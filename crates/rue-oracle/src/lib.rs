@@ -4820,7 +4820,9 @@ impl<'a> Interp<'a> {
                 self.run_drop(ty, v)?;
                 Value::Unit
             }
-            CfgInstData::StorageLive { .. } | CfgInstData::StorageDead { .. } => Value::Unit,
+            CfgInstData::StorageLive { .. }
+            | CfgInstData::StorageDead { .. }
+            | CfgInstData::MoveOut { .. } => Value::Unit,
         };
         frame.cache.insert(v.as_u32(), result.clone());
         Ok(result)

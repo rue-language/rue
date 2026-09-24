@@ -24,8 +24,9 @@
 //! returns, and intrinsic call signatures are validated before any getter or
 //! graph traversal can index them.
 //! Once those structural preconditions hold, a forward dataflow pass verifies
-//! explicit storage lifetimes, explicit Drop consumption, and initialization
-//! of unannotated compiler-owned slots such as runtime drop flags.
+//! explicit storage lifetimes, explicit Drop consumption, initialization of
+//! unannotated compiler-owned slots such as runtime drop flags, and that no
+//! place is dropped after a `MoveOut` on a path its drop flag does not guard.
 //!
 //! Strict publication checks apply to unreachable blocks too. Their sole
 //! reachability exemption is an unreachable block's `None` terminator:
@@ -43,6 +44,8 @@ use crate::inst::{
     BlockId, Cfg, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator, ValidatedCfg,
 };
 use crate::payload::CfgIntrinsicArgs;
+mod moves;
+
 use rue_air::{
     AirArgMode, FrozenTypeInternPool, IntrinsicAirArgument, IntrinsicAirArgumentSource,
     IntrinsicOperation, Type, TypeKind,
@@ -358,7 +361,9 @@ impl Cfg {
             CfgInstData::Store { value, .. } => out.push(*value),
             CfgInstData::ParamStore { value, .. } => out.push(*value),
 
-            CfgInstData::PlaceRead { place } => self.collect_place_operands(place, out),
+            CfgInstData::PlaceRead { place } | CfgInstData::MoveOut { place } => {
+                self.collect_place_operands(place, out)
+            }
             CfgInstData::PlaceWrite { place, value } => {
                 self.collect_place_operands(place, out);
                 out.push(*value);
@@ -555,11 +560,11 @@ impl<'a> Verifier<'a> {
     /// Verify the semantic ordering that is explicit in CFG, after structural
     /// verification has made all arena and payload reads safe.
     ///
-    /// This intentionally does not reconstruct source ownership. In
-    /// particular, a projected place may be partially initialized or moved and
-    /// a whole-slot Load may be a copy or a move; CFG has no marker that would
-    /// let this pass distinguish those cases soundly. Instead it proves four
-    /// bounded invariants that every publication boundary preserves:
+    /// This intentionally does not reconstruct source ownership. A
+    /// whole-slot Load may be a copy or a move; the builder's `MoveOut`
+    /// markers name the moves of values that need dropping, and nothing
+    /// else is inferred. It proves five bounded invariants that every
+    /// publication boundary preserves:
     ///
     /// * an exact logical `(slot, type)` storage region is live on every path at
     ///   each local access, and Live/Dead transitions alternate on every path;
@@ -569,7 +574,10 @@ impl<'a> Verifier<'a> {
     ///   runtime drop-flag guard that proves the root still owned (RUE-2290);
     /// * an unannotated compiler-owned slot that is loaded (notably a runtime
     ///   drop flag) has first been initialized by Store/Alloc on every path;
-    /// * every tracked nonzero-width storage region is dead at a normal Return.
+    /// * every tracked nonzero-width storage region is dead at a normal Return;
+    /// * no value read after a `MoveOut` of an overlapping place, with no
+    ///   write of it in between, is dropped, unless the place's runtime drop
+    ///   flag guards the read (RUE-2367, `verify/moves.rs`).
     ///
     /// Unreachable blocks have no runtime path and are deliberately excluded.
     /// Post-DCE detached arena values are absent from block instruction lists,
@@ -732,6 +740,7 @@ impl<'a> Verifier<'a> {
                 &entry_edges,
             )?;
         }
+        self.verify_move_facts(&value_roots, &flag_slots, &entry_edges)?;
         Ok(())
     }
 
@@ -2164,7 +2173,9 @@ impl<'a> Verifier<'a> {
                             .checked_enum_payload(payload)
                             .map_err(|error| self.payload_error(location, error))?;
                     }
-                    CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. } => {
+                    CfgInstData::PlaceRead { place }
+                    | CfgInstData::PlaceWrite { place, .. }
+                    | CfgInstData::MoveOut { place } => {
                         self.cfg
                             .checked_place_projections(place)
                             .map_err(|error| self.payload_error(location, error))?;
@@ -2277,9 +2288,9 @@ impl<'a> Verifier<'a> {
                 value,
                 "ParamStore",
             )?,
-            CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. } => {
-                self.verify_place(block, value, place)?
-            }
+            CfgInstData::PlaceRead { place }
+            | CfgInstData::PlaceWrite { place, .. }
+            | CfgInstData::MoveOut { place } => self.verify_place(block, value, place)?,
             CfgInstData::Call { .. } | CfgInstData::AccessorCall { .. } => {
                 self.verify_call_contract(block, value, inst.ty)?
             }
@@ -2980,7 +2991,7 @@ impl<'a> Verifier<'a> {
             CfgInstData::Store { value, .. } | CfgInstData::ParamStore { value, .. } => {
                 f(*value, "stored value")
             }
-            CfgInstData::PlaceRead { place } => {
+            CfgInstData::PlaceRead { place } | CfgInstData::MoveOut { place } => {
                 match place.base {
                     PlaceBase::Accessor(producer) | PlaceBase::Indirect(producer) => {
                         f(producer, "place base producer")
@@ -4148,6 +4159,337 @@ mod tests {
                 .contains("after it was already dropped on a reaching path"),
             "{error}"
         );
+    }
+
+    /// A conditional move out of a local (RUE-2367), as the builder lowers
+    /// `let y = x.f` (or `let y = x`) in one arm of an `if`.
+    #[derive(Default, Clone, Copy)]
+    struct ConditionalMoveShape {
+        /// The field of the pair moved out; `None` moves the whole pair.
+        moved_field: Option<u32>,
+        /// The field of the pair the exit drop reads; `None` reads the whole
+        /// pair.
+        dropped_field: Option<u32>,
+        /// The moved flag guards the exit drop.
+        guarded: bool,
+        /// The arm writes the moved place again after the move.
+        rewritten: bool,
+        /// The moved value is a discarded temporary the arm drops at once,
+        /// instead of the initializer of another local.
+        temporary: bool,
+    }
+
+    fn conditional_move_cfg(shape: ConditionalMoveShape) -> (Cfg, FrozenTypeInternPool) {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_nonzero_droppable_struct(&pool, &interner, "MovedOwner");
+        let pair_id = register_struct(&pool, &interner, "MovedPair", &[owner, owner]);
+        let pair = Type::new_struct(pair_id);
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            4,
+            1,
+            "conditional_move".to_string(),
+            vec![false],
+        );
+        let entry = cfg.new_block();
+        let move_arm = cfg.new_block();
+        let skip_arm = cfg.new_block();
+        let join = cfg.new_block();
+        let exit_drop = cfg.new_block();
+        let exit = cfg.new_block();
+        cfg.entry = entry;
+        let place_of = |cfg: &mut Cfg, field: Option<u32>| match field {
+            None => (Place::local(0, pair), pair),
+            Some(field_index) => (
+                cfg.make_place(
+                    PlaceBase::Local(0),
+                    pair,
+                    [Projection::Field {
+                        struct_id: pair_id,
+                        field_index,
+                    }],
+                )
+                .unwrap(),
+                owner,
+            ),
+        };
+
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: pair,
+            },
+            Type::UNIT,
+        );
+        let first = init_nonzero_owner(&mut cfg, entry, owner, 1);
+        let second = init_nonzero_owner(&mut cfg, entry, owner, 2);
+        let fields = cfg.push_struct_fields([first, second]).unwrap();
+        let init = push(
+            &mut cfg,
+            entry,
+            CfgInstData::StructInit {
+                struct_id: pair_id,
+                fields,
+            },
+            pair,
+        );
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc { slot: 0, init },
+            Type::UNIT,
+        );
+        let armed = push(&mut cfg, entry, CfgInstData::Const(1), Type::I32);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Store {
+                slot: 1,
+                value: armed,
+            },
+            Type::UNIT,
+        );
+        let cond = push(&mut cfg, entry, CfgInstData::Param { index: 0 }, Type::BOOL);
+        cfg.set_branch(entry, cond, move_arm, [], skip_arm, []);
+
+        let (moved_place, moved_ty) = place_of(&mut cfg, shape.moved_field);
+        let moved = match shape.moved_field {
+            None => push(&mut cfg, move_arm, CfgInstData::Load { slot: 0 }, pair),
+            Some(_) => push(
+                &mut cfg,
+                move_arm,
+                CfgInstData::PlaceRead {
+                    place: moved_place.duplicate_with_owner(),
+                },
+                moved_ty,
+            ),
+        };
+        let cleared = push(&mut cfg, move_arm, CfgInstData::Const(0), Type::I32);
+        push(
+            &mut cfg,
+            move_arm,
+            CfgInstData::Store {
+                slot: 1,
+                value: cleared,
+            },
+            Type::UNIT,
+        );
+        push(
+            &mut cfg,
+            move_arm,
+            CfgInstData::MoveOut {
+                place: moved_place.duplicate_with_owner(),
+            },
+            Type::UNIT,
+        );
+        if shape.temporary {
+            push(
+                &mut cfg,
+                move_arm,
+                CfgInstData::Drop { value: moved },
+                Type::UNIT,
+            );
+        } else {
+            push(
+                &mut cfg,
+                move_arm,
+                CfgInstData::StorageLive {
+                    slot: 2,
+                    local_ty: moved_ty,
+                },
+                Type::UNIT,
+            );
+            push(
+                &mut cfg,
+                move_arm,
+                CfgInstData::Alloc {
+                    slot: 2,
+                    init: moved,
+                },
+                Type::UNIT,
+            );
+            let binding = push(&mut cfg, move_arm, CfgInstData::Load { slot: 2 }, moved_ty);
+            push(
+                &mut cfg,
+                move_arm,
+                CfgInstData::Drop { value: binding },
+                Type::UNIT,
+            );
+            push(
+                &mut cfg,
+                move_arm,
+                CfgInstData::StorageDead {
+                    slot: 2,
+                    local_ty: moved_ty,
+                },
+                Type::UNIT,
+            );
+        }
+        if shape.rewritten {
+            let fresh = match shape.moved_field {
+                None => {
+                    let first = init_nonzero_owner(&mut cfg, move_arm, owner, 3);
+                    let second = init_nonzero_owner(&mut cfg, move_arm, owner, 4);
+                    let fields = cfg.push_struct_fields([first, second]).unwrap();
+                    push(
+                        &mut cfg,
+                        move_arm,
+                        CfgInstData::StructInit {
+                            struct_id: pair_id,
+                            fields,
+                        },
+                        pair,
+                    )
+                }
+                Some(_) => init_nonzero_owner(&mut cfg, move_arm, owner, 3),
+            };
+            push(
+                &mut cfg,
+                move_arm,
+                CfgInstData::PlaceWrite {
+                    place: moved_place.duplicate_with_owner(),
+                    value: fresh,
+                },
+                Type::UNIT,
+            );
+            let rearmed = push(&mut cfg, move_arm, CfgInstData::Const(1), Type::I32);
+            push(
+                &mut cfg,
+                move_arm,
+                CfgInstData::Store {
+                    slot: 1,
+                    value: rearmed,
+                },
+                Type::UNIT,
+            );
+        }
+        cfg.set_goto(move_arm, join, []);
+        cfg.set_goto(skip_arm, join, []);
+
+        if shape.guarded {
+            let flag = push(&mut cfg, join, CfgInstData::Load { slot: 1 }, Type::I32);
+            let zero = push(&mut cfg, join, CfgInstData::Const(0), Type::I32);
+            let live = push(&mut cfg, join, CfgInstData::Ne(flag, zero), Type::BOOL);
+            cfg.set_branch(join, live, exit_drop, [], exit, []);
+        } else {
+            cfg.set_goto(join, exit_drop, []);
+        }
+        let (dropped_place, dropped_ty) = place_of(&mut cfg, shape.dropped_field);
+        let remaining = match shape.dropped_field {
+            None => push(&mut cfg, exit_drop, CfgInstData::Load { slot: 0 }, pair),
+            Some(_) => push(
+                &mut cfg,
+                exit_drop,
+                CfgInstData::PlaceRead {
+                    place: dropped_place,
+                },
+                dropped_ty,
+            ),
+        };
+        push(
+            &mut cfg,
+            exit_drop,
+            CfgInstData::Drop { value: remaining },
+            Type::UNIT,
+        );
+        cfg.set_goto(exit_drop, exit, []);
+        push(
+            &mut cfg,
+            exit,
+            CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: pair,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+        (cfg, pool)
+    }
+
+    fn assert_moved_out_drop_rejected(shape: ConditionalMoveShape) {
+        let (cfg, pool) = conditional_move_cfg(shape);
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(
+            error.to_string().contains("moved out on a reaching path"),
+            "{error}"
+        );
+    }
+
+    fn assert_move_accepted(shape: ConditionalMoveShape) {
+        let (cfg, pool) = conditional_move_cfg(shape);
+        if let Err(error) = cfg.finish(&pool) {
+            panic!("{error}");
+        }
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_unguarded_drop_after_conditional_move() {
+        assert_moved_out_drop_rejected(ConditionalMoveShape::default());
+    }
+
+    #[test]
+    fn semantic_verifier_accepts_flag_guarded_drop_after_conditional_move() {
+        assert_move_accepted(ConditionalMoveShape {
+            guarded: true,
+            ..ConditionalMoveShape::default()
+        });
+    }
+
+    #[test]
+    fn semantic_verifier_accepts_unguarded_drop_after_move_and_rewrite() {
+        assert_move_accepted(ConditionalMoveShape {
+            rewritten: true,
+            ..ConditionalMoveShape::default()
+        });
+        assert_move_accepted(ConditionalMoveShape {
+            moved_field: Some(0),
+            dropped_field: Some(0),
+            rewritten: true,
+            ..ConditionalMoveShape::default()
+        });
+    }
+
+    #[test]
+    fn semantic_verifier_accepts_the_new_owner_dropping_the_moved_value() {
+        assert_move_accepted(ConditionalMoveShape {
+            guarded: true,
+            temporary: true,
+            ..ConditionalMoveShape::default()
+        });
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_unguarded_drop_overlapping_a_moved_field() {
+        for dropped_field in [Some(0), None] {
+            assert_moved_out_drop_rejected(ConditionalMoveShape {
+                moved_field: Some(0),
+                dropped_field,
+                ..ConditionalMoveShape::default()
+            });
+        }
+    }
+
+    #[test]
+    fn semantic_verifier_accepts_unguarded_drop_of_a_sibling_of_a_moved_field() {
+        assert_move_accepted(ConditionalMoveShape {
+            moved_field: Some(0),
+            dropped_field: Some(1),
+            ..ConditionalMoveShape::default()
+        });
+    }
+
+    #[test]
+    fn semantic_verifier_accepts_flag_guarded_drop_of_a_conditionally_moved_field() {
+        assert_move_accepted(ConditionalMoveShape {
+            moved_field: Some(0),
+            dropped_field: Some(0),
+            guarded: true,
+            ..ConditionalMoveShape::default()
+        });
     }
 
     /// `rounds` sequential `match`es of one flag-guarded binding (RUE-2347's

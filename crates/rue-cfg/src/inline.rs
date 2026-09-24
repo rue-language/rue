@@ -545,8 +545,9 @@ impl AccessorPlaceIndex {
         for raw in from..cfg.value_count() as u32 {
             self.values_scanned += 1;
             let value = CfgValue::from_raw(raw);
-            let (CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. }) =
-                &cfg.get_inst(value).data
+            let (CfgInstData::PlaceRead { place }
+            | CfgInstData::PlaceWrite { place, .. }
+            | CfgInstData::MoveOut { place }) = &cfg.get_inst(value).data
             else {
                 continue;
             };
@@ -938,7 +939,9 @@ fn substitute_accessor_places(
     let mut replacements = Vec::new();
     for value in candidates {
         let place = match &cfg.get_inst(value).data {
-            CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. }
+            CfgInstData::PlaceRead { place }
+            | CfgInstData::PlaceWrite { place, .. }
+            | CfgInstData::MoveOut { place }
                 if place.base == PlaceBase::Accessor(call) =>
             {
                 place
@@ -960,7 +963,8 @@ fn substitute_accessor_places(
         }
         match &mut cfg.get_inst_mut(value).data {
             CfgInstData::PlaceRead { place: target }
-            | CfgInstData::PlaceWrite { place: target, .. } => *target = place,
+            | CfgInstData::PlaceWrite { place: target, .. }
+            | CfgInstData::MoveOut { place: target } => *target = place,
             _ => unreachable!(),
         }
     }
@@ -1310,6 +1314,9 @@ fn translate_data(
         PlaceWrite { place, value } => PlaceWrite {
             place: translate_place(dst, callee, place, splice)?,
             value: splice.value(*value),
+        },
+        MoveOut { place } => MoveOut {
+            place: translate_place(dst, callee, place, splice)?,
         },
         Call {
             runtime,

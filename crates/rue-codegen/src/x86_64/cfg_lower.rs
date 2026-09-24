@@ -2220,7 +2220,9 @@ impl<'a> CfgLower<'a> {
                 self.lower_drop_plan(actions);
                 return ValueResult::SideEffect;
             }
-            ResidualValuePlan::StorageLive { .. } | ResidualValuePlan::StorageDead { .. } => {
+            ResidualValuePlan::StorageLive { .. }
+            | ResidualValuePlan::StorageDead { .. }
+            | ResidualValuePlan::MoveOut => {
                 return ValueResult::SideEffect;
             }
         };

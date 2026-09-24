@@ -263,6 +263,9 @@ impl CfgInstData {
                 slot: *slot,
                 local_ty: *local_ty,
             },
+            Self::MoveOut { place } => Self::MoveOut {
+                place: place.duplicate_with_owner(),
+            },
         }
     }
 }
@@ -667,6 +670,20 @@ pub enum CfgInstData {
     StorageDead {
         slot: u32,
         local_ty: Type,
+    },
+
+    /// Marks that the value at `place` was moved out: the new owner drops
+    /// it, so this function must not until the place is written again
+    /// (RUE-2367). The place is a local or parameter slot, optionally
+    /// projected through struct fields, exactly as the moved read named it.
+    ///
+    /// It has no runtime effect and lowers to nothing. It exists so the CFG
+    /// verifier can check the drop-flag discipline: a drop of a place moved
+    /// out on some reaching path must sit under that place's runtime drop
+    /// flag. Optimizations keep it in place and otherwise ignore it; it
+    /// reads and writes no memory.
+    MoveOut {
+        place: Place,
     },
 }
 
@@ -1238,6 +1255,31 @@ impl Cfg {
                 $value.map_err(CfgRemapError::Domain)?
             };
         }
+        macro_rules! remap_place {
+            ($place:expr) => {
+                cfg.make_place(
+                    $place.base,
+                    domain!(ty($place.base_type)),
+                    self.get_place_projections($place)
+                        .iter()
+                        .map(|projection| match projection {
+                            Projection::Field {
+                                struct_id,
+                                field_index,
+                            } => Ok(Projection::Field {
+                                struct_id: domain!(strukt(*struct_id)),
+                                field_index: *field_index,
+                            }),
+                            Projection::Index { array_type, index } => Ok(Projection::Index {
+                                array_type: domain!(ty(*array_type)),
+                                index: *index,
+                            }),
+                        })
+                        .collect::<Result<Vec<_>, CfgRemapError<E>>>()?,
+                )
+                .map_err(CfgRemapError::Edit)?
+            };
+        }
         for source in &self.values {
             let data = match &source.data {
                 Const(value) => Const(*value),
@@ -1281,56 +1323,10 @@ impl Cfg {
                     value: *value,
                 },
                 PlaceRead { place } => PlaceRead {
-                    place: cfg
-                        .make_place(
-                            place.base,
-                            domain!(ty(place.base_type)),
-                            self.get_place_projections(place)
-                                .iter()
-                                .map(|projection| match projection {
-                                    Projection::Field {
-                                        struct_id,
-                                        field_index,
-                                    } => Ok(Projection::Field {
-                                        struct_id: domain!(strukt(*struct_id)),
-                                        field_index: *field_index,
-                                    }),
-                                    Projection::Index { array_type, index } => {
-                                        Ok(Projection::Index {
-                                            array_type: domain!(ty(*array_type)),
-                                            index: *index,
-                                        })
-                                    }
-                                })
-                                .collect::<Result<Vec<_>, CfgRemapError<E>>>()?,
-                        )
-                        .map_err(CfgRemapError::Edit)?,
+                    place: remap_place!(place),
                 },
                 PlaceWrite { place, value } => PlaceWrite {
-                    place: cfg
-                        .make_place(
-                            place.base,
-                            domain!(ty(place.base_type)),
-                            self.get_place_projections(place)
-                                .iter()
-                                .map(|projection| match projection {
-                                    Projection::Field {
-                                        struct_id,
-                                        field_index,
-                                    } => Ok(Projection::Field {
-                                        struct_id: domain!(strukt(*struct_id)),
-                                        field_index: *field_index,
-                                    }),
-                                    Projection::Index { array_type, index } => {
-                                        Ok(Projection::Index {
-                                            array_type: domain!(ty(*array_type)),
-                                            index: *index,
-                                        })
-                                    }
-                                })
-                                .collect::<Result<Vec<_>, CfgRemapError<E>>>()?,
-                        )
-                        .map_err(CfgRemapError::Edit)?,
+                    place: remap_place!(place),
                     value: *value,
                 },
                 Call {
@@ -1416,6 +1412,9 @@ impl Cfg {
                 StorageDead { slot, local_ty } => StorageDead {
                     slot: *slot,
                     local_ty: domain!(ty(*local_ty)),
+                },
+                MoveOut { place } => MoveOut {
+                    place: remap_place!(place),
                 },
             };
             let contract = self.call_contract(CfgValue::from_raw(cfg.values.len() as u32));
@@ -3103,7 +3102,7 @@ impl Cfg {
                 | EnumPayloadGet { base: v, .. }
                 | IntCast { value: v, .. }
                 | Drop { value: v } => *v = map(*v),
-                PlaceRead { place } => {
+                PlaceRead { place } | MoveOut { place } => {
                     match &mut place.base {
                         PlaceBase::Accessor(value) | PlaceBase::Indirect(value) => {
                             *value = map(*value)
@@ -3819,6 +3818,10 @@ impl Cfg {
             }
             CfgInstData::StorageDead { slot, .. } => {
                 write!(f, "storage_dead ${}", slot)
+            }
+            CfgInstData::MoveOut { place } => {
+                write!(f, "move_out ")?;
+                self.fmt_place(f, place)
             }
         }
     }

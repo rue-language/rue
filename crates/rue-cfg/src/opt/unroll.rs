@@ -576,7 +576,7 @@ struct SourceOperands {
     values: Vec<CfgValue>,
     /// `Call` and `AccessorCall` arguments.
     call_args: Vec<CfgCallArg>,
-    /// `PlaceRead` and `PlaceWrite` projections.
+    /// `PlaceRead`, `PlaceWrite` and `MoveOut` projections.
     projections: Vec<Projection>,
 }
 
@@ -597,7 +597,9 @@ fn capture_operands(cfg: &Cfg, data: &CfgInstData) -> SourceOperands {
         CfgInstData::EnumVariant { payload, .. } => {
             operands.values = cfg.enum_payload(payload).to_vec();
         }
-        CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. } => {
+        CfgInstData::PlaceRead { place }
+        | CfgInstData::PlaceWrite { place, .. }
+        | CfgInstData::MoveOut { place } => {
             operands.projections = cfg.get_place_projections(place).to_vec();
         }
         _ => {}
@@ -790,7 +792,7 @@ fn remap_data(
             param_slot: *param_slot,
             value: m(*value),
         },
-        CfgInstData::PlaceRead { place } => {
+        CfgInstData::PlaceRead { place } | CfgInstData::MoveOut { place } => {
             let base = match place.base {
                 PlaceBase::Accessor(v) => PlaceBase::Accessor(m(v)),
                 PlaceBase::Indirect(v) => PlaceBase::Indirect(m(v)),
@@ -813,8 +815,11 @@ fn remap_data(
                     },
                 })
                 .collect::<Vec<_>>();
-            CfgInstData::PlaceRead {
-                place: cfg.make_place(base, place.base_type, ps)?,
+            let place = cfg.make_place(base, place.base_type, ps)?;
+            if matches!(data, CfgInstData::MoveOut { .. }) {
+                CfgInstData::MoveOut { place }
+            } else {
+                CfgInstData::PlaceRead { place }
             }
         }
         CfgInstData::PlaceWrite { place, value } => {

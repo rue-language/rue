@@ -210,6 +210,8 @@ pub enum ResidualValuePlan {
         slot: u32,
         local_ty: Type,
     },
+    /// The verifier's move-out marker: nothing to emit.
+    MoveOut,
     PlaceRead {
         place: PlacePlan,
         /// One leaf type per logical slot of the value being read, so a
@@ -984,6 +986,7 @@ pub enum ValueKind {
     Drop,
     StorageLive,
     StorageDead,
+    MoveOut,
     PlaceRead,
     PlaceWrite,
 }
@@ -1141,6 +1144,7 @@ impl ValuePlan {
                 | CfgInstData::PlaceWrite { .. }
                 | CfgInstData::StorageLive { .. }
                 | CfgInstData::StorageDead { .. }
+                | CfgInstData::MoveOut { .. }
                 | CfgInstData::Drop { .. }
                 | CfgInstData::Alloc { .. }
         ) {
@@ -1499,6 +1503,7 @@ enum ResidualInput {
         slot: u32,
         local_ty: Type,
     },
+    MoveOut,
     PlaceRead,
     PlaceWrite {
         value: CfgValue,
@@ -1838,6 +1843,7 @@ fn residual_plan<A: ValueLowerAdapter>(
         ResidualInput::StorageDead { slot, local_ty } => {
             ResidualValuePlan::StorageDead { slot, local_ty }
         }
+        ResidualInput::MoveOut => ResidualValuePlan::MoveOut,
         ResidualInput::PlaceRead => ResidualValuePlan::PlaceRead {
             place: match &ctx.cfg.get_inst(value).data {
                 CfgInstData::PlaceRead { place } => place_plan(ctx, adapter, place),
@@ -1908,6 +1914,7 @@ fn residual_kind(plan: &ResidualValuePlan) -> ValueKind {
         ResidualValuePlan::Drop { .. } => ValueKind::Drop,
         ResidualValuePlan::StorageLive { .. } => ValueKind::StorageLive,
         ResidualValuePlan::StorageDead { .. } => ValueKind::StorageDead,
+        ResidualValuePlan::MoveOut => ValueKind::MoveOut,
         ResidualValuePlan::PlaceRead { .. } => ValueKind::PlaceRead,
         ResidualValuePlan::PlaceWrite { .. } => ValueKind::PlaceWrite,
     }
@@ -2416,6 +2423,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                 local_ty: *local_ty
             })
         }
+        CfgInstData::MoveOut { .. } => lower_residual!(ResidualInput::MoveOut),
         CfgInstData::PlaceRead { .. } => lower_residual!(ResidualInput::PlaceRead),
         CfgInstData::PlaceWrite { value, .. } => {
             lower_residual!(ResidualInput::PlaceWrite { value: *value })

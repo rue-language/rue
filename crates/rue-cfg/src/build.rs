@@ -3203,6 +3203,7 @@ impl<'a> CfgBuilder<'a> {
                             self.update_drop_flag(key, false, span);
                         }
                     }
+                    self.emit_move_out(key, *place, ty, span);
                 }
                 if let Some(val) = result.value {
                     self.cache(air_ref, val);
@@ -3599,6 +3600,48 @@ impl<'a> CfgBuilder<'a> {
             return;
         };
         self.store_field_drop_flag(flag_slot, live, span);
+    }
+
+    /// Record a move out of `key` (or the path `place` names inside it) for
+    /// the verifier (RUE-2367): a `MoveOut` of the moved place, after the
+    /// drop flag's clearing, which the verifier's flag proof expects to come
+    /// first. Only a value that needs dropping is marked; no drop of any
+    /// other value is ever owed, so there is nothing to check.
+    fn emit_move_out(
+        &mut self,
+        key: MovedSlot,
+        place: Option<AirPlaceRef>,
+        ty: Type,
+        span: rue_span::Span,
+    ) {
+        if !self.type_needs_drop(ty) {
+            return;
+        }
+        let place = match place {
+            Some(place_ref) => {
+                let Some(place) = self.lower_air_place(place_ref) else {
+                    return;
+                };
+                place
+            }
+            None => {
+                let base = match key {
+                    MovedSlot::Local(slot) => PlaceBase::Local(slot),
+                    MovedSlot::Param(slot) => PlaceBase::Param(slot),
+                };
+                let place_result = self.cfg.make_place(base, ty, std::iter::empty());
+                self.payload_or(
+                    place_result,
+                    Place {
+                        base,
+                        base_type: ty,
+                        projections: CfgProjections::EMPTY,
+                    },
+                    span,
+                )
+            }
+        };
+        self.emit(CfgInstData::MoveOut { place }, Type::UNIT, span);
     }
 
     /// The path (declaration/element indices, outermost first) named by a

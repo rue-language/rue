@@ -34,8 +34,8 @@
 //! - [`has_observable_side_effect`]: the instruction is visible beyond its
 //!   result value — every call form (`Call`, `CallIndirect`, `AccessorCall`),
 //!   `Intrinsic`, `Alloc`, `Store`, `ParamStore`, `PlaceWrite`, `Drop`,
-//!   `StorageLive`/`StorageDead`. This is the axis DCE needs to keep an op
-//!   live even when its result is unused.
+//!   `StorageLive`/`StorageDead`, and the verifier's `MoveOut` marker. This is
+//!   the axis DCE needs to keep an op live even when its result is unused.
 //! - [`materializes_owned_value`]: the instruction's result type carries drop
 //!   glue, so the value it produces owns resources and the CFG owes it exactly
 //!   one `Drop` per materialization. This is the axis CSE and LICM need: a pass
@@ -117,8 +117,8 @@ pub(crate) fn may_trap(cfg: &Cfg, value: CfgValue) -> bool {
 ///
 /// These are the ops DCE must keep live even when their result is unused: every
 /// call form (`Call`, `CallIndirect`, `AccessorCall`), `Intrinsic`, `Alloc`,
-/// `Store`, `ParamStore`, `PlaceWrite`, `Drop`, and
-/// `StorageLive`/`StorageDead`. This axis is independent of [`may_trap`]: none
+/// `Store`, `ParamStore`, `PlaceWrite`, `Drop`, `StorageLive`/`StorageDead`,
+/// and the verifier's `MoveOut` marker. This axis is independent of [`may_trap`]: none
 /// of these are counted here for their trap potential (a call may of course
 /// trap, but it is kept live for its effect, and no call form is part of the
 /// `may_trap` speculation set because this axis already keeps every one of them
@@ -147,6 +147,10 @@ pub(crate) fn has_observable_side_effect(cfg: &Cfg, value: CfgValue) -> bool {
 
         // Storage liveness affects stack allocation.
         CfgInstData::StorageLive { .. } | CfgInstData::StorageDead { .. } => true,
+
+        // A move-out marker has no runtime effect, but it is what the
+        // verifier reads the move from, so it stays where it was emitted.
+        CfgInstData::MoveOut { .. } => true,
 
         _ => false,
     }
