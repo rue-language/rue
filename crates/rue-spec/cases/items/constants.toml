@@ -575,6 +575,17 @@ fn main() -> i32 { if A && B && C && D == 1 { 42 } else { 7 } }
 exit_code = 42
 
 [[case]]
+name = "const_block_declared_let_overflow_in_a_long_chain"
+spec = ["8.1:3", "3.1:6", "6.5:12"]
+description = "A 42-operator chain on an i8 binding is one declared region even though declaration-time evaluation walks it iteratively (RUE-2366): the running sum leaves i8 at the 28th addition, where run time traps, so the constant is E1200"
+source = """
+const K: bool = { let x: i8 = 100; x + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 - 40 == x };
+fn main() -> i32 { if K { 1 } else { 2 } }
+"""
+compile_fail = true
+error_contains = ["E1200", "integer overflow evaluating addition at type i8: the result 128 does not fit in i8"]
+
+[[case]]
 name = "const_block_unknown_let_annotation_type"
 spec = ["3.12:3", "5.1:8"]
 description = "An unknown type in a `let` annotation inside a constant initializer block is the unknown-type error (E0204) run time reports"
