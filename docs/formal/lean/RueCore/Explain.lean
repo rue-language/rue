@@ -2407,16 +2407,6 @@ theorem traceArgs_res {tev : Store → Expr → Trace} {ev : Store → Expr → 
           cases hr₂ : evalArgs ev H₁ es <;> rfl
       | _ => rfl
 
-/-- An aggregate's introduction row carries `introVal`'s result, with the
-arguments' trace prefixed (helper). Private, so the statement digest does not
-reach the renderers through it (`violationPremise`'s equations are more than
-the digest's heartbeat limit allows). -/
-private theorem tracedIntro_res (P : Program) (kids : List Step) (d : Nat) (Θ : List Ty)
-    (R : Ty) (e : Expr) (rule : String) (H H₁ : Store) (tr : List Event) (mk : Nat → Val) :
-    (tracedIntro P kids d Θ R e rule H H₁ tr mk).res = (introVal P.decls H₁ mk).withTrace tr := by
-  unfold tracedIntro introVal
-  split <;> simp [traced, refused, EvalRes.withTrace]
-
 /-- The instrumented mirror of `eval` (§6): the same machine, recording one
 row per evaluated node. `traceEval_res` proves the two agree on the final
 result. `d` is the nesting depth, `Θ` the binder types in scope and `R` the
@@ -3002,14 +2992,14 @@ theorem traceEval_res (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
           simp only [traceEval, eval,
             traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced, tracedIntro_res, didNotRun, refused,
-              EvalRes.withTrace] <;> grind)
+            first | rfl | (simp_all [traced, tracedIntro, introVal, didNotRun, refused,
+              EvalRes.withTrace] <;> split <;> simp_all)
       | mkEnum e' k args =>
           simp only [traceEval, eval,
             traceArgs_res (ev := fun H' e'' => eval M fuel P H' φ e'') (fun H' e'' => ih _ _ _ _ _ e'')]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced, tracedIntro_res, didNotRun, refused,
-              EvalRes.withTrace] <;> grind)
+            first | rfl | (simp_all [traced, tracedIntro, introVal, didNotRun, refused,
+              EvalRes.withTrace] <;> split <;> simp_all)
       | «match» scrut arms =>
           simp only [traceEval, eval, EvalRes.andThen, ih]
           (repeat' split) <;>
@@ -3019,13 +3009,13 @@ theorem traceEval_res (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
           simp only [traceEval, eval,
             traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced, tracedIntro_res, didNotRun, refused,
-              EvalRes.withTrace] <;> grind)
+            first | rfl | (simp_all [traced, tracedIntro, introVal, didNotRun, refused,
+              EvalRes.withTrace] <;> split <;> simp_all)
       | repeatArray Te e₁ n =>
           simp only [traceEval, eval, EvalRes.andThen, ih]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced, tracedIntro_res, didNotRun, refused,
-              EvalRes.withTrace] <;> grind)
+            first | rfl | (simp_all [traced, tracedIntro, introVal, didNotRun, refused,
+              EvalRes.withTrace] <;> split <;> simp_all)
       | indexRead pl idx πs =>
           simp only [traceEval, eval,
             traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
