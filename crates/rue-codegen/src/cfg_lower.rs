@@ -259,6 +259,7 @@ fn format_cfg_inst_data_impl(
         CfgInstData::Drop { value } => format!("drop {}", value),
         CfgInstData::StorageLive { slot, .. } => format!("storage_live ${}", slot),
         CfgInstData::StorageDead { slot, .. } => format!("storage_dead ${}", slot),
+        CfgInstData::MoveOut { place } => format!("move_out {}", cfg.place_to_string(place)),
         CfgInstData::AccessorCall { name, .. } => match interner {
             Some(interner) => format!("accessor_call @{}", interner.resolve(name)),
             None => format!("accessor_call @{}", name.into_usize()),

@@ -23,7 +23,7 @@
 //!
 //! - Observable side effect (`classify::has_observable_side_effect`): function
 //!   calls, intrinsics, `Store`/`ParamStore`/`PlaceWrite`, `Alloc`, `Drop`,
-//!   `StorageLive`/`StorageDead`.
+//!   `StorageLive`/`StorageDead`, `MoveOut`.
 //! - May trap (`classify::may_trap`): overflow-checked arithmetic and division
 //!   checks, `IntCast` (range check), and an indirect or indexed `PlaceRead`
 //!   (pointer fault or bounds check). DCE preserves these operations even when
@@ -189,7 +189,8 @@ fn compute_live_values(cfg: &Cfg, reachable: &BitSet) -> BitSet {
 /// ADR-0054 §2), so DCE, LICM, and unrolling agree on the trapping set:
 ///
 /// - `classify::has_observable_side_effect` — `Call`, `Intrinsic`, `Alloc`,
-///   `Store`, `ParamStore`, `PlaceWrite`, `Drop`, `StorageLive`/`StorageDead`.
+///   `Store`, `ParamStore`, `PlaceWrite`, `Drop`, `StorageLive`/`StorageDead`,
+///   `MoveOut`.
 /// - `classify::may_trap` — overflow-checked arithmetic and division checks,
 ///   `IntCast` (range check), and an indirect or indexed `PlaceRead` (pointer
 ///   fault or bounds check). DCE preserves these even when the result is unused
@@ -382,7 +383,7 @@ pub(super) fn visit_instruction_uses_kinded(
         CfgInstData::StorageLive { .. } | CfgInstData::StorageDead { .. } => {}
 
         // Place operations
-        CfgInstData::PlaceRead { place } => {
+        CfgInstData::PlaceRead { place } | CfgInstData::MoveOut { place } => {
             if let crate::PlaceBase::Accessor(value) | crate::PlaceBase::Indirect(value) =
                 place.base
             {
