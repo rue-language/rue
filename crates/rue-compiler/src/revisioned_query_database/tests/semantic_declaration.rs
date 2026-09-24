@@ -5438,7 +5438,7 @@ fn deferred_value_call_diagnostics_are_stable_and_keep_query_channels() {
             if matches!(
                 value.as_ref(),
                 crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(reason)
-                    if reason.as_ref() == "type constructor `Box` expects 1 comptime type argument(s), but 0 provided"
+                    if reason.as_ref() == "type constructor 'Box' expects 1 comptime type argument(s), but 0 were provided"
             )
     ));
 
