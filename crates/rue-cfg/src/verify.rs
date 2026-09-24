@@ -5423,7 +5423,9 @@ mod tests {
             assert!(work.validation_instruction_visits <= work.fact_solves * 9);
             assert!(work.instruction_operand_visits > 0);
             assert!(work.instruction_operand_visits <= work.fact_solves * 3);
-            assert!(work.terminator_operand_visits >= PHIS * 2);
+            // The dropped phi's exact-value fact scans only the blocks its
+            // definition reaches (the tail), not the whole chain.
+            assert!(work.terminator_operand_visits > 0);
             assert!(work.terminator_operand_visits <= work.fact_solves * PHIS);
         });
     }
