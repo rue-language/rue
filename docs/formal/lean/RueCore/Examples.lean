@@ -1042,11 +1042,14 @@ def arrayLinearElemLeaked : Expr :=
 
 Each acceptance is `check`'s, so `checkProgram_sound` turns it into a §5
 derivation and §7 covers the run; each refusal and each outcome below is
-checked by the kernel. `cA n` abbreviates the stored `S1 { x0: n }` these
-traces are full of. -/
+checked by the kernel. `cA i n` abbreviates the stored `S1 { x0: n }` with
+value identity `i` these traces are full of. Every aggregate a program builds
+mints its identity from the store's next index (`introVal`, `Dynamics.lean`),
+so a pinned final store is a run of `†` cells — the reserved slots and the
+retired bindings — and a binding's location counts the slots before it. -/
 
-/-- `S1 { x0: n }` as stored contents — the shape an array element's drop
-event carries (helper). -/
+/-- `S1 { x0: n }` with identity `i`, as stored contents — the shape an array
+element's drop event carries (helper). -/
 abbrev cA (i : Nat) (n : Int) : Contents := .struct sAffine i [c64 n]
 
 /-- Probe `a1`: constant-index reads at a `Copy` element type, accepted, and
@@ -1636,7 +1639,8 @@ Each acceptance is `check`'s, so §7 covers the run; each outcome and each
 refusal is checked by the kernel. `cAI a b` abbreviates the stored
 `S8 { S1 { a }, b }`. -/
 
-/-- `S8 { S1 { a }, b }` as stored contents (helper). -/
+/-- `S8 { S1 { a }, b }` as stored contents, the outer value with identity `i`
+and the inner with `j` (helper). -/
 abbrev cAI (i j : Nat) (a b : Int) : Contents := .struct sAffineInt i [cA j a, c64 b]
 
 /-- Probes q01/q08: `4 + 7`, and nothing observable dropped. -/
