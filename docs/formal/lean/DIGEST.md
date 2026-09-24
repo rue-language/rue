@@ -617,6 +617,28 @@ theorem RueCore.OwnSt.setAt_wf {D : Decls} (T' : Ty) (u : OwnSt)
     Ty.atPath D T π = some T' → OwnSt.wf D (t.setAt π u) T = true
 ```
 
+### `TypedArms.at_index`
+
+*theorem* · module `RueCore.Statics`
+
+*(no doc-comment)*
+
+```lean
+theorem RueCore.TypedArms.at_index {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty}
+  {arms : List Expr} {Tss : List (List Ty)} {os : List (Option Ctx)}
+  {Δs : List Ctx} :
+  TypedArms P R Γ₀ arms Tss T os Δs →
+    ∀ (k : Nat) {body : Expr} {Ts : List Ty},
+      arms[k]? = some body →
+        Tss[k]? = some Ts →
+          ∃ ob Δb,
+            Typed P R (armCtx Ts Γ₀) body T { norm := ob, brk := Δb } ∧
+              ∀ (Γb : Ctx),
+                ob = some Γb →
+                  NoResidualLinear P.decls (List.take Ts.length Γb) ∧
+                    some (List.drop Ts.length Γb) ∈ os
+```
+
 ### `Ctx.joinFold_perm`
 
 *theorem* · module `RueCore.Statics`
@@ -677,13 +699,11 @@ theorem RueCore.Ctx.joinAll_wf {D : Decls} {sk : List (Ty × Bool)} {Γs : List 
 
 Every rule preserves the context skeleton: only ownership states flow.
 This is the fused context's image of §5's convention that `Γ` is fixed while
-`Σ` is threaded through the judgment. The `ret` rule's arbitrary outgoing
-context (§5.7's `⊥`) is restricted to the same skeleton for exactly this
-reason.
+`Σ` is threaded through the judgment, read over `Ω` (`Out.SkelOk`).
 
 ```lean
-theorem RueCore.Typed.skel_preserved {P : Program} {R : Ty} {Γ Γ' : Ctx} {e : Expr}
-  {T : Ty} (h : Typed P R Γ e T Γ') : Γ'.skel = Γ.skel
+theorem RueCore.Typed.skel_preserved {P : Program} {R : Ty} {Γ : Ctx} {e : Expr}
+  {T : Ty} {Ω : Out} (h : Typed P R Γ e T Ω) : Out.SkelOk Γ Ω
 ```
 
 ### `dropContents_events`
@@ -1389,16 +1409,16 @@ which is why this is a lemma rather than a case of the induction.
 ```lean
 theorem RueCore.args_sound (M : FloatModel) {P : Program} {fuel : Nat}
   (ih :
-    ∀ {R : Ty} {Γ Γ' : Ctx} {e : Expr} {T : Ty},
-      Typed P R Γ e T Γ' →
+    ∀ {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty},
+      Typed P R Γ e T Ω →
         ∀ {φ : Frame} {H : Store},
           FrameMatches P.decls Γ φ H →
-            EvalOk P.decls T R Γ' φ H (eval M.toFloatOps fuel P H φ e))
-  (es : List Expr) {R : Ty} {Γ Γ' : Ctx} {Ts : List Ty} {φ : Frame}
+            EvalOk P.decls T R Ω.norm φ H (eval M.toFloatOps fuel P H φ e))
+  (es : List Expr) {R : Ty} {Γ : Ctx} {Ω : Out} {Ts : List Ty} {φ : Frame}
   {H : Store} :
-  TypedArgs P R Γ es Ts Γ' →
+  TypedArgs P R Γ es Ts Ω →
     FrameMatches P.decls Γ φ H →
-      ArgsOk P.decls R Ts Γ' φ H
+      ArgsOk P.decls R Ts Ω.norm φ H
         (evalArgs (fun H' e => eval M.toFloatOps fuel P H' φ e) H es)
 ```
 
@@ -1425,11 +1445,11 @@ runs at one unit less.
 
 ```lean
 theorem RueCore.soundness (M : FloatModel) {P : Program} (hwf : WfProgram P)
-  (fuel : Nat) {R : Ty} {Γ Γ' : Ctx} {e : Expr} {T : Ty} :
-  Typed P R Γ e T Γ' →
+  (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty} :
+  Typed P R Γ e T Ω →
     ∀ {φ : Frame} {H : Store},
       FrameMatches P.decls Γ φ H →
-        EvalOk P.decls T R Γ' φ H (eval M.toFloatOps fuel P H φ e)
+        EvalOk P.decls T R Ω.norm φ H (eval M.toFloatOps fuel P H φ e)
 ```
 
 ### `fuel_mono`
@@ -1643,24 +1663,30 @@ theorem RueCore.no_linear_discard (M : FloatModel) {P : Program} (h : ProgramTyp
 
 *theorem* · module `RueCore.Checker`
 
-Every `check` acceptance is a real derivation of the §5 judgment, so the
-§7 theorems apply to whatever `check` accepts.
+Every `check` acceptance is a real derivation of the §5 judgment, at every
+type the result admits (a `never` result at every type, (Sub-Never) §5.7), so
+the §7 theorems apply to whatever `check` accepts.
 
 ```lean
-theorem RueCore.check_sound {P : Program} {R : Ty} (e : Expr) {Γ : Ctx} {T : Ty}
-  {Γ' : Ctx} : check P R Γ e = some (T, Γ') → Typed P R Γ e T Γ'
+theorem RueCore.check_sound {P : Program} {R : Ty} (e : Expr) {Γ : Ctx} {c : CTy}
+  {Ω : Out} :
+  check P R Γ e = some (c, Ω) →
+    ∀ (T : Ty), c.fits T = true → Typed P R Γ e T Ω
 ```
 
 ### `checkArms_sound`
 
 *theorem* · module `RueCore.Checker`
 
-Every `checkArms` acceptance is a real (Match) §5.5 arm-list derivation.
+Every `checkArms` acceptance is a real (Match) §5.5 arm-list derivation, at
+every type the arms' fixed type admits.
 
 ```lean
-theorem RueCore.checkArms_sound {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty}
-  (es : List Expr) {Tss : List (List Ty)} {Γs : List Ctx} :
-  checkArms P R Γ₀ T es Tss = some Γs → TypedArms P R Γ₀ es Tss T Γs
+theorem RueCore.checkArms_sound {P : Program} {R : Ty} {Γ₀ : Ctx} {c : CTy}
+  (es : List Expr) {Tss : List (List Ty)} {os : List (Option Ctx)}
+  {Δs : List Ctx} :
+  checkArms P R Γ₀ c es Tss = some (os, Δs) →
+    ∀ (T : Ty), c.fits T = true → TypedArms P R Γ₀ es Tss T os Δs
 ```
 
 ### `checkArgs_sound`
@@ -1672,8 +1698,8 @@ derivation.
 
 ```lean
 theorem RueCore.checkArgs_sound {P : Program} {R : Ty} (es : List Expr) {Γ : Ctx}
-  {Ts : List Ty} {Γ' : Ctx} :
-  checkArgs P R Γ es Ts = some Γ' → TypedArgs P R Γ es Ts Γ'
+  {Ts : List Ty} {Ω : Out} :
+  checkArgs P R Γ es Ts = some Ω → TypedArgs P R Γ es Ts Ω
 ```
 
 ### `checkFn_sound`
@@ -1777,16 +1803,16 @@ theorem RueCore.checkProgram_sound {P : Program} (h : checkProgram P = true) :
 
 **`Typed` derives a `@panic` past a live linear binding.** (Panic) §5.8
 imposes no residual-linear premise — §5.7 exempts the `⊥_panic` edge from
-§5.6's obligation — so the `let`'s own scope-exit check is discharged by the
-free outgoing context (Sub-Never) licenses, which the rule may take
-`MovedOut`. This is the one shape where `Typed.panic` and `Typed.ret` differ:
-at an affine binding `Typed.letIn`'s premise is vacuous, so there is nothing
-to drop.
+§5.6's obligation — and the `let`'s tail is `⊥`, so (Let) with a divergent
+tail (`Typed.letInDiv`) reaches no scope exit and reads no state there. This
+is the one shape where `Typed.panic` and `Typed.ret` differ: `ret` carries the
+frame-wide residual-linear premise, and at an affine binding there is nothing
+for either to drop.
 
 ```lean
 theorem RueCore.Examples.panicPastLinear_typed :
   Typed (Examples.prog Examples.tI64 Examples.panicPastLinear) Examples.tI64
-    [] Examples.panicPastLinear Examples.tI64 []
+    [] Examples.panicPastLinear Examples.tI64 { norm := none, brk := [] }
 ```
 
 ### `Examples.countdown_at_17`
@@ -2888,29 +2914,6 @@ theorem RueCore.OwnSt.wfList_fieldStates_array {D : Decls} {t : OwnSt} {T₁ : T
   OwnSt.wfList D t.fieldStates (List.replicate n T₁) = true
 ```
 
-### `TypedArms.at_index`
-
-*theorem* · module `RueCore.Statics`
-
-**(Match) §5.5's premises for the arm a tag selects.** Read at the variant
-index `k`: the arm's body is typed under that variant's payload locals, its
-locals are discharged by §5.6 at the arm's end, and what it contributes to the
-n-way join is one of the states the join was taken over. This is the inversion
-`soundness` performs once (D-Match) §6.6 has read the tag (helper).
-
-```lean
-theorem RueCore.TypedArms.at_index {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty}
-  {arms : List Expr} {Tss : List (List Ty)} {Γs : List Ctx} :
-  TypedArms P R Γ₀ arms Tss T Γs →
-    ∀ (k : Nat) {body : Expr} {Ts : List Ty},
-      arms[k]? = some body →
-        Tss[k]? = some Ts →
-          ∃ Γb,
-            Typed P R (armCtx Ts Γ₀) body T Γb ∧
-              NoResidualLinear P.decls (List.take Ts.length Γb) ∧
-                List.drop Ts.length Γb ∈ Γs
-```
-
 ### `exhaustive_arm_exists`
 
 *theorem* · module `RueCore.Statics`
@@ -3079,6 +3082,44 @@ theorem RueCore.Ctx.joinFold_wf {D : Decls} {sk : List (Ty × Bool)} (Γs : List
       Ctx.Wf D acc → Ctx.joinFold D acc Γs = some Γ' → Ctx.Wf D Γ'
 ```
 
+### `Out.skelOk_none`
+
+*theorem* · module `RueCore.Statics`
+
+`⊥` preserves every skeleton vacuously (helper).
+
+```lean
+theorem RueCore.Out.skelOk_none {Γ : Ctx} {Δ : List Ctx} :
+  Out.SkelOk Γ { norm := none, brk := Δ }
+```
+
+### `Ctx.joinOpt_skel`
+
+*theorem* · module `RueCore.Statics`
+
+The two-arm §5.5 join over `Ω` preserves a skeleton both continuing arms
+have (helper).
+
+```lean
+theorem RueCore.Ctx.joinOpt_skel {D : Decls} {a b : Option Ctx} {Γ' : Ctx}
+  {S : List (Ty × Bool)} (h : Ctx.joinOpt D a b = some (some Γ'))
+  (ha : ∀ (x : Ctx), a = some x → x.skel = S)
+  (hb : ∀ (x : Ctx), b = some x → x.skel = S) : Γ'.skel = S
+```
+
+### `Ctx.joinOpts_skel`
+
+*theorem* · module `RueCore.Statics`
+
+The n-way §5.5 join over `Ω` preserves the skeleton every continuing arm
+has (helper).
+
+```lean
+theorem RueCore.Ctx.joinOpts_skel {D : Decls} {os : List (Option Ctx)} {Γ₀ Γ' : Ctx}
+  (h : Ctx.joinOpts D os = some (some Γ'))
+  (hs : Γ₀.SameSkel (List.filterMap id os)) : Γ'.skel = Γ₀.skel
+```
+
 ### `TypedArgs.skel_preserved`
 
 *theorem* · module `RueCore.Statics`
@@ -3086,25 +3127,50 @@ theorem RueCore.Ctx.joinFold_wf {D : Decls} {sk : List (Ty × Bool)} (Γs : List
 A typed expression list preserves the context skeleton too (helper).
 
 ```lean
-theorem RueCore.TypedArgs.skel_preserved {P : Program} {R : Ty} {Γ Γ' : Ctx}
-  {es : List Expr} {Ts : List Ty} (h : TypedArgs P R Γ es Ts Γ') :
-  Γ'.skel = Γ.skel
+theorem RueCore.TypedArgs.skel_preserved {P : Program} {R : Ty} {Γ : Ctx}
+  {es : List Expr} {Ts : List Ty} {Ω : Out} (h : TypedArgs P R Γ es Ts Ω) :
+  Out.SkelOk Γ Ω
 ```
 
 ### `TypedArms.arm_skel`
 
 *theorem* · module `RueCore.Statics`
 
-**Every arm of a `match` hands the §5.5 join a context with the skeleton the
-arm started from** (§5's convention that `Γ` is fixed): the arm's payload locals
-are popped, and the body preserved the rest. This is what lets the n-way join
-read either the accumulated state or an arm's, which is the `match` case of
-`soundness` (`Soundness.lean`) (helper).
+**Every continuing arm of a `match` hands the §5.5 join a context with the
+skeleton the arm started from** (§5's convention that `Γ` is fixed): the arm's
+payload locals are popped, and the body preserved the rest. This is what lets
+the n-way join read either the accumulated state or an arm's, which is the
+`match` case of `soundness` (`Soundness.lean`) (helper).
 
 ```lean
 theorem RueCore.TypedArms.arm_skel {P : Program} {R : Ty} {Γ₀ : Ctx}
-  {arms : List Expr} {Tss : List (List Ty)} {T : Ty} {Γs : List Ctx}
-  (h : TypedArms P R Γ₀ arms Tss T Γs) : Γ₀.SameSkel Γs
+  {arms : List Expr} {Tss : List (List Ty)} {T : Ty} {os : List (Option Ctx)}
+  {Δs : List Ctx} (h : TypedArms P R Γ₀ arms Tss T os Δs) :
+  Γ₀.SameSkel (List.filterMap id os)
+```
+
+### `Typed.skel_of`
+
+*theorem* · module `RueCore.Statics`
+
+The skeleton of a continuing outcome, read off a derivation (helper).
+
+```lean
+theorem RueCore.Typed.skel_of {P : Program} {R : Ty} {Γ Γ' : Ctx} {e : Expr} {T : Ty}
+  {Δ : List Ctx} (h : Typed P R Γ e T { norm := some Γ', brk := Δ }) :
+  Γ'.skel = Γ.skel
+```
+
+### `TypedArgs.skel_of`
+
+*theorem* · module `RueCore.Statics`
+
+The same, for an expression list (helper).
+
+```lean
+theorem RueCore.TypedArgs.skel_of {P : Program} {R : Ty} {Γ Γ' : Ctx} {es : List Expr}
+  {Ts : List Ty} {Δ : List Ctx}
+  (h : TypedArgs P R Γ es Ts { norm := some Γ', brk := Δ }) : Γ'.skel = Γ.skel
 ```
 
 ### `inBoundsIdx_eq_true`
@@ -4123,6 +4189,56 @@ theorem RueCore.OwnSt.joinList_matches {D : Decls} (hwf : WfDecls D)
       ContentsMatchesList D cs es Ts
 ```
 
+### `Ctx.joinOpts_mem`
+
+*theorem* · module `RueCore.Soundness`
+
+**(Match) §5.5's join over `Ω` holds a state for the arm that ran.** An
+arm that continued contributed its state to the list the join folds, so the
+join is a state — not `⊥` — and the fold `Ctx.joinAll` over the continuing
+arms produced it (helper).
+
+```lean
+theorem RueCore.Ctx.joinOpts_mem {D : Decls} {os : List (Option Ctx)} {o : Option Ctx}
+  {Γ : Ctx} (h : Ctx.joinOpts D os = some o) (hm : some Γ ∈ os) :
+  ∃ Γ',
+    o = some Γ' ∧
+      Ctx.joinAll D (List.filterMap id os) = some Γ' ∧
+        Γ ∈ List.filterMap id os
+```
+
+### `Matches.joinOpt_left`
+
+*theorem* · module `RueCore.Soundness`
+
+**The invariant survives (If) §5.5's join over `Ω` from the left arm**:
+when the left arm continues, the join is a state, and it is the left arm's
+state or its binary join with the right one's (helper).
+
+```lean
+theorem RueCore.Matches.joinOpt_left {D : Decls} (hwf : WfDecls D)
+  {a b o : Option Ctx} {Γ₁ : Ctx} (h : Ctx.joinOpt D a b = some o)
+  (ha : a = some Γ₁) :
+  ∃ Γ',
+    o = some Γ' ∧ ∀ (ρ : Env) (H : Store), Matches D Γ₁ ρ H → Matches D Γ' ρ H
+```
+
+### `Matches.joinOpt_right`
+
+*theorem* · module `RueCore.Soundness`
+
+The same from the right arm, which needs the two continuing arms to share
+a skeleton, as `Matches.join_right` does (helper).
+
+```lean
+theorem RueCore.Matches.joinOpt_right {D : Decls} (hwf : WfDecls D)
+  {a b o : Option Ctx} {Γ₂ : Ctx}
+  (hsk : ∀ (x : Ctx), a = some x → x.skel = Γ₂.skel)
+  (h : Ctx.joinOpt D a b = some o) (hb : b = some Γ₂) :
+  ∃ Γ',
+    o = some Γ' ∧ ∀ (ρ : Env) (H : Store), Matches D Γ₂ ρ H → Matches D Γ' ρ H
+```
+
 ### `mintParams_store`
 
 *theorem* · module `RueCore.Soundness`
@@ -4203,8 +4319,8 @@ A typed expression list has one type per member (helper).
 
 ```lean
 theorem RueCore.TypedArgs.length_eq {P : Program} {R : Ty} {es : List Expr}
-  {Ts : List Ty} {Γ Γ' : Ctx} :
-  TypedArgs P R Γ es Ts Γ' → es.length = Ts.length
+  {Ts : List Ty} {Γ : Ctx} {Ω : Out} :
+  TypedArgs P R Γ es Ts Ω → es.length = Ts.length
 ```
 
 ### `Val.ints_of_hasTys`
@@ -4242,6 +4358,35 @@ theorem RueCore.Contents.resolveDyn_ok {D : Decls} (is : List Int)
           ∃ ρ, c.resolveDyn is πs = DynStep.ok ρ ∧ Ty.atPath D Ta ρ = some T
 ```
 
+### `EvalOk.ok_inv`
+
+*theorem* · module `RueCore.Soundness`
+
+A value promised at some normal state names that state (helper).
+
+```lean
+theorem RueCore.EvalOk.ok_inv {D : Decls} {T R : Ty} {o : Option Ctx} {φ : Frame}
+  {H H' : Store} {v : Val} {tr : List Event}
+  (h : EvalOk D T R o φ H (EvalRes.ok H' v tr)) :
+  ∃ Γ',
+    o = some Γ' ∧ HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+```
+
+### `ArgsOk.ok_inv`
+
+*theorem* · module `RueCore.Soundness`
+
+The same, for an argument list (helper).
+
+```lean
+theorem RueCore.ArgsOk.ok_inv {D : Decls} {R : Ty} {Ts : List Ty} {o : Option Ctx}
+  {φ : Frame} {H H' : Store} {vs : List Val} {tr : List Event}
+  (h : ArgsOk D R Ts o φ H (ArgsRes.ok H' vs tr)) :
+  ∃ Γ',
+    o = some Γ' ∧
+      HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+```
+
 ### `EvalOk.mono_store`
 
 *theorem* · module `RueCore.Soundness`
@@ -4250,9 +4395,9 @@ A promise made from a later store is a promise from an earlier one, given
 the step between them was local to the frame (helper).
 
 ```lean
-theorem RueCore.EvalOk.mono_store {D : Decls} {T R : Ty} {Γ' : Ctx} {φ : Frame}
+theorem RueCore.EvalOk.mono_store {D : Decls} {T R : Ty} {o : Option Ctx} {φ : Frame}
   {H H₁ : Store} {r : EvalRes} (hu : Untouched φ.env H H₁)
-  (h : EvalOk D T R Γ' φ H₁ r) : EvalOk D T R Γ' φ H r
+  (h : EvalOk D T R o φ H₁ r) : EvalOk D T R o φ H r
 ```
 
 ### `AbortOk.mono_store`
@@ -4275,9 +4420,9 @@ Prefixing a trace changes no promise: the trace is an observation, not a
 state (helper).
 
 ```lean
-theorem RueCore.EvalOk.withTrace {D : Decls} {T R : Ty} {Γ' : Ctx} {φ : Frame}
-  {H : Store} {r : EvalRes} (h : EvalOk D T R Γ' φ H r) (tr : List Event) :
-  EvalOk D T R Γ' φ H (EvalRes.withTrace tr r)
+theorem RueCore.EvalOk.withTrace {D : Decls} {T R : Ty} {o : Option Ctx} {φ : Frame}
+  {H : Store} {r : EvalRes} (h : EvalOk D T R o φ H r) (tr : List Event) :
+  EvalOk D T R o φ H (EvalRes.withTrace tr r)
 ```
 
 ### `AbortOk.withTrace`
@@ -4297,12 +4442,12 @@ theorem RueCore.AbortOk.withTrace {D : Decls} {R : Ty} {φ : Frame} {H : Store}
 *theorem* · module `RueCore.Soundness`
 
 A result that is not a value satisfies the full promise, whatever type and
-outgoing context the form claims — the promise is only about values there
+outgoing state the form claims — the promise is only about values there
 (helper).
 
 ```lean
-theorem RueCore.EvalOk.of_abort {D : Decls} {T R : Ty} {Γ' : Ctx} {φ : Frame}
-  {H : Store} {r : EvalRes} (h : AbortOk D R φ H r) : EvalOk D T R Γ' φ H r
+theorem RueCore.EvalOk.of_abort {D : Decls} {T R : Ty} {o : Option Ctx} {φ : Frame}
+  {H : Store} {r : EvalRes} (h : AbortOk D R φ H r) : EvalOk D T R o φ H r
 ```
 
 ### `EvalOk.toAbort`
@@ -4313,10 +4458,36 @@ An evaluation that produced no value only ever produced an `AbortOk`
 outcome (helper).
 
 ```lean
-theorem RueCore.EvalOk.toAbort {D : Decls} {T R : Ty} {Γ' : Ctx} {φ : Frame}
-  {H : Store} {r : EvalRes} (h : EvalOk D T R Γ' φ H r)
+theorem RueCore.EvalOk.toAbort {D : Decls} {T R : Ty} {o : Option Ctx} {φ : Frame}
+  {H : Store} {r : EvalRes} (h : EvalOk D T R o φ H r)
   (hne : ∀ (H' : Store) (v : Val) (tr : List Event), r ≠ EvalRes.ok H' v tr) :
   AbortOk D R φ H r
+```
+
+### `EvalOk.bot_abort`
+
+*theorem* · module `RueCore.Soundness`
+
+**`⊥` is not a value.** An evaluation promised at §5.7's `⊥` produced no
+value, so it is an `AbortOk` outcome (helper).
+
+```lean
+theorem RueCore.EvalOk.bot_abort {D : Decls} {T R : Ty} {φ : Frame} {H : Store}
+  {r : EvalRes} (h : EvalOk D T R none φ H r) : AbortOk D R φ H r
+```
+
+### `EvalOk.bot_andThen`
+
+*theorem* · module `RueCore.Soundness`
+
+§6.2's search past a divergent operand: the operand produced no value, so
+the context never runs and its outcome is the whole form's — which is what the
+`-Bottom` rules' conclusions promise, at whatever type they name (helper).
+
+```lean
+theorem RueCore.EvalOk.bot_andThen {D : Decls} {T T₀ R : Ty} {φ : Frame} {H : Store}
+  {r : EvalRes} {k : Store → Val → EvalRes} (h : EvalOk D T₀ R none φ H r) :
+  EvalOk D T R none φ H (r.andThen k)
 ```
 
 ### `EvalOk.bind`
@@ -4329,29 +4500,53 @@ operand's value, promises the form's outcome. Every operand of every form is
 discharged by this lemma (helper).
 
 ```lean
-theorem RueCore.EvalOk.bind {D : Decls} {T T₀ R : Ty} {Γ' Γ₀ : Ctx} {φ : Frame}
-  {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
-  (hr : EvalOk D T₀ R Γ₀ φ H r)
+theorem RueCore.EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ : Ctx}
+  {φ : Frame} {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
+  (hr : EvalOk D T₀ R (some Γ₀) φ H r)
   (hk :
     ∀ (H₁ : Store) (v : Val) (tr : List Event),
       r = EvalRes.ok H₁ v tr →
         HasTy D v T₀ →
-          FrameMatches D Γ₀ φ H₁ → EvalOk D T R Γ' φ H₁ (k H₁ v)) :
-  EvalOk D T R Γ' φ H (r.andThen k)
+          FrameMatches D Γ₀ φ H₁ → EvalOk D T R o φ H₁ (k H₁ v)) :
+  EvalOk D T R o φ H (r.andThen k)
+```
+
+### `EvalOk.bindSame`
+
+*theorem* · module `RueCore.Soundness`
+
+`bind` for an operand whose outgoing `Ω` the form passes on unchanged —
+§5.3's threading convention at a one-operand rule: if the operand continues,
+the form continues at the same state; if it is `⊥`, so is the form (helper).
+
+```lean
+theorem RueCore.EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {φ : Frame}
+  {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
+  (hr : EvalOk D T₀ R o φ H r)
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr : List Event) (Γ₀ : Ctx),
+      r = EvalRes.ok H₁ v tr →
+        HasTy D v T₀ →
+          FrameMatches D Γ₀ φ H₁ → EvalOk D T R (some Γ₀) φ H₁ (k H₁ v)) :
+  EvalOk D T R o φ H (r.andThen k)
 ```
 
 ### `EvalOk.weaken`
 
 *theorem* · module `RueCore.Soundness`
 
-Weakening the outgoing context of a promise, which is what §5.5's join
-asks of an arm (helper).
+Weakening the outgoing state of a promise, which is what §5.5's join asks
+of an arm: a value's state is carried to some state of the join, and `⊥`
+carries nothing (helper).
 
 ```lean
-theorem RueCore.EvalOk.weaken {D : Decls} {T R : Ty} {Γ₁ Γ' : Ctx} {φ : Frame}
+theorem RueCore.EvalOk.weaken {D : Decls} {T R : Ty} {o₁ o' : Option Ctx} {φ : Frame}
   {H : Store} {r : EvalRes}
-  (hw : ∀ (H' : Store), FrameMatches D Γ₁ φ H' → FrameMatches D Γ' φ H')
-  (h : EvalOk D T R Γ₁ φ H r) : EvalOk D T R Γ' φ H r
+  (hw :
+    ∀ (Γ₁ : Ctx) (H' : Store),
+      o₁ = some Γ₁ →
+        FrameMatches D Γ₁ φ H' → ∃ Γ', o' = some Γ' ∧ FrameMatches D Γ' φ H')
+  (h : EvalOk D T R o₁ φ H r) : EvalOk D T R o' φ H r
 ```
 
 ### `EvalRes.withTrace_outOfFuel_iff`
@@ -4438,7 +4633,8 @@ reads only the callee's signature (§5.8's (Call)) and passes no arguments
 
 ```lean
 theorem RueCore.entry_typed {P : Program} {fd : FnDef} (h0 : P.fns[0]? = some fd)
-  (hp : fd.params = []) (R : Ty) : Typed P R [] (Expr.call 0 []) fd.ret []
+  (hp : fd.params = []) (R : Ty) :
+  Typed P R [] (Expr.call 0 []) fd.ret { norm := some [], brk := [] }
 ```
 
 ### `frameMatches_empty`
@@ -4484,6 +4680,69 @@ theorem RueCore.EvalRes.absorb_ne_returned {r : EvalRes} {k : Store → Val → 
   r.absorb k ≠ EvalRes.returned H v tr
 ```
 
+### `CTy.eq_of_fits`
+
+*theorem* · module `RueCore.Checker`
+
+(helper) `check`'s result type `ty X` admits exactly `X`.
+
+```lean
+theorem RueCore.CTy.eq_of_fits {T' T : Ty} (h : (CTy.ty T').fits T = true) : T' = T
+```
+
+### `CTy.fits_self`
+
+*theorem* · module `RueCore.Checker`
+
+(helper) A type admits itself.
+
+```lean
+theorem RueCore.CTy.fits_self (T : Ty) : (CTy.ty T).fits T = true
+```
+
+### `CTy.fits_never`
+
+*theorem* · module `RueCore.Checker`
+
+(helper) `never` admits every type — (Sub-Never) §5.7.
+
+```lean
+theorem RueCore.CTy.fits_never (T : Ty) : CTy.never.fits T = true
+```
+
+### `CTy.fits_pick`
+
+*theorem* · module `RueCore.Checker`
+
+(helper) `pick` chooses a type the checked type admits.
+
+```lean
+theorem RueCore.CTy.fits_pick (c : CTy) (d : Ty) : c.fits (c.pick d) = true
+```
+
+### `CTy.fitsC_fits`
+
+*theorem* · module `RueCore.Checker`
+
+(helper) An arm whose type fits the one `firstArmTy` fixed admits every type
+that one admits.
+
+```lean
+theorem RueCore.CTy.fitsC_fits {c' c : CTy} {T : Ty} (h : c'.fitsC c = true)
+  (hT : c.fits T = true) : c'.fits T = true
+```
+
+### `CTy.meet_fits`
+
+*theorem* · module `RueCore.Checker`
+
+(helper) Two arms whose types meet both admit whatever their meet admits.
+
+```lean
+theorem RueCore.CTy.meet_fits {c₁ c₂ c' : CTy} {T : Ty} (h : c₁.meet c₂ = some c')
+  (hT : c'.fits T = true) : c₁.fits T = true ∧ c₂.fits T = true
+```
+
 ### `checkIdx_sound`
 
 *theorem* · module `RueCore.Checker`
@@ -4493,9 +4752,9 @@ types (`4.11:4`) (helper).
 
 ```lean
 theorem RueCore.checkIdx_sound {P : Program} {R : Ty} (es : List Expr) {Γ : Ctx}
-  {Ts : List Ty} {Γ' : Ctx} :
-  checkIdx P R Γ es = some (Ts, Γ') →
-    TypedArgs P R Γ es Ts Γ' ∧ Ts.all Ty.isInt = true
+  {Ts : List Ty} {Ω : Out} :
+  checkIdx P R Γ es = some (Ts, Ω) →
+    TypedArgs P R Γ es Ts Ω ∧ Ts.all Ty.isInt = true
 ```
 
 ### `Ty.grounded_declIds`
@@ -6131,6 +6390,34 @@ Defining equations, as Lean derived them from the body:
     op.resultTy T = if op.isCompare = true then Ty.bool else T
 ```
 
+### `CTy`
+
+*inductive* · module `RueCore.Checker`
+
+The type `check` concludes at: a type, or `never` — §5.7's type of the
+diverging forms, which the fragment's rules fold (Sub-Never) into by
+concluding at every type. `check` returns `never` exactly where the rule it
+mirrors concludes at an arbitrary type, and `check_sound` says so: a `never`
+result has a derivation at **every** type (§5.7's (Sub-Never)).
+
+```lean
+inductive RueCore.CTy : Type
+```
+
+Constructors:
+
+**`CTy.never`** — §5.7's `never`: the expression has a derivation at every type.
+
+```lean
+RueCore.CTy.never : CTy
+```
+
+**`CTy.ty`** — An ordinary type.
+
+```lean
+RueCore.CTy.ty (T : Ty) : CTy
+```
+
 ### `Contents`
 
 *inductive* · module `RueCore.Dynamics`
@@ -6844,6 +7131,82 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (x : IntWidth), intMin x Sign.unsigned = 0
 ∀ (x : IntWidth), intMin x Sign.signed = -2 ^ (x.bits - 1)
+```
+
+### `CTy.fits`
+
+*def* · module `RueCore.Checker`
+
+Whether a checked type admits `T` — (Sub-Never) §5.7 for `never`, identity
+otherwise (helper).
+
+```lean
+def RueCore.CTy.fits : CTy → Ty → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (x : Ty), CTy.never.fits x = true
+∀ (x T' : Ty), (CTy.ty T').fits x = decide (T' = x)
+```
+
+### `CTy.fitsC`
+
+*def* · module `RueCore.Checker`
+
+Whether one checked type admits every type another admits — the arm
+comparison `match` makes against the type `firstArmTy` fixed (helper).
+
+```lean
+def RueCore.CTy.fitsC : CTy → CTy → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (x : CTy), CTy.never.fitsC x = true
+∀ (T' T : Ty), (CTy.ty T').fitsC (CTy.ty T) = decide (T' = T)
+∀ (T : Ty), (CTy.ty T).fitsC CTy.never = false
+```
+
+### `CTy.meet`
+
+*def* · module `RueCore.Checker`
+
+The common type of two branch arms, §5.5's single `T` with (Sub-Never)
+§5.7 applied to a diverging arm: `never` meets anything, two types meet only
+when equal (helper).
+
+```lean
+def RueCore.CTy.meet : CTy → CTy → Option CTy
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (x : CTy), CTy.never.meet x = some x
+∀ (x : CTy), (x = CTy.never → False) → x.meet CTy.never = some x
+∀ (T₁ T₂ : Ty),
+  (CTy.ty T₁).meet (CTy.ty T₂) =
+    if T₁ = T₂ then some (CTy.ty T₁) else none
+```
+
+### `CTy.pick`
+
+*def* · module `RueCore.Checker`
+
+A type a checked type admits, defaulting when it admits them all (helper).
+
+```lean
+def RueCore.CTy.pick : CTy → Ty → Ty
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (x T : Ty), (CTy.ty T).pick x = T
+∀ (x : Ty), CTy.never.pick x = x
 ```
 
 ### `Cell`
@@ -8196,31 +8559,6 @@ Examples.structEnv =
     Examples.dNested, Examples.dCarryAffine]
 ```
 
-### `Explain.Verdict`
-
-*inductive* · module `RueCore.Explain`
-
-What a rule concluded at one node: the §5 judgment's right-hand side
-`⇒ T ⊣ Σ'`, or the premise that failed.
-
-```lean
-inductive RueCore.Explain.Verdict : Type
-```
-
-Constructors:
-
-**`Explain.Verdict.accept`**
-
-```lean
-RueCore.Explain.Verdict.accept (ty : Ty) (ctxOut : Ctx) : Explain.Verdict
-```
-
-**`Explain.Verdict.reject`**
-
-```lean
-RueCore.Explain.Verdict.reject (premise : String) : Explain.Verdict
-```
-
 ### `Float.narrow`
 
 *def* · module `RueCore.Float`
@@ -8304,6 +8642,25 @@ Constructors:
 
 ```lean
 RueCore.FnDef.mk (params : List Param) (ret : Ty) (body : Expr) : FnDef
+```
+
+### `Out`
+
+*inductive* · module `RueCore.Statics`
+
+§5.3's outgoing result `Ω`: `norm = some Σ'` is `Σ';Δ` and `norm = none`
+is `⊥;Δ`, with `brk` the recorded deliveries `Δ` (section docstring).
+
+```lean
+inductive RueCore.Out : Type
+```
+
+Constructors:
+
+**`Out.mk`**
+
+```lean
+RueCore.Out.mk (norm : Option Ctx) (brk : List Ctx) : Out
 ```
 
 ### `OwnSt.join`
@@ -8870,28 +9227,6 @@ Examples.panicPastLinear =
   Expr.letIn false (Examples.resLD (Examples.lit 7)) (Expr.panic "boom")
 ```
 
-### `Explain.Deriv`
-
-*inductive* · module `RueCore.Explain`
-
-A derivation tree for the §5 judgment `Γ;Σ ⊢ e ⇒ T ⊣ Σ'`: one node per
-rule, carrying the rule's name as the calculus writes it, the incoming fused
-`Γ;Σ`, the expression the rule concluded about, its verdict, and the
-sub-derivations of its premises, in premise order.
-
-```lean
-inductive RueCore.Explain.Deriv : Type
-```
-
-Constructors:
-
-**`Explain.Deriv.node`**
-
-```lean
-RueCore.Explain.Deriv.node (rule : String) (ctxIn : Ctx) (expr : Expr)
-  (verdict : Explain.Verdict) (kids : List Explain.Deriv) : Explain.Deriv
-```
-
 ### `Explain.Step`
 
 *inductive* · module `RueCore.Explain`
@@ -8914,6 +9249,31 @@ RueCore.Explain.Step.mk (depth : Nat) (rule : String) (binders : List Ty)
   (retTy : Ty) (expr : Expr) (shown : Option String)
   (storeBefore storeAfter : Store) (events : List Event)
   (res : Explain.StepRes) : Explain.Step
+```
+
+### `Explain.Verdict`
+
+*inductive* · module `RueCore.Explain`
+
+What a rule concluded at one node: the §5 judgment's right-hand side
+`⇒ T ⊣ Σ'`, or the premise that failed.
+
+```lean
+inductive RueCore.Explain.Verdict : Type
+```
+
+Constructors:
+
+**`Explain.Verdict.accept`**
+
+```lean
+RueCore.Explain.Verdict.accept (ty : CTy) (out : Out) : Explain.Verdict
+```
+
+**`Explain.Verdict.reject`**
+
+```lean
+RueCore.Explain.Verdict.reject (premise : String) : Explain.Verdict
 ```
 
 ### `Float.exactOps`
@@ -8939,6 +9299,38 @@ Float.exactOps =
   { arith := Float.arith false, sqrt := Float.sqrtD false,
     ofLit := Float.ofLit, ofInt := Float.ofInt, narrow := Float.narrow,
     nanSign := false }
+```
+
+### `Out.SkelOk`
+
+*def* · module `RueCore.Statics`
+
+The skeleton half of §5's convention that `Γ` is fixed while `Σ` is
+threaded, read over `Ω`: a normal outgoing state, when there is one, has the
+incoming skeleton. `⊥` has no state and so nothing to preserve (helper).
+
+```lean
+def RueCore.Out.SkelOk (Γ : Ctx) (Ω : Out) : Prop :=
+  ∀ (Γ' : Ctx), Ω.norm = some Γ' → Γ'.skel = Γ.skel
+```
+
+### `Out.add`
+
+*def* · module `RueCore.Statics`
+
+§5.3's `Ω ⊕ Δ`: add a continuing prefix's deliveries to an outcome, which
+keeps its own continuing-or-divergent shape — `(Σ';Δ') ⊕ Δ = Σ';(Δ' ∪ Δ)` and
+`(⊥;Δ') ⊕ Δ = ⊥;(Δ' ∪ Δ)`.
+
+```lean
+def RueCore.Out.add (Ω : Out) (Δ : List Ctx) : Out
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (Ω : Out) (Δ : List Ctx),
+  Ω.add Δ = { norm := Ω.norm, brk := Ω.brk ++ Δ }
 ```
 
 ### `Program`
@@ -9462,31 +9854,26 @@ Defining equations, as Lean derived them from the body:
 Examples.demoOps = Float.exactOps
 ```
 
-### `Explain.Deriv.result`
+### `Explain.Deriv`
 
-*def* · module `RueCore.Explain`
+*inductive* · module `RueCore.Explain`
 
-The derivation's conclusion, in `check`'s shape: the type and outgoing
-`Σ` of an accepted node, nothing for a rejected one. `explain_result` is the
-proof that this projection is exactly `check` (§5 as an algorithm).
+A derivation tree for the §5 judgment `Γ;Σ ⊢ e ⇒ T ⊣ Ω`: one node per
+rule, carrying the rule's name as the calculus writes it, the incoming fused
+`Γ;Σ`, the expression the rule concluded about, its verdict, and the
+sub-derivations of its premises, in premise order.
 
 ```lean
-def RueCore.Explain.Deriv.result : Explain.Deriv → Option (Ty × Ctx)
+inductive RueCore.Explain.Deriv : Type
 ```
 
-Defining equations, as Lean derived them from the body:
+Constructors:
+
+**`Explain.Deriv.node`**
 
 ```lean
-∀ (rule : String) (ctxIn : Ctx) (expr : Expr) (T : Ty) (Γ' : Ctx)
-  (kids : List Explain.Deriv),
-  (Explain.Deriv.node rule ctxIn expr (Explain.Verdict.accept T Γ')
-        kids).result =
-    some (T, Γ')
-∀ (rule : String) (ctxIn : Ctx) (expr : Expr) (premise : String)
-  (kids : List Explain.Deriv),
-  (Explain.Deriv.node rule ctxIn expr (Explain.Verdict.reject premise)
-        kids).result =
-    none
+RueCore.Explain.Deriv.node (rule : String) (ctxIn : Ctx) (expr : Expr)
+  (verdict : Explain.Verdict) (kids : List Explain.Deriv) : Explain.Deriv
 ```
 
 ### `Explain.Trace`
@@ -9508,19 +9895,6 @@ Constructors:
 ```lean
 RueCore.Explain.Trace.mk (steps : List Explain.Step) (res : EvalRes) :
   Explain.Trace
-```
-
-### `Explain.explain`
-
-*def* · module `RueCore.Explain`
-
-The instrumented mirror of `check` (§5): the same algorithm, recording
-the rule it applied at every node and, where it rejects, the premise that
-failed. `explain_result` proves the two agree.
-
-```lean
-def RueCore.Explain.explain (P : Program) (R : Ty) (Γ : Ctx) :
-  Expr → Explain.Deriv
 ```
 
 ### `Program.entry`
@@ -9720,13 +10094,47 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Checker`
 
 The §5 judgment as an algorithm: one case per `Typed` rule, in the same
-order, producing the type and outgoing context or rejecting. `P` is the
-top-level function environment (Call) §5.8 looks a callee up in and `R` the
-enclosing function's declared return type (Return-Value) §5.7 checks a
-`return` operand against.
+order, producing the type (`CTy`) and §5.3's outgoing `Ω` or rejecting. `P`
+is the top-level function environment (Call) §5.8 looks a callee up in and
+`R` the enclosing function's declared return type (Return-Value) §5.7 checks
+a `return` operand against. Where an operand's `Ω` is `⊥` the algorithm stops
+exactly where the `-Bottom` rules stop, and a branch joins only the arms that
+continue (`Ctx.joinOpt`, `Ctx.joinOpts`).
 
 ```lean
-def RueCore.check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
+def RueCore.check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
+```
+
+### `checkArgs`
+
+*def* · module `RueCore.Checker`
+
+(Call) §5.8's argument list as an algorithm: each argument is checked
+against its parameter's type with Σ threaded left to right, and the count must
+match (`4.10:3`, `4.10:4`). An argument that diverges stops the list there
+(§5.3's (Strict-Bottom)); the ones after it are not checked.
+
+```lean
+def RueCore.checkArgs (P : Program) (R : Ty) :
+  Ctx → List Expr → List Ty → Option Out
+```
+
+### `checkArms`
+
+*def* · module `RueCore.Checker`
+
+(Match) §5.5's arm premises as an algorithm: every arm from the same
+post-scrutinee state `Γ₀`, each under its variant's payload locals (`armCtx`),
+each at the type `c` the first typed arm fixed, and each that continues
+discharging §5.6 for the locals it pops. The result is one optional outgoing
+context per arm — `none` for an arm that diverges — in declaration order, and
+the arms' deliveries, which is what `Ctx.joinOpts` then folds. A count
+mismatch between the arms and the variants is the last clause's `none` —
+`check` has already required the counts to agree, so no program reaches it.
+
+```lean
+def RueCore.checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (c : CTy) :
+  List Expr → List (List Ty) → Option (List (Option Ctx) × List Ctx)
 ```
 
 ### `checkNoCycle`
@@ -9853,6 +10261,29 @@ Defining equations, as Lean derived them from the body:
     | none => none
 ```
 
+### `Ctx.joinOpt`
+
+*def* · module `RueCore.Statics`
+
+§5.5's branch join over `Ω` for two arms: "the normal state is `join` of
+the continuing arms' normal states (`⊥` when no arm continues)". A divergent
+arm contributes nothing, which is how (Sub-Never) §5.7 lets it sit beside a
+continuing one; `none` is a join the continuing arms disagree on.
+
+```lean
+def RueCore.Ctx.joinOpt (D : Decls) :
+  Option Ctx → Option Ctx → Option (Option Ctx)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : Option Ctx), Ctx.joinOpt D none x = some x
+∀ (D : Decls) (a : Ctx), Ctx.joinOpt D (some a) none = some (some a)
+∀ (D : Decls) (a b : Ctx),
+  Ctx.joinOpt D (some a) (some b) = Option.map some (Ctx.join D a b)
+```
+
 ### `EnumDecl.Wf`
 
 *inductive* · module `RueCore.Statics`
@@ -9973,69 +10404,58 @@ RueCore.Explain.ArgsTrace.mk (steps : List Explain.Step) (res : ArgsRes) :
   Explain.ArgsTrace
 ```
 
+### `Explain.Deriv.result`
+
+*def* · module `RueCore.Explain`
+
+The derivation's conclusion, in `check`'s shape: the type and outgoing
+`Σ` of an accepted node, nothing for a rejected one. `explain_result` is the
+proof that this projection is exactly `check` (§5 as an algorithm).
+
+```lean
+def RueCore.Explain.Deriv.result : Explain.Deriv → Option (CTy × Out)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (rule : String) (ctxIn : Ctx) (expr : Expr) (c : CTy) (Ω : Out)
+  (kids : List Explain.Deriv),
+  (Explain.Deriv.node rule ctxIn expr (Explain.Verdict.accept c Ω)
+        kids).result =
+    some (c, Ω)
+∀ (rule : String) (ctxIn : Ctx) (expr : Expr) (premise : String)
+  (kids : List Explain.Deriv),
+  (Explain.Deriv.node rule ctxIn expr (Explain.Verdict.reject premise)
+        kids).result =
+    none
+```
+
+### `Explain.explain`
+
+*def* · module `RueCore.Explain`
+
+The instrumented mirror of `check` (§5): the same algorithm, recording
+the rule it applied at every node and, where it rejects, the premise that
+failed. `explain_result` proves the two agree.
+
+```lean
+def RueCore.Explain.explain (P : Program) (R : Ty) (Γ : Ctx) :
+  Expr → Explain.Deriv
+```
+
 ### `Explain.explainArgs`
 
 *def* · module `RueCore.Explain`
 
 The instrumented mirror of `checkArgs` (§5.8's (Call) argument list):
-the sub-derivations in argument order, and the outgoing `Σ` when every
-argument checked at its parameter's type.
+the sub-derivations in argument order, and the outgoing `Ω` when every
+argument checked at its parameter's type, or `⊥` from the first that
+diverged (§5.3's (Strict-Bottom)).
 
 ```lean
 def RueCore.Explain.explainArgs (P : Program) (R : Ty) :
-  Ctx → List Expr → List Ty → Option Ctx × List Explain.Deriv
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (P : Program) (R : Ty) (x : Ctx),
-  Explain.explainArgs P R x [] [] = (some x, [])
-∀ (P : Program) (R : Ty) (x : Ctx) (e : Expr) (es : List Expr) (T : Ty)
-  (Ts : List Ty),
-  Explain.explainArgs P R x (e :: es) (T :: Ts) =
-    match (Explain.explain P R x e).result with
-    | some (T', Γ₁) =>
-      if T' = T then
-        have rest := Explain.explainArgs P R Γ₁ es Ts;
-        (rest.fst, Explain.explain P R x e :: rest.snd)
-      else (none, [Explain.explain P R x e])
-    | none => (none, [Explain.explain P R x e])
-∀ (P : Program) (R : Ty) (x : Ctx) (x_1 : List Expr) (x_2 : List Ty),
-  (x_1 = [] → x_2 = [] → False) →
-    (∀ (e : Expr) (es : List Expr) (T : Ty) (Ts : List Ty),
-        x_1 = e :: es → x_2 = T :: Ts → False) →
-      Explain.explainArgs P R x x_1 x_2 = (none, [])
-```
-
-### `Explain.explainIdx`
-
-*def* · module `RueCore.Explain`
-
-The instrumented mirror of `checkIdx`: the index expressions'
-sub-derivations in evaluation order, and their integer types with the outgoing
-`Σ` when every one checked at an integer type (`4.11:4`).
-
-```lean
-def RueCore.Explain.explainIdx (P : Program) (R : Ty) :
-  Ctx → List Expr → Option (List Ty × Ctx) × List Explain.Deriv
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (P : Program) (R : Ty) (x : Ctx),
-  Explain.explainIdx P R x [] = (some ([], x), [])
-∀ (P : Program) (R : Ty) (x : Ctx) (e : Expr) (es : List Expr),
-  Explain.explainIdx P R x (e :: es) =
-    match (Explain.explain P R x e).result with
-    | some (Ty.int w s, Γ₁) =>
-      have rest := Explain.explainIdx P R Γ₁ es;
-      (match rest.fst with
-        | some (Ts, Γ₂) => some (Ty.int w s :: Ts, Γ₂)
-        | none => none,
-        Explain.explain P R x e :: rest.snd)
-    | x_1 => (none, [Explain.explain P R x e])
+  Ctx → List Expr → List Ty → Option Out × List Explain.Deriv
 ```
 
 ### `Explain.traceEval`
@@ -10085,36 +10505,6 @@ RueCore.StructDecl.Wf.mk {D : Decls} {sd : StructDecl}
   StructDecl.Wf D sd
 ```
 
-### `checkArgs`
-
-*def* · module `RueCore.Checker`
-
-(Call) §5.8's argument list as an algorithm: each argument is checked
-against its parameter's type with Σ threaded left to right, and the count must
-match (`4.10:3`, `4.10:4`).
-
-```lean
-def RueCore.checkArgs (P : Program) (R : Ty) :
-  Ctx → List Expr → List Ty → Option Ctx
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (P : Program) (R : Ty) (x : Ctx), checkArgs P R x [] [] = some x
-∀ (P : Program) (R : Ty) (x : Ctx) (e : Expr) (es : List Expr) (T : Ty)
-  (Ts : List Ty),
-  checkArgs P R x (e :: es) (T :: Ts) =
-    match check P R x e with
-    | some (T', Γ₁) => if T' = T then checkArgs P R Γ₁ es Ts else none
-    | none => none
-∀ (P : Program) (R : Ty) (x : Ctx) (x_1 : List Expr) (x_2 : List Ty),
-  (x_1 = [] → x_2 = [] → False) →
-    (∀ (e : Expr) (es : List Expr) (T : Ty) (Ts : List Ty),
-        x_1 = e :: es → x_2 = T :: Ts → False) →
-      checkArgs P R x x_1 x_2 = none
-```
-
 ### `checkEnumDecl`
 
 *def* · module `RueCore.Checker`
@@ -10142,24 +10532,32 @@ Defining equations, as Lean derived them from the body:
 The index expressions of a place below a dynamic index, as an algorithm:
 each is checked at whatever integer type it has (`4.11:4`), left to right with
 Σ threaded, and their types are returned for `Typed.indexRead`/`indexWrite`'s
-`TypedArgs` premise.
+`TypedArgs` premise. An index that diverges stops the list (§5.3's
+(Strict-Bottom)); the unchecked indices after it are given its type, which is
+any integer type `Typed`'s `TypedArgs.consBot` accepts for an untyped
+member.
 
 ```lean
 def RueCore.checkIdx (P : Program) (R : Ty) :
-  Ctx → List Expr → Option (List Ty × Ctx)
+  Ctx → List Expr → Option (List Ty × Out)
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (P : Program) (R : Ty) (x : Ctx), checkIdx P R x [] = some ([], x)
+∀ (P : Program) (R : Ty) (x : Ctx),
+  checkIdx P R x [] = some ([], { norm := some x, brk := [] })
 ∀ (P : Program) (R : Ty) (x : Ctx) (e : Expr) (es : List Expr),
   checkIdx P R x (e :: es) =
     match check P R x e with
-    | some (Ty.int w s, Γ₁) =>
+    | some (CTy.ty (Ty.int w s), { norm := some Γ₁, brk := Δ₁ }) =>
       match checkIdx P R Γ₁ es with
-      | some (Ts, Γ₂) => some (Ty.int w s :: Ts, Γ₂)
+      | some (Ts, Ω) => some (Ty.int w s :: Ts, Ω.add Δ₁)
       | none => none
+    | some (CTy.ty (Ty.int w s), { norm := none, brk := Δ₁ }) =>
+      some
+        (Ty.int w s :: List.map (fun x => Ty.int w s) es,
+          { norm := none, brk := Δ₁ })
     | x => none
 ```
 
@@ -10291,6 +10689,64 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls), Ctx.joinAll D [] = none
 ∀ (D : Decls) (Γ : Ctx) (Γs : List Ctx),
   Ctx.joinAll D (Γ :: Γs) = Ctx.joinFold D Γ Γs
+```
+
+### `Ctx.joinOpts`
+
+*def* · module `RueCore.Statics`
+
+(Match) §5.5's n-way join over `Ω`: the fold `Ctx.joinAll` over the
+normal states of the arms that **continue**, or `⊥` when none does.
+
+```lean
+def RueCore.Ctx.joinOpts (D : Decls) (os : List (Option Ctx)) :
+  Option (Option Ctx)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (os : List (Option Ctx)),
+  Ctx.joinOpts D os =
+    match List.filterMap id os with
+    | [] => some none
+    | Γ :: Γs => Option.map some (Ctx.joinFold D Γ Γs)
+```
+
+### `Explain.explainIdx`
+
+*def* · module `RueCore.Explain`
+
+The instrumented mirror of `checkIdx`: the index expressions'
+sub-derivations in evaluation order, and their integer types with the outgoing
+`Ω` when every one checked at an integer type (`4.11:4`).
+
+```lean
+def RueCore.Explain.explainIdx (P : Program) (R : Ty) :
+  Ctx → List Expr → Option (List Ty × Out) × List Explain.Deriv
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (P : Program) (R : Ty) (x : Ctx),
+  Explain.explainIdx P R x [] =
+    (some ([], { norm := some x, brk := [] }), [])
+∀ (P : Program) (R : Ty) (x : Ctx) (e : Expr) (es : List Expr),
+  Explain.explainIdx P R x (e :: es) =
+    match (Explain.explain P R x e).result with
+    | some (CTy.ty (Ty.int w s), { norm := some Γ₁, brk := Δ₁ }) =>
+      have rest := Explain.explainIdx P R Γ₁ es;
+      (match rest.fst with
+        | some (Ts, Ω) => some (Ty.int w s :: Ts, Ω.add Δ₁)
+        | none => none,
+        Explain.explain P R x e :: rest.snd)
+    | some (CTy.ty (Ty.int w s), { norm := none, brk := Δ₁ }) =>
+      (some
+          (Ty.int w s :: List.map (fun x => Ty.int w s) es,
+            { norm := none, brk := Δ₁ }),
+        [Explain.explain P R x e])
+    | x_1 => (none, [Explain.explain P R x e])
 ```
 
 ### `Explain.runTrace`
@@ -10483,14 +10939,17 @@ def RueCore.AbortOk (D : Decls) (R : Ty) (φ : Frame) (H : Store) : EvalRes → 
 *def* · module `RueCore.Soundness`
 
 The promise for an argument list (§5.8's (Call), left to right with Σ
-threaded) (helper).
+threaded), at the list's normal outgoing state `o` (helper).
 
 ```lean
-def RueCore.ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (Γ' : Ctx) (φ : Frame)
-  (H : Store) : ArgsRes → Prop :=
+def RueCore.ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx)
+  (φ : Frame) (H : Store) : ArgsRes → Prop :=
   match x✝ with
   | ArgsRes.ok H' vs tr =>
-    HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+    match o with
+    | some Γ' =>
+      HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+    | none => False
   | ArgsRes.abort r => AbortOk D R φ H r
 ```
 
@@ -11201,19 +11660,23 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Soundness`
 
-The promise `soundness` makes about `eval`'s result: a value of the
-expression's type with the outgoing context's invariant restored
-(preservation), or one of `AbortOk`'s outcomes — never `.stuck` (progress).
-Stating it as a predicate on the result, rather than as a disjunction of
-existentials, is what lets the operand combinators (`andThen`) be discharged
-once and reused at every form (helper).
+The promise `soundness` makes about `eval`'s result, given the normal
+outgoing state `o` of §5.3's `Ω`: a value of the expression's type with that
+state's invariant restored (preservation), or one of `AbortOk`'s outcomes —
+never `.stuck` (progress). When `o` is `none`, §5.7's `⊥`, a value is
+**impossible**: an expression the rules type as divergent never completes
+normally. Stating it as a predicate on the result, rather than as a
+disjunction of existentials, is what lets the operand combinators (`andThen`)
+be discharged once and reused at every form (helper).
 
 ```lean
-def RueCore.EvalOk (D : Decls) (T R : Ty) (Γ' : Ctx) (φ : Frame) (H : Store) :
-  EvalRes → Prop :=
+def RueCore.EvalOk (D : Decls) (T R : Ty) (o : Option Ctx) (φ : Frame)
+  (H : Store) : EvalRes → Prop :=
   match x✝ with
   | EvalRes.ok H' v tr =>
-    HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+    match o with
+    | some Γ' => HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+    | none => False
   | EvalRes.returned H' v tr => HasTy D v R ∧ Untouched φ.env H H'
   | EvalRes.panic k tr => True
   | EvalRes.stuck why => False
@@ -11331,47 +11794,6 @@ def RueCore.NoResidualLinear (D : Decls) (Γ : Ctx) : Prop :=
   ∀ (en : Entry), en ∈ Γ → residualLinear D en.st en.ty = false
 ```
 
-### `checkArms`
-
-*def* · module `RueCore.Checker`
-
-(Match) §5.5's arm premises as an algorithm: every arm from the same
-post-scrutinee state `Γ₀`, each under its variant's payload locals (`armCtx`),
-each at the type `T` the first arm fixed, and each discharging §5.6 for the
-locals it pops. The result is one outgoing context per arm, in declaration
-order, which is what `Ctx.joinAll` then folds. A count mismatch between the arms
-and the variants is the last clause's `none` — `check` has already required the
-counts to agree, so no program reaches it.
-
-```lean
-def RueCore.checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (T : Ty) :
-  List Expr → List (List Ty) → Option (List Ctx)
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (P : Program) (R : Ty) (Γ₀ : Ctx) (T : Ty),
-  checkArms P R Γ₀ T [] [] = some []
-∀ (P : Program) (R : Ty) (Γ₀ : Ctx) (T : Ty) (e : Expr) (es : List Expr)
-  (Ts : List Ty) (Tss : List (List Ty)),
-  checkArms P R Γ₀ T (e :: es) (Ts :: Tss) =
-    match check P R (armCtx Ts Γ₀) e with
-    | some (T', Γb) =>
-      if T' = T ∧ NoResidualLinear P.decls (List.take Ts.length Γb) then
-        match checkArms P R Γ₀ T es Tss with
-        | some Γs => some (List.drop Ts.length Γb :: Γs)
-        | none => none
-      else none
-    | none => none
-∀ (P : Program) (R : Ty) (Γ₀ : Ctx) (T : Ty) (x : List Expr)
-  (x_1 : List (List Ty)),
-  (x = [] → x_1 = [] → False) →
-    (∀ (e : Expr) (es : List Expr) (Ts : List Ty) (Tss : List (List Ty)),
-        x = e :: es → x_1 = Ts :: Tss → False) →
-      checkArms P R Γ₀ T x x_1 = none
-```
-
 ### `checkFn`
 
 *def* · module `RueCore.Checker`
@@ -11391,8 +11813,12 @@ Defining equations, as Lean derived them from the body:
 ∀ (P : Program) (fd : FnDef),
   checkFn P fd =
     match check P fd.ret (fnCtx fd) fd.body with
-    | some (T, Γf) =>
-      decide (T = fd.ret) && decide (NoResidualLinear P.decls Γf)
+    | some (c, Ω) =>
+      (c.fits fd.ret &&
+          match Ω.norm with
+          | some Γf => decide (NoResidualLinear P.decls Γf)
+          | none => true) &&
+        Ω.brk.isEmpty
     | none => false
 ```
 
@@ -11635,8 +12061,29 @@ RueCore.ProgramTyped.mk {P : Program} (wf : WfProgram P)
 
 *inductive* · module `RueCore.Statics`
 
-`Γ ; Σ ⊢ e ⇒ T ⊣ Σ'` (§5), over the fused context, under the program `P`
-and the enclosing function's return type `R`.
+`Γ ; Σ ⊢ e ⇒ T ⊣ Ω` (§5), over the fused context, under the program `P`
+and the enclosing function's return type `R`, with §5.3's outgoing result
+`Ω` (`Out`).
+
+**Reachability is in the rules' shape**, as §5.7 says: the `-Bottom` rules
+type nothing past a diverging subexpression. `binopBot`, `floatBinopBot`,
+`indexReadBot`, `indexWriteBotRhs`, `indexWriteBotIdx`, `assignBot`,
+`matchBot`, `iteBot` and `TypedArgs.consBot` are (Strict-Bottom) §5.3 at the
+strict contexts the fragment has; `seqBot` and `letBot` are (Seq-Bottom) and
+(Let-Bottom); `letInDiv` is (Let) whose tail diverges; `retBot` is
+(Return-Bottom) §5.7; `TypedArms.armDiv` is a `match` arm that diverges. A
+rule with one operand and nothing after it (`neg`, `dbg`, `call`, …) passes
+the operand's `Ω` on unchanged, which is §5.3's threading convention and
+(Strict-Bottom) at once. (Strict-Bottom) concludes at the construct's own
+type `T_E`, so its variants carry the premises that name that type and
+nothing more.
+
+**(Sub-Never) §5.7 is folded in**, because the fragment has no `never` type:
+a rule whose conclusion §5.7 types at `never` — (Return-Value),
+(Return-Bottom), (Panic), (Seq-Bottom), (Let-Bottom), and the (Strict-Bottom)
+of a condition or a scrutinee, whose `T_E` is the arms' type — concludes at
+every type instead. (Sub-Never) leaves `Ω` untouched, so every one of them
+concludes at `⊥`.
 
 Rule names cite the calculus: `useCopy`/`useMove` are (Use-Copy)/(Use-Move)
 (§5.1) and `useDeclared` is (Use-Declared-Linear-Destructure) §5.1, the
@@ -11658,7 +12105,7 @@ with the §5.5 join; `call` is (Call) by value (§5.8); `ret` is (Return-Value)
 and `panic` is (Panic), each with (Sub-Never) folded in (§5.7, §5.8).
 
 ```lean
-inductive RueCore.Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop
+inductive RueCore.Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop
 ```
 
 Constructors:
@@ -11668,21 +12115,22 @@ Constructors:
 ```lean
 RueCore.Typed.intLit {P : Program} {R : Ty} {Γ : Ctx} {w : IntWidth}
   {s : Sign} {n : Int} :
-  InBounds w s n → Typed P R Γ (Expr.intLit w s n) (Ty.int w s) Γ
+  InBounds w s n →
+    Typed P R Γ (Expr.intLit w s n) (Ty.int w s) { norm := some Γ, brk := [] }
 ```
 
 **`Typed.boolLit`** — (Lit) §5.8: a boolean literal.
 
 ```lean
 RueCore.Typed.boolLit {P : Program} {R : Ty} {Γ : Ctx} {b : Bool} :
-  Typed P R Γ (Expr.boolLit b) Ty.bool Γ
+  Typed P R Γ (Expr.boolLit b) Ty.bool { norm := some Γ, brk := [] }
 ```
 
 **`Typed.unitLit`** — (Lit) §5.8: the unit literal.
 
 ```lean
 RueCore.Typed.unitLit {P : Program} {R : Ty} {Γ : Ctx} :
-  Typed P R Γ Expr.unitLit Ty.unit Γ
+  Typed P R Γ Expr.unitLit Ty.unit { norm := some Γ, brk := [] }
 ```
 
 **`Typed.useCopy`** — (Use-Copy) §5.1: a use of a `Copy` place copies; Σ unchanged. `get` returning a state at all is `Owned-Base` for every proper prefix (`3.8:53`), since a path under a `MovedOut` prefix is absent from Σ. §5.1 states the node's own premise as `Σ(p) = Owned` and argues the subtree condition away: "every sub-place of a `Copy` type is itself `Copy`, so no descendant can be `MovedOut`, and the two premises coincide there". The rule here makes the subtree condition a premise instead of carrying that argument as an invariant of Σ. It restricts nothing a program can reach — no rule ever marks a sub-place of a `Copy` type `MovedOut`, since (Use-Move) and (@Drop) both demand a non-`Copy` type at the path they mark, and §3's `3.8:18` makes every field of a `@copy` declaration `Copy` — so `check` accepts the same programs either way. `declaredPrefix … = none` is §5.1's `plan_Γ(p) = Ordinary(Copy, T)`: the ordinary rules "are read only with an `Ordinary` plan", which is what keeps this rule from overlapping `useDeclared` when the selected leaf is `Copy` (`Syntax.lean`).
@@ -11696,7 +12144,7 @@ RueCore.Typed.useCopy {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
         Ty.atPath P.decls en.ty p.path = some T →
           Ty.mult P.decls T = Mult.copy →
             declaredPrefix P.decls en.ty p.path = none →
-              Typed P R Γ (Expr.use p) T Γ
+              Typed P R Γ (Expr.use p) T { norm := some Γ, brk := [] }
 ```
 
 **`Typed.useMove`** — (Use-Move) §5.1: a use of an `Affine`/`Linear` place moves it out — at a projection, the **partial move** of `3.8:22`, which marks exactly `p` and removes every path under it while leaving `p`'s siblings alone. `fully-owned(Σ, p)` is the premise (`3.8:26`: handing an aggregate with a hole to a new owner is ill-formed), and `noDtorPrefix` is `3.9:34`'s restriction (E0456). `rootIdxOnly` is §4.2's third restriction, `3.8:68`'s "element moves only at the root" (E0904): the move may take one element out of the **root binding**'s array, and out of no array reached through a further step (`Syntax.lean`). `declaredPrefix … = none` is §5.1's `Ordinary` plan premise, exactly as the `Copy` rule above carries it.
@@ -11713,8 +12161,12 @@ RueCore.Typed.useMove {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
               declaredPrefix P.decls en.ty p.path = none →
                 rootIdxOnly P.decls en.ty p.path = true →
                   Typed P R Γ (Expr.use p) T
-                    (List.set Γ p.root
-                      (en.setSt (en.st.setAt p.path OwnSt.movedOut)))
+                    {
+                      norm :=
+                        some
+                          (List.set Γ p.root
+                            (en.setSt (en.st.setAt p.path OwnSt.movedOut))),
+                      brk := [] }
 ```
 
 **`Typed.useDeclared`** — **(Use-Declared-Linear-Destructure) §5.1**, the declared-linear destructure of `3.8:33`: a use of a place whose path has a proper prefix of declared-`linear` struct type consumes that prefix — the **smallest** enclosing one, `d` — and produces the selected leaf, destroying `d`'s droppable residue on the way (§6.3's `destructure`). The premises are the rule's, in its order. `declaredPrefix` is §4.2's `plan_Γ(p) = Declared(d, π_s)`, and it carries the rule's second premise with it: `Γ ⊢ d : S` with `S` declared `linear` is `declaredPrefix_declaredLinear` (`Syntax.lean`) rather than a premise here. `fully-owned(Σ, d)` is asked of `d`, not of `p` — the rule hands a new owner the leaf and destroys the rest, so the whole subtree must be there (`3.8:26`). `linearResidue = false` is `¬ linear-residue(S, π_s)`, the premise that rejects the access "before any residue can be silently dropped" (`3.8:60`, E0474). `noDtorPrefix` is read over the **whole** path, which is the rule's "no proper prefix `q` of `p` has a user-defined destructor — every enclosing value, including `d`" (`3.9:34`, E0456). And `T` is the leaf's type, bound by the rule's `Γ ⊢ p : T`. `rootIdxOnly` is deliberately **not** a premise here, where (Use-Move) carries it. §4.2's `dl` is explicit that "the selected path may pass through nested structs and constant-index arrays", `3.8:71` says that consuming the linear sub-places of an array reached through a field projection discharges the array field's obligation, and the compiler accepts every shape that admits: `x.arr[0]` on a declared-`linear` `x` (probe b3), `h.arr[0].x0` whose *consumed* place is an element of an array reached through a field (probe d1b), and `a[0][0].x0` whose consumed place sits at a nested index (probe d2b) — although the same `a[0][0]` moved **ordinarily** is E0904 (probe e1). A retained *array* in the residue needs nothing of the sort (probe d9). The Σ effect is §5.1's move effect, taken at `d`: `Σ[ d ↦ MovedOut, and every path strictly under d removed ]`. Nothing else in the context moves, so a declared-linear **ancestor** of `d` stays `Owned` and keeps its own obligation (§5.6's declared clause), and a sibling of `d` keeps its own state — which is what makes `h.l.a` consume `h.l` alone (probe d4). Because the rule is selected by the *plan* rather than by `class(T)`, it fires at a `Copy` leaf too: that is §4.2's "central override", and probe d1 is it.
@@ -11731,73 +12183,101 @@ RueCore.Typed.useDeclared {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
               Ty.atPath P.decls en.ty p.path = some T →
                 noDtorPrefix P.decls en.ty p.path = true →
                   Typed P R Γ (Expr.use p) T
-                    (List.set Γ p.root
-                      (en.setSt (en.st.setAt πd OwnSt.movedOut)))
+                    {
+                      norm :=
+                        some
+                          (List.set Γ p.root
+                            (en.setSt (en.st.setAt πd OwnSt.movedOut))),
+                      brk := [] }
 ```
 
 **`Typed.binop`** — (Arith) and (Ord) §5.8, in one rule because they differ only in the type they conclude at (`BinOp.resultTy`): both operands share one `int(w,s)`, typed left to right with Σ threaded (`4.2:1`), and the result is that same type for the arithmetic, bitwise and shift operators and `bool` for the ordering compares (`4.3:1`). The shift operators take their amount at the shifted operand's own type, which is `4.3a:9` and is why they need no second operand type here.
 
 ```lean
-RueCore.Typed.binop {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {op : BinOp}
-  {e₁ e₂ : Expr} {w : IntWidth} {s : Sign} :
-  Typed P R Γ e₁ (Ty.int w s) Γ₁ →
-    Typed P R Γ₁ e₂ (Ty.int w s) Γ₂ →
+RueCore.Typed.binop {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Ω₂ : Out}
+  {Δ₁ : List Ctx} {op : BinOp} {e₁ e₂ : Expr} {w : IntWidth} {s : Sign} :
+  Typed P R Γ e₁ (Ty.int w s) { norm := some Γ₁, brk := Δ₁ } →
+    Typed P R Γ₁ e₂ (Ty.int w s) Ω₂ →
       op.intAdmits = true →
-        Typed P R Γ (Expr.binop op e₁ e₂) (op.resultTy (Ty.int w s)) Γ₂
+        Typed P R Γ (Expr.binop op e₁ e₂) (op.resultTy (Ty.int w s))
+          (Ω₂.add Δ₁)
+```
+
+**`Typed.binopBot`** — (Strict-Bottom) §5.3 at `binop`'s left operand: once `e₁` diverges the right operand is never reached, so it is not typed, and the form concludes at `⊥` with `e₁`'s deliveries and at its own type `T_E`, (Arith)/(Ord)'s `op.resultTy (int(w,s))` — not at `never`. A right operand that diverges needs no rule of its own: `binop` passes `e₂`'s `Ω` on.
+
+```lean
+RueCore.Typed.binopBot {P : Program} {R : Ty} {Γ : Ctx} {Δ₁ : List Ctx}
+  {op : BinOp} {e₁ e₂ : Expr} {w : IntWidth} {s : Sign} :
+  Typed P R Γ e₁ (Ty.int w s) { norm := none, brk := Δ₁ } →
+    op.intAdmits = true →
+      Typed P R Γ (Expr.binop op e₁ e₂) (op.resultTy (Ty.int w s))
+        { norm := none, brk := Δ₁ }
 ```
 
 **`Typed.floatBinop`** — (Float-Arith), (Float-Ord) and (Total-Cmp) §5.8, in one rule for the same reason `binop` fuses (Arith) and (Ord): they differ only in the type they conclude at (`BinOp.resultTy` — `float(w)`, `bool`, `int(32,signed)`). Both operands share **one** `float(w)`: `3.12:13` gives no implicit widening, so an `f32`/`f64` mix has no derivation, and `3.12:14` relates no float operand to an integer one — the only bridges are the intrinsics. `BinOp.floatAdmits` is §5.8's "rejected by the absence of a rule" for `%` (`3.12:25`) and for the bitwise and shift operators, written as a side condition because one constructor stands for the three rule groups.
 
 ```lean
-RueCore.Typed.floatBinop {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {op : BinOp}
-  {e₁ e₂ : Expr} {w : FloatWidth} :
-  Typed P R Γ e₁ (Ty.float w) Γ₁ →
-    Typed P R Γ₁ e₂ (Ty.float w) Γ₂ →
+RueCore.Typed.floatBinop {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Ω₂ : Out}
+  {Δ₁ : List Ctx} {op : BinOp} {e₁ e₂ : Expr} {w : FloatWidth} :
+  Typed P R Γ e₁ (Ty.float w) { norm := some Γ₁, brk := Δ₁ } →
+    Typed P R Γ₁ e₂ (Ty.float w) Ω₂ →
       op.floatAdmits = true →
-        Typed P R Γ (Expr.binop op e₁ e₂) (op.resultTy (Ty.float w)) Γ₂
+        Typed P R Γ (Expr.binop op e₁ e₂) (op.resultTy (Ty.float w))
+          (Ω₂.add Δ₁)
+```
+
+**`Typed.floatBinopBot`** — (Strict-Bottom) §5.3 at a float `binop`'s left operand, exactly as `binopBot` is at an integer one.
+
+```lean
+RueCore.Typed.floatBinopBot {P : Program} {R : Ty} {Γ : Ctx} {Δ₁ : List Ctx}
+  {op : BinOp} {e₁ e₂ : Expr} {w : FloatWidth} :
+  Typed P R Γ e₁ (Ty.float w) { norm := none, brk := Δ₁ } →
+    op.floatAdmits = true →
+      Typed P R Γ (Expr.binop op e₁ e₂) (op.resultTy (Ty.float w))
+        { norm := none, brk := Δ₁ }
 ```
 
 **`Typed.neg`** — (Neg) §5.8: negation demands a **signed** operand (`4.2:6`; rejecting it on an unsigned type is `4.2:14`) and concludes at that type.
 
 ```lean
-RueCore.Typed.neg {P : Program} {R : Ty} {Γ Γ' : Ctx} {e : Expr}
+RueCore.Typed.neg {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr}
   {w : IntWidth} :
-  Typed P R Γ e (Ty.int w Sign.signed) Γ' →
-    Typed P R Γ (Expr.unop UnOp.neg e) (Ty.int w Sign.signed) Γ'
+  Typed P R Γ e (Ty.int w Sign.signed) Ω →
+    Typed P R Γ (Expr.unop UnOp.neg e) (Ty.int w Sign.signed) Ω
 ```
 
 **`Typed.floatNeg`** — (Float-Neg) §5.8: float negation applies at **every** float type, where (Neg) restricts the integer case to a signed one (`3.12:24`, `4.2:14`), and §6.4 makes it total rather than trapping on a minimum — a sign flip, on `-0.0` and on a NaN alike.
 
 ```lean
-RueCore.Typed.floatNeg {P : Program} {R : Ty} {Γ Γ' : Ctx} {e : Expr}
+RueCore.Typed.floatNeg {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr}
   {w : FloatWidth} :
-  Typed P R Γ e (Ty.float w) Γ' →
-    Typed P R Γ (Expr.unop UnOp.neg e) (Ty.float w) Γ'
+  Typed P R Γ e (Ty.float w) Ω →
+    Typed P R Γ (Expr.unop UnOp.neg e) (Ty.float w) Ω
 ```
 
 **`Typed.notOp`** — (Not) §5.8: logical negation demands `bool` (`4.4:2`). The bitwise operators do not accept `bool` at all (`4.3a:18`, `4.3a:19`), which is why `binop` above is stated only at `int(w,s)`.
 
 ```lean
-RueCore.Typed.notOp {P : Program} {R : Ty} {Γ Γ' : Ctx} {e : Expr} :
-  Typed P R Γ e Ty.bool Γ' → Typed P R Γ (Expr.unop UnOp.not e) Ty.bool Γ'
+RueCore.Typed.notOp {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} :
+  Typed P R Γ e Ty.bool Ω → Typed P R Γ (Expr.unop UnOp.not e) Ty.bool Ω
 ```
 
 **`Typed.bitnot`** — (BitNot) §5.8: the bitwise complement takes any integer type (`4.3a:3`, `4.3a:4`) and concludes at it.
 
 ```lean
-RueCore.Typed.bitnot {P : Program} {R : Ty} {Γ Γ' : Ctx} {e : Expr}
+RueCore.Typed.bitnot {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr}
   {w : IntWidth} {s : Sign} :
-  Typed P R Γ e (Ty.int w s) Γ' →
-    Typed P R Γ (Expr.unop UnOp.bitnot e) (Ty.int w s) Γ'
+  Typed P R Γ e (Ty.int w s) Ω →
+    Typed P R Γ (Expr.unop UnOp.bitnot e) (Ty.int w s) Ω
 ```
 
 **`Typed.intCast`** — (Int-Cast) §5.8 (`4.13:24`–`4.13:27`): the operand is any integer type and the result is the one elaboration took from the use site, which the form carries. Whether the value survives the conversion is dynamic (`4.13:28`, §6.4's own trap rule), not a typing question.
 
 ```lean
-RueCore.Typed.intCast {P : Program} {R : Ty} {Γ Γ' : Ctx} {w : IntWidth}
-  {s : Sign} {w' : IntWidth} {s' : Sign} {e : Expr} :
-  Typed P R Γ e (Ty.int w' s') Γ' →
-    Typed P R Γ (Expr.intCast w s e) (Ty.int w s) Γ'
+RueCore.Typed.intCast {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out}
+  {w : IntWidth} {s : Sign} {w' : IntWidth} {s' : Sign} {e : Expr} :
+  Typed P R Γ e (Ty.int w' s') Ω →
+    Typed P R Γ (Expr.intCast w s e) (Ty.int w s) Ω
 ```
 
 **`Typed.floatLit`** — (Lit) §5.8 for a float: the literal at the `float(w)` elaboration resolved for it (`3.12:7`), denoting a *finite* value of that type. The side condition is `3.12:10`, a **legality** rule — "a float literal whose value rounds to an infinity in its target type MUST be rejected at compile time (`E0206`)" — which §5.8's own prose cites, so it belongs here rather than being left to the surface; it is `intLit`'s range premise at the float widths. What it does *not* say is that the decimal is representable: `3.12:9` rounds, so `0.1` is fine and so is an underflow to zero. The threshold is `FloatWidth.overflowNum`, half an ulp above `max_{𝔽_w}`, and it is exact natural arithmetic rather than anything the model decides.
@@ -11805,101 +12285,113 @@ RueCore.Typed.intCast {P : Program} {R : Ty} {Γ Γ' : Ctx} {w : IntWidth}
 ```lean
 RueCore.Typed.floatLit {P : Program} {R : Ty} {Γ : Ctx} {w : FloatWidth}
   {l : FloatLit} :
-  FloatLit.RoundsFinite w l → Typed P R Γ (Expr.floatLit w l) (Ty.float w) Γ
+  FloatLit.RoundsFinite w l →
+    Typed P R Γ (Expr.floatLit w l) (Ty.float w) { norm := some Γ, brk := [] }
 ```
 
 **`Typed.intToFloat`** — (Int-To-Float) §5.8: the operand is an integer of any width and signedness (`3.12:16`, `4.13:139`) and the result is the `float(w)` elaboration took from the use site. It never traps (§6.4).
 
 ```lean
-RueCore.Typed.intToFloat {P : Program} {R : Ty} {Γ Γ' : Ctx} {w : FloatWidth}
-  {w' : IntWidth} {s' : Sign} {e : Expr} :
-  Typed P R Γ e (Ty.int w' s') Γ' →
-    Typed P R Γ (Expr.fintrin (FloatIntrin.intToFloat w) e) (Ty.float w) Γ'
+RueCore.Typed.intToFloat {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out}
+  {w : FloatWidth} {w' : IntWidth} {s' : Sign} {e : Expr} :
+  Typed P R Γ e (Ty.int w' s') Ω →
+    Typed P R Γ (Expr.fintrin (FloatIntrin.intToFloat w) e) (Ty.float w) Ω
 ```
 
 **`Typed.floatIntrin`** — (Float-To-Int), (Float-Cast) and (Float-Round) §5.8, in one rule: each takes one `float(w)` operand and concludes at the type the form carries (`FloatIntrin.resTy`). `FloatIntrin.floatSrc` carries (Float-Cast)'s `w' ≠ w` side condition (`3.12:19`) and keeps `@int_to_float`, whose operand is an integer, on its own rule above. Whether a `@float_to_int` *survives* is dynamic, not a typing question: `3.12:18` and §6.4's (D-Float-To-Int-Trap).
 
 ```lean
-RueCore.Typed.floatIntrin {P : Program} {R : Ty} {Γ Γ' : Ctx}
+RueCore.Typed.floatIntrin {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out}
   {k : FloatIntrin} {w : FloatWidth} {e : Expr} :
-  Typed P R Γ e (Ty.float w) Γ' →
-    k.floatSrc w = true → Typed P R Γ (Expr.fintrin k e) (k.resTy w) Γ'
+  Typed P R Γ e (Ty.float w) Ω →
+    k.floatSrc w = true → Typed P R Γ (Expr.fintrin k e) (k.resTy w) Ω
 ```
 
-**`Typed.panic`** — (Panic) §5.8 with (Sub-Never) folded in (§5.7), the same fold `Typed.ret` makes: `@panic` is `never`-typed, so the rule concludes at an arbitrary type and — since `⊥` contributes no state to a join — at an arbitrary outgoing context of the same skeleton. Unlike `ret` it imposes no residual-linear premise: §5.7 exempts the `⊥_panic` edge from §5.6's scope-exit check, and §6.12's own rule runs no drop. The message is a string literal the form carries rather than an operand, because the fragment has no string type, which is also why §5.8's operand-diverging companion has no instance.
+**`Typed.panic`** — (Panic) §5.8 with (Sub-Never) folded in (§5.7), the same fold `Typed.ret` makes: `@panic` is `never`-typed, so the rule concludes at an arbitrary type, and at `⊥` with no delivery the fragment records (a `⟨panic, _⟩` delivery has no consumer; §5.7 exempts it). Unlike `ret` it imposes no residual-linear premise: §5.7 exempts the `⊥_panic` edge from §5.6's scope-exit check, and §6.12's own rule runs no drop. The message is a string literal the form carries rather than an operand, because the fragment has no string type, which is also why §5.8's operand-diverging companion has no instance.
 
 ```lean
-RueCore.Typed.panic {P : Program} {R : Ty} {Γ Γ' : Ctx} {T : Ty}
-  {msg : String} : Γ'.skel = Γ.skel → Typed P R Γ (Expr.panic msg) T Γ'
+RueCore.Typed.panic {P : Program} {R : Ty} {Γ : Ctx} {T : Ty} {msg : String} :
+  Typed P R Γ (Expr.panic msg) T { norm := none, brk := [] }
 ```
 
 **`Typed.dbg`** — (Dbg) §5.8: the operand is a value-context use of a type `@dbg` renders — `int(w,s)` or `bool` in this fragment (`Ty.observable`; the compiler rejects an aggregate with E0702) — and the form itself is `unit`.
 
 ```lean
-RueCore.Typed.dbg {P : Program} {R : Ty} {Γ Γ' : Ctx} {e : Expr} {T : Ty} :
-  Typed P R Γ e T Γ' → T.observable = true → Typed P R Γ e.dbg Ty.unit Γ'
+RueCore.Typed.dbg {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr}
+  {T : Ty} :
+  Typed P R Γ e T Ω → T.observable = true → Typed P R Γ e.dbg Ty.unit Ω
 ```
 
 **`Typed.mkStruct`** — (Struct-Intro) §5.8: one initializer per declared field, typed in declaration order at its field's type with Σ threaded left to right (`3.6:5`, `3.6:6`, `3.6:15`), and the result owns every field — which is why `class(S)` is the field join of §3.
 
 ```lean
-RueCore.Typed.mkStruct {P : Program} {R : Ty} {Γ Γ' : Ctx} {s : Nat}
+RueCore.Typed.mkStruct {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {s : Nat}
   {args : List Expr} {sd : StructDecl} :
   P.decls.structs[s]? = some sd →
-    TypedArgs P R Γ args sd.fields Γ' →
-      Typed P R Γ (Expr.mkStruct s args) (Ty.struct s) Γ'
+    TypedArgs P R Γ args sd.fields Ω →
+      Typed P R Γ (Expr.mkStruct s args) (Ty.struct s) Ω
 ```
 
 **`Typed.mkEnum`** — (Enum-Intro) §5.5: one payload argument per declared component of the variant the tag names, typed left to right at its component's type with Σ threaded (§6.2's order, the same `TypedArgs` (Struct-Intro) uses), and the result owns the tag and the supplied payload — which is why `class(E)` is the payload join of §3 (`6.3:19`). The tag is the variant's declaration slot, so `variants[k]? = some Ts` is both §5.5's `E = enum { …, Kj(T̄j), … }` premise and `6.3:16`'s "the variant exists" (E0420 otherwise); the argument count is `6.3:16`'s arity premise, carried by `TypedArgs`' own shape.
 
 ```lean
-RueCore.Typed.mkEnum {P : Program} {R : Ty} {Γ Γ' : Ctx} {e k : Nat}
+RueCore.Typed.mkEnum {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {e k : Nat}
   {args : List Expr} {ed : EnumDecl} {Ts : List Ty} :
   P.decls.enums[e]? = some ed →
     ed.variants[k]? = some Ts →
-      TypedArgs P R Γ args Ts Γ' →
-        Typed P R Γ (Expr.mkEnum e k args) (Ty.enum e) Γ'
+      TypedArgs P R Γ args Ts Ω →
+        Typed P R Γ (Expr.mkEnum e k args) (Ty.enum e) Ω
 ```
 
-**`Typed.match`** — (Match) §5.5, the elimination form for enums. The scrutinee is typed first, at the enum type, and its Σ effect is whatever typing it did: at a place that is (Use-Copy)/(Use-Move) §5.1 by `class(E)` — a non-`Copy` enum is *consumed* by the match, because a scrutinee is a value context and a use of a move-type place there moves it (`3.8:7`, `3.8:76`; `6.3:17` for the payload the arm binds out of it, and not `3.8:33`'s declared-`linear` destructure, which is a rule this fragment does not mechanize), and a second `match` on it is then the use of a moved-out place the compiler reports as E0205 (`3.8:5`). Exhaustiveness is the arm list's **shape**: `arms.length = ed.variants.length`, with arm `j` the arm for variant `j`, so §5.5's "exactly the variants K1..Kn" needs no coverage search and no ordering side condition (`4.7:9`, `4.7:10`'s enum clause; the wildcard, the repeated pattern and the first-match order are elaboration obligations §5.5 states). Progress rests on it: `exhaustive_arm_exists` (`Soundness.lean`) is that a well-typed tag has an arm. Each arm is typed from the **same** post-scrutinee state `Σ0` under its payload locals (`armCtx`), all arms at one type `T` — the premise a diverging arm satisfies through `Typed.ret`/`Typed.panic`, which conclude at any type and any same-skeleton context, exactly as an `ite` arm does (§5.7's (Sub-Never), and the `⊥` a join reads nothing from). At the arm's end the payload locals leave scope under §5.6: `TypedArms` carries the same residual-linear check `Typed.letIn` carries for its one binder, over the `ai` entries the arm pops. The outgoing states then join n-way (`Ctx.joinAll`).
+**`Typed.match`** — (Match) §5.5, the elimination form for enums. The scrutinee is typed first, at the enum type, and its Σ effect is whatever typing it did: at a place that is (Use-Copy)/(Use-Move) §5.1 by `class(E)` — a non-`Copy` enum is *consumed* by the match, because a scrutinee is a value context and a use of a move-type place there moves it (`3.8:7`, `3.8:76`; `6.3:17` for the payload the arm binds out of it, and not `3.8:33`'s declared-`linear` destructure, which is a rule this fragment does not mechanize), and a second `match` on it is then the use of a moved-out place the compiler reports as E0205 (`3.8:5`). Exhaustiveness is the arm list's **shape**: `arms.length = ed.variants.length`, with arm `j` the arm for variant `j`, so §5.5's "exactly the variants K1..Kn" needs no coverage search and no ordering side condition (`4.7:9`, `4.7:10`'s enum clause; the wildcard, the repeated pattern and the first-match order are elaboration obligations §5.5 states). Progress rests on it: `exhaustive_arm_exists` (`Soundness.lean`) is that a well-typed tag has an arm. Each arm is typed from the **same** post-scrutinee state `Σ0` under its payload locals (`armCtx`), all arms at one type `T` — the premise a diverging arm satisfies through (Sub-Never), which the `⊥` rules fold in, exactly as an `ite` arm does. An arm that continues leaves its payload locals' scope under §5.6: `TypedArms` carries the same residual-linear check `Typed.letIn` carries for its one binder, over the `ai` entries the arm pops. §5.5 joins the **continuing** arms' outgoing states n-way (`Ctx.joinOpts`, the fold `Ctx.joinAll` over them), and a diverging arm is "excluded from the state join" and contributes only its deliveries. The delivery set is the scrutinee's `Δ_0` with every arm's, continuing or not.
 
 ```lean
-RueCore.Typed.match {P : Program} {R : Ty} {Γ Γ₀ Γ' : Ctx} {Γs : List Ctx}
-  {scrut : Expr} {arms : List Expr} {e : Nat} {ed : EnumDecl} {T : Ty} :
-  Typed P R Γ scrut (Ty.enum e) Γ₀ →
+RueCore.Typed.match {P : Program} {R : Ty} {Γ Γ₀ : Ctx} {Δ₀ : List Ctx}
+  {o : Option Ctx} {os : List (Option Ctx)} {Δs : List Ctx} {scrut : Expr}
+  {arms : List Expr} {e : Nat} {ed : EnumDecl} {T : Ty} :
+  Typed P R Γ scrut (Ty.enum e) { norm := some Γ₀, brk := Δ₀ } →
     P.decls.enums[e]? = some ed →
       arms.length = ed.variants.length →
-        TypedArms P R Γ₀ arms ed.variants T Γs →
-          Ctx.joinAll P.decls Γs = some Γ' →
-            Typed P R Γ (scrut.match arms) T Γ'
+        TypedArms P R Γ₀ arms ed.variants T os Δs →
+          Ctx.joinOpts P.decls os = some o →
+            Typed P R Γ (scrut.match arms) T { norm := o, brk := Δs ++ Δ₀ }
+```
+
+**`Typed.matchBot`** — (Strict-Bottom) §5.3 at a `match` scrutinee: a scrutinee that diverges reaches no arm, so no arm is typed. `T_E` is the arms' common type, which nothing then constrains, so the rule concludes at any type — the reading of §5.7's (Sub-Never) the `⊥` rules share.
+
+```lean
+RueCore.Typed.matchBot {P : Program} {R : Ty} {Γ : Ctx} {Δ₀ : List Ctx}
+  {scrut : Expr} {arms : List Expr} {e : Nat} {T : Ty} :
+  Typed P R Γ scrut (Ty.enum e) { norm := none, brk := Δ₀ } →
+    Typed P R Γ (scrut.match arms) T { norm := none, brk := Δ₀ }
 ```
 
 **`Typed.mkArray`** — (Array-Intro) §5.8: all `n` elements share one element type `T` (`3.5:3`, `7.1:3`), are typed left to right with Σ threaded, and the array owns all of them — which is why `class([T; n])` is §3's lift of `class(T)`. `n` is the literal's own length (`7.1:4` — the declared size must match), and `n = 0` is admitted: `[]` is the zero-sized `[T; 0]` and uses nothing. The element-type list is `List.replicate n T`, so this rule is (Struct-Intro)'s `TypedArgs` at a constant field list.
 
 ```lean
-RueCore.Typed.mkArray {P : Program} {R : Ty} {Γ Γ' : Ctx} {T : Ty}
+RueCore.Typed.mkArray {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {T : Ty}
   {args : List Expr} :
-  TypedArgs P R Γ args (List.replicate args.length T) Γ' →
-    Typed P R Γ (Expr.mkArray T args) (T.array args.length) Γ'
+  TypedArgs P R Γ args (List.replicate args.length T) Ω →
+    Typed P R Γ (Expr.mkArray T args) (T.array args.length) Ω
 ```
 
 **`Typed.repeatArray`** — The surface repeat form `[e; n]` (`7.1:36`–`7.1:39`), whose element type `7.1:38` restricts to `Copy` (E0905, probe `a2b`). §2's elaboration inventory gives this form **no core image**: it elaborates to `let t = e; [t, …, t]`, "one evaluation of the operand, then `n` value-context *copies* (§4.2)", precisely because the `Copy` restriction makes those copies free. The form is kept here as a rule of its own so the printer can emit the surface spelling the compiler's E0905 is about and so the bridge exercises it; the premise and the dynamics are exactly that elaboration's, and `Ty.mult P.decls T = .copy` is `7.1:38`. That the calculus and this rule agree is by construction and not by a theorem — it is named as a deviation in `../03-metatheory.md`.
 
 ```lean
-RueCore.Typed.repeatArray {P : Program} {R : Ty} {Γ Γ' : Ctx} {T : Ty}
+RueCore.Typed.repeatArray {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {T : Ty}
   {e : Expr} {n : Nat} :
-  Typed P R Γ e T Γ' →
+  Typed P R Γ e T Ω →
     Ty.mult P.decls T = Mult.copy →
-      Typed P R Γ (Expr.repeatArray T e n) (T.array n) Γ'
+      Typed P R Γ (Expr.repeatArray T e n) (T.array n) Ω
 ```
 
 **`Typed.indexRead`** — (Use-Untrackable-Dynamic-Copy) §5.1, at a read `p[e₁]π₁…[eₖ]πₖ` below one or more indices that are not compile-time constants: §4.2's `Untrackable(OrdinaryDynamic)` plan, and the *only* successful static rule for it. The place is `p` (a constant `Place`), then `k ≥ 1` dynamic steps, each followed by a constant path of field slots and constant indices, so `a[i]`, `a[i].x0`, `h.arr[i].x0`, `a[i][j]` and `a[i][0].x1` are all this form (probes q01, q08, q09, q10). `Place` stays constant-only: a dynamic step is never a path of Σ, which is what keeps Σ finite (`3.8:68`). The premises, in the order the rule reads them. * The index expressions are typed **left to right** at integer types, with Σ threaded (`TypedArgs` at a list of `int(w,s)`; `4.11:4` admits any integer type), and the place is read on the resulting context; `eval` runs them in the same order. `4.11:14` puts a full index expression's *base* before its index, and that is unobservable here because the base is a `Place`: reading one runs nothing and threads no Σ. * `fully-owned(Σ, p)` at the array the **first** dynamic step indexes — stronger than §5.1's `Σ(p) = Owned`, and `3.8:70`/`7.1:45`'s own rule: it is an error "to index the array with a non-constant index" while an element is moved out (E0205; probes q06, q19). It is `p`, not the root binding: `a[0][i]` after `a[1]` moved reads a whole `a[0]`, and the compiler accepts it (probe r01). A later dynamic step needs nothing more, because `fully-owned` at `p` is `fully-owned` at everything under it. A moved inner element under a second dynamic step is not merely untested but inexpressible: a nested element move such as `a[0][1]` is itself E0904 (`rootIdxOnly`; review probes a1–a3). * `Γ ⊢ p[…]… : T` is `Ty.atPath` to `p` and then `Ty.atDyn` through the dynamic tail, which fails unless every dynamic step is taken at an array. * `class(T) = Copy` is the rule's own premise, and §4.2's "there is no successful static rule … when `class(T) ∈ {Affine,Linear}`" is that premise's absence rather than a rejection of its own (E0904; probes q02, q15). * No declared-`linear` proper prefix anywhere along the complete path: `declaredPrefix … = none` above the first dynamic step and `Ty.dynNoDeclared` below it keep §4.2's `Untrackable(DeclaredLinearDynamic)` — ill-formed there — without an instance (E0904; probes q11, r07). The read copies, so the outgoing state is the indices'. Whether each index is *in range* is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing question.
 
 ```lean
-RueCore.Typed.indexRead {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {p : Place}
-  {idx : List Expr} {πs : List (List Nat)} {Ts : List Ty} {en : Entry}
-  {u : OwnSt} {Ta T : Ty} :
-  TypedArgs P R Γ idx Ts Γ₁ →
+RueCore.Typed.indexRead {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ : List Ctx}
+  {p : Place} {idx : List Expr} {πs : List (List Nat)} {Ts : List Ty}
+  {en : Entry} {u : OwnSt} {Ta T : Ty} :
+  TypedArgs P R Γ idx Ts { norm := some Γ₁, brk := Δ } →
     Ts.all Ty.isInt = true →
       idx.length = πs.length →
         πs ≠ [] →
@@ -11911,15 +12403,33 @@ RueCore.Typed.indexRead {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {p : Place}
                     Ty.mult P.decls T = Mult.copy →
                       declaredPrefix P.decls en.ty p.path = none →
                         Ty.dynNoDeclared P.decls Ta πs = true →
-                          Typed P R Γ (Expr.indexRead p idx πs) T Γ₁
+                          Typed P R Γ (Expr.indexRead p idx πs) T
+                            { norm := some Γ₁, brk := Δ }
+```
+
+**`Typed.indexReadBot`** — (Strict-Bottom) §5.3 at a dynamic index: an index expression diverges, so the place is never navigated and no premise about its state is read. The premises left are the ones that name `T_E`, the leaf's type — the index list's shape, and `Γ ⊢ p[…]… : T` read on the incoming context, whose skeleton is the one every later state has.
+
+```lean
+RueCore.Typed.indexReadBot {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}
+  {p : Place} {idx : List Expr} {πs : List (List Nat)} {Ts : List Ty}
+  {en : Entry} {Ta T : Ty} :
+  TypedArgs P R Γ idx Ts { norm := none, brk := Δ } →
+    Ts.all Ty.isInt = true →
+      idx.length = πs.length →
+        πs ≠ [] →
+          Γ[p.root]? = some en →
+            Ty.atPath P.decls en.ty p.path = some Ta →
+              Ty.atDyn P.decls Ta πs = some T →
+                Typed P R Γ (Expr.indexRead p idx πs) T
+                  { norm := none, brk := Δ }
 ```
 
 **`Typed.indexWrite`** — (Assign) §5.2 below a dynamic index, `p[e₁]π₁…[eₖ]πₖ = e` (`7.1:30`, `4.11:12`): an in-place mutation that modifies the array without moving it. The root must be a `μ = mut` binding (§5 preamble). **The right-hand side is typed first**, then the index expressions left to right, with Σ threaded in that order: `5.2:14` is normative ("the right-hand side `expression` is evaluated first … any index subexpressions appearing in the target … are evaluated after the right-hand side, in source order"), §6.2's `assign p = E` context says the same, and the compiler agrees (probes q14, q20, r10). The destination is **not** a use, so the read's `class(T) = Copy` premise does not transfer here: what (Assign) demands of a destination is its own last premise, `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the leaf. A place under a runtime index can never be proven `MovedOut` (`3.8:77`), so the disjunction is its right half, `class(T) ≠ Linear`: an affine, even destructor-bearing, leaf is admitted and the machine's overwrite-drop runs its glue (probe q04), while a linear-carrying one is E0493 (probe q05). There is **no plan premise**: §4.2's plans classify value-context uses, and an assignment destination is not one. The compiler admits a dynamic-index write under a declared-`linear` prefix above the index (`v0.x0[i] = 9`, second-review probe c3; `v.arr[i].x1 = 9`, probe r06) **and** below it (`a[i].x0 = 5` on `[L; 2]` with `L` declared `linear`, probe r05, which prints `6`). The write lands on a leaf the declared-`linear` place still owns whole — `fully-owned` below guards that — and consumes nothing, so `Untrackable(DeclaredLinearDynamic)` has no instance at a write. `3.8:72`/`7.1:46` — "while one or more elements of an array are moved out, it is a compile-time error to assign into the array" — is `fully-owned(Σ, p)` on the post-operand state at the array the first dynamic step indexes, and `assignArrayOk` at any array the constant place stepped through to reach it (`a[0][i].k = 5` after a move of `a[1]` is E0480, probe r02; `a[i].k = 5` after `a[0]` moved, probes q07, q18). And `3.8:55`'s reinitialization is (Assign)'s own `Σ1[p ↦ Owned]`, taken at the **whole array** `p`: `7.1:46` says an element write "does not reinstate per-element ownership", and on the `fully-owned` premise there is nothing to reinstate, so writing `Owned` at `p` changes no path's state. `en₀.st.get p.path = some u₀` constrains `u₀` nowhere, and deliberately: it is (Assign)'s own incoming `Σ(p)` lookup, whose content is that the destination path is *reachable* — `OwnSt.get` is `none` under a moved-out prefix — while every condition on the state itself is read after the operands have run, on `u₁`, because that is the state the write overwrites.
 
 ```lean
-RueCore.Typed.indexWrite {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {p : Place}
-  {idx : List Expr} {πs : List (List Nat)} {e : Expr} {en₀ en₁ : Entry}
-  {u₀ u₁ : OwnSt} {Ts : List Ty} {Ta T : Ty} :
+RueCore.Typed.indexWrite {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx}
+  {Δ₁ Δ₂ : List Ctx} {p : Place} {idx : List Expr} {πs : List (List Nat)}
+  {e : Expr} {en₀ en₁ : Entry} {u₀ u₁ : OwnSt} {Ts : List Ty} {Ta T : Ty} :
   Γ[p.root]? = some en₀ →
     en₀.mu = true →
       en₀.st.get p.path = some u₀ →
@@ -11927,8 +12437,8 @@ RueCore.Typed.indexWrite {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {p : Plac
           Ty.atDyn P.decls Ta πs = some T →
             idx.length = πs.length →
               πs ≠ [] →
-                Typed P R Γ e T Γ₁ →
-                  TypedArgs P R Γ₁ idx Ts Γ₂ →
+                Typed P R Γ e T { norm := some Γ₁, brk := Δ₁ } →
+                  TypedArgs P R Γ₁ idx Ts { norm := some Γ₂, brk := Δ₂ } →
                     Ts.all Ty.isInt = true →
                       Γ₂[p.root]? = some en₁ →
                         en₁.st.get p.path = some u₁ →
@@ -11938,18 +12448,49 @@ RueCore.Typed.indexWrite {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {p : Plac
                               Ty.mult P.decls T ≠ Mult.linear →
                                 Typed P R Γ (Expr.indexWrite p idx πs e)
                                   Ty.unit
-                                  (List.set Γ₂ p.root
-                                    (en₁.setSt
-                                      (en₁.st.setAt p.path OwnSt.owned)))
+                                  {
+                                    norm :=
+                                      some
+                                        (List.set Γ₂ p.root
+                                          (en₁.setSt
+                                            (en₁.st.setAt p.path
+                                              OwnSt.owned))),
+                                    brk := Δ₂ ++ Δ₁ }
+```
+
+**`Typed.indexWriteBotRhs`** — (Strict-Bottom) §5.3 at a dynamic-index write's right-hand side, which `5.2:14` evaluates first: it diverges, so neither the indices nor the destination are reached. `T_E` is `unit`, and (Strict-Bottom) puts no type on the hole, so nothing else is premised.
+
+```lean
+RueCore.Typed.indexWriteBotRhs {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}
+  {p : Place} {idx : List Expr} {πs : List (List Nat)} {e : Expr} {T : Ty} :
+  Typed P R Γ e T { norm := none, brk := Δ } →
+    Typed P R Γ (Expr.indexWrite p idx πs e) Ty.unit
+      { norm := none, brk := Δ }
+```
+
+**`Typed.indexWriteBotIdx`** — (Strict-Bottom) §5.3 at a dynamic-index write's index list: the right-hand side ran and is a value in the evaluation context, so it is typed at the leaf's type, and an index diverges; the destination is never reached (the RHS value is the pending value `Dynamics.lean` describes, RUE-2316).
+
+```lean
+RueCore.Typed.indexWriteBotIdx {P : Program} {R : Ty} {Γ Γ₁ : Ctx}
+  {Δ₁ Δ₂ : List Ctx} {p : Place} {idx : List Expr} {πs : List (List Nat)}
+  {e : Expr} {en₀ : Entry} {Ts : List Ty} {Ta T : Ty} :
+  Γ[p.root]? = some en₀ →
+    Ty.atPath P.decls en₀.ty p.path = some Ta →
+      Ty.atDyn P.decls Ta πs = some T →
+        Typed P R Γ e T { norm := some Γ₁, brk := Δ₁ } →
+          TypedArgs P R Γ₁ idx Ts { norm := none, brk := Δ₂ } →
+            Ts.all Ty.isInt = true →
+              Typed P R Γ (Expr.indexWrite p idx πs e) Ty.unit
+                { norm := none, brk := Δ₂ ++ Δ₁ }
 ```
 
 **`Typed.indexDrop`** — (@Drop-Copy) §5.3 at a `Copy` place below a dynamic index, `@drop(p[e₁]π₁…[eₖ]πₖ)`. §5.3's rule has no index premise and its prose admits `@drop(a[i])` on a `Copy`-element array at a dynamic index; the compiler accepts the form (probe d1), runs the indices and bounds-checks them (probe d3 traps), and gives it exactly the read's premises: an affine or linear place there is E0904, as its read is (probe d4). The premise is therefore the read's whole derivation, (Use-Untrackable-Dynamic-Copy) §5.1 at the same place — `Copy` leaf, `fully-owned(Σ, p)`, no declared-`linear` prefix, integer indices typed left to right — and the conclusion is the read's outgoing context at type `unit`: a `Copy` place is moved by nothing, so there is no ownership effect to add.
 
 ```lean
-RueCore.Typed.indexDrop {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {p : Place}
+RueCore.Typed.indexDrop {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {p : Place}
   {idx : List Expr} {πs : List (List Nat)} {T : Ty} :
-  Typed P R Γ (Expr.indexRead p idx πs) T Γ₁ →
-    Typed P R Γ (Expr.indexDrop p idx πs) Ty.unit Γ₁
+  Typed P R Γ (Expr.indexRead p idx πs) T Ω →
+    Typed P R Γ (Expr.indexDrop p idx πs) Ty.unit Ω
 ```
 
 **`Typed.dropCopy`** — (@Drop-Copy) §5.3: no drop glue, no ownership effect. §5.3 gives it neither of (@Drop)'s projection premises — a `Copy` place is moved by nothing — so only the `Ordinary` plan premise is added: §5.3 says the two `@drop` rules "are read the same way" as §5.1's two use rules, which is `declaredPrefix … = none`. The subtree condition is read the way the `Copy` use rule above reads it, for the same reason and at the same cost (none).
@@ -11963,7 +12504,7 @@ RueCore.Typed.dropCopy {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
         Ty.atPath P.decls en.ty p.path = some T →
           Ty.mult P.decls T = Mult.copy →
             declaredPrefix P.decls en.ty p.path = none →
-              Typed P R Γ (Expr.drop p) Ty.unit Γ
+              Typed P R Γ (Expr.drop p) Ty.unit { norm := some Γ, brk := [] }
 ```
 
 **`Typed.dropRes`** — (@Drop) §5.3: consumes the place and discharges its (affine or linear) obligation; the only non-move discharge of a linear obligation. At a projection it *is* a partial move, so it carries (Use-Move)'s `3.9:34` premise. What it does **not** carry is `fully-owned`: §5.3 states `Σ(p) = Owned` and says why — `@drop` hands the value to no new owner, and §6.11's `⊘`-skip drops a partially moved value correctly. Its own last premise takes that strength's place: where a path under `p` has been moved out, no still-owned linear sub-place may remain below `p` (`residualLinearBelow`). That premise is a **statics-only** discipline: the machine runs `@drop`'s glue over whatever the place holds, linear content included — which is what makes `@drop` the one non-move discharge of a linear obligation (`3.9:39`) — so no monitor refuses the state it forbids and `soundness` does not consume it. It is here because the calculus has it and the compiler enforces it (E0406). `rootIdxOnly` is §4.2's root-index restriction, exactly as on (Use-Move) above: `@drop(a[0])` at the root drops exactly that element (probe a8) while `@drop(h.a[0])` through a field is E0904 (probe b18).
@@ -11982,8 +12523,12 @@ RueCore.Typed.dropRes {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
                     residualLinearBelow P.decls u T = false →
                   rootIdxOnly P.decls en.ty p.path = true →
                     Typed P R Γ (Expr.drop p) Ty.unit
-                      (List.set Γ p.root
-                        (en.setSt (en.st.setAt p.path OwnSt.movedOut)))
+                      {
+                        norm :=
+                          some
+                            (List.set Γ p.root
+                              (en.setSt (en.st.setAt p.path OwnSt.movedOut))),
+                        brk := [] }
 ```
 
 **`Typed.dropDeclared`** — **(@Drop) §5.3 at a declared-linear plan**, the `@drop` half of the destructure. §5.3 states it in prose rather than as a fourth rule: the two `@drop` rules "are read the same way" as §5.1's two use rules, so "`@drop(p)` leaves `p` `MovedOut`, so where elaboration records `Declared(d, π)` for `p` the intrinsic consumes `d` and destroys its droppable residue exactly as a use does, rather than marking the projected leaf alone." So the premises are `Typed.useDeclared`'s, verbatim, and there is **no premise on the leaf's class**: §5.3 is explicit that the whole of `d` is consumed "for a `Copy` field `f` as much as for a droppable one", and the compiler agrees — after `@drop(d.f)` at a `Copy` field, a later use of `d` is E0205 (probe d6/d6b). That is the one place where `@drop` at a `Copy` place is not a no-op, and it is why this rule is not folded into `dropCopy`. The **prose spec** does not say it yet: `3.9:37-39` describe `@drop` at the named place only, and `3.9:39`'s "applied to a `@copy` value, it is a no-op" is about that place, not about a `Copy` leaf reached through a declared-`linear` prefix. The rule follows the calculus §5.3 and `3.8:33`'s destructure, which the compiler matches; RUE-2338 is the spec paragraph that is owed. What the dynamics adds over a use is only the leaf: §6.3's `destructure` runs the residue's drops, and then §6.11 drops the selected leaf itself (probe d6c fixes the order — residue first, leaf second). `rootIdxOnly` is **not** carried, for the reason `useDeclared` above does not carry it; `@drop(a[0].x0)` on an `[T0; 2]` compiles and consumes the element (probe d3).
@@ -12000,78 +12545,147 @@ RueCore.Typed.dropDeclared {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
               Ty.atPath P.decls en.ty p.path = some T →
                 noDtorPrefix P.decls en.ty p.path = true →
                   Typed P R Γ (Expr.drop p) Ty.unit
-                    (List.set Γ p.root
-                      (en.setSt (en.st.setAt πd OwnSt.movedOut)))
+                    {
+                      norm :=
+                        some
+                          (List.set Γ p.root
+                            (en.setSt (en.st.setAt πd OwnSt.movedOut))),
+                      brk := [] }
 ```
 
-**`Typed.letIn`** — (Let) + §5.6 scope exit: the binder enters `Owned`; at the body's end its residual state must not be an unconsumed linear value (the leak check). An `Owned` affine residue is dropped by the machine (§6.7); `MovedOut` needs nothing.
+**`Typed.letIn`** — (Let) + §5.6 scope exit: the binder enters `Owned`; at the body's end its residual state must not be an unconsumed linear value (the leak check). An `Owned` affine residue is dropped by the machine (§6.7); `MovedOut` needs nothing. The body's deliveries keep the binder on top of the state they record, which is the state in force at their edge; the conclusion is §5.3's `Ω_2 ⊕ Δ_1`.
 
 ```lean
 RueCore.Typed.letIn {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Γ₂ : List Entry}
-  {m : Bool} {e₁ e₂ : Expr} {T₁ T₂ : Ty} {en' : Entry} :
-  Typed P R Γ e₁ T₁ Γ₁ →
+  {Δ₁ Δ₂ : List Ctx} {m : Bool} {e₁ e₂ : Expr} {T₁ T₂ : Ty} {en' : Entry} :
+  Typed P R Γ e₁ T₁ { norm := some Γ₁, brk := Δ₁ } →
     Typed P R ({ ty := T₁, mu := m, st := OwnSt.owned } :: Γ₁) e₂ T₂
-        (en' :: Γ₂) →
+        { norm := some (en' :: Γ₂), brk := Δ₂ } →
       residualLinear P.decls en'.st en'.ty = false →
-        Typed P R Γ (Expr.letIn m e₁ e₂) T₂ Γ₂
+        Typed P R Γ (Expr.letIn m e₁ e₂) T₂
+          { norm := some Γ₂, brk := Δ₂ ++ Δ₁ }
+```
+
+**`Typed.letInDiv`** — (Let) §5.3 with a tail that diverges, `Ω_2 = ⊥;Δ_2`: the whole `let` is divergent, `⊥;(Δ_2 ∪ Δ_1)`. No scope exit is reached on a normal path, so §5.6's check has nothing to read here; a `return` in the tail discharged it where it fired (`Typed.ret`).
+
+```lean
+RueCore.Typed.letInDiv {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ₁ Δ₂ : List Ctx}
+  {m : Bool} {e₁ e₂ : Expr} {T₁ T₂ : Ty} :
+  Typed P R Γ e₁ T₁ { norm := some Γ₁, brk := Δ₁ } →
+    Typed P R ({ ty := T₁, mu := m, st := OwnSt.owned } :: Γ₁) e₂ T₂
+        { norm := none, brk := Δ₂ } →
+      Typed P R Γ (Expr.letIn m e₁ e₂) T₂ { norm := none, brk := Δ₂ ++ Δ₁ }
+```
+
+**`Typed.letBot`** — (Let-Bottom) §5.3 with (Sub-Never) §5.7: the initializer diverges, so no binding is made and the body is not typed; the form is `never`, at any type.
+
+```lean
+RueCore.Typed.letBot {P : Program} {R : Ty} {Γ : Ctx} {Δ₁ : List Ctx}
+  {m : Bool} {e₁ e₂ : Expr} {T₁ T : Ty} :
+  Typed P R Γ e₁ T₁ { norm := none, brk := Δ₁ } →
+    Typed P R Γ (Expr.letIn m e₁ e₂) T { norm := none, brk := Δ₁ }
 ```
 
 **`Typed.assign`** — (Assign) §5.2, at a place: the root must be a `μ = mut` binding (§5 preamble), the RHS runs first, the overwrite of live linear content is ill-formed (`3.8:77`, checked on the **post-RHS** state — the RUE-387 premise, and the `Σ1` reading that makes `p = f(p)` legal), and the subtree at `p` becomes `Owned` afterward (reinitialization, `3.8:55`). The `get` premises are `Owned-Base` (`3.8:53`) at both states: a path under a moved prefix is not a path to assign to, which the compiler reports as E0205. The `3.8:77` premise is §5.2's disjunction **as written** — `Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, on the destination's declared type — and not §5.6's residual reading. `overwriteOk`'s docstring says why: an overwrite discharges nothing, so the argument that made §5.5 and §5.6 state-keyed (RUE-526, RUE-1591) does not transfer, and the compiler rejects the shape the residual reading would accept (E0493 on `@drop(v.linearField); v = …`; corpus case `overwrite_past_partial_linear`). `assignArrayOk` is §5.2's own array side condition (`3.8:72`, E0480), read on the post-RHS state like the `3.8:77` premise beside it: a destination that steps into an array demands the whole array, so an element is never reinitialized and the whole-array reassignment is the only recovery (`7.1:46`). Its docstring records the deviation from §5.2's disjunction as written. One **deviation** (N3): `Owned-Base` is demanded on the *incoming* state as well as the post-RHS one, so this rule is one premise stricter than §5.2, which states neither (U4 reads §5.1's "in any context" side condition for the post-RHS lookup). Nothing a program can observe turns on it: only an RHS that reinitialises the target's own moved-out prefix could make the incoming lookup fail where the post-RHS one succeeds.
 
 ```lean
-RueCore.Typed.assign {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {p : Place}
-  {e : Expr} {en₀ en₁ : Entry} {u₀ u₁ : OwnSt} {T : Ty} :
+RueCore.Typed.assign {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ : List Ctx}
+  {p : Place} {e : Expr} {en₀ en₁ : Entry} {u₀ u₁ : OwnSt} {T : Ty} :
   Γ[p.root]? = some en₀ →
     en₀.mu = true →
       en₀.st.get p.path = some u₀ →
         Ty.atPath P.decls en₀.ty p.path = some T →
-          Typed P R Γ e T Γ₁ →
+          Typed P R Γ e T { norm := some Γ₁, brk := Δ } →
             Γ₁[p.root]? = some en₁ →
               en₁.st.get p.path = some u₁ →
                 assignArrayOk P.decls en₁.st en₁.ty p.path = true →
                   u₁ = OwnSt.movedOut ∨ Ty.mult P.decls T ≠ Mult.linear →
                     Typed P R Γ (Expr.assign p e) Ty.unit
-                      (List.set Γ₁ p.root
-                        (en₁.setSt (en₁.st.setAt p.path OwnSt.owned)))
+                      {
+                        norm :=
+                          some
+                            (List.set Γ₁ p.root
+                              (en₁.setSt (en₁.st.setAt p.path OwnSt.owned))),
+                        brk := Δ }
 ```
 
-**`Typed.seq`** — (Seq): the discarded value must not carry a linear value (`3.8:64`).
+**`Typed.assignBot`** — (Strict-Bottom) §5.3 at an assignment's right-hand side: it diverges, so nothing is stored and no premise about the destination is read. `T_E` is `unit`, and (Strict-Bottom) puts no type on the hole.
 
 ```lean
-RueCore.Typed.seq {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {e₁ e₂ : Expr}
-  {T₁ T₂ : Ty} :
-  Typed P R Γ e₁ T₁ Γ₁ →
+RueCore.Typed.assignBot {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}
+  {p : Place} {e : Expr} {T : Ty} :
+  Typed P R Γ e T { norm := none, brk := Δ } →
+    Typed P R Γ (Expr.assign p e) Ty.unit { norm := none, brk := Δ }
+```
+
+**`Typed.seq`** — (Seq): the discarded value must not carry a linear value (`3.8:64`). Only the prefix must continue; the tail's `Ω_2` is the form's, with the prefix's deliveries added (`Ω_2 ⊕ Δ_1`, §5.3).
+
+```lean
+RueCore.Typed.seq {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ₁ : List Ctx}
+  {Ω₂ : Out} {e₁ e₂ : Expr} {T₁ T₂ : Ty} :
+  Typed P R Γ e₁ T₁ { norm := some Γ₁, brk := Δ₁ } →
     Ty.mult P.decls T₁ ≠ Mult.linear →
-      Typed P R Γ₁ e₂ T₂ Γ₂ → Typed P R Γ (e₁.seq e₂) T₂ Γ₂
+      Typed P R Γ₁ e₂ T₂ Ω₂ → Typed P R Γ (e₁.seq e₂) T₂ (Ω₂.add Δ₁)
 ```
 
-**`Typed.ite`** — (If): both arms from the post-scrutinee state; outgoing state is the §5.5 join.
+**`Typed.seqBot`** — (Seq-Bottom) §5.3 with (Sub-Never) §5.7: the prefix diverges, so the tail is unreachable and not typed, and the form is `never`, at any type.
 
 ```lean
-RueCore.Typed.ite {P : Program} {R : Ty} {Γ Γ₀ Γ₁ Γ₂ Γ' : Ctx}
+RueCore.Typed.seqBot {P : Program} {R : Ty} {Γ : Ctx} {Δ₁ : List Ctx}
+  {e₁ e₂ : Expr} {T₁ T : Ty} :
+  Typed P R Γ e₁ T₁ { norm := none, brk := Δ₁ } →
+    Typed P R Γ (e₁.seq e₂) T { norm := none, brk := Δ₁ }
+```
+
+**`Typed.ite`** — (If): both arms from the post-condition state, at one type `T` (a diverging arm meets it by (Sub-Never) §5.7). The outgoing state is the §5.5 join of the arms that **continue** (`Ctx.joinOpt`: a diverging arm is excluded, `3.8:51`, and `⊥` when neither continues), and the deliveries are the condition's `Δ_0` with both arms'.
+
+```lean
+RueCore.Typed.ite {P : Program} {R : Ty} {Γ Γ₀ : Ctx} {Δ₀ : List Ctx}
+  {Ω₁ Ω₂ : Out} {o : Option Ctx} {c e₁ e₂ : Expr} {T : Ty} :
+  Typed P R Γ c Ty.bool { norm := some Γ₀, brk := Δ₀ } →
+    Typed P R Γ₀ e₁ T Ω₁ →
+      Typed P R Γ₀ e₂ T Ω₂ →
+        Ctx.joinOpt P.decls Ω₁.norm Ω₂.norm = some o →
+          Typed P R Γ (c.ite e₁ e₂) T
+            { norm := o, brk := Ω₁.brk ++ Ω₂.brk ++ Δ₀ }
+```
+
+**`Typed.iteBot`** — (Strict-Bottom) §5.3 at a condition: it diverges, so neither arm is reached or typed. `T_E` is the arms' type, which nothing then constrains, so the rule concludes at any type.
+
+```lean
+RueCore.Typed.iteBot {P : Program} {R : Ty} {Γ : Ctx} {Δ₀ : List Ctx}
   {c e₁ e₂ : Expr} {T : Ty} :
-  Typed P R Γ c Ty.bool Γ₀ →
-    Typed P R Γ₀ e₁ T Γ₁ →
-      Typed P R Γ₀ e₂ T Γ₂ →
-        Ctx.join P.decls Γ₁ Γ₂ = some Γ' → Typed P R Γ (c.ite e₁ e₂) T Γ'
+  Typed P R Γ c Ty.bool { norm := none, brk := Δ₀ } →
+    Typed P R Γ (c.ite e₁ e₂) T { norm := none, brk := Δ₀ }
 ```
 
 **`Typed.call`** — (Call) §5.8, by value: the callee's signature is looked up in the program, the arguments are checked against the parameter list in order with Σ threaded left to right, and the call's type is the callee's return type (`4.10:5`, `4.10:3`, `4.10:4`). The rule's by-reference clauses, `Λ_call` and its consistency and entry-recheck premises (§5.4), and the `Tr ≠ never` side condition with its (Call-Bottom) companion are not modelled: the fragment has no borrows and no `never` type.
 
 ```lean
-RueCore.Typed.call {P : Program} {R : Ty} {Γ Γ' : Ctx} {f : Nat}
+RueCore.Typed.call {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {f : Nat}
   {args : List Expr} {fd : FnDef} :
   P.fns[f]? = some fd →
-    TypedArgs P R Γ args (List.map Param.ty fd.params) Γ' →
-      Typed P R Γ (Expr.call f args) fd.ret Γ'
+    TypedArgs P R Γ args (List.map Param.ty fd.params) Ω →
+      Typed P R Γ (Expr.call f args) fd.ret Ω
 ```
 
-**`Typed.ret`** — (Return-Value) §5.7 with (Sub-Never) folded in: the operand is checked against the enclosing function's declared return type `R`; §5.6's `⊥_exit` obligation is the frame-wide residual-linear premise (no binding of the current frame still carries residual linear content — `3.8:62`, and (Fn) §5.8's second clause, which is why an early `return` past a live linear is rejected). The conclusion is at an arbitrary type, which is (Sub-Never) §5.7 applied to `never`, and at an arbitrary outgoing context of the same skeleton, which is `⊥`: §5.5's join reads no state from a diverging arm, so the context may be taken to be whatever the join needs. (Return-Bottom) is subsumed — a `return` whose operand itself diverges types by this rule with the operand at `R`.
+**`Typed.ret`** — (Return-Value) §5.7 with (Sub-Never) folded in: the operand is checked against the enclosing function's declared return type `R`; §5.6's `⊥_exit` obligation is the frame-wide residual-linear premise (no binding of the current frame still carries residual linear content — `3.8:62`, and (Fn) §5.8's second clause, which is why an early `return` past a live linear is rejected). The conclusion is at an arbitrary type, which is (Sub-Never) §5.7 applied to `never`, and at `⊥` with the operand's deliveries. The `⟨ret, Σ_e⟩` delivery itself is not recorded: its one consumer, (Fn) §5.8's residual check, is this rule's premise, read where the edge fires — the architecture §5.7's closing note allows.
 
 ```lean
-RueCore.Typed.ret {P : Program} {R : Ty} {Γ Γ₁ Γ' : Ctx} {e : Expr} {T : Ty} :
-  Typed P R Γ e R Γ₁ →
-    NoResidualLinear P.decls Γ₁ → Γ'.skel = Γ₁.skel → Typed P R Γ e.ret T Γ'
+RueCore.Typed.ret {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ : List Ctx}
+  {e : Expr} {T : Ty} :
+  Typed P R Γ e R { norm := some Γ₁, brk := Δ } →
+    NoResidualLinear P.decls Γ₁ →
+      Typed P R Γ e.ret T { norm := none, brk := Δ }
+```
+
+**`Typed.retBot`** — (Return-Bottom) §5.7 with (Sub-Never): the operand itself diverges, so the `return` never fires, makes no delivery and reads no state.
+
+```lean
+RueCore.Typed.retBot {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}
+  {e : Expr} {T : Ty} :
+  Typed P R Γ e R { norm := none, brk := Δ } →
+    Typed P R Γ e.ret T { norm := none, brk := Δ }
 ```
 
 ### `TypedArgs`
@@ -12087,7 +12701,7 @@ not in the fragment.
 
 ```lean
 inductive RueCore.TypedArgs (P : Program) (R : Ty) :
-  Ctx → List Expr → List Ty → Ctx → Prop
+  Ctx → List Expr → List Ty → Out → Prop
 ```
 
 Constructors:
@@ -12096,16 +12710,26 @@ Constructors:
 
 ```lean
 RueCore.TypedArgs.nil {P : Program} {R : Ty} {Γ : Ctx} :
-  TypedArgs P R Γ [] [] Γ
+  TypedArgs P R Γ [] [] { norm := some Γ, brk := [] }
 ```
 
-**`TypedArgs.cons`** — One member is a value-context use at its expected type (§4.2), threading Σ into the rest of the list (§5.8).
+**`TypedArgs.cons`** — One member is a value-context use at its expected type (§4.2), threading Σ into the rest of the list (§5.8), whose outcome is the list's with this member's deliveries added (§5.3's `Ω ⊕ Δ`).
 
 ```lean
-RueCore.TypedArgs.cons {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {e : Expr}
-  {es : List Expr} {T : Ty} {Ts : List Ty} :
-  Typed P R Γ e T Γ₁ →
-    TypedArgs P R Γ₁ es Ts Γ₂ → TypedArgs P R Γ (e :: es) (T :: Ts) Γ₂
+RueCore.TypedArgs.cons {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ₁ : List Ctx}
+  {Ω : Out} {e : Expr} {es : List Expr} {T : Ty} {Ts : List Ty} :
+  Typed P R Γ e T { norm := some Γ₁, brk := Δ₁ } →
+    TypedArgs P R Γ₁ es Ts Ω → TypedArgs P R Γ (e :: es) (T :: Ts) (Ω.add Δ₁)
+```
+
+**`TypedArgs.consBot`** — (Strict-Bottom) §5.3 at a list member: it diverges, so the members after it are never evaluated and not typed. The list still has one expected type per member — its arity is the construct's (`4.10:3`, `3.6:5`), a fact about the syntax rather than about a reachable state.
+
+```lean
+RueCore.TypedArgs.consBot {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}
+  {e : Expr} {es : List Expr} {T : Ty} {Ts : List Ty} :
+  Typed P R Γ e T { norm := none, brk := Δ } →
+    es.length = Ts.length →
+      TypedArgs P R Γ (e :: es) (T :: Ts) { norm := none, brk := Δ }
 ```
 
 ### `TypedArms`
@@ -12116,17 +12740,19 @@ RueCore.TypedArgs.cons {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {e : Expr}
 post-scrutinee state `Σ0`** (a `match` is a branch, not a sequence, so Σ is not
 threaded from arm to arm) and each at the one type `T` the rule concludes at.
 
-An arm carries two premises of its own. Its body is typed under the variant's
-payload locals (`armCtx`), and at its end those locals leave scope under §5.6
-— `NoResidualLinear` over the `ai` entries the arm pops is the leak check
-`Typed.letIn` makes for its single binder, read over the whole payload
-(`6.3:17`: a `Linear` payload an arm neither moves nor consumes is a leak; an
-`Affine` one the machine drops once). The arm's contribution to the join is what
-is left after popping them.
+An arm that continues carries two premises of its own. Its body is typed under
+the variant's payload locals (`armCtx`), and at its end those locals leave
+scope under §5.6 — `NoResidualLinear` over the `ai` entries the arm pops is
+the leak check `Typed.letIn` makes for its single binder, read over the whole
+payload (`6.3:17`: a `Linear` payload an arm neither moves nor consumes is a
+leak; an `Affine` one the machine drops once). The arm's contribution to the
+join is what is left after popping them. An arm that diverges contributes `⊥`
+to the join (`none`), and only its deliveries. The result is one optional
+state per arm, in declaration order, and the arms' deliveries.
 
 ```lean
 inductive RueCore.TypedArms (P : Program) (R : Ty) :
-  Ctx → List Expr → List (List Ty) → Ty → List Ctx → Prop
+  Ctx → List Expr → List (List Ty) → Ty → List (Option Ctx) → List Ctx → Prop
 ```
 
 Constructors:
@@ -12135,19 +12761,31 @@ Constructors:
 
 ```lean
 RueCore.TypedArms.noArms {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty} :
-  TypedArms P R Γ₀ [] [] T []
+  TypedArms P R Γ₀ [] [] T [] []
 ```
 
-**`TypedArms.arm`** — The arm for the next variant: its body typed under that variant's payload locals, those locals discharged by §5.6 at the arm's end, and the rest of the arms typed from the same `Σ0`.
+**`TypedArms.arm`** — The arm for the next variant, continuing: its body typed under that variant's payload locals, those locals discharged by §5.6 at the arm's end, and the rest of the arms typed from the same `Σ0`.
 
 ```lean
-RueCore.TypedArms.arm {P : Program} {R : Ty} {Γ₀ Γb : Ctx} {Γs : List Ctx}
-  {e : Expr} {es : List Expr} {Ts : List Ty} {Tss : List (List Ty)} {T : Ty} :
-  Typed P R (armCtx Ts Γ₀) e T Γb →
+RueCore.TypedArms.arm {P : Program} {R : Ty} {Γ₀ Γb : Ctx} {Δb : List Ctx}
+  {os : List (Option Ctx)} {Δs : List Ctx} {e : Expr} {es : List Expr}
+  {Ts : List Ty} {Tss : List (List Ty)} {T : Ty} :
+  Typed P R (armCtx Ts Γ₀) e T { norm := some Γb, brk := Δb } →
     NoResidualLinear P.decls (List.take Ts.length Γb) →
-      TypedArms P R Γ₀ es Tss T Γs →
+      TypedArms P R Γ₀ es Tss T os Δs →
         TypedArms P R Γ₀ (e :: es) (Ts :: Tss) T
-          (List.drop Ts.length Γb :: Γs)
+          (some (List.drop Ts.length Γb) :: os) (Δb ++ Δs)
+```
+
+**`TypedArms.armDiv`** — The arm for the next variant, diverging: its body is `⊥`, so no scope exit is reached on a normal path and it contributes no state to the join (§5.5, `3.8:51`), only its deliveries.
+
+```lean
+RueCore.TypedArms.armDiv {P : Program} {R : Ty} {Γ₀ : Ctx} {Δb : List Ctx}
+  {os : List (Option Ctx)} {Δs : List Ctx} {e : Expr} {es : List Expr}
+  {Ts : List Ty} {Tss : List (List Ty)} {T : Ty} :
+  Typed P R (armCtx Ts Γ₀) e T { norm := none, brk := Δb } →
+    TypedArms P R Γ₀ es Tss T os Δs →
+      TypedArms P R Γ₀ (e :: es) (Ts :: Tss) T (none :: os) (Δb ++ Δs)
 ```
 
 ### `WfFn`
@@ -12160,13 +12798,16 @@ exit edge discharges §5.6's obligation for every by-value parameter and every
 still-open body-local binding (`3.8:62` — a by-value parameter carrying a
 linear value must be consumed on every non-diverging path). The rule's early
 exits are covered by `Typed.ret`, which carries the same premise at the edge
-where the frame's scopes end (§5.7's `⊥_exit`).
+where the frame's scopes end (§5.7's `⊥_exit`). A body with no normal exit,
+`Ωf = ⊥;Δf`, owes nothing at one. `Δf` has no `⟨break, _⟩`: "a break outside
+a loop is ill-formed" (§5.7), which is (Fn)'s own premise.
 
 ```lean
 def RueCore.WfFn (P : Program) (fd : FnDef) : Prop :=
-  ∃ Γf,
-    Typed P fd.ret (fnCtx fd) fd.body fd.ret Γf ∧
-      NoResidualLinear P.decls Γf
+  ∃ Ωf,
+    Typed P fd.ret (fnCtx fd) fd.body fd.ret Ωf ∧
+      (∀ (Γf : Ctx), Ωf.norm = some Γf → NoResidualLinear P.decls Γf) ∧
+        Ωf.brk = []
 ```
 
 ### `WfProgram`

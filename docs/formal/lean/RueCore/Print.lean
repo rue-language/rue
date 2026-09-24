@@ -276,13 +276,17 @@ def enumItems : Nat → List EnumDecl → String
   | _, [] => ""
   | e, ed :: rest => enumItem e ed ++ enumItems (e + 1) rest
 
+mutual
 /-- Type inference without ownership: the fragment's types do not depend on
 Σ, so the printer can recover every subexpression's type from the binders
 alone. `Γ` lists binder types innermost first, exactly as `Ctx` does; `P` is
 the program a call's callee is looked up in and `R` the enclosing function's
-return type, which is the type `Checker.lean` gives a `return`. A `none`
-means the program is ill-scoped, which elaborated programs never are
-(helper). -/
+return type. A `none` means the expression is `never`-typed — a `return`, a
+`@panic`, or a form built only of them, which (Sub-Never) §5.7 lets stand at
+any type — or that the program is ill-scoped, which elaborated programs never
+are; a caller that needs a type then writes a default, which a `never`
+initializer meets. A branch takes its first arm that has a type, as
+`Checker.lean`'s `firstArmTy` does (helper). -/
 def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
   | .intLit w s _ => some (.int w s)
   | .boolLit _ => some .bool
@@ -304,21 +308,16 @@ def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
       match tyOf P R Γ e with
       | some (.float w) => some (k.resTy w)
       | _ => none
-  | .panic _ => some R
+  | .panic _ => none
   | .dbg _ => some .unit
   | .mkStruct s _ => some (.struct s)
   | .mkEnum e _ _ => some (.enum e)
   | .«match» scrut arms =>
-      -- Every arm has the `match`'s own type, so the first one answers; it is
-      -- read under that arm's payload locals, innermost binder first.
-      (match tyOf P R Γ scrut with
+            (match tyOf P R Γ scrut with
        | some (.enum e) =>
-         (match P.decls.enums[e]?, arms with
-          | some ed, a₀ :: _ =>
-            (match ed.variants with
-             | Ts :: _ => tyOf P R (Ts.reverse ++ Γ) a₀
-             | [] => none)
-          | _, _ => none)
+         (match P.decls.enums[e]? with
+          | some ed => tyOfArms P R Γ arms ed.variants
+          | none => none)
        | _ => none)
   | .mkArray T args => some (.array T args.length)
   | .repeatArray T _ n => some (.array T n)
@@ -337,9 +336,22 @@ def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
       tyOf P R (T₁ :: Γ) e₂
   | .assign _ _ => some .unit
   | .seq _ e₂ => tyOf P R Γ e₂
-  | .ite _ e₁ _ => tyOf P R Γ e₁
+  | .ite _ e₁ e₂ =>
+      match tyOf P R Γ e₁ with
+      | some T => some T
+      | none => tyOf P R Γ e₂
   | .call f _ => (P.fns[f]?).map FnDef.ret
-  | .ret _ => some R
+  | .ret _ => none
+
+/-- The type of a `match`'s arms: the first arm's that has one, each read
+under its variant's payload locals, innermost binder first (helper). -/
+def tyOfArms (P : Program) (R : Ty) (Γ : List Ty) : List Expr → List (List Ty) → Option Ty
+  | a :: as, Ts :: Tss =>
+      match tyOf P R (Ts.reverse ++ Γ) a with
+      | some T => some T
+      | none => tyOfArms P R Γ as Tss
+  | _, _ => none
+end
 
 /-- The binder introduced at nesting depth `d` is named `v<d>`; a de Bruijn
 index `i` under `n` binders names the binder at depth `n - 1 - i` (helper). -/

@@ -127,7 +127,7 @@ function body, checked from (Fn) §5.8's entry context.
                   (Seq) §5.3, 3.8:64
                     e       { @dbg(10); return 5 }
                     Γ;Σ     [v3: S1 = Owned, v2: S1 = Owned, v1: S1 = Owned, v0: E2 = MovedOut]
-                    ⇒       i64  ⊣  [v3: S1 = Owned, v2: S1 = Owned, v1: S1 = Owned, v0: E2 = MovedOut]
+                    ⇒       never  ⊣  ⊥
                       (Dbg) §5.8
                         e       @dbg(10)
                         Γ;Σ     [v3: S1 = Owned, v2: S1 = Owned, v1: S1 = Owned, v0: E2 = MovedOut]
@@ -139,7 +139,7 @@ function body, checked from (Fn) §5.8's entry context.
                       (Return-Value) §5.7
                         e       return 5
                         Γ;Σ     [v3: S1 = Owned, v2: S1 = Owned, v1: S1 = Owned, v0: E2 = MovedOut]
-                        ⇒       i64  ⊣  [v3: S1 = Owned, v2: S1 = Owned, v1: S1 = Owned, v0: E2 = MovedOut]
+                        ⇒       never  ⊣  ⊥
                           (Lit) §5.8
                             e       5
                             Γ;Σ     [v3: S1 = Owned, v2: S1 = Owned, v1: S1 = Owned, v0: E2 = MovedOut]

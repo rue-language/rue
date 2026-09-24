@@ -41,7 +41,7 @@ Verdict: ACCEPTED by the checker (§5).
          no parameters, so `checkProgram_sound` ties the whole program to a
          real derivation and the §7 safety theorems apply to it.
 
-         fn f0() -> i64  — body ⇒ i64, exit Σ (empty)
+         fn f0() -> i64  — body ⇒ never, exit ⊥ (no normal exit)
 
 ── The derivations (§5) ────────────────────────────────────────────────────────
 
@@ -52,10 +52,10 @@ function body, checked from (Fn) §5.8's entry context.
 
   fn f0() -> i64
 
-  (Let) §5.3 + the §5.6 scope-exit leak check
+  (Let) §5.3, the body diverging
     e       { let v0: S1 = S1 { x0: 7 }; { @drop(v0); @panic("boom") } }
     Γ;Σ     (empty)
-    ⇒       i64  ⊣  (empty)
+    ⇒       never  ⊣  ⊥
       (Struct-Intro) §5.8
         e       S1 { x0: 7 }
         Γ;Σ     (empty)
@@ -67,7 +67,7 @@ function body, checked from (Fn) §5.8's entry context.
       (Seq) §5.3, 3.8:64
         e       { @drop(v0); @panic("boom") }
         Γ;Σ     [v0: S1 = Owned]
-        ⇒       i64  ⊣  [v0: S1 = MovedOut]
+        ⇒       never  ⊣  ⊥
           (@Drop) §5.3
             e       @drop(v0)
             Γ;Σ     [v0: S1 = Owned]
@@ -75,7 +75,7 @@ function body, checked from (Fn) §5.8's entry context.
           (Panic) §5.8 + (Sub-Never) §5.7
             e       @panic("boom")
             Γ;Σ     [v0: S1 = MovedOut]
-            ⇒       i64  ⊣  [v0: S1 = MovedOut]
+            ⇒       never  ⊣  ⊥
 
 ── The run (§6) ────────────────────────────────────────────────────────────────
 

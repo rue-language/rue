@@ -3951,9 +3951,9 @@ calculus, the second is the calculus doing what it says.
   applies: (Assign)'s leaf premise `class(T) ≠ Linear` keeps the abandoned
   value from being linear, so `no_linear_discard` is not affected there. That
   edge is the calculus as written — §6.9's unwinding
-  rule walks only σ, and §5.7's strict-context bottom rule (`Strict-Bottom`
-  there, which the fragment does not mechanize) imposes no discard check on
-  siblings already evaluated — it is what the Rue compiler does, and closing
+  rule walks only σ, and §5.3's (Strict-Bottom) — `Typed.consBot` and the
+  other `-Bottom` variants here — imposes no discard check on siblings
+  already evaluated — it is what the Rue compiler does, and closing
   it is an open spec decision (RUE-2316, the pending-argument decision).
   `Dynamics.lean`'s "Pending values" section states it in full;
   `Examples.lean`'s `linearLostAtCallArg` is the kernel-checked witness at an
