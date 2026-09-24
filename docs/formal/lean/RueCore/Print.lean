@@ -277,6 +277,37 @@ def enumItems : Nat → List EnumDecl → String
   | e, ed :: rest => enumItem e ed ++ enumItems (e + 1) rest
 
 mutual
+/-- Whether `check` gives an expression §5.7's `⊥` (no normal outgoing state):
+a `return` or `@panic`, a form whose first diverging operand stops it (§5.3's
+(Strict-Bottom), (Seq-Bottom), (Let-Bottom)), a sequence or `let` whose tail
+diverges, and a branch whose condition or scrutinee diverges or whose every arm
+does. Divergence in the fragment is structural — it reads no ownership state —
+so the printer can compute it from the syntax alone, as `tyOf` does types. It
+is what lets `tyOf` stop where `check` stops (helper). -/
+def diverges : Expr → Bool
+  | .ret _ | .panic _ => true
+  | .binop _ e₁ e₂ => diverges e₁ || diverges e₂
+  | .unop _ e | .intCast _ _ e | .fintrin _ e | .dbg e | .repeatArray _ e _ => diverges e
+  | .mkStruct _ args | .mkEnum _ _ args | .mkArray _ args | .call _ args => divergesList args
+  | .indexRead _ idx _ | .indexDrop _ idx _ => divergesList idx
+  | .indexWrite _ idx _ e => diverges e || divergesList idx
+  | .assign _ e => diverges e
+  | .letIn _ e₁ e₂ | .seq e₁ e₂ => diverges e₁ || diverges e₂
+  | .ite c e₁ e₂ => diverges c || (diverges e₁ && diverges e₂)
+  | .«match» scrut arms => diverges scrut || divergesAll arms
+  | _ => false
+
+/-- Some member of a list diverges (helper). -/
+def divergesList : List Expr → Bool
+  | [] => false
+  | e :: es => diverges e || divergesList es
+
+/-- Every arm diverges, and there is at least one (helper). -/
+def divergesAll : List Expr → Bool
+  | [] => false
+  | [e] => diverges e
+  | e :: es => diverges e && divergesAll es
+
 /-- Type inference without ownership: the fragment's types do not depend on
 Σ, so the printer can recover every subexpression's type from the binders
 alone. `Γ` lists binder types innermost first, exactly as `Ctx` does; `P` is
@@ -286,7 +317,11 @@ return type. A `none` means the expression is `never`-typed — a `return`, a
 any type — or that the program is ill-scoped, which elaborated programs never
 are; a caller that needs a type then writes a default, which a `never`
 initializer meets. A branch takes its first arm that has a type, as
-`Checker.lean`'s `firstArmTy` does (helper). -/
+`Checker.lean`'s `firstArmTy` does, and a sequence, `let` or branch whose
+first part diverges (`diverges`) is `never` as (Seq-Bottom), (Let-Bottom) and
+(Strict-Bottom) make it in `check`, whatever its unreachable tail would say. So
+the type printed for a binder is the one `check` gave its initializer: an
+accepted program prints as a program the same rules accept (helper). -/
 def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
   | .intLit w s _ => some (.int w s)
   | .boolLit _ => some .bool
@@ -313,12 +348,14 @@ def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
   | .mkStruct s _ => some (.struct s)
   | .mkEnum e _ _ => some (.enum e)
   | .«match» scrut arms =>
-            (match tyOf P R Γ scrut with
-       | some (.enum e) =>
-         (match P.decls.enums[e]? with
-          | some ed => tyOfArms P R Γ arms ed.variants
-          | none => none)
-       | _ => none)
+            if diverges scrut then none
+      else
+        (match tyOf P R Γ scrut with
+         | some (.enum e) =>
+           (match P.decls.enums[e]? with
+            | some ed => tyOfArms P R Γ arms ed.variants
+            | none => none)
+         | _ => none)
   | .mkArray T args => some (.array T args.length)
   | .repeatArray T _ n => some (.array T n)
   | .indexRead pl _ πs =>
@@ -331,15 +368,19 @@ def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
   | .indexWrite _ _ _ _ => some .unit
   | .indexDrop _ _ _ => some .unit
   | .drop _ => some .unit
-  | .letIn _ e₁ e₂ => do
-      let T₁ ← tyOf P R Γ e₁
-      tyOf P R (T₁ :: Γ) e₂
+  | .letIn _ e₁ e₂ =>
+      if diverges e₁ then none
+      else do
+        let T₁ ← tyOf P R Γ e₁
+        tyOf P R (T₁ :: Γ) e₂
   | .assign _ _ => some .unit
-  | .seq _ e₂ => tyOf P R Γ e₂
-  | .ite _ e₁ e₂ =>
-      match tyOf P R Γ e₁ with
-      | some T => some T
-      | none => tyOf P R Γ e₂
+  | .seq e₁ e₂ => if diverges e₁ then none else tyOf P R Γ e₂
+  | .ite c e₁ e₂ =>
+      if diverges c then none
+      else
+        match tyOf P R Γ e₁ with
+        | some T => some T
+        | none => tyOf P R Γ e₂
   | .call f _ => (P.fns[f]?).map FnDef.ret
   | .ret _ => none
 
@@ -434,7 +475,7 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
           (if op = .totalCmp then "@total_cmp(" ++ a ++ ", " ++ b ++ ")"
            else a ++ " " ++ binOpSym op ++ " " ++ b) ++ " }"
       else
-        "(" ++ expr P R Γ lvl e₁ ++ " " ++ binOpSym op ++ " " ++ expr P R Γ lvl e₂ ++ ")"
+        "(" ++ operand P R Γ lvl e₁ ++ " " ++ binOpSym op ++ " " ++ operand P R Γ lvl e₂ ++ ")"
   | .floatLit _ l => l.spell
   | .fintrin k e =>
       -- Each `@f` takes its result type from the *use* site (`3.12:16`,
@@ -447,7 +488,7 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
       "{ let " ++ c ++ ": " ++ tyName T' ++ " = " ++ expr P R Γ (lvl + 1) e ++ "; " ++
         "let " ++ r ++ ": " ++ tyName T ++ " = " ++ fintrinName k ++ "(" ++ c ++ "); " ++
         r ++ " }"
-  | .unop op e => "(" ++ unOpSym op ++ expr P R Γ lvl e ++ ")"
+  | .unop op e => "(" ++ unOpSym op ++ operand P R Γ lvl e ++ ")"
   | .intCast w s e =>
       -- `4.13:26` takes the target from the use site and nothing fixes the
       -- operand's own type either, so both ends get a typed binder.
@@ -489,7 +530,7 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
   | .repeatArray _ e n =>
       -- `7.1:36`'s repeat form. `7.1:37` makes the count a compile-time
       -- constant, which the core carries as a `Nat`.
-      "[" ++ expr P R Γ lvl e ++ "; " ++ toString n ++ "]"
+      "[" ++ operand P R Γ lvl e ++ "; " ++ toString n ++ "]"
   | .indexRead pl idx πs =>
       -- `p[e₁]π₁…[eₖ]πₖ`, spelled as the surface writes it. `4.11:4` admits
       -- any integer type in index position and nothing downstream of the
@@ -555,6 +596,13 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
       fnName f ++ "(" ++
         String.intercalate ", " (args.map (fun a => expr P R Γ lvl a)) ++ ")"
   | .ret e => "return " ++ expr P R Γ lvl e
+
+/-- An operator's operand: a `return` there is parenthesized, because Rue's
+`return` takes the whole expression after it — `return 1 + 2` returns `3` —
+where the core `binop (ret 1) 2` returns `1` (helper). -/
+partial def operand (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → String
+  | .ret e => "(return " ++ expr P R Γ lvl e ++ ")"
+  | e => expr P R Γ lvl e
 
 /-- The dynamic tail `[e₁]π₁…[eₖ]πₖ` of a place below a dynamic index, read
 off the type `T` of the part already printed: each index as a typed block,
