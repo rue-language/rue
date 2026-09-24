@@ -707,6 +707,127 @@ compile_fail = true
 error_contains = ["E0206", "expected f32, found i32"]
 
 # =============================================================================
+# Float comptime arguments are keyed by value (RUE-2403)
+# =============================================================================
+# A float comptime argument is its value at its parameter's type, not its
+# spelling: equal values are one argument, so one specialization and one
+# type-function application (4.14:5, 4.14:25).
+
+[[case]]
+name = "equal_float_comptime_arguments_select_one_type"
+spec = ["3.12:11", "4.14:5", "4.14:25"]
+description = "`3.0`, `0.3e1`, `30e-1` and an `f32` const initialized from `3` are one argument at a `comptime v: f32`, as are two spellings that round to one f32, so each application is the same type (RUE-2403)"
+source = """
+fn Mk(comptime v: f32) -> type {
+    struct { x: i32 }
+}
+const K: f32 = 3;
+const A = Mk(K);
+const B = Mk(3.0);
+const C = Mk(0.3e1);
+const D = Mk(30e-1);
+const P = Mk(0.1);
+const Q = Mk(0.100000001);
+
+fn main() -> i32 {
+    let a: A = B { x: 1 };
+    let c: C = a;
+    let d: D = c;
+    let e: Mk(K) = d;
+    let p: P = Q { x: 2 };
+    @dbg(e.x + 2);
+    @dbg(p.x);
+    0
+}
+"""
+expected_stdout = """
+3
+2
+"""
+exit_code = 0
+
+[[case]]
+name = "float_const_from_integer_and_float_literal_are_one_type_argument"
+spec = ["3.12:11", "4.14:5", "4.14:25"]
+description = "`Mk(K)` with `const K: f32 = 3` and `Mk(3.0)` are the same type: the const's value, not the integer spelling it was written with, is the argument (RUE-2403)"
+source = """
+fn Mk(comptime v: f32) -> type {
+    struct { x: i32 }
+}
+const K: f32 = 3;
+
+fn main() -> i32 {
+    let a: Mk(K) = Mk(3.0) { x: 1 };
+    @dbg(a.x);
+    0
+}
+"""
+expected_stdout = """
+1
+"""
+exit_code = 0
+
+[[case]]
+name = "negative_and_positive_zero_float_comptime_arguments_are_distinct_types"
+spec = ["4.14:5", "4.14:25"]
+description = "-0.0 and 0.0 are distinct values, so `Mk(-0.0)` and `Mk(0.0)` are distinct types; the diagnostic names each by its value (RUE-2402, RUE-2403)"
+source = """
+fn Mk(comptime v: f32) -> type {
+    struct { x: i32 }
+}
+const Z = Mk(0.0);
+const N = Mk(-0.0);
+
+fn main() -> i32 {
+    let z: Z = N { x: 1 };
+    @dbg(z.x);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected Mk(0.0), found Mk(-0.0)"]
+
+[[case]]
+name = "equal_float_values_at_different_float_types_are_distinct_arguments"
+spec = ["4.14:5", "4.14:5a", "4.14:25"]
+description = "`3.0` at `f32` and `3.0` at `f64` are different arguments, so `G(f32, 3.0)` and `G(f64, 3.0)` are distinct types (RUE-2403)"
+source = """
+fn G(comptime T: type, comptime v: T) -> type {
+    struct { x: i32 }
+}
+const A = G(f32, 3.0);
+const B = G(f64, 3.0);
+
+fn main() -> i32 {
+    let a: A = B { x: 1 };
+    @dbg(a.x);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected G(f32, 3.0), found G(f64, 3.0)"]
+
+[[case]]
+name = "float_comptime_arguments_equal_only_at_f32_are_distinct_at_f64"
+spec = ["4.14:5", "4.14:25"]
+description = "`0.1` and `0.100000001` round to one f32 but two f64 values, so at a `comptime v: f64` they are distinct types (RUE-2403)"
+source = """
+fn Mk(comptime v: f64) -> type {
+    struct { x: i32 }
+}
+const P = Mk(0.1);
+const Q = Mk(0.100000001);
+
+fn main() -> i32 {
+    let p: P = Q { x: 1 };
+    @dbg(p.x);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected Mk(0.1), found Mk(0.100000001)"]
+
+# =============================================================================
 # Phase 3: Type Parameters (ADR-0025)
 # =============================================================================
 # Tests for `type` as a type name and comptime type parameters.

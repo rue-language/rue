@@ -113,3 +113,22 @@ pub fn start() -> i32 { runaway(0) }
 ]
 compile_fail = true
 error_contains = ["exceeded the maximum nesting depth"]
+
+[[case]]
+name = "equal_float_comptime_arguments_share_one_specialization"
+description = "A float comptime argument is keyed by its value at the parameter type (RUE-2403): `f(3)`, `f(3.0)` and `f(0.3e1)` are one specialization, `f(0.1)` and `f(0.100000001)` round to one f32 and are one more, and `f(-0.0)` stays distinct from `f(0.0)`."
+files = [{ path = "main.rue", source = """
+fn f(comptime v: f32) -> i32 { 1 }
+fn main() -> i32 {
+    f(3) + f(3.0) + f(0.3e1) + f(0.1) + f(0.100000001) + f(0.0) + f(-0.0)
+}
+""" }]
+args = ["--emit", "air", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "__f.vfloat3e0:",
+    "__f.vfloat1e_2d1:",
+    "__f.vfloat0e0:",
+    "__f.vfloat_2d0e0:",
+]
+compile_stdout_not_contains = ["__f.vfloat3:", "__f.vfloat100000001e_2d9:"]
