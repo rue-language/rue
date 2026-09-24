@@ -1377,9 +1377,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// the entry state, unless an earlier pass of an enclosing loop settled
     /// this loop from an entry at or below this one; then it is that head
     /// joined with the entry, a lower bound of this loop-head state, and
-    /// `ctx` is moved to it. Only an enclosing loop's recheck, whose AIR is
-    /// discarded, revisits a loop, so the kept AIR always comes from a pass
-    /// at the entry state.
+    /// `ctx` is moved to it. A loop is revisited only by a non-first pass of
+    /// its parent, and every such pass is a recheck whose AIR is discarded,
+    /// so the kept AIR always comes from a pass at the entry state.
     fn enter_loop_head(
         &mut self,
         body: InstRef,
@@ -1389,6 +1389,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         AHashMap<Spur, VariableMoveState>,
         AHashMap<Spur, VariableMoveState>,
     ) {
+        // The RIR's address names it only while it is alive. That holds for
+        // the whole nest: the body's RIR (and any inlined accessor's) outlives
+        // the analysis of the outermost loop, and the hints are cleared when
+        // the next outermost loop starts.
         let rir = std::ptr::from_ref(self.body_rir_ref()) as usize;
         let node = self.loop_head_hints.enter((body, rir));
         let entry = ctx.ownership.moved_vars.clone();
@@ -4798,6 +4802,28 @@ mod loop_head_tests {
         let error = CompileError::new(ErrorKind::UseAfterMove("d".into()), Span::new(0, 1));
         let error = with_previous_iteration_note(with_previous_iteration_note(error));
         assert_eq!(error.diagnostic().notes.len(), 1);
+    }
+
+    /// The later-iteration note goes on a use after move whose move is a
+    /// recorded later-iteration exit move, once, and nowhere else.
+    #[test]
+    fn later_iteration_exit_note_marks_recorded_moves_once() {
+        let moved = Span::new(4, 5);
+        let mut spans = AHashSet::new();
+        spans.insert(moved);
+        let error = CompileError::new(ErrorKind::UseAfterMove("d".into()), Span::new(8, 9))
+            .with_label("value moved here", moved);
+        let error =
+            with_later_iteration_exit_note(&spans, with_later_iteration_exit_note(&spans, error));
+        assert_eq!(error.diagnostic().notes.len(), 1);
+        let elsewhere = CompileError::new(ErrorKind::UseAfterMove("d".into()), Span::new(8, 9))
+            .with_label("value moved here", Span::new(1, 2));
+        assert!(
+            with_later_iteration_exit_note(&spans, elsewhere)
+                .diagnostic()
+                .notes
+                .is_empty()
+        );
     }
 
     /// The fixpoint bound counts a variable's whole path and each of its

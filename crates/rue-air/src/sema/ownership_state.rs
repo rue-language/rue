@@ -1471,6 +1471,31 @@ mod tests {
     }
 
     #[test]
+    fn loop_edge_states_absorb_a_recheck_record() {
+        let s = syms(&["x"]);
+        let x = s[0];
+        let mut moved_x = AHashMap::new();
+        moved_x
+            .entry(x)
+            .or_insert_with(VariableMoveState::default)
+            .mark_path_moved(&[], Span::new(0, 1));
+        let mut real = LoopEdgeStates::entered_at(1);
+        real.record_break(&AHashMap::new(), 2);
+        let mut rechecked = real.clone();
+        rechecked.record_break(&moved_x, 2);
+        rechecked.record_continue(&moved_x, 3);
+        real.absorb(rechecked);
+        let (breaks, continues) = real.merged_moves();
+        let breaks = breaks.expect("break recorded");
+        assert!(
+            breaks
+                .get(&x)
+                .is_some_and(|state| state.full_move.is_some())
+        );
+        assert!(continues.is_some_and(|moves| moves.contains_key(&x)));
+    }
+
+    #[test]
     fn loop_head_hints_address_loops_by_position_across_parent_passes() {
         let s = syms(&["x", "y"]);
         let (x, y) = (s[0], s[1]);
