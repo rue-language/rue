@@ -611,10 +611,34 @@ impl Unifier {
                 unreachable!()
             };
             self.rebind_int_literal_to_concrete(lhs, &expected);
-            UnifyResult::Ok
-        } else {
-            self.unify_with(lhs, rhs, concrete_types_equal)
+            return UnifyResult::Ok;
         }
+        // An array's elements are each a value-context use of the one element
+        // type (7.1:2), so an array expected at `[f32; N]` expects `f32` of
+        // every element: the rule descends through array structure, and
+        // `[1, 2]` at `[f32; 2]` types its literals `f32` exactly as
+        // `let x: f32 = 1;` does (3.12:11). Lengths are checked first, with
+        // the same (actual, expected) direction as `unify_with`.
+        if let (
+            InferType::Array {
+                element: found_element,
+                length: found_length,
+            },
+            InferType::Array {
+                element: expected_element,
+                length: expected_length,
+            },
+        ) = (&lhs_applied, &rhs_applied)
+        {
+            if found_length != expected_length {
+                return UnifyResult::ArrayLengthMismatch {
+                    expected: *expected_length,
+                    found: *found_length,
+                };
+            }
+            return self.unify_contextual(found_element, expected_element, concrete_types_equal);
+        }
+        self.unify_with(lhs, rhs, concrete_types_equal)
     }
 
     fn register_string_context_types(
@@ -764,7 +788,14 @@ impl Unifier {
                     }
                     _ => unreachable!(),
                 };
-                let result = if matches!(constraint, Constraint::FieldSet { .. }) {
+                // A store into a field or an element expects the declared
+                // type, so it admits the same literals as any other value
+                // context (3.12:11): `a[0] = 1` into an `[f32; N]` as
+                // `p.x = 1` into an `f32` field.
+                let result = if matches!(
+                    constraint,
+                    Constraint::FieldSet { .. } | Constraint::IndexSet { .. }
+                ) {
                     self.unify_contextual(actual, expected, concrete_types_equal)
                 } else {
                     self.unify_with(actual, expected, concrete_types_equal)
@@ -1435,6 +1466,66 @@ mod tests {
         assert_eq!(
             unifier.resolve(&InferType::Var(contextual)),
             Some(Type::F32)
+        );
+    }
+
+    fn float_array(element: InferType, length: u64) -> InferType {
+        InferType::Array {
+            element: Box::new(element),
+            length,
+        }
+    }
+
+    /// An array literal's element variable stands for every element (7.1:2),
+    /// so a contextual `[f32; 2]` types the whole literal class `f32`, through
+    /// nesting, while a length mismatch is still reported (RUE-2389).
+    #[test]
+    fn contextual_integer_literal_admission_descends_through_arrays() {
+        let first = TypeVarId::new(0);
+        let second = TypeVarId::new(1);
+        let mut unifier = Unifier::new();
+        unifier.mark_int_literal_vars(&[first, second]);
+        let errors = unifier.solve_constraints(&[
+            Constraint::equal(
+                InferType::Var(second),
+                InferType::Var(first),
+                Span::new(0, 1),
+            ),
+            Constraint::contextual(
+                float_array(float_array(InferType::Var(first), 2), 3),
+                float_array(float_array(InferType::Concrete(Type::F32), 2), 3),
+                Span::new(1, 2),
+            ),
+        ]);
+        assert!(errors.is_empty(), "{errors:?}");
+        for var in [first, second] {
+            assert_eq!(unifier.resolve(&InferType::Var(var)), Some(Type::F32));
+        }
+
+        let mut mismatched = Unifier::new();
+        let errors = mismatched.solve_constraints(&[Constraint::contextual(
+            float_array(InferType::IntLiteral, 2),
+            float_array(InferType::Concrete(Type::F64), 3),
+            Span::new(0, 1),
+        )]);
+        assert_eq!(
+            errors.first().map(|error| &error.kind),
+            Some(&UnifyResult::ArrayLengthMismatch {
+                expected: 3,
+                found: 2,
+            })
+        );
+
+        // A typed integer element is not a literal and does not convert.
+        let mut typed = Unifier::new();
+        assert!(
+            !typed
+                .solve_constraints(&[Constraint::contextual(
+                    float_array(InferType::Concrete(Type::I32), 2),
+                    float_array(InferType::Concrete(Type::F32), 2),
+                    Span::new(0, 1),
+                )])
+                .is_empty()
         );
     }
 

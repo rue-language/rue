@@ -3419,10 +3419,12 @@ impl<'a> ConstraintGenerator<'a> {
 
                 continues &= base_info.continues && index_info.continues && value_info.continues;
 
-                // Constrain value type to match array element type
+                // The stored value is a value-context use of the element type,
+                // so it admits an integer literal at a float element (3.12:11)
+                // exactly as a field store and the deferred `IndexSet` do.
                 if let InferType::Array { element, .. } = &base_info.ty {
                     if value_info.continues {
-                        self.add_constraint(Constraint::equal(
+                        self.add_constraint(Constraint::contextual(
                             value_info.ty,
                             (**element).clone(),
                             value_info.span,
