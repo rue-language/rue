@@ -2644,7 +2644,14 @@ the identity on it. `LoopHead` is the equation, stated over the body's normal
 outgoing state `o`: `Σ_h = Σ` when the body never completes (`B_h = ∅`), and
 `Σ_h = join(Σ, Σ_e)` when it completes at `Σ_e`. It is a **fixpoint** premise:
 `o` is read off the judgment that types the body *at* `Σ_h`. Any solution is
-admitted, as the calculus admits any; `check` computes the least one by
+admitted, as the calculus admits any, the non-least ones included — an
+affine outer binding the body never touches may be `MovedOut` at such a head,
+since `join(Owned, MovedOut) = MovedOut`. A non-least head can only reject
+more: its linear-carrying paths equal the entry's (the join is undefined where
+they differ), every rule is antitone in `MovedOut` on the other paths (a use,
+`@drop` and `fully-owned` want `Owned`; an assignment takes either;
+`NoResidualLinear` and the overwrite premise read linear content only), and
+its post-loop state is only more moved. `check` computes the least one by
 iteration (`Checker.lean`).
 
 The second clause asks that `Σ_h`, when a back edge produced it, be a state
@@ -3440,7 +3447,13 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   loop is left only by the body's own `return`/`@panic`, which were checked
   where they fired. Either way the loop concludes at `⊥` and delivers no
   `break` outward (`Δ_out` removes this loop's own edges, and the syntactic
-  premise says there are none — `Typed.brk_nil`). -/
+  premise says there are none — `Typed.brk_nil`).
+
+  The diverge premise is there for fidelity to §5.7 and agreement with the
+  compiler (E0406), not for safety: `soundness` does not use it, since a loop
+  that never exits cannot leak in a way the machine sees — the premise `ret`'s
+  residual check has at a `return` has no dynamic counterpart here. The same
+  holds of `loopBreakDiv`'s. -/
   | loopDiv {Γ Γh Ωe e T} :
       Typed P R Γh e .unit Ωe →
       LoopHead P.decls Γ Ωe.norm Γh →

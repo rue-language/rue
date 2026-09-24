@@ -249,15 +249,16 @@ the corpus, which exports only completed runs, leaves it out.
 ### The one edge no monitor covers
 
 There is one place where the theorems say less than "never a violation"
-suggests, and it concerns `return`, not fuel. A by-value argument's value sits
-in no cell and no scope record until `mintParams` gives it one. If a *later*
-argument of the same call unwinds by `return`, (D-Return) discards the
-earlier value with the evaluation context. No drop runs and no monitor fires,
+suggests, and it concerns `return` and `break`, not fuel. A by-value
+argument's value sits in no cell and no scope record until `mintParams` gives
+it one. If a *later* argument of the same call unwinds by `return` or `break`,
+(D-Return) §6.9 or (D-Break) §6.10 discards the earlier value with the
+evaluation context. No drop runs and no monitor fires,
 so a linear value is consumed zero times without any violation. That is the
 calculus as written and what the compiler does, not a modelling slip.
 `Dynamics.lean`'s "Pending values" section states it, `Examples.lean`'s
-`linearLostAtCallArg` and `affineLostAtCallArg` are the kernel-checked
-witnesses, and closing it is RUE-2316.
+`linearLostAtCallArg`, `affineLostAtCallArg` and `linearLostAtBreakArg` (the
+`break` case) are kernel-checked witnesses, and closing it is RUE-2316.
 
 ## 3. The invariant: what `Matches` says, and why it is asymmetric
 

@@ -215,7 +215,12 @@ gives a back-edge state with at least as many, and the next head is no
 smaller. A head that is not yet the fixpoint therefore adds a `MovedOut` at a
 path the body writes, and the body writes at most one per node of its
 syntax, which is the bound (`Expr.nodes`, plus the step that confirms the
-fixpoint). None of this is needed for soundness: `check` re-checks the body
+fixpoint). The bound is generous: in practice the second step already
+confirms the fixpoint, because the back-edge moves at the first head are the
+body's writes plus the head's carried moves, all of which that head already
+has. Its cost is multiplicative in loop nesting depth — each level re-checks
+its body about three times — which the corpus does not feel. None of this is
+needed for soundness: `check` re-checks the body
 at the head it found and verifies the equation `LoopHead` states, so
 `check_sound` reads only that final check. A bound too small would cost
 completeness, never soundness. -/

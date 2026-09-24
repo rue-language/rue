@@ -4318,7 +4318,8 @@ this theorem noticing. They are different in kind: the first is a gap in the
 calculus, the second is the calculus doing what it says.
 
 * **A pending value (open).** A value already built for a **sibling
-  position** that a *later* sibling destroys by `return` is in no cell and no
+  position** that a *later* sibling destroys by `return` or `break` is in no
+  cell and no
   scope record, so its drop is neither run nor monitored and none of the five
   violations fires. The sibling positions are every list `evalArgs` walks — a
   call's argument list, a struct literal's initializers, an array literal's
@@ -4326,14 +4327,15 @@ calculus, the second is the calculus doing what it says.
   run after it (`5.2:14`). At the right-hand side only the affine half
   applies: (Assign)'s leaf premise `class(T) ≠ Linear` keeps the abandoned
   value from being linear, so `no_linear_discard` is not affected there. That
-  edge is the calculus as written — §6.9's unwinding
-  rule walks only σ, and §5.3's strict-context bottom rule (`Strict-Bottom`
+  edge is the calculus as written — §6.9's and §6.10's unwinding
+  rules walk only σ, and §5.3's strict-context bottom rule (`Strict-Bottom`
   there, `Typed.consBot` and the other `-Bottom` variants here) imposes no discard check on siblings
   already evaluated — it is what the Rue compiler does, and closing
   it is an open spec decision (RUE-2316, the pending-argument decision).
   `Dynamics.lean`'s "Pending values" section states it in full;
   `Examples.lean`'s `linearLostAtCallArg` is the kernel-checked witness at an
-  argument and `linearLostAtArrayElem` the one at an array element.
+  argument, `linearLostAtArrayElem` the one at an array element, and
+  `linearLostAtBreakArg` the one where the later sibling is a `break`.
 * **A `@panic` (by design).** §6.12 abandons the configuration, and §5.7
   exempts the `⊥_panic` edge from §5.6's obligation, so a trap runs no scope
   drop at all: a live linear binding at a `@panic` is destroyed with no
