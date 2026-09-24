@@ -1265,6 +1265,67 @@ mod tests {
     }
 
     #[test]
+    fn call_result_mismatch_checks_only_scalar_typed_values() {
+        let typed = |value, ty| TypedSemanticConst { value, ty };
+        let mismatch = |expected: &str, found: &str| {
+            Some(SemanticNucleusFailure::Diagnostic(
+                rue_error::ErrorKind::TypeMismatch {
+                    expected: expected.into(),
+                    found: found.into(),
+                },
+            ))
+        };
+        let int = DurableConstValue::Integer(1);
+        assert_eq!(
+            durable_call_result_mismatch(
+                &typed(int.clone(), Some(DurableType::U8)),
+                &DurableType::I32
+            ),
+            mismatch("i32", "u8")
+        );
+        assert_eq!(
+            durable_call_result_mismatch(
+                &typed(DurableConstValue::Bool(true), Some(DurableType::Bool)),
+                &DurableType::I32
+            ),
+            mismatch("i32", "bool")
+        );
+        assert_eq!(
+            durable_call_result_mismatch(
+                &typed(
+                    DurableConstValue::Float(Arc::from("1.5")),
+                    Some(DurableType::F32)
+                ),
+                &DurableType::F64
+            ),
+            mismatch("f64", "f32")
+        );
+        // The declared type itself, an untyped integer literal and an
+        // untyped float literal all take the declared type.
+        assert_eq!(
+            durable_call_result_mismatch(
+                &typed(int.clone(), Some(DurableType::I32)),
+                &DurableType::I32
+            ),
+            None
+        );
+        assert_eq!(
+            durable_call_result_mismatch(&typed(int, None), &DurableType::I64),
+            None
+        );
+        assert_eq!(
+            durable_call_result_mismatch(
+                &typed(
+                    DurableConstValue::Float(Arc::from("1.5")),
+                    Some(DurableType::ComptimeFloat)
+                ),
+                &DurableType::F32
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn structured_value_fit_mapping_preserves_each_exact_failure_channel() {
         let alias_key = crate::StableDefinitionKey::from_stable_parts(
             ModuleId::from_logical_path("structured-fit.rue").unwrap(),
