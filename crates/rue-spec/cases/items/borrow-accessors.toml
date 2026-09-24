@@ -1464,6 +1464,154 @@ compile_fail = true
 error_contains = ["E0259", "as an `inout self` receiver while an accessor result borrows it"]
 
 [[case]]
+name = "inout_self_method_on_exclusive_accessor_result_uses_its_loan"
+spec = ["6.6:8", "6.6:10"]
+description = "An `inout self` method on an exclusive accessor result mutates the yielded place through the accessor's own loan; it is not a second exclusive use of the root (RUE-2358)."
+source = """
+struct P {
+    c: i64,
+
+    fn set(inout self, v: i64) -> i64 { self.c = v; v }
+    fn get(borrow self) -> i64 { self.c }
+}
+struct Acc {
+    p: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn bump(inout self) -> i64 { self.p.c = self.p.c + 1; self.p.c }
+}
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 } };
+    a.pmut().set(88);
+    @dbg(a.p.c);
+    @dbg(a.pmut().get());
+    if a.p.c == 88 { 0 } else { 1 }
+}
+"""
+expected_stdout = "88\n88\n"
+exit_code = 0
+
+[[case]]
+name = "inout_self_method_on_field_and_element_accessor_results_drops_replaced_values"
+spec = ["6.6:8", "6.6:10"]
+description = "A field-reached receiver and an element accessor result take `inout self` calls through their loans; each assignment in the method drops the value it replaces exactly once (RUE-2358)."
+source = """
+struct Tag { n: i64 }
+drop fn Tag(self) { @dbg(self.n); }
+struct P {
+    c: i64,
+    t: Tag,
+
+    fn replace(inout self, n: i64) { self.t = Tag { n: n }; self.c = self.c + 1; }
+}
+struct Acc {
+    p: P,
+    ps: [P; 2],
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn at_mut(inout self, i: u64) -> inout P { yield self.ps[i]; }
+}
+struct Holder { acc: Acc }
+fn main() -> i32 {
+    let mut h = Holder { acc: Acc {
+        p: P { c: 0, t: Tag { n: 1 } },
+        ps: [P { c: 0, t: Tag { n: 3 } }, P { c: 0, t: Tag { n: 5 } }],
+    } };
+    h.acc.pmut().replace(2);
+    h.acc.at_mut(1).replace(6);
+    @dbg(h.acc.p.c + h.acc.ps[1].c);
+    0
+}
+"""
+expected_stdout = "1\n5\n2\n2\n3\n6\n"
+exit_code = 0
+
+[[case]]
+name = "inout_self_method_on_shared_accessor_result_rejected"
+spec = ["6.6:8", "6.6:10"]
+description = "A shared accessor result grants no mutation: an `inout self` method on it conflicts with the shared loan (E0259, RUE-2358)."
+source = """
+struct P {
+    c: i64,
+
+    fn set(inout self, v: i64) -> i64 { self.c = v; v }
+    fn get(borrow self) -> i64 { self.c }
+}
+struct Acc {
+    p: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn bump(inout self) -> i64 { self.p.c = self.p.c + 1; self.p.c }
+}
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 } };
+    a.pref().set(2);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "as an `inout self` receiver while an accessor result borrows it"]
+
+[[case]]
+name = "inout_self_method_on_accessor_result_conflicts_with_sibling_inout_root"
+spec = ["6.6:10"]
+description = "An exclusive use of the root beside a method call on its accessor result in the same full expression is still rejected (E0259, RUE-2358)."
+source = """
+struct P {
+    c: i64,
+
+    fn set(inout self, v: i64) -> i64 { self.c = v; v }
+    fn get(borrow self) -> i64 { self.c }
+}
+struct Acc {
+    p: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn bump(inout self) -> i64 { self.p.c = self.p.c + 1; self.p.c }
+}
+fn g(inout a: Acc) -> i64 { a.p.c = 5; 0 }
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 } };
+    use2(a.pmut().set(2), g(inout a));
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "as `inout` while an accessor result borrows it"]
+
+[[case]]
+name = "root_inout_self_method_while_accessor_result_live_rejected"
+spec = ["6.6:10"]
+description = "An `inout self` method on the root itself while its accessor result is live in the same full expression is still rejected (E0259, RUE-2358)."
+source = """
+struct P {
+    c: i64,
+
+    fn set(inout self, v: i64) -> i64 { self.c = v; v }
+    fn get(borrow self) -> i64 { self.c }
+}
+struct Acc {
+    p: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn bump(inout self) -> i64 { self.p.c = self.p.c + 1; self.p.c }
+}
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 } };
+    use2(a.pmut().get(), a.bump());
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "as an `inout self` receiver while an accessor result borrows it"]
+
+[[case]]
 name = "accessor_read_before_inout_call_is_legal"
 spec = ["6.6:8", "6.6:10"]
 description = "The accessor loan ends with its full expression: reading the result in a prior statement, then calling with `inout`, is legal (RUE-1593)."
