@@ -933,9 +933,10 @@ fn method_on_accessor_result_uses_its_loan() {
     }
 }
 
-// RUE-2358: the controls. Mutating through a shared accessor result, and an
-// exclusive use of the root beside an accessor loan in the same full
-// expression, stay E0259 (6.6:10).
+// RUE-2358: mutating through a shared accessor result, an exclusive use of
+// the root beside an accessor loan in the same full expression, and a compared
+// shared read of the root beside an exclusive accessor result are E0259
+// (6.6:10). Only the compare shapes are new rejections; the rest are controls.
 #[test]
 fn method_on_accessor_result_still_conflicts_with_other_root_uses() {
     let fixture = accessor_result_receiver_fixture();
@@ -944,6 +945,9 @@ fn method_on_accessor_result_still_conflicts_with_other_root_uses() {
         "use2(a.pmut().get(), a.bump())",
         "use2(a.bump(), a.pmut().get())",
         "use2(a.pmut().set(), g(inout a))",
+        // An `==` operand borrows its place: a shared use of the root (F1).
+        "if a.p.c == a.pmut().get() { 1 } else { 0 }",
+        "if a.pmut().get() == a.p.c { 1 } else { 0 }",
     ] {
         let source = format!(
             "fn f() -> i64 {{
