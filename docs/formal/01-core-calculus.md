@@ -1497,8 +1497,7 @@ which remains outside this rule's scope.
 > linear bindings, `return`, `@panic` and `continue` inside a body, a linear
 > parameter live at a diverging loop, an unreachable `break` beside a
 > `return`, nested loops) agrees with the old text's reading and with the
-> compiler. `3.8:79`'s wording ("invariant across every reachable back edge")
-> still states the equality; aligning it with the loop-head state is RUE-2355.
+> compiler. `3.8:79` now states the loop-head state too (RUE-2355).
 >
 > The Lean mechanization (`docs/formal/lean`) states the `return`
 > obligation inside its `ret` rule, at the return's own context, rather than as
