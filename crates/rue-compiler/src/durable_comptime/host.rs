@@ -2019,13 +2019,20 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeCallProtocol
         mut ticket: Self::CompletionTicket,
         result: rue_air::ComptimeOutcome<Self::Value, Self::Failure>,
     ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
+        // The value leaves the call typed at the declared return type, once
+        // its own type is checked against it (RUE-2364).
         let result = match (result, frame.expected_result.as_ref()) {
             (
                 rue_air::ComptimeOutcome::Known(EvaluatedSemanticConst::Value(value)),
                 Some(expected),
-            ) => rue_air::ComptimeOutcome::Known(EvaluatedSemanticConst::Value(
-                TypedSemanticConst::typed(value.value.clone(), expected.0.clone()),
-            )),
+            ) => match durable_call_result_mismatch(&value, &expected.0) {
+                Some(failure) => rue_air::ComptimeOutcome::HostFailure(
+                    DurableComptimeHostFailure::semantic(Box::new(failure)),
+                ),
+                None => rue_air::ComptimeOutcome::Known(EvaluatedSemanticConst::Value(
+                    TypedSemanticConst::typed(value.value.clone(), expected.0.clone()),
+                )),
+            },
             (result, _) => result,
         };
         match self
