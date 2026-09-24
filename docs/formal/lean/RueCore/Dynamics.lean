@@ -31,6 +31,14 @@ Design commitments carried over from §6:
     The monitors make a linear violation observable as a positive result
     (which is what `soundness` needs), at the price that `eval` and §6
     differ on statically invalid input.
+  - `ownedUnderCopy` is a fourth monitor of the same kind (RUE-2323): the
+    **copy-closure** check (`Contents.copyClosed`) at aggregate introduction
+    and at an assignment. §6.5's (D-Struct) builds whatever its initializers
+    produced and relies on (Struct-Intro) §5.8 to have made a `Copy`
+    struct's fields `Copy`; on a program §5 rejects, an owned value can sit
+    under a `Copy` node, and the next (D-Use-Copy) duplicates its owner. The
+    monitor refuses that aggregate before it exists, which is what lets
+    `no_double_free` (`Trace.lean`) be proved without a typing derivation.
 * **The correspondence with §6 is claimed on the checker's input domain.**
   On a program `check` accepts, `eval` and §6 agree (the adequacy lemma
   owed in RUE-2289 is stated there); on other input they may not. An
@@ -60,6 +68,34 @@ Design commitments carried over from §6:
   `@dbg`'s own event (`dbg v`) is the other half of §6.12's observable
   output; those two are what a printed Rue program can see, in the one
   trace order they happened in.
+* Every aggregate value carries a **value identity**, minted at its
+  introduction ("Value identities" below), so each drop event says *which*
+  value it dropped, not only what it looked like.
+
+## Value identities (RUE-2323)
+
+§6.1 gives allocations identities and values none: two `S1 { 1 }` values are
+the same term. To state §7's no-double-free bullet over the trace — "every
+stored value's destructor runs at most once" — the machine needs to tell two
+equal-looking values apart, so aggregate introduction ((D-Struct) and
+(D-Array) §6.5, (D-Enum-Intro) §6.6, and the repeat form) **mints** one
+(`introVal`). The identity is the store's next index, reserved by appending
+`†`: §6.1 already says "a fresh identity is one not in `dom(H)`" and that a
+dead index is never reused, so a reserved index is a name nothing else can
+take, and threading a counter through `eval` would add nothing the store
+does not already count. The slot holds no storage, and nothing binds it or
+reads it.
+
+The identity rides on the value (`Val.struct s i vs` and the other aggregate
+forms) and on its stored image (`Contents`), through every move, parameter
+and `match` binding, and the events carry it because they carry the value or
+contents they ran on. It is unobservable: nothing in `eval` branches on it,
+and the printer (`Print.lean`) and the corpus (`Corpus.lean`) never print it,
+so the bridge compares exactly what it compared before. A copy of a `Copy`
+value carries its original's identity; `no_double_free` counts only the
+non-`Copy` nodes (`Contents.own`, `Trace.lean`), which are never copied.
+`Step` mints the same way, so the two presentations keep one store
+(`Step.lean`).
 
 ## Places, partial moves, and §6.11's drop order
 
@@ -247,16 +283,19 @@ larger fuel) and `no_masking` (a refusal at one fuel is that same refusal, or
 
 namespace RueCore
 
-/-- Machine values (§6.1's `v`), fragment forms only. `struct s vs` is §6.1's
-`{ v1, …, vk }_S`: the declaration's index and one value per field, in
+/-- Machine values (§6.1's `v`), fragment forms only. `struct s i vs` is §6.1's
+`{ v1, …, vk }_S`: the declaration's index, the value's **identity** `i`
+(minted at introduction, `introVal`; §6.1 has none, and the module docstring
+says why the machine adds it), and one value per field, in
 declaration order — the order `3.9:13` drops them in. `float w f` is §6.1's `f_T` at `T = float(w)`: §2's
 datum, not a bit pattern (`Float.lean`). A struct value names its declaration rather than
 carrying its class, so the machine's drop decisions are value-driven — it
 reads the tag the value carries — while the class and the destructor come from
 the program's declarations, as the compiled program's drop glue does.
 
-`enum e k vs` is §6.1's `Kj⟨ v1, …, va ⟩`: the declaration's index, the
-**0-based variant tag** `Kj`, and the active variant's payload. `vs = []` is
+`enum e k i vs` is §6.1's `Kj⟨ v1, …, va ⟩`: the declaration's index, the
+**0-based variant tag** `Kj`, the identity, and the active variant's payload;
+`array T i vs` is `[ v1, …, vn ]` with its element type and identity. `vs = []` is
 §6.1's bare tag, the discriminant-only case, which `6.3:15` lets an
 implementation store as a plain discriminant. The tag is what §6.6's (D-Match)
 switches on and what §6.11's enum case reads to find the one payload to drop. -/
@@ -283,7 +322,9 @@ node, not only at the root, because (D-Use-Move) §6.3 writes `H[ℓ@π ↦ ⊘]
 exactly the sub-position a partial move takes (§4.2, `3.8:22`). A hole-free
 contents is a value (`toVal`), and a value written into a cell becomes the
 hole-free tree of the same shape (`ofVal`); the two are inverse, which is what
-lets §6.11's walk and §6.3's navigation share one representation. -/
+lets §6.11's walk and §6.3's navigation share one representation. An aggregate
+node keeps its value's identity, so a stored value and the value read back
+out of it are the same value. -/
 inductive Contents where
   | hole
   | int (w : IntWidth) (s : Sign) (n : Int)
@@ -517,7 +558,10 @@ a Rue program can *observe*: the user destructor `S` declares (`3.9`), which
 in §6.11's order: the destructor, then the fields in declaration order, each
 recursively, with every `⊘` skipped. A binding's drop carries the *contents*
 it ran on, because after a partial move what is dropped is a tree with holes in
-it rather than a value; a discarded temporary is always a whole value. -/
+it rather than a value; a discarded temporary is always a whole value. Every
+aggregate in what an event carries has its identity, so the trace records
+*which* values were dropped and destroyed; `no_double_free` (`Trace.lean`) is
+the theorem that no identity is freed, or destroyed, twice. -/
 inductive Event where
   | drop (ℓ : Nat) (c : Contents)
   | dropTemp (v : Val)
@@ -1306,10 +1350,12 @@ them through the model `M`;
 `panic` is (D-Panic) §6.12; `dbg` appends the operand's rendering to the
 observable output (§5.8's (Dbg), §6.12's `Outcome`); `drop` is §6.11's
 explicit `@drop`; `letIn` is (D-Let) + (D-EndScope)'s drop-retire (§6.7);
-`assign` is (D-Assign), §6.8's overwrite-drop / reinitialization; `seq` is
+`assign` is (D-Assign), §6.8's overwrite-drop / reinitialization, with the
+copy-closure monitor on what it stores; `seq` is
 (D-Seq), discarding with a temporary drop (§6.7); `mkStruct` is (D-Struct)
 §6.5 after §6.2's left-to-right search through its initializers and `mkArray`
-is (D-Array) §6.5 after the same search; `repeatArray` is §2's elaboration of
+is (D-Array) §6.5 after the same search, each minting its value's identity
+(`introVal`); `repeatArray` is §2's elaboration of
 the surface repeat form (`7.1:39`); `indexRead` and `indexWrite` are
 (D-Index)/(D-Index-Trap) §6.5 at a dynamic index, reading by §6.3's copy rule
 and writing by §6.8's overwrite; `mkEnum` is

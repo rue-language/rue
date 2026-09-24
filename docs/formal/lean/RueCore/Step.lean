@@ -60,6 +60,14 @@ named by §6's own four violations only; `unwindLocs_plain` and
 `destructure_plain` prove that where a monitor lets a drop through, the plain
 drop does the same thing.
 
+`eval`'s fourth monitor, `ownedUnderCopy` (RUE-2323), refuses an aggregate
+literal or an assignment that would put an owned value under a `Copy` node
+(`Contents.copyClosed`, `Dynamics.lean`). §6.5's (D-Struct) and §6.8's
+(D-Assign) have no such premise and rely on §5.8's typing, so (D-Struct),
+(D-Enum-Intro), (D-Array) and (D-Assign) here carry none either. The one
+program shape it matters on is ill-typed, and there `Step` really does run a
+destructor twice on one value (`dupProgram_step_double_free`, `Trace.lean`).
+
 ## Where the relation departs from §6's text
 
 Each item is a reading §6 needs before it can be mechanized, or a choice of
@@ -88,6 +96,12 @@ representation; none changes what a checked program does.
   `eval` recovers it, rather than read off elaboration's `μ` annotation.
 * **A destructor is one trace event** (`Event.dtor`), as in `eval`, rather
   than §6.11's nested run of the `drop fn` body.
+* **Aggregate introduction mints a value identity** (RUE-2323), as `eval`'s
+  `introVal` does: (D-Struct), (D-Enum-Intro), (D-Array) and the repeat form
+  append a `†` slot to the store and give the new value its index. §6.1 has
+  no value identities; they exist so the trace can say which value a drop
+  was of (`Trace.lean`), and minting them the same way in both presentations
+  keeps the adequacy proofs' relation between stores an equality.
 * **The entry point is called.** `Config.init` calls function 0 with no
   arguments, so (D-Return-Main) is (D-Return) reaching the entry `call` frame
   and a body value there is (D-Return-Value). From §6.12's own initial
@@ -108,6 +122,9 @@ On programs `check` rejects, `Step` follows §6 where `eval` does not:
 
 * `@drop` of a `⊘` place is §6.11's no-op (`drop(H, ⊘) = H`) in `Step`;
   `eval` refuses it with `useAfterMove` (`Contents.isHole`).
+* An aggregate or an assignment that puts an owned value under a `Copy` node
+  steps in `Step`; `eval` refuses it with `ownedUnderCopy`
+  (`Contents.copyClosed`).
 
 Part 2's `eval ⇒ Step*` simulation is stated over checked programs (RUE-2289),
 where this case does not arise; unchecked programs are out of its scope.
@@ -1135,7 +1152,7 @@ theorem Config.Stuck.no_step {M : FloatOps} {P : Program} {C C' : Config} {w : V
 
 /-- Whether a violation is one of **§6's own stuck states** — a read of a `⊘`
 or `†` cell, an unbound index, a wrong-shaped operand — rather than one of the
-three monitors `eval` adds, which §6.3, §6.7 and §6.8 do not have. -/
+four monitors `eval` adds, which §6.3, §6.5, §6.7 and §6.8 do not have. -/
 def Violation.isStuckState : Violation → Bool
   | .useAfterMove | .useAfterDrop | .unbound | .typeConfusion => true
   | .linearLeak | .linearOverwrite | .linearDiscard | .ownedUnderCopy => false
@@ -1299,8 +1316,8 @@ theorem dynPlace_err {H : Store} {φ : Frame} {p : Place} {vs : List Val}
 
 /-- **§6's stuck states only** (RUE-2314): a configuration `step` finds stuck
 is stuck on `useAfterMove`, `useAfterDrop`, `unbound` or `typeConfusion` —
-never on `linearLeak`, `linearOverwrite` or `linearDiscard`, the three
-monitors `eval` adds and §6.3, §6.7 and §6.8 do not have. -/
+never on `linearLeak`, `linearOverwrite`, `linearDiscard` or `ownedUnderCopy`,
+the four monitors `eval` adds and §6.3, §6.5, §6.7 and §6.8 do not have. -/
 theorem step_stuck_isStuckState {M : FloatOps} {P : Program} {C : Config} {w : Violation}
     (h : C.Stuck M P w) : w.isStuckState = true := by
   simp only [Config.Stuck] at h
