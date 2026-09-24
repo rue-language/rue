@@ -6996,6 +6996,63 @@ mod tests {
         assert_all_blocks_terminated(&cfg);
     }
 
+    /// `while c { StrBuf.with_capacity(8) }` and `loop { StrBuf.with_capacity(8) }`:
+    /// the body's tail value is discarded at the back edge, so it is dropped
+    /// once, in the block that jumps back to the loop head (RUE-2378).
+    #[test]
+    fn loop_body_tail_value_is_dropped_at_the_back_edge() {
+        use SemanticBodyInstData as D;
+        for infinite in [false, true] {
+            let mut f = BodyFixture::new(SemanticImportType::I32);
+            let resource = declare_droppable_resource(&mut f);
+            let cap = f.inst(D::Const(8), SemanticImportType::U64);
+            let made = f.call_inst("StrBuf.with_capacity", &[cap], resource.clone());
+            let body = f.inst(
+                D::Block {
+                    statements: [].into(),
+                    value: made,
+                },
+                resource,
+            );
+            let looped = if infinite {
+                f.inst(D::InfiniteLoop { body }, SemanticImportType::Never)
+            } else {
+                let cond = f.inst(D::BoolConst(true), SemanticImportType::Bool);
+                f.inst(D::Loop { cond, body }, SemanticImportType::Unit)
+            };
+            let zero = f.inst(D::Const(0), SemanticImportType::I32);
+            let tail = f.inst(
+                D::Block {
+                    statements: [looped].into(),
+                    value: zero,
+                },
+                SemanticImportType::I32,
+            );
+            f.inst(D::Ret(Some(tail)), SemanticImportType::I32);
+            let cfg = f.build_cfg();
+
+            assert_eq!(count_drops(&cfg), 1, "infinite={infinite}");
+            let dropping = cfg
+                .blocks()
+                .iter()
+                .find(|block| {
+                    block
+                        .insts
+                        .iter()
+                        .any(|v| matches!(cfg.get_inst(*v).data, CfgInstData::Drop { .. }))
+                })
+                .expect("a block drops the tail value");
+            let Terminator::Goto { target, .. } = dropping.terminator else {
+                panic!("the dropping block must take the back edge, infinite={infinite}");
+            };
+            assert!(
+                target.0 <= dropping.id.0,
+                "the drop must precede the jump back to the loop head, infinite={infinite}"
+            );
+            assert_all_blocks_terminated(&cfg);
+        }
+    }
+
     #[test]
     fn fallible_initializer_drops_local_only_after_successful_alloc() {
         // The post-`?` elaboration of
