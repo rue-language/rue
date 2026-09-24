@@ -247,9 +247,8 @@ impl Unifier {
                     self.rebind_int_literal_to_concrete(lhs, ty);
                     self.rebind_int_literal_to_concrete(rhs, ty);
                     UnifyResult::Ok
-                } else if ty.is_error() || ty.is_never() {
-                    // Error type propagates; `!` coerces to the literal's
-                    // type (see the literal-variable case in `bind`).
+                } else if ty.is_error() {
+                    // Error type propagates
                     UnifyResult::Ok
                 } else {
                     UnifyResult::IntLiteralNonInteger { found: *ty }
@@ -411,16 +410,7 @@ impl Unifier {
                         // all (RUE-231).
                         return UnifyResult::Ok;
                     }
-                    if t.is_never() {
-                        // `!` coerces to every type (spec 3.4:3-4), so a
-                        // literal beside a diverging operand is not typed by
-                        // it: `(return 18) < 3` and `[return 15, 1]` leave the
-                        // literal free to take its context or default to i32.
-                        // Binding it would type the literal as `!` and
-                        // range-check its value against `!` (E0800).
-                        return UnifyResult::Ok;
-                    }
-                    if !t.is_integer() {
+                    if !t.is_integer() && !t.is_never() {
                         return UnifyResult::IntLiteralNonInteger { found: *t };
                     }
                 }
@@ -435,11 +425,11 @@ impl Unifier {
                 InferType::Var(other) => {
                     self.float_literal_vars.insert(*other);
                 }
-                // A float literal beside a diverging operand stays free, as
-                // an integer literal does above.
-                InferType::Concrete(t) if t.is_never() => return UnifyResult::Ok,
                 InferType::Concrete(t)
-                    if t.is_float() || *t == Type::COMPTIME_FLOAT || t.is_error() => {}
+                    if t.is_float()
+                        || *t == Type::COMPTIME_FLOAT
+                        || t.is_error()
+                        || t.is_never() => {}
                 InferType::Concrete(t) => {
                     return UnifyResult::TypeMismatch {
                         expected: InferType::Concrete(Type::COMPTIME_FLOAT),

@@ -506,3 +506,14 @@ fn main() -> i32 {
 }
 """
 exit_code = 6
+
+[[case]]
+name = "integer_literal_at_a_declared_never_parameter_rejected"
+spec = ["3.4:3", "3.4:9"]
+description = "The coercion runs from ! only: a literal passed where a parameter declares ! is still rejected"
+source = """
+fn g(x: !) -> i32 { 0 }
+fn main() -> i32 { g(5) }
+"""
+compile_fail = true
+error_contains = "out of range for type '!'"
