@@ -4759,7 +4759,11 @@ impl<'a> ConstraintGenerator<'a> {
 
         // Constrain each runtime argument to its parameter type, with type
         // parameters substituted. Comptime type parameters (the `T: type`
-        // arguments themselves) are validated in sema.
+        // arguments themselves) are validated in sema. An argument is a use at
+        // its parameter's type exactly as in a non-generic call, so the
+        // constraint is contextual: an integer literal at an `f32` parameter,
+        // at `x: T` with `T = f64`, or inside an array literal at `[f32; N]`
+        // is a float (3.12:11, RUE-2393). A typed integer stays a mismatch.
         for (i, arg_info) in arg_infos.iter().enumerate() {
             if self.was_canceled() {
                 break;
