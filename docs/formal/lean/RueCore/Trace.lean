@@ -1024,4 +1024,402 @@ theorem Contents.destructure_measure {D : Decls} {F : Event → List Nat} (hF : 
       have := dropResidue_measure hF hr hd a
       omega
 
+/-! ## The conservation law's promise about one evaluation -/
+
+/-- `Fresh` over three stores that only grew is the two ranges back to back
+(helper). -/
+theorem Fresh.count_trans {H H₁ H₂ : Store} (h₁ : H.length ≤ H₁.length)
+    (h₂ : H₁.length ≤ H₂.length) (a : Nat) :
+    (Fresh H H₂).count a = (Fresh H H₁).count a + (Fresh H₁ H₂).count a := by
+  have : Fresh H H₂ = Fresh H H₁ ++ Fresh H₁ H₂ := by
+    simp only [Fresh]
+    have := (List.range'_append (s := H.length) (m := H₁.length - H.length)
+      (n := H₂.length - H₁.length) (step := 1))
+    rw [show H.length + 1 * (H₁.length - H.length) = H₁.length by omega,
+      show H₁.length - H.length + (H₂.length - H₁.length) = H₂.length - H.length by omega]
+      at this
+    exact this.symm
+  rw [this, List.count_append]
+
+/-- A trap's range composes the same way (helper). -/
+theorem Fresh.count_trans_range {H H₁ : Store} (h₁ : H.length ≤ H₁.length) (N a : Nat) :
+    (List.range' H.length (H₁.length - H.length + N)).count a
+      = (Fresh H H₁).count a + (List.range' H₁.length N).count a := by
+  have := (List.range'_append (s := H.length) (m := H₁.length - H.length) (n := N) (step := 1))
+  rw [show H.length + 1 * (H₁.length - H.length) = H₁.length by omega] at this
+  rw [← this, List.count_append]; rfl
+
+/-- Nothing was minted between a store and itself (helper). -/
+@[simp] theorem Fresh.self (H : Store) : Fresh H H = [] := by simp [Fresh]
+
+/-- One reserved slot mints one identity, the old length (helper). -/
+theorem Fresh.snoc (H : Store) (c : Cell) : Fresh H (H ++ [c]) = [H.length] := by
+  simp [Fresh]
+
+/-- **The conservation law, for one evaluation** from store `H`, holding the
+owned identities `X` besides it (a pending operand's value): the result's
+store, its value and the trace's projection `F` together own at most what `H`
+and `X` owned, plus what was minted on the way — each identity counted, as a
+multiset. The store and the value stay copy-closed. A trap carries no store,
+so its minted range is existential; a refusal and exhausted fuel promise
+nothing (helper). -/
+def Cons (D : Decls) (F : Event → List Nat) (H : Store) (X : List Nat) : EvalRes → Prop
+  | .ok H' v tr | .returned H' v tr =>
+      H.length ≤ H'.length ∧ StoreCC D H' ∧ (Contents.ofVal v).copyClosed D = true ∧
+      ∀ a, (storeOwn D H').count a + (v.own D).count a + (tr.flatMap F).count a
+        ≤ (storeOwn D H).count a + X.count a + (Fresh H H').count a
+  | .broke H' _ tr =>
+      H.length ≤ H'.length ∧ StoreCC D H' ∧
+      ∀ a, (storeOwn D H').count a + (tr.flatMap F).count a
+        ≤ (storeOwn D H).count a + X.count a + (Fresh H H').count a
+  | .panic _ tr =>
+      ∃ N, ∀ a, (tr.flatMap F).count a
+        ≤ (storeOwn D H).count a + X.count a + (List.range' H.length N).count a
+  | .stuck _ | .outOfFuel => True
+
+/-- Holding more does not break the law (helper). -/
+theorem Cons.weaken {D : Decls} {F : Event → List Nat} {H : Store} {X Y : List Nat}
+    {r : EvalRes} (h : Cons D F H X r) (hXY : ∀ a, X.count a ≤ Y.count a) : Cons D F H Y r := by
+  cases r with
+  | ok H' v tr =>
+      obtain ⟨h1, h2, h3, h4⟩ := h
+      exact ⟨h1, h2, h3, fun a => by have := h4 a; have := hXY a; omega⟩
+  | returned H' v tr =>
+      obtain ⟨h1, h2, h3, h4⟩ := h
+      exact ⟨h1, h2, h3, fun a => by have := h4 a; have := hXY a; omega⟩
+  | broke H' sc tr =>
+      obtain ⟨h1, h2, h4⟩ := h
+      exact ⟨h1, h2, fun a => by have := h4 a; have := hXY a; omega⟩
+  | panic k tr =>
+      obtain ⟨N, h4⟩ := h
+      exact ⟨N, fun a => by have := h4 a; have := hXY a; omega⟩
+  | stuck w => trivial
+  | outOfFuel => trivial
+
+/-- **Composition**: an evaluation from `H₁` whose own law holds, run after a
+step from `H` to `H₁` that emitted `tr` and left `Y` held, satisfies the law
+from `H` with the step's trace prefixed — §6.2's search, as a ledger
+(helper). -/
+theorem Cons.prefix {D : Decls} {F : Event → List Nat} {H H₁ : Store} {X Y : List Nat}
+    {tr : List Event} {r : EvalRes} (hle : H.length ≤ H₁.length)
+    (hI : ∀ a, (storeOwn D H₁).count a + Y.count a + (tr.flatMap F).count a
+      ≤ (storeOwn D H).count a + X.count a + (Fresh H H₁).count a)
+    (hr : Cons D F H₁ Y r) : Cons D F H X (r.withTrace tr) := by
+  cases r with
+  | ok H₂ v tr₂ =>
+      obtain ⟨h1, h2, h3, h4⟩ := hr
+      refine ⟨Nat.le_trans hle h1, h2, h3, fun a => ?_⟩
+      have := hI a; have := h4 a; have := Fresh.count_trans hle h1 a
+      simp only [List.flatMap_append, List.count_append]
+      omega
+  | returned H₂ v tr₂ =>
+      obtain ⟨h1, h2, h3, h4⟩ := hr
+      refine ⟨Nat.le_trans hle h1, h2, h3, fun a => ?_⟩
+      have := hI a; have := h4 a; have := Fresh.count_trans hle h1 a
+      simp only [List.flatMap_append, List.count_append]
+      omega
+  | broke H₂ sc tr₂ =>
+      obtain ⟨h1, h2, h4⟩ := hr
+      refine ⟨Nat.le_trans hle h1, h2, fun a => ?_⟩
+      have := hI a; have := h4 a; have := Fresh.count_trans hle h1 a
+      simp only [List.flatMap_append, List.count_append]
+      omega
+  | panic k tr₂ =>
+      obtain ⟨N, h4⟩ := hr
+      refine ⟨H₁.length - H.length + N, fun a => ?_⟩
+      have := hI a; have := h4 a; have := Fresh.count_trans_range hle N a
+      simp only [List.flatMap_append, List.count_append]
+      omega
+  | stuck w => trivial
+  | outOfFuel => trivial
+
+/-- A step that emitted nothing: the law transports back along it (helper). -/
+theorem Cons.shift {D : Decls} {F : Event → List Nat} {H H₁ : Store} {X Y : List Nat}
+    {r : EvalRes} (hle : H.length ≤ H₁.length)
+    (hI : ∀ a, (storeOwn D H₁).count a + Y.count a
+      ≤ (storeOwn D H).count a + X.count a + (Fresh H H₁).count a)
+    (hr : Cons D F H₁ Y r) : Cons D F H X r := by
+  have := Cons.prefix (tr := []) hle (fun a => by simpa using hI a) hr
+  cases r <;> simpa [EvalRes.withTrace] using this
+
+/-- **§6.2's search, as a ledger**: an operand that keeps the law, sequenced
+into a context that keeps it holding the operand's value, keeps it
+(helper). -/
+theorem Cons.bind {D : Decls} {F : Event → List Nat} {H : Store} {X : List Nat}
+    {r : EvalRes} {k : Store → Val → EvalRes} (hr : Cons D F H X r)
+    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → StoreCC D H₁ → (Contents.ofVal v).copyClosed D = true →
+      Cons D F H₁ (v.own D) (k H₁ v)) :
+    Cons D F H X (r.andThen k) := by
+  cases r with
+  | ok H₁ v tr =>
+      obtain ⟨h1, h2, h3, h4⟩ := hr
+      exact Cons.prefix h1 (fun a => by have := h4 a; omega) (hk H₁ v tr rfl h2 h3)
+  | returned H₁ v tr => exact hr
+  | broke H₁ sc tr => exact hr
+  | panic k tr => exact hr
+  | stuck w => trivial
+  | outOfFuel => trivial
+
+/-- §6.9's call boundary, as a ledger: the same, with an unwinding `return`
+becoming the call's value (helper). -/
+theorem Cons.absorb {D : Decls} {F : Event → List Nat} {H : Store} {X : List Nat}
+    {r : EvalRes} {k : Store → Val → EvalRes} (hr : Cons D F H X r)
+    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → StoreCC D H₁ → (Contents.ofVal v).copyClosed D = true →
+      Cons D F H₁ (v.own D) (k H₁ v)) :
+    Cons D F H X (r.absorb k) := by
+  cases r with
+  | ok H₁ v tr =>
+      obtain ⟨h1, h2, h3, h4⟩ := hr
+      exact Cons.prefix h1 (fun a => by have := h4 a; omega) (hk H₁ v tr rfl h2 h3)
+  | returned H₁ v tr => exact hr
+  | broke H₁ sc tr => trivial
+  | panic k tr => exact hr
+  | stuck w => trivial
+  | outOfFuel => trivial
+
+/-- A value produced where the store is, owning nothing held (helper). -/
+theorem Cons.pure {D : Decls} {F : Event → List Nat} {H : Store} {X : List Nat} {v : Val}
+    (hcc : StoreCC D H) (hv : (Contents.ofVal v).copyClosed D = true)
+    (ho : ∀ a, (v.own D).count a ≤ X.count a) : Cons D F H X (.ok H v []) :=
+  ⟨Nat.le_refl _, hcc, hv, fun a => by have := ho a; simp; omega⟩
+
+/-- A scalar owns nothing and is copy-closed (helper). -/
+def Val.scalar : Val → Prop
+  | .int _ _ _ | .float _ _ | .bool _ | .unit => True
+  | _ => False
+
+/-- A scalar's ledger (helper). -/
+theorem Val.scalar_own {D : Decls} {v : Val} (h : v.scalar) :
+    v.own D = [] ∧ (Contents.ofVal v).copyClosed D = true := by
+  cases v with
+  | int => exact ⟨rfl, rfl⟩
+  | float => exact ⟨rfl, rfl⟩
+  | bool => exact ⟨rfl, rfl⟩
+  | unit => exact ⟨rfl, rfl⟩
+  | _ => simp [Val.scalar] at h
+
+/-- An operator's outcome keeps the law when its value is a scalar (helper). -/
+theorem Cons.opRes {D : Decls} {F : Event → List Nat} {H : Store} {X : List Nat} {o : OpRes}
+    (hcc : StoreCC D H) (hs : ∀ v, o = .val v → v.scalar) : Cons D F H X (o.toRes H) := by
+  cases o with
+  | val v =>
+      obtain ⟨h1, h2⟩ := Val.scalar_own (D := D) (hs v rfl)
+      exact Cons.pure hcc h2 (fun a => by simp [h1])
+  | trap k => exact ⟨0, fun a => by simp⟩
+  | confused => trivial
+
+/-! ## The forms' own ledgers -/
+/-- `range_check`'s value is a scalar (helper). -/
+theorem intResult_scalar {w s n v} (h : intResult w s n = .val v) : v.scalar := by
+  unfold intResult at h; split at h <;> cases h; trivial
+
+/-- §6.4's integer rules produce a scalar (helper). -/
+theorem binOpInt_scalar {op w s n₁ n₂ v} (h : binOpInt op w s n₁ n₂ = .val v) : v.scalar := by
+  unfold binOpInt at h
+  split at h <;> (repeat' split at h) <;> first | exact intResult_scalar h | (cases h; trivial) | cases h
+
+/-- §6.4's float rules produce a scalar (helper). -/
+theorem binOpFloat_scalar {M op w a b v} (h : binOpFloat M op w a b = .val v) : v.scalar := by
+  unfold binOpFloat at h
+  split at h <;> first | (cases h; trivial) | cases h
+
+/-- §6.4's binary operators produce a scalar (helper). -/
+theorem evalBinOp_scalar {M op a b v} (h : evalBinOp M op a b = .val v) : v.scalar := by
+  unfold evalBinOp at h
+  split at h
+  · split at h
+    · exact binOpInt_scalar h
+    · cases h
+  · split at h
+    · exact binOpFloat_scalar h
+    · cases h
+  · cases h
+
+/-- §6.4's unary operators produce a scalar (helper). -/
+theorem evalUnOp_scalar {op a v} (h : evalUnOp op a = .val v) : v.scalar := by
+  unfold evalUnOp at h
+  split at h <;> first | exact intResult_scalar h | (cases h; trivial) | cases h
+
+/-- `@intCast` produces a scalar (helper). -/
+theorem evalIntCast_scalar {w s a v} (h : evalIntCast w s a = .val v) : v.scalar := by
+  unfold evalIntCast at h
+  split at h
+  · split at h <;> first | (cases h; trivial) | cases h
+  · cases h
+
+/-- §6.4's float intrinsics produce a scalar (helper). -/
+theorem evalFintrin_scalar {M k a v} (h : evalFintrin M k a = .val v) : v.scalar := by
+  unfold evalFintrin at h
+  split at h <;> (repeat' split at h) <;> first | (cases h; trivial) | cases h
+
+/-- A value's stored image has the value's class (helper). -/
+theorem Contents.mult_ofVal (D : Decls) (v : Val) : (Contents.ofVal v).mult D = v.mult D := by
+  have h : ∀ vs : List Val, (Contents.ofVals vs).length = vs.length := by
+    intro vs; induction vs <;> simp_all [Contents.ofVals]
+  cases v <;> simp [Contents.ofVal, Contents.mult, Val.mult, h]
+
+/-- A `Copy` value owns nothing (helper). -/
+theorem Val.own_of_copy {D : Decls} {v : Val} (h : v.mult D = .copy) : v.own D = [] :=
+  Contents.own_of_mult (by rw [Contents.mult_ofVal]; exact h)
+
+/-- `ownList` over `ofVals` of a cons (helper). -/
+theorem Contents.ownList_ofVals_cons (D : Decls) (v : Val) (vs : List Val) :
+    Contents.ownList D (Contents.ofVals (v :: vs)) = v.own D ++ Contents.ownList D (Contents.ofVals vs) :=
+  rfl
+
+/-- `n` copies of a `Copy` value own nothing (helper). -/
+theorem Contents.ownList_replicate {D : Decls} {v : Val} (h : v.mult D = .copy) :
+    ∀ n, Contents.ownList D (Contents.ofVals (List.replicate n v)) = []
+  | 0 => rfl
+  | n + 1 => by
+      simp only [List.replicate_succ, Contents.ownList_ofVals_cons, Val.own_of_copy h,
+        Contents.ownList_replicate h n, List.nil_append]
+
+/-- The store `mintParams` leaves owns the store's identities and the
+arguments' (§6.9's (D-Call), §6.6's (D-Match)) (helper). -/
+theorem storeOwn_mintParams (D : Decls) (H : Store) (vs : List Val) :
+    storeOwn D (mintParams H vs).1 = storeOwn D H ++ Contents.ownList D (Contents.ofVals vs) := by
+  rw [mintParams_store, storeOwn_append]
+  congr 1
+  induction vs with
+  | nil => rfl
+  | cons v vs ih =>
+      simp only [List.map_cons, storeOwn, List.flatMap_cons, Cell.own] at ih ⊢
+      rw [ih]; rfl
+
+/-- The cells `mintParams` adds are copy-closed when the arguments are
+(helper). -/
+theorem StoreCC.mintParams {D : Decls} {H : Store} {vs : List Val} (h : StoreCC D H)
+    (hv : Contents.copyClosedList D (Contents.ofVals vs) = true) :
+    StoreCC D (RueCore.mintParams H vs).1 := by
+  rw [mintParams_store]
+  refine h.append ?_
+  induction vs with
+  | nil => intro ℓ c hc; simp at hc
+  | cons v vs ih =>
+      simp only [Contents.ofVals, Contents.copyClosedList, Bool.and_eq_true] at hv
+      intro ℓ c hc
+      cases ℓ with
+      | zero => simp at hc; subst hc; exact hv.1
+      | succ ℓ => simp only [List.map_cons, List.getElem?_cons_succ] at hc; exact ih hv.2 ℓ c hc
+
+/-- The store `mintParams` leaves is the old one grown (helper). -/
+theorem mintParams_length (H : Store) (vs : List Val) :
+    (mintParams H vs).1.length = H.length + vs.length := by
+  rw [mintParams_store]; simp
+
+/-- An aggregate owns at most its members' identities and its own (helper). -/
+theorem Contents.own_struct_le (D : Decls) (s i : Nat) (cs : List Contents) (a : Nat) :
+    ((Contents.struct s i cs).own D).count a ≤ (Contents.ownList D cs).count a + [i].count a := by
+  simp only [Contents.own]; split <;> simp [List.count_cons] <;> omega
+
+/-- The same at an enum (helper). -/
+theorem Contents.own_enum_le (D : Decls) (e k i : Nat) (cs : List Contents) (a : Nat) :
+    ((Contents.enum e k i cs).own D).count a ≤ (Contents.ownList D cs).count a + [i].count a := by
+  simp only [Contents.own]; split <;> simp [List.count_cons] <;> omega
+
+/-- The same at an array (helper). -/
+theorem Contents.own_array_le (D : Decls) (T : Ty) (i : Nat) (cs : List Contents) (a : Nat) :
+    ((Contents.array T i cs).own D).count a ≤ (Contents.ownList D cs).count a + [i].count a := by
+  simp only [Contents.own]; split <;> simp [List.count_cons] <;> omega
+
+/-- An enum owns at least its payload, and a copy-closed one's payload is
+copy-closed — what (D-Match) §6.6 hands the arm's cells (helper). -/
+theorem Contents.enum_payload {D : Decls} {e k i : Nat} {cs : List Contents}
+    (h : (Contents.enum e k i cs).copyClosed D = true) (a : Nat) :
+    (Contents.ownList D cs).count a ≤ ((Contents.enum e k i cs).own D).count a ∧
+      Contents.copyClosedList D cs = true := by
+  simp only [Contents.copyClosed] at h
+  split at h
+  · rename_i hc
+    refine ⟨by simp [Contents.allCopyList_own h], Contents.allCopyList_copyClosedList h⟩
+  · rename_i hc
+    refine ⟨by simp [Contents.own, hc, List.count_cons], h⟩
+
+/-- **Aggregate introduction, as a ledger** (`introVal`): the new value owns at
+most its members and the one identity just minted, which is the one index the
+store grew by (helper). -/
+theorem Cons.intro {D : Decls} {F : Event → List Nat} {H : Store} {Y : List Nat}
+    {mk : Nat → Val} (hcc : StoreCC D H)
+    (ho : ∀ a, ((mk H.length).own D).count a ≤ Y.count a + [H.length].count a) :
+    Cons D F H Y (RueCore.introVal D H mk) := by
+  unfold RueCore.introVal
+  split
+  · rename_i hv
+    refine ⟨by simp, hcc.append StoreCC.dead, hv, fun a => ?_⟩
+    have := ho a
+    rw [storeOwn_append, Fresh.snoc]
+    simp [storeOwn, Cell.own]
+    omega
+  · trivial
+
+/-- What `dynPlace` lands on is a live cell and a read of it (helper). -/
+theorem dynPlace_at {H : Store} {φ : Frame} {p : Place} {vs : List Val} {πs : List (List Nat)}
+    {ℓ : Nat} {c sub : Contents} {ρ : List Nat} (h : dynPlace H φ p vs πs = .at ℓ c sub ρ) :
+    H[ℓ]? = some (.full c) ∧ c.readAt p.path = .ok sub := by
+  unfold dynPlace at h
+  split at h
+  · cases h
+  · split at h
+    · cases h
+    · rename_i ℓ' hρ
+      split at h
+      · cases h
+      · cases h
+      · rename_i c' hc
+        split at h
+        · cases h
+        · rename_i sub' hr
+          split at h
+          · cases h; exact ⟨hc, hr⟩
+          · cases h
+          · cases h
+
+/-- The law's promise about an argument list (helper). -/
+def ArgsCons (D : Decls) (F : Event → List Nat) (H : Store) : ArgsRes → Prop
+  | .ok H' vs tr =>
+      H.length ≤ H'.length ∧ StoreCC D H' ∧
+      Contents.copyClosedList D (Contents.ofVals vs) = true ∧
+      ∀ a, (storeOwn D H').count a + (Contents.ownList D (Contents.ofVals vs)).count a +
+          (tr.flatMap F).count a ≤ (storeOwn D H).count a + (Fresh H H').count a
+  | .abort r => Cons D F H [] r
+
+/-- **An argument list keeps the law** (§6.2's left-to-right search through
+`g(v̄, …, E, …)`, `S{ v̄, …, E, … }` and `[ v̄, …, E, … ]`): each argument's
+value is held while the next one runs, and an abort abandons the ones already
+built — which only loses identities, never duplicates one (helper). -/
+theorem evalArgs_cons {D : Decls} {F : Event → List Nat} {ev : Store → Expr → EvalRes}
+    (hev : ∀ H e, StoreCC D H → Cons D F H [] (ev H e)) :
+    ∀ (H : Store) (es : List Expr), StoreCC D H → ArgsCons D F H (evalArgs ev H es)
+  | H, [], hcc => ⟨Nat.le_refl _, hcc, rfl, fun a => by simp [Contents.ofVals, Contents.ownList]⟩
+  | H, e :: es, hcc => by
+      simp only [evalArgs]
+      have h₁ := hev H e hcc
+      cases hr : ev H e with
+      | ok H₁ v tr =>
+          rw [hr] at h₁
+          obtain ⟨l₁, c₁, v₁, i₁⟩ := h₁
+          have h₂ := evalArgs_cons hev H₁ es c₁
+          dsimp only
+          cases hra : evalArgs ev H₁ es with
+          | ok H₂ vs tr₂ =>
+              rw [hra] at h₂
+              dsimp only
+              obtain ⟨l₂, c₂, v₂, i₂⟩ := h₂
+              refine ⟨Nat.le_trans l₁ l₂, c₂, ?_, fun a => ?_⟩
+              · simp [Contents.ofVals, Contents.copyClosedList, v₁, v₂]
+              · have := i₁ a; have := i₂ a; have := Fresh.count_trans l₁ l₂ a
+                simp only [Contents.ownList_ofVals_cons, List.flatMap_append, List.count_append]
+                simp only [List.count_nil] at *
+                omega
+          | abort r =>
+              rw [hra] at h₂
+              dsimp only
+              exact Cons.prefix (Y := []) l₁ (fun a => by have := i₁ a; simp at *; omega) h₂
+      | returned H₁ v tr => rw [hr] at h₁; exact h₁
+      | broke H₁ sc tr => rw [hr] at h₁; exact h₁
+      | panic k tr => rw [hr] at h₁; exact h₁
+      | stuck w => trivial
+      | outOfFuel => trivial
+
 end RueCore
