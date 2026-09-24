@@ -2798,7 +2798,16 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         }
     }
 
-    /// Evaluate an operator whose first operand may itself be an operator,
+    /// Whether an instruction is a chain operator whose first operand is also
+    /// one.
+    fn is_operator_chain(&self, instruction: &InstData) -> bool {
+        self.chain_operand(instruction).is_some_and(|operand| {
+            self.chain_operand(&self.program_rir().get(operand).data)
+                .is_some()
+        })
+    }
+
+    /// Evaluate an operator whose first operand is itself an operator,
     /// without recursing once per operator (RUE-2366).
     ///
     /// The parser admits a left-nested chain such as `a + b + c + …` or
@@ -2982,16 +2991,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 then_block,
                 else_block,
             } => self.eval_branch(cond, then_block, else_block, env),
-            // An operator walks its chain of first operands iteratively, and
-            // marks its own declared integer region there (RUE-2366).
-            ref data if self.chain_operand(data).is_some() => {
-                self.eval_operator_chain(inst_ref, env)
-            }
+            // An operator whose first operand is another operator walks that
+            // chain iteratively, and marks its own declared integer region
+            // there (RUE-2366). A lone operator keeps the direct path, which
+            // spends no chain frame per level of right nesting.
+            ref data if self.is_operator_chain(data) => self.eval_operator_chain(inst_ref, env),
             // A region that can read a declared binding is marked for the
             // declared integer check at its root; an operation already in a
-            // region, or any other instruction, dispatches directly. The only
-            // region root that reaches this arm is a negated literal: every
-            // other one is a chain operator.
+            // region, or any other instruction, dispatches directly.
             ref data
                 if !env.declared_integer_locals.is_empty()
                     && Self::is_declared_region_root(data)
