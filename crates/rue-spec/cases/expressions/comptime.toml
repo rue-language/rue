@@ -489,7 +489,7 @@ exit_code = 0
 [[case]]
 name = "integer_literal_at_a_float_parameter_of_a_method_with_a_comptime_parameter"
 spec = ["3.12:11", "4.14:5"]
-description = "A method or associated function with a comptime value parameter, and a method of a type-constructor struct, accept an integer literal at a float parameter (RUE-2393)"
+description = "A method or associated function with a comptime value parameter, and a method of a type-constructor struct, accept an integer literal at a float parameter; these shapes already worked, and this guards them beside the RUE-2393 fix"
 source = """
 struct S {
     v: i32,
@@ -521,6 +521,31 @@ expected_stdout = """
 3.0
 """
 exit_code = 0
+
+[[case]]
+name = "negated_zero_literal_at_a_float_comptime_parameter_keeps_its_sign"
+spec = ["3.12:11", "3.12:24", "4.14:5"]
+description = "`-0` at a float type is -0.0 as a comptime argument and in a comptime block, the value run time gives, so a comptime parameter has one value in and out of `comptime` (RUE-2393, RUE-2402)"
+source = """
+fn f(comptime v: f64) -> f64 {
+    let c: f64 = comptime { 1.0 / v };
+    let r: f64 = 1.0 / v;
+    @dbg(c);
+    @dbg(r);
+    0.0
+}
+fn main() -> i32 {
+    f(-0);
+    f(0);
+    let a: f64 = -0;
+    let b: f64 = comptime { -0 };
+    @dbg(1.0 / a);
+    @dbg(1.0 / b);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "-inf\n-inf\ninf\ninf\n-inf\n-inf\n"
 
 [[case]]
 name = "typed_integer_at_a_float_parameter_of_a_comptime_function_rejected"

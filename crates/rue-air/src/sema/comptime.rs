@@ -3377,14 +3377,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     // float is expected it becomes the float nearest to its
                     // exact integer value, as the bare literal does above
                     // (spec 3.12:11): `f(-2)` at a `comptime v: f32` binds
-                    // `-2.0`. The integer value, not the spelling, gives the
-                    // text, so `-0` is `0.0` as `let x: f32 = -0;` is.
+                    // `-2.0`. The sign stays on the float, so `-0` is `-0.0`,
+                    // as run time negates the converted literal (3.12:24).
                     if let Some(ty) = self
                         .host
                         .const_expr_type(&self.program_key(), env, inst_ref)
                         && self.host.type_float_width(&ty).is_some()
                     {
-                        let text = (-(magnitude as i128)).to_string();
+                        let text = format!("-{magnitude}");
                         return match host_value!(self.host.float_value_from_text(&text, Some(ty))) {
                             Some(value) => ComptimeOutcome::Known(value),
                             None => ComptimeOutcome::RuntimeDependent,
