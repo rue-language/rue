@@ -3262,6 +3262,20 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     .host
                     .const_expr_type(&self.program_key(), env, inst_ref);
                 if let Some(ty) = &ty {
+                    // An integer literal is admitted where a float is
+                    // expected (spec 3.12:11, ADR-0065 §3): it becomes the
+                    // float nearest to it, as `let x: f32 = 3;` does at run
+                    // time. The value keeps the literal's decimal text, which
+                    // every float consumer reads at its own width.
+                    if self.host.type_float_width(ty).is_some() {
+                        return match host_value!(
+                            self.host
+                                .float_value_from_text(&v.to_string(), Some(ty.clone()))
+                        ) {
+                            Some(value) => ComptimeOutcome::Known(value),
+                            None => ComptimeOutcome::RuntimeDependent,
+                        };
+                    }
                     if !self
                         .host
                         .type_integer_semantics(ty)

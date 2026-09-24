@@ -44,8 +44,25 @@ use crate::types::Type;
 /// may legitimately be `inf` or `NaN`, so the two read the same spelling with
 /// different parsers.
 pub(crate) enum FloatConstSource<'a> {
-    Literal { spelling: &'a str, negated: bool },
-    ComputedValue { spelling: &'a str },
+    Literal {
+        spelling: &'a str,
+        negated: bool,
+    },
+    ComputedValue {
+        spelling: &'a str,
+    },
+    /// A `comptime {}` block's float result. The ordinary comptime domain
+    /// keeps floats as untyped text, so the result's spelling is the only
+    /// witness of where it came from. An operation renders its result at the
+    /// width it computed at, where it parses back exactly, or as `inf`,
+    /// `-inf` or `NaN`, the only spellings without a digit. A spelling with a
+    /// digit that does not name a finite value at the target width is
+    /// therefore a source literal passed through unchanged (`comptime { 1e39
+    /// }` at `f32`), held to the literal rule of spec 3.12:10 as the same
+    /// literal written directly is.
+    ComptimeResult {
+        spelling: &'a str,
+    },
 }
 
 /// Where a string value came from when it is materialized into AIR.
@@ -194,6 +211,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 },
             ),
             FloatConstSource::ComputedValue { spelling } => (
+                crate::float_value_bits(spelling, ty),
+                format!("{type_name} value"),
+                spelling.to_owned(),
+            ),
+            FloatConstSource::ComptimeResult { spelling }
+                if spelling.bytes().any(|byte| byte.is_ascii_digit()) =>
+            {
+                (
+                    crate::finite_float_literal_bits(spelling, ty),
+                    format!("finite {type_name} literal"),
+                    spelling.to_owned(),
+                )
+            }
+            FloatConstSource::ComptimeResult { spelling } => (
                 crate::float_value_bits(spelling, ty),
                 format!("{type_name} value"),
                 spelling.to_owned(),
