@@ -3746,9 +3746,10 @@ writes, since the compiler rejects a `break` outside a loop). -/
 outer affine binding and completes, so the back edge leaves it `MovedOut`, the
 head is `MovedOut`, and the body's `@drop` is refused at the head — the
 iteration finds no head. The machine drops it on the first turn and meets
-`⊘` on the second. -/
+`⊘` on the second. The loop is the `let`'s whole body: it has no `break`, so it
+is `never`-typed and nothing may follow it (RUE-2376). -/
 def loopMovedPrevIteration : Expr :=
-  letIn false (resA (lit 1)) (seq (loop (drop (.var 0))) (lit 0))
+  letIn false (resA (lit 1)) (loop (drop (.var 0)))
 
 example : checkProgram (prog tI64 loopMovedPrevIteration) = false := by rfl
 example : run demoOps (prog tI64 loopMovedPrevIteration) demoFuel = .stuck .useAfterMove := by
