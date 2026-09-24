@@ -71,6 +71,31 @@ pub(crate) enum FloatConstSource<'a> {
     },
 }
 
+/// The bit pattern of a float literal at `ty` (`f32` or `f64`), or the
+/// spec 3.12:10 rejection when its value rounds to an infinity there: E0206
+/// "expected finite f32 literal, found 1e39". `found` is the literal as the
+/// diagnostic names it; the sign lives in `text` only when `negated` is set.
+///
+/// This is the one rule every path that gives a float literal its type
+/// meets: the body checker's literal and `comptime {}` result, a durable
+/// constant's structural child, and the comptime engine's literal in a typed
+/// result position (a slot, a `let` annotation, a call argument or a call's
+/// result).
+pub fn finite_float_literal(
+    text: &str,
+    ty: Type,
+    negated: bool,
+    found: impl FnOnce() -> String,
+) -> Result<u64, ErrorKind> {
+    crate::finite_float_literal_bits_with_sign(text, ty, negated).ok_or_else(|| {
+        let type_name = if ty == Type::F32 { "f32" } else { "f64" };
+        ErrorKind::TypeMismatch {
+            expected: format!("finite {type_name} literal"),
+            found: found(),
+        }
+    })
+}
+
 /// A comptime float spelling for a diagnostic. A literal's comptime value
 /// is its canonical `<digits>e<exponent>` text (`34028236e31`), which is not
 /// what the user wrote; one leading digit before the point reads as the
@@ -231,39 +256,31 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         }
-        let type_name = self.format_type_name(ty);
-        let (bits, expected, found) = match source {
-            FloatConstSource::Literal { spelling, negated } => (
-                crate::finite_float_literal_bits_with_sign(spelling, ty, negated),
-                format!("finite {type_name} literal"),
-                if negated {
-                    format!("-{spelling}")
-                } else {
-                    spelling.to_owned()
-                },
-            ),
-            FloatConstSource::ComputedValue { spelling } => (
-                crate::float_value_bits(spelling, ty),
-                format!("{type_name} value"),
-                spelling.to_owned(),
-            ),
+        let computed = |spelling: &str| {
+            crate::float_value_bits(spelling, ty).ok_or_else(|| ErrorKind::TypeMismatch {
+                expected: format!("{} value", self.format_type_name(ty)),
+                found: spelling.to_owned(),
+            })
+        };
+        let bits = match source {
+            FloatConstSource::Literal { spelling, negated } => {
+                finite_float_literal(spelling, ty, negated, || {
+                    if negated {
+                        format!("-{spelling}")
+                    } else {
+                        spelling.to_owned()
+                    }
+                })
+            }
+            FloatConstSource::ComputedValue { spelling } => computed(spelling),
             FloatConstSource::ComptimeResult { spelling }
                 if spelling.bytes().any(|byte| byte.is_ascii_digit()) =>
             {
-                (
-                    crate::finite_float_literal_bits(spelling, ty),
-                    format!("finite {type_name} literal"),
-                    scientific_float_spelling(spelling),
-                )
+                finite_float_literal(spelling, ty, false, || scientific_float_spelling(spelling))
             }
-            FloatConstSource::ComptimeResult { spelling } => (
-                crate::float_value_bits(spelling, ty),
-                format!("{type_name} value"),
-                spelling.to_owned(),
-            ),
-        };
-        let bits = bits
-            .ok_or_else(|| CompileError::new(ErrorKind::TypeMismatch { expected, found }, span))?;
+            FloatConstSource::ComptimeResult { spelling } => computed(spelling),
+        }
+        .map_err(|kind| CompileError::new(kind, span))?;
         Ok(AirInstData::Const(bits))
     }
 

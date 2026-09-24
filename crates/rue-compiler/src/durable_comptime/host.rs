@@ -295,14 +295,9 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
                 } else {
                     rue_air::Type::F64
                 };
-                if rue_air::finite_float_literal_bits(text, width).is_some() {
-                    Ok(())
-                } else {
-                    Err(reject(rue_error::ErrorKind::TypeMismatch {
-                        expected: format!("finite {} literal", durable_type_diagnostic_name(slot)),
-                        found: text.to_string(),
-                    }))
-                }
+                rue_air::finite_float_literal(text, width, false, || text.to_string())
+                    .map(|_| ())
+                    .map_err(reject)
             }
             _ => Ok(()),
         }
@@ -2058,6 +2053,27 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeCallProtocol
             .map(|parameter| DurableComptimeType(parameter.ty.clone()))
     }
 
+    /// A value parameter's type with the call's earlier type arguments
+    /// substituted, as the binding substitutes it: `comptime v: T` after
+    /// `T = f32` takes `f32`, where a float literal argument meets spec
+    /// 3.12:10 (RUE-2406).
+    fn comptime_call_parameter_type(
+        &self,
+        binding: &Self::CallBinding,
+        index: usize,
+    ) -> Option<Self::Type> {
+        let parameter = binding.parameter(index)?;
+        let type_arguments = binding
+            .type_arguments()
+            .iter()
+            .map(|(_, ty)| ty.clone())
+            .collect::<Vec<_>>();
+        Some(DurableComptimeType(substitute_durable_generics(
+            &parameter.ty,
+            &type_arguments,
+        )))
+    }
+
     fn finish_comptime_call_binding(
         &mut self,
         binding: Self::CallBinding,
@@ -2600,6 +2616,19 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
                 ty: DurableComptimeScalarPolicy::type_name(ty.as_ref()),
             },
         )
+    }
+
+    fn float_literal_not_finite(
+        &self,
+        kind: rue_error::ErrorKind,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        // At the literal's own range, as `admit_child_value` anchors a
+        // structural child, not at the declaration.
+        durable_host_failure(DurableComptimeFailure::kind_at_site(
+            &self.diagnostic_site(site),
+            kind,
+        ))
     }
 
     fn cannot_negate(

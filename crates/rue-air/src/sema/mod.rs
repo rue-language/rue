@@ -123,6 +123,8 @@ pub use provider::{
     ProviderDefinitionKind, ProviderNamespace,
 };
 pub(crate) use semantic_body_export::SemanticBodyExportHost;
+// The spec 3.12:10 float-literal rule, shared with the durable host.
+pub use analyze_ops::finite_float_literal;
 // RUE-1091 slice r4b-1 provider surface: the durable source vocabulary the
 // rue-compiler provider adapter supplies to the body identity pool, and the
 // call-resolution ProviderFacts driver that composes pool + provider answers.

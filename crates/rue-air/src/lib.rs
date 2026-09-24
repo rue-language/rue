@@ -104,6 +104,7 @@ pub use runtime_call::{
     RuntimeOperandOrigin,
 };
 pub use sema::ComptimeMethodReceiverPolicy;
+pub use sema::finite_float_literal;
 pub use sema::{
     AnalyzedBodyOwnerEvent, AnalyzedCallableKind, AnalyzedFunction, BodyAnalysisWork,
     BodyFactProvider, BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken,

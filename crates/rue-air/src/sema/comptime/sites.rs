@@ -193,6 +193,16 @@ where
     /// region is not checked. A region is the arithmetic and comparison
     /// operators connected to one root; see `ComptimeEngine::declared_region`.
     pub declared_integer_checks: AHashMap<InstRef, Option<T>>,
+    /// The declared type the next evaluated expression's value takes: a
+    /// structural literal's slot, a `let` annotation, a call argument's
+    /// parameter or a call's return type. It flows only into the result
+    /// positions of that expression (a block's tail, a branch's or match
+    /// arm's body, a nested `comptime`), where a float literal is held to
+    /// the finite-literal rule of spec 3.12:10 at its own span, as the body
+    /// type checker holds it. Unlike `expected_result`, which is only a
+    /// width hint, it is set immediately before the one evaluation it
+    /// types and taken by that evaluation, so an operand never inherits it.
+    pub literal_type: Option<T>,
 }
 
 impl<'a, V, T, N, F, I> ComptimeEnv<'a, V, T, N, F, I>
@@ -252,6 +262,7 @@ where
             expected_result: None,
             declared_integer_locals: AHashMap::new(),
             declared_integer_checks: AHashMap::new(),
+            literal_type: None,
         }
     }
 
@@ -272,6 +283,7 @@ where
             expected_result: None,
             declared_integer_locals: AHashMap::new(),
             declared_integer_checks: AHashMap::new(),
+            literal_type: None,
         }
     }
 
