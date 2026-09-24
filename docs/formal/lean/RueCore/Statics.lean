@@ -2374,9 +2374,81 @@ def Ctx.joinAll (D : Decls) : List Ctx → Option Ctx
   | [] => none
   | Γ :: Γs => Ctx.joinFold D Γ Γs
 
+/-! ### The outgoing result `Ω` (§5.3)
+
+§5.3 gives every judgment an outgoing result `Ω ::= Σ;Δ | ⊥;Δ`: an optional
+normal ownership state together with the **edge deliveries** `Δ` the
+expression's reachable diverging edges make. `Out` is that pair. `norm` is the
+normal state — `some Σ'` when evaluation can reach the next expression, `none`
+for §5.7's `⊥` — and `brk` is the part of `Δ` a later consumer reads a *state*
+from.
+
+Which deliveries `brk` carries is a choice §5.7's closing note leaves to the
+mechanization: "check each edge where it fires — so long as the sets `B` and
+`X` it computes are the ones these rules define". The fragment checks a
+`return` where it fires (`Typed.ret` carries (Fn) §5.8's residual-linear
+obligation at the edge), and §5.7 exempts a `@panic` from §5.6, so neither
+needs a consumer and neither is recorded. The deliveries that do need one are
+`⟨break, Σ⟩`, which (Loop-Break) §5.7 joins at the loop's exit; the fragment
+has no loop yet (RUE-2369), so no rule makes one and `brk` is always empty.
+It is threaded through every rule anyway, as §5.3's **Threading** paragraph
+says — a premise's deliveries are unioned into the conclusion's — so that
+adding `break` adds rules and changes none. The list is the calculus's set:
+order and repetition carry no meaning. -/
+
+/-- §5.3's outgoing result `Ω`: `norm = some Σ'` is `Σ';Δ` and `norm = none`
+is `⊥;Δ`, with `brk` the recorded deliveries `Δ` (section docstring). -/
+structure Out where
+  /-- The normal outgoing state, or `none` for §5.7's `⊥`. -/
+  norm : Option Ctx
+  /-- The `⟨break, Σ⟩` deliveries, each with the state in force at its edge. -/
+  brk : List Ctx
+
+/-- §5.3's `Ω ⊕ Δ`: add a continuing prefix's deliveries to an outcome, which
+keeps its own continuing-or-divergent shape — `(Σ';Δ') ⊕ Δ = Σ';(Δ' ∪ Δ)` and
+`(⊥;Δ') ⊕ Δ = ⊥;(Δ' ∪ Δ)`. -/
+def Out.add (Ω : Out) (Δ : List Ctx) : Out := ⟨Ω.norm, Ω.brk ++ Δ⟩
+
+/-- §5.5's branch join over `Ω` for two arms: "the normal state is `join` of
+the continuing arms' normal states (`⊥` when no arm continues)". A divergent
+arm contributes nothing, which is how (Sub-Never) §5.7 lets it sit beside a
+continuing one; `none` is a join the continuing arms disagree on. -/
+def Ctx.joinOpt (D : Decls) : Option Ctx → Option Ctx → Option (Option Ctx)
+  | none, o => some o
+  | some a, none => some (some a)
+  | some a, some b => (Ctx.join D a b).map some
+
+/-- (Match) §5.5's n-way join over `Ω`: the fold `Ctx.joinAll` over the
+normal states of the arms that **continue**, or `⊥` when none does. -/
+def Ctx.joinOpts (D : Decls) (os : List (Option Ctx)) : Option (Option Ctx) :=
+  match os.filterMap id with
+  | [] => some none
+  | Γ :: Γs => (Ctx.joinFold D Γ Γs).map some
+
 mutual
-/-- `Γ ; Σ ⊢ e ⇒ T ⊣ Σ'` (§5), over the fused context, under the program `P`
-and the enclosing function's return type `R`.
+/-- `Γ ; Σ ⊢ e ⇒ T ⊣ Ω` (§5), over the fused context, under the program `P`
+and the enclosing function's return type `R`, with §5.3's outgoing result
+`Ω` (`Out`).
+
+**Reachability is in the rules' shape**, as §5.7 says: the `-Bottom` rules
+type nothing past a diverging subexpression. `binopBot`, `floatBinopBot`,
+`indexReadBot`, `indexWriteBotRhs`, `indexWriteBotIdx`, `assignBot`,
+`matchBot`, `iteBot` and `TypedArgs.consBot` are (Strict-Bottom) §5.3 at the
+strict contexts the fragment has; `seqBot` and `letBot` are (Seq-Bottom) and
+(Let-Bottom); `letInDiv` is (Let) whose tail diverges; `retBot` is
+(Return-Bottom) §5.7; `TypedArms.armDiv` is a `match` arm that diverges. A
+rule with one operand and nothing after it (`neg`, `dbg`, `call`, …) passes
+the operand's `Ω` on unchanged, which is §5.3's threading convention and
+(Strict-Bottom) at once. (Strict-Bottom) concludes at the construct's own
+type `T_E`, so its variants carry the premises that name that type and
+nothing more.
+
+**(Sub-Never) §5.7 is folded in**, because the fragment has no `never` type:
+a rule whose conclusion §5.7 types at `never` — (Return-Value),
+(Return-Bottom), (Panic), (Seq-Bottom), (Let-Bottom), and the (Strict-Bottom)
+of a condition or a scrutinee, whose `T_E` is the arms' type — concludes at
+every type instead. (Sub-Never) leaves `Ω` untouched, so every one of them
+concludes at `⊥`.
 
 Rule names cite the calculus: `useCopy`/`useMove` are (Use-Copy)/(Use-Move)
 (§5.1) and `useDeclared` is (Use-Declared-Linear-Destructure) §5.1, the
@@ -2396,18 +2468,18 @@ check; `assign` is (Assign) with the `3.8:77` linear-overwrite premise, keyed
 on the destination's type (`overwriteOk`), on the *post-RHS* state; `seq` is (Seq) with the `3.8:64` discard check; `ite` is (If)
 with the §5.5 join; `call` is (Call) by value (§5.8); `ret` is (Return-Value)
 and `panic` is (Panic), each with (Sub-Never) folded in (§5.7, §5.8). -/
-inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop where
+inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop where
   /-- (Lit) §5.8: an integer literal at the `int(w,s)` elaboration resolved
   for it (`4.1:2`), denoting a value of that type (§6.1's `n_T` bound). -/
   | intLit {Γ w s n} :
       InBounds w s n →
-      Typed P R Γ (.intLit w s n) (.int w s) Γ
+      Typed P R Γ (.intLit w s n) (.int w s) ⟨some Γ, []⟩
   /-- (Lit) §5.8: a boolean literal. -/
   | boolLit {Γ b} :
-      Typed P R Γ (.boolLit b) .bool Γ
+      Typed P R Γ (.boolLit b) .bool ⟨some Γ, []⟩
   /-- (Lit) §5.8: the unit literal. -/
   | unitLit {Γ} :
-      Typed P R Γ .unitLit .unit Γ
+      Typed P R Γ .unitLit .unit ⟨some Γ, []⟩
   /-- (Use-Copy) §5.1: a use of a `Copy` place copies; Σ unchanged. `get`
   returning a state at all is `Owned-Base` for every proper prefix (`3.8:53`),
   since a path under a `MovedOut` prefix is absent from Σ.
@@ -2430,7 +2502,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       en.ty.atPath P.decls p.path = some T →
       T.mult P.decls = .copy →
       declaredPrefix P.decls en.ty p.path = none →
-      Typed P R Γ (.use p) T Γ
+      Typed P R Γ (.use p) T ⟨some Γ, []⟩
   /-- (Use-Move) §5.1: a use of an `Affine`/`Linear` place moves it out — at a
   projection, the **partial move** of `3.8:22`, which marks exactly `p` and
   removes every path under it while leaving `p`'s siblings alone.
@@ -2449,7 +2521,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       noDtorPrefix P.decls en.ty p.path = true →
       declaredPrefix P.decls en.ty p.path = none →
       rootIdxOnly P.decls en.ty p.path = true →
-      Typed P R Γ (.use p) T (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
+      Typed P R Γ (.use p) T ⟨some (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut))), []⟩
   /-- **(Use-Declared-Linear-Destructure) §5.1**, the declared-linear
   destructure of `3.8:33`: a use of a place whose path has a proper prefix of
   declared-`linear` struct type consumes that prefix — the **smallest**
@@ -2496,7 +2568,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       linearResidue P.decls Td πs = false →
       en.ty.atPath P.decls p.path = some T →
       noDtorPrefix P.decls en.ty p.path = true →
-      Typed P R Γ (.use p) T (Γ.set p.root (en.setSt (en.st.setAt πd .movedOut)))
+      Typed P R Γ (.use p) T ⟨some (Γ.set p.root (en.setSt (en.st.setAt πd .movedOut))), []⟩
   /-- (Arith) and (Ord) §5.8, in one rule because they differ only in the
   type they conclude at (`BinOp.resultTy`): both operands share one
   `int(w,s)`, typed left to right with Σ threaded (`4.2:1`), and the result is
@@ -2504,10 +2576,19 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   for the ordering compares (`4.3:1`). The shift operators take their amount
   at the shifted operand's own type, which is `4.3a:9` and is why they need no
   second operand type here. -/
-  | binop {Γ Γ₁ Γ₂ op e₁ e₂ w s} :
-      Typed P R Γ e₁ (.int w s) Γ₁ → Typed P R Γ₁ e₂ (.int w s) Γ₂ →
+  | binop {Γ Γ₁ Ω₂ Δ₁ op e₁ e₂ w s} :
+      Typed P R Γ e₁ (.int w s) ⟨some Γ₁, Δ₁⟩ → Typed P R Γ₁ e₂ (.int w s) Ω₂ →
       op.intAdmits = true →
-      Typed P R Γ (.binop op e₁ e₂) (op.resultTy (.int w s)) Γ₂
+      Typed P R Γ (.binop op e₁ e₂) (op.resultTy (.int w s)) (Ω₂.add Δ₁)
+  /-- (Strict-Bottom) §5.3 at `binop`'s left operand: once `e₁` diverges the
+  right operand is never reached, so it is not typed, and the form concludes
+  at `⊥` with `e₁`'s deliveries and at its own type `T_E`, (Arith)/(Ord)'s
+  `op.resultTy (int(w,s))` — not at `never`. A right operand that diverges
+  needs no rule of its own: `binop` passes `e₂`'s `Ω` on. -/
+  | binopBot {Γ Δ₁ op e₁ e₂ w s} :
+      Typed P R Γ e₁ (.int w s) ⟨none, Δ₁⟩ →
+      op.intAdmits = true →
+      Typed P R Γ (.binop op e₁ e₂) (op.resultTy (.int w s)) ⟨none, Δ₁⟩
   /-- (Float-Arith), (Float-Ord) and (Total-Cmp) §5.8, in one rule for the
   same reason `binop` fuses (Arith) and (Ord): they differ only in the type
   they conclude at (`BinOp.resultTy` — `float(w)`, `bool`, `int(32,signed)`).
@@ -2517,40 +2598,46 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   `BinOp.floatAdmits` is §5.8's "rejected by the absence of a rule" for `%`
   (`3.12:25`) and for the bitwise and shift operators, written as a side
   condition because one constructor stands for the three rule groups. -/
-  | floatBinop {Γ Γ₁ Γ₂ op e₁ e₂ w} :
-      Typed P R Γ e₁ (.float w) Γ₁ → Typed P R Γ₁ e₂ (.float w) Γ₂ →
+  | floatBinop {Γ Γ₁ Ω₂ Δ₁ op e₁ e₂ w} :
+      Typed P R Γ e₁ (.float w) ⟨some Γ₁, Δ₁⟩ → Typed P R Γ₁ e₂ (.float w) Ω₂ →
       op.floatAdmits = true →
-      Typed P R Γ (.binop op e₁ e₂) (op.resultTy (.float w)) Γ₂
+      Typed P R Γ (.binop op e₁ e₂) (op.resultTy (.float w)) (Ω₂.add Δ₁)
+  /-- (Strict-Bottom) §5.3 at a float `binop`'s left operand, exactly as
+  `binopBot` is at an integer one. -/
+  | floatBinopBot {Γ Δ₁ op e₁ e₂ w} :
+      Typed P R Γ e₁ (.float w) ⟨none, Δ₁⟩ →
+      op.floatAdmits = true →
+      Typed P R Γ (.binop op e₁ e₂) (op.resultTy (.float w)) ⟨none, Δ₁⟩
   /-- (Neg) §5.8: negation demands a **signed** operand (`4.2:6`; rejecting it
   on an unsigned type is `4.2:14`) and concludes at that type. -/
-  | neg {Γ Γ' e w} :
-      Typed P R Γ e (.int w .signed) Γ' →
-      Typed P R Γ (.unop .neg e) (.int w .signed) Γ'
+  | neg {Γ Ω e w} :
+      Typed P R Γ e (.int w .signed) Ω →
+      Typed P R Γ (.unop .neg e) (.int w .signed) Ω
   /-- (Float-Neg) §5.8: float negation applies at **every** float type, where
   (Neg) restricts the integer case to a signed one (`3.12:24`, `4.2:14`), and
   §6.4 makes it total rather than trapping on a minimum — a sign flip, on
   `-0.0` and on a NaN alike. -/
-  | floatNeg {Γ Γ' e w} :
-      Typed P R Γ e (.float w) Γ' →
-      Typed P R Γ (.unop .neg e) (.float w) Γ'
+  | floatNeg {Γ Ω e w} :
+      Typed P R Γ e (.float w) Ω →
+      Typed P R Γ (.unop .neg e) (.float w) Ω
   /-- (Not) §5.8: logical negation demands `bool` (`4.4:2`). The bitwise
   operators do not accept `bool` at all (`4.3a:18`, `4.3a:19`), which is why
   `binop` above is stated only at `int(w,s)`. -/
-  | notOp {Γ Γ' e} :
-      Typed P R Γ e .bool Γ' →
-      Typed P R Γ (.unop .not e) .bool Γ'
+  | notOp {Γ Ω e} :
+      Typed P R Γ e .bool Ω →
+      Typed P R Γ (.unop .not e) .bool Ω
   /-- (BitNot) §5.8: the bitwise complement takes any integer type
   (`4.3a:3`, `4.3a:4`) and concludes at it. -/
-  | bitnot {Γ Γ' e w s} :
-      Typed P R Γ e (.int w s) Γ' →
-      Typed P R Γ (.unop .bitnot e) (.int w s) Γ'
+  | bitnot {Γ Ω e w s} :
+      Typed P R Γ e (.int w s) Ω →
+      Typed P R Γ (.unop .bitnot e) (.int w s) Ω
   /-- (Int-Cast) §5.8 (`4.13:24`–`4.13:27`): the operand is any integer type
   and the result is the one elaboration took from the use site, which the form
   carries. Whether the value survives the conversion is dynamic (`4.13:28`,
   §6.4's own trap rule), not a typing question. -/
-  | intCast {Γ Γ' w s w' s' e} :
-      Typed P R Γ e (.int w' s') Γ' →
-      Typed P R Γ (.intCast w s e) (.int w s) Γ'
+  | intCast {Γ Ω w s w' s' e} :
+      Typed P R Γ e (.int w' s') Ω →
+      Typed P R Γ (.intCast w s e) (.int w s) Ω
   /-- (Lit) §5.8 for a float: the literal at the `float(w)` elaboration
   resolved for it (`3.12:7`), denoting a *finite* value of that type. The side
   condition is `3.12:10`, a **legality** rule — "a float literal whose value
@@ -2563,13 +2650,13 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   is exact natural arithmetic rather than anything the model decides. -/
   | floatLit {Γ w l} :
       l.RoundsFinite w →
-      Typed P R Γ (.floatLit w l) (.float w) Γ
+      Typed P R Γ (.floatLit w l) (.float w) ⟨some Γ, []⟩
   /-- (Int-To-Float) §5.8: the operand is an integer of any width and
   signedness (`3.12:16`, `4.13:139`) and the result is the `float(w)`
   elaboration took from the use site. It never traps (§6.4). -/
-  | intToFloat {Γ Γ' w w' s' e} :
-      Typed P R Γ e (.int w' s') Γ' →
-      Typed P R Γ (.fintrin (.intToFloat w) e) (.float w) Γ'
+  | intToFloat {Γ Ω w w' s' e} :
+      Typed P R Γ e (.int w' s') Ω →
+      Typed P R Γ (.fintrin (.intToFloat w) e) (.float w) Ω
   /-- (Float-To-Int), (Float-Cast) and (Float-Round) §5.8, in one rule: each
   takes one `float(w)` operand and concludes at the type the form carries
   (`FloatIntrin.resTy`). `FloatIntrin.floatSrc` carries (Float-Cast)'s
@@ -2577,35 +2664,34 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   is an integer, on its own rule above. Whether a `@float_to_int` *survives*
   is dynamic, not a typing question: `3.12:18` and §6.4's
   (D-Float-To-Int-Trap). -/
-  | floatIntrin {Γ Γ' k w e} :
-      Typed P R Γ e (.float w) Γ' → k.floatSrc w = true →
-      Typed P R Γ (.fintrin k e) (k.resTy w) Γ'
+  | floatIntrin {Γ Ω k w e} :
+      Typed P R Γ e (.float w) Ω → k.floatSrc w = true →
+      Typed P R Γ (.fintrin k e) (k.resTy w) Ω
   /-- (Panic) §5.8 with (Sub-Never) folded in (§5.7), the same fold
   `Typed.ret` makes: `@panic` is `never`-typed, so the rule concludes at an
-  arbitrary type and — since `⊥` contributes no state to a join — at an
-  arbitrary outgoing context of the same skeleton. Unlike `ret` it imposes no
+  arbitrary type, and at `⊥` with no delivery the fragment records (a
+  `⟨panic, _⟩` delivery has no consumer; §5.7 exempts it). Unlike `ret` it imposes no
   residual-linear premise: §5.7 exempts the `⊥_panic` edge from §5.6's
   scope-exit check, and §6.12's own rule runs no drop. The message is a string
   literal the form carries rather than an operand, because the fragment has no
   string type, which is also why §5.8's operand-diverging companion has no
   instance. -/
-  | panic {Γ Γ' T msg} :
-      Ctx.skel Γ' = Ctx.skel Γ →
-      Typed P R Γ (.panic msg) T Γ'
+  | panic {Γ T msg} :
+      Typed P R Γ (.panic msg) T ⟨none, []⟩
   /-- (Dbg) §5.8: the operand is a value-context use of a type `@dbg` renders
   — `int(w,s)` or `bool` in this fragment (`Ty.observable`; the compiler
   rejects an aggregate with E0702) — and the form itself is `unit`. -/
-  | dbg {Γ Γ' e T} :
-      Typed P R Γ e T Γ' → T.observable = true →
-      Typed P R Γ (.dbg e) .unit Γ'
+  | dbg {Γ Ω e T} :
+      Typed P R Γ e T Ω → T.observable = true →
+      Typed P R Γ (.dbg e) .unit Ω
   /-- (Struct-Intro) §5.8: one initializer per declared field, typed in
   declaration order at its field's type with Σ threaded left to right
   (`3.6:5`, `3.6:6`, `3.6:15`), and the result owns every field — which is why
   `class(S)` is the field join of §3. -/
-  | mkStruct {Γ Γ' s args sd} :
+  | mkStruct {Γ Ω s args sd} :
       P.decls.structs[s]? = some sd →
-      TypedArgs P R Γ args sd.fields Γ' →
-      Typed P R Γ (.mkStruct s args) (.struct s) Γ'
+      TypedArgs P R Γ args sd.fields Ω →
+      Typed P R Γ (.mkStruct s args) (.struct s) Ω
   /-- (Enum-Intro) §5.5: one payload argument per declared component of the
   variant the tag names, typed left to right at its component's type with Σ
   threaded (§6.2's order, the same `TypedArgs` (Struct-Intro) uses), and the
@@ -2614,11 +2700,11 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   `variants[k]? = some Ts` is both §5.5's `E = enum { …, Kj(T̄j), … }` premise
   and `6.3:16`'s "the variant exists" (E0420 otherwise); the argument count is
   `6.3:16`'s arity premise, carried by `TypedArgs`' own shape. -/
-  | mkEnum {Γ Γ' e k args ed Ts} :
+  | mkEnum {Γ Ω e k args ed Ts} :
       P.decls.enums[e]? = some ed →
       ed.variants[k]? = some Ts →
-      TypedArgs P R Γ args Ts Γ' →
-      Typed P R Γ (.mkEnum e k args) (.enum e) Γ'
+      TypedArgs P R Γ args Ts Ω →
+      Typed P R Γ (.mkEnum e k args) (.enum e) Ω
   /-- (Match) §5.5, the elimination form for enums.
 
   The scrutinee is typed first, at the enum type, and its Σ effect is whatever
@@ -2639,20 +2725,28 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
 
   Each arm is typed from the **same** post-scrutinee state `Σ0` under its
   payload locals (`armCtx`), all arms at one type `T` — the premise a diverging
-  arm satisfies through `Typed.ret`/`Typed.panic`, which conclude at any type
-  and any same-skeleton context, exactly as an `ite` arm does (§5.7's
-  (Sub-Never), and the `⊥` a join reads nothing from). At the arm's end the
-  payload locals leave scope under §5.6: `TypedArms` carries the same
-  residual-linear check `Typed.letIn` carries for its one binder, over the
-  `ai` entries the arm pops. The outgoing states then join n-way
-  (`Ctx.joinAll`). -/
-  | «match» {Γ Γ₀ Γ' Γs scrut arms e ed T} :
-      Typed P R Γ scrut (.enum e) Γ₀ →
+  arm satisfies through (Sub-Never), which the `⊥` rules fold in, exactly as
+  an `ite` arm does. An arm that continues leaves its payload locals' scope
+  under §5.6: `TypedArms` carries the same residual-linear check `Typed.letIn`
+  carries for its one binder, over the `ai` entries the arm pops. §5.5 joins
+  the **continuing** arms' outgoing states n-way (`Ctx.joinOpts`, the fold
+  `Ctx.joinAll` over them), and a diverging arm is "excluded from the state
+  join" and contributes only its deliveries. The delivery set is the
+  scrutinee's `Δ_0` with every arm's, continuing or not. -/
+  | «match» {Γ Γ₀ Δ₀ o os Δs scrut arms e ed T} :
+      Typed P R Γ scrut (.enum e) ⟨some Γ₀, Δ₀⟩ →
       P.decls.enums[e]? = some ed →
       arms.length = ed.variants.length →
-      TypedArms P R Γ₀ arms ed.variants T Γs →
-      Ctx.joinAll P.decls Γs = some Γ' →
-      Typed P R Γ (.«match» scrut arms) T Γ'
+      TypedArms P R Γ₀ arms ed.variants T os Δs →
+      Ctx.joinOpts P.decls os = some o →
+      Typed P R Γ (.«match» scrut arms) T ⟨o, Δs ++ Δ₀⟩
+  /-- (Strict-Bottom) §5.3 at a `match` scrutinee: a scrutinee that diverges
+  reaches no arm, so no arm is typed. `T_E` is the arms' common type, which
+  nothing then constrains, so the rule concludes at any type — the reading of
+  §5.7's (Sub-Never) the `⊥` rules share. -/
+  | matchBot {Γ Δ₀ scrut arms e T} :
+      Typed P R Γ scrut (.enum e) ⟨none, Δ₀⟩ →
+      Typed P R Γ (.«match» scrut arms) T ⟨none, Δ₀⟩
   /-- (Array-Intro) §5.8: all `n` elements share one element type `T`
   (`3.5:3`, `7.1:3`), are typed left to right with Σ threaded, and the array
   owns all of them — which is why `class([T; n])` is §3's lift of `class(T)`.
@@ -2660,9 +2754,9 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   `n = 0` is admitted: `[]` is the zero-sized `[T; 0]` and uses nothing. The
   element-type list is `List.replicate n T`, so this rule is
   (Struct-Intro)'s `TypedArgs` at a constant field list. -/
-  | mkArray {Γ Γ' T args} :
-      TypedArgs P R Γ args (List.replicate args.length T) Γ' →
-      Typed P R Γ (.mkArray T args) (.array T args.length) Γ'
+  | mkArray {Γ Ω T args} :
+      TypedArgs P R Γ args (List.replicate args.length T) Ω →
+      Typed P R Γ (.mkArray T args) (.array T args.length) Ω
   /-- The surface repeat form `[e; n]` (`7.1:36`–`7.1:39`), whose element type
   `7.1:38` restricts to `Copy` (E0905, probe `a2b`).
 
@@ -2675,9 +2769,9 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   elaboration's, and `Ty.mult P.decls T = .copy` is `7.1:38`. That the
   calculus and this rule agree is by construction and not by a theorem — it is
   named as a deviation in `../03-metatheory.md`. -/
-  | repeatArray {Γ Γ' T e n} :
-      Typed P R Γ e T Γ' → T.mult P.decls = .copy →
-      Typed P R Γ (.repeatArray T e n) (.array T n) Γ'
+  | repeatArray {Γ Ω T e n} :
+      Typed P R Γ e T Ω → T.mult P.decls = .copy →
+      Typed P R Γ (.repeatArray T e n) (.array T n) Ω
   /-- (Use-Untrackable-Dynamic-Copy) §5.1, at a read `p[e₁]π₁…[eₖ]πₖ` below one
   or more indices that are not compile-time constants: §4.2's
   `Untrackable(OrdinaryDynamic)` plan, and the *only* successful static rule
@@ -2719,8 +2813,8 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   The read copies, so the outgoing state is the indices'. Whether each index
   is *in range* is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing
   question. -/
-  | indexRead {Γ Γ₁ p idx πs Ts en u Ta T} :
-      TypedArgs P R Γ idx Ts Γ₁ → Ts.all Ty.isInt = true →
+  | indexRead {Γ Γ₁ Δ p idx πs Ts en u Ta T} :
+      TypedArgs P R Γ idx Ts ⟨some Γ₁, Δ⟩ → Ts.all Ty.isInt = true →
       idx.length = πs.length → πs ≠ [] →
       Γ₁[p.root]? = some en →
       en.st.get p.path = some u → u.fullyOwned = true →
@@ -2729,7 +2823,19 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       T.mult P.decls = .copy →
       declaredPrefix P.decls en.ty p.path = none →
       Ta.dynNoDeclared P.decls πs = true →
-      Typed P R Γ (.indexRead p idx πs) T Γ₁
+      Typed P R Γ (.indexRead p idx πs) T ⟨some Γ₁, Δ⟩
+  /-- (Strict-Bottom) §5.3 at a dynamic index: an index expression diverges,
+  so the place is never navigated and no premise about its state is read.
+  The premises left are the ones that name `T_E`, the leaf's type — the
+  index list's shape, and `Γ ⊢ p[…]… : T` read on the incoming context, whose
+  skeleton is the one every later state has. -/
+  | indexReadBot {Γ Δ p idx πs Ts en Ta T} :
+      TypedArgs P R Γ idx Ts ⟨none, Δ⟩ → Ts.all Ty.isInt = true →
+      idx.length = πs.length → πs ≠ [] →
+      Γ[p.root]? = some en →
+      en.ty.atPath P.decls p.path = some Ta →
+      Ta.atDyn P.decls πs = some T →
+      Typed P R Γ (.indexRead p idx πs) T ⟨none, Δ⟩
   /-- (Assign) §5.2 below a dynamic index, `p[e₁]π₁…[eₖ]πₖ = e` (`7.1:30`,
   `4.11:12`): an in-place mutation that modifies the array without moving it.
   The root must be a `μ = mut` binding (§5 preamble).
@@ -2774,20 +2880,38 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   destination path is *reachable* — `OwnSt.get` is `none` under a moved-out
   prefix — while every condition on the state itself is read after the operands
   have run, on `u₁`, because that is the state the write overwrites. -/
-  | indexWrite {Γ Γ₁ Γ₂ p idx πs e en₀ en₁ u₀ u₁ Ts Ta T} :
+  | indexWrite {Γ Γ₁ Γ₂ Δ₁ Δ₂ p idx πs e en₀ en₁ u₀ u₁ Ts Ta T} :
       Γ[p.root]? = some en₀ → en₀.mu = true →
       en₀.st.get p.path = some u₀ →
       en₀.ty.atPath P.decls p.path = some Ta →
       Ta.atDyn P.decls πs = some T →
       idx.length = πs.length → πs ≠ [] →
-      Typed P R Γ e T Γ₁ →
-      TypedArgs P R Γ₁ idx Ts Γ₂ → Ts.all Ty.isInt = true →
+      Typed P R Γ e T ⟨some Γ₁, Δ₁⟩ →
+      TypedArgs P R Γ₁ idx Ts ⟨some Γ₂, Δ₂⟩ → Ts.all Ty.isInt = true →
       Γ₂[p.root]? = some en₁ →
       en₁.st.get p.path = some u₁ → u₁.fullyOwned = true →
       assignArrayOk P.decls en₁.st en₁.ty p.path = true →
       T.mult P.decls ≠ .linear →
       Typed P R Γ (.indexWrite p idx πs e) .unit
-        (Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
+        ⟨some (Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned))), Δ₂ ++ Δ₁⟩
+  /-- (Strict-Bottom) §5.3 at a dynamic-index write's right-hand side, which
+  `5.2:14` evaluates first: it diverges, so neither the indices nor the
+  destination are reached. `T_E` is `unit`, and (Strict-Bottom) puts no type
+  on the hole, so nothing else is premised. -/
+  | indexWriteBotRhs {Γ Δ p idx πs e T} :
+      Typed P R Γ e T ⟨none, Δ⟩ →
+      Typed P R Γ (.indexWrite p idx πs e) .unit ⟨none, Δ⟩
+  /-- (Strict-Bottom) §5.3 at a dynamic-index write's index list: the
+  right-hand side ran and is a value in the evaluation context, so it is typed
+  at the leaf's type, and an index diverges; the destination is never reached
+  (the RHS value is the pending value `Dynamics.lean` describes, RUE-2316). -/
+  | indexWriteBotIdx {Γ Γ₁ Δ₁ Δ₂ p idx πs e en₀ Ts Ta T} :
+      Γ[p.root]? = some en₀ →
+      en₀.ty.atPath P.decls p.path = some Ta →
+      Ta.atDyn P.decls πs = some T →
+      Typed P R Γ e T ⟨some Γ₁, Δ₁⟩ →
+      TypedArgs P R Γ₁ idx Ts ⟨none, Δ₂⟩ → Ts.all Ty.isInt = true →
+      Typed P R Γ (.indexWrite p idx πs e) .unit ⟨none, Δ₂ ++ Δ₁⟩
   /-- (@Drop-Copy) §5.3 at a `Copy` place below a dynamic index,
   `@drop(p[e₁]π₁…[eₖ]πₖ)`. §5.3's rule has no index premise and its prose
   admits `@drop(a[i])` on a `Copy`-element array at a dynamic index; the
@@ -2799,9 +2923,9 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   prefix, integer indices typed left to right — and the conclusion is the
   read's outgoing context at type `unit`: a `Copy` place is moved by nothing,
   so there is no ownership effect to add. -/
-  | indexDrop {Γ Γ₁ p idx πs T} :
-      Typed P R Γ (.indexRead p idx πs) T Γ₁ →
-      Typed P R Γ (.indexDrop p idx πs) .unit Γ₁
+  | indexDrop {Γ Ω p idx πs T} :
+      Typed P R Γ (.indexRead p idx πs) T Ω →
+      Typed P R Γ (.indexDrop p idx πs) .unit Ω
   /-- (@Drop-Copy) §5.3: no drop glue, no ownership effect. §5.3 gives it
   neither of (@Drop)'s projection premises — a `Copy` place is moved by
   nothing — so only the `Ordinary` plan premise is added: §5.3 says the two
@@ -2814,7 +2938,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       en.ty.atPath P.decls p.path = some T →
       T.mult P.decls = .copy →
       declaredPrefix P.decls en.ty p.path = none →
-      Typed P R Γ (.drop p) .unit Γ
+      Typed P R Γ (.drop p) .unit ⟨some Γ, []⟩
   /-- (@Drop) §5.3: consumes the place and discharges its (affine or linear)
   obligation; the only non-move discharge of a linear obligation. At a
   projection it *is* a partial move, so it carries (Use-Move)'s `3.9:34`
@@ -2841,7 +2965,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       declaredPrefix P.decls en.ty p.path = none →
       (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) →
       rootIdxOnly P.decls en.ty p.path = true →
-      Typed P R Γ (.drop p) .unit (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
+      Typed P R Γ (.drop p) .unit ⟨some (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut))), []⟩
   /-- **(@Drop) §5.3 at a declared-linear plan**, the `@drop` half of the
   destructure. §5.3 states it in prose rather than as a fourth rule: the two
   `@drop` rules "are read the same way" as §5.1's two use rules, so
@@ -2877,16 +3001,32 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       linearResidue P.decls Td πs = false →
       en.ty.atPath P.decls p.path = some T →
       noDtorPrefix P.decls en.ty p.path = true →
-      Typed P R Γ (.drop p) .unit (Γ.set p.root (en.setSt (en.st.setAt πd .movedOut)))
+      Typed P R Γ (.drop p) .unit ⟨some (Γ.set p.root (en.setSt (en.st.setAt πd .movedOut))), []⟩
   /-- (Let) + §5.6 scope exit: the binder enters `Owned`; at the body's end
   its residual state must not be an unconsumed linear value (the leak check).
   An `Owned` affine residue is dropped by the machine (§6.7); `MovedOut` needs
-  nothing. -/
-  | letIn {Γ Γ₁ Γ₂ m e₁ e₂ T₁ T₂ en'} :
-      Typed P R Γ e₁ T₁ Γ₁ →
-      Typed P R ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂ T₂ (en' :: Γ₂) →
+  nothing. The body's deliveries keep the binder on top of the state they
+  record, which is the state in force at their edge; the conclusion is §5.3's
+  `Ω_2 ⊕ Δ_1`. -/
+  | letIn {Γ Γ₁ Γ₂ Δ₁ Δ₂ m e₁ e₂ T₁ T₂ en'} :
+      Typed P R Γ e₁ T₁ ⟨some Γ₁, Δ₁⟩ →
+      Typed P R ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂ T₂ ⟨some (en' :: Γ₂), Δ₂⟩ →
       residualLinear P.decls en'.st en'.ty = false →
-      Typed P R Γ (.letIn m e₁ e₂) T₂ Γ₂
+      Typed P R Γ (.letIn m e₁ e₂) T₂ ⟨some Γ₂, Δ₂ ++ Δ₁⟩
+  /-- (Let) §5.3 with a tail that diverges, `Ω_2 = ⊥;Δ_2`: the whole `let` is
+  divergent, `⊥;(Δ_2 ∪ Δ_1)`. No scope exit is reached on a normal path, so
+  §5.6's check has nothing to read here; a `return` in the tail discharged it
+  where it fired (`Typed.ret`). -/
+  | letInDiv {Γ Γ₁ Δ₁ Δ₂ m e₁ e₂ T₁ T₂} :
+      Typed P R Γ e₁ T₁ ⟨some Γ₁, Δ₁⟩ →
+      Typed P R ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂ T₂ ⟨none, Δ₂⟩ →
+      Typed P R Γ (.letIn m e₁ e₂) T₂ ⟨none, Δ₂ ++ Δ₁⟩
+  /-- (Let-Bottom) §5.3 with (Sub-Never) §5.7: the initializer diverges, so no
+  binding is made and the body is not typed; the form is `never`, at any
+  type. -/
+  | letBot {Γ Δ₁ m e₁ e₂ T₁ T} :
+      Typed P R Γ e₁ T₁ ⟨none, Δ₁⟩ →
+      Typed P R Γ (.letIn m e₁ e₂) T ⟨none, Δ₁⟩
   /-- (Assign) §5.2, at a place: the root must be a `μ = mut` binding (§5
   preamble), the RHS runs first, the overwrite of live linear content is
   ill-formed (`3.8:77`, checked on the **post-RHS** state — the RUE-387
@@ -2916,28 +3056,51 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   post-RHS lookup). Nothing a program can observe turns on it: only an RHS that
   reinitialises the target's own moved-out prefix could make the incoming
   lookup fail where the post-RHS one succeeds. -/
-  | assign {Γ Γ₁ p e en₀ en₁ u₀ u₁ T} :
+  | assign {Γ Γ₁ Δ p e en₀ en₁ u₀ u₁ T} :
       Γ[p.root]? = some en₀ → en₀.mu = true →
       en₀.st.get p.path = some u₀ →
       en₀.ty.atPath P.decls p.path = some T →
-      Typed P R Γ e T Γ₁ →
+      Typed P R Γ e T ⟨some Γ₁, Δ⟩ →
       Γ₁[p.root]? = some en₁ →
       en₁.st.get p.path = some u₁ →
       assignArrayOk P.decls en₁.st en₁.ty p.path = true →
       (u₁ = .movedOut ∨ T.mult P.decls ≠ .linear) →
-      Typed P R Γ (.assign p e) .unit (Γ₁.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
-  /-- (Seq): the discarded value must not carry a linear value (`3.8:64`). -/
-  | seq {Γ Γ₁ Γ₂ e₁ e₂ T₁ T₂} :
-      Typed P R Γ e₁ T₁ Γ₁ → T₁.mult P.decls ≠ .linear →
-      Typed P R Γ₁ e₂ T₂ Γ₂ →
-      Typed P R Γ (.seq e₁ e₂) T₂ Γ₂
-  /-- (If): both arms from the post-scrutinee state; outgoing state is the
-  §5.5 join. -/
-  | ite {Γ Γ₀ Γ₁ Γ₂ Γ' c e₁ e₂ T} :
-      Typed P R Γ c .bool Γ₀ →
-      Typed P R Γ₀ e₁ T Γ₁ → Typed P R Γ₀ e₂ T Γ₂ →
-      Ctx.join P.decls Γ₁ Γ₂ = some Γ' →
-      Typed P R Γ (.ite c e₁ e₂) T Γ'
+      Typed P R Γ (.assign p e) .unit
+        ⟨some (Γ₁.set p.root (en₁.setSt (en₁.st.setAt p.path .owned))), Δ⟩
+  /-- (Strict-Bottom) §5.3 at an assignment's right-hand side: it diverges, so
+  nothing is stored and no premise about the destination is read. `T_E` is
+  `unit`, and (Strict-Bottom) puts no type on the hole. -/
+  | assignBot {Γ Δ p e T} :
+      Typed P R Γ e T ⟨none, Δ⟩ →
+      Typed P R Γ (.assign p e) .unit ⟨none, Δ⟩
+  /-- (Seq): the discarded value must not carry a linear value (`3.8:64`).
+  Only the prefix must continue; the tail's `Ω_2` is the form's, with the
+  prefix's deliveries added (`Ω_2 ⊕ Δ_1`, §5.3). -/
+  | seq {Γ Γ₁ Δ₁ Ω₂ e₁ e₂ T₁ T₂} :
+      Typed P R Γ e₁ T₁ ⟨some Γ₁, Δ₁⟩ → T₁.mult P.decls ≠ .linear →
+      Typed P R Γ₁ e₂ T₂ Ω₂ →
+      Typed P R Γ (.seq e₁ e₂) T₂ (Ω₂.add Δ₁)
+  /-- (Seq-Bottom) §5.3 with (Sub-Never) §5.7: the prefix diverges, so the
+  tail is unreachable and not typed, and the form is `never`, at any type. -/
+  | seqBot {Γ Δ₁ e₁ e₂ T₁ T} :
+      Typed P R Γ e₁ T₁ ⟨none, Δ₁⟩ →
+      Typed P R Γ (.seq e₁ e₂) T ⟨none, Δ₁⟩
+  /-- (If): both arms from the post-condition state, at one type `T` (a
+  diverging arm meets it by (Sub-Never) §5.7). The outgoing state is the §5.5
+  join of the arms that **continue** (`Ctx.joinOpt`: a diverging arm is
+  excluded, `3.8:51`, and `⊥` when neither continues), and the deliveries are
+  the condition's `Δ_0` with both arms'. -/
+  | ite {Γ Γ₀ Δ₀ Ω₁ Ω₂ o c e₁ e₂ T} :
+      Typed P R Γ c .bool ⟨some Γ₀, Δ₀⟩ →
+      Typed P R Γ₀ e₁ T Ω₁ → Typed P R Γ₀ e₂ T Ω₂ →
+      Ctx.joinOpt P.decls Ω₁.norm Ω₂.norm = some o →
+      Typed P R Γ (.ite c e₁ e₂) T ⟨o, Ω₁.brk ++ Ω₂.brk ++ Δ₀⟩
+  /-- (Strict-Bottom) §5.3 at a condition: it diverges, so neither arm is
+  reached or typed. `T_E` is the arms' type, which nothing then constrains, so
+  the rule concludes at any type. -/
+  | iteBot {Γ Δ₀ c e₁ e₂ T} :
+      Typed P R Γ c .bool ⟨none, Δ₀⟩ →
+      Typed P R Γ (.ite c e₁ e₂) T ⟨none, Δ₀⟩
   /-- (Call) §5.8, by value: the callee's signature is looked up in the
   program, the arguments are checked against the parameter list in order with
   Σ threaded left to right, and the call's type is the callee's return type
@@ -2945,26 +3108,29 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   and its consistency and entry-recheck premises (§5.4), and the `Tr ≠ never`
   side condition with its (Call-Bottom) companion are not modelled: the
   fragment has no borrows and no `never` type. -/
-  | call {Γ Γ' f args fd} :
+  | call {Γ Ω f args fd} :
       P.fns[f]? = some fd →
-      TypedArgs P R Γ args (fd.params.map Param.ty) Γ' →
-      Typed P R Γ (.call f args) fd.ret Γ'
+      TypedArgs P R Γ args (fd.params.map Param.ty) Ω →
+      Typed P R Γ (.call f args) fd.ret Ω
   /-- (Return-Value) §5.7 with (Sub-Never) folded in: the operand is checked
   against the enclosing function's declared return type `R`; §5.6's `⊥_exit`
   obligation is the frame-wide residual-linear premise (no binding of the
   current frame still carries residual linear content — `3.8:62`, and (Fn) §5.8's
   second clause, which is why an early `return` past a live linear is
   rejected). The conclusion is at an arbitrary type, which is (Sub-Never)
-  §5.7 applied to `never`, and at an arbitrary outgoing context of the same
-  skeleton, which is `⊥`: §5.5's join reads no state from a diverging arm, so
-  the context may be taken to be whatever the join needs. (Return-Bottom) is
-  subsumed — a `return` whose operand itself diverges types by this rule with
-  the operand at `R`. -/
-  | ret {Γ Γ₁ Γ' e T} :
-      Typed P R Γ e R Γ₁ →
+  §5.7 applied to `never`, and at `⊥` with the operand's deliveries. The
+  `⟨ret, Σ_e⟩` delivery itself is not recorded: its one consumer, (Fn) §5.8's
+  residual check, is this rule's premise, read where the edge fires — the
+  architecture §5.7's closing note allows. -/
+  | ret {Γ Γ₁ Δ e T} :
+      Typed P R Γ e R ⟨some Γ₁, Δ⟩ →
       NoResidualLinear P.decls Γ₁ →
-      Ctx.skel Γ' = Ctx.skel Γ₁ →
-      Typed P R Γ (.ret e) T Γ'
+      Typed P R Γ (.ret e) T ⟨none, Δ⟩
+  /-- (Return-Bottom) §5.7 with (Sub-Never): the operand itself diverges, so
+  the `return` never fires, makes no delivery and reads no state. -/
+  | retBot {Γ Δ e T} :
+      Typed P R Γ e R ⟨none, Δ⟩ →
+      Typed P R Γ (.ret e) T ⟨none, Δ⟩
 
 /-- An expression list typed left to right against a list of expected types
 with Σ threaded (`Σ0 = Σ`, then `Γ;Σ_{i-1};Λ ⊢ e ⇒ Ti ⊣ Σi` for each `i`).
@@ -2972,60 +3138,83 @@ Both §5.8 forms that take one use it: (Call)'s by-value argument list and
 (Struct-Intro)'s field initializers. (Call)'s by-reference argument forms, and
 with them `Λ_call`, its consistency premise and the call-entry recheck, are
 not in the fragment. -/
-inductive TypedArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Ctx → Prop where
+inductive TypedArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Out → Prop where
   /-- The empty list leaves Σ alone (`Σ0 = Σ`, §5.8). -/
-  | nil {Γ} : TypedArgs P R Γ [] [] Γ
+  | nil {Γ} : TypedArgs P R Γ [] [] ⟨some Γ, []⟩
   /-- One member is a value-context use at its expected type (§4.2),
-  threading Σ into the rest of the list (§5.8). -/
-  | cons {Γ Γ₁ Γ₂ e es T Ts} :
-      Typed P R Γ e T Γ₁ → TypedArgs P R Γ₁ es Ts Γ₂ →
-      TypedArgs P R Γ (e :: es) (T :: Ts) Γ₂
+  threading Σ into the rest of the list (§5.8), whose outcome is the list's
+  with this member's deliveries added (§5.3's `Ω ⊕ Δ`). -/
+  | cons {Γ Γ₁ Δ₁ Ω e es T Ts} :
+      Typed P R Γ e T ⟨some Γ₁, Δ₁⟩ → TypedArgs P R Γ₁ es Ts Ω →
+      TypedArgs P R Γ (e :: es) (T :: Ts) (Ω.add Δ₁)
+  /-- (Strict-Bottom) §5.3 at a list member: it diverges, so the members after
+  it are never evaluated and not typed. The list still has one expected type
+  per member — its arity is the construct's (`4.10:3`, `3.6:5`), a fact about
+  the syntax rather than about a reachable state. -/
+  | consBot {Γ Δ e es T Ts} :
+      Typed P R Γ e T ⟨none, Δ⟩ → es.length = Ts.length →
+      TypedArgs P R Γ (e :: es) (T :: Ts) ⟨none, Δ⟩
 
 /-- (Match) §5.5's arm premises: one arm per variant, **each from the same
 post-scrutinee state `Σ0`** (a `match` is a branch, not a sequence, so Σ is not
 threaded from arm to arm) and each at the one type `T` the rule concludes at.
 
-An arm carries two premises of its own. Its body is typed under the variant's
-payload locals (`armCtx`), and at its end those locals leave scope under §5.6
-— `NoResidualLinear` over the `ai` entries the arm pops is the leak check
-`Typed.letIn` makes for its single binder, read over the whole payload
-(`6.3:17`: a `Linear` payload an arm neither moves nor consumes is a leak; an
-`Affine` one the machine drops once). The arm's contribution to the join is what
-is left after popping them. -/
+An arm that continues carries two premises of its own. Its body is typed under
+the variant's payload locals (`armCtx`), and at its end those locals leave
+scope under §5.6 — `NoResidualLinear` over the `ai` entries the arm pops is
+the leak check `Typed.letIn` makes for its single binder, read over the whole
+payload (`6.3:17`: a `Linear` payload an arm neither moves nor consumes is a
+leak; an `Affine` one the machine drops once). The arm's contribution to the
+join is what is left after popping them. An arm that diverges contributes `⊥`
+to the join (`none`), and only its deliveries. The result is one optional
+state per arm, in declaration order, and the arms' deliveries. -/
 inductive TypedArms (P : Program) (R : Ty) : Ctx → List Expr → List (List Ty) → Ty →
-    List Ctx → Prop where
+    List (Option Ctx) → List Ctx → Prop where
   /-- No arms left to type, and so no state to contribute. -/
-  | noArms {Γ₀ T} : TypedArms P R Γ₀ [] [] T []
-  /-- The arm for the next variant: its body typed under that variant's payload
-  locals, those locals discharged by §5.6 at the arm's end, and the rest of the
-  arms typed from the same `Σ0`. -/
-  | arm {Γ₀ Γb Γs e es Ts Tss T} :
-      Typed P R (armCtx Ts Γ₀) e T Γb →
+  | noArms {Γ₀ T} : TypedArms P R Γ₀ [] [] T [] []
+  /-- The arm for the next variant, continuing: its body typed under that
+  variant's payload locals, those locals discharged by §5.6 at the arm's end,
+  and the rest of the arms typed from the same `Σ0`. -/
+  | arm {Γ₀ Γb Δb os Δs e es Ts Tss T} :
+      Typed P R (armCtx Ts Γ₀) e T ⟨some Γb, Δb⟩ →
       NoResidualLinear P.decls (Γb.take Ts.length) →
-      TypedArms P R Γ₀ es Tss T Γs →
-      TypedArms P R Γ₀ (e :: es) (Ts :: Tss) T (Γb.drop Ts.length :: Γs)
+      TypedArms P R Γ₀ es Tss T os Δs →
+      TypedArms P R Γ₀ (e :: es) (Ts :: Tss) T (some (Γb.drop Ts.length) :: os) (Δb ++ Δs)
+  /-- The arm for the next variant, diverging: its body is `⊥`, so no scope
+  exit is reached on a normal path and it contributes no state to the join
+  (§5.5, `3.8:51`), only its deliveries. -/
+  | armDiv {Γ₀ Δb os Δs e es Ts Tss T} :
+      Typed P R (armCtx Ts Γ₀) e T ⟨none, Δb⟩ →
+      TypedArms P R Γ₀ es Tss T os Δs →
+      TypedArms P R Γ₀ (e :: es) (Ts :: Tss) T (none :: os) (Δb ++ Δs)
 end
 
-/-- **(Match) §5.5's premises for the arm a tag selects.** Read at the variant
-index `k`: the arm's body is typed under that variant's payload locals, its
-locals are discharged by §5.6 at the arm's end, and what it contributes to the
-n-way join is one of the states the join was taken over. This is the inversion
-`soundness` performs once (D-Match) §6.6 has read the tag (helper). -/
 theorem TypedArms.at_index {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty} :
-    ∀ {arms : List Expr} {Tss : List (List Ty)} {Γs : List Ctx},
-      TypedArms P R Γ₀ arms Tss T Γs →
+    ∀ {arms : List Expr} {Tss : List (List Ty)} {os : List (Option Ctx)} {Δs : List Ctx},
+      TypedArms P R Γ₀ arms Tss T os Δs →
       ∀ (k : Nat) {body : Expr} {Ts : List Ty}, arms[k]? = some body → Tss[k]? = some Ts →
-        ∃ Γb, Typed P R (armCtx Ts Γ₀) body T Γb ∧
-          NoResidualLinear P.decls (Γb.take Ts.length) ∧ (Γb.drop Ts.length) ∈ Γs
-  | _, _, _, .noArms, _, _, _, ha, _ => by simp at ha
-  | _, _, _, .arm hbody hres _, 0, _, _, ha, ht => by
+        ∃ ob Δb, Typed P R (armCtx Ts Γ₀) body T ⟨ob, Δb⟩ ∧
+          ∀ Γb, ob = some Γb →
+            NoResidualLinear P.decls (Γb.take Ts.length) ∧ some (Γb.drop Ts.length) ∈ os
+  | _, _, _, _, .noArms, _, _, _, ha, _ => by simp at ha
+  | _, _, _, _, .arm hbody hres _, 0, _, _, ha, ht => by
       simp only [List.getElem?_cons_zero, Option.some_inj] at ha ht
       subst ha; subst ht
-      exact ⟨_, hbody, hres, List.mem_cons_self⟩
-  | _, _, _, .arm _ _ hrest, (k + 1), _, _, ha, ht => by
+      refine ⟨_, _, hbody, fun Γb h => ?_⟩
+      cases h
+      exact ⟨hres, List.mem_cons_self⟩
+  | _, _, _, _, .armDiv hbody _, 0, _, _, ha, ht => by
+      simp only [List.getElem?_cons_zero, Option.some_inj] at ha ht
+      subst ha; subst ht
+      exact ⟨_, _, hbody, fun Γb h => by cases h⟩
+  | _, _, _, _, .arm _ _ hrest, (k + 1), _, _, ha, ht => by
       simp only [List.getElem?_cons_succ] at ha ht
-      obtain ⟨Γb, h₁, h₂, h₃⟩ := TypedArms.at_index hrest k ha ht
-      exact ⟨Γb, h₁, h₂, List.mem_cons_of_mem _ h₃⟩
+      obtain ⟨ob, Δb, h₁, h₂⟩ := TypedArms.at_index hrest k ha ht
+      exact ⟨ob, Δb, h₁, fun Γb h => ⟨(h₂ Γb h).1, List.mem_cons_of_mem _ (h₂ Γb h).2⟩⟩
+  | _, _, _, _, .armDiv _ hrest, (k + 1), _, _, ha, ht => by
+      simp only [List.getElem?_cons_succ] at ha ht
+      obtain ⟨ob, Δb, h₁, h₂⟩ := TypedArms.at_index hrest k ha ht
+      exact ⟨ob, Δb, h₁, fun Γb h => ⟨(h₂ Γb h).1, List.mem_cons_of_mem _ (h₂ Γb h).2⟩⟩
 
 /-- **Exhaustiveness gives the tag an arm** (§5.5): a `match` has exactly one
 arm per variant, so a variant index the declaration has is an index the arm list
@@ -3048,9 +3237,12 @@ exit edge discharges §5.6's obligation for every by-value parameter and every
 still-open body-local binding (`3.8:62` — a by-value parameter carrying a
 linear value must be consumed on every non-diverging path). The rule's early
 exits are covered by `Typed.ret`, which carries the same premise at the edge
-where the frame's scopes end (§5.7's `⊥_exit`). -/
+where the frame's scopes end (§5.7's `⊥_exit`). A body with no normal exit,
+`Ωf = ⊥;Δf`, owes nothing at one. `Δf` has no `⟨break, _⟩`: "a break outside
+a loop is ill-formed" (§5.7), which is (Fn)'s own premise. -/
 def WfFn (P : Program) (fd : FnDef) : Prop :=
-  ∃ Γf, Typed P fd.ret (fnCtx fd) fd.body fd.ret Γf ∧ NoResidualLinear P.decls Γf
+  ∃ Ωf, Typed P fd.ret (fnCtx fd) fd.body fd.ret Ωf ∧
+    (∀ Γf, Ωf.norm = some Γf → NoResidualLinear P.decls Γf) ∧ Ωf.brk = []
 
 /-- A well-formed program: §3's class assignment holds of every declaration and
 (Fn) §5.8 of every function. Recursion is ordinary — a body may call any
@@ -3299,169 +3491,296 @@ theorem Ctx.joinAll_wf {D : Decls} {sk : List (Ty × Bool)} {Γs : List Ctx} {Γ
       obtain ⟨hsk, hwf⟩ := hinv Γ List.mem_cons_self
       exact Ctx.joinFold_wf Γs Γ Γ' (fun Δ hΔ => hinv Δ (List.mem_cons_of_mem _ hΔ)) hsk hwf h
 
+/-- The skeleton half of §5's convention that `Γ` is fixed while `Σ` is
+threaded, read over `Ω`: a normal outgoing state, when there is one, has the
+incoming skeleton. `⊥` has no state and so nothing to preserve (helper). -/
+def Out.SkelOk (Γ : Ctx) (Ω : Out) : Prop := ∀ Γ', Ω.norm = some Γ' → Γ'.skel = Γ.skel
+
+/-- `⊥` preserves every skeleton vacuously (helper). -/
+theorem Out.skelOk_none {Γ : Ctx} {Δ : List Ctx} : Out.SkelOk Γ ⟨none, Δ⟩ :=
+  fun _ h => by cases h
+
+/-- The two-arm §5.5 join over `Ω` preserves a skeleton both continuing arms
+have (helper). -/
+theorem Ctx.joinOpt_skel {D : Decls} {a b : Option Ctx} {Γ' : Ctx} {S : List (Ty × Bool)}
+    (h : Ctx.joinOpt D a b = some (some Γ'))
+    (ha : ∀ x, a = some x → x.skel = S) (hb : ∀ x, b = some x → x.skel = S) :
+    Γ'.skel = S := by
+  cases a with
+  | none => simp only [Ctx.joinOpt, Option.some.injEq] at h; exact hb _ h
+  | some x =>
+    cases b with
+    | none =>
+        simp only [Ctx.joinOpt, Option.some.injEq] at h
+        cases h; exact ha _ rfl
+    | some y =>
+        simp only [Ctx.joinOpt] at h
+        cases hj : Ctx.join D x y with
+        | none => rw [hj] at h; cases h
+        | some z =>
+            rw [hj] at h
+            simp only [Option.map_some, Option.some.injEq] at h
+            cases h
+            exact (Ctx.join_skel hj).trans (ha _ rfl)
+
+/-- The n-way §5.5 join over `Ω` preserves the skeleton every continuing arm
+has (helper). -/
+theorem Ctx.joinOpts_skel {D : Decls} {os : List (Option Ctx)} {Γ₀ Γ' : Ctx}
+    (h : Ctx.joinOpts D os = some (some Γ')) (hs : Ctx.SameSkel Γ₀ (os.filterMap id)) :
+    Γ'.skel = Γ₀.skel := by
+  unfold Ctx.joinOpts at h
+  revert hs
+  cases hf : os.filterMap id with
+  | nil => rw [hf] at h; simp at h
+  | cons Γ₁ Γs =>
+      rw [hf] at h
+      intro hs
+      cases hj : Ctx.joinFold D Γ₁ Γs with
+      | none => simp [hj] at h
+      | some z =>
+          simp only [hj, Option.map_some, Option.some.injEq] at h
+          cases h
+          exact (Ctx.joinFold_skel Γs hj).trans hs.1
+
 /-- Every rule preserves the context skeleton: only ownership states flow.
 This is the fused context's image of §5's convention that `Γ` is fixed while
-`Σ` is threaded through the judgment. The `ret` rule's arbitrary outgoing
-context (§5.7's `⊥`) is restricted to the same skeleton for exactly this
-reason. -/
-theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ') :
-    Γ'.skel = Γ.skel := by
+`Σ` is threaded through the judgment, read over `Ω` (`Out.SkelOk`). -/
+theorem Typed.skel_preserved {P R} {Γ : Ctx} {e T} {Ω : Out} (h : Typed P R Γ e T Ω) :
+    Out.SkelOk Γ Ω := by
   induction h using Typed.rec
-    (motive_2 := fun Γ _ _ Γ' _ => Ctx.skel Γ' = Ctx.skel Γ)
-    (motive_3 := fun Γ₀ _ _ _ Γs _ => Ctx.SameSkel Γ₀ Γs) with
-  | intLit _ => rfl
-  | boolLit => rfl
-  | unitLit => rfl
-  | useCopy _ _ _ _ _ _ => rfl
-  | useMove hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
-  | useDeclared hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
-  | binop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
-  | floatBinop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
+    (motive_2 := fun Γ _ _ Ω _ => Out.SkelOk Γ Ω)
+    (motive_3 := fun Γ₀ _ _ _ os _ _ => Ctx.SameSkel Γ₀ (os.filterMap id)) with
+  | intLit _ => exact fun _ h => by cases h; rfl
+  | boolLit => exact fun _ h => by cases h; rfl
+  | unitLit => exact fun _ h => by cases h; rfl
+  | useCopy _ _ _ _ _ _ => exact fun _ h => by cases h; rfl
+  | useMove hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
+  | useDeclared hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
+  | binop _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
+  | binopBot _ _ _ => exact Out.skelOk_none
+  | floatBinop _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
+  | floatBinopBot _ _ _ => exact Out.skelOk_none
   | neg _ ih => exact ih
   | floatNeg _ ih => exact ih
   | notOp _ ih => exact ih
   | bitnot _ ih => exact ih
   | intCast _ ih => exact ih
-  | floatLit _ => rfl
+  | floatLit _ => exact fun _ h => by cases h; rfl
   | intToFloat _ ih => exact ih
   | floatIntrin _ _ ih => exact ih
-  | panic hskel => exact hskel
+  | panic => exact Out.skelOk_none
   | dbg _ _ ih => exact ih
   | mkStruct _ _ ih => exact ih
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
-  | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => exact ih
+  | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => exact fun _ h => by cases h; exact ih _ rfl
+  | indexReadBot _ _ _ _ _ _ _ _ => exact Out.skelOk_none
   | indexDrop _ ih => exact ih
   | indexWrite _ _ _ _ _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
-      exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
+      intro _ h
+      cases h; exact (skel_set_setSt hget₁ _).trans ((ih₂ _ rfl).trans (ih₁ _ rfl))
+  | indexWriteBotRhs _ _ => exact Out.skelOk_none
+  | indexWriteBotIdx _ _ _ _ _ _ _ _ => exact Out.skelOk_none
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
-      obtain ⟨Γ₁, rest, rfl, hsk⟩ := Ctx.joinAll_skel hjoin
-      exact hsk.trans (iharms.1.trans ihs)
+      intro _ h
+      cases h; exact (Ctx.joinOpts_skel hjoin iharms).trans (ihs _ rfl)
+  | matchBot _ _ => exact Out.skelOk_none
   | noArms => trivial
-  | arm _ _ _ ihbody iharms => exact ⟨skel_drop_armCtx ihbody, iharms⟩
-  | dropCopy _ _ _ _ _ _ => rfl
-  | dropRes hget _ _ _ _ _ _ _ _ => exact skel_set_setSt hget _
-  | dropDeclared hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
+  | arm _ _ _ ihbody iharms => exact ⟨skel_drop_armCtx (ihbody _ rfl), iharms⟩
+  | armDiv _ _ _ iharms => exact iharms
+  | dropCopy _ _ _ _ _ _ => exact fun _ h => by cases h; rfl
+  | dropRes hget _ _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
+  | dropDeclared hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
   | letIn _ _ _ ih₁ ih₂ =>
-      have := ih₂
+      intro _ h
+      cases h
+      have := ih₂ _ rfl
       simp [Ctx.skel, List.map_cons] at this
-      exact this.2.trans ih₁
-  | assign _ _ _ _ _ hget₁ _ _ _ ih => exact (skel_set_setSt hget₁ _).trans ih
-  | seq _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
-  | ite _ _ _ hjoin ihc ih₁ _ => exact (Ctx.join_skel hjoin).trans (ih₁.trans ihc)
+      exact this.2.trans (ih₁ _ rfl)
+  | letInDiv _ _ _ _ => exact Out.skelOk_none
+  | letBot _ _ => exact Out.skelOk_none
+  | assign _ _ _ _ _ hget₁ _ _ _ ih =>
+      intro _ h
+      cases h; exact (skel_set_setSt hget₁ _).trans (ih _ rfl)
+  | assignBot _ _ => exact Out.skelOk_none
+  | seq _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
+  | seqBot _ _ => exact Out.skelOk_none
+  | ite _ _ _ hjoin ihc ih₁ ih₂ =>
+      intro _ h
+      cases h
+      exact (Ctx.joinOpt_skel hjoin (fun x hx => (ih₁ x hx).trans (ihc _ rfl))
+        (fun x hx => (ih₂ x hx).trans (ihc _ rfl)))
+  | iteBot _ _ => exact Out.skelOk_none
   | call _ _ ih => exact ih
-  | ret _ _ hskel ih => exact hskel.trans ih
-  | nil => rfl
-  | cons _ _ ih ihs => exact ihs.trans ih
+  | ret _ _ _ => exact Out.skelOk_none
+  | retBot _ _ => exact Out.skelOk_none
+  | nil => exact fun _ h => by cases h; rfl
+  | cons _ _ ih ihs => exact fun _ h => (ihs _ h).trans (ih _ rfl)
+  | consBot _ _ _ => exact Out.skelOk_none
 
 /-- A typed expression list preserves the context skeleton too (helper). -/
-theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R Γ es Ts Γ') :
-    Γ'.skel = Γ.skel := by
+theorem TypedArgs.skel_preserved {P R} {Γ : Ctx} {es Ts} {Ω : Out} (h : TypedArgs P R Γ es Ts Ω) :
+    Out.SkelOk Γ Ω := by
   induction h using TypedArgs.rec
-    (motive_1 := fun Γ _ _ Γ' _ => Ctx.skel Γ' = Ctx.skel Γ)
-    (motive_3 := fun Γ₀ _ _ _ Γs _ => Ctx.SameSkel Γ₀ Γs) with
-  | intLit _ => rfl
-  | boolLit => rfl
-  | unitLit => rfl
-  | useCopy _ _ _ _ _ _ => rfl
-  | useMove hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
-  | useDeclared hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
-  | binop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
-  | floatBinop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
+    (motive_1 := fun Γ _ _ Ω _ => Out.SkelOk Γ Ω)
+    (motive_3 := fun Γ₀ _ _ _ os _ _ => Ctx.SameSkel Γ₀ (os.filterMap id)) with
+  | intLit _ => exact fun _ h => by cases h; rfl
+  | boolLit => exact fun _ h => by cases h; rfl
+  | unitLit => exact fun _ h => by cases h; rfl
+  | useCopy _ _ _ _ _ _ => exact fun _ h => by cases h; rfl
+  | useMove hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
+  | useDeclared hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
+  | binop _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
+  | binopBot _ _ _ => exact Out.skelOk_none
+  | floatBinop _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
+  | floatBinopBot _ _ _ => exact Out.skelOk_none
   | neg _ ih => exact ih
   | floatNeg _ ih => exact ih
   | notOp _ ih => exact ih
   | bitnot _ ih => exact ih
   | intCast _ ih => exact ih
-  | floatLit _ => rfl
+  | floatLit _ => exact fun _ h => by cases h; rfl
   | intToFloat _ ih => exact ih
   | floatIntrin _ _ ih => exact ih
-  | panic hskel => exact hskel
+  | panic => exact Out.skelOk_none
   | dbg _ _ ih => exact ih
   | mkStruct _ _ ih => exact ih
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
-  | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => exact ih
+  | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => exact fun _ h => by cases h; exact ih _ rfl
+  | indexReadBot _ _ _ _ _ _ _ _ => exact Out.skelOk_none
   | indexDrop _ ih => exact ih
   | indexWrite _ _ _ _ _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
-      exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
+      intro _ h
+      cases h; exact (skel_set_setSt hget₁ _).trans ((ih₂ _ rfl).trans (ih₁ _ rfl))
+  | indexWriteBotRhs _ _ => exact Out.skelOk_none
+  | indexWriteBotIdx _ _ _ _ _ _ _ _ => exact Out.skelOk_none
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
-      obtain ⟨Γ₁, rest, rfl, hsk⟩ := Ctx.joinAll_skel hjoin
-      exact hsk.trans (iharms.1.trans ihs)
+      intro _ h
+      cases h; exact (Ctx.joinOpts_skel hjoin iharms).trans (ihs _ rfl)
+  | matchBot _ _ => exact Out.skelOk_none
   | noArms => trivial
-  | arm _ _ _ ihbody iharms => exact ⟨skel_drop_armCtx ihbody, iharms⟩
-  | dropCopy _ _ _ _ _ _ => rfl
-  | dropRes hget _ _ _ _ _ _ _ _ => exact skel_set_setSt hget _
-  | dropDeclared hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
+  | arm _ _ _ ihbody iharms => exact ⟨skel_drop_armCtx (ihbody _ rfl), iharms⟩
+  | armDiv _ _ _ iharms => exact iharms
+  | dropCopy _ _ _ _ _ _ => exact fun _ h => by cases h; rfl
+  | dropRes hget _ _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
+  | dropDeclared hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
   | letIn _ _ _ ih₁ ih₂ =>
-      have := ih₂
+      intro _ h
+      cases h
+      have := ih₂ _ rfl
       simp [Ctx.skel, List.map_cons] at this
-      exact this.2.trans ih₁
-  | assign _ _ _ _ _ hget₁ _ _ _ ih => exact (skel_set_setSt hget₁ _).trans ih
-  | seq _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
-  | ite _ _ _ hjoin ihc ih₁ _ => exact (Ctx.join_skel hjoin).trans (ih₁.trans ihc)
+      exact this.2.trans (ih₁ _ rfl)
+  | letInDiv _ _ _ _ => exact Out.skelOk_none
+  | letBot _ _ => exact Out.skelOk_none
+  | assign _ _ _ _ _ hget₁ _ _ _ ih =>
+      intro _ h
+      cases h; exact (skel_set_setSt hget₁ _).trans (ih _ rfl)
+  | assignBot _ _ => exact Out.skelOk_none
+  | seq _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
+  | seqBot _ _ => exact Out.skelOk_none
+  | ite _ _ _ hjoin ihc ih₁ ih₂ =>
+      intro _ h
+      cases h
+      exact (Ctx.joinOpt_skel hjoin (fun x hx => (ih₁ x hx).trans (ihc _ rfl))
+        (fun x hx => (ih₂ x hx).trans (ihc _ rfl)))
+  | iteBot _ _ => exact Out.skelOk_none
   | call _ _ ih => exact ih
-  | ret _ _ hskel ih => exact hskel.trans ih
-  | nil => rfl
-  | cons _ _ ih ihs => exact ihs.trans ih
+  | ret _ _ _ => exact Out.skelOk_none
+  | retBot _ _ => exact Out.skelOk_none
+  | nil => exact fun _ h => by cases h; rfl
+  | cons _ _ ih ihs => exact fun _ h => (ihs _ h).trans (ih _ rfl)
+  | consBot _ _ _ => exact Out.skelOk_none
 
-/-- **Every arm of a `match` hands the §5.5 join a context with the skeleton the
-arm started from** (§5's convention that `Γ` is fixed): the arm's payload locals
-are popped, and the body preserved the rest. This is what lets the n-way join
-read either the accumulated state or an arm's, which is the `match` case of
-`soundness` (`Soundness.lean`) (helper). -/
-theorem TypedArms.arm_skel {P R} {Γ₀ : Ctx} {arms Tss T} {Γs : List Ctx}
-    (h : TypedArms P R Γ₀ arms Tss T Γs) : Ctx.SameSkel Γ₀ Γs := by
+/-- **Every continuing arm of a `match` hands the §5.5 join a context with the
+skeleton the arm started from** (§5's convention that `Γ` is fixed): the arm's
+payload locals are popped, and the body preserved the rest. This is what lets
+the n-way join read either the accumulated state or an arm's, which is the
+`match` case of `soundness` (`Soundness.lean`) (helper). -/
+theorem TypedArms.arm_skel {P R} {Γ₀ : Ctx} {arms Tss T} {os : List (Option Ctx)} {Δs : List Ctx}
+    (h : TypedArms P R Γ₀ arms Tss T os Δs) : Ctx.SameSkel Γ₀ (os.filterMap id) := by
   induction h using TypedArms.rec
-    (motive_1 := fun Γ _ _ Γ' _ => Ctx.skel Γ' = Ctx.skel Γ)
-    (motive_2 := fun Γ _ _ Γ' _ => Ctx.skel Γ' = Ctx.skel Γ) with
-  | intLit _ => rfl
-  | boolLit => rfl
-  | unitLit => rfl
-  | useCopy _ _ _ _ _ _ => rfl
-  | useMove hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
-  | useDeclared hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
-  | binop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
-  | floatBinop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
+    (motive_1 := fun Γ _ _ Ω _ => Out.SkelOk Γ Ω)
+    (motive_2 := fun Γ _ _ Ω _ => Out.SkelOk Γ Ω) with
+  | intLit _ => exact fun _ h => by cases h; rfl
+  | boolLit => exact fun _ h => by cases h; rfl
+  | unitLit => exact fun _ h => by cases h; rfl
+  | useCopy _ _ _ _ _ _ => exact fun _ h => by cases h; rfl
+  | useMove hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
+  | useDeclared hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
+  | binop _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
+  | binopBot _ _ _ => exact Out.skelOk_none
+  | floatBinop _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
+  | floatBinopBot _ _ _ => exact Out.skelOk_none
   | neg _ ih => exact ih
   | floatNeg _ ih => exact ih
   | notOp _ ih => exact ih
   | bitnot _ ih => exact ih
   | intCast _ ih => exact ih
-  | floatLit _ => rfl
+  | floatLit _ => exact fun _ h => by cases h; rfl
   | intToFloat _ ih => exact ih
   | floatIntrin _ _ ih => exact ih
-  | panic hskel => exact hskel
+  | panic => exact Out.skelOk_none
   | dbg _ _ ih => exact ih
   | mkStruct _ _ ih => exact ih
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
-  | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => exact ih
+  | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => exact fun _ h => by cases h; exact ih _ rfl
+  | indexReadBot _ _ _ _ _ _ _ _ => exact Out.skelOk_none
   | indexDrop _ ih => exact ih
   | indexWrite _ _ _ _ _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
-      exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
+      intro _ h
+      cases h; exact (skel_set_setSt hget₁ _).trans ((ih₂ _ rfl).trans (ih₁ _ rfl))
+  | indexWriteBotRhs _ _ => exact Out.skelOk_none
+  | indexWriteBotIdx _ _ _ _ _ _ _ _ => exact Out.skelOk_none
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
-      obtain ⟨Γ₁, rest, rfl, hsk⟩ := Ctx.joinAll_skel hjoin
-      exact hsk.trans (iharms.1.trans ihs)
+      intro _ h
+      cases h; exact (Ctx.joinOpts_skel hjoin iharms).trans (ihs _ rfl)
+  | matchBot _ _ => exact Out.skelOk_none
   | noArms => trivial
-  | arm _ _ _ ihbody iharms => exact ⟨skel_drop_armCtx ihbody, iharms⟩
-  | dropCopy _ _ _ _ _ _ => rfl
-  | dropRes hget _ _ _ _ _ _ _ _ => exact skel_set_setSt hget _
-  | dropDeclared hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
+  | arm _ _ _ ihbody iharms => exact ⟨skel_drop_armCtx (ihbody _ rfl), iharms⟩
+  | armDiv _ _ _ iharms => exact iharms
+  | dropCopy _ _ _ _ _ _ => exact fun _ h => by cases h; rfl
+  | dropRes hget _ _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
+  | dropDeclared hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
   | letIn _ _ _ ih₁ ih₂ =>
-      have := ih₂
+      intro _ h
+      cases h
+      have := ih₂ _ rfl
       simp [Ctx.skel, List.map_cons] at this
-      exact this.2.trans ih₁
-  | assign _ _ _ _ _ hget₁ _ _ _ ih => exact (skel_set_setSt hget₁ _).trans ih
-  | seq _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
-  | ite _ _ _ hjoin ihc ih₁ _ => exact (Ctx.join_skel hjoin).trans (ih₁.trans ihc)
+      exact this.2.trans (ih₁ _ rfl)
+  | letInDiv _ _ _ _ => exact Out.skelOk_none
+  | letBot _ _ => exact Out.skelOk_none
+  | assign _ _ _ _ _ hget₁ _ _ _ ih =>
+      intro _ h
+      cases h; exact (skel_set_setSt hget₁ _).trans (ih _ rfl)
+  | assignBot _ _ => exact Out.skelOk_none
+  | seq _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
+  | seqBot _ _ => exact Out.skelOk_none
+  | ite _ _ _ hjoin ihc ih₁ ih₂ =>
+      intro _ h
+      cases h
+      exact (Ctx.joinOpt_skel hjoin (fun x hx => (ih₁ x hx).trans (ihc _ rfl))
+        (fun x hx => (ih₂ x hx).trans (ihc _ rfl)))
+  | iteBot _ _ => exact Out.skelOk_none
   | call _ _ ih => exact ih
-  | ret _ _ hskel ih => exact hskel.trans ih
-  | nil => rfl
-  | cons _ _ ih ihs => exact ihs.trans ih
+  | ret _ _ _ => exact Out.skelOk_none
+  | retBot _ _ => exact Out.skelOk_none
+  | nil => exact fun _ h => by cases h; rfl
+  | cons _ _ ih ihs => exact fun _ h => (ihs _ h).trans (ih _ rfl)
+  | consBot _ _ _ => exact Out.skelOk_none
 
+/-- The skeleton of a continuing outcome, read off a derivation (helper). -/
+theorem Typed.skel_of {P R} {Γ Γ' : Ctx} {e T} {Δ : List Ctx}
+    (h : Typed P R Γ e T ⟨some Γ', Δ⟩) : Γ'.skel = Γ.skel :=
+  h.skel_preserved Γ' rfl
+
+/-- The same, for an expression list (helper). -/
+theorem TypedArgs.skel_of {P R} {Γ Γ' : Ctx} {es Ts} {Δ : List Ctx}
+    (h : TypedArgs P R Γ es Ts ⟨some Γ', Δ⟩) : Γ'.skel = Γ.skel :=
+  h.skel_preserved Γ' rfl
 
 end RueCore

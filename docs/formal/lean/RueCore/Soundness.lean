@@ -2263,6 +2263,67 @@ theorem Matches.joinAll {D : Decls} (hwf : WfDecls D) :
       | head => exact Or.inl hmi
       | tail _ hrest => exact Or.inr ⟨Γᵢ, hrest, hmi⟩
 
+/-- **(Match) §5.5's join over `Ω` holds a state for the arm that ran.** An
+arm that continued contributed its state to the list the join folds, so the
+join is a state — not `⊥` — and the fold `Ctx.joinAll` over the continuing
+arms produced it (helper). -/
+theorem Ctx.joinOpts_mem {D : Decls} {os : List (Option Ctx)} {o : Option Ctx} {Γ : Ctx}
+    (h : Ctx.joinOpts D os = some o) (hm : some Γ ∈ os) :
+    ∃ Γ', o = some Γ' ∧ Ctx.joinAll D (os.filterMap id) = some Γ' ∧ Γ ∈ os.filterMap id := by
+  have hmf : Γ ∈ os.filterMap id := List.mem_filterMap.mpr ⟨some Γ, hm, rfl⟩
+  unfold Ctx.joinOpts at h
+  revert hmf
+  cases hf : os.filterMap id with
+  | nil => intro hmf; cases hmf
+  | cons Γ₁ Γs =>
+      intro hmf
+      rw [hf] at h
+      cases hj : Ctx.joinFold D Γ₁ Γs with
+      | none => simp [hj] at h
+      | some z =>
+          simp only [hj, Option.map_some, Option.some.injEq] at h
+          exact ⟨z, h.symm, hj, hmf⟩
+
+/-- **The invariant survives (If) §5.5's join over `Ω` from the left arm**:
+when the left arm continues, the join is a state, and it is the left arm's
+state or its binary join with the right one's (helper). -/
+theorem Matches.joinOpt_left {D : Decls} (hwf : WfDecls D) {a b o : Option Ctx} {Γ₁ : Ctx}
+    (h : Ctx.joinOpt D a b = some o) (ha : a = some Γ₁) :
+    ∃ Γ', o = some Γ' ∧ ∀ ρ H, Matches D Γ₁ ρ H → Matches D Γ' ρ H := by
+  subst ha
+  cases b with
+  | none =>
+      simp only [Ctx.joinOpt, Option.some.injEq] at h
+      exact ⟨Γ₁, h.symm, fun _ _ hm => hm⟩
+  | some y =>
+      simp only [Ctx.joinOpt] at h
+      cases hj : Ctx.join D Γ₁ y with
+      | none => rw [hj] at h; cases h
+      | some z =>
+          rw [hj] at h
+          simp only [Option.map_some, Option.some.injEq] at h
+          exact ⟨z, h.symm, fun _ _ hm => Matches.join_left hwf hj hm⟩
+
+/-- The same from the right arm, which needs the two continuing arms to share
+a skeleton, as `Matches.join_right` does (helper). -/
+theorem Matches.joinOpt_right {D : Decls} (hwf : WfDecls D) {a b o : Option Ctx} {Γ₂ : Ctx}
+    (hsk : ∀ x, a = some x → x.skel = Γ₂.skel)
+    (h : Ctx.joinOpt D a b = some o) (hb : b = some Γ₂) :
+    ∃ Γ', o = some Γ' ∧ ∀ ρ H, Matches D Γ₂ ρ H → Matches D Γ' ρ H := by
+  subst hb
+  cases a with
+  | none =>
+      simp only [Ctx.joinOpt, Option.some.injEq] at h
+      exact ⟨Γ₂, h.symm, fun _ _ hm => hm⟩
+  | some x =>
+      simp only [Ctx.joinOpt] at h
+      cases hj : Ctx.join D x Γ₂ with
+      | none => rw [hj] at h; cases h
+      | some z =>
+          rw [hj] at h
+          simp only [Option.map_some, Option.some.injEq] at h
+          exact ⟨z, h.symm, fun _ _ hm => Matches.join_right hwf (hsk x rfl) hj hm⟩
+
 /-! ## Minting a callee's parameters (§6.9's (D-Call)) -/
 
 /-- Minting appends one cell per by-value argument and nothing else
@@ -2383,11 +2444,12 @@ theorem OwnSt.fullyOwned_setAt_owned : ∀ π : List Nat,
 
 /-- A typed expression list has one type per member (helper). -/
 theorem TypedArgs.length_eq {P : Program} {R : Ty} : ∀ {es : List Expr} {Ts : List Ty}
-    {Γ Γ' : Ctx}, TypedArgs P R Γ es Ts Γ' → es.length = Ts.length
+    {Γ : Ctx} {Ω : Out}, TypedArgs P R Γ es Ts Ω → es.length = Ts.length
   | [], _, _, _, h => by cases h; rfl
   | _ :: _, _, _, _, h => by
       cases h with
       | cons _ h' => simp only [List.length_cons, TypedArgs.length_eq h']
+      | consBot _ hl => simp only [List.length_cons, hl]
 
 /-- Index values typed at integer types are integers, one per value (helper). -/
 theorem Val.ints_of_hasTys {D : Decls} : ∀ {vs : List Val} {Ts : List Ty},
@@ -2469,32 +2531,57 @@ def AbortOk (D : Decls) (R : Ty) (φ : Frame) (H : Store) : EvalRes → Prop
   | .stuck _ => False
   | .outOfFuel => True
 
-/-- The promise `soundness` makes about `eval`'s result: a value of the
-expression's type with the outgoing context's invariant restored
-(preservation), or one of `AbortOk`'s outcomes — never `.stuck` (progress).
-Stating it as a predicate on the result, rather than as a disjunction of
-existentials, is what lets the operand combinators (`andThen`) be discharged
-once and reused at every form (helper). -/
-def EvalOk (D : Decls) (T R : Ty) (Γ' : Ctx) (φ : Frame) (H : Store) : EvalRes → Prop
-  | .ok H' v _ => HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+/-- The promise `soundness` makes about `eval`'s result, given the normal
+outgoing state `o` of §5.3's `Ω`: a value of the expression's type with that
+state's invariant restored (preservation), or one of `AbortOk`'s outcomes —
+never `.stuck` (progress). When `o` is `none`, §5.7's `⊥`, a value is
+**impossible**: an expression the rules type as divergent never completes
+normally. Stating it as a predicate on the result, rather than as a
+disjunction of existentials, is what lets the operand combinators (`andThen`)
+be discharged once and reused at every form (helper). -/
+def EvalOk (D : Decls) (T R : Ty) (o : Option Ctx) (φ : Frame) (H : Store) : EvalRes → Prop
+  | .ok H' v _ =>
+      match o with
+      | some Γ' => HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+      | none => False
   | .returned H' v _ => HasTy D v R ∧ Untouched φ.env H H'
   | .panic _ _ => True
   | .stuck _ => False
   | .outOfFuel => True
 
 /-- The promise for an argument list (§5.8's (Call), left to right with Σ
-threaded) (helper). -/
-def ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (Γ' : Ctx) (φ : Frame) (H : Store) :
+threaded), at the list's normal outgoing state `o` (helper). -/
+def ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx) (φ : Frame) (H : Store) :
     ArgsRes → Prop
-  | .ok H' vs _ => HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+  | .ok H' vs _ =>
+      match o with
+      | some Γ' => HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+      | none => False
   | .abort r => AbortOk D R φ H r
+
+/-- A value promised at some normal state names that state (helper). -/
+theorem EvalOk.ok_inv {D T R o φ H H' v tr} (h : EvalOk D T R o φ H (.ok H' v tr)) :
+    ∃ Γ', o = some Γ' ∧ HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H' := by
+  cases o with
+  | none => exact h.elim
+  | some Γ' => exact ⟨Γ', rfl, h⟩
+
+/-- The same, for an argument list (helper). -/
+theorem ArgsOk.ok_inv {D R Ts o φ H H' vs tr} (h : ArgsOk D R Ts o φ H (.ok H' vs tr)) :
+    ∃ Γ', o = some Γ' ∧ HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H' := by
+  cases o with
+  | none => exact h.elim
+  | some Γ' => exact ⟨Γ', rfl, h⟩
 
 /-- A promise made from a later store is a promise from an earlier one, given
 the step between them was local to the frame (helper). -/
-theorem EvalOk.mono_store {D T R Γ' φ H H₁ r} (hu : Untouched φ.env H H₁)
-    (h : EvalOk D T R Γ' φ H₁ r) : EvalOk D T R Γ' φ H r := by
+theorem EvalOk.mono_store {D T R o φ H H₁ r} (hu : Untouched φ.env H H₁)
+    (h : EvalOk D T R o φ H₁ r) : EvalOk D T R o φ H r := by
   cases r with
-  | ok H' v tr => exact ⟨h.1, h.2.1, hu.trans h.2.2⟩
+  | ok H' v tr =>
+      cases o with
+      | none => exact h.elim
+      | some Γ' => exact ⟨h.1, h.2.1, hu.trans h.2.2⟩
   | returned H' v tr => exact ⟨h.1, hu.trans h.2⟩
   | panic k tr => trivial
   | stuck w => exact h.elim
@@ -2512,9 +2599,9 @@ theorem AbortOk.mono_store {D R φ H H₁ r} (hu : Untouched φ.env H H₁)
 
 /-- Prefixing a trace changes no promise: the trace is an observation, not a
 state (helper). -/
-theorem EvalOk.withTrace {D T R Γ' φ H r} (h : EvalOk D T R Γ' φ H r) (tr : List Event) :
-    EvalOk D T R Γ' φ H (r.withTrace tr) := by
-  cases r <;> simp_all [EvalRes.withTrace, EvalOk]
+theorem EvalOk.withTrace {D T R o φ H r} (h : EvalOk D T R o φ H r) (tr : List Event) :
+    EvalOk D T R o φ H (r.withTrace tr) := by
+  cases r <;> cases o <;> simp_all [EvalRes.withTrace, EvalOk]
 
 /-- The same, for a result that is not a value (helper). -/
 theorem AbortOk.withTrace {D R φ H r} (h : AbortOk D R φ H r) (tr : List Event) :
@@ -2522,14 +2609,14 @@ theorem AbortOk.withTrace {D R φ H r} (h : AbortOk D R φ H r) (tr : List Event
   cases r <;> simp_all [EvalRes.withTrace, AbortOk]
 
 /-- A result that is not a value satisfies the full promise, whatever type and
-outgoing context the form claims — the promise is only about values there
+outgoing state the form claims — the promise is only about values there
 (helper). -/
-theorem EvalOk.of_abort {D T R Γ' φ H r} (h : AbortOk D R φ H r) : EvalOk D T R Γ' φ H r := by
-  cases r <;> simp_all [AbortOk, EvalOk]
+theorem EvalOk.of_abort {D T R o φ H r} (h : AbortOk D R φ H r) : EvalOk D T R o φ H r := by
+  cases r <;> cases o <;> simp_all [AbortOk, EvalOk]
 
 /-- An evaluation that produced no value only ever produced an `AbortOk`
 outcome (helper). -/
-theorem EvalOk.toAbort {D T R Γ' φ H r} (h : EvalOk D T R Γ' φ H r)
+theorem EvalOk.toAbort {D T R o φ H r} (h : EvalOk D T R o φ H r)
     (hne : ∀ H' v tr, r ≠ .ok H' v tr) : AbortOk D R φ H r := by
   cases r with
   | ok H' v tr => exact absurd rfl (hne H' v tr)
@@ -2538,16 +2625,34 @@ theorem EvalOk.toAbort {D T R Γ' φ H r} (h : EvalOk D T R Γ' φ H r)
   | stuck w => exact h.elim
   | outOfFuel => trivial
 
+/-- **`⊥` is not a value.** An evaluation promised at §5.7's `⊥` produced no
+value, so it is an `AbortOk` outcome (helper). -/
+theorem EvalOk.bot_abort {D T R φ H r} (h : EvalOk D T R none φ H r) : AbortOk D R φ H r :=
+  h.toAbort (fun H' v tr hr => by subst hr; exact h)
+
+/-- §6.2's search past a divergent operand: the operand produced no value, so
+the context never runs and its outcome is the whole form's — which is what the
+`-Bottom` rules' conclusions promise, at whatever type they name (helper). -/
+theorem EvalOk.bot_andThen {D T T₀ R φ H r} {k : Store → Val → EvalRes}
+    (h : EvalOk D T₀ R none φ H r) : EvalOk D T R none φ H (r.andThen k) := by
+  have ha := h.bot_abort
+  cases r with
+  | ok H' v tr => exact ha.elim
+  | returned H' v tr => exact ha
+  | panic k tr => trivial
+  | stuck w => exact ha.elim
+  | outOfFuel => trivial
+
 /-- **§6.2's search, once and for all.** An operand that promised its own
 outcome, sequenced into a context that promises the form's outcome from the
 operand's value, promises the form's outcome. Every operand of every form is
 discharged by this lemma (helper). -/
-theorem EvalOk.bind {D : Decls} {T T₀ R : Ty} {Γ' Γ₀ : Ctx} {φ : Frame} {H : Store}
-    {r : EvalRes} {k : Store → Val → EvalRes}
-    (hr : EvalOk D T₀ R Γ₀ φ H r)
+theorem EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ : Ctx} {φ : Frame}
+    {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
+    (hr : EvalOk D T₀ R (some Γ₀) φ H r)
     (hk : ∀ H₁ v tr, r = .ok H₁ v tr → HasTy D v T₀ → FrameMatches D Γ₀ φ H₁ →
-            EvalOk D T R Γ' φ H₁ (k H₁ v)) :
-    EvalOk D T R Γ' φ H (r.andThen k) := by
+            EvalOk D T R o φ H₁ (k H₁ v)) :
+    EvalOk D T R o φ H (r.andThen k) := by
   cases r with
   | ok H₁ v tr =>
       obtain ⟨hty, hfm, hu⟩ := hr
@@ -2557,15 +2662,33 @@ theorem EvalOk.bind {D : Decls} {T T₀ R : Ty} {Γ' Γ₀ : Ctx} {φ : Frame} {
   | stuck w => exact hr.elim
   | outOfFuel => trivial
 
+/-- `bind` for an operand whose outgoing `Ω` the form passes on unchanged —
+§5.3's threading convention at a one-operand rule: if the operand continues,
+the form continues at the same state; if it is `⊥`, so is the form (helper). -/
+theorem EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {φ : Frame}
+    {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
+    (hr : EvalOk D T₀ R o φ H r)
+    (hk : ∀ H₁ v tr Γ₀, r = .ok H₁ v tr → HasTy D v T₀ → FrameMatches D Γ₀ φ H₁ →
+            EvalOk D T R (some Γ₀) φ H₁ (k H₁ v)) :
+    EvalOk D T R o φ H (r.andThen k) := by
+  cases o with
+  | none => exact hr.bot_andThen
+  | some Γ₀ => exact EvalOk.bind hr (fun H₁ v tr h hty hfm => hk H₁ v tr Γ₀ h hty hfm)
+
 /-! ## The main theorem -/
 
-/-- Weakening the outgoing context of a promise, which is what §5.5's join
-asks of an arm (helper). -/
-theorem EvalOk.weaken {D T R Γ₁ Γ' φ H r}
-    (hw : ∀ H', FrameMatches D Γ₁ φ H' → FrameMatches D Γ' φ H')
-    (h : EvalOk D T R Γ₁ φ H r) : EvalOk D T R Γ' φ H r := by
+/-- Weakening the outgoing state of a promise, which is what §5.5's join asks
+of an arm: a value's state is carried to some state of the join, and `⊥`
+carries nothing (helper). -/
+theorem EvalOk.weaken {D T R o₁ o' φ H r}
+    (hw : ∀ Γ₁ H', o₁ = some Γ₁ → FrameMatches D Γ₁ φ H' →
+      ∃ Γ', o' = some Γ' ∧ FrameMatches D Γ' φ H')
+    (h : EvalOk D T R o₁ φ H r) : EvalOk D T R o' φ H r := by
   cases r with
-  | ok H' v tr => exact ⟨h.1, hw H' h.2.1, h.2.2⟩
+  | ok H' v tr =>
+      obtain ⟨Γ₁, rfl, hty, hfm, hu⟩ := h.ok_inv
+      obtain ⟨Γ', rfl, hfm'⟩ := hw Γ₁ H' rfl hfm
+      exact ⟨hty, hfm', hu⟩
   | returned H' v tr => exact h
   | panic k tr => trivial
   | stuck w => exact h.elim
@@ -2579,22 +2702,23 @@ among them, which aborts the call before any parameter cell is minted. The
 hypothesis is `soundness` at the fuel the call has already spent one unit of,
 which is why this is a lemma rather than a case of the induction. -/
 theorem args_sound (M : FloatModel) {P : Program} {fuel : Nat}
-    (ih : ∀ {R : Ty} {Γ Γ' : Ctx} {e : Expr} {T : Ty}, Typed P R Γ e T Γ' →
+    (ih : ∀ {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty}, Typed P R Γ e T Ω →
       ∀ {φ : Frame} {H : Store}, FrameMatches P.decls Γ φ H →
-        EvalOk P.decls T R Γ' φ H (eval M.toFloatOps fuel P H φ e)) :
-    ∀ (es : List Expr) {R : Ty} {Γ Γ' : Ctx} {Ts : List Ty} {φ : Frame} {H : Store},
-      TypedArgs P R Γ es Ts Γ' → FrameMatches P.decls Γ φ H →
-        ArgsOk P.decls R Ts Γ' φ H (evalArgs (fun H' e => eval M.toFloatOps fuel P H' φ e) H es) := by
+        EvalOk P.decls T R Ω.norm φ H (eval M.toFloatOps fuel P H φ e)) :
+    ∀ (es : List Expr) {R : Ty} {Γ : Ctx} {Ω : Out} {Ts : List Ty} {φ : Frame} {H : Store},
+      TypedArgs P R Γ es Ts Ω → FrameMatches P.decls Γ φ H →
+        ArgsOk P.decls R Ts Ω.norm φ H
+          (evalArgs (fun H' e => eval M.toFloatOps fuel P H' φ e) H es) := by
   intro es
   induction es with
   | nil =>
-      intro R Γ Γ' Ts φ H hta hfm
+      intro R Γ Ω Ts φ H hta hfm
       cases hta
       exact ⟨.nil, hfm, Untouched.refl⟩
   | cons e es ihes =>
-      intro R Γ Γ' Ts φ H hta hfm
+      intro R Γ Ω Ts φ H hta hfm
       cases hta with
-      | @cons _ Γ₁ _ _ _ T Ts' h₁ h₂ =>
+      | @cons _ Γ₁ Δ₁ Ω' _ _ T Ts' h₁ h₂ =>
         have k₁ := ih h₁ hfm
         simp only [evalArgs]
         cases hr : eval M.toFloatOps fuel P H φ e with
@@ -2607,7 +2731,9 @@ theorem args_sound (M : FloatModel) {P : Program} {fuel : Nat}
             | ok H₂ vs tr₂ =>
                 rw [hr₂] at k₂
                 dsimp only
-                obtain ⟨hvs, hfm₂, hu₂⟩ := k₂
+                obtain ⟨Γ₂, hn, hvs, hfm₂, hu₂⟩ := k₂.ok_inv
+                show ArgsOk P.decls R (T :: Ts') Ω'.norm φ H (.ok H₂ (v :: vs) (tr ++ tr₂))
+                rw [hn]
                 exact ⟨.cons hty hvs, hfm₂, hu₁.trans hu₂⟩
             | abort r =>
                 rw [hr₂] at k₂
@@ -2620,6 +2746,15 @@ theorem args_sound (M : FloatModel) {P : Program} {fuel : Nat}
         | panic pk tr => try dsimp only; trivial
         | stuck w => rw [hr] at k₁; exact k₁.elim
         | outOfFuel => try dsimp only; trivial
+      | @consBot _ Δ _ _ T Ts' h₁ _ =>
+        have k₁ := (ih h₁ hfm).bot_abort
+        simp only [evalArgs]
+        cases hr : eval M.toFloatOps fuel P H φ e with
+        | ok H₁ v tr => rw [hr] at k₁; exact k₁.elim
+        | returned H₁ v tr => rw [hr] at k₁; exact k₁
+        | panic pk tr => trivial
+        | stuck w => rw [hr] at k₁; exact k₁.elim
+        | outOfFuel => trivial
 
 /-- **Type safety for the fragment** (§7, first bullet, in
 definitional-interpreter form).
@@ -2638,18 +2773,18 @@ subexpression of the call, so recursion is what the fuel is there to bound,
 and every subexpression — a call's arguments and the callee's body alike —
 runs at one unit less. -/
 theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
-    ∀ (fuel : Nat) {R : Ty} {Γ Γ' : Ctx} {e : Expr} {T : Ty}, Typed P R Γ e T Γ' →
+    ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty}, Typed P R Γ e T Ω →
       ∀ {φ : Frame} {H : Store}, FrameMatches P.decls Γ φ H →
-        EvalOk P.decls T R Γ' φ H (eval M.toFloatOps fuel P H φ e) := by
+        EvalOk P.decls T R Ω.norm φ H (eval M.toFloatOps fuel P H φ e) := by
   intro fuel
   induction fuel with
   | zero =>
-      intro R Γ Γ' e T ht φ H hfm
+      intro R Γ Ω e T ht φ H hfm
       simp only [eval]
-      trivial
+      cases Ω.norm <;> trivial
   | succ fuel ih =>
       have hargs := args_sound M ih
-      intro R Γ Γ' e T ht φ H hfm
+      intro R Γ Ω e T ht φ H hfm
       cases ht with
       | @intLit Γ w sg n hb =>
           simp only [eval]
@@ -2726,19 +2861,27 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           rw [hev]
           exact ⟨htyv, ⟨hfm.store.set hρ ⟨cc', rfl, hmm'⟩, hfm.record⟩,
             Untouched.trans_set Untouched.refl (Or.inr (List.mem_of_getElem? hρ))⟩
-      | @binop Γ Γ₁ Γ₂ op e₁ e₂ w sg h₁ h₂ hop =>
+      | @binop Γ Γ₁ Ω₂ Δ₁ op e₁ e₂ w sg h₁ h₂ hop =>
           simp only [eval]
           refine EvalOk.bind (ih h₁ hfm) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
           obtain ⟨n₁, rfl, _⟩ := hty₁.int_inv
-          refine EvalOk.bind (ih h₂ hfm₁) ?_
-          intro H₂ v₂ tr₂ _ hty₂ hfm₂
+          refine EvalOk.bindSame (ih h₂ hfm₁) ?_
+          intro H₂ v₂ tr₂ Γ₂ _ hty₂ hfm₂
           obtain ⟨n₂, rfl, _⟩ := hty₂.int_inv
           rcases evalBinOp_res (D := P.decls) M.toFloatOps op w sg n₁ n₂ hop with
             ⟨v, hv, hty⟩ | ⟨k, hk⟩
           · rw [hv]; exact ⟨hty, hfm₂, Untouched.refl⟩
           · rw [hk]; trivial
-      | @floatBinop Γ Γ₁ Γ₂ op e₁ e₂ w h₁ h₂ hop =>
+      | @binopBot Γ Δ₁ op e₁ e₂ w sg h₁ hop =>
+          -- (Strict-Bottom) §5.3: the left operand produced no value, so the
+          -- right one never runs and its outcome is the form's.
+          simp only [eval]
+          exact (ih h₁ hfm).bot_andThen
+      | @floatBinopBot Γ Δ₁ op e₁ e₂ w h₁ hop =>
+          simp only [eval]
+          exact (ih h₁ hfm).bot_andThen
+      | @floatBinop Γ Γ₁ Ω₂ Δ₁ op e₁ e₂ w h₁ h₂ hop =>
           -- (Float-Arith)/(Float-Ord)/(Total-Cmp) §5.8 with §6.4's dynamics:
           -- the operands reduce left to right (§6.2) and the operator is
           -- total, so unlike the integer arm there is no trap branch at all
@@ -2747,52 +2890,52 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h₁ hfm) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
           obtain ⟨f₁, rfl, hw₁⟩ := hty₁.float_inv
-          refine EvalOk.bind (ih h₂ hfm₁) ?_
-          intro H₂ v₂ tr₂ _ hty₂ hfm₂
+          refine EvalOk.bindSame (ih h₂ hfm₁) ?_
+          intro H₂ v₂ tr₂ Γ₂ _ hty₂ hfm₂
           obtain ⟨f₂, rfl, hw₂⟩ := hty₂.float_inv
           obtain ⟨v, hv, hty⟩ := evalBinOpFloat_res (D := P.decls) M op w f₁ f₂ hw₁ hw₂ hop
           rw [hv]
           exact ⟨hty, hfm₂, Untouched.refl⟩
-      | @neg Γ Γ' e w h =>
+      | @neg Γ Ω e w h =>
           simp only [eval]
-          refine EvalOk.bind (ih h hfm) ?_
-          intro H' v tr _ hty hfm'
+          refine EvalOk.bindSame (ih h hfm) ?_
+          intro H' v tr Γ' _ hty hfm'
           obtain ⟨n, rfl, _⟩ := hty.int_inv
           rcases evalUnOp_int_res (D := P.decls) .neg w .signed n (by simp) with
             ⟨v', hv, hty'⟩ | hk
           · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
           · rw [hk]; trivial
-      | @floatNeg Γ Γ' e w h =>
+      | @floatNeg Γ Ω e w h =>
           -- (Float-Neg) §5.8 with (D-Float-Neg) §6.4: total, so there is no
           -- trap branch here at all (`3.12:24`).
           simp only [eval]
-          refine EvalOk.bind (ih h hfm) ?_
-          intro H' v tr _ hty hfm'
+          refine EvalOk.bindSame (ih h hfm) ?_
+          intro H' v tr Γ' _ hty hfm'
           obtain ⟨f, rfl, hwf'⟩ := hty.float_inv
           obtain ⟨v', hv, hty'⟩ := evalUnOp_float_res (D := P.decls) w f hwf'
           rw [hv]
           exact ⟨hty', hfm', Untouched.refl⟩
-      | @notOp Γ Γ' e h =>
+      | @notOp Γ Ω e h =>
           simp only [eval]
-          refine EvalOk.bind (ih h hfm) ?_
-          intro H' v tr _ hty hfm'
+          refine EvalOk.bindSame (ih h hfm) ?_
+          intro H' v tr Γ' _ hty hfm'
           obtain ⟨b, rfl⟩ := hty.bool_inv
           obtain ⟨v', hv, hty'⟩ := evalUnOp_bool_res (D := P.decls) b
           rw [hv]
           exact ⟨hty', hfm', Untouched.refl⟩
-      | @bitnot Γ Γ' e w sg h =>
+      | @bitnot Γ Ω e w sg h =>
           simp only [eval]
-          refine EvalOk.bind (ih h hfm) ?_
-          intro H' v tr _ hty hfm'
+          refine EvalOk.bindSame (ih h hfm) ?_
+          intro H' v tr Γ' _ hty hfm'
           obtain ⟨n, rfl, _⟩ := hty.int_inv
           rcases evalUnOp_int_res (D := P.decls) .bitnot w sg n (by simp) with
             ⟨v', hv, hty'⟩ | hk
           · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
           · rw [hk]; trivial
-      | @intCast Γ Γ' w sg w' s' e h =>
+      | @intCast Γ Ω w sg w' s' e h =>
           simp only [eval]
-          refine EvalOk.bind (ih h hfm) ?_
-          intro H' v tr _ hty hfm'
+          refine EvalOk.bindSame (ih h hfm) ?_
+          intro H' v tr Γ' _ hty hfm'
           obtain ⟨n, rfl, _⟩ := hty.int_inv
           rcases evalIntCast_res (D := P.decls) w sg w' s' n with ⟨v', hv, hty'⟩ | hk
           · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
@@ -2802,35 +2945,35 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           -- `𝔽_w`, and `ofLit_wf` is the closure law that says so.
           simp only [eval]
           exact ⟨.float (M.ofLit_wf w l.sig l.negExp l.e), hfm, Untouched.refl⟩
-      | @intToFloat Γ Γ' w w' s' e h =>
+      | @intToFloat Γ Ω w w' s' e h =>
           simp only [eval]
-          refine EvalOk.bind (ih h hfm) ?_
-          intro H' v tr _ hty hfm'
+          refine EvalOk.bindSame (ih h hfm) ?_
+          intro H' v tr Γ' _ hty hfm'
           obtain ⟨n, rfl, _⟩ := hty.int_inv
           obtain ⟨v', hv, hty'⟩ := evalFintrin_int_res (D := P.decls) M w w' s' n
           rw [hv]
           exact ⟨hty', hfm', Untouched.refl⟩
-      | @floatIntrin Γ Γ' k w e h hk =>
+      | @floatIntrin Γ Ω k w e h hk =>
           simp only [eval]
-          refine EvalOk.bind (ih h hfm) ?_
-          intro H' v tr _ hty hfm'
+          refine EvalOk.bindSame (ih h hfm) ?_
+          intro H' v tr Γ' _ hty hfm'
           obtain ⟨f, rfl, hwf'⟩ := hty.float_inv
           rcases evalFintrin_float_res (D := P.decls) M k w f hwf' hk with
             ⟨v', hv, hty'⟩ | hk'
           · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
           · rw [hk']; trivial
-      | @panic Γ Γ'' T msg hskel =>
+      | @panic Γ T msg =>
           -- (D-Panic) §6.12 abandons the configuration, which is a defined
-          -- trap and so one of `EvalOk`'s permitted outcomes; the rule's
-          -- arbitrary type and outgoing context are never read.
+          -- trap and so one of `EvalOk`'s permitted outcomes, and never the
+          -- value that `⊥` rules out.
           simp only [eval]
           trivial
-      | @dbg Γ Γ' e T h hobs =>
+      | @dbg Γ Ω e T h hobs =>
           simp only [eval]
-          refine EvalOk.bind (ih h hfm) ?_
-          intro H' v tr _ hty hfm'
+          refine EvalOk.bindSame (ih h hfm) ?_
+          intro H' v tr Γ' _ hty hfm'
           exact ⟨.unit, hfm', Untouched.refl⟩
-      | @mkStruct Γ Γ' s args sd hget hta =>
+      | @mkStruct Γ Ω s args sd hget hta =>
           -- (D-Struct) §6.5 over §6.2's left-to-right search: the same
           -- argument-list lemma (Call) §5.8 uses, then the literal.
           simp only [eval]
@@ -2842,12 +2985,12 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               exact EvalOk.of_abort ka
           | ok H₁ vs tr =>
               rw [hra] at ka
-              obtain ⟨hvs, hfm₁, hu₁⟩ := ka
+              obtain ⟨Γ₁, hn, hvs, hfm₁, hu₁⟩ := ka.ok_inv
               have hlen : sd.fields.length = vs.length := hvs.length_eq.symm
               simp only [hget]
-              rw [if_pos hlen]
+              rw [if_pos hlen, hn]
               exact ⟨.struct hget hvs, hfm₁, hu₁⟩
-      | @mkEnum Γ Γ' e k args ed Ts hd hv hta =>
+      | @mkEnum Γ Ω e k args ed Ts hd hv hta =>
           -- (D-Enum-Intro) §6.6 over §6.2's left-to-right search: the same
           -- argument-list lemma (Struct-Intro) and (Call) use, then the tagged
           -- value.
@@ -2860,12 +3003,16 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               exact EvalOk.of_abort ka
           | ok H₁ vs tr =>
               rw [hra] at ka
-              obtain ⟨hvs, hfm₁, hu₁⟩ := ka
+              obtain ⟨Γ₁, hn, hvs, hfm₁, hu₁⟩ := ka.ok_inv
               have hlen : Ts.length = vs.length := hvs.length_eq.symm
               simp only [hd, hv]
-              rw [if_pos hlen]
+              rw [if_pos hlen, hn]
               exact ⟨.enum hd hv hvs, hfm₁, hu₁⟩
-      | @«match» Γ Γ₀ Γ' Γs scrut arms e ed T hscrut hd hlen harms hjoin =>
+      | @matchBot Γ Δ₀ scrut arms e T hscrut =>
+          -- (Strict-Bottom) §5.3 at the scrutinee: no tag is read, no arm runs.
+          simp only [eval]
+          exact (ih hscrut hfm).bot_andThen
+      | @«match» Γ Γ₀ Δ₀ o os Δs scrut arms e ed T hscrut hd hlen harms hjoin =>
           -- (D-Match) §6.6: the scrutinee's use, the tag switch, the payload
           -- cells bound as (D-Let) binds one, and their newest-first drop at the
           -- arm's end.
@@ -2877,7 +3024,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           subst hed
           -- Progress at a `match` is exhaustiveness: the tag has an arm.
           obtain ⟨body, harm⟩ := exhaustive_arm_exists hlen hv
-          obtain ⟨Γb, hbody, hres, hmemΓ⟩ := harms.at_index k harm hv
+          obtain ⟨ob, Δb, hbody, hbres⟩ := harms.at_index k harm hv
           have hlenvs : vs.length = Ts.length := hvs.length_eq
           have hlocs : ((mintParams H₀ vs).2.reverse).length = Ts.length := by
             rw [List.length_reverse, mintParams_locs_length]; exact hlenvs
@@ -2907,7 +3054,9 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                 scope := φ.scope ++ (mintParams H₀ vs).2 } body with
           | ok H₂ v₂ tr₂ =>
               rw [hrb] at kb
-              obtain ⟨hty₂, hfm₂, hu₂⟩ := kb
+              obtain ⟨Γb, hnb, hty₂, hfm₂, hu₂⟩ := kb.ok_inv
+              obtain ⟨hres, hmem⟩ := hbres Γb hnb
+              obtain ⟨Γ', rfl, hjall, hmemΓ⟩ := Ctx.joinOpts_mem hjoin hmem
               obtain ⟨H₃, evs, hunw, hm₃, hlen₃, hout₃⟩ :=
                 Matches.unwindPrefix hwf.decls Ts.length Γb
                   ((mintParams H₀ vs).2.reverse ++ φ.env) H₂ hfm₂.store hres
@@ -2925,7 +3074,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                 exact hu₀₂.2 ℓ hlt hnin
               simp only [EvalRes.andThen, hunw, EvalRes.withTrace]
               exact ⟨hty₂,
-                ⟨Matches.joinAll hwf.decls hjoin harms.arm_skel hmemΓ hm₃, hfm.record⟩, hu₀₃⟩
+                ⟨Matches.joinAll hwf.decls hjall harms.arm_skel hmemΓ hm₃, hfm.record⟩, hu₀₃⟩
           | returned H₂ v₂ tr₂ =>
               rw [hrb] at kb
               simp only [EvalRes.andThen]
@@ -2933,7 +3082,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           | panic pk tr₂ => simp only [EvalRes.andThen]; trivial
           | stuck w => rw [hrb] at kb; exact kb.elim
           | outOfFuel => simp only [EvalRes.andThen]; trivial
-      | @mkArray Γ Γ' T args hta =>
+      | @mkArray Γ Ω T args hta =>
           -- (D-Array) §6.5 over §6.2's left-to-right search: the same
           -- argument-list lemma (Struct-Intro) uses, then the literal. There
           -- is no declaration and so no arity premise: the value's length
@@ -2947,17 +3096,32 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               exact EvalOk.of_abort ka
           | ok H₁ vs tr =>
               rw [hra] at ka
-              obtain ⟨hvs, hfm₁, hu₁⟩ := ka
+              obtain ⟨Γ₁, hn, hvs, hfm₁, hu₁⟩ := ka.ok_inv
+              rw [hn]
               exact ⟨.array hvs, hfm₁, hu₁⟩
-      | @repeatArray Γ Γ' T e n h hcopy =>
+      | @repeatArray Γ Ω T e n h hcopy =>
           -- `7.1:39`: the operand is evaluated **exactly once** and its result
           -- copied into each of the `n` slots, which `7.1:38`'s `Copy` premise
           -- is what makes well defined.
           simp only [eval]
-          refine EvalOk.bind (ih h hfm) ?_
-          intro H' v tr _ hty hfm'
+          refine EvalOk.bindSame (ih h hfm) ?_
+          intro H' v tr Γ' _ hty hfm'
           exact ⟨.array (HasTys.replicate hty n), hfm', Untouched.refl⟩
-      | @indexRead Γ Γ₁ p idx πs Ts en u Ta T hta hint hlen _ hget hg hfo hty hdyn _ _ _ =>
+      | @indexReadBot Γ Δ p idx πs Ts en Ta T hta _ _ _ _ _ _ =>
+          -- (Strict-Bottom) §5.3 at an index: the list aborts, and the place
+          -- is never navigated.
+          simp only [eval]
+          have ka := hargs idx hta hfm
+          cases hra : evalArgs (fun H' e => eval M.toFloatOps fuel P H' φ e) H idx with
+          | abort r =>
+              rw [hra] at ka
+              dsimp only
+              exact EvalOk.of_abort ka
+          | ok H₁ vs tr =>
+              rw [hra] at ka
+              obtain ⟨_, hn, _⟩ := ka.ok_inv
+              cases hn
+      | @indexRead Γ Γ₁ Δ p idx πs Ts en u Ta T hta hint hlen _ hget hg hfo hty hdyn _ _ _ =>
           -- (D-Index)/(D-Index-Trap) §6.5: the indices reduce first, left to
           -- right (§6.2's `v[E]`), the place is navigated, and each bound is
           -- tested at its step before the leaf is read (`7.1:10`). Out of
@@ -2997,16 +3161,37 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                 obtain ⟨v, hv, htyv⟩ := hleaf.toVal rfl
                 simp only [hdp, hrl, hv]
                 exact ⟨htyv, hfm₁, hu₁⟩
-      | @indexDrop Γ Γ₁ p idx πs T h =>
+      | @indexDrop Γ Ω p idx πs T h =>
           -- §6.11's `@drop` at a `Copy` place below a dynamic index is the
           -- read with its value discarded: the read's own case gives the
           -- indices, the navigation and the bounds trap, and a `Copy` leaf
           -- owes nothing, so the value is `()` on the read's store.
           simp only [eval]
-          refine EvalOk.bind (ih h hfm) ?_
-          intro H' v tr _ _ hfm'
+          refine EvalOk.bindSame (ih h hfm) ?_
+          intro H' v tr Γ' _ _ hfm'
           exact ⟨.unit, hfm', Untouched.refl⟩
-      | @indexWrite Γ Γ₁ Γ₂ p idx πs e en₀ en₁ u₀ u₁ Ts Ta T hget₀ hmut hg₀ hty₀ hdyn hlen _
+      | @indexWriteBotRhs Γ Δ p idx πs e T h₁ =>
+          -- (Strict-Bottom) §5.3 at the right-hand side, which `5.2:14` runs
+          -- first: nothing after it runs.
+          simp only [eval]
+          exact (ih h₁ hfm).bot_andThen
+      | @indexWriteBotIdx Γ Γ₁ Δ₁ Δ₂ p idx πs e en₀ Ts Ta T _ _ _ h₁ hta _ =>
+          -- (Strict-Bottom) §5.3 at an index, after the right-hand side ran:
+          -- the list aborts and the destination is never reached.
+          simp only [eval]
+          refine EvalOk.bind (ih h₁ hfm) ?_
+          intro H₁ v tr₁ _ _ hfm₁
+          have ka := hargs idx hta hfm₁
+          cases hra : evalArgs (fun H' e' => eval M.toFloatOps fuel P H' φ e') H₁ idx with
+          | abort r =>
+              rw [hra] at ka
+              dsimp only
+              exact EvalOk.of_abort ka
+          | ok H₂ vs tr =>
+              rw [hra] at ka
+              obtain ⟨_, hn, _⟩ := ka.ok_inv
+              cases hn
+      | @indexWrite Γ Γ₁ Γ₂ Δ₁ Δ₂ p idx πs e en₀ en₁ u₀ u₁ Ts Ta T hget₀ hmut hg₀ hty₀ hdyn hlen _
           h₁ hta hint hget₁ hg₁ hfo _ hnlin =>
           -- (D-Assign) §6.8 below a dynamic index, in `5.2:14`'s order: the
           -- right-hand side, then the indices, then the bounds checks where
@@ -3034,8 +3219,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                 rw [hislen, hvs.length_eq, ← hta.length_eq, hlen]
               obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm₂.store.lookup hget₁
               obtain ⟨cc, rfl, hmm⟩ := hcm
-              have hskel : Ctx.skel Γ₂ = Ctx.skel Γ :=
-                (TypedArgs.skel_preserved hta).trans h₁.skel_preserved
+              have hskel : Ctx.skel Γ₂ = Ctx.skel Γ := hta.skel_of.trans h₁.skel_of
               have htyeq : en₁.ty = en₀.ty := (skel_lookup hskel hget₀ hget₁).1
               have hty₁ : en₁.ty.atPath P.decls p.path = some Ta := htyeq ▸ hty₀
               obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt p.path hmm hg₁ hty₁
@@ -3129,7 +3313,38 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           rw [hev]
           exact ⟨.unit, ⟨hfm.store.set hρ ⟨cc', rfl, hmm'⟩, hfm.record⟩,
             Untouched.trans_set Untouched.refl (Or.inr (List.mem_of_getElem? hρ))⟩
-      | @letIn Γ Γ₁ Γ₂ m e₁ e₂ T₁ T₂ en' h₁ h₂ hres =>
+      | @letBot Γ Δ₁ m e₁ e₂ T₁ T h₁ =>
+          -- (Let-Bottom) §5.3: the initializer produced no value, so no cell
+          -- is minted and the body never runs.
+          simp only [eval]
+          exact (ih h₁ hfm).bot_andThen
+      | @letInDiv Γ Γ₁ Δ₁ Δ₂ m e₁ e₂ T₁ T₂ h₁ h₂ =>
+          -- (Let) with a divergent tail: the body never completes, so the
+          -- `endscope` never runs; a `return` in it unwound past the binder.
+          simp only [eval]
+          refine EvalOk.bind (ih h₁ hfm) ?_
+          intro H₁ v₁ tr₁ _ hty₁ hfm₁
+          have hfresh : H₁.length ∉ φ.env := hfm₁.store.fresh_not_mem
+          have hfm' : FrameMatches P.decls ({ ty := T₁, mu := m, st := .owned } :: Γ₁)
+              { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] }
+              (H₁ ++ [.full (Contents.ofVal v₁)]) := by
+            constructor
+            · refine .cons ?_ ⟨Contents.ofVal v₁, rfl, ContentsMatches.ofVal hty₁⟩ hfresh
+                (hfm₁.store.append _)
+              simp
+            · simp [hfm₁.record]
+          have kb := (ih h₂ hfm').bot_abort
+          cases hrb : eval M.toFloatOps fuel P (H₁ ++ [.full (Contents.ofVal v₁)])
+              { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] } e₂ with
+          | ok H₂ v₂ tr₂ => rw [hrb] at kb; exact kb.elim
+          | returned H₂ v₂ tr₂ =>
+              rw [hrb] at kb
+              simp only [EvalRes.andThen]
+              exact ⟨kb.1, kb.2.under_binder⟩
+          | panic pk tr => simp only [EvalRes.andThen]; trivial
+          | stuck w => rw [hrb] at kb; exact kb.elim
+          | outOfFuel => simp only [EvalRes.andThen]; trivial
+      | @letIn Γ Γ₁ Γ₂ Δ₁ Δ₂ m e₁ e₂ T₁ T₂ en' h₁ h₂ hres =>
           simp only [eval]
           refine EvalOk.bind (ih h₁ hfm) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
@@ -3144,7 +3359,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
             · simp [hfm₁.record]
           have kb := ih h₂ hfm'
           have hty_en' : en'.ty = T₁ := by
-            have hskel := h₂.skel_preserved
+            have hskel := h₂.skel_of
             simp only [Ctx.skel, List.map_cons, List.cons.injEq] at hskel
             exact congrArg Prod.fst hskel.1
           cases hrb : eval M.toFloatOps fuel P (H₁ ++ [.full (Contents.ofVal v₁)])
@@ -3166,7 +3381,11 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           | panic pk tr => simp only [EvalRes.andThen]; trivial
           | stuck w => rw [hrb] at kb; exact kb.elim
           | outOfFuel => simp only [EvalRes.andThen]; trivial
-      | @assign Γ Γ₁ pl e en₀ en₁ u₀ u₁ T hget₀ hmut hg₀ hty₀ h hget₁ hg₁ _ hover =>
+      | @assignBot Γ Δ pl e T h =>
+          -- (Strict-Bottom) §5.3 at the right-hand side: nothing is stored.
+          simp only [eval]
+          exact (ih h hfm).bot_andThen
+      | @assign Γ Γ₁ Δ pl e en₀ en₁ u₀ u₁ T hget₀ hmut hg₀ hty₀ h hget₁ hg₁ _ hover =>
           -- (D-Assign) §6.8 at a sub-position: drop what is live there (a `⊘`
           -- drops nothing — reinitialization, `3.8:55`), then store.
           simp only [eval]
@@ -3174,7 +3393,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           intro H₁ v tr _ hty hfm₁
           obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm₁.store.lookup hget₁
           obtain ⟨cc, rfl, hmm⟩ := hcm
-          have hskel := h.skel_preserved
+          have hskel := h.skel_of
           have htyeq : en₁.ty = en₀.ty := (skel_lookup hskel hget₀ hget₁).1
           obtain ⟨old, hread, hold⟩ :=
             ContentsMatches.readAt pl.path hmm hg₁ (htyeq ▸ hty₀)
@@ -3193,7 +3412,11 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
             not_false_eq_true]
           exact ⟨.unit, ⟨hfm₁.store.set hρ ⟨cc', rfl, hmm'⟩, hfm₁.record⟩,
             Untouched.trans_set Untouched.refl (Or.inr hmem)⟩
-      | @seq Γ Γ₁ Γ₂ e₁ e₂ T₁ T₂ h₁ hnl h₂ =>
+      | @seqBot Γ Δ₁ e₁ e₂ T₁ T h₁ =>
+          -- (Seq-Bottom) §5.3: the prefix produced no value; the tail never runs.
+          simp only [eval]
+          exact (ih h₁ hfm).bot_andThen
+      | @seq Γ Γ₁ Δ₁ Ω₂ e₁ e₂ T₁ T₂ h₁ hnl h₂ =>
           simp only [eval]
           refine EvalOk.bind (ih h₁ hfm) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
@@ -3205,26 +3428,33 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               simp only [hevs]
               exact (ih h₂ hfm₁).withTrace _
           | copy => exact ih h₂ hfm₁
-      | @ite Γ Γ₀ Γ₁ Γ₂ Γ' c e₁ e₂ T hc h₁ h₂ hjoin =>
+      | @iteBot Γ Δ₀ c e₁ e₂ T hc =>
+          -- (Strict-Bottom) §5.3 at the condition: neither arm runs.
+          simp only [eval]
+          exact (ih hc hfm).bot_andThen
+      | @ite Γ Γ₀ Δ₀ Ω₁ Ω₂ o c e₁ e₂ T hc h₁ h₂ hjoin =>
+          -- (If) §5.5: the arm that runs promises its own normal state, which
+          -- the join over the continuing arms carries on; an arm typed `⊥`
+          -- promises no value at all, so it needs nothing from the join.
           simp only [eval]
           refine EvalOk.bind (ih hc hfm) ?_
           intro H₀ v₀ tr₀ _ hty₀ hfm₀
           obtain ⟨b, rfl⟩ := hty₀.bool_inv
-          have hskel12 : Ctx.skel Γ₁ = Ctx.skel Γ₂ :=
-            h₁.skel_preserved.trans h₂.skel_preserved.symm
+          have hsk₁ : ∀ x, Ω₁.norm = some x → x.skel = Γ₀.skel := h₁.skel_preserved
+          have hsk₂ : ∀ x, Ω₂.norm = some x → x.skel = Γ₀.skel := h₂.skel_preserved
           cases b with
           | true =>
               dsimp only
-              exact EvalOk.weaken
-                (fun H' hf => ⟨Matches.join_left hwf.decls hjoin hf.store, hf.record⟩)
-                (ih h₁ hfm₀)
+              refine EvalOk.weaken (fun Γ₁ H' hn hf => ?_) (ih h₁ hfm₀)
+              obtain ⟨Γ', ho, hm⟩ := Matches.joinOpt_left hwf.decls hjoin hn
+              exact ⟨Γ', ho, hm _ _ hf.store, hf.record⟩
           | false =>
               dsimp only
-              exact EvalOk.weaken
-                (fun H' hf =>
-                  ⟨Matches.join_right hwf.decls hskel12 hjoin hf.store, hf.record⟩)
-                (ih h₂ hfm₀)
-      | @call Γ Γ' f args fd hget hta =>
+              refine EvalOk.weaken (fun Γ₂ H' hn hf => ?_) (ih h₂ hfm₀)
+              obtain ⟨Γ', ho, hm⟩ := Matches.joinOpt_right hwf.decls
+                (fun x hx => (hsk₁ x hx).trans (hsk₂ Γ₂ hn).symm) hjoin hn
+              exact ⟨Γ', ho, hm _ _ hf.store, hf.record⟩
+      | @call Γ Ω f args fd hget hta =>
           simp only [eval]
           have ka := hargs args hta hfm
           cases hra : evalArgs (fun H' e => eval M.toFloatOps fuel P H' φ e) H args with
@@ -3234,14 +3464,15 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               exact EvalOk.of_abort ka
           | ok H₁ vs tr =>
               rw [hra] at ka
-              obtain ⟨hvs, hfm₁, hu₁⟩ := ka
+              obtain ⟨Γ', hn, hvs, hfm₁, hu₁⟩ := ka.ok_inv
+              rw [hn]
               have hlen : fd.params.length = vs.length := by
                 have hl := hvs.length_eq
                 simp only [List.length_map] at hl
                 omega
               simp only [hget]
               rw [if_pos hlen]
-              obtain ⟨Γf, hbody, hnlf⟩ := hwf.fns fd (List.mem_of_getElem? hget)
+              obtain ⟨Ωf, hbody, hnlf, _⟩ := hwf.fns fd (List.mem_of_getElem? hget)
               have hfmg : FrameMatches P.decls (fnCtx fd)
                   { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 }
                   (mintParams H₁ vs).1 :=
@@ -3265,9 +3496,9 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                   fd.body with
               | ok H₃ v tr₃ =>
                   rw [hrb] at kb
-                  obtain ⟨htyv, hfm₃, hu₃⟩ := kb
+                  obtain ⟨Γf, hnf, htyv, hfm₃, hu₃⟩ := kb.ok_inv
                   obtain ⟨H₄, evs, hrun, hlen4, hout4⟩ :=
-                    runAllScopeDrops_ok hwf.decls hfm₃ hnlf
+                    runAllScopeDrops_ok hwf.decls hfm₃ (hnlf Γf hnf)
                   simp only [EvalRes.absorb, hrun, EvalRes.withTrace]
                   have hu34 : Untouched (mintParams H₁ vs).2.reverse H₃ H₄ :=
                     ⟨by omega, fun ℓ _ hnin => hout4 ℓ hnin⟩
@@ -3284,7 +3515,12 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               | panic pk tr => simp only [EvalRes.absorb, EvalRes.withTrace]; trivial
               | stuck w => rw [hrb] at kb; exact kb.elim
               | outOfFuel => simp only [EvalRes.absorb, EvalRes.withTrace]; trivial
-      | @ret Γ Γ₁ Γ'' e T hty hnl hskel =>
+      | @retBot Γ Δ e T hty =>
+          -- (Return-Bottom) §5.7: the operand produced no value, so the
+          -- `return` never fires.
+          simp only [eval]
+          exact (ih hty hfm).bot_andThen
+      | @ret Γ Γ₁ Δ e T hty hnl =>
           simp only [eval]
           refine EvalOk.bind (ih hty hfm) ?_
           intro H₁ v tr _ htyv hfm₁
@@ -3610,7 +3846,7 @@ theorem no_masking (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Ex
 reads only the callee's signature (§5.8's (Call)) and passes no arguments
 (helper). -/
 theorem entry_typed {P : Program} {fd : FnDef} (h0 : P.fns[0]? = some fd)
-    (hp : fd.params = []) (R : Ty) : Typed P R [] (.call 0 []) fd.ret [] := by
+    (hp : fd.params = []) (R : Ty) : Typed P R [] (.call 0 []) fd.ret ⟨some [], []⟩ := by
   refine .call h0 ?_
   simp only [hp, List.map_nil]
   exact .nil
@@ -3676,7 +3912,8 @@ theorem run_safe (M : FloatModel) {P : Program} {fd : FnDef} (hwf : WfProgram P)
     (h0 : P.fns[0]? = some fd) (hp : fd.params = []) (fuel : Nat) :
     run M.toFloatOps P fuel = .outOfFuel ∨ (∃ k tr, run M.toFloatOps P fuel = .panic k tr) ∨
       (∃ H v tr, run M.toFloatOps P fuel = .ok H v tr ∧ HasTy P.decls v fd.ret) := by
-  have hok : EvalOk P.decls fd.ret fd.ret [] { env := [], scope := [] } [] (run M.toFloatOps P fuel) :=
+  have hok : EvalOk P.decls fd.ret fd.ret (some []) { env := [], scope := [] } []
+      (run M.toFloatOps P fuel) :=
     soundness M hwf fuel (entry_typed h0 hp fd.ret) frameMatches_empty
   cases hr : run M.toFloatOps P fuel with
   | ok H v tr =>
