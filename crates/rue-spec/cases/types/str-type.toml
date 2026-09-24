@@ -294,6 +294,51 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "E0495"
 
+# 3.7:44 / 5.1:8 — a `let` annotated `str` binds a first-class `str`, so its
+# initializer has to be compatible with `str`. Constraint generation leaves a
+# `str` annotation unconstrained (a literal initializer materializes as a
+# 2-word view there), and that exemption once let any value bind at its own
+# type: `let u: str = 5` compiled and `u` was an `i32` (RUE-2388).
+[[case]]
+name = "str_let_annotation_rejects_unrelated_type_{kind}"
+spec = ["3.7:44", "5.1:8"]
+description = "A let annotated str rejects an initializer of an unrelated type"
+source = "{source}"
+compile_fail = true
+error_contains = "E0206"
+params = [
+  { kind = "integer", source = "fn main() -> i32 {\n    let u: str = 5;\n    0\n}" },
+  { kind = "integer_used", source = "fn main() -> i32 {\n    let u: str = 5;\n    @dbg(u);\n    0\n}" },
+  { kind = "typed_integer", source = "fn main() -> i32 {\n    let n: u8 = 3;\n    let u: str = n;\n    0\n}" },
+  { kind = "float", source = "fn main() -> i32 {\n    let u: str = 1.5;\n    0\n}" },
+  { kind = "bool", source = "fn main() -> i32 {\n    let u: str = true;\n    0\n}" },
+  { kind = "unit", source = "fn main() -> i32 {\n    let u: str = ();\n    0\n}" },
+  { kind = "array", source = "fn main() -> i32 {\n    let u: str = [1, 2];\n    0\n}" },
+  { kind = "struct", source = "struct P { x: i32 }\nfn main() -> i32 {\n    let u: str = P { x: 1 };\n    0\n}" },
+  { kind = "wildcard", source = "fn main() -> i32 {\n    let _: str = 5;\n    0\n}" },
+  { kind = "generic_body", source = "fn f(comptime T: type) -> i32 {\n    let u: str = 5;\n    0\n}\nfn main() -> i32 {\n    f(i32)\n}" },
+]
+
+# 3.7:44 — the control for the rule above: a string literal, another `str`,
+# a branch of literals, and a call result all bind at a `str` annotation.
+[[case]]
+name = "str_let_annotation_accepts_str_initializers"
+spec = ["3.7:44", "5.1:8"]
+source = """
+fn pick(c: bool) -> str {
+    if c { "hello" } else { "hi" }
+}
+fn main() -> i32 {
+    let c = true;
+    let a: str = "abc";
+    let b: str = a;
+    let d: str = if c { "x" } else { "yz" };
+    let e: str = pick(true);
+    @intCast(a.len() + b.len() + d.len() + e.len())
+}
+"""
+exit_code = 12
+
 # 3.7:10 / 4.3:3 — `str` equality is byte-content equality, not pointer+len
 # structural equality. The returned literal may occupy a distinct rodata slot.
 [[case]]

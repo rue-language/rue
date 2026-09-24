@@ -121,6 +121,27 @@ params = [
   { variant = "multiple", body = "let a: i32 = 5; let b: i32 = 7; a + b", exit_code = 12 },
 ]
 
+# 5.1:8 — an annotated `let` checks its initializer against the annotation
+# whatever the annotation names: a literal whose type cannot be the annotated
+# one is rejected, not bound at the initializer's type.
+[[case]]
+name = "let_annotation_rejects_incompatible_initializer_{kind}"
+spec = ["5.1:8"]
+description = "A let annotation rejects an initializer whose type is not compatible with it"
+source = "{source}"
+compile_fail = true
+error_contains = "E0206"
+params = [
+  { kind = "integer_at_bool", source = "fn main() -> i32 {\n    let u: bool = 5;\n    0\n}" },
+  { kind = "integer_at_struct", source = "struct P { x: i32 }\nfn main() -> i32 {\n    let u: P = 5;\n    0\n}" },
+  { kind = "integer_at_enum", source = "enum E { A, B }\nfn main() -> i32 {\n    let u: E = 5;\n    0\n}" },
+  { kind = "integer_at_unit", source = "fn main() -> i32 {\n    let u: () = 5;\n    0\n}" },
+  { kind = "float_at_bool", source = "fn main() -> i32 {\n    let u: bool = 1.5;\n    0\n}" },
+  { kind = "bool_at_integer", source = "fn main() -> i32 {\n    let u: i32 = true;\n    0\n}" },
+  { kind = "string_at_integer", source = "fn main() -> i32 {\n    let u: i32 = \"a\";\n    0\n}" },
+  { kind = "integer_at_array", source = "fn main() -> i32 {\n    let u: [i32; 2] = 5;\n    0\n}", error_contains = "E0800" },
+]
+
 # =============================================================================
 # Mutable Variables
 # =============================================================================
