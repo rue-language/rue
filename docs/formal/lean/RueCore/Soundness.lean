@@ -2510,55 +2510,119 @@ theorem Contents.resolveDyn_ok {D : Decls} : ∀ (is : List Int) (πs : List (Li
 
 /-! ## What soundness promises about one evaluation -/
 
+/-- The promise for an unwinding `break` (§6.10's (D-Break)), made about an
+evaluation in frame `φ` from store `H`: the `break` fired in a frame that is
+`φ` with some bindings `locs` opened on top of it — the ones the loop body
+opened and had not closed, each minted above `H` — and at one of the
+delivered states `B` of §5.3's `Ω`, the frame it fired in agrees with the
+store. Its record is `φ`'s with `locs` appended, which is what the loop reads
+to find the drops it owes, and nothing `φ` names outside the frame was
+touched. It is closed under entering a binder (`BrokeOk.under_binders`), so a
+`let` or a `match` arm passes it outward unchanged, and the loop that catches
+it reads the frame it fired in straight off it (helper). -/
+def BrokeOk (D : Decls) (B : List Ctx) (φ : Frame) (H H' : Store) (sc : List Nat) : Prop :=
+  ∃ Γb ∈ B, ∃ locs : List Nat, sc = φ.scope ++ locs ∧
+    FrameMatches D Γb { env := locs.reverse ++ φ.env, scope := sc } H' ∧
+    (∀ ℓ ∈ locs, H.length ≤ ℓ) ∧ Untouched φ.env H H'
+
 /-- The promise for an evaluation that does **not** produce a value here: an
 unwinding `return` carries a value of the enclosing function's declared return
-type `R` and leaves the frame's neighbours alone; a trap and exhausted fuel
-promise nothing; a refusal is impossible, which is the whole theorem
-(helper). -/
-def AbortOk (D : Decls) (R : Ty) (φ : Frame) (H : Store) : EvalRes → Prop
+type `R` and leaves the frame's neighbours alone; an unwinding `break` is one
+of the deliveries `B` (`BrokeOk`); a trap and exhausted fuel promise nothing;
+a refusal is impossible, which is the whole theorem (helper). -/
+def AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Frame) (H : Store) : EvalRes → Prop
   | .ok _ _ _ => False
   | .returned H' v _ => HasTy D v R ∧ Untouched φ.env H H'
+  | .broke H' sc _ => BrokeOk D B φ H H' sc
   | .panic _ _ => True
   | .stuck _ => False
   | .outOfFuel => True
 
-/-- The promise `soundness` makes about `eval`'s result, given the normal
-outgoing state `o` of §5.3's `Ω`: a value of the expression's type with that
-state's invariant restored (preservation), or one of `AbortOk`'s outcomes —
-never `.stuck` (progress). When `o` is `none`, §5.7's `⊥`, a value is
-**impossible**: an expression the rules type as divergent never completes
-normally. Stating it as a predicate on the result, rather than as a
-disjunction of existentials, is what lets the operand combinators (`andThen`)
-be discharged once and reused at every form (helper). -/
-def EvalOk (D : Decls) (T R : Ty) (o : Option Ctx) (φ : Frame) (H : Store) : EvalRes → Prop
+/-- The promise `soundness` makes about `eval`'s result, given §5.3's `Ω` —
+its normal outgoing state `o` and its deliveries `B`: a value of the
+expression's type with that state's invariant restored (preservation), or one
+of `AbortOk`'s outcomes — never `.stuck` (progress). When `o` is `none`,
+§5.7's `⊥`, a value is **impossible**: an expression the rules type as
+divergent never completes normally. A `break` is one of the deliveries: the
+state it fired at is one the rules recorded. Stating it as a predicate on the
+result, rather than as a disjunction of existentials, is what lets the operand
+combinators (`andThen`) be discharged once and reused at every form
+(helper). -/
+def EvalOk (D : Decls) (T R : Ty) (o : Option Ctx) (B : List Ctx) (φ : Frame) (H : Store) :
+    EvalRes → Prop
   | .ok H' v _ =>
       match o with
       | some Γ' => HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
       | none => False
   | .returned H' v _ => HasTy D v R ∧ Untouched φ.env H H'
+  | .broke H' sc _ => BrokeOk D B φ H H' sc
   | .panic _ _ => True
   | .stuck _ => False
   | .outOfFuel => True
 
 /-- The promise for an argument list (§5.8's (Call), left to right with Σ
-threaded), at the list's normal outgoing state `o` (helper). -/
-def ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx) (φ : Frame) (H : Store) :
-    ArgsRes → Prop
+threaded), at the list's normal outgoing state `o` and deliveries `B`
+(helper). -/
+def ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx) (B : List Ctx) (φ : Frame)
+    (H : Store) : ArgsRes → Prop
   | .ok H' vs _ =>
       match o with
       | some Γ' => HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
       | none => False
-  | .abort r => AbortOk D R φ H r
+  | .abort r => AbortOk D R B φ H r
+
+/-- A `break` promised from a later store is promised from an earlier one,
+given the step between them was local to the frame (helper). -/
+theorem BrokeOk.mono_store {D B φ H H₁ H' sc} (hu : Untouched φ.env H H₁)
+    (h : BrokeOk D B φ H₁ H' sc) : BrokeOk D B φ H H' sc := by
+  obtain ⟨Γb, hb, locs, hsc, hfm, hfresh, hu'⟩ := h
+  exact ⟨Γb, hb, locs, hsc, hfm, fun ℓ hℓ => Nat.le_trans hu.1 (hfresh ℓ hℓ), hu.trans hu'⟩
+
+/-- A `break` at one of some deliveries is at one of any superset of them
+(helper). -/
+theorem BrokeOk.mono_brk {D B B' φ H H' sc} (hB : B ⊆ B') (h : BrokeOk D B φ H H' sc) :
+    BrokeOk D B' φ H H' sc := by
+  obtain ⟨Γb, hb, rest⟩ := h
+  exact ⟨Γb, hB hb, rest⟩
+
+/-- **A `break` passes out through a binder** (§6.10, with §6.7's and §6.6's
+registration): a `break` inside a `let` body or a `match` arm, whose frame is
+the enclosing one with the binder's fresh cells `ls` opened on top, is a
+`break` of the enclosing frame with `ls` among the bindings still open where
+it fired. The unwind the loop runs therefore drops the binder's cells too —
+which is RUE-1277's redundancy read at a `break`: the discarded `endscope`
+marker's cells are found in the scope record instead (helper). -/
+theorem BrokeOk.under_binders {D B φ H Hm H' sc} {ls : List Nat}
+    (hpre : H.length ≤ Hm.length) (hkeep : ∀ ℓ, ℓ < H.length → Hm[ℓ]? = H[ℓ]?)
+    (hfresh : ∀ ℓ ∈ ls, H.length ≤ ℓ)
+    (h : BrokeOk D B { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls } Hm H' sc) :
+    BrokeOk D B φ H H' sc := by
+  obtain ⟨Γb, hb, locs, hsc, hfm, hfresh', hu⟩ := h
+  refine ⟨Γb, hb, ls ++ locs, by simp [hsc], ?_, ?_, ?_⟩
+  · simpa [List.reverse_append, List.append_assoc] using hfm
+  · intro ℓ hℓ
+    rcases List.mem_append.mp hℓ with h | h
+    · exact hfresh ℓ h
+    · exact Nat.le_trans hpre (hfresh' ℓ h)
+  · exact Untouched.under_binders hpre hkeep (fun ℓ hℓ => hfresh ℓ (List.mem_reverse.mp hℓ)) hu
+
+/-- `BrokeOk.under_binders` at a `let`'s one binder, whose cell is minted at
+the end of the store (§6.7's (D-Let)) (helper). -/
+theorem BrokeOk.under_binder {D B φ H₁ H' sc} {c : Cell}
+    (h : BrokeOk D B { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] }
+      (H₁ ++ [c]) H' sc) : BrokeOk D B φ H₁ H' sc :=
+  BrokeOk.under_binders (ls := [H₁.length]) (by simp)
+    (fun _ hℓ => List.getElem?_append_left hℓ) (by simp) h
 
 /-- A value promised at some normal state names that state (helper). -/
-theorem EvalOk.ok_inv {D T R o φ H H' v tr} (h : EvalOk D T R o φ H (.ok H' v tr)) :
+theorem EvalOk.ok_inv {D T R o B φ H H' v tr} (h : EvalOk D T R o B φ H (.ok H' v tr)) :
     ∃ Γ', o = some Γ' ∧ HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H' := by
   cases o with
   | none => exact h.elim
   | some Γ' => exact ⟨Γ', rfl, h⟩
 
 /-- The same, for an argument list (helper). -/
-theorem ArgsOk.ok_inv {D R Ts o φ H H' vs tr} (h : ArgsOk D R Ts o φ H (.ok H' vs tr)) :
+theorem ArgsOk.ok_inv {D R Ts o B φ H H' vs tr} (h : ArgsOk D R Ts o B φ H (.ok H' vs tr)) :
     ∃ Γ', o = some Γ' ∧ HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H' := by
   cases o with
   | none => exact h.elim
@@ -2566,89 +2630,111 @@ theorem ArgsOk.ok_inv {D R Ts o φ H H' vs tr} (h : ArgsOk D R Ts o φ H (.ok H'
 
 /-- A promise made from a later store is a promise from an earlier one, given
 the step between them was local to the frame (helper). -/
-theorem EvalOk.mono_store {D T R o φ H H₁ r} (hu : Untouched φ.env H H₁)
-    (h : EvalOk D T R o φ H₁ r) : EvalOk D T R o φ H r := by
+theorem EvalOk.mono_store {D T R o B φ H H₁ r} (hu : Untouched φ.env H H₁)
+    (h : EvalOk D T R o B φ H₁ r) : EvalOk D T R o B φ H r := by
   cases r with
   | ok H' v tr =>
       cases o with
       | none => exact h.elim
       | some Γ' => exact ⟨h.1, h.2.1, hu.trans h.2.2⟩
   | returned H' v tr => exact ⟨h.1, hu.trans h.2⟩
+  | broke H' sc tr => exact BrokeOk.mono_store hu h
   | panic k tr => trivial
   | stuck w => exact h.elim
   | outOfFuel => trivial
 
 /-- The same, for a result that is not a value (helper). -/
-theorem AbortOk.mono_store {D R φ H H₁ r} (hu : Untouched φ.env H H₁)
-    (h : AbortOk D R φ H₁ r) : AbortOk D R φ H r := by
+theorem AbortOk.mono_store {D R B φ H H₁ r} (hu : Untouched φ.env H H₁)
+    (h : AbortOk D R B φ H₁ r) : AbortOk D R B φ H r := by
   cases r with
   | ok H' v tr => exact h.elim
   | returned H' v tr => exact ⟨h.1, hu.trans h.2⟩
+  | broke H' sc tr => exact BrokeOk.mono_store hu h
   | panic k tr => trivial
   | stuck w => exact h.elim
   | outOfFuel => trivial
 
+/-- A promise at some deliveries is a promise at any superset of them: a form
+carries its operands' deliveries outward among its own (§5.3's threading)
+(helper). -/
+theorem EvalOk.mono_brk {D T R o B B' φ H r} (hB : B ⊆ B') (h : EvalOk D T R o B φ H r) :
+    EvalOk D T R o B' φ H r := by
+  cases r with
+  | broke H' sc tr => exact BrokeOk.mono_brk hB h
+  | _ => exact h
+
+/-- The same, for a result that is not a value (helper). -/
+theorem AbortOk.mono_brk {D R B B' φ H r} (hB : B ⊆ B') (h : AbortOk D R B φ H r) :
+    AbortOk D R B' φ H r := by
+  cases r with
+  | broke H' sc tr => exact BrokeOk.mono_brk hB h
+  | _ => exact h
+
 /-- Prefixing a trace changes no promise: the trace is an observation, not a
 state (helper). -/
-theorem EvalOk.withTrace {D T R o φ H r} (h : EvalOk D T R o φ H r) (tr : List Event) :
-    EvalOk D T R o φ H (r.withTrace tr) := by
+theorem EvalOk.withTrace {D T R o B φ H r} (h : EvalOk D T R o B φ H r) (tr : List Event) :
+    EvalOk D T R o B φ H (r.withTrace tr) := by
   cases r <;> cases o <;> simp_all [EvalRes.withTrace, EvalOk]
 
 /-- The same, for a result that is not a value (helper). -/
-theorem AbortOk.withTrace {D R φ H r} (h : AbortOk D R φ H r) (tr : List Event) :
-    AbortOk D R φ H (r.withTrace tr) := by
+theorem AbortOk.withTrace {D R B φ H r} (h : AbortOk D R B φ H r) (tr : List Event) :
+    AbortOk D R B φ H (r.withTrace tr) := by
   cases r <;> simp_all [EvalRes.withTrace, AbortOk]
 
 /-- A result that is not a value satisfies the full promise, whatever type and
 outgoing state the form claims — the promise is only about values there
 (helper). -/
-theorem EvalOk.of_abort {D T R o φ H r} (h : AbortOk D R φ H r) : EvalOk D T R o φ H r := by
+theorem EvalOk.of_abort {D T R o B φ H r} (h : AbortOk D R B φ H r) : EvalOk D T R o B φ H r := by
   cases r <;> cases o <;> simp_all [AbortOk, EvalOk]
 
 /-- An evaluation that produced no value only ever produced an `AbortOk`
 outcome (helper). -/
-theorem EvalOk.toAbort {D T R o φ H r} (h : EvalOk D T R o φ H r)
-    (hne : ∀ H' v tr, r ≠ .ok H' v tr) : AbortOk D R φ H r := by
+theorem EvalOk.toAbort {D T R o B φ H r} (h : EvalOk D T R o B φ H r)
+    (hne : ∀ H' v tr, r ≠ .ok H' v tr) : AbortOk D R B φ H r := by
   cases r with
   | ok H' v tr => exact absurd rfl (hne H' v tr)
   | returned H' v tr => exact h
+  | broke H' sc tr => exact h
   | panic k tr => trivial
   | stuck w => exact h.elim
   | outOfFuel => trivial
 
 /-- **`⊥` is not a value.** An evaluation promised at §5.7's `⊥` produced no
 value, so it is an `AbortOk` outcome (helper). -/
-theorem EvalOk.bot_abort {D T R φ H r} (h : EvalOk D T R none φ H r) : AbortOk D R φ H r :=
+theorem EvalOk.bot_abort {D T R B φ H r} (h : EvalOk D T R none B φ H r) : AbortOk D R B φ H r :=
   h.toAbort (fun H' v tr hr => by subst hr; exact h)
 
 /-- §6.2's search past a divergent operand: the operand produced no value, so
 the context never runs and its outcome is the whole form's — which is what the
 `-Bottom` rules' conclusions promise, at whatever type they name (helper). -/
-theorem EvalOk.bot_andThen {D T T₀ R φ H r} {k : Store → Val → EvalRes}
-    (h : EvalOk D T₀ R none φ H r) : EvalOk D T R none φ H (r.andThen k) := by
+theorem EvalOk.bot_andThen {D T T₀ R B φ H r} {k : Store → Val → EvalRes}
+    (h : EvalOk D T₀ R none B φ H r) : EvalOk D T R none B φ H (r.andThen k) := by
   have ha := h.bot_abort
   cases r with
   | ok H' v tr => exact ha.elim
   | returned H' v tr => exact ha
+  | broke H' sc tr => exact ha
   | panic k tr => trivial
   | stuck w => exact ha.elim
   | outOfFuel => trivial
 
 /-- **§6.2's search, once and for all.** An operand that promised its own
 outcome, sequenced into a context that promises the form's outcome from the
-operand's value, promises the form's outcome. Every operand of every form is
-discharged by this lemma (helper). -/
-theorem EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ : Ctx} {φ : Frame}
-    {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
-    (hr : EvalOk D T₀ R (some Γ₀) φ H r)
+operand's value, promises the form's outcome — the operand's deliveries among
+the form's. Every operand of every form is discharged by this lemma
+(helper). -/
+theorem EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ : Ctx} {B₀ B : List Ctx}
+    {φ : Frame} {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
+    (hr : EvalOk D T₀ R (some Γ₀) B₀ φ H r) (hB : B₀ ⊆ B)
     (hk : ∀ H₁ v tr, r = .ok H₁ v tr → HasTy D v T₀ → FrameMatches D Γ₀ φ H₁ →
-            EvalOk D T R o φ H₁ (k H₁ v)) :
-    EvalOk D T R o φ H (r.andThen k) := by
+            EvalOk D T R o B φ H₁ (k H₁ v)) :
+    EvalOk D T R o B φ H (r.andThen k) := by
   cases r with
   | ok H₁ v tr =>
       obtain ⟨hty, hfm, hu⟩ := hr
       exact (((hk H₁ v tr rfl hty hfm).mono_store hu).withTrace tr)
   | returned H₁ v tr => exact hr
+  | broke H₁ sc tr => exact BrokeOk.mono_brk hB hr
   | panic k tr => trivial
   | stuck w => exact hr.elim
   | outOfFuel => trivial
@@ -2656,33 +2742,189 @@ theorem EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ : Ctx} {
 /-- `bind` for an operand whose outgoing `Ω` the form passes on unchanged —
 §5.3's threading convention at a one-operand rule: if the operand continues,
 the form continues at the same state; if it is `⊥`, so is the form (helper). -/
-theorem EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {φ : Frame}
+theorem EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {B : List Ctx} {φ : Frame}
     {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
-    (hr : EvalOk D T₀ R o φ H r)
+    (hr : EvalOk D T₀ R o B φ H r)
     (hk : ∀ H₁ v tr Γ₀, r = .ok H₁ v tr → HasTy D v T₀ → FrameMatches D Γ₀ φ H₁ →
-            EvalOk D T R (some Γ₀) φ H₁ (k H₁ v)) :
-    EvalOk D T R o φ H (r.andThen k) := by
+            EvalOk D T R (some Γ₀) B φ H₁ (k H₁ v)) :
+    EvalOk D T R o B φ H (r.andThen k) := by
   cases o with
   | none => exact hr.bot_andThen
-  | some Γ₀ => exact EvalOk.bind hr (fun H₁ v tr h hty hfm => hk H₁ v tr Γ₀ h hty hfm)
+  | some Γ₀ => exact EvalOk.bind hr (List.Subset.refl _) (fun H₁ v tr h hty hfm => hk H₁ v tr Γ₀ h hty hfm)
 
 /-! ## The main theorem -/
+
+/-- (helper) Close `B₀ ⊆ B` where `B` is a form's delivery list and `B₀` one of
+its premises': §5.3's threading makes every premise's deliveries a part of
+the conclusion's. -/
+local macro "brk_sub" : tactic =>
+  `(tactic| (intro _ hx; first | exact hx | (simp only [Out.add, List.mem_append] at hx ⊢; simp [hx])))
 
 /-- Weakening the outgoing state of a promise, which is what §5.5's join asks
 of an arm: a value's state is carried to some state of the join, and `⊥`
 carries nothing (helper). -/
-theorem EvalOk.weaken {D T R o₁ o' φ H r}
+theorem EvalOk.weaken {D T R o₁ o' B φ H r}
     (hw : ∀ Γ₁ H', o₁ = some Γ₁ → FrameMatches D Γ₁ φ H' →
       ∃ Γ', o' = some Γ' ∧ FrameMatches D Γ' φ H')
-    (h : EvalOk D T R o₁ φ H r) : EvalOk D T R o' φ H r := by
+    (h : EvalOk D T R o₁ B φ H r) : EvalOk D T R o' B φ H r := by
   cases r with
   | ok H' v tr =>
       obtain ⟨Γ₁, rfl, hty, hfm, hu⟩ := h.ok_inv
       obtain ⟨Γ', rfl, hfm'⟩ := hw Γ₁ H' rfl hfm
       exact ⟨hty, hfm', hu⟩
   | returned H' v tr => exact h
+  | broke H' sc tr => exact h
   | panic k tr => trivial
   | stuck w => exact h.elim
+  | outOfFuel => trivial
+
+/-! ## Loops: the head, the back edge, and the exits (§5.7, §6.10) -/
+
+/-- The invariant binds exactly one location per binding (helper). -/
+theorem Matches.length_eq {D Γ ρ H} (hm : Matches D Γ ρ H) : Γ.length = ρ.length := by
+  induction hm with
+  | nil => rfl
+  | cons _ _ _ _ ih => simp [ih]
+
+/-- `Ctx.SameSkel` from a pointwise skeleton equation (helper). -/
+theorem Ctx.SameSkel.of_forall {Γ₀ : Ctx} :
+    ∀ {Γs : List Ctx}, (∀ Γ ∈ Γs, Ctx.skel Γ = Ctx.skel Γ₀) → Ctx.SameSkel Γ₀ Γs
+  | [], _ => trivial
+  | Γ :: _, h => ⟨h Γ List.mem_cons_self,
+      Ctx.SameSkel.of_forall (fun Γ' h' => h Γ' (List.mem_cons_of_mem _ h'))⟩
+
+/-- **Entering a loop at its head.** The store agreeing with the entry state
+agrees with the loop-head state: the head is the entry or its §5.5 join with
+the back-edge state, and the join weakens its left arm (helper). -/
+theorem LoopHead.enter {D : Decls} (hwf : WfDecls D) {Γ Γh : Ctx} {o : Option Ctx}
+    {φ : Frame} {H : Store} (h : LoopHead D Γ o Γh) (hfm : FrameMatches D Γ φ H) :
+    FrameMatches D Γh φ H := by
+  cases o with
+  | none =>
+      have h1 := h.1
+      simp only [Ctx.joinOpt, Option.some.injEq] at h1
+      cases h1; exact hfm
+  | some Γe =>
+      have h1 := h.1
+      simp only [Ctx.joinOpt] at h1
+      cases hj : Ctx.join D Γ Γe with
+      | none => rw [hj] at h1; cases h1
+      | some z =>
+          rw [hj] at h1
+          simp only [Option.map_some, Option.some.injEq] at h1
+          subst h1
+          exact ⟨Matches.join_left hwf hj hfm.store, hfm.record⟩
+
+/-- **The back edge** (§5.7, `3.8:79`). The store agreeing with the body's
+back-edge state agrees with the loop-head state: the head is the §5.5 join of
+the entry with that state, and the join weakens its right arm. This is the
+preservation half of re-entering the body (helper). -/
+theorem LoopHead.backEdge {D : Decls} (hwf : WfDecls D) {Γ Γh Γe : Ctx}
+    {φ : Frame} {H : Store} (h : LoopHead D Γ (some Γe) Γh) (hsk : Γe.skel = Γh.skel)
+    (hfm : FrameMatches D Γe φ H) : FrameMatches D Γh φ H := by
+  have h1 := h.1
+  simp only [Ctx.joinOpt] at h1
+  cases hj : Ctx.join D Γ Γe with
+  | none => rw [hj] at h1; cases h1
+  | some z =>
+      rw [hj] at h1
+      simp only [Option.map_some, Option.some.injEq] at h1
+      subst h1
+      have hs : Ctx.skel Γ = Ctx.skel Γe := (Ctx.join_skel hj).symm.trans hsk.symm
+      exact ⟨Matches.join_right hwf hs hj hfm.store, hfm.record⟩
+
+/-- **The exits** (§5.7's (Loop-Break), §6.10's (D-Break)). A `break` that
+fired at one of the body's deliveries `Γb`, in a frame that is the loop's with
+the body's still-open bindings `locs` on top, is caught by the loop: it
+drop-retires exactly those bindings, newest first — `unwind-drops(H, φ', φ)`
+— and the rule's premise that they carry no residual linear content is what
+keeps the leak monitor off. What is left agrees with `outside_loop(Γb)`, and
+so with the loop's outgoing state, the join over every exit (`3.8:80`)
+(helper). -/
+theorem loop_exit_ok {D : Decls} (hwf : WfDecls D) {Γh Γx : Ctx} {B : List Ctx}
+    {φ : Frame} {H H₁ : Store} {sc : List Nat} (hfmh : FrameMatches D Γh φ H)
+    (hext : ∀ Γb ∈ B, Ctx.Extends Γb Γh)
+    (hnl : ∀ Γb ∈ B, NoResidualLinear D (Ctx.loopLocals Γh Γb))
+    (hjoin : Ctx.joinAll D (B.map (Ctx.outsideLoop Γh)) = some Γx)
+    (hb : BrokeOk D B φ H H₁ sc) :
+    ∃ H₂ evs, unwindLocs D H₁ (sc.drop φ.scope.length).reverse = .ok (H₂, evs) ∧
+      FrameMatches D Γx φ H₂ ∧ Untouched φ.env H H₂ := by
+  obtain ⟨Γb, hmem, locs, rfl, hfmb, hfresh, hu⟩ := hb
+  have hdrop : (φ.scope ++ locs).drop φ.scope.length = locs := List.drop_left
+  rw [hdrop]
+  have hlenb : Γb.length = locs.length + φ.env.length := by
+    rw [Matches.length_eq hfmb.store]; simp
+  have hlenh : Γh.length = φ.env.length := Matches.length_eq hfmh.store
+  have hn : Γb.length - Γh.length = locs.length := by omega
+  have hnl' : NoResidualLinear D (Γb.take locs.length) := by
+    have := hnl Γb hmem
+    simp only [Ctx.loopLocals, hn] at this
+    exact this
+  obtain ⟨H₂, evs, hunw, hm₂, hlen₂, hout₂⟩ :=
+    Matches.unwindPrefix hwf locs.length Γb (locs.reverse ++ φ.env) H₁ hfmb.store hnl'
+  have hlocs : locs.reverse.length = locs.length := List.length_reverse
+  have hT : (locs.reverse ++ φ.env).take locs.length = locs.reverse := by
+    rw [← hlocs, List.take_left]
+  have hD : (locs.reverse ++ φ.env).drop locs.length = φ.env := by
+    rw [← hlocs, List.drop_left]
+  rw [hT] at hunw hout₂
+  rw [hD] at hm₂
+  have hout : Γb.drop locs.length = Ctx.outsideLoop Γh Γb := by
+    simp only [Ctx.outsideLoop, hn]
+  rw [hout] at hm₂
+  have hsame : Ctx.SameSkel Γh (B.map (Ctx.outsideLoop Γh)) :=
+    Ctx.SameSkel.of_forall fun Γo hΓo => by
+      obtain ⟨Γb', hb', rfl⟩ := List.mem_map.mp hΓo
+      exact Ctx.outsideLoop_skel (hext Γb' hb')
+  have hmx : Matches D Γx φ.env H₂ :=
+    Matches.joinAll hwf hjoin hsame (List.mem_map.mpr ⟨Γb, hmem, rfl⟩) hm₂
+  refine ⟨H₂, evs, hunw, ⟨hmx, hfmh.record⟩, ⟨by rw [hlen₂]; exact hu.1, fun ℓ hlt hnin => ?_⟩⟩
+  have hnl₂ : ℓ ∉ locs.reverse := by
+    intro hm
+    exact absurd (hfresh ℓ (List.mem_reverse.mp hm)) (by omega)
+  rw [hout₂ ℓ hnl₂]
+  exact hu.2 ℓ hlt hnin
+
+/-- **One turn of a loop** (§6.10), for `soundness`: given the body's promise
+from the loop-head state, the promise for the loop's rest from the back edge
+(which is `soundness` again, one unit of fuel down, at the re-entered loop's
+derivation), and what the loop's rule makes of an exit, the loop keeps the
+promise. An unwinding `return` from the body passes through; a trap and
+exhausted fuel promise nothing (helper). -/
+theorem loop_step (M : FloatOps) {P : Program} {fuel : Nat} {D : Decls} {T R : Ty}
+    {oe : Option Ctx} {Be : List Ctx}
+    {φ : Frame} {H : Store} {e : Expr} {o' : Option Ctx} {B' : List Ctx}
+    (kb : EvalOk D .unit R oe Be φ H (eval M fuel P H φ e))
+    (hback : ∀ Γe H₁, oe = some Γe → FrameMatches D Γe φ H₁ →
+      EvalOk D T R o' B' φ H₁ (eval M fuel P H₁ φ (.loop e)))
+    (hexit : ∀ H₁ sc, BrokeOk D Be φ H H₁ sc →
+      EvalOk D T R o' B' φ H
+        (match unwindLocs P.decls H₁ (sc.drop φ.scope.length).reverse with
+         | .error w => .stuck w
+         | .ok (H₂, evs) => .ok H₂ .unit evs)) :
+    EvalOk D T R o' B' φ H (eval M (fuel + 1) P H φ (.loop e)) := by
+  simp only [eval]
+  cases hrb : eval M fuel P H φ e with
+  | ok H₁ v tr =>
+      rw [hrb] at kb
+      obtain ⟨Γe, hn, _, hfm₁, hu₁⟩ := kb.ok_inv
+      exact ((hback Γe H₁ hn hfm₁).mono_store hu₁).withTrace tr
+  | broke H₁ sc tr =>
+      rw [hrb] at kb
+      have k := hexit H₁ sc kb
+      dsimp only
+      cases hunw : unwindLocs P.decls H₁ (sc.drop φ.scope.length).reverse with
+      | error w => rw [hunw] at k; exact k
+      | ok p =>
+          obtain ⟨H₂, evs⟩ := p
+          rw [hunw] at k
+          dsimp only at k ⊢
+          cases o' with
+          | none => exact k.elim
+          | some Γ' => exact k
+  | returned H₁ v tr => rw [hrb] at kb; exact kb
+  | panic pk tr => trivial
+  | stuck w => rw [hrb] at kb; exact kb.elim
   | outOfFuel => trivial
 
 /-- **The argument list of a call is safe** (§5.8's (Call), §6.9's (D-Call)):
@@ -2695,10 +2937,10 @@ which is why this is a lemma rather than a case of the induction. -/
 theorem args_sound (M : FloatModel) {P : Program} {fuel : Nat}
     (ih : ∀ {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty}, Typed P R Γ e T Ω →
       ∀ {φ : Frame} {H : Store}, FrameMatches P.decls Γ φ H →
-        EvalOk P.decls T R Ω.norm φ H (eval M.toFloatOps fuel P H φ e)) :
+        EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatOps fuel P H φ e)) :
     ∀ (es : List Expr) {R : Ty} {Γ : Ctx} {Ω : Out} {Ts : List Ty} {φ : Frame} {H : Store},
       TypedArgs P R Γ es Ts Ω → FrameMatches P.decls Γ φ H →
-        ArgsOk P.decls R Ts Ω.norm φ H
+        ArgsOk P.decls R Ts Ω.norm Ω.brk φ H
           (evalArgs (fun H' e => eval M.toFloatOps fuel P H' φ e) H es) := by
   intro es
   induction es with
@@ -2723,17 +2965,22 @@ theorem args_sound (M : FloatModel) {P : Program} {fuel : Nat}
                 rw [hr₂] at k₂
                 dsimp only
                 obtain ⟨Γ₂, hn, hvs, hfm₂, hu₂⟩ := k₂.ok_inv
-                show ArgsOk P.decls R (T :: Ts') Ω'.norm φ H (.ok H₂ (v :: vs) (tr ++ tr₂))
+                show ArgsOk P.decls R (T :: Ts') Ω'.norm (Ω'.brk ++ Δ₁) φ H
+                  (.ok H₂ (v :: vs) (tr ++ tr₂))
                 rw [hn]
                 exact ⟨.cons hty hvs, hfm₂, hu₁.trans hu₂⟩
             | abort r =>
                 rw [hr₂] at k₂
                 dsimp only
-                exact (k₂.mono_store hu₁).withTrace tr
+                exact ((k₂.mono_store hu₁).withTrace tr).mono_brk (List.subset_append_left _ _)
         | returned H₁ v tr =>
             rw [hr] at k₁
             try dsimp only
             exact k₁
+        | broke H₁ sc tr =>
+            rw [hr] at k₁
+            try dsimp only
+            exact BrokeOk.mono_brk (List.subset_append_right _ _) k₁
         | panic pk tr => try dsimp only; trivial
         | stuck w => rw [hr] at k₁; exact k₁.elim
         | outOfFuel => try dsimp only; trivial
@@ -2743,6 +2990,7 @@ theorem args_sound (M : FloatModel) {P : Program} {fuel : Nat}
         cases hr : eval M.toFloatOps fuel P H φ e with
         | ok H₁ v tr => rw [hr] at k₁; exact k₁.elim
         | returned H₁ v tr => rw [hr] at k₁; exact k₁
+        | broke H₁ sc tr => rw [hr] at k₁; exact k₁
         | panic pk tr => trivial
         | stuck w => rw [hr] at k₁; exact k₁.elim
         | outOfFuel => trivial
@@ -2767,7 +3015,7 @@ runs at one unit less. -/
 theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
     ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty}, Typed P R Γ e T Ω →
       ∀ {φ : Frame} {H : Store}, FrameMatches P.decls Γ φ H →
-        EvalOk P.decls T R Ω.norm φ H (eval M.toFloatOps fuel P H φ e) := by
+        EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatOps fuel P H φ e) := by
   intro fuel
   induction fuel with
   | zero =>
@@ -2855,10 +3103,10 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
             Untouched.trans_set Untouched.refl (Or.inr (List.mem_of_getElem? hρ))⟩
       | @binop Γ Γ₁ Ω₂ Δ₁ op e₁ e₂ w sg h₁ h₂ hop =>
           simp only [eval]
-          refine EvalOk.bind (ih h₁ hfm) ?_
+          refine EvalOk.bind (ih h₁ hfm) (by brk_sub) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
           obtain ⟨n₁, rfl, _⟩ := hty₁.int_inv
-          refine EvalOk.bindSame (ih h₂ hfm₁) ?_
+          refine EvalOk.bindSame ((ih h₂ hfm₁).mono_brk (by brk_sub)) ?_
           intro H₂ v₂ tr₂ Γ₂ _ hty₂ hfm₂
           obtain ⟨n₂, rfl, _⟩ := hty₂.int_inv
           rcases evalBinOp_res (D := P.decls) M.toFloatOps op w sg n₁ n₂ hop with
@@ -2879,10 +3127,10 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           -- total, so unlike the integer arm there is no trap branch at all
           -- (`3.12:21`).
           simp only [eval]
-          refine EvalOk.bind (ih h₁ hfm) ?_
+          refine EvalOk.bind (ih h₁ hfm) (by brk_sub) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
           obtain ⟨f₁, rfl, hw₁⟩ := hty₁.float_inv
-          refine EvalOk.bindSame (ih h₂ hfm₁) ?_
+          refine EvalOk.bindSame ((ih h₂ hfm₁).mono_brk (by brk_sub)) ?_
           intro H₂ v₂ tr₂ Γ₂ _ hty₂ hfm₂
           obtain ⟨f₂, rfl, hw₂⟩ := hty₂.float_inv
           obtain ⟨v, hv, hty⟩ := evalBinOpFloat_res (D := P.decls) M op w f₁ f₂ hw₁ hw₂ hop
@@ -2974,7 +3222,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           | abort r =>
               rw [hra] at ka
               dsimp only
-              exact EvalOk.of_abort ka
+              exact EvalOk.of_abort (ka.mono_brk (by brk_sub))
           | ok H₁ vs tr =>
               rw [hra] at ka
               obtain ⟨Γ₁, hn, hvs, hfm₁, hu₁⟩ := ka.ok_inv
@@ -2992,7 +3240,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           | abort r =>
               rw [hra] at ka
               dsimp only
-              exact EvalOk.of_abort ka
+              exact EvalOk.of_abort (ka.mono_brk (by brk_sub))
           | ok H₁ vs tr =>
               rw [hra] at ka
               obtain ⟨Γ₁, hn, hvs, hfm₁, hu₁⟩ := ka.ok_inv
@@ -3009,14 +3257,14 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           -- cells bound as (D-Let) binds one, and their newest-first drop at the
           -- arm's end.
           simp only [eval]
-          refine EvalOk.bind (ih hscrut hfm) ?_
+          refine EvalOk.bind (ih hscrut hfm) (by brk_sub) ?_
           intro H₀ v tr _ htyv hfm₀
           obtain ⟨k, ed', Ts, vs, rfl, hd', hv, hvs⟩ := htyv.enum_inv
           have hed : ed' = ed := by rw [hd] at hd'; exact (Option.some_inj.mp hd').symm
           subst hed
           -- Progress at a `match` is exhaustiveness: the tag has an arm.
           obtain ⟨body, harm⟩ := exhaustive_arm_exists hlen hv
-          obtain ⟨ob, Δb, hbody, hbres⟩ := harms.at_index k harm hv
+          obtain ⟨ob, Δb, hbody, hbres, hΔb⟩ := harms.at_index k harm hv
           have hlenvs : vs.length = Ts.length := hvs.length_eq
           have hlocs : ((mintParams H₀ vs).2.reverse).length = Ts.length := by
             rw [List.length_reverse, mintParams_locs_length]; exact hlenvs
@@ -3071,6 +3319,14 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               rw [hrb] at kb
               simp only [EvalRes.andThen]
               exact ⟨kb.1, Untouched.under_binders hpre hkeep hfresh kb.2⟩
+          | broke H₂ sc tr₂ =>
+              -- (D-Break) §6.10 from inside the arm: the arm's `endscope` is
+              -- discarded, and its payload cells travel with the `break` as
+              -- bindings still open where it fired.
+              rw [hrb] at kb
+              simp only [EvalRes.andThen]
+              exact BrokeOk.mono_brk (hΔb.trans (List.subset_append_left _ _))
+                (BrokeOk.under_binders hpre hkeep (fun ℓ hℓ => mintParams_fresh H₀ vs ℓ hℓ) kb)
           | panic pk tr₂ => simp only [EvalRes.andThen]; trivial
           | stuck w => rw [hrb] at kb; exact kb.elim
           | outOfFuel => simp only [EvalRes.andThen]; trivial
@@ -3085,7 +3341,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           | abort r =>
               rw [hra] at ka
               dsimp only
-              exact EvalOk.of_abort ka
+              exact EvalOk.of_abort (ka.mono_brk (by brk_sub))
           | ok H₁ vs tr =>
               rw [hra] at ka
               obtain ⟨Γ₁, hn, hvs, hfm₁, hu₁⟩ := ka.ok_inv
@@ -3108,7 +3364,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           | abort r =>
               rw [hra] at ka
               dsimp only
-              exact EvalOk.of_abort ka
+              exact EvalOk.of_abort (ka.mono_brk (by brk_sub))
           | ok H₁ vs tr =>
               rw [hra] at ka
               obtain ⟨_, hn, _⟩ := ka.ok_inv
@@ -3127,7 +3383,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           | abort r =>
               rw [hra] at ka
               dsimp only
-              exact EvalOk.of_abort ka
+              exact EvalOk.of_abort (ka.mono_brk (by brk_sub))
           | ok H₁ vs tr =>
               rw [hra] at ka
               obtain ⟨hvs, hfm₁, hu₁⟩ := ka
@@ -3171,14 +3427,14 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           -- (Strict-Bottom) §5.3 at an index, after the right-hand side ran:
           -- the list aborts and the destination is never reached.
           simp only [eval]
-          refine EvalOk.bind (ih h₁ hfm) ?_
+          refine EvalOk.bind (ih h₁ hfm) (by brk_sub) ?_
           intro H₁ v tr₁ _ _ hfm₁
           have ka := hargs idx hta hfm₁
           cases hra : evalArgs (fun H' e' => eval M.toFloatOps fuel P H' φ e') H₁ idx with
           | abort r =>
               rw [hra] at ka
               dsimp only
-              exact EvalOk.of_abort ka
+              exact EvalOk.of_abort (ka.mono_brk (by brk_sub))
           | ok H₂ vs tr =>
               rw [hra] at ka
               obtain ⟨_, hn, _⟩ := ka.ok_inv
@@ -3194,14 +3450,14 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           -- array back into the cell, and the array stays `Owned` whole —
           -- which is `Σ1[p ↦ Owned]`.
           simp only [eval]
-          refine EvalOk.bind (ih h₁ hfm) ?_
+          refine EvalOk.bind (ih h₁ hfm) (by brk_sub) ?_
           intro H₁ v tr₁ _ htyv hfm₁
           have ka := hargs idx hta hfm₁
           cases hra : evalArgs (fun H' e' => eval M.toFloatOps fuel P H' φ e') H₁ idx with
           | abort r =>
               rw [hra] at ka
               dsimp only
-              exact EvalOk.of_abort ka
+              exact EvalOk.of_abort (ka.mono_brk (by brk_sub))
           | ok H₂ vs tr =>
               rw [hra] at ka
               obtain ⟨hvs, hfm₂, hu₂⟩ := ka
@@ -3314,7 +3570,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           -- (Let) with a divergent tail: the body never completes, so the
           -- `endscope` never runs; a `return` in it unwound past the binder.
           simp only [eval]
-          refine EvalOk.bind (ih h₁ hfm) ?_
+          refine EvalOk.bind (ih h₁ hfm) (by brk_sub) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
           have hfresh : H₁.length ∉ φ.env := hfm₁.store.fresh_not_mem
           have hfm' : FrameMatches P.decls ({ ty := T₁, mu := m, st := .owned } :: Γ₁)
@@ -3333,12 +3589,18 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               rw [hrb] at kb
               simp only [EvalRes.andThen]
               exact ⟨kb.1, kb.2.under_binder⟩
+          | broke H₂ sc tr₂ =>
+              -- (D-Break) §6.10 from the body: the `endscope` marker is
+              -- discarded, and the binder's cell travels with the `break`.
+              rw [hrb] at kb
+              simp only [EvalRes.andThen]
+              exact BrokeOk.mono_brk (by brk_sub) kb.under_binder
           | panic pk tr => simp only [EvalRes.andThen]; trivial
           | stuck w => rw [hrb] at kb; exact kb.elim
           | outOfFuel => simp only [EvalRes.andThen]; trivial
       | @letIn Γ Γ₁ Γ₂ Δ₁ Δ₂ m e₁ e₂ T₁ T₂ en' h₁ h₂ hres =>
           simp only [eval]
-          refine EvalOk.bind (ih h₁ hfm) ?_
+          refine EvalOk.bind (ih h₁ hfm) (by brk_sub) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
           have hfresh : H₁.length ∉ φ.env := hfm₁.store.fresh_not_mem
           have hfm' : FrameMatches P.decls ({ ty := T₁, mu := m, st := .owned } :: Γ₁)
@@ -3370,6 +3632,12 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               rw [hrb] at kb
               simp only [EvalRes.andThen]
               exact ⟨kb.1, kb.2.under_binder⟩
+          | broke H₂ sc tr₂ =>
+              -- (D-Break) §6.10 from the body: the `endscope` marker is
+              -- discarded, and the binder's cell travels with the `break`.
+              rw [hrb] at kb
+              simp only [EvalRes.andThen]
+              exact BrokeOk.mono_brk (by brk_sub) kb.under_binder
           | panic pk tr => simp only [EvalRes.andThen]; trivial
           | stuck w => rw [hrb] at kb; exact kb.elim
           | outOfFuel => simp only [EvalRes.andThen]; trivial
@@ -3381,7 +3649,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           -- (D-Assign) §6.8 at a sub-position: drop what is live there (a `⊘`
           -- drops nothing — reinitialization, `3.8:55`), then store.
           simp only [eval]
-          refine EvalOk.bind (ih h hfm) ?_
+          refine EvalOk.bind (ih h hfm) (by brk_sub) ?_
           intro H₁ v tr _ hty hfm₁
           obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm₁.store.lookup hget₁
           obtain ⟨cc, rfl, hmm⟩ := hcm
@@ -3410,7 +3678,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           exact (ih h₁ hfm).bot_andThen
       | @seq Γ Γ₁ Δ₁ Ω₂ e₁ e₂ T₁ T₂ h₁ hnl h₂ =>
           simp only [eval]
-          refine EvalOk.bind (ih h₁ hfm) ?_
+          refine EvalOk.bind (ih h₁ hfm) (by brk_sub) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
           have hvnl : v₁.mult P.decls ≠ .linear := by rw [hty₁.mult_eq]; exact hnl
           cases hml : v₁.mult P.decls with
@@ -3418,8 +3686,8 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           | affine =>
               obtain ⟨evs, hevs⟩ := dropContents_ok (D := P.decls) hty₁.contentsTy
               simp only [hevs]
-              exact (ih h₂ hfm₁).withTrace _
-          | copy => exact ih h₂ hfm₁
+              exact ((ih h₂ hfm₁).mono_brk (by brk_sub)).withTrace _
+          | copy => exact (ih h₂ hfm₁).mono_brk (by brk_sub)
       | @iteBot Γ Δ₀ c e₁ e₂ T hc =>
           -- (Strict-Bottom) §5.3 at the condition: neither arm runs.
           simp only [eval]
@@ -3429,20 +3697,20 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           -- the join over the continuing arms carries on; an arm typed `⊥`
           -- promises no value at all, so it needs nothing from the join.
           simp only [eval]
-          refine EvalOk.bind (ih hc hfm) ?_
+          refine EvalOk.bind (ih hc hfm) (by brk_sub) ?_
           intro H₀ v₀ tr₀ _ hty₀ hfm₀
           obtain ⟨b, rfl⟩ := hty₀.bool_inv
-          have hsk₁ : ∀ x, Ω₁.norm = some x → x.skel = Γ₀.skel := h₁.skel_preserved
-          have hsk₂ : ∀ x, Ω₂.norm = some x → x.skel = Γ₀.skel := h₂.skel_preserved
+          have hsk₁ : ∀ x, Ω₁.norm = some x → x.skel = Γ₀.skel := h₁.skel_preserved.norm
+          have hsk₂ : ∀ x, Ω₂.norm = some x → x.skel = Γ₀.skel := h₂.skel_preserved.norm
           cases b with
           | true =>
               dsimp only
-              refine EvalOk.weaken (fun Γ₁ H' hn hf => ?_) (ih h₁ hfm₀)
+              refine EvalOk.weaken (fun Γ₁ H' hn hf => ?_) ((ih h₁ hfm₀).mono_brk (by brk_sub))
               obtain ⟨Γ', ho, hm⟩ := Matches.joinOpt_left hwf.decls hjoin hn
               exact ⟨Γ', ho, hm _ _ hf.store, hf.record⟩
           | false =>
               dsimp only
-              refine EvalOk.weaken (fun Γ₂ H' hn hf => ?_) (ih h₂ hfm₀)
+              refine EvalOk.weaken (fun Γ₂ H' hn hf => ?_) ((ih h₂ hfm₀).mono_brk (by brk_sub))
               obtain ⟨Γ', ho, hm⟩ := Matches.joinOpt_right hwf.decls
                 (fun x hx => (hsk₁ x hx).trans (hsk₂ Γ₂ hn).symm) hjoin hn
               exact ⟨Γ', ho, hm _ _ hf.store, hf.record⟩
@@ -3453,7 +3721,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           | abort r =>
               rw [hra] at ka
               dsimp only
-              exact EvalOk.of_abort ka
+              exact EvalOk.of_abort (ka.mono_brk (by brk_sub))
           | ok H₁ vs tr =>
               rw [hra] at ka
               obtain ⟨Γ', hn, hvs, hfm₁, hu₁⟩ := ka.ok_inv
@@ -3464,7 +3732,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                 omega
               simp only [hget]
               rw [if_pos hlen]
-              obtain ⟨Ωf, hbody, hnlf, _⟩ := hwf.fns fd (List.mem_of_getElem? hget)
+              obtain ⟨Ωf, hbody, hnlf, hbrkf⟩ := hwf.fns fd (List.mem_of_getElem? hget)
               have hfmg : FrameMatches P.decls (fnCtx fd)
                   { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 }
                   (mintParams H₁ vs).1 :=
@@ -3504,9 +3772,69 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                   simp only [EvalRes.absorb, EvalRes.withTrace]
                   exact ⟨htyv, ⟨hmint.transport hdisj hu₃, hfm.record⟩,
                     hu₁.trans (Untouched.of_fresh hpre hfreshg hkeep hu₃)⟩
+              | broke H₃ sc tr₃ =>
+                  -- (Fn) §5.8 gives the body no `⟨break, _⟩` delivery, so no
+                  -- `break` reaches the call boundary.
+                  rw [hrb] at kb
+                  obtain ⟨Γb, hb, _⟩ := kb
+                  rw [hbrkf] at hb
+                  cases hb
               | panic pk tr => simp only [EvalRes.absorb, EvalRes.withTrace]; trivial
               | stuck w => rw [hrb] at kb; exact kb.elim
               | outOfFuel => simp only [EvalRes.absorb, EvalRes.withTrace]; trivial
+      | @brk Γ T =>
+          -- (D-Break) §6.10: the `break` fires in this very frame, with no
+          -- binding opened since the loop's — unless an enclosing `let` or
+          -- arm adds its own on the way out (`BrokeOk.under_binders`).
+          simp only [eval]
+          exact ⟨Γ, List.mem_singleton_self _, [], by simp, by simpa using hfm,
+            by simp, Untouched.refl⟩
+      | @loopDiv Γ Γh Ωe e T hbody hhead hnb hdiv =>
+          -- (Loop-Div-Backedge)/(Loop-Div) with §6.10: the body runs from the
+          -- head, and every completed turn re-enters it there — the same
+          -- derivation types the loop again at its head (`reenter_body`), so
+          -- the fuel induction takes the next turn. A `break` is impossible:
+          -- the body has none targeting this loop (`Typed.brk_nil`).
+          have hre : Typed P R Γh (.loop e) T ⟨none, []⟩ :=
+            .loopDiv hbody (hhead.reenter_body hbody) hnb hdiv
+          refine loop_step M.toFloatOps (ih hbody (hhead.enter hwf.decls hfm)) ?_ ?_
+          · intro Γe H₁ hn hfm₁
+            have hh : LoopHead P.decls Γ (some Γe) Γh := hn ▸ hhead
+            exact ih hre (hh.backEdge hwf.decls (hbody.skel_preserved.norm Γe hn) hfm₁)
+          · intro H₁ sc hb
+            obtain ⟨Γb, hmem, _⟩ := hb
+            rw [Typed.brk_nil hbody hnb] at hmem
+            cases hmem
+      | @loopBreakDiv Γ Γh Ωe e hbody hhead hb' hnil hdiv =>
+          -- (Loop-Break) with no reachable exit: as `loopDiv`, and the body's
+          -- `break`s are all unreachable, so none fires.
+          have hre : Typed P R Γh (.loop e) .unit ⟨none, []⟩ :=
+            .loopBreakDiv hbody (hhead.reenter_body hbody) hb' hnil hdiv
+          refine loop_step M.toFloatOps (ih hbody (hhead.enter hwf.decls hfm)) ?_ ?_
+          · intro Γe H₁ hn hfm₁
+            have hh : LoopHead P.decls Γ (some Γe) Γh := hn ▸ hhead
+            exact ih hre (hh.backEdge hwf.decls (hbody.skel_preserved.norm Γe hn) hfm₁)
+          · intro H₁ sc hb
+            obtain ⟨Γb, hmem, _⟩ := hb
+            rw [hnil] at hmem
+            cases hmem
+      | @loopBreak Γ Γh Ωe Γx e hbody hhead hb' hnl hjoin =>
+          -- (Loop-Break) with §6.10: the back edge as for `loopDiv`, and a
+          -- `break` from the body is caught here, which unwinds the body's
+          -- open bindings and continues at the join of the exits
+          -- (`loop_exit_ok`).
+          have hre : Typed P R Γh (.loop e) .unit ⟨some Γx, []⟩ :=
+            .loopBreak hbody (hhead.reenter_body hbody) hb' hnl hjoin
+          have hfmh := hhead.enter hwf.decls hfm
+          refine loop_step M.toFloatOps (ih hbody hfmh) ?_ ?_
+          · intro Γe H₁ hn hfm₁
+            have hh : LoopHead P.decls Γ (some Γe) Γh := hn ▸ hhead
+            exact ih hre (hh.backEdge hwf.decls (hbody.skel_preserved.norm Γe hn) hfm₁)
+          · intro H₁ sc hb
+            obtain ⟨H₂, evs, hunw, hfmx, hu⟩ :=
+              loop_exit_ok hwf.decls hfmh hbody.skel_preserved.brk hnl hjoin hb
+            rw [hunw]
+            exact ⟨.unit, hfmx, hu⟩
       | @retBot Γ Δ e T hty =>
           -- (Return-Bottom) §5.7: the operand produced no value, so the
           -- `return` never fires.
@@ -3514,7 +3842,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           exact (ih hty hfm).bot_andThen
       | @ret Γ Γ₁ Δ e T hty hnl =>
           simp only [eval]
-          refine EvalOk.bind (ih hty hfm) ?_
+          refine EvalOk.bind (ih hty hfm) (by brk_sub) ?_
           intro H₁ v tr _ htyv hfm₁
           obtain ⟨H₂, evs, hrun, hlen, hout⟩ := runAllScopeDrops_ok hwf.decls hfm₁ hnl
           simp only [hrun]
@@ -3553,6 +3881,7 @@ theorem EvalRes.andThen_mono {r r' : EvalRes} {k k' : Store → Val → EvalRes}
         exact h (by rw [hc]; simp [EvalRes.withTrace])
       rw [hk H v tr rfl hkne]
   | returned H v tr => rw [hr (by simp)]; rfl
+  | broke H sc tr => rw [hr (by simp)]; rfl
   | panic pk tr => rw [hr (by simp)]; rfl
   | stuck w => rw [hr (by simp)]; rfl
   | outOfFuel => simp only [EvalRes.andThen] at h; exact absurd rfl h
@@ -3572,6 +3901,7 @@ theorem EvalRes.absorb_mono {r r' : EvalRes} {k k' : Store → Val → EvalRes}
         exact h (by rw [hc]; simp [EvalRes.withTrace])
       rw [hk H v tr rfl hkne]
   | returned H v tr => rw [hr (by simp)]; rfl
+  | broke H sc tr => rw [hr (by simp)]; rfl
   | panic pk tr => rw [hr (by simp)]; rfl
   | stuck w => rw [hr (by simp)]; rfl
   | outOfFuel => simp only [EvalRes.absorb] at h; exact absurd rfl h
@@ -3596,6 +3926,7 @@ theorem evalArgs_mono {ev ev' : Store → Expr → EvalRes}
             exact hne (by simp [EvalRes.withTrace])
           rw [evalArgs_mono hev H₁ es hrest]
       | returned H₁ v tr => rw [hev H e (by rw [hr]; simp), hr]
+      | broke H₁ sc tr => rw [hev H e (by rw [hr]; simp), hr]
       | panic pk tr' => rw [hev H e (by rw [hr]; simp), hr]
       | stuck w => rw [hev H e (by rw [hr]; simp), hr]
       | outOfFuel => rw [hr] at hne; exact absurd rfl hne
@@ -3617,6 +3948,24 @@ theorem eval_succ (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
       | use i => rfl
       | drop i => rfl
       | panic msg => rfl
+      | brk => rfl
+      | loop e₁ =>
+          -- §6.10: each turn is one body run and one re-entry, each at one
+          -- unit less, so the two answers agree turn by turn.
+          simp only [eval] at h ⊢
+          cases hr : eval M n P H φ e₁ with
+          | ok H₁ v tr =>
+              rw [ih H φ e₁ (by rw [hr]; simp), hr]
+              rw [hr] at h
+              dsimp only at h ⊢
+              have h₂ := ih H₁ φ (.loop e₁) (fun hc => h (by rw [hc]; rfl))
+              simp only [eval] at h₂
+              rw [h₂]
+          | broke H₁ sc tr => rw [ih H φ e₁ (by rw [hr]; simp), hr]
+          | returned H₁ v tr => rw [ih H φ e₁ (by rw [hr]; simp), hr]
+          | panic pk tr => rw [ih H φ e₁ (by rw [hr]; simp), hr]
+          | stuck w => rw [ih H φ e₁ (by rw [hr]; simp), hr]
+          | outOfFuel => rw [hr] at h; exact absurd rfl h
       | binop op e₁ e₂ =>
           simp only [eval] at h ⊢
           refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
@@ -3869,6 +4218,7 @@ theorem EvalRes.absorb_ne_returned {r : EvalRes} {k : Store → Val → EvalRes}
       simp only [EvalRes.absorb]
       exact EvalRes.withTrace_ne_returned (fun H' v' tr' => hk H₁ v₁ H' v' tr') H v tr
   | returned H₁ v₁ tr₁ => simp [EvalRes.absorb]
+  | broke H₁ sc tr₁ => simp [EvalRes.absorb]
   | panic pk tr => simp [EvalRes.absorb]
   | stuck w => simp [EvalRes.absorb]
   | outOfFuel => simp [EvalRes.absorb]
@@ -3904,7 +4254,7 @@ theorem run_safe (M : FloatModel) {P : Program} {fd : FnDef} (hwf : WfProgram P)
     (h0 : P.fns[0]? = some fd) (hp : fd.params = []) (fuel : Nat) :
     run M.toFloatOps P fuel = .outOfFuel ∨ (∃ k tr, run M.toFloatOps P fuel = .panic k tr) ∨
       (∃ H v tr, run M.toFloatOps P fuel = .ok H v tr ∧ HasTy P.decls v fd.ret) := by
-  have hok : EvalOk P.decls fd.ret fd.ret (some []) { env := [], scope := [] } []
+  have hok : EvalOk P.decls fd.ret fd.ret (some []) [] { env := [], scope := [] } []
       (run M.toFloatOps P fuel) :=
     soundness M hwf fuel (entry_typed h0 hp fd.ret) frameMatches_empty
   cases hr : run M.toFloatOps P fuel with
@@ -3912,6 +4262,11 @@ theorem run_safe (M : FloatModel) {P : Program} {fd : FnDef} (hwf : WfProgram P)
       rw [hr] at hok
       exact Or.inr (Or.inr ⟨H, v, tr, rfl, hok.1⟩)
   | returned H v tr => exact absurd hr (run_ne_returned M.toFloatOps H v tr)
+  | broke H sc tr =>
+      -- The entry call delivers no `break` (`entry_typed`'s `Ω` has none).
+      rw [hr] at hok
+      obtain ⟨_, hb, _⟩ := hok
+      cases hb
   | panic k tr => exact Or.inr (Or.inl ⟨k, tr, rfl⟩)
   | stuck w => rw [hr] at hok; exact hok.elim
   | outOfFuel => exact Or.inl rfl

@@ -647,7 +647,9 @@ def Contents.declaredPlan (D : Decls) : Contents → List Nat → Option (List N
 /-- Evaluation results: a value with the final store and trace (§6.12's normal
 result); a value handed back by an unwinding `return`, whose frame's scopes
 have already been dropped (§6.9's (D-Return)) and which every enclosing form
-passes on untouched until a call boundary absorbs it; a defined panic
+passes on untouched until a call boundary absorbs it; a `break` on its way to
+its loop, which every enclosing form passes on the same way until the loop
+catches it and runs the drops it owes (§6.10's (D-Break)); a defined panic
 (§6.12's `↯κ`); a violation ("stuck": either a configuration §6 leaves
 undefined or a linear action one of the monitors refuses, named; the module
 docstring says which is which); or exhausted fuel, which is not a machine
@@ -655,6 +657,10 @@ state at all but this interpreter's admission that it stopped early. -/
 inductive EvalRes where
   | ok (H : Store) (v : Val) (tr : List Event)
   | returned (H : Store) (v : Val) (tr : List Event)
+  /-- A `break` unwinding to its loop (§6.10's (D-Break)): the store, the
+  scope record of the frame the `break` fired in — the loop reads off it which
+  cells the body still owed a drop — and the trace so far. -/
+  | broke (H : Store) (scope : List Nat) (tr : List Event)
   | panic (k : PanicKind) (tr : List Event)
   | stuck (why : Violation)
   | outOfFuel
@@ -666,15 +672,18 @@ a normal result does (helper). -/
 def EvalRes.withTrace (tr : List Event) : EvalRes → EvalRes
   | .ok H v tr' => .ok H v (tr ++ tr')
   | .returned H v tr' => .returned H v (tr ++ tr')
+  | .broke H sc tr' => .broke H sc (tr ++ tr')
   | .panic k tr' => .panic k (tr ++ tr')
   | r => r
 
 /-- §6.2's evaluation-context search, as a combinator: run an operand, and if
 it reduced to a value, continue in the context with the store it left, the
 operand's trace prefixed onto whatever the context produces. Every other
-outcome — a trap (§6.12), a refusal, exhausted fuel, and an unwinding `return`
-(§6.9's (D-Return), which discards the context `E` it is under) — is the whole
-form's outcome, unchanged. -/
+outcome — a trap (§6.12), a refusal, exhausted fuel, an unwinding `return`
+(§6.9's (D-Return), which discards the context `E` it is under) and an
+unwinding `break` ((D-Break) §6.10, which discards the context `E'` it is
+under, pending `endscope` markers included) — is the whole form's outcome,
+unchanged. -/
 def EvalRes.andThen : EvalRes → (Store → Val → EvalRes) → EvalRes
   | .ok H v tr, k => (k H v).withTrace tr
   | r, _ => r
@@ -683,10 +692,18 @@ def EvalRes.andThen : EvalRes → (Store → Val → EvalRes) → EvalRes
 except that an unwinding `return` stops here. (D-Return) hands its value to
 the suspended caller context, so at the one form that suspended a caller — a
 call — a `returned` result becomes the call's value, with the drops its unwind
-already ran. Everywhere else the `return` keeps travelling (`andThen`). -/
+already ran. Everywhere else the `return` keeps travelling (`andThen`).
+
+A `break` never crosses a call boundary: §5.7 makes one well-formed only
+inside a loop, and (Fn) §5.8 gives a function body no `⟨break, _⟩` delivery,
+so a callee's `break` is caught by a loop of its own body — "a `break` in a
+callee would be ill-formed" (§6.10). One that reached the boundary anyway is
+a configuration §6 leaves undefined, `typeConfusion`; `soundness` proves no
+typed program reaches it. -/
 def EvalRes.absorb : EvalRes → (Store → Val → EvalRes) → EvalRes
   | .ok H v tr, k => (k H v).withTrace tr
   | .returned H v tr, _ => .ok H v tr
+  | .broke _ _ _, _ => .stuck .typeConfusion
   | r, _ => r
 
 mutual
@@ -1554,6 +1571,30 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
         match runAllScopeDrops P.decls H₁ φ with
         | .error w => .stuck w
         | .ok (H₂, evs) => .returned H₂ v evs
+  | fuel + 1, P, H, φ, .loop e =>
+      -- §6.10: run the body in the loop's frame. (D-Loop-Iter): when it
+      -- becomes a value — `()`, discarded, since the body is `unit`-typed —
+      -- its own `let`s and arms have already dropped what they bound (§6.7's
+      -- `endscope`), and the loop re-enters its body; each turn spends a unit
+      -- of fuel, so an infinite loop exhausts it. (D-Break): a `break` from
+      -- the body carries the scope record of the frame it fired in, whose
+      -- cells past the loop's own are the body's bindings still open there —
+      -- `unwind-drops(H, φ', φ)` drop-retires them, newest-first — and the
+      -- whole loop yields `()`. Every other outcome, an unwinding `return`
+      -- included, leaves the loop unchanged.
+      match eval M fuel P H φ e with
+      | .ok H₁ _ tr => (eval M fuel P H₁ φ (.loop e)).withTrace tr
+      | .broke H₁ sc tr =>
+          match unwindLocs P.decls H₁ (sc.drop φ.scope.length).reverse with
+          | .error w => .stuck w
+          | .ok (H₂, evs) => .ok H₂ .unit (tr ++ evs)
+      | r => r
+  | _ + 1, _, H, φ, .brk =>
+      -- (D-Break) §6.10: discard the evaluation context — every pending
+      -- `endscope` marker inside it included — and hand the loop the frame's
+      -- scope record, which is where §6.7 registered every binding the
+      -- discarded markers owed a drop (RUE-1277).
+      .broke H φ.scope []
 
 /-- A program's outcome (§6.12's top-level result): call the entry function,
 index `0`, with no arguments in an empty store and a frame with no bindings.

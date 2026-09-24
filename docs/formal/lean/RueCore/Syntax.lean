@@ -1030,7 +1030,16 @@ over `Expr` handles them the way it handles arguments. `indexDrop p idx πs` is
 index: §5.3 gives that rule no index premise, and its prose admits
 `@drop(a[i])` on a `Copy`-element array at a dynamic index. `drop` takes a
 constant `Place`, so the dynamic form is its own constructor, with the read's
-place and the read's premises; its value is `()`. -/
+place and the read's premises; its value is `()`.
+
+`loop e` is §2's `loop { e }` and `brk` its nullary `break`, which exits the
+innermost enclosing loop and hands it `()` (§5.7, §6.10). There is no
+value-carrying `break`: §2's grammar has none, and `4.8:22` makes
+`break expr` a compile-time error at the surface. `continue` has no
+constructor either: §2 elaborates it to the loop's back edge, and §5.7
+lists its `⟨continue, Σ⟩` delivery only so the back-edge set is closed under
+that elaboration. Lean spells the constructor `brk` because `break` is one of
+its own keywords. -/
 inductive Expr where
   | intLit (w : IntWidth) (s : Sign) (n : Int)
   | floatLit (w : FloatWidth) (l : FloatLit)
@@ -1058,7 +1067,36 @@ inductive Expr where
   | ite (c e₁ e₂ : Expr)
   | call (f : Nat) (args : List Expr)
   | ret (e : Expr)
+  | loop (e : Expr)
+  | brk
 deriving Repr
+
+mutual
+/-- §5.7's syntactic classification of a loop body, "`e` contains a `break`
+targeting this loop" (`4.8:21`): a `break` anywhere in `e` except inside a
+nested `loop`, whose own breaks target that loop (the core has no labelled
+`break`). Reachability is not consulted — a `break` after a `return` still
+counts — which is what makes (Loop-Break) `unit`-typed "even when every `break`
+is unreachable" (§5.7). -/
+def Expr.breaks : Expr → Bool
+  | .brk => true
+  | .loop _ => false
+  | .intLit _ _ _ | .floatLit _ _ | .boolLit _ | .unitLit | .use _ | .panic _
+  | .drop _ => false
+  | .binop _ e₁ e₂ | .letIn _ e₁ e₂ | .seq e₁ e₂ => e₁.breaks || e₂.breaks
+  | .unop _ e | .intCast _ _ e | .fintrin _ e | .dbg e | .repeatArray _ e _
+  | .assign _ e | .ret e => e.breaks
+  | .mkStruct _ args | .mkEnum _ _ args | .mkArray _ args | .call _ args
+  | .indexRead _ args _ | .indexDrop _ args _ => Expr.breaksList args
+  | .indexWrite _ idx _ e => e.breaks || Expr.breaksList idx
+  | .ite c e₁ e₂ => c.breaks || e₁.breaks || e₂.breaks
+  | .«match» scrut arms => scrut.breaks || Expr.breaksList arms
+
+/-- `Expr.breaks` over a list of subexpressions (helper). -/
+def Expr.breaksList : List Expr → Bool
+  | [] => false
+  | e :: es => e.breaks || Expr.breaksList es
+end
 
 /-- A by-value parameter (§5.8's `mi = ∅` mode): its declared type and its `μ`
 mark, which is what lets a body assign to it (§5.2). `borrow`/`inout`

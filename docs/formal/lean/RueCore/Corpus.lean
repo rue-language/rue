@@ -1002,6 +1002,7 @@ def outcomeSummary (c : Case) : String :=
         " and traps with " ++ panicName k
   | true, .stuck w => "accepted yet refused with " ++ violationName w ++ " (impossible by soundness)"
   | _, .returned _ _ _ => "the entry call handed on a return (impossible: the call boundary absorbs it)"
+  | _, .broke _ _ _ => "the entry call handed on a break (impossible: the call boundary refuses it)"
   | _, .outOfFuel => "not completed at the export fuel; this case is not exported"
 
 /-! ## JSON -/
@@ -1032,10 +1033,11 @@ def verdictJson (c : Case) : String :=
     "{\"accept\": {\"type\": " ++ jsonString (resultTyName c) ++ "}}"
   else "{\"reject\": {}}"
 
-/-- The `expected` field. Two of its arms are unreachable in the exported
+/-- The `expected` field. Three of its arms are unreachable in the exported
 document and are here because the function must be total: a `returned` result,
-which the entry call's own frame boundary absorbs (`run_ne_returned`), and an
-`outOfFuel` one, which `jsonOf` filters out — the consumer knows only `ok`,
+which the entry call's own frame boundary absorbs (`run_ne_returned`), a
+`broke` one, which the same boundary turns into the refusal it is spelled as
+here (`EvalRes.absorb`), and an `outOfFuel` one, which `jsonOf` filters out — the consumer knows only `ok`,
 `panic` and `stuck` (`crates/rue-oracle-diff/src/lean_corpus.rs`). -/
 def expectedJson (c : Case) : String :=
   match run exportOps c.prog exportFuel with
@@ -1049,6 +1051,7 @@ def expectedJson (c : Case) : String :=
       "{\"kind\": \"panic\", \"panic\": " ++ jsonString (panicName k) ++
         ", \"stdout\": " ++ jsonArray ((tr.filterMap eventLine).map jsonString) ++ "}"
   | .stuck w => "{\"kind\": \"stuck\", \"violation\": " ++ jsonString (violationName w) ++ "}"
+  | .broke _ _ _ => "{\"kind\": \"stuck\", \"violation\": \"typeConfusion\"}"
   | .outOfFuel => "{\"kind\": \"outOfFuel\"}"
 
 /-- Whether a case completed at the export fuel. A case that did not is left
