@@ -278,7 +278,8 @@ pub(crate) struct ModuleSpine {
 /// analysis, the comptime engine, and the inference prepass — decodes the same
 /// spine and then applies the one shadowing rule and (where privacy is its
 /// job) the one per-hop visibility walk to it. Returns `None` for a spine that
-/// bottoms out in anything other than a name, which can never be a module path.
+/// bottoms out in anything other than a name; a spine rooted at an inline
+/// `@import("path")` is [`decode_inline_import_spine`]'s.
 pub(crate) fn decode_module_spine(rir: &Rir, inst_ref: InstRef) -> Option<ModuleSpine> {
     let mut fields = Vec::new();
     let mut cursor = inst_ref;
@@ -297,6 +298,61 @@ pub(crate) fn decode_module_spine(rir: &Rir, inst_ref: InstRef) -> Option<Module
     Some(ModuleSpine {
         root,
         root_span,
+        fields,
+    })
+}
+
+/// The dotted spine of a module path rooted at an inline `@import("path")`
+/// (`@import("x.rue").inner.f`), decoded from RIR syntax alone.
+pub(crate) struct InlineImportSpine {
+    /// The import specifier the root intrinsic names.
+    pub(crate) path: Spur,
+    /// The field names hanging off the root, in source order.
+    pub(crate) fields: Vec<Spur>,
+}
+
+/// The one syntactic decoder for a module spine whose root is an inline
+/// `@import("path")` rather than a name (RUE-2401).
+///
+/// Pure syntax, like [`decode_module_spine`]: it walks the `FieldGet` chain
+/// down to an `@import` intrinsic with one string-literal argument and reports
+/// the specifier plus the field names in source order. No lexical binding can
+/// shadow an intrinsic root, and resolving the specifier to a module is the
+/// consumer's job through the canonical-import lookup. Returns `None` for any
+/// other root.
+pub(crate) fn decode_inline_import_spine(
+    rir: &Rir,
+    interner: &lasso::ThreadedRodeo,
+    inst_ref: InstRef,
+) -> Option<InlineImportSpine> {
+    let mut fields = Vec::new();
+    let mut cursor = inst_ref;
+    let (name, args) = loop {
+        match &rir.get(cursor).data {
+            InstData::FieldGet { base, field } => {
+                fields.push(*field);
+                cursor = *base;
+            }
+            InstData::Intrinsic { name, args } => break (*name, args),
+            _ => return None,
+        }
+    };
+    if rue_builtins::IntrinsicName::from_spelling(interner.resolve(&name))
+        != Some(rue_builtins::IntrinsicName::Import)
+    {
+        return None;
+    }
+    let args = rir.intrinsic_args(args);
+    let mut args = args.iter();
+    let (Some(arg), None) = (args.next(), args.next()) else {
+        return None;
+    };
+    let InstData::StringConst { content, .. } = rir.get(arg.value).data else {
+        return None;
+    };
+    fields.reverse();
+    Some(InlineImportSpine {
+        path: content,
         fields,
     })
 }

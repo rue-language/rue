@@ -15,7 +15,10 @@ use super::types::{InferType, TypeVarAllocator, TypeVarId};
 use crate::Type;
 use crate::intern_pool::TypeInternPool;
 use crate::scope::ScopedContext;
-use crate::sema::{ComptimeSelection, ConstValue, decode_module_spine, select_module_nominal};
+use crate::sema::{
+    ComptimeSelection, ConstValue, decode_inline_import_spine, decode_module_spine,
+    select_module_nominal,
+};
 use crate::semantic_type_resolution::{UnqualifiedNominalTier, select_unqualified_nominal};
 #[cfg(test)]
 use crate::types::ArrayLen;
@@ -1375,23 +1378,11 @@ impl<'a> ConstraintGenerator<'a> {
     /// their arguments are constrained to the callee's parameters (RUE-2401).
     /// Any other instruction, and the eager unit-test path, answer `None`.
     fn import_module_type(&self, inst_ref: InstRef) -> Option<Type> {
-        let InstData::Intrinsic { name, args } = &self.rir.get(inst_ref).data else {
-            return None;
-        };
-        if rue_builtins::IntrinsicName::from_spelling(self.interner.resolve(name))
-            != Some(rue_builtins::IntrinsicName::Import)
-        {
+        let spine = decode_inline_import_spine(self.rir, self.interner, inst_ref)?;
+        if !spine.fields.is_empty() {
             return None;
         }
-        let args = self.rir.intrinsic_args(args);
-        let mut args = args.iter();
-        let (Some(arg), None) = (args.next(), args.next()) else {
-            return None;
-        };
-        let InstData::StringConst { content, .. } = &self.rir.get(arg.value).data else {
-            return None;
-        };
-        let module = self.lazy?.import_module(self.interner.resolve(content))?;
+        let module = self.lazy?.import_module(self.interner.resolve(&spine.path))?;
         Some(Type::new_module(module))
     }
 
@@ -4498,14 +4489,10 @@ impl<'a> ConstraintGenerator<'a> {
     /// module binding of the previous hop's file. No lexical binding can
     /// shadow an intrinsic root.
     fn inline_import_member_file(&self, module: InstRef) -> Option<FileId> {
-        let mut fields = Vec::new();
-        let mut cursor = module;
-        while let InstData::FieldGet { base, field } = self.rir.get(cursor).data {
-            fields.push(field);
-            cursor = base;
-        }
-        let mut file_id = self.module_file(self.import_module_type(cursor)?)?;
-        for field in fields.into_iter().rev() {
+        let spine = decode_inline_import_spine(self.rir, self.interner, module)?;
+        let root = self.lazy?.import_module(self.interner.resolve(&spine.path))?;
+        let mut file_id = self.module_file_id(root)?;
+        for field in spine.fields {
             file_id = self.module_file(self.module_binding_type((file_id, field))?)?;
         }
         Some(file_id)

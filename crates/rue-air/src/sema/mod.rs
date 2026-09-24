@@ -64,7 +64,8 @@ pub use binding_manifest::{
 // guards in `api_inventory` and `consistency_tests`. `comptime` itself
 // stays private; only the guard source crosses this boundary.
 pub(crate) use aggregate_resolution::{
-    ModuleTypeMember, decode_module_spine, select_module_nominal, select_module_type_member,
+    ModuleTypeMember, decode_inline_import_spine, decode_module_spine, select_module_nominal,
+    select_module_type_member,
 };
 pub use comptime::ComptimeMethodReceiverPolicy;
 pub use comptime::{
