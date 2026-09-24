@@ -42,34 +42,141 @@ pub fn float_value_bits(text: &str, ty: Type) -> Option<u64> {
     }
 }
 
-/// Render a float bit pattern at `ty` as its shortest round-trip decimal text,
-/// the value form compile-time evaluation stores for a computed float.
+/// Render a float bit pattern at `ty` as the canonical text of a compile-time
+/// float *value*: the one spelling every value-equal float at that width
+/// shares, so that a comptime float's identity (a specialization key, a
+/// type-constructor instance, an interned constant) is its value, not how the
+/// source wrote it (RUE-2403).
+///
+/// A finite value is its shortest round-trip decimal at `ty` in the canonical
+/// decimal form of [`canonical_decimal_literal`] (`<significand>e<exponent>`),
+/// with a leading `-` when the sign bit is set. That is also the form a source
+/// literal canonicalizes to, so `3`, `3.0`, `3e0` and `0.3e1` all become
+/// `3e0`, and an untyped literal written in shortest form already has its
+/// value's spelling. The sign is kept on zero: `-0.0` (`-0e0`) and `0.0`
+/// (`0e0`) are distinct values (RUE-2402). The infinities are `inf` and
+/// `-inf`.
 ///
 /// A NaN renders as the canonical `NaN` regardless of sign or payload:
 /// compile-time evaluation runs on the build host, whose NaN sign bit is an
 /// accident of that host's hardware, and a compiler must produce the same
 /// program everywhere. At run time the same operation's NaN sign is
-/// target-defined (spec 3.12).
+/// target-defined (spec 3.12). So every comptime NaN at one width is one
+/// value, and one key.
 #[must_use]
 pub fn render_float_bits(bits: u64, ty: Type) -> String {
     let mut buffer = zmij::Buffer::new();
-    match ty {
+    let (shortest, negative) = match ty {
         Type::F32 => {
             let value = f32::from_bits(bits as u32);
             if value.is_nan() {
                 return "NaN".to_owned();
             }
-            buffer.format(value).to_owned()
+            if value.is_infinite() {
+                return if value < 0.0 { "-inf" } else { "inf" }.to_owned();
+            }
+            (buffer.format(value.abs()), value.is_sign_negative())
         }
         Type::F64 => {
             let value = f64::from_bits(bits);
             if value.is_nan() {
                 return "NaN".to_owned();
             }
-            buffer.format(value).to_owned()
+            if value.is_infinite() {
+                return if value < 0.0 { "-inf" } else { "inf" }.to_owned();
+            }
+            (buffer.format(value.abs()), value.is_sign_negative())
         }
         _ => unreachable!("render_float_bits requires a float type"),
+    };
+    let magnitude = canonical_decimal_literal(shortest)
+        .expect("the shortest round-trip rendering of a finite float is a decimal literal");
+    if negative {
+        format!("-{magnitude}")
+    } else {
+        magnitude
     }
+}
+
+/// The canonical text of a compile-time float value once it is bound at the
+/// float type `ty`: its bits at `ty`, rendered by [`render_float_bits`]. Two
+/// spellings of one value at `ty` give one text, even when their exact
+/// decimals differ (`0.1` and `0.10000000149011612` at `f32`). Returns `None`
+/// for a text that is not a float value or a `ty` that is not a float type.
+#[must_use]
+pub fn canonical_float_value_text(text: &str, ty: Type) -> Option<String> {
+    float_value_bits(text, ty).map(|bits| render_float_bits(bits, ty))
+}
+
+/// The float value text an integer takes where a float is expected (spec
+/// 3.12:11): its exact decimal in the canonical form, so `3` is `3e0` as the
+/// literal `3.0` is, and `-0` is `-0e0` (RUE-2402). The text stays exact;
+/// each use rounds it to its width.
+#[must_use]
+pub fn integer_float_value_text(value: i128) -> String {
+    let magnitude = canonical_decimal_literal(&value.unsigned_abs().to_string())
+        .expect("an integer's digits are a decimal literal");
+    if value < 0 {
+        format!("-{magnitude}")
+    } else {
+        magnitude
+    }
+}
+
+/// [`integer_float_value_text`] for a negated integer literal whose
+/// magnitude may not fit `i128`: the sign always stays, so `-0` is `-0e0`.
+#[must_use]
+pub fn negated_integer_float_value_text(magnitude: u64) -> String {
+    let magnitude = canonical_decimal_literal(&magnitude.to_string())
+        .expect("an integer's digits are a decimal literal");
+    format!("-{magnitude}")
+}
+
+/// A float value's text as a person reads it: a canonical `<digits>e<exp>`
+/// in the notation the runtime's float formatter uses (`3.0`, `0.1`, `-0.0`,
+/// `1e+16`, `1e-6`), so a diagnostic names `Mk(3.0)`, not `Mk(3e0)`. Any
+/// other text (`NaN`, `inf`, a spelling not in canonical form) is returned
+/// unchanged.
+#[must_use]
+pub fn display_float_value_text(text: &str) -> String {
+    let (sign, magnitude) = match text.strip_prefix('-') {
+        Some(magnitude) => ("-", magnitude),
+        None => ("", text),
+    };
+    let Some((digits, exponent)) = magnitude.split_once('e') else {
+        return text.to_owned();
+    };
+    let Ok(exponent) = exponent.parse::<i64>() else {
+        return text.to_owned();
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return text.to_owned();
+    }
+    let Ok(count) = i64::try_from(digits.len()) else {
+        return text.to_owned();
+    };
+    // The number of digits before the decimal point.
+    let point = count + exponent;
+    let rendered = if (-4..=16).contains(&point) {
+        if exponent >= 0 {
+            format!("{digits}{}.0", "0".repeat(exponent as usize))
+        } else if point > 0 {
+            let (whole, fraction) = digits.split_at(point as usize);
+            format!("{whole}.{fraction}")
+        } else {
+            format!("0.{}{digits}", "0".repeat((-point) as usize))
+        }
+    } else {
+        let (lead, rest) = digits.split_at(1);
+        let scientific = point - 1;
+        let exponent_sign = if scientific >= 0 { "+" } else { "" };
+        if rest.is_empty() {
+            format!("{lead}e{exponent_sign}{scientific}")
+        } else {
+            format!("{lead}.{rest}e{exponent_sign}{scientific}")
+        }
+    };
+    format!("{sign}{rendered}")
 }
 
 /// Convert a lexer-owned unsigned literal while applying a source unary sign.

@@ -53,7 +53,10 @@ pub use call_abi::{
 pub use exact_decimal::canonical_decimal_literal;
 pub use exact_decimal::finite_float_literal_bits;
 pub(crate) use exact_decimal::finite_float_literal_bits_with_sign;
-pub use exact_decimal::{float_value_bits, render_float_bits};
+pub use exact_decimal::{
+    canonical_float_value_text, display_float_value_text, float_value_bits,
+    integer_float_value_text, negated_integer_float_value_text, render_float_bits,
+};
 pub use ffi_predicates::{
     FfiPredicate, FfiPredicateFailure, FfiRejectReason, FfiTypePool, c_ffi_safe,
     c_passable_by_value, check_c_layout, has_c_layout, repr_c_marker_eligible,

@@ -210,7 +210,9 @@ fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
                             crate::CanonicalArgumentValue::Function(_) => "function".to_owned(),
                             crate::CanonicalArgumentValue::Unit => "()".to_owned(),
                             crate::CanonicalArgumentValue::String(value) => format!("\"{value}\""),
-                            crate::CanonicalArgumentValue::Float(value) => value.to_string(),
+                            crate::CanonicalArgumentValue::Float(value) => {
+                                rue_air::display_float_value_text(value)
+                            }
                             crate::CanonicalArgumentValue::Aggregate(_) => "<aggregate>".to_owned(),
                         }),
                 );
@@ -373,8 +375,9 @@ pub(crate) fn is_durable_str_type(ty: &DurableType) -> bool {
 /// The float value an integer takes where `f32` or `f64` is expected, or
 /// `None` in any other pairing. An integer literal is admitted wherever a
 /// float type is expected (spec 3.12:11, ADR-0065 §3) and denotes the float
-/// nearest its exact value, which the float's decimal text carries until its
-/// use rounds it to the width. This is the one conversion declaration-time
+/// nearest its exact value, which the float's canonical decimal text (`3e0`,
+/// the text the literal `3.0` has) carries until its use rounds it to the
+/// width. This is the one conversion declaration-time
 /// evaluation applies, both to a `const` initializer (`const X: f64 = 3;`) and
 /// to each element or field of a structural value whose declared slot is a
 /// float (`const A: [f32; 2] = [1, 2];`), matching the body path. A negated
@@ -386,9 +389,9 @@ pub(crate) fn durable_integer_as_float(
     ty: &DurableType,
 ) -> Option<DurableConstValue> {
     match (ty, value) {
-        (DurableType::F32 | DurableType::F64, DurableConstValue::Integer(integer)) => {
-            Some(DurableConstValue::Float(Arc::from(integer.to_string())))
-        }
+        (DurableType::F32 | DurableType::F64, DurableConstValue::Integer(integer)) => Some(
+            DurableConstValue::Float(Arc::from(rue_air::integer_float_value_text(*integer))),
+        ),
         _ => None,
     }
 }
@@ -1323,7 +1326,7 @@ mod tests {
         for ty in [DurableType::F32, DurableType::F64] {
             assert_eq!(
                 durable_integer_as_float(&DurableConstValue::Integer(-3), &ty),
-                Some(DurableConstValue::Float(Arc::from("-3")))
+                Some(DurableConstValue::Float(Arc::from("-3e0")))
             );
         }
         assert_eq!(

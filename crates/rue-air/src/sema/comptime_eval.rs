@@ -1806,6 +1806,74 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         )
     }
 
+    /// The value a comptime argument binds at its parameter type `expected`.
+    /// A float at `f32` or `f64` is keyed by its value at that width, not by
+    /// its spelling: `3`, `3.0` and `0.3e1` bind one canonical text, so they
+    /// name one specialization and one type-constructor instance (RUE-2403).
+    /// Every other value binds unchanged.
+    pub(crate) fn canonical_comptime_value_at(
+        &self,
+        value: ConstValue,
+        expected: Type,
+    ) -> ConstValue {
+        let ConstValue::Float(symbol) = &value else {
+            return value;
+        };
+        if expected != Type::F32 && expected != Type::F64 {
+            return value;
+        }
+        let text = self.body_interner().resolve(&symbol.spur());
+        let Some(canonical) = crate::canonical_float_value_text(text, expected) else {
+            return value;
+        };
+        if canonical == text {
+            return value;
+        }
+        ConstValue::Float(rue_rir::SymbolHandle::new(
+            self.body_interner().get_or_intern(canonical),
+        ))
+    }
+
+    /// Rebind every float value argument of a comptime call at its
+    /// (substituted) parameter type, by [`Self::canonical_comptime_value_at`],
+    /// before the call is reduced or keyed. A parameter whose type does not
+    /// resolve keeps its value; validation reports it.
+    pub(crate) fn canonicalize_comptime_call_values(
+        &mut self,
+        function: &crate::sema::info::FunctionCallInfo,
+        callee_types: &AHashMap<Spur, Type>,
+        callee_values: &mut AHashMap<Spur, ConstValue>,
+        span: Span,
+    ) {
+        if !callee_values
+            .values()
+            .any(|value| matches!(value, ConstValue::Float(_)))
+        {
+            return;
+        }
+        let param_data = self.body_param_data(function.params);
+        let param_names = param_data.names().to_vec();
+        let param_types = param_data.types().to_vec();
+        for (index, (name, declared)) in param_names.iter().zip(param_types).enumerate() {
+            if !matches!(callee_values.get(name), Some(ConstValue::Float(_))) {
+                continue;
+            }
+            let Ok(expected) = self.resolve_substituted_param_type(
+                function,
+                index,
+                declared,
+                callee_types,
+                callee_values,
+                span,
+            ) else {
+                continue;
+            };
+            let value = callee_values[name].clone();
+            let value = self.canonical_comptime_value_at(value, expected);
+            callee_values.insert(*name, value);
+        }
+    }
+
     /// Validate a structural argument against the complete local type shape
     /// before the comptime call is reduced.  Aggregate handles are opaque,
     /// so checking only their outer `Type` would admit malformed field counts,
@@ -3615,6 +3683,13 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeCallProtocol for OrdinaryBodyEngin
         >,
         Self::Failure,
     > {
+        let mut bound = bound;
+        self.canonicalize_comptime_call_values(
+            &admission.payload,
+            &bound.callee_types,
+            &mut bound.callee_values,
+            span,
+        );
         let external_result = OrdinaryBodyEngine::reduce_external_comptime_call(
             self,
             admission.name,
