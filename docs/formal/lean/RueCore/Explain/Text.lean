@@ -88,6 +88,8 @@ def stepResLines (indent : Nat) : StepRes → List String
   | .unwound v =>
       [sp indent ++ pad 8 "result" ++ "value " ++ valLine v ++
         " — handed past this node by a `return` (§6.9)"]
+  | .breaking =>
+      [sp indent ++ pad 8 "result" ++ "BREAK — unwinding to the enclosing loop (§6.10)"]
   | .panicked k =>
       [sp indent ++ pad 8 "result" ++ "PANIC (" ++ Corpus.panicName k ++ ") — a defined trap, §6.12"]
   | .refuse w why =>
@@ -122,6 +124,8 @@ def outcomeLines : EvalRes → List String
   | .returned _ v tr =>
       ["Outcome: ok — value " ++ valLine v ++ " (handed back by a `return`, §6.9)",
        "         drop trace: " ++ (if tr.isEmpty then "(no drops)" else eventsLine tr)]
+  | .broke _ _ _ =>
+      ["Outcome: a `break` outside every loop (impossible: the call boundary refuses it, §6.10)"]
   | .panic k tr =>
       ["Outcome: PANIC (" ++ Corpus.panicName k ++ ") — a defined trap, §6.12",
        "         trace up to the trap: " ++ (if tr.isEmpty then "(nothing)" else eventsLine tr)]

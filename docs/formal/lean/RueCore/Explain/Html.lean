@@ -136,6 +136,8 @@ def stepResHtml : StepRes → String
   | .unwound v =>
       tagc "span" "ok" (esc ("value " ++ valLine v)) ++
         tagc "div" "ctx" "handed past this node by a `return` (§6.9)"
+  | .breaking =>
+      tagc "span" "ok" "break" ++ tagc "div" "ctx" "unwinding to the enclosing loop (§6.10)"
   | .panicked k => tagc "span" "bad" (esc ("panic: " ++ Corpus.panicName k))
   | .refuse w why =>
       tagc "span" "bad" (esc ("refused: " ++ Corpus.violationName w)) ++
@@ -210,6 +212,9 @@ def outcomeHtml : EvalRes → String
       tagc "span" "ok" (esc ("ok — value " ++ valLine v ++ " (handed back by a `return`)")) ++
       tagc "div" "ctx" ("drop trace: " ++
         (if tr.isEmpty then "(no drops)" else esc (eventsLine tr)))
+  | .broke _ _ _ =>
+      tagc "span" "bad" "a `break` outside every loop" ++
+      tagc "div" "ctx" "impossible: the call boundary refuses it (§6.10)"
   | .outOfFuel =>
       tagc "span" "bad" "out of fuel" ++
       tagc "div" "ctx"

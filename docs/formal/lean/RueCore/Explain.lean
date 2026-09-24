@@ -159,6 +159,8 @@ partial def exprLine (P : Program) (R : Ty) : List Ty → Expr → String
       Print.fnName f ++ "(" ++
         String.intercalate ", " (args.map (fun a => exprLine P R Γ a)) ++ ")"
   | Γ, .ret e => "return " ++ exprLine P R Γ e
+  | _, .brk => "break"
+  | Γ, .loop e => "loop { " ++ exprLine P R Γ e ++ " }"
 
 /-- (helper) Clip a rendering so a tree keeps its shape in an 80-column
 terminal. Nothing is lost: every rendering prints the whole program, in
@@ -278,8 +280,8 @@ def cTyName : CTy → String
   | .ty T => Print.tyName T
 
 /-- (helper) §5.3's outgoing result `Ω`: the normal state, or `⊥` when there
-is none, followed by the recorded `⟨break, Σ⟩` deliveries when there are any
-(the fragment has no `break` yet, so there never are). -/
+is none, followed by the recorded `⟨break, Σ⟩` deliveries when there are
+any. -/
 def outLine (Ω : Out) : String :=
   let norm := match Ω.norm with
     | some Γ => ctxLine Γ
@@ -753,6 +755,49 @@ def armLeak : String :=
   "scope, which is §5.6's leak check on the payload binding ((Match) premise " ++
   "`each pattern local x_{ij} leaves scope at arm end`, §5.5; 6.3:17, 3.8:32; the " ++
   "compiler reports E0406)"
+
+/-- §5.7's loop-head state does not exist, or the iteration that computes it
+(`headIter`, `Checker.lean`) did not reach it. -/
+def loopHeadNone : String :=
+  "no loop-head state: iterating `Σ_h = join(Σ, B_h)` from the entry state fails — the " ++
+  "body is refused at a candidate head (the derivation below is the body at the entry " ++
+  "state), or the entry and a back-edge state disagree on a linear-carrying binding, " ++
+  "so the join is undefined (§5.7's `head(Σ, e)`; 3.8:79, 3.8:50; a value moved by one " ++
+  "iteration is `MovedOut` at the head, and the compiler reports E0205 \"moved in a " ++
+  "previous iteration\")"
+
+/-- The body's type is not `unit`, which every loop rule of §5.7 asks. -/
+def loopBodyNotUnit (T : Ty) : String :=
+  "the loop body has type " ++ Print.tyName T ++ ", but §5.7 types a loop body at unit " ++
+  "((Loop-Break)/(Loop-Div) premise `Γ;Σ_h;Λ ⊢ e ⇒ unit`)"
+
+/-- (helper) Unreachable: `headIter` stops only at a head the step leaves
+unchanged, which is the equation checked here. -/
+def loopHeadNotFixpoint : String :=
+  "the head the iteration found does not solve `Σ_h = head(Σ, e)` (§5.7); the iteration " ++
+  "stops only at a head the step leaves unchanged, so no program reaches this premise"
+
+/-- The `⟨diverge, Σ_h⟩` delivery's residual check (§5.6/§5.7's retained
+non-panic check, frame-wide). -/
+def divergeLeak : String :=
+  "the loop re-enters itself forever and a binding of this frame is still Owned at a " ++
+  "linear type at the loop head — the `⟨diverge, Σ_h⟩` delivery keeps §5.6's non-panic " ++
+  "residual check ((Loop-Div-Backedge) §5.7; (Fn) §5.8; 3.8:62; the compiler reports E0406)"
+
+/-- (Loop-Break) §5.7's discharge of the loop-local scopes an exit ends. -/
+def breakLeak : String :=
+  "a `break` leaves a binding the loop body opened Owned at a linear type — the exit ends " ++
+  "its scope, where §5.6's obligation is discharged ((Loop-Break) §5.7, `outside_loop`; " ++
+  "3.8:32; the compiler reports E0406)"
+
+/-- (Loop-Break) §5.7's exit join, `join({ outside_loop(Σ_x) | Σ_x ∈ X })`
+(`3.8:80`). -/
+def exitJoinConflict (who : Option String) : String :=
+  "the reachable exits disagree on a linear-carrying binding" ++
+  (match who with | some w => " — " ++ w | none => "") ++
+  ", so a linear value is consumed on only some exits ((Loop-Break) premise " ++
+  "`Ω_exit = join({ outside_loop(Σ_x) | Σ_x ∈ X })`, §5.7; 3.8:80, 3.8:50; the compiler " ++
+  "reports E0443)"
 
 /-- An operator whose operand diverges: the checker names no type for it.
 §5.3's (Strict-Bottom) concludes at the operator's own type, and that type is
@@ -1502,6 +1547,49 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
             accepted "(Return-Bottom) §5.7" Γ (.ret e) .never ⟨none, Δ⟩ [d]
           else
             rejected "(Return-Bottom) §5.7" Γ (.ret e) (Premise.returnTypeMismatch (c.pick R) R) [d]
+  | .brk => accepted "(Break) §5.7 + (Sub-Never) §5.7" Γ .brk .never ⟨none, [Γ]⟩ []
+  | .loop e =>
+      -- `check`'s loop, node for node: the head by iteration, the body at the
+      -- head (the one sub-derivation), the equation, then the rule `4.8:21`'s
+      -- syntactic classification picks.
+      let rule := if e.breaks then "(Loop-Break) §5.7" else "(Loop-Div) §5.7"
+      match headIter P.decls (fun Γ' => ((explain P R Γ' e).result).map (fun r => r.2.norm)) Γ
+          (e.nodes + 2) Γ with
+      | none => rejected rule Γ (.loop e) Premise.loopHeadNone [explain P R Γ e]
+      | some Γh =>
+        let d := explain P R Γh e
+        match d.result with
+        | some (c, Ωe) =>
+          if c.fits .unit ∧ Ctx.joinOpt P.decls (some Γ) Ωe.norm = some (some Γh) ∧
+              (Ωe.norm = none ∨ Ctx.Wf P.decls Γh) then
+            if e.breaks then
+              match Ωe.brk with
+              | [] =>
+                  if Ωe.norm = none ∨ NoResidualLinear P.decls Γh then
+                    accepted "(Loop-Break) §5.7, no reachable exit" Γ (.loop e) (.ty .unit)
+                      ⟨none, []⟩ [d]
+                  else rejected rule Γ (.loop e) Premise.divergeLeak [d]
+              | Γb₀ :: Γbs =>
+                  if (Γb₀ :: Γbs).all
+                      (fun Γb => decide (NoResidualLinear P.decls (Ctx.loopLocals Γh Γb))) then
+                    match Ctx.joinAll P.decls ((Γb₀ :: Γbs).map (Ctx.outsideLoop Γh)) with
+                    | some Γx => accepted rule Γ (.loop e) (.ty .unit) ⟨some Γx, []⟩ [d]
+                    | none =>
+                        rejected rule Γ (.loop e)
+                          (Premise.exitJoinConflict
+                            (joinAllConflict P.decls ((Γb₀ :: Γbs).map (Ctx.outsideLoop Γh))))
+                          [d]
+                  else rejected rule Γ (.loop e) Premise.breakLeak [d]
+            else if Ωe.norm = none ∨ NoResidualLinear P.decls Γh then
+              accepted
+                (if Ωe.norm.isSome then "(Loop-Div-Backedge) §5.7 + (Sub-Never) §5.7"
+                 else "(Loop-Div) §5.7 + (Sub-Never) §5.7")
+                Γ (.loop e) .never ⟨none, []⟩ [d]
+            else rejected "(Loop-Div-Backedge) §5.7" Γ (.loop e) Premise.divergeLeak [d]
+          else if c.fits .unit then
+            rejected rule Γ (.loop e) Premise.loopHeadNotFixpoint [d]
+          else rejected rule Γ (.loop e) (Premise.loopBodyNotUnit (c.pick .unit)) [d]
+        | none => rejected rule Γ (.loop e) Premise.subDerivation [d]
 
 /-- The instrumented mirror of `checkArgs` (§5.8's (Call) argument list):
 the sub-derivations in argument order, and the outgoing `Ω` when every
@@ -1931,6 +2019,44 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
           by_cases h : c.fits R = true ∧ NoResidualLinear P.decls Γ₁
           · rw [if_pos h, if_pos h]; rfl
           · rw [if_neg h, if_neg h]; split <;> rfl
+  | .brk, Γ => rfl
+  | .loop e, Γ => by
+      simp only [explain, check, explain_result e]
+      cases hh : headIter P.decls (fun Γ' => Option.map (fun r => r.snd.norm) (check P R Γ' e))
+          Γ (e.nodes + 2) Γ with
+      | none => rfl
+      | some Γh =>
+        dsimp only
+        cases hc : check P R Γh e with
+        | none => rfl
+        | some r =>
+          obtain ⟨c, Ωe⟩ := r
+          dsimp only
+          by_cases h₁ : c.fits .unit = true ∧ Ctx.joinOpt P.decls (some Γ) Ωe.norm = some (some Γh) ∧
+              (Ωe.norm = none ∨ Ctx.Wf P.decls Γh)
+          · simp only [if_pos h₁]
+            by_cases hb : e.breaks = true
+            · simp only [if_pos hb]
+              cases Ωe.brk with
+              | nil =>
+                  dsimp only
+                  by_cases h₂ : Ωe.norm = none ∨ NoResidualLinear P.decls Γh
+                  · simp only [if_pos h₂]; rfl
+                  · simp only [if_neg h₂]; rfl
+              | cons Γb₀ Γbs =>
+                  dsimp only
+                  split
+                  · rename_i h₃
+                    try simp only [if_pos h₃]
+                    cases Ctx.joinAll P.decls ((Γb₀ :: Γbs).map (Ctx.outsideLoop Γh)) <;> rfl
+                  · rename_i h₃
+                    try simp only [if_neg h₃]
+                    rfl
+            · simp only [if_neg hb]
+              by_cases h₂ : Ωe.norm = none ∨ NoResidualLinear P.decls Γh
+              · simp only [if_pos h₂]; rfl
+              · simp only [if_neg h₂]; rfl
+          · simp only [if_neg h₁]; split <;> rfl
 
 /-- **The index-list derivations are the checker's** (helper). -/
 theorem explainIdx_result {P : Program} {R : Ty} : ∀ (es : List Expr) (Γ : Ctx),
@@ -2019,6 +2145,7 @@ fuel. -/
 inductive StepRes where
   | value (v : Val)
   | unwound (v : Val)
+  | breaking
   | panicked (k : PanicKind)
   | refuse (why : Violation) (premise : String)
   | exhausted
@@ -2027,6 +2154,7 @@ inductive StepRes where
 def StepRes.ofRes : EvalRes → StepRes
   | .ok _ v _ => .value v
   | .returned _ v _ => .unwound v
+  | .broke _ _ _ => .breaking
   | .panic k _ => .panicked k
   | .stuck w => .refuse w (violationPremise w)
   | .outOfFuel => .exhausted
@@ -2694,6 +2822,26 @@ def traceEval (M : FloatOps) (P : Program) :
                  ("run-all-scope-drops(" ++ locsLine φ.scope.reverse ++ ")")
                  H₁ H₂ evs (.unwound v) (.returned H₂ v (tr ++ evs)))
       | r => propagate t.steps d Θ R (.ret e) "(D-Return) §6.9" H r
+  | _ + 1, d, Θ, R, H, φ, .brk =>
+      traced [] d Θ R .brk "(D-Break) §6.10" H H [] .breaking (.broke H φ.scope [])
+  | fuel + 1, d, Θ, R, H, φ, .loop e =>
+      let tb := traceEval M P fuel (d + 1) Θ R H φ e
+      match tb.res with
+      | .ok H₁ _ tr =>
+          -- (D-Loop-Iter): the body became `()`, and the loop re-enters it.
+          let tl := traceEval M P fuel (d + 1) Θ R H₁ φ (.loop e)
+          traced (tb.steps ++ tl.steps) d Θ R (.loop e) "(D-Loop-Iter) §6.10 (re-enter the body)"
+            H (lastStore (tb.steps ++ tl.steps) H₁) [] (StepRes.ofRes tl.res)
+            (tl.res.withTrace tr)
+      | .broke H₁ sc tr =>
+          (match unwindLocs P.decls H₁ (sc.drop φ.scope.length).reverse with
+           | .error w =>
+               refused tb.steps d Θ R (.loop e) "(D-Break) §6.10 (unwind to the loop)" H₁ w
+           | .ok (H₂, evs) =>
+               tracedAs tb.steps d Θ R (.loop e) "(D-Break) §6.10 (unwind to the loop)"
+                 ("unwind-drops(" ++ locsLine (sc.drop φ.scope.length).reverse ++ ")")
+                 H₁ H₂ evs (.value .unit) (.ok H₂ .unit (tr ++ evs)))
+      | r => propagate tb.steps d Θ R (.loop e) "(D-Loop-Iter) §6.10" H r
   | fuel + 1, d, Θ, R, H, φ, .call f args =>
       let ta := traceArgs (fun H' e' => traceEval M P fuel (d + 1) Θ R H' φ e') H args
       match ta.res with
@@ -2725,6 +2873,9 @@ def traceEval (M : FloatOps) (P : Program) :
                    "(D-Return)/(D-Return-Main) §6.9 (the callee's return is the call's value)"
                    ("absorb " ++ valLine v)
                    H₃ H₃ [] (.value v) (.ok H₃ v (tr ++ tr₃))
+             | .broke _ _ _ =>
+                 refused (ta.steps ++ [push] ++ tb.steps) d Θ R (.call f args)
+                   "(D-Call) §6.9 — a `break` reached the call boundary" H .typeConfusion
              | r =>
                  didNotRun (ta.steps ++ [push] ++ tb.steps) d Θ R (.call f args)
                    (match r with
@@ -2857,6 +3008,12 @@ theorem traceEval_res (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
             traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, tracedAs, didNotRun, refused, EvalRes.absorb,
+              EvalRes.withTrace] <;> grind)
+      | brk => rfl
+      | loop e₁ =>
+          simp only [traceEval, eval, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, tracedAs, refused,
               EvalRes.withTrace] <;> grind)
 
 /-! ## A whole program

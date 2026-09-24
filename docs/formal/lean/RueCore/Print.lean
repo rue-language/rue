@@ -281,11 +281,15 @@ mutual
 a `return` or `@panic`, a form whose first diverging operand stops it (§5.3's
 (Strict-Bottom), (Seq-Bottom), (Let-Bottom)), a sequence or `let` whose tail
 diverges, and a branch whose condition or scrutinee diverges or whose every arm
-does. Divergence in the fragment is structural — it reads no ownership state —
-so the printer can compute it from the syntax alone, as `tyOf` does types. It
-is what lets `tyOf` stop where `check` stops (helper). -/
+does. A `break` diverges, and so does a loop with no **reachable** `break`
+targeting it (`reachesBrk`): (Loop-Div) and the break-exited loop rule with
+`X = ∅` both conclude at `⊥`. Divergence in the fragment is structural — it
+reads no ownership state — so the printer can compute it from the syntax
+alone, as `tyOf` does types. It is what lets `tyOf` stop where `check` stops
+(helper). -/
 def diverges : Expr → Bool
-  | .ret _ | .panic _ => true
+  | .ret _ | .panic _ | .brk => true
+  | .loop e => !reachesBrk e
   | .binop _ e₁ e₂ => diverges e₁ || diverges e₂
   | .unop _ e | .intCast _ _ e | .fintrin _ e | .dbg e | .repeatArray _ e _ => diverges e
   | .mkStruct _ args | .mkEnum _ _ args | .mkArray _ args | .call _ args => divergesList args
@@ -307,6 +311,35 @@ def divergesAll : List Expr → Bool
   | [] => false
   | [e] => diverges e
   | e :: es => diverges e && divergesAll es
+
+/-- Whether `check` gives a loop body a `⟨break, _⟩` delivery (§5.3): a
+`break` targeting the enclosing loop that a derivation reaches, which is one
+outside any nested loop and not past a diverging subexpression — the same
+structural reachability `diverges` reads (helper). -/
+def reachesBrk : Expr → Bool
+  | .brk => true
+  | .loop _ => false
+  | .binop _ e₁ e₂ | .letIn _ e₁ e₂ | .seq e₁ e₂ =>
+      reachesBrk e₁ || (!diverges e₁ && reachesBrk e₂)
+  | .unop _ e | .intCast _ _ e | .fintrin _ e | .dbg e | .repeatArray _ e _
+  | .assign _ e | .ret e => reachesBrk e
+  | .mkStruct _ args | .mkEnum _ _ args | .mkArray _ args | .call _ args
+  | .indexRead _ args _ | .indexDrop _ args _ => reachesBrkList args
+  | .indexWrite _ idx _ e => reachesBrk e || (!diverges e && reachesBrkList idx)
+  | .ite c e₁ e₂ => reachesBrk c || (!diverges c && (reachesBrk e₁ || reachesBrk e₂))
+  | .«match» scrut arms => reachesBrk scrut || (!diverges scrut && reachesBrkAny arms)
+  | _ => false
+
+/-- A list evaluated left to right reaches a `break` before its first member
+that diverges (helper). -/
+def reachesBrkList : List Expr → Bool
+  | [] => false
+  | e :: es => reachesBrk e || (!diverges e && reachesBrkList es)
+
+/-- Some arm reaches a `break` (helper). -/
+def reachesBrkAny : List Expr → Bool
+  | [] => false
+  | e :: es => reachesBrk e || reachesBrkAny es
 
 /-- Type inference without ownership: the fragment's types do not depend on
 Σ, so the printer can recover every subexpression's type from the binders
@@ -383,6 +416,10 @@ def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
         | none => tyOf P R Γ e₂
   | .call f _ => (P.fns[f]?).map FnDef.ret
   | .ret _ => none
+  | .brk => none
+  -- `4.8:21`'s syntactic classification: a loop with a `break` targeting it is
+  -- `()`, even when no `break` is reachable, and one without is `never`.
+  | .loop e => if e.breaks then some .unit else none
 
 /-- The type of a `match`'s arms: the first arm's that has one, each read
 under its variant's payload locals, innermost binder first (helper). -/
@@ -596,12 +633,22 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
       fnName f ++ "(" ++
         String.intercalate ", " (args.map (fun a => expr P R Γ lvl a)) ++ ")"
   | .ret e => "return " ++ expr P R Γ lvl e
+  | .brk => "break"
+  | .loop e =>
+      -- §2's `loop { e }`; the body is a block whose value `()` is discarded
+      -- at every turn (§6.10's (D-Loop-Iter)).
+      "loop {\n" ++
+      indent (lvl + 1) ++ expr P R Γ (lvl + 1) e ++ "\n" ++
+      indent lvl ++ "}"
 
 /-- An operator's operand: a `return` there is parenthesized, because Rue's
 `return` takes the whole expression after it — `return 1 + 2` returns `3` —
-where the core `binop (ret 1) 2` returns `1` (helper). -/
+where the core `binop (ret 1) 2` returns `1`. A `break` is parenthesized the
+same way, so that a following token cannot be read as its operand
+(helper). -/
 partial def operand (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → String
   | .ret e => "(return " ++ expr P R Γ lvl e ++ ")"
+  | .brk => "(break)"
   | e => expr P R Γ lvl e
 
 /-- The dynamic tail `[e₁]π₁…[eₖ]πₖ` of a place below a dynamic index, read

@@ -642,6 +642,33 @@ inductive OwnSt where
   | fields (ts : List OwnSt)
 deriving Repr
 
+mutual
+/-- Equality of ownership states is decidable, by structure; Lean's deriving
+handler does not cover the nested `List OwnSt`, so it is written out. `check`
+compares two states at §5.7's loop head (helper). -/
+def OwnSt.decEq : (a b : OwnSt) → Decidable (a = b)
+  | .owned, .owned => isTrue rfl
+  | .movedOut, .movedOut => isTrue rfl
+  | .fields as, .fields bs =>
+      match OwnSt.decEqList as bs with
+      | isTrue h => isTrue (h ▸ rfl)
+      | isFalse h => isFalse (fun h' => by cases h'; exact h rfl)
+  | .owned, .movedOut | .owned, .fields _ | .movedOut, .owned | .movedOut, .fields _
+  | .fields _, .owned | .fields _, .movedOut => isFalse (fun h => by cases h)
+
+/-- The same over a slot list (helper). -/
+def OwnSt.decEqList : (as bs : List OwnSt) → Decidable (as = bs)
+  | [], [] => isTrue rfl
+  | [], _ :: _ | _ :: _, [] => isFalse (fun h => by cases h)
+  | a :: as, b :: bs =>
+      match OwnSt.decEq a b, OwnSt.decEqList as bs with
+      | isTrue h₁, isTrue h₂ => isTrue (h₁ ▸ h₂ ▸ rfl)
+      | isFalse h₁, _ => isFalse (fun h => by cases h; exact h₁ rfl)
+      | _, isFalse h₂ => isFalse (fun h => by cases h; exact h₂ rfl)
+end
+
+instance : DecidableEq OwnSt := OwnSt.decEq
+
 /-- The recorded states of a node's fields; a node with no record of its own
 has none, and every field of it is `owned` (helper). -/
 def OwnSt.fieldStates : OwnSt → List OwnSt
@@ -901,7 +928,7 @@ structure Entry where
   ty : Ty
   mu : Bool
   st : OwnSt
-deriving Repr
+deriving Repr, DecidableEq
 
 /-- Re-mark an entry's ownership state (helper). -/
 def Entry.setSt (en : Entry) (s : OwnSt) : Entry := { en with st := s }
@@ -2128,6 +2155,179 @@ theorem Ctx.join_assoc {D : Decls} (hD : WfStructs D) :
           Entry.join_assoc hD h₁.1 h₂.1 w₁.1 w₂.1 w₃.1,
           Ctx.join_assoc hD as bs cs h₁.2 h₂.2 w₁.2 w₂.2 w₃.2]
 
+/-! ### The join is idempotent and absorbs its right arm
+
+§5.7's loop-head state is a fixpoint of `Σ_h = join(Σ, Σ_e)`, where `Σ_e` is
+the back-edge state of the body typed at `Σ_h`. Re-entering the loop at `Σ_h`
+must solve the same equation, `Σ_h = join(Σ_h, Σ_e)`, and that is
+`join(join(Σ, Σ_e), Σ_e) = join(Σ, Σ_e)`: the join **absorbs** a second copy of
+its right arm. Idempotence is the special case the absorption needs at a
+wholly `Owned` left arm. Both hold of a right arm that is a shape of its type
+(`OwnSt.wf`); nothing is asked of the left one, which is what lets
+`soundness` re-enter a loop from an entry state it knows nothing about but its
+agreement with the store. -/
+
+mutual
+/-- **§5.5's join is idempotent** on a state that is a shape of its type: a
+path joined with itself is unchanged (helper). -/
+theorem OwnSt.join_idem {D : Decls} : ∀ (b : OwnSt) (T : Ty), OwnSt.wf D b T = true →
+    OwnSt.join D b b T = some b
+  | .owned, _, _ => by simp [OwnSt.join_owned_left, ownedJoinOk]
+  | .movedOut, _, _ => by simp [OwnSt.join_movedOut_left, residualLinear]
+  | .fields bs, .struct s, hw => by
+      cases hd : D.structs[s]? with
+      | none => simp [OwnSt.wf, hd] at hw
+      | some sd =>
+          rw [OwnSt.wf_fields_struct D s sd hd] at hw
+          rw [OwnSt.join_fields_struct D s sd hd, OwnSt.joinList_idem bs sd.fields hw]
+          rfl
+  | .fields bs, .array T n, hw => by
+      rw [OwnSt.wf_fields_array] at hw
+      rw [OwnSt.join_fields_array, OwnSt.joinList_idem bs _ hw]
+      rfl
+  | .fields _, .int _ _, hw | .fields _, .float _, hw | .fields _, .bool, hw
+  | .fields _, .unit, hw | .fields _, .enum _, hw => by simp [OwnSt.wf] at hw
+
+/-- The same over a slot list (helper). -/
+theorem OwnSt.joinList_idem {D : Decls} : ∀ (bs : List OwnSt) (Ts : List Ty),
+    OwnSt.wfList D bs Ts = true → OwnSt.joinList D bs bs Ts = some bs
+  | [], [], _ => rfl
+  | [], T :: Ts, _ => by rw [OwnSt.joinList_nil_left]; simp [ownedJoinOkList]
+  | _ :: _, [], hw => by simp [OwnSt.wfList] at hw
+  | b :: bs, T :: Ts, hw => by
+      simp only [OwnSt.wfList, Bool.and_eq_true] at hw
+      simp [OwnSt.joinList, OwnSt.join_idem b T hw.1, OwnSt.joinList_idem bs Ts hw.2]
+end
+
+mutual
+/-- **§5.5's join absorbs its right arm**: joining the result with the right
+arm again changes nothing, given the right arm is a shape of its type
+(helper). -/
+theorem OwnSt.join_absorb {D : Decls} : ∀ (a b c : OwnSt) (T : Ty), OwnSt.wf D b T = true →
+    OwnSt.join D a b T = some c → OwnSt.join D c b T = some c
+  | .owned, b, c, T, hw, h => by
+      rw [OwnSt.join_owned_left] at h
+      split at h
+      · cases h; exact OwnSt.join_idem _ T hw
+      · cases h
+  | .movedOut, b, c, T, _, h => by
+      rw [OwnSt.join_movedOut_left] at h
+      split at h
+      · cases h
+      · cases h; rw [OwnSt.join_movedOut_left, if_neg (by assumption)]
+  | .fields as, .owned, c, T, _, h => by
+      rw [OwnSt.join_owned_right] at h ⊢
+      split at h
+      · cases h; rw [if_pos (by assumption)]
+      · cases h
+  | .fields as, .movedOut, c, T, _, h => by
+      rw [OwnSt.join_movedOut_right] at h
+      split at h
+      · cases h
+      · cases h; simp [OwnSt.join_movedOut_left, residualLinear]
+  | .fields as, .fields bs, c, .struct s, hw, h => by
+      cases hd : D.structs[s]? with
+      | none => simp [OwnSt.wf, hd] at hw
+      | some sd =>
+          rw [OwnSt.wf_fields_struct D s sd hd] at hw
+          rw [OwnSt.join_fields_struct D s sd hd] at h
+          cases hl : OwnSt.joinList D as bs sd.fields with
+          | none => rw [hl] at h; cases h
+          | some cs =>
+              rw [hl] at h
+              simp only [Option.map_some, Option.some.injEq] at h
+              subst h
+              rw [OwnSt.join_fields_struct D s sd hd,
+                OwnSt.joinList_absorb as bs cs sd.fields hw hl]
+              rfl
+  | .fields as, .fields bs, c, .array T n, hw, h => by
+      rw [OwnSt.wf_fields_array] at hw
+      rw [OwnSt.join_fields_array] at h
+      cases hl : OwnSt.joinList D as bs (List.replicate n T) with
+      | none => rw [hl] at h; cases h
+      | some cs =>
+          rw [hl] at h
+          simp only [Option.map_some, Option.some.injEq] at h
+          subst h
+          rw [OwnSt.join_fields_array, OwnSt.joinList_absorb as bs cs _ hw hl]
+          rfl
+  | .fields _, .fields _, _, .int _ _, hw, _ | .fields _, .fields _, _, .float _, hw, _
+  | .fields _, .fields _, _, .bool, hw, _ | .fields _, .fields _, _, .unit, hw, _
+  | .fields _, .fields _, _, .enum _, hw, _ => by simp [OwnSt.wf] at hw
+
+/-- The same over a slot list (helper). -/
+theorem OwnSt.joinList_absorb {D : Decls} : ∀ (as bs cs : List OwnSt) (Ts : List Ty),
+    OwnSt.wfList D bs Ts = true →
+    OwnSt.joinList D as bs Ts = some cs → OwnSt.joinList D cs bs Ts = some cs
+  | _, bs, cs, [], _, h => by
+      cases cs with
+      | nil => cases bs <;> rfl
+      | cons _ _ => simp [OwnSt.joinList] at h
+  | [], bs, cs, T :: Ts, hw, h => by
+      rw [OwnSt.joinList_nil_left] at h
+      split at h
+      · cases h; exact OwnSt.joinList_idem _ _ hw
+      · cases h
+  | a :: as, [], cs, T :: Ts, _, h => by
+      rw [OwnSt.joinList_nil_right] at h ⊢
+      split at h
+      · cases h; rw [if_pos (by assumption)]
+      · cases h
+  | a :: as, b :: bs, cs, T :: Ts, hw, h => by
+      simp only [OwnSt.wfList, Bool.and_eq_true] at hw
+      simp only [OwnSt.joinList] at h
+      cases hab : OwnSt.join D a b T with
+      | none => rw [hab] at h; cases h
+      | some c =>
+          cases hl : OwnSt.joinList D as bs Ts with
+          | none => rw [hab, hl] at h; cases h
+          | some cs' =>
+              rw [hab, hl] at h
+              cases h
+              simp [OwnSt.joinList, OwnSt.join_absorb a b c T hw.1 hab,
+                OwnSt.joinList_absorb as bs cs' Ts hw.2 hl]
+end
+
+/-- §5.5's per-entry join absorbs its right arm, given the two entries share a
+skeleton and the right one is well formed (helper). -/
+theorem Entry.join_absorb {D : Decls} {a b c : Entry} (hsk : a.skel = b.skel)
+    (hw : Entry.wf D b = true) (h : a.join D b = some c) : c.join D b = some c := by
+  have hty : b.ty = a.ty := Entry.ty_of_skel hsk
+  unfold Entry.join at h ⊢
+  cases hj : OwnSt.join D a.st b.st a.ty with
+  | none => rw [hj] at h; cases h
+  | some u =>
+      rw [hj] at h
+      simp only [Option.map_some, Option.some.injEq] at h
+      subst h
+      have hw' : OwnSt.wf D b.st a.ty = true := by rw [← hty]; exact hw
+      simp [Entry.setSt_st, Entry.setSt_ty, OwnSt.join_absorb a.st b.st u a.ty hw' hj,
+        Entry.setSt_setSt]
+
+/-- **§5.5's join absorbs its right arm**, context-wide: `join(join(Γ, Γe), Γe)
+= join(Γ, Γe)` whenever `Γe` is well formed and has `Γ`'s skeleton. This is
+the lattice fact behind re-entering a loop at its head (`LoopHead.reenter`). -/
+theorem Ctx.join_absorb {D : Decls} : ∀ {Γ Γe Γh : Ctx}, Γ.skel = Γe.skel → Ctx.Wf D Γe →
+    Ctx.join D Γ Γe = some Γh → Ctx.join D Γh Γe = some Γh
+  | [], [], _, _, _, h => by cases h; rfl
+  | [], _ :: _, _, hs, _, _ => by simp [Ctx.skel] at hs
+  | _ :: _, [], _, hs, _, _ => by simp [Ctx.skel] at hs
+  | a :: as, b :: bs, Γh, hs, hw, h => by
+      simp only [Ctx.skel, List.map_cons, List.cons.injEq] at hs
+      simp only [Ctx.Wf, List.mem_cons, forall_eq_or_imp] at hw
+      unfold Ctx.join at h
+      cases he : a.join D b with
+      | none => simp [he] at h
+      | some e =>
+          cases hr : Ctx.join D as bs with
+          | none => simp [he, hr] at h
+          | some rest =>
+              simp only [he, hr, Option.some.injEq] at h
+              subst h
+              have he' := Entry.join_absorb hs.1 hw.1 he
+              have hr' := Ctx.join_absorb (Γh := rest) hs.2 hw.2 hr
+              simp [Ctx.join, he', hr']
+
 /-- **The §5.5 join of two well-formed contexts is well formed**, so the
 accumulator of the n-way fold keeps the invariant associativity is stated
 over. -/
@@ -2424,6 +2624,56 @@ def Ctx.joinOpts (D : Decls) (os : List (Option Ctx)) : Option (Option Ctx) :=
   match os.filterMap id with
   | [] => some none
   | Γ :: Γs => (Ctx.joinFold D Γ Γs).map some
+
+/-! ### The loop head and the loop's exits (§5.7)
+
+§5.7 types a loop body once, at the **loop-head state** `Σ_h`, "the entry
+state joined with the states at the body's own reachable back edges":
+
+```
+  head(Σ, e) = Σ_h   where
+    Γ;Σ_h;Λ ⊢ e ⇒ unit ⊣ Ω_h
+    B_h = { Σ_e | Ω_h = Σ_e;Δ_h } ∪ { Σ_c | ⟨continue, Σ_c⟩ ∈ Δ_h }
+    outside_loop(Σ_h) = join({ outside_loop(Σ) } ∪ { outside_loop(Σ_b) | Σ_b ∈ B_h })
+```
+
+The core has no `continue` (§2 elaborates it to the back edge), so `B_h` is at
+most the body's own normal completion state, and that state has the head's
+skeleton — a body's `let`s close before it completes — so `outside_loop` is
+the identity on it. `LoopHead` is the equation, stated over the body's normal
+outgoing state `o`: `Σ_h = Σ` when the body never completes (`B_h = ∅`), and
+`Σ_h = join(Σ, Σ_e)` when it completes at `Σ_e`. It is a **fixpoint** premise:
+`o` is read off the judgment that types the body *at* `Σ_h`. Any solution is
+admitted, as the calculus admits any; `check` computes the least one by
+iteration (`Checker.lean`).
+
+The second clause asks that `Σ_h`, when a back edge produced it, be a state
+of its declared types (`Ctx.Wf`). That is not a premise the calculus writes,
+because §5's states *are* shapes of their types; here it is the invariant
+`Typed.wf` proves of every state a rule writes, and a join of two such states
+is one (`Ctx.join_wf`). The equation alone does not give it: `Σ_h` appears on
+both sides, and a field record at a scalar type, which no rule writes, can
+solve it. With it, re-entering the loop at `Σ_h` solves the equation again
+(`LoopHead.reenter`), which is what the back-edge proof in `soundness` needs.
+-/
+
+/-- §5.7's loop-head equation `Σ_h = head(Σ, e)`, over the body's normal
+outgoing state `o` (section docstring): `Σ_h` is the §5.5 join of the entry
+state `Γ` with the body's back-edge state when it has one, and is `Γ` itself
+when it has none; a head a back edge produced is a state of its types. -/
+def LoopHead (D : Decls) (Γ : Ctx) (o : Option Ctx) (Γh : Ctx) : Prop :=
+  Ctx.joinOpt D (some Γ) o = some (some Γh) ∧ ∀ Γe, o = some Γe → Ctx.Wf D Γh
+
+/-- The loop-local part of a `⟨break, Σ_x⟩` delivery made by a loop body typed
+at `Γh`: the bindings the body opened and had not closed where the `break`
+fired, innermost first. §5.7 discharges their §5.6 obligation "at the exit
+itself, where their scopes end" (helper). -/
+def Ctx.loopLocals (Γh Γb : Ctx) : Ctx := Γb.take (Γb.length - Γh.length)
+
+/-- §5.7's `outside_loop(Σ_x)` for a delivery made by a body typed at `Γh`:
+the bindings in scope at the loop's entry, which are the delivered context's
+outermost `|Γh|` entries (helper). -/
+def Ctx.outsideLoop (Γh Γb : Ctx) : Ctx := Γb.drop (Γb.length - Γh.length)
 
 mutual
 /-- `Γ ; Σ ⊢ e ⇒ T ⊣ Ω` (§5), over the fused context, under the program `P`
@@ -3159,6 +3409,77 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   | retBot {Γ Δ e T} :
       Typed P R Γ e R ⟨none, Δ⟩ →
       Typed P R Γ (.ret e) T ⟨none, Δ⟩
+  /-- **(Break) §5.7** with (Sub-Never) folded in: `break` yields no value to
+  its own context, so it concludes at every type and at `⊥`, and it delivers
+  `⟨break, Σ⟩` — the **whole** context in force where it fires, loop-local
+  bindings included — to the innermost enclosing loop, which is the one
+  consumer that reads it (`loopBreak`). Every rule between the two carries the
+  delivery outward by §5.3's threading, whether or not the `break` is in tail
+  position. "Well-formed only inside a loop" is (Fn)'s premise that a body
+  delivers no `break` (`WfFn`). -/
+  | brk {Γ T} :
+      Typed P R Γ .brk T ⟨none, [Γ]⟩
+  /-- **(Loop-Div-Backedge) and (Loop-Div) §5.7**, in one rule, because they
+  differ only in whether the body reaches its back edge — which is what the
+  body's own `Ω` says, so the rule reads it rather than splitting on it. The
+  body syntactically contains no `break` targeting this loop (`4.8:21`,
+  `Expr.breaks`), so the loop is `never`-typed, with (Sub-Never) folded in.
+
+  The body is typed once, at the **loop-head state** `Σ_h = head(Σ, e)`
+  (`3.8:79`): `LoopHead` is §5.7's defining equation, `Σ_h` the join of the
+  entry state with the states at the body's own reachable back edges, read off
+  the very judgment that types the body at `Σ_h`. When the body continues it
+  re-enters itself forever, so it delivers `⟨diverge, Σ_h⟩`; the fragment
+  checks that delivery where it fires, frame-wide, by `NoResidualLinear` —
+  §5.6/§5.7's retained non-panic residual check, which the compiler enforces
+  as E0406 for a linear local or a by-value parameter live at `loop { }`
+  (`../03-metatheory.md` records the reading). When the body never completes
+  (Loop-Div), `B_h = ∅`, so `Σ_h = Σ` and there is no diverge delivery: the
+  loop is left only by the body's own `return`/`@panic`, which were checked
+  where they fired. Either way the loop concludes at `⊥` and delivers no
+  `break` outward (`Δ_out` removes this loop's own edges, and the syntactic
+  premise says there are none — `Typed.brk_nil`). -/
+  | loopDiv {Γ Γh Ωe e T} :
+      Typed P R Γh e .unit Ωe →
+      LoopHead P.decls Γ Ωe.norm Γh →
+      e.breaks = false →
+      (∀ Γe, Ωe.norm = some Γe → NoResidualLinear P.decls Γh) →
+      Typed P R Γ (.loop e) T ⟨none, []⟩
+  /-- **(Loop-Break) §5.7 with a reachable exit** (`X ≠ ∅`): the body contains
+  a `break` targeting this loop (`4.8:21`), so the loop is `unit`-typed; the
+  body is typed at the loop-head state (`LoopHead`, as for `loopDiv`), and the
+  exits are read off that one judgment. `X` is the body's `brk`: each
+  delivery is the whole context at its `break`, so the loop splits it at the
+  loop's own depth. The loop-local bindings still open there (the prefix,
+  `Ctx.loopLocals`) end at the exit, which discharges §5.6 for them
+  ("discharged at the exit itself"; dynamically, §6.10's unwind); the rest
+  (`Ctx.outsideLoop`) is `outside_loop(Σ_x)`, and the loop's normal outgoing
+  state is §5.5's join over those (`3.8:80`), `Ctx.joinAll` in delivery
+  order (the order is immaterial: `Ctx.joinAll_perm`). The body's normal
+  completion is the back edge, which `LoopHead` already reads; it is not an
+  exit. The loop consumes its own `break` deliveries (`Δ_out`), and the
+  fragment has no others, so it delivers none. -/
+  | loopBreak {Γ Γh Ωe Γx e} :
+      Typed P R Γh e .unit Ωe →
+      LoopHead P.decls Γ Ωe.norm Γh →
+      e.breaks = true →
+      (∀ Γb ∈ Ωe.brk, NoResidualLinear P.decls (Ctx.loopLocals Γh Γb)) →
+      Ctx.joinAll P.decls (Ωe.brk.map (Ctx.outsideLoop Γh)) = some Γx →
+      Typed P R Γ (.loop e) .unit ⟨some Γx, []⟩
+  /-- **(Loop-Break) §5.7 with no reachable exit** (`X = ∅`): every targeting
+  `break` is unreachable, so the loop is still `unit`-typed by `4.8:21`'s
+  syntactic classification but has no post-loop state, `⊥`. With a reachable
+  back edge it re-enters itself forever and delivers `⟨diverge, Σ_h⟩` exactly
+  as `loopDiv` does, checked the same way; with none, the body's own
+  `return`/`@panic` are its only exits. "The two forms differ only in
+  `4.8:21`'s syntactic type, never in what they deliver." -/
+  | loopBreakDiv {Γ Γh Ωe e} :
+      Typed P R Γh e .unit Ωe →
+      LoopHead P.decls Γ Ωe.norm Γh →
+      e.breaks = true →
+      Ωe.brk = [] →
+      (∀ Γe, Ωe.norm = some Γe → NoResidualLinear P.decls Γh) →
+      Typed P R Γ (.loop e) .unit ⟨none, []⟩
 
 /-- An expression list typed left to right against a list of expected types
 with Σ threaded (`Σ0 = Σ`, then `Γ;Σ_{i-1};Λ ⊢ e ⇒ Ti ⊣ Σi` for each `i`).
@@ -3221,34 +3542,37 @@ end
 index `k`: the arm's body is typed under that variant's payload locals, and
 when it continues its locals are discharged by §5.6 at the arm's end and what
 it contributes to the n-way join is one of the states the join was taken
-over. This is the inversion `soundness` performs once (D-Match) §6.6 has read
-the tag (helper). -/
+over, and its deliveries are among the arms'. This is the inversion
+`soundness` performs once (D-Match) §6.6 has read the tag (helper). -/
 theorem TypedArms.at_index {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty} :
     ∀ {arms : List Expr} {Tss : List (List Ty)} {os : List (Option Ctx)} {Δs : List Ctx},
       TypedArms P R Γ₀ arms Tss T os Δs →
       ∀ (k : Nat) {body : Expr} {Ts : List Ty}, arms[k]? = some body → Tss[k]? = some Ts →
         ∃ ob Δb, Typed P R (armCtx Ts Γ₀) body T ⟨ob, Δb⟩ ∧
-          ∀ Γb, ob = some Γb →
-            NoResidualLinear P.decls (Γb.take Ts.length) ∧ some (Γb.drop Ts.length) ∈ os
+          (∀ Γb, ob = some Γb →
+            NoResidualLinear P.decls (Γb.take Ts.length) ∧ some (Γb.drop Ts.length) ∈ os) ∧
+          Δb ⊆ Δs
   | _, _, _, _, .noArms, _, _, _, ha, _ => by simp at ha
   | _, _, _, _, .arm hbody hres _, 0, _, _, ha, ht => by
       simp only [List.getElem?_cons_zero, Option.some_inj] at ha ht
       subst ha; subst ht
-      refine ⟨_, _, hbody, fun Γb h => ?_⟩
+      refine ⟨_, _, hbody, fun Γb h => ?_, List.subset_append_left _ _⟩
       cases h
       exact ⟨hres, List.mem_cons_self⟩
   | _, _, _, _, .armDiv hbody _, 0, _, _, ha, ht => by
       simp only [List.getElem?_cons_zero, Option.some_inj] at ha ht
       subst ha; subst ht
-      exact ⟨_, _, hbody, fun Γb h => by cases h⟩
+      exact ⟨_, _, hbody, fun Γb h => (by cases h), List.subset_append_left _ _⟩
   | _, _, _, _, .arm _ _ hrest, (k + 1), _, _, ha, ht => by
       simp only [List.getElem?_cons_succ] at ha ht
-      obtain ⟨ob, Δb, h₁, h₂⟩ := TypedArms.at_index hrest k ha ht
-      exact ⟨ob, Δb, h₁, fun Γb h => ⟨(h₂ Γb h).1, List.mem_cons_of_mem _ (h₂ Γb h).2⟩⟩
+      obtain ⟨ob, Δb, h₁, h₂, h₃⟩ := TypedArms.at_index hrest k ha ht
+      exact ⟨ob, Δb, h₁, fun Γb h => ⟨(h₂ Γb h).1, List.mem_cons_of_mem _ (h₂ Γb h).2⟩,
+        h₃.trans (List.subset_append_right _ _)⟩
   | _, _, _, _, .armDiv _ hrest, (k + 1), _, _, ha, ht => by
       simp only [List.getElem?_cons_succ] at ha ht
-      obtain ⟨ob, Δb, h₁, h₂⟩ := TypedArms.at_index hrest k ha ht
-      exact ⟨ob, Δb, h₁, fun Γb h => ⟨(h₂ Γb h).1, List.mem_cons_of_mem _ (h₂ Γb h).2⟩⟩
+      obtain ⟨ob, Δb, h₁, h₂, h₃⟩ := TypedArms.at_index hrest k ha ht
+      exact ⟨ob, Δb, h₁, fun Γb h => ⟨(h₂ Γb h).1, List.mem_cons_of_mem _ (h₂ Γb h).2⟩,
+        h₃.trans (List.subset_append_right _ _)⟩
 
 /-- **Exhaustiveness gives the tag an arm** (§5.5): a `match` has exactly one
 arm per variant, so a variant index the declaration has is an index the arm list
@@ -3525,15 +3849,6 @@ theorem Ctx.joinAll_wf {D : Decls} {sk : List (Ty × Bool)} {Γs : List Ctx} {Γ
       obtain ⟨hsk, hwf⟩ := hinv Γ List.mem_cons_self
       exact Ctx.joinFold_wf Γs Γ Γ' (fun Δ hΔ => hinv Δ (List.mem_cons_of_mem _ hΔ)) hsk hwf h
 
-/-- The skeleton half of §5's convention that `Γ` is fixed while `Σ` is
-threaded, read over `Ω`: a normal outgoing state, when there is one, has the
-incoming skeleton. `⊥` has no state and so nothing to preserve (helper). -/
-def Out.SkelOk (Γ : Ctx) (Ω : Out) : Prop := ∀ Γ', Ω.norm = some Γ' → Γ'.skel = Γ.skel
-
-/-- `⊥` preserves every skeleton vacuously (helper). -/
-theorem Out.skelOk_none {Γ : Ctx} {Δ : List Ctx} : Out.SkelOk Γ ⟨none, Δ⟩ :=
-  fun _ h => by cases h
-
 /-- The two-arm §5.5 join over `Ω` preserves a skeleton both continuing arms
 have (helper). -/
 theorem Ctx.joinOpt_skel {D : Decls} {a b : Option Ctx} {Γ' : Ctx} {S : List (Ty × Bool)}
@@ -3576,157 +3891,284 @@ theorem Ctx.joinOpts_skel {D : Decls} {os : List (Option Ctx)} {Γ₀ Γ' : Ctx}
           cases h
           exact (Ctx.joinFold_skel Γs hj).trans hs.1
 
+/-- A delivered context **extends** `Γ`: it is `Γ`'s skeleton with zero or
+more bindings pushed on top. A `⟨break, Σ⟩` delivery records the whole
+context in force at the `break` (`Typed.brk`), so between the loop that reads
+it and the `break` that made it sit the bindings of every `let` and every
+`match` arm the `break` is inside (helper). -/
+def Ctx.Extends (Γb Γ : Ctx) : Prop := ∃ pre, Γb.skel = pre ++ Γ.skel
+
+/-- A context extends itself (helper). -/
+theorem Ctx.Extends.refl (Γ : Ctx) : Ctx.Extends Γ Γ := ⟨[], rfl⟩
+
+/-- Extension is read against the skeleton only (helper). -/
+theorem Ctx.Extends.skel {Γb Γ₁ Γ : Ctx} (h : Ctx.Extends Γb Γ₁) (hs : Γ₁.skel = Γ.skel) :
+    Ctx.Extends Γb Γ := by
+  obtain ⟨pre, hp⟩ := h
+  exact ⟨pre, hp.trans (by rw [hs])⟩
+
+/-- Extending a context with one more binding on top extends the context
+under it: a delivery from a `let` body extends the `let`'s own context
+(helper). -/
+theorem Ctx.Extends.pop {Γb Γ : Ctx} {en : Entry} (h : Ctx.Extends Γb (en :: Γ)) :
+    Ctx.Extends Γb Γ := by
+  obtain ⟨pre, hp⟩ := h
+  exact ⟨pre ++ [en.skel], by simpa [Ctx.skel] using hp⟩
+
+/-- The same for a `match` arm's payload locals (helper). -/
+theorem Ctx.Extends.armCtx {Γb Γ₀ : Ctx} {Ts : List Ty} (h : Ctx.Extends Γb (armCtx Ts Γ₀)) :
+    Ctx.Extends Γb Γ₀ := by
+  obtain ⟨pre, hp⟩ := h
+  exact ⟨pre ++ (Ts.map fun T => (T, false)).reverse, by rw [hp, Ctx.skel_armCtx]; simp⟩
+
+/-- An extension is at least as long as what it extends (helper). -/
+theorem Ctx.Extends.length_le {Γb Γ : Ctx} (h : Ctx.Extends Γb Γ) : Γ.length ≤ Γb.length := by
+  obtain ⟨pre, hp⟩ := h
+  have := congrArg List.length hp
+  simp [Ctx.skel] at this
+  omega
+
+/-- `outside_loop(Σ_x)` has the loop's own skeleton: popping the loop-local
+bindings off a delivery that extends the head leaves the head's bindings
+(helper). -/
+theorem Ctx.outsideLoop_skel {Γh Γb : Ctx} (h : Ctx.Extends Γb Γh) :
+    (Ctx.outsideLoop Γh Γb).skel = Γh.skel := by
+  obtain ⟨pre, hp⟩ := h
+  have hlen : Γb.length = pre.length + Γh.length := by
+    have := congrArg List.length hp
+    simpa [Ctx.skel] using this
+  have hmap : (Ctx.outsideLoop Γh Γb).skel = Γb.skel.drop (Γb.length - Γh.length) := by
+    simp [Ctx.outsideLoop, Ctx.skel, List.map_drop]
+  rw [hmap, hp, show Γb.length - Γh.length = pre.length by omega, List.drop_left]
+
+/-- The skeleton half of §5's convention that `Γ` is fixed while `Σ` is
+threaded, read over `Ω`: a normal outgoing state, when there is one, has the
+incoming skeleton, and every `⟨break, Σ⟩` delivery **extends** it — the
+bindings in force at the edge, on top of the incoming ones. `⊥` has no state,
+so it constrains only the deliveries (helper). -/
+structure Out.SkelOk (Γ : Ctx) (Ω : Out) : Prop where
+  /-- The normal outgoing state has the incoming skeleton. -/
+  norm : ∀ Γ', Ω.norm = some Γ' → Γ'.skel = Γ.skel
+  /-- Every delivered state extends it. -/
+  brk : ∀ Γb ∈ Ω.brk, Ctx.Extends Γb Γ
+
+/-- A `⊥` outcome whose deliveries extend the context preserves its skeleton
+(helper). -/
+theorem Out.skelOk_bot {Γ : Ctx} {Δ : List Ctx} (h : ∀ Γb ∈ Δ, Ctx.Extends Γb Γ) :
+    Out.SkelOk Γ ⟨none, Δ⟩ :=
+  ⟨fun _ h => (by cases h), h⟩
+
+/-- An outcome that continues at the incoming context itself and delivers
+nothing preserves its skeleton (helper). -/
+theorem Out.skelOk_same {Γ : Ctx} : Out.SkelOk Γ ⟨some Γ, []⟩ :=
+  ⟨fun _ h => by cases h; rfl, fun _ h => by cases h⟩
+
+/-- An outcome that continues at a context of the incoming skeleton and
+delivers nothing preserves it (helper). -/
+theorem Out.skelOk_of {Γ Γ' : Ctx} (h : Γ'.skel = Γ.skel) : Out.SkelOk Γ ⟨some Γ', []⟩ :=
+  ⟨fun _ hn => by cases hn; exact h, fun _ h => by cases h⟩
+
+/-- §5.3's threading, read over skeletons: a prefix that continues at `Γ₁`
+followed by a subexpression typed from `Γ₁` preserves the skeleton the
+prefix started from, `Ω ⊕ Δ₁` included (helper). -/
+theorem Out.SkelOk.then {Γ Γ₁ : Ctx} {Δ₁ : List Ctx} {Ω : Out}
+    (h₁ : Out.SkelOk Γ ⟨some Γ₁, Δ₁⟩) (h₂ : Out.SkelOk Γ₁ Ω) : Out.SkelOk Γ (Ω.add Δ₁) := by
+  have hs := h₁.norm Γ₁ rfl
+  refine ⟨fun Γ' h => (h₂.norm Γ' h).trans hs, fun Γb hb => ?_⟩
+  rcases List.mem_append.mp hb with hb | hb
+  · exact (h₂.brk Γb hb).skel hs
+  · exact h₁.brk Γb hb
+
+/-- The loop-head state has the entry's skeleton: it is the entry itself or
+its §5.5 join with the back-edge state (helper). -/
+theorem LoopHead.skel {D : Decls} {Γ Γh : Ctx} {o : Option Ctx} (h : LoopHead D Γ o Γh) :
+    Γh.skel = Γ.skel := by
+  cases o with
+  | none =>
+      have h1 := h.1
+      simp only [Ctx.joinOpt, Option.some.injEq] at h1
+      cases h1; rfl
+  | some Γe =>
+      have h1 := h.1
+      simp only [Ctx.joinOpt] at h1
+      cases hj : Ctx.join D Γ Γe with
+      | none => rw [hj] at h1; cases h1
+      | some z =>
+          rw [hj] at h1
+          simp only [Option.map_some, Option.some.injEq] at h1
+          cases h1
+          exact Ctx.join_skel hj
+
+/-- **Re-entering a loop at its head solves the head equation again** (§5.7):
+if `Σ_h = head(Σ, e)` with the body typed at `Σ_h`, then `Σ_h = head(Σ_h, e)`
+with the same body judgment. Without a back edge `Σ_h` is `Σ_h`'s own entry;
+with one it is `join(Σ, Σ_e)`, and the join absorbs a second `Σ_e`
+(`Ctx.join_absorb`). This is the lattice step of the back-edge proof: the
+derivation that typed the loop at entry types it again at every later
+iteration, so `soundness`'s fuel induction applies to the next turn. -/
+theorem LoopHead.reenter {D : Decls} {Γ Γh : Ctx} {o : Option Ctx} (h : LoopHead D Γ o Γh)
+    (ho : ∀ Γe, o = some Γe → Γe.skel = Γh.skel ∧ Ctx.Wf D Γe) : LoopHead D Γh o Γh := by
+  cases o with
+  | none => exact ⟨rfl, fun _ h => by cases h⟩
+  | some Γe =>
+      have h1 := h.1
+      simp only [Ctx.joinOpt] at h1
+      cases hj : Ctx.join D Γ Γe with
+      | none => rw [hj] at h1; cases h1
+      | some z =>
+          rw [hj] at h1
+          simp only [Option.map_some, Option.some.injEq] at h1
+          subst h1
+          obtain ⟨hsk, hw⟩ := ho Γe rfl
+          have hsk' : Γ.skel = Γe.skel := (Ctx.join_skel hj).symm.trans hsk.symm
+          have hj' := Ctx.join_absorb hsk' hw hj
+          exact ⟨by simp [Ctx.joinOpt, hj'], h.2⟩
+
+mutual
 /-- Every rule preserves the context skeleton: only ownership states flow.
 This is the fused context's image of §5's convention that `Γ` is fixed while
-`Σ` is threaded through the judgment, read over `Ω` (`Out.SkelOk`). -/
-theorem Typed.skel_preserved {P R} {Γ : Ctx} {e T} {Ω : Out} (h : Typed P R Γ e T Ω) :
-    Out.SkelOk Γ Ω := by
-  induction h using Typed.rec
-    (motive_2 := fun Γ _ _ Ω _ => Out.SkelOk Γ Ω)
-    (motive_3 := fun Γ₀ _ _ _ os _ _ => Ctx.SameSkel Γ₀ (os.filterMap id)) with
-  | intLit _ => exact fun _ h => by cases h; rfl
-  | boolLit => exact fun _ h => by cases h; rfl
-  | unitLit => exact fun _ h => by cases h; rfl
-  | useCopy _ _ _ _ _ _ => exact fun _ h => by cases h; rfl
-  | useMove hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
-  | useDeclared hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
-  | binop _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
-  | binopBot _ _ _ => exact Out.skelOk_none
-  | floatBinop _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
-  | floatBinopBot _ _ _ => exact Out.skelOk_none
-  | neg _ ih => exact ih
-  | floatNeg _ ih => exact ih
-  | notOp _ ih => exact ih
-  | bitnot _ ih => exact ih
-  | intCast _ ih => exact ih
-  | floatLit _ => exact fun _ h => by cases h; rfl
-  | intToFloat _ ih => exact ih
-  | floatIntrin _ _ ih => exact ih
-  | panic => exact Out.skelOk_none
-  | dbg _ _ ih => exact ih
-  | mkStruct _ _ ih => exact ih
-  | mkArray _ ih => exact ih
-  | repeatArray _ _ ih => exact ih
-  | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => exact fun _ h => by cases h; exact ih _ rfl
-  | indexReadBot _ _ _ _ _ _ _ _ => exact Out.skelOk_none
-  | indexDrop _ ih => exact ih
-  | indexWrite _ _ _ _ _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
-      intro _ h
-      cases h; exact (skel_set_setSt hget₁ _).trans ((ih₂ _ rfl).trans (ih₁ _ rfl))
-  | indexWriteBotRhs _ _ => exact Out.skelOk_none
-  | indexWriteBotIdx _ _ _ _ _ _ _ _ => exact Out.skelOk_none
-  | mkEnum _ _ _ ih => exact ih
-  | «match» _ _ _ _ hjoin ihs iharms =>
-      intro _ h
-      cases h; exact (Ctx.joinOpts_skel hjoin iharms).trans (ihs _ rfl)
-  | matchBot _ _ => exact Out.skelOk_none
-  | noArms => trivial
-  | arm _ _ _ ihbody iharms => exact ⟨skel_drop_armCtx (ihbody _ rfl), iharms⟩
-  | armDiv _ _ _ iharms => exact iharms
-  | dropCopy _ _ _ _ _ _ => exact fun _ h => by cases h; rfl
-  | dropRes hget _ _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
-  | dropDeclared hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
-  | letIn _ _ _ ih₁ ih₂ =>
-      intro _ h
+`Σ` is threaded through the judgment, read over `Ω` (`Out.SkelOk`): the
+normal outgoing state has the incoming skeleton, and every `⟨break, Σ⟩`
+delivery extends it. The three judgments are proved together, by recursion
+on the derivation. -/
+theorem Typed.skel_preserved {P R} : ∀ {Γ : Ctx} {e T} {Ω : Out},
+    Typed P R Γ e T Ω → Out.SkelOk Γ Ω
+  | _, _, _, _, .intLit _ => Out.skelOk_same
+  | _, _, _, _, .boolLit => Out.skelOk_same
+  | _, _, _, _, .unitLit => Out.skelOk_same
+  | _, _, _, _, .floatLit _ => Out.skelOk_same
+  | _, _, _, _, .useCopy _ _ _ _ _ _ => Out.skelOk_same
+  | _, _, _, _, .dropCopy _ _ _ _ _ _ => Out.skelOk_same
+  | _, _, _, _, .useMove hget _ _ _ _ _ _ _ => Out.skelOk_of (skel_set_setSt hget _)
+  | _, _, _, _, .useDeclared hget _ _ _ _ _ _ _ => Out.skelOk_of (skel_set_setSt hget _)
+  | _, _, _, _, .dropRes hget _ _ _ _ _ _ _ _ => Out.skelOk_of (skel_set_setSt hget _)
+  | _, _, _, _, .dropDeclared hget _ _ _ _ _ _ _ => Out.skelOk_of (skel_set_setSt hget _)
+  | _, _, _, _, .binop h₁ h₂ _ => (Typed.skel_preserved h₁).then (Typed.skel_preserved h₂)
+  | _, _, _, _, .binopBot h₁ _ => Typed.skel_preserved h₁
+  | _, _, _, _, .floatBinop h₁ h₂ _ => (Typed.skel_preserved h₁).then (Typed.skel_preserved h₂)
+  | _, _, _, _, .floatBinopBot h₁ _ => Typed.skel_preserved h₁
+  | _, _, _, _, .neg h => Typed.skel_preserved h
+  | _, _, _, _, .floatNeg h => Typed.skel_preserved h
+  | _, _, _, _, .notOp h => Typed.skel_preserved h
+  | _, _, _, _, .bitnot h => Typed.skel_preserved h
+  | _, _, _, _, .intCast h => Typed.skel_preserved h
+  | _, _, _, _, .intToFloat h => Typed.skel_preserved h
+  | _, _, _, _, .floatIntrin h _ => Typed.skel_preserved h
+  | _, _, _, _, .panic => Out.skelOk_bot (by simp)
+  | _, _, _, _, .dbg h _ => Typed.skel_preserved h
+  | _, _, _, _, .mkStruct _ hta => TypedArgs.skel_preserved hta
+  | _, _, _, _, .mkEnum _ _ hta => TypedArgs.skel_preserved hta
+  | _, _, _, _, .mkArray hta => TypedArgs.skel_preserved hta
+  | _, _, _, _, .repeatArray h _ => Typed.skel_preserved h
+  | _, _, _, _, .«match» hscrut _ _ harms hjoin => by
+      have ks := Typed.skel_preserved hscrut
+      have ka := TypedArms.skel_all harms
+      have hs := ks.norm _ rfl
+      refine ⟨fun _ h => ?_, fun Γb hb => ?_⟩
+      · cases h; exact (Ctx.joinOpts_skel hjoin ka.1).trans hs
+      · rcases List.mem_append.mp hb with hb | hb
+        · exact (ka.2 Γb hb).skel hs
+        · exact ks.brk Γb hb
+  | _, _, _, _, .matchBot h => Typed.skel_preserved h
+  | _, _, _, _, .indexRead hta _ _ _ _ _ _ _ _ _ _ _ => TypedArgs.skel_preserved hta
+  | _, _, _, _, .indexReadBot hta _ _ _ _ _ _ => TypedArgs.skel_preserved hta
+  | _, _, _, _, .indexWrite _ _ _ _ _ _ _ h₁ hta _ hget₁ _ _ _ _ => by
+      have k := (Typed.skel_preserved h₁).then (TypedArgs.skel_preserved hta)
+      exact ⟨fun _ h => by cases h; exact (skel_set_setSt hget₁ _).trans (k.norm _ rfl), k.brk⟩
+  | _, _, _, _, .indexWriteBotRhs h => Typed.skel_preserved h
+  | _, _, _, _, .indexWriteBotIdx _ _ _ h₁ hta _ =>
+      (Typed.skel_preserved h₁).then (TypedArgs.skel_preserved hta)
+  | _, _, _, _, .indexDrop h => Typed.skel_preserved h
+  | _, _, _, _, .letIn h₁ h₂ _ => by
+      have k₁ := Typed.skel_preserved h₁
+      have k₂ := Typed.skel_preserved h₂
+      have hs := k₁.norm _ rfl
+      refine ⟨fun _ h => ?_, fun Γb hb => ?_⟩
+      · cases h
+        have := k₂.norm _ rfl
+        simp only [Ctx.skel, List.map_cons, List.cons.injEq] at this
+        exact this.2.trans hs
+      · rcases List.mem_append.mp hb with hb | hb
+        · exact ((k₂.brk Γb hb).pop).skel hs
+        · exact k₁.brk Γb hb
+  | _, _, _, _, .letInDiv h₁ h₂ => by
+      have k₁ := Typed.skel_preserved h₁
+      have k₂ := Typed.skel_preserved h₂
+      have hs := k₁.norm _ rfl
+      refine Out.skelOk_bot fun Γb hb => ?_
+      rcases List.mem_append.mp hb with hb | hb
+      · exact ((k₂.brk Γb hb).pop).skel hs
+      · exact k₁.brk Γb hb
+  | _, _, _, _, .letBot h => Typed.skel_preserved h
+  | _, _, _, _, .assign _ _ _ _ h hget₁ _ _ _ => by
+      have k := Typed.skel_preserved h
+      exact ⟨fun _ hn => by cases hn; exact (skel_set_setSt hget₁ _).trans (k.norm _ rfl), k.brk⟩
+  | _, _, _, _, .assignBot h => Typed.skel_preserved h
+  | _, _, _, _, .seq h₁ _ h₂ => (Typed.skel_preserved h₁).then (Typed.skel_preserved h₂)
+  | _, _, _, _, .seqBot h => Typed.skel_preserved h
+  | _, _, _, _, .ite hc h₁ h₂ hjoin => by
+      have kc := Typed.skel_preserved hc
+      have k₁ := Typed.skel_preserved h₁
+      have k₂ := Typed.skel_preserved h₂
+      have hs := kc.norm _ rfl
+      refine ⟨fun _ h => ?_, fun Γb hb => ?_⟩
+      · cases h
+        exact Ctx.joinOpt_skel hjoin (fun x hx => (k₁.norm x hx).trans hs)
+          (fun x hx => (k₂.norm x hx).trans hs)
+      · simp only [List.mem_append] at hb
+        rcases hb with (hb | hb) | hb
+        · exact (k₁.brk Γb hb).skel hs
+        · exact (k₂.brk Γb hb).skel hs
+        · exact kc.brk Γb hb
+  | _, _, _, _, .iteBot h => Typed.skel_preserved h
+  | _, _, _, _, .call _ hta => TypedArgs.skel_preserved hta
+  | _, _, _, _, .ret h _ => Out.skelOk_bot (Typed.skel_preserved h).brk
+  | _, _, _, _, .retBot h => Typed.skel_preserved h
+  | _, _, _, _, .brk => Out.skelOk_bot fun Γb hb => by
+      simp only [List.mem_singleton] at hb
+      subst hb
+      exact Ctx.Extends.refl _
+  | _, _, _, _, .loopDiv _ _ _ _ => Out.skelOk_bot (by simp)
+  | _, _, _, _, .loopBreakDiv _ _ _ _ _ => Out.skelOk_bot (by simp)
+  | _, _, _, _, .loopBreak hbody hhead _ _ hjoin => by
+      have kb := Typed.skel_preserved hbody
+      refine ⟨fun _ h => ?_, fun _ h => by cases h⟩
       cases h
-      have := ih₂ _ rfl
-      simp [Ctx.skel, List.map_cons] at this
-      exact this.2.trans (ih₁ _ rfl)
-  | letInDiv _ _ _ _ => exact Out.skelOk_none
-  | letBot _ _ => exact Out.skelOk_none
-  | assign _ _ _ _ _ hget₁ _ _ _ ih =>
-      intro _ h
-      cases h; exact (skel_set_setSt hget₁ _).trans (ih _ rfl)
-  | assignBot _ _ => exact Out.skelOk_none
-  | seq _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
-  | seqBot _ _ => exact Out.skelOk_none
-  | ite _ _ _ hjoin ihc ih₁ ih₂ =>
-      intro _ h
-      cases h
-      exact (Ctx.joinOpt_skel hjoin (fun x hx => (ih₁ x hx).trans (ihc _ rfl))
-        (fun x hx => (ih₂ x hx).trans (ihc _ rfl)))
-  | iteBot _ _ => exact Out.skelOk_none
-  | call _ _ ih => exact ih
-  | ret _ _ _ => exact Out.skelOk_none
-  | retBot _ _ => exact Out.skelOk_none
-  | nil => exact fun _ h => by cases h; rfl
-  | cons _ _ ih ihs => exact fun _ h => (ihs _ h).trans (ih _ rfl)
-  | consBot _ _ _ => exact Out.skelOk_none
+      obtain ⟨Γ₁, Γrest, hΓs, hsk⟩ := Ctx.joinAll_skel hjoin
+      have hmem : Γ₁ ∈ _ := hΓs ▸ List.mem_cons_self
+      obtain ⟨Γb, hb, rfl⟩ := List.mem_map.mp hmem
+      exact hsk.trans ((Ctx.outsideLoop_skel (kb.brk Γb hb)).trans hhead.skel)
 
 /-- A typed expression list preserves the context skeleton too (helper). -/
-theorem TypedArgs.skel_preserved {P R} {Γ : Ctx} {es Ts} {Ω : Out} (h : TypedArgs P R Γ es Ts Ω) :
-    Out.SkelOk Γ Ω := by
-  induction h using TypedArgs.rec
-    (motive_1 := fun Γ _ _ Ω _ => Out.SkelOk Γ Ω)
-    (motive_3 := fun Γ₀ _ _ _ os _ _ => Ctx.SameSkel Γ₀ (os.filterMap id)) with
-  | intLit _ => exact fun _ h => by cases h; rfl
-  | boolLit => exact fun _ h => by cases h; rfl
-  | unitLit => exact fun _ h => by cases h; rfl
-  | useCopy _ _ _ _ _ _ => exact fun _ h => by cases h; rfl
-  | useMove hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
-  | useDeclared hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
-  | binop _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
-  | binopBot _ _ _ => exact Out.skelOk_none
-  | floatBinop _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
-  | floatBinopBot _ _ _ => exact Out.skelOk_none
-  | neg _ ih => exact ih
-  | floatNeg _ ih => exact ih
-  | notOp _ ih => exact ih
-  | bitnot _ ih => exact ih
-  | intCast _ ih => exact ih
-  | floatLit _ => exact fun _ h => by cases h; rfl
-  | intToFloat _ ih => exact ih
-  | floatIntrin _ _ ih => exact ih
-  | panic => exact Out.skelOk_none
-  | dbg _ _ ih => exact ih
-  | mkStruct _ _ ih => exact ih
-  | mkArray _ ih => exact ih
-  | repeatArray _ _ ih => exact ih
-  | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => exact fun _ h => by cases h; exact ih _ rfl
-  | indexReadBot _ _ _ _ _ _ _ _ => exact Out.skelOk_none
-  | indexDrop _ ih => exact ih
-  | indexWrite _ _ _ _ _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
-      intro _ h
-      cases h; exact (skel_set_setSt hget₁ _).trans ((ih₂ _ rfl).trans (ih₁ _ rfl))
-  | indexWriteBotRhs _ _ => exact Out.skelOk_none
-  | indexWriteBotIdx _ _ _ _ _ _ _ _ => exact Out.skelOk_none
-  | mkEnum _ _ _ ih => exact ih
-  | «match» _ _ _ _ hjoin ihs iharms =>
-      intro _ h
-      cases h; exact (Ctx.joinOpts_skel hjoin iharms).trans (ihs _ rfl)
-  | matchBot _ _ => exact Out.skelOk_none
-  | noArms => trivial
-  | arm _ _ _ ihbody iharms => exact ⟨skel_drop_armCtx (ihbody _ rfl), iharms⟩
-  | armDiv _ _ _ iharms => exact iharms
-  | dropCopy _ _ _ _ _ _ => exact fun _ h => by cases h; rfl
-  | dropRes hget _ _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
-  | dropDeclared hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
-  | letIn _ _ _ ih₁ ih₂ =>
-      intro _ h
-      cases h
-      have := ih₂ _ rfl
-      simp [Ctx.skel, List.map_cons] at this
-      exact this.2.trans (ih₁ _ rfl)
-  | letInDiv _ _ _ _ => exact Out.skelOk_none
-  | letBot _ _ => exact Out.skelOk_none
-  | assign _ _ _ _ _ hget₁ _ _ _ ih =>
-      intro _ h
-      cases h; exact (skel_set_setSt hget₁ _).trans (ih _ rfl)
-  | assignBot _ _ => exact Out.skelOk_none
-  | seq _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
-  | seqBot _ _ => exact Out.skelOk_none
-  | ite _ _ _ hjoin ihc ih₁ ih₂ =>
-      intro _ h
-      cases h
-      exact (Ctx.joinOpt_skel hjoin (fun x hx => (ih₁ x hx).trans (ihc _ rfl))
-        (fun x hx => (ih₂ x hx).trans (ihc _ rfl)))
-  | iteBot _ _ => exact Out.skelOk_none
-  | call _ _ ih => exact ih
-  | ret _ _ _ => exact Out.skelOk_none
-  | retBot _ _ => exact Out.skelOk_none
-  | nil => exact fun _ h => by cases h; rfl
-  | cons _ _ ih ihs => exact fun _ h => (ihs _ h).trans (ih _ rfl)
-  | consBot _ _ _ => exact Out.skelOk_none
+theorem TypedArgs.skel_preserved {P R} : ∀ {Γ : Ctx} {es Ts} {Ω : Out},
+    TypedArgs P R Γ es Ts Ω → Out.SkelOk Γ Ω
+  | _, _, _, _, .nil => Out.skelOk_same
+  | _, _, _, _, .cons h hs => (Typed.skel_preserved h).then (TypedArgs.skel_preserved hs)
+  | _, _, _, _, .consBot h _ => Typed.skel_preserved h
+
+/-- **Every continuing arm of a `match` hands the §5.5 join a context with the
+skeleton the arm started from**, and every delivery an arm makes extends it:
+the arm's payload locals are popped on its normal path, and sit on top of the
+arm's context at a `break` inside it (helper). -/
+theorem TypedArms.skel_all {P R} : ∀ {Γ₀ : Ctx} {arms Tss T} {os : List (Option Ctx)}
+    {Δs : List Ctx}, TypedArms P R Γ₀ arms Tss T os Δs →
+    Ctx.SameSkel Γ₀ (os.filterMap id) ∧ ∀ Γb ∈ Δs, Ctx.Extends Γb Γ₀
+  | _, _, _, _, _, _, .noArms => ⟨trivial, by simp⟩
+  | _, _, _, _, _, _, .arm hbody _ hrest => by
+      have kb := Typed.skel_preserved hbody
+      have kr := TypedArms.skel_all hrest
+      refine ⟨⟨skel_drop_armCtx (kb.norm _ rfl), kr.1⟩, fun Γb hb => ?_⟩
+      rcases List.mem_append.mp hb with hb | hb
+      · exact (kb.brk Γb hb).armCtx
+      · exact kr.2 Γb hb
+  | _, _, _, _, _, _, .armDiv hbody hrest => by
+      have kb := Typed.skel_preserved hbody
+      have kr := TypedArms.skel_all hrest
+      refine ⟨kr.1, fun Γb hb => ?_⟩
+      rcases List.mem_append.mp hb with hb | hb
+      · exact (kb.brk Γb hb).armCtx
+      · exact kr.2 Γb hb
+end
 
 /-- **Every continuing arm of a `match` hands the §5.5 join a context with the
 skeleton the arm started from** (§5's convention that `Γ` is fixed): the arm's
@@ -3734,88 +4176,19 @@ payload locals are popped, and the body preserved the rest. This is what lets
 the n-way join read either the accumulated state or an arm's, which is the
 `match` case of `soundness` (`Soundness.lean`) (helper). -/
 theorem TypedArms.arm_skel {P R} {Γ₀ : Ctx} {arms Tss T} {os : List (Option Ctx)} {Δs : List Ctx}
-    (h : TypedArms P R Γ₀ arms Tss T os Δs) : Ctx.SameSkel Γ₀ (os.filterMap id) := by
-  induction h using TypedArms.rec
-    (motive_1 := fun Γ _ _ Ω _ => Out.SkelOk Γ Ω)
-    (motive_2 := fun Γ _ _ Ω _ => Out.SkelOk Γ Ω) with
-  | intLit _ => exact fun _ h => by cases h; rfl
-  | boolLit => exact fun _ h => by cases h; rfl
-  | unitLit => exact fun _ h => by cases h; rfl
-  | useCopy _ _ _ _ _ _ => exact fun _ h => by cases h; rfl
-  | useMove hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
-  | useDeclared hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
-  | binop _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
-  | binopBot _ _ _ => exact Out.skelOk_none
-  | floatBinop _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
-  | floatBinopBot _ _ _ => exact Out.skelOk_none
-  | neg _ ih => exact ih
-  | floatNeg _ ih => exact ih
-  | notOp _ ih => exact ih
-  | bitnot _ ih => exact ih
-  | intCast _ ih => exact ih
-  | floatLit _ => exact fun _ h => by cases h; rfl
-  | intToFloat _ ih => exact ih
-  | floatIntrin _ _ ih => exact ih
-  | panic => exact Out.skelOk_none
-  | dbg _ _ ih => exact ih
-  | mkStruct _ _ ih => exact ih
-  | mkArray _ ih => exact ih
-  | repeatArray _ _ ih => exact ih
-  | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => exact fun _ h => by cases h; exact ih _ rfl
-  | indexReadBot _ _ _ _ _ _ _ _ => exact Out.skelOk_none
-  | indexDrop _ ih => exact ih
-  | indexWrite _ _ _ _ _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
-      intro _ h
-      cases h; exact (skel_set_setSt hget₁ _).trans ((ih₂ _ rfl).trans (ih₁ _ rfl))
-  | indexWriteBotRhs _ _ => exact Out.skelOk_none
-  | indexWriteBotIdx _ _ _ _ _ _ _ _ => exact Out.skelOk_none
-  | mkEnum _ _ _ ih => exact ih
-  | «match» _ _ _ _ hjoin ihs iharms =>
-      intro _ h
-      cases h; exact (Ctx.joinOpts_skel hjoin iharms).trans (ihs _ rfl)
-  | matchBot _ _ => exact Out.skelOk_none
-  | noArms => trivial
-  | arm _ _ _ ihbody iharms => exact ⟨skel_drop_armCtx (ihbody _ rfl), iharms⟩
-  | armDiv _ _ _ iharms => exact iharms
-  | dropCopy _ _ _ _ _ _ => exact fun _ h => by cases h; rfl
-  | dropRes hget _ _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
-  | dropDeclared hget _ _ _ _ _ _ _ => exact fun _ h => by cases h; exact skel_set_setSt hget _
-  | letIn _ _ _ ih₁ ih₂ =>
-      intro _ h
-      cases h
-      have := ih₂ _ rfl
-      simp [Ctx.skel, List.map_cons] at this
-      exact this.2.trans (ih₁ _ rfl)
-  | letInDiv _ _ _ _ => exact Out.skelOk_none
-  | letBot _ _ => exact Out.skelOk_none
-  | assign _ _ _ _ _ hget₁ _ _ _ ih =>
-      intro _ h
-      cases h; exact (skel_set_setSt hget₁ _).trans (ih _ rfl)
-  | assignBot _ _ => exact Out.skelOk_none
-  | seq _ _ _ ih₁ ih₂ => exact fun _ h => (ih₂ _ h).trans (ih₁ _ rfl)
-  | seqBot _ _ => exact Out.skelOk_none
-  | ite _ _ _ hjoin ihc ih₁ ih₂ =>
-      intro _ h
-      cases h
-      exact (Ctx.joinOpt_skel hjoin (fun x hx => (ih₁ x hx).trans (ihc _ rfl))
-        (fun x hx => (ih₂ x hx).trans (ihc _ rfl)))
-  | iteBot _ _ => exact Out.skelOk_none
-  | call _ _ ih => exact ih
-  | ret _ _ _ => exact Out.skelOk_none
-  | retBot _ _ => exact Out.skelOk_none
-  | nil => exact fun _ h => by cases h; rfl
-  | cons _ _ ih ihs => exact fun _ h => (ihs _ h).trans (ih _ rfl)
-  | consBot _ _ _ => exact Out.skelOk_none
+    (h : TypedArms P R Γ₀ arms Tss T os Δs) : Ctx.SameSkel Γ₀ (os.filterMap id) :=
+  (TypedArms.skel_all h).1
+
 
 /-- The skeleton of a continuing outcome, read off a derivation (helper). -/
 theorem Typed.skel_of {P R} {Γ Γ' : Ctx} {e T} {Δ : List Ctx}
     (h : Typed P R Γ e T ⟨some Γ', Δ⟩) : Γ'.skel = Γ.skel :=
-  h.skel_preserved Γ' rfl
+  h.skel_preserved.norm Γ' rfl
 
 /-- The same, for an expression list (helper). -/
 theorem TypedArgs.skel_of {P R} {Γ Γ' : Ctx} {es Ts} {Δ : List Ctx}
     (h : TypedArgs P R Γ es Ts ⟨some Γ', Δ⟩) : Γ'.skel = Γ.skel :=
-  h.skel_preserved Γ' rfl
+  h.skel_preserved.norm Γ' rfl
 
 /-- Two contexts with one skeleton agree on every entry's type and mark
 (helper). -/
@@ -3918,122 +4291,333 @@ theorem Ctx.joinOpts_wf {D : Decls} {os : List (Option Ctx)} {Γ' : Ctx} {S : Li
           obtain ⟨hsk, hw⟩ := hinv Γ₁ List.mem_cons_self
           exact Ctx.joinFold_wf Γs Γ₁ _ (fun Γ hΓ => hinv Γ (List.mem_cons_of_mem _ hΓ)) hsk hw hj
 
+/-- (helper) Every state an outcome carries — its normal outgoing state and
+every delivered one — is a shape of its declared types. -/
+structure Out.Wf (D : Decls) (Ω : Out) : Prop where
+  /-- The normal outgoing state. -/
+  norm : ∀ Γ', Ω.norm = some Γ' → Ctx.Wf D Γ'
+  /-- Every `⟨break, Σ⟩` delivery. -/
+  brk : ∀ Γb ∈ Ω.brk, Ctx.Wf D Γb
+
 /-- (helper) `Typed.wf`'s statement for one judgment: a well-formed incoming
-context gives a well-formed normal outgoing state. -/
+context gives a well-formed normal outgoing state and well-formed deliveries. -/
 def Out.WfPres (D : Decls) (Γ : Ctx) (Ω : Out) : Prop :=
-  Ctx.Wf D Γ → ∀ Γ', Ω.norm = some Γ' → Ctx.Wf D Γ'
+  Ctx.Wf D Γ → Out.Wf D Ω
 
-/-- (helper) The same for a `match`'s arms: every continuing arm's state. -/
-def Out.WfArms (D : Decls) (Γ₀ : Ctx) (os : List (Option Ctx)) : Prop :=
-  Ctx.Wf D Γ₀ → ∀ Γ ∈ os.filterMap id, Ctx.Wf D Γ
+/-- (helper) The same for a `match`'s arms: every continuing arm's state and
+every arm's deliveries. -/
+def Out.WfArms (D : Decls) (Γ₀ : Ctx) (os : List (Option Ctx)) (Δs : List Ctx) : Prop :=
+  Ctx.Wf D Γ₀ → (∀ Γ ∈ os.filterMap id, Ctx.Wf D Γ) ∧ ∀ Γb ∈ Δs, Ctx.Wf D Γb
 
+/-- (helper) A `⊥` outcome is well formed when its deliveries are. -/
+theorem Out.Wf.bot {D : Decls} {Δ : List Ctx} (h : ∀ Γb ∈ Δ, Ctx.Wf D Γb) :
+    Out.Wf D ⟨none, Δ⟩ := ⟨fun _ h => (by cases h), h⟩
+
+/-- (helper) An outcome that continues at a well-formed state and delivers
+nothing is well formed. -/
+theorem Out.Wf.of {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) : Out.Wf D ⟨some Γ, []⟩ :=
+  ⟨fun _ hn => by cases hn; exact h, fun _ h => by cases h⟩
+
+/-- (helper) §5.3's threading, read over the shape invariant. -/
+theorem Out.Wf.then {D : Decls} {Γ₁ : Ctx} {Δ₁ : List Ctx} {Ω : Out}
+    (h₁ : Out.Wf D ⟨some Γ₁, Δ₁⟩) (h₂ : Ctx.Wf D Γ₁ → Out.Wf D Ω) : Out.Wf D (Ω.add Δ₁) := by
+  have k₂ := h₂ (h₁.norm _ rfl)
+  refine ⟨k₂.norm, fun Γb hb => ?_⟩
+  rcases List.mem_append.mp hb with hb | hb
+  · exact k₂.brk Γb hb
+  · exact h₁.brk Γb hb
+
+/-- (helper) The loop-head state is well formed when the entry is: it is the
+entry itself, or a head `LoopHead` asks to be well formed. -/
+theorem LoopHead.wf {D : Decls} {Γ Γh : Ctx} {o : Option Ctx} (h : LoopHead D Γ o Γh)
+    (hw : Ctx.Wf D Γ) : Ctx.Wf D Γh := by
+  cases o with
+  | none =>
+      have h1 := h.1
+      simp only [Ctx.joinOpt, Option.some.injEq] at h1
+      cases h1; exact hw
+  | some Γe => exact h.2 Γe rfl
+
+/-- (helper) Dropping bindings off the top keeps a frame well formed. -/
+theorem Ctx.Wf.drop {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) (n : Nat) : Ctx.Wf D (Γ.drop n) :=
+  fun en hen => h en (List.mem_of_mem_drop hen)
+
+mutual
 /-- **The shape invariant is preserved judgment-wide** (RUE-2340): from a
 well-formed incoming context, every normal outgoing state a derivation
-concludes at is well-formed. With `fnCtx_wf` it discharges `Ctx.Wf`, the
-premise §5.5's associativity carries (`Ctx.joinAll_perm`), at every normal
-outgoing state of a function body (`Typed.wf_fnCtx`). The induction that
-proves it carries the invariant into every arm of every `match` and `if` it
-passes through, which is where associativity is read; what is stated as a
-theorem is that outgoing-state form, not a separate corollary per join. It
-holds because §5.3's `Ω` gives §5.7's `⊥` no state: before the judgment
-carried `Ω`, `return` and `@panic` concluded at an arbitrary context and the
-statement was false. It reads `Ω.norm` only; the delivered states in `Ω.brk`
-are empty until the loop slice (RUE-2369), which must extend it — and
-`Out.SkelOk` — to them, since (Loop-Break) §5.7 joins them. -/
-theorem Typed.wf {P R} {Γ : Ctx} {e T} {Ω : Out} (h : Typed P R Γ e T Ω) :
-    Out.WfPres P.decls Γ Ω := by
-  induction h using Typed.rec
-    (motive_2 := fun Γ _ _ Ω _ => Out.WfPres P.decls Γ Ω)
-    (motive_3 := fun Γ₀ _ _ _ os _ _ => Out.WfArms P.decls Γ₀ os) with
-  | intLit _ => intro hw _ h; cases h; exact hw
-  | boolLit => intro hw _ h; cases h; exact hw
-  | unitLit => intro hw _ h; cases h; exact hw
-  | floatLit _ => intro hw _ h; cases h; exact hw
-  | useCopy _ _ _ _ _ _ => intro hw _ h; cases h; exact hw
-  | dropCopy _ _ _ _ _ _ => intro hw _ h; cases h; exact hw
-  | useMove hget _ _ hty _ _ _ _ =>
-      intro hw _ h; cases h; exact hw.set_setAt hget hty (by simp [OwnSt.wf])
-  | useDeclared hget _ _ _ htd _ _ _ =>
-      intro hw _ h; cases h; exact hw.set_setAt hget htd (by simp [OwnSt.wf])
-  | dropRes hget _ _ hty _ _ _ _ _ =>
-      intro hw _ h; cases h; exact hw.set_setAt hget hty (by simp [OwnSt.wf])
-  | dropDeclared hget _ _ _ htd _ _ _ =>
-      intro hw _ h; cases h; exact hw.set_setAt hget htd (by simp [OwnSt.wf])
-  | binop _ _ _ ih₁ ih₂ => intro hw _ h; exact ih₂ (ih₁ hw _ rfl) _ h
-  | floatBinop _ _ _ ih₁ ih₂ => intro hw _ h; exact ih₂ (ih₁ hw _ rfl) _ h
-  | binopBot _ _ _ => intro _ _ h; cases h
-  | floatBinopBot _ _ _ => intro _ _ h; cases h
-  | neg _ ih => exact ih
-  | floatNeg _ ih => exact ih
-  | notOp _ ih => exact ih
-  | bitnot _ ih => exact ih
-  | intCast _ ih => exact ih
-  | intToFloat _ ih => exact ih
-  | floatIntrin _ _ ih => exact ih
-  | panic => intro _ _ h; cases h
-  | dbg _ _ ih => exact ih
-  | mkStruct _ _ ih => exact ih
-  | mkEnum _ _ _ ih => exact ih
-  | mkArray _ ih => exact ih
-  | repeatArray _ _ ih => exact ih
-  | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => intro hw _ h; cases h; exact ih hw _ rfl
-  | indexReadBot _ _ _ _ _ _ _ _ => intro _ _ h; cases h
-  | indexDrop _ ih => exact ih
-  | indexWrite hget₀ _ _ hty₀ _ _ _ h₁ hta _ hget₁ _ _ _ _ ih₁ ih₂ =>
-      intro hw _ h
-      cases h
+concludes at, and every state it delivers to a loop, is well-formed. With
+`fnCtx_wf` it discharges `Ctx.Wf`, the premise §5.5's associativity carries
+(`Ctx.joinAll_perm`), at every normal outgoing state of a function body
+(`Typed.wf_fnCtx`). The recursion carries the invariant into every arm of
+every `match` and `if` and into every loop body it passes through, which is
+where associativity is read; what is stated as a theorem is that
+outgoing-state form, not a separate corollary per join. It holds because
+§5.3's `Ω` gives §5.7's `⊥` no state: before the judgment carried `Ω`,
+`return` and `@panic` concluded at an arbitrary context and the statement was
+false. A loop body is typed at the loop-head state, which `LoopHead` asks to
+be well formed when a back edge produced it (`LoopHead.wf`); (Loop-Break)'s
+exit state is the join of the deliveries' `outside_loop` parts, each a
+suffix of a well-formed delivery. -/
+theorem Typed.wf {P R} : ∀ {Γ : Ctx} {e T} {Ω : Out},
+    Typed P R Γ e T Ω → Out.WfPres P.decls Γ Ω
+  | _, _, _, _, .intLit _ => Out.Wf.of
+  | _, _, _, _, .boolLit => Out.Wf.of
+  | _, _, _, _, .unitLit => Out.Wf.of
+  | _, _, _, _, .floatLit _ => Out.Wf.of
+  | _, _, _, _, .useCopy _ _ _ _ _ _ => Out.Wf.of
+  | _, _, _, _, .dropCopy _ _ _ _ _ _ => Out.Wf.of
+  | _, _, _, _, .useMove hget _ _ hty _ _ _ _ => fun hw =>
+      Out.Wf.of (hw.set_setAt hget hty (by simp [OwnSt.wf]))
+  | _, _, _, _, .useDeclared hget _ _ _ htd _ _ _ => fun hw =>
+      Out.Wf.of (hw.set_setAt hget htd (by simp [OwnSt.wf]))
+  | _, _, _, _, .dropRes hget _ _ hty _ _ _ _ _ => fun hw =>
+      Out.Wf.of (hw.set_setAt hget hty (by simp [OwnSt.wf]))
+  | _, _, _, _, .dropDeclared hget _ _ _ htd _ _ _ => fun hw =>
+      Out.Wf.of (hw.set_setAt hget htd (by simp [OwnSt.wf]))
+  | _, _, _, _, .binop h₁ h₂ _ => fun hw => (Typed.wf h₁ hw).then (Typed.wf h₂)
+  | _, _, _, _, .floatBinop h₁ h₂ _ => fun hw => (Typed.wf h₁ hw).then (Typed.wf h₂)
+  | _, _, _, _, .binopBot h₁ _ => Typed.wf h₁
+  | _, _, _, _, .floatBinopBot h₁ _ => Typed.wf h₁
+  | _, _, _, _, .neg h => Typed.wf h
+  | _, _, _, _, .floatNeg h => Typed.wf h
+  | _, _, _, _, .notOp h => Typed.wf h
+  | _, _, _, _, .bitnot h => Typed.wf h
+  | _, _, _, _, .intCast h => Typed.wf h
+  | _, _, _, _, .intToFloat h => Typed.wf h
+  | _, _, _, _, .floatIntrin h _ => Typed.wf h
+  | _, _, _, _, .panic => fun _ => Out.Wf.bot (by simp)
+  | _, _, _, _, .dbg h _ => Typed.wf h
+  | _, _, _, _, .mkStruct _ hta => TypedArgs.wf hta
+  | _, _, _, _, .mkEnum _ _ hta => TypedArgs.wf hta
+  | _, _, _, _, .mkArray hta => TypedArgs.wf hta
+  | _, _, _, _, .repeatArray h _ => Typed.wf h
+  | _, _, _, _, .indexRead hta _ _ _ _ _ _ _ _ _ _ _ => TypedArgs.wf hta
+  | _, _, _, _, .indexReadBot hta _ _ _ _ _ _ => TypedArgs.wf hta
+  | _, _, _, _, .indexDrop h => Typed.wf h
+  | _, _, _, _, .indexWrite hget₀ _ _ hty₀ _ _ _ h₁ hta _ hget₁ _ _ _ _ => fun hw => by
+      have k := (Typed.wf h₁ hw).then (TypedArgs.wf hta)
       have hsk : Ctx.skel _ = Ctx.skel _ := hta.skel_of.trans h₁.skel_of
       have hty₁ := (skel_lookup hsk hget₀ hget₁).1 ▸ hty₀
-      exact (ih₂ (ih₁ hw _ rfl) _ rfl).set_setAt hget₁ hty₁ (by simp [OwnSt.wf])
-  | indexWriteBotRhs _ _ => intro _ _ h; cases h
-  | indexWriteBotIdx _ _ _ _ _ _ _ _ => intro _ _ h; cases h
-  | «match» _ _ _ harms hjoin ihs iharms =>
-      intro hw _ h
-      cases h
-      have hw₀ := ihs hw _ rfl
-      exact Ctx.joinOpts_wf hjoin fun Γ hΓ =>
-        ⟨Ctx.SameSkel.mem harms.arm_skel Γ hΓ, iharms hw₀ Γ hΓ⟩
-  | matchBot _ _ => intro _ _ h; cases h
-  | noArms => intro _ _ h; simp at h
-  | arm _ _ _ ihbody iharms =>
-      intro hw Γ hΓ
-      simp only [List.filterMap_cons, id, List.mem_cons] at hΓ
-      rcases hΓ with rfl | hΓ
-      · intro en hen
-        exact ihbody (hw.armCtx _) _ rfl en (List.mem_of_mem_drop hen)
-      · exact iharms hw Γ hΓ
-  | armDiv _ _ _ iharms =>
-      intro hw Γ hΓ
-      exact iharms hw Γ hΓ
-  | letIn _ _ _ ih₁ ih₂ =>
-      intro hw _ h
-      cases h
-      have hw₁ := ih₁ hw _ rfl
-      intro en hen
-      exact ih₂ (hw₁.cons_owned _ _) _ rfl en (List.mem_cons_of_mem _ hen)
-  | letInDiv _ _ _ _ => intro _ _ h; cases h
-  | letBot _ _ => intro _ _ h; cases h
-  | assign hget₀ _ _ hty₀ h₁ hget₁ _ _ _ ih =>
-      intro hw _ h
-      cases h
+      exact ⟨fun _ h => by
+        cases h; exact (k.norm _ rfl).set_setAt hget₁ hty₁ (by simp [OwnSt.wf]), k.brk⟩
+  | _, _, _, _, .indexWriteBotRhs h => Typed.wf h
+  | _, _, _, _, .indexWriteBotIdx _ _ _ h₁ hta _ => fun hw => (Typed.wf h₁ hw).then (TypedArgs.wf hta)
+  | _, _, _, _, .«match» hscrut _ _ harms hjoin => fun hw => by
+      have ks := Typed.wf hscrut hw
+      have ka := TypedArms.wf harms (ks.norm _ rfl)
+      refine ⟨fun _ h => ?_, fun Γb hb => ?_⟩
+      · cases h
+        exact Ctx.joinOpts_wf hjoin fun Γ hΓ =>
+          ⟨Ctx.SameSkel.mem harms.arm_skel Γ hΓ, ka.1 Γ hΓ⟩
+      · rcases List.mem_append.mp hb with hb | hb
+        · exact ka.2 Γb hb
+        · exact ks.brk Γb hb
+  | _, _, _, _, .matchBot h => Typed.wf h
+  | _, _, _, _, .letIn h₁ h₂ _ => fun hw => by
+      have k₁ := Typed.wf h₁ hw
+      have k₂ := Typed.wf h₂ ((k₁.norm _ rfl).cons_owned _ _)
+      refine ⟨fun _ h => ?_, fun Γb hb => ?_⟩
+      · cases h
+        intro en hen
+        exact k₂.norm _ rfl en (List.mem_cons_of_mem _ hen)
+      · rcases List.mem_append.mp hb with hb | hb
+        · exact k₂.brk Γb hb
+        · exact k₁.brk Γb hb
+  | _, _, _, _, .letInDiv h₁ h₂ => fun hw => by
+      have k₁ := Typed.wf h₁ hw
+      have k₂ := Typed.wf h₂ ((k₁.norm _ rfl).cons_owned _ _)
+      refine Out.Wf.bot fun Γb hb => ?_
+      rcases List.mem_append.mp hb with hb | hb
+      · exact k₂.brk Γb hb
+      · exact k₁.brk Γb hb
+  | _, _, _, _, .letBot h => Typed.wf h
+  | _, _, _, _, .assign hget₀ _ _ hty₀ h₁ hget₁ _ _ _ => fun hw => by
+      have k := Typed.wf h₁ hw
       have hty₁ := (skel_lookup h₁.skel_of hget₀ hget₁).1 ▸ hty₀
-      exact (ih hw _ rfl).set_setAt hget₁ hty₁ (by simp [OwnSt.wf])
-  | assignBot _ _ => intro _ _ h; cases h
-  | seq _ _ _ ih₁ ih₂ => intro hw _ h; exact ih₂ (ih₁ hw _ rfl) _ h
-  | seqBot _ _ => intro _ _ h; cases h
-  | ite _ h₁ h₂ hjoin ihc ih₁ ih₂ =>
-      intro hw _ h
+      exact ⟨fun _ h => by
+        cases h; exact (k.norm _ rfl).set_setAt hget₁ hty₁ (by simp [OwnSt.wf]), k.brk⟩
+  | _, _, _, _, .assignBot h => Typed.wf h
+  | _, _, _, _, .seq h₁ _ h₂ => fun hw => (Typed.wf h₁ hw).then (Typed.wf h₂)
+  | _, _, _, _, .seqBot h => Typed.wf h
+  | _, _, _, _, .ite hc h₁ h₂ hjoin => fun hw => by
+      have kc := Typed.wf hc hw
+      have hw₀ := kc.norm _ rfl
+      have k₁ := Typed.wf h₁ hw₀
+      have k₂ := Typed.wf h₂ hw₀
+      refine ⟨fun _ h => ?_, fun Γb hb => ?_⟩
+      · cases h
+        exact Ctx.joinOpt_wf hjoin (fun x hx => ⟨h₁.skel_preserved.norm x hx, k₁.norm x hx⟩)
+          (fun x hx => ⟨h₂.skel_preserved.norm x hx, k₂.norm x hx⟩)
+      · simp only [List.mem_append] at hb
+        rcases hb with (hb | hb) | hb
+        · exact k₁.brk Γb hb
+        · exact k₂.brk Γb hb
+        · exact kc.brk Γb hb
+  | _, _, _, _, .iteBot h => Typed.wf h
+  | _, _, _, _, .call _ hta => TypedArgs.wf hta
+  | _, _, _, _, .ret h _ => fun hw => Out.Wf.bot (Typed.wf h hw).brk
+  | _, _, _, _, .retBot h => Typed.wf h
+  | _, _, _, _, .brk => fun hw => Out.Wf.bot fun Γb hb => by
+      simp only [List.mem_singleton] at hb
+      subst hb; exact hw
+  | _, _, _, _, .loopDiv _ _ _ _ => fun _ => Out.Wf.bot (by simp)
+  | _, _, _, _, .loopBreakDiv _ _ _ _ _ => fun _ => Out.Wf.bot (by simp)
+  | _, _, _, _, .loopBreak (Γh := Γh) hbody hhead _ _ hjoin => fun hw => by
+      have kb := Typed.wf hbody (hhead.wf hw)
+      have ks := Typed.skel_preserved hbody
+      refine ⟨fun _ h => ?_, fun _ h => by cases h⟩
       cases h
-      have hw₀ := ihc hw _ rfl
-      exact Ctx.joinOpt_wf hjoin (fun x hx => ⟨h₁.skel_preserved x hx, ih₁ hw₀ x hx⟩)
-        (fun x hx => ⟨h₂.skel_preserved x hx, ih₂ hw₀ x hx⟩)
-  | iteBot _ _ => intro _ _ h; cases h
-  | call _ _ ih => exact ih
-  | ret _ _ _ => intro _ _ h; cases h
-  | retBot _ _ => intro _ _ h; cases h
-  | nil => intro hw _ h; cases h; exact hw
-  | cons _ _ ih ihs => intro hw _ h; exact ihs (ih hw _ rfl) _ h
-  | consBot _ _ _ => intro _ _ h; cases h
+      refine Ctx.joinAll_wf (sk := Γh.skel) (fun Γo hΓo => ?_) hjoin
+      obtain ⟨Γb, hb, rfl⟩ := List.mem_map.mp hΓo
+      exact ⟨Ctx.outsideLoop_skel (ks.brk Γb hb), (kb.brk Γb hb).drop _⟩
+
+/-- (helper) The same, for an expression list. -/
+theorem TypedArgs.wf {P R} : ∀ {Γ : Ctx} {es Ts} {Ω : Out},
+    TypedArgs P R Γ es Ts Ω → Out.WfPres P.decls Γ Ω
+  | _, _, _, _, .nil => Out.Wf.of
+  | _, _, _, _, .cons h hs => fun hw => (Typed.wf h hw).then (TypedArgs.wf hs)
+  | _, _, _, _, .consBot h _ => Typed.wf h
+
+/-- (helper) The same, for a `match`'s arms. -/
+theorem TypedArms.wf {P R} : ∀ {Γ₀ : Ctx} {arms Tss T} {os : List (Option Ctx)}
+    {Δs : List Ctx}, TypedArms P R Γ₀ arms Tss T os Δs → Out.WfArms P.decls Γ₀ os Δs
+  | _, _, _, _, _, _, .noArms => fun _ => ⟨by simp, by simp⟩
+  | _, _, _, _, _, _, .arm hbody _ hrest => fun hw => by
+      have kb := Typed.wf hbody (hw.armCtx _)
+      have kr := TypedArms.wf hrest hw
+      refine ⟨fun Γ hΓ => ?_, fun Γb hb => ?_⟩
+      · simp only [List.filterMap_cons, id, List.mem_cons] at hΓ
+        rcases hΓ with rfl | hΓ
+        · exact (kb.norm _ rfl).drop _
+        · exact kr.1 Γ hΓ
+      · rcases List.mem_append.mp hb with hb | hb
+        · exact kb.brk Γb hb
+        · exact kr.2 Γb hb
+  | _, _, _, _, _, _, .armDiv hbody hrest => fun hw => by
+      have kb := Typed.wf hbody (hw.armCtx _)
+      have kr := TypedArms.wf hrest hw
+      refine ⟨kr.1, fun Γb hb => ?_⟩
+      rcases List.mem_append.mp hb with hb | hb
+      · exact kb.brk Γb hb
+      · exact kr.2 Γb hb
+end
+
+/-- `LoopHead.reenter` for the loop rules' own premises: the body judgment
+typed at the head gives the back-edge state the head's skeleton
+(`Typed.skel_preserved`) and makes it well formed from the well-formed head
+(`Typed.wf`) (helper). -/
+theorem LoopHead.reenter_body {P R} {Γ Γh : Ctx} {e : Expr} {Ωe : Out}
+    (h : LoopHead P.decls Γ Ωe.norm Γh) (hbody : Typed P R Γh e .unit Ωe) :
+    LoopHead P.decls Γh Ωe.norm Γh :=
+  h.reenter fun Γe hn =>
+    ⟨hbody.skel_preserved.norm Γe hn, (hbody.wf (h.2 Γe hn)).norm Γe hn⟩
+
+/-! ### No `break`, no delivery
+
+§5.7's (Loop-Div) rules are selected by a *syntactic* premise — the body
+contains no `break` targeting the loop — while the loop's outgoing `Δ_out`
+removes the deliveries the body made. The two agree: a derivation of a body
+with no such `break` makes no `⟨break, _⟩` delivery at all, because the only
+rule that makes one is (Break) and every loop consumes its own. So the
+`break`-less loop rules deliver nothing without a premise saying so, and
+`soundness` uses this to rule out a `break` escaping one. -/
+
+mutual
+/-- **A body with no `break` targeting its loop delivers none** (§5.7): every
+delivery in `Ω.brk` comes from a `break` the syntax has, outside any nested
+loop (`Expr.breaks`). -/
+theorem Typed.brk_nil {P R} : ∀ {Γ : Ctx} {e T} {Ω : Out},
+    Typed P R Γ e T Ω → e.breaks = false → Ω.brk = []
+  | _, _, _, _, .intLit _, _ | _, _, _, _, .boolLit, _ | _, _, _, _, .unitLit, _
+  | _, _, _, _, .floatLit _, _ | _, _, _, _, .useCopy _ _ _ _ _ _, _
+  | _, _, _, _, .dropCopy _ _ _ _ _ _, _ | _, _, _, _, .useMove _ _ _ _ _ _ _ _, _
+  | _, _, _, _, .useDeclared _ _ _ _ _ _ _ _, _ | _, _, _, _, .dropRes _ _ _ _ _ _ _ _ _, _
+  | _, _, _, _, .dropDeclared _ _ _ _ _ _ _ _, _ | _, _, _, _, .panic, _
+  | _, _, _, _, .loopDiv _ _ _ _, _ | _, _, _, _, .loopBreakDiv _ _ _ _ _, _
+  | _, _, _, _, .loopBreak _ _ _ _ _, _ => rfl
+  | _, _, _, _, .brk, hb => by simp [Expr.breaks] at hb
+  | _, _, _, _, .binop h₁ h₂ _, hb | _, _, _, _, .floatBinop h₁ h₂ _, hb
+  | _, _, _, _, .seq h₁ _ h₂, hb => by
+      simp only [Expr.breaks, Bool.or_eq_false_iff] at hb
+      simp [Out.add, Typed.brk_nil h₁ hb.1, Typed.brk_nil h₂ hb.2]
+  | _, _, _, _, .binopBot h₁ _, hb | _, _, _, _, .floatBinopBot h₁ _, hb
+  | _, _, _, _, .seqBot h₁, hb | _, _, _, _, .letBot h₁, hb => by
+      simp only [Expr.breaks, Bool.or_eq_false_iff] at hb
+      exact Typed.brk_nil h₁ hb.1
+  | _, _, _, _, .neg h, hb | _, _, _, _, .floatNeg h, hb | _, _, _, _, .notOp h, hb
+  | _, _, _, _, .bitnot h, hb | _, _, _, _, .intCast h, hb | _, _, _, _, .intToFloat h, hb
+  | _, _, _, _, .floatIntrin h _, hb | _, _, _, _, .dbg h _, hb
+  | _, _, _, _, .repeatArray h _, hb | _, _, _, _, .assignBot h, hb
+  | _, _, _, _, .retBot h, hb => by
+      simp only [Expr.breaks] at hb
+      exact Typed.brk_nil h hb
+  | _, _, _, _, .indexWriteBotRhs h, hb => by
+      simp only [Expr.breaks, Bool.or_eq_false_iff] at hb
+      exact Typed.brk_nil h hb.1
+  | _, _, _, _, .ret h _, hb | _, _, _, _, .assign _ _ _ _ h _ _ _ _, hb => by
+      simp only [Expr.breaks] at hb
+      have h' := Typed.brk_nil h hb
+      simpa using h'
+  | _, _, _, _, .indexDrop h, hb => by
+      simp only [Expr.breaks] at hb
+      exact Typed.brk_nil h (by simpa [Expr.breaks] using hb)
+  | _, _, _, _, .mkStruct _ hta, hb | _, _, _, _, .mkEnum _ _ hta, hb
+  | _, _, _, _, .mkArray hta, hb | _, _, _, _, .call _ hta, hb
+  | _, _, _, _, .indexRead hta _ _ _ _ _ _ _ _ _ _ _, hb
+  | _, _, _, _, .indexReadBot hta _ _ _ _ _ _, hb => by
+      simp only [Expr.breaks] at hb
+      exact TypedArgs.brk_nil hta hb
+  | _, _, _, _, .indexWrite _ _ _ _ _ _ _ h₁ hta _ _ _ _ _ _, hb
+  | _, _, _, _, .indexWriteBotIdx _ _ _ h₁ hta _, hb => by
+      simp only [Expr.breaks, Bool.or_eq_false_iff] at hb
+      have h₁' := Typed.brk_nil h₁ hb.1
+      have h₂' := TypedArgs.brk_nil hta hb.2
+      simp only at h₁' h₂'
+      simp [h₁', h₂']
+  | _, _, _, _, .«match» hscrut _ _ harms _, hb => by
+      simp only [Expr.breaks, Bool.or_eq_false_iff] at hb
+      have h₁' := Typed.brk_nil hscrut hb.1
+      have h₂' := TypedArms.brk_nil harms hb.2
+      simp only at h₁'
+      simp [h₁', h₂']
+  | _, _, _, _, .matchBot h, hb | _, _, _, _, .iteBot h, hb => by
+      simp only [Expr.breaks, Bool.or_eq_false_iff] at hb
+      exact Typed.brk_nil h (by simp [hb])
+  | _, _, _, _, .letIn h₁ h₂ _, hb | _, _, _, _, .letInDiv h₁ h₂, hb => by
+      simp only [Expr.breaks, Bool.or_eq_false_iff] at hb
+      have h₁' := Typed.brk_nil h₁ hb.1
+      have h₂' := Typed.brk_nil h₂ hb.2
+      simp only at h₁' h₂'
+      simp [h₁', h₂']
+  | _, _, _, _, .ite hc h₁ h₂ _, hb => by
+      simp only [Expr.breaks, Bool.or_eq_false_iff] at hb
+      have hc' := Typed.brk_nil hc hb.1.1
+      simp only at hc'
+      simp [hc', Typed.brk_nil h₁ hb.1.2, Typed.brk_nil h₂ hb.2]
+
+/-- (helper) The same, for an expression list. -/
+theorem TypedArgs.brk_nil {P R} : ∀ {Γ : Ctx} {es Ts} {Ω : Out},
+    TypedArgs P R Γ es Ts Ω → Expr.breaksList es = false → Ω.brk = []
+  | _, _, _, _, .nil, _ => rfl
+  | _, _, _, _, .cons h hs, hb => by
+      simp only [Expr.breaksList, Bool.or_eq_false_iff] at hb
+      have h' := Typed.brk_nil h hb.1
+      simp only at h'
+      simp [Out.add, h', TypedArgs.brk_nil hs hb.2]
+  | _, _, _, _, .consBot h _, hb => by
+      simp only [Expr.breaksList, Bool.or_eq_false_iff] at hb
+      exact Typed.brk_nil h hb.1
+
+/-- (helper) The same, for a `match`'s arms. -/
+theorem TypedArms.brk_nil {P R} : ∀ {Γ₀ : Ctx} {arms Tss T} {os : List (Option Ctx)}
+    {Δs : List Ctx}, TypedArms P R Γ₀ arms Tss T os Δs → Expr.breaksList arms = false → Δs = []
+  | _, _, _, _, _, _, .noArms, _ => rfl
+  | _, _, _, _, _, _, .arm h _ hs, hb | _, _, _, _, _, _, .armDiv h hs, hb => by
+      simp only [Expr.breaksList, Bool.or_eq_false_iff] at hb
+      have h' := Typed.brk_nil h hb.1
+      simp only at h'
+      simp [h', TypedArms.brk_nil hs hb.2]
+end
 
 /-- (Fn) §5.8's entry context is well-formed: every parameter enters
 `Owned`, a shape of every type (helper). -/
@@ -4049,6 +4633,6 @@ body** (RUE-2340): `Typed.wf` from (Fn) §5.8's entry context, which
 hypothesis is left for a caller to supply. -/
 theorem Typed.wf_fnCtx {P R} {fd : FnDef} {e T} {Ω : Out}
     (h : Typed P R (fnCtx fd) e T Ω) : ∀ Γ', Ω.norm = some Γ' → Ctx.Wf P.decls Γ' :=
-  h.wf (fnCtx_wf P.decls fd)
+  (h.wf (fnCtx_wf P.decls fd)).norm
 
 end RueCore

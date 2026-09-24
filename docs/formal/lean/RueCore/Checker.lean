@@ -165,6 +165,75 @@ def CTy.pick : CTy → Ty → Ty
   | .never, d => d
 
 mutual
+/-- The number of nodes of an expression, the bound on §5.7's loop-head
+iteration (`headIter`) (helper). -/
+def Expr.nodes : Expr → Nat
+  | .intLit _ _ _ | .floatLit _ _ | .boolLit _ | .unitLit | .use _ | .panic _ | .drop _
+  | .brk => 1
+  | .binop _ e₁ e₂ | .letIn _ e₁ e₂ | .seq e₁ e₂ => e₁.nodes + e₂.nodes + 1
+  | .unop _ e | .intCast _ _ e | .fintrin _ e | .dbg e | .repeatArray _ e _ | .assign _ e
+  | .ret e | .loop e => e.nodes + 1
+  | .mkStruct _ args | .mkEnum _ _ args | .mkArray _ args | .call _ args
+  | .indexRead _ args _ | .indexDrop _ args _ => Expr.nodesList args + 1
+  | .indexWrite _ idx _ e => e.nodes + Expr.nodesList idx + 1
+  | .ite c e₁ e₂ => c.nodes + e₁.nodes + e₂.nodes + 1
+  | .«match» scrut arms => scrut.nodes + Expr.nodesList arms + 1
+
+/-- The same over a list (helper). -/
+def Expr.nodesList : List Expr → Nat
+  | [] => 0
+  | e :: es => e.nodes + Expr.nodesList es
+end
+
+/-! ### The loop head, algorithmically
+
+§5.7 types a loop body at the loop-head state `Σ_h`, a fixpoint of
+`Σ_h = join(Σ, B_h)` where `B_h` is read off the body typed at `Σ_h`, and says
+how to compute the least one: "start from `Σ`, type the body, join the entry
+with the back-edge states it reaches, and repeat until the state stops
+changing". `headIter` is that iteration, over a function `body` that types
+the body at a candidate head and reports its normal outgoing state (`none`
+when the body is refused there). It stops at the first candidate the step
+leaves unchanged, and refuses when a step is refused, when a join is
+undefined (§5.5's `3.8:50`: a linear-carrying path `Owned` at entry and
+`MovedOut` at the back edge), or when the bound runs out.
+
+**Termination** is structural: the iteration is bounded, so `check` is total.
+**The bound suffices**, by the argument §5.7 gives: the sequence only moves
+toward `MovedOut`. Every head is `join(Σ, Σ_e)` for a back-edge state `Σ_e`,
+so it has every move `Σ` has; the body's outgoing state at a path is either
+written by the body (a move, a `@drop`, an assignment) — the same at every
+head — or carried through from the head, so a head with more paths `MovedOut`
+gives a back-edge state with at least as many, and the next head is no
+smaller. A head that is not yet the fixpoint therefore adds a `MovedOut` at a
+path the body writes, and the body writes at most one per node of its
+syntax, which is the bound (`Expr.nodes`, plus the step that confirms the
+fixpoint). None of this is needed for soundness: `check` re-checks the body
+at the head it found and verifies the equation `LoopHead` states, so
+`check_sound` reads only that final check. A bound too small would cost
+completeness, never soundness. -/
+
+/-- One step of the head iteration: join the entry state with the back-edge
+state the body reached from the current candidate, or `none` when the body
+was refused there or the join is undefined (helper). -/
+def headNext (D : Decls) (Γ : Ctx) : Option (Option Ctx) → Option Ctx
+  | some o =>
+      match Ctx.joinOpt D (some Γ) o with
+      | some (some Γ') => some Γ'
+      | _ => none
+  | none => none
+
+/-- §5.7's head iteration from the candidate `Γc`, for at most `n` steps: the
+first candidate a step leaves unchanged (section docstring) (helper). -/
+def headIter (D : Decls) (body : Ctx → Option (Option Ctx)) (Γ : Ctx) :
+    Nat → Ctx → Option Ctx
+  | 0, _ => none
+  | n + 1, Γc =>
+      match headNext D Γ (body Γc) with
+      | none => none
+      | some Γ' => if Γ' = Γc then some Γc else headIter D body Γ n Γ'
+
+mutual
 /-- The §5 judgment as an algorithm: one case per `Typed` rule, in the same
 order, producing the type (`CTy`) and §5.3's outgoing `Ω` or rejecting. `P`
 is the top-level function environment (Call) §5.8 looks a callee up in and
@@ -497,6 +566,37 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
           if c.fits R ∧ NoResidualLinear P.decls Γ₁ then some (.never, ⟨none, Δ⟩) else none
       | some (c, ⟨none, Δ⟩) => if c.fits R then some (.never, ⟨none, Δ⟩) else none
       | none => none
+  | .brk => some (.never, ⟨none, [Γ]⟩)
+  | .loop e =>
+      -- §5.7: find the loop-head state by iteration, type the body there,
+      -- and check that the head solves the equation the rules state; then
+      -- the syntactic classification (`4.8:21`) picks the rule.
+      match headIter P.decls (fun Γ' => (check P R Γ' e).map (fun r => r.2.norm)) Γ
+          (e.nodes + 2) Γ with
+      | none => none
+      | some Γh =>
+        match check P R Γh e with
+        | some (c, Ωe) =>
+          if c.fits .unit ∧ Ctx.joinOpt P.decls (some Γ) Ωe.norm = some (some Γh) ∧
+              (Ωe.norm = none ∨ Ctx.Wf P.decls Γh) then
+            if e.breaks then
+              match Ωe.brk with
+              | [] =>
+                  if Ωe.norm = none ∨ NoResidualLinear P.decls Γh then
+                    some (.ty .unit, ⟨none, []⟩)
+                  else none
+              | Γb₀ :: Γbs =>
+                  if (Γb₀ :: Γbs).all
+                      (fun Γb => decide (NoResidualLinear P.decls (Ctx.loopLocals Γh Γb))) then
+                    match Ctx.joinAll P.decls ((Γb₀ :: Γbs).map (Ctx.outsideLoop Γh)) with
+                    | some Γx => some (.ty .unit, ⟨some Γx, []⟩)
+                    | none => none
+                  else none
+            else if Ωe.norm = none ∨ NoResidualLinear P.decls Γh then
+              some (.never, ⟨none, []⟩)
+            else none
+          else none
+        | none => none
 
 /-- (Call) §5.8's argument list as an algorithm: each argument is checked
 against its parameter's type with Σ threaded left to right, and the count must
@@ -1274,6 +1374,62 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
               intro T _
               exact .ret (check_sound e hchk R hcond.1) hcond.2
             · cases h
+  | .brk, Γ, c, Ω, h => by
+      simp only [check, Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      intro T _
+      exact .brk
+  | .loop e, Γ, c, Ω, h => by
+      simp only [check] at h
+      split at h
+      · cases h
+      · rename_i Γh _
+        cases hchk : check P R Γh e with
+        | none => simp [hchk] at h
+        | some r =>
+          obtain ⟨ce, Ωe⟩ := r
+          simp only [hchk] at h
+          split at h
+          · rename_i hcond
+            obtain ⟨hfit, hjoin, hwfh⟩ := hcond
+            have hbody := check_sound e hchk .unit hfit
+            have hhead : LoopHead P.decls Γ Ωe.norm Γh :=
+              ⟨hjoin, fun Γe hn => hwfh.resolve_left (by rw [hn]; simp)⟩
+            split at h
+            · rename_i hb
+              split at h
+              · rename_i hnil
+                split at h
+                · rename_i hdiv
+                  simp only [Option.some.injEq, Prod.mk.injEq] at h
+                  obtain ⟨rfl, rfl⟩ := h
+                  fin_ty
+                  exact .loopBreakDiv hbody hhead hb hnil
+                    (fun Γe hn => hdiv.resolve_left (by rw [hn]; simp))
+                · cases h
+              · rename_i Γb₀ Γbs hcons
+                split at h
+                · rename_i hall
+                  split at h
+                  · rename_i Γx hjx
+                    simp only [Option.some.injEq, Prod.mk.injEq] at h
+                    obtain ⟨rfl, rfl⟩ := h
+                    fin_ty
+                    rw [← hcons] at hall hjx
+                    exact .loopBreak hbody hhead hb
+                      (fun Γb hΓb => of_decide_eq_true (List.all_eq_true.mp hall Γb hΓb)) hjx
+                  · cases h
+                · cases h
+            · rename_i hb
+              split at h
+              · rename_i hdiv
+                simp only [Option.some.injEq, Prod.mk.injEq] at h
+                obtain ⟨rfl, rfl⟩ := h
+                intro T _
+                exact .loopDiv hbody hhead (by simpa using hb)
+                  (fun Γe hn => hdiv.resolve_left (by rw [hn]; simp))
+              · cases h
+          · cases h
 
 /-- Every `checkIdx` acceptance is a real index-list derivation at integer
 types (`4.11:4`) (helper). -/
