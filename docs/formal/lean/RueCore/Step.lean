@@ -60,22 +60,60 @@ named by §6's own four violations only; `unwindLocs_plain` and
 `destructure_plain` prove that where a monitor lets a drop through, the plain
 drop does the same thing.
 
-## Two deviations in form
+## Where the relation departs from §6's text
 
-* **The environment is restored at `endscope`.** §6.7 never restores `ρ`
-  after a binding dies, because elaboration α-renames binders and a dead name
-  is never looked up. Bindings here are de Bruijn indices, and a stale index
-  *would* be looked up by the continuation, so the `endscope` frame carries
-  the frame to resume, exactly as `eval` resumes its caller's. On every
-  reachable configuration the resumed frame is the paper's `⟨ρ; s minus ℓ̄⟩`.
+Each item is a reading §6 needs before it can be mechanized, or a choice of
+representation; none changes what a checked program does.
+
+* **One list of frames** for §6.2's `E` and §6.1's `K` (above), so (Search) is
+  an enter and a plug constructor per context production rather than one
+  congruence rule, and (Panic-Lift) is the shape of every trap rule.
+* **`endscope` pops by count.** §6.7 never restores `ρ` after a binding dies,
+  because elaboration α-renames binders and a dead name is never looked up.
+  Bindings here are de Bruijn indices, so (D-EndScope) resumes in `⟨ρ; s minus
+  ℓ̄⟩` by popping the marker's cells off the front of the environment and the
+  end of the scope record (`Frame.popScope`), which (D-Let) and (D-Match) put
+  there.
 * **The loop boundary keeps its context** (a calculus finding, recorded in
   RUE-2324's report). §6.10's `loopβ(e, φ)` records no context, so under
   (Search) the rules as written would, at `E[loop { e }]`, hand the body's
   first value to `E` and let `break` discard `E` with `E'`. (D-Call) states
   its context explicitly (`ret(E, φ)`); the loop frame here sits above `E`'s
   frames the same way, so the loop yields `()` to its context, as the
-  compiler and `eval` do. §6.10's `push-scope` is `eval`'s single scope
-  record read by length, as in `Dynamics.lean`.
+  compiler and `eval` do.
+* **One scope record per frame.** §6.10's `push-scope(φ)` is `eval`'s single
+  scope record read by length, as in `Dynamics.lean`: (D-Loop-Iter) and
+  (D-Break) run `run-scope-drops` on the cells past the loop frame's record.
+* **The use plan is recovered from the store** (`Contents.declaredPlan`), as
+  `eval` recovers it, rather than read off elaboration's `μ` annotation.
+* **A destructor is one trace event** (`Event.dtor`), as in `eval`, rather
+  than §6.11's nested run of the `drop fn` body.
+* **The entry point is called.** `Config.init` calls function 0 with no
+  arguments, so (D-Return-Main) is (D-Return) reaching the entry `call` frame
+  and a body value there is (D-Return-Value). From §6.12's own initial
+  configuration, which has no `call` frame, a `return` would be stuck
+  (`typeConfusion`); that configuration is not reachable from `Config.init`.
+* **A dynamic place is `Copy` or stuck.** A dynamic read and `@drop` at a
+  dynamic place use §6.3's only `Untrackable(OrdinaryDynamic)` rule,
+  (D-Use-Untrackable-Dynamic-Copy), and are stuck (`typeConfusion`) at a
+  non-`Copy` leaf; `@drop` there of a `⊘` is stuck too (`useAfterMove`). The
+  statics reject both (E0904).
+
+`Config.Terminal` accepts any value at an empty stack, where (Result-Ok) reads
+an `i32` or `⟨⟩`; (D-Panic)'s `panic: msg` line is not an event.
+
+## Where the relation and `eval` differ (for part 2)
+
+On programs `check` rejects, `Step` follows §6 where `eval` does not:
+
+* `@drop` of a `⊘` place is §6.11's no-op (`drop(H, ⊘) = H`) in `Step`;
+  `eval` refuses it with `useAfterMove` (`Contents.isHole`).
+* A non-`Copy` dynamic read, `@drop` at a dynamic place, and repeat operand
+  are stuck in `Step`; `eval` copies the value, which can run a destructor
+  twice.
+
+Part 2's `eval ⇒ Step*` simulation is stated over checked programs (RUE-2289),
+where neither case arises; unchecked programs are out of its scope.
 -/
 
 namespace RueCore
@@ -135,9 +173,9 @@ inductive Kont where
   | assign (p : Place)
   /-- `return E` (§6.2). -/
   | ret
-  /-- `endscope(ℓ̄) in E` (§6.2, §6.7), with the frame to resume when it
-  closes (the module docstring says why the frame is carried). -/
-  | endscope (ℓs : List Nat) (φ : Frame)
+  /-- `endscope(ℓ̄) in E` (§6.2, §6.7): the cells the body owes. Closing it
+  pops them off the frame by count (the module docstring says why a pop). -/
+  | endscope (ℓs : List Nat)
   /-- `loopβ(e, φ)` (§6.1, §6.10): the loop's body and the frame each turn
   starts in; `break` unwinds to here. -/
   | loop (e : Expr) (φ : Frame)
@@ -168,18 +206,29 @@ deriving Repr
 /-- §6.12's initial configuration: the empty store (the fragment has no
 string literals to pre-allocate), an empty frame, and the entry point called
 with no arguments — the same call `run` (`Dynamics.lean`) makes, so
-(D-Return-Main) is (D-Return-Value) at the bottom of the stack. -/
+(D-Return-Main) is (D-Return) reaching the entry `call` frame. From §6.12's
+own initial configuration, with no `call` frame, a `return` would be stuck
+(`typeConfusion`); that configuration is not reachable from here. -/
 def Config.init : Config :=
   .run [] { env := [], scope := [] } [] (.eval (.call 0 [])) []
 
 /-- The terminal configurations: `✓n`, a value with nothing left to plug it
-into — (Result-Ok) — and `↯κ` — (Result-Panic). -/
+into — (Result-Ok) — and `↯κ` — (Result-Panic). Any value counts here, where
+(Result-Ok) reads only an `i32` or `⟨⟩`: reading the exit code is left to the
+observer. -/
 def Config.Terminal : Config → Prop
   | .run _ _ [] (.ret _) _ => True
   | .panic _ _ => True
   | .run _ _ _ _ _ => False
 
 /-! ## Stack searches and monitor-free drops -/
+
+/-- §6.7's `⟨ρ; s minus ℓ̄⟩` for the `n` cells an `endscope` marker owes:
+(D-Let) and (D-Match) put them at the front of the environment (de Bruijn
+indices) and at the end of the scope record, so closing the marker drops them
+from both by count (helper). -/
+def Frame.popScope (φ : Frame) (n : Nat) : Frame :=
+  { env := φ.env.drop n, scope := φ.scope.take (φ.scope.length - n) }
 
 /-- The nearest `ret(E, φ)` below the top: its frame and the stack under it.
 (D-Return) discards everything above it — context frames, pending `endscope`
@@ -366,7 +415,8 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
   -- ### §6.12: `@panic` and `@dbg`
   /-- (D-Panic) §6.12: `@panic` abandons the configuration to `↯user`, which
   (Panic-Lift) §6.2 carries past every context. The fragment's message is a
-  literal field, so there is no operand to reduce first. -/
+  literal field, so there is no operand to reduce first. §6.12's `panic: msg`
+  output line is not recorded as an event, as in `eval`. -/
   | panic {H φ K tr msg} :
       Step M P (.run H φ K (.eval (.panic msg)) tr) (.panic .user tr)
   /-- (Search) §6.2 into `@dbg( E )`. -/
@@ -435,17 +485,22 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
       Step M P (.run H φ K (.eval (.repeatArray T e n)) tr)
         (.run H φ (.repeatArray T n :: K) (.eval e) tr)
   /-- The repeat form's elaboration (`7.1:39`): the operand, evaluated once,
-  copied into each of the `n` slots. -/
+  copied into each of the `n` slots. The elaboration `let t = v; [t, …, t]`
+  is defined only at a `Copy` operand (`7.1:38`), so a non-`Copy` one is stuck
+  (`typeConfusion`). -/
   | repeatArray {H φ K tr T n v} :
+      v.mult P.decls = .copy →
       Step M P (.run H φ (.repeatArray T n :: K) (.ret v) tr)
         (.run H φ K (.ret (.array T (List.replicate n v))) tr)
   /-- (D-Index) §6.5 at a dynamic place, every index in range, and
   (D-Use-Untrackable-Dynamic-Copy) §6.3 reads the `Copy` leaf, leaving the
-  storage live. -/
+  storage live. §6.3 has no rule for a non-`Copy` leaf here, so that
+  configuration is stuck (`typeConfusion`). -/
   | indexRead {H φ K tr p πs vs ℓ c sub ρ leaf v} :
       dynPlace H φ p vs πs = .at ℓ c sub ρ →
       sub.readAt ρ = .ok leaf →
       leaf.toVal = some v →
+      v.mult P.decls = .copy →
       Step M P (.run H φ K (.args (.indexRead p πs) vs []) tr) (.run H φ K (.ret v) tr)
   /-- (D-Index-Trap) §6.5: an index out of range traps `↯bounds`, lifted by
   (Panic-Lift) §6.2. -/
@@ -453,11 +508,15 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
       dynPlace H φ p vs πs = .bounds →
       Step M P (.run H φ K (.args (.indexRead p πs) vs []) tr) (.panic .bounds tr)
   /-- §6.11's `@drop` at a `Copy` place below a dynamic index: (D-Index) §6.5
-  navigates it, nothing is dropped, and the result is `⟨⟩`. -/
+  navigates it, nothing is dropped, and the result is `⟨⟩`. The plan is
+  `Untrackable(OrdinaryDynamic)`, whose only rule is §6.3's `Copy` read, so a
+  non-`Copy` leaf is stuck (`typeConfusion`) and so is a `⊘` leaf
+  (`useAfterMove`, the read finding no value). -/
   | indexDrop {H φ K tr p πs vs ℓ c sub ρ leaf v} :
       dynPlace H φ p vs πs = .at ℓ c sub ρ →
       sub.readAt ρ = .ok leaf →
       leaf.toVal = some v →
+      leaf.mult P.decls = .copy →
       Step M P (.run H φ K (.args (.indexDrop p πs) vs []) tr) (.run H φ K (.ret .unit) tr)
   /-- (D-Index-Trap) §6.5 at `@drop`'s dynamic place. -/
   | indexDropTrap {H φ K tr p πs vs} :
@@ -489,7 +548,7 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
       mintParams H vs = (H', ls) →
       Step M P (.run H φ (.«match» arms :: K) (.ret (.enum e k vs)) tr)
         (.run H' { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls }
-          (.endscope ls φ :: K) (.eval body) tr)
+          (.endscope ls :: K) (.eval body) tr)
   /-- (Search) §6.2 into `if E { e1 } else { e2 }`. -/
   | iteEnter {H φ K tr c e₁ e₂} :
       Step M P (.run H φ K (.eval (.ite c e₁ e₂)) tr) (.run H φ (.ite e₁ e₂ :: K) (.eval c) tr)
@@ -509,12 +568,14 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
       Step M P (.run H φ (.letIn e₂ :: K) (.ret v) tr)
         (.run (H ++ [.full (Contents.ofVal v)])
           { env := H.length :: φ.env, scope := φ.scope ++ [H.length] }
-          (.endscope [H.length] φ :: K) (.eval e₂) tr)
+          (.endscope [H.length] :: K) (.eval e₂) tr)
   /-- (D-EndScope) §6.7: the body is a value; drop-retire the marker's cells
-  newest-first and resume the enclosing frame. -/
-  | endScope {H φ K tr ℓs φs v H' evs} :
+  newest-first and resume in `⟨ρ; s minus ℓ̄⟩`: the marker's cells popped off
+  the environment and the scope record by count (`Frame.popScope`). -/
+  | endScope {H φ K tr ℓs v H' evs} :
       plainUnwind P.decls H ℓs.reverse = .ok (H', evs) →
-      Step M P (.run H φ (.endscope ℓs φs :: K) (.ret v) tr) (.run H' φs K (.ret v) (tr ++ evs))
+      Step M P (.run H φ (.endscope ℓs :: K) (.ret v) tr)
+        (.run H' (φ.popScope ℓs.length) K (.ret v) (tr ++ evs))
   /-- (Search) §6.2 into `E ; e2`. -/
   | seqEnter {H φ K tr e₁ e₂} :
       Step M P (.run H φ K (.eval (.seq e₁ e₂)) tr) (.run H φ (.seq e₂ :: K) (.eval e₁) tr)
@@ -542,24 +603,26 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
       c.writeAt p.path (Contents.ofVal v) = some c' →
       Step M P (.run H φ (.assign p :: K) (.ret v) tr)
         (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ evs))
-  /-- §6.11's `@drop` at a declared-linear plan: §6.3's destructure, then the
-  selected leaf's own drop, and `⊘` at the consumed place. -/
+  /-- `@drop` at a declared-linear plan, as §5.1 reads §5.3's `(@Drop)` under a
+  `Declared(d, π)` plan (the paragraph after the use rules): §6.3's
+  destructure, then the selected leaf's own drop (§6.11), and `⊘` at the
+  consumed place. A `⊘` leaf has no drop (`drop(H, ⊘) = H`). -/
   | dropDeclared {H φ K tr p ℓ c πd πs cd leaf evs levs c'} :
       rootCell H φ p.root = .ok (ℓ, c) →
       c.declaredPlan P.decls p.path = some (πd, πs) →
       c.readAt πd = .ok cd →
       plainDestructure P.decls cd πs = .ok (leaf, evs) →
-      leaf.isHole = false →
       dropCell P.decls ℓ leaf = .ok levs →
       c.writeAt πd .hole = some c' →
       Step M P (.run H φ K (.eval (.drop p)) tr)
         (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ (evs ++ levs)))
-  /-- §6.11's `@drop` of a `Copy` place: `⟨⟩`, the store unchanged. -/
+  /-- §6.11's `@drop` of a `Copy` place: `⟨⟩`, the store unchanged. A `⊘`
+  place is `Copy` here (`Contents.mult`), so `@drop` of a moved-out place is
+  §6.11's `drop(H, ⊘) = H` and not a refusal. -/
   | dropCopy {H φ K tr p ℓ c sub} :
       rootCell H φ p.root = .ok (ℓ, c) →
       c.declaredPlan P.decls p.path = none →
       c.readAt p.path = .ok sub →
-      sub.isHole = false →
       sub.mult P.decls = .copy →
       Step M P (.run H φ K (.eval (.drop p)) tr) (.run H φ K (.ret .unit) tr)
   /-- §6.11's `@drop` of a non-`Copy` place: run `drop` on what it holds (the
@@ -568,7 +631,6 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
       rootCell H φ p.root = .ok (ℓ, c) →
       c.declaredPlan P.decls p.path = none →
       c.readAt p.path = .ok sub →
-      sub.isHole = false →
       sub.mult P.decls ≠ .copy →
       dropCell P.decls ℓ sub = .ok evs →
       c.writeAt p.path .hole = some c' →
@@ -584,8 +646,8 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
       mintParams H vs = (H', ls) →
       Step M P (.run H φ K (.args (.call f) vs []) tr)
         (.run H' { env := ls.reverse, scope := ls } (.call φ :: K) (.eval fd.body) tr)
-  /-- (D-Return-Value) §6.9 — and (D-Return-Main) at the bottom of the stack:
-  the body is a value; run the frame's scope drops and resume the caller. -/
+  /-- (D-Return-Value) §6.9: the body is a value; run the frame's scope drops
+  and resume the caller. -/
   | callReturn {H φ K tr φs v H' evs} :
       plainUnwind P.decls H φ.scope.reverse = .ok (H', evs) →
       Step M P (.run H φ (.call φs :: K) (.ret v) tr) (.run H' φs K (.ret v) (tr ++ evs))
@@ -594,7 +656,8 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
       Step M P (.run H φ K (.eval (.ret e)) tr) (.run H φ (.ret :: K) (.eval e) tr)
   /-- (D-Return) §6.9: discard every frame up to the nearest `ret(E, φ)` —
   pending `endscope` markers and loop boundaries included — run the frame's
-  scope drops from its record, and hand `v` to the caller. -/
+  scope drops from its record, and hand `v` to the caller. At the entry
+  point's `call` frame this is (D-Return-Main) §6.9 (`Config.init`). -/
   | ret {H φ K tr v φs K' H' evs} :
       Kont.toCall K = some (φs, K') →
       plainUnwind P.decls H φ.scope.reverse = .ok (H', evs) →
@@ -603,11 +666,13 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
   /-- (D-Loop-Enter) §6.10: push the loop boundary and enter the body. -/
   | loopEnter {H φ K tr e} :
       Step M P (.run H φ K (.eval (.loop e)) tr) (.run H φ (.loop e φ :: K) (.eval e) tr)
-  /-- (D-Loop-Iter) §6.10: the body became a value; re-enter it in the loop's
-  frame. -/
-  | loopIter {H φ K tr e φs v} :
+  /-- (D-Loop-Iter) §6.10: the body became a value; `run-scope-drops` on the
+  cells the turn still owes (those past the loop's own record, newest-first, as
+  (D-Break) reads them), then re-enter the body in the loop's frame. -/
+  | loopIter {H φ K tr e φs v H' evs} :
+      plainUnwind P.decls H (φ.scope.drop φs.scope.length).reverse = .ok (H', evs) →
       Step M P (.run H φ (.loop e φs :: K) (.ret v) tr)
-        (.run H φs (.loop e φs :: K) (.eval e) tr)
+        (.run H' φs (.loop e φs :: K) (.eval e) (tr ++ evs))
   /-- (D-Break) §6.10: discard every frame up to the nearest loop boundary,
   drop-retire the cells the body still owed newest-first
   (`unwind-drops(H, φ', φ)`), and yield `⟨⟩` to the loop's context. -/
@@ -702,21 +767,18 @@ def stepEval (M : FloatOps) (P : Program) (H : Store) (φ : Frame) (K : List Kon
           match plainDestructure P.decls cd πs with
           | .error w => .stuck w
           | .ok (leaf, evs) =>
-            if leaf.isHole then .stuck .useAfterMove
-            else
-              match dropCell P.decls ℓ leaf with
-              | .error w => .stuck w
-              | .ok levs =>
-                match c.writeAt πd .hole with
-                | none => .stuck .typeConfusion
-                | some c' =>
-                  .next (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ (evs ++ levs)))
+            match dropCell P.decls ℓ leaf with
+            | .error w => .stuck w
+            | .ok levs =>
+              match c.writeAt πd .hole with
+              | none => .stuck .typeConfusion
+              | some c' =>
+                .next (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ (evs ++ levs)))
       | none =>
         match c.readAt p.path with
         | .error w => .stuck w
         | .ok sub =>
-          if sub.isHole then .stuck .useAfterMove
-          else if sub.mult P.decls = .copy then .next (.run H φ K (.ret .unit) tr)
+          if sub.mult P.decls = .copy then .next (.run H φ K (.ret .unit) tr)
           else
             match dropCell P.decls ℓ sub with
             | .error w => .stuck w
@@ -779,7 +841,9 @@ def stepArgs (P : Program) (H : Store) (φ : Frame) (K : List Kont) (tr : List E
       | .ok leaf =>
         match leaf.toVal with
         | none => .stuck .useAfterMove
-        | some v => .next (.run H φ K (.ret v) tr)
+        | some v =>
+          if v.mult P.decls = .copy then .next (.run H φ K (.ret v) tr)
+          else .stuck .typeConfusion
   | .indexDrop p πs =>
     match dynPlace H φ p vs πs with
     | .stuck w => .stuck w
@@ -790,7 +854,9 @@ def stepArgs (P : Program) (H : Store) (φ : Frame) (K : List Kont) (tr : List E
       | .ok leaf =>
         match leaf.toVal with
         | none => .stuck .useAfterMove
-        | some _ => .next (.run H φ K (.ret .unit) tr)
+        | some _ =>
+          if leaf.mult P.decls = .copy then .next (.run H φ K (.ret .unit) tr)
+          else .stuck .typeConfusion
   | .indexWrite p πs v =>
     match dynPlace H φ p vs πs with
     | .stuck w => .stuck w
@@ -829,7 +895,9 @@ def stepRet (M : FloatOps) (P : Program) (H : Store) (φ : Frame) (K : List Kont
   | .fintrin k => (evalFintrin M k v).toStep H φ K tr
   | .dbg => .next (.run H φ K (.ret .unit) (tr ++ [.dbg v]))
   | .args t vs es => .next (.run H φ K (.args t (vs ++ [v]) es) tr)
-  | .repeatArray T n => .next (.run H φ K (.ret (.array T (List.replicate n v))) tr)
+  | .repeatArray T n =>
+    if v.mult P.decls = .copy then .next (.run H φ K (.ret (.array T (List.replicate n v))) tr)
+    else .stuck .typeConfusion
   | .indexWriteRhs p idx πs => .next (.run H φ K (.args (.indexWrite p πs v) [] idx) tr)
   | .«match» arms =>
     match v with
@@ -840,12 +908,12 @@ def stepRet (M : FloatOps) (P : Program) (H : Store) (φ : Frame) (K : List Kont
         match mintParams H vs with
         | (H', ls) =>
           .next (.run H' { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls }
-            (.endscope ls φ :: K) (.eval body) tr)
+            (.endscope ls :: K) (.eval body) tr)
     | _ => .stuck .typeConfusion
   | .letIn e₂ =>
     .next (.run (H ++ [.full (Contents.ofVal v)])
       { env := H.length :: φ.env, scope := φ.scope ++ [H.length] }
-      (.endscope [H.length] φ :: K) (.eval e₂) tr)
+      (.endscope [H.length] :: K) (.eval e₂) tr)
   | .seq e₂ =>
     if v.mult P.decls = .copy then .next (.run H φ K (.eval e₂) tr)
     else
@@ -877,11 +945,14 @@ def stepRet (M : FloatOps) (P : Program) (H : Store) (φ : Frame) (K : List Kont
       match plainUnwind P.decls H φ.scope.reverse with
       | .error w => .stuck w
       | .ok (H', evs) => .next (.run H' φs K' (.ret v) (tr ++ evs))
-  | .endscope ℓs φs =>
+  | .endscope ℓs =>
     match plainUnwind P.decls H ℓs.reverse with
     | .error w => .stuck w
-    | .ok (H', evs) => .next (.run H' φs K (.ret v) (tr ++ evs))
-  | .loop e φs => .next (.run H φs (.loop e φs :: K) (.eval e) tr)
+    | .ok (H', evs) => .next (.run H' (φ.popScope ℓs.length) K (.ret v) (tr ++ evs))
+  | .loop e φs =>
+    match plainUnwind P.decls H (φ.scope.drop φs.scope.length).reverse with
+    | .error w => .stuck w
+    | .ok (H', evs) => .next (.run H' φs (.loop e φs :: K) (.eval e) (tr ++ evs))
   | .call φs =>
     match plainUnwind P.decls H φ.scope.reverse with
     | .error w => .stuck w
@@ -1025,6 +1096,24 @@ theorem Config.trichotomy (M : FloatOps) (P : Program) (C : Config) :
   | next C' => exact .inl ⟨C', step_iff.mpr h⟩
   | halted => exact .inr (.inl (step_halted_iff.mp h))
   | stuck w => exact .inr (.inr ⟨w, h⟩)
+
+/-- **Stuck, in `Step`'s own terms** (§6, §7): a configuration is stuck —
+not terminal, and no rule of §6 applies to it — exactly when `step` names it
+stuck. This is what makes `Config.Stuck` a statement about the relation and not
+only about the function's labels. -/
+theorem Config.stuck_iff {M : FloatOps} {P : Program} {C : Config} :
+    (¬ C.Terminal ∧ ∀ C', ¬ Step M P C C') ↔ ∃ w, C.Stuck M P w := by
+  cases h : step M P C with
+  | next C' =>
+      refine iff_of_false (fun ⟨_, hn⟩ => hn C' (step_iff.mpr h)) ?_
+      intro ⟨w, hw⟩; simp [Config.Stuck, h] at hw
+  | halted =>
+      refine iff_of_false (fun ⟨hT, _⟩ => hT (step_halted_iff.mp h)) ?_
+      intro ⟨w, hw⟩; simp [Config.Stuck, h] at hw
+  | stuck w =>
+      refine iff_of_true ⟨fun hT => ?_, fun C' hs => ?_⟩ ⟨w, h⟩
+      · rw [step_halted_iff.mpr hT] at h; cases h
+      · rw [step_iff.mp hs] at h; cases h
 
 /-- A stuck configuration takes no step (§6). -/
 theorem Config.Stuck.no_step {M : FloatOps} {P : Program} {C C' : Config} {w : Violation}
@@ -1367,5 +1456,160 @@ theorem letAddProgram_runs (M : FloatOps) :
       (.run [.dead] { env := [], scope := [] } [] (.ret (.int .w32 .signed 42)) []) ∧
     run M letAddProgram 100 = .ok [.dead] (.int .w32 .signed 42) [] :=
   ⟨stepN_steps (n := 30), rfl⟩
+
+
+/-! ## Programs run through the relation
+
+The review's repros (RUE-2324), each run from §6.12's initial configuration
+by `stepN` and read as a `→*` derivation by `stepN_steps`. The first group pins
+where §6 has no rule; the rest exercise drops, `loop`, `break`, `match` and
+`return`, and `run` gives each of them the same answer. -/
+
+/-- One affine struct with a destructor, `S`, and an affine enum
+`E { A(S), B }` (helper). -/
+def demoDecls : Decls :=
+  { structs := [{ attr := .none, fields := [], dtor := true, cls := .affine }],
+    enums := [{ variants := [[.struct 0], []], cls := .affine }] }
+
+/-- A program over `demoDecls` whose entry point returns `i32` (helper). -/
+def demoProgram (e : Expr) : Program := Program.entry demoDecls (.int .w32 .signed) e
+
+/-- `S{}` and an `i32` literal (helper). -/
+def demoS : Expr := .mkStruct 0 []
+
+/-- An `i32` literal (helper). -/
+def demoI32 (n : Int) : Expr := .intLit .w32 .signed n
+
+/-- The contents `S{}` leaves in a cell (helper). -/
+def demoSc : Contents := .struct 0 []
+
+/-- **(D-Use-Untrackable-Dynamic-Copy) needs `Copy`** (§6.3): in
+`let a = [S{}, S{}]; let x = a[dyn 0]; 0` the dynamic read of an affine
+leaf is stuck, before any destructor runs. (`eval` copies the leaf and runs
+three destructors for two structs; `check` rejects the program.) -/
+theorem demo_dynamicRead_stuck (M : FloatOps) :
+    ∃ C, Steps M (demoProgram (.letIn false (.mkArray (.struct 0) [demoS, demoS])
+        (.letIn false (.indexRead (.var 0) [demoI32 0] [[]]) (demoI32 0)))) Config.init C ∧
+      C.Stuck M (demoProgram (.letIn false (.mkArray (.struct 0) [demoS, demoS])
+        (.letIn false (.indexRead (.var 0) [demoI32 0] [[]]) (demoI32 0)))) .typeConfusion :=
+  ⟨_, stepN_steps (n := 100), rfl⟩
+
+/-- **`@drop` at a dynamic place needs `Copy`** (§6.3's only
+`Untrackable(OrdinaryDynamic)` rule): `let a = [S{}]; @drop(a[dyn 0]); @dbg(1); 0`
+is stuck at the `@drop`, with nothing printed. (`eval` treats it as a no-op
+and drops the `S` after the `@dbg`.) -/
+theorem demo_dynamicDrop_stuck (M : FloatOps) :
+    ∃ C, Steps M (demoProgram (.letIn false (.mkArray (.struct 0) [demoS])
+        (.seq (.indexDrop (.var 0) [demoI32 0] [[]]) (.seq (.dbg (demoI32 1)) (demoI32 0)))))
+        Config.init C ∧
+      C.Stuck M (demoProgram (.letIn false (.mkArray (.struct 0) [demoS])
+        (.seq (.indexDrop (.var 0) [demoI32 0] [[]]) (.seq (.dbg (demoI32 1)) (demoI32 0)))))
+        .typeConfusion :=
+  ⟨_, stepN_steps (n := 100), rfl⟩
+
+/-- **The repeat form needs `Copy`** (`7.1:38`): `let a = [S{}; 2]; 0` is
+stuck at the repeat, where `eval` would replicate the struct and run its
+destructor twice. -/
+theorem demo_repeat_stuck (M : FloatOps) :
+    ∃ C, Steps M (demoProgram (.letIn false (.repeatArray (.struct 0) demoS 2) (demoI32 0)))
+        Config.init C ∧
+      C.Stuck M (demoProgram (.letIn false (.repeatArray (.struct 0) demoS 2) (demoI32 0)))
+        .typeConfusion :=
+  ⟨_, stepN_steps (n := 100), rfl⟩
+
+/-- **`@drop` of a moved-out place is a no-op** (§6.11: `drop(H, ⊘) = H`):
+`let s = S{}; let t = s; @drop(s); 0` reaches `✓0`, and the one `S` is
+destroyed once, when `t` goes out of scope. (`eval` refuses it with
+`useAfterMove`; `check` rejects the program.) -/
+theorem demo_dropMoved_runs (M : FloatOps) :
+    ∃ H, Steps M (demoProgram (.letIn false demoS
+        (.letIn false (.use (.var 0)) (.seq (.drop (.var 1)) (demoI32 0))))) Config.init
+      (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 0))
+        [.drop 1 demoSc, .dtor 0 demoSc]) :=
+  ⟨_, stepN_steps (n := 100)⟩
+
+/-- **The loop yields `⟨⟩` to its context** (§6.10, RUE-2324's calculus
+finding): `let x = loop { break }; @dbg(7); 0` prints `7` and reaches `✓0`. -/
+theorem demo_loopInLet_runs (M : FloatOps) :
+    ∃ H, Steps M (demoProgram (.letIn false (.loop .brk) (.seq (.dbg (demoI32 7)) (demoI32 0))))
+      Config.init
+      (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 0))
+        [.dbg (.int .w32 .signed 7)]) ∧
+    run M (demoProgram (.letIn false (.loop .brk) (.seq (.dbg (demoI32 7)) (demoI32 0)))) 100 =
+      .ok H (.int .w32 .signed 0) [.dbg (.int .w32 .signed 7)] :=
+  ⟨_, stepN_steps (n := 100), rfl⟩
+
+/-- **(D-Break) drops what the body owed** (§6.10's `unwind-drops`):
+`loop { let s = S{}; break }; 3` destroys the `S` at the `break` and reaches
+`✓3`. -/
+theorem demo_breakDrops_runs (M : FloatOps) :
+    ∃ H, Steps M (demoProgram (.seq (.loop (.letIn false demoS .brk)) (demoI32 3))) Config.init
+      (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 3))
+        [.drop 0 demoSc, .dtor 0 demoSc]) ∧
+    run M (demoProgram (.seq (.loop (.letIn false demoS .brk)) (demoI32 3))) 100 =
+      .ok H (.int .w32 .signed 3) [.drop 0 demoSc, .dtor 0 demoSc] :=
+  ⟨_, stepN_steps (n := 100), rfl⟩
+
+/-- A counting loop: `let mut i = 0; loop { let s = S{}; if i >= 2 { break }
+else { i = i + 1 } }; i` (helper). -/
+def demoCountingLoop : Expr :=
+  .letIn true (demoI32 0)
+    (.seq (.loop (.letIn false demoS
+        (.ite (.binop .ge (.use (.var 1)) (demoI32 2)) .brk
+          (.assign (.var 1) (.binop .add (.use (.var 1)) (demoI32 1))))))
+      (.use (.var 0)))
+
+/-- **Every turn's drops run** (§6.7's (D-EndScope) on the turns that finish,
+§6.10's (D-Break) on the one that breaks): the counting loop destroys three
+`S`, one per turn, and reaches `✓2`. -/
+theorem demo_loopTurns_runs (M : FloatOps) :
+    ∃ H, Steps M (demoProgram demoCountingLoop) Config.init
+      (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 2))
+        [.drop 1 demoSc, .dtor 0 demoSc, .drop 2 demoSc, .dtor 0 demoSc,
+         .drop 3 demoSc, .dtor 0 demoSc]) ∧
+    run M (demoProgram demoCountingLoop) 200 =
+      .ok H (.int .w32 .signed 2)
+        [.drop 1 demoSc, .dtor 0 demoSc, .drop 2 demoSc, .dtor 0 demoSc,
+         .drop 3 demoSc, .dtor 0 demoSc] :=
+  ⟨_, stepN_steps (n := 300), rfl⟩
+
+/-- **(D-Return) from inside a `let`** (§6.9): `let s = S{}; let y = return 5; 0`
+discards the pending `let` and `endscope`, destroys the `S` from the frame's
+record, and reaches `✓5`. -/
+theorem demo_returnInLet_runs (M : FloatOps) :
+    ∃ H, Steps M (demoProgram (.letIn false demoS (.letIn false (.ret (demoI32 5)) (demoI32 0))))
+      Config.init
+      (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 5))
+        [.drop 0 demoSc, .dtor 0 demoSc]) ∧
+    run M (demoProgram (.letIn false demoS (.letIn false (.ret (demoI32 5)) (demoI32 0)))) 100 =
+      .ok H (.int .w32 .signed 5) [.drop 0 demoSc, .dtor 0 demoSc] :=
+  ⟨_, stepN_steps (n := 100), rfl⟩
+
+/-- **(D-Return) from a `match` arm** (§6.6, §6.9):
+`let x = S{}; match A(S{}) { A(p) => return 4, B => 0 }` destroys the arm's
+payload and then `x`, newest first, and reaches `✓4`. -/
+theorem demo_returnInMatch_runs (M : FloatOps) :
+    ∃ H, Steps M (demoProgram (.letIn false demoS
+        (.«match» (.mkEnum 0 0 [demoS]) [.ret (demoI32 4), demoI32 0]))) Config.init
+      (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 4))
+        [.drop 1 demoSc, .dtor 0 demoSc, .drop 0 demoSc, .dtor 0 demoSc]) ∧
+    run M (demoProgram (.letIn false demoS
+        (.«match» (.mkEnum 0 0 [demoS]) [.ret (demoI32 4), demoI32 0]))) 100 =
+      .ok H (.int .w32 .signed 4)
+        [.drop 1 demoSc, .dtor 0 demoSc, .drop 0 demoSc, .dtor 0 demoSc] :=
+  ⟨_, stepN_steps (n := 100), rfl⟩
+
+/-- **(D-Loop-Iter) runs the turn's drops** (§6.10's `run-scope-drops`): at a
+loop boundary whose frame owes nothing, a body value returned in a frame that
+still owes cell 0 destroys it before the next turn. The configuration is not
+reachable from `Config.init` — there `endscope` has always emptied the list —
+but it is one §6.10's rule covers. -/
+theorem demo_loopIter_drops (M : FloatOps) (e : Expr) :
+    Step M (demoProgram e)
+      (.run [.full demoSc] { env := [0], scope := [0] }
+        [.loop .brk { env := [], scope := [] }] (.ret .unit) [])
+      (.run [.dead] { env := [], scope := [] } [.loop .brk { env := [], scope := [] }]
+        (.eval .brk) [.drop 0 demoSc, .dtor 0 demoSc]) :=
+  step_iff.mpr rfl
 
 end RueCore
