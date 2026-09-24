@@ -332,9 +332,86 @@ fn subtract_magnitudes(lhs: &str, rhs: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_decimal_literal, finite_float_literal_bits, finite_float_literal_bits_with_sign,
+        canonical_decimal_literal, canonical_float_value_text, display_float_value_text,
+        finite_float_literal_bits, finite_float_literal_bits_with_sign, integer_float_value_text,
+        negated_integer_float_value_text, render_float_bits,
     };
     use crate::Type;
+
+    #[test]
+    fn a_float_value_has_one_canonical_text_per_width() {
+        // Every spelling of three, and three computed, share one text, which
+        // is also the literal `3.0`'s canonical decimal (RUE-2403).
+        for spelling in ["3", "3.0", "3e0", "0.3e1", "30e-1"] {
+            for ty in [Type::F32, Type::F64] {
+                assert_eq!(
+                    canonical_float_value_text(spelling, ty).as_deref(),
+                    Some("3e0")
+                );
+            }
+        }
+        assert_eq!(integer_float_value_text(3), "3e0");
+        assert_eq!(canonical_decimal_literal("3.0").as_deref(), Some("3e0"));
+        assert_eq!(render_float_bits(3.0_f64.to_bits(), Type::F64), "3e0");
+        // Equal at f32, distinct at f64.
+        assert_eq!(
+            canonical_float_value_text("0.100000001", Type::F32),
+            canonical_float_value_text("0.1", Type::F32)
+        );
+        assert_ne!(
+            canonical_float_value_text("0.100000001", Type::F64),
+            canonical_float_value_text("0.1", Type::F64)
+        );
+        // Signed zero stays signed (RUE-2402).
+        assert_eq!(negated_integer_float_value_text(0), "-0e0");
+        assert_eq!(integer_float_value_text(0), "0e0");
+        assert_eq!(
+            render_float_bits((-0.0_f32).to_bits().into(), Type::F32),
+            "-0e0"
+        );
+        assert_eq!(
+            canonical_float_value_text("-0e0", Type::F64).as_deref(),
+            Some("-0e0")
+        );
+        // Every NaN at a width is one value; infinities keep their sign.
+        let payload = f64::from_bits(0x7ff8_0000_0000_0001);
+        assert_eq!(render_float_bits(payload.to_bits(), Type::F64), "NaN");
+        assert_eq!(render_float_bits((-f64::NAN).to_bits(), Type::F64), "NaN");
+        assert_eq!(
+            render_float_bits(f64::NEG_INFINITY.to_bits(), Type::F64),
+            "-inf"
+        );
+        assert_eq!(
+            canonical_float_value_text("inf", Type::F32).as_deref(),
+            Some("inf")
+        );
+        assert_eq!(canonical_float_value_text("x", Type::F32), None);
+        assert_eq!(canonical_float_value_text("3", Type::I32), None);
+    }
+
+    #[test]
+    fn a_canonical_float_text_displays_as_the_runtime_formatter_does() {
+        for (text, shown) in [
+            ("3e0", "3.0"),
+            ("-3e0", "-3.0"),
+            ("0e0", "0.0"),
+            ("-0e0", "-0.0"),
+            ("15e-1", "1.5"),
+            ("1e-1", "0.1"),
+            ("1e-5", "0.00001"),
+            ("1e-6", "1e-6"),
+            ("123456789e0", "123456789.0"),
+            ("1e15", "1000000000000000.0"),
+            ("1e16", "1e+16"),
+            ("15e300", "1.5e+301"),
+            ("5e-324", "5e-324"),
+            ("NaN", "NaN"),
+            ("-inf", "-inf"),
+            ("3", "3"),
+        ] {
+            assert_eq!(display_float_value_text(text), shown, "{text}");
+        }
+    }
 
     #[test]
     fn equivalent_spellings_share_exact_identity() {
