@@ -1480,7 +1480,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // E0259). A receiver reached through an accessor result needs no
         // re-check: an argument's own accessor call or by-ref use of the root
         // is checked against the receiver's loan when it is analyzed.
-        if let Some(root) = receiver_var {
+        if let Some(root) = receiver_var
+            && receiver_mode != AirArgMode::Normal
+        {
             self.reject_receiver_accessor_loan_conflict(
                 root,
                 receiver_mode,

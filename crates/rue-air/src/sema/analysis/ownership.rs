@@ -7489,6 +7489,37 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
     }
 
+    /// Record a projection-mode read of a place rooted at a local or
+    /// parameter as a shared use of that root, rejecting it if it overlaps an
+    /// exclusive accessor result in the same full expression (spec 6.6:10,
+    /// E0259).
+    ///
+    /// A projection-mode read borrows its place for the operation that
+    /// consumes it: the operands of `==` and the ordering operators (4.3:3f),
+    /// `@dbg`, and `@assert`. Like a value-context read, it cannot overlap an
+    /// exclusive accessor result in either order. Otherwise
+    /// `w.b.s == w.bmut().bump()` would read `w.b.s` after the accessor result
+    /// mutated it. A place reached through an accessor result roots at no
+    /// plain variable, and it reads through that result's own loan.
+    pub(super) fn record_projection_shared_read(
+        &self,
+        inst_ref: InstRef,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<()> {
+        let Some(root) = root_variable_of(self.body_rir_ref(), inst_ref) else {
+            return Ok(());
+        };
+        if ctx.ownership.byref_arg_root == Some(root)
+            || !(ctx.locals.contains_key(&root) || ctx.has_param(root))
+        {
+            return Ok(());
+        }
+        self.reject_accessor_shared_loan_conflict(root, "by a shared read", span, ctx)?;
+        ctx.ownership.expression_shared_reads.push((root, span));
+        Ok(())
+    }
+
     /// Check the completed-use ledgers that a nested full-expression boundary
     /// temporarily hides. Direct accessor calls and arm-loan readmission both
     /// use this check so evaluation order has one conflict rule.
