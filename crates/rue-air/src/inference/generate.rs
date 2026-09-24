@@ -4798,7 +4798,7 @@ impl<'a> ConstraintGenerator<'a> {
             {
                 continue;
             }
-            self.add_constraint(Constraint::equal(
+            self.add_constraint(Constraint::contextual(
                 arg_info.ty.clone(),
                 expected,
                 arg_info.span,
