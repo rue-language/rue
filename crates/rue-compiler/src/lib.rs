@@ -101,6 +101,8 @@ mod api_inventory;
 #[cfg(test)]
 mod assert_comparison_tests;
 #[cfg(test)]
+mod drop_flag_guard_mutation_tests;
+#[cfg(test)]
 mod integration_tests;
 #[cfg(test)]
 mod scaling_harness;

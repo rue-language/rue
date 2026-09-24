@@ -20,6 +20,7 @@
 mod api_inventory;
 mod build;
 mod dominators;
+mod guard_mutation;
 mod inline;
 mod inst;
 pub mod opt;
