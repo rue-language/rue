@@ -1524,7 +1524,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             && receiver_mode == AirArgMode::Inout
             && let Some(root) = self.extract_root_variable(receiver)
         {
-            self.record_completed_exclusive_use(root, span, ctx);
+            self.record_completed_exclusive_use(root, span, ctx)?;
         }
         if !call.continues {
             ctx.ownership

@@ -1870,7 +1870,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // A projection-mode read is a shared use of its place's root
         // (spec 6.6:10).
-        self.record_borrowed_place_use(inst_ref, false, inst.span, ctx)?;
+        self.record_borrowed_place_use(inst_ref, inst.span, ctx)?;
 
         // For VarRef, we handle it specially: check for full moves but don't mark as moved
         if let InstData::VarRef { name, .. } = &inst.data {
