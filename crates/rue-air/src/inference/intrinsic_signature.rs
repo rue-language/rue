@@ -113,8 +113,10 @@ pub(crate) enum ResultShape {
     Text,
     /// A compiler-provided enum, named by its source spelling.
     BuiltinEnum(&'static str),
-    /// A module value carrying the documented unresolved module id; semantic
-    /// analysis resolves the real identity.
+    /// A module value carrying the documented unresolved module id. The
+    /// generator first resolves an `@import` site through the fact provider's
+    /// canonical-import lookup (RUE-2401); the sentinel is what remains when
+    /// no provider can (the eager unit-test path).
     UnresolvedModule,
     /// The signature's shared operand variable.
     Common,
@@ -344,12 +346,13 @@ pub(crate) const fn intrinsic_shape(name: IntrinsicName) -> IntrinsicShape {
         I::TargetArch => IntrinsicSignature::new(Ungenerated, BuiltinEnum("Arch")),
         I::TargetOs => IntrinsicSignature::new(Ungenerated, BuiltinEnum("Os")),
         I::TargetDataModel => IntrinsicSignature::new(Ungenerated, BuiltinEnum("DataModel")),
-        // `@import("path")` is a module value. Resolving the path to a real
-        // module id needs the registry, which inference does not have, so the
-        // documented sentinel is used: inference only needs module-ness, and
-        // semantic analysis resolves the member with the receiver's real
-        // identity. Returning unit here made a member call on the binding
-        // unresolvable (RUE-142).
+        // `@import("path")` is a module value. The generator resolves the
+        // path to the real module through the fact provider's canonical-import
+        // lookup, the one semantic analysis binds the intrinsic with, so a
+        // member call on it constrains its arguments (RUE-2401). The sentinel
+        // below is only the fallback where no provider can resolve it.
+        // Returning unit here made a member call on the binding unresolvable
+        // (RUE-142).
         I::Import => IntrinsicSignature::new(Uniform(Free), ResultShape::UnresolvedModule),
         // The remaining value intrinsics evaluate to unit.
         I::Dbg | I::Drop | I::TestPreviewGate => {
