@@ -302,7 +302,8 @@ struct SpliceShape {
 
 impl SpliceShape {
     fn growth(&self, callee: &Cfg) -> Result<crate::opt::CodeGrowth, CfgInlineError> {
-        let callee_values = u64::try_from(callee.value_count()).map_err(|_| {
+        // `MoveOut` markers lower to nothing, so they are not charged.
+        let callee_values = u64::try_from(callee.charged_value_count()).map_err(|_| {
             CfgInlineError::Edit(CfgEditError::ResourceLimitExceeded {
                 family: "inline growth",
             })
