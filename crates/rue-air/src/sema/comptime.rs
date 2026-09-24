@@ -1098,6 +1098,12 @@ pub struct ComptimeEngine<'e, H: ComptimeHost> {
     frames: Vec<
         ComptimeFrame<H::Value, H::Type, H::Name, H::File, H::ProgramKey, H::CanonicalIdentity>,
     >,
+    /// The already-computed outcome of an operator's first operand, handed
+    /// from [`Self::eval_operator_chain`] to the operator it is evaluating.
+    /// It is set immediately before dispatching that operator and consumed
+    /// by the operator's first `eval`, so it is never observed by any other
+    /// instruction.
+    evaluated_operand: Option<(InstRef, ComptimeOutcome<H::Value, H::Failure>)>,
     #[cfg(test)]
     provenance_classifications: usize,
 }
@@ -1107,6 +1113,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         Self {
             host,
             frames: Vec::new(),
+            evaluated_operand: None,
             #[cfg(test)]
             provenance_classifications: 0,
         }
@@ -2757,6 +2764,117 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         (operations, checked)
     }
 
+    /// The operand an operator evaluates before anything else, when the
+    /// operator is one [`Self::eval_operator_chain`] may evaluate on its
+    /// behalf: every binary operator evaluates its left operand first, and a
+    /// unary operator its operand, except a negated integer literal, which
+    /// is one literal and evaluates nothing.
+    fn chain_operand(&self, data: &InstData) -> Option<InstRef> {
+        match data {
+            InstData::Add { lhs, .. }
+            | InstData::Sub { lhs, .. }
+            | InstData::Mul { lhs, .. }
+            | InstData::Div { lhs, .. }
+            | InstData::Mod { lhs, .. }
+            | InstData::Eq { lhs, .. }
+            | InstData::Ne { lhs, .. }
+            | InstData::Lt { lhs, .. }
+            | InstData::Gt { lhs, .. }
+            | InstData::Le { lhs, .. }
+            | InstData::Ge { lhs, .. }
+            | InstData::And { lhs, .. }
+            | InstData::Or { lhs, .. }
+            | InstData::BitAnd { lhs, .. }
+            | InstData::BitOr { lhs, .. }
+            | InstData::BitXor { lhs, .. }
+            | InstData::Shl { lhs, .. }
+            | InstData::Shr { lhs, .. } => Some(*lhs),
+            InstData::Not { operand } | InstData::BitNot { operand } => Some(*operand),
+            InstData::Neg { operand } => {
+                (!matches!(self.program_rir().get(*operand).data, InstData::IntConst(_)))
+                    .then_some(*operand)
+            }
+            _ => None,
+        }
+    }
+
+    /// Evaluate an operator whose first operand may itself be an operator,
+    /// without recursing once per operator (RUE-2366).
+    ///
+    /// The parser admits a left-nested chain such as `a + b + c + …` or
+    /// `- - - … x` up to the nesting limit of spec C.6:3, and recursing
+    /// through the instruction dispatcher's large frame once per operator
+    /// exhausted the thread stack well before that limit. This walk descends
+    /// the chain of first operands, entering each operator exactly as
+    /// [`Self::eval`] would (the cancellation check, then marking the
+    /// declared integer region it roots), evaluates the innermost operand
+    /// normally, and then dispatches the operators from the innermost out,
+    /// handing each one its first operand's outcome through
+    /// `evaluated_operand`. Every such operator evaluates that operand before
+    /// anything else, so each sees the outcome, region marks and evaluation
+    /// order the recursive walk gives it; only the second operands recurse.
+    #[inline(never)]
+    fn eval_operator_chain(
+        &mut self,
+        root: InstRef,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        // Each entered operator, its first operand, and the region
+        // operations it marked.
+        let mut entered: Vec<(InstRef, InstRef, Vec<InstRef>)> = Vec::new();
+        let mut node = root;
+        let mut outcome = loop {
+            // `eval` checked cancellation on entering the root.
+            if node != root {
+                match self.host.check_canceled() {
+                    Ok(()) => {}
+                    Err(ComptimeHostError::HostFailure(error)) => {
+                        break ComptimeOutcome::HostFailure(error);
+                    }
+                    Err(ComptimeHostError::Abort(error)) => break ComptimeOutcome::Abort(error),
+                }
+            }
+            let data = self.program_rir().get(node).data.clone();
+            let operand = self
+                .chain_operand(&data)
+                .expect("an operator chain holds only chain operators");
+            let marked = if !env.declared_integer_locals.is_empty()
+                && Self::is_declared_region_root(&data)
+                && !env.declared_integer_checks.contains_key(&node)
+            {
+                let (operations, checked) = self.declared_region(node, None, env);
+                for operation in &operations {
+                    env.declared_integer_checks
+                        .insert(*operation, checked.clone());
+                }
+                operations
+            } else {
+                Vec::new()
+            };
+            entered.push((node, operand, marked));
+            let operand_data = &self.program_rir().get(operand).data;
+            if self.chain_operand(operand_data).is_some() {
+                node = operand;
+            } else {
+                break self.eval(operand, env);
+            }
+        };
+        while let Some((node, operand, marked)) = entered.pop() {
+            debug_assert!(self.evaluated_operand.is_none());
+            self.evaluated_operand = Some((operand, outcome));
+            outcome = self.eval_dispatch(node, env);
+            debug_assert!(
+                self.evaluated_operand.is_none(),
+                "a chain operator must evaluate its first operand first"
+            );
+            self.evaluated_operand = None;
+            for operation in &marked {
+                env.declared_integer_checks.remove(operation);
+            }
+        }
+        outcome
+    }
+
     #[inline(never)]
     fn eval_declared_region_root(
         &mut self,
@@ -2830,6 +2948,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         inst_ref: InstRef,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
+        if let Some((operand, _)) = &self.evaluated_operand
+            && *operand == inst_ref
+        {
+            return self.evaluated_operand.take().expect("operand outcome").1;
+        }
         host_value!(self.host.check_canceled());
         let (data, span) = {
             let source = self.program_rir().get(inst_ref);
@@ -2847,9 +2970,16 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 then_block,
                 else_block,
             } => self.eval_branch(cond, then_block, else_block, env),
+            // An operator walks its chain of first operands iteratively, and
+            // marks its own declared integer region there (RUE-2366).
+            ref data if self.chain_operand(data).is_some() => {
+                self.eval_operator_chain(inst_ref, env)
+            }
             // A region that can read a declared binding is marked for the
             // declared integer check at its root; an operation already in a
-            // region, or any other instruction, dispatches directly.
+            // region, or any other instruction, dispatches directly. The only
+            // region root that reaches this arm is a negated literal: every
+            // other one is a chain operator.
             ref data
                 if !env.declared_integer_locals.is_empty()
                     && Self::is_declared_region_root(data)
