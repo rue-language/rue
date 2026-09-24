@@ -2,6 +2,21 @@
 
 use super::*;
 
+/// One child position of a structural literal, named by the engine so a host
+/// can report the type declared for it. A child is evaluated against its own
+/// slot's type, never the type of the literal that contains it: the inner
+/// `[1, 2]` of `[[1, 2], [3, 4]]` at `[[i32; 2]; 2]` fills an `[i32; 2]`
+/// element, and the `[1, 3]` of `S { a: [1, 3] }` fills the field `a`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComptimeChildSlot<'a, N> {
+    /// An element of an array literal or of an array-repeat literal.
+    ArrayElement,
+    /// The named field of a struct literal.
+    StructField(&'a N),
+    /// The payload position `index` of the named enum variant.
+    EnumPayload { variant: &'a N, index: usize },
+}
+
 #[derive(Debug)]
 pub struct ComptimeFrame<V, T, N, F, P, I> {
     pub program: P,

@@ -861,6 +861,53 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         }
     }
 
+    /// The declared type of a structural child slot, read from the same
+    /// facts that admission checks the child against afterwards, so a
+    /// nested literal is typed by its slot: `[1, 2]` inside `[[i32; 2]; 2]`
+    /// is an `[i32; 2]`, and so is the `[1, 2]` of a field or payload
+    /// declared `[i32; 2]` (RUE-2390).
+    fn comptime_child_slot_type(
+        &mut self,
+        parent: &Self::Type,
+        slot: rue_air::ComptimeChildSlot<'_, Self::Name>,
+    ) -> rue_air::ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        let slot_type = match (slot, parent.as_ref()) {
+            (rue_air::ComptimeChildSlot::ArrayElement, DurableType::Array { element, .. }) => {
+                Some(element.as_ref().clone())
+            }
+            (rue_air::ComptimeChildSlot::ArrayElement, _) => None,
+            (rue_air::ComptimeChildSlot::StructField(field), parent) => {
+                match self
+                    .services
+                    .resolve_struct_field_index(parent, field.as_str())
+                    .map_err(durable_provider_error)?
+                {
+                    Some(index) => self
+                        .services
+                        .resolve_struct_field_type(parent, index)
+                        .map_err(durable_provider_error)?,
+                    None => None,
+                }
+            }
+            (rue_air::ComptimeChildSlot::EnumPayload { variant, index }, parent) => {
+                match self
+                    .services
+                    .resolve_enum_variant_index(parent, variant.as_str())
+                    .map_err(durable_provider_error)?
+                {
+                    Some(variant) => self
+                        .services
+                        .resolve_enum_variant_payload_types(parent, variant)
+                        .map_err(durable_provider_error)?
+                        .get(index)
+                        .cloned(),
+                    None => None,
+                }
+            }
+        };
+        Ok(slot_type.map(DurableComptimeType))
+    }
+
     fn const_expr_type(
         &self,
         _program: &Self::ProgramKey,
