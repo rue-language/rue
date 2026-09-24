@@ -2121,18 +2121,8 @@ impl<'a> CfgBuilder<'a> {
                     // A statement's discarded result is a temporary the
                     // statement owns (`D { v: 7 };`, `make();`, `let _ = …`,
                     // a discarded if/match result): drop it at the end of
-                    // the statement (RUE-65, RUE-66). Values forwarded into
-                    // calls are NOT affected — the callee owns and drops
-                    // those; only the statement's own result is dropped
-                    // here. Moves out of locals (`d;`) were already marked
-                    // by MarkMoved, so this drop is the move's destination.
-                    if let Some(temp_val) = result.value {
-                        let stmt_ty = self.air.get(*stmt).ty;
-                        if self.type_needs_drop(stmt_ty) {
-                            let stmt_span = self.air.get(*stmt).span;
-                            self.emit(CfgInstData::Drop { value: temp_val }, Type::UNIT, stmt_span);
-                        }
-                    }
+                    // the statement (RUE-65, RUE-66).
+                    self.drop_discarded_value(result.value, *stmt);
                 }
 
                 // Lower the final value
@@ -2394,9 +2384,12 @@ impl<'a> CfgBuilder<'a> {
                 self.current_block = body_block;
                 let body_result = self.lower_inst(*body);
 
-                // After body, go back to header (unless diverged)
+                // After body, go back to header (unless diverged). The body's
+                // value is discarded at the back edge, so it is dropped there
+                // exactly as an expression statement's result is (RUE-2378).
                 let falls_through = !matches!(body_result.continuation, Continuation::Diverged);
                 if falls_through {
+                    self.drop_discarded_value(body_result.value, *body);
                     self.goto_no_args(self.current_block, header_block);
                 }
 
@@ -2469,8 +2462,11 @@ impl<'a> CfgBuilder<'a> {
                 self.current_block = body_block;
                 let body_result = self.lower_inst(*body);
 
-                // After body, go back to start (unless diverged via return/break/continue)
+                // After body, go back to start (unless diverged via
+                // return/break/continue), dropping the body's discarded value
+                // at the back edge as for a `while` body (RUE-2378).
                 if !matches!(body_result.continuation, Continuation::Diverged) {
+                    self.drop_discarded_value(body_result.value, *body);
                     self.goto_no_args(self.current_block, body_block);
                 }
 
@@ -3409,6 +3405,23 @@ impl<'a> CfgBuilder<'a> {
         ExprResult {
             value: None,
             continuation: Continuation::Diverged,
+        }
+    }
+
+    /// Drop the value of an expression whose result is discarded: an
+    /// expression statement, or a loop body at its back edge. The value is a
+    /// temporary the discarding context owns. Values forwarded into calls are
+    /// not affected, since the callee owns and drops those; a move out of a
+    /// local (`d;`, or a body ending in `d`) was already marked by
+    /// `MarkMoved`, so this drop is the move's destination.
+    fn drop_discarded_value(&mut self, value: Option<CfgValue>, air_ref: AirRef) {
+        let Some(value) = value else {
+            return;
+        };
+        let inst = self.air.get(air_ref);
+        let (ty, span) = (inst.ty, inst.span);
+        if self.type_needs_drop(ty) {
+            self.emit(CfgInstData::Drop { value }, Type::UNIT, span);
         }
     }
 
