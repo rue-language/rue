@@ -360,6 +360,26 @@ pub(crate) fn is_durable_str_type(ty: &DurableType) -> bool {
     matches!(ty, DurableType::BuiltinNominal { name, .. } if name.as_ref() == "str")
 }
 
+/// The float value an integer takes where `f32` or `f64` is expected, or
+/// `None` in any other pairing. An integer literal is admitted wherever a
+/// float type is expected (spec 3.12:11, ADR-0065 §3) and denotes the float
+/// nearest its exact value, which the float's decimal text carries until its
+/// use rounds it to the width. This is the one conversion declaration-time
+/// evaluation applies, both to a `const` initializer (`const X: f64 = 3;`) and
+/// to each element or field of a structural value whose declared slot is a
+/// float (`const A: [f32; 2] = [1, 2];`), matching the body path.
+pub(crate) fn durable_integer_as_float(
+    value: &DurableConstValue,
+    ty: &DurableType,
+) -> Option<DurableConstValue> {
+    match (ty, value) {
+        (DurableType::F32 | DurableType::F64, DurableConstValue::Integer(integer)) => {
+            Some(DurableConstValue::Float(Arc::from(integer.to_string())))
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn durable_const_fits_type(value: &DurableConstValue, ty: &DurableType) -> bool {
     use crate::durable_semantics::{DurableConstValue as V, DurableType as T};
     match (ty, value) {
@@ -1267,6 +1287,24 @@ mod tests {
 
     fn value(value: DurableConstValue, ty: Option<DurableType>) -> EvaluatedSemanticConst {
         EvaluatedSemanticConst::Value(Arc::new(TypedSemanticConst { value, ty }))
+    }
+
+    #[test]
+    fn integer_takes_float_text_only_in_a_float_slot() {
+        for ty in [DurableType::F32, DurableType::F64] {
+            assert_eq!(
+                durable_integer_as_float(&DurableConstValue::Integer(-3), &ty),
+                Some(DurableConstValue::Float(Arc::from("-3")))
+            );
+        }
+        assert_eq!(
+            durable_integer_as_float(&DurableConstValue::Integer(3), &DurableType::I64),
+            None
+        );
+        assert_eq!(
+            durable_integer_as_float(&DurableConstValue::Bool(true), &DurableType::F32),
+            None
+        );
     }
 
     #[test]

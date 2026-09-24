@@ -221,6 +221,23 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
         }
     }
 
+    /// Give an untyped integer literal the float type of the slot it fills,
+    /// as [`durable_integer_as_float`] does for a `const` initializer: an
+    /// element of `[1, 2]` at `[f32; 2]`, a field `x: 1` of an `f32` field,
+    /// or a payload of a float variant (spec 3.12:11). A value that already
+    /// carries a type keeps it and is checked against the slot as before.
+    fn admit_contextual_integer(value: &mut EvaluatedSemanticConst, expected: &DurableType) {
+        if let EvaluatedSemanticConst::Value(typed) = value
+            && typed.ty.is_none()
+            && let Some(float) = durable_integer_as_float(&typed.value, expected)
+        {
+            *value = EvaluatedSemanticConst::Value(Arc::new(TypedSemanticConst {
+                value: float,
+                ty: Some(expected.clone()),
+            }));
+        }
+    }
+
     fn durable_child_type_error(
         found: DurableType,
         expected: &DurableType,
@@ -1053,7 +1070,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
             ));
         }
         let mut ordered = Vec::with_capacity(fields.len());
-        for (name, value) in fields {
+        for (name, mut value) in fields {
             let index = match self
                 .services
                 .resolve_struct_field_index(ty.as_ref(), name.as_str())
@@ -1073,6 +1090,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
                 Ok(None) => return rue_air::ComptimeOutcome::RuntimeDependent,
                 Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
             };
+            Self::admit_contextual_integer(&mut value, &field_type);
             if let Some(found) = Self::durable_child_type_mismatch(&value, &field_type) {
                 return durable_host_error_outcome(Self::durable_child_type_error(
                     found,
@@ -1111,7 +1129,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
     fn resolve_comptime_array(
         &mut self,
         ty: Self::Type,
-        elements: Vec<Self::Value>,
+        mut elements: Vec<Self::Value>,
         _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
         let DurableType::Array { element, len } = ty.as_ref() else {
@@ -1131,7 +1149,8 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         if elements.len() as u64 != *len {
             return rue_air::ComptimeOutcome::RuntimeDependent;
         }
-        for value in &elements {
+        for value in &mut elements {
+            Self::admit_contextual_integer(value, element.as_ref());
             if let Some(found) = Self::durable_child_type_mismatch(value, element.as_ref()) {
                 return durable_host_error_outcome(Self::durable_child_type_error(
                     found,
@@ -1520,7 +1539,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         &mut self,
         enum_type: DurableComptimeType,
         variant: Self::Name,
-        payload: Vec<Self::Value>,
+        mut payload: Vec<Self::Value>,
         _site: &rue_air::ComptimeSite<Self::ProgramKey>,
         _span: rue_span::Span,
     ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
@@ -1554,7 +1573,8 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
             return rue_air::ComptimeOutcome::RuntimeDependent;
         }
         let mut nodes = 0;
-        for (value, ty) in payload.iter().zip(payload_types.iter()) {
+        for (value, ty) in payload.iter_mut().zip(payload_types.iter()) {
+            Self::admit_contextual_integer(value, ty);
             if let Some(found) = Self::durable_child_type_mismatch(value, ty) {
                 return durable_host_error_outcome(Self::durable_child_type_error(found, ty));
             }
