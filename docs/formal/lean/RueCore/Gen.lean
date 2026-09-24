@@ -1216,13 +1216,18 @@ def leaf (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
 end
 
 /-- (helper) A **break arm**: the arm of an `if` or a `match` inside a loop
-body that leaves the loop, either a bare `break` or one unit-typed leaf and
-then `break` — `{ @drop(x); break }`, which is where a move inside a loop meets
-§5.7's exit rather than its back edge. The `break` is the arm's **last** form,
-so no syntax follows it in its block (RUE-2376), and the arm is `never`-typed,
-which (Sub-Never) §5.7 coerces to the other arms' type (`firstArmTy` and
-`CTy.meet` skip it, `Checker.lean`). -/
+body, or the tail of a once-through loop's body, that leaves the loop. Half the
+time, where the scope holds a binder of a non-`Copy` aggregate type, it is
+`{ @drop(x); break }` for such a binder — a move inside a loop that meets §5.7's
+exit rather than its back edge, which is RUE-1615's shape when every path
+breaks and RUE-1614's exit join when another exit keeps `x`; otherwise a bare
+`break` or one unit-typed leaf and then `break`. The `break` is the arm's
+**last** form, so no syntax follows it in its block (RUE-2376), and the arm is
+`never`-typed, which (Sub-Never) §5.7 coerces to the other arms' type
+(`firstArmTy` and `CTy.meet` skip it, `Checker.lean`). -/
 def breakArm (D : Decls) (Γ : Scope) : G Expr := do
+  let owned := indicesWhere Γ (fun b => isAggregate b.ty && b.ty.mult D != .copy)
+  if !owned.isEmpty && (← chance 1 2) then return seq (drop (.var (← pick 0 owned))) brk
   if ← chance 1 2 then return brk
   return seq (← leaf D Γ .unit 2) brk
 
@@ -1247,6 +1252,32 @@ def countedLoop (n : Nat) (body : Expr) : Expr :=
       (seq (ite (binop .ge k (intLit .w64 .signed n)) brk unitLit)
         (seq (assign (.var 0) (binop .add k (intLit .w64 .signed 1))) body)))
 
+/-- (helper) Draw a loop under `Γ` (module docstring, "Loops"): counted three
+times in four (`countedLoop`, a bound `n ≤ 3`) and **once-through** otherwise —
+a body whose last form is a break arm, so it runs once and no turn reaches the
+back edge. `body` draws the body and `cond` a condition, each under the scope
+the body sees: a counted loop's has the counter on top, **unmarked**, so that
+nothing the body draws writes it. Half the bodies open with an **exit
+statement**, `if c { … break } else { () }`: an exit the run may or may not
+take, beside the loop's own. -/
+def drawLoop (D : Decls) (Γ : Scope) (body cond : Scope → G Expr) : G Expr := do
+  let n ← nat 0 3
+  let once ← chance 1 4
+  let Γl : Scope := if once then Γ else { ty := .int .w64 .signed, mu := false } :: Γ
+  let b ← body Γl
+  let b ← if ← chance 1 2 then do
+      let c ← cond Γl
+      pure (seq (ite c (← breakArm D Γl) unitLit) b)
+    else pure b
+  if once then return loop (seq b (← breakArm D Γl))
+  return countedLoop n b
+
+/-- (helper) Whether the scope holds a binder of a non-`Copy` aggregate type:
+something a loop body can move or `@drop`, which is what makes a loop's
+back edge and exits say anything about ownership. -/
+def ownedInScope (D : Decls) (Γ : Scope) : Bool :=
+  Γ.any (fun b => isAggregate b.ty && b.ty.mult D != .copy)
+
 /-- (helper) An expression of the wanted type under `Γ`, at most `fuel`
 levels deep. The weights here are the bias the module docstring
 describes. -/
@@ -1260,6 +1291,12 @@ def expr (D : Decls) : Bool → Scope → Ty → Nat → G Expr
       if arrayInScope D Γ && (← chance 1 2) then
         let s ← arrayStmt D Γ (fun Γ' T' => atom D Γ' T' 2) (fun Γ' T' => atom D Γ' T' 2)
         return seq s (← leaf D Γ T 2)
+      -- Likewise a loop statement one time in four where the scope holds
+      -- something a body can move (`ownedInScope`), its body and condition
+      -- leaves: this is where a move inside a loop has an outer binder to take.
+      if ownedInScope D Γ && (← chance 1 4) then
+        let lp ← drawLoop D Γ (fun Γ' => leaf D Γ' .unit 2) (fun Γ' => atom D Γ' .bool 2)
+        return seq lp (← leaf D Γ T 2)
       leaf D Γ T 2
   | lb, Γ, T, fuel + 1 => do
       if !Γ.isEmpty && (← chance 1 6) then return (← leaf D Γ T 2)
@@ -1267,7 +1304,8 @@ def expr (D : Decls) : Bool → Scope → Ty → Nat → G Expr
         [(4, 0), (3, 1), (3, 2), (4, 3),
           (if D.enums.isEmpty then 0 else if enumPlaceInScope D Γ then 14 else 3, 4),
           (if arrayInScope D Γ then 6 else 0, 5),
-          (if T == .unit then 4 else 0, 6), (2, 7)]
+          (if T != .unit then 0 else if ownedInScope D Γ then 4 else 1, 6),
+          (if ownedInScope D Γ then 3 else 1, 7)]
       match form with
       | 0 =>
           let T₁ ← binderTy D
@@ -1296,21 +1334,15 @@ def expr (D : Decls) : Bool → Scope → Ty → Nat → G Expr
           let e₂ ← expr D lb Γ T fuel
           return ite c e₁ e₂
       | 6 | 7 =>
-          -- A counted `loop` (module docstring, "Loops"): a fresh `mut`
-          -- counter `k`, a guard that breaks once `k ≥ n`, the increment, then
-          -- a drawn body under `k`, which the draw sees as an unmarked binder so
-          -- that nothing it draws writes `k`. One loop in four ends its body
-          -- with a `break`, so no turn reaches the back edge (RUE-1615's shape).
-          -- Form 6 is the loop itself, at `unit`; form 7, at any type, is the
-          -- loop as a statement before the rest, the way form 5 places an
-          -- array statement, because a `unit`-typed draw one level above a
-          -- leaf is rare.
-          let n ← nat 0 3
-          let Γk : Scope := { ty := .int .w64 .signed, mu := false } :: Γ
-          let body ← expr D true Γk .unit fuel
-          let body ← if ← chance 1 4 then pure (seq body brk) else pure body
-          if form == 6 then return countedLoop n body
-          return seq (countedLoop n body) (← expr D lb Γ T fuel)
+          -- A `loop` (`drawLoop`). Form 6 is the loop itself, at `unit`; form 7,
+          -- at any type, is the loop as a statement before the rest, the way
+          -- form 5 places an array statement, because a `unit`-typed draw one
+          -- level above a leaf is rare. Both are weighted up where the scope
+          -- holds something a body can move (`ownedInScope`).
+          let lp ← drawLoop D Γ (fun Γ' => expr D true Γ' .unit fuel)
+            (fun Γ' => expr D false Γ' .bool fuel)
+          if form == 6 then return lp
+          return seq lp (← expr D lb Γ T fuel)
       | 5 =>
           -- An array statement, then the rest at the wanted type: weighted up
           -- where the scope has an array to index (`arrayStmt`), because the
