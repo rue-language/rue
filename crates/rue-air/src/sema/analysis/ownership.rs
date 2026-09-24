@@ -3833,21 +3833,38 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 marker_depth = declared_depth.expect("declared-linear depth checked above");
                 let destructured_path = trace.prefix_field_path(marker_depth).unwrap_or_default();
 
-                // Destructuring a sub-place uses it as a whole value, so the
-                // place itself, an ancestor, or a descendant being moved makes
-                // this a use-after-move (RUE-279) — at the root the full-move
-                // check above already covers it.
-                if !destructured_path.is_empty()
-                    && let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var)
-                    && let Some(moved_span) = state.is_path_or_descendant_moved(&destructured_path)
-                {
-                    return Err(super::use_after_move_path_error(
-                        self.body_interner(),
-                        trace.root_var,
-                        &destructured_path,
-                        span,
-                        moved_span,
-                    ));
+                // Destructuring a place uses it as a whole value (the core's
+                // `fully-owned(Σ, d)` premise), so the place itself, an
+                // ancestor, or a descendant being moved makes this a
+                // use-after-move (RUE-279). At the root the full-move check
+                // above covers the place itself; a descendant can still be
+                // moved there by a nested declared-`linear` destructure
+                // (`y.mid.inner.a`), after which consuming `y` through
+                // `y.mid` would hand out the hole and drop the destructured
+                // residue a second time (RUE-2335).
+                if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
+                    if destructured_path.is_empty() {
+                        if let Some((moved_path, moved_span)) = state.moved_strict_descendant(&[])
+                        {
+                            return Err(self.moved_part_below_error(
+                                trace.root_var,
+                                &[],
+                                moved_path,
+                                moved_span,
+                                span,
+                            ));
+                        }
+                    } else if let Some(moved_span) =
+                        state.is_path_or_descendant_moved(&destructured_path)
+                    {
+                        return Err(super::use_after_move_path_error(
+                            self.body_interner(),
+                            trace.root_var,
+                            &destructured_path,
+                            span,
+                            moved_span,
+                        ));
+                    }
                 }
 
                 move_is_partial = !destructured_path.is_empty();
@@ -6781,6 +6798,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         else {
             return Ok(());
         };
+        Err(self.moved_part_below_error(root_var, path, moved_path, moved_span, span))
+    }
+
+    /// The diagnostic for a whole-value use of `path` while `moved_path`
+    /// below it is moved out: the descendant half of `fully-owned` (§5.1,
+    /// spec 3.8:26), shared by [`Self::reject_moved_part_below`] and the
+    /// declared-linear destructure of a root binding.
+    fn moved_part_below_error(
+        &self,
+        root_var: Spur,
+        path: &[Spur],
+        moved_path: &[Spur],
+        moved_span: Span,
+        span: Span,
+    ) -> CompileError {
         // Not `use_after_move_path_error`: its help suggests a borrow, and a
         // borrow of the place fails for the same reason. The recovery is
         // 3.8:55's reinitialization of the moved part — unless the part lies
@@ -6803,14 +6835,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
             None => format!("reinitialize `{moved}` first (`{moved} = ...`)"),
         };
-        Err(
-            CompileError::new(ErrorKind::UseAfterMove(moved.clone()), span)
-                .with_label("value moved here", moved_span)
-                .with_help(format!(
-                    "`{place}` is used as a whole here, so every part of it must be \
-                     owned; {reinit}"
-                )),
-        )
+        CompileError::new(ErrorKind::UseAfterMove(moved.clone()), span)
+            .with_label("value moved here", moved_span)
+            .with_help(format!(
+                "`{place}` is used as a whole here, so every part of it must be \
+                 owned; {reinit}"
+            ))
     }
 
     /// Reject a constant index that leaves its array anywhere in a traced
