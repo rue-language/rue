@@ -3373,6 +3373,25 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // Unary negation: -expr
             InstData::Neg { operand } => {
                 if let InstData::IntConst(magnitude) = self.program_rir().get(*operand).data {
+                    // A negated integer literal is one literal, so where a
+                    // float is expected it becomes the float nearest to its
+                    // exact integer value, as the bare literal does above
+                    // (spec 3.12:11): `f(-2)` at a `comptime v: f32` binds
+                    // `-2.0`. The integer value, not the spelling, gives the
+                    // text, so `-0` is `0.0` as `let x: f32 = -0;` is.
+                    if let Some(ty) = self
+                        .host
+                        .const_expr_type(&self.program_key(), env, inst_ref)
+                        && self.host.type_float_width(&ty).is_some()
+                    {
+                        let text = (-(magnitude as i128)).to_string();
+                        return match host_value!(
+                            self.host.float_value_from_text(&text, Some(ty))
+                        ) {
+                            Some(value) => ComptimeOutcome::Known(value),
+                            None => ComptimeOutcome::RuntimeDependent,
+                        };
+                    }
                     let literal = H::Value::integer(magnitude as i128);
                     let ty =
                         outcome_value!(self.unary_integer_type_for(env, inst_ref, &literal, span,));
