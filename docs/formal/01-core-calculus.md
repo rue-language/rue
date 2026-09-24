@@ -1440,12 +1440,11 @@ which remains outside this rule's scope.
   `loop { …; break; }` whose outer loop then reaches its own back edge is
   E0205 "moved in a previous iteration".
 - **Compiler agreement.** The compiler computes the post-loop state from the
-  reachable exit-edge join required by (Loop-Break) and 3.8:80, with one
-  difference, RUE-2354: it reads the exit states off its *first* pass over the
-  body, at the entry state, so a `break` taken on a later iteration, after an
-  earlier iteration moved an outer binding, is missed. There, (Loop-Break)'s
-  exits, read at `Σ_h`, see the move and refuse a use after the loop that the
-  compiler accepts and then double-drops. Otherwise: a value moved
+  reachable exit-edge join required by (Loop-Break) and 3.8:80. It types the
+  body at the loop-head state, iterated from the entry to a fixpoint, and reads
+  the exits off that pass, so a `break` taken on a later iteration, after an
+  earlier iteration moved an outer binding, contributes its moved state
+  (RUE-2354, resolved). A value moved
   in a breaking arm is `MovedOut` after the loop, while moving and reassigning
   it before the `break` leaves it usable after the loop (§5.2's
   reinitialization). Copy uses remain usable after every exit because they do
@@ -1486,11 +1485,12 @@ which remains outside this rule's scope.
 >   CLI case). The loop-head state admits it, and admits the breakless form
 >   too. A first revision of this rewrite had extended the equality to breakless
 >   loops; the maintainer review caught it.
-> - **Away from the compiler, where the compiler is unsound:** the exits are read
->   at the loop-head state. So a `break` on a later iteration, after an earlier
->   iteration moved an outer binding, contributes its moved state to the
->   post-loop join (`3.8:80`). The compiler reads exits off its first pass only,
->   and accepts a use after the loop that double-drops (RUE-2354).
+> - **Away from the compiler as it then stood, where it was unsound:** the exits
+>   are read at the loop-head state. So a `break` on a later iteration, after an
+>   earlier iteration moved an outer binding, contributes its moved state to the
+>   post-loop join (`3.8:80`). The compiler read exits off its first pass only,
+>   and accepted a use after the loop that double-dropped. RUE-2354 changed the
+>   compiler to this reading.
 >
 > Every other probe recorded on RUE-2321 (the RUE-1615 and RUE-1614 shapes,
 > move-then-reassign across the back edge, the break-edge join on affine and
