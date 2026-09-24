@@ -1206,6 +1206,770 @@ fn main() -> i32 {
 exit_code = 0
 expected_stdout = "10\n100\n101\n0\n102\n"
 
+# -----------------------------------------------------------------------------
+# Loop-head move states (RUE-2356). A loop head is reached from the loop's
+# entry and from its back edges, so a place moved or reinitialized inside the
+# loop may be owned on one incoming path and moved out on another. Each drop
+# of such a place (overwrite, scope exit, break) must follow what the executed
+# path did, so every value is dropped exactly once (3.9:2): a value moved by
+# the previous iteration is not dropped again when the place is reassigned,
+# and one reassigned in the loop after a move before it is not leaked.
+# -----------------------------------------------------------------------------
+
+[[case]]
+name = "loop_reinit_then_move_field_each_depth"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "A field reinitialized and then moved on every loop iteration, at depths 1 to 3, is dropped exactly once; a zero-iteration loop drops the original value at scope exit (RUE-2356)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Q { w: S }
+struct R { q: Q }
+struct H { a: S, w: S, q: Q, r: R }
+
+fn run(n: i64) {
+    let mut h = H { a: S { v: 1 }, w: S { v: 2 }, q: Q { w: S { v: 3 } }, r: R { q: Q { w: S { v: 4 } } } };
+    let mut i: i64 = 0;
+    while i < n {
+        h.w = S { v: 10 + i };         // drops 2 on the first iteration only
+        let x: S = h.w;
+        @drop(x);                      // 10, then 11
+        h.q.w = S { v: 20 + i };
+        let y: S = h.q.w;
+        @drop(y);
+        h.r.q.w = S { v: 30 + i };
+        let z: S = h.r.q.w;
+        @drop(z);
+        i = i + 1;
+    }
+    @dbg(0);
+}   // 1, plus 2 3 4 when the loop never ran
+
+fn main() -> i32 {
+    run(2);
+    run(0);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "2\n10\n3\n20\n4\n30\n11\n21\n31\n0\n1\n0\n1\n2\n3\n4\n"
+
+[[case]]
+name = "loop_reinit_then_move_field_each_depth_o2"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "The same at -O2: a field reinitialized and then moved on every loop iteration, at depths 1 to 3, is dropped exactly once; a zero-iteration loop drops the original value at scope exit (RUE-2356)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Q { w: S }
+struct R { q: Q }
+struct H { a: S, w: S, q: Q, r: R }
+
+fn run(n: i64) {
+    let mut h = H { a: S { v: 1 }, w: S { v: 2 }, q: Q { w: S { v: 3 } }, r: R { q: Q { w: S { v: 4 } } } };
+    let mut i: i64 = 0;
+    while i < n {
+        h.w = S { v: 10 + i };         // drops 2 on the first iteration only
+        let x: S = h.w;
+        @drop(x);                      // 10, then 11
+        h.q.w = S { v: 20 + i };
+        let y: S = h.q.w;
+        @drop(y);
+        h.r.q.w = S { v: 30 + i };
+        let z: S = h.r.q.w;
+        @drop(z);
+        i = i + 1;
+    }
+    @dbg(0);
+}   // 1, plus 2 3 4 when the loop never ran
+
+fn main() -> i32 {
+    run(2);
+    run(0);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "2\n10\n3\n20\n4\n30\n11\n21\n31\n0\n1\n0\n1\n2\n3\n4\n"
+opt_level = 2
+
+[[case]]
+name = "loop_reinit_then_move_field_loop_and_for"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "A field reinitialized and then moved in every iteration of a `loop` left by `break`, and of a `for` loop, is dropped exactly once (RUE-2356)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct H { a: S, w: S }
+
+fn in_loop(n: i64) {
+    let mut h = H { a: S { v: 1 }, w: S { v: 2 } };
+    let mut i: i64 = 0;
+    loop {
+        if i == n { break; }
+        h.w = S { v: 10 + i };
+        let x: S = h.w;
+        @drop(x);
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn in_for() {
+    let mut h = H { a: S { v: 3 }, w: S { v: 4 } };
+    for k in [0, 1] {
+        h.w = S { v: 20 + k };
+        let x: S = h.w;
+        @drop(x);
+    }
+    @dbg(0);
+}
+
+fn main() -> i32 {
+    in_loop(2);
+    in_for();
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "2\n10\n11\n0\n1\n4\n20\n21\n0\n3\n"
+
+[[case]]
+name = "loop_reinit_then_move_field_loop_and_for_o2"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "The same at -O2: a field reinitialized and then moved in every iteration of a `loop` left by `break`, and of a `for` loop, is dropped exactly once (RUE-2356)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct H { a: S, w: S }
+
+fn in_loop(n: i64) {
+    let mut h = H { a: S { v: 1 }, w: S { v: 2 } };
+    let mut i: i64 = 0;
+    loop {
+        if i == n { break; }
+        h.w = S { v: 10 + i };
+        let x: S = h.w;
+        @drop(x);
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn in_for() {
+    let mut h = H { a: S { v: 3 }, w: S { v: 4 } };
+    for k in [0, 1] {
+        h.w = S { v: 20 + k };
+        let x: S = h.w;
+        @drop(x);
+    }
+    @dbg(0);
+}
+
+fn main() -> i32 {
+    in_loop(2);
+    in_for();
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "2\n10\n11\n0\n1\n4\n20\n21\n0\n3\n"
+opt_level = 2
+
+[[case]]
+name = "loop_reinit_then_move_field_continue_and_conditional_move"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "A field reinitialized every iteration but moved only on some iterations, whether skipped by `continue` or by a condition, is dropped exactly once (RUE-2356)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct H { a: S, w: S }
+
+fn skip_by_continue(n: i64) {
+    let mut h = H { a: S { v: 1 }, w: S { v: 2 } };
+    let mut i: i64 = 0;
+    while i < n {
+        i = i + 1;
+        h.w = S { v: 10 + i };         // drops the value the last iteration kept
+        if i == 1 { continue; }
+        let x: S = h.w;
+        @drop(x);
+    }
+    @dbg(0);
+}
+
+fn move_conditionally(n: i64) {
+    let mut h = H { a: S { v: 3 }, w: S { v: 4 } };
+    let mut i: i64 = 0;
+    while i < n {
+        h.w = S { v: 20 + i };
+        if i == 0 { let x: S = h.w; @drop(x); }
+        i = i + 1;
+    }
+    @dbg(0);
+}   // 3, then the last value 22
+
+fn main() -> i32 {
+    skip_by_continue(3);
+    move_conditionally(3);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "2\n11\n12\n13\n0\n1\n4\n20\n21\n0\n3\n22\n"
+
+[[case]]
+name = "loop_reinit_then_move_field_continue_and_conditional_move_o2"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "The same at -O2: a field reinitialized every iteration but moved only on some iterations, whether skipped by `continue` or by a condition, is dropped exactly once (RUE-2356)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct H { a: S, w: S }
+
+fn skip_by_continue(n: i64) {
+    let mut h = H { a: S { v: 1 }, w: S { v: 2 } };
+    let mut i: i64 = 0;
+    while i < n {
+        i = i + 1;
+        h.w = S { v: 10 + i };         // drops the value the last iteration kept
+        if i == 1 { continue; }
+        let x: S = h.w;
+        @drop(x);
+    }
+    @dbg(0);
+}
+
+fn move_conditionally(n: i64) {
+    let mut h = H { a: S { v: 3 }, w: S { v: 4 } };
+    let mut i: i64 = 0;
+    while i < n {
+        h.w = S { v: 20 + i };
+        if i == 0 { let x: S = h.w; @drop(x); }
+        i = i + 1;
+    }
+    @dbg(0);
+}   // 3, then the last value 22
+
+fn main() -> i32 {
+    skip_by_continue(3);
+    move_conditionally(3);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "2\n11\n12\n13\n0\n1\n4\n20\n21\n0\n3\n22\n"
+opt_level = 2
+
+[[case]]
+name = "loop_reinit_then_move_field_nested_loops"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "A field reinitialized and moved across nested loops, in the inner loop or after it in the outer one, is dropped exactly once (RUE-2356)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct H { a: S, w: S }
+
+fn move_in_inner(n: i64) {
+    let mut h = H { a: S { v: 1 }, w: S { v: 2 } };
+    let mut i: i64 = 0;
+    while i < n {
+        let mut j: i64 = 0;
+        while j < 2 {
+            h.w = S { v: 100 + 10 * i + j };
+            let x: S = h.w;
+            @drop(x);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn move_in_outer(n: i64) {
+    let mut h = H { a: S { v: 3 }, w: S { v: 4 } };
+    let mut i: i64 = 0;
+    while i < n {
+        let mut j: i64 = 0;
+        loop {
+            h.w = S { v: 200 + 10 * i + j };   // the second write drops the first
+            j = j + 1;
+            if j == 2 { break; }
+        }
+        let x: S = h.w;
+        @drop(x);
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn main() -> i32 {
+    move_in_inner(2);
+    move_in_outer(2);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "2\n100\n101\n110\n111\n0\n1\n4\n200\n201\n210\n211\n0\n3\n"
+
+[[case]]
+name = "loop_reinit_then_move_field_nested_loops_o2"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "The same at -O2: a field reinitialized and moved across nested loops, in the inner loop or after it in the outer one, is dropped exactly once (RUE-2356)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct H { a: S, w: S }
+
+fn move_in_inner(n: i64) {
+    let mut h = H { a: S { v: 1 }, w: S { v: 2 } };
+    let mut i: i64 = 0;
+    while i < n {
+        let mut j: i64 = 0;
+        while j < 2 {
+            h.w = S { v: 100 + 10 * i + j };
+            let x: S = h.w;
+            @drop(x);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn move_in_outer(n: i64) {
+    let mut h = H { a: S { v: 3 }, w: S { v: 4 } };
+    let mut i: i64 = 0;
+    while i < n {
+        let mut j: i64 = 0;
+        loop {
+            h.w = S { v: 200 + 10 * i + j };   // the second write drops the first
+            j = j + 1;
+            if j == 2 { break; }
+        }
+        let x: S = h.w;
+        @drop(x);
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn main() -> i32 {
+    move_in_inner(2);
+    move_in_outer(2);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "2\n100\n101\n110\n111\n0\n1\n4\n200\n201\n210\n211\n0\n3\n"
+opt_level = 2
+
+[[case]]
+name = "loop_whole_reinit_after_part_moved"
+spec = ["3.9:2", "3.9:18", "3.8:55", "3.8:72"]
+description = "Reinitializing a whole struct or array field on every iteration after a part of it was moved in the previous one drops only the live remainder, and a zero-iteration loop drops everything at scope exit (RUE-2356)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct P { c: i64, s: S }
+struct H { a: S, w: S }
+struct G { k: S, a: [P; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S { v: n } } }
+
+fn whole_struct(n: i64) {
+    let mut h = H { a: S { v: 1 }, w: S { v: 2 } };
+    let mut i: i64 = 0;
+    while i < n {
+        h = H { a: S { v: 10 * i + 10 }, w: S { v: 10 * i + 11 } };
+        let x: S = h.w;
+        @drop(x);
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn array_field(n: i64) {
+    let mut g = G { k: S { v: 3 }, a: [mk(4), mk(5)] };
+    let mut i: i64 = 0;
+    while i < n {
+        g.a = [mk(10 * i + 40), mk(10 * i + 41)];
+        let x: S = g.a[0].s;
+        @drop(x);
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn main() -> i32 {
+    whole_struct(2);
+    whole_struct(0);
+    array_field(2);
+    array_field(0);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n2\n11\n10\n21\n0\n20\n0\n1\n2\n4\n5\n40\n41\n50\n0\n3\n51\n0\n3\n4\n5\n"
+
+[[case]]
+name = "loop_whole_reinit_after_part_moved_o2"
+spec = ["3.9:2", "3.9:18", "3.8:55", "3.8:72"]
+description = "The same at -O2: reinitializing a whole struct or array field on every iteration after a part of it was moved in the previous one drops only the live remainder, and a zero-iteration loop drops everything at scope exit (RUE-2356)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct P { c: i64, s: S }
+struct H { a: S, w: S }
+struct G { k: S, a: [P; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S { v: n } } }
+
+fn whole_struct(n: i64) {
+    let mut h = H { a: S { v: 1 }, w: S { v: 2 } };
+    let mut i: i64 = 0;
+    while i < n {
+        h = H { a: S { v: 10 * i + 10 }, w: S { v: 10 * i + 11 } };
+        let x: S = h.w;
+        @drop(x);
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn array_field(n: i64) {
+    let mut g = G { k: S { v: 3 }, a: [mk(4), mk(5)] };
+    let mut i: i64 = 0;
+    while i < n {
+        g.a = [mk(10 * i + 40), mk(10 * i + 41)];
+        let x: S = g.a[0].s;
+        @drop(x);
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn main() -> i32 {
+    whole_struct(2);
+    whole_struct(0);
+    array_field(2);
+    array_field(0);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n2\n11\n10\n21\n0\n20\n0\n1\n2\n4\n5\n40\n41\n50\n0\n3\n51\n0\n3\n4\n5\n"
+opt_level = 2
+
+[[case]]
+name = "loop_reinit_variable_moved_before_loop"
+spec = ["3.9:2", "3.9:18"]
+description = "A variable moved before a loop and reinitialized in it drops each new value exactly once, in `loop` and `while` form, and a zero-iteration loop drops nothing (RUE-2356)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct D { x: i64 }
+drop fn D(self) { @dbg(self.x); }
+fn mk(s: i64) -> D { @dbg(0 - s); D { x: s } }
+fn eat(d: D) -> i64 { d.x }
+
+fn in_loop() {
+    let mut v = mk(1);
+    eat(v);
+    let mut c: i64 = 0;
+    loop {
+        if c == 3 { break; }
+        c = c + 1;
+        v = mk(10 + c);                // drops the previous iteration's value
+    }
+    @dbg(0);
+}   // 13
+
+fn in_while(n: i64) {
+    let mut v = mk(2);
+    eat(v);
+    let mut c: i64 = 0;
+    while c < n {
+        c = c + 1;
+        v = mk(20 + c);
+    }
+    @dbg(0);
+}
+
+fn main() -> i32 {
+    in_loop();
+    in_while(2);
+    in_while(0);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "-1\n1\n-11\n-12\n11\n-13\n12\n0\n13\n-2\n2\n-21\n-22\n21\n0\n22\n-2\n2\n0\n"
+
+[[case]]
+name = "loop_reinit_variable_moved_before_loop_o2"
+spec = ["3.9:2", "3.9:18"]
+description = "The same at -O2: a variable moved before a loop and reinitialized in it drops each new value exactly once, in `loop` and `while` form, and a zero-iteration loop drops nothing (RUE-2356)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct D { x: i64 }
+drop fn D(self) { @dbg(self.x); }
+fn mk(s: i64) -> D { @dbg(0 - s); D { x: s } }
+fn eat(d: D) -> i64 { d.x }
+
+fn in_loop() {
+    let mut v = mk(1);
+    eat(v);
+    let mut c: i64 = 0;
+    loop {
+        if c == 3 { break; }
+        c = c + 1;
+        v = mk(10 + c);                // drops the previous iteration's value
+    }
+    @dbg(0);
+}   // 13
+
+fn in_while(n: i64) {
+    let mut v = mk(2);
+    eat(v);
+    let mut c: i64 = 0;
+    while c < n {
+        c = c + 1;
+        v = mk(20 + c);
+    }
+    @dbg(0);
+}
+
+fn main() -> i32 {
+    in_loop();
+    in_while(2);
+    in_while(0);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "-1\n1\n-11\n-12\n11\n-13\n12\n0\n13\n-2\n2\n-21\n-22\n21\n0\n22\n-2\n2\n0\n"
+opt_level = 2
+
+[[case]]
+name = "loop_reinit_field_moved_before_loop"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "A field moved before a loop and reinitialized in it drops each new value exactly once, in `while` and `loop` form, and a zero-iteration loop drops nothing for it (RUE-2356)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct H { a: S, w: S }
+
+fn in_while(n: i64) {
+    let mut h = H { a: S { v: 1 }, w: S { v: 2 } };
+    let x: S = h.w;
+    @drop(x);
+    let mut i: i64 = 0;
+    while i < n {
+        h.w = S { v: 10 + i };
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn in_loop(n: i64) {
+    let mut h = H { a: S { v: 3 }, w: S { v: 4 } };
+    let x: S = h.w;
+    @drop(x);
+    let mut i: i64 = 0;
+    loop {
+        if i == n { break; }
+        h.w = S { v: 20 + i };
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn main() -> i32 {
+    in_while(2);
+    in_while(0);
+    in_loop(2);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "2\n10\n0\n1\n11\n2\n0\n1\n4\n20\n0\n3\n21\n"
+
+[[case]]
+name = "loop_reinit_field_moved_before_loop_o2"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "The same at -O2: a field moved before a loop and reinitialized in it drops each new value exactly once, in `while` and `loop` form, and a zero-iteration loop drops nothing for it (RUE-2356)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct H { a: S, w: S }
+
+fn in_while(n: i64) {
+    let mut h = H { a: S { v: 1 }, w: S { v: 2 } };
+    let x: S = h.w;
+    @drop(x);
+    let mut i: i64 = 0;
+    while i < n {
+        h.w = S { v: 10 + i };
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn in_loop(n: i64) {
+    let mut h = H { a: S { v: 3 }, w: S { v: 4 } };
+    let x: S = h.w;
+    @drop(x);
+    let mut i: i64 = 0;
+    loop {
+        if i == n { break; }
+        h.w = S { v: 20 + i };
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn main() -> i32 {
+    in_while(2);
+    in_while(0);
+    in_loop(2);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "2\n10\n0\n1\n11\n2\n0\n1\n4\n20\n0\n3\n21\n"
+opt_level = 2
+
+[[case]]
+name = "loop_move_controls"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "Controls for loop-head move states: a variable reinitialized and moved every iteration, a field moved and then reinitialized, moves in a loop condition, and a field moved before a loop that never touches it (RUE-2356)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct H { a: S, w: S }
+
+fn val(s: S) -> i64 { s.v }
+
+fn variable(n: i64) {
+    let mut w = S { v: 2 };
+    let mut i: i64 = 0;
+    while i < n {
+        w = S { v: 10 + i };
+        let x: S = w;
+        @drop(x);
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn move_then_reinit(n: i64) {
+    let mut h = H { a: S { v: 1 }, w: S { v: 3 } };
+    let mut i: i64 = 0;
+    while i < n {
+        let x: S = h.w;
+        @drop(x);
+        h.w = S { v: 20 + i };
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn move_in_condition() {
+    let mut h = H { a: S { v: 1 }, w: S { v: 4 } };
+    let mut w = S { v: 5 };
+    let mut k: i64 = 30;
+    while val(h.w) < 32 { h.w = S { v: k }; k = k + 1; }
+    while val(w) < 42 { w = S { v: k + 9 }; k = k + 1; }
+    @dbg(0);
+}
+
+fn untouched(n: i64) {
+    let mut h = H { a: S { v: 1 }, w: S { v: 6 } };
+    let x: S = h.w;
+    @drop(x);
+    let mut i: i64 = 0;
+    while i < n { i = i + 1; }
+    @dbg(0);
+}
+
+fn main() -> i32 {
+    variable(2);
+    move_then_reinit(2);
+    move_in_condition();
+    untouched(2);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "2\n10\n11\n0\n3\n20\n0\n1\n21\n4\n30\n31\n32\n5\n42\n0\n1\n6\n0\n1\n"
+
+[[case]]
+name = "loop_move_controls_o2"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "The same at -O2: controls for loop-head move states: a variable reinitialized and moved every iteration, a field moved and then reinitialized, moves in a loop condition, and a field moved before a loop that never touches it (RUE-2356)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct H { a: S, w: S }
+
+fn val(s: S) -> i64 { s.v }
+
+fn variable(n: i64) {
+    let mut w = S { v: 2 };
+    let mut i: i64 = 0;
+    while i < n {
+        w = S { v: 10 + i };
+        let x: S = w;
+        @drop(x);
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn move_then_reinit(n: i64) {
+    let mut h = H { a: S { v: 1 }, w: S { v: 3 } };
+    let mut i: i64 = 0;
+    while i < n {
+        let x: S = h.w;
+        @drop(x);
+        h.w = S { v: 20 + i };
+        i = i + 1;
+    }
+    @dbg(0);
+}
+
+fn move_in_condition() {
+    let mut h = H { a: S { v: 1 }, w: S { v: 4 } };
+    let mut w = S { v: 5 };
+    let mut k: i64 = 30;
+    while val(h.w) < 32 { h.w = S { v: k }; k = k + 1; }
+    while val(w) < 42 { w = S { v: k + 9 }; k = k + 1; }
+    @dbg(0);
+}
+
+fn untouched(n: i64) {
+    let mut h = H { a: S { v: 1 }, w: S { v: 6 } };
+    let x: S = h.w;
+    @drop(x);
+    let mut i: i64 = 0;
+    while i < n { i = i + 1; }
+    @dbg(0);
+}
+
+fn main() -> i32 {
+    variable(2);
+    move_then_reinit(2);
+    move_in_condition();
+    untouched(2);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "2\n10\n11\n0\n3\n20\n0\n1\n21\n4\n30\n31\n32\n5\n42\n0\n1\n6\n0\n1\n"
+opt_level = 2
+
 [[case]]
 name = "discarded_temporary_dropped_at_statement_end"
 spec = ["3.9:18"]

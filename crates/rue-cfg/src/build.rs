@@ -4954,6 +4954,44 @@ mod tests {
         );
     }
 
+    /// RUE-2356: the loop-head weakening turns definite move facts into the
+    /// facts a join with an owning back edge would give, and keeps the
+    /// canonical identity equal to that join's.
+    #[test]
+    fn loop_head_weakening_matches_a_join_with_an_owning_edge() {
+        let slot = MovedSlot::Local(2);
+        let whole = MovedSlot::Local(5);
+        let moved_at_entry = vec![1];
+        let owned_at_entry = vec![0, 3];
+        let owning_edge = MoveState::default();
+        let mut entry = owning_edge.clone();
+        entry.mark_path(slot, moved_at_entry.clone());
+        entry.mark_slot(whole);
+        let joined = entry.intersect(&owning_edge);
+
+        let mut head = entry.clone();
+        head.forget_slot_move(whole);
+        head.weaken_path(slot, &moved_at_entry);
+        assert!(!head.is_slot_moved(whole));
+        assert!(!head.is_path_moved(&(slot, moved_at_entry.clone())));
+        assert!(head.is_path_maybe_moved(&(slot, moved_at_entry.clone())));
+        assert!(!head.fields.contains_key(&slot));
+        assert_eq!(head.identity, joined.identity);
+
+        // A path owned at entry becomes "maybe moved", as a join with a back
+        // edge that moved it would make it; weakening twice changes nothing.
+        head.weaken_path(slot, &owned_at_entry);
+        head.weaken_path(slot, &owned_at_entry);
+        head.forget_slot_move(whole);
+        assert_eq!(
+            head.maybe_moved_paths_of(slot),
+            AHashSet::from([moved_at_entry, owned_at_entry.clone()])
+        );
+        let mut moving_edge = owning_edge.clone();
+        moving_edge.mark_path(slot, owned_at_entry);
+        assert_eq!(head.identity, joined.intersect(&moving_edge).identity);
+    }
+
     /// Definition/module keys for hand-built structured-body fixtures.
     type Key = &'static str;
 
