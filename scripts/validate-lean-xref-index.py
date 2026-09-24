@@ -135,15 +135,14 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ("T", "unit"): ("yes", ["Ty.unit"], ""),
     ("T", "never"): (
         "stand-in",
-        ["Typed.ret", "Typed.panic", "CTy.never"],
-        "`return` and `@panic` are in the fragment (§5.7, §5.8) but `never` is not "
-        "a type of the judgment: every rule §5.7 types at `never` — `ret`, `retBot`, "
-        "`panic`, `seqBot`, `letBot`, `iteBot`, `matchBot` — folds (Sub-Never) in "
-        "by concluding at any type, with §5.3's `⊥` as its outgoing result, which "
-        "is sound because `never` has no values (`3.4:1`) and needs no `HasTy` "
-        "case. The checker's `CTy.never` is the type's algorithmic image. `break` "
-        "and an infinite `loop` are the never-typed forms the fragment still has "
-        "no image of",
+        ["Typed.ret", "Typed.panic", "Typed.brk", "Typed.loopDiv", "CTy.never"],
+        "`return`, `@panic`, `break` and a `break`-less `loop` are in the fragment "
+        "(§5.7, §5.8) but `never` is not a type of the judgment: every rule §5.7 "
+        "types at `never` — `ret`, `retBot`, `panic`, `brk`, `loopDiv`, `seqBot`, "
+        "`letBot`, `iteBot`, `matchBot` — folds (Sub-Never) in by concluding at any "
+        "type, with §5.3's `⊥` as its outgoing result, which is sound because "
+        "`never` has no values (`3.4:1`) and needs no `HasTy` case. The checker's "
+        "`CTy.never` is the type's algorithmic image",
     ),
     ("T", "S"): (
         "partial",
@@ -351,13 +350,22 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ),
     ("e", "e1 ; e2"): ("yes", ["Expr.seq"], "with the `3.8:64` discard check"),
     ("e", "loop { e }"): (
-        "no",
-        [],
-        "no loops, so no `loopβ` boundary on the control stack and no back-edge "
-        "invariance premise; the interpreter is fuel-indexed (calls already make "
-        "its recursion unbounded), so a loop would not cost it its totality",
+        "yes",
+        ["Expr.loop", "Typed.loopDiv", "Typed.loopBreak", "Typed.loopBreakDiv"],
+        "(Loop-Div-Backedge) and (Loop-Div) §5.7 in `loopDiv`, (Loop-Break) in "
+        "`loopBreak` (a reachable exit) and `loopBreakDiv` (none), each typing the "
+        "body once at the loop-head state `LoopHead`; §6.10's dynamics in `eval`, "
+        "where each turn spends fuel. The scope record stays one list: the loop "
+        "reads the length it had at entry rather than pushing a record, and a "
+        "`break`'s unwind drops the cells past it",
     ),
-    ("e", "break"): ("no", [], "follows `loop { e }` and `never`"),
+    ("e", "break"): (
+        "yes",
+        ["Expr.brk", "Typed.brk"],
+        "nullary, as §2 writes it (`4.8:22`: `break expr` is a compile-time error); "
+        "(Break) §5.7 delivers the whole context at the edge, and (D-Break) §6.10 "
+        "hands the loop the frame's scope record",
+    ),
     ("e", "return e"): (
         "yes",
         ["Expr.ret"],

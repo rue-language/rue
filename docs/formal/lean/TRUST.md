@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 331.
+- Theorems checked: 374.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -144,6 +144,12 @@ and diffs them against the committed copies.
 | `Ctx.join_cons_bind_left` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Ctx.join_cons_bind_right` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Ctx.join_assoc` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `OwnSt.join_idem` | `RueCore.Statics` | `propext` |
+| `OwnSt.joinList_idem` | `RueCore.Statics` | `propext` |
+| `OwnSt.join_absorb` | `RueCore.Statics` | `propext` |
+| `OwnSt.joinList_absorb` | `RueCore.Statics` | `propext` |
+| `Entry.join_absorb` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Ctx.join_absorb` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Ctx.join_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `OwnSt.setField_wf` | `RueCore.Statics` | `propext` |
 | `OwnSt.fieldAt_wf` | `RueCore.Statics` | `propext` |
@@ -169,11 +175,23 @@ and diffs them against the committed copies.
 | `Ctx.joinAll_perm` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Ctx.joinFold_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Ctx.joinAll_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Out.skelOk_none` | `RueCore.Statics` | *none* |
 | `Ctx.joinOpt_skel` | `RueCore.Statics` | `propext` |
 | `Ctx.joinOpts_skel` | `RueCore.Statics` | `propext` |
+| `Ctx.Extends.refl` | `RueCore.Statics` | *none* |
+| `Ctx.Extends.skel` | `RueCore.Statics` | *none* |
+| `Ctx.Extends.pop` | `RueCore.Statics` | `propext` |
+| `Ctx.Extends.armCtx` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Ctx.Extends.length_le` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Ctx.outsideLoop_skel` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Out.skelOk_bot` | `RueCore.Statics` | *none* |
+| `Out.skelOk_same` | `RueCore.Statics` | *none* |
+| `Out.skelOk_of` | `RueCore.Statics` | *none* |
+| `Out.SkelOk.then` | `RueCore.Statics` | `propext` |
+| `LoopHead.skel` | `RueCore.Statics` | `propext` |
+| `LoopHead.reenter` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Typed.skel_preserved` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `TypedArgs.skel_preserved` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `TypedArms.skel_all` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `TypedArms.arm_skel` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Typed.skel_of` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `TypedArgs.skel_of` | `RueCore.Statics` | `Quot.sound`, `propext` |
@@ -184,7 +202,18 @@ and diffs them against the committed copies.
 | `Ctx.Wf.armCtx` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Ctx.joinOpt_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Ctx.joinOpts_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Out.Wf.bot` | `RueCore.Statics` | `propext` |
+| `Out.Wf.of` | `RueCore.Statics` | `propext` |
+| `Out.Wf.then` | `RueCore.Statics` | `propext` |
+| `LoopHead.wf` | `RueCore.Statics` | `propext` |
+| `Ctx.Wf.drop` | `RueCore.Statics` | `propext` |
 | `Typed.wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `TypedArgs.wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `TypedArms.wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `LoopHead.reenter_body` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Typed.brk_nil` | `RueCore.Statics` | `propext` |
+| `TypedArgs.brk_nil` | `RueCore.Statics` | `propext` |
+| `TypedArms.brk_nil` | `RueCore.Statics` | `propext` |
 | `fnCtx_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Typed.wf_fnCtx` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `inBoundsIdx_eq_true` | `RueCore.Dynamics` | `propext` |
@@ -312,10 +341,16 @@ and diffs them against the committed copies.
 | `TypedArgs.length_eq` | `RueCore.Soundness` | `propext` |
 | `Val.ints_of_hasTys` | `RueCore.Soundness` | `propext` |
 | `Contents.resolveDyn_ok` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `BrokeOk.mono_store` | `RueCore.Soundness` | `propext` |
+| `BrokeOk.mono_brk` | `RueCore.Soundness` | `propext` |
+| `BrokeOk.under_binders` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `BrokeOk.under_binder` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `EvalOk.ok_inv` | `RueCore.Soundness` | `propext` |
 | `ArgsOk.ok_inv` | `RueCore.Soundness` | `propext` |
 | `EvalOk.mono_store` | `RueCore.Soundness` | `propext` |
 | `AbortOk.mono_store` | `RueCore.Soundness` | `propext` |
+| `EvalOk.mono_brk` | `RueCore.Soundness` | `propext` |
+| `AbortOk.mono_brk` | `RueCore.Soundness` | `propext` |
 | `EvalOk.withTrace` | `RueCore.Soundness` | `propext` |
 | `AbortOk.withTrace` | `RueCore.Soundness` | `propext` |
 | `EvalOk.of_abort` | `RueCore.Soundness` | `propext` |
@@ -325,6 +360,12 @@ and diffs them against the committed copies.
 | `EvalOk.bind` | `RueCore.Soundness` | `propext` |
 | `EvalOk.bindSame` | `RueCore.Soundness` | `propext` |
 | `EvalOk.weaken` | `RueCore.Soundness` | `propext` |
+| `Matches.length_eq` | `RueCore.Soundness` | `propext` |
+| `Ctx.SameSkel.of_forall` | `RueCore.Soundness` | *none* |
+| `LoopHead.enter` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `LoopHead.backEdge` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `loop_exit_ok` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `loop_step` | `RueCore.Soundness` | `propext` |
 | `args_sound` | `RueCore.Soundness` | `propext` |
 | `soundness` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `EvalRes.withTrace_outOfFuel_iff` | `RueCore.Soundness` | `propext` |
@@ -376,6 +417,8 @@ and diffs them against the committed copies.
 | `Examples.floatToInt_inf_traps` | `RueCore.Examples` | `propext` |
 | `Examples.floatToInt_nan_traps` | `RueCore.Examples` | `propext` |
 | `Examples.floatDivZeroToInt_traps` | `RueCore.Examples` | `Quot.sound`, `propext` |
+| `Examples.eval_loop_ok` | `RueCore.Examples` | `propext` |
+| `Examples.infiniteLoop_outOfFuel` | `RueCore.Examples` | `propext` |
 | `Explain.explain_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainIdx_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainArgs_result` | `RueCore.Explain` | `Quot.sound`, `propext` |

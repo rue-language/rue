@@ -94,6 +94,13 @@ it keeps where a `-Bottom` rule drops it:
   `assignBot`, `indexWriteBotRhs` and `indexWriteBotIdx` omit (Assign)'s
   `μ = mut` root (their docstrings say why), and `check` still demands it.
 
+* **A loop whose head iteration outlasts its bound** (`headIter`): refused.
+  The argument in "The loop head, algorithmically" below says the bound is
+  never reached, so this is a completeness limit only in principle.
+
+The never-typed forms are `return`, `@panic`, `break` and a `break`-less
+`loop` alike, so each shape above is one for all four.
+
 A `never` *right* operand is fine — the left one has already fixed the type —
 as is a `never` call argument, struct field, array element, condition or
 scrutinee, whose position names its own type. Nothing a reader would write

@@ -57,8 +57,9 @@ Read `Typed P R Γ e T Ω` as the judgment above, with §5.3's outgoing result
 `Ω` for `Σ'`: `Ω` (`Out`) is a normal outgoing state `some Σ'`, or `none` for
 §5.7's `⊥` when evaluation never continues past `e`, together with the edge
 deliveries `Δ` a later rule reads a state from. (The fragment records only
-`⟨break, Σ⟩` deliveries, and has no `break` yet, so `Δ` is always empty; a
-`return` discharges its obligation where it fires.) `P` is the program: its
+`⟨break, Σ⟩` deliveries, each the whole context in force at its `break`,
+which the enclosing loop reads; a `return` discharges its obligation where it
+fires.) `P` is the program: its
 functions are where (Call) §5.8 looks up a callee's signature, and its
 declarations (`P.decls`) are what types are read against. `R` is the enclosing
 function's declared return type, which (Return-Value) §5.7 checks a `return`
@@ -87,8 +88,8 @@ Four things differ in shape and not in content:
   `return e` at `never` and lets (Sub-Never) coerce it to whatever the context
   needs, with a divergent outgoing state `⊥`. `Ty` has no `never`: a `never`
   value does not exist (`3.4:1`), so nothing is ever typed at it dynamically.
-  Instead `Typed.ret`, `Typed.panic` and the `-Bottom` rules §5.7 types at
-  `never` conclude at *any* type, and at `⊥`. The `⊥` itself is in the
+  Instead `Typed.ret`, `Typed.panic`, `Typed.brk`, `Typed.loopDiv` and the
+  `-Bottom` rules §5.7 types at `never` conclude at *any* type, and at `⊥`. The `⊥` itself is in the
   judgment: a branch joins only the arms that continue, and nothing is typed
   past a diverging subexpression, as §5.3's (Strict-Bottom), (Seq-Bottom) and
   (Let-Bottom) say. `INDEX.md` records (Sub-Never) at the rules that fold it
@@ -163,12 +164,13 @@ def run (M : FloatOps) (P : Program) (fuel : Nat) : EvalRes :=
   no arguments.
 
 Rather than take one step, `eval` runs the program to the end and reports one
-of five outcomes:
+of six outcomes:
 
 | `EvalRes` | Meaning in §6 |
 | --- | --- |
 | `.ok H' v tr` | the machine halted normally with value `v`, final store `H'`, and trace `tr` |
 | `.returned H' v tr` | an unwinding `return` handed `v` back (§6.9's (D-Return)); every enclosing form passes it on until a call boundary absorbs it |
+| `.broke H' sc tr` | an unwinding `break` (§6.10's (D-Break)), carrying the scope record `sc` of the frame it fired in; every enclosing form passes it on until its loop catches it and drops the cells the body still owed |
 | `.panic k tr` | the machine halted in a defined trap `↯κ` (§6.12) — `overflow`, `divZero`, `remZero`, `castOverflow`, `bounds` or `user` — carrying the trace `tr` of what ran before it |
 | `.stuck w` | the machine refused: `w` names either a configuration §6 leaves undefined or a linear action the machine monitors (see below) |
 | `.outOfFuel` | not a machine state at all: the interpreter's admission that it stopped early (see below) |
@@ -200,7 +202,7 @@ accepts, and only there (`Dynamics.lean`).
 
 Why a function rather than the relation? A function can be *run*, so every
 semantic question about a fragment program can be answered by executing it.
-And a total function always returns one of the five outcomes, so progress
+And a total function always returns one of the six outcomes, so progress
 becomes the single statement "never `.stuck`", which section 4's theorem
 proves. What the function owes the relation is an adequacy lemma (the two
 agree on every program). It is owed by RUE-2289 and required before the
@@ -239,7 +241,10 @@ say nothing. Two lemmas close it:
 So for a program that completes at some bound, "for every fuel" is a
 statement about its one real outcome. `Examples.lean` shows both sides:
 `run demoOps countdown 16` is `outOfFuel`, `run demoOps countdown 17` is the
-value, and `fuel_mono` proves every larger bound agrees.
+value, and `fuel_mono` proves every larger bound agrees. A program that does
+*not* complete is the other side: every turn of a `loop` spends fuel, so
+`loop { () }` is `outOfFuel` at every bound (`infiniteLoop_outOfFuel`), and
+the corpus, which exports only completed runs, leaves it out.
 
 ### The one edge no monitor covers
 
@@ -323,11 +328,15 @@ It is stated as an invariant for two reasons:
   no two bindings share one. That is why §7's no-use-after-drop bullet follows
   from the invariant rather than from a fact about closed expressions, and why
   no unwind touches a `†` cell or retires one twice.
-- It stops being free when `Frame.scope` becomes the *stack* §6.1 specifies.
-  §6.6's `match` arms and §6.10's loops push and pop scopes independently of
-  the binder chain, and then σ and ρ are two books to keep in step. That is
-  the shape for which the calculus keeps σ beside ρ (RUE-1277). This fragment does not
-  have it, so nothing here has checked it.
+- It stops being free when `Frame.scope` becomes the *stack* §6.1 specifies,
+  where scopes are pushed and popped independently of the binder chain and σ
+  and ρ are two books to keep in step. That is the shape for which the
+  calculus keeps σ beside ρ (RUE-1277). This fragment does not have it:
+  §6.6's `match` arm appends its payload cells to the one record, and a loop
+  remembers the record's length at its entry instead of pushing one, so a
+  `break` hands the loop the record it fired in and the loop drops the cells
+  past that length. The equation stays definitional; what the loop's proof
+  uses is `Matches.unwindPrefix`, the arm's own teardown lemma.
 
 **`Untouched ρ H H'`** carries frame *locality*: the store only grows, and
 every allocated cell that ρ does not name keeps its contents. A callee's
@@ -341,7 +350,7 @@ signature.
 ```lean
 theorem soundness (M : FloatModel) (hwf : WfProgram P) :
     ∀ fuel, Typed P R Γ e T Ω → FrameMatches P.decls Γ φ H →
-      EvalOk P.decls T R Ω.norm φ H (eval M.toFloatOps fuel P H φ e)
+      EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatOps fuel P H φ e)
 ```
 
 (implicit arguments omitted). `M` is any float model that satisfies the IEEE
@@ -358,6 +367,8 @@ reuse it at every form. It says:
   expression the rules type as divergent never completes normally;
 - on `.returned`, the value has the enclosing function's return type `R`, and
   the cells outside the frame are untouched;
+- on `.broke`, the `break` fired at one of `Ω`'s delivered states, in the
+  frame with the loop body's still-open bindings on top (`BrokeOk`);
 - on `.panic` and `.outOfFuel`, nothing;
 - on `.stuck`, **`False`**, which is the whole point.
 
@@ -421,6 +432,30 @@ accepts all five, and the corpus seeds them now (`if_return_arm_affine`,
 `match_return_arm_linear`, `match_never_first_arm`, `if_panic_arm_linear`,
 `panic_past_linear`). The generator still emits neither `return` nor `@panic`
 (`Gen.lean`).
+
+### Loops, briefly
+
+`loop e` and its nullary `break` (§5.7, §6.10) add three things a reader
+should know where to find; the worked examples are the loop generator's
+(RUE-2330).
+
+- **The loop-head state.** A loop body is typed once, at the state in force
+  at the loop head on every turn: the entry state joined with the state the
+  body leaves at its back edge. That state is on both sides of its own
+  definition, so the rule takes it as a premise, `LoopHead`, and the checker
+  finds it by iterating from the entry state until it stops changing
+  (`headIter`). `loop_reassign_then_move` is the seed where the head is not
+  the entry state.
+- **The back edge in the proof.** A turn that completes re-enters the loop
+  at its head, and the same derivation types the loop there again
+  (`LoopHead.reenter`, which rests on the join absorbing a second copy of the
+  back-edge state), so `soundness`'s fuel induction takes every later turn.
+- **The exits.** A `break` delivers the whole context in force where it fires
+  (`Typed.brk`). The loop splits it: the bindings the body opened are dropped
+  at the exit (`NoResidualLinear` over `Ctx.loopLocals`, and §6.10's unwind at
+  run time), and the rest is joined over every exit (`Ctx.outsideLoop`,
+  `3.8:80`). A linear binding consumed at one exit and not another is §5.5's
+  join failure, E0443 (`loop_linear_one_exit`).
 
 ## 5. Worked examples
 

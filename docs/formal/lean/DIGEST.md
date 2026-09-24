@@ -43,7 +43,7 @@ The theorems below are about a *fragment* of the core calculus
 rule by rule and form by form; its two coverage lines, quoted here so the
 boundary is visible before the statements are:
 
-- *Calculus rules → declarations*: 82 of 97 labeled §5/§6 rules are mechanized; 15 are *not yet mechanized*.
+- *Calculus rules → declarations*: 87 of 97 labeled §5/§6 rules are mechanized; 10 are *not yet mechanized*.
 - *Abstract syntax forms → declarations*: 30 of 35 §2 forms have a core image (8 of them partial); 5 are *not yet mechanized*.
 
 The forms that count as partial are `S`, `E`, `e1 ⊕ e2`, `⊖ e`, `e1 ⋚ e2`,
@@ -584,6 +584,20 @@ theorem RueCore.Ctx.join_assoc {D : Decls} (hD : WfStructs D) (Γ₁ Γ₂ Γ₃
               (Ctx.join D Γ₂ Γ₃).bind fun Γ => Ctx.join D Γ₁ Γ
 ```
 
+### `Ctx.join_absorb`
+
+*theorem* · module `RueCore.Statics`
+
+**§5.5's join absorbs its right arm**, context-wide: `join(join(Γ, Γe), Γe)
+= join(Γ, Γe)` whenever `Γe` is well formed and has `Γ`'s skeleton. This is
+the lattice fact behind re-entering a loop at its head (`LoopHead.reenter`).
+
+```lean
+theorem RueCore.Ctx.join_absorb {D : Decls} {Γ Γe Γh : Ctx} :
+  Γ.skel = Γe.skel →
+    Ctx.Wf D Γe → Ctx.join D Γ Γe = some Γh → Ctx.join D Γh Γe = some Γh
+```
+
 ### `Ctx.join_wf`
 
 *theorem* · module `RueCore.Statics`
@@ -671,17 +685,39 @@ theorem RueCore.Ctx.joinAll_wf {D : Decls} {sk : List (Ty × Bool)} {Γs : List 
   (h : Ctx.joinAll D Γs = some Γ') : Ctx.Wf D Γ'
 ```
 
+### `LoopHead.reenter`
+
+*theorem* · module `RueCore.Statics`
+
+**Re-entering a loop at its head solves the head equation again** (§5.7):
+if `Σ_h = head(Σ, e)` with the body typed at `Σ_h`, then `Σ_h = head(Σ_h, e)`
+with the same body judgment. Without a back edge `Σ_h` is `Σ_h`'s own entry;
+with one it is `join(Σ, Σ_e)`, and the join absorbs a second `Σ_e`
+(`Ctx.join_absorb`). This is the lattice step of the back-edge proof: the
+derivation that typed the loop at entry types it again at every later
+iteration, so `soundness`'s fuel induction applies to the next turn.
+
+```lean
+theorem RueCore.LoopHead.reenter {D : Decls} {Γ Γh : Ctx} {o : Option Ctx}
+  (h : LoopHead D Γ o Γh)
+  (ho : ∀ (Γe : Ctx), o = some Γe → Γe.skel = Γh.skel ∧ Ctx.Wf D Γe) :
+  LoopHead D Γh o Γh
+```
+
 ### `Typed.skel_preserved`
 
 *theorem* · module `RueCore.Statics`
 
 Every rule preserves the context skeleton: only ownership states flow.
 This is the fused context's image of §5's convention that `Γ` is fixed while
-`Σ` is threaded through the judgment, read over `Ω` (`Out.SkelOk`).
+`Σ` is threaded through the judgment, read over `Ω` (`Out.SkelOk`): the
+normal outgoing state has the incoming skeleton, and every `⟨break, Σ⟩`
+delivery extends it. The three judgments are proved together, by recursion
+on the derivation.
 
 ```lean
 theorem RueCore.Typed.skel_preserved {P : Program} {R : Ty} {Γ : Ctx} {e : Expr}
-  {T : Ty} {Ω : Out} (h : Typed P R Γ e T Ω) : Out.SkelOk Γ Ω
+  {T : Ty} {Ω : Out} : Typed P R Γ e T Ω → Out.SkelOk Γ Ω
 ```
 
 ### `Typed.wf`
@@ -690,21 +726,36 @@ theorem RueCore.Typed.skel_preserved {P : Program} {R : Ty} {Γ : Ctx} {e : Expr
 
 **The shape invariant is preserved judgment-wide** (RUE-2340): from a
 well-formed incoming context, every normal outgoing state a derivation
-concludes at is well-formed. With `fnCtx_wf` it discharges `Ctx.Wf`, the
-premise §5.5's associativity carries (`Ctx.joinAll_perm`), at every normal
-outgoing state of a function body (`Typed.wf_fnCtx`). The induction that
-proves it carries the invariant into every arm of every `match` and `if` it
-passes through, which is where associativity is read; what is stated as a
-theorem is that outgoing-state form, not a separate corollary per join. It
-holds because §5.3's `Ω` gives §5.7's `⊥` no state: before the judgment
-carried `Ω`, `return` and `@panic` concluded at an arbitrary context and the
-statement was false. It reads `Ω.norm` only; the delivered states in `Ω.brk`
-are empty until the loop slice (RUE-2369), which must extend it — and
-`Out.SkelOk` — to them, since (Loop-Break) §5.7 joins them.
+concludes at, and every state it delivers to a loop, is well-formed. With
+`fnCtx_wf` it discharges `Ctx.Wf`, the premise §5.5's associativity carries
+(`Ctx.joinAll_perm`), at every normal outgoing state of a function body
+(`Typed.wf_fnCtx`). The recursion carries the invariant into every arm of
+every `match` and `if` and into every loop body it passes through, which is
+where associativity is read; what is stated as a theorem is that
+outgoing-state form, not a separate corollary per join. It holds because
+§5.3's `Ω` gives §5.7's `⊥` no state: before the judgment carried `Ω`,
+`return` and `@panic` concluded at an arbitrary context and the statement was
+false. A loop body is typed at the loop-head state, which `LoopHead` asks to
+be well formed when a back edge produced it (`LoopHead.wf`); (Loop-Break)'s
+exit state is the join of the deliveries' `outside_loop` parts, each a
+suffix of a well-formed delivery.
 
 ```lean
 theorem RueCore.Typed.wf {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty}
-  {Ω : Out} (h : Typed P R Γ e T Ω) : Out.WfPres P.decls Γ Ω
+  {Ω : Out} : Typed P R Γ e T Ω → Out.WfPres P.decls Γ Ω
+```
+
+### `Typed.brk_nil`
+
+*theorem* · module `RueCore.Statics`
+
+**A body with no `break` targeting its loop delivers none** (§5.7): every
+delivery in `Ω.brk` comes from a `break` the syntax has, outside any nested
+loop (`Expr.breaks`).
+
+```lean
+theorem RueCore.Typed.brk_nil {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty}
+  {Ω : Out} : Typed P R Γ e T Ω → e.breaks = false → Ω.brk = []
 ```
 
 ### `Typed.wf_fnCtx`
@@ -1429,12 +1480,13 @@ theorem RueCore.args_sound (M : FloatModel) {P : Program} {fuel : Nat}
       Typed P R Γ e T Ω →
         ∀ {φ : Frame} {H : Store},
           FrameMatches P.decls Γ φ H →
-            EvalOk P.decls T R Ω.norm φ H (eval M.toFloatOps fuel P H φ e))
+            EvalOk P.decls T R Ω.norm Ω.brk φ H
+              (eval M.toFloatOps fuel P H φ e))
   (es : List Expr) {R : Ty} {Γ : Ctx} {Ω : Out} {Ts : List Ty} {φ : Frame}
   {H : Store} :
   TypedArgs P R Γ es Ts Ω →
     FrameMatches P.decls Γ φ H →
-      ArgsOk P.decls R Ts Ω.norm φ H
+      ArgsOk P.decls R Ts Ω.norm Ω.brk φ H
         (evalArgs (fun H' e => eval M.toFloatOps fuel P H' φ e) H es)
 ```
 
@@ -1466,7 +1518,7 @@ theorem RueCore.soundness (M : FloatModel) {P : Program} (hwf : WfProgram P)
   Typed P R Γ e T Ω →
     ∀ {φ : Frame} {H : Store},
       FrameMatches P.decls Γ φ H →
-        EvalOk P.decls T R Ω.norm φ H (eval M.toFloatOps fuel P H φ e)
+        EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatOps fuel P H φ e)
 ```
 
 ### `fuel_mono`
@@ -1895,6 +1947,21 @@ theorem RueCore.Examples.floatDivZeroToInt_traps (M : FloatModel) (P : Program)
       (Expr.fintrin (FloatIntrin.floatToInt w' s')
         (Expr.binop BinOp.div (Examples.flE w 1 0) (Examples.flE w 0 0))) =
     EvalRes.panic PanicKind.overflow []
+```
+
+### `Examples.infiniteLoop_outOfFuel`
+
+*theorem* · module `RueCore.Examples`
+
+**The fuel counts iterations**: an infinite loop exhausts every bound. Each
+turn runs the body at one unit less and re-enters at one unit less, so no fuel
+completes it — `outOfFuel` is its answer at every bound, which is what
+`Corpus.lean`'s export leaves out.
+
+```lean
+theorem RueCore.Examples.infiniteLoop_outOfFuel (M : FloatOps) (P : Program)
+  (fuel : Nat) (H : Store) (φ : Frame) :
+  eval M fuel P H φ Examples.infiniteLoop = EvalRes.outOfFuel
 ```
 
 ### `Explain.explain_result`
@@ -2841,6 +2908,69 @@ theorem RueCore.Ctx.join_cons_bind_right (D : Decls) (a b c : Entry)
     | x, x_1 => none
 ```
 
+### `OwnSt.join_idem`
+
+*theorem* · module `RueCore.Statics`
+
+**§5.5's join is idempotent** on a state that is a shape of its type: a
+path joined with itself is unchanged (helper).
+
+```lean
+theorem RueCore.OwnSt.join_idem {D : Decls} (b : OwnSt) (T : Ty) :
+  OwnSt.wf D b T = true → OwnSt.join D b b T = some b
+```
+
+### `OwnSt.joinList_idem`
+
+*theorem* · module `RueCore.Statics`
+
+The same over a slot list (helper).
+
+```lean
+theorem RueCore.OwnSt.joinList_idem {D : Decls} (bs : List OwnSt) (Ts : List Ty) :
+  OwnSt.wfList D bs Ts = true → OwnSt.joinList D bs bs Ts = some bs
+```
+
+### `OwnSt.join_absorb`
+
+*theorem* · module `RueCore.Statics`
+
+**§5.5's join absorbs its right arm**: joining the result with the right
+arm again changes nothing, given the right arm is a shape of its type
+(helper).
+
+```lean
+theorem RueCore.OwnSt.join_absorb {D : Decls} (a b c : OwnSt) (T : Ty) :
+  OwnSt.wf D b T = true →
+    OwnSt.join D a b T = some c → OwnSt.join D c b T = some c
+```
+
+### `OwnSt.joinList_absorb`
+
+*theorem* · module `RueCore.Statics`
+
+The same over a slot list (helper).
+
+```lean
+theorem RueCore.OwnSt.joinList_absorb {D : Decls} (as bs cs : List OwnSt)
+  (Ts : List Ty) :
+  OwnSt.wfList D bs Ts = true →
+    OwnSt.joinList D as bs Ts = some cs → OwnSt.joinList D cs bs Ts = some cs
+```
+
+### `Entry.join_absorb`
+
+*theorem* · module `RueCore.Statics`
+
+§5.5's per-entry join absorbs its right arm, given the two entries share a
+skeleton and the right one is well formed (helper).
+
+```lean
+theorem RueCore.Entry.join_absorb {D : Decls} {a b c : Entry} (hsk : a.skel = b.skel)
+  (hw : Entry.wf D b = true) (h : Entry.join D a b = some c) :
+  Entry.join D c b = some c
+```
+
 ### `OwnSt.setField_wf`
 
 *theorem* · module `RueCore.Statics`
@@ -2939,8 +3069,8 @@ theorem RueCore.OwnSt.wfList_fieldStates_array {D : Decls} {t : OwnSt} {T₁ : T
 index `k`: the arm's body is typed under that variant's payload locals, and
 when it continues its locals are discharged by §5.6 at the arm's end and what
 it contributes to the n-way join is one of the states the join was taken
-over. This is the inversion `soundness` performs once (D-Match) §6.6 has read
-the tag (helper).
+over, and its deliveries are among the arms'. This is the inversion
+`soundness` performs once (D-Match) §6.6 has read the tag (helper).
 
 ```lean
 theorem RueCore.TypedArms.at_index {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty}
@@ -2952,10 +3082,11 @@ theorem RueCore.TypedArms.at_index {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty}
         Tss[k]? = some Ts →
           ∃ ob Δb,
             Typed P R (armCtx Ts Γ₀) body T { norm := ob, brk := Δb } ∧
-              ∀ (Γb : Ctx),
-                ob = some Γb →
-                  NoResidualLinear P.decls (List.take Ts.length Γb) ∧
-                    some (List.drop Ts.length Γb) ∈ os
+              (∀ (Γb : Ctx),
+                  ob = some Γb →
+                    NoResidualLinear P.decls (List.take Ts.length Γb) ∧
+                      some (List.drop Ts.length Γb) ∈ os) ∧
+                Δb ⊆ Δs
 ```
 
 ### `exhaustive_arm_exists`
@@ -3126,17 +3257,6 @@ theorem RueCore.Ctx.joinFold_wf {D : Decls} {sk : List (Ty × Bool)} (Γs : List
       Ctx.Wf D acc → Ctx.joinFold D acc Γs = some Γ' → Ctx.Wf D Γ'
 ```
 
-### `Out.skelOk_none`
-
-*theorem* · module `RueCore.Statics`
-
-`⊥` preserves every skeleton vacuously (helper).
-
-```lean
-theorem RueCore.Out.skelOk_none {Γ : Ctx} {Δ : List Ctx} :
-  Out.SkelOk Γ { norm := none, brk := Δ }
-```
-
 ### `Ctx.joinOpt_skel`
 
 *theorem* · module `RueCore.Statics`
@@ -3164,6 +3284,137 @@ theorem RueCore.Ctx.joinOpts_skel {D : Decls} {os : List (Option Ctx)} {Γ₀ Γ
   (hs : Γ₀.SameSkel (List.filterMap id os)) : Γ'.skel = Γ₀.skel
 ```
 
+### `Ctx.Extends.refl`
+
+*theorem* · module `RueCore.Statics`
+
+A context extends itself (helper).
+
+```lean
+theorem RueCore.Ctx.Extends.refl (Γ : Ctx) : Γ.Extends Γ
+```
+
+### `Ctx.Extends.skel`
+
+*theorem* · module `RueCore.Statics`
+
+Extension is read against the skeleton only (helper).
+
+```lean
+theorem RueCore.Ctx.Extends.skel {Γb Γ₁ Γ : Ctx} (h : Γb.Extends Γ₁)
+  (hs : Γ₁.skel = Γ.skel) : Γb.Extends Γ
+```
+
+### `Ctx.Extends.pop`
+
+*theorem* · module `RueCore.Statics`
+
+Extending a context with one more binding on top extends the context
+under it: a delivery from a `let` body extends the `let`'s own context
+(helper).
+
+```lean
+theorem RueCore.Ctx.Extends.pop {Γb Γ : Ctx} {en : Entry} (h : Γb.Extends (en :: Γ)) :
+  Γb.Extends Γ
+```
+
+### `Ctx.Extends.armCtx`
+
+*theorem* · module `RueCore.Statics`
+
+The same for a `match` arm's payload locals (helper).
+
+```lean
+theorem RueCore.Ctx.Extends.armCtx {Γb Γ₀ : Ctx} {Ts : List Ty}
+  (h : Γb.Extends (armCtx Ts Γ₀)) : Γb.Extends Γ₀
+```
+
+### `Ctx.Extends.length_le`
+
+*theorem* · module `RueCore.Statics`
+
+An extension is at least as long as what it extends (helper).
+
+```lean
+theorem RueCore.Ctx.Extends.length_le {Γb Γ : Ctx} (h : Γb.Extends Γ) :
+  List.length Γ ≤ List.length Γb
+```
+
+### `Ctx.outsideLoop_skel`
+
+*theorem* · module `RueCore.Statics`
+
+`outside_loop(Σ_x)` has the loop's own skeleton: popping the loop-local
+bindings off a delivery that extends the head leaves the head's bindings
+(helper).
+
+```lean
+theorem RueCore.Ctx.outsideLoop_skel {Γh Γb : Ctx} (h : Γb.Extends Γh) :
+  (Γh.outsideLoop Γb).skel = Γh.skel
+```
+
+### `Out.skelOk_bot`
+
+*theorem* · module `RueCore.Statics`
+
+A `⊥` outcome whose deliveries extend the context preserves its skeleton
+(helper).
+
+```lean
+theorem RueCore.Out.skelOk_bot {Γ : Ctx} {Δ : List Ctx}
+  (h : ∀ (Γb : Ctx), Γb ∈ Δ → Γb.Extends Γ) :
+  Out.SkelOk Γ { norm := none, brk := Δ }
+```
+
+### `Out.skelOk_same`
+
+*theorem* · module `RueCore.Statics`
+
+An outcome that continues at the incoming context itself and delivers
+nothing preserves its skeleton (helper).
+
+```lean
+theorem RueCore.Out.skelOk_same {Γ : Ctx} : Out.SkelOk Γ { norm := some Γ, brk := [] }
+```
+
+### `Out.skelOk_of`
+
+*theorem* · module `RueCore.Statics`
+
+An outcome that continues at a context of the incoming skeleton and
+delivers nothing preserves it (helper).
+
+```lean
+theorem RueCore.Out.skelOk_of {Γ Γ' : Ctx} (h : Γ'.skel = Γ.skel) :
+  Out.SkelOk Γ { norm := some Γ', brk := [] }
+```
+
+### `Out.SkelOk.then`
+
+*theorem* · module `RueCore.Statics`
+
+§5.3's threading, read over skeletons: a prefix that continues at `Γ₁`
+followed by a subexpression typed from `Γ₁` preserves the skeleton the
+prefix started from, `Ω ⊕ Δ₁` included (helper).
+
+```lean
+theorem RueCore.Out.SkelOk.then {Γ Γ₁ : Ctx} {Δ₁ : List Ctx} {Ω : Out}
+  (h₁ : Out.SkelOk Γ { norm := some Γ₁, brk := Δ₁ }) (h₂ : Out.SkelOk Γ₁ Ω) :
+  Out.SkelOk Γ (Ω.add Δ₁)
+```
+
+### `LoopHead.skel`
+
+*theorem* · module `RueCore.Statics`
+
+The loop-head state has the entry's skeleton: it is the entry itself or
+its §5.5 join with the back-edge state (helper).
+
+```lean
+theorem RueCore.LoopHead.skel {D : Decls} {Γ Γh : Ctx} {o : Option Ctx}
+  (h : LoopHead D Γ o Γh) : Γh.skel = Γ.skel
+```
+
 ### `TypedArgs.skel_preserved`
 
 *theorem* · module `RueCore.Statics`
@@ -3172,8 +3423,25 @@ A typed expression list preserves the context skeleton too (helper).
 
 ```lean
 theorem RueCore.TypedArgs.skel_preserved {P : Program} {R : Ty} {Γ : Ctx}
-  {es : List Expr} {Ts : List Ty} {Ω : Out} (h : TypedArgs P R Γ es Ts Ω) :
-  Out.SkelOk Γ Ω
+  {es : List Expr} {Ts : List Ty} {Ω : Out} :
+  TypedArgs P R Γ es Ts Ω → Out.SkelOk Γ Ω
+```
+
+### `TypedArms.skel_all`
+
+*theorem* · module `RueCore.Statics`
+
+**Every continuing arm of a `match` hands the §5.5 join a context with the
+skeleton the arm started from**, and every delivery an arm makes extends it:
+the arm's payload locals are popped on its normal path, and sit on top of the
+arm's context at a `break` inside it (helper).
+
+```lean
+theorem RueCore.TypedArms.skel_all {P : Program} {R : Ty} {Γ₀ : Ctx}
+  {arms : List Expr} {Tss : List (List Ty)} {T : Ty} {os : List (Option Ctx)}
+  {Δs : List Ctx} :
+  TypedArms P R Γ₀ arms Tss T os Δs →
+    Γ₀.SameSkel (List.filterMap id os) ∧ ∀ (Γb : Ctx), Γb ∈ Δs → Γb.Extends Γ₀
 ```
 
 ### `TypedArms.arm_skel`
@@ -3305,6 +3573,127 @@ theorem RueCore.Ctx.joinOpts_wf {D : Decls} {os : List (Option Ctx)} {Γ' : Ctx}
   {S : List (Ty × Bool)} (h : Ctx.joinOpts D os = some (some Γ'))
   (hinv : ∀ (Γ : Ctx), Γ ∈ List.filterMap id os → Γ.skel = S ∧ Ctx.Wf D Γ) :
   Ctx.Wf D Γ'
+```
+
+### `Out.Wf.bot`
+
+*theorem* · module `RueCore.Statics`
+
+(helper) A `⊥` outcome is well formed when its deliveries are.
+
+```lean
+theorem RueCore.Out.Wf.bot {D : Decls} {Δ : List Ctx}
+  (h : ∀ (Γb : Ctx), Γb ∈ Δ → Ctx.Wf D Γb) :
+  Out.Wf D { norm := none, brk := Δ }
+```
+
+### `Out.Wf.of`
+
+*theorem* · module `RueCore.Statics`
+
+(helper) An outcome that continues at a well-formed state and delivers
+nothing is well formed.
+
+```lean
+theorem RueCore.Out.Wf.of {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) :
+  Out.Wf D { norm := some Γ, brk := [] }
+```
+
+### `Out.Wf.then`
+
+*theorem* · module `RueCore.Statics`
+
+(helper) §5.3's threading, read over the shape invariant.
+
+```lean
+theorem RueCore.Out.Wf.then {D : Decls} {Γ₁ : Ctx} {Δ₁ : List Ctx} {Ω : Out}
+  (h₁ : Out.Wf D { norm := some Γ₁, brk := Δ₁ })
+  (h₂ : Ctx.Wf D Γ₁ → Out.Wf D Ω) : Out.Wf D (Ω.add Δ₁)
+```
+
+### `LoopHead.wf`
+
+*theorem* · module `RueCore.Statics`
+
+(helper) The loop-head state is well formed when the entry is: it is the
+entry itself, or a head `LoopHead` asks to be well formed.
+
+```lean
+theorem RueCore.LoopHead.wf {D : Decls} {Γ Γh : Ctx} {o : Option Ctx}
+  (h : LoopHead D Γ o Γh) (hw : Ctx.Wf D Γ) : Ctx.Wf D Γh
+```
+
+### `Ctx.Wf.drop`
+
+*theorem* · module `RueCore.Statics`
+
+(helper) Dropping bindings off the top keeps a frame well formed.
+
+```lean
+theorem RueCore.Ctx.Wf.drop {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) (n : Nat) :
+  Ctx.Wf D (List.drop n Γ)
+```
+
+### `TypedArgs.wf`
+
+*theorem* · module `RueCore.Statics`
+
+(helper) The same, for an expression list.
+
+```lean
+theorem RueCore.TypedArgs.wf {P : Program} {R : Ty} {Γ : Ctx} {es : List Expr}
+  {Ts : List Ty} {Ω : Out} : TypedArgs P R Γ es Ts Ω → Out.WfPres P.decls Γ Ω
+```
+
+### `TypedArms.wf`
+
+*theorem* · module `RueCore.Statics`
+
+(helper) The same, for a `match`'s arms.
+
+```lean
+theorem RueCore.TypedArms.wf {P : Program} {R : Ty} {Γ₀ : Ctx} {arms : List Expr}
+  {Tss : List (List Ty)} {T : Ty} {os : List (Option Ctx)} {Δs : List Ctx} :
+  TypedArms P R Γ₀ arms Tss T os Δs → Out.WfArms P.decls Γ₀ os Δs
+```
+
+### `LoopHead.reenter_body`
+
+*theorem* · module `RueCore.Statics`
+
+`LoopHead.reenter` for the loop rules' own premises: the body judgment
+typed at the head gives the back-edge state the head's skeleton
+(`Typed.skel_preserved`) and makes it well formed from the well-formed head
+(`Typed.wf`) (helper).
+
+```lean
+theorem RueCore.LoopHead.reenter_body {P : Program} {R : Ty} {Γ Γh : Ctx} {e : Expr}
+  {Ωe : Out} (h : LoopHead P.decls Γ Ωe.norm Γh)
+  (hbody : Typed P R Γh e Ty.unit Ωe) : LoopHead P.decls Γh Ωe.norm Γh
+```
+
+### `TypedArgs.brk_nil`
+
+*theorem* · module `RueCore.Statics`
+
+(helper) The same, for an expression list.
+
+```lean
+theorem RueCore.TypedArgs.brk_nil {P : Program} {R : Ty} {Γ : Ctx} {es : List Expr}
+  {Ts : List Ty} {Ω : Out} :
+  TypedArgs P R Γ es Ts Ω → Expr.breaksList es = false → Ω.brk = []
+```
+
+### `TypedArms.brk_nil`
+
+*theorem* · module `RueCore.Statics`
+
+(helper) The same, for a `match`'s arms.
+
+```lean
+theorem RueCore.TypedArms.brk_nil {P : Program} {R : Ty} {Γ₀ : Ctx} {arms : List Expr}
+  {Tss : List (List Ty)} {T : Ty} {os : List (Option Ctx)} {Δs : List Ctx} :
+  TypedArms P R Γ₀ arms Tss T os Δs → Expr.breaksList arms = false → Δs = []
 ```
 
 ### `fnCtx_wf`
@@ -4490,6 +4879,72 @@ theorem RueCore.Contents.resolveDyn_ok {D : Decls} (is : List Int)
           ∃ ρ, c.resolveDyn is πs = DynStep.ok ρ ∧ Ty.atPath D Ta ρ = some T
 ```
 
+### `BrokeOk.mono_store`
+
+*theorem* · module `RueCore.Soundness`
+
+A `break` promised from a later store is promised from an earlier one,
+given the step between them was local to the frame (helper).
+
+```lean
+theorem RueCore.BrokeOk.mono_store {D : Decls} {B : List Ctx} {φ : Frame}
+  {H H₁ H' : Store} {sc : List Nat} (hu : Untouched φ.env H H₁)
+  (h : BrokeOk D B φ H₁ H' sc) : BrokeOk D B φ H H' sc
+```
+
+### `BrokeOk.mono_brk`
+
+*theorem* · module `RueCore.Soundness`
+
+A `break` at one of some deliveries is at one of any superset of them
+(helper).
+
+```lean
+theorem RueCore.BrokeOk.mono_brk {D : Decls} {B B' : List Ctx} {φ : Frame}
+  {H H' : Store} {sc : List Nat} (hB : B ⊆ B') (h : BrokeOk D B φ H H' sc) :
+  BrokeOk D B' φ H H' sc
+```
+
+### `BrokeOk.under_binders`
+
+*theorem* · module `RueCore.Soundness`
+
+**A `break` passes out through a binder** (§6.10, with §6.7's and §6.6's
+registration): a `break` inside a `let` body or a `match` arm, whose frame is
+the enclosing one with the binder's fresh cells `ls` opened on top, is a
+`break` of the enclosing frame with `ls` among the bindings still open where
+it fired. The unwind the loop runs therefore drops the binder's cells too —
+which is RUE-1277's redundancy read at a `break`: the discarded `endscope`
+marker's cells are found in the scope record instead (helper).
+
+```lean
+theorem RueCore.BrokeOk.under_binders {D : Decls} {B : List Ctx} {φ : Frame}
+  {H Hm H' : Store} {sc ls : List Nat} (hpre : List.length H ≤ List.length Hm)
+  (hkeep : ∀ (ℓ : Nat), ℓ < List.length H → Hm[ℓ]? = H[ℓ]?)
+  (hfresh : ∀ (ℓ : Nat), ℓ ∈ ls → List.length H ≤ ℓ)
+  (h :
+    BrokeOk D B { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls } Hm H'
+      sc) :
+  BrokeOk D B φ H H' sc
+```
+
+### `BrokeOk.under_binder`
+
+*theorem* · module `RueCore.Soundness`
+
+`BrokeOk.under_binders` at a `let`'s one binder, whose cell is minted at
+the end of the store (§6.7's (D-Let)) (helper).
+
+```lean
+theorem RueCore.BrokeOk.under_binder {D : Decls} {B : List Ctx} {φ : Frame}
+  {H₁ H' : Store} {sc : List Nat} {c : Cell}
+  (h :
+    BrokeOk D B
+      { env := List.length H₁ :: φ.env, scope := φ.scope ++ [List.length H₁] }
+      (H₁ ++ [c]) H' sc) :
+  BrokeOk D B φ H₁ H' sc
+```
+
 ### `EvalOk.ok_inv`
 
 *theorem* · module `RueCore.Soundness`
@@ -4497,9 +4952,9 @@ theorem RueCore.Contents.resolveDyn_ok {D : Decls} (is : List Int)
 A value promised at some normal state names that state (helper).
 
 ```lean
-theorem RueCore.EvalOk.ok_inv {D : Decls} {T R : Ty} {o : Option Ctx} {φ : Frame}
-  {H H' : Store} {v : Val} {tr : List Event}
-  (h : EvalOk D T R o φ H (EvalRes.ok H' v tr)) :
+theorem RueCore.EvalOk.ok_inv {D : Decls} {T R : Ty} {o : Option Ctx} {B : List Ctx}
+  {φ : Frame} {H H' : Store} {v : Val} {tr : List Event}
+  (h : EvalOk D T R o B φ H (EvalRes.ok H' v tr)) :
   ∃ Γ',
     o = some Γ' ∧ HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
 ```
@@ -4512,8 +4967,8 @@ The same, for an argument list (helper).
 
 ```lean
 theorem RueCore.ArgsOk.ok_inv {D : Decls} {R : Ty} {Ts : List Ty} {o : Option Ctx}
-  {φ : Frame} {H H' : Store} {vs : List Val} {tr : List Event}
-  (h : ArgsOk D R Ts o φ H (ArgsRes.ok H' vs tr)) :
+  {B : List Ctx} {φ : Frame} {H H' : Store} {vs : List Val} {tr : List Event}
+  (h : ArgsOk D R Ts o B φ H (ArgsRes.ok H' vs tr)) :
   ∃ Γ',
     o = some Γ' ∧
       HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
@@ -4527,9 +4982,10 @@ A promise made from a later store is a promise from an earlier one, given
 the step between them was local to the frame (helper).
 
 ```lean
-theorem RueCore.EvalOk.mono_store {D : Decls} {T R : Ty} {o : Option Ctx} {φ : Frame}
-  {H H₁ : Store} {r : EvalRes} (hu : Untouched φ.env H H₁)
-  (h : EvalOk D T R o φ H₁ r) : EvalOk D T R o φ H r
+theorem RueCore.EvalOk.mono_store {D : Decls} {T R : Ty} {o : Option Ctx}
+  {B : List Ctx} {φ : Frame} {H H₁ : Store} {r : EvalRes}
+  (hu : Untouched φ.env H H₁) (h : EvalOk D T R o B φ H₁ r) :
+  EvalOk D T R o B φ H r
 ```
 
 ### `AbortOk.mono_store`
@@ -4539,9 +4995,35 @@ theorem RueCore.EvalOk.mono_store {D : Decls} {T R : Ty} {o : Option Ctx} {φ : 
 The same, for a result that is not a value (helper).
 
 ```lean
-theorem RueCore.AbortOk.mono_store {D : Decls} {R : Ty} {φ : Frame} {H H₁ : Store}
-  {r : EvalRes} (hu : Untouched φ.env H H₁) (h : AbortOk D R φ H₁ r) :
-  AbortOk D R φ H r
+theorem RueCore.AbortOk.mono_store {D : Decls} {R : Ty} {B : List Ctx} {φ : Frame}
+  {H H₁ : Store} {r : EvalRes} (hu : Untouched φ.env H H₁)
+  (h : AbortOk D R B φ H₁ r) : AbortOk D R B φ H r
+```
+
+### `EvalOk.mono_brk`
+
+*theorem* · module `RueCore.Soundness`
+
+A promise at some deliveries is a promise at any superset of them: a form
+carries its operands' deliveries outward among its own (§5.3's threading)
+(helper).
+
+```lean
+theorem RueCore.EvalOk.mono_brk {D : Decls} {T R : Ty} {o : Option Ctx}
+  {B B' : List Ctx} {φ : Frame} {H : Store} {r : EvalRes} (hB : B ⊆ B')
+  (h : EvalOk D T R o B φ H r) : EvalOk D T R o B' φ H r
+```
+
+### `AbortOk.mono_brk`
+
+*theorem* · module `RueCore.Soundness`
+
+The same, for a result that is not a value (helper).
+
+```lean
+theorem RueCore.AbortOk.mono_brk {D : Decls} {R : Ty} {B B' : List Ctx} {φ : Frame}
+  {H : Store} {r : EvalRes} (hB : B ⊆ B') (h : AbortOk D R B φ H r) :
+  AbortOk D R B' φ H r
 ```
 
 ### `EvalOk.withTrace`
@@ -4552,9 +5034,10 @@ Prefixing a trace changes no promise: the trace is an observation, not a
 state (helper).
 
 ```lean
-theorem RueCore.EvalOk.withTrace {D : Decls} {T R : Ty} {o : Option Ctx} {φ : Frame}
-  {H : Store} {r : EvalRes} (h : EvalOk D T R o φ H r) (tr : List Event) :
-  EvalOk D T R o φ H (EvalRes.withTrace tr r)
+theorem RueCore.EvalOk.withTrace {D : Decls} {T R : Ty} {o : Option Ctx}
+  {B : List Ctx} {φ : Frame} {H : Store} {r : EvalRes}
+  (h : EvalOk D T R o B φ H r) (tr : List Event) :
+  EvalOk D T R o B φ H (EvalRes.withTrace tr r)
 ```
 
 ### `AbortOk.withTrace`
@@ -4564,9 +5047,9 @@ theorem RueCore.EvalOk.withTrace {D : Decls} {T R : Ty} {o : Option Ctx} {φ : F
 The same, for a result that is not a value (helper).
 
 ```lean
-theorem RueCore.AbortOk.withTrace {D : Decls} {R : Ty} {φ : Frame} {H : Store}
-  {r : EvalRes} (h : AbortOk D R φ H r) (tr : List Event) :
-  AbortOk D R φ H (EvalRes.withTrace tr r)
+theorem RueCore.AbortOk.withTrace {D : Decls} {R : Ty} {B : List Ctx} {φ : Frame}
+  {H : Store} {r : EvalRes} (h : AbortOk D R B φ H r) (tr : List Event) :
+  AbortOk D R B φ H (EvalRes.withTrace tr r)
 ```
 
 ### `EvalOk.of_abort`
@@ -4578,8 +5061,9 @@ outgoing state the form claims — the promise is only about values there
 (helper).
 
 ```lean
-theorem RueCore.EvalOk.of_abort {D : Decls} {T R : Ty} {o : Option Ctx} {φ : Frame}
-  {H : Store} {r : EvalRes} (h : AbortOk D R φ H r) : EvalOk D T R o φ H r
+theorem RueCore.EvalOk.of_abort {D : Decls} {T R : Ty} {o : Option Ctx} {B : List Ctx}
+  {φ : Frame} {H : Store} {r : EvalRes} (h : AbortOk D R B φ H r) :
+  EvalOk D T R o B φ H r
 ```
 
 ### `EvalOk.toAbort`
@@ -4590,10 +5074,10 @@ An evaluation that produced no value only ever produced an `AbortOk`
 outcome (helper).
 
 ```lean
-theorem RueCore.EvalOk.toAbort {D : Decls} {T R : Ty} {o : Option Ctx} {φ : Frame}
-  {H : Store} {r : EvalRes} (h : EvalOk D T R o φ H r)
+theorem RueCore.EvalOk.toAbort {D : Decls} {T R : Ty} {o : Option Ctx} {B : List Ctx}
+  {φ : Frame} {H : Store} {r : EvalRes} (h : EvalOk D T R o B φ H r)
   (hne : ∀ (H' : Store) (v : Val) (tr : List Event), r ≠ EvalRes.ok H' v tr) :
-  AbortOk D R φ H r
+  AbortOk D R B φ H r
 ```
 
 ### `EvalOk.bot_abort`
@@ -4604,8 +5088,9 @@ theorem RueCore.EvalOk.toAbort {D : Decls} {T R : Ty} {o : Option Ctx} {φ : Fra
 value, so it is an `AbortOk` outcome (helper).
 
 ```lean
-theorem RueCore.EvalOk.bot_abort {D : Decls} {T R : Ty} {φ : Frame} {H : Store}
-  {r : EvalRes} (h : EvalOk D T R none φ H r) : AbortOk D R φ H r
+theorem RueCore.EvalOk.bot_abort {D : Decls} {T R : Ty} {B : List Ctx} {φ : Frame}
+  {H : Store} {r : EvalRes} (h : EvalOk D T R none B φ H r) :
+  AbortOk D R B φ H r
 ```
 
 ### `EvalOk.bot_andThen`
@@ -4617,9 +5102,9 @@ the context never runs and its outcome is the whole form's — which is what the
 `-Bottom` rules' conclusions promise, at whatever type they name (helper).
 
 ```lean
-theorem RueCore.EvalOk.bot_andThen {D : Decls} {T T₀ R : Ty} {φ : Frame} {H : Store}
-  {r : EvalRes} {k : Store → Val → EvalRes} (h : EvalOk D T₀ R none φ H r) :
-  EvalOk D T R none φ H (r.andThen k)
+theorem RueCore.EvalOk.bot_andThen {D : Decls} {T T₀ R : Ty} {B : List Ctx}
+  {φ : Frame} {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
+  (h : EvalOk D T₀ R none B φ H r) : EvalOk D T R none B φ H (r.andThen k)
 ```
 
 ### `EvalOk.bind`
@@ -4628,19 +5113,21 @@ theorem RueCore.EvalOk.bot_andThen {D : Decls} {T T₀ R : Ty} {φ : Frame} {H :
 
 **§6.2's search, once and for all.** An operand that promised its own
 outcome, sequenced into a context that promises the form's outcome from the
-operand's value, promises the form's outcome. Every operand of every form is
-discharged by this lemma (helper).
+operand's value, promises the form's outcome — the operand's deliveries among
+the form's. Every operand of every form is discharged by this lemma
+(helper).
 
 ```lean
 theorem RueCore.EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ : Ctx}
-  {φ : Frame} {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
-  (hr : EvalOk D T₀ R (some Γ₀) φ H r)
+  {B₀ B : List Ctx} {φ : Frame} {H : Store} {r : EvalRes}
+  {k : Store → Val → EvalRes} (hr : EvalOk D T₀ R (some Γ₀) B₀ φ H r)
+  (hB : B₀ ⊆ B)
   (hk :
     ∀ (H₁ : Store) (v : Val) (tr : List Event),
       r = EvalRes.ok H₁ v tr →
         HasTy D v T₀ →
-          FrameMatches D Γ₀ φ H₁ → EvalOk D T R o φ H₁ (k H₁ v)) :
-  EvalOk D T R o φ H (r.andThen k)
+          FrameMatches D Γ₀ φ H₁ → EvalOk D T R o B φ H₁ (k H₁ v)) :
+  EvalOk D T R o B φ H (r.andThen k)
 ```
 
 ### `EvalOk.bindSame`
@@ -4652,15 +5139,15 @@ theorem RueCore.EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ 
 the form continues at the same state; if it is `⊥`, so is the form (helper).
 
 ```lean
-theorem RueCore.EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {φ : Frame}
-  {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
-  (hr : EvalOk D T₀ R o φ H r)
+theorem RueCore.EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx}
+  {B : List Ctx} {φ : Frame} {H : Store} {r : EvalRes}
+  {k : Store → Val → EvalRes} (hr : EvalOk D T₀ R o B φ H r)
   (hk :
     ∀ (H₁ : Store) (v : Val) (tr : List Event) (Γ₀ : Ctx),
       r = EvalRes.ok H₁ v tr →
         HasTy D v T₀ →
-          FrameMatches D Γ₀ φ H₁ → EvalOk D T R (some Γ₀) φ H₁ (k H₁ v)) :
-  EvalOk D T R o φ H (r.andThen k)
+          FrameMatches D Γ₀ φ H₁ → EvalOk D T R (some Γ₀) B φ H₁ (k H₁ v)) :
+  EvalOk D T R o B φ H (r.andThen k)
 ```
 
 ### `EvalOk.weaken`
@@ -4672,13 +5159,123 @@ of an arm: a value's state is carried to some state of the join, and `⊥`
 carries nothing (helper).
 
 ```lean
-theorem RueCore.EvalOk.weaken {D : Decls} {T R : Ty} {o₁ o' : Option Ctx} {φ : Frame}
-  {H : Store} {r : EvalRes}
+theorem RueCore.EvalOk.weaken {D : Decls} {T R : Ty} {o₁ o' : Option Ctx}
+  {B : List Ctx} {φ : Frame} {H : Store} {r : EvalRes}
   (hw :
     ∀ (Γ₁ : Ctx) (H' : Store),
       o₁ = some Γ₁ →
         FrameMatches D Γ₁ φ H' → ∃ Γ', o' = some Γ' ∧ FrameMatches D Γ' φ H')
-  (h : EvalOk D T R o₁ φ H r) : EvalOk D T R o' φ H r
+  (h : EvalOk D T R o₁ B φ H r) : EvalOk D T R o' B φ H r
+```
+
+### `Matches.length_eq`
+
+*theorem* · module `RueCore.Soundness`
+
+The invariant binds exactly one location per binding (helper).
+
+```lean
+theorem RueCore.Matches.length_eq {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store}
+  (hm : Matches D Γ ρ H) : List.length Γ = List.length ρ
+```
+
+### `Ctx.SameSkel.of_forall`
+
+*theorem* · module `RueCore.Soundness`
+
+`Ctx.SameSkel` from a pointwise skeleton equation (helper).
+
+```lean
+theorem RueCore.Ctx.SameSkel.of_forall {Γ₀ : Ctx} {Γs : List Ctx} :
+  (∀ (Γ : Ctx), Γ ∈ Γs → Γ.skel = Γ₀.skel) → Γ₀.SameSkel Γs
+```
+
+### `LoopHead.enter`
+
+*theorem* · module `RueCore.Soundness`
+
+**Entering a loop at its head.** The store agreeing with the entry state
+agrees with the loop-head state: the head is the entry or its §5.5 join with
+the back-edge state, and the join weakens its left arm (helper).
+
+```lean
+theorem RueCore.LoopHead.enter {D : Decls} (hwf : WfDecls D) {Γ Γh : Ctx}
+  {o : Option Ctx} {φ : Frame} {H : Store} (h : LoopHead D Γ o Γh)
+  (hfm : FrameMatches D Γ φ H) : FrameMatches D Γh φ H
+```
+
+### `LoopHead.backEdge`
+
+*theorem* · module `RueCore.Soundness`
+
+**The back edge** (§5.7, `3.8:79`). The store agreeing with the body's
+back-edge state agrees with the loop-head state: the head is the §5.5 join of
+the entry with that state, and the join weakens its right arm. This is the
+preservation half of re-entering the body (helper).
+
+```lean
+theorem RueCore.LoopHead.backEdge {D : Decls} (hwf : WfDecls D) {Γ Γh Γe : Ctx}
+  {φ : Frame} {H : Store} (h : LoopHead D Γ (some Γe) Γh)
+  (hsk : Γe.skel = Γh.skel) (hfm : FrameMatches D Γe φ H) :
+  FrameMatches D Γh φ H
+```
+
+### `loop_exit_ok`
+
+*theorem* · module `RueCore.Soundness`
+
+**The exits** (§5.7's (Loop-Break), §6.10's (D-Break)). A `break` that
+fired at one of the body's deliveries `Γb`, in a frame that is the loop's with
+the body's still-open bindings `locs` on top, is caught by the loop: it
+drop-retires exactly those bindings, newest first — `unwind-drops(H, φ', φ)`
+— and the rule's premise that they carry no residual linear content is what
+keeps the leak monitor off. What is left agrees with `outside_loop(Γb)`, and
+so with the loop's outgoing state, the join over every exit (`3.8:80`)
+(helper).
+
+```lean
+theorem RueCore.loop_exit_ok {D : Decls} (hwf : WfDecls D) {Γh Γx : Ctx}
+  {B : List Ctx} {φ : Frame} {H H₁ : Store} {sc : List Nat}
+  (hfmh : FrameMatches D Γh φ H) (hext : ∀ (Γb : Ctx), Γb ∈ B → Γb.Extends Γh)
+  (hnl : ∀ (Γb : Ctx), Γb ∈ B → NoResidualLinear D (Γh.loopLocals Γb))
+  (hjoin : Ctx.joinAll D (List.map Γh.outsideLoop B) = some Γx)
+  (hb : BrokeOk D B φ H H₁ sc) :
+  ∃ H₂ evs,
+    unwindLocs D H₁ (List.drop φ.scope.length sc).reverse =
+        Except.ok (H₂, evs) ∧
+      FrameMatches D Γx φ H₂ ∧ Untouched φ.env H H₂
+```
+
+### `loop_step`
+
+*theorem* · module `RueCore.Soundness`
+
+**One turn of a loop** (§6.10), for `soundness`: given the body's promise
+from the loop-head state, the promise for the loop's rest from the back edge
+(which is `soundness` again, one unit of fuel down, at the re-entered loop's
+derivation), and what the loop's rule makes of an exit, the loop keeps the
+promise. An unwinding `return` from the body passes through; a trap and
+exhausted fuel promise nothing (helper).
+
+```lean
+theorem RueCore.loop_step (M : FloatOps) {P : Program} {fuel : Nat} {D : Decls}
+  {T R : Ty} {oe : Option Ctx} {Be : List Ctx} {φ : Frame} {H : Store}
+  {e : Expr} {o' : Option Ctx} {B' : List Ctx}
+  (kb : EvalOk D Ty.unit R oe Be φ H (eval M fuel P H φ e))
+  (hback :
+    ∀ (Γe : Ctx) (H₁ : Store),
+      oe = some Γe →
+        FrameMatches D Γe φ H₁ →
+          EvalOk D T R o' B' φ H₁ (eval M fuel P H₁ φ e.loop))
+  (hexit :
+    ∀ (H₁ : Store) (sc : List Nat),
+      BrokeOk D Be φ H H₁ sc →
+        EvalOk D T R o' B' φ H
+          (match
+            unwindLocs P.decls H₁ (List.drop φ.scope.length sc).reverse with
+          | Except.error w => EvalRes.stuck w
+          | Except.ok (H₂, evs) => EvalRes.ok H₂ Val.unit evs)) :
+  EvalOk D T R o' B' φ H (eval M (fuel + 1) P H φ e.loop)
 ```
 
 ### `EvalRes.withTrace_outOfFuel_iff`
@@ -4962,6 +5559,20 @@ is accessible outright (helper).
 ```lean
 theorem RueCore.Decls.acc_of_empty {D : Decls} {d : DeclId} (h : D.byValue d = []) :
   Acc (fun a b => D.Names b a) d
+```
+
+### `Examples.eval_loop_ok`
+
+*theorem* · module `RueCore.Examples`
+
+(D-Loop-Iter) §6.10, as an equation: a body that completes re-enters the
+loop at one unit of fuel less (helper).
+
+```lean
+theorem RueCore.Examples.eval_loop_ok {M : FloatOps} {P : Program} {n : Nat}
+  {H H₁ : Store} {φ : Frame} {e : Expr} {v : Val} {tr : List Event}
+  (h : eval M n P H φ e = EvalRes.ok H₁ v tr) :
+  eval M (n + 1) P H φ e.loop = EvalRes.withTrace tr (eval M n P H₁ φ e.loop)
 ```
 
 ### `Explain.explainIdx_result`
@@ -7864,6 +8475,12 @@ RueCore.Explain.StepRes.value (v : Val) : Explain.StepRes
 RueCore.Explain.StepRes.unwound (v : Val) : Explain.StepRes
 ```
 
+**`Explain.StepRes.breaking`**
+
+```lean
+RueCore.Explain.StepRes.breaking : Explain.StepRes
+```
+
 **`Explain.StepRes.panicked`**
 
 ```lean
@@ -7946,6 +8563,15 @@ index: §5.3 gives that rule no index premise, and its prose admits
 `@drop(a[i])` on a `Copy`-element array at a dynamic index. `drop` takes a
 constant `Place`, so the dynamic form is its own constructor, with the read's
 place and the read's premises; its value is `()`.
+
+`loop e` is §2's `loop { e }` and `brk` its nullary `break`, which exits the
+innermost enclosing loop and hands it `()` (§5.7, §6.10). There is no
+value-carrying `break`: §2's grammar has none, and `4.8:22` makes
+`break expr` a compile-time error at the surface. `continue` has no
+constructor either: §2 elaborates it to the loop's back edge, and §5.7
+lists its `⟨continue, Σ⟩` delivery only so the back-edge set is closed under
+that elaboration. Lean spells the constructor `brk` because `break` is one of
+its own keywords.
 
 ```lean
 inductive RueCore.Expr : Type
@@ -8110,6 +8736,18 @@ RueCore.Expr.call (f : Nat) (args : List Expr) : Expr
 
 ```lean
 RueCore.Expr.ret (e : Expr) : Expr
+```
+
+**`Expr.loop`**
+
+```lean
+RueCore.Expr.loop (e : Expr) : Expr
+```
+
+**`Expr.brk`**
+
+```lean
+RueCore.Expr.brk : Expr
 ```
 
 ### `Float.arith`
@@ -8487,6 +9125,45 @@ def RueCore.Ctx.SameSkel (Γ₀ : Ctx) : List Ctx → Prop :=
   List.brecOn x✝ (Ctx.SameSkel._f Γ₀)
 ```
 
+### `Ctx.loopLocals`
+
+*def* · module `RueCore.Statics`
+
+The loop-local part of a `⟨break, Σ_x⟩` delivery made by a loop body typed
+at `Γh`: the bindings the body opened and had not closed where the `break`
+fired, innermost first. §5.7 discharges their §5.6 obligation "at the exit
+itself, where their scopes end" (helper).
+
+```lean
+def RueCore.Ctx.loopLocals (Γh Γb : Ctx) : Ctx
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (Γh Γb : Ctx),
+  Γh.loopLocals Γb = List.take (List.length Γb - List.length Γh) Γb
+```
+
+### `Ctx.outsideLoop`
+
+*def* · module `RueCore.Statics`
+
+§5.7's `outside_loop(Σ_x)` for a delivery made by a body typed at `Γh`:
+the bindings in scope at the loop's entry, which are the delivered context's
+outermost `|Γh|` entries (helper).
+
+```lean
+def RueCore.Ctx.outsideLoop (Γh Γb : Ctx) : Ctx
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (Γh Γb : Ctx),
+  Γh.outsideLoop Γb = List.drop (List.length Γb - List.length Γh) Γb
+```
+
 ### `Ctx.skel`
 
 *def* · module `RueCore.Statics`
@@ -8636,6 +9313,25 @@ Defining equations, as Lean derived them from the body:
     Expr.floatLit w { sig := sig, negExp := false, e := e }
 ```
 
+### `Examples.infiniteLoop`
+
+*def* · module `RueCore.Examples`
+
+**A loop with no `break` never completes** (Loop-Div-Backedge, §6.10): its
+body is `()`, so it re-enters itself at every turn and each turn spends fuel.
+It is `never`-typed, and (Sub-Never) lets it stand as an `i64` function's
+body.
+
+```lean
+def RueCore.Examples.infiniteLoop : Expr
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.infiniteLoop = Expr.unitLit.loop
+```
+
 ### `Examples.lit`
 
 *def* · module `RueCore.Examples`
@@ -8689,6 +9385,21 @@ Examples.structEnv =
     Examples.dLinearDtor, Examples.dCarry, Examples.dOuter,
     Examples.dPair, Examples.dTwoAffine, Examples.dAffineInt,
     Examples.dNested, Examples.dCarryAffine]
+```
+
+### `Expr.breaks`
+
+*def* · module `RueCore.Syntax`
+
+§5.7's syntactic classification of a loop body, "`e` contains a `break`
+targeting this loop" (`4.8:21`): a `break` anywhere in `e` except inside a
+nested `loop`, whose own breaks target that loop (the core has no labelled
+`break`). Reachability is not consulted — a `break` after a `return` still
+counts — which is what makes (Loop-Break) `unit`-typed "even when every `break`
+is unreachable" (§5.7).
+
+```lean
+def RueCore.Expr.breaks : Expr → Bool
 ```
 
 ### `Float.narrow`
@@ -9231,6 +9942,21 @@ Defining equations, as Lean derived them from the body:
     | Except.ok (leaf, rest) => Except.ok (leaf, c :: rest)
 ```
 
+### `Ctx.Extends`
+
+*def* · module `RueCore.Statics`
+
+A delivered context **extends** `Γ`: it is `Γ`'s skeleton with zero or
+more bindings pushed on top. A `⟨break, Σ⟩` delivery records the whole
+context in force at the `break` (`Typed.brk`), so between the loop that reads
+it and the `break` that made it sit the bindings of every `let` and every
+`match` arm the `break` is inside (helper).
+
+```lean
+def RueCore.Ctx.Extends (Γb Γ : Ctx) : Prop :=
+  ∃ pre, Γb.skel = pre ++ Γ.skel
+```
+
 ### `Decls.Names`
 
 *def* · module `RueCore.Statics`
@@ -9292,7 +10018,9 @@ Defining equations, as Lean derived them from the body:
 Evaluation results: a value with the final store and trace (§6.12's normal
 result); a value handed back by an unwinding `return`, whose frame's scopes
 have already been dropped (§6.9's (D-Return)) and which every enclosing form
-passes on untouched until a call boundary absorbs it; a defined panic
+passes on untouched until a call boundary absorbs it; a `break` on its way to
+its loop, which every enclosing form passes on the same way until the loop
+catches it and runs the drops it owes (§6.10's (D-Break)); a defined panic
 (§6.12's `↯κ`); a violation ("stuck": either a configuration §6 leaves
 undefined or a linear action one of the monitors refuses, named; the module
 docstring says which is which); or exhausted fuel, which is not a machine
@@ -9314,6 +10042,13 @@ RueCore.EvalRes.ok (H : Store) (v : Val) (tr : List Event) : EvalRes
 
 ```lean
 RueCore.EvalRes.returned (H : Store) (v : Val) (tr : List Event) : EvalRes
+```
+
+**`EvalRes.broke`** — A `break` unwinding to its loop (§6.10's (D-Break)): the store, the scope record of the frame the `break` fired in — the loop reads off it which cells the body still owed a drop — and the trace so far.
+
+```lean
+RueCore.EvalRes.broke (H : Store) (scope : List Nat) (tr : List Event) :
+  EvalRes
 ```
 
 **`EvalRes.panic`**
@@ -9408,6 +10143,24 @@ RueCore.Explain.Verdict.accept (ty : CTy) (out : Out) : Explain.Verdict
 RueCore.Explain.Verdict.reject (premise : String) : Explain.Verdict
 ```
 
+### `Expr.breaksList`
+
+*def* · module `RueCore.Syntax`
+
+`Expr.breaks` over a list of subexpressions (helper).
+
+```lean
+def RueCore.Expr.breaksList : List Expr → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Expr.breaksList [] = false
+∀ (e : Expr) (es : List Expr),
+  Expr.breaksList (e :: es) = (e.breaks || Expr.breaksList es)
+```
+
 ### `Float.exactOps`
 
 *def* · module `RueCore.Float`
@@ -9431,19 +10184,6 @@ Float.exactOps =
   { arith := Float.arith false, sqrt := Float.sqrtD false,
     ofLit := Float.ofLit, ofInt := Float.ofInt, narrow := Float.narrow,
     nanSign := false }
-```
-
-### `Out.SkelOk`
-
-*def* · module `RueCore.Statics`
-
-The skeleton half of §5's convention that `Γ` is fixed while `Σ` is
-threaded, read over `Ω`: a normal outgoing state, when there is one, has the
-incoming skeleton. `⊥` has no state and so nothing to preserve (helper).
-
-```lean
-def RueCore.Out.SkelOk (Γ : Ctx) (Ω : Out) : Prop :=
-  ∀ (Γ' : Ctx), Ω.norm = some Γ' → Γ'.skel = Γ.skel
 ```
 
 ### `Out.add`
@@ -9920,6 +10660,9 @@ Defining equations, as Lean derived them from the body:
 ∀ (tr : List Event) (H : Store) (v : Val) (tr' : List Event),
   EvalRes.withTrace tr (EvalRes.returned H v tr') =
     EvalRes.returned H v (tr ++ tr')
+∀ (tr : List Event) (H : Store) (sc : List Nat) (tr' : List Event),
+  EvalRes.withTrace tr (EvalRes.broke H sc tr') =
+    EvalRes.broke H sc (tr ++ tr')
 ∀ (tr : List Event) (k : PanicKind) (tr' : List Event),
   EvalRes.withTrace tr (EvalRes.panic k tr') = EvalRes.panic k (tr ++ tr')
 ∀ (tr : List Event) (x : EvalRes),
@@ -9927,9 +10670,11 @@ Defining equations, as Lean derived them from the body:
       x = EvalRes.ok H v tr' → False) →
     (∀ (H : Store) (v : Val) (tr' : List Event),
         x = EvalRes.returned H v tr' → False) →
-      (∀ (k : PanicKind) (tr' : List Event),
-          x = EvalRes.panic k tr' → False) →
-        EvalRes.withTrace tr x = x
+      (∀ (H : Store) (sc : List Nat) (tr' : List Event),
+          x = EvalRes.broke H sc tr' → False) →
+        (∀ (k : PanicKind) (tr' : List Event),
+            x = EvalRes.panic k tr' → False) →
+          EvalRes.withTrace tr x = x
 ```
 
 ### `Examples.countdown`
@@ -10027,6 +10772,30 @@ Constructors:
 ```lean
 RueCore.Explain.Trace.mk (steps : List Explain.Step) (res : EvalRes) :
   Explain.Trace
+```
+
+### `Out.SkelOk`
+
+*inductive* · module `RueCore.Statics`
+
+The skeleton half of §5's convention that `Γ` is fixed while `Σ` is
+threaded, read over `Ω`: a normal outgoing state, when there is one, has the
+incoming skeleton, and every `⟨break, Σ⟩` delivery **extends** it — the
+bindings in force at the edge, on top of the incoming ones. `⊥` has no state,
+so it constrains only the deliveries (helper).
+
+```lean
+inductive RueCore.Out.SkelOk (Γ : Ctx) (Ω : Out) : Prop
+```
+
+Constructors:
+
+**`Out.SkelOk.mk`**
+
+```lean
+RueCore.Out.SkelOk.mk {Γ : Ctx} {Ω : Out}
+  (norm : ∀ (Γ' : Ctx), Ω.norm = some Γ' → Γ'.skel = Γ.skel)
+  (brk : ∀ (Γb : Ctx), Γb ∈ Ω.brk → Γb.Extends Γ) : Out.SkelOk Γ Ω
 ```
 
 ### `Program.entry`
@@ -10453,6 +11222,13 @@ the suspended caller context, so at the one form that suspended a caller — a
 call — a `returned` result becomes the call's value, with the drops its unwind
 already ran. Everywhere else the `return` keeps travelling (`andThen`).
 
+A `break` never crosses a call boundary: §5.7 makes one well-formed only
+inside a loop, and (Fn) §5.8 gives a function body no `⟨break, _⟩` delivery,
+so a callee's `break` is caught by a loop of its own body — "a `break` in a
+callee would be ill-formed" (§6.10). One that reached the boundary anyway is
+a configuration §6 leaves undefined, `typeConfusion`; `soundness` proves no
+typed program reaches it.
+
 ```lean
 def RueCore.EvalRes.absorb : EvalRes → (Store → Val → EvalRes) → EvalRes
 ```
@@ -10464,12 +11240,18 @@ Defining equations, as Lean derived them from the body:
   (EvalRes.ok H v tr).absorb x = EvalRes.withTrace tr (x H v)
 ∀ (x : Store → Val → EvalRes) (H : Store) (v : Val) (tr : List Event),
   (EvalRes.returned H v tr).absorb x = EvalRes.ok H v tr
+∀ (x : Store → Val → EvalRes) (H : Store) (scope : List Nat)
+  (tr : List Event),
+  (EvalRes.broke H scope tr).absorb x =
+    EvalRes.stuck Violation.typeConfusion
 ∀ (x : EvalRes) (x_1 : Store → Val → EvalRes),
   (∀ (H : Store) (v : Val) (tr : List Event),
       x = EvalRes.ok H v tr → False) →
     (∀ (H : Store) (v : Val) (tr : List Event),
         x = EvalRes.returned H v tr → False) →
-      x.absorb x_1 = x
+      (∀ (H : Store) (scope : List Nat) (tr : List Event),
+          x = EvalRes.broke H scope tr → False) →
+        x.absorb x_1 = x
 ```
 
 ### `EvalRes.andThen`
@@ -10479,9 +11261,11 @@ Defining equations, as Lean derived them from the body:
 §6.2's evaluation-context search, as a combinator: run an operand, and if
 it reduced to a value, continue in the context with the store it left, the
 operand's trace prefixed onto whatever the context produces. Every other
-outcome — a trap (§6.12), a refusal, exhausted fuel, and an unwinding `return`
-(§6.9's (D-Return), which discards the context `E` it is under) — is the whole
-form's outcome, unchanged.
+outcome — a trap (§6.12), a refusal, exhausted fuel, an unwinding `return`
+(§6.9's (D-Return), which discards the context `E` it is under) and an
+unwinding `break` ((D-Break) §6.10, which discards the context `E'` it is
+under, pending `endscope` markers included) — is the whole form's outcome,
+unchanged.
 
 ```lean
 def RueCore.EvalRes.andThen : EvalRes → (Store → Val → EvalRes) → EvalRes
@@ -11052,15 +11836,17 @@ Defining equations, as Lean derived them from the body:
 
 The promise for an evaluation that does **not** produce a value here: an
 unwinding `return` carries a value of the enclosing function's declared return
-type `R` and leaves the frame's neighbours alone; a trap and exhausted fuel
-promise nothing; a refusal is impossible, which is the whole theorem
-(helper).
+type `R` and leaves the frame's neighbours alone; an unwinding `break` is one
+of the deliveries `B` (`BrokeOk`); a trap and exhausted fuel promise nothing;
+a refusal is impossible, which is the whole theorem (helper).
 
 ```lean
-def RueCore.AbortOk (D : Decls) (R : Ty) (φ : Frame) (H : Store) : EvalRes → Prop :=
+def RueCore.AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Frame) (H : Store) :
+  EvalRes → Prop :=
   match x✝ with
   | EvalRes.ok H v tr => False
   | EvalRes.returned H' v tr => HasTy D v R ∧ Untouched φ.env H H'
+  | EvalRes.broke H' sc tr => BrokeOk D B φ H H' sc
   | EvalRes.panic k tr => True
   | EvalRes.stuck why => False
   | EvalRes.outOfFuel => True
@@ -11071,18 +11857,47 @@ def RueCore.AbortOk (D : Decls) (R : Ty) (φ : Frame) (H : Store) : EvalRes → 
 *def* · module `RueCore.Soundness`
 
 The promise for an argument list (§5.8's (Call), left to right with Σ
-threaded), at the list's normal outgoing state `o` (helper).
+threaded), at the list's normal outgoing state `o` and deliveries `B`
+(helper).
 
 ```lean
 def RueCore.ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx)
-  (φ : Frame) (H : Store) : ArgsRes → Prop :=
+  (B : List Ctx) (φ : Frame) (H : Store) : ArgsRes → Prop :=
   match x✝ with
   | ArgsRes.ok H' vs tr =>
     match o with
     | some Γ' =>
       HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
     | none => False
-  | ArgsRes.abort r => AbortOk D R φ H r
+  | ArgsRes.abort r => AbortOk D R B φ H r
+```
+
+### `BrokeOk`
+
+*def* · module `RueCore.Soundness`
+
+The promise for an unwinding `break` (§6.10's (D-Break)), made about an
+evaluation in frame `φ` from store `H`: the `break` fired in a frame that is
+`φ` with some bindings `locs` opened on top of it — the ones the loop body
+opened and had not closed, each minted above `H` — and at one of the
+delivered states `B` of §5.3's `Ω`, the frame it fired in agrees with the
+store. Its record is `φ`'s with `locs` appended, which is what the loop reads
+to find the drops it owes, and nothing `φ` names outside the frame was
+touched. It is closed under entering a binder (`BrokeOk.under_binders`), so a
+`let` or a `match` arm passes it outward unchanged, and the loop that catches
+it reads the frame it fired in straight off it (helper).
+
+```lean
+def RueCore.BrokeOk (D : Decls) (B : List Ctx) (φ : Frame) (H H' : Store)
+  (sc : List Nat) : Prop :=
+  ∃ Γb,
+    Γb ∈ B ∧
+      ∃ locs,
+        sc = φ.scope ++ locs ∧
+          FrameMatches D Γb { env := locs.reverse ++ φ.env, scope := sc }
+              H' ∧
+            (∀ (ℓ : Nat), ℓ ∈ locs → List.length H ≤ ℓ) ∧
+              Untouched φ.env H H'
 ```
 
 ### `CellMatches`
@@ -11771,16 +12586,67 @@ def RueCore.Ctx.Wf (D : Decls) (Γ : Ctx) : Prop :=
   ∀ (en : Entry), en ∈ Γ → Entry.wf D en = true
 ```
 
+### `LoopHead`
+
+*def* · module `RueCore.Statics`
+
+§5.7's loop-head equation `Σ_h = head(Σ, e)`, over the body's normal
+outgoing state `o` (section docstring): `Σ_h` is the §5.5 join of the entry
+state `Γ` with the body's back-edge state when it has one, and is `Γ` itself
+when it has none; a head a back edge produced is a state of its types.
+
+```lean
+def RueCore.LoopHead (D : Decls) (Γ : Ctx) (o : Option Ctx) (Γh : Ctx) : Prop :=
+  Ctx.joinOpt D (some Γ) o = some (some Γh) ∧
+    ∀ (Γe : Ctx), o = some Γe → Ctx.Wf D Γh
+```
+
+### `Out.Wf`
+
+*inductive* · module `RueCore.Statics`
+
+(helper) Every state an outcome carries — its normal outgoing state and
+every delivered one — is a shape of its declared types.
+
+```lean
+inductive RueCore.Out.Wf (D : Decls) (Ω : Out) : Prop
+```
+
+Constructors:
+
+**`Out.Wf.mk`**
+
+```lean
+RueCore.Out.Wf.mk {D : Decls} {Ω : Out}
+  (norm : ∀ (Γ' : Ctx), Ω.norm = some Γ' → Ctx.Wf D Γ')
+  (brk : ∀ (Γb : Ctx), Γb ∈ Ω.brk → Ctx.Wf D Γb) : Out.Wf D Ω
+```
+
+### `Out.WfArms`
+
+*def* · module `RueCore.Statics`
+
+(helper) The same for a `match`'s arms: every continuing arm's state and
+every arm's deliveries.
+
+```lean
+def RueCore.Out.WfArms (D : Decls) (Γ₀ : Ctx) (os : List (Option Ctx))
+  (Δs : List Ctx) : Prop :=
+  Ctx.Wf D Γ₀ →
+    (∀ (Γ : Ctx), Γ ∈ List.filterMap id os → Ctx.Wf D Γ) ∧
+      ∀ (Γb : Ctx), Γb ∈ Δs → Ctx.Wf D Γb
+```
+
 ### `Out.WfPres`
 
 *def* · module `RueCore.Statics`
 
 (helper) `Typed.wf`'s statement for one judgment: a well-formed incoming
-context gives a well-formed normal outgoing state.
+context gives a well-formed normal outgoing state and well-formed deliveries.
 
 ```lean
 def RueCore.Out.WfPres (D : Decls) (Γ : Ctx) (Ω : Out) : Prop :=
-  Ctx.Wf D Γ → ∀ (Γ' : Ctx), Ω.norm = some Γ' → Ctx.Wf D Γ'
+  Ctx.Wf D Γ → Out.Wf D Ω
 ```
 
 ### `Entry.wf`
@@ -11804,24 +12670,27 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Soundness`
 
-The promise `soundness` makes about `eval`'s result, given the normal
-outgoing state `o` of §5.3's `Ω`: a value of the expression's type with that
-state's invariant restored (preservation), or one of `AbortOk`'s outcomes —
-never `.stuck` (progress). When `o` is `none`, §5.7's `⊥`, a value is
-**impossible**: an expression the rules type as divergent never completes
-normally. Stating it as a predicate on the result, rather than as a
-disjunction of existentials, is what lets the operand combinators (`andThen`)
-be discharged once and reused at every form (helper).
+The promise `soundness` makes about `eval`'s result, given §5.3's `Ω` —
+its normal outgoing state `o` and its deliveries `B`: a value of the
+expression's type with that state's invariant restored (preservation), or one
+of `AbortOk`'s outcomes — never `.stuck` (progress). When `o` is `none`,
+§5.7's `⊥`, a value is **impossible**: an expression the rules type as
+divergent never completes normally. A `break` is one of the deliveries: the
+state it fired at is one the rules recorded. Stating it as a predicate on the
+result, rather than as a disjunction of existentials, is what lets the operand
+combinators (`andThen`) be discharged once and reused at every form
+(helper).
 
 ```lean
-def RueCore.EvalOk (D : Decls) (T R : Ty) (o : Option Ctx) (φ : Frame)
-  (H : Store) : EvalRes → Prop :=
+def RueCore.EvalOk (D : Decls) (T R : Ty) (o : Option Ctx) (B : List Ctx)
+  (φ : Frame) (H : Store) : EvalRes → Prop :=
   match x✝ with
   | EvalRes.ok H' v tr =>
     match o with
     | some Γ' => HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
     | none => False
   | EvalRes.returned H' v tr => HasTy D v R ∧ Untouched φ.env H H'
+  | EvalRes.broke H' sc tr => BrokeOk D B φ H H' sc
   | EvalRes.panic k tr => True
   | EvalRes.stuck why => False
   | EvalRes.outOfFuel => True
@@ -12830,6 +13699,52 @@ RueCore.Typed.retBot {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}
   {e : Expr} {T : Ty} :
   Typed P R Γ e R { norm := none, brk := Δ } →
     Typed P R Γ e.ret T { norm := none, brk := Δ }
+```
+
+**`Typed.brk`** — **(Break) §5.7** with (Sub-Never) folded in: `break` yields no value to its own context, so it concludes at every type and at `⊥`, and it delivers `⟨break, Σ⟩` — the **whole** context in force where it fires, loop-local bindings included — to the innermost enclosing loop, which is the one consumer that reads it (`loopBreak`). Every rule between the two carries the delivery outward by §5.3's threading, whether or not the `break` is in tail position. "Well-formed only inside a loop" is (Fn)'s premise that a body delivers no `break` (`WfFn`).
+
+```lean
+RueCore.Typed.brk {P : Program} {R : Ty} {Γ : Ctx} {T : Ty} :
+  Typed P R Γ Expr.brk T { norm := none, brk := [Γ] }
+```
+
+**`Typed.loopDiv`** — **(Loop-Div-Backedge) and (Loop-Div) §5.7**, in one rule, because they differ only in whether the body reaches its back edge — which is what the body's own `Ω` says, so the rule reads it rather than splitting on it. The body syntactically contains no `break` targeting this loop (`4.8:21`, `Expr.breaks`), so the loop is `never`-typed, with (Sub-Never) folded in. The body is typed once, at the **loop-head state** `Σ_h = head(Σ, e)` (`3.8:79`): `LoopHead` is §5.7's defining equation, `Σ_h` the join of the entry state with the states at the body's own reachable back edges, read off the very judgment that types the body at `Σ_h`. When the body continues it re-enters itself forever, so it delivers `⟨diverge, Σ_h⟩`; the fragment checks that delivery where it fires, frame-wide, by `NoResidualLinear` — §5.6/§5.7's retained non-panic residual check, which the compiler enforces as E0406 for a linear local or a by-value parameter live at `loop { }` (`../03-metatheory.md` records the reading). When the body never completes (Loop-Div), `B_h = ∅`, so `Σ_h = Σ` and there is no diverge delivery: the loop is left only by the body's own `return`/`@panic`, which were checked where they fired. Either way the loop concludes at `⊥` and delivers no `break` outward (`Δ_out` removes this loop's own edges, and the syntactic premise says there are none — `Typed.brk_nil`).
+
+```lean
+RueCore.Typed.loopDiv {P : Program} {R : Ty} {Γ Γh : Ctx} {Ωe : Out}
+  {e : Expr} {T : Ty} :
+  Typed P R Γh e Ty.unit Ωe →
+    LoopHead P.decls Γ Ωe.norm Γh →
+      e.breaks = false →
+        (∀ (Γe : Ctx), Ωe.norm = some Γe → NoResidualLinear P.decls Γh) →
+          Typed P R Γ e.loop T { norm := none, brk := [] }
+```
+
+**`Typed.loopBreak`** — **(Loop-Break) §5.7 with a reachable exit** (`X ≠ ∅`): the body contains a `break` targeting this loop (`4.8:21`), so the loop is `unit`-typed; the body is typed at the loop-head state (`LoopHead`, as for `loopDiv`), and the exits are read off that one judgment. `X` is the body's `brk`: each delivery is the whole context at its `break`, so the loop splits it at the loop's own depth. The loop-local bindings still open there (the prefix, `Ctx.loopLocals`) end at the exit, which discharges §5.6 for them ("discharged at the exit itself"; dynamically, §6.10's unwind); the rest (`Ctx.outsideLoop`) is `outside_loop(Σ_x)`, and the loop's normal outgoing state is §5.5's join over those (`3.8:80`), `Ctx.joinAll` in delivery order (the order is immaterial: `Ctx.joinAll_perm`). The body's normal completion is the back edge, which `LoopHead` already reads; it is not an exit. The loop consumes its own `break` deliveries (`Δ_out`), and the fragment has no others, so it delivers none.
+
+```lean
+RueCore.Typed.loopBreak {P : Program} {R : Ty} {Γ Γh : Ctx} {Ωe : Out}
+  {Γx : Ctx} {e : Expr} :
+  Typed P R Γh e Ty.unit Ωe →
+    LoopHead P.decls Γ Ωe.norm Γh →
+      e.breaks = true →
+        (∀ (Γb : Ctx),
+            Γb ∈ Ωe.brk → NoResidualLinear P.decls (Γh.loopLocals Γb)) →
+          Ctx.joinAll P.decls (List.map Γh.outsideLoop Ωe.brk) = some Γx →
+            Typed P R Γ e.loop Ty.unit { norm := some Γx, brk := [] }
+```
+
+**`Typed.loopBreakDiv`** — **(Loop-Break) §5.7 with no reachable exit** (`X = ∅`): every targeting `break` is unreachable, so the loop is still `unit`-typed by `4.8:21`'s syntactic classification but has no post-loop state, `⊥`. With a reachable back edge it re-enters itself forever and delivers `⟨diverge, Σ_h⟩` exactly as `loopDiv` does, checked the same way; with none, the body's own `return`/`@panic` are its only exits. "The two forms differ only in `4.8:21`'s syntactic type, never in what they deliver."
+
+```lean
+RueCore.Typed.loopBreakDiv {P : Program} {R : Ty} {Γ Γh : Ctx} {Ωe : Out}
+  {e : Expr} :
+  Typed P R Γh e Ty.unit Ωe →
+    LoopHead P.decls Γ Ωe.norm Γh →
+      e.breaks = true →
+        Ωe.brk = [] →
+          (∀ (Γe : Ctx), Ωe.norm = some Γe → NoResidualLinear P.decls Γh) →
+            Typed P R Γ e.loop Ty.unit { norm := none, brk := [] }
 ```
 
 ### `TypedArgs`

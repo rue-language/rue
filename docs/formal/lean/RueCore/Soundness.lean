@@ -31,11 +31,13 @@ call, the extended frame inside a `let` body — builds σ and ρ from the same
 list, so σ carries no information ρ does not and the equation cannot fail
 here. It is stated as an invariant because it is what the *teardown* proofs
 consume, and because it is the clause that stops being free the moment
-`Frame.scope` becomes the stack §6.1 actually specifies: §6.6's `match` arms
-and §6.10's loops push and pop scopes independently of the binder chain, and
-then σ and ρ are two different books that a slice has to keep in step. That
-is the shape the RUE-1277 redundancy was raised for, and this fragment does
-not have it.
+`Frame.scope` becomes the stack §6.1 actually specifies, where scopes are
+pushed and popped independently of the binder chain and σ and ρ are two
+different books a slice has to keep in step. That is the shape the RUE-1277
+redundancy was raised for, and this fragment does not have it: §6.6's `match`
+arm appends to the one record, and a loop reads its boundary as the record's
+length at entry (`Dynamics.lean`), so a `break`'s record is the loop's with the
+body's open bindings appended (`BrokeOk`).
 
 What the clause does buy, already: `run-all-scope-drops` walks σ, and because
 σ is ρ, `Matches` — every cell live or moved-out, no two bindings sharing one
@@ -101,11 +103,28 @@ never refuses because the arm discharged §5.6 for exactly those cells
 (`6.3:17`, `6.3:20`). `dropContents_enum_events` is the drop *order* at an enum,
 in the same closed form the struct case has.
 
+## Loops: the back edge and the exits
+
+A loop is typed at its head state (§5.7's `LoopHead`), and three facts carry
+it through the fuel induction. `LoopHead.enter`: the store agreeing with the
+entry state agrees with the head, since the head is the entry joined with the
+back-edge state and the join weakens its left arm. `LoopHead.backEdge`: a
+store agreeing with the back-edge state agrees with the head, the join's right
+arm. And `LoopHead.reenter_body` (`Statics.lean`): the loop's own derivation
+types it again at its head, so the next turn is the same loop at one unit of
+fuel less. A `break` is caught by `loop_exit_ok`: the body's open bindings are
+exactly the cells past the loop's scope-record length, `Matches.unwindPrefix`
+drops them without refusal because (Loop-Break) discharged §5.6 for them, and
+what remains agrees with `outside_loop` and so with the exit join. A
+`break`-less loop has no delivery to catch (`Typed.brk_nil`), and (Fn) gives a
+function body none, so a `break` never reaches a call boundary.
+
 ## The theorem
 
 `soundness` is type safety in definitional-interpreter form: a well-typed
 expression evaluates to a well-typed value with the invariant restored
-(preservation), to a value handed back by an unwinding `return`, to a *defined*
+(preservation), to a value handed back by an unwinding `return`, to a `break`
+unwinding to its loop from one of the recorded delivery states, to a *defined*
 panic, or to `outOfFuel` — never to a `Violation` (progress). `fuel_mono` and
 `no_masking` are what keep the fuel caveat honest. The corollaries at the
 bottom restate the theorem per §7 bullet, over a whole program.
@@ -3001,7 +3020,8 @@ definitional-interpreter form).
 A well-typed expression, run at any fuel in any frame and store agreeing with
 its incoming context, yields a well-typed value with the agreement restored at
 the normal outgoing state of its §5.3 result `Ω` — and no value at all when
-`Ω` is §5.7's `⊥` — a value handed back by an unwinding `return` (§6.9), a
+`Ω` is §5.7's `⊥` — a value handed back by an unwinding `return` (§6.9), an
+unwinding `break` (§6.10) that fired at one of `Ω`'s delivered states, a
 *defined* panic (§6.12), or `outOfFuel` — never `.stuck`, so never a
 `Violation`: no use-after-move, no use-after-drop, no linear leak, no linear
 overwrite, no linear discard (§7's decomposed bullets). The theorem is
@@ -4324,8 +4344,9 @@ calculus, the second is the calculus doing what it says.
   route as well as the first.
 
 Every *other* edge — a `let`'s scope exit, a `match` arm's `endscope` over its
-payload locals (`Matches.unwindPrefix`), a frame's normal pop, and a `return`'s
-unwind — is covered. -/
+payload locals (`Matches.unwindPrefix`), a `break`'s unwind to its loop
+(`loop_exit_ok`), a frame's normal pop, and a `return`'s unwind — is
+covered. -/
 theorem no_violation (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) (w : Violation) :
     run M.toFloatOps P fuel ≠ .stuck w := by
   obtain ⟨_, _, h₁ | ⟨k, trk, h₂⟩ | ⟨H, v, tr, h₃, _⟩⟩ := h.run_safe M fuel
