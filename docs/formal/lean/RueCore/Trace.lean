@@ -1198,6 +1198,11 @@ theorem Val.scalar_own {D : Decls} {v : Val} (h : v.scalar) :
   | unit => exact ⟨rfl, rfl⟩
   | _ => simp [Val.scalar] at h
 
+/-- A scalar produced where the store is keeps the law (helper). -/
+theorem Cons.scalar {D : Decls} {F : Event → List Nat} {H : Store} {X : List Nat} {v : Val}
+    (hcc : StoreCC D H) (hs : v.scalar) : Cons D F H X (.ok H v []) :=
+  Cons.pure hcc (Val.scalar_own hs).2 (fun a => by simp [(Val.scalar_own (D := D) hs).1])
+
 /-- An operator's outcome keeps the law when its value is a scalar (helper). -/
 theorem Cons.opRes {D : Decls} {F : Event → List Nat} {H : Store} {X : List Nat} {o : OpRes}
     (hcc : StoreCC D H) (hs : ∀ v, o = .val v → v.scalar) : Cons D F H X (o.toRes H) := by
@@ -1570,5 +1575,396 @@ theorem Cons.unwind {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
       have hf : Fresh H H' = [] := by simp [Fresh, l]
       rw [hf]; simp
       omega
+
+/-! ## The law, over the whole machine -/
+
+/-- **The conservation law** (§7's no-double-free, the invariant half): every
+evaluation, of every expression from every copy-closed store, at every fuel,
+keeps `Cons` — no identity is ever duplicated, only moved, consumed, or
+minted fresh. By fuel induction over `eval`, one case per form, each closed by
+its ledger above. It reads no typing derivation: copy closure is what the
+machine maintains itself, and `DtorNotCopy` (inside `TraceMeasure`, for
+`dtorIds`) is the one fact it needs about the declarations. -/
+theorem eval_conserves (M : FloatOps) {P : Program} {F : Event → List Nat}
+    (hF : TraceMeasure P.decls F) :
+    ∀ (fuel : Nat) (H : Store) (φ : Frame) (e : Expr), StoreCC P.decls H →
+      Cons P.decls F H [] (eval M fuel P H φ e) := by
+  intro fuel
+  induction fuel with
+  | zero => intro H φ e _; simp only [eval]; trivial
+  | succ n ih =>
+    intro H φ e hcc
+    have hargs := fun (H' : Store) (es : List Expr) (hc : StoreCC P.decls H') =>
+      evalArgs_cons (fun H'' e' hc' => ih H'' φ e' hc') H' es hc
+    cases e with
+    | intLit w sg m => exact Cons.scalar hcc trivial
+    | floatLit w l => exact Cons.scalar hcc trivial
+    | boolLit b => exact Cons.scalar hcc trivial
+    | unitLit => exact Cons.scalar hcc trivial
+    | use p =>
+        simp only [eval]
+        split
+        · trivial
+        · rename_i ℓ _
+          split
+          · trivial
+          · trivial
+          · rename_i c hc
+            split
+            · split
+              · trivial
+              · rename_i cd hr
+                split
+                · trivial
+                · rename_i leaf evs hd
+                  split
+                  · trivial
+                  · rename_i v hv
+                    split
+                    · trivial
+                    · rename_i c' hw
+                      exact Cons.destructure hF hcc hc hr hd hv hw
+            · split
+              · trivial
+              · rename_i sub hr
+                split
+                · trivial
+                · rename_i v hv
+                  split
+                  · rename_i hm
+                    have hsub := Contents.ofVal_toVal hv
+                    refine Cons.pure hcc ?_ (fun a => by simp [Val.own_of_copy hm])
+                    rw [hsub]; exact Contents.readAt_copyClosed _ (hcc ℓ c hc) hr
+                  · split
+                    · trivial
+                    · rename_i c' hw
+                      exact Cons.move hcc hc hr hw hv
+    | binop op e₁ e₂ =>
+        simp only [eval]
+        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ _ hc₁ _ => ?_)
+        refine Cons.bind ((ih H₁ φ e₂ hc₁).weaken (by simp)) (fun H₂ v₂ _ _ hc₂ _ => ?_)
+        exact Cons.opRes hc₂ (fun v h => evalBinOp_scalar h)
+    | unop op e₁ =>
+        simp only [eval]
+        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ _ hc₁ _ => ?_)
+        exact Cons.opRes hc₁ (fun v h => evalUnOp_scalar h)
+    | intCast w sg e₁ =>
+        simp only [eval]
+        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ _ hc₁ _ => ?_)
+        exact Cons.opRes hc₁ (fun v h => evalIntCast_scalar h)
+    | fintrin k e₁ =>
+        simp only [eval]
+        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ _ hc₁ _ => ?_)
+        exact Cons.opRes hc₁ (fun v h => evalFintrin_scalar h)
+    | panic msg => simp only [eval]; exact ⟨0, fun a => by simp⟩
+    | dbg e₁ =>
+        simp only [eval]
+        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ _ hc₁ _ => ?_)
+        refine ⟨Nat.le_refl _, hc₁, rfl, fun a => ?_⟩
+        simp [hF.dbg]
+    | mkStruct s args =>
+        simp only [eval]
+        have ka := hargs H args hcc
+        split
+        · rename_i r hra; rw [hra] at ka; exact ka
+        · rename_i H₁ vs tr hra
+          rw [hra] at ka
+          obtain ⟨l₁, c₁, _, i₁⟩ := ka
+          refine Cons.prefix (Y := Contents.ownList P.decls (Contents.ofVals vs)) l₁
+            (fun a => by have := i₁ a; simp only [List.count_nil] at *; omega) ?_
+          split
+          · trivial
+          · split
+            · exact Cons.intro c₁ (fun a => Contents.own_struct_le P.decls s _ _ a)
+            · trivial
+    | mkEnum e k args =>
+        simp only [eval]
+        have ka := hargs H args hcc
+        split
+        · rename_i r hra; rw [hra] at ka; exact ka
+        · rename_i H₁ vs tr hra
+          rw [hra] at ka
+          obtain ⟨l₁, c₁, _, i₁⟩ := ka
+          refine Cons.prefix (Y := Contents.ownList P.decls (Contents.ofVals vs)) l₁
+            (fun a => by have := i₁ a; simp only [List.count_nil] at *; omega) ?_
+          split
+          · trivial
+          · split
+            · trivial
+            · split
+              · exact Cons.intro c₁ (fun a => Contents.own_enum_le P.decls e k _ _ a)
+              · trivial
+    | «match» scrut arms =>
+        simp only [eval]
+        refine Cons.bind (ih H φ scrut hcc) (fun H₀ v _ _ hc₀ hv => ?_)
+        cases v with
+        | enum e k i vs =>
+          dsimp only
+          split
+          · trivial
+          · rename_i body harm
+            have hpay := Contents.enum_payload hv
+            refine Cons.shift (H₁ := (mintParams H₀ vs).1) (Y := []) ?_ ?_ ?_
+            · rw [mintParams_length]; omega
+            · intro a
+              have := (hpay a).1
+              rw [storeOwn_mintParams]
+              simp only [List.count_append, List.count_nil]
+              show _ ≤ _ + ((Contents.enum e k i (Contents.ofVals vs)).own P.decls).count a + _
+              omega
+            · refine Cons.bind (ih _ _ body (hc₀.mintParams (hpay 0).2))
+                (fun H₂ v₂ _ _ hc₂ hv₂ => ?_)
+              exact Cons.unwind hF hc₂ hv₂
+        | _ => trivial
+    | mkArray T args =>
+        simp only [eval]
+        have ka := hargs H args hcc
+        split
+        · rename_i r hra; rw [hra] at ka; exact ka
+        · rename_i H₁ vs tr hra
+          rw [hra] at ka
+          obtain ⟨l₁, c₁, _, i₁⟩ := ka
+          refine Cons.prefix (Y := Contents.ownList P.decls (Contents.ofVals vs)) l₁
+            (fun a => by have := i₁ a; simp only [List.count_nil] at *; omega) ?_
+          exact Cons.intro c₁ (fun a => Contents.own_array_le P.decls T _ _ a)
+    | repeatArray T e₁ m =>
+        simp only [eval]
+        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ _ hc₁ _ => ?_)
+        split
+        · rename_i hm
+          refine Cons.intro hc₁ (fun a => ?_)
+          have := Contents.own_array_le P.decls T H₁.length
+            (Contents.ofVals (List.replicate m v₁)) a
+          rw [Contents.ownList_replicate hm] at this
+          simp only [List.count_nil] at this
+          show _ ≤ _
+          have h0 : (v₁.own P.decls).count a = 0 := by simp [Val.own_of_copy hm]
+          exact Nat.le_trans this (by omega)
+        · trivial
+    | indexRead p idx πs =>
+        simp only [eval]
+        have ka := hargs H idx hcc
+        split
+        · rename_i r hra; rw [hra] at ka; exact ka
+        · rename_i H₁ vs tr hra
+          rw [hra] at ka
+          obtain ⟨l₁, c₁, _, i₁⟩ := ka
+          refine Cons.prefix (Y := Contents.ownList P.decls (Contents.ofVals vs)) l₁
+            (fun a => by have := i₁ a; simp only [List.count_nil] at *; omega) ?_
+          split
+          · trivial
+          · exact ⟨0, fun a => by simp⟩
+          · rename_i ℓ c sub ρ hdp
+            obtain ⟨hc, hr⟩ := dynPlace_at hdp
+            split
+            · trivial
+            · rename_i leaf hr'
+              split
+              · trivial
+              · rename_i v hv
+                split
+                · rename_i hm
+                  refine Cons.pure c₁ ?_ (fun a => by simp [Val.own_of_copy hm])
+                  rw [Contents.ofVal_toVal hv]
+                  exact Contents.readAt_copyClosed ρ
+                    (Contents.readAt_copyClosed _ (c₁ ℓ c hc) hr) hr'
+                · trivial
+    | indexWrite p idx πs e₁ =>
+        simp only [eval]
+        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v _ _ hc₁ hv => ?_)
+        have ka := hargs H₁ idx hc₁
+        split
+        · rename_i r hra; rw [hra] at ka; exact ka.weaken (by simp)
+        · rename_i H₂ vs tr hra
+          rw [hra] at ka
+          obtain ⟨l₂, c₂, _, i₂⟩ := ka
+          refine Cons.prefix
+            (Y := v.own P.decls ++ Contents.ownList P.decls (Contents.ofVals vs)) l₂
+            (fun a => by have := i₂ a; simp only [List.count_append] at *; omega) ?_
+          split
+          · trivial
+          · exact ⟨0, fun a => by simp⟩
+          · rename_i ℓ c sub ρ hdp
+            obtain ⟨hc, hr⟩ := dynPlace_at hdp
+            split
+            · trivial
+            · rename_i old hr'
+              split
+              · trivial
+              · split
+                · trivial
+                · rename_i evs hd
+                  split
+                  · trivial
+                  · rename_i sub' hw'
+                    split
+                    · trivial
+                    · rename_i c' hw
+                      split
+                      · rename_i hc'
+                        exact Cons.assignDyn hF c₂ hc hr hr' hd hw' hw hc'
+                      · trivial
+    | indexDrop p idx πs =>
+        simp only [eval]
+        refine Cons.bind (ih H φ _ hcc) (fun H₁ v₁ _ _ hc₁ _ => ?_)
+        exact Cons.pure hc₁ rfl (fun a => by simp)
+    | drop p =>
+        simp only [eval]
+        split
+        · trivial
+        · rename_i ℓ _
+          split
+          · trivial
+          · trivial
+          · rename_i c hc
+            split
+            · split
+              · trivial
+              · rename_i cd hr
+                split
+                · trivial
+                · rename_i leaf evs hd
+                  split
+                  · trivial
+                  · split
+                    · trivial
+                    · rename_i levs hl
+                      split
+                      · trivial
+                      · rename_i c' hw
+                        exact Cons.dropDeclared hF hcc hc hr hd hl hw
+            · split
+              · trivial
+              · rename_i sub hr
+                split
+                · trivial
+                · split
+                  · trivial
+                  · rename_i evs hd
+                    split
+                    · exact Cons.scalar hcc trivial
+                    · split
+                      · trivial
+                      · rename_i c' hw
+                        exact Cons.dropPlace hF hcc hc hr hd hw
+    | letIn m e₁ e₂ =>
+        simp only [eval]
+        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ _ hc₁ hv₁ => ?_)
+        refine Cons.shift (H₁ := H₁ ++ [.full (Contents.ofVal v₁)]) (Y := []) (by simp)
+          (fun a => ?_) ?_
+        · rw [storeOwn_append]
+          simp [storeOwn, Cell.own, List.count_append]
+        · refine Cons.bind (ih _ _ e₂ (hc₁.append (StoreCC.single hv₁)))
+            (fun H₂ v₂ _ _ hc₂ hv₂ => ?_)
+          split
+          · trivial
+          · rename_i H₃ evs hdr
+            obtain ⟨i, l, c⟩ := dropRetire_measure hF hc₂ hdr
+            exact ⟨by omega, c, hv₂, fun a => by have := i a; simp [Fresh, l]; omega⟩
+    | assign p e₁ =>
+        simp only [eval]
+        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v _ _ hc₁ hv => ?_)
+        split
+        · trivial
+        · split
+          · trivial
+          · trivial
+          · rename_i c hc
+            split
+            · trivial
+            · rename_i old hr
+              split
+              · trivial
+              · split
+                · trivial
+                · rename_i evs hd
+                  split
+                  · trivial
+                  · rename_i c' hw
+                    split
+                    · rename_i hc'
+                      exact (Cons.assign (Y := []) hF hc₁ hc hr hd hw hc').weaken (by simp)
+                    · trivial
+    | seq e₁ e₂ =>
+        simp only [eval]
+        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ _ hc₁ hv₁ => ?_)
+        split
+        · trivial
+        · split
+          · trivial
+          · rename_i evs hd
+            refine Cons.prefix (Y := []) (Nat.le_refl _) (fun a => ?_) (ih H₁ φ e₂ hc₁)
+            have := hF.temp hv₁ hd a
+            simp only [List.flatMap_cons, List.count_append, List.count_nil, Fresh.self] at *
+            omega
+        · exact (ih H₁ φ e₂ hc₁).weaken (by simp)
+    | ite c e₁ e₂ =>
+        simp only [eval]
+        refine Cons.bind (ih H φ c hcc) (fun H₀ v₀ _ _ hc₀ _ => ?_)
+        split
+        · split
+          · exact (ih H₀ φ e₁ hc₀).weaken (by simp)
+          · exact (ih H₀ φ e₂ hc₀).weaken (by simp)
+        · trivial
+    | call f args =>
+        simp only [eval]
+        have ka := hargs H args hcc
+        split
+        · rename_i r hra; rw [hra] at ka; exact ka
+        · rename_i H₁ vs tr hra
+          rw [hra] at ka
+          obtain ⟨l₁, c₁, cv₁, i₁⟩ := ka
+          refine Cons.prefix (Y := Contents.ownList P.decls (Contents.ofVals vs)) l₁
+            (fun a => by have := i₁ a; simp only [List.count_nil] at *; omega) ?_
+          split
+          · trivial
+          · rename_i fd hfd
+            split
+            · refine Cons.shift (H₁ := (mintParams H₁ vs).1) (Y := []) ?_ ?_ ?_
+              · rw [mintParams_length]; omega
+              · intro a
+                rw [storeOwn_mintParams]
+                simp only [List.count_append, List.count_nil]
+                omega
+              · refine Cons.absorb (ih _ _ fd.body (c₁.mintParams cv₁))
+                  (fun H₃ v _ _ hc₃ hv₃ => ?_)
+                simp only [runAllScopeDrops]
+                exact Cons.unwind hF hc₃ hv₃
+            · trivial
+    | ret e₁ =>
+        simp only [eval]
+        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v _ _ hc₁ hv => ?_)
+        simp only [runAllScopeDrops]
+        split
+        · trivial
+        · rename_i H₂ evs hu
+          obtain ⟨i, l, c⟩ := unwindLocs_measure hF hc₁ hu
+          exact ⟨by omega, c, hv, fun a => by have := i a; simp [Fresh, l]; omega⟩
+    | loop e₁ =>
+        simp only [eval]
+        have hb := ih H φ e₁ hcc
+        split
+        · rename_i H₁ v tr hr
+          rw [hr] at hb
+          obtain ⟨l, c, _, i⟩ := hb
+          exact Cons.prefix (Y := []) l (fun a => by have := i a; simp at *; omega)
+            (ih H₁ φ (.loop e₁) c)
+        · rename_i H₁ sc tr hr
+          rw [hr] at hb
+          obtain ⟨l, c, i⟩ := hb
+          split
+          · trivial
+          · rename_i H₂ evs hu
+            obtain ⟨i', l', c'⟩ := unwindLocs_measure hF c hu
+            refine ⟨by omega, c', rfl, fun a => ?_⟩
+            have := i a; have := i' a
+            have hf : Fresh H H₂ = Fresh H H₁ := by simp [Fresh, l']
+            rw [hf]
+            simp only [List.flatMap_append, List.count_append, Val.own_unit, List.count_nil] at *
+            omega
+        · exact hb
+    | brk =>
+        simp only [eval]
+        exact ⟨Nat.le_refl _, hcc, fun a => by simp⟩
 
 end RueCore
