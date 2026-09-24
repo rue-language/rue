@@ -2316,6 +2316,23 @@ pub(crate) fn bind_durable_comptime_argument(
             }
         });
     }
+    // A float bound at a float parameter is keyed by its value at that width,
+    // not by its spelling: `3`, `3.0` and `0.30e1` bind one text, so they
+    // reduce to one instance (RUE-2403).
+    let width = match &expected {
+        DurableType::F32 => Some(rue_air::Type::F32),
+        DurableType::F64 => Some(rue_air::Type::F64),
+        _ => None,
+    };
+    let canonical = match (&value, width) {
+        (crate::durable_semantics::DurableConstValue::Float(text), Some(width)) => {
+            rue_air::canonical_float_value_text(text, width)
+        }
+        _ => None,
+    };
+    let value = canonical.map_or(value, |text| {
+        crate::durable_semantics::DurableConstValue::Float(Arc::from(text))
+    });
     let parameter_name: Arc<str> = Arc::from(parameter_name);
     binding
         .value_arguments
