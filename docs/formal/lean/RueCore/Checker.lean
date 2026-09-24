@@ -132,16 +132,56 @@ stay off the shapes it gets wrong (`Corpus.lean`, `Gen.lean`).
 
 namespace RueCore
 
+/-- The type `check` concludes at: a type, or `never` — §5.7's type of the
+diverging forms, which the fragment's rules fold (Sub-Never) into by
+concluding at every type. `check` returns `never` exactly where the rule it
+mirrors concludes at an arbitrary type, and `check_sound` says so: a `never`
+result has a derivation at **every** type (§5.7's (Sub-Never)). -/
+inductive CTy where
+  /-- §5.7's `never`: the expression has a derivation at every type. -/
+  | never
+  /-- An ordinary type. -/
+  | ty (T : Ty)
+deriving DecidableEq, Repr
+
+/-- Whether a checked type admits `T` — (Sub-Never) §5.7 for `never`, identity
+otherwise (helper). -/
+def CTy.fits : CTy → Ty → Bool
+  | .never, _ => true
+  | .ty T', T => decide (T' = T)
+
+/-- Whether one checked type admits every type another admits — the arm
+comparison `match` makes against the type `firstArmTy` fixed (helper). -/
+def CTy.fitsC : CTy → CTy → Bool
+  | .never, _ => true
+  | .ty T', .ty T => decide (T' = T)
+  | .ty _, .never => false
+
+/-- The common type of two branch arms, §5.5's single `T` with (Sub-Never)
+§5.7 applied to a diverging arm: `never` meets anything, two types meet only
+when equal (helper). -/
+def CTy.meet : CTy → CTy → Option CTy
+  | .never, c => some c
+  | c, .never => some c
+  | .ty T₁, .ty T₂ => if T₁ = T₂ then some (.ty T₁) else none
+
+/-- A type a checked type admits, defaulting when it admits them all (helper). -/
+def CTy.pick : CTy → Ty → Ty
+  | .ty T, _ => T
+  | .never, d => d
+
 mutual
 /-- The §5 judgment as an algorithm: one case per `Typed` rule, in the same
-order, producing the type and outgoing context or rejecting. `P` is the
-top-level function environment (Call) §5.8 looks a callee up in and `R` the
-enclosing function's declared return type (Return-Value) §5.7 checks a
-`return` operand against. -/
-def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
-  | .intLit w s n => if InBounds w s n then some (.int w s, Γ) else none
-  | .boolLit _ => some (.bool, Γ)
-  | .unitLit => some (.unit, Γ)
+order, producing the type (`CTy`) and §5.3's outgoing `Ω` or rejecting. `P`
+is the top-level function environment (Call) §5.8 looks a callee up in and
+`R` the enclosing function's declared return type (Return-Value) §5.7 checks
+a `return` operand against. Where an operand's `Ω` is `⊥` the algorithm stops
+exactly where the `-Bottom` rules stop, and a branch joins only the arms that
+continue (`Ctx.joinOpt`, `Ctx.joinOpts`). -/
+def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
+  | .intLit w s n => if InBounds w s n then some (.ty (.int w s), ⟨some Γ, []⟩) else none
+  | .boolLit _ => some (.ty .bool, ⟨some Γ, []⟩)
+  | .unitLit => some (.ty .unit, ⟨some Γ, []⟩)
   | .use p =>
       match Γ[p.root]? with
       | none => none
@@ -152,71 +192,86 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
              | some u, some Td, some T =>
                  if u.fullyOwned ∧ linearResidue P.decls Td πs = false ∧
                      noDtorPrefix P.decls en.ty p.path then
-                   some (T, Γ.set p.root (en.setSt (en.st.setAt πd .movedOut)))
+                   some (.ty T, ⟨some (Γ.set p.root (en.setSt (en.st.setAt πd .movedOut))), []⟩)
                  else none
              | _, _, _ => none)
         | none =>
             (match en.st.get p.path, en.ty.atPath P.decls p.path with
              | some u, some T =>
                  if T.mult P.decls = .copy then
-                   (if u.fullyOwned then some (T, Γ) else none)
+                   (if u.fullyOwned then some (.ty T, ⟨some Γ, []⟩) else none)
                  else
                    (if u.fullyOwned ∧ noDtorPrefix P.decls en.ty p.path ∧
                        rootIdxOnly P.decls en.ty p.path then
-                      some (T, Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
+                      some (.ty T, ⟨some (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut))), []⟩)
                     else none)
              | _, _ => none)
   | .binop op e₁ e₂ =>
       match check P R Γ e₁ with
-      | some (.int w s, Γ₁) =>
+      | some (.ty (.int w s), ⟨some Γ₁, Δ₁⟩) =>
         (match check P R Γ₁ e₂ with
-        | some (.int w' s', Γ₂) =>
-            if w' = w ∧ s' = s ∧ op.intAdmits = true then some (op.resultTy (.int w s), Γ₂)
+        | some (.ty (.int w' s'), Ω₂) =>
+            if w' = w ∧ s' = s ∧ op.intAdmits = true then
+              some (.ty (op.resultTy (.int w s)), Ω₂.add Δ₁)
+            else none
+        | some (.never, Ω₂) =>
+            if op.intAdmits = true then some (.ty (op.resultTy (.int w s)), Ω₂.add Δ₁)
             else none
         | _ => none)
-      | some (.float w, Γ₁) =>
+      | some (.ty (.int w s), ⟨none, Δ₁⟩) =>
+          if op.intAdmits = true then some (.ty (op.resultTy (.int w s)), ⟨none, Δ₁⟩)
+          else none
+      | some (.ty (.float w), ⟨some Γ₁, Δ₁⟩) =>
         (match check P R Γ₁ e₂ with
-        | some (.float w', Γ₂) =>
-            if w' = w ∧ op.floatAdmits = true then some (op.resultTy (.float w), Γ₂) else none
+        | some (.ty (.float w'), Ω₂) =>
+            if w' = w ∧ op.floatAdmits = true then
+              some (.ty (op.resultTy (.float w)), Ω₂.add Δ₁)
+            else none
+        | some (.never, Ω₂) =>
+            if op.floatAdmits = true then some (.ty (op.resultTy (.float w)), Ω₂.add Δ₁)
+            else none
         | _ => none)
+      | some (.ty (.float w), ⟨none, Δ₁⟩) =>
+          if op.floatAdmits = true then some (.ty (op.resultTy (.float w)), ⟨none, Δ₁⟩)
+          else none
       | _ => none
-  | .floatLit w l => if l.RoundsFinite w then some (.float w, Γ) else none
+  | .floatLit w l => if l.RoundsFinite w then some (.ty (.float w), ⟨some Γ, []⟩) else none
   | .fintrin (.intToFloat w) e =>
       match check P R Γ e with
-      | some (.int _ _, Γ') => some (.float w, Γ')
+      | some (.ty (.int _ _), Ω) => some (.ty (.float w), Ω)
       | _ => none
   | .fintrin k e =>
       match check P R Γ e with
-      | some (.float w, Γ') => if k.floatSrc w then some (k.resTy w, Γ') else none
+      | some (.ty (.float w), Ω) => if k.floatSrc w then some (.ty (k.resTy w), Ω) else none
       | _ => none
   | .unop .neg e =>
       match check P R Γ e with
-      | some (.int w .signed, Γ') => some (.int w .signed, Γ')
-      | some (.float w, Γ') => some (.float w, Γ')
+      | some (.ty (.int w .signed), Ω) => some (.ty (.int w .signed), Ω)
+      | some (.ty (.float w), Ω) => some (.ty (.float w), Ω)
       | _ => none
   | .unop .not e =>
       match check P R Γ e with
-      | some (.bool, Γ') => some (.bool, Γ')
+      | some (.ty .bool, Ω) => some (.ty .bool, Ω)
       | _ => none
   | .unop .bitnot e =>
       match check P R Γ e with
-      | some (.int w s, Γ') => some (.int w s, Γ')
+      | some (.ty (.int w s), Ω) => some (.ty (.int w s), Ω)
       | _ => none
   | .intCast w s e =>
       match check P R Γ e with
-      | some (.int _ _, Γ') => some (.int w s, Γ')
+      | some (.ty (.int _ _), Ω) => some (.ty (.int w s), Ω)
       | _ => none
-  | .panic _ => some (R, Γ)
+  | .panic _ => some (.never, ⟨none, []⟩)
   | .dbg e =>
       match check P R Γ e with
-      | some (T, Γ') => if T.observable then some (.unit, Γ') else none
-      | none => none
+      | some (.ty T, Ω) => if T.observable then some (.ty .unit, Ω) else none
+      | _ => none
   | .mkStruct s args =>
       match P.decls.structs[s]? with
       | none => none
       | some sd =>
         match checkArgs P R Γ args sd.fields with
-        | some Γ' => some (.struct s, Γ')
+        | some Ω => some (.ty (.struct s), Ω)
         | none => none
   | .mkEnum e k args =>
       match P.decls.enums[e]? with
@@ -226,38 +281,37 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
         | none => none
         | some Ts =>
           match checkArgs P R Γ args Ts with
-          | some Γ' => some (.enum e, Γ')
+          | some Ω => some (.ty (.enum e), Ω)
           | none => none
   | .«match» scrut arms =>
       match check P R Γ scrut with
-      | some (.enum e, Γ₀) =>
+      | some (.ty (.enum e), ⟨some Γ₀, Δ₀⟩) =>
         (match P.decls.enums[e]? with
          | none => none
          | some ed =>
            if arms.length = ed.variants.length then
-             (match firstArmTy P R Γ₀ arms ed.variants with
+             (match checkArms P R Γ₀ (firstArmTy P R Γ₀ arms ed.variants) arms ed.variants with
               | none => none
-              | some T =>
-                (match checkArms P R Γ₀ T arms ed.variants with
-                 | none => none
-                 | some Γs =>
-                   (match Ctx.joinAll P.decls Γs with
-                    | some Γ' => some (T, Γ')
-                    | none => none)))
+              | some (os, Δs) =>
+                (match Ctx.joinOpts P.decls os with
+                 | some o => some (firstArmTy P R Γ₀ arms ed.variants, ⟨o, Δs ++ Δ₀⟩)
+                 | none => none))
            else none)
+      | some (.ty (.enum _), ⟨none, Δ₀⟩) => some (.never, ⟨none, Δ₀⟩)
+      | some (.never, ⟨none, Δ₀⟩) => some (.never, ⟨none, Δ₀⟩)
       | _ => none
   | .mkArray T args =>
       match checkArgs P R Γ args (List.replicate args.length T) with
-      | some Γ' => some (.array T args.length, Γ')
+      | some Ω => some (.ty (.array T args.length), Ω)
       | none => none
   | .repeatArray T e n =>
       match check P R Γ e with
-      | some (T', Γ') =>
-          if T' = T ∧ T.mult P.decls = .copy then some (.array T n, Γ') else none
-      | none => none
+      | some (.ty T', Ω) =>
+          if T' = T ∧ T.mult P.decls = .copy then some (.ty (.array T n), Ω) else none
+      | _ => none
   | .indexRead p idx πs =>
       match checkIdx P R Γ idx with
-      | some (_, Γ₁) =>
+      | some (_, ⟨some Γ₁, Δ⟩) =>
         (match Γ₁[p.root]? with
          | none => none
          | some en =>
@@ -268,10 +322,21 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
                   if idx.length = πs.length ∧ πs ≠ [] ∧ u.fullyOwned ∧
                       T.mult P.decls = .copy ∧
                       declaredPrefix P.decls en.ty p.path = none ∧
-                      Ta.dynNoDeclared P.decls πs then some (T, Γ₁)
+                      Ta.dynNoDeclared P.decls πs then some (.ty T, ⟨some Γ₁, Δ⟩)
                   else none
               | none => none)
            | _, _ => none)
+      | some (_, ⟨none, Δ⟩) =>
+        (match Γ[p.root]? with
+         | none => none
+         | some en =>
+           match en.ty.atPath P.decls p.path with
+           | some Ta =>
+             (match Ta.atDyn P.decls πs with
+              | some T =>
+                  if idx.length = πs.length ∧ πs ≠ [] then some (.ty T, ⟨none, Δ⟩) else none
+              | none => none)
+           | none => none)
       | none => none
   | .indexWrite p idx πs e =>
       match Γ[p.root]? with
@@ -283,10 +348,10 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
             (match Ta.atDyn P.decls πs with
              | some T =>
                (match check P R Γ e with
-                | some (T', Γ₁) =>
-                  if T' = T then
+                | some (c, ⟨some Γ₁, Δ₁⟩) =>
+                  if c.fits T then
                     (match checkIdx P R Γ₁ idx with
-                     | some (_, Γ₂) =>
+                     | some (_, ⟨some Γ₂, Δ₂⟩) =>
                        (match Γ₂[p.root]? with
                         | some en₁ =>
                           (match en₁.st.get p.path with
@@ -294,13 +359,16 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
                                if idx.length = πs.length ∧ πs ≠ [] ∧ u₁.fullyOwned ∧
                                    assignArrayOk P.decls en₁.st en₁.ty p.path ∧
                                    T.mult P.decls ≠ .linear then
-                                 some (.unit,
-                                   Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
+                                 some (.ty .unit,
+                                   ⟨some (Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned))),
+                                     Δ₂ ++ Δ₁⟩)
                                else none
                            | none => none)
                         | none => none)
+                     | some (_, ⟨none, Δ₂⟩) => some (.ty .unit, ⟨none, Δ₂ ++ Δ₁⟩)
                      | none => none)
                   else none
+                | some (_, ⟨none, Δ₁⟩) => some (.ty .unit, ⟨none, Δ₁⟩)
                 | none => none)
              | none => none)
           | _, _ => none
@@ -309,7 +377,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
       -- (@Drop-Copy) §5.3 below a dynamic index: exactly the read's check,
       -- at type `unit` (`Typed.indexDrop`).
       match checkIdx P R Γ idx with
-      | some (_, Γ₁) =>
+      | some (_, ⟨some Γ₁, Δ⟩) =>
         (match Γ₁[p.root]? with
          | none => none
          | some en =>
@@ -320,10 +388,21 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
                   if idx.length = πs.length ∧ πs ≠ [] ∧ u.fullyOwned ∧
                       T.mult P.decls = .copy ∧
                       declaredPrefix P.decls en.ty p.path = none ∧
-                      Ta.dynNoDeclared P.decls πs then some (.unit, Γ₁)
+                      Ta.dynNoDeclared P.decls πs then some (.ty .unit, ⟨some Γ₁, Δ⟩)
                   else none
               | none => none)
            | _, _ => none)
+      | some (_, ⟨none, Δ⟩) =>
+        (match Γ[p.root]? with
+         | none => none
+         | some en =>
+           match en.ty.atPath P.decls p.path with
+           | some Ta =>
+             (match Ta.atDyn P.decls πs with
+              | some _ =>
+                  if idx.length = πs.length ∧ πs ≠ [] then some (.ty .unit, ⟨none, Δ⟩) else none
+              | none => none)
+           | none => none)
       | none => none
   | .drop p =>
       match Γ[p.root]? with
@@ -335,29 +414,32 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
              | some u, some Td, some _T =>
                  if u.fullyOwned ∧ linearResidue P.decls Td πs = false ∧
                      noDtorPrefix P.decls en.ty p.path then
-                   some (.unit, Γ.set p.root (en.setSt (en.st.setAt πd .movedOut)))
+                   some (.ty .unit, ⟨some (Γ.set p.root (en.setSt (en.st.setAt πd .movedOut))), []⟩)
                  else none
              | _, _, _ => none)
         | none =>
             (match en.st.get p.path, en.ty.atPath P.decls p.path with
              | some u, some T =>
                  if T.mult P.decls = .copy then
-                   (if u.fullyOwned then some (.unit, Γ) else none)
+                   (if u.fullyOwned then some (.ty .unit, ⟨some Γ, []⟩) else none)
                  else
                    (if u.isOwned ∧ noDtorPrefix P.decls en.ty p.path ∧
                        (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) ∧
                        rootIdxOnly P.decls en.ty p.path then
-                      some (.unit, Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
+                      some (.ty .unit, ⟨some (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut))), []⟩)
                     else none)
              | _, _ => none)
   | .letIn m e₁ e₂ =>
       match check P R Γ e₁ with
-      | none => none
-      | some (T₁, Γ₁) =>
-        match check P R ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂ with
-        | some (T₂, en' :: Γ₂) =>
-            if residualLinear P.decls en'.st en'.ty then none else some (T₂, Γ₂)
-        | _ => none
+      | some (.ty T₁, ⟨some Γ₁, Δ₁⟩) =>
+        (match check P R ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂ with
+         | some (c₂, ⟨some (en' :: Γ₂), Δ₂⟩) =>
+             if residualLinear P.decls en'.st en'.ty then none
+             else some (c₂, ⟨some Γ₂, Δ₂ ++ Δ₁⟩)
+         | some (c₂, ⟨none, Δ₂⟩) => some (c₂, ⟨none, Δ₂ ++ Δ₁⟩)
+         | _ => none)
+      | some (_, ⟨none, Δ₁⟩) => some (.never, ⟨none, Δ₁⟩)
+      | _ => none
   | .assign p e =>
       match Γ[p.root]? with
       | none => none
@@ -366,135 +448,203 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
           match en₀.st.get p.path, en₀.ty.atPath P.decls p.path with
           | some _, some T =>
             (match check P R Γ e with
-             | some (T', Γ₁) =>
-               if T' = T then
+             | some (c, ⟨some Γ₁, Δ⟩) =>
+               if c.fits T then
                  (match Γ₁[p.root]? with
                   | some en₁ =>
                     (match en₁.st.get p.path with
                      | some u₁ =>
                          if assignArrayOk P.decls en₁.st en₁.ty p.path ∧
                              overwriteOk P.decls u₁ T then
-                           some (.unit,
-                             Γ₁.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
+                           some (.ty .unit,
+                             ⟨some (Γ₁.set p.root (en₁.setSt (en₁.st.setAt p.path .owned))), Δ⟩)
                          else none
                      | none => none)
                   | none => none)
                else none
+             | some (_, ⟨none, Δ⟩) => some (.ty .unit, ⟨none, Δ⟩)
              | none => none)
           | _, _ => none
         else none
   | .seq e₁ e₂ =>
       match check P R Γ e₁ with
-      | some (T₁, Γ₁) =>
+      | some (.ty T₁, ⟨some Γ₁, Δ₁⟩) =>
           if T₁.mult P.decls = .linear then none
-          else check P R Γ₁ e₂
-      | none => none
+          else
+            (match check P R Γ₁ e₂ with
+             | some (c₂, Ω₂) => some (c₂, Ω₂.add Δ₁)
+             | none => none)
+      | some (_, ⟨none, Δ₁⟩) => some (.never, ⟨none, Δ₁⟩)
+      | _ => none
   | .ite c e₁ e₂ =>
       match check P R Γ c with
-      | some (.bool, Γ₀) =>
+      | some (.ty .bool, ⟨some Γ₀, Δ₀⟩) =>
         (match check P R Γ₀ e₁, check P R Γ₀ e₂ with
-        | some (T₁, Γ₁), some (T₂, Γ₂) =>
-            if T₁ = T₂ then
-              match Ctx.join P.decls Γ₁ Γ₂ with
-              | some Γ' => some (T₁, Γ')
-              | none => none
-            else none
+        | some (c₁, Ω₁), some (c₂, Ω₂) =>
+            (match CTy.meet c₁ c₂ with
+             | some c' =>
+               (match Ctx.joinOpt P.decls Ω₁.norm Ω₂.norm with
+                | some o => some (c', ⟨o, Ω₁.brk ++ Ω₂.brk ++ Δ₀⟩)
+                | none => none)
+             | none => none)
         | _, _ => none)
+      | some (cc, ⟨none, Δ₀⟩) => if cc.fits .bool then some (.never, ⟨none, Δ₀⟩) else none
       | _ => none
   | .call f args =>
       match P.fns[f]? with
       | none => none
       | some fd =>
         match checkArgs P R Γ args (fd.params.map Param.ty) with
-        | some Γ' => some (fd.ret, Γ')
+        | some Ω => some (.ty fd.ret, Ω)
         | none => none
   | .ret e =>
       match check P R Γ e with
+      | some (c, ⟨some Γ₁, Δ⟩) =>
+          if c.fits R ∧ NoResidualLinear P.decls Γ₁ then some (.never, ⟨none, Δ⟩) else none
+      | some (c, ⟨none, Δ⟩) => if c.fits R then some (.never, ⟨none, Δ⟩) else none
       | none => none
-      | some (T, Γ₁) =>
-          if T = R ∧ NoResidualLinear P.decls Γ₁ then some (R, Γ₁) else none
 
 /-- (Call) §5.8's argument list as an algorithm: each argument is checked
 against its parameter's type with Σ threaded left to right, and the count must
-match (`4.10:3`, `4.10:4`). -/
-def checkArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Option Ctx
-  | Γ, [], [] => some Γ
+match (`4.10:3`, `4.10:4`). An argument that diverges stops the list there
+(§5.3's (Strict-Bottom)); the ones after it are not checked. -/
+def checkArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Option Out
+  | Γ, [], [] => some ⟨some Γ, []⟩
   | Γ, e :: es, T :: Ts =>
       match check P R Γ e with
-      | some (T', Γ₁) => if T' = T then checkArgs P R Γ₁ es Ts else none
+      | some (c, ⟨some Γ₁, Δ₁⟩) =>
+          if c.fits T then
+            (match checkArgs P R Γ₁ es Ts with
+             | some Ω => some (Ω.add Δ₁)
+             | none => none)
+          else none
+      | some (c, ⟨none, Δ₁⟩) =>
+          if c.fits T ∧ es.length = Ts.length then some ⟨none, Δ₁⟩ else none
       | none => none
   | _, _, _ => none
 
 /-- The index expressions of a place below a dynamic index, as an algorithm:
 each is checked at whatever integer type it has (`4.11:4`), left to right with
 Σ threaded, and their types are returned for `Typed.indexRead`/`indexWrite`'s
-`TypedArgs` premise. -/
-def checkIdx (P : Program) (R : Ty) : Ctx → List Expr → Option (List Ty × Ctx)
-  | Γ, [] => some ([], Γ)
+`TypedArgs` premise. An index that diverges stops the list (§5.3's
+(Strict-Bottom)); the unchecked indices after it are given its type, which is
+any integer type `Typed`'s `TypedArgs.consBot` accepts for an untyped
+member. -/
+def checkIdx (P : Program) (R : Ty) : Ctx → List Expr → Option (List Ty × Out)
+  | Γ, [] => some ([], ⟨some Γ, []⟩)
   | Γ, e :: es =>
       match check P R Γ e with
-      | some (.int w s, Γ₁) =>
+      | some (.ty (.int w s), ⟨some Γ₁, Δ₁⟩) =>
         (match checkIdx P R Γ₁ es with
-         | some (Ts, Γ₂) => some (.int w s :: Ts, Γ₂)
+         | some (Ts, Ω) => some (.int w s :: Ts, Ω.add Δ₁)
          | none => none)
+      | some (.ty (.int w s), ⟨none, Δ₁⟩) =>
+          some (.int w s :: es.map (fun _ => .int w s), ⟨none, Δ₁⟩)
       | _ => none
 
 /-- The type (Match) §5.5's arms must share, as the algorithm picks it: the
-**first** arm's, read under that arm's own payload locals. §5.5 states the
-premise as one type `T` for every arm and lets (Sub-Never) supply it for a
-diverging one, which an algorithm cannot do, so `check` fixes `T` here and
-compares the others against it — exactly what it does for `ite`'s two arms.
-
-The completeness this costs is **not** this function's and **not** positional.
-`check` concludes a `return`/`@panic` at the enclosing return type `R` and at
-the state in force, so a diverging arm is at `R` wherever it stands: first, it
-fixes `T := R` and the siblings are refused; last, the siblings fix `T` and it
-is refused. `match` carries the state half of the same choice as well — a
-diverging arm contributes its outgoing state to `Ctx.joinAll` where §5.7
-contributes `⊥`. Both costs are pre-existing, refused identically at `ite`, and
-the module docstring writes out a program for each. -/
+**first** arm's that has a type, read under that arm's own payload locals, or
+`never` when every arm diverges at `never`. §5.5 states the premise as one
+type `T` for every arm and lets (Sub-Never) supply it for a diverging one, so
+`check` fixes `T` here and compares the others against it — exactly what it
+does for `ite`'s two arms (`CTy.meet`). -/
 def firstArmTy (P : Program) (R : Ty) (Γ₀ : Ctx) :
-    List Expr → List (List Ty) → Option Ty
-  | e :: _, Ts :: _ => (check P R (armCtx Ts Γ₀) e).map Prod.fst
-  | _, _ => none
+    List Expr → List (List Ty) → CTy
+  | e :: es, Ts :: Tss =>
+      match check P R (armCtx Ts Γ₀) e with
+      | some (.ty T, _) => .ty T
+      | _ => firstArmTy P R Γ₀ es Tss
+  | _, _ => .never
 
 /-- (Match) §5.5's arm premises as an algorithm: every arm from the same
 post-scrutinee state `Γ₀`, each under its variant's payload locals (`armCtx`),
-each at the type `T` the first arm fixed, and each discharging §5.6 for the
-locals it pops. The result is one outgoing context per arm, in declaration
-order, which is what `Ctx.joinAll` then folds. A count mismatch between the arms
-and the variants is the last clause's `none` — `check` has already required the
-counts to agree, so no program reaches it. -/
-def checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (T : Ty) :
-    List Expr → List (List Ty) → Option (List Ctx)
-  | [], [] => some []
+each at the type `c` the first typed arm fixed, and each that continues
+discharging §5.6 for the locals it pops. The result is one optional outgoing
+context per arm — `none` for an arm that diverges — in declaration order, and
+the arms' deliveries, which is what `Ctx.joinOpts` then folds. A count
+mismatch between the arms and the variants is the last clause's `none` —
+`check` has already required the counts to agree, so no program reaches it. -/
+def checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (c : CTy) :
+    List Expr → List (List Ty) → Option (List (Option Ctx) × List Ctx)
+  | [], [] => some ([], [])
   | e :: es, Ts :: Tss =>
       match check P R (armCtx Ts Γ₀) e with
-      | some (T', Γb) =>
-          if T' = T ∧ NoResidualLinear P.decls (Γb.take Ts.length) then
-            (match checkArms P R Γ₀ T es Tss with
-             | some Γs => some (Γb.drop Ts.length :: Γs)
+      | some (c', ⟨some Γb, Δb⟩) =>
+          if c'.fitsC c ∧ NoResidualLinear P.decls (Γb.take Ts.length) then
+            (match checkArms P R Γ₀ c es Tss with
+             | some (os, Δs) => some (some (Γb.drop Ts.length) :: os, Δb ++ Δs)
+             | none => none)
+          else none
+      | some (c', ⟨none, Δb⟩) =>
+          if c'.fitsC c then
+            (match checkArms P R Γ₀ c es Tss with
+             | some (os, Δs) => some (none :: os, Δb ++ Δs)
              | none => none)
           else none
       | none => none
   | _, _ => none
 end
 
+/-- (helper) `check`'s result type `ty X` admits exactly `X`. -/
+theorem CTy.eq_of_fits {T' T : Ty} (h : (CTy.ty T').fits T = true) : T' = T := by
+  simpa [CTy.fits] using h
+
+/-- (helper) A type admits itself. -/
+theorem CTy.fits_self (T : Ty) : (CTy.ty T).fits T = true := by simp [CTy.fits]
+
+/-- (helper) `never` admits every type — (Sub-Never) §5.7. -/
+theorem CTy.fits_never (T : Ty) : CTy.never.fits T = true := rfl
+
+/-- (helper) `pick` chooses a type the checked type admits. -/
+theorem CTy.fits_pick (c : CTy) (d : Ty) : c.fits (c.pick d) = true := by
+  cases c <;> simp [CTy.fits, CTy.pick]
+
+/-- (helper) An arm whose type fits the one `firstArmTy` fixed admits every type
+that one admits. -/
+theorem CTy.fitsC_fits {c' c : CTy} {T : Ty} (h : c'.fitsC c = true) (hT : c.fits T = true) :
+    c'.fits T = true := by
+  cases c' <;> cases c <;> simp_all [CTy.fitsC, CTy.fits]
+
+/-- (helper) Two arms whose types meet both admit whatever their meet admits. -/
+theorem CTy.meet_fits {c₁ c₂ c' : CTy} {T : Ty} (h : CTy.meet c₁ c₂ = some c')
+    (hT : c'.fits T = true) : c₁.fits T = true ∧ c₂.fits T = true := by
+  cases c₁ with
+  | never =>
+      simp only [CTy.meet, Option.some.injEq] at h
+      subst h; exact ⟨rfl, hT⟩
+  | ty T₁ =>
+    cases c₂ with
+    | never =>
+        simp only [CTy.meet, Option.some.injEq] at h
+        subst h; exact ⟨hT, rfl⟩
+    | ty T₂ =>
+        simp only [CTy.meet] at h
+        split at h
+        · rename_i heq
+          simp only [Option.some.injEq] at h
+          subst h; subst heq; exact ⟨hT, hT⟩
+        · cases h
+
+/-- (helper) Close a `check_sound` case whose result type is an ordinary type:
+the only type it admits is that one. -/
+local macro "fin_ty" : tactic => `(tactic| (intro T hT; cases CTy.eq_of_fits hT))
+
 mutual
-/-- Every `check` acceptance is a real derivation of the §5 judgment, so the
-§7 theorems apply to whatever `check` accepts. -/
-theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
-    check P R Γ e = some (T, Γ') → Typed P R Γ e T Γ'
-  | .intLit w s n, Γ, T, Γ', h => by
+/-- Every `check` acceptance is a real derivation of the §5 judgment, at every
+type the result admits (a `never` result at every type, (Sub-Never) §5.7), so
+the §7 theorems apply to whatever `check` accepts. -/
+theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy} {Ω : Out},
+    check P R Γ e = some (c, Ω) → ∀ T, c.fits T = true → Typed P R Γ e T Ω
+  | .intLit w s n, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
-      · cases h; exact .intLit ‹_›
+      · cases h; fin_ty; exact .intLit ‹_›
       · cases h
-  | .boolLit b, Γ, T, Γ', h => by
-      simp only [check] at h; cases h; exact .boolLit
-  | .unitLit, Γ, T, Γ', h => by
-      simp only [check] at h; cases h; exact .unitLit
-  | .use pl, Γ, T, Γ', h => by
+  | .boolLit b, Γ, c, Ω, h => by
+      simp only [check] at h; cases h; fin_ty; exact .boolLit
+  | .unitLit, Γ, c, Ω, h => by
+      simp only [check] at h; cases h; fin_ty; exact .unitLit
+  | .use pl, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
       · cases h
@@ -507,7 +657,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
             · rename_i u Td T₀ hgd htd hty
               split at h
               · rename_i hprem
-                cases h
+                cases h; fin_ty
                 exact .useDeclared hen hplan hgd hprem.1 htd hprem.2.1 hty hprem.2.2
               · cases h
             · cases h
@@ -519,117 +669,174 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
               · rename_i hcopy
                 split at h
                 · rename_i hfo
-                  cases h
+                  cases h; fin_ty
                   exact .useCopy hen hg hfo hty hcopy hplan
                 · cases h
               · rename_i hncopy
                 split at h
                 · rename_i hprem
-                  cases h
+                  cases h; fin_ty
                   exact .useMove hen hg hprem.1 hty hncopy hprem.2.1 hplan hprem.2.2
                 · cases h
             · cases h
-  | .binop op e₁ e₂, Γ, T, Γ', h => by
+  | .binop op e₁ e₂, Γ, c, Ω, h => by
+      simp only [check] at h
+      cases h₁ : check P R Γ e₁ with
+      | none => simp [h₁] at h
+      | some r₁ =>
+        obtain ⟨c₁, o₁, Δ₁⟩ := r₁
+        cases c₁ with
+        | never => simp [h₁] at h
+        | ty T₁ =>
+          cases T₁ with
+          | int w s =>
+            cases o₁ with
+            | none =>
+                simp only [h₁] at h
+                split at h
+                · cases h; fin_ty
+                  exact .binopBot (check_sound e₁ h₁ _ (CTy.fits_self _)) ‹_›
+                · cases h
+            | some Γ₁ =>
+                simp only [h₁] at h
+                cases h₂ : check P R Γ₁ e₂ with
+                | none => simp [h₂] at h
+                | some r₂ =>
+                  obtain ⟨c₂, Ω₂⟩ := r₂
+                  cases c₂ with
+                  | never =>
+                      simp only [h₂] at h
+                      split at h
+                      · cases h; fin_ty
+                        exact .binop (check_sound e₁ h₁ _ (CTy.fits_self _))
+                          (check_sound e₂ h₂ _ rfl) ‹_›
+                      · cases h
+                  | ty T₂ =>
+                    cases T₂ with
+                    | int w' s' =>
+                        simp only [h₂] at h
+                        split at h
+                        · rename_i hws
+                          obtain ⟨rfl, rfl, hadm⟩ := hws
+                          cases h; fin_ty
+                          exact .binop (check_sound e₁ h₁ _ (CTy.fits_self _))
+                            (check_sound e₂ h₂ _ (CTy.fits_self _)) hadm
+                        · cases h
+                    | float _ | bool | unit | struct _ | enum _ | array _ _ => simp [h₂] at h
+          | float w =>
+            cases o₁ with
+            | none =>
+                simp only [h₁] at h
+                split at h
+                · cases h; fin_ty
+                  exact .floatBinopBot (check_sound e₁ h₁ _ (CTy.fits_self _)) ‹_›
+                · cases h
+            | some Γ₁ =>
+                simp only [h₁] at h
+                cases h₂ : check P R Γ₁ e₂ with
+                | none => simp [h₂] at h
+                | some r₂ =>
+                  obtain ⟨c₂, Ω₂⟩ := r₂
+                  cases c₂ with
+                  | never =>
+                      simp only [h₂] at h
+                      split at h
+                      · cases h; fin_ty
+                        exact .floatBinop (check_sound e₁ h₁ _ (CTy.fits_self _))
+                          (check_sound e₂ h₂ _ rfl) ‹_›
+                      · cases h
+                  | ty T₂ =>
+                    cases T₂ with
+                    | float w' =>
+                        simp only [h₂] at h
+                        split at h
+                        · rename_i hws
+                          obtain ⟨rfl, hadm⟩ := hws
+                          cases h; fin_ty
+                          exact .floatBinop (check_sound e₁ h₁ _ (CTy.fits_self _))
+                            (check_sound e₂ h₂ _ (CTy.fits_self _)) hadm
+                        · cases h
+                    | int _ _ | bool | unit | struct _ | enum _ | array _ _ => simp [h₂] at h
+          | bool | unit | struct _ | enum _ | array _ _ => simp [h₁] at h
+  | .floatLit w l, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
-      · rename_i w s Γ₁ h₁
-        split at h
-        · rename_i w' s' Γ₂ h₂
-          split at h
-          · rename_i hws
-            obtain ⟨hw, hs, hadm⟩ := hws
-            subst hw; subst hs
-            cases h
-            exact .binop (check_sound e₁ h₁) (check_sound e₂ h₂) hadm
-          · cases h
-        · cases h
-      · rename_i w Γ₁ h₁
-        split at h
-        · rename_i w' Γ₂ h₂
-          split at h
-          · rename_i hws
-            obtain ⟨hw, hadm⟩ := hws
-            subst hw
-            cases h
-            exact .floatBinop (check_sound e₁ h₁) (check_sound e₂ h₂) hadm
-          · cases h
-        · cases h
+      · cases h; fin_ty; exact .floatLit ‹_›
       · cases h
-  | .floatLit w l, Γ, T, Γ', h => by
+  | .fintrin (.intToFloat w) e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
-      · cases h; exact .floatLit ‹_›
+      · cases h; fin_ty; exact .intToFloat (check_sound e ‹_› _ (CTy.fits_self _))
       · cases h
-  | .fintrin (.intToFloat w) e, Γ, T, Γ', h => by
-      simp only [check] at h
-      split at h
-      · cases h; exact .intToFloat (check_sound e ‹_›)
-      · cases h
-  | .fintrin (.floatToInt w s) e, Γ, T, Γ', h => by
+  | .fintrin (.floatToInt w s) e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
       · split at h
-        · cases h; exact .floatIntrin (check_sound e ‹_›) (by simpa using ‹_›)
+        · cases h; fin_ty
+          exact .floatIntrin (check_sound e ‹_› _ (CTy.fits_self _)) (by simpa using ‹_›)
         · cases h
       · cases h
-  | .fintrin (.floatCast w) e, Γ, T, Γ', h => by
+  | .fintrin (.floatCast w) e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
       · split at h
-        · cases h; exact .floatIntrin (check_sound e ‹_›) (by simpa using ‹_›)
+        · cases h; fin_ty
+          exact .floatIntrin (check_sound e ‹_› _ (CTy.fits_self _)) (by simpa using ‹_›)
         · cases h
       · cases h
-  | .fintrin (.roundOp k) e, Γ, T, Γ', h => by
+  | .fintrin (.roundOp k) e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
       · split at h
-        · cases h; exact .floatIntrin (check_sound e ‹_›) (by simpa using ‹_›)
+        · cases h; fin_ty
+          exact .floatIntrin (check_sound e ‹_› _ (CTy.fits_self _)) (by simpa using ‹_›)
         · cases h
       · cases h
-  | .unop .neg e, Γ, T, Γ', h => by
+  | .unop .neg e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
-      · cases h; exact .neg (check_sound e ‹_›)
-      · cases h; exact .floatNeg (check_sound e ‹_›)
+      · cases h; fin_ty; exact .neg (check_sound e ‹_› _ (CTy.fits_self _))
+      · cases h; fin_ty; exact .floatNeg (check_sound e ‹_› _ (CTy.fits_self _))
       · cases h
-  | .unop .not e, Γ, T, Γ', h => by
+  | .unop .not e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
-      · cases h; exact .notOp (check_sound e ‹_›)
+      · cases h; fin_ty; exact .notOp (check_sound e ‹_› _ (CTy.fits_self _))
       · cases h
-  | .unop .bitnot e, Γ, T, Γ', h => by
+  | .unop .bitnot e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
-      · cases h; exact .bitnot (check_sound e ‹_›)
+      · cases h; fin_ty; exact .bitnot (check_sound e ‹_› _ (CTy.fits_self _))
       · cases h
-  | .intCast w s e, Γ, T, Γ', h => by
+  | .intCast w s e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
-      · cases h; exact .intCast (check_sound e ‹_›)
+      · cases h; fin_ty; exact .intCast (check_sound e ‹_› _ (CTy.fits_self _))
       · cases h
-  | .panic msg, Γ, T, Γ', h => by
+  | .panic msg, Γ, c, Ω, h => by
       simp only [check] at h
       cases h
-      exact .panic rfl
-  | .dbg e, Γ, T, Γ', h => by
+      intro T _
+      exact .panic
+  | .dbg e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
-      · rename_i T₁ Γ₁ h₁
+      · rename_i T₁ Ω₁ h₁
         split at h
-        · cases h; exact .dbg (check_sound e h₁) ‹_›
+        · cases h; fin_ty; exact .dbg (check_sound e h₁ _ (CTy.fits_self _)) ‹_›
         · cases h
       · cases h
-  | .mkStruct s args, Γ, T, Γ', h => by
+  | .mkStruct s args, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
       · cases h
       · rename_i sd hsd
         split at h
-        · rename_i Γ₁ hargs
-          cases h
+        · rename_i Ω₁ hargs
+          cases h; fin_ty
           exact .mkStruct hsd (checkArgs_sound args hargs)
         · cases h
-  | .mkEnum e k args, Γ, T, Γ', h => by
+  | .mkEnum e k args, Γ, c, Ω, h => by
       simp only [check] at h
       cases hed : P.decls.enums[e]? with
       | none => simp only [hed] at h; cases h
@@ -641,89 +848,119 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
           simp only [hv] at h
           cases hargs : checkArgs P R Γ args Ts with
           | none => simp only [hargs] at h; cases h
-          | some Γ₁ =>
+          | some Ω₁ =>
               simp only [hargs] at h
-              cases h
+              cases h; fin_ty
               exact .mkEnum hed hv (checkArgs_sound args hargs)
-  | .«match» scrut arms, Γ, T, Γ', h => by
+  | .«match» scrut arms, Γ, c, Ω, h => by
       simp only [check] at h
       cases hscrut : check P R Γ scrut with
-      | none => simp only [hscrut] at h; cases h
-      | some p =>
-        obtain ⟨Tsc, Γ₀⟩ := p
-        simp only [hscrut] at h
-        cases Tsc with
-        | int w sg => simp at h
-        | float w => simp at h
-        | bool => simp at h
-        | unit => simp at h
-        | struct s' => simp at h
-        | array Te n => simp at h
-        | enum e =>
-          simp only [] at h
-          cases hed : P.decls.enums[e]? with
-          | none => simp only [hed] at h; cases h
-          | some ed =>
-            simp only [hed] at h
-            by_cases hlen : arms.length = ed.variants.length
-            · simp only [if_pos hlen] at h
-              cases hfirst : firstArmTy P R Γ₀ arms ed.variants with
-              | none => simp only [hfirst] at h; cases h
-              | some T₁ =>
-                simp only [hfirst] at h
-                cases harms : checkArms P R Γ₀ T₁ arms ed.variants with
-                | none => simp only [harms] at h; cases h
-                | some Γs =>
-                  simp only [harms] at h
-                  cases hjoin : Ctx.joinAll P.decls Γs with
-                  | none => simp only [hjoin] at h; cases h
-                  | some Γj =>
-                      simp only [hjoin] at h
-                      cases h
-                      exact .«match» (check_sound scrut hscrut) hed hlen
-                        (checkArms_sound arms harms) hjoin
-            · simp only [if_neg hlen] at h; cases h
-  | .mkArray Te args, Γ, T, Γ', h => by
+      | none => simp [hscrut] at h
+      | some r =>
+        obtain ⟨csc, o₀, Δ₀⟩ := r
+        cases csc with
+        | never =>
+          cases o₀ with
+          | some Γ₀ => simp [hscrut] at h
+          | none =>
+              simp only [hscrut, Option.some.injEq, Prod.mk.injEq] at h
+              obtain ⟨rfl, rfl⟩ := h
+              intro T _
+              exact .matchBot (e := 0) (check_sound scrut hscrut _ rfl)
+        | ty Tsc =>
+          cases Tsc with
+          | int _ _ | float _ | bool | unit | struct _ | array _ _ => simp [hscrut] at h
+          | enum e =>
+            cases o₀ with
+            | none =>
+                simp only [hscrut, Option.some.injEq, Prod.mk.injEq] at h
+                obtain ⟨rfl, rfl⟩ := h
+                intro T _
+                exact .matchBot (check_sound scrut hscrut _ (CTy.fits_self _))
+            | some Γ₀ =>
+              simp only [hscrut] at h
+              cases hed : P.decls.enums[e]? with
+              | none => simp only [hed] at h; cases h
+              | some ed =>
+                simp only [hed] at h
+                by_cases hlen : arms.length = ed.variants.length
+                · simp only [if_pos hlen] at h
+                  cases harms : checkArms P R Γ₀ (firstArmTy P R Γ₀ arms ed.variants) arms
+                      ed.variants with
+                  | none => simp only [harms] at h; cases h
+                  | some r =>
+                    obtain ⟨os, Δs⟩ := r
+                    simp only [harms] at h
+                    cases hjoin : Ctx.joinOpts P.decls os with
+                    | none => simp only [hjoin] at h; cases h
+                    | some o =>
+                        simp only [hjoin, Option.some.injEq, Prod.mk.injEq] at h
+                        obtain ⟨rfl, rfl⟩ := h
+                        intro T hT
+                        exact .«match» (check_sound scrut hscrut _ (CTy.fits_self _)) hed hlen
+                          (checkArms_sound arms harms T hT) hjoin
+                · simp only [if_neg hlen] at h; cases h
+  | .mkArray Te args, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
-      · rename_i Γ₁ hargs
-        cases h
+      · rename_i Ω₁ hargs
+        cases h; fin_ty
         exact .mkArray (checkArgs_sound args hargs)
       · cases h
-  | .repeatArray Te e n, Γ, T, Γ', h => by
+  | .repeatArray Te e n, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
-      · rename_i T' Γ₁ hchk
+      · rename_i T' Ω₁ hchk
         split at h
         · rename_i hprem
           obtain ⟨hT, hcopy⟩ := hprem
           subst hT
-          cases h
-          exact .repeatArray (check_sound e hchk) hcopy
+          cases h; fin_ty
+          exact .repeatArray (check_sound e hchk _ (CTy.fits_self _)) hcopy
         · cases h
       · cases h
-  | .indexRead pl idx πs, Γ, T, Γ', h => by
+  | .indexRead pl idx πs, Γ, c, Ω, h => by
       simp only [check] at h
-      split at h
-      · rename_i Ts Γ₁ hidx
+      cases hidx : checkIdx P R Γ idx with
+      | none => simp [hidx] at h
+      | some r =>
+        obtain ⟨Ts, o₁, Δ⟩ := r
         obtain ⟨hta, hint⟩ := checkIdx_sound idx hidx
-        split at h
-        · cases h
-        · rename_i en hen
+        cases o₁ with
+        | some Γ₁ =>
+          simp only [hidx] at h
           split at h
-          · rename_i u Ta hg hty
+          · cases h
+          · rename_i en hen
             split at h
-            · rename_i T₀ hdyn
+            · rename_i u Ta hg hty
               split at h
-              · rename_i hprem
-                obtain ⟨hlen, hne, hfo, hcopy, hplan, hnd⟩ := hprem
-                cases h
-                exact .indexRead hta hint hlen hne hen hg hfo hty hdyn hcopy hplan hnd
+              · rename_i T₀ hdyn
+                split at h
+                · rename_i hprem
+                  obtain ⟨hlen, hne, hfo, hcopy, hplan, hnd⟩ := hprem
+                  cases h; fin_ty
+                  exact .indexRead hta hint hlen hne hen hg hfo hty hdyn hcopy hplan hnd
+                · cases h
               · cases h
             · cases h
+        | none =>
+          simp only [hidx] at h
+          split at h
           · cases h
-      · cases h
-  | .indexWrite pl idx πs e, Γ, T, Γ', h => by
+          · rename_i en hen
+            split at h
+            · rename_i Ta hty
+              split at h
+              · rename_i T₀ hdyn
+                split at h
+                · rename_i hprem
+                  cases h; fin_ty
+                  exact .indexReadBot hta hint hprem.1 hprem.2 hen hty hdyn
+                · cases h
+              · cases h
+            · cases h
+  | .indexWrite pl idx πs e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
       · cases h
@@ -734,57 +971,93 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
           · rename_i u₀ Ta hg₀ hty₀
             split at h
             · rename_i T₀ hdyn
-              split at h
-              · rename_i T' Γ₁ hchk
-                split at h
-                · rename_i hT
-                  subst hT
+              cases hchk : check P R Γ e with
+              | none => simp [hchk] at h
+              | some r =>
+                obtain ⟨ce, o₁, Δ₁⟩ := r
+                cases o₁ with
+                | none =>
+                    simp only [hchk, Option.some.injEq, Prod.mk.injEq] at h
+                    obtain ⟨rfl, rfl⟩ := h
+                    fin_ty
+                    exact .indexWriteBotRhs (check_sound e hchk _ (CTy.fits_pick ce T₀))
+                | some Γ₁ =>
+                  simp only [hchk] at h
                   split at h
-                  · rename_i Ts Γ₂ hidx
-                    obtain ⟨hta, hint⟩ := checkIdx_sound idx hidx
-                    split at h
-                    · rename_i en₁ hget₁
-                      split at h
-                      · rename_i u₁ hg₁
+                  · rename_i hT
+                    cases hidx : checkIdx P R Γ₁ idx with
+                    | none => simp [hidx] at h
+                    | some r₂ =>
+                      obtain ⟨Ts, o₂, Δ₂⟩ := r₂
+                      obtain ⟨hta, hint⟩ := checkIdx_sound idx hidx
+                      cases o₂ with
+                      | none =>
+                          simp only [hidx, Option.some.injEq, Prod.mk.injEq] at h
+                          obtain ⟨rfl, rfl⟩ := h
+                          fin_ty
+                          exact .indexWriteBotIdx hget₀ hty₀ hdyn (check_sound e hchk _ hT) hta hint
+                      | some Γ₂ =>
+                        simp only [hidx] at h
                         split at h
-                        · rename_i hpost
-                          obtain ⟨hlen, hne, hfo, harr, hnl⟩ := hpost
-                          cases h
-                          exact .indexWrite hget₀ hmu hg₀ hty₀ hdyn hlen hne
-                            (check_sound e hchk) hta hint hget₁ hg₁ hfo harr hnl
+                        · rename_i en₁ hget₁
+                          split at h
+                          · rename_i u₁ hg₁
+                            split at h
+                            · rename_i hpost
+                              obtain ⟨hlen, hne, hfo, harr, hnl⟩ := hpost
+                              cases h; fin_ty
+                              exact .indexWrite hget₀ hmu hg₀ hty₀ hdyn hlen hne
+                                (check_sound e hchk _ hT) hta hint hget₁ hg₁ hfo harr hnl
+                            · cases h
+                          · cases h
                         · cases h
-                      · cases h
-                    · cases h
                   · cases h
+            · cases h
+          · cases h
+        · cases h
+  | .indexDrop pl idx πs, Γ, c, Ω, h => by
+      simp only [check] at h
+      cases hidx : checkIdx P R Γ idx with
+      | none => simp [hidx] at h
+      | some r =>
+        obtain ⟨Ts, o₁, Δ⟩ := r
+        obtain ⟨hta, hint⟩ := checkIdx_sound idx hidx
+        cases o₁ with
+        | some Γ₁ =>
+          simp only [hidx] at h
+          split at h
+          · cases h
+          · rename_i en hen
+            split at h
+            · rename_i u Ta hg hty
+              split at h
+              · rename_i T₀ hdyn
+                split at h
+                · rename_i hprem
+                  obtain ⟨hlen, hne, hfo, hcopy, hplan, hnd⟩ := hprem
+                  cases h; fin_ty
+                  exact .indexDrop
+                    (.indexRead hta hint hlen hne hen hg hfo hty hdyn hcopy hplan hnd)
                 · cases h
               · cases h
             · cases h
-          · cases h
-        · cases h
-
-  | .indexDrop pl idx πs, Γ, T, Γ', h => by
-      simp only [check] at h
-      split at h
-      · rename_i Ts Γ₁ hidx
-        obtain ⟨hta, hint⟩ := checkIdx_sound idx hidx
-        split at h
-        · cases h
-        · rename_i en hen
+        | none =>
+          simp only [hidx] at h
           split at h
-          · rename_i u Ta hg hty
+          · cases h
+          · rename_i en hen
             split at h
-            · rename_i T₀ hdyn
+            · rename_i Ta hty
               split at h
-              · rename_i hprem
-                obtain ⟨hlen, hne, hfo, hcopy, hplan, hnd⟩ := hprem
-                cases h
-                exact .indexDrop
-                  (.indexRead hta hint hlen hne hen hg hfo hty hdyn hcopy hplan hnd)
+              · rename_i T₀ hdyn
+                split at h
+                · rename_i hprem
+                  cases h; fin_ty
+                  exact .indexDrop (.indexReadBot hta hint hprem.1 hprem.2 hen hty hdyn)
+                · cases h
               · cases h
             · cases h
-          · cases h
-      · cases h
-  | .drop pl, Γ, T, Γ', h => by
+  | .drop pl, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
       · cases h
@@ -797,7 +1070,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
             · rename_i u Td T₀ hgd htd hty
               split at h
               · rename_i hprem
-                cases h
+                cases h; fin_ty
                 exact .dropDeclared hen hplan hgd hprem.1 htd hprem.2.1 hty hprem.2.2
               · cases h
             · cases h
@@ -809,29 +1082,58 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
               · rename_i hcopy
                 split at h
                 · rename_i hfo
-                  cases h
+                  cases h; fin_ty
                   exact .dropCopy hen hg hfo hty hcopy hplan
                 · cases h
               · rename_i hncopy
                 split at h
                 · rename_i hprem
-                  cases h
+                  cases h; fin_ty
                   exact .dropRes hen hg hprem.1 hty hncopy hprem.2.1 hplan hprem.2.2.1
                     hprem.2.2.2
                 · cases h
             · cases h
-  | .letIn m e₁ e₂, Γ, T, Γ', h => by
+  | .letIn m e₁ e₂, Γ, c, Ω, h => by
       simp only [check] at h
-      split at h
-      · cases h
-      · split at h
-        · split at h
-          · cases h
-          · cases h
-            exact .letIn (check_sound e₁ ‹_›) (check_sound e₂ ‹_›)
-              ((Bool.not_eq_true _).mp ‹_›)
-        · cases h
-  | .assign pl e, Γ, T, Γ', h => by
+      cases h₁ : check P R Γ e₁ with
+      | none => simp [h₁] at h
+      | some r₁ =>
+        obtain ⟨c₁, o₁, Δ₁⟩ := r₁
+        cases o₁ with
+        | none =>
+            simp only [h₁, Option.some.injEq, Prod.mk.injEq] at h
+            obtain ⟨rfl, rfl⟩ := h
+            intro T _
+            exact .letBot (check_sound e₁ h₁ _ (CTy.fits_pick c₁ .unit))
+        | some Γ₁ =>
+          cases c₁ with
+          | never => simp [h₁] at h
+          | ty T₁ =>
+            simp only [h₁] at h
+            cases h₂ : check P R ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂ with
+            | none => simp [h₂] at h
+            | some r₂ =>
+              obtain ⟨c₂, o₂, Δ₂⟩ := r₂
+              cases o₂ with
+              | none =>
+                  simp only [h₂, Option.some.injEq, Prod.mk.injEq] at h
+                  obtain ⟨rfl, rfl⟩ := h
+                  intro T hT
+                  exact .letInDiv (check_sound e₁ h₁ _ (CTy.fits_self _)) (check_sound e₂ h₂ T hT)
+              | some Γb =>
+                cases Γb with
+                | nil => simp [h₂] at h
+                | cons en' Γ₂ =>
+                  simp only [h₂] at h
+                  split at h
+                  · cases h
+                  · rename_i hres
+                    simp only [Option.some.injEq, Prod.mk.injEq] at h
+                    obtain ⟨rfl, rfl⟩ := h
+                    intro T hT
+                    exact .letIn (check_sound e₁ h₁ _ (CTy.fits_self _)) (check_sound e₂ h₂ T hT)
+                      ((Bool.not_eq_true _).mp hres)
+  | .assign pl e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
       · cases h
@@ -840,143 +1142,272 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
         · rename_i hmu
           split at h
           · rename_i u₀ T₀ hg₀ hty₀
-            split at h
-            · rename_i T' Γ₁ hchk
-              split at h
-              · rename_i hT
-                subst hT
+            cases hchk : check P R Γ e with
+            | none => simp [hchk] at h
+            | some r =>
+              obtain ⟨ce, o₁, Δ⟩ := r
+              cases o₁ with
+              | none =>
+                  simp only [hchk, Option.some.injEq, Prod.mk.injEq] at h
+                  obtain ⟨rfl, rfl⟩ := h
+                  fin_ty
+                  exact .assignBot (check_sound e hchk _ (CTy.fits_pick ce T₀))
+              | some Γ₁ =>
+                simp only [hchk] at h
                 split at h
-                · rename_i en₁ hget₁
+                · rename_i hT
                   split at h
-                  · rename_i u₁ hg₁
+                  · rename_i en₁ hget₁
                     split at h
-                    · rename_i hover
-                      cases h
-                      exact .assign hget₀ hmu hg₀ hty₀ (check_sound e hchk) hget₁ hg₁
-                        hover.1 (overwriteOk_iff.mp hover.2)
+                    · rename_i u₁ hg₁
+                      split at h
+                      · rename_i hover
+                        cases h; fin_ty
+                        exact .assign hget₀ hmu hg₀ hty₀ (check_sound e hchk _ hT) hget₁ hg₁
+                          hover.1 (overwriteOk_iff.mp hover.2)
+                      · cases h
                     · cases h
                   · cases h
                 · cases h
-              · cases h
-            · cases h
           · cases h
         · cases h
-  | .seq e₁ e₂, Γ, T, Γ', h => by
+  | .seq e₁ e₂, Γ, c, Ω, h => by
       simp only [check] at h
-      split at h
-      · split at h
-        · cases h
-        · exact .seq (check_sound e₁ ‹_›) ‹_› (check_sound e₂ h)
-      · cases h
-  | .ite c e₁ e₂, Γ, T, Γ', h => by
-      simp only [check] at h
-      split at h
-      · rename_i Γ₀ hcond
-        split at h
-        · rename_i T₁ Γ₁ T₂ Γ₂ h₁ h₂
-          split at h
-          · rename_i hT
+      cases h₁ : check P R Γ e₁ with
+      | none => simp [h₁] at h
+      | some r₁ =>
+        obtain ⟨c₁, o₁, Δ₁⟩ := r₁
+        cases o₁ with
+        | none =>
+            simp only [h₁, Option.some.injEq, Prod.mk.injEq] at h
+            obtain ⟨rfl, rfl⟩ := h
+            intro T _
+            exact .seqBot (check_sound e₁ h₁ _ (CTy.fits_pick c₁ .unit))
+        | some Γ₁ =>
+          cases c₁ with
+          | never => simp [h₁] at h
+          | ty T₁ =>
+            simp only [h₁] at h
             split at h
-            · rename_i Γj hjoin
-              cases h
-              subst hT
-              exact .ite (check_sound c hcond) (check_sound e₁ h₁) (check_sound e₂ h₂) hjoin
             · cases h
-          · cases h
-        · cases h
-      · cases h
-  | .call f args, Γ, T, Γ', h => by
+            · rename_i hnl
+              cases h₂ : check P R Γ₁ e₂ with
+              | none => simp [h₂] at h
+              | some r₂ =>
+                  obtain ⟨c₂, Ω₂⟩ := r₂
+                  simp only [h₂, Option.some.injEq, Prod.mk.injEq] at h
+                  obtain ⟨rfl, rfl⟩ := h
+                  intro T hT
+                  exact .seq (check_sound e₁ h₁ _ (CTy.fits_self _)) hnl (check_sound e₂ h₂ T hT)
+  | .ite cnd e₁ e₂, Γ, c, Ω, h => by
+      simp only [check] at h
+      cases hc : check P R Γ cnd with
+      | none => simp [hc] at h
+      | some r₀ =>
+        obtain ⟨cc, o₀, Δ₀⟩ := r₀
+        cases o₀ with
+        | none =>
+            simp only [hc] at h
+            split at h
+            · rename_i hb
+              simp only [Option.some.injEq, Prod.mk.injEq] at h
+              obtain ⟨rfl, rfl⟩ := h
+              intro T _
+              exact .iteBot (check_sound cnd hc _ hb)
+            · cases h
+        | some Γ₀ =>
+          cases cc with
+          | never => simp [hc] at h
+          | ty Tc =>
+            cases Tc with
+            | int _ _ | float _ | unit | struct _ | enum _ | array _ _ => simp [hc] at h
+            | bool =>
+              simp only [hc] at h
+              cases h₁ : check P R Γ₀ e₁ with
+              | none => simp [h₁] at h
+              | some r₁ =>
+                cases h₂ : check P R Γ₀ e₂ with
+                | none => simp [h₁, h₂] at h
+                | some r₂ =>
+                  obtain ⟨c₁, Ω₁⟩ := r₁
+                  obtain ⟨c₂, Ω₂⟩ := r₂
+                  simp only [h₁, h₂] at h
+                  cases hm : CTy.meet c₁ c₂ with
+                  | none => simp [hm] at h
+                  | some c' =>
+                    simp only [hm] at h
+                    cases hj : Ctx.joinOpt P.decls Ω₁.norm Ω₂.norm with
+                    | none => simp [hj] at h
+                    | some o =>
+                        simp only [hj, Option.some.injEq, Prod.mk.injEq] at h
+                        obtain ⟨rfl, rfl⟩ := h
+                        intro T hT
+                        obtain ⟨hT₁, hT₂⟩ := CTy.meet_fits hm hT
+                        exact .ite (check_sound cnd hc _ (CTy.fits_self _))
+                          (check_sound e₁ h₁ T hT₁) (check_sound e₂ h₂ T hT₂) hj
+  | .call f args, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
       · cases h
       · rename_i fd hfd
         split at h
-        · rename_i Γ₁ hargs
-          cases h
+        · rename_i Ω₁ hargs
+          cases h; fin_ty
           exact .call hfd (checkArgs_sound args hargs)
         · cases h
-  | .ret e, Γ, T, Γ', h => by
+  | .ret e, Γ, c, Ω, h => by
       simp only [check] at h
-      split at h
-      · cases h
-      · rename_i T₁ Γ₁ hchk
-        split at h
-        · rename_i hcond
-          cases h
-          obtain ⟨hT, hnl⟩ := hcond
-          subst hT
-          exact .ret (check_sound e hchk) hnl rfl
-        · cases h
+      cases hchk : check P R Γ e with
+      | none => simp [hchk] at h
+      | some r =>
+        obtain ⟨ce, o₁, Δ⟩ := r
+        cases o₁ with
+        | none =>
+            simp only [hchk] at h
+            split at h
+            · rename_i hR
+              simp only [Option.some.injEq, Prod.mk.injEq] at h
+              obtain ⟨rfl, rfl⟩ := h
+              intro T _
+              exact .retBot (check_sound e hchk R hR)
+            · cases h
+        | some Γ₁ =>
+            simp only [hchk] at h
+            split at h
+            · rename_i hcond
+              simp only [Option.some.injEq, Prod.mk.injEq] at h
+              obtain ⟨rfl, rfl⟩ := h
+              intro T _
+              exact .ret (check_sound e hchk R hcond.1) hcond.2
+            · cases h
 
 /-- Every `checkIdx` acceptance is a real index-list derivation at integer
 types (`4.11:4`) (helper). -/
-theorem checkIdx_sound {P : Program} {R : Ty} : ∀ (es : List Expr) {Γ : Ctx} {Ts Γ'},
-    checkIdx P R Γ es = some (Ts, Γ') → TypedArgs P R Γ es Ts Γ' ∧ Ts.all Ty.isInt = true
-  | [], Γ, Ts, Γ', h => by
+theorem checkIdx_sound {P : Program} {R : Ty} : ∀ (es : List Expr) {Γ : Ctx} {Ts Ω},
+    checkIdx P R Γ es = some (Ts, Ω) → TypedArgs P R Γ es Ts Ω ∧ Ts.all Ty.isInt = true
+  | [], Γ, Ts, Ω, h => by
       simp only [checkIdx, Option.some.injEq, Prod.mk.injEq] at h
       obtain ⟨rfl, rfl⟩ := h
       exact ⟨.nil, rfl⟩
-  | e :: es, Γ, Ts, Γ', h => by
+  | e :: es, Γ, Ts, Ω, h => by
       simp only [checkIdx] at h
-      split at h
-      · rename_i w sg Γ₁ hchk
-        split at h
-        · rename_i Ts' Γ₂ hrest
-          simp only [Option.some.injEq, Prod.mk.injEq] at h
-          obtain ⟨rfl, rfl⟩ := h
-          obtain ⟨hta, hint⟩ := checkIdx_sound es hrest
-          exact ⟨.cons (check_sound e hchk) hta, by simp [Ty.isInt, hint]⟩
-        · cases h
-      · cases h
+      cases hchk : check P R Γ e with
+      | none => simp [hchk] at h
+      | some r =>
+        obtain ⟨ce, o₁, Δ₁⟩ := r
+        cases ce with
+        | never => simp [hchk] at h
+        | ty T₁ =>
+          cases T₁ with
+          | float _ | bool | unit | struct _ | enum _ | array _ _ => simp [hchk] at h
+          | int w sg =>
+            cases o₁ with
+            | none =>
+                simp only [hchk, Option.some.injEq, Prod.mk.injEq] at h
+                obtain ⟨rfl, rfl⟩ := h
+                refine ⟨.consBot (check_sound e hchk _ (CTy.fits_self _)) (by simp), ?_⟩
+                simp [Ty.isInt]
+            | some Γ₁ =>
+                simp only [hchk] at h
+                cases hrest : checkIdx P R Γ₁ es with
+                | none => simp [hrest] at h
+                | some r' =>
+                  obtain ⟨Ts', Ω'⟩ := r'
+                  simp only [hrest, Option.some.injEq, Prod.mk.injEq] at h
+                  obtain ⟨rfl, rfl⟩ := h
+                  obtain ⟨hta, hint⟩ := checkIdx_sound es hrest
+                  exact ⟨.cons (check_sound e hchk _ (CTy.fits_self _)) hta,
+                    by simp [Ty.isInt, hint]⟩
 
-/-- Every `checkArms` acceptance is a real (Match) §5.5 arm-list derivation. -/
-theorem checkArms_sound {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty} :
-    ∀ (es : List Expr) {Tss : List (List Ty)} {Γs : List Ctx},
-    checkArms P R Γ₀ T es Tss = some Γs → TypedArms P R Γ₀ es Tss T Γs
-  | [], Tss, Γs, h => by
+/-- Every `checkArms` acceptance is a real (Match) §5.5 arm-list derivation, at
+every type the arms' fixed type admits. -/
+theorem checkArms_sound {P : Program} {R : Ty} {Γ₀ : Ctx} {c : CTy} :
+    ∀ (es : List Expr) {Tss : List (List Ty)} {os : List (Option Ctx)} {Δs : List Ctx},
+    checkArms P R Γ₀ c es Tss = some (os, Δs) → ∀ T, c.fits T = true →
+      TypedArms P R Γ₀ es Tss T os Δs
+  | [], Tss, os, Δs, h => by
       cases Tss with
-      | nil => simp only [checkArms] at h; cases h; exact .noArms
-      | cons _ _ => simp only [checkArms] at h; simp at h
-  | e :: es, Tss, Γs, h => by
+      | nil =>
+          simp only [checkArms, Option.some.injEq, Prod.mk.injEq] at h
+          obtain ⟨rfl, rfl⟩ := h
+          intro T _; exact .noArms
+      | cons _ _ => simp [checkArms] at h
+  | e :: es, Tss, os, Δs, h => by
       cases Tss with
-      | nil => simp only [checkArms] at h; simp at h
+      | nil => simp [checkArms] at h
       | cons Ts Tss' =>
           simp only [checkArms] at h
-          split at h
-          · rename_i T' Γb hchk
-            split at h
-            · rename_i hcond
-              obtain ⟨hT, hres⟩ := hcond
-              subst hT
-              split at h
-              · rename_i Γs' harms
-                cases h
-                exact .arm (check_sound e hchk) hres (checkArms_sound es harms)
-              · cases h
-            · cases h
-          · cases h
+          cases hchk : check P R (armCtx Ts Γ₀) e with
+          | none => simp [hchk] at h
+          | some r =>
+            obtain ⟨c', o, Δb⟩ := r
+            cases o with
+            | some Γb =>
+                simp only [hchk] at h
+                split at h
+                · rename_i hcond
+                  cases hrest : checkArms P R Γ₀ c es Tss' with
+                  | none => simp [hrest] at h
+                  | some r' =>
+                    obtain ⟨os', Δs'⟩ := r'
+                    simp only [hrest, Option.some.injEq, Prod.mk.injEq] at h
+                    obtain ⟨rfl, rfl⟩ := h
+                    intro T hT
+                    exact .arm (check_sound e hchk T (CTy.fitsC_fits hcond.1 hT)) hcond.2
+                      (checkArms_sound es hrest T hT)
+                · cases h
+            | none =>
+                simp only [hchk] at h
+                split at h
+                · rename_i hcond
+                  cases hrest : checkArms P R Γ₀ c es Tss' with
+                  | none => simp [hrest] at h
+                  | some r' =>
+                    obtain ⟨os', Δs'⟩ := r'
+                    simp only [hrest, Option.some.injEq, Prod.mk.injEq] at h
+                    obtain ⟨rfl, rfl⟩ := h
+                    intro T hT
+                    exact .armDiv (check_sound e hchk T (CTy.fitsC_fits hcond hT))
+                      (checkArms_sound es hrest T hT)
+                · cases h
 
 /-- Every `checkArgs` acceptance is a real (Call) §5.8 argument-list
 derivation. -/
-theorem checkArgs_sound {P : Program} {R : Ty} : ∀ (es : List Expr) {Γ : Ctx} {Ts Γ'},
-    checkArgs P R Γ es Ts = some Γ' → TypedArgs P R Γ es Ts Γ'
-  | [], Γ, Ts, Γ', h => by
+theorem checkArgs_sound {P : Program} {R : Ty} : ∀ (es : List Expr) {Γ : Ctx} {Ts Ω},
+    checkArgs P R Γ es Ts = some Ω → TypedArgs P R Γ es Ts Ω
+  | [], Γ, Ts, Ω, h => by
       cases Ts with
-      | nil => simp only [checkArgs] at h; cases h; exact .nil
-      | cons _ _ => simp only [checkArgs] at h; simp at h
-  | e :: es, Γ, Ts, Γ', h => by
+      | nil => simp only [checkArgs, Option.some.injEq] at h; subst h; exact .nil
+      | cons _ _ => simp [checkArgs] at h
+  | e :: es, Γ, Ts, Ω, h => by
       cases Ts with
-      | nil => simp only [checkArgs] at h; simp at h
+      | nil => simp [checkArgs] at h
       | cons T Ts' =>
           simp only [checkArgs] at h
-          split at h
-          · rename_i T'' Γ₁ hchk
-            split at h
-            · rename_i hT
-              subst hT
-              exact .cons (check_sound e hchk) (checkArgs_sound es h)
-            · cases h
-          · cases h
+          cases hchk : check P R Γ e with
+          | none => simp [hchk] at h
+          | some r =>
+            obtain ⟨ce, o, Δ₁⟩ := r
+            cases o with
+            | none =>
+                simp only [hchk] at h
+                split at h
+                · rename_i hcond
+                  simp only [Option.some.injEq] at h
+                  subst h
+                  exact .consBot (check_sound e hchk T hcond.1) hcond.2
+                · cases h
+            | some Γ₁ =>
+                simp only [hchk] at h
+                split at h
+                · rename_i hT
+                  cases hrest : checkArgs P R Γ₁ es Ts' with
+                  | none => simp [hrest] at h
+                  | some Ω' =>
+                      simp only [hrest, Option.some.injEq] at h
+                      subst h
+                      exact .cons (check_sound e hchk T hT) (checkArgs_sound es hrest)
+                · cases h
 end
 
 /-- (Fn) §5.8 as an algorithm: the body checks at the declared return type
@@ -985,7 +1416,12 @@ from the entry context `Γ0;Σ0` (`fnCtx`), and its normal exit edge discharges
 still-open body-local binding (`3.8:62`). -/
 def checkFn (P : Program) (fd : FnDef) : Bool :=
   match check P fd.ret (fnCtx fd) fd.body with
-  | some (T, Γf) => decide (T = fd.ret) && decide (NoResidualLinear P.decls Γf)
+  | some (c, Ω) =>
+      c.fits fd.ret &&
+        (match Ω.norm with
+         | some Γf => decide (NoResidualLinear P.decls Γf)
+         | none => true) &&
+        Ω.brk.isEmpty
   | none => false
 
 /-- §3's class assignment for one struct declaration, as an algorithm: the
@@ -1106,11 +1542,12 @@ def checkProgram (P : Program) : Bool :=
 theorem checkFn_sound {P : Program} {fd : FnDef} (h : checkFn P fd = true) : WfFn P fd := by
   unfold checkFn at h
   split at h
-  · rename_i T Γf hchk
-    simp only [Bool.and_eq_true, decide_eq_true_eq] at h
-    obtain ⟨hT, hnl⟩ := h
-    subst hT
-    exact ⟨Γf, check_sound fd.body hchk, hnl⟩
+  · rename_i c Ω hchk
+    simp only [Bool.and_eq_true, List.isEmpty_iff] at h
+    obtain ⟨⟨hT, hnl⟩, hbrk⟩ := h
+    refine ⟨Ω, check_sound fd.body hchk _ hT, fun Γf hn => ?_, hbrk⟩
+    rw [hn] at hnl
+    simpa using hnl
   · exact absurd h (by simp)
 
 /-- Every `checkStructDecl` acceptance is §3's class assignment for that
