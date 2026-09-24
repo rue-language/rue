@@ -112,13 +112,13 @@ error_contains = ["literal value 300 is out of range for type 'u8'"]
 
 [[case]]
 name = "const_annotation_type_mismatch"
-description = "A non-integer annotation must match the initializer's type exactly."
+description = "A non-integer annotation must match the initializer's type exactly: an integer literal at bool is worded as `let x: bool = 5;` is at run time (RUE-2357)."
 files = [{ path = "main.rue", source = """
 const X: bool = 5;
 fn main() -> i32 { 0 }
 """ }]
 compile_fail = true
-error_contains = ["type mismatch: expected bool, found i32"]
+error_contains = ["type mismatch: expected integer type, found bool"]
 
 [[case]]
 name = "const_unannotated_rejected"
