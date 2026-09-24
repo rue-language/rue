@@ -3844,8 +3844,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // residue a second time (RUE-2335).
                 if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
                     if destructured_path.is_empty() {
-                        if let Some((moved_path, moved_span)) = state.moved_strict_descendant(&[])
-                        {
+                        if let Some((moved_path, moved_span)) = state.moved_strict_descendant(&[]) {
                             return Err(self.moved_part_below_error(
                                 trace.root_var,
                                 &[],
