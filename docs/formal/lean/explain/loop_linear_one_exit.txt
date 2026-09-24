@@ -55,7 +55,7 @@ The premise that fails, in fn f0() -> i64, at (Loop-Break) §5.7:
     on  loop { if false { { @drop(v0); break } } else { break } }
 
     the reachable exits disagree on a linear-carrying binding — v0: S3 is
-    MovedOut in arm 0 and Owned in arm 1, so a linear value is consumed on
+    MovedOut in exit 0 and Owned in exit 1, so a linear value is consumed on
     only some exits ((Loop-Break) premise `Ω_exit = join({ outside_loop(Σ_x) |
     Σ_x ∈ X })`, §5.7; 3.8:80, 3.8:50; the compiler reports E0443)
 
@@ -93,7 +93,7 @@ function body, checked from (Fn) §5.8's entry context.
             Γ;Σ     [v0: S3 = Owned]
             ✗       this premise fails:
                     the reachable exits disagree on a linear-carrying binding — v0: S3
-                    is MovedOut in arm 0 and Owned in arm 1, so a linear value is
+                    is MovedOut in exit 0 and Owned in exit 1, so a linear value is
                     consumed on only some exits ((Loop-Break) premise `Ω_exit = join({
                     outside_loop(Σ_x) | Σ_x ∈ X })`, §5.7; 3.8:80, 3.8:50; the compiler
                     reports E0443)
