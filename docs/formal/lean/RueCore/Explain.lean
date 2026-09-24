@@ -272,6 +272,22 @@ def ctxEntryLines : Ctx → List String
 def ctxLine (Γ : Ctx) : String :=
   if Γ.isEmpty then "(empty)" else "[" ++ String.intercalate ", " (ctxEntryLines Γ) ++ "]"
 
+/-- (helper) A checked type: an ordinary type's name, or `never` (§5.7). -/
+def cTyName : CTy → String
+  | .never => "never"
+  | .ty T => Print.tyName T
+
+/-- (helper) §5.3's outgoing result `Ω`: the normal state, or `⊥` when there
+is none, followed by the recorded `⟨break, Σ⟩` deliveries when there are any
+(the fragment has no `break` yet, so there never are). -/
+def outLine (Ω : Out) : String :=
+  let norm := match Ω.norm with
+    | some Γ => ctxLine Γ
+    | none => "⊥"
+  if Ω.brk.isEmpty then norm
+  else norm ++ "; Δ = {" ++
+    String.intercalate ", " (Ω.brk.map fun Γ => "⟨break, " ++ ctxLine Γ ++ "⟩") ++ "}"
+
 /-- (helper) A function's signature, as §2's `F` production writes it and as
 `Print.lean` prints it. -/
 def fnHeader (i : Nat) (fd : FnDef) : String :=
@@ -738,6 +754,22 @@ def armLeak : String :=
   "`each pattern local x_{ij} leaves scope at arm end`, §5.5; 6.3:17, 3.8:32; the " ++
   "compiler reports E0406)"
 
+/-- An operator whose operand diverges: the checker names no type for it.
+§5.3's (Strict-Bottom) concludes at the operator's own type, and that type is
+read off the operand's, which a `never` operand does not fix, so `check`
+refuses rather than guess (the incompleteness `Checker.lean`'s docstring
+records). -/
+def neverOperand : String :=
+  "the operand diverges (its type is `never`), so the checker cannot name the operator's " ++
+  "type ((Strict-Bottom) §5.3 concludes at the construct's own type `T_E`, which a `never` " ++
+  "operand does not fix; a completeness limit of `check`, not a rule of the calculus)"
+
+/-- Two arm types that do not meet: one type each, and different (§5.5's
+single `T`, with (Sub-Never) §5.7 letting a diverging arm meet anything). -/
+def armTypeMismatchC : CTy → CTy → String
+  | .ty T₁, .ty T₂ => armTypeMismatch T₁ T₂
+  | _, _ => subDerivation
+
 end Premise
 
 /-- (helper) The rule name a binary operator's node carries: §5.8 types the
@@ -796,10 +828,10 @@ def joinAllConflict (D : Decls) : List Ctx → Option String
 /-- What a rule concluded at one node: the §5 judgment's right-hand side
 `⇒ T ⊣ Σ'`, or the premise that failed. -/
 inductive Verdict where
-  | accept (ty : Ty) (ctxOut : Ctx)
+  | accept (ty : CTy) (out : Out)
   | reject (premise : String)
 
-/-- A derivation tree for the §5 judgment `Γ;Σ ⊢ e ⇒ T ⊣ Σ'`: one node per
+/-- A derivation tree for the §5 judgment `Γ;Σ ⊢ e ⇒ T ⊣ Ω`: one node per
 rule, carrying the rule's name as the calculus writes it, the incoming fused
 `Γ;Σ`, the expression the rule concluded about, its verdict, and the
 sub-derivations of its premises, in premise order. -/
@@ -809,8 +841,8 @@ inductive Deriv where
 /-- The derivation's conclusion, in `check`'s shape: the type and outgoing
 `Σ` of an accepted node, nothing for a rejected one. `explain_result` is the
 proof that this projection is exactly `check` (§5 as an algorithm). -/
-def Deriv.result : Deriv → Option (Ty × Ctx)
-  | .node _ _ _ (.accept T Γ') _ => some (T, Γ')
+def Deriv.result : Deriv → Option (CTy × Out)
+  | .node _ _ _ (.accept c Ω) _ => some (c, Ω)
   | .node _ _ _ (.reject _) _ => none
 
 /-- (helper) The deepest rejected premise of a derivation: the one a reader
@@ -838,9 +870,15 @@ def dynAtFailure (D : Decls) : Ty → List (List Nat) → String
   | _, [] => Premise.pathNotField
 
 /-- (helper) An accepting node. -/
-def accepted (rule : String) (Γ : Ctx) (e : Expr) (T : Ty) (Γ' : Ctx)
+def accepted (rule : String) (Γ : Ctx) (e : Expr) (c : CTy) (Ω : Out)
     (kids : List Deriv) : Deriv :=
-  .node rule Γ e (.accept T Γ') kids
+  .node rule Γ e (.accept c Ω) kids
+
+/-- (helper) An accepting node that continues at a type, delivering nothing:
+every rule with no subexpression. -/
+def acceptedAt (rule : String) (Γ : Ctx) (e : Expr) (T : Ty) (Γ' : Ctx)
+    (kids : List Deriv) : Deriv :=
+  accepted rule Γ e (.ty T) ⟨some Γ', []⟩ kids
 
 /-- (helper) A rejecting node: the partial derivation above the failure
 plus the premise that failed. -/
@@ -854,10 +892,10 @@ the rule it applied at every node and, where it rejects, the premise that
 failed. `explain_result` proves the two agree. -/
 def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
   | .intLit w s n =>
-      if InBounds w s n then accepted "(Lit) §5.8" Γ (.intLit w s n) (.int w s) Γ []
+      if InBounds w s n then acceptedAt "(Lit) §5.8" Γ (.intLit w s n) (.int w s) Γ []
       else rejected "(Lit) §5.8" Γ (.intLit w s n) (Premise.litOutOfRange (.int w s)) []
-  | .boolLit b => accepted "(Lit) §5.8" Γ (.boolLit b) .bool Γ []
-  | .unitLit => accepted "(Lit) §5.8" Γ .unitLit .unit Γ []
+  | .boolLit b => acceptedAt "(Lit) §5.8" Γ (.boolLit b) .bool Γ []
+  | .unitLit => acceptedAt "(Lit) §5.8" Γ .unitLit .unit Γ []
   | .use pl =>
       match Γ[pl.root]? with
       | none => rejected "(Use-Copy)/(Use-Move) §5.1" Γ (.use pl) Premise.unboundIndex []
@@ -868,7 +906,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
              | some u, some Td, some T =>
                  if u.fullyOwned ∧ linearResidue P.decls Td πs = false ∧
                      noDtorPrefix P.decls en.ty pl.path then
-                   accepted "(Use-Declared-Linear-Destructure) §5.1" Γ (.use pl) T
+                   acceptedAt "(Use-Declared-Linear-Destructure) §5.1" Γ (.use pl) T
                      (Γ.set pl.root (en.setSt (en.st.setAt πd .movedOut))) []
                  else if !u.fullyOwned then
                    rejected "(Use-Declared-Linear-Destructure) §5.1" Γ (.use pl)
@@ -889,12 +927,12 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
           (match en.st.get pl.path, en.ty.atPath P.decls pl.path with
            | some u, some T =>
                if T.mult P.decls = .copy then
-                 (if u.fullyOwned then accepted "(Use-Copy) §5.1" Γ (.use pl) T Γ []
+                 (if u.fullyOwned then acceptedAt "(Use-Copy) §5.1" Γ (.use pl) T Γ []
                   else rejected "(Use-Copy) §5.1" Γ (.use pl) (Premise.usePartiallyMoved T) [])
                else
                  (if u.fullyOwned ∧ noDtorPrefix P.decls en.ty pl.path ∧
                       rootIdxOnly P.decls en.ty pl.path then
-                    accepted "(Use-Move) §5.1" Γ (.use pl) T
+                    acceptedAt "(Use-Move) §5.1" Γ (.use pl) T
                       (Γ.set pl.root (en.setSt (en.st.setAt pl.path .movedOut))) []
                   else if !rootIdxOnly P.decls en.ty pl.path then
                     rejected "(Use-Move) §5.1" Γ (.use pl) Premise.moveAtIndex []
@@ -906,49 +944,78 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
   | .binop op e₁ e₂ =>
       let rule := binopRule op
       let frule := floatBinopRule op
+      let brule := binopRule op ++ " with (Strict-Bottom) §5.3"
+      let fbrule := floatBinopRule op ++ " with (Strict-Bottom) §5.3"
       let d₁ := explain P R Γ e₁
       match d₁.result with
-      | some (.int w s, Γ₁) =>
+      | some (.ty (.int w s), ⟨some Γ₁, Δ₁⟩) =>
         let d₂ := explain P R Γ₁ e₂
         (match d₂.result with
-         | some (.int w' s', Γ₂) =>
+         | some (.ty (.int w' s'), Ω₂) =>
              if w' = w ∧ s' = s ∧ op.intAdmits = true then
-               accepted rule Γ (.binop op e₁ e₂) (op.resultTy (.int w s)) Γ₂ [d₁, d₂]
+               accepted rule Γ (.binop op e₁ e₂) (.ty (op.resultTy (.int w s))) (Ω₂.add Δ₁)
+                 [d₁, d₂]
              else if w' = w ∧ s' = s then
                rejected rule Γ (.binop op e₁ e₂)
                  (Premise.opNotOnInt op (.int w s)) [d₁, d₂]
              else
                rejected rule Γ (.binop op e₁ e₂)
                  (Premise.operandWidthMismatch (.int w s) (.int w' s')) [d₁, d₂]
-         | some (T, _) => rejected rule Γ (.binop op e₁ e₂) (Premise.operandNotInt T) [d₁, d₂]
+         | some (.never, Ω₂) =>
+             if op.intAdmits = true then
+               accepted rule Γ (.binop op e₁ e₂) (.ty (op.resultTy (.int w s))) (Ω₂.add Δ₁)
+                 [d₁, d₂]
+             else
+               rejected rule Γ (.binop op e₁ e₂) (Premise.opNotOnInt op (.int w s)) [d₁, d₂]
+         | some (.ty T, _) => rejected rule Γ (.binop op e₁ e₂) (Premise.operandNotInt T) [d₁, d₂]
          | none => rejected rule Γ (.binop op e₁ e₂) Premise.subDerivation [d₁, d₂])
-      | some (.float w, Γ₁) =>
+      | some (.ty (.int w s), ⟨none, Δ₁⟩) =>
+          if op.intAdmits = true then
+            accepted brule Γ (.binop op e₁ e₂) (.ty (op.resultTy (.int w s))) ⟨none, Δ₁⟩ [d₁]
+          else rejected brule Γ (.binop op e₁ e₂) (Premise.opNotOnInt op (.int w s)) [d₁]
+      | some (.ty (.float w), ⟨some Γ₁, Δ₁⟩) =>
         let d₂ := explain P R Γ₁ e₂
         (match d₂.result with
-         | some (.float w', Γ₂) =>
+         | some (.ty (.float w'), Ω₂) =>
              if w' = w ∧ op.floatAdmits = true then
-               accepted frule Γ (.binop op e₁ e₂) (op.resultTy (.float w)) Γ₂ [d₁, d₂]
+               accepted frule Γ (.binop op e₁ e₂) (.ty (op.resultTy (.float w))) (Ω₂.add Δ₁)
+                 [d₁, d₂]
              else if w' = w then
                rejected frule Γ (.binop op e₁ e₂)
                  (Premise.opNotOnFloat op (.float w)) [d₁, d₂]
              else
                rejected frule Γ (.binop op e₁ e₂)
                  (Premise.operandWidthMismatch (.float w) (.float w')) [d₁, d₂]
-         | some (T, _) => rejected frule Γ (.binop op e₁ e₂) (Premise.operandNotScalar T) [d₁, d₂]
+         | some (.never, Ω₂) =>
+             if op.floatAdmits = true then
+               accepted frule Γ (.binop op e₁ e₂) (.ty (op.resultTy (.float w))) (Ω₂.add Δ₁)
+                 [d₁, d₂]
+             else
+               rejected frule Γ (.binop op e₁ e₂) (Premise.opNotOnFloat op (.float w)) [d₁, d₂]
+         | some (.ty T, _) =>
+             rejected frule Γ (.binop op e₁ e₂) (Premise.operandNotScalar T) [d₁, d₂]
          | none => rejected frule Γ (.binop op e₁ e₂) Premise.subDerivation [d₁, d₂])
-      | some (T, _) => rejected rule Γ (.binop op e₁ e₂) (Premise.operandNotScalar T) [d₁]
+      | some (.ty (.float w), ⟨none, Δ₁⟩) =>
+          if op.floatAdmits = true then
+            accepted fbrule Γ (.binop op e₁ e₂) (.ty (op.resultTy (.float w))) ⟨none, Δ₁⟩ [d₁]
+          else rejected fbrule Γ (.binop op e₁ e₂) (Premise.opNotOnFloat op (.float w)) [d₁]
+      | some (.ty T, _) => rejected rule Γ (.binop op e₁ e₂) (Premise.operandNotScalar T) [d₁]
+      | some (.never, _) => rejected rule Γ (.binop op e₁ e₂) Premise.neverOperand [d₁]
       | none => rejected rule Γ (.binop op e₁ e₂) Premise.subDerivation [d₁]
   | .floatLit w l =>
-      if l.RoundsFinite w then accepted "(Lit) §5.8" Γ (.floatLit w l) (.float w) Γ []
+      if l.RoundsFinite w then acceptedAt "(Lit) §5.8" Γ (.floatLit w l) (.float w) Γ []
       else rejected "(Lit) §5.8" Γ (.floatLit w l) (Premise.floatLitInfinite w) []
   | .fintrin (.intToFloat w) e =>
       let d := explain P R Γ e
       (match d.result with
-       | some (.int _ _, Γ') =>
-           accepted "(Int-To-Float) §5.8" Γ (.fintrin (.intToFloat w) e) (.float w) Γ' [d]
-       | some (T, _) =>
+       | some (.ty (.int _ _), Ω) =>
+           accepted "(Int-To-Float) §5.8" Γ (.fintrin (.intToFloat w) e) (.ty (.float w)) Ω [d]
+       | some (.ty T, _) =>
            rejected "(Int-To-Float) §5.8" Γ (.fintrin (.intToFloat w) e)
              (Premise.intToFloatNotInt T) [d]
+       | some (.never, _) =>
+           rejected "(Int-To-Float) §5.8" Γ (.fintrin (.intToFloat w) e)
+             Premise.neverOperand [d]
        | none =>
            rejected "(Int-To-Float) §5.8" Γ (.fintrin (.intToFloat w) e)
              Premise.subDerivation [d])
@@ -956,59 +1023,68 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       let rule := fintrinRule k
       let d := explain P R Γ e
       (match d.result with
-       | some (.float w, Γ') =>
+       | some (.ty (.float w), Ω) =>
            if k.floatSrc w then
-             accepted rule Γ (.fintrin k e) (k.resTy w) Γ' [d]
+             accepted rule Γ (.fintrin k e) (.ty (k.resTy w)) Ω [d]
            else
              rejected rule Γ (.fintrin k e) (Premise.floatCastSameWidth (.float w)) [d]
-       | some (T, _) => rejected rule Γ (.fintrin k e) (Premise.fintrinNotFloat k T) [d]
+       | some (.ty T, _) => rejected rule Γ (.fintrin k e) (Premise.fintrinNotFloat k T) [d]
+       | some (.never, _) => rejected rule Γ (.fintrin k e) Premise.neverOperand [d]
        | none => rejected rule Γ (.fintrin k e) Premise.subDerivation [d])
   | .unop .neg e =>
       let d := explain P R Γ e
       (match d.result with
-       | some (.int w .signed, Γ') =>
-           accepted "(Neg) §5.8" Γ (.unop .neg e) (.int w .signed) Γ' [d]
-       | some (.float w, Γ') =>
-           accepted "(Float-Neg) §5.8" Γ (.unop .neg e) (.float w) Γ' [d]
-       | some (T, _) => rejected "(Neg) §5.8" Γ (.unop .neg e) (Premise.negNotSigned T) [d]
+       | some (.ty (.int w .signed), Ω) =>
+           accepted "(Neg) §5.8" Γ (.unop .neg e) (.ty (.int w .signed)) Ω [d]
+       | some (.ty (.float w), Ω) =>
+           accepted "(Float-Neg) §5.8" Γ (.unop .neg e) (.ty (.float w)) Ω [d]
+       | some (.ty T, _) => rejected "(Neg) §5.8" Γ (.unop .neg e) (Premise.negNotSigned T) [d]
+       | some (.never, _) => rejected "(Neg) §5.8" Γ (.unop .neg e) Premise.neverOperand [d]
        | none => rejected "(Neg) §5.8" Γ (.unop .neg e) Premise.subDerivation [d])
   | .unop .not e =>
       let d := explain P R Γ e
       (match d.result with
-       | some (.bool, Γ') => accepted "(Not) §5.8" Γ (.unop .not e) .bool Γ' [d]
-       | some (T, _) => rejected "(Not) §5.8" Γ (.unop .not e) (Premise.notNotBool T) [d]
+       | some (.ty .bool, Ω) => accepted "(Not) §5.8" Γ (.unop .not e) (.ty .bool) Ω [d]
+       | some (.ty T, _) => rejected "(Not) §5.8" Γ (.unop .not e) (Premise.notNotBool T) [d]
+       | some (.never, _) => rejected "(Not) §5.8" Γ (.unop .not e) Premise.neverOperand [d]
        | none => rejected "(Not) §5.8" Γ (.unop .not e) Premise.subDerivation [d])
   | .unop .bitnot e =>
       let d := explain P R Γ e
       (match d.result with
-       | some (.int w s, Γ') =>
-           accepted "(BitNot) §5.8" Γ (.unop .bitnot e) (.int w s) Γ' [d]
-       | some (T, _) =>
+       | some (.ty (.int w s), Ω) =>
+           accepted "(BitNot) §5.8" Γ (.unop .bitnot e) (.ty (.int w s)) Ω [d]
+       | some (.ty T, _) =>
            rejected "(BitNot) §5.8" Γ (.unop .bitnot e) (Premise.bitnotNotInt T) [d]
+       | some (.never, _) =>
+           rejected "(BitNot) §5.8" Γ (.unop .bitnot e) Premise.neverOperand [d]
        | none => rejected "(BitNot) §5.8" Γ (.unop .bitnot e) Premise.subDerivation [d])
   | .intCast w s e =>
       let d := explain P R Γ e
       (match d.result with
-       | some (.int _ _, Γ') =>
-           accepted "(Int-Cast) §5.8" Γ (.intCast w s e) (.int w s) Γ' [d]
-       | some (T, _) =>
+       | some (.ty (.int _ _), Ω) =>
+           accepted "(Int-Cast) §5.8" Γ (.intCast w s e) (.ty (.int w s)) Ω [d]
+       | some (.ty T, _) =>
            rejected "(Int-Cast) §5.8" Γ (.intCast w s e) (Premise.castNotInt T) [d]
+       | some (.never, _) =>
+           rejected "(Int-Cast) §5.8" Γ (.intCast w s e) Premise.neverOperand [d]
        | none => rejected "(Int-Cast) §5.8" Γ (.intCast w s e) Premise.subDerivation [d])
-  | .panic msg => accepted "(Panic) §5.8 + (Sub-Never) §5.7" Γ (.panic msg) R Γ []
+  | .panic msg =>
+      accepted "(Panic) §5.8 + (Sub-Never) §5.7" Γ (.panic msg) .never ⟨none, []⟩ []
   | .dbg e =>
       let d := explain P R Γ e
       (match d.result with
-       | some (T, Γ') =>
-           if T.observable then accepted "(Dbg) §5.8" Γ (.dbg e) .unit Γ' [d]
+       | some (.ty T, Ω) =>
+           if T.observable then accepted "(Dbg) §5.8" Γ (.dbg e) (.ty .unit) Ω [d]
            else rejected "(Dbg) §5.8" Γ (.dbg e) (Premise.dbgNotObservable T) [d]
+       | some (.never, _) => rejected "(Dbg) §5.8" Γ (.dbg e) Premise.neverOperand [d]
        | none => rejected "(Dbg) §5.8" Γ (.dbg e) Premise.subDerivation [d])
   | .mkStruct s args =>
       match P.decls.structs[s]? with
       | none => rejected "(Struct-Intro) §5.8" Γ (.mkStruct s args) Premise.unknownStruct []
       | some sd =>
         (match explainArgs P R Γ args sd.fields with
-         | (some Γ', kids) =>
-             accepted "(Struct-Intro) §5.8" Γ (.mkStruct s args) (.struct s) Γ' kids
+         | (some Ω, kids) =>
+             accepted "(Struct-Intro) §5.8" Γ (.mkStruct s args) (.ty (.struct s)) Ω kids
          | (none, kids) =>
              rejected "(Struct-Intro) §5.8" Γ (.mkStruct s args)
                (fieldsPremise P R Γ args sd.fields) kids)
@@ -1021,48 +1097,52 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
              rejected "(Enum-Intro) §5.5" Γ (.mkEnum e k args) Premise.unknownVariant []
          | some Ts =>
            (match explainArgs P R Γ args Ts with
-            | (some Γ', kids) =>
-                accepted "(Enum-Intro) §5.5" Γ (.mkEnum e k args) (.enum e) Γ' kids
+            | (some Ω, kids) =>
+                accepted "(Enum-Intro) §5.5" Γ (.mkEnum e k args) (.ty (.enum e)) Ω kids
             | (none, kids) =>
                 rejected "(Enum-Intro) §5.5" Γ (.mkEnum e k args)
                   (payloadPremise P R Γ args Ts) kids))
   | .«match» scrut arms =>
       let ds := explain P R Γ scrut
       match ds.result with
-      | some (.enum e, Γ₀) =>
+      | some (.ty (.enum e), ⟨some Γ₀, Δ₀⟩) =>
         (match P.decls.enums[e]? with
          | none => rejected "(Match) §5.5" Γ (.«match» scrut arms) Premise.unknownEnum [ds]
          | some ed =>
            if arms.length = ed.variants.length then
-             (match firstArmTy P R Γ₀ arms ed.variants with
+             (match checkArms P R Γ₀ (firstArmTy P R Γ₀ arms ed.variants) arms ed.variants with
               | none =>
-                  rejected "(Match) §5.5" Γ (.«match» scrut arms) Premise.subDerivation
+                  rejected "(Match) §5.5" Γ (.«match» scrut arms)
+                    (armsPremise P R Γ₀ (firstArmTy P R Γ₀ arms ed.variants) arms ed.variants)
                     (ds :: explainArms P R Γ₀ arms ed.variants)
-              | some T =>
-                (match checkArms P R Γ₀ T arms ed.variants with
-                 | none =>
-                     rejected "(Match) §5.5" Γ (.«match» scrut arms)
-                       (armsPremise P R Γ₀ T arms ed.variants)
+              | some (os, Δs) =>
+                (match Ctx.joinOpts P.decls os with
+                 | some o =>
+                     accepted "(Match) §5.5 join" Γ (.«match» scrut arms)
+                       (firstArmTy P R Γ₀ arms ed.variants) ⟨o, Δs ++ Δ₀⟩
                        (ds :: explainArms P R Γ₀ arms ed.variants)
-                 | some Γs =>
-                   (match Ctx.joinAll P.decls Γs with
-                    | some Γ' =>
-                        accepted "(Match) §5.5 join" Γ (.«match» scrut arms) T Γ'
-                          (ds :: explainArms P R Γ₀ arms ed.variants)
-                    | none =>
-                        rejected "(Match) §5.5 join" Γ (.«match» scrut arms)
-                          (Premise.joinConflict true (joinAllConflict P.decls Γs))
-                          (ds :: explainArms P R Γ₀ arms ed.variants))))
+                 | none =>
+                     rejected "(Match) §5.5 join" Γ (.«match» scrut arms)
+                       (Premise.joinConflict true (joinAllConflict P.decls (os.filterMap id)))
+                       (ds :: explainArms P R Γ₀ arms ed.variants)))
            else
              rejected "(Match) §5.5" Γ (.«match» scrut arms)
                (Premise.armCountMismatch arms.length ed.variants.length) [ds])
-      | some (T, _) =>
+      | some (.ty (.enum _), ⟨none, Δ₀⟩) =>
+          accepted "(Strict-Bottom) §5.3 at a match scrutinee" Γ (.«match» scrut arms) .never
+            ⟨none, Δ₀⟩ [ds]
+      | some (.never, ⟨none, Δ₀⟩) =>
+          accepted "(Strict-Bottom) §5.3 at a match scrutinee" Γ (.«match» scrut arms) .never
+            ⟨none, Δ₀⟩ [ds]
+      | some (.ty T, _) =>
           rejected "(Match) §5.5" Γ (.«match» scrut arms) (Premise.scrutNotEnum T) [ds]
+      | some (.never, _) =>
+          rejected "(Match) §5.5" Γ (.«match» scrut arms) Premise.subDerivation [ds]
       | none => rejected "(Match) §5.5" Γ (.«match» scrut arms) Premise.subDerivation [ds]
   | .mkArray T args =>
       (match explainArgs P R Γ args (List.replicate args.length T) with
-       | (some Γ', kids) =>
-           accepted "(Array-Intro) §5.8" Γ (.mkArray T args) (.array T args.length) Γ' kids
+       | (some Ω, kids) =>
+           accepted "(Array-Intro) §5.8" Γ (.mkArray T args) (.ty (.array T args.length)) Ω kids
        | (none, kids) =>
            rejected "(Array-Intro) §5.8" Γ (.mkArray T args)
              (elemsPremise P R Γ args (List.replicate args.length T)) kids)
@@ -1070,19 +1150,21 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       let rule := "(Array-Intro) §5.8, through §2's repeat elaboration"
       let d := explain P R Γ e
       (match d.result with
-       | some (T', Γ') =>
+       | some (.ty T', Ω) =>
            if T' = T ∧ T.mult P.decls = .copy then
-             accepted rule Γ (.repeatArray T e n) (.array T n) Γ' [d]
+             accepted rule Γ (.repeatArray T e n) (.ty (.array T n)) Ω [d]
            else if T' = T then
              rejected rule Γ (.repeatArray T e n) (Premise.repeatNotCopy T) [d]
            else rejected rule Γ (.repeatArray T e n) (Premise.elemTypeMismatch T' T) [d]
+       | some (.never, _) => rejected rule Γ (.repeatArray T e n) Premise.neverOperand [d]
        | none => rejected rule Γ (.repeatArray T e n) Premise.subDerivation [d])
   | .indexRead pl idx πs =>
       let rule := "(Use-Untrackable-Dynamic-Copy) §5.1"
+      let brule := "(Use-Untrackable-Dynamic-Copy) §5.1 with (Strict-Bottom) §5.3"
       let ri := explainIdx P R Γ idx
       (match ri.1 with
        | none => rejected rule Γ (.indexRead pl idx πs) (idxPremise P R Γ idx) ri.2
-       | some (_, Γ₁) =>
+       | some (_, ⟨some Γ₁, Δ⟩) =>
          (match Γ₁[pl.root]? with
           | none => rejected rule Γ (.indexRead pl idx πs) Premise.unboundIndex ri.2
           | some en =>
@@ -1094,7 +1176,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                        T.mult P.decls = .copy ∧
                        declaredPrefix P.decls en.ty pl.path = none ∧
                        Ta.dynNoDeclared P.decls πs then
-                     accepted rule Γ (.indexRead pl idx πs) T Γ₁ ri.2
+                     accepted rule Γ (.indexRead pl idx πs) (.ty T) ⟨some Γ₁, Δ⟩ ri.2
                    else if ¬(idx.length = πs.length ∧ πs ≠ []) then
                      rejected rule Γ (.indexRead pl idx πs) Premise.dynShape ri.2
                    else if declaredPrefix P.decls en.ty pl.path ≠ none ∨
@@ -1106,9 +1188,24 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                | none =>
                    rejected rule Γ (.indexRead pl idx πs) (dynAtFailure P.decls Ta πs) ri.2)
             | none, _ => rejected rule Γ (.indexRead pl idx πs) Premise.pathUnderMoved ri.2
-            | _, none => rejected rule Γ (.indexRead pl idx πs) Premise.pathNotField ri.2))
+            | _, none => rejected rule Γ (.indexRead pl idx πs) Premise.pathNotField ri.2)
+       | some (_, ⟨none, Δ⟩) =>
+         (match Γ[pl.root]? with
+          | none => rejected brule Γ (.indexRead pl idx πs) Premise.unboundIndex ri.2
+          | some en =>
+            match en.ty.atPath P.decls pl.path with
+            | some Ta =>
+              (match Ta.atDyn P.decls πs with
+               | some T =>
+                   if idx.length = πs.length ∧ πs ≠ [] then
+                     accepted brule Γ (.indexRead pl idx πs) (.ty T) ⟨none, Δ⟩ ri.2
+                   else rejected brule Γ (.indexRead pl idx πs) Premise.dynShape ri.2
+               | none =>
+                   rejected brule Γ (.indexRead pl idx πs) (dynAtFailure P.decls Ta πs) ri.2)
+            | none => rejected brule Γ (.indexRead pl idx πs) Premise.pathNotField ri.2))
   | .indexWrite pl idx πs e =>
       let rule := "(Assign) §5.2 below a dynamic index"
+      let brule := "(Assign) §5.2 below a dynamic index, with (Strict-Bottom) §5.3"
       (match Γ[pl.root]? with
        | none => rejected rule Γ (.indexWrite pl idx πs e) Premise.unboundIndex []
        | some en₀ =>
@@ -1119,11 +1216,11 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
               | some T =>
                 (let d := explain P R Γ e
                  match d.result with
-                 | some (T', Γ₁) =>
-                   if T' = T then
+                 | some (c, ⟨some Γ₁, Δ₁⟩) =>
+                   if c.fits T then
                      (let ri := explainIdx P R Γ₁ idx
                       match ri.1 with
-                      | some (_, Γ₂) =>
+                      | some (_, ⟨some Γ₂, Δ₂⟩) =>
                         (match Γ₂[pl.root]? with
                          | some en₁ =>
                            (match en₁.st.get pl.path with
@@ -1131,8 +1228,9 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                                 if idx.length = πs.length ∧ πs ≠ [] ∧ u₁.fullyOwned ∧
                                     assignArrayOk P.decls en₁.st en₁.ty pl.path ∧
                                     T.mult P.decls ≠ .linear then
-                                  accepted rule Γ (.indexWrite pl idx πs e) .unit
-                                    (Γ₂.set pl.root (en₁.setSt (en₁.st.setAt pl.path .owned)))
+                                  accepted rule Γ (.indexWrite pl idx πs e) (.ty .unit)
+                                    ⟨some (Γ₂.set pl.root (en₁.setSt (en₁.st.setAt pl.path .owned))),
+                                      Δ₂ ++ Δ₁⟩
                                     (d :: ri.2)
                                 else if ¬(idx.length = πs.length ∧ πs ≠ []) then
                                   rejected rule Γ (.indexWrite pl idx πs e)
@@ -1152,12 +1250,17 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                          | none =>
                              rejected rule Γ (.indexWrite pl idx πs e)
                                Premise.assignTargetLost (d :: ri.2))
+                      | some (_, ⟨none, Δ₂⟩) =>
+                          accepted brule Γ (.indexWrite pl idx πs e) (.ty .unit)
+                            ⟨none, Δ₂ ++ Δ₁⟩ (d :: ri.2)
                       | none =>
                           rejected rule Γ (.indexWrite pl idx πs e)
                             (idxPremise P R Γ₁ idx) (d :: ri.2))
                    else
                      rejected rule Γ (.indexWrite pl idx πs e)
-                       (Premise.assignTypeMismatch T' T) [d]
+                       (Premise.assignTypeMismatch (c.pick T) T) [d]
+                 | some (_, ⟨none, Δ₁⟩) =>
+                     accepted brule Γ (.indexWrite pl idx πs e) (.ty .unit) ⟨none, Δ₁⟩ [d]
                  | none =>
                      rejected rule Γ (.indexWrite pl idx πs e) Premise.subDerivation [d])
               | none =>
@@ -1167,10 +1270,11 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
          else rejected rule Γ (.indexWrite pl idx πs e) Premise.notMutable [])
   | .indexDrop pl idx πs =>
       let rule := "(@Drop-Copy) §5.3 below a dynamic index, with (Use-Untrackable-Dynamic-Copy) §5.1's premises"
+      let brule := "(@Drop-Copy) §5.3 below a dynamic index, with (Strict-Bottom) §5.3"
       let ri := explainIdx P R Γ idx
       (match ri.1 with
        | none => rejected rule Γ (.indexDrop pl idx πs) (idxPremise P R Γ idx) ri.2
-       | some (_, Γ₁) =>
+       | some (_, ⟨some Γ₁, Δ⟩) =>
          (match Γ₁[pl.root]? with
           | none => rejected rule Γ (.indexDrop pl idx πs) Premise.unboundIndex ri.2
           | some en =>
@@ -1182,7 +1286,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                        T.mult P.decls = .copy ∧
                        declaredPrefix P.decls en.ty pl.path = none ∧
                        Ta.dynNoDeclared P.decls πs then
-                     accepted rule Γ (.indexDrop pl idx πs) .unit Γ₁ ri.2
+                     accepted rule Γ (.indexDrop pl idx πs) (.ty .unit) ⟨some Γ₁, Δ⟩ ri.2
                    else if ¬(idx.length = πs.length ∧ πs ≠ []) then
                      rejected rule Γ (.indexDrop pl idx πs) Premise.dynShape ri.2
                    else if declaredPrefix P.decls en.ty pl.path ≠ none ∨
@@ -1194,7 +1298,21 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                | none =>
                    rejected rule Γ (.indexDrop pl idx πs) (dynAtFailure P.decls Ta πs) ri.2)
             | none, _ => rejected rule Γ (.indexDrop pl idx πs) Premise.pathUnderMoved ri.2
-            | _, none => rejected rule Γ (.indexDrop pl idx πs) Premise.pathNotField ri.2))
+            | _, none => rejected rule Γ (.indexDrop pl idx πs) Premise.pathNotField ri.2)
+       | some (_, ⟨none, Δ⟩) =>
+         (match Γ[pl.root]? with
+          | none => rejected brule Γ (.indexDrop pl idx πs) Premise.unboundIndex ri.2
+          | some en =>
+            match en.ty.atPath P.decls pl.path with
+            | some Ta =>
+              (match Ta.atDyn P.decls πs with
+               | some _ =>
+                   if idx.length = πs.length ∧ πs ≠ [] then
+                     accepted brule Γ (.indexDrop pl idx πs) (.ty .unit) ⟨none, Δ⟩ ri.2
+                   else rejected brule Γ (.indexDrop pl idx πs) Premise.dynShape ri.2
+               | none =>
+                   rejected brule Γ (.indexDrop pl idx πs) (dynAtFailure P.decls Ta πs) ri.2)
+            | none => rejected brule Γ (.indexDrop pl idx πs) Premise.pathNotField ri.2))
   | .drop pl =>
       match Γ[pl.root]? with
       | none => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.unboundIndex []
@@ -1205,7 +1323,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
              | some u, some Td, some _T =>
                  if u.fullyOwned ∧ linearResidue P.decls Td πs = false ∧
                      noDtorPrefix P.decls en.ty pl.path then
-                   accepted "(@Drop) §5.3 at a declared-linear plan" Γ (.drop pl) .unit
+                   acceptedAt "(@Drop) §5.3 at a declared-linear plan" Γ (.drop pl) .unit
                      (Γ.set pl.root (en.setSt (en.st.setAt πd .movedOut))) []
                  else if !u.fullyOwned then
                    rejected "(@Drop) §5.3 at a declared-linear plan" Γ (.drop pl)
@@ -1226,13 +1344,13 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
           (match en.st.get pl.path, en.ty.atPath P.decls pl.path with
            | some u, some T =>
                if T.mult P.decls = .copy then
-                 (if u.fullyOwned then accepted "(@Drop-Copy) §5.3" Γ (.drop pl) .unit Γ []
+                 (if u.fullyOwned then acceptedAt "(@Drop-Copy) §5.3" Γ (.drop pl) .unit Γ []
                   else rejected "(@Drop-Copy) §5.3" Γ (.drop pl) (Premise.usePartiallyMoved T) [])
                else
                  (if u.isOwned ∧ noDtorPrefix P.decls en.ty pl.path ∧
                      (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) ∧
                      rootIdxOnly P.decls en.ty pl.path then
-                    accepted "(@Drop) §5.3" Γ (.drop pl) .unit
+                    acceptedAt "(@Drop) §5.3" Γ (.drop pl) .unit
                       (Γ.set pl.root (en.setSt (en.st.setAt pl.path .movedOut))) []
                   else if !rootIdxOnly P.decls en.ty pl.path then
                     rejected "(@Drop) §5.3" Γ (.drop pl) Premise.moveAtIndex []
@@ -1244,25 +1362,28 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
            | none, _ => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.pathUnderMoved []
            | _, none => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.pathNotField [])
   | .letIn m e₁ e₂ =>
+      let rule := "(Let) §5.3 + the §5.6 scope-exit leak check"
       let d₁ := explain P R Γ e₁
       match d₁.result with
-      | none => rejected "(Let) §5.3 + the §5.6 scope-exit leak check" Γ (.letIn m e₁ e₂)
-                  Premise.subDerivation [d₁]
-      | some (T₁, Γ₁) =>
+      | some (.ty T₁, ⟨some Γ₁, Δ₁⟩) =>
         let d₂ := explain P R ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂
         (match d₂.result with
-         | some (T₂, en' :: Γ₂) =>
+         | some (c₂, ⟨some (en' :: Γ₂), Δ₂⟩) =>
              if residualLinear P.decls en'.st en'.ty then
-               rejected "(Let) §5.3 + the §5.6 scope-exit leak check" Γ (.letIn m e₁ e₂)
-                 (Premise.letLeak T₁) [d₁, d₂]
+               rejected rule Γ (.letIn m e₁ e₂) (Premise.letLeak T₁) [d₁, d₂]
              else
-               accepted "(Let) §5.3 + the §5.6 scope-exit leak check" Γ (.letIn m e₁ e₂) T₂ Γ₂ [d₁, d₂]
-         | some (_, []) =>
-             rejected "(Let) §5.3 + the §5.6 scope-exit leak check" Γ (.letIn m e₁ e₂)
-               Premise.letBinderLost [d₁, d₂]
-         | none =>
-             rejected "(Let) §5.3 + the §5.6 scope-exit leak check" Γ (.letIn m e₁ e₂)
-               Premise.subDerivation [d₁, d₂])
+               accepted rule Γ (.letIn m e₁ e₂) c₂ ⟨some Γ₂, Δ₂ ++ Δ₁⟩ [d₁, d₂]
+         | some (c₂, ⟨none, Δ₂⟩) =>
+             accepted "(Let) §5.3, the body diverging" Γ (.letIn m e₁ e₂) c₂ ⟨none, Δ₂ ++ Δ₁⟩
+               [d₁, d₂]
+         | some (_, ⟨some [], _⟩) =>
+             rejected rule Γ (.letIn m e₁ e₂) Premise.letBinderLost [d₁, d₂]
+         | none => rejected rule Γ (.letIn m e₁ e₂) Premise.subDerivation [d₁, d₂])
+      | some (_, ⟨none, Δ₁⟩) =>
+          accepted "(Let-Bottom) §5.3 + (Sub-Never) §5.7" Γ (.letIn m e₁ e₂) .never ⟨none, Δ₁⟩
+            [d₁]
+      | some (.never, _) => rejected rule Γ (.letIn m e₁ e₂) Premise.subDerivation [d₁]
+      | none => rejected rule Γ (.letIn m e₁ e₂) Premise.subDerivation [d₁]
   | .assign pl e =>
       match Γ[pl.root]? with
       | none => rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e) Premise.unboundIndex []
@@ -1272,16 +1393,17 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
           | some _, some T =>
             (let d := explain P R Γ e
              match d.result with
-             | some (T', Γ₁) =>
-               if T' = T then
+             | some (c, ⟨some Γ₁, Δ⟩) =>
+               if c.fits T then
                  (match Γ₁[pl.root]? with
                   | some en₁ =>
                     (match en₁.st.get pl.path with
                      | some u₁ =>
                          if assignArrayOk P.decls en₁.st en₁.ty pl.path ∧
                              overwriteOk P.decls u₁ T then
-                           accepted "(Assign) §5.2, 3.8:77" Γ (.assign pl e) .unit
-                             (Γ₁.set pl.root (en₁.setSt (en₁.st.setAt pl.path .owned))) [d]
+                           accepted "(Assign) §5.2, 3.8:77" Γ (.assign pl e) (.ty .unit)
+                             ⟨some (Γ₁.set pl.root (en₁.setSt (en₁.st.setAt pl.path .owned))), Δ⟩
+                             [d]
                          else if !assignArrayOk P.decls en₁.st en₁.ty pl.path then
                            rejected "(Assign) §5.2, 3.8:72, 7.1:46" Γ (.assign pl e)
                              Premise.assignIntoPartialArray [d]
@@ -1296,7 +1418,10 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                         Premise.assignTargetLost [d])
                else
                  rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e)
-                   (Premise.assignTypeMismatch T' T) [d]
+                   (Premise.assignTypeMismatch (c.pick T) T) [d]
+             | some (_, ⟨none, Δ⟩) =>
+                 accepted "(Assign) §5.2 with (Strict-Bottom) §5.3" Γ (.assign pl e) (.ty .unit)
+                   ⟨none, Δ⟩ [d]
              | none =>
                  rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e) Premise.subDerivation [d])
           | none, _ =>
@@ -1307,44 +1432,57 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
   | .seq e₁ e₂ =>
       let d₁ := explain P R Γ e₁
       match d₁.result with
-      | some (T₁, Γ₁) =>
+      | some (.ty T₁, ⟨some Γ₁, Δ₁⟩) =>
           if T₁.mult P.decls = .linear then
             rejected "(Seq) §5.3, 3.8:64" Γ (.seq e₁ e₂) (Premise.discardsLinear T₁) [d₁]
           else
             let d₂ := explain P R Γ₁ e₂
             (match d₂.result with
-             | some (T₂, Γ₂) => accepted "(Seq) §5.3, 3.8:64" Γ (.seq e₁ e₂) T₂ Γ₂ [d₁, d₂]
+             | some (c₂, Ω₂) => accepted "(Seq) §5.3, 3.8:64" Γ (.seq e₁ e₂) c₂ (Ω₂.add Δ₁) [d₁, d₂]
              | none => rejected "(Seq) §5.3, 3.8:64" Γ (.seq e₁ e₂) Premise.subDerivation [d₁, d₂])
+      | some (_, ⟨none, Δ₁⟩) =>
+          accepted "(Seq-Bottom) §5.3 + (Sub-Never) §5.7" Γ (.seq e₁ e₂) .never ⟨none, Δ₁⟩ [d₁]
+      | some (.never, _) => rejected "(Seq) §5.3, 3.8:64" Γ (.seq e₁ e₂) Premise.subDerivation [d₁]
       | none => rejected "(Seq) §5.3, 3.8:64" Γ (.seq e₁ e₂) Premise.subDerivation [d₁]
   | .ite c e₁ e₂ =>
       let dc := explain P R Γ c
       match dc.result with
-      | some (.bool, Γ₀) =>
+      | some (.ty .bool, ⟨some Γ₀, Δ₀⟩) =>
         let d₁ := explain P R Γ₀ e₁
         let d₂ := explain P R Γ₀ e₂
         (match d₁.result, d₂.result with
-         | some (T₁, Γ₁), some (T₂, Γ₂) =>
-             if T₁ = T₂ then
-               match Ctx.join P.decls Γ₁ Γ₂ with
-               | some Γ' => accepted "(If) §5.5 join" Γ (.ite c e₁ e₂) T₁ Γ' [dc, d₁, d₂]
-               | none =>
-                   rejected "(If) §5.5 join" Γ (.ite c e₁ e₂)
-                     (Premise.joinConflict false
-                       (joinConflictEntry P.decls "the then-arm" "the else-arm" Γ₁ Γ₂))
+         | some (c₁, Ω₁), some (c₂, Ω₂) =>
+             (match CTy.meet c₁ c₂ with
+              | some c' =>
+                (match Ctx.joinOpt P.decls Ω₁.norm Ω₂.norm with
+                 | some o =>
+                     accepted "(If) §5.5 join" Γ (.ite c e₁ e₂) c' ⟨o, Ω₁.brk ++ Ω₂.brk ++ Δ₀⟩
                        [dc, d₁, d₂]
-             else
-               rejected "(If) §5.5 join" Γ (.ite c e₁ e₂)
-                 (Premise.armTypeMismatch T₁ T₂) [dc, d₁, d₂]
+                 | none =>
+                     rejected "(If) §5.5 join" Γ (.ite c e₁ e₂)
+                       (Premise.joinConflict false
+                         (joinConflictEntry P.decls "the then-arm" "the else-arm"
+                           (Ω₁.norm.getD []) (Ω₂.norm.getD [])))
+                       [dc, d₁, d₂])
+              | none =>
+                  rejected "(If) §5.5 join" Γ (.ite c e₁ e₂)
+                    (Premise.armTypeMismatchC c₁ c₂) [dc, d₁, d₂])
          | _, _ => rejected "(If) §5.5 join" Γ (.ite c e₁ e₂) Premise.subDerivation [dc, d₁, d₂])
-      | some (T, _) =>
+      | some (cc, ⟨none, Δ₀⟩) =>
+          if cc.fits .bool then
+            accepted "(Strict-Bottom) §5.3 at a condition" Γ (.ite c e₁ e₂) .never ⟨none, Δ₀⟩ [dc]
+          else
+            rejected "(If) §5.5 join" Γ (.ite c e₁ e₂) (Premise.condNotBool (cc.pick .bool)) [dc]
+      | some (.ty T, _) =>
           rejected "(If) §5.5 join" Γ (.ite c e₁ e₂) (Premise.condNotBool T) [dc]
+      | some (.never, _) => rejected "(If) §5.5 join" Γ (.ite c e₁ e₂) Premise.subDerivation [dc]
       | none => rejected "(If) §5.5 join" Γ (.ite c e₁ e₂) Premise.subDerivation [dc]
   | .call f args =>
       match P.fns[f]? with
       | none => rejected "(Call) §5.8" Γ (.call f args) Premise.unknownCallee []
       | some fd =>
         (match explainArgs P R Γ args (fd.params.map Param.ty) with
-         | (some Γ', kids) => accepted "(Call) §5.8" Γ (.call f args) fd.ret Γ' kids
+         | (some Ω, kids) => accepted "(Call) §5.8" Γ (.call f args) (.ty fd.ret) Ω kids
          | (none, kids) =>
              rejected "(Call) §5.8" Γ (.call f args)
                (argsPremise P R Γ args (fd.params.map Param.ty)) kids)
@@ -1352,43 +1490,55 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       let d := explain P R Γ e
       match d.result with
       | none => rejected "(Return-Value) §5.7" Γ (.ret e) Premise.subDerivation [d]
-      | some (T, Γ₁) =>
-          if T = R ∧ NoResidualLinear P.decls Γ₁ then
-            accepted "(Return-Value) §5.7" Γ (.ret e) R Γ₁ [d]
-          else if T = R then
+      | some (c, ⟨some Γ₁, Δ⟩) =>
+          if c.fits R ∧ NoResidualLinear P.decls Γ₁ then
+            accepted "(Return-Value) §5.7" Γ (.ret e) .never ⟨none, Δ⟩ [d]
+          else if c.fits R then
             rejected "(Return-Value) §5.7" Γ (.ret e) Premise.returnLeak [d]
           else
-            rejected "(Return-Value) §5.7" Γ (.ret e) (Premise.returnTypeMismatch T R) [d]
+            rejected "(Return-Value) §5.7" Γ (.ret e) (Premise.returnTypeMismatch (c.pick R) R) [d]
+      | some (c, ⟨none, Δ⟩) =>
+          if c.fits R then
+            accepted "(Return-Bottom) §5.7" Γ (.ret e) .never ⟨none, Δ⟩ [d]
+          else
+            rejected "(Return-Bottom) §5.7" Γ (.ret e) (Premise.returnTypeMismatch (c.pick R) R) [d]
 
 /-- The instrumented mirror of `checkArgs` (§5.8's (Call) argument list):
-the sub-derivations in argument order, and the outgoing `Σ` when every
-argument checked at its parameter's type. -/
-def explainArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Option Ctx × List Deriv
-  | Γ, [], [] => (some Γ, [])
+the sub-derivations in argument order, and the outgoing `Ω` when every
+argument checked at its parameter's type, or `⊥` from the first that
+diverged (§5.3's (Strict-Bottom)). -/
+def explainArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Option Out × List Deriv
+  | Γ, [], [] => (some ⟨some Γ, []⟩, [])
   | Γ, e :: es, T :: Ts =>
       let d := explain P R Γ e
       (match d.result with
-       | some (T', Γ₁) =>
-           if T' = T then
+       | some (c, ⟨some Γ₁, Δ₁⟩) =>
+           if c.fits T then
              let rest := explainArgs P R Γ₁ es Ts
-             (rest.1, d :: rest.2)
+             ((match rest.1 with
+               | some Ω => some (Ω.add Δ₁)
+               | none => none), d :: rest.2)
            else (none, [d])
+       | some (c, ⟨none, Δ₁⟩) =>
+           if c.fits T ∧ es.length = Ts.length then (some ⟨none, Δ₁⟩, [d]) else (none, [d])
        | none => (none, [d]))
   | _, _, _ => (none, [])
 
 /-- The instrumented mirror of `checkIdx`: the index expressions'
 sub-derivations in evaluation order, and their integer types with the outgoing
-`Σ` when every one checked at an integer type (`4.11:4`). -/
-def explainIdx (P : Program) (R : Ty) : Ctx → List Expr → Option (List Ty × Ctx) × List Deriv
-  | Γ, [] => (some ([], Γ), [])
+`Ω` when every one checked at an integer type (`4.11:4`). -/
+def explainIdx (P : Program) (R : Ty) : Ctx → List Expr → Option (List Ty × Out) × List Deriv
+  | Γ, [] => (some ([], ⟨some Γ, []⟩), [])
   | Γ, e :: es =>
       let d := explain P R Γ e
       (match d.result with
-       | some (.int w s, Γ₁) =>
+       | some (.ty (.int w s), ⟨some Γ₁, Δ₁⟩) =>
            let rest := explainIdx P R Γ₁ es
            ((match rest.1 with
-             | some (Ts, Γ₂) => some (.int w s :: Ts, Γ₂)
+             | some (Ts, Ω) => some (.int w s :: Ts, Ω.add Δ₁)
              | none => none), d :: rest.2)
+       | some (.ty (.int w s), ⟨none, Δ₁⟩) =>
+           (some (.int w s :: es.map (fun _ => .int w s), ⟨none, Δ₁⟩), [d])
        | _ => (none, [d]))
 
 /-- The premise a rejected index list failed: the first index whose
@@ -1397,8 +1547,9 @@ def idxPremise (P : Program) (R : Ty) : Ctx → List Expr → String
   | _, [] => Premise.subDerivation
   | Γ, e :: es =>
       (match (explain P R Γ e).result with
-       | some (.int _ _, Γ₁) => idxPremise P R Γ₁ es
-       | some (T, _) => Premise.indexNotInt T
+       | some (.ty (.int _ _), ⟨some Γ₁, _⟩) => idxPremise P R Γ₁ es
+       | some (.ty T, _) => Premise.indexNotInt T
+       | some (.never, _) => Premise.neverOperand
        | none => Premise.subDerivation)
 
 /-- The premise a rejected argument list failed: a count mismatch (`4.10:3`),
@@ -1408,8 +1559,10 @@ def argsPremise (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Strin
   | _, [], [] => Premise.argCountMismatch
   | Γ, e :: es, T :: Ts =>
       (match (explain P R Γ e).result with
-       | some (T', Γ₁) =>
-           if T' = T then argsPremise P R Γ₁ es Ts else Premise.argTypeMismatch T' T
+       | some (c, ⟨some Γ₁, _⟩) =>
+           if c.fits T then argsPremise P R Γ₁ es Ts else Premise.argTypeMismatch (c.pick T) T
+       | some (c, ⟨none, _⟩) =>
+           if c.fits T then Premise.argCountMismatch else Premise.argTypeMismatch (c.pick T) T
        | none => Premise.subDerivation)
   | _, _, _ => Premise.argCountMismatch
 
@@ -1421,8 +1574,12 @@ def fieldsPremise (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Str
   | _, [], [] => Premise.fieldCountMismatch
   | Γ, e :: es, T :: Ts =>
       (match (explain P R Γ e).result with
-       | some (T', Γ₁) =>
-           if T' = T then fieldsPremise P R Γ₁ es Ts else Premise.fieldTypeMismatch T' T
+       | some (c, ⟨some Γ₁, _⟩) =>
+           if c.fits T then fieldsPremise P R Γ₁ es Ts
+           else Premise.fieldTypeMismatch (c.pick T) T
+       | some (c, ⟨none, _⟩) =>
+           if c.fits T then Premise.fieldCountMismatch
+           else Premise.fieldTypeMismatch (c.pick T) T
        | none => Premise.subDerivation)
   | _, _, _ => Premise.fieldCountMismatch
 
@@ -1433,8 +1590,12 @@ def payloadPremise (P : Program) (R : Ty) : Ctx → List Expr → List Ty → St
   | _, [], [] => Premise.payloadCountMismatch
   | Γ, e :: es, T :: Ts =>
       (match (explain P R Γ e).result with
-       | some (T', Γ₁) =>
-           if T' = T then payloadPremise P R Γ₁ es Ts else Premise.payloadTypeMismatch T' T
+       | some (c, ⟨some Γ₁, _⟩) =>
+           if c.fits T then payloadPremise P R Γ₁ es Ts
+           else Premise.payloadTypeMismatch (c.pick T) T
+       | some (c, ⟨none, _⟩) =>
+           if c.fits T then Premise.payloadCountMismatch
+           else Premise.payloadTypeMismatch (c.pick T) T
        | none => Premise.subDerivation)
   | _, _, _ => Premise.payloadCountMismatch
 
@@ -1447,17 +1608,20 @@ def explainArms (P : Program) (R : Ty) (Γ₀ : Ctx) : List Expr → List (List 
   | e :: es, Ts :: Tss => explain P R (armCtx Ts Γ₀) e :: explainArms P R Γ₀ es Tss
 
 /-- The premise a rejected arm list failed: the first arm whose body does not
-check, whose type is not the one the first arm fixed, or which leaves a payload
-local unconsumed at the arm's end (§5.6). -/
-def armsPremise (P : Program) (R : Ty) (Γ₀ : Ctx) (T : Ty) :
+check, whose type is not the one the first typed arm fixed, or which, when it
+continues, leaves a payload local unconsumed at the arm's end (§5.6). -/
+def armsPremise (P : Program) (R : Ty) (Γ₀ : Ctx) (c : CTy) :
     List Expr → List (List Ty) → String
   | [], [] => Premise.subDerivation
   | e :: es, Ts :: Tss =>
       (match (explain P R (armCtx Ts Γ₀) e).result with
-       | some (T', Γb) =>
-           if T' ≠ T then Premise.armTypeMismatch T' T
+       | some (c', ⟨some Γb, _⟩) =>
+           if !c'.fitsC c then Premise.armTypeMismatchC c' c
            else if !decide (NoResidualLinear P.decls (Γb.take Ts.length)) then Premise.armLeak
-           else armsPremise P R Γ₀ T es Tss
+           else armsPremise P R Γ₀ c es Tss
+       | some (c', ⟨none, _⟩) =>
+           if !c'.fitsC c then Premise.armTypeMismatchC c' c
+           else armsPremise P R Γ₀ c es Tss
        | none => Premise.subDerivation)
   | _, _ => Premise.subDerivation
 /-- The premise a rejected element list failed: the first element whose type is
@@ -1467,12 +1631,16 @@ def elemsPremise (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Stri
   | _, [], [] => Premise.subDerivation
   | Γ, e :: es, T :: Ts =>
       (match (explain P R Γ e).result with
-       | some (T', Γ₁) =>
-           if T' = T then elemsPremise P R Γ₁ es Ts else Premise.elemTypeMismatch T' T
+       | some (c, ⟨some Γ₁, _⟩) =>
+           if c.fits T then elemsPremise P R Γ₁ es Ts
+           else Premise.elemTypeMismatch (c.pick T) T
+       | some (c, ⟨none, _⟩) =>
+           if c.fits T then Premise.subDerivation else Premise.elemTypeMismatch (c.pick T) T
        | none => Premise.subDerivation)
   | _, _, _ => Premise.subDerivation
 end
 
+set_option maxHeartbeats 1600000 in
 mutual
 /-- **The derivation is the checker.** Projecting a derivation to its
 conclusion reproduces `check P R Γ e` exactly, so a rendered derivation can
@@ -1488,48 +1656,48 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
   | .unitLit, Γ => rfl
   | .use pl, Γ => by
       simp only [explain, check]
-      (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
+      (repeat' split) <;> first | rfl | simp_all [accepted, acceptedAt, rejected, Deriv.result]
   | .binop op e₁ e₂, Γ => by
       simp only [explain, check, explain_result e₁, explain_result e₂]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
   | .unop .neg e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
   | .unop .not e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
   | .unop .bitnot e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
   | .intCast w s e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
   | .fintrin (.intToFloat w) e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
   | .fintrin (.floatToInt w s) e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
   | .fintrin (.floatCast w) e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
   | .fintrin (.roundOp k) e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
   | .panic msg, Γ => rfl
   | .dbg e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, acceptedAt, Deriv.result] <;> grind)
   | .mkStruct s args, Γ => by
       simp only [explain, check]
       cases hs : P.decls.structs[s]? with
@@ -1543,7 +1711,7 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
           intro hargs
           cases res with
           | none => rw [← hargs]; rfl
-          | some Γ' => rw [← hargs]; rfl
+          | some Ω' => rw [← hargs]; rfl
   | .mkEnum e k args, Γ => by
       simp only [explain, check]
       cases hed : P.decls.enums[e]? with
@@ -1561,38 +1729,42 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
             intro hargs
             cases res with
             | none => rw [← hargs]; rfl
-            | some Γ' => rw [← hargs]; rfl
+            | some Ω' => rw [← hargs]; rfl
   | .«match» scrut arms, Γ => by
       simp only [explain, check, explain_result scrut]
       cases hs : check P R Γ scrut with
       | none => rfl
       | some p =>
-        obtain ⟨Tsc, Γ₀⟩ := p
-        cases Tsc with
-        | int => rfl
-        | float => rfl
-        | bool => rfl
-        | unit => rfl
-        | struct s' => rfl
-        | array Te n => rfl
-        | enum e =>
-          dsimp only
-          cases hed : P.decls.enums[e]? with
-          | none => rfl
-          | some ed =>
-            dsimp only
-            by_cases hlen : arms.length = ed.variants.length
-            · simp only [if_pos hlen]
-              cases hf : firstArmTy P R Γ₀ arms ed.variants with
+        obtain ⟨csc, o₀, Δ₀⟩ := p
+        cases csc with
+        | never => cases o₀ <;> rfl
+        | ty Tsc =>
+          cases Tsc with
+          | int => rfl
+          | float => rfl
+          | bool => rfl
+          | unit => rfl
+          | struct s' => rfl
+          | array Te n => rfl
+          | enum e =>
+            cases o₀ with
+            | none => rfl
+            | some Γ₀ =>
+              dsimp only
+              cases hed : P.decls.enums[e]? with
               | none => rfl
-              | some T =>
+              | some ed =>
                 dsimp only
-                cases hc : checkArms P R Γ₀ T arms ed.variants with
-                | none => rfl
-                | some Γs =>
-                    dsimp only
-                    cases hj : Ctx.joinAll P.decls Γs <;> rfl
-            · simp only [if_neg hlen]; rfl
+                by_cases hlen : arms.length = ed.variants.length
+                · simp only [if_pos hlen]
+                  cases hc : checkArms P R Γ₀ (firstArmTy P R Γ₀ arms ed.variants) arms
+                      ed.variants with
+                  | none => rfl
+                  | some r =>
+                      obtain ⟨os, Δs⟩ := r
+                      dsimp only
+                      cases hj : Ctx.joinOpts P.decls os <;> rfl
+                · simp only [if_neg hlen]; rfl
   | .mkArray Te args, Γ => by
       simp only [explain, check]
       have hargs := explainArgs_result (P := P) (R := R) args Γ (List.replicate args.length Te)
@@ -1606,61 +1778,127 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
   | .repeatArray Te e n, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, acceptedAt, Deriv.result] <;> grind)
   | .indexRead pl idx πs, Γ => by
       simp only [explain, check, explainIdx_result idx]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
   | .indexWrite pl idx πs e, Γ => by
       simp only [explain, check, explain_result e, explainIdx_result idx]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
   | .indexDrop pl idx πs, Γ => by
       simp only [explain, check, explainIdx_result idx]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
   | .drop pl, Γ => by
       simp only [explain, check]
-      (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
+      (repeat' split) <;> first | rfl | simp_all [accepted, acceptedAt, rejected, Deriv.result]
   | .letIn m e₁ e₂, Γ => by
-      simp only [explain, check, explain_result e₁, explain_result e₂]
-      (repeat' split) <;>
-        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+      simp only [explain, check, explain_result e₁]
+      cases h₁ : check P R Γ e₁ with
+      | none => rfl
+      | some p =>
+        obtain ⟨c₁, o₁, Δ₁⟩ := p
+        cases o₁ with
+        | none => cases c₁ <;> rfl
+        | some Γ₁ =>
+          cases c₁ with
+          | never => rfl
+          | ty T₁ =>
+            simp only [explain_result e₂]
+            cases h₂ : check P R ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂ with
+            | none => rfl
+            | some q =>
+              obtain ⟨c₂, o₂, Δ₂⟩ := q
+              cases o₂ with
+              | none => rfl
+              | some Γb =>
+                cases Γb with
+                | nil => rfl
+                | cons en' Γ₂ => dsimp only; split <;> rfl
   | .assign pl e, Γ => by
-      simp only [explain, check, explain_result e]
-      (repeat' split) <;>
-        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+      simp only [explain, check]
+      cases hg : Γ[pl.root]? with
+      | none => rfl
+      | some en₀ =>
+        dsimp only
+        by_cases hmu : en₀.mu = true
+        · simp only [hmu, if_true]
+          cases hs : en₀.st.get pl.path with
+          | none => rfl
+          | some u₀ =>
+            cases ht : en₀.ty.atPath P.decls pl.path with
+            | none => rfl
+            | some T =>
+              dsimp only
+              rw [explain_result e]
+              cases hc : check P R Γ e with
+              | none => rfl
+              | some r =>
+                obtain ⟨c, o, Δ⟩ := r
+                cases o with
+                | none => rfl
+                | some Γ₁ =>
+                  dsimp only
+                  by_cases hT : c.fits T = true
+                  · simp only [hT, if_true]
+                    cases hg₁ : Γ₁[pl.root]? with
+                    | none => rfl
+                    | some en₁ =>
+                      dsimp only
+                      cases hu : en₁.st.get pl.path with
+                      | none => rfl
+                      | some u₁ =>
+                        dsimp only
+                        by_cases hA : assignArrayOk P.decls en₁.st en₁.ty pl.path = true ∧
+                            overwriteOk P.decls u₁ T = true
+                        · rw [if_pos hA, if_pos hA]; rfl
+                        · rw [if_neg hA, if_neg hA]; split <;> rfl
+                  · simp only [hT, Bool.false_eq_true, if_false]; rfl
+        · simp only [hmu, Bool.false_eq_true, if_false]; rfl
   | .seq e₁ e₂, Γ => by
       simp only [explain, check, explain_result e₁, explain_result e₂]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
   | .ite c e₁ e₂, Γ => by
       simp only [explain, check, explain_result c]
       cases hc : check P R Γ c with
       | none => rfl
       | some p =>
-        obtain ⟨T, Γ₀⟩ := p
-        cases T with
-        | int => rfl
-        | float => rfl
-        | unit => rfl
-        | struct s' => rfl
-        | enum e' => rfl
-        | array Te n => rfl
-        | bool =>
-            simp only [explain_result e₁, explain_result e₂]
-            cases h₁ : check P R Γ₀ e₁ with
-            | none => cases h₂ : check P R Γ₀ e₂ <;> rfl
-            | some q₁ =>
-              cases h₂ : check P R Γ₀ e₂ with
-              | none => rfl
-              | some q₂ =>
-                obtain ⟨T₁, Γ₁⟩ := q₁
-                obtain ⟨T₂, Γ₂⟩ := q₂
-                simp only []
-                split
-                · cases hj : Ctx.join P.decls Γ₁ Γ₂ <;> rfl
-                · rfl
+        obtain ⟨cc, o₀, Δ₀⟩ := p
+        cases o₀ with
+        | none =>
+            cases cc with
+            | never => (try dsimp only); split <;> rfl
+            | ty T => cases T <;> ((try dsimp only); split <;> rfl)
+        | some Γ₀ =>
+          cases cc with
+          | never => rfl
+          | ty T =>
+            cases T with
+            | int => rfl
+            | float => rfl
+            | unit => rfl
+            | struct s' => rfl
+            | enum e' => rfl
+            | array Te n => rfl
+            | bool =>
+                simp only [explain_result e₁, explain_result e₂]
+                cases h₁ : check P R Γ₀ e₁ with
+                | none => cases h₂ : check P R Γ₀ e₂ <;> rfl
+                | some q₁ =>
+                  cases h₂ : check P R Γ₀ e₂ with
+                  | none => rfl
+                  | some q₂ =>
+                    obtain ⟨c₁, Ω₁⟩ := q₁
+                    obtain ⟨c₂, Ω₂⟩ := q₂
+                    simp only []
+                    cases hm : CTy.meet c₁ c₂ with
+                    | none => rfl
+                    | some c' =>
+                        dsimp only
+                        cases hj : Ctx.joinOpt P.decls Ω₁.norm Ω₂.norm <;> rfl
   | .call f args, Γ => by
       simp only [explain, check]
       cases hf : P.fns[f]? with
@@ -1674,10 +1912,20 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
           intro hargs
           cases res with
           | none => rw [← hargs]; rfl
-          | some Γ' => rw [← hargs]; rfl
+          | some Ω' => rw [← hargs]; rfl
   | .ret e, Γ => by
       simp only [explain, check, explain_result e]
-      (repeat' split) <;> first | rfl | simp_all [accepted, Deriv.result]
+      cases hc : check P R Γ e with
+      | none => rfl
+      | some r =>
+        obtain ⟨c, o, Δ⟩ := r
+        cases o with
+        | none => dsimp only; split <;> rfl
+        | some Γ₁ =>
+          dsimp only
+          by_cases h : c.fits R = true ∧ NoResidualLinear P.decls Γ₁
+          · rw [if_pos h, if_pos h]; rfl
+          · rw [if_neg h, if_neg h]; split <;> rfl
 
 /-- **The index-list derivations are the checker's** (helper). -/
 theorem explainIdx_result {P : Program} {R : Ty} : ∀ (es : List Expr) (Γ : Ctx),
@@ -1688,13 +1936,19 @@ theorem explainIdx_result {P : Program} {R : Ty} : ∀ (es : List Expr) (Γ : Ct
       cases hr : check P R Γ e with
       | none => rfl
       | some p =>
-        obtain ⟨T', Γ₁⟩ := p
-        cases T' with
-        | int w s =>
-            simp only []
-            rw [explainIdx_result es Γ₁]
-            rcases checkIdx P R Γ₁ es with _ | ⟨_, _⟩ <;> rfl
-        | float _ | bool | unit | struct _ | enum _ | array _ _ => rfl
+        obtain ⟨c, o, Δ⟩ := p
+        cases c with
+        | never => rfl
+        | ty T' =>
+          cases T' with
+          | int w s =>
+              cases o with
+              | none => rfl
+              | some Γ₁ =>
+                simp only []
+                rw [explainIdx_result es Γ₁]
+                rcases checkIdx P R Γ₁ es with _ | ⟨_, _⟩ <;> rfl
+          | float _ | bool | unit | struct _ | enum _ | array _ _ => rfl
 
 /-- **The argument-list derivations are the checker's** ((Call) §5.8). -/
 theorem explainArgs_result {P : Program} {R : Ty} : ∀ (es : List Expr) (Γ : Ctx) (Ts : List Ty),
@@ -1707,11 +1961,14 @@ theorem explainArgs_result {P : Program} {R : Ty} : ∀ (es : List Expr) (Γ : C
       cases hr : check P R Γ e with
       | none => rfl
       | some p =>
-        obtain ⟨T', Γ₁⟩ := p
-        simp only []
-        split
-        · exact explainArgs_result es Γ₁ Ts
-        · rfl
+        obtain ⟨c, o, Δ⟩ := p
+        cases o with
+        | none => simp only []; split <;> rfl
+        | some Γ₁ =>
+          simp only []
+          split
+          · rw [explainArgs_result es Γ₁ Ts]; rfl
+          · rfl
 end
 
 /-! ## Runs
