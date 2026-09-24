@@ -6,7 +6,7 @@
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 use crate::inference::{FrontierParamOverlay, LazyInferenceFacts, ParamVarInfo};
-use crate::sema::decode_module_spine;
+use crate::sema::{decode_inline_import_spine, decode_module_spine};
 use ahash::AHashMap;
 use lasso::Key;
 use std::collections::VecDeque;
@@ -1489,6 +1489,27 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .and_then(|types| types.get(&receiver))
             .and_then(Type::as_module)
         {
+            return Some(module);
+        }
+        // `@import("x.rue").f(..)`, `@import("std").cmp.max(..)`: the root is
+        // the imported module itself, bound through the same canonical-import
+        // lookup that analyzes the intrinsic, then each segment is a module
+        // binding of the previous hop's file (RUE-2401). Privacy stays with
+        // semantic analysis, which resolves the same path again.
+        if let Some(spine) =
+            decode_inline_import_spine(self.body_rir_ref(), self.body_interner(), receiver)
+        {
+            let path = self.body_interner().resolve(&spine.path).to_owned();
+            let receiver_span = self.body_rir_ref().get(receiver).span;
+            let mut module = self.resolve_canonical_import(&path, receiver_span).ok()?;
+            for field in spine.fields {
+                let file = self.module_def(module).file_id;
+                module = self
+                    .call_facts()
+                    .call_module_binding(file, field)?
+                    .ty
+                    .as_module()?;
+            }
             return Some(module);
         }
         let rue_rir::InstData::VarRef { name, .. } = self.body_rir_ref().get(receiver).data else {
