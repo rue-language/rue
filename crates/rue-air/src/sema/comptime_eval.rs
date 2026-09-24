@@ -426,6 +426,7 @@ impl<'a>
             expected_result: None,
             declared_integer_locals: AHashMap::new(),
             declared_integer_checks: AHashMap::new(),
+            literal_type: None,
         }
     }
 }
@@ -2868,6 +2869,36 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
     fn float_type(&self, width: super::comptime::ComptimeFloatWidth) -> Option<Type> {
         Some(width.air_type())
     }
+    /// The declared type of one child slot of a structural literal, so the
+    /// engine evaluates an element, field or payload at its own type and
+    /// holds a float literal there to spec 3.12:10 at the literal, as the
+    /// durable host does (RUE-2390, RUE-2406).
+    fn comptime_child_slot_type(
+        &mut self,
+        parent: &Type,
+        slot: super::comptime::ComptimeChildSlot<'_, Spur>,
+    ) -> ComptimeHostResult<Option<Type>, Self::Failure> {
+        use super::comptime::ComptimeChildSlot;
+        let pool = self.body_type_pool();
+        Ok(match (slot, parent.kind()) {
+            (ComptimeChildSlot::ArrayElement, TypeKind::Array(id)) => Some(pool.array_def(id).0),
+            (ComptimeChildSlot::Field(name), TypeKind::Struct(id)) => {
+                let name = self.body_interner().resolve(name);
+                pool.struct_def(id)
+                    .fields
+                    .iter()
+                    .find(|field| field.name == name)
+                    .map(|field| field.ty)
+            }
+            (ComptimeChildSlot::EnumPayload { variant, index }, TypeKind::Enum(id)) => {
+                let definition = pool.enum_def(id);
+                definition
+                    .find_variant(self.body_interner().resolve(variant))
+                    .and_then(|variant| definition.variant_payload(variant).get(index).copied())
+            }
+            _ => None,
+        })
+    }
     fn const_expr_type(
         &self,
         _program: &Self::ProgramKey,
@@ -3666,6 +3697,13 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeRejections for OrdinaryBodyEngine<
             },
             site.span(),
         )
+    }
+    fn float_literal_not_finite(
+        &self,
+        kind: ErrorKind,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        CompileError::new(kind, site.span())
     }
     fn cannot_negate(
         &self,

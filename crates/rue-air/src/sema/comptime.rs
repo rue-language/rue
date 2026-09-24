@@ -853,6 +853,18 @@ pub trait ComptimeCallProtocol: ComptimeDomain {
     ) -> Option<Self::Type> {
         None
     }
+    /// The type an argument's value takes at its parameter, with the call's
+    /// earlier type arguments substituted (`v: T` after `T = f32` is `f32`).
+    /// The engine holds a float literal argument to spec 3.12:10 at it. The
+    /// default is the declared argument type, for a host whose parameter
+    /// types are already concrete.
+    fn comptime_call_parameter_type(
+        &self,
+        binding: &Self::CallBinding,
+        index: usize,
+    ) -> Option<Self::Type> {
+        self.comptime_call_argument_type(binding, index)
+    }
     /// Push one already-evaluated argument. `false` rejects the call as
     /// runtime-dependent and stops the engine before the next child runs.
     fn bind_comptime_call_argument(
@@ -1055,6 +1067,16 @@ pub trait ComptimeRejections: ComptimeDomain {
         &self,
         value: i128,
         ty: &Self::Type,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure;
+    /// Report a float literal that does not name a finite value at the
+    /// declared type it takes (spec 3.12:10). `kind` is the E0206 the shared
+    /// [`crate::finite_float_literal`] rule built, so every host words it as
+    /// the body type checker does; the host only anchors it at `site`, the
+    /// literal's own span.
+    fn float_literal_not_finite(
+        &self,
+        kind: rue_error::ErrorKind,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure;
     fn cannot_negate(
@@ -1909,7 +1931,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             let program = self.program_key();
             let previous_expected = env.expected_result.clone();
             env.expected_result = self.host.comptime_call_argument_type(binding, index);
-            let value = match self.eval(arg.value, env) {
+            let parameter_type = self.host.comptime_call_parameter_type(binding, index);
+            let value = match self.eval_typed(arg.value, parameter_type, env) {
                 ComptimeOutcome::Known(value) => value,
                 other => {
                     env.expected_result = previous_expected;
@@ -2067,8 +2090,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         child_env.expected_result = frame.expected_result.clone();
         let body = frame.body;
         let is_call = frame.name.is_some();
+        // A call's body produces a value of its declared return type, so a
+        // float literal in its result position meets spec 3.12:10 there. A
+        // root frame's value is admitted by its consumer: a `const`
+        // initializer or the body type checker's `comptime {}` result.
+        let literal_type = is_call.then(|| frame.expected_result.clone()).flatten();
         self.frames.push(frame);
-        let result = self.eval(body, &mut child_env);
+        let result = self.eval_typed(body, literal_type, &mut child_env);
         let frame = self.frames.pop().expect("comptime frame stack underflow");
         if is_call {
             let result = match result {
@@ -2099,7 +2127,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
         let enclosing = std::mem::replace(&mut env.expected_result, slot.clone());
-        let value = self.eval(child, env);
+        let value = self.eval_typed(child, slot.clone(), env);
         env.expected_result = enclosing;
         match (value, slot) {
             (ComptimeOutcome::Known(value), Some(slot)) => {
@@ -3074,18 +3102,33 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             let source = self.program_rir().get(inst_ref);
             (source.data.clone(), source.span)
         };
+        // The declared type this expression's value takes, if any, is
+        // consumed here: only the result positions below pass it on.
+        let literal_type = env.literal_type.take();
+        if let Some(ty) = literal_type.as_ref() {
+            host_value!(self.admit_float_literal(&data, ty, span));
+        }
         match data {
             InstData::Call { name, args } => {
                 let name = self.name_from_rir(name.into());
                 self.evaluate_call(name, &args, env, span)
             }
-            InstData::Comptime { expr } => self.eval(expr, env),
-            InstData::Block { instructions } => self.eval_block(instructions, env, span),
+            InstData::Comptime { expr } => {
+                env.literal_type = literal_type;
+                self.eval(expr, env)
+            }
+            InstData::Block { instructions } => {
+                self.eval_block(instructions, literal_type, env, span)
+            }
             InstData::Branch {
                 cond,
                 then_block,
                 else_block,
-            } => self.eval_branch(cond, then_block, else_block, env),
+            } => self.eval_branch(cond, then_block, else_block, literal_type, env),
+            InstData::Match { .. } => {
+                env.literal_type = literal_type;
+                self.eval_dispatch(inst_ref, env)
+            }
             // An operator whose first operand is another operator walks that
             // chain iteratively, and marks its own declared integer region
             // there; an operator inside a chain receives its outcome from
@@ -3110,10 +3153,68 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         }
     }
 
+    /// Hold a float literal, or a negated one, that takes the declared type
+    /// `ty` to the finite-literal rule of spec 3.12:10 (RUE-2406, RUE-2411).
+    /// Run time rejects `let x: f32 = 1e39;` on the literal, whatever
+    /// position gives it its type; this is the same rule, through the same
+    /// [`crate::finite_float_literal`], for a literal the engine gives its
+    /// type. Any other expression, and a type without a float width, passes:
+    /// a computed value (`1e38 * 10.0`) may be an infinity.
+    #[inline(never)]
+    fn admit_float_literal(
+        &self,
+        data: &InstData,
+        ty: &H::Type,
+        span: Span,
+    ) -> ComptimeHostResult<(), H::Failure> {
+        let (text, negated) = match data {
+            InstData::FloatConst { text } => (*text, false),
+            InstData::Neg { operand } => match self.program_rir().get(*operand).data {
+                InstData::FloatConst { text } => (text, true),
+                _ => return Ok(()),
+            },
+            _ => return Ok(()),
+        };
+        let Some(width) = self.host.type_float_width(ty) else {
+            return Ok(());
+        };
+        let spelling = self
+            .host
+            .display_name(&self.host.name_from_symbol(&self.program_key(), text.into()));
+        match crate::finite_float_literal(&spelling, width.air_type(), negated, || {
+            if negated {
+                format!("-{spelling}")
+            } else {
+                spelling.clone()
+            }
+        }) {
+            Ok(_) => Ok(()),
+            Err(kind) => Err(ComptimeHostError::HostFailure(
+                self.host
+                    .float_literal_not_finite(kind, &self.diagnostic_site(span)),
+            )),
+        }
+    }
+
+    /// Evaluate `inst` as an expression whose value takes the declared type
+    /// `ty`, so a float literal in its result position meets spec 3.12:10.
+    fn eval_typed(
+        &mut self,
+        inst: InstRef,
+        ty: Option<H::Type>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        env.literal_type = ty;
+        let value = self.eval(inst, env);
+        env.literal_type = None;
+        value
+    }
+
     #[inline(never)]
     fn eval_block(
         &mut self,
         instructions: rue_rir::RirBlockInstsRange,
+        literal_type: Option<H::Type>,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
         span: Span,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
@@ -3175,7 +3276,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 }
                 H::Value::unit()
             } else {
-                match self.eval(stmt_ref, env) {
+                let literal_type = if is_tail { literal_type.clone() } else { None };
+                match self.eval_typed(stmt_ref, literal_type, env) {
                     ComptimeOutcome::Known(value) => value,
                     other => {
                         env.locals = saved_locals;
@@ -3238,6 +3340,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
         span: Span,
     ) -> ComptimeOutcome<(H::Value, Option<H::Type>), H::Failure> {
+        // The annotation's type, when it reduces, is the type the
+        // initializer's value takes: a float literal initializer meets spec
+        // 3.12:10 at it, as run time holds `let y: T = 1e39;` at `T = f32`.
+        let mut literal_type = None;
         let annotated = match annotation {
             Some(annotation) => {
                 let (types, values) = env.substs_with_locals();
@@ -3249,9 +3355,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     &values,
                     span,
                 ) {
-                    ComptimeOutcome::Known(ty) => (self.names_primitive_integer(annotation)
-                        && self.host.type_integer_semantics(&ty).is_some())
-                    .then_some(ty),
+                    ComptimeOutcome::Known(ty) => {
+                        literal_type = Some(ty.clone());
+                        (self.names_primitive_integer(annotation)
+                            && self.host.type_integer_semantics(&ty).is_some())
+                        .then_some(ty)
+                    }
                     // An annotation that does not reduce here leaves the
                     // binding unchecked, as on trunk.
                     ComptimeOutcome::RuntimeDependent | ComptimeOutcome::UnsupportedContext => None,
@@ -3273,12 +3382,20 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let region = (joins && (annotated.is_some() || !env.declared_integer_locals.is_empty()))
             .then(|| self.declared_region(init, annotated.clone(), env));
         let (value, checked) = match region {
-            Some((operations, checked)) if !operations.is_empty() => (
-                self.eval_declared_region(init, operations, checked.clone(), env),
-                checked,
-            ),
-            Some((_, checked)) => (self.eval(init, env), checked),
-            None => (self.eval(init, env), None),
+            Some((operations, checked)) if !operations.is_empty() => {
+                // A region is evaluated below `eval`, so a negated float
+                // literal at its root is admitted here.
+                if let Some(ty) = literal_type.as_ref() {
+                    let init_inst = self.program_rir().get(init);
+                    host_value!(self.admit_float_literal(&init_inst.data, ty, init_inst.span));
+                }
+                (
+                    self.eval_declared_region(init, operations, checked.clone(), env),
+                    checked,
+                )
+            }
+            Some((_, checked)) => (self.eval_typed(init, literal_type, env), checked),
+            None => (self.eval_typed(init, literal_type, env), None),
         };
         let value = outcome_value!(value);
         let declared = checked.filter(|ty| {
@@ -3297,15 +3414,16 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         cond: InstRef,
         then_block: InstRef,
         else_block: Option<InstRef>,
+        literal_type: Option<H::Type>,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
         match self.eval(cond, env) {
             ComptimeOutcome::Known(value) if value.as_boolean() == Some(true) => {
-                self.eval(then_block, env)
+                self.eval_typed(then_block, literal_type, env)
             }
             ComptimeOutcome::Known(value) if value.as_boolean() == Some(false) => {
                 match else_block {
-                    Some(else_block) => self.eval(else_block, env),
+                    Some(else_block) => self.eval_typed(else_block, literal_type, env),
                     None => ComptimeOutcome::Known(H::Value::unit()),
                 }
             }
@@ -4193,6 +4311,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // all, and a non-constant scrutinee is not decidable either —
             // both make the `match` non-evaluable.
             InstData::Match { scrutinee, arms } => {
+                let literal_type = env.literal_type.take();
                 let scrutinee = *scrutinee;
                 let scrut = outcome_value!(self.eval(scrutinee, env));
                 let arms = self
@@ -4261,7 +4380,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                                 env.declared_integer_locals.remove(&name);
                                 previous.push((name.clone(), env.locals.insert(name, value)));
                             }
-                            let result = self.eval(*body, env);
+                            let result = self.eval_typed(*body, literal_type.clone(), env);
                             if let Some(saved_declared) = saved_declared {
                                 env.declared_integer_locals = saved_declared;
                             }
