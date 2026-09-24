@@ -942,7 +942,7 @@ def dbgLine : Val → Option String
   | .int _ _ n => some (toString n)
   | .float w f => some (f.render w)
   | .bool b => some (if b then "true" else "false")
-  | .unit | .struct _ _ | .enum _ _ _ | .array _ _ => none
+  | .unit | .struct _ _ _ | .enum _ _ _ _ | .array _ _ _ => none
 
 /-- The line a user destructor prints (`Print.structItem`): the struct's
 first field, when that field is an integer. A declaration whose first field is
@@ -951,7 +951,7 @@ alike — and neither has one whose first field has been moved out, which
 `3.9:34` makes unreachable anyway (a destructor-bearing value has no partial
 moves). -/
 def dtorLine : Contents → Option String
-  | .struct _ (.int w s n :: _) => dbgLine (.int w s n)
+  | .struct _ _ (.int w s n :: _) => dbgLine (.int w s n)
   | _ => none
 
 /-- One stdout line per *observable* event, in trace order. Two events are
@@ -983,7 +983,7 @@ def valueLines (D : Decls) (v : Val) : List String :=
   -- the ones its own drop emits — a struct's fields in declaration order
   -- (`3.9:13`), an enum's active payload (`6.3:20`), an array's elements in
   -- ascending index order (`3.9:15`).
-  | .struct _ _ | .enum _ _ _ | .array _ _ =>
+  | .struct _ _ _ | .enum _ _ _ _ | .array _ _ _ =>
       match dropContents D (Contents.ofVal v) with
       | .ok evs => evs.filterMap eventLine
       | .error _ => []

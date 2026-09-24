@@ -150,24 +150,24 @@ inductive HasTy (D : Decls) : Val → Ty → Prop where
   | float {w f} : f.Wf w → HasTy D (.float w f) (.float w)
   | bool {b} : HasTy D (.bool b) .bool
   | unit : HasTy D .unit .unit
-  | struct {s sd vs} :
-      D.structs[s]? = some sd → HasTys D vs sd.fields → HasTy D (.struct s vs) (.struct s)
+  | struct {s sd i vs} :
+      D.structs[s]? = some sd → HasTys D vs sd.fields → HasTy D (.struct s i vs) (.struct s)
   /-- §6.1's `Kj⟨ v1, …, va ⟩` at `E`: the tag names a variant of the
   declaration — which is what progress at a `match` reads (`exhaustive_arm_exists`)
   — and the payload is well typed at that variant's declared component types
   ((Enum-Intro) §5.5, read on values). Nothing relates the value to the *other*
   variants: `class(E)` does (§3), and that is a fact about the type. -/
-  | enum {e k ed Ts vs} :
+  | enum {e k ed Ts i vs} :
       D.enums[e]? = some ed → ed.variants[k]? = some Ts → HasTys D vs Ts →
-      HasTy D (.enum e k vs) (.enum e)
+      HasTy D (.enum e k i vs) (.enum e)
 
   /-- §6.1's `[ v1, …, vn ]` well typed at `[T; n]` exactly when it has `n`
   elements and each is well typed at `T` ((Array-Intro) §5.8, read on values;
   `3.5:3`'s one shared element type is `List.replicate n T`). The value
   carries `T` because `class([T; n])` is not a function of the elements
   present — `3.8:74` (`Syntax.lean`). -/
-  | array {T n vs} :
-      HasTys D vs (List.replicate n T) → HasTy D (.array T vs) (.array T n)
+  | array {T n i vs} :
+      HasTys D vs (List.replicate n T) → HasTy D (.array T i vs) (.array T n)
 
 /-- Value typing for a value list, pointwise against the expected types: a
 call's arguments against the callee's parameter types (§5.8's (Call),
@@ -207,21 +207,21 @@ theorem HasTy.bool_inv {D v} (h : HasTy D v .bool) : ∃ b, v = .bool b := by
 
 /-- Inversion of value typing at a struct type (helper). -/
 theorem HasTy.struct_inv {D v s} (h : HasTy D v (.struct s)) :
-    ∃ sd vs, v = .struct s vs ∧ D.structs[s]? = some sd ∧ HasTys D vs sd.fields := by
-  cases h; exact ⟨_, _, rfl, ‹_›, ‹_›⟩
+    ∃ sd i vs, v = .struct s i vs ∧ D.structs[s]? = some sd ∧ HasTys D vs sd.fields := by
+  cases h; exact ⟨_, _, _, rfl, ‹_›, ‹_›⟩
 
 /-- Inversion of value typing at an enum type: the value carries a tag the
 declaration has and a payload well typed at that variant's components — the
 half progress at a `match` needs (helper). -/
 theorem HasTy.enum_inv {D v e} (h : HasTy D v (.enum e)) :
-    ∃ k ed Ts vs, v = .enum e k vs ∧ D.enums[e]? = some ed ∧ ed.variants[k]? = some Ts ∧
+    ∃ k ed Ts i vs, v = .enum e k i vs ∧ D.enums[e]? = some ed ∧ ed.variants[k]? = some Ts ∧
       HasTys D vs Ts := by
-  cases h; exact ⟨_, _, _, _, rfl, ‹_›, ‹_›, ‹_›⟩
+  cases h; exact ⟨_, _, _, _, _, rfl, ‹_›, ‹_›, ‹_›⟩
 
 /-- Inversion of value typing at an array type (helper). -/
 theorem HasTy.array_inv {D v T n} (h : HasTy D v (.array T n)) :
-    ∃ vs, v = .array T vs ∧ HasTys D vs (List.replicate n T) := by
-  cases h; exact ⟨_, rfl, ‹_›⟩
+    ∃ i vs, v = .array T i vs ∧ HasTys D vs (List.replicate n T) := by
+  cases h; exact ⟨_, _, rfl, ‹_›⟩
 
 /-! ## Typing the contents of a cell
 
@@ -241,8 +241,8 @@ mutual
 def Contents.holeFree : Contents → Bool
   | .hole => false
   | .int _ _ _ | .float _ _ | .bool _ | .unit => true
-  | .struct _ cs | .array _ cs => Contents.holeFreeList cs
-  | .enum _ _ cs => Contents.holeFreeList cs
+  | .struct _ _ cs | .array _ _ cs => Contents.holeFreeList cs
+  | .enum _ _ _ cs => Contents.holeFreeList cs
 
 /-- The same over a field list (helper). -/
 def Contents.holeFreeList : List Contents → Bool
@@ -263,21 +263,22 @@ inductive ContentsTy (D : Decls) : Contents → Ty → Prop where
   | float {w f} : f.Wf w → ContentsTy D (.float w f) (.float w)
   | bool {b} : ContentsTy D (.bool b) .bool
   | unit : ContentsTy D .unit .unit
-  | struct {s sd cs} :
-      D.structs[s]? = some sd → ContentsTys D cs sd.fields → ContentsTy D (.struct s cs) (.struct s)
+  | struct {s sd i cs} :
+      D.structs[s]? = some sd → ContentsTys D cs sd.fields →
+      ContentsTy D (.struct s i cs) (.struct s)
   /-- §6.1's tagged value stored in a cell, typed the way `HasTy.enum` types
   the value. A payload position is never `⊘` in a reachable state (no path
   reaches one — `Dynamics.lean`), but nothing here needs that: `ContentsTy`
   admits `⊘` at every node and `holeFree` is what the rules that want a value
   ask for. -/
-  | enum {e k ed Ts cs} :
+  | enum {e k ed Ts i cs} :
       D.enums[e]? = some ed → ed.variants[k]? = some Ts → ContentsTys D cs Ts →
-      ContentsTy D (.enum e k cs) (.enum e)
+      ContentsTy D (.enum e k i cs) (.enum e)
 
   /-- An array's stored contents: `n` positions, each well typed at the
   element type, with §6.1's `⊘` admitted at any of them. -/
-  | array {T n cs} :
-      ContentsTys D cs (List.replicate n T) → ContentsTy D (.array T cs) (.array T n)
+  | array {T n i cs} :
+      ContentsTys D cs (List.replicate n T) → ContentsTy D (.array T i cs) (.array T n)
 
 /-- The same, pointwise against a declaration's field list, a variant's
 payload components, or an array's `n` copies of its element type (§5.8's
@@ -295,13 +296,13 @@ theorem ContentsTys.length_eq : ∀ {D cs Ts}, ContentsTys D cs Ts → cs.length
 
 /-- Inversion of contents typing at a struct type, for a contents that is not
 a hole (helper). -/
-theorem ContentsTy.struct_inv {D s cs T} (h : ContentsTy D (.struct s cs) T) :
+theorem ContentsTy.struct_inv {D s i cs T} (h : ContentsTy D (.struct s i cs) T) :
     ∃ sd, T = .struct s ∧ D.structs[s]? = some sd ∧ ContentsTys D cs sd.fields := by
   cases h; exact ⟨_, rfl, ‹_›, ‹_›⟩
 
 /-- Inversion of contents typing at an array type, for a contents that is not
 a hole (helper). -/
-theorem ContentsTy.array_inv {D T cs T₀} (h : ContentsTy D (.array T cs) T₀) :
+theorem ContentsTy.array_inv {D T i cs T₀} (h : ContentsTy D (.array T i cs) T₀) :
     ∃ n, T₀ = .array T n ∧ ContentsTys D cs (List.replicate n T) := by
   cases h; exact ⟨_, rfl, ‹_›⟩
 
@@ -310,10 +311,10 @@ elements: the shape (D-Index) §6.5 needs before it can bounds-check an index
 against `cs.length` (helper). -/
 theorem ContentsTy.array_shape {D : Decls} {c : Contents} {T : Ty} {n : Nat}
     (h : ContentsTy D c (.array T n)) (hf : c.holeFree = true) :
-    ∃ cs, c = .array T cs ∧ ContentsTys D cs (List.replicate n T) := by
+    ∃ i cs, c = .array T i cs ∧ ContentsTys D cs (List.replicate n T) := by
   cases h with
   | hole => simp [Contents.holeFree] at hf
-  | array hcs => exact ⟨_, rfl, hcs⟩
+  | array hcs => exact ⟨_, _, rfl, hcs⟩
 
 /-- A field of a well-typed contents is well typed at its declared type
 (helper). -/
@@ -369,9 +370,9 @@ theorem Contents.holeFree_ofVal (v : Val) : (Contents.ofVal v).holeFree = true :
   | float => rfl
   | bool => rfl
   | unit => rfl
-  | struct s vs => exact Contents.holeFreeList_ofVals vs
-  | enum e k vs => exact Contents.holeFreeList_ofVals vs
-  | array T vs => exact Contents.holeFreeList_ofVals vs
+  | struct s i vs => exact Contents.holeFreeList_ofVals vs
+  | enum e k i vs => exact Contents.holeFreeList_ofVals vs
+  | array T i vs => exact Contents.holeFreeList_ofVals vs
 
 /-- The same over a field or element list (helper). -/
 theorem Contents.holeFreeList_ofVals : ∀ vs : List Val,
@@ -439,18 +440,18 @@ theorem ContentsTy.toVal {D c T} (h : ContentsTy D c T) (hf : c.holeFree = true)
   | float hw => exact ⟨_, rfl, .float hw⟩
   | bool => exact ⟨_, rfl, .bool⟩
   | unit => exact ⟨_, rfl, .unit⟩
-  | @struct s sd cs hd hcs =>
+  | @struct s sd i cs hd hcs =>
       obtain ⟨vs, hvs, hty⟩ := ContentsTys.toVals hcs (by
         simpa only [Contents.holeFree] using hf)
-      exact ⟨_, by simp only [Contents.toVal, hvs, Option.map_some], .struct hd hty⟩
-  | @enum e k ed Ts cs hd hv hcs =>
+      exact ⟨Val.struct s i vs, by simp only [Contents.toVal, hvs, Option.map_some], .struct hd hty⟩
+  | @enum e k ed Ts i cs hd hv hcs =>
       obtain ⟨vs, hvs, hty⟩ := ContentsTys.toVals hcs (by
         simpa only [Contents.holeFree] using hf)
-      exact ⟨_, by simp only [Contents.toVal, hvs, Option.map_some], .enum hd hv hty⟩
-  | @array T n cs hcs =>
+      exact ⟨Val.enum e k i vs, by simp only [Contents.toVal, hvs, Option.map_some], .enum hd hv hty⟩
+  | @array T n i cs hcs =>
       obtain ⟨vs, hvs, hty⟩ := ContentsTys.toVals hcs (by
         simpa only [Contents.holeFree] using hf)
-      exact ⟨_, by simp only [Contents.toVal, hvs, Option.map_some], .array hty⟩
+      exact ⟨Val.array T i vs, by simp only [Contents.toVal, hvs, Option.map_some], .array hty⟩
 
 /-- The same over a field list (helper). -/
 theorem ContentsTys.toVals {D cs Ts} (h : ContentsTys D cs Ts)
@@ -480,6 +481,151 @@ theorem ContentsTy.mult_eq {D c T} (h : ContentsTy D c T) (hf : c.holeFree = tru
   | array hcs =>
       simp only [Contents.mult, ContentsTys.length_eq hcs, List.length_replicate]
 
+/-! ## Copy closure: a `Copy` type holds nothing owned
+
+The machine's copy-closure monitor (`Contents.copyClosed`, `Dynamics.lean`)
+refuses an aggregate whose class is `Copy` but whose members are not. §3 makes
+that a fact about types — `3.8:18` requires every field of a `@copy` struct to
+be `Copy`, `6.3:19` makes an enum `Copy` only when every payload component is,
+and §3's array lift makes `[T; n]` `Copy` only when `T` is — so well-typed
+contents is copy-closed and the monitor never fires on a checked program. -/
+
+/-- A class of rank `0` is `Copy` (helper). -/
+theorem Mult.eq_copy_of_rank {m : Mult} (h : m.rank = 0) : m = .copy := by
+  cases m <;> simp_all [Mult.rank]
+
+/-- **A `Copy` struct's fields are `Copy`** (`3.8:18`): the class is the
+attribute's lift of the field join, only `@copy` lifts to `Copy`, and a
+well-formed `@copy` declaration's join is already `Copy` (helper). -/
+theorem StructDecl.Wf.field_copy {D : Decls} {sd : StructDecl} (h : sd.Wf D)
+    (hcls : sd.cls = .copy) : ∀ T ∈ sd.fields, T.mult D = .copy := by
+  intro T hmem
+  have hattr : sd.attr = .copy := by
+    have hc := h.classIsJoin
+    rw [hcls] at hc
+    cases ha : sd.attr with
+    | copy => rfl
+    | linear => rw [ha] at hc; cases hc
+    | none =>
+        rw [ha] at hc
+        simp only [Attr.lift] at hc
+        split at hc <;> cases hc
+  have hbase := (h.copyWf hattr).1
+  have hle := rank_le_joinFold_of_mem D sd.fields .copy T hmem
+  have : (sd.baseOf D).rank = 0 := by rw [hbase]; rfl
+  exact Mult.eq_copy_of_rank (by unfold StructDecl.baseOf at this; omega)
+
+/-- **A `Copy` enum's payloads are `Copy`** (`6.3:19`): the class is the join
+over every payload component of every variant (helper). -/
+theorem EnumDecl.Wf.payload_copy {D : Decls} {ed : EnumDecl} (h : ed.Wf D)
+    (hcls : ed.cls = .copy) : ∀ Ts ∈ ed.variants, ∀ T ∈ Ts, T.mult D = .copy := by
+  intro Ts hTs T hT
+  have hle := rank_le_payloadFold_of_mem D ed.variants .copy Ts T hTs hT
+  have : (ed.payloadJoin D).rank = 0 := by rw [← h.classIsJoin, hcls]; rfl
+  exact Mult.eq_copy_of_rank (by unfold EnumDecl.payloadJoin at this; omega)
+
+/-- **A `Copy` array's element type is `Copy`** (§3's array lift) (helper). -/
+theorem Ty.array_copy_elem {D : Decls} {T : Ty} {n : Nat}
+    (h : Ty.mult D (.array T n) = .copy) : T.mult D = .copy := by
+  simp only [Ty.mult] at h
+  split at h
+  · assumption
+  · split at h <;> simp_all
+
+mutual
+/-- Well-typed contents at a `Copy` type is `Copy` all the way down (helper). -/
+theorem ContentsTy.allCopy {D : Decls} {c : Contents} {T : Ty} (hwf : WfDecls D)
+    (h : ContentsTy D c T) (hc : T.mult D = .copy) : c.allCopy D = true := by
+  cases h with
+  | hole => rfl
+  | int => rfl
+  | float => rfl
+  | bool => rfl
+  | unit => rfl
+  | @struct s sd i cs hd hcs =>
+      have hcls : sd.cls = .copy := by simpa only [Ty.mult, Decls.classOf, hd] using hc
+      have hc' : D.classOf s = .copy := by simp only [Decls.classOf, hd]; exact hcls
+      simp only [Contents.allCopy, hc', decide_true, Bool.true_and]
+      exact ContentsTys.allCopyList hwf hcs ((hwf.structs s sd hd).field_copy hcls)
+  | @enum e k ed Ts i cs hd hv hcs =>
+      have hcls : ed.cls = .copy := by simpa only [Ty.mult, Decls.enumClassOf, hd] using hc
+      have hc' : D.enumClassOf e = .copy := by simp only [Decls.enumClassOf, hd]; exact hcls
+      simp only [Contents.allCopy, hc', decide_true, Bool.true_and]
+      exact ContentsTys.allCopyList hwf hcs
+        ((hwf.enums e ed hd).payload_copy hcls Ts (List.mem_of_getElem? hv))
+  | @array T n i cs hcs =>
+      have hlen : cs.length = n := by simpa using hcs.length_eq
+      simp only [Contents.allCopy, hlen, hc, decide_true, Bool.true_and]
+      refine ContentsTys.allCopyList hwf hcs ?_
+      intro T' hmem
+      rw [List.eq_of_mem_replicate hmem]
+      exact Ty.array_copy_elem hc
+
+/-- The same over a field list (helper). -/
+theorem ContentsTys.allCopyList {D : Decls} {cs : List Contents} {Ts : List Ty}
+    (hwf : WfDecls D) (h : ContentsTys D cs Ts) (hc : ∀ T ∈ Ts, T.mult D = .copy) :
+    Contents.allCopyList D cs = true := by
+  cases h with
+  | nil => rfl
+  | cons h₁ h₂ =>
+      simp only [Contents.allCopyList, Bool.and_eq_true]
+      exact ⟨ContentsTy.allCopy hwf h₁ (hc _ List.mem_cons_self),
+        ContentsTys.allCopyList hwf h₂ (fun T hT => hc T (List.mem_cons_of_mem _ hT))⟩
+end
+
+mutual
+/-- **Well-typed contents is copy-closed**, so the machine's copy-closure
+monitor (`Contents.copyClosed`) lets every checked program's aggregates through
+(helper). -/
+theorem ContentsTy.copyClosed {D : Decls} {c : Contents} {T : Ty} (hwf : WfDecls D)
+    (h : ContentsTy D c T) : c.copyClosed D = true := by
+  cases h with
+  | hole => rfl
+  | int => rfl
+  | float => rfl
+  | bool => rfl
+  | unit => rfl
+  | @struct s sd i cs hd hcs =>
+      simp only [Contents.copyClosed]
+      split
+      · rename_i hc'
+        have hcls : sd.cls = .copy := by simpa only [Decls.classOf, hd] using hc'
+        exact ContentsTys.allCopyList hwf hcs ((hwf.structs s sd hd).field_copy hcls)
+      · exact ContentsTys.copyClosedList hwf hcs
+  | @enum e k ed Ts i cs hd hv hcs =>
+      simp only [Contents.copyClosed]
+      split
+      · rename_i hc'
+        have hcls : ed.cls = .copy := by simpa only [Decls.enumClassOf, hd] using hc'
+        exact ContentsTys.allCopyList hwf hcs
+          ((hwf.enums e ed hd).payload_copy hcls Ts (List.mem_of_getElem? hv))
+      · exact ContentsTys.copyClosedList hwf hcs
+  | @array T n i cs hcs =>
+      have hlen : cs.length = n := by simpa using hcs.length_eq
+      simp only [Contents.copyClosed, hlen]
+      split
+      · rename_i hc'
+        refine ContentsTys.allCopyList hwf hcs ?_
+        intro T' hmem
+        rw [List.eq_of_mem_replicate hmem]
+        exact Ty.array_copy_elem hc'
+      · exact ContentsTys.copyClosedList hwf hcs
+
+/-- The same over a field list (helper). -/
+theorem ContentsTys.copyClosedList {D : Decls} {cs : List Contents} {Ts : List Ty}
+    (hwf : WfDecls D) (h : ContentsTys D cs Ts) : Contents.copyClosedList D cs = true := by
+  cases h with
+  | nil => rfl
+  | cons h₁ h₂ =>
+      simp only [Contents.copyClosedList, Bool.and_eq_true]
+      exact ⟨ContentsTy.copyClosed hwf h₁, ContentsTys.copyClosedList hwf h₂⟩
+end
+
+/-- A well-typed value is copy-closed (helper). -/
+theorem HasTy.copyClosed {D : Decls} {v : Val} {T : Ty} (hwf : WfDecls D) (h : HasTy D v T) :
+    (Contents.ofVal v).copyClosed D = true :=
+  h.contentsTy.copyClosed hwf
+
 /-! ## §6.11's walk over contents: it never refuses, and it drops in order -/
 
 mutual
@@ -495,11 +641,11 @@ theorem dropContents_events {D : Decls} {c : Contents} {T : Ty} (h : ContentsTy 
   | float => rfl
   | bool => rfl
   | unit => rfl
-  | @struct s sd cs hd hcs =>
+  | @struct s sd i cs hd hcs =>
       simp only [dropContents, dropEvents, hd, dropContentsList_events hcs]
-  | @enum e k ed Ts cs hd hv hcs =>
+  | @enum e k ed Ts i cs hd hv hcs =>
       simp only [dropContents, dropEvents, dropContentsList_events hcs]
-  | @array T n cs hcs =>
+  | @array T n i cs hcs =>
       simp only [dropContents, dropEvents, dropContentsList_events hcs]
 
 /-- The same over a field list: `drop*` emits exactly the fields' events, in
@@ -534,9 +680,10 @@ Be exact about the `⊘`-skip: this theorem states the **map**, `cs.map
 is carried by the closed form's own leaf case, not concluded here; what the
 theorem adds is that the walk emits exactly that map, in that order. -/
 theorem dropContents_struct_events {D : Decls} {s : Nat} {sd : StructDecl}
-    {cs : List Contents} (hd : D.structs[s]? = some sd) (h : ContentsTy D (.struct s cs) (.struct s)) :
-    dropContents D (.struct s cs)
-      = .ok ((if sd.dtor then [Event.dtor s (.struct s cs)] else [])
+    {i : Nat} {cs : List Contents} (hd : D.structs[s]? = some sd)
+    (h : ContentsTy D (.struct s i cs) (.struct s)) :
+    dropContents D (.struct s i cs)
+      = .ok ((if sd.dtor then [Event.dtor s (.struct s i cs)] else [])
               ++ (cs.map (dropEvents D)).flatten) := by
   rw [dropContents_events h]
   simp only [dropEvents, hd, dropEventsList_eq_flatten]
@@ -549,9 +696,9 @@ whose payload list is empty. The inactive variants contribute nothing because
 they have no storage — the value carries one tag — and a payload already moved
 out by a `match` binding left the enum place `⊘`, which `dropEvents .hole = []`
 skips. -/
-theorem dropContents_enum_events {D : Decls} {e k : Nat} {cs : List Contents}
-    (h : ContentsTy D (.enum e k cs) (.enum e)) :
-    dropContents D (.enum e k cs) = .ok ((cs.map (dropEvents D)).flatten) := by
+theorem dropContents_enum_events {D : Decls} {e k i : Nat} {cs : List Contents}
+    (h : ContentsTy D (.enum e k i cs) (.enum e)) :
+    dropContents D (.enum e k i cs) = .ok ((cs.map (dropEvents D)).flatten) := by
   rw [dropContents_events h]
   simp only [dropEvents, dropEventsList_eq_flatten]
 
@@ -564,9 +711,9 @@ the same `⊘`-skip `dropContents_struct_events` carries). This is the closed
 form RUE-2237's "dropped exactly once" quantifies over at an array, and it is
 `3.8:73`'s "untouched elements are dropped, in ascending index order" as a
 theorem. -/
-theorem dropContents_array_events {D : Decls} {T : Ty} {n : Nat} {cs : List Contents}
-    (h : ContentsTy D (.array T cs) (.array T n)) :
-    dropContents D (.array T cs) = .ok (cs.map (dropEvents D)).flatten := by
+theorem dropContents_array_events {D : Decls} {T : Ty} {n i : Nat} {cs : List Contents}
+    (h : ContentsTy D (.array T i cs) (.array T n)) :
+    dropContents D (.array T i cs) = .ok (cs.map (dropEvents D)).flatten := by
   rw [dropContents_events h]
   simp only [dropEvents, dropEventsList_eq_flatten]
 
@@ -574,10 +721,11 @@ theorem dropContents_array_events {D : Decls} {T : Ty} {n : Nat} {cs : List Cont
 event first — when its declaration has one — and then exactly the events its
 fields' drops emit, in declaration order. This is the induction step;
 `dropContents_struct_events` is the closed form. -/
-theorem dropContents_order {D : Decls} {s : Nat} {sd : StructDecl} {cs : List Contents}
-    {evs : List Event} (hd : D.structs[s]? = some sd) (h : dropContents D (.struct s cs) = .ok evs) :
+theorem dropContents_order {D : Decls} {s i : Nat} {sd : StructDecl} {cs : List Contents}
+    {evs : List Event} (hd : D.structs[s]? = some sd)
+    (h : dropContents D (.struct s i cs) = .ok evs) :
     ∃ fevs, dropContentsList D cs = .ok fevs ∧
-      evs = (if sd.dtor then [Event.dtor s (.struct s cs)] else []) ++ fevs := by
+      evs = (if sd.dtor then [Event.dtor s (.struct s i cs)] else []) ++ fevs := by
   simp only [dropContents, hd] at h
   cases hf : dropContentsList D cs with
   | error w => rw [hf] at h; cases h
@@ -616,7 +764,7 @@ theorem ContentsTy.residualLinear_false {D : Decls} {c : Contents} {T : Ty}
   | float => rfl
   | bool => rfl
   | unit => rfl
-  | @struct s sd cs hd hcs =>
+  | @struct s sd i cs hd hcs =>
       have hcls : sd.cls ≠ .linear := by
         simpa only [Ty.mult, Decls.classOf, hd] using hnl
       have hw := hwf.structs s sd hd
@@ -625,7 +773,7 @@ theorem ContentsTy.residualLinear_false {D : Decls} {c : Contents} {T : Ty}
         exact hcls (by rw [hw.classIsJoin, ha]; rfl)
       simp only [Contents.residualLinear, hd, hattr, Bool.false_or, decide_false]
       exact ContentsTys.residualLinearList_false hwf hcs (hw.field_not_linear hcls)
-  | @enum e k ed Ts cs hd hv hcs =>
+  | @enum e k ed Ts i cs hd hv hcs =>
       -- §6.11's enum case reads the **active** payload, and §3's join
       -- (`6.3:19`) makes a non-`Linear` enum one with no linear payload in any
       -- variant, the active one included.
@@ -635,7 +783,7 @@ theorem ContentsTy.residualLinear_false {D : Decls} {c : Contents} {T : Ty}
       simp only [Contents.residualLinear]
       exact ContentsTys.residualLinearList_false hwf hcs
         (hw.payload_not_linear hcls Ts (List.mem_of_getElem? hv))
-  | @array T n cs hcs =>
+  | @array T n i cs hcs =>
       -- An array carries no obligation of its own, so the question is whether
       -- an **element** does. It cannot: `class([T; n])` reaches `Linear`
       -- exactly when `class(T)` does and `n > 0` (§3), so a non-linear array
@@ -905,16 +1053,16 @@ inductive ContentsMatches (D : Decls) : Contents → OwnSt → Ty → Prop where
       ContentsTy D c T → c.residualLinear D = false → ContentsMatches D c .movedOut T
   /-- A partially moved path holds the struct its type names, field by
   field. -/
-  | fields {s sd cs ts} :
+  | fields {s sd i cs ts} :
       D.structs[s]? = some sd → ContentsMatchesList D cs ts sd.fields →
-      ContentsMatches D (.struct s cs) (.fields ts) (.struct s)
+      ContentsMatches D (.struct s i cs) (.fields ts) (.struct s)
   /-- The array form of the same clause: a node with per-element records holds
   the array its type names, element by element. A constant-index **write**
   reaches it (`a[0] = …` records `fields [Owned]`), and so does an element
   move, whose `⊘` is what `3.8:73`'s per-path element drop reads. -/
-  | elems {T n cs ts} :
+  | elems {T n i cs ts} :
       ContentsMatchesList D cs ts (List.replicate n T) →
-      ContentsMatches D (.array T cs) (.fields ts) (.array T n)
+      ContentsMatches D (.array T i cs) (.fields ts) (.array T n)
 
 /-- The same over a declaration's fields, slot by slot; a slot Σ has no record
 for is `owned` (`OwnSt.fieldAt`) (helper). -/
@@ -1020,28 +1168,28 @@ theorem ContentsMatchesList.of_owned : ∀ {D : Decls} {cs : List Contents} {Ts 
 struct, and every slot of it is `owned` (helper). -/
 theorem ContentsMatches.owned_struct {D : Decls} {c : Contents} {s : Nat}
     {sd : StructDecl} (hd : D.structs[s]? = some sd) (h : ContentsMatches D c .owned (.struct s)) :
-    ∃ cs, c = .struct s cs ∧ ContentsMatchesList D cs [] sd.fields := by
+    ∃ i cs, c = .struct s i cs ∧ ContentsMatchesList D cs [] sd.fields := by
   cases h with
   | owned hty hf =>
       cases hty with
       | hole => simp [Contents.holeFree] at hf
-      | @struct s' sd' cs hd' hcs =>
+      | @struct s' sd' i cs hd' hcs =>
           have : sd' = sd := by rw [hd'] at hd; cases hd; rfl
           subst this
-          exact ⟨cs, rfl, ContentsMatchesList.of_owned hcs
+          exact ⟨i, cs, rfl, ContentsMatchesList.of_owned hcs
             (by simpa only [Contents.holeFree] using hf)⟩
 
 /-- Inversion of an `Owned` match at an array type: the cell holds that array,
 and every element of it is `owned` (helper). -/
 theorem ContentsMatches.owned_array {D : Decls} {c : Contents} {T : Ty} {n : Nat}
     (h : ContentsMatches D c .owned (.array T n)) :
-    ∃ cs, c = .array T cs ∧ ContentsMatchesList D cs [] (List.replicate n T) := by
+    ∃ i cs, c = .array T i cs ∧ ContentsMatchesList D cs [] (List.replicate n T) := by
   cases h with
   | owned hty hf =>
       cases hty with
       | hole => simp [Contents.holeFree] at hf
-      | @array T' n' cs hcs =>
-          exact ⟨cs, rfl, ContentsMatchesList.of_owned hcs
+      | @array T' n' i cs hcs =>
+          exact ⟨i, cs, rfl, ContentsMatchesList.of_owned hcs
             (by simpa only [Contents.holeFree] using hf)⟩
 
 /-- Inversion of a field step (helper).
@@ -1185,7 +1333,7 @@ theorem splitResidue_ok {D : Decls} : ∀ (πs : List Nat) {c : Contents} {T T' 
         · simp only [linearResidue, hd, hf, Bool.or_eq_false_iff] at hres
           cases hty with
           | hole => simp [Contents.holeFree] at hhf
-          | @struct s' sd' cs hd' hcs =>
+          | @struct s' sd' i cs hd' hcs =>
               have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
               subst heq
               refine splitFields_ok f hcs (by simpa only [Contents.holeFree] using hhf)
@@ -1194,7 +1342,7 @@ theorem splitResidue_ok {D : Decls} : ∀ (πs : List Nat) {c : Contents} {T T' 
         · simp only [linearResidue, hf, Bool.or_eq_false_iff] at hres
           cases hty with
           | hole => simp [Contents.holeFree] at hhf
-          | @array T'' n' cs hcs =>
+          | @array T'' n' i cs hcs =>
               refine splitFields_ok f hcs (by simpa only [Contents.holeFree] using hhf)
                 hf hres.1 (fun cf hcf hhf' => splitResidue_ok π hcf hhf' hpath ?_)
               simpa only [hf] using hres.2
@@ -1311,9 +1459,9 @@ theorem Contents.isHole_eq_false : ∀ {c : Contents}, c ≠ .hole → c.isHole 
   | .float _ _, _ => rfl
   | .bool _, _ => rfl
   | .unit, _ => rfl
-  | .struct _ _, _ => rfl
-  | .enum _ _ _, _ => rfl
-  | .array _ _, _ => rfl
+  | .struct _ _ _, _ => rfl
+  | .enum _ _ _ _, _ => rfl
+  | .array _ _ _, _ => rfl
 
 /-- A fully-owned node is an `Owned` one (helper). -/
 theorem OwnSt.isOwned_of_fullyOwned : ∀ {t : OwnSt}, t.fullyOwned = true → t.isOwned = true
@@ -1346,7 +1494,7 @@ theorem ContentsMatches.readAt {D : Decls} : ∀ (π : List Nat) {c : Contents}
         rcases Ty.fieldAt_inv hfa with ⟨s, sd, rfl, hd, hf⟩ | ⟨n, rfl, hf⟩
         · cases hm with
           | owned hcty hhf =>
-              obtain ⟨cs, rfl, hl⟩ := ContentsMatches.owned_struct hd (.owned hcty hhf)
+              obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_struct hd (.owned hcty hhf)
               obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
               simp only [OwnSt.get] at hg
               simp only [Contents.readAt, hcf]
@@ -1354,7 +1502,7 @@ theorem ContentsMatches.readAt {D : Decls} : ∀ (π : List Nat) {c : Contents}
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
                 hg hty
           | moved _ _ => simp [OwnSt.get] at hg
-          | @fields s' sd' cs ts hd' hl =>
+          | @fields s' sd' i cs ts hd' hl =>
               have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
               subst heq
               obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
@@ -1363,7 +1511,7 @@ theorem ContentsMatches.readAt {D : Decls} : ∀ (π : List Nat) {c : Contents}
               exact ContentsMatches.readAt π hmf hg hty
         · cases hm with
           | owned hcty hhf =>
-              obtain ⟨cs, rfl, hl⟩ := ContentsMatches.owned_array (.owned hcty hhf)
+              obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_array (.owned hcty hhf)
               obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
               simp only [OwnSt.get] at hg
               simp only [Contents.readAt, hcf]
@@ -1371,7 +1519,7 @@ theorem ContentsMatches.readAt {D : Decls} : ∀ (π : List Nat) {c : Contents}
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
                 hg hty
           | moved _ _ => simp [OwnSt.get] at hg
-          | @elems T'' n' cs ts hl =>
+          | @elems T'' n' i cs ts hl =>
               obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
               simp only [OwnSt.get] at hg
               simp only [Contents.readAt, hcf]
@@ -1397,47 +1545,47 @@ theorem ContentsMatches.writeAt {D : Decls} : ∀ (π : List Nat) {c sub' : Cont
         rcases Ty.fieldAt_inv hfa with ⟨s, sd, rfl, hd, hf⟩ | ⟨n, rfl, hf⟩
         · cases hm with
           | owned hcty hhf =>
-              obtain ⟨cs, rfl, hl⟩ := ContentsMatches.owned_struct hd (.owned hcty hhf)
+              obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_struct hd (.owned hcty hhf)
               obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
               simp only [OwnSt.get] at hg
               obtain ⟨cf', hw, hmf'⟩ := ContentsMatches.writeAt π
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
                 hg hty hnew
-              refine ⟨.struct s (cs.set f cf'), by simp only [Contents.writeAt, hcf, hw,
+              refine ⟨.struct s i (cs.set f cf'), by simp only [Contents.writeAt, hcf, hw,
                 Option.map_some], ?_⟩
               simp only [OwnSt.setAt]
               exact .fields hd (ContentsMatchesList.set f hl hf
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf'))
           | moved _ _ => simp [OwnSt.get] at hg
-          | @fields s' sd' cs ts hd' hl =>
+          | @fields s' sd' i cs ts hd' hl =>
               have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
               subst heq
               obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
               simp only [OwnSt.get] at hg
               obtain ⟨cf', hw, hmf'⟩ := ContentsMatches.writeAt π hmf hg hty hnew
-              refine ⟨.struct s (cs.set f cf'), by simp only [Contents.writeAt, hcf, hw,
+              refine ⟨.struct s i (cs.set f cf'), by simp only [Contents.writeAt, hcf, hw,
                 Option.map_some], ?_⟩
               simp only [OwnSt.setAt]
               exact .fields hd' (ContentsMatchesList.set f hl hf hmf')
         · cases hm with
           | owned hcty hhf =>
-              obtain ⟨cs, rfl, hl⟩ := ContentsMatches.owned_array (.owned hcty hhf)
+              obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_array (.owned hcty hhf)
               obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
               simp only [OwnSt.get] at hg
               obtain ⟨cf', hw, hmf'⟩ := ContentsMatches.writeAt π
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
                 hg hty hnew
-              refine ⟨.array Tf (cs.set f cf'), by simp only [Contents.writeAt, hcf, hw,
+              refine ⟨.array Tf i (cs.set f cf'), by simp only [Contents.writeAt, hcf, hw,
                 Option.map_some], ?_⟩
               simp only [OwnSt.setAt]
               exact .elems (ContentsMatchesList.set f hl hf
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf'))
           | moved _ _ => simp [OwnSt.get] at hg
-          | @elems _ _ cs ts hl =>
+          | @elems _ _ i cs ts hl =>
               obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
               simp only [OwnSt.get] at hg
               obtain ⟨cf', hw, hmf'⟩ := ContentsMatches.writeAt π hmf hg hty hnew
-              refine ⟨.array Tf (cs.set f cf'), by simp only [Contents.writeAt, hcf, hw,
+              refine ⟨.array Tf i (cs.set f cf'), by simp only [Contents.writeAt, hcf, hw,
                 Option.map_some], ?_⟩
               simp only [OwnSt.setAt]
               exact .elems (ContentsMatchesList.set f hl hf hmf')
@@ -1464,12 +1612,12 @@ theorem ContentsMatches.declaredPlan_eq {D : Decls} : ∀ (π : List Nat) {c : C
       | some Tf =>
         simp only [Ty.atPath, hfa] at hty
         rcases Ty.fieldAt_inv hfa with ⟨s, sd, rfl, hd, hf⟩ | ⟨n, rfl, hf⟩
-        · have hdl : ∀ cs : List Contents,
-              (Contents.struct s cs).declaredLinear D = (Ty.struct s).declaredLinear D :=
-            fun _ => rfl
+        · have hdl : ∀ (i : Nat) (cs : List Contents),
+              (Contents.struct s i cs).declaredLinear D = (Ty.struct s).declaredLinear D :=
+            fun _ _ => rfl
           cases hm with
           | owned hcty hhf =>
-              obtain ⟨cs, rfl, hl⟩ := ContentsMatches.owned_struct hd (.owned hcty hhf)
+              obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_struct hd (.owned hcty hhf)
               obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
               simp only [OwnSt.get] at hg
               have ih := ContentsMatches.declaredPlan_eq π
@@ -1479,7 +1627,7 @@ theorem ContentsMatches.declaredPlan_eq {D : Decls} : ∀ (π : List Nat) {c : C
               | none => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec, hdl]
               | some r => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec]
           | moved _ _ => simp [OwnSt.get] at hg
-          | @fields s' sd' cs ts hd' hl =>
+          | @fields s' sd' i cs ts hd' hl =>
               have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
               subst heq
               obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
@@ -1493,7 +1641,7 @@ theorem ContentsMatches.declaredPlan_eq {D : Decls} : ∀ (π : List Nat) {c : C
           -- into the element and agree by the induction hypothesis.
           cases hm with
           | owned hcty hhf =>
-              obtain ⟨cs, rfl, hl⟩ := ContentsMatches.owned_array (.owned hcty hhf)
+              obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_array (.owned hcty hhf)
               obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
               simp only [OwnSt.get] at hg
               have ih := ContentsMatches.declaredPlan_eq π
@@ -1504,7 +1652,7 @@ theorem ContentsMatches.declaredPlan_eq {D : Decls} : ∀ (π : List Nat) {c : C
                   Ty.declaredLinear]
               | some r => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec]
           | moved _ _ => simp [OwnSt.get] at hg
-          | @elems _ _ cs ts hl =>
+          | @elems _ _ i cs ts hl =>
               obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
               simp only [OwnSt.get] at hg
               have ih := ContentsMatches.declaredPlan_eq π hmf hg hty
@@ -1556,11 +1704,11 @@ theorem ContentsMatches.residualLinear_false {D c t T} (hwf : WfDecls D)
       refine hc.residualLinear_false hwf ?_
       simpa only [residualLinear, decide_eq_false_iff_not] using hr
   | moved _ hnl => exact hnl
-  | @fields s sd cs ts hd hl =>
+  | @fields s sd i cs ts hd hl =>
       simp only [residualLinear, hd, Bool.or_eq_false_iff, decide_eq_false_iff_not] at hr
       simp only [Contents.residualLinear, hd, hr.1, Bool.false_or, decide_false]
       exact ContentsMatchesList.residualLinearList_false hwf hl hr.2
-  | @elems T n cs ts hl =>
+  | @elems T n i cs ts hl =>
       simp only [residualLinear] at hr
       simp only [Contents.residualLinear]
       exact ContentsMatchesList.residualLinearList_false hwf hl hr
@@ -1973,12 +2121,12 @@ theorem ownedJoinOk_matches {D : Decls} (hwf : WfDecls D) :
         simp only [ownedJoinOk] at hok
         split at hok
         · rename_i sd hd
-          obtain ⟨cs, rfl, hl⟩ := ContentsMatches.owned_struct hd h
+          obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_struct hd h
           exact .fields hd (ownedJoinOkList_matches hwf ts hok hl)
         · simp at hok
       | array T' n =>
         simp only [ownedJoinOk] at hok
-        obtain ⟨cs, rfl, hl⟩ := ContentsMatches.owned_array h
+        obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_array h
         exact .elems (ownedJoinOkList_matches hwf ts hok hl)
 
 /-- The same over a declaration's fields (helper). -/
@@ -2075,12 +2223,12 @@ theorem OwnSt.join_matches {D : Decls} (hwf : WfDecls D) :
               subst hj
               rcases hc with h | h
               · cases h with
-                | @fields _ sd' cs _ hd' hl =>
+                | @fields _ sd' _ cs _ hd' hl =>
                   have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
                   subst heq
                   exact .fields hd' (OwnSt.joinList_matches hwf as bs sd'.fields hjl (Or.inl hl))
               · cases h with
-                | @fields _ sd' cs _ hd' hl =>
+                | @fields _ sd' _ cs _ hd' hl =>
                   have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
                   subst heq
                   exact .fields hd' (OwnSt.joinList_matches hwf as bs sd'.fields hjl (Or.inr hl))
@@ -2095,10 +2243,10 @@ theorem OwnSt.join_matches {D : Decls} (hwf : WfDecls D) :
             subst hj
             rcases hc with h | h
             · cases h with
-              | @elems _ _ cs _ hl =>
+              | @elems _ _ _ cs _ hl =>
                 exact .elems (OwnSt.joinList_matches hwf as bs (List.replicate n T') hjl (Or.inl hl))
             · cases h with
-              | @elems _ _ cs _ hl =>
+              | @elems _ _ _ cs _ hl =>
                 exact .elems (OwnSt.joinList_matches hwf as bs (List.replicate n T') hjl (Or.inr hl))
 
 /-- The same over a declaration's field slots (helper). -/
@@ -2502,7 +2650,7 @@ theorem Contents.resolveDyn_ok {D : Decls} : ∀ (is : List Int) (πs : List (Li
         | none => simp [hE] at hdyn
         | some T₁ =>
           simp only [hE] at hdyn
-          obtain ⟨cs, rfl, hl⟩ := ContentsMatches.owned_array hm
+          obtain ⟨_, cs, rfl, hl⟩ := ContentsMatches.owned_array hm
           have hcl : cs.length = n := by
             simpa only [List.length_replicate] using hl.contentsTys.length_eq
           by_cases hb : inBoundsIdx i cs.length = true
@@ -2796,6 +2944,18 @@ theorem EvalOk.weaken {D T R o₁ o' B φ H r}
   | panic k tr => trivial
   | stuck w => exact h.elim
   | outOfFuel => trivial
+
+/-- **Aggregate introduction keeps the promise** ((D-Struct), (D-Array) §6.5,
+(D-Enum-Intro) §6.6, the repeat form): a well-typed aggregate passes the
+copy-closure monitor (`HasTy.copyClosed`), and the identity it mints reserves
+one `†` slot above the store, which no binding names — so the frame still
+matches and nothing it names was touched (helper). -/
+theorem introVal_ok {D : Decls} {T R : Ty} {Γ : Ctx} {B : List Ctx} {φ : Frame}
+    {H₀ H : Store} {mk : Nat → Val} (hwf : WfDecls D) (hty : HasTy D (mk H.length) T)
+    (hfm : FrameMatches D Γ φ H) (hu : Untouched φ.env H₀ H) :
+    EvalOk D T R (some Γ) B φ H₀ (introVal D H mk) := by
+  simp only [introVal, if_pos (hty.copyClosed hwf)]
+  exact ⟨hty, ⟨hfm.store.append _, hfm.record⟩, hu.trans (Untouched.append _)⟩
 
 /-! ## Loops: the head, the back edge, and the exits (§5.7, §6.10) -/
 
@@ -3249,7 +3409,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               have hlen : sd.fields.length = vs.length := hvs.length_eq.symm
               simp only [hget]
               rw [if_pos hlen, hn]
-              exact ⟨.struct hget hvs, hfm₁, hu₁⟩
+              exact (introVal_ok hwf.decls (.struct hget hvs) hfm₁ hu₁).withTrace tr
       | @mkEnum Γ Ω e k args ed Ts hd hv hta =>
           -- (D-Enum-Intro) §6.6 over §6.2's left-to-right search: the same
           -- argument-list lemma (Struct-Intro) and (Call) use, then the tagged
@@ -3267,7 +3427,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               have hlen : Ts.length = vs.length := hvs.length_eq.symm
               simp only [hd, hv]
               rw [if_pos hlen, hn]
-              exact ⟨.enum hd hv hvs, hfm₁, hu₁⟩
+              exact (introVal_ok hwf.decls (.enum hd hv hvs) hfm₁ hu₁).withTrace tr
       | @matchBot Γ Δ₀ scrut arms e T hscrut =>
           -- (Strict-Bottom) §5.3 at the scrutinee: no tag is read, no arm runs.
           simp only [eval]
@@ -3279,7 +3439,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           simp only [eval]
           refine EvalOk.bind (ih hscrut hfm) (by brk_sub) ?_
           intro H₀ v tr _ htyv hfm₀
-          obtain ⟨k, ed', Ts, vs, rfl, hd', hv, hvs⟩ := htyv.enum_inv
+          obtain ⟨k, ed', Ts, _, vs, rfl, hd', hv, hvs⟩ := htyv.enum_inv
           have hed : ed' = ed := by rw [hd] at hd'; exact (Option.some_inj.mp hd').symm
           subst hed
           -- Progress at a `match` is exhaustiveness: the tag has an arm.
@@ -3366,7 +3526,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               rw [hra] at ka
               obtain ⟨Γ₁, hn, hvs, hfm₁, hu₁⟩ := ka.ok_inv
               rw [hn]
-              exact ⟨.array hvs, hfm₁, hu₁⟩
+              exact (introVal_ok hwf.decls (.array hvs) hfm₁ hu₁).withTrace tr
       | @repeatArray Γ Ω T e n h hcopy =>
           -- `7.1:39`: the operand is evaluated **exactly once** and its result
           -- copied into each of the `n` slots, which `7.1:38`'s `Copy` premise
@@ -3377,7 +3537,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bindSame (ih h hfm) ?_
           intro H' v tr Γ' _ hty hfm'
           rw [if_pos (hty.mult_eq.trans hcopy)]
-          exact ⟨.array (HasTys.replicate hty n), hfm', Untouched.refl⟩
+          exact introVal_ok hwf.decls (.array (HasTys.replicate hty n)) hfm' Untouched.refl
       | @indexReadBot Γ Δ p idx πs Ts en Ta T hta _ _ _ _ _ _ =>
           -- (Strict-Bottom) §5.3 at an index: the list aborts, and the place
           -- is never navigated.
@@ -3518,7 +3678,8 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                 have hso' : ContentsMatches P.decls sub' .owned Ta :=
                   .owned hm'.contentsTy (hm'.holeFree (OwnSt.fullyOwned_setAt_owned ρ))
                 obtain ⟨cc', hw, hmm'⟩ := ContentsMatches.writeAt p.path hmm hg₁ hty₁ hso'
-                simp only [hdp, hrl, hnl, Bool.false_eq_true, if_false, hdc, hw', hw]
+                simp only [hdp, hrl, hnl, Bool.false_eq_true, if_false, hdc, hw', hw,
+                  hmm'.contentsTy.copyClosed hwf.decls, if_true]
                 exact ⟨.unit, ⟨hfm₂.store.set hρ ⟨cc', rfl, hmm'⟩, hfm₂.record⟩,
                   Untouched.trans_set hu₂ (Or.inr hmem)⟩
       | @dropCopy Γ pl en u T hget hg hfo hty hcopy hplan =>
@@ -3695,7 +3856,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
             (htyeq ▸ hty₀) (ContentsMatches.ofVal hty)
           have hmem : ℓ ∈ φ.env := List.mem_of_getElem? hρ
           simp only [hρ, hc, hread, hnl, Bool.false_eq_true, if_neg, hdc, hw,
-            not_false_eq_true]
+            not_false_eq_true, hmm'.contentsTy.copyClosed hwf.decls, if_true]
           exact ⟨.unit, ⟨hfm₁.store.set hρ ⟨cc', rfl, hmm'⟩, hfm₁.record⟩,
             Untouched.trans_set Untouched.refl (Or.inr hmem)⟩
       | @seqBot Γ Δ₁ e₁ e₂ T₁ T h₁ =>
