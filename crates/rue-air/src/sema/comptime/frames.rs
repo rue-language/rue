@@ -12,7 +12,7 @@ pub enum ComptimeChildSlot<'a, N> {
     /// An element of an array literal or of an array-repeat literal.
     ArrayElement,
     /// The named field of a struct literal.
-    StructField(&'a N),
+    Field(&'a N),
     /// The payload position `index` of the named enum variant.
     EnumPayload { variant: &'a N, index: usize },
 }

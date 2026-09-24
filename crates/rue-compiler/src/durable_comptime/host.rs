@@ -876,7 +876,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
                 Some(element.as_ref().clone())
             }
             (rue_air::ComptimeChildSlot::ArrayElement, _) => None,
-            (rue_air::ComptimeChildSlot::StructField(field), parent) => {
+            (rue_air::ComptimeChildSlot::Field(field), parent) => {
                 match self
                     .services
                     .resolve_struct_field_index(parent, field.as_str())
