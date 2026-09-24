@@ -1281,8 +1281,8 @@ mod tests {
             COMPTIME_ENGINE_SOURCE
                 .matches("self.evaluate_comptime_type_syntax(")
                 .count(),
-            6,
-            "all type-bearing RIR arms and anonymous method descriptors must use the engine helper"
+            7,
+            "all type-bearing RIR arms, `let` annotations and anonymous method descriptors must use the engine helper"
         );
         for forbidden in [
             "pub fn resolve_semantic_type_syntax",
