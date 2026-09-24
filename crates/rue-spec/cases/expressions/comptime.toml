@@ -1770,6 +1770,108 @@ fn main() -> i32 { 0 }
 compile_fail = true
 error_contains = "integer overflow"
 
+# 6.1:5 binds a call reduced in a const initializer as it binds the same call
+# in a body: the callee's body must evaluate to a value of its declared return
+# type. Declaration-time evaluation used to type every call's value at the
+# declared return type without checking it, so a u8 body value in an i32
+# function was accepted, and `1 << s` with `s: u8`, computed at u8, gave
+# K == 1 where run time reports E0206 (RUE-2364).
+
+[[case]]
+name = "comptime_const_call_u8_shift_in_i32_function_rejected"
+spec = ["4.14:2", "6.1:5"]
+description = "`1 << s` with `s: u8` is a u8, so returning it from an i32 function is E0206 in a const initializer as in a body, not the u8 result 1 - RUE-2364"
+source = """
+fn sh(comptime s: u8) -> i32 { 1 << s }
+const K: i32 = sh(8);
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found u8"]
+
+[[case]]
+name = "comptime_const_call_narrow_integer_in_wider_function_rejected"
+spec = ["4.14:2", "6.1:5"]
+description = "An i8 parameter returned from an i64 function is E0206 in a const initializer: integers do not widen implicitly"
+source = """
+fn widen(comptime n: i8) -> i64 { n }
+const K: i64 = widen(8);
+fn main() -> i32 { @intCast(K) }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i64, found i8"]
+
+[[case]]
+name = "comptime_const_call_bool_in_integer_function_rejected"
+spec = ["4.14:2", "6.1:5"]
+description = "A bool parameter returned from an i32 function is E0206 in a const initializer"
+source = """
+fn f(comptime b: bool) -> i32 { b }
+const K: i32 = f(true);
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found bool"]
+
+[[case]]
+name = "comptime_const_call_float_in_integer_function_rejected"
+spec = ["4.14:2", "6.1:5"]
+description = "An f64 parameter returned from an i32 function is E0206 naming f64, as in a body"
+source = """
+fn f(comptime x: f64) -> i32 { x }
+const K: i32 = f(1.5);
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found f64"]
+
+[[case]]
+name = "comptime_const_call_nested_result_checked_at_each_call"
+spec = ["4.14:2", "6.1:5"]
+description = "An inner call's i32 value returned from an outer i64 function is E0206: each call's value is checked against its own callee's return type"
+source = """
+fn inner(comptime n: i32) -> i32 { n }
+fn outer(comptime n: i32) -> i64 { inner(n) }
+const K: i64 = outer(4);
+fn main() -> i32 { @intCast(K) }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i64, found i32"]
+
+[[case]]
+name = "comptime_const_call_type_parameter_return_checked_at_its_argument"
+spec = ["4.14:2", "6.1:5"]
+description = "A return type spelled as a comptime type parameter is checked at its argument: a u8 returned as T = i32 is E0206"
+source = """
+fn f(comptime T: type, comptime n: u8) -> T { n }
+const K: i32 = f(i32, 7);
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found u8"]
+
+[[case]]
+name = "comptime_const_call_matching_return_types_accepted"
+spec = ["4.14:2", "6.1:5"]
+description = "Values of the declared return type are accepted in a const initializer: a u8 shift in a u8 function, an untyped literal and arithmetic at the return type, a T-typed parameter at T = u8 and T = i64, and a nested call of the same type"
+source = """
+fn sh(comptime s: u8) -> u8 { 1 << s }
+fn lit(comptime s: u8) -> i32 { 5 }
+fn sum(comptime n: i64) -> i64 { let x = 1 + 2; x + n }
+fn id(comptime T: type, comptime n: T) -> T { n }
+fn twice(comptime n: i64) -> i64 { sum(n) * 2 }
+const A: u8 = sh(3);
+const B: i32 = lit(1);
+const C: i64 = sum(4);
+const D: u8 = id(u8, 200);
+const E: i64 = id(i64, 5000000000);
+const F: i64 = twice(1);
+fn main() -> i32 {
+    if A == 8 && B == 5 && C == 7 && D == 200 && E == 5000000000 && F == 8 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
 # 4.14:2 binds a comptime function's *recursive self call* exactly as it binds
 # any other call: the value reached through `f(n - 1)` is the value the same
 # body produces when reduced directly. The self call used to opt out of the
