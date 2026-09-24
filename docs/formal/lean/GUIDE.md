@@ -218,16 +218,36 @@ rule, and §7's own phrasing ("no reduction sequence reaches a stuck
 configuration") is a statement about it. `eval` is what can be *run* and
 *proved about*: the safety theorem is a fuel induction over it, and the bridge
 compares its results with the compiler's. Neither alone is enough: a theorem
-about `eval` says nothing about §6 unless the two agree, and `Step` cannot be
-run against a compiler or carry the safety proof as cheaply. The adequacy
+about `eval` says nothing about §6 unless the two agree, and `Step`, though
+it runs (`stepN` takes its steps, and `letAddProgram_runs` and the `demo_`
+theorems run whole programs through it), is not what the bridge runs against
+the compiler, and it does not carry the safety proof as cheaply. The adequacy
 theorems (RUE-2289's parts 2 and 3) are the bridge between them; until they
 land, `Step`'s own theorems are the cheap ones — it is deterministic, a
 finished configuration takes no step, and a stuck one is stuck on one of §6's
 four violations, never on one of `eval`'s three monitors
-(`../03-metatheory.md`). One reading differs from §6's text in form: §6.2's
-evaluation context `E` and §6.1's stack `K` are one list of frames in `Step`,
-so the rule that searches into a context is two constructors, one entering
-the hole and one plugging a value back in.
+(`../03-metatheory.md`). Where `Step` departs from §6's text, and the
+metatheory row and `Step.lean`'s module docstring give the same list:
+
+- §6.2's evaluation context `E` and §6.1's stack `K` are one list of frames,
+  so the rule that searches into a context is two constructors, one entering
+  the hole and one plugging a value back in;
+- `endscope` pops its cells off the frame by count, because bindings are de
+  Bruijn indices where §6.7 relies on α-renaming;
+- the loop boundary sits above its context's frames, because §6.10's
+  `loopβ(e, φ)` records no context;
+- `push-scope` is one scope record read by length, so (D-Loop-Iter) and
+  (D-Break) drop the cells past the loop's record;
+- the use plan is recovered from the store rather than read off `μ`;
+- a destructor is one trace event rather than a nested run;
+- `Config.init` calls the entry point, so (D-Return-Main) is (D-Return)
+  reaching its `call` frame;
+- a dynamic read, `@drop` at a dynamic place, or repeat operand that is not
+  `Copy` is stuck, the premise of the rule each cites.
+
+On programs `check` rejects, `Step` follows §6 where `eval` does not: `@drop`
+of a `⊘` place is §6.11's no-op where `eval` refuses it, and the three
+non-`Copy` forms are stuck where `eval` copies.
 
 ### Fuel, and why the theorems quantify over it
 
