@@ -361,6 +361,80 @@ fn scalar_patterns_are_engine_decided_and_only_paths_reach_the_host() {
     MATCH_NO_SELECTED_FAILURE.with(|failure| failure.set(false));
 }
 
+fn fake_host(program: Rir) -> FakeHost {
+    FakeHost {
+        programs: vec![program],
+        type_symbol: SymbolHandle::new(lasso::ThreadedRodeo::new().get_or_intern("T")),
+        constant: None,
+        dependencies: Vec::new(),
+        call_plans: AHashMap::new(),
+        recursive: None,
+        enter_count: 0,
+        finish_outcome: FakeFinishOutcome::Identity,
+        finished: Vec::new(),
+        float_evaluations: Cell::new(0),
+    }
+}
+
+/// A left-nested operator chain far deeper than the parser admits evaluates
+/// without recursing once per operator (RUE-2366), and each of its nodes still
+/// passes exactly one cancellation checkpoint.
+#[test]
+fn left_nested_operator_chains_evaluate_iteratively() {
+    const DEPTH: usize = 20_000;
+    let mut editor = RirEditor::new();
+    let one = |editor: &mut RirEditor| {
+        editor.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        })
+    };
+    let mut sum = one(&mut editor);
+    for _ in 0..DEPTH {
+        let rhs = one(&mut editor);
+        sum = editor.add_inst(Inst {
+            data: InstData::Add { lhs: sum, rhs },
+            span: Span::new(0, 1),
+        });
+    }
+    let mut negated = editor.add_inst(Inst {
+        data: InstData::BoolConst(true),
+        span: Span::new(0, 1),
+    });
+    for _ in 0..DEPTH {
+        negated = editor.add_inst(Inst {
+            data: InstData::Not { operand: negated },
+            span: Span::new(0, 1),
+        });
+    }
+    let mut host = fake_host(editor.finish());
+    let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+    let mut engine = ComptimeEngine::new(&mut host);
+
+    configure_checkpoint_abort(None);
+    assert!(matches!(
+        engine.evaluate(ComptimeFrame::expression(0, sum), &mut env),
+        ComptimeOutcome::Known(FakeValue::Integer(total)) if total == DEPTH as i128 + 1
+    ));
+    assert_eq!(checkpoint_count(), 2 * DEPTH + 1);
+
+    configure_checkpoint_abort(None);
+    assert!(matches!(
+        engine.evaluate(ComptimeFrame::expression(0, negated), &mut env),
+        ComptimeOutcome::Known(FakeValue::Boolean(true))
+    ));
+    assert_eq!(checkpoint_count(), DEPTH + 1);
+
+    // Cancellation partway up the chain stops it there.
+    configure_checkpoint_abort(Some(DEPTH));
+    assert!(matches!(
+        engine.evaluate(ComptimeFrame::expression(0, sum), &mut env),
+        ComptimeOutcome::Abort(FakeFailure::Canceled)
+    ));
+    assert_eq!(checkpoint_count(), DEPTH);
+    configure_checkpoint_abort(None);
+}
+
 #[test]
 fn semantic_rejections_are_emitted_by_real_engine_dispatch() {
     let mut editor = RirEditor::new();
