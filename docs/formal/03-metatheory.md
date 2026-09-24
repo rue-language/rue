@@ -285,11 +285,65 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 
 ## No double-free
 
-- **Not yet mechanized.** The drop trace makes double frees visible; the
-  theorem over minted value identities is RUE-2237.
-- **Partial progress:** the walk it will quantify over now has a proved
-  shape, in closed form, **over cell contents rather than values** — which is
-  where the `⊘`-skip that makes double frees impossible lives.
+- **Theorem:** `RueCore.no_double_free` (`lean/RueCore/Trace.lean`).
+- **In words:** a well-typed program's run is never refused, and in its trace
+  no value is freed twice and no value has its destructor run twice.
+- **What is counted.** §6.1 gives values no identity, so the machine adds
+  one (RUE-2323): aggregate introduction — (D-Struct) and (D-Array) §6.5,
+  (D-Enum-Intro) §6.6, the repeat form — **mints** a value identity, the
+  store's next index, reserved with `†` (`RueCore.introVal`; §6.1's "a fresh
+  identity is one not in `dom(H)`"). The identity travels with the value
+  through every move and binding, and the trace's `drop`, `dropTemp` and
+  `dtor` events carry the values they ran on, identity included. The theorem
+  counts two projections of the trace:
+  - `RueCore.freedIds`: the owned identities each `drop`/`dropTemp` marker
+    frees, meaning the non-`Copy` nodes of the dropped tree, `⊘` skipped;
+  - `RueCore.dtorIds`: the identity of each value a user destructor ran on.
+    This is §7's own wording, "every stored value's destructor runs at most
+    once".
+
+  Each identity occurs at most once in each (`List.count a ≤ 1`). A `Copy`
+  value is duplicated freely and has no drop glue, so its copies share an
+  identity and neither projection counts them.
+- **Proof.** `RueCore.eval_conserves` is a conservation law, proved by fuel
+  induction over `eval`, one case per form. The owned identities of the final
+  store, of the result value and of the trace's projection together are, as
+  a multiset, at most those of the initial store plus the ones minted during
+  the run. Minting takes store indices, so the minted ones form a range and
+  appear once each. §7's "Because" is the law's cases:
+  - a move writes `⊘` where it took (§6.3);
+  - §6.11's walk skips every `⊘` ("this single skip is what makes
+    double-free impossible");
+  - the declared-linear rule hands on its leaf, drops the residue once and
+    leaves `⊘`;
+  - a `match` moves the payload whole into the arm's cells, so the
+    scrutinee's owner is gone.
+- **What the law needs**:
+  - **Copy closure** (`RueCore.Contents.copyClosed`): nothing owned under a
+    `Copy` node, or a copy would duplicate it. §3 makes this a property of
+    every well-typed value (`RueCore.ContentsTy.copyClosed`). The machine
+    also enforces it with a fourth monitor beside the linear three,
+    `ownedUnderCopy`, at aggregate introduction and at an assignment. The law
+    therefore holds for every run of any program with well-formed
+    declarations: `RueCore.freed_once`, and `RueCore.dtor_once`, which uses
+    `3.9:31`, "a destructor-bearing struct is not `Copy`".
+  - **Typing**, which enters through `RueCore.no_violation`. A checked
+    program never reaches the monitor or any other refusal, so its trace is
+    the whole run's. A refused run carries no trace, so without this conjunct
+    the statement could be satisfied vacuously.
+- **The monitor is load-bearing, not decorative.** An ill-typed program
+  puts an `S1` with a destructor into an `@copy` struct's field, copies the
+  struct and drops the field through both copies:
+  - `check` rejects it;
+  - `eval` refuses it with `ownedUnderCopy`;
+  - §6's relation, `Step`, has no monitor and runs `S1`'s destructor on the
+    same identity twice (`RueCore.dupProgram_step_double_free`).
+- **Covers:** the whole fragment, for by-value programs: scalars, structs,
+  enums, arrays, places with constant and dynamic indices, calls, `return`,
+  loops and `break`. Buffer cells (§6.13.3) are not in the fragment.
+- **The walk's order**, alongside: the events a drop emits have a proved
+  closed form, **over cell contents rather than values** — which is where the
+  `⊘`-skip that makes double frees impossible lives.
   `RueCore.dropContents_struct_events` (`lean/RueCore/Soundness.lean`) says
   that for well-typed contents at a struct type the events its drop emits are
   its user destructor's event — when the declaration has one (`3.9:28`) —
@@ -310,9 +364,9 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   `RueCore.ContentsMatches.residualLinear_false` says contents the leak
   monitor lets through holds no live declared-`linear` sub-value — the
   residual reading §5.6 asks for, which is what makes a partially consumed
-  carrier's residue droppable. What is still owed is the
-  identity-level statement: that each minted value appears in the trace
-  exactly once.
+  carrier's residue droppable. "Exactly once" (that every owned, droppable,
+  non-moved value *is* dropped) is part 2's `drop_exactly_once` (RUE-2328);
+  this section is the "at most once" half.
 
 ## No use-after-drop / no leak of drops
 
@@ -455,8 +509,8 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 | Totality of the float operations | **assumed, named** — and less of it assumed than §7 expected. The obligation splits three ways. (1) *Totality as a function* is free: every §6.4 float operation is a total Lean function, so no float redex is stuck for want of a result. (2) *The `(D-Float-To-Int)`/`(D-Float-To-Int-Trap)` partition* is a **theorem**, `RueCore.floatToInt_partition`, because §2's datum model makes truncation exact integer arithmetic; `RueCore.evalFintrin_float_res` is it at the machine, and `RueCore.binOpFloat_res` is the matching statement for the arithmetic and the compares — the latter with no trap disjunct at all (`3.12:21`). Closure of the *exact* operations in `𝔽_w` is proved too: `RueCore.negate_wf` (`(D-Float-Neg)`), `RueCore.widen_wf` (the widening half of `(D-Float-Cast)`) and `RueCore.roundOp_wf` (`@floor`/`@ceil`/`@trunc`/`@round`). (3) What is **assumed** is closure of the *rounded* operations, which is IEEE's and not the mechanization's: the fields `arith_wf`, `sqrt_wf`, `ofLit_wf`, `ofInt_wf` and `narrow_wf` of `RueCore.FloatModel`, together with the behavioural laws §6.4 quotes from `3.12:22` and `3.12:19` (`arith_nan`, `narrow_nan`, `div_by_zero`, `zero_div_zero`) and `3.12:9`'s `ofLit_zero`/`ofLit_one`. Every one of those is a statement that is true of IEEE 754 *and* of the compiler, which is why the two NaN laws are the **weak** ones — a NaN operand yields *a* NaN, sign unspecified. `3.12:44`'s `σ_NaN` is the sign of a NaN an invalid operation *creates*; a propagated NaN keeps its operand's sign on every target Rue has, so a law that fixed the result's sign would be false of both. What `RueCore.Float.exactOps` propagates (the first NaN operand's sign) and the `σ_NaN` it picks are therefore **model choices**, checked against the compiler rather than assumed, and no theorem depends on either. They are structure fields, not `axiom` declarations, so every theorem that uses one carries it in its statement and `TRUST.md` lists them apart from Lean's axioms (`lean/RueCore/Float.lean`) |
 | Totality of the **integer** operations | discharged where it is needed, by construction rather than as a lemma: `RueCore.valOf_inBounds` says every `w`-bit pattern read at a signedness denotes a value of that type, which is what makes §6.4's bitwise and shift rules total, and `RueCore.binOpInt_res`, `RueCore.evalUnOp_int_res` and `RueCore.evalIntCast_res` say every integer operator lands on a value of its rule's type or on a trap — the operator half of progress. The last two name the category: `neg` traps only as `overflow` and `@intCast` only as `castOverflow`. `binOpInt_res` ranges over §6.12's categories rather than naming one, because `/` and `%` add their own (`lean/RueCore/Soundness.lean`) |
 | Handle-uniqueness preservation (O1) | not yet mechanized (RUE-2240) |
-| §6's reduction relation, mechanized | **defined; adequacy owed to RUE-2289's parts 2 and 3**. `RueCore.Step` is §6's `C → C'` over the §6.1 configuration for the fragment, one constructor per §6 rule, each citing it; §6.2's evaluation contexts are a stack of frames (`RueCore.Kont`), so (Search) is an enter and a plug constructor per context production and (Panic-Lift) is the shape of every trap rule. Proved about it, and nothing more yet: it is deterministic (`RueCore.Step.det`), a terminal configuration takes no step (`RueCore.Step.terminal`), and every configuration is terminal, steps, or is stuck (`RueCore.Config.trichotomy`, through the function `RueCore.step` and `RueCore.step_iff`), with every stuck state named by one of §6's own four violations and never by one of `eval`'s three monitors (`RueCore.step_stuck_isStuckState`). `RueCore.Config.stuck_iff` states stuckness in `Step`'s own terms: not terminal and no step. `RueCore.unwindLocs_plain` and `RueCore.destructure_plain` say a monitor only removes behaviour. Where it departs from §6's text: (Search) is an enter and a plug constructor per context production; the `endscope` frame pops its cells by count, because bindings are de Bruijn indices where §6.7 relies on α-renaming; the loop boundary sits above its context's frames, because §6.10's `loopβ(e, φ)` records no context; `push-scope` is one scope record read by length, so (D-Loop-Iter) and (D-Break) drop the cells past the loop's record; the use plan is recovered from the store rather than read off `μ`; a destructor is one trace event rather than a nested run; `RueCore.Config.init` calls the entry point, so (D-Return-Main) is (D-Return) reaching its `call` frame; and a dynamic read, `@drop` at a dynamic place, or repeat operand that is not `Copy` is stuck, the premise of the rule each cites. On programs `check` rejects, `Step` follows §6 where `eval` does not: `@drop` of a `⊘` place is §6.11's no-op where `eval` refuses it (`lean/RueCore/Step.lean`) |
-| Adequacy of `eval` to §6's reduction, and progress/preservation derived over the mechanized relation | not yet stated; a Phase C deliverable required at checkpoint C and the CI gate (RUE-2289). Its domain is the programs `check` accepts: there `eval`'s `ok`/`panic` outcomes must agree with §6's values and panics, and neither side gets stuck. `.stuck` is outside the correspondence, because three of `eval`'s refusals are monitors §6 does not have, and because `eval` names an operand-shape mismatch where §6 simply has no rule (`Dynamics.lean`, "the correspondence with §6"). A raw literal outside its type's `n_T` range is the other known difference, and `check` rejects it |
+| §6's reduction relation, mechanized | **defined; adequacy owed to RUE-2289's parts 2 and 3**. `RueCore.Step` is §6's `C → C'` over the §6.1 configuration for the fragment, one constructor per §6 rule, each citing it; §6.2's evaluation contexts are a stack of frames (`RueCore.Kont`), so (Search) is an enter and a plug constructor per context production and (Panic-Lift) is the shape of every trap rule. Proved about it, and nothing more yet: it is deterministic (`RueCore.Step.det`), a terminal configuration takes no step (`RueCore.Step.terminal`), and every configuration is terminal, steps, or is stuck (`RueCore.Config.trichotomy`, through the function `RueCore.step` and `RueCore.step_iff`), with every stuck state named by one of §6's own four violations and never by one of `eval`'s four monitors (`RueCore.step_stuck_isStuckState`). `RueCore.Config.stuck_iff` states stuckness in `Step`'s own terms: not terminal and no step. `RueCore.unwindLocs_plain` and `RueCore.destructure_plain` say a monitor only removes behaviour. Where it departs from §6's text: (Search) is an enter and a plug constructor per context production; the `endscope` frame pops its cells by count, because bindings are de Bruijn indices where §6.7 relies on α-renaming; the loop boundary sits above its context's frames, because §6.10's `loopβ(e, φ)` records no context; `push-scope` is one scope record read by length, so (D-Loop-Iter) and (D-Break) drop the cells past the loop's record; the use plan is recovered from the store rather than read off `μ`; a destructor is one trace event rather than a nested run; aggregate introduction mints a value identity by reserving a `†` store slot, exactly as `eval` does, so the two presentations keep one store (RUE-2323); `RueCore.Config.init` calls the entry point, so (D-Return-Main) is (D-Return) reaching its `call` frame; and a dynamic read, `@drop` at a dynamic place, or repeat operand that is not `Copy` is stuck, the premise of the rule each cites. On programs `check` rejects, `Step` follows §6 where `eval` does not: `@drop` of a `⊘` place is §6.11's no-op where `eval` refuses it, and an owned value put under a `Copy` node steps where `eval` refuses it with `ownedUnderCopy` (`lean/RueCore/Step.lean`) |
+| Adequacy of `eval` to §6's reduction, and progress/preservation derived over the mechanized relation | not yet stated; a Phase C deliverable required at checkpoint C and the CI gate (RUE-2289). Its domain is the programs `check` accepts: there `eval`'s `ok`/`panic` outcomes must agree with §6's values and panics, and neither side gets stuck. `.stuck` is outside the correspondence, because four of `eval`'s refusals are monitors §6 does not have, and because `eval` names an operand-shape mismatch where §6 simply has no rule (`Dynamics.lean`, "the correspondence with §6"). A raw literal outside its type's `n_T` range is the other known difference, and `check` rejects it |
 | §5.5's `join(Σ1, …, Σn)` read unordered and unbracketed | **proved**, over states that are shapes of their declared types. The binary join is commutative (`RueCore.OwnSt.join_comm`, `RueCore.Ctx.join_comm`) and associative (`RueCore.OwnSt.join_assoc`, `RueCore.Ctx.join_assoc`), so `RueCore.Ctx.joinAll_perm` says the left fold the mechanization computes is invariant under a permutation of the arms — which is what licenses reading `RueCore.Ctx.joinAll` as the unordered n-way join §5.5 writes. Associativity carries two premises and `lean/RueCore/Examples.lean` pins a counterexample to each: `RueCore.OwnSt.wf`, the state-against-type invariant (`.fields` at a scalar is a state no rule can write), and `RueCore.WfStructs`, §3's class assignment (a struct whose recorded class disagrees with its field join separates the two associations). `RueCore.OwnSt.setAt_wf` and `RueCore.Ctx.joinAll_wf` say the rules that write and that join keep the first, and `RueCore.Typed.wf` proves it preserved judgment-wide from a well-formed context; with `RueCore.fnCtx_wf` it holds at every normal outgoing state of a function body (`RueCore.Typed.wf_fnCtx`), with no hypothesis left over. It covers every delivered `break` state too, and `RueCore.Typed.skel_preserved` says each one extends the incoming skeleton (RUE-2369). That theorem was false while §5.7's `⊥` concluded at *any* context of the incoming skeleton (RUE-2340); since the judgment carries §5.3's `Ω` (RUE-2368), `⊥` has no state, and every normal outgoing state is one a rule wrote |
 | §5.3's `Ω` and the `-Bottom` rules | **mechanized as written**, with the readings below. `RueCore.Typed` concludes at `RueCore.Out`, an optional normal state with the recorded deliveries; (Strict-Bottom) is one variant per strict context the fragment has (`binopBot`, `floatBinopBot`, `indexReadBot`, `indexWriteBotRhs`, `indexWriteBotIdx`, `assignBot`, `matchBot`, `iteBot`, `TypedArgs.consBot`), concluding at the construct's own type `T_E` with the premises that name it; (Seq-Bottom), (Let-Bottom) and (Return-Bottom) are `seqBot`, `letBot` and `retBot`; (Let) with a divergent tail is `letInDiv`; the branch join is over the arms that continue (`RueCore.Ctx.joinOpt`, `RueCore.Ctx.joinOpts`). (Sub-Never) is folded into the rules §5.7 types at `never`, because the fragment has no `never` type; the checker's `RueCore.CTy.never` is its image. Before RUE-2368 the judgment had no `Ω`: `return` and `@panic` concluded at any context, and the checker, which had to pick one, refused a diverging arm beside a continuing one in five seeded shapes the compiler accepts (`if_return_arm_affine`, `match_return_arm_linear`, `match_never_first_arm`, `if_panic_arm_linear`, `panic_past_linear`) |
 | Dead code after a diverging form | **unchecked, as §5.3 writes it**. (Seq-Bottom), (Let-Bottom) and (Strict-Bottom) type nothing past a `return` or `@panic`, so the checker accepts ill-formed dead code the compiler rejects (E0206, E0205, E0406, E0478, E0203, E0600 there), which §5.3 permits a surface checker to do. The corpus verdict contract excludes such programs (`lean/RueCore/Corpus.lean`), and whether the core should say more about unreachable source is a question for the calculus. No seed case has the shape, and the generator draws `break` only as the last form of an arm or of a once-through loop body, with at most one diverging arm per branch, so no generated case has it either (RUE-2330); whether errors in unreachable source are normative is RUE-2376 |

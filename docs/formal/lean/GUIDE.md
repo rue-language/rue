@@ -190,14 +190,28 @@ observable outcome, and the bridge compares it against a native binary's
 stdout (`README.md`, "The bridge corpus"). A trap carries a trace too, because
 a trapping process prints what it printed and then exits 101.
 
+**Every aggregate value has an identity.** §6.1 gives values none: two
+`S1 { 1 }` are the same term. To say *which* value a drop was of, a struct,
+enum or array literal **mints** one when it is built, and the value carries it
+from then on — `S1 { 1 }#3` in a step table, `.struct s 3 [...]` in Lean. The
+identity is the store's next index, reserved by appending a `†` slot that no
+binding ever names (§6.1: "a fresh identity is one not in `dom(H)`"), so the
+stores in the tables below have `†` slots between the bindings, and a
+binding's location is the next index after them. Nothing branches on an
+identity and nothing prints one, so the bridge compares exactly what it
+compared before. What it buys is section 4's last theorem, `no_double_free`:
+in a checked program's trace, no identity is freed twice.
+
 A `Violation` is a refusal: `useAfterMove` (reading a `⊘` cell),
 `useAfterDrop` (touching a `†` cell), `linearLeak` (a scope exit or a frame
 unwind reaching a live linear value), `linearOverwrite` (`3.8:77`),
-`linearDiscard` (`3.8:64`), and `unbound` and `typeConfusion` for ill-scoped
-or ill-typed input. Each of §7's memory-safety bullets says that one of these
-never happens. The three linear refusals are monitors the machine adds: §6's
-rules would drop the value and rely on §5 to have forbidden it. The other four
-are §6's own stuck states. So `eval` is a model of §6 on the programs `check`
+`linearDiscard` (`3.8:64`), `ownedUnderCopy` (an owned value put under a
+`Copy` node, which a copy would duplicate), and `unbound` and `typeConfusion`
+for ill-scoped or ill-typed input. Each of §7's memory-safety bullets says
+that one of these never happens. The three linear refusals and
+`ownedUnderCopy` are monitors the machine adds: §6's rules would drop the
+value, or build the aggregate, and rely on §5 to have forbidden it. The other
+four are §6's own stuck states. So `eval` is a model of §6 on the programs `check`
 accepts, and only there (`Dynamics.lean`).
 
 Why a function rather than the relation? A function can be *run*, so every
@@ -225,7 +239,7 @@ the compiler, and it does not carry the safety proof as cheaply. The adequacy
 theorems (RUE-2289's parts 2 and 3) are the bridge between them; until they
 land, `Step`'s own theorems are the cheap ones — it is deterministic, a
 finished configuration takes no step, and a stuck one is stuck on one of §6's
-four violations, never on one of `eval`'s three monitors
+four violations, never on one of `eval`'s four monitors
 (`../03-metatheory.md`). Where `Step` departs from §6's text, and the
 metatheory row and `Step.lean`'s module docstring give the same list:
 
@@ -240,6 +254,8 @@ metatheory row and `Step.lean`'s module docstring give the same list:
   (D-Break) drop the cells past the loop's record;
 - the use plan is recovered from the store rather than read off `μ`;
 - a destructor is one trace event rather than a nested run;
+- aggregate introduction mints a value identity by reserving a `†` slot, as
+  `eval` does, so the two presentations keep one store;
 - `Config.init` calls the entry point, so (D-Return-Main) is (D-Return)
   reaching its `call` frame;
 - a dynamic read, `@drop` at a dynamic place, or repeat operand that is not
@@ -426,6 +442,33 @@ theorem run_safe (M : FloatModel) (hwf : WfProgram P)
 
 The named corollaries (`no_use_after_move`, `no_linear_leak`, …) each restate
 "never `.stuck` with this particular violation" for one §7 bullet.
+
+**No double free** is the one bullet about the trace rather than the result
+(`Trace.lean`):
+
+```lean
+theorem no_double_free (M : FloatModel) (h : ProgramTyped P) (fuel : Nat) :
+    (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
+      (∀ a, (freedIds P.decls (run M.toFloatOps P fuel).trace).count a ≤ 1) ∧
+      (∀ a, (dtorIds (run M.toFloatOps P fuel).trace).count a ≤ 1)
+```
+
+In words: the run is never refused, and in its trace no value identity is
+freed twice and no value has its destructor run twice. `freedIds` reads the
+non-`Copy` identities out of each `drop`/`dropTemp` marker's tree, and
+`dtorIds` the identity of each value a destructor ran on. A `Copy` value is
+duplicated freely and frees nothing, so neither counts it.
+
+The proof is a **conservation law**, `eval_conserves`, by the same fuel
+induction as `soundness`: what the final store, the result and the trace own,
+counted as a multiset, is at most what the initial store owned plus what was
+minted, and minted identities are store indices, each once. It needs no typing
+derivation. It needs **copy closure**, that nothing owned sits under a `Copy`
+node, and the machine enforces that with its fourth monitor. Typing enters
+through the first conjunct, `no_violation`: a checked program never reaches
+the monitor, so its trace is the whole run's. `dupProgram_step_double_free` is
+the ill-typed program that shows the monitor is doing real work: §6's
+relation, which has no monitor, runs one destructor twice on one identity.
 
 **From a program to the theorem.** The theorem quantifies over derivations.
 To apply it to a *program* you need to know a derivation exists, and
