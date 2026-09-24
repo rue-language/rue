@@ -2372,6 +2372,13 @@ impl<'a> ConstraintGenerator<'a> {
                             }
                             InferType::Var(var)
                         });
+                        // A diverging `Common` operand imposes nothing on
+                        // the common type. When every `Common` operand
+                        // diverges, the common type is `!` itself, which
+                        // coerces to any context: `fn f() -> i32 {
+                        // @sqrt(return 3) }` is accepted, rather than the
+                        // lone common variable taking its literal default.
+                        let mut common_operand_diverged = None;
                         if !matches!(signature.params, ParamShape::Ungenerated) {
                             for (index, arg_ref) in args.iter().enumerate() {
                                 let info = generate_intrinsic_arg!(arg_ref.value);
@@ -2379,6 +2386,10 @@ impl<'a> ConstraintGenerator<'a> {
                                     ParamConstraint::Free => {}
                                     ParamConstraint::Common => {
                                         if let Some(common) = &common {
+                                            let diverged = Self::is_never_concrete(&info.ty);
+                                            common_operand_diverged = Some(
+                                                common_operand_diverged.unwrap_or(true) && diverged,
+                                            );
                                             self.add_peer_equal(info.ty, common.clone(), info.span);
                                         }
                                     }
@@ -2416,6 +2427,15 @@ impl<'a> ConstraintGenerator<'a> {
                                     }
                                 }
                             }
+                        }
+                        if common_operand_diverged == Some(true)
+                            && let Some(common) = &common
+                        {
+                            self.add_constraint(Constraint::equal(
+                                common.clone(),
+                                InferType::Concrete(Type::NEVER),
+                                span,
+                            ));
                         }
                         if signature.diverges {
                             continues = false;

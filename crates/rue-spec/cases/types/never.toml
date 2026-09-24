@@ -427,7 +427,7 @@ exit_code = 27
 
 [[case]]
 name = "never_coerces_at_bit_cast_operand"
-spec = ["3.4:3", "3.4:4", "4.13:118"]
+spec = ["3.4:3", "3.4:4", "4.13:119", "4.13:120"]
 description = "A diverging @bitCast operand is accepted; it has no width to compare with the target's"
 source = """
 fn main() -> i32 {
@@ -509,7 +509,7 @@ exit_code = 6
 
 [[case]]
 name = "integer_literal_at_a_declared_never_parameter_rejected"
-spec = ["3.4:3", "3.4:9"]
+spec = ["3.4:3", "3.1:17"]
 description = "The coercion runs from ! only: a literal passed where a parameter declares ! is still rejected"
 source = """
 fn g(x: !) -> i32 { 0 }
@@ -517,3 +517,31 @@ fn main() -> i32 { g(5) }
 """
 compile_fail = true
 error_contains = "out of range for type '!'"
+
+[[case]]
+name = "wrapping_arithmetic_with_both_operands_diverging_is_never_typed"
+spec = ["3.4:3", "3.4:4", "4.13:98"]
+description = "A wrapping-arithmetic intrinsic whose operands both diverge has type !, in value and statement position"
+source = """
+fn d() -> ! { @panic("unreachable") }
+fn sub_let() -> i32 { let x = @wrapping_sub(return 13, return 8); 0 }
+fn mul_stmt() -> i32 { @wrapping_mul(return 14, return 8); 0 }
+fn to_u8() -> u8 { @wrapping_add(return 18, d()) }
+fn main() -> i32 {
+    @wrapping_add(return 7, return 8)
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "float_rounding_intrinsic_of_a_diverging_operand_is_never_typed"
+spec = ["3.4:3", "3.4:4", "4.13:143"]
+description = "A rounding intrinsic whose only operand diverges has type !, which coerces to a non-float context"
+source = """
+fn as_let() -> i32 { let x: i32 = @sqrt(return 4); x }
+fn as_bool() -> bool { @floor(return true) }
+fn main() -> i32 {
+    @sqrt(return 3)
+}
+"""
+exit_code = 3

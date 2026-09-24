@@ -1626,6 +1626,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// literal default `i32` (3.1:14), `true`/`false` ask for `bool`, a
     /// variant path for its enum, and a struct pattern for its struct. Arms of
     /// only wildcards ask for nothing, and the scrutinee stays `!`.
+    ///
+    /// The integer case picks the literal default on purpose: no arm fixes a
+    /// width, so the patterns are checked as they would be against an
+    /// unannotated integer scrutinee, and a pattern outside `i32` is E0800.
+    /// This is a sema-side reading of the patterns, not a second inference:
+    /// the scrutinee never produces a value, so the choice only decides how
+    /// the dead arms are checked.
     fn diverging_scrutinee_type(
         &mut self,
         arms: &rue_rir::RirMatchArmsRange,

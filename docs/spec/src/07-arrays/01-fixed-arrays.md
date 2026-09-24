@@ -94,7 +94,8 @@ moves; the move case is governed by 7.1:28).
 
 {{ rule(id="7.1:7", cat="legality-rule") }}
 
-The index **MUST** be an integer type.
+The index **MUST** be an integer type. The requirement holds up to the one
+admitted never-type coercion (3.4:3): a diverging index is accepted.
 
 {{ rule(id="7.1:8") }}
 
