@@ -37,7 +37,7 @@ One array of case objects. Fields:
   an operator whose operand is `never`, such as `(return 1) + 2`, where it
   names no type (`Checker.lean`, "what completeness still costs"). That shape
   would be a *false* bridge failure, so no seed case has it and `Gen.lean`
-  emits neither `return` nor `@panic`. A diverging arm beside a continuing one
+  emits neither `return` nor `@panic`, and puts a `break` in no operand. A diverging arm beside a continuing one
   is no longer such a shape, and five seed cases below exercise it.
 
   The `accept` half has one exclusion of its own: **syntax after a diverging
@@ -46,7 +46,9 @@ One array of case objects. Fields:
   may reject — §5.3 lets a surface checker report errors in unreachable
   source (`Checker.lean`, "Dead code"). For a program with syntax after a
   diverging form, then, a compiler rejection is not a compiler defect. No
-  seed case has that shape, and a generator must not produce it (RUE-2369).
+  seed case has that shape, and `Gen.lean` does not produce it: it draws
+  `break` only as the last form of an arm or of a once-through loop body
+  (RUE-2330).
 * `expected` — the interpreter's outcome for an accepted program:
   `{"kind": "ok", "stdout": [<line>...], "exit": 0}`, where the lines are the
   run's **observable events** in trace order — one per user destructor and one

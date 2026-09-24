@@ -73,13 +73,13 @@ that seed and more than `i` cases. Its bias toward moves in one arm of an
 documented in the module.
 
 A generated program may declare its own **enums** as well as its own structs,
-and about three in four do (153 of 200 at `--gen 200 --seed 7`, 794 of 1,000
+and about three in four do (157 of 200 at `--gen 200 --seed 7`, 781 of 1,000
 at `--gen 1000 --seed 23`); such a program also draws enum construction and
 `match` — one arm per variant in declaration order, each arm a block over that
 variant's payload locals, which it may move, `@drop`, read or leave. A little
-under half the cases contain a `match` (85 of 200 and 444 of 1,000 at those two
+under half the cases contain a `match` (94 of 200 and 418 of 1,000 at those two
 settings), and a `match` whose scrutinee is a **place** rather than a temporary
-is the majority of them (101 of 172 sites and 502 of 818), because a drawn
+is the majority of them (76 of 157 sites and 467 of 769), because a drawn
 `match` half the time binds its scrutinee to a `let` first where the scope
 holds no enum place.
 
@@ -90,42 +90,54 @@ slots, so the use, `@drop` and assignment draws reach `a[c]`, `a[c].f`,
 `h.arr[c]` and `a[c][c']`; places below a **dynamic** index — `a[i]`,
 `a[i].f`, `h.arr[i].f`, `a[i][j]` — are read at a `Copy` leaf, written, and
 `@drop`ped at a `Copy` leaf, with one index in five out of bounds. About half
-the programs contain an array literal or repeat form (96 of 200, 501 of 1,000;
-a literal alone 85 and 467, a repeat form 24 and 126), 56 and 300 an
-index form, 43 and 248 a dynamic one, and the bounds trap ends 14 and 71 runs.
+the programs contain an array literal or repeat form (95 of 200, 471 of 1,000;
+a literal alone 90 and 448, a repeat form 24 and 114), 56 and 308 an
+index form, 42 and 245 a dynamic one, and the bounds trap ends 12 and 50 runs.
 Each index is bound by a `let` before the form that uses it, because the
 compiler folds a literal index in a block to a constant one and rejects an
 out-of-range constant at compile time (E0902): a block that can be fully
 evaluated at compile time is a constant index under `8.2:4`. That a
 `let`-bound index stays dynamic rests on the compiler's current reading of
 `8.2:4`'s open list, which is RUE-2349. The draw does not avoid the shapes of
-the array red seeds, so generated cases of them appear at the rates the module
-measures — the self-assignment `a[c] = a[c]` (RUE-2346; one case at
-`--gen 200 --seed 7`, three at `--gen 1000 --seed 23`, one of which the
-compiler's E0904 masks), and each such case is attributed by hand, the way
-RUE-2335's shape is. That is the only disagreement the acceptance settings
-(200 at seed 7, 1,000 at seed 23) still reach: a dynamic index into a
-zero-length array field (five at seed 23) disagreed until RUE-2345 was fixed. Wider runs at other seeds
-reached RUE-2344's shape too (`gen_2_1694`, `--gen 1695 --seed 2`; it agrees
-now that RUE-2344 is fixed), and two compiler defects found and filed from
-them, RUE-2347 (a CFG verification
-error on a `match` in one `if` arm) and RUE-2348 (an internal error on a float
-array bound inside an enum-valued block). Any other generated disagreement is
-a finding to file.
+the array red seeds, so a generated case of one is attributed by hand, the way
+RUE-2335's shape is: the self-assignment `a[c] = a[c]` (RUE-2346) is the one
+still red. On the current draws the acceptance settings (200 at seed 7, 1,000
+at seed 23) reach no disagreement at all: every one of the 1,200 cases agrees
+with the compiler. On the draws before loops they reached the self-assignment
+(one case at seed 7, three at seed 23) and a dynamic index into a zero-length
+array field (five at seed 23, agreeing since RUE-2345 was fixed); wider runs at
+other seeds reached RUE-2344's shape (`gen_2_1694`, agreeing since RUE-2344
+was fixed) and two compiler defects found and filed from them, RUE-2347 (a
+CFG verification error on a `match` in one `if` arm) and RUE-2348 (an
+internal error on a float array bound inside an enum-valued block). Any other
+generated disagreement is a finding to file.
 
 A use or `@drop` is drawn through a struct declared `linear` exactly as through
 any other (RUE-2339), so the checker, not the draw, picks §4.2's declared-linear
-destructure: 19 of the 200 programs and 78 of the 1,000 contain one, the
-checker accepts 2 and 16 of those, and the destructure's own linear-residue
-premise (E0474) is the deepest refusal of none of either. RUE-2335's shape — a
+destructure: 25 of the 200 programs and 94 of the 1,000 contain one, the
+checker accepts none and 12 of those, and the destructure's own linear-residue
+premise (E0474) is the deepest refusal of none and 5. RUE-2335's shape — a
 `@drop` of a declared-`linear` place after a destructure under it, which the
 compiler rejects and the model accepts — is not drawn around. None of those
-1,200 cases has it, but the draw reaches it, rarely (first at seed 1:
-`gen_1_151382`, `--gen 151383 --seed 1`, the only one in the first 300,000),
-and such a case is a bridge disagreement to attribute to RUE-2335 by hand. One shape is deliberately absent and the
-module says why: a `return` or `@panic` **inside an arm**, which `check` was
-incomplete on until it carried §5.7's `⊥` (RUE-2368). The seed corpus has
-those shapes now; drawing them is the loop generator's work (RUE-2330).
+1,200 cases has it, but the draw reaches it, rarely (on the draws before
+loops, first at seed 1 in `gen_1_151382`, the only one in the first 300,000),
+and such a case is a bridge disagreement to attribute to RUE-2335 by hand.
+
+A generated program may hold **loops** too (RUE-2330): half of them do (100 of
+200, 454 of 1,000). A loop is either **counted** — a `mut` counter, a guard
+`if k >= n { break }` first, `n ≤ 3` — or **once-through**, a body that ends
+in a `break`, so every generated program terminates and none is left out of
+the export for running out of fuel. Inside a loop body, `break` appears as a
+whole arm of an `if` or a `match` (at most one per branch) or as the last form
+of a once-through body, often right after a `@drop` of a binder from outside
+the loop: RUE-1615's shape when every path breaks, RUE-1614's exit join when
+another exit keeps the value. Loops nest (11 and 43 programs). Two shapes are
+drawn around, because each waits on a decision rather than being a finding:
+syntax after a `break` in the same block (RUE-2376), and a loop body that is
+not `unit` (RUE-2379). A `return` or `@panic` is not drawn yet: `check` has
+been complete on a diverging arm since it carried §5.7's `⊥` (RUE-2368), and
+drawing them under the `break` discipline is follow-up work. The seed corpus
+has those shapes.
 
 ```bash
 lake exe ruecore-corpus --gen 1000 --seed 7 > /tmp/gen.json   # seed cases, then 1000 generated
@@ -523,7 +535,7 @@ a slice author writes:
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
 | `RueCore/Print.lean` | core syntax → Rue source, the program's struct and enum declarations included, and the observation channel (a `drop fn` per destructor-bearing declaration) | §2 elaboration inventory, 3.9 |
 | `RueCore/Corpus.lean` | the bridge corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`) | §5, §6, §7 witnesses |
-| `RueCore/Gen.lean` | a seeded, type-directed generator of fragment programs — struct **and enum** declarations, enum construction, `match` in §5.5's canonical form, and **arrays**: `[T; n]` fields and binders, literal and repeat forms, constant-index reads, writes, element moves and `@drop`s, and dynamic-index reads, writes and `Copy` `@drop`s at and below the element, in and out of bounds — appended to the corpus by `lake exe ruecore-corpus --gen N --seed S` | programs, not rules |
+| `RueCore/Gen.lean` | a seeded, type-directed generator of fragment programs — struct **and enum** declarations, enum construction, `match` in §5.5's canonical form, **arrays**: `[T; n]` fields and binders, literal and repeat forms, constant-index reads, writes, element moves and `@drop`s, and dynamic-index reads, writes and `Copy` `@drop`s at and below the element, in and out of bounds — and **loops**: counted and once-through, nested, with `break` arms that may move a binder from outside the loop, every one terminating — appended to the corpus by `lake exe ruecore-corpus --gen N --seed S` | programs, not rules |
 | `RueCore/Explain.lean` | instrumented mirrors of `check` and `eval` — derivation trees with the failing premise named, and step tables with stores and drop events — with the lemmas tying both to the proved definitions | §5, §6 as an explanation |
 | `RueCore/Explain/Text.lean`, `RueCore/Explain/Html.lean` | the terminal and self-contained-page renderings (`lake exe ruecore-explain`); the checked-in text is in `explain/` | — |
 | `RueCore/Digest.lean`, `RueCore/DigestMain.lean` | the statement digest and the trust report, walked out of the compiled environment (`lake exe ruecore-digest`) | the claim inventory and its trust boundary |
@@ -592,9 +604,10 @@ proof. A `break` delivers the whole context where it fires; the loop drops the
 bindings its body opened (`Ctx.loopLocals`, §6.10's unwind) and joins the rest
 over every exit (`Ctx.outsideLoop`, `3.8:80`). A `break`-less loop is
 `never`-typed and checks the `⟨diverge, Σ_h⟩` edge frame-wide
-(`03-metatheory.md` records the reading). Six seeds cover the shapes
-(`Examples.lean`, "Loops and `break`"); the generator draws no loops yet
-(RUE-2330).
+(`03-metatheory.md` records the reading). Eleven corpus cases cover the
+shapes (`Examples.lean`, "Loops and `break`"), and the generator draws
+counted, once-through and nested loops (`Gen.lean`, "Loops"). The guide's
+example 11 traces RUE-1615's and RUE-1614's shapes through the rules.
 
 ## The main theorem
 

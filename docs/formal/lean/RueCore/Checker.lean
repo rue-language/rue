@@ -104,7 +104,9 @@ The never-typed forms are `return`, `@panic`, `break` and a `break`-less
 A `never` *right* operand is fine — the left one has already fixed the type —
 as is a `never` call argument, struct field, array element, condition or
 scrutinee, whose position names its own type. Nothing a reader would write
-turns on these, and `Gen.lean` emits no `return` or `@panic`.
+turns on these, and `Gen.lean` emits no `return` or `@panic` and puts a
+`break` only where a whole arm or a block's last form stands, never in an
+operand.
 
 ## Dead code: accepted here, rejected by the compiler
 
@@ -127,8 +129,9 @@ nothing about the compiler's verdict on a program with syntax after a
 diverging form, and `Corpus.lean`'s verdict contract excludes that shape.
 Whether the core should say more about errors in unreachable code is a
 question for the calculus, not settled here. No seed and no generated case
-has the shape today; a generator that emits `break` (RUE-2369) must not put
-syntax after a diverging form, or the bridge must skip such cases.
+has the shape: `Gen.lean` draws `break` only as the last form of an arm or of
+a once-through loop body, with at most one diverging arm per branch (RUE-2330),
+and draws no `return` or `@panic`.
 -/
 
 namespace RueCore

@@ -437,8 +437,7 @@ accepts all five, and the corpus seeds them now (`if_return_arm_affine`,
 ### Loops, briefly
 
 `loop e` and its nullary `break` (§5.7, §6.10) add three things a reader
-should know where to find; the worked examples are the loop generator's
-(RUE-2330).
+should know where to find; example 11 works through them.
 
 - **The loop-head state.** A loop body is typed once, at the state in force
   at the loop head on every turn: the entry state joined with the state the
@@ -476,6 +475,7 @@ interpreter and the theorem in full. The others show only what is new.
 | 8 | `enum_match_affine` | a `match` consumes its scrutinee; where the payload drops |
 | 9 | `array_dyn_write_rhs_first` | an assignment evaluates its right-hand side before its index |
 | 10 | `float_to_int_trap_inf` | the one float trap, and where the IEEE assumption sits |
+| 11 | `loop_move_every_path_breaks`, `loop_linear_one_exit` | a loop's head state, its back edge and its exits: RUE-1615's shape and RUE-1614's |
 
 Every example has the same parts: **The program**, **What the checker
 demands**, **The run**, and, where the proof needs something new, **What the
@@ -751,8 +751,7 @@ fn f0() -> i64 {
 #### What the checker demands
 
 `@panic` is `never`-typed (§5.7, `3.4:2`). `Typed.panic` folds (Sub-Never) in
-exactly as `Typed.ret` does (section 1): it concludes at any type and at any
-outgoing context of the same skeleton.
+exactly as `Typed.ret` does (section 1): it concludes at any type, and at `⊥`.
 
 The difference from `return` is one premise. §5.7 gives `return` the
 provenance `⊥_exit`, which "carries the §5.6 scope-exit/drop obligation", so
@@ -760,16 +759,16 @@ provenance `⊥_exit`, which "carries the §5.6 scope-exit/drop obligation", so
 `⊥_panic`, which §5.7 exempts ("§5.6 performs no scope-exit check or drop on
 that edge"), so `Typed.panic` demands nothing. That one premise is the whole
 difference between an exit that unwinds and an exit that abandons. (`check`
-is stricter here than the judgment and rejects a `@panic` past a live linear
-binding; section 4 lists that among the costs of completeness.)
+accepts a `@panic` past a live linear binding too, since it carries `⊥`
+(RUE-2368); `panic_past_linear` is that case.)
 
 | Node | Rule | Concludes |
 | --- | --- | --- |
 | `S1 { x0: 7 }` | (Struct-Intro) §5.8 | `⇒ S1` |
 | `@drop(v0)` | (@Drop) §5.3 | `⇒ unit`, and `v0` becomes `MovedOut` |
-| `@panic("boom")` | (Panic) §5.8 + (Sub-Never) §5.7 | `⇒ i64`: `check` picks the enclosing return type, as it does for `return` (`Checker.lean`) |
-| `@drop(v0); @panic(…)` | (Seq) §5.3 | `⇒ i64`; the discarded `unit` carries no linear value |
-| `let v0 = …; …` | (Let) §5.3 + §5.6 | `⇒ i64`; `v0` is `MovedOut` at the body's end, so the leak check has nothing to ask |
+| `@panic("boom")` | (Panic) §5.8 + (Sub-Never) §5.7 | `⇒ never ⊣ ⊥`: `check` returns `never`, which (Sub-Never) lets stand as the function's `i64` |
+| `@drop(v0); @panic(…)` | (Seq) §5.3 | `⇒ never ⊣ ⊥`; the discarded `unit` carries no linear value |
+| `let v0 = …; …` | (Let) §5.3 + §5.6 | `⇒ never ⊣ ⊥`; the body has no normal exit, so no scope-exit check is read (`explain/panic_after_drop.txt` renders `body ⇒ never, exit ⊥`) |
 
 #### The run
 
@@ -1422,6 +1421,199 @@ their own. `Float.exactOps`, the instance the corpus and the examples run, is
 constructive integer arithmetic. That it *satisfies* the laws is the residual
 assumption, and it is checked by running the float corpus against the
 compiler rather than proved.
+
+### Example 11: `loop_move_every_path_breaks` and `loop_linear_one_exit`, a loop's head state and its exits
+
+A loop is where one typing of the body has to speak for every turn. Two
+corpus cases show the two things the loop rules compute to make that true:
+the state at the loop head, which is RUE-1615's shape, and the state after
+the loop, which is RUE-1614's.
+
+#### The program
+
+```rue
+linear struct S3 { x0: i64 }
+drop fn S3(self) { @dbg(self.x0); }     // the observation channel
+
+// loop_move_every_path_breaks: accepted
+fn f0() -> i64 {
+    {
+        let v0: S3 = S3 { x0: 1 };
+        { loop { { @drop(v0); break } }; 5 }
+    }
+}
+
+// loop_linear_one_exit: rejected (E0443)
+fn f0() -> i64 {
+    {
+        let v0: S3 = S3 { x0: 1 };
+        { loop { if false { { @drop(v0); break } } else { break } }; 0 }
+    }
+}
+```
+
+In the core they are `Examples.loopMoveEveryPathBreaks` and
+`Examples.loopLinearOneExit`: `loop e` and the nullary `brk`. Both loops
+consume the linear `v0` inside the body. The first always does it just before
+leaving. The second does it on one way out and not on the other.
+
+#### What the checker demands
+
+(Loop-Break) §5.7, `Typed.loopBreak` in Lean, types a loop in three steps:
+
+1. **Find the loop-head state** `Σ_h`: what is true at the top of *every*
+   turn. It is the entry state joined (§5.5) with the state at every back
+   edge, the end of a turn that goes round again. `Σ_h` depends on the body,
+   and the body is typed at `Σ_h`, so the rule takes `Σ_h` as a premise
+   (`LoopHead`), and `check` finds it by iterating from the entry state until
+   it stops changing (`headIter`).
+2. **Type the body once, at `Σ_h`.** Its outgoing result says where the turn
+   ends: a normal state is the back edge, and each `⟨break, Σ_x⟩` delivery is
+   an exit (§5.3's `Ω`).
+3. **Read the exits.** At each exit the bindings the body opened are
+   discharged, since their scopes end there (`Ctx.loopLocals`, checked by
+   `NoResidualLinear`). The rest is joined over every exit
+   (`Ctx.outsideLoop`, `3.8:80`), and that join is the state after the loop.
+
+For `loop_move_every_path_breaks`, in the notation `explain/` renders:
+
+```
+  entry             Σ   = [v0: S3 = Owned]
+  body at Σ         { @drop(v0); break }
+                      ⇒ never ⊣ ⊥; Δ = {⟨break, [v0: S3 = MovedOut]⟩}
+  back edges        none: the body's result is ⊥, so no turn goes round
+  loop head         Σ_h = Σ = [v0: S3 = Owned]
+  exits             exit 0: [v0: S3 = MovedOut]
+  after the loop    [v0: S3 = MovedOut]
+```
+
+The `@drop` is checked at `Σ_h`, where `v0` is `Owned`, so it is legal, and
+the `let`'s scope exit then finds `v0` `MovedOut` and owes nothing. The
+compiler used to reject this program as "moved in a previous iteration"
+(RUE-1615). A previous iteration is exactly what the head state describes,
+and here no turn reaches the back edge, so there is no previous iteration
+whose move could matter.
+
+Give the body a way round and the same move is refused.
+`loop_moved_prev_iteration` is `loop { @drop(v0) }` on an affine `S1`:
+
+```
+  entry             Σ   = [v0: S1 = Owned]
+  iteration 1       body at Σ reaches the back edge with [v0: S1 = MovedOut]
+                    join(Σ, back edge) = [v0: S1 = MovedOut]      changed
+  iteration 2       body at [v0: S1 = MovedOut]: @drop(v0) refused
+  loop head         none: E0205 "moved in a previous iteration" (3.8:79)
+```
+
+For `loop_linear_one_exit`, the body has two exits and still no back edge:
+
+```
+  entry             Σ   = [v0: S3 = Owned]
+  body at Σ         if false { @drop(v0); break } else { break }
+                      ⇒ never ⊣ ⊥; Δ = {⟨break, [v0: S3 = MovedOut]⟩, ⟨break, [v0: S3 = Owned]⟩}
+  loop head         Σ_h = Σ
+  exits             exit 0: [v0: S3 = MovedOut]
+                    exit 1: [v0: S3 = Owned]
+  after the loop    join undefined ✗
+```
+
+The join is undefined because `S3` is linear and the exits disagree on `v0`
+(`3.8:50`). The explainer names it: "the reachable exits disagree on a
+linear-carrying binding — v0: S3 is MovedOut in exit 0 and Owned in exit 1",
+and the compiler reports E0443. This is RUE-1614's rule, that a linear value
+must be consumed on every way out, applied to `break` edges instead of
+`return` edges. With an affine `S1` in place of `S3` the join is defined and
+gives `MovedOut` ("maybe moved"): `loop_two_exits` is that case, and it is
+accepted.
+
+`loop_reassign_then_move` is the seed where the head is not the entry state.
+Each turn assigns `d` and then drops it:
+
+```
+  entry             Σ   = [v1: i64 mut = Owned, v0: S1 mut = Owned]
+  iteration 1       back edge [v1 = Owned, v0 = MovedOut]
+                    join = [v1: i64 mut = Owned, v0: S1 mut = MovedOut]     changed
+  iteration 2       body at that state: (Assign) reinitializes v0 before the @drop
+                    back edge [v1 = Owned, v0 = MovedOut]; join unchanged
+  loop head         Σ_h = [v1: i64 mut = Owned, v0: S1 mut = MovedOut]
+```
+
+`Examples.lean` kernel-checks both steps of that iteration: a bound of one
+refuses, and a bound of two reaches this head.
+
+#### The run
+
+`loop_move_every_path_breaks`, rows as `explain/loop_move_every_path_breaks.txt`
+numbers them:
+
+| Row | Rule | Store before | Effect | Store after | Events |
+| --- | --- | --- | --- | --- | --- |
+| 4 | (D-Let) §6.7 | `[]` | mint `ℓ0` for `v0` | `[ℓ0 = S3 { 1 }]` | |
+| 5 | `@drop` §6.11 | `[ℓ0 = S3 { 1 }]` | the glue runs, and the cell is marked `⊘` | `[ℓ0 = ⊘]` | `drop ℓ0 = S3 { 1 }`; `run drop fn S3(S3 { 1 })` |
+| 6–7 | (D-Break) §6.10, then (D-Seq) | `[ℓ0 = ⊘]` | the `break` fires, and the sequence passes it on (`EvalRes.broke`) | `[ℓ0 = ⊘]` | |
+| **8** | **(D-Break) §6.10 (unwind to the loop)** | `[ℓ0 = ⊘]` | the loop catches it and drops the cells the body opened, newest first. The body opened none, so `unwind-drops([])` does nothing, and the loop's value is `()` | `[ℓ0 = ⊘]` | |
+| 9–11 | literal, (D-Seq), (D-EndScope) | `[ℓ0 = ⊘]` | the value `5`; `v0`'s cell is already `⊘`, so its scope exit drops nothing | `[ℓ0 = †]` | |
+
+The output is `1`, then `5`. A body that had opened a binding would see it
+dropped at row 8 instead of at its own scope's end (`loop_break_past_local`).
+
+`loop_linear_one_exit` takes exit 1: `false` sends it to the `else` arm, whose
+`break` leaves `v0` alone. Then the `let`'s scope exit (row 11) meets a live
+linear value, and the machine refuses with `linearLeak`. The bridge never
+sees that run, because the compiler rejects the program first.
+
+#### What the proof needs
+
+Three things, in `Statics.lean` and `Soundness.lean`:
+
+- **The back edge.** A turn that completes re-enters the loop at its head, and
+  the same body derivation must type it there. `LoopHead.reenter` says it
+  does: the join absorbs a second copy of a back-edge state
+  (`Ctx.join_absorb`), so joining the head with the new back edge gives the
+  head again. `soundness`'s fuel induction then takes every later turn.
+  `LoopHead.enter` and `LoopHead.backEdge` carry the store's agreement onto the
+  head, from the entry and from the back edge.
+- **The exits.** `loop_exit_ok` carries the store's agreement across a
+  `break`: the unwind drops exactly the cells `Ctx.loopLocals` names, and the
+  exit's state joins into the loop's outgoing one. The machine keeps the
+  state of the path it took, and the join is the "maybe" over all paths, which
+  is `3.8:60`'s asymmetry again.
+- **Nontermination.** A loop may never finish. Each turn spends fuel, so a
+  run that has not finished is `outOfFuel`, never a wrong answer
+  (`infiniteLoop_outOfFuel` proves an infinite loop exhausts every bound), and
+  the export leaves such a case out (`Corpus.lean`).
+
+#### Before and after: what the loop-head rewrite fixed
+
+The calculus used to state the loop rule as a check: the state at every back
+edge must *equal* the state at loop entry (`3.8:79` read literally,
+"invariant across every reachable back edge"). The body was typed from the
+entry state, and the rule then compared the end of a turn with the start.
+
+That check rejected a program the compiler accepts on purpose:
+
+```rue
+loop { if n > 1 { break; } d = S1 { x0: n + 10 }; @drop(d); n = n + 1; }
+```
+
+Every turn gives `d` a new value before dropping it, so nothing is ever used
+after it moved. But the turn ends with `d` moved, while it started with `d`
+owned, and "moved" is not equal to "owned", so the old rule said no. It also
+typed the exits from the entry state. A `break` on the second turn, after
+the first turn had moved something, was read as if nothing had moved. That
+direction was unsound, and the compiler had the same gap (RUE-2354, fixed).
+
+The rewrite (#3181, RUE-2321) replaced the equality with the loop-head state:
+type the body once at the state that is true at the top of *every* turn,
+the entry joined with every back edge. Something moved by one turn and not
+restored is `MovedOut` there, so a later turn cannot use it (E0205, "moved in
+a previous iteration"). Something restored before its use is fine, because
+the body's own assignment reinitializes it. And every exit is read at that
+same state, so a late `break` sees what earlier turns did. The equality was
+a test that a loop which changes its state and puts it back can never pass.
+The head state is an equation that such a loop can satisfy, and the Lean
+package computes its least solution (`headIter`) and then checks it
+(`LoopHead`).
 
 ## 6. Running things yourself
 
