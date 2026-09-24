@@ -4425,3 +4425,88 @@ const P = Pair;
 """ }
 compile_fail = true
 error_contains = ["E0706", "const `P` is private"]
+
+# A `comptime {}` block types a literal as the same expression does at run time
+# (RUE-2357). An integer literal at a float type is that float (3.12:11); it
+# used to be E0800 "out of range for f32". A float literal passed through a
+# block unchanged is still a literal, held to 3.12:10 at its target type as
+# `let x: f32 = 1e39;` is; it used to be accepted as an infinity. A value an
+# operation computed may still be infinite.
+
+[[case]]
+name = "comptime_block_integer_literal_at_float_type_accepted"
+spec = ["3.12:11", "4.14:2"]
+description = "An integer literal at an f32 `let` inside a `comptime {}` block and as a block's value at f32 and f64 is the nearest float, as at run time - RUE-2357"
+source = """
+fn main() -> i32 {
+    let a: i32 = comptime { let x: f32 = 3; let y: f64 = 2; if x == 3.0 && y == 2.0 { 20 } else { 1 } };
+    let b: f32 = comptime { 3 };
+    let c: f64 = comptime { 9007199254740993 };
+    if b == 3.0 && c == 9007199254740992.0 { a + 22 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_const_integer_literal_at_float_type_accepted"
+spec = ["3.12:11", "4.14:2"]
+description = "The same `comptime {}` block in a const initializer is accepted too"
+source = """
+const K: i32 = comptime { let x: f32 = 3; if x == 3.0 { 42 } else { 1 } };
+fn main() -> i32 { K }
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_block_float_literal_out_of_range_rejected"
+spec = ["3.12:10", "4.14:2"]
+description = "A float literal that rounds to an infinity at f32 is E0206 as a `comptime {}` block's value, as it is written directly - RUE-2357"
+source = """
+fn main() -> i32 {
+    let x: f32 = comptime { 1e39 };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found 1e39"]
+
+[[case]]
+name = "comptime_block_negated_float_literal_out_of_range_rejected"
+spec = ["3.12:10", "4.14:2"]
+description = "A negated float literal that rounds to an infinity at f32 is E0206 as a `comptime {}` block's value"
+source = """
+fn main() -> i32 {
+    let x: f32 = comptime { -1e39 };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found -1e39"]
+
+[[case]]
+name = "comptime_block_float_literal_out_of_f64_range_rejected"
+spec = ["3.12:10", "4.14:2"]
+description = "A float literal that rounds to an infinity at f64 is E0206 as a `comptime {}` block's value"
+source = """
+fn main() -> i32 {
+    let x: f64 = comptime { 1e400 };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f64 literal"]
+
+[[case]]
+name = "comptime_block_computed_infinity_and_finite_literals_accepted"
+spec = ["3.12:10", "4.14:2"]
+description = "A literal finite at its type is accepted as a block's value, and an operation that overflows f32 is an infinity, not a literal error"
+source = """
+fn main() -> i32 {
+    let big: f32 = comptime { 3.4e38 };
+    let wide: f64 = comptime { 1e39 };
+    let inf: f32 = comptime { 1e38 * 4.0 };
+    let div: f32 = comptime { 1.0 / 0.0 };
+    if inf > big && div == inf && wide > 1e38 { 42 } else { 1 }
+}
+"""
+exit_code = 42

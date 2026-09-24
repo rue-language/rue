@@ -595,3 +595,129 @@ fn main() -> i32 { K }
 """
 compile_fail = true
 error_contains = ["E0204", "unknown type 'comptime_int'"]
+
+# =============================================================================
+# A typed initializer value against the declared type (3.11:8, 6.5:5) — RUE-2357
+# =============================================================================
+
+# A constant, arithmetic on one, or a call already has a type, so it is not a
+# literal the declared type can contextualize: a value of another type is the
+# E0206 type mismatch `let k: i32 = a;` with `a: i8` is at run time, whether or
+# not its value would fit. The const path used to judge it by range alone, so
+# a fitting value was E0800 "literal out of range" and an i32 constant was
+# accepted at an f32 annotation. A block whose tail is a `let` binding's value
+# is not covered here: it needs inference (RUE-2360).
+
+[[case]]
+name = "const_typed_integer_constant_at_wider_type_rejected"
+spec = ["3.11:8", "6.5:5"]
+description = "An i8 constant used as an i32 constant's initializer is E0206 naming both types, as at run time, not E0800 - RUE-2357"
+source = """
+const A: i8 = 5;
+const K: i32 = A;
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found i8"]
+
+[[case]]
+name = "const_typed_integer_constant_at_other_signedness_rejected"
+spec = ["3.11:8", "6.5:5"]
+description = "A negative i8 constant used as a u8 constant's initializer is E0206: the types differ, whatever the value"
+source = """
+const A: i8 = -5;
+const K: u8 = A;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected u8, found i8"]
+
+[[case]]
+name = "const_typed_integer_arithmetic_at_other_type_rejected"
+spec = ["3.11:8", "6.5:5"]
+description = "Arithmetic on a u8 constant is a u8, so it is E0206 as an i32 constant's initializer"
+source = """
+const A: u8 = 5;
+const K: i32 = A * 2;
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found u8"]
+
+[[case]]
+name = "const_call_value_at_other_integer_type_rejected"
+spec = ["3.11:8", "6.1:5", "6.5:5"]
+description = "A call's u8 value, of its callee's declared return type, is E0206 as an i32 constant's initializer, as `let k: i32 = f(3);` is"
+source = """
+fn f(comptime x: i32) -> u8 { 3 }
+const K: i32 = f(3);
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found u8"]
+
+[[case]]
+name = "const_typed_integer_constant_at_float_type_rejected"
+spec = ["3.11:8", "3.12:11"]
+description = "An i32 constant is not an integer literal, so it does not convert to f32: E0206, where it used to be accepted"
+source = """
+const A: i32 = 5;
+const K: f32 = A;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected f32, found i32"]
+
+[[case]]
+name = "const_typed_float_constant_at_other_width_rejected"
+spec = ["3.11:8"]
+description = "An f64 constant is E0206 as an f32 constant's initializer"
+source = """
+const A: f64 = 1.5;
+const K: f32 = A;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected f32, found f64"]
+
+[[case]]
+name = "const_typed_values_of_the_declared_type_accepted"
+spec = ["3.11:8", "3.12:11", "6.1:5", "6.5:5"]
+description = "Values of the declared type are accepted: an i8 constant at i8, a u8 call at u8, and integer literals at f32 and f64, directly and as a block's tail"
+source = """
+fn f(comptime x: i32) -> u8 { 3 }
+const A: i8 = 5;
+const B: i8 = A;
+const C: u8 = f(1);
+const D: f32 = 3;
+const E: f64 = { 7 };
+fn main() -> i32 {
+    if B == 5 && C == 3 && D == 3.0 && E == 7.0 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+# An untyped literal that cannot take the declared type reads as the body
+# path's inference reports it, from the literal's side (RUE-2357).
+
+[[case]]
+name = "const_integer_literal_at_bool_type_rejected_with_run_time_wording"
+spec = ["3.11:8", "6.5:5"]
+description = "An integer literal as a bool constant's initializer is E0206 worded as `let x: bool = 1;` is at run time"
+source = """
+const X: bool = 1;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected integer type, found bool"]
+
+[[case]]
+name = "const_float_literal_at_integer_type_rejected_with_run_time_wording"
+spec = ["3.12:11", "6.5:5"]
+description = "A float literal as an i32 constant's initializer is E0206 worded as `let x: i32 = 1.5;` is at run time"
+source = """
+const X: i32 = 1.5;
+fn main() -> i32 { X }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected comptime_float, found i32"]
