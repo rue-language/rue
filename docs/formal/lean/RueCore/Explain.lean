@@ -1640,7 +1640,12 @@ def elemsPremise (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Stri
   | _, _, _ => Premise.subDerivation
 end
 
-set_option maxHeartbeats 1600000 in
+-- The budget is per declaration, and the `assign` and `ret` arms of
+-- `explain_result` are where it goes: each `check` arm now splits on the
+-- operand's `Ω` (a continuing state or §5.7's `⊥`) as well as on its type, so
+-- the case analysis roughly doubles (RUE-2368). The default fails at those two
+-- arms and 400000 passes; the proof is unchanged.
+set_option maxHeartbeats 400000 in
 mutual
 /-- **The derivation is the checker.** Projecting a derivation to its
 conclusion reproduces `check P R Γ e` exactly, so a rendered derivation can

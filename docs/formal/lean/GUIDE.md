@@ -394,14 +394,24 @@ So for any program, run `checkProgram`:
   is one. A rejection can also be a plain type error, such as an out-of-range
   literal, which `eval` runs without complaint.
 
-**Completeness is false, at one shape.** Not every derivable program is
+**Completeness is false, at a few shapes.** Not every derivable program is
 accepted. `check` carries §5.7's `⊥`, so a diverging arm contributes nothing
 to a join and a `@panic` past a live linear binding reaches no scope exit, as
-the rules say; what it does not do is name a type for an operator whose
-operand is `never`. `(return 1) + 2` is derivable — §5.3's (Strict-Bottom)
-types it at the operator's own type, whatever integer type the `return` is
-coerced to — and `check` refuses it rather than guess. `Checker.lean`'s module
-docstring lists the forms. Nothing a reader would write turns on it.
+the rules say. What it does not do is accept a `never` operand where it reads
+a type off one: an operator's left operand, a cast or intrinsic operand,
+`@dbg`, a repeat form, an index expression (`a[return 8]`). `(return 1) + 2`
+is derivable — §5.3's (Strict-Bottom) types it at the operator's own type,
+whatever integer type the `return` is coerced to — and `check` refuses it
+rather than guess. `Checker.lean`'s module docstring lists every shape.
+Nothing a reader would write turns on them.
+
+**And an acceptance says less about dead code.** The `-Bottom` rules type
+nothing past a diverging subexpression, so `return 1; (1 + true)` is accepted
+here: the tail is unreachable and §5.3 does not check it. The compiler rejects
+it, which §5.3 allows ("the surface checker may still … report ordinary errors
+in unreachable source"). So for a program with syntax after a `return` or
+`@panic`, an `accept` verdict does not mean the compiler must accept, and the
+corpus has no such case.
 
 Before RUE-2368 the checker had no `⊥` and was narrower: it refused a `return`
 arm of an `if` or a `match` whose sibling kept a binding the arm moved, a

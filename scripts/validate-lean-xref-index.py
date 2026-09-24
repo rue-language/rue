@@ -135,12 +135,15 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ("T", "unit"): ("yes", ["Ty.unit"], ""),
     ("T", "never"): (
         "stand-in",
-        ["Typed.ret", "Typed.panic"],
+        ["Typed.ret", "Typed.panic", "CTy.never"],
         "`return` and `@panic` are in the fragment (§5.7, §5.8) but `never` is not "
-        "a type here: both rules fold (Sub-Never) in by concluding at any type, "
-        "which is sound because `never` has no values (`3.4:1`), and neither ever "
-        "needs a `HasTy` case. `break` and an infinite `loop` are the never-typed "
-        "forms the fragment still has no image of",
+        "a type of the judgment: every rule §5.7 types at `never` — `ret`, `retBot`, "
+        "`panic`, `seqBot`, `letBot`, `iteBot`, `matchBot` — folds (Sub-Never) in "
+        "by concluding at any type, with §5.3's `⊥` as its outgoing result, which "
+        "is sound because `never` has no values (`3.4:1`) and needs no `HasTy` "
+        "case. The checker's `CTy.never` is the type's algorithmic image. `break` "
+        "and an infinite `loop` are the never-typed forms the fragment still has "
+        "no image of",
     ),
     ("T", "S"): (
         "partial",
@@ -358,9 +361,9 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ("e", "return e"): (
         "yes",
         ["Expr.ret"],
-        "(Return-Value) §5.7 with (Sub-Never) folded into the same rule, and "
-        "§5.6's obligation carried at the `⊥_exit` edge; (Return-Bottom) is "
-        "subsumed rather than separate",
+        "(Return-Value) §5.7 (`Typed.ret`) with (Sub-Never) folded into the same "
+        "rule and §5.6's obligation carried at the `⊥_exit` edge, and "
+        "(Return-Bottom) §5.7 as its own rule (`Typed.retBot`)",
     ),
     ("e", "assign p = e"): (
         "yes",

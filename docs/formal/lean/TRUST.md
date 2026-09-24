@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 329.
+- Theorems checked: 331.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -185,6 +185,8 @@ and diffs them against the committed copies.
 | `Ctx.joinOpt_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Ctx.joinOpts_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Typed.wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `fnCtx_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Typed.wf_fnCtx` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `inBoundsIdx_eq_true` | `RueCore.Dynamics` | `propext` |
 | `dropEventsList_eq_flatten` | `RueCore.Dynamics` | `propext` |
 | `HasTys.length_eq` | `RueCore.Soundness` | `propext` |
