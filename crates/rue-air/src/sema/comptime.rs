@@ -2875,11 +2875,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 }
                 continue;
             }
-            debug_assert!(self.evaluated_operand.is_none());
+            assert!(
+                self.evaluated_operand.is_none(),
+                "an operand handoff is consumed before the next one"
+            );
             self.evaluated_operand = operand_outcome.take();
             let outcome = self.eval_dispatch(node, env);
             // The handoff is consumed unless cancellation stopped it first.
-            debug_assert!(
+            assert!(
                 self.evaluated_operand.is_none()
                     || matches!(
                         outcome,
