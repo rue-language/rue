@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 405.
+- Theorems checked: 416.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -230,6 +230,7 @@ and diffs them against the committed copies.
 | `stepRet_ne_halted` | `RueCore.Step` | `propext` |
 | `step_halted_iff` | `RueCore.Step` | `Quot.sound`, `propext` |
 | `Config.trichotomy` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `Config.stuck_iff` | `RueCore.Step` | `Quot.sound`, `propext` |
 | `Config.Stuck.no_step` | `RueCore.Step` | `propext` |
 | `Contents.readAt_err` | `RueCore.Step` | `propext` |
 | `Contents.splitResidue_err` | `RueCore.Step` | `propext` |
@@ -249,6 +250,16 @@ and diffs them against the committed copies.
 | `destructure_plain` | `RueCore.Step` | `propext` |
 | `stepN_steps` | `RueCore.Step` | `Quot.sound`, `propext` |
 | `letAddProgram_runs` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `demo_dynamicRead_stuck` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `demo_dynamicDrop_stuck` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `demo_repeat_stuck` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `demo_dropMoved_runs` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `demo_loopInLet_runs` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `demo_breakDrops_runs` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `demo_loopTurns_runs` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `demo_returnInLet_runs` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `demo_returnInMatch_runs` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `demo_loopIter_drops` | `RueCore.Step` | `Quot.sound`, `propext` |
 | `HasTys.length_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.mult_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.int_inv` | `RueCore.Soundness` | `propext` |
