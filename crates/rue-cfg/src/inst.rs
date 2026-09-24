@@ -901,7 +901,8 @@ pub struct Cfg {
     capacity_exceeded: Option<&'static str>,
     /// How many arena values are [`CfgInstData::MoveOut`] markers. The arena
     /// is append-only, so [`Cfg::add_inst`] and [`Cfg::set_inst_data`] keep
-    /// this exact; [`Cfg::charged_value_count`] subtracts it.
+    /// this exact, and the verifier checks it against the arena;
+    /// [`Cfg::charged_value_count`] subtracts it.
     move_out_values: usize,
 }
 
@@ -1820,15 +1821,18 @@ impl Cfg {
     /// (RUE-2367).
     #[inline]
     pub fn charged_value_count(&self) -> usize {
-        debug_assert_eq!(
-            self.move_out_values,
-            self.values
-                .iter()
-                .filter(|inst| matches!(inst.data, CfgInstData::MoveOut { .. }))
-                .count(),
-            "the MoveOut count drifted from the arena"
-        );
         self.values.len() - self.move_out_values
+    }
+
+    /// The recorded `MoveOut` count and the count in the arena, which the
+    /// verifier requires to agree.
+    pub(crate) fn move_out_counts(&self) -> (usize, usize) {
+        let counted = self
+            .values
+            .iter()
+            .filter(|inst| matches!(inst.data, CfgInstData::MoveOut { .. }))
+            .count();
+        (self.move_out_values, counted)
     }
 
     /// The attached values whose every use is a by-reference call argument.
