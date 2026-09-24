@@ -5714,7 +5714,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E0205", "use of moved value"]
+error_contains = ["E0205", "use of moved value", "the loop can exit on a later iteration, after this move"]
 
 # The same exit through a `continue` edge: the move rides the continue into
 # the next iteration, whose `break` exits with it (3.8:79, 3.8:80).
@@ -5778,11 +5778,14 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = ["E0205", "use of moved value"]
 
-# The while form: its breaks are read at the loop-head state too.
+# The while form: its breaks and its condition-false exit are read at the
+# loop-head state. This case does not tell the two apart (the condition-false
+# exit alone already leaves `d` moved, and trunk rejected it too); the
+# condition-break cases below are the discriminating `while` shapes.
 [[case]]
-name = "while_later_iteration_break_sees_earlier_iteration_move"
+name = "while_exits_see_earlier_iteration_move"
 spec = ["3.8:79", "3.8:80"]
-description = "A while loop's later-iteration break exits with a value an earlier iteration moved."
+description = "A while loop's break and condition-false exits after an iteration that moved a value leave it moved."
 source = """
 struct D { x: i32 }
 drop fn D(self) { @dbg(self.x); }
@@ -5829,11 +5832,13 @@ compile_fail = true
 error_contains = ["E0205", "use of moved value"]
 
 # Reassign-then-move is legal: the value is moved at the head of every later
-# iteration and reinitialized before the body uses it (3.8:79). Breakless,
-# exited by `return`.
+# iteration and reinitialized before the body uses it. This is the loop-head
+# reading of formal core §5.7 (`head(Σ, e)`, rue-language/rue#3181); 3.8:79
+# still words the back-edge rule as invariance, which forbids it, so it is not
+# cited here until RUE-2355 rewords it. Breakless, exited by `return`.
 [[case]]
 name = "reassign_then_move_breakless_is_legal"
-spec = ["3.8:55", "3.8:79"]
+spec = ["3.8:55"]
 description = "Reinitializing before the move in every iteration is legal in a breakless loop."
 source = """
 struct Data { x: i32 }
@@ -5853,10 +5858,12 @@ fn main() -> i32 {
 exit_code = 7
 
 # With a `break` and a reinitialization before the use after the loop, every
-# value is destroyed exactly once.
+# value is destroyed exactly once. Formal core §5.7's loop-head state admits
+# the reassign-then-move body; 3.8:79 is not cited until RUE-2355 rewords its
+# invariance rule to match.
 [[case]]
 name = "reassign_then_move_with_break_is_legal"
-spec = ["3.8:55", "3.8:79", "3.8:80"]
+spec = ["3.8:55", "3.8:80"]
 description = "Reinitializing before the move in every iteration and after the loop is legal."
 source = """
 struct D { x: i32 }
@@ -5880,12 +5887,14 @@ fn main() -> i32 {
 expected_stdout = "1\n11\n12\n7\n"
 exit_code = 7
 
-# A while loop's condition-false exits are read at the loop-head state: a
-# condition that reinitializes the value leaves it owned on every exit,
-# although the body moved it on the back edge (3.8:80).
+# A while loop's condition-false exits are read at the loop-head state
+# (formal core §5.7; 3.8:80): a condition that reinitializes the value leaves
+# it owned on every exit, although the body moved it on the back edge. 3.8:79
+# is not cited until RUE-2355 rewords its invariance rule to the loop-head
+# state.
 [[case]]
 name = "while_condition_reinit_leaves_exit_owned"
-spec = ["3.8:55", "3.8:79", "3.8:80"]
+spec = ["3.8:55", "3.8:80"]
 description = "A while condition that reinitializes a value before every check leaves it owned after the loop."
 source = """
 struct D { x: i32 }
@@ -5904,3 +5913,194 @@ fn main() -> i32 {
 """
 expected_stdout = "1\n20\n21\n22\n23\n"
 exit_code = 23
+
+# A `break` in a while condition targets the ENCLOSING loop. On the while's
+# second iteration it fires with `d` moved by the first, so the enclosing
+# loop's exit carries that move (3.8:80; RUE-2354). The while's loop-head
+# recheck must hand this later-iteration edge back to the enclosing loop.
+[[case]]
+name = "while_condition_break_to_outer_loop_sees_earlier_iteration_move"
+spec = ["3.8:79", "3.8:80"]
+description = "A break in a while condition, taken on a later while iteration, exits the enclosing loop with the moved value."
+source = """
+struct D { x: i32 }
+drop fn D(self) { @dbg(self.x); }
+fn eat(d: D) -> i32 { d.x }
+fn stop(i: i32) -> bool { i == 1 }
+
+fn main() -> i32 {
+    let mut d = D { x: 1 };
+    let mut i: i32 = 0;
+    loop {
+        while { if stop(i) { break; } i < 100 } {
+            i = i + 1;
+            d = D { x: 10 + i };
+            eat(d);
+        }
+        return 5;
+    }
+    eat(d)
+}
+"""
+compile_fail = true
+error_contains = ["E0205", "use of moved value"]
+
+# The `continue` form: the later-iteration condition `continue` re-enters the
+# enclosing loop with `d` moved, so that loop's next iteration cannot use it
+# (3.8:79).
+[[case]]
+name = "while_condition_continue_to_outer_loop_sees_earlier_iteration_move"
+spec = ["3.8:79"]
+description = "A continue in a while condition, taken on a later while iteration, re-enters the enclosing loop with the moved value."
+source = """
+struct D { x: i32 }
+drop fn D(self) { @dbg(self.x); }
+fn eat(d: D) -> i32 { d.x }
+fn stop(i: i32) -> bool { i == 1 }
+
+fn main() -> i32 {
+    let mut d = D { x: 1 };
+    let mut i: i32 = 0;
+    let mut n: i32 = 0;
+    loop {
+        if n == 1 { eat(d); break; }
+        n = n + 1;
+        while { if stop(i) { continue; } i < 100 } {
+            i = i + 1;
+            d = D { x: 10 + i };
+            eat(d);
+        }
+        return 5;
+    }
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0205", "previous iteration of the loop"]
+
+# Reinitializing after the enclosing loop makes the condition-break shape
+# legal, and every value is destroyed exactly once.
+[[case]]
+name = "while_condition_break_to_outer_loop_reinit_after_is_legal"
+spec = ["3.8:55", "3.8:80"]
+description = "A value moved before a later-iteration condition break and reinitialized after the enclosing loop is legal."
+source = """
+struct D { x: i32 }
+drop fn D(self) { @dbg(self.x); }
+fn eat(d: D) -> i32 { d.x }
+fn stop(i: i32) -> bool { i == 2 }
+
+fn main() -> i32 {
+    let mut d = D { x: 1 };
+    let mut i: i32 = 0;
+    loop {
+        while { if stop(i) { break; } i < 100 } {
+            i = i + 1;
+            d = D { x: 10 + i };
+            eat(d);
+        }
+        return 5;
+    }
+    d = D { x: 7 };
+    eat(d)
+}
+"""
+expected_stdout = "1\n11\n12\n7\n"
+exit_code = 7
+
+# A `break` in a while condition targets the ENCLOSING loop. On the while's
+# second iteration it fires with `d` moved by the first, so the enclosing
+# loop's exit carries that move (3.8:80; RUE-2354). The while's loop-head
+# recheck must hand this later-iteration edge back to the enclosing loop.
+[[case]]
+name = "while_condition_break_to_outer_loop_sees_earlier_iteration_move_o2"
+spec = ["3.8:79", "3.8:80"]
+description = "A break in a while condition, taken on a later while iteration, exits the enclosing loop with the moved value at -O2."
+opt_level = 2
+source = """
+struct D { x: i32 }
+drop fn D(self) { @dbg(self.x); }
+fn eat(d: D) -> i32 { d.x }
+fn stop(i: i32) -> bool { i == 1 }
+
+fn main() -> i32 {
+    let mut d = D { x: 1 };
+    let mut i: i32 = 0;
+    loop {
+        while { if stop(i) { break; } i < 100 } {
+            i = i + 1;
+            d = D { x: 10 + i };
+            eat(d);
+        }
+        return 5;
+    }
+    eat(d)
+}
+"""
+compile_fail = true
+error_contains = ["E0205", "use of moved value"]
+
+# The `continue` form: the later-iteration condition `continue` re-enters the
+# enclosing loop with `d` moved, so that loop's next iteration cannot use it
+# (3.8:79).
+[[case]]
+name = "while_condition_continue_to_outer_loop_sees_earlier_iteration_move_o2"
+spec = ["3.8:79"]
+description = "A continue in a while condition, taken on a later while iteration, re-enters the enclosing loop with the moved value at -O2."
+opt_level = 2
+source = """
+struct D { x: i32 }
+drop fn D(self) { @dbg(self.x); }
+fn eat(d: D) -> i32 { d.x }
+fn stop(i: i32) -> bool { i == 1 }
+
+fn main() -> i32 {
+    let mut d = D { x: 1 };
+    let mut i: i32 = 0;
+    let mut n: i32 = 0;
+    loop {
+        if n == 1 { eat(d); break; }
+        n = n + 1;
+        while { if stop(i) { continue; } i < 100 } {
+            i = i + 1;
+            d = D { x: 10 + i };
+            eat(d);
+        }
+        return 5;
+    }
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0205", "previous iteration of the loop"]
+
+# Reinitializing after the enclosing loop makes the condition-break shape
+# legal, and every value is destroyed exactly once.
+[[case]]
+name = "while_condition_break_to_outer_loop_reinit_after_is_legal_o2"
+spec = ["3.8:55", "3.8:80"]
+description = "A value moved before a later-iteration condition break and reinitialized after the enclosing loop is legal at -O2."
+opt_level = 2
+source = """
+struct D { x: i32 }
+drop fn D(self) { @dbg(self.x); }
+fn eat(d: D) -> i32 { d.x }
+fn stop(i: i32) -> bool { i == 2 }
+
+fn main() -> i32 {
+    let mut d = D { x: 1 };
+    let mut i: i32 = 0;
+    loop {
+        while { if stop(i) { break; } i < 100 } {
+            i = i + 1;
+            d = D { x: 10 + i };
+            eat(d);
+        }
+        return 5;
+    }
+    d = D { x: 7 };
+    eat(d)
+}
+"""
+expected_stdout = "1\n11\n12\n7\n"
+exit_code = 7

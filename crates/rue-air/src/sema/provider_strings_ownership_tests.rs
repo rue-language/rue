@@ -1274,6 +1274,37 @@ fn provider_body_nested_later_iteration_break_sees_earlier_move() {
     );
 }
 
+// A `break` in a while condition targets the enclosing loop; the while's
+// loop-head recheck must hand its later-iteration state back to that loop's
+// exit join (RUE-2354 review, B1).
+#[test]
+fn provider_body_while_condition_break_to_outer_loop_sees_earlier_move() {
+    let fixture = later_iteration_fixture();
+    let error = fixture
+        .analyze(
+            "fn main() -> i32 {
+    let mut n = NonCopy { x: 1 };
+    let mut i = 0;
+    loop {
+        while { if stop(i) { break; } i < 100 } {
+            i = i + 1;
+            n = NonCopy { x: i };
+            consume(n);
+        }
+        return 5;
+    }
+    consume(n)
+}",
+            "main",
+        )
+        .map(|_| ())
+        .expect_err("the condition break exits the outer loop with `n` moved");
+    assert!(
+        matches!(&error.kind, ErrorKind::UseAfterMove { .. }),
+        "unexpected diagnostic: {error:?}"
+    );
+}
+
 // The loop-head state admits reassign-then-move: `n` is moved at the head of
 // every later iteration and reinitialized before the body uses it, and a
 // reassignment after the loop restores it for the use there.
