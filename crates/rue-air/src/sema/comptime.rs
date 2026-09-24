@@ -557,6 +557,21 @@ pub trait ComptimeValueAlgebra: ComptimeDomain {
     ) -> ComptimeOutcome<Self::Value, Self::Failure> {
         ComptimeOutcome::RuntimeDependent
     }
+    /// Admit one reduced child of a structural literal into the slot it
+    /// fills: an array element, a struct field or an enum payload, at any
+    /// depth. `slot` is the type [`ComptimeTypeAlgebra::comptime_child_slot_type`]
+    /// declared for it and `site` is the child's own span, so a host
+    /// reports a value the slot cannot hold where the body type checker
+    /// would, on the element (RUE-2392, RUE-2395). The host may retag the
+    /// value to the slot's type. The default admits it unchanged.
+    fn admit_comptime_child(
+        &mut self,
+        value: Self::Value,
+        _slot: &Self::Type,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<Self::Value, Self::Failure> {
+        Ok(value)
+    }
     fn resolve_comptime_array_repeat(
         &mut self,
         _ty: Self::Type,
@@ -2074,17 +2089,27 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     /// enclosing expected result is the type of the literal itself, so a
     /// child evaluated under it would type a nested array literal as its
     /// parent (RUE-2390). Every array element, struct field and enum payload
-    /// goes through here.
+    /// goes through here, so this is also the one point where a reduced
+    /// child is admitted into its slot, at the child's own span (RUE-2392,
+    /// RUE-2395).
     fn eval_in_slot(
         &mut self,
         child: InstRef,
         slot: Option<H::Type>,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
-        let enclosing = std::mem::replace(&mut env.expected_result, slot);
+        let enclosing = std::mem::replace(&mut env.expected_result, slot.clone());
         let value = self.eval(child, env);
         env.expected_result = enclosing;
-        value
+        match (value, slot) {
+            (ComptimeOutcome::Known(value), Some(slot)) => {
+                let site = self.diagnostic_site(self.program_rir().get(child).span);
+                ComptimeOutcome::Known(host_value!(
+                    self.host.admit_comptime_child(value, &slot, &site)
+                ))
+            }
+            (value, _) => value,
+        }
     }
 
     /// The type the host declares for `slot` of a literal of type `parent`,

@@ -238,16 +238,74 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
         }
     }
 
-    fn durable_child_type_error(
-        found: DurableType,
-        expected: &DurableType,
-    ) -> rue_air::ComptimeHostError<DurableComptimeHostFailure> {
-        durable_host_error(DurableComptimeFailure::failure(
-            SemanticNucleusFailure::Diagnostic(rue_error::ErrorKind::TypeMismatch {
-                expected: durable_type_diagnostic_name(expected),
+    /// Admit one reduced child of a structural literal into its declared
+    /// slot type: an array element, a struct field or an enum payload, at
+    /// any depth. This is the one rule every child meets, whether the engine
+    /// admits it at its own span through `admit_comptime_child` or an
+    /// aggregate constructor re-admits it at the literal's span (`site` is
+    /// `None` only where no span reaches the host, and the diagnostic then
+    /// falls back to the declaration).
+    ///
+    /// Each rejection is the one the body type checker gives for the same
+    /// child: a value typed at another type is E0206; an untyped integer
+    /// literal outside the slot's integer range is E0800 (spec 6.5:5); and a
+    /// float literal that does not name a finite value at the slot's width
+    /// is E0206 "expected finite f32 literal" (spec 3.12:10), exactly as the
+    /// scalar `const X: f32 = 1e39;` is. A float still typed
+    /// `comptime_float` is the literal's own text; a computed float carries
+    /// its width and may be `inf`.
+    fn admit_child_value(
+        value: &mut EvaluatedSemanticConst,
+        slot: &DurableType,
+        site: Option<&DurableComptimeDiagnosticSite>,
+    ) -> rue_air::ComptimeHostResult<(), DurableComptimeHostFailure> {
+        Self::admit_contextual_integer(value, slot);
+        let reject = |kind: rue_error::ErrorKind| {
+            durable_host_error(match site {
+                Some(site) => DurableComptimeFailure::kind_at_site(site, kind),
+                None => DurableComptimeFailure::failure(SemanticNucleusFailure::Diagnostic(kind)),
+            })
+        };
+        if let Some(found) = Self::durable_child_type_mismatch(value, slot) {
+            return Err(reject(rue_error::ErrorKind::TypeMismatch {
+                expected: durable_type_diagnostic_name(slot),
                 found: durable_type_diagnostic_name(&found),
-            }),
-        ))
+            }));
+        }
+        let EvaluatedSemanticConst::Value(typed) = value else {
+            return Ok(());
+        };
+        match (&typed.value, typed.ty.as_ref(), slot) {
+            (DurableConstValue::Integer(integer), None, _)
+                if durable_int_width(slot).is_some()
+                    && !durable_const_fits_type(&typed.value, slot) =>
+            {
+                Err(reject(rue_error::ErrorKind::LiteralOutOfRange {
+                    value: *integer,
+                    ty: durable_type_diagnostic_name(slot),
+                }))
+            }
+            (
+                DurableConstValue::Float(text),
+                Some(DurableType::ComptimeFloat),
+                DurableType::F32 | DurableType::F64,
+            ) => {
+                let width = if matches!(slot, DurableType::F32) {
+                    rue_air::Type::F32
+                } else {
+                    rue_air::Type::F64
+                };
+                if rue_air::finite_float_literal_bits(text, width).is_some() {
+                    Ok(())
+                } else {
+                    Err(reject(rue_error::ErrorKind::TypeMismatch {
+                        expected: format!("finite {} literal", durable_type_diagnostic_name(slot)),
+                        found: text.to_string(),
+                    }))
+                }
+            }
+            _ => Ok(()),
+        }
     }
 
     #[allow(dead_code)]
@@ -1099,8 +1157,9 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         &mut self,
         ty: Self::Type,
         fields: Vec<(Self::Name, Self::Value)>,
-        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
+        let site = self.diagnostic_site(site);
         let field_count = match self.services.resolve_struct_field_count(ty.as_ref()) {
             Ok(field_count) => field_count,
             Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
@@ -1137,12 +1196,8 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
                 Ok(None) => return rue_air::ComptimeOutcome::RuntimeDependent,
                 Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
             };
-            Self::admit_contextual_integer(&mut value, &field_type);
-            if let Some(found) = Self::durable_child_type_mismatch(&value, &field_type) {
-                return durable_host_error_outcome(Self::durable_child_type_error(
-                    found,
-                    &field_type,
-                ));
+            if let Err(error) = Self::admit_child_value(&mut value, &field_type, Some(&site)) {
+                return durable_host_error_outcome(error);
             }
             let Some(durable_value) = into_durable_value(value.clone()) else {
                 return rue_air::ComptimeOutcome::RuntimeDependent;
@@ -1177,11 +1232,12 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         &mut self,
         ty: Self::Type,
         mut elements: Vec<Self::Value>,
-        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
         let DurableType::Array { element, len } = ty.as_ref() else {
             return rue_air::ComptimeOutcome::RuntimeDependent;
         };
+        let site = self.diagnostic_site(site);
         match self.services.type_is_copy(ty.as_ref()) {
             Ok(true) => {}
             Ok(false) => {
@@ -1193,16 +1249,22 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
             }
             Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
         }
+        // A literal of the wrong length for its declared array type is the
+        // body type checker's E0901, at the literal (RUE-2395).
         if elements.len() as u64 != *len {
-            return rue_air::ComptimeOutcome::RuntimeDependent;
+            return durable_host_error_outcome(durable_host_error(
+                DurableComptimeFailure::kind_at_site(
+                    &site,
+                    rue_error::ErrorKind::ArrayLengthMismatch {
+                        expected: *len,
+                        found: elements.len() as u64,
+                    },
+                ),
+            ));
         }
         for value in &mut elements {
-            Self::admit_contextual_integer(value, element.as_ref());
-            if let Some(found) = Self::durable_child_type_mismatch(value, element.as_ref()) {
-                return durable_host_error_outcome(Self::durable_child_type_error(
-                    found,
-                    element.as_ref(),
-                ));
+            if let Err(error) = Self::admit_child_value(value, element.as_ref(), Some(&site)) {
+                return durable_host_error_outcome(error);
             }
             let Some(value) = into_durable_value(value.clone()) else {
                 return rue_air::ComptimeOutcome::RuntimeDependent;
@@ -1222,6 +1284,17 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
             },
             rue_air::ComptimeOutcome::Known,
         )
+    }
+
+    fn admit_comptime_child(
+        &mut self,
+        mut value: Self::Value,
+        slot: &Self::Type,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<Self::Value, Self::Failure> {
+        let site = self.diagnostic_site(site);
+        Self::admit_child_value(&mut value, slot.as_ref(), Some(&site))?;
+        Ok(value)
     }
 
     fn resolve_comptime_array_repeat(
@@ -1621,9 +1694,8 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         }
         let mut nodes = 0;
         for (value, ty) in payload.iter_mut().zip(payload_types.iter()) {
-            Self::admit_contextual_integer(value, ty);
-            if let Some(found) = Self::durable_child_type_mismatch(value, ty) {
-                return durable_host_error_outcome(Self::durable_child_type_error(found, ty));
+            if let Err(error) = Self::admit_child_value(value, ty, None) {
+                return durable_host_error_outcome(error);
             }
             let Some(value) = into_durable_value(value.clone()) else {
                 return rue_air::ComptimeOutcome::RuntimeDependent;

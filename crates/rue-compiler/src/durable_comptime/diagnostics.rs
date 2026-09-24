@@ -325,8 +325,22 @@ impl DurableComptimeFailure {
     }
 
     fn diagnostic_at_site(site: &DurableComptimeDiagnosticSite, reason: String) -> Self {
+        Self::kind_at_site(
+            site,
+            rue_error::ErrorKind::ComptimeEvaluationFailed { reason },
+        )
+    }
+
+    /// A domain diagnostic anchored at `site` within its producer
+    /// declaration: an element, field or payload a structural literal's
+    /// slot cannot hold is reported on that child, as the body type
+    /// checker reports it (RUE-2392, RUE-2395).
+    pub(crate) fn kind_at_site(
+        site: &DurableComptimeDiagnosticSite,
+        kind: rue_error::ErrorKind,
+    ) -> Self {
         Self::failure(SemanticNucleusFailure::DiagnosticAtProducerRange {
-            kind: rue_error::ErrorKind::ComptimeEvaluationFailed { reason },
+            kind,
             producer: site.producer.clone(),
             start: site.start,
             end: site.end,
