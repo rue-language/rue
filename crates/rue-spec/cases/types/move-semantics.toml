@@ -2528,6 +2528,256 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "linear value 'h' must be consumed"
 
+# RUE-2335: after a projection through two declared-`linear` levels destructures
+# the inner one, `@drop` of the declared-linear ancestor is its discharge (core
+# (@Drop) §5.3: no still-owned linear sub-place remains below it).
+[[case]]
+name = "drop_of_declared_linear_ancestor_after_inner_destructure"
+spec = ["3.8:33", "3.9:37", "3.9:38", "3.9:39"]
+description = "@drop of a declared-linear ancestor after its declared-linear field was destructured discharges it and drops only the owned residue, once (RUE-2335)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct S2 { x0: i64 }
+drop fn S2(self) { @dbg(self.x0); }
+linear struct L { a: i64, b: S1 }
+linear struct L2 { inner: L, z: S2 }
+
+fn f0() -> i64 {
+    let y: L2 = L2 { inner: L { a: 1, b: S1 { x0: 2 } }, z: S2 { x0: 3 } };
+    @dbg(10);
+    let v: i64 = y.inner.a;   // destructures y.inner: drops b, prints 2
+    @dbg(20);
+    @drop(y);                 // discharges y; drops only the residue z, prints 3
+    @dbg(30);
+    v
+}
+
+fn main() -> i32 { let result: i64 = f0(); @dbg(result); 0 }
+"""
+exit_code = 0
+expected_stdout = "10\n2\n20\n3\n30\n1\n"
+
+[[case]]
+name = "drop_of_declared_linear_ancestor_after_inner_destructure_o2"
+spec = ["3.8:33", "3.9:37", "3.9:38", "3.9:39"]
+description = "@drop of a declared-linear ancestor after its declared-linear field was destructured discharges it and drops only the owned residue, once at -O2 (RUE-2335)"
+opt_level = 2
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct S2 { x0: i64 }
+drop fn S2(self) { @dbg(self.x0); }
+linear struct L { a: i64, b: S1 }
+linear struct L2 { inner: L, z: S2 }
+
+fn f0() -> i64 {
+    let y: L2 = L2 { inner: L { a: 1, b: S1 { x0: 2 } }, z: S2 { x0: 3 } };
+    @dbg(10);
+    let v: i64 = y.inner.a;   // destructures y.inner: drops b, prints 2
+    @dbg(20);
+    @drop(y);                 // discharges y; drops only the residue z, prints 3
+    @dbg(30);
+    v
+}
+
+fn main() -> i32 { let result: i64 = f0(); @dbg(result); 0 }
+"""
+exit_code = 0
+expected_stdout = "10\n2\n20\n3\n30\n1\n"
+
+[[case]]
+name = "drop_of_declared_linear_ancestor_with_live_linear_sibling_rejected"
+spec = ["3.8:32", "3.9:37"]
+description = "@drop of a declared-linear ancestor after one declared-linear field was destructured still rejects a sibling linear field that remains owned (RUE-2335)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+linear struct L { a: i64, b: S1 }
+linear struct L2 { inner: L, other: L }
+
+fn main() -> i32 {
+    let y: L2 = L2 { inner: L { a: 1, b: S1 { x0: 2 } }, other: L { a: 5, b: S1 { x0: 6 } } };
+    let v: i64 = y.inner.a;
+    @drop(y);
+    0
+}
+"""
+compile_fail = true
+error_contains = "'y.other' still holds a linear value"
+
+[[case]]
+name = "declared_linear_ancestor_left_after_inner_destructure_rejected"
+spec = ["3.8:32", "3.8:33"]
+description = "A declared-linear ancestor left to scope exit after its declared-linear field was destructured keeps its own obligation (RUE-2335)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct S2 { x0: i64 }
+drop fn S2(self) { @dbg(self.x0); }
+linear struct L { a: i64, b: S1 }
+linear struct L2 { inner: L, z: S2 }
+
+fn main() -> i32 {
+    let y: L2 = L2 { inner: L { a: 1, b: S1 { x0: 2 } }, z: S2 { x0: 3 } };
+    let v: i64 = y.inner.a;
+    0
+}
+"""
+compile_fail = true
+error_contains = "linear value 'y' must be consumed"
+
+[[case]]
+name = "declared_linear_sibling_destructure_after_inner_destructure_rejected"
+spec = ["3.8:26", "3.8:33"]
+description = "Destructuring a declared-linear ancestor through a sibling field after its declared-linear field was destructured uses a partially moved value (RUE-2335)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct S2 { x0: i64 }
+drop fn S2(self) { @dbg(self.x0); }
+linear struct L { a: i64, b: S1 }
+linear struct L2 { inner: L, z: S2 }
+
+fn sink(s: S2) -> i64 { 7 }
+
+fn main() -> i32 {
+    let y: L2 = L2 { inner: L { a: 1, b: S1 { x0: 2 } }, z: S2 { x0: 3 } };
+    let v: i64 = y.inner.a;
+    let w: i64 = sink(y.z);
+    0
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'y.inner'"
+
+[[case]]
+name = "drop_of_declared_linear_ancestor_after_inner_reinit"
+spec = ["3.8:33", "3.8:55", "3.9:37"]
+description = "Reinitializing a destructured declared-linear field restores it, and @drop of the ancestor then drops the new field and the residue (RUE-2335)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct S2 { x0: i64 }
+drop fn S2(self) { @dbg(self.x0); }
+linear struct L { a: i64, b: S1 }
+linear struct L2 { inner: L, z: S2 }
+
+fn main() -> i32 {
+    let mut y: L2 = L2 { inner: L { a: 1, b: S1 { x0: 2 } }, z: S2 { x0: 3 } };
+    let v: i64 = y.inner.a;
+    @dbg(20);
+    y.inner = L { a: 5, b: S1 { x0: 6 } };
+    @dbg(30);
+    @drop(y);
+    @dbg(v);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "2\n20\n30\n6\n3\n1\n"
+
+[[case]]
+name = "drop_of_declared_linear_root_through_infectious_field_after_destructure"
+spec = ["3.8:33", "3.8:60", "3.9:37", "3.9:39"]
+description = "@drop of a declared-linear root after a destructure below an infectious field drops that field's residue and the root's other fields in declaration order (RUE-2335)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct S2 { x0: i64 }
+drop fn S2(self) { @dbg(self.x0); }
+linear struct L { a: i64, b: S1 }
+struct H { l: L, s: S2 }
+linear struct G { h: H, t: S1 }
+
+fn main() -> i32 {
+    let y: G = G { h: H { l: L { a: 1, b: S1 { x0: 2 } }, s: S2 { x0: 3 } }, t: S1 { x0: 4 } };
+    let v: i64 = y.h.l.a;
+    @dbg(20);
+    @drop(y);
+    @dbg(v);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "2\n20\n3\n4\n1\n"
+
+[[case]]
+name = "drop_of_declared_linear_grandparent_with_partially_moved_linear_child_rejected"
+spec = ["3.8:32", "3.8:33", "3.9:37"]
+description = "Three declared-linear levels: after the innermost is destructured, the middle one is still an owned linear sub-place, so @drop of the root is rejected (RUE-2335)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct S2 { x0: i64 }
+drop fn S2(self) { @dbg(self.x0); }
+struct S3 { x0: i64 }
+drop fn S3(self) { @dbg(self.x0); }
+linear struct L { a: i64, b: S1 }
+linear struct L2 { inner: L, z: S2 }
+linear struct L3 { mid: L2, w: S3 }
+
+fn main() -> i32 {
+    let y: L3 = L3 { mid: L2 { inner: L { a: 1, b: S1 { x0: 2 } }, z: S2 { x0: 3 } }, w: S3 { x0: 4 } };
+    let v: i64 = y.mid.inner.a;
+    @drop(y);
+    0
+}
+"""
+compile_fail = true
+error_contains = "'y.mid' still holds a linear value"
+
+[[case]]
+name = "declared_linear_root_destructure_through_partially_moved_field_rejected"
+spec = ["3.8:26", "3.8:33"]
+description = "Three declared-linear levels: after the innermost is destructured, @drop of the middle one destructures the root, which is no longer fully owned (RUE-2335)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct S2 { x0: i64 }
+drop fn S2(self) { @dbg(self.x0); }
+struct S3 { x0: i64 }
+drop fn S3(self) { @dbg(self.x0); }
+linear struct L { a: i64, b: S1 }
+linear struct L2 { inner: L, z: S2 }
+linear struct L3 { mid: L2, w: S3 }
+
+fn main() -> i32 {
+    let y: L3 = L3 { mid: L2 { inner: L { a: 1, b: S1 { x0: 2 } }, z: S2 { x0: 3 } }, w: S3 { x0: 4 } };
+    let v: i64 = y.mid.inner.a;
+    @drop(y.mid);
+    0
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'y.mid.inner'"
+
+[[case]]
+name = "declared_linear_root_projection_through_partially_moved_field_rejected"
+spec = ["3.8:26", "3.8:33"]
+description = "Three declared-linear levels: after the innermost is destructured, moving the middle one out destructures the root, which is no longer fully owned (RUE-2335)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct S2 { x0: i64 }
+drop fn S2(self) { @dbg(self.x0); }
+struct S3 { x0: i64 }
+drop fn S3(self) { @dbg(self.x0); }
+linear struct L { a: i64, b: S1 }
+linear struct L2 { inner: L, z: S2 }
+linear struct L3 { mid: L2, w: S3 }
+
+fn main() -> i32 {
+    let y: L3 = L3 { mid: L2 { inner: L { a: 1, b: S1 { x0: 2 } }, z: S2 { x0: 3 } }, w: S3 { x0: 4 } };
+    let v: i64 = y.mid.inner.a;
+    let m: L2 = y.mid;
+    @drop(m);
+    0
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'y.mid.inner'"
+
 [[case]]
 name = "infectious_carrier_unconsumed_field_reported_at_scope_exit"
 spec = ["3.8:60"]
