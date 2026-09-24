@@ -1192,7 +1192,7 @@ mod tests {
         );
 
         super::super::constopt::run(&mut cfg);
-        let fwd = super::super::forward::run(&mut cfg).unwrap();
+        let fwd = super::super::forward::run(&mut cfg, &test_type_pool()).unwrap();
         // Both `Load`s forwarded to their slot's single write (the adds).
         assert_eq!(fwd.loads_forwarded_single_write, 2);
 
