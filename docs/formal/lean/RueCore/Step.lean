@@ -1138,7 +1138,7 @@ or `†` cell, an unbound index, a wrong-shaped operand — rather than one of t
 three monitors `eval` adds, which §6.3, §6.7 and §6.8 do not have. -/
 def Violation.isStuckState : Violation → Bool
   | .useAfterMove | .useAfterDrop | .unbound | .typeConfusion => true
-  | .linearLeak | .linearOverwrite | .linearDiscard => false
+  | .linearLeak | .linearOverwrite | .linearDiscard | .ownedUnderCopy => false
 
 /-- `readAt` refuses only with §6's stuck states (helper). -/
 theorem Contents.readAt_err : ∀ {c : Contents} {π : List Nat} {w : Violation},
