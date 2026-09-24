@@ -45,6 +45,10 @@ pub(super) trait InferenceFactSource {
     fn inference_module_binding_type(&self, key: (FileId, Spur)) -> Option<Type>;
     fn inference_module_file_id(&self, module: ModuleId) -> Option<FileId>;
     fn inference_function_by_file(&self, key: (FileId, Spur)) -> Option<Spur>;
+    /// The module an `@import(path)` written in the analyzed body names,
+    /// resolved by the same canonical-import lookup semantic analysis binds
+    /// the intrinsic with.
+    fn inference_import_module(&self, import_path: &str) -> Option<ModuleId>;
 }
 
 /// Demand-population cache for constraint generation (RUE-1091 slice r5b).
@@ -229,5 +233,9 @@ impl<H: BodyAnalysisReadHost> LazyInferenceFacts for HostInferenceFacts<'_, H> {
 
     fn function_by_file(&self, key: (FileId, Spur)) -> Option<Spur> {
         self.host.inference_function_by_file(key)
+    }
+
+    fn import_module(&self, import_path: &str) -> Option<ModuleId> {
+        self.host.inference_import_module(import_path)
     }
 }

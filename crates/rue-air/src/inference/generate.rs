@@ -217,6 +217,7 @@ pub(crate) trait LazyInferenceFacts {
     fn module_binding_type(&self, key: (FileId, Spur)) -> Option<Type>;
     fn module_file_id(&self, module: ModuleId) -> Option<FileId>;
     fn function_by_file(&self, key: (FileId, Spur)) -> Option<Spur>;
+    fn import_module(&self, import_path: &str) -> Option<ModuleId>;
 }
 
 /// Context for constraint generation within a single function.
@@ -1365,6 +1366,35 @@ impl<'a> ConstraintGenerator<'a> {
             .and_then(|map| map.get(&key).copied())
     }
 
+    /// The module type an inline `@import("path")` instruction names.
+    ///
+    /// Under the lazy provider (production) the path resolves through the same
+    /// canonical-import lookup semantic analysis binds the intrinsic with, so
+    /// `@import("x.rue").f(3)` and `let m = @import("x.rue"); m.f(3)` reach the
+    /// module-member call path exactly as `const m = @import("x.rue")` does and
+    /// their arguments are constrained to the callee's parameters (RUE-2401).
+    /// Any other instruction, and the eager unit-test path, answer `None`.
+    fn import_module_type(&self, inst_ref: InstRef) -> Option<Type> {
+        let InstData::Intrinsic { name, args } = &self.rir.get(inst_ref).data else {
+            return None;
+        };
+        if rue_builtins::IntrinsicName::from_spelling(self.interner.resolve(name))
+            != Some(rue_builtins::IntrinsicName::Import)
+        {
+            return None;
+        }
+        let args = self.rir.intrinsic_args(args);
+        let mut args = args.iter();
+        let (Some(arg), None) = (args.next(), args.next()) else {
+            return None;
+        };
+        let InstData::StringConst { content, .. } = &self.rir.get(arg.value).data else {
+            return None;
+        };
+        let module = self.lazy?.import_module(self.interner.resolve(content))?;
+        Some(Type::new_module(module))
+    }
+
     /// Resolve a module registry file identity.
     fn module_file_id(&self, module: ModuleId) -> Option<FileId> {
         if let Some(lazy) = self.lazy {
@@ -2352,7 +2382,10 @@ impl<'a> ConstraintGenerator<'a> {
                         if signature.diverges {
                             continues = false;
                         }
-                        let result = self.signature_result_type(signature.result, common);
+                        let result = match self.import_module_type(inst_ref) {
+                            Some(module) => InferType::Concrete(module),
+                            None => self.signature_result_type(signature.result, common),
+                        };
                         if signature.result_is_integer {
                             self.add_constraint(Constraint::is_integer(result.clone(), span));
                         }
@@ -4436,7 +4469,9 @@ impl<'a> ConstraintGenerator<'a> {
     /// since inference would otherwise constrain a value expression with an
     /// unrelated module member's type.
     fn module_member_file(&self, module: InstRef, ctx: &ConstraintContext) -> Option<FileId> {
-        let spine = decode_module_spine(self.rir, module)?;
+        let Some(spine) = decode_module_spine(self.rir, module) else {
+            return self.inline_import_member_file(module);
+        };
         let mut file_id = match ctx
             .locals
             .get(&spine.root)
@@ -4452,6 +4487,25 @@ impl<'a> ConstraintGenerator<'a> {
             }
         };
         for field in spine.fields {
+            file_id = self.module_file(self.module_binding_type((file_id, field))?)?;
+        }
+        Some(file_id)
+    }
+
+    /// [`Self::module_member_file`] for a spine rooted at an inline
+    /// `@import("path")` rather than a name (`@import("x.rue").S.new(3)`):
+    /// the root is the imported module itself, and each further segment is a
+    /// module binding of the previous hop's file. No lexical binding can
+    /// shadow an intrinsic root.
+    fn inline_import_member_file(&self, module: InstRef) -> Option<FileId> {
+        let mut fields = Vec::new();
+        let mut cursor = module;
+        while let InstData::FieldGet { base, field } = self.rir.get(cursor).data {
+            fields.push(field);
+            cursor = base;
+        }
+        let mut file_id = self.module_file(self.import_module_type(cursor)?)?;
+        for field in fields.into_iter().rev() {
             file_id = self.module_file(self.module_binding_type((file_id, field))?)?;
         }
         Some(file_id)
