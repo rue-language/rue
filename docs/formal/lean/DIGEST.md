@@ -43,8 +43,8 @@ The theorems below are about a *fragment* of the core calculus
 rule by rule and form by form; its two coverage lines, quoted here so the
 boundary is visible before the statements are:
 
-- *Calculus rules → declarations*: 87 of 97 labeled §5/§6 rules are mechanized; 10 are *not yet mechanized*.
-- *Abstract syntax forms → declarations*: 30 of 35 §2 forms have a core image (8 of them partial); 5 are *not yet mechanized*.
+- *Calculus rules → declarations*: 88 of 97 labeled §5/§6 rules are mechanized; 9 are *not yet mechanized*.
+- *Abstract syntax forms → declarations*: 32 of 35 §2 forms have a core image (8 of them partial); 3 are *not yet mechanized*.
 
 The forms that count as partial are `S`, `E`, `e1 ⊕ e2`, `⊖ e`, `e1 ⋚ e2`,
 `g ( a1, ..., am )`, `@panic ( s )`,
@@ -1500,7 +1500,8 @@ definitional-interpreter form).
 A well-typed expression, run at any fuel in any frame and store agreeing with
 its incoming context, yields a well-typed value with the agreement restored at
 the normal outgoing state of its §5.3 result `Ω` — and no value at all when
-`Ω` is §5.7's `⊥` — a value handed back by an unwinding `return` (§6.9), a
+`Ω` is §5.7's `⊥` — a value handed back by an unwinding `return` (§6.9), an
+unwinding `break` (§6.10) that fired at one of `Ω`'s delivered states, a
 *defined* panic (§6.12), or `outOfFuel` — never `.stuck`, so never a
 `Violation`: no use-after-move, no use-after-drop, no linear leak, no linear
 overwrite, no linear discard (§7's decomposed bullets). The theorem is
@@ -1650,8 +1651,9 @@ calculus, the second is the calculus doing what it says.
   route as well as the first.
 
 Every *other* edge — a `let`'s scope exit, a `match` arm's `endscope` over its
-payload locals (`Matches.unwindPrefix`), a frame's normal pop, and a `return`'s
-unwind — is covered.
+payload locals (`Matches.unwindPrefix`), a `break`'s unwind to its loop
+(`loop_exit_ok`), a frame's normal pop, and a `return`'s unwind — is
+covered.
 
 ```lean
 theorem RueCore.no_violation (M : FloatModel) {P : Program} (h : ProgramTyped P)
@@ -11090,7 +11092,11 @@ newest-first drop at the arm's end; `ite` is (D-If-T)/(D-If-F) after the §6.2
 search for the scrutinee; `call` is (D-Call)
 followed by (D-Return-Value) when the body completes normally, and by
 (D-Return)'s absorption when it does not; `ret` is (D-Return), which runs the
-frame's scope drops and hands the value past every enclosing form.
+frame's scope drops and hands the value past every enclosing form; `loop` is
+(D-Loop-Enter) and (D-Loop-Iter) §6.10, re-entering the body at one unit of
+fuel less after every turn that completes, and (D-Break)'s unwind when the
+body breaks; `brk` is (D-Break), which hands its loop the frame's scope
+record.
 
 Every operand is sequenced with `andThen`, which is §6.2's search through an
 evaluation context; the callee's body is sequenced with `absorb`, the one
@@ -13115,7 +13121,9 @@ outgoing states join n-way; `letIn` folds in §5.6's residual-linear scope-exit
 check; `assign` is (Assign) with the `3.8:77` linear-overwrite premise, keyed
 on the destination's type (`overwriteOk`), on the *post-RHS* state; `seq` is (Seq) with the `3.8:64` discard check; `ite` is (If)
 with the §5.5 join; `call` is (Call) by value (§5.8); `ret` is (Return-Value)
-and `panic` is (Panic), each with (Sub-Never) folded in (§5.7, §5.8).
+and `panic` is (Panic), each with (Sub-Never) folded in (§5.7, §5.8); `brk` is
+(Break), `loopDiv` is (Loop-Div-Backedge) and (Loop-Div), and `loopBreak` and
+`loopBreakDiv` are (Loop-Break) with and without a reachable exit (§5.7).
 
 ```lean
 inductive RueCore.Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop

@@ -329,14 +329,14 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
-  [25]  d5            (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return runs the drop through the frame's scope record instead; a trap runs no drop at all)
+  [25]  d5            (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let v2: S1 = v1.x0[0].x0; { @drop(v2); { @dbg(20); { { v1.x0[v0].x0 = S1 { x0…
          store   [ℓ0 = 0, ℓ1 = S12 { [S11 { S1 { 1 } }, S11 { S1 { 3 } }] }]
            →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
-  [26]  d4          (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return runs the drop through the frame's scope record instead; a trap runs no drop at all)
+  [26]  d4          (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let mut v1: S12 = S12 { x0: [S11 { x0: S1 { x0: 1 } }, S11 { x0: S1 { x0: 3 }…
          store   [ℓ0 = 0]
            →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]

@@ -168,12 +168,12 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   [ℓ0 = S11 { 8, [] }, ℓ1 = 0]
            →     [ℓ0 = S11 { 8, [] }, ℓ1 = 0]
          result  PANIC (bounds) — a defined trap, §6.12
-  [12]  d3        (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return runs the drop through the frame's scope record instead; a trap runs no drop at all)
+  [12]  d3        (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let v1: i32 = 0; { @dbg(v0.x1[v1]); 0 } }
          store   [ℓ0 = S11 { 8, [] }]
            →     [ℓ0 = S11 { 8, [] }, ℓ1 = 0]
          result  PANIC (bounds) — a defined trap, §6.12
-  [13]  d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return runs the drop through the frame's scope record instead; a trap runs no drop at all)
+  [13]  d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let v0: S11 = S11 { x0: 8, x1: [] }; { let v1: i32 = 0; { @dbg(v0.x1[v1]); 0 …
          store   (empty)
            →     [ℓ0 = S11 { 8, [] }, ℓ1 = 0]

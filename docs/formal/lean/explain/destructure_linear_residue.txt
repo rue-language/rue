@@ -164,7 +164,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
                  linear obligation was never discharged (endscope §6.7 /
                  `run-all-scope-drops` §6.9, the §5.6 leak check executed; 3.8:32; §7
                  “consumed exactly once”)
-  [9]   d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return runs the drop through the frame's scope record instead; a trap runs no drop at all)
+  [9]   d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let v0: S17 = S17 { x0: 1, x1: S2 { x0: 2 } }; { let v1: i64 = v0.x0; v1 } }
          store   (empty)
            →     [ℓ0 = S17 { 1, S2 { 2 } }]
