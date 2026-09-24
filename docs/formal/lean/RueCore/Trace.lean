@@ -1422,4 +1422,153 @@ theorem evalArgs_cons {D : Decls} {F : Event → List Nat} {ev : Store → Expr 
       | stuck w => trivial
       | outOfFuel => trivial
 
+/-! ## The place forms' ledgers: a move, a drop, a write -/
+
+/-- Writing a cell mints nothing (helper). -/
+@[simp] theorem Fresh.set (H : Store) (ℓ : Nat) (x : Cell) : Fresh H (H.set ℓ x) = [] := by
+  simp [Fresh]
+
+/-- `()` owns nothing (helper). -/
+@[simp] theorem Val.own_unit (D : Decls) : Val.unit.own D = [] := rfl
+
+/-- **(D-Use-Move) §6.3, as a ledger**: the value handed on owns what the
+place owned, and the place now holds `⊘` — so the identity moved, it did not
+multiply (helper). -/
+theorem Cons.move {D : Decls} {F : Event → List Nat} {H : Store} {X : List Nat} {ℓ : Nat}
+    {c c' sub : Contents} {π : List Nat} {v : Val} (hcc : StoreCC D H)
+    (hc : H[ℓ]? = some (.full c)) (hr : c.readAt π = .ok sub)
+    (hw : c.writeAt π .hole = some c') (hv : sub.toVal = some v) :
+    Cons D F H X (.ok (H.set ℓ (.full c')) v []) := by
+  have hccc := hcc ℓ c hc
+  have hsub : Contents.ofVal v = sub := Contents.ofVal_toVal hv
+  refine ⟨by simp, hcc.set (Contents.writeAt_copyClosed π hccc rfl hw), ?_, fun a => ?_⟩
+  · rw [hsub]; exact Contents.readAt_copyClosed π hccc hr
+  · have h1 := storeOwn_set_count D a (.full c') hc
+    have h2 := Contents.writeAt_own a π hccc hr hw
+    simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
+    simp only [Val.own, hsub, List.flatMap_nil, List.count_nil]
+    omega
+
+/-- **(D-Use-Declared-Linear) §6.3, as a ledger**: the leaf handed on and the
+residue dropped together account for the consumed place, which becomes `⊘`
+(helper). -/
+theorem Cons.destructure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
+    {H : Store} {X : List Nat} {ℓ : Nat} {c c' cd leaf : Contents} {πd πs : List Nat}
+    {v : Val} {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
+    (hr : c.readAt πd = .ok cd) (hd : cd.destructure D πs = .ok (leaf, evs))
+    (hv : leaf.toVal = some v) (hw : c.writeAt πd .hole = some c') :
+    Cons D F H X (.ok (H.set ℓ (.full c')) v evs) := by
+  have hccc := hcc ℓ c hc
+  have hcd := Contents.readAt_copyClosed πd hccc hr
+  obtain ⟨hm, hl⟩ := Contents.destructure_measure hF hcd hd
+  have hsub : Contents.ofVal v = leaf := Contents.ofVal_toVal hv
+  refine ⟨by simp, hcc.set (Contents.writeAt_copyClosed πd hccc rfl hw), by rw [hsub]; exact hl,
+    fun a => ?_⟩
+  have h1 := storeOwn_set_count D a (.full c') hc
+  have h2 := Contents.writeAt_own a πd hccc hr hw
+  have h3 := hm a
+  simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
+  simp only [Val.own, hsub]
+  omega
+
+/-- **§6.11's `@drop`, as a ledger**: the place's residue is dropped and the
+place becomes `⊘`, so what the trace frees leaves the store (helper). -/
+theorem Cons.dropPlace {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
+    {H : Store} {X : List Nat} {ℓ : Nat} {c c' sub : Contents} {π : List Nat}
+    {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
+    (hr : c.readAt π = .ok sub) (hd : dropCell D ℓ sub = .ok evs)
+    (hw : c.writeAt π .hole = some c') :
+    Cons D F H X (.ok (H.set ℓ (.full c')) .unit evs) := by
+  have hccc := hcc ℓ c hc
+  have hsub := Contents.readAt_copyClosed π hccc hr
+  refine ⟨by simp, hcc.set (Contents.writeAt_copyClosed π hccc rfl hw), rfl, fun a => ?_⟩
+  have h1 := storeOwn_set_count D a (.full c') hc
+  have h2 := Contents.writeAt_own a π hccc hr hw
+  have h3 := dropCell_measure hF hsub hd a
+  simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
+  simp only [Val.own, Contents.ofVal, Contents.own, List.count_nil]
+  omega
+
+/-- **§6.11's `@drop` at a declared plan, as a ledger**: the residue, then the
+leaf, then `⊘` at the consumed place (helper). -/
+theorem Cons.dropDeclared {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
+    {H : Store} {X : List Nat} {ℓ : Nat} {c c' cd leaf : Contents} {πd πs : List Nat}
+    {evs levs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
+    (hr : c.readAt πd = .ok cd) (hd : cd.destructure D πs = .ok (leaf, evs))
+    (hl : dropCell D ℓ leaf = .ok levs) (hw : c.writeAt πd .hole = some c') :
+    Cons D F H X (.ok (H.set ℓ (.full c')) .unit (evs ++ levs)) := by
+  have hccc := hcc ℓ c hc
+  have hcd := Contents.readAt_copyClosed πd hccc hr
+  obtain ⟨hm, hlc⟩ := Contents.destructure_measure hF hcd hd
+  refine ⟨by simp, hcc.set (Contents.writeAt_copyClosed πd hccc rfl hw), rfl, fun a => ?_⟩
+  have h1 := storeOwn_set_count D a (.full c') hc
+  have h2 := Contents.writeAt_own a πd hccc hr hw
+  have h3 := hm a
+  have h4 := dropCell_measure hF hlc hl a
+  simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
+  simp only [Val.own, Contents.ofVal, Contents.own, List.count_nil, List.flatMap_append,
+    List.count_append]
+  omega
+
+/-- **(D-Assign) §6.8, as a ledger**: the old contents at the place is dropped
+and the held value takes its position (helper). -/
+theorem Cons.assign {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
+    {H : Store} {Y : List Nat} {ℓ : Nat} {c c' old : Contents} {π : List Nat} {v : Val}
+    {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
+    (hr : c.readAt π = .ok old) (hd : dropCell D ℓ old = .ok evs)
+    (hw : c.writeAt π (Contents.ofVal v) = some c') (hc' : c'.copyClosed D = true) :
+    Cons D F H (v.own D ++ Y) (.ok (H.set ℓ (.full c')) .unit evs) := by
+  have hccc := hcc ℓ c hc
+  have hold := Contents.readAt_copyClosed π hccc hr
+  refine ⟨by simp, hcc.set hc', rfl, fun a => ?_⟩
+  have h1 := storeOwn_set_count D a (.full c') hc
+  have h2 := Contents.writeAt_own a π hccc hr hw
+  have h3 := dropCell_measure hF hold hd a
+  simp only [Cell.own] at h1
+  simp only [List.count_append, Fresh.set, Val.own_unit, List.count_nil]
+  simp only [Val.own] at *
+  omega
+
+/-- **(D-Assign) below a dynamic index, as a ledger**: the same, at the leaf
+the index resolved to, one level down (helper). -/
+theorem Cons.assignDyn {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
+    {H : Store} {Y : List Nat} {ℓ : Nat} {c c' sub sub' old : Contents} {π ρ : List Nat}
+    {v : Val} {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
+    (hr : c.readAt π = .ok sub) (hr' : sub.readAt ρ = .ok old)
+    (hd : dropCell D ℓ old = .ok evs) (hw' : sub.writeAt ρ (Contents.ofVal v) = some sub')
+    (hw : c.writeAt π sub' = some c') (hc' : c'.copyClosed D = true) :
+    Cons D F H (v.own D ++ Y) (.ok (H.set ℓ (.full c')) .unit evs) := by
+  have hccc := hcc ℓ c hc
+  have hsub := Contents.readAt_copyClosed π hccc hr
+  have hold := Contents.readAt_copyClosed ρ hsub hr'
+  refine ⟨by simp, hcc.set hc', rfl, fun a => ?_⟩
+  have h1 := storeOwn_set_count D a (.full c') hc
+  have h2 := Contents.writeAt_own a π hccc hr hw
+  have h2' := Contents.writeAt_own a ρ hsub hr' hw'
+  have h3 := dropCell_measure hF hold hd a
+  simp only [Cell.own] at h1
+  simp only [List.count_append, Fresh.set, Val.own_unit, List.count_nil]
+  simp only [Val.own] at *
+  omega
+
+/-- A scope teardown after a value (`endscope` §6.7, the frame pop §6.9), as
+a ledger (helper). -/
+theorem Cons.unwind {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
+    {H : Store} {v : Val} {ls : List Nat} (hcc : StoreCC D H)
+    (hv : (Contents.ofVal v).copyClosed D = true) :
+    Cons D F H (v.own D)
+      (match unwindLocs D H ls with
+       | .error w => .stuck w
+       | .ok (H', evs) => .ok H' v evs) := by
+  cases hu : unwindLocs D H ls with
+  | error w => trivial
+  | ok r =>
+      obtain ⟨H', evs⟩ := r
+      obtain ⟨i, l, c⟩ := unwindLocs_measure hF hcc hu
+      refine ⟨by omega, c, hv, fun a => ?_⟩
+      have := i a
+      have hf : Fresh H H' = [] := by simp [Fresh, l]
+      rw [hf]; simp
+      omega
+
 end RueCore
