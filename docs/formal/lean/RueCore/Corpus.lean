@@ -861,7 +861,27 @@ def cases : List Case := [
   { name := "panic_past_linear",
     description := "A @panic past a live linear binding whose type declares a destructor: §5.7 exempts the ⊥_panic edge from §5.6's obligation and §6.12 runs no drop, so the value is consumed zero times with no violation and nothing prints before the trap. The let's tail is ⊥, so the checker reads no scope exit; before RUE-2368 it refused. The compiler accepts it.",
     rules := ["(Panic) §5.8", "(Let) §5.3", "(D-Panic) §6.12", "3.8:51"],
-    prog := Examples.prog Examples.tI64 Examples.panicPastLinear }
+    prog := Examples.prog Examples.tI64 Examples.panicPastLinear },
+  { name := "loop_move_every_path_breaks",
+    description := "RUE-1615's shape: a loop whose body drops a linear binding and breaks. No path reaches the back edge, so the loop-head state is the entry state and the move is checked only against the exit, where the binding is MovedOut. The compiler once reported \"moved in a previous iteration\" here. The destructor prints 1, then the value 5.",
+    rules := ["(Loop-Break) §5.7", "(Break) §5.7", "(@Drop) §5.3", "(D-Break) §6.10", "3.8:79", "3.8:80"],
+    prog := Examples.prog Examples.tI64 Examples.loopMoveEveryPathBreaks },
+  { name := "loop_linear_one_exit",
+    description := "The RUE-1614 shape inside a loop: a linear binding is dropped before one break and kept at the other. The loop's outgoing state is §5.5's join over its exits, which is undefined on a linear binding that is MovedOut at one and Owned at the other (E0443). The run takes the exit that keeps it, and the let's scope exit then meets a live linear value.",
+    rules := ["(Loop-Break) §5.7", "(Break) §5.7", "§5.5 join", "3.8:50", "3.8:80"],
+    prog := Examples.prog Examples.tI64 Examples.loopLinearOneExit },
+  { name := "loop_break_past_local",
+    description := "A loop body that binds an affine S1 { 7 } and counts once, then breaks. On the counting turn the binding drops at the body's end (§6.7); on the breaking turn the break discards that endscope and the loop's unwind drops it (§6.10's unwind-drops, RUE-1277). Both print 7; then the value 1.",
+    rules := ["(Loop-Break) §5.7", "(Break) §5.7", "(D-Loop-Iter) §6.10", "(D-Break) §6.10", "§5.6 scope exit", "(Assign) §5.2"],
+    prog := Examples.prog Examples.tI64 Examples.loopBreakPastLocal },
+  { name := "loop_two_exits",
+    description := "Two break sites, an affine binding dropped before one and kept at the other. The exit join sends it to MovedOut; the run takes the exit that kept it, and the machine, which keeps the path-specific state, still drops it at the let's end (3.8:60's asymmetry): the destructor prints 9 as f0's scope closes, and main then prints the value 5.",
+    rules := ["(Loop-Break) §5.7", "(Break) §5.7", "§5.5 join", "3.8:60", "3.8:80"],
+    prog := Examples.prog Examples.tI64 Examples.loopTwoExits },
+  { name := "loop_reassign_then_move",
+    description := "The compiler's reassign_before_move_ok: each turn assigns d before dropping it, so the back edge leaves d MovedOut and the loop-head state is the join of entry and back edge, MovedOut, at which (Assign) reinitializes d before the body uses it. The first assignment overwrites the live S1 { 1 } (1), the drops print 10 and 11, and the value is 2.",
+    rules := ["(Loop-Break) §5.7", "3.8:79", "(Assign) §5.2", "§6.8 overwrite-drop", "(@Drop) §5.3", "(D-Loop-Iter) §6.10"],
+    prog := Examples.prog Examples.tI64 Examples.loopReassignThenMove }
 ]
 
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/
