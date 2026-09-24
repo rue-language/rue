@@ -716,7 +716,11 @@ impl<'a> Verifier<'a> {
         // and shared by every consumption fact (RUE-2347).
         let flag_slots = self.drop_flag_slots(raw_slots);
         for &value in &droppable_values {
-            let start = defining_blocks[value.as_u32() as usize].unwrap_or(self.cfg.entry);
+            // Structural verification has checked that every reachable use,
+            // this Drop included, is dominated by its definition, so the
+            // definition lies in a reachable block.
+            let start = defining_blocks[value.as_u32() as usize]
+                .expect("a dropped value's definition dominates its Drop, so it is reachable");
             self.verify_exact_drop_fact(value, start, &flag_slots, &entry_edges)?;
         }
         for root in owner_roots {
@@ -1271,6 +1275,13 @@ impl<'a> Verifier<'a> {
     /// fresh at its definition whatever reaches the block. This keeps each
     /// fact's cost proportional to the region its value can reach instead
     /// of the whole CFG.
+    ///
+    /// Soundness depends on the order in `verify()`: the structural pass
+    /// (`verify_use`, through `verify_inst` and `verify_terminator_use`)
+    /// has already rejected every reachable use, Drop and edge argument not
+    /// dominated by its definition before `verify_semantic_dataflow` runs.
+    /// A caller that skips or reorders that pass would let a drop outside
+    /// the definition's region go unchecked here.
     fn verify_exact_drop_fact_under(
         &self,
         target: CfgValue,
@@ -5424,8 +5435,11 @@ mod tests {
             assert!(work.instruction_operand_visits > 0);
             assert!(work.instruction_operand_visits <= work.fact_solves * 3);
             // The dropped phi's exact-value fact scans only the blocks its
-            // definition reaches (the tail), not the whole chain.
-            assert!(work.terminator_operand_visits > 0);
+            // definition reaches (the tail), not the whole chain: fewer
+            // terminator operands than one chain walk would visit, and at
+            // least the tail's four instructions.
+            assert!(work.terminator_operand_visits < PHIS);
+            assert!(work.validation_instruction_visits >= 4);
             assert!(work.terminator_operand_visits <= work.fact_solves * PHIS);
         });
     }
@@ -7094,5 +7108,120 @@ mod tests {
         );
         let error = cfg.finish(&FrozenTypeInternPool::new()).unwrap_err();
         assert!(error.to_string().contains("is unattached"));
+    }
+
+    // The exact-value drop fact starts at the dropped value's defining block
+    // (RUE-2356). These pin the loop and phi shapes where that block is not
+    // the entry: a value defined in a loop header, one defined before the
+    // loop outside the entry block, and a phi carried around a back edge.
+    fn exact_drop_owner(name: &str) -> (Type, StructId, FrozenTypeInternPool) {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_droppable_struct(&pool, &interner, name);
+        let id = match owner.kind() {
+            TypeKind::Struct(id) => id,
+            _ => unreachable!(),
+        };
+        (owner, id, pool.freeze())
+    }
+
+    fn exact_drop_init(cfg: &mut Cfg, block: BlockId, owner: Type, id: StructId) -> CfgValue {
+        let fields = cfg.push_struct_fields([]).unwrap();
+        push(
+            cfg,
+            block,
+            CfgInstData::StructInit {
+                struct_id: id,
+                fields,
+            },
+            owner,
+        )
+    }
+
+    /// Value defined in a loop header, dropped in the body, then dropped again
+    /// on a body exit that leaves the loop.
+    #[test]
+    fn exact_drop_fact_rejects_loop_header_value_dropped_in_body_and_on_exit() {
+        let (owner, id, pool) = exact_drop_owner("B1Owner");
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "b1".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let header = cfg.new_block();
+        let body = cfg.new_block();
+        let exit = cfg.new_block();
+        let exit2 = cfg.new_block();
+        cfg.entry = entry;
+        cfg.set_goto(entry, header, []);
+        let v = exact_drop_init(&mut cfg, header, owner, id);
+        let c = push(&mut cfg, header, CfgInstData::BoolConst(false), Type::BOOL);
+        cfg.set_branch(header, c, body, [], exit, []);
+        push(&mut cfg, body, CfgInstData::Drop { value: v }, Type::UNIT);
+        let c2 = push(&mut cfg, body, CfgInstData::BoolConst(false), Type::BOOL);
+        cfg.set_branch(body, c2, header, [], exit2, []);
+        push(&mut cfg, exit, CfgInstData::Drop { value: v }, Type::UNIT);
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+        push(&mut cfg, exit2, CfgInstData::Drop { value: v }, Type::UNIT);
+        cfg.set_terminator(exit2, Terminator::Return { value: None });
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("already dropped on a reaching path"),
+            "{error}"
+        );
+    }
+
+    /// Value defined before a loop in a non-entry block, dropped inside the
+    /// loop body: the second iteration drops it again.
+    #[test]
+    fn exact_drop_fact_rejects_pre_loop_value_dropped_every_iteration() {
+        let (owner, id, pool) = exact_drop_owner("B2Owner");
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "b2".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let pre = cfg.new_block();
+        let header = cfg.new_block();
+        let body = cfg.new_block();
+        let exit = cfg.new_block();
+        cfg.entry = entry;
+        cfg.set_goto(entry, pre, []);
+        let v = exact_drop_init(&mut cfg, pre, owner, id);
+        cfg.set_goto(pre, header, []);
+        let c = push(&mut cfg, header, CfgInstData::BoolConst(false), Type::BOOL);
+        cfg.set_branch(header, c, body, [], exit, []);
+        push(&mut cfg, body, CfgInstData::Drop { value: v }, Type::UNIT);
+        cfg.set_goto(body, header, []);
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("already dropped on a reaching path"),
+            "{error}"
+        );
+    }
+
+    /// A phi dropped in its join, then passed back to the same join on the
+    /// back edge.
+    #[test]
+    fn exact_drop_fact_rejects_phi_passed_back_after_its_drop() {
+        let (owner, id, pool) = exact_drop_owner("B4Owner");
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "b4".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let join = cfg.new_block();
+        let exit = cfg.new_block();
+        let p = cfg.add_block_param(join, owner);
+        cfg.entry = entry;
+        let v = exact_drop_init(&mut cfg, entry, owner, id);
+        cfg.set_goto(entry, join, [v]);
+        push(&mut cfg, join, CfgInstData::Drop { value: p }, Type::UNIT);
+        let c = push(&mut cfg, join, CfgInstData::BoolConst(false), Type::BOOL);
+        cfg.set_branch(join, c, join, [p], exit, []);
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("already dropped on a reaching path"),
+            "{error}"
+        );
     }
 }
