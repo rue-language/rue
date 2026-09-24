@@ -2876,9 +2876,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             );
         }
         let saved_locals = env.locals.clone();
-        let saved_declared = (!env.declared_integer_locals.is_empty())
-            .then(|| env.declared_integer_locals.clone())
-            .unwrap_or_default();
+        let saved_declared = if env.declared_integer_locals.is_empty() {
+            Default::default()
+        } else {
+            env.declared_integer_locals.clone()
+        };
         let mut result = H::Value::unit();
         for (i, stmt_ref) in stmt_refs.iter().copied().enumerate() {
             let is_tail = i + 1 == stmt_refs.len();
