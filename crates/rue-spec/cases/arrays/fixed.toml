@@ -1519,6 +1519,138 @@ fn main() -> i32 {
 """
 exit_code = 15
 
+# A `let` annotation whose length is a comptime call is the binding's type:
+# the initializer is checked against it, and its literals take its element
+# type. The annotation used to be dropped, binding the initializer's own
+# type instead (RUE-2384).
+
+[[case]]
+name = "let_annotation_call_length_mismatch"
+description = "RUE-2384: a call-computed length in a `let` annotation is checked against the initializer's length."
+spec = ["5.1:8", "7.1:41"]
+source = """
+fn n(comptime s: u64) -> u64 { s }
+fn main() -> i32 {
+    let a: [u8; n(3)] = [7; 1];
+    @dbg(a[0]);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0901", "expected array of 3 elements, found 1 elements"]
+
+[[case]]
+name = "let_annotation_call_length_element_type"
+description = "RUE-2384: the annotation's element type types the initializer's literal, so 300 does not fit `u8`."
+spec = ["5.1:8", "7.1:41"]
+source = """
+fn n(comptime s: u64) -> u64 { s }
+fn main() -> i32 {
+    let a: [u8; n(1)] = [300; 1];
+    @dbg(a[0]);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0800", "300", "u8"]
+
+[[case]]
+name = "let_annotation_nested_call_length_mismatch"
+description = "RUE-2384: a call-computed inner length of a nested array annotation is checked."
+spec = ["5.1:8", "7.1:41"]
+source = """
+fn n(comptime s: u64) -> u64 { s }
+fn main() -> i32 {
+    let a: [[u8; n(2)]; 2] = [[1; 1]; 2];
+    @dbg(a[0][0]);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0901", "expected array of 2 elements, found 1 elements"]
+
+[[case]]
+name = "let_annotation_call_length_specialized_mismatch"
+description = "RUE-2384: a call length over a comptime value parameter is checked in each specialization."
+spec = ["5.1:8", "7.1:34", "7.1:41"]
+source = """
+fn n(comptime s: u64) -> u64 { s }
+fn g(comptime k: u64) -> u8 {
+    let a: [u8; n(k)] = [7; 1];
+    a[0]
+}
+fn main() -> i32 {
+    @dbg(g(3));
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0901", "expected array of 3 elements, found 1 elements"]
+
+[[case]]
+name = "let_annotation_call_length_in_comptime_block_mismatch"
+description = "RUE-2384: a `let` inside a `comptime` block checks its call-computed length too."
+spec = ["5.1:8", "7.1:41"]
+source = """
+fn n(comptime s: u64) -> u64 { s }
+fn main() -> i32 {
+    let v = comptime {
+        let a: [u8; n(3)] = [7; 1];
+        a[0]
+    };
+    @dbg(v);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0901", "expected array of 3 elements, found 1 elements"]
+
+[[case]]
+name = "let_annotation_constructor_call_length_mismatch"
+description = "RUE-2384: a call-computed argument of a type-constructor annotation names that specialization, which the initializer must match."
+spec = ["5.1:8", "7.1:34", "7.1:41"]
+source = """
+fn n(comptime s: u64) -> u64 { s }
+fn Box(comptime k: u64) -> type { struct { v: [u8; k] } }
+fn main() -> i32 {
+    let x: Box(n(3)) = Box(1) { v: [3; 1] };
+    @dbg(x.v[0]);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected Box(3), found Box(1)"]
+
+[[case]]
+name = "let_annotation_call_length_matching_shapes"
+description = "RUE-2384: annotations with matching call-computed lengths are accepted in every position: plain, nested, specialized, inside a `comptime` block, and as a type-constructor argument."
+spec = ["5.1:8", "7.1:34", "7.1:41"]
+source = """
+fn n(comptime s: u64) -> u64 { s }
+fn Box(comptime k: u64) -> type { struct { v: [u8; k] } }
+fn g(comptime k: u64) -> u8 {
+    let a: [u8; n(k)] = [4; k];
+    a[k - 1]
+}
+fn main() -> i32 {
+    let a: [u8; n(3)] = [250, 2, 1];
+    let b: [[u8; n(2)]; n(1)] = [[5, 6]];
+    let c = comptime {
+        let t: [u8; n(2)] = [8; 2];
+        t[1]
+    };
+    let x: Box(n(3)) = Box(3) { v: [9; 3] };
+    @dbg(a[0]);
+    @dbg(b[0][1]);
+    @dbg(g(2));
+    @dbg(c);
+    @dbg(x.v[2]);
+    0
+}
+"""
+expected_stdout = "250\n6\n4\n8\n9\n"
+exit_code = 0
+
 # =============================================================================
 # Array-Repeat Literals (RUE-235)
 # =============================================================================
