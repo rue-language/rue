@@ -317,7 +317,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         // Validate offset type (must be integer)
-        if !offset_type.is_integer() && !offset_type.is_error() && !offset_type.is_never() {
+        if !offset_type.coerces_into(Type::is_integer) {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "ptr_offset".to_string(),

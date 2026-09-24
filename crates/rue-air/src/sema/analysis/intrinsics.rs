@@ -2289,7 +2289,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
         let arg = self.analyze_inst(air, args[0].value, ctx)?;
-        if !arg.ty.is_float() && !arg.ty.is_never() && !arg.ty.is_error() {
+        if !arg.ty.coerces_into(Type::is_float) {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: intrinsic_name.to_string(),
