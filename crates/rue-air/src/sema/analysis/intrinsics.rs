@@ -1304,6 +1304,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         coll: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        // The loop's loan is a shared use of the root (spec 6.6:10).
+        let coll_span = self.body_rir_ref().get(coll).span;
+        self.record_borrowed_place_use(coll, false, coll_span, ctx)?;
         let root = self.extract_root_variable(coll);
         let move_before = self.snapshot_move_state(root, ctx);
         let coll_result = self.analyze_with_borrow_root(air, coll, root, ctx)?;
@@ -1357,6 +1360,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // exactly as they do for a `borrow`-mode call argument. A non-place
         // argument (literal, arithmetic, call result) has no owning variable to
         // preserve, so it is analyzed normally.
+        // The borrow is a shared use of the root, so it cannot overlap an
+        // exclusive accessor result in the same full expression (6.6:10).
+        let arg_span = self.body_rir_ref().get(args[0].value).span;
+        self.record_borrowed_place_use(args[0].value, false, arg_span, ctx)?;
         let byref_root = root_variable_of(self.body_rir_ref(), args[0].value);
         let arg_result = self.analyze_with_borrow_root(air, args[0].value, byref_root, ctx)?;
         let arg_type = arg_result.ty;

@@ -952,6 +952,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // legal (RUE-222) — rather than silently leaking it or rejecting a valid
         // later use with E0205.
         let operand = args[0].value;
+        // Taking the address uses the root: `@raw` shares it and `@raw_mut`
+        // and `@field_ptr` use it exclusively, so neither may overlap an
+        // incompatible accessor result in the same full expression (6.6:10).
+        let operand_span = self.body_rir_ref().get(operand).span;
+        self.record_borrowed_place_use(operand, is_mut, operand_span, ctx)?;
         let operand_root = self.extract_root_variable(operand);
         let operand_move_state_before = self.snapshot_move_state(operand_root, ctx);
         // Analyze the operand as a borrow (`byref_arg_root`), exactly as `@dbg`

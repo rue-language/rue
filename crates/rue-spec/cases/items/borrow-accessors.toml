@@ -1764,6 +1764,242 @@ expected_stdout = "true\ntrue\ntrue\ntrue\n"
 exit_code = 0
 
 [[case]]
+name = "shadowing_local_compared_inside_accessor_loan_is_not_the_root"
+spec = ["6.6:10"]
+description = "A nested `let` that shadows the loaned root is a different binding: comparing it inside the accessor loan's full expression is no use of the root (RUE-2358)."
+source = """
+struct P {
+    c: i64,
+}
+struct Acc {
+    p: P,
+    k: i64,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn cmut(inout self) -> inout i64 { yield self.p.c; }
+}
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn setp2(inout p: P, x: i64) { p.c = x; }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 }, k: 1 };
+    let r = use2(a.pmut().c, { let a = 5; if a == 5 { 1 } else { 2 } });
+    @dbg(r);
+    0
+}
+"""
+expected_stdout = "2\n"
+exit_code = 0
+
+[[case]]
+name = "shadowing_local_read_inside_accessor_loan_is_not_the_root"
+spec = ["6.6:10"]
+description = "Reading a shadowing local by value inside an exclusive accessor loan's full expression is no use of the loaned root (RUE-2358)."
+source = """
+struct P {
+    c: i64,
+}
+struct Acc {
+    p: P,
+    k: i64,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn cmut(inout self) -> inout i64 { yield self.p.c; }
+}
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn setp2(inout p: P, x: i64) { p.c = x; }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 }, k: 1 };
+    let r = use2(a.pmut().c, { let a = 5; a + 0 });
+    @dbg(r);
+    0
+}
+"""
+expected_stdout = "6\n"
+exit_code = 0
+
+[[case]]
+name = "shadowing_local_compared_in_compound_accessor_assignment"
+spec = ["6.6:10"]
+description = "A compound assignment through an accessor may compare a shadowing local in its right-hand side (RUE-2358)."
+source = """
+struct P {
+    c: i64,
+}
+struct Acc {
+    p: P,
+    k: i64,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn cmut(inout self) -> inout i64 { yield self.p.c; }
+}
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn setp2(inout p: P, x: i64) { p.c = x; }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 }, k: 1 };
+    a.pmut().c += { let a = 5; if a == 5 { 1 } else { 0 } };
+    @dbg(a.p.c);
+    0
+}
+"""
+expected_stdout = "2\n"
+exit_code = 0
+
+[[case]]
+name = "shadowing_local_compared_beside_inout_accessor_argument"
+spec = ["6.6:10"]
+description = "An `inout` accessor-result argument coexists with a sibling argument that compares a shadowing local (RUE-2358)."
+source = """
+struct P {
+    c: i64,
+}
+struct Acc {
+    p: P,
+    k: i64,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn cmut(inout self) -> inout i64 { yield self.p.c; }
+}
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn setp2(inout p: P, x: i64) { p.c = x; }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 }, k: 1 };
+    setp2(inout a.pmut(), { let a = 7; if a > 5 { 3 } else { 4 } });
+    @dbg(a.p.c);
+    0
+}
+"""
+expected_stdout = "3\n"
+exit_code = 0
+
+[[case]]
+name = "compound_accessor_assignment_rejects_compared_root_in_rhs"
+spec = ["5.2:18", "6.6:10"]
+description = "A compound assignment evaluates its accessor target first (5.2:18), so a comparison reading the same root in the right-hand side overlaps the exclusive loan (E0259, RUE-2358)."
+source = """
+struct P {
+    c: i64,
+}
+struct Acc {
+    p: P,
+    k: i64,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn cmut(inout self) -> inout i64 { yield self.p.c; }
+}
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn setp2(inout p: P, x: i64) { p.c = x; }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 }, k: 1 };
+    a.pmut().c += if a.k == 1 { 1 } else { 0 };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "by a shared read"]
+
+[[case]]
+name = "assert_eq_operand_conflicts_with_exclusive_accessor_result"
+spec = ["6.6:10"]
+description = "`@assert_eq` borrows both operands: reading the root beside an exclusive accessor result is E0259 (RUE-2358)."
+source = """
+struct P {
+    c: i64,
+}
+struct Acc {
+    p: P,
+    k: i64,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn cmut(inout self) -> inout i64 { yield self.p.c; }
+}
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn setp2(inout p: P, x: i64) { p.c = x; }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 }, k: 1 };
+    @assert_eq(a.cmut(), a.p.c);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "by a shared read"]
+
+[[case]]
+name = "dbg_operand_conflicts_with_exclusive_accessor_result"
+spec = ["6.6:10"]
+description = "`@dbg` borrows its operand: printing the root inside an exclusive accessor loan's full expression is a shared use of it (E0259, RUE-2358)."
+source = """
+struct P {
+    c: i64,
+}
+struct Acc {
+    p: P,
+    k: i64,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn cmut(inout self) -> inout i64 { yield self.p.c; }
+}
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn setp2(inout p: P, x: i64) { p.c = x; }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 }, k: 1 };
+    a.pmut().c += { @dbg(a.p.c); 1 };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "by a shared read"]
+
+[[case]]
+name = "raw_operand_conflicts_with_exclusive_accessor_result"
+spec = ["6.6:10"]
+description = "`@raw` takes a shared address of its place: taking it inside an exclusive accessor loan's full expression is a shared use of the root (E0259, RUE-2358)."
+source = """
+struct P {
+    c: i64,
+}
+struct Acc {
+    p: P,
+    k: i64,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn cmut(inout self) -> inout i64 { yield self.p.c; }
+}
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn setp2(inout p: P, x: i64) { p.c = x; }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 }, k: 1 };
+    let r = use2(a.pmut().c, checked { let q = @raw(a.k); 0 });
+    @dbg(r);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "by a shared read"]
+
+[[case]]
+name = "strbuf_concat_operand_conflicts_with_exclusive_accessor_result"
+spec = ["6.6:10"]
+description = "`StrBuf` `+` borrows both operands at once: the root beside its exclusive accessor result is E0259 (RUE-2358)."
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+struct W {
+    s: StrBuf,
+
+    fn smut(inout self) -> inout StrBuf { yield self.s; }
+}
+fn main() -> i32 {
+    let mut w = W { s: "ab" };
+    let t = w.s + w.smut();
+    println(t);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "after a shared read"]
+
+[[case]]
 name = "accessor_read_before_inout_call_is_legal"
 spec = ["6.6:8", "6.6:10"]
 description = "The accessor loan ends with its full expression: reading the result in a prior statement, then calling with `inout`, is legal (RUE-1593)."
