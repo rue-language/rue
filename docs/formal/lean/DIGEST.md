@@ -1625,7 +1625,8 @@ this theorem noticing. They are different in kind: the first is a gap in the
 calculus, the second is the calculus doing what it says.
 
 * **A pending value (open).** A value already built for a **sibling
-  position** that a *later* sibling destroys by `return` is in no cell and no
+  position** that a *later* sibling destroys by `return` or `break` is in no
+  cell and no
   scope record, so its drop is neither run nor monitored and none of the five
   violations fires. The sibling positions are every list `evalArgs` walks — a
   call's argument list, a struct literal's initializers, an array literal's
@@ -1633,14 +1634,15 @@ calculus, the second is the calculus doing what it says.
   run after it (`5.2:14`). At the right-hand side only the affine half
   applies: (Assign)'s leaf premise `class(T) ≠ Linear` keeps the abandoned
   value from being linear, so `no_linear_discard` is not affected there. That
-  edge is the calculus as written — §6.9's unwinding
-  rule walks only σ, and §5.3's strict-context bottom rule (`Strict-Bottom`
+  edge is the calculus as written — §6.9's and §6.10's unwinding
+  rules walk only σ, and §5.3's strict-context bottom rule (`Strict-Bottom`
   there, `Typed.consBot` and the other `-Bottom` variants here) imposes no discard check on siblings
   already evaluated — it is what the Rue compiler does, and closing
   it is an open spec decision (RUE-2316, the pending-argument decision).
   `Dynamics.lean`'s "Pending values" section states it in full;
   `Examples.lean`'s `linearLostAtCallArg` is the kernel-checked witness at an
-  argument and `linearLostAtArrayElem` the one at an array element.
+  argument, `linearLostAtArrayElem` the one at an array element, and
+  `linearLostAtBreakArg` the one where the later sibling is a `break`.
 * **A `@panic` (by design).** §6.12 abandons the configuration, and §5.7
   exempts the `⊥_panic` edge from §5.6's obligation, so a trap runs no scope
   drop at all: a live linear binding at a `@panic` is destroyed with no
@@ -13716,7 +13718,7 @@ RueCore.Typed.brk {P : Program} {R : Ty} {Γ : Ctx} {T : Ty} :
   Typed P R Γ Expr.brk T { norm := none, brk := [Γ] }
 ```
 
-**`Typed.loopDiv`** — **(Loop-Div-Backedge) and (Loop-Div) §5.7**, in one rule, because they differ only in whether the body reaches its back edge — which is what the body's own `Ω` says, so the rule reads it rather than splitting on it. The body syntactically contains no `break` targeting this loop (`4.8:21`, `Expr.breaks`), so the loop is `never`-typed, with (Sub-Never) folded in. The body is typed once, at the **loop-head state** `Σ_h = head(Σ, e)` (`3.8:79`): `LoopHead` is §5.7's defining equation, `Σ_h` the join of the entry state with the states at the body's own reachable back edges, read off the very judgment that types the body at `Σ_h`. When the body continues it re-enters itself forever, so it delivers `⟨diverge, Σ_h⟩`; the fragment checks that delivery where it fires, frame-wide, by `NoResidualLinear` — §5.6/§5.7's retained non-panic residual check, which the compiler enforces as E0406 for a linear local or a by-value parameter live at `loop { }` (`../03-metatheory.md` records the reading). When the body never completes (Loop-Div), `B_h = ∅`, so `Σ_h = Σ` and there is no diverge delivery: the loop is left only by the body's own `return`/`@panic`, which were checked where they fired. Either way the loop concludes at `⊥` and delivers no `break` outward (`Δ_out` removes this loop's own edges, and the syntactic premise says there are none — `Typed.brk_nil`).
+**`Typed.loopDiv`** — **(Loop-Div-Backedge) and (Loop-Div) §5.7**, in one rule, because they differ only in whether the body reaches its back edge — which is what the body's own `Ω` says, so the rule reads it rather than splitting on it. The body syntactically contains no `break` targeting this loop (`4.8:21`, `Expr.breaks`), so the loop is `never`-typed, with (Sub-Never) folded in. The body is typed once, at the **loop-head state** `Σ_h = head(Σ, e)` (`3.8:79`): `LoopHead` is §5.7's defining equation, `Σ_h` the join of the entry state with the states at the body's own reachable back edges, read off the very judgment that types the body at `Σ_h`. When the body continues it re-enters itself forever, so it delivers `⟨diverge, Σ_h⟩`; the fragment checks that delivery where it fires, frame-wide, by `NoResidualLinear` — §5.6/§5.7's retained non-panic residual check, which the compiler enforces as E0406 for a linear local or a by-value parameter live at `loop { }` (`../03-metatheory.md` records the reading). When the body never completes (Loop-Div), `B_h = ∅`, so `Σ_h = Σ` and there is no diverge delivery: the loop is left only by the body's own `return`/`@panic`, which were checked where they fired. Either way the loop concludes at `⊥` and delivers no `break` outward (`Δ_out` removes this loop's own edges, and the syntactic premise says there are none — `Typed.brk_nil`). The diverge premise is there for fidelity to §5.7 and agreement with the compiler (E0406), not for safety: `soundness` does not use it, since a loop that never exits cannot leak in a way the machine sees — the premise `ret`'s residual check has at a `return` has no dynamic counterpart here. The same holds of `loopBreakDiv`'s.
 
 ```lean
 RueCore.Typed.loopDiv {P : Program} {R : Ty} {Γ Γh : Ctx} {Ωe : Out}
