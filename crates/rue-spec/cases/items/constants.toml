@@ -846,3 +846,101 @@ fn main() -> i32 { 0 }
 """
 compile_fail = true
 error_contains = ["E0206", "expected [i32; 2], found [i64; 2]"]
+
+# The slot typing above also changes behaviour outside nested consts: a flat
+# array's arithmetic element now evaluates at the element's own width rather
+# than a wider default, the same widths are enforced in a struct field and an
+# enum payload, and a comptime-evaluated call's nested aggregate return (in a
+# comptime block, a constant initializer, or an array length) resolves at its
+# slot's type the same way an aggregate literal does.
+
+[[case]]
+name = "const_flat_array_element_arithmetic_evaluated_at_element_width"
+spec = ["4.14:27", "6.5:2"]
+description = "An arithmetic element of a flat array constant is evaluated at the element's own declared width, accepting a value that a wider default would have overflowed (RUE-2390)"
+source = """
+const A: [i64; 1] = [2147483647 + 1];
+fn main() -> i32 { if A[0] == 2147483648 { 42 } else { 1 } }
+"""
+exit_code = 42
+
+[[case]]
+name = "const_array_element_arithmetic_overflow_rejected_at_element_width"
+spec = ["4.14:27", "6.5:2"]
+description = "An arithmetic array element that overflows its own element width gives the same overflow error a flat scalar constant gives at that width, not a wider default (RUE-2390)"
+source = """
+const A: [i8; 1] = [100 + 100];
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1200", "integer overflow evaluating addition at type i8"]
+
+[[case]]
+name = "const_struct_field_arithmetic_overflow_rejected_at_field_width"
+spec = ["4.14:27", "6.5:2"]
+description = "An arithmetic struct field that overflows its declared field width gives the field's own overflow error rather than a wider default (RUE-2390)"
+source = """
+@copy struct S { a: i8 }
+const C: S = S { a: 100 + 100 };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1200", "integer overflow evaluating addition at type i8"]
+
+[[case]]
+name = "const_enum_payload_arithmetic_overflow_rejected_at_payload_width"
+spec = ["4.14:27", "6.5:2"]
+description = "An arithmetic enum payload that overflows its declared payload width gives the payload's own overflow error rather than a wider default (RUE-2390)"
+source = """
+enum E { A(i8), B }
+const C: E = E.A(100 + 100);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1200", "integer overflow evaluating addition at type i8"]
+
+[[case]]
+name = "const_comptime_call_returns_nested_aggregate"
+spec = ["6.5:1", "6.5:2", "4.14:26", "4.14:27", "3.12:11"]
+description = "A comptime-evaluated call's nested aggregate return reduces at its slot's type both in a comptime block and in a constant's initializer: a nested array, a struct with an array field, an enum with an array payload, and integer literals filling a nested float array (RUE-2390)"
+source = """
+fn f_arr(comptime k: i32) -> [[i32; 2]; 2] { [[1, 2], [3, k]] }
+@copy struct S { a: [u8; 2], b: i16 }
+fn f_struct(comptime k: u8) -> S { S { a: [200, k], b: -2 } }
+enum E { A([u8; 2]), B }
+fn f_enum(comptime k: u8) -> E { E.A([200, k]) }
+fn f_float(comptime k: u64) -> [[f32; 2]; 1] { [[1, 2]] }
+fn g(comptime k: i32) -> [[i32; 2]; 2] { [[1, 2], [3, k]] }
+const D: [[i32; 2]; 2] = g(40);
+fn main() -> i32 {
+    let a = comptime { f_arr(40) };
+    let s = comptime { f_struct(40) };
+    let e = comptime { f_enum(40) };
+    let fl = comptime { f_float(1) };
+    let arr_ok = a[1][1] == 40 && a[0][1] == 2;
+    let struct_ok = @intCast(s.a[1]) == 40 && @intCast(s.b) == -2;
+    let enum_ok = match e { E.A(x) => @intCast(x[1]) == 40, E.B => false };
+    let const_ok = D[1][1] == 40 && D[0][1] == 2;
+    let float_ok = fl[0][1] == 2.0;
+    if arr_ok && struct_ok && enum_ok && const_ok && float_ok { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "const_array_length_from_nested_const"
+spec = ["7.1:41", "6.5:2", "4.14:27"]
+description = "An array length call folds a comptime parameter of nested aggregate type, indexing into a nested array constant and a struct constant's array field alike (RUE-2390)"
+source = """
+const A: [[u64; 2]; 2] = [[1, 2], [3, 3]];
+fn n(comptime a: [[u64; 2]; 2]) -> u64 { a[1][1] }
+@copy struct S { a: [u64; 2] }
+const C: S = S { a: [1, 3] };
+fn m(comptime s: S) -> u64 { s.a[1] }
+fn main() -> i32 {
+    let x: [i32; n(A)] = [7; 3];
+    let y: [i32; m(C)] = [9; 3];
+    x[2] + y[2] - 5
+}
+"""
+exit_code = 11

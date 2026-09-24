@@ -1376,7 +1376,14 @@ impl ComptimeProgramFacts for FakeHost {
 impl ComptimeTypeAlgebra for FakeHost {
     /// A fake array type `FakeType(n)` with `n` in 21..=29 has element type
     /// `FakeType(n - 1)`, so nesting depth is visible in the types the engine
-    /// resolves arrays at.
+    /// resolves arrays at. The fake struct type `FakeType(7)` (the type
+    /// every struct literal resolves to via `resolve_named_type_value`
+    /// below) has one field whose slot is `FakeType(25)`, and a fake enum
+    /// type `FakeType(40)` has a variant whose payload position 0 is
+    /// `FakeType(26)`; both slot types fall in the array-nesting range, so
+    /// routing a `Field` or `EnumPayload` slot to a nested array literal
+    /// exercises the same recorded-type check `resolve_comptime_array` uses
+    /// for `ArrayElement`.
     fn comptime_child_slot_type(
         &mut self,
         parent: &Self::Type,
@@ -1386,6 +1393,8 @@ impl ComptimeTypeAlgebra for FakeHost {
             ComptimeChildSlot::ArrayElement if (21..=29).contains(&parent.0) => {
                 Some(FakeType(parent.0 - 1))
             }
+            ComptimeChildSlot::Field(_) if parent.0 == 7 => Some(FakeType(25)),
+            ComptimeChildSlot::EnumPayload { index: 0, .. } if parent.0 == 40 => Some(FakeType(26)),
             _ => None,
         })
     }
@@ -1623,6 +1632,26 @@ impl ComptimeValueAlgebra for FakeHost {
     ) -> ComptimeOutcome<Self::Value, Self::Failure> {
         RESOLVED_ARRAY_TYPES.with(|types| types.borrow_mut().push(ty));
         ComptimeOutcome::Known(FakeValue::Unit)
+    }
+    /// Mirrors `resolve_comptime_array` above: a fake struct literal with at
+    /// least one field reduces to `Unit` once every field has reduced, so
+    /// `struct_field_literal_...` below can assert on the `Field` slot's
+    /// effect on a nested array without needing a real structural value
+    /// representation. A struct literal with no fields keeps the engine's
+    /// `RuntimeDependent` default, which
+    /// `unary_aggregate_and_unknown_type_intrinsic_use_real_rejection_dispatch`
+    /// already relies on.
+    fn resolve_comptime_struct(
+        &mut self,
+        _ty: Self::Type,
+        fields: Vec<(Self::Name, Self::Value)>,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        if fields.is_empty() {
+            ComptimeOutcome::RuntimeDependent
+        } else {
+            ComptimeOutcome::Known(FakeValue::Unit)
+        }
     }
     fn resolve_comptime_named_value(
         &mut self,
@@ -6344,4 +6373,111 @@ fn nested_array_literal_resolves_at_its_element_slot_type() {
         );
     });
     assert_eq!(env.expected_result, None);
+}
+
+/// A struct literal's field is resolved at the `Field` slot's type, not at
+/// the struct's own type: an array field of the fake struct `FakeType(7)`
+/// fills the `FakeType(25)` slot, so its element in turn resolves at
+/// `FakeType(24)` (RUE-2390 N3: only `ArrayElement` had unit coverage).
+#[test]
+fn struct_field_literal_resolves_at_its_field_slot_type() {
+    let mut editor = rue_rir::RirEditor::new();
+    let element = editor.add_inst(rue_rir::Inst {
+        data: InstData::IntConst(1),
+        span: Span::new(0, 1),
+    });
+    let field_value = editor
+        .add_array_init(&[element], Span::new(0, 2))
+        .expect("array literal payload");
+    let interner = lasso::ThreadedRodeo::new();
+    let struct_init = editor
+        .add_struct_init(
+            None,
+            None,
+            interner.get_or_intern("S"),
+            &[(interner.get_or_intern("a"), field_value)],
+            None,
+            Span::new(0, 3),
+        )
+        .expect("struct literal payload");
+    let mut host = FakeHost {
+        programs: vec![editor.finish()],
+        type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+        constant: None,
+        dependencies: Vec::new(),
+        call_plans: AHashMap::new(),
+        recursive: None,
+        enter_count: 0,
+        finish_outcome: FakeFinishOutcome::Identity,
+        finished: Vec::new(),
+        float_evaluations: Cell::new(0),
+    };
+    let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+    RESOLVED_ARRAY_TYPES.with(|types| types.borrow_mut().clear());
+
+    assert!(matches!(
+        ComptimeEngine::new(&mut host)
+            .evaluate(ComptimeFrame::expression(0, struct_init), &mut env),
+        ComptimeOutcome::Known(FakeValue::Unit)
+    ));
+    // The field's array reduces at FakeType(25), the type `Field` names for
+    // this struct, and its own element in turn resolves one level in.
+    RESOLVED_ARRAY_TYPES.with(|types| {
+        assert_eq!(types.borrow().as_slice(), [FakeType(25)]);
+    });
+}
+
+/// An enum variant's payload is resolved at the `EnumPayload` slot's type,
+/// not at the enum's own type: payload position 0 of the fake enum
+/// `FakeType(40)` fills the `FakeType(26)` slot (RUE-2390 N3). This calls
+/// the engine's payload-reduction helper directly, the way `MethodCall`
+/// dispatch does for `E.A(...)`, so the test does not have to reconstruct
+/// the qualified-call receiver machinery those tests already cover.
+#[test]
+fn enum_payload_literal_resolves_at_its_payload_slot_type() {
+    let mut editor = rue_rir::RirEditor::new();
+    let element = editor.add_inst(rue_rir::Inst {
+        data: InstData::IntConst(1),
+        span: Span::new(0, 1),
+    });
+    let payload_value = editor
+        .add_array_init(&[element], Span::new(0, 2))
+        .expect("array literal payload");
+    let interner = lasso::ThreadedRodeo::new();
+    let mut host = FakeHost {
+        programs: vec![editor.finish()],
+        type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+        constant: None,
+        dependencies: Vec::new(),
+        call_plans: AHashMap::new(),
+        recursive: None,
+        enter_count: 0,
+        finish_outcome: FakeFinishOutcome::Identity,
+        finished: Vec::new(),
+        float_evaluations: Cell::new(0),
+    };
+    let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+    RESOLVED_ARRAY_TYPES.with(|types| types.borrow_mut().clear());
+    let variant = FakeName { ordinal: 99 };
+    let args = [RirCallArg {
+        value: payload_value,
+        mode: RirArgMode::Normal,
+    }];
+
+    let mut engine = ComptimeEngine::new(&mut host);
+    engine
+        .frames
+        .push(ComptimeFrame::expression(0, payload_value));
+    let result = engine.eval_enum_payload(&FakeType(40), &variant, &args, &mut env);
+    engine.frames.pop();
+
+    assert!(matches!(
+        result,
+        ComptimeOutcome::Known(ref values) if values.len() == 1
+    ));
+    // The payload's array reduces at FakeType(26), the type `EnumPayload`
+    // names for position 0 of this enum.
+    RESOLVED_ARRAY_TYPES.with(|types| {
+        assert_eq!(types.borrow().as_slice(), [FakeType(26)]);
+    });
 }
