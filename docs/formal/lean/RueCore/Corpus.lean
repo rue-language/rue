@@ -881,7 +881,31 @@ def cases : List Case := [
   { name := "loop_reassign_then_move",
     description := "The compiler's reassign_before_move_ok: each turn assigns d before dropping it, so the back edge leaves d MovedOut and the loop-head state is the join of entry and back edge, MovedOut, at which (Assign) reinitializes d before the body uses it. The first assignment overwrites the live S1 { 1 } (1), the drops print 10 and 11, and the value is 2.",
     rules := ["(Loop-Break) §5.7", "3.8:79", "(Assign) §5.2", "§6.8 overwrite-drop", "(@Drop) §5.3", "(D-Loop-Iter) §6.10"],
-    prog := Examples.prog Examples.tI64 Examples.loopReassignThenMove }
+    prog := Examples.prog Examples.tI64 Examples.loopReassignThenMove },
+  { name := "loop_moved_prev_iteration",
+    description := "A loop whose body drops an outer affine binding and completes, so the back edge leaves it MovedOut, the loop-head state is the join of entry and back edge, MovedOut, and the @drop is refused at that head: moved in a previous iteration (3.8:79; the compiler reports E0205). The machine drops it on the first turn and meets the moved-out cell on the second.",
+    rules := ["(Loop-Div) §5.7", "3.8:79", "(@Drop) §5.3", "(D-Loop-Iter) §6.10"],
+    prog := Examples.prog Examples.tI64 Examples.loopMovedPrevIteration },
+  { name := "loop_break_past_linear",
+    description := "A break past a live linear loop-local: the exit ends the local's scope, and (Loop-Break)'s discharge of the loop-local bindings finds it still Owned (the compiler reports E0406). The machine's unwind meets the live linear value: linearLeak.",
+    rules := ["(Loop-Break) §5.7", "(Break) §5.7", "§5.6 residual-linear leak check", "(D-Break) §6.10", "3.8:32"],
+    prog := Examples.prog Examples.tI64 Examples.loopBreakPastLinear },
+  { name := "loop_counted",
+    description := "The counted loop the generator draws: a mut counter, a guard that breaks once it reaches 3, the increment, then the body. The body runs three times and @dbg prints 1, 2 and 3; then the value 3.",
+    rules := ["(Loop-Break) §5.7", "(Break) §5.7", "(Assign) §5.2", "(Dbg) §5.8", "(D-Loop-Iter) §6.10", "(D-Break) §6.10"],
+    prog := Examples.prog Examples.tI64 Examples.loopCounted },
+  { name := "loop_nested_inner_break",
+    description := "A break exits only its own loop: the outer loop counts to 2, and on each turn the inner loop binds S1 { k } and breaks, so the inner exit's unwind drops it and the outer loop goes on. The destructors print 1 and 2; then the value 2.",
+    rules := ["(Loop-Break) §5.7", "(Break) §5.7", "(D-Break) §6.10", "§5.6 scope exit", "(D-Loop-Iter) §6.10"],
+    prog := Examples.prog Examples.tI64 Examples.loopNestedInnerBreak },
+  { name := "loop_nested_move_outer",
+    description := "RUE-1615's shape one loop up: the inner loop drops an outer affine binding and breaks, so it reaches no back edge, but the outer loop does, and at the outer head the binding is MovedOut, where the inner @drop is refused (3.8:79; the compiler reports E0205). The machine drops it on the first outer turn and meets the moved-out cell on the second.",
+    rules := ["(Loop-Break) §5.7", "3.8:79", "(@Drop) §5.3", "(D-Loop-Iter) §6.10", "(D-Break) §6.10"],
+    prog := Examples.prog Examples.tI64 Examples.loopNestedMoveOuter },
+  { name := "loop_nested_every_path_breaks",
+    description := "Every path breaks, through a nested loop: the inner loop drops a linear binding and breaks, and the outer loop breaks right after, so neither reaches its back edge, both heads are the entry state, and the binding is MovedOut at the one exit. The destructor prints 1, then the value 5.",
+    rules := ["(Loop-Break) §5.7", "(Break) §5.7", "(@Drop) §5.3", "3.8:79", "3.8:80", "(D-Break) §6.10"],
+    prog := Examples.prog Examples.tI64 Examples.loopNestedEveryPathBreaks }
 ]
 
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/

@@ -3778,6 +3778,63 @@ boundary refuses the `break` that reaches it (`EvalRes.absorb`). -/
 example : checkProgram (prog tI64 brk) = false := by rfl
 example : run demoOps (prog tI64 brk) demoFuel = .stuck .typeConfusion := by rfl
 
+/-! ### The generator's loop shapes (RUE-2330)
+
+The shapes `Gen.lean` draws, each seeded once so that its printed form is
+pinned and checked against the compiler: the counted loop every generated
+counted loop is (`Gen.countedLoop`), and a loop nested in another's body, where
+a `break` exits only the inner loop and a move inside the inner loop meets the
+outer loop's back edge. Each has no syntax after a `break` in its block
+(RUE-2376) and a `unit` body (RUE-2379). -/
+
+/-- The guard and increment every counted loop opens with, under the counter
+at index `0`: `if k >= n { break } else { () }; k = k + 1; rest` — the shape
+`Gen.countedLoop` prints (helper). -/
+def countedBody (n : Int) (rest : Expr) : Expr :=
+  seq (ite (binop .ge (use (.var 0)) (lit n)) brk unitLit)
+    (seq (assign (.var 0) (binop .add (use (.var 0)) (lit 1))) rest)
+
+/-- **The counted loop** (`Gen.countedLoop`, with `n = 3`): the guard exits once
+the counter reaches `3`, so the body runs three times and `@dbg` prints `1`,
+`2`, `3`; then the value `3`. The head is the entry state joined with the back
+edge's, and both hold the `Copy` counter `Owned`, so it is the entry state. -/
+def loopCounted : Expr :=
+  letIn true (lit 0) (seq (loop (countedBody 3 (dbg (use (.var 0))))) (use (.var 0)))
+
+/-- **A `break` exits only its own loop**: the outer loop counts to `2`, and on
+each turn the inner loop binds an affine `S1 { k }` and breaks, so §6.10's
+unwind drops it at the inner exit and the outer loop carries on. The
+destructors print `1` and `2`; then the value `2`. -/
+def loopNestedInnerBreak : Expr :=
+  letIn true (lit 0)
+    (seq (loop (countedBody 2 (loop (letIn false (resA (use (.var 0))) brk)))) (use (.var 0)))
+
+/-- **RUE-1615's shape one loop up**: the inner loop drops an outer affine
+binding and breaks, so the inner loop reaches no back edge; but the outer loop
+does, and at its head the binding is the join of the entry's `Owned` and the
+back edge's `MovedOut` — `MovedOut`, so the inner `@drop` is refused at that
+head (`3.8:79`, E0205). The machine drops it on the first outer turn (`1`) and
+meets `⊘` on the second. -/
+def loopNestedMoveOuter : Expr :=
+  letIn false (resA (lit 1))
+    (letIn true (lit 0)
+      (seq (loop (countedBody 2 (loop (seq (drop (.var 1)) brk)))) (lit 0)))
+
+/-- **Every path breaks, through a nested loop**: the inner loop drops a
+linear binding and breaks, and the outer loop breaks right after it, so
+neither loop reaches its back edge, both heads are the entry state, and the
+binding is `MovedOut` at the one exit that matters. The destructor prints `1`,
+then the value `5`. -/
+def loopNestedEveryPathBreaks : Expr :=
+  letIn false (resLD (lit 1))
+    (seq (loop (seq (loop (seq (drop (.var 0)) brk)) brk)) (lit 5))
+
+example : checkProgram (prog tI64 loopCounted) = true := by rfl
+example : checkProgram (prog tI64 loopNestedInnerBreak) = true := by rfl
+example : checkProgram (prog tI64 loopNestedMoveOuter) = false := by rfl
+example : checkProgram (prog tI64 loopNestedEveryPathBreaks) = true := by rfl
+example : run demoOps (prog tI64 loopNestedMoveOuter) demoFuel = .stuck .useAfterMove := by rfl
+
 /-- (D-Loop-Iter) §6.10, as an equation: a body that completes re-enters the
 loop at one unit of fuel less (helper). -/
 theorem eval_loop_ok {M : FloatOps} {P : Program} {n : Nat} {H H₁ : Store} {φ : Frame}
