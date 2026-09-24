@@ -3715,6 +3715,49 @@ example :
       = some [{ ty := tI64, mu := true, st := .owned },
               { ty := .struct sAffine, mu := true, st := .movedOut }] := by rfl
 
+/-! ### The loop refusals, kernel-checked
+
+Each way `check` refuses a loop, beside the machine's outcome on the same
+program. The compiler agrees with each verdict (the RUE-2369 probes: E0205,
+E0406, E0406, and the call boundary's refusal is a program no surface syntax
+writes, since the compiler rejects a `break` outside a loop). -/
+
+/-- **Moved in a previous iteration** (`3.8:79`, E0205): the body drops an
+outer affine binding and completes, so the back edge leaves it `MovedOut`, the
+head is `MovedOut`, and the body's `@drop` is refused at the head — the
+iteration finds no head. The machine drops it on the first turn and meets
+`⊘` on the second. -/
+def loopMovedPrevIteration : Expr :=
+  letIn false (resA (lit 1)) (seq (loop (drop (.var 0))) (lit 0))
+
+example : checkProgram (prog tI64 loopMovedPrevIteration) = false := by rfl
+example : run demoOps (prog tI64 loopMovedPrevIteration) demoFuel = .stuck .useAfterMove := by
+  rfl
+
+/-- **A `break` past a live linear loop-local** (E0406): the exit ends the
+local's scope, and (Loop-Break)'s check on `Ctx.loopLocals` finds it still
+`Owned`. The machine's unwind meets the live linear value: `linearLeak`. -/
+def loopBreakPastLinear : Expr :=
+  seq (loop (letIn false (resLD (lit 1)) brk)) (lit 0)
+
+example : checkProgram (prog tI64 loopBreakPastLinear) = false := by rfl
+example : run demoOps (prog tI64 loopBreakPastLinear) demoFuel = .stuck .linearLeak := by rfl
+
+/-- **A linear binding live at a loop that never exits** (E0406): the body
+completes, so the loop delivers `⟨diverge, Σ_h⟩`, and the frame-wide residual
+check at the head finds the binding (`03-metatheory.md`'s reading). The
+machine never finishes, so it reaches no refusal. -/
+def loopDivergeLinear : Expr :=
+  letIn false (resLD (lit 1)) (loop unitLit)
+
+example : checkProgram (prog tI64 loopDivergeLinear) = false := by rfl
+
+/-- **A `break` outside every loop**: (Fn) §5.8 gives a function body no
+`⟨break, _⟩` delivery, so `checkFn` refuses it, and the machine's call
+boundary refuses the `break` that reaches it (`EvalRes.absorb`). -/
+example : checkProgram (prog tI64 brk) = false := by rfl
+example : run demoOps (prog tI64 brk) demoFuel = .stuck .typeConfusion := by rfl
+
 /-- (D-Loop-Iter) §6.10, as an equation: a body that completes re-enters the
 loop at one unit of fuel less (helper). -/
 theorem eval_loop_ok {M : FloatOps} {P : Program} {n : Nat} {H H₁ : Store} {φ : Frame}
