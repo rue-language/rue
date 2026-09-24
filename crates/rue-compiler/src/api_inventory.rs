@@ -9568,6 +9568,9 @@ fn private_access_decisions_come_from_the_shared_authority() {
     }
     let provider_body = include_str!("revisioned_query_database/body/provider_body.rs");
     assert!(provider_body.contains("rue_air::check_source_path_visibility("));
-    assert!(provider_body.contains("rue_air::private_member_access("));
+    // Type-syntax failures, private items among them, take the diagnostic
+    // shared by the signature and durable comptime adapters.
+    let type_syntax_diagnostics = include_str!("durable_comptime/diagnostics.rs");
+    assert!(type_syntax_diagnostics.contains("rue_air::private_member_access("));
     assert!(!provider_body.contains("defining.is_visible_from(&accessing"));
 }

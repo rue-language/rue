@@ -21,15 +21,7 @@ pub(super) fn unknown_module_member_failure(
     module_display: &str,
     member: &str,
 ) -> crate::semantic_query_nucleus::SemanticNucleusFailure {
-    use crate::semantic_query_nucleus::SemanticNucleusFailure as F;
-    let kind = rue_air::unknown_module_member_kind(module_display, member);
-    match rue_air::unknown_module_member_help(module_display, member) {
-        Some(help) => F::DiagnosticWithHelp {
-            kind,
-            help: Arc::from(help),
-        },
-        None => F::Diagnostic(kind),
-    }
+    crate::durable_comptime::unknown_module_member_failure(module_display, member)
 }
 
 fn collect_body_type_reference(
@@ -2831,9 +2823,6 @@ pub(in crate::revisioned_query_database) fn semantic_type_query_failure(
         Arc<str>,
     >,
 ) -> ResolveSemanticSignatureError {
-    use rue_air::SemanticTypeSyntaxFailure as F;
-    use rue_error::ErrorKind;
-
     match crate::durable_comptime::classify_durable_type_syntax_failure(failure) {
         crate::durable_comptime::DurableTypeSyntaxClassification::Abort(abort) => {
             ResolveSemanticSignatureError::Abort(abort)
@@ -2842,209 +2831,9 @@ pub(in crate::revisioned_query_database) fn semantic_type_query_failure(
             ResolveSemanticSignatureError::failure(failure)
         }
         crate::durable_comptime::DurableTypeSyntaxClassification::Semantic(failure) => {
-            match failure {
-                F::UnknownType { syntax } => ResolveSemanticSignatureError::failure(
-                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                        ErrorKind::UnknownType(syntax.to_string()),
-                    ),
-                ),
-                F::UnknownModuleMember { module, member, .. } => {
-                    ResolveSemanticSignatureError::failure(unknown_module_member_failure(
-                        &module, &member,
-                    ))
-                }
-                F::ValueWhereTypeExpected { parameter, .. } => {
-                    ResolveSemanticSignatureError::failure(
-                        crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(
-                            Arc::from(format!(
-                                "argument for comptime parameter `{parameter}` must be a type"
-                            )),
-                        ),
-                    )
-                }
-                F::UnknownConstructor {
-                    constructor,
-                    expectation: rue_air::SemanticComptimeCallExpectation::Type,
-                } => ResolveSemanticSignatureError::failure(
-                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                        ErrorKind::UnknownType(format!("{constructor}(...)")),
-                    ),
-                ),
-                F::UnknownConstructor {
-                    constructor,
-                    expectation: rue_air::SemanticComptimeCallExpectation::Value,
-                } => ResolveSemanticSignatureError::failure(
-                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                        ErrorKind::ComptimeEvaluationFailed {
-                            reason: format!(
-                                "`{constructor}` is not a function; a compile-time value call requires a value-returning comptime function"
-                            ),
-                        },
-                    ),
-                ),
-                F::InvalidConstructorArity {
-                    constructor,
-                    expected,
-                    found,
-                    expectation: rue_air::SemanticComptimeCallExpectation::Type,
-                    ..
-                } => ResolveSemanticSignatureError::failure(
-                    crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(Arc::from(
-                        format!(
-                            "type constructor `{constructor}` expects {expected} comptime type argument(s), but {found} provided"
-                        ),
-                    )),
-                ),
-                F::InvalidConstructorArity {
-                    constructor,
-                    expected,
-                    found,
-                    expectation: rue_air::SemanticComptimeCallExpectation::Value,
-                    ..
-                } => ResolveSemanticSignatureError::failure(
-                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                        ErrorKind::ComptimeEvaluationFailed {
-                            reason: format!(
-                                "value-returning comptime function `{constructor}` expects {expected} comptime {}, but {found} {} provided",
-                                if expected == 1 {
-                                    "argument"
-                                } else {
-                                    "arguments"
-                                },
-                                if found == 1 { "was" } else { "were" },
-                            ),
-                        },
-                    ),
-                ),
-                F::NotTypeConstructor { constructor, .. } => {
-                    ResolveSemanticSignatureError::failure(
-                        crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(
-                            Arc::from(format!("function `{constructor}` is not a type")),
-                        ),
-                    )
-                }
-                F::TypeWhereValueExpected { constructor, .. } => {
-                    ResolveSemanticSignatureError::failure(
-                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                            ErrorKind::ComptimeEvaluationFailed {
-                                reason: format!(
-                                    "`{constructor}` returns `type` and cannot be used where a compile-time value is required"
-                                ),
-                            },
-                        ),
-                    )
-                }
-                F::RuntimeConstructorParameter {
-                    constructor,
-                    expectation: rue_air::SemanticComptimeCallExpectation::Type,
-                    ..
-                } => ResolveSemanticSignatureError::failure(
-                    crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(Arc::from(
-                        format!(
-                            "type constructor `{constructor}` cannot have runtime parameters; all parameters must be `comptime`"
-                        ),
-                    )),
-                ),
-                F::RuntimeConstructorParameter {
-                    constructor,
-                    expectation: rue_air::SemanticComptimeCallExpectation::Value,
-                    expected,
-                    ..
-                } => ResolveSemanticSignatureError::failure(
-                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                        ErrorKind::ComptimeEvaluationFailed {
-                            reason: if expected == 0 {
-                                format!(
-                                    "call `{constructor}(...)` is not a compile-time value because its callee must declare at least one `comptime` parameter"
-                                )
-                            } else {
-                                format!(
-                                    "call `{constructor}(...)` is not a compile-time value because all parameters must be `comptime`"
-                                )
-                            },
-                        },
-                    ),
-                ),
-                F::ConstructorDidNotReduce { constructor, .. } => {
-                    ResolveSemanticSignatureError::failure(
-                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                            ErrorKind::ComptimeEvaluationFailed {
-                                reason: format!(
-                                    "the type constructor `{constructor}` did not reduce to a concrete type at compile time"
-                                ),
-                            },
-                        ),
-                    )
-                }
-                // A private *named* item reached by type syntax is the uniform
-                // module-member privacy violation E0706 (spec 10.3:7,
-                // 10.4:18), the same code and words every other position
-                // reports for it.
-                F::PrivateItem { kind, name, .. } => ResolveSemanticSignatureError::failure(
-                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                        rue_air::private_member_access(rue_air::PrivateItemKind::from(kind), &name),
-                    ),
-                ),
-                // Privacy's one carve-out: applying a private comptime type
-                // constructor in a type position is E0460 (10.4:16), which
-                // names the constructor and its defining file.
-                F::PrivateTypeConstructor {
-                    name,
-                    defining_file,
-                    ..
-                } => ResolveSemanticSignatureError::failure(
-                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                        ErrorKind::PrivateUnqualifiedAccess(Box::new(
-                            rue_error::PrivateUnqualifiedAccessData {
-                                item_kind: rue_air::PrivateItemKind::Function.spelling().to_owned(),
-                                name: name.to_string(),
-                                defining_file: defining_file.to_string(),
-                            },
-                        )),
-                    ),
-                ),
-                F::AmbiguousItem { name, .. } => ResolveSemanticSignatureError::failure(
-                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                        ErrorKind::ComptimeEvaluationFailed {
-                            reason: format!("type resolution is ambiguous for `{name}`"),
-                        },
-                    ),
-                ),
-                F::Path(path) => match path {
-                    rue_air::SemanticModulePathFailure::Empty => {
-                        ResolveSemanticSignatureError::failure(
-                            crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                                ErrorKind::ComptimeEvaluationFailed {
-                                    reason: "type path is empty".to_owned(),
-                                },
-                            ),
-                        )
-                    }
-                    rue_air::SemanticModulePathFailure::UnknownRoot { name } => {
-                        ResolveSemanticSignatureError::failure(
-                            crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                                ErrorKind::UnknownType(name.to_string()),
-                            ),
-                        )
-                    }
-                    rue_air::SemanticModulePathFailure::UnknownMember {
-                        module, member, ..
-                    } => ResolveSemanticSignatureError::failure(unknown_module_member_failure(
-                        &module, &member,
-                    )),
-                    rue_air::SemanticModulePathFailure::PrivateMember { member, .. } => {
-                        ResolveSemanticSignatureError::failure(
-                            crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                                ErrorKind::ComptimeEvaluationFailed {
-                                    reason: format!(
-                                        "private module member `{member}` cannot be used in a type path"
-                                    ),
-                                },
-                            ),
-                        )
-                    }
-                },
-            }
+            ResolveSemanticSignatureError::failure(
+                crate::durable_comptime::semantic_type_syntax_failure(failure),
+            )
         }
     }
 }

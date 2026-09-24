@@ -5350,8 +5350,9 @@ fn type_syntax_adapters_preserve_comptime_and_signature_diagnostics() {
     assert!(matches!(
         comptime,
         crate::durable_comptime::DurableComptimeFailure::Failure(value)
-            if matches!(value.as_ref(), crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(reason)
-                if reason.contains("Semantic(UnknownType"))
+            if matches!(value.as_ref(), crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                rue_error::ErrorKind::UnknownType(syntax)
+            ) if syntax == "Sef")
     ));
 
     let signature = semantic_type_query_failure(nested);

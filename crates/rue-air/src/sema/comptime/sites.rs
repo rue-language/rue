@@ -182,6 +182,17 @@ where
     /// the environment rather than keyed by program so concurrent/nested
     /// instantiations cannot observe one another's integer context.
     pub expected_result: Option<T>,
+    /// The declared integer type of each expression-local `let` binding that
+    /// carries one: an annotated binding, or an unannotated one bound to an
+    /// operation that carries a declared type. Values keep the types the
+    /// engine computes for them; this map only range-checks the arithmetic
+    /// that run time performs at the declared type (RUE-2353).
+    pub declared_integer_locals: AHashMap<N, T>,
+    /// The integer operations of the arithmetic regions being evaluated,
+    /// each with the declared type its result must fit, or `None` when its
+    /// region is not checked. A region is the arithmetic and comparison
+    /// operators connected to one root; see `ComptimeEngine::declared_region`.
+    pub declared_integer_checks: AHashMap<InstRef, Option<T>>,
 }
 
 impl<'a, V, T, N, F, I> ComptimeEnv<'a, V, T, N, F, I>
@@ -239,6 +250,8 @@ where
             const_module_members: AHashMap::new(),
             defining_file: None,
             expected_result: None,
+            declared_integer_locals: AHashMap::new(),
+            declared_integer_checks: AHashMap::new(),
         }
     }
 
@@ -257,6 +270,8 @@ where
             const_module_members: AHashMap::new(),
             defining_file: None,
             expected_result: None,
+            declared_integer_locals: AHashMap::new(),
+            declared_integer_checks: AHashMap::new(),
         }
     }
 
