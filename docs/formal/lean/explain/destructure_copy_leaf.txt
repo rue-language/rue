@@ -135,6 +135,8 @@ One row per evaluated node, in execution order: a node's premises run before
 the node itself, so the table reads top to bottom as the machine ran. `d<n>`
 is the nesting depth — a callee's rows are deeper than its call's — and `>>`
 marks a drop event. The run enters at f0(), as `Dynamics.run` does.
+`#n` after an aggregate is its identity, minted when it was built; a `†`
+cell is a retired binding or an identity's reserved slot (`introVal`).
 
   [1]   d1    (D-Call) §6.9 (push the frame)
          expr    fn f0() -> i64  with []
