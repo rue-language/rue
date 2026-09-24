@@ -944,3 +944,162 @@ fn main() -> i32 {
 }
 """
 exit_code = 11
+
+# =============================================================================
+# Aggregate constant elements checked against their slots (3.12:10, 3.1:17,
+# 3.11:8) — RUE-2392, RUE-2395
+# =============================================================================
+
+# Each element, field and payload of a constant's aggregate initializer is
+# admitted into the slot it fills with the check the body type checker makes
+# there, at any depth: a float literal must be finite at its slot's width, an
+# integer literal must fit its slot's range, and an array literal must have
+# its slot's length. Each is reported with run time's code, on the child.
+
+[[case]]
+name = "const_array_float_literal_not_finite_rejected"
+spec = ["3.12:10", "6.5:2"]
+description = "A float literal element that rounds to infinity at its f32 slot is E0206, as the scalar constant and the body path report (RUE-2392)"
+source = """
+const A: [f32; 1] = [1e39];
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found 1e39"]
+
+[[case]]
+name = "const_struct_field_float_literal_not_finite_rejected"
+spec = ["3.12:10", "6.5:2"]
+description = "A float literal struct field that is not finite at its declared f32 field type is E0206 (RUE-2392)"
+source = """
+@copy struct P { x: f32, y: f32 }
+const Q: P = P { x: 1.0, y: 1e39 };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found 1e39"]
+
+[[case]]
+name = "const_enum_payload_float_literal_not_finite_rejected"
+spec = ["3.12:10", "6.5:2"]
+description = "A float literal enum payload that is not finite at its declared f32 payload type is E0206 (RUE-2392)"
+source = """
+enum E { A(f32) }
+const V: E = E.A(1e39);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found 1e39"]
+
+[[case]]
+name = "const_nested_float_literal_not_finite_rejected"
+spec = ["3.12:10", "6.5:2", "4.14:26"]
+description = "A float literal that is not finite at its slot is E0206 at depth too: in a nested array, after an integer element, and at f64 (RUE-2392)"
+source = """
+const A: [[f64; 2]; 1] = [[1, 1e400]];
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f64 literal, found 1e400"]
+
+[[case]]
+name = "const_aggregate_finite_float_literals_accepted"
+spec = ["3.12:10", "6.5:2", "4.14:26"]
+description = "Float literals finite at their slots are admitted at every depth: the largest f32 magnitude, a negated literal, and a value finite at f64 but not at f32 (RUE-2392)"
+source = """
+const A: [[f32; 2]; 1] = [[1, 3.4e38]];
+@copy struct P { x: f32, y: f64 }
+const Q: P = P { x: -1.5, y: 1e300 };
+enum E { A(f64) }
+const V: E = E.A(1e39);
+fn main() -> i32 {
+    let v = match V { E.A(x) => x > 1e38, };
+    if A[0][1] > 3.0e38 && Q.x == -1.5 && Q.y > 1e299 && v { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "const_array_integer_literal_out_of_range_rejected"
+spec = ["3.1:17", "6.5:5", "6.5:2"]
+description = "An integer literal element outside its u8 slot is run time's E0800, not a generic reduction failure (RUE-2395)"
+source = """
+const A: [u8; 1] = [300];
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0800", "literal value 300 is out of range for type 'u8'"]
+
+[[case]]
+name = "const_struct_field_integer_literal_out_of_range_rejected"
+spec = ["3.1:17", "6.5:5", "6.5:2"]
+description = "An integer literal struct field outside its declared i8 field type is E0800 (RUE-2395)"
+source = """
+@copy struct S { a: i8 }
+const C: S = S { a: 300 };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0800", "literal value 300 is out of range for type 'i8'"]
+
+[[case]]
+name = "const_nested_integer_literal_out_of_range_rejected"
+spec = ["3.1:17", "6.5:5", "6.5:2", "4.14:26"]
+description = "An integer literal outside its slot is E0800 at depth: the repeated element of a repeat inside a nested array (RUE-2395)"
+source = """
+const B: [[u8; 2]; 1] = [[300; 2]];
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0800", "literal value 300 is out of range for type 'u8'"]
+
+[[case]]
+name = "const_array_length_mismatch_rejected"
+spec = ["3.11:8", "6.5:2"]
+description = "An array literal of the wrong length for a constant's declared array type is run time's E0901 (RUE-2395)"
+source = """
+const B: [i32; 2] = [1, 2, 3];
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0901", "expected array of 2 elements, found 3 elements"]
+
+[[case]]
+name = "const_nested_array_length_mismatch_rejected"
+spec = ["3.11:8", "6.5:2", "4.14:26"]
+description = "A nested array literal of the wrong length for its element slot is E0901 (RUE-2395)"
+source = """
+const B: [[i32; 2]; 2] = [[1, 2], [1, 2, 3]];
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0901", "expected array of 2 elements, found 3 elements"]
+
+[[case]]
+name = "const_enum_payload_array_length_mismatch_rejected"
+spec = ["3.11:8", "6.5:2", "4.14:26"]
+description = "An array payload of the wrong length for its variant's declared payload type is E0901 (RUE-2395)"
+source = """
+enum E { A([i32; 2]) }
+const V: E = E.A([1, 2, 3]);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0901", "expected array of 2 elements, found 3 elements"]
+
+[[case]]
+name = "const_aggregate_in_range_elements_accepted"
+spec = ["3.1:17", "3.11:8", "6.5:5", "6.5:2"]
+description = "Integer literals at the ends of their slots' ranges and array literals of their slots' lengths are admitted at every depth (RUE-2395)"
+source = """
+const A: [[u8; 2]; 2] = [[0, 255], [255; 2]];
+@copy struct S { a: i8, b: [i8; 2] }
+const C: S = S { a: -128, b: [127, -128] };
+enum E { A([i16; 3]) }
+const V: E = E.A([-32768, 0, 32767]);
+fn main() -> i32 {
+    let v = match V { E.A(x) => x[2] == 32767, };
+    if A[1][0] == 255 && C.a == -128 && C.b[0] == 127 && v { 42 } else { 1 }
+}
+"""
+exit_code = 42
