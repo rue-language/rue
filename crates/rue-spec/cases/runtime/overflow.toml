@@ -143,3 +143,59 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# A constant multiplier that is a power of two may be lowered as a left shift,
+# checked by shifting back. A signed type's minimum has the bit pattern of
+# 2^(bits-1) but is negative, so a multiply by it must stay an ordinary
+# checked multiply at every optimization level: `MIN * -1` traps and
+# `1 * MIN` does not (RUE-2318).
+[[case]]
+name = "overflow_i64_min_times_neg1_{form}_o{opt_level}"
+spec = ["3.1:6", "8.1:3"]
+source = """
+fn neg_one() -> i64 { 0 - 1 }
+fn f0() -> i64 {
+    {expr}
+}
+fn main() -> i32 {
+    let result: i64 = f0();
+    @dbg(result);
+    0
+}
+"""
+runtime_error = "integer overflow"
+params = [
+  { form = "literals", expr = "((-9223372036854775808) * (-1))", opt_level = 0 },
+  { form = "literals", expr = "((-9223372036854775808) * (-1))", opt_level = 2 },
+  { form = "literals", expr = "((-9223372036854775808) * (-1))", opt_level = 3 },
+  { form = "swapped", expr = "((-1) * (-9223372036854775808))", opt_level = 0 },
+  { form = "swapped", expr = "((-1) * (-9223372036854775808))", opt_level = 2 },
+  { form = "swapped", expr = "((-1) * (-9223372036854775808))", opt_level = 3 },
+  { form = "zero_minus_one", expr = "((-9223372036854775808) * (0 - 1))", opt_level = 0 },
+  { form = "zero_minus_one", expr = "((-9223372036854775808) * (0 - 1))", opt_level = 2 },
+  { form = "zero_minus_one", expr = "((-9223372036854775808) * (0 - 1))", opt_level = 3 },
+  { form = "nested", expr = "(1 + ((-9223372036854775808) * (-1)))", opt_level = 0 },
+  { form = "nested", expr = "(1 + ((-9223372036854775808) * (-1)))", opt_level = 2 },
+  { form = "nested", expr = "(1 + ((-9223372036854775808) * (-1)))", opt_level = 3 },
+  { form = "runtime_neg1", expr = "neg_one() * (-9223372036854775808)", opt_level = 0 },
+  { form = "runtime_neg1", expr = "neg_one() * (-9223372036854775808)", opt_level = 2 },
+  { form = "runtime_neg1", expr = "neg_one() * (-9223372036854775808)", opt_level = 3 },
+]
+
+# Near-miss control: 1 * MIN is MIN, representable, and must not trap.
+[[case]]
+name = "i64_one_times_min_no_overflow_o{opt_level}"
+spec = ["3.1:6", "8.1:3"]
+source = """
+fn one() -> i64 { 1 }
+fn main() -> i32 {
+    let product: i64 = one() * (-9223372036854775808);
+    if product == -9223372036854775807 - 1 { 42 } else { 7 }
+}
+"""
+exit_code = 42
+params = [
+  { opt_level = 0 },
+  { opt_level = 2 },
+  { opt_level = 3 },
+]
