@@ -2152,7 +2152,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // the emitted value still carries a concrete non-integer type;
             // allowing that value into a projection produces invalid AIR.
             let index_type = air.get(index_result.air_ref).ty;
-            if !index_type.is_integer() {
+            if !index_type.coerces_into(Type::is_integer) {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "integer type".to_string(),

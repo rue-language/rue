@@ -2067,7 +2067,7 @@ impl Air {
                                     ),
                                 )
                             })?;
-                        if !operand_inst.ty.is_integer() {
+                        if !operand_inst.ty.coerces_into(Type::is_integer) {
                             return Err(fail(
                                 None,
                                 format!(
@@ -2172,7 +2172,7 @@ impl Air {
                                 ));
                             }
                             let operand_ty = self.instructions[operand.as_u32() as usize].ty;
-                            if !operand_ty.is_integer() {
+                            if !operand_ty.coerces_into(Type::is_integer) {
                                 return Err(fail(
                                     Some(index),
                                     format!(
@@ -2357,7 +2357,7 @@ impl Air {
                     {
                         match pattern {
                             AirPattern::Wildcard => {}
-                            AirPattern::Int(_) if !scrutinee_ty.is_integer() => {
+                            AirPattern::Int(_) if !scrutinee_ty.coerces_into(Type::is_integer) => {
                                 return Err(fail(
                                     Some(index),
                                     format!(
@@ -2366,7 +2366,9 @@ impl Air {
                                     ),
                                 ));
                             }
-                            AirPattern::Bool(_) if scrutinee_ty != Type::BOOL => {
+                            AirPattern::Bool(_)
+                                if !scrutinee_ty.coerces_into(|ty| *ty == Type::BOOL) =>
+                            {
                                 return Err(fail(
                                     Some(index),
                                     format!(
@@ -2387,7 +2389,7 @@ impl Air {
                                     .map_err(|reason| {
                                         fail(Some(index), format!("invalid enum pattern: {reason}"))
                                     })?;
-                                if scrutinee_ty != Type::new_enum(enum_id) {
+                                if !scrutinee_ty.can_coerce_to(&Type::new_enum(enum_id)) {
                                     return Err(fail(
                                         Some(index),
                                         format!(

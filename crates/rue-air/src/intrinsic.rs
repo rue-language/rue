@@ -872,12 +872,14 @@ impl IntrinsicOperation {
             // integer and a float of the same width. Source-level `@bitCast`
             // admits only the integer form (E0950); the float form is how sema
             // moves a float's bit pattern into the integer runtime ABI
-            // (ADR-0065 §6).
+            // (ADR-0065 §6). A diverging operand coerces to the source type
+            // the result's width asks for.
             Self::BitCast => {
                 args.len() == 1
-                    && (first.ty.is_integer() || first.ty.is_float())
                     && (result.is_integer() || result.is_float())
-                    && scalar_bits(first.ty) == scalar_bits(result)
+                    && (first.ty == Type::NEVER
+                        || ((first.ty.is_integer() || first.ty.is_float())
+                            && scalar_bits(first.ty) == scalar_bits(result)))
             }
             Self::AssertFailed
             | Self::BoundsCheck
