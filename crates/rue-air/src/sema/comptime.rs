@@ -2769,8 +2769,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     /// behalf: every binary operator evaluates its left operand first, and a
     /// unary operator its operand, except a negated integer literal, which
     /// is one literal and evaluates nothing.
-    fn chain_operand(&self, data: &InstData) -> Option<InstRef> {
-        match data {
+    fn chain_operand(&self, instruction: &InstData) -> Option<InstRef> {
+        match instruction {
             InstData::Add { lhs, .. }
             | InstData::Sub { lhs, .. }
             | InstData::Mul { lhs, .. }
@@ -2789,10 +2789,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             | InstData::BitXor { lhs, .. }
             | InstData::Shl { lhs, .. }
             | InstData::Shr { lhs, .. } => Some(*lhs),
-            InstData::Not { operand } | InstData::BitNot { operand } => Some(*operand),
-            InstData::Neg { operand } => {
-                (!matches!(self.program_rir().get(*operand).data, InstData::IntConst(_)))
-                    .then_some(*operand)
+            InstData::Not { operand: first } | InstData::BitNot { operand: first } => Some(*first),
+            InstData::Neg { operand: negated } => {
+                (!matches!(self.program_rir().get(*negated).data, InstData::IntConst(_)))
+                    .then_some(*negated)
             }
             _ => None,
         }
@@ -2805,35 +2805,26 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     /// `- - - … x` up to the nesting limit of spec C.6:3, and recursing
     /// through the instruction dispatcher's large frame once per operator
     /// exhausted the thread stack well before that limit. This walk descends
-    /// the chain of first operands, entering each operator exactly as
-    /// [`Self::eval`] would (the cancellation check, then marking the
-    /// declared integer region it roots), evaluates the innermost operand
-    /// normally, and then dispatches the operators from the innermost out,
-    /// handing each one its first operand's outcome through
-    /// `evaluated_operand`. Every such operator evaluates that operand before
-    /// anything else, so each sees the outcome, region marks and evaluation
-    /// order the recursive walk gives it; only the second operands recurse.
+    /// the chain of first operands, entering each operator as [`Self::eval`]
+    /// would by marking the declared integer region it roots, and then
+    /// dispatches the operators from the innermost out: the innermost
+    /// evaluates its first operand itself, and each outer operator receives
+    /// the outcome of the one inside it through `evaluated_operand`. Every
+    /// such operator evaluates that operand before anything else, so each
+    /// sees the outcome, region marks and evaluation order the recursive walk
+    /// gives it; only the second operands recurse. An inner operator's one
+    /// cancellation checkpoint is the `eval` that hands its outcome over.
     #[inline(never)]
     fn eval_operator_chain(
         &mut self,
         root: InstRef,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
-        // Each entered operator, its first operand, and the region
-        // operations it marked.
-        let mut entered: Vec<(InstRef, InstRef, Vec<InstRef>)> = Vec::new();
+        // Each entered operator with the region operations it marked. The
+        // innermost operator comes last.
+        let mut entered: Vec<(InstRef, Vec<InstRef>)> = Vec::new();
         let mut node = root;
-        let mut outcome = loop {
-            // `eval` checked cancellation on entering the root.
-            if node != root {
-                match self.host.check_canceled() {
-                    Ok(()) => {}
-                    Err(ComptimeHostError::HostFailure(error)) => {
-                        break ComptimeOutcome::HostFailure(error);
-                    }
-                    Err(ComptimeHostError::Abort(error)) => break ComptimeOutcome::Abort(error),
-                }
-            }
+        loop {
             let data = self.program_rir().get(node).data.clone();
             let operand = self
                 .chain_operand(&data)
@@ -2851,28 +2842,49 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             } else {
                 Vec::new()
             };
-            entered.push((node, operand, marked));
-            let operand_data = &self.program_rir().get(operand).data;
-            if self.chain_operand(operand_data).is_some() {
-                node = operand;
-            } else {
-                break self.eval(operand, env);
+            entered.push((node, marked));
+            if self
+                .chain_operand(&self.program_rir().get(operand).data)
+                .is_none()
+            {
+                break;
             }
-        };
-        while let Some((node, operand, marked)) = entered.pop() {
+            node = operand;
+        }
+        // The innermost operator evaluates its own first operand; each outer
+        // one receives the outcome of the operator inside it.
+        let mut operand_outcome: Option<(InstRef, ComptimeOutcome<H::Value, H::Failure>)> = None;
+        while let Some((node, marked)) = entered.pop() {
+            // Every chain operator returns a host failure or an abort of its
+            // first operand unchanged, without evaluating anything more, so
+            // the rest of the chain only unwinds.
+            if let Some((_, ComptimeOutcome::HostFailure(_) | ComptimeOutcome::Abort(_))) =
+                &operand_outcome
+            {
+                for operation in &marked {
+                    env.declared_integer_checks.remove(operation);
+                }
+                continue;
+            }
             debug_assert!(self.evaluated_operand.is_none());
-            self.evaluated_operand = Some((operand, outcome));
-            outcome = self.eval_dispatch(node, env);
+            self.evaluated_operand = operand_outcome.take();
+            let outcome = self.eval_dispatch(node, env);
+            // The handoff is consumed unless cancellation stopped it first.
             debug_assert!(
-                self.evaluated_operand.is_none(),
+                self.evaluated_operand.is_none()
+                    || matches!(
+                        outcome,
+                        ComptimeOutcome::HostFailure(_) | ComptimeOutcome::Abort(_)
+                    ),
                 "a chain operator must evaluate its first operand first"
             );
             self.evaluated_operand = None;
             for operation in &marked {
                 env.declared_integer_checks.remove(operation);
             }
+            operand_outcome = Some((node, outcome));
         }
-        outcome
+        operand_outcome.expect("an operator chain has a root").1
     }
 
     #[inline(never)]
@@ -2948,12 +2960,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         inst_ref: InstRef,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
+        host_value!(self.host.check_canceled());
         if let Some((operand, _)) = &self.evaluated_operand
             && *operand == inst_ref
         {
             return self.evaluated_operand.take().expect("operand outcome").1;
         }
-        host_value!(self.host.check_canceled());
         let (data, span) = {
             let source = self.program_rir().get(inst_ref);
             (source.data.clone(), source.span)
