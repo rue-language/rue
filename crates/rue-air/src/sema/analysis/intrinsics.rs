@@ -3211,11 +3211,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // The operand and result types share one integer type through the
         // inference equality constraints; use the concrete operand type as the
         // result. (A mismatch between the two operands is reported by inference
-        // as an ordinary type error before reaching here.)
+        // as an ordinary type error before reaching here.) When no operand is
+        // an integer but one diverges, the call never produces a value and its
+        // type is `!` (spec 3.4:3-4), as inference types it; only `<error>`
+        // operands, already diagnosed, leave the recovery type.
         let result_ty = if lty.is_integer() {
             lty
         } else if rty.is_integer() {
             rty
+        } else if lty.is_never() || rty.is_never() {
+            Type::NEVER
         } else {
             Type::ERROR
         };
@@ -3241,7 +3246,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: result_ty,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, result_ty))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            result_ty,
+            lhs.continues && rhs.continues,
+        ))
     }
 
     /// Analyze @import intrinsic.
