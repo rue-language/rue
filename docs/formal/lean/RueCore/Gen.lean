@@ -1215,11 +1215,43 @@ def leaf (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
   | T, depth => atom D Γ T depth
 end
 
+/-- (helper) A **break arm**: the arm of an `if` or a `match` inside a loop
+body that leaves the loop, either a bare `break` or one unit-typed leaf and
+then `break` — `{ @drop(x); break }`, which is where a move inside a loop meets
+§5.7's exit rather than its back edge. The `break` is the arm's **last** form,
+so no syntax follows it in its block (RUE-2376), and the arm is `never`-typed,
+which (Sub-Never) §5.7 coerces to the other arms' type (`firstArmTy` and
+`CTy.meet` skip it, `Checker.lean`). -/
+def breakArm (D : Decls) (Γ : Scope) : G Expr := do
+  if ← chance 1 2 then return brk
+  return seq (← leaf D Γ .unit 2) brk
+
+/-- (helper) Which arm of a `match` inside a loop body is a break arm, one
+`match` in three: at most **one**, so a `match` of two or more arms always has
+an arm that continues and never diverges as a whole (RUE-2376). Outside a loop
+body (`lb` false) there is none, because a `break` there targets no loop. -/
+def breakArmIdx (lb : Bool) (n : Nat) : G (Option Nat) := do
+  if lb && 2 ≤ n && (← chance 1 3) then return some (← nat 0 (n - 1))
+  return none
+
+/-- (helper) The loop the generator draws, around a body drawn under the
+counter: `let mut k: i64 = 0; loop { if k >= n { break } else { () }; k = k +
+1; body }`. The guard is the body's first statement, so every turn that
+reaches it with `k ≥ n` exits, and the body runs at most `n` times whatever it
+does — the bound that makes every generated loop terminate (module docstring,
+"Loops"). -/
+def countedLoop (n : Nat) (body : Expr) : Expr :=
+  let k := use (.var 0)
+  letIn true (intLit .w64 .signed 0)
+    (loop
+      (seq (ite (binop .ge k (intLit .w64 .signed n)) brk unitLit)
+        (seq (assign (.var 0) (binop .add k (intLit .w64 .signed 1))) body)))
+
 /-- (helper) An expression of the wanted type under `Γ`, at most `fuel`
 levels deep. The weights here are the bias the module docstring
 describes. -/
-def expr (D : Decls) : Scope → Ty → Nat → G Expr
-  | Γ, T, 0 => do
+def expr (D : Decls) : Bool → Scope → Ty → Nat → G Expr
+  | _, Γ, T, 0 => do
       -- Out of fuel the draw is a leaf, and that is where most of a
       -- program's binders are in scope: a `let` body is drawn one level down
       -- from the `let`. So where the scope has an array to index, the leaf is
@@ -1229,38 +1261,64 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
         let s ← arrayStmt D Γ (fun Γ' T' => atom D Γ' T' 2) (fun Γ' T' => atom D Γ' T' 2)
         return seq s (← leaf D Γ T 2)
       leaf D Γ T 2
-  | Γ, T, fuel + 1 => do
+  | lb, Γ, T, fuel + 1 => do
       if !Γ.isEmpty && (← chance 1 6) then return (← leaf D Γ T 2)
       let form ← weighted 3
         [(4, 0), (3, 1), (3, 2), (4, 3),
           (if D.enums.isEmpty then 0 else if enumPlaceInScope D Γ then 14 else 3, 4),
-          (if arrayInScope D Γ then 6 else 0, 5)]
+          (if arrayInScope D Γ then 6 else 0, 5),
+          (if T == .unit then 4 else 0, 6), (2, 7)]
       match form with
       | 0 =>
           let T₁ ← binderTy D
           let m ← chance 2 3
-          let e₁ ← expr D Γ T₁ fuel
-          let e₂ ← expr D ({ ty := T₁, mu := m } :: Γ) T fuel
+          let e₁ ← expr D lb Γ T₁ fuel
+          let e₂ ← expr D lb ({ ty := T₁, mu := m } :: Γ) T fuel
           return letIn m e₁ e₂
       | 1 =>
           let muts := indicesWhere Γ (fun b => b.mu)
           let T₁ ← weighted .unit
             [(if muts.isEmpty then 4 else 7, .unit), (2, ← binderTy D), (2, ← intTy)]
-          let e₁ ← expr D Γ T₁ fuel
-          let e₂ ← expr D Γ T fuel
+          let e₁ ← expr D lb Γ T₁ fuel
+          let e₂ ← expr D lb Γ T fuel
           return seq e₁ e₂
       | 2 =>
-          let c ← expr D Γ .bool fuel
-          let e₁ ← expr D Γ T fuel
-          let e₂ ← expr D Γ T fuel
+          let c ← expr D false Γ .bool fuel
+          -- Inside a loop body, one `if` in three has a **break arm**
+          -- (`breakArm`) on a side drawn at random, and the other arm is an
+          -- ordinary draw: at most one arm diverges, so the `if` itself never
+          -- does and nothing after it is dead code (RUE-2376).
+          if lb && (← chance 1 3) then
+            let a ← breakArm D Γ
+            let e ← expr D lb Γ T fuel
+            if ← bool then return ite c a e else return ite c e a
+          let e₁ ← expr D lb Γ T fuel
+          let e₂ ← expr D lb Γ T fuel
           return ite c e₁ e₂
+      | 6 | 7 =>
+          -- A counted `loop` (module docstring, "Loops"): a fresh `mut`
+          -- counter `k`, a guard that breaks once `k ≥ n`, the increment, then
+          -- a drawn body under `k`, which the draw sees as an unmarked binder so
+          -- that nothing it draws writes `k`. One loop in four ends its body
+          -- with a `break`, so no turn reaches the back edge (RUE-1615's shape).
+          -- Form 6 is the loop itself, at `unit`; form 7, at any type, is the
+          -- loop as a statement before the rest, the way form 5 places an
+          -- array statement, because a `unit`-typed draw one level above a
+          -- leaf is rare.
+          let n ← nat 0 3
+          let Γk : Scope := { ty := .int .w64 .signed, mu := false } :: Γ
+          let body ← expr D true Γk .unit fuel
+          let body ← if ← chance 1 4 then pure (seq body brk) else pure body
+          if form == 6 then return countedLoop n body
+          return seq (countedLoop n body) (← expr D lb Γ T fuel)
       | 5 =>
           -- An array statement, then the rest at the wanted type: weighted up
           -- where the scope has an array to index (`arrayStmt`), because the
           -- type-directed draws reach an index form only where the type they
           -- want is the element's.
-          let s ← arrayStmt D Γ (fun Γ' T' => expr D Γ' T' fuel) (fun Γ' T' => expr D Γ' T' fuel)
-          return seq s (← expr D Γ T fuel)
+          let s ← arrayStmt D Γ (fun Γ' T' => expr D false Γ' T' fuel)
+            (fun Γ' T' => expr D false Γ' T' fuel)
+          return seq s (← expr D lb Γ T fuel)
       | 4 =>
           -- (Match) §5.5 in expression position: the scrutinee at the drawn
           -- enum type, then **exactly one arm per variant in declaration
@@ -1291,9 +1349,13 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
                 -- holds the consumed binding, which is what a nested `match` on
                 -- `v` (E0205) and the join over an entry an arm moved need.
                 let m ← chance 1 3
-                let init ← expr D Γ (.enum e) fuel
+                let init ← expr D false Γ (.enum e) fuel
                 let Γ' : Scope := { ty := .enum e, mu := m } :: Γ
-                let arms ← ed.variants.mapM (fun Ts => expr D (armScope Ts Γ') T fuel)
+                let bj ← breakArmIdx lb ed.variants.length
+                let arms ← (List.range ed.variants.length).mapM (fun j =>
+                  let Ts := (ed.variants[j]?).getD []
+                  if bj == some j then breakArm D (armScope Ts Γ')
+                  else expr D lb (armScope Ts Γ') T fuel)
                 let m' := «match» (use (.var 0)) arms
                 let body ← if ← chance 1 3 then
                     pure (seq (← leaf D Γ' .unit 2) m')
@@ -1305,8 +1367,12 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
                 else if !uses.isEmpty && (← chance 4 5) then
                   pure (use (.var (← pick 0 uses)))
                 else
-                  expr D Γ (.enum e) fuel
-              let arms ← ed.variants.mapM (fun Ts => expr D (armScope Ts Γ) T fuel)
+                  expr D false Γ (.enum e) fuel
+              let bj ← breakArmIdx lb ed.variants.length
+              let arms ← (List.range ed.variants.length).mapM (fun j =>
+                let Ts := (ed.variants[j]?).getD []
+                if bj == some j then breakArm D (armScope Ts Γ)
+                else expr D lb (armScope Ts Γ) T fuel)
               return «match» scrut arms
           | none => leaf D Γ T 2
       | _ =>
@@ -1324,10 +1390,10 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
               | some ed =>
                   let k ← nat 0 (ed.variants.length - 1)
                   return mkEnum e k
-                    (← ((ed.variants[k]?).getD []).mapM (fun T' => expr D Γ T' fuel))
+                    (← ((ed.variants[k]?).getD []).mapM (fun T' => expr D false Γ T' fuel))
               | none => return leastValue D (declFuel D) (.enum e)
           | .int w sg =>
-              let self := expr D Γ (.int w sg) fuel
+              let self := expr D false Γ (.int w sg) fuel
               let form ← weighted 0 [(5, 0), (3, 1), (2, 2), (3, 3), (2, 4)]
               match form with
               | 0 =>
@@ -1362,13 +1428,13 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
                     return binop .totalCmp (← floatLiteral wf) (← floatLiteral wf)
                   if ← chance 1 3 then
                     let Tf ← floatTy
-                    return fintrin (.floatToInt w sg) (← expr D Γ Tf fuel)
+                    return fintrin (.floatToInt w sg) (← expr D false Γ Tf fuel)
                   let src ← intTy
-                  return intCast w sg (← expr D Γ src fuel)
+                  return intCast w sg (← expr D false Γ src fuel)
           | .float w =>
               -- (Float-Arith), (Float-Neg), (Int-To-Float), (Float-Cast) and
               -- (Float-Round) §5.8, with §6.4's trap-free dynamics.
-              let self := expr D Γ (.float w) fuel
+              let self := expr D false Γ (.float w) fuel
               let form ← weighted 0 [(5, 0), (2, 1), (2, 2), (2, 3), (2, 4)]
               match form with
               | 0 =>
@@ -1377,31 +1443,31 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
               | 1 => return unop .neg (← self)
               | 2 =>
                   let src ← intTy
-                  return fintrin (.intToFloat w) (← expr D Γ src fuel)
+                  return fintrin (.intToFloat w) (← expr D false Γ src fuel)
               | 3 =>
                   -- `3.12:19` converts between the two widths and only
                   -- between them, so the source is the other one.
                   let src : FloatWidth := match w with | .w32 => .w64 | .w64 => .w32
-                  return fintrin (.floatCast w) (← expr D Γ (.float src) fuel)
+                  return fintrin (.floatCast w) (← expr D false Γ (.float src) fuel)
               | _ =>
                   let k ← pick FloatUnIntrin.sqrt
                     [FloatUnIntrin.sqrt, .round .floor, .round .ceil, .round .trunc,
                       .round .round]
                   return fintrin (.roundOp k) (← self)
           | .bool =>
-              if ← chance 1 5 then return unop .not (← expr D Γ .bool fuel)
+              if ← chance 1 5 then return unop .not (← expr D false Γ .bool fuel)
               let op ← pick BinOp.lt [BinOp.lt, .le, .gt, .ge]
               if ← chance 1 3 then
                 let Tf ← floatTy
-                return binop op (← expr D Γ Tf fuel) (← expr D Γ Tf fuel)
+                return binop op (← expr D false Γ Tf fuel) (← expr D false Γ Tf fuel)
               let Tc ← intTy
-              return binop op (← expr D Γ Tc fuel) (← expr D Γ Tc fuel)
+              return binop op (← expr D false Γ Tc fuel) (← expr D false Γ Tc fuel)
           | .unit =>
               let muts := indicesWhere Γ (fun b => b.mu)
               let drops := dropPlaces D Γ
               -- A dynamic-index write or `@drop`, one draw in four where the
               -- scope has a place below a dynamic index (`dynUnit`).
-              if let some e ← dynUnit D Γ 4 (fun Γ' T => expr D Γ' T fuel) (fun Γ' T => expr D Γ' T fuel) then
+              if let some e ← dynUnit D Γ 4 (fun Γ' T => expr D false Γ' T fuel) (fun Γ' T => expr D false Γ' T fuel) then
                 return e
               -- A `@drop` or an assignment *at a projection* is the shape this
               -- slice is about (§4.2's partial move), so it is drawn first.
@@ -1412,14 +1478,14 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
                 let slots := assignSlots D i b.ty
                 if !slots.isEmpty && (← chance 1 2) then
                   let (pl, Tf) ← pick (.var i, b.ty) slots
-                  return assign pl (← expr D Γ Tf fuel)
-                return assign (.var i) (← expr D Γ b.ty fuel)
+                  return assign pl (← expr D false Γ Tf fuel)
+                return assign (.var i) (← expr D false Γ b.ty fuel)
               if ← chance 1 3 then
                 let To ← weighted (← intTy) [(3, ← intTy), (2, ← floatTy), (1, .bool)]
-                return dbg (← expr D Γ To fuel)
+                return dbg (← expr D false Γ To fuel)
               if Γ.isEmpty && !D.structs.isEmpty then
                 let T₁ ← binderTy D
-                return seq (← expr D Γ T₁ fuel) unitLit
+                return seq (← expr D false Γ T₁ fuel) unitLit
               leaf D Γ .unit 2
           | .struct s =>
               let uses := indicesWhere Γ (fun b => b.ty == .struct s)
@@ -1427,7 +1493,7 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
               let projs := projPlaces D Γ (.struct s)
               if !projs.isEmpty && (← chance 1 3) then return use (← pickPlace (.var 0) projs)
               match D.structs[s]? with
-              | some sd => return mkStruct s (← sd.fields.mapM (fun T' => expr D Γ T' fuel))
+              | some sd => return mkStruct s (← sd.fields.mapM (fun T' => expr D false Γ T' fuel))
               | none => return mkStruct s []
           | .array E n =>
               -- `atom`'s array draw one level up: a use of an array binder or
@@ -1438,8 +1504,8 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
               if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
               let projs := projPlaces D Γ (.array E n)
               if !projs.isEmpty && (← chance 1 3) then return use (← pickPlace (.var 0) projs)
-              if E.mult D == .copy && (← chance 1 3) then return repeatArray E (← expr D Γ E fuel) n
-              return mkArray E (← (List.replicate n E).mapM (fun T' => expr D Γ T' fuel))
+              if E.mult D == .copy && (← chance 1 3) then return repeatArray E (← expr D false Γ E fuel) n
+              return mkArray E (← (List.replicate n E).mapM (fun T' => expr D false Γ T' fuel))
 
 /-- (helper) Every subexpression, the expression itself first. -/
 def subexprs : Expr → List Expr
@@ -1451,7 +1517,7 @@ def subexprs : Expr → List Expr
   | e@(call _ args) | e@(mkStruct _ args) | e@(mkEnum _ _ args) | e@(mkArray _ args)
   | e@(indexRead _ args _) | e@(indexDrop _ args _) =>
       e :: (args.map subexprs).flatten
-  | e@(repeatArray _ e₁ _) => e :: subexprs e₁
+  | e@(repeatArray _ e₁ _) | e@(loop e₁) => e :: subexprs e₁
   | e@(indexWrite _ args _ e₁) => e :: subexprs e₁ ++ (args.map subexprs).flatten
   | e@(.«match» scrut arms) => e :: subexprs scrut ++ (arms.map subexprs).flatten
   | e => [e]
@@ -1529,6 +1595,10 @@ def rulesIn (D : Decls) (Γ : List Ty) : Expr → List String
   | indexDrop _ idx _ =>
       ["(@Drop-Copy) §5.3", "(D-Index) §6.5"] ++ (idx.map (rulesIn D Γ)).flatten
   | ret e₁ => ["(Return-Value) §5.7", "(D-Return) §6.9"] ++ rulesIn D Γ e₁
+  | loop e₁ =>
+      (if e₁.breaks then ["(Loop-Break) §5.7", "3.8:79", "3.8:80"] else ["(Loop-Div) §5.7"]) ++
+        ["(D-Loop-Iter) §6.10"] ++ rulesIn D Γ e₁
+  | brk => ["(Break) §5.7", "(D-Break) §6.10"]
   | _ => []
 
 /-- (helper) The labels a `match`'s arms exercise, walked alongside the
@@ -1579,7 +1649,7 @@ def genCase (seed i : Nat) : G Corpus.Case := do
   let D ← genEnv D₁.enums.length nHolders D₁
   let depth ← weighted 3 [(4, 2), (3, 3)]
   let T ← resultTy D
-  let e ← expr D [] T depth
+  let e ← expr D false [] T depth
   return {
     name := s!"gen_{seed}_{i}",
     description := s!"Generated program {i} of seed {seed} ({D.structs.length} struct " ++
