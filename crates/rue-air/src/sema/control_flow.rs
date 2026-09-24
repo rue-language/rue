@@ -1310,10 +1310,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Every step that changes the head adds a moved path or clears
             // a must-move fact, at most two per tracked path.
             let bound = 2 * tracked_move_paths(&head) + 1;
-            debug_assert!(
-                rechecks <= bound,
-                "loop-head state did not settle within {bound} rechecks"
-            );
             if rechecks > bound {
                 return Err(CompileError::without_span(ErrorKind::InternalError(
                     format!("loop-head state did not settle within {bound} rechecks"),
@@ -1338,7 +1334,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // loop's exit and back-edge joins would see only the edge's
             // first-iteration state (RUE-2354).
             let rechecked_edges = std::mem::take(&mut scratch_ctx.ownership.loop_break_stack);
-            debug_assert_eq!(rechecked_edges.len(), ctx.ownership.loop_break_stack.len());
+            if rechecked_edges.len() != ctx.ownership.loop_break_stack.len() {
+                return Err(CompileError::without_span(ErrorKind::InternalError(
+                    "a loop recheck changed the enclosing loop stack's depth".to_string(),
+                )));
+            }
             for (edges, rechecked) in ctx
                 .ownership
                 .loop_break_stack
