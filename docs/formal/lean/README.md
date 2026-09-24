@@ -102,9 +102,13 @@ evaluated at compile time is a constant index under `8.2:4`. That a
 the array red seeds, so a generated case of one is attributed by hand, the way
 RUE-2335's shape is: the self-assignment `a[c] = a[c]` (RUE-2346) is the one
 still red. On the current draws the acceptance settings (200 at seed 7, 1,000
-at seed 23) reach no disagreement at all: every one of the 1,200 cases agrees
-with the compiler. On the draws before loops they reached the self-assignment
-(one case at seed 7, three at seed 23) and a dynamic index into a zero-length
+at seed 23) reach the self-assignment in four cases (`gen_7_145`, `gen_7_159`,
+`gen_7_181`, `gen_23_752`), each masked by an E0406 the compiler reports
+first, so every one of the 1,200 cases agrees with the compiler; a wider run
+reaches it unmasked (`gen_101_207` at `--gen 400 --seed 101`, on the draws
+just before the loop generator's restoring statements), which is an allowed
+RUE-2346 disagreement. On the draws before loops they reached the
+self-assignment (one case at seed 7, three at seed 23) and a dynamic index into a zero-length
 array field (five at seed 23, agreeing since RUE-2345 was fixed); wider runs at
 other seeds reached RUE-2344's shape (`gen_2_1694`, agreeing since RUE-2344
 was fixed) and two compiler defects found and filed from them, RUE-2347 (a

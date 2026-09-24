@@ -1459,7 +1459,8 @@ leaving. The second does it on one way out and not on the other.
 
 #### What the checker demands
 
-(Loop-Break) §5.7, `Typed.loopBreak` in Lean, types a loop in three steps:
+(Loop-Break) §5.7, `Typed.loopBreak` in Lean, types a loop in three steps, and
+the `break`-less (Loop-Div) forms share the first two:
 
 1. **Find the loop-head state** `Σ_h`: what is true at the top of *every*
    turn. It is the entry state joined (§5.5) with the state at every back
@@ -1495,7 +1496,9 @@ and here no turn reaches the back edge, so there is no previous iteration
 whose move could matter.
 
 Give the body a way round and the same move is refused.
-`loop_moved_prev_iteration` is `loop { @drop(v0) }` on an affine `S1`:
+`loop_moved_prev_iteration` is `loop { @drop(v0) }` on an affine `S1`, a
+`break`-less loop, so (Loop-Div-Backedge) rather than (Loop-Break) — but the
+head state is found the same way:
 
 ```
   entry             Σ   = [v0: S1 = Owned]
@@ -1527,7 +1530,8 @@ gives `MovedOut` ("maybe moved"): `loop_two_exits` is that case, and it is
 accepted.
 
 `loop_reassign_then_move` is the seed where the head is not the entry state.
-Each turn assigns `d` and then drops it:
+Each turn assigns `d` and then drops it; in the printed program `d` is `v0` and
+the counter `n` is `v1`:
 
 ```
   entry             Σ   = [v1: i64 mut = Owned, v0: S1 mut = Owned]
@@ -1550,10 +1554,15 @@ numbers them:
 | --- | --- | --- | --- | --- | --- |
 | 4 | (D-Let) §6.7 | `[]` | mint `ℓ0` for `v0` | `[ℓ0 = S3 { 1 }]` | |
 | 5 | `@drop` §6.11 | `[ℓ0 = S3 { 1 }]` | the glue runs, and the cell is marked `⊘` | `[ℓ0 = ⊘]` | `drop ℓ0 = S3 { 1 }`; `run drop fn S3(S3 { 1 })` |
-| 6–7 | (D-Break) §6.10, then (D-Seq) | `[ℓ0 = ⊘]` | the `break` fires, and the sequence passes it on (`EvalRes.broke`) | `[ℓ0 = ⊘]` | |
+| 6 | (D-Break) §6.10 | `[ℓ0 = ⊘]` | the `break` fires (`EvalRes.broke`) | `[ℓ0 = ⊘]` | |
+| 7 | (D-Seq) §6.7 | `[ℓ0 = S3 { 1 }]` | the sequence `{ @drop(v0); break }` passes the `break` on | `[ℓ0 = ⊘]` | |
 | **8** | **(D-Break) §6.10 (unwind to the loop)** | `[ℓ0 = ⊘]` | the loop catches it and drops the cells the body opened, newest first. The body opened none, so `unwind-drops([])` does nothing, and the loop's value is `()` | `[ℓ0 = ⊘]` | |
-| 9–11 | literal, (D-Seq), (D-EndScope) | `[ℓ0 = ⊘]` | the value `5`; `v0`'s cell is already `⊘`, so its scope exit drops nothing | `[ℓ0 = †]` | |
+| 9 | literal §6.3 | `[ℓ0 = ⊘]` | the value `5` | `[ℓ0 = ⊘]` | |
+| 10 | (D-Seq) §6.7 | `[ℓ0 = S3 { 1 }]` | the sequence `{ loop { … }; 5 }` ends with `5` | `[ℓ0 = ⊘]` | |
+| 11 | (D-EndScope) §6.7 | `[ℓ0 = ⊘]` | `v0`'s cell is already `⊘`, so its scope exit drops nothing | `[ℓ0 = †]` | |
 
+A row for a compound form (rows 7 and 10) records the store at the form's
+start, before its parts ran, which is why its "before" still shows `S3 { 1 }`.
 The output is `1`, then `5`. A body that had opened a binding would see it
 dropped at row 8 instead of at its own scope's end (`loop_break_past_local`).
 
@@ -1585,35 +1594,54 @@ Three things, in `Statics.lean` and `Soundness.lean`:
 
 #### Before and after: what the loop-head rewrite fixed
 
-The calculus used to state the loop rule as a check: the state at every back
-edge must *equal* the state at loop entry (`3.8:79` read literally,
-"invariant across every reachable back edge"). The body was typed from the
-entry state, and the rule then compared the end of a turn with the start.
+The calculus's changelog in §5.7 (`01-core-calculus.md`, "Rewritten into
+judgment form") lists three verdicts the rewrite (#3181, RUE-2321) changed.
+Here they are in plain terms.
 
-That check rejected a program the compiler accepts on purpose:
+**Before**, the two loop rules differed. The `break`-exited rule,
+(Loop-Break), typed the body from the entry state and then *checked* each back
+edge: the state at the end of a turn that goes round again had to **equal**
+the state at entry (`3.8:79` read literally, "invariant across every reachable
+back edge"). The `break`-less rule, (Loop-Div-Backedge), had no such check at
+all.
 
-```rue
-loop { if n > 1 { break; } d = S1 { x0: n + 10 }; @drop(d); n = n + 1; }
-```
+1. **A loop that moves an outer value and never exits was accepted.**
+   `loop { @drop(v0); }` with no `break` fell under (Loop-Div-Backedge), which
+   typed the body once, from the entry state, where `v0` is `Owned`, and never
+   asked about the second turn. The second turn drops a value the first one
+   already dropped. That was the old calculus's unsound verdict. The compiler
+   always rejected it (E0205, "moved in a previous iteration"), and so does the
+   new rule: `loop_moved_prev_iteration` above is this program.
+2. **Reassign-then-move was rejected, though it is safe.** In
 
-Every turn gives `d` a new value before dropping it, so nothing is ever used
-after it moved. But the turn ends with `d` moved, while it started with `d`
-owned, and "moved" is not equal to "owned", so the old rule said no. It also
-typed the exits from the entry state. A `break` on the second turn, after
-the first turn had moved something, was read as if nothing had moved. That
-direction was unsound, and the compiler had the same gap (RUE-2354, fixed).
+   ```rue
+   loop { if n > 1 { break; } d = S1 { x0: n + 10 }; @drop(d); n = n + 1; }
+   ```
 
-The rewrite (#3181, RUE-2321) replaced the equality with the loop-head state:
-type the body once at the state that is true at the top of *every* turn,
-the entry joined with every back edge. Something moved by one turn and not
-restored is `MovedOut` there, so a later turn cannot use it (E0205, "moved in
-a previous iteration"). Something restored before its use is fine, because
-the body's own assignment reinitializes it. And every exit is read at that
-same state, so a late `break` sees what earlier turns did. The equality was
-a test that a loop which changes its state and puts it back can never pass.
-The head state is an equation that such a loop can satisfy, and the Lean
-package computes its least solution (`headIter`) and then checks it
-(`LoopHead`).
+   every turn gives `d` a new value before dropping it. But each turn *ends*
+   with `d` moved and began with `d` owned, so the equality failed. The
+   opposite order, move-then-reassign (`@drop(d); d = …;`), passed the old
+   check, because that turn ends with `d` owned again. The compiler accepts
+   both on purpose (`reassign_before_move_ok`); the old calculus was too strict
+   about the first.
+3. **An exit on a later turn.** Because every back edge had to equal the
+   entry, a later turn always started where the first did, and reading the
+   exits from the entry state was right *under the old rule*. The gap was the
+   compiler's: it relaxed the equality to admit reassign-then-move, but kept
+   reading exits from its first pass, so a `break` after an earlier turn had
+   moved something was read as if nothing had moved. That was unsound, and
+   RUE-2354 fixed the compiler.
+
+**After**, both rules type the body once at the **loop-head state**: the entry
+joined with every back-edge state, which is what is true at the top of *every*
+turn. In case 1 the head has `v0` `MovedOut`, so the `@drop` is refused. In
+case 2 the head has `d` `MovedOut`, and the body's assignment reinitializes it
+before the drop, so it is accepted. In case 3 the exits are read at the head,
+so a late `break` sees what earlier turns did. The head is on both sides of its
+own definition, so it is an equation rather than a check. The Lean package
+computes its least solution by iteration (`headIter`) and then checks it
+(`LoopHead`). The spec's prose paragraph `3.8:79` still words the rule as
+back-edge invariance; bringing that wording in line is RUE-2355.
 
 ## 6. Running things yourself
 

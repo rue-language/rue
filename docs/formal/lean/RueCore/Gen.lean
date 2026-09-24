@@ -84,12 +84,12 @@ where a proper prefix of it is a struct declared `linear` the checker takes the
 decides the case — residue check included. (The one plan-dependent test the
 draw makes is `3.8:68`'s root rule for an element move, which is the ordinary
 plan's premise and not the destructure's; `pathOk` says why.) That puts a
-destructure in 25 of the 200 programs at `--gen 200 --seed 7` (54 sites, 30 of
-them two steps deep) and in 94 of the 1,000 at `--gen 1000 --seed 23` (158
-sites, 82). The checker reaches a declared-plan rule in 15 and 54 of those
-programs and accepts none and 12 of them; the deepest refusal is the
-linear-residue premise, the E0474 of `3.8:60`, in none and 5, and a
-declared-plan premise of any kind in 5 and 13. The rest are refused for the
+destructure in 22 of the 200 programs at `--gen 200 --seed 7` (43 sites, 21 of
+them two steps deep) and in 109 of the 1,000 at `--gen 1000 --seed 23` (195
+sites, 107). The checker reaches a declared-plan rule in 11 and 52 of those
+programs and accepts 2 and 6 of them; the deepest refusal is the
+linear-residue premise, the E0474 of `3.8:60`, in 1 and 6, and a
+declared-plan premise of any kind in 4 and 11. The rest are refused for the
 reasons any generated case is — most often a linear value leaked at a scope
 exit, a `match` arm or a discarded statement, or a use after the move —
 because a declared-`linear` binder has to be consumed explicitly and a random
@@ -128,20 +128,20 @@ places are drawn two ways:
   a `let` first (`bindIdx` says why) and out of bounds one draw in five.
 
 The share of programs that reach each form, of 200 at `--gen 200 --seed 7` and
-of 1,000 at `--gen 1000 --seed 23`: an array literal 90 and 448 (a zero-length
-one 14 and 95), the repeat form 24 and 114; a constant-index `Copy` read 17 and
-54, a non-`Copy` element or path-under-element move 10 and 55, a `@drop` at a
-constant index 12 and 83, a constant-index write 5 and 30; a dynamic-index read
-34 and 174, write 8 and 63, `@drop` 14 and 81 — below the element (`a[i].f`)
-in 16 and 113, through a field (`h.arr[i]`) in 31 and 174, two dynamic steps
-(`a[i][j]`) in 7 and 35. The bounds trap ends 12 and 50 runs, 8 and 29 of them
+of 1,000 at `--gen 1000 --seed 23`: an array literal 100 and 453 (a zero-length
+one 21 and 106), the repeat form 26 and 126; a constant-index `Copy` read 15 and
+66, a non-`Copy` element or path-under-element move 7 and 31, a `@drop` at a
+constant index 16 and 86, a constant-index write 7 and 16; a dynamic-index read
+36 and 145, write 20 and 67, `@drop` 15 and 92 — below the element (`a[i].f`)
+in 25 and 95, through a field (`h.arr[i]`) in 38 and 166, two dynamic steps
+(`a[i][j]`) in 13 and 40. The bounds trap ends 19 and 71 runs, 11 and 36 of them
 of programs the checker accepts.
 
 The array refusals, as the deepest refusal of a rejected program at the same
 two settings: `3.8:72`'s write into an array with a moved-out element (E0480)
-3 and 6; `3.8:70`'s dynamic index into one 1 and 12; §4.2's
+2 and 4; `3.8:70`'s dynamic index into one 1 and none; §4.2's
 `DeclaredLinearDynamic`, a dynamic index under a declared-`linear` struct
-(E0904), 5 and 35; (Assign)'s linear overwrite at a dynamic-index write none
+(E0904), 7 and 37; (Assign)'s linear overwrite at a dynamic-index write none
 and 2.
 Three array refusals are **not** drawn, each because the draw is typed to
 avoid it rather than because ownership might: `3.8:68`'s element move out of a
@@ -155,11 +155,15 @@ Three generated shapes have disagreed with the compiler, each seeded, and none
 is drawn around — drawing around one would write the compiler's current
 answer into the generator. A generated case with one of them is a bridge
 disagreement to attribute to its issue by hand, as RUE-2335's is (above);
-nothing in the tree counts them. The acceptance settings, `--gen 200 --seed 7`
-and `--gen 1000 --seed 23`, reach **none** of them on the current draws: all
-1,200 cases agree with the compiler. The names below are the cases that
-reached each shape on the draws before loops (RUE-2330), which changed the
-program every setting produces from its first loop draw on. Wider runs at
+nothing in the tree counts them. On the current draws the acceptance settings,
+`--gen 200 --seed 7` and `--gen 1000 --seed 23`, reach one of them, the
+self-assignment, in four cases, and in every one the compiler stops first at
+another error, so no case **disagrees**: all 1,200 agree with the compiler.
+Wider runs reach it unmasked: `gen_101_207` (`--gen 400 --seed 101`) was
+drawn before the restoring statements below changed the draws, and is a
+RUE-2346 disagreement. The other names below are the cases that reached each
+shape on the draws before loops (RUE-2330), which changed the program every
+setting produces from its first loop draw on. Wider runs at
 other seeds have also reached two compiler defects filed from them, RUE-2347
 (a CFG verification error on a `match` in one `if` arm) and RUE-2348 (an
 internal error on a float array bound inside an enum-valued block). Any other
@@ -168,10 +172,13 @@ generated disagreement is a finding to file.
 * `a[c] = a[c]` (seed `array_elem_self_assign`, RUE-2346, still red): the
   model refuses it, because (Assign) §5.2 runs the right-hand side first and
   the write then goes into an array with a moved-out element (`3.8:72`,
-  `7.1:46`), while the compiler accepts it on purpose (RUE-228). Before loops,
-  one case at `--gen 200 --seed 7` (`gen_7_101`) and three at `--gen 1000
-  --seed 23` (`gen_23_295`, `gen_23_868`, and `gen_23_652`, whose verdicts
-  agreed because the compiler stopped first at a later E0904).
+  `7.1:46`), while the compiler accepts it on purpose (RUE-228). On the current
+  draws, three cases at `--gen 200 --seed 7` (`gen_7_145`, `gen_7_159`,
+  `gen_7_181`) and one at `--gen 1000 --seed 23` (`gen_23_752`), each masked
+  because the compiler first reports an E0406 elsewhere. Before loops, one
+  case at seed 7 (`gen_7_101`, disagreeing) and three at seed 23
+  (`gen_23_295`, `gen_23_868`, and `gen_23_652`, the last masked by an
+  E0904).
 * A dynamic index into a **zero-length array field**, `h.arr[i]` at
   `arr: [T; 0]` (seed `array_zero_length_field_dyn_read`): an internal
   compiler error in code generation where the model traps with `bounds`,
@@ -223,7 +230,13 @@ construction**:
   exit.
 
 Half the bodies open with an **exit statement**, `if c { <break arm> } else {
-() }`, with a drawn condition, and inside a loop body one `if` in three and one
+() }`, with a drawn condition. Two draws aim at the moves a random body seldom
+gets accepted (`drawLoop`): half the counted bodies whose scope has a `mut`
+struct or enum binder from outside the loop open with a **restoring
+statement** (`restoreStmt`) — reassign-then-move `x = <fresh>; @drop(x)` at an
+affine type, move-then-reassign `@drop(x); x = <fresh>` at a linear one — and
+half the once-through loops whose scope has a linear struct or enum binder
+drop it on **every** exit. Inside a loop body, one `if` in three and one
 `match` in three has a break arm among its arms (`breakArmIdx`). A break arm is
 `break`, `{ <leaf>; break }`, or — half the time where the scope holds a
 non-`Copy` aggregate — `{ @drop(x); break }`: a move that meets an exit rather
@@ -239,7 +252,9 @@ The body terminates because every loop inside it is one of these two shapes and
 the fragment has no other back edge (no calls are drawn), so every generated
 program terminates, and within the export fuel: every one of the 200 at
 `--gen 200 --seed 7` and the 1,000 at `--gen 1000 --seed 23` completes and is
-exported; none reaches `outOfFuel` (`Corpus.lean`'s export would leave it out).
+exported. The export enforces it: `lake exe ruecore-corpus --gen N` fails,
+naming the cases, if a generated case does not complete at the export fuel,
+rather than leaving it out as it does a seed case (`CorpusMain.lean`).
 
 Two constraints are drawn around rather than left to chance, because each is a
 question for the calculus rather than a finding the bridge should make:
@@ -257,29 +272,35 @@ question for the calculus rather than a finding the bridge should make:
   types a loop body there and the compiler also accepts a non-`unit` one.
 
 The share of programs that reach each loop shape, of 200 at `--gen 200 --seed
-7` and of 1,000 at `--gen 1000 --seed 23`: a loop 100 and 454 (165 and 762
-loops), a counted one 82 and 383, a once-through one 38 and 159, a loop nested
-in a loop's body 11 and 43; an `if` with a break arm inside a loop body — an
-exit statement or a drawn arm — 58 and 278, a `match` with one 1 and 5; a move
+7` and of 1,000 at `--gen 1000 --seed 23`: a loop 102 and 480 (172 and 775
+loops), a counted one 86 and 389, a once-through one 35 and 174, a loop nested
+in a loop's body 10 and 41; an `if` with a break arm inside a loop body — an
+exit statement or a drawn arm — 66 and 301, a `match` with one 2 and 4; a move
 or `@drop` of a non-`Copy` binder from outside the innermost loop, inside its
-body, 43 and 218, of which the checker accepts 4 and 21. The checker accepts
-41 and 182 of the programs with a loop. The loop refusals, as the deepest
-refusal of a rejected program: no loop-head state — a value moved by one turn
-and used by the next, `3.8:79`'s E0205 — 8 and 52; the exits disagreeing on a
-linear binding (`3.8:80`, E0443) none and 4; a `break` past a live linear
-loop-local (E0406) and the `⟨diverge, Σ_h⟩` leak none at either, the second by
-construction, since no generated loop diverges.
+body, 49 and 236, of which the checker accepts 6 and 26 — inside a counted
+loop, where it can meet the back edge, 39 and 182 (3 and 14 accepted), of a
+linear value 20 and 95 (1 and none accepted), and beside an assignment to the
+same binder in the same loop, the restoring idioms, 17 and 79 (2 and 16
+accepted). The checker accepts 44 and 177 of the programs with a loop. The
+loop refusals, as the deepest refusal of a rejected program: no loop-head
+state — a value moved by one turn and used by the next, `3.8:79`'s E0205 — 11
+and 49; the exits disagreeing on a linear binding (`3.8:80`, E0443) none and 6;
+a `break` past a live linear loop-local (E0406) and the `⟨diverge, Σ_h⟩` leak
+none at either, the second by construction, since no generated loop diverges.
+An accepted linear move in a loop stays rare because the value then has to be
+consumed after the loop as well, which a random rest of the program seldom
+does.
 
 ## What it deliberately does not guarantee
 
 Ownership. Moves, drops, assignments, `match` arms and scope exits are chosen
 at random, so a large minority of the programs are rejected by the checker and
-refused by the machine — 87 of 200 at `--gen 200 --seed 7` and 420 of 1,000 at
+refused by the machine — 87 of 200 at `--gen 200 --seed 7` and 438 of 1,000 at
 `--gen 1000 --seed 23`, the figures the weights below are tuned against. Both
 are recorded (`Corpus.caseJson` reads them off `checkProgram` and `run` as for
 any case), never filtered: a rejected program checks that the compiler rejects
 it too, an accepted one that the three implementations agree with the
-interpreter's trace. At those two settings 94 of 200 and 418 of 1,000 programs
+interpreter's trace. At those two settings 89 of 200 and 431 of 1,000 programs
 contain a `match`.
 
 Every figure in this module is a count over the programs `generate` returns at
@@ -303,7 +324,7 @@ the weights can be read and changed:
   `Linear` is `Linear` whatever its attribute says (§3), which is how the
   linear-through-a-field shapes arise;
 * about two declarations in seven are declared `linear`, which puts one in
-  122 of the programs at `--gen 200 --seed 7` and 562 of 1,000 at
+  126 of the programs at `--gen 200 --seed 7` and 579 of 1,000 at
   `--gen 1000 --seed 23`, and a path through one is §4.2's declared-linear
   destructure (above, "How deep a place goes");
 * a sequence's discarded statement is mostly unit-typed, where `assign`
@@ -334,19 +355,19 @@ the weights can be read and changed:
   sibling fields still drop at scope exit) and a binder next (the move that
   makes a second `match` on the same place the E0205 the compiler reports).
   That weight on its own starved the shape it is for, because the branch it
-  fired on was the rarer one: with the weight alone only 18 of 140 `match` sites
-  at `--gen 200 --seed 7` and 80 of 751 at `--gen 1000 --seed 23` have an enum
+  fired on was the rarer one: with the weight alone only 24 of 149 `match` sites
+  at `--gen 200 --seed 7` and 61 of 676 at `--gen 1000 --seed 23` have an enum
   place in scope at all. So where the scope offers no place of the drawn enum's
   type the draw **makes** one half the time — `let v = <the temporary> in
   match v`, sometimes with one statement in between — instead of matching a
   temporary, and the arms are then typed under a scope that still holds the
-  consumed binding. Measured with it: 81 of 157 sites and 494 of 769 have a
-  place in scope, 76 and 467 scrutinize one (the weight alone reaches 12 of 140
-  and 60 of 751), and the E0205 a second `match` on the same place is — (Use-Move)
+  consumed binding. Measured with it: 98 of 161 sites and 543 of 811 have a
+  place in scope, 93 and 509 scrutinize one (the weight alone reaches 20 of 149
+  and 45 of 676), and the E0205 a second `match` on the same place is — (Use-Move)
   §5.1's `fully-owned` premise at an enum type — becomes the *deepest* refusal
-  of 18 of 200 and 83 of 1,000 cases, where the weight alone reaches 1 and 7.
+  of 17 of 200 and 93 of 1,000 cases, where the weight alone reaches 3 and 5.
   The n-way **join** conflict stays rare at either setting — no case in 200 at
-  seed 7 and 1 in 1,000 at seed 23, while the binary (If) join is the deepest
+  seed 7 and none in 1,000 at seed 23, while the binary (If) join is the deepest
   refusal of none and 1 —
   because it needs two arms to disagree about an entry that carries a
   linear value and outlives the `match`, which random arms seldom do;
@@ -355,9 +376,9 @@ the weights can be read and changed:
 * one field type in five and one `let` binder type in five is an **array**
   (`arrayOf`), wrapped around the type the draw would have made anyway, so the
   other weights keep their meaning; one array in four is nested, and the length
-  is small with `0` among them (`arrayLen`). At `--gen 200 --seed 7` 129 programs
-  declare a struct with an array field and 95 contain an array literal or
-  repeat form; at `--gen 1000 --seed 23`, 625 and 471;
+  is small with `0` among them (`arrayLen`). At `--gen 200 --seed 7` 132 programs
+  declare a struct with an array field and 106 contain an array literal or
+  repeat form; at `--gen 1000 --seed 23`, 637 and 482;
 * an index is a **constant** step of a place like a field slot (`fieldSlots`),
   so the use, `@drop` and assignment draws above reach `a[c]`, `a[c].f`,
   `h.arr[c]` and `a[c][c']` with no draw of their own, held to `3.8:68`'s root
@@ -366,8 +387,8 @@ the weights can be read and changed:
 * where the scope has an array to index, an **array statement** is weighted up
   (`arrayStmt`: form 5 of `expr`, weight 6, and at fuel 0 half of the leaves),
   because the type-directed draws alone reach an index form only where the
-  type they want is the element's: without it, 33 of 200 and 144 of 1,000
-  programs contain an index form, with it 56 and 308. The statement is a
+  type they want is the element's: without it, 30 of 200 and 138 of 1,000
+  programs contain an index form, with it 66 and 294. The statement is a
   dynamic-index write, read or `Copy` `@drop` (`dynUnit`) or a constant-index
   read, `@drop`, write or element move, and an atom at a `Copy` type is a read
   below a dynamic index one time in three where the scope offers one
@@ -850,13 +871,15 @@ tail without it, because a two-step path needs a nesting declaration, a binder
 of the outer type in scope, and — for a move or a `@drop` of a non-`Copy` leaf
 — both prefixes free of a destructor. A two-step place counts an index step as
 a step (`fieldSlots`). Measured on the current draws, `--gen 200 --seed 7`
-reaches 56 depth-2 places across 32 programs with the bias and 37 across 25
-without it, `--gen 300 --seed 23` 61 across 37 with and 44 across 28 without,
-`--gen 1000 --seed 23` 215 across 126 with and 156 across 111 without, and
-`--gen 3000 --seed 101` 597 across 397 with and 636 across 409 without. The
+reaches 44 depth-2 places across 30 programs with the bias and 37 across 23
+without it, `--gen 300 --seed 23` 95 across 50 with and 60 across 39 without,
+`--gen 1000 --seed 23` 259 across 145 with and 213 across 139 without, and
+`--gen 3000 --seed 101` 687 across 421 with and 584 across 388 without. The
 two runs diverge at the first pick the bias changes, so each pair compares two
-different sets of programs, and the largest run says the gain at the smaller
-ones is within that noise. The weight is left as it is. This is one of the module's weights; it lives
+different sets of programs, and the gain is of the size that noise can make
+or undo: on the draws before this module's restoring statements (RUE-2330's
+review) the largest run went the other way, 597 against 636. The weight is
+left as it is. This is one of the module's weights; it lives
 here rather than at the draw sites that pick a place. -/
 def pickPlace (default : Place) (ps : List Place) : G Place := do
   let deep := ps.filter (fun p => 2 ≤ p.path.length)
@@ -1026,9 +1049,9 @@ a dynamic index (weight 1).
 
 The read is here because `atom`'s read has to match the type the draw
 wants, and a wanted integer type is one of eight, so without a read whose type
-is the place's own the read is rare: without it 12 of the 200 programs at
-`--gen 200 --seed 7` and 66 of the 1,000 at `--gen 1000 --seed 23` read below a
-dynamic index, with it 34 and 174. `rhs` draws the written value and `other` a
+is the place's own the read is rare: without it 14 of the 200 programs at
+`--gen 200 --seed 7` and 55 of the 1,000 at `--gen 1000 --seed 23` read below a
+dynamic index, with it 36 and 145. `rhs` draws the written value and `other` a
 non-literal index, each under the scope it is given. -/
 def dynUnit (D : Decls) (Γ : Scope) (den : Nat) (rhs : Scope → Ty → G Expr)
     (other : Scope → Ty → G Expr) : G (Option Expr) := do
