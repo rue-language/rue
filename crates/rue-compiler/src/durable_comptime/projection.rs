@@ -448,6 +448,36 @@ pub(crate) fn durable_value_fit_failure(
     })
 }
 
+/// The E0206 a completed call's value makes with its callee's declared
+/// return type, if its own type differs (RUE-2364).
+///
+/// A call's value leaves the callee typed at the declared return type, so
+/// its own type must be checked first, as the body type checker checks a
+/// function's tail. Only a value typed at a scalar type is checked here:
+/// an integer (`u8` from `1 << s` with `s: u8`), `bool`, `f32` or `f64`.
+/// There is no implicit conversion between those types at run time, so a
+/// different declared type is the mismatch run time reports. An untyped
+/// integer literal (`ty: None`) or float literal (`comptime_float`) takes
+/// the declared type, and every other value keeps its existing checks.
+pub(crate) fn durable_call_result_mismatch(
+    value: &TypedSemanticConst,
+    declared: &DurableType,
+) -> Option<SemanticNucleusFailure> {
+    let found = value.ty.as_ref()?;
+    let scalar = match (&value.value, found) {
+        (DurableConstValue::Integer(_), ty) => durable_int_width(ty).is_some(),
+        (DurableConstValue::Bool(_), DurableType::Bool)
+        | (DurableConstValue::Float(_), DurableType::F32 | DurableType::F64) => true,
+        _ => false,
+    };
+    (scalar && found != declared).then(|| {
+        SemanticNucleusFailure::Diagnostic(rue_error::ErrorKind::TypeMismatch {
+            expected: durable_type_diagnostic_name(declared),
+            found: durable_type_diagnostic_name(found),
+        })
+    })
+}
+
 /// Map the shared value-fit classification to the exact semantic channel used
 /// by structured durable calls.  Consumers may add presentation-specific
 /// wrappers, but they must not reimplement this mapping.
