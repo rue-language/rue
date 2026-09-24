@@ -24,8 +24,9 @@
 //! one, and whatever it cannot place exactly (a dropped value that is not a
 //! read of a place, such as a forwarded store or a block parameter; a write
 //! through a dynamic index; a base that is not a local or parameter) only
-//! ever makes it accept more. A false rejection is an internal error on
-//! valid code.
+//! ever makes it accept more. So does a `MoveOut` whose index projection is
+//! not a literal `Const`: the move has no exact place, and it goes unchecked
+//! without a signal. A false rejection is an internal error on valid code.
 
 use super::{EntryEdge, OwnerRoot, SEMANTIC_STATE_A, SEMANTIC_STATE_B, Verifier};
 use crate::inst::{BlockId, CfgInstData, CfgValue, Place, PlaceBase, Projection};
@@ -54,7 +55,8 @@ struct MovedPlace {
 enum Event {
     /// A `MoveOut` of the place.
     Move(MovedPlace),
-    /// A write of the place: the value there is owned again.
+    /// A write of the place: a moved place it names or contains is owned
+    /// again.
     Write(MovedPlace),
     /// A read of the place whose value is dropped. The read, not the
     /// `Drop`, is what must not follow a move: a value read before the move
@@ -70,6 +72,13 @@ fn overlaps(left: &[Step], right: &[Step]) -> bool {
         (Step::AnyIndex, _) | (_, Step::AnyIndex) => true,
         (left, right) => left == right,
     })
+}
+
+/// A write of `written` makes the value at `path` owned again: it names
+/// `path` or a place containing it, counting an unresolved index as any
+/// index. A write strictly inside `path` leaves the rest of it moved out.
+fn rewrites(written: &[Step], path: &[Step]) -> bool {
+    written.len() <= path.len() && overlaps(written, path)
 }
 
 /// `prefix` names `path` or a place containing it, exactly.
@@ -282,7 +291,7 @@ impl Verifier<'_> {
             match event {
                 Event::Move(moved) if moved == place => (MOVED, false),
                 Event::Write(written)
-                    if written.root == place.root && overlaps(&written.path, &place.path) =>
+                    if written.root == place.root && rewrites(&written.path, &place.path) =>
                 {
                     (OWNED, false)
                 }
@@ -335,7 +344,7 @@ impl Verifier<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Step, contains, overlaps};
+    use super::{Step, contains, overlaps, rewrites};
 
     #[test]
     fn paths_overlap_when_one_contains_the_other() {
@@ -348,5 +357,10 @@ mod tests {
         assert!(contains(&[Field(1)], &[Field(1), Field(2)]));
         assert!(!contains(&[Field(1), Field(2)], &[Field(1)]));
         assert!(!contains(&[AnyIndex], &[Index(0)]));
+        assert!(rewrites(&[Field(1)], &[Field(1)]));
+        assert!(rewrites(&[], &[Field(1)]));
+        assert!(rewrites(&[AnyIndex], &[Index(2), Field(0)]));
+        assert!(!rewrites(&[Field(1), Field(0)], &[Field(1)]));
+        assert!(!rewrites(&[Field(0)], &[Field(1)]));
     }
 }
