@@ -2780,6 +2780,383 @@ exit_code = 0
 expected_stdout = "2\n100\n101\n110\n0\n1\n-1\n1\n-100\n100\n-101\n101\n-110\n110\n-120\n120\n-121\n0\n121\n"
 opt_level = 3
 
+# -----------------------------------------------------------------------------
+# A loop-carried local moved out and reinitialized in one iteration (RUE-2380).
+# The moved-out value belongs to its new binding, whose drop at scope end runs
+# after the reinit; the optimizer must keep it that binding's drop rather than
+# a second consumption of the reinitialized local.
+# -----------------------------------------------------------------------------
+
+[[case]]
+name = "loop_move_out_then_reinit_same_iteration"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "A local moved out and then reinitialized in the same iteration of a `while` or `loop`, through a literal, a call, a nested block or an assigned binding, drops each value exactly once (RUE-2380)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+fn mk(v: i64) -> S { S { v: v } }
+
+fn in_while() {
+    let mut b = S { v: 1 };
+    let mut i: i64 = 0;
+    while i < 2 { i = i + 1; let t = b; b = S { v: 10 + i }; }   // 1, then 11
+    @dbg(0);
+}   // 12
+
+fn in_loop() {
+    let mut b = S { v: 2 };
+    let mut i: i64 = 0;
+    loop { i = i + 1; let t = b; b = S { v: 20 + i }; if i >= 2 { break; } }   // 2, then 21
+    @dbg(0);
+}   // 22
+
+fn reinit_through_call() {
+    let mut b = S { v: 3 };
+    let mut i: i64 = 0;
+    while i < 2 { i = i + 1; let t = b; b = mk(30 + i); }   // 3, then 31
+    @dbg(0);
+}   // 32
+
+fn nested_block() {
+    let mut b = S { v: 4 };
+    let mut i: i64 = 0;
+    while i < 2 { i = i + 1; { let t = b; { b = S { v: 40 + i }; } } }   // 4, then 41
+    @dbg(0);
+}   // 42
+
+fn assigned_binding() {
+    let mut b = S { v: 5 };
+    let mut i: i64 = 0;
+    while i < 2 {
+        i = i + 1;
+        let mut t = S { v: -1 };
+        t = b;                     // drops -1
+        b = S { v: 50 + i };
+    }   // 5, then 51
+    @dbg(0);
+}   // 52
+
+fn main() -> i32 {
+    in_while();
+    in_loop();
+    reinit_through_call();
+    nested_block();
+    assigned_binding();
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n11\n0\n12\n2\n21\n0\n22\n3\n31\n0\n32\n4\n41\n0\n42\n-1\n5\n-1\n51\n0\n52\n"
+
+[[case]]
+name = "loop_move_out_then_reinit_same_iteration_o2"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "The same at -O2: a local moved out and then reinitialized in the same iteration of a `while` or `loop`, through a literal, a call, a nested block or an assigned binding, drops each value exactly once (RUE-2380)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+fn mk(v: i64) -> S { S { v: v } }
+
+fn in_while() {
+    let mut b = S { v: 1 };
+    let mut i: i64 = 0;
+    while i < 2 { i = i + 1; let t = b; b = S { v: 10 + i }; }   // 1, then 11
+    @dbg(0);
+}   // 12
+
+fn in_loop() {
+    let mut b = S { v: 2 };
+    let mut i: i64 = 0;
+    loop { i = i + 1; let t = b; b = S { v: 20 + i }; if i >= 2 { break; } }   // 2, then 21
+    @dbg(0);
+}   // 22
+
+fn reinit_through_call() {
+    let mut b = S { v: 3 };
+    let mut i: i64 = 0;
+    while i < 2 { i = i + 1; let t = b; b = mk(30 + i); }   // 3, then 31
+    @dbg(0);
+}   // 32
+
+fn nested_block() {
+    let mut b = S { v: 4 };
+    let mut i: i64 = 0;
+    while i < 2 { i = i + 1; { let t = b; { b = S { v: 40 + i }; } } }   // 4, then 41
+    @dbg(0);
+}   // 42
+
+fn assigned_binding() {
+    let mut b = S { v: 5 };
+    let mut i: i64 = 0;
+    while i < 2 {
+        i = i + 1;
+        let mut t = S { v: -1 };
+        t = b;                     // drops -1
+        b = S { v: 50 + i };
+    }   // 5, then 51
+    @dbg(0);
+}   // 52
+
+fn main() -> i32 {
+    in_while();
+    in_loop();
+    reinit_through_call();
+    nested_block();
+    assigned_binding();
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n11\n0\n12\n2\n21\n0\n22\n3\n31\n0\n32\n4\n41\n0\n42\n-1\n5\n-1\n51\n0\n52\n"
+opt_level = 2
+
+[[case]]
+name = "loop_move_out_then_reinit_same_iteration_o3"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "The same at -O3: a local moved out and then reinitialized in the same iteration of a `while` or `loop`, through a literal, a call, a nested block or an assigned binding, drops each value exactly once (RUE-2380)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+fn mk(v: i64) -> S { S { v: v } }
+
+fn in_while() {
+    let mut b = S { v: 1 };
+    let mut i: i64 = 0;
+    while i < 2 { i = i + 1; let t = b; b = S { v: 10 + i }; }   // 1, then 11
+    @dbg(0);
+}   // 12
+
+fn in_loop() {
+    let mut b = S { v: 2 };
+    let mut i: i64 = 0;
+    loop { i = i + 1; let t = b; b = S { v: 20 + i }; if i >= 2 { break; } }   // 2, then 21
+    @dbg(0);
+}   // 22
+
+fn reinit_through_call() {
+    let mut b = S { v: 3 };
+    let mut i: i64 = 0;
+    while i < 2 { i = i + 1; let t = b; b = mk(30 + i); }   // 3, then 31
+    @dbg(0);
+}   // 32
+
+fn nested_block() {
+    let mut b = S { v: 4 };
+    let mut i: i64 = 0;
+    while i < 2 { i = i + 1; { let t = b; { b = S { v: 40 + i }; } } }   // 4, then 41
+    @dbg(0);
+}   // 42
+
+fn assigned_binding() {
+    let mut b = S { v: 5 };
+    let mut i: i64 = 0;
+    while i < 2 {
+        i = i + 1;
+        let mut t = S { v: -1 };
+        t = b;                     // drops -1
+        b = S { v: 50 + i };
+    }   // 5, then 51
+    @dbg(0);
+}   // 52
+
+fn main() -> i32 {
+    in_while();
+    in_loop();
+    reinit_through_call();
+    nested_block();
+    assigned_binding();
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n11\n0\n12\n2\n21\n0\n22\n3\n31\n0\n32\n4\n41\n0\n42\n-1\n5\n-1\n51\n0\n52\n"
+opt_level = 3
+
+[[case]]
+name = "loop_move_out_then_reinit_in_arms"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "A local moved out and reinitialized in `if` arms, on only some iterations, after a flag-guarded reinit at the top of the body, or through an `if` or `match` value, drops each value exactly once (RUE-2380)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+
+fn if_arms() {
+    let mut b = S { v: 1 };
+    let mut i: i64 = 0;
+    while i < 3 {
+        i = i + 1;
+        if i % 2 == 0 { let t = b; b = S { v: 10 + i }; } else { let u = b; b = S { v: 20 + i }; }
+    }   // 1, 21, 12
+    @dbg(0);
+}   // 23
+
+fn some_iterations() {
+    let mut b = S { v: 2 };
+    let mut i: i64 = 0;
+    while i < 3 { i = i + 1; if i == 2 { let t = b; b = S { v: 30 + i }; } }   // 2 on the second iteration
+    @dbg(0);
+}   // 32
+
+fn guarded_reinit_at_top() {
+    let mut b = S { v: 3 };
+    let mut i: i64 = 0;
+    while i < 3 {
+        i = i + 1;
+        if i > 1 { b = S { v: 40 + i }; }   // drops the last iteration's reinit
+        let t = b;
+        b = S { v: 50 + i };
+    }   // 3; 51 42; 52 43
+    @dbg(0);
+}   // 53
+
+fn moved_through_if_and_match() {
+    let mut b = S { v: 4 };
+    let mut i: i64 = 0;
+    while i < 2 {
+        i = i + 1;
+        let t = if i > 5 { b } else { b };
+        b = S { v: 60 + i };
+        let u = match i { 1 => b, _ => b };
+        b = S { v: 70 + i };
+    }   // 61 4, then 62 71
+    @dbg(0);
+}   // 72
+
+fn main() -> i32 {
+    if_arms();
+    some_iterations();
+    guarded_reinit_at_top();
+    moved_through_if_and_match();
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n21\n12\n0\n23\n2\n0\n32\n3\n51\n42\n52\n43\n0\n53\n61\n4\n62\n71\n0\n72\n"
+
+[[case]]
+name = "loop_move_out_then_reinit_in_arms_o2"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "The same at -O2: a local moved out and reinitialized in `if` arms, on only some iterations, after a flag-guarded reinit at the top of the body, or through an `if` or `match` value, drops each value exactly once (RUE-2380)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+
+fn if_arms() {
+    let mut b = S { v: 1 };
+    let mut i: i64 = 0;
+    while i < 3 {
+        i = i + 1;
+        if i % 2 == 0 { let t = b; b = S { v: 10 + i }; } else { let u = b; b = S { v: 20 + i }; }
+    }   // 1, 21, 12
+    @dbg(0);
+}   // 23
+
+fn some_iterations() {
+    let mut b = S { v: 2 };
+    let mut i: i64 = 0;
+    while i < 3 { i = i + 1; if i == 2 { let t = b; b = S { v: 30 + i }; } }   // 2 on the second iteration
+    @dbg(0);
+}   // 32
+
+fn guarded_reinit_at_top() {
+    let mut b = S { v: 3 };
+    let mut i: i64 = 0;
+    while i < 3 {
+        i = i + 1;
+        if i > 1 { b = S { v: 40 + i }; }   // drops the last iteration's reinit
+        let t = b;
+        b = S { v: 50 + i };
+    }   // 3; 51 42; 52 43
+    @dbg(0);
+}   // 53
+
+fn moved_through_if_and_match() {
+    let mut b = S { v: 4 };
+    let mut i: i64 = 0;
+    while i < 2 {
+        i = i + 1;
+        let t = if i > 5 { b } else { b };
+        b = S { v: 60 + i };
+        let u = match i { 1 => b, _ => b };
+        b = S { v: 70 + i };
+    }   // 61 4, then 62 71
+    @dbg(0);
+}   // 72
+
+fn main() -> i32 {
+    if_arms();
+    some_iterations();
+    guarded_reinit_at_top();
+    moved_through_if_and_match();
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n21\n12\n0\n23\n2\n0\n32\n3\n51\n42\n52\n43\n0\n53\n61\n4\n62\n71\n0\n72\n"
+opt_level = 2
+
+[[case]]
+name = "loop_move_out_then_reinit_in_arms_o3"
+spec = ["3.9:2", "3.9:18", "3.8:55"]
+description = "The same at -O3: a local moved out and reinitialized in `if` arms, on only some iterations, after a flag-guarded reinit at the top of the body, or through an `if` or `match` value, drops each value exactly once (RUE-2380)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+
+fn if_arms() {
+    let mut b = S { v: 1 };
+    let mut i: i64 = 0;
+    while i < 3 {
+        i = i + 1;
+        if i % 2 == 0 { let t = b; b = S { v: 10 + i }; } else { let u = b; b = S { v: 20 + i }; }
+    }   // 1, 21, 12
+    @dbg(0);
+}   // 23
+
+fn some_iterations() {
+    let mut b = S { v: 2 };
+    let mut i: i64 = 0;
+    while i < 3 { i = i + 1; if i == 2 { let t = b; b = S { v: 30 + i }; } }   // 2 on the second iteration
+    @dbg(0);
+}   // 32
+
+fn guarded_reinit_at_top() {
+    let mut b = S { v: 3 };
+    let mut i: i64 = 0;
+    while i < 3 {
+        i = i + 1;
+        if i > 1 { b = S { v: 40 + i }; }   // drops the last iteration's reinit
+        let t = b;
+        b = S { v: 50 + i };
+    }   // 3; 51 42; 52 43
+    @dbg(0);
+}   // 53
+
+fn moved_through_if_and_match() {
+    let mut b = S { v: 4 };
+    let mut i: i64 = 0;
+    while i < 2 {
+        i = i + 1;
+        let t = if i > 5 { b } else { b };
+        b = S { v: 60 + i };
+        let u = match i { 1 => b, _ => b };
+        b = S { v: 70 + i };
+    }   // 61 4, then 62 71
+    @dbg(0);
+}   // 72
+
+fn main() -> i32 {
+    if_arms();
+    some_iterations();
+    guarded_reinit_at_top();
+    moved_through_if_and_match();
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n21\n12\n0\n23\n2\n0\n32\n3\n51\n42\n52\n43\n0\n53\n61\n4\n62\n71\n0\n72\n"
+opt_level = 3
+
 [[case]]
 name = "discarded_temporary_dropped_at_statement_end"
 spec = ["3.9:18"]

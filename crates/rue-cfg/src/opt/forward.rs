@@ -1451,4 +1451,182 @@ mod tests {
             Terminator::Return { value: Some(v) } if v == sized_load
         ));
     }
+
+    /// A pool holding one struct with a destructor and one without.
+    fn owning_and_plain_struct_pool() -> (FrozenTypeInternPool, Type, Type) {
+        let interner = lasso::ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let register = |name: &str, destructor: Option<&str>| {
+            Type::new_struct(
+                pool.register_struct(
+                    interner.get_or_intern(name),
+                    StructDef {
+                        name: name.into(),
+                        fields: Vec::new(),
+                        is_copy: false,
+                        is_linear: false,
+                        declared_linear: false,
+                        destructor: destructor.map(Into::into),
+                        is_builtin: false,
+                        is_pub: false,
+                        file_id: rue_span::FileId::DEFAULT,
+                    },
+                )
+                .0,
+            )
+        };
+        let owning = register("Owning", Some("Owning.__drop"));
+        let plain = register("Plain", None);
+        let pool = pool.freeze();
+        assert!(pool.type_needs_drop(owning));
+        assert!(!pool.type_needs_drop(plain));
+        (pool, owning, plain)
+    }
+
+    /// `let mut b = p0; let t = b; [b = p1;] drop t`, with `b` in slot 0 and
+    /// `t` in slot 1. Returns the CFG and `t`'s dropped load.
+    fn move_out_then_maybe_reinit(ty: Type, reinit: bool) -> (Cfg, CfgValue) {
+        let mut cfg = Cfg::new(Type::UNIT, 2, 2, "test".to_string(), vec![false, false]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let p0 = push(&mut cfg, CfgInstData::Param { index: 0 }, ty);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc { slot: 0, init: p0 },
+            Type::UNIT,
+        );
+        let moved = push(&mut cfg, CfgInstData::Load { slot: 0 }, ty);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 1,
+                init: moved,
+            },
+            Type::UNIT,
+        );
+        if reinit {
+            let p1 = push(&mut cfg, CfgInstData::Param { index: 1 }, ty);
+            push(
+                &mut cfg,
+                CfgInstData::Store { slot: 0, value: p1 },
+                Type::UNIT,
+            );
+        }
+        let dropped = push(&mut cfg, CfgInstData::Load { slot: 1 }, ty);
+        push(&mut cfg, CfgInstData::Drop { value: dropped }, Type::UNIT);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: None });
+        (cfg, dropped)
+    }
+
+    fn drop_operand(cfg: &Cfg) -> CfgValue {
+        cfg.get_block(cfg.entry)
+            .insts
+            .iter()
+            .find_map(|&value| match cfg.get_inst(value).data {
+                CfgInstData::Drop { value } => Some(value),
+                _ => None,
+            })
+            .expect("the drop survives forwarding")
+    }
+
+    #[test]
+    fn test_owned_move_not_rerooted_at_reinitialized_local() {
+        // RUE-2380: `let t = b; b = ..; drop t`. Forwarding `load t` to the
+        // move-out `load b` would make the drop consume `b` after its reinit,
+        // so in a loop the next iteration's `load b` reads a consumed root.
+        let (pool, owning, _) = owning_and_plain_struct_pool();
+        let (mut cfg, dropped) = move_out_then_maybe_reinit(owning, true);
+        let stats = super::run(&mut cfg, &pool).unwrap();
+        assert_eq!(stats.loads_declined_reinitializable_root, 1);
+        assert_eq!(stats.loads_forwarded_single_write, 0);
+        assert_eq!(drop_operand(&cfg), dropped);
+    }
+
+    #[test]
+    fn test_owned_move_forwarded_when_source_single_write() {
+        // Without the reinit `b` has one write and cannot be rewritten while
+        // `t` is live: the drop may take the moved value directly.
+        let (pool, owning, _) = owning_and_plain_struct_pool();
+        let (mut cfg, _) = move_out_then_maybe_reinit(owning, false);
+        let stats = super::run(&mut cfg, &pool).unwrap();
+        assert_eq!(stats.loads_declined_reinitializable_root, 0);
+        // `load t` forwards to the move-out `load b`, which in turn forwards
+        // to `b`'s single write, the parameter.
+        assert!(matches!(
+            cfg.get_inst(drop_operand(&cfg)).data,
+            CfgInstData::Param { index: 0 }
+        ));
+    }
+
+    #[test]
+    fn test_plain_move_forwarded_across_reinit() {
+        // A value without drop glue carries no ownership fact to re-root.
+        let (pool, _, plain) = owning_and_plain_struct_pool();
+        let (mut cfg, dropped) = move_out_then_maybe_reinit(plain, true);
+        let stats = super::run(&mut cfg, &pool).unwrap();
+        assert_eq!(stats.loads_declined_reinitializable_root, 0);
+        assert_eq!(stats.loads_forwarded_single_write, 1);
+        assert_ne!(drop_operand(&cfg), dropped);
+    }
+
+    #[test]
+    fn test_owned_move_through_block_param_not_rerooted() {
+        // `let t = if c { b } else { b }; b = ..; drop t`: the phi's incoming
+        // arguments both root at the reinitialized `b`.
+        let (pool, owning, _) = owning_and_plain_struct_pool();
+        let mut cfg = Cfg::new(Type::UNIT, 2, 3, "test".to_string(), vec![false; 3]);
+        let entry = cfg.new_block();
+        let then_block = cfg.new_block();
+        let else_block = cfg.new_block();
+        let join = cfg.new_block();
+        cfg.entry = entry;
+        let p0 = push_in(&mut cfg, entry, CfgInstData::Param { index: 0 }, owning);
+        push_in(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc { slot: 0, init: p0 },
+            Type::UNIT,
+        );
+        let cond = push_in(&mut cfg, entry, CfgInstData::Param { index: 2 }, Type::BOOL);
+        cfg.set_branch(entry, cond, then_block, [], else_block, []);
+        let phi = cfg.add_block_param(join, owning);
+        for arm in [then_block, else_block] {
+            let moved = push_in(&mut cfg, arm, CfgInstData::Load { slot: 0 }, owning);
+            cfg.set_goto(arm, join, [moved]);
+        }
+        push_in(
+            &mut cfg,
+            join,
+            CfgInstData::Alloc { slot: 1, init: phi },
+            Type::UNIT,
+        );
+        let p1 = push_in(&mut cfg, join, CfgInstData::Param { index: 1 }, owning);
+        push_in(
+            &mut cfg,
+            join,
+            CfgInstData::Store { slot: 0, value: p1 },
+            Type::UNIT,
+        );
+        let dropped = push_in(&mut cfg, join, CfgInstData::Load { slot: 1 }, owning);
+        push_in(
+            &mut cfg,
+            join,
+            CfgInstData::Drop { value: dropped },
+            Type::UNIT,
+        );
+        cfg.set_terminator(join, Terminator::Return { value: None });
+
+        let stats = super::run(&mut cfg, &pool).unwrap();
+        assert_eq!(stats.loads_declined_reinitializable_root, 1);
+        let drop_operand = cfg
+            .get_block(join)
+            .insts
+            .iter()
+            .find_map(|&value| match cfg.get_inst(value).data {
+                CfgInstData::Drop { value } => Some(value),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(drop_operand, dropped);
+    }
 }
