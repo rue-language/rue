@@ -773,6 +773,21 @@ theorem RueCore.Typed.wf_fnCtx {P : Program} {R : Ty} {fd : FnDef} {e : Expr} {T
   Ω.norm = some Γ' → Ctx.Wf P.decls Γ'
 ```
 
+### `Contents.mult_toVal`
+
+*theorem* · module `RueCore.Dynamics`
+
+`Contents.mult` agrees with `Val.mult` on a hole-free contents: §6's
+`Step.indexDrop` reads `leaf.mult` on the store's `Contents`, while `eval`'s
+dynamic checks (RUE-2400) read `v.mult` on the `Val` a successful read
+produces; this is what lets the two land on the same refusal. Serves
+RUE-2289 part 2, the `eval ⇒ Step*` simulation.
+
+```lean
+theorem RueCore.Contents.mult_toVal (D : Decls) (c : Contents) (v : Val)
+  (h : c.toVal = some v) : Contents.mult D c = Val.mult D v
+```
+
 ### `Step.step_eq`
 
 *theorem* · module `RueCore.Step`
@@ -944,8 +959,8 @@ theorem RueCore.letAddProgram_runs (M : FloatOps) :
 
 **(D-Use-Untrackable-Dynamic-Copy) needs `Copy`** (§6.3): in
 `let a = [S{}, S{}]; let x = a[dyn 0]; 0` the dynamic read of an affine
-leaf is stuck, before any destructor runs. (`eval` copies the leaf and runs
-three destructors for two structs; `check` rejects the program.)
+leaf is stuck, before any destructor runs. `eval` is stuck at the same read
+(`RueCore.Examples.dynReadAffine_refused`); `check` rejects the program.
 
 ```lean
 theorem RueCore.demo_dynamicRead_stuck (M : FloatOps) :
@@ -970,8 +985,8 @@ theorem RueCore.demo_dynamicRead_stuck (M : FloatOps) :
 
 **`@drop` at a dynamic place needs `Copy`** (§6.3's only
 `Untrackable(OrdinaryDynamic)` rule): `let a = [S{}]; @drop(a[dyn 0]); @dbg(1); 0`
-is stuck at the `@drop`, with nothing printed. (`eval` treats it as a no-op
-and drops the `S` after the `@dbg`.)
+is stuck at the `@drop`, with nothing printed. `eval` is stuck at the same
+`@drop` (`RueCore.Examples.dynDropAffine_refused`).
 
 ```lean
 theorem RueCore.demo_dynamicDrop_stuck (M : FloatOps) :
@@ -995,8 +1010,8 @@ theorem RueCore.demo_dynamicDrop_stuck (M : FloatOps) :
 *theorem* · module `RueCore.Step`
 
 **The repeat form needs `Copy`** (`7.1:38`): `let a = [S{}; 2]; 0` is
-stuck at the repeat, where `eval` would replicate the struct and run its
-destructor twice.
+stuck at the repeat. `eval` is stuck at the same repeat
+(`RueCore.Examples.repeatAffine_refused`).
 
 ```lean
 theorem RueCore.demo_repeat_stuck (M : FloatOps) :
@@ -2282,6 +2297,57 @@ know the safety theorems apply to a program.
 ```lean
 theorem RueCore.checkProgram_sound {P : Program} (h : checkProgram P = true) :
   ProgramTyped P
+```
+
+### `Examples.dynReadAffine_refused`
+
+*theorem* · module `RueCore.Examples`
+
+(RUE-2400) The dynamic-index read of an affine leaf is refused by the
+machine as well as the statics: (D-Use-Untrackable-Dynamic-Copy) §6.3 is the
+only rule there and it wants `class(T) = Copy`, so `eval` answers
+`typeConfusion` instead of duplicating the leaf. `Step.demo_dynamicRead_stuck`
+is the same program, stuck at the same rule in `Step`.
+
+```lean
+theorem RueCore.Examples.dynReadAffine_refused (M : FloatOps) :
+  run M (Examples.prog Examples.tI64 Examples.dynReadAffineCopied)
+      Examples.demoFuel =
+    EvalRes.stuck Violation.typeConfusion
+```
+
+### `Examples.dynDropAffine_refused`
+
+*theorem* · module `RueCore.Examples`
+
+(RUE-2400) `@drop(a[i])` of an affine leaf is refused by the machine: the
+dynamic `@drop` is the read with its value discarded, so it inherits the
+read's `Copy` check, and no `@dbg` output or destructor event is produced.
+`Step.demo_dynamicDrop_stuck` is the same program, stuck at the same rule in
+`Step`.
+
+```lean
+theorem RueCore.Examples.dynDropAffine_refused (M : FloatOps) :
+  run M (Examples.prog Examples.tI64 Examples.dynDropAffineSkipped)
+      Examples.demoFuel =
+    EvalRes.stuck Violation.typeConfusion
+```
+
+### `Examples.repeatAffine_refused`
+
+*theorem* · module `RueCore.Examples`
+
+(RUE-2400) The repeat form at an affine operand is refused by the
+machine: §2's elaboration `let t = v; [t, t]` would be stuck at the second use
+of `t`, and `eval` answers `typeConfusion` rather than replicating `v`.
+`Step.demo_repeat_stuck` is the same program, stuck at the same rule in
+`Step`.
+
+```lean
+theorem RueCore.Examples.repeatAffine_refused (M : FloatOps) :
+  run M (Examples.prog Examples.tI64 Examples.repeatAffineDuplicated)
+      Examples.demoFuel =
+    EvalRes.stuck Violation.typeConfusion
 ```
 
 ### `Examples.panicPastLinear_typed`
@@ -4123,6 +4189,18 @@ theorem RueCore.TypedArms.brk_nil {P : Program} {R : Ty} {Γ₀ : Ctx} {arms : L
 
 ```lean
 theorem RueCore.fnCtx_wf (D : Decls) (fd : FnDef) : Ctx.Wf D (fnCtx fd)
+```
+
+### `Contents.toVals_length`
+
+*theorem* · module `RueCore.Dynamics`
+
+`toVals` does not change a list's length, for `mult_toVal`'s array case
+(helper).
+
+```lean
+theorem RueCore.Contents.toVals_length (cs : List Contents) (vs : List Val) :
+  Contents.toVals cs = some vs → vs.length = cs.length
 ```
 
 ### `inBoundsIdx_eq_true`
@@ -6428,6 +6506,38 @@ The environment `ρ` (§6.1), de Bruijn: index `i` ↦ its location.
 ```lean
 abbrev RueCore.Env : Type :=
   List Nat
+```
+
+### `Examples.demoFuel`
+
+*def* · module `RueCore.Examples`
+
+The fuel every demo runs at: far more than the deepest of them spends.
+
+```lean
+def RueCore.Examples.demoFuel : Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.demoFuel = 400
+```
+
+### `Examples.sAffine`
+
+*def* · module `RueCore.Examples`
+
+`S1`'s index in `structEnv`.
+
+```lean
+def RueCore.Examples.sAffine : Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.sAffine = 1
 ```
 
 ### `Examples.sLinearDtor`
@@ -10162,6 +10272,22 @@ Defining equations, as Lean derived them from the body:
 ∀ (n : Int), Examples.lit n = Expr.intLit IntWidth.w64 Sign.signed n
 ```
 
+### `Examples.resA`
+
+*def* · module `RueCore.Examples`
+
+An `Affine`, destructor-bearing struct literal.
+
+```lean
+def RueCore.Examples.resA (e : Expr) : Expr
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (e : Expr), Examples.resA e = Expr.mkStruct Examples.sAffine [e]
+```
+
 ### `Examples.resLD`
 
 *def* · module `RueCore.Examples`
@@ -11123,6 +11249,56 @@ RueCore.EvalRes.stuck (why : Violation) : EvalRes
 RueCore.EvalRes.outOfFuel : EvalRes
 ```
 
+### `Examples.dynDropAffineSkipped`
+
+*def* · module `RueCore.Examples`
+
+Review probe T3 (RUE-2400): `let a = [S1{1}]; @drop(a[i]); @dbg(1); 0`.
+`@drop` below a dynamic index has only the `Copy` rule (E0904 otherwise);
+before RUE-2400 `eval` stepped it to `()` and dropped the leaf only at scope
+exit, after the `@dbg`, where §6.11 would drop it at the `@drop`.
+
+```lean
+def RueCore.Examples.dynDropAffineSkipped : Expr
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.dynDropAffineSkipped =
+  Expr.letIn false
+    (Expr.mkArray (Ty.struct Examples.sAffine)
+      [Examples.resA (Examples.lit 1)])
+    ((Expr.indexDrop (Place.var 0) [Examples.lit 0] [[]]).seq
+      ((Examples.lit 1).dbg.seq (Examples.lit 0)))
+```
+
+### `Examples.dynReadAffineCopied`
+
+*def* · module `RueCore.Examples`
+
+Review probe T1 (RUE-2324 review, RUE-2400): `let a = [S1{1}, S1{2}];
+let x = a[i]; 0` with an affine element under a dynamic index. The statics
+reject it (E0904: §5.1's only rule at `Untrackable(OrdinaryDynamic)` wants
+`class(T) = Copy`), and the machine refuses it too: before RUE-2400 `eval`
+copied the affine leaf out and left the array live, so three destructors ran
+for two constructed values.
+
+```lean
+def RueCore.Examples.dynReadAffineCopied : Expr
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.dynReadAffineCopied =
+  Expr.letIn false
+    (Expr.mkArray (Ty.struct Examples.sAffine)
+      [Examples.resA (Examples.lit 1), Examples.resA (Examples.lit 2)])
+    (Expr.letIn false (Expr.indexRead (Place.var 0) [Examples.lit 0] [[]])
+      (Examples.lit 0))
+```
+
 ### `Examples.panicPastLinear`
 
 *def* · module `RueCore.Examples`
@@ -11146,6 +11322,28 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.panicPastLinear =
   Expr.letIn false (Examples.resLD (Examples.lit 7)) (Expr.panic "boom")
+```
+
+### `Examples.repeatAffineDuplicated`
+
+*def* · module `RueCore.Examples`
+
+The review's repeat probe (RUE-2400): `let a = [S1{1}; 2]; 0`. `7.1:38`
+wants a `Copy` element (E0905); before RUE-2400 `eval` replicated the value,
+so two destructors ran for one constructed `S1`.
+
+```lean
+def RueCore.Examples.repeatAffineDuplicated : Expr
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.repeatAffineDuplicated =
+  Expr.letIn false
+    (Expr.repeatArray (Ty.struct Examples.sAffine)
+      (Examples.resA (Examples.lit 1)) 2)
+    (Examples.lit 0)
 ```
 
 ### `Explain.Step`

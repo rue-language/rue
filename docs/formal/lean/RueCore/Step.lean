@@ -108,12 +108,9 @@ On programs `check` rejects, `Step` follows §6 where `eval` does not:
 
 * `@drop` of a `⊘` place is §6.11's no-op (`drop(H, ⊘) = H`) in `Step`;
   `eval` refuses it with `useAfterMove` (`Contents.isHole`).
-* A non-`Copy` dynamic read, `@drop` at a dynamic place, and repeat operand
-  are stuck in `Step`; `eval` copies the value, which can run a destructor
-  twice.
 
 Part 2's `eval ⇒ Step*` simulation is stated over checked programs (RUE-2289),
-where neither case arises; unchecked programs are out of its scope.
+where this case does not arise; unchecked programs are out of its scope.
 -/
 
 namespace RueCore
@@ -1485,8 +1482,8 @@ def demoSc : Contents := .struct 0 []
 
 /-- **(D-Use-Untrackable-Dynamic-Copy) needs `Copy`** (§6.3): in
 `let a = [S{}, S{}]; let x = a[dyn 0]; 0` the dynamic read of an affine
-leaf is stuck, before any destructor runs. (`eval` copies the leaf and runs
-three destructors for two structs; `check` rejects the program.) -/
+leaf is stuck, before any destructor runs. `eval` is stuck at the same read
+(`RueCore.Examples.dynReadAffine_refused`); `check` rejects the program. -/
 theorem demo_dynamicRead_stuck (M : FloatOps) :
     ∃ C, Steps M (demoProgram (.letIn false (.mkArray (.struct 0) [demoS, demoS])
         (.letIn false (.indexRead (.var 0) [demoI32 0] [[]]) (demoI32 0)))) Config.init C ∧
@@ -1496,8 +1493,8 @@ theorem demo_dynamicRead_stuck (M : FloatOps) :
 
 /-- **`@drop` at a dynamic place needs `Copy`** (§6.3's only
 `Untrackable(OrdinaryDynamic)` rule): `let a = [S{}]; @drop(a[dyn 0]); @dbg(1); 0`
-is stuck at the `@drop`, with nothing printed. (`eval` treats it as a no-op
-and drops the `S` after the `@dbg`.) -/
+is stuck at the `@drop`, with nothing printed. `eval` is stuck at the same
+`@drop` (`RueCore.Examples.dynDropAffine_refused`). -/
 theorem demo_dynamicDrop_stuck (M : FloatOps) :
     ∃ C, Steps M (demoProgram (.letIn false (.mkArray (.struct 0) [demoS])
         (.seq (.indexDrop (.var 0) [demoI32 0] [[]]) (.seq (.dbg (demoI32 1)) (demoI32 0)))))
@@ -1508,8 +1505,8 @@ theorem demo_dynamicDrop_stuck (M : FloatOps) :
   ⟨_, stepN_steps (n := 100), rfl⟩
 
 /-- **The repeat form needs `Copy`** (`7.1:38`): `let a = [S{}; 2]; 0` is
-stuck at the repeat, where `eval` would replicate the struct and run its
-destructor twice. -/
+stuck at the repeat. `eval` is stuck at the same repeat
+(`RueCore.Examples.repeatAffine_refused`). -/
 theorem demo_repeat_stuck (M : FloatOps) :
     ∃ C, Steps M (demoProgram (.letIn false (.repeatArray (.struct 0) demoS 2) (demoI32 0)))
         Config.init C ∧
