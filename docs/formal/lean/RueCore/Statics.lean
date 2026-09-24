@@ -70,17 +70,20 @@ cost something: every rule that demands two equal types (§5.5's arms,
 (Assign)'s target) would have to admit a subsumption it can never observe.
 `INDEX.md` records (Sub-Never) as mechanized at the rules that fold it in.
 
-The two differ in one premise, and the difference is §5.7's provenance.
+The forms differ in what they owe, and the difference is §5.7's provenance.
 `return` carries `⊥_exit`, which is the §5.6 scope-exit obligation taken
 frame-wide, so `Typed.ret` demands `NoResidualLinear`. `@panic` carries
 `⊥_panic`, which §5.7 exempts from that check — "§5.6 performs no scope-exit
 check or drop on that edge" — so `Typed.panic` demands nothing of the
-context, and §6.12's dynamics run no drop to match.
+context, and §6.12's dynamics run no drop to match. `break` also carries
+`⊥_exit`, but its scopes end at the loop it targets, so it delivers its state
+there (`Typed.brk`) and the loop discharges the obligation for the scopes the
+exit ends (`Typed.loopBreak`). A loop that never exits carries `⊥_diverge`,
+checked frame-wide where it fires (`Typed.loopDiv`).
 
-An *algorithm* cannot leave a type and a state free, so `check`
-(`Checker.lean`) picks one of each — the enclosing return type and the state
-in force at the form — and its module docstring says what completeness
-that costs.
+An *algorithm* cannot leave a type free, so `check` (`Checker.lean`) returns
+`never` where a rule concludes at every type, and its module docstring says
+what completeness that costs.
 -/
 
 namespace RueCore
