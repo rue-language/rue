@@ -3370,10 +3370,13 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
       | @repeatArray Γ Ω T e n h hcopy =>
           -- `7.1:39`: the operand is evaluated **exactly once** and its result
           -- copied into each of the `n` slots, which `7.1:38`'s `Copy` premise
-          -- is what makes well defined.
+          -- is what makes well defined. The machine checks that premise on the
+          -- value (RUE-2400), and `HasTy.mult_eq` carries the rule's
+          -- `T.mult = .copy` over to it, so the refusal is never reached.
           simp only [eval]
           refine EvalOk.bindSame (ih h hfm) ?_
           intro H' v tr Γ' _ hty hfm'
+          rw [if_pos (hty.mult_eq.trans hcopy)]
           exact ⟨.array (HasTys.replicate hty n), hfm', Untouched.refl⟩
       | @indexReadBot Γ Δ p idx πs Ts en Ta T hta _ _ _ _ _ _ =>
           -- (Strict-Bottom) §5.3 at an index: the list aborts, and the place
@@ -3389,7 +3392,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               rw [hra] at ka
               obtain ⟨_, hn, _⟩ := ka.ok_inv
               cases hn
-      | @indexRead Γ Γ₁ Δ p idx πs Ts en u Ta T hta hint hlen _ hget hg hfo hty hdyn _ _ _ =>
+      | @indexRead Γ Γ₁ Δ p idx πs Ts en u Ta T hta hint hlen _ hget hg hfo hty hdyn hcopy _ _ =>
           -- (D-Index)/(D-Index-Trap) §6.5: the indices reduce first, left to
           -- right (§6.2's `v[E]`), the place is navigated, and each bound is
           -- tested at its step before the leaf is read (`7.1:10`). Out of
@@ -3427,7 +3430,10 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                 obtain ⟨leaf, hrl, hleaf⟩ :=
                   ContentsMatches.readAt ρ hso (OwnSt.get_owned ρ) hρty
                 obtain ⟨v, hv, htyv⟩ := hleaf.toVal rfl
-                simp only [hdp, hrl, hv]
+                -- (D-Use-Untrackable-Dynamic-Copy)'s `class(T) = Copy`, which
+                -- the machine checks on the value (RUE-2400): the rule's own
+                -- premise, carried to `v` by `HasTy.mult_eq`.
+                simp only [hdp, hrl, hv, if_pos (htyv.mult_eq.trans hcopy)]
                 exact ⟨htyv, hfm₁, hu₁⟩
       | @indexDrop Γ Ω p idx πs T h =>
           -- §6.11's `@drop` at a `Copy` place below a dynamic index is the
