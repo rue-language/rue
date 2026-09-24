@@ -1987,10 +1987,11 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
             }
             let width = policy.integer_width.expect("mul width");
             let shift = if width.bits >= 32 {
-                power_of_two_shift(ctx, *lhs)
+                power_of_two_shift(ctx, *lhs, width)
                     .map(|shift| (rhs_result.primary, shift))
                     .or_else(|| {
-                        power_of_two_shift(ctx, *rhs).map(|shift| (lhs_result.primary, shift))
+                        power_of_two_shift(ctx, *rhs, width)
+                            .map(|shift| (lhs_result.primary, shift))
                     })
             } else {
                 None
@@ -2686,11 +2687,33 @@ fn intrinsic_runtime_call(
     Some(plan)
 }
 
-fn power_of_two_shift(ctx: &CfgLowerContext<'_>, value: CfgValue) -> Option<u8> {
+fn power_of_two_shift(
+    ctx: &CfgLowerContext<'_>,
+    value: CfgValue,
+    width: IntegerWidth,
+) -> Option<u8> {
     match ctx.cfg.get_inst(value).data {
-        CfgInstData::Const(value) if value.is_power_of_two() => Some(value.trailing_zeros() as u8),
+        CfgInstData::Const(value) => multiplier_shift(value, width),
         _ => None,
     }
+}
+
+/// The shift amount `s` when the constant multiplier `value` is the positive
+/// power of two `2^s` at `width`, so a checked multiply by it can be lowered as
+/// a left shift whose overflow check is "shifting back recovers the operand".
+///
+/// A signed width's sign-bit pattern `2^(bits-1)` is its minimum, the negative
+/// number `-2^(bits-1)`, not a positive power of two: the shift check gets a
+/// multiply by it wrong both ways (`-1 * MIN` overflows though
+/// `(-1 << (bits-1)) >> (bits-1)` recovers `-1`; `1 * MIN` does not though
+/// the check says it does), so that constant takes the ordinary checked
+/// multiply (RUE-2318).
+fn multiplier_shift(value: u64, width: IntegerWidth) -> Option<u8> {
+    if !value.is_power_of_two() {
+        return None;
+    }
+    let shift = value.trailing_zeros();
+    (shift < width.bits - u32::from(width.signed)).then_some(shift as u8)
 }
 
 fn shape(ctx: &CfgLowerContext<'_>, ty: Type) -> ValueShape {
@@ -3030,6 +3053,49 @@ mod integer_policy_tests {
             signed: false,
         },
     ];
+
+    /// A multiply lowered as a shift is checked by shifting back, so the
+    /// strength reduction is sound only for a multiplier that is the positive
+    /// power of two at its width: a signed sign-bit constant is `MIN`
+    /// (RUE-2318).
+    #[test]
+    fn multiply_shift_is_offered_only_for_positive_powers_of_two() {
+        for width in WIDTHS.into_iter().filter(|width| width.bits >= 32) {
+            let integer = integer_type(width);
+            for shift in 0..width.bits {
+                let multiplier = 1u64 << shift;
+                let offered = multiplier_shift(multiplier, width);
+                let positive = integer.fits_i128(1i128 << shift);
+                assert_eq!(
+                    offered,
+                    positive.then_some(shift as u8),
+                    "{width:?} multiplier 2^{shift}"
+                );
+                let Some(amount) = offered else { continue };
+                // The backends' check: the product is the operand shifted
+                // left, truncated to the width, and it did not overflow iff
+                // shifting it back (arithmetic for signed) recovers the operand.
+                for operand in probe_values().into_iter().filter(|v| integer.fits_i128(*v)) {
+                    let bits = width.bits;
+                    let raw = (operand as u128) << amount;
+                    let truncated = raw & ((1u128 << bits) - 1);
+                    let product = if width.signed && truncated >> (bits - 1) == 1 {
+                        truncated as i128 - (1i128 << bits)
+                    } else {
+                        truncated as i128
+                    };
+                    let recovered = product >> amount;
+                    assert_eq!(
+                        recovered == operand,
+                        integer.fits_i128(operand * (1i128 << amount)),
+                        "{width:?} {operand} * 2^{amount}"
+                    );
+                }
+            }
+            assert_eq!(multiplier_shift(0, width), None);
+            assert_eq!(multiplier_shift(3, width), None);
+        }
+    }
 
     /// Every value a backend could be handed at a boundary of any integer type.
     fn probe_values() -> Vec<i128> {
