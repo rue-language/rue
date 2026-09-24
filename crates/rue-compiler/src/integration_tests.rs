@@ -1541,6 +1541,12 @@ drop fn StrBuf(self) { }
                         fn main() -> i32 { probe(); 0 }
                     "#,
                 ),
+                // The operand must be an integer (4.13:119), and `!` coerces
+                // to it (3.4:4) as it does for `@intCast` (RUE-2375).
+                (
+                    "bitCast operand",
+                    r#"fn diverge() -> ! { loop {} } fn main() -> i32 { let _: u64 = @bitCast(diverge()); 0 }"#,
+                ),
             ];
             for (label, source) in accepted {
                 test_cfg(source).unwrap_or_else(|error| panic!("{label} must reach CFG: {error}"));
@@ -1562,10 +1568,6 @@ drop fn StrBuf(self) { }
                 (
                     "raw divergent rvalue",
                     r#"fn diverge() -> ! { loop {} } fn main() -> i32 { checked { @raw(diverge()); } 0 }"#,
-                ),
-                (
-                    "bitCast bottom operand",
-                    r#"fn diverge() -> ! { loop {} } fn main() -> i32 { let _: u64 = @bitCast(diverge()); 0 }"#,
                 ),
                 (
                     "syscall non-u64",
