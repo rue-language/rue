@@ -818,6 +818,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // generation, so this is the check that rejects e.g. passing a `B`
             // where `T == A` - without it the callee would read B-shaped fields
             // out of an A-sized allocation (RUE-99, RUE-73).
+            let mut value_arg_index = 0;
             for (i, (air_arg, &is_comptime)) in
                 air_args.iter().zip(param_comptime.iter()).enumerate()
             {
@@ -854,10 +855,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     self.validate_comptime_value_for_type(
                         name,
                         param_names[i],
-                        value,
+                        value.clone(),
                         expected,
                         span,
                     )?;
+                    // The specialization is keyed by the value at its
+                    // parameter type, so `f(3)` and `f(3.0)` at a
+                    // `comptime v: f32` are one specialization (RUE-2403).
+                    let value = self.canonical_comptime_value_at(value, expected);
+                    if let Some(slot) = value_args.get_mut(value_arg_index) {
+                        *slot = value.clone();
+                    }
+                    value_subst.insert(param_names[i], value);
+                    value_arg_index += 1;
                 }
                 let found = air.get(air_arg.value).ty;
                 if !self.types_compatible(found, expected) && !expected.is_error() {

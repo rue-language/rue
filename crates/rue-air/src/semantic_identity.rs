@@ -404,7 +404,7 @@ where
                 CanonicalArgumentValue::Function(_) => "function".to_owned(),
                 CanonicalArgumentValue::Unit => "()".to_owned(),
                 CanonicalArgumentValue::String(value) => format!("\"{value}\""),
-                CanonicalArgumentValue::Float(value) => value.to_string(),
+                CanonicalArgumentValue::Float(value) => crate::display_float_value_text(value),
                 CanonicalArgumentValue::Aggregate(_) => "<aggregate>".to_owned(),
             });
         }
