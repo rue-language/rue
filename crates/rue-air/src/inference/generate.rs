@@ -1814,7 +1814,7 @@ impl<'a> ConstraintGenerator<'a> {
                 // rejected at parse time — validate.rs, RUE-528 — so a
                 // comparison LHS reaching here is a legitimately
                 // parenthesized boolean operand and gets normal typing.)
-                self.add_constraint(Constraint::equal(lhs_info.ty, rhs_info.ty, span));
+                self.add_peer_equal(lhs_info.ty, rhs_info.ty, span);
                 InferType::Concrete(Type::BOOL)
             }
 
@@ -2379,11 +2379,7 @@ impl<'a> ConstraintGenerator<'a> {
                                     ParamConstraint::Free => {}
                                     ParamConstraint::Common => {
                                         if let Some(common) = &common {
-                                            self.add_constraint(Constraint::equal(
-                                                info.ty,
-                                                common.clone(),
-                                                info.span,
-                                            ));
+                                            self.add_peer_equal(info.ty, common.clone(), info.span);
                                         }
                                     }
                                     ParamConstraint::Equal(fixed) => {
@@ -3367,28 +3363,34 @@ impl<'a> ConstraintGenerator<'a> {
                         length: 0,
                     }
                 } else {
-                    // Get element type from first element, constrain rest to match
+                    // The element type is the first element's, and the rest
+                    // are constrained to match it. A diverging (`!`) element
+                    // coerces to its peers' type (spec 3.4:3-4), so the first
+                    // element that is not `!` supplies the type: in
+                    // `[return 15, 1]` the literal is typed by its context,
+                    // not by the `return`.
                     let first_info =
                         self.generate_sequenced_operand(elements.get(0).unwrap(), ctx, true);
                     continues &= first_info.continues;
                     if self.was_canceled() {
                         return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
                     }
+                    let mut element_ty = first_info.ty;
                     for elem_ref in elements.values().skip(1) {
                         let elem_info = self.generate_sequenced_operand(elem_ref, ctx, continues);
                         continues &= elem_info.continues;
                         if self.was_canceled() {
                             break;
                         }
-                        self.add_constraint(Constraint::equal(
-                            elem_info.ty,
-                            first_info.ty.clone(),
-                            elem_info.span,
-                        ));
+                        if Self::is_never_concrete(&element_ty) {
+                            element_ty = elem_info.ty;
+                        } else {
+                            self.add_peer_equal(elem_info.ty, element_ty.clone(), elem_info.span);
+                        }
                     }
                     // Build the array type with the inferred element type
                     InferType::Array {
-                        element: Box::new(first_info.ty),
+                        element: Box::new(element_ty),
                         length: elements.len() as u64,
                     }
                 }
@@ -4062,6 +4064,22 @@ impl<'a> ConstraintGenerator<'a> {
         self.add_constraint(Constraint::is_numeric(result_ty.clone(), lhs_info.span));
 
         result_ty
+    }
+
+    /// Constrain two peer operands — the sides of a comparison, the elements
+    /// of an array literal, the common-typed operands of an intrinsic — to
+    /// share a type. A diverging operand (concretely `!`) coerces to its
+    /// peer's type (spec 3.4:3-4) and imposes nothing on it: unifying the two
+    /// would drag a literal peer to `!` and range-check it there (E0800), as
+    /// `generate_binary_arith` avoids for arithmetic (RUE-270, RUE-2375).
+    /// A directional expectation (an annotation, a parameter, a return type)
+    /// is not a peer and keeps its ordinary constraint, so a literal at a
+    /// declared `!` is still rejected.
+    fn add_peer_equal(&mut self, operand: InferType, peer: InferType, span: Span) {
+        if Self::is_never_concrete(&operand) || Self::is_never_concrete(&peer) {
+            return;
+        }
+        self.add_constraint(Constraint::equal(operand, peer, span));
     }
 
     /// Whether `ty` is *concretely* the never type `!` (a diverging expression),
