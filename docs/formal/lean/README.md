@@ -73,13 +73,13 @@ that seed and more than `i` cases. Its bias toward moves in one arm of an
 documented in the module.
 
 A generated program may declare its own **enums** as well as its own structs,
-and about three in four do (157 of 200 at `--gen 200 --seed 7`, 781 of 1,000
+and about three in four do (144 of 200 at `--gen 200 --seed 7`, 777 of 1,000
 at `--gen 1000 --seed 23`); such a program also draws enum construction and
 `match` — one arm per variant in declaration order, each arm a block over that
 variant's payload locals, which it may move, `@drop`, read or leave. A little
-under half the cases contain a `match` (94 of 200 and 418 of 1,000 at those two
+under half the cases contain a `match` (89 of 200 and 431 of 1,000 at those two
 settings), and a `match` whose scrutinee is a **place** rather than a temporary
-is the majority of them (76 of 157 sites and 467 of 769), because a drawn
+is the majority of them (93 of 161 sites and 509 of 811), because a drawn
 `match` half the time binds its scrutinee to a `let` first where the scope
 holds no enum place.
 
@@ -90,9 +90,9 @@ slots, so the use, `@drop` and assignment draws reach `a[c]`, `a[c].f`,
 `h.arr[c]` and `a[c][c']`; places below a **dynamic** index — `a[i]`,
 `a[i].f`, `h.arr[i].f`, `a[i][j]` — are read at a `Copy` leaf, written, and
 `@drop`ped at a `Copy` leaf, with one index in five out of bounds. About half
-the programs contain an array literal or repeat form (95 of 200, 471 of 1,000;
-a literal alone 90 and 448, a repeat form 24 and 114), 56 and 308 an
-index form, 42 and 245 a dynamic one, and the bounds trap ends 12 and 50 runs.
+the programs contain an array literal or repeat form (106 of 200, 482 of 1,000;
+a literal alone 100 and 453, a repeat form 26 and 126), 66 and 294 an
+index form, 52 and 220 a dynamic one, and the bounds trap ends 19 and 71 runs.
 Each index is bound by a `let` before the form that uses it, because the
 compiler folds a literal index in a block to a constant one and rejects an
 out-of-range constant at compile time (E0902): a block that can be fully
@@ -118,24 +118,27 @@ generated disagreement is a finding to file.
 
 A use or `@drop` is drawn through a struct declared `linear` exactly as through
 any other (RUE-2339), so the checker, not the draw, picks §4.2's declared-linear
-destructure: 25 of the 200 programs and 94 of the 1,000 contain one, the
-checker accepts none and 12 of those, and the destructure's own linear-residue
-premise (E0474) is the deepest refusal of none and 5. RUE-2335's shape — a
+destructure: 22 of the 200 programs and 109 of the 1,000 contain one, the
+checker accepts 2 and 6 of those, and the destructure's own linear-residue
+premise (E0474) is the deepest refusal of 1 and 6. RUE-2335's shape — a
 `@drop` of a declared-`linear` place after a destructure under it, which the
 compiler rejects and the model accepts — is not drawn around. None of those
 1,200 cases has it, but the draw reaches it, rarely (on the draws before
 loops, first at seed 1 in `gen_1_151382`, the only one in the first 300,000),
 and such a case is a bridge disagreement to attribute to RUE-2335 by hand.
 
-A generated program may hold **loops** too (RUE-2330): half of them do (100 of
-200, 454 of 1,000). A loop is either **counted** — a `mut` counter, a guard
+A generated program may hold **loops** too (RUE-2330): half of them do (102 of
+200, 480 of 1,000). A loop is either **counted** — a `mut` counter, a guard
 `if k >= n { break }` first, `n ≤ 3` — or **once-through**, a body that ends
 in a `break`, so every generated program terminates and none is left out of
 the export for running out of fuel. Inside a loop body, `break` appears as a
 whole arm of an `if` or a `match` (at most one per branch) or as the last form
 of a once-through body, often right after a `@drop` of a binder from outside
 the loop: RUE-1615's shape when every path breaks, RUE-1614's exit join when
-another exit keeps the value. Loops nest (11 and 43 programs). Two shapes are
+another exit keeps the value. Loops nest (10 and 41 programs), and two draws aim at the moves a random body
+seldom gets accepted: a counted body may open with a restoring statement
+(reassign-then-move, or move-then-reassign at a linear type), and a
+once-through loop may consume a linear binder on every exit. Two shapes are
 drawn around, because each waits on a decision rather than being a finding:
 syntax after a `break` in the same block (RUE-2376), and a loop body that is
 not `unit` (RUE-2379). A `return` or `@panic` is not drawn yet: `check` has
