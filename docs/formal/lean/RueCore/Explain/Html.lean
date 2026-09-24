@@ -114,8 +114,11 @@ partial def derivHtml (P : Program) (R : Ty) : Deriv → String
   | .node r Γ e v kids =>
       let binders := binderTys Γ
       let concl := match v with
-        | .accept T Γ' =>
-            tagc "div" "concl" ("⇒ " ++ esc (Print.tyName T) ++ " ⊣ " ++ ctxHtml Γ')
+        | .accept c Ω =>
+            tagc "div" "concl" ("⇒ " ++ esc (cTyName c) ++ " ⊣ " ++
+              (match Ω.norm, Ω.brk with
+               | some Γ', [] => ctxHtml Γ'
+               | _, _ => esc (outLine Ω)))
         | .reject why => tagc "div" "failed" ("✗ " ++ esc why)
       let children :=
         if kids.isEmpty then ""

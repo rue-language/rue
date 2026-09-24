@@ -3245,25 +3245,23 @@ example : run demoOps (prog tI64 panicPastAffine) demoFuel = .panic .user [] := 
 
 /-- **`Typed` derives a `@panic` past a live linear binding.** (Panic) §5.8
 imposes no residual-linear premise — §5.7 exempts the `⊥_panic` edge from
-§5.6's obligation — so the `let`'s own scope-exit check is discharged by the
-free outgoing context (Sub-Never) licenses, which the rule may take
-`MovedOut`. This is the one shape where `Typed.panic` and `Typed.ret` differ:
-at an affine binding `Typed.letIn`'s premise is vacuous, so there is nothing
-to drop. -/
+§5.6's obligation — and the `let`'s tail is `⊥`, so (Let) with a divergent
+tail (`Typed.letInDiv`) reaches no scope exit and reads no state there. This
+is the one shape where `Typed.panic` and `Typed.ret` differ: `ret` carries the
+frame-wide residual-linear premise, and at an affine binding there is nothing
+for either to drop. -/
 theorem panicPastLinear_typed :
-    Typed (prog tI64 panicPastLinear) tI64 [] panicPastLinear tI64 [] := by
-  refine .letIn (T₁ := .struct sLinearDtor) (Γ₁ := [])
-    (en' := { ty := .struct sLinearDtor, mu := false, st := .movedOut }) ?_ ?_ ?_
+    Typed (prog tI64 panicPastLinear) tI64 [] panicPastLinear tI64 ⟨none, []⟩ := by
+  refine .letInDiv (T₁ := .struct sLinearDtor) (Γ₁ := []) (Δ₁ := []) (Δ₂ := []) ?_ ?_
   · exact .mkStruct (sd := dLinearDtor) rfl (.cons (.intLit (by decide)) .nil)
-  · exact .panic rfl
-  · decide
+  · exact .panic
 
-/-- **And `check` rejects it**, which `check_sound` permits and completeness
-would not: the algorithm gives `@panic` the state in force at the form, so the
-`let` sees `v0` still `Owned` at a `Linear` type and refuses. The compiler
-accepts the same program. `Checker.lean`'s "what completeness costs" names
-this shape. -/
-example : checkProgram (prog tI64 panicPastLinear) = false := by rfl
+/-- **And `check` accepts it**, as the Rue compiler does. `check` carries
+§5.7's `⊥` provenance: the `@panic` tail is `⊥`, so the `let` reaches no scope
+exit on a normal path and its §5.6 check has nothing to read. Before the
+checker carried `⊥` (RUE-2368) it handed the `let` the state in force at the
+`@panic`, saw `v0` still `Owned` at a `Linear` type, and refused. -/
+example : checkProgram (prog tI64 panicPastLinear) = true := by rfl
 
 /-- **The linear value is consumed zero times, with no violation.** The trap
 carries an empty trace: `S3` declares a destructor and it does not run,

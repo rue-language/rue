@@ -58,8 +58,8 @@ def section' (title : String) : List String :=
 /-- The §5 judgment's conclusion at one node, as the calculus writes its
 right-hand side: `⇒ T ⊣ Σ'`, or the premise that failed. -/
 def verdictLines (indent : Nat) : Verdict → List String
-  | .accept T Γ' =>
-      [sp indent ++ pad 8 "⇒" ++ Print.tyName T ++ "  ⊣  " ++ clip 80 (ctxLine Γ')]
+  | .accept c Ω =>
+      [sp indent ++ pad 8 "⇒" ++ cTyName c ++ "  ⊣  " ++ clip 80 (outLine Ω)]
   | .reject why =>
       (sp indent ++ pad 8 "✗" ++ "this premise fails:") ::
         para (indent + 8) 68 why
@@ -141,16 +141,25 @@ def fnVerdictLines (P : Program) : List (Nat × FnDef × Deriv) → List String
   | (i, fd, d) :: rest =>
       let head := sp 9 ++ fnHeader i fd
       let tail := match d.result with
-        | some (T, Γf) =>
-            if T = fd.ret ∧ NoResidualLinear P.decls Γf then
-              [head ++ "  — body ⇒ " ++ Print.tyName T ++ ", exit Σ " ++ clip 40 (ctxLine Γf)]
-            else if T = fd.ret then
+        | some (c, Ω) =>
+            let exitOk := match Ω.norm with
+              | some Γf => decide (NoResidualLinear P.decls Γf)
+              | none => true
+            if !c.fits fd.ret then
+              [head ++ "  — REJECTED: the body has type " ++ cTyName c ++
+                 ", not the declared return type"]
+            else if !exitOk then
               [head ++ "  — REJECTED: a by-value parameter or a still-open binding is",
                sp 11 ++ "still Owned at a linear type where the body ends ((Fn) §5.8's",
                sp 11 ++ "second clause; 3.8:62; the compiler reports E0406)"]
+            else if !Ω.brk.isEmpty then
+              [head ++ "  — REJECTED: a `break` outside a loop ((Fn) §5.8, §5.7)"]
             else
-              [head ++ "  — REJECTED: the body has type " ++ Print.tyName T ++
-                 ", not the declared return type"]
+              (match Ω.norm with
+               | some Γf =>
+                   [head ++ "  — body ⇒ " ++ cTyName c ++ ", exit Σ " ++ clip 40 (ctxLine Γf)]
+               | none =>
+                   [head ++ "  — body ⇒ " ++ cTyName c ++ ", exit ⊥ (no normal exit)"])
         | none => [head ++ "  — REJECTED: see the derivation below"]
       tail ++ fnVerdictLines P rest
 
