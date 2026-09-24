@@ -2618,17 +2618,22 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
         )
     }
 
-    fn float_literal_not_finite(
+    fn admit_comptime_float_literal(
         &self,
-        kind: rue_error::ErrorKind,
+        literal: &str,
+        width: rue_air::ComptimeFloatWidth,
         site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
+    ) -> rue_air::ComptimeHostResult<(), Self::Failure> {
         // At the literal's own range, as `admit_child_value` anchors a
         // structural child, not at the declaration.
-        durable_host_failure(DurableComptimeFailure::kind_at_site(
-            &self.diagnostic_site(site),
-            kind,
-        ))
+        rue_air::finite_float_literal(literal, width.air_type(), false, || literal.to_owned())
+            .map(|_| ())
+            .map_err(|kind| {
+                durable_host_error(DurableComptimeFailure::kind_at_site(
+                    &self.diagnostic_site(site),
+                    kind,
+                ))
+            })
     }
 
     fn cannot_negate(

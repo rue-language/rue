@@ -1069,16 +1069,18 @@ pub trait ComptimeRejections: ComptimeDomain {
         ty: &Self::Type,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure;
-    /// Report a float literal that does not name a finite value at the
-    /// declared type it takes (spec 3.12:10). `kind` is the E0206 the shared
-    /// [`crate::finite_float_literal`] rule built, so every host words it as
-    /// the body type checker does; the host only anchors it at `site`, the
-    /// literal's own span.
-    fn float_literal_not_finite(
+    /// Hold a float literal to the declared float type it takes, of width
+    /// `width`: spec 3.12:10 rejects one whose value rounds to an infinity
+    /// there. `literal` is its source spelling, with a leading `-` when it
+    /// is negated. A host applies the shared [`crate::finite_float_literal`]
+    /// rule, so the E0206 reads as the body type checker's, and anchors it
+    /// at `site`, the literal's own span.
+    fn admit_comptime_float_literal(
         &self,
-        kind: rue_error::ErrorKind,
+        literal: &str,
+        width: ComptimeFloatWidth,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure;
+    ) -> ComptimeHostResult<(), Self::Failure>;
     fn cannot_negate(
         &self,
         ty: &Self::Type,
@@ -3163,17 +3165,18 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     #[inline(never)]
     fn admit_float_literal(
         &self,
-        data: &InstData,
+        instruction: &InstData,
         ty: &H::Type,
         span: Span,
     ) -> ComptimeHostResult<(), H::Failure> {
-        let (text, negated) = match data {
-            InstData::FloatConst { text } => (*text, false),
-            InstData::Neg { operand } => match self.program_rir().get(*operand).data {
-                InstData::FloatConst { text } => (text, true),
-                _ => return Ok(()),
-            },
-            _ => return Ok(()),
+        let (text, negated) = if let InstData::FloatConst { text } = instruction {
+            (*text, false)
+        } else if let InstData::Neg { operand } = instruction
+            && let InstData::FloatConst { text } = self.program_rir().get(*operand).data
+        {
+            (text, true)
+        } else {
+            return Ok(());
         };
         let Some(width) = self.host.type_float_width(ty) else {
             return Ok(());
@@ -3181,19 +3184,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let spelling = self
             .host
             .display_name(&self.host.name_from_symbol(&self.program_key(), text.into()));
-        match crate::finite_float_literal(&spelling, width.air_type(), negated, || {
-            if negated {
-                format!("-{spelling}")
-            } else {
-                spelling.clone()
-            }
-        }) {
-            Ok(_) => Ok(()),
-            Err(kind) => Err(ComptimeHostError::HostFailure(
-                self.host
-                    .float_literal_not_finite(kind, &self.diagnostic_site(span)),
-            )),
-        }
+        let literal = if negated {
+            format!("-{spelling}")
+        } else {
+            spelling
+        };
+        self.host
+            .admit_comptime_float_literal(&literal, width, &self.diagnostic_site(span))
     }
 
     /// Evaluate `inst` as an expression whose value takes the declared type

@@ -2378,7 +2378,7 @@ fn comptime_host_is_an_empty_umbrella_over_its_capabilities() {
             owner.push((rest.split('(').next().unwrap_or_default(), current));
         }
     }
-    assert_eq!(owner.len(), 87, "the host contract lost or gained a method");
+    assert_eq!(owner.len(), 89, "the host contract lost or gained a method");
     for (method, trait_name) in &owner {
         assert!(
             capabilities.contains(trait_name),
@@ -3136,7 +3136,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         .unwrap_or(production.len());
     let provenance_helper = &production[provenance_helper_start..provenance_helper_end];
     let eval_offset = provenance_helper
-        .find("self.eval(arg.value, env)")
+        .find("self.eval_typed(arg.value, parameter_type, env)")
         .expect("argument evaluation in provenance helper");
     let provenance_offset = provenance_helper
         .find("self.host.program_rir(&program)")
