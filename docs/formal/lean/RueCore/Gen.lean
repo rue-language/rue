@@ -1318,6 +1318,21 @@ def countedLoop (n : Nat) (body : Expr) : Expr :=
       (seq (ite (binop .ge k (intLit .w64 .signed n)) brk unitLit)
         (seq (assign (.var 0) (binop .add k (intLit .w64 .signed 1))) body)))
 
+/-- (helper) A **restoring statement** for a counted loop's body, drawn at a
+`mut` binder `i` of struct or enum type from outside the loop, whose value it
+moves and replaces within the turn (`3.8:79`'s two idioms, §5.7): at an
+`Affine` type **reassign-then-move**, `x = <fresh>; @drop(x)`, so `x` is
+`MovedOut` at the back edge and the loop-head state, and (Assign)
+reinitializes it before the move; at a `Linear` type **move-then-reassign**,
+`@drop(x); x = <fresh>`, so the back edge restores the entry state — the
+first idiom would overwrite a live linear value on the first turn (`3.8:77`).
+The fresh value is `leastValue`'s literal, which names no binder, so the
+statement moves nothing but `x`. -/
+def restoreStmt (D : Decls) (i : Nat) (T : Ty) : Expr :=
+  let fresh := leastValue D (declFuel D) T
+  if T.mult D == .linear then seq (drop (.var i)) (assign (.var i) fresh)
+  else seq (assign (.var i) fresh) (drop (.var i))
+
 /-- (helper) Draw a loop under `Γ` (module docstring, "Loops"): counted three
 times in four (`countedLoop`, a bound `n ≤ 3`) and **once-through** otherwise —
 a body whose last form is a break arm, so it runs once and no turn reaches the
@@ -1325,17 +1340,45 @@ back edge. `body` draws the body and `cond` a condition, each under the scope
 the body sees: a counted loop's has the counter on top, **unmarked**, so that
 nothing the body draws writes it. Half the bodies open with an **exit
 statement**, `if c { … break } else { () }`: an exit the run may or may not
-take, beside the loop's own. -/
+take, beside the loop's own.
+
+Two draws aim at the shapes a random body seldom reaches **accepted**. Half the
+counted bodies where the scope offers one open with a restoring statement
+(`restoreStmt`), and half of those are that statement alone: a move across the
+back edge the head state admits. And half
+the once-through loops where the scope holds a linear struct or enum binder
+**consume it on every exit**: the exit statement's arm and the tail are both
+`{ @drop(x); break }`, so §5.7's exit join agrees on `x` — the accepted side of
+RUE-1614's rule, where one exit keeping `x` would be E0443; half of those have
+an empty body before the exits. -/
 def drawLoop (D : Decls) (Γ : Scope) (body cond : Scope → G Expr) : G Expr := do
   let n ← nat 0 3
   let once ← chance 1 4
   let Γl : Scope := if once then Γ else { ty := .int .w64 .signed, mu := false } :: Γ
   let b ← body Γl
+  let structOrEnum (T : Ty) : Bool := isStruct T || isEnum T
+  let b ← if once then pure b else do
+      let rs := indicesWhere Γl (fun bd => bd.mu && structOrEnum bd.ty && bd.ty.mult D != .copy)
+      if !rs.isEmpty && (← chance 1 2) then
+        let i ← pick 0 rs
+        let r := restoreStmt D i (((Γl[i]?).map Binder.ty).getD .unit)
+        -- Half of these bodies are the restoring statement alone, so that a
+        -- random rest cannot undo it (a second move of `x` is the usual one).
+        if ← chance 1 2 then pure r else pure (seq r b)
+      else pure b
+  let lins := indicesWhere Γl (fun bd => structOrEnum bd.ty && bd.ty.mult D == .linear)
+  let consume ← if once && !lins.isEmpty && (← chance 1 2) then some <$> pick 0 lins
+    else pure none
+  -- Likewise half of the consuming bodies are empty before their exits.
+  let b ← if consume.isSome && (← chance 1 2) then pure unitLit else pure b
+  let arm : G Expr := match consume with
+    | some i => pure (seq (drop (.var i)) brk)
+    | none => breakArm D Γl
   let b ← if ← chance 1 2 then do
       let c ← cond Γl
-      pure (seq (ite c (← breakArm D Γl) unitLit) b)
+      pure (seq (ite c (← arm) unitLit) b)
     else pure b
-  if once then return loop (seq b (← breakArm D Γl))
+  if once then return loop (seq b (← arm))
   return countedLoop n b
 
 /-- (helper) Whether the scope holds a binder of a non-`Copy` aggregate type:
