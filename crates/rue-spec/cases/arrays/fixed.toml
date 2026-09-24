@@ -1401,6 +1401,124 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "not a function"
 
+# 6.1:5 binds a call folded into an array length (7.1:41) as it binds the same
+# call in a body: the callee's body must evaluate to a value of its declared
+# return type. The length was taken from the call's value without checking it,
+# so `1 << s` with `s: u8`, computed at u8 where the amount 8 masks to 0, gave
+# the length 1 where run time reports E0206 (RUE-2381).
+
+[[case]]
+name = "array_length_call_u8_shift_in_u64_function_rejected_in_struct_field"
+spec = ["7.1:41", "6.1:5"]
+description = "`1 << s` with `s: u8` is a u8, so returning it from a u64 function is E0206 in a struct field's array length, not the length 1 - RUE-2381"
+source = """
+fn n(comptime s: u8) -> u64 { 1 << s }
+struct S { a: [u8; n(8)] }
+fn main() -> i32 {
+    let s = S { a: [0; 1] };
+    @intCast(s.a[0])
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected u64, found u8"]
+
+[[case]]
+name = "array_length_call_result_mismatch_rejected_in_let_annotation"
+spec = ["7.1:41", "6.1:5"]
+description = "An i64 parameter returned from an i32 function is E0206 in a `let` annotation's array length: integers do not convert implicitly"
+source = """
+fn n(comptime k: i64) -> i32 { k }
+fn main() -> i32 {
+    let a: [u8; n(1)] = [0; 1];
+    @intCast(a[0])
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found i64"]
+
+[[case]]
+name = "array_length_call_result_mismatch_rejected_in_parameter"
+spec = ["7.1:41", "6.1:5"]
+description = "A u8 value returned from a u64 function is E0206 in a parameter's array length"
+source = """
+fn n(comptime s: u8) -> u64 { 1 << s }
+fn f(a: [u8; n(8)]) -> u8 { a[0] }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected u64, found u8"]
+
+[[case]]
+name = "array_length_call_result_mismatch_rejected_in_return_type"
+spec = ["7.1:41", "6.1:5"]
+description = "A u8 value returned from a u64 function is E0206 in a return type's array length"
+source = """
+fn n(comptime s: u8) -> u64 { 1 << s }
+fn f() -> [u8; n(8)] { [0; 1] }
+fn main() -> i32 { @intCast(f()[0]) }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected u64, found u8"]
+
+[[case]]
+name = "array_length_call_nested_result_checked_at_outer_call"
+spec = ["7.1:41", "6.1:5"]
+description = "An inner call's u8 value returned from the outer u64 function is E0206: the outermost call of an array length is checked against its own callee's return type"
+source = """
+fn inner(comptime s: u8) -> u8 { 1 << s }
+fn outer(comptime s: u8) -> u64 { inner(s) }
+fn main() -> i32 {
+    let a: [u8; outer(2)] = [0; 4];
+    @intCast(a[0])
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected u64, found u8"]
+
+[[case]]
+name = "array_length_call_result_mismatch_rejected_in_const_type"
+spec = ["7.1:41", "6.1:5"]
+description = "A u8 value returned from a u64 function is E0206 in a const's declared array type"
+source = """
+fn n(comptime s: u8) -> u64 { 1 << s }
+const A: [u8; n(8)] = [0; 1];
+fn main() -> i32 { @intCast(A[0]) }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected u64, found u8"]
+
+[[case]]
+name = "array_length_call_result_mismatch_rejected_in_enum_payload"
+spec = ["7.1:41", "6.1:5"]
+description = "A u8 value returned from a u64 function is E0206 in an enum payload's array length"
+source = """
+fn n(comptime s: u8) -> u64 { 1 << s }
+enum E { V([u8; n(8)]) }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected u64, found u8"]
+
+[[case]]
+name = "array_length_call_matching_return_types_accepted"
+spec = ["7.1:41", "6.1:5"]
+description = "Values of the declared return type fold to array lengths: a u64 shift in a u64 function, an untyped literal at u64, arithmetic at usize and i32, and a nested call of the same type"
+source = """
+fn sh(comptime s: u64) -> u64 { 1 << s }
+fn lit(comptime s: u64) -> u64 { 4 }
+fn twice(comptime k: usize) -> usize { k * 2 }
+fn inc(comptime k: i32) -> i32 { k + 1 }
+fn nested(comptime s: u64) -> u64 { sh(s) + 1 }
+struct S { a: [u8; sh(3)], b: [u8; lit(0)], c: [u8; nested(2)] }
+fn sum(a: [u8; twice(3)], b: [u8; inc(3)]) -> u8 { a[5] + b[3] }
+fn main() -> i32 {
+    let s = S { a: [1; 8], b: [2; 4], c: [3; 5] };
+    let t: u8 = s.a[7] + s.b[3] + s.c[4] + sum([4; 6], [5; 4]);
+    @intCast(t)
+}
+"""
+exit_code = 15
+
 # =============================================================================
 # Array-Repeat Literals (RUE-235)
 # =============================================================================
