@@ -463,20 +463,27 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
   | argsPlug {H φ K tr t vs es v} :
       Step M P (.run H φ (.args t vs es :: K) (.ret v) tr) (.run H φ K (.args t (vs ++ [v]) es) tr)
   -- ### §6.5, §6.6: aggregates, enums, `match`, `if`
-  /-- (D-Struct) §6.5: every initializer is a value. -/
+  /-- (D-Struct) §6.5: every initializer is a value. The value's identity is
+  minted as `eval` mints it (`introVal`): the next index of the store,
+  reserved with `†`. -/
   | mkStruct {H φ K tr s vs sd} :
       P.decls.structs[s]? = some sd →
       sd.fields.length = vs.length →
-      Step M P (.run H φ K (.args (.struct s) vs []) tr) (.run H φ K (.ret (.struct s vs)) tr)
-  /-- (D-Enum-Intro) §6.6: every payload component is a value. -/
+      Step M P (.run H φ K (.args (.struct s) vs []) tr)
+        (.run (H ++ [.dead]) φ K (.ret (.struct s H.length vs)) tr)
+  /-- (D-Enum-Intro) §6.6: every payload component is a value; the identity is
+  minted as at (D-Struct). -/
   | mkEnum {H φ K tr e k vs ed Ts} :
       P.decls.enums[e]? = some ed →
       ed.variants[k]? = some Ts →
       Ts.length = vs.length →
-      Step M P (.run H φ K (.args (.enum e k) vs []) tr) (.run H φ K (.ret (.enum e k vs)) tr)
-  /-- (D-Array) §6.5: every element is a value. -/
+      Step M P (.run H φ K (.args (.enum e k) vs []) tr)
+        (.run (H ++ [.dead]) φ K (.ret (.enum e k H.length vs)) tr)
+  /-- (D-Array) §6.5: every element is a value; the identity is minted as at
+  (D-Struct). -/
   | mkArray {H φ K tr T vs} :
-      Step M P (.run H φ K (.args (.array T) vs []) tr) (.run H φ K (.ret (.array T vs)) tr)
+      Step M P (.run H φ K (.args (.array T) vs []) tr)
+        (.run (H ++ [.dead]) φ K (.ret (.array T H.length vs)) tr)
   /-- (Search) §6.2 into the repeat form's operand (`7.1:39`). -/
   | repeatEnter {H φ K tr T e n} :
       Step M P (.run H φ K (.eval (.repeatArray T e n)) tr)
@@ -488,7 +495,7 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
   | repeatArray {H φ K tr T n v} :
       v.mult P.decls = .copy →
       Step M P (.run H φ (.repeatArray T n :: K) (.ret v) tr)
-        (.run H φ K (.ret (.array T (List.replicate n v))) tr)
+        (.run (H ++ [.dead]) φ K (.ret (.array T H.length (List.replicate n v))) tr)
   /-- (D-Index) §6.5 at a dynamic place, every index in range, and
   (D-Use-Untrackable-Dynamic-Copy) §6.3 reads the `Copy` leaf, leaving the
   storage live. §6.3 has no rule for a non-`Copy` leaf here, so that
@@ -540,10 +547,10 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
         (.run H φ (.«match» arms :: K) (.eval scrut) tr)
   /-- (D-Match) §6.6: the tag selects the arm; the payload is bound to fresh
   cells, appended to the scope record *and* owed to the arm's `endscope`. -/
-  | «match» {H φ K tr arms e k vs body H' ls} :
+  | «match» {H φ K tr arms e k i vs body H' ls} :
       arms[k]? = some body →
       mintParams H vs = (H', ls) →
-      Step M P (.run H φ (.«match» arms :: K) (.ret (.enum e k vs)) tr)
+      Step M P (.run H φ (.«match» arms :: K) (.ret (.enum e k i vs)) tr)
         (.run H' { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls }
           (.endscope ls :: K) (.eval body) tr)
   /-- (Search) §6.2 into `if E { e1 } else { e2 }`. -/
@@ -807,7 +814,8 @@ def stepArgs (P : Program) (H : Store) (φ : Frame) (K : List Kont) (tr : List E
     match P.decls.structs[s]? with
     | none => .stuck .unbound
     | some sd =>
-      if sd.fields.length = vs.length then .next (.run H φ K (.ret (.struct s vs)) tr)
+      if sd.fields.length = vs.length then
+        .next (.run (H ++ [.dead]) φ K (.ret (.struct s H.length vs)) tr)
       else .stuck .typeConfusion
   | .enum e k =>
     match P.decls.enums[e]? with
@@ -816,9 +824,10 @@ def stepArgs (P : Program) (H : Store) (φ : Frame) (K : List Kont) (tr : List E
       match ed.variants[k]? with
       | none => .stuck .typeConfusion
       | some Ts =>
-        if Ts.length = vs.length then .next (.run H φ K (.ret (.enum e k vs)) tr)
+        if Ts.length = vs.length then
+          .next (.run (H ++ [.dead]) φ K (.ret (.enum e k H.length vs)) tr)
         else .stuck .typeConfusion
-  | .array T => .next (.run H φ K (.ret (.array T vs)) tr)
+  | .array T => .next (.run (H ++ [.dead]) φ K (.ret (.array T H.length vs)) tr)
   | .call f =>
     match P.fns[f]? with
     | none => .stuck .unbound
@@ -893,12 +902,13 @@ def stepRet (M : FloatOps) (P : Program) (H : Store) (φ : Frame) (K : List Kont
   | .dbg => .next (.run H φ K (.ret .unit) (tr ++ [.dbg v]))
   | .args t vs es => .next (.run H φ K (.args t (vs ++ [v]) es) tr)
   | .repeatArray T n =>
-    if v.mult P.decls = .copy then .next (.run H φ K (.ret (.array T (List.replicate n v))) tr)
+    if v.mult P.decls = .copy then
+      .next (.run (H ++ [.dead]) φ K (.ret (.array T H.length (List.replicate n v))) tr)
     else .stuck .typeConfusion
   | .indexWriteRhs p idx πs => .next (.run H φ K (.args (.indexWrite p πs v) [] idx) tr)
   | .«match» arms =>
     match v with
-    | .enum _ k vs =>
+    | .enum _ k _ vs =>
       match arms[k]? with
       | none => .stuck .typeConfusion
       | some body =>
@@ -1135,18 +1145,18 @@ theorem Contents.readAt_err : ∀ {c : Contents} {π : List Nat} {w : Violation}
     c.readAt π = .error w → w.isStuckState = true
   | _, [], _, h => by simp [Contents.readAt] at h
   | .hole, _ :: _, _, h => by simp [Contents.readAt] at h; subst h; rfl
-  | .struct _ cs, f :: π, _, h => by
+  | .struct _ _ cs, f :: π, _, h => by
       simp only [Contents.readAt] at h
       split at h
       · exact Contents.readAt_err h
       · simp at h; subst h; rfl
-  | .array _ cs, f :: π, _, h => by
+  | .array _ _ cs, f :: π, _, h => by
       simp only [Contents.readAt] at h
       split at h
       · exact Contents.readAt_err h
       · simp at h; subst h; rfl
   | .int _ _ _, _ :: _, _, h | .float _ _, _ :: _, _, h | .bool _, _ :: _, _, h
-  | .unit, _ :: _, _, h | .enum _ _ _, _ :: _, _, h => by
+  | .unit, _ :: _, _, h | .enum _ _ _ _, _ :: _, _, h => by
       simp [Contents.readAt] at h; subst h; rfl
 
 mutual
@@ -1154,13 +1164,13 @@ mutual
 theorem Contents.splitResidue_err (D : Decls) : ∀ {c : Contents} {π : List Nat} {w : Violation},
     c.splitResidue D π = .error w → w.isStuckState = true
   | _, [], _, h => by simp [Contents.splitResidue] at h
-  | .struct _ cs, f :: π, _, h => by
+  | .struct _ _ cs, f :: π, _, h => by
       simp only [Contents.splitResidue] at h; exact Contents.splitFields_err D h
-  | .array _ cs, f :: π, _, h => by
+  | .array _ _ cs, f :: π, _, h => by
       simp only [Contents.splitResidue] at h; exact Contents.splitFields_err D h
   | .hole, _ :: _, _, h => by simp [Contents.splitResidue] at h; subst h; rfl
   | .int _ _ _, _ :: _, _, h | .float _ _, _ :: _, _, h | .bool _, _ :: _, _, h
-  | .unit, _ :: _, _, h | .enum _ _ _, _ :: _, _, h => by
+  | .unit, _ :: _, _, h | .enum _ _ _ _, _ :: _, _, h => by
       simp [Contents.splitResidue] at h; subst h; rfl
 
 /-- `split`'s field step refuses only with §6's stuck states (helper). -/
@@ -1186,15 +1196,15 @@ theorem dropContents_err (D : Decls) : ∀ {c : Contents} {w : Violation},
     dropContents D c = .error w → w.isStuckState = true
   | .hole, _, h | .int _ _ _, _, h | .float _ _, _, h | .bool _, _, h | .unit, _, h => by
       simp [dropContents] at h
-  | .struct s cs, _, h => by
+  | .struct s i cs, _, h => by
       simp only [dropContents] at h
       split at h
       · simp at h; subst h; rfl
       · split at h
         · simp at h; subst h; exact dropContentsList_err D ‹_›
         · simp at h
-  | .enum _ _ cs, _, h => by simp only [dropContents] at h; exact dropContentsList_err D h
-  | .array _ cs, _, h => by simp only [dropContents] at h; exact dropContentsList_err D h
+  | .enum _ _ _ cs, _, h => by simp only [dropContents] at h; exact dropContentsList_err D h
+  | .array _ _ cs, _, h => by simp only [dropContents] at h; exact dropContentsList_err D h
 
 /-- `drop*` refuses only with §6's stuck states (helper). -/
 theorem dropContentsList_err (D : Decls) : ∀ {cs : List Contents} {w : Violation},
@@ -1477,8 +1487,9 @@ def demoS : Expr := .mkStruct 0 []
 /-- An `i32` literal (helper). -/
 def demoI32 (n : Int) : Expr := .intLit .w32 .signed n
 
-/-- The contents `S{}` leaves in a cell (helper). -/
-def demoSc : Contents := .struct 0 []
+/-- The contents `S{}` leaves in a cell, at the identity it was minted with
+(helper). -/
+def demoSc (i : Nat) : Contents := .struct 0 i []
 
 /-- **(D-Use-Untrackable-Dynamic-Copy) needs `Copy`** (§6.3): in
 `let a = [S{}, S{}]; let x = a[dyn 0]; 0` the dynamic read of an affine
@@ -1522,7 +1533,7 @@ theorem demo_dropMoved_runs (M : FloatOps) :
     ∃ H, Steps M (demoProgram (.letIn false demoS
         (.letIn false (.use (.var 0)) (.seq (.drop (.var 1)) (demoI32 0))))) Config.init
       (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 0))
-        [.drop 1 demoSc, .dtor 0 demoSc]) :=
+        [.drop 2 (demoSc 0), .dtor 0 (demoSc 0)]) :=
   ⟨_, stepN_steps (n := 100)⟩
 
 /-- **The loop yields `⟨⟩` to its context** (§6.10, RUE-2324's calculus
@@ -1542,9 +1553,9 @@ theorem demo_loopInLet_runs (M : FloatOps) :
 theorem demo_breakDrops_runs (M : FloatOps) :
     ∃ H, Steps M (demoProgram (.seq (.loop (.letIn false demoS .brk)) (demoI32 3))) Config.init
       (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 3))
-        [.drop 0 demoSc, .dtor 0 demoSc]) ∧
+        [.drop 1 (demoSc 0), .dtor 0 (demoSc 0)]) ∧
     run M (demoProgram (.seq (.loop (.letIn false demoS .brk)) (demoI32 3))) 100 =
-      .ok H (.int .w32 .signed 3) [.drop 0 demoSc, .dtor 0 demoSc] :=
+      .ok H (.int .w32 .signed 3) [.drop 1 (demoSc 0), .dtor 0 (demoSc 0)] :=
   ⟨_, stepN_steps (n := 100), rfl⟩
 
 /-- A counting loop: `let mut i = 0; loop { let s = S{}; if i >= 2 { break }
@@ -1562,12 +1573,12 @@ def demoCountingLoop : Expr :=
 theorem demo_loopTurns_runs (M : FloatOps) :
     ∃ H, Steps M (demoProgram demoCountingLoop) Config.init
       (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 2))
-        [.drop 1 demoSc, .dtor 0 demoSc, .drop 2 demoSc, .dtor 0 demoSc,
-         .drop 3 demoSc, .dtor 0 demoSc]) ∧
+        [.drop 2 (demoSc 1), .dtor 0 (demoSc 1), .drop 4 (demoSc 3), .dtor 0 (demoSc 3),
+         .drop 6 (demoSc 5), .dtor 0 (demoSc 5)]) ∧
     run M (demoProgram demoCountingLoop) 200 =
       .ok H (.int .w32 .signed 2)
-        [.drop 1 demoSc, .dtor 0 demoSc, .drop 2 demoSc, .dtor 0 demoSc,
-         .drop 3 demoSc, .dtor 0 demoSc] :=
+        [.drop 2 (demoSc 1), .dtor 0 (demoSc 1), .drop 4 (demoSc 3), .dtor 0 (demoSc 3),
+         .drop 6 (demoSc 5), .dtor 0 (demoSc 5)] :=
   ⟨_, stepN_steps (n := 300), rfl⟩
 
 /-- **(D-Return) from inside a `let`** (§6.9): `let s = S{}; let y = return 5; 0`
@@ -1577,9 +1588,9 @@ theorem demo_returnInLet_runs (M : FloatOps) :
     ∃ H, Steps M (demoProgram (.letIn false demoS (.letIn false (.ret (demoI32 5)) (demoI32 0))))
       Config.init
       (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 5))
-        [.drop 0 demoSc, .dtor 0 demoSc]) ∧
+        [.drop 1 (demoSc 0), .dtor 0 (demoSc 0)]) ∧
     run M (demoProgram (.letIn false demoS (.letIn false (.ret (demoI32 5)) (demoI32 0)))) 100 =
-      .ok H (.int .w32 .signed 5) [.drop 0 demoSc, .dtor 0 demoSc] :=
+      .ok H (.int .w32 .signed 5) [.drop 1 (demoSc 0), .dtor 0 (demoSc 0)] :=
   ⟨_, stepN_steps (n := 100), rfl⟩
 
 /-- **(D-Return) from a `match` arm** (§6.6, §6.9):
@@ -1589,11 +1600,11 @@ theorem demo_returnInMatch_runs (M : FloatOps) :
     ∃ H, Steps M (demoProgram (.letIn false demoS
         (.«match» (.mkEnum 0 0 [demoS]) [.ret (demoI32 4), demoI32 0]))) Config.init
       (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 4))
-        [.drop 1 demoSc, .dtor 0 demoSc, .drop 0 demoSc, .dtor 0 demoSc]) ∧
+        [.drop 4 (demoSc 2), .dtor 0 (demoSc 2), .drop 1 (demoSc 0), .dtor 0 (demoSc 0)]) ∧
     run M (demoProgram (.letIn false demoS
         (.«match» (.mkEnum 0 0 [demoS]) [.ret (demoI32 4), demoI32 0]))) 100 =
       .ok H (.int .w32 .signed 4)
-        [.drop 1 demoSc, .dtor 0 demoSc, .drop 0 demoSc, .dtor 0 demoSc] :=
+        [.drop 4 (demoSc 2), .dtor 0 (demoSc 2), .drop 1 (demoSc 0), .dtor 0 (demoSc 0)] :=
   ⟨_, stepN_steps (n := 100), rfl⟩
 
 /-- **(D-Loop-Iter) runs the turn's drops** (§6.10's `run-scope-drops`): at a
@@ -1603,10 +1614,10 @@ reachable from `Config.init` — there `endscope` has always emptied the list �
 but it is one §6.10's rule covers. -/
 theorem demo_loopIter_drops (M : FloatOps) (e : Expr) :
     Step M (demoProgram e)
-      (.run [.full demoSc] { env := [0], scope := [0] }
+      (.run [.full (demoSc 0)] { env := [0], scope := [0] }
         [.loop .brk { env := [], scope := [] }] (.ret .unit) [])
       (.run [.dead] { env := [], scope := [] } [.loop .brk { env := [], scope := [] }]
-        (.eval .brk) [.drop 0 demoSc, .dtor 0 demoSc]) :=
+        (.eval .brk) [.drop 0 (demoSc 0), .dtor 0 (demoSc 0)]) :=
   step_iff.mpr rfl
 
 end RueCore

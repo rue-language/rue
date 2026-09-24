@@ -180,25 +180,34 @@ def valTy : Val → Ty
   | .float w _ => .float w
   | .bool _ => .bool
   | .unit => .unit
-  | .struct s _ => .struct s
-  | .enum e _ _ => .enum e
-  | .array T vs => .array T vs.length
+  | .struct s _ _ => .struct s
+  | .enum e _ _ _ => .enum e
+  | .array T _ vs => .array T vs.length
+
+/-- (helper) A value identity, as the trace shows it: `#i` after the
+aggregate it names (`introVal`, `Dynamics.lean`). A copy of a `Copy` value
+carries its original's identity; `no_double_free` (`Trace.lean`) counts only
+the non-`Copy` ones, so a repeated identity on a `Copy` value is expected, and
+on anything else it would be the double free the theorem rules out. -/
+def idTag (i : Nat) : String := "#" ++ toString i
 
 /-- (helper) A value, as §6.1 writes it: a scalar as itself, a struct value
-as `{ v1, …, vk }_S` with its declaration's name. -/
+as `{ v1, …, vk }_S` with its declaration's name, and every aggregate followed
+by its identity (`idTag`). -/
 partial def valLine : Val → String
   | .int _ _ n => toString n
   | .float w f => f.render w
   | .bool b => if b then "true" else "false"
   | .unit => "()"
-  | .struct s vs =>
+  | .struct s i vs =>
       Print.tyName (.struct s) ++ " { " ++
-        String.intercalate ", " (vs.map valLine) ++ " }"
-  | .enum e k vs =>
+        String.intercalate ", " (vs.map valLine) ++ " }" ++ idTag i
+  | .enum e k i vs =>
       -- §6.1's `Kj⟨ v1, …, va ⟩`: the tag, and the payload when there is one.
       Print.tyName (.enum e) ++ "." ++ Print.variantName k ++
-        (if vs.isEmpty then "⟨⟩" else "⟨" ++ String.intercalate ", " (vs.map valLine) ++ "⟩")
-  | .array _ vs => "[" ++ String.intercalate ", " (vs.map valLine) ++ "]"
+        (if vs.isEmpty then "⟨⟩" else "⟨" ++ String.intercalate ", " (vs.map valLine) ++ "⟩") ++
+        idTag i
+  | .array _ i vs => "[" ++ String.intercalate ", " (vs.map valLine) ++ "]" ++ idTag i
 
 /-- (helper) Cell contents (§6.1's `c ::= v | ⊘`), as a tree: a `⊘` may sit
 at any node after a partial move (§4.2). -/
@@ -208,18 +217,20 @@ partial def contentsLine : Contents → String
   | .float w f => f.render w
   | .bool b => if b then "true" else "false"
   | .unit => "()"
-  | .struct s cs =>
+  | .struct s i cs =>
       Print.tyName (.struct s) ++ " { " ++
-        String.intercalate ", " (cs.map contentsLine) ++ " }"
-  | .enum e k cs =>
+        String.intercalate ", " (cs.map contentsLine) ++ " }" ++ idTag i
+  | .enum e k i cs =>
       Print.tyName (.enum e) ++ "." ++ Print.variantName k ++
-        (if cs.isEmpty then "⟨⟩" else "⟨" ++ String.intercalate ", " (cs.map contentsLine) ++ "⟩")
-  | .array _ cs => "[" ++ String.intercalate ", " (cs.map contentsLine) ++ "]"
+        (if cs.isEmpty then "⟨⟩" else "⟨" ++ String.intercalate ", " (cs.map contentsLine) ++ "⟩") ++
+        idTag i
+  | .array _ i cs => "[" ++ String.intercalate ", " (cs.map contentsLine) ++ "]" ++ idTag i
 
-/-- (helper) A store cell: its contents, or the retired marker `†`. -/
+/-- (helper) A store cell: its contents, or `†` — a retired binding, or the
+slot a minted value identity reserved (`introVal`), which never held a value. -/
 def cellLine : Cell → String
   | .full c => contentsLine c
-  | .dead => "† (retired)"
+  | .dead => "†"
 
 /-- (helper) A store location. Locations are indices and are never reused
 (§6.1). -/
@@ -2289,6 +2300,18 @@ def trapLiftsPastCall : String :=
   "(Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 " ++
   "abandons the configuration and `run-all-scope-drops` never runs"
 
+/-- (helper) An aggregate's introduction ((D-Struct), (D-Array) §6.5,
+(D-Enum-Intro) §6.6, the repeat form), mirroring `introVal`: the value's
+identity is minted as the next store index, reserved with `†`, and the row
+shows the value with it (`idTag`); an aggregate the copy-closure monitor
+refuses is refused here too. -/
+def tracedIntro (P : Program) (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr)
+    (rule : String) (H H₁ : Store) (tr : List Event) (mk : Nat → Val) : Trace :=
+  if (Contents.ofVal (mk H₁.length)).copyClosed P.decls then
+    traced kids d Θ R e (rule ++ " (mint " ++ idTag H₁.length ++ ")") H (H₁ ++ [.dead]) []
+      (.value (mk H₁.length)) (.ok (H₁ ++ [.dead]) (mk H₁.length) tr)
+  else refused kids d Θ R e rule H .typeConfusion
+
 /-- (helper) An operator that met a wrong-shaped value. §5 excludes it and
 `soundness` (§7) proves so; it is here because `eval` is total. -/
 def confused (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr) (rule : String)
@@ -2570,8 +2593,8 @@ def traceEval (M : FloatOps) (P : Program) :
          | none => refused ta.steps d Θ R (.mkStruct s args) "(D-Struct) §6.5" H .unbound
          | some sd =>
              if sd.fields.length = vs.length then
-               traced ta.steps d Θ R (.mkStruct s args) "(D-Struct) §6.5" H H₁ []
-                 (.value (.struct s vs)) (.ok H₁ (.struct s vs) tr)
+               tracedIntro P ta.steps d Θ R (.mkStruct s args) "(D-Struct) §6.5" H H₁ tr
+                 (fun i => .struct s i vs)
              else refused ta.steps d Θ R (.mkStruct s args) "(D-Struct) §6.5" H .typeConfusion)
   | fuel + 1, d, Θ, R, H, φ, .mkEnum e k args =>
       let ta := traceArgs (fun H' e' => traceEval M P fuel (d + 1) Θ R H' φ e') H args
@@ -2586,8 +2609,8 @@ def traceEval (M : FloatOps) (P : Program) :
                refused ta.steps d Θ R (.mkEnum e k args) "(D-Enum-Intro) §6.6" H .typeConfusion
            | some Ts =>
                if Ts.length = vs.length then
-                 traced ta.steps d Θ R (.mkEnum e k args) "(D-Enum-Intro) §6.6" H H₁ []
-                   (.value (.enum e k vs)) (.ok H₁ (.enum e k vs) tr)
+                 tracedIntro P ta.steps d Θ R (.mkEnum e k args) "(D-Enum-Intro) §6.6" H H₁ tr
+                   (fun i => .enum e k i vs)
                else
                  refused ta.steps d Θ R (.mkEnum e k args) "(D-Enum-Intro) §6.6" H
                    .typeConfusion)
@@ -2596,7 +2619,7 @@ def traceEval (M : FloatOps) (P : Program) :
       (match t₀.res with
        | .ok H₀ v tr₀ =>
          (match v with
-          | .enum e k vs =>
+          | .enum e k _ vs =>
             (match arms[k]? with
              | none =>
                  refused t₀.steps d Θ R (.«match» scrut arms) "(D-Match) §6.6" H .typeConfusion
@@ -2630,17 +2653,16 @@ def traceEval (M : FloatOps) (P : Program) :
       (match ta.res with
        | .abort r => didNotRun ta.steps d Θ R (.mkArray T args) "(D-Array) §6.5" H r
        | .ok H₁ vs tr =>
-           traced ta.steps d Θ R (.mkArray T args) "(D-Array) §6.5" H H₁ []
-             (.value (.array T vs)) (.ok H₁ (.array T vs) tr))
+           tracedIntro P ta.steps d Θ R (.mkArray T args) "(D-Array) §6.5" H H₁ tr
+             (fun i => .array T i vs))
   | fuel + 1, d, Θ, R, H, φ, .repeatArray T e n =>
       let rule := "(D-Array) §6.5, through §2's repeat elaboration (7.1:39)"
       let t := traceEval M P fuel (d + 1) Θ R H φ e
       (match t.res with
        | .ok H₁ v tr =>
            if v.mult P.decls = .copy then
-             traced t.steps d Θ R (.repeatArray T e n) rule H H₁ []
-               (.value (.array T (List.replicate n v)))
-               (.ok H₁ (.array T (List.replicate n v)) tr)
+             tracedIntro P t.steps d Θ R (.repeatArray T e n) rule H H₁ tr
+               (fun i => .array T i (List.replicate n v))
            else refused t.steps d Θ R (.repeatArray T e n) rule H .typeConfusion
        | r => propagate t.steps d Θ R (.repeatArray T e n) rule H r)
   | fuel + 1, d, Θ, R, H, φ, .indexRead pl idx πs =>
@@ -2716,12 +2738,16 @@ def traceEval (M : FloatOps) (P : Program) :
                            refused (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e)
                              rule H .typeConfusion
                        | some c' =>
+                         if c'.copyClosed P.decls then
                            traced (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e)
                              (if old.isHole then
                                 rule ++ " (reinitialization, 3.8:55)"
                               else rule ++ " (overwrite-drop)")
                              H (H₂.set ℓ (.full c')) evs (.value .unit)
-                             (.ok (H₂.set ℓ (.full c')) .unit (tr₁ ++ (tr₂ ++ evs))))
+                             (.ok (H₂.set ℓ (.full c')) .unit (tr₁ ++ (tr₂ ++ evs)))
+                         else
+                           refused (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e)
+                             rule H .typeConfusion)
           | .abort r =>
               didNotRun (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e) rule H
                 (r.withTrace tr₁))
@@ -2778,11 +2804,15 @@ def traceEval (M : FloatOps) (P : Program) :
                              refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H
                                .typeConfusion
                          | some c' =>
+                           if c'.copyClosed P.decls then
                              traced t.steps d Θ R (.assign pl e)
                                (if old.isHole then "(D-Assign) §6.8 (reinitialization, 3.8:55)"
                                 else "(D-Assign) §6.8 (overwrite-drop)")
                                H (H₁.set ℓ (.full c')) evs (.value .unit)
-                               (.ok (H₁.set ℓ (.full c')) .unit (tr ++ evs)))
+                               (.ok (H₁.set ℓ (.full c')) .unit (tr ++ evs))
+                           else
+                             refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H
+                               .typeConfusion)
       | r => propagate t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H r
   | fuel + 1, d, Θ, R, H, φ, .seq e₁ e₂ =>
       let t₁ := traceEval M P fuel (d + 1) Θ R H φ e₁
@@ -2955,12 +2985,14 @@ theorem traceEval_res (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
           simp only [traceEval, eval,
             traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced, didNotRun, EvalRes.withTrace] <;> grind)
+            first | rfl | (simp_all [traced, tracedIntro, introVal, didNotRun, refused,
+              EvalRes.withTrace] <;> grind)
       | mkEnum e' k args =>
           simp only [traceEval, eval,
             traceArgs_res (ev := fun H' e'' => eval M fuel P H' φ e'') (fun H' e'' => ih _ _ _ _ _ e'')]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced, didNotRun, refused, EvalRes.withTrace] <;> grind)
+            first | rfl | (simp_all [traced, tracedIntro, introVal, didNotRun, refused,
+              EvalRes.withTrace] <;> grind)
       | «match» scrut arms =>
           simp only [traceEval, eval, EvalRes.andThen, ih]
           (repeat' split) <;>
@@ -2970,11 +3002,13 @@ theorem traceEval_res (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
           simp only [traceEval, eval,
             traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced, didNotRun, EvalRes.withTrace] <;> grind)
+            first | rfl | (simp_all [traced, tracedIntro, introVal, didNotRun, refused,
+              EvalRes.withTrace] <;> grind)
       | repeatArray Te e₁ n =>
           simp only [traceEval, eval, EvalRes.andThen, ih]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced, refused, EvalRes.withTrace] <;> grind)
+            first | rfl | (simp_all [traced, tracedIntro, introVal, refused,
+              EvalRes.withTrace] <;> grind)
       | indexRead pl idx πs =>
           simp only [traceEval, eval,
             traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]

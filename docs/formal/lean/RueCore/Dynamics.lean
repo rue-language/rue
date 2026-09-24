@@ -265,17 +265,17 @@ inductive Val where
   | float (w : FloatWidth) (f : FloatDatum)
   | bool (b : Bool)
   | unit
-  | struct (s : Nat) (fields : List Val)
-  | enum (e : Nat) (k : Nat) (payload : List Val)
-  | array (elem : Ty) (vs : List Val)
+  | struct (s : Nat) (id : Nat) (fields : List Val)
+  | enum (e : Nat) (k : Nat) (id : Nat) (payload : List Val)
+  | array (elem : Ty) (id : Nat) (vs : List Val)
 deriving Repr
 
 /-- The dynamic image of `class(T)` (§3) on a value: scalars are `Copy`, a
 struct value has the class its declaration records. -/
 def Val.mult (D : Decls) : Val → Mult
-  | .struct s _ => D.classOf s
-  | .enum e _ _ => D.enumClassOf e
-  | .array T vs => Ty.mult D (.array T vs.length)
+  | .struct s _ _ => D.classOf s
+  | .enum e _ _ _ => D.enumClassOf e
+  | .array T _ vs => Ty.mult D (.array T vs.length)
   | .int _ _ _ | .float _ _ | .bool _ | .unit => .copy
 
 /-- Cell contents (§6.1's `c ::= v | ⊘`), as a **tree**: `⊘` may sit at any
@@ -290,9 +290,9 @@ inductive Contents where
   | float (w : FloatWidth) (f : FloatDatum)
   | bool (b : Bool)
   | unit
-  | struct (s : Nat) (cs : List Contents)
-  | enum (e : Nat) (k : Nat) (cs : List Contents)
-  | array (elem : Ty) (cs : List Contents)
+  | struct (s : Nat) (id : Nat) (cs : List Contents)
+  | enum (e : Nat) (k : Nat) (id : Nat) (cs : List Contents)
+  | array (elem : Ty) (id : Nat) (cs : List Contents)
 deriving Repr
 
 mutual
@@ -303,9 +303,9 @@ def Contents.ofVal : Val → Contents
   | .float w f => .float w f
   | .bool b => .bool b
   | .unit => .unit
-  | .struct s vs => .struct s (Contents.ofVals vs)
-  | .enum e k vs => .enum e k (Contents.ofVals vs)
-  | .array T vs => .array T (Contents.ofVals vs)
+  | .struct s i vs => .struct s i (Contents.ofVals vs)
+  | .enum e k i vs => .enum e k i (Contents.ofVals vs)
+  | .array T i vs => .array T i (Contents.ofVals vs)
 
 /-- `ofVal` over a field or element list (helper). -/
 def Contents.ofVals : List Val → List Contents
@@ -323,9 +323,9 @@ def Contents.toVal : Contents → Option Val
   | .float w f => some (.float w f)
   | .bool b => some (.bool b)
   | .unit => some .unit
-  | .struct s cs => (Contents.toVals cs).map (Val.struct s)
-  | .enum e k cs => (Contents.toVals cs).map (Val.enum e k)
-  | .array T cs => (Contents.toVals cs).map (Val.array T)
+  | .struct s i cs => (Contents.toVals cs).map (Val.struct s i)
+  | .enum e k i cs => (Contents.toVals cs).map (Val.enum e k i)
+  | .array T i cs => (Contents.toVals cs).map (Val.array T i)
 
 /-- `toVal` over a field or element list (helper). -/
 def Contents.toVals : List Contents → Option (List Val)
@@ -341,16 +341,64 @@ runs a drop, so that dropping an already moved-out place is the refusal §7's
 no-use-after-move bullet forbids rather than a silent no-op (helper). -/
 def Contents.isHole : Contents → Bool
   | .hole => true
-  | .int _ _ _ | .float _ _ | .bool _ | .unit | .struct _ _ | .enum _ _ _
-  | .array _ _ => false
+  | .int _ _ _ | .float _ _ | .bool _ | .unit | .struct _ _ _ | .enum _ _ _ _
+  | .array _ _ _ => false
 
 /-- The dynamic image of `class(T)` (§3) on cell contents: a hole has nothing
 to drop, and a struct has the class its declaration records (helper). -/
 def Contents.mult (D : Decls) : Contents → Mult
-  | .struct s _ => D.classOf s
-  | .enum e _ _ => D.enumClassOf e
-  | .array T cs => Ty.mult D (.array T cs.length)
+  | .struct s _ _ => D.classOf s
+  | .enum e _ _ _ => D.enumClassOf e
+  | .array T _ cs => Ty.mult D (.array T cs.length)
   | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => .copy
+
+mutual
+/-- Whether every node of a contents is `Copy` — a `⊘` and a scalar are, and an
+aggregate is when its own class is and each member is (helper). -/
+def Contents.allCopy (D : Decls) : Contents → Bool
+  | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => true
+  | .struct s _ cs => decide (D.classOf s = .copy) && Contents.allCopyList D cs
+  | .enum e _ _ cs => decide (D.enumClassOf e = .copy) && Contents.allCopyList D cs
+  | .array T _ cs =>
+      decide (Ty.mult D (.array T cs.length) = .copy) && Contents.allCopyList D cs
+
+/-- `allCopy` over a field, payload or element list (helper). -/
+def Contents.allCopyList (D : Decls) : List Contents → Bool
+  | [] => true
+  | c :: cs => Contents.allCopy D c && Contents.allCopyList D cs
+end
+
+mutual
+/-- **Copy closure**: no non-`Copy` value sits under a `Copy` node. §3 makes
+it a fact about types — a `Copy` type's fields, payloads and elements are
+`Copy` (`3.8:18`, `6.3:19`, §3's array lift) — and the machine relies on it
+wherever it duplicates a value: (D-Use-Copy), the dynamic-index read and the
+repeat form copy a `Copy` value whole, which is sound only when nothing owned
+hides inside it. A struct literal, an enum literal or an array literal whose
+class is `Copy` but whose members are not, or an assignment that writes an
+owned value under a `Copy` node, is a shape no well-typed program produces;
+the machine refuses it (`typeConfusion`) rather than build a duplicable
+owner, and `soundness` proves a checked program never reaches the refusal
+(`HasTy.copyClosed`, `ContentsTy.copyClosed`, `Soundness.lean`). It is a
+**monitor** in the module docstring's sense — §6's (D-Struct) would build the
+value — and it is what makes `no_double_free`'s conservation law hold without
+a typing derivation (`Trace.lean`) (helper). -/
+def Contents.copyClosed (D : Decls) : Contents → Bool
+  | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => true
+  | .struct s _ cs =>
+      if D.classOf s = .copy then Contents.allCopyList D cs else Contents.copyClosedList D cs
+  | .enum e _ _ cs =>
+      if D.enumClassOf e = .copy then Contents.allCopyList D cs
+      else Contents.copyClosedList D cs
+  | .array T _ cs =>
+      if Ty.mult D (.array T cs.length) = .copy then Contents.allCopyList D cs
+      else Contents.copyClosedList D cs
+
+/-- `copyClosed` over a field, payload or element list (helper). -/
+def Contents.copyClosedList (D : Decls) : List Contents → Bool
+  | [] => true
+  | c :: cs => Contents.copyClosed D c && Contents.copyClosedList D cs
+end
 
 /-- `toVals` does not change a list's length, for `mult_toVal`'s array case
 (helper). -/
@@ -397,15 +445,15 @@ exactly probe e11, which the statics reject (E0406) and which this monitor would
 let run. -/
 def Contents.residualLinear (D : Decls) : Contents → Bool
   | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => false
-  | .struct s cs =>
+  | .struct s _ cs =>
       (match D.structs[s]? with
        | some sd => sd.attr = .linear || Contents.residualLinearList D cs
        | none => false)
-  | .enum _ _ cs => Contents.residualLinearList D cs
+  | .enum _ _ _ cs => Contents.residualLinearList D cs
   -- An array declares no attribute of its own, so its obligation is the
   -- disjunction over its live elements — and a zero-length one carries
   -- nothing at all, which is `3.8:74` read on the store's side.
-  | .array _ cs => Contents.residualLinearList D cs
+  | .array _ _ cs => Contents.residualLinearList D cs
 
 /-- The same over a field, payload or element list (helper). -/
 def Contents.residualLinearList (D : Decls) : List Contents → Bool
@@ -420,13 +468,13 @@ so every `eval` arm that writes has already read at the same path, and its
 `none` case is unreachable rather than a second refusal (helper). -/
 def Contents.writeAt : Contents → List Nat → Contents → Option Contents
   | _, [], new => some new
-  | .struct s cs, f :: π, new =>
+  | .struct s i cs, f :: π, new =>
       (match cs[f]? with
-       | some c => (Contents.writeAt c π new).map fun c' => .struct s (cs.set f c')
+       | some c => (Contents.writeAt c π new).map fun c' => .struct s i (cs.set f c')
        | none => none)
-  | .array T cs, f :: π, new =>
+  | .array T i cs, f :: π, new =>
       (match cs[f]? with
-       | some c => (Contents.writeAt c π new).map fun c' => .array T (cs.set f c')
+       | some c => (Contents.writeAt c π new).map fun c' => .array T i (cs.set f c')
        | none => none)
   | _, _ :: _, _ => none
   -- An enum node has no field step: a payload is reached by a `match` arm's
@@ -525,7 +573,7 @@ produces (helper). -/
 def Contents.readAt : Contents → List Nat → Except Violation Contents
   | c, [] => .ok c
   | .hole, _ :: _ => .error .useAfterMove
-  | .struct _ cs, f :: π =>
+  | .struct _ _ cs, f :: π =>
       (match cs[f]? with
        | some c => Contents.readAt c π
        | none => .error .typeConfusion)
@@ -535,7 +583,7 @@ def Contents.readAt : Contents → List Nat → Except Violation Contents
   -- is. A *dynamic* index is not a path: `Contents.resolveDyn` bounds-checks
   -- it (§6.5's (D-Index-Trap)) and only then hands this function the constant
   -- path it resolved to.
-  | .array _ cs, f :: π =>
+  | .array _ _ cs, f :: π =>
       (match cs[f]? with
        | some c => Contents.readAt c π
        | none => .error .typeConfusion)
@@ -573,7 +621,7 @@ check, which is the compiler's order too (probe r11: `a[id(5)][id(0)]` prints
 path, and §6.3's `readAt` and §6.8's `writeAt` take it from there (helper). -/
 def Contents.resolveDyn : Contents → List Int → List (List Nat) → DynStep
   | _, [], [] => .ok []
-  | .array _ cs, i :: is, π :: πs =>
+  | .array _ _ cs, i :: is, π :: πs =>
       if inBoundsIdx i cs.length then
         (match cs[i.toNat]? with
          | none => .stuck .typeConfusion
@@ -635,12 +683,12 @@ def dynPlace (H : Store) (φ : Frame) (p : Place) (vs : List Val) (πs : List (L
 declaration index §6.1's `{ v1, …, vk }_S` carries rather than off a type
 (helper). -/
 def Contents.declaredLinear (D : Decls) : Contents → Bool
-  | .struct s _ =>
+  | .struct s _ _ =>
       (match D.structs[s]? with
        | some sd => sd.attr = .linear
        | none => false)
-  | .hole | .array _ _ | .int _ _ _ | .float _ _ | .bool _ | .unit
-  | .enum _ _ _ => false
+  | .hole | .array _ _ _ | .int _ _ _ | .float _ _ | .bool _ | .unit
+  | .enum _ _ _ _ => false
 
 /-- §6.3's use-plan annotation `μ`, recovered from the store: `some (π_d, π_s)`
 where the path has a proper prefix of declared-`linear` struct type — §4.2's
@@ -658,16 +706,16 @@ its own and the walk continues into the element — the array clause of
 `Ty.declaredLinear` (`Syntax.lean`), read on the value. -/
 def Contents.declaredPlan (D : Decls) : Contents → List Nat → Option (List Nat × List Nat)
   | _, [] => none
-  | .struct s cs, f :: π =>
+  | .struct s i cs, f :: π =>
       (match cs[f]? with
        | some cf =>
            (match Contents.declaredPlan D cf π with
             | some r => some (f :: r.1, r.2)
             | none =>
-                if (Contents.struct s cs).declaredLinear D then some ([], f :: π) else none)
+                if (Contents.struct s i cs).declaredLinear D then some ([], f :: π) else none)
        | none =>
-           if (Contents.struct s cs).declaredLinear D then some ([], f :: π) else none)
-  | .array _ cs, c :: π =>
+           if (Contents.struct s i cs).declaredLinear D then some ([], f :: π) else none)
+  | .array _ _ cs, c :: π =>
       (match cs[c]? with
        | some ce =>
            (match Contents.declaredPlan D ce π with
@@ -676,7 +724,7 @@ def Contents.declaredPlan (D : Decls) : Contents → List Nat → Option (List N
        | none => none)
   | .hole, _ :: _ => none
   | .int _ _ _, _ :: _ | .float _ _, _ :: _ | .bool _, _ :: _ | .unit, _ :: _
-  | .enum _ _ _, _ :: _ => none
+  | .enum _ _ _ _, _ :: _ => none
 
 /-- Evaluation results: a value with the final store and trace (§6.12's normal
 result); a value handed back by an unwinding `return`, whose frame's scopes
@@ -793,20 +841,20 @@ def dropContents (D : Decls) : Contents → Except Violation (List Event)
   | .float _ _ => .ok []
   | .bool _ => .ok []
   | .unit => .ok []
-  | .struct s cs =>
+  | .struct s i cs =>
       match D.structs[s]? with
       | none => .error .unbound
       | some sd =>
           match dropContentsList D cs with
           | .error w => .error w
           | .ok evs =>
-              .ok ((if sd.dtor then [Event.dtor s (.struct s cs)] else []) ++ evs)
-  | .enum _ _ cs => dropContentsList D cs
+              .ok ((if sd.dtor then [Event.dtor s (.struct s i cs)] else []) ++ evs)
+  | .enum _ _ _ cs => dropContentsList D cs
   -- §6.11's `drop(H, [v1,…,vn]) = drop*(H, [v1,…,vn])`: an array declares no
   -- destructor of its own — `3.9:14` gives `[T; n]` one exactly when `T` has
   -- one — so the walk is the elements' own, in **ascending index order**
   -- (`3.9:15`, `3.8:73`), every `⊘` skipped.
-  | .array _ cs => dropContentsList D cs
+  | .array _ _ cs => dropContentsList D cs
 
 /-- `drop*(H, [c1,…,ck])` (§6.11): fold `drop` over the contents left to right
 — for a struct's fields, declaration order (`3.9:13`); for an array's
@@ -840,12 +888,12 @@ def dropEvents (D : Decls) : Contents → List Event
   | .float _ _ => []
   | .bool _ => []
   | .unit => []
-  | .struct s cs =>
+  | .struct s i cs =>
       (match D.structs[s]? with
-       | some sd => if sd.dtor then [Event.dtor s (.struct s cs)] else []
+       | some sd => if sd.dtor then [Event.dtor s (.struct s i cs)] else []
        | none => []) ++ dropEventsList D cs
-  | .enum _ _ cs => dropEventsList D cs
-  | .array _ cs => dropEventsList D cs
+  | .enum _ _ _ cs => dropEventsList D cs
+  | .array _ _ cs => dropEventsList D cs
 
 /-- The same over a field, payload or element list: the members' events
 concatenated in declaration order (`3.9:13`) or ascending index order
@@ -876,11 +924,11 @@ on the compiler: a declared-`linear` `{ p, arr: [S1; 3], q }` destructured at
 def Contents.splitResidue (D : Decls) :
     Contents → List Nat → Except Violation (Contents × List Contents)
   | c, [] => .ok (c, [])
-  | .struct _ cs, f :: π => Contents.splitFields D cs f π
-  | .array _ cs, c :: π => Contents.splitFields D cs c π
+  | .struct _ _ cs, f :: π => Contents.splitFields D cs f π
+  | .array _ _ cs, c :: π => Contents.splitFields D cs c π
   | .hole, _ :: _ => .error .useAfterMove
   | .int _ _ _, _ :: _ | .float _ _, _ :: _ | .bool _, _ :: _ | .unit, _ :: _
-  | .enum _ _ _, _ :: _ => .error .typeConfusion
+  | .enum _ _ _ _, _ :: _ => .error .typeConfusion
 
 /-- `split`'s step over one node's stored members — a declaration's fields, or
 an array's elements: retain the members before the selected slot, recurse into
@@ -1222,6 +1270,24 @@ def OpRes.toRes (H : Store) : OpRes → EvalRes
   | .trap k => .panic k []
   | .confused => .stuck .typeConfusion
 
+/-- **Aggregate introduction mints a value identity** ((D-Struct) and (D-Array)
+§6.5, (D-Enum-Intro) §6.6, and the repeat form): the new value's identity is
+`H.length`, the next index of the store, and that index is reserved by
+appending `†`. §6.1 draws every identity from one pool — "a fresh identity is
+one not in `dom(H)`; dead allocations stay in the domain as `†`, so an
+identity is never reused" — so a reserved index is a name no later mint, and
+no later binding, can take. The reserved slot holds no storage and nothing
+binds it; it is never read. The identity travels with the value — through
+`Contents.ofVal`/`toVal` into and out of cells, into a callee's parameter
+cells and a `match` arm's payload cells — and the drop trace records it
+(`Event`), which is what `no_double_free` (`Trace.lean`) counts.
+
+The copy-closure monitor (`Contents.copyClosed`) runs here, on the finished
+value (helper). -/
+def introVal (D : Decls) (H : Store) (mk : Nat → Val) : EvalRes :=
+  if (Contents.ofVal (mk H.length)).copyClosed D then .ok (H ++ [.dead]) (mk H.length) []
+  else .stuck .typeConfusion
+
 /-- The interpreter, over a `FloatOps` (`Float.lean`): §2 fixes `rnd_w` and
 `σ_NaN` per *target*, not per rule, so the machine takes them as a parameter
 and every theorem quantifies over a model that satisfies §7's laws. Rule
@@ -1334,7 +1400,7 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
            match P.decls.structs[s]? with
            | none => .stuck .unbound
            | some sd =>
-               if sd.fields.length = vs.length then .ok H₁ (.struct s vs) []
+               if sd.fields.length = vs.length then introVal P.decls H₁ (fun i => .struct s i vs)
                else .stuck .typeConfusion)
   | fuel + 1, P, H, φ, .mkEnum e k args =>
       -- (D-Enum-Intro) §6.6: an enum literal is a redex once every payload
@@ -1352,7 +1418,7 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
              match ed.variants[k]? with
              | none => .stuck .typeConfusion
              | some Ts =>
-                 if Ts.length = vs.length then .ok H₁ (.enum e k vs) []
+                 if Ts.length = vs.length then introVal P.decls H₁ (fun i => .enum e k i vs)
                  else .stuck .typeConfusion)
   | fuel + 1, P, H, φ, .«match» scrut arms =>
       -- (D-Match) §6.6: reduce the scrutinee to an enum value — a *use* of its
@@ -1367,7 +1433,7 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
       -- judgment already pins.
       (eval M fuel P H φ scrut).andThen fun H₀ v =>
         match v with
-        | .enum _ k vs =>
+        | .enum _ k _ vs =>
           (match arms[k]? with
            | none => .stuck .typeConfusion
            | some body =>
@@ -1404,7 +1470,7 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
       -- arity check: the value's length **is** the literal's.
       (match evalArgs (fun H' e => eval M fuel P H' φ e) H args with
        | .abort r => r
-       | .ok H₁ vs tr => EvalRes.withTrace tr (.ok H₁ (.array T vs) []))
+       | .ok H₁ vs tr => EvalRes.withTrace tr (introVal P.decls H₁ (fun i => .array T i vs)))
   | fuel + 1, P, H, φ, .repeatArray T e n =>
       -- The surface repeat form, whose dynamics is §2's elaboration of it:
       -- `7.1:39` evaluates the operand **exactly once** and copies its result
@@ -1417,7 +1483,7 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
       -- reaches the refusal: `Typed.repeatArray`'s `T.mult = .copy` premise and
       -- `HasTy.mult_eq` give it (`soundness`).
       (eval M fuel P H φ e).andThen fun H' v =>
-        if v.mult P.decls = .copy then .ok H' (.array T (List.replicate n v)) []
+        if v.mult P.decls = .copy then introVal P.decls H' (fun i => .array T i (List.replicate n v))
         else .stuck .typeConfusion
   | fuel + 1, P, H, φ, .indexRead p idx πs =>
       -- (D-Index)/(D-Index-Trap) §6.5 at a place below one or more **dynamic**
@@ -1484,7 +1550,9 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
                     | some sub' =>
                       match c.writeAt p.path sub' with
                       | none => .stuck .typeConfusion
-                      | some c' => .ok (H₂.set ℓ (.full c')) .unit evs
+                      | some c' =>
+                        if c'.copyClosed P.decls then .ok (H₂.set ℓ (.full c')) .unit evs
+                        else .stuck .typeConfusion
   | fuel + 1, P, H, φ, .indexDrop p idx πs =>
       -- §6.11's `@drop(p)` at a `Copy` place below a dynamic index. A `Copy`
       -- place owes no glue and changes no ownership, so what is left of the
@@ -1582,7 +1650,10 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
                   | .ok evs =>
                       match c.writeAt p.path (Contents.ofVal v) with
                       | none => .stuck .typeConfusion
-                      | some c' => .ok (H₁.set ℓ (.full c')) .unit evs
+                      | some c' =>
+                          -- The copy-closure monitor (`Contents.copyClosed`).
+                          if c'.copyClosed P.decls then .ok (H₁.set ℓ (.full c')) .unit evs
+                          else .stuck .typeConfusion
   | fuel + 1, P, H, φ, .seq e₁ e₂ =>
       (eval M fuel P H φ e₁).andThen fun H₁ v₁ =>
         match v₁.mult P.decls with
