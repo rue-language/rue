@@ -211,3 +211,7 @@ shape.
   the generated index from every §5/§6 rule to the declaration that
   mechanizes it or *not yet mechanized*, and `lean/README.md` has the build
   commands (`scripts/rue lean`).
+- **`FIELD.md`**: the field map. For each of the eight subfields of the
+  programming-languages literature the core draws on, it lists the canonical
+  sources (every one fetched), the accepted terms, symbols and
+  theorem forms, and the terms we use that differ from them.
