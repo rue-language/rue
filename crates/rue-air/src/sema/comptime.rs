@@ -3114,6 +3114,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let literal_type = env.literal_type.take();
         if let Some(ty) = literal_type.as_ref() {
             host_value!(self.admit_float_literal(&data, ty, span));
+            if let Some(magnitude) = self.negated_integer_literal_at_float(&data, ty) {
+                return self.negated_integer_literal_as_float(magnitude, ty.clone());
+            }
         }
         match data {
             InstData::Call { name, args } => {
@@ -3196,6 +3199,41 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         };
         self.host
             .admit_comptime_float_literal(&literal, width, &self.diagnostic_site(span))
+    }
+
+    /// The magnitude of `instruction` when it is a negated integer literal
+    /// (`-0`, `-(0)`) and `ty` is a float type, so that the literal takes
+    /// `ty` before it is negated (spec 3.12:11, 3.12:24).
+    fn negated_integer_literal_at_float(&self, instruction: &InstData, ty: &H::Type) -> Option<u64> {
+        let InstData::Neg { operand } = instruction else {
+            return None;
+        };
+        let InstData::IntConst(magnitude) = self.program_rir().get(*operand).data else {
+            return None;
+        };
+        self.host.type_float_width(ty).map(|_| magnitude)
+    }
+
+    /// A negated integer literal whose type is the float type `ty`. It is one
+    /// literal, so it becomes the float nearest to its exact integer value, as
+    /// the bare literal does (spec 3.12:11): `f(-2)` at a `comptime v: f32`
+    /// binds `-2.0`. The sign stays on the float, so `-0` is `-0.0`, as run
+    /// time negates the converted literal (3.12:24). This is the one
+    /// conversion for both the type a host retains for the expression and a
+    /// declared result type (a `const` initializer, a `let` annotation, an
+    /// aggregate slot or a return type), so `const N: f64 = -0;` and
+    /// `let n: f64 = -0;` agree (RUE-2402, RUE-2408).
+    #[inline(never)]
+    fn negated_integer_literal_as_float(
+        &mut self,
+        magnitude: u64,
+        ty: H::Type,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let text = format!("-{magnitude}");
+        match host_value!(self.host.float_value_from_text(&text, Some(ty))) {
+            Some(value) => ComptimeOutcome::Known(value),
+            None => ComptimeOutcome::RuntimeDependent,
+        }
     }
 
     /// Evaluate `inst` as an expression whose value takes the declared type
@@ -3518,22 +3556,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // Unary negation: -expr
             InstData::Neg { operand } => {
                 if let InstData::IntConst(magnitude) = self.program_rir().get(*operand).data {
-                    // A negated integer literal is one literal, so where a
-                    // float is expected it becomes the float nearest to its
-                    // exact integer value, as the bare literal does above
-                    // (spec 3.12:11): `f(-2)` at a `comptime v: f32` binds
-                    // `-2.0`. The sign stays on the float, so `-0` is `-0.0`,
-                    // as run time negates the converted literal (3.12:24).
+                    // A host that retains expression types gives the
+                    // literal its float type here; a declared result type
+                    // reaches it through `eval` instead.
                     if let Some(ty) = self
                         .host
                         .const_expr_type(&self.program_key(), env, inst_ref)
                         && self.host.type_float_width(&ty).is_some()
                     {
-                        let text = format!("-{magnitude}");
-                        return match host_value!(self.host.float_value_from_text(&text, Some(ty))) {
-                            Some(value) => ComptimeOutcome::Known(value),
-                            None => ComptimeOutcome::RuntimeDependent,
-                        };
+                        return self.negated_integer_literal_as_float(magnitude, ty);
                     }
                     let literal = H::Value::integer(magnitude as i128);
                     let ty =
