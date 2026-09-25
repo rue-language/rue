@@ -139,17 +139,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// Lower explicit call operands through the canonical ownership/coercion
-    /// authority. Module-local import bindings opt into a final semantic type
-    /// check because inference cannot recover their defining file; ordinary
-    /// and specialized calls preserve their inferred/comptime and physical
-    /// view types here.
+    /// authority, then require each operand's analyzed type to be its
+    /// parameter's type ([`Self::require_slot_type`]). Inference cannot be
+    /// trusted for this: an operand it has no fact for (an unreduced
+    /// constructor head, typed `<error>`) unifies with any parameter
+    /// (RUE-2438). Only a generic callee skips the check here, because its
+    /// declared parameter types still mention type parameters; it checks each
+    /// operand against the substituted type once the call's type arguments
+    /// are known.
     pub(super) fn analyze_call_operands(
         &mut self,
         air: &mut Air,
         args_range: &rue_rir::RirCallArgsRange,
         param_types: &[Type],
         param_modes: &[RirParamMode],
-        validate_semantic_types: bool,
+        check_operand_types: bool,
         call_may_continue: bool,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<CallOperands> {
@@ -162,16 +166,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             call_may_continue,
             ctx,
         )?;
-        if validate_semantic_types {
+        if check_operand_types {
             for ((arg, air_arg), expected) in args.iter().zip(&operands.args).zip(param_types) {
-                let found = air.get(air_arg.value).ty;
-                if !self.types_compatible(found, *expected) {
-                    return Err(self.type_mismatch_error(
-                        *expected,
-                        found,
-                        self.body_rir_ref().get(arg.value).span,
-                    ));
-                }
+                self.require_slot_type(
+                    *expected,
+                    air.get(air_arg.value).ty,
+                    self.body_rir_ref().get(arg.value).span,
+                )?;
             }
         }
         Ok(operands)
@@ -679,7 +680,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             args_range,
             &param_types,
             &param_modes,
-            false,
+            !fn_info.is_generic,
             !fn_info.return_type.is_never(),
             ctx,
         )?;
@@ -1427,7 +1428,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             args_range,
             &method_param_types,
             &method_param_modes,
-            false,
+            true,
             receiver_continues && !return_type.is_never(),
             ctx,
         );
@@ -1826,7 +1827,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             args_range,
             &method_param_types,
             &method_param_modes,
-            false,
+            true,
             !return_type.is_never(),
             ctx,
         )?;

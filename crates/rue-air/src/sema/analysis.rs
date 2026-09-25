@@ -380,6 +380,32 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             span,
         )
     }
+
+    /// Require a value's analyzed AIR type to be the declared type of the
+    /// slot it flows into: a call parameter, an assignment target, a function
+    /// result, or an array element.
+    ///
+    /// Inference normally makes this check redundant by unifying the operand
+    /// with the slot, but it cannot when it has no fact for the operand: a
+    /// constructor head it could not reduce is typed `<error>`, which unifies
+    /// with anything, while AIR emission still reduces that head to a concrete
+    /// nominal. Every slot that stores or passes the value without a
+    /// conversion step must therefore compare the type AIR emission computed,
+    /// never the inferred one, or a value of another instance or layout
+    /// reaches code generation (RUE-2438). `!` and `<error>` keep their
+    /// recovery coercions, and an `<error>` slot has already been reported.
+    pub(crate) fn require_slot_type(
+        &self,
+        expected: Type,
+        found: Type,
+        span: Span,
+    ) -> CompileResult<()> {
+        if expected.is_error() || self.types_compatible(found, expected) {
+            Ok(())
+        } else {
+            Err(self.type_mismatch_error(expected, found, span))
+        }
+    }
 }
 
 mod builtin_ops;

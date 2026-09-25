@@ -634,7 +634,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             args_range,
             &param_types,
             &param_modes,
-            false,
+            true,
             !result.is_never(),
             ctx,
         )?;

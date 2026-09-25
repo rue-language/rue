@@ -1650,7 +1650,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             args_range,
             &param_types,
             &param_modes,
-            false,
+            true,
             true,
             ctx,
         )?;
@@ -3028,19 +3028,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // identity before emitting it so equal source/target layout is
                 // a proved invariant, not an assumption. Never/Error retain
                 // their usual recovery coercions and cannot execute a store.
-                if !self.types_equivalent(value_result.ty, param_ty)
-                    && !value_result.ty.is_never()
-                    && !value_result.ty.is_error()
-                    && !param_ty.is_error()
-                {
-                    return Err(CompileError::new(
-                        ErrorKind::TypeMismatch {
-                            expected: self.format_type_name(param_ty),
-                            found: self.format_type_name(value_result.ty),
-                        },
-                        self.body_rir_ref().get(value).span,
-                    ));
-                }
+                self.require_slot_type(
+                    param_ty,
+                    value_result.ty,
+                    self.body_rir_ref().get(value).span,
+                )?;
 
                 // RUE-387: reassigning an `inout` parameter whose type carries
                 // a linear value would drop the caller's live value implicitly.
@@ -3127,17 +3119,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
                 ctx,
             )?;
-            // Constraint generation deliberately imposes no equality on a
-            // `str` store, so the literal RHS above can materialize as a
-            // 2-word view instead of a `String`. That exemption also let a
-            // value of an unrelated type through: `let mut s: str = "hello";
-            // s = 5;` overwrote the view's pointer word and `s.len()` then
-            // read a corrupted length (RUE-2248). The store itself is a plain
-            // copy, so require the value to be a `str` here, after the escape
-            // diagnostics above have had their say.
-            if value_result.continues && !self.types_compatible(value_result.ty, local_ty) {
-                return Err(self.type_mismatch_error(local_ty, value_result.ty, span));
-            }
+        }
+        // The store is a plain copy with no conversion step, so the value
+        // must already have the local's type. Inference does not guarantee
+        // it: it imposes no equality on a `str` store (so a literal RHS can
+        // materialize as a 2-word view), which let `s = 5` overwrite a `str`
+        // view's pointer word (RUE-2248), and it has no fact for a
+        // constructor head it could not reduce, which let another instance's
+        // layout overwrite the local (RUE-2438). Checked after the `str`
+        // escape diagnostics above have had their say.
+        if value_result.continues {
+            self.require_slot_type(local_ty, value_result.ty, span)?;
         }
 
         // Assignment to a mutable variable resets its move state.
@@ -5454,6 +5446,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
             }
 
+            // A place write copies the value with no conversion step, so the
+            // value must already have the field's type; inference has no
+            // fact for an unreduced constructor head (RUE-2438).
+            if value_result.continues {
+                self.require_slot_type(field_type, value_result.ty, span)?;
+            }
             // Emit PlaceWrite instruction
             let place_ref = Self::build_place_ref(air, &trace)?;
             let air_ref = air.add_inst(AirInst {
@@ -5723,6 +5721,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
             }
 
+            // A place write copies the value with no conversion step, so the
+            // value must already have the element's type; inference has no
+            // fact for an unreduced constructor head (RUE-2438).
+            if value_result.continues {
+                self.require_slot_type(elem_type, value_result.ty, span)?;
+            }
             // Emit PlaceWrite instruction
             let place_ref = Self::build_place_ref(air, &trace)?;
             let air_ref = air.add_inst(AirInst {
