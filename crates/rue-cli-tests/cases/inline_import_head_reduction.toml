@@ -154,3 +154,47 @@ pub fn R(comptime T: type) -> type { struct { v: T, w: T } }
 """ },
 ]
 exit_code = 42
+
+[[case]]
+name = "inline_import_head_resolves_relative_to_the_importing_file"
+description = "An inline @import in lib/sub/rel.rue resolves against lib/sub: `@import(\"sib.rue\")` reaches lib/sub/sib.rue (+100), not the same-named root sib.rue (+1), and `@import(\"../cell.rue\")` reaches lib/cell.rue."
+files = [
+    { path = "main.rue", source = """
+const rel = @import("lib/sub/rel.rue");
+fn main() -> i32 { @intCast(rel.mk(41) + rel.mk2(1) - 101) }
+""" },
+    { path = "lib/sub/rel.rue", source = """
+pub fn mk(x: i64) -> i64 {
+    let c = @import("../cell.rue").Cell(i64) { v: x };
+    c.add(1)
+}
+pub fn mk2(x: i64) -> i64 {
+    @import("sib.rue").Sib(i64).make(x).v
+}
+""" },
+    { path = "lib/sub/sib.rue", source = """
+pub fn Sib(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn make(x: T) -> Self { Self { v: x + 100 } }
+    }
+}
+""" },
+    { path = "sib.rue", source = """
+pub fn Sib(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn make(x: T) -> Self { Self { v: x + 1 } }
+    }
+}
+""" },
+    { path = "lib/cell.rue", source = """
+pub fn Cell(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn add(self, x: T) -> T { self.v + x }
+    }
+}
+""" },
+]
+exit_code = 42
