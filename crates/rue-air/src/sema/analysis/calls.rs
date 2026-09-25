@@ -15,6 +15,33 @@ use crate::sema::context::DivergenceKind;
 use crate::sema::info::FunctionCallInfo;
 use ahash::AHashMap;
 
+/// Reject a runtime call whose result is a comptime-only value.
+///
+/// A `type` (or module) value cannot exist at runtime (spec 4.14:6), so a call
+/// producing one must reduce at compile time: an all-`comptime` call to a
+/// `-> type` function is folded to a `TypeConst` before emission (4.14:28). A
+/// call reaching an emitter with such a result — the callee has a runtime
+/// parameter, or its form is not reduced — has no call ABI to lower to, so it
+/// is diagnosed at the call instead of reaching codegen (RUE-2417).
+fn reject_runtime_comptime_only_result(return_type: Type, span: Span) -> CompileResult<()> {
+    if return_type.is_comptime_type() || return_type.is_module() {
+        return Err(CompileError::new(
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: "type values cannot exist at runtime, and this call producing one \
+                         cannot be evaluated at compile time"
+                    .to_string(),
+            },
+            span,
+        )
+        .with_help(
+            "a call to a function returning `type` is evaluated at compile time only when \
+             every parameter of the function is `comptime` and every argument is \
+             compile-time known",
+        ));
+    }
+    Ok(())
+}
+
 /// Validate membership for a module-member function call.
 ///
 /// Membership (spec 4.13:90, RUE-140): a module contains only declarations
@@ -147,6 +174,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         continues: bool,
         span: Span,
     ) -> CompileResult<AnalysisResult> {
+        reject_runtime_comptime_only_result(return_type, span)?;
         let air_ref = air.add_call(None, name, args, return_type, span)?;
         let air_ref =
             self.wrap_value_with_temp_scope(air, air_ref, return_type, span, temp_scope)?;
@@ -569,8 +597,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 });
                 return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
             }
-            // If we can't evaluate at compile time, fall through to runtime call
-            // (which will fail at link time, but gives a better error experience)
+            // A body that does not reduce falls through to the runtime call
+            // emission below, which rejects its `type` result (RUE-2417).
         }
 
         // Only runtime calls contribute a lazy body edge. A successfully
@@ -883,10 +911,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     });
                     return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
                 }
-                // If we can't evaluate at compile time, fall through to the error below
-                // (we can't have a runtime call that returns `type`)
+                // A body that does not reduce falls through to the emission
+                // below, which rejects the runtime `type` result (RUE-2417).
             }
 
+            reject_runtime_comptime_only_result(return_type, span)?;
             let air_ref = air.add_call_generic(
                 name,
                 &type_args,
@@ -1549,10 +1578,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Functions with comptime parameters need specialization: a plain
         // Call to the base name would reference a body that is never
         // analyzed (generic bodies are only materialized per specialization,
-        // RUE-166). Use the already-resolved call path so module-qualified
-        // type constructors do not re-enter unqualified source-name lookup;
-        // module membership and accessibility were checked above.
-        if fn_info.is_generic {
+        // RUE-166). A `-> type` function reduces at compile time exactly as an
+        // unqualified call to it does (spec 4.14:5a, 4.14:28), including a
+        // zero-parameter one. Use the already-resolved call path so
+        // module-qualified type constructors do not re-enter unqualified
+        // source-name lookup; module membership and accessibility were checked
+        // above.
+        if fn_info.is_generic || self.function_returns_type(&fn_info) {
             return self.analyze_resolved_function_call(
                 air,
                 function_key,
