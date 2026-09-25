@@ -399,8 +399,9 @@ prove is that `exactOps` satisfies the laws; that is the residual assumption,
 and it is checked rather than proved, by running every float corpus case
 against the compiler. `propext` and
 `Quot.sound` are this project's policy; `Classical.choice` is kernel-checked
-but outside it; `sorryAx` and `Lean.ofReduceBool`/`ofReduceNat`
-(`native_decide`) are holes. The exe exits non-zero on anything outside the
+but outside it; `sorryAx` and the axiom `native_decide` adds (one per use
+from Lean 4.29, `foo._native.native_decide.ax_1_1`; `Lean.ofReduceBool`
+before) are holes. The exe exits non-zero on anything outside the
 policy, which fails the Buck build too — and unlike the target's `trust` list,
 it covers *every* theorem, including ones no trusted theorem uses.
 
@@ -411,7 +412,9 @@ CI runs the Lean build until ADR-0097's gate is met (RUE-2241), so a reviewer
 regenerates both and diffs, which is what `GUIDE.md`'s "Validating this in
 thirty minutes" asks for. `scripts/rue lean` prints `trust.md` from the Buck
 build's own outputs, beside `digest.md`, `corpus.json`, `axioms.txt`, and the
-`leanchecker` re-check.
+`leanchecker` re-check of every module in the roots' import closure outside
+the toolchain, which is what guarantees that the kernel checked every
+declaration.
 
 ## How to read this, with no Lean
 
@@ -545,7 +548,7 @@ its own layer or a lower one:
 | **L0 syntax** | `Float`, `Syntax` | §2's syntax, types and float data |
 | **L1 definitions** | `Statics`, `Dynamics`, `Step`, `Soundness/Defs`, `Checker/Defs`, `Trace/Defs`, `Adequacy/Defs` | the semantics (§5's judgment, `eval`, §6's `Step`), and every definition a headline statement is written in: value typing and `FrameMatches`, the checker algorithm, the trace projections, ledgers and configuration invariants, `Config.SafeAt` |
 | **L2 proofs** | `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives) |
-| **L3 tooling** | `Examples`, `Witnesses`, `Print`, `Corpus`, `Gen`, `Explain*`, `Digest`, the `*Main` executables, the root `RueCore` | example and corpus programs and the theorems about them, the printer, the generator, the explain and digest reports |
+| **L3 tooling** | `Examples`, `Witnesses`, `Print`, `Corpus`, `Gen`, `Explain*`, `Digest`, `Layers`, `Lint`, the `*Main` executables, the root `RueCore` | example and corpus programs and the theorems about them, the printer, the generator, the explain and digest reports, the layer table and the lint |
 
 L3 may import anything; nothing in L0–L2 imports L3, so no theorem of the
 spine depends on the printer, the generator, the corpus or an example
@@ -559,14 +562,20 @@ because they mention example or corpus programs. The statement/proof split
 adds a statements layer between L1 and L2 on top of this.
 
 **The audit.** `lake exe ruecore-layers`, after `lake build`, reads each
-module's imports from its compiled `.olean` header, walking from the library
-root and every executable's root, and checks them against the one table in
-`RueCore/LayersMain.lean`. It fails on an import from a higher layer, on an
+module's imports from its compiled `.olean` header, walking the whole import
+closure of the library root and every executable's root, and checks them
+against the one table in `RueCore/Layers.lean`. The walk stops at the
+toolchain's own modules (`Init`, `Std`, `Lean`, `Lake`, when the `.olean` is
+the one the toolchain ships), which are trusted as the toolchain is. It fails
+on any other module in the closure that is not the package's (a library a
+`[[lean_lib]]` line adds, say), on an import from a higher layer, on an
 L0–L2 module importing anything outside the package but `Init`, on an L0–L2
 module that is not a `module`, and on a module missing from the table, a
 stale table entry, or a source file nothing imports. It prints the graph, one
-line per module, and ends with `ruecore-layers: 30 modules, 67 package
-imports, no upward import`. The Buck target runs it as the `layers.txt`
+line per module, and ends with `ruecore-layers: 33 modules, 71 package
+imports, no upward import; import closure: 33 modules outside the toolchain,
+all the package's, …`. `lake exe ruecore-layers --closure` prints that
+closure, one module per line: the list the kernel re-check replays. The Buck target runs it as the `layers.txt`
 report, so `./buck2 build root//:lean-ruecore` fails on an upward import;
 RUE-2241 picks it up with the rest of the Lean build.
 
@@ -588,7 +597,10 @@ hide definition bodies from the proofs and tools above them (a downstream
 enforced by the audit instead. `leanchecker` and the digest's
 `importModules` load every part of a module's `.olean` (the private part
 holds proof bodies), so the kernel re-check and `#print axioms` still see
-every proof.
+every proof. The re-check replays every module of the roots' import closure
+outside the toolchain, as the audit walks it — the library, each executable's
+root and the tooling it imports — and the audit makes that closure exactly the
+package's modules ("The trusted-base lint").
 
 The import graph, from the audit (an arrow points from a module to one that
 imports it; the root `RueCore`, which imports every library module, is left
@@ -629,7 +641,10 @@ flowchart BT
     Explain_Text["Explain.Text"]
     ExplainMain["ExplainMain"]
     Gen["Gen"]
+    Layers["Layers"]
     LayersMain["LayersMain"]
+    Lint["Lint"]
+    LintMain["LintMain"]
     Print["Print"]
     root["RueCore (root)"]
     Witnesses["Witnesses"]
@@ -664,7 +679,11 @@ flowchart BT
   Corpus --> CorpusMain
   Gen --> CorpusMain
   root --> Digest
-  Digest --> DigestMain
+  Lint --> DigestMain
+  Layers --> LayersMain
+  Digest --> Lint
+  Layers --> Lint
+  Lint --> LintMain
   Checker --> Examples
   Corpus --> Explain
   Explain_Ledger --> Explain_Html
@@ -680,6 +699,100 @@ flowchart BT
   TraceOrder --> Witnesses
   Corpus --> Witnesses
 ```
+
+## The trusted-base lint (RUE-2457)
+
+`TRUST.md` reports each theorem's axioms; the lint turns the trust bar into a
+build failure and extends it to every declaration. `lake exe ruecore-lint`,
+after `lake build` and the executables' builds, imports each root of the layer
+table in turn (the library, then each executable, since each defines its own
+`main`) and asks the compiled environment, for every constant declared in a
+package module — about 10,000, generated ones included:
+
+- **Axioms, by allow-list.** One memoized pass over every constant's type and
+  value (after TauCeti's `scripts/Axioms.lean`, and walking the bodies itself
+  rather than reading the axiom summaries Lean stores in each `.olean`). Any
+  axiom but `propext` and `Quot.sound` fails, whatever it is called. That is
+  what catches `native_decide`: since Lean 4.29 each use adds its own axiom,
+  `foo._native.native_decide.ax_1_1 : decide p = true`, which mentions no
+  compiler primitive and would pass a lint that matched `Lean.ofReduceBool`
+  by name. One exception, listed rather than failed: an L3 *definition* that
+  reaches `Classical.choice`, which Lean's own library brings (the proofs
+  inside `String` operations, and a `partial def`'s `Nonempty` inhabitant).
+  No statement depends on tooling code; every L3 *theorem*, and every
+  declaration of L0–L2, is held to the allow-list.
+- **Constructs, in L0–L2.** No `unsafe`, `partial def`, `@[implemented_by]`,
+  `@[extern]`, `opaque`, or direct use of a compiler-evaluation primitive
+  (`Lean.reduceBool`, `Lean.ofReduceBool`, `Lean.trustCompiler`, …). Each
+  makes the code `#eval` runs differ from the definition the kernel reasons
+  about, or hides a definition from the kernel, without leaving an axiom. L3
+  may use them, and every use is listed. So are the four printers `deriving
+  Repr` writes as `partial def`s for the nested types of L0–L1 (`Expr`,
+  `Val`, `Contents`, `OwnSt`). They are recognized by where they came from,
+  not by their shape: an `opaque` returning `Std.Format` under a `Repr`
+  instance, where the printer and the instance were both declared inside the
+  source range of the type's own declaration, which is where a `deriving`
+  clause puts them. A hand-written `partial def instReprT.repr` is a command
+  of its own, outside that range, and fails. The printers only render values
+  for `#eval`, and none is in the trusted base. The exemption is a policy
+  convenience, not a trust claim: one macro call that writes a type, a
+  printer and its instance gives all three the call's range, so it passes
+  too, and what keeps such a printer harmless is that it is an `opaque` of
+  type `Std.Format` that no headline statement reaches. The `f._unsafe_rec` Lean compiles
+  beside every recursive definition is the compiler's, and is not reported
+  apart from `f`.
+- **Options, a courtesy.** No `set_option debug.skipKernelTC` (it adds
+  declarations the kernel never checks) and no `maxHeartbeats 0` in the
+  sources or `lakefile.toml`; bounded overrides are listed. Options leave no
+  trace in the environment, so this one check reads the sources, outside
+  comments and string literals, as one stream of tokens: a line break after
+  `set_option`, a `«quoted»` name part and `set_option … in` read as they do
+  to Lean. A `set_option` whose name is not a literal identifier (a
+  macro's `$o:ident`) fails, and so does any other name mentioning
+  `skipKernelTC`. The scan is best-effort: it does not parse every lexical
+  form (an interpolated string's `{…}`, a raw string, a TOML escape in
+  `lakefile.toml`), so its summary line says what the scan found, not that
+  there is no such option.
+
+**The guarantee is the kernel re-check, not the scan.** A macro or an
+elaborator can set an option without writing `set_option`, and L3 imports
+`Lean`, so no scan of the sources can show that every declaration went
+through the kernel. The toolchain's `leanchecker` does: it replays every
+declaration of a module through the kernel, on top of that module's imports,
+and a declaration the kernel rejects fails it, however the option was set.
+`leanchecker` picks modules by name prefix, not by what imports what, so it
+is given the roots' import closure by name: `lake env leanchecker $(lake exe
+ruecore-layers --closure)`, every module the audit's walk from the `.olean`
+headers reaches outside the toolchain. The toolchain's modules (`Init`,
+`Std`, `Lean`, `Lake`) are not replayed; they are trusted as the toolchain
+is. The audit fails on any other module in the closure, so what is replayed
+is exactly the package's 33 modules. The Buck target runs it after the
+executables are built; a local check should run it too (about 15 s).
+
+It prints each table, ends with one summary line, and exits non-zero on a
+violation, naming each on stderr. The Buck target runs it as the `lint.txt`
+report, so `./buck2 build root//:lean-ruecore` fails on a violation. For
+RUE-2241: when the Lean build enters CI, `lint.txt` is one of the reports it
+gates on, beside `trust.md` and `layers.txt`, and nothing more needs wiring.
+
+**The trusted base.** The same module computes what a reviewer must read to
+know what the headline theorems say: the package definitions their
+statements transitively unfold to (a statement's constants, a definition's
+body, an inductive type's constructors, but no proof). `TRUST.md` prints it
+in its "Trusted base" section. The headline statements are declared once, as
+`RueCore.Lint.headline` in `RueCore/Lint.lean`: 36 theorems, following the
+packet `../REDTEAM.md` asks for: the §7 claims and their linking theorems
+(`checkProgram_sound`, `step_iff`, `Config.stuck_iff`, `run_complete`,
+`run_ne_returned`), each resolved when the module compiles. A lemma
+`03-metatheory.md` cites as a step of a proof (the trace invariants behind
+`no_double_free`, the drop-order lemmas, the float lemmas §7 owes) is not a
+claim and is not on the list; RUE-2460 (the Spec layer) finalizes it. Today their trusted base is 292
+definitions, all in L0 and L1 (the package has 811 theorems besides). A
+definition counts as Lean's own, and is only counted, when Lean's own tables
+record it as such (recursors and their auxiliaries, matchers, projections),
+or when it is named as Lean names a by-product and has no source range of its
+own. Anything else is listed: a hand-written `T.ndrec` or `RueCore._x`, a
+`private` definition, one under an instance's name (`instDecidableEqTy.decEq`).
 
 ## What is mechanized
 
@@ -707,7 +820,8 @@ flowchart BT
 | `RueCore/Explain.lean` | instrumented mirrors of `check` and `eval` — derivation trees with the failing premise named, and step tables with stores and drop events — with the lemmas tying both to the proved definitions | §5, §6 as an explanation |
 | `RueCore/Explain/Text.lean`, `RueCore/Explain/Html.lean`, `RueCore/Explain/Ledger.lean` | the terminal and self-contained-page renderings (`lake exe ruecore-explain`), each ending with the identity ledger: per owned identity, the step that minted it, the steps that ended it and the steps whose destructor ran on it, so "exactly once" and the order are visible; the checked-in text is in `explain/` | §7 |
 | `RueCore/Digest.lean`, `RueCore/DigestMain.lean` | the statement digest and the trust report, walked out of the compiled environment (`lake exe ruecore-digest`) | the claim inventory and its trust boundary |
-| `RueCore/LayersMain.lean` | the layer table and the layering audit over the compiled import graph (`lake exe ruecore-layers`, "Layers" above) | what the claims may depend on |
+| `RueCore/Layers.lean`, `RueCore/LayersMain.lean` | the layer table and the layering audit over the compiled import graph (`lake exe ruecore-layers`, "Layers" above) | what the claims may depend on |
+| `RueCore/Lint.lean`, `RueCore/LintMain.lean` | the headline statements, the trusted-base lint over every declaration of the package, and the trusted base `TRUST.md` prints (`lake exe ruecore-lint`, "The trusted-base lint" above) | what the claims may rest on |
 | `DIGEST.md`, `TRUST.md` | (generated) every theorem's statement with the definitions it is written in terms of; every theorem's axioms, `sorry` count, and declared assumptions | §7's claims, stated |
 | `GUIDE.md`, `INDEX.md` | the reader's guide, including the thirty-minute validation procedure, and the generated form ↔ rule ↔ declaration ↔ paragraph index (`scripts/validate-lean-xref-index.py`) | §2, §5, §6 coverage |
 

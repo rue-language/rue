@@ -766,14 +766,26 @@ rue_tool_test(
 
 # ADR-0097: the mechanized formal core builds against the SHA-pinned Lean
 # distribution (toolchains//:lean-distribution) and reports on itself: the
-# build log, the toolchain's own leanchecker re-check, and the `#print axioms`
+# build log, the toolchain's own leanchecker re-check of every module in the
+# import closure of the library and executable roots outside the toolchain
+# (`ruecore-layers --closure`, walked from the .olean headers; RUE-2457;
+# Init, Std, Lean and Lake are trusted as the toolchain), and the `#print axioms`
 # listing for the theorems named in `trust`, which fails the build if any
 # theorem depends on an axiom beyond propext and Quot.sound. It also runs the
 # package's own reports (RUE-2247): `digest.md`, every theorem's statement,
 # and `trust.md`, every theorem's axioms, which fails the build on a proof
-# outside the policy whether or not `trust` names it, and `layers.txt`, the
-# layering audit (RUE-2456), which fails the build on an import from a higher
-# layer. Deliberately not a test
+# outside the policy whether or not `trust` names it; `lint.txt`, the
+# trusted-base lint (RUE-2457), which fails the build on any axiom outside
+# propext and Quot.sound in any declaration (a tooling definition's
+# Classical.choice, which Lean's own library brings, is listed), on `unsafe`, `partial`,
+# `implemented_by`, `extern` or `opaque` in the syntax, definition and proof
+# layers, and on `debug.skipKernelTC`, a macro-named option or an unbounded
+# `maxHeartbeats` in a scan of the sources (a courtesy: the leanchecker
+# re-check is what guarantees the kernel checked every declaration); and
+# `layers.txt`, the layering audit (RUE-2456), which fails the build on an
+# import from a higher layer, or on a module in the roots' import closure that
+# is neither the package's nor the toolchain's. Both read every executable's compiled modules,
+# so `extra_exes` builds them all before any report runs. Deliberately not a test
 # target: no tier applies, so no CI lane requests it until the ADR's gate is
 # met (RUE-2241). `scripts/rue lean` builds it and prints the trust report.
 lean_package(
@@ -782,10 +794,12 @@ lean_package(
     toolchain = "toolchains//:lean-distribution",
     module = "RueCore",
     corpus_exe = "ruecore-corpus",
-    extra_exes = ["ruecore-explain"],
+    closure_exe = ["ruecore-layers", "--closure"],
+    extra_exes = ["ruecore-explain", "ruecore-digest", "ruecore-layers", "ruecore-lint"],
     report_exes = {
         "digest.md": ["ruecore-digest"],
         "trust.md": ["ruecore-digest", "--trust"],
+        "lint.txt": ["ruecore-lint"],
         "layers.txt": ["ruecore-layers"],
     },
     trust = [
