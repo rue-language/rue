@@ -5,8 +5,9 @@ Each turn of a counted loop moves the mut affine b into t and reinitializes b,
 and t drops after the reinit: 2 and 21 in the loop, 22 at b's scope exit, then
 the value 2. Seeded by the bridge sensitivity drills (RUE-2464): with
 RUE-2380's fix removed the compiler ICEd at -O2 and -O3 (E9000), and no seed
-or generated case reached the shape. Only the bridge's native lanes at those
-levels see that mutant; bin/verify.py runs the default level.
+or generated case reached the shape. Only the harness's O2/O3 compile lanes
+(checker <-> compiler [O2]) see that mutant; bin/verify.py runs the default
+level.
 
 Rules exercised: (Loop-Break) §5.7 · (Use-Move) §5.1 · (Assign) §5.2 · 3.8:55 · §5.6 scope exit · (D-Loop-Iter) §6.10
 
