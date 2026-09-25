@@ -341,6 +341,26 @@ impl LocalModuleScope {
 }
 
 #[derive(Clone)]
+/// What the staged pre-pass learned about this body's generic calls, from
+/// the canonical semantic evaluator, for the final inference pass to use.
+#[derive(Default)]
+struct GenericCallFacts {
+    /// Each evaluated comptime argument, keyed by the argument's `InstRef`.
+    argument_values: AHashMap<InstRef, ConstValue>,
+    /// Each call's return type with its comptime arguments substituted, keyed
+    /// by the call's `InstRef`, for a declared return type that constraint
+    /// generation cannot reduce itself: a type-function application such as
+    /// `-> Box(T)` (RUE-2425).
+    return_types: AHashMap<InstRef, Type>,
+}
+
+impl GenericCallFacts {
+    fn extend(&mut self, other: Self) {
+        self.argument_values.extend(other.argument_values);
+        self.return_types.extend(other.return_types);
+    }
+}
+
 struct PrecomputeSnapshot {
     comptime_local_bindings: Arc<AHashMap<InstRef, Type>>,
     local_annotations: Arc<AHashMap<InstRef, Type>>,
@@ -430,7 +450,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         )?;
         let (
             mut selections,
-            mut argument_values,
+            mut call_facts,
             mut frontier,
             mut fact_nodes,
             mut canonical_evaluations,
@@ -470,7 +490,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     type_subst,
                     value_subst,
                     Some(&selections),
-                    Some(&argument_values),
+                    Some(&call_facts),
                     true,
                     true,
                     Some(&precompute_snapshot),
@@ -501,7 +521,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     &precompute_snapshot.comptime_local_bindings,
                 )?;
                 selections.extend(nested_selections);
-                argument_values.extend(nested_arguments);
+                call_facts.extend(nested_arguments);
                 frontier.extend(nested_frontier);
                 fact_nodes = fact_nodes.saturating_add(nested_fact_nodes);
                 canonical_evaluations =
@@ -519,7 +539,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             type_subst,
             value_subst,
             Some(&selections),
-            Some(&argument_values),
+            Some(&call_facts),
             false,
             false,
             Some(&precompute_snapshot),
@@ -649,7 +669,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         type_subst: Option<&AHashMap<Spur, Type>>,
         value_subst: Option<&AHashMap<Spur, ConstValue>>,
         selections: Option<&AHashMap<InstRef, crate::sema::ComptimeSelection>>,
-        argument_values: Option<&AHashMap<InstRef, ConstValue>>,
+        call_facts: Option<&GenericCallFacts>,
         staged: bool,
         frontier_mode: bool,
         precompute_snapshot: Option<&PrecomputeSnapshot>,
@@ -817,7 +837,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .with_comptime_values(value_subst)
                 .with_comptime_selections(selections, staged)
                 .with_comptime_frontier_mode(frontier_mode)
-                .with_comptime_argument_values(argument_values);
+                .with_comptime_argument_values(call_facts.map(|facts| &facts.argument_values))
+                .with_generic_call_return_types(call_facts.map(|facts| &facts.return_types));
 
             // Build parameter map for constraint context.
             // Convert Type to InferType so arrays are represented structurally.
@@ -1162,7 +1183,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         comptime_local_bindings: &AHashMap<InstRef, Type>,
     ) -> CompileResult<(
         AHashMap<InstRef, crate::sema::ComptimeSelection>,
-        AHashMap<InstRef, ConstValue>,
+        GenericCallFacts,
         VecDeque<ComptimeInferenceFrontier>,
         u64,
         u64,
@@ -1188,7 +1209,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
         }
         let mut selections = AHashMap::new();
-        let mut argument_values = AHashMap::new();
+        let mut call_facts = GenericCallFacts::default();
         let mut frontier = VecDeque::new();
         let can_select = value_subst.is_some_and(|values| !values.is_empty());
         enum FactTask {
@@ -1443,6 +1464,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 let call_args = self.body_rir_ref().call_args(args).to_vec();
                                 canonical_evaluations = canonical_evaluations.saturating_add(
                                     self.collect_generic_argument_facts(
+                                        inst_ref,
                                         function_key,
                                         &call_args,
                                         inst_span,
@@ -1450,7 +1472,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                         type_subst,
                                         value_subst,
                                         &bindings,
-                                        &mut argument_values,
+                                        &mut call_facts,
                                     ),
                                 );
                             }
@@ -1508,7 +1530,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         Ok((
             selections,
-            argument_values,
+            call_facts,
             frontier,
             fact_nodes,
             canonical_evaluations,
@@ -1721,6 +1743,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
     fn collect_generic_argument_facts(
         &mut self,
+        call: InstRef,
         function_key: Spur,
         call_args: &[rue_rir::RirCallArg],
         call_span: Span,
@@ -1728,7 +1751,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         type_subst: Option<&AHashMap<Spur, Type>>,
         value_subst: Option<&AHashMap<Spur, ConstValue>>,
         scope: &FrontierScope,
-        argument_values: &mut AHashMap<InstRef, ConstValue>,
+        call_facts: &mut GenericCallFacts,
     ) -> u64 {
         let Some(function) = self.function_info(function_key) else {
             return 0;
@@ -1764,7 +1787,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         None,
                     )
                 {
-                    argument_values.insert(arg.value, ConstValue::Type(ty));
+                    call_facts
+                        .argument_values
+                        .insert(arg.value, ConstValue::Type(ty));
                     callee_types.insert(param_names[index], ty);
                 }
                 continue;
@@ -1795,9 +1820,32 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 lexical_binding_capture_view(scope),
                 Some(expected),
             ) {
-                argument_values.insert(arg.value, value.clone());
+                call_facts.argument_values.insert(arg.value, value.clone());
                 callee_values.insert(param_names[index], value);
             }
+        }
+        // With every comptime argument known, the return type is the one call
+        // analysis will give this call, computed by the same substitution. It
+        // lets inference see the result of `-> Box(T)`, which it cannot reduce
+        // itself: a field of it, a method on it, or a literal compared with
+        // either then takes the real type (RUE-2425).
+        let comptime_params = param_data
+            .comptime()
+            .iter()
+            .filter(|is_comptime| **is_comptime)
+            .count();
+        if function.return_type.is_comptime_type()
+            && callee_types.len() + callee_values.len() == comptime_params
+            && let Ok(return_type) = self.resolve_substituted_return_type(
+                &function,
+                &callee_types,
+                &callee_values,
+                call_span,
+            )
+            && !return_type.is_comptime_type()
+            && !return_type.is_error()
+        {
+            call_facts.return_types.insert(call, return_type);
         }
         canonical_evaluations
     }
