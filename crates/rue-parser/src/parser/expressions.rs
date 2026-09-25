@@ -238,8 +238,7 @@ impl Parser {
     /// body of the construct the head belongs to: `while return {}` (RUE-209).
     /// A `{` nested in the head's own brackets is an operand again.
     fn jump_operand(&mut self) -> PResult<Option<Box<Expr>>> {
-        if self.expr_terminator() || (self.at(TokenKind::LBrace) && self.at_condition_head_top())
-        {
+        if self.expr_terminator() || (self.at(TokenKind::LBrace) && self.at_condition_head_top()) {
             return Ok(None);
         }
         Ok(Some(Box::new(self.expr()?)))

@@ -56,6 +56,16 @@ fn main() -> i32 { while (break) {} 0 }
 compile_fail = true
 error_contains = ["E0500"]
 
+# Outside a condition head a leading `{` is the operand (RUE-2449), so a
+# block-valued `break` reaches semantic analysis's break-value rejection.
+[[case]]
+name = "break_block_operand_semantic_error"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { loop { break { 2 } } }
+""" }]
+compile_fail = true
+error_contains = ["E0502"]
+
 # =============================================================================
 # RUE-210: an `if`/`match` expression statement followed by a line beginning
 # with unary `-` is two statements, not a subtraction. The `if`/`match` value
