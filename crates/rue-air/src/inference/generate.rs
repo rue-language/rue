@@ -168,6 +168,36 @@ pub struct FunctionSig {
     pub(crate) param_type_syntax: Vec<Option<crate::sema::StructuredTypeSyntax>>,
     /// Exact structured return syntax for the same substitution path.
     pub(crate) return_type_syntax: Option<crate::sema::StructuredTypeSyntax>,
+    /// The file the signature is declared in. Its type syntax resolves in
+    /// that file's scope, never the calling body's (RUE-2422).
+    pub(crate) signature_file: FileId,
+}
+
+/// The scope a type hint's names resolve in.
+#[derive(Debug, Clone, Copy)]
+enum TypeHintScope<'s> {
+    /// A type written in the body under generation, where the body's comptime
+    /// aliases (`let T = i64;`) are in scope.
+    Body,
+    /// A generic callee's declared signature at a call: only the callee's
+    /// comptime parameters and the names of its declaring file are in scope
+    /// (RUE-2422).
+    Signature(&'s FunctionSig),
+}
+
+impl TypeHintScope<'_> {
+    /// Whether `name` is one of the callee's comptime parameters, which hide
+    /// every same-named item in the signature.
+    fn is_comptime_parameter(self, name: Spur) -> bool {
+        match self {
+            Self::Body => false,
+            Self::Signature(func) => func
+                .param_names
+                .iter()
+                .zip(&func.param_comptime)
+                .any(|(param, &comptime)| comptime && *param == name),
+        }
+    }
 }
 
 /// Information about a method during constraint generation.
@@ -1929,6 +1959,7 @@ impl<'a> ConstraintGenerator<'a> {
                                 None,
                                 None,
                                 span.file_id,
+                                TypeHintScope::Body,
                             )
                         });
                     if let Some(annotated_ty) = annotated {
@@ -2201,13 +2232,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // type value), the constraint is skipped and the check happens in
                     // semantic analysis instead (RUE-73, RUE-99).
                     if func.is_generic {
-                        self.generate_generic_call(
-                            &func,
-                            arg_range,
-                            span.file_id,
-                            &mut arg_diverged,
-                            ctx,
-                        )
+                        self.generate_generic_call(&func, arg_range, &mut arg_diverged, ctx)
                     } else if args.len() != func.param_types.len() {
                         // Check argument count matches parameter count.
                         // Semantic analysis will emit a proper error; we just need to avoid
@@ -3648,13 +3673,7 @@ impl<'a> ConstraintGenerator<'a> {
                                 // module boundary cannot change which comptime
                                 // arguments are captured or whether `-> T` is
                                 // substituted.
-                                self.generate_generic_call(
-                                    &func,
-                                    args,
-                                    span.file_id,
-                                    &mut arg_diverged,
-                                    ctx,
-                                )
+                                self.generate_generic_call(&func, args, &mut arg_diverged, ctx)
                             } else {
                                 if call_args.len() == func.param_types.len() {
                                     // Constrain each argument against its declared
@@ -4341,7 +4360,13 @@ impl<'a> ConstraintGenerator<'a> {
     /// important: a higher-precedence enum binding in struct position (or vice
     /// versa) must not fall through to a lower-precedence declaration.
     fn unqualified_nominal_type(&self, type_name: Spur, file_id: FileId) -> Option<Type> {
-        self.unqualified_nominal_type_with_substitution(type_name, file_id, self.type_subst, false)
+        self.unqualified_nominal_type_with_substitution(
+            type_name,
+            file_id,
+            self.type_subst,
+            false,
+            TypeHintScope::Body,
+        )
     }
 
     fn unqualified_nominal_type_with_substitution(
@@ -4350,6 +4375,7 @@ impl<'a> ConstraintGenerator<'a> {
         file_id: FileId,
         substitution: Option<&AHashMap<Spur, Type>>,
         lexical_shadowed: bool,
+        scope: TypeHintScope<'_>,
     ) -> Option<Type> {
         select_unqualified_nominal(|tier| {
             Ok::<_, std::convert::Infallible>(match tier {
@@ -4357,7 +4383,11 @@ impl<'a> ConstraintGenerator<'a> {
                     substitution.and_then(|subst| subst.get(&type_name).copied())
                 }
                 UnqualifiedNominalTier::LexicalAlias => {
-                    if let Some(ty) = self.comptime_alias_types.get(&type_name).copied() {
+                    // The body's comptime aliases are not in a callee
+                    // signature's scope (RUE-2422).
+                    if matches!(scope, TypeHintScope::Signature(_)) {
+                        None
+                    } else if let Some(ty) = self.comptime_alias_types.get(&type_name).copied() {
                         Some(ty)
                     } else if lexical_shadowed {
                         Some(Type::ERROR)
@@ -4522,7 +4552,14 @@ impl<'a> ConstraintGenerator<'a> {
             local, ty, span, ..
         } = pattern
         {
-            let head = self.infer_type_hint(self.rir.type_syntax(), *ty, None, None, span.file_id);
+            let head = self.infer_type_hint(
+                self.rir.type_syntax(),
+                *ty,
+                None,
+                None,
+                span.file_id,
+                TypeHintScope::Body,
+            );
             self.register_struct_pattern_local(*local, head, *span, ctx);
             return;
         }
@@ -4715,7 +4752,14 @@ impl<'a> ConstraintGenerator<'a> {
             // A struct pattern (RUE-2175) contributes its head type; a head
             // that does not resolve here is sema's to report.
             rue_rir::RirPatternView::Struct { ty, span, .. } => self
-                .infer_type_hint(self.rir.type_syntax(), *ty, None, None, span.file_id)
+                .infer_type_hint(
+                    self.rir.type_syntax(),
+                    *ty,
+                    None,
+                    None,
+                    span.file_id,
+                    TypeHintScope::Body,
+                )
                 .unwrap_or_else(|| InferType::Var(self.fresh_var())),
         }
     }
@@ -4741,7 +4785,6 @@ impl<'a> ConstraintGenerator<'a> {
         &mut self,
         func: &FunctionSig,
         args: &rue_rir::RirCallArgsRange,
-        file_id: FileId,
         arg_diverged: &mut bool,
         ctx: &mut ConstraintContext,
     ) -> InferType {
@@ -4829,7 +4872,7 @@ impl<'a> ConstraintGenerator<'a> {
                 // type parameter like `a: [T; 3]` (RUE-172) - substitute T.
                 match func.param_type_syntax.get(i).and_then(|syntax| {
                     syntax.as_ref().and_then(|syntax| {
-                        self.infer_structured_type_hint(syntax, &type_subst, &value_subst, file_id)
+                        self.infer_structured_type_hint(func, syntax, &type_subst, &value_subst)
                     })
                 }) {
                     Some(ty) => ty,
@@ -4866,7 +4909,7 @@ impl<'a> ConstraintGenerator<'a> {
             // substitution attempt would let the use site decide a type sema
             // never agreed to (`h.sq(f32, v) == 6.25` defaulted the literal to
             // `f64` against an `f32` specialization, an AIR verification ICE).
-            self.substituted_generic_return_type(func, &type_subst, &value_subst, file_id)
+            self.substituted_generic_return_type(func, &type_subst, &value_subst)
                 .unwrap_or_else(|| InferType::Var(self.fresh_var()))
         } else {
             func.return_type.clone()
@@ -4899,10 +4942,9 @@ impl<'a> ConstraintGenerator<'a> {
         func: &FunctionSig,
         type_subst: &AHashMap<Spur, Type>,
         value_subst: &AHashMap<Spur, i128>,
-        file_id: FileId,
     ) -> Option<InferType> {
         func.return_type_syntax.as_ref().and_then(|syntax| {
-            self.infer_structured_type_hint(syntax, type_subst, value_subst, file_id)
+            self.infer_structured_type_hint(func, syntax, type_subst, value_subst)
         })
     }
 
@@ -4936,22 +4978,39 @@ impl<'a> ConstraintGenerator<'a> {
         values: Option<&AHashMap<Spur, i128>>,
         file_id: FileId,
     ) -> Option<InferType> {
-        self.infer_type_hint(self.rir.type_syntax(), syntax, subst, values, file_id)
+        self.infer_type_hint(
+            self.rir.type_syntax(),
+            syntax,
+            subst,
+            values,
+            file_id,
+            TypeHintScope::Body,
+        )
     }
 
+    /// Hint one type in a generic callee's declared signature at a call.
+    ///
+    /// The syntax resolves in the callee's declaration scope: its comptime
+    /// parameters are bound to this call's arguments (`subst`, `values`) and
+    /// hide any same-named item, and its other names resolve in the file that
+    /// declares the signature. The calling body's comptime aliases are not in
+    /// scope, so a caller's `let T = i64;` cannot retype a callee's `-> T`
+    /// (RUE-2422). A parameter this call has not bound yet — a staged probe
+    /// runs before the argument facts exist — leaves the hint unknown.
     fn infer_structured_type_hint(
         &self,
+        func: &FunctionSig,
         syntax: &crate::sema::StructuredTypeSyntax,
         subst: &AHashMap<Spur, Type>,
         values: &AHashMap<Spur, i128>,
-        file_id: FileId,
     ) -> Option<InferType> {
         self.infer_type_hint(
             &syntax.arena,
             syntax.root,
             Some(subst),
             Some(values),
-            file_id,
+            func.signature_file,
+            TypeHintScope::Signature(func),
         )
     }
 
@@ -4962,25 +5021,40 @@ impl<'a> ConstraintGenerator<'a> {
         subst: Option<&AHashMap<Spur, Type>>,
         values: Option<&AHashMap<Spur, i128>>,
         file_id: FileId,
+        scope: TypeHintScope<'_>,
     ) -> Option<InferType> {
         match arena.node(syntax)? {
             RirTypeSyntaxNode::Named(symbol) => {
                 let name = *arena.symbol(*symbol)?;
-                self.unqualified_nominal_type_with_substitution(name, file_id, subst, false)
+                if scope.is_comptime_parameter(name)
+                    && !subst.is_some_and(|subst| subst.contains_key(&name))
+                {
+                    None
+                } else {
+                    self.unqualified_nominal_type_with_substitution(
+                        name, file_id, subst, false, scope,
+                    )
                     .map(|ty| self.type_to_infer(ty))
+                }
             }
             RirTypeSyntaxNode::Unit => Some(InferType::Concrete(Type::UNIT)),
             RirTypeSyntaxNode::Never => Some(InferType::Concrete(Type::NEVER)),
             RirTypeSyntaxNode::Array { element, length } => {
-                let element = self.infer_type_hint(arena, *element, subst, values, file_id)?;
+                let element =
+                    self.infer_type_hint(arena, *element, subst, values, file_id, scope)?;
                 let length = match arena.node(*length)? {
                     RirTypeSyntaxNode::Integer(value) => u64::try_from(*value).ok()?,
                     RirTypeSyntaxNode::Named(symbol) => {
                         let name = *arena.symbol(*symbol)?;
-                        values
-                            .and_then(|values| values.get(&name).copied())
-                            .or_else(|| self.scoped_const_value(name, file_id))
-                            .and_then(|value| u64::try_from(value).ok())?
+                        let bound = values.and_then(|values| values.get(&name).copied());
+                        // A callee's comptime parameter hides a same-named
+                        // file-level `const` (RUE-2422).
+                        let value = if bound.is_some() || scope.is_comptime_parameter(name) {
+                            bound
+                        } else {
+                            self.scoped_const_value(name, file_id)
+                        };
+                        u64::try_from(value?).ok()?
                     }
                     _ => return None,
                 };
@@ -4992,7 +5066,7 @@ impl<'a> ConstraintGenerator<'a> {
             RirTypeSyntaxNode::PointerConst { pointee }
             | RirTypeSyntaxNode::PointerMut { pointee } => {
                 let pointee = self
-                    .infer_type_hint(arena, *pointee, subst, values, file_id)?
+                    .infer_type_hint(arena, *pointee, subst, values, file_id, scope)?
                     .as_concrete()?;
                 let ty = match arena.node(syntax)? {
                     RirTypeSyntaxNode::PointerConst { .. } => {
@@ -5804,6 +5878,7 @@ mod tests {
             param_names: vec![],
             param_type_syntax: vec![],
             return_type_syntax: None,
+            signature_file: FileId::DEFAULT,
         }
     }
 
