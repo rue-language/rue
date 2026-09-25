@@ -481,8 +481,10 @@ on both paths, although on the `else` path it is still live. The static story
 is conservative and the dynamic story is exact: the machine drops that
 residue path-specifically at scope exit (§5.6, §6.7; `3.8:60`, and `3.8:73`
 for array elements). The corpus case `cond_drop_affine` is this program, and
-`partial_move_one_arm` is the same one field down. The invariant must allow
-that gap.
+`partial_move_one_arm` is the same one field down;
+`loop_drop_after_zero_width_temp` is the same drop before a loop's `break`,
+after a discarded `[i64; 0]` temporary, which the compiler ICEd on until
+RUE-2450. The invariant must allow that gap.
 
 What it must never allow is a live *linear* value behind a `MovedOut` node.
 Then the static leak check could pass while the machine reached
