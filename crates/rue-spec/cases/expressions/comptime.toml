@@ -814,6 +814,93 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "type values cannot exist at runtime"
 
+# A runtime `if` or `match` whose branches are type values is typed `type`
+# (4.6:10, 4.7:12) and produces no runtime value. Discarded, it is accepted,
+# like a bare `i32;` statement; bound with `let`, it is the 4.14:6 error.
+# Before RUE-2415 the discarded join was an internal CFG error (E9000).
+
+[[case]]
+name = "runtime_if_of_type_values_discarded"
+spec = ["4.14:6", "4.6:10"]
+description = "A runtime if over distinct type literals in statement position is accepted (RUE-2415)"
+source = """
+fn main() -> i32 {
+    let c = true;
+    if c { i32 } else { i64 };
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "runtime_if_of_const_type_alias_discarded"
+spec = ["4.14:6", "4.6:10"]
+description = "A runtime if over one const type alias in statement position is accepted (RUE-2415)"
+source = """
+const T = i32;
+fn main() -> i32 {
+    let c = true;
+    let x = if c { 40 } else { 0 };
+    if c { T } else { T };
+    x + 2
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "runtime_match_of_type_values_discarded"
+spec = ["4.14:6", "4.7:12"]
+description = "A runtime match whose arms are type values, in statement position, is accepted (RUE-2415)"
+source = """
+fn main() -> i32 {
+    let n = 1;
+    match n { 1 => i32, _ => u8 };
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "runtime_if_of_type_param_in_specialized_body"
+spec = ["4.14:6", "4.6:10"]
+description = "A runtime if over a comptime type parameter inside a specialized body is accepted (RUE-2415)"
+source = """
+fn pick(comptime T: type, c: bool) -> i32 {
+    if c { T } else { T };
+    if c { 42 } else { 0 }
+}
+fn main() -> i32 { pick(i32, true) }
+"""
+exit_code = 42
+
+[[case]]
+name = "runtime_if_of_type_values_let_rejected"
+spec = ["4.14:6"]
+description = "Binding a runtime if over type values with let stores a type value at runtime (RUE-2415)"
+source = """
+fn main() -> i32 {
+    let c = true;
+    let t = if c { i32 } else { i32 };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "type values only exist at compile time"]
+
+[[case]]
+name = "runtime_match_of_type_values_let_rejected"
+spec = ["4.14:6"]
+description = "Binding a runtime match over type values with let stores a type value at runtime (RUE-2415)"
+source = """
+fn main() -> i32 {
+    let n = 1;
+    let t = match n { 1 => i32, _ => i64 };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "type values only exist at compile time"]
+
 # =============================================================================
 # Phase 4: Anonymous Struct Types (ADR-0025)
 # =============================================================================
