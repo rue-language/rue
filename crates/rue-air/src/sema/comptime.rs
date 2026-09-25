@@ -3201,7 +3201,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     /// The magnitude of `instruction` when it is a negated integer literal
     /// (`-0`, `-(0)`) and `ty` is a float type, so that the literal takes
     /// `ty` before it is negated (spec 3.12:11, 3.12:24).
-    fn negated_integer_literal_at_float(&self, instruction: &InstData, ty: &H::Type) -> Option<u64> {
+    fn negated_integer_literal_at_float(
+        &self,
+        instruction: &InstData,
+        ty: &H::Type,
+    ) -> Option<u64> {
         let InstData::Neg { operand } = instruction else {
             return None;
         };

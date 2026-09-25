@@ -367,7 +367,10 @@ pub(crate) fn is_durable_str_type(ty: &DurableType) -> bool {
 /// use rounds it to the width. This is the one conversion declaration-time
 /// evaluation applies, both to a `const` initializer (`const X: f64 = 3;`) and
 /// to each element or field of a structural value whose declared slot is a
-/// float (`const A: [f32; 2] = [1, 2];`), matching the body path.
+/// float (`const A: [f32; 2] = [1, 2];`), matching the body path. A negated
+/// literal in such a position has already taken the float type in the
+/// evaluator, which negates after converting as run time does: an integer `0`
+/// has no sign to keep, so `-0` converted here would be `+0.0`.
 pub(crate) fn durable_integer_as_float(
     value: &DurableConstValue,
     ty: &DurableType,

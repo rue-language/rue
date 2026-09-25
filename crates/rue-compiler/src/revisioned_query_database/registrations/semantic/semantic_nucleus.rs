@@ -1025,9 +1025,11 @@ $runtime
                                                             let compatible = typed.ty.as_ref().is_none_or(|found| {
                                                                 found == &ty
                                                                     // `I32` here is also untyped integer arithmetic
-                                                                    // (`-1`, `1 + 2`) the evaluator defaulted: a
-                                                                    // float declared type gives it no integer type
-                                                                    // to take, and run time accepts it at f32/f64.
+                                                                    // (`1 + 2`) the evaluator defaulted: a float
+                                                                    // declared type gives it no integer type to
+                                                                    // take, and run time accepts it at f32/f64. A
+                                                                    // negated literal (`-1`) already took the
+                                                                    // declared float type in the evaluator.
                                                                     // A declared-i32 constant looks the same at
                                                                     // this point and is admitted too (RUE-2360).
                                                                     || (matches!(found, crate::durable_semantics::DurableType::ComptimeFloat | crate::durable_semantics::DurableType::I32)
