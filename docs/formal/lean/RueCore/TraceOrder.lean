@@ -1,0 +1,592 @@
+import RueCore.TraceExact
+
+/-!
+# RueCore.TraceOrder — the order drops run in (§3.9, §6.11, §7)
+
+`no_double_free` (`Trace.lean`) says no owned value is ended twice, and
+`drop_exactly_once` (`TraceExact.lean`) that each is ended exactly once. This
+module says **in what order** the ends happen. The order has two halves, and
+they need two different pieces of machinery, so `drop_order` is their
+conjunction.
+
+## Within a value: a grammar over the trace (§3.9, §6.11)
+
+§6.11 fixes the order of one value's drop: its user destructor first
+(`3.9:28`), then its fields in declaration order (`3.9:13`), an array's
+elements in ascending index order (`3.9:15`, `3.8:73`), and an enum's
+**active** payload only (`6.3:20`), every `⊘` skipped. `dropEvents` is that
+order written as a function. `Blocks` is a grammar over whole traces: a trace
+is a sequence of blocks, each a `@dbg` line, a consumption, or a drop marker
+(`drop ℓ c`, `dropTemp v`) followed by **exactly** §6.11's walk of what the
+marker names. The grammar has no other place for a destructor event, so a
+trace in it runs every destructor inside the walk of the marker before it,
+in §6.11's order, and no destructor anywhere else.
+
+`run_blocks` proves every finished run's trace is in the grammar. It reads no
+typing derivation, only `DtorNotCopy` (a destructor-bearing struct is not
+`Copy`, `3.9:31`), which a declared-linear destructure's `Copy` residue
+subtree needs: that subtree is dropped with no marker, as `@drop` of a `Copy`
+place is, and its walk is empty only because nothing under a `Copy` node owns
+anything (copy closure, which the machine maintains) and no `Copy` struct
+declares a destructor.
+
+## Across cells: newest-first teardown, over §6's relation (§6.7, §6.9, §6.10)
+
+The order *between* cells is not a property of the trace alone: every
+`drop ℓ c` block is a valid block by itself, so "the trace can be cut into
+newest-first groups" says nothing. What gives it content is the machine's
+scope record, so this half is stated over `Step`, from every configuration
+reachable from `Config.init`:
+
+* `reachable_ordered`: every scope record in a reachable configuration — the
+  current frame's, every suspended caller's and loop boundary's, and every
+  pending `endscope` marker's — lists its cells in strictly increasing
+  location order, below the store's length. Records are only ever extended
+  with freshly allocated cells, so **registration order is location order**.
+* `step_drop_order`: every step's `drop` markers either all name one cell
+  (an overwrite, `@drop`, or a destructure's residue, several sub-positions
+  of one binding) or name distinct cells in **strictly decreasing** location
+  order — newest registered first. A teardown (`endscope`, a frame pop,
+  `return`'s σ-walk, a loop turn's end, `break`'s unwind) walks its record
+  backwards, and the record is increasing, so its markers are strictly
+  decreasing.
+
+What this half does not say: it relates the markers of **one step**. That
+two sibling scopes tear down in the right relative order follows from the
+dynamics' shape — an inner `let`'s `endscope` runs when its body finishes,
+before the outer one's — and is not restated here.
+-/
+
+namespace RueCore
+
+/-! ## Within a value: the block grammar -/
+
+/-- **§6.11's order, as a grammar over the trace.** A trace is a sequence of
+blocks: a `@dbg` line, a consumption (`consume c`, which runs no drop of its
+own), or a drop marker followed by exactly the events §6.11's walk of what it
+names emits (`dropEvents`) — for a binding's drop `drop ℓ c`, the contents
+`c`, and for a discarded temporary `dropTemp v`, the value `v`. A destructor
+event (`dtor`) appears only inside such a walk, so the grammar says where
+every destructor runs: inside the drop of the value that owns it, after the
+destructors of everything dropped before it in §6.11's order (§3.9, §6.11). -/
+inductive Blocks (D : Decls) : List Event → Prop
+  | nil : Blocks D []
+  | dbg {v : Val} {t : List Event} : Blocks D t → Blocks D (.dbg v :: t)
+  | consume {c : Contents} {t : List Event} : Blocks D t → Blocks D (.consume c :: t)
+  | drop {ℓ : Nat} {c : Contents} {t : List Event} :
+      Blocks D t → Blocks D (.drop ℓ c :: (dropEvents D c ++ t))
+  | dropTemp {v : Val} {t : List Event} :
+      Blocks D t → Blocks D (.dropTemp v :: (dropEvents D (.ofVal v) ++ t))
+
+/-- Two block sequences, one after the other, are one (helper). -/
+theorem Blocks.append {D : Decls} {t u : List Event} (h₁ : Blocks D t) (h₂ : Blocks D u) :
+    Blocks D (t ++ u) := by
+  induction h₁ with
+  | nil => exact h₂
+  | dbg _ ih => exact .dbg ih
+  | consume _ ih => exact .consume ih
+  | drop _ ih => simpa only [List.cons_append, List.append_assoc] using Blocks.drop ih
+  | dropTemp _ ih => simpa only [List.cons_append, List.append_assoc] using Blocks.dropTemp ih
+
+/-- A single binding's drop block (helper). -/
+theorem Blocks.dropOne {D : Decls} (ℓ : Nat) (c : Contents) :
+    Blocks D (.drop ℓ c :: dropEvents D c) := by
+  simpa using (Blocks.drop (ℓ := ℓ) (c := c) (Blocks.nil (D := D)))
+
+mutual
+/-- **The walk is §6.11's order**: whenever `dropContents` succeeds, it emits
+exactly `dropEvents`, with no typing hypothesis — the walk refuses only an
+unbound struct index, where `dropEvents` would emit nothing (§6.11). -/
+theorem dropContents_eq {D : Decls} : ∀ {c : Contents} {evs : List Event},
+    dropContents D c = .ok evs → evs = dropEvents D c
+  | .hole, _, h | .int _ _ _, _, h | .float _ _, _, h | .bool _, _, h | .unit, _, h => by
+      simp [dropContents] at h; subst h; rfl
+  | .struct s i cs, evs, h => by
+      simp only [dropContents] at h
+      split at h
+      · cases h
+      · rename_i sd hd
+        split at h
+        · cases h
+        · rename_i evs' hl
+          cases h
+          simp [dropEvents, hd, dropContentsList_eq hl]
+  | .enum _ _ _ cs, _, h => by
+      simp only [dropContents] at h; simp only [dropEvents]; exact dropContentsList_eq h
+  | .array _ _ cs, _, h => by
+      simp only [dropContents] at h; simp only [dropEvents]; exact dropContentsList_eq h
+
+/-- The same over a list (helper). -/
+theorem dropContentsList_eq {D : Decls} : ∀ {cs : List Contents} {evs : List Event},
+    dropContentsList D cs = .ok evs → evs = dropEventsList D cs
+  | [], _, h => by simp [dropContentsList] at h; subst h; rfl
+  | c :: cs, _, h => by
+      simp only [dropContentsList] at h
+      split at h
+      · cases h
+      · rename_i e₁ h₁
+        split at h
+        · cases h
+        · rename_i e₂ h₂
+          cases h
+          simp [dropEventsList, dropContents_eq h₁, dropContentsList_eq h₂]
+end
+
+mutual
+/-- An all-`Copy` contents' walk is empty: no `Copy` struct declares a
+destructor (`3.9:31`) (helper). -/
+theorem dropEvents_allCopy {D : Decls} (hdt : DtorNotCopy D) :
+    ∀ {c : Contents}, c.allCopy D = true → dropEvents D c = []
+  | .hole, _ | .int _ _ _, _ | .float _ _, _ | .bool _, _ | .unit, _ => rfl
+  | .struct s i cs, hac => by
+      simp only [Contents.allCopy, Bool.and_eq_true, decide_eq_true_eq] at hac
+      simp only [dropEvents, dropEventsList_allCopy hdt hac.2, List.append_nil]
+      split
+      · rename_i sd hd
+        have : sd.dtor = false := by
+          cases hsd : sd.dtor
+          · rfl
+          · exact absurd hac.1 (hdt s sd hd hsd)
+        simp [this]
+      · rfl
+  | .enum _ _ _ cs, hac => by
+      simp only [Contents.allCopy, Bool.and_eq_true] at hac
+      simp only [dropEvents]; exact dropEventsList_allCopy hdt hac.2
+  | .array _ _ cs, hac => by
+      simp only [Contents.allCopy, Bool.and_eq_true] at hac
+      simp only [dropEvents]; exact dropEventsList_allCopy hdt hac.2
+
+/-- The same over a list (helper). -/
+theorem dropEventsList_allCopy {D : Decls} (hdt : DtorNotCopy D) :
+    ∀ {cs : List Contents}, Contents.allCopyList D cs = true → dropEventsList D cs = []
+  | [], _ => rfl
+  | c :: cs, hac => by
+      simp only [Contents.allCopyList, Bool.and_eq_true] at hac
+      simp [dropEventsList, dropEvents_allCopy hdt hac.1, dropEventsList_allCopy hdt hac.2]
+end
+
+/-- A binding's drop (`dropCell`) is one block, or nothing for `Copy`
+contents (helper). -/
+theorem dropCell_blocks {D : Decls} {ℓ : Nat} {c : Contents} {evs : List Event}
+    (h : dropCell D ℓ c = .ok evs) : Blocks D evs := by
+  unfold dropCell at h
+  split at h
+  · cases h; exact .nil
+  · split at h
+    · cases h
+    · rename_i evs' hw
+      cases h
+      rw [dropContents_eq hw]
+      exact Blocks.dropOne ℓ c
+
+/-- `drop-retire` (§6.1) is one block or nothing (helper). -/
+theorem dropRetire_blocks {D : Decls} {H H' : Store} {ℓ : Nat} {evs : List Event}
+    (h : dropRetire D H ℓ = .ok (H', evs)) : Blocks D evs := by
+  unfold dropRetire at h
+  split at h
+  · cases h
+  · cases h
+  · split at h
+    · cases h
+    · split at h
+      · cases h
+      · rename_i evs' hd
+        cases h
+        exact dropCell_blocks hd
+
+/-- `run-scope-drops` (§6.1) is a sequence of blocks, one per live
+non-`Copy` cell, in the order given (helper). -/
+theorem unwindLocs_blocks {D : Decls} :
+    ∀ {H H' : Store} {ls : List Nat} {evs : List Event},
+      unwindLocs D H ls = .ok (H', evs) → Blocks D evs
+  | _, _, [], _, h => by simp [unwindLocs] at h; obtain ⟨_, rfl⟩ := h; exact .nil
+  | H, _, ℓ :: ls, _, h => by
+      simp only [unwindLocs] at h
+      split at h
+      · cases h
+      · rename_i H₁ evs₁ h₁
+        split at h
+        · cases h
+        · rename_i H₂ evs₂ h₂
+          cases h
+          exact (dropRetire_blocks h₁).append (unwindLocs_blocks h₂)
+
+/-- §6.3's `drop*` on a destructure's residue is a sequence of blocks: a
+non-`Copy` subtree's marker and walk, and a `Copy` subtree's empty walk
+(helper). -/
+theorem dropResidue_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat} :
+    ∀ {rs : List Contents} {evs : List Event}, Contents.copyClosedList D rs = true →
+      dropResidue D ℓ rs = .ok evs → Blocks D evs
+  | [], _, _, h => by simp [dropResidue] at h; subst h; exact .nil
+  | r :: rs, evs, hcc, h => by
+      simp only [Contents.copyClosedList, Bool.and_eq_true] at hcc
+      simp only [dropResidue] at h
+      split at h
+      · cases h
+      · split at h
+        · cases h
+        · rename_i e₁ h₁
+          split at h
+          · cases h
+          · rename_i e₂ h₂
+            cases h
+            have ih := dropResidue_blocks hdt hcc.2 h₂
+            rw [dropContents_eq h₁]
+            unfold residueMark
+            split
+            · rename_i hm
+              rw [dropEvents_allCopy hdt (Contents.copyClosed_allCopy hcc.1 hm)]
+              simpa using ih
+            · simpa using Blocks.drop (ℓ := ℓ) (c := r) ih
+
+/-- §6.3's destructure is a sequence of blocks: the residue's, then the
+consumed shell (helper). -/
+theorem destructure_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat} {cd leaf : Contents}
+    {πs : List Nat} {evs : List Event} (hcc : cd.copyClosed D = true)
+    (h : cd.destructure D ℓ πs = .ok (leaf, evs)) : Blocks D evs := by
+  unfold Contents.destructure at h
+  split at h
+  · cases h
+  · rename_i leaf' rs hs
+    split at h
+    · cases h
+    · rename_i evs' hd
+      cases h
+      exact (dropResidue_blocks hdt (Contents.splitResidue_own 0 πs hcc hs).2.2 hd).append
+        (.consume .nil)
+
+/-- (D-Match)'s consumption is a block or nothing (helper). -/
+theorem matchConsume_blocks {D : Decls} {e k i : Nat} {vs : List Val} :
+    Blocks D (matchConsume D e k i vs) := by
+  unfold matchConsume
+  split
+  · exact .nil
+  · exact .consume .nil
+
+/-! ## Within a value: every evaluation's trace is blocks -/
+
+/-- A prefix of blocks before a result's blocks (helper). -/
+theorem Blocks.withTrace {D : Decls} {tr : List Event} {r : EvalRes} (h₁ : Blocks D tr)
+    (h₂ : Blocks D r.trace) : Blocks D (r.withTrace tr).trace := by
+  cases r <;> simp only [EvalRes.withTrace, EvalRes.trace] at h₂ ⊢ <;>
+    first | exact h₁.append h₂ | exact .nil
+
+/-- §6.2's search keeps the grammar (helper). -/
+theorem Blocks.bind {D : Decls} {r : EvalRes} {k : Store → Val → EvalRes}
+    (hr : Blocks D r.trace) (hk : ∀ H₁ v tr, r = .ok H₁ v tr → Blocks D (k H₁ v).trace) :
+    Blocks D (r.andThen k).trace := by
+  cases r with
+  | ok H₁ v tr => exact Blocks.withTrace hr (hk H₁ v tr rfl)
+  | _ => exact hr
+
+/-- §6.9's call boundary keeps the grammar (helper). -/
+theorem Blocks.absorb {D : Decls} {r : EvalRes} {k : Store → Val → EvalRes}
+    (hr : Blocks D r.trace) (hk : ∀ H₁ v tr, r = .ok H₁ v tr → Blocks D (k H₁ v).trace) :
+    Blocks D (r.absorb k).trace := by
+  cases r with
+  | ok H₁ v tr => exact Blocks.withTrace hr (hk H₁ v tr rfl)
+  | broke => exact .nil
+  | _ => exact hr
+
+/-- An operator's outcome emits nothing (helper). -/
+theorem Blocks.opRes {D : Decls} {H : Store} {o : OpRes} : Blocks D (o.toRes H).trace := by
+  cases o <;> exact .nil
+
+/-- Aggregate introduction emits nothing (helper). -/
+theorem Blocks.intro {D D' : Decls} {H : Store} {mk : Nat → Val} :
+    Blocks D (introVal D' H mk).trace := by
+  unfold introVal; split <;> exact .nil
+
+/-- A copy-closed store is one step further along an evaluation that reached
+a value (helper). -/
+theorem eval_ok_cc (M : FloatOps) {P : Program} {n : Nat} {H H₁ : Store} {φ : Frame} {e : Expr}
+    {v : Val} {tr : List Event} (hcc : StoreCC P.decls H)
+    (hr : eval M n P H φ e = .ok H₁ v tr) :
+    StoreCC P.decls H₁ ∧ (Contents.ofVal v).copyClosed P.decls = true := by
+  have h := eval_conserves M (freed_measure P.decls) n H φ e hcc
+  rw [hr] at h
+  exact ⟨h.2.1, h.2.2.1⟩
+
+/-- The grammar's promise about an argument list (helper). -/
+def ArgsBlocks (D : Decls) : ArgsRes → Prop
+  | .ok _ _ tr => Blocks D tr
+  | .abort r => Blocks D r.trace
+
+/-- An argument list keeps the grammar (helper). -/
+theorem evalArgs_blocks {D : Decls} {ev : Store → Expr → EvalRes}
+    (hev : ∀ H e, StoreCC D H → Blocks D (ev H e).trace)
+    (hcc : ∀ H e H₁ v tr, StoreCC D H → ev H e = .ok H₁ v tr → StoreCC D H₁) :
+    ∀ (H : Store) (es : List Expr), StoreCC D H → ArgsBlocks D (evalArgs ev H es)
+  | H, [], _ => .nil
+  | H, e :: es, hc => by
+      simp only [evalArgs]
+      have h₁ := hev H e hc
+      cases hr : ev H e with
+      | ok H₁ v tr =>
+          rw [hr] at h₁
+          have h₂ := evalArgs_blocks hev hcc H₁ es (hcc H e H₁ v tr hc hr)
+          dsimp only
+          cases hra : evalArgs ev H₁ es with
+          | ok H₂ vs tr₂ => rw [hra] at h₂; exact Blocks.append h₁ h₂
+          | abort r => rw [hra] at h₂; exact Blocks.withTrace h₁ h₂
+      | _ => rw [hr] at h₁; exact h₁
+
+/-- **Every evaluation's trace is in §6.11's block grammar** (§3.9, §6.11):
+every evaluation, of every expression, from every copy-closed store, at every
+fuel. By fuel induction over `eval`; no typing derivation, only
+`DtorNotCopy`, which a destructure's `Copy` residue needs (module
+docstring). -/
+theorem eval_blocks (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls) :
+    ∀ (fuel : Nat) (H : Store) (φ : Frame) (e : Expr), StoreCC P.decls H →
+      Blocks P.decls (eval M fuel P H φ e).trace := by
+  intro fuel
+  induction fuel with
+  | zero => intro H φ e _; exact .nil
+  | succ n ih =>
+    intro H φ e hcc
+    have hok := fun {H' : Store} {φ' : Frame} {e' : Expr} {H₁ : Store} {v : Val}
+        {tr : List Event} (hc : StoreCC P.decls H') (hr : eval M n P H' φ' e' = .ok H₁ v tr) =>
+      eval_ok_cc M hc hr
+    have hargs := fun (H' : Store) (es : List Expr) (hc : StoreCC P.decls H') =>
+      evalArgs_blocks (ev := fun H'' e' => eval M n P H'' φ e')
+        (fun H'' e' hc' => ih H'' φ e' hc') (fun _ _ _ _ _ hc' hr => (hok hc' hr).1) H' es hc
+    have hargsc := fun (H' : Store) (es : List Expr) (hc : StoreCC P.decls H') =>
+      evalArgs_cons (F := Event.freed P.decls) (ev := fun H'' e' => eval M n P H'' φ e')
+        (fun H'' e' hc' => eval_conserves M (freed_measure P.decls) n H'' φ e' hc') H' es hc
+    cases e with
+    | intLit | floatLit | boolLit | unitLit | panic | brk => exact .nil
+    | use p =>
+        simp only [eval]
+        split
+        · exact .nil
+        · split
+          · exact .nil
+          · exact .nil
+          · rename_i c hc
+            split
+            · split
+              · exact .nil
+              · rename_i cd hr
+                split
+                · exact .nil
+                · rename_i leaf evs hd
+                  have hb := destructure_blocks hdt
+                    (Contents.readAt_copyClosed _ (hcc _ c hc) hr) hd
+                  (repeat' split) <;> first | exact .nil | exact hb
+            · (repeat' split) <;> exact .nil
+    | drop p =>
+        simp only [eval]
+        split
+        · exact .nil
+        · split
+          · exact .nil
+          · exact .nil
+          · rename_i c hc
+            split
+            · split
+              · exact .nil
+              · rename_i cd hr
+                split
+                · exact .nil
+                · rename_i leaf evs hd
+                  have hb := destructure_blocks hdt
+                    (Contents.readAt_copyClosed _ (hcc _ c hc) hr) hd
+                  split
+                  · exact .nil
+                  · split
+                    · exact .nil
+                    · rename_i levs hl
+                      split
+                      · exact .nil
+                      · exact hb.append (dropCell_blocks hl)
+            · split
+              · exact .nil
+              · split
+                · exact .nil
+                · split
+                  · exact .nil
+                  · rename_i evs hd
+                    split
+                    · exact .nil
+                    · split
+                      · exact .nil
+                      · exact dropCell_blocks hd
+    | binop op e₁ e₂ =>
+        simp only [eval]
+        refine Blocks.bind (ih H φ e₁ hcc) (fun H₁ _ _ hr => ?_)
+        exact Blocks.bind (ih H₁ φ e₂ (hok hcc hr).1) (fun _ _ _ _ => Blocks.opRes)
+    | unop _ e₁ | intCast _ _ e₁ | fintrin _ e₁ =>
+        simp only [eval]
+        exact Blocks.bind (ih H φ e₁ hcc) (fun _ _ _ _ => Blocks.opRes)
+    | dbg e₁ =>
+        simp only [eval]
+        refine Blocks.bind (ih H φ e₁ hcc) (fun _ _ _ _ => ?_)
+        split
+        · exact .dbg .nil
+        · exact .nil
+    | repeatArray T e₁ m =>
+        simp only [eval]
+        refine Blocks.bind (ih H φ e₁ hcc) (fun _ _ _ _ => ?_)
+        split
+        · exact Blocks.intro
+        · exact .nil
+    | mkStruct _ args | mkEnum _ _ args | mkArray _ args =>
+        simp only [eval]
+        have ka := hargs H args hcc
+        split
+        · rename_i r hra; rw [hra] at ka; exact ka
+        · rename_i H₁ vs tr hra
+          rw [hra] at ka
+          refine Blocks.withTrace ka ?_
+          (repeat' split) <;> first | exact .nil | exact Blocks.intro
+    | indexRead p idx πs =>
+        simp only [eval]
+        have ka := hargs H idx hcc
+        split
+        · rename_i r hra; rw [hra] at ka; exact ka
+        · rename_i H₁ vs tr hra
+          rw [hra] at ka
+          refine Blocks.withTrace ka ?_
+          (repeat' split) <;> exact .nil
+    | indexDrop p idx πs =>
+        simp only [eval]
+        exact Blocks.bind (ih H φ _ hcc) (fun _ _ _ _ => .nil)
+    | indexWrite p idx πs e₁ =>
+        simp only [eval]
+        refine Blocks.bind (ih H φ e₁ hcc) (fun H₁ _ _ hr => ?_)
+        have ka := hargs H₁ idx (hok hcc hr).1
+        split
+        · rename_i r hra; rw [hra] at ka; exact ka
+        · rename_i H₂ vs tr hra
+          rw [hra] at ka
+          refine Blocks.withTrace ka ?_
+          split
+          · exact .nil
+          · exact .nil
+          · split
+            · exact .nil
+            · split
+              · exact .nil
+              · split
+                · exact .nil
+                · rename_i evs hd
+                  (repeat' split) <;> first | exact .nil | exact dropCell_blocks hd
+    | «match» scrut arms =>
+        simp only [eval]
+        refine Blocks.bind (ih H φ scrut hcc) (fun H₀ v _ hr => ?_)
+        obtain ⟨hc₀, hv⟩ := hok hcc hr
+        cases v with
+        | enum e k i vs =>
+          dsimp only
+          split
+          · exact .nil
+          · rename_i body _
+            refine Blocks.withTrace matchConsume_blocks ?_
+            refine Blocks.bind (ih _ _ body (hc₀.mintParams (Contents.enum_payload hv 0).2))
+              (fun _ _ _ _ => ?_)
+            split
+            · exact .nil
+            · rename_i H₃ evs hu
+              exact unwindLocs_blocks hu
+        | _ => exact .nil
+    | letIn m e₁ e₂ =>
+        simp only [eval]
+        refine Blocks.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ hr => ?_)
+        obtain ⟨hc₁, hv₁⟩ := hok hcc hr
+        refine Blocks.bind (ih _ _ e₂ (hc₁.append (StoreCC.single hv₁))) (fun _ _ _ _ => ?_)
+        split
+        · exact .nil
+        · rename_i H₃ evs hdr
+          exact dropRetire_blocks hdr
+    | assign p e₁ =>
+        simp only [eval]
+        refine Blocks.bind (ih H φ e₁ hcc) (fun _ _ _ _ => ?_)
+        split
+        · exact .nil
+        · split
+          · exact .nil
+          · exact .nil
+          · split
+            · exact .nil
+            · split
+              · exact .nil
+              · split
+                · exact .nil
+                · rename_i evs hd
+                  (repeat' split) <;> first | exact .nil | exact dropCell_blocks hd
+    | seq e₁ e₂ =>
+        simp only [eval]
+        refine Blocks.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ hr => ?_)
+        have hc₁ := (hok hcc hr).1
+        split
+        · exact .nil
+        · split
+          · exact .nil
+          · rename_i evs hd
+            refine Blocks.withTrace ?_ (ih H₁ φ e₂ hc₁)
+            rw [dropContents_eq hd]
+            simpa using (Blocks.dropTemp (v := v₁) (Blocks.nil (D := P.decls)))
+        · exact ih H₁ φ e₂ hc₁
+    | ite c e₁ e₂ =>
+        simp only [eval]
+        refine Blocks.bind (ih H φ c hcc) (fun H₀ _ _ hr => ?_)
+        have hc₀ := (hok hcc hr).1
+        split
+        · split
+          · exact ih H₀ φ e₁ hc₀
+          · exact ih H₀ φ e₂ hc₀
+        · exact .nil
+    | call f args =>
+        simp only [eval]
+        have ka := hargs H args hcc
+        have kc := hargsc H args hcc
+        split
+        · rename_i r hra; rw [hra] at ka; exact ka
+        · rename_i H₁ vs tr hra
+          rw [hra] at ka kc
+          obtain ⟨_, c₁, cv₁, _⟩ := kc
+          refine Blocks.withTrace ka ?_
+          split
+          · exact .nil
+          · rename_i fd _
+            split
+            · refine Blocks.absorb (ih _ _ fd.body (c₁.mintParams cv₁)) (fun _ _ _ _ => ?_)
+              split
+              · exact .nil
+              · rename_i H₄ evs hu
+                exact unwindLocs_blocks hu
+            · exact .nil
+    | ret e₁ =>
+        simp only [eval]
+        refine Blocks.bind (ih H φ e₁ hcc) (fun _ _ _ _ => ?_)
+        split
+        · exact .nil
+        · rename_i H₂ evs hu
+          exact unwindLocs_blocks hu
+    | loop e₁ =>
+        simp only [eval]
+        have hb := ih H φ e₁ hcc
+        split
+        · rename_i H₁ tr hr
+          rw [hr] at hb
+          exact Blocks.withTrace hb (ih H₁ φ (.loop e₁) (hok hcc hr).1)
+        · exact .nil
+        · rename_i H₁ sc tr hr
+          rw [hr] at hb
+          split
+          · exact .nil
+          · rename_i H₂ evs hu
+            exact Blocks.append hb (unwindLocs_blocks hu)
+        · exact hb
+
+/-- **Every finished run's trace is in §6.11's block grammar** (§3.9, §6.11):
+every destructor event of every run sits inside §6.11's walk of the drop
+marker before it — the value's own destructor first (`3.9:28`), then its
+fields in declaration order (`3.9:13`), an array's elements ascending
+(`3.9:15`), an enum's active payload only (`6.3:20`), every `⊘` skipped —
+and nowhere else. It needs only `DtorNotCopy`, which `WfDecls` gives. -/
+theorem run_blocks (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls) (fuel : Nat) :
+    Blocks P.decls (run M P fuel).trace :=
+  eval_blocks M hdt fuel [] _ _ (fun ℓ c hc => by simp at hc)
+
+end RueCore
