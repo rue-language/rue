@@ -1756,8 +1756,9 @@ def lostFrame : Frame := { env := [1], scope := [1] }
 /-- The checker accepts the program (helper). -/
 theorem lostProgram_typed : ProgramTyped lostProgram := checkProgram_sound (by rfl)
 
-/-- **The RUE-2316 carve-out is load-bearing**: at a typed configuration of a
-checked program that is not `pendingSafe`, the exact ledger fails — `x`'s
+/-- **The RUE-2316 carve-out is load-bearing** (§6.9's (D-Return), §7): at a
+typed configuration of a checked program that is not `pendingSafe`, the exact
+ledger fails — `x`'s
 `S0` (identity `0`) is held once when `g`'s body starts and is nowhere when
 its `return` has unwound: not in the store, not in the result, not in the
 trace. -/

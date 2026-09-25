@@ -21,16 +21,16 @@ its original's identity and nothing ever frees it. What the theorem counts is
 the **owned** part of a value: `Contents.own`, the identities of its
 non-`Copy` nodes, `⊘` skipped. Two projections of the trace read it:
 
-* `freedIds`: the owned identities each `drop`/`dropTemp` marker frees — the
-  whole dropped tree, which is where §6.11's walk goes;
+* `freedIds`: the owned identities each marker ends — a `drop`/`dropTemp`
+  marker the whole dropped tree, which is where §6.11's walk goes (a
+  declared-linear destructure's residue included, which drops each retained
+  subtree under a `drop` marker of its own), and a `consume` event the shell a
+  `match` or a destructure consumes (RUE-2427);
 * `dtorIds`: the identity of each value a user destructor ran on — §7's own
   wording, "every stored value's destructor runs at most once".
 
-`no_double_free` says each identity occurs at most once in each. A
-declared-linear destructure's residue is a third case neither projection
-sees as freed: `dropResidue` frees it with no `drop`/`dropTemp` marker of its
-own, so it is outside `freedIds` until RUE-2328 adds one; `dtorIds` already
-catches it when the residue has a destructor.
+`no_double_free` says each identity occurs at most once in each; the
+"exactly once" half is `drop_exactly_once` (`TraceExact.lean`).
 
 ## Why it holds: a conservation law
 
@@ -2184,10 +2184,8 @@ theorem run_trace_once (M : FloatOps) {P : Program} {F : Event → List Nat}
 
 /-- **No identity appears twice among the `drop`/`dropTemp` free events, on
 any finished run** (§6.11): each owned identity occurs at most once among the
-trees those markers free (`freedIds`). A declared-linear destructure's
-residue is freed with no marker of its own (`dropResidue`), so it sits
-outside this count until RUE-2328 adds one; `dtor_once` below already
-catches it when the residue has a destructor. Holds unconditionally, for
+trees those markers free (`freedIds`), a declared-linear destructure's
+residue and a consumed shell included (RUE-2427). Holds unconditionally, for
 every program, no hypothesis at all: the machine refuses the one shape — an
 owned value hidden under a `Copy` node — that would let a copy duplicate it
 (`Contents.copyClosed`). -/
@@ -2217,9 +2215,9 @@ the old owner no longer owns what it handed on; §6.11's walk skips every `⊘`
 position is never dropped through the old owner; and a `match` binding takes
 the payload whole into the arm's cells, so the scrutinee's owner is gone.
 The declared-linear destructure (§6.3) consumes its place the same way: the
-leaf is handed on, the residue is dropped once with no marker of its own —
-so it counts toward `dtorIds` when it has a destructor, but sits outside
-`freedIds` until RUE-2328 — and the place becomes `⊘`. -/
+leaf is handed on, the residue is dropped once, each retained subtree under
+its own `drop` marker, the path's shell is consumed (`consume`), and the
+place becomes `⊘`. -/
 theorem no_double_free (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
       (∀ a, (freedIds P.decls (run M.toFloatOps P fuel).trace).count a ≤ 1) ∧
