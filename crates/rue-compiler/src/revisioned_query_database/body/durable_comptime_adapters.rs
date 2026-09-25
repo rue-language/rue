@@ -672,12 +672,14 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
         // hand it the shapes this root observed through const values too, so
         // `Wrap(u8)` answers by its fields and destructor (RUE-2404).
         let mut provider = self.provider.clone();
+        // Identities compare canonically, as `anonymous_nominal_shape` and
+        // the provider's own projection lookup do.
         let mut seen = std::collections::BTreeSet::new();
         let observed = self
             .session
             .observed_anonymous_nominals()
             .filter(|nominal| {
-                seen.insert(nominal.identity.clone())
+                seen.insert(nominal.identity.with_canonical_producer().into_owned())
                     && provider.anonymous_projection(&nominal.identity).is_none()
             })
             .cloned()

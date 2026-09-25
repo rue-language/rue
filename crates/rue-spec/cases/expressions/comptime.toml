@@ -5532,3 +5532,47 @@ pub fn rep(comptime T: type, x: T) -> [T; K] { [x; K] }
 pub fn gid(comptime T: type, x: T) -> T { x }
 """ }
 exit_code = 42
+
+[[case]]
+name = "comptime_block_inline_constructor_struct_literal"
+spec = ["4.14:23", "4.14:26"]
+description = "A struct literal headed by an inline type-constructor call reduces inside a body `comptime` block (RUE-2404)"
+source = """
+fn Wrap(comptime T: type) -> type { struct { a: T } }
+fn main() -> i32 { let x = comptime { Wrap(u8) { a: 42 } }; @intCast(x.a) }
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_argument_inline_constructor_struct_literal"
+spec = ["4.14:5", "4.14:23", "4.14:26"]
+description = "A struct literal headed by an inline type-constructor call is a comptime argument (RUE-2404)"
+source = """
+fn Wrap(comptime T: type) -> type { struct { a: T } }
+fn get(comptime w: Wrap(u8)) -> i32 { @intCast(w.a) }
+fn main() -> i32 { get(Wrap(u8) { a: 42 }) }
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_block_inline_constructor_with_destructor_rejected"
+spec = ["4.14:26"]
+description = "An anonymous struct with a destructor is not Copy, so its inline-headed literal cannot be a comptime block's value (RUE-2404)"
+source = """
+fn Wrap(comptime T: type) -> type { struct { a: T, drop fn(self) { } } }
+fn main() -> i32 { let x = comptime { Wrap(u8) { a: 42 } }; @intCast(x.a) }
+"""
+compile_fail = true
+error_contains = ["E1200", "structural comptime values require a Copy type"]
+
+[[case]]
+name = "comptime_argument_inline_constructor_with_destructor_rejected"
+spec = ["4.14:5", "4.14:26"]
+description = "An anonymous struct with a destructor is not Copy, so its inline-headed literal cannot be a comptime argument (RUE-2404)"
+source = """
+fn Wrap(comptime T: type) -> type { struct { a: T, drop fn(self) { } } }
+fn get(comptime w: Wrap(u8)) -> i32 { 0 }
+fn main() -> i32 { get(Wrap(u8) { a: 42 }) }
+"""
+compile_fail = true
+error_contains = ["E1200", "structural comptime values require a Copy type"]
