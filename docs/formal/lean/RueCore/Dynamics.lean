@@ -1,4 +1,8 @@
-import RueCore.Statics
+module
+
+public import RueCore.Statics
+
+@[expose] public section
 
 /-!
 # RueCore.Dynamics — the executable machine (§6)

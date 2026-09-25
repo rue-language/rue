@@ -1,5 +1,9 @@
-import RueCore.Step
-import RueCore.Soundness.Defs
+module
+
+public import RueCore.Step
+public import RueCore.Soundness.Defs
+
+@[expose] public section
 
 /-!
 # RueCore.Adequacy.Defs — what the adequacy theorems are stated over (layer L1)

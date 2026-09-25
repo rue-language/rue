@@ -1,4 +1,8 @@
-import RueCore.Dynamics
+module
+
+public import RueCore.Dynamics
+
+@[expose] public section
 
 /-!
 # RueCore.Step — §6's reduction relation, over the §6.1 configuration

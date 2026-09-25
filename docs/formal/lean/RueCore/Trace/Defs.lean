@@ -1,5 +1,9 @@
-import RueCore.Step
-import RueCore.Soundness.Defs
+module
+
+public import RueCore.Step
+public import RueCore.Soundness.Defs
+
+@[expose] public section
 
 /-!
 # RueCore.Trace.Defs — what the trace theorems are stated over (layer L1)

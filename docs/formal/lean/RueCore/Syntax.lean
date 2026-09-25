@@ -1,4 +1,8 @@
-import RueCore.Float
+module
+
+public import RueCore.Float
+
+@[expose] public section
 
 /-!
 # RueCore.Syntax — abstract syntax of the spike fragment

@@ -1,5 +1,9 @@
-import RueCore.Dynamics
-import RueCore.Soundness.Defs
+module
+
+public import RueCore.Dynamics
+public import RueCore.Soundness.Defs
+
+@[expose] public section
 
 /-!
 # RueCore.Soundness — the §7 memory-safety theorem, fragment-sized

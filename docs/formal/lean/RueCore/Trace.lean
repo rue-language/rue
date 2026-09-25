@@ -1,7 +1,11 @@
-import RueCore.Soundness
-import RueCore.Checker
-import RueCore.Step
-import RueCore.Trace.Defs
+module
+
+public import RueCore.Soundness
+public import RueCore.Checker
+public import RueCore.Step
+public import RueCore.Trace.Defs
+
+@[expose] public section
 
 /-!
 # RueCore.Trace — theorems over the drop trace (§7)

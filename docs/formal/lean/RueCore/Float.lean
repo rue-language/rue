@@ -1,3 +1,7 @@
+module
+
+@[expose] public section
+
 /-!
 # RueCore.Float — `𝔽_w`, the rendering, and the `FloatModel` interface
 
