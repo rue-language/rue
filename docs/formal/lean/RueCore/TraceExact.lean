@@ -34,15 +34,21 @@ way an owned value's life ends has one:
 A run starts from the empty store, so every identity it mentions is minted
 during the run, and nothing in the run's result says which store indices were
 minted for owned values. The theorems therefore work at two grains, which
-together cover every owned value a checked run ever holds, from the moment it
-exists to the end of the evaluation or form that received it:
+together cover every owned value a checked run ever holds, from the moment an
+evaluation or a form holds it to the end of that evaluation or form:
 
 * `drop_exactly_once`, at every well-typed **evaluation**: the identities it
   **starts** with (`a < H.length`, the cells');
 * `rest_exactly_once`, at the **rest of every form** once its leading
   operands have produced their values: those values too, which is where a
   value minted inside an evaluation — `let x = S { .. }`, `S { .. };`,
-  `g(S { .. })` — is ended (`Lead`, `rest_step`).
+  `g(S { .. })` — is ended (`Lead`, `rest_step`); a `loop`'s lead is its body
+  breaking, so a `break`'s unwind of body-minted bindings is covered too.
+
+What the two do not see is an end emitted *early*, inside the evaluation
+that minted the value: no window holds the value yet, so only
+`no_double_free`'s "at most once" bounds such an end, and `main`'s own result
+is part of `run`'s result, handed to no form.
 
 "Still in the store" is not a hiding place: `Tidy` (`eval_tidy`) says every
 cell an evaluation allocates is retired by its end — §6.9's frame pop, §6.7's
@@ -1245,14 +1251,18 @@ holding it, and yet the form's own rest ends it. The proof checks that rest
 at every form (`Exact.bind`'s continuation), and `Lead` and `rest_step` state
 it: once a form's leading operand — or its argument list — has produced its
 values, whatever the rest of the form yields keeps the exact ledger with
-those values held. Every owned value of a run is present at the start of some
-evaluation or is produced by some form's leading operands, so with
-`eval_exact` this covers every owned value the run ever holds. -/
+those values held. A `loop`'s lead is its body breaking, so a `break`'s
+unwind of the bindings the body still held is a rest too. With `eval_exact`
+this puts every place the machine ends a value inside a window that already
+counts it (`rest_exactly_once`). -/
 
 /-- **A form's leading operands have run** (helper): from store `H` in frame
 `φ` at fuel `fuel`, the form's first operand — or its argument list, for a
 call, a literal and a dynamic read — produced the values `vs` in store `H₁`,
-after trace `tr`. A `@drop` below a dynamic index runs the read first. -/
+after trace `tr`. A `@drop` below a dynamic index runs the read first. A
+`loop`'s lead is its body **breaking**: its rest is (D-Break)'s unwind, which
+ends the values the body still held — the cells the carried record owes, the
+body's own bindings included (§6.10). -/
 def Lead (M : FloatOps) (P : Program) (fuel : Nat) (H : Store) (φ : Frame) (H₁ : Store)
     (vs : List Val) (tr : List Event) : Expr → Prop
   | .letIn _ e₁ _ | .seq e₁ _ | .«match» e₁ _ | .assign _ e₁ | .ret e₁ | .dbg e₁
@@ -1262,8 +1272,9 @@ def Lead (M : FloatOps) (P : Program) (fuel : Nat) (H : Store) (φ : Frame) (H�
   | .indexDrop p idx πs => ∃ v, vs = [v] ∧ eval M fuel P H φ (.indexRead p idx πs) = .ok H₁ v tr
   | .call _ args | .mkStruct _ args | .mkEnum _ _ args | .mkArray _ args | .indexRead _ args _ =>
       evalArgs (fun H' e => eval M fuel P H' φ e) H args = .ok H₁ vs tr
+  | .loop e₁ => ∃ sc, vs = [] ∧ eval M fuel P H φ e₁ = .broke H₁ sc tr
   | .intLit _ _ _ | .floatLit _ _ | .boolLit _ | .unitLit | .use _ | .panic _ | .drop _
-  | .loop _ | .brk => False
+  | .brk => False
 
 /-- Prefixing a trace is injective (helper). -/
 theorem EvalRes.withTrace_inj {a b : EvalRes} {tr : List Event}
@@ -1296,7 +1307,19 @@ theorem rest_step (M : FloatOps) {P : Program} (hp : P.pendingSafe = true) {n : 
   have single : ∀ v, vs = [v] → (Contents.ofVal v).copyClosed P.decls = true := by
     intro v hv; subst hv; simpa [Contents.ofVals, Contents.copyClosedList] using hvs
   cases e with
-  | intLit | floatLit | boolLit | unitLit | use | panic | drop | loop | brk => exact hl.elim
+  | intLit | floatLit | boolLit | unitLit | use | panic | drop | brk => exact hl.elim
+  | loop e₁ =>
+      obtain ⟨sc, rfl, hr⟩ := hl
+      simp only [eval, hr] at heq
+      split at heq
+      · rename_i w _
+        cases r <;> simp [EvalRes.withTrace] at heq
+        trivial
+      · rename_i H₂ evs hu
+        cases r <;> simp [EvalRes.withTrace] at heq
+        obtain ⟨rfl, rfl, rfl⟩ := heq
+        obtain ⟨i, l, c⟩ := unwindLocs_exact hc₁ hu
+        exact ⟨by omega, c, rfl, fun a _ => by have := i a; simp [Contents.ofVals, Contents.ownList]; omega⟩
   | binop op e₁ e₂ =>
       obtain ⟨v₁, rfl, hr⟩ := hl
       simp only [eval, hr, EvalRes.andThen] at heq
@@ -1906,7 +1929,8 @@ callee's parameter cell a frame pop forgot to walk — would still count as
 retired (`†`) by its end — a `let`'s at its `endscope` (§6.7), a `match` arm's
 at the arm's end (§6.6), a callee's at the frame pop (§6.9), and each at the
 σ-walk of an unwinding `return` — except, for an unwinding `break`, the cells
-its carried scope record still owes, which the loop retires (§6.10). Cells
+its carried scope record still owes, which the loop retires (§6.10) and
+whose values `rest_exactly_once` at the loop counts as ended. Cells
 outside the frame's environment are touched only to be retired, and an
 unwinding `return` has retired the whole frame's record. It is a fact about
 the store's shape alone, proved by its own fuel induction (`eval_tidy`), with
@@ -1936,12 +1960,14 @@ def Retired (H : Store) (keep : List Nat) (H' : Store) : Prop :=
 (§6.7, §6.9, §6.10): the store only grew and was touched outside `φ`'s
 environment only to retire; every cell the evaluation allocated is retired by
 its end — for an unwinding `break`, all but the cells of the scope record it
-carries, which extends `φ`'s and which the loop retires; and an unwinding
+carries, which extends `φ`'s by cells allocated since `H` and which the loop
+retires; and an unwinding
 `return` has retired every cell of `φ`'s record (§6.9's σ-walk). -/
 def Tidy (φ : Frame) (H : Store) : EvalRes → Prop
   | .ok H' _ _ => Local φ H H' ∧ Retired H [] H'
   | .returned H' _ _ => Local φ H H' ∧ Retired H [] H' ∧ ∀ ℓ ∈ φ.scope, H'[ℓ]? = some .dead
-  | .broke H' sc _ => Local φ H H' ∧ Retired H sc H' ∧ ∃ locs, sc = φ.scope ++ locs
+  | .broke H' sc _ => Local φ H H' ∧ Retired H sc H' ∧
+      ∃ locs, sc = φ.scope ++ locs ∧ ∀ ℓ ∈ locs, H.length ≤ ℓ
   | .panic _ _ | .stuck _ | .outOfFuel => True
 
 /-- Nothing changed (helper). -/
@@ -2014,7 +2040,10 @@ theorem Tidy.prefix {φ : Frame} {H H₁ : Store} {tr : List Event} {r : EvalRes
   cases r with
   | ok H₂ v tr₂ => exact ⟨hl.trans hr.1, key H₂ [] hr.1 hr.2⟩
   | returned H₂ v tr₂ => exact ⟨hl.trans hr.1, key H₂ [] hr.1 hr.2.1, hr.2.2⟩
-  | broke H₂ sc tr₂ => exact ⟨hl.trans hr.1, key H₂ sc hr.1 hr.2.1, hr.2.2⟩
+  | broke H₂ sc tr₂ =>
+      obtain ⟨locs, hsc, hfr⟩ := hr.2.2
+      exact ⟨hl.trans hr.1, key H₂ sc hr.1 hr.2.1, locs, hsc,
+        fun ℓ hm => Nat.le_trans hl.1 (hfr ℓ hm)⟩
   | _ => trivial
 
 /-- §6.2's search keeps the frame-pop invariant (helper). -/
@@ -2167,9 +2196,13 @@ theorem Tidy.scoped {φ : Frame} {H Hm : Store} {ls : List Nat} {r : EvalRes}
       refine ⟨loc H₂ l₂, ret H₂ [] (fun ℓ hm _ => s₂ ℓ (by simp [hm])) r₂,
         fun ℓ hm => s₂ ℓ (by simp [hm])⟩
   | broke H₂ sc tr =>
-      obtain ⟨l₂, r₂, locs, hsc⟩ := hr
-      refine ⟨loc H₂ l₂, ret H₂ sc (fun ℓ hm hk' => absurd (by rw [hsc]; simp [hm]) hk') r₂,
-        ls ++ locs, by rw [hsc]; simp⟩
+      obtain ⟨l₂, r₂, locs, hsc, hfr⟩ := hr
+      have hsc : sc = (φ.scope ++ ls) ++ locs ∧ ∀ ℓ ∈ locs, Hm.length ≤ ℓ := ⟨hsc, hfr⟩
+      refine ⟨loc H₂ l₂, ret H₂ sc (fun ℓ hm hk' => absurd (by rw [hsc.1]; simp [hm]) hk') r₂,
+        ls ++ locs, by rw [hsc.1]; simp, fun ℓ hm => ?_⟩
+      rcases List.mem_append.mp hm with h | h
+      · exact ((hls ℓ).mp h).1
+      · exact Nat.le_trans hlen (hsc.2 ℓ h)
   | _ => trivial
 
 /-- Minted cells are the next indices, in order (helper). -/
@@ -2313,7 +2346,7 @@ theorem eval_tidy (M : FloatOps) (P : Program) :
     | panic => simp only [eval]; trivial
     | brk =>
         simp only [eval]
-        exact ⟨Local.refl φ H, Retired.same (Nat.le_refl _), [], by simp⟩
+        exact ⟨Local.refl φ H, Retired.same (Nat.le_refl _), [], by simp, by simp⟩
     | use p | drop p =>
         simp only [eval]
         split
@@ -2502,7 +2535,7 @@ theorem eval_tidy (M : FloatOps) (P : Program) :
         · trivial
         · rename_i H₁ sc tr hr
           rw [hr] at hb
-          obtain ⟨l₁, r₁, locs, hsc⟩ := hb
+          obtain ⟨l₁, r₁, locs, hsc, _⟩ := hb
           split
           · trivial
           · rename_i H₂ evs hu
@@ -2547,7 +2580,8 @@ never refused, and when it finishes normally or unwinds by `return` or
 * **every cell the evaluation allocated is retired** (`Tidy`): a `let`'s at
   its `endscope` (§6.7), a `match` arm's at the arm's end (§6.6), a callee's
   at its frame pop (§6.9) — except, for an unwinding `break`, the cells its
-  scope record still owes, which the loop retires (§6.10) — cells outside the
+  scope record still owes, which the loop retires (§6.10) and whose values
+  `rest_exactly_once` at the loop counts (`breakLeak_rejected`) — cells outside the
   frame's environment were touched only to be retired, and an unwinding
   `return` has retired the frame's whole record (§6.9's σ-walk). So "still in
   the store" means a cell the enclosing code can still reach, never one a
@@ -2609,7 +2643,7 @@ theorem Tidy.settled {φ : Frame} {H H₁ : Store} {r : EvalRes} {tr : List Even
   cases r with
   | ok => exact Retired.mono hle h.2
   | returned => exact ⟨Retired.mono hle h.2.1, h.2.2⟩
-  | broke => exact ⟨Retired.mono hle h.2.1, h.2.2⟩
+  | broke => exact ⟨Retired.mono hle h.2.1, h.2.2.elim fun locs h' => ⟨locs, h'.1⟩⟩
   | _ => trivial
 
 /-- A form's leading operands ran from a copy-closed store: the store only
@@ -2639,7 +2673,12 @@ theorem lead_cc (M : FloatOps) {P : Program} (hp : P.pendingSafe = true) {fuel :
     rw [hra] at this
     exact ⟨this.1, this.2.1, this.2.2.1⟩
   cases e with
-  | intLit | floatLit | boolLit | unitLit | use | panic | drop | loop | brk => exact hl.elim
+  | intLit | floatLit | boolLit | unitLit | use | panic | drop | brk => exact hl.elim
+  | loop e₁ =>
+      obtain ⟨sc, rfl, hr⟩ := hl
+      have := eval_exact M hp fuel H φ e₁ hcc (by simpa [Expr.pendingSafe] using he)
+      rw [hr] at this
+      exact ⟨this.1, this.2.1, rfl⟩
   | mkStruct _ args | mkEnum _ _ args | mkArray _ args | call _ args | indexRead _ args _ =>
       simp only [Expr.pendingSafe, Bool.and_eq_true] at he
       exact list args he.1 he.2 hl
@@ -2671,12 +2710,23 @@ or ended in `r`'s trace exactly as many times as it was held; every cell
 allocated since `H₁` is retired (`Settled`). This is where a `let`'s
 initializer is dropped at the `endscope`, a discarded `S { .. };` at the
 `dropTemp`, an argument at the callee's frame pop, and a scrutinee's shell at
-its `consume` — values `drop_exactly_once` alone never sees, because no
-evaluation starts holding them (`letDropDeleted_rejected`). Every owned value
-a checked run holds is present when some evaluation starts or is produced by
-some form's leading operands, so the two theorems together cover every owned
-value of the run, from the moment it exists to the end of the evaluation or
-form that received it. -/
+its `consume`, and where a `break` unwinds the bindings its loop body still
+held — the loop's lead is its body breaking, so the unwind is that loop's rest
+(`breakLeak_rejected`) — values `drop_exactly_once` alone never sees, because
+no evaluation starts holding them (`letDropDeleted_rejected`). Every place the
+machine ends an owned value — an `endscope`, a discard, a frame pop, a
+`return`'s σ-walk, a `break`'s unwind, a consumption, an overwrite or `@drop`
+— lies inside the window of a statement that already counts the value: the
+rest of the form that bound or received it, the rest of the loop a `break`
+unwinds to, or an evaluation that started holding it. So the two theorems
+together say every owned value a checked run holds is ended at most once in
+each window, exactly once by the end of the window that holds it, and never
+left in a cell nobody can reach.
+
+What the two do not see is an end emitted *early*, inside the evaluation
+that minted the value: no window holds the value yet, so only
+`no_double_free`'s "at most once" bounds such an end, and `main`'s own result
+is part of `run`'s result, handed to no form. -/
 theorem rest_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
     (hp : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
     {φ : Frame} {H : Store} (ht : Typed P R Γ e T Ω) (hfm : FrameMatches P.decls Γ φ H)
@@ -2771,22 +2821,48 @@ theorem pendingSafe_needed (M : FloatOps) :
     simp [storeOwn, lostStore, Cell.own, Contents.own, Contents.ownList, lostProgram, lostDecls,
       Decls.classOf, Decls.ofStructs, freedIds, Val.own, Contents.ofVal] at this
 
-/-! ## What the strengthened statements reject
+/-! ## What the statements reject, at typed configurations
 
-Two results a buggy machine could produce, each accepted by the bare
-start-of-evaluation ledger and each rejected by the statements above.
+Four results a buggy machine could produce. Each is accepted by the bare
+start-of-evaluation ledger `Exact`; each is rejected by what
+`drop_exactly_once` or `rest_exactly_once` concludes at a typed configuration
+of a checked, `pendingSafe` program — where the real run, by the same
+theorems, satisfies the conclusion.
 
-* **An orphaned parameter** (review probe 5): `g(x)` with `g` ignoring its
-  parameter. The real frame pop drops the `S0` in `g`'s parameter cell and
-  retires the cell. A machine whose frame pop forgot the σ-walk would leave
-  the cell full and emit no drop — and the ledger still balances, because the
-  `S0` is "still in the store". `Tidy` rejects it: the callee's cell was
-  allocated by the call and is not retired.
-* **A deleted drop of a minted value** (review probe 4): `let x = S0 { 1 }; 0`
-  and `S0 { 1 }; 0`. The `S0` is minted inside the evaluation, so the bare
-  ledger — which counts the identities an evaluation starts with — accepts a
-  result with its drop deleted. `rest_exactly_once`'s ledger, taken where the
-  initializer has produced the `S0`, rejects it. -/
+* **An orphaned parameter** (first review, probe 5): `g(x)` with `g` ignoring
+  its parameter. A frame pop that forgot the σ-walk leaves `g`'s parameter
+  cell full and emits no drop. The ledger still balances — the `S0` is "still
+  in the store" — and `Tidy` rejects it.
+* **A deleted drop of a minted value** (first review, probe 4):
+  `let x = S0 { 1 }; 0` and `S0 { 1 }; 0`. The `S0` is minted inside the
+  evaluation, so no evaluation starts holding it; `rest_exactly_once`'s ledger,
+  taken where the initializer has produced it, rejects the deletion.
+* **A silent `break` unwind** (second review, probe B1): in
+  `loop { let z = S0 { 1 }; break; }`, a loop that retires `z`'s cell without
+  dropping its `S0`. `Tidy` is satisfied — the cell is retired — and the `S0`
+  was minted after the loop started; `rest_exactly_once` at the loop, whose
+  lead is its body breaking, rejects it. -/
+
+/-- A checker verdict at a type is a typing derivation (helper). -/
+theorem typed_of_check {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} (T : Ty)
+    (h : (check P R Γ e).any (fun p => p.1.fits T) = true) : ∃ Ω, Typed P R Γ e T Ω := by
+  cases hc : check P R Γ e with
+  | none => simp [hc] at h
+  | some p => obtain ⟨c, Ω⟩ := p; simp [hc] at h; exact ⟨Ω, check_sound e hc T h⟩
+
+/-- `g`'s entry frame agrees with its entry context (helper). -/
+theorem lostFrame_matches : FrameMatches lostDecls lostCtx lostFrame lostStore :=
+  ⟨.cons (by rfl) ⟨_, rfl, ContentsMatches.ofVal (v := .struct 0 0 [.int .w64 .signed 7])
+    (HasTy.struct (by rfl) (.cons (.int (w := .w64) (s := .signed) (n := 7) (by decide)) .nil))⟩
+    (by simp) .nil, rfl⟩
+
+/-- `g`'s entry store is copy-closed (helper). -/
+theorem lostStore_cc : StoreCC lostDecls lostStore := by
+  intro ℓ c hc
+  match ℓ, hc with
+  | 0, hc => simp [lostStore] at hc
+  | 1, hc => simp [lostStore] at hc; subst hc; rfl
+  | _ + 2, hc => simp [lostStore] at hc
 
 /-- `g` ignores its `S0` parameter (helper). -/
 def orphanProgram : Program :=
@@ -2803,15 +2879,26 @@ def s0x : Contents := .struct 0 0 [.int .w64 .signed 7]
 def orphanResult : EvalRes :=
   .ok [.dead, .full .hole, .full s0x] (.int .w64 .signed 0) [.dtor 0 s0x]
 
-/-- **An orphaned cell balances the ledger but breaks `Tidy`** (§6.9): the real run
-of `g(x)` drops `x`'s `S0` at `g`'s frame pop and retires its cell; the
-orphaned result keeps the ledger (`Exact`) yet fails the frame-pop invariant,
-which `drop_exactly_once` also concludes. -/
-theorem orphan_rejected (M : FloatOps) :
-    eval M 100 orphanProgram lostStore lostFrame (.call 1 [.use (.var 0)])
+/-- **An orphaned cell balances the ledger but breaks `Tidy`** (§6.9). At the
+typed configuration `g(x)` of a checked, `pendingSafe` program, the real run
+drops `x`'s `S0` at `g`'s frame pop and retires the cell, and satisfies
+`drop_exactly_once`; the orphaned result keeps `Exact` yet fails `Tidy`,
+which `drop_exactly_once` concludes. -/
+theorem orphan_rejected (M : FloatModel) :
+    ProgramTyped orphanProgram ∧ orphanProgram.pendingSafe = true ∧
+      (∃ Ω, Typed orphanProgram (.int .w64 .signed) lostCtx (.call 1 [.use (.var 0)])
+        (.int .w64 .signed) Ω) ∧
+      eval M.toFloatOps 100 orphanProgram lostStore lostFrame (.call 1 [.use (.var 0)])
         = .ok [.dead, .full .hole, .dead] (.int .w64 .signed 0) [.drop 2 s0x, .dtor 0 s0x] ∧
+      Tidy lostFrame lostStore
+        (eval M.toFloatOps 100 orphanProgram lostStore lostFrame (.call 1 [.use (.var 0)])) ∧
       Exact lostDecls lostStore [] orphanResult ∧ ¬ Tidy lostFrame lostStore orphanResult := by
-  refine ⟨by rfl, ⟨by decide, fun ℓ c hc => ?_, rfl, fun a ha => ?_⟩, fun ⟨_, hret⟩ => ?_⟩
+  have hP : ProgramTyped orphanProgram := checkProgram_sound (by rfl)
+  obtain ⟨Ω, ht⟩ := typed_of_check (P := orphanProgram) (R := .int .w64 .signed) (Γ := lostCtx)
+    (e := .call 1 [.use (.var 0)]) (.int .w64 .signed) (by rfl)
+  refine ⟨hP, by rfl, ⟨Ω, ht⟩, by rfl,
+    (drop_exactly_once M hP (by rfl) ht lostFrame_matches lostStore_cc (by rfl)).2.2,
+    ⟨by decide, fun ℓ c hc => ?_, rfl, fun a ha => ?_⟩, fun ⟨_, hret⟩ => ?_⟩
   · match ℓ, hc with
     | 0, hc => simp at hc
     | 1, hc => simp at hc; subst hc; rfl
@@ -2827,22 +2914,44 @@ theorem orphan_rejected (M : FloatOps) :
 /-- The minted `S0 { 1 }` (helper). -/
 def s0one : Val := .struct 0 0 [.int .w64 .signed 1]
 
+/-- The empty frame agrees with the empty context over the empty store
+(helper). -/
+theorem emptyStore_cc : StoreCC lostDecls [] := fun ℓ c hc => by simp at hc
+
 /-- **A deleted `let` drop passes the bare ledger but not the form's** (§6.7):
-`let x = S0 { 1 }; 0` from the empty store. The whole evaluation's ledger
-counts no starting identity, so it accepts the result with the `endscope`'s
-drop deleted; `rest_exactly_once`'s ledger — from the store the initializer
-left, holding the minted `S0` — rejects it. -/
-theorem letDropDeleted_rejected (M : FloatOps) :
-    Lead M orphanProgram 100 [] { env := [], scope := [] } [.dead] [s0one] []
+`let x = S0 { 1 }; 0`, a typed configuration of a checked, `pendingSafe`
+program, from the empty store. The whole evaluation's ledger counts no
+starting identity, so it accepts the result with the `endscope`'s drop
+deleted; `rest_exactly_once`'s ledger — from the store the initializer left,
+holding the minted `S0` — holds of the real rest and rejects the deletion. -/
+theorem letDropDeleted_rejected (M : FloatModel) :
+    ProgramTyped orphanProgram ∧
+      (∃ Ω, Typed orphanProgram (.int .w64 .signed) []
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0))
+        (.int .w64 .signed) Ω) ∧
+      Lead M.toFloatOps orphanProgram 100 [] { env := [], scope := [] } [.dead] [s0one] []
         (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0)) ∧
-      eval M 101 orphanProgram [] { env := [], scope := [] }
+      eval M.toFloatOps 101 orphanProgram [] { env := [], scope := [] }
           (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0))
         = .ok [.dead, .dead] (.int .w64 .signed 0)
             [.drop 1 (Contents.ofVal s0one), .dtor 0 (Contents.ofVal s0one)] ∧
+      Exact lostDecls [.dead] (Contents.ownList lostDecls (Contents.ofVals [s0one]))
+          (.ok [.dead, .dead] (.int .w64 .signed 0)
+            [.drop 1 (Contents.ofVal s0one), .dtor 0 (Contents.ofVal s0one)]) ∧
       Exact lostDecls [] [] (.ok [.dead, .dead] (.int .w64 .signed 0) [.dtor 0 (Contents.ofVal s0one)]) ∧
       ¬ Exact lostDecls [.dead] (Contents.ownList lostDecls (Contents.ofVals [s0one]))
           (.ok [.dead, .dead] (.int .w64 .signed 0) [.dtor 0 (Contents.ofVal s0one)]) := by
-  refine ⟨⟨s0one, rfl, by rfl⟩, by rfl, ⟨by decide, fun ℓ c hc => ?_, rfl, fun a ha => ?_⟩,
+  have hP : ProgramTyped orphanProgram := checkProgram_sound (by rfl)
+  obtain ⟨Ω, ht⟩ := typed_of_check (P := orphanProgram) (R := .int .w64 .signed) (Γ := [])
+    (e := .letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0))
+    (.int .w64 .signed) (by rfl)
+  have hl : Lead M.toFloatOps orphanProgram 100 [] { env := [], scope := [] } [.dead] [s0one] []
+      (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0)) :=
+    ⟨s0one, rfl, by rfl⟩
+  have real := (rest_exactly_once M hP (by rfl) ht frameMatches_empty emptyStore_cc (by rfl) hl
+    (r := .ok [.dead, .dead] (.int .w64 .signed 0)
+      [.drop 1 (Contents.ofVal s0one), .dtor 0 (Contents.ofVal s0one)]) (by rfl)).2.1
+  refine ⟨hP, ⟨Ω, ht⟩, hl, by rfl, real, ⟨by decide, fun ℓ c hc => ?_, rfl, fun a ha => ?_⟩,
     fun ⟨_, _, _, h4⟩ => ?_⟩
   · match ℓ, hc with
     | 0, hc => simp at hc
@@ -2853,18 +2962,104 @@ theorem letDropDeleted_rejected (M : FloatOps) :
     exact absurd this (by decide)
 
 /-- **The same for a discarded temporary** (§6.7's (D-Seq)): `S0 { 1 }; 0`
-with its `dropTemp` deleted is rejected by `rest_exactly_once`'s ledger. -/
-theorem seqDropDeleted_rejected (M : FloatOps) :
-    Lead M orphanProgram 100 [] { env := [], scope := [] } [.dead] [s0one] []
+with its `dropTemp` deleted is rejected by `rest_exactly_once`'s ledger, which
+holds of the real rest. -/
+theorem seqDropDeleted_rejected (M : FloatModel) :
+    (∃ Ω, Typed orphanProgram (.int .w64 .signed) []
+        (.seq (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0))
+        (.int .w64 .signed) Ω) ∧
+      Lead M.toFloatOps orphanProgram 100 [] { env := [], scope := [] } [.dead] [s0one] []
         (.seq (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0)) ∧
-      eval M 101 orphanProgram [] { env := [], scope := [] }
+      eval M.toFloatOps 101 orphanProgram [] { env := [], scope := [] }
           (.seq (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0))
         = .ok [.dead] (.int .w64 .signed 0) [.dropTemp s0one, .dtor 0 (Contents.ofVal s0one)] ∧
+      Exact lostDecls [.dead] (Contents.ownList lostDecls (Contents.ofVals [s0one]))
+          (.ok [.dead] (.int .w64 .signed 0) [.dropTemp s0one, .dtor 0 (Contents.ofVal s0one)]) ∧
       ¬ Exact lostDecls [.dead] (Contents.ownList lostDecls (Contents.ofVals [s0one]))
           (.ok [.dead] (.int .w64 .signed 0) [.dtor 0 (Contents.ofVal s0one)]) := by
-  refine ⟨⟨s0one, rfl, by rfl⟩, by rfl, fun ⟨_, _, _, h4⟩ => ?_⟩
+  have hP : ProgramTyped orphanProgram := checkProgram_sound (by rfl)
+  obtain ⟨Ω, ht⟩ := typed_of_check (P := orphanProgram) (R := .int .w64 .signed) (Γ := [])
+    (e := .seq (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0))
+    (.int .w64 .signed) (by rfl)
+  have hl : Lead M.toFloatOps orphanProgram 100 [] { env := [], scope := [] } [.dead] [s0one] []
+      (.seq (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0)) :=
+    ⟨s0one, rfl, by rfl⟩
+  have real := (rest_exactly_once M hP (by rfl) ht frameMatches_empty emptyStore_cc (by rfl) hl
+    (r := .ok [.dead] (.int .w64 .signed 0) [.dropTemp s0one, .dtor 0 (Contents.ofVal s0one)])
+    (by rfl)).2.1
+  refine ⟨⟨Ω, ht⟩, hl, by rfl, real, fun ⟨_, _, _, h4⟩ => ?_⟩
   have := h4 0 (by decide)
   exact absurd this (by decide)
+
+/-- `g(x: S0) { loop { let z = S0 { 1 }; break; }; @drop(x); 0 }`, called with
+an `S0` (helper). -/
+def breakProgram : Program :=
+  { decls := lostDecls,
+    fns := [{ params := [], ret := .int .w64 .signed,
+              body := .call 1 [.mkStruct 0 [.intLit .w64 .signed 7]] },
+            { params := [⟨.struct 0, false⟩], ret := .int .w64 .signed,
+              body := .seq (.loop (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) .brk))
+                (.seq (.drop (.var 0)) (.intLit .w64 .signed 0)) }] }
+
+/-- `g`'s loop (helper). -/
+def breakLoop : Expr := .loop (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) .brk)
+
+/-- `z`'s `S0` (helper). -/
+def s0z : Contents := .struct 0 2 [.int .w64 .signed 1]
+
+/-- The store the loop body broke in: `z` still bound in `ℓ3` (helper). -/
+def breakStore : Store := [.dead, .full s0x, .dead, .full s0z]
+
+/-- A loop whose `break` unwind retires `z`'s cell with no drop and no
+destructor (helper). -/
+def breakLeak : EvalRes := .ok [.dead, .full s0x, .dead, .dead] .unit []
+
+/-- **A silent `break` unwind of a body-minted value** (§6.10's (D-Break)):
+`g`'s loop is a typed configuration of a checked, `pendingSafe` program. The
+real loop drop-retires `z`'s cell. A loop that retires it silently satisfies
+the bare ledger and `Tidy` — `z`'s `S0` was minted after the loop started, and
+its cell is retired — and is rejected by `rest_exactly_once` at the loop, whose
+lead is the body breaking in `breakStore`; the real unwind satisfies it. -/
+theorem breakLeak_rejected (M : FloatModel) :
+    ProgramTyped breakProgram ∧ breakProgram.pendingSafe = true ∧
+      (∃ Ω, Typed breakProgram (.int .w64 .signed) lostCtx breakLoop .unit Ω) ∧
+      Lead M.toFloatOps breakProgram 100 lostStore lostFrame breakStore [] [] breakLoop ∧
+      eval M.toFloatOps 101 breakProgram lostStore lostFrame breakLoop
+        = .ok [.dead, .full s0x, .dead, .dead] .unit [.drop 3 s0z, .dtor 0 s0z] ∧
+      Exact lostDecls breakStore []
+        (.ok [.dead, .full s0x, .dead, .dead] .unit [.drop 3 s0z, .dtor 0 s0z]) ∧
+      Exact lostDecls lostStore [] breakLeak ∧ Tidy lostFrame lostStore breakLeak ∧
+      ¬ Exact lostDecls breakStore [] breakLeak := by
+  have hP : ProgramTyped breakProgram := checkProgram_sound (by rfl)
+  obtain ⟨Ω, ht⟩ := typed_of_check (P := breakProgram) (R := .int .w64 .signed) (Γ := lostCtx)
+    (e := breakLoop) .unit (by rfl)
+  have hl : Lead M.toFloatOps breakProgram 100 lostStore lostFrame breakStore [] [] breakLoop :=
+    ⟨[1, 3], rfl, by rfl⟩
+  have real := (rest_exactly_once M hP (by rfl) ht lostFrame_matches lostStore_cc (by rfl) hl
+    (r := .ok [.dead, .full s0x, .dead, .dead] .unit [.drop 3 s0z, .dtor 0 s0z]) (by rfl)).2.1
+  refine ⟨hP, by rfl, ⟨Ω, ht⟩, hl, by rfl, real,
+    ⟨by decide, fun ℓ c hc => ?_, rfl, fun a ha => ?_⟩,
+    ⟨⟨by decide, fun ℓ hl' _ => ?_⟩, fun ℓ h₁ h₂ _ => ?_⟩, fun ⟨_, _, _, h4⟩ => ?_⟩
+  · match ℓ, hc with
+    | 0, hc => simp at hc
+    | 1, hc => simp at hc; subst hc; rfl
+    | 2, hc => simp at hc
+    | 3, hc => simp at hc
+    | _ + 4, hc => simp at hc
+  · match a, ha with
+    | 0, _ => rfl
+    | 1, _ => rfl
+    | _ + 2, ha => exact absurd ha (by simp [lostStore])
+  · match ℓ, hl' with
+    | 0, _ => exact .inl rfl
+    | 1, _ => exact .inl rfl
+    | _ + 2, hl' => exact absurd hl' (by simp [lostStore])
+  · simp [lostStore] at h₁; simp at h₂
+    match ℓ, h₁, h₂ with
+    | 2, _, _ => rfl
+    | 3, _, _ => rfl
+  · have := h4 2 (by decide)
+    exact absurd this (by decide)
 
 end RueCore
 

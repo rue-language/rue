@@ -808,6 +808,7 @@ lean_package(
         "RueCore.orphan_rejected",
         "RueCore.letDropDeleted_rejected",
         "RueCore.seqDropDeleted_rejected",
+        "RueCore.breakLeak_rejected",
         "RueCore.eval_sound",
         "RueCore.eval_sim",
         "RueCore.run_sim",

@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 740.
+- Theorems checked: 745.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -782,9 +782,14 @@ and diffs them against the committed copies.
 | `rest_exactly_once` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `lostProgram_typed` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `pendingSafe_needed` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
-| `orphan_rejected` | `RueCore.TraceExact` | `propext` |
-| `letDropDeleted_rejected` | `RueCore.TraceExact` | `propext` |
-| `seqDropDeleted_rejected` | `RueCore.TraceExact` | `propext` |
+| `typed_of_check` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `lostFrame_matches` | `RueCore.TraceExact` | `propext` |
+| `lostStore_cc` | `RueCore.TraceExact` | `propext` |
+| `orphan_rejected` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `emptyStore_cc` | `RueCore.TraceExact` | `propext` |
+| `letDropDeleted_rejected` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `seqDropDeleted_rejected` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `breakLeak_rejected` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `Explain.explain_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainIdx_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainArgs_result` | `RueCore.Explain` | `Quot.sound`, `propext` |

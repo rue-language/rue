@@ -439,8 +439,9 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   - **The frame-pop invariant.** Every cell the evaluation allocated is
     retired: a `let`'s at its `endscope`, a `match` arm's at the arm's end,
     a callee's at its frame pop. The one exception is an unwinding `break`,
-    which leaves the cells its scope record still owes, and the loop retires
-    them. Cells outside the frame's environment were touched only to be
+    which leaves the cells its scope record still owes. The loop retires
+    them, and `rest_exactly_once` at the loop counts their values as ended
+    (see below). Cells outside the frame's environment were touched only to be
     retired, and an unwinding `return` has retired the frame's whole record
     (`RueCore.Tidy`, `RueCore.eval_tidy`). So "still in the store" never
     means a cell nobody can reach any more. `RueCore.orphan_rejected` is a
@@ -478,13 +479,28 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   read) have produced their values, whatever the rest of the form yields is
   not refused, keeps the same ledger with those values held, and has
   retired every cell allocated since (`RueCore.Lead`, `RueCore.rest_step`,
-  `RueCore.Settled`). `RueCore.letDropDeleted_rejected` and
-  `RueCore.seqDropDeleted_rejected` delete the `let`'s and the discard's
-  drop. The bare ledger accepts both, and `rest_exactly_once`'s rejects
-  them. Every owned value a checked run holds is present when some
-  evaluation starts, or is produced by some form's leading operands, so the
-  two theorems cover every owned value of the run, from the moment it
-  exists to the end of the evaluation or form that received it.
+  `RueCore.Settled`). A `loop`'s lead is its body **breaking**, so the
+  `break`'s unwind of the bindings the body still held is a rest too.
+  Three witnesses are each stated at a typed configuration of a checked,
+  `pendingSafe` program, and in each the real run satisfies the theorem:
+  - `RueCore.letDropDeleted_rejected` deletes the `let`'s drop;
+  - `RueCore.seqDropDeleted_rejected` deletes the discard's drop;
+  - `RueCore.breakLeak_rejected` has a loop retire a body-minted binding's
+    cell without dropping it.
+
+  The bare ledger accepts all three (with `Tidy`, for the loop), and
+  `rest_exactly_once`'s ledger rejects them. Every place the machine ends
+  an owned value lies inside the window of a statement that already counts
+  the value: the rest of the form that bound or received it, the rest of
+  the loop a `break` unwinds to, or an evaluation that started holding it.
+  The places are an `endscope`, a discard, a frame pop, a `return`'s σ-walk,
+  a `break`'s unwind, a consumption, an overwrite and `@drop`. So every
+  owned value a checked run holds ends exactly once by the end of the
+  window that holds it, and is never left in a cell nobody can reach.
+  What neither theorem sees is an end emitted *early*, inside the
+  evaluation that minted the value: no window holds the value yet, so only
+  `no_double_free` bounds it (at most once). Nor does either see `main`'s
+  own result, which is part of `run`'s result and handed to no form.
 - **Carve-outs, stated where they apply:**
   - **`@panic`** (§6.12): a trap carries no store and runs no drop, so a
     `panic` result carries no claim. The values live at the trap are
