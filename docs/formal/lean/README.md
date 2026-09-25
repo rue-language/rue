@@ -1,5 +1,9 @@
 # RueCore — the Lean 4 mechanization
 
+> **New here?** [What the proof says about the compiler](../WHAT-IT-MEANS.md)
+> is a one-page, plain-language account of what is proved, how it is tested
+> against the compiler, and what it does not guarantee.
+
 A machine-checked mechanization of a fragment of the Rue core calculus
 (`../01-core-calculus.md`), proving the fragment's slice of the §7
 memory-safety theorems in Lean 4. Adopted as the fourth view of the language

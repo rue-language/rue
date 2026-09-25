@@ -1,5 +1,9 @@
 # The Rue Formal Semantics
 
+> **New here?** [What the proof says about the compiler](WHAT-IT-MEANS.md) is a
+> one-page, plain-language account of what the Lean proofs cover and what they
+> do and do not guarantee about the compiler.
+
 This directory is the **formal core** of Rue: a precise, mechanizable definition
 of the language's static and dynamic semantics. It exists to serve two purposes
 the prose specification (`docs/spec/`) cannot:
