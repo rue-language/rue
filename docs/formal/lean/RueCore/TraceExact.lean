@@ -2822,7 +2822,7 @@ theorem orphan_rejected (M : FloatOps) :
     | 1, _ => rfl
     | _ + 2, ha => exact absurd ha (by simp [lostStore])
   · have := hret 2 (by decide) (by decide) (by simp)
-    simp [orphanResult] at this
+    simp at this
 
 /-- The minted `S0 { 1 }` (helper). -/
 def s0one : Val := .struct 0 0 [.int .w64 .signed 1]
