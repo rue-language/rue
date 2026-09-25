@@ -136,3 +136,23 @@ pub fn f(x: usize) -> usize { x }
 ]
 stdout = ""
 exit_code = 42
+
+[[case]]
+name = "let_const_alias_in_inlined_leaf_callee"
+description = "A leaf callee with a let-bound const module is inlined at -O2, which inlines leaf callees only; it failed there too before the fix"
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+const a = @import("x.rue");
+fn f() -> i32 {
+    let m = a;
+    7
+}
+fn main() -> i32 { f() + f() + f() + f() + f() + f() }
+""" },
+    { path = "x.rue", source = """
+pub fn g(x: usize) -> usize { x }
+""" },
+]
+stdout = ""
+exit_code = 42
