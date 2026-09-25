@@ -589,4 +589,458 @@ theorem run_blocks (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls) (fue
     Blocks P.decls (run M P fuel).trace :=
   eval_blocks M hdt fuel [] _ _ (fun ℓ c hc => by simp at hc)
 
+/-! ## Across cells: the scope records of a reachable configuration -/
+
+/-- A scope record in **registration order is location order**: its cells
+strictly increasing, every one below the store's length `n` (helper). -/
+def Rec (n : Nat) (ls : List Nat) : Prop := ls.Pairwise (· < ·) ∧ ∀ ℓ ∈ ls, ℓ < n
+
+/-- A longer store keeps a record ordered (helper). -/
+theorem Rec.mono {n m : Nat} {ls : List Nat} (h : Rec n ls) (hn : n ≤ m) : Rec m ls :=
+  ⟨h.1, fun ℓ hm => Nat.lt_of_lt_of_le (h.2 ℓ hm) hn⟩
+
+/-- Part of a record, in its order, is ordered (helper). -/
+theorem Rec.sublist {n : Nat} {ls ls' : List Nat} (h : Rec n ls) (hs : ls'.Sublist ls) :
+    Rec n ls' :=
+  ⟨h.1.sublist hs, fun ℓ hm => h.2 ℓ (hs.subset hm)⟩
+
+/-- Fresh cells are allocated in increasing order (helper). Core's
+`List.pairwise_lt_range'` costs `Classical.choice`, so this proof avoids it. -/
+theorem range'_increasing : ∀ (s k : Nat), (List.range' s k).Pairwise (· < ·)
+  | _, 0 => .nil
+  | s, k + 1 => by
+      rw [List.range'_succ]
+      exact List.pairwise_cons.mpr
+        ⟨fun a ha => Nat.lt_of_succ_le (List.mem_range'_1.mp ha).1, range'_increasing (s + 1) k⟩
+
+/-- A record extended with freshly allocated cells, `n` onwards, is ordered
+(helper). -/
+theorem Rec.fresh {n k : Nat} {ls : List Nat} (h : Rec n ls) :
+    Rec (n + k) (ls ++ List.range' n k) := by
+  refine ⟨List.pairwise_append.mpr ⟨h.1, range'_increasing _ _, fun a ha b hb => ?_⟩,
+    fun ℓ hm => ?_⟩
+  · have := h.2 a ha; have := (List.mem_range'_1.mp hb).1; omega
+  · rcases List.mem_append.mp hm with h' | h'
+    · have := h.2 ℓ h'; omega
+    · exact (List.mem_range'_1.mp h').2
+
+/-- What a frame of the control stack owes, ordered: a pending `endscope`
+marker's cells, and the scope record of a suspended caller (`ret(E, φ)`) or
+of a loop boundary (`loopβ(e, φ)`) (helper). -/
+def Kont.Ordered (n : Nat) : Kont → Prop
+  | .endscope ls => Rec n ls
+  | .loop _ φ => Rec n φ.scope
+  | .call φ => Rec n φ.scope
+  | _ => True
+
+/-- A longer store keeps a frame ordered (helper). -/
+theorem Kont.Ordered.mono {n m : Nat} {k : Kont} (h : k.Ordered n) (hn : n ≤ m) :
+    k.Ordered m := by
+  cases k <;> first | trivial | exact Rec.mono h hn
+
+/-- **Every scope record of a configuration is in registration order**, which
+is location order: the current frame's, and every one the control stack
+holds (§6.1's `σ`, §6.7's `endscope`, §6.9's `ret(E, φ)`, §6.10's
+`loopβ(e, φ)`). -/
+def Config.Ordered : Config → Prop
+  | .run H φ K _ _ => Rec H.length φ.scope ∧ ∀ k ∈ K, k.Ordered H.length
+  | .panic _ _ => True
+
+/-- A step that leaves the frame alone, grows or keeps the store, and pushes
+only frames that owe nothing keeps the invariant (helper). -/
+theorem Config.Ordered.keep {H H' : Store} {φ : Frame} {K K' : List Kont} {f f' : Focus}
+    {tr tr' : List Event} (h : (Config.run H φ K f tr).Ordered) (hn : H.length ≤ H'.length)
+    (hK : ∀ k ∈ K', k ∈ K ∨ ∀ n, k.Ordered n) : (Config.run H' φ K' f' tr').Ordered :=
+  ⟨h.1.mono hn, fun k hk => by
+    rcases hK k hk with h' | h'
+    · exact (h.2 k h').mono hn
+    · exact h' _⟩
+
+/-- A step that keeps the stack (helper). -/
+theorem Config.Ordered.same {H H' : Store} {φ : Frame} {K : List Kont} {f f' : Focus}
+    {tr tr' : List Event} (h : (Config.run H φ K f tr).Ordered) (hn : H.length ≤ H'.length) :
+    (Config.run H' φ K f' tr').Ordered :=
+  h.keep hn (fun _ hk => .inl hk)
+
+/-- A step that pushes a context frame, which owes nothing (helper). -/
+theorem Config.Ordered.push {H H' : Store} {φ : Frame} {K : List Kont} {k : Kont} {f f' : Focus}
+    {tr tr' : List Event} (h : (Config.run H φ K f tr).Ordered) (hn : H.length ≤ H'.length)
+    (hk : ∀ n, k.Ordered n) : (Config.run H' φ (k :: K) f' tr').Ordered :=
+  h.keep hn (fun _ hm => by
+    rcases List.mem_cons.mp hm with rfl | hm
+    · exact .inr hk
+    · exact .inl hm)
+
+/-- A step that pops a context frame (helper). -/
+theorem Config.Ordered.pop {H H' : Store} {φ : Frame} {K : List Kont} {k : Kont} {f f' : Focus}
+    {tr tr' : List Event} (h : (Config.run H φ (k :: K) f tr).Ordered)
+    (hn : H.length ≤ H'.length) : (Config.run H' φ K f' tr').Ordered :=
+  h.keep hn (fun _ hm => .inl (List.mem_cons_of_mem _ hm))
+
+/-- The monitor-free drop-retire keeps the store's length (helper). -/
+theorem plainDropRetire_length {D : Decls} {H H' : Store} {ℓ : Nat} {evs : List Event}
+    (h : plainDropRetire D H ℓ = .ok (H', evs)) : H'.length = H.length := by
+  unfold plainDropRetire at h
+  split at h
+  · cases h
+  · cases h
+  · split at h
+    · cases h
+    · cases h; simp
+
+/-- The monitor-free unwind keeps the store's length (helper). -/
+theorem plainUnwind_length {D : Decls} :
+    ∀ {H H' : Store} {ls : List Nat} {evs : List Event},
+      plainUnwind D H ls = .ok (H', evs) → H'.length = H.length
+  | _, _, [], _, h => by simp [plainUnwind] at h; rw [h.1]
+  | H, _, ℓ :: ls, _, h => by
+      simp only [plainUnwind] at h
+      split at h
+      · cases h
+      · rename_i H₁ evs₁ h₁
+        split at h
+        · cases h
+        · rename_i H₂ evs₂ h₂
+          cases h
+          rw [plainUnwind_length h₂, plainDropRetire_length h₁]
+
+/-- (D-Return)'s search: the caller's frame is on the stack, and what is left
+under it was under it (helper). -/
+theorem Kont.toCall_mem : ∀ {K K' : List Kont} {φ : Frame}, Kont.toCall K = some (φ, K') →
+    Kont.call φ ∈ K ∧ ∀ k ∈ K', k ∈ K
+  | [], _, _, h => by simp [Kont.toCall] at h
+  | k :: K, K', φ, h => by
+      cases k <;> simp only [Kont.toCall, Option.some.injEq, Prod.mk.injEq] at h
+      case call φ' =>
+        obtain ⟨rfl, rfl⟩ := h
+        exact ⟨List.mem_cons_self, fun k hk => List.mem_cons_of_mem _ hk⟩
+      all_goals
+        obtain ⟨h₁, h₂⟩ := Kont.toCall_mem h
+        exact ⟨List.mem_cons_of_mem _ h₁, fun k hk => List.mem_cons_of_mem _ (h₂ k hk)⟩
+
+/-- (D-Break)'s search: the loop boundary is on the stack, and what is left
+under it was under it (helper). -/
+theorem Kont.toLoop_mem : ∀ {K K' : List Kont} {φ : Frame}, Kont.toLoop K = some (φ, K') →
+    (∃ e, Kont.loop e φ ∈ K) ∧ ∀ k ∈ K', k ∈ K
+  | [], _, _, h => by simp [Kont.toLoop] at h
+  | k :: K, K', φ, h => by
+      cases k <;> simp only [Kont.toLoop, Option.some.injEq, Prod.mk.injEq] at h
+      case loop e φ' =>
+        obtain ⟨rfl, rfl⟩ := h
+        exact ⟨⟨e, List.mem_cons_self⟩, fun k hk => List.mem_cons_of_mem _ hk⟩
+      case call => cases h
+      all_goals
+        obtain ⟨⟨e, h₁⟩, h₂⟩ := Kont.toLoop_mem h
+        exact ⟨⟨e, List.mem_cons_of_mem _ h₁⟩, fun k hk => List.mem_cons_of_mem _ (h₂ k hk)⟩
+
+/-- `mintParams`' store and cells, as the invariant reads them (helper). -/
+theorem mintParams_eq {H H' : Store} {vs : List Val} {ls : List Nat}
+    (h : mintParams H vs = (H', ls)) :
+    H'.length = H.length + vs.length ∧ ls = List.range' H.length vs.length := by
+  have h₁ := mintParams_length H vs
+  have h₂ := mintParams_locs H vs
+  rw [h] at h₁ h₂
+  exact ⟨h₁, h₂⟩
+
+/-- **Every step keeps every scope record in registration order** (§6.7,
+§6.9, §6.10): a record is only ever extended with cells allocated at that
+step — (D-Let)'s one, (D-Match)'s payload cells, (D-Call)'s parameter cells —
+which are past every cell already in it, and only ever shortened from its
+end ((D-EndScope)'s pop) or replaced by one the stack held. -/
+theorem step_ordered {M : FloatOps} {P : Program} {C C' : Config} (h : Step M P C C')
+    (hC : C.Ordered) : C'.Ordered := by
+  cases h
+  case «match» H φ K tr arms e k i vs body H' ls _ hm =>
+    obtain ⟨hl, rfl⟩ := mintParams_eq hm
+    refine ⟨hl ▸ hC.1.fresh, fun k hk => ?_⟩
+    rcases List.mem_cons.mp hk with rfl | hk
+    · exact hl ▸ (⟨range'_increasing _ _, fun ℓ hm => (List.mem_range'_1.mp hm).2⟩ :
+        Rec (H.length + vs.length) (List.range' H.length vs.length))
+    · exact (hC.2 k (List.mem_cons_of_mem _ hk)).mono (by omega)
+  case letBind H φ K tr e₂ v =>
+    refine ⟨by simpa using Rec.fresh (k := 1) hC.1, fun k hk => ?_⟩
+    rcases List.mem_cons.mp hk with rfl | hk
+    · exact ⟨List.pairwise_singleton _ _, fun ℓ hm => by simp at hm; simp [hm]⟩
+    · exact (hC.2 k (List.mem_cons_of_mem _ hk)).mono (by simp)
+  case endScope H φ K tr ℓs v H' evs hu =>
+    have hl := plainUnwind_length hu
+    refine ⟨(hC.1.sublist (List.take_sublist _ _)).mono (by omega), fun k hk => ?_⟩
+    exact (hC.2 k (List.mem_cons_of_mem _ hk)).mono (by omega)
+  case call H φ K tr f vs fd H' ls _ _ hm =>
+    obtain ⟨hl, rfl⟩ := mintParams_eq hm
+    have h0 : Rec H.length [] := ⟨.nil, by simp⟩
+    refine ⟨by simpa [hl] using Rec.fresh (k := vs.length) h0, fun k hk => ?_⟩
+    rcases List.mem_cons.mp hk with rfl | hk
+    · exact hC.1.mono (by omega)
+    · exact (hC.2 k hk).mono (by omega)
+  case callReturn H φ K tr φs v H' evs hu =>
+    have hl := plainUnwind_length hu
+    exact ⟨(hC.2 _ List.mem_cons_self).mono (by omega),
+      fun k hk => (hC.2 k (List.mem_cons_of_mem _ hk)).mono (by omega)⟩
+  case ret H φ K tr v φs K' H' evs hk hu =>
+    have hl := plainUnwind_length hu
+    obtain ⟨h₁, h₂⟩ := Kont.toCall_mem hk
+    exact ⟨(hC.2 _ (List.mem_cons_of_mem _ h₁)).mono (by omega),
+      fun k hk => (hC.2 k (List.mem_cons_of_mem _ (h₂ k hk))).mono (by omega)⟩
+  case loopEnter H φ K tr e =>
+    refine ⟨hC.1, fun k hk => ?_⟩
+    rcases List.mem_cons.mp hk with rfl | hk
+    · exact hC.1
+    · exact hC.2 k hk
+  case loopIter H φ K tr e φs H' evs hu =>
+    have hl := plainUnwind_length hu
+    have hφs := hC.2 _ List.mem_cons_self
+    exact ⟨(show Rec H.length φs.scope from hφs).mono (by omega),
+      fun k hk => (hC.2 k hk).mono (by omega)⟩
+  case brk H φ K tr φs K' H' evs hk hu =>
+    have hl := plainUnwind_length hu
+    obtain ⟨⟨e, h₁⟩, h₂⟩ := Kont.toLoop_mem hk
+    exact ⟨(show Rec H.length φs.scope from hC.2 _ h₁).mono (by omega),
+      fun k hk => (hC.2 k (h₂ k hk)).mono (by omega)⟩
+  all_goals first
+    | trivial
+    | exact hC.same (by first | exact Nat.le_refl _ | simp)
+    | exact hC.push (by first | exact Nat.le_refl _ | simp) (fun _ => trivial)
+    | exact hC.pop (by first | exact Nat.le_refl _ | simp)
+    | exact (hC.pop (f' := .ret .unit) (tr' := []) (Nat.le_refl _)).push (Nat.le_refl _)
+        (fun _ => trivial)
+
+/-- **Registration order is location order, everywhere the machine goes**
+(§6.1, §6.7, §6.9, §6.10): in every configuration reachable from §6.12's
+initial one, every scope record — the current frame's, every suspended
+caller's and loop boundary's, and every pending `endscope` marker's — lists
+its cells in strictly increasing location order. No typing hypothesis. -/
+theorem reachable_ordered {M : FloatOps} {P : Program} {C : Config}
+    (h : Steps M P Config.init C) : C.Ordered := by
+  have key : ∀ {C₁ C₂ : Config}, Steps M P C₁ C₂ → C₁.Ordered → C₂.Ordered := by
+    intro C₁ C₂ hs
+    induction hs with
+    | refl => exact id
+    | step h₁ _ ih => exact fun hC => ih (step_ordered h₁ hC)
+  exact key h ⟨⟨.nil, by simp⟩, by simp⟩
+
+/-! ## Across cells: every step's drops are newest-first -/
+
+/-- The cells a trace's `drop` markers name, in trace order (helper). -/
+def dropLocs (tr : List Event) : List Nat :=
+  tr.filterMap fun | .drop ℓ _ => some ℓ | _ => none
+
+/-- `dropLocs` distributes over concatenation (helper). -/
+theorem dropLocs_append (l₁ l₂ : List Event) : dropLocs (l₁ ++ l₂) = dropLocs l₁ ++ dropLocs l₂ :=
+  List.filterMap_append
+
+mutual
+/-- §6.11's walk names no cell: it emits destructor events only (helper). -/
+theorem dropLocs_dropEvents (D : Decls) : ∀ c : Contents, dropLocs (dropEvents D c) = []
+  | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => rfl
+  | .struct s i cs => by
+      simp only [dropEvents, dropLocs_append, dropLocs_dropEventsList D cs, List.append_nil]
+      split
+      · split <;> rfl
+      · rfl
+  | .enum _ _ _ cs | .array _ _ cs => by simp only [dropEvents]; exact dropLocs_dropEventsList D cs
+
+/-- The same over a list (helper). -/
+theorem dropLocs_dropEventsList (D : Decls) : ∀ cs : List Contents,
+    dropLocs (dropEventsList D cs) = []
+  | [] => rfl
+  | c :: cs => by
+      simp only [dropEventsList, dropLocs_append, dropLocs_dropEvents D c,
+        dropLocs_dropEventsList D cs, List.append_nil]
+end
+
+/-- A binding's drop names its own cell once, or nothing for `Copy` contents
+(helper). -/
+theorem dropCell_locs' {D : Decls} {ℓ : Nat} {c : Contents} {evs : List Event}
+    (h : dropCell D ℓ c = .ok evs) : dropLocs evs = [] ∨ dropLocs evs = [ℓ] := by
+  unfold dropCell at h
+  split at h
+  · cases h; exact .inl rfl
+  · split at h
+    · cases h
+    · rename_i evs' hw
+      cases h
+      refine .inr ?_
+      rw [dropContents_eq hw,
+        show (Event.drop ℓ c :: dropEvents D c) = [.drop ℓ c] ++ dropEvents D c from rfl,
+        dropLocs_append, dropLocs_dropEvents]
+      rfl
+
+/-- A binding's drop names at most its own cell (helper). -/
+theorem dropCell_locs {D : Decls} {ℓ : Nat} {c : Contents} {evs : List Event}
+    (h : dropCell D ℓ c = .ok evs) : ∀ x ∈ dropLocs evs, x = ℓ := by
+  intro x hx
+  rcases dropCell_locs' h with h' | h' <;> rw [h'] at hx <;> simp_all
+
+/-- A destructure's residue drops name only the destructured cell (helper). -/
+theorem plainResidue_locs {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {evs : List Event},
+    plainResidue D ℓ rs = .ok evs → ∀ x ∈ dropLocs evs, x = ℓ
+  | [], _, h => by simp [plainResidue] at h; subst h; simp [dropLocs]
+  | r :: rs, _, h => by
+      simp only [plainResidue] at h
+      split at h
+      · cases h
+      · rename_i e₁ h₁
+        split at h
+        · cases h
+        · rename_i e₂ h₂
+          cases h
+          intro x hx
+          simp only [dropLocs_append, dropContents_eq h₁, dropLocs_dropEvents, List.append_nil,
+            List.mem_append] at hx
+          rcases hx with hx | hx
+          · unfold residueMark at hx
+            split at hx
+            · simp [dropLocs] at hx
+            · simpa [dropLocs] using hx
+          · exact plainResidue_locs h₂ x hx
+
+/-- §6.3's destructure names only the destructured cell (helper). -/
+theorem plainDestructure_locs {D : Decls} {ℓ : Nat} {c leaf : Contents} {πs : List Nat}
+    {evs : List Event} (h : plainDestructure D ℓ c πs = .ok (leaf, evs)) :
+    ∀ x ∈ dropLocs evs, x = ℓ := by
+  unfold plainDestructure at h
+  split at h
+  · cases h
+  · split at h
+    · cases h
+    · rename_i evs' hr
+      cases h
+      intro x hx
+      simp only [dropLocs_append, List.mem_append] at hx
+      rcases hx with hx | hx
+      · exact plainResidue_locs hr x hx
+      · simp [dropLocs] at hx
+
+/-- `run-scope-drops` names the cells it is given, in the order given, each
+at most once (helper). -/
+theorem plainUnwind_locs {D : Decls} : ∀ {H H' : Store} {ls : List Nat} {evs : List Event},
+    plainUnwind D H ls = .ok (H', evs) → (dropLocs evs).Sublist ls
+  | _, _, [], _, h => by
+      simp [plainUnwind] at h; obtain ⟨_, rfl⟩ := h; exact .slnil
+  | H, _, ℓ :: ls, _, h => by
+      simp only [plainUnwind] at h
+      split at h
+      · cases h
+      · rename_i H₁ evs₁ h₁
+        split at h
+        · cases h
+        · rename_i H₂ evs₂ h₂
+          cases h
+          have ih := plainUnwind_locs h₂
+          have hd : dropLocs evs₁ = [] ∨ dropLocs evs₁ = [ℓ] := by
+            unfold plainDropRetire at h₁
+            split at h₁
+            · cases h₁
+            · cases h₁
+            · split at h₁
+              · cases h₁
+              · rename_i hd
+                cases h₁
+                exact dropCell_locs' hd
+          rw [dropLocs_append]
+          rcases hd with hd | hd <;> rw [hd]
+          · exact ih.cons ℓ
+          · exact ih.cons_cons ℓ
+
+/-- **The order one step drops cells in**: its `drop` markers either all name
+one cell — an overwrite, an `@drop`, a destructure's residue, several
+sub-positions of one binding — or name distinct cells in strictly decreasing
+location order (helper). -/
+def NewestFirst (ls : List Nat) : Prop := (∃ ℓ, ∀ x ∈ ls, x = ℓ) ∨ ls.Pairwise (· > ·)
+
+/-- A teardown of an ordered record drops newest-first (helper). -/
+theorem NewestFirst.teardown {n : Nat} {ls ls' : List Nat} (h : Rec n ls)
+    (hs : ls'.Sublist ls.reverse) : NewestFirst ls' :=
+  .inr ((List.pairwise_reverse.mpr h.1).sublist hs)
+
+/-- The output a configuration has produced so far (§6.12) (helper). -/
+def Config.trace : Config → List Event
+  | .run _ _ _ _ tr => tr
+  | .panic _ tr => tr
+
+/-- **Every step of §6's relation from an ordered configuration drops
+newest-first** (§6.7, §6.9, §6.10, §6.11): it appends to the trace, and the
+`drop` markers it appends name one cell or name distinct cells in strictly
+decreasing location order. A teardown — (D-EndScope), (D-Return-Value)'s
+frame pop, (D-Return)'s σ-walk, (D-Loop-Iter)'s end of a turn and
+(D-Break)'s unwind — walks an ordered record backwards
+(`NewestFirst.teardown`). -/
+theorem step_drop_order {M : FloatOps} {P : Program} {C C' : Config} (h : Step M P C C')
+    (hC : C.Ordered) : ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) := by
+  have one : ∀ {evs : List Event} (ℓ : Nat), (∀ x ∈ dropLocs evs, x = ℓ) →
+      NewestFirst (dropLocs evs) := fun ℓ h => .inl ⟨ℓ, h⟩
+  have none : ∀ {evs : List Event}, dropLocs evs = [] → NewestFirst (dropLocs evs) :=
+    fun h => .inl ⟨0, by simp [h]⟩
+  cases h
+  case useDeclared H φ K tr p ℓ c πd πs cd leaf evs v c' _ _ _ hd _ _ =>
+    exact ⟨_, rfl, one ℓ (plainDestructure_locs hd)⟩
+  case dbg => exact ⟨_, rfl, none rfl⟩
+  case «match» =>
+    refine ⟨_, rfl, none ?_⟩
+    unfold matchConsume; split <;> rfl
+  case endScope H φ K tr ℓs v H' evs hu =>
+    exact ⟨_, rfl, NewestFirst.teardown (hC.2 _ List.mem_cons_self) (plainUnwind_locs hu)⟩
+  case seqDrop hd =>
+    refine ⟨_, rfl, none ?_⟩
+    rw [show ∀ v evs, (Event.dropTemp v :: evs) = [.dropTemp v] ++ evs from fun _ _ => rfl,
+      dropLocs_append, dropContents_eq hd, dropLocs_dropEvents]; rfl
+  case assign H φ K tr p v ℓ c old evs c' _ _ hd _ => exact ⟨_, rfl, one ℓ (dropCell_locs hd)⟩
+  case indexWrite H φ K tr p πs v vs ℓ c sub ρ old evs sub' c' _ _ hd _ _ => exact ⟨_, rfl, one ℓ (dropCell_locs hd)⟩
+  case dropDeclared H φ K tr p ℓ c πd πs cd leaf evs levs c' _ _ _ hd hl _ =>
+    refine ⟨_, rfl, one ℓ (fun x hx => ?_)⟩
+    rw [dropLocs_append, List.mem_append] at hx
+    rcases hx with hx | hx
+    · exact plainDestructure_locs hd x hx
+    · exact dropCell_locs hl x hx
+  case dropMove H φ K tr p ℓ c sub evs c' _ _ _ _ hd _ => exact ⟨_, rfl, one ℓ (dropCell_locs hd)⟩
+  case callReturn H φ K tr φs v H' evs hu =>
+    exact ⟨_, rfl, NewestFirst.teardown hC.1 (plainUnwind_locs hu)⟩
+  case ret hu => exact ⟨_, rfl, NewestFirst.teardown hC.1 (plainUnwind_locs hu)⟩
+  case loopIter hu =>
+    exact ⟨_, rfl, NewestFirst.teardown (hC.1.sublist (List.drop_sublist _ _))
+      (plainUnwind_locs hu)⟩
+  case brk hu =>
+    exact ⟨_, rfl, NewestFirst.teardown (hC.1.sublist (List.drop_sublist _ _))
+      (plainUnwind_locs hu)⟩
+  all_goals exact ⟨[], by simp [Config.trace], none rfl⟩
+
+/-- **Newest-first teardown, on every reachable step** (§6.7, §6.9, §6.10):
+from every configuration reachable from §6.12's initial one, every step's
+`drop` markers name one cell or distinct cells newest-first. No typing
+hypothesis. -/
+theorem reachable_drop_order {M : FloatOps} {P : Program} {C C' : Config}
+    (hr : Steps M P Config.init C) (h : Step M P C C') :
+    ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) :=
+  step_drop_order h (reachable_ordered hr)
+
+/-! ## `drop_order` -/
+
+/-- **Drop order** (§3.9, §6.7, §6.9, §6.10, §6.11; §7's "no use-after-drop /
+no leak of drops" bullet, its *when*). For a program the checker accepts:
+
+* its run is never refused (`no_violation`), so its trace is the whole run's;
+* **within a value**, the run's trace is in §6.11's block grammar
+  (`run_blocks`): every destructor event sits inside the walk of the drop
+  marker before it — destructor first (`3.9:28`), fields in declaration
+  order (`3.9:13`), array elements ascending (`3.9:15`), an enum's active
+  payload only (`6.3:20`) — and nowhere else;
+* **across cells**, every step of §6's relation from a reachable
+  configuration drops the cells it tears down newest first
+  (`reachable_drop_order`): its `drop` markers name one cell, or distinct
+  cells in strictly decreasing location order, which is reverse registration
+  order because every scope record is in location order
+  (`reachable_ordered`).
+
+The first half is over `eval`, where copy closure holds; the second over
+`Step`, where the scope record lives. Neither needs typing beyond
+`DtorNotCopy`; the typing hypothesis buys the first conjunct. -/
+theorem drop_order (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+    (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
+      Blocks P.decls (run M.toFloatOps P fuel).trace ∧
+      ∀ C C', Steps M.toFloatOps P Config.init C → Step M.toFloatOps P C C' →
+        ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) :=
+  ⟨no_violation M h fuel, run_blocks M.toFloatOps h.wf.decls.dtorNotCopy fuel,
+    fun _ _ hr hs => reachable_drop_order hr hs⟩
+
 end RueCore
