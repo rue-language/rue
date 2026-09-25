@@ -420,3 +420,218 @@ pub fn boxed(comptime T: type, x: T) -> Box(T) { Box(T) { v: x } }
 pub const I = i64;
 """ },
 ]
+
+# The pre-inference walk reduces a constructor head under the bindings in scope
+# at the head. It once reduced heads afterwards through a name-flattened view
+# where the later same-named binding site won, so a head could be reduced from
+# a module that is not in scope there: inference typed the literal from the
+# wrong module, and either sema disagreed (a false E0206/E0800) or the call
+# argument was accepted as the wrong module's type and read past the value.
+[[case]]
+name = "inner_rebinding_does_not_leak_into_outer_head"
+description = "let m = b; { let m = a; .. } m.P(u64).V(3) reduces from b, whose payload is i8."
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+fn main() -> i32 {
+    let m = b;
+    {
+        let m = a;
+        let z = m.P(u64).V(1);
+    }
+    let o = m.P(u64).V(3);
+    match o { m.P(u64).V(v) => @intCast(v) }
+}
+""" },
+    { path = "a.rue", source = """
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+stdout = ""
+exit_code = 3
+
+[[case]]
+name = "inner_rebinding_in_if_does_not_leak_into_outer_head"
+description = "let m = b; if true { let m = a; .. } m.P(u64).V(3) reduces from b."
+files = [
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+fn main() -> i32 {
+    let m = b;
+    if true {
+        let m = a;
+        let z = m.P(u64).V(1);
+    }
+    let o = m.P(u64).V(3);
+    match o { m.P(u64).V(v) => @intCast(v) }
+}
+""" },
+    { path = "a.rue", source = """
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+stdout = ""
+exit_code = 3
+
+[[case]]
+name = "outer_head_keeps_wide_payload_past_inner_rebinding"
+description = "let m = a; { let m = b; .. } m.P(u64).V(300) reduces from a, so 300 fits its u64 payload."
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+fn main() -> i32 {
+    let m = a;
+    {
+        let m = b;
+        let z = m.P(u64).V(1);
+    }
+    let o = m.P(u64).V(300);
+    match o { m.P(u64).V(v) => if v == 300 { 5 } else { 1 } }
+}
+""" },
+    { path = "a.rue", source = """
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+stdout = ""
+exit_code = 5
+
+[[case]]
+name = "later_rebinding_does_not_retype_earlier_head"
+description = "let m = a; take(m.R(u64) { v: 3 }); let m = b; with take expecting b.R(u64) is E0206."
+compile_fail = true
+error_contains = ["E0206"]
+files = [
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+fn take(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn main() -> i32 {
+    let m = a;
+    let r = take(m.R(u64) { v: 3 });
+    let m = b;
+    r
+}
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+""" },
+]
+
+[[case]]
+name = "self_named_local_module_ignores_later_nested_rebinding"
+description = "let a = a; take(a.R(u64) { v: 3 }); if false { let a = b; } with take expecting b.R(u64) is E0206."
+compile_fail = true
+error_contains = ["E0206"]
+files = [
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+fn take(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn main() -> i32 {
+    let a = a;
+    let r = take(a.R(u64) { v: 3 });
+    if false { let a = b; }
+    r
+}
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+""" },
+]
+
+[[case]]
+name = "outer_struct_head_past_inner_rebinding_is_checked_at_call"
+description = "let m = b; { let m = a; .. } take(m.Q(u64) { v: 3 }) with take expecting a.Q(u64) is E0206."
+compile_fail = true
+error_contains = ["E0206"]
+files = [
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+fn take(p: a.Q(u64)) -> i32 { if p.v == 3 { 0 } else { 7 } }
+fn main() -> i32 {
+    let m = b;
+    {
+        let m = a;
+        let z = m.Q(u64) { v: 1 };
+    }
+    take(m.Q(u64) { v: 3 })
+}
+""" },
+    { path = "a.rue", source = """
+pub fn Q(comptime T: type) -> type { struct { v: T } }
+""" },
+    { path = "b.rue", source = """
+pub fn Q(comptime T: type) -> type { struct { v: i8 } }
+""" },
+]
+
+[[case]]
+name = "outer_struct_head_field_type_past_inner_rebinding"
+description = "let m = b; { let m = a; .. } m.Q(u64) { v: -1 } takes b's i8 field, so the negative literal is accepted."
+files = [
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+fn take(p: b.Q(u64)) -> i32 { @intCast(p.v + 5) }
+fn main() -> i32 {
+    let m = b;
+    {
+        let m = a;
+        let z = m.Q(u64) { v: 1 };
+    }
+    let o = m.Q(u64) { v: -1 };
+    take(o)
+}
+""" },
+    { path = "a.rue", source = """
+pub fn Q(comptime T: type) -> type { struct { v: T } }
+""" },
+    { path = "b.rue", source = """
+pub fn Q(comptime T: type) -> type { struct { v: i8 } }
+""" },
+]
+exit_code = 4
+
+# A module-valued join has one module. Arms naming different modules are
+# rejected at the join, before any head rooted at the local is reduced.
+[[case]]
+name = "join_of_different_modules_is_rejected"
+description = "let k = if c { a } else { b }; k.R(u64) { v: 3 } is E0206 at the join."
+compile_fail = true
+error_contains = ["E0206"]
+files = [
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+fn take(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn main() -> i32 { let c = true; let k = if c { a } else { b }; take(k.R(u64) { v: 3 }) }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+""" },
+]
