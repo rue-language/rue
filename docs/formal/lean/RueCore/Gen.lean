@@ -195,15 +195,15 @@ generated disagreement is a finding to file.
   of it) was moved (seed `array_dyn_write_after_field_move`): `gen_2_1694`
   (`--gen 1695 --seed 2`) reached it before loops, and it agrees now that
   RUE-2344 is fixed.
-* `return { … }`, a `return` whose operand is a **block** (not yet seeded or
-  filed): §2's `return e` and `4.9:2`'s `"return" expression?` admit a block
-  operand, but the compiler's parser reads `return` before a `{` as a bare
-  `return` — `return ()` (`4.9:3`) — and then the block as the next
-  expression, so a function returning `i32` is refused with E0206. The printer
-  writes a `let`-bound dynamic index as such a block (`bindIdx`), so a
-  returned atom that reads below a dynamic index prints as one:
-  `gen_23_444` (`--gen 1000 --seed 23`), which the model accepts and runs to
-  `1`. `fn f() -> i32 { return { 2 } }` is the whole shape.
+* `return { … }`, a `return` whose operand is a **block**: §2's `return e`
+  and `4.9:2`'s `"return" expression?` admit a block operand, but the
+  compiler's parser read `return` before a `{` as a bare `return` and the
+  block as the next expression, so a function returning `i32` was refused
+  with E0206. The printer writes a `let`-bound dynamic index as such a block
+  (`bindIdx`), which is how `gen_23_444` (`--gen 1000 --seed 23`) reached it.
+  It agrees now that RUE-2449 is fixed: the parser keeps a leading `{` as the
+  operand except directly within an `if`/`while` condition, a `for` iterable
+  or a `match` scrutinee.
 
 Calls are **not** generated yet: every generated case is a one-function
 program (`Program.entry`), so the shapes RUE-2233 added that need a callee — a
