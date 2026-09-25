@@ -21,9 +21,10 @@ questions, and exits non-zero when one of them has the wrong answer:
   (`TauCetiProject/TauCeti`, `scripts/Axioms.lean`), and it walks the bodies
   itself rather than reading the per-module summaries Lean's
   `collectAxioms` precomputes when it writes an `.olean`.
-* **Constructs.** In the modules `RueCore/Layers.lean` puts in L0–L2 — the
-  syntax, the definitions and the proofs — no declaration is `unsafe`,
-  `partial`, `@[implemented_by]` or `@[extern]`, is an `opaque` constant (the
+* **Constructs.** In the modules `RueCore/Layers.lean` puts in L0–L2 and the
+  Spec layer — the syntax, the definitions, the statements and the proofs —
+  no declaration is `unsafe`, `partial`, `@[implemented_by]` or `@[extern]`,
+  is an `opaque` constant (the
   kernel cannot see its value, so nothing about it can be proved from its
   definition), or mentions a compiler-evaluation primitive (`nativePrimitives`).
   Each of these makes the code `#eval` runs differ from the definition the
@@ -61,10 +62,19 @@ toolchain is. The layering audit fails on any other module in the closure, so
 what is replayed is exactly the package's modules. The scan names the likely
 culprit early, and on the line it is on.
 
+**The statement/proof split** (RUE-2460, `spineProblems`). The headline
+theorems are listed once, in the Spec layer (`RueCore.Spec.spine`), each
+beside the `def …_stmt : Prop` that states it over L0 and L1 alone. The lint
+checks that the list and the environment agree: each headline theorem's own
+statement is its `_stmt`'s body, the same term up to binder names;
+`RueCore.Spine.<name>` restates it with exactly the type `…_stmt`, which is
+where the kernel checks the proof against the Spec statement; and no `_stmt`
+or `Spine` theorem is outside the list.
+
 The same pass computes the **trusted base** (`trustedBase`): the package
-definitions the headline statements (`headline`) transitively unfold to —
-their statements' constants, a definition's body, an inductive type's
-constructors — which is what a reviewer must read to know what the headline
+definitions the Spec statements transitively unfold to — their constants, a
+definition's body, an inductive type's constructors — which is what a
+reviewer must read, beside the Spec layer, to know what the headline
 theorems say. Proofs are not in it: a theorem met along the way is not
 followed, because the kernel checks a proof and proof irrelevance makes its
 content invisible to every statement. `TRUST.md` prints it (its "Trusted
@@ -78,71 +88,18 @@ namespace RueCore.Lint
 /-! ## The headline statements -/
 
 /-- (helper) The headline statements: the theorems the mechanization's claims
-are made of, and the one place they are listed (README, "The trusted-base
-lint"). It follows the red-team packet `docs/formal/REDTEAM.md` asks for:
-every theorem §7's bullets and `03-metatheory.md` cite as a claim, including
-the linking theorems. Type safety (`soundness`, `run_safe`, `no_violation`,
-the named corollaries, and `step_progress`/`step_preservation`/
-`step_type_safety` over the reduction relation); the checker's soundness
-(`check_sound`, and `checkProgram_sound`, which ties the executable
-`checkProgram` to the `ProgramTyped` hypothesis every theorem above carries);
-the trace properties (`no_double_free` with the two laws it is made of,
-`freed_once` and `dtor_once`, `drop_exactly_once`, `rest_exactly_once`,
-`drop_order`); the adequacy of `eval` to the reduction relation with the fuel
-lemmas ADR-0097 decision 3 requires (`eval_sound`, `run_sim`,
-`eval_complete`, `run_complete` off the checked domain, `never_stuck_iff`,
-`step_never_stuck_of_run`, `run_stuck_of_step_stuck`, `eval_diverges_iff`,
-`fuel_mono`, `no_masking`, `run_ne_returned`); and the relation's own
-properties the readings of those rest on (`Step.det`, `Step.terminal`,
-`Config.trichotomy` with the function it goes through, `step_iff`,
-`Config.stuck_iff`, and `step_stuck_isStuckState`). The simulation
-invariants `eval_sim` and `eval_steps_of_outOfFuel` are left out: they state
-induction hypotheses, and `run_sim` and `eval_complete` are their claims.
-The list is the §7 claims and their linking theorems, not every theorem
-`03-metatheory.md` cites: a lemma it cites as a step of a proof (the trace
-invariants behind `no_double_free`, the drop-order lemmas behind
-`drop_order`, the float lemmas §7 owes, the join and adequacy steps) is not a
-claim, and its statement is not part of what the headline theorems say.
-RUE-2460's Spec layer finalizes the list. Each name is resolved when this
-module compiles, so a renamed theorem breaks the build rather than the list. -/
-def headline : List Name := [
-  ``RueCore.soundness,
-  ``RueCore.run_safe,
-  ``RueCore.no_violation,
-  ``RueCore.no_use_after_move,
-  ``RueCore.no_use_after_drop,
-  ``RueCore.no_linear_leak,
-  ``RueCore.no_linear_overwrite,
-  ``RueCore.no_linear_discard,
-  ``RueCore.step_progress,
-  ``RueCore.step_preservation,
-  ``RueCore.step_type_safety,
-  ``RueCore.check_sound,
-  ``RueCore.checkProgram_sound,
-  ``RueCore.no_double_free,
-  ``RueCore.freed_once,
-  ``RueCore.dtor_once,
-  ``RueCore.drop_exactly_once,
-  ``RueCore.rest_exactly_once,
-  ``RueCore.drop_order,
-  ``RueCore.eval_sound,
-  ``RueCore.run_sim,
-  ``RueCore.eval_complete,
-  ``RueCore.run_complete,
-  ``RueCore.never_stuck_iff,
-  ``RueCore.step_never_stuck_of_run,
-  ``RueCore.run_stuck_of_step_stuck,
-  ``RueCore.eval_diverges_iff,
-  ``RueCore.fuel_mono,
-  ``RueCore.no_masking,
-  ``RueCore.run_ne_returned,
-  ``RueCore.Step.det,
-  ``RueCore.Step.terminal,
-  ``RueCore.Config.trichotomy,
-  ``RueCore.step_iff,
-  ``RueCore.Config.stuck_iff,
-  ``RueCore.step_stuck_isStuckState
-]
+are made of. They are listed once, in the Spec layer (`RueCore.Spec.spine`,
+RUE-2460), each beside the `…_stmt` statement it proves, and this list is
+read from there: the §7 claims and their linking theorems — type safety over
+`eval` and its named corollaries, the checker's soundness, the trace
+properties, the reduction relation's own properties and §7 over it, and the
+adequacy of `eval` to `Step` with the fuel lemmas. A lemma `03-metatheory.md`
+cites as a step of a proof is not a claim and is not on the list. The
+theorem names are resolved against the environment by `spineProblems`. -/
+def headline : List Name := Spec.spine.map (·.1)
+
+/-- (helper) The Spec statements, in the order of `headline`. -/
+def statements : List Name := Spec.spine.map (·.2)
 
 /-! ## Where a declaration lives -/
 
@@ -281,7 +238,7 @@ deriving Inhabited
 /-- (helper) A layer's label for a table, or a question mark for a module the
 table does not have (the layering audit fails on that). -/
 def layerLabel (l : Nat) : String :=
-  if l ≤ 3 then Layers.layerName l else "no layer"
+  if l ≤ Layers.toolingLayer then Layers.layerName l else "no layer"
 
 /-- (helper) An axiom's name as a finding prints it, with the reason it is
 there when Lean's native evaluation made it. -/
@@ -391,10 +348,10 @@ library puts it there — the proofs inside `String` and `Array` operations
 (`String.endsWith` reaches it through `Array.extract_eq_self_iff`'s proof and
 `Classical.propDecidable`), and the inhabitant of a `partial def` whose type
 is only `Nonempty` (`Classical.ofNonempty`) — and no statement depends on
-tooling code. A theorem in L3, and every declaration of L0–L2, is held to the
+tooling code. A theorem in L3, and every declaration of L0–L2 and Spec, is held to the
 allow-list. -/
 def axiomFails (layer : Nat) (info : ConstantInfo) (a : Name) : Bool :=
-  !(layer == 3 && !(info matches .thmInfo _) && a == ``Classical.choice)
+  !(layer == Layers.toolingLayer && !(info matches .thmInfo _) && a == ``Classical.choice)
 
 /-- (helper) Lint the package declarations of one environment that `done`
 does not already hold: their axioms and, by layer, their constructs. Returns
@@ -432,7 +389,7 @@ def lintEnvironment (env : Environment) (done : NameSet) (memo : NameMap (Array 
     for (c, exempt) in constructs env n info do
       findings := findings.push
         { subject := toString n, module := m, layer := layer, detail := c,
-          fails := (layer ≤ 2 && !exempt) || layer > 3 }
+          fails := (layer < Layers.toolingLayer && !exempt) || layer > Layers.toolingLayer }
   return (findings, linted, modules, memo, used)
 
 /-! ## Options -/
@@ -705,21 +662,13 @@ def isLeanAux (env : Environment) (n : Name) : Bool :=
               ((find? env p).isSome && isRecordedAux env p)
         | _ => false))
 
-/-- (helper) The trusted base of the headline statements: every package
-constant their statements transitively unfold to. From a theorem, only its
-statement is followed; from a definition, its type and body; from an
-inductive type, its constructors' types; from a constructor or a recursor,
-its type. A theorem met along the way is not followed: proofs are the
-kernel's business. -/
-def trustedBase (env : Environment) : CoreM TrustedBase := do
-  -- `isLeanAux`, not `Digest.isGenerated`: a private or instance-scoped
-  -- definition a statement reaches is listed, not counted
-  let mut work : Array Name := #[]
-  let mut missing := #[]
-  for h in headline do
-    match find? env h with
-    | some (.thmInfo v) => work := work ++ v.type.getUsedConstants
-    | _ => missing := missing.push h
+/-- (helper) Every package constant the given constants transitively unfold
+to, the given ones included. From a definition, its type and body are
+followed; from an inductive type, its constructors' types; from a constructor
+or a recursor, its type. A theorem met along the way is not followed: proofs
+are the kernel's business. -/
+def unfoldClosure (env : Environment) (start : Array Name) : NameSet := Id.run do
+  let mut work := start
   let mut seen : NameSet := {}
   while !work.isEmpty do
     let n := work.back!
@@ -735,6 +684,43 @@ def trustedBase (env : Environment) : CoreM TrustedBase := do
     | .inductInfo v => work := work ++ v.ctors.toArray
     | .ctorInfo v => work := work.push v.induct
     | _ => pure ()
+  return seen
+
+/-- (helper) The body of a Spec statement: what its `def …_stmt : Prop`
+says, or `none` when the environment has no such definition. -/
+def statementBody? (env : Environment) (stmt : Name) : Option Lean.Expr :=
+  match find? env stmt with
+  | some (.defnInfo v) => some v.value
+  | _ => none
+
+/-- (helper) The definitions one set of constants rests on, as a reviewer
+counts them: the closure, less constructors, instances and Lean's own
+auxiliaries. -/
+def readable (env : Environment) (seen : NameSet) : Array Name := Id.run do
+  let mut out := #[]
+  for n in seen.toList do
+    let some info := find? env n | continue
+    if info matches .ctorInfo _ then continue
+    if Meta.isInstanceCore env n || isLeanAux env n then continue
+    out := out.push n
+  return out.qsort (·.toString < ·.toString)
+
+/-- (helper) The trusted base of the headline statements: every package
+constant the Spec statements (`statements`) transitively unfold to, the
+statements themselves left out — they are the Spec layer, read in full. It
+starts from each statement's body, so it is the same set the theorems' own
+statements reach, since each is its statement's body (`spineProblems`). -/
+def trustedBase (env : Environment) : CoreM TrustedBase := do
+  -- `isLeanAux`, not `Digest.isGenerated`: a private or instance-scoped
+  -- definition a statement reaches is listed, not counted
+  let mut start : Array Name := #[]
+  let mut missing := #[]
+  for (h, s) in Spec.spine do
+    match statementBody? env s with
+    | some body => start := start ++ body.getUsedConstants
+    | none => missing := missing.push s
+    unless (find? env h) matches some (.thmInfo _) do missing := missing.push h
+  let seen := unfoldClosure env start
   let mut definitions := #[]
   let mut instances := #[]
   let mut generated := 0
@@ -751,6 +737,70 @@ def trustedBase (env : Environment) : CoreM TrustedBase := do
       (a.2.1.toString < b.2.1.toString || (a.2.1 == b.2.1 && a.1.toString < b.1.toString)))
   return { definitions := definitions.qsort order,
            instances := instances.qsort (·.toString < ·.toString), generated, missing }
+
+/-! ## The spine: each headline proof against its statement -/
+
+/-- (helper) The theorem of `Spine.lean` that checks a headline theorem
+against its statement: `RueCore.soundness` is checked by
+`RueCore.Spine.soundness`. -/
+def spineName (thm : Name) : Name :=
+  thm.replacePrefix `RueCore `RueCore.Spine
+
+/-- (helper) What is wrong with the statement/proof split, if anything
+(RUE-2460), each as a sentence:
+
+* every entry of `Spec.spine` names a theorem of the environment and a
+  `def … : Prop` declared in a Spec-layer module, and no entry is repeated;
+* each headline theorem's own statement *is* its Spec statement's body, the
+  same term up to binder names and binder annotations (`Expr.eqv`) — so the
+  statement a reviewer reads in `Spec` is word for word the one the proof
+  layer states, not merely one the kernel can unfold to it;
+* `RueCore.Spine.<name>` exists, is declared in `RueCore.Spine`, and has
+  exactly the type `RueCore.Spec.<name>_stmt` (the kernel checked its proof,
+  `@RueCore.<name>`, against that type);
+* every `…_stmt` definition of a Spec-layer module is in `Spec.spine`, and
+  `RueCore.Spine` declares no other theorem, so nothing is stated or bound
+  outside the list. -/
+def spineProblems (env : Environment) : Array String := Id.run do
+  let mut out := #[]
+  let mut seenT : NameSet := {}
+  let mut seenS : NameSet := {}
+  for (h, s) in Spec.spine do
+    if seenT.contains h || seenS.contains s then
+      out := out.push s!"{h}/{s}: listed twice in RueCore.Spec.spine"
+    seenT := seenT.insert h
+    seenS := seenS.insert s
+    let sLayer := (moduleOf? env s).bind Layers.layerOf?
+    let body? : Option Lean.Expr := match find? env s with
+      | some (.defnInfo v) =>
+          if v.type == .sort .zero && sLayer == some Layers.specLayer then some v.value else none
+      | _ => none
+    let some body := body?
+      | out := out.push s!"{s}: not a `def … : Prop` of a Spec-layer module"; continue
+    match find? env h with
+    | some (.thmInfo v) =>
+        if !(v.type == body) then
+          out := out.push s!"{h}: its statement is not {s}'s body (up to binder names), though the two may be definitionally equal"
+    | _ => out := out.push s!"{h}: not a theorem of the environment"
+    let b := spineName h
+    match find? env b with
+    | some (.thmInfo v) =>
+        if v.type != .const s [] then
+          out := out.push s!"{b}: its type is not exactly {s}"
+        if moduleOf? env b != some `RueCore.Spine then
+          out := out.push s!"{b}: not declared in RueCore.Spine"
+    | _ => out := out.push s!"{b}: missing; RueCore.Spine must restate {h} as `{s}`"
+  for (n, info) in env.constants.toList do
+    let some m := moduleOf? env n | continue
+    if Layers.layerOf? m == some Layers.specLayer then
+      if let .defnInfo _ := info then
+        if (n.toString.endsWith "_stmt") && !seenS.contains n then
+          out := out.push s!"{n}: a Spec statement RueCore.Spec.spine does not list"
+    if m == `RueCore.Spine then
+      if let .thmInfo _ := info then
+        if (rangeOf? env n).isSome && !(Spec.spine.any fun (h, _) => spineName h == n) then
+          out := out.push s!"{n}: a theorem of RueCore.Spine that binds no entry of RueCore.Spec.spine"
+  return out
 
 /-- (helper) The trusted base as `TRUST.md`'s "Trusted base" section. -/
 def renderTrustedBase (tb : TrustedBase) : List String :=
@@ -772,10 +822,12 @@ def renderTrustedBase (tb : TrustedBase) : List String :=
    "constructors — computed from the compiled environment by the same pass as",
    "`lake exe ruecore-lint` (`RueCore/Lint.lean`, `trustedBase`). Proofs are not",
    "in it, because the kernel checks them; neither is anything of Lean's own",
-   "library. The headline statements are listed once, in `RueCore.Lint.headline`:",
-   "the §7 claims and their linking theorems. A lemma `03-metatheory.md` cites as a",
-   "step of a proof is not a claim, and is not a headline; RUE-2460 (the Spec layer)",
-   "finalizes the list.",
+   "library. The headline statements are the Spec layer's (`RueCore/Spec.lean`,",
+   "`RueCore.Spec.spine`): the §7 claims and their linking theorems, each stated once",
+   "as a `def …_stmt : Prop` and proved by the theorem beside it. The pass starts from",
+   "those statements' bodies, so the statements themselves are not counted here; they",
+   "are read in full, in `SPINE.md`. A lemma `03-metatheory.md` cites as a step of a",
+   "proof is not a claim, and is not a headline.",
    "",
    s!"- Headline statements: {headline.length} — " ++
      ", ".intercalate (headline.map (s!"`{Digest.shortName ·}`")) ++ ".",

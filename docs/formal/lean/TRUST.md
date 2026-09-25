@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 811.
+- Theorems checked: 847.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -847,6 +847,42 @@ and diffs them against the committed copies.
 | `drop_order` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `Blocks.drop_inv` | `RueCore.TraceOrder` | `propext` |
 | `Blocks.not_dtor` | `RueCore.TraceOrder` | `propext` |
+| `Spine.soundness` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.run_safe` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.no_violation` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.no_use_after_move` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.no_use_after_drop` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.no_linear_leak` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.no_linear_overwrite` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.no_linear_discard` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.fuel_mono` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.no_masking` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.run_ne_returned` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.check_sound` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.checkProgram_sound` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.no_double_free` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.freed_once` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.dtor_once` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.drop_exactly_once` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.rest_exactly_once` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.drop_order` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Step.det` | `RueCore.Spine` | `propext` |
+| `Spine.Step.terminal` | `RueCore.Spine` | `propext` |
+| `Spine.Config.trichotomy` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.step_iff` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Config.stuck_iff` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.step_stuck_isStuckState` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.step_progress` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.step_preservation` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.step_type_safety` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.eval_sound` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.run_sim` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.eval_complete` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.run_complete` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.never_stuck_iff` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.step_never_stuck_of_run` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.run_stuck_of_step_stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.eval_diverges_iff` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Examples.dynReadAffine_refused` | `RueCore.Examples` | `propext` |
 | `Examples.dynDropAffine_refused` | `RueCore.Examples` | `propext` |
 | `Examples.repeatAffine_refused` | `RueCore.Examples` | `propext` |
@@ -951,12 +987,14 @@ constants of each statement, a definition's body, an inductive type's
 constructors — computed from the compiled environment by the same pass as
 `lake exe ruecore-lint` (`RueCore/Lint.lean`, `trustedBase`). Proofs are not
 in it, because the kernel checks them; neither is anything of Lean's own
-library. The headline statements are listed once, in `RueCore.Lint.headline`:
-the §7 claims and their linking theorems. A lemma `03-metatheory.md` cites as a
-step of a proof is not a claim, and is not a headline; RUE-2460 (the Spec layer)
-finalizes the list.
+library. The headline statements are the Spec layer's (`RueCore/Spec.lean`,
+`RueCore.Spec.spine`): the §7 claims and their linking theorems, each stated once
+as a `def …_stmt : Prop` and proved by the theorem beside it. The pass starts from
+those statements' bodies, so the statements themselves are not counted here; they
+are read in full, in `SPINE.md`. A lemma `03-metatheory.md` cites as a step of a
+proof is not a claim, and is not a headline.
 
-- Headline statements: 36 — `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `step_progress`, `step_preservation`, `step_type_safety`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `run_stuck_of_step_stuck`, `eval_diverges_iff`, `fuel_mono`, `no_masking`, `run_ne_returned`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `Config.stuck_iff`, `step_stuck_isStuckState`.
+- Headline statements: 36 — `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `no_masking`, `run_ne_returned`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `Config.stuck_iff`, `step_stuck_isStuckState`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `run_stuck_of_step_stuck`, `eval_diverges_iff`.
 - Definitions to read: **292**, in 9 modules (66 inductive, 223 def, 3 abbrev).
 - Instances they use: 12 — `instDecidableEqAttr`, `instDecidableEqEntry`, `instDecidableEqFloatWidth`, `instDecidableEqIntWidth`, `instDecidableEqMult`, `instDecidableEqOwnSt`, `instDecidableEqSign`, `instDecidableEqTy`, `instDecidableInBounds`, `instDecidableNoResidualLinear`, `instDecidableRoundsFinite`, `instDecidableWf_1`. A `deriving` image says nothing beyond its type; a hand-written one is read with the predicate it decides.
 - Lean-generated auxiliaries passed through (`isLeanAux`): 525. Each is

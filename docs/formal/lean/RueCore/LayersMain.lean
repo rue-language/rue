@@ -15,12 +15,16 @@ mechanically fixed (README, "Layers"):
 * **L0 syntax** — `Float`, `Syntax`;
 * **L1 definitions** — the semantics (`Statics`, `Dynamics`, `Step`) and the
   definitions the headline statements are written in (`*/Defs`);
-* **L2 proofs** — the theorems and their proofs;
+* **Spec statements** — the headline statements, each a `def …_stmt : Prop`
+  over L0 and L1 alone (`Spec`, `Spec/*`, RUE-2460);
+* **L2 proofs** — the theorems and their proofs, and `Spine`, which checks
+  each headline proof against its Spec statement;
 * **L3 tooling** — examples, witnesses, the printer, the corpus, the
   generator, the explain and digest reports, and the executables.
 
 A module may import only modules of its own layer or a lower one. L3 may
-import anything, and no module of L0–L2 imports L3. `table` is the one place a layer is
+import anything, and no module of L0–L2 or Spec imports L3; Spec imports only
+L0, L1 and Spec, so a statement cannot mention a proof. `table` is the one place a layer is
 declared; it lives in `RueCore/Layers.lean`, which the trusted-base lint
 (`RueCore/Lint.lean`, RUE-2457) reads too.
 
@@ -36,8 +40,8 @@ trusted as the toolchain is. It fails when
   toolchain's — a library a `[[lean_lib]]` line adds, say — so that the
   closure outside the toolchain is exactly the package's modules in `table`;
 * a module imports a module of a higher layer;
-* an L0–L2 module imports anything outside the package but Lean's `Init`;
-* an L0–L2 module is not a `module` (the module system is adopted for the
+* an L0–L2 or Spec module imports anything outside the package but Lean's `Init`;
+* an L0–L2 or Spec module is not a `module` (the module system is adopted for the
   claim's layers: `module` headers, `public import`, `@[expose] public
   section`);
 * a package module reached from the roots is missing from `table`, a `table`
@@ -180,8 +184,8 @@ def audit : IO UInt32 := do
         ((layerOf? a).getD 9 == (layerOf? b).getD 9 && a.toString < b.toString)) do
     let some h := headers.get? m | continue
     let some l := layerOf? m | continue
-    if l ≤ 2 && !h.isModule then
-      problems := problems.push s!"{m} ({layerName l}): not a `module`; L0–L2 use the module system"
+    if l < toolingLayer && !h.isModule then
+      problems := problems.push s!"{m} ({layerName l}): not a `module`; L0–L2 and Spec use the module system"
     let mut shown : Array String := #[]
     for i in h.imports do
       if inPackage i.module then
@@ -192,9 +196,9 @@ def audit : IO UInt32 := do
           if li > l then
             problems := problems.push
               s!"{m} ({layerName l}) imports {i.module} ({layerName li}): an upward import"
-      else if l ≤ 2 && i.module != `Init then
+      else if l < toolingLayer && i.module != `Init then
         problems := problems.push
-          s!"{m} ({layerName l}) imports {i.module}, outside the package; L0–L2 import only `Init`"
+          s!"{m} ({layerName l}) imports {i.module}, outside the package; L0–L2 and Spec import only `Init`"
     let kind := if h.isModule then "module" else "file"
     lines := lines.push s!"{layerName l} | {m} ({kind}) <- {", ".intercalate shown.toList}"
   for line in lines do IO.println line

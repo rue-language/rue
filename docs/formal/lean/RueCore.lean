@@ -10,6 +10,8 @@ import RueCore.Adequacy.Defs
 import RueCore.Statics.Lemmas
 import RueCore.Dynamics.Lemmas
 import RueCore.Step.Lemmas
+import RueCore.Spec
+import RueCore.Spine
 import RueCore.Soundness
 import RueCore.Trace
 import RueCore.Adequacy
