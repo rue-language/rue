@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 745.
+- Theorems checked: 799.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -790,6 +790,60 @@ and diffs them against the committed copies.
 | `letDropDeleted_rejected` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `seqDropDeleted_rejected` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `breakLeak_rejected` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Blocks.append` | `RueCore.TraceOrder` | `propext` |
+| `Blocks.dropOne` | `RueCore.TraceOrder` | `propext` |
+| `dropContents_eq` | `RueCore.TraceOrder` | `propext` |
+| `dropContentsList_eq` | `RueCore.TraceOrder` | `propext` |
+| `dropEvents_allCopy` | `RueCore.TraceOrder` | `propext` |
+| `dropEventsList_allCopy` | `RueCore.TraceOrder` | `propext` |
+| `dropCell_blocks` | `RueCore.TraceOrder` | `propext` |
+| `dropRetire_blocks` | `RueCore.TraceOrder` | `propext` |
+| `unwindLocs_blocks` | `RueCore.TraceOrder` | `propext` |
+| `dropResidue_blocks` | `RueCore.TraceOrder` | `propext` |
+| `destructure_blocks` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `matchConsume_blocks` | `RueCore.TraceOrder` | `propext` |
+| `Blocks.withTrace` | `RueCore.TraceOrder` | `propext` |
+| `Blocks.bind` | `RueCore.TraceOrder` | `propext` |
+| `Blocks.absorb` | `RueCore.TraceOrder` | `propext` |
+| `Blocks.opRes` | `RueCore.TraceOrder` | `propext` |
+| `Blocks.intro` | `RueCore.TraceOrder` | `propext` |
+| `eval_ok_cc` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `evalArgs_blocks` | `RueCore.TraceOrder` | `propext` |
+| `eval_blocks` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `run_blocks` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `Rec.mono` | `RueCore.TraceOrder` | *none* |
+| `Rec.sublist` | `RueCore.TraceOrder` | *none* |
+| `range'_increasing` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `Rec.fresh` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `Kont.Ordered.mono` | `RueCore.TraceOrder` | `propext` |
+| `Config.Ordered.keep` | `RueCore.TraceOrder` | `propext` |
+| `Config.Ordered.same` | `RueCore.TraceOrder` | `propext` |
+| `Config.Ordered.push` | `RueCore.TraceOrder` | `propext` |
+| `Config.Ordered.pop` | `RueCore.TraceOrder` | `propext` |
+| `plainDropRetire_length` | `RueCore.TraceOrder` | `propext` |
+| `plainUnwind_length` | `RueCore.TraceOrder` | `propext` |
+| `Kont.toCall_mem` | `RueCore.TraceOrder` | `propext` |
+| `Kont.toLoop_mem` | `RueCore.TraceOrder` | `propext` |
+| `mintParams_eq` | `RueCore.TraceOrder` | `propext` |
+| `step_ordered` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `reachable_ordered` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `dropLocs_append` | `RueCore.TraceOrder` | `propext` |
+| `dropLocs_dropEvents` | `RueCore.TraceOrder` | `propext` |
+| `dropLocs_dropEventsList` | `RueCore.TraceOrder` | `propext` |
+| `dropCell_locs'` | `RueCore.TraceOrder` | `propext` |
+| `dropCell_locs` | `RueCore.TraceOrder` | `propext` |
+| `plainResidue_locs` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `plainDestructure_locs` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `plainUnwind_locs` | `RueCore.TraceOrder` | `propext` |
+| `NewestFirst.teardown` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `step_drop_order` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `reachable_drop_order` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `drop_order` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `Blocks.drop_inv` | `RueCore.TraceOrder` | `propext` |
+| `Blocks.not_dtor` | `RueCore.TraceOrder` | `propext` |
+| `fieldsSwapped_rejected` | `RueCore.TraceOrder` | `propext` |
+| `returnPastAffine_newestFirst` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `unorderedRecord_rejected` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `Explain.explain_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainIdx_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainArgs_result` | `RueCore.Explain` | `Quot.sound`, `propext` |

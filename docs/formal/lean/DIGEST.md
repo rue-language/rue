@@ -3319,6 +3319,217 @@ theorem RueCore.breakLeak_rejected (M : FloatModel) :
                   ¬Exact lostDecls breakStore [] breakLeak
 ```
 
+### `dropContents_eq`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**The walk is §6.11's order**: whenever `dropContents` succeeds, it emits
+exactly `dropEvents`, with no typing hypothesis — the walk refuses only an
+unbound struct index, where `dropEvents` would emit nothing (§6.11).
+
+```lean
+theorem RueCore.dropContents_eq {D : Decls} {c : Contents} {evs : List Event} :
+  dropContents D c = Except.ok evs → evs = dropEvents D c
+```
+
+### `eval_blocks`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**Every evaluation's trace is in §6.11's block grammar** (§3.9, §6.11):
+every evaluation, of every expression, from every copy-closed store, at every
+fuel. By fuel induction over `eval`; no typing derivation, only
+`DtorNotCopy`, which a destructure's `Copy` residue needs (module
+docstring).
+
+```lean
+theorem RueCore.eval_blocks (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls)
+  (fuel : Nat) (H : Store) (φ : Frame) (e : Expr) :
+  StoreCC P.decls H → Blocks P.decls (eval M fuel P H φ e).trace
+```
+
+### `run_blocks`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**Every finished run's trace is in §6.11's block grammar** (§3.9, §6.11):
+every destructor event of every run sits inside §6.11's walk of the drop
+marker before it — the value's own destructor first (`3.9:28`), then its
+fields in declaration order (`3.9:13`), an array's elements ascending
+(`3.9:15`), an enum's active payload only (`6.3:20`), every `⊘` skipped —
+and nowhere else. It needs only `DtorNotCopy`, which `WfDecls` gives.
+
+```lean
+theorem RueCore.run_blocks (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls)
+  (fuel : Nat) : Blocks P.decls (run M P fuel).trace
+```
+
+### `step_ordered`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**Every step keeps every scope record in registration order** (§6.7,
+§6.9, §6.10): a record is only ever extended with cells allocated at that
+step — (D-Let)'s one, (D-Match)'s payload cells, (D-Call)'s parameter cells —
+which are past every cell already in it, and only ever shortened from its
+end ((D-EndScope)'s pop) or replaced by one the stack held.
+
+```lean
+theorem RueCore.step_ordered {M : FloatOps} {P : Program} {C C' : Config}
+  (h : Step M P C C') (hC : C.Ordered) : C'.Ordered
+```
+
+### `reachable_ordered`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**Registration order is location order, everywhere the machine goes**
+(§6.1, §6.7, §6.9, §6.10): in every configuration reachable from §6.12's
+initial one, every scope record — the current frame's, every suspended
+caller's and loop boundary's, and every pending `endscope` marker's — lists
+its cells in strictly increasing location order. No typing hypothesis.
+
+```lean
+theorem RueCore.reachable_ordered {M : FloatOps} {P : Program} {C : Config}
+  (h : Steps M P Config.init C) : C.Ordered
+```
+
+### `step_drop_order`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**Every step of §6's relation from an ordered configuration drops
+newest-first** (§6.7, §6.9, §6.10, §6.11): it appends to the trace, and the
+`drop` markers it appends name one cell or name distinct cells in strictly
+decreasing location order. A teardown — (D-EndScope), (D-Return-Value)'s
+frame pop, (D-Return)'s σ-walk, (D-Loop-Iter)'s end of a turn and
+(D-Break)'s unwind — walks an ordered record backwards
+(`NewestFirst.teardown`).
+
+```lean
+theorem RueCore.step_drop_order {M : FloatOps} {P : Program} {C C' : Config}
+  (h : Step M P C C') (hC : C.Ordered) :
+  ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs)
+```
+
+### `reachable_drop_order`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**Newest-first teardown, on every reachable step** (§6.7, §6.9, §6.10):
+from every configuration reachable from §6.12's initial one, every step's
+`drop` markers name one cell or distinct cells newest-first. No typing
+hypothesis.
+
+```lean
+theorem RueCore.reachable_drop_order {M : FloatOps} {P : Program} {C C' : Config}
+  (hr : Steps M P Config.init C) (h : Step M P C C') :
+  ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs)
+```
+
+### `drop_order`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**Drop order** (§3.9, §6.7, §6.9, §6.10, §6.11; §7's "no use-after-drop /
+no leak of drops" bullet, its *when*). For a program the checker accepts:
+
+* its run is never refused (`no_violation`), so its trace is the whole run's;
+* **within a value**, the run's trace is in §6.11's block grammar
+  (`run_blocks`): every destructor event sits inside the walk of the drop
+  marker before it — destructor first (`3.9:28`), fields in declaration
+  order (`3.9:13`), array elements ascending (`3.9:15`), an enum's active
+  payload only (`6.3:20`) — and nowhere else;
+* **across cells**, every step of §6's relation from a reachable
+  configuration drops the cells it tears down newest first
+  (`reachable_drop_order`): its `drop` markers name one cell, or distinct
+  cells in strictly decreasing location order, which is reverse registration
+  order because every scope record is in location order
+  (`reachable_ordered`).
+
+The first half is over `eval`, where copy closure holds; the second over
+`Step`, where the scope record lives. Neither needs typing beyond
+`DtorNotCopy`; the typing hypothesis buys the first conjunct.
+
+```lean
+theorem RueCore.drop_order (M : FloatModel) {P : Program} (h : ProgramTyped P)
+  (fuel : Nat) :
+  (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+    Blocks P.decls (run M.toFloatOps P fuel).trace ∧
+      ∀ (C C' : Config),
+        Steps M.toFloatOps P Config.init C →
+          Step M.toFloatOps P C C' →
+            ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs)
+```
+
+### `Blocks.not_dtor`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**No destructor outside a drop**: a trace that opens with a destructor
+event is not in the grammar (§6.11).
+
+```lean
+theorem RueCore.Blocks.not_dtor {D : Decls} {s : Nat} {c : Contents}
+  {t : List Event} : ¬Blocks D (Event.dtor s c :: t)
+```
+
+### `fieldsSwapped_rejected`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**Fields in declaration order, or the grammar rejects the trace**
+(`3.9:13`): `struct_field_drop_order` drops `S7 { S1 {1}#0, S1 {2}#1 }#2`,
+whose walk runs `#0`'s destructor and then `#1`'s. The same marker followed by
+the two destructors the other way round is not in the grammar.
+
+```lean
+theorem RueCore.fieldsSwapped_rejected :
+  ¬Blocks (Examples.prog Examples.tI64 Examples.structFieldOrder).decls
+      [Event.drop 3
+          (Contents.struct Examples.sTwoAffine 2
+            [Examples.cA 0 1, Examples.cA 1 2]),
+        Event.dtor Examples.sAffine (Examples.cA 1 2),
+        Event.dtor Examples.sAffine (Examples.cA 0 1)]
+```
+
+### `returnPastAffine_newestFirst`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**Newest-first on a reachable step** (§6.9's (D-Return)):
+`return_past_affine` returns past two live affine bindings, `ℓ1` then `ℓ3`,
+and the one step that runs the frame's σ-walk drops `ℓ3` then `ℓ1` — two
+distinct cells, newest first, the teardown `reachable_drop_order` speaks
+of.
+
+```lean
+theorem RueCore.returnPastAffine_newestFirst :
+  ∃ C C' evs,
+    Steps Examples.demoOps Examples.returnPastAffine Config.init C ∧
+      Step Examples.demoOps Examples.returnPastAffine C C' ∧
+        C'.trace = C.trace ++ evs ∧ dropLocs evs = [3, 1]
+```
+
+### `unorderedRecord_rejected`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**The invariant is what orders a teardown.** A frame whose scope record
+is *not* in location order — `[3, 1]`, a configuration `reachable_ordered`
+says no run reaches — pops (D-Return-Value) and drops `ℓ1` before `ℓ3`: the
+step is a real step of §6's relation, and its markers are not newest-first.
+So `step_drop_order`'s hypothesis is load-bearing, and `reachable_ordered`
+is what discharges it.
+
+```lean
+theorem RueCore.unorderedRecord_rejected :
+  ∃ C C' evs,
+    ¬C.Ordered ∧
+      Step Examples.demoOps Examples.returnPastAffine C C' ∧
+        C'.trace = C.trace ++ evs ∧ ¬NewestFirst (dropLocs evs)
+```
+
 ### `Explain.explain_result`
 
 *theorem* · module `RueCore.Explain`
@@ -11224,6 +11435,526 @@ The empty frame agrees with the empty context over the empty store
 theorem RueCore.emptyStore_cc : StoreCC lostDecls []
 ```
 
+### `Blocks.append`
+
+*theorem* · module `RueCore.TraceOrder`
+
+Two block sequences, one after the other, are one (helper).
+
+```lean
+theorem RueCore.Blocks.append {D : Decls} {t u : List Event} (h₁ : Blocks D t)
+  (h₂ : Blocks D u) : Blocks D (t ++ u)
+```
+
+### `Blocks.dropOne`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A single binding's drop block (helper).
+
+```lean
+theorem RueCore.Blocks.dropOne {D : Decls} (ℓ : Nat) (c : Contents) :
+  Blocks D (Event.drop ℓ c :: dropEvents D c)
+```
+
+### `dropContentsList_eq`
+
+*theorem* · module `RueCore.TraceOrder`
+
+The same over a list (helper).
+
+```lean
+theorem RueCore.dropContentsList_eq {D : Decls} {cs : List Contents}
+  {evs : List Event} :
+  dropContentsList D cs = Except.ok evs → evs = dropEventsList D cs
+```
+
+### `dropEvents_allCopy`
+
+*theorem* · module `RueCore.TraceOrder`
+
+An all-`Copy` contents' walk is empty: no `Copy` struct declares a
+destructor (`3.9:31`) (helper).
+
+```lean
+theorem RueCore.dropEvents_allCopy {D : Decls} (hdt : DtorNotCopy D) {c : Contents} :
+  Contents.allCopy D c = true → dropEvents D c = []
+```
+
+### `dropEventsList_allCopy`
+
+*theorem* · module `RueCore.TraceOrder`
+
+The same over a list (helper).
+
+```lean
+theorem RueCore.dropEventsList_allCopy {D : Decls} (hdt : DtorNotCopy D)
+  {cs : List Contents} :
+  Contents.allCopyList D cs = true → dropEventsList D cs = []
+```
+
+### `dropCell_blocks`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A binding's drop (`dropCell`) is one block, or nothing for `Copy`
+contents (helper).
+
+```lean
+theorem RueCore.dropCell_blocks {D : Decls} {ℓ : Nat} {c : Contents}
+  {evs : List Event} (h : dropCell D ℓ c = Except.ok evs) : Blocks D evs
+```
+
+### `dropRetire_blocks`
+
+*theorem* · module `RueCore.TraceOrder`
+
+`drop-retire` (§6.1) is one block or nothing (helper).
+
+```lean
+theorem RueCore.dropRetire_blocks {D : Decls} {H H' : Store} {ℓ : Nat}
+  {evs : List Event} (h : dropRetire D H ℓ = Except.ok (H', evs)) :
+  Blocks D evs
+```
+
+### `unwindLocs_blocks`
+
+*theorem* · module `RueCore.TraceOrder`
+
+`run-scope-drops` (§6.1) is a sequence of blocks, one per live
+non-`Copy` cell, in the order given (helper).
+
+```lean
+theorem RueCore.unwindLocs_blocks {D : Decls} {H H' : Store} {ls : List Nat}
+  {evs : List Event} : unwindLocs D H ls = Except.ok (H', evs) → Blocks D evs
+```
+
+### `dropResidue_blocks`
+
+*theorem* · module `RueCore.TraceOrder`
+
+§6.3's `drop*` on a destructure's residue is a sequence of blocks: a
+non-`Copy` subtree's marker and walk, and a `Copy` subtree's empty walk
+(helper).
+
+```lean
+theorem RueCore.dropResidue_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat}
+  {rs : List Contents} {evs : List Event} :
+  Contents.copyClosedList D rs = true →
+    dropResidue D ℓ rs = Except.ok evs → Blocks D evs
+```
+
+### `destructure_blocks`
+
+*theorem* · module `RueCore.TraceOrder`
+
+§6.3's destructure is a sequence of blocks: the residue's, then the
+consumed shell (helper).
+
+```lean
+theorem RueCore.destructure_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat}
+  {cd leaf : Contents} {πs : List Nat} {evs : List Event}
+  (hcc : Contents.copyClosed D cd = true)
+  (h : Contents.destructure D ℓ cd πs = Except.ok (leaf, evs)) : Blocks D evs
+```
+
+### `matchConsume_blocks`
+
+*theorem* · module `RueCore.TraceOrder`
+
+(D-Match)'s consumption is a block or nothing (helper).
+
+```lean
+theorem RueCore.matchConsume_blocks {D : Decls} {e k i : Nat} {vs : List Val} :
+  Blocks D (matchConsume D e k i vs)
+```
+
+### `Blocks.withTrace`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A prefix of blocks before a result's blocks (helper).
+
+```lean
+theorem RueCore.Blocks.withTrace {D : Decls} {tr : List Event} {r : EvalRes}
+  (h₁ : Blocks D tr) (h₂ : Blocks D r.trace) :
+  Blocks D (EvalRes.withTrace tr r).trace
+```
+
+### `Blocks.bind`
+
+*theorem* · module `RueCore.TraceOrder`
+
+§6.2's search keeps the grammar (helper).
+
+```lean
+theorem RueCore.Blocks.bind {D : Decls} {r : EvalRes} {k : Store → Val → EvalRes}
+  (hr : Blocks D r.trace)
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr : List Event),
+      r = EvalRes.ok H₁ v tr → Blocks D (k H₁ v).trace) :
+  Blocks D (r.andThen k).trace
+```
+
+### `Blocks.absorb`
+
+*theorem* · module `RueCore.TraceOrder`
+
+§6.9's call boundary keeps the grammar (helper).
+
+```lean
+theorem RueCore.Blocks.absorb {D : Decls} {r : EvalRes} {k : Store → Val → EvalRes}
+  (hr : Blocks D r.trace)
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr : List Event),
+      r = EvalRes.ok H₁ v tr → Blocks D (k H₁ v).trace) :
+  Blocks D (r.absorb k).trace
+```
+
+### `Blocks.opRes`
+
+*theorem* · module `RueCore.TraceOrder`
+
+An operator's outcome emits nothing (helper).
+
+```lean
+theorem RueCore.Blocks.opRes {D : Decls} {H : Store} {o : OpRes} :
+  Blocks D (OpRes.toRes H o).trace
+```
+
+### `Blocks.intro`
+
+*theorem* · module `RueCore.TraceOrder`
+
+Aggregate introduction emits nothing (helper).
+
+```lean
+theorem RueCore.Blocks.intro {D D' : Decls} {H : Store} {mk : Nat → Val} :
+  Blocks D (introVal D' H mk).trace
+```
+
+### `eval_ok_cc`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A copy-closed store is one step further along an evaluation that reached
+a value (helper).
+
+```lean
+theorem RueCore.eval_ok_cc (M : FloatOps) {P : Program} {n : Nat} {H H₁ : Store}
+  {φ : Frame} {e : Expr} {v : Val} {tr : List Event} (hcc : StoreCC P.decls H)
+  (hr : eval M n P H φ e = EvalRes.ok H₁ v tr) :
+  StoreCC P.decls H₁ ∧ Contents.copyClosed P.decls (Contents.ofVal v) = true
+```
+
+### `evalArgs_blocks`
+
+*theorem* · module `RueCore.TraceOrder`
+
+An argument list keeps the grammar (helper).
+
+```lean
+theorem RueCore.evalArgs_blocks {D : Decls} {ev : Store → Expr → EvalRes}
+  (hev : ∀ (H : Store) (e : Expr), StoreCC D H → Blocks D (ev H e).trace)
+  (hcc :
+    ∀ (H : Store) (e : Expr) (H₁ : Store) (v : Val) (tr : List Event),
+      StoreCC D H → ev H e = EvalRes.ok H₁ v tr → StoreCC D H₁)
+  (H : Store) (es : List Expr) : StoreCC D H → ArgsBlocks D (evalArgs ev H es)
+```
+
+### `Rec.mono`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A longer store keeps a record ordered (helper).
+
+```lean
+theorem RueCore.Rec.mono {n m : Nat} {ls : List Nat} (h : Rec n ls) (hn : n ≤ m) :
+  Rec m ls
+```
+
+### `Rec.sublist`
+
+*theorem* · module `RueCore.TraceOrder`
+
+Part of a record, in its order, is ordered (helper).
+
+```lean
+theorem RueCore.Rec.sublist {n : Nat} {ls ls' : List Nat} (h : Rec n ls)
+  (hs : ls'.Sublist ls) : Rec n ls'
+```
+
+### `range'_increasing`
+
+*theorem* · module `RueCore.TraceOrder`
+
+Fresh cells are allocated in increasing order (helper). Core's
+`List.pairwise_lt_range'` costs `Classical.choice`, so this proof avoids it.
+
+```lean
+theorem RueCore.range'_increasing (s k : Nat) :
+  List.Pairwise (fun x1 x2 => x1 < x2) (List.range' s k)
+```
+
+### `Rec.fresh`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A record extended with freshly allocated cells, `n` onwards, is ordered
+(helper).
+
+```lean
+theorem RueCore.Rec.fresh {n k : Nat} {ls : List Nat} (h : Rec n ls) :
+  Rec (n + k) (ls ++ List.range' n k)
+```
+
+### `Kont.Ordered.mono`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A longer store keeps a frame ordered (helper).
+
+```lean
+theorem RueCore.Kont.Ordered.mono {n m : Nat} {k : Kont} (h : Kont.Ordered n k)
+  (hn : n ≤ m) : Kont.Ordered m k
+```
+
+### `Config.Ordered.keep`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A step that leaves the frame alone, grows or keeps the store, and pushes
+only frames that owe nothing keeps the invariant (helper).
+
+```lean
+theorem RueCore.Config.Ordered.keep {H H' : Store} {φ : Frame} {K K' : List Kont}
+  {f f' : Focus} {tr tr' : List Event} (h : (Config.run H φ K f tr).Ordered)
+  (hn : List.length H ≤ List.length H')
+  (hK : ∀ (k : Kont), k ∈ K' → k ∈ K ∨ ∀ (n : Nat), Kont.Ordered n k) :
+  (Config.run H' φ K' f' tr').Ordered
+```
+
+### `Config.Ordered.same`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A step that keeps the stack (helper).
+
+```lean
+theorem RueCore.Config.Ordered.same {H H' : Store} {φ : Frame} {K : List Kont}
+  {f f' : Focus} {tr tr' : List Event} (h : (Config.run H φ K f tr).Ordered)
+  (hn : List.length H ≤ List.length H') : (Config.run H' φ K f' tr').Ordered
+```
+
+### `Config.Ordered.push`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A step that pushes a context frame, which owes nothing (helper).
+
+```lean
+theorem RueCore.Config.Ordered.push {H H' : Store} {φ : Frame} {K : List Kont}
+  {k : Kont} {f f' : Focus} {tr tr' : List Event}
+  (h : (Config.run H φ K f tr).Ordered) (hn : List.length H ≤ List.length H')
+  (hk : ∀ (n : Nat), Kont.Ordered n k) :
+  (Config.run H' φ (k :: K) f' tr').Ordered
+```
+
+### `Config.Ordered.pop`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A step that pops a context frame (helper).
+
+```lean
+theorem RueCore.Config.Ordered.pop {H H' : Store} {φ : Frame} {K : List Kont}
+  {k : Kont} {f f' : Focus} {tr tr' : List Event}
+  (h : (Config.run H φ (k :: K) f tr).Ordered)
+  (hn : List.length H ≤ List.length H') : (Config.run H' φ K f' tr').Ordered
+```
+
+### `plainDropRetire_length`
+
+*theorem* · module `RueCore.TraceOrder`
+
+The monitor-free drop-retire keeps the store's length (helper).
+
+```lean
+theorem RueCore.plainDropRetire_length {D : Decls} {H H' : Store} {ℓ : Nat}
+  {evs : List Event} (h : plainDropRetire D H ℓ = Except.ok (H', evs)) :
+  List.length H' = List.length H
+```
+
+### `plainUnwind_length`
+
+*theorem* · module `RueCore.TraceOrder`
+
+The monitor-free unwind keeps the store's length (helper).
+
+```lean
+theorem RueCore.plainUnwind_length {D : Decls} {H H' : Store} {ls : List Nat}
+  {evs : List Event} :
+  plainUnwind D H ls = Except.ok (H', evs) → List.length H' = List.length H
+```
+
+### `Kont.toCall_mem`
+
+*theorem* · module `RueCore.TraceOrder`
+
+(D-Return)'s search: the caller's frame is on the stack, and what is left
+under it was under it (helper).
+
+```lean
+theorem RueCore.Kont.toCall_mem {K K' : List Kont} {φ : Frame} :
+  Kont.toCall K = some (φ, K') →
+    Kont.call φ ∈ K ∧ ∀ (k : Kont), k ∈ K' → k ∈ K
+```
+
+### `Kont.toLoop_mem`
+
+*theorem* · module `RueCore.TraceOrder`
+
+(D-Break)'s search: the loop boundary is on the stack, and what is left
+under it was under it (helper).
+
+```lean
+theorem RueCore.Kont.toLoop_mem {K K' : List Kont} {φ : Frame} :
+  Kont.toLoop K = some (φ, K') →
+    (∃ e, Kont.loop e φ ∈ K) ∧ ∀ (k : Kont), k ∈ K' → k ∈ K
+```
+
+### `mintParams_eq`
+
+*theorem* · module `RueCore.TraceOrder`
+
+`mintParams`' store and cells, as the invariant reads them (helper).
+
+```lean
+theorem RueCore.mintParams_eq {H H' : Store} {vs : List Val} {ls : List Nat}
+  (h : mintParams H vs = (H', ls)) :
+  List.length H' = List.length H + vs.length ∧
+    ls = List.range' (List.length H) vs.length
+```
+
+### `dropLocs_append`
+
+*theorem* · module `RueCore.TraceOrder`
+
+`dropLocs` distributes over concatenation (helper).
+
+```lean
+theorem RueCore.dropLocs_append (l₁ l₂ : List Event) :
+  dropLocs (l₁ ++ l₂) = dropLocs l₁ ++ dropLocs l₂
+```
+
+### `dropLocs_dropEvents`
+
+*theorem* · module `RueCore.TraceOrder`
+
+§6.11's walk names no cell: it emits destructor events only (helper).
+
+```lean
+theorem RueCore.dropLocs_dropEvents (D : Decls) (c : Contents) :
+  dropLocs (dropEvents D c) = []
+```
+
+### `dropLocs_dropEventsList`
+
+*theorem* · module `RueCore.TraceOrder`
+
+The same over a list (helper).
+
+```lean
+theorem RueCore.dropLocs_dropEventsList (D : Decls) (cs : List Contents) :
+  dropLocs (dropEventsList D cs) = []
+```
+
+### `dropCell_locs'`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A binding's drop names its own cell once, or nothing for `Copy` contents
+(helper).
+
+```lean
+theorem RueCore.dropCell_locs' {D : Decls} {ℓ : Nat} {c : Contents} {evs : List Event}
+  (h : dropCell D ℓ c = Except.ok evs) :
+  dropLocs evs = [] ∨ dropLocs evs = [ℓ]
+```
+
+### `dropCell_locs`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A binding's drop names at most its own cell (helper).
+
+```lean
+theorem RueCore.dropCell_locs {D : Decls} {ℓ : Nat} {c : Contents} {evs : List Event}
+  (h : dropCell D ℓ c = Except.ok evs) (x : Nat) : x ∈ dropLocs evs → x = ℓ
+```
+
+### `plainResidue_locs`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A destructure's residue drops name only the destructured cell (helper).
+
+```lean
+theorem RueCore.plainResidue_locs {D : Decls} {ℓ : Nat} {rs : List Contents}
+  {evs : List Event} :
+  plainResidue D ℓ rs = Except.ok evs → ∀ (x : Nat), x ∈ dropLocs evs → x = ℓ
+```
+
+### `plainDestructure_locs`
+
+*theorem* · module `RueCore.TraceOrder`
+
+§6.3's destructure names only the destructured cell (helper).
+
+```lean
+theorem RueCore.plainDestructure_locs {D : Decls} {ℓ : Nat} {c leaf : Contents}
+  {πs : List Nat} {evs : List Event}
+  (h : plainDestructure D ℓ c πs = Except.ok (leaf, evs)) (x : Nat) :
+  x ∈ dropLocs evs → x = ℓ
+```
+
+### `plainUnwind_locs`
+
+*theorem* · module `RueCore.TraceOrder`
+
+`run-scope-drops` names the cells it is given, in the order given, each
+at most once (helper).
+
+```lean
+theorem RueCore.plainUnwind_locs {D : Decls} {H H' : Store} {ls : List Nat}
+  {evs : List Event} :
+  plainUnwind D H ls = Except.ok (H', evs) → (dropLocs evs).Sublist ls
+```
+
+### `NewestFirst.teardown`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A teardown of an ordered record drops newest-first (helper).
+
+```lean
+theorem RueCore.NewestFirst.teardown {n : Nat} {ls ls' : List Nat} (h : Rec n ls)
+  (hs : ls'.Sublist ls.reverse) : NewestFirst ls'
+```
+
+### `Blocks.drop_inv`
+
+*theorem* · module `RueCore.TraceOrder`
+
+Inverting a drop block: what follows a marker is §6.11's walk of what it
+names (helper).
+
+```lean
+theorem RueCore.Blocks.drop_inv {D : Decls} {ℓ : Nat} {c : Contents} {t : List Event}
+  (h : Blocks D (Event.drop ℓ c :: t)) :
+  ∃ t', t = dropEvents D c ++ t' ∧ Blocks D t'
+```
+
 ### `Explain.explainIdx_result`
 
 *theorem* · module `RueCore.Explain`
@@ -11466,6 +12197,22 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 Examples.sLinearDtor = 3
+```
+
+### `Examples.sTwoAffine`
+
+*def* · module `RueCore.Examples`
+
+`S7`'s index in `structEnv`.
+
+```lean
+def RueCore.Examples.sTwoAffine : Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.sTwoAffine = 7
 ```
 
 ### `Float.ratOf`
@@ -11722,6 +12469,21 @@ RueCore.Mult.affine : Mult
 RueCore.Mult.linear : Mult
 ```
 
+### `NewestFirst`
+
+*def* · module `RueCore.TraceOrder`
+
+**The order one step drops cells in**: its `drop` markers either all name
+one cell — an overwrite, an `@drop`, a destructure's residue, several
+sub-positions of one binding — or name distinct cells in strictly decreasing
+location order (helper).
+
+```lean
+def RueCore.NewestFirst (ls : List Nat) : Prop :=
+  (∃ ℓ, ∀ (x : Nat), x ∈ ls → x = ℓ) ∨
+    List.Pairwise (fun x1 x2 => x1 > x2) ls
+```
+
 ### `OwnSt`
 
 *inductive* · module `RueCore.Statics`
@@ -11854,6 +12616,18 @@ RueCore.Place.proj (p : Place) (f : Nat) : Place
 
 ```lean
 RueCore.Place.idx (p : Place) (c : Nat) : Place
+```
+
+### `Rec`
+
+*def* · module `RueCore.TraceOrder`
+
+A scope record in **registration order is location order**: its cells
+strictly increasing, every one below the store's length `n` (helper).
+
+```lean
+def RueCore.Rec (n : Nat) (ls : List Nat) : Prop :=
+  List.Pairwise (fun x1 x2 => x1 < x2) ls ∧ ∀ (ℓ : Nat), ℓ ∈ ls → ℓ < n
 ```
 
 ### `Sign`
@@ -14049,6 +14823,24 @@ RueCore.Event.consume (c : Contents) : Event
 RueCore.Event.dbg (v : Val) : Event
 ```
 
+### `Examples.c64`
+
+*def* · module `RueCore.Examples`
+
+The same as stored contents — what a cell holds and what a drop event
+records, now that a cell's contents is a tree with `⊘` at any node
+(helper).
+
+```lean
+def RueCore.Examples.c64 (n : Int) : Contents
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (n : Int), Examples.c64 n = Contents.int IntWidth.w64 Sign.signed n
+```
+
 ### `Examples.dAffine`
 
 *def* · module `RueCore.Examples`
@@ -15264,6 +16056,24 @@ Defining equations, as Lean derived them from the body:
     x.dtorIds = []
 ```
 
+### `Examples.cA`
+
+*def* · module `RueCore.Examples`
+
+`S1 { x0: n }` with identity `i`, as stored contents — the shape an array
+element's drop event carries (helper).
+
+```lean
+def RueCore.Examples.cA (i : Nat) (n : Int) : Contents
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (i : Nat) (n : Int),
+  Examples.cA i n = Contents.struct Examples.sAffine i [Examples.c64 n]
+```
+
 ### `Examples.flE`
 
 *def* · module `RueCore.Examples`
@@ -15991,6 +16801,29 @@ place `⊘` and is skipped by the `⊘` case above, never dropped twice.
 def RueCore.dropContents (D : Decls) : Contents → Except Violation (List Event)
 ```
 
+### `dropLocs`
+
+*def* · module `RueCore.TraceOrder`
+
+The cells a trace's `drop` markers name, in trace order (helper).
+
+```lean
+def RueCore.dropLocs (tr : List Event) : List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (tr : List Event),
+  dropLocs tr =
+    List.filterMap
+      (fun x =>
+        match x with
+        | Event.drop ℓ c => some ℓ
+        | x => none)
+      tr
+```
+
 ### `evalFintrin`
 
 *def* · module `RueCore.Dynamics`
@@ -16505,6 +17338,28 @@ Examples.repeatAffineDuplicated =
     (Examples.lit 0)
 ```
 
+### `Examples.structFieldOrder`
+
+*def* · module `RueCore.Examples`
+
+Two destructor-bearing fields in one struct with no destructor of its own:
+scope exit drops them in **declaration** order (§6.11), so the trace is `1`
+then `2`.
+
+```lean
+def RueCore.Examples.structFieldOrder : Expr
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.structFieldOrder =
+  Expr.letIn false
+    (Expr.mkStruct Examples.sTwoAffine
+      [Examples.resA (Examples.lit 1), Examples.resA (Examples.lit 2)])
+    (Examples.lit 0)
+```
+
 ### `Explain.Step`
 
 *inductive* · module `RueCore.Explain`
@@ -16681,6 +17536,23 @@ Defining equations, as Lean derived them from the body:
 ∀ (H H' : Store),
   Fresh H H' =
     List.range' (List.length H) (List.length H' - List.length H)
+```
+
+### `Kont.Ordered`
+
+*def* · module `RueCore.TraceOrder`
+
+What a frame of the control stack owes, ordered: a pending `endscope`
+marker's cells, and the scope record of a suspended caller (`ret(E, φ)`) or
+of a loop boundary (`loopβ(e, φ)`) (helper).
+
+```lean
+def RueCore.Kont.Ordered (n : Nat) : Kont → Prop :=
+  match x✝ with
+  | Kont.endscope ls => Rec n ls
+  | Kont.loop e φ => Rec n φ.scope
+  | Kont.call φ => Rec n φ.scope
+  | x => True
 ```
 
 ### `Kont.toCall`
@@ -17346,6 +18218,24 @@ RueCore.ArgsRes.ok (H : Store) (vs : List Val) (tr : List Event) : ArgsRes
 RueCore.ArgsRes.abort (r : EvalRes) : ArgsRes
 ```
 
+### `Config.Ordered`
+
+*def* · module `RueCore.TraceOrder`
+
+**Every scope record of a configuration is in registration order**, which
+is location order: the current frame's, and every one the control stack
+holds (§6.1's `σ`, §6.7's `endscope`, §6.9's `ret(E, φ)`, §6.10's
+`loopβ(e, φ)`).
+
+```lean
+def RueCore.Config.Ordered : Config → Prop :=
+  match x✝ with
+  | Config.run H φ K f tr =>
+    Rec (List.length H) φ.scope ∧
+      ∀ (k : Kont), k ∈ K → Kont.Ordered (List.length H) k
+  | Config.panic k tr => True
+```
+
 ### `Config.Terminal`
 
 *def* · module `RueCore.Step`
@@ -17397,6 +18287,24 @@ Defining equations, as Lean derived them from the body:
 Config.init =
   Config.run [] { env := [], scope := [] } []
     (Focus.eval (Expr.call 0 [])) []
+```
+
+### `Config.trace`
+
+*def* · module `RueCore.TraceOrder`
+
+The output a configuration has produced so far (§6.12) (helper).
+
+```lean
+def RueCore.Config.trace : Config → List Event
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (H : Store) (φ : Frame) (K : List Kont) (f : Focus) (tr : List Event),
+  (Config.run H φ K f tr).trace = tr
+∀ (k : PanicKind) (tr : List Event), (Config.panic k tr).trace = tr
 ```
 
 ### `Contents.mult`
@@ -18998,6 +19906,28 @@ Defining equations, as Lean derived them from the body:
     | Γ :: Γs => Option.map some (Ctx.joinFold D Γ Γs)
 ```
 
+### `Examples.returnPastAffine`
+
+*def* · module `RueCore.Examples`
+
+An early `return` past two live affine bindings: the frame unwinds
+newest-first (§6.9's (D-Return)), so the trace is `4` then `3`, then the
+value `7`.
+
+```lean
+def RueCore.Examples.returnPastAffine : Program
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.returnPastAffine =
+  Examples.prog Examples.tI64
+    (Expr.letIn false (Examples.resA (Examples.lit 3))
+      (Expr.letIn false (Examples.resA (Examples.lit 4))
+        (Examples.lit 7).ret))
+```
+
 ### `Explain.explainIdx`
 
 *def* · module `RueCore.Explain`
@@ -19407,6 +20337,19 @@ def RueCore.AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Frame) (H : Store)
   | EvalRes.outOfFuel => True
 ```
 
+### `ArgsBlocks`
+
+*def* · module `RueCore.TraceOrder`
+
+The grammar's promise about an argument list (helper).
+
+```lean
+def RueCore.ArgsBlocks (D : Decls) : ArgsRes → Prop :=
+  match x✝ with
+  | ArgsRes.ok H vs tr => Blocks D tr
+  | ArgsRes.abort r => Blocks D r.trace
+```
+
 ### `ArgsCons`
 
 *def* · module `RueCore.Trace`
@@ -19469,6 +20412,60 @@ def RueCore.ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx)
       HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
     | none => False
   | ArgsRes.abort r => AbortOk D R B φ H r
+```
+
+### `Blocks`
+
+*inductive* · module `RueCore.TraceOrder`
+
+**§6.11's order, as a grammar over the trace.** A trace is a sequence of
+blocks: a `@dbg` line, a consumption (`consume c`, which runs no drop of its
+own), or a drop marker followed by exactly the events §6.11's walk of what it
+names emits (`dropEvents`) — for a binding's drop `drop ℓ c`, the contents
+`c`, and for a discarded temporary `dropTemp v`, the value `v`. A destructor
+event (`dtor`) appears only inside such a walk, so the grammar says where
+every destructor runs: inside the drop of the value that owns it, after the
+destructors of everything dropped before it in §6.11's order (§3.9, §6.11).
+
+```lean
+inductive RueCore.Blocks (D : Decls) : List Event → Prop
+```
+
+Constructors:
+
+**`Blocks.nil`**
+
+```lean
+RueCore.Blocks.nil {D : Decls} : Blocks D []
+```
+
+**`Blocks.dbg`**
+
+```lean
+RueCore.Blocks.dbg {D : Decls} {v : Val} {t : List Event} :
+  Blocks D t → Blocks D (Event.dbg v :: t)
+```
+
+**`Blocks.consume`**
+
+```lean
+RueCore.Blocks.consume {D : Decls} {c : Contents} {t : List Event} :
+  Blocks D t → Blocks D (Event.consume c :: t)
+```
+
+**`Blocks.drop`**
+
+```lean
+RueCore.Blocks.drop {D : Decls} {ℓ : Nat} {c : Contents} {t : List Event} :
+  Blocks D t → Blocks D (Event.drop ℓ c :: (dropEvents D c ++ t))
+```
+
+**`Blocks.dropTemp`**
+
+```lean
+RueCore.Blocks.dropTemp {D : Decls} {v : Val} {t : List Event} :
+  Blocks D t →
+    Blocks D (Event.dropTemp v :: (dropEvents D (Contents.ofVal v) ++ t))
 ```
 
 ### `BrokeOk`

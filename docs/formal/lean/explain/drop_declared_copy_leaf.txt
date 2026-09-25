@@ -232,6 +232,21 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †]
          result  value 3
 
+── Identities (§7) ─────────────────────────────────────────────────────────────
+
+One line per owned identity: the step that minted it, the steps that ended
+it (a drop marker, a discarded temporary, a consumption), and the steps whose
+destructor ran on it. `drop_exactly_once` is one entry in the ended column
+per identity, and the step numbers there are the order `drop_order` fixes;
+`[n.k]` is the k-th end of step n, when one step ends several values.
+
+  id    minted  ended                             destructor  ended
+  ────────────────────────────────────────────────────────────────────────
+  #0    [4]     [9.1] drop ℓ2                     [9]         once
+  #1    [5]     [9.2] consume                     —           once
+
+  Every owned identity is ended exactly once (`drop_exactly_once`).
+
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 3
          drop trace: @dbg prints 10; drop ℓ2 = S1 { 2 }#0; run drop fn S1(S1 { 2 }#0); consume S11 { ⊘, ⊘ }#1; @dbg prints 20

@@ -165,6 +165,21 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
 
+── Identities (§7) ─────────────────────────────────────────────────────────────
+
+One line per owned identity: the step that minted it, the steps that ended
+it (a drop marker, a discarded temporary, a consumption), and the steps whose
+destructor ran on it. `drop_exactly_once` is one entry in the ended column
+per identity, and the step numbers there are the order `drop_order` fixes;
+`[n.k]` is the k-th end of step n, when one step ends several values.
+
+  id    minted  ended                             destructor  ended
+  ────────────────────────────────────────────────────────────────────────
+  #0    [2]     —                                 —           the run was refused (§6)
+
+  The run was refused (§6), which a checked program's never is (`soundness`);
+  the ledger is what the table recorded before the refusal.
+
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: REFUSED (useAfterMove)
          a read of a cell holding ⊘: the value was already moved out of this
