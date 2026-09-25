@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 531.
+- Theorems checked: 576.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -566,6 +566,51 @@ and diffs them against the committed copies.
 | `dtor_once` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `no_double_free` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `dupProgram_step_double_free` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Steps.trans` | `RueCore.Adequacy` | `propext` |
+| `Steps.single` | `RueCore.Adequacy` | `propext` |
+| `Steps.peel` | `RueCore.Adequacy` | `propext` |
+| `Sim.pre` | `RueCore.Adequacy` | `propext` |
+| `Sim.withTrace` | `RueCore.Adequacy` | `propext` |
+| `Sim.andThen` | `RueCore.Adequacy` | `propext` |
+| `Sim.lift` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `Sim.absorb` | `RueCore.Adequacy` | `propext` |
+| `OpRes.sim` | `RueCore.Adequacy` | `propext` |
+| `evalArgs_sim` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `Sim.peel` | `RueCore.Adequacy` | `propext` |
+| `evalArgs_abort_ne_ok` | `RueCore.Adequacy` | `propext` |
+| `EvalRes.withTrace_andThen` | `RueCore.Adequacy` | `propext` |
+| `rootCell_of` | `RueCore.Adequacy` | `propext` |
+| `Frame.popScope_push` | `RueCore.Adequacy` | `propext` |
+| `Frame.popScope_let` | `RueCore.Adequacy` | `propext` |
+| `plainUnwind_single` | `RueCore.Adequacy` | `propext` |
+| `sim_use` | `RueCore.Adequacy` | `propext` |
+| `sim_drop` | `RueCore.Adequacy` | `propext` |
+| `sim_binop` | `RueCore.Adequacy` | `propext` |
+| `sim_unop` | `RueCore.Adequacy` | `propext` |
+| `sim_intCast` | `RueCore.Adequacy` | `propext` |
+| `sim_fintrin` | `RueCore.Adequacy` | `propext` |
+| `sim_dbg` | `RueCore.Adequacy` | `propext` |
+| `sim_mkStruct` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `sim_mkEnum` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `sim_mkArray` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `sim_repeat` | `RueCore.Adequacy` | `propext` |
+| `sim_indexRead_args` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `sim_indexRead` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `sim_indexDrop` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `sim_indexWrite` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `sim_match` | `RueCore.Adequacy` | `propext` |
+| `sim_letIn` | `RueCore.Adequacy` | `propext` |
+| `sim_assign` | `RueCore.Adequacy` | `propext` |
+| `sim_seq` | `RueCore.Adequacy` | `propext` |
+| `sim_ite` | `RueCore.Adequacy` | `propext` |
+| `sim_call` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `sim_ret` | `RueCore.Adequacy` | `propext` |
+| `sim_brk` | `RueCore.Adequacy` | `propext` |
+| `sim_loop` | `RueCore.Adequacy` | `propext` |
+| `eval_sim` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `run_sim` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `eval_sound` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `letAddProgram_sound` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `Examples.dynReadAffine_refused` | `RueCore.Examples` | `propext` |
 | `Examples.dynDropAffine_refused` | `RueCore.Examples` | `propext` |
 | `Examples.repeatAffine_refused` | `RueCore.Examples` | `propext` |
