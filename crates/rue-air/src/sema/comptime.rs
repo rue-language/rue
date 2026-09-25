@@ -5214,12 +5214,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             InstData::StructInit {
                 fields,
                 module,
+                ctor_head,
                 type_name,
                 ..
             } => {
                 if module.is_some() {
                     return ComptimeOutcome::RuntimeDependent;
                 }
+                let ctor_head = *ctor_head;
                 let site = self.diagnostic_site(span);
                 let field_inits: Vec<_> = self
                     .program_rir()
@@ -5229,12 +5231,23 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     .collect();
                 // The struct's type names each field's slot, so it resolves
                 // before the fields reduce against those slots.
-                let type_name = self.name_from_rir((*type_name).into());
-                let ty = host_value!(self.host.resolve_comptime_struct_type(
-                    &self.program_key(),
-                    type_name,
-                    span,
-                ));
+                // An inline type-constructor head, `Wrap(u8) { ... }`, names
+                // the struct by its reduction rather than by `type_name`,
+                // which is only the constructor's name (spec 4.14:23).
+                let ty = if let Some(head) = ctor_head {
+                    let head = outcome_value!(self.eval(head, env));
+                    let Some(ty) = head.as_type() else {
+                        return ComptimeOutcome::RuntimeDependent;
+                    };
+                    Some(ty)
+                } else {
+                    let type_name = self.name_from_rir((*type_name).into());
+                    host_value!(self.host.resolve_comptime_struct_type(
+                        &self.program_key(),
+                        type_name,
+                        span,
+                    ))
+                };
                 let field_inits: Vec<_> = field_inits
                     .into_iter()
                     .map(|(name, field)| (self.name_from_rir(name.into()), field))
