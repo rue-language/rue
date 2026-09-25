@@ -628,6 +628,282 @@ theorem sim_indexWrite (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
                 · intro K tr; exact Steps.single (.indexWrite hd hold hdrop hw₁ hw₂)
                 · trivial
 
+/-- (D-Match) §6.6: the arm runs under its `endscope`, which (D-EndScope)
+closes (helper). -/
+theorem sim_match (IH : SimIH M P fuel) (scrut : Expr) (arms : List Expr) :
+    Sim M P φ (evalConf H φ (.«match» scrut arms)) (eval M (fuel + 1) P H φ (.«match» scrut arms)) := by
+  simp only [eval]
+  refine Sim.andThen (F := .«match» arms) (fun _ => ⟨rfl, rfl⟩)
+    (fun _ _ => Steps.single .matchEnter) (IH H φ scrut) ?_
+  intro H₀ v _ _hv
+  split
+  · rename_i en k i vs
+    split
+    · trivial
+    · rename_i body hbody
+      refine Sim.andThen (F := .endscope (mintParams H₀ vs).2) (fun _ => ⟨rfl, rfl⟩)
+        (fun _ _ => Steps.single (.«match» hbody rfl)) (IH _ _ body) ?_
+      intro H₂ v₂ _ _
+      split
+      · trivial
+      · rename_i H₃ evs hu
+        intro K tr
+        have := Steps.single (M := M) (P := P) (.endScope (K := K) (tr := tr) (v := v₂)
+          (φ := { env := (mintParams H₀ vs).2.reverse ++ φ.env,
+                  scope := φ.scope ++ (mintParams H₀ vs).2 }) (unwindLocs_plain hu))
+        rwa [Frame.popScope_push] at this
+  · trivial
+
+/-- (D-Let) §6.7, then (D-EndScope) (helper). -/
+theorem sim_letIn (IH : SimIH M P fuel) (m : Bool) (e₁ e₂ : Expr) :
+    Sim M P φ (evalConf H φ (.letIn m e₁ e₂)) (eval M (fuel + 1) P H φ (.letIn m e₁ e₂)) := by
+  simp only [eval]
+  refine Sim.andThen (F := .letIn e₂) (fun _ => ⟨rfl, rfl⟩)
+    (fun _ _ => Steps.single .letEnter) (IH H φ e₁) ?_
+  intro H₁ v₁ _ _
+  refine Sim.andThen (F := .endscope [H₁.length]) (fun _ => ⟨rfl, rfl⟩)
+    (fun _ _ => Steps.single .letBind) (IH _ _ e₂) ?_
+  intro H₂ v₂ _ _
+  split
+  · trivial
+  · rename_i H₃ evs hd
+    intro K tr
+    have := Steps.single (M := M) (P := P) (.endScope (K := K) (tr := tr) (v := v₂)
+      (φ := { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] })
+      (ℓs := [H₁.length]) (plainUnwind_single hd))
+    simpa [Frame.popScope_let] using this
+
+/-- (D-Assign) §6.8 (helper). -/
+theorem sim_assign (IH : SimIH M P fuel) (p : Place) (e : Expr) :
+    Sim M P φ (evalConf H φ (.assign p e)) (eval M (fuel + 1) P H φ (.assign p e)) := by
+  simp only [eval]
+  refine Sim.andThen (F := .assign p) (fun _ => ⟨rfl, rfl⟩)
+    (fun _ _ => Steps.single .assignEnter) (IH H φ e) ?_
+  intro H₁ v _ _
+  split
+  · trivial
+  · rename_i ℓ hℓ
+    split
+    · trivial
+    · trivial
+    · rename_i c hc
+      split
+      · trivial
+      · rename_i old hold
+        split
+        · trivial
+        · split
+          · trivial
+          · rename_i evs hdrop
+            split
+            · trivial
+            · rename_i c' hw
+              split
+              · intro K tr; exact Steps.single (.assign (rootCell_of hℓ hc) hold hdrop hw)
+              · trivial
+
+/-- (D-Seq) §6.7 (helper). -/
+theorem sim_seq (IH : SimIH M P fuel) (e₁ e₂ : Expr) :
+    Sim M P φ (evalConf H φ (.seq e₁ e₂)) (eval M (fuel + 1) P H φ (.seq e₁ e₂)) := by
+  simp only [eval]
+  refine Sim.andThen (F := .seq e₂) (fun _ => ⟨rfl, rfl⟩)
+    (fun _ _ => Steps.single .seqEnter) (IH H φ e₁) ?_
+  intro H₁ v₁ _ _
+  split
+  · trivial
+  · rename_i hm
+    split
+    · trivial
+    · rename_i evs hd
+      have hne : v₁.mult P.decls ≠ .copy := by rw [hm]; exact nofun
+      exact Sim.withTrace (C₂ := evalConf H₁ φ e₂) (fun _ _ => Steps.single (.seqDrop hne hd))
+        (IH H₁ φ e₂)
+  · rename_i hm
+    exact Sim.pre (fun _ _ => Steps.single (.seqCopy hm)) (IH H₁ φ e₂)
+
+/-- (D-If-T)/(D-If-F) §6.6 (helper). -/
+theorem sim_ite (IH : SimIH M P fuel) (c e₁ e₂ : Expr) :
+    Sim M P φ (evalConf H φ (.ite c e₁ e₂)) (eval M (fuel + 1) P H φ (.ite c e₁ e₂)) := by
+  simp only [eval]
+  refine Sim.andThen (F := .ite e₁ e₂) (fun _ => ⟨rfl, rfl⟩)
+    (fun _ _ => Steps.single .iteEnter) (IH H φ c) ?_
+  intro H₀ v _ _hv
+  split
+  · rename_i b
+    split
+    · rename_i hb
+      subst hb
+      exact Sim.pre (fun _ _ => Steps.single .iteTrue) (IH H₀ φ e₁)
+    · rename_i hb
+      simp only [Bool.not_eq_true] at hb
+      subst hb
+      exact Sim.pre (fun _ _ => Steps.single .iteFalse) (IH H₀ φ e₂)
+  · trivial
+
+/-- (D-Call) §6.9, then (D-Return-Value), or (D-Return)'s value caught at the
+`call` frame (helper). -/
+theorem sim_call (IH : SimIH M P fuel) (f : Nat) (args : List Expr) :
+    Sim M P φ (evalConf H φ (.call f args)) (eval M (fuel + 1) P H φ (.call f args)) := by
+  simp only [eval]
+  obtain ⟨ihok, ihab⟩ := evalArgs_sim (φ := φ) IH (.call f) args H []
+  have hent : ∀ K tr, Steps M P (evalConf H φ (.call f args) K tr)
+      (argsConf H φ (.call f) [] args K tr) := fun _ _ => Steps.single .callEnter
+  split
+  · rename_i r hr; exact Sim.pre hent (ihab r hr)
+  · rename_i H₁ vs tr₁ hr
+    refine Sim.withTrace (C₂ := argsConf H₁ φ (.call f) vs [])
+      (fun K tr => (hent K tr).trans (by simpa using ihok _ _ _ hr K tr)) ?_
+    split
+    · trivial
+    · rename_i fd hfd
+      split
+      · rename_i hlen
+        refine Sim.absorb (fun _ _ => Steps.single (.call hfd hlen rfl)) (IH _ _ fd.body) ?_
+        intro H₃ v _ _
+        split
+        · trivial
+        · rename_i H₄ evs hu
+          intro K tr
+          exact Steps.single (.callReturn (unwindLocs_plain hu))
+      · trivial
+
+/-- (D-Return) §6.9 (helper). -/
+theorem sim_ret (IH : SimIH M P fuel) (e : Expr) :
+    Sim M P φ (evalConf H φ (.ret e)) (eval M (fuel + 1) P H φ (.ret e)) := by
+  simp only [eval]
+  refine Sim.andThen (F := .ret) (fun _ => ⟨rfl, rfl⟩)
+    (fun _ _ => Steps.single .retEnter) (IH H φ e) ?_
+  intro H₁ v _ _
+  split
+  · trivial
+  · rename_i H₂ evs hu
+    intro K tr φs K' hK
+    exact Steps.single (.ret hK (unwindLocs_plain hu))
+
+/-- (D-Break) §6.10 (helper). -/
+theorem sim_brk : Sim M P φ (evalConf H φ .brk) (eval M (fuel + 1) P H φ .brk) := by
+  simp only [eval]
+  intro K tr φs K' H' evs hK hu
+  simpa using Steps.single (.brk hK hu)
+
+/-- (D-Loop-Enter), (D-Loop-Iter) and (D-Break)'s landing §6.10. A turn that
+finishes re-enters the body; `eval` re-evaluates the loop at one less fuel,
+whose simulation starts one (D-Loop-Enter) earlier, peeled off by
+determinism (helper). -/
+theorem sim_loop (IH : SimIH M P fuel) (e : Expr) :
+    Sim M P φ (evalConf H φ (.loop e)) (eval M (fuel + 1) P H φ (.loop e)) := by
+  simp only [eval]
+  have hent : ∀ K tr, Steps M P (evalConf H φ (.loop e) K tr) (evalConf H φ e (.loop e φ :: K) tr) :=
+    fun _ _ => Steps.single .loopEnter
+  have h₁ := IH H φ e
+  cases hr : eval M fuel P H φ e with
+  | ok H₁ v tr₁ =>
+      rw [hr] at h₁
+      simp only
+      have hpeel : Sim M P φ (evalConf H₁ φ e ∘ (Kont.loop e φ :: ·))
+          (eval M fuel P H₁ φ (.loop e)) :=
+        Sim.peel (fun _ _ => .loopEnter) (fun _ _ => trivial) (IH H₁ φ (.loop e))
+      refine Sim.withTrace (C₂ := evalConf H₁ φ e ∘ (Kont.loop e φ :: ·)) (fun K tr => ?_) hpeel
+      have hit : Step M P (.run H₁ φ (.loop e φ :: K) (.ret v) (tr ++ tr₁))
+          (.run H₁ φ (.loop e φ :: K) (.eval e) (tr ++ tr₁ ++ [])) :=
+        .loopIter (by simp [plainUnwind])
+      simp only [List.append_nil] at hit
+      exact (hent K tr).trans ((h₁ _ tr).trans (Steps.single hit))
+  | broke H₁ sc tr₁ =>
+      rw [hr] at h₁
+      simp only
+      split
+      · trivial
+      · rename_i H₂ evs hu
+        intro K tr
+        have := h₁ (.loop e φ :: K) tr φ K H₂ evs rfl (unwindLocs_plain hu)
+        simp only [List.append_assoc] at this ⊢
+        exact (hent K tr).trans this
+  | returned H₁ v tr₁ =>
+      rw [hr] at h₁
+      simp only [Sim] at h₁ ⊢
+      intro K tr φs K' hK
+      exact (hent K tr).trans (h₁ (.loop e φ :: K) tr φs K' hK)
+  | panic κ tr₁ =>
+      rw [hr] at h₁
+      simp only [Sim] at h₁ ⊢
+      intro K tr
+      exact (hent K tr).trans (h₁ (.loop e φ :: K) tr)
+  | stuck w => trivial
+  | outOfFuel => trivial
+
 end forms
+
+/-! ## Soundness of `eval` with respect to `Step` -/
+
+/-- **`eval` is simulated by `→*`**, for every expression, store, frame and
+fuel (RUE-2329). -/
+theorem eval_sim (M : FloatOps) (P : Program) (fuel : Nat) : SimIH M P fuel := by
+  induction fuel using Nat.strongRecOn with
+  | ind n ih =>
+  intro H φ e
+  cases n with
+  | zero => simp [eval, Sim]
+  | succ fuel =>
+    have IH := ih fuel (Nat.lt_succ_self _)
+    cases e with
+    | intLit w s n => intro K tr; simpa [eval] using Steps.single .intLit
+    | floatLit w l => intro K tr; simpa [eval] using Steps.single .floatLit
+    | boolLit b => intro K tr; simpa [eval] using Steps.single .boolLit
+    | unitLit => intro K tr; simpa [eval] using Steps.single .unitLit
+    | use p => exact sim_use p
+    | binop op e₁ e₂ => exact sim_binop IH op e₁ e₂
+    | unop op e => exact sim_unop IH op e
+    | intCast w s e => exact sim_intCast IH w s e
+    | fintrin k e => exact sim_fintrin IH k e
+    | panic msg => intro K tr; simpa [eval] using Steps.single .panic
+    | dbg e => exact sim_dbg IH e
+    | mkStruct s args => exact sim_mkStruct IH s args
+    | mkEnum e k args => exact sim_mkEnum IH e k args
+    | «match» scrut arms => exact sim_match IH scrut arms
+    | mkArray T args => exact sim_mkArray IH T args
+    | repeatArray T e n => exact sim_repeat IH T e n
+    | indexRead p idx πs => exact sim_indexRead IH p idx πs
+    | indexWrite p idx πs e => exact sim_indexWrite IH p idx πs e
+    | indexDrop p idx πs =>
+        cases fuel with
+        | zero => simp [eval, EvalRes.andThen, Sim]
+        | succ f => exact sim_indexDrop (ih f (by omega)) p idx πs
+    | drop p => exact sim_drop p
+    | letIn m e₁ e₂ => exact sim_letIn IH m e₁ e₂
+    | assign p e => exact sim_assign IH p e
+    | seq e₁ e₂ => exact sim_seq IH e₁ e₂
+    | ite c e₁ e₂ => exact sim_ite IH c e₁ e₂
+    | call f args => exact sim_call IH f args
+    | ret e => exact sim_ret IH e
+    | loop e => exact sim_loop IH e
+    | brk => exact sim_brk
+
+/-- The empty frame the entry point is called from (helper). -/
+abbrev Frame.empty : Frame := { env := [], scope := [] }
+
+/-- **`run` is simulated by `→*` from §6.12's initial configuration**, on
+every program. -/
+theorem run_sim (M : FloatOps) (P : Program) (fuel : Nat) :
+    (∀ H v tr, run M P fuel = .ok H v tr →
+      Steps M P Config.init (.run H Frame.empty [] (.ret v) tr)) ∧
+    (∀ k tr, run M P fuel = .panic k tr → Steps M P Config.init (.panic k tr)) := by
+  have h := eval_sim M P fuel [] Frame.empty (.call 0 [])
+  refine ⟨fun H v tr hr => ?_, fun k tr hr => ?_⟩
+  · simp only [run] at hr
+    rw [hr] at h
+    simpa [Config.init] using h [] []
+  · simp only [run] at hr
+    rw [hr] at h
+    simpa [Config.init] using h [] []
+
+/-- **`eval` is sound with respect to §6's reduction** (RUE-2329). -/
+theorem eval_sound (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+    (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
+    (∀ H v tr, run M.toFloatOps P fuel = .ok H v tr →
+      Steps M.toFloatOps P Config.init (.run H Frame.empty [] (.ret v) tr)) ∧
+    (∀ k tr, run M.toFloatOps P fuel = .panic k tr →
+      Steps M.toFloatOps P Config.init (.panic k tr)) :=
+  ⟨no_violation M h fuel, (run_sim M.toFloatOps P fuel).1, (run_sim M.toFloatOps P fuel).2⟩
 
 end RueCore
