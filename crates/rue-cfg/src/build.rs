@@ -812,6 +812,26 @@ pub struct CfgBuilder<'a> {
     accessor_yield_spine: AHashSet<AirRef>,
 }
 
+/// The CFG type of a value whose AIR type is `ty`.
+///
+/// A module (spec 10.4:6, "a module is not a runtime value"; its identity is
+/// its type) and a `type` value (4.14:6, "type values cannot exist at
+/// runtime") are comptime-only, yet AIR still binds, loads and joins them:
+/// `let m = @import("x.rue");` is a local of type `<module>`. The CFG gives
+/// every such value, and every local holding one, the unit type, the one
+/// zero-sized type every CFG consumer already handles. The alternative, a CFG
+/// value of type `<module>`, has no representation where CFG bodies are
+/// relocated (the -O3 inliner's type domain, RUE-2419), and a local initialized
+/// through a `TypeConst` (a `()` filler) but read as `<module>` fails the
+/// verifier's per-type storage facts.
+fn cfg_value_type(ty: Type) -> Type {
+    if ty.is_module() || ty.is_comptime_type() {
+        Type::UNIT
+    } else {
+        ty
+    }
+}
+
 /// The AIR values on an accessor's yield spine: every `Ret` operand, and every
 /// block value beneath it, down to the `PlaceRead` that lowered the trailing
 /// `yield`.
@@ -3125,7 +3145,9 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::StorageLive { slot } => {
-                // Emit StorageLive to CFG
+                // A local bound to a module or a `type` holds a `()` in the
+                // CFG, like every comptime-only value (`cfg_value_type`).
+                let ty = cfg_value_type(ty);
                 self.emit(
                     CfgInstData::StorageLive {
                         slot: *slot,
@@ -3163,7 +3185,7 @@ impl<'a> CfgBuilder<'a> {
                 self.emit(
                     CfgInstData::StorageDead {
                         slot: *slot,
-                        local_ty: ty,
+                        local_ty: cfg_value_type(ty),
                     },
                     Type::UNIT,
                     span,
@@ -3222,10 +3244,14 @@ impl<'a> CfgBuilder<'a> {
     }
 
     /// Emit an instruction in the current block.
+    ///
+    /// The result type passes through `cfg_value_type`, so a comptime-only
+    /// value (a module, or a `type`) is a `()` value in the CFG.
     fn emit(&mut self, data: CfgInstData, ty: Type, span: rue_span::Span) -> CfgValue {
         if let CfgInstData::Drop { value } = &data {
             self.record_implicit_destructors(self.cfg.get_inst(*value).ty);
         }
+        let ty = cfg_value_type(ty);
         self.cfg
             .add_inst_to_block(self.current_block, CfgInst { data, ty, span })
     }
@@ -3347,19 +3373,14 @@ impl<'a> CfgBuilder<'a> {
     /// Add the block parameter that carries an `if`/`match` result into its
     /// join block, or `None` when the result type has no runtime value.
     ///
-    /// `()` and `!` have none, and neither do the comptime-only types: a
-    /// module (spec 10.4:6, "a module is not a runtime value"; its identity is
-    /// its type) and a `type` value (4.14:6, "type values cannot exist at
-    /// runtime"). A join of those, such as `if c { m } else { m }` for a
-    /// module `m`, is typed by its branches' common type (4.6:10, 4.7:12) and
-    /// carries nothing at runtime. A const-bound module or type lowers to a
-    /// `TypeConst`, which yields no CFG value, so such a join must not expect
-    /// one (RUE-2415).
+    /// `()` and `!` have none, and neither do the comptime-only types, which
+    /// `cfg_value_type` maps to `()`. A join of those, such as
+    /// `if c { m } else { m }` for a module `m`, is typed by its branches'
+    /// common type (4.6:10, 4.7:12) and carries nothing at runtime. A
+    /// const-bound module or type lowers to a `TypeConst`, which yields no CFG
+    /// value, so such a join must not expect one (RUE-2415).
     fn join_param(&mut self, join_block: BlockId, result_type: Type) -> Option<(CfgValue, Type)> {
-        let carries_value = result_type != Type::UNIT
-            && !result_type.is_never()
-            && !result_type.is_module()
-            && !result_type.is_comptime_type();
+        let carries_value = cfg_value_type(result_type) != Type::UNIT && !result_type.is_never();
         carries_value.then(|| {
             (
                 self.cfg.add_block_param(join_block, result_type),
