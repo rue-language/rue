@@ -3111,8 +3111,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let literal_type = env.literal_type.take();
         if let Some(ty) = literal_type.as_ref() {
             host_value!(self.admit_float_literal(&data, ty, span));
-            if let Some(magnitude) = self.negated_integer_literal_at_float(&data, ty) {
-                return self.negated_integer_literal_as_float(magnitude, ty.clone());
+            if let Some((magnitude, negated)) = self.integer_literal_at_float(&data, ty) {
+                return self.integer_literal_as_float(magnitude, negated, ty.clone());
             }
         }
         match data {
@@ -3198,39 +3198,53 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             .admit_comptime_float_literal(&literal, width, &self.diagnostic_site(span))
     }
 
-    /// The magnitude of `instruction` when it is a negated integer literal
-    /// (`-0`, `-(0)`) and `ty` is a float type, so that the literal takes
-    /// `ty` before it is negated (spec 3.12:11, 3.12:24).
-    fn negated_integer_literal_at_float(
+    /// The magnitude of `instruction` and whether it is negated, when
+    /// `instruction` is a bare integer literal (`0`) or a negated one (`-0`,
+    /// `-(0)`) and `ty` is a float type, so that the literal takes `ty`
+    /// before any negation is applied (spec 3.12:10, 3.12:11, 3.12:24). A
+    /// typed integer value or const (a `VarRef` or anything else this match
+    /// does not name) is left for the ordinary integer path, which rejects it
+    /// against a float type.
+    fn integer_literal_at_float(
         &self,
         instruction: &InstData,
         ty: &H::Type,
-    ) -> Option<u64> {
-        let InstData::Neg { operand } = instruction else {
+    ) -> Option<(u64, bool)> {
+        let (magnitude, negated) = if let InstData::IntConst(magnitude) = instruction {
+            (*magnitude, false)
+        } else if let InstData::Neg { operand } = instruction
+            && let InstData::IntConst(magnitude) = self.program_rir().get(*operand).data
+        {
+            (magnitude, true)
+        } else {
             return None;
         };
-        let InstData::IntConst(magnitude) = self.program_rir().get(*operand).data else {
-            return None;
-        };
-        self.host.type_float_width(ty).map(|_| magnitude)
+        self.host.type_float_width(ty).map(|_| (magnitude, negated))
     }
 
-    /// A negated integer literal whose type is the float type `ty`. It is one
-    /// literal, so it becomes the float nearest to its exact integer value, as
-    /// the bare literal does (spec 3.12:11): `f(-2)` at a `comptime v: f32`
-    /// binds `-2.0`. The sign stays on the float, so `-0` is `-0.0`, as run
-    /// time negates the converted literal (3.12:24). This is the one
-    /// conversion for both the type a host retains for the expression and a
-    /// declared result type (a `const` initializer, a `let` annotation, an
-    /// aggregate slot or a return type), so `const N: f64 = -0;` and
-    /// `let n: f64 = -0;` agree (RUE-2402, RUE-2408).
+    /// A bare or negated integer literal whose type is the float type `ty`.
+    /// It is one literal, so it becomes the float nearest to its exact
+    /// integer value (spec 3.12:11): `f(2)` and `f(-2)` at a `comptime v:
+    /// f32` bind `2.0` and `-2.0` alike. The sign stays on the float, so
+    /// `-0` is `-0.0`, as run time negates the converted literal (3.12:24).
+    /// This is the one conversion for both the type a host retains for the
+    /// expression and a declared result type (a `const` initializer, a `let`
+    /// annotation, an aggregate slot, a return type or a comptime call
+    /// argument), so `const N: f64 = -0;`, `let n: f64 = -0;` and
+    /// `id64(-0)` agree, as do their positive counterparts (RUE-2402,
+    /// RUE-2408).
     #[inline(never)]
-    fn negated_integer_literal_as_float(
+    fn integer_literal_as_float(
         &mut self,
         magnitude: u64,
+        negated: bool,
         ty: H::Type,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
-        let text = format!("-{magnitude}");
+        let text = if negated {
+            format!("-{magnitude}")
+        } else {
+            magnitude.to_string()
+        };
         match host_value!(self.host.float_value_from_text(&text, Some(ty))) {
             Some(value) => ComptimeOutcome::Known(value),
             None => ComptimeOutcome::RuntimeDependent,
@@ -3565,7 +3579,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         .const_expr_type(&self.program_key(), env, inst_ref)
                         && self.host.type_float_width(&ty).is_some()
                     {
-                        return self.negated_integer_literal_as_float(magnitude, ty);
+                        return self.integer_literal_as_float(magnitude, true, ty);
                     }
                     let literal = H::Value::integer(magnitude as i128);
                     let ty =
