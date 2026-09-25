@@ -413,7 +413,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   carrier's residue droppable. "Exactly once" (that every owned, droppable,
   non-moved value *is* dropped) is `RueCore.drop_exactly_once`, in the next
   section; this section is the "at most once" half. `RueCore.run_blocks`
-  (next section) lifts the closed form from one drop to every run's trace:
+  (next section) lifts the closed form from one drop to every finished run's trace:
   every destructor event sits inside the walk of the marker before it.
 
 ## No use-after-drop / no leak of drops
@@ -535,62 +535,82 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 - **Theorem:** `RueCore.drop_order` (`lean/RueCore/TraceOrder.lean`,
   RUE-2428): the *order*, meaning when and in what order the drops run. The
   theorems above say every owned value ends exactly once; this one says in
-  what order. It has two halves, each over the presentation where its fact
-  lives, and its first conjunct is `no_violation`, so the trace it reads is
-  the whole run's.
-- **Within a value (§3.9, §6.11):** `RueCore.run_blocks`. Every finished
-  run's trace is in the block grammar `RueCore.Blocks`: a sequence of
-  `@dbg` lines, consumptions, and drop markers (`drop ℓ c`, `dropTemp v`),
-  each marker followed by *exactly* §6.11's walk of what it names
-  (`RueCore.dropEvents`). The grammar has no other place for a destructor
-  event. So every destructor of every run sits inside the walk of the drop
-  that owns it, in §6.11's order:
+  what order. It is stated over §6's relation, for a program the checker
+  accepts, in two halves.
+- **Within a value (§3.9, §6.11):** every **finished** run's trace (a
+  terminal value or a trap that `→*` reaches from `Config.init`) is in the
+  block grammar `RueCore.Blocks` (`RueCore.step_blocks`, which reaches
+  `Step` from `eval`'s `RueCore.run_blocks` through `eval_complete`). The
+  grammar is a sequence of `@dbg` lines, consumptions, and drop markers
+  (`drop ℓ c`, `dropTemp v`), each marker followed by *exactly* §6.11's walk
+  of what it names (`RueCore.dropEvents`). The grammar has no other place
+  for a destructor event. So every destructor of every finished run sits
+  inside the walk of the drop that owns it, in §6.11's order:
   - the value's own destructor first (`3.9:28`);
   - fields in declaration order (`3.9:13`);
   - array elements ascending (`3.9:15`, `3.8:73`);
-  - an enum's active payload only (`6.3:20`);
+  - an enum's active payload only (`6.3:20`), which is how an enum value is
+    stored (it holds only the active payload);
   - every `⊘` skipped.
 
-  It reads no typing derivation, only `3.9:31` (`RueCore.DtorNotCopy`). A
-  declared-linear destructure's `Copy` residue subtree is dropped with no
-  marker, and its walk is empty because no `Copy` struct declares a
-  destructor and, by copy closure, nothing under a `Copy` node owns
-  anything. `RueCore.fieldsSwapped_rejected` is the grammar rejecting
-  `struct_field_drop_order`'s trace with its two field destructors swapped.
-- **Across cells (§6.7, §6.9, §6.10):** `RueCore.reachable_drop_order`,
-  over §6's relation. This half cannot be a property of the trace alone:
-  every `drop ℓ c` block is valid by itself, so "the trace cuts into
-  newest-first groups" would say nothing. It rests on the machine's scope
-  records.
-  - `RueCore.reachable_ordered`: in every configuration reachable from
-    `Config.init`, every scope record lists its cells in strictly increasing
-    location order. That covers the current frame's record, every
-    suspended caller's and loop boundary's, and every pending `endscope`
-    marker's. Records only ever grow by freshly allocated cells, so
-    registration order is location order.
-  - `RueCore.step_drop_order`: from such a configuration, every step's
-    `drop` markers either all name one cell, or name distinct cells in
-    strictly decreasing location order, newest registered first
-    (`RueCore.NewestFirst`). The one-cell case covers an overwrite, `@drop`
-    and a destructure's residue, which are sub-positions of one binding.
-    The other case is every teardown: `endscope`, a frame pop, `return`'s
-    σ-walk, the end of a loop turn, and `break`'s unwind.
+  `run_blocks` reads no typing derivation, only `3.9:31`
+  (`RueCore.DtorNotCopy`). A declared-linear destructure's `Copy` residue
+  subtree is dropped with no marker, and its walk is empty because no `Copy`
+  struct declares a destructor and, by copy closure, nothing under a `Copy`
+  node owns anything. `RueCore.fieldsSwapped_rejected` is the grammar
+  rejecting `struct_field_drop_order`'s trace with its two field destructors
+  swapped.
+- **What the grammar does not constrain.** It ties each marker to its walk,
+  not to the cell. Fidelity to what the cell held is `dropCell` reading
+  `H(ℓ)` and the exactly-once ledger above. A consumption carries no walk,
+  so on a program the checker rejects a destructor-bearing node can be
+  consumed without its destructor running (`destructure_under_dtor`, E0456
+  by `3.9:34`), and the grammar accepts that trace.
+- **Across cells (§6.7, §6.9, §6.10):** last-in first-out, at every step
+  from a reachable configuration. This half cannot be a property of the
+  trace alone: every `drop ℓ c` block is valid by itself. It rests on the
+  machine's scope records.
+  - `RueCore.reachable_ordered`: every scope record lists its cells in
+    strictly increasing location order. Records only ever grow by freshly
+    allocated cells, so registration order is location order.
+  - `RueCore.reachable_nested`: the scopes **nest** (`RueCore.Config.Nested`).
+    A frame's pending `endscope` markers are exactly the tail of its record,
+    innermost last, and the whole registration stack (every suspended
+    caller's record, then the current frame's, `RueCore.Config.stack`) is in
+    location order. In particular (D-EndScope)'s pop by count removes the
+    marker's own cells (`RueCore.Frame.popScope_tail`), which §6.7 states as
+    a set difference and `Step.lean` implements by count.
+  - `RueCore.reachable_lifo`: every step is last-in first-out on that stack
+    (`RueCore.Lifo`). It keeps the stack as a prefix of the new one, or it
+    cuts the stack back and drops only cells of the suffix it cut, newest
+    first. Each such cell is newer than every cell still registered
+    (`RueCore.Lifo.newer`). So across all its exit steps a scope's cells drop
+    newest first, and before any cell of an enclosing scope or a caller:
+    `{ let a; let b; }` exits over two (D-EndScope) steps and drops `b`
+    first.
+  - `RueCore.reachable_drop_order`: within one step, the markers name one
+    cell (an overwrite, `@drop`, a destructure's residue) or distinct cells
+    in strictly decreasing location order (`RueCore.NewestFirst`).
 
-  `RueCore.returnPastAffine_newestFirst` is the teardown on a real run:
-  `return_past_affine`'s σ-walk drops `ℓ3` then `ℓ1` in one reachable step.
-  `RueCore.unorderedRecord_rejected` shows the invariant is load-bearing: a
-  frame whose record is out of location order (a configuration no run
-  reaches) takes a real step whose drops are not newest-first.
-- **What it does not say.** The cross-cell half relates the drops of **one
-  step**. That an inner `let`'s `endscope` runs before the outer one's
-  follows from the shape of the rules (the inner body finishes first) and is
-  not restated as a theorem.
-- **The corpus, read through it.** `TraceOrder.lean` pins, for ten
+  Witnesses:
+  - `RueCore.returnPastAffine_newestFirst` is a teardown on a real run:
+    `return_past_affine`'s σ-walk drops `ℓ3` then `ℓ1` in one step.
+  - `RueCore.swappedMarkers_rejected` is two nested `let`s' markers swapped.
+    Every record is in location order and every step drops one cell, yet the
+    run drops `ℓ1` before `ℓ3`, and the first (D-EndScope) pops `ℓ3` off the
+    record while its marker drops `ℓ1`. It is not `Nested`, so no run
+    reaches it.
+  - `RueCore.unorderedRecord_rejected`: a frame whose record is out of
+    location order takes a real step whose drops are not newest-first.
+- **The corpus, read through it.** `TraceOrder.lean` pins, for eleven
   order-witnessing seed cases, the identities the destructors ran on in
   order (the order the printed destructors print their payloads in, which
   the bridge checks against the compiler), the cells the markers name, and
-  the identities the markers end, each once. The explain renderings'
-  identity ledger shows the same per case (`lean/explain/*.txt`).
+  the identities the markers end, each once. `nested_scopes` is the
+  bridge-checked case of the cross-step order. The explain renderings'
+  identity ledger shows the same per case (`lean/explain/*.txt`). No corpus
+  case has two droppable by-value parameters, so the callee frame's
+  last-parameter-first teardown is proved but not bridge-checked.
 
 ## No use-after-free
 
@@ -755,8 +775,10 @@ this document states, and its consequence in §7's terms is
 implies that no reduction sequence reaches a stuck configuration on every
 program (`RueCore.step_never_stuck_of_run`), and on a checked program the two
 are equivalent (`RueCore.never_stuck_iff`). **(a)**, the safety theorem
-covering every Phase C slice, no longer waits on drop order: that is
-`RueCore.drop_order` (RUE-2237). **(c)**, the independent review, is
+covering every Phase C slice, no longer waits on drop order:
+`RueCore.drop_order` (RUE-2237) states it over §6's relation, within a value
+by §6.11's grammar on every finished run, and across cells last-in first-out
+on every reachable step. **(c)**, the independent review, is
 checkpoint C (RUE-2251).
 
 ## Traceability

@@ -711,45 +711,69 @@ live bindings. The σ-walk drops each once (`#2` and `#0`, row 9), and no
 `endscope` runs for either: the ledger has one end per identity, and all of
 them are on the unwind path.
 
-**Drop order** (`TraceOrder.lean`). *Within a value, every destructor runs
-inside the drop of the value that owns it, in §6.11's order; across cells,
-every step tears its cells down newest first.*
+**Drop order** (`TraceOrder.lean`). *In every finished run, every
+destructor runs inside the drop of the value that owns it, in §6.11's order;
+and at every step the machine tears cells down last-in first-out: whatever
+it deregisters, it drops newest first, and every such cell is newer than
+every cell still registered.*
 
 ```lean
-theorem drop_order (M : FloatModel) (h : ProgramTyped P) (fuel : Nat) :
-    (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
-      Blocks P.decls (run M.toFloatOps P fuel).trace ∧
-      ∀ C C', Steps M.toFloatOps P Config.init C → Step M.toFloatOps P C C' →
-        ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs)
+theorem drop_order (M : FloatModel) (h : ProgramTyped P) :
+    (∀ H φ v tr, Steps M.toFloatOps P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
+    (∀ κ tr, Steps M.toFloatOps P Config.init (.panic κ tr) → Blocks P.decls tr) ∧
+    ∀ C C', Steps M.toFloatOps P Config.init C → Step M.toFloatOps P C C' →
+      ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) ∧
+        Lifo C.stack C'.stack (dropLocs evs) ∧ C.stack.Pairwise (· < ·)
 ```
 
-The two halves need two presentations.
+Both halves are over §6's `Step`.
 
-- **Within a value**, the statement is over `eval`'s trace. `Blocks` is a
-  grammar: a trace is a sequence of `@dbg` lines, consumptions, and drop
-  markers, each marker followed by exactly §6.11's walk of what it names
-  (`dropEvents`). That is the destructor first, then the fields in
-  declaration order, an array's elements ascending, and an enum's active
-  payload only. A destructor event has no other place in the grammar.
-- **Across cells**, the statement is over §6's `Step`, because the order
-  comes from the scope record, which the trace does not show. Every scope
-  record of every reachable configuration is in location order, which is
-  registration order (`reachable_ordered`). So a teardown, which walks its
-  record backwards, drops strictly newest first. Every other step drops
-  sub-positions of one cell only.
+- **Within a value.** `Blocks` is a grammar: a trace is a sequence of
+  `@dbg` lines, consumptions, and drop markers, each marker followed by
+  exactly §6.11's walk of what it names (`dropEvents`). That is the
+  destructor first, then the fields in declaration order, an array's
+  elements ascending, and an enum's active payload only. A destructor event
+  has no other place in the grammar. It is proved over `eval`
+  (`run_blocks`) and carried to `Step`'s finished runs by `eval_complete`
+  (`step_blocks`).
+- **Across cells**, the order comes from the scope records, which the trace
+  does not show. `C.stack` is the machine's registration stack: every
+  suspended caller's scope record, then the current frame's.
+  - It is in location order, which is registration order (the last
+    conjunct).
+  - The pending `endscope` markers are exactly the tail of their frame's
+    record (`reachable_nested`).
+  - So every step is `Lifo`: it keeps the stack as a prefix of the new one,
+    or cuts it back and drops only cells of the part it cut, newest first.
+    Those cells are newer than every cell still registered (`Lifo.newer`).
+    This orders drops across steps as well as within one: `{ let a; let b; }`
+    exits over two (D-EndScope) steps and drops `b` first.
+  - `NewestFirst` is the same within one step: one cell, or distinct cells
+    newest first.
 
-Witnesses: `struct_nested_dtor_drop` (example 4) for the first half. `S5`'s
-destructor (`#1`) runs before its field's (`#0`), both inside the one
-`drop ℓ2` block. `return_past_affine` for the second: the σ-walk's one step
-drops `ℓ3`, then `ℓ1` (`returnPastAffine_newestFirst`). In the ledger these
-show as the ends `[9.1]` and `[9.2]`, the first and second end of row 9. `TraceOrder.lean` also pins ten
-order-witnessing corpus cases through the theorems' projections, and has two
-results the statement rejects:
+Witnesses:
+
+- `struct_nested_dtor_drop` (example 4), for the first half. `S5`'s
+  destructor (`#1`) runs before its field's (`#0`), both inside the one
+  `drop ℓ2` block.
+- `nested_scopes`, for the cross-step order. Its two sibling `let`s drop
+  `ℓ3` then `ℓ1` over two steps.
+- `return_past_affine`, for the order within one step. The σ-walk's one step
+  drops `ℓ3`, then `ℓ1` (`returnPastAffine_newestFirst`). In the ledger these
+  show as the ends `[9.1]` and `[9.2]`, the first and second end of row 9.
+
+`TraceOrder.lean` also pins eleven order-witnessing corpus cases through the
+theorems' projections, and has three results the statement rejects:
 
 - `fieldsSwapped_rejected`: a struct's two field destructors swapped;
+- `swappedMarkers_rejected`: two nested `let`s whose markers are swapped.
+  Every record is in order and every step drops one cell, yet the run drops
+  oldest first. The nesting invariant is what rules it out.
 - `unorderedRecord_rejected`: a frame whose record is out of location order
-  takes a real step that drops oldest first. The invariant is what rules it
-  out.
+  takes a real step that drops oldest first.
+
+The grammar ties a marker to its walk, not to the cell. That the walk is of
+what the cell really held is the exactly-once ledger's job.
 
 ### Loops, briefly
 
