@@ -15,7 +15,9 @@ completeness modulo fuel: whatever terminal configuration §6's `→*` reaches,
 every fuel past the length of the run makes `eval` answer it
 (`eval_complete`); `eval` exhausts every fuel exactly when §6 diverges
 (`eval_diverges_iff`); and "`eval` is never stuck" is "§6 is never stuck", in
-§7's phrasing (`never_stuck_iff`).
+§7's phrasing (`never_stuck_iff`). Part 4 restates §7's first bullet over
+`Step` itself: progress and preservation (`step_progress`,
+`step_preservation`, `step_type_safety`).
 
 ## The simulation relation
 
@@ -93,6 +95,23 @@ it answers is placed by `run_sim` at the same end (`Steps.final_unique`).
 refusal of `eval`'s. The checked domain removes the refusal (`no_violation`),
 which gives `eval_complete`, `never_stuck_iff` and `eval_diverges_iff`.
 `dropMoved_refused` shows the refusal is really there off the domain.
+
+## §7 over `Step`: progress and preservation
+
+Part 4 derives §7's first bullet in §6's terms. `step_progress` is
+`step_never_stuck_of_run` given `no_violation`: on a checked program, every
+configuration `→*` reaches reduces or has halted. Preservation is stated for a
+*semantic* configuration typing, `Config.SafeAt`: a configuration is typed at
+`T` when nothing it reaches is stuck and every value it halts with has type
+`T`. Its one-step preservation is by construction, and the fundamental lemma
+`init_safeAt` — a checked program's initial configuration is typed at its
+entry type — is `soundness` (through `run_safe`) carried to §6 by
+`eval_complete`. `step_type_safety` puts the three together at every
+horizon: §6 has run `n` steps, or has halted with a well-typed value, or with
+a defined panic. A syntactic configuration typing, with one preservation case
+per `Step` constructor, would be a second safety proof and is not claimed.
+`affineScopeDrop_both_ways` is one corpus program in both presentations, the
+GUIDE's worked instance.
 -/
 
 namespace RueCore

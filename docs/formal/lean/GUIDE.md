@@ -301,6 +301,92 @@ exactly when §6's run never ends. On a program `check` rejects, `eval` may
 refuse where §6 carries on. `dropMoved_refused` is `@drop` of a moved-out
 place, which is §6.11's no-op and `eval`'s `useAfterMove`.
 
+### One program, traced both ways
+
+Why keep two presentations of one dynamics at all? §6 is written as a
+relation, so the relation is the thing a reader can hold against the
+calculus rule by rule, and §7's promises ("does not get stuck", "types are
+preserved under reduction") are sentences about it. The interpreter is what
+can be run against the compiler, and what the safety proof is an induction
+over. Adequacy is what lets a result about one be read as a result about the
+other. Here is one corpus program, `affine_scope_drop`, in both (the
+corpus prelude's other declarations omitted):
+
+```rue
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+fn f0() -> i64 {
+    {
+        let v0: S1 = S1 { x0: 7 };
+        1
+    }
+}
+```
+
+`explain/affine_scope_drop.txt` renders `eval`'s run in seven rows, one per
+evaluated node, premises first. `Step` takes twelve steps from §6.12's
+initial configuration to `✓1`, and `affineScopeDrop_both_ways`
+(`Adequacy.lean`) writes them out, one constructor each. The two columns
+line up like this, with `K` the frame stack below the focus (the top frame
+first) and `call` the entry point's `ret(E, φ)`:
+
+| Step | Constructor | §6 rule | What changes | `explain/` row |
+| --- | --- | --- | --- | --- |
+| 1 | `callEnter` | (Search) §6.2 | focus on `f0()`'s empty argument list | [1] |
+| 2 | `call` | (D-Call) §6.9 | push `call`; focus on the body | [1] |
+| 3 | `letEnter` | (Search) §6.2 | push `let v0 = □; 1`; focus on `S1 { x0: 7 }` | [4] |
+| 4 | `structEnter` | (Search) §6.2 | focus on the initializer list | [3] |
+| 5 | `argsPush` | (Search) §6.2 | push `S1{ □ }`; focus on `7` | [3] |
+| 6 | `intLit` | §6.3 | `7` is a value | [2] |
+| 7 | `argsPlug` | (Search) §6.2 | pop `S1{ □ }`; the list holds `7` | [3] |
+| 8 | `mkStruct` | (D-Struct) §6.5 | store `[ℓ0 = †]`: mint `#0`; value `S1 { 7 }#0` | [3] |
+| 9 | `letBind` | (D-Let) §6.7 | store gains `ℓ1 = S1 { 7 }#0`; push `endscope([ℓ1])`; focus on `1` | [4] |
+| 10 | `intLit` | §6.3 | `1` is a value | [5] |
+| 11 | `endScope` | (D-EndScope) §6.7 | `ℓ1` dropped and retired; trace gains `drop ℓ1`, then `S1`'s destructor | [6] |
+| 12 | `callReturn` | (D-Return-Value) §6.9 | pop `call`; the frame's record is empty; `✓1` | [7] |
+
+Two things differ, and neither is a disagreement:
+
+- Five of the twelve steps are (Search): entering a subexpression, or
+  plugging a value back into its context. `eval` does these by recursion, so
+  they have no row of their own. They are also where its fuel goes: each
+  recursive call of `eval` sits behind one enter step, and that is why
+  `eval_steps_of_outOfFuel` can count fuel in steps.
+- `explain/` lists a node after its premises, so (D-Let)'s row [4] follows
+  the struct literal's rows it waited for. `Step` interleaves the same work:
+  step 3 enters the `let`, and step 9 is its rule firing.
+
+The end states are equal: the same store (`[†, †]`), the same value (`1`),
+and the same trace. `affineScopeDrop_both_ways` proves exactly that, and also
+proves `check` accepts the program. The adequacy theorems say that this
+agreement is not special to one program: on every program `check` accepts,
+`eval`'s value or panic is §6's (`eval_sound`), §6's is `eval`'s at every
+fuel past the run's length (`eval_complete`), and `outOfFuel` at every fuel
+is §6 running forever (`eval_diverges_iff`).
+
+**What that buys: §7 in its own terms.** The safety theorem is proved once,
+over `eval`. Adequacy then carries it to `Step`:
+
+- `step_progress`: every configuration §6 reaches from a checked program's
+  initial one reduces or has halted, so none is stuck.
+- `step_preservation`: every configuration §6 reaches is typed at the entry
+  point's return type. A step from a typed configuration lands on a typed one.
+- `step_type_safety`: at every horizon `n`, §6 has run `n` steps, or has
+  halted with a value of the declared type, or with a defined panic.
+
+"Typed" here is `Config.SafeAt`, a *semantic* typing: nothing the
+configuration reaches is stuck, and every value it halts with has the type.
+Preserving it is immediate. The work is in showing the initial configuration
+has it (`init_safeAt`), and that is `run_safe` carried over by
+`eval_complete`. A syntactic typing of configurations would be a second
+safety proof, one case per `Step` constructor, and the mechanization does not
+claim one. For `affine_scope_drop`, `step_value_typed` reads off that the `1`
+§6 halts with is an `i64`.
+
+Off the checked domain, the two presentations can part. `dropMoved_refused`
+is a program `check` rejects, `@drop` of a moved-out binding: §6.11 makes it a
+no-op and `Step` reaches `✓0`, while `eval` refuses it with `useAfterMove`.
+
 ### Fuel, and why the theorems quantify over it
 
 Lean accepts a function only if it can see that the function terminates.
@@ -471,6 +557,9 @@ reuse it at every form. It says:
 - on `.stuck`, **`False`**, which is the whole point.
 
 That is progress and preservation in one statement (§7, first bullet).
+Over §6's `Step` the same guarantee is `step_progress` and
+`step_preservation`, derived from this theorem by adequacy (section 2, "One
+program, traced both ways").
 
 Over a whole program, `run_safe` says it in the shape a reader wants:
 
@@ -1953,6 +2042,18 @@ Fuel is the other place to look. The theorems say "for every fuel", and
 defect looks like:* either one missing, or stated with a hypothesis that
 makes it vacuous (`no_masking` with `n = m`, say).
 
+Then ask the fuel question from §6's side, which is checkpoint C's: does
+"for every fuel, never `.stuck`" imply that no reduction sequence reaches a
+stuck configuration? `step_never_stuck_of_run` says yes, on every program;
+`never_stuck_iff` is the equivalence on checked programs; and
+`step_progress` is the conclusion for checked programs. Can `outOfFuel` hide
+a violation? `run_stuck_of_step_stuck` says a stuck §6 run is a refusal at
+every fuel past its length, and `eval_diverges_iff` says that on a checked
+program, exhaustion at every fuel is divergence. `03-metatheory.md`'s
+"ADR-0097's conditions" section maps each gate condition to its theorem.
+*A defect looks like:* any of these stated with `P` fixed or with an extra
+hypothesis beyond `ProgramTyped`.
+
 **5. Run the three-way bridge (three minutes).**
 
 The theorems are about `eval` and `check`, not about the compiler. The bridge
@@ -2039,10 +2140,13 @@ Pick two of these three and read the calculus and the Lean side by side.
 
 **What thirty minutes does not buy.** The adequacy lemma tying this
 executable dynamics to §6's reduction relation is proved both ways
-(`eval_sound` and `eval_complete`, section 2), but §7's progress and
-preservation, stated over `Step` itself, are owed by RUE-2289's part 4. The fuel is this interpreter's device and has no
-counterpart in §6, so `fuel_mono` and `no_masking` are about `eval`, not
-about the paper machine. And the rules and forms `INDEX.md` marks *not yet
+(`eval_sound` and `eval_complete`, section 2), and §7's progress and
+preservation are stated over `Step` itself (`step_progress`,
+`step_preservation`). But the preservation there is for a semantic
+configuration typing, not a syntactic one (section 2). The fuel is this
+interpreter's device and has no counterpart in §6, so `fuel_mono` and
+`no_masking` are about `eval`, not about the paper machine; their §6-side
+counterparts are `run_stuck_of_step_stuck` and `eval_diverges_iff`. And the rules and forms `INDEX.md` marks *not yet
 mechanized* are outside every theorem above. The fragment boundary in step 3
 is not a formality; it is most of what the reports are for.
 
