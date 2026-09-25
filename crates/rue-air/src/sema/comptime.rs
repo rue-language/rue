@@ -2646,16 +2646,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         // The nearest lexical binding of the root, in the order name lookup
         // consults them: a value local or runtime name shadows the file's
         // bindings, and a type-valued binding does too unless it is a module.
-        // A runtime local may itself be a module, which body analysis
-        // reports through `local_module_membership`.
+        // A runtime local may itself be a module, which body analysis and
+        // staged inference report through `local_module_membership`.
+        let local_module = |root: &H::Name| {
+            env.local_module_membership
+                .as_ref()
+                .and_then(|membership| membership(root))
+        };
         let lexical = if env.locals.contains_key(&root) {
             Some(None)
-        } else if env.is_runtime_local_name(&root) || env.runtime_binding_names.contains(&root) {
-            Some(
-                env.local_module_membership
-                    .as_ref()
-                    .and_then(|membership| membership(&root)),
-            )
         } else if let Some(binding) = env
             .local_binding_membership
             .as_ref()
@@ -2663,8 +2662,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         {
             Some(match binding {
                 ComptimeLocalBinding::Type(ty) => Some(ty),
-                ComptimeLocalBinding::Runtime => None,
+                ComptimeLocalBinding::Runtime => local_module(&root),
             })
+        } else if env.is_runtime_local_name(&root) || env.runtime_binding_names.contains(&root) {
+            Some(local_module(&root))
         } else if let Some(ty) = env.type_subst.get(&root) {
             Some(Some(ty.clone()))
         } else if env.value_subst.contains_key(&root) {
