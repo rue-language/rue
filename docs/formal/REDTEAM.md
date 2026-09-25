@@ -47,11 +47,12 @@ reading's limits stated in the log.
   first pass lost several findings to this (see the log). Today the packet
   is built by hand, with an ad hoc extraction script kept in the pass's
   scratch directory (`scratch/rue-<issue>/`, uncommitted); RUE-2460's Spec
-  layer, once it lands, gives a canonical statement/definition extraction to
-  build it from instead. The docs agent's packet follows the same
-  completeness rule: the top-level docs in full (the formal-semantics README
-  and the mechanization's README) plus the same theorem block, without the
-  definitions closure.
+  layer now gives the canonical extraction to build it from instead: the
+  statements are [lean/SPINE.md](lean/SPINE.md), and their definitions
+  closure is `lean/TRUST.md`'s "Trusted base". The docs agent's packet
+  follows the same completeness rule: the top-level docs in full (the
+  formal-semantics README and the mechanization's README) plus the same
+  theorem block, without the definitions closure.
 - **Cross-model auditor.** A model from a different family (Codex today),
   given the same brief and packet independently, without the red agent's
   report. Invoke it as an ordinary lane addressed to that model, never shown

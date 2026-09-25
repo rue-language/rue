@@ -784,7 +784,9 @@ rue_tool_test(
 # re-check is what guarantees the kernel checked every declaration); and
 # `layers.txt`, the layering audit (RUE-2456), which fails the build on an
 # import from a higher layer, or on a module in the roots' import closure that
-# is neither the package's nor the toolchain's. Both read every executable's compiled modules,
+# is neither the package's nor the toolchain's; and `spine.md`, the Spec layer's statements
+# (RUE-2460), which fails the build when a headline theorem is not stated word for word as its
+# Spec statement. The lint and the audit read every executable's compiled modules,
 # so `extra_exes` builds them all before any report runs. Deliberately not a test
 # target: no tier applies, so no CI lane requests it until the ADR's gate is
 # met (RUE-2241). `scripts/rue lean` builds it and prints the trust report.
@@ -801,6 +803,7 @@ lean_package(
         "trust.md": ["ruecore-digest", "--trust"],
         "lint.txt": ["ruecore-lint"],
         "layers.txt": ["ruecore-layers"],
+        "spine.md": ["ruecore-digest", "--spine"],
     },
     trust = [
         "RueCore.soundness",
