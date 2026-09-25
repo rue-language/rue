@@ -496,6 +496,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         local_binding_capture: std::sync::Arc<
             dyn Fn() -> Vec<(Spur, super::ComptimeLocalBinding<Type>)>,
         >,
+        local_module_membership: std::sync::Arc<dyn Fn(&Spur) -> Option<Type>>,
         expected_result: Option<Type>,
     ) -> Option<ConstValue> {
         let empty_types = AHashMap::new();
@@ -507,6 +508,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         env.resolved_types = Some(resolved_types);
         env.local_binding_membership = Some(local_binding_membership);
         env.local_binding_capture = Some(local_binding_capture);
+        env.local_module_membership = Some(local_module_membership);
         env.defining_file = Some(self.body_rir_ref().get(inst_ref).span.file_id);
         env.expected_result = expected_result;
         env.canonical_identity = self.active_anonymous_producer().cloned();
@@ -525,6 +527,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         local_binding_capture: std::sync::Arc<
             dyn Fn() -> Vec<(Spur, super::ComptimeLocalBinding<Type>)>,
         >,
+        local_module_membership: std::sync::Arc<dyn Fn(&Spur) -> Option<Type>>,
     ) -> CompileResult<Option<bool>> {
         let empty_types = AHashMap::new();
         let empty_values = AHashMap::new();
@@ -535,6 +538,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         env.resolved_types = Some(resolved_types);
         env.local_binding_membership = Some(local_binding_membership);
         env.local_binding_capture = Some(local_binding_capture);
+        env.local_module_membership = Some(local_module_membership);
         env.defining_file = Some(self.body_rir_ref().get(condition).span.file_id);
         env.canonical_identity = self.active_anonymous_producer().cloned();
         match ComptimeEngine::new(self).select_branch((), condition, &mut env) {
@@ -563,6 +567,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         local_binding_capture: std::sync::Arc<
             dyn Fn() -> Vec<(Spur, super::ComptimeLocalBinding<Type>)>,
         >,
+        local_module_membership: std::sync::Arc<dyn Fn(&Spur) -> Option<Type>>,
     ) -> CompileResult<Option<usize>> {
         let empty_types = AHashMap::new();
         let empty_values = AHashMap::new();
@@ -573,6 +578,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         env.resolved_types = Some(resolved_types);
         env.local_binding_membership = Some(local_binding_membership);
         env.local_binding_capture = Some(local_binding_capture);
+        env.local_module_membership = Some(local_module_membership);
         env.defining_file = Some(self.body_rir_ref().get(scrutinee).span.file_id);
         env.canonical_identity = self.active_anonymous_producer().cloned();
         match ComptimeEngine::new(self).select_match((), scrutinee, arms, &mut env) {

@@ -138,6 +138,10 @@ struct FrontierScopeNode {
 enum LexicalBinding {
     Runtime,
     ComptimeType(Type),
+    /// A runtime local whose inferred type is a module (`let m = lib`): a
+    /// runtime binding to every value lookup, and a module-path root
+    /// (RUE-2426).
+    Module(Type),
 }
 
 #[derive(Debug, Clone)]
@@ -228,9 +232,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .as_ref()
             .map(|node| node.lexical_bindings.clone())
             .unwrap_or_else(LexicalBindingTrieNode::empty);
-        let lexical_binding = binding
-            .alias_ty
-            .map_or(LexicalBinding::Runtime, LexicalBinding::ComptimeType);
+        let lexical_binding = match (binding.alias_ty, binding.ty) {
+            (Some(alias), _) => LexicalBinding::ComptimeType(alias),
+            (None, Some(ty)) if ty.as_module().is_some() => LexicalBinding::Module(ty),
+            (None, _) => LexicalBinding::Runtime,
+        };
         let overlay = binding
             .ty
             .map(|ty| {
@@ -269,8 +275,29 @@ fn lexical_binding_membership_view(
                 LexicalBindingTrieNode::lookup(&node.lexical_bindings, name.into_usize() as u32, 0)
             })
             .map(|binding| match binding {
-                LexicalBinding::Runtime => crate::sema::ComptimeLocalBinding::Runtime,
+                LexicalBinding::Runtime | LexicalBinding::Module(_) => {
+                    crate::sema::ComptimeLocalBinding::Runtime
+                }
                 LexicalBinding::ComptimeType(ty) => crate::sema::ComptimeLocalBinding::Type(ty),
+            })
+    })
+}
+
+/// The module a `let`-bound module in lexical scope holds, for the comptime
+/// engine's module-path roots (RUE-2426).
+fn lexical_module_membership_view(
+    scope: &FrontierScope,
+) -> std::sync::Arc<dyn Fn(&Spur) -> Option<Type>> {
+    let scope = scope.clone();
+    std::sync::Arc::new(move |name| {
+        scope
+            .as_ref()
+            .and_then(|node| {
+                LexicalBindingTrieNode::lookup(&node.lexical_bindings, name.into_usize() as u32, 0)
+            })
+            .and_then(|binding| match binding {
+                LexicalBinding::Module(ty) => Some(ty),
+                LexicalBinding::Runtime | LexicalBinding::ComptimeType(_) => None,
             })
     })
 }
@@ -1276,6 +1303,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 value_subst,
                                 lexical_binding_membership_view(&bindings),
                                 lexical_binding_capture_view(&bindings),
+                                lexical_module_membership_view(&bindings),
                             )?
                         {
                             selections
@@ -1398,6 +1426,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 value_subst,
                                 lexical_binding_membership_view(&bindings),
                                 lexical_binding_capture_view(&bindings),
+                                lexical_module_membership_view(&bindings),
                             )?
                             && crate::sema::comptime::prunable_match_body(
                                 self.body_rir_ref(),
@@ -1792,6 +1821,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         value_subst,
                         lexical_binding_membership_view(scope),
                         lexical_binding_capture_view(scope),
+                        lexical_module_membership_view(scope),
                         None,
                     )
                 {
@@ -1826,6 +1856,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 value_subst,
                 lexical_binding_membership_view(scope),
                 lexical_binding_capture_view(scope),
+                lexical_module_membership_view(scope),
                 Some(expected),
             ) {
                 call_facts.argument_values.insert(arg.value, value.clone());
