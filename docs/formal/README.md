@@ -222,4 +222,5 @@ shape.
   name the mechanization's definition layers declare, each with its meaning,
   its upstream source (through FIELD.md) and its class: standard, a Rue
   concept the specification names, or ours and pending the terminology audit.
-  `scripts/glossary-check.py` fails on a term, symbol or name it does not list.
+  `scripts/glossary-check.py` (the Buck test `//:formal-glossary-validation`)
+  fails on a term, symbol or name it does not list.

@@ -983,6 +983,23 @@ rue_tool_test(
     resources = ["scripts/validate-lean-xref-index.py"],
 )
 
+# RUE-2461: docs/formal/GLOSSARY.md lists every bold or italic term, non-ASCII
+# symbol and L0/L1 Lean name the formal core's documents use. The gate fails
+# on one without a row, on a stale First use column (`--write` regenerates
+# it), and when it cannot read the layer table or finds no L0/L1 name.
+rue_sh_test(
+    name = "formal-glossary-validation",
+    test = "scripts/glossary-check.py",
+    args = [
+        "--formal",
+        "$(location //docs:formal)",
+    ],
+    resources = [
+        ":gatelib-sources",
+        "scripts/validate-lean-xref-index.py",
+    ],
+)
+
 rue_sh_test(
     name = "adr-registry-validation",
     test = "scripts/validate-adrs.py",

@@ -35,6 +35,18 @@ filegroup(
     visibility = ["//:"],
 )
 
+# The formal core's documents with its Lake package, for
+# //:formal-glossary-validation (RUE-2461), which reads the Markdown documents,
+# GLOSSARY.md, and the definition layers' Lean sources under lean/.
+filegroup(
+    name = "formal",
+    srcs = dict([
+        (path[len("formal/"):], path)
+        for path in glob(["formal/**"], exclude = ["formal/lean/.lake/**"])
+    ]),
+    visibility = ["//:"],
+)
+
 # The core calculus, read by //:lean-xref-index-validation for its rule and
 # section inventory (RUE-2245).
 export_file(
