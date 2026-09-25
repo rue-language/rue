@@ -5002,6 +5002,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         };
                     }
                     if let Some(ty) = env.type_subst.get(&type_symbol) {
+                        // A module-typed substitution is a `let`-bound module:
+                        // a path root, never a type value (RUE-2426).
+                        if self.host.type_is_module(ty) {
+                            return ComptimeOutcome::RuntimeDependent;
+                        }
                         return ComptimeOutcome::Known(H::Value::type_value(ty.clone()));
                     }
                     // A named type (primitive / struct / enum) resolves directly.
@@ -5079,8 +5084,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 if env.is_runtime_local_name(&name) {
                     return ComptimeOutcome::RuntimeDependent;
                 }
-                // 3. Comptime type parameters in scope
+                // 3. Comptime type parameters in scope. A module-typed
+                //    substitution is a `let`-bound module, which is a path
+                //    root and not a compile-time value (RUE-2426; a module is
+                //    not a runtime value either, 10.4:6).
                 if let Some(ty) = env.type_subst.get(&name) {
+                    if self.host.type_is_module(ty) {
+                        return ComptimeOutcome::RuntimeDependent;
+                    }
                     return ComptimeOutcome::Known(H::Value::type_value(ty.clone()));
                 }
                 // 4. Comptime value parameters in scope
