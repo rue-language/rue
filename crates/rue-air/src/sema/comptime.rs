@@ -573,19 +573,33 @@ pub trait ComptimeValueAlgebra: ComptimeDomain {
         Ok(value)
     }
     /// Admit a structural literal's shape against its type's declaration
-    /// before any child reduces: `shape` is the literal's field names or its
-    /// variant and payload count, and `site` is the literal. A host reports
-    /// what the body type checker reports for the same literal (an unknown,
-    /// duplicate or missing field, an unknown variant, a payload count the
-    /// variant does not declare), and in the same order, ahead of any child's
-    /// own error (RUE-2407). The default admits every shape.
+    /// before any child reduces: `shape` is the literal's field names, its
+    /// variant and payload count, or its length, `declared` the type its
+    /// position declares, if any, and `site` the literal. A host reports
+    /// what the body type checker reports for the same literal: the literal's
+    /// own type against `declared`, then an unknown, duplicate or missing
+    /// field, an unknown variant, or a payload count or length the type does
+    /// not declare (RUE-2407). A failure the host orders after type checks
+    /// (see [`Self::comptime_literal_failure_order`]) still yields to a
+    /// child's type mismatch. The default admits every shape.
     fn admit_comptime_literal_shape(
         &mut self,
         _ty: &Self::Type,
         _shape: ComptimeLiteralShape<'_, Self::Name>,
+        _declared: Option<&Self::Type>,
         _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<(), Self::Failure> {
         Ok(())
+    }
+    /// Where a structural literal's failure is reported relative to its
+    /// siblings' type checks: `failure` is a host failure, or `None` for a
+    /// trap or a runtime-dependent child. The default reports every failure
+    /// as it happens.
+    fn comptime_literal_failure_order(
+        &self,
+        _failure: Option<&Self::Failure>,
+    ) -> ComptimeFailureOrder {
+        ComptimeFailureOrder::Immediate
     }
     fn resolve_comptime_array_repeat(
         &mut self,
@@ -2187,24 +2201,237 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         self.child_slot_type(contextual.as_ref(), ComptimeChildSlot::ArrayElement)
     }
 
+    /// The type a structural literal at `inst_ref` is checked against: the
+    /// type its own position declares (`declared`, the expression's
+    /// [`ComptimeEnv::literal_type`]), or, for the root of an expression
+    /// frame such as a `const` initializer, the frame's expected result. An
+    /// enclosing expected result reaching an index base, a receiver, an
+    /// operand or an unannotated `let` initializer is not one (RUE-2407).
+    fn literal_context(
+        &self,
+        inst_ref: InstRef,
+        declared: Option<H::Type>,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> Option<H::Type> {
+        declared.or_else(|| {
+            let [root] = self.frames.as_slice() else {
+                return None;
+            };
+            (root.call_identity.is_none() && root.body == inst_ref)
+                .then(|| env.expected_result.clone())
+                .flatten()
+        })
+    }
+
+    /// Evaluate a child of an array literal whose type is only a hint: the
+    /// hint types the child's own literals, but the child is not admitted
+    /// into it, since no position declares it.
+    fn eval_hinted(
+        &mut self,
+        child: InstRef,
+        hint: Option<H::Type>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let enclosing = std::mem::replace(&mut env.expected_result, hint);
+        let value = self.eval(child, env);
+        env.expected_result = enclosing;
+        value
+    }
+
+    /// Reduce an array literal's elements and resolve its type. A declared
+    /// literal has its length admitted first and each element admitted into
+    /// its slot; a hinted one reduces its elements at the hint only.
+    fn eval_array_literal(
+        &mut self,
+        inst_ref: InstRef,
+        elements: &[InstRef],
+        declared: Option<&H::Type>,
+        hinted: bool,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<(Option<H::Type>, Vec<H::Value>), H::Failure> {
+        let mut order = ComptimeChildOrder::default();
+        if let Some(declared) = declared {
+            outcome_value!(self.admit_literal_shape(
+                declared,
+                ComptimeLiteralShape::Array {
+                    len: elements.len() as u64,
+                },
+                Some(declared),
+                span,
+                &mut order,
+            ));
+        }
+        let element_slot = host_value!(self.array_element_slot_type(env, inst_ref));
+        let mut values = Vec::with_capacity(elements.len());
+        for element in elements.iter().copied() {
+            let outcome = if hinted {
+                self.eval_hinted(element, element_slot.clone(), env)
+            } else {
+                self.eval_in_slot(element, element_slot.clone(), env)
+            };
+            if let Some(value) = outcome_value!(self.order_child(outcome, &mut order)) {
+                values.push(value);
+            }
+        }
+        let values = outcome_value!(order.finish(values));
+        let ty = self.host.resolve_comptime_array_type(
+            &self.program_key(),
+            env,
+            inst_ref,
+            values.first(),
+            values.len() as u64,
+        );
+        ComptimeOutcome::Known((ty, values))
+    }
+
+    /// Admit a structural literal's shape, and its own type against the
+    /// type its position declares, before any child reduces. A failure the
+    /// host orders after the children's type checks is held in `order`, so
+    /// a child's type mismatch is still reported first, as the body type
+    /// checker reports it (RUE-2407).
+    fn admit_literal_shape(
+        &mut self,
+        ty: &H::Type,
+        shape: ComptimeLiteralShape<'_, H::Name>,
+        declared: Option<&H::Type>,
+        span: Span,
+        order: &mut ComptimeChildOrder<H::Value, H::Failure>,
+    ) -> ComptimeOutcome<(), H::Failure> {
+        let site = self.diagnostic_site(span);
+        match self
+            .host
+            .admit_comptime_literal_shape(ty, shape, declared, &site)
+        {
+            Ok(()) => ComptimeOutcome::Known(()),
+            Err(ComptimeHostError::Abort(error)) => ComptimeOutcome::Abort(error),
+            Err(ComptimeHostError::HostFailure(error)) => {
+                match self.host.comptime_literal_failure_order(Some(&error)) {
+                    ComptimeFailureOrder::AfterTypeChecks => {
+                        order.hold(ComptimeOutcome::HostFailure(error));
+                        ComptimeOutcome::Known(())
+                    }
+                    ComptimeFailureOrder::Immediate | ComptimeFailureOrder::TypeCheck => {
+                        ComptimeOutcome::HostFailure(error)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Order one reduced child of a structural literal against its
+    /// siblings: `Known(Some(value))` for a value, `Known(None)` for a
+    /// failure held until every sibling's type check has run, and the
+    /// outcome itself for one reported now.
+    fn order_child(
+        &mut self,
+        outcome: ComptimeOutcome<H::Value, H::Failure>,
+        order: &mut ComptimeChildOrder<H::Value, H::Failure>,
+    ) -> ComptimeOutcome<Option<H::Value>, H::Failure> {
+        let placement = match &outcome {
+            ComptimeOutcome::Known(_) => None,
+            ComptimeOutcome::HostFailure(error) => {
+                Some(self.host.comptime_literal_failure_order(Some(error)))
+            }
+            ComptimeOutcome::Trap(_) | ComptimeOutcome::RuntimeDependent => {
+                Some(self.host.comptime_literal_failure_order(None))
+            }
+            ComptimeOutcome::NotReady
+            | ComptimeOutcome::UnsupportedContext
+            | ComptimeOutcome::Abort(_) => Some(ComptimeFailureOrder::Immediate),
+        };
+        match (placement, outcome) {
+            (_, ComptimeOutcome::Known(value)) => ComptimeOutcome::Known(Some(value)),
+            (Some(ComptimeFailureOrder::AfterTypeChecks), held) => {
+                order.hold(held);
+                ComptimeOutcome::Known(None)
+            }
+            (_, now) => retype_outcome(now),
+        }
+    }
+
+    /// Reduce an array-repeat literal, `hinted` saying whether its type is
+    /// only an enclosing hint rather than one its position declares (see
+    /// the `ArrayInit` arm).
+    fn eval_array_repeat(
+        &mut self,
+        inst_ref: InstRef,
+        value: InstRef,
+        count: RepeatCount,
+        hinted: bool,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let element_slot = host_value!(self.array_element_slot_type(env, inst_ref));
+        let value = outcome_value!(if hinted {
+            self.eval_hinted(value, element_slot, env)
+        } else {
+            self.eval_in_slot(value, element_slot, env)
+        });
+        let len = match count {
+            RepeatCount::Literal(n) => n,
+            RepeatCount::Named(sym) => {
+                let name = self.name_from_rir(sym.into());
+                let site = self.diagnostic_site(span);
+                let binding = Self::classify_array_length_binding(env, &name);
+                outcome_value!(self.host.resolve_named_array_length(
+                    &name,
+                    &site,
+                    Some(&env.value_subst),
+                    binding,
+                ))
+            }
+        };
+        if let Some(elem_ty) = value.as_type() {
+            // A repeat over a type literal is itself a comptime type.
+            let array_ty = self.host.get_or_create_array_type(elem_ty, len);
+            return ComptimeOutcome::Known(H::Value::type_value(array_ty));
+        }
+        // A reduced value repeat is a structural array literal. Its
+        // contextual type is resolved through the same array contract
+        // as ArrayInit, then the host performs one bounded admission.
+        let Some(array_ty) = self.host.resolve_comptime_array_type(
+            &self.program_key(),
+            env,
+            inst_ref,
+            Some(&value),
+            len,
+        ) else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        let site = self.diagnostic_site(span);
+        let outcome = self
+            .host
+            .resolve_comptime_array_repeat(array_ty, value, len, &site);
+        if hinted && let ComptimeOutcome::HostFailure(_) = outcome {
+            return ComptimeOutcome::RuntimeDependent;
+        }
+        outcome
+    }
+
     /// Reduce an enum variant's payload in source order, each argument
     /// against the declared type of its payload position, once the variant
     /// and its payload count are admitted at the constructor's `span`.
+    /// `declared` is the type the constructor's position declares, if any.
     fn eval_enum_payload(
         &mut self,
         enum_type: &H::Type,
         variant: &H::Name,
         args: &[rue_rir::RirCallArg],
+        declared: Option<&H::Type>,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
         span: Span,
     ) -> ComptimeOutcome<Vec<H::Value>, H::Failure> {
-        host_value!(self.host.admit_comptime_literal_shape(
+        let mut order = ComptimeChildOrder::default();
+        outcome_value!(self.admit_literal_shape(
             enum_type,
             ComptimeLiteralShape::EnumVariant {
                 variant,
                 payloads: args.len(),
             },
-            &self.diagnostic_site(span),
+            declared,
+            span,
+            &mut order,
         ));
         let mut payload = Vec::with_capacity(args.len());
         for (index, arg) in args.iter().enumerate() {
@@ -2212,17 +2439,22 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 Some(enum_type),
                 ComptimeChildSlot::EnumPayload { variant, index },
             ));
-            payload.push(outcome_value!(self.eval_in_slot(arg.value, slot, env)));
+            let outcome = self.eval_in_slot(arg.value, slot, env);
+            if let Some(value) = outcome_value!(self.order_child(outcome, &mut order)) {
+                payload.push(value);
+            }
         }
-        ComptimeOutcome::Known(payload)
+        order.finish(payload)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn evaluate_method_call(
         &mut self,
         inst_ref: InstRef,
         receiver: InstRef,
         method: H::Name,
         args: &rue_rir::RirCallArgsRange,
+        declared: Option<H::Type>,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
         span: Span,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
@@ -2247,6 +2479,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         &type_value,
                         &method,
                         &args,
+                        declared.as_ref(),
                         env,
                         span
                     ));
@@ -2269,8 +2502,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             if let Some(enum_type) = receiver.as_type()
                 && self.host.type_is_enum(&enum_type)
             {
-                let payload =
-                    outcome_value!(self.eval_enum_payload(&enum_type, &method, &args, env, span));
+                let payload = outcome_value!(self.eval_enum_payload(
+                    &enum_type,
+                    &method,
+                    &args,
+                    declared.as_ref(),
+                    env,
+                    span
+                ));
                 let site = self.semantic_site(inst_ref, ComptimeSiteKind::Member, span);
                 return self.host.resolve_comptime_enum_variant_with_payload(
                     enum_type, method, payload, &site, span,
@@ -3039,7 +3278,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 "an operand handoff is consumed before the next one"
             );
             self.evaluated_operand = operand_outcome.take();
-            let outcome = self.eval_dispatch(node, env);
+            let outcome = self.eval_dispatch(node, None, env);
             // The handoff is consumed unless cancellation stopped it first.
             assert!(
                 self.evaluated_operand.is_none()
@@ -3082,7 +3321,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             env.declared_integer_checks
                 .insert(*operation, checked.clone());
         }
-        let outcome = self.eval_dispatch(root, env);
+        let outcome = self.eval_dispatch(root, None, env);
         for operation in &operations {
             env.declared_integer_checks.remove(operation);
         }
@@ -3164,7 +3403,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             } => self.eval_branch(cond, then_block, else_block, literal_type, env),
             InstData::Match { .. } => {
                 env.literal_type = literal_type;
-                self.eval_dispatch(inst_ref, env)
+                self.eval_dispatch(inst_ref, None, env)
             }
             // An operator whose first operand is another operator walks that
             // chain iteratively, and marks its own declared integer region
@@ -3186,7 +3425,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             {
                 self.eval_declared_region_root(inst_ref, env)
             }
-            _ => self.eval_dispatch(inst_ref, env),
+            _ => self.eval_dispatch(inst_ref, literal_type, env),
         }
     }
 
@@ -3524,9 +3763,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     /// result encoding is a typed `ComptimeOutcome`; no recursive edge is
     /// collapsed into a legacy optional result inside the engine.
     #[inline(never)]
+    /// `declared` is the type the expression's own position declares for
+    /// its value (its [`ComptimeEnv::literal_type`]), which a structural
+    /// literal is checked against.
     fn eval_dispatch(
         &mut self,
         inst_ref: InstRef,
+        declared: Option<H::Type>,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
         let inst = {
@@ -4739,43 +4982,17 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // (`Option([i32; 2])`). A repeat over a *runtime* element is a genuine
             // array value literal and is not comptime-foldable here (`None`).
             InstData::ArrayRepeat { value, count } => {
-                let (value, count) = (*value, count.clone());
-                let element_slot = host_value!(self.array_element_slot_type(env, inst_ref));
-                let value = outcome_value!(self.eval_in_slot(value, element_slot, env));
-                let len = match count {
-                    RepeatCount::Literal(n) => n,
-                    RepeatCount::Named(sym) => {
-                        let name = self.name_from_rir(sym.into());
-                        let site = self.diagnostic_site(span);
-                        let binding = Self::classify_array_length_binding(env, &name);
-                        outcome_value!(self.host.resolve_named_array_length(
-                            &name,
-                            &site,
-                            Some(&env.value_subst),
-                            binding,
-                        ))
-                    }
-                };
-                if let Some(elem_ty) = value.as_type() {
-                    // A repeat over a type literal is itself a comptime type.
-                    let array_ty = self.host.get_or_create_array_type(elem_ty, len);
-                    return ComptimeOutcome::Known(H::Value::type_value(array_ty));
+                // Declared or hinted exactly as an array literal is.
+                let declared = self.literal_context(inst_ref, declared, env);
+                let enclosing = env.expected_result.clone();
+                if declared.is_some() {
+                    env.expected_result = declared.clone();
                 }
-                // A reduced value repeat is a structural array literal. Its
-                // contextual type is resolved through the same array contract
-                // as ArrayInit, then the host performs one bounded admission.
-                let Some(array_ty) = self.host.resolve_comptime_array_type(
-                    &self.program_key(),
-                    env,
-                    inst_ref,
-                    Some(&value),
-                    len,
-                ) else {
-                    return ComptimeOutcome::RuntimeDependent;
-                };
-                let site = self.diagnostic_site(span);
-                self.host
-                    .resolve_comptime_array_repeat(array_ty, value, len, &site)
+                let hinted = declared.is_none() && enclosing.is_some();
+                let outcome =
+                    self.eval_array_repeat(inst_ref, *value, count.clone(), hinted, span, env);
+                env.expected_result = enclosing;
+                outcome
             }
 
             // VarRef: comptime let-bindings, comptime parameters, file-level
@@ -4989,7 +5206,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             } => {
                 let receiver = *receiver;
                 let method = self.name_from_rir((*method).into());
-                self.evaluate_method_call(inst_ref, receiver, method, args, env, span)
+                let declared = self.literal_context(inst_ref, declared, env);
+                self.evaluate_method_call(inst_ref, receiver, method, args, declared, env, span)
             }
 
             InstData::StructInit {
@@ -5020,12 +5238,16 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     .into_iter()
                     .map(|(name, field)| (self.name_from_rir(name.into()), field))
                     .collect();
+                let mut order = ComptimeChildOrder::default();
                 if let Some(ty) = ty.as_ref() {
                     let names: Vec<_> = field_inits.iter().map(|(name, _)| name.clone()).collect();
-                    host_value!(self.host.admit_comptime_literal_shape(
+                    let declared = self.literal_context(inst_ref, declared, env);
+                    outcome_value!(self.admit_literal_shape(
                         ty,
                         ComptimeLiteralShape::Struct { fields: &names },
-                        &site,
+                        declared.as_ref(),
+                        span,
+                        &mut order,
                     ));
                 }
                 let mut values = Vec::with_capacity(field_inits.len());
@@ -5033,8 +5255,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     let slot = host_value!(
                         self.child_slot_type(ty.as_ref(), ComptimeChildSlot::Field(&name))
                     );
-                    values.push((name, outcome_value!(self.eval_in_slot(field, slot, env))));
+                    let outcome = self.eval_in_slot(field, slot, env);
+                    if let Some(value) = outcome_value!(self.order_child(outcome, &mut order)) {
+                        values.push((name, value));
+                    }
                 }
+                let values = outcome_value!(order.finish(values));
                 let Some(ty) = ty else {
                     return ComptimeOutcome::RuntimeDependent;
                 };
@@ -5043,25 +5269,37 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             InstData::ArrayInit { elements } => {
                 let site = self.diagnostic_site(span);
                 let array_elements = self.program_rir().array_elements(elements).to_vec();
-                let element_slot = host_value!(self.array_element_slot_type(env, inst_ref));
-                let mut values = Vec::with_capacity(array_elements.len());
-                for element in array_elements {
-                    values.push(outcome_value!(self.eval_in_slot(
-                        element,
-                        element_slot.clone(),
-                        env
-                    )));
+                // An array literal is checked against a type only where its
+                // position declares one (RUE-2407). Elsewhere, as an index
+                // base, a method receiver, an operand or an unannotated `let`
+                // initializer, an enclosing expected result is only a hint:
+                // the literal reduces at it when it fits, and is
+                // runtime-dependent rather than in error when it does not.
+                // With neither, its type comes from its elements.
+                let declared = self.literal_context(inst_ref, declared, env);
+                let enclosing = env.expected_result.clone();
+                let hinted = declared.is_none() && enclosing.is_some();
+                if declared.is_some() {
+                    env.expected_result = declared.clone();
                 }
-                let Some(ty) = self.host.resolve_comptime_array_type(
-                    &self.program_key(),
-                    env,
+                let reduced = self.eval_array_literal(
                     inst_ref,
-                    values.first(),
-                    values.len() as u64,
-                ) else {
+                    &array_elements,
+                    declared.as_ref(),
+                    hinted,
+                    span,
+                    env,
+                );
+                env.expected_result = enclosing;
+                let (ty, values) = outcome_value!(reduced);
+                let Some(ty) = ty else {
                     return ComptimeOutcome::RuntimeDependent;
                 };
-                self.host.resolve_comptime_array(ty, values, &site)
+                let outcome = self.host.resolve_comptime_array(ty, values, &site);
+                if hinted && let ComptimeOutcome::HostFailure(_) = outcome {
+                    return ComptimeOutcome::RuntimeDependent;
+                }
+                outcome
             }
             // Everything else requires runtime evaluation. The semantic
             // rejection hook lets durable hosts preserve the exact

@@ -6476,8 +6476,14 @@ fn enum_payload_literal_resolves_at_its_payload_slot_type() {
     engine
         .frames
         .push(ComptimeFrame::expression(0, payload_value));
-    let result =
-        engine.eval_enum_payload(&FakeType(40), &variant, &args, &mut env, Span::new(0, 2));
+    let result = engine.eval_enum_payload(
+        &FakeType(40),
+        &variant,
+        &args,
+        None,
+        &mut env,
+        Span::new(0, 2),
+    );
     engine.frames.pop();
 
     assert!(matches!(

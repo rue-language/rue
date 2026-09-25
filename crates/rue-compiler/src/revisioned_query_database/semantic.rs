@@ -192,10 +192,101 @@ pub(super) fn inferred_const_type_name(
     crate::durable_comptime::inferred_durable_const_type_name(value)
 }
 
+/// The type to suggest for an unannotated constant, spelled as the
+/// constant's own module can name it. A struct or enum declared in another
+/// module is reached there through an import binding (`m.E`), which the
+/// value's type does not record; the initializer that built the value
+/// names it, so a foreign type is spelled from the initializer's head when
+/// it has one (RUE-2407).
 pub(super) fn suggested_const_type_name(
     value: &crate::durable_semantics::DurableConstValue,
+    module: &crate::ModuleId,
+    program: &crate::body_query::DurableComptimeProgram,
+    init: rue_rir::InstRef,
 ) -> String {
-    crate::durable_comptime::suggested_durable_const_type_name(value)
+    let suggested = crate::durable_comptime::suggested_durable_const_type_name(value);
+    let crate::durable_semantics::DurableConstValue::Aggregate(aggregate) = value else {
+        return suggested;
+    };
+    if !names_foreign_nominal(&aggregate.ty, module) {
+        return suggested;
+    }
+    initializer_type_spelling(program, init).unwrap_or(suggested)
+}
+
+fn names_foreign_nominal(
+    ty: &crate::durable_semantics::DurableType,
+    module: &crate::ModuleId,
+) -> bool {
+    match ty {
+        crate::durable_semantics::DurableType::Nominal(key) => key.module() != module,
+        crate::durable_semantics::DurableType::Array { element, .. } => {
+            names_foreign_nominal(element, module)
+        }
+        _ => false,
+    }
+}
+
+/// The type a structural initializer names at its head, as written: the
+/// receiver path of an enum constructor (`m.E` in `m.E.A(0)`), the path of a
+/// bare variant, a struct literal's type, or an array literal of one.
+fn initializer_type_spelling(
+    program: &crate::body_query::DurableComptimeProgram,
+    init: rue_rir::InstRef,
+) -> Option<String> {
+    let symbol = |spur: lasso::Spur| -> Option<String> {
+        let handle: rue_rir::SymbolHandle = spur.into();
+        program
+            .symbols
+            .get(handle.issuing_interner_ordinal())
+            .map(|name| name.to_string())
+    };
+    let path = |mut inst: rue_rir::InstRef| -> Option<String> {
+        let mut segments = Vec::new();
+        loop {
+            match &program.rir.get(inst).data {
+                rue_rir::InstData::VarRef { name, .. } => {
+                    segments.push(symbol(*name)?);
+                    break;
+                }
+                rue_rir::InstData::FieldGet { base, field } => {
+                    segments.push(symbol(*field)?);
+                    inst = *base;
+                }
+                _ => return None,
+            }
+        }
+        segments.reverse();
+        Some(segments.join("."))
+    };
+    match &program.rir.get(init).data {
+        rue_rir::InstData::MethodCall { receiver, .. } => path(*receiver),
+        rue_rir::InstData::FieldGet { base, .. } => path(*base),
+        rue_rir::InstData::EnumVariant {
+            module, type_name, ..
+        } => {
+            let type_name = symbol(*type_name)?;
+            match module {
+                Some(module) => Some(format!("{}.{type_name}", path(*module)?)),
+                None => Some(type_name),
+            }
+        }
+        rue_rir::InstData::StructInit {
+            module: None,
+            type_name,
+            ..
+        } => symbol(*type_name),
+        rue_rir::InstData::ArrayInit { elements } => {
+            let elements = program.rir.array_elements(elements).to_vec();
+            let first = *elements.first()?;
+            Some(format!(
+                "[{}; {}]",
+                initializer_type_spelling(program, first)?,
+                elements.len()
+            ))
+        }
+        _ => None,
+    }
 }
 
 /// The bit pattern a `const` initializer of float type denotes, or `None` when

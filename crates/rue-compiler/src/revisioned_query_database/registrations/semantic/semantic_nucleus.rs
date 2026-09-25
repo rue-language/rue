@@ -994,7 +994,15 @@ $runtime
                                                                 | crate::durable_semantics::DurableConstValue::Function(_)
                                                         ) => Ok(crate::durable_semantics::DurableType::ComptimeType),
                                                         None => {
-                                                            let inferred = suggested_const_type_name(&value);
+                                                            let (init, _, _) = core
+                                                                .const_root()
+                                                                .expect("const core validated its root kind");
+                                                            let inferred = suggested_const_type_name(
+                                                                &value,
+                                                                &query.declaration.module,
+                                                                &core,
+                                                                init,
+                                                            );
                                                             return Ok(QueryOutput::success(Value::Failure(
                                                                 Failure::DiagnosticWithHelp {
                                                                     kind: rue_error::ErrorKind::ConstMissingTypeAnnotation {

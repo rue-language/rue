@@ -2378,7 +2378,7 @@ fn comptime_host_is_an_empty_umbrella_over_its_capabilities() {
             owner.push((rest.split('(').next().unwrap_or_default(), current));
         }
     }
-    assert_eq!(owner.len(), 89, "the host contract lost or gained a method");
+    assert_eq!(owner.len(), 90, "the host contract lost or gained a method");
     for (method, trait_name) in &owner {
         assert!(
             capabilities.contains(trait_name),
@@ -2925,11 +2925,17 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         );
     }
     assert!(production.contains("enum ComptimeArrayLengthBinding"));
-    let array_dispatch = production
+    let array_arm = production
         .split("InstData::ArrayRepeat { value, count } => {")
         .nth(1)
         .and_then(|source| source.split("InstData::VarRef { name, .. } => {").next())
         .expect("array repeat dispatch");
+    assert!(array_arm.contains("self.eval_array_repeat("));
+    let array_dispatch = production
+        .split("fn eval_array_repeat(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn ").next())
+        .expect("array repeat reduction");
     assert!(array_dispatch.contains("classify_array_length_binding"));
     let array_hook = host_contract
         .split("fn resolve_named_array_length(")

@@ -29,6 +29,68 @@ pub enum ComptimeLiteralShape<'a, N> {
     /// The variant a payload constructor or a bare variant path names, and
     /// the number of payloads it supplies (zero for a bare path).
     EnumVariant { variant: &'a N, payloads: usize },
+    /// The number of elements of an array literal, admitted against the
+    /// array type its position declares.
+    Array { len: u64 },
+}
+
+/// Where a host reports a structural literal's failure relative to the
+/// type checks of the literal's children. The body type checker reports a
+/// child's type mismatch before the literal's structural errors, and those
+/// before a child's range, finite-literal or evaluation errors (RUE-2407).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComptimeFailureOrder {
+    /// Reported as it happens.
+    Immediate,
+    /// A type check: reported as it happens, ahead of any held failure.
+    TypeCheck,
+    /// Held until every sibling's type check has run, then reported if no
+    /// sibling reported one first.
+    AfterTypeChecks,
+}
+
+/// The failure a structural literal holds while its remaining children
+/// reduce, per [`ComptimeFailureOrder::AfterTypeChecks`]. The first held
+/// failure wins, so a shape error held before any child is reported ahead
+/// of a child's later-ordered error.
+#[derive(Debug)]
+pub(crate) struct ComptimeChildOrder<V, F> {
+    held: Option<ComptimeOutcome<V, F>>,
+}
+
+impl<V, F> Default for ComptimeChildOrder<V, F> {
+    fn default() -> Self {
+        Self { held: None }
+    }
+}
+
+impl<V, F> ComptimeChildOrder<V, F> {
+    pub(crate) fn hold(&mut self, outcome: ComptimeOutcome<V, F>) {
+        self.held.get_or_insert(outcome);
+    }
+
+    /// The literal's reduced children, or the failure it held.
+    pub(crate) fn finish<T>(self, values: T) -> ComptimeOutcome<T, F> {
+        match self.held {
+            Some(held) => retype_outcome(held),
+            None => ComptimeOutcome::Known(values),
+        }
+    }
+}
+
+/// Carry a non-value outcome over to another value type. A known value has
+/// no counterpart and is never passed here.
+pub(crate) fn retype_outcome<V, T, F>(outcome: ComptimeOutcome<V, F>) -> ComptimeOutcome<T, F> {
+    match outcome {
+        ComptimeOutcome::Known(_) | ComptimeOutcome::RuntimeDependent => {
+            ComptimeOutcome::RuntimeDependent
+        }
+        ComptimeOutcome::NotReady => ComptimeOutcome::NotReady,
+        ComptimeOutcome::UnsupportedContext => ComptimeOutcome::UnsupportedContext,
+        ComptimeOutcome::Trap(trap) => ComptimeOutcome::Trap(trap),
+        ComptimeOutcome::HostFailure(error) => ComptimeOutcome::HostFailure(error),
+        ComptimeOutcome::Abort(error) => ComptimeOutcome::Abort(error),
+    }
 }
 
 #[derive(Debug)]
