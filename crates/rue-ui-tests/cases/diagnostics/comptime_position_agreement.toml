@@ -253,16 +253,80 @@ error: [E0800]: literal value -129 is out of range for type 'i8'
 
 [[case]]
 name = "unsigned_negation_in_const_points_at_negation"
+description = "Only the site is pinned: the body path's `unsigned values cannot be negated` note is still missing here (see the follow-up issue)."
 source = """
 const K: u8 = -1;
 fn main() -> i32 { 0 }
 """
 compile_fail = true
-expected_error = """
-error: [E0801]: cannot apply unary operator `-` to type 'u8'
- --> test.rue:1:15
-  |
-1 | const K: u8 = -1;
-  |               ^^
-  |
+error_contains = [
+    "E0801",
+    "cannot apply unary operator `-` to type 'u8'",
+    "test.rue:1:15",
+]
+
+# A named array length the durable engine rejects is reported on the length
+# expression, in a const and through a type constructor alike (RUE-2405).
+
+[[case]]
+name = "negative_named_length_in_const_points_at_repeat"
+source = """
+const N: i32 = -1;
+const A = [0; N];
+fn main() -> i32 { 0 }
 """
+compile_fail = true
+error_contains = ["E0481", "'N' is negative or too large", "test.rue:2:11"]
+
+[[case]]
+name = "type_shadowed_length_from_const_points_into_constructor"
+source = """
+fn TypeShadow(comptime N: type) -> type { [i32; N] }
+const TYPE: type = TypeShadow(i32);
+fn main() -> i32 { let x: TYPE = [1, 2]; 0 }
+"""
+compile_fail = true
+error_contains = ["E0481", "'N' is not an integer", "test.rue:1:43"]
+
+[[case]]
+name = "type_shadowed_length_from_let_points_into_constructor"
+source = """
+fn TypeShadow(comptime N: type) -> type { [i32; N] }
+fn main() -> i32 { let x: TypeShadow(i32) = [1, 2]; 0 }
+"""
+compile_fail = true
+error_contains = ["E0481", "'N' is not an integer", "test.rue:1:43"]
+
+# A constructor whose body the durable engine rejects is reported inside the
+# constructor, whether it is reached from a signature, a let or a const.
+
+[[case]]
+name = "fn_field_in_constructor_from_signature_points_into_constructor"
+source = """
+fn Make() -> type { struct { cb: fn(i32) -> i32 } }
+fn apply(m: Make()) -> i32 { 0 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0214", "not a struct field", "test.rue:1:21"]
+
+[[case]]
+name = "fn_payload_in_constructor_from_const_points_into_constructor"
+source = """
+fn Make() -> type { enum { Run(fn(i32) -> i32), Skip } }
+const T = Make();
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0214", "not an enum payload", "test.rue:1:21"]
+
+[[case]]
+name = "out_of_range_in_imported_const_points_into_its_file"
+source = """
+const lib = @import("lib.rue");
+const A: i8 = lib.B;
+fn main() -> i32 { 0 }
+"""
+aux_files = { "lib.rue" = "// padding\n// padding\npub const B: i8 = -129;\n" }
+compile_fail = true
+error_contains = ["E0800", "literal value -129 is out of range for type 'i8'", "lib.rue:3:19"]
