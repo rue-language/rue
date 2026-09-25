@@ -222,9 +222,10 @@ semantic question about a fragment program can be answered by executing it.
 And a total function always returns one of the six outcomes, so progress
 becomes the single statement "never `.stuck`", which section 4's theorem
 proves. What the function owes the relation is an adequacy lemma (the two
-agree on every program). It is owed by RUE-2289 and required before the
-mechanization gates anything (`../03-metatheory.md`, "How to read a theorem
-here").
+agree on every checked program), required before the mechanization gates
+anything (`../03-metatheory.md`, "How to read a theorem here"). Its first
+half, soundness, is proved (`eval_sound`, below); its second half,
+completeness modulo fuel, is owed by RUE-2289's part 3.
 
 **Two presentations of one dynamics.** The relation exists too:
 `Step.lean` defines `Step`, §6's `C → C'` itself, one constructor per §6
@@ -239,8 +240,8 @@ about `eval` says nothing about §6 unless the two agree, and `Step`, though
 it runs (`stepN` takes its steps, and `letAddProgram_runs` and the `demo_`
 theorems run whole programs through it), is not what the bridge runs against
 the compiler, and it does not carry the safety proof as cheaply. The adequacy
-theorems (RUE-2289's parts 2 and 3) are the bridge between them; until they
-land, `Step`'s own theorems are the cheap ones — it is deterministic, a
+theorems (RUE-2289's parts 2 and 3) are the bridge between them. Besides
+them, `Step`'s own theorems are the cheap ones — it is deterministic, a
 finished configuration takes no step, and a stuck one is stuck on one of §6's
 four violations, never on one of `eval`'s four monitors
 (`../03-metatheory.md`). Where `Step` departs from §6's text, and the
@@ -266,6 +267,23 @@ metatheory row and `Step.lean`'s module docstring give the same list:
 
 On programs `check` rejects, `Step` follows §6 where `eval` does not: `@drop`
 of a `⊘` place is §6.11's no-op where `eval` refuses it.
+
+**Soundness: what `eval` answers, §6 reaches.** `Adequacy.lean` proves the
+first adequacy theorem. For a program `check` accepts, `eval_sound` says three
+things: `run` is never `.stuck` (that is `no_violation`); if it answers a
+value, §6.12's initial configuration reaches, by `Step`, the terminal
+configuration holding that value, with the same store and the same trace; and
+if it panics, `Step` reaches the same panic after the same trace. The proof is
+a simulation, `Sim`, read off each of `eval`'s outcomes: the expression in
+focus under *any* context reaches the context's hole with the value, or the
+panic, or (for an unwinding `return` or `break`) the nearest caller or loop.
+Each `andThen` in `eval` becomes one enter step, the operand's run, and one
+plug step. A surprise: the simulation needs no typing at all (`run_sim` holds
+on every program), because every place `eval` and `Step` differ is a refusal
+on `eval`'s side, and a refusal promises nothing. Typing only fixes the
+domain, by ruling `.stuck` out. `letAddProgram_sound` is the theorem at work:
+the same `→*` derivation `letAddProgram_runs` found by stepping, obtained from
+`run`'s answer alone.
 
 ### Fuel, and why the theorems quantify over it
 
@@ -1998,9 +2016,10 @@ Pick two of these three and read the calculus and the Lean side by side.
   drop event emitted in the wrong order relative to the body's own trace,
   which step 5's stdout comparison would catch.
 
-**What thirty minutes does not buy.** The adequacy lemma tying this
-executable dynamics to §6's reduction relation is owed by RUE-2289 and not
-proved here (section 2). The fuel is this interpreter's device and has no
+**What thirty minutes does not buy.** Half of the adequacy lemma tying this
+executable dynamics to §6's reduction relation is proved (`eval_sound`,
+section 2); the other half, that every run of §6 to its end is one `eval`
+finds at some fuel, is owed by RUE-2289's part 3. The fuel is this interpreter's device and has no
 counterpart in §6, so `fuel_mono` and `no_masking` are about `eval`, not
 about the paper machine. And the rules and forms `INDEX.md` marks *not yet
 mechanized* are outside every theorem above. The fragment boundary in step 3

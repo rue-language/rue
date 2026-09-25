@@ -7,9 +7,11 @@ import RueCore.Dynamics
 end. This module presents it as §6 itself does, as a small-step relation
 `Step M P C C'` between machine configurations, one constructor per rule. The
 two presentations are of one dynamics; the adequacy theorems that say so are
-RUE-2289's parts 2 and 3. This part defines the relation and proves only what
-is cheap: it is deterministic, a terminal configuration takes no step, and
-its stuck configurations are exactly the ones §6 leaves undefined.
+RUE-2289's parts 2 and 3. This module defines the relation and proves only
+what is cheap: it is deterministic, a terminal configuration takes no step,
+and its stuck configurations are exactly the ones §6 leaves undefined.
+Part 2, `eval ⇒ Step*`, is `eval_sound` (`Adequacy.lean`); part 3, the
+converse modulo fuel, is RUE-2332.
 
 ## The configuration (§6.1)
 
@@ -126,8 +128,11 @@ On programs `check` rejects, `Step` follows §6 where `eval` does not:
   steps in `Step`; `eval` refuses it with `ownedUnderCopy`
   (`Contents.copyClosed`).
 
-Part 2's `eval ⇒ Step*` simulation is stated over checked programs (RUE-2289),
-where this case does not arise; unchecked programs are out of its scope.
+Both are refusals on `eval`'s side, so neither obstructs part 2's
+`eval ⇒ Step*` simulation, which holds on every program (`run_sim`,
+`Adequacy.lean`); `eval_sound` states it over checked programs (RUE-2289),
+where `no_violation` rules `.stuck` out. They matter for part 3, the converse,
+which is stated over checked programs for that reason.
 -/
 
 namespace RueCore
