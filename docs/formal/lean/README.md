@@ -549,7 +549,10 @@ its own layer or a lower one:
 
 L3 may import anything; nothing in L0–L2 imports L3, so no theorem of the
 spine depends on the printer, the generator, the corpus or an example
-program. The `*/Defs` modules are the definitions moved verbatim out of the
+program. L1 is not yet definitions only: its modules still hold about 210
+helper lemmas about those definitions, and `Step.lean` holds 11 demo
+witnesses. Moving them to L2 and `Witnesses` is part of the statement/proof
+split (RUE-2460). The `*/Defs` modules are the definitions moved verbatim out of the
 proof modules (the `Defs` of a module holds what its headline statements
 mention); `Witnesses.lean` is the theorems moved out of the proof modules
 because they mention example or corpus programs. The statement/proof split
@@ -628,6 +631,7 @@ flowchart BT
     Gen["Gen"]
     LayersMain["LayersMain"]
     Print["Print"]
+    root["RueCore (root)"]
     Witnesses["Witnesses"]
   end
   Float --> Syntax
