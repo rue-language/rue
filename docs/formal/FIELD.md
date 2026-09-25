@@ -56,7 +56,7 @@ for TAPL's notation); Harper 2016 (PFPL).
 | hole | The empty position in a context, `[ ]` | Felleisen & Hieb; PFPL (written `∘`) |
 | redex; notion of reduction | The reducible term in the hole; the base reduction relation | Felleisen & Hieb |
 | standard reduction | A reduction step taken only inside an evaluation context | Felleisen & Hieb, Def. 2.3 (preprint numbering) |
-| reduction semantics | A semantics given as a rewriting relation on terms, the style of Wright & Felleisen's syntactic approach | Amin & Rompf §2 |
+| reduction semantics (usage) | A semantics given as a rewriting relation on terms, the style of Wright & Felleisen's syntactic approach | Amin & Rompf §2 |
 | value; `e val` | A finished computation | PFPL §5.2; SF |
 | normal form | A term that cannot step | SF *Smallstep* |
 | stuck | Not a value (not final) and no step applies | Plotkin 1981/2004 §3.1, Def. 11; PFPL ch. 6 introduction; Wright & Felleisen Def. 4.8; SF |
@@ -131,7 +131,7 @@ Dreyer et al. 2019 (SIGPLAN blog); Appel & McAllester 2001.
 | weak / strong soundness | The program never yields `wrong` / its answer lies in the type's value set | Wright & Felleisen §§1–2 |
 | faulty expression; uniform evaluation | Wright & Felleisen's syntactic approximation of stuck, later replaced by progress | Wright & Felleisen Def. 4.9, Lemma 4.10; PFPL §6.4 |
 | progressive state; `safe(e)` | Every thread is a value or can reduce; every state reachable from e is progressive | Timany §2.4 |
-| syntactic type soundness | Soundness proved by induction over the syntax of typing. Wright & Felleisen prove it by subject reduction plus uniform evaluation (faulty expressions are untypable); the now-standard proof uses progress and preservation instead | Wright & Felleisen Thm 4.12; Timany §2.5; PFPL §6.4 |
+| syntactic type soundness | Soundness established through "a syntactic connection between answers and types" (Wright & Felleisen), not a model of types. Wright & Felleisen prove it by subject reduction plus uniform evaluation (faulty expressions are untypable); the now-standard proof uses progress and preservation instead | Wright & Felleisen Thm 4.12; Timany §2.5; PFPL §6.4 |
 | semantic type soundness | Soundness through a semantic typing judgment `⊨`, which says what a term does rather than how it is built | Timany §4; Dreyer et al. 2019 |
 | logical relation | A type-indexed interpretation of values and expressions that defines `⊨` | Timany §5 |
 | compatibility lemma | The semantic counterpart of one typing rule | Timany §4.1, §8.4 |
@@ -144,7 +144,7 @@ Dreyer et al. 2019 (SIGPLAN blog); Appel & McAllester 2001.
 
 | Symbol | Reading | Variants |
 |---|---|---|
-| `Γ ⊢ e : τ` | "under Γ, e has type τ" | Wright & Felleisen `Γ ▷ e : τ`; SF `Gamma \|-- t \in T`; PFPL writes `e : τ` for closed terms |
+| `Γ ⊢ e : τ` | "under Γ, e has type τ" | Wright & Felleisen `Γ ▷ e : τ`; SF `Gamma \|-- t ∈ T`; PFPL writes `e : τ` for closed terms |
 | `Γ ⊨ e : τ` | "e is semantically well typed at τ" | Timany |
 | `safe(e)` | "no state reachable from e is stuck" | Timany |
 
@@ -165,7 +165,8 @@ denotational model).
 | Type soundness, safety form | `∅ ⊢ e : τ ⇒ safe(e)` | Timany §2.4 |
 | Fundamental theorem | `Γ ⊢ e : τ ⇒ Γ ⊨ e : τ` | Timany Thm 6.5 |
 | Adequacy | `∅ ⊨ e : τ ⇒ safe(e)` | Timany §4.1; Thm 6.6 |
-| Semantic type soundness | `∅ ⊢ e : τ ⇒ safe(e)`, obtained from the fundamental theorem and adequacy | Timany Cor. 6.7 |
+| Syntactic type soundness | `∅ ⊢ e : τ ⇒ safe(e)`, proved by progress and preservation | Timany Cor. 2.3 |
+| Semantic type soundness | The same statement, `∅ ⊢ e : τ ⇒ safe(e)`, obtained instead from the fundamental theorem and adequacy | Timany Cor. 6.7 |
 
 Timany et al. argue (§3) that progress and preservation are too weak rather
 than false. They cover only syntactically well-typed code, say nothing about
@@ -179,7 +180,7 @@ data abstraction, and put `unsafe` code behind a safe API out of scope.
 | `step_progress`: every configuration reachable from a checked program's start steps or has halted | progress is stated per well-typed term. The reachability form is Timany's `safe(e)` | partial |
 | `step_preservation` over `Config.SafeAt` | Preservation is syntactic (`⊢ e′ : τ`). A statement over "nothing reachable is stuck, and every halted value is typed" is a semantic statement in Timany's safety form. Our own docs already say this: the `Config.SafeAt` docstring ("Which preservation", `Adequacy.lean`), GUIDE §2 and the metatheory's type-safety section call the configuration typing semantic and claim no syntactic `⊢ C : T` | partial: the name clashes with the accepted syntactic meaning, and our docs disclose the clash |
 | `Config.SafeAt` | `safe(e)` (Timany §2.4) plus value typing. Timany's adequacy (Thm 6.6) concludes `safe(e)` only; our second conjunct is the syntactic value typing `HasTy` | partial |
-| "fundamental lemma" `init_safeAt` (metatheory): a checked program's initial configuration is `SafeAt` | Timany's fundamental theorem is `⊢ ⇒ ⊨`; `⊢ ⇒ safe` is his Cor. 6.7, which he calls semantic type soundness. Our proof has no `⊨` and no logical relation: it is syntactic soundness of `eval` (a `Matches` invariant) followed by the `eval`/`Step` agreement of §3. "The fundamental theorem composed with adequacy" is only an analogy | partial |
+| "fundamental lemma" `init_safeAt` (metatheory): a checked program's initial configuration is `SafeAt` | Timany's fundamental theorem is `⊢ ⇒ ⊨`; `⊢ ⇒ safe` is their Cor. 6.7, which they call semantic type soundness, and also their Cor. 2.3, "Syntactic Type Soundness", proved by progress and preservation. Our proof has no `⊨` and no logical relation, so Cor. 2.3 is the closer counterpart: it is syntactic soundness of `eval` (a `Matches` invariant) followed by the `eval`/`Step` agreement of §3. "The fundamental theorem composed with adequacy" is only an analogy | partial |
 | `FrameMatches` / `Matches` ("Σ faithfully tracks the store's initialization") | the invariant a syntactic proof carries: store typing / a well-typed machine state. Ours checks each cell against both its ownership state and its type (`ContentsMatches`; "an owned node holds a hole-free well-typed contents"), and `Soundness.lean` calls `Matches` "the §7 preservation invariant" | partial: store typing extended with ownership state |
 | Σ for the ownership state (§5) | Σ is store typing in TAPL and the global environment in Oxide | partial: symbol clash |
 | `Violation` (`useAfterMove`, `useAfterDrop`, …) | `wrong` (Milner), "going wrong" (CompCert), stuck (PFPL) | partial: ours is a named refusal, and four of its eight constructors are the monitors of §6 below, which are not stuck states of §6's `Step` |
@@ -294,7 +295,7 @@ Atkey 2018; Bernardy et al. 2018 (Linear Haskell).
 | qualifier | The annotation that puts a type in one of these classes | Walker §1.2 (`lin`, `un`); Tov & Pucella ("usage qualifier") |
 | context split | `Γ = Γ₁ ∘ Γ₂`, which distributes linear assumptions between subterms | Walker Fig. 1-4 |
 | dereliction subtyping | An unlimited-use function may be used where a one-use function is expected, after linear logic's dereliction rule | Tov & Pucella |
-| multiplicity | An arrow or binder annotation: 1, ω, a variable, or a sum or product of these. Multiplicities form a semiring without a zero | Linear Haskell Fig. 5 |
+| multiplicity | An arrow or binder annotation: 1, ω, a variable, or a sum or product of these. Multiplicities form a semiring without a zero | Linear Haskell §3.2 |
 | usage; semiring | QTT's annotations, which form a semiring; {0, 1, ω} is one example | Atkey §2.1.1; McBride ("rig"; his ω is relevant, unbounded use unless weakening is added) |
 
 ### Symbols
@@ -646,7 +647,7 @@ the secondary source named alongside.
 | Barendregt & Wiedijk 2005 | H. Barendregt, F. Wiedijk. The Challenge of Computer Mathematics. *Phil. Trans. R. Soc. A* 363(1835):2351–2375, 2005 | https://doi.org/10.1098/rsta.2005.1650 | Crossref; the authors' preprint in the Radboud repository (https://hdl.handle.net/2066/32307) |
 | Barr et al. 2015 | E. T. Barr, M. Harman, P. McMinn, M. Shahbaz, S. Yoo. The Oracle Problem in Software Testing: A Survey. *IEEE TSE* 41(5):507–525, 2015 | https://doi.org/10.1109/TSE.2014.2372785 | Crossref; PDF of the same title |
 | Bernardy et al. 2018 | J.-P. Bernardy, M. Boespflug, R. R. Newton, S. Peyton Jones, A. Spiwack. Linear Haskell: practical linearity in a higher-order polymorphic language. *PACMPL* 2(POPL), 2018 | https://arxiv.org/abs/1710.09756 | "Linear Haskell: practical linearity in a higher-order polymorphic language" |
-| Cedar 2024 | C. Disselkoen et al. How We Built Cedar: A Verification-Guided Approach. FSE Companion '24, 351–357, 2024 (doi:10.1145/3663529.3663854) | https://arxiv.org/abs/2407.01688 | "How We Built Cedar: A Verification-Guided Approach"; the arXiv PDF's first page gives the FSE Companion venue and DOI |
+| Cedar 2024 | C. Disselkoen et al. How We Built Cedar: A Verification-Guided Approach. FSE Companion '24, 351–357 (pages per Crossref), 2024 (doi:10.1145/3663529.3663854) | https://arxiv.org/abs/2407.01688 | "How We Built Cedar: A Verification-Guided Approach"; the arXiv PDF's first page gives the FSE Companion venue and DOI |
 | Charguéraud 2013 | A. Charguéraud. Pretty-Big-Step Semantics. ESOP 2013, *Programming Languages and Systems*, LNCS, 41–60 | https://doi.org/10.1007/978-3-642-37036-6_3 | Crossref; author PDF (chargueraud.org/research/2012/pretty/pretty.pdf) |
 | Chen et al. 2020 | J. Chen, J. Patra, M. Pradel, Y. Xiong, H. Zhang, D. Hao, L. Zhang. A Survey of Compiler Testing. *ACM Comput. Surv.* 53(1), Art. 4, 2020 | https://doi.org/10.1145/3363562 | Crossref; 2019 preprint PDF of the same title (section numbers here are the preprint's) |
 | Claessen & Hughes 2000 | K. Claessen, J. Hughes. QuickCheck: A Lightweight Tool for Random Testing of Haskell Programs. ICFP 2000, 268–279 | https://doi.org/10.1145/351240.351266 | Crossref; PDF of the same title |
@@ -675,7 +676,7 @@ the secondary source named alongside.
 | Nipkow & Klein | T. Nipkow, G. Klein. *Concrete Semantics*; Isabelle HOL-IMP theory `Small_Step` | http://concrete-semantics.org/ and https://isabelle.in.tum.de/library/HOL/HOL-IMP/Small_Step.html | "Concrete Semantics"; "Small-Step Semantics of Commands" |
 | Niu, Sterling & Harper 2024 | Y. Niu, J. Sterling, R. Harper. Cost-sensitive computational adequacy of higher-order recursion in synthetic domain theory. MFPS 2024 (ENTICS 4) | https://arxiv.org/abs/2404.00212 | arXiv abstract page; full text |
 | Owens et al. 2016 | S. Owens, M. O. Myreen, R. Kumar, Y. K. Tan. Functional Big-Step Semantics. ESOP 2016, LNCS 9632, 589–615 | https://doi.org/10.1007/978-3-662-49498-1_23 | Crossref; "Functional Big-step Semantics" (cl.cam.ac.uk PDF) |
-| Oxide | A. Weiss, O. Gierczak, D. Patterson, A. Ahmed. Oxide: The Essence of Rust. arXiv:1903.00982 | https://arxiv.org/abs/1903.00982 | "Oxide: The Essence of Rust" |
+| Oxide | A. Weiss, O. Gierczak, D. Patterson, A. Ahmed. Oxide: The Essence of Rust. arXiv:1903.00982; theorem and lemma numbers cited here are v4's (19 Oct 2021), and v1 (3 Mar 2019) numbers them differently | https://arxiv.org/abs/1903.00982 | "Oxide: The Essence of Rust" |
 | Pierce 2002 (TAPL) | B. C. Pierce. *Types and Programming Languages*. MIT Press, 2002 | https://www.cis.upenn.edu/~bcpierce/tapl/ | "Types and Programming Languages", with its table of contents and errata (text not read) |
 | Plotkin 1977 | G. D. Plotkin. LCF considered as a programming language. *Theor. Comput. Sci.* 5(3):223–255, 1977 **(record)** | https://doi.org/10.1016/0304-3975(77)90044-5 | Crossref record |
 | Plotkin 1981/2004 | G. D. Plotkin. A Structural Approach to Operational Semantics. DAIMI FN-19, Aarhus, 1981; *J. Log. Algebr. Program.* 60–61:17–139, 2004 | https://doi.org/10.1016/j.jlap.2004.05.001 | Crossref/OpenAlex record; the author's own 2004 edition (homepages.inf.ed.ac.uk/gdp/publications/sos_jlap.pdf), whose numbering is used here |
