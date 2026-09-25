@@ -324,8 +324,12 @@ list, so their axioms are checked with the safety theorems'.
 
 ## Deciding whether to believe it (RUE-2247)
 
-Two generated reports for a reader who knows type systems or proof assistants
-and wants to judge the mechanization without trusting whoever wrote it:
+Start with `SPINE.md` (generated, "The statement layer" below): the 36
+statements that are the claim, each with its English reading, the §7
+paragraph it realizes and the definitions it names, and the checks that tie
+each to its proof. Then two generated reports for a reader who knows type
+systems or proof assistants and wants to judge the mechanization without
+trusting whoever wrote it:
 
 ```bash
 lake exe ruecore-digest > DIGEST.md          # every statement
@@ -545,27 +549,29 @@ a slice author writes:
 ## Layers (RUE-2456)
 
 What a claim depends on is kept small and checked by a tool. Every module of
-the package sits in one of four layers, and a module imports only modules of
+the package sits in one of five layers, and a module imports only modules of
 its own layer or a lower one:
 
 | Layer | Modules | What it holds |
 | --- | --- | --- |
 | **L0 syntax** | `Float`, `Syntax` | §2's syntax, types and float data |
 | **L1 definitions** | `Statics`, `Dynamics`, `Step`, `Soundness/Defs`, `Checker/Defs`, `Trace/Defs`, `Adequacy/Defs` | the semantics (§5's judgment, `eval`, §6's `Step`), and every definition a headline statement is written in: value typing and `FrameMatches`, the checker algorithm, the trace projections, ledgers and configuration invariants, `Config.SafeAt` |
-| **L2 proofs** | `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L1's definitions |
+| **Spec statements** | `Spec`, `Spec.Safety`, `Spec.Checker`, `Spec.Trace`, `Spec.Step`, `Spec.Adequacy` | the headline statements, each a `def …_stmt : Prop` over L0 and L1 alone, with its English reading; the one list of them, `Spec.spine` ("The statement layer") |
+| **L2 proofs** | `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder`, `Spine` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L1's definitions, and `Spine` checks each headline proof against its Spec statement |
 | **L3 tooling** | `Examples`, `Witnesses`, `Print`, `Corpus`, `Gen`, `Explain*`, `Digest`, `Layers`, `Lint`, the `*Main` executables, the root `RueCore` | example and corpus programs and the theorems about them, the printer, the generator, the explain and digest reports, the layer table and the lint |
 
-L3 may import anything; nothing in L0–L2 imports L3, so no theorem of the
+L3 may import anything; nothing in L0–L2 or Spec imports L3, so no theorem of the
 spine depends on the printer, the generator, the corpus or an example
-program. L1 is definitions only: the 181 theorems its modules held are in
+program. Spec sits between L1 and L2 and keeps its own name, so the other
+layers keep theirs: a statement may mention only syntax and definitions, and
+the audit fails on a Spec module that imports a proof. L1 is definitions only: the 181 theorems its modules held are in
 `Statics/Lemmas.lean`, `Dynamics/Lemmas.lean` and `Step/Lemmas.lean` (L2),
 moved verbatim, and `Step.lean`'s 11 demo witnesses, with the two
 `Adequacy.lean` theorems about their programs, are in `Witnesses.lean`
 (RUE-2460). The `*/Defs` modules are the definitions moved verbatim out of the
 proof modules (the `Defs` of a module holds what its headline statements
 mention); `Witnesses.lean` is the theorems moved out of the proof modules
-because they mention example or corpus programs. The statement/proof split
-adds a statements layer between L1 and L2 on top of this.
+because they mention example or corpus programs.
 
 **The audit.** `lake exe ruecore-layers`, after `lake build`, reads each
 module's imports from its compiled `.olean` header, walking the whole import
@@ -575,11 +581,11 @@ toolchain's own modules (`Init`, `Std`, `Lean`, `Lake`, when the `.olean` is
 the one the toolchain ships), which are trusted as the toolchain is. It fails
 on any other module in the closure that is not the package's (a library a
 `[[lean_lib]]` line adds, say), on an import from a higher layer, on an
-L0–L2 module importing anything outside the package but `Init`, on an L0–L2
-module that is not a `module`, and on a module missing from the table, a
+L0–L2 or Spec module importing anything outside the package but `Init`, on
+one that is not a `module`, and on a module missing from the table, a
 stale table entry, or a source file nothing imports. It prints the graph, one
-line per module, and ends with `ruecore-layers: 36 modules, 82 package
-imports, no upward import; import closure: 36 modules outside the toolchain,
+line per module, and ends with `ruecore-layers: 43 modules, 101 package
+imports, no upward import; import closure: 43 modules outside the toolchain,
 all the package's, …`. `lake exe ruecore-layers --closure` prints that
 closure, one module per line: the list the kernel re-check replays. The Buck target runs it as the `layers.txt`
 report, so `./buck2 build root//:lean-ruecore` fails on an upward import;
@@ -627,15 +633,28 @@ flowchart BT
     Step["Step"]
     Trace_Defs["Trace.Defs"]
   end
+  subgraph Spec["Spec statements"]
+    Spec["Spec"]
+    Spec_Adequacy["Spec.Adequacy"]
+    Spec_Checker["Spec.Checker"]
+    Spec_Safety["Spec.Safety"]
+    Spec_Step["Spec.Step"]
+    Spec_Trace["Spec.Trace"]
+  end
   subgraph L2["L2 proofs"]
     Adequacy["Adequacy"]
     Checker["Checker"]
+    Dynamics_Lemmas["Dynamics.Lemmas"]
     Soundness["Soundness"]
+    Spine["Spine"]
+    Statics_Lemmas["Statics.Lemmas"]
+    Step_Lemmas["Step.Lemmas"]
     Trace["Trace"]
     TraceExact["TraceExact"]
     TraceOrder["TraceOrder"]
   end
   subgraph L3["L3 tooling"]
+    root["RueCore (root)"]
     Corpus["Corpus"]
     CorpusMain["CorpusMain"]
     Digest["Digest"]
@@ -652,7 +671,6 @@ flowchart BT
     Lint["Lint"]
     LintMain["LintMain"]
     Print["Print"]
-    root["RueCore (root)"]
     Witnesses["Witnesses"]
   end
   Float --> Syntax
@@ -665,16 +683,41 @@ flowchart BT
   Dynamics --> Step
   Step --> Trace_Defs
   Soundness_Defs --> Trace_Defs
+  Spec_Safety --> Spec
+  Spec_Checker --> Spec
+  Spec_Trace --> Spec
+  Spec_Step --> Spec
+  Spec_Adequacy --> Spec
+  Adequacy_Defs --> Spec_Adequacy
+  Checker_Defs --> Spec_Checker
+  Soundness_Defs --> Spec_Safety
+  Adequacy_Defs --> Spec_Step
+  Trace_Defs --> Spec_Trace
   Step --> Adequacy
+  Step_Lemmas --> Adequacy
   Soundness --> Adequacy
   Adequacy_Defs --> Adequacy
   Soundness --> Checker
   Checker_Defs --> Checker
+  Dynamics --> Dynamics_Lemmas
+  Statics_Lemmas --> Dynamics_Lemmas
   Dynamics --> Soundness
+  Dynamics_Lemmas --> Soundness
   Soundness_Defs --> Soundness
+  Spec --> Spine
+  Soundness --> Spine
+  Checker --> Spine
+  Trace --> Spine
+  TraceExact --> Spine
+  TraceOrder --> Spine
+  Adequacy --> Spine
+  Statics --> Statics_Lemmas
+  Step --> Step_Lemmas
+  Dynamics_Lemmas --> Step_Lemmas
   Soundness --> Trace
   Checker --> Trace
   Step --> Trace
+  Step_Lemmas --> Trace
   Trace_Defs --> Trace
   Trace --> TraceExact
   Adequacy --> TraceExact
@@ -686,10 +729,6 @@ flowchart BT
   Gen --> CorpusMain
   root --> Digest
   Lint --> DigestMain
-  Layers --> LayersMain
-  Digest --> Lint
-  Layers --> Lint
-  Lint --> LintMain
   Checker --> Examples
   Corpus --> Explain
   Explain_Ledger --> Explain_Html
@@ -699,6 +738,10 @@ flowchart BT
   Explain_Text --> ExplainMain
   Explain_Html --> ExplainMain
   Corpus --> Gen
+  Layers --> LayersMain
+  Digest --> Lint
+  Layers --> Lint
+  Lint --> LintMain
   Syntax --> Print
   Adequacy --> Witnesses
   TraceExact --> Witnesses
@@ -772,7 +815,7 @@ ruecore-layers --closure)`, every module the audit's walk from the `.olean`
 headers reaches outside the toolchain. The toolchain's modules (`Init`,
 `Std`, `Lean`, `Lake`) are not replayed; they are trusted as the toolchain
 is. The audit fails on any other module in the closure, so what is replayed
-is exactly the package's 36 modules. The Buck target runs it after the
+is exactly the package's 43 modules. The Buck target runs it after the
 executables are built; a local check should run it too (about 15 s).
 
 It prints each table, ends with one summary line, and exits non-zero on a
@@ -782,23 +825,104 @@ RUE-2241: when the Lean build enters CI, `lint.txt` is one of the reports it
 gates on, beside `trust.md` and `layers.txt`, and nothing more needs wiring.
 
 **The trusted base.** The same module computes what a reviewer must read to
-know what the headline theorems say: the package definitions their
-statements transitively unfold to (a statement's constants, a definition's
-body, an inductive type's constructors, but no proof). `TRUST.md` prints it
-in its "Trusted base" section. The headline statements are declared once, as
-`RueCore.Lint.headline` in `RueCore/Lint.lean`: 36 theorems, following the
-packet `../REDTEAM.md` asks for: the §7 claims and their linking theorems
-(`checkProgram_sound`, `step_iff`, `Config.stuck_iff`, `run_complete`,
-`run_ne_returned`), each resolved when the module compiles. A lemma
+know what the headline theorems say, beside the Spec layer: the package
+definitions the Spec statements transitively unfold to (a statement's
+constants, a definition's body, an inductive type's constructors, but no
+proof). `TRUST.md` prints it in its "Trusted base" section. The headline
+statements are the Spec layer's list, `RueCore.Spec.spine` ("The statement
+layer"): 36 theorems, following the packet `../REDTEAM.md` asks for: the §7
+claims and their linking theorems (`checkProgram_sound`, `step_iff`,
+`Config.stuck_iff`, `run_complete`, `run_ne_returned`). A lemma
 `03-metatheory.md` cites as a step of a proof (the trace invariants behind
 `no_double_free`, the drop-order lemmas, the float lemmas §7 owes) is not a
-claim and is not on the list; RUE-2460 (the Spec layer) finalizes it. Today their trusted base is 292
-definitions, all in L0 and L1 (the package has 811 theorems besides). A
+claim and is not on the list. Today their trusted base is 292 definitions,
+all in L0 and L1 (the package has 811 theorems besides, and the 36 `Spine`
+restatements). A
 definition counts as Lean's own, and is only counted, when Lean's own tables
 record it as such (recursors and their auxiliaries, matchers, projections),
 or when it is named as Lean names a by-product and has no source range of its
 own. Anything else is listed: a hand-written `T.ndrec` or `RueCore._x`, a
 `private` definition, one under an instance's name (`instDecidableEqTy.decEq`).
+
+## The statement layer (RUE-2460)
+
+A kernel-checked proof is worth what its statement says. `SPINE.md`
+(generated) is the claim, statement by statement, and the first thing to
+read; `DIGEST.md` stays the full index.
+
+**Spec.** Every headline statement is written once, in the Spec layer
+(`RueCore/Spec.lean` and `RueCore/Spec/*.lean`), as a `def <name>_stmt : Prop`
+over the definitions of L0 and L1 alone, with a doc-comment giving its English
+reading, the §7 paragraph of `../01-core-calculus.md` it realizes, and where
+it is narrower than that paragraph. `RueCore.Spec.spine` lists the 36 of them,
+each beside the theorem that proves it, and every tool reads that list:
+
+* **The kernel.** `RueCore/Spine.lean` (L2) restates each theorem as
+  `theorem RueCore.Spine.<name> : RueCore.Spec.<name>_stmt := @RueCore.<name>`,
+  so `lake build` fails unless every proof proves its Spec statement. The
+  L2 theorems keep their own statements, names and call sites.
+* **The lint.** `lake exe ruecore-lint` (`Lint.spineProblems`) checks that each
+  L2 theorem's own statement is its `_stmt`'s body, the same term up to binder
+  names — so the statement a reader meets in the proof module is word for word
+  the one in Spec, not merely definitionally equal to it — that each
+  `RueCore.Spine` theorem has exactly its `_stmt` as its type, and that no
+  `_stmt` and no `Spine` theorem is outside the list. The lint's headline list
+  and the trusted base are read from `Spec.spine` too.
+* **Lean Comparator** ([leanprover/comparator](https://github.com/leanprover/comparator)),
+  configured in `comparator/`. Its challenge, `comparator/Challenge.lean`,
+  imports `RueCore.Spec` (so L0 and L1) and nothing else, and states each
+  `RueCore.Spine.<name> : RueCore.Spec.<name>_stmt` with `sorry`; the solution
+  is `RueCore.Spine`; `comparator/config.json` names the 36 theorems and allows
+  the axioms `propext` and `Quot.sound`. Comparator certifies that each
+  solution theorem has the challenge's statement, with every constant the
+  statements use identical in the two environments, that its proof uses no
+  other axiom, and that the kernel accepts the whole exported solution, which
+  it replays from a `lean4export` export rather than trusting an `.olean`.
+
+`SPINE.md`, the challenge and the configuration are generated from
+`Spec.spine`, so none of them is edited by hand:
+
+```bash
+lake exe ruecore-digest --spine > SPINE.md
+lake exe ruecore-digest --challenge > comparator/Challenge.lean
+lake exe ruecore-digest --comparator-config > comparator/config.json
+```
+
+**Running Comparator.** `comparator/run.sh` builds Comparator (tag `v4.33.0`)
+and `lean4export` (the revision that tag pins, `v4.33.0`) against this
+package's toolchain in `.lake/comparator`, then runs Comparator on
+`comparator/config.json`. The `Challenge` library in `lakefile.toml` is not a
+default target and nothing imports it, so only Comparator builds it.
+Comparator runs every build and export under
+[`landrun`](https://github.com/Zouuup/landrun), which needs Linux Landlock.
+It calls `landrun --best-effort`, which on a kernel without Landlock runs the
+command **unsandboxed and says nothing**, so `comparator/run.sh` first probes
+the sandbox the same way (a `landrun --best-effort` that grants only `cat` and
+its libraries must fail to read `/etc/hostname`) and refuses to run when it
+would be a no-op:
+
+* **On macOS**, `comparator/run.sh --fake-landrun` uses Comparator's
+  `scripts/fake-landrun.sh`, which runs the same steps unsandboxed. Every
+  check is made, and it passes (`Your solution is okay!`, about 12 s once the
+  package is built). What the sandbox adds is protection against a solution
+  written to tamper with the build, which our own proofs are not. So does
+  Docker Desktop: its LinuxKit kernel (6.10) is built without
+  `CONFIG_SECURITY_LANDLOCK`; there the script built Comparator, `lean4export`
+  and the package from scratch on Linux (aarch64) and Comparator passed, but
+  the probe shows `landrun` sandboxing nothing, and the script now refuses
+  without `--fake-landrun`.
+* **In RUE-2241's Linux lane**, on a kernel with Landlock active (Linux 5.13 or
+  later with `landlock` in `/sys/kernel/security/lsm`, as on GitHub's Ubuntu
+  runners): build `landrun` from its `main` branch (`GOBIN=$HOME/.local/bin go
+  install github.com/zouuup/landrun/cmd/landrun@main`, Go 1.24) and put it in
+  `PATH`; then, in this directory of a fresh checkout that has not built
+  `RueCore.Spine` yet (Comparator's second assumption), run Comparator's own
+  invocation, `systemd-run --property=RestrictAddressFamilies=~AF_UNIX --user
+  --pty -E PATH="$PATH" --working-directory "$PWD" -- comparator/run.sh`, or,
+  where no systemd user session exists, `comparator/run.sh` alone (the same
+  sandbox without the `AF_UNIX` guard). The lane passes when the script exits
+  0. Not yet run on a Landlock kernel: the sandboxed path, and the probe's
+  positive case, are untested.
 
 ## What is mechanized
 
@@ -829,6 +953,10 @@ own. Anything else is listed: a hand-written `T.ndrec` or `RueCore._x`, a
 | `RueCore/Digest.lean`, `RueCore/DigestMain.lean` | the statement digest and the trust report, walked out of the compiled environment (`lake exe ruecore-digest`) | the claim inventory and its trust boundary |
 | `RueCore/Layers.lean`, `RueCore/LayersMain.lean` | the layer table and the layering audit over the compiled import graph (`lake exe ruecore-layers`, "Layers" above) | what the claims may depend on |
 | `RueCore/Lint.lean`, `RueCore/LintMain.lean` | the headline statements, the trusted-base lint over every declaration of the package, and the trusted base `TRUST.md` prints (`lake exe ruecore-lint`, "The trusted-base lint" above) | what the claims may rest on |
+| `RueCore/Spec.lean`, `RueCore/Spec/*.lean` | (layer Spec) the 36 headline statements, each a `def …_stmt : Prop` over L0 and L1 with its English reading, and `Spec.spine`, the one list of them ("The statement layer") | §7's claims, stated |
+| `RueCore/Spine.lean` | (layer L2) each headline theorem restated with its Spec statement as its type, so the kernel checks the proof against it; Lean Comparator's solution | §7's claims, proved |
+| `comparator/` | Lean Comparator's challenge and configuration (generated) and `run.sh`, which builds and runs Comparator | the statement/proof split, certified |
+| `SPINE.md` | (generated) every Spec statement in Lean, its English reading, its §7 paragraph and the definitions it names — the first page a reviewer reads | §7's claims, stated |
 | `DIGEST.md`, `TRUST.md` | (generated) every theorem's statement with the definitions it is written in terms of; every theorem's axioms, `sorry` count, and declared assumptions | §7's claims, stated |
 | `GUIDE.md`, `INDEX.md` | the reader's guide, including the thirty-minute validation procedure, and the generated form ↔ rule ↔ declaration ↔ paragraph index (`scripts/validate-lean-xref-index.py`) | §2, §5, §6 coverage |
 
