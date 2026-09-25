@@ -8,6 +8,11 @@
 # past the value and segfaulted, an assignment kept stale fields, and the other
 # positions failed as E9000 or codegen ICEs. Each now reports E0206, the
 # diagnostic a `let` annotation and a struct field already gave.
+#
+# A head through a re-exported callable alias (`facade.Box(u8)` with
+# `pub const Box = boxes.Box;`) was another head the comptime engine did not
+# reduce; it now resolves the alias as a runtime module-member call does, so
+# the call's arguments take their declared types.
 
 [section]
 id = "cli.inline_import_head_slot_type"
@@ -66,18 +71,27 @@ pub fn Box(comptime T: type) -> type { struct { v: T } }
 ]
 
 [[case]]
-name = "inout_argument_of_another_instance_is_e0206"
-description = "An `inout` argument whose local holds another instance is E0206 (was accepted)."
+name = "reexported_callable_alias_head_types_its_arguments"
+description = "`facade.Box(u8).make(300)` through `pub const Box = boxes.Box;` reduces its head, so `300` is range-checked as `u8` (E0800); it used to default to `i32` and truncate to 44."
 compile_fail = true
-error_contains = ["E0206", "expected Box(i32), found Box(i64)"]
+error_contains = ["E0800", "out of range for type 'u8'"]
 files = [
     { path = "main.rue", source = """
-const lib = @import("lib.rue");
-fn bump(inout b: lib.Box(i32)) -> i32 { b.v = b.v + 1; b.v }
-fn main() -> i32 { let mut x = @import("lib.rue").Box(i64) { v: 7 }; bump(inout x) }
+const facade = @import("facade.rue");
+fn main() -> i32 { let b = facade.Box(u8).make(300); @intCast(b.get()) }
 """ },
-    { path = "lib.rue", source = """
-pub fn Box(comptime T: type) -> type { struct { v: T } }
+    { path = "facade.rue", source = """
+const boxes = @import("boxes.rue");
+pub const Box = boxes.Box;
+""" },
+    { path = "boxes.rue", source = """
+pub fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn make(v: T) -> Self { Self { v: v } }
+        fn get(borrow self) -> T { self.v }
+    }
+}
 """ },
 ]
 

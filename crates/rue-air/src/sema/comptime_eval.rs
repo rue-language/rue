@@ -1177,7 +1177,32 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Body analysis reads a closed declaration namespace: membership is
         // read-only and a missing signature is authoritative.
         let Some(function_key) = self.resolve_function_name_local(method, module_file_id) else {
-            return Ok(None);
+            // A re-exported callable (`pub const Box = boxes.Box;`, spec
+            // 6.5:15) is a member through its const, exactly as a runtime
+            // module-member call resolves it: the const's own visibility
+            // gates access, and it names the underlying function. Without
+            // this, `facade.Box(i64).make(7)` left its head unreduced, so
+            // inference had no fact for the call and `7` defaulted to `i32`
+            // (RUE-2438).
+            let reexport = self
+                .call_facts()
+                .call_value_const(module_file_id, method)
+                .and_then(|info| match info.value {
+                    ConstValue::Function(key) => Some((key.spur(), info.is_pub)),
+                    _ => None,
+                });
+            let Some((function_key, is_pub)) = reexport else {
+                return Ok(None);
+            };
+            let member_name = self.body_interner().resolve(&method).to_string();
+            self.check_item_visibility(
+                crate::PrivateItemKind::Const,
+                &member_name,
+                module_file_id,
+                is_pub,
+                span,
+            )?;
+            return Ok(Some(function_key));
         };
         let Some(fn_info) = self
             .function_info(function_key)
