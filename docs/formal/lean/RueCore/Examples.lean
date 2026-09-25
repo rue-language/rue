@@ -3820,6 +3820,31 @@ example :
       = some [{ ty := tI64, mu := true, st := .owned },
               { ty := .struct sAffine, mu := true, st := .movedOut }] := by rfl
 
+/-- **A conditional drop in a loop after a discarded zero-width temporary**
+(RUE-2450): `{ let a: [i64; 0] = []; a };` is a whole statement whose value
+§6.7 drops at once (it carries nothing), then an affine `S1 { 1 }` is bound,
+and a loop breaks on a `false` flag, or drops the binding and breaks, or
+reassigns it. The two exits meet at `MovedOut` (§5.5's join, which `Affine`
+allows); the back edge carries the reassigned `Owned`. The run takes the
+dropping exit on the first turn: the destructor prints `1`, and the value is
+`9`. The compiler ICEd on this shape (RUE-2450, E9000 in its CFG verifier):
+the temporary's slot, reused by the binding, read as a compiler-owned one, and
+the drop-flag proof missed the binding's whole write there. -/
+def loopDropAfterZeroWidthTemp : Expr :=
+  seq (letIn false (mkArray tI64 []) (use (.var 0)))
+    (letIn true (resA (lit 1))
+      (letIn false (boolLit false)
+        (seq
+          (loop
+            (seq (ite (use (.var 0)) brk unitLit)
+              (seq (ite (boolLit true) (seq (drop (.var 1)) brk) unitLit)
+                (assign (.var 1) (resA (lit 2))))))
+          (lit 9))))
+
+example : checkProgram (prog tI64 loopDropAfterZeroWidthTemp) = true := by rfl
+example : run demoOps (prog tI64 loopDropAfterZeroWidthTemp) demoFuel
+    = .ok (List.replicate 5 .dead) (v64 9) [.drop 3 (cA 2 1), .dtor sAffine (cA 2 1)] := by rfl
+
 /-! ### The loop refusals, kernel-checked
 
 Each way `check` refuses a loop, beside the machine's outcome on the same
