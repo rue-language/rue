@@ -631,6 +631,17 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         _values: Option<&AHashMap<Self::Name, Self::Value>>,
         binding: rue_air::ComptimeArrayLengthBinding<Self::Value>,
     ) -> rue_air::ComptimeOutcome<u64, Self::Failure> {
+        // Every named-length diagnostic lands on the length expression, as
+        // the body path reports it (RUE-2405); a resolution failure (a
+        // module, a target descriptor, an undefined constant) keeps its own
+        // channel.
+        let length_site = self.diagnostic_site(site);
+        let anchored = |failure: SemanticNucleusFailure| match failure {
+            SemanticNucleusFailure::Diagnostic(kind) => {
+                durable_diagnostic_failure(&length_site, kind)
+            }
+            failure => DurableComptimeHostFailure::semantic(Box::new(failure)),
+        };
         let decision = classify_durable_named_array_length(
             name.as_str(),
             durable_array_length_binding_from_air(binding),
@@ -638,16 +649,8 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         let decision = match decision {
             Ok(decision) => decision,
             Err(error) => {
-                return rue_air::ComptimeOutcome::HostFailure(durable_diagnostic_failure(
-                    &self.diagnostic_site(site),
-                    match durable_named_array_length_failure(name.as_str(), error) {
-                        SemanticNucleusFailure::Diagnostic(kind) => kind,
-                        failure => {
-                            return rue_air::ComptimeOutcome::HostFailure(
-                                DurableComptimeHostFailure::semantic(Box::new(failure)),
-                            );
-                        }
-                    },
+                return rue_air::ComptimeOutcome::HostFailure(anchored(
+                    durable_named_array_length_failure(name.as_str(), error),
                 ));
             }
         };
@@ -659,13 +662,10 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
                 rue_air::ComptimeOutcome::RuntimeDependent
             }
             DurableComptimeArrayLengthDecision::Shadowed => {
-                let failure = durable_named_array_length_failure(
+                rue_air::ComptimeOutcome::HostFailure(anchored(durable_named_array_length_failure(
                     name.as_str(),
                     DurableComptimeArrayLengthError::NonInteger,
-                );
-                rue_air::ComptimeOutcome::HostFailure(DurableComptimeHostFailure::semantic(
-                    Box::new(failure),
-                ))
+                )))
             }
             DurableComptimeArrayLengthDecision::ResolveGlobal => {
                 let program = site.program();
@@ -706,11 +706,9 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
                     .map_or(value, EvaluatedSemanticConst::integer);
                 match durable_named_array_length_value(&value) {
                     Ok(value) => rue_air::ComptimeOutcome::Known(value),
-                    Err(error) => {
-                        rue_air::ComptimeOutcome::HostFailure(DurableComptimeHostFailure::semantic(
-                            Box::new(durable_named_array_length_failure(name.as_str(), error)),
-                        ))
-                    }
+                    Err(error) => rue_air::ComptimeOutcome::HostFailure(anchored(
+                        durable_named_array_length_failure(name.as_str(), error),
+                    )),
                 }
             }
         }

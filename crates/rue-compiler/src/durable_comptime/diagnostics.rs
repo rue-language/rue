@@ -334,8 +334,8 @@ impl DurableComptimeFailure {
         ))
     }
 
-    /// Construct a diagnostic anchored to the owning declaration.  The site
-    /// is explicit so nested/foreign evaluation cannot accidentally label the
+    /// Construct a diagnostic anchored at `site`, a range within its
+    /// producer declaration.  The site is explicit so nested/foreign evaluation cannot accidentally label the
     /// failure with the ambient caller's span.
     pub(crate) fn comptime_failure_at(
         site: &DurableComptimeDiagnosticSite,
@@ -428,7 +428,10 @@ pub(super) fn durable_host_failure(error: DurableComptimeFailure) -> DurableComp
 
 /// A durable comptime diagnostic anchored at the AIR engine's `site`, so a
 /// const initializer reports it where the body path does: `-129` at `i8` on
-/// the negated literal, not on the whole declaration (RUE-2405).
+/// the negated literal, not on the whole declaration (RUE-2405). The site
+/// is wherever the engine was when it failed, which may be inside another
+/// declaration or file: a type constructor's `[i32; N]`, or a callee's
+/// body.
 pub(super) fn durable_diagnostic_failure(
     site: &DurableComptimeDiagnosticSite,
     kind: rue_error::ErrorKind,

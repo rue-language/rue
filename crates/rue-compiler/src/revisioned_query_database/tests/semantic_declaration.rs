@@ -2203,22 +2203,23 @@ fn direct_const_named_array_length_live_local_kinds_do_not_fall_through() {
             ),
         ),
     ];
-    // A `bool` length the evaluator rejects inside the called type function
-    // is anchored at that function's `[i32; N]` (RUE-2405), as the body path
-    // reports it; a `type` length is still rejected without a site.
-    let bool_length_site = |actual: &Failure| match actual {
+    // A length the evaluator rejects inside the called type function is
+    // anchored at that function's `[i32; N]` (RUE-2405), as the body path
+    // reports it.
+    let length_site = |producer: &str, actual: &Failure| match actual {
         Failure::DiagnosticAtProducerRange {
             kind,
             producer: actual_producer,
             start: 42,
             end: 50,
-        } if &*actual_producer.name == "BoolShadow" => Some(Failure::Diagnostic(kind.clone())),
+        } if &*actual_producer.name == producer => Some(Failure::Diagnostic(kind.clone())),
         _ => None,
     };
     for (name, expected) in expected {
         let (value, attempt) = query(name);
         let anchored = match (name, &value) {
-            ("BOOL", Value::Failure(actual)) => bool_length_site(actual),
+            ("BOOL", Value::Failure(actual)) => length_site("BoolShadow", actual),
+            ("TYPE", Value::Failure(actual)) => length_site("TypeShadow", actual),
             (_, Value::Failure(actual)) => Some(actual.clone()),
             _ => None,
         };
