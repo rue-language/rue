@@ -31,7 +31,8 @@ adds. The rule coverage is measured after them.
   skip a drop, double a drop, reverse a drop order, drop a moved-out field,
   an off-by-one bounds check, a wrong overflow check.
 
-Every mutant is a patch of a line or two, and none touches test files.
+Most mutants are one- or two-line patches; the clean reverts (`h2335b`,
+`h2341`, `h2442`) are the fix's full non-test diff. None touches test files.
 
 **Procedure, per mutant.** Each mutant ran in its own detached scratch
 worktree, one at a time. We built the compiler and then ran three stages,
@@ -51,7 +52,9 @@ check applies to the exported corpus. That test has four parts:
 * A case the checker accepts must print the expected stdout and exit with the
   expected status.
 * A trap must exit 101 after the expected stdout.
-* A compiler crash or internal error counts as a disagreement.
+* A compiler crash or internal error on an accepted case counts as a
+  disagreement. (An ICE on a checker-rejected case exits 1, which the
+  per-case test treats as agreement, the same as any other rejection.)
 
 When all three stages missed a mutant, we also ran the full bridge harness
 (`rue-oracle-diff lean-corpus`, the program behind `scripts/rue lean-bridge`)
@@ -73,9 +76,13 @@ Three candidate mutants failed that check, and we excluded them:
   (`crates/rue-compiler/src/drop_glue.rs`). Nothing in the pipeline calls
   that function; the glue comes from `synthesize_canonical_drop_glue`. We
   re-ran both mutants there (the "v2" rows).
-* The RUE-2438 mutant (the call-operand check disabled) still rejects the
-  issue's repro with E0206. The other slot checks from the same fix, and
-  RUE-2439's constructor-head reduction, still apply.
+* The RUE-2438 mutant (the call-operand check disabled): not shown live. Its
+  bug's repro is still rejected (redundant checks), and its shape is outside
+  the fragment. Only one repro was checked; RUE-2438's fix spans 8 commits
+  and several slots, and this mutant disables just one call-operand check,
+  backed up by the other slot checks and RUE-2439's constructor-head
+  reduction. Its shape (inline-import constructor heads) is also outside the
+  fragment.
 
 **Programs to detection** counts through the generated stream in order: 200
 cases at seed 7, then 1,000 at seed 23. So `gen_23_181` is program 382.
@@ -91,7 +98,7 @@ else would have found it.
 |---|---|---|---|---|---|---|---|---|
 | 1 | `h2318` | RUE-2318: `multiplier_shift` takes `2^(bits-1)` for a positive power of two at a signed width (codegen) | `i64::MIN * -1`; yes | yes | `i64_min_times_neg1` (41), own seed | no: generator 0 of 1,200 | — | native exits 0 with `MIN`; the model traps with overflow |
 | 2 | `h2345` | RUE-2345: `frame_place_has_no_storage` sees only a zero-sized root, not a zero-sized field on the path (codegen) | dynamic index into a zero-length array field; yes | yes | `array_zero_length_field_dyn_read` (154), own seed | yes: `gen_23_500` | 701 | the compiler panics (ICE at `place_lower.rs`) |
-| 3 | `h2335` | RUE-2335, root half: a declared-linear destructure of a root skips the moved-descendant check (sema) | three declared-linear levels, `@drop(y.x0)` after `y.x0.x0.x0`; yes | **no** | — | no, not even the full harness | — | (the mutant accepts the program and runs a destructor twice: `2 4 2 3`) |
+| 3 | `h2335` | RUE-2335, root half: a declared-linear destructure of a root skips the moved-descendant check (sema) | three declared-linear levels, `@drop(y.x0)` after `y.x0.x0.x0`; yes | **no** | — | no, not even the full harness | — | (the mutant accepts the program and runs a destructor twice: destructor lines `2 4 2 3`) |
 | 4 | `h2335b` | RUE-2335, drop half: `d7eda72e6` reverted, so `@drop` of a declared-linear ancestor counts its own obligation as residue (sema) | `@drop` of an ancestor after an inner destructure; yes | yes | `destructure_ancestor_dropped` (101), own seed | no | — | the compiler rejects (E0406) a program the checker accepts |
 | 5 | `h2341` | RUE-2341: `b3aae3230` reverted, the partially-moved-array write rule keyed on the root (sema) | write into a field-reached array with a moved-out part; yes | yes | `array_dyn_write_after_destructure_via_field` (148), own seed | no | — | the compiler accepts a program the checker rejects |
 | 6 | `h2344` | RUE-2344: `field_path` restarts at a dynamic index instead of stopping (sema) | `h.a[i].b` checked as `h.b`; yes | yes | `array_dyn_write_after_field_move` (149), own seed | no (the README records `gen_2_1694` at seed 2) | — | the compiler accepts a program the checker rejects |
@@ -111,8 +118,9 @@ else would have found it.
 | 20 | `c-overflow-kind` | the overflow trap calls the divide-by-zero helper (codegen) | any arithmetic overflow; yes | yes, **by the full harness only** | 6 seeds (`overflow` first) | yes: `gen_7_7` | 8 | `lean <-> native` and `oracle <-> native`, trap kind; the stdout-and-exit test cannot see it |
 | 21 | `c-unguarded-flag-drop` | a path-dependent drop ignores its drop flag (CFG build) | a move in one `if` arm; yes | yes | `cond_drop_affine` (20), 6 seeds | yes: `gen_7_117` | 118 | ICE (E9000) |
 
-Excluded as equivalent: `c-double-field-drop` and `c-reverse-field-drops`
-(v1, dead code) and `h2438`. See "Checking the mutants themselves" above.
+Excluded: `c-double-field-drop` and `c-reverse-field-drops` (v1, dead code —
+truly equivalent) and `h2438` (not shown live, on weaker evidence). See
+"Checking the mutants themselves" above.
 
 ### Detection rate
 
@@ -121,10 +129,10 @@ Excluded as equivalent: `c-double-field-drop` and `c-reverse-field-drops`
 | All 21 mutants, seeds + 1,200 generated, per-case test plus the full harness on misses | 18 | **86%** |
 | All 21, per-case stdout-and-exit test only | 17 | 81% |
 | The 20 mutants whose shape is in the fragment | 18 | 90% |
-| The 20, after this page's three seeds | 20 | **100%** |
+| The 20, after this page's three seeds (the seeds were written for these mutants; h2380's is caught only at -O2 or by the harness) | 20 | 100% |
 | The 11 in-fragment historical mutants, **not counting a bug's own regression seed** | 4 (`h2345`, `h2347`, `h2290`, `h2449`) | 36% |
 | The 9 classic mutants | 9 | 100% |
-| The generator alone (1,200 programs), all 21 | 11 | 52% |
+| The generator alone (1,200 programs), all 21 (one, `c-overflow-kind`, only by the full harness) | 11 | 52% |
 
 The two misses in the fragment were `h2335` (root half) and `h2380`. The
 third miss, `h2442`, is outside the fragment. The generator's catches all
@@ -136,18 +144,19 @@ twelve.
 ### What the numbers say
 
 * **The seeds are strong regression memory and a weaker detector.** Seven of
-  the eleven historical in-fragment mutants are caught only by the seed
-  written for that bug. Those seeds do their job, since a reintroduced bug
-  fails at once. But the corpus as it stood before each bug would have
-  caught only four of the eleven.
+  the eleven were caught by nothing but their own regression seed (five:
+  `h2318`, `h2335b`, `h2341`, `h2344`, `h2450`) or not at all (two: `h2335`,
+  `h2380`). Those seeds do their job, since a reintroduced bug fails at once.
+  But the corpus as it stood before each bug would have caught only four of
+  the eleven.
 * **The generator reaches ownership and drop-glue bugs quickly, but not
   every shape.** It catches every drop-flag and verifier mutant in 118
   programs or fewer, and the glue mutants in 3. Within 1,200 programs it
   never reached:
-  * an overwrite-drop that prints: only 1 of the 684 accepted generated
-    programs has one (`gen_7_112`), and it is an element write, which the
-    whole-local mutant does not touch. The coverage section below has the
-    cause: few generated destructors print anything;
+  * an overwrite-drop that prints: only 2 of the 684 accepted generated
+    programs have one (`gen_7_112`, `gen_23_890`), and both are element
+    writes, which the whole-local mutant does not touch. The coverage
+    section below has the cause: few generated destructors print anything;
   * two destructor-bearing locals ending in the same inner block;
   * `i64::MIN * -1`;
   * three declared-linear levels;
@@ -158,8 +167,9 @@ twelve.
     native` comparison sees it.
   * `h2380` shows only at `-O2` and `-O3`. The per-case test compiles at the
     default level, so it cannot see this mutant even with a seed; the new
-    seed `loop_move_out_then_reinit` is caught by the harness's native lanes
-    and by the per-case test at `-O2`.
+    seed `loop_move_out_then_reinit` is caught by the harness's O2/O3
+    compile lanes (`checker <-> compiler [O2]`) and by the per-case test at
+    `-O2`.
 
 ## Rule coverage
 
@@ -366,9 +376,13 @@ leaves.
 **Observable drops are rare in generated programs.** Only 14 of the 115
 accepted programs at seed 7, and 51 of the 569 at seed 23, print any
 destructor line. Among the seeds it is 76 of 140. A drop that prints nothing
-is invisible to the bridge. That is why three drop mutants got past 1,200
-generated programs: `c-skip-overwrite-drop`, `c-reverse-scope-drops` and
-`h2335`. The same mutants are caught by the seeds, where destructors print.
+is invisible to the bridge. That is why two drop mutants got past 1,200
+generated programs: `c-skip-overwrite-drop` and `c-reverse-scope-drops`. The
+same mutants are caught by the seeds, where destructors print. `h2335`'s
+miss is different: it is a sema-acceptance mutant, caught by no existing
+seed and by nothing that prints a destructor; the new seed catches it
+through the verdict (the compiler accepts what the checker rejects), and
+the generator missed it for its shape, not because drops are invisible.
 
 ## Follow-ups
 
@@ -378,10 +392,11 @@ blind spot, get a generator or tooling proposal too.
 | Mutant | Follow-up | Kind |
 |---|---|---|
 | `h2335` (root half) | `destructure_root_through_moved_part`: three declared-linear levels, `@drop(y.x0)` after `y.x0.x0.x0`. The checker rejects it; the mutant accepts it | seed, added here |
-| `h2380` | `loop_move_out_then_reinit`: a counted loop that moves `mut b` into `t` and reinitializes `b`. The mutant ICEs at `-O2`; the harness's native lanes, and the per-case test at `-O2`, catch it | seed, added here |
-| `c-bounds-off-by-one` (no seed caught it) | `array_bounds_trap_at_len`: reads at `len - 1` and then at `len`. The other bounds seeds index further past the end | seed, added here |
+| `h2380` | `loop_move_out_then_reinit`: a counted loop that moves `mut b` into `t` and reinitializes `b`. The mutant ICEs at `-O2`; the harness's O2/O3 compile lanes, and the per-case test at `-O2`, catch it | seed, added here |
+| `c-bounds-off-by-one` (no seed caught it) | `array_bounds_trap_at_len`: reads at `len - 1` and then at `len`. The other bounds seeds index further past the end, or into a zero-length array, which does not go through the length compare | seed, added here |
 | `h2442` | named constants and comptime parameters are outside the fragment | scope note |
-| `c-skip-overwrite-drop`, `c-reverse-scope-drops`, `h2335`, `h2335b` (generator 0 of 1,200) | make generated destructors observable: give every destructor-bearing struct an integer `x0`, or print a per-declaration tag | generator issue |
+| `c-skip-overwrite-drop`, `c-reverse-scope-drops` (generator 0 of 1,200) | make generated destructors observable: give every destructor-bearing struct an integer `x0`, or print a per-declaration tag | generator issue |
+| `h2335`, `h2335b` (generator 0 of 1,200) | generate three declared-linear levels | generator issue |
 | `h2318` (own seed only) | draw boundary literals (`MIN`, `MAX`, `±1`, powers of two) as arithmetic operands | generator issue |
 | (Call) §5.8 and the call-boundary drop paths (no generated case) | generate multi-function programs: by-value parameters, including destructor-bearing ones, and calls in operand position | generator issue |
 | `c-overflow-kind` (the per-case test is blind to it) and `h2380` (default level only) | the loop's per-case check should also compare the trap kind (stderr's panic message) and compile at `-O2` as well as the default level, or the lane should run `scripts/rue lean-bridge`, which does both | tooling issue |
@@ -398,5 +413,9 @@ blind spot, get a generator or tooling proposal too.
 * The rule counts come from `Explain.programDerivs` and `Explain.runTrace`
   over the same cases.
 
-The mutants are one- or two-line patches against `f4ac09fc9`, kept with the
-run logs in the loop's scratch directory. They are not committed.
+Most mutants are one- or two-line patches against `f4ac09fc9`; the clean
+reverts (`h2335b`, `h2341`, `h2442`) are the fix's full non-test diff. They
+are kept with the run logs in the loop's scratch directory, and are not
+committed. The 171-seed drill corpus there is regenerable from `f4ac09fc9`;
+`chain.sh`'s own output later overwrote it with this page's 174-seed export,
+since both land in the same `scratch/<worktree basename>` directory.
