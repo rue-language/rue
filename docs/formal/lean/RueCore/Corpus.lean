@@ -931,11 +931,11 @@ def cases : List Case := [
     rules := ["(Use-Declared-Linear-Destructure) §5.1", "(@Drop) §5.3", "3.8:26", "3.8:33"],
     prog := Examples.destrTripleProg Examples.tI64 Examples.destructureRootThroughMovedPart },
   { name := "array_bounds_trap_at_len",
-    description := "A dynamic-index read at the last element and then at exactly the length: 30 prints and the second read is (D-Index-Trap) §6.5's bounds trap. Seeded by the bridge sensitivity drills (RUE-2464): an off-by-one bounds check (i <= n) passed every seed, because the other bounds seeds index further past the end.",
+    description := "A dynamic-index read at the last element and then at exactly the length: 30 prints and the second read is (D-Index-Trap) §6.5's bounds trap. Seeded by the bridge sensitivity drills (RUE-2464): an off-by-one bounds check (i <= n) passed every seed, because the other bounds seeds index further past the end, or into a zero-length array, which does not go through the length compare.",
     rules := ["(Use-Untrackable-Dynamic-Copy) §5.1", "(D-Index) §6.5", "(D-Index-Trap) §6.5", "§6.12", "7.1:10"],
     prog := Examples.arrayBoundsTrapAtLen },
   { name := "loop_move_out_then_reinit",
-    description := "Each turn of a counted loop moves the mut affine b into t and reinitializes b, and t drops after the reinit: 2 and 21 in the loop, 22 at b's scope exit, then the value 2. Seeded by the bridge sensitivity drills (RUE-2464): with RUE-2380's fix removed the compiler ICEd at -O2 and -O3 (E9000), and no seed or generated case reached the shape. Only the bridge's native lanes at those levels see that mutant; bin/verify.py runs the default level.",
+    description := "Each turn of a counted loop moves the mut affine b into t and reinitializes b, and t drops after the reinit: 2 and 21 in the loop, 22 at b's scope exit, then the value 2. Seeded by the bridge sensitivity drills (RUE-2464): with RUE-2380's fix removed the compiler ICEd at -O2 and -O3 (E9000), and no seed or generated case reached the shape. Only the harness's O2/O3 compile lanes (checker <-> compiler [O2]) see that mutant; bin/verify.py runs the default level.",
     rules := ["(Loop-Break) §5.7", "(Use-Move) §5.1", "(Assign) §5.2", "3.8:55", "§5.6 scope exit", "(D-Loop-Iter) §6.10"],
     prog := Examples.prog Examples.tI64 Examples.loopMoveOutThenReinit }
 ]
