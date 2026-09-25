@@ -534,6 +534,143 @@ a slice author writes:
   statements or the proofs touch, regenerate `DIGEST.md` and `TRUST.md` too
   (`lake exe ruecore-digest`, `--trust`) and commit them.
 
+## Layers (RUE-2456)
+
+What a claim depends on is kept small and checked by a tool. Every module of
+the package sits in one of four layers, and a module imports only modules of
+its own layer or a lower one:
+
+| Layer | Modules | What it holds |
+| --- | --- | --- |
+| **L0 syntax** | `Float`, `Syntax` | §2's syntax, types and float data |
+| **L1 definitions** | `Statics`, `Dynamics`, `Step`, `Soundness/Defs`, `Checker/Defs`, `Trace/Defs`, `Adequacy/Defs` | the semantics (§5's judgment, `eval`, §6's `Step`), and every definition a headline statement is written in: value typing and `FrameMatches`, the checker algorithm, the trace projections, ledgers and configuration invariants, `Config.SafeAt` |
+| **L2 proofs** | `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives) |
+| **L3 tooling** | `Examples`, `Witnesses`, `Print`, `Corpus`, `Gen`, `Explain*`, `Digest`, the `*Main` executables, the root `RueCore` | example and corpus programs and the theorems about them, the printer, the generator, the explain and digest reports |
+
+L3 may import anything; nothing in L0–L2 imports L3, so no theorem of the
+spine depends on the printer, the generator, the corpus or an example
+program. The `*/Defs` modules are the definitions moved verbatim out of the
+proof modules (the `Defs` of a module holds what its headline statements
+mention); `Witnesses.lean` is the theorems moved out of the proof modules
+because they mention example or corpus programs. The statement/proof split
+adds a statements layer between L1 and L2 on top of this.
+
+**The audit.** `lake exe ruecore-layers`, after `lake build`, reads each
+module's imports from its compiled `.olean` header, walking from the library
+root and every executable's root, and checks them against the one table in
+`RueCore/LayersMain.lean`. It fails on an import from a higher layer, on an
+L0–L2 module importing anything outside the package but `Init`, on an L0–L2
+module that is not a `module`, and on a module missing from the table, a
+stale table entry, or a source file nothing imports. It prints the graph, one
+line per module, and ends with `ruecore-layers: 30 modules, 67 package
+imports, no upward import`. The Buck target runs it as the `layers.txt`
+report, so `./buck2 build root//:lean-ruecore` fails on an upward import;
+RUE-2241 picks it up with the rest of the Lean build.
+
+**The module system.** L0–L2 are `module`s (Lean 4.33.1 supports the
+module system without an option): a `module` header, `public import`, and
+`@[expose] public section`, so every definition's body stays visible to the
+modules above it and `decide`, `rfl` and unfolding work across modules as
+before. L3 stays ordinary files: `Examples.lean`'s `#eval`/`#guard` would
+need a `meta import` of every module it runs, `Digest.lean` imports `Lean`
+to walk the environment at run time, and a non-module file may import
+modules, so nothing is lost. What is not adopted, and why: private `import`
+and non-exposed definitions would hide definition bodies from the proofs
+and tools above them (a downstream `decide` or `unfold` of a non-exposed
+definition fails), so the layer rule is enforced by the audit instead. `leanchecker` and the digest's `importModules` load
+every part of a module's `.olean` (the private part holds proof bodies), so
+the kernel re-check and `#print axioms` still see every proof.
+
+The import graph, from the audit (an arrow points from a module to one that
+imports it; the root `RueCore`, which imports every library module, is left
+out):
+
+```mermaid
+flowchart BT
+  subgraph L0["L0 syntax"]
+    Float["Float"]
+    Syntax["Syntax"]
+  end
+  subgraph L1["L1 definitions"]
+    Adequacy_Defs["Adequacy.Defs"]
+    Checker_Defs["Checker.Defs"]
+    Dynamics["Dynamics"]
+    Soundness_Defs["Soundness.Defs"]
+    Statics["Statics"]
+    Step["Step"]
+    Trace_Defs["Trace.Defs"]
+  end
+  subgraph L2["L2 proofs"]
+    Adequacy["Adequacy"]
+    Checker["Checker"]
+    Soundness["Soundness"]
+    Trace["Trace"]
+    TraceExact["TraceExact"]
+    TraceOrder["TraceOrder"]
+  end
+  subgraph L3["L3 tooling"]
+    Corpus["Corpus"]
+    CorpusMain["CorpusMain"]
+    Digest["Digest"]
+    DigestMain["DigestMain"]
+    Examples["Examples"]
+    Explain["Explain"]
+    Explain_Html["Explain.Html"]
+    Explain_Ledger["Explain.Ledger"]
+    Explain_Text["Explain.Text"]
+    ExplainMain["ExplainMain"]
+    Gen["Gen"]
+    LayersMain["LayersMain"]
+    Print["Print"]
+    Witnesses["Witnesses"]
+  end
+  Float --> Syntax
+  Step --> Adequacy_Defs
+  Soundness_Defs --> Adequacy_Defs
+  Statics --> Checker_Defs
+  Statics --> Dynamics
+  Dynamics --> Soundness_Defs
+  Syntax --> Statics
+  Dynamics --> Step
+  Step --> Trace_Defs
+  Soundness_Defs --> Trace_Defs
+  Step --> Adequacy
+  Soundness --> Adequacy
+  Adequacy_Defs --> Adequacy
+  Soundness --> Checker
+  Checker_Defs --> Checker
+  Dynamics --> Soundness
+  Soundness_Defs --> Soundness
+  Soundness --> Trace
+  Checker --> Trace
+  Step --> Trace
+  Trace_Defs --> Trace
+  Trace --> TraceExact
+  Adequacy --> TraceExact
+  TraceExact --> TraceOrder
+  Checker --> Corpus
+  Examples --> Corpus
+  Print --> Corpus
+  Corpus --> CorpusMain
+  Gen --> CorpusMain
+  root --> Digest
+  Digest --> DigestMain
+  Checker --> Examples
+  Corpus --> Explain
+  Explain_Ledger --> Explain_Html
+  Explain --> Explain_Ledger
+  Trace --> Explain_Ledger
+  Explain_Ledger --> Explain_Text
+  Explain_Text --> ExplainMain
+  Explain_Html --> ExplainMain
+  Corpus --> Gen
+  Syntax --> Print
+  Adequacy --> Witnesses
+  TraceExact --> Witnesses
+  TraceOrder --> Witnesses
+  Corpus --> Witnesses
+```
+
 ## What is mechanized
 
 | File | Contents | Calculus |
@@ -560,6 +697,7 @@ a slice author writes:
 | `RueCore/Explain.lean` | instrumented mirrors of `check` and `eval` — derivation trees with the failing premise named, and step tables with stores and drop events — with the lemmas tying both to the proved definitions | §5, §6 as an explanation |
 | `RueCore/Explain/Text.lean`, `RueCore/Explain/Html.lean`, `RueCore/Explain/Ledger.lean` | the terminal and self-contained-page renderings (`lake exe ruecore-explain`), each ending with the identity ledger: per owned identity, the step that minted it, the steps that ended it and the steps whose destructor ran on it, so "exactly once" and the order are visible; the checked-in text is in `explain/` | §7 |
 | `RueCore/Digest.lean`, `RueCore/DigestMain.lean` | the statement digest and the trust report, walked out of the compiled environment (`lake exe ruecore-digest`) | the claim inventory and its trust boundary |
+| `RueCore/LayersMain.lean` | the layer table and the layering audit over the compiled import graph (`lake exe ruecore-layers`, "Layers" above) | what the claims may depend on |
 | `DIGEST.md`, `TRUST.md` | (generated) every theorem's statement with the definitions it is written in terms of; every theorem's axioms, `sorry` count, and declared assumptions | §7's claims, stated |
 | `GUIDE.md`, `INDEX.md` | the reader's guide, including the thirty-minute validation procedure, and the generated form ↔ rule ↔ declaration ↔ paragraph index (`scripts/validate-lean-xref-index.py`) | §2, §5, §6 coverage |
 
