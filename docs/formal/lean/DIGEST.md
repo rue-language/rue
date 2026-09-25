@@ -3427,39 +3427,114 @@ theorem RueCore.reachable_drop_order {M : FloatOps} {P : Program} {C C' : Config
   ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs)
 ```
 
+### `step_nested`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**Every step keeps the scopes nested** (§6.7, §6.9, §6.10): (D-Let) and
+(D-Match) push a marker equal to the cells they append to the record,
+(D-EndScope) pops both together, a call starts a frame of its own, and a
+return, a loop turn's end and a `break` restore a record the stack held.
+
+```lean
+theorem RueCore.step_nested {M : FloatOps} {P : Program} {C C' : Config}
+  (h : Step M P C C') (hC : C.Nested) : C'.Nested
+```
+
+### `reachable_nested`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**The nesting holds everywhere the machine goes** (§6.7, §6.9, §6.10):
+in every configuration reachable from §6.12's initial one. In particular
+(D-EndScope)'s pop by count always removes the marker's own cells
+(`Frame.popScope_tail`). No typing hypothesis.
+
+```lean
+theorem RueCore.reachable_nested {M : FloatOps} {P : Program} {C : Config}
+  (h : Steps M P Config.init C) : C.Nested
+```
+
+### `step_lifo`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**Every step is last-in first-out** (§6.7, §6.9, §6.10): from a nested
+configuration, a step appends `evs` to the trace and either keeps the
+registration stack as a prefix of the new one, or cuts it back and drops
+only cells of the cut suffix, newest first (`Lifo`).
+
+```lean
+theorem RueCore.step_lifo {M : FloatOps} {P : Program} {C C' : Config}
+  (h : Step M P C C') (hC : C.Nested) :
+  ∃ evs, C'.trace = C.trace ++ evs ∧ Lifo C.stack C'.stack (dropLocs evs)
+```
+
+### `reachable_lifo`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**Last-in first-out, on every reachable step** (§6.7, §6.9, §6.10): the
+registration stack is in location order, and a step that deregisters cells
+drops only cells it deregistered, each newer than every cell still
+registered. So a cell dropped at one teardown and a cell dropped at a later
+one, still registered at the first, drop newest first: `{ let a; let b; }`
+drops `b` before `a` over its two (D-EndScope) steps. No typing
+hypothesis.
+
+```lean
+theorem RueCore.reachable_lifo {M : FloatOps} {P : Program} {C C' : Config}
+  (hr : Steps M P Config.init C) (h : Step M P C C') :
+  ∃ evs,
+    C'.trace = C.trace ++ evs ∧
+      Lifo C.stack C'.stack (dropLocs evs) ∧
+        (¬C.stack <+: C'.stack →
+          ∀ (ℓ : Nat),
+            ℓ ∈ dropLocs evs →
+              ¬ℓ ∈ C'.stack ∧ ∀ (ℓ' : Nat), ℓ' ∈ C'.stack → ℓ' < ℓ)
+```
+
 ### `drop_order`
 
 *theorem* · module `RueCore.TraceOrder`
 
 **Drop order** (§3.9, §6.7, §6.9, §6.10, §6.11; §7's "no use-after-drop /
-no leak of drops" bullet, its *when*). For a program the checker accepts:
+no leak of drops" bullet, its *when*), over §6's relation, for a program the
+checker accepts:
 
-* its run is never refused (`no_violation`), so its trace is the whole run's;
-* **within a value**, the run's trace is in §6.11's block grammar
-  (`run_blocks`): every destructor event sits inside the walk of the drop
-  marker before it — destructor first (`3.9:28`), fields in declaration
-  order (`3.9:13`), array elements ascending (`3.9:15`), an enum's active
-  payload only (`6.3:20`) — and nowhere else;
-* **across cells**, every step of §6's relation from a reachable
-  configuration drops the cells it tears down newest first
-  (`reachable_drop_order`): its `drop` markers name one cell, or distinct
-  cells in strictly decreasing location order, which is reverse registration
-  order because every scope record is in location order
-  (`reachable_ordered`).
+* **within a value**: every finished run's trace — a terminal value or a
+  trap — is in §6.11's block grammar (`step_blocks`): every destructor event
+  sits inside the walk of the drop marker before it — destructor first
+  (`3.9:28`), fields in declaration order (`3.9:13`), array elements
+  ascending (`3.9:15`), an enum's stored (active) payload only (`6.3:20`) —
+  and nowhere else;
+* **across cells**, at every step from a reachable configuration: its `drop`
+  markers name one cell or distinct cells newest first (`NewestFirst`), and
+  the step is last-in first-out on the registration stack (`Lifo`): it keeps
+  the stack, or cuts it back and drops only cells it deregistered — each
+  newer than every cell still registered, by `reachable_nested`'s location
+  order (`reachable_lifo`, `Lifo.newer`). So across all its exit steps a
+  scope's cells drop newest first, and before any older scope's.
 
-The first half is over `eval`, where copy closure holds; the second over
-`Step`, where the scope record lives. Neither needs typing beyond
-`DtorNotCopy`; the typing hypothesis buys the first conjunct.
+Only the first half reads the typing hypothesis, through `eval_complete` and
+`DtorNotCopy`.
 
 ```lean
-theorem RueCore.drop_order (M : FloatModel) {P : Program} (h : ProgramTyped P)
-  (fuel : Nat) :
-  (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
-    Blocks P.decls (run M.toFloatOps P fuel).trace ∧
+theorem RueCore.drop_order (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+  (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+      Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+        Blocks P.decls tr) ∧
+    (∀ (κ : PanicKind) (tr : List Event),
+        Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+          Blocks P.decls tr) ∧
       ∀ (C C' : Config),
         Steps M.toFloatOps P Config.init C →
           Step M.toFloatOps P C C' →
-            ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs)
+            ∃ evs,
+              C'.trace = C.trace ++ evs ∧
+                NewestFirst (dropLocs evs) ∧
+                  Lifo C.stack C'.stack (dropLocs evs) ∧
+                    List.Pairwise (fun x1 x2 => x1 < x2) C.stack
 ```
 
 ### `Blocks.not_dtor`
@@ -3528,6 +3603,26 @@ theorem RueCore.unorderedRecord_rejected :
     ¬C.Ordered ∧
       Step Examples.demoOps Examples.returnPastAffine C C' ∧
         C'.trace = C.trace ++ evs ∧ ¬NewestFirst (dropLocs evs)
+```
+
+### `swappedMarkers_rejected`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**The nesting is what orders sibling scopes** (§6.7). With the two
+markers swapped, every record is still in location order (`Config.Ordered`)
+and every step drops one cell, so per-step order says nothing; yet the run
+drops `ℓ1` before `ℓ3`, oldest first, and the first (D-EndScope) pops `ℓ3` off
+the record while its marker drops `ℓ1`. `Config.Nested` rejects the
+configuration, so `reachable_nested` says no run reaches it.
+
+```lean
+theorem RueCore.swappedMarkers_rejected :
+  swappedMarkers.Ordered ∧
+    ¬swappedMarkers.Nested ∧
+      ∃ C,
+        Steps Examples.demoOps Examples.returnPastAffine swappedMarkers C ∧
+          dropLocs C.trace = [1, 3]
 ```
 
 ### `Explain.explain_result`
@@ -11942,6 +12037,100 @@ theorem RueCore.NewestFirst.teardown {n : Nat} {ls ls' : List Nat} (h : Rec n ls
   (hs : ls'.Sublist ls.reverse) : NewestFirst ls'
 ```
 
+### `Frame.popScope_tail`
+
+*theorem* · module `RueCore.TraceOrder`
+
+(D-EndScope)'s pop by count removes exactly the marker's cells when they
+are the record's tail (helper).
+
+```lean
+theorem RueCore.Frame.popScope_tail (φ : Frame) {sc ls : List Nat}
+  (h : φ.scope = sc ++ ls) : (φ.popScope ls.length).scope = sc
+```
+
+### `Nest.toCall`
+
+*theorem* · module `RueCore.TraceOrder`
+
+(D-Return)'s search, read by the nesting: the caller's record is the
+next one, and the stack below it is the rest (helper).
+
+```lean
+theorem RueCore.Nest.toCall {K K' : List Kont} {φ : Frame} {sc : List Nat} :
+  Nest sc K →
+    Kont.toCall K = some (φ, K') → Nest φ.scope K' ∧ Stk K = Stk K' ++ φ.scope
+```
+
+### `Nest.toLoop`
+
+*theorem* · module `RueCore.TraceOrder`
+
+(D-Break)'s search, read by the nesting: the loop boundary's record is a
+prefix of the frame's, the rest being the cells the body registered, and no
+caller's record is crossed (helper).
+
+```lean
+theorem RueCore.Nest.toLoop {K K' : List Kont} {φ : Frame} {sc : List Nat} :
+  Nest sc K →
+    Kont.toLoop K = some (φ, K') →
+      (∃ m, sc = φ.scope ++ m) ∧ Nest φ.scope K' ∧ Stk K = Stk K'
+```
+
+### `Lifo.newer`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**What a teardown deregisters is newer than everything still
+registered**: on a stack in location order, a step that cuts the stack back
+drops only cells it deregistered, each newer than every cell still
+registered (helper).
+
+```lean
+theorem RueCore.Lifo.newer {S S' ls : List Nat}
+  (hS : List.Pairwise (fun x1 x2 => x1 < x2) S) (h : Lifo S S' ls)
+  (hcut : ¬S <+: S') (ℓ : Nat) :
+  ℓ ∈ ls → ¬ℓ ∈ S' ∧ ∀ (ℓ' : Nat), ℓ' ∈ S' → ℓ' < ℓ
+```
+
+### `Lifo.same`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A step that keeps the frame and the callers keeps the stack (helper).
+
+```lean
+theorem RueCore.Lifo.same {S ls : List Nat} : Lifo S S ls
+```
+
+### `Lifo.cut`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A teardown of the current frame's tail (helper).
+
+```lean
+theorem RueCore.Lifo.cut {A m ls : List Nat} (h : ls.Sublist m.reverse) :
+  Lifo (A ++ m) A ls
+```
+
+### `step_blocks`
+
+*theorem* · module `RueCore.TraceOrder`
+
+`Blocks` on §6's terminal configurations: a finished `Step` run's trace
+is the one `eval` answers (`eval_complete`), so it is in the block grammar
+(helper).
+
+```lean
+theorem RueCore.step_blocks (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+  (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+      Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+        Blocks P.decls tr) ∧
+    ∀ (κ : PanicKind) (tr : List Event),
+      Steps M.toFloatOps P Config.init (Config.panic κ tr) → Blocks P.decls tr
+```
+
 ### `Blocks.drop_inv`
 
 *theorem* · module `RueCore.TraceOrder`
@@ -12437,6 +12626,20 @@ RueCore.IntWidth.w32 : IntWidth
 
 ```lean
 RueCore.IntWidth.w64 : IntWidth
+```
+
+### `Lifo`
+
+*def* · module `RueCore.TraceOrder`
+
+**How one step changes the registration stack, and what it drops**: it
+either keeps the stack as a prefix of the new one — nothing deregistered —
+or cuts the stack back to a prefix of the old one, and its `drop` markers
+then name only cells of the suffix it cut, newest first (helper).
+
+```lean
+def RueCore.Lifo (S S' ls : List Nat) : Prop :=
+  S <+: S' ∨ S' <+: S ∧ ls.Sublist (List.drop S'.length S).reverse
 ```
 
 ### `Mult`
@@ -17618,6 +17821,22 @@ def RueCore.Local (φ : Frame) (H H' : Store) : Prop :=
         ¬ℓ ∈ φ.env → H'[ℓ]? = H[ℓ]? ∨ H'[ℓ]? = some Cell.dead
 ```
 
+### `Nest`
+
+*def* · module `RueCore.TraceOrder`
+
+The scope record the pending `endscope` markers and loop boundaries of
+one frame account for (§6.7, §6.10): reading the stack top-down, each
+`endscope ℓs` is the tail of what is left of the record, a loop boundary
+`loopβ(e, φs)` has exactly `φs`'s record left, and a caller's frame
+`ret(E, φs)` starts the same reading over for the caller's record `φs`
+(helper).
+
+```lean
+def RueCore.Nest : List Nat → List Kont → Prop :=
+  List.brecOn (motive := fun x => List Nat → Prop) x✝ Nest._f x✝¹
+```
+
 ### `Out.add`
 
 *def* · module `RueCore.Statics`
@@ -17671,6 +17890,27 @@ def RueCore.Retired (H : Store) (keep : List Nat) (H' : Store) : Prop :=
   ∀ (ℓ : Nat),
     List.length H ≤ ℓ →
       ℓ < List.length H' → ¬ℓ ∈ keep → H'[ℓ]? = some Cell.dead
+```
+
+### `Stk`
+
+*def* · module `RueCore.TraceOrder`
+
+The registration records of the suspended callers, bottom of the stack
+first (§6.9's `ret(E, φ)` frames) (helper).
+
+```lean
+def RueCore.Stk : List Kont → List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Stk [] = []
+∀ (φs : Frame) (K : List Kont),
+  Stk (Kont.call φs :: K) = Stk K ++ φs.scope
+∀ (head : Kont) (K : List Kont),
+  (∀ (φs : Frame), head = Kont.call φs → False) → Stk (head :: K) = Stk K
 ```
 
 ### `Ty.atPath`
@@ -18218,6 +18458,22 @@ RueCore.ArgsRes.ok (H : Store) (vs : List Val) (tr : List Event) : ArgsRes
 RueCore.ArgsRes.abort (r : EvalRes) : ArgsRes
 ```
 
+### `Config.Nested`
+
+*def* · module `RueCore.TraceOrder`
+
+**Scopes nest** (§6.7, §6.9, §6.10): every frame's pending `endscope`
+markers are exactly the tail of its scope record, innermost last, and the
+whole registration stack is in location order, below the store's length.
+
+```lean
+def RueCore.Config.Nested : Config → Prop :=
+  match x✝ with
+  | Config.run H φ K f tr =>
+    Nest φ.scope K ∧ Rec (List.length H) (Stk K ++ φ.scope)
+  | Config.panic k tr => True
+```
+
 ### `Config.Ordered`
 
 *def* · module `RueCore.TraceOrder`
@@ -18287,6 +18543,26 @@ Defining equations, as Lean derived them from the body:
 Config.init =
   Config.run [] { env := [], scope := [] } []
     (Focus.eval (Expr.call 0 [])) []
+```
+
+### `Config.stack`
+
+*def* · module `RueCore.TraceOrder`
+
+The machine's whole **registration stack**: every suspended caller's
+scope record, bottom first, then the current frame's (§6.1's `σ` per frame);
+empty at a trap (helper).
+
+```lean
+def RueCore.Config.stack : Config → List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (H : Store) (φ : Frame) (K : List Kont) (f : Focus) (tr : List Event),
+  (Config.run H φ K f tr).stack = Stk K ++ φ.scope
+∀ (k : PanicKind) (tr : List Event), (Config.panic k tr).stack = []
 ```
 
 ### `Config.trace`
@@ -19250,6 +19526,31 @@ Defining equations, as Lean derived them from the body:
   overwriteOk D OwnSt.owned x = decide (Ty.mult D x ≠ Mult.linear)
 ∀ (D : Decls) (x : Ty) (ts : List OwnSt),
   overwriteOk D (OwnSt.fields ts) x = decide (Ty.mult D x ≠ Mult.linear)
+```
+
+### `swappedMarkers`
+
+*def* · module `RueCore.TraceOrder`
+
+Two nested `let`s' pending markers, swapped: `endscope [1]` above
+`endscope [3]` in a frame whose record is `[1, 3]` (the review's Probe 2)
+(helper).
+
+```lean
+def RueCore.swappedMarkers : Config
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+swappedMarkers =
+  Config.run
+    [Cell.dead, Cell.full (Examples.cA 0 3), Cell.dead,
+      Cell.full (Examples.cA 2 4)]
+    { env := [3, 1], scope := [1, 3] }
+    [Kont.endscope [1], Kont.endscope [3],
+      Kont.call { env := [], scope := [] }]
+    (Focus.ret (Examples.v64 7)) []
 ```
 
 ### `ArgsTidy`
