@@ -1755,6 +1755,120 @@ expected_stdout = """42
 """
 exit_code = 0
 
+# 7.1:37 resolves a repeat count by the rules of an array-type length. A
+# count HM could not read as an integer was left to take its type from the
+# context: an annotation's length was accepted in its place, and with no
+# annotation the repeat was reported as an un-annotatable empty array
+# (E0903). Every invalid named count is E0481, as in a type position
+# (RUE-2442).
+[[case]]
+name = "array_repeat_negative_const_count_against_annotation"
+error_contains = "[E0481]"
+spec = ["7.1:37"]
+source = """
+const N: i32 = -1;
+fn main() -> i32 {
+    let a: [i32; 2] = [7; N];
+    a[0] + a[1]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_repeat_bool_const_count_against_annotation"
+error_contains = "[E0481]"
+spec = ["7.1:37"]
+source = """
+const N: bool = true;
+fn main() -> i32 {
+    let a: [i32; 2] = [7; N];
+    a[0] + a[1]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_repeat_type_const_count_unannotated"
+error_contains = "[E0481]"
+spec = ["7.1:37"]
+source = """
+const N: type = i32;
+fn main() -> i32 {
+    let a = [7; N];
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_repeat_negative_comptime_param_count_against_return_type"
+error_contains = "[E0481]"
+spec = ["7.1:37"]
+source = """
+fn mk(comptime n: i64) -> [i32; 2] {
+    [7; n]
+}
+fn main() -> i32 {
+    let a = mk(-1);
+    a[0] + a[1]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_repeat_negative_comptime_param_count_unannotated"
+error_contains = "[E0481]"
+spec = ["7.1:37"]
+source = """
+fn mk(comptime n: i64) -> i32 {
+    let a = [7; n];
+    0
+}
+fn main() -> i32 {
+    mk(-1)
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_repeat_local_let_count_against_annotation"
+error_contains = "[E0481]"
+spec = ["7.1:37"]
+description = "A local binding is not a compile-time constant, even when its value is known, so it is no repeat count"
+source = """
+fn main() -> i32 {
+    let n = 2;
+    let a: [i32; 2] = [7; n];
+    a[0] + a[1]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_repeat_valid_const_count_against_wrong_annotation"
+error_contains = "[E0901]"
+spec = ["7.1:37", "7.1:4"]
+source = """
+const N: i32 = 5;
+fn main() -> i32 {
+    let a: [i32; 2] = [7; N];
+    a[0] + a[1]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_repeat_computed_const_count_against_annotation"
+spec = ["7.1:37"]
+source = """
+const N: i32 = 1 + 1;
+fn main() -> i32 {
+    let a: [i32; 2] = [7; N];
+    a[0] + a[1]
+}
+"""
+exit_code = 14
+
 [[case]]
 name = "array_repeat_evaluates_value_once"
 spec = ["7.1:39"]
