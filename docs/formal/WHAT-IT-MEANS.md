@@ -46,7 +46,7 @@ For programs in the core fragment that the typing rules accept:
   (moved into a `match`, say). A linear value is never leaked, overwritten or
   silently discarded. Two exceptions, where a value is never dropped: values
   alive at a trap, and a value computed for one argument when a later argument
-  `return`s early (RUE-2316, open; the compiler behaves the same).
+  `return`s early (RUE-2316, open; the compiler has the same gap).
 - **Drops happen in the promised order**: destructor, then fields in
   declaration order, array elements ascending, bindings newest first.
 - **The Lean type checker never accepts a program the rules forbid.** It may
@@ -75,7 +75,7 @@ decides which. At least eight were compiler bugs, all fixed
 RUE-2348); others became spec questions.
 
 One hand-written case knowingly disagrees: the spec forbids `a[0] = a[0]`, the
-compiler accepts it deliberately, and the decision is open (RUE-2346).
+compiler accepts it, and the decision is open (RUE-2346).
 
 This is **verification-guided development**, as AWS did for Cedar: prove an
 executable model's properties, then test the product against it.
