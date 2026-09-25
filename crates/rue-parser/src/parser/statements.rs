@@ -7,7 +7,7 @@ impl Parser {
     pub(super) fn if_expr(&mut self) -> PResult<Expr> {
         let start = self.start();
         self.expect(TokenKind::If)?;
-        let cond = self.expr()?;
+        let cond = self.condition_head_expr()?;
         let (cond, then_block) = self.condition_body(cond, "if", start)?;
         let else_block = if self.eat(TokenKind::Else) {
             if self.at(TokenKind::If) {
@@ -34,7 +34,7 @@ impl Parser {
     pub(super) fn while_expr(&mut self) -> PResult<Expr> {
         let start = self.start();
         self.bump();
-        let cond = self.expr()?;
+        let cond = self.condition_head_expr()?;
         let (cond, body) = self.condition_body(cond, "while", start)?;
         Ok(Expr::While(WhileExpr {
             cond: Box::new(cond),
@@ -47,7 +47,7 @@ impl Parser {
         self.bump();
         let binder = self.for_binder()?;
         self.expect(TokenKind::In)?;
-        let iterable = self.expr()?;
+        let iterable = self.condition_head_expr()?;
         let (iterable, body) = self.condition_body(iterable, "for", start)?;
         Ok(Expr::For(ForExpr {
             binder,
@@ -64,6 +64,15 @@ impl Parser {
             body,
             span: self.span_from(start),
         }))
+    }
+
+    /// Parses an `if`/`while` condition, `for` iterable or `match`
+    /// scrutinee: the heads a `{` body follows. See `Parser::condition_head`.
+    fn condition_head_expr(&mut self) -> PResult<Expr> {
+        let enclosing = self.condition_head.replace(self.cursor);
+        let head = self.expr();
+        self.condition_head = enclosing;
+        head
     }
 
     fn condition_body(
@@ -109,7 +118,7 @@ impl Parser {
     pub(super) fn match_expr(&mut self) -> PResult<Expr> {
         let start = self.start();
         self.bump();
-        let scrutinee = self.expr()?;
+        let scrutinee = self.condition_head_expr()?;
         let (scrutinee, empty_arms_consumed) = if self.at(TokenKind::LBrace) {
             if matches!(scrutinee, Expr::StructLit(_)) {
                 let body_end = self.skip_brace_group();

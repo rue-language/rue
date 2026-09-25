@@ -140,11 +140,7 @@ impl Parser {
             TokenKind::Match => self.match_expr(),
             TokenKind::Break => {
                 self.bump();
-                let value = if self.at(TokenKind::LBrace) || self.expr_terminator() {
-                    None
-                } else {
-                    Some(Box::new(self.expr()?))
-                };
+                let value = self.jump_operand()?;
                 Ok(Expr::Break(BreakExpr {
                     value,
                     span: self.span_from(start),
@@ -158,11 +154,7 @@ impl Parser {
             }
             TokenKind::Return => {
                 self.bump();
-                let value = if self.at(TokenKind::LBrace) || self.expr_terminator() {
-                    None
-                } else {
-                    Some(Box::new(self.expr()?))
-                };
+                let value = self.jump_operand()?;
                 Ok(Expr::Return(ReturnExpr {
                     value,
                     span: self.span_from(start),
@@ -239,6 +231,35 @@ impl Parser {
                 Err(())
             }
         }
+    }
+
+    /// The optional operand of `return` and `break` (4.9:2, A.2). A `{` begins
+    /// the operand, except directly within a condition head, where it is the
+    /// body of the construct the head belongs to: `while return {}` (RUE-209).
+    /// A `{` nested in the head's own brackets is an operand again.
+    fn jump_operand(&mut self) -> PResult<Option<Box<Expr>>> {
+        if self.expr_terminator() || (self.at(TokenKind::LBrace) && self.at_condition_head_top())
+        {
+            return Ok(None);
+        }
+        Ok(Some(Box::new(self.expr()?)))
+    }
+
+    /// Whether the cursor sits at the bracket depth where the innermost
+    /// condition head began, rather than inside a group nested in it.
+    fn at_condition_head_top(&self) -> bool {
+        let Some(head) = self.condition_head else {
+            return false;
+        };
+        let mut depth = 0i32;
+        for token in &self.tokens[head..self.cursor] {
+            match token.kind {
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => depth -= 1,
+                _ => {}
+            }
+        }
+        depth <= 0
     }
 
     fn expr_terminator(&self) -> bool {
