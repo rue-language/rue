@@ -1204,6 +1204,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
     fn resolve_comptime_type_path(
         &mut self,
         _file: Self::File,
+        _root_module: Option<&Self::Type>,
         segments: &[Self::Name],
         _span: rue_span::Span,
     ) -> rue_air::ComptimeHostResult<Option<Self::Value>, Self::Failure> {
@@ -2080,6 +2081,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeCallProtocol
     fn resolve_module_comptime_callable(
         &mut self,
         _file_id: Self::File,
+        _root_module: Option<&Self::Type>,
         _segments: &[Self::Name],
         _method: Self::Name,
         _span: rue_span::Span,

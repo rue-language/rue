@@ -174,6 +174,11 @@ where
     /// but is invoked only at a capture boundary rather than per name lookup.
     pub local_binding_capture:
         Option<std::sync::Arc<dyn Fn() -> Vec<(N, ComptimeLocalBinding<T>)> + 'a>>,
+    /// Optional lookup of the runtime locals that are modules (`let m =
+    /// @import("x.rue")`), supplied by body analysis. A module path rooted
+    /// at one resolves from its module rather than being shadowed by it
+    /// (spec 10.4:1, RUE-2426).
+    pub local_module_membership: Option<std::sync::Arc<dyn Fn(&N) -> Option<T> + 'a>>,
     pub runtime_binding_names: AHashSet<N>,
     pub locals: AHashMap<N, V>,
     pub const_module_members: AHashMap<InstRef, V>,
@@ -255,6 +260,7 @@ where
             runtime_local_name_membership: None,
             local_binding_membership: None,
             local_binding_capture: None,
+            local_module_membership: None,
             runtime_binding_names: AHashSet::new(),
             locals: AHashMap::new(),
             const_module_members: AHashMap::new(),
@@ -276,6 +282,7 @@ where
             runtime_local_name_membership: None,
             local_binding_membership: None,
             local_binding_capture: None,
+            local_module_membership: None,
             runtime_binding_names: AHashSet::new(),
             locals: AHashMap::new(),
             const_module_members: AHashMap::new(),

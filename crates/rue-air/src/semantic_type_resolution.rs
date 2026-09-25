@@ -169,6 +169,16 @@ pub trait SemanticModulePathProvider<S, M, A> {
     type Abort;
     type Failure;
 
+    /// The module a lexical binding named `name` holds, when one in scope
+    /// *is* a module (`let m = @import("x.rue")`, spec 10.4:1 and 10.4:8).
+    /// It shadows the file's module bindings, and the path's remaining
+    /// segments are walked from it by
+    /// [`resolve_semantic_module_path_from`]. Providers with no lexical
+    /// scope, which is every declaration-level one, have none.
+    fn local_module_root(&mut self, _scope: &S, _name: &str) -> Option<SemanticResolvedModule<M, A>> {
+        None
+    }
+
     fn root_module_binding(
         &mut self,
         scope: &S,
@@ -259,7 +269,9 @@ fn lift_provider<T, E, P, F>(
     })
 }
 
-/// Resolve a dotted module path whose root is a module binding of `root_scope`.
+/// Resolve a dotted module path whose root is a module binding of `root_scope`,
+/// or a lexical binding that is a module
+/// ([`SemanticModulePathProvider::local_module_root`]).
 ///
 /// The root's own visibility is checked here; every subsequent hop is checked
 /// by the one shared member walk [`resolve_semantic_module_path_from`], so a
@@ -284,6 +296,9 @@ where
     let Some((first_name, rest)) = segments.split_first() else {
         return Err(E::Semantic(F::Empty));
     };
+    if let Some(start) = provider.local_module_root(root_scope, first_name) {
+        return resolve_semantic_module_path_from(provider, root_scope, start, rest);
+    }
     let first =
         lift_provider(provider.root_module_binding(root_scope, first_name))?.ok_or_else(|| {
             E::Semantic(F::UnknownRoot {

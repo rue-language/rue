@@ -310,20 +310,22 @@ enum ReceiverFacts<'a> {
     Syntactic(&'a LocalModuleScope),
 }
 
-/// The `let` bindings in lexical scope at one point of the pre-pass gate's
-/// walk, each with the module its initializer names, or `None` for a local
-/// that is not a module (which still shadows a file-level binding).
+/// The `let` bindings in lexical scope at one point of a body walk that runs
+/// before inference, each with the module its initializer names, or `None`
+/// for a local that is not a module (which still shadows a file-level
+/// binding). The pre-pass gate and the comptime type-local precompute
+/// (`precompute_comptime_type_locals`) both keep one.
 #[derive(Default)]
-struct LocalModuleScope {
+pub(crate) struct LocalModuleScope {
     bindings: AHashMap<Spur, Vec<Option<crate::types::ModuleId>>>,
 }
 
 impl LocalModuleScope {
-    fn bind(&mut self, name: Spur, module: Option<crate::types::ModuleId>) {
+    pub(crate) fn bind(&mut self, name: Spur, module: Option<crate::types::ModuleId>) {
         self.bindings.entry(name).or_default().push(module);
     }
 
-    fn unbind(&mut self, name: Spur) {
+    pub(crate) fn unbind(&mut self, name: Spur) {
         if let Some(stack) = self.bindings.get_mut(&name) {
             stack.pop();
             if stack.is_empty() {
@@ -333,7 +335,7 @@ impl LocalModuleScope {
     }
 
     /// `Some` when a `let` named `name` is in scope: the module it names, if any.
-    fn lookup(&self, name: Spur) -> Option<Option<crate::types::ModuleId>> {
+    pub(crate) fn lookup(&self, name: Spur) -> Option<Option<crate::types::ModuleId>> {
         self.bindings
             .get(&name)
             .and_then(|stack| stack.last().copied())
@@ -723,6 +725,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     )?;
                 let comptime_local_bindings = precomputed_locals.aliases;
                 let local_annotations = precomputed_locals.local_annotations;
+                let local_modules = precomputed_locals.local_modules;
 
                 // The inline-head pre-reduction below evaluates head expressions
                 // without walking the body, so it can't replay lexical scope; give it
@@ -730,8 +733,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // binding site deterministically (instruction order, which follows
                 // program order) — matching the old flat map for this opportunistic
                 // path.
+                // A `let`-bound module joins the view as its module type, so a
+                // head rooted at it (`m.Option(u64).Some(3)`) reduces from that
+                // module (RUE-2426).
                 let mut flat_bindings: Vec<(InstRef, Type)> = comptime_local_bindings
                     .iter()
+                    .chain(local_modules.iter())
                     .map(|(inst_ref, ty)| (*inst_ref, *ty))
                     .collect();
                 flat_bindings.sort_by_key(|(inst_ref, _)| inst_ref.as_u32());
@@ -1666,9 +1673,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Some(module)
     }
 
-    /// Bring one `let` into the gate's lexical scope, with the module its
-    /// initializer names under the bindings already in scope, or none.
-    fn bind_local_module(&mut self, alloc: InstRef, locals: &mut LocalModuleScope) {
+    /// Bring one `let` into a pre-inference walk's lexical scope, with the
+    /// module its initializer names under the bindings already in scope, or
+    /// none.
+    pub(crate) fn bind_local_module(&mut self, alloc: InstRef, locals: &mut LocalModuleScope) {
         let rue_rir::InstData::Alloc {
             name: Some(name),
             init,

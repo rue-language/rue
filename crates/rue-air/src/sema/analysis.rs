@@ -394,3 +394,4 @@ mod pointers;
 mod skolem;
 pub(crate) use skolem::SkolemMember;
 mod type_inference;
+pub(crate) use type_inference::LocalModuleScope;
