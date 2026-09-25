@@ -1,0 +1,292 @@
+════════════════════════════════════════════════════════════════════════════════
+ destructure_root_through_moved_part
+════════════════════════════════════════════════════════════════════════════════
+Three declared-linear levels: y.x0.x0.x0 destructures the innermost, and
+@drop(y.x0) then destructures the root y, which a hole below it keeps from
+being fully owned (3.8:26; the compiler reports E0205). Seeded by the bridge
+sensitivity drills (RUE-2464): with RUE-2335's root check removed the compiler
+accepted it and ran the hole's destructor twice, and no seed or generated case
+caught that.
+
+Rules exercised: (Use-Declared-Linear-Destructure) §5.1 · (@Drop) §5.3 · 3.8:26 · 3.8:33
+
+── The program ─────────────────────────────────────────────────────────────────
+
+@copy struct S0 { x0: i64 }
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+linear struct S2 { x0: i64 }
+linear struct S3 { x0: i64 }
+drop fn S3(self) { @dbg(self.x0); }
+struct S4 { x0: i64, x1: S3 }
+struct S5 { x0: i64, x1: S1 }
+drop fn S5(self) { @dbg(self.x0); }
+@copy struct S6 { x0: i64, x1: i64 }
+struct S7 { x0: S1, x1: S1 }
+struct S8 { x0: S1, x1: i64 }
+struct S9 { x0: S7, x1: i64 }
+struct S10 { x0: S3, x1: S1 }
+linear struct S11 { x0: i64, x1: S1 }
+struct S12 { x0: S11, x1: S1 }
+linear struct S13 { x0: S11, x1: S1 }
+linear struct S14 { x0: S1, x1: S1 }
+linear struct S15 { x0: S1, x1: i64, x2: S1 }
+linear struct S16 { x0: S8, x1: S1 }
+linear struct S17 { x0: i64, x1: S2 }
+linear struct S18 { x0: i64, x1: S1 }
+drop fn S18(self) { @dbg(self.x0); }
+struct S19 { x0: i64, x1: S2 }
+linear struct S20 { x0: S19, x1: S1 }
+linear struct S21 { x0: [S1; 2], x1: i64 }
+linear struct S22 { x0: [S1; 2], x1: S1 }
+linear struct S23 { x0: S13, x1: S1 }
+fn f0() -> i64 {
+    {
+        let v0: S23 = S23 { x0: S13 { x0: S11 { x0: 1, x1: S1 { x0: 2 } }, x1: S1 { x0: 3 } }, x1: S1 { x0: 4 } };
+        {
+            let v1: i64 = v0.x0.x0.x0;
+            {
+                @drop(v0.x0);
+                v1
+            }
+        }
+    }
+}
+
+
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: REJECTED by the checker (§5).
+
+The premise that fails, in fn f0() -> i64, at (@Drop) §5.3 at a declared-linear plan:
+
+    on  @drop(v0.x0)
+
+    the smallest enclosing declared-`linear` place, of type S23, is not fully
+    owned: the place itself or a path under it is MovedOut, and the
+    destructure hands the selected leaf to a new owner while destroying the
+    rest ((Use-Declared-Linear-Destructure) premise `fully-owned(Σ, d)`, §5.1;
+    3.8:26; the compiler reports E0205 where the place itself was consumed,
+    and E0474 on the retained inner declared-`linear` place where a path under
+    it was)
+
+── The derivations (§5) ────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order. One tree per
+function body, checked from (Fn) §5.8's entry context.
+
+  fn f0() -> i64
+
+  (Let) §5.3 + the §5.6 scope-exit leak check
+    e       { let v0: S23 = S23 { x0: S13 { x0: S11 { x0: 1, x1: S1 { x0: 2 } }, x1: S1 { x…
+    Γ;Σ     (empty)
+    ✗       this premise fails:
+            a premise's own derivation failed — the reason is the rejected
+            premise nested under this rule
+      (Struct-Intro) §5.8
+        e       S23 { x0: S13 { x0: S11 { x0: 1, x1: S1 { x0: 2 } }, x1: S1 { x0: 3 } }, x1: S1…
+        Γ;Σ     (empty)
+        ⇒       S23  ⊣  (empty)
+          (Struct-Intro) §5.8
+            e       S13 { x0: S11 { x0: 1, x1: S1 { x0: 2 } }, x1: S1 { x0: 3 } }
+            Γ;Σ     (empty)
+            ⇒       S13  ⊣  (empty)
+              (Struct-Intro) §5.8
+                e       S11 { x0: 1, x1: S1 { x0: 2 } }
+                Γ;Σ     (empty)
+                ⇒       S11  ⊣  (empty)
+                  (Lit) §5.8
+                    e       1
+                    Γ;Σ     (empty)
+                    ⇒       i64  ⊣  (empty)
+                  (Struct-Intro) §5.8
+                    e       S1 { x0: 2 }
+                    Γ;Σ     (empty)
+                    ⇒       S1  ⊣  (empty)
+                      (Lit) §5.8
+                        e       2
+                        Γ;Σ     (empty)
+                        ⇒       i64  ⊣  (empty)
+              (Struct-Intro) §5.8
+                e       S1 { x0: 3 }
+                Γ;Σ     (empty)
+                ⇒       S1  ⊣  (empty)
+                  (Lit) §5.8
+                    e       3
+                    Γ;Σ     (empty)
+                    ⇒       i64  ⊣  (empty)
+          (Struct-Intro) §5.8
+            e       S1 { x0: 4 }
+            Γ;Σ     (empty)
+            ⇒       S1  ⊣  (empty)
+              (Lit) §5.8
+                e       4
+                Γ;Σ     (empty)
+                ⇒       i64  ⊣  (empty)
+      (Let) §5.3 + the §5.6 scope-exit leak check
+        e       { let v1: i64 = v0.x0.x0.x0; { @drop(v0.x0); v1 } }
+        Γ;Σ     [v0: S23 = Owned]
+        ✗       this premise fails:
+                a premise's own derivation failed — the reason is the rejected
+                premise nested under this rule
+          (Use-Declared-Linear-Destructure) §5.1
+            e       v0.x0.x0.x0
+            Γ;Σ     [v0: S23 = Owned]
+            ⇒       i64  ⊣  [v0: S23 = Owned{ x0: Owned{ x0: MovedOut } }]
+          (Seq) §5.3, 3.8:64
+            e       { @drop(v0.x0); v1 }
+            Γ;Σ     [v1: i64 = Owned, v0: S23 = Owned{ x0: Owned{ x0: MovedOut } }]
+            ✗       this premise fails:
+                    a premise's own derivation failed — the reason is the rejected
+                    premise nested under this rule
+              (@Drop) §5.3 at a declared-linear plan
+                e       @drop(v0.x0)
+                Γ;Σ     [v1: i64 = Owned, v0: S23 = Owned{ x0: Owned{ x0: MovedOut } }]
+                ✗       this premise fails:
+                        the smallest enclosing declared-`linear` place, of type S23, is not
+                        fully owned: the place itself or a path under it is MovedOut, and
+                        the destructure hands the selected leaf to a new owner while
+                        destroying the rest ((Use-Declared-Linear-Destructure) premise
+                        `fully-owned(Σ, d)`, §5.1; 3.8:26; the compiler reports E0205 where
+                        the place itself was consumed, and E0474 on the retained inner
+                        declared-`linear` place where a path under it was)
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth — a callee's rows are deeper than its call's — and `>>`
+marks a drop event. The run enters at f0(), as `Dynamics.run` does.
+`#n` after an aggregate is its identity, minted when it was built; a `†`
+cell is a retired binding or an identity's reserved slot (`introVal`).
+
+  [1]   d1    (D-Call) §6.9 (push the frame)
+         expr    fn f0() -> i64  with []
+         store   (empty)
+           →     (empty)
+         result  value ()
+  [2]   d6              literal §6.3
+         expr    1
+         store   (empty)
+           →     (empty)
+         result  value 1
+  [3]   d7                literal §6.3
+         expr    2
+         store   (empty)
+           →     (empty)
+         result  value 2
+  [4]   d6              (D-Struct) §6.5 (mint #0)
+         expr    S1 { x0: 2 }
+         store   (empty)
+           →     [ℓ0 = †]
+         result  value S1 { 2 }#0
+  [5]   d5            (D-Struct) §6.5 (mint #1)
+         expr    S11 { x0: 1, x1: S1 { x0: 2 } }
+         store   (empty)
+           →     [ℓ0 = †, ℓ1 = †]
+         result  value S11 { 1, S1 { 2 }#0 }#1
+  [6]   d6              literal §6.3
+         expr    3
+         store   [ℓ0 = †, ℓ1 = †]
+           →     [ℓ0 = †, ℓ1 = †]
+         result  value 3
+  [7]   d5            (D-Struct) §6.5 (mint #2)
+         expr    S1 { x0: 3 }
+         store   [ℓ0 = †, ℓ1 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †]
+         result  value S1 { 3 }#2
+  [8]   d4          (D-Struct) §6.5 (mint #3)
+         expr    S13 { x0: S11 { x0: 1, x1: S1 { x0: 2 } }, x1: S1 { x0: 3 } }
+         store   (empty)
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
+         result  value S13 { S11 { 1, S1 { 2 }#0 }#1, S1 { 3 }#2 }#3
+  [9]   d5            literal §6.3
+         expr    4
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
+         result  value 4
+  [10]  d4          (D-Struct) §6.5 (mint #4)
+         expr    S1 { x0: 4 }
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †]
+         result  value S1 { 4 }#4
+  [11]  d3        (D-Struct) §6.5 (mint #5)
+         expr    S23 { x0: S13 { x0: S11 { x0: 1, x1: S1 { x0: 2 } }, x1: S1 { x0: 3 } }, x1: S1…
+         store   (empty)
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
+         result  value S23 { S13 { S11 { 1, S1 { 2 }#0 }#1, S1 { 3 }#2 }#3, S1 { 4 }#4 }#5
+  [12]  d3        (D-Let) §6.7 (mint the binding)
+         expr    let v0 = S23 { S13 { S11 { 1, S1 { 2 }#0 }#1, S1 { 3 }#2 }#3, S1 { 4 }#4 }#5 at…
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = S23 { S13 { S11 {…
+         result  value S23 { S13 { S11 { 1, S1 { 2 }#0 }#1, S1 { 3 }#2 }#3, S1 { 4 }#4 }#5
+  [13]  d4          (D-Use-Declared-Linear) §6.3
+         expr    v0.x0.x0.x0
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = S23 { S13 { S11 {…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = S23 { S13 { ⊘, S1…
+         events  >> drop ℓ6 = S1 { 2 }#0; run drop fn S1(S1 { 2 }#0); consume S11 { ⊘, ⊘ }#1
+         result  value 1
+  [14]  d4          (D-Let) §6.7 (mint the binding)
+         expr    let v1 = 1 at ℓ7
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = S23 { S13 { ⊘, S1…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = S23 { S13 { ⊘, S1…
+         result  value 1
+  [15]  d5            @drop §6.11 at a declared-linear plan (§6.3)
+         expr    @drop(v0.x0)
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = S23 { S13 { ⊘, S1…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = ⊘, ℓ7 = 1]
+         events  >> drop ℓ6 = S1 { 4 }#4; run drop fn S1(S1 { 4 }#4); consume S23 { ⊘, ⊘ }#5; drop ℓ6 = S13 { ⊘, S1 { 3 }#2 }#3; run drop fn S1(S1 { 3 }#2)
+         result  value ()
+  [16]  d5            (D-Use-Copy) §6.3
+         expr    v1
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = ⊘, ℓ7 = 1]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = ⊘, ℓ7 = 1]
+         result  value 1
+  [17]  d4          (D-Seq) §6.7
+         expr    { @drop(v0.x0); v1 }
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = S23 { S13 { ⊘, S1…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = ⊘, ℓ7 = 1]
+         result  value 1
+  [18]  d3        (D-EndScope) §6.7 (retire the binding)
+         expr    endscope([ℓ7])
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = ⊘, ℓ7 = 1]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = ⊘, ℓ7 = †]
+         result  value 1
+  [19]  d2      (D-EndScope) §6.7 (retire the binding)
+         expr    endscope([ℓ6])
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = ⊘, ℓ7 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †]
+         result  value 1
+  [20]  d0  (D-Return-Value) §6.9 (pop the frame)
+         expr    run-all-scope-drops([])
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †]
+         result  value 1
+
+── Identities (§7) ─────────────────────────────────────────────────────────────
+
+One line per owned identity: the step that minted it, the steps that ended
+it (a drop marker, a discarded temporary, a consumption), and the steps whose
+destructor ran on it. `drop_exactly_once` is one entry in the ended column
+per identity. Read in row order, and `[n.k]` (the k-th end of row n) inside a
+row, the ends are the trace's order, which `drop_order` fixes: a value's
+destructors inside its drop in §6.11's order, and cells last-in first-out.
+
+  id    minted  ended                             destructor  verdict
+  ────────────────────────────────────────────────────────────────────────
+  #0    [4]     [13.1] drop ℓ6                    [13]        once
+  #1    [5]     [13.2] consume                    —           once
+  #2    [7]     [15.3] drop ℓ6                    [15]        once
+  #3    [8]     [15.3] drop ℓ6                    —           once
+  #4    [10]    [15.1] drop ℓ6                    [15]        once
+  #5    [11]    [15.2] consume                    —           once
+
+  Every owned identity is ended exactly once (`drop_exactly_once`).
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: ok — value 1
+         drop trace: drop ℓ6 = S1 { 2 }#0; run drop fn S1(S1 { 2 }#0); consume S11 { ⊘, ⊘ }#1; drop ℓ6 = S1 { 4 }#4; run drop fn S1(S1 { 4 }#4); consume S23 { ⊘, ⊘ }#5; drop ℓ6 = S13 { ⊘, S1 { 3 }#2 }#3; run drop fn S1(S1 { 3 }#2)
+
