@@ -899,7 +899,7 @@ def cases : List Case := [
     rules := ["(Loop-Break) §5.7", "3.8:79", "(Assign) §5.2", "§6.8 overwrite-drop", "(@Drop) §5.3", "(D-Loop-Iter) §6.10"],
     prog := Examples.prog Examples.tI64 Examples.loopReassignThenMove },
   { name := "loop_drop_after_zero_width_temp",
-    description := "A discarded zero-width temporary ({ let a: [i64; 0] = []; a };) before a loop that breaks on a false flag, or drops an affine binding and breaks, or reassigns it: the exits meet at MovedOut, which Affine allows, and the run drops the binding once (1) before the value 9. The compiler ICEd on this (RUE-2450, E9000 in its CFG verifier: the temporary's reused slot read as compiler-owned hid the binding's whole write from the drop-flag proof); the case stays as the regression signal.",
+    description := "A discarded zero-width temporary (an [i64; 0] block value) before a loop that breaks on a false flag, or drops an affine binding and breaks, or reassigns it: the exits meet at MovedOut, which Affine allows, and the run drops the binding once (1) before the value 9. The compiler ICEd on this (RUE-2450, E9000 in its CFG verifier: the temporary's reused slot read as compiler-owned hid the binding's whole write from the drop-flag proof); the case stays as the regression signal.",
     rules := ["§6.7 temporary drop", "(Loop-Break) §5.7", "(Break) §5.7", "§5.5 join", "(@Drop) §5.3", "(Assign) §5.2", "3.8:79", "3.9:38"],
     prog := Examples.prog Examples.tI64 Examples.loopDropAfterZeroWidthTemp },
   { name := "loop_moved_prev_iteration",
