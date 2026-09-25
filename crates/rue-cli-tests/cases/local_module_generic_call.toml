@@ -246,3 +246,23 @@ pub fn g(comptime T: type, x: T) -> T { x }
 ]
 compile_fail = true
 error_contains = ["E0413", "no method named 'g'"]
+
+[[case]]
+name = "non_module_shadow_leaves_scope_before_only_generic_call"
+description = "A non-module `let m` inside a block leaves scope; the body's only generic call then goes through the file-level module `m`, so the gate must unbind the shadow at the block's end."
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+const m = @import("a.rue");
+fn main() -> i32 {
+    let r = { let m = 5; m };
+    let n = m.g(u64, 5000000000);
+    if n > 1 { r - 2 } else { 1 }
+}
+""" },
+    { path = "a.rue", source = """
+pub fn g(comptime T: type, x: T) -> T { x }
+""" },
+]
+stdout = ""
+exit_code = 3
