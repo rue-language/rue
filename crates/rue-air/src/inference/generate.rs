@@ -5046,15 +5046,15 @@ impl<'a> ConstraintGenerator<'a> {
                     RirTypeSyntaxNode::Integer(value) => u64::try_from(*value).ok()?,
                     RirTypeSyntaxNode::Named(symbol) => {
                         let name = *arena.symbol(*symbol)?;
-                        let bound = values.and_then(|values| values.get(&name).copied());
-                        // A callee's comptime parameter hides a same-named
-                        // file-level `const` (RUE-2422).
-                        let value = if bound.is_some() || scope.is_comptime_parameter(name) {
-                            bound
-                        } else {
-                            self.scoped_const_value(name, file_id)
-                        };
-                        u64::try_from(value?).ok()?
+                        values
+                            .and_then(|values| values.get(&name).copied())
+                            // A callee's comptime parameter hides a same-named
+                            // file-level `const` (RUE-2422).
+                            .or_else(|| {
+                                self.scoped_const_value(name, file_id)
+                                    .filter(|_| !scope.is_comptime_parameter(name))
+                            })
+                            .and_then(|value| u64::try_from(value).ok())?
                     }
                     _ => return None,
                 };
