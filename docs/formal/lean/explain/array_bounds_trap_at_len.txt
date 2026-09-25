@@ -4,7 +4,8 @@
 A dynamic-index read at the last element and then at exactly the length: 30
 prints and the second read is (D-Index-Trap) §6.5's bounds trap. Seeded by the
 bridge sensitivity drills (RUE-2464): an off-by-one bounds check (i <= n)
-passed every seed, because the other bounds seeds index further past the end.
+passed every seed, because the other bounds seeds index further past the end,
+or into a zero-length array, which does not go through the length compare.
 
 Rules exercised: (Use-Untrackable-Dynamic-Copy) §5.1 · (D-Index) §6.5 · (D-Index-Trap) §6.5 · §6.12 · 7.1:10
 
