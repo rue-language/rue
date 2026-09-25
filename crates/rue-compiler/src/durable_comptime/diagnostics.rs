@@ -120,6 +120,26 @@ impl DurableComptimeHostFailure {
         }
     }
 
+    /// Whether this failure is a type check the body type checker makes
+    /// while inferring a literal's types, ahead of the literal's structural
+    /// checks: a type mismatch other than the finite-literal rule, or an
+    /// array length (RUE-2407).
+    pub(super) fn is_type_check(&self) -> bool {
+        let DurableComptimeHostFailureKind::Semantic(failure) = &self.0 else {
+            return false;
+        };
+        let (SemanticNucleusFailure::Diagnostic(kind)
+        | SemanticNucleusFailure::DiagnosticAtProducerRange { kind, .. }) = failure.as_ref()
+        else {
+            return false;
+        };
+        match kind {
+            rue_error::ErrorKind::TypeMismatch { expected, .. } => !expected.starts_with("finite "),
+            rue_error::ErrorKind::ArrayLengthMismatch { .. } => true,
+            _ => false,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn semantic_failure(&self) -> Option<&SemanticNucleusFailure> {
         match &self.0 {

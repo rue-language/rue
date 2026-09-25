@@ -373,19 +373,47 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
         &self,
         ty: &DurableType,
         shape: rue_air::ComptimeLiteralShape<'_, DurableComptimeName>,
+        declared: Option<&DurableType>,
         site: &DurableComptimeDiagnosticSite,
     ) -> rue_air::ComptimeHostResult<(), DurableComptimeHostFailure> {
+        let reject = |kind| {
+            Err(durable_host_error(DurableComptimeFailure::kind_at_site(
+                site, kind,
+            )))
+        };
+        if let rue_air::ComptimeLiteralShape::Array { len } = shape {
+            // An array literal of the wrong length for the array type its
+            // position declares is E0901, ahead of its elements' shapes.
+            return match ty {
+                DurableType::Array { len: declared, .. } if *declared != len => {
+                    reject(rue_error::ErrorKind::ArrayLengthMismatch {
+                        expected: *declared,
+                        found: len,
+                    })
+                }
+                _ => Ok(()),
+            };
+        }
+        // A struct literal or enum constructor whose own type is not the
+        // type its position declares is E0206 on the literal, ahead of its
+        // shape, as the body path's inference reports it.
+        if let Some(declared) = declared
+            && Self::names_a_value_type(declared)
+            && !matches!(declared, DurableType::AnonymousNominal(_))
+            && !matches!(ty, DurableType::AnonymousNominal(_))
+            && declared != ty
+        {
+            return reject(rue_error::ErrorKind::TypeMismatch {
+                expected: durable_type_diagnostic_name(declared),
+                found: durable_type_diagnostic_name(ty),
+            });
+        }
         let Some(members) = self
             .services
             .resolve_declared_member_names(ty)
             .map_err(durable_provider_error)?
         else {
             return Ok(());
-        };
-        let reject = |kind| {
-            Err(durable_host_error(DurableComptimeFailure::kind_at_site(
-                site, kind,
-            )))
         };
         let type_name = durable_type_diagnostic_name(ty);
         match shape {
@@ -424,6 +452,7 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
                     },
                 )))
             }
+            rue_air::ComptimeLiteralShape::Array { .. } => Ok(()),
             rue_air::ComptimeLiteralShape::EnumVariant { variant, payloads } => {
                 let Some(index) = members
                     .iter()
@@ -1461,10 +1490,30 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         &mut self,
         ty: &Self::Type,
         shape: rue_air::ComptimeLiteralShape<'_, Self::Name>,
+        declared: Option<&Self::Type>,
         site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> rue_air::ComptimeHostResult<(), Self::Failure> {
         let site = self.diagnostic_site(site);
-        self.admit_literal_shape(ty.as_ref(), shape, &site)
+        self.admit_literal_shape(
+            ty.as_ref(),
+            shape,
+            declared.map(|declared| declared.as_ref()),
+            &site,
+        )
+    }
+
+    /// The body type checker infers a literal's types before it checks the
+    /// literal's structure, so a child's type mismatch is reported first,
+    /// and a structural error, a range or finite-literal error, a trap or
+    /// a child that does not reduce waits for its siblings' type checks.
+    fn comptime_literal_failure_order(
+        &self,
+        failure: Option<&Self::Failure>,
+    ) -> rue_air::ComptimeFailureOrder {
+        match failure {
+            Some(failure) if failure.is_type_check() => rue_air::ComptimeFailureOrder::TypeCheck,
+            _ => rue_air::ComptimeFailureOrder::AfterTypeChecks,
+        }
     }
 
     fn resolve_comptime_array_repeat(
@@ -1938,6 +1987,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
                         variant: &field,
                         payloads: 0,
                     },
+                    None,
                     &diagnostic,
                 ) {
                     return durable_host_error_outcome(error);
@@ -1965,6 +2015,28 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
                         return durable_host_error_outcome(durable_provider_error(error));
                     }
                 };
+                // The guard itself holds for every enum, whether or not its
+                // declared member names are known to the shape check above.
+                match self
+                    .services
+                    .resolve_enum_variant_payload_types(enum_type, index)
+                {
+                    Ok(payload) if payload.is_empty() => {}
+                    Ok(payload) => {
+                        return durable_host_error_outcome(durable_host_error(
+                            DurableComptimeFailure::kind_at_site(
+                                &diagnostic,
+                                rue_error::ErrorKind::WrongArgumentCount {
+                                    expected: payload.len(),
+                                    found: 0,
+                                },
+                            ),
+                        ));
+                    }
+                    Err(error) => {
+                        return durable_host_error_outcome(durable_provider_error(error));
+                    }
+                }
                 return EvaluatedSemanticConst::aggregate_enum(
                     DurableComptimeType(enum_type.clone()),
                     index,

@@ -1122,9 +1122,13 @@ exit_code = 42
 # =============================================================================
 
 # A struct literal or enum constructor in a constant's initializer is held to
-# its type's declaration before any child reduces, with the body type
-# checker's codes, on the literal: each field named once and none left out,
-# and a declared variant given as many payloads as it declares.
+# its type's declaration with the body type checker's codes, on the literal:
+# each field named once and none left out, and a declared variant given as
+# many payloads as it declares. As in the body path, a child's type mismatch
+# and the literal's own type against its slot are reported first, and a
+# child's range or finite-literal error after the structure. Only a literal
+# whose position declares a type is checked against one: an array literal
+# indexed, compared or bound by an unannotated `let` is not.
 
 [[case]]
 name = "const_struct_unknown_field_rejected"
@@ -1166,7 +1170,7 @@ error_contains = ["E0400", "missing field 'b' in struct 'S'"]
 [[case]]
 name = "const_nested_struct_unknown_field_rejected"
 spec = ["3.6:15", "6.5:2", "4.14:26"]
-description = "An unknown field is E0401 at depth: a struct literal element of an array, and ahead of a sibling field that is itself in error (RUE-2407)"
+description = "An unknown field is E0401 at depth: a struct literal element of an array, and ahead of a sibling field whose float literal is not finite at its slot, which the body path checks after structure (RUE-2407)"
 source = """
 @copy struct P { x: f32, y: i32 }
 const A: [P; 1] = [P { x: 1e39, z: 1 }];
@@ -1286,6 +1290,149 @@ fn main() -> i32 { 0 }
 """
 compile_fail = true
 error_contains = ["E0206", "expected E, found S"]
+
+[[case]]
+name = "const_struct_child_type_mismatch_before_unknown_field"
+spec = ["3.6:15", "6.5:2"]
+description = "A field's type mismatch is reported before an unknown sibling field, as the body path's inference reports it, whichever is written first (RUE-2407)"
+source = """
+@copy struct S { a: i32 }
+const A: S = S { b: 1, a: true };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found bool"]
+
+[[case]]
+name = "const_nested_enum_payload_type_mismatch_before_count"
+spec = ["6.3:16", "6.5:2", "4.14:26"]
+description = "A payload's type mismatch is reported before its constructor's payload count, at depth (RUE-2407)"
+source = """
+enum E { A(u8) }
+enum F { W(E) }
+const C: F = F.W(E.A(true, 1));
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected u8, found bool"]
+
+[[case]]
+name = "const_struct_literal_of_other_type_before_its_shape"
+spec = ["6.5:2"]
+description = "A struct literal whose type is not the constant's is E0206 naming both types, ahead of the literal's own unknown field (RUE-2407)"
+source = """
+@copy struct S { a: i32 }
+enum E { A(i32) }
+const K: E = S { b: 1 };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected E, found S"]
+
+[[case]]
+name = "const_enum_constructor_of_other_type_before_its_count"
+spec = ["6.5:2"]
+description = "An enum constructor whose type is not the constant's is E0206 ahead of its payload count (RUE-2407)"
+source = """
+@copy struct S { a: i32 }
+enum E { A(i32) }
+const K: S = E.A(1, 2);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected S, found E"]
+
+[[case]]
+name = "const_array_length_before_element_shape"
+spec = ["3.11:8", "6.5:2"]
+description = "An array literal of the wrong length for its declared type is E0901 ahead of an element's unknown field (RUE-2407)"
+source = """
+@copy struct S { a: i32 }
+const K: [S; 1] = [S { a: 1 }, S { b: 1 }];
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0901", "expected array of 1 element, found 2 elements"]
+
+[[case]]
+name = "const_indexed_array_literal_not_checked_against_const_type"
+spec = ["6.5:2", "4.14:26"]
+description = "An array literal that is indexed takes no type from the constant's declared type: it is not a false E0206 'expected i32, found [{integer}; 2]'. The declaration-time evaluator does not reduce it yet, and says so (RUE-2407)"
+source = """
+const K: i32 = [40, 2][0] + [40, 2][1];
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E1200", "did not reduce to a value"]
+
+[[case]]
+name = "const_compared_array_literal_not_checked_against_const_type"
+spec = ["6.5:2", "4.14:26"]
+description = "An array literal that is an operand of `==` takes no type from the constant's declared bool type: it is not a false E0206 (RUE-2407)"
+source = """
+const K: bool = [1, 2][0] == 1;
+fn main() -> i32 { if K { 42 } else { 0 } }
+"""
+compile_fail = true
+error_contains = ["E1200", "did not reduce to a value"]
+
+[[case]]
+name = "const_unannotated_let_array_not_checked_against_const_type"
+spec = ["6.5:2", "4.14:26"]
+description = "An array literal bound by an unannotated `let` inside a constant's initializer takes no type from the constant: it is not a false E0206 (RUE-2407)"
+source = """
+const K: i32 = { let a = [40, 2]; a[0] + a[1] };
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E1200", "did not reduce to a value"]
+
+[[case]]
+name = "const_annotated_let_array_takes_its_annotation"
+spec = ["6.5:2", "4.14:26"]
+description = "An array literal bound by an annotated `let` inside a constant's initializer is typed by the annotation, not the constant's type, and reduces (RUE-2407)"
+source = """
+const K: i32 = { let a: [i32; 2] = [40, 2]; a[0] + a[1] };
+fn main() -> i32 { K }
+"""
+exit_code = 42
+
+[[case]]
+name = "const_comptime_call_array_local_not_checked_against_result"
+spec = ["6.5:2", "4.14:26"]
+description = "An array literal bound inside a comptime function a constant calls takes no type from the function's return type: it is not a false E0206 (RUE-2407)"
+source = """
+fn f(comptime n: i32) -> i32 { let a = [n, 2]; a[0] + a[1] }
+const K: i32 = f(40);
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E1200", "did not reduce to a value"]
+
+[[case]]
+name = "const_type_constructor_argument_array_not_checked"
+spec = ["6.5:2", "4.14:26"]
+description = "An indexed array literal in a type constructor's argument takes no type from the parameter's type: it is not a false E0206 'expected u64' (RUE-2407)"
+source = """
+fn Arr(comptime n: usize) -> type { struct { a: [i32; n] } }
+const T2 = Arr([2, 3][0]);
+fn main() -> i32 { let t = T2 { a: [40, 2] }; t.a[0] + t.a[1] }
+"""
+compile_fail = true
+error_contains = ["E1200", "did not reduce to a value"]
+
+[[case]]
+name = "const_missing_annotation_help_qualifies_imported_type"
+spec = ["6.5:4"]
+description = "The missing-annotation help for an enum value from an imported module spells the type as the constant's module names it, `m.E`, not the bare `E` (RUE-2407)"
+source = """
+const m = @import("m.rue");
+const K = m.E.A(0);
+fn main() -> i32 { 0 }
+"""
+aux_files = { "m.rue" = "pub enum E { A(i32), U }" }
+compile_fail = true
+error_contains = ["E0475", "add a type annotation: `const K: m.E = ...;`"]
 
 [[case]]
 name = "const_aggregate_declared_shapes_accepted"
