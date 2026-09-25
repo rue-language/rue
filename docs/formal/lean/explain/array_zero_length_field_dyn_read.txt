@@ -186,6 +186,21 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1, ℓ3 = 0]
          result  PANIC (bounds) — a defined trap, §6.12
 
+── Identities (§7) ─────────────────────────────────────────────────────────────
+
+One line per owned identity: the step that minted it, the steps that ended
+it (a drop marker, a discarded temporary, a consumption), and the steps whose
+destructor ran on it. `drop_exactly_once` is one entry in the ended column
+per identity, and the step numbers there are the order `drop_order` fixes;
+`[n.k]` is the k-th end of step n, when one step ends several values.
+
+  id    minted  ended                             destructor  ended
+  ────────────────────────────────────────────────────────────────────────
+  #1    [4]     —                                 —           abandoned by the trap (§6.12)
+
+  Every owned identity is ended exactly once, except #1 (abandoned by the trap
+  (§6.12)).
+
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: PANIC (bounds) — a defined trap, §6.12
          trace up to the trap: (nothing)

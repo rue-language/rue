@@ -218,6 +218,16 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
            →     (empty)
          result  value 0
 
+── Identities (§7) ─────────────────────────────────────────────────────────────
+
+One line per owned identity: the step that minted it, the steps that ended
+it (a drop marker, a discarded temporary, a consumption), and the steps whose
+destructor ran on it. `drop_exactly_once` is one entry in the ended column
+per identity, and the step numbers there are the order `drop_order` fixes;
+`[n.k]` is the k-th end of step n, when one step ends several values.
+
+  The run owns no identity: nothing to end.
+
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 0
          drop trace: @dbg prints -1; @dbg prints 0; @dbg prints 1

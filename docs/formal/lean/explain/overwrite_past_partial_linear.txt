@@ -253,6 +253,25 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †]
          result  value 9
 
+── Identities (§7) ─────────────────────────────────────────────────────────────
+
+One line per owned identity: the step that minted it, the steps that ended
+it (a drop marker, a discarded temporary, a consumption), and the steps whose
+destructor ran on it. `drop_exactly_once` is one entry in the ended column
+per identity, and the step numbers there are the order `drop_order` fixes;
+`[n.k]` is the k-th end of step n, when one step ends several values.
+
+  id    minted  ended                             destructor  ended
+  ────────────────────────────────────────────────────────────────────────
+  #0    [3]     [8] drop ℓ3                       [8]         once
+  #1    [5]     [14] drop ℓ3                      [14]        once
+  #2    [6]     [14] drop ℓ3                      —           once
+  #4    [10]    [15] drop ℓ3                      [15]        once
+  #5    [12]    [15] drop ℓ3                      [15]        once
+  #6    [13]    [15] drop ℓ3                      —           once
+
+  Every owned identity is ended exactly once (`drop_exactly_once`).
+
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 9
          drop trace: drop ℓ3 = S3 { 1 }#0; run drop fn S3(S3 { 1 }#0); drop ℓ3 = S10 { ⊘, S1 { 2 }#1 }#2; run drop fn S1(S1 { 2 }#1); drop ℓ3 = S10 { S3 { 5 }#4, S1 { 6 }#5 }#6; run drop fn S3(S3 { 5 }#4); run drop fn S1(S1 { 6 }#5)

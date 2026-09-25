@@ -133,6 +133,20 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
            →     [ℓ0 = †, ℓ1 = ⊘]
          result  PANIC (user) — a defined trap, §6.12
 
+── Identities (§7) ─────────────────────────────────────────────────────────────
+
+One line per owned identity: the step that minted it, the steps that ended
+it (a drop marker, a discarded temporary, a consumption), and the steps whose
+destructor ran on it. `drop_exactly_once` is one entry in the ended column
+per identity, and the step numbers there are the order `drop_order` fixes;
+`[n.k]` is the k-th end of step n, when one step ends several values.
+
+  id    minted  ended                             destructor  ended
+  ────────────────────────────────────────────────────────────────────────
+  #0    [3]     [5] drop ℓ1                       [5]         once
+
+  Every owned identity is ended exactly once (`drop_exactly_once`).
+
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: PANIC (user) — a defined trap, §6.12
          trace up to the trap: drop ℓ1 = S1 { 7 }#0; run drop fn S1(S1 { 7 }#0)
