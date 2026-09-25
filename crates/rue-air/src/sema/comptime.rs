@@ -5024,7 +5024,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     let names: Vec<_> = field_inits.iter().map(|(name, _)| name.clone()).collect();
                     host_value!(self.host.admit_comptime_literal_shape(
                         ty,
-                        ComptimeLiteralShape::StructFields(&names),
+                        ComptimeLiteralShape::Struct { fields: &names },
                         &site,
                     ));
                 }

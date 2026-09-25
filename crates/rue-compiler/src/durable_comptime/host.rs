@@ -331,7 +331,7 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
         };
         let type_name = durable_type_diagnostic_name(ty);
         match shape {
-            rue_air::ComptimeLiteralShape::StructFields(fields) => {
+            rue_air::ComptimeLiteralShape::Struct { fields } => {
                 let mut named = vec![false; members.len()];
                 for field in fields {
                     let Some(index) = members

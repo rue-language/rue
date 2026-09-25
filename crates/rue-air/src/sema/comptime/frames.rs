@@ -25,7 +25,7 @@ pub enum ComptimeChildSlot<'a, N> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComptimeLiteralShape<'a, N> {
     /// The field names of a struct literal, in source order.
-    StructFields(&'a [N]),
+    Struct { fields: &'a [N] },
     /// The variant a payload constructor or a bare variant path names, and
     /// the number of payloads it supplies (zero for a bare path).
     EnumVariant { variant: &'a N, payloads: usize },
