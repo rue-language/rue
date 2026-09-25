@@ -4,7 +4,67 @@ import RueCore.Soundness
 /-!
 # RueCore.Adequacy — `eval` is sound with respect to §6's `Step`
 
-(module docstring to follow)
+ADR-0097's decision 3 proves safety over the definitional interpreter `eval`
+and says that "a theorem about `eval` is a theorem about §6 only once the two
+are proved to agree". `Step.lean` mechanizes §6's reduction relation; this
+module proves the first half of the agreement, RUE-2289's part 2: whatever
+`eval` answers with a value or a panic, §6's `→*` reaches too, with the same
+store, value and trace (`eval_sound`). The converse, completeness modulo fuel,
+is part 3 (RUE-2332), stated over the same relation `Sim`.
+
+## The simulation relation
+
+`eval H φ e` is one expression run to its end; `Step` runs a configuration
+whose focus is that expression under a context. §6.2 writes the configuration
+`⟨H ; φ ; K ; E[e]⟩`; here the context is the list of frames `K` below the
+focus (`Step.lean`'s module docstring), so an expression in focus is the
+family `evalConf H φ e K tr`, one configuration for every context `K` and every
+trace `tr` already produced. `Sim M P φ C r` says what `eval`'s result `r`
+promises about `→*` from the family `C`:
+
+* `.ok H' v tr'`: for every context, `E[e] →* E[v]`, in the frame `φ` the
+  expression started in, with the store `H'` and the trace extended by `tr'`
+  — §6.2's (Search) run to the hole's value;
+* `.panic κ tr'`: for every context, `E[e] →* ↯κ` after `tr'` — (Panic-Lift)
+  §6.2;
+* `.returned H' v tr'`: for every context with a `ret(E', φs)` frame
+  (`Kont.toCall`), the configuration reaches the caller `E'[v]` in `φs` —
+  (D-Return) §6.9, whose drops `eval` has already run from the same frame;
+* `.broke H' sc tr'`: for every context with a loop boundary before any call
+  frame (`Kont.toLoop`) and every successful unwind of the cells the body
+  still owed, the configuration reaches the loop's context with `⟨⟩` —
+  (D-Break) §6.10. `eval`'s loop supplies both premises: the loop frame is on
+  top of the body's context, and `unwindLocs_plain` turns its monitored unwind
+  into the plain one;
+* `.stuck` and `.outOfFuel`: nothing.
+
+`eval_sim` is `Sim` for every expression, store, frame and fuel. Each
+`andThen` in `eval` is one (Search) enter step, the operand's `Sim` under one
+more frame, and a plug step (`Sim.andThen`); argument lists are
+`evalArgs_sim`; the call boundary is `Sim.absorb`; and a loop turn that
+finishes re-enters the body through (D-Loop-Iter) where `eval` re-evaluates
+the whole loop at one less fuel, the one (D-Loop-Enter) between them peeled
+off by determinism (`Sim.peel`, `Step.det`).
+
+## Where typing enters, and where it does not
+
+`eval_sim` and `run_sim` hold on **every** program. The places where `eval`
+and `Step` differ are all refusals on `eval`'s side: the four monitors
+(`linearLeak`, `linearOverwrite`, `linearDiscard`, `ownedUnderCopy`) and the
+`useAfterMove` refusal of `@drop` at a `⊘` place, which §6.11 makes a no-op.
+A refusal is `.stuck`, about which `Sim` promises nothing, and where a monitor
+lets a drop through the plain drop does the same thing (`unwindLocs_plain`,
+`destructure_plain`, `dropRetire_plain`). So soundness needs no typing
+derivation.
+
+Typing is what fixes the domain (RUE-2314): `eval_sound` is stated for the
+programs `check` accepts, where `no_violation` says `run` is never `.stuck`.
+There every outcome is a value, a panic, or `outOfFuel`, and the first two are
+§6's. On other input `run_sim` still holds but says nothing about `.stuck`,
+which is outside the correspondence: three monitors are not §6's, and `eval`
+inspects operand shapes in an order §6.2 does not fix. Completeness (part 3)
+is where the domain does work, because there `Step` can step where `eval`
+refuses.
 -/
 
 namespace RueCore
@@ -16,8 +76,15 @@ for every context `K` and every trace `tr` already produced (§6.1, §6.2). -/
 abbrev evalConf (H : Store) (φ : Frame) (e : Expr) : List Kont → List Event → Config :=
   fun K tr => .run H φ K (.eval e) tr
 
-/-- **The simulation relation** between an `eval` result and `→*` (RUE-2289,
-parts 2 and 3). -/
+/-- **The simulation relation** between an `eval` result and §6's `→*`
+(RUE-2289, parts 2 and 3; the module docstring reads it clause by clause). `C`
+is a configuration family indexed by the context `K` below the focus and the
+trace `tr` produced before it, §6.2's `⟨H ; φ ; K ; E[e]⟩`: a value reaches
+`E[v]` in the frame `φ` (§6.2's (Search)), a panic reaches `↯κ` from every
+context ((Panic-Lift) §6.2), an unwinding `return` reaches the nearest caller
+((D-Return) §6.9), and an unwinding `break` reaches the nearest loop's context
+((D-Break) §6.10). Part 3 (RUE-2332) proves the converse over this same
+relation. -/
 def Sim (M : FloatOps) (P : Program) (φ : Frame) (C : List Kont → List Event → Config) :
     EvalRes → Prop
   | .ok H v tr' => ∀ K tr, Steps M P (C K tr) (.run H φ K (.ret v) (tr ++ tr'))
@@ -32,12 +99,14 @@ def Sim (M : FloatOps) (P : Program) (φ : Frame) (C : List Kont → List Event 
 
 /-! ## `→*` -/
 
+/-- `→*` composes (§6.12) (helper). -/
 theorem Steps.trans {M : FloatOps} {P : Program} {C₁ C₂ C₃ : Config}
     (h₁ : Steps M P C₁ C₂) (h₂ : Steps M P C₂ C₃) : Steps M P C₁ C₃ := by
   induction h₁ with
   | refl => exact h₂
   | step s _ ih => exact .step s (ih h₂)
 
+/-- One step is a run (§6.12) (helper). -/
 theorem Steps.single {M : FloatOps} {P : Program} {C₁ C₂ : Config}
     (h : Step M P C₁ C₂) : Steps M P C₁ C₂ := .step h (.refl _)
 
@@ -46,6 +115,9 @@ def Config.evalFocus : Config → Prop
   | .run _ _ _ (.eval _) _ => True
   | _ => False
 
+/-- **Peeling a step by determinism** (`Step.det`, §6): a run from `C` that
+ends at a configuration with no expression in focus passes through `C`'s one
+successor (helper). -/
 theorem Steps.peel {M : FloatOps} {P : Program} {C C' D : Config}
     (hs : Step M P C C') (h : Steps M P C D) (hC : C.evalFocus) (hD : ¬ D.evalFocus) :
     Steps M P C' D := by
@@ -62,6 +134,7 @@ def Kont.Transparent (F : Kont) : Prop :=
 
 /-! ## Combinators -/
 
+/-- A run into the family carries its simulation back (helper). -/
 theorem Sim.pre {M : FloatOps} {P : Program} {φ : Frame} {C C₂ : List Kont → List Event → Config}
     {r : EvalRes} (hpre : ∀ K tr, Steps M P (C K tr) (C₂ K tr)) (h : Sim M P φ C₂ r) :
     Sim M P φ C r := by
@@ -71,6 +144,8 @@ theorem Sim.pre {M : FloatOps} {P : Program} {φ : Frame} {C C₂ : List Kont �
   · intro K tr φs K' H' evs hK hu; exact (hpre K tr).trans (h K tr φs K' H' evs hK hu)
   · intro K tr; exact (hpre K tr).trans (h K tr)
 
+/-- A run into the family that emits `tr₁` carries its simulation back to
+the result with `tr₁` prefixed (§6.12's accumulating output) (helper). -/
 theorem Sim.withTrace {M : FloatOps} {P : Program} {φ : Frame}
     {C C₂ : List Kont → List Event → Config} {r : EvalRes} {tr₁ : List Event}
     (hpre : ∀ K tr, Steps M P (C K tr) (C₂ K (tr ++ tr₁))) (h : Sim M P φ C₂ r) :
@@ -86,6 +161,11 @@ theorem Sim.withTrace {M : FloatOps} {P : Program} {φ : Frame}
   · intro K tr; have := h K (tr ++ tr₁); simp only [List.append_assoc] at this
     exact (hpre K tr).trans this
 
+/-- **§6.2's (Search), once**: `eval`'s `andThen` is an enter step pushing a
+frame `F`, the operand run under `F`, and a plug of its value into `F`'s hole.
+A `return` or a `break` passes through `F` unchanged because `F` is neither a
+call frame nor a loop boundary, and a panic because (Panic-Lift) discards
+every context (helper). -/
 theorem Sim.andThen {M : FloatOps} {P : Program} {φ φ₁ : Frame}
     {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
     (hC : ∀ K tr, Steps M P (C K tr) (C₁ (F :: K) tr))
@@ -836,8 +916,12 @@ end forms
 
 /-! ## Soundness of `eval` with respect to `Step` -/
 
-/-- **`eval` is simulated by `→*`**, for every expression, store, frame and
-fuel (RUE-2329). -/
+/-- **`eval` is simulated by §6's `→*`** (RUE-2289 part 2, ADR-0097 decision
+3), for every expression, store, frame and fuel, on every program: a value, a
+panic, an unwinding `return` and an unwinding `break` are each reached by
+`Step` from the expression in focus under any context, as `Sim` reads them
+(§6.2's (Search) and (Panic-Lift), (D-Return) §6.9, (D-Break) §6.10). The
+proof is a strong induction on fuel with one lemma per form. -/
 theorem eval_sim (M : FloatOps) (P : Program) (fuel : Nat) : SimIH M P fuel := by
   induction fuel using Nat.strongRecOn with
   | ind n ih =>
@@ -883,7 +967,11 @@ theorem eval_sim (M : FloatOps) (P : Program) (fuel : Nat) : SimIH M P fuel := b
 abbrev Frame.empty : Frame := { env := [], scope := [] }
 
 /-- **`run` is simulated by `→*` from §6.12's initial configuration**, on
-every program. -/
+every program: a value `run` returns is a terminal configuration `✓` that
+`Config.init` reaches with the same store and trace ((D-Return-Main) §6.9,
+(Result-Ok) §6.12), and a panic is `↯κ` after the same trace ((Result-Panic)
+§6.12). No typing hypothesis: every place `eval` and `Step` differ is a
+refusal on `eval`'s side. -/
 theorem run_sim (M : FloatOps) (P : Program) (fuel : Nat) :
     (∀ H v tr, run M P fuel = .ok H v tr →
       Steps M P Config.init (.run H Frame.empty [] (.ret v) tr)) ∧
@@ -897,7 +985,16 @@ theorem run_sim (M : FloatOps) (P : Program) (fuel : Nat) :
     rw [hr] at h
     simpa [Config.init] using h [] []
 
-/-- **`eval` is sound with respect to §6's reduction** (RUE-2329). -/
+/-- **`eval` is sound with respect to §6's reduction** (RUE-2289 part 2;
+ADR-0097 decision 3: "a theorem about `eval` is a theorem about §6 only once
+the two are proved to agree"). For a program `check` accepts
+(`ProgramTyped`, RUE-2314's domain), `run` is never stuck (`no_violation`),
+so it answers a value, a panic or `outOfFuel`; a value is reached by §6's
+`→*` from the initial configuration as a terminal configuration with the same
+store and trace, and a panic as `↯κ` after the same trace (§6.2, §6.12).
+`.stuck` is outside the correspondence and does not occur here; `outOfFuel`
+is not a state of §6's machine, and completeness modulo fuel is part 3
+(RUE-2332). -/
 theorem eval_sound (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
     (∀ H v tr, run M.toFloatOps P fuel = .ok H v tr →
@@ -905,5 +1002,15 @@ theorem eval_sound (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : N
     (∀ k tr, run M.toFloatOps P fuel = .panic k tr →
       Steps M.toFloatOps P Config.init (.panic k tr)) :=
   ⟨no_violation M h fuel, (run_sim M.toFloatOps P fuel).1, (run_sim M.toFloatOps P fuel).2⟩
+
+
+/-- **The theorem at work**: `letAddProgram_runs` (`Step.lean`) found its
+`→*` derivation by running `stepN`; here it comes from `run`'s answer alone,
+through `run_sim` — `let x = 40; x + 2` reaches `✓42` with the `let`'s cell
+retired and nothing printed (§6.7, §6.9, §6.12). -/
+theorem letAddProgram_sound (M : FloatOps) :
+    Steps M letAddProgram Config.init
+      (.run [.dead] Frame.empty [] (.ret (.int .w32 .signed 42)) []) :=
+  (run_sim M letAddProgram 100).1 _ _ _ rfl
 
 end RueCore
