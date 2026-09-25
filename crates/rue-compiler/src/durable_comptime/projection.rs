@@ -393,6 +393,36 @@ pub(crate) fn durable_integer_as_float(
     }
 }
 
+/// Whether a durable type is a struct: declared, builtin, or anonymous from a
+/// type constructor such as `Wrap(u8)` (RUE-2404). Structural comptime values
+/// read the fields of all three through the same host services.
+pub(crate) fn is_durable_struct_type(ty: &DurableType) -> bool {
+    match ty {
+        DurableType::Nominal(key) => key.kind() == crate::StableDefinitionKind::Struct,
+        DurableType::BuiltinNominal { kind, .. } => {
+            *kind == rue_air::SemanticImportNominalKind::Struct
+        }
+        DurableType::AnonymousNominal(identity) => {
+            identity.kind == rue_air::AnonymousNominalKind::Struct
+        }
+        _ => false,
+    }
+}
+
+/// Whether a durable type is an enum; see [`is_durable_struct_type`].
+pub(crate) fn is_durable_enum_type(ty: &DurableType) -> bool {
+    match ty {
+        DurableType::Nominal(key) => key.kind() == crate::StableDefinitionKind::Enum,
+        DurableType::BuiltinNominal { kind, .. } => {
+            *kind == rue_air::SemanticImportNominalKind::Enum
+        }
+        DurableType::AnonymousNominal(identity) => {
+            identity.kind == rue_air::AnonymousNominalKind::Enum
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn durable_const_fits_type(value: &DurableConstValue, ty: &DurableType) -> bool {
     use crate::durable_semantics::{DurableConstValue as V, DurableType as T};
     match (ty, value) {
@@ -410,16 +440,9 @@ pub(crate) fn durable_const_fits_type(value: &DurableConstValue, ty: &DurableTyp
             value.ty == *ty
                 && rue_air::semantic_import_const_value_within_limits(&V::Aggregate(value.clone()))
                 && match (&value.kind, ty) {
-                    (rue_air::SemanticImportAggregateKind::Struct(_), T::Nominal(key)) => {
-                        key.kind() == crate::StableDefinitionKind::Struct
+                    (rue_air::SemanticImportAggregateKind::Struct(_), _) => {
+                        is_durable_struct_type(ty)
                     }
-                    (
-                        rue_air::SemanticImportAggregateKind::Struct(_),
-                        T::BuiltinNominal {
-                            kind: rue_air::SemanticImportNominalKind::Struct,
-                            ..
-                        },
-                    ) => true,
                     (
                         rue_air::SemanticImportAggregateKind::Array(values),
                         T::Array { element, len },
@@ -429,16 +452,9 @@ pub(crate) fn durable_const_fits_type(value: &DurableConstValue, ty: &DurableTyp
                                 .iter()
                                 .all(|value| durable_const_fits_type(value, element))
                     }
-                    (rue_air::SemanticImportAggregateKind::Enum { .. }, T::Nominal(key)) => {
-                        key.kind() == crate::StableDefinitionKind::Enum
+                    (rue_air::SemanticImportAggregateKind::Enum { .. }, _) => {
+                        is_durable_enum_type(ty)
                     }
-                    (
-                        rue_air::SemanticImportAggregateKind::Enum { .. },
-                        T::BuiltinNominal {
-                            kind: rue_air::SemanticImportNominalKind::Enum,
-                            ..
-                        },
-                    ) => true,
                     _ => false,
                 }
         }

@@ -121,8 +121,8 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
                     nodes,
                 )
             }
-            (rue_air::SemanticImportAggregateKind::Struct(values), DurableType::Nominal(key))
-                if key.kind() == crate::StableDefinitionKind::Struct =>
+            (rue_air::SemanticImportAggregateKind::Struct(values), _)
+                if is_durable_struct_type(expected) =>
             {
                 let count = self
                     .services
@@ -144,50 +144,9 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
                 }
                 check_children(values, types, self, nodes)
             }
-            (
-                rue_air::SemanticImportAggregateKind::Enum { variant, payload },
-                DurableType::Nominal(key),
-            ) if key.kind() == crate::StableDefinitionKind::Enum => {
-                let types = self
-                    .services
-                    .resolve_enum_variant_payload_types(expected, *variant)
-                    .map_err(durable_provider_error)?;
-                check_children(payload, types.to_vec(), self, nodes)
-            }
-            (
-                rue_air::SemanticImportAggregateKind::Struct(values),
-                DurableType::BuiltinNominal {
-                    kind: rue_air::SemanticImportNominalKind::Struct,
-                    ..
-                },
-            ) => {
-                let count = self
-                    .services
-                    .resolve_struct_field_count(expected)
-                    .map_err(durable_provider_error)?;
-                if count != values.len() {
-                    return Ok(false);
-                }
-                let mut types = Vec::with_capacity(count);
-                for index in 0..count {
-                    let Some(ty) = self
-                        .services
-                        .resolve_struct_field_type(expected, index as u32)
-                        .map_err(durable_provider_error)?
-                    else {
-                        return Ok(false);
-                    };
-                    types.push(ty);
-                }
-                check_children(values, types, self, nodes)
-            }
-            (
-                rue_air::SemanticImportAggregateKind::Enum { variant, payload },
-                DurableType::BuiltinNominal {
-                    kind: rue_air::SemanticImportNominalKind::Enum,
-                    ..
-                },
-            ) => {
+            (rue_air::SemanticImportAggregateKind::Enum { variant, payload }, _)
+                if is_durable_enum_type(expected) =>
+            {
                 let types = self
                     .services
                     .resolve_enum_variant_payload_types(expected, *variant)
@@ -1034,7 +993,16 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         DurableComptimeScalarPolicy::type_name(ty.as_ref())
     }
     fn type_is_enum(&self, ty: &Self::Type) -> bool {
-        matches!(ty.as_ref(), DurableType::Nominal(key) if key.kind() == crate::StableDefinitionKind::Enum)
+        // A declared enum, or an anonymous one from a type constructor such as
+        // `Option(u8)`, so `O.Some(x)` through `const O = Option(u8);` is a
+        // variant constructor rather than a method call (RUE-2396).
+        match ty.as_ref() {
+            DurableType::Nominal(key) => key.kind() == crate::StableDefinitionKind::Enum,
+            DurableType::AnonymousNominal(identity) => {
+                identity.kind == rue_air::AnonymousNominalKind::Enum
+            }
+            _ => false,
+        }
     }
 
     fn type_is_unsigned(&self, ty: &Self::Type) -> bool {
