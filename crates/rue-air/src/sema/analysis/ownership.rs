@@ -7787,6 +7787,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(())
     }
 
+    /// Whether a parameter is an `inout str` view (ADR-0043 two-types
+    /// model): its argument is a local `StrBuf` or `Str(N)` that keeps its own
+    /// type as the operand, narrowed at the call and validated by
+    /// [`Self::validate_inout_str_operand`] rather than by type identity.
+    pub(crate) fn is_inout_str_param(&self, mode: RirParamMode, ty: Type) -> bool {
+        mode == RirParamMode::Inout && self.is_str_struct(ty)
+    }
+
     /// Validate the source of a bare `inout str` view (ADR-0043 two-types
     /// model, RUE-386). A locally-backed `StrBuf`/`Str(N)` is accepted, as is
     /// forwarding an existing `inout str` parameter (which preserves that
@@ -8132,8 +8140,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 continue;
             }
             let is_str_param = self.is_str_like(param_ty);
-            let is_inout_str_param =
-                param_mode == RirParamMode::Inout && self.is_str_struct(param_ty);
+            let is_inout_str_param = self.is_inout_str_param(param_mode, param_ty);
             let is_exact_str_fixed_ref =
                 matches!(param_mode, RirParamMode::Borrow | RirParamMode::Inout)
                     && self.is_str_fixed_struct(param_ty);
