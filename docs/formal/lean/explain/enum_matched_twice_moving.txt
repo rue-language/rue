@@ -186,6 +186,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          expr    bind E0.K0's payload to [ℓ3]
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = S1 { 1 }#0]
+         events  >> consume E0.K0⟨⊘⟩#1
          result  value E0.K0⟨S1 { 1 }#0⟩#1
   [8]   d5            literal §6.3
          expr    5

@@ -191,6 +191,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          expr    v0[0].x0
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = [S2 { 1 }#0, S2 { 2 }#1]#2]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = [⊘, S2 { 2 }#1]#2]
+         events  >> consume S2 { ⊘ }#0
          result  value 1
   [11]  d5            (Dbg) §5.8, the observable output of §6.12
          expr    @dbg(v0[0].x0)
@@ -253,5 +254,5 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 7
-         drop trace: @dbg prints 10; @dbg prints 1; drop ℓ4 = S2 { 2 }#1; drop ℓ3 = [⊘, ⊘]#2
+         drop trace: @dbg prints 10; consume S2 { ⊘ }#0; @dbg prints 1; drop ℓ4 = S2 { 2 }#1; drop ℓ3 = [⊘, ⊘]#2
 

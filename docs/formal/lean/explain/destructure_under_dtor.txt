@@ -150,7 +150,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          expr    v0.x0
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = S18 { 1, S1 { 2 }#0 }#1]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘]
-         events  >> run drop fn S1(S1 { 2 }#0)
+         events  >> drop ℓ2 = S1 { 2 }#0; run drop fn S1(S1 { 2 }#0); consume S18 { ⊘, ⊘ }#1
          result  value 1
   [8]   d4          (D-Let) §6.7 (mint the binding)
          expr    let v1 = 1 at ℓ3
@@ -180,5 +180,5 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 1
-         drop trace: run drop fn S1(S1 { 2 }#0)
+         drop trace: drop ℓ2 = S1 { 2 }#0; run drop fn S1(S1 { 2 }#0); consume S18 { ⊘, ⊘ }#1
 
