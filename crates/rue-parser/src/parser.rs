@@ -32,6 +32,12 @@ pub struct Parser {
     /// head scan needs to look past a parenthesised group (A.2:2 item 6), so
     /// nested groups cost one lookup each instead of one walk each.
     paren_close: Option<Vec<u32>>,
+    /// Token index where the innermost enclosing `if`/`while` condition, `for`
+    /// iterable or `match` scrutinee began, while that head is being parsed.
+    /// At the head's own bracket depth a `return`/`break` directly followed by
+    /// `{` takes no operand, so `while return {}` keeps `{}` as its body
+    /// (RUE-209); everywhere else `{` begins the operand (4.9:2, RUE-2449).
+    condition_head: Option<usize>,
 }
 struct PrimitiveTypeSpurs {
     i8: Spur,
@@ -174,6 +180,7 @@ impl Parser {
             interner_error,
             anonymous_type_literals: 0,
             paren_close: None,
+            condition_head: None,
         }
     }
 
@@ -199,6 +206,7 @@ impl Parser {
             interner_error,
             anonymous_type_literals: 0,
             paren_close: None,
+            condition_head: None,
         }
     }
 
