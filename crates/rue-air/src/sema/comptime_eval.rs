@@ -2633,9 +2633,11 @@ pub(super) fn initializer_may_evaluate_to_type_with_bindings(
 
 /// Whether a dotted receiver spine could still name a module, type, or
 /// constant binding: it must be a chain of member accesses bottoming out at a
-/// `VarRef` whose name no runtime binding shadows (spec 4.14:6). This mirrors
-/// the reachability requirement of the evaluator's own qualified-call walk,
-/// which rejects every other receiver shape as a runtime call.
+/// `VarRef` whose name no runtime binding shadows (spec 4.14:6), or at an
+/// intrinsic, which no binding can shadow and which roots a module path when
+/// it is an inline `@import("path")` (RUE-2439). This mirrors the reachability
+/// requirement of the evaluator's own qualified-call walk, which rejects every
+/// other receiver shape (and any other intrinsic root) as a runtime call.
 fn spine_root_names_unshadowed_binding(
     rir: &rue_rir::Rir,
     mut cursor: InstRef,
@@ -2644,6 +2646,7 @@ fn spine_root_names_unshadowed_binding(
     loop {
         match &rir.get(cursor).data {
             InstData::VarRef { name, .. } => return !runtime_bindings.contains(name),
+            InstData::Intrinsic { .. } => return true,
             InstData::FieldGet { base, .. } => cursor = *base,
             _ => return false,
         }
@@ -2999,6 +3002,12 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
     }
     fn type_is_module(&self, ty: &Type) -> bool {
         ty.as_module().is_some()
+    }
+    fn inline_import_module(&self, specifier: &Spur, span: Span) -> Option<Type> {
+        let path = self.body_interner().resolve(specifier);
+        self.resolve_canonical_import(path, span)
+            .ok()
+            .map(Type::new_module)
     }
     fn type_is_unsigned(&self, ty: &Type) -> bool {
         ty.is_unsigned()

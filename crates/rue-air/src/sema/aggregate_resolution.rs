@@ -311,6 +311,52 @@ pub(crate) struct InlineImportSpine {
     pub(crate) fields: Vec<Spur>,
 }
 
+/// A dotted spine rooted at an intrinsic call rather than a name
+/// (`@import("x.rue").inner.f`), decoded from RIR syntax alone.
+pub(crate) struct IntrinsicRootedSpine {
+    /// The intrinsic's name as written.
+    pub(crate) name: Spur,
+    /// The intrinsic's arguments.
+    pub(crate) args: rue_rir::RirCallArgsRange,
+    /// The span of the intrinsic call.
+    pub(crate) root_span: rue_span::Span,
+    /// The field names hanging off the root, in source order.
+    pub(crate) fields: Vec<Spur>,
+}
+
+/// The one syntactic walk of a `FieldGet` chain down to an intrinsic root.
+///
+/// Pure syntax, like [`decode_module_spine`], and it does not classify the
+/// intrinsic: [`decode_inline_import_spine`] recognizes `@import` by its
+/// interned spelling, and the comptime engine by its own intrinsic decoder, so
+/// both walk the same spine. Returns `None` for any other root.
+pub(crate) fn decode_intrinsic_rooted_spine(
+    rir: &Rir,
+    inst_ref: InstRef,
+) -> Option<IntrinsicRootedSpine> {
+    let mut fields = Vec::new();
+    let mut cursor = inst_ref;
+    loop {
+        let inst = rir.get(cursor);
+        match &inst.data {
+            InstData::FieldGet { base, field } => {
+                fields.push(*field);
+                cursor = *base;
+            }
+            InstData::Intrinsic { name, args } => {
+                fields.reverse();
+                return Some(IntrinsicRootedSpine {
+                    name: *name,
+                    args: args.clone(),
+                    root_span: inst.span,
+                    fields,
+                });
+            }
+            _ => return None,
+        }
+    }
+}
+
 /// The one syntactic decoder for a module spine whose root is an inline
 /// `@import("path")` rather than a name (RUE-2401).
 ///
@@ -325,24 +371,13 @@ pub(crate) fn decode_inline_import_spine(
     interner: &lasso::ThreadedRodeo,
     inst_ref: InstRef,
 ) -> Option<InlineImportSpine> {
-    let mut fields = Vec::new();
-    let mut cursor = inst_ref;
-    let (name, args) = loop {
-        match &rir.get(cursor).data {
-            InstData::FieldGet { base, field } => {
-                fields.push(*field);
-                cursor = *base;
-            }
-            InstData::Intrinsic { name, args } => break (*name, args),
-            _ => return None,
-        }
-    };
-    if rue_builtins::IntrinsicName::from_spelling(interner.resolve(&name))
+    let spine = decode_intrinsic_rooted_spine(rir, inst_ref)?;
+    if rue_builtins::IntrinsicName::from_spelling(interner.resolve(&spine.name))
         != Some(rue_builtins::IntrinsicName::Import)
     {
         return None;
     }
-    let args = rir.intrinsic_args(args);
+    let args = rir.intrinsic_args(&spine.args);
     let mut args = args.iter();
     let (Some(arg), None) = (args.next(), args.next()) else {
         return None;
@@ -350,10 +385,9 @@ pub(crate) fn decode_inline_import_spine(
     let InstData::StringConst { content, .. } = rir.get(arg.value).data else {
         return None;
     };
-    fields.reverse();
     Some(InlineImportSpine {
         path: content,
-        fields,
+        fields: spine.fields,
     })
 }
 
