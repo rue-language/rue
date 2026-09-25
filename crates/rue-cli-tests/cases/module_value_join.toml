@@ -68,6 +68,13 @@ pub fn f(x: usize) -> usize { x }
 ]
 exit_code = 42
 
+# This case has no `differential_opt = true` and no explicit `-O` in `args`,
+# so the harness compiles and runs it once at the driver's default optimization
+# level, `-O0` (`OptLevel::default()`, crates/rue-cfg/src/opt/mod.rs); it does
+# not sweep -O1..-O3. At -O3 specifically, inlining `pick` (which holds a
+# module-typed local) hits a pre-existing -O3 inliner bug tracked separately as
+# RUE-2419 ("MissingLiveType(<module>)"); that bug is unrelated to this join
+# fix and is not exercised here.
 [[case]]
 name = "const_bound_module_join_nested_and_diverging"
 description = "Nested joins, a block-tailed branch and a diverging branch over a const-bound module"

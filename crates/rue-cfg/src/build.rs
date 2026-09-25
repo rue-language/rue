@@ -3344,12 +3344,6 @@ impl<'a> CfgBuilder<'a> {
             .set_terminator(exit_block, Terminator::Goto { target, args });
     }
 
-    /// Terminate `exit_block` with a `Goto` into `join_block`, passing the
-    /// branch's value as the single block arg IFF the join has a result
-    /// param. This is the ONE place the value-branch/join-param arity
-    /// contract is encoded — if/else arms and match arms all wire through
-    /// here, so the contract cannot drift between constructs (the RUE-347
-    /// bug class lives exactly on this seam).
     /// Add the block parameter that carries an `if`/`match` result into its
     /// join block, or `None` when the result type has no runtime value.
     ///
@@ -3374,12 +3368,19 @@ impl<'a> CfgBuilder<'a> {
         })
     }
 
-    /// Jump from a branch's exit block to its join, passing exactly one
-    /// argument when the join has a result parameter and none otherwise.
+    /// Terminate `exit_block` with a `Goto` into `join_block`, passing the
+    /// branch's value as the single block arg IFF the join has a result
+    /// param. This is the ONE place the value-branch/join-param arity
+    /// contract is encoded — if/else arms and match arms all wire through
+    /// here, so the contract cannot drift between constructs (the RUE-347
+    /// bug class lives exactly on this seam).
     ///
     /// A branch that continues without a CFG value while the join expects one
-    /// gets the same zero filler `lower_value` materializes, so the edge
-    /// never passes fewer arguments than the join block declares.
+    /// is not a valid program shape: `join_param` omits a param exactly for
+    /// the types that produce no runtime value (see its doc comment), so
+    /// every branch of a runtime-typed join must have one. Reaching that case
+    /// here is a builder or sema bug, and it records an internal-compiler-
+    /// error diagnostic rather than synthesizing a filler value (RUE-2415).
     fn goto_join(
         &mut self,
         exit_block: BlockId,
@@ -3390,14 +3391,25 @@ impl<'a> CfgBuilder<'a> {
     ) {
         let args: Vec<CfgValue> = match (result_param, value) {
             (Some(_), Some(val)) => vec![val],
-            (Some((_, ty)), None) => vec![self.cfg.add_inst_to_block(
-                exit_block,
-                CfgInst {
-                    data: CfgInstData::Const(0),
-                    ty,
+            (Some((_, ty)), None) => {
+                // `join_param` only omits a param for `()`, `!`, a module, or a
+                // comptime `type` (see its doc comment), so every branch that
+                // reaches a join expecting `ty` must have produced a value.
+                // Reaching here means a builder or sema bug let a runtime-typed
+                // branch through with none. Record a clean internal-compiler-
+                // error diagnostic rather than filling a zero: a filler would
+                // carry `ty` and so pass the verifier's arity and type check,
+                // silently turning a real bug into a miscompile (RUE-2415).
+                self.errors.push(CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "goto_join: branch into block {join_block:?} (expects a \
+                         value of type {ty:?}) reached the join with no CFG \
+                         value (phase: cfg_builder). This is a compiler bug."
+                    )),
                     span,
-                },
-            )],
+                ));
+                vec![]
+            }
             (None, _) => vec![],
         };
         let args_result = self.cfg.push_goto_args(args);
