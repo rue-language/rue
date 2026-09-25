@@ -1,0 +1,156 @@
+# RUE-2439: a type-constructor head rooted at an inline `@import` in a
+# function body reduces as the const-bound and let-bound forms do (4.14:23,
+# 10.4:1), so inference types what the head constructs.
+#
+# The comptime engine decoded a module path only when its root was a name, so
+# `@import("x.rue").Option(u64)` was not a path at all. The head stayed
+# unreduced, inference had no fact for the construction, and an integer literal
+# defaulted to `i32`: `.Some(3)` into `u64` was E0206, a `5000000000` field was
+# E0800 for `i32`, and a `u8` argument of `300` silently truncated to 44. The
+# engine now roots such a path at the imported module, the way a `let`-bound
+# module root is resolved (RUE-2426).
+
+[section]
+id = "cli.inline_import_head_reduction"
+name = "Inline-import constructor heads in bodies (RUE-2439)"
+description = "A constructor head rooted at an inline @import reduces in a function body, so its arguments and literals take their declared types."
+
+[[case]]
+name = "inline_import_enum_variant_head"
+description = "RUE-2439's repro: `@import(\"x.rue\").Option(u64).Some(3)` into a `u64` payload runs (was E0206, expected u64, found i32)."
+files = [
+    { path = "main.rue", source = """
+const x = @import("x.rue");
+fn main() -> i32 {
+    let o: x.Option(u64) = @import("x.rue").Option(u64).Some(3);
+    match o { x.Option(u64).Some(v) => @intCast(v), x.Option(u64).None => 0 }
+}
+""" },
+    { path = "x.rue", source = """
+pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "inline_import_wide_payload_literal"
+description = "An unannotated `@import(\"x.rue\").Option(u64).Some(5000000000)` takes the payload's `u64` (was E0800 for `i32`)."
+files = [
+    { path = "main.rue", source = """
+const x = @import("x.rue");
+fn main() -> i32 {
+    let o = @import("x.rue").Option(u64).Some(5000000000);
+    match o { x.Option(u64).Some(v) => @intCast(v / 1000000000), x.Option(u64).None => 0 }
+}
+""" },
+    { path = "x.rue", source = """
+pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
+""" },
+]
+exit_code = 5
+
+[[case]]
+name = "inline_import_struct_literal_and_array"
+description = "Inline-head struct literals take their field types and join as array elements (the array was E0903, the wide field E0800)."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let big = @import("x.rue").R(u64) { v: 5000000000, w: 0 };
+    let xs = [@import("x.rue").R(u64) { v: 40, w: 0 }, @import("x.rue").R(u64) { v: 0, w: 2 }];
+    @intCast(big.v / 5000000000 - 1 + xs[0].v + xs[1].w)
+}
+""" },
+    { path = "x.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T } }
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "inline_import_associated_and_method_calls"
+description = "`@import(\"x.rue\").Box(i64).make(-1)`, a method on an inline-head value, an `inout self` method, and a `let` alias of the head all type their integer arguments as `i64` (each was E0206 on the RUE-2438 slot check and relied on untyped lowering before it)."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let a = @import("x.rue").Box(i64).make(-1);
+    let mut c = @import("x.rue").Box(i64) { v: 7 };
+    c.set(40);
+    let T = @import("x.rue").Box(i64);
+    let t = T { v: 1 };
+    @intCast(a.get() + c.add(2) + t.add(0))  // -1 + 42 + 1
+}
+""" },
+    { path = "x.rue", source = """
+pub fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn make(v: T) -> Self { Self { v: v } }
+        fn get(borrow self) -> T { self.v }
+        fn set(inout self, x: T) { self.v = x; }
+        fn add(self, x: T) -> T { self.v + x }
+    }
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "inline_import_narrow_argument_is_range_checked"
+description = "`@import(\"x.rue\").Box(u8).make(300)` checks `300` against `u8` (E0800); it used to default to `i32` and truncate to 44."
+compile_fail = true
+error_contains = ["E0800", "out of range for type 'u8'"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let b = @import("x.rue").Box(u8).make(300); @intCast(b.v) }
+""" },
+    { path = "x.rue", source = """
+pub fn Box(comptime T: type) -> type { struct { v: T, fn make(v: T) -> Self { Self { v: v } } } }
+""" },
+]
+
+[[case]]
+name = "inline_import_reexported_head"
+description = "An inline import of a facade whose `Box` re-exports another module's constructor reduces too."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let b = @import("lib/facade.rue").Box(i64).make(7); @intCast(b.v) }
+""" },
+    { path = "lib/boxes.rue", source = """
+pub fn Box(comptime T: type) -> type { struct { v: T, fn make(v: T) -> Self { Self { v: v } } } }
+""" },
+    { path = "lib/facade.rue", source = """
+const boxes = @import("boxes.rue");
+pub const Box = boxes.Box;
+""" },
+]
+exit_code = 7
+
+[[case]]
+name = "inline_import_std_submodule_head"
+description = "`@import(\"std\").arraybuf.ArrayBuf(u64).new()` walks the submodule, so `push(5000000000)` takes `u64` (was E0800 for `i32`)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let mut v = @import("std").arraybuf.ArrayBuf(u64).new();
+    v.push(5000000000);
+    v.push(2);
+    @intCast(v.len())
+}
+""" },
+]
+exit_code = 2
+
+[[case]]
+name = "inline_import_head_as_comptime_argument"
+description = "An inline-import head passed as a comptime type argument reduces (was E1201)."
+files = [
+    { path = "main.rue", source = """
+fn f(comptime T: type) -> i32 { let t = T { v: 40, w: 2 }; @intCast(t.v + t.w) }
+fn main() -> i32 { f(@import("x.rue").R(u64)) }
+""" },
+    { path = "x.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T } }
+""" },
+]
+exit_code = 42
