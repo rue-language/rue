@@ -1004,6 +1004,200 @@ theorem eval_sound (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : N
   ⟨no_violation M h fuel, (run_sim M.toFloatOps P fuel).1, (run_sim M.toFloatOps P fuel).2⟩
 
 
+/-! ## Counted runs -/
+
+/-- `→ⁿ`: a run of exactly `n` steps of §6's reduction (helper). Completeness
+counts steps, because fuel is a bound on them. -/
+inductive StepsN (M : FloatOps) (P : Program) : Nat → Config → Config → Prop where
+  | refl (C : Config) : StepsN M P 0 C C
+  | step {n : Nat} {C₁ C₂ C₃ : Config} :
+      Step M P C₁ C₂ → StepsN M P n C₂ C₃ → StepsN M P (n + 1) C₁ C₃
+
+section counted
+variable {M : FloatOps} {P : Program}
+
+/-- A counted run is a run (§6.12's `→*`) (helper). -/
+theorem StepsN.toSteps {n : Nat} {C D : Config} (h : StepsN M P n C D) : Steps M P C D := by
+  induction h with
+  | refl => exact .refl _
+  | step s _ ih => exact .step s ih
+
+/-- Every run has a length (helper). -/
+theorem Steps.toN {C D : Config} (h : Steps M P C D) : ∃ n, StepsN M P n C D := by
+  induction h with
+  | refl C => exact ⟨0, .refl C⟩
+  | step s _ ih => obtain ⟨n, h⟩ := ih; exact ⟨n + 1, .step s h⟩
+
+/-- Counted runs compose (helper). -/
+theorem StepsN.trans {a b : Nat} {C E D : Config} (h₁ : StepsN M P a C E) (h₂ : StepsN M P b E D) :
+    StepsN M P (a + b) C D := by
+  induction h₁ with
+  | refl => simpa using h₂
+  | step s _ ih => rw [Nat.add_right_comm]; exact .step s (ih h₂)
+
+/-- A run of `n` steps has a run of every shorter length from the same start
+(helper). -/
+theorem StepsN.prefix {n : Nat} {C D : Config} (h : StepsN M P n C D) :
+    ∀ {m : Nat}, m ≤ n → ∃ E, StepsN M P m C E := by
+  induction h with
+  | refl C => intro m hm; exact ⟨C, by rw [Nat.le_zero.mp hm]; exact .refl C⟩
+  | @step n C₁ C₂ C₃ s _ ih =>
+      intro m hm
+      cases m with
+      | zero => exact ⟨C₁, .refl C₁⟩
+      | succ m =>
+          obtain ⟨E, hE⟩ := ih (Nat.le_of_succ_le_succ hm)
+          exact ⟨E, .step s hE⟩
+
+/-- **Determinism, counted** (`Step.det`, §6): two runs of the same length
+from one configuration end at the same configuration (helper). -/
+theorem StepsN.det {n : Nat} {C D D' : Config} (h : StepsN M P n C D) (h' : StepsN M P n C D') :
+    D = D' := by
+  induction h generalizing D' with
+  | refl => cases h'; rfl
+  | step s _ ih =>
+      cases h' with
+      | step s' rest' => rw [Step.det s s'] at *; exact ih rest'
+
+/-- Peeling a counted run's first step by determinism (helper). -/
+theorem StepsN.peel {n : Nat} {C C' D : Config} (hs : Step M P C C') (h : StepsN M P (n + 1) C D) :
+    StepsN M P n C' D := by
+  cases h with
+  | step s rest => rw [Step.det hs s]; exact rest
+
+/-- **A configuration that takes no step bounds every run** through it (§6,
+by `Step.det`): if `→ᵏ` reaches a configuration with no successor — terminal
+or stuck — no run from the same start is longer than `k` (helper). -/
+theorem StepsN.bound {k : Nat} {C T : Config} (hT : StepsN M P k C T) (hfin : ∀ C', ¬ Step M P T C') :
+    ∀ {n : Nat} {D : Config}, StepsN M P n C D → n ≤ k := by
+  induction hT with
+  | refl =>
+      intro n D h
+      cases h with
+      | refl => exact Nat.le_refl 0
+      | step s _ => exact absurd s (hfin _)
+  | step s _ ih =>
+      intro n D h
+      cases h with
+      | refl => exact Nat.zero_le _
+      | step s' rest' =>
+          rw [Step.det s s'] at ih
+          exact Nat.succ_le_succ (ih hfin rest')
+
+/-- **One end per start** (§6, by `Step.det`): two configurations with no
+successor reached from the same configuration are the same one (helper). -/
+theorem Steps.final_unique {C T₁ T₂ : Config} (h₁ : Steps M P C T₁) (h₂ : Steps M P C T₂)
+    (hf₁ : ∀ C', ¬ Step M P T₁ C') (hf₂ : ∀ C', ¬ Step M P T₂ C') : T₁ = T₂ := by
+  induction h₁ with
+  | refl => cases h₂ with
+    | refl => rfl
+    | step s _ => exact absurd s (hf₁ _)
+  | step s _ ih =>
+      cases h₂ with
+      | refl => exact absurd s (hf₂ _)
+      | step s' rest' => rw [Step.det s s'] at ih; exact ih rest' hf₁
+
+/-! ## Fuel counts steps -/
+
+/-- A run of `n` steps from every member of a configuration family: from
+`⟨H ; φ ; K ; E[e]⟩`, for every context `K` and trace `tr` (helper). -/
+def Long (M : FloatOps) (P : Program) (C : List Kont → List Event → Config) (n : Nat) : Prop :=
+  ∀ K tr, ∃ D, StepsN M P n (C K tr) D
+
+/-- A family with long runs has shorter ones (helper). -/
+theorem Long.mono {C : List Kont → List Event → Config} {m n : Nat} (hmn : m ≤ n)
+    (h : Long M P C n) : Long M P C m := by
+  intro K tr
+  obtain ⟨D, hD⟩ := h K tr
+  exact hD.prefix hmn
+
+/-- A run into a family with long runs is at least as long (helper). -/
+theorem Long.pre {C C₂ : List Kont → List Event → Config} {n : Nat}
+    (hpre : ∀ K tr, ∃ tr', Steps M P (C K tr) (C₂ K tr')) (h : Long M P C₂ n) : Long M P C n := by
+  intro K tr
+  obtain ⟨tr', hs⟩ := hpre K tr
+  obtain ⟨m, hm⟩ := hs.toN
+  obtain ⟨D, hD⟩ := h K tr'
+  exact (hm.trans hD).prefix (Nat.le_add_left n m)
+
+/-- A step and then a run into a family with long runs is one step longer
+(helper). -/
+theorem Long.pre1 {C C₂ : List Kont → List Event → Config} {n : Nat}
+    (hpre : ∀ K tr, ∃ C' tr', Step M P (C K tr) C' ∧ Steps M P C' (C₂ K tr'))
+    (h : Long M P C₂ n) : Long M P C (n + 1) := by
+  intro K tr
+  obtain ⟨C', tr', s, hs⟩ := hpre K tr
+  obtain ⟨m, hm⟩ := hs.toN
+  obtain ⟨D, hD⟩ := h K tr'
+  have := StepsN.step s (hm.trans hD)
+  exact this.prefix (by omega)
+
+/-- **§6.2's (Search), counted**: the twin of `Sim.andThen` for exhausted
+fuel. If `eval` spent its fuel on the operand, the operand's run under the
+pushed frame `F` is the long one, one enter step in; if the operand reached a
+value (`Sim`'s `ok` clause gives the run to it) and the context spent the fuel,
+the context's run is (helper). -/
+theorem Long.andThen {φ₁ : Frame} {C C₁ : List Kont → List Event → Config} {F : Kont} {fuel : Nat}
+    (hC : ∀ K tr, Step M P (C K tr) (C₁ (F :: K) tr))
+    {r : EvalRes} (hsim : Sim M P φ₁ C₁ r) (h₁ : r = .outOfFuel → Long M P C₁ fuel)
+    {k : Store → Val → EvalRes}
+    (hk : ∀ H₁ v tr₁, r = .ok H₁ v tr₁ → k H₁ v = .outOfFuel →
+      Long M P (fun K tr => .run H₁ φ₁ (F :: K) (.ret v) tr) fuel) :
+    r.andThen k = .outOfFuel → Long M P C (fuel + 1) := by
+  intro hr
+  cases r with
+  | ok H₁ v tr₁ =>
+      simp only [EvalRes.andThen, EvalRes.withTrace_outOfFuel_iff] at hr
+      exact Long.pre1 (fun K tr => ⟨_, tr ++ tr₁, hC K tr, hsim (F :: K) tr⟩) (hk H₁ v tr₁ rfl hr)
+  | outOfFuel =>
+      exact Long.pre1 (C₂ := fun K tr => C₁ (F :: K) tr)
+        (fun K tr => ⟨_, tr, hC K tr, .refl _⟩) (fun K tr => h₁ rfl (F :: K) tr)
+  | _ => simp [EvalRes.andThen] at hr
+
+/-- The induction hypothesis: at fuel `fuel`, exhaustion is a run of `fuel`
+steps (helper). -/
+def LongIH (M : FloatOps) (P : Program) (fuel : Nat) : Prop :=
+  ∀ H φ e, eval M fuel P H φ e = .outOfFuel → Long M P (evalConf H φ e) fuel
+
+/-- **Argument lists, counted** (§6.2's `…( v̄, E, ē )`): a list that spent
+its fuel on an element has a run one step longer than the element's fuel, the
+extra step being the (Search) push into the element's hole (helper). -/
+theorem evalArgs_long {fuel : Nat} {φ : Frame} (IH : LongIH M P fuel) (t : ArgsTag) :
+    ∀ (es : List Expr) (H : Store) (vs₀ : List Val),
+    evalArgs (fun H e => eval M fuel P H φ e) H es = .abort .outOfFuel →
+      Long M P (argsConf H φ t vs₀ es) (fuel + 1)
+  | [], H, vs₀, h => by simp [evalArgs] at h
+  | e :: es, H, vs₀, h => by
+      have hpush : ∀ K tr, Step M P (argsConf H φ t vs₀ (e :: es) K tr)
+          (evalConf H φ e (.args t vs₀ es :: K) tr) := fun K tr => .argsPush
+      cases he : eval M fuel P H φ e with
+      | ok H₁ v tr₁ =>
+          simp only [evalArgs, he] at h
+          split at h
+          · simp at h
+          · rename_i r' h₂
+            simp only [ArgsRes.abort.injEq, EvalRes.withTrace_outOfFuel_iff] at h
+            subst h
+            have ih := evalArgs_long IH t es H₁ (vs₀ ++ [v]) h₂
+            have hs := eval_sim M P fuel H φ e
+            rw [he] at hs
+            refine Long.pre (fun K tr => ⟨tr ++ tr₁, ?_⟩) ih
+            exact .step (hpush K tr) ((hs _ tr).trans (Steps.single .argsPlug))
+      | outOfFuel =>
+          exact Long.pre1 (C₂ := fun K tr => evalConf H φ e (.args t vs₀ es :: K) tr)
+            (fun K tr => ⟨_, tr, hpush K tr, .refl _⟩) (fun K tr => IH H φ e he _ tr)
+      | _ => simp [evalArgs, he] at h
+
+/-- `evalArgs` finishes as `eval_sim` says, from the argument list (helper). -/
+theorem evalArgs_ok_steps {fuel : Nat} {φ : Frame} {t : ArgsTag} {es : List Expr} {H H' : Store}
+    {vs : List Val} {tr' : List Event}
+    (h : evalArgs (fun H e => eval M fuel P H φ e) H es = .ok H' vs tr') :
+    ∀ K tr, Steps M P (argsConf H φ t [] es K tr) (.run H' φ K (.args t vs []) (tr ++ tr')) := by
+  intro K tr
+  simpa using (evalArgs_sim (eval_sim M P fuel) t es H []).1 _ _ _ h K tr
+
+end counted
+
 /-- **The theorem at work**: `letAddProgram_runs` (`Step.lean`) found its
 `→*` derivation by running `stepN`; here it comes from `run`'s answer alone,
 through `run_sim` — `let x = 40; x + 2` reaches `✓42` with the `let`'s cell
