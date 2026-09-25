@@ -223,4 +223,168 @@ theorem evalArgs_sim {M : FloatOps} {P : Program} {fuel : Nat} {φ : Frame}
           rw [he] at h₁
           exact Sim.lift (fun _ => ⟨rfl, rfl⟩) hpush h₁ (by simp)
 
+
+/-- Where no `Sim` target has an expression in focus, a first step of `C`
+can be peeled off by determinism (helper). -/
+theorem Sim.peel {M : FloatOps} {P : Program} {φ : Frame}
+    {C C₂ : List Kont → List Event → Config} {r : EvalRes}
+    (hs : ∀ K tr, Step M P (C K tr) (C₂ K tr)) (hC : ∀ K tr, (C K tr).evalFocus)
+    (h : Sim M P φ C r) : Sim M P φ C₂ r := by
+  cases r <;> simp only [Sim] at h ⊢
+  · intro K tr; exact Steps.peel (hs K tr) (h K tr) (hC K tr) (by simp [Config.evalFocus])
+  · intro K tr φs K' hK
+    exact Steps.peel (hs K tr) (h K tr φs K' hK) (hC K tr) (by simp [Config.evalFocus])
+  · intro K tr φs K' H' evs hK hu
+    exact Steps.peel (hs K tr) (h K tr φs K' H' evs hK hu) (hC K tr) (by simp [Config.evalFocus])
+  · intro K tr; exact Steps.peel (hs K tr) (h K tr) (hC K tr) (by simp [Config.evalFocus])
+
+/-- `evalArgs` aborts only with a result that is not a value (helper). -/
+theorem evalArgs_abort_ne_ok {ev : Store → Expr → EvalRes} :
+    ∀ {es : List Expr} {H : Store} {r : EvalRes}, evalArgs ev H es = .abort r →
+      ∀ H' v tr, r ≠ .ok H' v tr
+  | [], _, _, h => by simp [evalArgs] at h
+  | e :: es, H, r, h => by
+      intro H' v tr hr
+      subst hr
+      simp only [evalArgs] at h
+      split at h
+      · split at h
+        · simp at h
+        · rename_i r' h'
+          simp only [ArgsRes.abort.injEq] at h
+          cases r' <;> simp [EvalRes.withTrace] at h
+          exact evalArgs_abort_ne_ok h' _ _ _ rfl
+      · rename_i hne
+        simp only [ArgsRes.abort.injEq] at h
+        exact hne _ _ _ h
+
+/-- `andThen` after a trace prefix (helper). -/
+theorem EvalRes.withTrace_andThen (r : EvalRes) (t : List Event) (k : Store → Val → EvalRes) :
+    (r.withTrace t).andThen k = (r.andThen k).withTrace t := by
+  cases r with
+  | ok H v tr =>
+      simp only [EvalRes.withTrace, EvalRes.andThen]
+      cases k H v <;> simp [List.append_assoc]
+  | _ => simp [EvalRes.withTrace, EvalRes.andThen]
+
+/-- The root of a place, as `eval` resolves it inline, is `rootCell` (helper). -/
+theorem rootCell_of {H : Store} {φ : Frame} {i ℓ : Nat} {c : Contents}
+    (hℓ : φ.env[i]? = some ℓ) (hc : H[ℓ]? = some (.full c)) : rootCell H φ i = .ok (ℓ, c) := by
+  simp [rootCell, hℓ, hc]
+
+/-- (D-EndScope) restores the frame (D-Let) or (D-Match) extended (helper). -/
+theorem Frame.popScope_push (φ : Frame) (ls : List Nat) :
+    ({ env := ls.reverse ++ φ.env, scope := φ.scope ++ ls } : Frame).popScope ls.length = φ := by
+  cases φ
+  simp [Frame.popScope]
+
+/-- (D-EndScope) after (D-Let) (helper). -/
+theorem Frame.popScope_let (φ : Frame) (ℓ : Nat) :
+    ({ env := ℓ :: φ.env, scope := φ.scope ++ [ℓ] } : Frame).popScope 1 = φ := by
+  cases φ
+  simp [Frame.popScope]
+
+/-- The monitor-free unwind of one cell (helper). -/
+theorem plainUnwind_single {D : Decls} {H H' : Store} {ℓ : Nat} {evs : List Event}
+    (h : dropRetire D H ℓ = .ok (H', evs)) : plainUnwind D H [ℓ] = .ok (H', evs) := by
+  simp [plainUnwind, dropRetire_plain h]
+
+section forms
+variable {M : FloatOps} {P : Program} {fuel : Nat} {H : Store} {φ : Frame}
+
+/-- (D-Use-Declared-Linear), (D-Use-Copy), (D-Use-Move) §6.3 (helper). -/
+theorem sim_use (p : Place) :
+    Sim M P φ (evalConf H φ (.use p)) (eval M (fuel + 1) P H φ (.use p)) := by
+  simp only [eval]
+  split
+  · trivial
+  · rename_i ℓ hℓ
+    split
+    · trivial
+    · trivial
+    · rename_i c hc
+      have hroot := rootCell_of hℓ hc
+      split
+      · rename_i πd πs hplan
+        split
+        · trivial
+        · rename_i cd hcd
+          split
+          · trivial
+          · rename_i leaf evs hd
+            split
+            · trivial
+            · rename_i v hv
+              split
+              · trivial
+              · rename_i c' hw
+                intro K tr
+                exact Steps.single (.useDeclared hroot hplan hcd (destructure_plain hd) hv hw)
+      · rename_i hplan
+        split
+        · trivial
+        · rename_i sub hsub
+          split
+          · trivial
+          · rename_i v hv
+            split
+            · rename_i hcopy
+              intro K tr; simpa using Steps.single (.useCopy hroot hplan hsub hv hcopy)
+            · rename_i hcopy
+              split
+              · trivial
+              · rename_i c' hw
+                intro K tr; simpa using Steps.single (.useMove hroot hplan hsub hv hcopy hw)
+
+/-- §6.11's `@drop` at a constant place (helper). -/
+theorem sim_drop (p : Place) :
+    Sim M P φ (evalConf H φ (.drop p)) (eval M (fuel + 1) P H φ (.drop p)) := by
+  simp only [eval]
+  split
+  · trivial
+  · rename_i ℓ hℓ
+    split
+    · trivial
+    · trivial
+    · rename_i c hc
+      have hroot := rootCell_of hℓ hc
+      split
+      · rename_i πd πs hplan
+        split
+        · trivial
+        · rename_i cd hcd
+          split
+          · trivial
+          · rename_i leaf evs hd
+            split
+            · trivial
+            · split
+              · trivial
+              · rename_i levs hl
+                split
+                · trivial
+                · rename_i c' hw
+                  intro K tr
+                  exact Steps.single (.dropDeclared hroot hplan hcd (destructure_plain hd) hl hw)
+      · rename_i hplan
+        split
+        · trivial
+        · rename_i sub hsub
+          split
+          · trivial
+          · split
+            · trivial
+            · rename_i evs hdrop
+              split
+              · rename_i hcopy
+                intro K tr; simpa using Steps.single (.dropCopy hroot hplan hsub hcopy)
+              · rename_i hcopy
+                split
+                · trivial
+                · rename_i c' hw
+                  intro K tr
+                  simpa using Steps.single (.dropMove hroot hplan hsub hcopy hdrop hw)
+
+end forms
+
 end RueCore
