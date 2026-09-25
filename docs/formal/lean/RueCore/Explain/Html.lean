@@ -243,7 +243,7 @@ def page (title body : String) : String :=
 
 /-- The identity ledger (`Explain.Ledger`) as a table: one row per owned
 identity, with the step that minted it, the steps that ended it, the steps
-whose destructor ran on it, and whether it was ended exactly once. -/
+whose destructor ran on it, and whether it was ended exactly once (§7). -/
 def ledgerHtml (P : Program) (rows : List (Nat × Step)) (res : EvalRes) : String :=
   let es := Ledger.entries P.decls rows
   let refs := fun (ns : List Nat) =>

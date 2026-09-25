@@ -138,7 +138,7 @@ def outcomeLines : EvalRes → List String
 
 /-- The identity ledger (`Explain.Ledger`): one line per owned identity —
 the step that minted it, the steps that ended it, the steps whose destructor
-ran on it — and whether it was ended exactly once. -/
+ran on it — and whether it was ended exactly once (§7). -/
 def ledgerLines (P : Program) (rows : List (Nat × Step)) (res : EvalRes) : List String :=
   let es := Ledger.entries P.decls rows
   let line := fun (e : Ledger.Entry) =>

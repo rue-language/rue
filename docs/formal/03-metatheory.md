@@ -412,7 +412,9 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   residual reading §5.6 asks for, which is what makes a partially consumed
   carrier's residue droppable. "Exactly once" (that every owned, droppable,
   non-moved value *is* dropped) is `RueCore.drop_exactly_once`, in the next
-  section; this section is the "at most once" half.
+  section; this section is the "at most once" half. `RueCore.run_blocks`
+  (next section) lifts the closed form from one drop to every run's trace:
+  every destructor event sits inside the walk of the marker before it.
 
 ## No use-after-drop / no leak of drops
 
@@ -530,10 +532,65 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   followed by the operand's own ledger, so the continuation ledger that
   `rest_exactly_once` states is the one the proof checks. `RueCore.eval_tidy`
   is a separate fuel induction on the store's shape.
-- **Owed:** drop *order*, meaning when and in what order the drops run
-  (reverse registration at scope exit, §3.9 and §6.11 within a value), is
-  `drop_order`, part 2b of RUE-2328 (RUE-2428). These theorems say that
-  every owned value ends exactly once, not when.
+- **Theorem:** `RueCore.drop_order` (`lean/RueCore/TraceOrder.lean`,
+  RUE-2428): the *order*, meaning when and in what order the drops run. The
+  theorems above say every owned value ends exactly once; this one says in
+  what order. It has two halves, each over the presentation where its fact
+  lives, and its first conjunct is `no_violation`, so the trace it reads is
+  the whole run's.
+- **Within a value (§3.9, §6.11):** `RueCore.run_blocks`. Every finished
+  run's trace is in the block grammar `RueCore.Blocks`: a sequence of
+  `@dbg` lines, consumptions, and drop markers (`drop ℓ c`, `dropTemp v`),
+  each marker followed by *exactly* §6.11's walk of what it names
+  (`RueCore.dropEvents`). The grammar has no other place for a destructor
+  event. So every destructor of every run sits inside the walk of the drop
+  that owns it, in §6.11's order:
+  - the value's own destructor first (`3.9:28`);
+  - fields in declaration order (`3.9:13`);
+  - array elements ascending (`3.9:15`, `3.8:73`);
+  - an enum's active payload only (`6.3:20`);
+  - every `⊘` skipped.
+
+  It reads no typing derivation, only `3.9:31` (`RueCore.DtorNotCopy`). A
+  declared-linear destructure's `Copy` residue subtree is dropped with no
+  marker, and its walk is empty because no `Copy` struct declares a
+  destructor and, by copy closure, nothing under a `Copy` node owns
+  anything. `RueCore.fieldsSwapped_rejected` is the grammar rejecting
+  `struct_field_drop_order`'s trace with its two field destructors swapped.
+- **Across cells (§6.7, §6.9, §6.10):** `RueCore.reachable_drop_order`,
+  over §6's relation. This half cannot be a property of the trace alone:
+  every `drop ℓ c` block is valid by itself, so "the trace cuts into
+  newest-first groups" would say nothing. It rests on the machine's scope
+  records.
+  - `RueCore.reachable_ordered`: in every configuration reachable from
+    `Config.init`, every scope record lists its cells in strictly increasing
+    location order. That covers the current frame's record, every
+    suspended caller's and loop boundary's, and every pending `endscope`
+    marker's. Records only ever grow by freshly allocated cells, so
+    registration order is location order.
+  - `RueCore.step_drop_order`: from such a configuration, every step's
+    `drop` markers either all name one cell, or name distinct cells in
+    strictly decreasing location order, newest registered first
+    (`RueCore.NewestFirst`). The one-cell case covers an overwrite, `@drop`
+    and a destructure's residue, which are sub-positions of one binding.
+    The other case is every teardown: `endscope`, a frame pop, `return`'s
+    σ-walk, the end of a loop turn, and `break`'s unwind.
+
+  `RueCore.returnPastAffine_newestFirst` is the teardown on a real run:
+  `return_past_affine`'s σ-walk drops `ℓ3` then `ℓ1` in one reachable step.
+  `RueCore.unorderedRecord_rejected` shows the invariant is load-bearing: a
+  frame whose record is out of location order (a configuration no run
+  reaches) takes a real step whose drops are not newest-first.
+- **What it does not say.** The cross-cell half relates the drops of **one
+  step**. That an inner `let`'s `endscope` runs before the outer one's
+  follows from the shape of the rules (the inner body finishes first) and is
+  not restated as a theorem.
+- **The corpus, read through it.** `TraceOrder.lean` pins, for ten
+  order-witnessing seed cases, the identities the destructors ran on in
+  order (the order the printed destructors print their payloads in, which
+  the bridge checks against the compiler), the cells the markers name, and
+  the identities the markers end, each once. The explain renderings'
+  identity ledger shows the same per case (`lean/explain/*.txt`).
 
 ## No use-after-free
 
@@ -698,8 +755,9 @@ this document states, and its consequence in §7's terms is
 implies that no reduction sequence reaches a stuck configuration on every
 program (`RueCore.step_never_stuck_of_run`), and on a checked program the two
 are equivalent (`RueCore.never_stuck_iff`). **(a)**, the safety theorem
-covering every Phase C slice, still waits on drop order (RUE-2237); **(c)**,
-the independent review, is checkpoint C (RUE-2251).
+covering every Phase C slice, no longer waits on drop order: that is
+`RueCore.drop_order` (RUE-2237). **(c)**, the independent review, is
+checkpoint C (RUE-2251).
 
 ## Traceability
 
