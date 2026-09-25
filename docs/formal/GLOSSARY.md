@@ -459,16 +459,16 @@ non-ASCII symbols, which the check extracts.
 |---|---|---|---|---|---|
 | `Γ` | "gamma" | The type context: each binding's declared type and mutability mark | The typing context of `Γ ⊢ e : τ` ([FIELD §2][F2]) | Ours also carries the mutability mark and, in Lean, the ownership state (`Ctx`) | 01 §4.2; 03 “Type safety”; README “The extension rubric”; lean/README “Explaining a program”; GUIDE §1; `Syntax` |
 | `Σ`; `Σ_h`; `Σ_edge` | "sigma" | The ownership state, a map from paths to `Owned` / `MovedOut`; `Σ_h` the loop-head state | none | Σ is store typing in TAPL and the global environment in Oxide ([FIELD §2][F2], [FIELD §5][F5]) | 01 §2; 03 intro; README “The extension rubric”; lean/README “Generated programs”; GUIDE §1; `Syntax` |
-| `Λ` | "lambda" | The loan state: the set of loans outstanding during a call | none | Λ is usually a type abstraction (System F); no fetched source uses it for loans | 01 §5; 03 “Exclusivity / no aliased mutation”; lean/README “Doc-comment convention”; GUIDE §1; `Syntax` |
+| `Λ` | "lambda" | The loan state: the set of loans outstanding during a call | none | none known; no fetched source uses Λ for loans | 01 §5; 03 “Exclusivity / no aliased mutation”; lean/README “Doc-comment convention”; GUIDE §1; `Syntax` |
 | `Δ`; `Δ − κ`; `Δ ∋ κ` | "delta" | The set of edge deliveries an expression can make; with `κ` removed; containing a delivery of kind `κ` | none | Oxide's `Δ` is the type environment ([FIELD §5][F5]) | 01 §5; 03 “Lemmas §7 owes, and the …”; GUIDE §1; `Statics` |
 | `Ω`; `Σ;Δ`; `⊥;Δ` | "omega" | An expression's outgoing result: a normal state with its deliveries, or no normal state | Walker's algorithmic output context `Γ₂`, Oxide's `⇒ Γ′` ([FIELD §4][F4], [FIELD §5][F5]) | Ours adds the deliveries; ω is a multiplicity in Linear Haskell and a loan kind in Oxide ([FIELD §4][F4]) | 01 §5; 03 “Type safety”; lean/README “How to read this, with …”; GUIDE §1; `Statics` |
 | `Θ` | "theta" | In the explain code (`traceEval`), the binder types in scope | none | Oxide's `Θ` is temporary typing ([FIELD §5][F5]) | lean/README “Explaining a program” |
 | `α`; α-renaming | "alpha" | α-renaming: consistent renaming of bound names | α-equivalence ([FIELD §9][F9], PFPL §1.2) | none | 01 §2; 03 “Lemmas §7 owes, and the …”; GUIDE §2; `Step` |
 | `β`; `β_w`; `loopβ` | "beta" | `β_w(n)`: the `w`-bit pattern of integer `n`; `loopβ`: the loop-boundary frame of the control stack | none | β usually names β-reduction ([FIELD §8][F8], Reference §4) | 01 §6.1; 03 intro; GUIDE §2; `Syntax` |
 | `δ`; `δ(Δ)` | "delta" | The provenance of a delivery set: which kinds of exit it contains | none | none known | 01 §5.3 |
-| `ε` | "epsilon" | The empty path | The empty string of formal languages | none | 01 §6.1; GUIDE §2 |
+| `ε` | "epsilon" | The empty path | Ordinary notation for the empty sequence | none | 01 §6.1; GUIDE §2 |
 | `κ`; `↯κ` | "kappa" | An edge kind (`ret`, `break`, `continue`, `diverge`, `panic`); in `↯κ`, a trap category | none | RustBelt's `κ` is a lifetime ([FIELD §5][F5]) | 01 §5; 03 “Lemmas §7 owes, and the …”; lean/README “What is mechanized”; GUIDE §2; `Dynamics` |
-| `μ` | "mu" | A binding's mutability mark, `∅` or `mut` | none | μ usually binds a recursive type or a least fixed point | 01 §2; 03 “Lemmas §7 owes, and the …”; GUIDE §1; `Syntax` |
+| `μ` | "mu" | A binding's mutability mark, `∅` or `mut` | none | none known | 01 §2; 03 “Lemmas §7 owes, and the …”; GUIDE §1; `Syntax` |
 | `π`; `π_d`; `π_s`; `πⱼ` | "pi" | A path, or a segment of one | none | π is a multiplicity in Linear Haskell and a usage in QTT ([FIELD §4][F4]) | 01 §4.2; 03 intro; lean/README “Generated programs”; GUIDE §2; `Syntax` |
 | `ρ` | "rho" | A frame's environment: binding to cell and path | The environment of `eval n ρ e` ([FIELD §3][F3]) | none | 01 §6.1; 03 “Type safety”; GUIDE §2; `Dynamics` |
 | `σ`; `σ_NaN` | "sigma" | A frame's stack of scope records; `σ_NaN`, the sign of a NaN the target creates | none | σ is a trace or execution in the trace-property literature ([FIELD §6][F6]) | 01 §2; 03 intro; lean/README “Deciding whether to believe it”; GUIDE §2; `Float` |
@@ -476,9 +476,9 @@ non-ASCII symbols, which the check extracts.
 | `ℓ`; `ℓ̄` | "ell" | A location: the allocation of one binding's cell; `ℓ̄` a list of them | none | Oxide's `ℓ` is a loan ([FIELD §5][F5]) | 01 §5.4; 03 “No use-after-drop / no leak …”; lean/README “What is mechanized”; GUIDE §2; `Dynamics` |
 | `ℤ`; `⊕_ℤ` | "the integers" | The mathematical integers; an operation computed on them exactly | Ordinary notation | none | 01 §6.4 |
 | `𝔽_w` | "F sub w" | The set of `float(w)` data | none | none known | 01 §2; 03 “Lemmas §7 owes, and the …”; lean/README “Deciding whether to believe it”; GUIDE “What the checker demands”; `Float` |
-| `ē`; `v̄`; `T̄`; `x̄` (a bar) | "e-bar" | A sequence of the barred thing | Ordinary notation for a vector of terms | none | 01 §2; `Syntax` |
+| `ē`; `v̄`; `T̄`; `x̄` (a bar) | "e-bar" | A sequence of the barred thing | Ordinary notation for a sequence | none | 01 §2; `Syntax` |
 | `†` | "dagger" | A dead (retired) allocation | Oxide's dead type `τ†` ([FIELD §5][F5]) | Oxide's dagger marks a type; ours marks an allocation | 01 §6.1; 03 “No double-free”; GUIDE §2; `Dynamics` |
-| `⊘` | "moved out" | The contents of an uninitialized or moved-out cell | none; accepted words are "moved from" and "deinitialized" ([FIELD §5][F5]) | Our own symbol | 01 §5.3; 03 intro; lean/README “What is mechanized”; GUIDE §2; `Syntax` |
+| `⊘` | "moved out" | The contents of an uninitialized or moved-out cell | none; accepted words are "moved from" and "deinitialized" ([FIELD §5][F5]) | Our own symbol; FIELD §5 records the accepted words, not a symbol | 01 §5.3; 03 intro; lean/README “What is mechanized”; GUIDE §2; `Syntax` |
 | `⊥`; `⊥_exit`; `⊥_diverge`; `⊥_panic` | "bottom" | No normal outgoing state; the three kinds of diverging exit | ⊥ as bottom, "no value" | Leucker & Schallhart's `⊥` is the verdict *false* ([FIELD §6][F6]) | 01 §5; 03 intro; lean/README “How to read this, with …”; GUIDE §1; `Statics` |
 | `⊢` | "entails", "turnstile" | Separates a judgment's contexts from its subject | `Γ ⊢ e : τ` ([FIELD §2][F2]) | none | 01 §5; 03 “Type safety”; README “The extension rubric”; lean/README “How to read this, with …”; GUIDE §1; `Syntax` |
 | `⊣` | "leaves" | Separates a judgment from the outgoing state: `⊢ e ⇒ T ⊣ Σ'` | none | Walker writes `; Γ₂`, Oxide `⇒ Γ′` ([FIELD §4][F4], [FIELD §5][F5]) | 01 §5; README “The extension rubric”; lean/README “How to read this, with …”; GUIDE §1; `Statics` |
@@ -489,12 +489,12 @@ non-ASCII symbols, which the check extracts.
 | `↯`; `↯κ` | "trap" | A configuration halted in a trap of category κ | none | PFPL writes a checked error `e err` ([FIELD §1][F1]) | 01 §5.7; 03 “Lemmas §7 owes, and the …”; lean/README “What is mechanized”; GUIDE §2; `Float` |
 | `✓`; `✓n` | "halted with n"; "holds" | A configuration halted normally with exit code n; in tables, "holds" or "done" | none | none known | 01 §6.1; 03 “Lemmas §7 owes, and the …”; GUIDE “One program, traced both ways”; `Step` |
 | `✗` | "fails" | In GUIDE's worked tables, "undefined" or "fails" | none | none | GUIDE “What the checker demands” |
-| `⟨ ⟩`; `⟨⟩` | "angle brackets"; "unit" | A tuple: a configuration `⟨H ; φ ; K ; e⟩`, a delivery `⟨κ, Σ⟩`, an enum value `Kj⟨…⟩`; `⟨⟩` the unit value; in Lean code, an anonymous constructor | PFPL's configurations; Lean's anonymous constructor ([FIELD §8][F8]) | none | 01 §6.1; 03 “No use-after-drop / no leak …”; `Dynamics` |
+| `⟨ ⟩`; `⟨⟩` | "angle brackets"; "unit" | A tuple: a configuration `⟨H ; φ ; K ; e⟩`, a delivery `⟨κ, Σ⟩`, an enum value `Kj⟨…⟩`; `⟨⟩` the unit value; in Lean code, an anonymous constructor | Ordinary tuple notation; in Lean code, Lean's anonymous constructor | none | 01 §6.1; 03 “No use-after-drop / no leak …”; `Dynamics` |
 | `□` | "hole" | In GUIDE's step tables, the hole of an evaluation context | Felleisen & Hieb's `[ ]`, PFPL's `∘` ([FIELD §1][F1]) | 01 writes `[·]`; GUIDE writes `□` | GUIDE “One program, traced both ways” |
 | `♭`; `K♭` | "flat" | The control stack flattened into one list of frames | none | none known | `Step` |
 | `⊑` | "is at most as restrictive as" | The class order `Copy ⊑ Affine ⊑ Linear`; more restrictive is higher | Tov & Pucella's direction ([FIELD §4][F4]) | The reverse of Walker's `lin ⊑ un` ([FIELD §4][F4]) | 01 §3; `Syntax` |
 | `⊔`; `⋃` | "join"; "union over" | The least upper bound; the union of an indexed family of sets | The join of qualifiers (Tov & Pucella, [FIELD §4][F4]); order theory ([FIELD §9][F9]) | none | 01 §3; GUIDE “What the checker demands”; `Syntax` |
-| `⊕`; `⊕_w`; `Ω ⊕ Δ` | "op" | A binary arithmetic or bitwise operator; at float width `w`; adding deliveries to an outcome | none | ⊕ is usually a direct sum or exclusive or | 01 §2; `Float` |
+| `⊕`; `⊕_w`; `Ω ⊕ Δ` | "op" | A binary arithmetic or bitwise operator; at float width `w`; adding deliveries to an outcome | none | none known | 01 §2; `Float` |
 | `⊖` | "unary op" | A unary operator: `neg`, `not`, `bitnot` | none | none known | 01 §2; `Syntax` |
 | `⊙`; `⊙_w` | "float op" | Any float operation at width w | none | none known | 01 §5.8; `Float` |
 | `⊛`; `⊛_bits` | "bit op" | A bitwise operator `&`, `\|`, `^`, and its action on bit patterns | none | none known | 01 §6.4 |
@@ -502,11 +502,11 @@ non-ASCII symbols, which the check extracts.
 | `⋚` | "compares with" | An ordering compare `<`, `>`, `<=`, `>=` | none | none known | 01 §2; `Syntax` |
 | `≈` | "is structurally equal to" | Structural equality of values, a partial equivalence because of NaN | none | CompCert's `S ≈ C` is semantic preservation ([FIELD §7][F7]) | 01 §2; 03 intro; lean/README “What is mechanized”; `Float` |
 | `≺`; `≺_w` | "precedes" | IEEE 754's total order on `float(w)` data | none | none known | 01 §6.4; `Float` |
-| `⊳` | "fits" | The mode-position compatibility relation of the slice statics (not in the core yet) | none | ⊳ is also PFPL's evaluation state `k ▷ e` ([FIELD §1][F1]) | 01 §2 |
+| `⊳` | "fits" | The mode-position compatibility relation of the slice statics (not in the core yet) | none | none known; PFPL's evaluation state `k ▷ e` uses the similar `▷` ([FIELD §1][F1]) | 01 §2 |
 | `⇝` | "elaborates to" | Rewriting a surface form into a core one | none | none known | 01 §5.4 |
 | `⟶` | "then, below it" | In GUIDE's derivation tables, a child premise of the row above | none | none known | GUIDE “What the checker demands” |
-| `←` | "from" | In GUIDE's drawings, where a value came from; in Lean code, rewriting right to left (`rw [← h]`) | Lean's `rw [← h]` ([FIELD §8][F8]) | none | GUIDE “What the checker demands” |
-| `↔`; `⟺` | "if and only if"; "to and from" | Logical equivalence; in prose, a conversion both ways (float↔integer) | Lean's `↔` ([FIELD §8][F8]) | none | 01 §2; lean/README “What is mechanized”; `Statics` |
+| `←` | "from" | In GUIDE's drawings, where a value came from; in Lean code, rewriting right to left (`rw [← h]`) | Lean's `rw [← h]` | none | GUIDE “What the checker demands” |
+| `↔`; `⟺` | "if and only if"; "to and from" | Logical equivalence; in prose, a conversion both ways (float↔integer) | Lean's `↔` (TPIL, [FIELD §8][F8]) | none | 01 §2; lean/README “What is mechanized”; `Statics` |
 | `⟹` | "implies" | Implication, in the float rule tables | Ordinary logic notation | none | 01 §6.4 |
 | `¬`; `∧`; `∨`; `∀`; `∃` | "not", "and", "or", "for all", "there exists" | Logical connectives and quantifiers | Lean's notation for propositions ([FIELD §8][F8]) | none | 01 §5; 03 “Type safety”; lean/README “The main theorem”; GUIDE §4; `Float` |
 | `∈`; `∉`; `∋`; `∅`; `∪`; `⊂`; `⊆`; `⊊` | "in", "not in", "contains", "empty", "union", "proper subset", "subset", "proper subset" | Set membership and inclusion; `∅` also the empty mutability mark and the empty loan set; `⊊` in `check ⊊ Typed`, "strictly fewer programs than" | Ordinary set notation | none | 01 §2; 03 intro; `Float` |
