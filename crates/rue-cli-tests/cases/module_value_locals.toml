@@ -1,0 +1,138 @@
+# Locals bound to a module value, at every optimization level (RUE-2419).
+#
+# A module is not a runtime value (spec 10.4:6), but a `let` may bind one
+# (10.4:1), and a local whose value is a module names that module (10.4:8). The
+# CFG gives such a local, and every load of it, the unit type. Before the fix
+# the local kept the type `<module>`: the -O3 inliner, which relocates a
+# callee's CFG through a type domain that has no entry for modules, failed with
+# `MissingLiveType(<module>)` (E9000), and a local bound to a const module and
+# then used as a statement failed CFG verification at every level.
+#
+# Each case is `differential_opt`: it runs at -O0 through -O3 and every level
+# must agree. The callees are called twice so -O3 inlines them.
+
+[section]
+id = "cli.module_value_locals"
+name = "Module value locals"
+description = "A let-bound module is a zero-sized local that inlining, unrolling and verification accept."
+
+[[case]]
+name = "let_import_in_inlined_callee"
+description = "A callee binding `let m = @import(...)` is inlined at -O3"
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+fn f() -> i32 {
+    let m = @import("x.rue");
+    let n: usize = 20;
+    @intCast(m.f(n))
+}
+fn main() -> i32 { f() + f() + 2 }
+""" },
+    { path = "x.rue", source = """
+pub fn f(x: usize) -> usize { x }
+""" },
+]
+stdout = ""
+exit_code = 42
+
+[[case]]
+name = "let_const_alias_and_reexport_in_inlined_callees"
+description = "Locals bound to a const module and to a re-exported module, in nested inlined callees"
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+const a = @import("x.rue");
+const lib = @import("lib.rue");
+fn g() -> i32 {
+    let m = lib.inner;
+    let n: usize = 5;
+    @intCast(m.f(n) + lib.g(n))
+}
+fn f() -> i32 {
+    let mut m = a;
+    m = a;
+    let k = { m };
+    g() + g() + @intCast(k.f(1))
+}
+fn main() -> i32 { f() + f() }
+""" },
+    { path = "lib.rue", source = """
+pub const inner = @import("x.rue");
+pub fn g(x: usize) -> usize { x }
+""" },
+    { path = "x.rue", source = """
+pub fn f(x: usize) -> usize { x }
+""" },
+]
+stdout = ""
+exit_code = 42
+
+[[case]]
+name = "module_joins_in_inlined_callee"
+description = "If and match joins of a let-bound module, one arm diverging, in a callee inlined at -O3"
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+fn f(c: bool) -> i32 {
+    let a = @import("x.rue");
+    let m = if c { a } else { a };
+    let k = match c { true => m, false => { return 2; } };
+    let n: usize = 20;
+    @intCast(k.f(n) + m.f(n))
+}
+fn main() -> i32 { f(true) + f(false) }
+""" },
+    { path = "x.rue", source = """
+pub fn f(x: usize) -> usize { x }
+""" },
+]
+stdout = ""
+exit_code = 42
+
+[[case]]
+name = "let_module_in_unrolled_loop"
+description = "A module local bound and joined inside a constant-trip loop body"
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+const a = @import("x.rue");
+fn f() -> i32 {
+    let mut s: usize = 0;
+    let mut i: usize = 0;
+    while i < 4 {
+        let m = if i < 2 { a } else { a };
+        s = s + m.f(i);
+        i = i + 1;
+    }
+    @intCast(s)
+}
+fn main() -> i32 { f() + f() + 30 }
+""" },
+    { path = "x.rue", source = """
+pub fn f(x: usize) -> usize { x }
+""" },
+]
+stdout = ""
+exit_code = 42
+
+[[case]]
+name = "let_module_in_statement_position"
+description = "A local bound to a const module, then used as a statement (10.4:7), passes CFG verification"
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+const a = @import("x.rue");
+fn main() -> i32 {
+    let m = a;
+    m;
+    { m };
+    @intCast(m.f(42))
+}
+""" },
+    { path = "x.rue", source = """
+pub fn f(x: usize) -> usize { x }
+""" },
+]
+stdout = ""
+exit_code = 42
