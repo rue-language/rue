@@ -19,8 +19,9 @@ program every value and panic `eval` answers, §6's `→*` reaches), and so is
 completeness modulo fuel (`RueCore.eval_complete`: every value and panic §6's
 `→*` reaches, `eval` answers at every fuel past the run's length). With both
 directions, §7's first bullet is also stated over `Step` itself, in §7's own
-terms (`RueCore.step_progress`, `RueCore.step_preservation`,
-`RueCore.step_type_safety`; the type-safety section below). To check any claim yourself:
+terms — preservation in a semantic form; the type-safety section says what
+that covers — (`RueCore.step_progress`, `RueCore.step_preservation`,
+`RueCore.step_type_safety`). To check any claim yourself:
 `scripts/rue lean` builds the package, re-checks it, and prints the axioms
 every listed theorem depends on; the reading guide in `lean/README.md` is the
 entry point for a reader with no Lean.
@@ -193,10 +194,14 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   *progress* (`step_progress`): every configuration `→*` reaches from §6.12's
   initial configuration reduces or has halted with a value or a defined panic
   — §7's "does not get stuck" verbatim, so no reduction sequence reaches a
-  stuck configuration. *Preservation* (`step_preservation`): every
-  configuration `→*` reaches is typed at the entry point's declared return
-  type, and a step from a typed configuration lands on a typed one
-  (`RueCore.Config.SafeAt.preservation`). *At the result*
+  stuck configuration. *Preservation* (`step_preservation`), in a semantic
+  form: every configuration `→*` reaches is `RueCore.Config.SafeAt` the entry
+  point's declared return type, which is the program's answer type, not the
+  type of the redex in focus. It is `step_progress` and `step_value_typed`
+  together, restated as a predicate on configurations. It holds at every type
+  on a run that diverges or panics, and its one-step form,
+  `RueCore.Config.SafeAt.preservation`, needs no typing hypothesis. *At the
+  result*
   (`step_value_typed`): a value §6 halts with has that type. *At every
   horizon* (`step_type_safety`): §6 has run `n` steps, or has halted with a
   well-typed value, or with a defined panic; `RueCore.eval_diverges_iff` is
@@ -210,6 +215,9 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   and frame stack, one preservation case per `Step` constructor) would be a
   second safety proof over `Step`, not a corollary of this one, and is not
   claimed; the invariant that plays its role is `FrameMatches`, over `eval`.
+  The §7 preservation invariant proper, "Σ faithfully tracks the store's
+  initialization", is `FrameMatches` over `eval`. No `Step`-side counterpart
+  is stated.
 - **Invariant:** `RueCore.FrameMatches`, in two halves. `Matches` — "Σ
   faithfully tracks the store's initialization" (§7), whose per-cell clause is
   the **recursive** `RueCore.ContentsMatches`: Σ's state for a binding is a
