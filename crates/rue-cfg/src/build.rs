@@ -2287,30 +2287,37 @@ impl<'a> CfgBuilder<'a> {
                     then_type
                 };
 
-                // Add block parameter for result (if we have a value type)
-                let result_param = if result_type != Type::UNIT && result_type != Type::NEVER {
-                    Some(self.cfg.add_block_param(join_block, result_type))
-                } else {
-                    None
-                };
+                let result_param = self.join_param(join_block, result_type);
 
                 // Wire up non-divergent branches to join
                 if !then_diverged {
-                    self.goto_join(then_exit_block, join_block, result_param, then_result.value);
+                    self.goto_join(
+                        then_exit_block,
+                        join_block,
+                        result_param,
+                        then_result.value,
+                        span,
+                    );
                 }
 
                 if !else_diverged {
-                    self.goto_join(else_exit_block, join_block, result_param, else_result.value);
+                    self.goto_join(
+                        else_exit_block,
+                        join_block,
+                        result_param,
+                        else_result.value,
+                        span,
+                    );
                 }
 
                 self.current_block = join_block;
 
-                if let Some(param) = result_param {
+                if let Some((param, _)) = result_param {
                     self.cache(air_ref, param);
                 }
 
                 ExprResult {
-                    value: result_param,
+                    value: result_param.map(|(param, _)| param),
                     continuation: Continuation::Continues,
                 }
             }
@@ -2638,28 +2645,29 @@ impl<'a> CfgBuilder<'a> {
                     };
                 }
 
-                // Add block parameter for result (if we have a value type)
-                let result_param = if result_type != Type::UNIT && result_type != Type::NEVER {
-                    Some(self.cfg.add_block_param(join_block, result_type))
-                } else {
-                    None
-                };
+                let result_param = self.join_param(join_block, result_type);
 
                 // Wire up non-divergent arms to join
                 for (exit_block, body_result, diverged) in arm_results {
                     if !diverged {
-                        self.goto_join(exit_block, join_block, result_param, body_result.value);
+                        self.goto_join(
+                            exit_block,
+                            join_block,
+                            result_param,
+                            body_result.value,
+                            span,
+                        );
                     }
                 }
 
                 self.current_block = join_block;
 
-                if let Some(param) = result_param {
+                if let Some((param, _)) = result_param {
                     self.cache(air_ref, param);
                 }
 
                 ExprResult {
-                    value: result_param,
+                    value: result_param.map(|(param, _)| param),
                     continuation: Continuation::Continues,
                 }
             }
@@ -3342,16 +3350,55 @@ impl<'a> CfgBuilder<'a> {
     /// contract is encoded — if/else arms and match arms all wire through
     /// here, so the contract cannot drift between constructs (the RUE-347
     /// bug class lives exactly on this seam).
+    /// Add the block parameter that carries an `if`/`match` result into its
+    /// join block, or `None` when the result type has no runtime value.
+    ///
+    /// `()` and `!` have none, and neither do the comptime-only types: a
+    /// module (spec 10.4:6, "a module is not a runtime value"; its identity is
+    /// its type) and a `type` value (4.14:6, "type values cannot exist at
+    /// runtime"). A join of those, such as `if c { m } else { m }` for a
+    /// module `m`, is typed by its branches' common type (4.6:10, 4.7:12) and
+    /// carries nothing at runtime. A const-bound module or type lowers to a
+    /// `TypeConst`, which yields no CFG value, so such a join must not expect
+    /// one (RUE-2415).
+    fn join_param(&mut self, join_block: BlockId, result_type: Type) -> Option<(CfgValue, Type)> {
+        let carries_value = result_type != Type::UNIT
+            && !result_type.is_never()
+            && !result_type.is_module()
+            && !result_type.is_comptime_type();
+        carries_value.then(|| {
+            (
+                self.cfg.add_block_param(join_block, result_type),
+                result_type,
+            )
+        })
+    }
+
+    /// Jump from a branch's exit block to its join, passing exactly one
+    /// argument when the join has a result parameter and none otherwise.
+    ///
+    /// A branch that continues without a CFG value while the join expects one
+    /// gets the same zero filler `lower_value` materializes, so the edge
+    /// never passes fewer arguments than the join block declares.
     fn goto_join(
         &mut self,
         exit_block: BlockId,
         join_block: BlockId,
-        result_param: Option<CfgValue>,
+        result_param: Option<(CfgValue, Type)>,
         value: Option<CfgValue>,
+        span: rue_span::Span,
     ) {
-        let args: Vec<CfgValue> = match (value, result_param) {
-            (Some(val), Some(_)) => vec![val],
-            _ => vec![],
+        let args: Vec<CfgValue> = match (result_param, value) {
+            (Some(_), Some(val)) => vec![val],
+            (Some((_, ty)), None) => vec![self.cfg.add_inst_to_block(
+                exit_block,
+                CfgInst {
+                    data: CfgInstData::Const(0),
+                    ty,
+                    span,
+                },
+            )],
+            (None, _) => vec![],
         };
         let args_result = self.cfg.push_goto_args(args);
         let args = self.payload_or(args_result, CfgGotoArgs::EMPTY, rue_span::Span::default());
