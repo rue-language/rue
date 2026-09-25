@@ -603,7 +603,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     reaches it.
   - `RueCore.unorderedRecord_rejected`: a frame whose record is out of
     location order takes a real step whose drops are not newest-first.
-- **The corpus, read through it.** `TraceOrder.lean` pins, for fourteen
+- **The corpus, read through it.** `Witnesses.lean` pins, for fourteen
   order-witnessing seed cases, the identities the destructors ran on in
   order (the order the printed destructors print their payloads in, which
   the bridge checks against the compiler), the cells the markers name, and

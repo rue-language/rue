@@ -3,7 +3,7 @@ import RueCore.Corpus
 /-!
 # RueCore.Explain — derivations and runs, rendered for a reader (RUE-2246)
 
-`check` (§5, `Checker.lean`) answers *whether* a program is well-formed and
+`check` (§5, `Checker/Defs.lean`) answers *whether* a program is well-formed and
 `eval` (§6, `Dynamics.lean`) answers *what it does*; neither says **why**.
 This module adds the two instrumented mirrors an explainability view needs:
 
@@ -770,7 +770,7 @@ def armLeak : String :=
   "compiler reports E0406)"
 
 /-- §5.7's loop-head state does not exist, or the iteration that computes it
-(`headIter`, `Checker.lean`) did not reach it. -/
+(`headIter`, `Checker/Defs.lean`) did not reach it. -/
 def loopHeadNone : String :=
   "no loop-head state: iterating `Σ_h = join(Σ, B_h)` from the entry state fails — the " ++
   "body is refused at a candidate head (the derivation below is the body at the entry " ++
