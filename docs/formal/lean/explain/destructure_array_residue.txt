@@ -212,7 +212,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          expr    v0.x1
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = S21 { [S1 { 1 }#0, S1 { 2 }#1]#2,…
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = ⊘]
-         events  >> run drop fn S1(S1 { 1 }#0); run drop fn S1(S1 { 2 }#1)
+         events  >> drop ℓ4 = [S1 { 1 }#0, S1 { 2 }#1]#2; run drop fn S1(S1 { 1 }#0); run drop fn S1(S1 { 2 }#1); consume S21 { ⊘, ⊘ }#3
          result  value 7
   [13]  d5            (D-Let) §6.7 (mint the binding)
          expr    let v1 = 7 at ℓ5
@@ -263,5 +263,5 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 7
-         drop trace: @dbg prints 10; run drop fn S1(S1 { 1 }#0); run drop fn S1(S1 { 2 }#1); @dbg prints 20
+         drop trace: @dbg prints 10; drop ℓ4 = [S1 { 1 }#0, S1 { 2 }#1]#2; run drop fn S1(S1 { 1 }#0); run drop fn S1(S1 { 2 }#1); consume S21 { ⊘, ⊘ }#3; @dbg prints 20
 

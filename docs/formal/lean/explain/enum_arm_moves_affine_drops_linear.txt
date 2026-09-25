@@ -240,6 +240,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          expr    bind E5.K0's payload to [ℓ6, ℓ7]
          store   [ℓ0 = †, ℓ1 = S1 { 9 }#0, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = ⊘]
            →     [ℓ0 = †, ℓ1 = S1 { 9 }#0, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = ⊘, ℓ6 = S1 { 1 }…
+         events  >> consume E5.K0⟨⊘, ⊘⟩#4
          result  value E5.K0⟨S1 { 1 }#2, S3 { 2 }#3⟩#4
   [13]  d8                  (D-Use-Move) §6.3
          expr    v2
@@ -328,5 +329,5 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 5
-         drop trace: drop ℓ1 = S1 { 9 }#0; run drop fn S1(S1 { 9 }#0); drop ℓ7 = S3 { 2 }#3; run drop fn S3(S3 { 2 }#3); @dbg prints 20; drop ℓ1 = S1 { 1 }#2; run drop fn S1(S1 { 1 }#2)
+         drop trace: consume E5.K0⟨⊘, ⊘⟩#4; drop ℓ1 = S1 { 9 }#0; run drop fn S1(S1 { 9 }#0); drop ℓ7 = S3 { 2 }#3; run drop fn S3(S3 { 2 }#3); @dbg prints 20; drop ℓ1 = S1 { 1 }#2; run drop fn S1(S1 { 1 }#2)
 

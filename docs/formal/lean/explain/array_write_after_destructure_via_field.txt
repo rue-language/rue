@@ -229,6 +229,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          expr    v0.x0[0].x0
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = S12 { [S11 { S1 {…
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = S12 { [⊘, S11 { S…
+         events  >> consume S11 { ⊘ }#1
          result  value S1 { 1 }#0
   [12]  d4          (D-Let) §6.7 (mint the binding)
          expr    let v1 = S1 { 1 }#0 at ℓ7

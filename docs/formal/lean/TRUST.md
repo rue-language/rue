@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 637.
+- Theorems checked: 704.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -241,6 +241,7 @@ and diffs them against the committed copies.
 | `dropContentsList_err` | `RueCore.Step` | `propext` |
 | `dropCell_err` | `RueCore.Step` | `propext` |
 | `plainUnwind_err` | `RueCore.Step` | `propext` |
+| `plainResidue_err` | `RueCore.Step` | `propext` |
 | `plainDestructure_err` | `RueCore.Step` | `propext` |
 | `rootCell_err` | `RueCore.Step` | `propext` |
 | `Contents.resolveDyn_err` | `RueCore.Step` | `propext` |
@@ -264,6 +265,7 @@ and diffs them against the committed copies.
 | `demo_loopIter_drops` | `RueCore.Step` | `Quot.sound`, `propext` |
 | `HasTys.length_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.mult_eq` | `RueCore.Soundness` | `propext` |
+| `HasTy.observable` | `RueCore.Soundness` | `propext` |
 | `HasTy.int_inv` | `RueCore.Soundness` | `propext` |
 | `HasTy.float_inv` | `RueCore.Soundness` | `propext` |
 | `HasTy.bool_inv` | `RueCore.Soundness` | `propext` |
@@ -506,6 +508,7 @@ and diffs them against the committed copies.
 | `dropCell_measure` | `RueCore.Trace` | `propext` |
 | `dropRetire_measure` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `unwindLocs_measure` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `residueMark_measure` | `RueCore.Trace` | `propext` |
 | `dropResidue_measure` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Contents.ownList_append` | `RueCore.Trace` | `propext` |
 | `Contents.copyClosedList_append` | `RueCore.Trace` | `propext` |
@@ -514,6 +517,10 @@ and diffs them against the committed copies.
 | `Contents.splitFields_allCopy` | `RueCore.Trace` | `propext` |
 | `Contents.splitResidue_own` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Contents.splitFields_own` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Contents.skelFields_length` | `RueCore.Trace` | `propext` |
+| `Contents.ownList_holes` | `RueCore.Trace` | `propext` |
+| `Contents.skeleton_own` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Contents.skelFields_own` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Contents.destructure_measure` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Fresh.count_trans` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Fresh.count_trans_range` | `RueCore.Trace` | `Quot.sound`, `propext` |
@@ -546,6 +553,7 @@ and diffs them against the committed copies.
 | `Contents.own_enum_le` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Contents.own_array_le` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Contents.enum_payload` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `matchConsume_measure` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Cons.intro` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `dynPlace_at` | `RueCore.Trace` | `propext` |
 | `evalArgs_cons` | `RueCore.Trace` | `Quot.sound`, `propext` |
@@ -632,6 +640,7 @@ and diffs them against the committed copies.
 | `Long.pre` | `RueCore.Adequacy` | `propext` |
 | `Long.pre1` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `Long.andThen` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `Long.andThen0` | `RueCore.Adequacy` | `propext` |
 | `evalArgs_long` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `evalArgs_ok_steps` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `Long.zero` | `RueCore.Adequacy` | `propext` |
@@ -682,6 +691,64 @@ and diffs them against the committed copies.
 | `step_value_typed` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `step_type_safety` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `affineScopeDrop_both_ways` | `RueCore.Adequacy` | `propext` |
+| `Expr.pendingSafeList_mem` | `RueCore.TraceExact` | `propext` |
+| `Expr.returnsList_mem` | `RueCore.TraceExact` | `propext` |
+| `Expr.breaksList_mem` | `RueCore.TraceExact` | `propext` |
+| `Expr.quietList_mem` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `EvalRes.andThen_noRet` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `EvalRes.andThen_noBrk` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `EvalRes.withTrace_noRet` | `RueCore.TraceExact` | `propext` |
+| `EvalRes.withTrace_noBrk` | `RueCore.TraceExact` | `propext` |
+| `evalArgs_noRet` | `RueCore.TraceExact` | `propext` |
+| `evalArgs_noBrk` | `RueCore.TraceExact` | `propext` |
+| `introVal_quiet` | `RueCore.TraceExact` | `propext` |
+| `OpRes.toRes_quiet` | `RueCore.TraceExact` | `propext` |
+| `EvalRes.absorb_quiet` | `RueCore.TraceExact` | `propext` |
+| `eval_quiet` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `freedIds_append` | `RueCore.TraceExact` | `propext` |
+| `Contents.readAt_writeAt` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Contents.writeAt_own_eq` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `dropCell_freed` | `RueCore.TraceExact` | `propext` |
+| `residueMark_freed` | `RueCore.TraceExact` | `propext` |
+| `dropResidue_freed` | `RueCore.TraceExact` | `propext` |
+| `Contents.destructure_exact` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `dropRetire_exact` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `unwindLocs_exact` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `matchConsume_exact` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Contents.own_struct_fresh` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Contents.own_enum_fresh` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Contents.own_array_fresh` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Val.ints_own` | `RueCore.TraceExact` | `propext` |
+| `dynPlace_ints` | `RueCore.TraceExact` | `propext` |
+| `Exact.prefix` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Exact.shift` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Exact.bind` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Exact.bindHeld` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Exact.absorb` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Exact.pure` | `RueCore.TraceExact` | `propext` |
+| `Exact.scalar` | `RueCore.TraceExact` | `propext` |
+| `Exact.opRes` | `RueCore.TraceExact` | `propext` |
+| `Exact.intro` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Exact.of_quiet` | `RueCore.TraceExact` | `propext` |
+| `evalArgs_exactQuiet` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `evalArgs_exact` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Exact.move` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Exact.destructure` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Exact.dropPlace` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Exact.dropDeclared` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Exact.assign` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Exact.assignDyn` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Exact.unwind` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `evalBinOp_val_args` | `RueCore.TraceExact` | `propext` |
+| `evalUnOp_val_arg` | `RueCore.TraceExact` | `propext` |
+| `evalIntCast_val_arg` | `RueCore.TraceExact` | `propext` |
+| `evalFintrin_val_arg` | `RueCore.TraceExact` | `propext` |
+| `Val.observable_scalar` | `RueCore.TraceExact` | `propext` |
+| `eval_indexRead_copy` | `RueCore.TraceExact` | `propext` |
+| `eval_exact` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `drop_exactly_once` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `lostProgram_typed` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `pendingSafe_needed` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `Explain.explain_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainIdx_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainArgs_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
