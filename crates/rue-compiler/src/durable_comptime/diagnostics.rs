@@ -426,11 +426,14 @@ pub(super) fn durable_host_failure(error: DurableComptimeFailure) -> DurableComp
     }
 }
 
+/// A durable comptime diagnostic anchored at the AIR engine's `site`, so a
+/// const initializer reports it where the body path does: `-129` at `i8` on
+/// the negated literal, not on the whole declaration (RUE-2405).
 pub(super) fn durable_diagnostic_failure(
-    _site: &DurableComptimeDiagnosticSite,
+    site: &DurableComptimeDiagnosticSite,
     kind: rue_error::ErrorKind,
 ) -> DurableComptimeHostFailure {
-    DurableComptimeHostFailure::semantic(Box::new(SemanticNucleusFailure::Diagnostic(kind)))
+    durable_host_failure(DurableComptimeFailure::kind_at_site(site, kind))
 }
 
 /// A durable comptime diagnostic that carries a `help:` line.
