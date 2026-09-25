@@ -1198,6 +1198,415 @@ theorem evalArgs_ok_steps {fuel : Nat} {φ : Frame} {t : ArgsTag} {es : List Exp
 
 end counted
 
+/-! ## Fuel counts steps, per form -/
+
+section longForms
+variable {M : FloatOps} {P : Program} {fuel : Nat} {H : Store} {φ : Frame}
+
+/-- Every family has runs of no steps (helper). -/
+theorem Long.zero {C : List Kont → List Event → Config} : Long M P C 0 :=
+  fun _ _ => ⟨_, .refl _⟩
+
+/-- An operator's outcome is never exhausted fuel (helper). -/
+theorem OpRes.toRes_ne_outOfFuel (o : OpRes) (H : Store) : o.toRes H ≠ .outOfFuel := by
+  cases o <;> simp [OpRes.toRes]
+
+/-- Aggregate introduction is never exhausted fuel (helper). -/
+theorem introVal_ne_outOfFuel {D : Decls} {H : Store} {mk : Nat → Val} :
+    introVal D H mk ≠ .outOfFuel := by
+  simp only [introVal]; split <;> simp
+
+/-- Close a context `k H v = .outOfFuel` whose context never spends fuel. -/
+macro "never_oof" : tactic => `(tactic| (
+  intro _ _ _ _ h
+  first
+  | exact absurd h (OpRes.toRes_ne_outOfFuel _ _)
+  | exact absurd h introVal_ne_outOfFuel
+  | (try simp only [] at h
+     (repeat' split at h) <;> first
+       | simp at h
+       | exact absurd h (OpRes.toRes_ne_outOfFuel _ _)
+       | exact absurd h introVal_ne_outOfFuel)))
+
+/-- The place forms, literals, `@panic` and `break` spend no fuel of their own
+beyond the unit they start with (helper). -/
+theorem eval_leaf_ne_outOfFuel {e : Expr}
+    (he : match e with
+      | .intLit .. | .floatLit .. | .boolLit _ | .unitLit | .use _ | .drop _ | .panic _ | .brk => True
+      | _ => False) :
+    eval M (fuel + 1) P H φ e ≠ .outOfFuel := by
+  cases e <;> simp only at he <;> simp only [eval]
+  all_goals (repeat' split)
+  all_goals simp
+
+/-- §6.4's binary operators, counted (helper). -/
+theorem long_binop (IH : LongIH M P fuel) (op : BinOp) (e₁ e₂ : Expr) :
+    eval M (fuel + 1) P H φ (.binop op e₁ e₂) = .outOfFuel →
+      Long M P (evalConf H φ (.binop op e₁ e₂)) (fuel + 1) := by
+  simp only [eval]
+  refine Long.andThen (C₁ := evalConf H φ e₁) (F := .binopL op e₂) (fun _ _ => .binopEnter)
+    (eval_sim M P fuel H φ e₁) (IH H φ e₁) ?_
+  intro H₁ v₁ _ _ hk
+  refine Long.mono (Nat.le_succ _) (Long.andThen (C₁ := evalConf H₁ φ e₂) (F := .binopR op v₁)
+    (fun _ _ => .binopMid) (eval_sim M P fuel H₁ φ e₂) (IH H₁ φ e₂) ?_ hk)
+  never_oof
+
+/-- §6.4's unary operators, counted (helper). -/
+theorem long_unop (IH : LongIH M P fuel) (op : UnOp) (e : Expr) :
+    eval M (fuel + 1) P H φ (.unop op e) = .outOfFuel →
+      Long M P (evalConf H φ (.unop op e)) (fuel + 1) := by
+  simp only [eval]
+  refine Long.andThen (C₁ := evalConf H φ e) (F := .unop op) (fun _ _ => .unopEnter)
+    (eval_sim M P fuel H φ e) (IH H φ e) ?_
+  never_oof
+
+/-- (D-Int-Cast), counted (helper). -/
+theorem long_intCast (IH : LongIH M P fuel) (w : IntWidth) (sg : Sign) (e : Expr) :
+    eval M (fuel + 1) P H φ (.intCast w sg e) = .outOfFuel →
+      Long M P (evalConf H φ (.intCast w sg e)) (fuel + 1) := by
+  simp only [eval]
+  refine Long.andThen (C₁ := evalConf H φ e) (F := .intCast w sg) (fun _ _ => .intCastEnter)
+    (eval_sim M P fuel H φ e) (IH H φ e) ?_
+  never_oof
+
+/-- §6.4's float intrinsics, counted (helper). -/
+theorem long_fintrin (IH : LongIH M P fuel) (k : FloatIntrin) (e : Expr) :
+    eval M (fuel + 1) P H φ (.fintrin k e) = .outOfFuel →
+      Long M P (evalConf H φ (.fintrin k e)) (fuel + 1) := by
+  simp only [eval]
+  refine Long.andThen (C₁ := evalConf H φ e) (F := .fintrin k) (fun _ _ => .fintrinEnter)
+    (eval_sim M P fuel H φ e) (IH H φ e) ?_
+  never_oof
+
+/-- `@dbg` (§6.12), counted (helper). -/
+theorem long_dbg (IH : LongIH M P fuel) (e : Expr) :
+    eval M (fuel + 1) P H φ (.dbg e) = .outOfFuel →
+      Long M P (evalConf H φ (.dbg e)) (fuel + 1) := by
+  simp only [eval]
+  refine Long.andThen (C₁ := evalConf H φ e) (F := .dbg) (fun _ _ => .dbgEnter)
+    (eval_sim M P fuel H φ e) (IH H φ e) ?_
+  never_oof
+
+/-- The repeat form (`7.1:39`), counted (helper). -/
+theorem long_repeat (IH : LongIH M P fuel) (T : Ty) (e : Expr) (n : Nat) :
+    eval M (fuel + 1) P H φ (.repeatArray T e n) = .outOfFuel →
+      Long M P (evalConf H φ (.repeatArray T e n)) (fuel + 1) := by
+  simp only [eval]
+  refine Long.andThen (C₁ := evalConf H φ e) (F := .repeatArray T n) (fun _ _ => .repeatEnter)
+    (eval_sim M P fuel H φ e) (IH H φ e) ?_
+  never_oof
+
+/-- (D-Return) §6.9, counted (helper). -/
+theorem long_ret (IH : LongIH M P fuel) (e : Expr) :
+    eval M (fuel + 1) P H φ (.ret e) = .outOfFuel →
+      Long M P (evalConf H φ (.ret e)) (fuel + 1) := by
+  simp only [eval]
+  refine Long.andThen (C₁ := evalConf H φ e) (F := .ret) (fun _ _ => .retEnter)
+    (eval_sim M P fuel H φ e) (IH H φ e) ?_
+  never_oof
+
+/-- (D-Assign) §6.8, counted (helper). -/
+theorem long_assign (IH : LongIH M P fuel) (p : Place) (e : Expr) :
+    eval M (fuel + 1) P H φ (.assign p e) = .outOfFuel →
+      Long M P (evalConf H φ (.assign p e)) (fuel + 1) := by
+  simp only [eval]
+  refine Long.andThen (C₁ := evalConf H φ e) (F := .assign p) (fun _ _ => .assignEnter)
+    (eval_sim M P fuel H φ e) (IH H φ e) ?_
+  never_oof
+
+/-- (D-Let) §6.7, counted: the body runs after (D-Let)'s step (helper). -/
+theorem long_letIn (IH : LongIH M P fuel) (m : Bool) (e₁ e₂ : Expr) :
+    eval M (fuel + 1) P H φ (.letIn m e₁ e₂) = .outOfFuel →
+      Long M P (evalConf H φ (.letIn m e₁ e₂)) (fuel + 1) := by
+  simp only [eval]
+  refine Long.andThen (C₁ := evalConf H φ e₁) (F := .letIn e₂) (fun _ _ => .letEnter)
+    (eval_sim M P fuel H φ e₁) (IH H φ e₁) ?_
+  intro H₁ v₁ _ _ hk
+  refine Long.mono (Nat.le_succ _) (Long.andThen (F := .endscope [H₁.length])
+    (fun _ _ => .letBind) (eval_sim M P fuel _ _ e₂) (IH _ _ e₂) ?_ hk)
+  never_oof
+
+/-- (D-Match) §6.6, counted: the arm runs after (D-Match)'s step (helper). -/
+theorem long_match (IH : LongIH M P fuel) (scrut : Expr) (arms : List Expr) :
+    eval M (fuel + 1) P H φ (.«match» scrut arms) = .outOfFuel →
+      Long M P (evalConf H φ (.«match» scrut arms)) (fuel + 1) := by
+  simp only [eval]
+  refine Long.andThen (C₁ := evalConf H φ scrut) (F := .«match» arms) (fun _ _ => .matchEnter)
+    (eval_sim M P fuel H φ scrut) (IH H φ scrut) ?_
+  intro H₀ v _ _ hk
+  try simp only [] at hk
+  split at hk
+  · rename_i _ _ _ vs _
+    split at hk
+    · simp at hk
+    · rename_i body hbody
+      refine Long.mono (Nat.le_succ _) (Long.andThen (F := .endscope (mintParams H₀ vs).2)
+        (fun _ _ => .«match» hbody rfl) (eval_sim M P fuel _ _ body) (IH _ _ body) ?_ hk)
+      never_oof
+  · simp at hk
+
+/-- (D-Seq) §6.7, counted: the second operand runs after (D-Seq)'s step
+(helper). -/
+theorem long_seq (IH : LongIH M P fuel) (e₁ e₂ : Expr) :
+    eval M (fuel + 1) P H φ (.seq e₁ e₂) = .outOfFuel →
+      Long M P (evalConf H φ (.seq e₁ e₂)) (fuel + 1) := by
+  simp only [eval]
+  refine Long.andThen (C₁ := evalConf H φ e₁) (F := .seq e₂) (fun _ _ => .seqEnter)
+    (eval_sim M P fuel H φ e₁) (IH H φ e₁) ?_
+  intro H₁ v₁ _ _ hk
+  try simp only [] at hk
+  split at hk
+  · simp at hk
+  · rename_i hm
+    split at hk
+    · simp at hk
+    · rename_i evs hd
+      rw [EvalRes.withTrace_outOfFuel_iff] at hk
+      have hne : v₁.mult P.decls ≠ .copy := by rw [hm]; exact nofun
+      exact Long.mono (Nat.le_succ _) (Long.pre1 (C₂ := evalConf H₁ φ e₂)
+        (fun K tr => ⟨_, _, .seqDrop hne hd, .refl _⟩) (IH H₁ φ e₂ hk))
+  · rename_i hm
+    exact Long.mono (Nat.le_succ _) (Long.pre1 (C₂ := evalConf H₁ φ e₂)
+      (fun K tr => ⟨_, _, .seqCopy hm, .refl _⟩) (IH H₁ φ e₂ hk))
+
+/-- (D-If-T)/(D-If-F) §6.6, counted (helper). -/
+theorem long_ite (IH : LongIH M P fuel) (c e₁ e₂ : Expr) :
+    eval M (fuel + 1) P H φ (.ite c e₁ e₂) = .outOfFuel →
+      Long M P (evalConf H φ (.ite c e₁ e₂)) (fuel + 1) := by
+  simp only [eval]
+  refine Long.andThen (C₁ := evalConf H φ c) (F := .ite e₁ e₂) (fun _ _ => .iteEnter)
+    (eval_sim M P fuel H φ c) (IH H φ c) ?_
+  intro H₀ v _ _ hk
+  try simp only [] at hk
+  split at hk
+  · rename_i b
+    split at hk
+    · rename_i hb
+      subst hb
+      exact Long.mono (Nat.le_succ _) (Long.pre1 (C₂ := evalConf H₀ φ e₁)
+        (fun K tr => ⟨_, _, .iteTrue, .refl _⟩) (IH H₀ φ e₁ hk))
+    · rename_i hb
+      simp only [Bool.not_eq_true] at hb
+      subst hb
+      exact Long.mono (Nat.le_succ _) (Long.pre1 (C₂ := evalConf H₀ φ e₂)
+        (fun K tr => ⟨_, _, .iteFalse, .refl _⟩) (IH H₀ φ e₂ hk))
+  · simp at hk
+
+/-- An argument-list form whose list spent the fuel, from its enter step
+(helper). -/
+theorem long_argsForm {t : ArgsTag} {es : List Expr} {e : Expr} (IH : LongIH M P fuel)
+    (hent : ∀ K tr, Step M P (evalConf H φ e K tr) (argsConf H φ t [] es K tr))
+    (h : evalArgs (fun H e => eval M fuel P H φ e) H es = .abort .outOfFuel) :
+    Long M P (evalConf H φ e) (fuel + 1) :=
+  Long.pre (fun K tr => ⟨tr, Steps.single (hent K tr)⟩) (evalArgs_long IH t es H [] h)
+
+/-- (D-Struct) §6.5, counted (helper). -/
+theorem long_mkStruct (IH : LongIH M P fuel) (s : Nat) (args : List Expr) :
+    eval M (fuel + 1) P H φ (.mkStruct s args) = .outOfFuel →
+      Long M P (evalConf H φ (.mkStruct s args)) (fuel + 1) := by
+  simp only [eval]
+  intro h
+  split at h
+  · subst h; exact long_argsForm IH (fun _ _ => .structEnter) ‹_›
+  · rw [EvalRes.withTrace_outOfFuel_iff] at h
+    (repeat' split at h) <;> first | simp at h | exact absurd h introVal_ne_outOfFuel
+
+/-- (D-Enum-Intro) §6.6, counted (helper). -/
+theorem long_mkEnum (IH : LongIH M P fuel) (e k : Nat) (args : List Expr) :
+    eval M (fuel + 1) P H φ (.mkEnum e k args) = .outOfFuel →
+      Long M P (evalConf H φ (.mkEnum e k args)) (fuel + 1) := by
+  simp only [eval]
+  intro h
+  split at h
+  · subst h; exact long_argsForm IH (fun _ _ => .enumEnter) ‹_›
+  · rw [EvalRes.withTrace_outOfFuel_iff] at h
+    (repeat' split at h) <;> first | simp at h | exact absurd h introVal_ne_outOfFuel
+
+/-- (D-Array) §6.5, counted (helper). -/
+theorem long_mkArray (IH : LongIH M P fuel) (T : Ty) (args : List Expr) :
+    eval M (fuel + 1) P H φ (.mkArray T args) = .outOfFuel →
+      Long M P (evalConf H φ (.mkArray T args)) (fuel + 1) := by
+  simp only [eval]
+  intro h
+  split at h
+  · subst h; exact long_argsForm IH (fun _ _ => .arrayEnter) ‹_›
+  · rw [EvalRes.withTrace_outOfFuel_iff] at h
+    exact absurd h introVal_ne_outOfFuel
+
+/-- (D-Index) §6.5, counted (helper). -/
+theorem long_indexRead (IH : LongIH M P fuel) (p : Place) (idx : List Expr) (πs : List (List Nat)) :
+    eval M (fuel + 1) P H φ (.indexRead p idx πs) = .outOfFuel →
+      Long M P (evalConf H φ (.indexRead p idx πs)) (fuel + 1) := by
+  simp only [eval]
+  intro h
+  split at h
+  · subst h; exact long_argsForm IH (fun _ _ => .indexReadEnter) ‹_›
+  · rw [EvalRes.withTrace_outOfFuel_iff] at h
+    (repeat' split at h) <;> simp at h
+
+/-- `@drop` at a dynamic place, counted. `eval` re-dispatches it to the read
+at one less fuel without a step of its own; the (Search) push into the first
+index pays for that unit (helper). -/
+theorem long_indexDrop (IH : LongIH M P fuel) (p : Place) (idx : List Expr) (πs : List (List Nat)) :
+    eval M (fuel + 2) P H φ (.indexDrop p idx πs) = .outOfFuel →
+      Long M P (evalConf H φ (.indexDrop p idx πs)) (fuel + 2) := by
+  intro h
+  have he : eval M (fuel + 2) P H φ (.indexDrop p idx πs) =
+      (eval M (fuel + 1) P H φ (.indexRead p idx πs)).andThen (fun H' _ => .ok H' .unit []) := by
+    simp only [eval]
+  have hr : eval M (fuel + 1) P H φ (.indexRead p idx πs) = .outOfFuel := by
+    rw [he] at h
+    revert h
+    cases eval M (fuel + 1) P H φ (.indexRead p idx πs) <;> simp [EvalRes.andThen, EvalRes.withTrace]
+  simp only [eval] at hr
+  split at hr
+  · subst hr
+    exact Long.pre1 (C₂ := argsConf H φ (.indexDrop p πs) [] idx)
+      (fun _ tr => ⟨_, tr, .indexDropEnter, .refl _⟩) (evalArgs_long IH _ idx H [] ‹_›)
+  · rw [EvalRes.withTrace_outOfFuel_iff] at hr
+    (repeat' split at hr) <;> simp at hr
+
+/-- `@drop` at a dynamic place at the smallest fuel: one step, (Search) into
+the indices (helper). -/
+theorem long_indexDrop_one (p : Place) (idx : List Expr) (πs : List (List Nat)) :
+    Long M P (evalConf H φ (.indexDrop p idx πs)) 1 :=
+  Long.pre1 (C₂ := argsConf H φ (.indexDrop p πs) [] idx)
+    (fun _ tr => ⟨_, tr, .indexDropEnter, .refl _⟩) Long.zero
+
+/-- (D-Assign) below a dynamic index (§6.8, `5.2:14`), counted (helper). -/
+theorem long_indexWrite (IH : LongIH M P fuel) (p : Place) (idx : List Expr)
+    (πs : List (List Nat)) (e : Expr) :
+    eval M (fuel + 1) P H φ (.indexWrite p idx πs e) = .outOfFuel →
+      Long M P (evalConf H φ (.indexWrite p idx πs e)) (fuel + 1) := by
+  simp only [eval]
+  refine Long.andThen (C₁ := evalConf H φ e) (F := .indexWriteRhs p idx πs)
+    (fun _ _ => .indexWriteEnter) (eval_sim M P fuel H φ e) (IH H φ e) ?_
+  intro H₁ v _ _ hk
+  try simp only [] at hk
+  split at hk
+  · subst hk
+    exact Long.mono (Nat.le_succ _)
+      (Long.pre (fun K tr => ⟨tr, Steps.single .indexWriteRhs⟩)
+        (evalArgs_long IH (.indexWrite p πs v) idx H₁ [] ‹_›))
+  · rw [EvalRes.withTrace_outOfFuel_iff] at hk
+    (repeat' split at hk) <;> simp at hk
+
+/-- (D-Call) §6.9, counted: the body runs after the arguments and (D-Call)'s
+step (helper). -/
+theorem long_call (IH : LongIH M P fuel) (f : Nat) (args : List Expr) :
+    eval M (fuel + 1) P H φ (.call f args) = .outOfFuel →
+      Long M P (evalConf H φ (.call f args)) (fuel + 1) := by
+  simp only [eval]
+  intro h
+  split at h
+  · subst h; exact long_argsForm IH (fun _ _ => .callEnter) ‹_›
+  · rename_i H₁ vs tr₁ hr
+    rw [EvalRes.withTrace_outOfFuel_iff] at h
+    split at h
+    · simp at h
+    · rename_i fd hfd
+      split at h
+      · rename_i hlen
+        have hb : eval M fuel P (mintParams H₁ vs).1
+            { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 } fd.body =
+              .outOfFuel := by
+          revert h
+          cases eval M fuel P (mintParams H₁ vs).1
+              { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 } fd.body
+          all_goals simp only [EvalRes.absorb, EvalRes.withTrace_outOfFuel_iff, imp_self]
+          all_goals (try split)
+          all_goals simp
+        exact Long.pre1 (C₂ := fun K tr => evalConf _ _ fd.body (.call φ :: K) tr)
+          (fun K tr => ⟨_, tr ++ tr₁, .callEnter,
+            (evalArgs_ok_steps hr K tr).trans (Steps.single (.call hfd hlen rfl))⟩)
+          (fun K tr => IH _ _ _ hb _ tr)
+      · simp at h
+
+/-- (D-Loop-Enter) and (D-Loop-Iter) §6.10, counted. A turn that finishes
+re-enters the body through (D-Loop-Iter) where `eval` re-evaluates the loop
+at one less fuel; that re-evaluation's first step, (D-Loop-Enter), is peeled
+off by determinism (`StepsN.peel`), and (D-Loop-Iter) stands in for it
+(helper). -/
+theorem long_loop (IH : LongIH M P fuel) (e : Expr) :
+    eval M (fuel + 1) P H φ (.loop e) = .outOfFuel →
+      Long M P (evalConf H φ (.loop e)) (fuel + 1) := by
+  simp only [eval]
+  have hent : ∀ K tr, Step M P (evalConf H φ (.loop e) K tr) (evalConf H φ e (.loop e φ :: K) tr) :=
+    fun _ _ => .loopEnter
+  cases hr : eval M fuel P H φ e with
+  | ok H₁ v tr₁ =>
+      intro h
+      simp only [EvalRes.withTrace_outOfFuel_iff] at h
+      have hs := eval_sim M P fuel H φ e
+      rw [hr] at hs
+      cases fuel with
+      | zero => simp [eval] at hr
+      | succ f =>
+          have hL := IH H₁ φ (.loop e) h
+          have hL' : Long M P (fun K tr => evalConf H₁ φ e (.loop e φ :: K) tr) f := by
+            intro K tr
+            obtain ⟨D, hD⟩ := hL K tr
+            exact ⟨D, hD.peel .loopEnter⟩
+          have hit : Long M P (fun K tr => .run H₁ φ (.loop e φ :: K) (.ret v) tr) (f + 1) :=
+            Long.pre1 (fun K tr => ⟨_, tr ++ [], .loopIter (by simp [plainUnwind]), .refl _⟩) hL'
+          exact Long.pre1 (fun K tr => ⟨_, tr ++ tr₁, hent K tr, hs _ tr⟩) hit
+  | broke H₁ sc tr₁ =>
+      intro h
+      simp only [] at h
+      split at h <;> simp at h
+  | outOfFuel =>
+      intro _
+      exact Long.pre1 (C₂ := fun K tr => evalConf H φ e (.loop e φ :: K) tr)
+        (fun K tr => ⟨_, tr, hent K tr, .refl _⟩) (fun K tr => IH H φ e hr _ tr)
+  | returned => simp
+  | panic => simp
+  | stuck => simp
+
+end longForms
+
+/-- **Fuel counts steps** (RUE-2332; ADR-0097 decision 3). If `eval` exhausts
+`fuel` on an expression, then from that expression in focus, under any context
+and after any trace, §6's reduction has a run of exactly `fuel` steps. Each
+unit of fuel `eval` spends is paid for by at least one `Step`: a (Search)
+enter step (§6.2) before every recursive call, the operands already reduced
+before it (`eval_sim`'s `ok` clause), and (D-Loop-Iter) (§6.10) for the loop's
+re-evaluation. No typing hypothesis. The proof is a strong induction on fuel,
+as `eval_sim`'s is. -/
+theorem eval_steps_of_outOfFuel (M : FloatOps) (P : Program) (fuel : Nat) : LongIH M P fuel := by
+  induction fuel using Nat.strongRecOn with
+  | ind n ih =>
+  intro H φ e
+  cases n with
+  | zero => intro _; exact Long.zero
+  | succ fuel =>
+    have IH := ih fuel (Nat.lt_succ_self _)
+    cases e with
+    | intLit | floatLit | boolLit | unitLit | use | drop | panic | brk =>
+        intro h; exact absurd h (eval_leaf_ne_outOfFuel trivial)
+    | binop op e₁ e₂ => exact long_binop IH op e₁ e₂
+    | unop op e => exact long_unop IH op e
+    | intCast w s e => exact long_intCast IH w s e
+    | fintrin k e => exact long_fintrin IH k e
+    | dbg e => exact long_dbg IH e
+    | mkStruct s args => exact long_mkStruct IH s args
+    | mkEnum e k args => exact long_mkEnum IH e k args
+    | «match» scrut arms => exact long_match IH scrut arms
+    | mkArray T args => exact long_mkArray IH T args
+    | repeatArray T e n => exact long_repeat IH T e n
+    | indexRead p idx πs => exact long_indexRead IH p idx πs
+    | indexWrite p idx πs e => exact long_indexWrite IH p idx πs e
+    | indexDrop p idx πs =>
+        cases fuel with
+        | zero => intro _; exact long_indexDrop_one p idx πs
+        | succ f => exact long_indexDrop (ih f (by omega)) p idx πs
+    | letIn m e₁ e₂ => exact long_letIn IH m e₁ e₂
+    | assign p e => exact long_assign IH p e
+    | seq e₁ e₂ => exact long_seq IH e₁ e₂
+    | ite c e₁ e₂ => exact long_ite IH c e₁ e₂
+    | call f args => exact long_call IH f args
+    | ret e => exact long_ret IH e
+    | loop e => exact long_loop IH e
+
 /-- **The theorem at work**: `letAddProgram_runs` (`Step.lean`) found its
 `→*` derivation by running `stepN`; here it comes from `run`'s answer alone,
 through `run_sim` — `let x = 40; x + 2` reaches `✓42` with the `let`'s cell
