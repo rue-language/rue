@@ -55,6 +55,11 @@ diverging form is outside the verdict contract, and no case has one
 Running the consumer needs neither `lake` nor `elan`: the corpus it reads is
 the Buck target's own `corpus.json`.
 
+How sensitive the corpus is, that is, whether it would catch a compiler
+that is wrong, is measured in [BRIDGE-SENSITIVITY.md](BRIDGE-SENSITIVITY.md)
+(RUE-2464). That page reintroduced historical compiler bugs and classic
+mutants one at a time and recorded which seed or generated case caught each.
+
 ```bash
 scripts/rue lean-bridge                      # or: ./buck2 run //:lean-bridge
 scripts/rue lean-bridge -- --case overflow   # one case
