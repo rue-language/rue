@@ -1146,15 +1146,11 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<Type> {
-        let local_modules = self.type_syntax_local_module_roots(syntax, ctx);
-        let type_vars: &AHashMap<Spur, Type> = &ctx.comptime_type_vars;
-        let type_substitutions = if local_modules.is_empty() {
-            std::borrow::Cow::Borrowed(type_vars)
-        } else {
-            let mut substitutions = type_vars.clone();
-            substitutions.extend(local_modules);
-            std::borrow::Cow::Owned(substitutions)
-        };
+        let type_substitutions = self.with_local_module_roots(
+            syntax,
+            std::borrow::Cow::Borrowed(&ctx.comptime_type_vars),
+            ctx,
+        );
         self.storage.resolve_body_type_with_substitutions(
             syntax,
             span,
@@ -1163,20 +1159,21 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         )
     }
 
-    /// The `let`-bound modules a body-position type names as path roots
-    /// (`let b: m.S`, `let o: m.Option(u64)`), each as a module-typed
-    /// substitution: type resolution walks a path from a module-typed
-    /// substitution exactly as from a file-level module binding (10.4:1,
-    /// RUE-2426). The root is classified by the one shadowing rule, so a
-    /// local that is not a module leaves the path to the file's bindings, as
-    /// before.
-    fn type_syntax_local_module_roots(
+    /// `type_substitutions` plus each `let`-bound module a body-position type
+    /// names as a path root (`let b: m.S`, `let o: m.Option(u64)`, a field
+    /// `struct { s: m.S }`), as a module-typed substitution: type resolution
+    /// walks a path from a module-typed substitution exactly as from a
+    /// file-level module binding (10.4:1, RUE-2426). The root is classified
+    /// by the one shadowing rule, so a local that is not a module leaves the
+    /// path to the file's bindings, as before. Only a path root is looked up,
+    /// so the common annotation costs one walk of its own syntax.
+    pub(crate) fn with_local_module_roots<'s>(
         &self,
         syntax: RirTypeSyntaxRef,
+        mut type_substitutions: std::borrow::Cow<'s, AHashMap<Spur, Type>>,
         ctx: &AnalysisContext,
-    ) -> Vec<(Spur, Type)> {
+    ) -> std::borrow::Cow<'s, AHashMap<Spur, Type>> {
         let arena = self.body_rir_ref().type_syntax();
-        let mut roots = Vec::new();
         let mut pending = vec![syntax];
         while let Some(reference) = pending.pop() {
             let path = match arena.node(reference) {
@@ -1187,18 +1184,18 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             if let Some(root) = path
                 .and_then(|path| arena.words(path))
                 .filter(|words| words.len() > 1)
-                .and_then(|words| {
-                    arena.symbol(rue_rir::RirTypeSyntaxSymbol::from_u32(words[0]))
-                })
+                .and_then(|words| arena.symbol(rue_rir::RirTypeSyntaxSymbol::from_u32(words[0])))
                 .copied()
                 && let super::aggregate_resolution::ModuleSpineRoot::LocalModule(module) =
                     self.classify_module_spine_root(root, ctx)
             {
-                roots.push((root, Type::new_module(module)));
+                type_substitutions
+                    .to_mut()
+                    .insert(root, Type::new_module(module));
             }
             arena.visit_child_references(reference, |child| pending.push(child));
         }
-        roots
+        type_substitutions
     }
 
     pub(crate) fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(

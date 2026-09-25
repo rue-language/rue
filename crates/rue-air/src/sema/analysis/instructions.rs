@@ -480,10 +480,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let mut struct_fields = Vec::with_capacity(field_decls.len());
                 for (name_sym, type_sym) in field_decls {
                     let name_str = self.body_interner().resolve(&name_sym).to_string();
+                    let field_subst = self.with_local_module_roots(
+                        type_sym,
+                        std::borrow::Cow::Borrowed(field_type_subst.as_ref()),
+                        ctx,
+                    );
                     let field_ty = self
                         .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
                             type_sym,
-                            field_type_subst.as_ref(),
+                            field_subst.as_ref(),
                             &ctx.comptime_value_vars,
                             inst.span,
                         )
@@ -666,10 +671,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     variant_names.push(self.body_interner().resolve(vsym).to_string());
                     let mut tys: Vec<Type> = Vec::with_capacity(symbols.len());
                     for ty_sym in symbols {
+                        let payload_subst = self.with_local_module_roots(
+                            ty_sym,
+                            std::borrow::Cow::Borrowed(&ctx.comptime_type_vars),
+                            ctx,
+                        );
                         let field_ty = self
                             .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
                                 ty_sym,
-                                &ctx.comptime_type_vars,
+                                payload_subst.as_ref(),
                                 &ctx.comptime_value_vars,
                                 inst.span,
                             )
