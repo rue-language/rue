@@ -1115,3 +1115,155 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Aggregate constant literals checked against their declared shapes (3.6:15,
+# 6.3:5, 6.3:16) — RUE-2407
+# =============================================================================
+
+# A struct literal or enum constructor in a constant's initializer is held to
+# its type's declaration before any child reduces, with the body type
+# checker's codes, on the literal: each field named once and none left out,
+# and a declared variant given as many payloads as it declares.
+
+[[case]]
+name = "const_struct_unknown_field_rejected"
+spec = ["3.6:15", "6.5:2"]
+description = "A struct literal naming a field the struct does not declare is E0401 in a constant initializer, as in a body, not a generic reduction failure (RUE-2407)"
+source = """
+@copy struct S { a: i32 }
+const A: S = S { b: 1 };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0401", "unknown field 'b' in struct 'S'"]
+
+[[case]]
+name = "const_struct_duplicate_field_rejected"
+spec = ["3.6:15", "6.5:2"]
+description = "A struct literal naming a field twice is E0402 in a constant initializer (RUE-2407)"
+source = """
+@copy struct P { x: i32, y: i32 }
+const A: P = P { x: 1, x: 2, y: 3 };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0402", "duplicate field 'x' in struct 'P'"]
+
+[[case]]
+name = "const_nested_struct_missing_field_rejected"
+spec = ["3.6:15", "6.5:2", "4.14:26"]
+description = "A struct literal that leaves a field out is E0400 at depth: a field of a struct field (RUE-2407)"
+source = """
+@copy struct S { a: i32, b: i32 }
+@copy struct T { s: S }
+const A: T = T { s: S { a: 1 } };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0400", "missing field 'b' in struct 'S'"]
+
+[[case]]
+name = "const_nested_struct_unknown_field_rejected"
+spec = ["3.6:15", "6.5:2", "4.14:26"]
+description = "An unknown field is E0401 at depth: a struct literal element of an array, and ahead of a sibling field that is itself in error (RUE-2407)"
+source = """
+@copy struct P { x: f32, y: i32 }
+const A: [P; 1] = [P { x: 1e39, z: 1 }];
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0401", "unknown field 'z' in struct 'P'"]
+
+[[case]]
+name = "const_non_copy_struct_unknown_field_rejected"
+spec = ["3.6:15", "6.5:2"]
+description = "A struct literal's shape is checked before the constant's Copy requirement, so an unknown field of a non-Copy struct is still E0401 (RUE-2407)"
+source = """
+struct N { a: i32 }
+const A: N = N { b: 1 };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0401", "unknown field 'b' in struct 'N'"]
+
+[[case]]
+name = "const_enum_unknown_variant_rejected"
+spec = ["6.3:5", "6.5:2"]
+description = "A payload constructor naming a variant the enum does not declare is E0420 in a constant initializer (RUE-2407)"
+source = """
+enum E { A(i32) }
+const B: E = E.C(1);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0420", "unknown variant 'C' in enum 'E'"]
+
+[[case]]
+name = "const_nested_enum_unknown_bare_variant_rejected"
+spec = ["6.3:5", "6.5:2", "4.14:26"]
+description = "A bare variant path naming an undeclared variant is E0420 at depth: an array element (RUE-2407)"
+source = """
+enum E { A(i32), U }
+const B: [E; 2] = [E.U, E.C];
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0420", "unknown variant 'C' in enum 'E'"]
+
+[[case]]
+name = "const_enum_payload_count_rejected"
+spec = ["6.3:16", "6.5:2"]
+description = "A payload constructor given more payloads than its variant declares is E0207 in a constant initializer (RUE-2407)"
+source = """
+enum E { A(i32) }
+const C: E = E.A(1, 2);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0207", "expected 1 argument, found 2"]
+
+[[case]]
+name = "const_nested_enum_payload_count_rejected"
+spec = ["6.3:16", "6.5:2", "4.14:26"]
+description = "A wrong payload count is E0207 at depth, ahead of the payload's own range: a payload of a payload given too many arguments (RUE-2407)"
+source = """
+enum E { A(u8) }
+enum F { W(E) }
+const C: F = F.W(E.A(300, 1));
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0207", "expected 1 argument, found 2"]
+
+[[case]]
+name = "const_nested_unit_variant_with_payload_rejected"
+spec = ["6.3:16", "6.5:2", "4.14:26"]
+description = "A discriminant-only variant given a payload is E0207 at depth: a struct field (RUE-2407)"
+source = """
+enum E { A(i32), U }
+@copy struct K { e: E }
+const C: K = K { e: E.U(1) };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0207", "expected 0 arguments, found 1"]
+
+[[case]]
+name = "const_aggregate_declared_shapes_accepted"
+spec = ["3.6:15", "6.3:16", "6.5:2", "4.14:26"]
+description = "Struct literals with their fields in any order and enum constructors with their declared payload counts are admitted at every depth (RUE-2407)"
+source = """
+@copy struct P { x: i32, y: i32 }
+enum E { A(u8), U }
+@copy struct T { p: P, e: E }
+const A: P = P { y: 2, x: 1 };
+const C: [E; 2] = [E.U, E.A(4)];
+const D: T = T { e: E.U, p: P { y: 7, x: 5 } };
+fn main() -> i32 {
+    let c = match C[1] { E.A(v) => v, E.U => 0 };
+    let d = match D.e { E.A(_) => 100, E.U => 0 };
+    A.y + @intCast(c) + D.p.y + D.p.x + d + 24
+}
+"""
+exit_code = 42
