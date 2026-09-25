@@ -484,6 +484,9 @@ def check_rows(tables: Sequence[Table], lean_dir: Path) -> List[str]:
     declared = all_declared(lean_dir)
     for table in tables:
         if table.kind == "symbol":
+            for index, cells in table.rows:
+                if len(cells) != len(table.header):
+                    errors.append(f"GLOSSARY.md line {index + 1}: {len(cells)} cells, the header has {len(table.header)}")
             continue
         cls, src, lean = column(table, "class"), column(table, "source"), column(table, "lean")
         if cls is None:
