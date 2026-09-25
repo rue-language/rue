@@ -1112,7 +1112,7 @@ theorem Contents.skelFields_own {D : Decls} (a : Nat) : ∀ (cs : List Contents)
         cases hs
         have := Contents.skelFields_own a cs f π h.2 hsf
         simp only [Contents.skelFields, Contents.ownList, Contents.own, List.count_append,
-          List.count_nil, List.nil_append]
+          List.nil_append]
         omega
 end
 
