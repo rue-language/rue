@@ -161,6 +161,8 @@ fn update_checked_const_index_test_stats(update: impl FnOnce(&mut CheckedConstIn
 /// each admitted call owns one source-order binding transaction, and the
 /// engine must not replay already validated arguments.
 pub struct OrdinaryComptimeCallBinding {
+    function: FunctionCallInfo,
+    span: Span,
     parameter_names: Vec<Spur>,
     parameter_types: Vec<Type>,
     parameter_is_type: Vec<bool>,
@@ -185,9 +187,21 @@ fn push_ordinary_comptime_call_argument(
 fn finish_ordinary_comptime_call_binding(
     binding: OrdinaryComptimeCallBinding,
 ) -> Option<OrdinaryComptimeBoundCall> {
+    let (callee_types, callee_values) = ordinary_comptime_call_substitutions(&binding)?;
+    Some(OrdinaryComptimeBoundCall {
+        callee_types,
+        callee_values,
+    })
+}
+
+/// Split the arguments bound so far into the callee's type and value
+/// substitutions. `None` rejects a type parameter bound to a non-type value.
+fn ordinary_comptime_call_substitutions(
+    binding: &OrdinaryComptimeCallBinding,
+) -> Option<(AHashMap<Spur, Type>, AHashMap<Spur, ConstValue>)> {
     let mut callee_types = AHashMap::new();
     let mut callee_values = AHashMap::new();
-    for (index, value) in binding.arguments.into_iter().enumerate() {
+    for (index, value) in binding.arguments.iter().enumerate() {
         let is_comptime_type = binding
             .parameter_is_type
             .get(index)
@@ -196,7 +210,7 @@ fn finish_ordinary_comptime_call_binding(
         let parameter_name = binding.parameter_names.get(index).copied()?;
         match (is_comptime_type, value) {
             (true, ConstValue::Type(ty)) => {
-                callee_types.insert(parameter_name, ty);
+                callee_types.insert(parameter_name, *ty);
             }
             // Ordinary body semantics deliberately ignore direct-unit
             // provenance: computed Unit remains a valid body type argument.
@@ -205,14 +219,11 @@ fn finish_ordinary_comptime_call_binding(
             }
             (true, _) => return None,
             (false, value) => {
-                callee_values.insert(parameter_name, value);
+                callee_values.insert(parameter_name, value.clone());
             }
         }
     }
-    Some(OrdinaryComptimeBoundCall {
-        callee_types,
-        callee_values,
-    })
+    Some((callee_types, callee_values))
 }
 
 impl super::comptime::ComptimeValue for ConstValue {
@@ -1555,15 +1566,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     fn begin_comptime_call_binding(
         &self,
         admission: &ComptimeCallAdmission<FunctionCallInfo, Spur>,
-        _argument_count: usize,
-        _span: Span,
+        argument_count: usize,
+        span: Span,
     ) -> CompileResult<OrdinaryComptimeCallBinding> {
         let param_data = self.body_param_data(admission.payload.params);
         Ok(OrdinaryComptimeCallBinding {
+            function: admission.payload,
+            span,
             parameter_names: param_data.names().to_vec(),
             parameter_types: param_data.types().to_vec(),
             parameter_is_type: self.comptime_type_param_flags(&admission.payload),
-            arguments: Vec::with_capacity(_argument_count),
+            arguments: Vec::with_capacity(argument_count),
         })
     }
 
@@ -1581,6 +1594,29 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             binding,
             argument.value().clone(),
         ))
+    }
+
+    /// A parameter's type with the call's earlier type and value arguments
+    /// substituted, as call checking substitutes it: `comptime v: T` after
+    /// `T = f32` takes `f32`. A declaration that does not resolve under the
+    /// partial substitution leaves the argument untyped; the complete batch
+    /// is validated at call preparation.
+    fn comptime_call_parameter_type(
+        &mut self,
+        binding: &OrdinaryComptimeCallBinding,
+        index: usize,
+    ) -> Option<Type> {
+        let declared = binding.parameter_types.get(index).copied()?;
+        let (type_subst, value_subst) = ordinary_comptime_call_substitutions(binding)?;
+        self.resolve_substituted_param_type(
+            &binding.function,
+            index,
+            declared,
+            &type_subst,
+            &value_subst,
+            binding.span,
+        )
+        .ok()
     }
 
     fn finish_comptime_call_binding(
@@ -1627,6 +1663,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             &callee_values,
             fn_body_info.span,
         )?;
+        // The callee's result position takes the substituted return type,
+        // so a float literal returned by `mk(f32)` meets spec 3.12:10 at the
+        // literal rather than at the enclosing `comptime` block.
+        let return_type = self.resolve_substituted_return_type(
+            &fn_info,
+            &callee_types,
+            &callee_values,
+            fn_body_info.span,
+        )?;
         Ok(Some(ComptimeCallPreparation::Enter {
             frame: ComptimeFrame {
                 program: (),
@@ -1639,7 +1684,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 value_bindings: callee_values,
                 name_bindings: AHashMap::new(),
                 call_identity: None,
-                expected_result: Some(fn_body_info.return_type),
+                expected_result: Some(return_type),
             },
             ticket: (),
         }))
@@ -3410,12 +3455,12 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeCallProtocol for OrdinaryBodyEngin
         OrdinaryBodyEngine::bind_comptime_call_argument(self, binding, argument, index, span)
             .map_err(Into::into)
     }
-    fn comptime_call_argument_type(
-        &self,
+    fn comptime_call_parameter_type(
+        &mut self,
         binding: &Self::CallBinding,
         index: usize,
     ) -> Option<Type> {
-        binding.parameter_types.get(index).copied()
+        OrdinaryBodyEngine::comptime_call_parameter_type(self, binding, index)
     }
     fn finish_comptime_call_binding(
         &mut self,
@@ -3814,6 +3859,17 @@ mod binding_tests {
         let value_name = interner.get_or_intern("value");
         let later_name = interner.get_or_intern("later");
         let mut binding = OrdinaryComptimeCallBinding {
+            function: FunctionCallInfo {
+                params: crate::param_arena::ParamRange::default(),
+                return_type: Type::I32,
+                returns_type: false,
+                is_generic: false,
+                is_pub: false,
+                is_unchecked: false,
+                is_extern: false,
+                file_id: FileId::new(0),
+            },
+            span: Span::new(0, 0),
             parameter_names: vec![value_name, later_name],
             parameter_types: vec![Type::I32, Type::I32],
             parameter_is_type: vec![true, false],

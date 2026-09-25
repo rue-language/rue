@@ -2043,22 +2043,12 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeCallProtocol
         Ok(true)
     }
 
-    fn comptime_call_argument_type(
-        &self,
-        binding: &Self::CallBinding,
-        index: usize,
-    ) -> Option<Self::Type> {
-        binding
-            .parameter(index)
-            .map(|parameter| DurableComptimeType(parameter.ty.clone()))
-    }
-
-    /// A value parameter's type with the call's earlier type arguments
+    /// A parameter's type with the call's earlier type arguments
     /// substituted, as the binding substitutes it: `comptime v: T` after
     /// `T = f32` takes `f32`, where a float literal argument meets spec
-    /// 3.12:10 (RUE-2406).
+    /// 3.12:10, and `comptime v: [T; 1]` types its elements as `f32`.
     fn comptime_call_parameter_type(
-        &self,
+        &mut self,
         binding: &Self::CallBinding,
         index: usize,
     ) -> Option<Self::Type> {
