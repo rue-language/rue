@@ -10,7 +10,7 @@ use ahash::{AHashMap, AHashSet};
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use lasso::Spur;
 use rue_error::{CompileError, CompileResult, ErrorKind, MissingFieldsError, OptionExt};
-use rue_rir::{InstData, InstRef, RirParamMode};
+use rue_rir::{InstData, InstRef, RepeatCount, RirParamMode};
 use rue_span::Span;
 
 use super::aggregate_resolution::{
@@ -23,7 +23,7 @@ use super::context::{AnalysisContext, AnalysisResult, ConstValue};
 use crate::inst::{
     Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirProjection, AirRef,
 };
-use crate::types::{Type, TypeKind};
+use crate::types::{ArrayLen, Type, TypeKind};
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Resolve a path/pattern enum type name that may be a comptime
@@ -1639,8 +1639,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 self.analyze_array_init(air, inst_ref, elements, inst.span, ctx)
             }
 
-            InstData::ArrayRepeat { value, .. } => {
-                self.analyze_array_repeat(air, inst_ref, *value, inst.span, ctx)
+            InstData::ArrayRepeat { value, count } => {
+                self.analyze_array_repeat(air, inst_ref, *value, *count, inst.span, ctx)
             }
 
             InstData::IndexGet { base, index } => {
@@ -2132,10 +2132,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
     /// Analyze an array-repeat literal `[value; count]` (RUE-235).
     ///
-    /// The result type `[ElemType; count]` was inferred by HM (the count is a
-    /// compile-time constant resolved during constraint generation via the
-    /// array-length const-eval path). This analysis:
-    /// 1. gates the form behind the `array_repeat` preview feature;
+    /// HM infers the result type `[ElemType; count]` when it can read the
+    /// count as an integer; otherwise it leaves a fresh variable for this
+    /// analysis to diagnose. This analysis:
+    /// 1. resolves a named count through the canonical array-length path, so
+    ///    a count that is not a non-negative integer compile-time constant
+    ///    is E0481 (spec 7.1:37), as in a type position or `comptime` block,
+    ///    before an annotation's length or the empty-array fallback can
+    ///    stand in for it (RUE-2442);
     /// 2. requires the element type to be `Copy` — a repeat materializes
     ///    `count` copies of one value, which is only sound for Copy elements
     ///    (matching Rust's `[v; N]: Copy`);
@@ -2148,9 +2152,30 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         air: &mut Air,
         inst_ref: InstRef,
         value_ref: InstRef,
+        count: RepeatCount,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        // HM reads a named count only when it is an integer `const` or an
+        // integer `comptime` value parameter, and leaves a fresh variable for
+        // anything else. Against an annotation that variable took the
+        // annotation's length, so `[7; N]` with `N = -1`, `true`, a type, a
+        // local, or an unknown name was accepted as `[T; 2]`; with no
+        // annotation it decayed to `<error>` and was reported as an
+        // un-annotatable empty array (E0903). Resolve the count here by the
+        // same rules as an array-type length (spec 7.1:37).
+        let count = match count {
+            RepeatCount::Literal(length) => length,
+            RepeatCount::Named(name) => {
+                let name = self.body_interner().resolve(&name).to_owned();
+                self.resolve_array_length(
+                    &ArrayLen::Named(name),
+                    span,
+                    Some(&ctx.comptime_value_vars),
+                )?
+            }
+        };
+
         // A repeat literal of a non-runtime value — a `type` value (`[i32; 2]`,
         // spec 4.14:6) or a module (`[@import("m"); 2]`, spec 10.4:145) — has no
         // runtime representation. Reject it (E1200 / E0206) before the preview
@@ -2183,6 +2208,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ));
             }
         };
+        // The array type's length must be the count itself. HM already equates
+        // them for a count it could read; this covers a valid count it could
+        // not, whose type otherwise came from the context alone.
+        if length != count {
+            return Err(CompileError::new(
+                ErrorKind::ArrayLengthMismatch {
+                    expected: length,
+                    found: count,
+                },
+                span,
+            ));
+        }
 
         // A repeat materializes the complete array value. Reject an oversized
         // layout before expanding its element-reference payload: for an input
