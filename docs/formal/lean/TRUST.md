@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 628.
+- Theorems checked: 637.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -566,6 +566,16 @@ and diffs them against the committed copies.
 | `dtor_once` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `no_double_free` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `dupProgram_step_double_free` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Examples.dynReadAffine_refused` | `RueCore.Examples` | `propext` |
+| `Examples.dynDropAffine_refused` | `RueCore.Examples` | `propext` |
+| `Examples.repeatAffine_refused` | `RueCore.Examples` | `propext` |
+| `Examples.panicPastLinear_typed` | `RueCore.Examples` | `propext` |
+| `Examples.countdown_at_17` | `RueCore.Examples` | `propext` |
+| `Examples.floatToInt_inf_traps` | `RueCore.Examples` | `propext` |
+| `Examples.floatToInt_nan_traps` | `RueCore.Examples` | `propext` |
+| `Examples.floatDivZeroToInt_traps` | `RueCore.Examples` | `Quot.sound`, `propext` |
+| `Examples.eval_loop_ok` | `RueCore.Examples` | `propext` |
+| `Examples.infiniteLoop_outOfFuel` | `RueCore.Examples` | `propext` |
 | `Steps.trans` | `RueCore.Adequacy` | `propext` |
 | `Steps.single` | `RueCore.Adequacy` | `propext` |
 | `Steps.peel` | `RueCore.Adequacy` | `propext` |
@@ -663,16 +673,15 @@ and diffs them against the committed copies.
 | `eval_diverges_iff` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `dropMoved_refused` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `letAddProgram_sound` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `Examples.dynReadAffine_refused` | `RueCore.Examples` | `propext` |
-| `Examples.dynDropAffine_refused` | `RueCore.Examples` | `propext` |
-| `Examples.repeatAffine_refused` | `RueCore.Examples` | `propext` |
-| `Examples.panicPastLinear_typed` | `RueCore.Examples` | `propext` |
-| `Examples.countdown_at_17` | `RueCore.Examples` | `propext` |
-| `Examples.floatToInt_inf_traps` | `RueCore.Examples` | `propext` |
-| `Examples.floatToInt_nan_traps` | `RueCore.Examples` | `propext` |
-| `Examples.floatDivZeroToInt_traps` | `RueCore.Examples` | `Quot.sound`, `propext` |
-| `Examples.eval_loop_ok` | `RueCore.Examples` | `propext` |
-| `Examples.infiniteLoop_outOfFuel` | `RueCore.Examples` | `propext` |
+| `Config.SafeAt.progress` | `RueCore.Adequacy` | `propext` |
+| `Config.SafeAt.preservation` | `RueCore.Adequacy` | `propext` |
+| `Config.SafeAt.steps` | `RueCore.Adequacy` | `propext` |
+| `init_safeAt` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `step_progress` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `step_preservation` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `step_value_typed` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `step_type_safety` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `affineScopeDrop_both_ways` | `RueCore.Adequacy` | `propext` |
 | `Explain.explain_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainIdx_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainArgs_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
