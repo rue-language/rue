@@ -1,6 +1,5 @@
 import RueCore.Trace
 import RueCore.Adequacy
-import RueCore.Corpus
 
 /-!
 # RueCore.TraceExact — every owned value ends exactly once (§7)
@@ -16,7 +15,7 @@ path (the σ-walk of §6.9 and §6.10), never both and never neither.
 
 ## What "ended" means
 
-`freedIds` (`Trace.lean`) reads the trace's markers, and since RUE-2427 every
+`freedIds` (`Trace/Defs.lean`) reads the trace's markers, and since RUE-2427 every
 way an owned value's life ends has one:
 
 * a binding's drop, at scope exit, `@drop` or an overwrite (`drop ℓ c`,
@@ -77,75 +76,15 @@ RUE-2427 adds — `@dbg`'s operand is observable and a loop body's value is
 `⟨⟩` — are what close every case where a value could otherwise vanish
 unrecorded. Typing enters only through `soundness`: a checked configuration's
 evaluation is never refused.
+
+The definitions the statements here are written in (`Exact`, `Lead`,
+`Tidy`, `Settled`, `Program.pendingSafe`) are in `Trace/Defs.lean`, the
+definitions layer (README, "Layers").
 -/
 
 namespace RueCore
 
 /-! ## The syntactic carve-out -/
-
-mutual
-/-- Whether an expression contains a `return` anywhere — including under a
-loop (helper). -/
-def Expr.returns : Expr → Bool
-  | .ret _ => true
-  | .brk => false
-  | .intLit _ _ _ | .floatLit _ _ | .boolLit _ | .unitLit | .use _ | .panic _
-  | .drop _ => false
-  | .binop _ e₁ e₂ | .letIn _ e₁ e₂ | .seq e₁ e₂ => e₁.returns || e₂.returns
-  | .unop _ e | .intCast _ _ e | .fintrin _ e | .dbg e | .repeatArray _ e _
-  | .assign _ e | .loop e => e.returns
-  | .mkStruct _ args | .mkEnum _ _ args | .mkArray _ args | .call _ args
-  | .indexRead _ args _ | .indexDrop _ args _ => Expr.returnsList args
-  | .indexWrite _ idx _ e => e.returns || Expr.returnsList idx
-  | .ite c e₁ e₂ => c.returns || e₁.returns || e₂.returns
-  | .«match» scrut arms => scrut.returns || Expr.returnsList arms
-
-/-- `Expr.returns` over a list (helper). -/
-def Expr.returnsList : List Expr → Bool
-  | [] => false
-  | e :: es => e.returns || Expr.returnsList es
-end
-
-/-- Whether evaluating an expression can **unwind** past its context: it
-contains a `return`, or a `break` its own loops do not catch
-(`Expr.breaks`) (helper). -/
-def Expr.unwinds (e : Expr) : Bool := e.returns || e.breaks
-
-/-- No expression of the list unwinds (helper). -/
-def Expr.quietList (es : List Expr) : Bool := es.all fun e => !e.unwinds
-
-mutual
-/-- **The RUE-2316 carve-out, syntactically**: no value computed for one
-operand is pending while a later operand of the same form can unwind — a
-call's arguments, a struct, enum or array literal's members, an index list,
-a binary operator's two operands, and an indexed assignment's right-hand side
-before its indices (`5.2:14`). The first operand may unwind: nothing is
-pending yet. `binop` is in the list although RUE-2316's text does not name it:
-its left operand is a scalar under (Arith) §5.8, so nothing owned is lost
-there on a checked program, but the carve-out is syntactic and cannot see the
-type. -/
-def Expr.pendingSafe : Expr → Bool
-  | .intLit _ _ _ | .floatLit _ _ | .boolLit _ | .unitLit | .use _ | .panic _
-  | .drop _ | .brk => true
-  | .binop _ e₁ e₂ => e₁.pendingSafe && e₂.pendingSafe && !e₂.unwinds
-  | .unop _ e | .intCast _ _ e | .fintrin _ e | .dbg e | .repeatArray _ e _
-  | .assign _ e | .ret e | .loop e => e.pendingSafe
-  | .mkStruct _ args | .mkEnum _ _ args | .mkArray _ args | .call _ args
-  | .indexRead _ args _ | .indexDrop _ args _ =>
-      Expr.pendingSafeList args && Expr.quietList args.tail
-  | .indexWrite _ idx _ e => e.pendingSafe && Expr.pendingSafeList idx && Expr.quietList idx
-  | .letIn _ e₁ e₂ | .seq e₁ e₂ => e₁.pendingSafe && e₂.pendingSafe
-  | .ite c e₁ e₂ => c.pendingSafe && e₁.pendingSafe && e₂.pendingSafe
-  | .«match» scrut arms => scrut.pendingSafe && Expr.pendingSafeList arms
-
-/-- `Expr.pendingSafe` over a list (helper). -/
-def Expr.pendingSafeList : List Expr → Bool
-  | [] => true
-  | e :: es => e.pendingSafe && Expr.pendingSafeList es
-end
-
-/-- Every function body of the program is `pendingSafe` (helper). -/
-def Program.pendingSafe (P : Program) : Bool := P.fns.all fun fd => fd.body.pendingSafe
 
 /-- A member of a `pendingSafe` list is `pendingSafe` (helper). -/
 theorem Expr.pendingSafeList_mem : ∀ {es : List Expr} {e : Expr},
@@ -797,25 +736,6 @@ theorem dynPlace_ints {H : Store} {φ : Frame} {p : Place} {vs : List Val} {πs 
 
 /-! ## The ledger, as an equality -/
 
-/-- **The exact ledger for one evaluation** from store `H`, holding the owned
-identities `X` besides it (a pending operand's value): for every identity the
-evaluation **starts** with (`a < H.length`), the result's store, its value
-and the identities the trace ends together hold it exactly as often as `H` and
-`X` did — it is still in the store, in the result, or ended once in the trace,
-and nothing is lost or duplicated. Identities minted during the evaluation
-(`≥ H.length`) are not counted; `no_double_free` bounds those. A trap, a
-refusal and exhausted fuel promise nothing (helper). -/
-def Exact (D : Decls) (H : Store) (X : List Nat) : EvalRes → Prop
-  | .ok H' v tr | .returned H' v tr =>
-      H.length ≤ H'.length ∧ StoreCC D H' ∧ (Contents.ofVal v).copyClosed D = true ∧
-      ∀ a, a < H.length → (storeOwn D H').count a + (v.own D).count a + (freedIds D tr).count a
-        = (storeOwn D H).count a + X.count a
-  | .broke H' _ tr =>
-      H.length ≤ H'.length ∧ StoreCC D H' ∧
-      ∀ a, a < H.length → (storeOwn D H').count a + (freedIds D tr).count a
-        = (storeOwn D H).count a + X.count a
-  | .panic _ _ | .stuck _ | .outOfFuel => True
-
 /-- **Composition**: a step from `H` to `H₁` that ended `tr` and left `Y`
 held, followed by an evaluation from `H₁` that keeps its own ledger, keeps the
 ledger from `H` (helper). -/
@@ -1255,26 +1175,6 @@ those values held. A `loop`'s lead is its body breaking, so a `break`'s
 unwind of the bindings the body still held is a rest too. With `eval_exact`
 this puts every place the machine ends a value inside a window that already
 counts it (`rest_exactly_once`). -/
-
-/-- **A form's leading operands have run** (helper): from store `H` in frame
-`φ` at fuel `fuel`, the form's first operand — or its argument list, for a
-call, a literal and a dynamic read — produced the values `vs` in store `H₁`,
-after trace `tr`. A `@drop` below a dynamic index runs the read first. A
-`loop`'s lead is its body **breaking**: its rest is (D-Break)'s unwind, which
-ends the values the body still held — the cells the carried record owes, the
-body's own bindings included (§6.10). -/
-def Lead (M : FloatOps) (P : Program) (fuel : Nat) (H : Store) (φ : Frame) (H₁ : Store)
-    (vs : List Val) (tr : List Event) : Expr → Prop
-  | .letIn _ e₁ _ | .seq e₁ _ | .«match» e₁ _ | .assign _ e₁ | .ret e₁ | .dbg e₁
-  | .repeatArray _ e₁ _ | .indexWrite _ _ _ e₁ | .binop _ e₁ _ | .unop _ e₁
-  | .intCast _ _ e₁ | .fintrin _ e₁ | .ite e₁ _ _ =>
-      ∃ v, vs = [v] ∧ eval M fuel P H φ e₁ = .ok H₁ v tr
-  | .indexDrop p idx πs => ∃ v, vs = [v] ∧ eval M fuel P H φ (.indexRead p idx πs) = .ok H₁ v tr
-  | .call _ args | .mkStruct _ args | .mkEnum _ _ args | .mkArray _ args | .indexRead _ args _ =>
-      evalArgs (fun H' e => eval M fuel P H' φ e) H args = .ok H₁ vs tr
-  | .loop e₁ => ∃ sc, vs = [] ∧ eval M fuel P H φ e₁ = .broke H₁ sc tr
-  | .intLit _ _ _ | .floatLit _ _ | .boolLit _ | .unitLit | .use _ | .panic _ | .drop _
-  | .brk => False
 
 /-- Prefixing a trace is injective (helper). -/
 theorem EvalRes.withTrace_inj {a b : EvalRes} {tr : List Event}
@@ -1945,31 +1845,6 @@ theorem Frame.In.mono {φ : Frame} {H H' : Store} (h : φ.In H) (hl : H.length �
     φ.In H' :=
   ⟨fun ℓ hm => Nat.lt_of_lt_of_le (h.1 ℓ hm) hl, fun ℓ hm => Nat.lt_of_lt_of_le (h.2 ℓ hm) hl⟩
 
-/-- The store only grew, and a cell outside the frame's environment was left
-alone or retired (helper). -/
-def Local (φ : Frame) (H H' : Store) : Prop :=
-  H.length ≤ H'.length ∧
-    ∀ ℓ, ℓ < H.length → ℓ ∉ φ.env → H'[ℓ]? = H[ℓ]? ∨ H'[ℓ]? = some .dead
-
-/-- Every cell allocated since `H` is retired, but those `keep` names
-(helper). -/
-def Retired (H : Store) (keep : List Nat) (H' : Store) : Prop :=
-  ∀ ℓ, H.length ≤ ℓ → ℓ < H'.length → ℓ ∉ keep → H'[ℓ]? = some .dead
-
-/-- **The frame-pop invariant for one evaluation** in frame `φ` from store `H`
-(§6.7, §6.9, §6.10): the store only grew and was touched outside `φ`'s
-environment only to retire; every cell the evaluation allocated is retired by
-its end — for an unwinding `break`, all but the cells of the scope record it
-carries, which extends `φ`'s by cells allocated since `H` and which the loop
-retires; and an unwinding
-`return` has retired every cell of `φ`'s record (§6.9's σ-walk). -/
-def Tidy (φ : Frame) (H : Store) : EvalRes → Prop
-  | .ok H' _ _ => Local φ H H' ∧ Retired H [] H'
-  | .returned H' _ _ => Local φ H H' ∧ Retired H [] H' ∧ ∀ ℓ ∈ φ.scope, H'[ℓ]? = some .dead
-  | .broke H' sc _ => Local φ H H' ∧ Retired H sc H' ∧
-      ∃ locs, sc = φ.scope ++ locs ∧ ∀ ℓ ∈ locs, H.length ≤ ℓ
-  | .panic _ _ | .stuck _ | .outOfFuel => True
-
 /-- Nothing changed (helper). -/
 theorem Local.refl (φ : Frame) (H : Store) : Local φ H H :=
   ⟨Nat.le_refl _, fun _ _ _ => .inl rfl⟩
@@ -2276,7 +2151,6 @@ theorem evalArgs_tidy {φ : Frame} {ev : Store → Expr → EvalRes} :
       | panic => trivial
       | stuck => trivial
       | outOfFuel => trivial
-
 
 /-- **§6.9's frame, pushed and popped**: a callee's body, run in a frame of
 fresh parameter cells `ls` and absorbed at the call boundary — its value's
@@ -2620,16 +2494,6 @@ theorem drop_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
   have := soundness M h.wf fuel ht hfm
   rw [hw] at this
   exact this
-
-/-- What the rest of a form owes the cells allocated after its leading
-operands ran: every one retired by the form's end — but, for an unwinding
-`break`, the ones its record owes the loop — and, for an unwinding `return`,
-the frame's whole record retired (helper). -/
-def Settled (φ : Frame) (H₁ : Store) : EvalRes → Prop
-  | .ok H' _ _ => Retired H₁ [] H'
-  | .returned H' _ _ => Retired H₁ [] H' ∧ ∀ ℓ ∈ φ.scope, H'[ℓ]? = some .dead
-  | .broke H' sc _ => Retired H₁ sc H' ∧ ∃ locs, sc = φ.scope ++ locs
-  | .panic _ _ | .stuck _ | .outOfFuel => True
 
 /-- Allocations since an earlier store include those since a later one
 (helper). -/
@@ -3062,12 +2926,3 @@ theorem breakLeak_rejected (M : FloatModel) :
     exact absurd this (by decide)
 
 end RueCore
-
-namespace RueCore.Corpus
-
--- Every seed case the checker accepts is `pendingSafe`: the RUE-2316
--- carve-out excludes nothing in the corpus, and a new seed that it would
--- exclude fails the build here.
-#guard (cases.filter (fun c => checkProgram c.prog)).all (fun c => c.prog.pendingSafe)
-
-end RueCore.Corpus

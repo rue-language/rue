@@ -574,16 +574,6 @@ and diffs them against the committed copies.
 | `dtor_once` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `no_double_free` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `dupProgram_step_double_free` | `RueCore.Trace` | `Quot.sound`, `propext` |
-| `Examples.dynReadAffine_refused` | `RueCore.Examples` | `propext` |
-| `Examples.dynDropAffine_refused` | `RueCore.Examples` | `propext` |
-| `Examples.repeatAffine_refused` | `RueCore.Examples` | `propext` |
-| `Examples.panicPastLinear_typed` | `RueCore.Examples` | `propext` |
-| `Examples.countdown_at_17` | `RueCore.Examples` | `propext` |
-| `Examples.floatToInt_inf_traps` | `RueCore.Examples` | `propext` |
-| `Examples.floatToInt_nan_traps` | `RueCore.Examples` | `propext` |
-| `Examples.floatDivZeroToInt_traps` | `RueCore.Examples` | `Quot.sound`, `propext` |
-| `Examples.eval_loop_ok` | `RueCore.Examples` | `propext` |
-| `Examples.infiniteLoop_outOfFuel` | `RueCore.Examples` | `propext` |
 | `Steps.trans` | `RueCore.Adequacy` | `propext` |
 | `Steps.single` | `RueCore.Adequacy` | `propext` |
 | `Steps.peel` | `RueCore.Adequacy` | `propext` |
@@ -690,7 +680,6 @@ and diffs them against the committed copies.
 | `step_preservation` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `step_value_typed` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `step_type_safety` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `affineScopeDrop_both_ways` | `RueCore.Adequacy` | `propext` |
 | `Expr.pendingSafeList_mem` | `RueCore.TraceExact` | `propext` |
 | `Expr.returnsList_mem` | `RueCore.TraceExact` | `propext` |
 | `Expr.breaksList_mem` | `RueCore.TraceExact` | `propext` |
@@ -852,10 +841,21 @@ and diffs them against the committed copies.
 | `drop_order` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `Blocks.drop_inv` | `RueCore.TraceOrder` | `propext` |
 | `Blocks.not_dtor` | `RueCore.TraceOrder` | `propext` |
-| `fieldsSwapped_rejected` | `RueCore.TraceOrder` | `propext` |
-| `returnPastAffine_newestFirst` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
-| `unorderedRecord_rejected` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
-| `swappedMarkers_rejected` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `Examples.dynReadAffine_refused` | `RueCore.Examples` | `propext` |
+| `Examples.dynDropAffine_refused` | `RueCore.Examples` | `propext` |
+| `Examples.repeatAffine_refused` | `RueCore.Examples` | `propext` |
+| `Examples.panicPastLinear_typed` | `RueCore.Examples` | `propext` |
+| `Examples.countdown_at_17` | `RueCore.Examples` | `propext` |
+| `Examples.floatToInt_inf_traps` | `RueCore.Examples` | `propext` |
+| `Examples.floatToInt_nan_traps` | `RueCore.Examples` | `propext` |
+| `Examples.floatDivZeroToInt_traps` | `RueCore.Examples` | `Quot.sound`, `propext` |
+| `Examples.eval_loop_ok` | `RueCore.Examples` | `propext` |
+| `Examples.infiniteLoop_outOfFuel` | `RueCore.Examples` | `propext` |
+| `affineScopeDrop_both_ways` | `RueCore.Witnesses` | `propext` |
+| `fieldsSwapped_rejected` | `RueCore.Witnesses` | `propext` |
+| `returnPastAffine_newestFirst` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `unorderedRecord_rejected` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `swappedMarkers_rejected` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
 | `Explain.explain_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainIdx_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainArgs_result` | `RueCore.Explain` | `Quot.sound`, `propext` |

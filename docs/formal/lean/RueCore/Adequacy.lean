@@ -1,6 +1,6 @@
 import RueCore.Step
 import RueCore.Soundness
-import RueCore.Examples
+import RueCore.Adequacy.Defs
 
 /-!
 # RueCore.Adequacy — `eval` is adequate to §6's `Step`, both ways
@@ -112,6 +112,10 @@ a defined panic. A syntactic configuration typing, with one preservation case
 per `Step` constructor, would be a second safety proof and is not claimed.
 `affineScopeDrop_both_ways` is one corpus program in both presentations, the
 GUIDE's worked instance.
+
+`Frame.empty`, `StepsN` and `Config.SafeAt` are in `Adequacy/Defs.lean`, the
+definitions layer; `affineScopeDrop_both_ways`, one corpus program traced
+both ways, is in `Witnesses.lean` (README, "Layers").
 -/
 
 namespace RueCore
@@ -239,7 +243,6 @@ theorem Sim.andThen {M : FloatOps} {P : Program} {φ φ₁ : Frame}
   | stuck w => simp [EvalRes.andThen, Sim]
   | outOfFuel => simp [EvalRes.andThen, Sim]
 
-
 /-- A result that is not a value passes through a transparent frame unchanged
 (helper). -/
 theorem Sim.lift {M : FloatOps} {P : Program} {φ φ₁ : Frame}
@@ -349,7 +352,6 @@ theorem evalArgs_sim {M : FloatOps} {P : Program} {fuel : Nat} {φ : Frame}
           have h₁ := IH H φ e
           rw [he] at h₁
           exact Sim.lift (fun _ => ⟨rfl, rfl⟩) hpush h₁ (by simp)
-
 
 /-- Where no `Sim` target has an expression in focus, a first step of `C`
 can be peeled off by determinism (helper). -/
@@ -1021,9 +1023,6 @@ theorem eval_sim (M : FloatOps) (P : Program) (fuel : Nat) : SimIH M P fuel := b
     | loop e => exact sim_loop IH e
     | brk => exact sim_brk
 
-/-- The empty frame the entry point is called from (helper). -/
-abbrev Frame.empty : Frame := { env := [], scope := [] }
-
 /-- **`run` is simulated by `→*` from §6.12's initial configuration**, on
 every program: a value `run` returns is a terminal configuration `✓` that
 `Config.init` reaches with the same store and trace ((D-Return-Main) §6.9,
@@ -1061,15 +1060,7 @@ theorem eval_sound (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : N
       Steps M.toFloatOps P Config.init (.panic k tr)) :=
   ⟨no_violation M h fuel, (run_sim M.toFloatOps P fuel).1, (run_sim M.toFloatOps P fuel).2⟩
 
-
 /-! ## Counted runs -/
-
-/-- `→ⁿ`: a run of exactly `n` steps of §6's reduction (helper). Completeness
-counts steps, because fuel is a bound on them. -/
-inductive StepsN (M : FloatOps) (P : Program) : Nat → Config → Config → Prop where
-  | refl (C : Config) : StepsN M P 0 C C
-  | step {n : Nat} {C₁ C₂ C₃ : Config} :
-      Step M P C₁ C₂ → StepsN M P n C₂ C₃ → StepsN M P (n + 1) C₁ C₃
 
 section counted
 variable {M : FloatOps} {P : Program}
@@ -1927,16 +1918,6 @@ typed frame stack with a Σ per suspended caller, and one preservation case per
 `Step` constructor) would be a second safety proof over `Step`, not a
 corollary of the first, and is not claimed here. -/
 
-/-- **A configuration typed at `T`, semantically** (§7, first bullet): every
-configuration `→*` reaches from `C` reduces or has halted ((Result-Ok),
-(Result-Panic) §6.12), and every value `C` halts with — `✓v`, a value at an
-empty stack — has type `T` (§5's value typing, `HasTy`). The typing is
-defined by reduction, not by a syntactic judgment over the configuration
-(this section's docstring says why). -/
-def Config.SafeAt (M : FloatOps) (P : Program) (T : Ty) (C : Config) : Prop :=
-  (∀ D, Steps M P C D → D.Terminal ∨ ∃ D', Step M P D D') ∧
-  (∀ H φ v tr, Steps M P C (.run H φ [] (.ret v) tr) → HasTy P.decls v T)
-
 /-- **Progress for a typed configuration** (§7, first bullet): it has halted
 with a value or a defined panic, or it takes a step (§6.12's terminal
 configurations; `Config.trichotomy` leaves stuck as the only other case). -/
@@ -2037,47 +2018,5 @@ theorem step_type_safety (M : FloatModel) {P : Program} (h : ProgramTyped P) :
   · exact .inl (eval_steps_of_outOfFuel _ P n [] Frame.empty (.call 0 []) ho [] [])
   · exact .inr (.inr ⟨κ, tr, (run_sim _ P n).2 κ tr hr⟩)
   · exact .inr (.inl ⟨H, v, tr, (run_sim _ P n).1 H v tr hr, hty⟩)
-
-/-! ## One program, traced both ways -/
-
-/-- The corpus case `affine_scope_drop` (`Corpus.lean`): `{ let v0: S1 =
-S1 { x0: 7 }; 1 }` as the entry point returning `i64`, where `S1` is affine
-with a destructor (helper). -/
-abbrev affineScopeDropProgram : Program := Examples.prog Examples.tI64 Examples.affineDrop
-
-/-- **One corpus program, both presentations** (GUIDE section 2, "One
-program, traced both ways"; §6.2, §6.5, §6.7, §6.9, §6.11, §6.12). `check`
-accepts `affine_scope_drop`; `run` answers `1` with both cells retired and
-the trace "drop `ℓ1`, then `S1`'s destructor"; and §6's `→*` reaches the same
-terminal configuration by the twelve steps written out here, one `Step`
-constructor each: (Search) into the call's empty argument list, (D-Call),
-(Search) into the `let`, (Search) into the struct literal and its one
-initializer, the literal, the plug, (D-Struct) minting `#0`, (D-Let),
-the body's literal, (D-EndScope) dropping and retiring `ℓ1`, and
-(D-Return-Value). `explain/affine_scope_drop.txt` renders `eval`'s run of the
-same program in seven rows: the (Search) steps are the part of `Step` that
-`eval` does by recursion. -/
-theorem affineScopeDrop_both_ways (M : FloatOps) :
-    checkProgram affineScopeDropProgram = true ∧
-    run M affineScopeDropProgram 100 =
-      .ok [.dead, .dead] (.int .w64 .signed 1)
-        [.drop 1 (.struct 1 0 [.int .w64 .signed 7]), .dtor 1 (.struct 1 0 [.int .w64 .signed 7])] ∧
-    Steps M affineScopeDropProgram Config.init
-      (.run [.dead, .dead] Frame.empty [] (.ret (.int .w64 .signed 1))
-        [.drop 1 (.struct 1 0 [.int .w64 .signed 7]), .dtor 1 (.struct 1 0 [.int .w64 .signed 7])]) := by
-  refine ⟨rfl, rfl, ?_⟩
-  refine .step .callEnter ?_
-  refine .step (.call rfl rfl rfl) ?_
-  refine .step .letEnter ?_
-  refine .step .structEnter ?_
-  refine .step .argsPush ?_
-  refine .step .intLit ?_
-  refine .step .argsPlug ?_
-  refine .step (.mkStruct rfl rfl) ?_
-  refine .step .letBind ?_
-  refine .step .intLit ?_
-  refine .step (.endScope rfl) ?_
-  refine .step (.callReturn rfl) ?_
-  exact .refl _
 
 end RueCore
