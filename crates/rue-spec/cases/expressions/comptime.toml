@@ -5576,3 +5576,134 @@ fn main() -> i32 { get(Wrap(u8) { a: 42 }) }
 """
 compile_fail = true
 error_contains = ["E1200", "structural comptime values require a Copy type"]
+
+# =============================================================================
+# A generic call's type-constructor result has its real type (RUE-2425)
+#
+# A generic callee's return type `-> Box(T)` is a type-constructor application
+# (4.14:23) with the call's type arguments substituted (4.14:16). The call's
+# value has that concrete type, so a field of it, a method on it, and a literal
+# compared with either take the declared field or method type, as they do for a
+# concrete struct result.
+# =============================================================================
+
+[[case]]
+name = "generic_ctor_result_field_types_peer_literal"
+spec = ["4.14:16", "4.14:23"]
+description = "A literal compared with, added to, or ordered against a field of a generic call's `-> Box(T)` result takes the field's type: `boxed(i64, 3000000000).v == 3000000000` is an i64 comparison (RUE-2425)"
+source = """
+fn Box(comptime T: type) -> type { struct { v: T } }
+fn boxed(comptime T: type, x: T) -> Box(T) { Box(T) { v: x } }
+
+fn main() -> i32 {
+    let s = boxed(i64, 1).v + 3000000000;
+    if boxed(i64, 3000000000).v == 3000000000
+        && 3000000000 == boxed(i64, 3000000000).v
+        && boxed(i64, 1).v < 3000000000
+        && s == 3000000001 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "generic_ctor_result_let_bound_field_and_method"
+spec = ["4.14:16", "4.14:23"]
+description = "A `let`-bound generic `-> Box(T)` result, a method on the result, and a nested field of a `-> Wrap(T)` result each give a peer literal the declared type (RUE-2425)"
+source = """
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T
+        fn get(self) -> T { self.v }
+    }
+}
+fn Wrap(comptime T: type) -> type { struct { inner: Box(T) } }
+fn boxed(comptime T: type, x: T) -> Box(T) { Box(T) { v: x } }
+fn wrapped(comptime T: type, x: T) -> Wrap(T) { Wrap(T) { inner: Box(T) { v: x } } }
+
+fn main() -> i32 {
+    let b = boxed(i64, 3000000000);
+    if b.v == 3000000000
+        && boxed(i64, 3000000000).get() == 3000000000
+        && wrapped(i64, 3000000000).inner.v == 3000000000 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "generic_ctor_result_forwarded_and_aliased_type_argument"
+spec = ["4.14:5a", "4.14:16", "4.14:23"]
+description = "The result's field type follows a type argument forwarded from an enclosing generic body or spelled through a comptime alias (RUE-2425)"
+source = """
+fn Box(comptime T: type) -> type { struct { v: T } }
+fn boxed(comptime T: type, x: T) -> Box(T) { Box(T) { v: x } }
+fn big(comptime T: type) -> bool { boxed(T, 3000000000).v == 3000000000 }
+
+fn main() -> i32 {
+    let W = i64;
+    if big(i64) && boxed(W, 3000000000).v == 3000000000 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "generic_ctor_result_module_qualified_callee"
+spec = ["4.14:5a", "4.14:23"]
+description = "A module-qualified generic callee's `-> Box(T)` result gives a peer literal its field's type (RUE-2425)"
+source = """
+const lib = @import("lib.rue");
+
+fn main() -> i32 {
+    if lib.boxed(i64, 3000000000).v == 3000000000 { 42 } else { 1 }
+}
+"""
+aux_files = { "lib.rue" = """
+pub fn Box(comptime T: type) -> type { struct { v: T } }
+pub fn boxed(comptime T: type, x: T) -> Box(T) { Box(T) { v: x } }
+""" }
+exit_code = 42
+
+[[case]]
+name = "generic_ctor_result_field_literal_range_checked"
+spec = ["4.14:23"]
+description = "A literal compared with a field of a generic call's `-> Box(T)` result is range-checked at the field's type: 300 against an i8 field is E0800 (RUE-2425)"
+source = """
+fn Box(comptime T: type) -> type { struct { v: T } }
+fn boxed(comptime T: type, x: T) -> Box(T) { Box(T) { v: x } }
+
+fn main() -> i32 {
+    if boxed(i8, 1).v == 300 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0800", "i8"]
+
+[[case]]
+name = "generic_ctor_result_field_mismatched_operand_rejected"
+spec = ["4.14:23"]
+description = "A field of a generic call's `-> Box(T)` result keeps its type against a differently typed operand: an i8 field compared with an i32 local is E0206 (RUE-2425)"
+source = """
+fn Box(comptime T: type) -> type { struct { v: T } }
+fn boxed(comptime T: type, x: T) -> Box(T) { Box(T) { v: x } }
+
+fn main() -> i32 {
+    let q: i32 = 255;
+    let b = boxed(i8, -1);
+    if b.v == q { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found i8"]
+
+[[case]]
+name = "generic_ctor_result_returned_at_wrong_instance_rejected"
+spec = ["4.14:23"]
+description = "A generic call's `Box(i64)` result returned from a function declared `-> Box(i32)` is E0206 (RUE-2425)"
+source = """
+fn Box(comptime T: type) -> type { struct { v: T } }
+fn boxed(comptime T: type, x: T) -> Box(T) { Box(T) { v: x } }
+fn get() -> Box(i32) { boxed(i64, 3) }
+
+fn main() -> i32 { get().v }
+"""
+compile_fail = true
+error_contains = ["E0206", "Box(i32)", "Box(i64)"]
