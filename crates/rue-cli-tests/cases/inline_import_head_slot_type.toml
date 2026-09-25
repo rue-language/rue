@@ -1,13 +1,20 @@
-# A value flowing into a declared-type slot is checked by its analyzed type
-# (RUE-2438). An inline `@import("lib.rue").Box(i64) { .. }` head is one that
-# inference does not reduce (RUE-2439): inference types the literal `<error>`,
-# which unifies with any slot, while AIR emission reduces the head to the real
-# `Box(i64)`. Call arguments, assignments, the tail result, array elements, and
-# equality operands trusted inference, so a `Box(i64)` reached a `Box(i32)`
-# slot: another module's four-field `R(u64)` passed for a one-field one read
-# past the value and segfaulted, an assignment kept stale fields, and the other
-# positions failed as E9000 or codegen ICEs. Each now reports E0206, the
-# diagnostic a `let` annotation and a struct field already gave.
+# A value flowing into a declared-type slot, or an operand into an operator,
+# is checked by its analyzed type (RUE-2438). Inference unifies each of these
+# with the slot, but it has no fact for an operand it could not type, and
+# `<error>` unifies with anything while AIR emission still computes the real
+# type. An inline `@import("lib.rue").Box(i64) { .. }` head was such an
+# operand until RUE-2439: call arguments, assignments, the tail result, array
+# elements and operator operands trusted inference, so a `Box(i64)` reached a
+# `Box(i32)` slot. Another module's four-field `R(u64)` passed for a one-field
+# one read past the value and segfaulted, a `StrBuf == R(u64)` read the struct
+# as a string, an assignment kept stale fields, and the other positions failed
+# as E9000 or codegen ICEs.
+#
+# The comptime engine now reduces a path rooted at an inline `@import`
+# (RUE-2439), so inference has the fact and reports each of these first; the
+# analyzed-type check stays behind it for any other operand inference cannot
+# type. Either way each position reports E0206 (E0801 for a unary `-`), never
+# a miscompile or ICE.
 #
 # A head through a re-exported callable alias (`facade.Box(u8)` with
 # `pub const Box = boxes.Box;`) was another head the comptime engine did not
@@ -17,7 +24,7 @@
 [section]
 id = "cli.inline_import_head_slot_type"
 name = "Inline-import literal heads against declared slot types"
-description = "A literal whose inline `@import` head inference cannot reduce is checked against each declared slot by its analyzed type: E0206, not a miscompile or ICE (RUE-2438)."
+description = "A literal through an inline `@import` head of another instance is rejected at each declared slot and operator operand: E0206, not a miscompile or ICE (RUE-2438, RUE-2439)."
 
 [[case]]
 name = "call_argument_of_another_module_instance_is_e0206"
@@ -161,7 +168,7 @@ pub fn Box(comptime T: type) -> type { struct { v: T } }
 name = "equality_operand_of_another_instance_is_e0206"
 description = "`q == @import(\"lib.rue\").Box(i64) { .. }` with `q: lib.Box(i32)` is E0206 (was an E9000 AIR ICE)."
 compile_fail = true
-error_contains = ["E0206", "expected Box(i32), found Box(i64)"]
+error_contains = ["E0206", "expected Box(i64), found Box(i32)"]
 files = [
     { path = "main.rue", source = """
 const lib = @import("lib.rue");
@@ -169,6 +176,436 @@ fn main() -> i32 { let q = lib.Box(i32) { v: 7 }; if (q == @import("lib.rue").Bo
 """ },
     { path = "lib.rue", source = """
 pub fn Box(comptime T: type) -> type { struct { v: T } }
+""" },
+]
+
+[[case]]
+name = "index_assignment_of_another_module_instance_is_e0206"
+description = "`xs[0] = @import(\"a.rue\").R(u64) { .. }` into a `[b.R(u64); 1]` is E0206 (was an E9000 AIR ICE)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn main() -> i32 { let mut xs = [b.R(u64) { v: 1, w: 1, x: 1, y: 1 }]; xs[0] = @import("a.rue").R(u64) { v: 3 }; sum(xs[0]) }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "callback_argument_of_another_module_instance_is_e0206"
+description = "A call through a `fn(b.R(u64)) -> i32` parameter checks its argument like a direct call (was accepted, reading past the value)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn ap(f: fn(b.R(u64)) -> i32) -> i32 { f(@import("a.rue").R(u64) { v: 3 }) }
+fn main() -> i32 { ap(sum) }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "array_repeat_value_of_another_module_instance_is_e0206"
+description = "`[@import(\"a.rue\").R(u64) { .. }; 2]` annotated `[b.R(u64); 2]` is E0206 (was E0903, an empty-array diagnostic)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn main() -> i32 { let xs: [b.R(u64); 2] = [@import("a.rue").R(u64) { v: 3 }; 2]; sum(xs[1]) }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "field_assignment_through_inout_self_is_e0206"
+description = "`self.r = @import(\"a.rue\").R(u64) { .. }` in an `inout self` method is E0206 (was an E9000 AIR ICE)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+struct H { r: b.R(u64), fn set(inout self) { self.r = @import("a.rue").R(u64) { v: 3 }; } }
+fn main() -> i32 { let mut h = H { r: b.R(u64) { v: 1, w: 2, x: 3, y: 4 } }; h.set(); sum(h.r) }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "generic_struct_method_argument_is_e0206"
+description = "A method of `Box(b.R(u64))` taking `T` checks its argument after substitution (was accepted and segfaulted)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn Box(comptime T: type) -> type { struct { v: T, fn put(self, p: T) -> T { p } } }
+fn main() -> i32 { let bx = Box(b.R(u64)) { v: b.R(u64) { v: 1, w: 2, x: 3, y: 4 } }; sum(bx.put(@import("a.rue").R(u64) { v: 3 })) }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "generic_struct_associated_argument_is_e0206"
+description = "`Box(b.R(u64)).mk(@import(\"a.rue\").R(u64) { .. })` is E0206 (was accepted and segfaulted)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn Box(comptime T: type) -> type { struct { v: T, fn mk(p: T) -> Self { Self { v: p } } } }
+fn main() -> i32 { let bx = Box(b.R(u64)).mk(@import("a.rue").R(u64) { v: 3 }); sum(bx.v) }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "while_body_assignment_is_e0206"
+description = "An assignment inside a `while` body is checked like any other (was accepted, exit 9 from stale fields)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn main() -> i32 { let mut x = b.R(u64) { v: 1, w: 2, x: 3, y: 4 }; let mut i = 0; while i < 1 { x = @import("a.rue").R(u64) { v: 3 }; i = i + 1; } sum(x) }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "drop_fn_body_argument_is_e0206"
+description = "A call argument inside a `drop fn` body is checked like any other (was accepted and segfaulted)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+struct D { k: i32 }
+drop fn D(self) { let x: i32 = sum(@import("a.rue").R(u64) { v: 3 }); }
+fn main() -> i32 { let d = D { k: 1 }; 0 }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "enum_head_argument_of_another_module_instance_is_e0206"
+description = "`g(@import(\"a.rue\").P(u64).V(n))` into `g(e: b.P(u64))` is E0206 (was accepted, a wrong value)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn g(e: b.P(u64)) -> i32 { match e { b.P(u64).V(x) => @intCast(x) } }
+fn main() -> i32 { let n: u64 = 300; g(@import("a.rue").P(u64).V(n)) }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "enum_head_assignment_of_another_module_instance_is_e0206"
+description = "`e = @import(\"a.rue\").P(u64).V(n)` into a `b.P(u64)` local is E0206 (was accepted, a wrong value)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn main() -> i32 { let n: u64 = 300; let mut e = b.P(u64).V(1); e = @import("a.rue").P(u64).V(n); match e { b.P(u64).V(x) => @intCast(x) } }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "strbuf_equality_with_a_struct_is_e0206"
+description = "`s == @import(\"b.rue\").R(u64) { .. }` with `s: StrBuf` is E0206 (was accepted and segfaulted in `StrBuf::equals_borrowed`)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+const std = @import("std");
+fn main() -> i32 { let s: std.strbuf.StrBuf = "hi"; if (s == @import("b.rue").R(u64) { v: 1, w: 2, x: 2, y: 2 }) { 1 } else { 2 } }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "str_inequality_with_a_struct_is_e0206"
+description = "`s != @import(\"a.rue\").R(u64) { .. }` with `s: str` is E0206 (was an E9000 AIR ICE)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn main() -> i32 { let s: str = "hi"; if (s != @import("a.rue").R(u64) { v: 3 }) { 1 } else { 0 } }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "scalar_equality_with_a_struct_is_e0206"
+description = "`n == @import(\"a.rue\").R(u64) { .. }` with `n: u64` is E0206 (was an E9000 AIR ICE)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn main() -> i32 { let n: u64 = 3; if (n == @import("a.rue").R(u64) { v: 3 }) { 1 } else { 2 } }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "scalar_ordering_with_a_struct_is_e0206"
+description = "`n < @import(\"a.rue\").R(u64) { .. }` with `n: u64` is E0206 (was an E9000 AIR ICE)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn main() -> i32 { let n: u64 = 3; if (n < @import("a.rue").R(u64) { v: 3 }) { 1 } else { 2 } }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "logical_operand_struct_is_e0206"
+description = "`c && (@import(\"a.rue\").R(u64) { .. })` is E0206 (was an E9000 AIR ICE)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn main() -> i32 { let c = true; if (c && (@import("a.rue").R(u64) { v: 3 })) { 1 } else { 2 } }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "not_operand_struct_is_e0206"
+description = "`!@import(\"a.rue\").R(u64) { .. }` is E0206 (was an E9000 AIR ICE)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn main() -> i32 { let x = !@import("a.rue").R(u64) { v: 3 }; if x { 1 } else { 2 } }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "negated_struct_is_e0801"
+description = "`-@import(\"a.rue\").R(u64) { .. }` is E0801 (was E1403, a missing stable identity at output publication)."
+compile_fail = true
+error_contains = ["E0801", "cannot apply unary operator `-` to type 'R(u64)'"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn main() -> i32 { let x = -@import("a.rue").R(u64) { v: 3 }; 0 }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "if_condition_struct_is_e0206"
+description = "`if (@import(\"a.rue\").R(u64) { .. })` is E0206 (was an E9000 CFG ICE)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn main() -> i32 { if (@import("a.rue").R(u64) { v: 3 }) { 1 } else { 2 } }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "while_condition_struct_is_e0206"
+description = "`while (@import(\"a.rue\").R(u64) { .. })` is E0206 (was an E9000 CFG ICE)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn sum(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn main() -> i32 { while (@import("a.rue").R(u64) { v: 3 }) { } 0 }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+pub fn P(comptime T: type) -> type { enum { V(T) } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+pub fn P(comptime T: type) -> type { enum { V(i8) } }
+""" },
+]
+
+[[case]]
+name = "qualified_struct_of_another_constructor_is_e0206"
+description = "`take(facade.Box(i64).make(7))` into `take(b: boxes.Other(i64))` is E0206 (was accepted and ran)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const facade = @import("lib/facade.rue");
+const boxes = @import("lib/boxes.rue");
+fn take(b: boxes.Other(i64)) -> i32 { @intCast(b.v + b.w) }
+fn main() -> i32 { take(facade.Box(i64).make(7)) }
+""" },
+    { path = "lib/boxes.rue", source = """
+pub fn Box(comptime T: type) -> type { struct { v: T, fn make(v: T) -> Self { Self { v: v } } } }
+pub fn Other(comptime T: type) -> type { struct { v: T, w: T, fn make(v: T) -> Self { Self { v: v, w: v } } } }
+""" },
+    { path = "lib/facade.rue", source = """
+const boxes = @import("boxes.rue");
+pub const Box = boxes.Box;
 """ },
 ]
 
