@@ -285,3 +285,82 @@ fn mk() -> [i64; 3] {
 fn main() -> i32 { @intCast(mk()[1]) }
 """
 compile_fail = true
+
+# =============================================================================
+# A leading `{` begins the operand (4.9:2, RUE-2449)
+# =============================================================================
+
+[[case]]
+name = "return_block_operand"
+spec = ["4.9:2"]
+source = """
+fn two() -> i32 {
+    return { 2 }
+}
+fn main() -> i32 { two() }
+"""
+exit_code = 2
+
+[[case]]
+name = "return_block_operand_in_let_initializer"
+spec = ["4.9:2", "4.9:8"]
+source = """
+fn eight() -> i32 {
+    let x: i32 = return { let y = 4; y + 4 };
+    x
+}
+fn main() -> i32 { eight() }
+"""
+exit_code = 8
+
+[[case]]
+name = "return_if_operand"
+spec = ["4.9:2"]
+source = """
+fn pick(c: bool) -> i32 {
+    return if c { 1 } else { 2 }
+}
+fn main() -> i32 { pick(false) * 10 + pick(true) }
+"""
+exit_code = 21
+
+[[case]]
+name = "return_match_operand"
+spec = ["4.9:2"]
+source = """
+fn classify(x: i32) -> i32 {
+    return match x { 1 => 10, _ => 20 }
+}
+fn main() -> i32 { classify(1) + classify(5) }
+"""
+exit_code = 30
+
+[[case]]
+name = "return_empty_block_operand_in_unit_function"
+spec = ["4.9:2", "4.9:4"]
+source = """
+fn nothing() {
+    return {}
+}
+fn main() -> i32 {
+    nothing();
+    7
+}
+"""
+exit_code = 7
+
+# Directly within a condition head the `{` is the construct's body, so a bare
+# `return` there takes no operand; inside the head's own parentheses the `{`
+# is the operand again (RUE-209, RUE-2449).
+[[case]]
+name = "return_in_condition_head_leaves_the_body"
+spec = ["4.9:2", "4.9:3"]
+source = """
+fn sink() { while return {} }
+fn four() -> i32 { if (return { 4 }) { 1 } else { 2 } }
+fn main() -> i32 {
+    sink();
+    four()
+}
+"""
+exit_code = 4

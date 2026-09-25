@@ -737,6 +737,41 @@ mod tests {
         ));
     }
 
+    fn return_value_of(source: &str) -> Option<Box<Expr>> {
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (ast, _) = Parser::new(tokens, interner).parse().unwrap();
+        let Item::Function(function) = &ast.items[0] else {
+            panic!("expected a function item");
+        };
+        let Expr::Block(body) = &function.body else {
+            panic!("expected a block body");
+        };
+        let mut expr = &*body.expr;
+        loop {
+            match expr {
+                Expr::Return(ret) => return ret.value.clone(),
+                Expr::If(if_expr) => expr = &if_expr.cond,
+                Expr::While(while_expr) => expr = &while_expr.cond,
+                Expr::Paren(paren) => expr = &paren.inner,
+                other => panic!("expected a return, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn return_takes_a_leading_brace_as_its_operand() {
+        assert!(matches!(
+            return_value_of("fn f() -> i32 { return { 2 } }").as_deref(),
+            Some(Expr::Block(_))
+        ));
+        assert!(matches!(
+            return_value_of("fn f() -> i32 { if (return { 2 }) { 1 } else { 0 } }").as_deref(),
+            Some(Expr::Block(_))
+        ));
+        assert!(return_value_of("fn f() { while return {} }").is_none());
+        assert!(return_value_of("fn f() -> i32 { if return { 1 } else { 2 } }").is_none());
+    }
+
     fn assignment_of(source: &str) -> AssignStatement {
         let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
         let (ast, _) = Parser::new(tokens, interner).parse().unwrap();
