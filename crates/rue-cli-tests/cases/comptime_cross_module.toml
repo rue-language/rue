@@ -417,3 +417,87 @@ fn main() -> i32 {
 ]
 exit_code = 0
 stdout = "11\n22\n99\n"
+
+# RUE-2417: a module-qualified call to a `-> type` function reduces at compile
+# time exactly as the unqualified call does (spec 4.14:5a, 4.14:28), in every
+# position, and a module-qualified call that cannot reduce is rejected at the
+# call rather than reaching codegen (spec 4.14:6).
+
+[[case]]
+name = "cross_module_zero_param_type_ctor_discarded_statement"
+description = "A discarded module-qualified zero-parameter `-> type` call reduces at compile time; it was an internal error (RUE-2417)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn Foo() -> type { i32 }
+pub fn Bar(comptime T: type) -> type { T }
+""" },
+  { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    lib.Foo();
+    lib.Bar(i32);
+    42
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "cross_module_zero_param_type_ctor_as_comptime_type_argument"
+description = "A module-qualified zero-parameter `-> type` call supplies a `comptime T: type` argument, like the unqualified call (RUE-2417)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn Foo() -> type { i32 }
+""" },
+  { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn first(comptime T: type, a: T) -> T { a }
+fn main() -> i32 {
+    let L = lib.Foo();
+    let x: L = first(lib.Foo(), 42);
+    x
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "cross_module_runtime_param_type_call_rejected"
+description = "A module-qualified call to a `-> type` function with a runtime parameter is rejected at the call; it was an internal error (RUE-2417)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn pick(c: bool) -> type { if c { i32 } else { i64 } }
+""" },
+  { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let c = true;
+    lib.pick(c);
+    42
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+
+[[case]]
+name = "module_returning_type_call_rejected_not_ice"
+description = "A call to a `-> type` function whose body is an `@import` does not reduce in call position; it is rejected at the call rather than reaching codegen (RUE-2417)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn f() -> i32 { 42 }
+""" },
+  { path = "main.rue", source = """
+fn m() -> type { @import("lib.rue") }
+fn main() -> i32 {
+    m();
+    42
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]

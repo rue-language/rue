@@ -1,0 +1,21 @@
+[section]
+id = "diagnostics.runtime_type_call"
+name = "Runtime calls producing a type value"
+description = "A call producing a type value that cannot be evaluated at compile time is rejected at the call, with the fully-comptime condition as help (spec 4.14:6, 4.14:28; RUE-2417)."
+
+[[case]]
+name = "runtime_param_type_call_statement"
+source = """
+fn pick(c: bool) -> type { if c { i32 } else { i64 } }
+fn main() -> i32 {
+    pick(true);
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+  "E1200",
+  "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time",
+  "every parameter of the function is `comptime` and every argument is compile-time known",
+  "3:5",
+]

@@ -814,6 +814,295 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "type values cannot exist at runtime"
 
+[[case]]
+name = "type_call_runtime_param_discarded_statement"
+spec = ["4.14:6", "4.14:28"]
+description = "A discarded call to a `-> type` function with a runtime parameter is rejected at the call (RUE-2417: was an ICE)"
+source = """
+fn pick(c: bool) -> type { if c { i32 } else { i64 } }
+fn main() -> i32 {
+    let c = true;
+    pick(c);
+    42
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+
+[[case]]
+name = "type_call_runtime_param_literal_argument"
+spec = ["4.14:6", "4.14:28"]
+description = "A compile-time known argument to a runtime parameter does not make the call fully-comptime"
+source = """
+fn pick(c: bool) -> type { if c { i32 } else { i64 } }
+fn main() -> i32 {
+    pick(true);
+    42
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+
+[[case]]
+name = "type_call_runtime_param_let_binding"
+spec = ["4.14:6", "4.14:28"]
+description = "An unannotated `let` bound to a runtime `-> type` call is rejected at the call"
+source = """
+fn pick(c: bool) -> type { if c { i32 } else { i64 } }
+fn main() -> i32 {
+    let T = pick(true);
+    42
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+
+[[case]]
+name = "type_call_runtime_param_in_runtime_function"
+spec = ["4.14:6", "4.14:28"]
+description = "The rejection does not depend on the enclosing function: a runtime caller's call is rejected the same way"
+source = """
+fn pick(c: bool) -> type { if c { i32 } else { i64 } }
+fn h(c: bool) -> i32 {
+    pick(c);
+    42
+}
+fn main() -> i32 { h(true) }
+"""
+compile_fail = true
+error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+
+[[case]]
+name = "type_call_runtime_param_in_match_arm"
+spec = ["4.14:6", "4.14:28"]
+description = "A runtime `-> type` call in a match-arm block is rejected at the call"
+source = """
+fn pick(c: bool) -> type { if c { i32 } else { i64 } }
+fn main() -> i32 {
+    let c = true;
+    match c { true => { pick(c); 42 }, false => 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+
+[[case]]
+name = "type_call_mixed_params_discarded_statement"
+spec = ["4.14:6", "4.14:28"]
+description = "A `-> type` function with a comptime and a runtime parameter is not fully-comptime"
+source = """
+fn M(comptime T: type, n: i32) -> type { T }
+fn main() -> i32 {
+    M(i32, 3);
+    42
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+
+[[case]]
+name = "type_call_mixed_params_let_binding"
+spec = ["4.14:6", "4.14:28"]
+description = "A `let` of a mixed-parameter `-> type` call is rejected at the call"
+source = """
+fn M(comptime T: type, n: i32) -> type { T }
+fn main() -> i32 {
+    let U = M(i32, 3);
+    42
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+
+[[case]]
+name = "type_call_method_with_self_receiver"
+spec = ["4.14:6", "4.14:28"]
+description = "A method returning `type` takes a runtime receiver, so its call is rejected"
+source = """
+struct S {
+    n: i32,
+    fn ty(self) -> type { i32 }
+}
+fn main() -> i32 {
+    let s = S { n: 1 };
+    s.ty();
+    42
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+
+[[case]]
+name = "type_call_associated_function_runtime_param"
+spec = ["4.14:6", "4.14:28"]
+description = "An associated function returning `type` with a runtime parameter is rejected at the call"
+source = """
+struct S {
+    n: i32,
+    fn ty(c: bool) -> type { i32 }
+}
+fn main() -> i32 {
+    S.ty(true);
+    42
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+
+[[case]]
+name = "type_call_runtime_param_as_runtime_argument"
+spec = ["4.14:6", "4.14:28"]
+description = "A runtime `-> type` call passed to a runtime `i32` parameter is a type mismatch at the argument"
+source = """
+fn pick(c: bool) -> type { if c { i32 } else { i64 } }
+fn id(x: i32) -> i32 { x }
+fn main() -> i32 {
+    let c = true;
+    id(pick(c))
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found type"]
+
+[[case]]
+name = "type_call_runtime_param_as_comptime_type_argument"
+spec = ["4.14:6", "4.14:28"]
+description = "A runtime `-> type` call is not a compile-time known argument for a `comptime T: type` parameter"
+source = """
+fn pick(c: bool) -> type { if c { i32 } else { i64 } }
+fn first(comptime T: type, a: T) -> T { a }
+fn main() -> i32 {
+    first(pick(true), 42)
+}
+"""
+compile_fail = true
+error_contains = ["E1201", "comptime parameter requires a compile-time known value"]
+
+[[case]]
+name = "type_call_runtime_param_in_comptime_block"
+spec = ["4.14:6", "4.14:28"]
+description = "Inside a comptime block a call with a runtime parameter is not comptime-evaluable (4.14:4)"
+source = """
+fn pick(c: bool) -> type { if c { i32 } else { i64 } }
+fn main() -> i32 {
+    comptime { pick(true); 42 }
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "cannot be known at compile time"]
+
+[[case]]
+name = "type_call_runtime_param_in_const_initializer"
+spec = ["4.14:6", "4.14:28"]
+description = "A const initializer rejects a call with a runtime parameter"
+source = """
+fn pick(c: bool) -> type { if c { i32 } else { i64 } }
+const T = pick(true);
+fn main() -> i32 {
+    let x: T = 42;
+    x
+}
+"""
+compile_fail = true
+error_contains = ["E0434", "call to `pick` is not supported in const context"]
+
+[[case]]
+name = "type_parameter_without_comptime"
+spec = ["4.14:6", "4.14:28"]
+description = "A runtime parameter of type `type` is rejected at the call"
+source = """
+fn f(T: type) -> i32 { 42 }
+fn main() -> i32 {
+    f(i32)
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "a parameter of type `type` must be marked `comptime`"]
+
+[[case]]
+name = "type_call_zero_params_discarded_statement"
+spec = ["4.14:6", "4.14:28"]
+description = "A zero-parameter `-> type` call is fully-comptime, so a discarded call reduces at compile time"
+source = """
+fn T() -> type { i32 }
+fn main() -> i32 {
+    T();
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "type_call_zero_params_let_binding"
+spec = ["4.14:6", "4.14:28"]
+description = "A zero-parameter `-> type` call binds a type value with an unannotated `let`"
+source = """
+fn T() -> type { i32 }
+fn main() -> i32 {
+    let U = T();
+    let x: U = 42;
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "type_call_comptime_params_discarded_statement"
+spec = ["4.14:6", "4.14:28"]
+description = "An all-comptime `-> type` call with compile-time known arguments reduces at compile time as a discarded statement"
+source = """
+fn P(comptime b: bool) -> type { if b { i32 } else { i64 } }
+fn main() -> i32 {
+    P(true);
+    let U = P(true);
+    let x: U = 42;
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "type_call_fully_comptime_inside_comptime_block"
+spec = ["4.14:6", "4.14:28"]
+description = "Fully-comptime `-> type` calls are admitted inside a comptime block"
+source = """
+fn T() -> type { i32 }
+fn Id(comptime U: type) -> type { U }
+fn main() -> i32 {
+    comptime { T(); let V = Id(i32); 42 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "type_call_fully_comptime_const_initializer"
+spec = ["4.14:6", "4.14:28"]
+description = "A fully-comptime `-> type` call is a const initializer"
+source = """
+fn T() -> type { i32 }
+const U = T();
+fn main() -> i32 {
+    let x: U = 42;
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "type_call_comptime_param_runtime_argument"
+spec = ["4.14:6", "4.14:28"]
+description = "An all-comptime `-> type` call with a runtime argument is rejected at the argument"
+source = """
+fn P(comptime b: bool) -> type { if b { i32 } else { i64 } }
+fn main() -> i32 {
+    let c = true;
+    P(c);
+    42
+}
+"""
+compile_fail = true
+error_contains = ["E1201", "comptime parameter requires a compile-time known value"]
+
 # A runtime `if` or `match` whose branches are type values is typed `type`
 # (4.6:10, 4.7:12) and produces no runtime value. Discarded, it is accepted,
 # like a bare `i32;` statement; bound with `let`, it is the 4.14:6 error.

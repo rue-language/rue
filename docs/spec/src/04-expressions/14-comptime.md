@@ -198,6 +198,25 @@ fn main() -> i32 {
 }
 ```
 
+The same holds for a call whose result is a type value. Such a call is
+evaluated at compile time exactly when it is a fully-comptime call (4.14:28).
+Any other call producing a type value, such as a call to a function returning
+`type` that has a non-`comptime` parameter, would need that value at runtime.
+It is a compile-time error at the call, wherever the call appears: as a
+discarded statement, as a `let` initializer, or as an operand. Passing
+compile-time known arguments to the runtime parameters does not make the call
+fully-comptime.
+
+```rue
+fn pick(c: bool) -> type { if c { i32 } else { i64 } }
+
+fn main() -> i32 {
+    pick(true);  // ERROR: `c` is a runtime parameter, so the type value
+                 // pick(true) produces would exist at runtime
+    0
+}
+```
+
 {{ rule(id="4.14:17", cat="normative") }}
 
 Within a specialized function body, an `if` expression whose condition can be evaluated at compile time (because it references comptime parameters in scope) selects its branch at compile time: only the taken branch is analyzed and compiled. This permits comptime-recursive functions, whose recursive call sits in a branch that is not taken once the recursion reaches its base case.
