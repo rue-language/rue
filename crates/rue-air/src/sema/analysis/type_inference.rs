@@ -742,14 +742,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     snapshot.inline_ctor_head_types.clone(),
                 )
             } else {
-                let (precomputed_locals, precompute_work) = self
-                    .precompute_comptime_type_locals(
-                        body,
-                        type_subst,
-                        value_subst,
-                        &runtime_params,
-                        precompute_attribution_enabled,
-                    )?;
+                let (precomputed_locals, precompute_work) = self.precompute_comptime_type_locals(
+                    body,
+                    type_subst,
+                    value_subst,
+                    &runtime_params,
+                    precompute_attribution_enabled,
+                )?;
                 let comptime_local_bindings = precomputed_locals.aliases;
                 let local_annotations = precomputed_locals.local_annotations;
                 // Inline type-constructor heads (`F(args).Variant(..)`,
