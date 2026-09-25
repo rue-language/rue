@@ -479,7 +479,7 @@ non-ASCII symbols, which the check extracts.
 | `κ`; `↯κ` | "kappa" | The kind of a diverging exit (`ret`, `break`, `continue`, `diverge`, `panic`); in `↯κ`, the kind of trap | none | RustBelt's `κ` is a lifetime ([FIELD §5][F5]) | 01 §5; 03 “Lemmas §7 owes, and the …”; lean/README “What is mechanized”; GUIDE §2; `Dynamics` |
 | `μ` | "mu" | A binding's mutability mark, `∅` or `mut` | none | none known | 01 §2; 03 “Lemmas §7 owes, and the …”; GUIDE §1; `Syntax` |
 | `π`; `π_d`; `π_s`; `πⱼ` | "pi" | A path, or a segment of one | none | π is a multiplicity in Linear Haskell and a usage in QTT ([FIELD §4][F4]) | 01 §4.2; 03 intro; lean/README “Generated programs”; GUIDE §2; `Syntax` |
-| `ρ` | "rho" | A frame's environment: binding to cell and path | The environment of `eval n ρ e` ([FIELD §3][F3]) | none | 01 §6.1; 03 “Type safety”; GUIDE §2; `Dynamics` |
+| `ρ` | "rho" | A frame's environment: binding to cell and path | The environment of `eval n ρ e` ([FIELD §3][F3]) | Amin & Rompf write ρ for the store and H for the environment; we use ρ for the environment and H for the store | 01 §6.1; 03 “Type safety”; GUIDE §2; `Dynamics` |
 | `σ`; `σ_NaN` | "sigma" | A frame's stack of scope records; `σ_NaN`, the sign of a NaN the target creates | none | σ is a trace or execution in the trace-property literature ([FIELD §6][F6]) | 01 §2; 03 intro; lean/README “Deciding whether to believe it”; GUIDE §2; `Float` |
 | `φ` | "phi" | A frame: an environment and its scope records, `⟨ρ ; σ⟩` | none | none known | 01 §2; 03 “Lemmas §7 owes, and the …”; lean/README “Explaining a program”; GUIDE §2; `Dynamics` |
 | `ℓ`; `ℓ̄` | "ell" | A location: the allocation of one binding's cell; `ℓ̄` a list of them | none | Oxide's `ℓ` is a loan ([FIELD §5][F5]) | 01 §5.4; 03 “No use-after-drop / no leak …”; lean/README “What is mechanized”; GUIDE §2; `Dynamics` |
@@ -502,7 +502,7 @@ non-ASCII symbols, which the check extracts.
 | `□` | "hole" | In GUIDE's step tables, the hole of an evaluation context | Felleisen & Hieb's `[ ]`, PFPL's `∘` ([FIELD §1][F1]) | 01 writes `[·]`; GUIDE writes `□` | GUIDE “One program, traced both ways” |
 | `♭`; `K♭` | "flat" | The control stack flattened into one list of frames | none | none known | `Step` |
 | `⊑` | "is at most as restrictive as" | The class order `Copy ⊑ Affine ⊑ Linear`; more restrictive is higher | Tov & Pucella's direction ([FIELD §4][F4]) | The reverse of Walker's `lin ⊑ un` ([FIELD §4][F4]) | 01 §3; `Syntax` |
-| `⊔`; `⋃` | "join"; "union over" | The least upper bound; the union of an indexed family of sets | The join of qualifiers (Tov & Pucella, [FIELD §4][F4]); order theory ([FIELD §9][F9]) | none | 01 §3; GUIDE “What the checker demands”; `Syntax` |
+| `⊔`; `⋃` | "join"; "union over" | The least upper bound; the union of an indexed family of sets | The least upper bound of qualifiers (Tov & Pucella, [FIELD §4][F4]); order theory ([FIELD §9][F9]) | none | 01 §3; GUIDE “What the checker demands”; `Syntax` |
 | `⊕`; `⊕_w`; `Ω ⊕ Δ` | "op" | A binary arithmetic or bitwise operator; at float width `w`; adding deliveries to an outcome | none | none known | 01 §2; `Float` |
 | `⊖` | "unary op" | A unary operator: `neg`, `not`, `bitnot` | none | none known | 01 §2; `Syntax` |
 | `⊙`; `⊙_w` | "float op" | Any float operation at width w | none | none known | 01 §5.8; `Float` |
