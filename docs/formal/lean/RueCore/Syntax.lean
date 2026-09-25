@@ -141,7 +141,7 @@ from these forms, and §5.6's untracked-residue disjunct is computed exactly
 An array's ownership state is a `Path ⇀ {Owned, MovedOut}` tree like a
 struct's, so every §5 predicate that recurses into a node's children — §5.6's
 `residual-linear`, §5.5's join and `ownedJoinOk`, §5.1's residue traversal,
-and `Soundness.lean`'s `ContentsMatches` — carries an array clause that reads
+and `Soundness/Defs.lean`'s `ContentsMatches` — carries an array clause that reads
 the element type `n` times (`List.replicate n T`). Part 1 wrote them out
 before any of them could see a `MovedOut` element; this part is where they
 all can.

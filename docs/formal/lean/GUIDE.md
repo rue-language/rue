@@ -329,7 +329,7 @@ fn f0() -> i64 {
 `explain/affine_scope_drop.txt` renders `eval`'s run in seven rows, one per
 evaluated node, premises first. `Step` takes twelve steps from §6.12's
 initial configuration to `✓1`, and `affineScopeDrop_both_ways`
-(`Adequacy.lean`) writes them out, one constructor each. The two columns
+(`Witnesses.lean`) writes them out, one constructor each. The two columns
 line up like this, with `K` the frame stack below the focus (the top frame
 first) and `call` the entry point's `ret(E, φ)`:
 
@@ -452,7 +452,7 @@ calculus as written and what the compiler does, not a modelling slip.
 ## 3. The invariant: what `Matches` says, and why it is asymmetric
 
 Every safety proof carries an invariant relating the static story to the
-dynamic one. Here it is `FrameMatches D Γ φ H` (`Soundness.lean`), where `D`
+dynamic one. Here it is `FrameMatches D Γ φ H` (`Soundness/Defs.lean`), where `D`
 is the program's declarations, against which `class(T)` and a value's drop
 are read. It has two fields, `store` and `record`, and the proof also carries
 a third fact, `Untouched`.
@@ -616,7 +616,7 @@ relation, which has no monitor, runs one destructor twice on one identity.
 
 **From a program to the theorem.** The theorem quantifies over derivations.
 To apply it to a *program* you need to know a derivation exists, and
-`Checker.lean` is how you find out. `check P R Γ e` runs the §5 rules as an
+`Checker.lean` is how you find out. `check P R Γ e` (`Checker/Defs.lean`) runs the §5 rules as an
 algorithm, returning the type (possibly `never`) and `Ω`, or rejecting.
 `checkProgram P` lifts that to (Fn) §5.8 for every function, plus the entry
 point's empty parameter list. `check_sound` and `checkProgram_sound` prove
@@ -771,7 +771,7 @@ Witnesses:
   compiler does the same. `param_moved_other_dropped` moves the first
   parameter out, so only the second is left to the pop.
 
-`TraceOrder.lean` also pins fourteen order-witnessing corpus cases through the
+`Witnesses.lean` pins fourteen order-witnessing corpus cases through the
 theorems' projections, and has three results the statement rejects:
 
 - `fieldsSwapped_rejected`: a struct's two field destructors swapped;
@@ -2155,7 +2155,7 @@ defect looks like:*
 
 The one place a soundness proof can quietly cheat is its invariant. An
 invariant too strong to be provable is caught by the kernel; one too weak to
-mean anything is not. `FrameMatches` (in `DIGEST.md`, or `Soundness.lean`) is
+mean anything is not. `FrameMatches` (in `DIGEST.md`, or `Soundness/Defs.lean`) is
 this proof's invariant, and its `store` field, through `CellMatches` and
 `ContentsMatches`, is what §7's no-use-after-move bullet names in words:
 "preservation maintains the invariant that Σ faithfully tracks the store's

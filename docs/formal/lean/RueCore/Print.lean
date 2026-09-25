@@ -350,7 +350,7 @@ return type. A `none` means the expression is `never`-typed — a `return`, a
 any type — or that the program is ill-scoped, which elaborated programs never
 are; a caller that needs a type then writes a default, which a `never`
 initializer meets. A branch takes its first arm that has a type, as
-`Checker.lean`'s `firstArmTy` does, and a sequence, `let` or branch whose
+`Checker/Defs.lean`'s `firstArmTy` does, and a sequence, `let` or branch whose
 first part diverges (`diverges`) is `never` as (Seq-Bottom), (Let-Bottom) and
 (Strict-Bottom) make it in `check`, whatever its unreachable tail would say. So
 the type printed for a binder is the one `check` gave its initializer: an

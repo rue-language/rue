@@ -103,7 +103,7 @@ contents they ran on. It is unobservable: nothing in `eval` branches on it,
 and the printer (`Print.lean`) and the corpus (`Corpus.lean`) never print it,
 so the bridge compares exactly what it compared before. A copy of a `Copy`
 value carries its original's identity; `no_double_free` counts only the
-non-`Copy` nodes (`Contents.own`, `Trace.lean`), which are never copied.
+non-`Copy` nodes (`Contents.own`, `Trace/Defs.lean`), which are never copied.
 `Step` mints the same way, so the two presentations keep one store
 (`Step.lean`).
 

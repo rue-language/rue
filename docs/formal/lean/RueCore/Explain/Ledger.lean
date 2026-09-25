@@ -5,7 +5,7 @@ import RueCore.Trace
 # RueCore.Explain.Ledger — the identity ledger (RUE-2428)
 
 The step table shows a run row by row; the ledger turns it sideways, one row
-per **owned identity** (`Contents.own`, `Trace.lean`): the step that minted
+per **owned identity** (`Contents.own`, `Trace/Defs.lean`): the step that minted
 it, every step whose trace ended it — a `drop` marker, a discarded
 temporary's `dropTemp`, or a consumption, the three ends `freedIds` counts —
 and every step whose destructor ran on it (`dtorIds`). "Exactly once"

@@ -63,7 +63,7 @@ and lets (Sub-Never) coerce them to any type, with a divergent outgoing state
 `⊥` that §5.5's join excludes. The judgment carries §5.3's outgoing result
 `Ω` (`Out`), whose `norm = none` is that `⊥`; the fragment folds the type
 half into each never-typed rule, which concludes at **any** type `T`. `Ty`
-therefore needs no `never` constructor and `HasTy` (`Soundness.lean`) no case
+therefore needs no `never` constructor and `HasTy` (`Soundness/Defs.lean`) no case
 for it — sound because `never` has no values (`3.4:1`), so nothing is ever
 typed at it dynamically. Adding the constructor would buy nothing here and
 cost something: every rule that demands two equal types (§5.5's arms,
@@ -81,8 +81,8 @@ there (`Typed.brk`) and the loop discharges the obligation for the scopes the
 exit ends (`Typed.loopBreak`). A loop that never exits carries `⊥_diverge`,
 checked frame-wide where it fires (`Typed.loopDiv`).
 
-An *algorithm* cannot leave a type free, so `check` (`Checker.lean`) returns
-`never` where a rule concludes at every type, and its module docstring says
+An *algorithm* cannot leave a type free, so `check` (`Checker/Defs.lean`) returns
+`never` where a rule concludes at every type, and `Checker.lean`'s module docstring says
 what completeness that costs.
 -/
 
@@ -169,7 +169,7 @@ structure StructDecl.Wf (D : Decls) (sd : StructDecl) : Prop where
 
 /-- A well-formed struct environment: §3's class assignment holds of every
 declaration (`StructDecl.Wf`). This is the premise that makes `Ty.mult`'s
-lookup §3's join, and it is what `checkStructs` (`Checker.lean`) decides. -/
+lookup §3's join, and it is what `checkStructs` (`Checker/Defs.lean`) decides. -/
 def WfStructs (D : Decls) : Prop :=
   ∀ (s : Nat) (sd : StructDecl), D.structs[s]? = some sd → StructDecl.Wf D sd
 
@@ -278,7 +278,7 @@ structure EnumDecl.Wf (D : Decls) (ed : EnumDecl) : Prop where
 /-- A well-formed enum environment: §3's class assignment holds of every enum
 declaration (`EnumDecl.Wf`). Together with `WfStructs` this is the premise that
 makes `Ty.mult`'s lookup §3's join at every type, and it is what `checkEnums`
-(`Checker.lean`) decides. -/
+(`Checker/Defs.lean`) decides. -/
 def WfEnums (D : Decls) : Prop :=
   ∀ (e : Nat) (ed : EnumDecl), D.enums[e]? = some ed → EnumDecl.Wf D ed
 
@@ -299,7 +299,7 @@ shape both equations solve at more than one assignment
 declaration's class is the unique solution of its equation (`class_unique`).
 The calculus states the equations but not this side condition; §3 gains the
 paragraph in RUE-2334, and `3.0:5` is the normative form it mechanizes.
-`checkNoCycle` (`Checker.lean`) decides it by peeling. -/
+`checkNoCycle` (`Checker/Defs.lean`) decides it by peeling. -/
 
 /-- A declaration of either kind, named the way a type names it: the domain of
 `3.0:5`'s "contains by value" relation. -/
@@ -368,7 +368,7 @@ def WfNames (D : Decls) : Prop := WellFounded (fun d' d => D.Names d d')
 §3's class assignment for every struct declaration (`WfStructs`) and for every
 enum declaration (`WfEnums`). This is the premise every theorem that reads a
 recorded class through `Ty.mult` carries, and it is what `checkDecls`
-(`Checker.lean`) decides. -/
+(`Checker/Defs.lean`) decides. -/
 structure WfDecls (D : Decls) : Prop where
   /-- `3.0:5` (E0483): no declaration contains itself by value. -/
   names : WfNames D

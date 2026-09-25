@@ -52,7 +52,7 @@ variant list, so the arm count and the arm order are the declaration's by
 construction and (Match) §5.5's `arms.length = ed.variants.length` cannot
 fail. Every arm is drawn at the `match`'s own type except a **break arm**
 (`breakArm`, below) or a **return or panic arm** (`divArm`), which is
-`never`-typed; `firstArmTy` (`Checker.lean`) skips a `never` arm and at most
+`never`-typed; `firstArmTy` (`Checker/Defs.lean`) skips a `never` arm and at most
 one arm diverges, so the type it fixes is always a drawn arm's and its choice
 is never the reason a generated case is refused.
 
@@ -1380,7 +1380,7 @@ breaks and RUE-1614's exit join when another exit keeps `x`; otherwise a bare
 `break` or one unit-typed leaf and then `break`. The `break` is the arm's
 **last** form, so no syntax follows it in its block (RUE-2376), and the arm is
 `never`-typed, which (Sub-Never) §5.7 coerces to the other arms' type
-(`firstArmTy` and `CTy.meet` skip it, `Checker.lean`). -/
+(`firstArmTy` and `CTy.meet` skip it, `Checker/Defs.lean`). -/
 def breakArm (D : Decls) (Γ : Scope) : G Expr := do
   let owned := indicesWhere Γ (fun b => isAggregate b.ty && b.ty.mult D != .copy)
   if !owned.isEmpty && (← chance 1 2) then return seq (drop (.var (← pick 0 owned))) brk
