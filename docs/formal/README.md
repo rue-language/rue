@@ -211,6 +211,9 @@ shape.
   the generated index from every §5/§6 rule to the declaration that
   mechanizes it or *not yet mechanized*, and `lean/README.md` has the build
   commands (`scripts/rue lean`).
+- **`REDTEAM.md`**, **`REDTEAM-LOG.md`**: the red-team program that attacks
+  the claim as a whole (statements, definitions, bridge, docs, trusted base),
+  and the append-only log of its passes, findings and what survived.
 - **`FIELD.md`**: the field map. For each of the eight subfields of the
   programming-languages literature the core draws on, it lists the canonical
   sources (every one fetched), the accepted terms, symbols and
