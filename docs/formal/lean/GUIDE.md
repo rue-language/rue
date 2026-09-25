@@ -1293,8 +1293,9 @@ being dropped, so its drop starts with a `drop ℓ3` marker, exactly as
 `@drop(v0.x0)` would record it. The consumed aggregate's own identity, `#2`,
 runs no drop of its own — everything it held has been handed on or dropped —
 and the `consume` event records that its life ends here, with every member
-`⊘` (RUE-2427). The trace names `#0`, `#1` and `#2` once each, and nothing
-names any of them again.
+`⊘` (RUE-2427). The trace's markers end `#0`, `#1` and `#2` once each (the
+`dtor` events name `#0` and `#1` too, as the destructors that ran), and no
+marker ends any of them again.
 
 `MovedOut` on the Σ side and `⊘` on the store side, at the one path `π_d`,
 is `ContentsMatches` again. The output is `10`, `1`, `2`, `20`, then the

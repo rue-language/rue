@@ -582,9 +582,11 @@ inductive Event where
   payload to the arm's cells, and the path from a declared-`linear` place `d`
   down to the selected leaf once §6.3's destructure has handed the leaf on and
   dropped the residue. `c` is the shell itself, every member a `⊘`
-  (`Contents.enumShell`, `Contents.skeleton`). No destructor runs: an enum
+  (`matchConsume`, `Contents.skeleton`). No destructor runs: an enum
   declares none (§3, E0417), and `3.9:34` keeps a destructor-bearing value off
-  a destructure's path. Like `drop` and `dropTemp` it is a marker no Rue
+  a destructure's path — a guarantee of the checker, not of the machine, which
+  on a program §5 rejects consumes such a node without running its glue
+  (`destructure_under_dtor`). Like `drop` and `dropTemp` it is a marker no Rue
   program can observe (`Corpus.eventLine`); it is what lets
   `drop_exactly_once` (`TraceExact.lean`) name the end of *every* owned value
   in the trace. -/

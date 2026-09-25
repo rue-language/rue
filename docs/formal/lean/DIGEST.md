@@ -3033,6 +3033,19 @@ theorem RueCore.eval_exact (M : FloatOps) {P : Program} (hp : P.pendingSafe = tr
     e.pendingSafe = true → Exact P.decls H [] (eval M fuel P H φ e)
 ```
 
+### `eval_tidy`
+
+*theorem* · module `RueCore.TraceExact`
+
+**Every allocation is retired** (§6.7, §6.9, §6.10): every evaluation, of
+every expression, in every frame that names only existing cells, keeps
+`Tidy`. By fuel induction over `eval`; no typing derivation.
+
+```lean
+theorem RueCore.eval_tidy (M : FloatOps) (P : Program) (fuel : Nat) (H : Store)
+  (φ : Frame) (e : Expr) : φ.In H → Tidy φ H (eval M fuel P H φ e)
+```
+
 ### `drop_exactly_once`
 
 *theorem* · module `RueCore.TraceExact`
@@ -3042,14 +3055,32 @@ theorem RueCore.eval_exact (M : FloatOps) {P : Program} (hp : P.pendingSafe = tr
 §6.7, §6.9, §6.10, §6.11). Take any well-typed configuration of a checked
 program — an expression typed in `Γ`, run in a frame and store that agree
 with `Γ` — whose program and expression are `pendingSafe`. Its evaluation is
-never refused, and every owned identity the store holds when it starts is,
-when it finishes normally or unwinds by `return` or `break`, in exactly one
-place: still in the store, part of the result, or ended in the trace exactly
-as many times as it was held — by a drop, a discarded temporary, a residue
-drop, or a consumption (`Exact`). So a binding's value is dropped at its
-scope's end on the normal path (`endscope`, §6.7) or by the σ-walk of an
-unwind (§6.9, §6.10) — never both, since the two share one trace and one
-count, and never neither.
+never refused, and when it finishes normally or unwinds by `return` or
+`break`:
+
+* **every owned identity the store held at the start** is in exactly one
+  place: in a cell that already existed, part of the result, or ended in the
+  trace exactly as many times as it was held — by a drop, a discarded
+  temporary, a residue drop, or a consumption (`Exact`);
+* **every cell the evaluation allocated is retired** (`Tidy`): a `let`'s at
+  its `endscope` (§6.7), a `match` arm's at the arm's end (§6.6), a callee's
+  at its frame pop (§6.9) — except, for an unwinding `break`, the cells its
+  scope record still owes, which the loop retires (§6.10) — cells outside the
+  frame's environment were touched only to be retired, and an unwinding
+  `return` has retired the frame's whole record (§6.9's σ-walk). So "still in
+  the store" means a cell the enclosing code can still reach, never one a
+  frame pop forgot (`orphan_rejected`).
+
+So a binding's value is dropped at its scope's end on the normal path
+(`endscope`, §6.7) or by the σ-walk of an unwind (§6.9, §6.10) — never both,
+since the two share one trace and one count, and never neither. "Exactly
+once" presumes each starting identity is held once, which every store a run
+reaches satisfies (`no_double_free`); the equation counts multiplicity in
+general.
+
+The values an evaluation *mints* are covered by its forms instead:
+`rest_exactly_once` is the same ledger for the rest of a form once its
+leading operands have produced their values.
 
 The carve-outs, stated where they apply:
 
@@ -3062,9 +3093,6 @@ The carve-outs, stated where they apply:
   `pendingSafe_needed` shows a checked program on which the conclusion fails
   without it.
 
-Every sub-evaluation of a checked run is such a configuration, so the theorem
-speaks about every moment of every checked, `pendingSafe` run.
-
 ```lean
 theorem RueCore.drop_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
   (hp : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr}
@@ -3072,7 +3100,44 @@ theorem RueCore.drop_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyp
   (hfm : FrameMatches P.decls Γ φ H) (hcc : StoreCC P.decls H)
   (he : e.pendingSafe = true) :
   (∀ (w : Violation), eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
-    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e)
+    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
+      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+```
+
+### `rest_exactly_once`
+
+*theorem* · module `RueCore.TraceExact`
+
+**Values minted inside an evaluation end exactly once too**: the rest of
+every form keeps the ledger (§6.7, §6.9, §6.10, §6.11, §7). Take a
+well-typed configuration of a checked, `pendingSafe` program, and a form
+whose leading operands — its first operand, or its argument list for a call,
+a literal or a dynamic read — have produced the values `vs` in store `H₁`
+after trace `tr` (`Lead`). Whatever the rest of the form yields, `r` with
+`eval … e = r.withTrace tr`, is not a refusal, and every owned identity of
+`vs` or of `H₁` is, at its end, in a cell that already existed, in the result,
+or ended in `r`'s trace exactly as many times as it was held; every cell
+allocated since `H₁` is retired (`Settled`). This is where a `let`'s
+initializer is dropped at the `endscope`, a discarded `S { .. };` at the
+`dropTemp`, an argument at the callee's frame pop, and a scrutinee's shell at
+its `consume` — values `drop_exactly_once` alone never sees, because no
+evaluation starts holding them (`letDropDeleted_rejected`). Every owned value
+a checked run holds is present when some evaluation starts or is produced by
+some form's leading operands, so the two theorems together cover every owned
+value of the run, from the moment it exists to the end of the evaluation or
+form that received it.
+
+```lean
+theorem RueCore.rest_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
+  (hp : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr}
+  {T : Ty} {Ω : Out} {φ : Frame} {H : Store} (ht : Typed P R Γ e T Ω)
+  (hfm : FrameMatches P.decls Γ φ H) (hcc : StoreCC P.decls H)
+  (he : e.pendingSafe = true) {H₁ : Store} {vs : List Val} {tr : List Event}
+  (hl : Lead M.toFloatOps P fuel H φ H₁ vs tr e) {r : EvalRes}
+  (hr : eval M.toFloatOps (fuel + 1) P H φ e = EvalRes.withTrace tr r) :
+  (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+    Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧
+      Settled φ H₁ r
 ```
 
 ### `pendingSafe_needed`
@@ -3095,6 +3160,85 @@ theorem RueCore.pendingSafe_needed (M : FloatOps) :
         lostBody.pendingSafe = false ∧
           ¬Exact lostProgram.decls lostStore []
               (eval M 100 lostProgram lostStore lostFrame lostBody)
+```
+
+### `orphan_rejected`
+
+*theorem* · module `RueCore.TraceExact`
+
+**An orphaned cell balances the ledger but breaks `Tidy`** (§6.9): the real run
+of `g(x)` drops `x`'s `S0` at `g`'s frame pop and retires its cell; the
+orphaned result keeps the ledger (`Exact`) yet fails the frame-pop invariant,
+which `drop_exactly_once` also concludes.
+
+```lean
+theorem RueCore.orphan_rejected (M : FloatOps) :
+  eval M 100 orphanProgram lostStore lostFrame
+        (Expr.call 1 [Expr.use (Place.var 0)]) =
+      EvalRes.ok [Cell.dead, Cell.full Contents.hole, Cell.dead]
+        (Val.int IntWidth.w64 Sign.signed 0)
+        [Event.drop 2 s0x, Event.dtor 0 s0x] ∧
+    Exact lostDecls lostStore [] orphanResult ∧
+      ¬Tidy lostFrame lostStore orphanResult
+```
+
+### `letDropDeleted_rejected`
+
+*theorem* · module `RueCore.TraceExact`
+
+**A deleted `let` drop passes the bare ledger but not the form's** (§6.7):
+`let x = S0 { 1 }; 0` from the empty store. The whole evaluation's ledger
+counts no starting identity, so it accepts the result with the `endscope`'s
+drop deleted; `rest_exactly_once`'s ledger — from the store the initializer
+left, holding the minted `S0` — rejects it.
+
+```lean
+theorem RueCore.letDropDeleted_rejected (M : FloatOps) :
+  Lead M orphanProgram 100 [] { env := [], scope := [] } [Cell.dead] [s0one]
+      []
+      (Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.intLit IntWidth.w64 Sign.signed 0)) ∧
+    eval M 101 orphanProgram [] { env := [], scope := [] }
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+            (Expr.intLit IntWidth.w64 Sign.signed 0)) =
+        EvalRes.ok [Cell.dead, Cell.dead] (Val.int IntWidth.w64 Sign.signed 0)
+          [Event.drop 1 (Contents.ofVal s0one),
+            Event.dtor 0 (Contents.ofVal s0one)] ∧
+      Exact lostDecls [] []
+          (EvalRes.ok [Cell.dead, Cell.dead]
+            (Val.int IntWidth.w64 Sign.signed 0)
+            [Event.dtor 0 (Contents.ofVal s0one)]) ∧
+        ¬Exact lostDecls [Cell.dead]
+            (Contents.ownList lostDecls (Contents.ofVals [s0one]))
+            (EvalRes.ok [Cell.dead, Cell.dead]
+              (Val.int IntWidth.w64 Sign.signed 0)
+              [Event.dtor 0 (Contents.ofVal s0one)])
+```
+
+### `seqDropDeleted_rejected`
+
+*theorem* · module `RueCore.TraceExact`
+
+**The same for a discarded temporary** (§6.7's (D-Seq)): `S0 { 1 }; 0`
+with its `dropTemp` deleted is rejected by `rest_exactly_once`'s ledger.
+
+```lean
+theorem RueCore.seqDropDeleted_rejected (M : FloatOps) :
+  Lead M orphanProgram 100 [] { env := [], scope := [] } [Cell.dead] [s0one]
+      []
+      ((Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1]).seq
+        (Expr.intLit IntWidth.w64 Sign.signed 0)) ∧
+    eval M 101 orphanProgram [] { env := [], scope := [] }
+          ((Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1]).seq
+            (Expr.intLit IntWidth.w64 Sign.signed 0)) =
+        EvalRes.ok [Cell.dead] (Val.int IntWidth.w64 Sign.signed 0)
+          [Event.dropTemp s0one, Event.dtor 0 (Contents.ofVal s0one)] ∧
+      ¬Exact lostDecls [Cell.dead]
+          (Contents.ownList lostDecls (Contents.ofVals [s0one]))
+          (EvalRes.ok [Cell.dead] (Val.int IntWidth.w64 Sign.signed 0)
+            [Event.dtor 0 (Contents.ofVal s0one)])
 ```
 
 ### `Explain.explain_result`
@@ -10531,6 +10675,424 @@ theorem RueCore.eval_indexRead_copy {M : FloatOps} {P : Program} {n : Nat}
   Val.mult P.decls v = Mult.copy
 ```
 
+### `EvalRes.withTrace_inj`
+
+*theorem* · module `RueCore.TraceExact`
+
+Prefixing a trace is injective (helper).
+
+```lean
+theorem RueCore.EvalRes.withTrace_inj {a b : EvalRes} {tr : List Event}
+  (h : EvalRes.withTrace tr a = EvalRes.withTrace tr b) : a = b
+```
+
+### `Contents.ownList_ofVals_single`
+
+*theorem* · module `RueCore.TraceExact`
+
+One value's list image owns what the value owns (helper).
+
+```lean
+theorem RueCore.Contents.ownList_ofVals_single (D : Decls) (v : Val) :
+  Contents.ownList D (Contents.ofVals [v]) = Val.own D v
+```
+
+### `rest_step`
+
+*theorem* · module `RueCore.TraceExact`
+
+**The rest of every form keeps the exact ledger** (the continuation half
+of `eval_exact`'s induction step): given the law at fuel `n`, once a form's
+leading operands produced `vs`, whatever the rest of the form yields at
+`n + 1` keeps `Exact` from `H₁` with `vs` held (helper).
+
+```lean
+theorem RueCore.rest_step (M : FloatOps) {P : Program} (hp : P.pendingSafe = true)
+  {n : Nat}
+  (ih :
+    ∀ (H : Store) (φ : Frame) (e : Expr),
+      StoreCC P.decls H →
+        e.pendingSafe = true → Exact P.decls H [] (eval M n P H φ e))
+  {H : Store} {φ : Frame} {e : Expr} {H₁ : Store} {vs : List Val}
+  {tr : List Event} :
+  e.pendingSafe = true →
+    Lead M P n H φ H₁ vs tr e →
+      StoreCC P.decls H₁ →
+        Contents.copyClosedList P.decls (Contents.ofVals vs) = true →
+          ∀ (r : EvalRes),
+            eval M (n + 1) P H φ e = EvalRes.withTrace tr r →
+              Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs))
+                r
+```
+
+### `Frame.In.mono`
+
+*theorem* · module `RueCore.TraceExact`
+
+A frame inside a store is inside every store grown from it (helper).
+
+```lean
+theorem RueCore.Frame.In.mono {φ : Frame} {H H' : Store} (h : φ.In H)
+  (hl : List.length H ≤ List.length H') : φ.In H'
+```
+
+### `Local.refl`
+
+*theorem* · module `RueCore.TraceExact`
+
+Nothing changed (helper).
+
+```lean
+theorem RueCore.Local.refl (φ : Frame) (H : Store) : Local φ H H
+```
+
+### `Local.trans`
+
+*theorem* · module `RueCore.TraceExact`
+
+Local steps compose (helper).
+
+```lean
+theorem RueCore.Local.trans {φ : Frame} {H H₁ H₂ : Store} (h₁ : Local φ H H₁)
+  (h₂ : Local φ H₁ H₂) : Local φ H H₂
+```
+
+### `Local.set`
+
+*theorem* · module `RueCore.TraceExact`
+
+A write through the environment is local (helper).
+
+```lean
+theorem RueCore.Local.set {φ : Frame} {H : Store} {ℓ : Nat} (x : Cell)
+  (hℓ : ℓ ∈ φ.env) : Local φ H (List.set H ℓ x)
+```
+
+### `Local.append`
+
+*theorem* · module `RueCore.TraceExact`
+
+Growing the store is local (helper).
+
+```lean
+theorem RueCore.Local.append {φ : Frame} {H : Store} (ext : Store) :
+  Local φ H (H ++ ext)
+```
+
+### `Retired.same`
+
+*theorem* · module `RueCore.TraceExact`
+
+Nothing allocated, nothing to retire (helper).
+
+```lean
+theorem RueCore.Retired.same {H H' : Store} {keep : List Nat}
+  (h : List.length H' ≤ List.length H) : Retired H keep H'
+```
+
+### `Tidy.same`
+
+*theorem* · module `RueCore.TraceExact`
+
+A value produced where the store is (helper).
+
+```lean
+theorem RueCore.Tidy.same {φ : Frame} {H : Store} {v : Val} {tr : List Event} :
+  Tidy φ H (EvalRes.ok H v tr)
+```
+
+### `Tidy.write`
+
+*theorem* · module `RueCore.TraceExact`
+
+A write through the environment (helper).
+
+```lean
+theorem RueCore.Tidy.write {φ : Frame} {H : Store} {ℓ : Nat} {x : Cell} {v : Val}
+  {tr : List Event} (hℓ : ℓ ∈ φ.env) :
+  Tidy φ H (EvalRes.ok (List.set H ℓ x) v tr)
+```
+
+### `Tidy.opRes`
+
+*theorem* · module `RueCore.TraceExact`
+
+An operator's outcome (helper).
+
+```lean
+theorem RueCore.Tidy.opRes {φ : Frame} {H : Store} {o : OpRes} :
+  Tidy φ H (OpRes.toRes H o)
+```
+
+### `Tidy.intro`
+
+*theorem* · module `RueCore.TraceExact`
+
+Aggregate introduction reserves one retired slot (helper).
+
+```lean
+theorem RueCore.Tidy.intro {D : Decls} {φ : Frame} {H : Store} {mk : Nat → Val} :
+  Tidy φ H (introVal D H mk)
+```
+
+### `Tidy.prefix`
+
+*theorem* · module `RueCore.TraceExact`
+
+**Composition**: a step that allocated and retired locally, then an
+evaluation in the same frame (helper).
+
+```lean
+theorem RueCore.Tidy.prefix {φ : Frame} {H H₁ : Store} {tr : List Event} {r : EvalRes}
+  (hf : ∀ (ℓ : Nat), ℓ ∈ φ.env → ℓ < List.length H) (hl : Local φ H H₁)
+  (hre : Retired H [] H₁) (hr : Tidy φ H₁ r) :
+  Tidy φ H (EvalRes.withTrace tr r)
+```
+
+### `Tidy.bind`
+
+*theorem* · module `RueCore.TraceExact`
+
+§6.2's search keeps the frame-pop invariant (helper).
+
+```lean
+theorem RueCore.Tidy.bind {φ : Frame} {H : Store} {r : EvalRes}
+  {k : Store → Val → EvalRes}
+  (hf : ∀ (ℓ : Nat), ℓ ∈ φ.env → ℓ < List.length H) (hr : Tidy φ H r)
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr : List Event),
+      r = EvalRes.ok H₁ v tr → Tidy φ H₁ (k H₁ v)) :
+  Tidy φ H (r.andThen k)
+```
+
+### `dropRetire_shape`
+
+*theorem* · module `RueCore.TraceExact`
+
+`drop-retire` retires exactly its cell (helper).
+
+```lean
+theorem RueCore.dropRetire_shape {D : Decls} {H H' : Store} {ℓ : Nat}
+  {evs : List Event} (h : dropRetire D H ℓ = Except.ok (H', evs)) :
+  H' = List.set H ℓ Cell.dead
+```
+
+### `dropRetire_live`
+
+*theorem* · module `RueCore.TraceExact`
+
+The same at a retired cell: `drop-retire` refuses (helper).
+
+```lean
+theorem RueCore.dropRetire_live {D : Decls} {H H' : Store} {ℓ : Nat}
+  {evs : List Event} (h : dropRetire D H ℓ = Except.ok (H', evs)) :
+  ℓ < List.length H
+```
+
+### `unwindLocs_shape`
+
+*theorem* · module `RueCore.TraceExact`
+
+**`run-scope-drops` retires exactly its cells** (§6.1): the store keeps its
+length, every listed cell is `†`, every other cell is untouched (helper).
+
+```lean
+theorem RueCore.unwindLocs_shape {D : Decls} {H H' : Store} {ls : List Nat}
+  {evs : List Event} :
+  unwindLocs D H ls = Except.ok (H', evs) →
+    List.length H' = List.length H ∧
+      (∀ (ℓ : Nat), ℓ ∈ ls → H'[ℓ]? = some Cell.dead) ∧
+        ∀ (ℓ : Nat), ¬ℓ ∈ ls → H'[ℓ]? = H[ℓ]?
+```
+
+### `unwind_kills`
+
+*theorem* · module `RueCore.TraceExact`
+
+`run-scope-drops` as a teardown (helper).
+
+```lean
+theorem RueCore.unwind_kills {D : Decls} {H : Store} {v : Val} {ls ls' : List Nat}
+  (hm : ∀ (ℓ : Nat), ℓ ∈ ls' ↔ ℓ ∈ ls) :
+  KillsOnly ls H v
+    (match unwindLocs D H ls' with
+    | Except.error w => EvalRes.stuck w
+    | Except.ok (H', evs) => EvalRes.ok H' v evs)
+```
+
+### `dropRetire_kills`
+
+*theorem* · module `RueCore.TraceExact`
+
+`drop-retire` of one cell as a teardown (helper).
+
+```lean
+theorem RueCore.dropRetire_kills {D : Decls} {H : Store} {v : Val} {ℓ : Nat} :
+  KillsOnly [ℓ] H v
+    (match dropRetire D H ℓ with
+    | Except.error w => EvalRes.stuck w
+    | Except.ok (H', evs) => EvalRes.ok H' v evs)
+```
+
+### `Tidy.scoped`
+
+*theorem* · module `RueCore.TraceExact`
+
+**A scope opened above the frame and closed at its end** (§6.7's `let`,
+§6.6's `match` arm): an evaluation in the frame extended by fresh cells `ls`,
+followed on a value by a teardown that retires exactly `ls`, keeps the
+frame-pop invariant in the frame it was opened in. An unwinding `return`
+finds `ls` in the extended record and has retired them; an unwinding `break`
+carries them in its record (helper).
+
+```lean
+theorem RueCore.Tidy.scoped {φ : Frame} {H Hm : Store} {ls : List Nat} {r : EvalRes}
+  {k : Store → Val → EvalRes}
+  (hls : ∀ (ℓ : Nat), ℓ ∈ ls ↔ List.length H ≤ ℓ ∧ ℓ < List.length Hm)
+  (hlen : List.length H ≤ List.length Hm)
+  (hpre : ∀ (ℓ : Nat), ℓ < List.length H → Hm[ℓ]? = H[ℓ]?)
+  (hr : Tidy { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls } Hm r)
+  (hk :
+    ∀ (H₂ : Store) (v : Val) (tr : List Event),
+      r = EvalRes.ok H₂ v tr → KillsOnly ls H₂ v (k H₂ v)) :
+  Tidy φ H (r.andThen k)
+```
+
+### `mintParams_locs`
+
+*theorem* · module `RueCore.TraceExact`
+
+Minted cells are the next indices, in order (helper).
+
+```lean
+theorem RueCore.mintParams_locs (H : Store) (vs : List Val) :
+  (mintParams H vs).snd = List.range' (List.length H) vs.length
+```
+
+### `mintParams_mem`
+
+*theorem* · module `RueCore.TraceExact`
+
+Membership in the minted cells (helper).
+
+```lean
+theorem RueCore.mintParams_mem (H : Store) (vs : List Val) (ℓ : Nat) :
+  ℓ ∈ (mintParams H vs).snd ↔
+    List.length H ≤ ℓ ∧ ℓ < List.length (mintParams H vs).fst
+```
+
+### `mintParams_pre`
+
+*theorem* · module `RueCore.TraceExact`
+
+Minting leaves the old cells alone (helper).
+
+```lean
+theorem RueCore.mintParams_pre (H : Store) (vs : List Val) (ℓ : Nat)
+  (h : ℓ < List.length H) : (mintParams H vs).fst[ℓ]? = H[ℓ]?
+```
+
+### `dynPlace_env`
+
+*theorem* · module `RueCore.TraceExact`
+
+A dynamic place's cell is named by the environment (helper).
+
+```lean
+theorem RueCore.dynPlace_env {H : Store} {φ : Frame} {p : Place} {vs : List Val}
+  {πs : List (List Nat)} {ℓ : Nat} {c sub : Contents} {ρ : List Nat}
+  (h : dynPlace H φ p vs πs = DynPlace.at ℓ c sub ρ) : ℓ ∈ φ.env
+```
+
+### `evalArgs_tidy`
+
+*theorem* · module `RueCore.TraceExact`
+
+An argument list keeps the frame-pop invariant (helper).
+
+```lean
+theorem RueCore.evalArgs_tidy {φ : Frame} {ev : Store → Expr → EvalRes}
+  {es : List Expr} :
+  (∀ (H : Store) (e : Expr), e ∈ es → φ.In H → Tidy φ H (ev H e)) →
+    ∀ (H : Store), φ.In H → ArgsTidy φ H (evalArgs ev H es)
+```
+
+### `Tidy.call`
+
+*theorem* · module `RueCore.TraceExact`
+
+**§6.9's frame, pushed and popped**: a callee's body, run in a frame of
+fresh parameter cells `ls` and absorbed at the call boundary — its value's
+frame popped by `run-all-scope-drops`, its unwinding `return` having popped
+it already — keeps the caller's frame-pop invariant (helper).
+
+```lean
+theorem RueCore.Tidy.call {D : Decls} {φ : Frame} {H Hm : Store} {ls : List Nat}
+  {r : EvalRes}
+  (hls : ∀ (ℓ : Nat), ℓ ∈ ls ↔ List.length H ≤ ℓ ∧ ℓ < List.length Hm)
+  (hlen : List.length H ≤ List.length Hm)
+  (hpre : ∀ (ℓ : Nat), ℓ < List.length H → Hm[ℓ]? = H[ℓ]?)
+  (hr : Tidy { env := ls.reverse, scope := ls } Hm r) :
+  Tidy φ H
+    (r.absorb fun H₃ v =>
+      match runAllScopeDrops D H₃ { env := ls.reverse, scope := ls } with
+      | Except.error w => EvalRes.stuck w
+      | Except.ok (H₄, evs) => EvalRes.ok H₄ v evs)
+```
+
+### `FrameMatches.frameIn`
+
+*theorem* · module `RueCore.TraceExact`
+
+A frame agreeing with a context names only existing cells (helper).
+
+```lean
+theorem RueCore.FrameMatches.frameIn {D : Decls} {Γ : Ctx} {φ : Frame} {H : Store}
+  (h : FrameMatches D Γ φ H) : φ.In H
+```
+
+### `Retired.mono`
+
+*theorem* · module `RueCore.TraceExact`
+
+Allocations since an earlier store include those since a later one
+(helper).
+
+```lean
+theorem RueCore.Retired.mono {H H₁ H' : Store} {keep : List Nat}
+  (hle : List.length H ≤ List.length H₁) (h : Retired H keep H') :
+  Retired H₁ keep H'
+```
+
+### `Tidy.settled`
+
+*theorem* · module `RueCore.TraceExact`
+
+The whole form's frame-pop invariant, read at the rest (helper).
+
+```lean
+theorem RueCore.Tidy.settled {φ : Frame} {H H₁ : Store} {r : EvalRes}
+  {tr : List Event} (hle : List.length H ≤ List.length H₁)
+  (h : Tidy φ H (EvalRes.withTrace tr r)) : Settled φ H₁ r
+```
+
+### `lead_cc`
+
+*theorem* · module `RueCore.TraceExact`
+
+A form's leading operands ran from a copy-closed store: the store only
+grew, it stays copy-closed, and the values are (helper).
+
+```lean
+theorem RueCore.lead_cc (M : FloatOps) {P : Program} (hp : P.pendingSafe = true)
+  {fuel : Nat} {H : Store} {φ : Frame} {e : Expr} {H₁ : Store} {vs : List Val}
+  {tr : List Event} (hcc : StoreCC P.decls H) (he : e.pendingSafe = true)
+  (hl : Lead M P fuel H φ H₁ vs tr e) :
+  List.length H ≤ List.length H₁ ∧
+    StoreCC P.decls H₁ ∧
+      Contents.copyClosedList P.decls (Contents.ofVals vs) = true
+```
+
 ### `lostProgram_typed`
 
 *theorem* · module `RueCore.TraceExact`
@@ -13354,7 +13916,7 @@ RueCore.Event.dropTemp (v : Val) : Event
 RueCore.Event.dtor (s : Nat) (c : Contents) : Event
 ```
 
-**`Event.consume`** — **A consumption** (RUE-2427): the aggregate nodes of `c` end here without a drop of their own, because every member they held has already been moved out or dropped — a `match`'s scrutinee shell once (D-Match) §6.6 has bound its payload to the arm's cells, and the path from a declared-`linear` place `d` down to the selected leaf once §6.3's destructure has handed the leaf on and dropped the residue. `c` is the shell itself, every member a `⊘` (`Contents.enumShell`, `Contents.skeleton`). No destructor runs: an enum declares none (§3, E0417), and `3.9:34` keeps a destructor-bearing value off a destructure's path. Like `drop` and `dropTemp` it is a marker no Rue program can observe (`Corpus.eventLine`); it is what lets `drop_exactly_once` (`TraceExact.lean`) name the end of *every* owned value in the trace.
+**`Event.consume`** — **A consumption** (RUE-2427): the aggregate nodes of `c` end here without a drop of their own, because every member they held has already been moved out or dropped — a `match`'s scrutinee shell once (D-Match) §6.6 has bound its payload to the arm's cells, and the path from a declared-`linear` place `d` down to the selected leaf once §6.3's destructure has handed the leaf on and dropped the residue. `c` is the shell itself, every member a `⊘` (`matchConsume`, `Contents.skeleton`). No destructor runs: an enum declares none (§3, E0417), and `3.9:34` keeps a destructor-bearing value off a destructure's path — a guarantee of the checker, not of the machine, which on a program §5 rejects consumes such a node without running its glue (`destructure_under_dtor`). Like `drop` and `dropTemp` it is a marker no Rue program can observe (`Corpus.eventLine`); it is what lets `drop_exactly_once` (`TraceExact.lean`) name the end of *every* owned value in the trace.
 
 ```lean
 RueCore.Event.consume (c : Contents) : Event
@@ -14251,6 +14813,38 @@ Defining equations, as Lean derived them from the body:
           if w.eTop < e ∨ 2 ^ (w.eTop - e).toNat ≤ m then
             FloatDatum.inf neg
           else canonNum neg m e
+```
+
+### `s0one`
+
+*def* · module `RueCore.TraceExact`
+
+The minted `S0 { 1 }` (helper).
+
+```lean
+def RueCore.s0one : Val
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+s0one = Val.struct 0 0 [Val.int IntWidth.w64 Sign.signed 1]
+```
+
+### `s0x`
+
+*def* · module `RueCore.TraceExact`
+
+`x`'s `S0` (helper).
+
+```lean
+def RueCore.s0x : Contents
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+s0x = Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 7]
 ```
 
 ### `valOf`
@@ -15902,6 +16496,18 @@ Float.exactOps =
     nanSign := false }
 ```
 
+### `Frame.In`
+
+*def* · module `RueCore.TraceExact`
+
+The frame names only cells the store already has (helper).
+
+```lean
+def RueCore.Frame.In (φ : Frame) (H : Store) : Prop :=
+  (∀ (ℓ : Nat), ℓ ∈ φ.env → ℓ < List.length H) ∧
+    ∀ (ℓ : Nat), ℓ ∈ φ.scope → ℓ < List.length H
+```
+
 ### `Fresh`
 
 *def* · module `RueCore.Trace`
@@ -15969,6 +16575,21 @@ Kont.toLoop [] = none
       Kont.toLoop (head :: K) = Kont.toLoop K
 ```
 
+### `Local`
+
+*def* · module `RueCore.TraceExact`
+
+The store only grew, and a cell outside the frame's environment was left
+alone or retired (helper).
+
+```lean
+def RueCore.Local (φ : Frame) (H H' : Store) : Prop :=
+  List.length H ≤ List.length H' ∧
+    ∀ (ℓ : Nat),
+      ℓ < List.length H →
+        ¬ℓ ∈ φ.env → H'[ℓ]? = H[ℓ]? ∨ H'[ℓ]? = some Cell.dead
+```
+
 ### `Out.add`
 
 *def* · module `RueCore.Statics`
@@ -16008,6 +16629,20 @@ Constructors:
 
 ```lean
 RueCore.Program.mk (decls : Decls) (fns : List FnDef) : Program
+```
+
+### `Retired`
+
+*def* · module `RueCore.TraceExact`
+
+Every cell allocated since `H` is retired, but those `keep` names
+(helper).
+
+```lean
+def RueCore.Retired (H : Store) (keep : List Nat) (H' : Store) : Prop :=
+  ∀ (ℓ : Nat),
+    List.length H ≤ ℓ →
+      ℓ < List.length H' → ¬ℓ ∈ keep → H'[ℓ]? = some Cell.dead
 ```
 
 ### `Ty.atPath`
@@ -16373,6 +17008,25 @@ Defining equations, as Lean derived them from the body:
   fnCtx fd =
     (List.map (fun p => { ty := p.ty, mu := p.mu, st := OwnSt.owned })
         fd.params).reverse
+```
+
+### `lostDecls`
+
+*def* · module `RueCore.TraceExact`
+
+`S0`, affine, with a destructor (helper).
+
+```lean
+def RueCore.lostDecls : Decls
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+lostDecls =
+  Decls.ofStructs
+    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+        dtor := true, cls := Mult.affine }]
 ```
 
 ### `lostStore`
@@ -16852,6 +17506,23 @@ Defining equations, as Lean derived them from the body:
 ∀ (es : List Expr), Expr.quietList es = es.all fun e => !e.unwinds
 ```
 
+### `KillsOnly`
+
+*def* · module `RueCore.TraceExact`
+
+What a scope teardown after a value does to the store: refuse, or retire
+exactly the cells `ls` names (helper).
+
+```lean
+def RueCore.KillsOnly (ls : List Nat) (H : Store) (v : Val) (R : EvalRes) : Prop :=
+  (∃ w, R = EvalRes.stuck w) ∨
+    ∃ H' evs,
+      R = EvalRes.ok H' v evs ∧
+        List.length H' = List.length H ∧
+          (∀ (ℓ : Nat), ℓ ∈ ls → H'[ℓ]? = some Cell.dead) ∧
+            ∀ (ℓ : Nat), ¬ℓ ∈ ls → H'[ℓ]? = H[ℓ]?
+```
+
 ### `Kont.Transparent`
 
 *def* · module `RueCore.Adequacy`
@@ -16950,6 +17621,28 @@ Defining equations, as Lean derived them from the body:
 ∀ (P : Program), P.pendingSafe = P.fns.all fun fd => fd.body.pendingSafe
 ```
 
+### `Settled`
+
+*def* · module `RueCore.TraceExact`
+
+What the rest of a form owes the cells allocated after its leading
+operands ran: every one retired by the form's end — but, for an unwinding
+`break`, the ones its record owes the loop — and, for an unwinding `return`,
+the frame's whole record retired (helper).
+
+```lean
+def RueCore.Settled (φ : Frame) (H₁ : Store) : EvalRes → Prop :=
+  match x✝ with
+  | EvalRes.ok H' v tr => Retired H₁ [] H'
+  | EvalRes.returned H' v tr =>
+    Retired H₁ [] H' ∧ ∀ (ℓ : Nat), ℓ ∈ φ.scope → H'[ℓ]? = some Cell.dead
+  | EvalRes.broke H' sc tr =>
+    Retired H₁ sc H' ∧ ∃ locs, sc = φ.scope ++ locs
+  | EvalRes.panic k tr => True
+  | EvalRes.stuck why => True
+  | EvalRes.outOfFuel => True
+```
+
 ### `StepOut`
 
 *inductive* · module `RueCore.Step`
@@ -16999,6 +17692,31 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (sd : StructDecl),
   StructDecl.baseOf D sd =
     List.foldl (fun m T => m.join (Ty.mult D T)) Mult.copy sd.fields
+```
+
+### `Tidy`
+
+*def* · module `RueCore.TraceExact`
+
+**The frame-pop invariant for one evaluation** in frame `φ` from store `H`
+(§6.7, §6.9, §6.10): the store only grew and was touched outside `φ`'s
+environment only to retire; every cell the evaluation allocated is retired by
+its end — for an unwinding `break`, all but the cells of the scope record it
+carries, which extends `φ`'s and which the loop retires; and an unwinding
+`return` has retired every cell of `φ`'s record (§6.9's σ-walk).
+
+```lean
+def RueCore.Tidy (φ : Frame) (H : Store) : EvalRes → Prop :=
+  match x✝ with
+  | EvalRes.ok H' v tr => Local φ H H' ∧ Retired H [] H'
+  | EvalRes.returned H' v tr =>
+    Local φ H H' ∧
+      Retired H [] H' ∧ ∀ (ℓ : Nat), ℓ ∈ φ.scope → H'[ℓ]? = some Cell.dead
+  | EvalRes.broke H' sc tr =>
+    Local φ H H' ∧ Retired H sc H' ∧ ∃ locs, sc = φ.scope ++ locs
+  | EvalRes.panic k tr => True
+  | EvalRes.stuck why => True
+  | EvalRes.outOfFuel => True
 ```
 
 ### `Ty.atDyn`
@@ -17317,6 +18035,48 @@ The program above (helper).
 def RueCore.lostProgram : Program
 ```
 
+### `orphanProgram`
+
+*def* · module `RueCore.TraceExact`
+
+`g` ignores its `S0` parameter (helper).
+
+```lean
+def RueCore.orphanProgram : Program
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+orphanProgram =
+  { decls := lostDecls,
+    fns :=
+      [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+          body := Expr.intLit IntWidth.w64 Sign.signed 0 },
+        { params := [{ ty := Ty.struct 0, mu := false }],
+          ret := Ty.int IntWidth.w64 Sign.signed,
+          body := Expr.intLit IntWidth.w64 Sign.signed 0 }] }
+```
+
+### `orphanResult`
+
+*def* · module `RueCore.TraceExact`
+
+The result of a frame pop that forgot its σ-walk: `g`'s parameter cell
+`ℓ2` still full, no drop, the destructor event alone (helper).
+
+```lean
+def RueCore.orphanResult : EvalRes
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+orphanResult =
+  EvalRes.ok [Cell.dead, Cell.full Contents.hole, Cell.full s0x]
+    (Val.int IntWidth.w64 Sign.signed 0) [Event.dtor 0 s0x]
+```
+
 ### `overwriteOk`
 
 *def* · module `RueCore.Statics`
@@ -17355,6 +18115,19 @@ Defining equations, as Lean derived them from the body:
   overwriteOk D OwnSt.owned x = decide (Ty.mult D x ≠ Mult.linear)
 ∀ (D : Decls) (x : Ty) (ts : List OwnSt),
   overwriteOk D (OwnSt.fields ts) x = decide (Ty.mult D x ≠ Mult.linear)
+```
+
+### `ArgsTidy`
+
+*def* · module `RueCore.TraceExact`
+
+The frame-pop invariant for an argument list (helper).
+
+```lean
+def RueCore.ArgsTidy (φ : Frame) (H : Store) : ArgsRes → Prop :=
+  match x✝ with
+  | ArgsRes.ok H' vs tr => Local φ H H' ∧ Retired H [] H'
+  | ArgsRes.abort r => Tidy φ H r
 ```
 
 ### `Ctx.joinFold`
@@ -18090,6 +18863,67 @@ Defining equations, as Lean derived them from the body:
         { steps := (tev x e).steps ++ ts.steps,
           res := ArgsRes.abort (EvalRes.withTrace tr r) }
     | r => { steps := (tev x e).steps, res := ArgsRes.abort r }
+```
+
+### `Lead`
+
+*def* · module `RueCore.TraceExact`
+
+**A form's leading operands have run** (helper): from store `H` in frame
+`φ` at fuel `fuel`, the form's first operand — or its argument list, for a
+call, a literal and a dynamic read — produced the values `vs` in store `H₁`,
+after trace `tr`. A `@drop` below a dynamic index runs the read first.
+
+```lean
+def RueCore.Lead (M : FloatOps) (P : Program) (fuel : Nat) (H : Store) (φ : Frame)
+  (H₁ : Store) (vs : List Val) (tr : List Event) : Expr → Prop :=
+  match x✝ with
+  | Expr.letIn m e₁ e₂ =>
+    ∃ v, vs = [v] ∧ eval M fuel P H φ e₁ = EvalRes.ok H₁ v tr
+  | e₁.seq e₂ => ∃ v, vs = [v] ∧ eval M fuel P H φ e₁ = EvalRes.ok H₁ v tr
+  | e₁.match arms =>
+    ∃ v, vs = [v] ∧ eval M fuel P H φ e₁ = EvalRes.ok H₁ v tr
+  | Expr.assign p e₁ =>
+    ∃ v, vs = [v] ∧ eval M fuel P H φ e₁ = EvalRes.ok H₁ v tr
+  | e₁.ret => ∃ v, vs = [v] ∧ eval M fuel P H φ e₁ = EvalRes.ok H₁ v tr
+  | e₁.dbg => ∃ v, vs = [v] ∧ eval M fuel P H φ e₁ = EvalRes.ok H₁ v tr
+  | Expr.repeatArray elem e₁ n =>
+    ∃ v, vs = [v] ∧ eval M fuel P H φ e₁ = EvalRes.ok H₁ v tr
+  | Expr.indexWrite p idx πs e₁ =>
+    ∃ v, vs = [v] ∧ eval M fuel P H φ e₁ = EvalRes.ok H₁ v tr
+  | Expr.binop op e₁ e₂ =>
+    ∃ v, vs = [v] ∧ eval M fuel P H φ e₁ = EvalRes.ok H₁ v tr
+  | Expr.unop op e₁ =>
+    ∃ v, vs = [v] ∧ eval M fuel P H φ e₁ = EvalRes.ok H₁ v tr
+  | Expr.intCast w s e₁ =>
+    ∃ v, vs = [v] ∧ eval M fuel P H φ e₁ = EvalRes.ok H₁ v tr
+  | Expr.fintrin k e₁ =>
+    ∃ v, vs = [v] ∧ eval M fuel P H φ e₁ = EvalRes.ok H₁ v tr
+  | e₁.ite e₁_1 e₂ =>
+    ∃ v, vs = [v] ∧ eval M fuel P H φ e₁ = EvalRes.ok H₁ v tr
+  | Expr.indexDrop p idx πs =>
+    ∃ v,
+      vs = [v] ∧
+        eval M fuel P H φ (Expr.indexRead p idx πs) = EvalRes.ok H₁ v tr
+  | Expr.call f args =>
+    evalArgs (fun H' e => eval M fuel P H' φ e) H args = ArgsRes.ok H₁ vs tr
+  | Expr.mkStruct s args =>
+    evalArgs (fun H' e => eval M fuel P H' φ e) H args = ArgsRes.ok H₁ vs tr
+  | Expr.mkEnum e k args =>
+    evalArgs (fun H' e => eval M fuel P H' φ e) H args = ArgsRes.ok H₁ vs tr
+  | Expr.mkArray elem args =>
+    evalArgs (fun H' e => eval M fuel P H' φ e) H args = ArgsRes.ok H₁ vs tr
+  | Expr.indexRead p args πs =>
+    evalArgs (fun H' e => eval M fuel P H' φ e) H args = ArgsRes.ok H₁ vs tr
+  | Expr.intLit w s n => False
+  | Expr.floatLit w l => False
+  | Expr.boolLit b => False
+  | Expr.unitLit => False
+  | Expr.use p => False
+  | Expr.panic msg => False
+  | Expr.drop p => False
+  | e.loop => False
+  | Expr.brk => False
 ```
 
 ### `WfEnums`

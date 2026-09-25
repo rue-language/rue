@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 704.
+- Theorems checked: 740.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -745,10 +745,46 @@ and diffs them against the committed copies.
 | `evalFintrin_val_arg` | `RueCore.TraceExact` | `propext` |
 | `Val.observable_scalar` | `RueCore.TraceExact` | `propext` |
 | `eval_indexRead_copy` | `RueCore.TraceExact` | `propext` |
+| `EvalRes.withTrace_inj` | `RueCore.TraceExact` | `propext` |
+| `Contents.ownList_ofVals_single` | `RueCore.TraceExact` | `propext` |
+| `rest_step` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `eval_exact` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Frame.In.mono` | `RueCore.TraceExact` | *none* |
+| `Local.refl` | `RueCore.TraceExact` | `propext` |
+| `Local.trans` | `RueCore.TraceExact` | `propext` |
+| `Local.set` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Local.append` | `RueCore.TraceExact` | `propext` |
+| `Retired.same` | `RueCore.TraceExact` | `propext` |
+| `Tidy.same` | `RueCore.TraceExact` | `propext` |
+| `Tidy.write` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Tidy.opRes` | `RueCore.TraceExact` | `propext` |
+| `Tidy.intro` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Tidy.prefix` | `RueCore.TraceExact` | `propext` |
+| `Tidy.bind` | `RueCore.TraceExact` | `propext` |
+| `dropRetire_shape` | `RueCore.TraceExact` | `propext` |
+| `dropRetire_live` | `RueCore.TraceExact` | `propext` |
+| `unwindLocs_shape` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `unwind_kills` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `dropRetire_kills` | `RueCore.TraceExact` | `propext` |
+| `Tidy.scoped` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `mintParams_locs` | `RueCore.TraceExact` | `propext` |
+| `mintParams_mem` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `mintParams_pre` | `RueCore.TraceExact` | `propext` |
+| `dynPlace_env` | `RueCore.TraceExact` | `propext` |
+| `evalArgs_tidy` | `RueCore.TraceExact` | `propext` |
+| `Tidy.call` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `eval_tidy` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `FrameMatches.frameIn` | `RueCore.TraceExact` | `propext` |
 | `drop_exactly_once` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Retired.mono` | `RueCore.TraceExact` | `propext` |
+| `Tidy.settled` | `RueCore.TraceExact` | `propext` |
+| `lead_cc` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `rest_exactly_once` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `lostProgram_typed` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `pendingSafe_needed` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `orphan_rejected` | `RueCore.TraceExact` | `propext` |
+| `letDropDeleted_rejected` | `RueCore.TraceExact` | `propext` |
+| `seqDropDeleted_rejected` | `RueCore.TraceExact` | `propext` |
 | `Explain.explain_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainIdx_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainArgs_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
