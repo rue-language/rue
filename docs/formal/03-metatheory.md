@@ -426,16 +426,32 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   being retired twice. The guard is also witnessed directly from an open
   machine state, including one whose scope record names a retired cell
   (`Examples.lean`).
-- **Theorem:** `RueCore.drop_exactly_once` (`lean/RueCore/TraceExact.lean`,
-  RUE-2427) — the "exactly once" half.
-- **In words:** take a well-typed configuration of a checked program: an
-  expression typed in `Γ`, run in a frame and store that agree with `Γ`.
-  Its evaluation is never refused. Every owned value the store holds when
-  it starts is, when it ends normally or unwinds by `return` or `break`, in
-  exactly one place: still in the store, part of the result, or ended in the
-  trace exactly as many times as it was held. So a binding's value is
-  dropped on the normal path (the binding's `endscope`, §6.7) or on the
-  unwind path (the σ-walk, §6.9 and §6.10), never both and never neither.
+- **Theorems:** `RueCore.drop_exactly_once` and `RueCore.rest_exactly_once`
+  (`lean/RueCore/TraceExact.lean`, RUE-2427): the "exactly once" half.
+- **In words.** Take a well-typed configuration of a checked program: an
+  expression typed in `Γ`, run in a frame and store that agree with `Γ`. Its
+  evaluation is never refused, and when it ends normally or unwinds by
+  `return` or `break`, two things hold.
+  - **The ledger.** Every owned value the store held when the evaluation
+    started is in exactly one place: in a cell that already existed, part of
+    the result, or ended in the trace exactly as many times as it was held
+    (`RueCore.Exact`).
+  - **The frame-pop invariant.** Every cell the evaluation allocated is
+    retired: a `let`'s at its `endscope`, a `match` arm's at the arm's end,
+    a callee's at its frame pop. The one exception is an unwinding `break`,
+    which leaves the cells its scope record still owes, and the loop retires
+    them. Cells outside the frame's environment were touched only to be
+    retired, and an unwinding `return` has retired the frame's whole record
+    (`RueCore.Tidy`, `RueCore.eval_tidy`). So "still in the store" never
+    means a cell nobody can reach any more. `RueCore.orphan_rejected` is a
+    frame pop that forgot its σ-walk: the bare ledger balances and `Tidy`
+    rejects it.
+
+  So a binding's value is dropped on the normal path (the binding's
+  `endscope`, §6.7) or on the unwind path (the σ-walk, §6.9 and §6.10),
+  never both and never neither. "Exactly once" presumes each starting
+  identity is held once, which every store a run reaches satisfies
+  (`no_double_free`). The equation counts multiplicity in general.
 - **What "ended" means.** `RueCore.freedIds` reads the trace's markers, and
   every way an owned value's life ends has one:
   - a binding's drop, `drop ℓ c` — at scope exit, `@drop`, an overwrite, and
@@ -450,12 +466,25 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 
   All three are markers no Rue program observes, so the corpus and the
   bridge are unchanged.
-- **Why over configurations, not `run`.** A run starts from the empty store,
-  so every identity it mentions is minted during it, and its result does not
-  say which store indices were minted for owned values. The theorem counts
-  the identities an evaluation *starts* with (`a < H.length`). Every
-  sub-evaluation of a checked run is a typed configuration, so it covers
-  every moment of every checked run.
+- **Why two statements, not one over `run`.** A run starts from the empty
+  store, so every identity it mentions is minted during it, and its result
+  does not say which store indices were minted for owned values.
+  `drop_exactly_once` counts the identities an evaluation *starts* with
+  (`a < H.length`). A value an operand mints and its own form ends is held
+  by no evaluation at its start: `let x = S { .. }`, `S { .. };`,
+  `g(S { .. })`, and a scrutinee's shell are all examples.
+  `RueCore.rest_exactly_once` covers those. Once a form's leading operands
+  (its first operand, or the argument list of a call, a literal or a dynamic
+  read) have produced their values, whatever the rest of the form yields is
+  not refused, keeps the same ledger with those values held, and has
+  retired every cell allocated since (`RueCore.Lead`, `RueCore.rest_step`,
+  `RueCore.Settled`). `RueCore.letDropDeleted_rejected` and
+  `RueCore.seqDropDeleted_rejected` delete the `let`'s and the discard's
+  drop. The bare ledger accepts both, and `rest_exactly_once`'s rejects
+  them. Every owned value a checked run holds is present when some
+  evaluation starts, or is produced by some form's leading operands, so the
+  two theorems cover every owned value of the run, from the moment it
+  exists to the end of the evaluation or form that received it.
 - **Carve-outs, stated where they apply:**
   - **`@panic`** (§6.12): a trap carries no store and runs no drop, so a
     `panic` result carries no claim. The values live at the trap are
@@ -465,8 +494,10 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     calculus as in the compiler. The hypothesis `RueCore.Program.pendingSafe`
     / `RueCore.Expr.pendingSafe` excludes the shape syntactically: no operand
     after the first of a call, a literal, an index list or a binary
-    operator, and no index of an indexed assignment, may contain `return` or
-    `break`. `RueCore.pendingSafe_needed` shows it is load-bearing: at a
+    operator, and no index of an indexed assignment, may contain a `return`
+    or a `break` its own loops do not catch. It is a whole-program
+    hypothesis, and every seed the checker accepts satisfies it (a `#guard`
+    in `TraceExact.lean`). `RueCore.pendingSafe_needed` shows it is load-bearing: at a
     typed configuration of a program the checker accepts, `x`'s value is in
     neither the store, the result nor the trace once the sibling's `return`
     has unwound.
@@ -479,7 +510,14 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   vanish unrecorded. Typing enters through `soundness` only: a checked
   configuration is never refused. `RueCore.eval_quiet` is the syntactic
   side: an expression with no `return` never unwinds by one, and one with no
-  free `break` never by that.
+  free `break` never by that. The induction step is `RueCore.rest_step`
+  followed by the operand's own ledger, so the continuation ledger that
+  `rest_exactly_once` states is the one the proof checks. `RueCore.eval_tidy`
+  is a separate fuel induction on the store's shape.
+- **Owed:** drop *order*, meaning when and in what order the drops run
+  (reverse registration at scope exit, §3.9 and §6.11 within a value), is
+  `drop_order`, part 2b of RUE-2328 (RUE-2428). These theorems say that
+  every owned value ends exactly once, not when.
 
 ## No use-after-free
 
