@@ -167,7 +167,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ctx,
         )?;
         if check_operand_types {
-            for ((arg, air_arg), expected) in args.iter().zip(&operands.args).zip(param_types) {
+            for (((arg, air_arg), expected), mode) in args
+                .iter()
+                .zip(&operands.args)
+                .zip(param_types)
+                .zip(param_modes)
+            {
+                // An `inout str` view is taken over a local `StrBuf` or
+                // `Str(N)`, which keeps its own type as the operand;
+                // `validate_inout_str_operand` is that position's authority.
+                if *mode == RirParamMode::Inout && self.is_str_struct(*expected) {
+                    continue;
+                }
                 self.require_slot_type(
                     *expected,
                     air.get(air_arg.value).ty,
