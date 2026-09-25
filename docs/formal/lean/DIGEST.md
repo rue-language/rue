@@ -12130,6 +12130,366 @@ theorem RueCore.Blocks.drop_inv {D : Decls} {ℓ : Nat} {c : Contents} {t : List
   ∃ t', t = dropEvents D c ++ t' ∧ Blocks D t'
 ```
 
+### `Spine.soundness`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.soundness_stmt`, by `RueCore.soundness` (helper).
+
+```lean
+theorem RueCore.Spine.soundness : Spec.soundness_stmt
+```
+
+### `Spine.run_safe`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.run_safe_stmt`, by `RueCore.run_safe` (helper).
+
+```lean
+theorem RueCore.Spine.run_safe : Spec.run_safe_stmt
+```
+
+### `Spine.no_violation`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.no_violation_stmt`, by `RueCore.no_violation` (helper).
+
+```lean
+theorem RueCore.Spine.no_violation : Spec.no_violation_stmt
+```
+
+### `Spine.no_use_after_move`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.no_use_after_move_stmt`, by `RueCore.no_use_after_move` (helper).
+
+```lean
+theorem RueCore.Spine.no_use_after_move : Spec.no_use_after_move_stmt
+```
+
+### `Spine.no_use_after_drop`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.no_use_after_drop_stmt`, by `RueCore.no_use_after_drop` (helper).
+
+```lean
+theorem RueCore.Spine.no_use_after_drop : Spec.no_use_after_drop_stmt
+```
+
+### `Spine.no_linear_leak`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.no_linear_leak_stmt`, by `RueCore.no_linear_leak` (helper).
+
+```lean
+theorem RueCore.Spine.no_linear_leak : Spec.no_linear_leak_stmt
+```
+
+### `Spine.no_linear_overwrite`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.no_linear_overwrite_stmt`, by `RueCore.no_linear_overwrite` (helper).
+
+```lean
+theorem RueCore.Spine.no_linear_overwrite : Spec.no_linear_overwrite_stmt
+```
+
+### `Spine.no_linear_discard`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.no_linear_discard_stmt`, by `RueCore.no_linear_discard` (helper).
+
+```lean
+theorem RueCore.Spine.no_linear_discard : Spec.no_linear_discard_stmt
+```
+
+### `Spine.fuel_mono`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.fuel_mono_stmt`, by `RueCore.fuel_mono` (helper).
+
+```lean
+theorem RueCore.Spine.fuel_mono : Spec.fuel_mono_stmt
+```
+
+### `Spine.no_masking`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.no_masking_stmt`, by `RueCore.no_masking` (helper).
+
+```lean
+theorem RueCore.Spine.no_masking : Spec.no_masking_stmt
+```
+
+### `Spine.run_ne_returned`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.run_ne_returned_stmt`, by `RueCore.run_ne_returned` (helper).
+
+```lean
+theorem RueCore.Spine.run_ne_returned : Spec.run_ne_returned_stmt
+```
+
+### `Spine.check_sound`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.check_sound_stmt`, by `RueCore.check_sound` (helper).
+
+```lean
+theorem RueCore.Spine.check_sound : Spec.check_sound_stmt
+```
+
+### `Spine.checkProgram_sound`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.checkProgram_sound_stmt`, by `RueCore.checkProgram_sound` (helper).
+
+```lean
+theorem RueCore.Spine.checkProgram_sound : Spec.checkProgram_sound_stmt
+```
+
+### `Spine.no_double_free`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.no_double_free_stmt`, by `RueCore.no_double_free` (helper).
+
+```lean
+theorem RueCore.Spine.no_double_free : Spec.no_double_free_stmt
+```
+
+### `Spine.freed_once`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.freed_once_stmt`, by `RueCore.freed_once` (helper).
+
+```lean
+theorem RueCore.Spine.freed_once : Spec.freed_once_stmt
+```
+
+### `Spine.dtor_once`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.dtor_once_stmt`, by `RueCore.dtor_once` (helper).
+
+```lean
+theorem RueCore.Spine.dtor_once : Spec.dtor_once_stmt
+```
+
+### `Spine.drop_exactly_once`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.drop_exactly_once_stmt`, by `RueCore.drop_exactly_once` (helper).
+
+```lean
+theorem RueCore.Spine.drop_exactly_once : Spec.drop_exactly_once_stmt
+```
+
+### `Spine.rest_exactly_once`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.rest_exactly_once_stmt`, by `RueCore.rest_exactly_once` (helper).
+
+```lean
+theorem RueCore.Spine.rest_exactly_once : Spec.rest_exactly_once_stmt
+```
+
+### `Spine.drop_order`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.drop_order_stmt`, by `RueCore.drop_order` (helper).
+
+```lean
+theorem RueCore.Spine.drop_order : Spec.drop_order_stmt
+```
+
+### `Spine.Step.det`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Step.det_stmt`, by `RueCore.Step.det` (helper).
+
+```lean
+theorem RueCore.Spine.Step.det : Spec.Step.det_stmt
+```
+
+### `Spine.Step.terminal`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Step.terminal_stmt`, by `RueCore.Step.terminal` (helper).
+
+```lean
+theorem RueCore.Spine.Step.terminal : Spec.Step.terminal_stmt
+```
+
+### `Spine.Config.trichotomy`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Config.trichotomy_stmt`, by `RueCore.Config.trichotomy` (helper).
+
+```lean
+theorem RueCore.Spine.Config.trichotomy : Spec.Config.trichotomy_stmt
+```
+
+### `Spine.step_iff`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.step_iff_stmt`, by `RueCore.step_iff` (helper).
+
+```lean
+theorem RueCore.Spine.step_iff : Spec.step_iff_stmt
+```
+
+### `Spine.Config.stuck_iff`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Config.stuck_iff_stmt`, by `RueCore.Config.stuck_iff` (helper).
+
+```lean
+theorem RueCore.Spine.Config.stuck_iff : Spec.Config.stuck_iff_stmt
+```
+
+### `Spine.step_stuck_isStuckState`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.step_stuck_isStuckState_stmt`, by `RueCore.step_stuck_isStuckState` (helper).
+
+```lean
+theorem RueCore.Spine.step_stuck_isStuckState : Spec.step_stuck_isStuckState_stmt
+```
+
+### `Spine.step_progress`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.step_progress_stmt`, by `RueCore.step_progress` (helper).
+
+```lean
+theorem RueCore.Spine.step_progress : Spec.step_progress_stmt
+```
+
+### `Spine.step_preservation`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.step_preservation_stmt`, by `RueCore.step_preservation` (helper).
+
+```lean
+theorem RueCore.Spine.step_preservation : Spec.step_preservation_stmt
+```
+
+### `Spine.step_type_safety`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.step_type_safety_stmt`, by `RueCore.step_type_safety` (helper).
+
+```lean
+theorem RueCore.Spine.step_type_safety : Spec.step_type_safety_stmt
+```
+
+### `Spine.eval_sound`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.eval_sound_stmt`, by `RueCore.eval_sound` (helper).
+
+```lean
+theorem RueCore.Spine.eval_sound : Spec.eval_sound_stmt
+```
+
+### `Spine.run_sim`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.run_sim_stmt`, by `RueCore.run_sim` (helper).
+
+```lean
+theorem RueCore.Spine.run_sim : Spec.run_sim_stmt
+```
+
+### `Spine.eval_complete`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.eval_complete_stmt`, by `RueCore.eval_complete` (helper).
+
+```lean
+theorem RueCore.Spine.eval_complete : Spec.eval_complete_stmt
+```
+
+### `Spine.run_complete`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.run_complete_stmt`, by `RueCore.run_complete` (helper).
+
+```lean
+theorem RueCore.Spine.run_complete : Spec.run_complete_stmt
+```
+
+### `Spine.never_stuck_iff`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.never_stuck_iff_stmt`, by `RueCore.never_stuck_iff` (helper).
+
+```lean
+theorem RueCore.Spine.never_stuck_iff : Spec.never_stuck_iff_stmt
+```
+
+### `Spine.step_never_stuck_of_run`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.step_never_stuck_of_run_stmt`, by `RueCore.step_never_stuck_of_run` (helper).
+
+```lean
+theorem RueCore.Spine.step_never_stuck_of_run : Spec.step_never_stuck_of_run_stmt
+```
+
+### `Spine.run_stuck_of_step_stuck`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.run_stuck_of_step_stuck_stmt`, by `RueCore.run_stuck_of_step_stuck` (helper).
+
+```lean
+theorem RueCore.Spine.run_stuck_of_step_stuck : Spec.run_stuck_of_step_stuck_stmt
+```
+
+### `Spine.eval_diverges_iff`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.eval_diverges_iff_stmt`, by `RueCore.eval_diverges_iff` (helper).
+
+```lean
+theorem RueCore.Spine.eval_diverges_iff : Spec.eval_diverges_iff_stmt
+```
+
 ### `Examples.eval_loop_ok`
 
 *theorem* · module `RueCore.Examples`
@@ -19810,6 +20170,38 @@ def RueCore.Explain.traceEval (M : FloatOps) (P : Program) :
   Nat → Nat → List Ty → Ty → Store → Frame → Expr → Explain.Trace
 ```
 
+### `Spec.fuel_mono_stmt`
+
+*def* · module `RueCore.Spec.Safety`
+
+**Fuel monotonicity** (§6 as `eval` runs it; `03-metatheory.md` "Fuel").
+An answer other than `outOfFuel` is the answer at every larger fuel.
+
+```lean
+def RueCore.Spec.fuel_mono_stmt : Prop :=
+  ∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr}
+    {n m : Nat},
+    n ≤ m →
+      eval M n P H φ e ≠ EvalRes.outOfFuel →
+        eval M m P H φ e = eval M n P H φ e
+```
+
+### `Spec.no_masking_stmt`
+
+*def* · module `RueCore.Spec.Safety`
+
+**No masking** (§6 as `eval` runs it; `03-metatheory.md` "Fuel"). A
+refusal at one fuel is the answer at every fuel that answers.
+
+```lean
+def RueCore.Spec.no_masking_stmt : Prop :=
+  ∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr}
+    {n m : Nat} {w : Violation},
+    eval M n P H φ e = EvalRes.stuck w →
+      eval M m P H φ e ≠ EvalRes.outOfFuel →
+        eval M m P H φ e = EvalRes.stuck w
+```
+
 ### `StructDecl.Wf`
 
 *inductive* · module `RueCore.Statics`
@@ -20382,6 +20774,32 @@ def RueCore.Lead (M : FloatOps) (P : Program) (fuel : Nat) (H : Store) (φ : Fra
   | Expr.brk => False
 ```
 
+### `Spec.dtor_once_stmt`
+
+*def* · module `RueCore.Spec.Trace`
+
+**No destructor twice on one value** (§6.11, `3.9:28`), given only that a
+destructor-bearing struct is not `Copy` (`3.9:31`).
+
+```lean
+def RueCore.Spec.dtor_once_stmt : Prop :=
+  ∀ (M : FloatOps) {P : Program},
+    DtorNotCopy P.decls →
+      ∀ (fuel a : Nat), List.count a (dtorIds (run M P fuel).trace) ≤ 1
+```
+
+### `Spec.run_ne_returned_stmt`
+
+*def* · module `RueCore.Spec.Safety`
+
+**No outcome is an unwinding `return`** ((D-Return-Main) §6.9).
+
+```lean
+def RueCore.Spec.run_ne_returned_stmt : Prop :=
+  ∀ (M : FloatOps) {P : Program} {fuel : Nat} (H : Store) (v : Val)
+    (tr : List Event), run M P fuel ≠ EvalRes.returned H v tr
+```
+
 ### `WfEnums`
 
 *def* · module `RueCore.Statics`
@@ -20539,6 +20957,20 @@ Defining equations, as Lean derived them from the body:
     | StepOut.next C' => stepN M P n C'
     | StepOut.halted => x
     | StepOut.stuck w => x
+```
+
+### `Spec.step_stuck_isStuckState_stmt`
+
+*def* · module `RueCore.Spec.Step`
+
+**Only §6's stuck states** (§6.3, §6.5; RUE-2314): a stuck configuration
+is a use after move or drop, an unbound name or a type confusion, never a
+monitor's.
+
+```lean
+def RueCore.Spec.step_stuck_isStuckState_stmt : Prop :=
+  ∀ {M : FloatOps} {P : Program} {C : Config} {w : Violation},
+    Config.Stuck M P C w → w.isStuckState = true
 ```
 
 ### `WfDecls`
@@ -21479,6 +21911,19 @@ def RueCore.Exact (D : Decls) (H : Store) (X : List Nat) : EvalRes → Prop :=
   | EvalRes.panic k tr => True
   | EvalRes.stuck why => True
   | EvalRes.outOfFuel => True
+```
+
+### `Spec.freed_once_stmt`
+
+*def* · module `RueCore.Spec.Trace`
+
+**Nothing freed twice, on every program** (§6.11): a finished run frees
+each identity at most once, with no typing hypothesis.
+
+```lean
+def RueCore.Spec.freed_once_stmt : Prop :=
+  ∀ (M : FloatOps) (P : Program) (fuel a : Nat),
+    List.count a (freedIds P.decls (run M P fuel).trace) ≤ 1
 ```
 
 ### `Contents.residualLinear`
@@ -22586,6 +23031,68 @@ RueCore.Step.brk {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
         (Config.run H' φs K' (Focus.ret Val.unit) (tr ++ evs))
 ```
 
+### `Spec.Config.stuck_iff_stmt`
+
+*def* · module `RueCore.Spec.Step`
+
+**Stuck in `Step`'s terms** (§6): not terminal and no step exactly when
+`step` says stuck.
+
+```lean
+def RueCore.Spec.Config.stuck_iff_stmt : Prop :=
+  ∀ {M : FloatOps} {P : Program} {C : Config},
+    (¬C.Terminal ∧ ∀ (C' : Config), ¬Step M P C C') ↔
+      ∃ w, Config.Stuck M P C w
+```
+
+### `Spec.Config.trichotomy_stmt`
+
+*def* · module `RueCore.Spec.Step`
+
+**Steps, terminal, or stuck** (§6), a stuck one named by a `Violation`.
+
+```lean
+def RueCore.Spec.Config.trichotomy_stmt : Prop :=
+  ∀ (M : FloatOps) (P : Program) (C : Config),
+    (∃ C', Step M P C C') ∨ C.Terminal ∨ ∃ w, Config.Stuck M P C w
+```
+
+### `Spec.Step.det_stmt`
+
+*def* · module `RueCore.Spec.Step`
+
+**Determinism** (§6): at most one step.
+
+```lean
+def RueCore.Spec.Step.det_stmt : Prop :=
+  ∀ {M : FloatOps} {P : Program} {C C₁ C₂ : Config},
+    Step M P C C₁ → Step M P C C₂ → C₁ = C₂
+```
+
+### `Spec.Step.terminal_stmt`
+
+*def* · module `RueCore.Spec.Step`
+
+**Terminal is final** (§6.12): `✓` and `↯κ` take no step.
+
+```lean
+def RueCore.Spec.Step.terminal_stmt : Prop :=
+  ∀ {M : FloatOps} {P : Program} {C C' : Config},
+    C.Terminal → ¬Step M P C C'
+```
+
+### `Spec.step_iff_stmt`
+
+*def* · module `RueCore.Spec.Step`
+
+**`step` computes `Step`** (§6).
+
+```lean
+def RueCore.Spec.step_iff_stmt : Prop :=
+  ∀ {M : FloatOps} {P : Program} {C C' : Config},
+    Step M P C C' ↔ step M P C = StepOut.next C'
+```
+
 ### `Steps`
 
 *inductive* · module `RueCore.Step`
@@ -22690,6 +23197,83 @@ def RueCore.Sim (M : FloatOps) (P : Program) (φ : Frame)
             (Config.run H' φs K' (Focus.ret Val.unit) (tr ++ tr' ++ evs))
   | EvalRes.stuck why => True
   | EvalRes.outOfFuel => True
+```
+
+### `Spec.run_complete_stmt`
+
+*def* · module `RueCore.Spec.Adequacy`
+
+**Completeness on every program** (§6.12): the same, up to a refusal of
+`run`'s (RUE-2314).
+
+```lean
+def RueCore.Spec.run_complete_stmt : Prop :=
+  ∀ (M : FloatOps) (P : Program),
+    (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+          ∃ n,
+            ∀ (fuel : Nat),
+              n < fuel →
+                run M P fuel = EvalRes.ok H v tr ∨
+                  ∃ w, run M P fuel = EvalRes.stuck w) ∧
+      ∀ (κ : PanicKind) (tr : List Event),
+        Steps M P Config.init (Config.panic κ tr) →
+          ∃ n,
+            ∀ (fuel : Nat),
+              n < fuel →
+                run M P fuel = EvalRes.panic κ tr ∨
+                  ∃ w, run M P fuel = EvalRes.stuck w
+```
+
+### `Spec.run_sim_stmt`
+
+*def* · module `RueCore.Spec.Adequacy`
+
+**`run` is simulated by `Step`, on every program** (§6.12): the same, with
+no typing hypothesis.
+
+```lean
+def RueCore.Spec.run_sim_stmt : Prop :=
+  ∀ (M : FloatOps) (P : Program) (fuel : Nat),
+    (∀ (H : Store) (v : Val) (tr : List Event),
+        run M P fuel = EvalRes.ok H v tr →
+          Steps M P Config.init
+            (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+      ∀ (k : PanicKind) (tr : List Event),
+        run M P fuel = EvalRes.panic k tr →
+          Steps M P Config.init (Config.panic k tr)
+```
+
+### `Spec.run_stuck_of_step_stuck_stmt`
+
+*def* · module `RueCore.Spec.Adequacy`
+
+**A stuck `Step` run is a refusal of `run`** (§6), at every large enough
+fuel, perhaps with another `Violation`.
+
+```lean
+def RueCore.Spec.run_stuck_of_step_stuck_stmt : Prop :=
+  ∀ (M : FloatOps) (P : Program) {C : Config} {w : Violation},
+    Steps M P Config.init C →
+      Config.Stuck M P C w →
+        ∃ n,
+          ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.stuck w'
+```
+
+### `Spec.step_never_stuck_of_run_stmt`
+
+*def* · module `RueCore.Spec.Adequacy`
+
+**`eval` never stuck, so `Step` never stuck, on every program** (§7 "Type
+safety": "it either reduces, halts with a value, or halts with one of the
+defined panics").
+
+```lean
+def RueCore.Spec.step_never_stuck_of_run_stmt : Prop :=
+  ∀ (M : FloatOps) (P : Program),
+    (∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w) →
+      ∀ (C : Config),
+        Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
 ```
 
 ### `LongIH`
@@ -23418,6 +24002,435 @@ Constructors:
 ```lean
 RueCore.ProgramTyped.mk {P : Program} (wf : WfProgram P)
   (entry : ∃ fd, P.fns[0]? = some fd ∧ fd.params = []) : ProgramTyped P
+```
+
+### `Spec.checkProgram_sound_stmt`
+
+*def* · module `RueCore.Spec.Checker`
+
+**An accepted program is well-typed** (§3, (Fn) §5.8): `checkProgram`
+decides the hypothesis `ProgramTyped` of the program statements.
+
+```lean
+def RueCore.Spec.checkProgram_sound_stmt : Prop :=
+  ∀ {P : Program}, checkProgram P = true → ProgramTyped P
+```
+
+### `Spec.drop_order_stmt`
+
+*def* · module `RueCore.Spec.Trace`
+
+**Drop order** (§7 "No use-after-drop / no leak of drops", "at the end of
+its scope"; §6.7, §6.9–§6.11), over `Step`. A finished run's trace — value
+or panic — is in §6.11's block grammar (`Blocks`). Each step from a
+reachable configuration drops one cell or distinct cells newest first, and
+the registration stack is in location order. `Lifo` holds of every step
+that keeps its stack, whatever it drops, so it constrains only a step that
+pops: the cells it drops are among those it cut, newest first (R7 of
+`REDTEAM-LOG.md`).
+
+```lean
+def RueCore.Spec.drop_order_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          Steps M.toFloatOps P Config.init
+              (Config.run H φ [] (Focus.ret v) tr) →
+            Blocks P.decls tr) ∧
+        (∀ (κ : PanicKind) (tr : List Event),
+            Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+              Blocks P.decls tr) ∧
+          ∀ (C C' : Config),
+            Steps M.toFloatOps P Config.init C →
+              Step M.toFloatOps P C C' →
+                ∃ evs,
+                  C'.trace = C.trace ++ evs ∧
+                    NewestFirst (dropLocs evs) ∧
+                      Lifo C.stack C'.stack (dropLocs evs) ∧
+                        List.Pairwise (fun x1 x2 => x1 < x2) C.stack
+```
+
+### `Spec.eval_complete_stmt`
+
+*def* · module `RueCore.Spec.Adequacy`
+
+**`eval` is complete for `Step`, modulo fuel** (§7's adequacy sentence).
+For a checked program, a value or panic `→*` reaches is `run`'s answer at
+every large enough fuel.
+
+```lean
+def RueCore.Spec.eval_complete_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          Steps M.toFloatOps P Config.init
+              (Config.run H φ [] (Focus.ret v) tr) →
+            ∃ n,
+              ∀ (fuel : Nat),
+                n < fuel → run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+        ∀ (κ : PanicKind) (tr : List Event),
+          Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+            ∃ n,
+              ∀ (fuel : Nat),
+                n < fuel → run M.toFloatOps P fuel = EvalRes.panic κ tr
+```
+
+### `Spec.eval_diverges_iff_stmt`
+
+*def* · module `RueCore.Spec.Adequacy`
+
+**Divergence is exhaustion at every fuel** (§7 "Type safety"; §6.12): for a
+checked program, `run` is `outOfFuel` at every fuel iff `Step` has runs of
+every length from `Config.init`.
+
+```lean
+def RueCore.Spec.eval_diverges_iff_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      ((∀ (fuel : Nat), run M.toFloatOps P fuel = EvalRes.outOfFuel) ↔
+        ∀ (n : Nat), ∃ D, StepsN M.toFloatOps P n Config.init D)
+```
+
+### `Spec.eval_sound_stmt`
+
+*def* · module `RueCore.Spec.Adequacy`
+
+**`eval` is sound for `Step`** (§7's adequacy sentence; ADR-0097). For a
+checked program, `run` is never stuck, and its values and panics are reached
+by `→*` from `Config.init` with the same store and trace.
+
+```lean
+def RueCore.Spec.eval_sound_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      ∀ (fuel : Nat),
+        (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+          (∀ (H : Store) (v : Val) (tr : List Event),
+              run M.toFloatOps P fuel = EvalRes.ok H v tr →
+                Steps M.toFloatOps P Config.init
+                  (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+            ∀ (k : PanicKind) (tr : List Event),
+              run M.toFloatOps P fuel = EvalRes.panic k tr →
+                Steps M.toFloatOps P Config.init (Config.panic k tr)
+```
+
+### `Spec.never_stuck_iff_stmt`
+
+*def* · module `RueCore.Spec.Adequacy`
+
+**Never stuck, both ways** (§7 "Type safety"). For a checked program, `run`
+is never stuck iff no reachable configuration is. Under `ProgramTyped` both
+sides hold outright, so the equivalence adds nothing; cite
+`step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`).
+
+```lean
+def RueCore.Spec.never_stuck_iff_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      ((∀ (fuel : Nat) (w : Violation),
+          run M.toFloatOps P fuel ≠ EvalRes.stuck w) ↔
+        ∀ (C : Config),
+          Steps M.toFloatOps P Config.init C →
+            C.Terminal ∨ ∃ C', Step M.toFloatOps P C C')
+```
+
+### `Spec.no_double_free_stmt`
+
+*def* · module `RueCore.Spec.Trace`
+
+**No double free** (§7 "No double-free"). A checked program's run is never
+refused, and its trace frees no identity twice and runs no destructor twice
+on one. Narrower than the bullet: an `outOfFuel` result has an empty trace,
+so a run that never finishes is not covered (RUE-2477).
+
+```lean
+def RueCore.Spec.no_double_free_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      ∀ (fuel : Nat),
+        (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+          (∀ (a : Nat),
+              List.count a
+                  (freedIds P.decls (run M.toFloatOps P fuel).trace) ≤
+                1) ∧
+            ∀ (a : Nat),
+              List.count a (dtorIds (run M.toFloatOps P fuel).trace) ≤ 1
+```
+
+### `Spec.no_linear_discard_stmt`
+
+*def* · module `RueCore.Spec.Safety`
+
+**No linear discard** (§7, the same bullet, `3.8:64`): no sequence discards
+a linear value. The three linear statements hold because `eval`'s monitors
+never fire; what they rule out is what those monitors watch (R3 of
+`REDTEAM-LOG.md`).
+
+```lean
+def RueCore.Spec.no_linear_discard_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      ∀ (fuel : Nat),
+        run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearDiscard
+```
+
+### `Spec.no_linear_leak_stmt`
+
+*def* · module `RueCore.Spec.Safety`
+
+**No linear leak** (§7 "Linear values are consumed exactly once", §5.6): no
+scope exit or unwind meets a live linear value.
+
+```lean
+def RueCore.Spec.no_linear_leak_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      ∀ (fuel : Nat),
+        run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearLeak
+```
+
+### `Spec.no_linear_overwrite_stmt`
+
+*def* · module `RueCore.Spec.Safety`
+
+**No linear overwrite** (§7, the same bullet, `3.8:77`): no assignment drops
+a live linear value.
+
+```lean
+def RueCore.Spec.no_linear_overwrite_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      ∀ (fuel : Nat),
+        run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearOverwrite
+```
+
+### `Spec.no_use_after_drop_stmt`
+
+*def* · module `RueCore.Spec.Safety`
+
+**No use-after-drop** (§7 "No use-after-drop / no leak of drops", "never
+read afterward"): no access to a retired cell.
+
+```lean
+def RueCore.Spec.no_use_after_drop_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      ∀ (fuel : Nat),
+        run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.useAfterDrop
+```
+
+### `Spec.no_use_after_move_stmt`
+
+*def* · module `RueCore.Spec.Safety`
+
+**No use-after-move** (§7 "No use-after-move"): no read of a `⊘`.
+
+```lean
+def RueCore.Spec.no_use_after_move_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      ∀ (fuel : Nat),
+        run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.useAfterMove
+```
+
+### `Spec.no_violation_stmt`
+
+*def* · module `RueCore.Spec.Safety`
+
+**No refusal of any kind** (§7's memory-safety bullets). A checked
+program's run is never `.stuck`. Narrower than the bullets: a value built for
+a sibling operand that a later one abandons by `return` or `break` is dropped
+by nobody (RUE-2316), and a `@panic` runs no drop (§5.7's `⊥_panic`).
+
+```lean
+def RueCore.Spec.no_violation_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      ∀ (fuel : Nat) (w : Violation),
+        run M.toFloatOps P fuel ≠ EvalRes.stuck w
+```
+
+### `Spec.step_preservation_stmt`
+
+*def* · module `RueCore.Spec.Step`
+
+**The invariant `SafeAt` along every run** (§7 "Type safety"; *not* its
+sentence "types are preserved under reduction"). For a checked program, every
+configuration reachable from `Config.init` is `SafeAt` the entry type: nothing
+reachable from it is stuck, and every value it halts with has that type.
+`SafeAt` is closed under `Steps` by definition, so this is `SafeAt` at
+`Config.init` (R4 of `REDTEAM-LOG.md`), a semantic invariant; no
+configuration typing `⊢ C : T` is defined or preserved (RUE-2423).
+
+```lean
+def RueCore.Spec.step_preservation_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      ∃ fd,
+        P.fns[0]? = some fd ∧
+          ∀ (C : Config),
+            Steps M.toFloatOps P Config.init C →
+              Config.SafeAt M.toFloatOps P fd.ret C
+```
+
+### `Spec.step_progress_stmt`
+
+*def* · module `RueCore.Spec.Step`
+
+**Progress over `Step`** (§7 "Type safety": "does not get stuck"). For a
+checked program, every configuration reachable from `Config.init` is
+terminal or steps.
+
+```lean
+def RueCore.Spec.step_progress_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      ∀ (C : Config),
+        Steps M.toFloatOps P Config.init C →
+          C.Terminal ∨ ∃ C', Step M.toFloatOps P C C'
+```
+
+### `Spec.step_type_safety_stmt`
+
+*def* · module `RueCore.Spec.Step`
+
+**Type safety over `Step`, per horizon** (§7 "Type safety"; §6.12). For a
+checked program and every `n`, the machine has run `n` steps, or halted with a
+well-typed value, or halted with a defined panic.
+
+```lean
+def RueCore.Spec.step_type_safety_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      ∃ fd,
+        P.fns[0]? = some fd ∧
+          ∀ (n : Nat),
+            (∃ D, StepsN M.toFloatOps P n Config.init D) ∨
+              (∃ H v tr,
+                  Steps M.toFloatOps P Config.init
+                      (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                    HasTy P.decls v fd.ret) ∨
+                ∃ κ tr, Steps M.toFloatOps P Config.init (Config.panic κ tr)
+```
+
+### `Spec.check_sound_stmt`
+
+*def* · module `RueCore.Spec.Checker`
+
+**The checker is sound** (§5 as an algorithm). Every `check` acceptance is
+a derivation of `Typed`, at every type the result fits.
+
+```lean
+def RueCore.Spec.check_sound_stmt : Prop :=
+  ∀ {P : Program} {R : Ty} (e : Expr) {Γ : Ctx} {c : CTy} {Ω : Out},
+    check P R Γ e = some (c, Ω) →
+      ∀ (T : Ty), c.fits T = true → Typed P R Γ e T Ω
+```
+
+### `Spec.drop_exactly_once_stmt`
+
+*def* · module `RueCore.Spec.Trace`
+
+**Every owned value ends exactly once** (§7 "No use-after-drop / no leak of
+drops"). A typed, `pendingSafe` expression of a checked program, run from
+an agreeing frame and store, is never refused; every identity the store
+holds ends up in an old cell, in the result, or ended in the trace as often
+as held (`Exact`); every cell it allocated is retired (`Tidy`). Narrower
+than the bullet: `pendingSafe` (RUE-2316), nothing about a panic, and per
+evaluation, not per run (RUE-2478).
+
+```lean
+def RueCore.Spec.drop_exactly_once_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      P.pendingSafe = true →
+        ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
+          {φ : Frame} {H : Store},
+          Typed P R Γ e T Ω →
+            FrameMatches P.decls Γ φ H →
+              StoreCC P.decls H →
+                e.pendingSafe = true →
+                  (∀ (w : Violation),
+                      eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
+                      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+```
+
+### `Spec.rest_exactly_once_stmt`
+
+*def* · module `RueCore.Spec.Trace`
+
+**Values minted during an evaluation end exactly once too** (the same §7
+bullet; §6.7, §6.9, §6.10): under the same hypotheses, once a form's leading
+operands produced `vs` in `H₁` (`Lead`), the rest of the form ends them and
+`H₁`'s identities as `Exact` counts, and retires what it allocated
+(`Settled`).
+
+```lean
+def RueCore.Spec.rest_exactly_once_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      P.pendingSafe = true →
+        ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
+          {φ : Frame} {H : Store},
+          Typed P R Γ e T Ω →
+            FrameMatches P.decls Γ φ H →
+              StoreCC P.decls H →
+                e.pendingSafe = true →
+                  ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
+                    Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                      ∀ {r : EvalRes},
+                        eval M.toFloatOps (fuel + 1) P H φ e =
+                            EvalRes.withTrace tr r →
+                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                            Exact P.decls H₁
+                                (Contents.ownList P.decls
+                                  (Contents.ofVals vs))
+                                r ∧
+                              Settled φ H₁ r
+```
+
+### `Spec.run_safe_stmt`
+
+*def* · module `RueCore.Spec.Safety`
+
+**Program safety** (§7 "Type safety"). A well-formed program run at any
+fuel exhausts it, panics, or returns a value of its entry point's type.
+
+```lean
+def RueCore.Spec.run_safe_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program} {fd : FnDef},
+    WfProgram P →
+      P.fns[0]? = some fd →
+        fd.params = [] →
+          ∀ (fuel : Nat),
+            run M.toFloatOps P fuel = EvalRes.outOfFuel ∨
+              (∃ k tr, run M.toFloatOps P fuel = EvalRes.panic k tr) ∨
+                ∃ H v tr,
+                  run M.toFloatOps P fuel = EvalRes.ok H v tr ∧
+                    HasTy P.decls v fd.ret
+```
+
+### `Spec.soundness_stmt`
+
+*def* · module `RueCore.Spec.Safety`
+
+**Type safety over `eval`** (§7 "Type safety", in the interpreter form it
+names). A typed expression of a well-formed program, run at any fuel from a
+frame and store agreeing with its context, ends in `EvalOk`: a well-typed
+value, an unwinding `return` or `break` §5.3's `Ω` allows, a defined panic,
+or exhausted fuel — never `.stuck`.
+
+```lean
+def RueCore.Spec.soundness_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    WfProgram P →
+      ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty},
+        Typed P R Γ e T Ω →
+          ∀ {φ : Frame} {H : Store},
+            FrameMatches P.decls Γ φ H →
+              EvalOk P.decls T R Ω.norm Ω.brk φ H
+                (eval M.toFloatOps fuel P H φ e)
 ```
 
 ### `Typed`
