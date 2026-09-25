@@ -5284,3 +5284,124 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# A generic callee's signature resolves in the callee's scope (RUE-2422)
+#
+# Occurrences of a callee's comptime parameter in its parameter and return
+# types are substituted at the call (4.14:5, 4.14:16); every other name in the
+# signature resolves where the callee is declared. A caller's comptime alias
+# of the same name (`let T = i64;`) is not in that scope, and a callee's
+# comptime parameter hides a same-named file-level `const`.
+# =============================================================================
+
+[[case]]
+name = "generic_signature_return_type_ignores_caller_local_alias"
+spec = ["4.14:5", "4.14:5a"]
+description = "A caller's `let T = i64;` does not retype a callee's `-> T`: `gid(i32, 1)` is i32 (RUE-2422)"
+source = """
+fn gid(comptime T: type, x: T) -> T { x }
+
+fn main() -> i32 {
+    let T = i64;
+    gid(i32, 1)
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "generic_signature_parameter_type_ignores_caller_local_alias"
+spec = ["4.14:5", "3.12:11"]
+description = "A caller's `let T = u8;` does not type the literal argument at a callee's `x: T`: 300 is an i32 at `take(i32, 300)` (RUE-2422)"
+source = """
+fn take(comptime T: type, x: T) -> T { x }
+
+fn main() -> i32 {
+    let T = u8;
+    let r: i32 = take(i32, 300);
+    r - 258
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "generic_signature_composite_return_ignores_caller_alias_in_nested_block"
+spec = ["4.14:5", "4.14:16"]
+description = "A caller alias shadowed in a nested block does not reach a callee's composite `-> [T; 2]` (RUE-2422)"
+source = """
+fn two(comptime T: type, x: T) -> [T; 2] { [x, x] }
+
+fn main() -> i32 {
+    let T = i32;
+    {
+        let T = i64;
+        let a: [i32; 2] = two(i32, 21);
+        a[0] + a[1]
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "generic_signature_parameter_hides_file_level_const"
+spec = ["4.14:5", "4.14:16"]
+description = "A callee's comptime parameter hides a same-named file-level `const` in its signature, for a type parameter `T` and a value parameter `N` (RUE-2422)"
+source = """
+const T = i64;
+const N: i32 = 5;
+
+fn gid(comptime T: type, x: T) -> T { x }
+fn zeros(comptime N: i32) -> [i32; N] { [0; N] }
+
+fn main() -> i32 {
+    let a: [i32; 2] = zeros(2);
+    gid(i32, 40) + a[0] + 2
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "generic_signature_keeps_callee_file_level_names"
+spec = ["4.14:5", "4.14:16"]
+description = "A callee's signature still sees its own file-level alias and struct when the caller has comptime aliases of the same names: `-> [W; N]` is `[i64; N]` and `-> [P; N]` is the struct `P` (RUE-2422)"
+source = """
+const W = i64;
+
+@copy
+struct P { a: i32 }
+
+fn ws(comptime N: i32) -> [W; N] { [3000000000; N] }
+fn ps(comptime N: i32) -> [P; N] { [P { a: 20 }; N] }
+
+fn main() -> i32 {
+    let W = u8;
+    let P = bool;
+    let w: [i64; 2] = ws(2);
+    let p = ps(2);
+    if w[1] == 3000000000 { p[0].a + p[1].a + 2 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "generic_signature_module_qualified_callee_resolves_in_its_module"
+spec = ["4.14:5a", "4.14:16"]
+description = "A module-qualified generic callee's signature resolves in its own module: the caller's `let T = i64;` and its file-level `K` do not reach `m.rep`'s `-> [T; K]`, which sees the callee module's `K` (RUE-2422)"
+source = """
+const m = @import("rep.rue");
+const K: i32 = 3;
+
+fn main() -> i32 {
+    let T = i64;
+    let a: [i32; 2] = m.rep(i32, 20);
+    a[0] + a[1] + m.gid(i32, 2)
+}
+"""
+aux_files = { "rep.rue" = """
+const K: i32 = 2;
+const T = i64;
+
+pub fn rep(comptime T: type, x: T) -> [T; K] { [x; K] }
+pub fn gid(comptime T: type, x: T) -> T { x }
+""" }
+exit_code = 42
