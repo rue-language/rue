@@ -1250,6 +1250,44 @@ compile_fail = true
 error_contains = ["E0207", "expected 0 arguments, found 1"]
 
 [[case]]
+name = "const_nested_array_literal_at_struct_slot_rejected"
+spec = ["6.5:2", "4.14:26"]
+description = "An array literal filling a struct-typed field is E0206 naming the literal's array type, as in a body, not a generic reduction failure (RUE-2407)"
+source = """
+@copy struct S { a: i32 }
+@copy struct W { s: S }
+const K: W = W { s: [1] };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected S, found [{integer}; 1]"]
+
+[[case]]
+name = "const_nested_integer_literal_at_struct_slot_rejected"
+spec = ["6.5:2", "4.14:26"]
+description = "An integer literal filling a struct-typed array element is E0206 read from the literal's side, as the scalar constant and the body report it (RUE-2407)"
+source = """
+@copy struct S { a: i32 }
+const K: [S; 1] = [1];
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected integer type, found S"]
+
+[[case]]
+name = "const_struct_literal_at_enum_type_rejected"
+spec = ["6.5:2"]
+description = "A struct literal initializing an enum-typed constant names the struct's type in its E0206, not \"aggregate\" (RUE-2407)"
+source = """
+@copy struct S { a: i32 }
+enum E { A(i32) }
+const K: E = S { a: 1 };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected E, found S"]
+
+[[case]]
 name = "const_aggregate_declared_shapes_accepted"
 spec = ["3.6:15", "6.3:16", "6.5:2", "4.14:26"]
 description = "Struct literals with their fields in any order and enum constructors with their declared payload counts are admitted at every depth (RUE-2407)"

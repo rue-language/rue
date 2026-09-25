@@ -188,13 +188,13 @@ pub(super) fn foreign_signatures_agree(
 
 pub(super) fn inferred_const_type_name(
     value: &crate::durable_semantics::DurableConstValue,
-) -> &'static str {
+) -> String {
     crate::durable_comptime::inferred_durable_const_type_name(value)
 }
 
 pub(super) fn suggested_const_type_name(
     value: &crate::durable_semantics::DurableConstValue,
-) -> &'static str {
+) -> String {
     crate::durable_comptime::suggested_durable_const_type_name(value)
 }
 
