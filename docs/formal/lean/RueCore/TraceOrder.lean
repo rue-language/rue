@@ -1043,4 +1043,143 @@ theorem drop_order (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : N
   ⟨no_violation M h fuel, run_blocks M.toFloatOps h.wf.decls.dtorNotCopy fuel,
     fun _ _ hr hs => reachable_drop_order hr hs⟩
 
+/-! ## What the statements reject
+
+Each half rejects something a wrong machine would produce. -/
+
+/-- Inverting a drop block: what follows a marker is §6.11's walk of what it
+names (helper). -/
+theorem Blocks.drop_inv {D : Decls} {ℓ : Nat} {c : Contents} {t : List Event}
+    (h : Blocks D (.drop ℓ c :: t)) : ∃ t', t = dropEvents D c ++ t' ∧ Blocks D t' := by
+  cases h with
+  | drop h' => exact ⟨_, rfl, h'⟩
+
+/-- **No destructor outside a drop**: a trace that opens with a destructor
+event is not in the grammar. -/
+theorem Blocks.not_dtor {D : Decls} {s : Nat} {c : Contents} {t : List Event} :
+    ¬ Blocks D (.dtor s c :: t) := by
+  intro h; cases h
+
+open Examples in
+/-- **Fields in declaration order, or the grammar rejects the trace**
+(`3.9:13`): `struct_field_drop_order` drops `S7 { S1 {1}#0, S1 {2}#1 }#2`,
+whose walk runs `#0`'s destructor and then `#1`'s. The same marker followed by
+the two destructors the other way round is not in the grammar. -/
+theorem fieldsSwapped_rejected :
+    ¬ Blocks (prog tI64 structFieldOrder).decls
+      [.drop 3 (.struct sTwoAffine 2 [cA 0 1, cA 1 2]), .dtor sAffine (cA 1 2),
+        .dtor sAffine (cA 0 1)] := by
+  intro h
+  obtain ⟨t', ht, _⟩ := Blocks.drop_inv h
+  have : dropEvents (prog tI64 structFieldOrder).decls (.struct sTwoAffine 2 [cA 0 1, cA 1 2])
+      = [.dtor sAffine (cA 0 1), .dtor sAffine (cA 1 2)] := by rfl
+  rw [this] at ht
+  simp [cA, sAffine] at ht
+
+open Examples in
+/-- **Newest-first on a reachable step** (§6.9's (D-Return)):
+`return_past_affine` returns past two live affine bindings, `ℓ1` then `ℓ3`,
+and the one step that runs the frame's σ-walk drops `ℓ3` then `ℓ1` — two
+distinct cells, newest first, the teardown `reachable_drop_order` speaks
+of. -/
+theorem returnPastAffine_newestFirst :
+    ∃ C C' evs, Steps demoOps returnPastAffine Config.init C ∧
+      Step demoOps returnPastAffine C C' ∧ C'.trace = C.trace ++ evs ∧ dropLocs evs = [3, 1] :=
+  ⟨stepN demoOps returnPastAffine 18 Config.init, _, _, stepN_steps,
+    step_iff.mpr rfl, rfl, rfl⟩
+
+open Examples in
+/-- **The invariant is what orders a teardown.** A frame whose scope record
+is *not* in location order — `[3, 1]`, a configuration `reachable_ordered`
+says no run reaches — pops (D-Return-Value) and drops `ℓ1` before `ℓ3`: the
+step is a real step of §6's relation, and its markers are not newest-first.
+So `step_drop_order`'s hypothesis is load-bearing, and `reachable_ordered`
+is what discharges it. -/
+theorem unorderedRecord_rejected :
+    ∃ C C' evs, ¬ C.Ordered ∧ Step demoOps returnPastAffine C C' ∧
+      C'.trace = C.trace ++ evs ∧ ¬ NewestFirst (dropLocs evs) := by
+  refine ⟨.run [.dead, .full (cA 0 3), .dead, .full (cA 2 4)] { env := [3, 1], scope := [3, 1] }
+      [.call { env := [], scope := [] }] (.ret (v64 7)) [], _, _,
+    fun h => ?_, .callReturn rfl, rfl, fun h => ?_⟩
+  · have := h.1.1; simp at this
+  · change NewestFirst [1, 3] at h
+    rcases h with ⟨ℓ, hℓ⟩ | h
+    · have h1 := hℓ 1 (by decide); have h3 := hℓ 3 (by decide); omega
+    · simp at h
+
+/-! ## The corpus, read through the theorems
+
+The order-witnessing corpus cases, each run at the export model: the
+identities the destructors ran on, in order (`dtorIds`, the order the printed
+destructors print their payloads in, which the bridge already checks against
+the compiler); the cells the `drop` markers name, in order (`dropLocs`); and
+the owned identities the markers end (`freedIds`), each exactly once. -/
+
+/-- A trace, read through the theorems: destructor identities, drop marker
+cells, ended identities (helper). -/
+def orderView (D : Decls) (tr : List Event) : List Nat × List Nat × List Nat :=
+  (dtorIds tr, dropLocs tr, freedIds D tr)
+
+/-- A corpus program's trace at the export model (helper). -/
+def corpusTrace (P : Program) : List Event :=
+  (run Corpus.exportOps P Examples.demoFuel).trace
+
+open Examples in
+/-- `struct_nested_dtor_drop`: the outer destructor (`#1`) before its field's
+(`#0`), `3.9:28`. -/
+example : orderView (prog tI64 structNestedDrop).decls (corpusTrace (prog tI64 structNestedDrop))
+    = ([1, 0], [2], [1, 0]) := by rfl
+
+open Examples in
+/-- `struct_field_drop_order`: fields in declaration order, `3.9:13`. -/
+example : orderView (prog tI64 structFieldOrder).decls (corpusTrace (prog tI64 structFieldOrder))
+    = ([0, 1], [3], [2, 0, 1]) := by rfl
+
+open Examples in
+/-- `array_drop_order`: elements ascending, `3.9:15`. -/
+example : orderView (prog tI64 arrayAffineDropOrder).decls
+      (corpusTrace (prog tI64 arrayAffineDropOrder)) = ([0, 1, 2], [4], [3, 0, 1, 2]) := by rfl
+
+open Examples in
+/-- `array_elem_move_rest_ascending`: the moved element (`#1`) is dropped by
+its new binding first, then the array's rest ascending, `3.8:73`. -/
+example : orderView (prog tI64 arrayElemMove).decls (corpusTrace (prog tI64 arrayElemMove))
+    = ([1, 0, 2], [5, 4], [1, 3, 0, 2]) := by rfl
+
+open Examples in
+/-- `enum_match_affine`: the shell (`#1`) consumed, the payload (`#0`)
+dropped once by the arm's binding, `6.3:20`. -/
+example : orderView (enumProg tI64 enumMatchAffine).decls
+      (corpusTrace (enumProg tI64 enumMatchAffine)) = ([0], [3], [1, 0]) := by rfl
+
+open Examples in
+/-- `enum_two_payload_bindings`: the arm's two payload cells torn down in one
+step, newest first (`ℓ5`, `ℓ4`). -/
+example : orderView (enumProg tI64 enumTwoPayloadBindings).decls
+      (corpusTrace (enumProg tI64 enumTwoPayloadBindings)) = ([1, 0], [5, 4], [2, 1, 0]) := by rfl
+
+open Examples in
+/-- `destructure_residue_order`: the residue in declaration order around the
+leaf, both under `ℓ3`'s markers, §6.3. -/
+example : orderView (destrProg tI64 destructureResidueOrder).decls
+      (corpusTrace (destrProg tI64 destructureResidueOrder)) = ([0, 1], [3, 3], [0, 1, 2]) := by
+  rfl
+
+open Examples in
+/-- `destructure_nested_residue`: nested residue before a later sibling. -/
+example : orderView (destrProg tI64 destructureNestedResidue).decls
+      (corpusTrace (destrProg tI64 destructureNestedResidue)) = ([0, 2], [4, 4], [0, 2, 3, 1]) := by
+  rfl
+
+open Examples in
+/-- `return_past_affine`: the σ-walk newest first, `ℓ3` then `ℓ1`, §6.9. -/
+example : orderView returnPastAffine.decls (corpusTrace returnPastAffine) = ([2, 0], [3, 1], [2, 0]) :=
+  by rfl
+
+open Examples in
+/-- `loop_break_past_local`: each turn's binding dropped at the `break`'s
+unwind, one per turn, §6.10. -/
+example : orderView (prog tI64 loopBreakPastLocal).decls
+      (corpusTrace (prog tI64 loopBreakPastLocal)) = ([1, 3], [2, 4], [1, 3]) := by rfl
+
 end RueCore
