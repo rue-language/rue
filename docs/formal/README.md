@@ -218,3 +218,8 @@ shape.
   programming-languages literature the core draws on, it lists the canonical
   sources (every one fetched), the accepted terms, symbols and
   theorem forms, and the terms we use that differ from them.
+- **`GLOSSARY.md`**: every term and symbol these documents use, and every
+  name the mechanization's definition layers declare, each with its meaning,
+  its upstream source (through FIELD.md) and its class: standard, a Rue
+  concept the specification names, or ours and pending the terminology audit.
+  `scripts/glossary-check.py` fails on a term, symbol or name it does not list.
