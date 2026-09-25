@@ -1,4 +1,8 @@
-import RueCore.Dynamics
+module
+
+public import RueCore.Dynamics
+
+@[expose] public section
 
 /-!
 # RueCore.Soundness.Defs — what `soundness` is stated over (layer L1)

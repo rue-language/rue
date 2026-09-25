@@ -1,5 +1,9 @@
-import RueCore.Soundness
-import RueCore.Checker.Defs
+module
+
+public import RueCore.Soundness
+public import RueCore.Checker.Defs
+
+@[expose] public section
 
 /-!
 # RueCore.Checker — a decidable, verified checker for the §5 rules

@@ -1,4 +1,8 @@
-import RueCore.Statics
+module
+
+public import RueCore.Statics
+
+@[expose] public section
 
 /-!
 # RueCore.Checker.Defs — the checker, as an algorithm (layer L1)

@@ -1,4 +1,8 @@
-import RueCore.Syntax
+module
+
+public import RueCore.Syntax
+
+@[expose] public section
 
 /-!
 # RueCore.Statics — ownership-threading typing (§5)

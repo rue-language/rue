@@ -1,5 +1,9 @@
-import RueCore.Trace
-import RueCore.Adequacy
+module
+
+public import RueCore.Trace
+public import RueCore.Adequacy
+
+@[expose] public section
 
 /-!
 # RueCore.TraceExact — every owned value ends exactly once (§7)

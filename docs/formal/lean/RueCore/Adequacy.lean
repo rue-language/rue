@@ -1,6 +1,10 @@
-import RueCore.Step
-import RueCore.Soundness
-import RueCore.Adequacy.Defs
+module
+
+public import RueCore.Step
+public import RueCore.Soundness
+public import RueCore.Adequacy.Defs
+
+@[expose] public section
 
 /-!
 # RueCore.Adequacy — `eval` is adequate to §6's `Step`, both ways

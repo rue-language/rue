@@ -13266,10 +13266,10 @@ def RueCore.FloatDatum.negate : FloatDatum → FloatDatum
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (a : Bool), (FloatDatum.nan a).negate = FloatDatum.nan !a
-∀ (a : Bool), (FloatDatum.inf a).negate = FloatDatum.inf !a
-∀ (a : Bool) (a_1 : Nat) (a_2 : Int),
-  (FloatDatum.num a a_1 a_2).negate = FloatDatum.num (!a) a_1 a_2
+∀ (neg : Bool), (FloatDatum.nan neg).negate = FloatDatum.nan !neg
+∀ (neg : Bool), (FloatDatum.inf neg).negate = FloatDatum.inf !neg
+∀ (neg : Bool) (sig : Nat) (exp : Int),
+  (FloatDatum.num neg sig exp).negate = FloatDatum.num (!neg) sig exp
 ```
 
 ### `FloatDatum.roundOp`
@@ -13326,17 +13326,17 @@ def RueCore.FloatDatum.truncToInt : FloatDatum → Option Int
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (a : Bool), (FloatDatum.nan a).truncToInt = none
-∀ (a : Bool), (FloatDatum.inf a).truncToInt = none
-∀ (a : Bool) (a_1 : Nat) (a_2 : Int),
-  (FloatDatum.num a a_1 a_2).truncToInt =
+∀ (neg : Bool), (FloatDatum.nan neg).truncToInt = none
+∀ (neg : Bool), (FloatDatum.inf neg).truncToInt = none
+∀ (neg : Bool) (sig : Nat) (exp : Int),
+  (FloatDatum.num neg sig exp).truncToInt =
     some
-      (if a = true then
-        -↑(if 0 ≤ a_2 then a_1 * 2 ^ a_2.toNat
-            else a_1 / 2 ^ (-a_2).toNat)
+      (if neg = true then
+        -↑(if 0 ≤ exp then sig * 2 ^ exp.toNat
+            else sig / 2 ^ (-exp).toNat)
       else
-        ↑(if 0 ≤ a_2 then a_1 * 2 ^ a_2.toNat
-          else a_1 / 2 ^ (-a_2).toNat))
+        ↑(if 0 ≤ exp then sig * 2 ^ exp.toNat
+          else sig / 2 ^ (-exp).toNat))
 ```
 
 ### `FloatDatum.widen`
@@ -13639,9 +13639,9 @@ def RueCore.Place.path : Place → List Nat
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (a : Nat), (Place.var a).path = []
-∀ (a : Place) (a_1 : Nat), (a.proj a_1).path = a.path ++ [a_1]
-∀ (a : Place) (a_1 : Nat), (a.idx a_1).path = a.path ++ [a_1]
+∀ (i : Nat), (Place.var i).path = []
+∀ (p : Place) (f : Nat), (p.proj f).path = p.path ++ [f]
+∀ (p : Place) (c : Nat), (p.idx c).path = p.path ++ [c]
 ```
 
 ### `Place.root`
@@ -13657,9 +13657,9 @@ def RueCore.Place.root : Place → Nat
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (a : Nat), (Place.var a).root = a
-∀ (a : Place) (a_1 : Nat), (a.proj a_1).root = a.root
-∀ (a : Place) (a_1 : Nat), (a.idx a_1).root = a.root
+∀ (i : Nat), (Place.var i).root = i
+∀ (p : Place) (f : Nat), (p.proj f).root = p.root
+∀ (p : Place) (c : Nat), (p.idx c).root = p.root
 ```
 
 ### `Ty`
@@ -13942,8 +13942,8 @@ def RueCore.DeclId.ty : DeclId → Ty
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (a : Nat), (DeclId.struct a).ty = Ty.struct a
-∀ (a : Nat), (DeclId.enum a).ty = Ty.enum a
+∀ (s : Nat), (DeclId.struct s).ty = Ty.struct s
+∀ (e : Nat), (DeclId.enum e).ty = Ty.enum e
 ```
 
 ### `Entry`
@@ -14459,13 +14459,13 @@ def RueCore.Ty.isInt : Ty → Bool
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (a : IntWidth) (a_1 : Sign), (Ty.int a a_1).isInt = true
-∀ (a : FloatWidth), (Ty.float a).isInt = false
+∀ (w : IntWidth) (s : Sign), (Ty.int w s).isInt = true
+∀ (w : FloatWidth), (Ty.float w).isInt = false
 Ty.bool.isInt = false
 Ty.unit.isInt = false
-∀ (a : Nat), (Ty.struct a).isInt = false
-∀ (a : Nat), (Ty.enum a).isInt = false
-∀ (a : Ty) (a_1 : Nat), (a.array a_1).isInt = false
+∀ (s : Nat), (Ty.struct s).isInt = false
+∀ (e : Nat), (Ty.enum e).isInt = false
+∀ (elem : Ty) (n : Nat), (elem.array n).isInt = false
 ```
 
 ### `Ty.observable`
@@ -14484,13 +14484,13 @@ def RueCore.Ty.observable : Ty → Bool
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (a : IntWidth) (a_1 : Sign), (Ty.int a a_1).observable = true
-∀ (a : FloatWidth), (Ty.float a).observable = true
+∀ (w : IntWidth) (s : Sign), (Ty.int w s).observable = true
+∀ (w : FloatWidth), (Ty.float w).observable = true
 Ty.bool.observable = true
 Ty.unit.observable = false
-∀ (a : Nat), (Ty.struct a).observable = false
-∀ (a : Nat), (Ty.enum a).observable = false
-∀ (a : Ty) (a_1 : Nat), (a.array a_1).observable = false
+∀ (s : Nat), (Ty.struct s).observable = false
+∀ (e : Nat), (Ty.enum e).observable = false
+∀ (elem : Ty) (n : Nat), (elem.array n).observable = false
 ```
 
 ### `Val`
@@ -14814,18 +14814,16 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 Contents.hole.isHole = true
-∀ (a : IntWidth) (a_1 : Sign) (a_2 : Int),
-  (Contents.int a a_1 a_2).isHole = false
-∀ (a : FloatWidth) (a_1 : FloatDatum),
-  (Contents.float a a_1).isHole = false
-∀ (a : Bool), (Contents.bool a).isHole = false
+∀ (w : IntWidth) (s : Sign) (n : Int), (Contents.int w s n).isHole = false
+∀ (w : FloatWidth) (f : FloatDatum), (Contents.float w f).isHole = false
+∀ (b : Bool), (Contents.bool b).isHole = false
 Contents.unit.isHole = false
-∀ (a a_1 : Nat) (a_2 : List Contents),
-  (Contents.struct a a_1 a_2).isHole = false
-∀ (a a_1 a_2 : Nat) (a_3 : List Contents),
-  (Contents.enum a a_1 a_2 a_3).isHole = false
-∀ (a : Ty) (a_1 : Nat) (a_2 : List Contents),
-  (Contents.array a a_1 a_2).isHole = false
+∀ (s i : Nat) (cs : List Contents),
+  (Contents.struct s i cs).isHole = false
+∀ (e k i : Nat) (cs : List Contents),
+  (Contents.enum e k i cs).isHole = false
+∀ (T : Ty) (i : Nat) (cs : List Contents),
+  (Contents.array T i cs).isHole = false
 ```
 
 ### `Contents.readAt`
@@ -15832,17 +15830,14 @@ def RueCore.Val.observable : Val → Bool
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (a : IntWidth) (a_1 : Sign) (a_2 : Int),
-  (Val.int a a_1 a_2).observable = true
-∀ (a : FloatWidth) (a_1 : FloatDatum), (Val.float a a_1).observable = true
-∀ (a : Bool), (Val.bool a).observable = true
+∀ (w : IntWidth) (s : Sign) (n : Int), (Val.int w s n).observable = true
+∀ (w : FloatWidth) (f : FloatDatum), (Val.float w f).observable = true
+∀ (b : Bool), (Val.bool b).observable = true
 Val.unit.observable = false
-∀ (a a_1 : Nat) (a_2 : List Val),
-  (Val.struct a a_1 a_2).observable = false
-∀ (a a_1 a_2 : Nat) (a_3 : List Val),
-  (Val.enum a a_1 a_2 a_3).observable = false
-∀ (a : Ty) (a_1 : Nat) (a_2 : List Val),
-  (Val.array a a_1 a_2).observable = false
+∀ (s i : Nat) (vs : List Val), (Val.struct s i vs).observable = false
+∀ (e k i : Nat) (vs : List Val), (Val.enum e k i vs).observable = false
+∀ (T : Ty) (i : Nat) (vs : List Val),
+  (Val.array T i vs).observable = false
 ```
 
 ### `Val.scalar`
@@ -16137,14 +16132,14 @@ def RueCore.Decls.byValue (D : Decls) : DeclId → List Ty
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls) (a : Nat),
-  D.byValue (DeclId.struct a) =
-    match D.structs[a]? with
+∀ (D : Decls) (s : Nat),
+  D.byValue (DeclId.struct s) =
+    match D.structs[s]? with
     | some sd => sd.fields
     | none => []
-∀ (D : Decls) (a : Nat),
-  D.byValue (DeclId.enum a) =
-    match D.enums[a]? with
+∀ (D : Decls) (e : Nat),
+  D.byValue (DeclId.enum e) =
+    match D.enums[e]? with
     | some ed => ed.variants.flatten
     | none => []
 ```
@@ -16447,14 +16442,14 @@ def RueCore.Float.narrow (f : FloatDatum) : FloatDatum
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (a : Bool), Float.narrow (FloatDatum.nan a) = FloatDatum.nan a
-∀ (a : Bool), Float.narrow (FloatDatum.inf a) = FloatDatum.inf a
-∀ (a : Bool) (a_1 : Nat) (a_2 : Int),
-  Float.narrow (FloatDatum.num a a_1 a_2) =
-    if a_1 = 0 then FloatDatum.num a 0 0
+∀ (neg : Bool), Float.narrow (FloatDatum.nan neg) = FloatDatum.nan neg
+∀ (neg : Bool), Float.narrow (FloatDatum.inf neg) = FloatDatum.inf neg
+∀ (neg : Bool) (sig : Nat) (exp : Int),
+  Float.narrow (FloatDatum.num neg sig exp) =
+    if sig = 0 then FloatDatum.num neg 0 0
     else
-      match Float.ratOf false a_1 a_2 with
-      | (fst, num, den) => roundRat FloatWidth.w32 a num den
+      match Float.ratOf false sig exp with
+      | (fst, num, den) => roundRat FloatWidth.w32 neg num den
 ```
 
 ### `Float.ofInt`
@@ -17967,18 +17962,18 @@ def RueCore.Ty.mult (D : Decls) : Ty → Mult
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls) (a : IntWidth) (a_1 : Sign),
-  Ty.mult D (Ty.int a a_1) = Mult.copy
-∀ (D : Decls) (a : FloatWidth), Ty.mult D (Ty.float a) = Mult.copy
+∀ (D : Decls) (w : IntWidth) (s : Sign),
+  Ty.mult D (Ty.int w s) = Mult.copy
+∀ (D : Decls) (w : FloatWidth), Ty.mult D (Ty.float w) = Mult.copy
 ∀ (D : Decls), Ty.mult D Ty.bool = Mult.copy
 ∀ (D : Decls), Ty.mult D Ty.unit = Mult.copy
-∀ (D : Decls) (a : Nat), Ty.mult D (Ty.struct a) = D.classOf a
-∀ (D : Decls) (a : Nat), Ty.mult D (Ty.enum a) = D.enumClassOf a
-∀ (D : Decls) (a : Ty) (a_1 : Nat),
-  Ty.mult D (a.array a_1) =
-    match Ty.mult D a with
+∀ (D : Decls) (s : Nat), Ty.mult D (Ty.struct s) = D.classOf s
+∀ (D : Decls) (e : Nat), Ty.mult D (Ty.enum e) = D.enumClassOf e
+∀ (D : Decls) (elem : Ty) (n : Nat),
+  Ty.mult D (elem.array n) =
+    match Ty.mult D elem with
     | Mult.copy => Mult.copy
-    | m => if a_1 = 0 then Mult.affine else m
+    | m => if n = 0 then Mult.affine else m
 ```
 
 ### `Untouched`
@@ -18909,9 +18904,9 @@ def RueCore.OpRes.toRes (H : Store) : OpRes → EvalRes
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (H : Store) (a : Val), OpRes.toRes H (OpRes.val a) = EvalRes.ok H a []
-∀ (H : Store) (a : PanicKind),
-  OpRes.toRes H (OpRes.trap a) = EvalRes.panic a []
+∀ (H : Store) (v : Val), OpRes.toRes H (OpRes.val v) = EvalRes.ok H v []
+∀ (H : Store) (k : PanicKind),
+  OpRes.toRes H (OpRes.trap k) = EvalRes.panic k []
 ∀ (H : Store),
   OpRes.toRes H OpRes.confused = EvalRes.stuck Violation.typeConfusion
 ```
@@ -20985,22 +20980,22 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : Decls), Contents.allCopy D Contents.hole = true
-∀ (D : Decls) (a : IntWidth) (a_1 : Sign) (a_2 : Int),
-  Contents.allCopy D (Contents.int a a_1 a_2) = true
-∀ (D : Decls) (a : FloatWidth) (a_1 : FloatDatum),
-  Contents.allCopy D (Contents.float a a_1) = true
-∀ (D : Decls) (a : Bool), Contents.allCopy D (Contents.bool a) = true
+∀ (D : Decls) (w : IntWidth) (s : Sign) (n : Int),
+  Contents.allCopy D (Contents.int w s n) = true
+∀ (D : Decls) (w : FloatWidth) (f : FloatDatum),
+  Contents.allCopy D (Contents.float w f) = true
+∀ (D : Decls) (b : Bool), Contents.allCopy D (Contents.bool b) = true
 ∀ (D : Decls), Contents.allCopy D Contents.unit = true
-∀ (D : Decls) (a a_1 : Nat) (a_2 : List Contents),
-  Contents.allCopy D (Contents.struct a a_1 a_2) =
-    (decide (D.classOf a = Mult.copy) && Contents.allCopyList D a_2)
-∀ (D : Decls) (a a_1 a_2 : Nat) (a_3 : List Contents),
-  Contents.allCopy D (Contents.enum a a_1 a_2 a_3) =
-    (decide (D.enumClassOf a = Mult.copy) && Contents.allCopyList D a_3)
-∀ (D : Decls) (a : Ty) (a_1 : Nat) (a_2 : List Contents),
-  Contents.allCopy D (Contents.array a a_1 a_2) =
-    (decide (Ty.mult D (a.array a_2.length) = Mult.copy) &&
-      Contents.allCopyList D a_2)
+∀ (D : Decls) (s i : Nat) (cs : List Contents),
+  Contents.allCopy D (Contents.struct s i cs) =
+    (decide (D.classOf s = Mult.copy) && Contents.allCopyList D cs)
+∀ (D : Decls) (e k i : Nat) (cs : List Contents),
+  Contents.allCopy D (Contents.enum e k i cs) =
+    (decide (D.enumClassOf e = Mult.copy) && Contents.allCopyList D cs)
+∀ (D : Decls) (T : Ty) (i : Nat) (cs : List Contents),
+  Contents.allCopy D (Contents.array T i cs) =
+    (decide (Ty.mult D (T.array cs.length) = Mult.copy) &&
+      Contents.allCopyList D cs)
 ```
 
 ### `Contents.allCopyList`
@@ -21049,25 +21044,25 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : Decls), Contents.copyClosed D Contents.hole = true
-∀ (D : Decls) (a : IntWidth) (a_1 : Sign) (a_2 : Int),
-  Contents.copyClosed D (Contents.int a a_1 a_2) = true
-∀ (D : Decls) (a : FloatWidth) (a_1 : FloatDatum),
-  Contents.copyClosed D (Contents.float a a_1) = true
-∀ (D : Decls) (a : Bool), Contents.copyClosed D (Contents.bool a) = true
+∀ (D : Decls) (w : IntWidth) (s : Sign) (n : Int),
+  Contents.copyClosed D (Contents.int w s n) = true
+∀ (D : Decls) (w : FloatWidth) (f : FloatDatum),
+  Contents.copyClosed D (Contents.float w f) = true
+∀ (D : Decls) (b : Bool), Contents.copyClosed D (Contents.bool b) = true
 ∀ (D : Decls), Contents.copyClosed D Contents.unit = true
-∀ (D : Decls) (a a_1 : Nat) (a_2 : List Contents),
-  Contents.copyClosed D (Contents.struct a a_1 a_2) =
-    if D.classOf a = Mult.copy then Contents.allCopyList D a_2
-    else Contents.copyClosedList D a_2
-∀ (D : Decls) (a a_1 a_2 : Nat) (a_3 : List Contents),
-  Contents.copyClosed D (Contents.enum a a_1 a_2 a_3) =
-    if D.enumClassOf a = Mult.copy then Contents.allCopyList D a_3
-    else Contents.copyClosedList D a_3
-∀ (D : Decls) (a : Ty) (a_1 : Nat) (a_2 : List Contents),
-  Contents.copyClosed D (Contents.array a a_1 a_2) =
-    if Ty.mult D (a.array a_2.length) = Mult.copy then
-      Contents.allCopyList D a_2
-    else Contents.copyClosedList D a_2
+∀ (D : Decls) (s i : Nat) (cs : List Contents),
+  Contents.copyClosed D (Contents.struct s i cs) =
+    if D.classOf s = Mult.copy then Contents.allCopyList D cs
+    else Contents.copyClosedList D cs
+∀ (D : Decls) (e k i : Nat) (cs : List Contents),
+  Contents.copyClosed D (Contents.enum e k i cs) =
+    if D.enumClassOf e = Mult.copy then Contents.allCopyList D cs
+    else Contents.copyClosedList D cs
+∀ (D : Decls) (T : Ty) (i : Nat) (cs : List Contents),
+  Contents.copyClosed D (Contents.array T i cs) =
+    if Ty.mult D (T.array cs.length) = Mult.copy then
+      Contents.allCopyList D cs
+    else Contents.copyClosedList D cs
 ```
 
 ### `Contents.copyClosedList`
@@ -21193,21 +21188,21 @@ def RueCore.Contents.ofVal : Val → Contents
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (a : IntWidth) (a_1 : Sign) (a_2 : Int),
-  Contents.ofVal (Val.int a a_1 a_2) = Contents.int a a_1 a_2
-∀ (a : FloatWidth) (a_1 : FloatDatum),
-  Contents.ofVal (Val.float a a_1) = Contents.float a a_1
-∀ (a : Bool), Contents.ofVal (Val.bool a) = Contents.bool a
+∀ (w : IntWidth) (s : Sign) (n : Int),
+  Contents.ofVal (Val.int w s n) = Contents.int w s n
+∀ (w : FloatWidth) (f : FloatDatum),
+  Contents.ofVal (Val.float w f) = Contents.float w f
+∀ (b : Bool), Contents.ofVal (Val.bool b) = Contents.bool b
 Contents.ofVal Val.unit = Contents.unit
-∀ (a a_1 : Nat) (a_2 : List Val),
-  Contents.ofVal (Val.struct a a_1 a_2) =
-    Contents.struct a a_1 (Contents.ofVals a_2)
-∀ (a a_1 a_2 : Nat) (a_3 : List Val),
-  Contents.ofVal (Val.enum a a_1 a_2 a_3) =
-    Contents.enum a a_1 a_2 (Contents.ofVals a_3)
-∀ (a : Ty) (a_1 : Nat) (a_2 : List Val),
-  Contents.ofVal (Val.array a a_1 a_2) =
-    Contents.array a a_1 (Contents.ofVals a_2)
+∀ (s i : Nat) (vs : List Val),
+  Contents.ofVal (Val.struct s i vs) =
+    Contents.struct s i (Contents.ofVals vs)
+∀ (e k i : Nat) (vs : List Val),
+  Contents.ofVal (Val.enum e k i vs) =
+    Contents.enum e k i (Contents.ofVals vs)
+∀ (T : Ty) (i : Nat) (vs : List Val),
+  Contents.ofVal (Val.array T i vs) =
+    Contents.array T i (Contents.ofVals vs)
 ```
 
 ### `Contents.ofVals`
@@ -21516,25 +21511,25 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : Decls), Contents.residualLinear D Contents.hole = false
-∀ (D : Decls) (a : IntWidth) (a_1 : Sign) (a_2 : Int),
-  Contents.residualLinear D (Contents.int a a_1 a_2) = false
-∀ (D : Decls) (a : FloatWidth) (a_1 : FloatDatum),
-  Contents.residualLinear D (Contents.float a a_1) = false
-∀ (D : Decls) (a : Bool),
-  Contents.residualLinear D (Contents.bool a) = false
+∀ (D : Decls) (w : IntWidth) (s : Sign) (n : Int),
+  Contents.residualLinear D (Contents.int w s n) = false
+∀ (D : Decls) (w : FloatWidth) (f : FloatDatum),
+  Contents.residualLinear D (Contents.float w f) = false
+∀ (D : Decls) (b : Bool),
+  Contents.residualLinear D (Contents.bool b) = false
 ∀ (D : Decls), Contents.residualLinear D Contents.unit = false
-∀ (D : Decls) (a a_1 : Nat) (a_2 : List Contents),
-  Contents.residualLinear D (Contents.struct a a_1 a_2) =
-    match D.structs[a]? with
+∀ (D : Decls) (s i : Nat) (cs : List Contents),
+  Contents.residualLinear D (Contents.struct s i cs) =
+    match D.structs[s]? with
     | some sd =>
-      decide (sd.attr = Attr.linear) || Contents.residualLinearList D a_2
+      decide (sd.attr = Attr.linear) || Contents.residualLinearList D cs
     | none => false
-∀ (D : Decls) (a a_1 a_2 : Nat) (a_3 : List Contents),
-  Contents.residualLinear D (Contents.enum a a_1 a_2 a_3) =
-    Contents.residualLinearList D a_3
-∀ (D : Decls) (a : Ty) (a_1 : Nat) (a_2 : List Contents),
-  Contents.residualLinear D (Contents.array a a_1 a_2) =
-    Contents.residualLinearList D a_2
+∀ (D : Decls) (e k i : Nat) (cs : List Contents),
+  Contents.residualLinear D (Contents.enum e k i cs) =
+    Contents.residualLinearList D cs
+∀ (D : Decls) (T : Ty) (i : Nat) (cs : List Contents),
+  Contents.residualLinear D (Contents.array T i cs) =
+    Contents.residualLinearList D cs
 ```
 
 ### `Contents.residualLinearList`
@@ -21787,21 +21782,21 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 Contents.hole.toVal = none
-∀ (a : IntWidth) (a_1 : Sign) (a_2 : Int),
-  (Contents.int a a_1 a_2).toVal = some (Val.int a a_1 a_2)
-∀ (a : FloatWidth) (a_1 : FloatDatum),
-  (Contents.float a a_1).toVal = some (Val.float a a_1)
-∀ (a : Bool), (Contents.bool a).toVal = some (Val.bool a)
+∀ (w : IntWidth) (s : Sign) (n : Int),
+  (Contents.int w s n).toVal = some (Val.int w s n)
+∀ (w : FloatWidth) (f : FloatDatum),
+  (Contents.float w f).toVal = some (Val.float w f)
+∀ (b : Bool), (Contents.bool b).toVal = some (Val.bool b)
 Contents.unit.toVal = some Val.unit
-∀ (a a_1 : Nat) (a_2 : List Contents),
-  (Contents.struct a a_1 a_2).toVal =
-    Option.map (Val.struct a a_1) (Contents.toVals a_2)
-∀ (a a_1 a_2 : Nat) (a_3 : List Contents),
-  (Contents.enum a a_1 a_2 a_3).toVal =
-    Option.map (Val.enum a a_1 a_2) (Contents.toVals a_3)
-∀ (a : Ty) (a_1 : Nat) (a_2 : List Contents),
-  (Contents.array a a_1 a_2).toVal =
-    Option.map (Val.array a a_1) (Contents.toVals a_2)
+∀ (s i : Nat) (cs : List Contents),
+  (Contents.struct s i cs).toVal =
+    Option.map (Val.struct s i) (Contents.toVals cs)
+∀ (e k i : Nat) (cs : List Contents),
+  (Contents.enum e k i cs).toVal =
+    Option.map (Val.enum e k i) (Contents.toVals cs)
+∀ (T : Ty) (i : Nat) (cs : List Contents),
+  (Contents.array T i cs).toVal =
+    Option.map (Val.array T i) (Contents.toVals cs)
 ```
 
 ### `Contents.toVals`
@@ -23231,7 +23226,8 @@ Defining equations, as Lean derived them from the body:
 ```lean
 OwnSt.owned.fullyOwned = true
 OwnSt.movedOut.fullyOwned = false
-∀ (a : List OwnSt), (OwnSt.fields a).fullyOwned = OwnSt.fullyOwnedList a
+∀ (ts : List OwnSt),
+  (OwnSt.fields ts).fullyOwned = OwnSt.fullyOwnedList ts
 ```
 
 ### `OwnSt.fullyOwnedList`
@@ -24272,24 +24268,24 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : Decls), dropEvents D Contents.hole = []
-∀ (D : Decls) (a : IntWidth) (a_1 : Sign) (a_2 : Int),
-  dropEvents D (Contents.int a a_1 a_2) = []
-∀ (D : Decls) (a : FloatWidth) (a_1 : FloatDatum),
-  dropEvents D (Contents.float a a_1) = []
-∀ (D : Decls) (a : Bool), dropEvents D (Contents.bool a) = []
+∀ (D : Decls) (w : IntWidth) (s : Sign) (n : Int),
+  dropEvents D (Contents.int w s n) = []
+∀ (D : Decls) (w : FloatWidth) (f : FloatDatum),
+  dropEvents D (Contents.float w f) = []
+∀ (D : Decls) (b : Bool), dropEvents D (Contents.bool b) = []
 ∀ (D : Decls), dropEvents D Contents.unit = []
-∀ (D : Decls) (a a_1 : Nat) (a_2 : List Contents),
-  dropEvents D (Contents.struct a a_1 a_2) =
-    (match D.structs[a]? with
+∀ (D : Decls) (s i : Nat) (cs : List Contents),
+  dropEvents D (Contents.struct s i cs) =
+    (match D.structs[s]? with
       | some sd =>
-        if sd.dtor = true then [Event.dtor a (Contents.struct a a_1 a_2)]
+        if sd.dtor = true then [Event.dtor s (Contents.struct s i cs)]
         else []
       | none => []) ++
-      dropEventsList D a_2
-∀ (D : Decls) (a a_1 a_2 : Nat) (a_3 : List Contents),
-  dropEvents D (Contents.enum a a_1 a_2 a_3) = dropEventsList D a_3
-∀ (D : Decls) (a : Ty) (a_1 : Nat) (a_2 : List Contents),
-  dropEvents D (Contents.array a a_1 a_2) = dropEventsList D a_2
+      dropEventsList D cs
+∀ (D : Decls) (e k i : Nat) (cs : List Contents),
+  dropEvents D (Contents.enum e k i cs) = dropEventsList D cs
+∀ (D : Decls) (T : Ty) (i : Nat) (cs : List Contents),
+  dropEvents D (Contents.array T i cs) = dropEventsList D cs
 ```
 
 ### `dropEventsList`

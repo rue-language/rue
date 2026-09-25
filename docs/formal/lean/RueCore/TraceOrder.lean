@@ -1,4 +1,8 @@
-import RueCore.TraceExact
+module
+
+public import RueCore.TraceExact
+
+@[expose] public section
 
 /-!
 # RueCore.TraceOrder — the order drops run in (§3.9, §6.11, §7)
