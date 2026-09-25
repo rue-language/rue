@@ -574,12 +574,18 @@ modules above it and `decide`, `rfl` and unfolding work across modules as
 before. L3 stays ordinary files: `Examples.lean`'s `#eval`/`#guard` would
 need a `meta import` of every module it runs, `Digest.lean` imports `Lean`
 to walk the environment at run time, and a non-module file may import
-modules, so nothing is lost. What is not adopted, and why: private `import`
-and non-exposed definitions would hide definition bodies from the proofs
-and tools above them (a downstream `decide` or `unfold` of a non-exposed
-definition fails), so the layer rule is enforced by the audit instead. `leanchecker` and the digest's `importModules` load
-every part of a module's `.olean` (the private part holds proof bodies), so
-the kernel re-check and `#print axioms` still see every proof.
+modules, so nothing is lost. It also gives the layer rule a second guard: a
+`module` cannot import a non-module file, so Lean itself refuses an L0–L2
+import of an L3 file ("cannot import non-module … from module"), and the
+audit covers what that leaves, an upward import within L0–L2.
+
+Not adopted, and why: private `import` and non-exposed definitions would
+hide definition bodies from the proofs and tools above them (a downstream
+`decide` or `unfold` of a non-exposed definition fails), so the layer rule is
+enforced by the audit instead. `leanchecker` and the digest's
+`importModules` load every part of a module's `.olean` (the private part
+holds proof bodies), so the kernel re-check and `#print axioms` still see
+every proof.
 
 The import graph, from the audit (an arrow points from a module to one that
 imports it; the root `RueCore`, which imports every library module, is left
