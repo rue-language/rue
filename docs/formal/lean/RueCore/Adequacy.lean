@@ -2,15 +2,19 @@ import RueCore.Step
 import RueCore.Soundness
 
 /-!
-# RueCore.Adequacy — `eval` is sound with respect to §6's `Step`
+# RueCore.Adequacy — `eval` is adequate to §6's `Step`, both ways
 
 ADR-0097's decision 3 proves safety over the definitional interpreter `eval`
 and says that "a theorem about `eval` is a theorem about §6 only once the two
 are proved to agree". `Step.lean` mechanizes §6's reduction relation; this
-module proves the first half of the agreement, RUE-2289's part 2: whatever
-`eval` answers with a value or a panic, §6's `→*` reaches too, with the same
-store, value and trace (`eval_sound`). The converse, completeness modulo fuel,
-is part 3 (RUE-2332), stated over the same relation `Sim`.
+module proves the agreement in both directions. RUE-2289's part 2 is
+soundness: whatever `eval` answers with a value or a panic, §6's `→*` reaches
+too, with the same store, value and trace (`eval_sound`). Part 3 is
+completeness modulo fuel: whatever terminal configuration §6's `→*` reaches,
+every fuel past the length of the run makes `eval` answer it
+(`eval_complete`); `eval` exhausts every fuel exactly when §6 diverges
+(`eval_diverges_iff`); and "`eval` is never stuck" is "§6 is never stuck", in
+§7's phrasing (`never_stuck_iff`).
 
 ## The simulation relation
 
@@ -65,6 +69,29 @@ which is outside the correspondence: four monitors are not §6's, and `eval`
 inspects operand shapes in an order §6.2 does not fix. Completeness (part 3)
 is where the domain does work, because there `Step` can step where `eval`
 refuses.
+
+## Completeness: fuel counts steps
+
+Part 3 needs no converse simulation. Its one new fact is
+`eval_steps_of_outOfFuel`: if `eval` exhausts `fuel` on an expression, §6's
+reduction has a run of exactly `fuel` steps from that expression in focus
+(`StepsN`). Each unit of fuel is paid for by at least one `Step`: every
+recursive call of `eval` sits behind a (Search) enter step (§6.2), and the
+operands before it reached values, which `Sim`'s `ok` clause turns into runs.
+Two forms spend fuel without a step of their own, and each is paid for by the
+next step. `@drop` at a dynamic place re-dispatches to the read, and the push
+into its first index pays for that. The loop re-evaluates itself at one less
+fuel, and (D-Loop-Iter) (§6.10) pays for that; the re-evaluation's
+(D-Loop-Enter) is peeled off by determinism, as in `eval_sim`.
+
+The rest is determinism (`Step.det`). A run that ends at a configuration with
+no successor, terminal or stuck, bounds every run from the same start
+(`StepsN.bound`). So past its length, `run` is not `outOfFuel`, and whatever
+it answers is placed by `run_sim` at the same end (`Steps.final_unique`).
+`run_complete` and `run_stuck_of_step_stuck` hold on every program, up to a
+refusal of `eval`'s. The checked domain removes the refusal (`no_violation`),
+which gives `eval_complete`, `never_stuck_iff` and `eval_diverges_iff`.
+`dropMoved_refused` shows the refusal is really there off the domain.
 -/
 
 namespace RueCore
@@ -83,8 +110,8 @@ trace `tr` produced before it, §6.2's `⟨H ; φ ; K ; E[e]⟩`: a value reache
 `E[v]` in the frame `φ` (§6.2's (Search)), a panic reaches `↯κ` from every
 context ((Panic-Lift) §6.2), an unwinding `return` reaches the nearest caller
 ((D-Return) §6.9), and an unwinding `break` reaches the nearest loop's context
-((D-Break) §6.10). Part 3 (RUE-2332) proves the converse over this same
-relation. -/
+((D-Break) §6.10). Part 3's completeness (`eval_complete`) takes its runs
+through already-reduced operands from this relation's `ok` clause. -/
 def Sim (M : FloatOps) (P : Program) (φ : Frame) (C : List Kont → List Event → Config) :
     EvalRes → Prop
   | .ok H v tr' => ∀ K tr, Steps M P (C K tr) (.run H φ K (.ret v) (tr ++ tr'))
@@ -993,8 +1020,8 @@ so it answers a value, a panic or `outOfFuel`; a value is reached by §6's
 `→*` from the initial configuration as a terminal configuration with the same
 store and trace, and a panic as `↯κ` after the same trace (§6.2, §6.12).
 `.stuck` is outside the correspondence and does not occur here; `outOfFuel`
-is not a state of §6's machine, and completeness modulo fuel is part 3
-(RUE-2332). -/
+is not a state of §6's machine. The converse, completeness modulo fuel, is
+`eval_complete`. -/
 theorem eval_sound (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
     (∀ H v tr, run M.toFloatOps P fuel = .ok H v tr →
@@ -1797,6 +1824,21 @@ theorem eval_diverges_iff (M : FloatModel) {P : Program} (h : ProgramTyped P) :
     | stuck w => exact absurd hr (no_violation M h fuel w)
     | returned H v tr => exact absurd hr (run_ne_returned _ H v tr)
     | broke H sc tr => exact absurd hr (run_ne_broke _ H sc tr)
+
+/-- **Why completeness is stated on checked programs** (RUE-2314): in
+`let s = S{}; let t = s; @drop(s); 0`, §6's `→*` reaches `✓0`, because §6.11
+makes `@drop` of a `⊘` place a no-op (`demo_dropMoved_runs`, `Step.lean`).
+`run` refuses it with `useAfterMove` instead. That refusal is the one disjunct
+`run_complete` allows, and `check` rejects the program. -/
+theorem dropMoved_refused (M : FloatOps) :
+    (∃ H, Steps M (demoProgram (.letIn false demoS
+        (.letIn false (.use (.var 0)) (.seq (.drop (.var 1)) (demoI32 0))))) Config.init
+      (.run H Frame.empty [] (.ret (.int .w32 .signed 0))
+        [.drop 2 (demoSc 0), .dtor 0 (demoSc 0)])) ∧
+    run M (demoProgram (.letIn false demoS
+        (.letIn false (.use (.var 0)) (.seq (.drop (.var 1)) (demoI32 0))))) 100 =
+      .stuck .useAfterMove :=
+  ⟨demo_dropMoved_runs M, rfl⟩
 
 /-- **The theorem at work**: `letAddProgram_runs` (`Step.lean`) found its
 `→*` derivation by running `stepN`; here it comes from `run`'s answer alone,

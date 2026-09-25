@@ -11,7 +11,7 @@ RUE-2289's parts 2 and 3. This module defines the relation and proves only
 what is cheap: it is deterministic, a terminal configuration takes no step,
 and its stuck configurations are exactly the ones §6 leaves undefined.
 Part 2, `eval ⇒ Step*`, is `eval_sound` (`Adequacy.lean`); part 3, the
-converse modulo fuel, is RUE-2332.
+converse modulo fuel, is `eval_complete` (`Adequacy.lean`).
 
 ## The configuration (§6.1)
 
@@ -131,8 +131,9 @@ On programs `check` rejects, `Step` follows §6 where `eval` does not:
 Both are refusals on `eval`'s side, so neither obstructs part 2's
 `eval ⇒ Step*` simulation, which holds on every program (`run_sim`,
 `Adequacy.lean`); `eval_sound` states it over checked programs (RUE-2289),
-where `no_violation` rules `.stuck` out. They matter for part 3, the converse,
-which is stated over checked programs for that reason.
+where `no_violation` rules `.stuck` out. They matter for part 3, the converse:
+`run_complete` holds on every program only up to a refusal of `eval`'s, and
+`eval_complete` removes the refusal on checked programs for that reason.
 -/
 
 namespace RueCore
