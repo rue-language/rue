@@ -2490,6 +2490,39 @@ def paramDroppedAtPop : Program :=
     fns := [{ params := [], ret := tI64, body := call 1 [resA (lit 2)] },
             { params := [⟨.struct sAffine, false⟩], ret := tI64, body := lit 1 }] }
 
+/-- Two by-value destructor-bearing arguments of two types, `f1(a: S1, b: S5)`,
+neither consumed: the frame pop tears the parameters down last-parameter
+first (§6.9's `run-all-scope-drops`, `drop_order`), so `b`'s drop (`2`, then
+its field's `3`, §6.11) comes before `a`'s (`1`), then the value `0`. -/
+def twoParamsDroppedAtPop : Program :=
+  { decls := Decls.ofStructs structEnv,
+    fns := [{ params := [], ret := tI64,
+              body := call 1 [resA (lit 1), mkStruct sOuter [lit 2, resA (lit 3)]] },
+            { params := [⟨.struct sAffine, false⟩, ⟨.struct sOuter, false⟩], ret := tI64,
+              body := lit 0 }] }
+
+/-- Three by-value destructor-bearing arguments, none consumed: the frame pop
+(§6.9's `run-all-scope-drops`) drops them `3`, `2`, `1`, then the value `0`. -/
+def threeParamsDroppedAtPop : Program :=
+  { decls := Decls.ofStructs structEnv,
+    fns := [{ params := [], ret := tI64,
+              body := call 1 [resA (lit 1), resA (lit 2), resA (lit 3)] },
+            { params := [⟨.struct sAffine, false⟩, ⟨.struct sAffine, false⟩,
+                         ⟨.struct sAffine, false⟩], ret := tI64,
+              body := lit 0 }] }
+
+/-- The **first** of two by-value parameters moved out, into a call, and the
+other left to the frame pop (§6.9): `f1(a, b)` moves `a` by (Use-Move) §5.1
+into `f2(a)`, whose own pop drops `a` (`1`); `f1`'s pop then owes only `b`
+(`2`), and the value is `7`. A moved parameter leaves the teardown, so here
+the first parameter's destructor runs first. -/
+def paramMovedOtherDropped : Program :=
+  { decls := Decls.ofStructs structEnv,
+    fns := [{ params := [], ret := tI64, body := call 1 [resA (lit 1), resA (lit 2)] },
+            { params := [⟨.struct sAffine, false⟩, ⟨.struct sAffine, false⟩], ret := tI64,
+              body := call 2 [use (.var 1)] },
+            { params := [⟨.struct sAffine, false⟩], ret := tI64, body := lit 7 }] }
+
 /-- A by-value **linear** parameter the callee never consumes: (Fn) §5.8's
 second clause rejects the callee (`3.8:62`), and the frame pop refuses with
 `linearLeak`. -/

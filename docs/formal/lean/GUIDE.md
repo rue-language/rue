@@ -761,8 +761,13 @@ Witnesses:
 - `return_past_affine`, for the order within one step. The σ-walk's one step
   drops `ℓ3`, then `ℓ1` (`returnPastAffine_newestFirst`). In the ledger these
   show as the ends `[9.1]` and `[9.2]`, the first and second end of row 9.
+- `two_params_dropped_at_pop` and `three_params_dropped_at_pop`, for a
+  callee frame's pop. It tears the by-value parameters down last-parameter
+  first (`ℓ4` then `ℓ3`; `ℓ5`, `ℓ4`, `ℓ3`), and the bridge checks the
+  compiler does the same. `param_moved_other_dropped` moves the first
+  parameter out, so only the second is left to the pop.
 
-`TraceOrder.lean` also pins eleven order-witnessing corpus cases through the
+`TraceOrder.lean` also pins fourteen order-witnessing corpus cases through the
 theorems' projections, and has three results the statement rejects:
 
 - `fieldsSwapped_rejected`: a struct's two field destructors swapped;

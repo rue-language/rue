@@ -1523,6 +1523,26 @@ example : orderView returnPastAffine.decls (corpusTrace returnPastAffine) = ([2,
   by rfl
 
 open Examples in
+/-- `two_params_dropped_at_pop`: the callee's frame pop tears its by-value
+parameters down last-parameter first, `b` (`ℓ4`, the `S5` `#2` and its field
+`#1`) before `a` (`ℓ3`, `#0`) — the LIFO half of `drop_order` at a frame,
+bridge-checked. -/
+example : orderView twoParamsDroppedAtPop.decls (corpusTrace twoParamsDroppedAtPop)
+    = ([2, 1, 0], [4, 3], [2, 1, 0]) := by rfl
+
+open Examples in
+/-- `three_params_dropped_at_pop`: three parameters, `ℓ5`, `ℓ4`, `ℓ3`. -/
+example : orderView threeParamsDroppedAtPop.decls (corpusTrace threeParamsDroppedAtPop)
+    = ([2, 1, 0], [5, 4, 3], [2, 1, 0]) := by rfl
+
+open Examples in
+/-- `param_moved_other_dropped`: the first parameter, moved into `f2`, is
+dropped by `f2`'s pop (`ℓ4`, `#0`); `f1`'s pop then owes only the second
+(`ℓ3`, `#1`). -/
+example : orderView paramMovedOtherDropped.decls (corpusTrace paramMovedOtherDropped)
+    = ([0, 1], [4, 3], [0, 1]) := by rfl
+
+open Examples in
 /-- `loop_break_past_local`: the first turn's binding (`ℓ2`) is dropped by its
 (D-EndScope) at the turn's end, and the second turn's (`ℓ4`) by the `break`'s
 unwind, §6.10. -/
