@@ -1191,7 +1191,8 @@ still there to move out ordinarily. -/
 example : checkProgram (prog tI64 arrayDeclaredElemDestructure) = true := by rfl
 example : run demoOps (prog tI64 arrayDeclaredElemDestructure) demoFuel
     = .ok (List.replicate 5 .dead) (v64 7)
-        [.dbg (v64 10), .dbg (v64 1), .drop 4 (.struct sLinear 1 [c64 2]),
+        [.dbg (v64 10), .consume (.struct sLinear 0 [.hole]), .dbg (v64 1),
+         .drop 4 (.struct sLinear 1 [c64 2]),
          .drop 3 (.array (.struct sLinear) 2 [.hole, .hole])] := by rfl
 
 /-- **The element move in one arm** (probe `a4`): the join leaves the element
@@ -1705,7 +1706,8 @@ element is admitted, as the compiler admits it. -/
 example : checkProgram dynWriteDeclaredLinearElem = true := by rfl
 example : run demoOps dynWriteDeclaredLinearElem demoFuel
     = .ok (List.replicate 7 .dead) (v64 6)
-        [.drop 4 (.array (.struct sLinear) 3 [.hole, .hole])] := by rfl
+        [.consume (.struct sLinear 1 [.hole]), .consume (.struct sLinear 2 [.hole]),
+         .drop 4 (.array (.struct sLinear) 3 [.hole, .hole])] := by rfl
 
 /-- Review probes d1/d3: `@drop` of a `Copy` place below a dynamic index is
 admitted, does nothing in range, and traps on bounds exactly as the read. -/
@@ -2782,8 +2784,8 @@ for the moved-out first binding. The compiler ICEd on it (RUE-2347). -/
 example : checkProgram (enumProg tI64 enumMatchOneArmAffine) = true := by rfl
 example : run demoOps (enumProg tI64 enumMatchOneArmAffine) demoFuel
     = .ok (List.replicate 7 .dead) (v64 9)
-        [.drop 6 (cA 0 1), .dtor sAffine (cA 0 1), .drop 5 (.enum eAffineIdx 0 4 [cA 3 2]),
-         .dtor sAffine (cA 3 2)] := by rfl
+        [.consume (.enum eAffineIdx 0 1 [.hole]), .drop 6 (cA 0 1), .dtor sAffine (cA 0 1),
+         .drop 5 (.enum eAffineIdx 0 4 [cA 3 2]), .dtor sAffine (cA 3 2)] := by rfl
 
 /-- (Match) §5.5's per-arm §5.6 obligation: an arm that binds a `Linear`
 payload and neither moves nor consumes it leaks (`6.3:17`, `3.8:32`; the
@@ -2880,8 +2882,10 @@ order. -/
 example : checkProgram (destrProg tI64 destructureThroughIndex) = true := by rfl
 example : run demoOps (destrProg tI64 destructureThroughIndex) demoFuel
     = .ok (List.replicate 7 .dead) (v64 4)
-        [.dbg (v64 10), .dtor sAffine (cA 1 2), .dtor sAffine (cA 3 3), .dbg (v64 20),
-         .drop 6 (cA 0 1), .dtor sAffine (cA 0 1)] := by rfl
+        [.dbg (v64 10), .drop 5 (cA 1 2), .dtor sAffine (cA 1 2), .drop 5 (cA 3 3),
+         .dtor sAffine (cA 3 3),
+         .consume (.struct sDestrArrIdx 4 [.array (.struct sAffine) 2 [.hole, .hole], .hole]),
+         .dbg (v64 20), .drop 6 (cA 0 1), .dtor sAffine (cA 0 1)] := by rfl
 
 /-- **A dynamic-index write under a declared-`linear` prefix is admitted**
 (second-review probe c3): `v0.x0[i] = 9` on `S21`'s array field is an
@@ -3884,10 +3888,10 @@ example : checkProgram (prog tI64 loopNestedMoveOuter) = false := by rfl
 example : checkProgram (prog tI64 loopNestedEveryPathBreaks) = true := by rfl
 example : run demoOps (prog tI64 loopNestedMoveOuter) demoFuel = .stuck .useAfterMove := by rfl
 
-/-- (D-Loop-Iter) §6.10, as an equation: a body that completes re-enters the
-loop at one unit of fuel less (helper). -/
+/-- (D-Loop-Iter) §6.10, as an equation: a body that completes with `⟨⟩`
+re-enters the loop at one unit of fuel less (helper). -/
 theorem eval_loop_ok {M : FloatOps} {P : Program} {n : Nat} {H H₁ : Store} {φ : Frame}
-    {e : Expr} {v : Val} {tr : List Event} (h : eval M n P H φ e = .ok H₁ v tr) :
+    {e : Expr} {tr : List Event} (h : eval M n P H φ e = .ok H₁ .unit tr) :
     eval M (n + 1) P H φ (.loop e) = (eval M n P H₁ φ (.loop e)).withTrace tr := by
   simp only [eval, h]
 
@@ -3905,7 +3909,7 @@ theorem infiniteLoop_outOfFuel (M : FloatOps) (P : Program) :
       cases n with
       | zero => rfl
       | succ m =>
-          rw [infiniteLoop, eval_loop_ok (H₁ := H) (v := .unit) (tr := []) rfl]
+          rw [infiniteLoop, eval_loop_ok (H₁ := H) (tr := []) rfl]
           have := ih H φ
           rw [infiniteLoop] at this
           rw [this]; rfl

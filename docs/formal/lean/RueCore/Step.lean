@@ -304,18 +304,33 @@ def plainUnwind (D : Decls) (H : Store) : List Nat → Except Violation (Store �
           | .error w => .error w
           | .ok (H₂, evs') => .ok (H₂, evs ++ evs')
 
+/-- §6.3's `drop*` on the residue as §6.3 writes it: each retained subtree's
+marker (`residueMark`, RUE-2427) and §6.11's walk, left to right, with no
+residue monitor (helper). -/
+def plainResidue (D : Decls) (ℓ : Nat) : List Contents → Except Violation (List Event)
+  | [] => .ok []
+  | r :: rs =>
+      match dropContents D r with
+      | .error w => .error w
+      | .ok evs =>
+          match plainResidue D ℓ rs with
+          | .error w => .error w
+          | .ok evs' => .ok (residueMark D ℓ r ++ evs ++ evs')
+
 /-- §6.3's `destructure(H, ℓ@π_d, π_s)` as §6.3 writes it: `split`, then
 `drop*` on the residue left to right, with no residue monitor — the
 (Use-Declared-Linear-Destructure) premise excluded a linear residue before
-(D-Use-Declared-Linear) can fire (helper). -/
-def plainDestructure (D : Decls) (c : Contents) (πs : List Nat) :
+(D-Use-Declared-Linear) can fire — and then the path's shell consumed
+(`consume`, RUE-2427), exactly as `eval`'s `Contents.destructure` records it
+(helper). -/
+def plainDestructure (D : Decls) (ℓ : Nat) (c : Contents) (πs : List Nat) :
     Except Violation (Contents × List Event) :=
   match Contents.splitResidue D c πs with
   | .error w => .error w
   | .ok (leaf, rs) =>
-      match dropContentsList D rs with
+      match plainResidue D ℓ rs with
       | .error w => .error w
-      | .ok evs => .ok (leaf, evs)
+      | .ok evs => .ok (leaf, evs ++ [.consume (c.skeleton πs)])
 
 /-! ## The relation -/
 
@@ -349,7 +364,7 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
       rootCell H φ p.root = .ok (ℓ, c) →
       c.declaredPlan P.decls p.path = some (πd, πs) →
       c.readAt πd = .ok cd →
-      plainDestructure P.decls cd πs = .ok (leaf, evs) →
+      plainDestructure P.decls ℓ cd πs = .ok (leaf, evs) →
       leaf.toVal = some v →
       c.writeAt πd .hole = some c' →
       Step M P (.run H φ K (.eval (.use p)) tr)
@@ -443,8 +458,11 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
   | dbgEnter {H φ K tr e} :
       Step M P (.run H φ K (.eval (.dbg e)) tr) (.run H φ (.dbg :: K) (.eval e) tr)
   /-- `@dbg`'s defining equation (§6.9's intrinsic note, §6.12): append the
-  value's rendering to the observable output and yield `⟨⟩`. -/
+  value's rendering to the observable output and yield `⟨⟩`. The rendering is
+  defined on an observable value only (`Val.observable`), so any other operand
+  has no rule (RUE-2427). -/
   | dbg {H φ K tr v} :
+      v.observable = true →
       Step M P (.run H φ (.dbg :: K) (.ret v) tr) (.run H φ K (.ret .unit) (tr ++ [.dbg v]))
   -- ### §6.2's list contexts
   /-- (Search) §6.2 into a struct literal's initializers, `S{ E, ē }`. -/
@@ -569,13 +587,14 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
       Step M P (.run H φ K (.eval (.«match» scrut arms)) tr)
         (.run H φ (.«match» arms :: K) (.eval scrut) tr)
   /-- (D-Match) §6.6: the tag selects the arm; the payload is bound to fresh
-  cells, appended to the scope record *and* owed to the arm's `endscope`. -/
+  cells, appended to the scope record *and* owed to the arm's `endscope`; a
+  non-`Copy` scrutinee's shell is consumed (`matchConsume`, RUE-2427). -/
   | «match» {H φ K tr arms e k i vs body H' ls} :
       arms[k]? = some body →
       mintParams H vs = (H', ls) →
       Step M P (.run H φ (.«match» arms :: K) (.ret (.enum e k i vs)) tr)
         (.run H' { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls }
-          (.endscope ls :: K) (.eval body) tr)
+          (.endscope ls :: K) (.eval body) (tr ++ matchConsume P.decls e k i vs))
   /-- (Search) §6.2 into `if E { e1 } else { e2 }`. -/
   | iteEnter {H φ K tr c e₁ e₂} :
       Step M P (.run H φ K (.eval (.ite c e₁ e₂)) tr) (.run H φ (.ite e₁ e₂ :: K) (.eval c) tr)
@@ -638,7 +657,7 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
       rootCell H φ p.root = .ok (ℓ, c) →
       c.declaredPlan P.decls p.path = some (πd, πs) →
       c.readAt πd = .ok cd →
-      plainDestructure P.decls cd πs = .ok (leaf, evs) →
+      plainDestructure P.decls ℓ cd πs = .ok (leaf, evs) →
       dropCell P.decls ℓ leaf = .ok levs →
       c.writeAt πd .hole = some c' →
       Step M P (.run H φ K (.eval (.drop p)) tr)
@@ -693,12 +712,13 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
   /-- (D-Loop-Enter) §6.10: push the loop boundary and enter the body. -/
   | loopEnter {H φ K tr e} :
       Step M P (.run H φ K (.eval (.loop e)) tr) (.run H φ (.loop e φ :: K) (.eval e) tr)
-  /-- (D-Loop-Iter) §6.10: the body became a value; `run-scope-drops` on the
+  /-- (D-Loop-Iter) §6.10: the body became `⟨⟩` — "necessarily `⟨⟩`", so any
+  other value has no rule (RUE-2427); `run-scope-drops` on the
   cells the turn still owes (those past the loop's own record, newest-first, as
   (D-Break) reads them), then re-enter the body in the loop's frame. -/
-  | loopIter {H φ K tr e φs v H' evs} :
+  | loopIter {H φ K tr e φs H' evs} :
       plainUnwind P.decls H (φ.scope.drop φs.scope.length).reverse = .ok (H', evs) →
-      Step M P (.run H φ (.loop e φs :: K) (.ret v) tr)
+      Step M P (.run H φ (.loop e φs :: K) (.ret .unit) tr)
         (.run H' φs (.loop e φs :: K) (.eval e) (tr ++ evs))
   /-- (D-Break) §6.10: discard every frame up to the nearest loop boundary,
   drop-retire the cells the body still owed newest-first
@@ -747,7 +767,7 @@ def stepEval (M : FloatOps) (P : Program) (H : Store) (φ : Frame) (K : List Kon
         match c.readAt πd with
         | .error w => .stuck w
         | .ok cd =>
-          match plainDestructure P.decls cd πs with
+          match plainDestructure P.decls ℓ cd πs with
           | .error w => .stuck w
           | .ok (leaf, evs) =>
             match leaf.toVal with
@@ -791,7 +811,7 @@ def stepEval (M : FloatOps) (P : Program) (H : Store) (φ : Frame) (K : List Kon
         match c.readAt πd with
         | .error w => .stuck w
         | .ok cd =>
-          match plainDestructure P.decls cd πs with
+          match plainDestructure P.decls ℓ cd πs with
           | .error w => .stuck w
           | .ok (leaf, evs) =>
             match dropCell P.decls ℓ leaf with
@@ -922,7 +942,8 @@ def stepRet (M : FloatOps) (P : Program) (H : Store) (φ : Frame) (K : List Kont
   | .unop op => (evalUnOp op v).toStep H φ K tr
   | .intCast w s => (evalIntCast w s v).toStep H φ K tr
   | .fintrin k => (evalFintrin M k v).toStep H φ K tr
-  | .dbg => .next (.run H φ K (.ret .unit) (tr ++ [.dbg v]))
+  | .dbg => if v.observable then .next (.run H φ K (.ret .unit) (tr ++ [.dbg v]))
+    else .stuck .typeConfusion
   | .args t vs es => .next (.run H φ K (.args t (vs ++ [v]) es) tr)
   | .repeatArray T n =>
     if v.mult P.decls = .copy then
@@ -931,14 +952,14 @@ def stepRet (M : FloatOps) (P : Program) (H : Store) (φ : Frame) (K : List Kont
   | .indexWriteRhs p idx πs => .next (.run H φ K (.args (.indexWrite p πs v) [] idx) tr)
   | .«match» arms =>
     match v with
-    | .enum _ k _ vs =>
+    | .enum e k i vs =>
       match arms[k]? with
       | none => .stuck .typeConfusion
       | some body =>
         match mintParams H vs with
         | (H', ls) =>
           .next (.run H' { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls }
-            (.endscope ls :: K) (.eval body) tr)
+            (.endscope ls :: K) (.eval body) (tr ++ matchConsume P.decls e k i vs))
     | _ => .stuck .typeConfusion
   | .letIn e₂ =>
     .next (.run (H ++ [.full (Contents.ofVal v)])
@@ -980,9 +1001,12 @@ def stepRet (M : FloatOps) (P : Program) (H : Store) (φ : Frame) (K : List Kont
     | .error w => .stuck w
     | .ok (H', evs) => .next (.run H' (φ.popScope ℓs.length) K (.ret v) (tr ++ evs))
   | .loop e φs =>
-    match plainUnwind P.decls H (φ.scope.drop φs.scope.length).reverse with
-    | .error w => .stuck w
-    | .ok (H', evs) => .next (.run H' φs (.loop e φs :: K) (.eval e) (tr ++ evs))
+    match v with
+    | .unit =>
+      match plainUnwind P.decls H (φ.scope.drop φs.scope.length).reverse with
+      | .error w => .stuck w
+      | .ok (H', evs) => .next (.run H' φs (.loop e φs :: K) (.eval e) (tr ++ evs))
+    | _ => .stuck .typeConfusion
   | .call φs =>
     match plainUnwind P.decls H φ.scope.reverse with
     | .error w => .stuck w
@@ -1270,14 +1294,26 @@ theorem plainUnwind_err {D : Decls} : ∀ {H : Store} {ls : List Nat} {w : Viola
         · simp at h; subst h; exact plainUnwind_err ‹_›
         · simp at h
 
+/-- The residue's plain `drop*` refuses only with §6's stuck states (helper). -/
+theorem plainResidue_err {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {w : Violation},
+    plainResidue D ℓ rs = .error w → w.isStuckState = true
+  | [], _, h => by simp [plainResidue] at h
+  | r :: rs, _, h => by
+      simp only [plainResidue] at h
+      split at h
+      · simp at h; subst h; exact dropContents_err D ‹_›
+      · split at h
+        · simp at h; subst h; exact plainResidue_err ‹_›
+        · simp at h
+
 /-- `plainDestructure` refuses only with §6's stuck states (helper). -/
-theorem plainDestructure_err {D : Decls} {c : Contents} {πs : List Nat} {w : Violation}
-    (h : plainDestructure D c πs = .error w) : w.isStuckState = true := by
+theorem plainDestructure_err {D : Decls} {ℓ : Nat} {c : Contents} {πs : List Nat} {w : Violation}
+    (h : plainDestructure D ℓ c πs = .error w) : w.isStuckState = true := by
   simp only [plainDestructure] at h
   split at h
   · simp at h; subst h; exact Contents.splitResidue_err D ‹_›
   · split at h
-    · simp at h; subst h; exact dropContentsList_err D ‹_›
+    · simp at h; subst h; exact plainResidue_err ‹_›
     · simp at h
 
 /-- `rootCell` refuses only with §6's stuck states (helper). -/
@@ -1406,20 +1442,20 @@ theorem unwindLocs_plain {D : Decls} : ∀ {H : Store} {ls : List Nat} {r : Stor
           simp only [unwindLocs_plain heq']
           exact h
 
-/-- The residue monitor passes only where `drop*` of the residue succeeds
-with the same trace (helper). -/
-theorem dropResidue_plain {D : Decls} : ∀ {rs : List Contents} {evs : List Event},
-    dropResidue D rs = .ok evs → dropContentsList D rs = .ok evs
-  | [], _, h => by simpa [dropResidue, dropContentsList] using h
+/-- The residue monitor passes only where the plain `drop*` of the residue
+succeeds with the same trace (helper). -/
+theorem dropResidue_plain {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {evs : List Event},
+    dropResidue D ℓ rs = .ok evs → plainResidue D ℓ rs = .ok evs
+  | [], _, h => by simpa [dropResidue, plainResidue] using h
   | r :: rs, evs, h => by
       simp only [dropResidue] at h
-      simp only [dropContentsList]
+      simp only [plainResidue]
       split at h
       · simp at h
       · split at h
         · simp at h
         · rename_i heq
-          try rw [heq]
+          rw [heq]
           split at h
           · simp at h
           · rename_i heq'
@@ -1429,9 +1465,9 @@ theorem dropResidue_plain {D : Decls} : ∀ {rs : List Contents} {evs : List Eve
 /-- **The residue monitor only removes behaviour** (RUE-2314): where
 `eval`'s monitored `destructure` succeeds, §6.3's monitor-free
 `destructure` succeeds with the same leaf and trace. -/
-theorem destructure_plain {D : Decls} {c : Contents} {πs : List Nat}
-    {r : Contents × List Event} (h : c.destructure D πs = .ok r) :
-    plainDestructure D c πs = .ok r := by
+theorem destructure_plain {D : Decls} {ℓ : Nat} {c : Contents} {πs : List Nat}
+    {r : Contents × List Event} (h : c.destructure D ℓ πs = .ok r) :
+    plainDestructure D ℓ c πs = .ok r := by
   simp only [Contents.destructure] at h
   simp only [plainDestructure]
   split at h
@@ -1618,16 +1654,19 @@ theorem demo_returnInLet_runs (M : FloatOps) :
 
 /-- **(D-Return) from a `match` arm** (§6.6, §6.9):
 `let x = S{}; match A(S{}) { A(p) => return 4, B => 0 }` destroys the arm's
-payload and then `x`, newest first, and reaches `✓4`. -/
+payload and then `x`, newest first, and reaches `✓4`. The match consumes the
+`A`'s shell first (`consume`, RUE-2427). -/
 theorem demo_returnInMatch_runs (M : FloatOps) :
     ∃ H, Steps M (demoProgram (.letIn false demoS
         (.«match» (.mkEnum 0 0 [demoS]) [.ret (demoI32 4), demoI32 0]))) Config.init
       (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 4))
-        [.drop 4 (demoSc 2), .dtor 0 (demoSc 2), .drop 1 (demoSc 0), .dtor 0 (demoSc 0)]) ∧
+        [.consume (.enum 0 0 3 [.hole]), .drop 4 (demoSc 2), .dtor 0 (demoSc 2),
+         .drop 1 (demoSc 0), .dtor 0 (demoSc 0)]) ∧
     run M (demoProgram (.letIn false demoS
         (.«match» (.mkEnum 0 0 [demoS]) [.ret (demoI32 4), demoI32 0]))) 100 =
       .ok H (.int .w32 .signed 4)
-        [.drop 4 (demoSc 2), .dtor 0 (demoSc 2), .drop 1 (demoSc 0), .dtor 0 (demoSc 0)] :=
+        [.consume (.enum 0 0 3 [.hole]), .drop 4 (demoSc 2), .dtor 0 (demoSc 2),
+         .drop 1 (demoSc 0), .dtor 0 (demoSc 0)] :=
   ⟨_, stepN_steps (n := 100), rfl⟩
 
 /-- **(D-Loop-Iter) runs the turn's drops** (§6.10's `run-scope-drops`): at a

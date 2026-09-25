@@ -557,8 +557,11 @@ theorem sim_dbg (IH : SimIH M P fuel) (e : Expr) :
   simp only [eval]
   refine Sim.andThen (F := .dbg) (fun _ => ⟨rfl, rfl⟩)
     (fun _ _ => Steps.single .dbgEnter) (IH H φ e) ?_
-  intro H₁ v _ _ K tr
-  exact Steps.single .dbg
+  intro H₁ v _ _
+  split
+  · intro K tr
+    exact Steps.single (.dbg ‹_›)
+  · trivial
 
 /-- (D-Struct) §6.5 after §6.2's search through the initializers; the
 identity is minted as `introVal` mints it (helper). -/
@@ -768,8 +771,13 @@ theorem sim_match (IH : SimIH M P fuel) (scrut : Expr) (arms : List Expr) :
     split
     · trivial
     · rename_i body hbody
+      -- (D-Match) records the shell's consumption as it binds the payload.
+      refine Sim.withTrace (C₂ := fun K tr => evalConf (mintParams H₀ vs).1
+          { env := (mintParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (mintParams H₀ vs).2 }
+          body (.endscope (mintParams H₀ vs).2 :: K) tr)
+        (fun _ _ => Steps.single (.«match» hbody rfl)) ?_
       refine Sim.andThen (F := .endscope (mintParams H₀ vs).2) (fun _ => ⟨rfl, rfl⟩)
-        (fun _ _ => Steps.single (.«match» hbody rfl)) (IH _ _ body) ?_
+        (fun _ _ => .refl _) (IH _ _ body) ?_
       intro H₂ v₂ _ _
       split
       · trivial
@@ -926,12 +934,15 @@ theorem sim_loop (IH : SimIH M P fuel) (e : Expr) :
   cases hr : eval M fuel P H φ e with
   | ok H₁ v tr₁ =>
       rw [hr] at h₁
+      cases v with
+      | unit => ?_
+      | _ => trivial
       simp only
       have hpeel : Sim M P φ (evalConf H₁ φ e ∘ (Kont.loop e φ :: ·))
           (eval M fuel P H₁ φ (.loop e)) :=
         Sim.peel (fun _ _ => .loopEnter) (fun _ _ => trivial) (IH H₁ φ (.loop e))
       refine Sim.withTrace (C₂ := evalConf H₁ φ e ∘ (Kont.loop e φ :: ·)) (fun K tr => ?_) hpeel
-      have hit : Step M P (.run H₁ φ (.loop e φ :: K) (.ret v) (tr ++ tr₁))
+      have hit : Step M P (.run H₁ φ (.loop e φ :: K) (.ret .unit) (tr ++ tr₁))
           (.run H₁ φ (.loop e φ :: K) (.eval e) (tr ++ tr₁ ++ [])) :=
         .loopIter (by simp [plainUnwind])
       simp only [List.append_nil] at hit
@@ -1201,6 +1212,24 @@ theorem Long.andThen {φ₁ : Frame} {C C₁ : List Kont → List Event → Conf
         (fun K tr => ⟨_, tr, hC K tr, .refl _⟩) (fun K tr => h₁ rfl (F :: K) tr)
   | _ => simp [EvalRes.andThen] at hr
 
+/-- §6.2's (Search) without its enter step, counted: the operand is already in
+focus under the frame `F` — (D-Match) put the arm's body there while binding
+the payload — so exhaustion is a run of `fuel` steps, not `fuel + 1`
+(helper). -/
+theorem Long.andThen0 {φ₁ : Frame} {C₁ : List Kont → List Event → Config} {F : Kont}
+    {fuel : Nat} {r : EvalRes} (hsim : Sim M P φ₁ C₁ r) (h₁ : r = .outOfFuel → Long M P C₁ fuel)
+    {k : Store → Val → EvalRes}
+    (hk : ∀ H₁ v tr₁, r = .ok H₁ v tr₁ → k H₁ v = .outOfFuel →
+      Long M P (fun K tr => .run H₁ φ₁ (F :: K) (.ret v) tr) fuel) :
+    r.andThen k = .outOfFuel → Long M P (fun K tr => C₁ (F :: K) tr) fuel := by
+  intro hr
+  cases r with
+  | ok H₁ v tr₁ =>
+      simp only [EvalRes.andThen, EvalRes.withTrace_outOfFuel_iff] at hr
+      exact Long.pre (fun K tr => ⟨tr ++ tr₁, hsim (F :: K) tr⟩) (hk H₁ v tr₁ rfl hr)
+  | outOfFuel => exact fun K tr => h₁ rfl (F :: K) tr
+  | _ => simp [EvalRes.andThen] at hr
+
 /-- The induction hypothesis: at fuel `fuel`, exhaustion is a run of `fuel`
 steps (helper). -/
 def LongIH (M : FloatOps) (P : Program) (fuel : Nat) : Prop :=
@@ -1387,8 +1416,14 @@ theorem long_match (IH : LongIH M P fuel) (scrut : Expr) (arms : List Expr) :
     split at hk
     · simp at hk
     · rename_i body hbody
-      refine Long.mono (Nat.le_succ _) (Long.andThen (F := .endscope (mintParams H₀ vs).2)
-        (fun _ _ => .«match» hbody rfl) (eval_sim M P fuel _ _ body) (IH _ _ body) ?_ hk)
+      rw [EvalRes.withTrace_outOfFuel_iff] at hk
+      refine Long.mono (Nat.le_succ _) (Long.pre1
+        (C₂ := fun K tr => evalConf (mintParams H₀ vs).1
+          { env := (mintParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (mintParams H₀ vs).2 }
+          body (.endscope (mintParams H₀ vs).2 :: K) tr)
+        (fun K tr => ⟨_, _, .«match» hbody rfl, .refl _⟩)
+        (Long.andThen0 (F := .endscope (mintParams H₀ vs).2) (eval_sim M P fuel _ _ body)
+          (IH _ _ body) ?_ hk))
       never_oof
   · simp at hk
 
@@ -1583,6 +1618,9 @@ theorem long_loop (IH : LongIH M P fuel) (e : Expr) :
   cases hr : eval M fuel P H φ e with
   | ok H₁ v tr₁ =>
       intro h
+      cases v with
+      | unit => ?_
+      | _ => simp at h
       simp only [EvalRes.withTrace_outOfFuel_iff] at h
       have hs := eval_sim M P fuel H φ e
       rw [hr] at hs
@@ -1594,7 +1632,7 @@ theorem long_loop (IH : LongIH M P fuel) (e : Expr) :
             intro K tr
             obtain ⟨D, hD⟩ := hL K tr
             exact ⟨D, hD.peel .loopEnter⟩
-          have hit : Long M P (fun K tr => .run H₁ φ (.loop e φ :: K) (.ret v) tr) (f + 1) :=
+          have hit : Long M P (fun K tr => .run H₁ φ (.loop e φ :: K) (.ret .unit) tr) (f + 1) :=
             Long.pre1 (fun K tr => ⟨_, tr ++ [], .loopIter (by simp [plainUnwind]), .refl _⟩) hL'
           exact Long.pre1 (fun K tr => ⟨_, tr ++ tr₁, hent K tr, hs _ tr⟩) hit
   | broke H₁ sc tr₁ =>

@@ -567,6 +567,19 @@ inductive Event where
   | drop (ℓ : Nat) (c : Contents)
   | dropTemp (v : Val)
   | dtor (s : Nat) (c : Contents)
+  /-- **A consumption** (RUE-2427): the aggregate nodes of `c` end here without
+  a drop of their own, because every member they held has already been moved
+  out or dropped — a `match`'s scrutinee shell once (D-Match) §6.6 has bound its
+  payload to the arm's cells, and the path from a declared-`linear` place `d`
+  down to the selected leaf once §6.3's destructure has handed the leaf on and
+  dropped the residue. `c` is the shell itself, every member a `⊘`
+  (`Contents.enumShell`, `Contents.skeleton`). No destructor runs: an enum
+  declares none (§3, E0417), and `3.9:34` keeps a destructor-bearing value off
+  a destructure's path. Like `drop` and `dropTemp` it is a marker no Rue
+  program can observe (`Corpus.eventLine`); it is what lets
+  `drop_exactly_once` (`TraceExact.lean`) name the end of *every* owned value
+  in the trace. -/
+  | consume (c : Contents)
   | dbg (v : Val)
 deriving Repr
 
@@ -999,8 +1012,17 @@ def Contents.splitFields (D : Decls) :
        | .ok (leaf, rest) => .ok (leaf, c :: rest))
 end
 
+/-- **The residue marker** (RUE-2427): a retained subtree `r` of the cell `ℓ`
+being destructured is a sub-position of `ℓ` being dropped, which is exactly
+what `@drop(x.f)` records as `drop ℓ sub`, so its drop starts with the same
+`drop ℓ r` marker — when `r` is not `Copy`, as `dropCell` records one. A
+`Copy` subtree has no drop glue and gets no marker (helper). -/
+def residueMark (D : Decls) (ℓ : Nat) (r : Contents) : List Event :=
+  if r.mult D = .copy then [] else [.drop ℓ r]
+
 /-- §6.3's `drop*` applied to `[r_1, …, r_m]` **left to right**, so "each
-legally droppable residue is destroyed immediately and exactly once".
+legally droppable residue is destroyed immediately and exactly once". Each
+element's drop is its marker (`residueMark`) and then §6.11's walk of it.
 
 The `residualLinear` test is the monitor this machine adds and §6.3 does not
 need: §5.1's `¬ linear-residue(S, π_s)` premise has already excluded a linear
@@ -1015,7 +1037,7 @@ Nothing is destroyed early by it: `dropContents` writes no store, the `⊘` at
 `ℓ@π_d` is the caller's step *after* `destructure` returns `.ok`, and a
 refusal discards the events, so an earlier residue's drop leaves no trace and
 no heap effect behind. -/
-def dropResidue (D : Decls) : List Contents → Except Violation (List Event)
+def dropResidue (D : Decls) (ℓ : Nat) : List Contents → Except Violation (List Event)
   | [] => .ok []
   | r :: rs =>
       if r.residualLinear D then .error .linearLeak
@@ -1023,32 +1045,69 @@ def dropResidue (D : Decls) : List Contents → Except Violation (List Event)
         match dropContents D r with
         | .error w => .error w
         | .ok evs =>
-            match dropResidue D rs with
+            match dropResidue D ℓ rs with
             | .error w => .error w
-            | .ok evs' => .ok (evs ++ evs')
+            | .ok evs' => .ok (residueMark D ℓ r ++ evs ++ evs')
+
+mutual
+/-- **The consumed shell of a destructure** (RUE-2427): the nodes on the
+selected path — the declared-`linear` place `d` and every node below it down
+to the leaf's parent — with the leaf and every retained subtree replaced by
+`⊘`. It is what §6.3's destructure consumes without dropping: the leaf is
+handed on, the residue is dropped, and `ℓ@π_d` becomes `⊘`. It walks the path
+exactly as `splitResidue` does (helper). -/
+def Contents.skeleton : Contents → List Nat → Contents
+  | _, [] => .hole
+  | .struct s i cs, f :: π => .struct s i (Contents.skelFields cs f π)
+  | .array T i cs, f :: π => .array T i (Contents.skelFields cs f π)
+  | _, _ :: _ => .hole
+
+/-- `skeleton`'s member step: `⊘` at every unselected slot, the recursion at
+the selected one (helper). -/
+def Contents.skelFields : List Contents → Nat → List Nat → List Contents
+  | [], _, _ => []
+  | c :: cs, 0, π => Contents.skeleton c π :: cs.map (fun _ => .hole)
+  | _ :: cs, f + 1, π => .hole :: Contents.skelFields cs f π
+end
 
 /-- **§6.3's `destructure(H, ℓ@π_d, π_s)`**, on the contents stored at the
-consumed place: `split` the aggregate, then apply `drop*` to the residue. The
-result is the selected leaf — "the result transferred to the context, not a
-value dropped by `destructure`" — and the residue's drop events. Writing `⊘`
-at `ℓ@π_d` is the caller's step, because §6.3 puts it *after* the residue's
-drops. -/
-def Contents.destructure (D : Decls) (c : Contents) (πs : List Nat) :
+consumed place of cell `ℓ`: `split` the aggregate, then apply `drop*` to the
+residue, then record the consumption of the path's shell (`consume`,
+RUE-2427). The result is the selected leaf — "the result transferred to the
+context, not a value dropped by `destructure`" — and the residue's drop events
+followed by the consumption. Writing `⊘` at `ℓ@π_d` is the caller's step,
+because §6.3 puts it *after* the residue's drops. -/
+def Contents.destructure (D : Decls) (ℓ : Nat) (c : Contents) (πs : List Nat) :
     Except Violation (Contents × List Event) :=
   match Contents.splitResidue D c πs with
   | .error w => .error w
   | .ok (leaf, rs) =>
-      match dropResidue D rs with
+      match dropResidue D ℓ rs with
       | .error w => .error w
-      | .ok evs => .ok (leaf, evs)
+      | .ok evs => .ok (leaf, evs ++ [.consume (c.skeleton πs)])
 
-/-- **The residue's trace, in closed form**: the concatenation of §6.11's
-events over the retained subtrees, in the traversal's own order.
-`dropResidue_events` (`Soundness.lean`) is the theorem that `dropResidue` emits
-exactly this on well-typed residue, which is what keeps the drop-order
-statements closed under the new redex. -/
-def dropResidueEvents (D : Decls) (rs : List Contents) : List Event :=
-  (rs.map (dropEvents D)).flatten
+/-- **The residue's trace, in closed form**: each retained subtree's marker and
+§6.11's events, in the traversal's own order. `dropResidue_events`
+(`Soundness.lean`) is the theorem that `dropResidue` emits exactly this on
+well-typed residue, which is what keeps the drop-order statements closed under
+the new redex. -/
+def dropResidueEvents (D : Decls) (ℓ : Nat) (rs : List Contents) : List Event :=
+  rs.flatMap (fun r => residueMark D ℓ r ++ dropEvents D r)
+
+/-- A `match` consumes a non-`Copy` scrutinee's **shell** (RUE-2427): the enum
+node, its payload already bound to the arm's cells. The event names the node
+with every payload slot `⊘`. A `Copy` scrutinee was copied, not consumed, and
+its shell owns nothing, so nothing is recorded (helper). -/
+def matchConsume (D : Decls) (e k i : Nat) (vs : List Val) : List Event :=
+  if D.enumClassOf e = .copy then [] else [.consume (.enum e k i (vs.map fun _ => .hole))]
+
+/-- `@dbg`'s operand domain: the values §6.12's rendering is defined on —
+an integer, a float or a `bool` (§5.8's (Dbg) types the operand
+`Ty.observable`; the compiler accepts integer, `bool` and `String` and nothing
+else) (helper). -/
+def Val.observable : Val → Bool
+  | .int _ _ _ | .float _ _ | .bool _ => true
+  | .unit | .struct _ _ _ | .enum _ _ _ _ | .array _ _ _ => false
 
 /-- A field list's events are its fields' events concatenated, left to right:
 the flattening `dropContents_struct_events` states the order with (helper). -/
@@ -1403,7 +1462,7 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
             (match c.readAt πd with
              | .error w => .stuck w
              | .ok cd =>
-               match cd.destructure P.decls πs with
+               match cd.destructure P.decls ℓ πs with
                | .error w => .stuck w
                | .ok (leaf, evs) =>
                  match leaf.toVal with
@@ -1441,7 +1500,13 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
       -- the evaluation had already produced, prefixed by `andThen`.
       .panic .user []
   | fuel + 1, P, H, φ, .dbg e =>
-      (eval M fuel P H φ e).andThen fun H' v => .ok H' .unit [.dbg v]
+      -- The operand must be one §6.12 can render (`Val.observable`): §6 has no
+      -- rule that appends the rendering of anything else, so the machine is
+      -- stuck rather than silently discarding an owned operand (RUE-2427). A
+      -- checked program never reaches it: (Dbg) §5.8 types the operand
+      -- `Ty.observable` (`soundness`).
+      (eval M fuel P H φ e).andThen fun H' v =>
+        if v.observable then .ok H' .unit [.dbg v] else .stuck .typeConfusion
   | fuel + 1, P, H, φ, .mkStruct s args =>
       -- (D-Struct) §6.5: a struct literal is a redex once every initializer
       -- is a value; §6.2's contexts reduce them left to right, threading `H`,
@@ -1479,14 +1544,12 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
       -- was read — then read the tag, which selects the one covering arm
       -- (exhaustiveness, §5.5, makes `arms[k]?` succeed for a well-typed value:
       -- `exhaustive_arm_exists`, `Soundness.lean`). The value's enum **index**
-      -- is dropped, as it is in §6.11's drop case and for the same reason:
-      -- nothing here looks a declaration up, the arms come from the `match`
-      -- form, and under `Typed` the index is the scrutinee's own
-      -- (`HasTy.enum_inv`), so reading it could only re-derive what the
-      -- judgment already pins.
+      -- is read only to class the consumed shell (`matchConsume`): the arms
+      -- come from the `match` form, and under `Typed` the index is the
+      -- scrutinee's own (`HasTy.enum_inv`).
       (eval M fuel P H φ scrut).andThen fun H₀ v =>
         match v with
-        | .enum _ k _ vs =>
+        | .enum e k i vs =>
           (match arms[k]? with
            | none => .stuck .typeConfusion
            | some body =>
@@ -1497,7 +1560,10 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
              -- minting (D-Call) §6.9 performs, and the two `reverse`s are the
              -- same one it needs: a payload tuple is written left to right while
              -- `Env` lists the innermost binder first.
+             -- The scrutinee's shell is consumed here, before the arm runs
+             -- (`matchConsume`, RUE-2427): its payload now lives in the cells.
              let minted := mintParams H₀ vs
+             EvalRes.withTrace (matchConsume P.decls e k i vs) <|
              (eval M fuel P minted.1
                  { env := minted.2.reverse ++ φ.env, scope := φ.scope ++ minted.2 }
                  body).andThen
@@ -1645,7 +1711,7 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
             (match c.readAt πd with
              | .error w => .stuck w
              | .ok cd =>
-               match cd.destructure P.decls πs with
+               match cd.destructure P.decls ℓ πs with
                | .error w => .stuck w
                | .ok (leaf, evs) =>
                  if leaf.isHole then .stuck .useAfterMove else
@@ -1762,8 +1828,12 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
       -- `unwind-drops(H, φ', φ)` drop-retires them, newest-first — and the
       -- whole loop yields `()`. Every other outcome, an unwinding `return`
       -- included, leaves the loop unchanged.
+      -- The body's value is `⟨⟩` (§6.10, "necessarily `⟨⟩`, discarded"); any
+      -- other value is stuck rather than discarded undropped (RUE-2427), and a
+      -- checked program never reaches it: the body is typed `unit`.
       match eval M fuel P H φ e with
-      | .ok H₁ _ tr => (eval M fuel P H₁ φ (.loop e)).withTrace tr
+      | .ok H₁ .unit tr => (eval M fuel P H₁ φ (.loop e)).withTrace tr
+      | .ok _ _ _ => .stuck .typeConfusion
       | .broke H₁ sc tr =>
           match unwindLocs P.decls H₁ (sc.drop φ.scope.length).reverse with
           | .error w => .stuck w
