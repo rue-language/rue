@@ -1,0 +1,130 @@
+# Runtime `if` and `match` joins of module values (RUE-2415).
+#
+# A module is not a runtime value (spec 10.4:6): its identity is its type. A
+# join whose branches name the same module is typed by that common type
+# (4.6:10, 4.7:12) and carries nothing at runtime, so member access through
+# the joined binding resolves statically. The const binding form behaves like
+# the let binding form (10.4:1). Before the fix a const-bound module lowered to
+# a `TypeConst`, which yields no CFG value, while the join block still expected
+# one: an internal CFG verification error (E9000).
+
+[section]
+id = "cli.module_value_join"
+name = "Module value joins"
+description = "A runtime if or match over one module is a zero-sized join, not an internal error."
+
+[[case]]
+name = "const_bound_module_if_join"
+description = "An if join of a const-bound module, then a call through the joined binding"
+files = [
+    { path = "main.rue", source = """
+const a = @import("x.rue");
+fn main() -> i32 {
+    let c = true;
+    let m = if c { a } else { a };
+    @intCast(m.f(40) + 2)
+}
+""" },
+    { path = "x.rue", source = """
+pub fn f(x: usize) -> usize { x }
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "const_bound_module_match_join"
+description = "A match join of a const-bound module, then a call through the joined binding"
+files = [
+    { path = "main.rue", source = """
+const a = @import("x.rue");
+fn main() -> i32 {
+    let n = 1;
+    let m = match n { 1 => a, _ => a };
+    @intCast(m.f(42))
+}
+""" },
+    { path = "x.rue", source = """
+pub fn f(x: usize) -> usize { x }
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "const_bound_module_join_discarded"
+description = "An if and a match over a const-bound module in statement position are discarded"
+files = [
+    { path = "main.rue", source = """
+const a = @import("x.rue");
+fn main() -> i32 {
+    let c = true;
+    if c { a } else { a };
+    match c { true => a, false => a };
+    @intCast(a.f(42))
+}
+""" },
+    { path = "x.rue", source = """
+pub fn f(x: usize) -> usize { x }
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "const_bound_module_join_nested_and_diverging"
+description = "Nested joins, a block-tailed branch and a diverging branch over a const-bound module"
+files = [
+    { path = "main.rue", source = """
+const a = @import("x.rue");
+fn pick(c: bool, d: bool) -> i32 {
+    let m = if c { if d { a } else { a } } else { let z = 1; a };
+    let k = if d { a } else { return 7; };
+    @intCast(m.f(30) + k.f(5))
+}
+fn main() -> i32 { pick(true, true) + pick(false, false) }
+""" },
+    { path = "x.rue", source = """
+pub fn f(x: usize) -> usize { x }
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "let_bound_module_if_join"
+description = "An if join of a let-bound module, the binding form 10.4:1 equates with const"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let a = @import("x.rue");
+    let c = true;
+    let m = if c { a } else { a };
+    let n: usize = 42;
+    @intCast(m.f(n))
+}
+""" },
+    { path = "x.rue", source = """
+pub fn f(x: usize) -> usize { x }
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "distinct_module_if_join_rejected"
+description = "An if over two different modules has no common type: E0206, not an internal error"
+files = [
+    { path = "main.rue", source = """
+const a = @import("x.rue");
+const b = @import("y.rue");
+fn main() -> i32 {
+    let c = true;
+    let m = if c { a } else { b };
+    @intCast(m.f(42))
+}
+""" },
+    { path = "x.rue", source = """
+pub fn f(x: usize) -> usize { x }
+""" },
+    { path = "y.rue", source = """
+pub fn f(x: usize) -> usize { x + 1 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0206", "found <module>"]
