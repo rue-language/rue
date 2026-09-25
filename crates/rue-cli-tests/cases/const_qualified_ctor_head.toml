@@ -1,0 +1,135 @@
+# RUE-2434: a module-qualified type-constructor head in a constant's struct
+# literal reduces as an unqualified head does (4.14:23, 4.14:26, 10.4:15).
+#
+# RUE-2404 taught declaration-time evaluation to reduce a literal's inline
+# head (`Wrap(u8) { .. }`). A qualified head (`lib.Wrap(u8) { .. }`) lowers to
+# a literal that also records its module, and the evaluator declined every
+# literal with a module before looking at the head, so the constant was E1200
+# "did not reduce". The head call carries the module itself, so only a
+# qualified literal without a head is still declined.
+
+[section]
+id = "cli.const_qualified_ctor_head"
+name = "Module-qualified constructor heads in constants (RUE-2434)"
+description = "A constant's struct literal with a module-qualified type-constructor head reduces."
+
+[[case]]
+name = "qualified_head_constant"
+description = "RUE-2434's repro: const C: lib.W = lib.Wrap(u8) { a: 42 }."
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+const lib = @import("x.rue");
+const C: lib.W = lib.Wrap(u8) { a: 42 };
+fn main() -> i32 { @intCast(C.a) }
+""" },
+    { path = "x.rue", source = """
+pub fn Wrap(comptime T: type) -> type { struct { a: T } }
+pub const W = Wrap(u8);
+""" },
+]
+stdout = ""
+exit_code = 42
+
+[[case]]
+name = "reexported_head_constant"
+description = "A head reached through a re-exported module, annotated by the same qualified application."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("x.rue");
+const C: lib.sub.Box(u64) = lib.sub.Box(u64) { v: 42 };
+fn main() -> i32 { @intCast(C.v) }
+""" },
+    { path = "x.rue", source = """
+pub const sub = @import("sub/y.rue");
+""" },
+    { path = "sub/y.rue", source = """
+pub fn Box(comptime T: type) -> type { struct { v: T } }
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "inline_import_head_constant"
+description = "A head rooted at an inline @import reduces too."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("x.rue");
+const C: lib.W = @import("x.rue").Wrap(u8) { a: 42 };
+fn main() -> i32 { @intCast(C.a) }
+""" },
+    { path = "x.rue", source = """
+pub fn Wrap(comptime T: type) -> type { struct { a: T } }
+pub const W = Wrap(u8);
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "qualified_head_nested_values"
+description = "Qualified-head literals as a Copy struct's field, as array elements, and inside a comptime block."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("x.rue");
+@copy struct O { w: lib.W, b: u8 }
+const X: O = O { w: lib.Wrap(u8) { a: 30 }, b: 2 };
+const A: [lib.W; 2] = [lib.Wrap(u8) { a: 4 }, lib.Wrap(u8) { a: 3 }];
+const B: lib.W = comptime { lib.Wrap(u8) { a: 3 } };
+fn main() -> i32 { @intCast(X.w.a + X.b + A[0].a + A[1].a + B.a) }
+""" },
+    { path = "x.rue", source = """
+pub fn Wrap(comptime T: type) -> type { struct { a: T } }
+pub const W = Wrap(u8);
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "qualified_head_wrong_application_rejected"
+description = "The head's type is checked against the declared one: Wrap(u8) where Wrap(u16) is declared is E0206."
+compile_fail = true
+error_contains = ["E0206", "expected Wrap(u16), found Wrap(u8)"]
+files = [
+    { path = "main.rue", source = """
+const lib = @import("x.rue");
+const C: lib.Wrap(u16) = lib.Wrap(u8) { a: 42 };
+fn main() -> i32 { 0 }
+""" },
+    { path = "x.rue", source = """
+pub fn Wrap(comptime T: type) -> type { struct { a: T } }
+""" },
+]
+
+[[case]]
+name = "qualified_head_field_range_checked"
+description = "A field value is range-checked against the head's field type (u8)."
+compile_fail = true
+error_contains = ["E0800", "out of range for type 'u8'"]
+files = [
+    { path = "main.rue", source = """
+const lib = @import("x.rue");
+const C: lib.W = lib.Wrap(u8) { a: 300 };
+fn main() -> i32 { 0 }
+""" },
+    { path = "x.rue", source = """
+pub fn Wrap(comptime T: type) -> type { struct { a: T } }
+pub const W = Wrap(u8);
+""" },
+]
+
+[[case]]
+name = "private_qualified_head_rejected"
+description = "A private constructor named through a module from another directory is E0706."
+compile_fail = true
+error_contains = ["E0706", "private"]
+files = [
+    { path = "main.rue", source = """
+const p = @import("sub/p.rue");
+const C: p.Pub(u8) = p.Priv(u8) { a: 42 };
+fn main() -> i32 { 0 }
+""" },
+    { path = "sub/p.rue", source = """
+fn Priv(comptime T: type) -> type { struct { a: T } }
+pub fn Pub(comptime T: type) -> type { struct { a: T } }
+""" },
+]
