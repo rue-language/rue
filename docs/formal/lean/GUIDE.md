@@ -2064,7 +2064,8 @@ back-edge invariance; bringing that wording in line is RUE-2355.
   ```
 
   Two things there would be holes: `sorryAx`, which means a proof was left
-  unfinished, and `Lean.ofReduceBool` (what `native_decide` introduces), which
+  unfinished, and the axiom `native_decide` adds for each use (named
+  `….native_decide.ax_…` from Lean 4.29, `Lean.ofReduceBool` before), which
   means a result the kernel did not verify itself. Lean's three standard
   axioms, `propext`, `Quot.sound` and `Classical.choice`, are kernel-checked
   assumptions of the logic, not holes; this project's policy is to use only
@@ -2111,8 +2112,8 @@ output, lists every theorem in the `RueCore` namespace with the axioms
 on `sorryAx`, and the axioms the package declares itself. Its header gives
 the counts; expect no axiom anywhere outside `propext` and `Quot.sound`, no
 `sorryAx`, and no declared axiom. *A defect looks like:* a `sorryAx` (an
-unfinished proof), a `Lean.ofReduceBool` (a `native_decide` the kernel did
-not check), a `Classical.choice` (allowed by Lean, outside this project's
+unfinished proof), a `….native_decide.ax_…` or `Lean.ofReduceBool` (a
+`native_decide` the kernel did not check), a `Classical.choice` (allowed by Lean, outside this project's
 constructive policy), or a package-declared axiom that assumes the thing
 being proved. A grep for `sorry` would miss the first of those if a macro hid
 it; the axiom list would not. Regenerate the report with

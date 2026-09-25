@@ -59,7 +59,8 @@ def _lean_package_impl(ctx: AnalysisContext) -> list[Provider]:
     `lake build` writes `.lake/` beside them and an action must not write to
     its inputs. The outputs are reports, not build products: a stamp, the
     `#print axioms` listing for the theorems `trust` names, the toolchain's
-    own `leanchecker` re-check of the compiled modules, and whatever
+    own `leanchecker` re-check of the compiled modules (every module
+    `closure_exe` prints, else the root module), and whatever
     `corpus_exe` and `report_exes` print. The action fails if any listed
     theorem depends on an axiom outside `allowed_axioms`, so the trust
     boundary of the mechanization is a build error, not a note.
@@ -77,6 +78,7 @@ def _lean_package_impl(ctx: AnalysisContext) -> list[Provider]:
     allowed = " ".join(ctx.attrs.allowed_axioms)
     corpus_exe = ctx.attrs.corpus_exe or ""
     extra_exes = " ".join(ctx.attrs.extra_exes)
+    closure_cmd = " ".join(['"{}"'.format(arg) for arg in ctx.attrs.closure_exe])
 
     # Reports the package generates about itself (the statement digest and the
     # trust report, RUE-2247): built, run, and their stdout captured beside
@@ -111,7 +113,6 @@ def _lean_package_impl(ctx: AnalysisContext) -> list[Provider]:
             'cd "$work"',
             'lake build "$module" > "$out/build.log" 2>&1',
             'lake env lean Trust.lean > "$out/axioms.txt" 2>&1',
-            'lake env leanchecker "$module" > "$out/leanchecker.txt" 2>&1',
             # The bridge corpus (RUE-2227), when the package declares an
             # exporter: built and run here so `corpus.json` is a Buck
             # artifact the rue-oracle-diff consumer can take by $(location).
@@ -129,6 +130,22 @@ def _lean_package_impl(ctx: AnalysisContext) -> list[Provider]:
             '  lake build "$exe" >> "$out/build.log" 2>&1',
             'done',
         ] + report_lines + [
+            # The kernel re-check, once everything is built: the toolchain's
+            # own `leanchecker` replays through the kernel every declaration of
+            # every module `closure_exe` prints (for RueCore, the roots' import
+            # closure outside the toolchain, walked from the `.olean` headers),
+            # or of the root module when there is none. A declaration added
+            # without the kernel checking it (the `debug.skipKernelTC` option,
+            # however it was set) fails here, so this, not a scan of the
+            # sources, is the guarantee (RUE-2457). Its message goes to stderr
+            # too, since Buck shows that rather than the report.
+            'closure_cmd=\'' + closure_cmd + '\'',
+            'if [ -n "$closure_cmd" ]; then',
+            '  modules=$(eval "lake exe $closure_cmd")',
+            'else',
+            '  modules="$module"',
+            'fi',
+            'lake env leanchecker -v $modules > "$out/leanchecker.txt" 2>&1 || { cat "$out/leanchecker.txt" >&2; exit 1; }',
             # Every `#print axioms` line reads `'<theorem>' depends on axioms: [a, b]`
             # (or `does not depend on any axioms`); reject any axiom outside the
             # allowed set.
@@ -178,6 +195,12 @@ lean_package = rule(
             default = ["propext", "Quot.sound"],
             doc = "Axioms the `trust` theorems may depend on; anything else fails the build.",
         ),
+        "closure_exe": attrs.list(
+            attrs.string(),
+            default = [],
+            doc = "A `lean_exe` of the package and its arguments that prints, one per line, the " +
+                  "modules `leanchecker` re-checks; when empty, `leanchecker` gets `module`.",
+        ),
         "corpus_exe": attrs.option(
             attrs.string(),
             default = None,
@@ -188,7 +211,7 @@ lean_package = rule(
             default = [],
             doc = "Further `lean_exe`s of the package to build (not run), so they keep compiling.",
         ),
-        "module": attrs.string(doc = "Root module `lake build` and `leanchecker` are given."),
+        "module": attrs.string(doc = "Root module `lake build` is given; `leanchecker` gets it when `closure_exe` is empty."),
         "report_exes": attrs.dict(
             attrs.string(),
             attrs.list(attrs.string()),
