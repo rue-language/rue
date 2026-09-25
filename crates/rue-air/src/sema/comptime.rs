@@ -844,27 +844,6 @@ pub trait ComptimeCallProtocol: ComptimeDomain {
         argument_count: usize,
         span: Span,
     ) -> ComptimeHostResult<Self::CallBinding, Self::Failure>;
-    /// Return the declared type for an argument before its expression is
-    /// reduced, so contextual aggregate literals preserve the call contract.
-    fn comptime_call_argument_type(
-        &self,
-        _binding: &Self::CallBinding,
-        _index: usize,
-    ) -> Option<Self::Type> {
-        None
-    }
-    /// The type an argument's value takes at its parameter, with the call's
-    /// earlier type arguments substituted (`v: T` after `T = f32` is `f32`).
-    /// The engine holds a float literal argument to spec 3.12:10 at it. The
-    /// default is the declared argument type, for a host whose parameter
-    /// types are already concrete.
-    fn comptime_call_parameter_type(
-        &self,
-        binding: &Self::CallBinding,
-        index: usize,
-    ) -> Option<Self::Type> {
-        self.comptime_call_argument_type(binding, index)
-    }
     /// Push one already-evaluated argument. `false` rejects the call as
     /// runtime-dependent and stops the engine before the next child runs.
     fn bind_comptime_call_argument(
@@ -879,6 +858,23 @@ pub trait ComptimeCallProtocol: ComptimeDomain {
         binding: Self::CallBinding,
         span: Span,
     ) -> ComptimeHostResult<Option<Self::BoundCall>, Self::Failure>;
+    /// The type an argument's value takes at its parameter, with the call's
+    /// earlier type and value arguments substituted (`v: T` after `T = f32`
+    /// is `f32`, `v: [T; 1]` is `[f32; 1]`). The engine evaluates the
+    /// argument against it, so a contextual aggregate literal takes its slot
+    /// types from the call contract and a float literal argument meets spec
+    /// 3.12:10 at its own span. `None` leaves the argument untyped.
+    ///
+    /// It reads the binding without advancing it, but resolving the
+    /// substituted type may intern one, so unlike the binding transaction's
+    /// own hooks it takes the host mutably.
+    fn comptime_call_parameter_type(
+        &mut self,
+        _binding: &Self::CallBinding,
+        _index: usize,
+    ) -> Option<Self::Type> {
+        None
+    }
     fn prepare_comptime_call(
         &mut self,
         admission: ComptimeCallAdmission<Self::CallAdmission, Self::Name>,
@@ -1719,8 +1715,17 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let body = frame.body;
         let previous_expected = env.expected_result.clone();
         env.expected_result = frame.expected_result.clone();
+        // A callable-body root is a function reduced by its own query, so its
+        // result position takes the declared return type exactly as an
+        // entered call frame's does (spec 3.12:10). An expression root's
+        // value is admitted by its consumer instead.
+        let literal_type = frame
+            .call_identity
+            .is_some()
+            .then(|| frame.expected_result.clone())
+            .flatten();
         self.frames.push(frame);
-        let result = self.eval(body, env);
+        let result = self.eval_typed(body, literal_type, env);
         self.frames.pop();
         env.expected_result = previous_expected;
         result
@@ -1932,8 +1937,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         for (index, arg) in args.iter().enumerate() {
             let program = self.program_key();
             let previous_expected = env.expected_result.clone();
-            env.expected_result = self.host.comptime_call_argument_type(binding, index);
             let parameter_type = self.host.comptime_call_parameter_type(binding, index);
+            env.expected_result = parameter_type.clone();
             let value = match self.eval_typed(arg.value, parameter_type, env) {
                 ComptimeOutcome::Known(value) => value,
                 other => {
@@ -2093,8 +2098,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let body = frame.body;
         let is_call = frame.name.is_some();
         // A call's body produces a value of its declared return type, so a
-        // float literal in its result position meets spec 3.12:10 there. A
-        // root frame's value is admitted by its consumer: a `const`
+        // float literal in its result position meets spec 3.12:10 there. An
+        // expression root's value is admitted by its consumer: a `const`
         // initializer or the body type checker's `comptime {}` result.
         let literal_type = is_call.then(|| frame.expected_result.clone()).flatten();
         self.frames.push(frame);
