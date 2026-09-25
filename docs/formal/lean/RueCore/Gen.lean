@@ -153,14 +153,18 @@ non-root array (E0904, `pathOk`), the repeat form at a non-`Copy` element
 program's result type, whose draws keep their weights; the seed corpus has
 the shapes those would add.
 
-Three generated shapes have disagreed with the compiler, each seeded, and none
-is drawn around — drawing around one would write the compiler's current
+Four generated shapes have disagreed with the compiler — three seeded, and a
+fourth the return arms reached (RUE-2383) not yet — and none is drawn around — drawing around one would write the compiler's current
 answer into the generator. A generated case with one of them is a bridge
 disagreement to attribute to its issue by hand, as RUE-2335's was (above);
 nothing in the tree counts them. On the current draws the acceptance settings,
 `--gen 200 --seed 7` and `--gen 1000 --seed 23`, reach one of them, the
 self-assignment, in four cases, and in every one the compiler stops first at
-another error, so no case **disagrees**: all 1,200 agree with the compiler.
+another error, so none of those **disagrees**. One case at those settings does
+disagree, on a shape the return arms reached (RUE-2383, the last bullet
+below): all 1,200 others agree with the compiler. At `--gen 200 --seed 41`
+the self-assignment is unmasked in `gen_41_76` and `gen_41_112`, two programs
+the return arms left unchanged.
 Wider runs reach it unmasked: `gen_101_207` (`--gen 400 --seed 101`) was
 drawn before the restoring statements below changed the draws, and is a
 RUE-2346 disagreement. The other names below are the cases that reached each
@@ -177,7 +181,8 @@ generated disagreement is a finding to file.
   `7.1:46`), while the compiler accepts it on purpose (RUE-228). On the current
   draws, three cases at `--gen 200 --seed 7` (`gen_7_145`, `gen_7_159`,
   `gen_7_181`) and one at `--gen 1000 --seed 23` (`gen_23_752`), each masked
-  because the compiler first reports an E0406 elsewhere. Before loops, one
+  because the compiler first reports another error — an E0406 at seed 7, an
+  E0205 in `gen_23_752`, which a return arm changed. Before loops, one
   case at seed 7 (`gen_7_101`, disagreeing) and three at seed 23
   (`gen_23_295`, `gen_23_868`, and `gen_23_652`, the last masked by an
   E0904).
@@ -190,6 +195,15 @@ generated disagreement is a finding to file.
   of it) was moved (seed `array_dyn_write_after_field_move`): `gen_2_1694`
   (`--gen 1695 --seed 2`) reached it before loops, and it agrees now that
   RUE-2344 is fixed.
+* `return { … }`, a `return` whose operand is a **block** (not yet seeded or
+  filed): §2's `return e` and `4.9:2`'s `"return" expression?` admit a block
+  operand, but the compiler's parser reads `return` before a `{` as a bare
+  `return` — `return ()` (`4.9:3`) — and then the block as the next
+  expression, so a function returning `i32` is refused with E0206. The printer
+  writes a `let`-bound dynamic index as such a block (`bindIdx`), so a
+  returned atom that reads below a dynamic index prints as one:
+  `gen_23_444` (`--gen 1000 --seed 23`), which the model accepts and runs to
+  `1`. `fn f() -> i32 { return { 2 } }` is the whole shape.
 
 Calls are **not** generated yet: every generated case is a one-function
 program (`Program.entry`), so the shapes RUE-2233 added that need a callee — a
