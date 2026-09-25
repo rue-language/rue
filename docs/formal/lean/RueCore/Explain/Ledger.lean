@@ -24,7 +24,7 @@ namespace Ledger
 
 /-- One owned identity's life: the step that minted it, if the run shows one,
 each end with its place in the table and what ended it, and each
-destructor's step. -/
+destructor's step (§7, §6.11). -/
 structure Entry where
   id : Nat
   minted : Option Nat
@@ -72,7 +72,7 @@ def rowEnds (D : Decls) (n : Nat) (s : Step) : List (Nat × String × String) :=
     (Event.freed D ev).map (fun i => (i, ref (k + 1), endLabel ev)))
 
 /-- The ledger of a run: one entry per owned identity the table mints or
-ends, in the order the table first shows it. -/
+ends, in the order the table first shows it (§7). -/
 def entries (D : Decls) (rows : List (Nat × Step)) : List Entry :=
   let ids := rows.foldl (fun seen (_, s) =>
     let seen := match mintedBy D s with

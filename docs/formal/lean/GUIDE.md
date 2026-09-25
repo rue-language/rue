@@ -658,6 +658,99 @@ accepts all five, and the corpus seeds them now (`if_return_arm_affine`,
 `panic_past_linear`). The generator still emits neither `return` nor `@panic`
 (`Gen.lean`).
 
+### The three trace theorems, one sentence each
+
+Three theorems read the drop trace rather than the result. Each is here in
+one plain sentence, beside its Lean statement and a corpus program whose
+trace shows it. Every explain rendering (`explain/<case>.txt`) ends with an
+**identity ledger**: one line per owned identity, with the step that minted
+it, the steps that ended it and the steps whose destructor ran on it. That
+makes each claim something you can look at, not only something proved.
+
+**No double free** (`Trace.lean`). *In a checked program's run, no value is
+ended twice and no value's destructor runs twice.*
+
+```lean
+theorem no_double_free (M : FloatModel) (h : ProgramTyped P) (fuel : Nat) :
+    (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
+      (∀ a, (freedIds P.decls (run M.toFloatOps P fuel).trace).count a ≤ 1) ∧
+      (∀ a, (dtorIds (run M.toFloatOps P fuel).trace).count a ≤ 1)
+```
+
+Witness: `partial_move_residue` (example 5). `v0.x0`'s value `#0` is moved
+out and dropped through its new binding at row 10 of its explain table. The
+scope exit at row 14
+drops the residue `S7 { ⊘, S1 { 2 }#1 }#2`, and the walk skips the `⊘`, so
+`#0` is not dropped again. The ledger's *ended* column has one entry for
+each of `#0`, `#1` and `#2`.
+
+**Exactly once** (`TraceExact.lean`). *Every owned value a well-typed
+evaluation holds is, when the evaluation ends normally or unwinds, still in a
+cell, part of the result, or ended exactly once: on the normal path or on
+the unwind path, never both and never neither.*
+
+```lean
+theorem drop_exactly_once (M : FloatModel) (h : ProgramTyped P)
+    (hp : P.pendingSafe = true) (ht : Typed P R Γ e T Ω)
+    (hfm : FrameMatches P.decls Γ φ H) (hcc : StoreCC P.decls H)
+    (he : e.pendingSafe = true) :
+    (∀ w, eval M.toFloatOps fuel P H φ e ≠ .stuck w) ∧
+      Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
+      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+```
+
+`Exact` is the count equation over the identities the evaluation starts
+with. `Tidy` says every cell the evaluation allocated has been retired.
+`rest_exactly_once` is the same for the values a form's leading operands
+produce, which is where a `let`'s initializer or a discarded `S { .. };`
+ends. The carve-outs are a trap, which ends nothing (§6.12), and
+`pendingSafe`, which excludes RUE-2316's abandoned operand.
+
+Witness: `return_past_affine` (example 2). The `return` unwinds past two
+live bindings. The σ-walk drops each once (`#2` and `#0`, row 9), and no
+`endscope` runs for either: the ledger has one end per identity, and all of
+them are on the unwind path.
+
+**Drop order** (`TraceOrder.lean`). *Within a value, every destructor runs
+inside the drop of the value that owns it, in §6.11's order; across cells,
+every step tears its cells down newest first.*
+
+```lean
+theorem drop_order (M : FloatModel) (h : ProgramTyped P) (fuel : Nat) :
+    (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
+      Blocks P.decls (run M.toFloatOps P fuel).trace ∧
+      ∀ C C', Steps M.toFloatOps P Config.init C → Step M.toFloatOps P C C' →
+        ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs)
+```
+
+The two halves need two presentations.
+
+- **Within a value**, the statement is over `eval`'s trace. `Blocks` is a
+  grammar: a trace is a sequence of `@dbg` lines, consumptions, and drop
+  markers, each marker followed by exactly §6.11's walk of what it names
+  (`dropEvents`). That is the destructor first, then the fields in
+  declaration order, an array's elements ascending, and an enum's active
+  payload only. A destructor event has no other place in the grammar.
+- **Across cells**, the statement is over §6's `Step`, because the order
+  comes from the scope record, which the trace does not show. Every scope
+  record of every reachable configuration is in location order, which is
+  registration order (`reachable_ordered`). So a teardown, which walks its
+  record backwards, drops strictly newest first. Every other step drops
+  sub-positions of one cell only.
+
+Witnesses: `struct_nested_dtor_drop` (example 4) for the first half. `S5`'s
+destructor (`#1`) runs before its field's (`#0`), both inside the one
+`drop ℓ2` block. `return_past_affine` for the second: the σ-walk's one step
+drops `ℓ3`, then `ℓ1` (`returnPastAffine_newestFirst`). In the ledger these
+show as the ends `[9.1]` and `[9.2]`, the first and second end of row 9. `TraceOrder.lean` also pins ten
+order-witnessing corpus cases through the theorems' projections, and has two
+results the statement rejects:
+
+- `fieldsSwapped_rejected`: a struct's two field destructors swapped;
+- `unorderedRecord_rejected`: a frame whose record is out of location order
+  takes a real step that drops oldest first. The invariant is what rules it
+  out.
+
 ### Loops, briefly
 
 `loop e` and its nullary `break` (§5.7, §6.10) add three things a reader

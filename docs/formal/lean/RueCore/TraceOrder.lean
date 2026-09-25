@@ -1055,7 +1055,7 @@ theorem Blocks.drop_inv {D : Decls} {ℓ : Nat} {c : Contents} {t : List Event}
   | drop h' => exact ⟨_, rfl, h'⟩
 
 /-- **No destructor outside a drop**: a trace that opens with a destructor
-event is not in the grammar. -/
+event is not in the grammar (§6.11). -/
 theorem Blocks.not_dtor {D : Decls} {s : Nat} {c : Contents} {t : List Event} :
     ¬ Blocks D (.dtor s c :: t) := by
   intro h; cases h
