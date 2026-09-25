@@ -1,0 +1,248 @@
+# RUE-2414: a generic call through a `let`-bound module takes its comptime
+# arguments exactly as the same call through a file-level `const` module does
+# (10.4:1: member access through either binding form has the same semantics).
+#
+# The staged comptime-argument pre-pass runs only when a gate finds a generic
+# call with a comptime argument in the body. The gate runs before inference,
+# so it resolves each call's receiver from syntax, and it knew only file-level
+# module bindings and inline `@import` spines. A receiver naming a local
+# (`let m = @import("x.rue")`, `let m = lib`, a join of modules) was not a fact
+# site, the pre-pass never ran, the type argument never reached the callee's
+# `x: T`, and the literal defaulted to i32: "E0206 expected u64, found i32".
+# The gate now walks the body in lexical scope, binding each `let` to the
+# module its initializer names.
+
+[section]
+id = "cli.local_module_generic_call"
+name = "Generic calls through let-bound modules (RUE-2414)"
+description = "A generic call through a let-bound module captures its comptime arguments as the const-bound form does."
+
+[[case]]
+name = "let_import_generic_type_param"
+description = "RUE-2414's repro: let m = @import(\"x.rue\"); m.g(u64, 3)."
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("x.rue");
+    let n = m.g(u64, 3);
+    @intCast(n)
+}
+""" },
+    { path = "x.rue", source = """
+pub fn g(comptime T: type, x: T) -> T { x }
+""" },
+]
+stdout = ""
+exit_code = 3
+
+[[case]]
+name = "let_alias_of_const_module"
+description = "A local alias of a file-level const module, with a literal past i32 range."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("x.rue");
+fn main() -> i32 {
+    let m = lib;
+    let n = m.g(u64, 5000000000);
+    if n > 1 { 3 } else { 1 }
+}
+""" },
+    { path = "x.rue", source = """
+pub fn g(comptime T: type, x: T) -> T { x }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "let_alias_of_local_module"
+description = "A local alias of another local module binding."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let a = @import("x.rue");
+    let m = a;
+    @intCast(m.g(u64, 3))
+}
+""" },
+    { path = "x.rue", source = """
+pub fn g(comptime T: type, x: T) -> T { x }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "local_module_shadows_file_module"
+description = "A let-bound module shadows a file-level module binding of the same name that has no such function."
+files = [
+    { path = "main.rue", source = """
+const m = @import("y.rue");
+fn main() -> i32 {
+    let m = @import("x.rue");
+    @intCast(m.g(u64, 3))
+}
+""" },
+    { path = "x.rue", source = """
+pub fn g(comptime T: type, x: T) -> T { x }
+""" },
+    { path = "y.rue", source = """
+pub fn other() -> i32 { 0 }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "inner_block_rebinds_to_other_module"
+description = "An inner block rebinds the name to a re-exporting module; each call resolves through its own binding."
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("x.rue");
+    let r = {
+        let m = @import("y.rue");
+        m.x.g(u64, 3)
+    };
+    @intCast(r + m.g(u64, 0))
+}
+""" },
+    { path = "x.rue", source = """
+pub fn g(comptime T: type, x: T) -> T { x }
+""" },
+    { path = "y.rue", source = """
+pub const x = @import("x.rue");
+""" },
+]
+stdout = ""
+exit_code = 3
+
+[[case]]
+name = "local_module_of_reexport"
+description = "let m = y.x, a local bound to a re-exported module."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let y = @import("y.rue");
+    let m = y.x;
+    @intCast(m.g(u64, 3))
+}
+""" },
+    { path = "x.rue", source = """
+pub fn g(comptime T: type, x: T) -> T { x }
+""" },
+    { path = "y.rue", source = """
+pub const x = @import("x.rue");
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "let_module_if_join"
+description = "A local bound to an if join of the same module (RUE-2419's join form)."
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+const lib = @import("x.rue");
+fn main() -> i32 {
+    let c = true;
+    let m = if c { lib } else { lib };
+    @intCast(m.g(u64, 3))
+}
+""" },
+    { path = "x.rue", source = """
+pub fn g(comptime T: type, x: T) -> T { x }
+""" },
+]
+stdout = ""
+exit_code = 3
+
+[[case]]
+name = "let_module_match_join"
+description = "A local bound to a match join of the same module."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let k = 1;
+    let m = match k { 1 => @import("x.rue"), _ => @import("x.rue") };
+    @intCast(m.g(u64, 3))
+}
+""" },
+    { path = "x.rue", source = """
+pub fn g(comptime T: type, x: T) -> T { x }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "let_module_block_initializer"
+description = "A local bound to a block whose own let names the module."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = { let t = @import("x.rue"); t };
+    @intCast(m.g(u64, 3))
+}
+""" },
+    { path = "x.rue", source = """
+pub fn g(comptime T: type, x: T) -> T { x }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "let_module_in_loop_body"
+description = "A module bound inside a loop body."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let mut t: u64 = 0;
+    let mut i = 0;
+    while i < 3 {
+        let m = @import("x.rue");
+        t = t + m.g(u64, 1);
+        i = i + 1;
+    }
+    @intCast(t)
+}
+""" },
+    { path = "x.rue", source = """
+pub fn g(comptime T: type, x: T) -> T { x }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "let_module_generic_literal_out_of_range"
+description = "The constraint is real: a literal past the substituted parameter type is E0800, as with a const-bound module."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("x.rue");
+    let n = m.g(u8, 300);
+    @intCast(n)
+}
+""" },
+    { path = "x.rue", source = """
+pub fn g(comptime T: type, x: T) -> T { x }
+""" },
+]
+compile_fail = true
+error_contains = ["E0800", "out of range for type 'u8'"]
+
+[[case]]
+name = "non_module_local_shadows_file_module"
+description = "A non-module local shadows a file-level module binding: m.g is a method lookup on the local (10.4:8)."
+files = [
+    { path = "main.rue", source = """
+const m = @import("x.rue");
+fn main() -> i32 {
+    let m = 5;
+    @intCast(m.g(u64, 3))
+}
+""" },
+    { path = "x.rue", source = """
+pub fn g(comptime T: type, x: T) -> T { x }
+""" },
+]
+compile_fail = true
+error_contains = ["E0413", "no method named 'g'"]
