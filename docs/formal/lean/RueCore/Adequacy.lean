@@ -385,6 +385,249 @@ theorem sim_drop (p : Place) :
                   intro K tr
                   simpa using Steps.single (.dropMove hroot hplan hsub hcopy hdrop hw)
 
+/-- §6.4's binary operators after §6.2's `E ⊕ e` and `v ⊕ E` (helper). -/
+theorem sim_binop (IH : SimIH M P fuel) (op : BinOp) (e₁ e₂ : Expr) :
+    Sim M P φ (evalConf H φ (.binop op e₁ e₂)) (eval M (fuel + 1) P H φ (.binop op e₁ e₂)) := by
+  simp only [eval]
+  refine Sim.andThen (F := .binopL op e₂) (fun _ => ⟨rfl, rfl⟩)
+    (fun _ _ => Steps.single .binopEnter) (IH H φ e₁) ?_
+  intro H₁ v₁ _ _
+  refine Sim.andThen (F := .binopR op v₁) (fun _ => ⟨rfl, rfl⟩)
+    (fun _ _ => Steps.single .binopMid) (IH H₁ φ e₂) ?_
+  intro H₂ v₂ _ _
+  exact OpRes.sim _ (fun _ _ _ h => .binop h) (fun _ _ _ h => .binopTrap h)
+
+/-- §6.4's unary operators after §6.2's `⊖ E` (helper). -/
+theorem sim_unop (IH : SimIH M P fuel) (op : UnOp) (e : Expr) :
+    Sim M P φ (evalConf H φ (.unop op e)) (eval M (fuel + 1) P H φ (.unop op e)) := by
+  simp only [eval]
+  refine Sim.andThen (F := .unop op) (fun _ => ⟨rfl, rfl⟩)
+    (fun _ _ => Steps.single .unopEnter) (IH H φ e) ?_
+  intro H₁ v _ _
+  exact OpRes.sim _ (fun _ _ _ h => .unop h) (fun _ _ _ h => .unopTrap h)
+
+/-- (D-Int-Cast) and its trap after §6.2's `@intCast( E )` (helper). -/
+theorem sim_intCast (IH : SimIH M P fuel) (w : IntWidth) (sg : Sign) (e : Expr) :
+    Sim M P φ (evalConf H φ (.intCast w sg e)) (eval M (fuel + 1) P H φ (.intCast w sg e)) := by
+  simp only [eval]
+  refine Sim.andThen (F := .intCast w sg) (fun _ => ⟨rfl, rfl⟩)
+    (fun _ _ => Steps.single .intCastEnter) (IH H φ e) ?_
+  intro H₁ v _ _
+  exact OpRes.sim _ (fun _ _ _ h => .intCast h) (fun _ _ _ h => .intCastTrap h)
+
+/-- §6.4's float intrinsics after §6.2's `@f( E )` (helper). -/
+theorem sim_fintrin (IH : SimIH M P fuel) (k : FloatIntrin) (e : Expr) :
+    Sim M P φ (evalConf H φ (.fintrin k e)) (eval M (fuel + 1) P H φ (.fintrin k e)) := by
+  simp only [eval]
+  refine Sim.andThen (F := .fintrin k) (fun _ => ⟨rfl, rfl⟩)
+    (fun _ _ => Steps.single .fintrinEnter) (IH H φ e) ?_
+  intro H₁ v _ _
+  exact OpRes.sim _ (fun _ _ _ h => .fintrin h) (fun _ _ _ h => .fintrinTrap h)
+
+/-- `@dbg` (§6.12) after §6.2's `@dbg( E )` (helper). -/
+theorem sim_dbg (IH : SimIH M P fuel) (e : Expr) :
+    Sim M P φ (evalConf H φ (.dbg e)) (eval M (fuel + 1) P H φ (.dbg e)) := by
+  simp only [eval]
+  refine Sim.andThen (F := .dbg) (fun _ => ⟨rfl, rfl⟩)
+    (fun _ _ => Steps.single .dbgEnter) (IH H φ e) ?_
+  intro H₁ v _ _ K tr
+  exact Steps.single .dbg
+
+/-- (D-Struct) §6.5 after §6.2's search through the initializers; the
+identity is minted as `introVal` mints it (helper). -/
+theorem sim_mkStruct (IH : SimIH M P fuel) (s : Nat) (args : List Expr) :
+    Sim M P φ (evalConf H φ (.mkStruct s args)) (eval M (fuel + 1) P H φ (.mkStruct s args)) := by
+  simp only [eval]
+  obtain ⟨ihok, ihab⟩ := evalArgs_sim (φ := φ) IH (.struct s) args H []
+  have hent : ∀ K tr, Steps M P (evalConf H φ (.mkStruct s args) K tr)
+      (argsConf H φ (.struct s) [] args K tr) := fun _ _ => Steps.single .structEnter
+  split
+  · rename_i r hr; exact Sim.pre hent (ihab r hr)
+  · rename_i H₁ vs tr₁ hr
+    refine Sim.withTrace (C₂ := argsConf H₁ φ (.struct s) vs [])
+      (fun K tr => (hent K tr).trans (by simpa using ihok _ _ _ hr K tr)) ?_
+    split
+    · trivial
+    · rename_i sd hsd
+      split
+      · rename_i hlen
+        simp only [introVal]
+        split
+        · intro K tr; simpa using Steps.single (.mkStruct hsd hlen)
+        · trivial
+      · trivial
+
+/-- (D-Enum-Intro) §6.6 after §6.2's search through the payload (helper). -/
+theorem sim_mkEnum (IH : SimIH M P fuel) (e k : Nat) (args : List Expr) :
+    Sim M P φ (evalConf H φ (.mkEnum e k args)) (eval M (fuel + 1) P H φ (.mkEnum e k args)) := by
+  simp only [eval]
+  obtain ⟨ihok, ihab⟩ := evalArgs_sim (φ := φ) IH (.enum e k) args H []
+  have hent : ∀ K tr, Steps M P (evalConf H φ (.mkEnum e k args) K tr)
+      (argsConf H φ (.enum e k) [] args K tr) := fun _ _ => Steps.single .enumEnter
+  split
+  · rename_i r hr; exact Sim.pre hent (ihab r hr)
+  · rename_i H₁ vs tr₁ hr
+    refine Sim.withTrace (C₂ := argsConf H₁ φ (.enum e k) vs [])
+      (fun K tr => (hent K tr).trans (by simpa using ihok _ _ _ hr K tr)) ?_
+    split
+    · trivial
+    · rename_i ed hed
+      split
+      · trivial
+      · rename_i Ts hTs
+        split
+        · rename_i hlen
+          simp only [introVal]
+          split
+          · intro K tr; simpa using Steps.single (.mkEnum hed hTs hlen)
+          · trivial
+        · trivial
+
+/-- (D-Array) §6.5 after §6.2's search through the elements (helper). -/
+theorem sim_mkArray (IH : SimIH M P fuel) (T : Ty) (args : List Expr) :
+    Sim M P φ (evalConf H φ (.mkArray T args)) (eval M (fuel + 1) P H φ (.mkArray T args)) := by
+  simp only [eval]
+  obtain ⟨ihok, ihab⟩ := evalArgs_sim (φ := φ) IH (.array T) args H []
+  have hent : ∀ K tr, Steps M P (evalConf H φ (.mkArray T args) K tr)
+      (argsConf H φ (.array T) [] args K tr) := fun _ _ => Steps.single .arrayEnter
+  split
+  · rename_i r hr; exact Sim.pre hent (ihab r hr)
+  · rename_i H₁ vs tr₁ hr
+    refine Sim.withTrace (C₂ := argsConf H₁ φ (.array T) vs [])
+      (fun K tr => (hent K tr).trans (by simpa using ihok _ _ _ hr K tr)) ?_
+    simp only [introVal]
+    split
+    · intro K tr; simpa using Steps.single .mkArray
+    · trivial
+
+/-- The repeat form (`7.1:39`) (helper). -/
+theorem sim_repeat (IH : SimIH M P fuel) (T : Ty) (e : Expr) (n : Nat) :
+    Sim M P φ (evalConf H φ (.repeatArray T e n)) (eval M (fuel + 1) P H φ (.repeatArray T e n)) := by
+  simp only [eval]
+  refine Sim.andThen (F := .repeatArray T n) (fun _ => ⟨rfl, rfl⟩)
+    (fun _ _ => Steps.single .repeatEnter) (IH H φ e) ?_
+  intro H₁ v _ _
+  split
+  · rename_i hcopy
+    simp only [introVal]
+    split
+    · intro K tr; simpa using Steps.single (.repeatArray hcopy)
+    · trivial
+  · trivial
+
+/-- (D-Index)/(D-Index-Trap) §6.5 and (D-Use-Untrackable-Dynamic-Copy) §6.3,
+from the index list's context (helper). -/
+theorem sim_indexRead_args (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
+    (πs : List (List Nat)) :
+    Sim M P φ (argsConf H φ (.indexRead p πs) [] idx)
+      (eval M (fuel + 1) P H φ (.indexRead p idx πs)) := by
+  simp only [eval]
+  obtain ⟨ihok, ihab⟩ := evalArgs_sim (φ := φ) IH (.indexRead p πs) idx H []
+  split
+  · rename_i r hr; exact ihab r hr
+  · rename_i H₁ vs tr₁ hr
+    refine Sim.withTrace (C₂ := argsConf H₁ φ (.indexRead p πs) vs [])
+      (fun K tr => by simpa using ihok _ _ _ hr K tr) ?_
+    split
+    · trivial
+    · rename_i hb
+      intro K tr; simpa using Steps.single (.indexReadTrap hb)
+    · rename_i ℓ c sub ρ hd
+      split
+      · trivial
+      · rename_i leaf hleaf
+        split
+        · trivial
+        · rename_i v hv
+          split
+          · rename_i hcopy
+            intro K tr; simpa using Steps.single (.indexRead hd hleaf hv hcopy)
+          · trivial
+
+/-- (D-Index) at an expression in focus (helper). -/
+theorem sim_indexRead (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
+    (πs : List (List Nat)) :
+    Sim M P φ (evalConf H φ (.indexRead p idx πs)) (eval M (fuel + 1) P H φ (.indexRead p idx πs)) :=
+  Sim.pre (fun _ _ => Steps.single .indexReadEnter) (sim_indexRead_args IH p idx πs)
+
+/-- §6.11's `@drop` at a `Copy` place below a dynamic index. `eval` runs it
+as the read with its value discarded, at the same fuel, so the argument list
+is at two less (helper). -/
+theorem sim_indexDrop (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
+    (πs : List (List Nat)) :
+    Sim M P φ (evalConf H φ (.indexDrop p idx πs)) (eval M (fuel + 2) P H φ (.indexDrop p idx πs)) := by
+  simp only [eval]
+  obtain ⟨ihok, ihab⟩ := evalArgs_sim (φ := φ) IH (.indexDrop p πs) idx H []
+  have hent : ∀ K tr, Steps M P (evalConf H φ (.indexDrop p idx πs) K tr)
+      (argsConf H φ (.indexDrop p πs) [] idx K tr) := fun _ _ => Steps.single .indexDropEnter
+  split
+  · rename_i r hr
+    have hne := evalArgs_abort_ne_ok hr
+    have : r.andThen (fun H' _ => .ok H' .unit []) = r := by
+      cases r <;> simp_all [EvalRes.andThen]
+    rw [this]
+    exact Sim.pre hent (ihab r hr)
+  · rename_i H₁ vs tr₁ hr
+    rw [EvalRes.withTrace_andThen]
+    refine Sim.withTrace (C₂ := argsConf H₁ φ (.indexDrop p πs) vs [])
+      (fun K tr => (hent K tr).trans (by simpa using ihok _ _ _ hr K tr)) ?_
+    split
+    · trivial
+    · rename_i hb
+      intro K tr; simpa [EvalRes.andThen] using Steps.single (.indexDropTrap hb)
+    · rename_i ℓ c sub ρ hd
+      split
+      · trivial
+      · rename_i leaf hleaf
+        split
+        · trivial
+        · rename_i v hv
+          split
+          · rename_i hcopy
+            rw [← Contents.mult_toVal _ _ _ hv] at hcopy
+            intro K tr; simpa [EvalRes.andThen] using Steps.single (.indexDrop hd hleaf hv hcopy)
+          · trivial
+
+/-- (D-Assign) §6.8 below a dynamic index, in `5.2:14`'s order (helper). -/
+theorem sim_indexWrite (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
+    (πs : List (List Nat)) (e : Expr) :
+    Sim M P φ (evalConf H φ (.indexWrite p idx πs e))
+      (eval M (fuel + 1) P H φ (.indexWrite p idx πs e)) := by
+  simp only [eval]
+  refine Sim.andThen (F := .indexWriteRhs p idx πs) (fun _ => ⟨rfl, rfl⟩)
+    (fun _ _ => Steps.single .indexWriteEnter) (IH H φ e) ?_
+  intro H₁ v _ _
+  obtain ⟨ihok, ihab⟩ := evalArgs_sim (φ := φ) IH (.indexWrite p πs v) idx H₁ []
+  have hent : ∀ K tr, Steps M P (.run H₁ φ (.indexWriteRhs p idx πs :: K) (.ret v) tr)
+      (argsConf H₁ φ (.indexWrite p πs v) [] idx K tr) := fun _ _ => Steps.single .indexWriteRhs
+  split
+  · rename_i r hr; exact Sim.pre hent (ihab r hr)
+  · rename_i H₂ vs tr₂ hr
+    refine Sim.withTrace (C₂ := argsConf H₂ φ (.indexWrite p πs v) vs [])
+      (fun K tr => (hent K tr).trans (by simpa using ihok _ _ _ hr K tr)) ?_
+    split
+    · trivial
+    · rename_i hb
+      intro K tr; simpa using Steps.single (.indexWriteTrap hb)
+    · rename_i ℓ c sub ρ hd
+      split
+      · trivial
+      · rename_i old hold
+        split
+        · trivial
+        · split
+          · trivial
+          · rename_i evs hdrop
+            split
+            · trivial
+            · rename_i sub' hw₁
+              split
+              · trivial
+              · rename_i c' hw₂
+                split
+                · intro K tr; exact Steps.single (.indexWrite hd hold hdrop hw₁ hw₂)
+                · trivial
+
 end forms
 
 end RueCore
