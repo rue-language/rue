@@ -29,9 +29,10 @@ The modelled fragment has integers, floats, `bool`, structs, enums with
 `match`, fixed-length arrays, `let`, assignment, `if`, `loop`, functions
 called by value, `return`, `@panic` and `@dbg`.
 
-It does **not** have borrows or `inout` parameters, heap storage behind
-growable containers, equality comparisons, generics, `comptime`, or most of
-the standard library. Borrows and the heap are planned (RUE-2238, RUE-2240).
+It does **not** have, for example, borrows or `inout` parameters,
+heap storage behind growable containers, strings, methods, equality
+comparisons, `&&`/`||`, `while`/`for`/`continue`, generics, `comptime`, or
+most of the standard library. Borrows and the heap are planned (RUE-2238, RUE-2240).
 
 ## What is proved
 
@@ -39,14 +40,14 @@ For programs in the core fragment that the typing rules accept:
 
 - **They never get stuck**, that is, reach a state the rules give no meaning
   to, such as using a moved or dropped value. A run ends with a value of its
-  declared type or a defined trap (overflow, division by zero, out of bounds,
-  `@panic`), or runs forever.
+  declared type or a defined trap (overflow, a failed cast, division by zero,
+  out of bounds, `@panic`), or runs forever.
 - **No value is dropped twice.**
 - **Every value needing a drop ends exactly once**: dropped, or consumed whole
-  (moved into a `match`, say). A linear value is never leaked, overwritten or
-  silently discarded. Two exceptions, where a value is never dropped: values
-  alive at a trap, and a value computed for one argument when a later argument
-  `return`s early (RUE-2316, open; the compiler has the same gap).
+  (moved into a `match`, say). Two paths drop nothing, linear values
+  included: a trap (by design), and a later part of an expression `return`ing
+  or `break`ing after an earlier part computed a value (RUE-2316, open; the
+  compiler has the same gap).
 - **Drops happen in the promised order**: destructor, then fields in
   declaration order, array elements ascending, bindings newest first.
 - **The Lean type checker never accepts a program the rules forbid.** It may
@@ -66,19 +67,19 @@ testing against an executable specification**:
    code at `-O1`, `-O2` and `-O3` run it.
 4. Every verdict and output must match.
 
-Inputs: 171 hand-written programs, and random ones from a generator (1,200
-across its two standard settings, all agreeing).
+Inputs: 171 hand-written programs and 1,200 generated ones, all agreeing as
+of 2026-09-25.
 
 A disagreement means the compiler, model, spec or printer is wrong; a person
-decides which. At least eight were compiler bugs, all fixed
+decides which. At least nine were compiler bugs, all fixed
 (RUE-2290, RUE-2318, RUE-2335, RUE-2341, RUE-2344, RUE-2345, RUE-2347,
-RUE-2348); others became spec questions.
+RUE-2348, RUE-2449); others became spec questions.
 
 One hand-written case knowingly disagrees: the spec forbids `a[0] = a[0]`, the
 compiler accepts it, and the decision is open (RUE-2346).
 
-This is **verification-guided development**, as AWS did for Cedar: prove an
-executable model's properties, then test the product against it.
+This follows **verification-guided development**, as AWS did for Cedar (prove
+the model, test the product against it), at a far smaller scale.
 
 ## What that does and does not guarantee
 
@@ -93,10 +94,9 @@ executable model's properties, then test the product against it.
 
 - Lean's kernel checks every step of all 811 theorems; none is unfinished.
 - Only two standard axioms, `propext` and `Quot.sound`, are used. IEEE 754
-  float laws are stated assumptions.
+  float laws are hypotheses the theorems take, not axioms.
 - The kernel cannot check that the model matches the calculus, or that the
-  printer is faithful. Review covers it: agent review of every slice, and at
-  each phase a different AI model family's review with a maintainer (one of
-  four done).
+  printer is faithful. Review covers those: agent review per slice, and
+  cross-model review with a maintainer per phase (one of four done).
 
 See [lean/TRUST.md](lean/TRUST.md) and [lean/GUIDE.md](lean/GUIDE.md).
