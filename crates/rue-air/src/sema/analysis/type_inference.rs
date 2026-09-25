@@ -299,6 +299,47 @@ fn lexical_binding_capture_view(
     })
 }
 
+/// What resolves a method-call receiver to a module for
+/// [`OrdinaryBodyEngine::generic_callee_key`].
+#[derive(Clone, Copy)]
+enum ReceiverFacts<'a> {
+    /// The fact collector's inferred types, which resolve any receiver.
+    Resolved(&'a AHashMap<InstRef, Type>),
+    /// The pre-pass gate, which runs before inference: the `let`-bound
+    /// modules in lexical scope at the call.
+    Syntactic(&'a LocalModuleScope),
+}
+
+/// The `let` bindings in lexical scope at one point of the pre-pass gate's
+/// walk, each with the module its initializer names, or `None` for a local
+/// that is not a module (which still shadows a file-level binding).
+#[derive(Default)]
+struct LocalModuleScope {
+    bindings: AHashMap<Spur, Vec<Option<crate::types::ModuleId>>>,
+}
+
+impl LocalModuleScope {
+    fn bind(&mut self, name: Spur, module: Option<crate::types::ModuleId>) {
+        self.bindings.entry(name).or_default().push(module);
+    }
+
+    fn unbind(&mut self, name: Spur) {
+        if let Some(stack) = self.bindings.get_mut(&name) {
+            stack.pop();
+            if stack.is_empty() {
+                self.bindings.remove(&name);
+            }
+        }
+    }
+
+    /// `Some` when a `let` named `name` is in scope: the module it names, if any.
+    fn lookup(&self, name: Spur) -> Option<Option<crate::types::ModuleId>> {
+        self.bindings
+            .get(&name)
+            .and_then(|stack| stack.last().copied())
+    }
+}
+
 #[derive(Clone)]
 struct PrecomputeSnapshot {
     comptime_local_bindings: Arc<AHashMap<InstRef, Type>>,
@@ -509,10 +550,32 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Keep the probe decision local to this body.  Scanning the packed
         // module RIR here made every function observe unrelated generic calls
         // (and made the cost proportional to body_count * module_size).
-        let mut pending = vec![body];
+        //
+        // The walk is lexically scoped: a block's `let`s come into scope in
+        // statement order and leave with the block, so a receiver naming a
+        // local module binding resolves to the module its initializer names,
+        // exactly as a file-level `const` does (RUE-2414).
+        enum GateTask {
+            Visit(InstRef),
+            Bind(InstRef),
+            Unbind(Spur),
+        }
+        let mut pending = vec![GateTask::Visit(body)];
         let mut visited = ahash::AHashSet::new();
+        let mut locals = LocalModuleScope::default();
         let mut nodes = 0_u64;
-        while let Some(inst_ref) = pending.pop() {
+        while let Some(task) = pending.pop() {
+            let inst_ref = match task {
+                GateTask::Visit(inst_ref) => inst_ref,
+                GateTask::Bind(alloc) => {
+                    self.bind_local_module(alloc, &mut locals);
+                    continue;
+                }
+                GateTask::Unbind(name) => {
+                    locals.unbind(name);
+                    continue;
+                }
+            };
             self.check_canceled()?;
             nodes = nodes.saturating_add(1);
             if !visited.insert(inst_ref) {
@@ -526,31 +589,53 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 rue_rir::InstData::Call { args, .. }
                 | rue_rir::InstData::MethodCall { args, .. } => {
                     let argument_count = self.body_rir_ref().call_args(args).len();
-                    self.generic_callee_key(&inst_data, inst_span, None)
-                        .and_then(|key| self.function_info(key))
-                        .is_some_and(|function| {
-                            if !function.is_generic {
-                                return false;
-                            }
-                            // Every comptime argument is a fact site, type
-                            // arguments included: inference substitutes the
-                            // captured type into the callee's parameter and
-                            // return types, and the canonical evaluation this
-                            // pre-pass produces is where that type comes from,
-                            // whatever the argument's spelling (RUE-1967).
-                            let param_data = self.body_param_data(function.params);
-                            (0..argument_count).any(|index| {
-                                param_data.comptime().get(index).copied().unwrap_or(false)
-                            })
-                        })
+                    self.generic_callee_key(
+                        &inst_data,
+                        inst_span,
+                        ReceiverFacts::Syntactic(&locals),
+                    )
+                    .and_then(|key| self.function_info(key))
+                    .is_some_and(|function| {
+                        if !function.is_generic {
+                            return false;
+                        }
+                        // Every comptime argument is a fact site, type
+                        // arguments included: inference substitutes the
+                        // captured type into the callee's parameter and
+                        // return types, and the canonical evaluation this
+                        // pre-pass produces is where that type comes from,
+                        // whatever the argument's spelling (RUE-1967).
+                        let param_data = self.body_param_data(function.params);
+                        (0..argument_count)
+                            .any(|index| param_data.comptime().get(index).copied().unwrap_or(false))
+                    })
                 }
                 _ => false,
             };
             if found {
                 return Ok((true, nodes));
             }
+            if let rue_rir::InstData::Block { instructions } = &inst_data {
+                let mut tasks = Vec::new();
+                let mut bound = Vec::new();
+                for statement in self.body_rir_ref().block_insts(instructions).values() {
+                    tasks.push(GateTask::Visit(statement));
+                    if let rue_rir::InstData::Alloc {
+                        name: Some(name), ..
+                    } = self.body_rir_ref().get(statement).data
+                    {
+                        tasks.push(GateTask::Bind(statement));
+                        bound.push(name);
+                    }
+                }
+                tasks.extend(bound.into_iter().map(GateTask::Unbind));
+                pending.extend(tasks.into_iter().rev());
+                continue;
+            }
+            let mut children = Vec::new();
             self.body_rir_ref()
-                .child_instructions(inst_ref, &mut pending);
+                .child_instructions(inst_ref, &mut children);
+            pending.extend(children.into_iter().map(GateTask::Visit));
         }
         Ok((false, nodes))
     }
@@ -1350,9 +1435,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         }
                         rue_rir::InstData::Call { args, .. }
                         | rue_rir::InstData::MethodCall { args, .. } => {
-                            if let Some(function_key) =
-                                self.generic_callee_key(&inst_data, inst_span, Some(resolved_types))
-                            {
+                            if let Some(function_key) = self.generic_callee_key(
+                                &inst_data,
+                                inst_span,
+                                ReceiverFacts::Resolved(resolved_types),
+                            ) {
                                 let call_args = self.body_rir_ref().call_args(args).to_vec();
                                 canonical_evaluations = canonical_evaluations.saturating_add(
                                     self.collect_generic_argument_facts(
@@ -1441,11 +1528,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// comptime arguments from a different source than a direct call did
     /// (RUE-1967).
     ///
-    /// `resolved_types` is the collector's inferred-type map, which resolves
-    /// any receiver expression. The gate runs before those types exist and
-    /// passes `None`; receivers that name module bindings, including
-    /// re-export chains, are resolved through the canonical file/module
-    /// visibility walk.
+    /// The collector passes its inferred-type map, which resolves any receiver
+    /// expression. The gate runs before those types exist and passes the
+    /// `let`-bound modules in lexical scope at the call; receivers that name
+    /// module bindings, local or file-level, including re-export chains, are
+    /// resolved through the canonical file/module visibility walk.
     ///
     /// Both shapes resolve the callee name through
     /// [`OrdinaryBodyEngine::resolve_callee_name_local`], so a call spelled
@@ -1458,7 +1545,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         &mut self,
         inst_data: &rue_rir::InstData,
         span: Span,
-        resolved_types: Option<&AHashMap<InstRef, Type>>,
+        receiver_facts: ReceiverFacts<'_>,
     ) -> Option<Spur> {
         match inst_data {
             rue_rir::InstData::Call { name, .. } => Some(
@@ -1469,7 +1556,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 receiver, method, ..
             } => {
                 let module =
-                    self.method_receiver_module(*receiver, span.file_id, resolved_types)?;
+                    self.method_receiver_module(*receiver, span.file_id, receiver_facts)?;
                 let module_file = self.module_def(module).file_id;
                 self.resolve_callee_name_local(*method, module_file)
             }
@@ -1478,19 +1565,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// The module a method-call receiver names, from the inferred receiver type
-    /// when one is available and otherwise from the file's module bindings.
+    /// when one is available and otherwise from the `let`-bound modules in
+    /// scope and the file's module bindings.
     fn method_receiver_module(
         &mut self,
         receiver: InstRef,
         file_id: FileId,
-        resolved_types: Option<&AHashMap<InstRef, Type>>,
+        receiver_facts: ReceiverFacts<'_>,
     ) -> Option<crate::types::ModuleId> {
-        if let Some(module) = resolved_types
-            .and_then(|types| types.get(&receiver))
-            .and_then(Type::as_module)
-        {
-            return Some(module);
-        }
+        let locals = match receiver_facts {
+            ReceiverFacts::Resolved(types) => {
+                if let Some(module) = types.get(&receiver).and_then(Type::as_module) {
+                    return Some(module);
+                }
+                None
+            }
+            ReceiverFacts::Syntactic(locals) => Some(locals),
+        };
         // `@import("x.rue").f(..)`, `@import("std").cmp.max(..)`: the root is
         // the imported module itself, bound through the same canonical-import
         // lookup that analyzes the intrinsic, then each segment is a module
@@ -1501,40 +1592,131 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         {
             let path = self.body_interner().resolve(&spine.path).to_owned();
             let receiver_span = self.body_rir_ref().get(receiver).span;
-            let mut module = self.resolve_canonical_import(&path, receiver_span).ok()?;
-            for field in spine.fields {
-                let file = self.module_def(module).file_id;
-                module = self
-                    .call_facts()
-                    .call_module_binding(file, field)?
-                    .ty
-                    .as_module()?;
-            }
-            return Some(module);
+            let module = self.resolve_canonical_import(&path, receiver_span).ok()?;
+            return self.module_member_module(module, &spine.fields);
         }
-        let rue_rir::InstData::VarRef { name, .. } = self.body_rir_ref().get(receiver).data else {
-            let spine = decode_module_spine(self.body_rir_ref(), receiver)?;
-            let mut segment_names = Vec::with_capacity(spine.fields.len() + 1);
-            segment_names.push(self.body_interner().resolve(&spine.root).to_owned());
-            segment_names.extend(
-                spine
-                    .fields
-                    .iter()
-                    .map(|field| self.body_interner().resolve(field).to_owned()),
-            );
-            let segments = segment_names.iter().map(String::as_str).collect::<Vec<_>>();
+        let spine = decode_module_spine(self.body_rir_ref(), receiver)?;
+        // A `let` in scope shadows the file's bindings: its module is the one
+        // its initializer named, and a local that is not a module names none
+        // (RUE-2414).
+        if let Some(local) = locals.and_then(|locals| locals.lookup(spine.root)) {
+            return self.module_member_module(local?, &spine.fields);
+        }
+        if spine.fields.is_empty() {
             return self
-                .resolve_type_module_prefix_in_file(
-                    spine.root_span.file_id,
-                    &segments,
-                    self.body_rir_ref().get(receiver).span,
-                )
-                .ok()
-                .map(|(module, _, _)| module);
+                .call_facts()
+                .call_module_binding(file_id, spine.root)
+                .and_then(|binding| binding.ty.as_module());
+        }
+        let mut segment_names = Vec::with_capacity(spine.fields.len() + 1);
+        segment_names.push(self.body_interner().resolve(&spine.root).to_owned());
+        segment_names.extend(
+            spine
+                .fields
+                .iter()
+                .map(|field| self.body_interner().resolve(field).to_owned()),
+        );
+        let segments = segment_names.iter().map(String::as_str).collect::<Vec<_>>();
+        self.resolve_type_module_prefix_in_file(
+            spine.root_span.file_id,
+            &segments,
+            self.body_rir_ref().get(receiver).span,
+        )
+        .ok()
+        .map(|(module, _, _)| module)
+    }
+
+    /// The module reached from `module` through `fields`, each segment a
+    /// module binding of the previous hop's file.
+    fn module_member_module(
+        &mut self,
+        mut module: crate::types::ModuleId,
+        fields: &[Spur],
+    ) -> Option<crate::types::ModuleId> {
+        for field in fields {
+            let file = self.module_def(module).file_id;
+            module = self
+                .call_facts()
+                .call_module_binding(file, *field)?
+                .ty
+                .as_module()?;
+        }
+        Some(module)
+    }
+
+    /// Bring one `let` into the gate's lexical scope, with the module its
+    /// initializer names under the bindings already in scope, or none.
+    fn bind_local_module(&mut self, alloc: InstRef, locals: &mut LocalModuleScope) {
+        let rue_rir::InstData::Alloc {
+            name: Some(name),
+            init,
+            ..
+        } = self.body_rir_ref().get(alloc).data
+        else {
+            return;
         };
-        self.call_facts()
-            .call_module_binding(file_id, name)
-            .and_then(|binding| binding.ty.as_module())
+        let module = self.initializer_module(init, locals);
+        locals.bind(name, module);
+    }
+
+    /// The module a `let` initializer names: a module path, or a join whose
+    /// value is one (`if c { a } else { a }`, a `match`, or a block ending in
+    /// one). Sema requires every arm of a module-valued join to name the same
+    /// module (RUE-2419), so the first arm that names one is the answer; an
+    /// initializer sema rejects only makes the gate run the pre-pass.
+    fn initializer_module(
+        &mut self,
+        init: InstRef,
+        locals: &mut LocalModuleScope,
+    ) -> Option<crate::types::ModuleId> {
+        let data = self.body_rir_ref().get(init).data.clone();
+        match data {
+            rue_rir::InstData::Branch {
+                then_block,
+                else_block,
+                ..
+            } => self
+                .initializer_module(then_block, locals)
+                .or_else(|| else_block.and_then(|block| self.initializer_module(block, locals))),
+            rue_rir::InstData::Match { arms, .. } => {
+                let bodies: Vec<InstRef> = self
+                    .body_rir_ref()
+                    .match_arms(&arms)
+                    .iter()
+                    .map(|(_, body)| body)
+                    .collect();
+                bodies
+                    .into_iter()
+                    .find_map(|body| self.initializer_module(body, locals))
+            }
+            rue_rir::InstData::Block { instructions } => {
+                let statements: Vec<InstRef> = self
+                    .body_rir_ref()
+                    .block_insts(&instructions)
+                    .values()
+                    .collect();
+                let (&tail, lets) = statements.split_last()?;
+                let mut bound = Vec::new();
+                for statement in lets {
+                    if let rue_rir::InstData::Alloc {
+                        name: Some(name), ..
+                    } = self.body_rir_ref().get(*statement).data
+                    {
+                        self.bind_local_module(*statement, locals);
+                        bound.push(name);
+                    }
+                }
+                let module = self.initializer_module(tail, locals);
+                for name in bound {
+                    locals.unbind(name);
+                }
+                module
+            }
+            _ => {
+                let file_id = self.body_rir_ref().get(init).span.file_id;
+                self.method_receiver_module(init, file_id, ReceiverFacts::Syntactic(locals))
+            }
+        }
     }
 
     fn collect_generic_argument_facts(
