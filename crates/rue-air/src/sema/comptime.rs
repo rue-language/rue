@@ -1715,15 +1715,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let body = frame.body;
         let previous_expected = env.expected_result.clone();
         env.expected_result = frame.expected_result.clone();
-        // A callable-body root is a function reduced by its own query, so its
-        // result position takes the declared return type exactly as an
-        // entered call frame's does (spec 3.12:10). An expression root's
-        // value is admitted by its consumer instead.
-        let literal_type = frame
-            .call_identity
-            .is_some()
-            .then(|| frame.expected_result.clone())
-            .flatten();
+        // A root's result position takes the type its frame expects: a
+        // callable body's declared return type, exactly as an entered call
+        // frame's does, and a `const` initializer's declared type, as
+        // `let x: T = e;` gives `e` its type at run time (spec 3.12:10,
+        // 3.12:11). An expression root expects none.
+        let literal_type = frame.expected_result.clone();
         self.frames.push(frame);
         let result = self.eval_typed(body, literal_type, env);
         self.frames.pop();

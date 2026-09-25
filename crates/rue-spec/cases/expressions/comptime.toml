@@ -548,6 +548,78 @@ exit_code = 0
 expected_stdout = "-inf\n-inf\ninf\ninf\n-inf\n-inf\n"
 
 [[case]]
+name = "negated_zero_literal_in_a_float_constant_keeps_its_sign"
+spec = ["3.12:11", "3.12:24", "6.5:1"]
+description = "`-0` initializing an f32 or f64 constant is -0.0, however it is spelled or nested, as `let n: f64 = -0;` is at run time; a constant naming it has the same value, and `-(-0)` is +0.0 (RUE-2408)"
+source = """
+const A: f64 = -0;
+const B: f32 = -0;
+const C: f64 = -(0);
+const D: f64 = - 0;
+const E: f64 = A;
+const F: f64 = comptime { -0 };
+const G: f64 = { let unused: i32 = -1; -0 };
+const H: f64 = -(-0);
+fn main() -> i32 {
+    let n: f64 = -0;
+    @dbg(1.0 / n);
+    @dbg(1.0 / A);
+    @dbg(1.0 / B);
+    @dbg(1.0 / C);
+    @dbg(1.0 / D);
+    @dbg(1.0 / E);
+    @dbg(1.0 / F);
+    @dbg(1.0 / G);
+    @dbg(1.0 / H);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "-inf\n-inf\n-inf\n-inf\n-inf\n-inf\n-inf\n-inf\ninf\n"
+
+[[case]]
+name = "negated_integer_literal_in_a_float_constant_aggregate"
+spec = ["3.12:11", "3.12:24", "6.5:1", "7.1:2"]
+description = "A negated integer literal filling a float array element, struct field or enum payload of a constant takes the slot's type before it is negated, so `-0` is -0.0 and `-1` is -1.0 there too (RUE-2408)"
+source = """
+@copy struct P { x: f32, y: f64 }
+enum V { Some(f64), None }
+const A: [f64; 2] = [-0, 1];
+const R: [f32; 3] = [-7; 3];
+const Q: P = P { x: -0, y: -2 };
+const S: V = V.Some(-0);
+fn main() -> i32 {
+    @dbg(1.0 / A[0]);
+    @dbg(R[2]);
+    @dbg(1.0 / Q.x);
+    @dbg(Q.y);
+    match S {
+        V.Some(v) => { @dbg(1.0 / v); },
+        V.None => {},
+    }
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "-inf\n-7.0\n-inf\n-2.0\n-inf\n"
+
+[[case]]
+name = "negated_integer_literal_beyond_i32_in_a_float_constant"
+spec = ["3.12:11", "6.5:1"]
+description = "A negated integer literal outside the i32 range is admitted at a float constant, as at a float `let`: it takes the float type, not a default integer type it would overflow (RUE-2408)"
+source = """
+const N: f64 = -3000000000;
+fn main() -> i32 {
+    let n: f64 = -3000000000;
+    @dbg(N);
+    @dbg(n);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "-3000000000.0\n-3000000000.0\n"
+
+[[case]]
 name = "typed_integer_at_a_float_parameter_of_a_comptime_function_rejected"
 spec = ["3.12:11", "4.14:5"]
 description = "Only an integer literal is accepted at a float parameter: a typed i32 value passed beside a comptime parameter is a type error (RUE-2393)"
