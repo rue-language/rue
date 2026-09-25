@@ -467,17 +467,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
-        // Structural equality compares two values of one aggregate type.
-        // Inference unifies the operands, but it has no fact for an
-        // unreduced constructor head, so compare the analyzed types
-        // (RUE-2438). String operands keep their view/buffer comparisons.
-        if allow_bool
-            && (lhs_type.is_struct() || lhs_type.is_enum() || lhs_type.is_array())
-            && !self.is_strbuf(lhs_type)
-            && !self.is_str_like(lhs_type)
-        {
-            self.require_slot_type(lhs_type, rhs_result.ty, self.body_rir_ref().get(rhs).span)?;
-        }
+        // Both operands of a comparison have one type. Inference unifies
+        // them, but it has no fact for an operand it could not type, so
+        // compare the analyzed types for every operand type and both
+        // equality and ordering (RUE-2438).
+        self.require_comparison_operand(
+            lhs_type,
+            rhs_result.ty,
+            self.body_rir_ref().get(rhs).span,
+        )?;
 
         if allow_bool && self.is_sentinel_lookup_test(lhs, rhs) {
             ctx.warnings.push(

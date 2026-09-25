@@ -753,6 +753,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let cond_result = ctx.with_expected_type(None, |ctx| self.analyze_inst(air, cond, ctx));
         ctx.ownership.exit_full_expression(boundary);
         let cond_result = cond_result?;
+        self.require_operand_type(
+            Type::BOOL,
+            cond_result.ty,
+            self.body_rir_ref().get(cond).span,
+        )?;
         let cond_divergence = ctx.divergence_kinds;
         ctx.divergence_kinds = DivergenceKinds::NONE;
         let reachable_edges_after_condition = ctx.ownership.loop_break_stack.clone();
@@ -1056,6 +1061,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let cond_result = self.analyze_inst(air, cond, ctx);
         ctx.ownership.exit_full_expression(boundary);
         let cond_result = cond_result?;
+        self.require_operand_type(
+            Type::BOOL,
+            cond_result.ty,
+            self.body_rir_ref().get(cond).span,
+        )?;
         let cond_divergence = ctx.divergence_kinds;
         ctx.divergence_kinds = DivergenceKinds::NONE;
         // The condition-false path exits the while before its body runs.
