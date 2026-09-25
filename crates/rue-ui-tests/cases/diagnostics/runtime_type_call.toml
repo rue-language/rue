@@ -15,7 +15,7 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = [
   "E1200",
-  "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time",
+  "this call produces a type value at runtime; a `type` result requires a fully-comptime call",
   "every parameter of the function is `comptime` and every argument is compile-time known",
   "3:5",
 ]

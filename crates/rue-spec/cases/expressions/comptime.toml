@@ -827,7 +827,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+error_contains = ["E1200", "this call produces a type value at runtime; a `type` result requires a fully-comptime call"]
 
 [[case]]
 name = "type_call_runtime_param_literal_argument"
@@ -841,7 +841,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+error_contains = ["E1200", "this call produces a type value at runtime; a `type` result requires a fully-comptime call"]
 
 [[case]]
 name = "type_call_runtime_param_let_binding"
@@ -855,7 +855,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+error_contains = ["E1200", "this call produces a type value at runtime; a `type` result requires a fully-comptime call"]
 
 [[case]]
 name = "type_call_runtime_param_in_runtime_function"
@@ -870,7 +870,7 @@ fn h(c: bool) -> i32 {
 fn main() -> i32 { h(true) }
 """
 compile_fail = true
-error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+error_contains = ["E1200", "this call produces a type value at runtime; a `type` result requires a fully-comptime call"]
 
 [[case]]
 name = "type_call_runtime_param_in_match_arm"
@@ -884,7 +884,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+error_contains = ["E1200", "this call produces a type value at runtime; a `type` result requires a fully-comptime call"]
 
 [[case]]
 name = "type_call_mixed_params_discarded_statement"
@@ -898,7 +898,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+error_contains = ["E1200", "this call produces a type value at runtime; a `type` result requires a fully-comptime call"]
 
 [[case]]
 name = "type_call_mixed_params_let_binding"
@@ -912,7 +912,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+error_contains = ["E1200", "this call produces a type value at runtime; a `type` result requires a fully-comptime call"]
 
 [[case]]
 name = "type_call_method_with_self_receiver"
@@ -930,7 +930,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+error_contains = ["E1200", "this call produces a type value at runtime; a `type` result requires a fully-comptime call"]
 
 [[case]]
 name = "type_call_associated_function_runtime_param"
@@ -947,7 +947,24 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+error_contains = ["E1200", "this call produces a type value at runtime; a `type` result requires a fully-comptime call"]
+
+[[case]]
+name = "type_call_zero_param_associated_function_not_reduced"
+spec = ["4.14:6", "4.14:28"]
+description = "A zero-parameter associated function returning `type` is rejected at the call without the runtime-parameter help, which would point at a condition already met (RUE-2417 review, S2)"
+source = """
+struct S {
+    n: i32,
+    fn ty() -> type { i32 }
+}
+fn main() -> i32 {
+    S.ty();
+    42
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "this function's body does not reduce to a type at compile time"]
 
 [[case]]
 name = "type_call_runtime_param_as_runtime_argument"
