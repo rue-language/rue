@@ -603,15 +603,18 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     reaches it.
   - `RueCore.unorderedRecord_rejected`: a frame whose record is out of
     location order takes a real step whose drops are not newest-first.
-- **The corpus, read through it.** `TraceOrder.lean` pins, for eleven
+- **The corpus, read through it.** `TraceOrder.lean` pins, for fourteen
   order-witnessing seed cases, the identities the destructors ran on in
   order (the order the printed destructors print their payloads in, which
   the bridge checks against the compiler), the cells the markers name, and
   the identities the markers end, each once. `nested_scopes` is the
   bridge-checked case of the cross-step order. The explain renderings'
-  identity ledger shows the same per case (`lean/explain/*.txt`). No corpus
-  case has two droppable by-value parameters, so the callee frame's
-  last-parameter-first teardown is proved but not bridge-checked.
+  identity ledger shows the same per case (`lean/explain/*.txt`). The callee
+  frame's last-parameter-first teardown is bridge-checked too:
+  `two_params_dropped_at_pop` (two parameters of two types) and
+  `three_params_dropped_at_pop` drop the last parameter first, and
+  `param_moved_other_dropped` moves the first parameter into a further call,
+  so only the second is left to the frame pop (RUE-2432).
 
 ## No use-after-free
 
