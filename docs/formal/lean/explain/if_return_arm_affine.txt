@@ -208,10 +208,11 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
 One line per owned identity: the step that minted it, the steps that ended
 it (a drop marker, a discarded temporary, a consumption), and the steps whose
 destructor ran on it. `drop_exactly_once` is one entry in the ended column
-per identity, and the step numbers there are the order `drop_order` fixes;
-`[n.k]` is the k-th end of step n, when one step ends several values.
+per identity. Read in row order, and `[n.k]` (the k-th end of row n) inside a
+row, the ends are the trace's order, which `drop_order` fixes: a value's
+destructors inside its drop in §6.11's order, and cells last-in first-out.
 
-  id    minted  ended                             destructor  ended
+  id    minted  ended                             destructor  verdict
   ────────────────────────────────────────────────────────────────────────
   #0    [3]     [9] drop ℓ1                       [9]         once
 
