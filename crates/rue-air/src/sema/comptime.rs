@@ -5218,10 +5218,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 type_name,
                 ..
             } => {
-                if module.is_some() {
+                let ctor_head = *ctor_head;
+                // A module-qualified name (`lib.S { .. }`) has no comptime
+                // struct resolution here. A module-qualified constructor head
+                // (`lib.Wrap(u8) { .. }`) carries its module in the head call,
+                // which reduces below like an unqualified head (RUE-2434).
+                if module.is_some() && ctor_head.is_none() {
                     return ComptimeOutcome::RuntimeDependent;
                 }
-                let ctor_head = *ctor_head;
                 let site = self.diagnostic_site(span);
                 let field_inits: Vec<_> = self
                     .program_rir()
