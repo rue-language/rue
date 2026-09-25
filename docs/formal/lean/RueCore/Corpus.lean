@@ -925,7 +925,19 @@ def cases : List Case := [
   { name := "loop_nested_every_path_breaks",
     description := "Every path breaks, through a nested loop: the inner loop drops a linear binding and breaks, and the outer loop breaks right after, so neither reaches its back edge, both heads are the entry state, and the binding is MovedOut at the one exit. The destructor prints 1, then the value 5.",
     rules := ["(Loop-Break) §5.7", "(Break) §5.7", "(@Drop) §5.3", "3.8:79", "3.8:80", "(D-Break) §6.10"],
-    prog := Examples.prog Examples.tI64 Examples.loopNestedEveryPathBreaks }
+    prog := Examples.prog Examples.tI64 Examples.loopNestedEveryPathBreaks },
+  { name := "destructure_root_through_moved_part",
+    description := "Three declared-linear levels: y.x0.x0.x0 destructures the innermost, and @drop(y.x0) then destructures the root y, which a hole below it keeps from being fully owned (3.8:26; the compiler reports E0205). Seeded by the bridge sensitivity drills (RUE-2464): with RUE-2335's root check removed the compiler accepted it and ran the hole's destructor twice, and no seed or generated case caught that.",
+    rules := ["(Use-Declared-Linear-Destructure) §5.1", "(@Drop) §5.3", "3.8:26", "3.8:33"],
+    prog := Examples.destrTripleProg Examples.tI64 Examples.destructureRootThroughMovedPart },
+  { name := "array_bounds_trap_at_len",
+    description := "A dynamic-index read at the last element and then at exactly the length: 30 prints and the second read is (D-Index-Trap) §6.5's bounds trap. Seeded by the bridge sensitivity drills (RUE-2464): an off-by-one bounds check (i <= n) passed every seed, because the other bounds seeds index further past the end.",
+    rules := ["(Use-Untrackable-Dynamic-Copy) §5.1", "(D-Index) §6.5", "(D-Index-Trap) §6.5", "§6.12", "7.1:10"],
+    prog := Examples.arrayBoundsTrapAtLen },
+  { name := "loop_move_out_then_reinit",
+    description := "Each turn of a counted loop moves the mut affine b into t and reinitializes b, and t drops after the reinit: 2 and 21 in the loop, 22 at b's scope exit, then the value 2. Seeded by the bridge sensitivity drills (RUE-2464): with RUE-2380's fix removed the compiler ICEd at -O2 and -O3 (E9000), and no seed or generated case reached the shape. Only the bridge's native lanes at those levels see that mutant; bin/verify.py runs the default level.",
+    rules := ["(Loop-Break) §5.7", "(Use-Move) §5.1", "(Assign) §5.2", "3.8:55", "§5.6 scope exit", "(D-Loop-Iter) §6.10"],
+    prog := Examples.prog Examples.tI64 Examples.loopMoveOutThenReinit }
 ]
 
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/

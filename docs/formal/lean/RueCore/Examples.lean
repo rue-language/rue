@@ -3972,6 +3972,83 @@ theorem infiniteLoop_outOfFuel (M : FloatOps) (P : Program) :
           rw [infiniteLoop] at this
           rw [this]; rfl
 
+/-! ## Seeds from the bridge sensitivity drills (RUE-2464)
+
+`docs/formal/lean/BRIDGE-SENSITIVITY.md` re-introduced historical compiler bugs
+into scratch copies of the compiler, one at a time, and ran the seed corpus and
+the generator against each. The three programs below are follow-ups for the
+mutants no seed caught: each is a small fragment program on which the mutated
+compiler disagrees with the model, and on which the fixed compiler agrees. -/
+
+/-- `S23`: `linear struct { x0: S13, x1: S1 }`. A third declared-`linear` level
+over `S13` (itself over `S11`), the shape RUE-2335's root check needs: after
+`y.x0.x0.x0` destructures the innermost level, a use of `y.x0` destructures the
+root `y`, which is no longer fully owned. -/
+def dDestrTriple : StructDecl :=
+  { attr := .linear, fields := [.struct 13, .struct 1], dtor := false, cls := .linear }
+
+/-- `S23`'s index in `destrDecls.structs ++ [dDestrTriple]`. -/
+def sDestrTriple : Nat := 23
+
+/-- A program over the destructure declarations plus `S23`, so that only the
+case that needs the third level prints it (helper). -/
+def destrTripleProg (T : Ty) (e : Expr) : Program :=
+  Program.entry (Decls.ofStructs (destrDecls.structs ++ [dDestrTriple])) T e
+
+/-- **A root destructure through a moved part** (RUE-2335's root half, the spec
+case `declared_linear_root_destructure_through_partially_moved_field_rejected`).
+`y.x0.x0.x0` destructures `y.x0.x0`, the innermost declared-`linear` place, so
+`y.x0.x0` is a hole. `@drop(y.x0)` then reaches `y.x0` through the declared-`linear`
+root `y`, and §5.1's (Use-Declared-Linear-Destructure) asks `fully-owned(Σ, y)`,
+which the hole below it refutes (`3.8:26`; the compiler reports E0205). A
+compiler without the root check accepts the program, hands out the hole, and
+runs `S1 { 2 }`'s destructor a second time; the drill's mutant printed
+`2 4 2 3`. -/
+def destructureRootThroughMovedPart : Expr :=
+  letIn false (mkStruct sDestrTriple
+      [mkStruct sDestrOuter [mkStruct sDestrPair [lit 1, resA (lit 2)], resA (lit 3)],
+       resA (lit 4)])
+    (letIn false (use (.proj (.proj (.proj (.var 0) 0) 0) 0))
+      (seq (drop (.proj (.var 1) 0)) (use (.var 0))))
+
+example : checkProgram (destrTripleProg tI64 destructureRootThroughMovedPart) = false := by rfl
+
+/-- **A dynamic index at exactly the length** (the drill's off-by-one bounds
+mutant): `f1(i)` builds `[10, 20, 30]` and reads `a[i]`; the entry point prints
+`f1(2)`, the last element, and then evaluates `f1(3)`, the first index past the
+end, which (D-Index-Trap) §6.5 abandons to `↯bounds` (`7.1:10`). A bounds
+check that compares `i ≤ n` instead of `i < n` passes both reads, and
+`arrayBoundsTrap`'s `f1(5)` does not tell the two apart. -/
+def arrayBoundsTrapAtLen : Program :=
+  { decls := Decls.ofStructs [],
+    fns := [{ params := [], ret := tI64, body := seq (dbg (call 1 [lit 2])) (call 1 [lit 3]) },
+            { params := [⟨tI64, false⟩], ret := tI64,
+              body := letIn false (mkArray tI64 [lit 10, lit 20, lit 30])
+                (indexRead (.var 0) [use (.var 1)] [[]]) }] }
+
+example : checkProgram arrayBoundsTrapAtLen = true := by rfl
+example : run demoOps arrayBoundsTrapAtLen demoFuel = .panic .bounds [.dbg (v64 30)] := by rfl
+
+/-- **A loop-carried binding moved out and reinitialized in one iteration**
+(RUE-2380, the spec case `loop_move_out_then_reinit_same_iteration`). Each turn
+of the counted loop moves the `mut` affine `b` into a fresh `t` and assigns `b`
+a new `S1`; `t` drops at its `let`'s end, after the reinitialization. (Assign)
+§5.2 reinitializes `b`, so the back edge holds it `Owned`, as the entry does.
+The destructors print `2` and `21` inside the loop and `22` at `b`'s scope
+exit, then the value `2`. The compiler before RUE-2380's fix forwarded `t`'s
+load to `b`'s, so at `-O2` and `-O3` its CFG verifier saw the next turn read a
+consumed owner root (E9000); only the bridge's native lanes at those levels see
+it. -/
+def loopMoveOutThenReinit : Expr :=
+  letIn true (resA (lit 2))
+    (letIn true (lit 0)
+      (seq (loop (countedBody 2
+          (letIn false (use (.var 1))
+            (assign (.var 2) (resA (binop .add (lit 20) (use (.var 1))))))))
+        (use (.var 0))))
+
+example : checkProgram (prog tI64 loopMoveOutThenReinit) = true := by rfl
+
 #eval checkProgram (scalarProg tI64 scalars)
 #eval checkProgram (prog tI64 linearLeaked)
 
