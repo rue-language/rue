@@ -340,7 +340,6 @@ impl LocalModuleScope {
     }
 }
 
-#[derive(Clone)]
 /// What the staged pre-pass learned about this body's generic calls, from
 /// the canonical semantic evaluator, for the final inference pass to use.
 #[derive(Default)]
@@ -361,6 +360,7 @@ impl GenericCallFacts {
     }
 }
 
+#[derive(Clone)]
 struct PrecomputeSnapshot {
     comptime_local_bindings: Arc<AHashMap<InstRef, Type>>,
     local_annotations: Arc<AHashMap<InstRef, Type>>,
@@ -505,7 +505,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 staged_resolved_types.extend(staged.0.iter().map(|(inst, ty)| (*inst, *ty)));
                 let (
                     nested_selections,
-                    nested_arguments,
+                    nested_call_facts,
                     nested_frontier,
                     nested_fact_nodes,
                     nested_canonical_evaluations,
@@ -521,7 +521,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     &precompute_snapshot.comptime_local_bindings,
                 )?;
                 selections.extend(nested_selections);
-                call_facts.extend(nested_arguments);
+                call_facts.extend(nested_call_facts);
                 frontier.extend(nested_frontier);
                 fact_nodes = fact_nodes.saturating_add(nested_fact_nodes);
                 canonical_evaluations =
