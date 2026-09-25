@@ -2421,6 +2421,155 @@ theorem RueCore.dupProgram_step_double_free (M : FloatOps) :
         [0, 0]
 ```
 
+### `Examples.dynReadAffine_refused`
+
+*theorem* · module `RueCore.Examples`
+
+(RUE-2400) The dynamic-index read of an affine leaf is refused by the
+machine as well as the statics: (D-Use-Untrackable-Dynamic-Copy) §6.3 is the
+only rule there and it wants `class(T) = Copy`, so `eval` answers
+`typeConfusion` instead of duplicating the leaf. `Step.demo_dynamicRead_stuck`
+is the same program, stuck at the same rule in `Step`.
+
+```lean
+theorem RueCore.Examples.dynReadAffine_refused (M : FloatOps) :
+  run M (Examples.prog Examples.tI64 Examples.dynReadAffineCopied)
+      Examples.demoFuel =
+    EvalRes.stuck Violation.typeConfusion
+```
+
+### `Examples.dynDropAffine_refused`
+
+*theorem* · module `RueCore.Examples`
+
+(RUE-2400) `@drop(a[i])` of an affine leaf is refused by the machine: the
+dynamic `@drop` is the read with its value discarded, so it inherits the
+read's `Copy` check, and no `@dbg` output or destructor event is produced.
+`Step.demo_dynamicDrop_stuck` is the same program, stuck at the same rule in
+`Step`.
+
+```lean
+theorem RueCore.Examples.dynDropAffine_refused (M : FloatOps) :
+  run M (Examples.prog Examples.tI64 Examples.dynDropAffineSkipped)
+      Examples.demoFuel =
+    EvalRes.stuck Violation.typeConfusion
+```
+
+### `Examples.repeatAffine_refused`
+
+*theorem* · module `RueCore.Examples`
+
+(RUE-2400) The repeat form at an affine operand is refused by the
+machine: §2's elaboration `let t = v; [t, t]` would be stuck at the second use
+of `t`, and `eval` answers `typeConfusion` rather than replicating `v`.
+`Step.demo_repeat_stuck` is the same program, stuck at the same rule in
+`Step`.
+
+```lean
+theorem RueCore.Examples.repeatAffine_refused (M : FloatOps) :
+  run M (Examples.prog Examples.tI64 Examples.repeatAffineDuplicated)
+      Examples.demoFuel =
+    EvalRes.stuck Violation.typeConfusion
+```
+
+### `Examples.panicPastLinear_typed`
+
+*theorem* · module `RueCore.Examples`
+
+**`Typed` derives a `@panic` past a live linear binding.** (Panic) §5.8
+imposes no residual-linear premise — §5.7 exempts the `⊥_panic` edge from
+§5.6's obligation — and the `let`'s tail is `⊥`, so (Let) with a divergent
+tail (`Typed.letInDiv`) reaches no scope exit and reads no state there. This
+is the one shape where `Typed.panic` and `Typed.ret` differ: `ret` carries the
+frame-wide residual-linear premise, and at an affine binding there is nothing
+for either to drop.
+
+```lean
+theorem RueCore.Examples.panicPastLinear_typed :
+  Typed (Examples.prog Examples.tI64 Examples.panicPastLinear) Examples.tI64
+    [] Examples.panicPastLinear Examples.tI64 { norm := none, brk := [] }
+```
+
+### `Examples.countdown_at_17`
+
+*theorem* · module `RueCore.Examples`
+
+Seventeen is enough, and the answer is a value with five retired
+parameter cells — one per frame the recursion pushed.
+
+```lean
+theorem RueCore.Examples.countdown_at_17 :
+  run Examples.demoOps Examples.countdown 17 =
+    EvalRes.ok [Cell.dead, Cell.dead, Cell.dead, Cell.dead, Cell.dead]
+      (Examples.v64 10) []
+```
+
+### `Examples.floatToInt_inf_traps`
+
+*theorem* · module `RueCore.Examples`
+
+**`@float_to_int` of an infinity traps** — `3.12:18`'s guard "admits both
+infinities as failures" — and the category is `↯overflow`, the one §6.12
+already lists (`8.1:7`), not a new one.
+
+```lean
+theorem RueCore.Examples.floatToInt_inf_traps (M : FloatModel) (w : FloatWidth)
+  (w' : IntWidth) (s' : Sign) (b : Bool) :
+  evalFintrin M.toFloatOps (FloatIntrin.floatToInt w' s')
+      (Val.float w (FloatDatum.inf b)) =
+    OpRes.trap PanicKind.overflow
+```
+
+### `Examples.floatToInt_nan_traps`
+
+*theorem* · module `RueCore.Examples`
+
+**`@float_to_int` of a NaN traps**, the other half of
+`(D-Float-To-Int-Trap)`'s premise (`3.12:18`).
+
+```lean
+theorem RueCore.Examples.floatToInt_nan_traps (M : FloatModel) (w : FloatWidth)
+  (w' : IntWidth) (s' : Sign) (b : Bool) :
+  evalFintrin M.toFloatOps (FloatIntrin.floatToInt w' s')
+      (Val.float w (FloatDatum.nan b)) =
+    OpRes.trap PanicKind.overflow
+```
+
+### `Examples.floatDivZeroToInt_traps`
+
+*theorem* · module `RueCore.Examples`
+
+**A whole redex: `@float_to_int(1.0 / 0.0)` traps at every model.** The
+division is `3.12:22`'s (`FloatModel.div_by_zero`), the literals are
+`3.12:9`'s (`ofLit_one`, `ofLit_zero`), and the trap is the partition. No
+float arithmetic is computed anywhere in the proof, and the theorem holds for
+every model satisfying the laws — including, but not only, `Float.exactOps`,
+which the corpus runs and the compiler agrees with.
+
+```lean
+theorem RueCore.Examples.floatDivZeroToInt_traps (M : FloatModel) (P : Program)
+  (H : Store) (φ : Frame) (w : FloatWidth) (w' : IntWidth) (s' : Sign) :
+  eval M.toFloatOps 8 P H φ
+      (Expr.fintrin (FloatIntrin.floatToInt w' s')
+        (Expr.binop BinOp.div (Examples.flE w 1 0) (Examples.flE w 0 0))) =
+    EvalRes.panic PanicKind.overflow []
+```
+
+### `Examples.infiniteLoop_outOfFuel`
+
+*theorem* · module `RueCore.Examples`
+
+**The fuel counts iterations**: an infinite loop exhausts every bound. Each
+turn runs the body at one unit less and re-enters at one unit less, so no fuel
+completes it — `outOfFuel` is its answer at every bound, which is what
+`Corpus.lean`'s export leaves out.
+
+```lean
+theorem RueCore.Examples.infiniteLoop_outOfFuel (M : FloatOps) (P : Program)
+  (fuel : Nat) (H : Store) (φ : Frame) :
+  eval M fuel P H φ Examples.infiniteLoop = EvalRes.outOfFuel
+```
+
 ### `eval_sim`
 
 *theorem* · module `RueCore.Adequacy`
@@ -2685,153 +2834,179 @@ theorem RueCore.letAddProgram_sound (M : FloatOps) :
       (Focus.ret (Val.int IntWidth.w32 Sign.signed 42)) [])
 ```
 
-### `Examples.dynReadAffine_refused`
+### `Config.SafeAt.progress`
 
-*theorem* · module `RueCore.Examples`
+*theorem* · module `RueCore.Adequacy`
 
-(RUE-2400) The dynamic-index read of an affine leaf is refused by the
-machine as well as the statics: (D-Use-Untrackable-Dynamic-Copy) §6.3 is the
-only rule there and it wants `class(T) = Copy`, so `eval` answers
-`typeConfusion` instead of duplicating the leaf. `Step.demo_dynamicRead_stuck`
-is the same program, stuck at the same rule in `Step`.
+**Progress for a typed configuration** (§7, first bullet): it has halted
+with a value or a defined panic, or it takes a step (§6.12's terminal
+configurations; `Config.trichotomy` leaves stuck as the only other case).
 
 ```lean
-theorem RueCore.Examples.dynReadAffine_refused (M : FloatOps) :
-  run M (Examples.prog Examples.tI64 Examples.dynReadAffineCopied)
-      Examples.demoFuel =
-    EvalRes.stuck Violation.typeConfusion
+theorem RueCore.Config.SafeAt.progress {M : FloatOps} {P : Program} {T : Ty}
+  {C : Config} (h : Config.SafeAt M P T C) : C.Terminal ∨ ∃ C', Step M P C C'
 ```
 
-### `Examples.dynDropAffine_refused`
+### `Config.SafeAt.preservation`
 
-*theorem* · module `RueCore.Examples`
+*theorem* · module `RueCore.Adequacy`
 
-(RUE-2400) `@drop(a[i])` of an affine leaf is refused by the machine: the
-dynamic `@drop` is the read with its value discarded, so it inherits the
-read's `Copy` check, and no `@dbg` output or destructor event is produced.
-`Step.demo_dynamicDrop_stuck` is the same program, stuck at the same rule in
-`Step`.
+**Preservation for a typed configuration** (§7, first bullet: "types are
+preserved under reduction"): a step of §6's `→` from a configuration typed at
+`T` lands on one typed at `T`.
 
 ```lean
-theorem RueCore.Examples.dynDropAffine_refused (M : FloatOps) :
-  run M (Examples.prog Examples.tI64 Examples.dynDropAffineSkipped)
-      Examples.demoFuel =
-    EvalRes.stuck Violation.typeConfusion
+theorem RueCore.Config.SafeAt.preservation {M : FloatOps} {P : Program} {T : Ty}
+  {C C' : Config} (h : Config.SafeAt M P T C) (hs : Step M P C C') :
+  Config.SafeAt M P T C'
 ```
 
-### `Examples.repeatAffine_refused`
+### `init_safeAt`
 
-*theorem* · module `RueCore.Examples`
+*theorem* · module `RueCore.Adequacy`
 
-(RUE-2400) The repeat form at an affine operand is refused by the
-machine: §2's elaboration `let t = v; [t, t]` would be stuck at the second use
-of `t`, and `eval` answers `typeConfusion` rather than replicating `v`.
-`Step.demo_repeat_stuck` is the same program, stuck at the same rule in
-`Step`.
+**The fundamental lemma: a checked program starts typed** (§7, first
+bullet; §6.12's initial configuration). For a program `check` accepts, the
+initial configuration is safe at the entry point's declared return type. The
+"never stuck" half is `step_never_stuck_of_run` given `no_violation`; the
+typing half takes a value §6 halts with to `run`'s answer at some fuel
+(`eval_complete`), where `run_safe` (`soundness` over a whole program) types
+it. This is the one place `soundness` enters the `Step` form.
 
 ```lean
-theorem RueCore.Examples.repeatAffine_refused (M : FloatOps) :
-  run M (Examples.prog Examples.tI64 Examples.repeatAffineDuplicated)
-      Examples.demoFuel =
-    EvalRes.stuck Violation.typeConfusion
+theorem RueCore.init_safeAt (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+  ∃ fd, P.fns[0]? = some fd ∧ Config.SafeAt M.toFloatOps P fd.ret Config.init
 ```
 
-### `Examples.panicPastLinear_typed`
+### `step_progress`
 
-*theorem* · module `RueCore.Examples`
+*theorem* · module `RueCore.Adequacy`
 
-**`Typed` derives a `@panic` past a live linear binding.** (Panic) §5.8
-imposes no residual-linear premise — §5.7 exempts the `⊥_panic` edge from
-§5.6's obligation — and the `let`'s tail is `⊥`, so (Let) with a divergent
-tail (`Typed.letInDiv`) reaches no scope exit and reads no state there. This
-is the one shape where `Typed.panic` and `Typed.ret` differ: `ret` carries the
-frame-wide residual-linear premise, and at an affine binding there is nothing
-for either to drop.
+**Progress over §6's reduction** (§7, first bullet, in its own phrasing:
+"a well-typed core program does not get stuck: it either reduces, halts with
+a value, or halts with one of the defined panics"; ADR-0097 decision 3). For
+a program `check` accepts, every configuration `→*` reaches from §6.12's
+initial configuration is terminal or takes a step, so none is stuck
+(`Config.stuck_iff`). Derived: `soundness` gives "`run` is never `.stuck`"
+(`no_violation`), and `step_never_stuck_of_run` — built from `run_sim` and
+the step count `eval_steps_of_outOfFuel` — carries it to `Step`.
 
 ```lean
-theorem RueCore.Examples.panicPastLinear_typed :
-  Typed (Examples.prog Examples.tI64 Examples.panicPastLinear) Examples.tI64
-    [] Examples.panicPastLinear Examples.tI64 { norm := none, brk := [] }
+theorem RueCore.step_progress (M : FloatModel) {P : Program} (h : ProgramTyped P)
+  (C : Config) :
+  Steps M.toFloatOps P Config.init C →
+    C.Terminal ∨ ∃ C', Step M.toFloatOps P C C'
 ```
 
-### `Examples.countdown_at_17`
+### `step_preservation`
 
-*theorem* · module `RueCore.Examples`
+*theorem* · module `RueCore.Adequacy`
 
-Seventeen is enough, and the answer is a value with five retired
-parameter cells — one per frame the recursion pushed.
+**Preservation over §6's reduction** (§7, first bullet: "types are
+preserved under reduction"; ADR-0097 decision 3). For a program `check`
+accepts, every configuration `→*` reaches from §6.12's initial configuration
+is typed at the entry point's declared return type, in the semantic sense of
+`Config.SafeAt`: it is never stuck from there on, and every value it halts
+with has that type. With `Config.SafeAt.preservation` this is the one-step
+form. The typing is semantic, not a syntactic `⊢ C : T`; this section's
+docstring says what that does and does not claim.
 
 ```lean
-theorem RueCore.Examples.countdown_at_17 :
-  run Examples.demoOps Examples.countdown 17 =
-    EvalRes.ok [Cell.dead, Cell.dead, Cell.dead, Cell.dead, Cell.dead]
-      (Examples.v64 10) []
+theorem RueCore.step_preservation (M : FloatModel) {P : Program}
+  (h : ProgramTyped P) :
+  ∃ fd,
+    P.fns[0]? = some fd ∧
+      ∀ (C : Config),
+        Steps M.toFloatOps P Config.init C →
+          Config.SafeAt M.toFloatOps P fd.ret C
 ```
 
-### `Examples.floatToInt_inf_traps`
+### `step_value_typed`
 
-*theorem* · module `RueCore.Examples`
+*theorem* · module `RueCore.Adequacy`
 
-**`@float_to_int` of an infinity traps** — `3.12:18`'s guard "admits both
-infinities as failures" — and the category is `↯overflow`, the one §6.12
-already lists (`8.1:7`), not a new one.
+**The value §6 halts with has the declared type** (§7, first bullet;
+§6.12's (Result-Ok)). For a program `check` accepts, if `→*` takes the
+initial configuration to `✓v`, then `v` has the entry point's declared return
+type. This is preservation read at the result, `Config.SafeAt`'s second half
+at `Config.init`.
 
 ```lean
-theorem RueCore.Examples.floatToInt_inf_traps (M : FloatModel) (w : FloatWidth)
-  (w' : IntWidth) (s' : Sign) (b : Bool) :
-  evalFintrin M.toFloatOps (FloatIntrin.floatToInt w' s')
-      (Val.float w (FloatDatum.inf b)) =
-    OpRes.trap PanicKind.overflow
+theorem RueCore.step_value_typed (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+  ∃ fd,
+    P.fns[0]? = some fd ∧
+      ∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        Steps M.toFloatOps P Config.init
+            (Config.run H φ [] (Focus.ret v) tr) →
+          HasTy P.decls v fd.ret
 ```
 
-### `Examples.floatToInt_nan_traps`
+### `step_type_safety`
 
-*theorem* · module `RueCore.Examples`
+*theorem* · module `RueCore.Adequacy`
 
-**`@float_to_int` of a NaN traps**, the other half of
-`(D-Float-To-Int-Trap)`'s premise (`3.12:18`).
+**Type safety over §6's reduction, at every horizon** (§7, first bullet;
+§6.12; ADR-0097 decisions 3 and 5(b)). For a program `check` accepts and
+every `n`: §6's machine runs `n` steps from the initial configuration, or it
+has halted with a value of the entry point's declared type, or it has halted
+with a defined panic — the three outcomes §7 allows, with stuck not among
+them. By `Step.det` there is one run, so the halted cases are its end.
+
+It is stated per horizon because "diverges or halts" is excluded middle on a
+non-decidable property, outside this package's axioms; `eval_diverges_iff` is
+the unbounded form of the first case. Fuel meets `Step` here directly: `run`
+at fuel `n` is out of fuel (then §6 has an `n`-step run,
+`eval_steps_of_outOfFuel`), a value (typed by `run_safe`, reached by
+`run_sim`), or a panic (reached by `run_sim`); never `.stuck`.
 
 ```lean
-theorem RueCore.Examples.floatToInt_nan_traps (M : FloatModel) (w : FloatWidth)
-  (w' : IntWidth) (s' : Sign) (b : Bool) :
-  evalFintrin M.toFloatOps (FloatIntrin.floatToInt w' s')
-      (Val.float w (FloatDatum.nan b)) =
-    OpRes.trap PanicKind.overflow
+theorem RueCore.step_type_safety (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+  ∃ fd,
+    P.fns[0]? = some fd ∧
+      ∀ (n : Nat),
+        (∃ D, StepsN M.toFloatOps P n Config.init D) ∨
+          (∃ H v tr,
+              Steps M.toFloatOps P Config.init
+                  (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                HasTy P.decls v fd.ret) ∨
+            ∃ κ tr, Steps M.toFloatOps P Config.init (Config.panic κ tr)
 ```
 
-### `Examples.floatDivZeroToInt_traps`
+### `affineScopeDrop_both_ways`
 
-*theorem* · module `RueCore.Examples`
+*theorem* · module `RueCore.Adequacy`
 
-**A whole redex: `@float_to_int(1.0 / 0.0)` traps at every model.** The
-division is `3.12:22`'s (`FloatModel.div_by_zero`), the literals are
-`3.12:9`'s (`ofLit_one`, `ofLit_zero`), and the trap is the partition. No
-float arithmetic is computed anywhere in the proof, and the theorem holds for
-every model satisfying the laws — including, but not only, `Float.exactOps`,
-which the corpus runs and the compiler agrees with.
-
-```lean
-theorem RueCore.Examples.floatDivZeroToInt_traps (M : FloatModel) (P : Program)
-  (H : Store) (φ : Frame) (w : FloatWidth) (w' : IntWidth) (s' : Sign) :
-  eval M.toFloatOps 8 P H φ
-      (Expr.fintrin (FloatIntrin.floatToInt w' s')
-        (Expr.binop BinOp.div (Examples.flE w 1 0) (Examples.flE w 0 0))) =
-    EvalRes.panic PanicKind.overflow []
-```
-
-### `Examples.infiniteLoop_outOfFuel`
-
-*theorem* · module `RueCore.Examples`
-
-**The fuel counts iterations**: an infinite loop exhausts every bound. Each
-turn runs the body at one unit less and re-enters at one unit less, so no fuel
-completes it — `outOfFuel` is its answer at every bound, which is what
-`Corpus.lean`'s export leaves out.
+**One corpus program, both presentations** (GUIDE section 2, "One
+program, traced both ways"; §6.2, §6.5, §6.7, §6.9, §6.11, §6.12). `check`
+accepts `affine_scope_drop`; `run` answers `1` with both cells retired and
+the trace "drop `ℓ1`, then `S1`'s destructor"; and §6's `→*` reaches the same
+terminal configuration by the twelve steps written out here, one `Step`
+constructor each: (Search) into the call's empty argument list, (D-Call),
+(Search) into the `let`, (Search) into the struct literal and its one
+initializer, the literal, the plug, (D-Struct) minting `#0`, (D-Let),
+the body's literal, (D-EndScope) dropping and retiring `ℓ1`, and
+(D-Return-Value). `explain/affine_scope_drop.txt` renders `eval`'s run of the
+same program in seven rows: the (Search) steps are the part of `Step` that
+`eval` does by recursion.
 
 ```lean
-theorem RueCore.Examples.infiniteLoop_outOfFuel (M : FloatOps) (P : Program)
-  (fuel : Nat) (H : Store) (φ : Frame) :
-  eval M fuel P H φ Examples.infiniteLoop = EvalRes.outOfFuel
+theorem RueCore.affineScopeDrop_both_ways (M : FloatOps) :
+  checkProgram affineScopeDropProgram = true ∧
+    run M affineScopeDropProgram 100 =
+        EvalRes.ok [Cell.dead, Cell.dead] (Val.int IntWidth.w64 Sign.signed 1)
+          [Event.drop 1
+              (Contents.struct 1 0 [Contents.int IntWidth.w64 Sign.signed 7]),
+            Event.dtor 1
+              (Contents.struct 1 0
+                [Contents.int IntWidth.w64 Sign.signed 7])] ∧
+      Steps M affineScopeDropProgram Config.init
+        (Config.run [Cell.dead, Cell.dead] Frame.empty []
+          (Focus.ret (Val.int IntWidth.w64 Sign.signed 1))
+          [Event.drop 1
+              (Contents.struct 1 0 [Contents.int IntWidth.w64 Sign.signed 7]),
+            Event.dtor 1
+              (Contents.struct 1 0
+                [Contents.int IntWidth.w64 Sign.signed 7])])
 ```
 
 ### `Explain.explain_result`
@@ -8101,6 +8276,20 @@ theorem RueCore.run_trace_once (M : FloatOps) {P : Program} {F : Event → List 
   List.count a (List.flatMap F (run M P fuel).trace) ≤ 1
 ```
 
+### `Examples.eval_loop_ok`
+
+*theorem* · module `RueCore.Examples`
+
+(D-Loop-Iter) §6.10, as an equation: a body that completes re-enters the
+loop at one unit of fuel less (helper).
+
+```lean
+theorem RueCore.Examples.eval_loop_ok {M : FloatOps} {P : Program} {n : Nat}
+  {H H₁ : Store} {φ : Frame} {e : Expr} {v : Val} {tr : List Event}
+  (h : eval M n P H φ e = EvalRes.ok H₁ v tr) :
+  eval M (n + 1) P H φ e.loop = EvalRes.withTrace tr (eval M n P H₁ φ e.loop)
+```
+
 ### `Steps.trans`
 
 *theorem* · module `RueCore.Adequacy`
@@ -9309,18 +9498,16 @@ theorem RueCore.run_classify {M : FloatOps} {P : Program} {T : Config}
             ∃ w, run M P fuel = EvalRes.stuck w
 ```
 
-### `Examples.eval_loop_ok`
+### `Config.SafeAt.steps`
 
-*theorem* · module `RueCore.Examples`
+*theorem* · module `RueCore.Adequacy`
 
-(D-Loop-Iter) §6.10, as an equation: a body that completes re-enters the
-loop at one unit of fuel less (helper).
+Preservation along `→*` (§6.12) (helper).
 
 ```lean
-theorem RueCore.Examples.eval_loop_ok {M : FloatOps} {P : Program} {n : Nat}
-  {H H₁ : Store} {φ : Frame} {e : Expr} {v : Val} {tr : List Event}
-  (h : eval M n P H φ e = EvalRes.ok H₁ v tr) :
-  eval M (n + 1) P H φ e.loop = EvalRes.withTrace tr (eval M n P H₁ φ e.loop)
+theorem RueCore.Config.SafeAt.steps {M : FloatOps} {P : Program} {T : Ty}
+  {C C' : Config} (h : Config.SafeAt M P T C) (hs : Steps M P C C') :
+  Config.SafeAt M P T C'
 ```
 
 ### `Explain.explainIdx_result`
@@ -14308,6 +14495,24 @@ RueCore.EvalRes.stuck (why : Violation) : EvalRes
 RueCore.EvalRes.outOfFuel : EvalRes
 ```
 
+### `Examples.affineDrop`
+
+*def* · module `RueCore.Examples`
+
+An affine resource silently dropped at scope exit — legal, and the trace
+shows the drop (its destructor).
+
+```lean
+def RueCore.Examples.affineDrop : Expr
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.affineDrop =
+  Expr.letIn false (Examples.resA (Examples.lit 7)) (Examples.lit 1)
+```
+
 ### `Examples.dynDropAffineSkipped`
 
 *def* · module `RueCore.Examples`
@@ -16608,6 +16813,24 @@ def RueCore.WfStructs (D : Decls) : Prop :=
     D.structs[s]? = some sd → StructDecl.Wf D sd
 ```
 
+### `affineScopeDropProgram`
+
+*def* · module `RueCore.Adequacy`
+
+The corpus case `affine_scope_drop` (`Corpus.lean`): `{ let v0: S1 =
+S1 { x0: 7 }; 1 }` as the entry point returning `i64`, where `S1` is affine
+with a destructor (helper).
+
+```lean
+def RueCore.affineScopeDropProgram : Program
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+affineScopeDropProgram = Examples.prog Examples.tI64 Examples.affineDrop
+```
+
 ### `checkEnums`
 
 *def* · module `RueCore.Checker`
@@ -16957,6 +17180,25 @@ Constructors:
 RueCore.FrameMatches.mk {D : Decls} {Γ : Ctx} {φ : Frame} {H : Store}
   (store : Matches D Γ φ.env H) (record : φ.scope.reverse = φ.env) :
   FrameMatches D Γ φ H
+```
+
+### `Config.SafeAt`
+
+*def* · module `RueCore.Adequacy`
+
+**A configuration typed at `T`, semantically** (§7, first bullet): every
+configuration `→*` reaches from `C` reduces or has halted ((Result-Ok),
+(Result-Panic) §6.12), and every value `C` halts with — `✓v`, a value at an
+empty stack — has type `T` (§5's value typing, `HasTy`). The typing is
+defined by reduction, not by a syntactic judgment over the configuration
+(this section's docstring says why).
+
+```lean
+def RueCore.Config.SafeAt (M : FloatOps) (P : Program) (T : Ty) (C : Config) :
+  Prop :=
+  (∀ (D : Config), Steps M P C D → D.Terminal ∨ ∃ D', Step M P D D') ∧
+    ∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+      Steps M P C (Config.run H φ [] (Focus.ret v) tr) → HasTy P.decls v T
 ```
 
 ### `Cons`
