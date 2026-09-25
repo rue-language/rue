@@ -1,4 +1,4 @@
-import RueCore.Digest
+import RueCore.Lint
 
 /-!
 # `lake exe ruecore-digest` — the expert validation surface (RUE-2247)
@@ -8,6 +8,9 @@ ruecore-digest                 the statement digest, on stdout (DIGEST.md)
 ruecore-digest --index <path>  the same, reading the scope counts elsewhere
 ruecore-digest --trust         the trust report, on stdout (TRUST.md)
 ```
+
+The trust report ends with the headline statements' trusted base, computed by
+`RueCore.Lint.trustedBase`, the pass `lake exe ruecore-lint` runs (RUE-2457).
 
 Both reports are generated from the compiled `RueCore` environment, so
 regenerating them and diffing against the committed `DIGEST.md` / `TRUST.md`
@@ -80,7 +83,11 @@ def trustReport (env : Environment) : CoreM (String × UInt32) := do
   let (text, clean) := Digest.renderTrust ordered (declared.qsort Digest.bySource)
   if !clean then
     IO.eprintln "ruecore-digest --trust: a proof depends on an axiom outside the policy"
-  return (text, if clean then 0 else 1)
+  let base ← Lint.trustedBase env
+  for h in base.missing do
+    IO.eprintln s!"ruecore-digest --trust: headline statement {h} is not a theorem of the environment"
+  let text := text ++ "\n" ++ String.intercalate "\n" (Lint.renderTrustedBase base)
+  return (text, if clean && base.missing.isEmpty then 0 else 1)
 
 /-- (helper) Import the mechanization and run one report against the imported
 environment, with names printed as the sources write them (the `RueCore`

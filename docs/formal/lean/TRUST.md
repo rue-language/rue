@@ -32,18 +32,37 @@ rather than holes: `propext` (propositional extensionality), `Quot.sound`
 two and not the third, so its proofs are constructive; `Classical.choice`
 is reported as a policy break rather than as an unsound step. Two other
 things are genuine holes: `sorryAx`, which is what an unfinished proof
-leaves behind, and `Lean.ofReduceBool`/`Lean.ofReduceNat`, which
-`native_decide` introduces for a result the kernel did not verify itself.
+leaves behind, and the axiom `native_decide` adds for a result the kernel
+did not verify itself — from Lean 4.29 one per use, named after the proof
+(`foo._native.native_decide.ax_1_1`), before that `Lean.ofReduceBool`.
 An axiom this package declares is neither: it is a stated assumption, and
 it is listed with its doc-comment below so a reader can judge the source
 it comes from.
 
-The Buck target `root//:lean-ruecore` checks the same boundary from the
-other side: it re-checks the compiled modules with the toolchain's own
-`leanchecker`, prints `#print axioms` for the theorems it names in `trust`,
+The guarantee that the kernel checked every declaration is `leanchecker`,
+the toolchain's own re-check, which replays every declaration of every
+module in the import closure of the library root and of each executable's
+root, outside the toolchain, through the kernel (`lake env leanchecker
+$(lake exe ruecore-layers --closure)`; `bin/chain.sh` and the Buck target
+`root//:lean-ruecore` run it). The closure is walked from the `.olean`
+import headers, and the layering audit fails on any module in it that is
+neither the package's nor the toolchain's, so what is replayed is every
+module of the package. The toolchain's own modules (`Init`, `Std`, `Lean`,
+`Lake`) are not replayed: they are trusted as the toolchain is. No scan of
+the sources can give that guarantee, since a macro can set
+`debug.skipKernelTC` without writing it. The Buck target checks the
+same boundary from the other side: besides that re-check, it
+prints `#print axioms` for the theorems it names in `trust`,
 and fails the build on any axiom outside `propext`/`Quot.sound`. This
 report covers *every* theorem, including the ones no trusted theorem uses.
-Neither check runs in CI yet: nothing in CI runs the Lean build until
+`lake exe ruecore-lint` (`RueCore/Lint.lean`, RUE-2457) covers every
+declaration, definitions included, by allow-list — any axiom but `propext`
+and `Quot.sound` fails it, whatever its name — and fails the build too on
+`unsafe`, `partial`, `@[implemented_by]`, `@[extern]` or `opaque` in the
+syntax, definition and proof layers, and, in a scan of the sources that is a
+courtesy beside `leanchecker`, on `debug.skipKernelTC`, an option a macro
+names, or an unbounded `maxHeartbeats`; the Buck target runs it as `lint.txt`.
+None of these checks runs in CI yet: nothing in CI runs the Lean build until
 ADR-0097's gate is met (RUE-2241), so a reviewer regenerates both reports
 and diffs them against the committed copies.
 
@@ -923,3 +942,38 @@ interfaces arrive (the library obligations of §6.13.5, and the
 adequacy obligation `../03-metatheory.md` records), each will appear
 in this section with its doc-comment, which is where its source
 belongs.
+
+## Trusted base
+
+What a reviewer must read to know what the headline theorems say: every
+definition of the package their statements transitively unfold to — the
+constants of each statement, a definition's body, an inductive type's
+constructors — computed from the compiled environment by the same pass as
+`lake exe ruecore-lint` (`RueCore/Lint.lean`, `trustedBase`). Proofs are not
+in it, because the kernel checks them; neither is anything of Lean's own
+library. The headline statements are listed once, in `RueCore.Lint.headline`:
+the §7 claims and their linking theorems. A lemma `03-metatheory.md` cites as a
+step of a proof is not a claim, and is not a headline; RUE-2460 (the Spec layer)
+finalizes the list.
+
+- Headline statements: 36 — `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `step_progress`, `step_preservation`, `step_type_safety`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `run_stuck_of_step_stuck`, `eval_diverges_iff`, `fuel_mono`, `no_masking`, `run_ne_returned`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `Config.stuck_iff`, `step_stuck_isStuckState`.
+- Definitions to read: **292**, in 9 modules (66 inductive, 223 def, 3 abbrev).
+- Instances they use: 12 — `instDecidableEqAttr`, `instDecidableEqEntry`, `instDecidableEqFloatWidth`, `instDecidableEqIntWidth`, `instDecidableEqMult`, `instDecidableEqOwnSt`, `instDecidableEqSign`, `instDecidableEqTy`, `instDecidableInBounds`, `instDecidableNoResidualLinear`, `instDecidableRoundsFinite`, `instDecidableWf_1`. A `deriving` image says nothing beyond its type; a hand-written one is read with the predicate it decides.
+- Lean-generated auxiliaries passed through (`isLeanAux`): 525. Each is
+  Lean's rendering of a definition listed here, so there is nothing more to read in
+  them. A constant counts as Lean's only when Lean's own tables record it (recursors
+  and their auxiliaries, matchers, projections), or when it is named as Lean names a
+  by-product and has no source range of its own; anything else is listed above,
+  including a `private` definition and one declared under an instance's name.
+
+| Module | Layer | Count | Definitions |
+| --- | --- | --- | --- |
+| `RueCore.Float` | L0 syntax | 32 | `FloatArith`, `FloatDatum`, `FloatDatum.Wf`, `FloatDatum.isNaN`, `FloatDatum.le`, `FloatDatum.lt`, `FloatDatum.negate`, `FloatDatum.roundOp`, `FloatDatum.succMag`, `FloatDatum.toIntIn`, `FloatDatum.totalCmp`, `FloatDatum.totalRank`, `FloatDatum.truncToInt`, `FloatDatum.widen`, `FloatLit`, `FloatLit.RoundsFinite`, `FloatLit.exact`, `FloatModel`, `FloatOps`, `FloatOps.cast`, `FloatOps.roundIntrin`, `FloatRoundOp`, `FloatUnIntrin`, `FloatWidth`, `FloatWidth.eMin`, `FloatWidth.eTop`, `FloatWidth.overflowNum`, `FloatWidth.prec`, `canonAux`, `canonNum`, `cmpScaled`, `magCmp` |
+| `RueCore.Syntax` | L0 syntax | 54 | `Attr`, `Attr.lift`, `BinOp`, `BinOp.floatAdmits`, `BinOp.intAdmits`, `BinOp.isCompare`, `BinOp.resultTy`, `Decls`, `Decls.classOf`, `Decls.enumClassOf`, `EnumDecl`, `Expr`, `Expr.breaks`, `FloatIntrin`, `FloatIntrin.floatSrc`, `FloatIntrin.resTy`, `FnDef`, `InBounds`, `IntWidth`, `IntWidth.bits`, `IntWidth.modulus`, `Mult`, `Mult.join`, `Mult.rank`, `Param`, `Place`, `Place.path`, `Place.root`, `Program`, `Sign`, `StructDecl`, `Ty`, `Ty.atDyn`, `Ty.atPath`, `Ty.declaredLinear`, `Ty.dynNoDeclared`, `Ty.fieldAt`, `Ty.isInt`, `Ty.mult`, `Ty.observable`, `UnOp`, `anyLinearOther`, `arrayPrefix`, `bitsOf`, `declaredPrefix`, `instDecidableEqTy.decEq`, `intMax`, `intMin`, `linearResidue`, `noArrayStep`, `noDtorPrefix`, `rootIdxOnly`, `valOf`, `wrapInt` |
+| `RueCore.Adequacy.Defs` | L1 definitions | 3 | `Config.SafeAt`, `Frame.empty`, `StepsN` |
+| `RueCore.Checker.Defs` | L1 definitions | 19 | `CTy`, `CTy.fits`, `CTy.fitsC`, `CTy.meet`, `Decls.peel`, `Decls.peelStep`, `Expr.nodes`, `Ty.grounded`, `check`, `checkDecls`, `checkEnumDecl`, `checkEnums`, `checkFn`, `checkNoCycle`, `checkProgram`, `checkStructDecl`, `checkStructs`, `headIter`, `headNext` |
+| `RueCore.Dynamics` | L1 definitions | 61 | `ArgsRes`, `Cell`, `Contents`, `Contents.allCopyList`, `Contents.copyClosed`, `Contents.declaredLinear`, `Contents.declaredPlan`, `Contents.destructure`, `Contents.isHole`, `Contents.mult`, `Contents.ofVal`, `Contents.ofVals`, `Contents.readAt`, `Contents.residualLinear`, `Contents.resolveDyn`, `Contents.skeleton`, `Contents.splitResidue`, `Contents.toVal`, `Contents.writeAt`, `DynPlace`, `DynStep`, `Env`, `EvalRes`, `EvalRes.absorb`, `EvalRes.andThen`, `EvalRes.withTrace`, `Event`, `Frame`, `OpRes`, `OpRes.toRes`, `PanicKind`, `Store`, `Val`, `Val.ints`, `Val.mult`, `Val.observable`, `Violation`, `binOpFloat`, `binOpInt`, `dropCell`, `dropContents`, `dropEvents`, `dropResidue`, `dropRetire`, `dynPlace`, `eval`, `evalArgs`, `evalBinOp`, `evalFintrin`, `evalIntCast`, `evalUnOp`, `inBoundsIdx`, `intResult`, `introVal`, `matchConsume`, `mintParams`, `residueMark`, `run`, `runAllScopeDrops`, `shiftAmount`, `unwindLocs` |
+| `RueCore.Soundness.Defs` | L1 definitions | 13 | `BrokeOk`, `CellMatches`, `Contents.holeFree`, `ContentsMatches`, `ContentsMatchesList`, `ContentsTy`, `ContentsTys`, `EvalOk`, `FrameMatches`, `HasTy`, `HasTys`, `Matches`, `Untouched` |
+| `RueCore.Statics` | L1 definitions | 56 | `Ctx`, `Ctx.Wf`, `Ctx.join`, `Ctx.joinAll`, `Ctx.joinFold`, `Ctx.joinOpt`, `Ctx.joinOpts`, `Ctx.loopLocals`, `Ctx.outsideLoop`, `DeclId`, `Decls.Names`, `Decls.byValue`, `Entry`, `Entry.join`, `Entry.setSt`, `Entry.wf`, `EnumDecl.Wf`, `EnumDecl.payloadJoin`, `LoopHead`, `NoResidualLinear`, `Out`, `Out.add`, `OwnSt`, `OwnSt.decEq`, `OwnSt.fieldAt`, `OwnSt.fieldStates`, `OwnSt.fullyOwned`, `OwnSt.get`, `OwnSt.isOwned`, `OwnSt.join`, `OwnSt.setAt`, `OwnSt.setField`, `OwnSt.wf`, `ProgramTyped`, `StructDecl.Wf`, `StructDecl.baseOf`, `Ty.declIds`, `Typed`, `TypedArgs`, `TypedArms`, `WfDecls`, `WfEnums`, `WfFn`, `WfNames`, `WfProgram`, `WfStructs`, `armCtx`, `assignArrayOk`, `fnCtx`, `instDecidableEqEntry.decEq`, `overwriteOk`, `ownedJoinOk`, `ownedJoinOkList`, `residualLinear`, `residualLinearBelow`, `residualLinearFields` |
+| `RueCore.Step` | L1 definitions | 24 | `ArgsTag`, `Config`, `Config.Stuck`, `Config.Terminal`, `Config.init`, `Focus`, `Frame.popScope`, `Kont`, `Kont.toCall`, `Kont.toLoop`, `OpRes.toStep`, `Step`, `StepOut`, `Steps`, `Violation.isStuckState`, `plainDestructure`, `plainDropRetire`, `plainResidue`, `plainUnwind`, `rootCell`, `step`, `stepArgs`, `stepEval`, `stepRet` |
+| `RueCore.Trace.Defs` | L1 definitions | 30 | `Blocks`, `Cell.own`, `Config.stack`, `Config.trace`, `Contents.own`, `Contents.ownList`, `DtorNotCopy`, `EvalRes.trace`, `Event.dtorIds`, `Event.freed`, `Exact`, `Expr.pendingSafe`, `Expr.quietList`, `Expr.returns`, `Expr.unwinds`, `Lead`, `Lifo`, `Local`, `NewestFirst`, `Program.pendingSafe`, `Retired`, `Settled`, `Stk`, `StoreCC`, `Tidy`, `Val.own`, `dropLocs`, `dtorIds`, `freedIds`, `storeOwn` |

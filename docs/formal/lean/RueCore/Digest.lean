@@ -715,6 +715,9 @@ def axiomVerdict (a : Name) : String × Bool :=
     ("**hole**: an unfinished proof — this is what `sorry` leaves behind", true)
   else if a == ``Lean.ofReduceBool || a == ``Lean.ofReduceNat then
     ("**hole**: `native_decide` — a result the kernel did not verify itself", true)
+  else if a.components.any (· == `_native) then
+    ("**hole**: the axiom `native_decide` adds for one use (Lean 4.29 on) — a result \
+      the kernel did not verify itself", true)
   else if inRoot a then
     ("a declared assumption of this package; read its doc-comment below", false)
   else ("**unknown axiom** — review it before trusting anything that uses it", true)
@@ -776,18 +779,37 @@ def renderTrust (theorems : Array (Item × Array Name)) (declared : Array Item) 
     "two and not the third, so its proofs are constructive; `Classical.choice`",
     "is reported as a policy break rather than as an unsound step. Two other",
     "things are genuine holes: `sorryAx`, which is what an unfinished proof",
-    "leaves behind, and `Lean.ofReduceBool`/`Lean.ofReduceNat`, which",
-    "`native_decide` introduces for a result the kernel did not verify itself.",
+    "leaves behind, and the axiom `native_decide` adds for a result the kernel",
+    "did not verify itself — from Lean 4.29 one per use, named after the proof",
+    "(`foo._native.native_decide.ax_1_1`), before that `Lean.ofReduceBool`.",
     "An axiom this package declares is neither: it is a stated assumption, and",
     "it is listed with its doc-comment below so a reader can judge the source",
     "it comes from.",
     "",
-    "The Buck target `root//:lean-ruecore` checks the same boundary from the",
-    "other side: it re-checks the compiled modules with the toolchain's own",
-    "`leanchecker`, prints `#print axioms` for the theorems it names in `trust`,",
+    "The guarantee that the kernel checked every declaration is `leanchecker`,",
+    "the toolchain's own re-check, which replays every declaration of every",
+    "module in the import closure of the library root and of each executable's",
+    "root, outside the toolchain, through the kernel (`lake env leanchecker",
+    "$(lake exe ruecore-layers --closure)`; `bin/chain.sh` and the Buck target",
+    "`root//:lean-ruecore` run it). The closure is walked from the `.olean`",
+    "import headers, and the layering audit fails on any module in it that is",
+    "neither the package's nor the toolchain's, so what is replayed is every",
+    "module of the package. The toolchain's own modules (`Init`, `Std`, `Lean`,",
+    "`Lake`) are not replayed: they are trusted as the toolchain is. No scan of",
+    "the sources can give that guarantee, since a macro can set",
+    "`debug.skipKernelTC` without writing it. The Buck target checks the",
+    "same boundary from the other side: besides that re-check, it",
+    "prints `#print axioms` for the theorems it names in `trust`,",
     "and fails the build on any axiom outside `propext`/`Quot.sound`. This",
     "report covers *every* theorem, including the ones no trusted theorem uses.",
-    "Neither check runs in CI yet: nothing in CI runs the Lean build until",
+    "`lake exe ruecore-lint` (`RueCore/Lint.lean`, RUE-2457) covers every",
+    "declaration, definitions included, by allow-list — any axiom but `propext`",
+    "and `Quot.sound` fails it, whatever its name — and fails the build too on",
+    "`unsafe`, `partial`, `@[implemented_by]`, `@[extern]` or `opaque` in the",
+    "syntax, definition and proof layers, and, in a scan of the sources that is a",
+    "courtesy beside `leanchecker`, on `debug.skipKernelTC`, an option a macro",
+    "names, or an unbounded `maxHeartbeats`; the Buck target runs it as `lint.txt`.",
+    "None of these checks runs in CI yet: nothing in CI runs the Lean build until",
     "ADR-0097's gate is met (RUE-2241), so a reviewer regenerates both reports",
     "and diffs them against the committed copies.",
     ""]
