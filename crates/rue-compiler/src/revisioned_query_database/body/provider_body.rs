@@ -243,7 +243,7 @@ impl SemanticNucleusTypeProvider<'_> {
         Ok(())
     }
 
-    fn anonymous_projection(
+    pub(in crate::revisioned_query_database) fn anonymous_projection(
         &self,
         identity: &crate::AnonymousNominalKey,
     ) -> Option<crate::durable_semantics::DurableAnonymousNominal> {
