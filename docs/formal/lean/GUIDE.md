@@ -349,9 +349,10 @@ Two things differ, and neither is a disagreement:
 
 - Five of the twelve steps are (Search): entering a subexpression, or
   plugging a value back into its context. `eval` does these by recursion, so
-  they have no row of their own. They are also where its fuel goes: each
-  recursive call of `eval` sits behind one enter step, and that is why
-  `eval_steps_of_outOfFuel` can count fuel in steps.
+  they have no row of their own. Each unit of fuel `eval` spends is paid for
+  by at least one step, either an enter step or the rule step that puts the
+  next subexpression in focus, which is why `eval_steps_of_outOfFuel` can
+  count fuel in steps.
 - `explain/` lists a node after its premises, so (D-Let)'s row [4] follows
   the struct literal's rows it waited for. `Step` interleaves the same work:
   step 3 enters the `let`, and step 9 is its rule firing.
@@ -370,7 +371,9 @@ over `eval`. Adequacy then carries it to `Step`:
 - `step_progress`: every configuration §6 reaches from a checked program's
   initial one reduces or has halted, so none is stuck.
 - `step_preservation`: every configuration §6 reaches is typed at the entry
-  point's return type. A step from a typed configuration lands on a typed one.
+  point's return type. A step from a typed configuration lands on a typed
+  one — equivalently, `step_progress` plus `step_value_typed`; the one-step
+  half holds on every program.
 - `step_type_safety`: at every horizon `n`, §6 has run `n` steps, or has
   halted with a value of the declared type, or with a defined panic.
 
@@ -557,9 +560,10 @@ reuse it at every form. It says:
 - on `.stuck`, **`False`**, which is the whole point.
 
 That is progress and preservation in one statement (§7, first bullet).
-Over §6's `Step` the same guarantee is `step_progress` and
-`step_preservation`, derived from this theorem by adequacy (section 2, "One
-program, traced both ways").
+Over §6's `Step`, its whole-program consequence is `step_progress` and
+`step_value_typed`, with `step_preservation` packaging the two as a semantic
+configuration typing, derived from this theorem by adequacy. The
+per-expression invariant `FrameMatches` has no `Step`-side statement.
 
 Over a whole program, `run_safe` says it in the shape a reader wants:
 
