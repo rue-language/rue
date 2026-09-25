@@ -804,6 +804,7 @@ lean_package(
         "RueCore.eval_complete",
         "RueCore.run_complete",
         "RueCore.never_stuck_iff",
+        "RueCore.step_never_stuck_of_run",
         "RueCore.eval_diverges_iff",
         "RueCore.eval_steps_of_outOfFuel",
         "RueCore.ContentsTy.copyClosed",
