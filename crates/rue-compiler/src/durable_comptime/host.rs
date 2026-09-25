@@ -1004,6 +1004,11 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
             _ => false,
         }
     }
+    fn type_is_module(&self, _ty: &Self::Type) -> bool {
+        // Durable modules are values (`EvaluatedSemanticConst::Module`), never
+        // `DurableComptimeType`s, so no type value here is a module (RUE-2426).
+        false
+    }
 
     fn type_is_unsigned(&self, ty: &Self::Type) -> bool {
         DurableComptimeScalarPolicy::type_is_unsigned(ty.as_ref())
