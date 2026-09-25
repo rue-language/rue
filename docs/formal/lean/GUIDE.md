@@ -177,15 +177,18 @@ of six outcomes:
 
 The trace lists, in order, everything the machine did that a program can see:
 
-- `drop ℓ c`, a binding's drop (at scope exit, at `@drop`, or when
-  overwritten). It records the *contents* dropped, which after a partial move
-  is a tree with holes in it.
+- `drop ℓ c`, a binding's drop (at scope exit, at `@drop`, when
+  overwritten, or a retained subtree of a declared-linear destructure's
+  residue). It records the *contents* dropped, which after a partial move is
+  a tree with holes in it.
 - `dropTemp v`, a discarded temporary.
+- `consume c`, the shell a `match` or a destructure consumes: every member
+  already moved out or dropped, so no drop of its own runs (RUE-2427).
 - `dtor s c`, a user destructor §6.11 ran.
 - `dbg v`, a `@dbg`: §6.12's observable output.
 
 The last two are what a Rue program prints; the first two mark where a drop
-starts. The trace is the fragment's image of the oracle interpreter's
+starts, and `consume` where a value's life ends without one. The trace is the fragment's image of the oracle interpreter's
 observable outcome, and the bridge compares it against a native binary's
 stdout (`README.md`, "The bridge corpus"). A trap carries a trace too, because
 a trapping process prints what it printed and then exits 101.
@@ -594,9 +597,9 @@ destructor run twice, and no identity appears twice among the
 of each `drop`/`dropTemp` marker's tree, and `dtorIds` the identity of each
 value a destructor ran on. A `Copy` value is duplicated freely and frees
 nothing, so neither counts it. A declared-linear destructure's residue is
-freed with no marker of its own (`dropResidue`), so it is outside `freedIds`
-until RUE-2328 gives it one; `dtorIds` still catches it when the residue has
-a destructor.
+dropped under a `drop` marker per retained subtree, and a `match` or a
+destructure records the shell it consumes with a `consume` event (RUE-2427),
+so `freedIds` sees every way an owned value's life ends.
 
 The proof is a **conservation law**, `eval_conserves`, by the same fuel
 induction as `soundness`: what the final store, the result and the trace own,
@@ -1278,21 +1281,26 @@ because `v0.x1` is not what was consumed.
 
 ```
   split(S15 { S1 { 1 }#0, 5, S1 { 2 }#1 }#2, [1]) = ( 5 , [ S1 { 1 }#0, S1 { 2 }#1 ] )
-  drop*(H, [ S1 { 1 }#0, S1 { 2 }#1 ])            = [ dtor S1 (S1 { 1 }#0)
-                                                    , dtor S1 (S1 { 2 }#1) ]
+  drop*(H, [ S1 { 1 }#0, S1 { 2 }#1 ])            = [ drop ℓ3 = S1 { 1 }#0, dtor S1 (S1 { 1 }#0)
+                                                    , drop ℓ3 = S1 { 2 }#1, dtor S1 (S1 { 2 }#1) ]
+  consume S15 { ⊘, ⊘, ⊘ }#2
   then H[ℓ3 ↦ ⊘]
 ```
 
 (`v0` is at `ℓ3` because the three literals reserved `ℓ0`–`ℓ2` for their
-identities; section 2.) The consumed aggregate's own identity, `#2`, is
-dropped by no event and freed with the place: the residue's destructors name
-`#0` and `#1`, and nothing names any of them again.
+identities; section 2.) Each retained subtree is a sub-position of `ℓ3`
+being dropped, so its drop starts with a `drop ℓ3` marker, exactly as
+`@drop(v0.x0)` would record it. The consumed aggregate's own identity, `#2`,
+runs no drop of its own — everything it held has been handed on or dropped —
+and the `consume` event records that its life ends here, with every member
+`⊘` (RUE-2427). The trace names `#0`, `#1` and `#2` once each, and nothing
+names any of them again.
 
 `MovedOut` on the Σ side and `⊘` on the store side, at the one path `π_d`,
 is `ContentsMatches` again. The output is `10`, `1`, `2`, `20`, then the
 value `5`: the residue drops **at the access** rather than at scope exit, and
-`explain/destructure_residue_order.txt` shows both events on its one
-(D-Use-Declared-Linear) §6.3 row. Where the selected path passes through a
+`explain/destructure_residue_order.txt` shows both drops and the
+consumption on its one (D-Use-Declared-Linear) §6.3 row. Where the selected path passes through a
 nested struct, the nested residue comes before the later sibling
 (`destructure_nested_residue`); where the form is `@drop` rather than a use,
 §6.11 drops the selected leaf *after* the residue
@@ -1511,6 +1519,7 @@ Change one thing and each premise answers in turn:
                            store  [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘]          ← the scrutinee moved out
   [7]  (D-Match) §6.6      bind E0.K0's payload to [ℓ3]
                            store  [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = S1 { 1 }#0]
+                           events >> consume E0.K0⟨⊘⟩#1
   [9]  (Dbg)               @dbg prints 10
   [12] (D-EndScope) §6.6   endscope([ℓ3])
                            events >> drop ℓ3 = S1 { 1 }#0; run drop fn S1(S1 { 1 }#0)
@@ -1520,7 +1529,8 @@ Change one thing and each premise answers in turn:
 
 The payload keeps its identity, `#0`, as it moves from the enum into the
 arm's cell, and the enum's own identity, `#1`, is consumed by the match and
-never dropped: the arm's cell is the payload's one owner.
+never dropped: the `consume` event on row [7] records the shell's end, every
+payload slot `⊘` (RUE-2427), and the arm's cell is the payload's one owner.
 
 Row [7] is (D-Match): the tag `K0` selects the covering arm, and the payload
 is bound to **fresh cells**, appended to the innermost scope record *and*

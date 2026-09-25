@@ -22,7 +22,11 @@ Design commitments carried over from §6:
   - `useAfterMove`, `useAfterDrop`, `unbound`, and `typeConfusion` are
     §6's own stuck states: no reduction rule applies to a read of a `⊘` or
     `†` cell, an unbound index, or an operator on a value of the wrong
-    shape.
+    shape. Two of the wrong shapes are values a form would otherwise discard
+    unrecorded (RUE-2427): a `@dbg` operand §6.12 cannot render
+    (`Val.observable`), and a loop body's value that is not the `⟨⟩`
+    §6.10's (D-Loop-Iter) re-enters on. `Step` has the same two premises, and
+    a checked program reaches neither ((Dbg) §5.8, §5.7's `unit` body).
   - `linearLeak`, `linearOverwrite`, and `linearDiscard` are **monitors**
     the interpreter adds. §6.7's `endscope`, §6.8's overwrite-drop, and
     §6.7's temporary discard execute the drop and rely on §5 (`3.8:32`,
@@ -65,7 +69,12 @@ Design commitments carried over from §6:
   §5.7's `⊥_panic` runs no further drop there is nothing to add to it.
 * Traces record each drop (`drop ℓ v`) and each discarded temporary
   (`dropTemp v`) — the §6.7 temporary-death analog — and, nested under
-  either, every user destructor §6.11 runs (`dtor s v`). Beside them
+  either, every user destructor §6.11 runs (`dtor s v`). A declared-linear
+  destructure's residue drops each retained subtree under a `drop ℓ r`
+  marker of its own (`residueMark`), and the shell a `match` or a destructure
+  consumes is recorded by a `consume` event (RUE-2427), so every way an owned
+  value's life ends is in the trace (`drop_exactly_once`,
+  `TraceExact.lean`). Beside them
   `@dbg`'s own event (`dbg v`) is the other half of §6.12's observable
   output; those two are what a printed Rue program can see, in the one
   trace order they happened in.

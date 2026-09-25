@@ -58,7 +58,8 @@ One array of case objects. Fields:
   come off the one trace, so a `@dbg` between two drops is between them here
   too. A drop with no destructor anywhere in it is unobservable in Rue and
   contributes no line; the interpreter's `drop ℓ v` and `dropTemp v` events
-  mark where a drop *starts* and are likewise not lines. Or
+  mark where a drop *starts*, and its `consume c` events where a matched or
+  destructured shell ends, and are likewise not lines. Or
   `{"kind": "panic", "panic": <name>, "stdout": [<line>...]}` for a §6.12
   trap, where the lines are the ones the run produced **before** the trap:
   §6.12's outcome keeps the observable output a trapping run emitted, and the

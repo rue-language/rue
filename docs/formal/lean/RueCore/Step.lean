@@ -114,6 +114,18 @@ representation; none changes what a checked program does.
   (D-Use-Untrackable-Dynamic-Copy), and are stuck (`typeConfusion`) at a
   non-`Copy` leaf; `@drop` there of a `⊘` is stuck too (`useAfterMove`). The
   statics reject both (E0904).
+* **`@dbg` renders an observable value, and a loop body yields `⟨⟩`**
+  (RUE-2427). `@dbg`'s defining equation appends a rendering §6.12 defines
+  only for an integer, a float or a `bool`, and §6.10 says the body's value
+  is "necessarily `⟨⟩`"; any other value is stuck (`typeConfusion`) rather
+  than discarded without a drop, as in `eval`. (Dbg) §5.8 and §5.7's `unit`
+  body keep a checked program away from both.
+* **Consumption is recorded** (RUE-2427). (D-Match) appends a `consume` event
+  for a non-`Copy` scrutinee's shell (`matchConsume`), and the destructure
+  drops each retained subtree under a `drop ℓ r` marker and then consumes the
+  path's shell (`plainDestructure`), exactly as `eval` does, so the two
+  presentations keep one trace. Like `drop` and `dropTemp`, both are markers
+  no Rue program observes.
 
 `Config.Terminal` accepts any value at an empty stack, where (Result-Ok) reads
 an `i32` or `⟨⟩`; (D-Panic)'s `panic: msg` line is not an event.
