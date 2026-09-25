@@ -266,6 +266,30 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
                 None => DurableComptimeFailure::failure(SemanticNucleusFailure::Diagnostic(kind)),
             })
         };
+        // An untyped literal that cannot take the slot's type at all reads
+        // from the literal's side, as the body path's inference and the
+        // scalar `const X: bool = 1;` report it: `S { s: 1 }` at an `S`
+        // field is "expected integer type, found S", and a float literal
+        // there "expected comptime_float, found S".
+        if let EvaluatedSemanticConst::Value(typed) = value {
+            let literal = match (&typed.value, typed.ty.as_ref()) {
+                (DurableConstValue::Integer(_), None) if durable_int_width(slot).is_none() => {
+                    Some("integer type")
+                }
+                (DurableConstValue::Float(_), Some(DurableType::ComptimeFloat)) => {
+                    Some("comptime_float")
+                }
+                _ => None,
+            };
+            if let Some(literal) = literal
+                && !matches!(slot, DurableType::F32 | DurableType::F64)
+            {
+                return Err(reject(rue_error::ErrorKind::TypeMismatch {
+                    expected: literal.to_owned(),
+                    found: durable_type_diagnostic_name(slot),
+                }));
+            }
+        }
         if let Some(found) = Self::durable_child_type_mismatch(value, slot) {
             return Err(reject(rue_error::ErrorKind::TypeMismatch {
                 expected: durable_type_diagnostic_name(slot),
@@ -300,6 +324,40 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
                     .map_err(reject)
             }
             _ => Ok(()),
+        }
+    }
+
+    /// Whether `ty` is a concrete value type a literal can be checked
+    /// against: a scalar or a nominal. A generic parameter, a pointer, a
+    /// slice or a comptime-only type is left to its own consumer.
+    fn names_a_value_type(ty: &DurableType) -> bool {
+        durable_int_width(ty).is_some()
+            || matches!(
+                ty,
+                DurableType::Bool
+                    | DurableType::Unit
+                    | DurableType::F32
+                    | DurableType::F64
+                    | DurableType::Nominal(_)
+                    | DurableType::BuiltinNominal { .. }
+                    | DurableType::AnonymousNominal(_)
+            )
+    }
+
+    /// The element type of an array literal as the body type checker names
+    /// it in a mismatch: its first element's type, `{integer}` or `{float}`
+    /// for an untyped literal, and `_` for an empty literal.
+    fn literal_element_type_name(first: Option<&EvaluatedSemanticConst>) -> String {
+        let Some(EvaluatedSemanticConst::Value(typed)) = first else {
+            return "_".to_owned();
+        };
+        match (&typed.value, typed.ty.as_ref()) {
+            (DurableConstValue::Integer(_), None) => "{integer}".to_owned(),
+            (_, Some(DurableType::ComptimeFloat)) | (DurableConstValue::Float(_), None) => {
+                "{float}".to_owned()
+            }
+            (_, Some(ty)) => durable_type_diagnostic_name(ty),
+            (value, None) => inferred_durable_const_type_name(value),
         }
     }
 
@@ -1318,10 +1376,28 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         mut elements: Vec<Self::Value>,
         site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
-        let DurableType::Array { element, len } = ty.as_ref() else {
-            return rue_air::ComptimeOutcome::RuntimeDependent;
-        };
         let site = self.diagnostic_site(site);
+        let DurableType::Array { element, len } = ty.as_ref() else {
+            // An array literal whose context names a type that is not an
+            // array is the body path's E0206 on the literal, naming the
+            // literal's own array type (RUE-2407).
+            if !Self::names_a_value_type(ty.as_ref()) {
+                return rue_air::ComptimeOutcome::RuntimeDependent;
+            }
+            return durable_host_error_outcome(durable_host_error(
+                DurableComptimeFailure::kind_at_site(
+                    &site,
+                    rue_error::ErrorKind::TypeMismatch {
+                        expected: durable_type_diagnostic_name(ty.as_ref()),
+                        found: format!(
+                            "[{}; {}]",
+                            Self::literal_element_type_name(elements.first()),
+                            elements.len()
+                        ),
+                    },
+                ),
+            ));
+        };
         match self.services.type_is_copy(ty.as_ref()) {
             Ok(true) => {}
             Ok(false) => {

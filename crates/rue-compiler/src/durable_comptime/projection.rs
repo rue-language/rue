@@ -283,7 +283,17 @@ pub(crate) fn durable_type_diagnostic_name_with_parameters(
     .unwrap_or_else(|| durable_type_diagnostic_name(ty))
 }
 
-pub(crate) fn inferred_durable_const_type_name(value: &DurableConstValue) -> &'static str {
+/// The type a reduced constant value has, for a mismatch diagnostic's
+/// "found": a scalar's inferred type, or an aggregate's own declared type,
+/// as the body type checker names it (RUE-2407).
+pub(crate) fn inferred_durable_const_type_name(value: &DurableConstValue) -> String {
+    match value {
+        DurableConstValue::Aggregate(aggregate) => durable_type_diagnostic_name(&aggregate.ty),
+        other => inferred_scalar_const_type_name(other).to_owned(),
+    }
+}
+
+fn inferred_scalar_const_type_name(value: &DurableConstValue) -> &'static str {
     match value {
         DurableConstValue::Integer(value) if i32::try_from(*value).is_ok() => "i32",
         DurableConstValue::Integer(value) if i64::try_from(*value).is_ok() => "i64",
@@ -307,9 +317,9 @@ pub(crate) fn inferred_durable_const_type_name(value: &DurableConstValue) -> &'s
 /// (spec 3.12:3, the same rule that keeps `comptime_int` unnameable), so a
 /// float initializer suggests the width a literal takes when no context
 /// supplies one (3.12:8).
-pub(crate) fn suggested_durable_const_type_name(value: &DurableConstValue) -> &'static str {
+pub(crate) fn suggested_durable_const_type_name(value: &DurableConstValue) -> String {
     match value {
-        DurableConstValue::Float(_) => "f64",
+        DurableConstValue::Float(_) => "f64".to_owned(),
         other => inferred_durable_const_type_name(other),
     }
 }
@@ -467,7 +477,7 @@ pub(crate) fn durable_value_fit_failure(
     }
     Some(DurableComptimeValueFitFailure::TypeMismatch {
         expected: durable_type_diagnostic_name(expected),
-        found: inferred_durable_const_type_name(value).to_owned(),
+        found: inferred_durable_const_type_name(value),
     })
 }
 
