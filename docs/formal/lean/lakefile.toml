@@ -20,3 +20,8 @@ supportInterpreter = true
 [[lean_exe]]
 name = "ruecore-layers"
 root = "RueCore.LayersMain"
+
+[[lean_exe]]
+name = "ruecore-lint"
+root = "RueCore.LintMain"
+supportInterpreter = true
