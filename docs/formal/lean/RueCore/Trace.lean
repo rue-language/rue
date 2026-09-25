@@ -1,6 +1,7 @@
 import RueCore.Soundness
 import RueCore.Checker
 import RueCore.Step
+import RueCore.Trace.Defs
 
 /-!
 # RueCore.Trace — theorems over the drop trace (§7)
@@ -55,79 +56,17 @@ through `no_violation`:
 a program the checker accepts never reaches the monitor, or any other
 refusal, so its trace is the whole run's — a `stuck` result carries no trace
 and would make the statement vacuous.
+
+The definitions the statements here are written in (owned identities, the
+trace's projections, `Cons`) are in `Trace/Defs.lean`, the definitions layer
+(README, "Layers").
 -/
 
 namespace RueCore
 
 /-! ## Owned identities -/
 
-mutual
-/-- The identities of a contents' **owned** nodes: every non-`Copy` aggregate
-in it, `⊘` skipped (§6.11's skip) and nothing below a `Copy` node, since a
-`Copy` value is duplicated freely and has no drop glue. -/
-def Contents.own (D : Decls) : Contents → List Nat
-  | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => []
-  | .struct s i cs => if D.classOf s = .copy then [] else i :: Contents.ownList D cs
-  | .enum e _ i cs => if D.enumClassOf e = .copy then [] else i :: Contents.ownList D cs
-  | .array T i cs =>
-      if Ty.mult D (.array T cs.length) = .copy then [] else i :: Contents.ownList D cs
-
-/-- `own` over a field, payload or element list (helper). -/
-def Contents.ownList (D : Decls) : List Contents → List Nat
-  | [] => []
-  | c :: cs => Contents.own D c ++ Contents.ownList D cs
-end
-
-/-- A value's owned identities: its stored image's (helper). -/
-abbrev Val.own (D : Decls) (v : Val) : List Nat := (Contents.ofVal v).own D
-
-/-- A cell's owned identities: a retired cell, or a reserved identity slot,
-holds none (helper). -/
-def Cell.own (D : Decls) : Cell → List Nat
-  | .full c => c.own D
-  | .dead => []
-
-/-- The store's owned identities, cell by cell (helper). -/
-def storeOwn (D : Decls) (H : Store) : List Nat := H.flatMap (Cell.own D)
-
-/-- Every live cell of the store is copy-closed (helper). -/
-def StoreCC (D : Decls) (H : Store) : Prop :=
-  ∀ (ℓ : Nat) (c : Contents), H[ℓ]? = some (Cell.full c) → c.copyClosed D = true
-
-/-- Multiset inclusion, read by counts: every identity occurs in `l₁` at most
-as often as in `l₂` (helper). -/
-def IdLe (l₁ l₂ : List Nat) : Prop := ∀ a, l₁.count a ≤ l₂.count a
-
-/-- The identities minted between two stores: the indices the store grew by,
-since `introVal` takes the next index (helper). -/
-def Fresh (H H' : Store) : List Nat := List.range' H.length (H'.length - H.length)
-
 /-! ## The trace's projections -/
-
-/-- The owned identities a `drop` or `dropTemp` marker frees: the whole tree
-§6.11's walk goes through — and the shell a `consume` event ends (RUE-2427),
-whose members were already moved out or dropped. A destructor event frees
-nothing of its own — it is nested under a marker — and a `@dbg` frees nothing
-(helper). -/
-def Event.freed (D : Decls) : Event → List Nat
-  | .drop _ c => c.own D
-  | .dropTemp v => v.own D
-  | .consume c => c.own D
-  | .dtor _ _ | .dbg _ => []
-
-/-- The identity of the value a user destructor ran on (§6.11, `3.9:28`) —
-every `dtor` event carries the struct it ran on (helper). -/
-def Event.dtorIds : Event → List Nat
-  | .dtor _ (.struct _ i _) => [i]
-  | _ => []
-
-/-- The identities the trace's markers free, in trace order: what §7's
-no-double-free bullet counts at a drop. -/
-def freedIds (D : Decls) (tr : List Event) : List Nat := tr.flatMap (Event.freed D)
-
-/-- The identities the trace's destructors ran on, in trace order: what §7's
-no-double-free bullet counts at a destructor (`3.9:28`). -/
-def dtorIds (tr : List Event) : List Nat := tr.flatMap Event.dtorIds
 
 /-- `dtorIds` distributes over concatenation (helper). -/
 theorem dtorIds_append (l₁ l₂ : List Event) : dtorIds (l₁ ++ l₂) = dtorIds l₁ ++ dtorIds l₂ := by
@@ -135,13 +74,6 @@ theorem dtorIds_append (l₁ l₂ : List Event) : dtorIds (l₁ ++ l₂) = dtorI
 
 /-- `dtorIds` of the empty trace (helper). -/
 @[simp] theorem dtorIds_nil : dtorIds [] = [] := rfl
-
-/-- The trace a result carries: everything the run emitted, for a value, an
-unwinding `return` or `break`, and a trap; nothing for a refusal or exhausted
-fuel (helper). -/
-def EvalRes.trace : EvalRes → List Event
-  | .ok _ _ tr | .returned _ _ tr | .broke _ _ tr | .panic _ tr => tr
-  | .stuck _ | .outOfFuel => []
 
 /-! ## Owned identities: the node-level facts -/
 
@@ -553,11 +485,6 @@ theorem StoreCC.set_dead {D : Decls} {H : Store} {ℓ : Nat} (h : StoreCC D H) :
 
 /-! ## §6.11's walk, counted -/
 
-/-- A destructor-bearing struct is not `Copy` (`3.9:31`): the one fact about
-the declarations the conservation law reads (helper). -/
-def DtorNotCopy (D : Decls) : Prop :=
-  ∀ (s : Nat) (sd : StructDecl), D.structs[s]? = some sd → sd.dtor = true → D.classOf s ≠ .copy
-
 /-- `WfDecls` gives it: only `@copy` lifts to `Copy`, and a `@copy`
 declaration declares no destructor (`3.8:18`, `3.9:31`) (helper). -/
 theorem WfDecls.dtorNotCopy {D : Decls} (h : WfDecls D) : DtorNotCopy D := by
@@ -743,27 +670,6 @@ theorem dropContentsList_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat) :
 end
 
 /-! ## A trace projection the law can count -/
-
-/-- What the conservation law asks of a projection `F` of the trace onto
-identities: §6.11's walk projects to at most what the dropped contents owns,
-with a binding's `drop` marker or a temporary's `dropTemp` marker on top, and
-a `@dbg` projects to nothing. `freedIds` and `dtorIds` are the two projections
-§7's bullet is about (`freed_measure`, `dtor_measure`) (helper). -/
-structure TraceMeasure (D : Decls) (F : Event → List Nat) : Prop where
-  /-- §6.11's walk, with no marker: a destructure's `Copy` residue subtree
-  (§6.3), which `residueMark` gives no marker. -/
-  walk : ∀ {c : Contents} {evs : List Event}, c.copyClosed D = true →
-    dropContents D c = .ok evs → IdLe (evs.flatMap F) (c.own D)
-  /-- A binding's drop: its `drop ℓ c` marker, then the walk (§6.11). -/
-  marker : ∀ {ℓ : Nat} {c : Contents} {evs : List Event}, c.copyClosed D = true →
-    dropContents D c = .ok evs → IdLe (F (.drop ℓ c) ++ evs.flatMap F) (c.own D)
-  /-- A discarded temporary: its `dropTemp v` marker, then the walk (§6.7). -/
-  temp : ∀ {v : Val} {evs : List Event}, (Contents.ofVal v).copyClosed D = true →
-    dropContents D (Contents.ofVal v) = .ok evs → IdLe (F (.dropTemp v) ++ evs.flatMap F) (v.own D)
-  /-- A consumption ends at most its shell (RUE-2427). -/
-  consume : ∀ c, IdLe (F (.consume c)) (c.own D)
-  /-- `@dbg` frees nothing. -/
-  dbg : ∀ v, F (.dbg v) = []
 
 /-- **`freedIds` is countable**: a marker frees exactly the tree it names, and
 the walk under it names nothing more (helper). -/
@@ -1173,27 +1079,6 @@ theorem Fresh.count_trans_range {H H₁ : Store} (h₁ : H.length ≤ H₁.lengt
 /-- One reserved slot mints one identity, the old length (helper). -/
 theorem Fresh.snoc (H : Store) (c : Cell) : Fresh H (H ++ [c]) = [H.length] := by
   simp [Fresh]
-
-/-- **The conservation law, for one evaluation** from store `H`, holding the
-owned identities `X` besides it (a pending operand's value): the result's
-store, its value and the trace's projection `F` together own at most what `H`
-and `X` owned, plus what was minted on the way — each identity counted, as a
-multiset. The store and the value stay copy-closed. A trap carries no store,
-so its minted range is existential; a refusal and exhausted fuel promise
-nothing (helper). -/
-def Cons (D : Decls) (F : Event → List Nat) (H : Store) (X : List Nat) : EvalRes → Prop
-  | .ok H' v tr | .returned H' v tr =>
-      H.length ≤ H'.length ∧ StoreCC D H' ∧ (Contents.ofVal v).copyClosed D = true ∧
-      ∀ a, (storeOwn D H').count a + (v.own D).count a + (tr.flatMap F).count a
-        ≤ (storeOwn D H).count a + X.count a + (Fresh H H').count a
-  | .broke H' _ tr =>
-      H.length ≤ H'.length ∧ StoreCC D H' ∧
-      ∀ a, (storeOwn D H').count a + (tr.flatMap F).count a
-        ≤ (storeOwn D H).count a + X.count a + (Fresh H H').count a
-  | .panic _ tr =>
-      ∃ N, ∀ a, (tr.flatMap F).count a
-        ≤ (storeOwn D H).count a + X.count a + (List.range' H.length N).count a
-  | .stuck _ | .outOfFuel => True
 
 /-- Holding more does not break the law (helper). -/
 theorem Cons.weaken {D : Decls} {F : Event → List Nat} {H : Store} {X Y : List Nat}

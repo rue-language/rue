@@ -74,28 +74,16 @@ destructor running (`destructure_under_dtor`, which `3.9:34` makes E0456);
 the grammar accepts that trace. And "an enum's active payload only" is how
 `Contents.enum` stores a value — it holds the active variant's payload and
 no other — rather than a clause of the grammar.
+
+The definitions the statements here are written in (`Blocks`,
+`Config.Ordered`, `Config.Nested`, `NewestFirst`, `Lifo`) are in
+`Trace/Defs.lean`, the definitions layer; the witnesses on example and corpus
+programs are in `Witnesses.lean` (README, "Layers").
 -/
 
 namespace RueCore
 
 /-! ## Within a value: the block grammar -/
-
-/-- **§6.11's order, as a grammar over the trace.** A trace is a sequence of
-blocks: a `@dbg` line, a consumption (`consume c`, which runs no drop of its
-own), or a drop marker followed by exactly the events §6.11's walk of what it
-names emits (`dropEvents`) — for a binding's drop `drop ℓ c`, the contents
-`c`, and for a discarded temporary `dropTemp v`, the value `v`. A destructor
-event (`dtor`) appears only inside such a walk, so the grammar says where
-every destructor runs: inside the drop of the value that owns it, after the
-destructors of everything dropped before it in §6.11's order (§3.9, §6.11). -/
-inductive Blocks (D : Decls) : List Event → Prop
-  | nil : Blocks D []
-  | dbg {v : Val} {t : List Event} : Blocks D t → Blocks D (.dbg v :: t)
-  | consume {c : Contents} {t : List Event} : Blocks D t → Blocks D (.consume c :: t)
-  | drop {ℓ : Nat} {c : Contents} {t : List Event} :
-      Blocks D t → Blocks D (.drop ℓ c :: (dropEvents D c ++ t))
-  | dropTemp {v : Val} {t : List Event} :
-      Blocks D t → Blocks D (.dropTemp v :: (dropEvents D (.ofVal v) ++ t))
 
 /-- Two block sequences, one after the other, are one (helper). -/
 theorem Blocks.append {D : Decls} {t u : List Event} (h₁ : Blocks D t) (h₂ : Blocks D u) :
@@ -610,10 +598,6 @@ theorem run_blocks (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls) (fue
 
 /-! ## Across cells: the scope records of a reachable configuration -/
 
-/-- A scope record in **registration order is location order**: its cells
-strictly increasing, every one below the store's length `n` (helper). -/
-def Rec (n : Nat) (ls : List Nat) : Prop := ls.Pairwise (· < ·) ∧ ∀ ℓ ∈ ls, ℓ < n
-
 /-- A longer store keeps a record ordered (helper). -/
 theorem Rec.mono {n m : Nat} {ls : List Nat} (h : Rec n ls) (hn : n ≤ m) : Rec m ls :=
   ⟨h.1, fun ℓ hm => Nat.lt_of_lt_of_le (h.2 ℓ hm) hn⟩
@@ -643,27 +627,10 @@ theorem Rec.fresh {n k : Nat} {ls : List Nat} (h : Rec n ls) :
     · have := h.2 ℓ h'; omega
     · exact (List.mem_range'_1.mp h').2
 
-/-- What a frame of the control stack owes, ordered: a pending `endscope`
-marker's cells, and the scope record of a suspended caller (`ret(E, φ)`) or
-of a loop boundary (`loopβ(e, φ)`) (helper). -/
-def Kont.Ordered (n : Nat) : Kont → Prop
-  | .endscope ls => Rec n ls
-  | .loop _ φ => Rec n φ.scope
-  | .call φ => Rec n φ.scope
-  | _ => True
-
 /-- A longer store keeps a frame ordered (helper). -/
 theorem Kont.Ordered.mono {n m : Nat} {k : Kont} (h : k.Ordered n) (hn : n ≤ m) :
     k.Ordered m := by
   cases k <;> first | trivial | exact Rec.mono h hn
-
-/-- **Every scope record of a configuration is in registration order**, which
-is location order: the current frame's, and every one the control stack
-holds (§6.1's `σ`, §6.7's `endscope`, §6.9's `ret(E, φ)`, §6.10's
-`loopβ(e, φ)`). -/
-def Config.Ordered : Config → Prop
-  | .run H φ K _ _ => Rec H.length φ.scope ∧ ∀ k ∈ K, k.Ordered H.length
-  | .panic _ _ => True
 
 /-- A step that leaves the frame alone, grows or keeps the store, and pushes
 only frames that owe nothing keeps the invariant (helper). -/
@@ -840,10 +807,6 @@ theorem reachable_ordered {M : FloatOps} {P : Program} {C : Config}
 
 /-! ## Across cells: every step's drops are newest-first -/
 
-/-- The cells a trace's `drop` markers name, in trace order (helper). -/
-def dropLocs (tr : List Event) : List Nat :=
-  tr.filterMap fun | .drop ℓ _ => some ℓ | _ => none
-
 /-- `dropLocs` distributes over concatenation (helper). -/
 theorem dropLocs_append (l₁ l₂ : List Event) : dropLocs (l₁ ++ l₂) = dropLocs l₁ ++ dropLocs l₂ :=
   List.filterMap_append
@@ -962,21 +925,10 @@ theorem plainUnwind_locs {D : Decls} : ∀ {H H' : Store} {ls : List Nat} {evs :
           · exact ih.cons ℓ
           · exact ih.cons_cons ℓ
 
-/-- **The order one step drops cells in**: its `drop` markers either all name
-one cell — an overwrite, an `@drop`, a destructure's residue, several
-sub-positions of one binding — or name distinct cells in strictly decreasing
-location order (helper). -/
-def NewestFirst (ls : List Nat) : Prop := (∃ ℓ, ∀ x ∈ ls, x = ℓ) ∨ ls.Pairwise (· > ·)
-
 /-- A teardown of an ordered record drops newest-first (helper). -/
 theorem NewestFirst.teardown {n : Nat} {ls ls' : List Nat} (h : Rec n ls)
     (hs : ls'.Sublist ls.reverse) : NewestFirst ls' :=
   .inr ((List.pairwise_reverse.mpr h.1).sublist hs)
-
-/-- The output a configuration has produced so far (§6.12) (helper). -/
-def Config.trace : Config → List Event
-  | .run _ _ _ _ tr => tr
-  | .panic _ tr => tr
 
 /-- **Every step of §6's relation from an ordered configuration drops
 newest-first** (§6.7, §6.9, §6.10, §6.11): it appends to the trace, and the
@@ -1046,40 +998,6 @@ teardown deregisters is newer than every cell still registered
 (`Lifo.newer`): across steps, across scopes and across frames, the machine
 drops last-in first-out. -/
 
-/-- The scope record the pending `endscope` markers and loop boundaries of
-one frame account for (§6.7, §6.10): reading the stack top-down, each
-`endscope ℓs` is the tail of what is left of the record, a loop boundary
-`loopβ(e, φs)` has exactly `φs`'s record left, and a caller's frame
-`ret(E, φs)` starts the same reading over for the caller's record `φs`
-(helper). -/
-def Nest : List Nat → List Kont → Prop
-  | _, [] => True
-  | sc, .endscope ls :: K => ∃ sc', sc = sc' ++ ls ∧ Nest sc' K
-  | sc, .loop _ φs :: K => sc = φs.scope ∧ Nest φs.scope K
-  | _, .call φs :: K => Nest φs.scope K
-  | sc, _ :: K => Nest sc K
-
-/-- The registration records of the suspended callers, bottom of the stack
-first (§6.9's `ret(E, φ)` frames) (helper). -/
-def Stk : List Kont → List Nat
-  | [] => []
-  | .call φs :: K => Stk K ++ φs.scope
-  | _ :: K => Stk K
-
-/-- The machine's whole **registration stack**: every suspended caller's
-scope record, bottom first, then the current frame's (§6.1's `σ` per frame);
-empty at a trap (helper). -/
-def Config.stack : Config → List Nat
-  | .run _ φ K _ _ => Stk K ++ φ.scope
-  | .panic _ _ => []
-
-/-- **Scopes nest** (§6.7, §6.9, §6.10): every frame's pending `endscope`
-markers are exactly the tail of its scope record, innermost last, and the
-whole registration stack is in location order, below the store's length. -/
-def Config.Nested : Config → Prop
-  | .run H φ K _ _ => Nest φ.scope K ∧ Rec H.length (Stk K ++ φ.scope)
-  | .panic _ _ => True
-
 /-- (D-EndScope)'s pop by count removes exactly the marker's cells when they
 are the record's tail (helper). -/
 theorem Frame.popScope_tail (φ : Frame) {sc ls : List Nat} (h : φ.scope = sc ++ ls) :
@@ -1127,13 +1045,6 @@ theorem Nest.toLoop {K K' : List Kont} {φ : Frame} :
         obtain ⟨⟨m, hm⟩, h₂, h₃⟩ := ih hn' h
         exact ⟨⟨m ++ ls, by rw [hsc, hm, List.append_assoc]⟩, h₂, h₃⟩
       all_goals exact ih hn h
-
-/-- **How one step changes the registration stack, and what it drops**: it
-either keeps the stack as a prefix of the new one — nothing deregistered —
-or cuts the stack back to a prefix of the old one, and its `drop` markers
-then name only cells of the suffix it cut, newest first (helper). -/
-def Lifo (S S' : List Nat) (ls : List Nat) : Prop :=
-  S <+: S' ∨ (S' <+: S ∧ ls.Sublist (S.drop S'.length).reverse)
 
 /-- **What a teardown deregisters is newer than everything still
 registered**: on a stack in location order, a step that cuts the stack back
@@ -1364,189 +1275,5 @@ event is not in the grammar (§6.11). -/
 theorem Blocks.not_dtor {D : Decls} {s : Nat} {c : Contents} {t : List Event} :
     ¬ Blocks D (.dtor s c :: t) := by
   intro h; cases h
-
-open Examples in
-/-- **Fields in declaration order, or the grammar rejects the trace**
-(`3.9:13`): `struct_field_drop_order` drops `S7 { S1 {1}#0, S1 {2}#1 }#2`,
-whose walk runs `#0`'s destructor and then `#1`'s. The same marker followed by
-the two destructors the other way round is not in the grammar. -/
-theorem fieldsSwapped_rejected :
-    ¬ Blocks (prog tI64 structFieldOrder).decls
-      [.drop 3 (.struct sTwoAffine 2 [cA 0 1, cA 1 2]), .dtor sAffine (cA 1 2),
-        .dtor sAffine (cA 0 1)] := by
-  intro h
-  obtain ⟨t', ht, _⟩ := Blocks.drop_inv h
-  have : dropEvents (prog tI64 structFieldOrder).decls (.struct sTwoAffine 2 [cA 0 1, cA 1 2])
-      = [.dtor sAffine (cA 0 1), .dtor sAffine (cA 1 2)] := by rfl
-  rw [this] at ht
-  simp [cA, sAffine] at ht
-
-open Examples in
-/-- **Newest-first on a reachable step** (§6.9's (D-Return)):
-`return_past_affine` returns past two live affine bindings, `ℓ1` then `ℓ3`,
-and the one step that runs the frame's σ-walk drops `ℓ3` then `ℓ1` — two
-distinct cells, newest first, the teardown `reachable_drop_order` speaks
-of. -/
-theorem returnPastAffine_newestFirst :
-    ∃ C C' evs, Steps demoOps returnPastAffine Config.init C ∧
-      Step demoOps returnPastAffine C C' ∧ C'.trace = C.trace ++ evs ∧ dropLocs evs = [3, 1] :=
-  ⟨stepN demoOps returnPastAffine 18 Config.init, _, _, stepN_steps,
-    step_iff.mpr rfl, rfl, rfl⟩
-
-open Examples in
-/-- **The invariant is what orders a teardown.** A frame whose scope record
-is *not* in location order — `[3, 1]`, a configuration `reachable_ordered`
-says no run reaches — pops (D-Return-Value) and drops `ℓ1` before `ℓ3`: the
-step is a real step of §6's relation, and its markers are not newest-first.
-So `step_drop_order`'s hypothesis is load-bearing, and `reachable_ordered`
-is what discharges it. -/
-theorem unorderedRecord_rejected :
-    ∃ C C' evs, ¬ C.Ordered ∧ Step demoOps returnPastAffine C C' ∧
-      C'.trace = C.trace ++ evs ∧ ¬ NewestFirst (dropLocs evs) := by
-  refine ⟨.run [.dead, .full (cA 0 3), .dead, .full (cA 2 4)] { env := [3, 1], scope := [3, 1] }
-      [.call { env := [], scope := [] }] (.ret (v64 7)) [], _, _,
-    fun h => ?_, .callReturn rfl, rfl, fun h => ?_⟩
-  · have := h.1.1; simp at this
-  · change NewestFirst [1, 3] at h
-    rcases h with ⟨ℓ, hℓ⟩ | h
-    · have h1 := hℓ 1 (by decide); have h3 := hℓ 3 (by decide); omega
-    · simp at h
-
-open Examples in
-/-- Two nested `let`s' pending markers, swapped: `endscope [1]` above
-`endscope [3]` in a frame whose record is `[1, 3]` (the review's Probe 2)
-(helper). -/
-def swappedMarkers : Config :=
-  .run [.dead, .full (cA 0 3), .dead, .full (cA 2 4)] { env := [3, 1], scope := [1, 3] }
-    [.endscope [1], .endscope [3], .call { env := [], scope := [] }] (.ret (v64 7)) []
-
-open Examples in
-/-- **The nesting is what orders sibling scopes** (§6.7). With the two
-markers swapped, every record is still in location order (`Config.Ordered`)
-and every step drops one cell, so per-step order says nothing; yet the run
-drops `ℓ1` before `ℓ3`, oldest first, and the first (D-EndScope) pops `ℓ3` off
-the record while its marker drops `ℓ1`. `Config.Nested` rejects the
-configuration, so `reachable_nested` says no run reaches it. -/
-theorem swappedMarkers_rejected :
-    swappedMarkers.Ordered ∧ ¬ swappedMarkers.Nested ∧
-      ∃ C, Steps demoOps returnPastAffine swappedMarkers C ∧ dropLocs C.trace = [1, 3] := by
-  refine ⟨⟨⟨by decide, by decide⟩, fun k hk => ?_⟩, fun h => ?_,
-    ⟨stepN demoOps returnPastAffine 3 swappedMarkers, stepN_steps, rfl⟩⟩
-  · simp only [List.mem_cons, List.not_mem_nil, or_false] at hk
-    rcases hk with rfl | rfl | rfl <;> simp [Kont.Ordered, Rec] <;> decide
-  · obtain ⟨⟨sc', hsc, _⟩, _⟩ := h
-    have := congrArg List.reverse hsc
-    simp at this
-
-/-! ## The corpus, read through the theorems
-
-The order-witnessing corpus cases, each run at the export model: the
-identities the destructors ran on, in order (`dtorIds`, the order the printed
-destructors print their payloads in, which the bridge already checks against
-the compiler); the cells the `drop` markers name, in order (`dropLocs`); and
-the owned identities the markers end (`freedIds`), each exactly once. -/
-
-/-- A trace, read through the theorems: destructor identities, drop marker
-cells, ended identities (helper). -/
-def orderView (D : Decls) (tr : List Event) : List Nat × List Nat × List Nat :=
-  (dtorIds tr, dropLocs tr, freedIds D tr)
-
-/-- A corpus program's trace at the export model (helper). -/
-def corpusTrace (P : Program) : List Event :=
-  (run Corpus.exportOps P Examples.demoFuel).trace
-
-open Examples in
-/-- `struct_nested_dtor_drop`: the outer destructor (`#1`) before its field's
-(`#0`), `3.9:28`. -/
-example : orderView (prog tI64 structNestedDrop).decls (corpusTrace (prog tI64 structNestedDrop))
-    = ([1, 0], [2], [1, 0]) := by rfl
-
-open Examples in
-/-- `struct_field_drop_order`: fields in declaration order, `3.9:13`. -/
-example : orderView (prog tI64 structFieldOrder).decls (corpusTrace (prog tI64 structFieldOrder))
-    = ([0, 1], [3], [2, 0, 1]) := by rfl
-
-open Examples in
-/-- `array_drop_order`: elements ascending, `3.9:15`. -/
-example : orderView (prog tI64 arrayAffineDropOrder).decls
-      (corpusTrace (prog tI64 arrayAffineDropOrder)) = ([0, 1, 2], [4], [3, 0, 1, 2]) := by rfl
-
-open Examples in
-/-- `array_elem_move_rest_ascending`: the moved element (`#1`) is dropped by
-its new binding first, then the array's rest ascending, `3.8:73`. -/
-example : orderView (prog tI64 arrayElemMove).decls (corpusTrace (prog tI64 arrayElemMove))
-    = ([1, 0, 2], [5, 4], [1, 3, 0, 2]) := by rfl
-
-open Examples in
-/-- `enum_match_affine`: the shell (`#1`) consumed, the payload (`#0`)
-dropped once by the arm's binding, `6.3:20`. -/
-example : orderView (enumProg tI64 enumMatchAffine).decls
-      (corpusTrace (enumProg tI64 enumMatchAffine)) = ([0], [3], [1, 0]) := by rfl
-
-open Examples in
-/-- `enum_two_payload_bindings`: the arm's two payload cells torn down in one
-step, newest first (`ℓ5`, `ℓ4`). -/
-example : orderView (enumProg tI64 enumTwoPayloadBindings).decls
-      (corpusTrace (enumProg tI64 enumTwoPayloadBindings)) = ([1, 0], [5, 4], [2, 1, 0]) := by rfl
-
-open Examples in
-/-- `destructure_residue_order`: the residue in declaration order around the
-leaf, both under `ℓ3`'s markers, §6.3. -/
-example : orderView (destrProg tI64 destructureResidueOrder).decls
-      (corpusTrace (destrProg tI64 destructureResidueOrder)) = ([0, 1], [3, 3], [0, 1, 2]) := by
-  rfl
-
-open Examples in
-/-- `destructure_nested_residue`: nested residue before a later sibling. -/
-example : orderView (destrProg tI64 destructureNestedResidue).decls
-      (corpusTrace (destrProg tI64 destructureNestedResidue)) = ([0, 2], [4, 4], [0, 2, 3, 1]) := by
-  rfl
-
-open Examples in
-/-- `nested_scopes`, the bridge case's own program (helper). -/
-def nestedScopes : Program :=
-  prog tI64 <| .letIn false (resA (lit 1)) (.letIn false (resA (lit 2)) (lit 0))
-
-/-- It is the corpus case's program. -/
-example : (Corpus.cases.find? (·.name == "nested_scopes")).map (·.prog.fns.map (·.body)) =
-    some (nestedScopes.fns.map (·.body)) := by rfl
-
-/-- `nested_scopes`: two sibling `let`s exit over two (D-EndScope) steps, the
-inner (`ℓ3`) before the outer (`ℓ1`) — the cross-step order `reachable_lifo`
-fixes, bridge-checked. -/
-example : orderView nestedScopes.decls (corpusTrace nestedScopes) = ([2, 0], [3, 1], [2, 0]) := by
-  rfl
-
-open Examples in
-/-- `return_past_affine`: the σ-walk newest first, `ℓ3` then `ℓ1`, §6.9. -/
-example : orderView returnPastAffine.decls (corpusTrace returnPastAffine) = ([2, 0], [3, 1], [2, 0]) :=
-  by rfl
-
-open Examples in
-/-- `two_params_dropped_at_pop`: the callee's frame pop tears its by-value
-parameters down last-parameter first, `b` (`ℓ4`, the `S5` `#2` and its field
-`#1`) before `a` (`ℓ3`, `#0`) — the LIFO half of `drop_order` at a frame,
-bridge-checked. -/
-example : orderView twoParamsDroppedAtPop.decls (corpusTrace twoParamsDroppedAtPop)
-    = ([2, 1, 0], [4, 3], [2, 1, 0]) := by rfl
-
-open Examples in
-/-- `three_params_dropped_at_pop`: three parameters, `ℓ5`, `ℓ4`, `ℓ3`. -/
-example : orderView threeParamsDroppedAtPop.decls (corpusTrace threeParamsDroppedAtPop)
-    = ([2, 1, 0], [5, 4, 3], [2, 1, 0]) := by rfl
-
-open Examples in
-/-- `param_moved_other_dropped`: the first parameter, moved into `f2`, is
-dropped by `f2`'s pop (`ℓ4`, `#0`); `f1`'s pop then owes only the second
-(`ℓ3`, `#1`). -/
-example : orderView paramMovedOtherDropped.decls (corpusTrace paramMovedOtherDropped)
-    = ([0, 1], [4, 3], [0, 1]) := by rfl
-
-open Examples in
-/-- `loop_break_past_local`: the first turn's binding (`ℓ2`) is dropped by its
-(D-EndScope) at the turn's end, and the second turn's (`ℓ4`) by the `break`'s
-unwind, §6.10. -/
-example : orderView (prog tI64 loopBreakPastLocal).decls
-      (corpusTrace (prog tI64 loopBreakPastLocal)) = ([1, 3], [2, 4], [1, 3]) := by rfl
 
 end RueCore

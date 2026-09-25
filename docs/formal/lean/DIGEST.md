@@ -2426,155 +2426,6 @@ theorem RueCore.dupProgram_step_double_free (M : FloatOps) :
         [0, 0]
 ```
 
-### `Examples.dynReadAffine_refused`
-
-*theorem* · module `RueCore.Examples`
-
-(RUE-2400) The dynamic-index read of an affine leaf is refused by the
-machine as well as the statics: (D-Use-Untrackable-Dynamic-Copy) §6.3 is the
-only rule there and it wants `class(T) = Copy`, so `eval` answers
-`typeConfusion` instead of duplicating the leaf. `Step.demo_dynamicRead_stuck`
-is the same program, stuck at the same rule in `Step`.
-
-```lean
-theorem RueCore.Examples.dynReadAffine_refused (M : FloatOps) :
-  run M (Examples.prog Examples.tI64 Examples.dynReadAffineCopied)
-      Examples.demoFuel =
-    EvalRes.stuck Violation.typeConfusion
-```
-
-### `Examples.dynDropAffine_refused`
-
-*theorem* · module `RueCore.Examples`
-
-(RUE-2400) `@drop(a[i])` of an affine leaf is refused by the machine: the
-dynamic `@drop` is the read with its value discarded, so it inherits the
-read's `Copy` check, and no `@dbg` output or destructor event is produced.
-`Step.demo_dynamicDrop_stuck` is the same program, stuck at the same rule in
-`Step`.
-
-```lean
-theorem RueCore.Examples.dynDropAffine_refused (M : FloatOps) :
-  run M (Examples.prog Examples.tI64 Examples.dynDropAffineSkipped)
-      Examples.demoFuel =
-    EvalRes.stuck Violation.typeConfusion
-```
-
-### `Examples.repeatAffine_refused`
-
-*theorem* · module `RueCore.Examples`
-
-(RUE-2400) The repeat form at an affine operand is refused by the
-machine: §2's elaboration `let t = v; [t, t]` would be stuck at the second use
-of `t`, and `eval` answers `typeConfusion` rather than replicating `v`.
-`Step.demo_repeat_stuck` is the same program, stuck at the same rule in
-`Step`.
-
-```lean
-theorem RueCore.Examples.repeatAffine_refused (M : FloatOps) :
-  run M (Examples.prog Examples.tI64 Examples.repeatAffineDuplicated)
-      Examples.demoFuel =
-    EvalRes.stuck Violation.typeConfusion
-```
-
-### `Examples.panicPastLinear_typed`
-
-*theorem* · module `RueCore.Examples`
-
-**`Typed` derives a `@panic` past a live linear binding.** (Panic) §5.8
-imposes no residual-linear premise — §5.7 exempts the `⊥_panic` edge from
-§5.6's obligation — and the `let`'s tail is `⊥`, so (Let) with a divergent
-tail (`Typed.letInDiv`) reaches no scope exit and reads no state there. This
-is the one shape where `Typed.panic` and `Typed.ret` differ: `ret` carries the
-frame-wide residual-linear premise, and at an affine binding there is nothing
-for either to drop.
-
-```lean
-theorem RueCore.Examples.panicPastLinear_typed :
-  Typed (Examples.prog Examples.tI64 Examples.panicPastLinear) Examples.tI64
-    [] Examples.panicPastLinear Examples.tI64 { norm := none, brk := [] }
-```
-
-### `Examples.countdown_at_17`
-
-*theorem* · module `RueCore.Examples`
-
-Seventeen is enough, and the answer is a value with five retired
-parameter cells — one per frame the recursion pushed.
-
-```lean
-theorem RueCore.Examples.countdown_at_17 :
-  run Examples.demoOps Examples.countdown 17 =
-    EvalRes.ok [Cell.dead, Cell.dead, Cell.dead, Cell.dead, Cell.dead]
-      (Examples.v64 10) []
-```
-
-### `Examples.floatToInt_inf_traps`
-
-*theorem* · module `RueCore.Examples`
-
-**`@float_to_int` of an infinity traps** — `3.12:18`'s guard "admits both
-infinities as failures" — and the category is `↯overflow`, the one §6.12
-already lists (`8.1:7`), not a new one.
-
-```lean
-theorem RueCore.Examples.floatToInt_inf_traps (M : FloatModel) (w : FloatWidth)
-  (w' : IntWidth) (s' : Sign) (b : Bool) :
-  evalFintrin M.toFloatOps (FloatIntrin.floatToInt w' s')
-      (Val.float w (FloatDatum.inf b)) =
-    OpRes.trap PanicKind.overflow
-```
-
-### `Examples.floatToInt_nan_traps`
-
-*theorem* · module `RueCore.Examples`
-
-**`@float_to_int` of a NaN traps**, the other half of
-`(D-Float-To-Int-Trap)`'s premise (`3.12:18`).
-
-```lean
-theorem RueCore.Examples.floatToInt_nan_traps (M : FloatModel) (w : FloatWidth)
-  (w' : IntWidth) (s' : Sign) (b : Bool) :
-  evalFintrin M.toFloatOps (FloatIntrin.floatToInt w' s')
-      (Val.float w (FloatDatum.nan b)) =
-    OpRes.trap PanicKind.overflow
-```
-
-### `Examples.floatDivZeroToInt_traps`
-
-*theorem* · module `RueCore.Examples`
-
-**A whole redex: `@float_to_int(1.0 / 0.0)` traps at every model.** The
-division is `3.12:22`'s (`FloatModel.div_by_zero`), the literals are
-`3.12:9`'s (`ofLit_one`, `ofLit_zero`), and the trap is the partition. No
-float arithmetic is computed anywhere in the proof, and the theorem holds for
-every model satisfying the laws — including, but not only, `Float.exactOps`,
-which the corpus runs and the compiler agrees with.
-
-```lean
-theorem RueCore.Examples.floatDivZeroToInt_traps (M : FloatModel) (P : Program)
-  (H : Store) (φ : Frame) (w : FloatWidth) (w' : IntWidth) (s' : Sign) :
-  eval M.toFloatOps 8 P H φ
-      (Expr.fintrin (FloatIntrin.floatToInt w' s')
-        (Expr.binop BinOp.div (Examples.flE w 1 0) (Examples.flE w 0 0))) =
-    EvalRes.panic PanicKind.overflow []
-```
-
-### `Examples.infiniteLoop_outOfFuel`
-
-*theorem* · module `RueCore.Examples`
-
-**The fuel counts iterations**: an infinite loop exhausts every bound. Each
-turn runs the body at one unit less and re-enters at one unit less, so no fuel
-completes it — `outOfFuel` is its answer at every bound, which is what
-`Corpus.lean`'s export leaves out.
-
-```lean
-theorem RueCore.Examples.infiniteLoop_outOfFuel (M : FloatOps) (P : Program)
-  (fuel : Nat) (H : Store) (φ : Frame) :
-  eval M fuel P H φ Examples.infiniteLoop = EvalRes.outOfFuel
-```
-
 ### `eval_sim`
 
 *theorem* · module `RueCore.Adequacy`
@@ -2975,43 +2826,6 @@ theorem RueCore.step_type_safety (M : FloatModel) {P : Program} (h : ProgramType
                   (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
                 HasTy P.decls v fd.ret) ∨
             ∃ κ tr, Steps M.toFloatOps P Config.init (Config.panic κ tr)
-```
-
-### `affineScopeDrop_both_ways`
-
-*theorem* · module `RueCore.Adequacy`
-
-**One corpus program, both presentations** (GUIDE section 2, "One
-program, traced both ways"; §6.2, §6.5, §6.7, §6.9, §6.11, §6.12). `check`
-accepts `affine_scope_drop`; `run` answers `1` with both cells retired and
-the trace "drop `ℓ1`, then `S1`'s destructor"; and §6's `→*` reaches the same
-terminal configuration by the twelve steps written out here, one `Step`
-constructor each: (Search) into the call's empty argument list, (D-Call),
-(Search) into the `let`, (Search) into the struct literal and its one
-initializer, the literal, the plug, (D-Struct) minting `#0`, (D-Let),
-the body's literal, (D-EndScope) dropping and retiring `ℓ1`, and
-(D-Return-Value). `explain/affine_scope_drop.txt` renders `eval`'s run of the
-same program in seven rows: the (Search) steps are the part of `Step` that
-`eval` does by recursion.
-
-```lean
-theorem RueCore.affineScopeDrop_both_ways (M : FloatOps) :
-  checkProgram affineScopeDropProgram = true ∧
-    run M affineScopeDropProgram 100 =
-        EvalRes.ok [Cell.dead, Cell.dead] (Val.int IntWidth.w64 Sign.signed 1)
-          [Event.drop 1
-              (Contents.struct 1 0 [Contents.int IntWidth.w64 Sign.signed 7]),
-            Event.dtor 1
-              (Contents.struct 1 0
-                [Contents.int IntWidth.w64 Sign.signed 7])] ∧
-      Steps M affineScopeDropProgram Config.init
-        (Config.run [Cell.dead, Cell.dead] Frame.empty []
-          (Focus.ret (Val.int IntWidth.w64 Sign.signed 1))
-          [Event.drop 1
-              (Contents.struct 1 0 [Contents.int IntWidth.w64 Sign.signed 7]),
-            Event.dtor 1
-              (Contents.struct 1 0
-                [Contents.int IntWidth.w64 Sign.signed 7])])
 ```
 
 ### `eval_exact`
@@ -3549,9 +3363,195 @@ theorem RueCore.Blocks.not_dtor {D : Decls} {s : Nat} {c : Contents}
   {t : List Event} : ¬Blocks D (Event.dtor s c :: t)
 ```
 
+### `Examples.dynReadAffine_refused`
+
+*theorem* · module `RueCore.Examples`
+
+(RUE-2400) The dynamic-index read of an affine leaf is refused by the
+machine as well as the statics: (D-Use-Untrackable-Dynamic-Copy) §6.3 is the
+only rule there and it wants `class(T) = Copy`, so `eval` answers
+`typeConfusion` instead of duplicating the leaf. `Step.demo_dynamicRead_stuck`
+is the same program, stuck at the same rule in `Step`.
+
+```lean
+theorem RueCore.Examples.dynReadAffine_refused (M : FloatOps) :
+  run M (Examples.prog Examples.tI64 Examples.dynReadAffineCopied)
+      Examples.demoFuel =
+    EvalRes.stuck Violation.typeConfusion
+```
+
+### `Examples.dynDropAffine_refused`
+
+*theorem* · module `RueCore.Examples`
+
+(RUE-2400) `@drop(a[i])` of an affine leaf is refused by the machine: the
+dynamic `@drop` is the read with its value discarded, so it inherits the
+read's `Copy` check, and no `@dbg` output or destructor event is produced.
+`Step.demo_dynamicDrop_stuck` is the same program, stuck at the same rule in
+`Step`.
+
+```lean
+theorem RueCore.Examples.dynDropAffine_refused (M : FloatOps) :
+  run M (Examples.prog Examples.tI64 Examples.dynDropAffineSkipped)
+      Examples.demoFuel =
+    EvalRes.stuck Violation.typeConfusion
+```
+
+### `Examples.repeatAffine_refused`
+
+*theorem* · module `RueCore.Examples`
+
+(RUE-2400) The repeat form at an affine operand is refused by the
+machine: §2's elaboration `let t = v; [t, t]` would be stuck at the second use
+of `t`, and `eval` answers `typeConfusion` rather than replicating `v`.
+`Step.demo_repeat_stuck` is the same program, stuck at the same rule in
+`Step`.
+
+```lean
+theorem RueCore.Examples.repeatAffine_refused (M : FloatOps) :
+  run M (Examples.prog Examples.tI64 Examples.repeatAffineDuplicated)
+      Examples.demoFuel =
+    EvalRes.stuck Violation.typeConfusion
+```
+
+### `Examples.panicPastLinear_typed`
+
+*theorem* · module `RueCore.Examples`
+
+**`Typed` derives a `@panic` past a live linear binding.** (Panic) §5.8
+imposes no residual-linear premise — §5.7 exempts the `⊥_panic` edge from
+§5.6's obligation — and the `let`'s tail is `⊥`, so (Let) with a divergent
+tail (`Typed.letInDiv`) reaches no scope exit and reads no state there. This
+is the one shape where `Typed.panic` and `Typed.ret` differ: `ret` carries the
+frame-wide residual-linear premise, and at an affine binding there is nothing
+for either to drop.
+
+```lean
+theorem RueCore.Examples.panicPastLinear_typed :
+  Typed (Examples.prog Examples.tI64 Examples.panicPastLinear) Examples.tI64
+    [] Examples.panicPastLinear Examples.tI64 { norm := none, brk := [] }
+```
+
+### `Examples.countdown_at_17`
+
+*theorem* · module `RueCore.Examples`
+
+Seventeen is enough, and the answer is a value with five retired
+parameter cells — one per frame the recursion pushed.
+
+```lean
+theorem RueCore.Examples.countdown_at_17 :
+  run Examples.demoOps Examples.countdown 17 =
+    EvalRes.ok [Cell.dead, Cell.dead, Cell.dead, Cell.dead, Cell.dead]
+      (Examples.v64 10) []
+```
+
+### `Examples.floatToInt_inf_traps`
+
+*theorem* · module `RueCore.Examples`
+
+**`@float_to_int` of an infinity traps** — `3.12:18`'s guard "admits both
+infinities as failures" — and the category is `↯overflow`, the one §6.12
+already lists (`8.1:7`), not a new one.
+
+```lean
+theorem RueCore.Examples.floatToInt_inf_traps (M : FloatModel) (w : FloatWidth)
+  (w' : IntWidth) (s' : Sign) (b : Bool) :
+  evalFintrin M.toFloatOps (FloatIntrin.floatToInt w' s')
+      (Val.float w (FloatDatum.inf b)) =
+    OpRes.trap PanicKind.overflow
+```
+
+### `Examples.floatToInt_nan_traps`
+
+*theorem* · module `RueCore.Examples`
+
+**`@float_to_int` of a NaN traps**, the other half of
+`(D-Float-To-Int-Trap)`'s premise (`3.12:18`).
+
+```lean
+theorem RueCore.Examples.floatToInt_nan_traps (M : FloatModel) (w : FloatWidth)
+  (w' : IntWidth) (s' : Sign) (b : Bool) :
+  evalFintrin M.toFloatOps (FloatIntrin.floatToInt w' s')
+      (Val.float w (FloatDatum.nan b)) =
+    OpRes.trap PanicKind.overflow
+```
+
+### `Examples.floatDivZeroToInt_traps`
+
+*theorem* · module `RueCore.Examples`
+
+**A whole redex: `@float_to_int(1.0 / 0.0)` traps at every model.** The
+division is `3.12:22`'s (`FloatModel.div_by_zero`), the literals are
+`3.12:9`'s (`ofLit_one`, `ofLit_zero`), and the trap is the partition. No
+float arithmetic is computed anywhere in the proof, and the theorem holds for
+every model satisfying the laws — including, but not only, `Float.exactOps`,
+which the corpus runs and the compiler agrees with.
+
+```lean
+theorem RueCore.Examples.floatDivZeroToInt_traps (M : FloatModel) (P : Program)
+  (H : Store) (φ : Frame) (w : FloatWidth) (w' : IntWidth) (s' : Sign) :
+  eval M.toFloatOps 8 P H φ
+      (Expr.fintrin (FloatIntrin.floatToInt w' s')
+        (Expr.binop BinOp.div (Examples.flE w 1 0) (Examples.flE w 0 0))) =
+    EvalRes.panic PanicKind.overflow []
+```
+
+### `Examples.infiniteLoop_outOfFuel`
+
+*theorem* · module `RueCore.Examples`
+
+**The fuel counts iterations**: an infinite loop exhausts every bound. Each
+turn runs the body at one unit less and re-enters at one unit less, so no fuel
+completes it — `outOfFuel` is its answer at every bound, which is what
+`Corpus.lean`'s export leaves out.
+
+```lean
+theorem RueCore.Examples.infiniteLoop_outOfFuel (M : FloatOps) (P : Program)
+  (fuel : Nat) (H : Store) (φ : Frame) :
+  eval M fuel P H φ Examples.infiniteLoop = EvalRes.outOfFuel
+```
+
+### `affineScopeDrop_both_ways`
+
+*theorem* · module `RueCore.Witnesses`
+
+**One corpus program, both presentations** (GUIDE section 2, "One
+program, traced both ways"; §6.2, §6.5, §6.7, §6.9, §6.11, §6.12). `check`
+accepts `affine_scope_drop`; `run` answers `1` with both cells retired and
+the trace "drop `ℓ1`, then `S1`'s destructor"; and §6's `→*` reaches the same
+terminal configuration by the twelve steps written out here, one `Step`
+constructor each: (Search) into the call's empty argument list, (D-Call),
+(Search) into the `let`, (Search) into the struct literal and its one
+initializer, the literal, the plug, (D-Struct) minting `#0`, (D-Let),
+the body's literal, (D-EndScope) dropping and retiring `ℓ1`, and
+(D-Return-Value). `explain/affine_scope_drop.txt` renders `eval`'s run of the
+same program in seven rows: the (Search) steps are the part of `Step` that
+`eval` does by recursion.
+
+```lean
+theorem RueCore.affineScopeDrop_both_ways (M : FloatOps) :
+  checkProgram affineScopeDropProgram = true ∧
+    run M affineScopeDropProgram 100 =
+        EvalRes.ok [Cell.dead, Cell.dead] (Val.int IntWidth.w64 Sign.signed 1)
+          [Event.drop 1
+              (Contents.struct 1 0 [Contents.int IntWidth.w64 Sign.signed 7]),
+            Event.dtor 1
+              (Contents.struct 1 0
+                [Contents.int IntWidth.w64 Sign.signed 7])] ∧
+      Steps M affineScopeDropProgram Config.init
+        (Config.run [Cell.dead, Cell.dead] Frame.empty []
+          (Focus.ret (Val.int IntWidth.w64 Sign.signed 1))
+          [Event.drop 1
+              (Contents.struct 1 0 [Contents.int IntWidth.w64 Sign.signed 7]),
+            Event.dtor 1
+              (Contents.struct 1 0
+                [Contents.int IntWidth.w64 Sign.signed 7])])
+```
+
 ### `fieldsSwapped_rejected`
 
-*theorem* · module `RueCore.TraceOrder`
+*theorem* · module `RueCore.Witnesses`
 
 **Fields in declaration order, or the grammar rejects the trace**
 (`3.9:13`): `struct_field_drop_order` drops `S7 { S1 {1}#0, S1 {2}#1 }#2`,
@@ -3570,7 +3570,7 @@ theorem RueCore.fieldsSwapped_rejected :
 
 ### `returnPastAffine_newestFirst`
 
-*theorem* · module `RueCore.TraceOrder`
+*theorem* · module `RueCore.Witnesses`
 
 **Newest-first on a reachable step** (§6.9's (D-Return)):
 `return_past_affine` returns past two live affine bindings, `ℓ1` then `ℓ3`,
@@ -3588,7 +3588,7 @@ theorem RueCore.returnPastAffine_newestFirst :
 
 ### `unorderedRecord_rejected`
 
-*theorem* · module `RueCore.TraceOrder`
+*theorem* · module `RueCore.Witnesses`
 
 **The invariant is what orders a teardown.** A frame whose scope record
 is *not* in location order — `[3, 1]`, a configuration `reachable_ordered`
@@ -3607,7 +3607,7 @@ theorem RueCore.unorderedRecord_rejected :
 
 ### `swappedMarkers_rejected`
 
-*theorem* · module `RueCore.TraceOrder`
+*theorem* · module `RueCore.Witnesses`
 
 **The nesting is what orders sibling scopes** (§6.7). With the two
 markers swapped, every record is still in location order (`Config.Ordered`)
@@ -9010,20 +9010,6 @@ theorem RueCore.run_trace_once (M : FloatOps) {P : Program} {F : Event → List 
   List.count a (List.flatMap F (run M P fuel).trace) ≤ 1
 ```
 
-### `Examples.eval_loop_ok`
-
-*theorem* · module `RueCore.Examples`
-
-(D-Loop-Iter) §6.10, as an equation: a body that completes with `⟨⟩`
-re-enters the loop at one unit of fuel less (helper).
-
-```lean
-theorem RueCore.Examples.eval_loop_ok {M : FloatOps} {P : Program} {n : Nat}
-  {H H₁ : Store} {φ : Frame} {e : Expr} {tr : List Event}
-  (h : eval M n P H φ e = EvalRes.ok H₁ Val.unit tr) :
-  eval M (n + 1) P H φ e.loop = EvalRes.withTrace tr (eval M n P H₁ φ e.loop)
-```
-
 ### `Steps.trans`
 
 *theorem* · module `RueCore.Adequacy`
@@ -12144,6 +12130,20 @@ theorem RueCore.Blocks.drop_inv {D : Decls} {ℓ : Nat} {c : Contents} {t : List
   ∃ t', t = dropEvents D c ++ t' ∧ Blocks D t'
 ```
 
+### `Examples.eval_loop_ok`
+
+*theorem* · module `RueCore.Examples`
+
+(D-Loop-Iter) §6.10, as an equation: a body that completes with `⟨⟩`
+re-enters the loop at one unit of fuel less (helper).
+
+```lean
+theorem RueCore.Examples.eval_loop_ok {M : FloatOps} {P : Program} {n : Nat}
+  {H H₁ : Store} {φ : Frame} {e : Expr} {tr : List Event}
+  (h : eval M n P H φ e = EvalRes.ok H₁ Val.unit tr) :
+  eval M (n + 1) P H φ e.loop = EvalRes.withTrace tr (eval M n P H₁ φ e.loop)
+```
+
 ### `Explain.explainIdx_result`
 
 *theorem* · module `RueCore.Explain`
@@ -12582,7 +12582,7 @@ RueCore.FloatWidth.w64 : FloatWidth
 
 ### `IdLe`
 
-*def* · module `RueCore.Trace`
+*def* · module `RueCore.Trace.Defs`
 
 Multiset inclusion, read by counts: every identity occurs in `l₁` at most
 as often as in `l₂` (helper).
@@ -12630,7 +12630,7 @@ RueCore.IntWidth.w64 : IntWidth
 
 ### `Lifo`
 
-*def* · module `RueCore.TraceOrder`
+*def* · module `RueCore.Trace.Defs`
 
 **How one step changes the registration stack, and what it drops**: it
 either keeps the stack as a prefix of the new one — nothing deregistered —
@@ -12674,7 +12674,7 @@ RueCore.Mult.linear : Mult
 
 ### `NewestFirst`
 
-*def* · module `RueCore.TraceOrder`
+*def* · module `RueCore.Trace.Defs`
 
 **The order one step drops cells in**: its `drop` markers either all name
 one cell — an overwrite, an `@drop`, a destructure's residue, several
@@ -12823,7 +12823,7 @@ RueCore.Place.idx (p : Place) (c : Nat) : Place
 
 ### `Rec`
 
-*def* · module `RueCore.TraceOrder`
+*def* · module `RueCore.Trace.Defs`
 
 A scope record in **registration order is location order**: its cells
 strictly increasing, every one below the store's length `n` (helper).
@@ -13836,7 +13836,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `CTy`
 
-*inductive* · module `RueCore.Checker`
+*inductive* · module `RueCore.Checker.Defs`
 
 The type `check` concludes at: a type, or `never` — §5.7's type of the
 diverging forms, which the fragment's rules fold (Sub-Never) into by
@@ -14218,7 +14218,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Frame.empty`
 
-*def* · module `RueCore.Adequacy`
+*def* · module `RueCore.Adequacy.Defs`
 
 The empty frame the entry point is called from (helper).
 
@@ -14417,7 +14417,7 @@ Ty.unit.declIds = []
 
 ### `Ty.grounded`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 Whether a type's declaration is already grounded. An array is grounded
 exactly when its element type is — `3.0:5` names array elements beside struct
@@ -14697,7 +14697,7 @@ RueCore.ArgsTag.indexWrite (p : Place) (πs : List (List Nat)) (v : Val) :
 
 ### `CTy.fits`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 Whether a checked type admits `T` — (Sub-Never) §5.7 for `never`, identity
 otherwise (helper).
@@ -14715,7 +14715,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `CTy.fitsC`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 Whether one checked type admits every type another admits — the arm
 comparison `match` makes against the type `firstArmTy` fixed (helper).
@@ -14734,7 +14734,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `CTy.meet`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 The common type of two branch arms, §5.5's single `T` with (Sub-Never)
 §5.7 applied to a diverging arm: `never` meets anything, two types meet only
@@ -14756,7 +14756,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `CTy.pick`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 A type a checked type admits, defaulting when it admits them all (helper).
 
@@ -16215,7 +16215,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Decls.peelStep`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 One peel round: a declaration is grounded when every type it contains by
 value is — a struct's fields, an enum's payload components over every variant
@@ -16239,7 +16239,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Event.dtorIds`
 
-*def* · module `RueCore.Trace`
+*def* · module `RueCore.Trace.Defs`
 
 The identity of the value a user destructor ran on (§6.11, `3.9:28`) —
 every `dtor` event carries the struct it ran on (helper).
@@ -16402,7 +16402,7 @@ def RueCore.Expr.breaks : Expr → Bool
 
 ### `Expr.pendingSafe`
 
-*def* · module `RueCore.TraceExact`
+*def* · module `RueCore.Trace.Defs`
 
 **The RUE-2316 carve-out, syntactically**: no value computed for one
 operand is pending while a later operand of the same form can unwind — a
@@ -16420,7 +16420,7 @@ def RueCore.Expr.pendingSafe : Expr → Bool
 
 ### `Expr.returns`
 
-*def* · module `RueCore.TraceExact`
+*def* · module `RueCore.Trace.Defs`
 
 Whether an expression contains a `return` anywhere — including under a
 loop (helper).
@@ -17006,7 +17006,7 @@ def RueCore.dropContents (D : Decls) : Contents → Except Violation (List Event
 
 ### `dropLocs`
 
-*def* · module `RueCore.TraceOrder`
+*def* · module `RueCore.Trace.Defs`
 
 The cells a trace's `drop` markers name, in trace order (helper).
 
@@ -17318,7 +17318,7 @@ def RueCore.Decls.Names (D : Decls) (d d' : DeclId) : Prop :=
 
 ### `Decls.peel`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 The grounded flags after `n` peel rounds, one per declaration of each
 layer; nothing is grounded at round `0` (helper).
@@ -17339,7 +17339,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `DtorNotCopy`
 
-*def* · module `RueCore.Trace`
+*def* · module `RueCore.Trace.Defs`
 
 A destructor-bearing struct is not `Copy` (`3.9:31`): the one fact about
 the declarations the conservation law reads (helper).
@@ -17632,7 +17632,7 @@ Expr.breaksList [] = false
 
 ### `Expr.pendingSafeList`
 
-*def* · module `RueCore.TraceExact`
+*def* · module `RueCore.Trace.Defs`
 
 `Expr.pendingSafe` over a list (helper).
 
@@ -17651,7 +17651,7 @@ Expr.pendingSafeList [] = true
 
 ### `Expr.returnsList`
 
-*def* · module `RueCore.TraceExact`
+*def* · module `RueCore.Trace.Defs`
 
 `Expr.returns` over a list (helper).
 
@@ -17669,7 +17669,7 @@ Expr.returnsList [] = false
 
 ### `Expr.unwinds`
 
-*def* · module `RueCore.TraceExact`
+*def* · module `RueCore.Trace.Defs`
 
 Whether evaluating an expression can **unwind** past its context: it
 contains a `return`, or a `break` its own loops do not catch
@@ -17724,7 +17724,7 @@ def RueCore.Frame.In (φ : Frame) (H : Store) : Prop :=
 
 ### `Fresh`
 
-*def* · module `RueCore.Trace`
+*def* · module `RueCore.Trace.Defs`
 
 The identities minted between two stores: the indices the store grew by,
 since `introVal` takes the next index (helper).
@@ -17743,7 +17743,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Kont.Ordered`
 
-*def* · module `RueCore.TraceOrder`
+*def* · module `RueCore.Trace.Defs`
 
 What a frame of the control stack owes, ordered: a pending `endscope`
 marker's cells, and the scope record of a suspended caller (`ret(E, φ)`) or
@@ -17808,7 +17808,7 @@ Kont.toLoop [] = none
 
 ### `Local`
 
-*def* · module `RueCore.TraceExact`
+*def* · module `RueCore.Trace.Defs`
 
 The store only grew, and a cell outside the frame's environment was left
 alone or retired (helper).
@@ -17823,7 +17823,7 @@ def RueCore.Local (φ : Frame) (H H' : Store) : Prop :=
 
 ### `Nest`
 
-*def* · module `RueCore.TraceOrder`
+*def* · module `RueCore.Trace.Defs`
 
 The scope record the pending `endscope` markers and loop boundaries of
 one frame account for (§6.7, §6.10): reading the stack top-down, each
@@ -17880,7 +17880,7 @@ RueCore.Program.mk (decls : Decls) (fns : List FnDef) : Program
 
 ### `Retired`
 
-*def* · module `RueCore.TraceExact`
+*def* · module `RueCore.Trace.Defs`
 
 Every cell allocated since `H` is retired, but those `keep` names
 (helper).
@@ -17894,7 +17894,7 @@ def RueCore.Retired (H : Store) (keep : List Nat) (H' : Store) : Prop :=
 
 ### `Stk`
 
-*def* · module `RueCore.TraceOrder`
+*def* · module `RueCore.Trace.Defs`
 
 The registration records of the suspended callers, bottom of the stack
 first (§6.9's `ret(E, φ)` frames) (helper).
@@ -17983,7 +17983,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Untouched`
 
-*def* · module `RueCore.Soundness`
+*def* · module `RueCore.Soundness.Defs`
 
 `Untouched ρ H H'`: the store only grew, and every cell that was already
 allocated and that `ρ` does not name has the contents it had. This is the
@@ -18121,7 +18121,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `dtorIds`
 
-*def* · module `RueCore.Trace`
+*def* · module `RueCore.Trace.Defs`
 
 The identities the trace's destructors ran on, in trace order: what §7's
 no-double-free bullet counts at a destructor (`3.9:28`).
@@ -18460,7 +18460,7 @@ RueCore.ArgsRes.abort (r : EvalRes) : ArgsRes
 
 ### `Config.Nested`
 
-*def* · module `RueCore.TraceOrder`
+*def* · module `RueCore.Trace.Defs`
 
 **Scopes nest** (§6.7, §6.9, §6.10): every frame's pending `endscope`
 markers are exactly the tail of its scope record, innermost last, and the
@@ -18476,7 +18476,7 @@ def RueCore.Config.Nested : Config → Prop :=
 
 ### `Config.Ordered`
 
-*def* · module `RueCore.TraceOrder`
+*def* · module `RueCore.Trace.Defs`
 
 **Every scope record of a configuration is in registration order**, which
 is location order: the current frame's, and every one the control stack
@@ -18547,7 +18547,7 @@ Config.init =
 
 ### `Config.stack`
 
-*def* · module `RueCore.TraceOrder`
+*def* · module `RueCore.Trace.Defs`
 
 The machine's whole **registration stack**: every suspended caller's
 scope record, bottom first, then the current frame's (§6.1's `σ` per frame);
@@ -18567,7 +18567,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Config.trace`
 
-*def* · module `RueCore.TraceOrder`
+*def* · module `RueCore.Trace.Defs`
 
 The output a configuration has produced so far (§6.12) (helper).
 
@@ -18689,7 +18689,7 @@ def RueCore.EvalRes.NoRet : EvalRes → Prop :=
 
 ### `EvalRes.trace`
 
-*def* · module `RueCore.Trace`
+*def* · module `RueCore.Trace.Defs`
 
 The trace a result carries: everything the run emitted, for a value, an
 unwinding `return` or `break`, and a trap; nothing for a refusal or exhausted
@@ -18848,7 +18848,7 @@ RueCore.Explain.Trace.mk (steps : List Explain.Step) (res : EvalRes) :
 
 ### `Expr.quietList`
 
-*def* · module `RueCore.TraceExact`
+*def* · module `RueCore.Trace.Defs`
 
 No expression of the list unwinds (helper).
 
@@ -18963,7 +18963,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Program.pendingSafe`
 
-*def* · module `RueCore.TraceExact`
+*def* · module `RueCore.Trace.Defs`
 
 Every function body of the program is `pendingSafe` (helper).
 
@@ -18979,7 +18979,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Settled`
 
-*def* · module `RueCore.TraceExact`
+*def* · module `RueCore.Trace.Defs`
 
 What the rest of a form owes the cells allocated after its leading
 operands ran: every one retired by the form's end — but, for an unwinding
@@ -19052,7 +19052,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Tidy`
 
-*def* · module `RueCore.TraceExact`
+*def* · module `RueCore.Trace.Defs`
 
 **The frame-pop invariant for one evaluation** in frame `φ` from store `H`
 (§6.7, §6.9, §6.10): the store only grew and was touched outside `φ`'s
@@ -19303,7 +19303,7 @@ breakProgram =
 
 ### `check`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 The §5 judgment as an algorithm: one case per `Typed` rule, in the same
 order, producing the type (`CTy`) and §5.3's outgoing `Ω` or rejecting. `P`
@@ -19319,7 +19319,7 @@ def RueCore.check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Ou
 
 ### `checkArgs`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 (Call) §5.8's argument list as an algorithm: each argument is checked
 against its parameter's type with Σ threaded left to right, and the count must
@@ -19333,7 +19333,7 @@ def RueCore.checkArgs (P : Program) (R : Ty) :
 
 ### `checkArms`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 (Match) §5.5's arm premises as an algorithm: every arm from the same
 post-scrutinee state `Γ₀`, each under its variant's payload locals (`armCtx`),
@@ -19351,7 +19351,7 @@ def RueCore.checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (c : CTy) :
 
 ### `checkNoCycle`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 **`3.0:5` (E0483) as an algorithm**: every declaration is grounded after
 `|structs| + |enums|` peel rounds, which is "no struct or enum contains itself
@@ -19530,7 +19530,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `swappedMarkers`
 
-*def* · module `RueCore.TraceOrder`
+*def* · module `RueCore.Witnesses`
 
 Two nested `let`s' pending markers, swapped: `endscope [1]` above
 `endscope [3]` in a frame whose record is `[1, 3]` (the review's Probe 2)
@@ -19849,7 +19849,7 @@ RueCore.StructDecl.Wf.mk {D : Decls} {sd : StructDecl}
 
 ### `checkEnumDecl`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 §3's class assignment for one enum declaration, as an algorithm (`6.3:19`):
 the recorded class is the payload join over every variant. There is no attribute
@@ -19869,7 +19869,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `checkIdx`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 The index expressions of a place below a dynamic index, as an algorithm:
 each is checked at whatever integer type it has (`4.11:4`), left to right with
@@ -19905,7 +19905,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `checkStructDecl`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 §3's class assignment for one struct declaration, as an algorithm: the
 recorded class is the attribute's lifting of the field join, a `@copy`
@@ -20325,7 +20325,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Lead`
 
-*def* · module `RueCore.TraceExact`
+*def* · module `RueCore.Trace.Defs`
 
 **A form's leading operands have run** (helper): from store `H` in frame
 `φ` at fuel `fuel`, the form's first operand — or its argument list, for a
@@ -20394,7 +20394,7 @@ def RueCore.Lead (M : FloatOps) (P : Program) (fuel : Nat) (H : Store) (φ : Fra
 A well-formed enum environment: §3's class assignment holds of every enum
 declaration (`EnumDecl.Wf`). Together with `WfStructs` this is the premise that
 makes `Ty.mult`'s lookup §3's join at every type, and it is what `checkEnums`
-(`Checker.lean`) decides.
+(`Checker/Defs.lean`) decides.
 
 ```lean
 def RueCore.WfEnums (D : Decls) : Prop :=
@@ -20407,7 +20407,7 @@ def RueCore.WfEnums (D : Decls) : Prop :=
 
 A well-formed struct environment: §3's class assignment holds of every
 declaration (`StructDecl.Wf`). This is the premise that makes `Ty.mult`'s
-lookup §3's join, and it is what `checkStructs` (`Checker.lean`) decides.
+lookup §3's join, and it is what `checkStructs` (`Checker/Defs.lean`) decides.
 
 ```lean
 def RueCore.WfStructs (D : Decls) : Prop :=
@@ -20417,7 +20417,7 @@ def RueCore.WfStructs (D : Decls) : Prop :=
 
 ### `affineScopeDropProgram`
 
-*def* · module `RueCore.Adequacy`
+*def* · module `RueCore.Witnesses`
 
 The corpus case `affine_scope_drop` (`Corpus.lean`): `{ let v0: S1 =
 S1 { x0: 7 }; 1 }` as the entry point returning `i64`, where `S1` is affine
@@ -20435,7 +20435,7 @@ affineScopeDropProgram = Examples.prog Examples.tI64 Examples.affineDrop
 
 ### `checkEnums`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 §3's class assignment for a whole enum environment, as an algorithm.
 `WfEnums` is what it decides, and that is the premise `Ty.mult`'s lookup needs to
@@ -20453,7 +20453,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `checkStructs`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 §3's class assignment for a whole struct environment, as an algorithm.
 `WfStructs` is what it decides, and that is the premise `Ty.mult`'s lookup
@@ -20554,7 +20554,7 @@ A well-formed declaration environment: `3.0:5`'s acyclicity (`WfNames`),
 §3's class assignment for every struct declaration (`WfStructs`) and for every
 enum declaration (`WfEnums`). This is the premise every theorem that reads a
 recorded class through `Ty.mult` carries, and it is what `checkDecls`
-(`Checker.lean`) decides.
+(`Checker/Defs.lean`) decides.
 
 ```lean
 inductive RueCore.WfDecls (D : Decls) : Prop
@@ -20571,7 +20571,7 @@ RueCore.WfDecls.mk {D : Decls} (names : WfNames D) (structs : WfStructs D)
 
 ### `checkDecls`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 A whole declaration environment as an algorithm: §3's equation for every
 struct (`checkStructs`), `6.3:19`'s for every enum (`checkEnums`), and
@@ -20717,7 +20717,7 @@ def RueCore.ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx)
 
 ### `Blocks`
 
-*inductive* · module `RueCore.TraceOrder`
+*inductive* · module `RueCore.Trace.Defs`
 
 **§6.11's order, as a grammar over the trace.** A trace is a sequence of
 blocks: a `@dbg` line, a consumption (`consume c`, which runs no drop of its
@@ -20771,7 +20771,7 @@ RueCore.Blocks.dropTemp {D : Decls} {v : Val} {t : List Event} :
 
 ### `BrokeOk`
 
-*def* · module `RueCore.Soundness`
+*def* · module `RueCore.Soundness.Defs`
 
 The promise for an unwinding `break` (§6.10's (D-Break)), made about an
 evaluation in frame `φ` from store `H`: the `break` fired in a frame that is
@@ -20799,7 +20799,7 @@ def RueCore.BrokeOk (D : Decls) (B : List Ctx) (φ : Frame) (H H' : Store)
 
 ### `Cell.own`
 
-*def* · module `RueCore.Trace`
+*def* · module `RueCore.Trace.Defs`
 
 A cell's owned identities: a retired cell, or a reserved identity slot,
 holds none (helper).
@@ -20817,7 +20817,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `storeOwn`
 
-*def* · module `RueCore.Trace`
+*def* · module `RueCore.Trace.Defs`
 
 The store's owned identities, cell by cell (helper).
 
@@ -20833,7 +20833,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `CellMatches`
 
-*def* · module `RueCore.Soundness`
+*def* · module `RueCore.Soundness.Defs`
 
 Per-cell agreement between the static entry and the dynamic cell: §7's
 "Σ faithfully tracks the store's initialization", with the §5.5 join's
@@ -20847,7 +20847,7 @@ def RueCore.CellMatches (D : Decls) (cell : Cell) (en : Entry) : Prop :=
 
 ### `Matches`
 
-*inductive* · module `RueCore.Soundness`
+*inductive* · module `RueCore.Soundness.Defs`
 
 `Matches Γ ρ H`: each binding's location holds a cell agreeing with its
 static entry; locations are live (in `H`) and pairwise distinct. This is the
@@ -20877,7 +20877,7 @@ RueCore.Matches.cons {D : Decls} {en : Entry} {Γ : Ctx} {ℓ : Nat} {ρ : Env}
 
 ### `FrameMatches`
 
-*inductive* · module `RueCore.Soundness`
+*inductive* · module `RueCore.Soundness.Defs`
 
 The per-frame invariant (§6.1): the fused context agrees with the store
 through the frame's environment, and the frame's scope record, read
@@ -20902,7 +20902,7 @@ RueCore.FrameMatches.mk {D : Decls} {Γ : Ctx} {φ : Frame} {H : Store}
 
 ### `Config.SafeAt`
 
-*def* · module `RueCore.Adequacy`
+*def* · module `RueCore.Adequacy.Defs`
 
 **A configuration typed at `T`, semantically** (§7, first bullet): every
 configuration `→*` reaches from `C` reduces or has halted ((Result-Ok),
@@ -20921,7 +20921,7 @@ def RueCore.Config.SafeAt (M : FloatOps) (P : Program) (T : Ty) (C : Config) :
 
 ### `Cons`
 
-*def* · module `RueCore.Trace`
+*def* · module `RueCore.Trace.Defs`
 
 **The conservation law, for one evaluation** from store `H`, holding the
 owned identities `X` besides it (a pending operand's value): the result's
@@ -21091,7 +21091,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `StoreCC`
 
-*def* · module `RueCore.Trace`
+*def* · module `RueCore.Trace.Defs`
 
 Every live cell of the store is copy-closed (helper).
 
@@ -21134,7 +21134,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Contents.holeFree`
 
-*def* · module `RueCore.Soundness`
+*def* · module `RueCore.Soundness.Defs`
 
 Whether a contents tree has no `⊘` anywhere in it — the tree of a value
 (helper).
@@ -21162,7 +21162,7 @@ Contents.unit.holeFree = true
 
 ### `Contents.holeFreeList`
 
-*def* · module `RueCore.Soundness`
+*def* · module `RueCore.Soundness.Defs`
 
 The same over a field list (helper).
 
@@ -21290,7 +21290,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Contents.own`
 
-*def* · module `RueCore.Trace`
+*def* · module `RueCore.Trace.Defs`
 
 The identities of a contents' **owned** nodes: every non-`Copy` aggregate
 in it, `⊘` skipped (§6.11's skip) and nothing below a `Copy` node, since a
@@ -21324,7 +21324,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Contents.ownList`
 
-*def* · module `RueCore.Trace`
+*def* · module `RueCore.Trace.Defs`
 
 `own` over a field, payload or element list (helper).
 
@@ -21342,7 +21342,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Val.own`
 
-*def* · module `RueCore.Trace`
+*def* · module `RueCore.Trace.Defs`
 
 A value's owned identities: its stored image's (helper).
 
@@ -21358,7 +21358,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Event.freed`
 
-*def* · module `RueCore.Trace`
+*def* · module `RueCore.Trace.Defs`
 
 The owned identities a `drop` or `dropTemp` marker frees: the whole tree
 §6.11's walk goes through — and the shell a `consume` event ends (RUE-2427),
@@ -21385,7 +21385,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `TraceMeasure`
 
-*inductive* · module `RueCore.Trace`
+*inductive* · module `RueCore.Trace.Defs`
 
 What the conservation law asks of a projection `F` of the trace onto
 identities: §6.11's walk projects to at most what the dropped contents owns,
@@ -21424,7 +21424,7 @@ RueCore.TraceMeasure.mk {D : Decls} {F : Event → List Nat}
 
 ### `freedIds`
 
-*def* · module `RueCore.Trace`
+*def* · module `RueCore.Trace.Defs`
 
 The identities the trace's markers free, in trace order: what §7's
 no-double-free bullet counts at a drop.
@@ -21442,7 +21442,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Exact`
 
-*def* · module `RueCore.TraceExact`
+*def* · module `RueCore.Trace.Defs`
 
 **The exact ledger for one evaluation** from store `H`, holding the owned
 identities `X` besides it (a pending operand's value): for every identity the
@@ -22618,7 +22618,7 @@ RueCore.Steps.step {M : FloatOps} {P : Program} {C₁ C₂ C₃ : Config} :
 
 ### `StepsN`
 
-*inductive* · module `RueCore.Adequacy`
+*inductive* · module `RueCore.Adequacy.Defs`
 
 `→ⁿ`: a run of exactly `n` steps of §6's reduction (helper). Completeness
 counts steps, because fuel is a bound on them.
@@ -22724,7 +22724,7 @@ def RueCore.SimIH (M : FloatOps) (P : Program) (fuel : Nat) : Prop :=
 
 ### `ContentsMatches`
 
-*inductive* · module `RueCore.Soundness`
+*inductive* · module `RueCore.Soundness.Defs`
 
 Per-node agreement between Σ's state for a path and the contents stored
 there, at the path's declared type (§7's "Σ faithfully tracks the store's
@@ -22776,7 +22776,7 @@ RueCore.ContentsMatches.elems {D : Decls} {T : Ty} {n i : Nat}
 
 ### `ContentsMatchesList`
 
-*inductive* · module `RueCore.Soundness`
+*inductive* · module `RueCore.Soundness.Defs`
 
 The same over a declaration's fields, slot by slot; a slot Σ has no record
 for is `owned` (`OwnSt.fieldAt`) (helper).
@@ -22807,7 +22807,7 @@ RueCore.ContentsMatchesList.cons {D : Decls} {c : Contents}
 
 ### `ContentsTy`
 
-*inductive* · module `RueCore.Soundness`
+*inductive* · module `RueCore.Soundness.Defs`
 
 Cell contents typed against §2's types, with §6.1's `⊘` admitted at any
 node. A moved-out position claims nothing, so it is well typed at every type;
@@ -22884,7 +22884,7 @@ RueCore.ContentsTy.array {D : Decls} {T : Ty} {n i : Nat}
 
 ### `ContentsTys`
 
-*inductive* · module `RueCore.Soundness`
+*inductive* · module `RueCore.Soundness.Defs`
 
 The same, pointwise against a declaration's field list, a variant's
 payload components, or an array's `n` copies of its element type (§5.8's
@@ -23021,7 +23021,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `EvalOk`
 
-*def* · module `RueCore.Soundness`
+*def* · module `RueCore.Soundness.Defs`
 
 The promise `soundness` makes about `eval`'s result, given §5.3's `Ω` —
 its normal outgoing state `o` and its deliveries `B`: a value of the
@@ -23051,7 +23051,7 @@ def RueCore.EvalOk (D : Decls) (T R : Ty) (o : Option Ctx) (B : List Ctx)
 
 ### `HasTy`
 
-*inductive* · module `RueCore.Soundness`
+*inductive* · module `RueCore.Soundness.Defs`
 
 Value typing: §6.1's values against §2's types, with the `n_T` bounds and,
 for a struct value, its declaration's field list — §6.1's `{ v1, …, vk }_S`
@@ -23119,7 +23119,7 @@ RueCore.HasTy.array {D : Decls} {T : Ty} {n i : Nat} {vs : List Val} :
 
 ### `HasTys`
 
-*inductive* · module `RueCore.Soundness`
+*inductive* · module `RueCore.Soundness.Defs`
 
 Value typing for a value list, pointwise against the expected types: a
 call's arguments against the callee's parameter types (§5.8's (Call),
@@ -23163,7 +23163,7 @@ def RueCore.NoResidualLinear (D : Decls) (Γ : Ctx) : Prop :=
 
 ### `checkFn`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 (Fn) §5.8 as an algorithm: the body checks at the declared return type
 from the entry context `Γ0;Σ0` (`fnCtx`), and its normal exit edge discharges
@@ -23191,7 +23191,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `checkProgram`
 
-*def* · module `RueCore.Checker`
+*def* · module `RueCore.Checker.Defs`
 
 A whole program as an algorithm: §3 and `3.0:5` for the declarations, (Fn)
 §5.8 for every function, plus the entry point's empty parameter list (§6.12's
