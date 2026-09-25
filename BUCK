@@ -771,7 +771,9 @@ rue_tool_test(
 # theorem depends on an axiom beyond propext and Quot.sound. It also runs the
 # package's own reports (RUE-2247): `digest.md`, every theorem's statement,
 # and `trust.md`, every theorem's axioms, which fails the build on a proof
-# outside the policy whether or not `trust` names it. Deliberately not a test
+# outside the policy whether or not `trust` names it, and `layers.txt`, the
+# layering audit (RUE-2456), which fails the build on an import from a higher
+# layer. Deliberately not a test
 # target: no tier applies, so no CI lane requests it until the ADR's gate is
 # met (RUE-2241). `scripts/rue lean` builds it and prints the trust report.
 lean_package(
@@ -784,6 +786,7 @@ lean_package(
     report_exes = {
         "digest.md": ["ruecore-digest"],
         "trust.md": ["ruecore-digest", "--trust"],
+        "layers.txt": ["ruecore-layers"],
     },
     trust = [
         "RueCore.soundness",
