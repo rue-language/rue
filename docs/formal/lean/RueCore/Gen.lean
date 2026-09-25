@@ -445,16 +445,31 @@ structure Binder where
 /-- (helper) The binders in scope, innermost first. -/
 abbrev Scope := List Binder
 
-/-- (helper) The generation monad: a `StdGen` threaded through. -/
-abbrev G := StateM StdGen
+/-- (helper) The generation monad: two `StdGen`s threaded through. The first
+is the **main** stream every draw reads; the second is the **side** stream
+(`side`), which only the diverging-arm draws (RUE-2383) read, so adding them
+left every other draw of every program where they do not fire unchanged. -/
+abbrev G := StateM (StdGen × StdGen)
 
-/-- (helper) A uniform natural number in `[lo, hi]`. -/
+/-- (helper) A uniform natural number in `[lo, hi]`, off the current stream. -/
 def nat (lo hi : Nat) : G Nat :=
-  modifyGet fun g => randNat g lo hi
+  modifyGet fun (g, h) => let (n, g') := randNat g lo hi; (n, (g', h))
 
-/-- (helper) A uniform boolean. -/
+/-- (helper) A uniform boolean, off the current stream. -/
 def bool : G Bool :=
-  modifyGet fun g => randBool g
+  modifyGet fun (g, h) => let (b, g') := randBool g; (b, (g', h))
+
+/-- (helper) Run a draw on the **side** stream: the two streams swap for its
+duration, so whatever it draws leaves the main stream where it was. The
+`return`/`@panic` draws (`divArm`, RUE-2383) run here, and where one replaces an
+arm the arm it replaces is still drawn on the main stream first and discarded
+— so a program without a diverging arm is the program the generator drew
+before, and a program with one differs from it only there. -/
+def side {α : Type} (m : G α) : G α := do
+  modify fun (g, h) => (h, g)
+  let r ← m
+  modify fun (g, h) => (h, g)
+  return r
 
 /-- (helper) True with probability `num / den`. -/
 def chance (num den : Nat) : G Bool := do
@@ -1320,6 +1335,32 @@ def breakArm (D : Decls) (Γ : Scope) : G Expr := do
   if ← chance 1 2 then return brk
   return seq (← leaf D Γ .unit 2) brk
 
+/-- (helper) A **return or panic arm** (RUE-2383): the arm of an `if` or a
+`match`, or the arm of a loop's exit statement, that leaves the function
+rather than the loop — `return v` two times in three, with `v` an atom at the
+enclosing function's return type `R` ((Return-Value) §5.7, (D-Return) §6.9),
+and `@panic("gen")` otherwise ((Panic) §5.8, (D-Panic) §6.12). As a break arm
+does, it is the bare form half the time and otherwise a block whose **last**
+form it is: `{ @drop(x); … }` at a non-`Copy` aggregate binder, where the
+scope holds one, or `{ <leaf>; … }` — so no syntax follows it (RUE-2376). It
+is `never`-typed, as a break arm is, and it is drawn only where a break arm may
+stand, never inside an operand (`expr`'s `rt`). Every draw here reads the side
+stream (`side`). -/
+def divArm (D : Decls) (R : Ty) (Γ : Scope) : G Expr := side do
+  let tail ← do
+    if ← chance 2 3 then pure (ret (← atom D Γ R 2)) else pure (Expr.panic "gen")
+  if ← chance 1 2 then return tail
+  let owned := indicesWhere Γ (fun b => isAggregate b.ty && b.ty.mult D != .copy)
+  if !owned.isEmpty && (← chance 1 2) then return seq (drop (.var (← pick 0 owned))) tail
+  return seq (← leaf D Γ .unit 2) tail
+
+/-- (helper) Turn an arm drawn on the main stream into a return or panic arm
+(`divArm`), one time in `den` where `rt` allows one; the choice reads the side
+stream, and the arm it replaces has already been drawn, so the main stream is
+where it would have been either way (`side`). -/
+def maybeDiv (D : Decls) (R : Ty) (rt : Bool) (Γ : Scope) (den : Nat) (a : Expr) : G Expr := do
+  if rt && (← side (chance 1 den)) then divArm D R Γ else return a
+
 /-- (helper) Which arm of a `match` inside a loop body is a break arm, one
 `match` in three: at most **one**, so a `match` of two or more arms always has
 an arm that continues and never diverges as a whole (RUE-2376). Outside a loop
@@ -1374,7 +1415,8 @@ the once-through loops where the scope holds a linear struct or enum binder
 `{ @drop(x); break }`, so §5.7's exit join agrees on `x` — the accepted side of
 RUE-1614's rule, where one exit keeping `x` would be E0443; half of those have
 an empty body before the exits. -/
-def drawLoop (D : Decls) (Γ : Scope) (body cond : Scope → G Expr) : G Expr := do
+def drawLoop (D : Decls) (R : Ty) (rt : Bool) (Γ : Scope) (body cond : Scope → G Expr) :
+    G Expr := do
   let n ← nat 0 3
   let once ← chance 1 4
   let Γl : Scope := if once then Γ else { ty := .int .w64 .signed, mu := false } :: Γ
@@ -1399,10 +1441,41 @@ def drawLoop (D : Decls) (Γ : Scope) (body cond : Scope → G Expr) : G Expr :=
     | none => breakArm D Γl
   let b ← if ← chance 1 2 then do
       let c ← cond Γl
-      pure (seq (ite c (← arm) unitLit) b)
+      -- The exit statement's arm, unless it consumes `x` on every exit, may
+      -- leave the function instead (`maybeDiv`, RUE-2383): a `return` or
+      -- `@panic` inside a loop. The tail below never does, because a loop
+      -- whose every exit left the function would diverge as a whole and the
+      -- rest of the block after it would be dead code (RUE-2376).
+      let a ← arm
+      let a ← if consume.isSome then pure a else maybeDiv D R rt Γl 3 a
+      pure (seq (ite c a unitLit) b)
     else pure b
   if once then return loop (seq b (← arm))
   return countedLoop n b
+
+/-- (helper) A `match`'s arms, one per variant of `ed` in declaration order,
+each under its payload locals (`armScope`): arm `bj` is a break arm
+(`breakArmIdx`) and every other arm is `other`'s draw, all on the main stream.
+Then, where `rt` allows one, the side stream (`side`) turns one arm into a
+return or panic arm (`divArm`, RUE-2383): the break arm one time in three,
+and in a `match` without one a random arm one time in six — so at most one
+arm diverges and the `match` never does as a whole (RUE-2376). -/
+def divArms (D : Decls) (R : Ty) (rt : Bool) (ed : EnumDecl) (Γ : Scope) (bj : Option Nat)
+    (other : List Ty → G Expr) : G (List Expr) := do
+  let n := ed.variants.length
+  let arms ← (List.range n).mapM (fun j =>
+    let Ts := (ed.variants[j]?).getD []
+    if bj == some j then breakArm D (armScope Ts Γ) else other Ts)
+  let dj ← match bj with
+    | some j => do if rt && (← side (chance 1 3)) then pure (some j) else pure none
+    | none => do
+        if rt && (← side (chance 1 6)) then pure (some (← side (nat 0 (n - 1))))
+        else pure none
+  match dj with
+  | none => return arms
+  | some j =>
+      let a ← divArm D R (armScope ((ed.variants[j]?).getD []) Γ)
+      return arms.set j a
 
 /-- (helper) Whether the scope holds a binder of a non-`Copy` aggregate type:
 something a loop body can move or `@drop`, which is what makes a loop's
@@ -1413,8 +1486,8 @@ def ownedInScope (D : Decls) (Γ : Scope) : Bool :=
 /-- (helper) An expression of the wanted type under `Γ`, at most `fuel`
 levels deep. The weights here are the bias the module docstring
 describes. -/
-def expr (D : Decls) : Bool → Scope → Ty → Nat → G Expr
-  | _, Γ, T, 0 => do
+def expr (D : Decls) (R : Ty) : Bool → Bool → Scope → Ty → Nat → G Expr
+  | _, rt, Γ, T, 0 => do
       -- Out of fuel the draw is a leaf, and that is where most of a
       -- program's binders are in scope: a `let` body is drawn one level down
       -- from the `let`. So where the scope has an array to index, the leaf is
@@ -1427,10 +1500,10 @@ def expr (D : Decls) : Bool → Scope → Ty → Nat → G Expr
       -- something a body can move (`ownedInScope`), its body and condition
       -- leaves: this is where a move inside a loop has an outer binder to take.
       if ownedInScope D Γ && (← chance 1 4) then
-        let lp ← drawLoop D Γ (fun Γ' => leaf D Γ' .unit 2) (fun Γ' => atom D Γ' .bool 2)
+        let lp ← drawLoop D R rt Γ (fun Γ' => leaf D Γ' .unit 2) (fun Γ' => atom D Γ' .bool 2)
         return seq lp (← leaf D Γ T 2)
       leaf D Γ T 2
-  | lb, Γ, T, fuel + 1 => do
+  | lb, rt, Γ, T, fuel + 1 => do
       if !Γ.isEmpty && (← chance 1 6) then return (← leaf D Γ T 2)
       let form ← weighted 3
         [(4, 0), (3, 1), (3, 2), (4, 3),
@@ -1442,28 +1515,35 @@ def expr (D : Decls) : Bool → Scope → Ty → Nat → G Expr
       | 0 =>
           let T₁ ← binderTy D
           let m ← chance 2 3
-          let e₁ ← expr D lb Γ T₁ fuel
-          let e₂ ← expr D lb ({ ty := T₁, mu := m } :: Γ) T fuel
+          let e₁ ← expr D R lb rt Γ T₁ fuel
+          let e₂ ← expr D R lb rt ({ ty := T₁, mu := m } :: Γ) T fuel
           return letIn m e₁ e₂
       | 1 =>
           let muts := indicesWhere Γ (fun b => b.mu)
           let T₁ ← weighted .unit
             [(if muts.isEmpty then 4 else 7, .unit), (2, ← binderTy D), (2, ← intTy)]
-          let e₁ ← expr D lb Γ T₁ fuel
-          let e₂ ← expr D lb Γ T fuel
+          let e₁ ← expr D R lb rt Γ T₁ fuel
+          let e₂ ← expr D R lb rt Γ T fuel
           return seq e₁ e₂
       | 2 =>
-          let c ← expr D false Γ .bool fuel
+          let c ← expr D R false false Γ .bool fuel
           -- Inside a loop body, one `if` in three has a **break arm**
           -- (`breakArm`) on a side drawn at random, and the other arm is an
           -- ordinary draw: at most one arm diverges, so the `if` itself never
           -- does and nothing after it is dead code (RUE-2376).
+          -- Where `rt` allows one, the break arm is a return or panic arm one
+          -- time in three instead, and an `if` without a break arm has one on
+          -- a side drawn at random one time in eight (`maybeDiv`, RUE-2383):
+          -- still at most one diverging arm.
           if lb && (← chance 1 3) then
-            let a ← breakArm D Γ
-            let e ← expr D lb Γ T fuel
+            let a ← maybeDiv D R rt Γ 3 (← breakArm D Γ)
+            let e ← expr D R lb rt Γ T fuel
             if ← bool then return ite c a e else return ite c e a
-          let e₁ ← expr D lb Γ T fuel
-          let e₂ ← expr D lb Γ T fuel
+          let e₁ ← expr D R lb rt Γ T fuel
+          let e₂ ← expr D R lb rt Γ T fuel
+          if rt && (← side (chance 1 8)) then
+            if ← side bool then return ite c (← divArm D R Γ) e₂
+            return ite c e₁ (← divArm D R Γ)
           return ite c e₁ e₂
       | 6 | 7 =>
           -- A `loop` (`drawLoop`). Form 6 is the loop itself, at `unit`; form 7,
@@ -1471,18 +1551,18 @@ def expr (D : Decls) : Bool → Scope → Ty → Nat → G Expr
           -- form 5 places an array statement, because a `unit`-typed draw one
           -- level above a leaf is rare. Both are weighted up where the scope
           -- holds something a body can move (`ownedInScope`).
-          let lp ← drawLoop D Γ (fun Γ' => expr D true Γ' .unit fuel)
-            (fun Γ' => expr D false Γ' .bool fuel)
+          let lp ← drawLoop D R rt Γ (fun Γ' => expr D R true rt Γ' .unit fuel)
+            (fun Γ' => expr D R false false Γ' .bool fuel)
           if form == 6 then return lp
-          return seq lp (← expr D lb Γ T fuel)
+          return seq lp (← expr D R lb rt Γ T fuel)
       | 5 =>
           -- An array statement, then the rest at the wanted type: weighted up
           -- where the scope has an array to index (`arrayStmt`), because the
           -- type-directed draws reach an index form only where the type they
           -- want is the element's.
-          let s ← arrayStmt D Γ (fun Γ' T' => expr D false Γ' T' fuel)
-            (fun Γ' T' => expr D false Γ' T' fuel)
-          return seq s (← expr D lb Γ T fuel)
+          let s ← arrayStmt D Γ (fun Γ' T' => expr D R false false Γ' T' fuel)
+            (fun Γ' T' => expr D R false false Γ' T' fuel)
+          return seq s (← expr D R lb rt Γ T fuel)
       | 4 =>
           -- (Match) §5.5 in expression position: the scrutinee at the drawn
           -- enum type, then **exactly one arm per variant in declaration
@@ -1513,13 +1593,10 @@ def expr (D : Decls) : Bool → Scope → Ty → Nat → G Expr
                 -- holds the consumed binding, which is what a nested `match` on
                 -- `v` (E0205) and the join over an entry an arm moved need.
                 let m ← chance 1 3
-                let init ← expr D false Γ (.enum e) fuel
+                let init ← expr D R false false Γ (.enum e) fuel
                 let Γ' : Scope := { ty := .enum e, mu := m } :: Γ
-                let bj ← breakArmIdx lb ed.variants.length
-                let arms ← (List.range ed.variants.length).mapM (fun j =>
-                  let Ts := (ed.variants[j]?).getD []
-                  if bj == some j then breakArm D (armScope Ts Γ')
-                  else expr D lb (armScope Ts Γ') T fuel)
+                let arms ← divArms D R rt ed Γ' (← breakArmIdx lb ed.variants.length)
+                  (fun Ts => expr D R lb rt (armScope Ts Γ') T fuel)
                 let m' := «match» (use (.var 0)) arms
                 let body ← if ← chance 1 3 then
                     pure (seq (← leaf D Γ' .unit 2) m')
@@ -1531,12 +1608,9 @@ def expr (D : Decls) : Bool → Scope → Ty → Nat → G Expr
                 else if !uses.isEmpty && (← chance 4 5) then
                   pure (use (.var (← pick 0 uses)))
                 else
-                  expr D false Γ (.enum e) fuel
-              let bj ← breakArmIdx lb ed.variants.length
-              let arms ← (List.range ed.variants.length).mapM (fun j =>
-                let Ts := (ed.variants[j]?).getD []
-                if bj == some j then breakArm D (armScope Ts Γ)
-                else expr D lb (armScope Ts Γ) T fuel)
+                  expr D R false false Γ (.enum e) fuel
+              let arms ← divArms D R rt ed Γ (← breakArmIdx lb ed.variants.length)
+                (fun Ts => expr D R lb rt (armScope Ts Γ) T fuel)
               return «match» scrut arms
           | none => leaf D Γ T 2
       | _ =>
@@ -1554,10 +1628,10 @@ def expr (D : Decls) : Bool → Scope → Ty → Nat → G Expr
               | some ed =>
                   let k ← nat 0 (ed.variants.length - 1)
                   return mkEnum e k
-                    (← ((ed.variants[k]?).getD []).mapM (fun T' => expr D false Γ T' fuel))
+                    (← ((ed.variants[k]?).getD []).mapM (fun T' => expr D R false false Γ T' fuel))
               | none => return leastValue D (declFuel D) (.enum e)
           | .int w sg =>
-              let self := expr D false Γ (.int w sg) fuel
+              let self := expr D R false false Γ (.int w sg) fuel
               let form ← weighted 0 [(5, 0), (3, 1), (2, 2), (3, 3), (2, 4)]
               match form with
               | 0 =>
@@ -1592,13 +1666,13 @@ def expr (D : Decls) : Bool → Scope → Ty → Nat → G Expr
                     return binop .totalCmp (← floatLiteral wf) (← floatLiteral wf)
                   if ← chance 1 3 then
                     let Tf ← floatTy
-                    return fintrin (.floatToInt w sg) (← expr D false Γ Tf fuel)
+                    return fintrin (.floatToInt w sg) (← expr D R false false Γ Tf fuel)
                   let src ← intTy
-                  return intCast w sg (← expr D false Γ src fuel)
+                  return intCast w sg (← expr D R false false Γ src fuel)
           | .float w =>
               -- (Float-Arith), (Float-Neg), (Int-To-Float), (Float-Cast) and
               -- (Float-Round) §5.8, with §6.4's trap-free dynamics.
-              let self := expr D false Γ (.float w) fuel
+              let self := expr D R false false Γ (.float w) fuel
               let form ← weighted 0 [(5, 0), (2, 1), (2, 2), (2, 3), (2, 4)]
               match form with
               | 0 =>
@@ -1607,31 +1681,31 @@ def expr (D : Decls) : Bool → Scope → Ty → Nat → G Expr
               | 1 => return unop .neg (← self)
               | 2 =>
                   let src ← intTy
-                  return fintrin (.intToFloat w) (← expr D false Γ src fuel)
+                  return fintrin (.intToFloat w) (← expr D R false false Γ src fuel)
               | 3 =>
                   -- `3.12:19` converts between the two widths and only
                   -- between them, so the source is the other one.
                   let src : FloatWidth := match w with | .w32 => .w64 | .w64 => .w32
-                  return fintrin (.floatCast w) (← expr D false Γ (.float src) fuel)
+                  return fintrin (.floatCast w) (← expr D R false false Γ (.float src) fuel)
               | _ =>
                   let k ← pick FloatUnIntrin.sqrt
                     [FloatUnIntrin.sqrt, .round .floor, .round .ceil, .round .trunc,
                       .round .round]
                   return fintrin (.roundOp k) (← self)
           | .bool =>
-              if ← chance 1 5 then return unop .not (← expr D false Γ .bool fuel)
+              if ← chance 1 5 then return unop .not (← expr D R false false Γ .bool fuel)
               let op ← pick BinOp.lt [BinOp.lt, .le, .gt, .ge]
               if ← chance 1 3 then
                 let Tf ← floatTy
-                return binop op (← expr D false Γ Tf fuel) (← expr D false Γ Tf fuel)
+                return binop op (← expr D R false false Γ Tf fuel) (← expr D R false false Γ Tf fuel)
               let Tc ← intTy
-              return binop op (← expr D false Γ Tc fuel) (← expr D false Γ Tc fuel)
+              return binop op (← expr D R false false Γ Tc fuel) (← expr D R false false Γ Tc fuel)
           | .unit =>
               let muts := indicesWhere Γ (fun b => b.mu)
               let drops := dropPlaces D Γ
               -- A dynamic-index write or `@drop`, one draw in four where the
               -- scope has a place below a dynamic index (`dynUnit`).
-              if let some e ← dynUnit D Γ 4 (fun Γ' T => expr D false Γ' T fuel) (fun Γ' T => expr D false Γ' T fuel) then
+              if let some e ← dynUnit D Γ 4 (fun Γ' T => expr D R false false Γ' T fuel) (fun Γ' T => expr D R false false Γ' T fuel) then
                 return e
               -- A `@drop` or an assignment *at a projection* is the shape this
               -- slice is about (§4.2's partial move), so it is drawn first.
@@ -1642,14 +1716,14 @@ def expr (D : Decls) : Bool → Scope → Ty → Nat → G Expr
                 let slots := assignSlots D i b.ty
                 if !slots.isEmpty && (← chance 1 2) then
                   let (pl, Tf) ← pick (.var i, b.ty) slots
-                  return assign pl (← expr D false Γ Tf fuel)
-                return assign (.var i) (← expr D false Γ b.ty fuel)
+                  return assign pl (← expr D R false false Γ Tf fuel)
+                return assign (.var i) (← expr D R false false Γ b.ty fuel)
               if ← chance 1 3 then
                 let To ← weighted (← intTy) [(3, ← intTy), (2, ← floatTy), (1, .bool)]
-                return dbg (← expr D false Γ To fuel)
+                return dbg (← expr D R false false Γ To fuel)
               if Γ.isEmpty && !D.structs.isEmpty then
                 let T₁ ← binderTy D
-                return seq (← expr D false Γ T₁ fuel) unitLit
+                return seq (← expr D R false false Γ T₁ fuel) unitLit
               leaf D Γ .unit 2
           | .struct s =>
               let uses := indicesWhere Γ (fun b => b.ty == .struct s)
@@ -1657,7 +1731,7 @@ def expr (D : Decls) : Bool → Scope → Ty → Nat → G Expr
               let projs := projPlaces D Γ (.struct s)
               if !projs.isEmpty && (← chance 1 3) then return use (← pickPlace (.var 0) projs)
               match D.structs[s]? with
-              | some sd => return mkStruct s (← sd.fields.mapM (fun T' => expr D false Γ T' fuel))
+              | some sd => return mkStruct s (← sd.fields.mapM (fun T' => expr D R false false Γ T' fuel))
               | none => return mkStruct s []
           | .array E n =>
               -- `atom`'s array draw one level up: a use of an array binder or
@@ -1668,8 +1742,8 @@ def expr (D : Decls) : Bool → Scope → Ty → Nat → G Expr
               if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
               let projs := projPlaces D Γ (.array E n)
               if !projs.isEmpty && (← chance 1 3) then return use (← pickPlace (.var 0) projs)
-              if E.mult D == .copy && (← chance 1 3) then return repeatArray E (← expr D false Γ E fuel) n
-              return mkArray E (← (List.replicate n E).mapM (fun T' => expr D false Γ T' fuel))
+              if E.mult D == .copy && (← chance 1 3) then return repeatArray E (← expr D R false false Γ E fuel) n
+              return mkArray E (← (List.replicate n E).mapM (fun T' => expr D R false false Γ T' fuel))
 
 /-- (helper) Every subexpression, the expression itself first. -/
 def subexprs : Expr → List Expr
@@ -1813,7 +1887,11 @@ def genCase (seed i : Nat) : G Corpus.Case := do
   let D ← genEnv D₁.enums.length nHolders D₁
   let depth ← weighted 3 [(4, 2), (3, 3)]
   let T ← resultTy D
-  let e ← expr D false [] T depth
+  let e ← expr D T false true [] T depth
+  -- One body in ten ends in a `return` of its value instead, `let r = e;
+  -- return r`: a return as the last form of the function body (RUE-2383),
+  -- drawn on the side stream (`side`).
+  let e ← if ← side (chance 1 10) then pure (letIn false e (ret (use (.var 0)))) else pure e
   return {
     name := s!"gen_{seed}_{i}",
     description := s!"Generated program {i} of seed {seed} ({D.structs.length} struct " ++
@@ -1825,6 +1903,6 @@ def genCase (seed i : Nat) : G Corpus.Case := do
 /-- (helper) `n` generated cases from `seed`, in order; a pure function of
 its arguments. -/
 def generate (n seed : Nat) : List Corpus.Case :=
-  ((List.range n).mapM (genCase seed)).run' (mkStdGen seed)
+  ((List.range n).mapM (genCase seed)).run' (mkStdGen seed, (stdSplit (mkStdGen seed)).2)
 
 end RueCore.Gen
