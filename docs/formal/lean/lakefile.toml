@@ -16,3 +16,7 @@ root = "RueCore.ExplainMain"
 name = "ruecore-digest"
 root = "RueCore.DigestMain"
 supportInterpreter = true
+
+[[lean_exe]]
+name = "ruecore-layers"
+root = "RueCore.LayersMain"
