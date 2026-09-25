@@ -3571,6 +3571,45 @@ mod tests {
         }
     }
 
+    /// An array literal whose position declares no type (an index base, an
+    /// `==` operand, an unannotated `let`, a comptime function's local, a
+    /// type constructor's argument) is never checked against the enclosing
+    /// constant's type (RUE-2407). These programs are valid and do not
+    /// reduce yet (the CLI corpus's `const_array_literal_context` cases are
+    /// their expected failures, RUE-2352 and RUE-2370); whatever they
+    /// report until then, it is not a type mismatch against that type.
+    #[test]
+    fn const_array_literal_outside_a_declared_position_is_not_a_type_mismatch() {
+        let cases = [
+            "const K: i32 = [40, 2][0] + [40, 2][1];\nfn main() -> i32 { K }\n",
+            "const K: bool = [1, 2][0] == 1;\nfn main() -> i32 { if K { 42 } else { 0 } }\n",
+            "const K: i32 = { let a = [40, 2]; a[0] + a[1] };\nfn main() -> i32 { K }\n",
+            "fn f(comptime n: i32) -> i32 { let a = [n, 2]; a[0] + a[1] }\n\
+             const K: i32 = f(40);\nfn main() -> i32 { K }\n",
+            "fn Arr(comptime n: usize) -> type { struct { a: [i32; n] } }\n\
+             const T2 = Arr([2, 3][0]);\n\
+             fn main() -> i32 { let t = T2 { a: [40, 2] }; t.a[0] + t.a[1] }\n",
+        ];
+        for source in cases {
+            let sources = vec![SourceView::new("main.rue", source, FileId::new(1))];
+            let metadata =
+                SourceMetadata::from_sources(&sources, sources[0].file_id, AHashMap::new())
+                    .unwrap();
+            let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
+            let Err(errors) = compile_snapshot(&snapshot, &CompileOptions::default()) else {
+                continue;
+            };
+            for error in errors.iter() {
+                assert_ne!(
+                    error.kind.code().to_string(),
+                    "E0206",
+                    "an undeclared array literal was checked against the constant's type: \
+                     {error}\n{source}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn canonical_batch_output_is_stable_for_relocated_import_graph() {
         let snapshot = |root: FileId, helper: FileId, directory: &str, reversed: bool| {

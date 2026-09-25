@@ -1,0 +1,68 @@
+# Array literals in a constant initializer whose position declares no type
+# (RUE-2407).
+#
+# An array literal that is indexed, compared, bound by an unannotated `let`
+# or local to a comptime function takes no type from the constant's
+# declared type: it is never checked against it (no false E0206 "expected
+# i32, found [{integer}; 2]"). The body path accepts every program below,
+# but the declaration-time evaluator does not reduce them yet: it types such
+# an array from its elements, as `i64`, or from an enclosing type that does
+# not fit, and reports E1200. Each case asserts the value the program has
+# and is an expected failure until its issue is fixed.
+
+[section]
+id = "cli.const_array_literal_context"
+name = "Const-initializer array literals outside a declared position"
+description = "Indexed, compared, let-bound and comptime-local array literals in const initializers reduce to the body path's value (RUE-2407; xfail RUE-2352, RUE-2370)."
+
+[[case]]
+name = "indexed_array_literal_reduces"
+description = "An indexed array literal in an i32 constant's initializer reduces."
+known_bug = "RUE-2370"
+files = [{ path = "main.rue", source = """
+const K: i32 = [40, 2][0] + [40, 2][1];
+fn main() -> i32 { K }
+""" }]
+exit_code = 42
+
+[[case]]
+name = "compared_array_literal_reduces"
+description = "An array literal operand of `==` in a bool constant's initializer reduces."
+known_bug = "RUE-2370"
+files = [{ path = "main.rue", source = """
+const K: bool = [1, 2][0] == 1;
+fn main() -> i32 { if K { 42 } else { 0 } }
+""" }]
+exit_code = 42
+
+[[case]]
+name = "unannotated_let_array_reduces"
+description = "An array literal bound by an unannotated `let` in a constant's initializer reduces."
+known_bug = "RUE-2352"
+files = [{ path = "main.rue", source = """
+const K: i32 = { let a = [40, 2]; a[0] + a[1] };
+fn main() -> i32 { K }
+""" }]
+exit_code = 42
+
+[[case]]
+name = "comptime_call_array_local_reduces"
+description = "An array local of a comptime function a constant calls reduces."
+known_bug = "RUE-2370"
+files = [{ path = "main.rue", source = """
+fn f(comptime n: i32) -> i32 { let a = [n, 2]; a[0] + a[1] }
+const K: i32 = f(40);
+fn main() -> i32 { K }
+""" }]
+exit_code = 42
+
+[[case]]
+name = "type_constructor_argument_array_reduces"
+description = "An indexed array literal in a type constructor's argument reduces."
+known_bug = "RUE-2370"
+files = [{ path = "main.rue", source = """
+fn Arr(comptime n: usize) -> type { struct { a: [i32; n] } }
+const T2 = Arr([2, 3][0]);
+fn main() -> i32 { let t = T2 { a: [40, 2] }; t.a[0] + t.a[1] }
+""" }]
+exit_code = 42
