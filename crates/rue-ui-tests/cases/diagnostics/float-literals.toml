@@ -540,3 +540,29 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0206", "expected finite f32 literal, found 1e39", "test.rue:2:40"]
+
+[[case]]
+name = "comptime_block_generic_call_argument_non_finite_literal_points_at_the_literal"
+description = "A float literal argument of a generic call in a `comptime {}` block that is not finite at the substituted parameter type is reported on the argument, as it is when a constant reduces the call (RUE-2406)."
+source = """
+fn id(comptime T: type, comptime v: T) -> T { v }
+fn main() -> i32 {
+    let a: f32 = comptime { id(f32, 1e39) };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found 1e39", "test.rue:3:37"]
+
+[[case]]
+name = "comptime_block_generic_call_result_non_finite_literal_points_at_the_literal"
+description = "A float literal a generic call in a `comptime {}` block returns at the substituted return type is reported on the literal in the callee, as it is when a constant reduces the call, not on the block (RUE-2406)."
+source = """
+fn mk(comptime T: type) -> T { 1e39 }
+fn main() -> i32 {
+    let a: f32 = comptime { mk(f32) };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found 1e39", "test.rue:1:32"]

@@ -4859,3 +4859,35 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+[[case]]
+name = "comptime_block_enum_payload_float_literal_not_finite_rejected"
+spec = ["3.12:10", "4.14:3"]
+description = "A float literal payload of an enum variant in a `comptime {}` block's value is held to the payload type's finite range, as the same variant written directly is: `comptime { E.A(1e39) }` with an `f32` payload is E0206, not a variant holding inf (RUE-2406)"
+source = """
+enum E { A(f32), B }
+fn main() -> i32 {
+    let e: E = comptime { E.A(1e39) };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found 1e39"]
+
+[[case]]
+name = "comptime_call_generic_array_argument_takes_the_substituted_element_type"
+spec = ["4.14:5", "4.14:3"]
+description = "A comptime argument is evaluated at its parameter's type with the call's type argument substituted, in a constant and in a `comptime {}` block: the array literal of `comptime v: [T; 1]` takes `T`'s element type, so `s(f32, [1.5])` and `s(i32, [7])` reduce rather than failing against the unsubstituted `T`, and `id(f32, 1.5 + 1.0)` does its arithmetic at f32 (RUE-2406)"
+source = """
+fn s(comptime T: type, comptime v: [T; 1]) -> T { v[0] }
+fn id(comptime T: type, comptime v: T) -> T { v }
+const A: f32 = s(f32, [1.5]);
+const B: i32 = s(i32, [7]);
+const E: f32 = id(f32, 1.5 + 1.0);
+fn main() -> i32 {
+    let c: f32 = comptime { s(f32, [2.5]) };
+    let d: i32 = comptime { s(i32, [35]) };
+    if A == 1.5 && c == 2.5 && E == 2.5 { B + d } else { 1 }
+}
+"""
+exit_code = 42
