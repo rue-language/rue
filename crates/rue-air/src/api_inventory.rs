@@ -3282,7 +3282,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         .find("fn try_eval_type_alias_init")
         .expect("pre-inference type-alias adapter");
     let alias_end = alias_source[alias_start..]
-        .find("/// Pre-reduce inline type-constructor heads")
+        .find("/// The `let` bindings a body's pre-inference walk resolved")
         .map(|offset| alias_start + offset)
         .expect("type-alias adapter boundary");
     let alias = &alias_source[alias_start..alias_end];
