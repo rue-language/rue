@@ -164,6 +164,16 @@ pub fn comptime_call_cycle_reason(name: &str) -> String {
     )
 }
 
+/// A dotted module path decoded by `ComptimeEngine::decode_module_path`:
+/// the accessing file, the module a local binding of the root holds (`None`
+/// when the root is a module binding of that file), and every segment,
+/// root included.
+struct DecodedModulePath<F, N, T> {
+    file: F,
+    root_module: Option<T>,
+    segments: Vec<N>,
+}
+
 /// Both operands of a binary arithmetic or ordering operation, classified by
 /// the value domain they were reduced to.
 enum ArithOperands<V> {
@@ -359,6 +369,13 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
     fn type_is_enum(&self, _ty: &Self::Type) -> bool {
         false
     }
+    /// Whether a type value is a module: a `let`-bound module (`let m =
+    /// @import("x.rue")`) reaches the engine as a module-typed substitution,
+    /// and a module path rooted at it resolves from that module (RUE-2426).
+    /// The default describes a domain without module-valued bindings.
+    fn type_is_module(&self, _ty: &Self::Type) -> bool {
+        false
+    }
     fn type_is_unsigned(&self, ty: &Self::Type) -> bool;
     fn type_integer_semantics(&self, ty: &Self::Type) -> Option<IntegerType>;
     /// The float width of `ty`, or `None` for a non-float type. The default
@@ -520,9 +537,13 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
         _name: Self::Name,
         span: Span,
     ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure>;
+    /// Resolve a decoded module type path. `root_module` is the module a
+    /// lexical binding of `segments[0]` holds, when the root is a local
+    /// module rather than a module binding of `file`.
     fn resolve_comptime_type_path(
         &mut self,
         file: Self::File,
+        root_module: Option<&Self::Type>,
         segments: &[Self::Name],
         span: Span,
     ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure>;
@@ -784,9 +805,12 @@ pub trait ComptimeValueAlgebra: ComptimeDomain {
 
 /// The ordered call lifecycle: admission, binding, preparation, completion.
 pub trait ComptimeCallProtocol: ComptimeDomain {
+    /// Resolve a callable through a decoded module path. `root_module` is as
+    /// for [`ComptimeHost::resolve_comptime_type_path`].
     fn resolve_module_comptime_callable(
         &mut self,
         file_id: Self::File,
+        root_module: Option<&Self::Type>,
         segments: &[Self::Name],
         method: Self::Name,
         span: Span,
@@ -2536,13 +2560,16 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         }
 
         let decoded = self.decode_module_path(receiver, env);
-        let Some((file_id, segments)) = decoded else {
+        let Some(path) = decoded else {
             return ComptimeOutcome::RuntimeDependent;
         };
-        let name = host_value!(
-            self.host
-                .resolve_module_comptime_callable(file_id, &segments, method, span)
-        );
+        let name = host_value!(self.host.resolve_module_comptime_callable(
+            path.file,
+            path.root_module.as_ref(),
+            &path.segments,
+            method,
+            span
+        ));
         let Some(name) = name else {
             return ComptimeOutcome::RuntimeDependent;
         };
@@ -2604,27 +2631,53 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     /// One decoder serves both consumers — a method call's receiver
     /// (`lib.nums.max(..)`) and a dotted type path (`std.strbuf.StrBuf`) — as
     /// they ask exactly the same question of exactly the same spine.
+    ///
+    /// A root bound to a module-typed substitution (`let m =
+    /// @import("x.rue")`, which the body's pre-inference walk binds that way)
+    /// is a local module: it shadows the file's bindings, and the host walks
+    /// the path from that module (spec 10.4:1, RUE-2426).
     fn decode_module_path(
         &self,
         inst_ref: InstRef,
         env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
-    ) -> Option<(H::File, Vec<H::Name>)> {
+    ) -> Option<DecodedModulePath<H::File, H::Name, H::Type>> {
         let spine = decode_module_spine(self.program_rir(), inst_ref)?;
         let root = self.name_from_rir(spine.root.into());
-        if env.locals.contains_key(&root)
-            || env
-                .local_binding_membership
-                .as_ref()
-                .and_then(|membership| membership(&root))
-                .is_some()
-            || env.is_runtime_local_name(&root)
-            || env.runtime_binding_names.contains(&root)
-            || env.type_subst.contains_key(&root)
-            || env.value_subst.contains_key(&root)
+        // The nearest lexical binding of the root, in the order name lookup
+        // consults them: a value local or runtime name shadows the file's
+        // bindings, and a type-valued binding does too unless it is a module.
+        // A runtime local may itself be a module, which body analysis
+        // reports through `local_module_membership`.
+        let lexical = if env.locals.contains_key(&root) {
+            Some(None)
+        } else if env.is_runtime_local_name(&root) || env.runtime_binding_names.contains(&root) {
+            Some(
+                env.local_module_membership
+                    .as_ref()
+                    .and_then(|membership| membership(&root)),
+            )
+        } else if let Some(binding) = env
+            .local_binding_membership
+            .as_ref()
+            .and_then(|membership| membership(&root))
         {
-            return None;
-        }
-        let file_id = env.defining_file.clone()?;
+            Some(match binding {
+                ComptimeLocalBinding::Type(ty) => Some(ty),
+                ComptimeLocalBinding::Runtime => None,
+            })
+        } else if let Some(ty) = env.type_subst.get(&root) {
+            Some(Some(ty.clone()))
+        } else if env.value_subst.contains_key(&root) {
+            Some(None)
+        } else {
+            None
+        };
+        let root_module = match lexical {
+            Some(Some(ty)) if self.host.type_is_module(&ty) => Some(ty),
+            Some(_) => return None,
+            None => None,
+        };
+        let file = env.defining_file.clone()?;
         let mut segments = Vec::with_capacity(spine.fields.len() + 1);
         segments.push(root);
         segments.extend(
@@ -2633,7 +2686,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 .into_iter()
                 .map(|field| self.name_from_rir(field.into())),
         );
-        Some((file_id, segments))
+        Some(DecodedModulePath {
+            file,
+            root_module,
+            segments,
+        })
     }
 
     /// Evaluate both operands of an arithmetic or ordering operation and
@@ -5066,10 +5123,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 if let Some(value) = env.const_module_members.get(&inst_ref) {
                     return ComptimeOutcome::Known(value.clone());
                 }
-                if let Some((file, segments)) = self.decode_module_path(inst_ref, env) {
-                    if let Some(value) =
-                        host_value!(self.host.resolve_comptime_type_path(file, &segments, span))
-                    {
+                if let Some(path) = self.decode_module_path(inst_ref, env) {
+                    if let Some(value) = host_value!(self.host.resolve_comptime_type_path(
+                        path.file,
+                        path.root_module.as_ref(),
+                        &path.segments,
+                        span
+                    )) {
                         return ComptimeOutcome::Known(value);
                     }
                 }

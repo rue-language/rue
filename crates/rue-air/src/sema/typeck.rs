@@ -224,6 +224,24 @@ impl<H: TypeSyntaxHost> crate::SemanticModulePathProvider<FileId, crate::types::
     type Abort = Infallible;
     type Failure = CompileError;
 
+    /// A body's `let`-bound module reaches type resolution as a module-typed
+    /// substitution (see `OrdinaryBodyEngine::resolve_rir_type_with_ctx`), so
+    /// `let b: m.S` and `m.Option(u64)` resolve through the local exactly as
+    /// through a file-level `const m` (spec 10.4:1, RUE-2426).
+    fn local_module_root(
+        &mut self,
+        _scope: &FileId,
+        name: &str,
+    ) -> Option<crate::SemanticResolvedModule<crate::types::ModuleId, FileId>> {
+        let substitutions = self.state.type_substitutions.as_ref()?;
+        let symbol = self.host.type_syntax_symbol(name);
+        let module = substitutions.get(&symbol)?.as_module()?;
+        Some(crate::SemanticResolvedModule {
+            module,
+            site: self.state.root_authority.file(),
+        })
+    }
+
     fn root_module_binding(
         &mut self,
         _scope: &FileId,
@@ -282,11 +300,14 @@ impl<H: TypeSyntaxHost>
             return Ok(None);
         }
         let symbol = self.host.type_syntax_symbol(name);
+        // A module-typed substitution is a local module binding, which is a
+        // path root and never a type itself.
         Ok(self
             .state
             .type_substitutions
             .as_ref()
-            .and_then(|substitutions| substitutions.get(&symbol).copied()))
+            .and_then(|substitutions| substitutions.get(&symbol).copied())
+            .filter(|ty| ty.as_module().is_none()))
     }
 
     fn primitive_type(&mut self, name: &str) -> SemaProviderResult<Option<Type>> {

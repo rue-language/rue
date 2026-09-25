@@ -1603,6 +1603,7 @@ impl ComptimeTypeAlgebra for FakeHost {
     fn resolve_comptime_type_path(
         &mut self,
         _file: Self::File,
+        _root_module: Option<&Self::Type>,
         _segments: &[Self::Name],
         _span: Span,
     ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
@@ -1867,6 +1868,7 @@ impl ComptimeCallProtocol for FakeHost {
     fn resolve_module_comptime_callable(
         &mut self,
         _file_id: Self::File,
+        _root_module: Option<&Self::Type>,
         _segments: &[Self::Name],
         method: Self::Name,
         _span: Span,

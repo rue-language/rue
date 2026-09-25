@@ -55,6 +55,7 @@ use rue_rir::{InstData, InstRef};
 use rue_span::{FileId, Span};
 
 use super::aggregate_resolution::decode_module_spine;
+use super::analysis::LocalModuleScope;
 use super::comptime::{
     COMPTIME_MATCH_NO_SELECTED_ARM, ComptimeAnonymousKind, ComptimeArgMode,
     ComptimeArrayLengthBinding, ComptimeCallAdmission, ComptimeCallArgument, ComptimeCallKey,
@@ -430,6 +431,15 @@ impl<'a>
             })),
             local_binding_membership: None,
             local_binding_capture: None,
+            local_module_membership: Some(std::sync::Arc::new({
+                let locals = &ctx.locals;
+                move |name: &Spur| {
+                    locals
+                        .get(name)
+                        .and_then(|local| local.ty.as_module())
+                        .map(Type::new_module)
+                }
+            })),
             runtime_binding_names: ctx.params.iter().map(|param| param.name).collect(),
             locals: AHashMap::new(),
             const_module_members: AHashMap::new(),
@@ -1094,12 +1104,35 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     fn resolve_module_comptime_callable(
         &mut self,
         file_id: FileId,
+        root_module: Option<Type>,
         segments: &[Spur],
         method: Spur,
         span: Span,
     ) -> CompileResult<Option<Spur>> {
         let recv_name = segments[0];
-        let module_file_id = if segments.len() == 1 {
+        let module_file_id = if let Some(root_module) = root_module {
+            // A `let`-bound module root: the remaining segments are members
+            // of that module, walked by the same canonical per-hop loop.
+            let Some(module) = root_module.as_module() else {
+                return Ok(None);
+            };
+            if segments.len() == 1 {
+                self.module_def(module).file_id
+            } else {
+                let segment_strings: Vec<String> = segments[1..]
+                    .iter()
+                    .map(|s| self.body_interner().resolve(s).to_owned())
+                    .collect();
+                let segments: Vec<&str> = segment_strings.iter().map(String::as_str).collect();
+                let Some((_, Some(module_file_id), _)) = self
+                    .resolve_type_module_prefix_from(file_id, Some(module), &segments, span)
+                    .ok()
+                else {
+                    return Ok(None);
+                };
+                module_file_id
+            }
+        } else if segments.len() == 1 {
             // Resolve through the declaration namespace, not the raw binding
             // table: while declarations are being bound, the defining file's
             // import constant may not be collected yet. A struct field like
@@ -1178,18 +1211,35 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     fn resolve_comptime_type_path(
         &mut self,
         root_file: FileId,
+        root_module: Option<Type>,
         segments: &[Spur],
         span: Span,
     ) -> CompileResult<Option<ConstValue>> {
         // The engine has already decoded the RIR spine and applied lexical
         // shadowing. This hook performs only declaration/type resolution on
         // the copied semantic path facts.
+        let Some(&segments_root) = segments.first() else {
+            return Ok(None);
+        };
         let segment_strings: Vec<String> = segments
             .iter()
             .map(|s| self.body_interner().resolve(s).to_owned())
             .collect();
         let segments: Vec<&str> = segment_strings.iter().map(String::as_str).collect();
-        match self.resolve_qualified_type_name_in_file(root_file, &segments, span) {
+        // A `let`-bound module root reaches type resolution as a
+        // module-typed substitution of the root's name, as a local module
+        // does in a type annotation (RUE-2426).
+        let local_module = root_module.map(|module| {
+            let mut substitutions = AHashMap::new();
+            substitutions.insert(segments_root, module);
+            substitutions
+        });
+        match self.resolve_qualified_type_name_in_file(
+            root_file,
+            &segments,
+            local_module.as_ref(),
+            span,
+        ) {
             Ok(ty) => Ok(Some(ConstValue::Type(ty))),
             // An unknown member / non-module base is simply not a type path
             // here; defer to the caller (a genuine runtime field access, or the
@@ -2114,12 +2164,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let eval_values: AHashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
         let mut runtime_bindings: AHashSet<Spur> = runtime_params.iter().copied().collect();
         let mut root_frame = Vec::new();
+        let mut local_modules = LocalModuleScope::default();
         self.walk_comptime_type_locals(
             body,
             &mut discovered,
             &mut eval_types,
             &eval_values,
             &mut runtime_bindings,
+            &mut local_modules,
             &mut root_frame,
             &mut attribution,
         )?;
@@ -2134,6 +2186,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// and the block arm unwinds its frame (in reverse, RUE-522-style) when
     /// its statements are done, restoring `eval_types` to the enclosing
     /// scope's view.
+    ///
+    /// A `let` whose initializer names a module (`let m = @import("x.rue")`,
+    /// `let m = lib`) binds `m` in `eval_types` as that module's type, the
+    /// module in `local_modules` resolved by the same walk the generic-call
+    /// gate uses. Type resolution and the comptime engine resolve a path
+    /// rooted at a module-typed binding from that module, so `let b: m.S`
+    /// and the heads `m.Option(u64)` and `let T = m.Option(u64)` reduce here
+    /// as they do through a file-level `const m` (10.4:1, RUE-2426).
+    #[allow(clippy::too_many_arguments)]
     fn walk_comptime_type_locals(
         &mut self,
         inst_ref: InstRef,
@@ -2141,6 +2202,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         eval_types: &mut AHashMap<Spur, Type>,
         eval_values: &AHashMap<Spur, ConstValue>,
         runtime_bindings: &mut AHashSet<Spur>,
+        local_modules: &mut LocalModuleScope,
         frame: &mut Vec<(Spur, Option<Type>, bool)>,
         attribution: &mut ComptimePrecomputeAttribution,
     ) -> CompileResult<()> {
@@ -2167,11 +2229,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         eval_types,
                         eval_values,
                         runtime_bindings,
+                        local_modules,
                         &mut inner_frame,
                         attribution,
                     )?;
                 }
                 for (name, old_type, was_runtime) in inner_frame.into_iter().rev() {
+                    local_modules.unbind(name);
                     match old_type {
                         Some(ty) => eval_types.insert(name, ty),
                         None => eval_types.remove(&name),
@@ -2215,10 +2279,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     eval_types,
                     eval_values,
                     runtime_bindings,
+                    local_modules,
                     frame,
                     attribution,
                 )?;
                 if let Some(name) = name {
+                    self.bind_local_module(inst_ref, local_modules);
+                    if let Some(Some(module)) = local_modules.lookup(name) {
+                        let module = Type::new_module(module);
+                        let old_type = eval_types.insert(name, module);
+                        let was_runtime = runtime_bindings.remove(&name);
+                        frame.push((name, old_type, was_runtime));
+                        discovered.local_modules.insert(inst_ref, module);
+                        return Ok(());
+                    }
                     let alias = if initializer_may_evaluate_to_type_with_bindings(
                         self.body_rir_ref(),
                         init,
@@ -2277,6 +2351,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         eval_types,
                         eval_values,
                         runtime_bindings,
+                        local_modules,
                         frame,
                         attribution,
                     )?;
@@ -2419,6 +2494,10 @@ pub(crate) struct PrecomputedTypeLocals {
     /// Local annotations resolved in their lexical and specialization context:
     /// the concrete expected type for the binding's initializer.
     pub(crate) local_annotations: AHashMap<InstRef, Type>,
+    /// `let` bindings whose initializer names a module (`let m =
+    /// @import("x.rue")`): the module's type, which a path rooted at the
+    /// binding resolves from (RUE-2426).
+    pub(crate) local_modules: AHashMap<InstRef, Type>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2898,6 +2977,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
     fn type_is_enum(&self, ty: &Type) -> bool {
         ty.is_enum()
     }
+    fn type_is_module(&self, ty: &Type) -> bool {
+        ty.as_module().is_some()
+    }
     fn type_is_unsigned(&self, ty: &Type) -> bool {
         ty.is_unsigned()
     }
@@ -2974,11 +3056,18 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
     fn resolve_comptime_type_path(
         &mut self,
         file: FileId,
+        root_module: Option<&Type>,
         segments: &[Spur],
         span: Span,
     ) -> ComptimeHostResult<Option<ConstValue>, Self::Failure> {
-        OrdinaryBodyEngine::resolve_comptime_type_path(self, file, segments, span)
-            .map_err(Into::into)
+        OrdinaryBodyEngine::resolve_comptime_type_path(
+            self,
+            file,
+            root_module.copied(),
+            segments,
+            span,
+        )
+        .map_err(Into::into)
     }
     fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
         &mut self,
@@ -3404,12 +3493,20 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeCallProtocol for OrdinaryBodyEngin
     fn resolve_module_comptime_callable(
         &mut self,
         file: FileId,
+        root_module: Option<&Type>,
         segments: &[Spur],
         method: Spur,
         span: Span,
     ) -> ComptimeHostResult<Option<Spur>, Self::Failure> {
-        OrdinaryBodyEngine::resolve_module_comptime_callable(self, file, segments, method, span)
-            .map_err(Into::into)
+        OrdinaryBodyEngine::resolve_module_comptime_callable(
+            self,
+            file,
+            root_module.copied(),
+            segments,
+            method,
+            span,
+        )
+        .map_err(Into::into)
     }
     fn admit_comptime_call(
         &mut self,
