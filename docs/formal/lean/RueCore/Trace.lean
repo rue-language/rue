@@ -105,12 +105,14 @@ def Fresh (H H' : Store) : List Nat := List.range' H.length (H'.length - H.lengt
 /-! ## The trace's projections -/
 
 /-- The owned identities a `drop` or `dropTemp` marker frees: the whole tree
-§6.11's walk goes through. A destructor event frees nothing of its own — it is
-nested under a marker, or under a destructure's residue drop — and a `@dbg`
-frees nothing (helper). -/
+§6.11's walk goes through — and the shell a `consume` event ends (RUE-2427),
+whose members were already moved out or dropped. A destructor event frees
+nothing of its own — it is nested under a marker — and a `@dbg` frees nothing
+(helper). -/
 def Event.freed (D : Decls) : Event → List Nat
   | .drop _ c => c.own D
   | .dropTemp v => v.own D
+  | .consume c => c.own D
   | .dtor _ _ | .dbg _ => []
 
 /-- The identity of the value a user destructor ran on (§6.11, `3.9:28`) —
@@ -748,7 +750,8 @@ with a binding's `drop` marker or a temporary's `dropTemp` marker on top, and
 a `@dbg` projects to nothing. `freedIds` and `dtorIds` are the two projections
 §7's bullet is about (`freed_measure`, `dtor_measure`) (helper). -/
 structure TraceMeasure (D : Decls) (F : Event → List Nat) : Prop where
-  /-- §6.11's walk, with no marker: a destructure's residue drop (§6.3). -/
+  /-- §6.11's walk, with no marker: a destructure's `Copy` residue subtree
+  (§6.3), which `residueMark` gives no marker. -/
   walk : ∀ {c : Contents} {evs : List Event}, c.copyClosed D = true →
     dropContents D c = .ok evs → IdLe (evs.flatMap F) (c.own D)
   /-- A binding's drop: its `drop ℓ c` marker, then the walk (§6.11). -/
@@ -757,6 +760,8 @@ structure TraceMeasure (D : Decls) (F : Event → List Nat) : Prop where
   /-- A discarded temporary: its `dropTemp v` marker, then the walk (§6.7). -/
   temp : ∀ {v : Val} {evs : List Event}, (Contents.ofVal v).copyClosed D = true →
     dropContents D (Contents.ofVal v) = .ok evs → IdLe (F (.dropTemp v) ++ evs.flatMap F) (v.own D)
+  /-- A consumption ends at most its shell (RUE-2427). -/
+  consume : ∀ c, IdLe (F (.consume c)) (c.own D)
   /-- `@dbg` frees nothing. -/
   dbg : ∀ v, F (.dbg v) = []
 
@@ -766,6 +771,7 @@ theorem freed_measure (D : Decls) : TraceMeasure D (Event.freed D) where
   walk := fun _ h a => by rw [dropContents_freed h]; simp
   marker := fun _ h a => by rw [List.count_append, dropContents_freed h]; simp [Event.freed]
   temp := fun _ h a => by rw [List.count_append, dropContents_freed h]; simp [Event.freed]
+  consume := fun _ a => by simp [Event.freed]
   dbg := fun _ => rfl
 
 /-- **`dtorIds` is countable**: a destructor runs on an owned node of the
@@ -776,6 +782,7 @@ theorem dtor_measure {D : Decls} (hdt : DtorNotCopy D) : TraceMeasure D Event.dt
     simpa [Event.dtorIds, dtorIds] using dropContents_dtor hdt a hc h
   temp := fun hc h a => by
     simpa [Event.dtorIds, dtorIds] using dropContents_dtor hdt a hc h
+  consume := fun _ a => by simp [Event.dtorIds]
   dbg := fun _ => rfl
 
 /-- A binding's drop (`dropCell`, §6.11), counted: nothing for a `Copy` cell,
@@ -844,10 +851,23 @@ theorem unwindLocs_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasu
           simp only [List.flatMap_append, List.count_append]
           omega
 
+/-- One residue subtree's drop — its marker (`residueMark`), then §6.11's
+walk — counted (helper). -/
+theorem residueMark_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
+    {ℓ : Nat} {r : Contents} {evs : List Event} (hcc : r.copyClosed D = true)
+    (h : dropContents D r = .ok evs) :
+    IdLe ((residueMark D ℓ r ++ evs).flatMap F) (r.own D) := by
+  unfold residueMark
+  split
+  · simpa using hF.walk hcc h
+  · intro a
+    have := hF.marker (ℓ := ℓ) hcc h a
+    simpa using this
+
 /-- `drop*` over a destructure's residue (§6.3), counted (helper). -/
-theorem dropResidue_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F) :
-    ∀ {rs : List Contents} {evs : List Event}, Contents.copyClosedList D rs = true →
-      dropResidue D rs = .ok evs → IdLe (evs.flatMap F) (Contents.ownList D rs)
+theorem dropResidue_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
+    {ℓ : Nat} : ∀ {rs : List Contents} {evs : List Event}, Contents.copyClosedList D rs = true →
+      dropResidue D ℓ rs = .ok evs → IdLe (evs.flatMap F) (Contents.ownList D rs)
   | [], _, _, h => by simp [dropResidue] at h; subst h; intro a; simp
   | r :: rs, evs, hcc, h => by
       simp only [Contents.copyClosedList, Bool.and_eq_true] at hcc
@@ -862,9 +882,9 @@ theorem dropResidue_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeas
           · rename_i e₂ h₂
             cases h
             intro a
-            have := hF.walk hcc.1 h₁ a
+            have := residueMark_measure hF (ℓ := ℓ) hcc.1 h₁ a
             have := dropResidue_measure hF hcc.2 h₂ a
-            simp only [List.flatMap_append, List.count_append, Contents.ownList]
+            simp only [List.flatMap_append, List.count_append, Contents.ownList] at *
             omega
 
 /-! ## §6.3's `split`, counted -/
@@ -1010,12 +1030,98 @@ theorem Contents.splitFields_own {D : Decls} (a : Nat) : ∀ (cs : List Contents
         omega
 end
 
-/-- **§6.3's `destructure`, counted**: the leaf it hands on and the residue
-drops it runs together account for at most what the consumed place owned
-(helper). -/
+/-- `skelFields` keeps the member count (helper). -/
+theorem Contents.skelFields_length : ∀ (cs : List Contents) (f : Nat) (π : List Nat),
+    (Contents.skelFields cs f π).length = cs.length
+  | [], _, _ => by simp [Contents.skelFields]
+  | c :: cs, 0, π => by simp [Contents.skelFields]
+  | c :: cs, f + 1, π => by simp [Contents.skelFields, Contents.skelFields_length cs f π]
+
+/-- A list of `⊘`s owns nothing (helper). -/
+theorem Contents.ownList_holes {α : Type} (D : Decls) :
+    ∀ cs : List α, Contents.ownList D (cs.map fun _ => .hole) = []
+  | [] => rfl
+  | _ :: cs => by simp [Contents.ownList, Contents.own, Contents.ownList_holes D cs]
+
+mutual
+/-- **`split` and the consumed shell, counted exactly** (§6.3, RUE-2427): the
+leaf, the residue and the path's shell (`Contents.skeleton`) together own
+exactly what the consumed place owned — every owned node of it is in exactly
+one of the three (helper). -/
+theorem Contents.skeleton_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c leaf : Contents}
+    {rs : List Contents}, c.copyClosed D = true → c.splitResidue D π = .ok (leaf, rs) →
+    (leaf.own D).count a + (Contents.ownList D rs).count a + ((c.skeleton π).own D).count a
+      = (c.own D).count a
+  | [], c, leaf, rs, _, hs => by
+      simp [Contents.splitResidue] at hs; obtain ⟨rfl, rfl⟩ := hs
+      simp [Contents.skeleton, Contents.own, Contents.ownList]
+  | f :: π, c, leaf, rs, h, hs => by
+      cases c with
+      | struct s i cs =>
+          simp only [Contents.splitResidue] at hs
+          simp only [Contents.copyClosed] at h
+          split at h
+          · rename_i hc
+            obtain ⟨hl, hr⟩ := Contents.splitFields_allCopy cs f π h hs
+            simp [Contents.skeleton, Contents.own, hc, Contents.allCopy_own hl,
+              Contents.allCopyList_own hr]
+          · rename_i hc
+            have := Contents.skelFields_own a cs f π h hs
+            simp only [Contents.skeleton, Contents.own, if_neg hc, List.count_cons]
+            omega
+      | array T i cs =>
+          simp only [Contents.splitResidue] at hs
+          simp only [Contents.copyClosed] at h
+          split at h
+          · rename_i hc
+            obtain ⟨hl, hr⟩ := Contents.splitFields_allCopy cs f π h hs
+            simp [Contents.skeleton, Contents.own, Contents.skelFields_length, hc,
+              Contents.allCopy_own hl, Contents.allCopyList_own hr]
+          · rename_i hc
+            have := Contents.skelFields_own a cs f π h hs
+            simp only [Contents.skeleton, Contents.own, Contents.skelFields_length, if_neg hc,
+              List.count_cons]
+            omega
+      | _ => simp [Contents.splitResidue] at hs
+
+/-- The same at `split`'s member step (helper). -/
+theorem Contents.skelFields_own {D : Decls} (a : Nat) : ∀ (cs : List Contents) (f : Nat)
+    (π : List Nat) {leaf : Contents} {rs : List Contents},
+    Contents.copyClosedList D cs = true → Contents.splitFields D cs f π = .ok (leaf, rs) →
+    (leaf.own D).count a + (Contents.ownList D rs).count a
+        + (Contents.ownList D (Contents.skelFields cs f π)).count a
+      = (Contents.ownList D cs).count a
+  | [], _, _, _, _, _, hs => by simp [Contents.splitFields] at hs
+  | c :: cs, 0, π, leaf, rs, h, hs => by
+      simp only [Contents.copyClosedList, Bool.and_eq_true] at h
+      simp only [Contents.splitFields] at hs
+      split at hs
+      · cases hs
+      · rename_i leaf' inner hsr
+        cases hs
+        have := Contents.skeleton_own a π h.1 hsr
+        simp only [Contents.skelFields, Contents.ownList, Contents.ownList_append,
+          Contents.ownList_holes, List.count_append, List.count_nil]
+        omega
+  | c :: cs, f + 1, π, leaf, rs, h, hs => by
+      simp only [Contents.copyClosedList, Bool.and_eq_true] at h
+      simp only [Contents.splitFields] at hs
+      split at hs
+      · cases hs
+      · rename_i leaf' rest hsf
+        cases hs
+        have := Contents.skelFields_own a cs f π h.2 hsf
+        simp only [Contents.skelFields, Contents.ownList, Contents.own, List.count_append,
+          List.count_nil, List.nil_append]
+        omega
+end
+
+/-- **§6.3's `destructure`, counted**: the leaf it hands on, the residue drops
+it runs and the shell it consumes together account for at most what the
+consumed place owned (helper). -/
 theorem Contents.destructure_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
-    {cd leaf : Contents} {πs : List Nat} {evs : List Event} (hcc : cd.copyClosed D = true)
-    (h : cd.destructure D πs = .ok (leaf, evs)) :
+    {ℓ : Nat} {cd leaf : Contents} {πs : List Nat} {evs : List Event}
+    (hcc : cd.copyClosed D = true) (h : cd.destructure D ℓ πs = .ok (leaf, evs)) :
     (∀ a, (leaf.own D).count a + (evs.flatMap F).count a ≤ (cd.own D).count a) ∧
       leaf.copyClosed D = true := by
   unfold Contents.destructure at h
@@ -1029,8 +1135,11 @@ theorem Contents.destructure_measure {D : Decls} {F : Event → List Nat} (hF : 
       have hl := (Contents.splitResidue_own 0 πs hcc hs).2.1
       have hr := (Contents.splitResidue_own 0 πs hcc hs).2.2
       refine ⟨fun a => ?_, hl⟩
-      have := (Contents.splitResidue_own a πs hcc hs).1
+      have := Contents.skeleton_own a πs hcc hs
       have := dropResidue_measure hF hr hd a
+      have := hF.consume (cd.skeleton πs) a
+      simp only [List.flatMap_append, List.flatMap_cons, List.flatMap_nil, List.append_nil,
+        List.count_append] at *
       omega
 
 /-! ## The conservation law's promise about one evaluation -/
@@ -1350,6 +1459,28 @@ theorem Contents.enum_payload {D : Decls} {e k i : Nat} {cs : List Contents}
   · rename_i hc
     refine ⟨by simp [Contents.own, hc, List.count_cons], h⟩
 
+/-- **(D-Match)'s consumption, counted** (RUE-2427): the payload the arm's cells
+receive and the shell `matchConsume` ends together account for at most the
+scrutinee — the payload moves, the shell ends, nothing is duplicated
+(helper). -/
+theorem matchConsume_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
+    {e k i : Nat} {vs : List Val} (h : (Contents.enum e k i (Contents.ofVals vs)).copyClosed D = true)
+    (a : Nat) :
+    (Contents.ownList D (Contents.ofVals vs)).count a + ((matchConsume D e k i vs).flatMap F).count a
+      ≤ ((Contents.enum e k i (Contents.ofVals vs)).own D).count a := by
+  unfold matchConsume
+  simp only [Contents.copyClosed] at h
+  split
+  · rename_i hc
+    rw [if_pos hc] at h
+    simp [Contents.allCopyList_own h]
+  · rename_i hc
+    have := hF.consume (.enum e k i (vs.map fun _ => .hole)) a
+    simp only [Contents.own, if_neg hc, Contents.ownList_holes, List.count_cons,
+      List.count_nil] at this ⊢
+    simp only [List.flatMap_cons, List.flatMap_nil, List.append_nil]
+    omega
+
 /-- **Aggregate introduction, as a ledger** (`introVal`): the new value owns at
 most its members and the one identity just minted, which is the one index the
 store grew by (helper). -/
@@ -1469,7 +1600,7 @@ residue dropped together account for the consumed place, which becomes `⊘`
 theorem Cons.destructure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
     {H : Store} {X : List Nat} {ℓ : Nat} {c c' cd leaf : Contents} {πd πs : List Nat}
     {v : Val} {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
-    (hr : c.readAt πd = .ok cd) (hd : cd.destructure D πs = .ok (leaf, evs))
+    (hr : c.readAt πd = .ok cd) (hd : cd.destructure D ℓ πs = .ok (leaf, evs))
     (hv : leaf.toVal = some v) (hw : c.writeAt πd .hole = some c') :
     Cons D F H X (.ok (H.set ℓ (.full c')) v evs) := by
   have hccc := hcc ℓ c hc
@@ -1508,7 +1639,7 @@ leaf, then `⊘` at the consumed place (helper). -/
 theorem Cons.dropDeclared {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
     {H : Store} {X : List Nat} {ℓ : Nat} {c c' cd leaf : Contents} {πd πs : List Nat}
     {evs levs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
-    (hr : c.readAt πd = .ok cd) (hd : cd.destructure D πs = .ok (leaf, evs))
+    (hr : c.readAt πd = .ok cd) (hd : cd.destructure D ℓ πs = .ok (leaf, evs))
     (hl : dropCell D ℓ leaf = .ok levs) (hw : c.writeAt πd .hole = some c') :
     Cons D F H X (.ok (H.set ℓ (.full c')) .unit (evs ++ levs)) := by
   have hccc := hcc ℓ c hc
@@ -1669,8 +1800,10 @@ theorem eval_conserves (M : FloatOps) {P : Program} {F : Event → List Nat}
     | dbg e₁ =>
         simp only [eval]
         refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ _ hc₁ _ => ?_)
-        refine ⟨Nat.le_refl _, hc₁, rfl, fun a => ?_⟩
-        simp [hF.dbg]
+        split
+        · refine ⟨Nat.le_refl _, hc₁, rfl, fun a => ?_⟩
+          simp [hF.dbg]
+        · trivial
     | mkStruct s args =>
         simp only [eval]
         have ka := hargs H args hcc
@@ -1713,17 +1846,16 @@ theorem eval_conserves (M : FloatOps) {P : Program} {F : Event → List Nat}
           · trivial
           · rename_i body harm
             have hpay := Contents.enum_payload hv
-            refine Cons.shift (H₁ := (mintParams H₀ vs).1) (Y := []) ?_ ?_ ?_
+            refine Cons.prefix (H₁ := (mintParams H₀ vs).1) (Y := []) ?_ ?_ ?_
             · rw [mintParams_length]; omega
             · intro a
-              have := (hpay a).1
+              have := matchConsume_measure hF hv a
               rw [storeOwn_mintParams]
               simp only [List.count_append, List.count_nil]
               show _ ≤ _ + ((Contents.enum e k i (Contents.ofVals vs)).own P.decls).count a + _
               omega
-            · refine Cons.bind (ih _ _ body (hc₀.mintParams (hpay 0).2))
-                (fun H₂ v₂ _ _ hc₂ hv₂ => ?_)
-              exact Cons.unwind hF hc₂ hv₂
+            · exact Cons.bind (ih _ _ body (hc₀.mintParams (hpay 0).2))
+                (fun H₂ v₂ _ _ hc₂ hv₂ => Cons.unwind hF hc₂ hv₂)
         | _ => trivial
     | mkArray T args =>
         simp only [eval]
@@ -1953,11 +2085,12 @@ theorem eval_conserves (M : FloatOps) {P : Program} {F : Event → List Nat}
         simp only [eval]
         have hb := ih H φ e₁ hcc
         split
-        · rename_i H₁ v tr hr
+        · rename_i H₁ tr hr
           rw [hr] at hb
           obtain ⟨l, c, _, i⟩ := hb
           exact Cons.prefix (Y := []) l (fun a => by have := i a; simp at *; omega)
             (ih H₁ φ (.loop e₁) c)
+        · trivial
         · rename_i H₁ sc tr hr
           rw [hr] at hb
           obtain ⟨l, c, i⟩ := hb

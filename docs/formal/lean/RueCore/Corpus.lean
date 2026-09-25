@@ -957,7 +957,8 @@ def dtorLine : Contents → Option String
 /-- One stdout line per *observable* event, in trace order. Two events are
 observable in Rue: a user destructor (`Print.lean`) and `@dbg` (§6.12's
 observable output). `drop ℓ v` and `dropTemp v` mark where a drop starts
-(§6.11, §6.7) and a drop with no destructor inside it prints nothing. Because
+(§6.11, §6.7), `consume c` marks where a matched or destructured shell ends
+(RUE-2427), and a drop with no destructor inside it prints nothing. Because
 both channels are read off the one trace, a `@dbg` line between two drops
 comes out between them. The projection is total and never panics — an event
 with no line is simply absent from stdout — so no export can be aborted by a
@@ -965,7 +966,7 @@ shape this function did not expect. -/
 def eventLine : Event → Option String
   | .dtor _ v => dtorLine v
   | .dbg v => dbgLine v
-  | .drop _ _ | .dropTemp _ => none
+  | .drop _ _ | .dropTemp _ | .consume _ => none
 
 /-- The lines `main` shows for the program's value (`Print.observeValue`): a
 scalar prints itself, `()` prints nothing, and a struct or enum value is dropped

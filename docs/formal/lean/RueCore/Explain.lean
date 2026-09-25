@@ -310,11 +310,13 @@ def fnHeader (i : Nat) (fd : FnDef) : String :=
 
 /-- (helper) One drop event (§6.7/§6.8/§6.9/§6.11): where a drop starts, and
 each user destructor it runs — the one event a printed Rue program can
-observe (`Print.lean`). -/
+observe (`Print.lean`) — and where a matched or destructured shell is
+consumed (RUE-2427). -/
 def eventLine : Event → String
   | .drop ℓ c => "drop " ++ locName ℓ ++ " = " ++ contentsLine c
   | .dropTemp v => "drop temporary " ++ valLine v
   | .dtor s c => "run drop fn " ++ Print.tyName (.struct s) ++ "(" ++ contentsLine c ++ ")"
+  | .consume c => "consume " ++ contentsLine c
   | .dbg v => "@dbg prints " ++ valLine v
 
 /-- (helper) A node's events on one line; most nodes emit none. -/
@@ -2442,7 +2444,7 @@ def traceEval (M : FloatOps) (P : Program) :
             (match c.readAt πd with
              | .error w => refused [] d Θ R (.use pl) "(D-Use-Declared-Linear) §6.3" H w
              | .ok cd =>
-               match cd.destructure P.decls πs with
+               match cd.destructure P.decls ℓ πs with
                | .error w => refused [] d Θ R (.use pl) "(D-Use-Declared-Linear) §6.3" H w
                | .ok (leaf, evs) =>
                  match leaf.toVal with
@@ -2486,7 +2488,7 @@ def traceEval (M : FloatOps) (P : Program) :
              | .error w =>
                  refused [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)" H w
              | .ok cd =>
-               match cd.destructure P.decls πs with
+               match cd.destructure P.decls ℓ πs with
                | .error w =>
                    refused [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)" H w
                | .ok (leaf, evs) =>
@@ -2588,8 +2590,11 @@ def traceEval (M : FloatOps) (P : Program) :
       let t := traceEval M P fuel (d + 1) Θ R H φ e
       match t.res with
       | .ok H' v tr =>
-          traced t.steps d Θ R (.dbg e) "(Dbg) §5.8, the observable output of §6.12" H H'
-            [.dbg v] (.value .unit) (.ok H' .unit (tr ++ [.dbg v]))
+          if v.observable then
+            traced t.steps d Θ R (.dbg e) "(Dbg) §5.8, the observable output of §6.12" H H'
+              [.dbg v] (.value .unit) (.ok H' .unit (tr ++ [.dbg v]))
+          else refused t.steps d Θ R (.dbg e) "(Dbg) §5.8, the observable output of §6.12" H'
+            .typeConfusion
       | r => propagate t.steps d Θ R (.dbg e) "(Dbg) §5.8, the observable output of §6.12" H r
   | fuel + 1, d, Θ, R, H, φ, .mkStruct s args =>
       let ta := traceArgs (fun H' e' => traceEval M P fuel (d + 1) Θ R H' φ e') H args
@@ -2626,17 +2631,18 @@ def traceEval (M : FloatOps) (P : Program) :
       (match t₀.res with
        | .ok H₀ v tr₀ =>
          (match v with
-          | .enum e k _ vs =>
+          | .enum e k i vs =>
             (match arms[k]? with
              | none =>
                  refused t₀.steps d Θ R (.«match» scrut arms) "(D-Match) §6.6" H .typeConfusion
              | some body =>
                let minted := mintParams H₀ vs
+               let mc := matchConsume P.decls e k i vs
                let bind := adminStep (d + 1) Θ R (.«match» scrut arms)
                  "(D-Match) §6.6 (bind the arm's payload)"
                  ("bind " ++ Print.tyName (.enum e) ++ "." ++ Print.variantName k ++
                    "'s payload to " ++ locsLine minted.2)
-                 H₀ minted.1 [] (.value v)
+                 H₀ minted.1 mc (.value v)
                let t₁ := traceEval M P fuel (d + 1) ((vs.map valTy).reverse ++ Θ) R minted.1
                  { env := minted.2.reverse ++ φ.env, scope := φ.scope ++ minted.2 } body
                (match t₁.res with
@@ -2649,10 +2655,10 @@ def traceEval (M : FloatOps) (P : Program) :
                        tracedAs (t₀.steps ++ [bind] ++ t₁.steps) d Θ R (.«match» scrut arms)
                          "(D-EndScope) §6.6 (end the arm)"
                          ("endscope(" ++ locsLine minted.2.reverse ++ ")")
-                         H₂ H₃ evs (.value v₂) (.ok H₃ v₂ (tr₀ ++ (tr₂ ++ evs))))
+                         H₂ H₃ evs (.value v₂) (.ok H₃ v₂ (tr₀ ++ (mc ++ (tr₂ ++ evs)))))
                 | r =>
                     didNotRun (t₀.steps ++ [bind] ++ t₁.steps) d Θ R (.«match» scrut arms)
-                      scopeNeverClosed H (r.withTrace tr₀)))
+                      scopeNeverClosed H ((r.withTrace mc).withTrace tr₀)))
           | _ => confused t₀.steps d Θ R (.«match» scrut arms) "(D-Match) §6.6" H)
        | r => propagate t₀.steps d Θ R (.«match» scrut arms) "(D-Match) §6.6" H r)
   | fuel + 1, d, Θ, R, H, φ, .mkArray T args =>
@@ -2877,12 +2883,15 @@ def traceEval (M : FloatOps) (P : Program) :
   | fuel + 1, d, Θ, R, H, φ, .loop e =>
       let tb := traceEval M P fuel (d + 1) Θ R H φ e
       match tb.res with
-      | .ok H₁ _ tr =>
+      | .ok H₁ .unit tr =>
           -- (D-Loop-Iter): the body became `()`, and the loop re-enters it.
           let tl := traceEval M P fuel (d + 1) Θ R H₁ φ (.loop e)
           traced (tb.steps ++ tl.steps) d Θ R (.loop e) "(D-Loop-Iter) §6.10 (re-enter the body)"
             H (lastStore (tb.steps ++ tl.steps) H₁) [] (StepRes.ofRes tl.res)
             (tl.res.withTrace tr)
+      | .ok H₁ _ _ =>
+          -- The body's value is not `⟨⟩`: no (D-Loop-Iter) applies.
+          refused tb.steps d Θ R (.loop e) "(D-Loop-Iter) §6.10" H₁ .typeConfusion
       | .broke H₁ sc tr =>
           (match unwindLocs P.decls H₁ (sc.drop φ.scope.length).reverse with
            | .error w =>
@@ -2986,7 +2995,7 @@ theorem traceEval_res (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
       | dbg e₁ =>
           simp only [traceEval, eval, EvalRes.andThen, ih]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced,
+            first | rfl | (simp_all [traced, refused,
               EvalRes.withTrace] <;> grind)
       | mkStruct s' args =>
           simp only [traceEval, eval,

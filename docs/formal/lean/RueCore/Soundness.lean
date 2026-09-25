@@ -191,6 +191,12 @@ theorem HasTy.mult_eq {D v T} (h : HasTy D v T) : v.mult D = T.mult D := by
       simp only [Val.mult, HasTys.length_eq hvs, List.length_replicate]
   | _ => rfl
 
+/-- A value of an observable type is one §6.12 can render: (Dbg) §5.8's
+premise, read on the value `@dbg`'s operand produced (RUE-2427) (helper). -/
+theorem HasTy.observable {D v T} (h : HasTy D v T) (hT : T.observable = true) :
+    v.observable = true := by
+  cases h <;> simp_all [Ty.observable, Val.observable]
+
 /-- Inversion of value typing at an integer type (helper). -/
 theorem HasTy.int_inv {D v w s} (h : HasTy D v (.int w s)) :
     ∃ n, v = .int w s n ∧ InBounds w s n := by
@@ -1354,30 +1360,33 @@ closed form `dropEvents` — so §6.3's `drop*` over `[r_1, …, r_m]` is exactl
 `dropResidueEvents`, which is the concatenation `3.8:33` asks for ("all
 droppable residue in that place is destroyed immediately, exactly once, in
 declaration/ascending-index order"). -/
-theorem dropResidue_events {D : Decls} (hwf : WfDecls D) : ∀ {rs : List Contents},
-    ResidueOk D rs → dropResidue D rs = .ok (dropResidueEvents D rs)
+theorem dropResidue_events {D : Decls} (hwf : WfDecls D) (ℓ : Nat) : ∀ {rs : List Contents},
+    ResidueOk D rs → dropResidue D ℓ rs = .ok (dropResidueEvents D ℓ rs)
   | [], _ => rfl
   | r :: rs, h => by
       obtain ⟨Tr, hty, hnl⟩ := h r List.mem_cons_self
       have hnres : r.residualLinear D = false := hty.residualLinear_false hwf hnl
       simp only [dropResidue, hnres, Bool.false_eq_true, if_neg, not_false_eq_true,
         dropContents_events hty,
-        dropResidue_events hwf (fun r' hr' => h r' (List.mem_cons_of_mem _ hr')),
-        dropResidueEvents, List.map_cons, List.flatten_cons]
+        dropResidue_events hwf ℓ (fun r' hr' => h r' (List.mem_cons_of_mem _ hr')),
+        dropResidueEvents, List.flatMap_cons, List.append_assoc]
 
 /-- **§6.3's `destructure` is total where §5.1 admits the redex**, and its
-trace is the residue's in closed form. This is the statement the two
-declared-linear `soundness` cases consume: the selected leaf comes back well
-typed at `Γ ⊢ p : T`'s type and hole-free — so a use hands on a `Val` and a
-`@drop` can run §6.11 on it — and the events are `dropResidueEvents`, with no
-`linearLeak` reachable. -/
-theorem destructure_ok {D : Decls} (hwf : WfDecls D) {c : Contents} {T T' : Ty}
+trace is the residue's in closed form followed by the consumption of the
+path's shell. This is the statement the two declared-linear `soundness` cases
+consume: the selected leaf comes back well typed at `Γ ⊢ p : T`'s type and
+hole-free — so a use hands on a `Val` and a `@drop` can run §6.11 on it — and
+the events are `dropResidueEvents` and one `consume`, with no `linearLeak`
+reachable. -/
+theorem destructure_ok {D : Decls} (hwf : WfDecls D) (ℓ : Nat) {c : Contents} {T T' : Ty}
     {πs : List Nat} (hty : ContentsTy D c T) (hhf : c.holeFree = true)
     (hpath : T.atPath D πs = some T') (hres : linearResidue D T πs = false) :
-    ∃ leaf rs, Contents.destructure D c πs = .ok (leaf, dropResidueEvents D rs) ∧
+    ∃ leaf rs, Contents.destructure D ℓ c πs
+        = .ok (leaf, dropResidueEvents D ℓ rs ++ [.consume (c.skeleton πs)]) ∧
       ContentsTy D leaf T' ∧ leaf.holeFree = true := by
   obtain ⟨leaf, rs, hsp, hlt, hlhf, hro⟩ := splitResidue_ok πs hty hhf hpath hres
-  exact ⟨leaf, rs, by simp only [Contents.destructure, hsp, dropResidue_events hwf hro], hlt, hlhf⟩
+  exact ⟨leaf, rs, by simp only [Contents.destructure, hsp, dropResidue_events hwf ℓ hro],
+    hlt, hlhf⟩
 
 mutual
 /-- A fully-owned node holds a hole-free contents: `fully-owned(Σ, p)` (§5.1)
@@ -3086,7 +3095,10 @@ theorem loop_step (M : FloatOps) {P : Program} {fuel : Nat} {D : Decls} {T R : T
   cases hrb : eval M fuel P H φ e with
   | ok H₁ v tr =>
       rw [hrb] at kb
-      obtain ⟨Γe, hn, _, hfm₁, hu₁⟩ := kb.ok_inv
+      obtain ⟨Γe, hn, hty, hfm₁, hu₁⟩ := kb.ok_inv
+      -- The body is typed `unit`, so its value is `⟨⟩` and (D-Loop-Iter)
+      -- re-enters it (RUE-2427).
+      cases hty
       exact ((hback Γe H₁ hn hfm₁).mono_store hu₁).withTrace tr
   | broke H₁ sc tr =>
       rw [hrb] at kb
@@ -3271,12 +3283,12 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
             rw [ContentsMatches.declaredPlan_eq pl.path hmm hgfull hty]; exact hplan
           obtain ⟨cd, hread, hsub⟩ := ContentsMatches.readAt πd hmm hgd htd
           obtain ⟨leaf, rs, hdest, hlty, hlhf⟩ :=
-            destructure_ok hwf.decls hsub.contentsTy (hsub.holeFree hfo) hleaf hres
+            destructure_ok hwf.decls ℓ hsub.contentsTy (hsub.holeFree hfo) hleaf hres
           obtain ⟨v, hv, htyv⟩ := hlty.toVal hlhf
           obtain ⟨cc', hw, hmm'⟩ :=
             ContentsMatches.writeAt πd hmm hgd htd (ContentsMatches.hole (T := Td))
           have hev : eval M.toFloatOps (fuel + 1) P H φ (.use pl)
-              = .ok (H.set ℓ (.full cc')) v (dropResidueEvents P.decls rs) := by
+              = .ok (H.set ℓ (.full cc')) v (dropResidueEvents P.decls ℓ rs ++ [.consume (cd.skeleton πs)]) := by
             simp [eval, hρ, hc, hpl, hread, hdest, hv, hw]
           rw [hev]
           exact ⟨htyv, ⟨hfm.store.set hρ ⟨cc', rfl, hmm'⟩, hfm.record⟩,
@@ -3392,6 +3404,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           simp only [eval]
           refine EvalOk.bindSame (ih h hfm) ?_
           intro H' v tr Γ' _ hty hfm'
+          rw [if_pos (hty.observable hobs)]
           exact ⟨.unit, hfm', Untouched.refl⟩
       | @mkStruct Γ Ω s args sd hget hta =>
           -- (D-Struct) §6.5 over §6.2's left-to-right search: the same
@@ -3732,7 +3745,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
             rw [ContentsMatches.declaredPlan_eq pl.path hmm hgfull hty]; exact hplan
           obtain ⟨cd, hread, hsub⟩ := ContentsMatches.readAt πd hmm hgd htd
           obtain ⟨leaf, rs, hdest, hlty, hlhf⟩ :=
-            destructure_ok hwf.decls hsub.contentsTy (hsub.holeFree hfo) hleaf hres
+            destructure_ok hwf.decls ℓ hsub.contentsTy (hsub.holeFree hfo) hleaf hres
           -- The machine's hole guard on the leaf (`Dynamics.lean`) is the one
           -- the ordinary `.drop` branch makes; here it is dead, because
           -- `fully-owned(Σ, d)` left the whole of `d` hole-free and `split`
@@ -3743,7 +3756,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨cc', hw, hmm'⟩ :=
             ContentsMatches.writeAt πd hmm hgd htd (ContentsMatches.hole (T := Td))
           have hev : eval M.toFloatOps (fuel + 1) P H φ (.drop pl)
-              = .ok (H.set ℓ (.full cc')) .unit (dropResidueEvents P.decls rs ++ levs) := by
+              = .ok (H.set ℓ (.full cc')) .unit ((dropResidueEvents P.decls ℓ rs ++ [.consume (cd.skeleton πs)]) ++ levs) := by
             simp [eval, hρ, hc, hpl, hread, hdest, hnh, hdc, hw]
           rw [hev]
           exact ⟨.unit, ⟨hfm.store.set hρ ⟨cc', rfl, hmm'⟩, hfm.record⟩,
@@ -4144,10 +4157,13 @@ theorem eval_succ (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
           | ok H₁ v tr =>
               rw [ih H φ e₁ (by rw [hr]; simp), hr]
               rw [hr] at h
-              dsimp only at h ⊢
-              have h₂ := ih H₁ φ (.loop e₁) (fun hc => h (by rw [hc]; rfl))
-              simp only [eval] at h₂
-              rw [h₂]
+              cases v with
+              | unit =>
+                  dsimp only at h ⊢
+                  have h₂ := ih H₁ φ (.loop e₁) (fun hc => h (by rw [hc]; rfl))
+                  simp only [eval] at h₂
+                  rw [h₂]
+              | _ => rfl
           | broke H₁ sc tr => rw [ih H φ e₁ (by rw [hr]; simp), hr]
           | returned H₁ v tr => rw [ih H φ e₁ (by rw [hr]; simp), hr]
           | panic pk tr => rw [ih H φ e₁ (by rw [hr]; simp), hr]
@@ -4212,9 +4228,9 @@ theorem eval_succ (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
               | none => rfl
               | some body =>
                   simp only [harm] at hkne ⊢
-                  refine EvalRes.andThen_mono (fun hne => ih _ _ body hne) ?_ hkne
-                  intro H₂ v₂ tr₂ _ _
-                  rfl
+                  have hkne' := mt EvalRes.withTrace_outOfFuel_iff.mpr hkne
+                  rw [EvalRes.andThen_mono (fun hne => ih _ _ body hne)
+                    (fun _ _ _ _ _ => rfl) hkne']
       | mkArray T args =>
           have hargs : evalArgs (fun H' e' => eval M n P H' φ e') H args ≠ .abort .outOfFuel := by
             intro hc
