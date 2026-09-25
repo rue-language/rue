@@ -2470,8 +2470,8 @@ so it answers a value, a panic or `outOfFuel`; a value is reached by §6's
 `→*` from the initial configuration as a terminal configuration with the same
 store and trace, and a panic as `↯κ` after the same trace (§6.2, §6.12).
 `.stuck` is outside the correspondence and does not occur here; `outOfFuel`
-is not a state of §6's machine, and completeness modulo fuel is part 3
-(RUE-2332).
+is not a state of §6's machine. The converse, completeness modulo fuel, is
+`eval_complete`.
 
 ```lean
 theorem RueCore.eval_sound (M : FloatModel) {P : Program} (h : ProgramTyped P)
@@ -2484,6 +2484,189 @@ theorem RueCore.eval_sound (M : FloatModel) {P : Program} (h : ProgramTyped P)
       ∀ (k : PanicKind) (tr : List Event),
         run M.toFloatOps P fuel = EvalRes.panic k tr →
           Steps M.toFloatOps P Config.init (Config.panic k tr)
+```
+
+### `eval_steps_of_outOfFuel`
+
+*theorem* · module `RueCore.Adequacy`
+
+**Fuel counts steps** (RUE-2332; ADR-0097 decision 3). If `eval` exhausts
+`fuel` on an expression, then from that expression in focus, under any context
+and after any trace, §6's reduction has a run of exactly `fuel` steps. Each
+unit of fuel `eval` spends is paid for by at least one `Step`: a (Search)
+enter step (§6.2) before every recursive call, the operands already reduced
+before it (`eval_sim`'s `ok` clause), and (D-Loop-Iter) (§6.10) for the loop's
+re-evaluation. No typing hypothesis. The proof is a strong induction on fuel,
+as `eval_sim`'s is.
+
+```lean
+theorem RueCore.eval_steps_of_outOfFuel (M : FloatOps) (P : Program) (fuel : Nat) :
+  LongIH M P fuel
+```
+
+### `run_complete`
+
+*theorem* · module `RueCore.Adequacy`
+
+**Completeness of `eval` modulo fuel, on every program** (RUE-2289 part
+3, ADR-0097 decision 3; §6.2, §6.12). If §6's `→*` takes the initial
+configuration to `✓` — a value at an empty stack — then at every fuel past
+the number of steps, `run` answers that value with the same store and trace,
+or refuses; likewise for `↯κ`. The refusal disjunct is where `eval`'s
+monitors and its `@drop ⊘` refusal sit (RUE-2314); `eval_complete` removes it
+on checked programs.
+
+```lean
+theorem RueCore.run_complete (M : FloatOps) (P : Program) :
+  (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+      Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+        ∃ n,
+          ∀ (fuel : Nat),
+            n < fuel →
+              run M P fuel = EvalRes.ok H v tr ∨
+                ∃ w, run M P fuel = EvalRes.stuck w) ∧
+    ∀ (κ : PanicKind) (tr : List Event),
+      Steps M P Config.init (Config.panic κ tr) →
+        ∃ n,
+          ∀ (fuel : Nat),
+            n < fuel →
+              run M P fuel = EvalRes.panic κ tr ∨
+                ∃ w, run M P fuel = EvalRes.stuck w
+```
+
+### `eval_complete`
+
+*theorem* · module `RueCore.Adequacy`
+
+**Completeness of `eval` modulo fuel** (RUE-2289 part 3; ADR-0097
+decision 3: "a theorem about `eval` is a theorem about §6 only once the two
+are proved to agree"). For a program `check` accepts (`ProgramTyped`,
+RUE-2314's domain): if §6's `→*` takes the initial configuration to a
+terminal configuration — `✓`, a value at an empty stack, or `↯κ` — then some
+fuel makes `run` answer that outcome with the same store, value and trace,
+and so does every larger fuel (§6.2, §6.12). With `eval_sound` this is
+adequacy in both directions: on checked programs, `run`'s values and panics
+are exactly the ends of §6's runs, and `outOfFuel` at every fuel is exactly
+divergence (`eval_diverges_iff`).
+
+```lean
+theorem RueCore.eval_complete (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+  (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+      Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+        ∃ n,
+          ∀ (fuel : Nat),
+            n < fuel → run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+    ∀ (κ : PanicKind) (tr : List Event),
+      Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+        ∃ n,
+          ∀ (fuel : Nat),
+            n < fuel → run M.toFloatOps P fuel = EvalRes.panic κ tr
+```
+
+### `run_stuck_of_step_stuck`
+
+*theorem* · module `RueCore.Adequacy`
+
+**A stuck `Step` run is a refusal of `run`, on every program** (§6, §7):
+if `→*` takes the initial configuration to a stuck one, then at every fuel past
+the number of steps `run` refuses. The refusal need not name the same
+`Violation`: `eval` inspects operand shapes in its own order (RUE-2314).
+
+```lean
+theorem RueCore.run_stuck_of_step_stuck (M : FloatOps) (P : Program) {C : Config}
+  {w : Violation} (hC : Steps M P Config.init C) (hs : Config.Stuck M P C w) :
+  ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.stuck w'
+```
+
+### `step_never_stuck_of_run`
+
+*theorem* · module `RueCore.Adequacy`
+
+**`eval` never stuck ⇒ `Step` never stuck, on every program** (§7's
+phrasing: "it either reduces, halts with a value, or halts with one of the
+defined panics"). If no fuel makes `run` refuse, every configuration `→*`
+reaches from the initial one is terminal or takes a step. The converse fails
+off the checked domain (RUE-2314): `@drop` of a `⊘` place is a refusal of
+`eval` and a no-op of §6.11, and `eval` refuses `true + 1/0` where §6.2 panics
+first.
+
+```lean
+theorem RueCore.step_never_stuck_of_run (M : FloatOps) (P : Program)
+  (hnv : ∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w)
+  (C : Config) : Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
+```
+
+### `never_stuck_iff`
+
+*theorem* · module `RueCore.Adequacy`
+
+**"Never stuck", both ways, in §7's phrasing** (RUE-2289 part 3; §7's
+type-safety bullet; ADR-0097 decision 3). For a program `check` accepts,
+"for every fuel, `run` is never `.stuck`" is equivalent to "every
+configuration §6's `→*` reaches from the initial one reduces or has halted
+with a value or a panic". The forward direction holds on every program
+(`step_never_stuck_of_run`) and is the one with content; on this domain the
+backward one is `no_violation`, and off it the backward one fails
+(RUE-2314's discriminators). `fuel_mono` and `no_masking` (`Soundness.lean`)
+say the same stability from `eval`'s side: its answer, once it is not
+`outOfFuel`, is the answer at every larger fuel.
+
+```lean
+theorem RueCore.never_stuck_iff (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+  (∀ (fuel : Nat) (w : Violation),
+      run M.toFloatOps P fuel ≠ EvalRes.stuck w) ↔
+    ∀ (C : Config),
+      Steps M.toFloatOps P Config.init C →
+        C.Terminal ∨ ∃ C', Step M.toFloatOps P C C'
+```
+
+### `eval_diverges_iff`
+
+*theorem* · module `RueCore.Adequacy`
+
+**Divergence is exhaustion at every fuel** (RUE-2289 part 3, ADR-0097
+decision 3). For a program `check` accepts, `run` is `outOfFuel` at every
+fuel exactly when §6's reduction has a run of every length from the initial
+configuration — by `Step.det`, one infinite run. So `outOfFuel` is never a
+premature stop on a checked program: past the length of §6's run, `eval`
+answers (`eval_complete`), and where it never answers §6 never halts.
+
+```lean
+theorem RueCore.eval_diverges_iff (M : FloatModel) {P : Program}
+  (h : ProgramTyped P) :
+  (∀ (fuel : Nat), run M.toFloatOps P fuel = EvalRes.outOfFuel) ↔
+    ∀ (n : Nat), ∃ D, StepsN M.toFloatOps P n Config.init D
+```
+
+### `dropMoved_refused`
+
+*theorem* · module `RueCore.Adequacy`
+
+**Why completeness is stated on checked programs** (RUE-2314): in
+`let s = S{}; let t = s; @drop(s); 0`, §6's `→*` reaches `✓0`, because §6.11
+makes `@drop` of a `⊘` place a no-op (`demo_dropMoved_runs`, `Step.lean`).
+`run` refuses it with `useAfterMove` instead. That refusal is the one disjunct
+`run_complete` allows, and `check` rejects the program.
+
+```lean
+theorem RueCore.dropMoved_refused (M : FloatOps) :
+  (∃ H,
+      Steps M
+        (demoProgram
+          (Expr.letIn false demoS
+            (Expr.letIn false (Expr.use (Place.var 0))
+              ((Expr.drop (Place.var 1)).seq (demoI32 0)))))
+        Config.init
+        (Config.run H Frame.empty []
+          (Focus.ret (Val.int IntWidth.w32 Sign.signed 0))
+          [Event.drop 2 (demoSc 0), Event.dtor 0 (demoSc 0)])) ∧
+    run M
+        (demoProgram
+          (Expr.letIn false demoS
+            (Expr.letIn false (Expr.use (Place.var 0))
+              ((Expr.drop (Place.var 1)).seq (demoI32 0)))))
+        100 =
+      EvalRes.stuck Violation.useAfterMove
 ```
 
 ### `letAddProgram_sound`
@@ -8497,6 +8680,633 @@ determinism (helper).
 theorem RueCore.sim_loop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (e : Expr) :
   Sim M P φ (evalConf H φ e.loop) (eval M (fuel + 1) P H φ e.loop)
+```
+
+### `StepsN.toSteps`
+
+*theorem* · module `RueCore.Adequacy`
+
+A counted run is a run (§6.12's `→*`) (helper).
+
+```lean
+theorem RueCore.StepsN.toSteps {M : FloatOps} {P : Program} {n : Nat} {C D : Config}
+  (h : StepsN M P n C D) : Steps M P C D
+```
+
+### `Steps.toN`
+
+*theorem* · module `RueCore.Adequacy`
+
+Every run has a length (helper).
+
+```lean
+theorem RueCore.Steps.toN {M : FloatOps} {P : Program} {C D : Config}
+  (h : Steps M P C D) : ∃ n, StepsN M P n C D
+```
+
+### `StepsN.trans`
+
+*theorem* · module `RueCore.Adequacy`
+
+Counted runs compose (helper).
+
+```lean
+theorem RueCore.StepsN.trans {M : FloatOps} {P : Program} {a b : Nat} {C E D : Config}
+  (h₁ : StepsN M P a C E) (h₂ : StepsN M P b E D) : StepsN M P (a + b) C D
+```
+
+### `StepsN.prefix`
+
+*theorem* · module `RueCore.Adequacy`
+
+A run of `n` steps has a run of every shorter length from the same start
+(helper).
+
+```lean
+theorem RueCore.StepsN.prefix {M : FloatOps} {P : Program} {n : Nat} {C D : Config}
+  (h : StepsN M P n C D) {m : Nat} : m ≤ n → ∃ E, StepsN M P m C E
+```
+
+### `StepsN.det`
+
+*theorem* · module `RueCore.Adequacy`
+
+**Determinism, counted** (`Step.det`, §6): two runs of the same length
+from one configuration end at the same configuration (helper).
+
+```lean
+theorem RueCore.StepsN.det {M : FloatOps} {P : Program} {n : Nat} {C D D' : Config}
+  (h : StepsN M P n C D) (h' : StepsN M P n C D') : D = D'
+```
+
+### `StepsN.peel`
+
+*theorem* · module `RueCore.Adequacy`
+
+Peeling a counted run's first step by determinism (helper).
+
+```lean
+theorem RueCore.StepsN.peel {M : FloatOps} {P : Program} {n : Nat} {C C' D : Config}
+  (hs : Step M P C C') (h : StepsN M P (n + 1) C D) : StepsN M P n C' D
+```
+
+### `StepsN.bound`
+
+*theorem* · module `RueCore.Adequacy`
+
+**A configuration that takes no step bounds every run** through it (§6,
+by `Step.det`): if `→ᵏ` reaches a configuration with no successor — terminal
+or stuck — no run from the same start is longer than `k` (helper).
+
+```lean
+theorem RueCore.StepsN.bound {M : FloatOps} {P : Program} {k : Nat} {C T : Config}
+  (hT : StepsN M P k C T) (hfin : ∀ (C' : Config), ¬Step M P T C') {n : Nat}
+  {D : Config} : StepsN M P n C D → n ≤ k
+```
+
+### `Steps.final_unique`
+
+*theorem* · module `RueCore.Adequacy`
+
+**One end per start** (§6, by `Step.det`): two configurations with no
+successor reached from the same configuration are the same one (helper).
+
+```lean
+theorem RueCore.Steps.final_unique {M : FloatOps} {P : Program} {C T₁ T₂ : Config}
+  (h₁ : Steps M P C T₁) (h₂ : Steps M P C T₂)
+  (hf₁ : ∀ (C' : Config), ¬Step M P T₁ C')
+  (hf₂ : ∀ (C' : Config), ¬Step M P T₂ C') : T₁ = T₂
+```
+
+### `Long.mono`
+
+*theorem* · module `RueCore.Adequacy`
+
+A family with long runs has shorter ones (helper).
+
+```lean
+theorem RueCore.Long.mono {M : FloatOps} {P : Program}
+  {C : List Kont → List Event → Config} {m n : Nat} (hmn : m ≤ n)
+  (h : Long M P C n) : Long M P C m
+```
+
+### `Long.pre`
+
+*theorem* · module `RueCore.Adequacy`
+
+A run into a family with long runs is at least as long (helper).
+
+```lean
+theorem RueCore.Long.pre {M : FloatOps} {P : Program}
+  {C C₂ : List Kont → List Event → Config} {n : Nat}
+  (hpre :
+    ∀ (K : List Kont) (tr : List Event), ∃ tr', Steps M P (C K tr) (C₂ K tr'))
+  (h : Long M P C₂ n) : Long M P C n
+```
+
+### `Long.pre1`
+
+*theorem* · module `RueCore.Adequacy`
+
+A step and then a run into a family with long runs is one step longer
+(helper).
+
+```lean
+theorem RueCore.Long.pre1 {M : FloatOps} {P : Program}
+  {C C₂ : List Kont → List Event → Config} {n : Nat}
+  (hpre :
+    ∀ (K : List Kont) (tr : List Event),
+      ∃ C' tr', Step M P (C K tr) C' ∧ Steps M P C' (C₂ K tr'))
+  (h : Long M P C₂ n) : Long M P C (n + 1)
+```
+
+### `Long.andThen`
+
+*theorem* · module `RueCore.Adequacy`
+
+**§6.2's (Search), counted**: the twin of `Sim.andThen` for exhausted
+fuel. If `eval` spent its fuel on the operand, the operand's run under the
+pushed frame `F` is the long one, one enter step in; if the operand reached a
+value (`Sim`'s `ok` clause gives the run to it) and the context spent the fuel,
+the context's run is (helper).
+
+```lean
+theorem RueCore.Long.andThen {M : FloatOps} {P : Program} {φ₁ : Frame}
+  {C C₁ : List Kont → List Event → Config} {F : Kont} {fuel : Nat}
+  (hC :
+    ∀ (K : List Kont) (tr : List Event), Step M P (C K tr) (C₁ (F :: K) tr))
+  {r : EvalRes} (hsim : Sim M P φ₁ C₁ r)
+  (h₁ : r = EvalRes.outOfFuel → Long M P C₁ fuel) {k : Store → Val → EvalRes}
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr₁ : List Event),
+      r = EvalRes.ok H₁ v tr₁ →
+        k H₁ v = EvalRes.outOfFuel →
+          Long M P (fun K tr => Config.run H₁ φ₁ (F :: K) (Focus.ret v) tr)
+            fuel) :
+  r.andThen k = EvalRes.outOfFuel → Long M P C (fuel + 1)
+```
+
+### `evalArgs_long`
+
+*theorem* · module `RueCore.Adequacy`
+
+**Argument lists, counted** (§6.2's `…( v̄, E, ē )`): a list that spent
+its fuel on an element has a run one step longer than the element's fuel, the
+extra step being the (Search) push into the element's hole (helper).
+
+```lean
+theorem RueCore.evalArgs_long {M : FloatOps} {P : Program} {fuel : Nat} {φ : Frame}
+  (IH : LongIH M P fuel) (t : ArgsTag) (es : List Expr) (H : Store)
+  (vs₀ : List Val) :
+  evalArgs (fun H e => eval M fuel P H φ e) H es =
+      ArgsRes.abort EvalRes.outOfFuel →
+    Long M P (argsConf H φ t vs₀ es) (fuel + 1)
+```
+
+### `evalArgs_ok_steps`
+
+*theorem* · module `RueCore.Adequacy`
+
+`evalArgs` finishes as `eval_sim` says, from the argument list (helper).
+
+```lean
+theorem RueCore.evalArgs_ok_steps {M : FloatOps} {P : Program} {fuel : Nat}
+  {φ : Frame} {t : ArgsTag} {es : List Expr} {H H' : Store} {vs : List Val}
+  {tr' : List Event}
+  (h : evalArgs (fun H e => eval M fuel P H φ e) H es = ArgsRes.ok H' vs tr')
+  (K : List Kont) (tr : List Event) :
+  Steps M P (argsConf H φ t [] es K tr)
+    (Config.run H' φ K (Focus.args t vs []) (tr ++ tr'))
+```
+
+### `Long.zero`
+
+*theorem* · module `RueCore.Adequacy`
+
+Every family has runs of no steps (helper).
+
+```lean
+theorem RueCore.Long.zero {M : FloatOps} {P : Program}
+  {C : List Kont → List Event → Config} : Long M P C 0
+```
+
+### `OpRes.toRes_ne_outOfFuel`
+
+*theorem* · module `RueCore.Adequacy`
+
+An operator's outcome is never exhausted fuel (helper).
+
+```lean
+theorem RueCore.OpRes.toRes_ne_outOfFuel (o : OpRes) (H : Store) :
+  OpRes.toRes H o ≠ EvalRes.outOfFuel
+```
+
+### `introVal_ne_outOfFuel`
+
+*theorem* · module `RueCore.Adequacy`
+
+Aggregate introduction is never exhausted fuel (helper).
+
+```lean
+theorem RueCore.introVal_ne_outOfFuel {D : Decls} {H : Store} {mk : Nat → Val} :
+  introVal D H mk ≠ EvalRes.outOfFuel
+```
+
+### `eval_leaf_ne_outOfFuel`
+
+*theorem* · module `RueCore.Adequacy`
+
+The place forms, literals, `@panic` and `break` spend no fuel of their own
+beyond the unit they start with (helper).
+
+```lean
+theorem RueCore.eval_leaf_ne_outOfFuel {M : FloatOps} {P : Program} {fuel : Nat}
+  {H : Store} {φ : Frame} {e : Expr}
+  (he :
+    match e with
+    | Expr.intLit w s n => True
+    | Expr.floatLit w l => True
+    | Expr.boolLit b => True
+    | Expr.unitLit => True
+    | Expr.use p => True
+    | Expr.drop p => True
+    | Expr.panic msg => True
+    | Expr.brk => True
+    | x => False) :
+  eval M (fuel + 1) P H φ e ≠ EvalRes.outOfFuel
+```
+
+### `long_binop`
+
+*theorem* · module `RueCore.Adequacy`
+
+§6.4's binary operators, counted (helper).
+
+```lean
+theorem RueCore.long_binop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (op : BinOp) (e₁ e₂ : Expr) :
+  eval M (fuel + 1) P H φ (Expr.binop op e₁ e₂) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (Expr.binop op e₁ e₂)) (fuel + 1)
+```
+
+### `long_unop`
+
+*theorem* · module `RueCore.Adequacy`
+
+§6.4's unary operators, counted (helper).
+
+```lean
+theorem RueCore.long_unop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (op : UnOp) (e : Expr) :
+  eval M (fuel + 1) P H φ (Expr.unop op e) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (Expr.unop op e)) (fuel + 1)
+```
+
+### `long_intCast`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Int-Cast), counted (helper).
+
+```lean
+theorem RueCore.long_intCast {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (w : IntWidth) (sg : Sign) (e : Expr) :
+  eval M (fuel + 1) P H φ (Expr.intCast w sg e) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (Expr.intCast w sg e)) (fuel + 1)
+```
+
+### `long_fintrin`
+
+*theorem* · module `RueCore.Adequacy`
+
+§6.4's float intrinsics, counted (helper).
+
+```lean
+theorem RueCore.long_fintrin {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (k : FloatIntrin) (e : Expr) :
+  eval M (fuel + 1) P H φ (Expr.fintrin k e) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (Expr.fintrin k e)) (fuel + 1)
+```
+
+### `long_dbg`
+
+*theorem* · module `RueCore.Adequacy`
+
+`@dbg` (§6.12), counted (helper).
+
+```lean
+theorem RueCore.long_dbg {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (e : Expr) :
+  eval M (fuel + 1) P H φ e.dbg = EvalRes.outOfFuel →
+    Long M P (evalConf H φ e.dbg) (fuel + 1)
+```
+
+### `long_repeat`
+
+*theorem* · module `RueCore.Adequacy`
+
+The repeat form (`7.1:39`), counted (helper).
+
+```lean
+theorem RueCore.long_repeat {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (T : Ty) (e : Expr) (n : Nat) :
+  eval M (fuel + 1) P H φ (Expr.repeatArray T e n) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (Expr.repeatArray T e n)) (fuel + 1)
+```
+
+### `long_ret`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Return) §6.9, counted (helper).
+
+```lean
+theorem RueCore.long_ret {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (e : Expr) :
+  eval M (fuel + 1) P H φ e.ret = EvalRes.outOfFuel →
+    Long M P (evalConf H φ e.ret) (fuel + 1)
+```
+
+### `long_assign`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Assign) §6.8, counted (helper).
+
+```lean
+theorem RueCore.long_assign {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (p : Place) (e : Expr) :
+  eval M (fuel + 1) P H φ (Expr.assign p e) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (Expr.assign p e)) (fuel + 1)
+```
+
+### `long_letIn`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Let) §6.7, counted: the body runs after (D-Let)'s step (helper).
+
+```lean
+theorem RueCore.long_letIn {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (m : Bool) (e₁ e₂ : Expr) :
+  eval M (fuel + 1) P H φ (Expr.letIn m e₁ e₂) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (Expr.letIn m e₁ e₂)) (fuel + 1)
+```
+
+### `long_match`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Match) §6.6, counted: the arm runs after (D-Match)'s step (helper).
+
+```lean
+theorem RueCore.long_match {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (scrut : Expr) (arms : List Expr) :
+  eval M (fuel + 1) P H φ (scrut.match arms) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (scrut.match arms)) (fuel + 1)
+```
+
+### `long_seq`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Seq) §6.7, counted: the second operand runs after (D-Seq)'s step
+(helper).
+
+```lean
+theorem RueCore.long_seq {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (e₁ e₂ : Expr) :
+  eval M (fuel + 1) P H φ (e₁.seq e₂) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (e₁.seq e₂)) (fuel + 1)
+```
+
+### `long_ite`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-If-T)/(D-If-F) §6.6, counted (helper).
+
+```lean
+theorem RueCore.long_ite {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (c e₁ e₂ : Expr) :
+  eval M (fuel + 1) P H φ (c.ite e₁ e₂) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (c.ite e₁ e₂)) (fuel + 1)
+```
+
+### `long_argsForm`
+
+*theorem* · module `RueCore.Adequacy`
+
+An argument-list form whose list spent the fuel, from its enter step
+(helper).
+
+```lean
+theorem RueCore.long_argsForm {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} {t : ArgsTag} {es : List Expr} {e : Expr} (IH : LongIH M P fuel)
+  (hent :
+    ∀ (K : List Kont) (tr : List Event),
+      Step M P (evalConf H φ e K tr) (argsConf H φ t [] es K tr))
+  (h :
+    evalArgs (fun H e => eval M fuel P H φ e) H es =
+      ArgsRes.abort EvalRes.outOfFuel) :
+  Long M P (evalConf H φ e) (fuel + 1)
+```
+
+### `long_mkStruct`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Struct) §6.5, counted (helper).
+
+```lean
+theorem RueCore.long_mkStruct {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (s : Nat) (args : List Expr) :
+  eval M (fuel + 1) P H φ (Expr.mkStruct s args) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (Expr.mkStruct s args)) (fuel + 1)
+```
+
+### `long_mkEnum`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Enum-Intro) §6.6, counted (helper).
+
+```lean
+theorem RueCore.long_mkEnum {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (e k : Nat) (args : List Expr) :
+  eval M (fuel + 1) P H φ (Expr.mkEnum e k args) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (Expr.mkEnum e k args)) (fuel + 1)
+```
+
+### `long_mkArray`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Array) §6.5, counted (helper).
+
+```lean
+theorem RueCore.long_mkArray {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (T : Ty) (args : List Expr) :
+  eval M (fuel + 1) P H φ (Expr.mkArray T args) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (Expr.mkArray T args)) (fuel + 1)
+```
+
+### `long_indexRead`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Index) §6.5, counted (helper).
+
+```lean
+theorem RueCore.long_indexRead {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (p : Place) (idx : List Expr)
+  (πs : List (List Nat)) :
+  eval M (fuel + 1) P H φ (Expr.indexRead p idx πs) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (Expr.indexRead p idx πs)) (fuel + 1)
+```
+
+### `long_indexDrop`
+
+*theorem* · module `RueCore.Adequacy`
+
+`@drop` at a dynamic place, counted. `eval` re-dispatches it to the read
+at one less fuel without a step of its own; the (Search) push into the first
+index pays for that unit (helper).
+
+```lean
+theorem RueCore.long_indexDrop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (p : Place) (idx : List Expr)
+  (πs : List (List Nat)) :
+  eval M (fuel + 2) P H φ (Expr.indexDrop p idx πs) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (Expr.indexDrop p idx πs)) (fuel + 2)
+```
+
+### `long_indexDrop_one`
+
+*theorem* · module `RueCore.Adequacy`
+
+`@drop` at a dynamic place at the smallest fuel: one step, (Search) into
+the indices (helper).
+
+```lean
+theorem RueCore.long_indexDrop_one {M : FloatOps} {P : Program} {H : Store}
+  {φ : Frame} (p : Place) (idx : List Expr) (πs : List (List Nat)) :
+  Long M P (evalConf H φ (Expr.indexDrop p idx πs)) 1
+```
+
+### `long_indexWrite`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Assign) below a dynamic index (§6.8, `5.2:14`), counted (helper).
+
+```lean
+theorem RueCore.long_indexWrite {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (p : Place) (idx : List Expr)
+  (πs : List (List Nat)) (e : Expr) :
+  eval M (fuel + 1) P H φ (Expr.indexWrite p idx πs e) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (Expr.indexWrite p idx πs e)) (fuel + 1)
+```
+
+### `long_call`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Call) §6.9, counted: the body runs after the arguments and (D-Call)'s
+step (helper).
+
+```lean
+theorem RueCore.long_call {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (f : Nat) (args : List Expr) :
+  eval M (fuel + 1) P H φ (Expr.call f args) = EvalRes.outOfFuel →
+    Long M P (evalConf H φ (Expr.call f args)) (fuel + 1)
+```
+
+### `long_loop`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Loop-Enter) and (D-Loop-Iter) §6.10, counted. A turn that finishes
+re-enters the body through (D-Loop-Iter) where `eval` re-evaluates the loop
+at one less fuel; that re-evaluation's first step, (D-Loop-Enter), is peeled
+off by determinism (`StepsN.peel`), and (D-Loop-Iter) stands in for it
+(helper).
+
+```lean
+theorem RueCore.long_loop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : LongIH M P fuel) (e : Expr) :
+  eval M (fuel + 1) P H φ e.loop = EvalRes.outOfFuel →
+    Long M P (evalConf H φ e.loop) (fuel + 1)
+```
+
+### `EvalRes.withTrace_ne_broke`
+
+*theorem* · module `RueCore.Adequacy`
+
+Prefixing a trace never makes an unwinding `break` (helper).
+
+```lean
+theorem RueCore.EvalRes.withTrace_ne_broke {r : EvalRes} {t : List Event}
+  (h :
+    ∀ (H : Store) (sc : List Nat) (tr : List Event),
+      r ≠ EvalRes.broke H sc tr)
+  (H : Store) (sc : List Nat) (tr : List Event) :
+  EvalRes.withTrace t r ≠ EvalRes.broke H sc tr
+```
+
+### `EvalRes.absorb_ne_broke`
+
+*theorem* · module `RueCore.Adequacy`
+
+The call boundary never passes an unwinding `break` on (helper).
+
+```lean
+theorem RueCore.EvalRes.absorb_ne_broke {r : EvalRes} {k : Store → Val → EvalRes}
+  (hk :
+    ∀ (H : Store) (v : Val) (H' : Store) (sc : List Nat) (tr : List Event),
+      k H v ≠ EvalRes.broke H' sc tr)
+  (H : Store) (sc : List Nat) (tr : List Event) :
+  r.absorb k ≠ EvalRes.broke H sc tr
+```
+
+### `run_ne_broke`
+
+*theorem* · module `RueCore.Adequacy`
+
+A program's outcome is never an unwinding `break`: the entry point is a
+call, and the call boundary turns a `break` that reached it into
+`typeConfusion` (§6.10: "a `break` in a callee would be ill-formed")
+(helper).
+
+```lean
+theorem RueCore.run_ne_broke (M : FloatOps) {P : Program} {fuel : Nat} (H : Store)
+  (sc : List Nat) (tr : List Event) : run M P fuel ≠ EvalRes.broke H sc tr
+```
+
+### `run_classify`
+
+*theorem* · module `RueCore.Adequacy`
+
+**Where a run of `Step` ends, `run` answers** (§6.12, `Step.det`): if
+`→*` takes §6.12's initial configuration to a configuration with no successor
+in `n` steps, then at every fuel past `n`, `run` answers a value whose
+terminal configuration is that one, a panic that is that one, or a refusal.
+Exhaustion is ruled out by `eval_steps_of_outOfFuel` (it would be a longer run
+than `StepsN.bound` allows), an `ok` or a `panic` is placed by `run_sim` and
+`Steps.final_unique`, and `run` is never `returned` or `broke` (helper).
+
+```lean
+theorem RueCore.run_classify {M : FloatOps} {P : Program} {T : Config}
+  (hT : Steps M P Config.init T) (hfin : ∀ (C' : Config), ¬Step M P T C') :
+  ∃ n,
+    ∀ (fuel : Nat),
+      n < fuel →
+        (∃ H v tr,
+            run M P fuel = EvalRes.ok H v tr ∧
+              T = Config.run H Frame.empty [] (Focus.ret v) tr) ∨
+          (∃ κ tr,
+              run M P fuel = EvalRes.panic κ tr ∧ T = Config.panic κ tr) ∨
+            ∃ w, run M P fuel = EvalRes.stuck w
 ```
 
 ### `Examples.eval_loop_ok`
@@ -17705,6 +18515,47 @@ RueCore.Steps.step {M : FloatOps} {P : Program} {C₁ C₂ C₃ : Config} :
   Step M P C₁ C₂ → Steps M P C₂ C₃ → Steps M P C₁ C₃
 ```
 
+### `StepsN`
+
+*inductive* · module `RueCore.Adequacy`
+
+`→ⁿ`: a run of exactly `n` steps of §6's reduction (helper). Completeness
+counts steps, because fuel is a bound on them.
+
+```lean
+inductive RueCore.StepsN (M : FloatOps) (P : Program) : Nat → Config → Config → Prop
+```
+
+Constructors:
+
+**`StepsN.refl`**
+
+```lean
+RueCore.StepsN.refl {M : FloatOps} {P : Program} (C : Config) :
+  StepsN M P 0 C C
+```
+
+**`StepsN.step`**
+
+```lean
+RueCore.StepsN.step {M : FloatOps} {P : Program} {n : Nat}
+  {C₁ C₂ C₃ : Config} :
+  Step M P C₁ C₂ → StepsN M P n C₂ C₃ → StepsN M P (n + 1) C₁ C₃
+```
+
+### `Long`
+
+*def* · module `RueCore.Adequacy`
+
+A run of `n` steps from every member of a configuration family: from
+`⟨H ; φ ; K ; E[e]⟩`, for every context `K` and trace `tr` (helper).
+
+```lean
+def RueCore.Long (M : FloatOps) (P : Program)
+  (C : List Kont → List Event → Config) (n : Nat) : Prop :=
+  ∀ (K : List Kont) (tr : List Event), ∃ D, StepsN M P n (C K tr) D
+```
+
 ### `Sim`
 
 *def* · module `RueCore.Adequacy`
@@ -17716,8 +18567,8 @@ trace `tr` produced before it, §6.2's `⟨H ; φ ; K ; E[e]⟩`: a value reache
 `E[v]` in the frame `φ` (§6.2's (Search)), a panic reaches `↯κ` from every
 context ((Panic-Lift) §6.2), an unwinding `return` reaches the nearest caller
 ((D-Return) §6.9), and an unwinding `break` reaches the nearest loop's context
-((D-Break) §6.10). Part 3 (RUE-2332) proves the converse over this same
-relation.
+((D-Break) §6.10). Part 3's completeness (`eval_complete`) takes its runs
+through already-reduced operands from this relation's `ok` clause.
 
 ```lean
 def RueCore.Sim (M : FloatOps) (P : Program) (φ : Frame)
@@ -17743,6 +18594,19 @@ def RueCore.Sim (M : FloatOps) (P : Program) (φ : Frame)
             (Config.run H' φs K' (Focus.ret Val.unit) (tr ++ tr' ++ evs))
   | EvalRes.stuck why => True
   | EvalRes.outOfFuel => True
+```
+
+### `LongIH`
+
+*def* · module `RueCore.Adequacy`
+
+The induction hypothesis: at fuel `fuel`, exhaustion is a run of `fuel`
+steps (helper).
+
+```lean
+def RueCore.LongIH (M : FloatOps) (P : Program) (fuel : Nat) : Prop :=
+  ∀ (H : Store) (φ : Frame) (e : Expr),
+    eval M fuel P H φ e = EvalRes.outOfFuel → Long M P (evalConf H φ e) fuel
 ```
 
 ### `SimIH`

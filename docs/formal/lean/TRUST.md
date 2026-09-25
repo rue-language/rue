@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 576.
+- Theorems checked: 628.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -610,6 +610,58 @@ and diffs them against the committed copies.
 | `eval_sim` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `run_sim` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `eval_sound` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `StepsN.toSteps` | `RueCore.Adequacy` | `propext` |
+| `Steps.toN` | `RueCore.Adequacy` | `propext` |
+| `StepsN.trans` | `RueCore.Adequacy` | `propext` |
+| `StepsN.prefix` | `RueCore.Adequacy` | `propext` |
+| `StepsN.det` | `RueCore.Adequacy` | `propext` |
+| `StepsN.peel` | `RueCore.Adequacy` | `propext` |
+| `StepsN.bound` | `RueCore.Adequacy` | `propext` |
+| `Steps.final_unique` | `RueCore.Adequacy` | `propext` |
+| `Long.mono` | `RueCore.Adequacy` | `propext` |
+| `Long.pre` | `RueCore.Adequacy` | `propext` |
+| `Long.pre1` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `Long.andThen` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `evalArgs_long` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `evalArgs_ok_steps` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `Long.zero` | `RueCore.Adequacy` | `propext` |
+| `OpRes.toRes_ne_outOfFuel` | `RueCore.Adequacy` | `propext` |
+| `introVal_ne_outOfFuel` | `RueCore.Adequacy` | `propext` |
+| `eval_leaf_ne_outOfFuel` | `RueCore.Adequacy` | `propext` |
+| `long_binop` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_unop` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_intCast` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_fintrin` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_dbg` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_repeat` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_ret` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_assign` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_letIn` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_match` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_seq` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_ite` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_argsForm` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_mkStruct` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_mkEnum` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_mkArray` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_indexRead` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_indexDrop` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_indexDrop_one` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_indexWrite` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_call` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `long_loop` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `eval_steps_of_outOfFuel` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `EvalRes.withTrace_ne_broke` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `EvalRes.absorb_ne_broke` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `run_ne_broke` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `run_classify` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `run_complete` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `eval_complete` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `run_stuck_of_step_stuck` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `step_never_stuck_of_run` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `never_stuck_iff` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `eval_diverges_iff` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `dropMoved_refused` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `letAddProgram_sound` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `Examples.dynReadAffine_refused` | `RueCore.Examples` | `propext` |
 | `Examples.dynDropAffine_refused` | `RueCore.Examples` | `propext` |
