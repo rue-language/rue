@@ -101,7 +101,6 @@ impl DurableComptimeEffects {
         );
     }
 
-    #[allow(dead_code)] // publication adapters consume the canonical projection directly
     pub(crate) fn anonymous_nominals(&self) -> impl Iterator<Item = &DurableAnonymousNominal> {
         self.anonymous_nominals.values()
     }

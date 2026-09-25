@@ -1221,6 +1221,16 @@ impl DurableComptimeSession {
         self.lifecycle.observe_anonymous_nominal(nominal);
     }
 
+    /// The anonymous nominals this root has observed so far, innermost active
+    /// scope first. A declaration-time evaluator meets an anonymous type from a
+    /// type constructor only here: `const W = Wrap(u8);` publishes the shape
+    /// with its value, not with any declaration signature (RUE-2404).
+    pub(crate) fn observed_anonymous_nominals(
+        &self,
+    ) -> impl Iterator<Item = &DurableAnonymousNominal> {
+        self.lifecycle.observed_anonymous_nominals()
+    }
+
     /// Issue the expression edge for an already-known call projection. The
     /// lifecycle owns the edge policy and retains its root scope until the
     /// evaluator has fully unwound.
@@ -1635,6 +1645,15 @@ impl DurableComptimeCallLifecycle {
                     self.parent_declaration.clone(),
                 )
             })
+    }
+
+    fn observed_anonymous_nominals(&self) -> impl Iterator<Item = &DurableAnonymousNominal> {
+        self.active
+            .iter()
+            .rev()
+            .filter_map(|key| self.scopes.get(key))
+            .chain(std::iter::once(&self.effects))
+            .flat_map(DurableComptimeEffects::anonymous_nominals)
     }
 
     fn current_effects_mut(&mut self) -> &mut DurableComptimeEffects {
