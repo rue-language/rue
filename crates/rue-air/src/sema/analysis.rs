@@ -428,10 +428,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
     /// Require a comparison's right operand to have its left operand's type.
     ///
-    /// A string operand is the one exception: `str`, `Str(N)` and `StrBuf`
-    /// compare with one another by content (4.3:3), so a string-family left
-    /// operand admits any string-family right operand, and any other right
-    /// operand is a mismatch. Without that second half a `StrBuf` left
+    /// A string operand is the one exception. The language requires both
+    /// operands to have the same type (4.3:1), and inference enforces that
+    /// first; this backstop only admits any string-family right operand for
+    /// a string-family left one, so the literal and view coercions inference
+    /// already approved are not re-rejected here. Any other right operand is
+    /// a mismatch. Without that second half a `StrBuf` left
     /// operand handed a four-word struct to `StrBuf::equals_borrowed`, which
     /// read it as a view (RUE-2438).
     pub(crate) fn require_comparison_operand(

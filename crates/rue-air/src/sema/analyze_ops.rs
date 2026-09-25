@@ -595,9 +595,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     // Logical operations: And, Or
     // ========================================================================
 
-    /// Analyze a logical operator instruction.
-    ///
-    /// Handles: And, Or
     /// Unary `-` requires a signed integer (i8/i16/i32/i64/isize) or a
     /// floating-point operand. Reject unsigned integers (no negative range),
     /// bool, and every other type. `<error>`/`never` pass through so a prior
@@ -622,6 +619,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.require_operand_type(Type::BOOL, ty, self.body_rir_ref().get(operand).span)
     }
 
+    /// Analyze a logical operator instruction.
+    ///
+    /// Handles: And, Or
     pub(crate) fn analyze_logical_op(
         &mut self,
         air: &mut Air,
