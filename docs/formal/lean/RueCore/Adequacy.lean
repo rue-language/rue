@@ -70,7 +70,7 @@ inspects operand shapes in an order §6.2 does not fix. Completeness (part 3)
 is where the domain does work, because there `Step` can step where `eval`
 refuses.
 
-## Completeness: fuel counts steps
+## Completeness: fuel is a lower bound on steps
 
 Part 3 needs no converse simulation. Its one new fact is
 `eval_steps_of_outOfFuel`: if `eval` exhausts `fuel` on an expression, §6's
