@@ -5,8 +5,8 @@ import RueCore.Dynamics
 import RueCore.Step
 import RueCore.Soundness
 import RueCore.Trace
-import RueCore.TraceExact
 import RueCore.Adequacy
+import RueCore.TraceExact
 import RueCore.Examples
 import RueCore.Print
 import RueCore.Corpus
