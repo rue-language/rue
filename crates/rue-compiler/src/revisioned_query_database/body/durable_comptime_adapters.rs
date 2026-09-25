@@ -1132,6 +1132,47 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
             .and_then(|index| u32::try_from(index).ok()))
     }
 
+    fn resolve_declared_member_names(
+        &self,
+        ty: &crate::durable_semantics::DurableType,
+    ) -> Result<
+        Option<std::sync::Arc<[std::sync::Arc<str>]>>,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let crate::durable_semantics::DurableType::Nominal(key) = ty else {
+            return Ok(None);
+        };
+        let kind = match key.kind() {
+            crate::StableDefinitionKind::Struct => crate::DefinitionKind::Struct,
+            crate::StableDefinitionKind::Enum => crate::DefinitionKind::Enum,
+            _ => return Ok(None),
+        };
+        let Some(candidate) = self.provider.candidate(key.module(), key.name(), kind)? else {
+            return Ok(None);
+        };
+        let names = match self.provider.signature(candidate)? {
+            crate::semantic_query_nucleus::DeclarationSignatureProjection::Struct {
+                fields,
+                ..
+            } => fields
+                .iter()
+                .map(|(name, _)| std::sync::Arc::<str>::from(name.as_ref()))
+                .collect(),
+            crate::semantic_query_nucleus::DeclarationSignatureProjection::Enum {
+                variants,
+                ..
+            } => variants
+                .iter()
+                .map(|(name, _)| std::sync::Arc::<str>::from(name.as_ref()))
+                .collect(),
+            _ => return Ok(None),
+        };
+        Ok(Some(names))
+    }
+
     fn resolve_struct_field_type(
         &self,
         struct_type: &crate::durable_semantics::DurableType,

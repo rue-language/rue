@@ -17,6 +17,20 @@ pub enum ComptimeChildSlot<'a, N> {
     EnumPayload { variant: &'a N, index: usize },
 }
 
+/// The source shape of a structural literal, named by the engine before any
+/// child reduces so a host can hold it to its type's declaration as the body
+/// type checker does: every field of a struct literal named once and none
+/// left out, and an enum variant that exists with as many payloads as it
+/// declares (RUE-2407).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComptimeLiteralShape<'a, N> {
+    /// The field names of a struct literal, in source order.
+    StructFields(&'a [N]),
+    /// The variant a payload constructor or a bare variant path names, and
+    /// the number of payloads it supplies (zero for a bare path).
+    EnumVariant { variant: &'a N, payloads: usize },
+}
+
 #[derive(Debug)]
 pub struct ComptimeFrame<V, T, N, F, P, I> {
     pub program: P,

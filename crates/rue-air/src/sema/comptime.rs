@@ -572,6 +572,21 @@ pub trait ComptimeValueAlgebra: ComptimeDomain {
     ) -> ComptimeHostResult<Self::Value, Self::Failure> {
         Ok(value)
     }
+    /// Admit a structural literal's shape against its type's declaration
+    /// before any child reduces: `shape` is the literal's field names or its
+    /// variant and payload count, and `site` is the literal. A host reports
+    /// what the body type checker reports for the same literal (an unknown,
+    /// duplicate or missing field, an unknown variant, a payload count the
+    /// variant does not declare), and in the same order, ahead of any child's
+    /// own error (RUE-2407). The default admits every shape.
+    fn admit_comptime_literal_shape(
+        &mut self,
+        _ty: &Self::Type,
+        _shape: ComptimeLiteralShape<'_, Self::Name>,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        Ok(())
+    }
     fn resolve_comptime_array_repeat(
         &mut self,
         _ty: Self::Type,
@@ -2173,14 +2188,24 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     }
 
     /// Reduce an enum variant's payload in source order, each argument
-    /// against the declared type of its payload position.
+    /// against the declared type of its payload position, once the variant
+    /// and its payload count are admitted at the constructor's `span`.
     fn eval_enum_payload(
         &mut self,
         enum_type: &H::Type,
         variant: &H::Name,
         args: &[rue_rir::RirCallArg],
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+        span: Span,
     ) -> ComptimeOutcome<Vec<H::Value>, H::Failure> {
+        host_value!(self.host.admit_comptime_literal_shape(
+            enum_type,
+            ComptimeLiteralShape::EnumVariant {
+                variant,
+                payloads: args.len(),
+            },
+            &self.diagnostic_site(span),
+        ));
         let mut payload = Vec::with_capacity(args.len());
         for (index, arg) in args.iter().enumerate() {
             let slot = host_value!(self.child_slot_type(
@@ -2218,8 +2243,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             };
             if let Some(type_value) = type_value {
                 if self.host.type_is_enum(&type_value) {
-                    let payload =
-                        outcome_value!(self.eval_enum_payload(&type_value, &method, &args, env));
+                    let payload = outcome_value!(self.eval_enum_payload(
+                        &type_value,
+                        &method,
+                        &args,
+                        env,
+                        span
+                    ));
                     let site = self.semantic_site(inst_ref, ComptimeSiteKind::Member, span);
                     return self.host.resolve_comptime_enum_variant_with_payload(
                         type_value, method, payload, &site, span,
@@ -2240,7 +2270,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 && self.host.type_is_enum(&enum_type)
             {
                 let payload =
-                    outcome_value!(self.eval_enum_payload(&enum_type, &method, &args, env));
+                    outcome_value!(self.eval_enum_payload(&enum_type, &method, &args, env, span));
                 let site = self.semantic_site(inst_ref, ComptimeSiteKind::Member, span);
                 return self.host.resolve_comptime_enum_variant_with_payload(
                     enum_type, method, payload, &site, span,
@@ -4986,9 +5016,20 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     type_name,
                     span,
                 ));
+                let field_inits: Vec<_> = field_inits
+                    .into_iter()
+                    .map(|(name, field)| (self.name_from_rir(name.into()), field))
+                    .collect();
+                if let Some(ty) = ty.as_ref() {
+                    let names: Vec<_> = field_inits.iter().map(|(name, _)| name.clone()).collect();
+                    host_value!(self.host.admit_comptime_literal_shape(
+                        ty,
+                        ComptimeLiteralShape::StructFields(&names),
+                        &site,
+                    ));
+                }
                 let mut values = Vec::with_capacity(field_inits.len());
                 for (name, field) in field_inits {
-                    let name = self.name_from_rir(name.into());
                     let slot = host_value!(
                         self.child_slot_type(ty.as_ref(), ComptimeChildSlot::Field(&name))
                     );
