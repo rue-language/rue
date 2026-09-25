@@ -300,6 +300,19 @@ pub(crate) trait DurableComptimeSemanticAuthority {
         Ok(None)
     }
 
+    /// The declared field names of a struct, or variant names of an enum,
+    /// in declaration order; `None` when `ty` is not a nominal whose
+    /// declaration is known here, so its literals' shapes are not checked.
+    fn resolve_declared_member_names(
+        &self,
+        _ty: &DurableType,
+    ) -> Result<
+        Option<Arc<[Arc<str>]>>,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
+        Ok(None)
+    }
+
     fn resolve_struct_field_type(
         &self,
         _struct_type: &DurableType,
@@ -560,6 +573,16 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
     {
         self.authority
             .resolve_struct_field_index(struct_type, field)
+    }
+
+    pub(super) fn resolve_declared_member_names(
+        &self,
+        ty: &DurableType,
+    ) -> Result<
+        Option<Arc<[Arc<str>]>>,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
+        self.authority.resolve_declared_member_names(ty)
     }
 
     pub(super) fn resolve_struct_field_type(

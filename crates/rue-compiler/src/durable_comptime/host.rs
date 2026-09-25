@@ -303,6 +303,95 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
         }
     }
 
+    /// Admit a structural literal's shape against its type's declaration,
+    /// before any child reduces, as the body type checker does: a struct
+    /// literal names each field once (an unknown field is E0401, a repeated
+    /// one E0402, in source order) and leaves none out (E0400); an enum
+    /// constructor or bare variant path names a declared variant (E0420)
+    /// with the payload count it declares (E0207). Each is reported on the
+    /// literal, which is where the body path reports it. This is the shape
+    /// half of the rule [`Self::admit_child_value`] completes per child.
+    fn admit_literal_shape(
+        &self,
+        ty: &DurableType,
+        shape: rue_air::ComptimeLiteralShape<'_, DurableComptimeName>,
+        site: &DurableComptimeDiagnosticSite,
+    ) -> rue_air::ComptimeHostResult<(), DurableComptimeHostFailure> {
+        let Some(members) = self
+            .services
+            .resolve_declared_member_names(ty)
+            .map_err(durable_provider_error)?
+        else {
+            return Ok(());
+        };
+        let reject = |kind| {
+            Err(durable_host_error(DurableComptimeFailure::kind_at_site(
+                site, kind,
+            )))
+        };
+        let type_name = durable_type_diagnostic_name(ty);
+        match shape {
+            rue_air::ComptimeLiteralShape::StructFields(fields) => {
+                let mut named = vec![false; members.len()];
+                for field in fields {
+                    let Some(index) = members
+                        .iter()
+                        .position(|member| **member == *field.as_str())
+                    else {
+                        return reject(rue_error::ErrorKind::UnknownField {
+                            struct_name: type_name,
+                            field_name: field.as_str().to_string(),
+                        });
+                    };
+                    if std::mem::replace(&mut named[index], true) {
+                        return reject(rue_error::ErrorKind::DuplicateField {
+                            struct_name: type_name,
+                            field_name: field.as_str().to_string(),
+                        });
+                    }
+                }
+                let missing_fields: Vec<String> = members
+                    .iter()
+                    .zip(named)
+                    .filter(|(_, named)| !named)
+                    .map(|(member, _)| member.to_string())
+                    .collect();
+                if missing_fields.is_empty() {
+                    return Ok(());
+                }
+                reject(rue_error::ErrorKind::MissingFields(Box::new(
+                    rue_error::MissingFieldsError {
+                        struct_name: type_name,
+                        missing_fields,
+                    },
+                )))
+            }
+            rue_air::ComptimeLiteralShape::EnumVariant { variant, payloads } => {
+                let Some(index) = members
+                    .iter()
+                    .position(|member| **member == *variant.as_str())
+                else {
+                    return reject(rue_error::ErrorKind::UnknownVariant {
+                        enum_name: type_name,
+                        variant_name: variant.as_str().to_string(),
+                    });
+                };
+                let declared = self
+                    .services
+                    .resolve_enum_variant_payload_types(ty, index as u32)
+                    .map_err(durable_provider_error)?
+                    .len();
+                if declared == payloads {
+                    return Ok(());
+                }
+                reject(rue_error::ErrorKind::WrongArgumentCount {
+                    expected: declared,
+                    found: payloads,
+                })
+            }
+        }
+    }
+
     #[allow(dead_code)]
     fn program_rir(
         &self,
@@ -1292,6 +1381,16 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         Ok(value)
     }
 
+    fn admit_comptime_literal_shape(
+        &mut self,
+        ty: &Self::Type,
+        shape: rue_air::ComptimeLiteralShape<'_, Self::Name>,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<(), Self::Failure> {
+        let site = self.diagnostic_site(site);
+        self.admit_literal_shape(ty.as_ref(), shape, &site)
+    }
+
     fn resolve_comptime_array_repeat(
         &mut self,
         ty: Self::Type,
@@ -1746,6 +1845,27 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
     ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
         if let EvaluatedSemanticConst::Value(value) = &base {
             if let DurableConstValue::Type(enum_type) = &value.value {
+                // A bare path names a declared variant that has no payload,
+                // as `E.A(..)` names one with the payloads it declares: a
+                // member path cannot manufacture a payload, since that would
+                // publish an invalid enum value.
+                let diagnostic = self
+                    .services
+                    .durable_session()
+                    .diagnostic_site(site.program(), site.span())
+                    .expect(
+                        "durable AIR diagnostic must reference a registered declaration program",
+                    );
+                if let Err(error) = self.admit_literal_shape(
+                    enum_type,
+                    rue_air::ComptimeLiteralShape::EnumVariant {
+                        variant: &field,
+                        payloads: 0,
+                    },
+                    &diagnostic,
+                ) {
+                    return durable_host_error_outcome(error);
+                }
                 match self.services.type_is_copy(enum_type) {
                     Ok(true) => {}
                     Ok(false) => {
@@ -1769,28 +1889,6 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
                         return durable_host_error_outcome(durable_provider_error(error));
                     }
                 };
-                let payload_types = match self
-                    .services
-                    .resolve_enum_variant_payload_types(enum_type, index)
-                {
-                    Ok(payload_types) => payload_types,
-                    Err(error) => {
-                        return durable_host_error_outcome(durable_provider_error(error));
-                    }
-                };
-                // A payload-bearing variant needs an explicit constructor
-                // call.  A member path cannot silently manufacture its
-                // payload, since that would publish an invalid enum value.
-                if !payload_types.is_empty() {
-                    return rue_air::ComptimeOutcome::HostFailure(durable_host_failure(
-                        DurableComptimeFailure::failure(SemanticNucleusFailure::Diagnostic(
-                            rue_error::ErrorKind::WrongArgumentCount {
-                                expected: payload_types.len(),
-                                found: 0,
-                            },
-                        )),
-                    ));
-                }
                 return EvaluatedSemanticConst::aggregate_enum(
                     DurableComptimeType(enum_type.clone()),
                     index,
