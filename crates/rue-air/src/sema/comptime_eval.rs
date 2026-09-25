@@ -2165,6 +2165,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             enabled: attribution_enabled,
             ..ComptimePrecomputeAttribution::default()
         };
+        let inline_heads = self.inline_ctor_head_candidates(body, &mut attribution)?;
         let mut discovered = PrecomputedTypeLocals::default();
         let mut eval_types: AHashMap<Spur, Type> = type_subst.cloned().unwrap_or_default();
         let eval_values: AHashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
@@ -2173,6 +2174,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut local_modules = LocalModuleScope::default();
         self.walk_comptime_type_locals(
             body,
+            &inline_heads,
             &mut discovered,
             &mut eval_types,
             &eval_values,
@@ -2182,6 +2184,61 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             &mut attribution,
         )?;
         Ok((discovered, attribution))
+    }
+
+    /// The inline type-constructor heads (`F(args).Variant(..)`,
+    /// `F(args) { .. }`; RUE-596, spec 4.14:23) reachable from this body,
+    /// which [`walk_comptime_type_locals`] pre-reduces to their concrete
+    /// struct/enum types before HM inference runs (RUE-599).
+    ///
+    /// The constraint generator has no comptime interpreter, so an inline
+    /// head left the construction's arguments unconstrained — an integer
+    /// payload literal then defaulted to `i32` and could no longer satisfy a
+    /// wider declared payload type (`Result(i64, i32).Ok(41)` → E0206), even
+    /// though the bound-alias form (`let R = Result(i64, i32); R.Ok(41)`)
+    /// typed it correctly. The reductions are keyed by the head's own
+    /// `InstRef` for the generator to look up.
+    ///
+    /// The scan follows only instructions reachable from this body and stops
+    /// at nested declaration owners. A module RIR contains every body in that
+    /// source file; scanning that whole arena once per body would multiply
+    /// unrelated work by the number of declarations in the module. The walk
+    /// visits a superset of the scanned instructions, so it meets every
+    /// candidate.
+    ///
+    /// [`walk_comptime_type_locals`]: Self::walk_comptime_type_locals
+    fn inline_ctor_head_candidates(
+        &mut self,
+        body: InstRef,
+        attribution: &mut ComptimePrecomputeAttribution,
+    ) -> CompileResult<AHashSet<InstRef>> {
+        // The body RIR index walk already censused the whole arena for these
+        // shapes. Zero occurrences anywhere proves the reachability scan below
+        // — whose candidates are a subset of the arena's — would collect
+        // nothing, so the common candidate-free body skips the scan outright.
+        if self.body_inline_ctor_head_candidates() == 0 {
+            return Ok(AHashSet::new());
+        }
+        // A head is the receiver of a `.NAME(..)` path whose receiver is
+        // itself a call (`F(args).Ok(x)`, or module-qualified
+        // `m.F(args).Ok(x)`, which RIR spells as a nested MethodCall), or a
+        // struct literal's explicit `ctor_head`. Runtime shapes like
+        // `foo(x).bar()` are collected too but fail the reduction cheaply
+        // (the comptime engine rejects callees with runtime parameters).
+        let (candidates, scan) = inline_ctor_head_candidates_with_work_checked(
+            self.body_rir_ref(),
+            body,
+            attribution.enabled,
+            || self.check_canceled(),
+        )?;
+        if attribution.enabled {
+            attribution.inline_scan_bodies += 1;
+            attribution.inline_scan_pops += scan.pops;
+            attribution.inline_scan_child_edges += scan.child_edges;
+            attribution.inline_raw_candidates += scan.raw_candidates;
+            attribution.inline_final_candidates += candidates.len() as u64;
+        }
+        Ok(candidates.into_iter().collect())
     }
 
     /// In-order walk over the current body's expressions for
@@ -2200,10 +2257,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// rooted at a module-typed binding from that module, so `let b: m.S`
     /// and the heads `m.Option(u64)` and `let T = m.Option(u64)` reduce here
     /// as they do through a file-level `const m` (10.4:1, RUE-2426).
+    ///
+    /// Each inline constructor head in `inline_heads` is reduced when the walk
+    /// reaches it, under the aliases and modules in scope there. Reducing
+    /// heads afterwards through a name-flattened view let a same-named
+    /// binding elsewhere in the body stand in for the one in scope, so
+    /// `let m = b; { let m = a; } m.P(u64).V(3)` typed the payload from
+    /// `a` (RUE-2426).
     #[allow(clippy::too_many_arguments)]
     fn walk_comptime_type_locals(
         &mut self,
         inst_ref: InstRef,
+        inline_heads: &AHashSet<InstRef>,
         discovered: &mut PrecomputedTypeLocals,
         eval_types: &mut AHashMap<Spur, Type>,
         eval_values: &AHashMap<Spur, ConstValue>,
@@ -2215,6 +2280,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.check_canceled()?;
         if attribution.enabled {
             attribution.alias_nodes_visited += 1;
+        }
+        if inline_heads.contains(&inst_ref) {
+            let started = attribution.enabled.then(Instant::now);
+            if attribution.enabled {
+                attribution.inline_eval_attempts += 1;
+            }
+            let result = self.try_evaluate_const_with_subst(inst_ref, eval_types, eval_values);
+            if let Some(started) = started {
+                attribution.eval_provider_ns = attribution
+                    .eval_provider_ns
+                    .saturating_add(elapsed_ns(started));
+            }
+            if let Some(ConstValue::Type(ty)) = result
+                && (ty.is_enum() || ty.as_struct().is_some())
+            {
+                if attribution.enabled {
+                    attribution.inline_type_successes += 1;
+                }
+                discovered.inline_ctor_head_types.insert(inst_ref, ty);
+            }
         }
         match &self.body_rir_ref().get(inst_ref).data {
             InstData::Block { instructions } => {
@@ -2231,6 +2316,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         .expect("the statement count came from this block payload");
                     self.walk_comptime_type_locals(
                         stmt,
+                        inline_heads,
                         discovered,
                         eval_types,
                         eval_values,
@@ -2281,6 +2367,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
                 self.walk_comptime_type_locals(
                     init,
+                    inline_heads,
                     discovered,
                     eval_types,
                     eval_values,
@@ -2296,7 +2383,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         let old_type = eval_types.insert(name, module);
                         let was_runtime = runtime_bindings.remove(&name);
                         frame.push((name, old_type, was_runtime));
-                        discovered.local_modules.insert(inst_ref, module);
                         return Ok(());
                     }
                     let alias = if initializer_may_evaluate_to_type_with_bindings(
@@ -2353,6 +2439,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 for child in children {
                     self.walk_comptime_type_locals(
                         child,
+                        inline_heads,
                         discovered,
                         eval_types,
                         eval_values,
@@ -2392,103 +2479,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             _ => None,
         }
     }
-
-    /// Pre-reduce inline type-constructor heads (`F(args).Variant(..)`,
-    /// `F(args) { .. }`; RUE-596, spec 4.14:23) to their
-    /// concrete struct/enum types before HM inference runs (RUE-599).
-    ///
-    /// The constraint generator has no comptime interpreter, so an inline
-    /// head left the construction's arguments unconstrained — an integer
-    /// payload literal then defaulted to `i32` and could no longer satisfy a
-    /// wider declared payload type (`Result(i64, i32).Ok(41)` → E0206), even
-    /// though the bound-alias form (`let R = Result(i64, i32); R.Ok(41)`)
-    /// typed it correctly via `comptime_local_types`. This pass reduces each
-    /// candidate head opportunistically (like
-    /// [`precompute_comptime_type_locals`], non-evaluable heads are simply
-    /// skipped and sema diagnoses them later) and returns the reductions
-    /// keyed by the head's own `InstRef` for the generator to look up.
-    ///
-    /// The scan follows only instructions reachable from this body and stops
-    /// at nested declaration owners. A module RIR contains every body in that
-    /// source file; scanning that whole arena once per body would multiply
-    /// unrelated work by the number of declarations in the module.
-    /// `comptime_local_types` carries the body's `let`-bound type aliases so a
-    /// head like `Result(T, i32)` with `let T = i64;` reduces.
-    ///
-    /// [`precompute_comptime_type_locals`]: Self::precompute_comptime_type_locals
-    pub(crate) fn precompute_inline_ctor_head_types(
-        &mut self,
-        body: InstRef,
-        type_subst: Option<&AHashMap<Spur, Type>>,
-        value_subst: Option<&AHashMap<Spur, ConstValue>>,
-        comptime_local_types: &AHashMap<Spur, Type>,
-        attribution_enabled: bool,
-    ) -> CompileResult<(AHashMap<InstRef, Type>, ComptimePrecomputeAttribution)> {
-        // The body RIR index walk already censused the whole arena for these
-        // shapes. Zero occurrences anywhere proves the reachability scan below
-        // — whose candidates are a subset of the arena's — would collect
-        // nothing, so the common candidate-free body skips the scan outright.
-        if self.body_inline_ctor_head_candidates() == 0 {
-            return Ok((
-                AHashMap::new(),
-                ComptimePrecomputeAttribution {
-                    enabled: attribution_enabled,
-                    ..ComptimePrecomputeAttribution::default()
-                },
-            ));
-        }
-        // A head is the receiver of a `.NAME(..)` path whose receiver is
-        // itself a call (`F(args).Ok(x)`, or module-qualified
-        // `m.F(args).Ok(x)`, which RIR spells as a nested MethodCall), or a
-        // struct literal's explicit `ctor_head`. Runtime shapes like
-        // `foo(x).bar()` are collected too but fail the reduction cheaply
-        // (the comptime engine rejects callees with runtime parameters).
-        let (candidates, scan) = inline_ctor_head_candidates_with_work_checked(
-            self.body_rir_ref(),
-            body,
-            attribution_enabled,
-            || self.check_canceled(),
-        )?;
-        let mut attribution = ComptimePrecomputeAttribution {
-            enabled: attribution_enabled,
-            inline_scan_bodies: u64::from(attribution_enabled),
-            inline_scan_pops: scan.pops,
-            inline_scan_child_edges: scan.child_edges,
-            inline_raw_candidates: scan.raw_candidates,
-            inline_final_candidates: if attribution_enabled {
-                candidates.len() as u64
-            } else {
-                0
-            },
-            ..ComptimePrecomputeAttribution::default()
-        };
-        let mut eval_types: AHashMap<Spur, Type> = type_subst.cloned().unwrap_or_default();
-        eval_types.extend(comptime_local_types);
-        let eval_values: AHashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
-        let mut reduced = AHashMap::new();
-        for head in candidates {
-            self.check_canceled()?;
-            let started = attribution.enabled.then(Instant::now);
-            if attribution.enabled {
-                attribution.inline_eval_attempts += 1;
-            }
-            let result = self.try_evaluate_const_with_subst(head, &eval_types, &eval_values);
-            if let Some(started) = started {
-                attribution.eval_provider_ns = attribution
-                    .eval_provider_ns
-                    .saturating_add(elapsed_ns(started));
-            }
-            if let Some(ConstValue::Type(ty)) = result
-                && (ty.is_enum() || ty.as_struct().is_some())
-            {
-                if attribution.enabled {
-                    attribution.inline_type_successes += 1;
-                }
-                reduced.insert(head, ty);
-            }
-        }
-        Ok((reduced, attribution))
-    }
 }
 
 /// The `let` bindings a body's pre-inference walk resolved, keyed by the
@@ -2500,10 +2490,9 @@ pub(crate) struct PrecomputedTypeLocals {
     /// Local annotations resolved in their lexical and specialization context:
     /// the concrete expected type for the binding's initializer.
     pub(crate) local_annotations: AHashMap<InstRef, Type>,
-    /// `let` bindings whose initializer names a module (`let m =
-    /// @import("x.rue")`): the module's type, which a path rooted at the
-    /// binding resolves from (RUE-2426).
-    pub(crate) local_modules: AHashMap<InstRef, Type>,
+    /// Inline type-constructor heads reduced in their lexical scope, keyed
+    /// by the head instruction (see `inline_ctor_head_candidates`).
+    pub(crate) inline_ctor_head_types: AHashMap<InstRef, Type>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]

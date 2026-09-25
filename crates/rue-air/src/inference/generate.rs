@@ -496,7 +496,7 @@ pub struct ConstraintGenerator<'a> {
     /// Inline type-constructor heads (`F(args).Variant(..)`, `F(args) { .. }`;
     /// RUE-596, spec 4.14:23) pre-reduced by sema to their
     /// concrete struct/enum types, keyed by the head's own `InstRef` — the
-    /// per-instruction analogue of `comptime_local_types` for heads that have
+    /// per-instruction analogue of the `let`-bound alias map for heads that have
     /// no `let`-bound name. Consulted so construction arguments get their
     /// declared payload/parameter constraints; without it an integer payload
     /// literal defaulted to `i32` and could not satisfy a wider declared type
