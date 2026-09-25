@@ -252,12 +252,13 @@ def ledgerHtml (P : Program) (rows : List (Nat × Step)) (res : EvalRes) : Strin
     ("One row per owned identity: the step that minted it, the steps that ended it " ++
      "(a drop marker, a discarded temporary, a consumption), and the steps whose " ++
      "destructor ran on it. <code>drop_exactly_once</code> is one entry in the ended " ++
-     "column per identity, and the step numbers there are the order " ++
-     "<code>drop_order</code> fixes; [n.k] is the k-th end of step n, when one step " ++
-     "ends several values.") ++
+     "column per identity. Read in row order, and [n.k] (the k-th end of row n) " ++
+     "inside a row, the ends are the trace's order, which <code>drop_order</code> " ++
+     "fixes: a value's destructors inside its drop in §6.11's order, and cells " ++
+     "last-in first-out.") ++
   (if es.isEmpty then "" else
     "<table class=\"trace\"><thead><tr><th>identity</th><th>minted</th><th>ended</th>" ++
-    "<th>destructor</th><th>ended</th></tr></thead><tbody>" ++
+    "<th>destructor</th><th>verdict</th></tr></thead><tbody>" ++
     String.intercalate "" (es.map (fun e =>
       tag "tr" (tagc "td" "mono" ("#" ++ toString e.id) ++
         tag "td" (refs e.minted.toList) ++

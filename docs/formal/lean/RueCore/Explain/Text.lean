@@ -150,10 +150,11 @@ def ledgerLines (P : Program) (rows : List (Nat × Step)) (res : EvalRes) : List
   ["One line per owned identity: the step that minted it, the steps that ended",
    "it (a drop marker, a discarded temporary, a consumption), and the steps whose",
    "destructor ran on it. `drop_exactly_once` is one entry in the ended column",
-   "per identity, and the step numbers there are the order `drop_order` fixes;",
-   "`[n.k]` is the k-th end of step n, when one step ends several values.", ""] ++
+   "per identity. Read in row order, and `[n.k]` (the k-th end of row n) inside a",
+   "row, the ends are the trace's order, which `drop_order` fixes: a value's",
+   "destructors inside its drop in §6.11's order, and cells last-in first-out.", ""] ++
   (if es.isEmpty then [] else
-    ["  " ++ pad 6 "id" ++ pad 8 "minted" ++ pad 34 "ended" ++ pad 12 "destructor" ++ "ended",
+    ["  " ++ pad 6 "id" ++ pad 8 "minted" ++ pad 34 "ended" ++ pad 12 "destructor" ++ "verdict",
      "  " ++ bar '─' 72] ++ es.map line ++ [""]) ++
   para 2 76 (Ledger.summary P.decls res es)
 
