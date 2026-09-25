@@ -3,8 +3,8 @@
 This file grounds the formal core's terminology in the programming-languages
 literature. The calculus ([01-core-calculus.md](01-core-calculus.md)), the
 metatheory ([03-metatheory.md](03-metatheory.md)) and the mechanization
-([lean/](lean/README.md)) draw on eight subfields. For each one, this file
-records:
+([lean/](lean/README.md)) draw on eight subfields, §§1–8, and on some
+general mathematics, §9. For each one, this file records:
 
 - the canonical sources;
 - the accepted terms, with the source that defines or uses each;
@@ -342,7 +342,8 @@ annotation. State the order's direction every time it is used.
 Rust Reference (*Destructors*, *Expressions*, *Glossary*, *Patterns*); the
 Rustonomicon (*Drop Flags*, *Destructors*); the rustc-dev-guide (*Move paths*,
 *Drop elaboration*); the Polonius book (*Atoms*); the Rust Book §4.1; Swift
-SE-0176 (*Enforce Exclusive Access to Memory*).
+SE-0176 (*Enforce Exclusive Access to Memory*); the CWE entries 416, 415 and
+401; Hicks 2014; ISO C N1570 §6.8.
 
 ### Accepted terms
 
@@ -368,6 +369,11 @@ SE-0176 (*Enforce Exclusive Access to Memory*).
 | substructural (context) | RustBelt's typing context is substructural | RustBelt §2, §3.3 |
 | law of exclusivity | A modification of a variable must be exclusive with any other access to it | Swift SE-0176, which takes the name from the Swift Ownership Manifesto |
 | ownership / sharing predicate | `⟦τ⟧.own`, `⟦τ⟧.shr` | RustBelt §4 |
+| use after free | The program "reuses or references memory after it has been freed". Alternate terms: dangling pointer, UAF | CWE-416 |
+| double free | The program "calls free() twice on the same memory address" | CWE-415 |
+| memory leak | Allocated memory is not released after its last use, so it cannot be reused. CWE's title is "Missing Release of Memory after Effective Lifetime", and it discourages "memory leak" because the phrase also names disclosure of memory contents | CWE-401 |
+| memory safety | No agreed formal definition. The common one: an execution is memory safe when no memory access error occurs (buffer overflow, null pointer dereference, use after free, use of uninitialized memory, illegal free). Hicks's own: no access to undefined (unallocated or freed) memory, with pointers as capabilities. Hicks counts leaks as outside memory safety | Hicks 2014 (the post, and his reply in its comments) |
+| full expression | An expression that is not part of another expression or of a declarator. There is a sequence point between one full expression and the next | C11 N1570 §6.8¶4 |
 
 Rust's own documentation does not call Rust "affine": the word occurs 0 times
 in the Rust Reference, the Book, the Rustonomicon and the rustc-dev-guide
@@ -405,6 +411,12 @@ in the Rust Reference, the Book, the Rustonomicon and the rustc-dev-guide
 | the dynamic `⊘` skip during a drop walk | the job drop flags do: conditional and open drops. GUIDE already calls it a per-element drop flag | partial: the same job, but the state lives in the cell rather than in a flag |
 | `Owned` / `MovedOut` (Σ's two states, §5); the `Borrowed` place-use mode; `inout`/`borrow` parameters | owner; moved from; borrow / loan; unique / shared reference | partial |
 | "law of exclusivity" (§5.4) | law of exclusivity (Swift SE-0176); in Rust terms, unique (`mut`/`uniq`) vs shared (`shr`/`shrd`) references | clear for the Swift term |
+| "memory safety", "the memory-safety-without-GC claim" (README; 01 §7: "These seven are the memory-safety-without-GC claim, decomposed") | memory safety (Hicks 2014): no memory access error | partial: the field has no single definition. Ours is a list of theorems, and two of them go past Hicks's reading: leak-freedom, which he puts outside memory safety, and linear values consumed exactly once |
+| "No use-after-free" (01 §7; the metatheory's heading, not yet mechanized): no reduction applies a §6.13.1 machine operation to a dead buffer allocation | use after free (CWE-416) | clear, for buffers: it is stated only over §6.13's allocation store |
+| "No double-free", `no_double_free` (01 §7; the metatheory): no destructor runs twice, and no identity is freed twice in a trace | double free (CWE-415) | partial: CWE's is one `free()` of the same address twice; ours counts destructor runs and `drop`/`dropTemp` events per value identity |
+| "No use-after-drop", `no_use_after_drop` (01 §7; the metatheory): no evaluation reads a retired (`†`) cell | use after free (CWE-416), for a dropped binding's cell | partial: the same kind of error. "Drop" is Rust's word (Ref. *Destructors*) for what CWE calls freeing |
+| "no leak of drops" (01 §7; the metatheory; `drop_exactly_once`, `Tidy`): every owned, droppable, non-moved place is dropped exactly once, at the end of its scope | memory leak (CWE-401) is the failure of the "at least once" half | partial: ours also has the "at most once" half, and it counts drops (destructor runs), not memory released |
+| "full expression" (01 §5.8, RUE-1279: the extent of an accessor loan) | full expression (C11 N1570 §6.8¶4) | partial: the same syntactic notion, an expression not inside another, used here for a loan's extent; C uses it for sequence points |
 
 ---
 
@@ -485,7 +497,9 @@ Regehr et al. 2012 (C-Reduce); Claessen & Hughes 2000 (QuickCheck); Barr et
 al. 2015; Chen et al. 2020 (survey; numbering below is from its 2019
 preprint); Disselkoen et al. 2024 (Cedar); Leroy
 2009 (CACM) and 2009 (JAR); Kumar et al. 2014 (CakeML); Pnueli, Siegel &
-Singerman 1998; Necula 2000; the libFuzzer documentation.
+Singerman 1998; Necula 2000; the libFuzzer documentation; DeMillo, Lipton &
+Sayward 1978; Jia & Harman 2011; Beer, Ben-David, Eisner & Rodeh 2001;
+RFC 2119.
 
 ### Accepted terms
 
@@ -513,6 +527,16 @@ Singerman 1998; Necula 2000; the libFuzzer documentation.
 | certifying compiler | A compiler that emits a proof alongside its code; only the client-side checker is trusted | Leroy CACM §2.2 (Necula §1 mentions one, the Touchstone compiler) |
 | forward / backward simulation | Source behaviors are preserved / target behaviors are allowed by the source. Backward simulation is also called refinement | Leroy JAR §2.1 |
 | trusted computing base | What must be trusted for a guarantee to hold | CakeML §1 |
+| program mutation; mutation; mutant | Judge how adequate a test set is by running it on *mutations* of the program: copies that differ from it by one simple error (for example `.LE.` replaced by `.EQ.`) | DeMillo et al. 1978, p. 36 |
+| dead / live mutant; kill | A mutant is *dead* when the test data gives it a result different from the program's, and *live* otherwise; testers try to *kill* the live ones | DeMillo et al. 1978, pp. 36–37 |
+| killed / survived | A mutant is killed when its result differs from the original's on some test, and has survived otherwise. The later, standard names for dead and live | Jia & Harman §II.B |
+| equivalent mutant | A mutant that always produces the same output as the original program, so no test can kill it. DeMillo et al. describe the case ("live mutants that are equivalent to P") without the compound noun | Jia & Harman §II.B; DeMillo et al. 1978, p. 36 |
+| mutation score | The number of killed mutants divided by the number of non-equivalent mutants | Jia & Harman §II.B |
+| coupling effect | Test data that distinguishes all programs differing from a correct one by simple errors also distinguishes more complex errors. An empirical principle, not a theorem | DeMillo et al. 1978, p. 35; Jia & Harman §II.A |
+| mutation testing; mutation analysis | Jia & Harman's names for the method; the analysis is the step that runs the mutants | Jia & Harman §§I, II.B |
+| vacuity; vacuous | A formula is vacuous in a model when one of its sub-formulas does not affect its truth there. Antecedent failure, an implication that holds because its premise never does, is the simplest case | Beer et al. 2001, §3 Def. 2; abstract |
+| interesting witness | For a formula that holds non-vacuously, a non-trivial example of it holding: "it proves non-vacuity, while a counter-example proves non-validity" | Beer et al. 2001, §4, Def. 20 |
+| MUST, MUST NOT (key words) | An absolute requirement / an absolute prohibition of a specification | RFC 2119 §§1–2 |
 
 ### Symbols
 
@@ -571,6 +595,10 @@ trusts the runner, the printer and the model.
 | "verdict" (the checker's accept or reject on a case) | no counterpart. In runtime verification a verdict is a monitor's output (§6), a different object | none |
 | "model gap", "gap registry" (01 §6.13.6; these belong to `rue-oracle`, not to the Lean model) | no verified counterpart | none |
 | "red case", "disagreement" | a candidate for a bug-exposing test (McKeeman: the results differ, or one system hangs or crashes) | partial |
+| "caught" (a sensitivity drill: a re-introduced historical compiler bug that some bridge case notices; REDTEAM.md "caught or not") | killed (Jia & Harman); dead (DeMillo et al.). The re-introduced bug plays the role of a mutant of the compiler | partial: the mutant is a real past bug, not the output of a mutation operator, and the test set is the bridge corpus |
+| "mutation" of the definitions (REDTEAM.md: "drop a premise or weaken a rule and see whether any theorem or corpus case notices"; RUE-2465) | program mutation (DeMillo et al.), applied to the model's definitions; the mutants that survive are the live ones | clear |
+| "non-vacuity witness" (REDTEAM.md: a program meeting every hypothesis, on which the conclusion is non-trivial) | interesting witness (Beer et al.), which shows that a formula holds non-vacuously | partial: the same role for a theorem's hypotheses, but Beer et al. define it for temporal formulas checked against a model, and their witness is a model or a path, not a program |
+| "sharpness counter-example" (REDTEAM.md: a program just outside a hypothesis, showing the hypothesis is not slack) | no verified counterpart | none |
 
 ---
 
@@ -602,6 +630,9 @@ documentation (`Lean.ReducibilityAttrs`,
 | structural / well-founded recursion | Recursive calls on strict subterms / on a decreasing measure (`termination_by`, `decreasing_by`) | Reference §7.6 |
 | `partial` | Opaque to the kernel: never unfolded, so its body cannot be reasoned about | Reference §7.6 |
 | inductively defined proposition | An inductive type in `Prop` | TPIL §7.3 |
+| `structure` | An inductive type with exactly one constructor and no indices; Lean generates a projection function for each field | Reference §4.4.2 |
+| `mutual` block; mutual recursion | Definitions that may mention one another are declared together in `mutual … end` | Reference §7.6.1 |
+| module; `public import`; `@[expose]` | A source file whose header begins with `module` opts in to separating public from private information; a definition's body is private unless exposed, and `@[expose] public section` exposes the rest of a file | Reference §5.3 ("If a source file's header begins with `module` …"), §5.4 "Modules and Visibility", §5.6.1 (the porting recipe) |
 | `decide` / `native_decide` | Evaluates a `Decidable` instance in the kernel / in compiled code, which adds an axiom. Up to 4.28 every use showed up as the one axiom `Lean.trustCompiler`; from 4.29 each use gets its own auto-generated axiom | `Init.Tactics`; Reference, "Validating a Lean Proof"; 4.29.0 release notes |
 | `noncomputable` | Required on definitions whose non-proof (data-producing) code depends on axioms such as `Classical.choice`; proofs may use axioms freely | Reference §8.3; TPIL |
 
@@ -629,6 +660,46 @@ equality; write "definitionally equal".
 | judgments as inductive types (GUIDE §1) | inductively defined propositions (TPIL) | clear |
 | `eval` as a total function made terminating by fuel | a terminating definition (structural or well-founded recursion), as opposed to `partial` | clear |
 
+## 9. General mathematics
+
+**Sources:** Davey & Priestley 2002 (contents only); Harper 2016 (PFPL);
+Hutton 1999; Boute 1992 **(record)**, with Leijen 2001 for its content.
+
+### Accepted terms
+
+| Term | Meaning | Source |
+|---|---|---|
+| ordered set; lattice; complete lattice | A set with an order; one in which every two elements have a join and a meet; one in which every subset has them | Davey & Priestley ch. 1 "Ordered sets"; ch. 2 "Lattices as ordered sets", "Lattices as algebraic structures" (section titles seen; the text was not read) |
+| join | The least upper bound of two elements. Tov & Pucella give a product the join `⊔` of its components' qualifiers (§4 above) | Davey & Priestley ch. 2 (title seen); Tov & Pucella |
+| fixpoint; least fixpoint | A point `x` with `f(x) = x`; the least such point in the order | Davey & Priestley ch. 8 "Fixpoint theorems" (title seen) |
+| α-equivalence; α-variant | Two terms are α-equivalent when they are identical up to the choice of bound variable names; PFPL identifies terms up to it | PFPL §1.2 |
+| ill-formed / well-formed | A syntax tree that breaks a formation rule is ill-formed (§1.2); the statics derives that "an expression is well-formed of a certain type" (ch. 4) | PFPL §1.2; ch. 4 introduction |
+| judgment; inference rule; derivation; rule induction | A derivation is "a finite composition of rules, starting with axioms and ending with that judgment", a tree whose nodes are rules | PFPL §§2.1–2.4 (the quote is §2.3) |
+| fold; left fold (`foldl`) | `fold` replaces a list's nil by a value and each cons by a function (a right fold); `foldl` processes the elements left to right, from a starting value | Hutton §2, §5.1 |
+| truncated division (T-division) | The quotient is rounded toward zero, so the remainder has the dividend's sign. C99's `/` and `%` | Leijen §1.1 |
+| floored division (F-division) | The quotient is rounded toward negative infinity, so the remainder has the divisor's sign | Leijen §1.1 |
+| Euclidean division (E-definition) | The unique `q`, `r` with `q` an integer, `D = d·q + r` and `0 ≤ r < \|d\|` | Leijen §1.2, crediting Boute 1992 |
+
+### Symbols
+
+| Symbol | Reading | Variants |
+|---|---|---|
+| `a ⊔ b` | "a join b" | Tov & Pucella write `⊔` for the join of qualifiers |
+| `a =α b` | "a and b are α-equivalent" | PFPL |
+
+### Terms we currently use that differ from this
+
+| Our term | Accepted term | Confidence |
+|---|---|---|
+| "multiplicity lattice" (§3): `Copy ⊑ Affine ⊑ Linear` | a lattice: a three-element chain is one | clear for "lattice"; "multiplicity" is §4's partial term |
+| `⊔` (§3), and §5.5's `join(Σ1, …, Σn)` (`OwnSt.join`, `Ctx.join`) | join (least upper bound) | clear for §3's order. §5.5's join acts on ownership states; `join_comm`, `join_assoc` and `join_idem` prove it commutative, associative and idempotent on well-formed states |
+| "left fold" (`Ctx.joinAll`; the metatheory) | left fold (`foldl`, Hutton §5.1) | clear |
+| the loop head as the least solution of §5.7's equation (`headIter`) | least fixpoint | clear |
+| "α-renames", "α-renaming" (§2, §6.7) | α-equivalence; α-variants (PFPL §1.2) | clear |
+| "well-formed", "ill-formed" (§5: a program no rule types is ill-formed) | well-formed / ill-formed (PFPL) | clear |
+| "derivation" (a typing derivation; GUIDE §1) | derivation (PFPL §2.3) | clear |
+| "the **Euclidean** remainder" (01 §6.4: a shift amount is reduced `mod w` to `0 ≤ k < w`; `Int.emod` in `Dynamics.lean`) | the remainder of Euclidean division (Boute, through Leijen) | clear |
+
 ---
 
 ## Sources
@@ -646,24 +717,33 @@ the secondary source named alongside.
 | Atkey 2018 | R. Atkey. Syntax and Semantics of Quantitative Type Theory. LICS 2018, 56–65 | https://doi.org/10.1145/3209108.3209189 | Crossref; PDF at bentnib.org |
 | Barendregt & Wiedijk 2005 | H. Barendregt, F. Wiedijk. The Challenge of Computer Mathematics. *Phil. Trans. R. Soc. A* 363(1835):2351–2375, 2005 | https://doi.org/10.1098/rsta.2005.1650 | Crossref; the authors' preprint in the Radboud repository (https://hdl.handle.net/2066/32307) |
 | Barr et al. 2015 | E. T. Barr, M. Harman, P. McMinn, M. Shahbaz, S. Yoo. The Oracle Problem in Software Testing: A Survey. *IEEE TSE* 41(5):507–525, 2015 | https://doi.org/10.1109/TSE.2014.2372785 | Crossref; PDF of the same title |
+| Beer et al. 2001 | I. Beer, S. Ben-David, C. Eisner, Y. Rodeh. Efficient Detection of Vacuity in Temporal Model Checking. *Formal Methods in System Design* 18(2):141–163, 2001 | https://doi.org/10.1023/A:1008779610539 | Crossref; the article PDF (cs.toronto.edu/~chechik/courses05/csc2108/beer01.pdf) |
 | Bernardy et al. 2018 | J.-P. Bernardy, M. Boespflug, R. R. Newton, S. Peyton Jones, A. Spiwack. Linear Haskell: practical linearity in a higher-order polymorphic language. *PACMPL* 2(POPL), 2018 | https://arxiv.org/abs/1710.09756 | "Linear Haskell: practical linearity in a higher-order polymorphic language" |
+| Boute 1992 | R. T. Boute. The Euclidean definition of the functions div and mod. *ACM TOPLAS* 14(2):127–144, 1992 **(record)** | https://doi.org/10.1145/128861.128862 | Crossref record (the ACM PDF returned 403); content cited through Leijen 2001 |
 | Cedar 2024 | C. Disselkoen et al. How We Built Cedar: A Verification-Guided Approach. FSE Companion '24, 351–357 (pages per Crossref), 2024 (doi:10.1145/3663529.3663854) | https://arxiv.org/abs/2407.01688 | "How We Built Cedar: A Verification-Guided Approach"; the arXiv PDF's first page gives the FSE Companion venue and DOI |
 | Charguéraud 2013 | A. Charguéraud. Pretty-Big-Step Semantics. ESOP 2013, *Programming Languages and Systems*, LNCS, 41–60 | https://doi.org/10.1007/978-3-642-37036-6_3 | Crossref; author PDF (chargueraud.org/research/2012/pretty/pretty.pdf) |
 | Chen et al. 2020 | J. Chen, J. Patra, M. Pradel, Y. Xiong, H. Zhang, D. Hao, L. Zhang. A Survey of Compiler Testing. *ACM Comput. Surv.* 53(1), Art. 4, 2020 | https://doi.org/10.1145/3363562 | Crossref; 2019 preprint PDF of the same title (section numbers here are the preprint's) |
 | Claessen & Hughes 2000 | K. Claessen, J. Hughes. QuickCheck: A Lightweight Tool for Random Testing of Haskell Programs. ICFP 2000, 268–279 | https://doi.org/10.1145/351240.351266 | Crossref; PDF of the same title |
 | Clarkson & Schneider 2010 | M. R. Clarkson, F. B. Schneider. Hyperproperties. *J. Comput. Secur.* 18(6):1157–1210, 2010 | https://doi.org/10.3233/JCS-2009-0393 | "Hyperproperties" (Crossref; Cornell PDF) |
 | Confluent | Kafka Message Delivery Guarantees (Confluent documentation) | https://docs.confluent.io/kafka/design/delivery-semantics.html | "Kafka Message Delivery Guarantees" |
-| C11 | ISO/IEC 9899:201x, draft N1570, §5.1.2.3 | https://port70.net/~nsz/c/c11/n1570.html | "N1570 … ISO/IEC 9899:201x" |
+| C11 | ISO/IEC 9899:201x, draft N1570, §5.1.2.3, §6.8 | https://port70.net/~nsz/c/c11/n1570.html | "N1570 … ISO/IEC 9899:201x" |
 | CakeML 2014 | R. Kumar, M. O. Myreen, M. Norrish, S. Owens. CakeML: A Verified Implementation of ML. POPL 2014, 179–191 | https://doi.org/10.1145/2535838.2535841 | Crossref; cakeml.org/popl14.pdf |
 | C-Reduce 2012 | J. Regehr, Y. Chen, P. Cuoq, E. Eide, C. Ellison, X. Yang. Test-Case Reduction for C Compiler Bugs. PLDI 2012, 335–346 | https://doi.org/10.1145/2254064.2254104 | Crossref; preprint of the same title |
 | Csmith 2011 | X. Yang, Y. Chen, E. Eide, J. Regehr. Finding and Understanding Bugs in C Compilers. PLDI 2011, 283–294 | https://doi.org/10.1145/1993498.1993532 | Crossref; preprint of the same title |
+| CWE | MITRE. Common Weakness Enumeration 4.20: CWE-416 Use After Free; CWE-415 Double Free; CWE-401 Missing Release of Memory after Effective Lifetime | https://cwe.mitre.org/data/definitions/416.html (and 415.html, 401.html) | "CWE-416: Use After Free (4.20)"; "CWE-415: Double Free (4.20)"; "CWE-401: Missing Release of Memory after Effective Lifetime (4.20)" |
+| Davey & Priestley 2002 | B. A. Davey, H. A. Priestley. *Introduction to Lattices and Order*, 2nd ed. Cambridge University Press, 2002 | https://doi.org/10.1017/CBO9780511809088 | Crossref; the CUP book page (chapter list); a scan of the table of contents (web.flu.cas.cz/scan/323537159.pdf). Text not read |
+| DeMillo et al. 1978 | R. A. DeMillo, R. J. Lipton, F. G. Sayward. Hints on Test Data Selection: Help for the Practicing Programmer. *Computer* 11(4):34–41, 1978 | https://doi.org/10.1109/C-M.1978.218136 | Crossref; a scan of the IEEE reprint (st.cs.uni-saarland.de/edu/recommendation-systems/papers/Hints_on_Test_Data_Selection-1.pdf), read as page images |
 | Dreyer et al. 2019 | D. Dreyer, A. Timany, R. Krebbers, L. Birkedal, R. Jung. What Type Soundness Theorem Do You Really Want to Prove? SIGPLAN Blog, 2019-10-17 | https://blog.sigplan.org/2019/10/17/what-type-soundness-theorem-do-you-really-want-to-prove/ | same title |
 | Felleisen & Hieb 1992 | M. Felleisen, R. Hieb. The revised report on the syntactic theories of sequential control and state. *Theor. Comput. Sci.* 103(2):235–271, 1992 | https://doi.org/10.1016/0304-3975(92)90014-7 | OpenAlex record; the Rice TR 100-89 preprint of the same title (numbering here is the preprint's) |
 | Harper 2016 (PFPL) | R. Harper. *Practical Foundations for Programming Languages*, 2nd ed. Cambridge University Press, 2016 | https://doi.org/10.1017/CBO9781316576892 | CUP page; cs.cmu.edu/~rwh/pfpl and its abbreviated PDF |
+| Hicks 2014 | M. Hicks. What is memory safety? *The PL Enthusiast* (blog), 2014-07-21 | http://www.pl-enthusiast.net/2014/07/21/memory-safety/ (the site is gone; fetched from https://web.archive.org/web/20260831075253/http://www.pl-enthusiast.net/2014/07/21/memory-safety/) | "What is memory safety? - The PL Enthusiast" (Wayback snapshot) |
+| Hutton 1999 | G. Hutton. A tutorial on the universality and expressiveness of fold. *J. Funct. Program.* 9(4):355–372, 1999 | https://doi.org/10.1017/S0956796899003500 | Crossref; people.cs.nott.ac.uk/pszgmh/fold.pdf |
+| Jia & Harman 2011 | Y. Jia, M. Harman. An Analysis and Survey of the Development of Mutation Testing. *IEEE TSE* 37(5):649–678, 2011 | https://doi.org/10.1109/TSE.2010.62 | Crossref; author preprint of the same title (www0.cs.ucl.ac.uk/staff/mharman/tse-mutation-survey.pdf) |
 | Lamport 1977 | L. Lamport. Proving the Correctness of Multiprocess Programs. *IEEE TSE* SE-3(2):125–143, 1977 | https://doi.org/10.1109/TSE.1977.229904 | Crossref; "The Writings of Leslie Lamport" (which says this paper introduced "safety" and "liveness") |
-| Lean Reference | *The Lean Language Reference* | https://lean-lang.org/doc/reference/latest/ | "The Lean Language Reference" and its chapters 2, 4, 7.4, 7.6, 8, "Validating a Lean Proof" |
+| Lean Reference | *The Lean Language Reference* | https://lean-lang.org/doc/reference/latest/ | "The Lean Language Reference" and its chapters 2, 4 (with §4.4 "Inductive Types"), 5 "Source Files and Modules", 7.4, 7.6 "Recursive Definitions", 8, "Validating a Lean Proof" |
 | Lean 4.29.0 | Lean 4.29.0 release notes | https://lean-lang.org/doc/reference/latest/releases/v4.29.0/ | "Lean 4.29.0 (2026-03-27)" |
 | Lean API | `Lean.ReducibilityAttrs`, `Init.Tactics` | https://lean-lang.org/doc/api/Lean/ReducibilityAttrs.html | "Lean.ReducibilityAttrs"; "Init.Tactics" |
+| Leijen 2001 | D. Leijen. Division and Modulus for Computer Scientists. University of Utrecht, 2001-12-03 | https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/divmodnote-letter.pdf | "Division and Modulus for Computer Scientists" |
 | Leroy 2009a (CACM) | X. Leroy. Formal verification of a realistic compiler. *CACM* 52(7):107–115, 2009 | https://doi.org/10.1145/1538788.1538814 | Crossref; xavierleroy.org PDF |
 | Leroy 2009b (JAR) | X. Leroy. A formally verified compiler back-end. *J. Autom. Reasoning* 43(4):363–446, 2009 | https://arxiv.org/abs/0902.2137 | "A formally verified compiler back-end" |
 | Leroy & Grall 2009 | X. Leroy, H. Grall. Coinductive big-step operational semantics. *Inf. Comput.* 207(2):284–304, 2009 | https://doi.org/10.1016/j.ic.2007.12.004 (arXiv:0808.0586) | "Coinductive big-step operational semantics" (arXiv) |
@@ -684,6 +764,7 @@ the secondary source named alongside.
 | Pnueli et al. 1998 | A. Pnueli, M. Siegel, E. Singerman. Translation Validation. TACAS 1998, LNCS 1384, 151–166 | https://doi.org/10.1007/BFb0054170 | Crossref; Weizmann research-portal page |
 | Polonius | The Polonius book, "Atoms" | https://rust-lang.github.io/polonius/rules/atoms.html | "Atoms - Polonius" |
 | Reynolds 1972 | J. C. Reynolds. Definitional interpreters for higher-order programming languages. ACM '72, 717–740; reprinted *Higher-Order Symb. Comput.* 11(4):363–397, 1998 **(record)** | https://doi.org/10.1023/A:1010027404223 | Crossref records for both |
+| RFC 2119 | S. Bradner. Key words for use in RFCs to Indicate Requirement Levels. RFC 2119 (BCP 14), 1997 | https://www.rfc-editor.org/rfc/rfc2119.txt | "Key words for use in RFCs to Indicate Requirement Levels" |
 | Rust Book | *The Rust Programming Language*, §4.1 "What is Ownership?" | https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html | "What is Ownership? - The Rust Programming Language" |
 | Rust Reference | *The Rust Reference*: Destructors; Expressions; Glossary; Patterns (and the whole-book `print.html`, searched for "affine") | https://doc.rust-lang.org/reference/destructors.html | "Destructors - The Rust Reference" (and "Expressions", "Glossary", "Patterns") |
 | Rustonomicon | *The Rustonomicon*: Drop Flags; Destructors | https://doc.rust-lang.org/nomicon/drop-flags.html | "Drop Flags - The Rustonomicon" |
