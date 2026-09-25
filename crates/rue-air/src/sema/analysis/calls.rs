@@ -23,21 +23,40 @@ use ahash::AHashMap;
 /// call reaching an emitter with such a result — the callee has a runtime
 /// parameter, or its form is not reduced — has no call ABI to lower to, so it
 /// is diagnosed at the call instead of reaching codegen (RUE-2417).
-fn reject_runtime_comptime_only_result(return_type: Type, span: Span) -> CompileResult<()> {
+///
+/// `has_runtime_param_or_receiver` distinguishes the two ways a call can
+/// reach here: a genuine runtime parameter (or, for a method, its runtime
+/// `self` receiver) makes the "every parameter comptime" help accurate, but a
+/// zero-parameter or all-`comptime`-parameter callee (`fn m() -> type { .. }`,
+/// a zero-parameter associated function) already meets that condition
+/// vacuously — its body simply failed to reduce — so the help would point at
+/// a condition the call already satisfies (RUE-2417 review).
+fn reject_runtime_comptime_only_result(
+    return_type: Type,
+    has_runtime_param_or_receiver: bool,
+    span: Span,
+) -> CompileResult<()> {
     if return_type.is_comptime_type() || return_type.is_module() {
-        return Err(CompileError::new(
+        let reason = if has_runtime_param_or_receiver {
+            "this call produces a type value at runtime; a `type` result requires a \
+             fully-comptime call"
+        } else {
+            "this function's body does not reduce to a type at compile time"
+        };
+        let mut err = CompileError::new(
             ErrorKind::ComptimeEvaluationFailed {
-                reason: "type values cannot exist at runtime, and this call producing one \
-                         cannot be evaluated at compile time"
-                    .to_string(),
+                reason: reason.to_string(),
             },
             span,
-        )
-        .with_help(
-            "a call to a function returning `type` is evaluated at compile time only when \
-             every parameter of the function is `comptime` and every argument is \
-             compile-time known",
-        ));
+        );
+        if has_runtime_param_or_receiver {
+            err = err.with_help(
+                "a call to a function returning `type` is evaluated at compile time only when \
+                 every parameter of the function is `comptime` and every argument is \
+                 compile-time known",
+            );
+        }
+        return Err(err);
     }
     Ok(())
 }
@@ -164,6 +183,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// temporary this call materialized (RUE-953). Wrapping the *call* in that
     /// block is what puts the temporaries' scope exit — and therefore their
     /// drop — after the callee has read through the loan.
+    #[allow(clippy::too_many_arguments)]
     fn emit_call_result(
         &mut self,
         air: &mut Air,
@@ -171,10 +191,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         args: &[AirCallArg],
         temp_scope: Vec<AirRef>,
         return_type: Type,
+        has_runtime_param_or_receiver: bool,
         continues: bool,
         span: Span,
     ) -> CompileResult<AnalysisResult> {
-        reject_runtime_comptime_only_result(return_type, span)?;
+        reject_runtime_comptime_only_result(return_type, has_runtime_param_or_receiver, span)?;
         let air_ref = air.add_call(None, name, args, return_type, span)?;
         let air_ref =
             self.wrap_value_with_temp_scope(air, air_ref, return_type, span, temp_scope)?;
@@ -915,7 +936,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // below, which rejects the runtime `type` result (RUE-2417).
             }
 
-            reject_runtime_comptime_only_result(return_type, span)?;
+            let has_runtime_param = param_comptime.iter().any(|&is_comptime| !is_comptime);
+            reject_runtime_comptime_only_result(return_type, has_runtime_param, span)?;
             let air_ref = air.add_call_generic(
                 name,
                 &type_args,
@@ -940,12 +962,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         } else {
             // Regular non-generic call
             let return_type = base_return_type;
+            let has_runtime_param = param_comptime.iter().any(|&is_comptime| !is_comptime);
             let result = self.emit_call_result(
                 air,
                 name,
                 &air_args,
                 temp_scope,
                 return_type,
+                has_runtime_param,
                 continues && !return_type.is_never(),
                 span,
             )?;
@@ -1444,12 +1468,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // call meets the definition it names.
         let call_name_sym = self.method_symbol_handle(struct_id, &method_name_str, true)?;
 
+        // A method call always has a runtime `self` receiver — methods take
+        // no `comptime self` — so the "make every parameter comptime" help
+        // is always accurate here (RUE-2417 review, S2).
         let call = self.emit_call_result(
             air,
             call_name_sym,
             &air_args,
             temp_scope,
             return_type,
+            true,
             receiver_continues && args_result.continues && !return_type.is_never(),
             span,
         )?;
@@ -1619,12 +1647,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ctx,
         )?;
 
+        // Reached only when the callee is neither generic nor `-> type`
+        // (the branch above redirects both cases to `analyze_resolved_function_call`),
+        // so every declared parameter here is a runtime one (`is_generic ==
+        // params.any(is_comptime)`); a `type`/module result would mean the
+        // callee genuinely has a runtime parameter, or none at all.
+        let has_runtime_param = !param_types.is_empty();
         let result = self.emit_call_result(
             air,
             function_key,
             &air_args,
             temp_scope,
             fn_info.return_type,
+            has_runtime_param,
             continues && !fn_info.return_type.is_never(),
             span,
         )?;
@@ -1763,6 +1798,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let method_param_data = self.body_param_data(method_info.params);
         let method_param_types = method_param_data.types().to_vec();
         let method_param_modes = method_param_data.modes().to_vec();
+        let method_param_comptime = method_param_data.comptime().to_vec();
         self.validate_call_contract(
             args_range,
             &method_param_types,
@@ -1802,12 +1838,22 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // host renders both, so the call meets the definition it names.
         let call_name_sym = self.method_symbol_handle(struct_id, &function_name_str, false)?;
 
+        // This path does not attempt comptime reduction of the associated
+        // function's body (unlike `analyze_resolved_function_call`), so a
+        // zero-parameter or all-`comptime` associated function returning
+        // `type` reaches here having already met the "every parameter
+        // comptime" condition vacuously; only a genuine runtime parameter
+        // makes that help text accurate (RUE-2417 review, S2).
+        let has_runtime_param = method_param_comptime
+            .iter()
+            .any(|&is_comptime| !is_comptime);
         let result = self.emit_call_result(
             air,
             call_name_sym,
             &air_args,
             temp_scope,
             return_type,
+            has_runtime_param,
             continues && !return_type.is_never(),
             span,
         )?;

@@ -481,11 +481,11 @@ fn main() -> i32 {
 """ },
 ]
 compile_fail = true
-error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+error_contains = ["E1200", "this call produces a type value at runtime; a `type` result requires a fully-comptime call"]
 
 [[case]]
 name = "module_returning_type_call_rejected_not_ice"
-description = "A call to a `-> type` function whose body is an `@import` does not reduce in call position; it is rejected at the call rather than reaching codegen (RUE-2417)."
+description = "A call to a `-> type` function whose body is an `@import` does not reduce in call position; it is rejected at the call rather than reaching codegen, and — having zero parameters — without the runtime-parameter help, which would point at a condition the call already meets (RUE-2417)."
 args = ["main.rue", "-o", "prog"]
 files = [
   { path = "lib.rue", source = """
@@ -500,4 +500,5 @@ fn main() -> i32 {
 """ },
 ]
 compile_fail = true
-error_contains = ["E1200", "type values cannot exist at runtime, and this call producing one cannot be evaluated at compile time"]
+error_contains = ["E1200", "this function's body does not reduce to a type at compile time"]
+compile_stderr_not_contains = ["every parameter of the function is `comptime`"]
