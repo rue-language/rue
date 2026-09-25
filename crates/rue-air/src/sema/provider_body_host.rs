@@ -4159,6 +4159,8 @@ where
             .collect();
         let return_type_syntax =
             <Self as DeclarationFacts>::function_return_type_syntax(self, &info);
+        let signature_file = <Self as DeclarationFacts>::function_signature_root_file(self, &info)
+            .unwrap_or(info.file_id);
         let param_comptime_type = self
             .durable_comptime_type_flags
             .borrow()
@@ -4185,6 +4187,7 @@ where
             param_names: params.names().to_vec(),
             param_type_syntax,
             return_type_syntax,
+            signature_file,
         })
     }
     fn uncached_method_sig(&self, key: (StructId, Spur)) -> Option<MethodSig> {
