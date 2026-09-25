@@ -1409,3 +1409,125 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+[[case]]
+name = "const_anon_struct_from_type_constructor"
+spec = ["4.14:26", "6.5:2", "4.14:8"]
+description = "A constant of an anonymous struct named through a type-constructor alias reduces; its Copy fields and missing destructor make it Copy (RUE-2404)"
+source = """
+fn Wrap(comptime T: type) -> type { struct { a: T } }
+const W = Wrap(u8);
+const C: W = W { a: 42 };
+fn main() -> i32 { @intCast(C.a) }
+"""
+exit_code = 42
+
+[[case]]
+name = "const_anon_struct_with_destructor_rejected"
+spec = ["4.14:26", "6.5:2"]
+description = "An anonymous struct with a destructor is not Copy, so its literal gets the same answer a non-Copy named struct gets (RUE-2404)"
+source = """
+fn Wrap(comptime T: type) -> type { struct { a: T, drop fn(self) { } } }
+const W = Wrap(u8);
+const C: W = W { a: 42 };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1200", "structural comptime values require a Copy type"]
+
+[[case]]
+name = "const_anon_struct_non_copy_field_rejected"
+spec = ["4.14:26", "6.5:2"]
+description = "An anonymous struct with a non-Copy field is not Copy, so its literal is rejected as a structural comptime value (RUE-2404)"
+source = """
+struct N { a: u8 }
+fn Wrap(comptime T: type) -> type { struct { a: T } }
+const W = Wrap(N);
+const C: W = W { a: N { a: 42 } };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1200", "structural comptime values require a Copy type"]
+
+[[case]]
+name = "const_anon_struct_field_and_array_element"
+spec = ["4.14:26", "6.5:2", "3.11:8"]
+description = "Anonymous struct values from a type constructor reduce as fields of a Copy named struct and as array elements (RUE-2404)"
+source = """
+fn Wrap(comptime T: type) -> type { struct { a: T } }
+const W = Wrap(u8);
+@copy struct Outer { w: W, b: u8 }
+const O: Outer = Outer { w: W { a: 30 }, b: 2 };
+const A: [W; 2] = [W { a: 4 }, W { a: 6 }];
+fn main() -> i32 { @intCast(O.w.a + O.b + A[0].a + A[1].a) }
+"""
+exit_code = 42
+
+[[case]]
+name = "const_anon_struct_through_other_constants"
+spec = ["4.14:26", "6.5:2"]
+description = "An anonymous struct constant can be initialized from another constant, take constant fields in any order, and have its field read by a later constant (RUE-2404)"
+source = """
+fn Pair(comptime T: type) -> type { struct { a: T, b: T } }
+const P = Pair(u8);
+const X: u8 = 40;
+const B: P = P { b: 2, a: X };
+const C: P = B;
+const D: u8 = C.a + C.b;
+fn main() -> i32 { @intCast(D) }
+"""
+exit_code = 42
+
+[[case]]
+name = "const_anon_struct_nested_constructor"
+spec = ["4.14:26", "6.5:2", "4.14:8"]
+description = "A constant of a type constructor applied to its own application, Wrap(Wrap(u8)), reduces (RUE-2404)"
+source = """
+fn Wrap(comptime T: type) -> type { struct { a: T } }
+const W = Wrap(u8);
+const WW = Wrap(Wrap(u8));
+const C: WW = WW { a: W { a: 42 } };
+fn main() -> i32 { @intCast(C.a.a) }
+"""
+exit_code = 42
+
+[[case]]
+name = "const_anon_struct_inline_constructor_head"
+spec = ["4.14:23", "4.14:26", "6.5:2"]
+description = "A struct literal headed by an inline type-constructor call reduces at declaration time to the type that call names (RUE-2404)"
+source = """
+fn Wrap(comptime T: type) -> type { struct { a: T } }
+const W = Wrap(u8);
+const B: Wrap(u8) = Wrap(u8) { a: 40 };
+const C: W = Wrap(u8) { a: 2 };
+fn main() -> i32 { @intCast(B.a + C.a) }
+"""
+exit_code = 42
+
+[[case]]
+name = "const_anon_struct_value_parameter_constructor"
+spec = ["4.14:24", "4.14:26", "6.5:2"]
+description = "A constant of an anonymous struct from a constructor with a comptime value parameter reduces (RUE-2404)"
+source = """
+fn Arr(comptime N: i32) -> type { struct { a: [u8; N] } }
+const A = Arr(2);
+const C: A = A { a: [40, 2] };
+fn main() -> i32 { @intCast(C.a[0] + C.a[1]) }
+"""
+exit_code = 42
+
+[[case]]
+name = "const_anon_enum_variant_through_applied_alias"
+spec = ["4.14:26", "6.5:2", "6.3:19"]
+description = "A variant of an anonymous enum named through an applied type-constructor alias is a variant constructor at declaration time, with or without a payload (RUE-2396)"
+source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const O = Option([u8; 2]);
+const C: O = O.Some([200, 41]);
+const N: O = O.None;
+fn main() -> i32 {
+    let n = match N { O.Some(_) => 100, O.None => 0 };
+    match C { O.Some(a) => @intCast(a[1] + 1) + n, O.None => 0 }
+}
+"""
+exit_code = 42
