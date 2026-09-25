@@ -166,7 +166,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             call_may_continue,
             ctx,
         )?;
-        if check_operand_types {
+        // Operands of a runtime call analyzed as an inline constructor head
+        // (`f(true) { .. }`) are recovered only on the way to that head's
+        // "not a type" diagnostic (`recover_missing_ctor_head_arguments`);
+        // such a head never reaches code generation, so its operands keep
+        // that one stable diagnostic rather than an argument mismatch.
+        if check_operand_types && !ctx.recover_missing_ctor_head_arguments {
             for (((arg, air_arg), expected), mode) in args
                 .iter()
                 .zip(&operands.args)
