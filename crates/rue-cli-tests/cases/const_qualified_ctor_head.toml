@@ -1,5 +1,6 @@
 # RUE-2434: a module-qualified type-constructor head in a constant's struct
-# literal reduces as an unqualified head does (4.14:23, 4.14:26, 10.4:15).
+# literal reduces as an unqualified head does (4.14:23, 4.14:26, 10.4:15),
+# and so does one in a body `comptime {}` block or a comptime argument.
 #
 # RUE-2404 taught declaration-time evaluation to reduce a literal's inline
 # head (`Wrap(u8) { .. }`). A qualified head (`lib.Wrap(u8) { .. }`) lowers to
@@ -133,3 +134,54 @@ fn Priv(comptime T: type) -> type { struct { a: T } }
 pub fn Pub(comptime T: type) -> type { struct { a: T } }
 """ },
 ]
+
+# The same StructInit arm serves the ordinary engine, so a body `comptime {}`
+# block and a comptime argument reduce a qualified head too.
+
+[[case]]
+name = "qualified_head_in_body_comptime_block"
+description = "comptime { lib.Wrap(u8) { a: 42 } } in a function body reduces (it was E1200)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("x.rue");
+fn main() -> i32 { let x = comptime { lib.Wrap(u8) { a: 42 } }; @intCast(x.a) }
+""" },
+    { path = "x.rue", source = """
+pub fn Wrap(comptime T: type) -> type { struct { a: T } }
+""" },
+]
+stdout = ""
+exit_code = 42
+
+[[case]]
+name = "qualified_head_as_comptime_argument"
+description = "A qualified-head literal passed as a comptime argument reduces (it was E1201)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("x.rue");
+fn g(comptime w: lib.W) -> i32 { @intCast(w.a) }
+fn main() -> i32 { g(lib.Wrap(u8) { a: 42 }) }
+""" },
+    { path = "x.rue", source = """
+pub fn Wrap(comptime T: type) -> type { struct { a: T } }
+pub const W = Wrap(u8);
+""" },
+]
+stdout = ""
+exit_code = 42
+
+[[case]]
+name = "qualified_head_wrong_application_as_comptime_argument"
+description = "A qualified head applied at the wrong type for a comptime parameter is still E0206."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("x.rue");
+fn g(comptime w: lib.Wrap(u16)) -> i32 { @intCast(w.a) }
+fn main() -> i32 { g(lib.Wrap(u8) { a: 42 }) }
+""" },
+    { path = "x.rue", source = """
+pub fn Wrap(comptime T: type) -> type { struct { a: T } }
+""" },
+]
+compile_fail = true
+error_contains = ["E0206", "expected Wrap(u16), found Wrap(u8)"]
