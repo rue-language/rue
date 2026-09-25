@@ -1,5 +1,6 @@
 import RueCore.Step
 import RueCore.Soundness
+import RueCore.Examples
 
 /-!
 # RueCore.Adequacy — `eval` is adequate to §6's `Step`, both ways
@@ -1848,5 +1849,178 @@ theorem letAddProgram_sound (M : FloatOps) :
     Steps M letAddProgram Config.init
       (.run [.dead] Frame.empty [] (.ret (.int .w32 .signed 42)) []) :=
   (run_sim M letAddProgram 100).1 _ _ _ rfl
+
+/-! ## §7 over `Step`: progress and preservation (RUE-2289 part 4)
+
+§7's first bullet is a statement about §6's machine: "a well-typed core
+program does not get stuck: it either reduces, halts with a value, or halts
+with one of the defined panics. Types are preserved under reduction." The
+theorems above state it over `eval` (`soundness`, `run_safe`); this section
+restates it over `Step`, derived from `soundness` and the two adequacy
+directions, so the metatheory can cite a theorem in §7's own terms.
+
+**Which preservation.** The configuration typing here is *semantic*:
+`Config.SafeAt T C` says every configuration `C` reaches is terminal or
+steps, and every value it halts with has type `T`. Progress and preservation
+of `SafeAt` hold by construction, as in any semantic-typing proof; the content
+is the fundamental lemma `init_safeAt` — a checked program's initial
+configuration is safe at its entry type — and that is `soundness` carried to
+§6 by adequacy. A *syntactic* configuration typing `⊢ C : T` (a typed store, a
+typed frame stack with a Σ per suspended caller, and one preservation case per
+`Step` constructor) would be a second safety proof over `Step`, not a
+corollary of the first, and is not claimed here. -/
+
+/-- **A configuration typed at `T`, semantically** (§7, first bullet): every
+configuration `→*` reaches from `C` reduces or has halted ((Result-Ok),
+(Result-Panic) §6.12), and every value `C` halts with — `✓v`, a value at an
+empty stack — has type `T` (§5's value typing, `HasTy`). The typing is
+defined by reduction, not by a syntactic judgment over the configuration
+(this section's docstring says why). -/
+def Config.SafeAt (M : FloatOps) (P : Program) (T : Ty) (C : Config) : Prop :=
+  (∀ D, Steps M P C D → D.Terminal ∨ ∃ D', Step M P D D') ∧
+  (∀ H φ v tr, Steps M P C (.run H φ [] (.ret v) tr) → HasTy P.decls v T)
+
+/-- **Progress for a typed configuration** (§7, first bullet): it has halted
+with a value or a defined panic, or it takes a step (§6.12's terminal
+configurations; `Config.trichotomy` leaves stuck as the only other case). -/
+theorem Config.SafeAt.progress {M : FloatOps} {P : Program} {T : Ty} {C : Config}
+    (h : C.SafeAt M P T) : C.Terminal ∨ ∃ C', Step M P C C' :=
+  h.1 C (.refl C)
+
+/-- **Preservation for a typed configuration** (§7, first bullet: "types are
+preserved under reduction"): a step of §6's `→` from a configuration typed at
+`T` lands on one typed at `T`. -/
+theorem Config.SafeAt.preservation {M : FloatOps} {P : Program} {T : Ty} {C C' : Config}
+    (h : C.SafeAt M P T) (hs : Step M P C C') : C'.SafeAt M P T :=
+  ⟨fun D hD => h.1 D (.step hs hD), fun H φ v tr hD => h.2 H φ v tr (.step hs hD)⟩
+
+/-- Preservation along `→*` (§6.12) (helper). -/
+theorem Config.SafeAt.steps {M : FloatOps} {P : Program} {T : Ty} {C C' : Config}
+    (h : C.SafeAt M P T) (hs : Steps M P C C') : C'.SafeAt M P T :=
+  ⟨fun D hD => h.1 D (hs.trans hD), fun H φ v tr hD => h.2 H φ v tr (hs.trans hD)⟩
+
+/-- **The fundamental lemma: a checked program starts typed** (§7, first
+bullet; §6.12's initial configuration). For a program `check` accepts, the
+initial configuration is safe at the entry point's declared return type. The
+"never stuck" half is `step_never_stuck_of_run` given `no_violation`; the
+typing half takes a value §6 halts with to `run`'s answer at some fuel
+(`eval_complete`), where `run_safe` (`soundness` over a whole program) types
+it. This is the one place `soundness` enters the `Step` form. -/
+theorem init_safeAt (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+    ∃ fd, P.fns[0]? = some fd ∧ Config.init.SafeAt M.toFloatOps P fd.ret := by
+  obtain ⟨fd, h0, hp⟩ := h.entry
+  refine ⟨fd, h0, step_never_stuck_of_run _ P (no_violation M h), ?_⟩
+  intro H φ v tr hT
+  obtain ⟨n, hn⟩ := (eval_complete M h).1 H φ v tr hT
+  have hr := hn (n + 1) (Nat.lt_succ_self n)
+  rcases run_safe M h.wf h0 hp (n + 1) with ho | ⟨κ, tr', hp'⟩ | ⟨H', v', tr', hr', hty⟩
+  · rw [hr] at ho; cases ho
+  · rw [hr] at hp'; cases hp'
+  · rw [hr] at hr'; cases hr'; exact hty
+
+/-- **Progress over §6's reduction** (§7, first bullet, in its own phrasing:
+"a well-typed core program does not get stuck: it either reduces, halts with
+a value, or halts with one of the defined panics"; ADR-0097 decision 3). For
+a program `check` accepts, every configuration `→*` reaches from §6.12's
+initial configuration is terminal or takes a step, so none is stuck
+(`Config.stuck_iff`). Derived: `soundness` gives "`run` is never `.stuck`"
+(`no_violation`), and `step_never_stuck_of_run` — built from `run_sim` and
+the step count `eval_steps_of_outOfFuel` — carries it to `Step`. -/
+theorem step_progress (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+    ∀ C, Steps M.toFloatOps P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatOps P C C' :=
+  step_never_stuck_of_run _ P (no_violation M h)
+
+/-- **Preservation over §6's reduction** (§7, first bullet: "types are
+preserved under reduction"; ADR-0097 decision 3). For a program `check`
+accepts, every configuration `→*` reaches from §6.12's initial configuration
+is typed at the entry point's declared return type, in the semantic sense of
+`Config.SafeAt`: it is never stuck from there on, and every value it halts
+with has that type. With `Config.SafeAt.preservation` this is the one-step
+form. The typing is semantic, not a syntactic `⊢ C : T`; this section's
+docstring says what that does and does not claim. -/
+theorem step_preservation (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+    ∃ fd, P.fns[0]? = some fd ∧
+      ∀ C, Steps M.toFloatOps P Config.init C → C.SafeAt M.toFloatOps P fd.ret := by
+  obtain ⟨fd, h0, hs⟩ := init_safeAt M h
+  exact ⟨fd, h0, fun C hC => hs.steps hC⟩
+
+/-- **The value §6 halts with has the declared type** (§7, first bullet;
+§6.12's (Result-Ok)). For a program `check` accepts, if `→*` takes the
+initial configuration to `✓v`, then `v` has the entry point's declared return
+type. This is preservation read at the result, `Config.SafeAt`'s second half
+at `Config.init`. -/
+theorem step_value_typed (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+    ∃ fd, P.fns[0]? = some fd ∧ ∀ H φ v tr,
+      Steps M.toFloatOps P Config.init (.run H φ [] (.ret v) tr) → HasTy P.decls v fd.ret := by
+  obtain ⟨fd, h0, hs⟩ := init_safeAt M h
+  exact ⟨fd, h0, hs.2⟩
+
+/-- **Type safety over §6's reduction, at every horizon** (§7, first bullet;
+§6.12; ADR-0097 decisions 3 and 5(b)). For a program `check` accepts and
+every `n`: §6's machine runs `n` steps from the initial configuration, or it
+has halted with a value of the entry point's declared type, or it has halted
+with a defined panic — the three outcomes §7 allows, with stuck not among
+them. By `Step.det` there is one run, so the halted cases are its end.
+
+It is stated per horizon because "diverges or halts" is excluded middle on a
+non-decidable property, outside this package's axioms; `eval_diverges_iff` is
+the unbounded form of the first case. Fuel meets `Step` here directly: `run`
+at fuel `n` is out of fuel (then §6 has an `n`-step run,
+`eval_steps_of_outOfFuel`), a value (typed by `run_safe`, reached by
+`run_sim`), or a panic (reached by `run_sim`); never `.stuck`. -/
+theorem step_type_safety (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+    ∃ fd, P.fns[0]? = some fd ∧ ∀ n,
+      (∃ D, StepsN M.toFloatOps P n Config.init D) ∨
+      (∃ H v tr, Steps M.toFloatOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        HasTy P.decls v fd.ret) ∨
+      (∃ κ tr, Steps M.toFloatOps P Config.init (.panic κ tr)) := by
+  obtain ⟨fd, h0, hp⟩ := h.entry
+  refine ⟨fd, h0, fun n => ?_⟩
+  rcases run_safe M h.wf h0 hp n with ho | ⟨κ, tr, hr⟩ | ⟨H, v, tr, hr, hty⟩
+  · exact .inl (eval_steps_of_outOfFuel _ P n [] Frame.empty (.call 0 []) ho [] [])
+  · exact .inr (.inr ⟨κ, tr, (run_sim _ P n).2 κ tr hr⟩)
+  · exact .inr (.inl ⟨H, v, tr, (run_sim _ P n).1 H v tr hr, hty⟩)
+
+/-! ## One program, traced both ways -/
+
+/-- The corpus case `affine_scope_drop` (`Corpus.lean`): `{ let v0: S1 =
+S1 { x0: 7 }; 1 }` as the entry point returning `i64`, where `S1` is affine
+with a destructor (helper). -/
+abbrev affineScopeDropProgram : Program := Examples.prog Examples.tI64 Examples.affineDrop
+
+/-- **One corpus program, both presentations** (GUIDE section 2, "One
+program, traced both ways"; §6.2, §6.5, §6.7, §6.9, §6.11, §6.12). `check`
+accepts `affine_scope_drop`; `run` answers `1` with both cells retired and
+the trace "drop `ℓ1`, then `S1`'s destructor"; and §6's `→*` reaches the same
+terminal configuration by the twelve steps written out here, one `Step`
+constructor each: (Search) into the call's empty argument list, (D-Call),
+(Search) into the `let`, (Search) into the struct literal and its one
+initializer, the literal, the plug, (D-Struct) minting `#0`, (D-Let),
+the body's literal, (D-EndScope) dropping and retiring `ℓ1`, and
+(D-Return-Value). `explain/affine_scope_drop.txt` renders `eval`'s run of the
+same program in seven rows: the (Search) steps are the part of `Step` that
+`eval` does by recursion. -/
+theorem affineScopeDrop_both_ways (M : FloatOps) :
+    checkProgram affineScopeDropProgram = true ∧
+    run M affineScopeDropProgram 100 =
+      .ok [.dead, .dead] (.int .w64 .signed 1)
+        [.drop 1 (.struct 1 0 [.int .w64 .signed 7]), .dtor 1 (.struct 1 0 [.int .w64 .signed 7])] ∧
+    Steps M affineScopeDropProgram Config.init
+      (.run [.dead, .dead] Frame.empty [] (.ret (.int .w64 .signed 1))
+        [.drop 1 (.struct 1 0 [.int .w64 .signed 7]), .dtor 1 (.struct 1 0 [.int .w64 .signed 7])]) := by
+  refine ⟨rfl, rfl, ?_⟩
+  refine .step .callEnter ?_
+  refine .step (.call rfl rfl rfl) ?_
+  refine .step .letEnter ?_
+  refine .step .structEnter ?_
+  refine .step .argsPush ?_
+  refine .step .intLit ?_
+  refine .step .argsPlug ?_
+  refine .step (.mkStruct rfl rfl) ?_
+  refine .step .letBind ?_
+  refine .step .intLit ?_
+  refine .step (.endScope rfl) ?_
+  refine .step (.callReturn rfl) ?_
+  exact .refl _
 
 end RueCore
