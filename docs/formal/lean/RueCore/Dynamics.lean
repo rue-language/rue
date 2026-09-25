@@ -41,8 +41,8 @@ Design commitments carried over from §6:
     `no_double_free` (`Trace.lean`) be proved without a typing derivation.
 * **The correspondence with §6 is claimed on the checker's input domain.**
   On a program `check` accepts, `eval` and §6 agree: `eval_sound`
-  (`Adequacy.lean`) proves `eval ⇒ Step*` there, and the converse modulo fuel
-  is RUE-2289's part 3; on other input they may not. An
+  (`Adequacy.lean`) proves `eval ⇒ Step*` there, and `eval_complete` the
+  converse modulo fuel; on other input they may not. An
   operator reduces both its operands first, in §6.2's own left-to-right
   order, and only then inspects their shapes, so a mismatch is named after
   the operands have run; but a raw `intLit` outside its type's `n_T` range

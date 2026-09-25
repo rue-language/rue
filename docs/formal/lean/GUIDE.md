@@ -224,8 +224,8 @@ becomes the single statement "never `.stuck`", which section 4's theorem
 proves. What the function owes the relation is an adequacy lemma (the two
 agree on every checked program), required before the mechanization gates
 anything (`../03-metatheory.md`, "How to read a theorem here"). Its first
-half, soundness, is proved (`eval_sound`, below); its second half,
-completeness modulo fuel, is owed by RUE-2289's part 3.
+half, soundness, is proved (`eval_sound`, below), and so is its second half,
+completeness modulo fuel (`eval_complete`).
 
 **Two presentations of one dynamics.** The relation exists too:
 `Step.lean` defines `Step`, §6's `C → C'` itself, one constructor per §6
@@ -285,6 +285,22 @@ domain, by ruling `.stuck` out. `letAddProgram_sound` is the theorem at work:
 the same `→*` derivation `letAddProgram_runs` found by stepping, obtained from
 `run`'s answer alone.
 
+**Completeness: what §6 reaches, `eval` answers.** The converse needs no second
+simulation, only a count. If `eval` runs out of `fuel` on an expression, `Step`
+has a run of exactly `fuel` steps from it (`eval_steps_of_outOfFuel`): every
+unit of fuel `eval` spends is paid for by a step. `Step` is deterministic, so a
+run that reaches an end in `n` steps has no longer run beside it. At any fuel
+above `n`, then, `run` cannot be out of fuel, and whatever it answers,
+soundness places at that same end. On a checked program, that makes
+`eval_complete`: `run` answers §6's value or panic, with the same store and
+trace, at every fuel past the length of §6's run. It also makes
+`never_stuck_iff`: "`run` is never `.stuck`" is equivalent to "every
+configuration `Step` reaches reduces or has halted", which is §7's own
+phrasing. And it makes `eval_diverges_iff`: `run` is out of fuel at every fuel
+exactly when §6's run never ends. On a program `check` rejects, `eval` may
+refuse where §6 carries on. `dropMoved_refused` is `@drop` of a moved-out
+place, which is §6.11's no-op and `eval`'s `useAfterMove`.
+
 ### Fuel, and why the theorems quantify over it
 
 Lean accepts a function only if it can see that the function terminates.
@@ -321,6 +337,11 @@ value, and `fuel_mono` proves every larger bound agrees. A program that does
 *not* complete is the other side: every turn of a `loop` spends fuel, so
 `loop { () }` is `outOfFuel` at every bound (`infiniteLoop_outOfFuel`), and
 the corpus, which exports only completed runs, leaves it out.
+
+The two lemmas close the loophole from `eval`'s side. Adequacy closes it from
+§6's side. On a checked program, `run` is out of fuel at every bound exactly
+when §6's reduction never ends (`eval_diverges_iff`). And when §6's run does
+end, every bound past its length finds the end (`eval_complete`).
 
 ### The one edge no monitor covers
 
@@ -2016,10 +2037,10 @@ Pick two of these three and read the calculus and the Lean side by side.
   drop event emitted in the wrong order relative to the body's own trace,
   which step 5's stdout comparison would catch.
 
-**What thirty minutes does not buy.** Half of the adequacy lemma tying this
-executable dynamics to §6's reduction relation is proved (`eval_sound`,
-section 2); the other half, that every run of §6 to its end is one `eval`
-finds at some fuel, is owed by RUE-2289's part 3. The fuel is this interpreter's device and has no
+**What thirty minutes does not buy.** The adequacy lemma tying this
+executable dynamics to §6's reduction relation is proved both ways
+(`eval_sound` and `eval_complete`, section 2), but §7's progress and
+preservation, stated over `Step` itself, are owed by RUE-2289's part 4. The fuel is this interpreter's device and has no
 counterpart in §6, so `fuel_mono` and `no_masking` are about `eval`, not
 about the paper machine. And the rules and forms `INDEX.md` marks *not yet
 mechanized* are outside every theorem above. The fragment boundary in step 3
