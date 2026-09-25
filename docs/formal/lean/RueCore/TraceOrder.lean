@@ -1014,34 +1014,320 @@ theorem reachable_drop_order {M : FloatOps} {P : Program} {C C' : Config}
     ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) :=
   step_drop_order h (reachable_ordered hr)
 
+/-! ## Across steps: scopes nest, and teardown is last-in first-out
+
+`step_drop_order` orders the drops of one step. A source block
+`{ let a; let b; }` exits over **two** (D-EndScope) steps, so ordering them
+needs more: that the pending `endscope` markers are exactly the tail of the
+scope record, innermost last (`Config.Nested`). Then every teardown removes a
+suffix of the machine's whole registration stack — the suspended callers'
+records, then the current frame's — and drops cells only from that suffix,
+newest first (`Lifo`). Since the stack is in location order, a cell a
+teardown deregisters is newer than every cell still registered
+(`Lifo.newer`): across steps, across scopes and across frames, the machine
+drops last-in first-out. -/
+
+/-- The scope record the pending `endscope` markers and loop boundaries of
+one frame account for (§6.7, §6.10): reading the stack top-down, each
+`endscope ℓs` is the tail of what is left of the record, a loop boundary
+`loopβ(e, φs)` has exactly `φs`'s record left, and a caller's frame
+`ret(E, φs)` starts the same reading over for the caller's record `φs`
+(helper). -/
+def Nest : List Nat → List Kont → Prop
+  | _, [] => True
+  | sc, .endscope ls :: K => ∃ sc', sc = sc' ++ ls ∧ Nest sc' K
+  | sc, .loop _ φs :: K => sc = φs.scope ∧ Nest φs.scope K
+  | _, .call φs :: K => Nest φs.scope K
+  | sc, _ :: K => Nest sc K
+
+/-- The registration records of the suspended callers, bottom of the stack
+first (§6.9's `ret(E, φ)` frames) (helper). -/
+def Stk : List Kont → List Nat
+  | [] => []
+  | .call φs :: K => Stk K ++ φs.scope
+  | _ :: K => Stk K
+
+/-- The machine's whole **registration stack**: every suspended caller's
+scope record, bottom first, then the current frame's (§6.1's `σ` per frame);
+empty at a trap (helper). -/
+def Config.stack : Config → List Nat
+  | .run _ φ K _ _ => Stk K ++ φ.scope
+  | .panic _ _ => []
+
+/-- **Scopes nest** (§6.7, §6.9, §6.10): every frame's pending `endscope`
+markers are exactly the tail of its scope record, innermost last, and the
+whole registration stack is in location order, below the store's length. -/
+def Config.Nested : Config → Prop
+  | .run H φ K _ _ => Nest φ.scope K ∧ Rec H.length (Stk K ++ φ.scope)
+  | .panic _ _ => True
+
+/-- (D-EndScope)'s pop by count removes exactly the marker's cells when they
+are the record's tail (helper). -/
+theorem Frame.popScope_tail (φ : Frame) {sc ls : List Nat} (h : φ.scope = sc ++ ls) :
+    (φ.popScope ls.length).scope = sc := by
+  simp [Frame.popScope, h]
+
+/-- (D-Return)'s search, read by the nesting: the caller's record is the
+next one, and the stack below it is the rest (helper). -/
+theorem Nest.toCall {K K' : List Kont} {φ : Frame} :
+    ∀ {sc : List Nat}, Nest sc K → Kont.toCall K = some (φ, K') →
+      Nest φ.scope K' ∧ Stk K = Stk K' ++ φ.scope := by
+  induction K with
+  | nil => intro _ _ h; simp [Kont.toCall] at h
+  | cons k K ih =>
+      intro sc hn h
+      cases k
+      case call φ' =>
+        simp only [Kont.toCall, Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨rfl, rfl⟩ := h
+        exact ⟨hn, rfl⟩
+      case endscope ls =>
+        obtain ⟨sc', _, hn'⟩ := hn
+        exact ih hn' h
+      case loop e φ' => exact ih hn.2 h
+      all_goals exact ih hn h
+
+/-- (D-Break)'s search, read by the nesting: the loop boundary's record is a
+prefix of the frame's, the rest being the cells the body registered, and no
+caller's record is crossed (helper). -/
+theorem Nest.toLoop {K K' : List Kont} {φ : Frame} :
+    ∀ {sc : List Nat}, Nest sc K → Kont.toLoop K = some (φ, K') →
+      (∃ m, sc = φ.scope ++ m) ∧ Nest φ.scope K' ∧ Stk K = Stk K' := by
+  induction K with
+  | nil => intro _ _ h; simp [Kont.toLoop] at h
+  | cons k K ih =>
+      intro sc hn h
+      cases k
+      case loop e φ' =>
+        simp only [Kont.toLoop, Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨rfl, rfl⟩ := h
+        exact ⟨⟨[], by simp [hn.1]⟩, hn.2, rfl⟩
+      case call => simp [Kont.toLoop] at h
+      case endscope ls =>
+        obtain ⟨sc', hsc, hn'⟩ := hn
+        obtain ⟨⟨m, hm⟩, h₂, h₃⟩ := ih hn' h
+        exact ⟨⟨m ++ ls, by rw [hsc, hm, List.append_assoc]⟩, h₂, h₃⟩
+      all_goals exact ih hn h
+
+/-- **How one step changes the registration stack, and what it drops**: it
+either keeps the stack as a prefix of the new one — nothing deregistered —
+or cuts the stack back to a prefix of the old one, and its `drop` markers
+then name only cells of the suffix it cut, newest first (helper). -/
+def Lifo (S S' : List Nat) (ls : List Nat) : Prop :=
+  S <+: S' ∨ (S' <+: S ∧ ls.Sublist (S.drop S'.length).reverse)
+
+/-- **What a teardown deregisters is newer than everything still
+registered**: on a stack in location order, a step that cuts the stack back
+drops only cells it deregistered, each newer than every cell still
+registered (helper). -/
+theorem Lifo.newer {S S' ls : List Nat} (hS : S.Pairwise (· < ·)) (h : Lifo S S' ls)
+    (hcut : ¬ S <+: S') : ∀ ℓ ∈ ls, ℓ ∉ S' ∧ ∀ ℓ' ∈ S', ℓ' < ℓ := by
+  rcases h with h | ⟨⟨rest, rfl⟩, hs⟩
+  · exact absurd h hcut
+  · intro ℓ hℓ
+    have hr : ℓ ∈ rest := by
+      have := hs.subset hℓ
+      simpa using this
+    have hlt : ∀ ℓ' ∈ S', ℓ' < ℓ := fun ℓ' hℓ' =>
+      (List.pairwise_append.mp hS).2.2 ℓ' hℓ' ℓ hr
+    exact ⟨fun hm => Nat.lt_irrefl ℓ (hlt ℓ hm), hlt⟩
+
+/-- A step that keeps the frame and the callers keeps the stack (helper). -/
+theorem Lifo.same {S ls : List Nat} : Lifo S S ls := .inl (List.prefix_refl S)
+
+/-- A teardown of the current frame's tail (helper). -/
+theorem Lifo.cut {A m ls : List Nat} (h : ls.Sublist m.reverse) : Lifo (A ++ m) A ls :=
+  .inr ⟨List.prefix_append A m, by simpa using h⟩
+
+/-- **Every step keeps the scopes nested** (§6.7, §6.9, §6.10): (D-Let) and
+(D-Match) push a marker equal to the cells they append to the record,
+(D-EndScope) pops both together, a call starts a frame of its own, and a
+return, a loop turn's end and a `break` restore a record the stack held. -/
+theorem step_nested {M : FloatOps} {P : Program} {C C' : Config} (h : Step M P C C')
+    (hC : C.Nested) : C'.Nested := by
+  cases h
+  case «match» H φ K tr arms e k i vs body H' ls _ hm =>
+    obtain ⟨hl, rfl⟩ := mintParams_eq hm
+    refine ⟨⟨φ.scope, rfl, hC.1⟩, ?_⟩
+    rw [← List.append_assoc, hl]; exact hC.2.fresh
+  case letBind H φ K tr e₂ v =>
+    refine ⟨⟨φ.scope, rfl, hC.1⟩, ?_⟩
+    have h1 : Rec (H.length + 1) (Stk K ++ φ.scope ++ List.range' H.length 1) :=
+      Rec.fresh (k := 1) hC.2
+    rw [← List.append_assoc]; exact h1.mono (by simp)
+  case endScope H φ K tr ℓs v H' evs hu =>
+    have hl := plainUnwind_length hu
+    obtain ⟨sc', hsc, hn⟩ := hC.1
+    have hp := Frame.popScope_tail φ hsc
+    have h2 : Rec H.length (Stk K ++ φ.scope) := hC.2
+    refine ⟨by rw [hp]; exact hn, ?_⟩
+    show Rec H'.length (Stk K ++ (φ.popScope ℓs.length).scope)
+    rw [hp]
+    refine (h2.sublist ?_).mono (by omega)
+    rw [hsc, ← List.append_assoc]; exact List.sublist_append_left _ _
+  case call H φ K tr f vs fd H' ls _ _ hm =>
+    obtain ⟨hl, rfl⟩ := mintParams_eq hm
+    refine ⟨hC.1, ?_⟩
+    simp only [Stk]; rw [hl]; exact hC.2.fresh
+  case callReturn H φ K tr φs v H' evs hu =>
+    have hl := plainUnwind_length hu
+    have h2 : Rec H.length (Stk K ++ φs.scope ++ φ.scope) := hC.2
+    exact ⟨hC.1, (h2.sublist (List.sublist_append_left _ _)).mono (by omega)⟩
+  case ret H φ K tr v φs K' H' evs hk hu =>
+    have hl := plainUnwind_length hu
+    obtain ⟨hn, hs⟩ := Nest.toCall (show Nest φ.scope K from hC.1) hk
+    have h2 : Rec H.length (Stk K ++ φ.scope) := hC.2
+    refine ⟨hn, (h2.sublist ?_).mono (by omega)⟩
+    rw [hs]; exact List.sublist_append_left _ _
+  case loopEnter H φ K tr e => exact ⟨⟨rfl, hC.1⟩, hC.2⟩
+  case loopIter H φ K tr e φs H' evs hu =>
+    have hl := plainUnwind_length hu
+    obtain ⟨heq, hn⟩ := hC.1
+    refine ⟨⟨rfl, hn⟩, ?_⟩
+    have := hC.2.mono (show H.length ≤ H'.length by omega)
+    simpa [Stk, heq] using this
+  case brk H φ K tr φs K' H' evs hk hu =>
+    have hl := plainUnwind_length hu
+    obtain ⟨⟨m, hm⟩, hn, hs⟩ := Nest.toLoop hC.1 hk
+    refine ⟨hn, (hC.2.sublist ?_).mono (by omega)⟩
+    rw [hs, hm, ← List.append_assoc]; exact List.sublist_append_left _ _
+  all_goals first
+    | trivial
+    | exact ⟨hC.1, hC.2.mono (by first | exact Nat.le_refl _ | simp)⟩
+
+/-- **The nesting holds everywhere the machine goes** (§6.7, §6.9, §6.10):
+in every configuration reachable from §6.12's initial one. In particular
+(D-EndScope)'s pop by count always removes the marker's own cells
+(`Frame.popScope_tail`). No typing hypothesis. -/
+theorem reachable_nested {M : FloatOps} {P : Program} {C : Config}
+    (h : Steps M P Config.init C) : C.Nested := by
+  have key : ∀ {C₁ C₂ : Config}, Steps M P C₁ C₂ → C₁.Nested → C₂.Nested := by
+    intro C₁ C₂ hs
+    induction hs with
+    | refl => exact id
+    | step h₁ _ ih => exact fun hC => ih (step_nested h₁ hC)
+  exact key h ⟨trivial, ⟨.nil, by simp [Stk]⟩⟩
+
+/-- **Every step is last-in first-out** (§6.7, §6.9, §6.10): from a nested
+configuration, a step appends `evs` to the trace and either keeps the
+registration stack as a prefix of the new one, or cuts it back and drops
+only cells of the cut suffix, newest first (`Lifo`). -/
+theorem step_lifo {M : FloatOps} {P : Program} {C C' : Config} (h : Step M P C C')
+    (hC : C.Nested) :
+    ∃ evs, C'.trace = C.trace ++ evs ∧ Lifo C.stack C'.stack (dropLocs evs) := by
+  have keep : ∀ {evs : List Event} {S S' : List Nat}, S <+: S' → Lifo S S' (dropLocs evs) :=
+    fun h => .inl h
+  have pre : ∀ A B D : List Nat, A ++ B <+: A ++ (B ++ D) := fun A B D => by
+    rw [← List.append_assoc]; exact List.prefix_append _ _
+  cases h
+  case «match» => exact ⟨_, rfl, keep (pre _ _ _)⟩
+  case letBind => exact ⟨[], by simp [Config.trace], keep (pre _ _ _)⟩
+  case endScope H φ K tr ℓs v H' evs hu =>
+    obtain ⟨sc', hsc, _⟩ := hC.1
+    refine ⟨_, rfl, ?_⟩
+    simp only [Config.stack, Stk, Frame.popScope_tail φ hsc, hsc, ← List.append_assoc]
+    exact Lifo.cut (plainUnwind_locs hu)
+  case call => exact ⟨[], by simp [Config.trace], keep (List.prefix_append _ _)⟩
+  case callReturn H φ K tr φs v H' evs hu =>
+    refine ⟨_, rfl, ?_⟩
+    simp only [Config.stack, Stk]
+    exact Lifo.cut (plainUnwind_locs hu)
+  case ret H φ K tr v φs K' H' evs hk hu =>
+    obtain ⟨_, hs⟩ := Nest.toCall hC.1 hk
+    refine ⟨_, rfl, ?_⟩
+    simp only [Config.stack, hs]
+    exact Lifo.cut (plainUnwind_locs hu)
+  case loopIter H φ K tr e φs H' evs hu =>
+    obtain ⟨heq, _⟩ := hC.1
+    refine ⟨_, rfl, ?_⟩
+    simp only [Config.stack, Stk, heq]
+    exact Lifo.same
+  case brk H φ K tr φs K' H' evs hk hu =>
+    obtain ⟨⟨m, hm⟩, _, hs⟩ := Nest.toLoop hC.1 hk
+    refine ⟨_, rfl, ?_⟩
+    have hd : φ.scope.drop φs.scope.length = m := by rw [hm]; simp
+    rw [hd] at hu
+    simp only [Config.stack, hs, hm, ← List.append_assoc]
+    exact Lifo.cut (plainUnwind_locs hu)
+  all_goals first
+    | exact ⟨_, rfl, Lifo.same⟩
+    | exact ⟨[], by simp [Config.trace], Lifo.same⟩
+    | exact ⟨[], by simp [Config.trace], .inr ⟨List.nil_prefix, List.nil_sublist _⟩⟩
+
+/-- **Last-in first-out, on every reachable step** (§6.7, §6.9, §6.10): the
+registration stack is in location order, and a step that deregisters cells
+drops only cells it deregistered, each newer than every cell still
+registered. So a cell dropped at one teardown and a cell dropped at a later
+one, still registered at the first, drop newest first: `{ let a; let b; }`
+drops `b` before `a` over its two (D-EndScope) steps. No typing
+hypothesis. -/
+theorem reachable_lifo {M : FloatOps} {P : Program} {C C' : Config}
+    (hr : Steps M P Config.init C) (h : Step M P C C') :
+    ∃ evs, C'.trace = C.trace ++ evs ∧ Lifo C.stack C'.stack (dropLocs evs) ∧
+      (¬ C.stack <+: C'.stack → ∀ ℓ ∈ dropLocs evs, ℓ ∉ C'.stack ∧ ∀ ℓ' ∈ C'.stack, ℓ' < ℓ) := by
+  have hn := reachable_nested hr
+  obtain ⟨evs, ht, hl⟩ := step_lifo h hn
+  refine ⟨evs, ht, hl, fun hcut => hl.newer ?_ hcut⟩
+  cases C with
+  | run H φ K f tr => exact hn.2.1
+  | panic => exact .nil
+
 /-! ## `drop_order` -/
 
+/-- `Blocks` on §6's terminal configurations: a finished `Step` run's trace
+is the one `eval` answers (`eval_complete`), so it is in the block grammar
+(helper). -/
+theorem step_blocks (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+    (∀ H φ v tr, Steps M.toFloatOps P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
+    (∀ κ tr, Steps M.toFloatOps P Config.init (.panic κ tr) → Blocks P.decls tr) := by
+  obtain ⟨hv, hp⟩ := eval_complete M h
+  have hdt := h.wf.decls.dtorNotCopy
+  refine ⟨fun H φ v tr hs => ?_, fun κ tr hs => ?_⟩
+  · obtain ⟨n, hn⟩ := hv H φ v tr hs
+    have := run_blocks M.toFloatOps hdt (n + 1)
+    rw [hn (n + 1) (Nat.lt_succ_self n)] at this
+    exact this
+  · obtain ⟨n, hn⟩ := hp κ tr hs
+    have := run_blocks M.toFloatOps hdt (n + 1)
+    rw [hn (n + 1) (Nat.lt_succ_self n)] at this
+    exact this
+
 /-- **Drop order** (§3.9, §6.7, §6.9, §6.10, §6.11; §7's "no use-after-drop /
-no leak of drops" bullet, its *when*). For a program the checker accepts:
+no leak of drops" bullet, its *when*), over §6's relation, for a program the
+checker accepts:
 
-* its run is never refused (`no_violation`), so its trace is the whole run's;
-* **within a value**, the run's trace is in §6.11's block grammar
-  (`run_blocks`): every destructor event sits inside the walk of the drop
-  marker before it — destructor first (`3.9:28`), fields in declaration
-  order (`3.9:13`), array elements ascending (`3.9:15`), an enum's active
-  payload only (`6.3:20`) — and nowhere else;
-* **across cells**, every step of §6's relation from a reachable
-  configuration drops the cells it tears down newest first
-  (`reachable_drop_order`): its `drop` markers name one cell, or distinct
-  cells in strictly decreasing location order, which is reverse registration
-  order because every scope record is in location order
-  (`reachable_ordered`).
+* **within a value**: every finished run's trace — a terminal value or a
+  trap — is in §6.11's block grammar (`step_blocks`): every destructor event
+  sits inside the walk of the drop marker before it — destructor first
+  (`3.9:28`), fields in declaration order (`3.9:13`), array elements
+  ascending (`3.9:15`), an enum's stored (active) payload only (`6.3:20`) —
+  and nowhere else;
+* **across cells**, at every step from a reachable configuration: its `drop`
+  markers name one cell or distinct cells newest first (`NewestFirst`), and
+  the step is last-in first-out on the registration stack (`Lifo`): it keeps
+  the stack, or cuts it back and drops only cells it deregistered — each
+  newer than every cell still registered, by `reachable_nested`'s location
+  order (`reachable_lifo`, `Lifo.newer`). So across all its exit steps a
+  scope's cells drop newest first, and before any older scope's.
 
-The first half is over `eval`, where copy closure holds; the second over
-`Step`, where the scope record lives. Neither needs typing beyond
-`DtorNotCopy`; the typing hypothesis buys the first conjunct. -/
-theorem drop_order (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
-      Blocks P.decls (run M.toFloatOps P fuel).trace ∧
-      ∀ C C', Steps M.toFloatOps P Config.init C → Step M.toFloatOps P C C' →
-        ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) :=
-  ⟨no_violation M h fuel, run_blocks M.toFloatOps h.wf.decls.dtorNotCopy fuel,
-    fun _ _ hr hs => reachable_drop_order hr hs⟩
+Only the first half reads the typing hypothesis, through `eval_complete` and
+`DtorNotCopy`. -/
+theorem drop_order (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+    (∀ H φ v tr, Steps M.toFloatOps P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
+    (∀ κ tr, Steps M.toFloatOps P Config.init (.panic κ tr) → Blocks P.decls tr) ∧
+    ∀ C C', Steps M.toFloatOps P Config.init C → Step M.toFloatOps P C C' →
+      ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) ∧
+        Lifo C.stack C'.stack (dropLocs evs) ∧ (C.stack.Pairwise (· < ·)) := by
+  refine ⟨(step_blocks M h).1, (step_blocks M h).2, fun C C' hr hs => ?_⟩
+  obtain ⟨evs, ht, hn⟩ := reachable_drop_order hr hs
+  obtain ⟨evs', ht', hl⟩ := step_lifo hs (reachable_nested hr)
+  have : evs' = evs := List.append_cancel_left (ht'.symm.trans ht)
+  subst this
+  refine ⟨evs', ht, hn, hl, ?_⟩
+  have hN := reachable_nested hr
+  cases C with
+  | run H φ K f tr => exact hN.2.1
+  | panic => exact .nil
 
 /-! ## What the statements reject
 
