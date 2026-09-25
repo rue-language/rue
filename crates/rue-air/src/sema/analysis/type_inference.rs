@@ -742,7 +742,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     snapshot.inline_ctor_head_types.clone(),
                 )
             } else {
-                let (precomputed_locals, mut precompute_work) = self
+                let (precomputed_locals, precompute_work) = self
                     .precompute_comptime_type_locals(
                         body,
                         type_subst,
@@ -752,51 +752,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     )?;
                 let comptime_local_bindings = precomputed_locals.aliases;
                 let local_annotations = precomputed_locals.local_annotations;
-                let local_modules = precomputed_locals.local_modules;
-
-                // The inline-head pre-reduction below evaluates head expressions
-                // without walking the body, so it can't replay lexical scope; give it
-                // the flattened name view. Same-named ties resolve to the later
-                // binding site deterministically (instruction order, which follows
-                // program order) — matching the old flat map for this opportunistic
-                // path.
-                // A `let`-bound module joins the view as its module type, so a
-                // head rooted at it (`m.Option(u64).Some(3)`) reduces from that
-                // module (RUE-2426).
-                let mut flat_bindings: Vec<(InstRef, Type)> = comptime_local_bindings
-                    .iter()
-                    .chain(local_modules.iter())
-                    .map(|(inst_ref, ty)| (*inst_ref, *ty))
-                    .collect();
-                flat_bindings.sort_by_key(|(inst_ref, _)| inst_ref.as_u32());
-                let comptime_local_types: AHashMap<Spur, Type> = flat_bindings
-                    .into_iter()
-                    .filter_map(
-                        |(inst_ref, ty)| match self.body_rir_ref().get(inst_ref).data {
-                            rue_rir::InstData::Alloc {
-                                name: Some(name), ..
-                            } => Some((name, ty)),
-                            _ => None,
-                        },
-                    )
-                    .collect();
-
-                // Pre-reduce inline type-constructor heads (`F(args).Variant(..)`,
-                // `F(args) { ... }`; RUE-596) to their concrete types, keyed by the
-                // head's `InstRef` — the nameless analogue of the alias map above.
-                // Without this, a construction argument on an inline head was never
-                // constrained and an integer payload literal defaulted to `i32`
-                // (RUE-599). Runs before the lazy-method collection below so methods
-                // registered while reducing a head are included in it.
-                let (inline_ctor_head_types, inline_work) = self
-                    .precompute_inline_ctor_head_types(
-                        body,
-                        type_subst,
-                        value_subst,
-                        &comptime_local_types,
-                        precompute_attribution_enabled,
-                    )?;
-                precompute_work.accrue(inline_work);
+                // Inline type-constructor heads (`F(args).Variant(..)`,
+                // `F(args) { ... }`; RUE-596) pre-reduced by the same walk under
+                // the aliases and `let`-bound modules in scope at each head,
+                // keyed by the head's `InstRef` — the nameless analogue of the
+                // alias map above (RUE-599, RUE-2426).
+                let inline_ctor_head_types = precomputed_locals.inline_ctor_head_types;
                 (
                     Arc::new(comptime_local_bindings),
                     Arc::new(local_annotations),
