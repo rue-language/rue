@@ -383,7 +383,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
     /// Require a value's analyzed AIR type to be the declared type of the
     /// slot it flows into: a call parameter, an assignment target, a function
-    /// result, or an array element.
+    /// result, or an array element. [`Self::require_operand_type`] applies the
+    /// same check to an operator's operand, which is not a slot.
     ///
     /// Inference normally makes this check redundant by unifying the operand
     /// with the slot, but it cannot when it has no fact for the operand: a
@@ -404,6 +405,49 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             Ok(())
         } else {
             Err(self.type_mismatch_error(expected, found, span))
+        }
+    }
+
+    /// Require an operator operand's analyzed AIR type to be the type the
+    /// operator demands of it: `bool` for an `if` or `while` condition, a `!`
+    /// operand or a `&&`/`||` operand, the negated type for a unary `-`, and
+    /// the left operand's type for the right operand of a comparison.
+    ///
+    /// The reason is [`Self::require_slot_type`]'s: inference has no fact for
+    /// an operand it could not type, and the AIR validator or CFG verifier
+    /// would otherwise meet the disagreement as an internal compiler error
+    /// (RUE-2438). The recovery rules are the same.
+    pub(crate) fn require_operand_type(
+        &self,
+        expected: Type,
+        found: Type,
+        span: Span,
+    ) -> CompileResult<()> {
+        self.require_slot_type(expected, found, span)
+    }
+
+    /// Require a comparison's right operand to have its left operand's type.
+    ///
+    /// A string operand is the one exception: `str`, `Str(N)` and `StrBuf`
+    /// compare with one another by content (4.3:3), so a string-family left
+    /// operand admits any string-family right operand, and any other right
+    /// operand is a mismatch. Without that second half a `StrBuf` left
+    /// operand handed a four-word struct to `StrBuf::equals_borrowed`, which
+    /// read it as a view (RUE-2438).
+    pub(crate) fn require_comparison_operand(
+        &self,
+        lhs: Type,
+        rhs: Type,
+        span: Span,
+    ) -> CompileResult<()> {
+        let is_string = |ty: Type| self.is_strbuf(ty) || self.is_str_like(ty);
+        if !is_string(lhs) {
+            return self.require_operand_type(lhs, rhs, span);
+        }
+        if is_string(rhs) || rhs.is_never() || rhs.is_error() {
+            Ok(())
+        } else {
+            Err(self.type_mismatch_error(lhs, rhs, span))
         }
     }
 }

@@ -443,22 +443,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let ty =
                     Self::resolved_integer_type(ctx, inst_ref, inst.span, "negation operator")?;
 
-                // Unary `-` requires a signed integer operand (i8/i16/i32/i64/
-                // isize). Reject unsigned integers (no negative range), bool, and
-                // every other non-signed type. `<error>`/`never` pass through so a
-                // prior error isn't masked by a spurious second diagnostic.
-                if !ty.is_signed() && !ty.is_float() && !ty.is_error() && !ty.is_never() {
-                    let note = if ty.is_unsigned() {
-                        "unsigned values cannot be negated"
-                    } else {
-                        "unary `-` requires a signed integer or floating-point operand"
-                    };
-                    return Err(CompileError::new(
-                        ErrorKind::CannotNegate(self.format_type_name(ty)),
-                        inst.span,
-                    )
-                    .with_note(note));
-                }
+                self.require_negatable(ty, inst.span)?;
 
                 // Special case: negating a literal that equals |MIN| for signed types.
                 let operand_inst = self.body_rir_ref().get(*operand);
@@ -503,6 +488,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
 
                 let operand_result = self.analyze_inst(air, *operand, ctx)?;
+                // The negation's type is inference's, and an operand
+                // inference could not type leaves it `<error>`: take the
+                // analyzed operand's type then, and hold it to the same rule
+                // (RUE-2438).
+                let ty = if ty.is_error() {
+                    self.require_negatable(operand_result.ty, inst.span)?;
+                    operand_result.ty
+                } else {
+                    self.require_operand_type(
+                        ty,
+                        operand_result.ty,
+                        self.body_rir_ref().get(*operand).span,
+                    )?;
+                    ty
+                };
 
                 if !operand_result.continues {
                     let air_ref = air.add_inst(AirInst {
@@ -523,6 +523,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             InstData::Not { operand } => {
                 let operand_result = self.analyze_inst(air, *operand, ctx)?;
+                self.require_operand_type(
+                    Type::BOOL,
+                    operand_result.ty,
+                    self.body_rir_ref().get(*operand).span,
+                )?;
 
                 if !operand_result.continues {
                     let air_ref = air.add_inst(AirInst {
@@ -593,6 +598,30 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Analyze a logical operator instruction.
     ///
     /// Handles: And, Or
+    /// Unary `-` requires a signed integer (i8/i16/i32/i64/isize) or a
+    /// floating-point operand. Reject unsigned integers (no negative range),
+    /// bool, and every other type. `<error>`/`never` pass through so a prior
+    /// error isn't masked by a spurious second diagnostic.
+    fn require_negatable(&self, ty: Type, span: rue_span::Span) -> CompileResult<()> {
+        if ty.is_signed() || ty.is_float() || ty.is_error() || ty.is_never() {
+            return Ok(());
+        }
+        let note = if ty.is_unsigned() {
+            "unsigned values cannot be negated"
+        } else {
+            "unary `-` requires a signed integer or floating-point operand"
+        };
+        Err(
+            CompileError::new(ErrorKind::CannotNegate(self.format_type_name(ty)), span)
+                .with_note(note),
+        )
+    }
+
+    /// Both operands of `&&` and `||` are `bool`.
+    fn require_logical_operand(&self, ty: Type, operand: InstRef) -> CompileResult<()> {
+        self.require_operand_type(Type::BOOL, ty, self.body_rir_ref().get(operand).span)
+    }
+
     pub(crate) fn analyze_logical_op(
         &mut self,
         air: &mut Air,
@@ -610,9 +639,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         match &inst.data {
             InstData::And { lhs, rhs } => {
                 let lhs_result = self.analyze_inst(air, *lhs, ctx)?;
+                self.require_logical_operand(lhs_result.ty, *lhs)?;
                 let reachable_edges_after_lhs = ctx.ownership.loop_break_stack.clone();
                 let divergence_before_rhs = ctx.divergence_kinds;
                 let rhs_result = self.analyze_inst(air, *rhs, ctx)?;
+                self.require_logical_operand(rhs_result.ty, *rhs)?;
                 if !lhs_result.continues {
                     Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_lhs);
                     ctx.divergence_kinds = divergence_before_rhs;
@@ -644,9 +675,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             InstData::Or { lhs, rhs } => {
                 let lhs_result = self.analyze_inst(air, *lhs, ctx)?;
+                self.require_logical_operand(lhs_result.ty, *lhs)?;
                 let reachable_edges_after_lhs = ctx.ownership.loop_break_stack.clone();
                 let divergence_before_rhs = ctx.divergence_kinds;
                 let rhs_result = self.analyze_inst(air, *rhs, ctx)?;
+                self.require_logical_operand(rhs_result.ty, *rhs)?;
                 if !lhs_result.continues {
                     Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_lhs);
                     ctx.divergence_kinds = divergence_before_rhs;
