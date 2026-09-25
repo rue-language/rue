@@ -1,4 +1,4 @@
-import RueCore.Explain
+import RueCore.Explain.Ledger
 
 /-!
 # RueCore.Explain.Html — the self-contained page (RUE-2246)
@@ -241,6 +241,33 @@ def page (title body : String) : String :=
   "<code>explain_result</code> and <code>traceEval_res</code> prove it.</footer>\n" ++
   "</body>\n</html>\n"
 
+/-- The identity ledger (`Explain.Ledger`) as a table: one row per owned
+identity, with the step that minted it, the steps that ended it, the steps
+whose destructor ran on it, and whether it was ended exactly once. -/
+def ledgerHtml (P : Program) (rows : List (Nat × Step)) (res : EvalRes) : String :=
+  let es := Ledger.entries P.decls rows
+  let refs := fun (ns : List Nat) =>
+    if ns.isEmpty then "—" else String.intercalate ", " (ns.map Ledger.rowRef)
+  tagc "p" "lead"
+    ("One row per owned identity: the step that minted it, the steps that ended it " ++
+     "(a drop marker, a discarded temporary, a consumption), and the steps whose " ++
+     "destructor ran on it. <code>drop_exactly_once</code> is one entry in the ended " ++
+     "column per identity, and the step numbers there are the order " ++
+     "<code>drop_order</code> fixes; [n.k] is the k-th end of step n, when one step " ++
+     "ends several values.") ++
+  (if es.isEmpty then "" else
+    "<table class=\"trace\"><thead><tr><th>identity</th><th>minted</th><th>ended</th>" ++
+    "<th>destructor</th><th>ended</th></tr></thead><tbody>" ++
+    String.intercalate "" (es.map (fun e =>
+      tag "tr" (tagc "td" "mono" ("#" ++ toString e.id) ++
+        tag "td" (refs e.minted.toList) ++
+        tag "td" (esc (Ledger.endsText e)) ++
+        tag "td" (refs e.dtors) ++
+        tag "td" (let v := Ledger.verdict P.decls res e
+                  if v == "once" then tagc "span" "ok" v else tagc "span" "bad" (esc v))))) ++
+    "</tbody></table>") ++
+  tag "p" (esc (Ledger.summary P.decls res es))
+
 /-- A complete, self-contained page explaining one fragment program: its
 §5 derivation and its §6 run. -/
 def render (name description : String) (rules : List String) (P : Program) : String :=
@@ -274,6 +301,8 @@ def render (name description : String) (rules : List String) (P : Program) : Str
      "<th>store after</th><th>drop events</th><th>result</th></tr></thead><tbody>" ++
      String.intercalate "" ((numbered 1 t.steps).map (fun p => stepRow P p.1 p.2)) ++
      "</tbody></table>" ++
+     tag "h2" "Identities (§7)" ++
+     ledgerHtml P (numbered 1 t.steps) t.res ++
      tag "h2" "Outcome" ++
      tag "p" (outcomeHtml t.res))
 

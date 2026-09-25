@@ -1,4 +1,4 @@
-import RueCore.Explain
+import RueCore.Explain.Ledger
 
 /-!
 # RueCore.Explain.Text — the terminal rendering (RUE-2246)
@@ -136,6 +136,27 @@ def outcomeLines : EvalRes → List String
        "         `fuel_mono` says a larger bound never changes an answer, so this",
        "         is a bound too small, not a claim about the program."]
 
+/-- The identity ledger (`Explain.Ledger`): one line per owned identity —
+the step that minted it, the steps that ended it, the steps whose destructor
+ran on it — and whether it was ended exactly once. -/
+def ledgerLines (P : Program) (rows : List (Nat × Step)) (res : EvalRes) : List String :=
+  let es := Ledger.entries P.decls rows
+  let line := fun (e : Ledger.Entry) =>
+    "  " ++ pad 6 ("#" ++ toString e.id) ++
+      pad 8 ((e.minted.map Ledger.rowRef).getD "—") ++
+      pad 34 (Ledger.endsText e) ++
+      pad 12 (if e.dtors.isEmpty then "—" else String.intercalate ", " (e.dtors.map Ledger.rowRef)) ++
+      Ledger.verdict P.decls res e
+  ["One line per owned identity: the step that minted it, the steps that ended",
+   "it (a drop marker, a discarded temporary, a consumption), and the steps whose",
+   "destructor ran on it. `drop_exactly_once` is one entry in the ended column",
+   "per identity, and the step numbers there are the order `drop_order` fixes;",
+   "`[n.k]` is the k-th end of step n, when one step ends several values.", ""] ++
+  (if es.isEmpty then [] else
+    ["  " ++ pad 6 "id" ++ pad 8 "minted" ++ pad 34 "ended" ++ pad 12 "destructor" ++ "ended",
+     "  " ++ bar '─' 72] ++ es.map line ++ [""]) ++
+  para 2 76 (Ledger.summary P.decls res es)
+
 /-! ## The page -/
 
 /-- (helper) One line of the verdict block per function: its signature and
@@ -221,6 +242,8 @@ def render (name description : String) (rules : List String) (P : Program) : Str
      "`#n` after an aggregate is its identity, minted when it was built; a `†`",
      "cell is a retired binding or an identity's reserved slot (`introVal`).", ""] ++
     ((numbered 1 t.steps).map (fun p => stepLines P p.1 p.2)).flatten ++
+    section' "Identities (§7)" ++
+    ledgerLines P (numbered 1 t.steps) t.res ++
     ["", bar '─' 80] ++
     outcomeLines t.res ++
     [""]
