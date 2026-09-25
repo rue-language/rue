@@ -23,6 +23,31 @@ fn main() -> i32 {
 aux_files = { "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }
 exit_code = 42
 
+# A let-bound module is a zero-sized local. At -O3 the inliner relocates the
+# callee's CFG, where the local once kept the type `<module>` and failed with
+# `MissingLiveType(<module>)` (RUE-2419).
+[[case]]
+name = "let_bound_module_in_inlined_callee"
+spec = ["10.4:1"]
+description = "A function holding a let-bound module, a let alias of a const module and a join of them compiles and runs when inlined at -O3"
+source = """
+const math = @import("math.rue");
+
+fn f(c: bool) -> i32 {
+    let m = @import("math.rue");
+    let k = math;
+    let j = if c { m } else { k };
+    j.add(m.add(10, 0), k.add(10, 0))
+}
+
+fn main() -> i32 {
+    f(true) + f(false) + 2
+}
+"""
+aux_files = { "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }
+opt_level = 3
+exit_code = 42
+
 # =============================================================================
 # Re-exports (10.4:3, 10.4:4)
 # =============================================================================
@@ -177,6 +202,26 @@ fn main() -> i32 {
 """
 aux_files = { "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }
 exit_code = 5
+
+# A local bound to a const module (10.4:8) held a `()` filler while its reads
+# were typed `<module>`, and CFG verification rejected the statement below as
+# a read of uninitialized storage (RUE-2419).
+[[case]]
+name = "module_local_alias_statement_discarded"
+spec = ["10.4:7"]
+description = "A local aliasing a const module binding, used as an expression statement, is accepted and discarded"
+source = """
+const math = @import("math.rue");
+
+fn main() -> i32 {
+    let m = math;
+    m;
+    { m };
+    m.add(3, 4)
+}
+"""
+aux_files = { "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }
+exit_code = 7
 
 # =============================================================================
 # Per-file scoping of module bindings (10.4:8) — RUE-113
