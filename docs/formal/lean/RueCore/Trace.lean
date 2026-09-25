@@ -3,6 +3,7 @@ module
 public import RueCore.Soundness
 public import RueCore.Checker
 public import RueCore.Step
+public import RueCore.Step.Lemmas
 public import RueCore.Trace.Defs
 
 @[expose] public section

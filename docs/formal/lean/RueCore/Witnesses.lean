@@ -256,3 +256,220 @@ namespace RueCore.Corpus
 #guard (cases.filter (fun c => checkProgram c.prog)).all (fun c => c.prog.pendingSafe)
 
 end RueCore.Corpus
+
+/-! ## Programs run through §6's relation
+
+`Step.lean`'s demo witnesses, moved here verbatim (RUE-2460) so that the
+definitions layer holds definitions only: programs run from §6.12's initial
+configuration by `stepN` and read as `→*` derivations by `stepN_steps`
+(`Step/Lemmas.lean`). They are checks on particular programs, not claims. -/
+
+namespace RueCore
+
+/-- A two-line program, `let x = 40; x + 2`, as the entry point returning
+`i32` (helper). -/
+def letAddProgram : Program :=
+  Program.entry (Decls.ofStructs []) (.int .w32 .signed)
+    (.letIn false (.intLit .w32 .signed 40) (.binop .add (.use (.var 0)) (.intLit .w32 .signed 2)))
+
+/-- **The relation runs a program to the same answer `eval` does**, a check
+the two presentations can be compared on before the adequacy theorems say
+they always agree: from §6.12's initial configuration, `→*` reaches `✓42`
+through (D-Call), (D-Let), (D-Use-Copy), (D-Arith), (D-EndScope) and
+(D-Return-Value), with the `let`'s cell retired and nothing printed; and
+`run` answers the same value, store and trace. -/
+theorem letAddProgram_runs (M : FloatOps) :
+    Steps M letAddProgram Config.init
+      (.run [.dead] { env := [], scope := [] } [] (.ret (.int .w32 .signed 42)) []) ∧
+    run M letAddProgram 100 = .ok [.dead] (.int .w32 .signed 42) [] :=
+  ⟨stepN_steps (n := 30), rfl⟩
+
+
+/-! ## Programs run through the relation
+
+The review's repros (RUE-2324), each run from §6.12's initial configuration
+by `stepN` and read as a `→*` derivation by `stepN_steps`. The first group pins
+where §6 has no rule; the rest exercise drops, `loop`, `break`, `match` and
+`return`, and `run` gives each of them the same answer. -/
+
+/-- One affine struct with a destructor, `S`, and an affine enum
+`E { A(S), B }` (helper). -/
+def demoDecls : Decls :=
+  { structs := [{ attr := .none, fields := [], dtor := true, cls := .affine }],
+    enums := [{ variants := [[.struct 0], []], cls := .affine }] }
+
+/-- A program over `demoDecls` whose entry point returns `i32` (helper). -/
+def demoProgram (e : Expr) : Program := Program.entry demoDecls (.int .w32 .signed) e
+
+/-- `S{}` and an `i32` literal (helper). -/
+def demoS : Expr := .mkStruct 0 []
+
+/-- An `i32` literal (helper). -/
+def demoI32 (n : Int) : Expr := .intLit .w32 .signed n
+
+/-- The contents `S{}` leaves in a cell, at the identity it was minted with
+(helper). -/
+def demoSc (i : Nat) : Contents := .struct 0 i []
+
+/-- **(D-Use-Untrackable-Dynamic-Copy) needs `Copy`** (§6.3): in
+`let a = [S{}, S{}]; let x = a[dyn 0]; 0` the dynamic read of an affine
+leaf is stuck, before any destructor runs. `eval` is stuck at the same read
+(`RueCore.Examples.dynReadAffine_refused`); `check` rejects the program. -/
+theorem demo_dynamicRead_stuck (M : FloatOps) :
+    ∃ C, Steps M (demoProgram (.letIn false (.mkArray (.struct 0) [demoS, demoS])
+        (.letIn false (.indexRead (.var 0) [demoI32 0] [[]]) (demoI32 0)))) Config.init C ∧
+      C.Stuck M (demoProgram (.letIn false (.mkArray (.struct 0) [demoS, demoS])
+        (.letIn false (.indexRead (.var 0) [demoI32 0] [[]]) (demoI32 0)))) .typeConfusion :=
+  ⟨_, stepN_steps (n := 100), rfl⟩
+
+/-- **`@drop` at a dynamic place needs `Copy`** (§6.3's only
+`Untrackable(OrdinaryDynamic)` rule): `let a = [S{}]; @drop(a[dyn 0]); @dbg(1); 0`
+is stuck at the `@drop`, with nothing printed. `eval` is stuck at the same
+`@drop` (`RueCore.Examples.dynDropAffine_refused`). -/
+theorem demo_dynamicDrop_stuck (M : FloatOps) :
+    ∃ C, Steps M (demoProgram (.letIn false (.mkArray (.struct 0) [demoS])
+        (.seq (.indexDrop (.var 0) [demoI32 0] [[]]) (.seq (.dbg (demoI32 1)) (demoI32 0)))))
+        Config.init C ∧
+      C.Stuck M (demoProgram (.letIn false (.mkArray (.struct 0) [demoS])
+        (.seq (.indexDrop (.var 0) [demoI32 0] [[]]) (.seq (.dbg (demoI32 1)) (demoI32 0)))))
+        .typeConfusion :=
+  ⟨_, stepN_steps (n := 100), rfl⟩
+
+/-- **The repeat form needs `Copy`** (`7.1:38`): `let a = [S{}; 2]; 0` is
+stuck at the repeat. `eval` is stuck at the same repeat
+(`RueCore.Examples.repeatAffine_refused`). -/
+theorem demo_repeat_stuck (M : FloatOps) :
+    ∃ C, Steps M (demoProgram (.letIn false (.repeatArray (.struct 0) demoS 2) (demoI32 0)))
+        Config.init C ∧
+      C.Stuck M (demoProgram (.letIn false (.repeatArray (.struct 0) demoS 2) (demoI32 0)))
+        .typeConfusion :=
+  ⟨_, stepN_steps (n := 100), rfl⟩
+
+/-- **`@drop` of a moved-out place is a no-op** (§6.11: `drop(H, ⊘) = H`):
+`let s = S{}; let t = s; @drop(s); 0` reaches `✓0`, and the one `S` is
+destroyed once, when `t` goes out of scope. (`eval` refuses it with
+`useAfterMove`; `check` rejects the program.) -/
+theorem demo_dropMoved_runs (M : FloatOps) :
+    ∃ H, Steps M (demoProgram (.letIn false demoS
+        (.letIn false (.use (.var 0)) (.seq (.drop (.var 1)) (demoI32 0))))) Config.init
+      (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 0))
+        [.drop 2 (demoSc 0), .dtor 0 (demoSc 0)]) :=
+  ⟨_, stepN_steps (n := 100)⟩
+
+/-- **The loop yields `⟨⟩` to its context** (§6.10, RUE-2324's calculus
+finding): `let x = loop { break }; @dbg(7); 0` prints `7` and reaches `✓0`. -/
+theorem demo_loopInLet_runs (M : FloatOps) :
+    ∃ H, Steps M (demoProgram (.letIn false (.loop .brk) (.seq (.dbg (demoI32 7)) (demoI32 0))))
+      Config.init
+      (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 0))
+        [.dbg (.int .w32 .signed 7)]) ∧
+    run M (demoProgram (.letIn false (.loop .brk) (.seq (.dbg (demoI32 7)) (demoI32 0)))) 100 =
+      .ok H (.int .w32 .signed 0) [.dbg (.int .w32 .signed 7)] :=
+  ⟨_, stepN_steps (n := 100), rfl⟩
+
+/-- **(D-Break) drops what the body owed** (§6.10's `unwind-drops`):
+`loop { let s = S{}; break }; 3` destroys the `S` at the `break` and reaches
+`✓3`. -/
+theorem demo_breakDrops_runs (M : FloatOps) :
+    ∃ H, Steps M (demoProgram (.seq (.loop (.letIn false demoS .brk)) (demoI32 3))) Config.init
+      (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 3))
+        [.drop 1 (demoSc 0), .dtor 0 (demoSc 0)]) ∧
+    run M (demoProgram (.seq (.loop (.letIn false demoS .brk)) (demoI32 3))) 100 =
+      .ok H (.int .w32 .signed 3) [.drop 1 (demoSc 0), .dtor 0 (demoSc 0)] :=
+  ⟨_, stepN_steps (n := 100), rfl⟩
+
+/-- A counting loop: `let mut i = 0; loop { let s = S{}; if i >= 2 { break }
+else { i = i + 1 } }; i` (helper). -/
+def demoCountingLoop : Expr :=
+  .letIn true (demoI32 0)
+    (.seq (.loop (.letIn false demoS
+        (.ite (.binop .ge (.use (.var 1)) (demoI32 2)) .brk
+          (.assign (.var 1) (.binop .add (.use (.var 1)) (demoI32 1))))))
+      (.use (.var 0)))
+
+/-- **Every turn's drops run** (§6.7's (D-EndScope) on the turns that finish,
+§6.10's (D-Break) on the one that breaks): the counting loop destroys three
+`S`, one per turn, and reaches `✓2`. -/
+theorem demo_loopTurns_runs (M : FloatOps) :
+    ∃ H, Steps M (demoProgram demoCountingLoop) Config.init
+      (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 2))
+        [.drop 2 (demoSc 1), .dtor 0 (demoSc 1), .drop 4 (demoSc 3), .dtor 0 (demoSc 3),
+         .drop 6 (demoSc 5), .dtor 0 (demoSc 5)]) ∧
+    run M (demoProgram demoCountingLoop) 200 =
+      .ok H (.int .w32 .signed 2)
+        [.drop 2 (demoSc 1), .dtor 0 (demoSc 1), .drop 4 (demoSc 3), .dtor 0 (demoSc 3),
+         .drop 6 (demoSc 5), .dtor 0 (demoSc 5)] :=
+  ⟨_, stepN_steps (n := 300), rfl⟩
+
+/-- **(D-Return) from inside a `let`** (§6.9): `let s = S{}; let y = return 5; 0`
+discards the pending `let` and `endscope`, destroys the `S` from the frame's
+record, and reaches `✓5`. -/
+theorem demo_returnInLet_runs (M : FloatOps) :
+    ∃ H, Steps M (demoProgram (.letIn false demoS (.letIn false (.ret (demoI32 5)) (demoI32 0))))
+      Config.init
+      (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 5))
+        [.drop 1 (demoSc 0), .dtor 0 (demoSc 0)]) ∧
+    run M (demoProgram (.letIn false demoS (.letIn false (.ret (demoI32 5)) (demoI32 0)))) 100 =
+      .ok H (.int .w32 .signed 5) [.drop 1 (demoSc 0), .dtor 0 (demoSc 0)] :=
+  ⟨_, stepN_steps (n := 100), rfl⟩
+
+/-- **(D-Return) from a `match` arm** (§6.6, §6.9):
+`let x = S{}; match A(S{}) { A(p) => return 4, B => 0 }` destroys the arm's
+payload and then `x`, newest first, and reaches `✓4`. The match consumes the
+`A`'s shell first (`consume`, RUE-2427). -/
+theorem demo_returnInMatch_runs (M : FloatOps) :
+    ∃ H, Steps M (demoProgram (.letIn false demoS
+        (.«match» (.mkEnum 0 0 [demoS]) [.ret (demoI32 4), demoI32 0]))) Config.init
+      (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 4))
+        [.consume (.enum 0 0 3 [.hole]), .drop 4 (demoSc 2), .dtor 0 (demoSc 2),
+         .drop 1 (demoSc 0), .dtor 0 (demoSc 0)]) ∧
+    run M (demoProgram (.letIn false demoS
+        (.«match» (.mkEnum 0 0 [demoS]) [.ret (demoI32 4), demoI32 0]))) 100 =
+      .ok H (.int .w32 .signed 4)
+        [.consume (.enum 0 0 3 [.hole]), .drop 4 (demoSc 2), .dtor 0 (demoSc 2),
+         .drop 1 (demoSc 0), .dtor 0 (demoSc 0)] :=
+  ⟨_, stepN_steps (n := 100), rfl⟩
+
+/-- **(D-Loop-Iter) runs the turn's drops** (§6.10's `run-scope-drops`): at a
+loop boundary whose frame owes nothing, a body value returned in a frame that
+still owes cell 0 destroys it before the next turn. The configuration is not
+reachable from `Config.init` — there `endscope` has always emptied the list —
+but it is one §6.10's rule covers. -/
+theorem demo_loopIter_drops (M : FloatOps) (e : Expr) :
+    Step M (demoProgram e)
+      (.run [.full (demoSc 0)] { env := [0], scope := [0] }
+        [.loop .brk { env := [], scope := [] }] (.ret .unit) [])
+      (.run [.dead] { env := [], scope := [] } [.loop .brk { env := [], scope := [] }]
+        (.eval .brk) [.drop 0 (demoSc 0), .dtor 0 (demoSc 0)]) :=
+  step_iff.mpr rfl
+
+/-! ## `run_sim` and `run_complete`'s domain at work
+
+Moved here verbatim from `Adequacy.lean` (RUE-2460): they are about the demo
+programs above, which left the definitions layer with them. -/
+
+/-- **Why completeness is stated on checked programs** (RUE-2314): in
+`let s = S{}; let t = s; @drop(s); 0`, §6's `→*` reaches `✓0`, because §6.11
+makes `@drop` of a `⊘` place a no-op (`demo_dropMoved_runs`, above).
+`run` refuses it with `useAfterMove` instead. That refusal is the one disjunct
+`run_complete` allows, and `check` rejects the program. -/
+theorem dropMoved_refused (M : FloatOps) :
+    (∃ H, Steps M (demoProgram (.letIn false demoS
+        (.letIn false (.use (.var 0)) (.seq (.drop (.var 1)) (demoI32 0))))) Config.init
+      (.run H Frame.empty [] (.ret (.int .w32 .signed 0))
+        [.drop 2 (demoSc 0), .dtor 0 (demoSc 0)])) ∧
+    run M (demoProgram (.letIn false demoS
+        (.letIn false (.use (.var 0)) (.seq (.drop (.var 1)) (demoI32 0))))) 100 =
+      .stuck .useAfterMove :=
+  ⟨demo_dropMoved_runs M, rfl⟩
+
+/-- **The theorem at work**: `letAddProgram_runs` (above) found its
+`→*` derivation by running `stepN`; here it comes from `run`'s answer alone,
+through `run_sim` — `let x = 40; x + 2` reaches `✓42` with the `let`'s cell
+retired and nothing printed (§6.7, §6.9, §6.12). -/
+theorem letAddProgram_sound (M : FloatOps) :
+    Steps M letAddProgram Config.init
+      (.run [.dead] Frame.empty [] (.ret (.int .w32 .signed 42)) []) :=
+  (run_sim M letAddProgram 100).1 _ _ _ rfl
+
+end RueCore

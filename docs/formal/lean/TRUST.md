@@ -90,198 +90,187 @@ and diffs them against the committed copies.
 | `Ty.atPath_append` | `RueCore.Syntax` | `propext` |
 | `declaredPrefix_split` | `RueCore.Syntax` | `propext` |
 | `declaredPrefix_declaredLinear` | `RueCore.Syntax` | `propext` |
-| `Mult.rank_le_join_left` | `RueCore.Statics` | *none* |
-| `Mult.rank_le_join_right` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Mult.eq_linear_of_rank` | `RueCore.Statics` | `propext` |
-| `rank_le_joinFold` | `RueCore.Statics` | `propext` |
-| `rank_le_joinFold_of_mem` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `joinFold_linear_inv` | `RueCore.Statics` | `propext` |
-| `StructDecl.Wf.field_not_linear` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `struct_carriesLinear_iff` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ty.mult_congr_declIds` | `RueCore.Statics` | `propext` |
-| `rank_le_payloadFold` | `RueCore.Statics` | `propext` |
-| `rank_le_payloadFold_of_mem` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `payloadFold_linear_inv` | `RueCore.Statics` | `propext` |
-| `EnumDecl.Wf.payload_not_linear` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `enum_carriesLinear_iff` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `joinFold_congr` | `RueCore.Statics` | `propext` |
-| `payloadFold_congr` | `RueCore.Statics` | `propext` |
-| `class_unique` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `struct_class_unique` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `enum_class_unique` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `OwnSt.get_append` | `RueCore.Statics` | `propext` |
-| `OwnSt.fullyOwned_fieldAt` | `RueCore.Statics` | `propext` |
-| `OwnSt.fullyOwned_get` | `RueCore.Statics` | `propext` |
-| `overwriteOk_iff` | `RueCore.Statics` | `propext` |
-| `OwnSt.join_comm` | `RueCore.Statics` | `propext` |
-| `OwnSt.joinList_comm` | `RueCore.Statics` | `propext` |
-| `Entry.join_comm` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ctx.join_comm` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ty.array_mult_linear` | `RueCore.Statics` | `propext` |
-| `Ty.any_replicate_mult_linear` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `residualLinear_mult_linear` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `residualLinearFields_mult_linear` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `ownedJoinOk_residualLinear` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `ownedJoinOkList_residualLinearFields` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `ownedJoinOk_of_residualLinear_false` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `ownedJoinOkList_of_residualLinearFields_false` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `OwnSt.join_owned_left` | `RueCore.Statics` | `propext` |
-| `OwnSt.join_owned_right` | `RueCore.Statics` | `propext` |
-| `OwnSt.join_movedOut_owned_eq` | `RueCore.Statics` | `propext` |
-| `OwnSt.join_movedOut_left` | `RueCore.Statics` | `propext` |
-| `OwnSt.join_movedOut_right` | `RueCore.Statics` | `propext` |
-| `OwnSt.joinList_nil_left` | `RueCore.Statics` | `propext` |
-| `OwnSt.joinList_nil_right` | `RueCore.Statics` | `propext` |
-| `OwnSt.join_fields_bind_left` | `RueCore.Statics` | `propext` |
-| `OwnSt.join_fields_bind_right` | `RueCore.Statics` | `propext` |
-| `OwnSt.joinList_cons_bind_left` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `OwnSt.joinList_cons_bind_right` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `residualLinear_of_ownedJoinOk` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `residualLinearFields_of_ownedJoinOkList` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `OwnSt.join_ownedJoinOk` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `OwnSt.joinList_ownedJoinOkList` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `OwnSt.join_residualLinear` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `OwnSt.joinList_residualLinearFields` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `OwnSt.join_exists` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `OwnSt.joinList_exists` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `OwnSt.join_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `OwnSt.joinList_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `OwnSt.join_fields_struct` | `RueCore.Statics` | `propext` |
-| `OwnSt.join_fields_array` | `RueCore.Statics` | `propext` |
-| `OwnSt.wf_fields_struct` | `RueCore.Statics` | `propext` |
-| `OwnSt.wf_fields_array` | `RueCore.Statics` | `propext` |
-| `OwnSt.join_assoc` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `OwnSt.joinList_assoc` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `optionMapBind` | `RueCore.Statics` | *none* |
-| `optionBindMap` | `RueCore.Statics` | *none* |
-| `Entry.setSt_st` | `RueCore.Statics` | *none* |
-| `Entry.setSt_ty` | `RueCore.Statics` | *none* |
-| `Entry.setSt_setSt` | `RueCore.Statics` | `Quot.sound` |
-| `Entry.ty_of_skel` | `RueCore.Statics` | `propext` |
-| `Entry.join_assoc` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Entry.join_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ctx.join_cons_bind_left` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ctx.join_cons_bind_right` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ctx.join_assoc` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `OwnSt.join_idem` | `RueCore.Statics` | `propext` |
-| `OwnSt.joinList_idem` | `RueCore.Statics` | `propext` |
-| `OwnSt.join_absorb` | `RueCore.Statics` | `propext` |
-| `OwnSt.joinList_absorb` | `RueCore.Statics` | `propext` |
-| `Entry.join_absorb` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ctx.join_absorb` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ctx.join_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `OwnSt.setField_wf` | `RueCore.Statics` | `propext` |
-| `OwnSt.fieldAt_wf` | `RueCore.Statics` | `propext` |
-| `OwnSt.setAt_cons_owned` | `RueCore.Statics` | `propext` |
-| `OwnSt.setAt_cons_fields` | `RueCore.Statics` | `propext` |
-| `OwnSt.wfList_fieldStates_struct` | `RueCore.Statics` | `propext` |
-| `OwnSt.wfList_fieldStates_array` | `RueCore.Statics` | `propext` |
-| `OwnSt.setAt_wf` | `RueCore.Statics` | `propext` |
-| `TypedArms.at_index` | `RueCore.Statics` | `propext` |
-| `exhaustive_arm_exists` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Entry.join_skel` | `RueCore.Statics` | `propext` |
-| `List.set_self_of_getElem?` | `RueCore.Statics` | `propext` |
-| `skel_set_setSt` | `RueCore.Statics` | `propext` |
-| `Ctx.skel_armCtx` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `skel_drop_armCtx` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ctx.join_skel` | `RueCore.Statics` | `propext` |
-| `Ctx.SameSkel.transport` | `RueCore.Statics` | *none* |
-| `Ctx.SameSkel.mem` | `RueCore.Statics` | *none* |
-| `Ctx.joinFold_skel` | `RueCore.Statics` | `propext` |
-| `Ctx.joinAll_skel` | `RueCore.Statics` | `propext` |
-| `Ctx.joinFold_bind_cons` | `RueCore.Statics` | `propext` |
-| `Ctx.joinFold_perm` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ctx.joinAll_perm` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ctx.joinFold_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ctx.joinAll_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ctx.joinOpt_skel` | `RueCore.Statics` | `propext` |
-| `Ctx.joinOpts_skel` | `RueCore.Statics` | `propext` |
-| `Ctx.Extends.refl` | `RueCore.Statics` | *none* |
-| `Ctx.Extends.skel` | `RueCore.Statics` | *none* |
-| `Ctx.Extends.pop` | `RueCore.Statics` | `propext` |
-| `Ctx.Extends.armCtx` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ctx.Extends.length_le` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ctx.outsideLoop_skel` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Out.skelOk_bot` | `RueCore.Statics` | *none* |
-| `Out.skelOk_same` | `RueCore.Statics` | *none* |
-| `Out.skelOk_of` | `RueCore.Statics` | *none* |
-| `Out.SkelOk.then` | `RueCore.Statics` | `propext` |
-| `LoopHead.skel` | `RueCore.Statics` | `propext` |
-| `LoopHead.reenter` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Typed.skel_preserved` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `TypedArgs.skel_preserved` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `TypedArms.skel_all` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `TypedArms.arm_skel` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Typed.skel_of` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `TypedArgs.skel_of` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `skel_lookup` | `RueCore.Statics` | `propext` |
-| `Entry.wf_owned` | `RueCore.Statics` | `propext` |
-| `Ctx.Wf.cons_owned` | `RueCore.Statics` | `propext` |
-| `Ctx.Wf.set_setAt` | `RueCore.Statics` | `propext` |
-| `Ctx.Wf.armCtx` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ctx.joinOpt_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Ctx.joinOpts_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Out.Wf.bot` | `RueCore.Statics` | `propext` |
-| `Out.Wf.of` | `RueCore.Statics` | `propext` |
-| `Out.Wf.then` | `RueCore.Statics` | `propext` |
-| `LoopHead.wf` | `RueCore.Statics` | `propext` |
-| `Ctx.Wf.drop` | `RueCore.Statics` | `propext` |
-| `Typed.wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `TypedArgs.wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `TypedArms.wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `LoopHead.reenter_body` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Typed.brk_nil` | `RueCore.Statics` | `propext` |
-| `TypedArgs.brk_nil` | `RueCore.Statics` | `propext` |
-| `TypedArms.brk_nil` | `RueCore.Statics` | `propext` |
-| `fnCtx_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Typed.wf_fnCtx` | `RueCore.Statics` | `Quot.sound`, `propext` |
-| `Contents.toVals_length` | `RueCore.Dynamics` | `propext` |
-| `Contents.mult_toVal` | `RueCore.Dynamics` | `Quot.sound`, `propext` |
-| `inBoundsIdx_eq_true` | `RueCore.Dynamics` | `propext` |
-| `dropEventsList_eq_flatten` | `RueCore.Dynamics` | `propext` |
-| `Step.step_eq` | `RueCore.Step` | `propext` |
-| `Step.det` | `RueCore.Step` | `propext` |
-| `Step.terminal` | `RueCore.Step` | `propext` |
-| `stepEval_complete` | `RueCore.Step` | `propext` |
-| `stepArgs_complete` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `stepRet_complete` | `RueCore.Step` | `propext` |
-| `step_iff` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `stepEval_ne_halted` | `RueCore.Step` | `propext` |
-| `stepArgs_ne_halted` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `stepRet_ne_halted` | `RueCore.Step` | `propext` |
-| `step_halted_iff` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `Config.trichotomy` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `Config.stuck_iff` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `Config.Stuck.no_step` | `RueCore.Step` | `propext` |
-| `Contents.readAt_err` | `RueCore.Step` | `propext` |
-| `Contents.splitResidue_err` | `RueCore.Step` | `propext` |
-| `Contents.splitFields_err` | `RueCore.Step` | `propext` |
-| `dropContents_err` | `RueCore.Step` | `propext` |
-| `dropContentsList_err` | `RueCore.Step` | `propext` |
-| `dropCell_err` | `RueCore.Step` | `propext` |
-| `plainUnwind_err` | `RueCore.Step` | `propext` |
-| `plainResidue_err` | `RueCore.Step` | `propext` |
-| `plainDestructure_err` | `RueCore.Step` | `propext` |
-| `rootCell_err` | `RueCore.Step` | `propext` |
-| `Contents.resolveDyn_err` | `RueCore.Step` | `propext` |
-| `dynPlace_err` | `RueCore.Step` | `propext` |
-| `step_stuck_isStuckState` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `dropRetire_plain` | `RueCore.Step` | `propext` |
-| `unwindLocs_plain` | `RueCore.Step` | `propext` |
-| `dropResidue_plain` | `RueCore.Step` | `propext` |
-| `destructure_plain` | `RueCore.Step` | `propext` |
-| `stepN_steps` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `letAddProgram_runs` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `demo_dynamicRead_stuck` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `demo_dynamicDrop_stuck` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `demo_repeat_stuck` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `demo_dropMoved_runs` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `demo_loopInLet_runs` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `demo_breakDrops_runs` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `demo_loopTurns_runs` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `demo_returnInLet_runs` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `demo_returnInMatch_runs` | `RueCore.Step` | `Quot.sound`, `propext` |
-| `demo_loopIter_drops` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `Mult.rank_le_join_left` | `RueCore.Statics.Lemmas` | *none* |
+| `Mult.rank_le_join_right` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Mult.eq_linear_of_rank` | `RueCore.Statics.Lemmas` | `propext` |
+| `rank_le_joinFold` | `RueCore.Statics.Lemmas` | `propext` |
+| `rank_le_joinFold_of_mem` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `joinFold_linear_inv` | `RueCore.Statics.Lemmas` | `propext` |
+| `StructDecl.Wf.field_not_linear` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `struct_carriesLinear_iff` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ty.mult_congr_declIds` | `RueCore.Statics.Lemmas` | `propext` |
+| `rank_le_payloadFold` | `RueCore.Statics.Lemmas` | `propext` |
+| `rank_le_payloadFold_of_mem` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `payloadFold_linear_inv` | `RueCore.Statics.Lemmas` | `propext` |
+| `EnumDecl.Wf.payload_not_linear` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `enum_carriesLinear_iff` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `joinFold_congr` | `RueCore.Statics.Lemmas` | `propext` |
+| `payloadFold_congr` | `RueCore.Statics.Lemmas` | `propext` |
+| `class_unique` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `struct_class_unique` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `enum_class_unique` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `OwnSt.get_append` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.fullyOwned_fieldAt` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.fullyOwned_get` | `RueCore.Statics.Lemmas` | `propext` |
+| `overwriteOk_iff` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.join_comm` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.joinList_comm` | `RueCore.Statics.Lemmas` | `propext` |
+| `Entry.join_comm` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ctx.join_comm` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ty.array_mult_linear` | `RueCore.Statics.Lemmas` | `propext` |
+| `Ty.any_replicate_mult_linear` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `residualLinear_mult_linear` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `residualLinearFields_mult_linear` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `ownedJoinOk_residualLinear` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `ownedJoinOkList_residualLinearFields` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `ownedJoinOk_of_residualLinear_false` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `ownedJoinOkList_of_residualLinearFields_false` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `OwnSt.join_owned_left` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.join_owned_right` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.join_movedOut_owned_eq` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.join_movedOut_left` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.join_movedOut_right` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.joinList_nil_left` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.joinList_nil_right` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.join_fields_bind_left` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.join_fields_bind_right` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.joinList_cons_bind_left` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `OwnSt.joinList_cons_bind_right` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `residualLinear_of_ownedJoinOk` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `residualLinearFields_of_ownedJoinOkList` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `OwnSt.join_ownedJoinOk` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `OwnSt.joinList_ownedJoinOkList` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `OwnSt.join_residualLinear` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `OwnSt.joinList_residualLinearFields` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `OwnSt.join_exists` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `OwnSt.joinList_exists` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `OwnSt.join_wf` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `OwnSt.joinList_wf` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `OwnSt.join_fields_struct` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.join_fields_array` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.wf_fields_struct` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.wf_fields_array` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.join_assoc` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `OwnSt.joinList_assoc` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `optionMapBind` | `RueCore.Statics.Lemmas` | *none* |
+| `optionBindMap` | `RueCore.Statics.Lemmas` | *none* |
+| `Entry.setSt_st` | `RueCore.Statics.Lemmas` | *none* |
+| `Entry.setSt_ty` | `RueCore.Statics.Lemmas` | *none* |
+| `Entry.setSt_setSt` | `RueCore.Statics.Lemmas` | `Quot.sound` |
+| `Entry.ty_of_skel` | `RueCore.Statics.Lemmas` | `propext` |
+| `Entry.join_assoc` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Entry.join_wf` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ctx.join_cons_bind_left` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ctx.join_cons_bind_right` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ctx.join_assoc` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `OwnSt.join_idem` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.joinList_idem` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.join_absorb` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.joinList_absorb` | `RueCore.Statics.Lemmas` | `propext` |
+| `Entry.join_absorb` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ctx.join_absorb` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ctx.join_wf` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `OwnSt.setField_wf` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.fieldAt_wf` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.setAt_cons_owned` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.setAt_cons_fields` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.wfList_fieldStates_struct` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.wfList_fieldStates_array` | `RueCore.Statics.Lemmas` | `propext` |
+| `OwnSt.setAt_wf` | `RueCore.Statics.Lemmas` | `propext` |
+| `TypedArms.at_index` | `RueCore.Statics.Lemmas` | `propext` |
+| `exhaustive_arm_exists` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Entry.join_skel` | `RueCore.Statics.Lemmas` | `propext` |
+| `List.set_self_of_getElem?` | `RueCore.Statics.Lemmas` | `propext` |
+| `skel_set_setSt` | `RueCore.Statics.Lemmas` | `propext` |
+| `Ctx.skel_armCtx` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `skel_drop_armCtx` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ctx.join_skel` | `RueCore.Statics.Lemmas` | `propext` |
+| `Ctx.SameSkel.transport` | `RueCore.Statics.Lemmas` | *none* |
+| `Ctx.SameSkel.mem` | `RueCore.Statics.Lemmas` | *none* |
+| `Ctx.joinFold_skel` | `RueCore.Statics.Lemmas` | `propext` |
+| `Ctx.joinAll_skel` | `RueCore.Statics.Lemmas` | `propext` |
+| `Ctx.joinFold_bind_cons` | `RueCore.Statics.Lemmas` | `propext` |
+| `Ctx.joinFold_perm` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ctx.joinAll_perm` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ctx.joinFold_wf` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ctx.joinAll_wf` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ctx.joinOpt_skel` | `RueCore.Statics.Lemmas` | `propext` |
+| `Ctx.joinOpts_skel` | `RueCore.Statics.Lemmas` | `propext` |
+| `Ctx.Extends.refl` | `RueCore.Statics.Lemmas` | *none* |
+| `Ctx.Extends.skel` | `RueCore.Statics.Lemmas` | *none* |
+| `Ctx.Extends.pop` | `RueCore.Statics.Lemmas` | `propext` |
+| `Ctx.Extends.armCtx` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ctx.Extends.length_le` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ctx.outsideLoop_skel` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Out.skelOk_bot` | `RueCore.Statics.Lemmas` | *none* |
+| `Out.skelOk_same` | `RueCore.Statics.Lemmas` | *none* |
+| `Out.skelOk_of` | `RueCore.Statics.Lemmas` | *none* |
+| `Out.SkelOk.then` | `RueCore.Statics.Lemmas` | `propext` |
+| `LoopHead.skel` | `RueCore.Statics.Lemmas` | `propext` |
+| `LoopHead.reenter` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Typed.skel_preserved` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `TypedArgs.skel_preserved` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `TypedArms.skel_all` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `TypedArms.arm_skel` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Typed.skel_of` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `TypedArgs.skel_of` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `skel_lookup` | `RueCore.Statics.Lemmas` | `propext` |
+| `Entry.wf_owned` | `RueCore.Statics.Lemmas` | `propext` |
+| `Ctx.Wf.cons_owned` | `RueCore.Statics.Lemmas` | `propext` |
+| `Ctx.Wf.set_setAt` | `RueCore.Statics.Lemmas` | `propext` |
+| `Ctx.Wf.armCtx` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ctx.joinOpt_wf` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ctx.joinOpts_wf` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Out.Wf.bot` | `RueCore.Statics.Lemmas` | `propext` |
+| `Out.Wf.of` | `RueCore.Statics.Lemmas` | `propext` |
+| `Out.Wf.then` | `RueCore.Statics.Lemmas` | `propext` |
+| `LoopHead.wf` | `RueCore.Statics.Lemmas` | `propext` |
+| `Ctx.Wf.drop` | `RueCore.Statics.Lemmas` | `propext` |
+| `Typed.wf` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `TypedArgs.wf` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `TypedArms.wf` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `LoopHead.reenter_body` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Typed.brk_nil` | `RueCore.Statics.Lemmas` | `propext` |
+| `TypedArgs.brk_nil` | `RueCore.Statics.Lemmas` | `propext` |
+| `TypedArms.brk_nil` | `RueCore.Statics.Lemmas` | `propext` |
+| `fnCtx_wf` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Typed.wf_fnCtx` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Contents.toVals_length` | `RueCore.Dynamics.Lemmas` | `propext` |
+| `Contents.mult_toVal` | `RueCore.Dynamics.Lemmas` | `Quot.sound`, `propext` |
+| `inBoundsIdx_eq_true` | `RueCore.Dynamics.Lemmas` | `propext` |
+| `dropEventsList_eq_flatten` | `RueCore.Dynamics.Lemmas` | `propext` |
+| `Step.step_eq` | `RueCore.Step.Lemmas` | `propext` |
+| `Step.det` | `RueCore.Step.Lemmas` | `propext` |
+| `Step.terminal` | `RueCore.Step.Lemmas` | `propext` |
+| `stepEval_complete` | `RueCore.Step.Lemmas` | `propext` |
+| `stepArgs_complete` | `RueCore.Step.Lemmas` | `Quot.sound`, `propext` |
+| `stepRet_complete` | `RueCore.Step.Lemmas` | `propext` |
+| `step_iff` | `RueCore.Step.Lemmas` | `Quot.sound`, `propext` |
+| `stepEval_ne_halted` | `RueCore.Step.Lemmas` | `propext` |
+| `stepArgs_ne_halted` | `RueCore.Step.Lemmas` | `Quot.sound`, `propext` |
+| `stepRet_ne_halted` | `RueCore.Step.Lemmas` | `propext` |
+| `step_halted_iff` | `RueCore.Step.Lemmas` | `Quot.sound`, `propext` |
+| `Config.trichotomy` | `RueCore.Step.Lemmas` | `Quot.sound`, `propext` |
+| `Config.stuck_iff` | `RueCore.Step.Lemmas` | `Quot.sound`, `propext` |
+| `Config.Stuck.no_step` | `RueCore.Step.Lemmas` | `propext` |
+| `Contents.readAt_err` | `RueCore.Step.Lemmas` | `propext` |
+| `Contents.splitResidue_err` | `RueCore.Step.Lemmas` | `propext` |
+| `Contents.splitFields_err` | `RueCore.Step.Lemmas` | `propext` |
+| `dropContents_err` | `RueCore.Step.Lemmas` | `propext` |
+| `dropContentsList_err` | `RueCore.Step.Lemmas` | `propext` |
+| `dropCell_err` | `RueCore.Step.Lemmas` | `propext` |
+| `plainUnwind_err` | `RueCore.Step.Lemmas` | `propext` |
+| `plainResidue_err` | `RueCore.Step.Lemmas` | `propext` |
+| `plainDestructure_err` | `RueCore.Step.Lemmas` | `propext` |
+| `rootCell_err` | `RueCore.Step.Lemmas` | `propext` |
+| `Contents.resolveDyn_err` | `RueCore.Step.Lemmas` | `propext` |
+| `dynPlace_err` | `RueCore.Step.Lemmas` | `propext` |
+| `step_stuck_isStuckState` | `RueCore.Step.Lemmas` | `Quot.sound`, `propext` |
+| `dropRetire_plain` | `RueCore.Step.Lemmas` | `propext` |
+| `unwindLocs_plain` | `RueCore.Step.Lemmas` | `propext` |
+| `dropResidue_plain` | `RueCore.Step.Lemmas` | `propext` |
+| `destructure_plain` | `RueCore.Step.Lemmas` | `propext` |
+| `stepN_steps` | `RueCore.Step.Lemmas` | `Quot.sound`, `propext` |
 | `HasTys.length_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.mult_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.observable` | `RueCore.Soundness` | `propext` |
@@ -689,8 +678,6 @@ and diffs them against the committed copies.
 | `step_never_stuck_of_run` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `never_stuck_iff` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `eval_diverges_iff` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `dropMoved_refused` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `letAddProgram_sound` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `Config.SafeAt.progress` | `RueCore.Adequacy` | `propext` |
 | `Config.SafeAt.preservation` | `RueCore.Adequacy` | `propext` |
 | `Config.SafeAt.steps` | `RueCore.Adequacy` | `propext` |
@@ -875,6 +862,19 @@ and diffs them against the committed copies.
 | `returnPastAffine_newestFirst` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
 | `unorderedRecord_rejected` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
 | `swappedMarkers_rejected` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `letAddProgram_runs` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `demo_dynamicRead_stuck` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `demo_dynamicDrop_stuck` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `demo_repeat_stuck` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `demo_dropMoved_runs` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `demo_loopInLet_runs` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `demo_breakDrops_runs` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `demo_loopTurns_runs` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `demo_returnInLet_runs` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `demo_returnInMatch_runs` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `demo_loopIter_drops` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `dropMoved_refused` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `letAddProgram_sound` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
 | `Explain.explain_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainIdx_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainArgs_result` | `RueCore.Explain` | `Quot.sound`, `propext` |

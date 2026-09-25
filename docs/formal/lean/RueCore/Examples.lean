@@ -3175,7 +3175,7 @@ states no rule can write: `.fields` at a scalar type is one, and `ownedJoinOk`
 refuses it while `residualLinear` sees nothing in it. So at `int` the two
 associations of `MovedOut`, `Owned`, `fields [Owned]` disagree — one is
 `MovedOut`, the other ill-formed — and `OwnSt.wf` is exactly the invariant that
-rules the third state out (`OwnSt.join_assoc`, `Statics.lean`'s join
+rules the third state out (`OwnSt.join_assoc`, `Statics/Lemmas.lean`'s join
 section). -/
 example :
     (OwnSt.join (Decls.ofStructs []) .movedOut .owned tI64).bind

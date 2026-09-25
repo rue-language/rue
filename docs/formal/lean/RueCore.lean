@@ -7,6 +7,9 @@ import RueCore.Step
 import RueCore.Soundness.Defs
 import RueCore.Trace.Defs
 import RueCore.Adequacy.Defs
+import RueCore.Statics.Lemmas
+import RueCore.Dynamics.Lemmas
+import RueCore.Step.Lemmas
 import RueCore.Soundness
 import RueCore.Trace
 import RueCore.Adequacy

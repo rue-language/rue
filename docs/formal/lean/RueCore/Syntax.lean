@@ -203,7 +203,7 @@ What makes both equations definitions rather than fixpoint conditions is
 `3.0:5` (E0483): no struct or enum contains itself by value, directly or
 through a cycle of struct fields and enum payloads. The condition is joint over
 the two layers because the recursion is — a field may name an enum and a
-payload may name a struct — and `class_unique` (`Statics.lean`) is the proof it
+payload may name a struct — and `class_unique` (`Statics/Lemmas.lean`) is the proof it
 buys, unconditionally: on declarations of the same shapes, at most one
 assignment of classes satisfies §3's equations.
 
@@ -475,7 +475,7 @@ def Ty.mult (D : Decls) : Ty → Mult
 
 /-- `carries_linear(T)` (§5.3): `class(T) = Linear`, which §5.3 states is the
 same predicate as "Linear lifted through the aggregates" because `class` *is*
-that join (§3). `struct_carriesLinear_iff` (`Statics.lean`) is the lifting,
+that join (§3). `struct_carriesLinear_iff` (`Statics/Lemmas.lean`) is the lifting,
 proved through the field join. -/
 abbrev Ty.carriesLinear (D : Decls) (T : Ty) : Prop := T.mult D = .linear
 
