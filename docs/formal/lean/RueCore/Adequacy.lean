@@ -61,7 +61,7 @@ Typing is what fixes the domain (RUE-2314): `eval_sound` is stated for the
 programs `check` accepts, where `no_violation` says `run` is never `.stuck`.
 There every outcome is a value, a panic, or `outOfFuel`, and the first two are
 §6's. On other input `run_sim` still holds but says nothing about `.stuck`,
-which is outside the correspondence: three monitors are not §6's, and `eval`
+which is outside the correspondence: four monitors are not §6's, and `eval`
 inspects operand shapes in an order §6.2 does not fix. Completeness (part 3)
 is where the domain does work, because there `Step` can step where `eval`
 refuses.
