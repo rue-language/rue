@@ -199,3 +199,70 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# A const initializer's diagnostic lands where the body path puts it (RUE-2405)
+# =============================================================================
+
+[[case]]
+name = "negated_literal_out_of_range_in_const_points_at_literal"
+source = """
+const X: i8 = -129;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0800]: literal value -129 is out of range for type 'i8'
+ --> test.rue:1:15
+  |
+1 | const X: i8 = -129;
+  |               ^^^^
+  |
+"""
+
+[[case]]
+name = "negated_literal_out_of_range_in_let_points_at_literal"
+source = """
+fn main() -> i32 { let x: i8 = -129; 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0800]: literal value -129 is out of range for type 'i8'
+ --> test.rue:1:32
+  |
+1 | fn main() -> i32 { let x: i8 = -129; 0 }
+  |                                ^^^^
+  |
+"""
+
+[[case]]
+name = "negated_literal_out_of_range_in_const_array_points_at_element"
+source = """
+const A: [i8; 2] = [1, -129];
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0800]: literal value -129 is out of range for type 'i8'
+ --> test.rue:1:24
+  |
+1 | const A: [i8; 2] = [1, -129];
+  |                        ^^^^
+  |
+"""
+
+[[case]]
+name = "unsigned_negation_in_const_points_at_negation"
+source = """
+const K: u8 = -1;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0801]: cannot apply unary operator `-` to type 'u8'
+ --> test.rue:1:15
+  |
+1 | const K: u8 = -1;
+  |               ^^
+  |
+"""
