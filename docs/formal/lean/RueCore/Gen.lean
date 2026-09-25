@@ -162,7 +162,7 @@ nothing in the tree counts them. On the current draws the acceptance settings,
 self-assignment, in four cases, and in every one the compiler stops first at
 another error, so none of those **disagrees**. One case at those settings does
 disagree, on a shape the return arms reached (RUE-2383, the last bullet
-below): all 1,200 others agree with the compiler. At `--gen 200 --seed 41`
+below): all 1,199 others agree with the compiler. At `--gen 200 --seed 41`
 the self-assignment is unmasked in `gen_41_76` and `gen_41_112`, two programs
 the return arms left unchanged.
 Wider runs reach it unmasked: `gen_101_207` (`--gen 400 --seed 101`) was
@@ -238,9 +238,11 @@ non-`Copy` aggregate binder or a unit-typed leaf. It stands in four places:
 * as the **function body's last form**, one body in ten: `let r = e; return r`.
 
 `expr`'s `rt` flag says where one may stand: the function body, and the
-statement positions of `let`, sequence, arm and loop-body draws under it. An
-operand, an argument, an initializer, a condition or a scrutinee is drawn with
-`rt` off, which keeps `check`'s one incomplete shape (a `never` operator
+statement positions of `let`, sequence, arm and loop-body draws under it. A
+`let` initializer is one of those positions: an arm inside it may return or
+panic, as a break arm there may, because nothing is pending at a `let`. An
+operand, a struct, enum or array field, a call or intrinsic argument, a
+condition, a scrutinee or an assigned value is drawn with `rt` off, which keeps `check`'s one incomplete shape (a `never` operator
 operand, `Checker.lean`, "what completeness still costs") and RUE-2316's
 pending-value edge — a value built for an earlier sibling, abandoned by the
 jump — out of the generated corpus, as it does for `break`.
@@ -350,7 +352,7 @@ figures the weights below were tuned against). Both
 are recorded (`Corpus.caseJson` reads them off `checkProgram` and `run` as for
 any case), never filtered: a rejected program checks that the compiler rejects
 it too, an accepted one that the three implementations agree with the
-interpreter's trace. At those two settings 89 of 200 and 431 of 1,000 programs
+interpreter's trace. At those two settings 88 of 200 and 427 of 1,000 programs
 contain a `match`.
 
 Every figure in this module is a count over the programs `generate` returns at
