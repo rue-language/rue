@@ -130,13 +130,11 @@ error_contains = ["E0481", "not a compile-time constant"]
 compile_stderr_not_contains = ["declared in"]
 
 [[case]]
-# Inference resolves a callee signature's `[T; K]` at the CALL SITE's file
-# (best-effort; K is out of the caller's scope so inference drops the length
-# constraint) — sema resolves K in the callee's own file and stays
-# authoritative. This is the one scenario that would regress if sema ever
-# stopped re-checking: the mismatch below must still be rejected.
+# A callee signature's `[T; K]` resolves K in the callee's own file, in
+# inference as in sema (RUE-2422), so the caller's wrong-size argument is the
+# same E0901 length mismatch the same-file spelling reports.
 name = "cross_file_generic_signature_size_mismatch_still_rejected"
-description = "A generic callee signature `[T; K]` with K a callee-file const: a caller passing the wrong array size is still rejected (E0206) because sema resolves K in the callee's file scope, even though caller-file inference no longer resolves K (RUE-1091: sema authority over best-effort inference)."
+description = "A generic callee signature `[T; K]` with K a callee-file const: a caller passing the wrong array size is rejected with E0901, as in the same-file spelling, because K resolves in the callee's file scope (RUE-1091, RUE-2422)."
 files = [
     { path = "main.rue", source = """
 const lib = @import("lib.rue");
@@ -151,7 +149,7 @@ pub fn firstof(comptime T: type, a: [T; K]) -> T { a[0] }
 """ },
 ]
 compile_fail = true
-error_contains = ["E0206"]
+error_contains = ["E0901", "expected array of 3 elements, found 2 elements"]
 
 [[case]]
 name = "cross_file_generic_signature_size_match_accepted"
