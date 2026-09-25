@@ -1744,10 +1744,14 @@ impl<'a> Verifier<'a> {
             }
             for &value in &block.insts {
                 let data = &self.cfg.get_inst(value).data;
-                if let Some((slot, write)) = flag_write(data) {
-                    if !candidates.contains(&slot) {
-                        continue;
-                    }
+                // A write to a compiler-owned slot can also be a whole write of
+                // the target: a zero-width local's load makes its slot number
+                // raw, and a later local reusing that slot is written there
+                // (RUE-2450). A flag write therefore never hides the target's
+                // own write, as it does not in `target_written` above.
+                if let Some((slot, write)) = flag_write(data)
+                    && candidates.contains(&slot)
+                {
                     match write {
                         Some(FlagWrite::Cleared) => {
                             last_write.insert(slot, FlagWrite::Cleared);
@@ -1762,7 +1766,8 @@ impl<'a> Verifier<'a> {
                             flags.remove(&slot);
                         }
                     }
-                } else if drops_target(data) {
+                }
+                if drops_target(data) {
                     for &slot in &candidates {
                         match last_write.get(&slot) {
                             Some(FlagWrite::Cleared) => continue,
@@ -3513,6 +3518,11 @@ mod tests {
         /// value (as common-subexpression elimination would leave it: no
         /// second load of the flag) guards a second drop of the root.
         rebranch_on_stale_test: bool,
+        /// Before the root's binding, a discarded zero-width temporary lives
+        /// and dies in the root's slot, as `{ let a: [i64; 0] = []; a };`
+        /// leaves it (RUE-2450): its load makes the slot number raw, so the
+        /// root's whole write is also a write to a compiler-owned slot.
+        zero_width_prefix: bool,
     }
 
     /// A way the join can write the flag slot other than the builder's `Store`
@@ -3538,6 +3548,7 @@ mod tests {
             extra_guard_entry,
             retest_after_exit_drop,
             rebranch_on_stale_test,
+            zero_width_prefix,
         } = shape;
         let guard_slot = if guard_slot == 0 { 1 } else { guard_slot };
         let pool = TypeInternPool::new();
@@ -3559,6 +3570,33 @@ mod tests {
         let exit = cfg.new_block();
         cfg.entry = entry;
 
+        if zero_width_prefix {
+            let unit_marker = |slot| CfgInstData::StorageLive {
+                slot,
+                local_ty: Type::UNIT,
+            };
+            push(&mut cfg, entry, unit_marker(0), Type::UNIT);
+            let unit = push(&mut cfg, entry, CfgInstData::Const(0), Type::UNIT);
+            push(
+                &mut cfg,
+                entry,
+                CfgInstData::Alloc {
+                    slot: 0,
+                    init: unit,
+                },
+                Type::UNIT,
+            );
+            push(&mut cfg, entry, CfgInstData::Load { slot: 0 }, Type::UNIT);
+            push(
+                &mut cfg,
+                entry,
+                CfgInstData::StorageDead {
+                    slot: 0,
+                    local_ty: Type::UNIT,
+                },
+                Type::UNIT,
+            );
+        }
         push(
             &mut cfg,
             entry,
@@ -4023,6 +4061,34 @@ mod tests {
     fn semantic_verifier_accepts_flag_guarded_exit_drop_after_conditional_explicit_drop() {
         let (cfg, pool) = conditional_explicit_drop_cfg(ConditionalDropShape::default());
         cfg.finish(&pool).unwrap();
+    }
+
+    /// A zero-width temporary that lived in the root's slot makes the slot
+    /// number raw; the root's whole write there still arms its flag
+    /// (RUE-2450).
+    #[test]
+    fn semantic_verifier_accepts_flag_guarded_exit_drop_after_a_zero_width_temporary_in_the_slot() {
+        let (cfg, pool) = conditional_explicit_drop_cfg(ConditionalDropShape {
+            zero_width_prefix: true,
+            ..Default::default()
+        });
+        cfg.finish(&pool).unwrap();
+    }
+
+    /// The raw slot number does not excuse a rearm without a whole write, or
+    /// an unguarded read after the drop (RUE-2450).
+    #[test]
+    fn semantic_verifier_rejects_consumed_reads_after_a_zero_width_temporary_in_the_slot() {
+        assert_consumed_root(ConditionalDropShape {
+            zero_width_prefix: true,
+            rearm_in_join: Some(RearmChannel::StoreConst),
+            ..Default::default()
+        });
+        assert_consumed_root(ConditionalDropShape {
+            zero_width_prefix: true,
+            read_in_join: true,
+            ..Default::default()
+        });
     }
 
     #[test]
