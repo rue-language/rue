@@ -30,12 +30,12 @@ place is, and its walk is empty only because nothing under a `Copy` node owns
 anything (copy closure, which the machine maintains) and no `Copy` struct
 declares a destructor.
 
-## Across cells: newest-first teardown, over §6's relation (§6.7, §6.9, §6.10)
+## Across cells: last-in first-out, over §6's relation (§6.7, §6.9, §6.10)
 
 The order *between* cells is not a property of the trace alone: every
 `drop ℓ c` block is a valid block by itself, so "the trace can be cut into
 newest-first groups" says nothing. What gives it content is the machine's
-scope record, so this half is stated over `Step`, from every configuration
+scope records, so this half is stated over `Step`, from every configuration
 reachable from `Config.init`:
 
 * `reachable_ordered`: every scope record in a reachable configuration — the
@@ -46,15 +46,34 @@ reachable from `Config.init`:
 * `step_drop_order`: every step's `drop` markers either all name one cell
   (an overwrite, `@drop`, or a destructure's residue, several sub-positions
   of one binding) or name distinct cells in **strictly decreasing** location
-  order — newest registered first. A teardown (`endscope`, a frame pop,
-  `return`'s σ-walk, a loop turn's end, `break`'s unwind) walks its record
-  backwards, and the record is increasing, so its markers are strictly
-  decreasing.
+  order — newest registered first.
+* `reachable_nested`: the scopes **nest**. A frame's pending `endscope`
+  markers are exactly the tail of its record, innermost last, and the whole
+  registration stack — every suspended caller's record, then the current
+  frame's — is in location order. So (D-EndScope)'s pop by count removes the
+  marker's own cells (`Frame.popScope_tail`).
+* `reachable_lifo`: every step is **last-in first-out** on that stack
+  (`Lifo`). It keeps the stack as a prefix of the new one, or cuts it back
+  and drops only cells of the suffix it cut, newest first; each such cell is
+  newer than every cell still registered. That orders drops *across* steps:
+  `{ let a; let b; }` exits over two (D-EndScope) steps, and `b` drops
+  first. `swappedMarkers_rejected` is a configuration with the two markers
+  swapped: every record is in order and every step drops one cell, yet it
+  drops oldest first — and it is not `Nested`, so no run reaches it.
 
-What this half does not say: it relates the markers of **one step**. That
-two sibling scopes tear down in the right relative order follows from the
-dynamics' shape — an inner `let`'s `endscope` runs when its body finishes,
-before the outer one's — and is not restated here.
+`drop_order` states both halves over `Step`: the within-value half reaches
+`Step`'s finished runs through `eval_complete` (`step_blocks`).
+
+## What the grammar does not constrain
+
+`Blocks` ties each marker to its walk, not to the cell: fidelity to what the
+cell held is `dropCell` reading `H(ℓ)` and the exactly-once ledger
+(`TraceExact.lean`). A consumption carries no walk, so on a program the
+checker rejects a destructor-bearing node can be consumed without its
+destructor running (`destructure_under_dtor`, which `3.9:34` makes E0456);
+the grammar accepts that trace. And "an enum's active payload only" is how
+`Contents.enum` stores a value — it holds the active variant's payload and
+no other — rather than a clause of the grammar.
 -/
 
 namespace RueCore
@@ -1393,6 +1412,32 @@ theorem unorderedRecord_rejected :
     · have h1 := hℓ 1 (by decide); have h3 := hℓ 3 (by decide); omega
     · simp at h
 
+open Examples in
+/-- Two nested `let`s' pending markers, swapped: `endscope [1]` above
+`endscope [3]` in a frame whose record is `[1, 3]` (the review's Probe 2)
+(helper). -/
+def swappedMarkers : Config :=
+  .run [.dead, .full (cA 0 3), .dead, .full (cA 2 4)] { env := [3, 1], scope := [1, 3] }
+    [.endscope [1], .endscope [3], .call { env := [], scope := [] }] (.ret (v64 7)) []
+
+open Examples in
+/-- **The nesting is what orders sibling scopes** (§6.7). With the two
+markers swapped, every record is still in location order (`Config.Ordered`)
+and every step drops one cell, so per-step order says nothing; yet the run
+drops `ℓ1` before `ℓ3`, oldest first, and the first (D-EndScope) pops `ℓ3` off
+the record while its marker drops `ℓ1`. `Config.Nested` rejects the
+configuration, so `reachable_nested` says no run reaches it. -/
+theorem swappedMarkers_rejected :
+    swappedMarkers.Ordered ∧ ¬ swappedMarkers.Nested ∧
+      ∃ C, Steps demoOps returnPastAffine swappedMarkers C ∧ dropLocs C.trace = [1, 3] := by
+  refine ⟨⟨⟨by decide, by decide⟩, fun k hk => ?_⟩, fun h => ?_,
+    ⟨stepN demoOps returnPastAffine 3 swappedMarkers, stepN_steps, rfl⟩⟩
+  · simp only [List.mem_cons, List.not_mem_nil, or_false] at hk
+    rcases hk with rfl | rfl | rfl <;> simp [Kont.Ordered, Rec] <;> decide
+  · obtain ⟨⟨sc', hsc, _⟩, _⟩ := h
+    have := congrArg List.reverse hsc
+    simp at this
+
 /-! ## The corpus, read through the theorems
 
 The order-witnessing corpus cases, each run at the export model: the
@@ -1458,13 +1503,29 @@ example : orderView (destrProg tI64 destructureNestedResidue).decls
   rfl
 
 open Examples in
+/-- `nested_scopes`, the bridge case's own program (helper). -/
+def nestedScopes : Program :=
+  prog tI64 <| .letIn false (resA (lit 1)) (.letIn false (resA (lit 2)) (lit 0))
+
+/-- It is the corpus case's program. -/
+example : (Corpus.cases.find? (·.name == "nested_scopes")).map (·.prog.fns.map (·.body)) =
+    some (nestedScopes.fns.map (·.body)) := by rfl
+
+/-- `nested_scopes`: two sibling `let`s exit over two (D-EndScope) steps, the
+inner (`ℓ3`) before the outer (`ℓ1`) — the cross-step order `reachable_lifo`
+fixes, bridge-checked. -/
+example : orderView nestedScopes.decls (corpusTrace nestedScopes) = ([2, 0], [3, 1], [2, 0]) := by
+  rfl
+
+open Examples in
 /-- `return_past_affine`: the σ-walk newest first, `ℓ3` then `ℓ1`, §6.9. -/
 example : orderView returnPastAffine.decls (corpusTrace returnPastAffine) = ([2, 0], [3, 1], [2, 0]) :=
   by rfl
 
 open Examples in
-/-- `loop_break_past_local`: each turn's binding dropped at the `break`'s
-unwind, one per turn, §6.10. -/
+/-- `loop_break_past_local`: the first turn's binding (`ℓ2`) is dropped by its
+(D-EndScope) at the turn's end, and the second turn's (`ℓ4`) by the `break`'s
+unwind, §6.10. -/
 example : orderView (prog tI64 loopBreakPastLocal).decls
       (corpusTrace (prog tI64 loopBreakPastLocal)) = ([1, 3], [2, 4], [1, 3]) := by rfl
 
