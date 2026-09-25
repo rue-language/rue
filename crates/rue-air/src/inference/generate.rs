@@ -546,6 +546,12 @@ pub struct ConstraintGenerator<'a> {
     comptime_frontier_mode: bool,
     /// Canonically evaluated computed comptime arguments keyed by source node.
     comptime_argument_values: Option<&'a AHashMap<InstRef, ConstValue>>,
+    /// A generic call's return type with its comptime arguments substituted,
+    /// keyed by the call's `InstRef`, where the declared return type is one
+    /// constraint generation cannot reduce itself (`-> Box(T)`). Sema computes
+    /// it with the call analysis's own substitution after the staged probe;
+    /// `None` in the probe and in bodies without generic calls (RUE-2425).
+    generic_call_return_types: Option<&'a AHashMap<InstRef, Type>>,
     /// Optional query-owned cancellation probe. It is checked at every
     /// generated instruction so a canceled staged frontier cannot continue
     /// producing constraints or publish partial facts.
@@ -739,6 +745,7 @@ impl<'a> ConstraintGenerator<'a> {
             staged_comptime_selectors: false,
             comptime_frontier_mode: false,
             comptime_argument_values: None,
+            generic_call_return_types: None,
             cancel_check: None,
             sibling_attempt_hook: None,
             canceled: false,
@@ -803,6 +810,7 @@ impl<'a> ConstraintGenerator<'a> {
             staged_comptime_selectors: false,
             comptime_frontier_mode: false,
             comptime_argument_values: None,
+            generic_call_return_types: None,
             cancel_check: None,
             sibling_attempt_hook: None,
             canceled: false,
@@ -1181,6 +1189,16 @@ impl<'a> ConstraintGenerator<'a> {
         values: Option<&'a AHashMap<InstRef, ConstValue>>,
     ) -> Self {
         self.comptime_argument_values = values;
+        self
+    }
+
+    /// Provide sema's substituted generic-call return types. See the
+    /// `generic_call_return_types` field (RUE-2425).
+    pub fn with_generic_call_return_types(
+        mut self,
+        return_types: Option<&'a AHashMap<InstRef, Type>>,
+    ) -> Self {
+        self.generic_call_return_types = return_types;
         self
     }
 
@@ -2232,7 +2250,13 @@ impl<'a> ConstraintGenerator<'a> {
                     // type value), the constraint is skipped and the check happens in
                     // semantic analysis instead (RUE-73, RUE-99).
                     if func.is_generic {
-                        self.generate_generic_call(&func, arg_range, &mut arg_diverged, ctx)
+                        self.generate_generic_call(
+                            inst_ref,
+                            &func,
+                            arg_range,
+                            &mut arg_diverged,
+                            ctx,
+                        )
                     } else if args.len() != func.param_types.len() {
                         // Check argument count matches parameter count.
                         // Semantic analysis will emit a proper error; we just need to avoid
@@ -3673,7 +3697,13 @@ impl<'a> ConstraintGenerator<'a> {
                                 // module boundary cannot change which comptime
                                 // arguments are captured or whether `-> T` is
                                 // substituted.
-                                self.generate_generic_call(&func, args, &mut arg_diverged, ctx)
+                                self.generate_generic_call(
+                                    inst_ref,
+                                    &func,
+                                    args,
+                                    &mut arg_diverged,
+                                    ctx,
+                                )
                             } else {
                                 if call_args.len() == func.param_types.len() {
                                     // Constrain each argument against its declared
@@ -4783,6 +4813,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// reachability accounting.
     fn generate_generic_call(
         &mut self,
+        call: InstRef,
         func: &FunctionSig,
         args: &rue_rir::RirCallArgsRange,
         arg_diverged: &mut bool,
@@ -4900,9 +4931,12 @@ impl<'a> ConstraintGenerator<'a> {
         // Compute the actual return type by substituting type parameters —
         // bare (`-> T`) or inside a composite (`-> [T; 3]`, RUE-172).
         if func.return_type == InferType::Concrete(Type::COMPTIME_TYPE) {
-            // A return type that cannot be reduced here — an unresolved type
-            // parameter, or a type-function application such as `-> Option(T)`
-            // whose monomorphized struct/enum only sema can name — becomes a
+            // A type-function application such as `-> Option(T)` names a
+            // monomorphized struct/enum only sema can reduce; sema's staged
+            // pre-pass supplies that reduction for this call once its comptime
+            // arguments are known, so a field or method of the result has its
+            // real type here (RUE-2425). A return type still unknown — an
+            // unresolved type parameter, or the staged probe itself — becomes a
             // fresh variable pinned by the call's use site. The `COMPTIME_TYPE`
             // placeholder would instead unify against the real result type and
             // reject the program (E0206), and a bare fresh variable with no
@@ -4910,6 +4944,11 @@ impl<'a> ConstraintGenerator<'a> {
             // never agreed to (`h.sq(f32, v) == 6.25` defaulted the literal to
             // `f64` against an `f32` specialization, an AIR verification ICE).
             self.substituted_generic_return_type(func, &type_subst, &value_subst)
+                .or_else(|| {
+                    self.generic_call_return_types
+                        .and_then(|types| types.get(&call).copied())
+                        .map(|ty| self.type_to_infer(ty))
+                })
                 .unwrap_or_else(|| InferType::Var(self.fresh_var()))
         } else {
             func.return_type.clone()
