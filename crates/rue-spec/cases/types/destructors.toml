@@ -4699,3 +4699,185 @@ fn main() -> i32 {
 """
 exit_code = 0
 expected_stdout = "3\n2\n1\n500\n"
+
+# -----------------------------------------------------------------------------
+# A conditional @drop after a discarded zero-width temporary (RUE-2450). The
+# temporary's slot is reused by the destructor-bearing binding, and the drop
+# flag still guards its scope-exit drop at every optimization level.
+# -----------------------------------------------------------------------------
+
+[[case]]
+name = "conditional_drop_after_discarded_zero_width_temporary"
+spec = ["3.9:38"]
+description = "A conditional @drop, in one if arm or before a loop's break, of a binding declared after a discarded zero-width temporary (`[i64; 0]`, `[(); 3]`, `()`, an empty struct, `[S; 0]`) drops it exactly once on either path (RUE-2450)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct E {}
+
+fn issue_repro(c: bool) {
+    { let a: [i64; 0] = []; a };
+    let mut v0: S = S { v: 1 };
+    loop {
+        if c { break } else { () }; if true { @drop(v0); break } else { () }; v0 = S { v: 2 };
+    };
+}   // 1 when the loop drops it, 1 at scope exit when it breaks first
+
+fn one_arm_drop(c: bool) {
+    { let a: [(); 3] = [(), (), ()]; a };
+    let r = S { v: 10 };
+    if c { @drop(r); } else { () };
+    @dbg(11);
+}   // 10 here only when c is false
+
+fn unit_and_empty_struct_temporaries(c: bool) {
+    { let a: () = (); a };
+    { let e: E = E {}; e };
+    let r = S { v: 20 };
+    if c { @drop(r); } else { () };
+    @dbg(21);
+}
+
+fn zero_length_droppable_array_before_while(n: i64) {
+    { let a: [S; 0] = []; a };
+    let mut b = S { v: 30 };
+    let mut i: i64 = 0;
+    while i < 3 {
+        if i == n { @drop(b); break } else { () };
+        b = S { v: 31 + i };
+        i = i + 1;
+    };
+}
+
+fn main() -> i32 {
+    issue_repro(false);
+    issue_repro(true);
+    one_arm_drop(true);
+    one_arm_drop(false);
+    unit_and_empty_struct_temporaries(true);
+    unit_and_empty_struct_temporaries(false);
+    zero_length_droppable_array_before_while(1);
+    zero_length_droppable_array_before_while(5);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n1\n10\n11\n11\n10\n20\n21\n21\n20\n30\n31\n30\n31\n32\n33\n"
+
+[[case]]
+name = "conditional_drop_after_discarded_zero_width_temporary_o2"
+spec = ["3.9:38"]
+description = "The conditional @drop after a discarded zero-width temporary at -O2 (RUE-2450)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct E {}
+
+fn issue_repro(c: bool) {
+    { let a: [i64; 0] = []; a };
+    let mut v0: S = S { v: 1 };
+    loop {
+        if c { break } else { () }; if true { @drop(v0); break } else { () }; v0 = S { v: 2 };
+    };
+}   // 1 when the loop drops it, 1 at scope exit when it breaks first
+
+fn one_arm_drop(c: bool) {
+    { let a: [(); 3] = [(), (), ()]; a };
+    let r = S { v: 10 };
+    if c { @drop(r); } else { () };
+    @dbg(11);
+}   // 10 here only when c is false
+
+fn unit_and_empty_struct_temporaries(c: bool) {
+    { let a: () = (); a };
+    { let e: E = E {}; e };
+    let r = S { v: 20 };
+    if c { @drop(r); } else { () };
+    @dbg(21);
+}
+
+fn zero_length_droppable_array_before_while(n: i64) {
+    { let a: [S; 0] = []; a };
+    let mut b = S { v: 30 };
+    let mut i: i64 = 0;
+    while i < 3 {
+        if i == n { @drop(b); break } else { () };
+        b = S { v: 31 + i };
+        i = i + 1;
+    };
+}
+
+fn main() -> i32 {
+    issue_repro(false);
+    issue_repro(true);
+    one_arm_drop(true);
+    one_arm_drop(false);
+    unit_and_empty_struct_temporaries(true);
+    unit_and_empty_struct_temporaries(false);
+    zero_length_droppable_array_before_while(1);
+    zero_length_droppable_array_before_while(5);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n1\n10\n11\n11\n10\n20\n21\n21\n20\n30\n31\n30\n31\n32\n33\n"
+opt_level = 2
+
+[[case]]
+name = "conditional_drop_after_discarded_zero_width_temporary_o3"
+spec = ["3.9:38"]
+description = "The conditional @drop after a discarded zero-width temporary at -O3 (RUE-2450)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct E {}
+
+fn issue_repro(c: bool) {
+    { let a: [i64; 0] = []; a };
+    let mut v0: S = S { v: 1 };
+    loop {
+        if c { break } else { () }; if true { @drop(v0); break } else { () }; v0 = S { v: 2 };
+    };
+}   // 1 when the loop drops it, 1 at scope exit when it breaks first
+
+fn one_arm_drop(c: bool) {
+    { let a: [(); 3] = [(), (), ()]; a };
+    let r = S { v: 10 };
+    if c { @drop(r); } else { () };
+    @dbg(11);
+}   // 10 here only when c is false
+
+fn unit_and_empty_struct_temporaries(c: bool) {
+    { let a: () = (); a };
+    { let e: E = E {}; e };
+    let r = S { v: 20 };
+    if c { @drop(r); } else { () };
+    @dbg(21);
+}
+
+fn zero_length_droppable_array_before_while(n: i64) {
+    { let a: [S; 0] = []; a };
+    let mut b = S { v: 30 };
+    let mut i: i64 = 0;
+    while i < 3 {
+        if i == n { @drop(b); break } else { () };
+        b = S { v: 31 + i };
+        i = i + 1;
+    };
+}
+
+fn main() -> i32 {
+    issue_repro(false);
+    issue_repro(true);
+    one_arm_drop(true);
+    one_arm_drop(false);
+    unit_and_empty_struct_temporaries(true);
+    unit_and_empty_struct_temporaries(false);
+    zero_length_droppable_array_before_while(1);
+    zero_length_droppable_array_before_while(5);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n1\n10\n11\n11\n10\n20\n21\n21\n20\n30\n31\n30\n31\n32\n33\n"
+opt_level = 3
