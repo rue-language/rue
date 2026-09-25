@@ -1748,7 +1748,8 @@ impl<'a> Verifier<'a> {
                 // the target: a zero-width local's load makes its slot number
                 // raw, and a later local reusing that slot is written there
                 // (RUE-2450). A flag write therefore never hides the target's
-                // own write, as it does not in `target_written` above.
+                // own write: the per-block `target_state` here must agree with
+                // the `target_written` solve above, which counts that write.
                 if let Some((slot, write)) = flag_write(data)
                     && candidates.contains(&slot)
                 {
