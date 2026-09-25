@@ -6,10 +6,15 @@ mechanization's definition layers, may use a term or a symbol only when the
 glossary has a row for it (its meaning, its upstream source and its class), so
 no term enters the formal core untraced. The gate reads:
 
-* the Markdown documents ``MARKDOWN_DOCS`` (those present on the branch);
+* the Markdown documents ``MARKDOWN_DOCS`` (a listed document that is missing
+  fails the check, unless the list marks it as not yet written);
 * the doc-comments (``/-- … -/``, ``/-! … -/``) of every module the layer table
-  in ``docs/formal/lean/RueCore/LayersMain.lean`` puts in ``DEFINITION_LAYERS``,
+  in ``docs/formal/lean/RueCore/Layers.lean`` puts in ``DEFINITION_LAYERS``,
   and the names those modules declare.
+
+The check never passes vacuously: it fails when it cannot read the layer
+table, when the table puts no module in the definition layers, or when those
+modules declare no name.
 
 It extracts three kinds of item and fails on any the glossary does not cover:
 
@@ -18,18 +23,27 @@ It extracts three kinds of item and fails on any the glossary does not cover:
    plain emphasis ("does **not**"), and italics likewise. So every bold span
    (``**…**``) and italic span (``*…*``, ``_…_``) outside fenced code blocks is
    extracted, and each must be a spelling in a term row or listed in the
-   glossary's "Emphasis, not terms" section. Skipped mechanically: a span of
-   more than ``MAX_TERM_WORDS`` words (a sentence or a lemma's statement); one
-   ending in ``.``, ``:`` or ``?`` (a run-in heading); one opening with ``[``,
-   ``(``, ``,`` or ``;`` or containing ``§`` (a status tag, a rule label, a
-   citation); a single character, a number or an issue id; and one that is all
-   code (an identifier, which rule 3 covers when it is a definition-layer name).
+   glossary's "Emphasis, not terms" section. Spans are found per paragraph,
+   not per line, so a span wrapped over a line break is seen. A run-in heading
+   (``**Root separation.**``) counts as a term: its trailing ``.``, ``:`` or
+   ``?`` is dropped. A leading label (``**(O1) Unique handle.**``) is kept.
+   Skipped mechanically: a span of more than ``MAX_TERM_WORDS`` words (a
+   sentence or a lemma's statement); one that is only a parenthesized label
+   (``**(D-Call)**``); one opening with ``[``, ``,`` or ``;`` or containing
+   ``§`` (a status tag, a citation); a single character, a number or an issue
+   id; and one that is all code (an identifier, which rule 3 covers when it is
+   a definition-layer name).
 2. **Symbols.** Every non-ASCII character outside ``TYPOGRAPHY``, in the
    documents (code blocks included) and in the doc-comments. Each must appear
    in the first column of the symbols table.
-3. **Definition-layer names.** Every ``def``, ``abbrev``, ``inductive`` and
-   ``structure`` the definition-layer modules declare, qualified below
-   ``RueCore``. Each must have a row in the Lean-names table.
+3. **Definition-layer names.** Every ``def``, ``abbrev``, ``inductive``,
+   ``structure``, ``class``, ``opaque``, ``axiom`` and named ``instance`` the
+   definition-layer modules declare, qualified below ``RueCore``. Each must
+   have a row in the Lean-names table. Not extracted: an anonymous
+   ``instance`` (it has no name), a ``theorem`` (a statement, not a term; the
+   term rows name the ones the documents rely on), a constructor (its
+   inductive's row covers it) and a ``where`` helper (local to its
+   definition).
 
 Matching is on a normal form: lower case, backticks and asterisks removed,
 whitespace collapsed, a leading article and trailing punctuation dropped. A
@@ -64,7 +78,8 @@ ROOT = Path(__file__).resolve().parent.parent
 FORMAL = ROOT / "docs" / "formal"
 
 # The documents the glossary covers, with the short name the First-use column
-# uses. A document not yet on the branch is skipped.
+# uses. A missing document fails the check, except one listed in
+# FUTURE_DOCS: a document an open issue will write, skipped until it lands.
 MARKDOWN_DOCS: List[Tuple[str, str]] = [
     ("01-core-calculus.md", "01"),
     ("03-metatheory.md", "03"),
@@ -75,13 +90,24 @@ MARKDOWN_DOCS: List[Tuple[str, str]] = [
     ("lean/GUIDE.md", "GUIDE"),
     ("lean/BRIDGE-SENSITIVITY.md", "BRIDGE-SENSITIVITY"),
 ]
+FUTURE_DOCS = {"WHAT-IT-MEANS.md"}
 
 # The layers whose doc-comments and declared names the glossary covers: L0
 # syntax and L1 definitions. When the statement/proof split (RUE-2460) adds a
 # statements layer, add its number here.
 DEFINITION_LAYERS = (0, 1)
 
-DECL_KINDS = ("def", "abbrev", "inductive", "structure")
+DECL_KINDS = ("def", "abbrev", "inductive", "structure", "class", "class inductive", "opaque", "axiom", "instance")
+
+# The xref parser's declaration line, widened to the kinds it does not index
+# (`class`, `class inductive`, a named `instance`). An anonymous instance
+# (`instance : C`, `instance (x : T) : C`) does not match: its name would start
+# with `:` or `(`.
+GLOSSARY_DECL_LINE = re.compile(
+    r"^(?:(?:private|protected|noncomputable|partial|unsafe|scoped)\s+)*"
+    r"(?P<kw>theorem|lemma|def|abbrev|inductive|structure|class\s+inductive|class|instance|opaque|axiom)\s+"
+    r"(?P<name>[^\s:({\[]+)"
+)
 
 MAX_TERM_WORDS = 4
 
@@ -97,6 +123,7 @@ ITALIC_UNDERSCORE = re.compile(r"(?<![\w\\])_(?=[^\s_])([^_\n]+?)(?<=[^\s_])_(?!
 CODE_SPAN = re.compile(r"(`+)(.+?)\1")
 FENCE = re.compile(r"^\s*(```|~~~)")
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+")
 DOC_COMMENT = re.compile(r"/-[-!](.*?)-/", re.S)
 LAYER_ENTRY = re.compile(r"\(`RueCore\.([\w.]+),\s*(\d+)\)")
 
@@ -114,8 +141,9 @@ def normalize(text: str) -> str:
     text = unicodedata.normalize("NFC", text)
     text = text.replace("`", "").replace("*", "")
     text = re.sub(r"\s+", " ", text).strip().lower()
+    text = text.strip(" ,;:.?")
     text = re.sub(r"^(?:a|an|the) ", "", text)
-    return text.strip(" ,;:.")
+    return text
 
 
 # --- sources -----------------------------------------------------------------
@@ -127,7 +155,38 @@ class Source:
 
     short: str
     lines: List[Tuple[str, str]] = field(default_factory=list)  # (section, text)
-    prose: List[str] = field(default_factory=list)  # text outside fenced code blocks
+    prose: List[str] = field(default_factory=list)  # text outside fenced code blocks, "" at a fence
+
+    def paragraphs(self) -> List[str]:
+        """The prose as paragraphs, each joined onto one line.
+
+        Emphasis may wrap over a line break inside a paragraph, so spans are
+        found per paragraph. A paragraph ends at a blank line or a fence; a
+        heading, a table row and a list item each start a new one (a table row
+        is a paragraph on its own).
+        """
+        out: List[str] = []
+        current: List[str] = []
+
+        def flush() -> None:
+            if current:
+                out.append(" ".join(part.strip() for part in current))
+                current.clear()
+
+        for line in self.prose:
+            stripped = line.strip()
+            if not stripped:
+                flush()
+            elif HEADING.match(line) or stripped.startswith("|"):
+                flush()
+                out.append(stripped)
+            elif LIST_ITEM.match(line):
+                flush()
+                current.append(line)
+            else:
+                current.append(line)
+        flush()
+        return out
 
 
 def section_label(heading: str) -> str:
@@ -149,6 +208,7 @@ def read_markdown(path: Path, short: str) -> Source:
         if FENCE.match(raw):
             in_fence = not in_fence
             source.lines.append((section, raw))
+            source.prose.append("")
             continue
         if not in_fence:
             heading = HEADING.match(raw)
@@ -159,9 +219,23 @@ def read_markdown(path: Path, short: str) -> Source:
     return source
 
 
+class Fatal(Exception):
+    """An input the check cannot run without; it fails rather than pass vacuously."""
+
+
 def definition_modules(lean_dir: Path) -> List[str]:
-    table = (lean_dir / "RueCore" / "LayersMain.lean").read_text(encoding="utf-8")
-    return [name for name, layer in LAYER_ENTRY.findall(table) if int(layer) in DEFINITION_LAYERS]
+    path = lean_dir / "RueCore" / "Layers.lean"
+    try:
+        table = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise Fatal(f"cannot read the layer table {path}: {error}") from error
+    entries = LAYER_ENTRY.findall(table)
+    if not entries:
+        raise Fatal(f"no layer entries (`RueCore.M, n) in {path}; has the table moved or changed form?")
+    modules = [name for name, layer in entries if int(layer) in DEFINITION_LAYERS]
+    if not modules:
+        raise Fatal(f"the layer table {path} puts no module in layers {DEFINITION_LAYERS}")
+    return modules
 
 
 def read_lean_docs(lean_dir: Path, module: str) -> Source:
@@ -172,29 +246,34 @@ def read_lean_docs(lean_dir: Path, module: str) -> Source:
         for line in comment.splitlines():
             source.lines.append((f"`{module}`", line))
             source.prose.append(line)
+        source.prose.append("")  # a doc-comment ends a paragraph
     return source
 
 
 def declared_names(lean_dir: Path, modules: Sequence[str]) -> Dict[str, str]:
-    """Every def/abbrev/inductive/structure name each module declares, qualified below RueCore."""
+    """Every name of a DECL_KINDS declaration each module declares, qualified below RueCore."""
     xref = load_script("validate-lean-xref-index.py", __file__)
+    xref.DECL_LINE = GLOSSARY_DECL_LINE
     names: Dict[str, str] = {}
     for module in modules:
         path = lean_dir / "RueCore" / Path(*module.split(".")).with_suffix(".lean")
         parsed = xref.parse_lean(path, lean_dir)
         for decl in parsed.declarations:
-            if decl.kind not in DECL_KINDS:
+            if re.sub(r"\s+", " ", decl.kind) not in DECL_KINDS:
                 continue
             name = decl.name
             if name.startswith("RueCore."):
                 name = name[len("RueCore."):]
             names.setdefault(name, module)
+    if not names:
+        raise Fatal(f"the definition-layer modules ({', '.join(modules)}) declare no name; is the parser reading them?")
     return names
 
 
 def all_declared(lean_dir: Path) -> set:
     """Every declaration and constructor of the package, qualified below RueCore."""
     xref = load_script("validate-lean-xref-index.py", __file__)
+    xref.DECL_LINE = GLOSSARY_DECL_LINE
     names = set()
     for path in sorted((lean_dir / "RueCore").rglob("*.lean")):
         for decl in xref.parse_lean(path, lean_dir).declarations:
@@ -207,7 +286,7 @@ def all_declared(lean_dir: Path) -> set:
 
 
 def marked_spans(text: str) -> List[str]:
-    """The bold and italic spans of one line of Markdown, per the module docstring's rule 1."""
+    """The bold and italic spans of one paragraph of Markdown, per the module docstring's rule 1."""
     spans: List[str] = []
     for match in BOLD.finditer(text):
         spans.append(match.group(1))
@@ -218,13 +297,14 @@ def marked_spans(text: str) -> List[str]:
             spans.append(rest[match.start(1):match.end(1)])
     kept: List[str] = []
     for span in spans:
-        stripped = span.strip()
-        if not stripped or stripped[0] in "[(,;" or "**" in stripped or "§" in stripped:
-            continue  # a status tag, a rule label or citation, a mis-paired marker
+        stripped = span.strip().strip("*").strip()  # `***x***` is bold around italic
+        stripped = stripped.rstrip(".:?").rstrip()  # a run-in heading is a term
+        if not stripped or stripped[0] in "[,;" or "**" in stripped or "§" in stripped:
+            continue  # a status tag, a citation, a mis-paired marker
+        if re.fullmatch(r"\([^()]*\)", stripped):
+            continue  # a rule label, `(D-Call)`
         if re.fullmatch(r"[\w]|\d+|RUE-\d+", stripped):
             continue  # a list marker, a number, an issue id
-        if stripped[-1] in ".:?":
-            continue
         if not CODE_SPAN.sub("", stripped).strip(" ,;'’s"):
             continue  # all code
         if len(stripped.split()) > MAX_TERM_WORDS:
@@ -249,8 +329,8 @@ class Extracted:
 def extract(sources: Sequence[Source], names: Dict[str, str]) -> Extracted:
     out = Extracted(names=dict(names))
     for source in sources:
-        for line in source.prose:
-            for span in marked_spans(line):
+        for paragraph in source.paragraphs():
+            for span in marked_spans(paragraph):
                 out.terms.setdefault(normalize(span), (span, source.short))
         for _, line in source.lines:
             for ch in symbols(line):
@@ -389,6 +469,8 @@ def load_sources(formal: Path, lean_dir: Path) -> Tuple[List[Source], Dict[str, 
         path = formal / relative
         if path.is_file():
             sources.append(read_markdown(path, short))
+        elif relative not in FUTURE_DOCS:
+            raise Fatal(f"the covered document {path} is missing; restore it, or drop it from MARKDOWN_DOCS")
     modules = definition_modules(lean_dir)
     for module in modules:
         sources.append(read_lean_docs(lean_dir, module))
@@ -397,7 +479,14 @@ def load_sources(formal: Path, lean_dir: Path) -> Tuple[List[Source], Dict[str, 
 
 
 def run(formal: Path, lean_dir: Path, glossary: Path, write: bool, list_missing: bool) -> int:
-    sources, names, modules = load_sources(formal, lean_dir)
+    try:
+        sources, names, modules = load_sources(formal, lean_dir)
+    except Fatal as error:
+        print(f"glossary-check: {error}", file=sys.stderr)
+        return 1
+    if not glossary.is_file():
+        print(f"glossary-check: no glossary at {glossary}", file=sys.stderr)
+        return 1
     extracted = extract(sources, names)
     lines = glossary.read_text(encoding="utf-8").splitlines() if glossary.is_file() else []
     tables, emphasis = parse_glossary(lines)
