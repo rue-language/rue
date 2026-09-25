@@ -1128,7 +1128,8 @@ exit_code = 42
 # and the literal's own type against its slot are reported first, and a
 # child's range or finite-literal error after the structure. Only a literal
 # whose position declares a type is checked against one: an array literal
-# indexed, compared or bound by an unannotated `let` is not.
+# indexed, compared or bound by an unannotated `let` is not (the CLI corpus's
+# `const_array_literal_context` cases track those, which do not reduce yet).
 
 [[case]]
 name = "const_struct_unknown_field_rejected"
@@ -1317,6 +1318,19 @@ compile_fail = true
 error_contains = ["E0206", "expected u8, found bool"]
 
 [[case]]
+name = "const_child_type_mismatch_before_literal_of_other_type"
+spec = ["6.5:2"]
+description = "A field's type mismatch is reported before its struct literal's own type against the constant's, as the body path reports it (RUE-2407)"
+source = """
+@copy struct S { a: i32 }
+enum E { A(i32) }
+const K: E = S { a: true };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found bool"]
+
+[[case]]
 name = "const_struct_literal_of_other_type_before_its_shape"
 spec = ["6.5:2"]
 description = "A struct literal whose type is not the constant's is E0206 naming both types, ahead of the literal's own unknown field (RUE-2407)"
@@ -1355,39 +1369,6 @@ compile_fail = true
 error_contains = ["E0901", "expected array of 1 element, found 2 elements"]
 
 [[case]]
-name = "const_indexed_array_literal_not_checked_against_const_type"
-spec = ["6.5:2", "4.14:26"]
-description = "An array literal that is indexed takes no type from the constant's declared type: it is not a false E0206 'expected i32, found [{integer}; 2]'. The declaration-time evaluator does not reduce it yet, and says so (RUE-2407)"
-source = """
-const K: i32 = [40, 2][0] + [40, 2][1];
-fn main() -> i32 { K }
-"""
-compile_fail = true
-error_contains = ["E1200", "did not reduce to a value"]
-
-[[case]]
-name = "const_compared_array_literal_not_checked_against_const_type"
-spec = ["6.5:2", "4.14:26"]
-description = "An array literal that is an operand of `==` takes no type from the constant's declared bool type: it is not a false E0206 (RUE-2407)"
-source = """
-const K: bool = [1, 2][0] == 1;
-fn main() -> i32 { if K { 42 } else { 0 } }
-"""
-compile_fail = true
-error_contains = ["E1200", "did not reduce to a value"]
-
-[[case]]
-name = "const_unannotated_let_array_not_checked_against_const_type"
-spec = ["6.5:2", "4.14:26"]
-description = "An array literal bound by an unannotated `let` inside a constant's initializer takes no type from the constant: it is not a false E0206 (RUE-2407)"
-source = """
-const K: i32 = { let a = [40, 2]; a[0] + a[1] };
-fn main() -> i32 { K }
-"""
-compile_fail = true
-error_contains = ["E1200", "did not reduce to a value"]
-
-[[case]]
 name = "const_annotated_let_array_takes_its_annotation"
 spec = ["6.5:2", "4.14:26"]
 description = "An array literal bound by an annotated `let` inside a constant's initializer is typed by the annotation, not the constant's type, and reduces (RUE-2407)"
@@ -1396,30 +1377,6 @@ const K: i32 = { let a: [i32; 2] = [40, 2]; a[0] + a[1] };
 fn main() -> i32 { K }
 """
 exit_code = 42
-
-[[case]]
-name = "const_comptime_call_array_local_not_checked_against_result"
-spec = ["6.5:2", "4.14:26"]
-description = "An array literal bound inside a comptime function a constant calls takes no type from the function's return type: it is not a false E0206 (RUE-2407)"
-source = """
-fn f(comptime n: i32) -> i32 { let a = [n, 2]; a[0] + a[1] }
-const K: i32 = f(40);
-fn main() -> i32 { K }
-"""
-compile_fail = true
-error_contains = ["E1200", "did not reduce to a value"]
-
-[[case]]
-name = "const_type_constructor_argument_array_not_checked"
-spec = ["6.5:2", "4.14:26"]
-description = "An indexed array literal in a type constructor's argument takes no type from the parameter's type: it is not a false E0206 'expected u64' (RUE-2407)"
-source = """
-fn Arr(comptime n: usize) -> type { struct { a: [i32; n] } }
-const T2 = Arr([2, 3][0]);
-fn main() -> i32 { let t = T2 { a: [40, 2] }; t.a[0] + t.a[1] }
-"""
-compile_fail = true
-error_contains = ["E1200", "did not reduce to a value"]
 
 [[case]]
 name = "const_missing_annotation_help_qualifies_imported_type"

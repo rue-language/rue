@@ -42,25 +42,34 @@ pub enum ComptimeLiteralShape<'a, N> {
 pub enum ComptimeFailureOrder {
     /// Reported as it happens.
     Immediate,
-    /// A type check: reported as it happens, ahead of any held failure.
+    /// A type check: a child's is reported as it happens, ahead of any held
+    /// failure; the literal's own, made before its children reduce, is held
+    /// until theirs have run.
     TypeCheck,
     /// Held until every sibling's type check has run, then reported if no
     /// sibling reported one first.
     AfterTypeChecks,
 }
 
-/// The failure a structural literal holds while its remaining children
-/// reduce, per [`ComptimeFailureOrder::AfterTypeChecks`]. The first held
-/// failure wins, so a shape error held before any child is reported ahead
-/// of a child's later-ordered error.
+/// The failures a structural literal holds while its children reduce. A
+/// child's type check is reported as it happens. The literal's own type
+/// check against its position, made before any child reduces, is held
+/// until every child's type check has run, and is reported ahead of any
+/// failure held per [`ComptimeFailureOrder::AfterTypeChecks`], of which the
+/// first wins: the body type checker reports a child's type mismatch, then
+/// the literal's, then the literal's structure, then the rest (RUE-2407).
 #[derive(Debug)]
 pub(crate) struct ComptimeChildOrder<V, F> {
+    held_type_check: Option<ComptimeOutcome<V, F>>,
     held: Option<ComptimeOutcome<V, F>>,
 }
 
 impl<V, F> Default for ComptimeChildOrder<V, F> {
     fn default() -> Self {
-        Self { held: None }
+        Self {
+            held_type_check: None,
+            held: None,
+        }
     }
 }
 
@@ -69,9 +78,14 @@ impl<V, F> ComptimeChildOrder<V, F> {
         self.held.get_or_insert(outcome);
     }
 
+    /// Hold the literal's own type check until its children's have run.
+    pub(crate) fn hold_type_check(&mut self, outcome: ComptimeOutcome<V, F>) {
+        self.held_type_check.get_or_insert(outcome);
+    }
+
     /// The literal's reduced children, or the failure it held.
     pub(crate) fn finish<T>(self, values: T) -> ComptimeOutcome<T, F> {
-        match self.held {
+        match self.held_type_check.or(self.held) {
             Some(held) => retype_outcome(held),
             None => ComptimeOutcome::Known(values),
         }

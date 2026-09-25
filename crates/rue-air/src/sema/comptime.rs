@@ -2287,9 +2287,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
     /// Admit a structural literal's shape, and its own type against the
     /// type its position declares, before any child reduces. A failure the
-    /// host orders after the children's type checks is held in `order`, so
-    /// a child's type mismatch is still reported first, as the body type
-    /// checker reports it (RUE-2407).
+    /// host orders is held in `order`, so a child's type mismatch is still
+    /// reported first, as the body type checker reports it (RUE-2407).
     fn admit_literal_shape(
         &mut self,
         ty: &H::Type,
@@ -2311,9 +2310,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         order.hold(ComptimeOutcome::HostFailure(error));
                         ComptimeOutcome::Known(())
                     }
-                    ComptimeFailureOrder::Immediate | ComptimeFailureOrder::TypeCheck => {
-                        ComptimeOutcome::HostFailure(error)
+                    ComptimeFailureOrder::TypeCheck => {
+                        order.hold_type_check(ComptimeOutcome::HostFailure(error));
+                        ComptimeOutcome::Known(())
                     }
+                    ComptimeFailureOrder::Immediate => ComptimeOutcome::HostFailure(error),
                 }
             }
         }
