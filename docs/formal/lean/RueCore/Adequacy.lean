@@ -1,6 +1,7 @@
 module
 
 public import RueCore.Step
+public import RueCore.Step.Lemmas
 public import RueCore.Soundness
 public import RueCore.Adequacy.Defs
 
@@ -98,7 +99,8 @@ it answers is placed by `run_sim` at the same end (`Steps.final_unique`).
 `run_complete` and `run_stuck_of_step_stuck` hold on every program, up to a
 refusal of `eval`'s. The checked domain removes the refusal (`no_violation`),
 which gives `eval_complete`, `never_stuck_iff` and `eval_diverges_iff`.
-`dropMoved_refused` shows the refusal is really there off the domain.
+`dropMoved_refused` (`Witnesses.lean`) shows the refusal is really there off
+the domain.
 
 ## §7 over `Step`: progress and preservation
 
@@ -1877,30 +1879,6 @@ theorem eval_diverges_iff (M : FloatModel) {P : Program} (h : ProgramTyped P) :
     | stuck w => exact absurd hr (no_violation M h fuel w)
     | returned H v tr => exact absurd hr (run_ne_returned _ H v tr)
     | broke H sc tr => exact absurd hr (run_ne_broke _ H sc tr)
-
-/-- **Why completeness is stated on checked programs** (RUE-2314): in
-`let s = S{}; let t = s; @drop(s); 0`, §6's `→*` reaches `✓0`, because §6.11
-makes `@drop` of a `⊘` place a no-op (`demo_dropMoved_runs`, `Step.lean`).
-`run` refuses it with `useAfterMove` instead. That refusal is the one disjunct
-`run_complete` allows, and `check` rejects the program. -/
-theorem dropMoved_refused (M : FloatOps) :
-    (∃ H, Steps M (demoProgram (.letIn false demoS
-        (.letIn false (.use (.var 0)) (.seq (.drop (.var 1)) (demoI32 0))))) Config.init
-      (.run H Frame.empty [] (.ret (.int .w32 .signed 0))
-        [.drop 2 (demoSc 0), .dtor 0 (demoSc 0)])) ∧
-    run M (demoProgram (.letIn false demoS
-        (.letIn false (.use (.var 0)) (.seq (.drop (.var 1)) (demoI32 0))))) 100 =
-      .stuck .useAfterMove :=
-  ⟨demo_dropMoved_runs M, rfl⟩
-
-/-- **The theorem at work**: `letAddProgram_runs` (`Step.lean`) found its
-`→*` derivation by running `stepN`; here it comes from `run`'s answer alone,
-through `run_sim` — `let x = 40; x + 2` reaches `✓42` with the `let`'s cell
-retired and nothing printed (§6.7, §6.9, §6.12). -/
-theorem letAddProgram_sound (M : FloatOps) :
-    Steps M letAddProgram Config.init
-      (.run [.dead] Frame.empty [] (.ret (.int .w32 .signed 42)) []) :=
-  (run_sim M letAddProgram 100).1 _ _ _ rfl
 
 /-! ## §7 over `Step`: progress and preservation (RUE-2289 part 4)
 

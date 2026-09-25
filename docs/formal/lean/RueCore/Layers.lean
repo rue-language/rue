@@ -31,6 +31,9 @@ def table : List (Name × Nat) := [
   (`RueCore.Trace.Defs, 1),
   (`RueCore.Adequacy.Defs, 1),
   -- L2 proofs
+  (`RueCore.Statics.Lemmas, 2),
+  (`RueCore.Dynamics.Lemmas, 2),
+  (`RueCore.Step.Lemmas, 2),
   (`RueCore.Soundness, 2),
   (`RueCore.Checker, 2),
   (`RueCore.Trace, 2),

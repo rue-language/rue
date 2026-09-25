@@ -7,6 +7,9 @@ public import RueCore.Statics
 /-!
 # RueCore.Dynamics — the executable machine (§6)
 
+This module holds definitions only (layer L1, README "Layers"); the theorems
+about them are in `Dynamics/Lemmas.lean` (layer L2), moved there verbatim (RUE-2460).
+
 A definitional interpreter over the §6.1 configuration shape, restricted to
 the fragment: a store of single-cell binding allocations (`full c`, whose
 contents is a tree with §6.1's moved-out marker `⊘` allowed at any node, or
@@ -455,31 +458,6 @@ def Contents.copyClosedList (D : Decls) : List Contents → Bool
   | c :: cs => Contents.copyClosed D c && Contents.copyClosedList D cs
 end
 
-/-- `toVals` does not change a list's length, for `mult_toVal`'s array case
-(helper). -/
-theorem Contents.toVals_length : ∀ (cs : List Contents) (vs : List Val),
-    Contents.toVals cs = some vs → vs.length = cs.length
-  | [], vs, h => by simp [Contents.toVals] at h; subst h; rfl
-  | c :: cs, vs, h => by
-      simp only [Contents.toVals] at h
-      split at h
-      · rename_i v vs' hv hvs
-        cases h
-        simp [Contents.toVals_length cs vs' hvs]
-      · cases h
-
-/-- `Contents.mult` agrees with `Val.mult` on a hole-free contents: §6's
-`Step.indexDrop` reads `leaf.mult` on the store's `Contents`, while `eval`'s
-dynamic checks (RUE-2400) read `v.mult` on the `Val` a successful read
-produces; this is what lets the two land on the same refusal. Serves
-RUE-2289 part 2, the `eval ⇒ Step*` simulation. -/
-theorem Contents.mult_toVal (D : Decls) (c : Contents) (v : Val) (h : c.toVal = some v) :
-    c.mult D = v.mult D := by
-  cases c <;> simp [Contents.toVal] at h
-  all_goals (first | (subst h; rfl) | skip)
-  all_goals (obtain ⟨vs, hvs, rfl⟩ := h)
-  all_goals (simp [Contents.mult, Val.mult, Contents.toVals_length _ _ hvs])
-
 mutual
 /-- §5.6's `residual-linear`, read on the **contents** rather than on Σ: does a
 live sub-value of a declared-`linear` struct type remain? This is the leak
@@ -676,11 +654,6 @@ path is navigated" (`7.1:10`). It is a named function rather than an inline
 condition because the machine and its instrumented mirror (`Explain.lean`)
 must test the same thing, and because §7's proof reads it twice. -/
 def inBoundsIdx (i : Int) (n : Nat) : Bool := decide (0 ≤ i) && decide (i < (n : Int))
-
-/-- The bounds test, read as §6.5 states it (helper). -/
-theorem inBoundsIdx_eq_true {i : Int} {n : Nat} :
-    inBoundsIdx i n = true ↔ (0 ≤ i ∧ i < (n : Int)) := by
-  simp [inBoundsIdx]
 
 /-- Where the dynamic tail of a place lands: the constant path it resolves to
 once every index is a value and in range, §6.5's bounds trap, or a refusal
@@ -1123,13 +1096,6 @@ else) (helper). -/
 def Val.observable : Val → Bool
   | .int _ _ _ | .float _ _ | .bool _ => true
   | .unit | .struct _ _ _ | .enum _ _ _ _ | .array _ _ _ => false
-
-/-- A field list's events are its fields' events concatenated, left to right:
-the flattening `dropContents_struct_events` states the order with (helper). -/
-theorem dropEventsList_eq_flatten (D : Decls) :
-    ∀ cs : List Contents, dropEventsList D cs = (cs.map (dropEvents D)).flatten
-  | [] => rfl
-  | c :: cs => by simp [dropEventsList, dropEventsList_eq_flatten D cs]
 
 /-- The drop of a binding cell's contents (§6.11), as the trace records it: a
 `drop ℓ c` marker naming the cell, then the events the contents' own drop

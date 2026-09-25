@@ -180,7 +180,7 @@ theorem RueCore.toIntIn_inf (b : Bool) (lo hi : Int) :
 
 ### `StructDecl.Wf.field_not_linear`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **A droppable struct carries no linear field.** If a declaration's class
 is not `Linear`, no field's class is — which is why the machine's leak monitor
@@ -195,7 +195,7 @@ theorem RueCore.StructDecl.Wf.field_not_linear {D : Decls} {sd : StructDecl}
 
 ### `struct_carriesLinear_iff`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **`carries_linear` lifts through the fields** (§5.3). A struct's class
 reaches `Linear` exactly when its declaration says `linear` (`3.8:57`) or some
@@ -211,7 +211,7 @@ theorem RueCore.struct_carriesLinear_iff {D : Decls} {s : Nat} {sd : StructDecl}
 
 ### `EnumDecl.Wf.payload_not_linear`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **A droppable enum carries no linear payload.** If a declaration's class is
 not `Linear`, no payload component of any variant is — which is why the
@@ -226,7 +226,7 @@ theorem RueCore.EnumDecl.Wf.payload_not_linear {D : Decls} {ed : EnumDecl}
 
 ### `enum_carriesLinear_iff`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **`carries_linear` lifts through an enum's payloads** (§5.3, `6.3:19`). An
 enum's class reaches `Linear` exactly when some variant carries a linear payload
@@ -244,7 +244,7 @@ theorem RueCore.enum_carriesLinear_iff {D : Decls} {e : Nat} {ed : EnumDecl}
 
 ### `class_unique`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **§3's class assignment has exactly one solution** (`3.0:5`, `6.3:19`).
 Two declaration environments of the same *shapes* — the same number of struct
@@ -280,7 +280,7 @@ theorem RueCore.class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D'
 
 ### `struct_class_unique`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **§3's class assignment for the struct layer has one solution**, the
 projection of `class_unique` §3's own sentence asks for. It needs the enum
@@ -306,7 +306,7 @@ theorem RueCore.struct_class_unique {D D' : Decls} (hwf : WfDecls D)
 
 ### `enum_class_unique`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **§3's class assignment for the enum layer has one solution** (`6.3:19`),
 the other projection of `class_unique`. Simpler than the struct one in its own
@@ -331,7 +331,7 @@ theorem RueCore.enum_class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDec
 
 ### `overwriteOk_iff`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 `overwriteOk` is §5.2's disjunction, spelled as the rule spells it: the
 `Prop` form is what `Typed.assign` carries, the `Bool` form what `check`
@@ -344,7 +344,7 @@ theorem RueCore.overwriteOk_iff {D : Decls} {u : OwnSt} {T : Ty} :
 
 ### `OwnSt.join_comm`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **The §5.5 join is commutative**, at one path and its subtree. Joining is
 symmetric in the two arms: where one side is wholly `Owned` the result is the
@@ -359,7 +359,7 @@ theorem RueCore.OwnSt.join_comm (D : Decls) (a b : OwnSt) (T : Ty) :
 
 ### `Entry.join_comm`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **The §5.5 join is commutative on one entry**, whose skeleton the two arms
 share — the entry's declared type and `mut` mark come from the incoming
@@ -372,7 +372,7 @@ theorem RueCore.Entry.join_comm {D : Decls} {a b : Entry} (hsk : a.skel = b.skel
 
 ### `Ctx.join_comm`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **The §5.5 join is commutative on a whole context**, pointwise, whenever
 the two arms carry the same skeleton — which `skel_preserved` guarantees of any
@@ -387,7 +387,7 @@ theorem RueCore.Ctx.join_comm {D : Decls} (Γ₁ Γ₂ : Ctx) :
 
 ### `residualLinear_mult_linear`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **Residue is only ever found where §3's class puts it.** §5.6's
 `residual-linear` is read on the state, not on the type, but it can report an
@@ -402,7 +402,7 @@ theorem RueCore.residualLinear_mult_linear {D : Decls} (hD : WfStructs D) (t : O
 
 ### `ownedJoinOk_residualLinear`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **The other half: what an `Owned` arm may absorb still carries the type's
 obligation.** `ownedJoinOk` admits exactly the `MovedOut` paths whose type is
@@ -418,7 +418,7 @@ theorem RueCore.ownedJoinOk_residualLinear {D : Decls} (hD : WfStructs D) (t : O
 
 ### `ownedJoinOk_of_residualLinear_false`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **A residue-free state answers `ownedJoinOk` exactly as `MovedOut` does**:
 joining it with a wholly `Owned` arm is admissible exactly when `class(T)` is
@@ -438,7 +438,7 @@ theorem RueCore.ownedJoinOk_of_residualLinear_false {D : Decls} (hD : WfStructs 
 
 ### `OwnSt.join_ownedJoinOk`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **A successful §5.5 join neither adds nor removes an inadmissible
 `MovedOut`**: both arms and the result answer `ownedJoinOk` alike, so joining a
@@ -457,7 +457,7 @@ theorem RueCore.OwnSt.join_ownedJoinOk {D : Decls} (hD : WfStructs D) (b c : Own
 
 ### `OwnSt.join_residualLinear`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **A successful §5.5 join is between arms carrying the same residue, and the
 result carries the same.** The disagreement clause refuses `MovedOut` against
@@ -475,7 +475,7 @@ theorem RueCore.OwnSt.join_residualLinear {D : Decls} (hD : WfStructs D) (b c : 
 
 ### `OwnSt.join_exists`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **Two residue-free states always join**, the converse of
 `OwnSt.join_residualLinear` and what makes §5.5's `MovedOut` cases associate:
@@ -492,7 +492,7 @@ theorem RueCore.OwnSt.join_exists {D : Decls} (hD : WfStructs D) (b c : OwnSt)
 
 ### `OwnSt.join_wf`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **§5.5's join stays inside the shapes of the type**: joining two states of
 `T` yields a state of `T`, so the invariant associativity is stated over
@@ -507,7 +507,7 @@ theorem RueCore.OwnSt.join_wf {D : Decls} (b c : OwnSt) (T : Ty) (r : OwnSt) :
 
 ### `OwnSt.join_assoc`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **The §5.5 join is associative**, at one path and its subtree, over states
 that are shapes of their type (`OwnSt.wf`) and under §3's class assignment for
@@ -536,7 +536,7 @@ theorem RueCore.OwnSt.join_assoc {D : Decls} (hD : WfStructs D) (a b c : OwnSt)
 
 ### `Entry.join_assoc`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **The §5.5 join is associative on one entry**, whose skeleton the three arms
 share — the declared type and `mut` mark come from the incoming context, so
@@ -552,7 +552,7 @@ theorem RueCore.Entry.join_assoc {D : Decls} (hD : WfStructs D) {a b c : Entry}
 
 ### `Entry.join_wf`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **The §5.5 join of two well-formed entries is well formed**, `OwnSt.join_wf`
 read at the entry's declared type.
@@ -565,7 +565,7 @@ theorem RueCore.Entry.join_wf {D : Decls} {a b e : Entry} (hab : a.skel = b.skel
 
 ### `Ctx.join_assoc`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **The §5.5 join is associative on a whole context**, pointwise, whenever the
 three arms carry the same skeleton and every entry is a shape of its declared
@@ -586,7 +586,7 @@ theorem RueCore.Ctx.join_assoc {D : Decls} (hD : WfStructs D) (Γ₁ Γ₂ Γ₃
 
 ### `Ctx.join_absorb`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **§5.5's join absorbs its right arm**, context-wide: `join(join(Γ, Γe), Γe)
 = join(Γ, Γe)` whenever `Γe` is well formed and has `Γ`'s skeleton. This is
@@ -600,7 +600,7 @@ theorem RueCore.Ctx.join_absorb {D : Decls} {Γ Γe Γh : Ctx} :
 
 ### `Ctx.join_wf`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **The §5.5 join of two well-formed contexts is well formed**, so the
 accumulator of the n-way fold keeps the invariant associativity is stated
@@ -614,7 +614,7 @@ theorem RueCore.Ctx.join_wf {D : Decls} (Γ₁ Γ₂ Γ' : Ctx) :
 
 ### `OwnSt.setAt_wf`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **§5's `Σ[ p ↦ u ]` stays inside the shapes of the type.** Writing a state of
 `p`'s own type at a path the root's declared type has (`Ty.atPath`, §5
@@ -633,7 +633,7 @@ theorem RueCore.OwnSt.setAt_wf {D : Decls} (T' : Ty) (u : OwnSt)
 
 ### `Ctx.joinFold_perm`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (Match) §5.5's fold over the remaining arms **does not depend on their
 order**, whatever the accumulator: joining two arms in either order is
@@ -655,7 +655,7 @@ theorem RueCore.Ctx.joinFold_perm {D : Decls} (hD : WfStructs D)
 
 ### `Ctx.joinAll_perm`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **(Match) §5.5's `join(Σ1, …, Σn)` is invariant under a permutation of the
 arms**, over arms that share a skeleton and whose entries are shapes of their
@@ -673,7 +673,7 @@ theorem RueCore.Ctx.joinAll_perm {D : Decls} (hD : WfStructs D)
 
 ### `Ctx.joinAll_wf`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **(Match) §5.5's n-way join of well-formed arms is well formed**, so a joined
 context may be joined again — which is what makes `Ctx.joinAll_perm`'s premise
@@ -687,7 +687,7 @@ theorem RueCore.Ctx.joinAll_wf {D : Decls} {sk : List (Ty × Bool)} {Γs : List 
 
 ### `LoopHead.reenter`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **Re-entering a loop at its head solves the head equation again** (§5.7):
 if `Σ_h = head(Σ, e)` with the body typed at `Σ_h`, then `Σ_h = head(Σ_h, e)`
@@ -706,7 +706,7 @@ theorem RueCore.LoopHead.reenter {D : Decls} {Γ Γh : Ctx} {o : Option Ctx}
 
 ### `Typed.skel_preserved`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Every rule preserves the context skeleton: only ownership states flow.
 This is the fused context's image of §5's convention that `Γ` is fixed while
@@ -722,7 +722,7 @@ theorem RueCore.Typed.skel_preserved {P : Program} {R : Ty} {Γ : Ctx} {e : Expr
 
 ### `Typed.wf`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **The shape invariant is preserved judgment-wide** (RUE-2340): from a
 well-formed incoming context, every normal outgoing state a derivation
@@ -747,7 +747,7 @@ theorem RueCore.Typed.wf {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty}
 
 ### `Typed.brk_nil`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **A body with no `break` targeting its loop delivers none** (§5.7): every
 delivery in `Ω.brk` comes from a `break` the syntax has, outside any nested
@@ -760,7 +760,7 @@ theorem RueCore.Typed.brk_nil {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} {T : 
 
 ### `Typed.wf_fnCtx`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **The shape invariant holds at every normal outgoing state of a function
 body** (RUE-2340): `Typed.wf` from (Fn) §5.8's entry context, which
@@ -775,7 +775,7 @@ theorem RueCore.Typed.wf_fnCtx {P : Program} {R : Ty} {fd : FnDef} {e : Expr} {T
 
 ### `Contents.mult_toVal`
 
-*theorem* · module `RueCore.Dynamics`
+*theorem* · module `RueCore.Dynamics.Lemmas`
 
 `Contents.mult` agrees with `Val.mult` on a hole-free contents: §6's
 `Step.indexDrop` reads `leaf.mult` on the store's `Contents`, while `eval`'s
@@ -790,7 +790,7 @@ theorem RueCore.Contents.mult_toVal (D : Decls) (c : Contents) (v : Val)
 
 ### `Step.step_eq`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 Every `Step` is the one `step` computes (§6).
 
@@ -801,7 +801,7 @@ theorem RueCore.Step.step_eq {M : FloatOps} {P : Program} {C C' : Config}
 
 ### `Step.det`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 **Determinism** of §6's reduction on the fragment: a configuration takes
 at most one step. The rules' left-hand sides fix the focus and the top frame,
@@ -817,7 +817,7 @@ theorem RueCore.Step.det {M : FloatOps} {P : Program} {C C₁ C₂ : Config}
 
 ### `Step.terminal`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 A terminal configuration takes no step: `✓n` and `↯κ` are final (§6.12).
 
@@ -828,7 +828,7 @@ theorem RueCore.Step.terminal {M : FloatOps} {P : Program} {C C' : Config}
 
 ### `step_iff`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 **`step` is `Step`** (§6): the function computes exactly the relation's
 one step. With `Step.step_eq` this is what makes `step`'s other two answers
@@ -841,7 +841,7 @@ theorem RueCore.step_iff {M : FloatOps} {P : Program} {C C' : Config} :
 
 ### `step_halted_iff`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 `step` answers `halted` exactly at the terminal configurations: `✓n` and
 `↯κ` (§6.12's (Result-Ok) and (Result-Panic)).
@@ -853,7 +853,7 @@ theorem RueCore.step_halted_iff {M : FloatOps} {P : Program} {C : Config} :
 
 ### `Config.trichotomy`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 **Every configuration is terminal, steps, or is stuck** (§6, §7's
 phrasing of progress): the three cases are exclusive (`step` is a function)
@@ -866,7 +866,7 @@ theorem RueCore.Config.trichotomy (M : FloatOps) (P : Program) (C : Config) :
 
 ### `Config.stuck_iff`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 **Stuck, in `Step`'s own terms** (§6, §7): a configuration is stuck —
 not terminal, and no rule of §6 applies to it — exactly when `step` names it
@@ -880,7 +880,7 @@ theorem RueCore.Config.stuck_iff {M : FloatOps} {P : Program} {C : Config} :
 
 ### `Config.Stuck.no_step`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 A stuck configuration takes no step (§6).
 
@@ -891,7 +891,7 @@ theorem RueCore.Config.Stuck.no_step {M : FloatOps} {P : Program} {C C' : Config
 
 ### `step_stuck_isStuckState`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 **§6's stuck states only** (RUE-2314): a configuration `step` finds stuck
 is stuck on `useAfterMove`, `useAfterDrop`, `unbound` or `typeConfusion` —
@@ -905,7 +905,7 @@ theorem RueCore.step_stuck_isStuckState {M : FloatOps} {P : Program} {C : Config
 
 ### `unwindLocs_plain`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 **The leak monitor only removes behaviour** (RUE-2314): where
 `unwindLocs` — `run-scope-drops` with `eval`'s monitor — succeeds, §6's
@@ -920,7 +920,7 @@ theorem RueCore.unwindLocs_plain {D : Decls} {H : Store} {ls : List Nat}
 
 ### `destructure_plain`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 **The residue monitor only removes behaviour** (RUE-2314): where
 `eval`'s monitored `destructure` succeeds, §6.3's monitor-free
@@ -931,280 +931,6 @@ theorem RueCore.destructure_plain {D : Decls} {ℓ : Nat} {c : Contents} {πs : 
   {r : Contents × List Event}
   (h : Contents.destructure D ℓ c πs = Except.ok r) :
   plainDestructure D ℓ c πs = Except.ok r
-```
-
-### `letAddProgram_runs`
-
-*theorem* · module `RueCore.Step`
-
-**The relation runs a program to the same answer `eval` does**, a check
-the two presentations can be compared on before the adequacy theorems say
-they always agree: from §6.12's initial configuration, `→*` reaches `✓42`
-through (D-Call), (D-Let), (D-Use-Copy), (D-Arith), (D-EndScope) and
-(D-Return-Value), with the `let`'s cell retired and nothing printed; and
-`run` answers the same value, store and trace.
-
-```lean
-theorem RueCore.letAddProgram_runs (M : FloatOps) :
-  Steps M letAddProgram Config.init
-      (Config.run [Cell.dead] { env := [], scope := [] } []
-        (Focus.ret (Val.int IntWidth.w32 Sign.signed 42)) []) ∧
-    run M letAddProgram 100 =
-      EvalRes.ok [Cell.dead] (Val.int IntWidth.w32 Sign.signed 42) []
-```
-
-### `demo_dynamicRead_stuck`
-
-*theorem* · module `RueCore.Step`
-
-**(D-Use-Untrackable-Dynamic-Copy) needs `Copy`** (§6.3): in
-`let a = [S{}, S{}]; let x = a[dyn 0]; 0` the dynamic read of an affine
-leaf is stuck, before any destructor runs. `eval` is stuck at the same read
-(`RueCore.Examples.dynReadAffine_refused`); `check` rejects the program.
-
-```lean
-theorem RueCore.demo_dynamicRead_stuck (M : FloatOps) :
-  ∃ C,
-    Steps M
-        (demoProgram
-          (Expr.letIn false (Expr.mkArray (Ty.struct 0) [demoS, demoS])
-            (Expr.letIn false (Expr.indexRead (Place.var 0) [demoI32 0] [[]])
-              (demoI32 0))))
-        Config.init C ∧
-      Config.Stuck M
-        (demoProgram
-          (Expr.letIn false (Expr.mkArray (Ty.struct 0) [demoS, demoS])
-            (Expr.letIn false (Expr.indexRead (Place.var 0) [demoI32 0] [[]])
-              (demoI32 0))))
-        C Violation.typeConfusion
-```
-
-### `demo_dynamicDrop_stuck`
-
-*theorem* · module `RueCore.Step`
-
-**`@drop` at a dynamic place needs `Copy`** (§6.3's only
-`Untrackable(OrdinaryDynamic)` rule): `let a = [S{}]; @drop(a[dyn 0]); @dbg(1); 0`
-is stuck at the `@drop`, with nothing printed. `eval` is stuck at the same
-`@drop` (`RueCore.Examples.dynDropAffine_refused`).
-
-```lean
-theorem RueCore.demo_dynamicDrop_stuck (M : FloatOps) :
-  ∃ C,
-    Steps M
-        (demoProgram
-          (Expr.letIn false (Expr.mkArray (Ty.struct 0) [demoS])
-            ((Expr.indexDrop (Place.var 0) [demoI32 0] [[]]).seq
-              ((demoI32 1).dbg.seq (demoI32 0)))))
-        Config.init C ∧
-      Config.Stuck M
-        (demoProgram
-          (Expr.letIn false (Expr.mkArray (Ty.struct 0) [demoS])
-            ((Expr.indexDrop (Place.var 0) [demoI32 0] [[]]).seq
-              ((demoI32 1).dbg.seq (demoI32 0)))))
-        C Violation.typeConfusion
-```
-
-### `demo_repeat_stuck`
-
-*theorem* · module `RueCore.Step`
-
-**The repeat form needs `Copy`** (`7.1:38`): `let a = [S{}; 2]; 0` is
-stuck at the repeat. `eval` is stuck at the same repeat
-(`RueCore.Examples.repeatAffine_refused`).
-
-```lean
-theorem RueCore.demo_repeat_stuck (M : FloatOps) :
-  ∃ C,
-    Steps M
-        (demoProgram
-          (Expr.letIn false (Expr.repeatArray (Ty.struct 0) demoS 2)
-            (demoI32 0)))
-        Config.init C ∧
-      Config.Stuck M
-        (demoProgram
-          (Expr.letIn false (Expr.repeatArray (Ty.struct 0) demoS 2)
-            (demoI32 0)))
-        C Violation.typeConfusion
-```
-
-### `demo_dropMoved_runs`
-
-*theorem* · module `RueCore.Step`
-
-**`@drop` of a moved-out place is a no-op** (§6.11: `drop(H, ⊘) = H`):
-`let s = S{}; let t = s; @drop(s); 0` reaches `✓0`, and the one `S` is
-destroyed once, when `t` goes out of scope. (`eval` refuses it with
-`useAfterMove`; `check` rejects the program.)
-
-```lean
-theorem RueCore.demo_dropMoved_runs (M : FloatOps) :
-  ∃ H,
-    Steps M
-      (demoProgram
-        (Expr.letIn false demoS
-          (Expr.letIn false (Expr.use (Place.var 0))
-            ((Expr.drop (Place.var 1)).seq (demoI32 0)))))
-      Config.init
-      (Config.run H { env := [], scope := [] } []
-        (Focus.ret (Val.int IntWidth.w32 Sign.signed 0))
-        [Event.drop 2 (demoSc 0), Event.dtor 0 (demoSc 0)])
-```
-
-### `demo_loopInLet_runs`
-
-*theorem* · module `RueCore.Step`
-
-**The loop yields `⟨⟩` to its context** (§6.10, RUE-2324's calculus
-finding): `let x = loop { break }; @dbg(7); 0` prints `7` and reaches `✓0`.
-
-```lean
-theorem RueCore.demo_loopInLet_runs (M : FloatOps) :
-  ∃ H,
-    Steps M
-        (demoProgram
-          (Expr.letIn false Expr.brk.loop ((demoI32 7).dbg.seq (demoI32 0))))
-        Config.init
-        (Config.run H { env := [], scope := [] } []
-          (Focus.ret (Val.int IntWidth.w32 Sign.signed 0))
-          [Event.dbg (Val.int IntWidth.w32 Sign.signed 7)]) ∧
-      run M
-          (demoProgram
-            (Expr.letIn false Expr.brk.loop
-              ((demoI32 7).dbg.seq (demoI32 0))))
-          100 =
-        EvalRes.ok H (Val.int IntWidth.w32 Sign.signed 0)
-          [Event.dbg (Val.int IntWidth.w32 Sign.signed 7)]
-```
-
-### `demo_breakDrops_runs`
-
-*theorem* · module `RueCore.Step`
-
-**(D-Break) drops what the body owed** (§6.10's `unwind-drops`):
-`loop { let s = S{}; break }; 3` destroys the `S` at the `break` and reaches
-`✓3`.
-
-```lean
-theorem RueCore.demo_breakDrops_runs (M : FloatOps) :
-  ∃ H,
-    Steps M
-        (demoProgram ((Expr.letIn false demoS Expr.brk).loop.seq (demoI32 3)))
-        Config.init
-        (Config.run H { env := [], scope := [] } []
-          (Focus.ret (Val.int IntWidth.w32 Sign.signed 3))
-          [Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]) ∧
-      run M
-          (demoProgram
-            ((Expr.letIn false demoS Expr.brk).loop.seq (demoI32 3)))
-          100 =
-        EvalRes.ok H (Val.int IntWidth.w32 Sign.signed 3)
-          [Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]
-```
-
-### `demo_loopTurns_runs`
-
-*theorem* · module `RueCore.Step`
-
-**Every turn's drops run** (§6.7's (D-EndScope) on the turns that finish,
-§6.10's (D-Break) on the one that breaks): the counting loop destroys three
-`S`, one per turn, and reaches `✓2`.
-
-```lean
-theorem RueCore.demo_loopTurns_runs (M : FloatOps) :
-  ∃ H,
-    Steps M (demoProgram demoCountingLoop) Config.init
-        (Config.run H { env := [], scope := [] } []
-          (Focus.ret (Val.int IntWidth.w32 Sign.signed 2))
-          [Event.drop 2 (demoSc 1), Event.dtor 0 (demoSc 1),
-            Event.drop 4 (demoSc 3), Event.dtor 0 (demoSc 3),
-            Event.drop 6 (demoSc 5), Event.dtor 0 (demoSc 5)]) ∧
-      run M (demoProgram demoCountingLoop) 200 =
-        EvalRes.ok H (Val.int IntWidth.w32 Sign.signed 2)
-          [Event.drop 2 (demoSc 1), Event.dtor 0 (demoSc 1),
-            Event.drop 4 (demoSc 3), Event.dtor 0 (demoSc 3),
-            Event.drop 6 (demoSc 5), Event.dtor 0 (demoSc 5)]
-```
-
-### `demo_returnInLet_runs`
-
-*theorem* · module `RueCore.Step`
-
-**(D-Return) from inside a `let`** (§6.9): `let s = S{}; let y = return 5; 0`
-discards the pending `let` and `endscope`, destroys the `S` from the frame's
-record, and reaches `✓5`.
-
-```lean
-theorem RueCore.demo_returnInLet_runs (M : FloatOps) :
-  ∃ H,
-    Steps M
-        (demoProgram
-          (Expr.letIn false demoS
-            (Expr.letIn false (demoI32 5).ret (demoI32 0))))
-        Config.init
-        (Config.run H { env := [], scope := [] } []
-          (Focus.ret (Val.int IntWidth.w32 Sign.signed 5))
-          [Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]) ∧
-      run M
-          (demoProgram
-            (Expr.letIn false demoS
-              (Expr.letIn false (demoI32 5).ret (demoI32 0))))
-          100 =
-        EvalRes.ok H (Val.int IntWidth.w32 Sign.signed 5)
-          [Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]
-```
-
-### `demo_returnInMatch_runs`
-
-*theorem* · module `RueCore.Step`
-
-**(D-Return) from a `match` arm** (§6.6, §6.9):
-`let x = S{}; match A(S{}) { A(p) => return 4, B => 0 }` destroys the arm's
-payload and then `x`, newest first, and reaches `✓4`. The match consumes the
-`A`'s shell first (`consume`, RUE-2427).
-
-```lean
-theorem RueCore.demo_returnInMatch_runs (M : FloatOps) :
-  ∃ H,
-    Steps M
-        (demoProgram
-          (Expr.letIn false demoS
-            ((Expr.mkEnum 0 0 [demoS]).match [(demoI32 4).ret, demoI32 0])))
-        Config.init
-        (Config.run H { env := [], scope := [] } []
-          (Focus.ret (Val.int IntWidth.w32 Sign.signed 4))
-          [Event.consume (Contents.enum 0 0 3 [Contents.hole]),
-            Event.drop 4 (demoSc 2), Event.dtor 0 (demoSc 2),
-            Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]) ∧
-      run M
-          (demoProgram
-            (Expr.letIn false demoS
-              ((Expr.mkEnum 0 0 [demoS]).match [(demoI32 4).ret, demoI32 0])))
-          100 =
-        EvalRes.ok H (Val.int IntWidth.w32 Sign.signed 4)
-          [Event.consume (Contents.enum 0 0 3 [Contents.hole]),
-            Event.drop 4 (demoSc 2), Event.dtor 0 (demoSc 2),
-            Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]
-```
-
-### `demo_loopIter_drops`
-
-*theorem* · module `RueCore.Step`
-
-**(D-Loop-Iter) runs the turn's drops** (§6.10's `run-scope-drops`): at a
-loop boundary whose frame owes nothing, a body value returned in a frame that
-still owes cell 0 destroys it before the next turn. The configuration is not
-reachable from `Config.init` — there `endscope` has always emptied the list —
-but it is one §6.10's rule covers.
-
-```lean
-theorem RueCore.demo_loopIter_drops (M : FloatOps) (e : Expr) :
-  Step M (demoProgram e)
-    (Config.run [Cell.full (demoSc 0)] { env := [0], scope := [0] }
-      [Kont.loop Expr.brk { env := [], scope := [] }] (Focus.ret Val.unit) [])
-    (Config.run [Cell.dead] { env := [], scope := [] }
-      [Kont.loop Expr.brk { env := [], scope := [] }] (Focus.eval Expr.brk)
-      [Event.drop 0 (demoSc 0), Event.dtor 0 (demoSc 0)])
 ```
 
 ### `dropContents_events`
@@ -2643,53 +2369,6 @@ theorem RueCore.eval_diverges_iff (M : FloatModel) {P : Program}
     ∀ (n : Nat), ∃ D, StepsN M.toFloatOps P n Config.init D
 ```
 
-### `dropMoved_refused`
-
-*theorem* · module `RueCore.Adequacy`
-
-**Why completeness is stated on checked programs** (RUE-2314): in
-`let s = S{}; let t = s; @drop(s); 0`, §6's `→*` reaches `✓0`, because §6.11
-makes `@drop` of a `⊘` place a no-op (`demo_dropMoved_runs`, `Step.lean`).
-`run` refuses it with `useAfterMove` instead. That refusal is the one disjunct
-`run_complete` allows, and `check` rejects the program.
-
-```lean
-theorem RueCore.dropMoved_refused (M : FloatOps) :
-  (∃ H,
-      Steps M
-        (demoProgram
-          (Expr.letIn false demoS
-            (Expr.letIn false (Expr.use (Place.var 0))
-              ((Expr.drop (Place.var 1)).seq (demoI32 0)))))
-        Config.init
-        (Config.run H Frame.empty []
-          (Focus.ret (Val.int IntWidth.w32 Sign.signed 0))
-          [Event.drop 2 (demoSc 0), Event.dtor 0 (demoSc 0)])) ∧
-    run M
-        (demoProgram
-          (Expr.letIn false demoS
-            (Expr.letIn false (Expr.use (Place.var 0))
-              ((Expr.drop (Place.var 1)).seq (demoI32 0)))))
-        100 =
-      EvalRes.stuck Violation.useAfterMove
-```
-
-### `letAddProgram_sound`
-
-*theorem* · module `RueCore.Adequacy`
-
-**The theorem at work**: `letAddProgram_runs` (`Step.lean`) found its
-`→*` derivation by running `stepN`; here it comes from `run`'s answer alone,
-through `run_sim` — `let x = 40; x + 2` reaches `✓42` with the `let`'s cell
-retired and nothing printed (§6.7, §6.9, §6.12).
-
-```lean
-theorem RueCore.letAddProgram_sound (M : FloatOps) :
-  Steps M letAddProgram Config.init
-    (Config.run [Cell.dead] Frame.empty []
-      (Focus.ret (Val.int IntWidth.w32 Sign.signed 42)) [])
-```
-
 ### `Config.SafeAt.progress`
 
 *theorem* · module `RueCore.Adequacy`
@@ -3625,6 +3304,327 @@ theorem RueCore.swappedMarkers_rejected :
           dropLocs C.trace = [1, 3]
 ```
 
+### `letAddProgram_runs`
+
+*theorem* · module `RueCore.Witnesses`
+
+**The relation runs a program to the same answer `eval` does**, a check
+the two presentations can be compared on before the adequacy theorems say
+they always agree: from §6.12's initial configuration, `→*` reaches `✓42`
+through (D-Call), (D-Let), (D-Use-Copy), (D-Arith), (D-EndScope) and
+(D-Return-Value), with the `let`'s cell retired and nothing printed; and
+`run` answers the same value, store and trace.
+
+```lean
+theorem RueCore.letAddProgram_runs (M : FloatOps) :
+  Steps M letAddProgram Config.init
+      (Config.run [Cell.dead] { env := [], scope := [] } []
+        (Focus.ret (Val.int IntWidth.w32 Sign.signed 42)) []) ∧
+    run M letAddProgram 100 =
+      EvalRes.ok [Cell.dead] (Val.int IntWidth.w32 Sign.signed 42) []
+```
+
+### `demo_dynamicRead_stuck`
+
+*theorem* · module `RueCore.Witnesses`
+
+**(D-Use-Untrackable-Dynamic-Copy) needs `Copy`** (§6.3): in
+`let a = [S{}, S{}]; let x = a[dyn 0]; 0` the dynamic read of an affine
+leaf is stuck, before any destructor runs. `eval` is stuck at the same read
+(`RueCore.Examples.dynReadAffine_refused`); `check` rejects the program.
+
+```lean
+theorem RueCore.demo_dynamicRead_stuck (M : FloatOps) :
+  ∃ C,
+    Steps M
+        (demoProgram
+          (Expr.letIn false (Expr.mkArray (Ty.struct 0) [demoS, demoS])
+            (Expr.letIn false (Expr.indexRead (Place.var 0) [demoI32 0] [[]])
+              (demoI32 0))))
+        Config.init C ∧
+      Config.Stuck M
+        (demoProgram
+          (Expr.letIn false (Expr.mkArray (Ty.struct 0) [demoS, demoS])
+            (Expr.letIn false (Expr.indexRead (Place.var 0) [demoI32 0] [[]])
+              (demoI32 0))))
+        C Violation.typeConfusion
+```
+
+### `demo_dynamicDrop_stuck`
+
+*theorem* · module `RueCore.Witnesses`
+
+**`@drop` at a dynamic place needs `Copy`** (§6.3's only
+`Untrackable(OrdinaryDynamic)` rule): `let a = [S{}]; @drop(a[dyn 0]); @dbg(1); 0`
+is stuck at the `@drop`, with nothing printed. `eval` is stuck at the same
+`@drop` (`RueCore.Examples.dynDropAffine_refused`).
+
+```lean
+theorem RueCore.demo_dynamicDrop_stuck (M : FloatOps) :
+  ∃ C,
+    Steps M
+        (demoProgram
+          (Expr.letIn false (Expr.mkArray (Ty.struct 0) [demoS])
+            ((Expr.indexDrop (Place.var 0) [demoI32 0] [[]]).seq
+              ((demoI32 1).dbg.seq (demoI32 0)))))
+        Config.init C ∧
+      Config.Stuck M
+        (demoProgram
+          (Expr.letIn false (Expr.mkArray (Ty.struct 0) [demoS])
+            ((Expr.indexDrop (Place.var 0) [demoI32 0] [[]]).seq
+              ((demoI32 1).dbg.seq (demoI32 0)))))
+        C Violation.typeConfusion
+```
+
+### `demo_repeat_stuck`
+
+*theorem* · module `RueCore.Witnesses`
+
+**The repeat form needs `Copy`** (`7.1:38`): `let a = [S{}; 2]; 0` is
+stuck at the repeat. `eval` is stuck at the same repeat
+(`RueCore.Examples.repeatAffine_refused`).
+
+```lean
+theorem RueCore.demo_repeat_stuck (M : FloatOps) :
+  ∃ C,
+    Steps M
+        (demoProgram
+          (Expr.letIn false (Expr.repeatArray (Ty.struct 0) demoS 2)
+            (demoI32 0)))
+        Config.init C ∧
+      Config.Stuck M
+        (demoProgram
+          (Expr.letIn false (Expr.repeatArray (Ty.struct 0) demoS 2)
+            (demoI32 0)))
+        C Violation.typeConfusion
+```
+
+### `demo_dropMoved_runs`
+
+*theorem* · module `RueCore.Witnesses`
+
+**`@drop` of a moved-out place is a no-op** (§6.11: `drop(H, ⊘) = H`):
+`let s = S{}; let t = s; @drop(s); 0` reaches `✓0`, and the one `S` is
+destroyed once, when `t` goes out of scope. (`eval` refuses it with
+`useAfterMove`; `check` rejects the program.)
+
+```lean
+theorem RueCore.demo_dropMoved_runs (M : FloatOps) :
+  ∃ H,
+    Steps M
+      (demoProgram
+        (Expr.letIn false demoS
+          (Expr.letIn false (Expr.use (Place.var 0))
+            ((Expr.drop (Place.var 1)).seq (demoI32 0)))))
+      Config.init
+      (Config.run H { env := [], scope := [] } []
+        (Focus.ret (Val.int IntWidth.w32 Sign.signed 0))
+        [Event.drop 2 (demoSc 0), Event.dtor 0 (demoSc 0)])
+```
+
+### `demo_loopInLet_runs`
+
+*theorem* · module `RueCore.Witnesses`
+
+**The loop yields `⟨⟩` to its context** (§6.10, RUE-2324's calculus
+finding): `let x = loop { break }; @dbg(7); 0` prints `7` and reaches `✓0`.
+
+```lean
+theorem RueCore.demo_loopInLet_runs (M : FloatOps) :
+  ∃ H,
+    Steps M
+        (demoProgram
+          (Expr.letIn false Expr.brk.loop ((demoI32 7).dbg.seq (demoI32 0))))
+        Config.init
+        (Config.run H { env := [], scope := [] } []
+          (Focus.ret (Val.int IntWidth.w32 Sign.signed 0))
+          [Event.dbg (Val.int IntWidth.w32 Sign.signed 7)]) ∧
+      run M
+          (demoProgram
+            (Expr.letIn false Expr.brk.loop
+              ((demoI32 7).dbg.seq (demoI32 0))))
+          100 =
+        EvalRes.ok H (Val.int IntWidth.w32 Sign.signed 0)
+          [Event.dbg (Val.int IntWidth.w32 Sign.signed 7)]
+```
+
+### `demo_breakDrops_runs`
+
+*theorem* · module `RueCore.Witnesses`
+
+**(D-Break) drops what the body owed** (§6.10's `unwind-drops`):
+`loop { let s = S{}; break }; 3` destroys the `S` at the `break` and reaches
+`✓3`.
+
+```lean
+theorem RueCore.demo_breakDrops_runs (M : FloatOps) :
+  ∃ H,
+    Steps M
+        (demoProgram ((Expr.letIn false demoS Expr.brk).loop.seq (demoI32 3)))
+        Config.init
+        (Config.run H { env := [], scope := [] } []
+          (Focus.ret (Val.int IntWidth.w32 Sign.signed 3))
+          [Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]) ∧
+      run M
+          (demoProgram
+            ((Expr.letIn false demoS Expr.brk).loop.seq (demoI32 3)))
+          100 =
+        EvalRes.ok H (Val.int IntWidth.w32 Sign.signed 3)
+          [Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]
+```
+
+### `demo_loopTurns_runs`
+
+*theorem* · module `RueCore.Witnesses`
+
+**Every turn's drops run** (§6.7's (D-EndScope) on the turns that finish,
+§6.10's (D-Break) on the one that breaks): the counting loop destroys three
+`S`, one per turn, and reaches `✓2`.
+
+```lean
+theorem RueCore.demo_loopTurns_runs (M : FloatOps) :
+  ∃ H,
+    Steps M (demoProgram demoCountingLoop) Config.init
+        (Config.run H { env := [], scope := [] } []
+          (Focus.ret (Val.int IntWidth.w32 Sign.signed 2))
+          [Event.drop 2 (demoSc 1), Event.dtor 0 (demoSc 1),
+            Event.drop 4 (demoSc 3), Event.dtor 0 (demoSc 3),
+            Event.drop 6 (demoSc 5), Event.dtor 0 (demoSc 5)]) ∧
+      run M (demoProgram demoCountingLoop) 200 =
+        EvalRes.ok H (Val.int IntWidth.w32 Sign.signed 2)
+          [Event.drop 2 (demoSc 1), Event.dtor 0 (demoSc 1),
+            Event.drop 4 (demoSc 3), Event.dtor 0 (demoSc 3),
+            Event.drop 6 (demoSc 5), Event.dtor 0 (demoSc 5)]
+```
+
+### `demo_returnInLet_runs`
+
+*theorem* · module `RueCore.Witnesses`
+
+**(D-Return) from inside a `let`** (§6.9): `let s = S{}; let y = return 5; 0`
+discards the pending `let` and `endscope`, destroys the `S` from the frame's
+record, and reaches `✓5`.
+
+```lean
+theorem RueCore.demo_returnInLet_runs (M : FloatOps) :
+  ∃ H,
+    Steps M
+        (demoProgram
+          (Expr.letIn false demoS
+            (Expr.letIn false (demoI32 5).ret (demoI32 0))))
+        Config.init
+        (Config.run H { env := [], scope := [] } []
+          (Focus.ret (Val.int IntWidth.w32 Sign.signed 5))
+          [Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]) ∧
+      run M
+          (demoProgram
+            (Expr.letIn false demoS
+              (Expr.letIn false (demoI32 5).ret (demoI32 0))))
+          100 =
+        EvalRes.ok H (Val.int IntWidth.w32 Sign.signed 5)
+          [Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]
+```
+
+### `demo_returnInMatch_runs`
+
+*theorem* · module `RueCore.Witnesses`
+
+**(D-Return) from a `match` arm** (§6.6, §6.9):
+`let x = S{}; match A(S{}) { A(p) => return 4, B => 0 }` destroys the arm's
+payload and then `x`, newest first, and reaches `✓4`. The match consumes the
+`A`'s shell first (`consume`, RUE-2427).
+
+```lean
+theorem RueCore.demo_returnInMatch_runs (M : FloatOps) :
+  ∃ H,
+    Steps M
+        (demoProgram
+          (Expr.letIn false demoS
+            ((Expr.mkEnum 0 0 [demoS]).match [(demoI32 4).ret, demoI32 0])))
+        Config.init
+        (Config.run H { env := [], scope := [] } []
+          (Focus.ret (Val.int IntWidth.w32 Sign.signed 4))
+          [Event.consume (Contents.enum 0 0 3 [Contents.hole]),
+            Event.drop 4 (demoSc 2), Event.dtor 0 (demoSc 2),
+            Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]) ∧
+      run M
+          (demoProgram
+            (Expr.letIn false demoS
+              ((Expr.mkEnum 0 0 [demoS]).match [(demoI32 4).ret, demoI32 0])))
+          100 =
+        EvalRes.ok H (Val.int IntWidth.w32 Sign.signed 4)
+          [Event.consume (Contents.enum 0 0 3 [Contents.hole]),
+            Event.drop 4 (demoSc 2), Event.dtor 0 (demoSc 2),
+            Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]
+```
+
+### `demo_loopIter_drops`
+
+*theorem* · module `RueCore.Witnesses`
+
+**(D-Loop-Iter) runs the turn's drops** (§6.10's `run-scope-drops`): at a
+loop boundary whose frame owes nothing, a body value returned in a frame that
+still owes cell 0 destroys it before the next turn. The configuration is not
+reachable from `Config.init` — there `endscope` has always emptied the list —
+but it is one §6.10's rule covers.
+
+```lean
+theorem RueCore.demo_loopIter_drops (M : FloatOps) (e : Expr) :
+  Step M (demoProgram e)
+    (Config.run [Cell.full (demoSc 0)] { env := [0], scope := [0] }
+      [Kont.loop Expr.brk { env := [], scope := [] }] (Focus.ret Val.unit) [])
+    (Config.run [Cell.dead] { env := [], scope := [] }
+      [Kont.loop Expr.brk { env := [], scope := [] }] (Focus.eval Expr.brk)
+      [Event.drop 0 (demoSc 0), Event.dtor 0 (demoSc 0)])
+```
+
+### `dropMoved_refused`
+
+*theorem* · module `RueCore.Witnesses`
+
+**Why completeness is stated on checked programs** (RUE-2314): in
+`let s = S{}; let t = s; @drop(s); 0`, §6's `→*` reaches `✓0`, because §6.11
+makes `@drop` of a `⊘` place a no-op (`demo_dropMoved_runs`, above).
+`run` refuses it with `useAfterMove` instead. That refusal is the one disjunct
+`run_complete` allows, and `check` rejects the program.
+
+```lean
+theorem RueCore.dropMoved_refused (M : FloatOps) :
+  (∃ H,
+      Steps M
+        (demoProgram
+          (Expr.letIn false demoS
+            (Expr.letIn false (Expr.use (Place.var 0))
+              ((Expr.drop (Place.var 1)).seq (demoI32 0)))))
+        Config.init
+        (Config.run H Frame.empty []
+          (Focus.ret (Val.int IntWidth.w32 Sign.signed 0))
+          [Event.drop 2 (demoSc 0), Event.dtor 0 (demoSc 0)])) ∧
+    run M
+        (demoProgram
+          (Expr.letIn false demoS
+            (Expr.letIn false (Expr.use (Place.var 0))
+              ((Expr.drop (Place.var 1)).seq (demoI32 0)))))
+        100 =
+      EvalRes.stuck Violation.useAfterMove
+```
+
+### `letAddProgram_sound`
+
+*theorem* · module `RueCore.Witnesses`
+
+**The theorem at work**: `letAddProgram_runs` (above) found its
+`→*` derivation by running `stepN`; here it comes from `run`'s answer alone,
+through `run_sim` — `let x = 40; x + 2` reaches `✓42` with the `let`'s cell
+retired and nothing printed (§6.7, §6.9, §6.12).
+
+```lean
+theorem RueCore.letAddProgram_sound (M : FloatOps) :
+  Steps M letAddProgram Config.init
+    (Config.run [Cell.dead] Frame.empty []
+      (Focus.ret (Val.int IntWidth.w32 Sign.signed 42)) [])
+```
+
 ### `Explain.explain_result`
 
 *theorem* · module `RueCore.Explain`
@@ -3861,7 +3861,7 @@ theorem RueCore.declaredPrefix_declaredLinear (D : Decls) (T : Ty)
 
 ### `Mult.rank_le_join_left`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The join is an upper bound of its left argument (§3) (helper).
 
@@ -3871,7 +3871,7 @@ theorem RueCore.Mult.rank_le_join_left (a b : Mult) : a.rank ≤ (a.join b).rank
 
 ### `Mult.rank_le_join_right`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The join is an upper bound of its right argument (§3) (helper).
 
@@ -3881,7 +3881,7 @@ theorem RueCore.Mult.rank_le_join_right (a b : Mult) : b.rank ≤ (a.join b).ran
 
 ### `Mult.eq_linear_of_rank`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 `Linear` is the top of §3's lattice, so nothing outranks it (helper).
 
@@ -3891,7 +3891,7 @@ theorem RueCore.Mult.eq_linear_of_rank {m : Mult} (h : 2 ≤ m.rank) : m = Mult.
 
 ### `rank_le_joinFold`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The accumulator of §3's join is a lower bound of the result (helper).
 
@@ -3902,7 +3902,7 @@ theorem RueCore.rank_le_joinFold (D : Decls) (Ts : List Ty) (acc : Mult) :
 
 ### `rank_le_joinFold_of_mem`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Every field's class is below §3's join of them (helper).
 
@@ -3916,7 +3916,7 @@ theorem RueCore.rank_le_joinFold_of_mem (D : Decls) (Ts : List Ty) (acc : Mult)
 
 ### `joinFold_linear_inv`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 §3's join reaches `Linear` only through a field that does (helper).
 
@@ -3928,7 +3928,7 @@ theorem RueCore.joinFold_linear_inv (D : Decls) (Ts : List Ty) (acc : Mult) :
 
 ### `Ty.mult_congr_declIds`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Two environments that give the same class to every declaration a type
 names by value give that type the same class: `class([T; n])` is §3's lift of
@@ -3942,7 +3942,7 @@ theorem RueCore.Ty.mult_congr_declIds {D D' : Decls} (T : Ty) :
 
 ### `rank_le_payloadFold`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The accumulator of the payload join is a lower bound of the result
 (helper).
@@ -3957,7 +3957,7 @@ theorem RueCore.rank_le_payloadFold (D : Decls) (Tss : List (List Ty)) (acc : Mu
 
 ### `rank_le_payloadFold_of_mem`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Every payload component's class is below §3's join of them (`6.3:19`)
 (helper).
@@ -3976,7 +3976,7 @@ theorem RueCore.rank_le_payloadFold_of_mem (D : Decls) (Tss : List (List Ty))
 
 ### `payloadFold_linear_inv`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 §3's payload join reaches `Linear` only through a payload component that
 does (helper).
@@ -3993,7 +3993,7 @@ theorem RueCore.payloadFold_linear_inv (D : Decls) (Tss : List (List Ty))
 
 ### `joinFold_congr`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Two environments that give every type of a field list the same class give
 that list the same §3 join (helper).
@@ -4007,7 +4007,7 @@ theorem RueCore.joinFold_congr {D D' : Decls} (Ts : List Ty) (acc : Mult) :
 
 ### `payloadFold_congr`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same for `6.3:19`'s payload join, over every component of every variant
 (helper).
@@ -4026,7 +4026,7 @@ theorem RueCore.payloadFold_congr {D D' : Decls} (Tss : List (List Ty)) (acc : M
 
 ### `OwnSt.get_append`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 `Σ`'s lookup along a concatenated path is the two lookups in turn. This is
 what lets (Use-Declared-Linear-Destructure) §5.1 state its ownership premise at
@@ -4040,7 +4040,7 @@ theorem RueCore.OwnSt.get_append (t : OwnSt) (π ρ : List Nat) :
 
 ### `OwnSt.fullyOwned_fieldAt`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Every field slot of a fully-owned node is fully owned (helper).
 
@@ -4051,7 +4051,7 @@ theorem RueCore.OwnSt.fullyOwned_fieldAt {ts : List OwnSt} (f : Nat) :
 
 ### `OwnSt.fullyOwned_get`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **A fully-owned node owns every path under it.** `fully-owned(Σ, d)`
 (§5 preamble) gives every place under `d` a state of its own, itself fully
@@ -4065,7 +4065,7 @@ theorem RueCore.OwnSt.fullyOwned_get {t : OwnSt} (π : List Nat) :
 
 ### `OwnSt.joinList_comm`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a declaration's fields, slot by slot (helper).
 
@@ -4076,7 +4076,7 @@ theorem RueCore.OwnSt.joinList_comm (D : Decls) (as bs : List OwnSt) (Ts : List 
 
 ### `Ty.array_mult_linear`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 §3's class of an array type reaches `Linear` exactly through a nonempty
 array of a `Linear` element type — `Ty.mult`'s own four-line table read as the
@@ -4090,7 +4090,7 @@ theorem RueCore.Ty.array_mult_linear (D : Decls) (T : Ty) (n : Nat) :
 
 ### `Ty.any_replicate_mult_linear`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same fact in the shape §5.5's array clauses use it: an array node's slot
 types are `List.replicate n T`, so asking whether any slot carries a linear
@@ -4104,7 +4104,7 @@ theorem RueCore.Ty.any_replicate_mult_linear (D : Decls) (T : Ty) (n : Nat) :
 
 ### `residualLinearFields_mult_linear`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a declaration's slots (helper).
 
@@ -4117,7 +4117,7 @@ theorem RueCore.residualLinearFields_mult_linear {D : Decls} (hD : WfStructs D)
 
 ### `ownedJoinOkList_residualLinearFields`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a declaration's slots (helper).
 
@@ -4131,7 +4131,7 @@ theorem RueCore.ownedJoinOkList_residualLinearFields {D : Decls} (hD : WfStructs
 
 ### `ownedJoinOkList_of_residualLinearFields_false`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a declaration's slots (helper).
 
@@ -4146,7 +4146,7 @@ theorem RueCore.ownedJoinOkList_of_residualLinearFields_false {D : Decls}
 
 ### `OwnSt.join_owned_left`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 §5.5's wholly-`Owned` arm on the left, as one equation over every state of
 the other arm (helper).
@@ -4159,7 +4159,7 @@ theorem RueCore.OwnSt.join_owned_left (D : Decls) (b : OwnSt) (T : Ty) :
 
 ### `OwnSt.join_owned_right`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 §5.5's wholly-`Owned` arm on the right; the join reads the same from either
 side (`OwnSt.join_comm`) (helper).
@@ -4172,7 +4172,7 @@ theorem RueCore.OwnSt.join_owned_right (D : Decls) (a : OwnSt) (T : Ty) :
 
 ### `OwnSt.join_movedOut_owned_eq`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The one clause the two readings share: joining `MovedOut` with a wholly
 `Owned` arm is admissible exactly when the arm has no residue, because
@@ -4189,7 +4189,7 @@ theorem RueCore.OwnSt.join_movedOut_owned_eq (D : Decls) (T : Ty) :
 
 ### `OwnSt.join_movedOut_left`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 §5.5's `MovedOut` arm on the left, as one equation over every state of the
 other arm — including the `Owned` one, by the clause above (helper).
@@ -4202,7 +4202,7 @@ theorem RueCore.OwnSt.join_movedOut_left (D : Decls) (b : OwnSt) (T : Ty) :
 
 ### `OwnSt.join_movedOut_right`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 §5.5's `MovedOut` arm on the right (helper).
 
@@ -4214,7 +4214,7 @@ theorem RueCore.OwnSt.join_movedOut_right (D : Decls) (a : OwnSt) (T : Ty) :
 
 ### `OwnSt.joinList_nil_left`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 §5.5's slot join where the left arm records no slot: the other arm's record
 survives subject to `ownedJoinOk` (helper).
@@ -4228,7 +4228,7 @@ theorem RueCore.OwnSt.joinList_nil_left (D : Decls) (bs : List OwnSt) (T : Ty)
 
 ### `OwnSt.joinList_nil_right`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same where the right arm records no slot (helper).
 
@@ -4241,7 +4241,7 @@ theorem RueCore.OwnSt.joinList_nil_right (D : Decls) (as : List OwnSt) (T : Ty)
 
 ### `OwnSt.join_fields_bind_left`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Joining a third field record after two is joining their slot lists after two
 (helper).
@@ -4261,7 +4261,7 @@ theorem RueCore.OwnSt.join_fields_bind_left (D : Decls) (as bs cs : List OwnSt)
 
 ### `OwnSt.join_fields_bind_right`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same for the other bracketing (helper).
 
@@ -4280,7 +4280,7 @@ theorem RueCore.OwnSt.join_fields_bind_right (D : Decls) (as bs cs : List OwnSt)
 
 ### `OwnSt.joinList_cons_bind_left`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 A slot list joins slot by slot, so one bracketing of three lists factors into
 that bracketing of the heads and of the tails — which is what carries the
@@ -4300,7 +4300,7 @@ theorem RueCore.OwnSt.joinList_cons_bind_left (D : Decls) (a b c : OwnSt)
 
 ### `OwnSt.joinList_cons_bind_right`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same for the other bracketing (helper).
 
@@ -4318,7 +4318,7 @@ theorem RueCore.OwnSt.joinList_cons_bind_right (D : Decls) (a b c : OwnSt)
 
 ### `residualLinear_of_ownedJoinOk`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 §5.6's residue of a state a wholly `Owned` arm may absorb *is* `class(T) =
 Linear`: the two halves above, taken together (helper).
@@ -4331,7 +4331,7 @@ theorem RueCore.residualLinear_of_ownedJoinOk {D : Decls} (hD : WfStructs D)
 
 ### `residualLinearFields_of_ownedJoinOkList`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a declaration's slots (helper).
 
@@ -4344,7 +4344,7 @@ theorem RueCore.residualLinearFields_of_ownedJoinOkList {D : Decls} (hD : WfStru
 
 ### `OwnSt.joinList_ownedJoinOkList`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a declaration's slots (helper).
 
@@ -4360,7 +4360,7 @@ theorem RueCore.OwnSt.joinList_ownedJoinOkList {D : Decls} (hD : WfStructs D)
 
 ### `OwnSt.joinList_residualLinearFields`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a declaration's slots (helper).
 
@@ -4374,7 +4374,7 @@ theorem RueCore.OwnSt.joinList_residualLinearFields {D : Decls} (hD : WfStructs 
 
 ### `OwnSt.joinList_exists`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a declaration's slots (helper).
 
@@ -4390,7 +4390,7 @@ theorem RueCore.OwnSt.joinList_exists {D : Decls} (hD : WfStructs D)
 
 ### `OwnSt.joinList_wf`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a declaration's slots (helper).
 
@@ -4404,7 +4404,7 @@ theorem RueCore.OwnSt.joinList_wf {D : Decls} (bs cs : List OwnSt) (Ts : List Ty
 
 ### `OwnSt.join_fields_struct`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 §5.5's join of two field records at a declared struct type (helper).
 
@@ -4417,7 +4417,7 @@ theorem RueCore.OwnSt.join_fields_struct (D : Decls) (s : Nat) (sd : StructDecl)
 
 ### `OwnSt.join_fields_array`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 §5.5's join of two field records at an array type, element by element
 (`3.8:73`) (helper).
@@ -4431,7 +4431,7 @@ theorem RueCore.OwnSt.join_fields_array (D : Decls) (T' : Ty) (n : Nat)
 
 ### `OwnSt.wf_fields_struct`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 A field record is a shape of a declared struct type exactly when its slots
 are shapes of the fields (helper).
@@ -4444,7 +4444,7 @@ theorem RueCore.OwnSt.wf_fields_struct (D : Decls) (s : Nat) (sd : StructDecl)
 
 ### `OwnSt.wf_fields_array`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The array form of the same (helper).
 
@@ -4457,7 +4457,7 @@ theorem RueCore.OwnSt.wf_fields_array (D : Decls) (T' : Ty) (n : Nat)
 
 ### `OwnSt.joinList_assoc`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a declaration's slots (helper).
 
@@ -4474,7 +4474,7 @@ theorem RueCore.OwnSt.joinList_assoc {D : Decls} (hD : WfStructs D)
 
 ### `optionMapBind`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Renaming the result of a partial computation before continuing is renaming
 after it (helper).
@@ -4486,7 +4486,7 @@ theorem RueCore.optionMapBind {α β γ : Type} (o : Option α) (f : α → β)
 
 ### `optionBindMap`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same on the other side of the bind (helper).
 
@@ -4497,7 +4497,7 @@ theorem RueCore.optionBindMap {α β γ : Type} (o : Option α) (f : α → Opti
 
 ### `Entry.setSt_st`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Re-marking an entry records the state it was given (helper).
 
@@ -4507,7 +4507,7 @@ theorem RueCore.Entry.setSt_st (en : Entry) (u : OwnSt) : (en.setSt u).st = u
 
 ### `Entry.setSt_ty`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Re-marking an entry leaves its declared type alone (helper).
 
@@ -4517,7 +4517,7 @@ theorem RueCore.Entry.setSt_ty (en : Entry) (u : OwnSt) : (en.setSt u).ty = en.t
 
 ### `Entry.setSt_setSt`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Re-marking twice is re-marking once: `Entry.setSt` writes the whole `Σ` part
 of the row (helper).
@@ -4529,7 +4529,7 @@ theorem RueCore.Entry.setSt_setSt (en : Entry) (u : OwnSt) :
 
 ### `Entry.ty_of_skel`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Two entries with one skeleton have one declared type (helper).
 
@@ -4539,7 +4539,7 @@ theorem RueCore.Entry.ty_of_skel {a b : Entry} (h : a.skel = b.skel) : b.ty = a.
 
 ### `Ctx.join_cons_bind_left`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 A context joins entry by entry, so one bracketing of three contexts factors
 into that bracketing of the heads and of the tails (helper).
@@ -4555,7 +4555,7 @@ theorem RueCore.Ctx.join_cons_bind_left (D : Decls) (a b c : Entry) (as bs cs : 
 
 ### `Ctx.join_cons_bind_right`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same for the other bracketing (helper).
 
@@ -4571,7 +4571,7 @@ theorem RueCore.Ctx.join_cons_bind_right (D : Decls) (a b c : Entry)
 
 ### `OwnSt.join_idem`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **§5.5's join is idempotent** on a state that is a shape of its type: a
 path joined with itself is unchanged (helper).
@@ -4583,7 +4583,7 @@ theorem RueCore.OwnSt.join_idem {D : Decls} (b : OwnSt) (T : Ty) :
 
 ### `OwnSt.joinList_idem`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a slot list (helper).
 
@@ -4594,7 +4594,7 @@ theorem RueCore.OwnSt.joinList_idem {D : Decls} (bs : List OwnSt) (Ts : List Ty)
 
 ### `OwnSt.join_absorb`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **§5.5's join absorbs its right arm**: joining the result with the right
 arm again changes nothing, given the right arm is a shape of its type
@@ -4608,7 +4608,7 @@ theorem RueCore.OwnSt.join_absorb {D : Decls} (a b c : OwnSt) (T : Ty) :
 
 ### `OwnSt.joinList_absorb`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a slot list (helper).
 
@@ -4621,7 +4621,7 @@ theorem RueCore.OwnSt.joinList_absorb {D : Decls} (as bs cs : List OwnSt)
 
 ### `Entry.join_absorb`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 §5.5's per-entry join absorbs its right arm, given the two entries share a
 skeleton and the right one is well formed (helper).
@@ -4634,7 +4634,7 @@ theorem RueCore.Entry.join_absorb {D : Decls} {a b c : Entry} (hsk : a.skel = b.
 
 ### `OwnSt.setField_wf`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Writing a state of a slot's own type into a record leaves the record a shape
 of its type: the `owned` padding `OwnSt.setField` inserts before the slot is a
@@ -4651,7 +4651,7 @@ theorem RueCore.OwnSt.setField_wf {D : Decls} (ts : List OwnSt) (f : Nat) (v : O
 
 ### `OwnSt.fieldAt_wf`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Reading a slot of a well-formed record gives a state of that slot's type; a
 slot no partial move has touched reads as `owned`, which is a state of every
@@ -4666,7 +4666,7 @@ theorem RueCore.OwnSt.fieldAt_wf {D : Decls} (ts : List OwnSt) (f : Nat)
 
 ### `OwnSt.setAt_cons_owned`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 `OwnSt.setAt` takes its first step the same way from a wholly `Owned` node as
 from a field record, because a node with no record of its own has every field
@@ -4682,7 +4682,7 @@ theorem RueCore.OwnSt.setAt_cons_owned (f : Nat) (π : List Nat) (u : OwnSt) :
 
 ### `OwnSt.setAt_cons_fields`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The field-record form of the same step (helper).
 
@@ -4697,7 +4697,7 @@ theorem RueCore.OwnSt.setAt_cons_fields (ts : List OwnSt) (f : Nat) (π : List N
 
 ### `OwnSt.wfList_fieldStates_struct`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The recorded slots of a state well formed at a declared struct type are
 themselves well formed at the field types — trivially so for a node with no
@@ -4712,7 +4712,7 @@ theorem RueCore.OwnSt.wfList_fieldStates_struct {D : Decls} {t : OwnSt} {s : Nat
 
 ### `OwnSt.wfList_fieldStates_array`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The array form of the same (helper).
 
@@ -4724,7 +4724,7 @@ theorem RueCore.OwnSt.wfList_fieldStates_array {D : Decls} {t : OwnSt} {T₁ : T
 
 ### `TypedArms.at_index`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **(Match) §5.5's premises for the arm a tag selects.** Read at the variant
 index `k`: the arm's body is typed under that variant's payload locals, and
@@ -4752,7 +4752,7 @@ theorem RueCore.TypedArms.at_index {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty}
 
 ### `exhaustive_arm_exists`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **Exhaustiveness gives the tag an arm** (§5.5): a `match` has exactly one
 arm per variant, so a variant index the declaration has is an index the arm list
@@ -4771,7 +4771,7 @@ theorem RueCore.exhaustive_arm_exists {arms : List Expr} {Tss : List (List Ty)}
 
 ### `Entry.join_skel`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The §5.5 join preserves an entry's skeleton: it rewrites the entry's
 ownership state and nothing else (helper).
@@ -4783,7 +4783,7 @@ theorem RueCore.Entry.join_skel {D : Decls} {a b e : Entry}
 
 ### `List.set_self_of_getElem?`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Setting an index to the element already there is the identity (helper).
 
@@ -4794,7 +4794,7 @@ theorem RueCore.List.set_self_of_getElem?.{u_1} {α : Type u_1} {l : List α} {i
 
 ### `skel_set_setSt`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Re-marking an entry's ownership state does not change the skeleton
 (helper).
@@ -4806,7 +4806,7 @@ theorem RueCore.skel_set_setSt {Γ : Ctx} {i : Nat} {en : Entry} (h : Γ[i]? = s
 
 ### `Ctx.skel_armCtx`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 A `match` arm's entry context has the arm's payload locals on top of the
 incoming skeleton, so popping them leaves that skeleton (helper).
@@ -4818,7 +4818,7 @@ theorem RueCore.Ctx.skel_armCtx (Ts : List Ty) (Γ : Ctx) :
 
 ### `skel_drop_armCtx`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The context an arm hands the §5.5 join — its body's outgoing context with
 the payload locals popped — has the skeleton the arm started from (helper).
@@ -4831,7 +4831,7 @@ theorem RueCore.skel_drop_armCtx {Γb : Ctx} {Ts : List Ty} {Γ₀ : Ctx}
 
 ### `Ctx.join_skel`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The §5.5 join preserves the context skeleton (helper).
 
@@ -4842,7 +4842,7 @@ theorem RueCore.Ctx.join_skel {D : Decls} {Γ₁ Γ₂ Γ' : Ctx} :
 
 ### `Ctx.SameSkel.transport`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 `Ctx.SameSkel` read against another context of the same skeleton — which is
 what lets the n-way join's accumulator stand in for `Σ0` (helper).
@@ -4854,7 +4854,7 @@ theorem RueCore.Ctx.SameSkel.transport {Γ₀ Γ₁ : Ctx} (h : Γ₁.skel = Γ�
 
 ### `Ctx.SameSkel.mem`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 `Ctx.SameSkel`, read at a member of the list (helper).
 
@@ -4865,7 +4865,7 @@ theorem RueCore.Ctx.SameSkel.mem {Γ₀ : Ctx} {Γs : List Ctx} :
 
 ### `Ctx.joinFold_skel`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The accumulator step of (Match) §5.5's n-way join preserves the skeleton it
 starts from (helper).
@@ -4877,7 +4877,7 @@ theorem RueCore.Ctx.joinFold_skel {D : Decls} (Γs : List Ctx) {acc Γ' : Ctx} :
 
 ### `Ctx.joinAll_skel`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (Match) §5.5's n-way join runs over a **non-empty** arm list — every core
 enum has at least one variant (§5.5) — and preserves the first arm's skeleton
@@ -4891,7 +4891,7 @@ theorem RueCore.Ctx.joinAll_skel {D : Decls} {Γs : List Ctx} {Γ' : Ctx} :
 
 ### `Ctx.joinFold_bind_cons`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 One step of (Match) §5.5's fold, with the accumulator allowed to have failed
 already: taking the next arm in is joining it into the accumulator (helper).
@@ -4905,7 +4905,7 @@ theorem RueCore.Ctx.joinFold_bind_cons (D : Decls) (o : Option Ctx) (Γ : Ctx)
 
 ### `Ctx.joinFold_wf`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (Match) §5.5's fold keeps the invariant: joined into a well-formed
 accumulator, a well-formed arm leaves a well-formed accumulator (helper).
@@ -4920,7 +4920,7 @@ theorem RueCore.Ctx.joinFold_wf {D : Decls} {sk : List (Ty × Bool)} (Γs : List
 
 ### `Ctx.joinOpt_skel`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The two-arm §5.5 join over `Ω` preserves a skeleton both continuing arms
 have (helper).
@@ -4934,7 +4934,7 @@ theorem RueCore.Ctx.joinOpt_skel {D : Decls} {a b : Option Ctx} {Γ' : Ctx}
 
 ### `Ctx.joinOpts_skel`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The n-way §5.5 join over `Ω` preserves the skeleton every continuing arm
 has (helper).
@@ -4947,7 +4947,7 @@ theorem RueCore.Ctx.joinOpts_skel {D : Decls} {os : List (Option Ctx)} {Γ₀ Γ
 
 ### `Ctx.Extends.refl`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 A context extends itself (helper).
 
@@ -4957,7 +4957,7 @@ theorem RueCore.Ctx.Extends.refl (Γ : Ctx) : Γ.Extends Γ
 
 ### `Ctx.Extends.skel`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Extension is read against the skeleton only (helper).
 
@@ -4968,7 +4968,7 @@ theorem RueCore.Ctx.Extends.skel {Γb Γ₁ Γ : Ctx} (h : Γb.Extends Γ₁)
 
 ### `Ctx.Extends.pop`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Extending a context with one more binding on top extends the context
 under it: a delivery from a `let` body extends the `let`'s own context
@@ -4981,7 +4981,7 @@ theorem RueCore.Ctx.Extends.pop {Γb Γ : Ctx} {en : Entry} (h : Γb.Extends (en
 
 ### `Ctx.Extends.armCtx`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same for a `match` arm's payload locals (helper).
 
@@ -4992,7 +4992,7 @@ theorem RueCore.Ctx.Extends.armCtx {Γb Γ₀ : Ctx} {Ts : List Ty}
 
 ### `Ctx.Extends.length_le`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 An extension is at least as long as what it extends (helper).
 
@@ -5003,7 +5003,7 @@ theorem RueCore.Ctx.Extends.length_le {Γb Γ : Ctx} (h : Γb.Extends Γ) :
 
 ### `Ctx.outsideLoop_skel`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 `outside_loop(Σ_x)` has the loop's own skeleton: popping the loop-local
 bindings off a delivery that extends the head leaves the head's bindings
@@ -5016,7 +5016,7 @@ theorem RueCore.Ctx.outsideLoop_skel {Γh Γb : Ctx} (h : Γb.Extends Γh) :
 
 ### `Out.skelOk_bot`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 A `⊥` outcome whose deliveries extend the context preserves its skeleton
 (helper).
@@ -5029,7 +5029,7 @@ theorem RueCore.Out.skelOk_bot {Γ : Ctx} {Δ : List Ctx}
 
 ### `Out.skelOk_same`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 An outcome that continues at the incoming context itself and delivers
 nothing preserves its skeleton (helper).
@@ -5040,7 +5040,7 @@ theorem RueCore.Out.skelOk_same {Γ : Ctx} : Out.SkelOk Γ { norm := some Γ, br
 
 ### `Out.skelOk_of`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 An outcome that continues at a context of the incoming skeleton and
 delivers nothing preserves it (helper).
@@ -5052,7 +5052,7 @@ theorem RueCore.Out.skelOk_of {Γ Γ' : Ctx} (h : Γ'.skel = Γ.skel) :
 
 ### `Out.SkelOk.then`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 §5.3's threading, read over skeletons: a prefix that continues at `Γ₁`
 followed by a subexpression typed from `Γ₁` preserves the skeleton the
@@ -5066,7 +5066,7 @@ theorem RueCore.Out.SkelOk.then {Γ Γ₁ : Ctx} {Δ₁ : List Ctx} {Ω : Out}
 
 ### `LoopHead.skel`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The loop-head state has the entry's skeleton: it is the entry itself or
 its §5.5 join with the back-edge state (helper).
@@ -5078,7 +5078,7 @@ theorem RueCore.LoopHead.skel {D : Decls} {Γ Γh : Ctx} {o : Option Ctx}
 
 ### `TypedArgs.skel_preserved`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 A typed expression list preserves the context skeleton too (helper).
 
@@ -5090,7 +5090,7 @@ theorem RueCore.TypedArgs.skel_preserved {P : Program} {R : Ty} {Γ : Ctx}
 
 ### `TypedArms.skel_all`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **Every continuing arm of a `match` hands the §5.5 join a context with the
 skeleton the arm started from**, and every delivery an arm makes extends it:
@@ -5107,7 +5107,7 @@ theorem RueCore.TypedArms.skel_all {P : Program} {R : Ty} {Γ₀ : Ctx}
 
 ### `TypedArms.arm_skel`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 **Every continuing arm of a `match` hands the §5.5 join a context with the
 skeleton the arm started from** (§5's convention that `Γ` is fixed): the arm's
@@ -5124,7 +5124,7 @@ theorem RueCore.TypedArms.arm_skel {P : Program} {R : Ty} {Γ₀ : Ctx}
 
 ### `Typed.skel_of`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The skeleton of a continuing outcome, read off a derivation (helper).
 
@@ -5136,7 +5136,7 @@ theorem RueCore.Typed.skel_of {P : Program} {R : Ty} {Γ Γ' : Ctx} {e : Expr} {
 
 ### `TypedArgs.skel_of`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 The same, for an expression list (helper).
 
@@ -5148,7 +5148,7 @@ theorem RueCore.TypedArgs.skel_of {P : Program} {R : Ty} {Γ Γ' : Ctx} {es : Li
 
 ### `skel_lookup`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 Two contexts with one skeleton agree on every entry's type and mark
 (helper).
@@ -5161,7 +5161,7 @@ theorem RueCore.skel_lookup {Γ Γ' : Ctx} (h : Γ'.skel = Γ.skel) {i : Nat}
 
 ### `Entry.wf_owned`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) Every state `fnCtx`/`armCtx`/`let` push is `Owned`, a shape of
 every type.
@@ -5173,7 +5173,7 @@ theorem RueCore.Entry.wf_owned (D : Decls) (T : Ty) (m : Bool) :
 
 ### `Ctx.Wf.cons_owned`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) A `let` binder enters `Owned`, so pushing it keeps a frame
 well-formed.
@@ -5185,7 +5185,7 @@ theorem RueCore.Ctx.Wf.cons_owned {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) (T : 
 
 ### `Ctx.Wf.set_setAt`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) Re-marking one entry at a path of its type with a state that is
 a shape of that path's type keeps a frame well-formed — (Use-Move),
@@ -5201,7 +5201,7 @@ theorem RueCore.Ctx.Wf.set_setAt {D : Decls} {Γ : Ctx} {i : Nat} {en : Entry}
 
 ### `Ctx.Wf.armCtx`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) A `match` arm's entry context is well-formed when `Σ0` is.
 
@@ -5212,7 +5212,7 @@ theorem RueCore.Ctx.Wf.armCtx {D : Decls} {Γ₀ : Ctx} (Ts : List Ty)
 
 ### `Ctx.joinOpt_wf`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) The two-arm join over `Ω` keeps the invariant.
 
@@ -5225,7 +5225,7 @@ theorem RueCore.Ctx.joinOpt_wf {D : Decls} {a b : Option Ctx} {Γ' : Ctx}
 
 ### `Ctx.joinOpts_wf`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) The n-way join over `Ω` keeps the invariant.
 
@@ -5238,7 +5238,7 @@ theorem RueCore.Ctx.joinOpts_wf {D : Decls} {os : List (Option Ctx)} {Γ' : Ctx}
 
 ### `Out.Wf.bot`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) A `⊥` outcome is well formed when its deliveries are.
 
@@ -5250,7 +5250,7 @@ theorem RueCore.Out.Wf.bot {D : Decls} {Δ : List Ctx}
 
 ### `Out.Wf.of`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) An outcome that continues at a well-formed state and delivers
 nothing is well formed.
@@ -5262,7 +5262,7 @@ theorem RueCore.Out.Wf.of {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) :
 
 ### `Out.Wf.then`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) §5.3's threading, read over the shape invariant.
 
@@ -5274,7 +5274,7 @@ theorem RueCore.Out.Wf.then {D : Decls} {Γ₁ : Ctx} {Δ₁ : List Ctx} {Ω : O
 
 ### `LoopHead.wf`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) The loop-head state is well formed when the entry is: it is the
 entry itself, or a head `LoopHead` asks to be well formed.
@@ -5286,7 +5286,7 @@ theorem RueCore.LoopHead.wf {D : Decls} {Γ Γh : Ctx} {o : Option Ctx}
 
 ### `Ctx.Wf.drop`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) Dropping bindings off the top keeps a frame well formed.
 
@@ -5297,7 +5297,7 @@ theorem RueCore.Ctx.Wf.drop {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) (n : Nat) :
 
 ### `TypedArgs.wf`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) The same, for an expression list.
 
@@ -5308,7 +5308,7 @@ theorem RueCore.TypedArgs.wf {P : Program} {R : Ty} {Γ : Ctx} {es : List Expr}
 
 ### `TypedArms.wf`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) The same, for a `match`'s arms.
 
@@ -5320,7 +5320,7 @@ theorem RueCore.TypedArms.wf {P : Program} {R : Ty} {Γ₀ : Ctx} {arms : List E
 
 ### `LoopHead.reenter_body`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 `LoopHead.reenter` for the loop rules' own premises: the body judgment
 typed at the head gives the back-edge state the head's skeleton
@@ -5335,7 +5335,7 @@ theorem RueCore.LoopHead.reenter_body {P : Program} {R : Ty} {Γ Γh : Ctx} {e :
 
 ### `TypedArgs.brk_nil`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) The same, for an expression list.
 
@@ -5347,7 +5347,7 @@ theorem RueCore.TypedArgs.brk_nil {P : Program} {R : Ty} {Γ : Ctx} {es : List E
 
 ### `TypedArms.brk_nil`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) The same, for a `match`'s arms.
 
@@ -5359,7 +5359,7 @@ theorem RueCore.TypedArms.brk_nil {P : Program} {R : Ty} {Γ₀ : Ctx} {arms : L
 
 ### `fnCtx_wf`
 
-*theorem* · module `RueCore.Statics`
+*theorem* · module `RueCore.Statics.Lemmas`
 
 (Fn) §5.8's entry context is well-formed: every parameter enters
 `Owned`, a shape of every type (helper).
@@ -5370,7 +5370,7 @@ theorem RueCore.fnCtx_wf (D : Decls) (fd : FnDef) : Ctx.Wf D (fnCtx fd)
 
 ### `Contents.toVals_length`
 
-*theorem* · module `RueCore.Dynamics`
+*theorem* · module `RueCore.Dynamics.Lemmas`
 
 `toVals` does not change a list's length, for `mult_toVal`'s array case
 (helper).
@@ -5382,7 +5382,7 @@ theorem RueCore.Contents.toVals_length (cs : List Contents) (vs : List Val) :
 
 ### `inBoundsIdx_eq_true`
 
-*theorem* · module `RueCore.Dynamics`
+*theorem* · module `RueCore.Dynamics.Lemmas`
 
 The bounds test, read as §6.5 states it (helper).
 
@@ -5393,7 +5393,7 @@ theorem RueCore.inBoundsIdx_eq_true {i : Int} {n : Nat} :
 
 ### `dropEventsList_eq_flatten`
 
-*theorem* · module `RueCore.Dynamics`
+*theorem* · module `RueCore.Dynamics.Lemmas`
 
 A field list's events are its fields' events concatenated, left to right:
 the flattening `dropContents_struct_events` states the order with (helper).
@@ -5405,7 +5405,7 @@ theorem RueCore.dropEventsList_eq_flatten (D : Decls) (cs : List Contents) :
 
 ### `stepEval_complete`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 `stepEval`'s `next` is a `Step` (helper).
 
@@ -5418,7 +5418,7 @@ theorem RueCore.stepEval_complete {M : FloatOps} {P : Program} {H : Store} {φ :
 
 ### `stepArgs_complete`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 `stepArgs`'s `next` is a `Step` (helper).
 
@@ -5431,7 +5431,7 @@ theorem RueCore.stepArgs_complete {M : FloatOps} {P : Program} {H : Store} {φ :
 
 ### `stepRet_complete`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 `stepRet`'s `next` is a `Step` (helper).
 
@@ -5444,7 +5444,7 @@ theorem RueCore.stepRet_complete {M : FloatOps} {P : Program} {H : Store} {φ : 
 
 ### `stepEval_ne_halted`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 `stepEval` never answers `halted` (helper).
 
@@ -5456,7 +5456,7 @@ theorem RueCore.stepEval_ne_halted {M : FloatOps} {P : Program} {H : Store}
 
 ### `stepArgs_ne_halted`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 `stepArgs` never answers `halted` (helper).
 
@@ -5468,7 +5468,7 @@ theorem RueCore.stepArgs_ne_halted {P : Program} {H : Store} {φ : Frame}
 
 ### `stepRet_ne_halted`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 `stepRet` never answers `halted` (helper).
 
@@ -5480,7 +5480,7 @@ theorem RueCore.stepRet_ne_halted {M : FloatOps} {P : Program} {H : Store} {φ :
 
 ### `Contents.readAt_err`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 `readAt` refuses only with §6's stuck states (helper).
 
@@ -5491,7 +5491,7 @@ theorem RueCore.Contents.readAt_err {c : Contents} {π : List Nat} {w : Violatio
 
 ### `Contents.splitResidue_err`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 `split` refuses only with §6's stuck states (helper).
 
@@ -5503,7 +5503,7 @@ theorem RueCore.Contents.splitResidue_err (D : Decls) {c : Contents} {π : List 
 
 ### `Contents.splitFields_err`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 `split`'s field step refuses only with §6's stuck states (helper).
 
@@ -5515,7 +5515,7 @@ theorem RueCore.Contents.splitFields_err (D : Decls) {cs : List Contents} {f : N
 
 ### `dropContents_err`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 §6.11's `drop` refuses only with §6's stuck states (helper).
 
@@ -5526,7 +5526,7 @@ theorem RueCore.dropContents_err (D : Decls) {c : Contents} {w : Violation} :
 
 ### `dropContentsList_err`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 `drop*` refuses only with §6's stuck states (helper).
 
@@ -5538,7 +5538,7 @@ theorem RueCore.dropContentsList_err (D : Decls) {cs : List Contents}
 
 ### `dropCell_err`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 A binding's drop refuses only with §6's stuck states (helper).
 
@@ -5549,7 +5549,7 @@ theorem RueCore.dropCell_err {D : Decls} {ℓ : Nat} {c : Contents} {w : Violati
 
 ### `plainUnwind_err`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 `plainUnwind` refuses only with §6's stuck states (helper).
 
@@ -5561,7 +5561,7 @@ theorem RueCore.plainUnwind_err {D : Decls} {H : Store} {ls : List Nat}
 
 ### `plainResidue_err`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 The residue's plain `drop*` refuses only with §6's stuck states (helper).
 
@@ -5573,7 +5573,7 @@ theorem RueCore.plainResidue_err {D : Decls} {ℓ : Nat} {rs : List Contents}
 
 ### `plainDestructure_err`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 `plainDestructure` refuses only with §6's stuck states (helper).
 
@@ -5585,7 +5585,7 @@ theorem RueCore.plainDestructure_err {D : Decls} {ℓ : Nat} {c : Contents}
 
 ### `rootCell_err`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 `rootCell` refuses only with §6's stuck states (helper).
 
@@ -5596,7 +5596,7 @@ theorem RueCore.rootCell_err {H : Store} {φ : Frame} {i : Nat} {w : Violation}
 
 ### `Contents.resolveDyn_err`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 Resolving a dynamic tail refuses only with §6's stuck states (helper).
 
@@ -5608,7 +5608,7 @@ theorem RueCore.Contents.resolveDyn_err {c : Contents} {is : List Int}
 
 ### `dynPlace_err`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 Navigating a dynamic place refuses only with §6's stuck states (helper).
 
@@ -5620,7 +5620,7 @@ theorem RueCore.dynPlace_err {H : Store} {φ : Frame} {p : Place} {vs : List Val
 
 ### `dropRetire_plain`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 Where `eval`'s leak monitor lets a scope exit through, §6's monitor-free
 drop-retire does the same thing (§6.1's `drop-retire`) (helper).
@@ -5633,7 +5633,7 @@ theorem RueCore.dropRetire_plain {D : Decls} {H : Store} {ℓ : Nat}
 
 ### `dropResidue_plain`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 The residue monitor passes only where the plain `drop*` of the residue
 succeeds with the same trace (helper).
@@ -5646,7 +5646,7 @@ theorem RueCore.dropResidue_plain {D : Decls} {ℓ : Nat} {rs : List Contents}
 
 ### `stepN_steps`
 
-*theorem* · module `RueCore.Step`
+*theorem* · module `RueCore.Step.Lemmas`
 
 Whatever `stepN` reaches, `→*` reaches (§6.12's `→*`), so a run of the
 function is a derivation of the relation (helper).
@@ -15875,7 +15875,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `demoSc`
 
-*def* · module `RueCore.Step`
+*def* · module `RueCore.Witnesses`
 
 The contents `S{}` leaves in a cell, at the identity it was minted with
 (helper).
@@ -16892,7 +16892,7 @@ breakLoop =
 
 ### `demoDecls`
 
-*def* · module `RueCore.Step`
+*def* · module `RueCore.Witnesses`
 
 One affine struct with a destructor, `S`, and an affine enum
 `E { A(S), B }` (helper).
@@ -16914,7 +16914,7 @@ demoDecls =
 
 ### `demoI32`
 
-*def* · module `RueCore.Step`
+*def* · module `RueCore.Witnesses`
 
 An `i32` literal (helper).
 
@@ -16930,7 +16930,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `demoS`
 
-*def* · module `RueCore.Step`
+*def* · module `RueCore.Witnesses`
 
 `S{}` and an `i32` literal (helper).
 
@@ -18063,7 +18063,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `demoCountingLoop`
 
-*def* · module `RueCore.Step`
+*def* · module `RueCore.Witnesses`
 
 A counting loop: `let mut i = 0; loop { let s = S{}; if i >= 2 { break }
 else { i = i + 1 } }; i` (helper).
@@ -19931,7 +19931,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `demoProgram`
 
-*def* · module `RueCore.Step`
+*def* · module `RueCore.Witnesses`
 
 A program over `demoDecls` whose entry point returns `i32` (helper).
 
@@ -20031,7 +20031,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `letAddProgram`
 
-*def* · module `RueCore.Step`
+*def* · module `RueCore.Witnesses`
 
 A two-line program, `let x = 40; x + 2`, as the entry point returning
 `i32` (helper).

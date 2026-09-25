@@ -1,6 +1,7 @@
 module
 
 public import RueCore.Dynamics
+public import RueCore.Dynamics.Lemmas
 public import RueCore.Soundness.Defs
 
 @[expose] public section
@@ -98,7 +99,7 @@ settles a non-linear type.
 ## Enums: exhaustiveness, and the payload that drops exactly once
 
 §7 names two mechanisms for an enum, and both are here. **Exhaustiveness** is
-progress at a `match`: `exhaustive_arm_exists` (`Statics.lean`) says a well-typed tag
+progress at a `match`: `exhaustive_arm_exists` (`Statics/Lemmas.lean`) says a well-typed tag
 is an index the arm list has, so the machine is never stuck on an uncovered tag.
 **Dropped exactly once** is the pair of `⊘`s: a `match` on a non-`Copy` enum
 moves the scrutinee out, so §6.11's later walk through that place finds a hole
@@ -115,7 +116,7 @@ it through the fuel induction. `LoopHead.enter`: the store agreeing with the
 entry state agrees with the head, since the head is the entry joined with the
 back-edge state and the join weakens its left arm. `LoopHead.backEdge`: a
 store agreeing with the back-edge state agrees with the head, the join's right
-arm. And `LoopHead.reenter_body` (`Statics.lean`): the loop's own derivation
+arm. And `LoopHead.reenter_body` (`Statics/Lemmas.lean`): the loop's own derivation
 types it again at its head, so the next turn is the same loop at one unit of
 fuel less. A `break` is caught by `loop_exit_ok`: the body's open bindings are
 exactly the cells past the loop's scope-record length, `Matches.unwindPrefix`
