@@ -2421,6 +2421,87 @@ theorem RueCore.dupProgram_step_double_free (M : FloatOps) :
         [0, 0]
 ```
 
+### `eval_sim`
+
+*theorem* · module `RueCore.Adequacy`
+
+**`eval` is simulated by §6's `→*`** (RUE-2289 part 2, ADR-0097 decision
+3), for every expression, store, frame and fuel, on every program: a value, a
+panic, an unwinding `return` and an unwinding `break` are each reached by
+`Step` from the expression in focus under any context, as `Sim` reads them
+(§6.2's (Search) and (Panic-Lift), (D-Return) §6.9, (D-Break) §6.10). The
+proof is a strong induction on fuel with one lemma per form.
+
+```lean
+theorem RueCore.eval_sim (M : FloatOps) (P : Program) (fuel : Nat) : SimIH M P fuel
+```
+
+### `run_sim`
+
+*theorem* · module `RueCore.Adequacy`
+
+**`run` is simulated by `→*` from §6.12's initial configuration**, on
+every program: a value `run` returns is a terminal configuration `✓` that
+`Config.init` reaches with the same store and trace ((D-Return-Main) §6.9,
+(Result-Ok) §6.12), and a panic is `↯κ` after the same trace ((Result-Panic)
+§6.12). No typing hypothesis: every place `eval` and `Step` differ is a
+refusal on `eval`'s side.
+
+```lean
+theorem RueCore.run_sim (M : FloatOps) (P : Program) (fuel : Nat) :
+  (∀ (H : Store) (v : Val) (tr : List Event),
+      run M P fuel = EvalRes.ok H v tr →
+        Steps M P Config.init
+          (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+    ∀ (k : PanicKind) (tr : List Event),
+      run M P fuel = EvalRes.panic k tr →
+        Steps M P Config.init (Config.panic k tr)
+```
+
+### `eval_sound`
+
+*theorem* · module `RueCore.Adequacy`
+
+**`eval` is sound with respect to §6's reduction** (RUE-2289 part 2;
+ADR-0097 decision 3: "a theorem about `eval` is a theorem about §6 only once
+the two are proved to agree"). For a program `check` accepts
+(`ProgramTyped`, RUE-2314's domain), `run` is never stuck (`no_violation`),
+so it answers a value, a panic or `outOfFuel`; a value is reached by §6's
+`→*` from the initial configuration as a terminal configuration with the same
+store and trace, and a panic as `↯κ` after the same trace (§6.2, §6.12).
+`.stuck` is outside the correspondence and does not occur here; `outOfFuel`
+is not a state of §6's machine, and completeness modulo fuel is part 3
+(RUE-2332).
+
+```lean
+theorem RueCore.eval_sound (M : FloatModel) {P : Program} (h : ProgramTyped P)
+  (fuel : Nat) :
+  (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+    (∀ (H : Store) (v : Val) (tr : List Event),
+        run M.toFloatOps P fuel = EvalRes.ok H v tr →
+          Steps M.toFloatOps P Config.init
+            (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+      ∀ (k : PanicKind) (tr : List Event),
+        run M.toFloatOps P fuel = EvalRes.panic k tr →
+          Steps M.toFloatOps P Config.init (Config.panic k tr)
+```
+
+### `letAddProgram_sound`
+
+*theorem* · module `RueCore.Adequacy`
+
+**The theorem at work**: `letAddProgram_runs` (`Step.lean`) found its
+`→*` derivation by running `stepN`; here it comes from `run`'s answer alone,
+through `run_sim` — `let x = 40; x + 2` reaches `✓42` with the `let`'s cell
+retired and nothing printed (§6.7, §6.9, §6.12).
+
+```lean
+theorem RueCore.letAddProgram_sound (M : FloatOps) :
+  Steps M letAddProgram Config.init
+    (Config.run [Cell.dead] Frame.empty []
+      (Focus.ret (Val.int IntWidth.w32 Sign.signed 42)) [])
+```
+
 ### `Examples.dynReadAffine_refused`
 
 *theorem* · module `RueCore.Examples`
@@ -7837,6 +7918,587 @@ theorem RueCore.run_trace_once (M : FloatOps) {P : Program} {F : Event → List 
   List.count a (List.flatMap F (run M P fuel).trace) ≤ 1
 ```
 
+### `Steps.trans`
+
+*theorem* · module `RueCore.Adequacy`
+
+`→*` composes (§6.12) (helper).
+
+```lean
+theorem RueCore.Steps.trans {M : FloatOps} {P : Program} {C₁ C₂ C₃ : Config}
+  (h₁ : Steps M P C₁ C₂) (h₂ : Steps M P C₂ C₃) : Steps M P C₁ C₃
+```
+
+### `Steps.single`
+
+*theorem* · module `RueCore.Adequacy`
+
+One step is a run (§6.12) (helper).
+
+```lean
+theorem RueCore.Steps.single {M : FloatOps} {P : Program} {C₁ C₂ : Config}
+  (h : Step M P C₁ C₂) : Steps M P C₁ C₂
+```
+
+### `Steps.peel`
+
+*theorem* · module `RueCore.Adequacy`
+
+**Peeling a step by determinism** (`Step.det`, §6): a run from `C` that
+ends at a configuration with no expression in focus passes through `C`'s one
+successor (helper).
+
+```lean
+theorem RueCore.Steps.peel {M : FloatOps} {P : Program} {C C' D : Config}
+  (hs : Step M P C C') (h : Steps M P C D) (hC : C.evalFocus)
+  (hD : ¬D.evalFocus) : Steps M P C' D
+```
+
+### `Sim.pre`
+
+*theorem* · module `RueCore.Adequacy`
+
+A run into the family carries its simulation back (helper).
+
+```lean
+theorem RueCore.Sim.pre {M : FloatOps} {P : Program} {φ : Frame}
+  {C C₂ : List Kont → List Event → Config} {r : EvalRes}
+  (hpre : ∀ (K : List Kont) (tr : List Event), Steps M P (C K tr) (C₂ K tr))
+  (h : Sim M P φ C₂ r) : Sim M P φ C r
+```
+
+### `Sim.withTrace`
+
+*theorem* · module `RueCore.Adequacy`
+
+A run into the family that emits `tr₁` carries its simulation back to
+the result with `tr₁` prefixed (§6.12's accumulating output) (helper).
+
+```lean
+theorem RueCore.Sim.withTrace {M : FloatOps} {P : Program} {φ : Frame}
+  {C C₂ : List Kont → List Event → Config} {r : EvalRes} {tr₁ : List Event}
+  (hpre :
+    ∀ (K : List Kont) (tr : List Event),
+      Steps M P (C K tr) (C₂ K (tr ++ tr₁)))
+  (h : Sim M P φ C₂ r) : Sim M P φ C (EvalRes.withTrace tr₁ r)
+```
+
+### `Sim.andThen`
+
+*theorem* · module `RueCore.Adequacy`
+
+**§6.2's (Search), once**: `eval`'s `andThen` is an enter step pushing a
+frame `F`, the operand run under `F`, and a plug of its value into `F`'s hole.
+A `return` or a `break` passes through `F` unchanged because `F` is neither a
+call frame nor a loop boundary, and a panic because (Panic-Lift) discards
+every context (helper).
+
+```lean
+theorem RueCore.Sim.andThen {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+  {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
+  (hC :
+    ∀ (K : List Kont) (tr : List Event), Steps M P (C K tr) (C₁ (F :: K) tr))
+  {r : EvalRes} (h₁ : Sim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr₁ : List Event),
+      r = EvalRes.ok H₁ v tr₁ →
+        Sim M P φ (fun K tr => Config.run H₁ φ₁ (F :: K) (Focus.ret v) tr)
+          (k H₁ v)) :
+  Sim M P φ C (r.andThen k)
+```
+
+### `Sim.lift`
+
+*theorem* · module `RueCore.Adequacy`
+
+A result that is not a value passes through a transparent frame unchanged
+(helper).
+
+```lean
+theorem RueCore.Sim.lift {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+  {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
+  (hC :
+    ∀ (K : List Kont) (tr : List Event), Steps M P (C K tr) (C₁ (F :: K) tr))
+  {r : EvalRes} (h₁ : Sim M P φ₁ C₁ r)
+  (hr : ∀ (H : Store) (v : Val) (tr : List Event), r ≠ EvalRes.ok H v tr) :
+  Sim M P φ C r
+```
+
+### `Sim.absorb`
+
+*theorem* · module `RueCore.Adequacy`
+
+§6.9's call boundary: the body's `returned` is caught at the `call φ`
+frame, which is what `absorb` turns into a value (helper).
+
+```lean
+theorem RueCore.Sim.absorb {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+  {C C₁ : List Kont → List Event → Config}
+  (hC :
+    ∀ (K : List Kont) (tr : List Event),
+      Steps M P (C K tr) (C₁ (Kont.call φ :: K) tr))
+  {r : EvalRes} (h₁ : Sim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr₁ : List Event),
+      r = EvalRes.ok H₁ v tr₁ →
+        Sim M P φ
+          (fun K tr => Config.run H₁ φ₁ (Kont.call φ :: K) (Focus.ret v) tr)
+          (k H₁ v)) :
+  Sim M P φ C (r.absorb k)
+```
+
+### `OpRes.sim`
+
+*theorem* · module `RueCore.Adequacy`
+
+§6.4's operator frames: a value plugs the hole, a trap is (Panic-Lift)
+(helper).
+
+```lean
+theorem RueCore.OpRes.sim {M : FloatOps} {P : Program} {φ : Frame} {H : Store}
+  {F : Kont} {v : Val} (o : OpRes)
+  (hv :
+    ∀ (K : List Kont) (tr : List Event) (v' : Val),
+      o = OpRes.val v' →
+        Step M P (Config.run H φ (F :: K) (Focus.ret v) tr)
+          (Config.run H φ K (Focus.ret v') tr))
+  (ht :
+    ∀ (K : List Kont) (tr : List Event) (κ : PanicKind),
+      o = OpRes.trap κ →
+        Step M P (Config.run H φ (F :: K) (Focus.ret v) tr)
+          (Config.panic κ tr)) :
+  Sim M P φ (fun K tr => Config.run H φ (F :: K) (Focus.ret v) tr)
+    (OpRes.toRes H o)
+```
+
+### `evalArgs_sim`
+
+*theorem* · module `RueCore.Adequacy`
+
+**Argument lists** (§6.2's `…( v̄, E, ē )`): where `evalArgs` finishes,
+`→*` walks the list to its redex; where it aborts, the aborting element's
+result is simulated from the list context (helper).
+
+```lean
+theorem RueCore.evalArgs_sim {M : FloatOps} {P : Program} {fuel : Nat} {φ : Frame}
+  (IH : SimIH M P fuel) (t : ArgsTag) (es : List Expr) (H : Store)
+  (vs₀ : List Val) :
+  (∀ (H' : Store) (vs : List Val) (tr' : List Event),
+      evalArgs (fun H e => eval M fuel P H φ e) H es = ArgsRes.ok H' vs tr' →
+        ∀ (K : List Kont) (tr : List Event),
+          Steps M P (Config.run H φ K (Focus.args t vs₀ es) tr)
+            (Config.run H' φ K (Focus.args t (vs₀ ++ vs) []) (tr ++ tr'))) ∧
+    ∀ (r : EvalRes),
+      evalArgs (fun H e => eval M fuel P H φ e) H es = ArgsRes.abort r →
+        Sim M P φ (argsConf H φ t vs₀ es) r
+```
+
+### `Sim.peel`
+
+*theorem* · module `RueCore.Adequacy`
+
+Where no `Sim` target has an expression in focus, a first step of `C`
+can be peeled off by determinism (helper).
+
+```lean
+theorem RueCore.Sim.peel {M : FloatOps} {P : Program} {φ : Frame}
+  {C C₂ : List Kont → List Event → Config} {r : EvalRes}
+  (hs : ∀ (K : List Kont) (tr : List Event), Step M P (C K tr) (C₂ K tr))
+  (hC : ∀ (K : List Kont) (tr : List Event), (C K tr).evalFocus)
+  (h : Sim M P φ C r) : Sim M P φ C₂ r
+```
+
+### `evalArgs_abort_ne_ok`
+
+*theorem* · module `RueCore.Adequacy`
+
+`evalArgs` aborts only with a result that is not a value (helper).
+
+```lean
+theorem RueCore.evalArgs_abort_ne_ok {ev : Store → Expr → EvalRes} {es : List Expr}
+  {H : Store} {r : EvalRes} :
+  evalArgs ev H es = ArgsRes.abort r →
+    ∀ (H' : Store) (v : Val) (tr : List Event), r ≠ EvalRes.ok H' v tr
+```
+
+### `EvalRes.withTrace_andThen`
+
+*theorem* · module `RueCore.Adequacy`
+
+`andThen` after a trace prefix (helper).
+
+```lean
+theorem RueCore.EvalRes.withTrace_andThen (r : EvalRes) (t : List Event)
+  (k : Store → Val → EvalRes) :
+  (EvalRes.withTrace t r).andThen k = EvalRes.withTrace t (r.andThen k)
+```
+
+### `rootCell_of`
+
+*theorem* · module `RueCore.Adequacy`
+
+The root of a place, as `eval` resolves it inline, is `rootCell` (helper).
+
+```lean
+theorem RueCore.rootCell_of {H : Store} {φ : Frame} {i ℓ : Nat} {c : Contents}
+  (hℓ : φ.env[i]? = some ℓ) (hc : H[ℓ]? = some (Cell.full c)) :
+  rootCell H φ i = Except.ok (ℓ, c)
+```
+
+### `Frame.popScope_push`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-EndScope) restores the frame (D-Let) or (D-Match) extended (helper).
+
+```lean
+theorem RueCore.Frame.popScope_push (φ : Frame) (ls : List Nat) :
+  { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls }.popScope ls.length =
+    φ
+```
+
+### `Frame.popScope_let`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-EndScope) after (D-Let) (helper).
+
+```lean
+theorem RueCore.Frame.popScope_let (φ : Frame) (ℓ : Nat) :
+  { env := ℓ :: φ.env, scope := φ.scope ++ [ℓ] }.popScope 1 = φ
+```
+
+### `plainUnwind_single`
+
+*theorem* · module `RueCore.Adequacy`
+
+The monitor-free unwind of one cell (helper).
+
+```lean
+theorem RueCore.plainUnwind_single {D : Decls} {H H' : Store} {ℓ : Nat}
+  {evs : List Event} (h : dropRetire D H ℓ = Except.ok (H', evs)) :
+  plainUnwind D H [ℓ] = Except.ok (H', evs)
+```
+
+### `sim_use`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Use-Declared-Linear), (D-Use-Copy), (D-Use-Move) §6.3 (helper).
+
+```lean
+theorem RueCore.sim_use {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (p : Place) :
+  Sim M P φ (evalConf H φ (Expr.use p)) (eval M (fuel + 1) P H φ (Expr.use p))
+```
+
+### `sim_drop`
+
+*theorem* · module `RueCore.Adequacy`
+
+§6.11's `@drop` at a constant place (helper).
+
+```lean
+theorem RueCore.sim_drop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (p : Place) :
+  Sim M P φ (evalConf H φ (Expr.drop p))
+    (eval M (fuel + 1) P H φ (Expr.drop p))
+```
+
+### `sim_binop`
+
+*theorem* · module `RueCore.Adequacy`
+
+§6.4's binary operators after §6.2's `E ⊕ e` and `v ⊕ E` (helper).
+
+```lean
+theorem RueCore.sim_binop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (op : BinOp) (e₁ e₂ : Expr) :
+  Sim M P φ (evalConf H φ (Expr.binop op e₁ e₂))
+    (eval M (fuel + 1) P H φ (Expr.binop op e₁ e₂))
+```
+
+### `sim_unop`
+
+*theorem* · module `RueCore.Adequacy`
+
+§6.4's unary operators after §6.2's `⊖ E` (helper).
+
+```lean
+theorem RueCore.sim_unop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (op : UnOp) (e : Expr) :
+  Sim M P φ (evalConf H φ (Expr.unop op e))
+    (eval M (fuel + 1) P H φ (Expr.unop op e))
+```
+
+### `sim_intCast`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Int-Cast) and its trap after §6.2's `@intCast( E )` (helper).
+
+```lean
+theorem RueCore.sim_intCast {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (w : IntWidth) (sg : Sign) (e : Expr) :
+  Sim M P φ (evalConf H φ (Expr.intCast w sg e))
+    (eval M (fuel + 1) P H φ (Expr.intCast w sg e))
+```
+
+### `sim_fintrin`
+
+*theorem* · module `RueCore.Adequacy`
+
+§6.4's float intrinsics after §6.2's `@f( E )` (helper).
+
+```lean
+theorem RueCore.sim_fintrin {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (k : FloatIntrin) (e : Expr) :
+  Sim M P φ (evalConf H φ (Expr.fintrin k e))
+    (eval M (fuel + 1) P H φ (Expr.fintrin k e))
+```
+
+### `sim_dbg`
+
+*theorem* · module `RueCore.Adequacy`
+
+`@dbg` (§6.12) after §6.2's `@dbg( E )` (helper).
+
+```lean
+theorem RueCore.sim_dbg {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (e : Expr) :
+  Sim M P φ (evalConf H φ e.dbg) (eval M (fuel + 1) P H φ e.dbg)
+```
+
+### `sim_mkStruct`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Struct) §6.5 after §6.2's search through the initializers; the
+identity is minted as `introVal` mints it (helper).
+
+```lean
+theorem RueCore.sim_mkStruct {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (s : Nat) (args : List Expr) :
+  Sim M P φ (evalConf H φ (Expr.mkStruct s args))
+    (eval M (fuel + 1) P H φ (Expr.mkStruct s args))
+```
+
+### `sim_mkEnum`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Enum-Intro) §6.6 after §6.2's search through the payload (helper).
+
+```lean
+theorem RueCore.sim_mkEnum {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (e k : Nat) (args : List Expr) :
+  Sim M P φ (evalConf H φ (Expr.mkEnum e k args))
+    (eval M (fuel + 1) P H φ (Expr.mkEnum e k args))
+```
+
+### `sim_mkArray`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Array) §6.5 after §6.2's search through the elements (helper).
+
+```lean
+theorem RueCore.sim_mkArray {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (T : Ty) (args : List Expr) :
+  Sim M P φ (evalConf H φ (Expr.mkArray T args))
+    (eval M (fuel + 1) P H φ (Expr.mkArray T args))
+```
+
+### `sim_repeat`
+
+*theorem* · module `RueCore.Adequacy`
+
+The repeat form (`7.1:39`) (helper).
+
+```lean
+theorem RueCore.sim_repeat {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (T : Ty) (e : Expr) (n : Nat) :
+  Sim M P φ (evalConf H φ (Expr.repeatArray T e n))
+    (eval M (fuel + 1) P H φ (Expr.repeatArray T e n))
+```
+
+### `sim_indexRead_args`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Index)/(D-Index-Trap) §6.5 and (D-Use-Untrackable-Dynamic-Copy) §6.3,
+from the index list's context (helper).
+
+```lean
+theorem RueCore.sim_indexRead_args {M : FloatOps} {P : Program} {fuel : Nat}
+  {H : Store} {φ : Frame} (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
+  (πs : List (List Nat)) :
+  Sim M P φ (argsConf H φ (ArgsTag.indexRead p πs) [] idx)
+    (eval M (fuel + 1) P H φ (Expr.indexRead p idx πs))
+```
+
+### `sim_indexRead`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Index) at an expression in focus (helper).
+
+```lean
+theorem RueCore.sim_indexRead {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
+  (πs : List (List Nat)) :
+  Sim M P φ (evalConf H φ (Expr.indexRead p idx πs))
+    (eval M (fuel + 1) P H φ (Expr.indexRead p idx πs))
+```
+
+### `sim_indexDrop`
+
+*theorem* · module `RueCore.Adequacy`
+
+§6.11's `@drop` at a `Copy` place below a dynamic index. `eval` runs it
+as the read with its value discarded, at the same fuel, so the argument list
+is at two less (helper).
+
+```lean
+theorem RueCore.sim_indexDrop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
+  (πs : List (List Nat)) :
+  Sim M P φ (evalConf H φ (Expr.indexDrop p idx πs))
+    (eval M (fuel + 2) P H φ (Expr.indexDrop p idx πs))
+```
+
+### `sim_indexWrite`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Assign) §6.8 below a dynamic index, in `5.2:14`'s order (helper).
+
+```lean
+theorem RueCore.sim_indexWrite {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
+  (πs : List (List Nat)) (e : Expr) :
+  Sim M P φ (evalConf H φ (Expr.indexWrite p idx πs e))
+    (eval M (fuel + 1) P H φ (Expr.indexWrite p idx πs e))
+```
+
+### `sim_match`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Match) §6.6: the arm runs under its `endscope`, which (D-EndScope)
+closes (helper).
+
+```lean
+theorem RueCore.sim_match {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (scrut : Expr) (arms : List Expr) :
+  Sim M P φ (evalConf H φ (scrut.match arms))
+    (eval M (fuel + 1) P H φ (scrut.match arms))
+```
+
+### `sim_letIn`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Let) §6.7, then (D-EndScope) (helper).
+
+```lean
+theorem RueCore.sim_letIn {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (m : Bool) (e₁ e₂ : Expr) :
+  Sim M P φ (evalConf H φ (Expr.letIn m e₁ e₂))
+    (eval M (fuel + 1) P H φ (Expr.letIn m e₁ e₂))
+```
+
+### `sim_assign`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Assign) §6.8 (helper).
+
+```lean
+theorem RueCore.sim_assign {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (p : Place) (e : Expr) :
+  Sim M P φ (evalConf H φ (Expr.assign p e))
+    (eval M (fuel + 1) P H φ (Expr.assign p e))
+```
+
+### `sim_seq`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Seq) §6.7 (helper).
+
+```lean
+theorem RueCore.sim_seq {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (e₁ e₂ : Expr) :
+  Sim M P φ (evalConf H φ (e₁.seq e₂)) (eval M (fuel + 1) P H φ (e₁.seq e₂))
+```
+
+### `sim_ite`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-If-T)/(D-If-F) §6.6 (helper).
+
+```lean
+theorem RueCore.sim_ite {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (c e₁ e₂ : Expr) :
+  Sim M P φ (evalConf H φ (c.ite e₁ e₂))
+    (eval M (fuel + 1) P H φ (c.ite e₁ e₂))
+```
+
+### `sim_call`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Call) §6.9, then (D-Return-Value), or (D-Return)'s value caught at the
+`call` frame (helper).
+
+```lean
+theorem RueCore.sim_call {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (f : Nat) (args : List Expr) :
+  Sim M P φ (evalConf H φ (Expr.call f args))
+    (eval M (fuel + 1) P H φ (Expr.call f args))
+```
+
+### `sim_ret`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Return) §6.9 (helper).
+
+```lean
+theorem RueCore.sim_ret {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (e : Expr) :
+  Sim M P φ (evalConf H φ e.ret) (eval M (fuel + 1) P H φ e.ret)
+```
+
+### `sim_brk`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Break) §6.10 (helper).
+
+```lean
+theorem RueCore.sim_brk {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} :
+  Sim M P φ (evalConf H φ Expr.brk) (eval M (fuel + 1) P H φ Expr.brk)
+```
+
+### `sim_loop`
+
+*theorem* · module `RueCore.Adequacy`
+
+(D-Loop-Enter), (D-Loop-Iter) and (D-Break)'s landing §6.10. A turn that
+finishes re-enters the body; `eval` re-evaluates the loop at one less fuel,
+whose simulation starts one (D-Loop-Enter) earlier, peeled off by
+determinism (helper).
+
+```lean
+theorem RueCore.sim_loop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : SimIH M P fuel) (e : Expr) :
+  Sim M P φ (evalConf H φ e.loop) (eval M (fuel + 1) P H φ e.loop)
+```
+
 ### `Examples.eval_loop_ok`
 
 *theorem* · module `RueCore.Examples`
@@ -9864,6 +10526,22 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (w : FloatWidth),
   w.overflowNum = 1 <<< w.eTop.toNat - 1 <<< (w.eTop - ↑w.prec - 1).toNat
+```
+
+### `Frame.empty`
+
+*def* · module `RueCore.Adequacy`
+
+The empty frame the entry point is called from (helper).
+
+```lean
+def RueCore.Frame.empty : Frame
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Frame.empty = { env := [], scope := [] }
 ```
 
 ### `Frame.popScope`
@@ -13600,6 +14278,19 @@ def RueCore.Config.Terminal : Config → Prop :=
   | Config.run H φ K f tr => False
 ```
 
+### `Config.evalFocus`
+
+*def* · module `RueCore.Adequacy`
+
+Whether a configuration has an expression in focus (helper).
+
+```lean
+def RueCore.Config.evalFocus : Config → Prop :=
+  match x✝ with
+  | Config.run H φ K (Focus.eval e) tr => True
+  | x => False
+```
+
 ### `Config.init`
 
 *def* · module `RueCore.Step`
@@ -13858,6 +14549,20 @@ Constructors:
 ```lean
 RueCore.Explain.Trace.mk (steps : List Explain.Step) (res : EvalRes) :
   Explain.Trace
+```
+
+### `Kont.Transparent`
+
+*def* · module `RueCore.Adequacy`
+
+A frame `toCall` and `toLoop` look through: every frame but `call` and
+`loop` (helper).
+
+```lean
+def RueCore.Kont.Transparent (F : Kont) : Prop :=
+  ∀ (K : List Kont),
+    Kont.toCall (F :: K) = Kont.toCall K ∧
+      Kont.toLoop (F :: K) = Kont.toLoop K
 ```
 
 ### `OpRes.toRes`
@@ -14131,6 +14836,25 @@ Defining equations, as Lean derived them from the body:
     (decide (Ty.mult D T = Mult.linear) || anyLinearOther D Ts f)
 ```
 
+### `argsConf`
+
+*def* · module `RueCore.Adequacy`
+
+A list context `…( v̄, E, ē )` at a store (helper).
+
+```lean
+def RueCore.argsConf (H : Store) (φ : Frame) (t : ArgsTag) (vs : List Val)
+  (es : List Expr) : List Kont → List Event → Config
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (H : Store) (φ : Frame) (t : ArgsTag) (vs : List Val) (es : List Expr)
+  (K : List Kont) (tr : List Event),
+  argsConf H φ t vs es K tr = Config.run H φ K (Focus.args t vs es) tr
+```
+
 ### `check`
 
 *def* · module `RueCore.Checker`
@@ -14245,6 +14969,25 @@ place a `return` stops travelling (§6.9).
 
 ```lean
 def RueCore.eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalRes
+```
+
+### `evalConf`
+
+*def* · module `RueCore.Adequacy`
+
+The configuration family of an expression in focus: `⟨H ; φ ; K ; E[e]⟩`
+for every context `K` and every trace `tr` already produced (§6.1, §6.2).
+
+```lean
+def RueCore.evalConf (H : Store) (φ : Frame) (e : Expr) :
+  List Kont → List Event → Config
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (H : Store) (φ : Frame) (e : Expr) (K : List Kont) (tr : List Event),
+  evalConf H φ e K tr = Config.run H φ K (Focus.eval e) tr
 ```
 
 ### `overwriteOk`
@@ -16960,6 +17703,58 @@ RueCore.Steps.refl {M : FloatOps} {P : Program} (C : Config) : Steps M P C C
 ```lean
 RueCore.Steps.step {M : FloatOps} {P : Program} {C₁ C₂ C₃ : Config} :
   Step M P C₁ C₂ → Steps M P C₂ C₃ → Steps M P C₁ C₃
+```
+
+### `Sim`
+
+*def* · module `RueCore.Adequacy`
+
+**The simulation relation** between an `eval` result and §6's `→*`
+(RUE-2289, parts 2 and 3; the module docstring reads it clause by clause). `C`
+is a configuration family indexed by the context `K` below the focus and the
+trace `tr` produced before it, §6.2's `⟨H ; φ ; K ; E[e]⟩`: a value reaches
+`E[v]` in the frame `φ` (§6.2's (Search)), a panic reaches `↯κ` from every
+context ((Panic-Lift) §6.2), an unwinding `return` reaches the nearest caller
+((D-Return) §6.9), and an unwinding `break` reaches the nearest loop's context
+((D-Break) §6.10). Part 3 (RUE-2332) proves the converse over this same
+relation.
+
+```lean
+def RueCore.Sim (M : FloatOps) (P : Program) (φ : Frame)
+  (C : List Kont → List Event → Config) : EvalRes → Prop :=
+  match x✝ with
+  | EvalRes.ok H v tr' =>
+    ∀ (K : List Kont) (tr : List Event),
+      Steps M P (C K tr) (Config.run H φ K (Focus.ret v) (tr ++ tr'))
+  | EvalRes.panic k tr' =>
+    ∀ (K : List Kont) (tr : List Event),
+      Steps M P (C K tr) (Config.panic k (tr ++ tr'))
+  | EvalRes.returned H v tr' =>
+    ∀ (K : List Kont) (tr : List Event) (φs : Frame) (K' : List Kont),
+      Kont.toCall K = some (φs, K') →
+        Steps M P (C K tr) (Config.run H φs K' (Focus.ret v) (tr ++ tr'))
+  | EvalRes.broke H sc tr' =>
+    ∀ (K : List Kont) (tr : List Event) (φs : Frame) (K' : List Kont)
+      (H' : Store) (evs : List Event),
+      Kont.toLoop K = some (φs, K') →
+        plainUnwind P.decls H (List.drop φs.scope.length sc).reverse =
+            Except.ok (H', evs) →
+          Steps M P (C K tr)
+            (Config.run H' φs K' (Focus.ret Val.unit) (tr ++ tr' ++ evs))
+  | EvalRes.stuck why => True
+  | EvalRes.outOfFuel => True
+```
+
+### `SimIH`
+
+*def* · module `RueCore.Adequacy`
+
+The induction hypothesis: `eval` at fuel `fuel` is simulated (helper).
+
+```lean
+def RueCore.SimIH (M : FloatOps) (P : Program) (fuel : Nat) : Prop :=
+  ∀ (H : Store) (φ : Frame) (e : Expr),
+    Sim M P φ (evalConf H φ e) (eval M fuel P H φ e)
 ```
 
 ### `ContentsMatches`
