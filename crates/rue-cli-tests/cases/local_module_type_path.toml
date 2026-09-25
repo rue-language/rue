@@ -1,0 +1,312 @@
+# RUE-2426: a `let`-bound module is a type-path root wherever a file-level
+# `const` module is (10.4:1: member access through either binding form has
+# the same semantics; 10.4:16: `m.Type` and `m.Type(T)` in type positions).
+#
+# Two resolvers missed the local. Type resolution looked a qualified path's
+# root up only among the file's module bindings, so `let b: m.S` was E0204
+# "unknown type 'm'". The comptime engine decoded a module path's root only as
+# a file-level binding and treated a local of that name as shadowing it, so
+# the inference precompute never reduced a head like `m.Option(u64)`: the
+# payload literal of `m.Option(u64).Some(3)` defaulted to i32 (E0206), and the
+# pattern `m.Option(u64).Some(v)` was E0421. A local that is a module now
+# reaches both as a module-typed binding, and the path is walked from that
+# module by the canonical per-hop walk.
+
+[section]
+id = "cli.local_module_type_path"
+name = "Let-bound modules as type-path roots (RUE-2426)"
+description = "A let-bound module names types, type constructors and constructor heads as a const-bound module does."
+
+[[case]]
+name = "annotation_struct"
+description = "let b: m.S through a let-bound import."
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("x.rue");
+    let b: m.S = m.S { a: 3 };
+    b.a
+}
+""" },
+    { path = "x.rue", source = """
+pub struct S { a: i32 }
+""" },
+]
+stdout = ""
+exit_code = 3
+
+[[case]]
+name = "annotation_type_constructor"
+description = "let w: m.Wrap(u64) and a type-alias member m.W in annotation position."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("x.rue");
+    let w: m.Wrap(u64) = m.Wrap(u64) { a: 5000000000 };
+    let v: m.W = m.W { a: 3 };
+    if w.a > 1 { @intCast(v.a) } else { 0 }
+}
+""" },
+    { path = "x.rue", source = """
+pub fn Wrap(comptime T: type) -> type { struct { a: T } }
+pub const W = Wrap(u8);
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "constructor_call_and_pattern"
+description = "RUE-2426's repro: m.Option(u64).Some(3), matched on m.Option(u64).Some(v)."
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("x.rue");
+    let o: m.Option(u64) = m.Option(u64).Some(3);
+    match o { m.Option(u64).Some(v) => @intCast(v), m.Option(u64).None => 1 }
+}
+""" },
+    { path = "x.rue", source = """
+pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
+""" },
+]
+stdout = ""
+exit_code = 3
+
+[[case]]
+name = "constructor_payload_past_i32"
+description = "The payload literal takes the head's u64 payload type, so a value past i32 range is accepted."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("x.rue");
+    let o = m.Option(u64).Some(5000000000);
+    match o { m.Option(u64).Some(v) => if v > 1 { 3 } else { 0 }, m.Option(u64).None => 1 }
+}
+""" },
+    { path = "x.rue", source = """
+pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "comptime_alias_of_local_module_constructor"
+description = "let T = m.Option(u64) reduces to the enum, so T.Some(..) takes a u64 payload."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("x.rue");
+    let T = m.Option(u64);
+    let o: T = T.Some(5000000000);
+    match o { T.Some(v) => if v > 1 { 3 } else { 0 }, T.None => 1 }
+}
+""" },
+    { path = "x.rue", source = """
+pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "type_argument_through_local_module"
+description = "m.Option(m.S): a type argument that is itself a path through the local."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("x.rue");
+    let o = m.Option(m.S).Some(m.S { a: 3 });
+    match o { m.Option(m.S).Some(s) => s.a, m.Option(m.S).None => 1 }
+}
+""" },
+    { path = "x.rue", source = """
+pub struct S { a: i32 }
+pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "local_alias_of_const_module"
+description = "let m = lib, a local alias of a file-level module binding."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("x.rue");
+fn main() -> i32 {
+    let m = lib;
+    let b: m.S = m.S { a: 3 };
+    let o = m.Option(u64).Some(5000000000);
+    match o { m.Option(u64).Some(v) => if v > 1 { b.a } else { 0 }, m.Option(u64).None => 1 }
+}
+""" },
+    { path = "x.rue", source = """
+pub struct S { a: i32 }
+pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "local_bound_to_reexport"
+description = "let m = @import(..).sub, a local bound to a re-exported module in another directory."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("x.rue").sub;
+    let t: m.T = m.T { c: 3 };
+    let b: m.Box(u64) = m.Box(u64) { v: 5000000000 };
+    if b.v > 1 { @intCast(t.c) } else { 0 }
+}
+""" },
+    { path = "x.rue", source = """
+pub const sub = @import("sub/y.rue");
+""" },
+    { path = "sub/y.rue", source = """
+pub struct T { c: u64 }
+pub fn Box(comptime T: type) -> type { struct { v: T } }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "local_module_shadows_file_module"
+description = "A let-bound module shadows a file-level module of the same name in type position."
+files = [
+    { path = "main.rue", source = """
+const m = @import("y.rue");
+fn main() -> i32 {
+    let m = @import("x.rue");
+    let b: m.S = m.S { a: 3 };
+    b.a
+}
+""" },
+    { path = "x.rue", source = """
+pub struct S { a: i32 }
+""" },
+    { path = "y.rue", source = """
+pub struct S { b: i64 }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "local_module_join"
+description = "A local bound to an if join of the same module names its types."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("x.rue");
+    let c = true;
+    let k = if c { m } else { m };
+    let b: k.S = k.S { a: 3 };
+    b.a
+}
+""" },
+    { path = "x.rue", source = """
+pub struct S { a: i32 }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "anonymous_type_members_through_local_module"
+description = "A body-local anonymous struct field and enum payload named through the local."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("x.rue");
+    let P = struct { s: m.S };
+    let E = enum { A(m.S), B };
+    let p = P { s: m.S { a: 2 } };
+    let e = E.A(m.S { a: 1 });
+    match e { E.A(s) => s.a + p.s.a, E.B => 0 }
+}
+""" },
+    { path = "x.rue", source = """
+pub struct S { a: i32 }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "generic_body_local_module"
+description = "A generic function's local module applies a constructor to its comptime parameter."
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+fn f(comptime T: type, x: T) -> T {
+    let m = @import("x.rue");
+    let o: m.Option(T) = m.Option(T).Some(x);
+    match o { m.Option(T).Some(v) => v, m.Option(T).None => x }
+}
+fn main() -> i32 {
+    let n: u64 = f(u64, 5000000000);
+    if n > 1 { 3 } else { 0 }
+}
+""" },
+    { path = "x.rue", source = """
+pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
+""" },
+]
+stdout = ""
+exit_code = 3
+
+[[case]]
+name = "module_binding_leaves_scope"
+description = "Outside its block the name is a later non-module local, and m.S is unknown there."
+compile_fail = true
+error_contains = ["E0204", "unknown type 'm'"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let r = {
+        let m = @import("x.rue");
+        let b: m.S = m.S { a: 3 };
+        b.a
+    };
+    let m = 5;
+    let c: m.S = r;
+    m
+}
+""" },
+    { path = "x.rue", source = """
+pub struct S { a: i32 }
+""" },
+]
+
+[[case]]
+name = "local_module_is_not_a_type"
+description = "The module itself is not a type: let x: m is E0204."
+compile_fail = true
+error_contains = ["E0204", "unknown type 'm'"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("x.rue");
+    let x: m = 3;
+    x
+}
+""" },
+    { path = "x.rue", source = """
+pub struct S { a: i32 }
+""" },
+]
+
+[[case]]
+name = "private_type_through_local_module"
+description = "A private struct named through a local module from another directory is E0706."
+compile_fail = true
+error_contains = ["E0706", "private"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("sub/z.rue");
+    let h: m.Hidden = m.Hidden { d: 1 };
+    h.d
+}
+""" },
+    { path = "sub/z.rue", source = """
+struct Hidden { d: i32 }
+""" },
+]

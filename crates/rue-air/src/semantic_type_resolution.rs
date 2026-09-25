@@ -175,7 +175,11 @@ pub trait SemanticModulePathProvider<S, M, A> {
     /// segments are walked from it by
     /// [`resolve_semantic_module_path_from`]. Providers with no lexical
     /// scope, which is every declaration-level one, have none.
-    fn local_module_root(&mut self, _scope: &S, _name: &str) -> Option<SemanticResolvedModule<M, A>> {
+    fn local_module_root(
+        &mut self,
+        _scope: &S,
+        _name: &str,
+    ) -> Option<SemanticResolvedModule<M, A>> {
         None
     }
 
