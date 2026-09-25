@@ -4433,18 +4433,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             )?;
 
             // Type check: returned value must match function's return type.
-            if !ctx.return_type.is_error()
-                && !inner_ty.is_error()
-                && !self.types_compatible(inner_ty, ctx.return_type)
-            {
-                return Err(CompileError::new(
-                    ErrorKind::TypeMismatch {
-                        expected: self.format_type_name(ctx.return_type),
-                        found: self.format_type_name(inner_ty),
-                    },
-                    span,
-                ));
-            }
+            self.require_slot_type(ctx.return_type, inner_ty, span)?;
             (Some(inner_result.air_ref), inner_result.continues)
         } else {
             // `return;` without expression - only valid for unit-returning functions

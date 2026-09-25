@@ -1,0 +1,184 @@
+# A value flowing into a declared-type slot is checked by its analyzed type
+# (RUE-2438). An inline `@import("lib.rue").Box(i64) { .. }` head is one that
+# inference does not reduce (RUE-2439): inference types the literal `<error>`,
+# which unifies with any slot, while AIR emission reduces the head to the real
+# `Box(i64)`. Call arguments, assignments, the tail result, array elements, and
+# equality operands trusted inference, so a `Box(i64)` reached a `Box(i32)`
+# slot: another module's four-field `R(u64)` passed for a one-field one read
+# past the value and segfaulted, an assignment kept stale fields, and the other
+# positions failed as E9000 or codegen ICEs. Each now reports E0206, the
+# diagnostic a `let` annotation and a struct field already gave.
+
+[section]
+id = "cli.inline_import_head_slot_type"
+name = "Inline-import literal heads against declared slot types"
+description = "A literal whose inline `@import` head inference cannot reduce is checked against each declared slot by its analyzed type: E0206, not a miscompile or ICE (RUE-2438)."
+
+[[case]]
+name = "call_argument_of_another_module_instance_is_e0206"
+description = "`take(@import(\"a.rue\").R(u64) { v: 3 })` into `take(p: b.R(u64))`, where b's `R` has four fields, is E0206 (was a segfault)."
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const b = @import("b.rue");
+fn take(p: b.R(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
+fn main() -> i32 { take(@import("a.rue").R(u64) { v: 3 }) }
+""" },
+    { path = "a.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T } }
+""" },
+    { path = "b.rue", source = """
+pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
+""" },
+]
+
+[[case]]
+name = "let_bound_call_argument_of_another_instance_is_e0206"
+description = "`let x = @import(\"lib.rue\").Box(i64) { v: 7 }; take(x)` into `take(b: lib.Box(i32))` is E0206 (was accepted)."
+compile_fail = true
+error_contains = ["E0206", "expected Box(i32), found Box(i64)"]
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn take(b: lib.Box(i32)) -> i32 { b.v }
+fn main() -> i32 { let x = @import("lib.rue").Box(i64) { v: 7 }; take(x) }
+""" },
+    { path = "lib.rue", source = """
+pub fn Box(comptime T: type) -> type { struct { v: T } }
+""" },
+]
+
+[[case]]
+name = "method_argument_of_another_instance_is_e0206"
+description = "A method's by-value argument takes the same check as a free function's (was accepted)."
+compile_fail = true
+error_contains = ["E0206", "expected Box(i32), found Box(i64)"]
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+struct H { k: i32, fn go(self, b: lib.Box(i32)) -> i32 { b.v + self.k } }
+fn main() -> i32 { let h = H { k: 0 }; h.go(@import("lib.rue").Box(i64) { v: 7 }) }
+""" },
+    { path = "lib.rue", source = """
+pub fn Box(comptime T: type) -> type { struct { v: T } }
+""" },
+]
+
+[[case]]
+name = "inout_argument_of_another_instance_is_e0206"
+description = "An `inout` argument whose local holds another instance is E0206 (was accepted)."
+compile_fail = true
+error_contains = ["E0206", "expected Box(i32), found Box(i64)"]
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn bump(inout b: lib.Box(i32)) -> i32 { b.v = b.v + 1; b.v }
+fn main() -> i32 { let mut x = @import("lib.rue").Box(i64) { v: 7 }; bump(inout x) }
+""" },
+    { path = "lib.rue", source = """
+pub fn Box(comptime T: type) -> type { struct { v: T } }
+""" },
+]
+
+[[case]]
+name = "local_assignment_of_another_instance_is_e0206"
+description = "`p = @import(\"lib.rue\").Box(i64) { .. }` into a `lib.Box(i32)` local is E0206 (was accepted, reading stale fields)."
+compile_fail = true
+error_contains = ["E0206", "expected Box(i32), found Box(i64)"]
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 { let mut p = lib.Box(i32) { v: 1 }; p = @import("lib.rue").Box(i64) { v: 7 }; p.v }
+""" },
+    { path = "lib.rue", source = """
+pub fn Box(comptime T: type) -> type { struct { v: T } }
+""" },
+]
+
+[[case]]
+name = "field_assignment_of_another_instance_is_e0206"
+description = "`h.b = @import(\"lib.rue\").Box(i64) { .. }` into a `lib.Box(i32)` field is E0206 (was an E9000 AIR ICE)."
+compile_fail = true
+error_contains = ["E0206", "expected Box(i32), found Box(i64)"]
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+struct H { b: lib.Box(i32) }
+fn main() -> i32 { let mut h = H { b: lib.Box(i32) { v: 1 } }; h.b = @import("lib.rue").Box(i64) { v: 7 }; h.b.v }
+""" },
+    { path = "lib.rue", source = """
+pub fn Box(comptime T: type) -> type { struct { v: T } }
+""" },
+]
+
+[[case]]
+name = "tail_result_of_another_instance_is_e0206"
+description = "A `-> lib.Box(i32)` function whose tail is `@import(\"lib.rue\").Box(i64) { .. }` is E0206 (was an E9000 CFG ICE)."
+compile_fail = true
+error_contains = ["E0206", "expected Box(i32), found Box(i64)"]
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn mk() -> lib.Box(i32) { @import("lib.rue").Box(i64) { v: 7 } }
+fn main() -> i32 { mk().v }
+""" },
+    { path = "lib.rue", source = """
+pub fn Box(comptime T: type) -> type { struct { v: T } }
+""" },
+]
+
+[[case]]
+name = "array_element_of_another_instance_is_e0206"
+description = "`[lib.Box(i32) { .. }, @import(\"lib.rue\").Box(i64) { .. }]` is E0206 at the second element (was a codegen panic)."
+compile_fail = true
+error_contains = ["E0206", "expected Box(i32), found Box(i64)"]
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 { let xs = [lib.Box(i32) { v: 1 }, @import("lib.rue").Box(i64) { v: 7 }]; xs[1].v }
+""" },
+    { path = "lib.rue", source = """
+pub fn Box(comptime T: type) -> type { struct { v: T } }
+""" },
+]
+
+[[case]]
+name = "equality_operand_of_another_instance_is_e0206"
+description = "`q == @import(\"lib.rue\").Box(i64) { .. }` with `q: lib.Box(i32)` is E0206 (was an E9000 AIR ICE)."
+compile_fail = true
+error_contains = ["E0206", "expected Box(i32), found Box(i64)"]
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 { let q = lib.Box(i32) { v: 7 }; if (q == @import("lib.rue").Box(i64) { v: 7 }) { 1 } else { 0 } }
+""" },
+    { path = "lib.rue", source = """
+pub fn Box(comptime T: type) -> type { struct { v: T } }
+""" },
+]
+
+[[case]]
+name = "same_instance_through_inline_head_still_runs"
+description = "Control: a literal through the inline head still flows into same-instance argument, assignment, field, array, and result slots (exit 42)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+struct H { b: lib.Box(i64) }
+fn take(b: lib.Box(i64)) -> i64 { b.v }
+fn mk() -> lib.Box(i64) { @import("lib.rue").Box(i64) { v: 10 } }
+fn main() -> i32 {
+    let mut p = lib.Box(i64) { v: 0 };
+    p = @import("lib.rue").Box(i64) { v: 20 };
+    let mut h = H { b: lib.Box(i64) { v: 0 } };
+    h.b = @import("lib.rue").Box(i64) { v: 5 };
+    let xs = [lib.Box(i64) { v: 0 }, @import("lib.rue").Box(i64) { v: 4 }];
+    let t = take(@import("lib.rue").Box(i64) { v: 3 });
+    @intCast(p.v + h.b.v + xs[1].v + t + mk().v)  // 20 + 5 + 4 + 3 + 10
+}
+""" },
+    { path = "lib.rue", source = """
+pub fn Box(comptime T: type) -> type { struct { v: T } }
+""" },
+]
+exit_code = 42

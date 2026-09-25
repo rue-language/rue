@@ -2074,7 +2074,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(CompileError::new(ErrorKind::TypeAnnotationRequired, span));
         }
 
-        let (_array_type_id, _elem_type, expected_len) = match array_type.as_array() {
+        let (_array_type_id, elem_type, expected_len) = match array_type.as_array() {
             Some(type_id) => {
                 let (element_type, length) = self.body_type_pool().array_def(type_id);
                 (type_id, element_type, length)
@@ -2120,6 +2120,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 super::analysis::AccessorEscapeSite::Capture,
                 span,
                 ctx,
+            )?;
+            // Every element must have the inferred element type as analyzed,
+            // not only as inferred (RUE-2438).
+            self.require_slot_type(
+                elem_type,
+                elem_result.ty,
+                self.body_rir_ref().get(elem_ref).span,
             )?;
             air_elems.push(elem_result.air_ref);
         }
@@ -2247,6 +2254,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             super::analysis::AccessorEscapeSite::Capture,
             span,
             ctx,
+        )?;
+        self.require_slot_type(
+            elem_type,
+            value_result.ty,
+            self.body_rir_ref().get(value_ref).span,
         )?;
 
         // The single-object limit above admits layouts the *function frame*

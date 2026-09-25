@@ -3120,18 +3120,17 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // lets context-driven intrinsics acquire their semantic result type.
         // Once AIR emission has resolved the actual body type, the function
         // boundary is directional. A value cannot flow into declared `!`, even
-        // though `!` itself can flow into every value type. Enforce that before
-        // constructing the implicit Ret so malformed AIR never reaches CFG
-        // verification (RUE-1911).
-        if return_type.is_never() && !self.types_compatible(body_result.ty, return_type) {
-            return Err(CompileError::new(
-                ErrorKind::TypeMismatch {
-                    expected: self.format_type_name(return_type),
-                    found: self.format_type_name(body_result.ty),
-                },
-                self.body_rir_ref().get(body).span,
-            ));
-        }
+        // though `!` itself can flow into every value type (RUE-1911), and a
+        // value inference had no fact for (an unreduced constructor head) may
+        // be another nominal instance than the declared result (RUE-2438).
+        // Enforce the declared type before constructing the implicit Ret, as
+        // an explicit `return` does, so malformed AIR never reaches CFG
+        // verification.
+        self.require_slot_type(
+            return_type,
+            body_result.ty,
+            self.body_rir_ref().get(body).span,
+        )?;
 
         // Add implicit return only if body doesn't already diverge (e.g., explicit return)
         if body_result.ty != Type::NEVER {
