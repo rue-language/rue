@@ -14,7 +14,7 @@ use std::borrow::Cow;
 use std::hash::Hash;
 use std::sync::Arc;
 
-use super::aggregate_resolution::decode_module_spine;
+use super::aggregate_resolution::{decode_intrinsic_rooted_spine, decode_module_spine};
 use crate::integer_semantics::{CheckedIntegerResult, IntegerType};
 
 // Source-level partitions of this one evaluator (RUE-1831), following the
@@ -375,6 +375,16 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
     /// The default describes a domain without module-valued bindings.
     fn type_is_module(&self, _ty: &Self::Type) -> bool {
         false
+    }
+    /// The module an inline `@import("path")` names, when it roots a module
+    /// path (`@import("x.rue").Option(u64)`, `@import("std").arraybuf.ArrayBuf`).
+    /// The specifier resolves through the same canonical-import lookup that
+    /// analyzes the intrinsic, from the file `span` is in; an unresolvable
+    /// specifier answers `None` and is reported where the intrinsic is
+    /// analyzed (RUE-2439). The default describes a domain without
+    /// module-valued roots.
+    fn inline_import_module(&self, _specifier: &Self::Name, _span: Span) -> Option<Self::Type> {
+        None
     }
     fn type_is_unsigned(&self, ty: &Self::Type) -> bool;
     fn type_integer_semantics(&self, ty: &Self::Type) -> Option<IntegerType>;
@@ -2641,7 +2651,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         inst_ref: InstRef,
         env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> Option<DecodedModulePath<H::File, H::Name, H::Type>> {
-        let spine = decode_module_spine(self.program_rir(), inst_ref)?;
+        let Some(spine) = decode_module_spine(self.program_rir(), inst_ref) else {
+            return self.decode_inline_import_module_path(inst_ref, env);
+        };
         let root = self.name_from_rir(spine.root.into());
         // The nearest lexical binding of the root, in the order name lookup
         // consults them: a value local or runtime name shadows the file's
@@ -2690,6 +2702,52 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         Some(DecodedModulePath {
             file,
             root_module,
+            segments,
+        })
+    }
+
+    /// Decode a module path rooted at an inline `@import("path")`
+    /// (`@import("x.rue").Option(u64)`, `@import("std").arraybuf.ArrayBuf`).
+    ///
+    /// The root is the imported module itself, so no lexical binding can
+    /// shadow it; it reaches the host as a local module root, exactly as
+    /// `let m = @import("x.rue"); m.Option(u64)` does (RUE-2426), under the
+    /// intrinsic's own name as the root segment. The spine is the shared
+    /// [`decode_intrinsic_rooted_spine`]'s, and the intrinsic is recognized by
+    /// the same decoder that classifies it as an expression, so a path the
+    /// engine walks here is one it would evaluate as an import (RUE-2439).
+    fn decode_inline_import_module_path(
+        &self,
+        inst_ref: InstRef,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> Option<DecodedModulePath<H::File, H::Name, H::Type>> {
+        let spine = decode_intrinsic_rooted_spine(self.program_rir(), inst_ref)?;
+        let root = self.name_from_rir(spine.name.into());
+        let ComptimeExpressionIntrinsicRequest::Import {
+            sole_string_literal: Some(specifier),
+            ..
+        } = self
+            .decode_expression_intrinsic(root.clone(), &spine.args)
+            .ok()?
+            .request
+        else {
+            return None;
+        };
+        let module = self
+            .host
+            .inline_import_module(&specifier, spine.root_span)?;
+        let file = env.defining_file.clone()?;
+        let mut segments = Vec::with_capacity(spine.fields.len() + 1);
+        segments.push(root);
+        segments.extend(
+            spine
+                .fields
+                .into_iter()
+                .map(|field| self.name_from_rir(field.into())),
+        );
+        Some(DecodedModulePath {
+            file,
+            root_module: Some(module),
             segments,
         })
     }
