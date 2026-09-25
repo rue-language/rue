@@ -713,8 +713,8 @@ them are on the unwind path.
 
 **Drop order** (`TraceOrder.lean`). *In every finished run, every
 destructor runs inside the drop of the value that owns it, in §6.11's order;
-and at every step the machine tears cells down last-in first-out: whatever
-it deregisters, it drops newest first, and every such cell is newer than
+and at every step the machine tears cells down last-in first-out: it drops
+only cells it deregistered, newest first, and every such cell is newer than
 every cell still registered.*
 
 ```lean

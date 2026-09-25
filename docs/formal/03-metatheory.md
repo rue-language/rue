@@ -412,8 +412,9 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   residual reading §5.6 asks for, which is what makes a partially consumed
   carrier's residue droppable. "Exactly once" (that every owned, droppable,
   non-moved value *is* dropped) is `RueCore.drop_exactly_once`, in the next
-  section; this section is the "at most once" half. `RueCore.run_blocks`
-  (next section) lifts the closed form from one drop to every finished run's trace:
+  section; this section is the "at most once" half. `RueCore.step_blocks`
+  (next section; `RueCore.run_blocks` over `eval`, carried to `Step`) lifts the
+  closed form from one drop to every finished run's trace:
   every destructor event sits inside the walk of the marker before it.
 
 ## No use-after-drop / no leak of drops
