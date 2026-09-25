@@ -655,8 +655,10 @@ arm of an `if` or a `match` whose sibling kept a binding the arm moved, a
 linear binding, and a `@panic` past a live linear binding. The compiler
 accepts all five, and the corpus seeds them now (`if_return_arm_affine`,
 `match_return_arm_linear`, `match_never_first_arm`, `if_panic_arm_linear`,
-`panic_past_linear`). The generator still emits neither `return` nor `@panic`
-(`Gen.lean`).
+`panic_past_linear`). The generator draws such arms too (RUE-2383): a
+`return` or `@panic` as a whole `if` or `match` arm, a loop exit's arm or the
+function body's last form, never in an operand and never with anything after
+it (`Gen.lean`, "Return and panic arms").
 
 ### The three trace theorems, one sentence each
 

@@ -31,9 +31,11 @@ a repeat form only at a `Copy` element (`7.1:38`), a `match` has **exactly one
 arm per variant in declaration order** typed under that variant's payload
 locals, a projection names a declared slot at the type it is asked for, a
 constant index is within its array's length (`7.1:9`), and a read below a
-dynamic index is at a `Copy` leaf, a `loop` body is `unit`-typed, and a
+dynamic index is at a `Copy` leaf, a `loop` body is `unit`-typed, a
 `break` stands only inside a loop body and only as the **last** form of its
-block (below, "Loops"). So `Print.tyOf` succeeds on every generated
+block (below, "Loops"), and a `return` or `@panic` only where a break arm could
+stand or as the function body's last form, never in an operand (below, "Return
+and panic arms"). So `Print.tyOf` succeeds on every generated
 program, and whatever the verified checker rejects, it rejects for an
 ownership reason — a use after move, a use of a partially moved value, a
 linear leak, a linear discard or overwrite, a disagreeing join, a move out of
@@ -49,10 +51,10 @@ might miss: `expr` builds the arm list by mapping over the declaration's own
 variant list, so the arm count and the arm order are the declaration's by
 construction and (Match) §5.5's `arms.length = ed.variants.length` cannot
 fail. Every arm is drawn at the `match`'s own type except a **break arm**
-(`breakArm`, below), which is `never`-typed; `firstArmTy` (`Checker.lean`)
-skips a `never` arm and at most one arm is a break arm, so the type it fixes is
-always a drawn arm's and its choice is never the reason a generated case is
-refused.
+(`breakArm`, below) or a **return or panic arm** (`divArm`), which is
+`never`-typed; `firstArmTy` (`Checker.lean`) skips a `never` arm and at most
+one arm diverges, so the type it fixes is always a drawn arm's and its choice
+is never the reason a generated case is refused.
 
 ## How deep a place goes
 
@@ -189,29 +191,61 @@ generated disagreement is a finding to file.
   (`--gen 1695 --seed 2`) reached it before loops, and it agrees now that
   RUE-2344 is fixed.
 
-Calls and `return` are **not** generated yet: every generated case is a
-one-function program (`Program.entry`), so the shapes RUE-2233 added — a
-frame unwound by an early `return`, a by-value parameter dropped at a frame
-pop, recursion — are covered by the hand-written seed cases only. Generating
-them needs a signature environment to draw callees from and a fuel bound that
+Calls are **not** generated yet: every generated case is a one-function
+program (`Program.entry`), so the shapes RUE-2233 added that need a callee — a
+frame unwound by an early `return` under a caller's live frame, a by-value
+parameter dropped at a frame pop, recursion — are covered by the hand-written
+seed cases only; an early `return` out of the entry function itself is drawn
+(below, "Return and panic arms"). Generating calls needs a signature environment to draw callees from and a fuel bound that
 recursion cannot escape; it is the follow-up this module's `expr` is shaped
 for (`Corpus.Case` already holds a whole `Program`).
 
-`return` and `@panic` are not drawn either, although `check` no longer stands
-in the way. Before RUE-2368 it did: `check` had no `⊥`, so it typed a
-diverging form at the enclosing return type and folded a `return` or `@panic`
-arm's state into §5.5's join, where §5.7 contributes none, and a drawn one
-would have been a *false* `reject` — rejected here, accepted by the calculus
-and by the compiler (measured on RUE-2320's diverging-arm probes). `check`
-carries §5.7's `⊥` now, and the one shape it is still incomplete on, a `never`
-operand of an operator (`Checker.lean`, "what completeness still costs"), is
-one a draw can keep out. What is left is the discipline a drawn `break`
-already follows (below, "Loops"): a diverging form only as the **last** form of
-an arm, and at most one diverging arm per branch, so that no syntax follows it
-(RUE-2376). Drawing `return` and `@panic` under that discipline is follow-up
-work; the seed corpus has the shapes (`if_return_arm_affine`,
-`match_return_arm_linear`, `match_never_first_arm`, `if_panic_arm_linear`,
-`panic_past_linear`, `ret_past_payload`).
+## Return and panic arms (RUE-2383)
+
+`return` and `@panic` are drawn under the discipline a drawn `break` follows
+(below, "Loops"): a diverging form is only ever the **last** form of an arm, a
+branch has at most one diverging arm, and none stands in an operand, so no
+syntax follows one (RUE-2376) and no `if` or `match` diverges as a whole. A
+**return or panic arm** (`divArm`) is `return v` two times in three, `v` an
+atom at the entry function's return type ((Return-Value) §5.7, (D-Return)
+§6.9), and `@panic("gen")` otherwise ((Panic) §5.8, (D-Panic) §6.12) — bare
+half the time, and otherwise the last form of a block after a `@drop` of a
+non-`Copy` aggregate binder or a unit-typed leaf. It stands in four places:
+
+* as a whole arm of an `if` — one `if` in eight on a random side, and one
+  break arm in three turned into one (`maybeDiv`);
+* as a whole arm of a `match` — one `match` in six on a random arm, and one
+  break arm in three (`divArms`);
+* as the arm of a loop's **exit statement** `if c { … } else { () }`, one in
+  three (`drawLoop`), which with the break arms above is how a `return` or
+  `@panic` reaches a loop body. A once-through loop's **tail** stays a break
+  arm, because a loop every exit of which left the function would diverge as
+  a whole and whatever followed it would be dead code;
+* as the **function body's last form**, one body in ten: `let r = e; return r`.
+
+`expr`'s `rt` flag says where one may stand: the function body, and the
+statement positions of `let`, sequence, arm and loop-body draws under it. An
+operand, an argument, an initializer, a condition or a scrutinee is drawn with
+`rt` off, which keeps `check`'s one incomplete shape (a `never` operator
+operand, `Checker.lean`, "what completeness still costs") and RUE-2316's
+pending-value edge — a value built for an earlier sibling, abandoned by the
+jump — out of the generated corpus, as it does for `break`.
+
+Every one of these draws reads a **side stream** (`side`), a second `StdGen`
+split off the seed, and an arm it replaces is still drawn on the main stream
+first and discarded. So a program with no diverging arm is exactly the program
+the generator drew before RUE-2383, and one with a diverging arm differs from
+its earlier draw only where an arm, or the body's tail, was replaced: 48 of the
+200 programs at `--gen 200 --seed 7` and 275 of the 1,000 at `--gen 1000
+--seed 23` differ. Of those, a `return` arm is in 25 and 137, a `@panic` in 10
+and 76, a returning body tail in 19 and 92, a `return` or `@panic` inside a
+loop body in 16 and 71; the checker accepts 25 and 127 of them, of which 2 and
+19 end in a panic. The figures in the rest of this module were measured on the
+draws before RUE-2383 unless they say otherwise; they hold as they stand for the
+programs that did not change, and the headline acceptance figure below is
+re-measured. The seed corpus keeps the hand-picked shapes
+(`if_return_arm_affine`, `match_return_arm_linear`, `match_never_first_arm`,
+`if_panic_arm_linear`, `panic_past_linear`, `ret_past_payload`).
 
 ## Loops (RUE-2330)
 
@@ -261,7 +295,8 @@ question for the calculus rather than a finding the bridge should make:
 
 * **no syntax after a diverging form** (RUE-2376): a `break` is only ever the
   last form of a break arm or of a once-through body, and a branch has at most
-  one break arm, so no `if` or `match` diverges as a whole and nothing follows
+  one break arm — or one return or panic arm in its place (above, "Return and
+  panic arms") — so no `if` or `match` diverges as a whole and nothing follows
   a `break` in its block — including as an operand followed by further
   operands, `S { x0: …, x1: break }`, which the compiler rejects with E0478
   and the checker accepts. `break` is also never drawn inside an operand, an
@@ -295,8 +330,9 @@ does.
 
 Ownership. Moves, drops, assignments, `match` arms and scope exits are chosen
 at random, so a large minority of the programs are rejected by the checker and
-refused by the machine — 87 of 200 at `--gen 200 --seed 7` and 438 of 1,000 at
-`--gen 1000 --seed 23`, the figures the weights below are tuned against. Both
+refused by the machine — 85 of 200 at `--gen 200 --seed 7` and 431 of 1,000 at
+`--gen 1000 --seed 23` (87 and 438 before the return and panic arms, the
+figures the weights below were tuned against). Both
 are recorded (`Corpus.caseJson` reads them off `checkProgram` and `run` as for
 any case), never filtered: a rejected program checks that the compiler rejects
 it too, an accepted one that the three implementations agree with the

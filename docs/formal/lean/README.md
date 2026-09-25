@@ -140,10 +140,12 @@ seldom gets accepted: a counted body may open with a restoring statement
 once-through loop may consume a linear binder on every exit. Two shapes are
 drawn around, because each waits on a decision rather than being a finding:
 syntax after a `break` in the same block (RUE-2376), and a loop body that is
-not `unit` (RUE-2379). A `return` or `@panic` is not drawn yet: `check` has
-been complete on a diverging arm since it carried §5.7's `⊥` (RUE-2368), and
-drawing them under the `break` discipline is follow-up work. The seed corpus
-has those shapes.
+not `unit` (RUE-2379). A `return` or `@panic` is drawn under the same
+discipline as `break` (RUE-2383): as a whole `if` or `match` arm, a loop exit's
+arm or the function body's last form, never in an operand, at most one per
+branch. They read a separate random stream, so a program without one is the
+program drawn before; about a quarter of the programs have one (48 of 200 at
+seed 7, 275 of 1,000 at seed 23).
 
 ```bash
 lake exe ruecore-corpus --gen 1000 --seed 7 > /tmp/gen.json   # seed cases, then 1000 generated
