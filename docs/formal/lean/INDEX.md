@@ -597,7 +597,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Float` | `RueCore.Float.ofInt` | def | (D-Int-To-Float), §6.4 | `3.12:16` |
 | `RueCore.Float` | `RueCore.Float.narrow` | def | (D-Float-Cast) | `3.12:19` |
 | `RueCore.Float` | `RueCore.Float.exactOps` | def | — | `3.12:44` |
-| `RueCore.Gen` | Gen.lean (module) | module | (Match), (Use-Declared-Linear-Destructure), (Assign), (Return-Value), (D-Return), (Panic), (D-Panic), (Use-Move), (If), §2, §3, §4.2, §5.1, §5.2, §5.5, §5.6, §5.7, §5.8, §6.9, §6.11, §6.12 | `6.3:19`, `3.8:18`, `3.0:5`, `6.3:16`, `7.1:38`, `7.1:9`, `3.8:68`, `3.8:60`, `3.8:72`, `3.8:70`, `7.1:46`, `4.9:2`, `4.9:3`, `3.8:79`, `3.8:80`, `4.2:1`, `3.8:22`, `6.3:17`, `3.12:44`, `3.12:42`, `3.9:44`, `3.9:34`, `3.9:31` |
+| `RueCore.Gen` | Gen.lean (module) | module | (Match), (Use-Declared-Linear-Destructure), (Assign), (Return-Value), (D-Return), (Panic), (D-Panic), (Use-Move), (If), §2, §3, §4.2, §5.1, §5.2, §5.5, §5.6, §5.7, §5.8, §6.9, §6.11, §6.12 | `6.3:19`, `3.8:18`, `3.0:5`, `6.3:16`, `7.1:38`, `7.1:9`, `3.8:68`, `3.8:60`, `3.8:72`, `3.8:70`, `7.1:46`, `4.9:2`, `3.8:79`, `3.8:80`, `4.2:1`, `3.8:22`, `6.3:17`, `3.12:44`, `3.12:42`, `3.9:44`, `3.9:34`, `3.9:31` |
 | `RueCore.Gen` | `RueCore.Gen.isAggregate` | def | §6.11 | `3.9:13`, `6.3:20`, `3.9:15` |
 | `RueCore.Gen` | `RueCore.Gen.intTy` | def | §2 | — |
 | `RueCore.Gen` | `RueCore.Gen.intLiteral` | def | §6.4 | — |
@@ -1618,7 +1618,6 @@ Cited sections the calculus has no heading for:
 | `4.8:21` | `RueCore.Typed.loopDiv`, `RueCore.Typed.loopBreak`, `RueCore.Typed.loopBreakDiv`, `RueCore.Expr.breaks` |
 | `4.8:22` | `RueCore.Expr` |
 | `4.9:2` | Gen.lean (module) |
-| `4.9:3` | Gen.lean (module) |
 | `4.10:3` | `RueCore.checkArgs`, `RueCore.Violation.typeConfusion`, `RueCore.Explain.Premise.argCountMismatch`, `RueCore.Explain.argsPremise`, `RueCore.HasTys.length_eq`, `RueCore.Typed.call`, `RueCore.TypedArgs.consBot` |
 | `4.10:4` | `RueCore.checkArgs`, `RueCore.Explain.Premise.argTypeMismatch`, `RueCore.Explain.argsPremise`, `RueCore.HasTys`, `RueCore.Typed.call` |
 | `4.10:5` | `RueCore.Typed.call` |
