@@ -178,10 +178,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .zip(param_types)
                 .zip(param_modes)
             {
-                // An `inout str` view is taken over a local `StrBuf` or
-                // `Str(N)`, which keeps its own type as the operand;
-                // `validate_inout_str_operand` is that position's authority.
-                if *mode == RirParamMode::Inout && self.is_str_struct(*expected) {
+                // An `inout str` view keeps its source's own type as the
+                // operand; `validate_inout_str_operand` is that position's
+                // authority.
+                if self.is_inout_str_param(*mode, *expected) {
                     continue;
                 }
                 self.require_slot_type(
