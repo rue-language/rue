@@ -1437,7 +1437,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         let root_file = self
             .storage
             .function_signature_root_file(function)
-            .unwrap_or(span.file_id);
+            .unwrap_or(function.file_id);
         if let Some(syntax) = self
             .storage
             .function_param_type_syntax(function, param_index)
@@ -1479,7 +1479,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         let root_file = self
             .storage
             .function_signature_root_file(function)
-            .unwrap_or(span.file_id);
+            .unwrap_or(function.file_id);
         if let Some(syntax) = self.storage.function_return_type_syntax(function) {
             return self
                 .storage
