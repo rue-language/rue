@@ -2083,9 +2083,10 @@ fn direct_const_named_array_length_uses_the_live_evaluator_policy() {
     ));
     assert!(matches!(
         query("NEG"),
-        Value::Failure(Failure::Diagnostic(
-            rue_error::ErrorKind::InvalidArrayLength { reason }
-        )) if reason == "array length expression 'NEG_N' is negative or too large"
+        Value::Failure(Failure::DiagnosticAtProducerRange {
+            kind: rue_error::ErrorKind::InvalidArrayLength { reason },
+            ..
+        }) if reason == "array length expression 'NEG_N' is negative or too large"
     ));
     // The source language has no integer literal wider than u64. Inject
     // the out-of-range semantic value after the real evaluator resolves
@@ -2109,9 +2110,10 @@ fn direct_const_named_array_length_uses_the_live_evaluator_policy() {
     );
     assert!(matches!(
         huge,
-        Value::Failure(Failure::Diagnostic(
-            rue_error::ErrorKind::InvalidArrayLength { reason }
-        )) if reason == "array length expression 'HUGE_N' is negative or too large"
+        Value::Failure(Failure::DiagnosticAtProducerRange {
+            kind: rue_error::ErrorKind::InvalidArrayLength { reason },
+            ..
+        }) if reason == "array length expression 'HUGE_N' is negative or too large"
     ));
     assert_eq!(
         huge_attempt
