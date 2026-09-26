@@ -1019,7 +1019,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
         (match d₂.result with
          | some (.ty (.int w' s'), Ω₂) =>
              if w' = w ∧ s' = s ∧ op.intAdmits = true then
-               accepted rule Γ (.binop op e₁ e₂) (.ty (op.resultTy (.int w s))) (Ω₂.add Δ₁)
+               accepted rule Γ (.binop op e₁ e₂) (.ty (op.resultTy (.int w s))) (Ω₂.merge Δ₁)
                  [d₁, d₂]
              else if w' = w ∧ s' = s then
                rejected rule Γ (.binop op e₁ e₂)
@@ -1029,7 +1029,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                  (Premise.operandWidthMismatch (.int w s) (.int w' s')) [d₁, d₂]
          | some (.never, Ω₂) =>
              if op.intAdmits = true then
-               accepted rule Γ (.binop op e₁ e₂) (.ty (op.resultTy (.int w s))) (Ω₂.add Δ₁)
+               accepted rule Γ (.binop op e₁ e₂) (.ty (op.resultTy (.int w s))) (Ω₂.merge Δ₁)
                  [d₁, d₂]
              else
                rejected rule Γ (.binop op e₁ e₂) (Premise.opNotOnInt op (.int w s)) [d₁, d₂]
@@ -1044,7 +1044,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
         (match d₂.result with
          | some (.ty (.float w'), Ω₂) =>
              if w' = w ∧ op.floatAdmits = true then
-               accepted frule Γ (.binop op e₁ e₂) (.ty (op.resultTy (.float w))) (Ω₂.add Δ₁)
+               accepted frule Γ (.binop op e₁ e₂) (.ty (op.resultTy (.float w))) (Ω₂.merge Δ₁)
                  [d₁, d₂]
              else if w' = w then
                rejected frule Γ (.binop op e₁ e₂)
@@ -1054,7 +1054,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                  (Premise.operandWidthMismatch (.float w) (.float w')) [d₁, d₂]
          | some (.never, Ω₂) =>
              if op.floatAdmits = true then
-               accepted frule Γ (.binop op e₁ e₂) (.ty (op.resultTy (.float w))) (Ω₂.add Δ₁)
+               accepted frule Γ (.binop op e₁ e₂) (.ty (op.resultTy (.float w))) (Ω₂.merge Δ₁)
                  [d₁, d₂]
              else
                rejected frule Γ (.binop op e₁ e₂) (Premise.opNotOnFloat op (.float w)) [d₁, d₂]
@@ -1504,7 +1504,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
           else
             let d₂ := explain P R Γ₁ e₂
             (match d₂.result with
-             | some (c₂, Ω₂) => accepted "(Seq) §5.3, 3.8:64" Γ (.seq e₁ e₂) c₂ (Ω₂.add Δ₁) [d₁, d₂]
+             | some (c₂, Ω₂) => accepted "(Seq) §5.3, 3.8:64" Γ (.seq e₁ e₂) c₂ (Ω₂.merge Δ₁) [d₁, d₂]
              | none => rejected "(Seq) §5.3, 3.8:64" Γ (.seq e₁ e₂) Premise.subDerivation [d₁, d₂])
       | some (_, ⟨none, Δ₁⟩) =>
           accepted "(Seq-Bottom) §5.3 + (Sub-Never) §5.7" Γ (.seq e₁ e₂) .never ⟨none, Δ₁⟩ [d₁]
@@ -1625,7 +1625,7 @@ def explainArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Optio
            if c.fits T then
              let rest := explainArgs P R Γ₁ es Ts
              ((match rest.1 with
-               | some Ω => some (Ω.add Δ₁)
+               | some Ω => some (Ω.merge Δ₁)
                | none => none), d :: rest.2)
            else (none, [d])
        | some (c, ⟨none, Δ₁⟩) =>
@@ -1644,7 +1644,7 @@ def explainIdx (P : Program) (R : Ty) : Ctx → List Expr → Option (List Ty ×
        | some (.ty (.int w s), ⟨some Γ₁, Δ₁⟩) =>
            let rest := explainIdx P R Γ₁ es
            ((match rest.1 with
-             | some (Ts, Ω) => some (.int w s :: Ts, Ω.add Δ₁)
+             | some (Ts, Ω) => some (.int w s :: Ts, Ω.merge Δ₁)
              | none => none), d :: rest.2)
        | some (.ty (.int w s), ⟨none, Δ₁⟩) =>
            (some (.int w s :: es.map (fun _ => .int w s), ⟨none, Δ₁⟩), [d])

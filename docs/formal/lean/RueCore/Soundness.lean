@@ -2729,7 +2729,7 @@ theorem EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {B : List C
 its premises': §5.3's threading makes every premise's deliveries a part of
 the conclusion's. -/
 local macro "brk_sub" : tactic =>
-  `(tactic| (intro _ hx; first | exact hx | (simp only [Out.add, List.mem_append] at hx ⊢; simp [hx])))
+  `(tactic| (intro _ hx; first | exact hx | (simp only [Out.merge, List.mem_append] at hx ⊢; simp [hx])))
 
 /-- Weakening the outgoing state of a promise, which is what §5.5's join asks
 of an arm: a value's state is carried to some state of the join, and `⊥`

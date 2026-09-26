@@ -793,7 +793,7 @@ structure Out where
 /-- §5.3's `Ω ⊕ Δ`: add a continuing prefix's deliveries to an outcome, which
 keeps its own continuing-or-divergent shape — `(Σ';Δ') ⊕ Δ = Σ';(Δ' ∪ Δ)` and
 `(⊥;Δ') ⊕ Δ = ⊥;(Δ' ∪ Δ)`. -/
-def Out.add (Ω : Out) (Δ : List Ctx) : Out := ⟨Ω.norm, Ω.brk ++ Δ⟩
+def Out.merge (Ω : Out) (Δ : List Ctx) : Out := ⟨Ω.norm, Ω.brk ++ Δ⟩
 
 /-- §5.5's branch join over `Ω` for two arms: "the normal state is `join` of
 the continuing arms' normal states (`⊥` when no arm continues)". A divergent
@@ -1024,7 +1024,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   | binop {Γ Γ₁ Ω₂ Δ₁ op e₁ e₂ w s} :
       Typed P R Γ e₁ (.int w s) ⟨some Γ₁, Δ₁⟩ → Typed P R Γ₁ e₂ (.int w s) Ω₂ →
       op.intAdmits = true →
-      Typed P R Γ (.binop op e₁ e₂) (op.resultTy (.int w s)) (Ω₂.add Δ₁)
+      Typed P R Γ (.binop op e₁ e₂) (op.resultTy (.int w s)) (Ω₂.merge Δ₁)
   /-- (Strict-Bottom) §5.3 at `binop`'s left operand: once `e₁` diverges the
   right operand is never reached, so it is not typed, and the form concludes
   at `⊥` with `e₁`'s deliveries and at its own type `T_E`, (Arith)/(Ord)'s
@@ -1046,7 +1046,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   | floatBinop {Γ Γ₁ Ω₂ Δ₁ op e₁ e₂ w} :
       Typed P R Γ e₁ (.float w) ⟨some Γ₁, Δ₁⟩ → Typed P R Γ₁ e₂ (.float w) Ω₂ →
       op.floatAdmits = true →
-      Typed P R Γ (.binop op e₁ e₂) (op.resultTy (.float w)) (Ω₂.add Δ₁)
+      Typed P R Γ (.binop op e₁ e₂) (op.resultTy (.float w)) (Ω₂.merge Δ₁)
   /-- (Strict-Bottom) §5.3 at a float `binop`'s left operand, exactly as
   `binopBot` is at an integer one. -/
   | floatBinopBot {Γ Δ₁ op e₁ e₂ w} :
@@ -1552,7 +1552,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   | seq {Γ Γ₁ Δ₁ Ω₂ e₁ e₂ T₁ T₂} :
       Typed P R Γ e₁ T₁ ⟨some Γ₁, Δ₁⟩ → T₁.mult P.decls ≠ .linear →
       Typed P R Γ₁ e₂ T₂ Ω₂ →
-      Typed P R Γ (.seq e₁ e₂) T₂ (Ω₂.add Δ₁)
+      Typed P R Γ (.seq e₁ e₂) T₂ (Ω₂.merge Δ₁)
   /-- (Seq-Bottom) §5.3 with (Sub-Never) §5.7: the prefix diverges, so the
   tail is unreachable and not typed, and the form is `never`, at any type. -/
   | seqBot {Γ Δ₁ e₁ e₂ T₁ T} :
@@ -1696,7 +1696,7 @@ inductive TypedArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → O
   with this member's deliveries added (§5.3's `Ω ⊕ Δ`). -/
   | cons {Γ Γ₁ Δ₁ Ω e es T Ts} :
       Typed P R Γ e T ⟨some Γ₁, Δ₁⟩ → TypedArgs P R Γ₁ es Ts Ω →
-      TypedArgs P R Γ (e :: es) (T :: Ts) (Ω.add Δ₁)
+      TypedArgs P R Γ (e :: es) (T :: Ts) (Ω.merge Δ₁)
   /-- (Strict-Bottom) §5.3 at a list member: it diverges, so the members after
   it are never evaluated and not typed. The list still has one expected type
   per member — its arity is the construct's (`4.10:3`, `3.6:5`), a fact about
