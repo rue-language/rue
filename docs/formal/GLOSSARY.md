@@ -107,7 +107,7 @@ it has two rows.
 | uninhabited | Of a type: it has no values, like an enum with zero variants | [spec 6.3:12][s6.3] | — | Rue-specific, grounded | 01 §2; `Statics` |
 | struct; structs | A user-declared record type with named fields | [spec 6.2:1][s6.2] | `StructDecl` | Rue-specific, grounded | 01 §2; 03 intro; lean/README “Generated programs”; GUIDE §2; BRIDGE-SENSITIVITY “Results”; `Syntax` |
 | enum; enums; variant; payload | A user-declared sum type: each variant carries a tuple of payload components | [spec 6.3:1][s6.3], [6.3:13][s6.3] | `EnumDecl` | Rue-specific, grounded | 01 §2; 03 intro; lean/README “Generated programs”; GUIDE §2; BRIDGE-SENSITIVITY “§5 derivation nodes”; `Float` |
-| active; active variant | The one variant an enum value holds at run time | [spec 6.3:20][s6.3] | — | Rue-specific, grounded | 01 §3; 03 intro; lean/README “What is mechanized”; GUIDE “The three trace theorems, one …”; `Syntax` |
+| active; active variant | The one variant an enum value holds at run time | [spec 6.3:20][s6.3] | — | Rue-specific, grounded | 01 §3; 03 intro; lean/README “The statement layer”; GUIDE “The three trace theorems, one …”; `Syntax` |
 | 0-based tag; 0-based variant tag | A variant's position in its enum's declaration, counted from zero, which identifies it at run time | [spec 6.3:20][s6.3] (the discriminant) | — | Rue-specific, grounded | `Syntax` |
 | discriminant-only | Of an enum: no variant carries a payload | [spec 6.3:13][s6.3] | — | Rue-specific, grounded | 01 §2; 03 “No double-free”; GUIDE “The run”; `Syntax` |
 | array; arrays; array element; whole array | A fixed-length sequence of `n` elements of one type, `[T; n]` | [spec 3.5:1][s3.5] | `Ty.array` | Rue-specific, grounded | 01 §2; 03 intro; lean/README “Generated programs”; GUIDE §2; BRIDGE-SENSITIVITY “Results”; `Syntax` |
@@ -263,7 +263,7 @@ it has two rows.
 | scope helpers | The four frame operations that push, close and unwind scopes | none | `Frame.popScope`, `runAllScopeDrops` | ours, pending audit | 01 §6.1 |
 | unwind; unwinding; with drops | Leaving scopes on a `return` or `break`, running their drops in order | none fetched | `unwindLocs`, `Expr.unwinds` | ours, pending audit | 01 §2; 03 intro; lean/README “How to read this, with …”; GUIDE §2; BRIDGE-SENSITIVITY “§6 step rows”; `Statics` |
 | newest-first | Of the drops at a scope's exit: in reverse order of creation | [FIELD §5][F5]: drop order (Rust Reference *Destructors*) | `NewestFirst` | standard | 01 §6.1; 03 “Type safety”; lean/README “How to read this, with …”; GUIDE §3; `Dynamics` |
-| fuel | A bound on how much work the interpreter may do; running out gives a timeout | [FIELD §3][F3]: Amin & Rompf | `eval` | standard | 01 §7; 03 intro; lean/README “The bridge corpus”; GUIDE §2; `Statics` |
+| fuel | A bound on how much work the interpreter may do; running out gives a timeout | [FIELD §3][F3]: Amin & Rompf | `eval` | standard | 01 §7; 03 intro; lean/README “The bridge corpus”; GUIDE §2; `Dynamics` |
 | out of fuel; `outOfFuel` | The interpreter's result when the fuel runs out | [FIELD §3][F3]: timeout | `EvalRes` | standard | 03 intro; lean/README “Generated programs”; GUIDE §2; `Dynamics` |
 | definitional interpreter; `eval` | An interpreter that serves as the definition of the language | [FIELD §3][F3]: Amin & Rompf §2.1 | `eval`, `run` | standard | 01 §6; 03 intro; README “The extension rubric”; REDTEAM “Targets”; lean/README “Explaining a program”; GUIDE §2; BRIDGE-SENSITIVITY “Rule coverage”; `Float` |
 | executable; executable semantics; executable reference interpreter | A semantics that runs programs as well as defining them | [FIELD §7][F7]: executable model (Cedar) | `eval` | standard | 01 §5.4; README “The executable oracle”; lean/README “Deciding whether to believe it”; GUIDE §7; `Float` |
@@ -297,9 +297,9 @@ it has two rows.
 | owned buffer handle; `buf⟨A⟩` | An opaque value that owns one buffer allocation | none | — | ours, pending audit | 01 §6.1 |
 | view; `view⟨A \| o, k⟩` | A second-class reference to a range of a buffer's cells | [spec 3.7:58][s3.7] | — | Rue-specific, grounded | 01 §2; 03 “Exclusivity / no aliased mutation”; README intro; lean/README intro |
 | retire; retires; retired; dead; `†` | Ending an allocation's life: its identity stays in the store, marked dead, and is never reused | [FIELD §5][F5]: dead (Oxide), partial | `Retired`, `dropRetire` | ours, pending audit | 01 §3; 03 “No double-free”; lean/README “The bridge corpus”; GUIDE §2; BRIDGE-SENSITIVITY “Results”; `Statics` |
-| mint; mints; fresh; fresh cells | Creating a new allocation or value identity, one never used before | none | `mintParams`, `Fresh` | ours, pending audit | 01 §2; 03 intro; REDTEAM “Targets”; GUIDE §2; BRIDGE-SENSITIVITY “Rule coverage”; `Dynamics` |
+| mint; mints; fresh; fresh cells | Creating a new allocation or value identity, one never used before | none | `mintParams`, `Fresh` | ours, pending audit | 01 §2; 03 intro; REDTEAM “Targets”; lean/README “The statement layer”; GUIDE §2; BRIDGE-SENSITIVITY “Rule coverage”; `Dynamics` |
 | identity; value identity | A unique tag an aggregate value carries from its creation, so a trace can say which value each event is about | none | `Contents.own`, `Val.own` | ours, pending audit | 01 §2; 03 “No double-free”; README “Why comptime is elaboration, not …”; lean/README “Generated programs”; GUIDE §2; `Float` |
-| shell | What remains of a matched enum value after its payload is moved out | none | `matchConsume` | ours, pending audit | 03 “No double-free”; GUIDE §2; `Dynamics` |
+| shell | What remains of a matched enum value after its payload is moved out | none | `matchConsume` | ours, pending audit | 03 “No double-free”; lean/README “The statement layer”; GUIDE §2; `Dynamics` |
 | consumption (event) | The trace event a `match` records when it consumes what remains of an enum scrutinee after its payload moves out | none | `Event` | ours, pending audit | 01 intro; 03 “No use-after-drop / no leak …”; README “The architecture: surface → elaboration …”; GUIDE “The run”; `Dynamics` |
 | registration stack | The machine's list, for every frame, of the pending `endscope` markers and the scope records | none | `Stk`, `Config.stack` | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “What is mechanized”; GUIDE “The three trace theorems, one …”; `Trace.Defs` |
 | scopes nest; nest | The pending `endscope` markers and the scope records agree, innermost first | none | `Nest`, `Config.Nested` | ours, pending audit | 01 §6.7; 03 “No use-after-drop / no leak …”; lean/README “Generated programs”; `Trace.Defs` |
@@ -372,7 +372,7 @@ it has two rows.
 | assumption; assumed; assumed, named; assumes | A fact a theorem takes as a hypothesis rather than proves | none | `FloatModel` | ours, pending audit | 01 §2; 03 “Lemmas §7 owes, and the …”; lean/README “Deciding whether to believe it”; GUIDE §4; `Float` |
 | consequence; consequences of | A fact that follows from a rule or definition, as opposed to one stated separately | none | — | ours, pending audit | 01 §4.2; 03 “No use-after-drop / no leak …”; GUIDE §4; `Float` |
 | unprovable | Of a claim: it cannot be proved from the stated premises | none | — | ours, pending audit | 01 §7 |
-| mutual recursion | Two or more definitions that refer to each other | [FIELD §8][F8]: `mutual` (Reference §7.6.1) | `Typed`, `TypedArgs`, `TypedArms` | standard | 01 §6.11; `Statics` |
+| mutual recursion | Two or more definitions that refer to each other | [FIELD §8][F8]: `mutual` (Reference §7.6.1) | `Typed`, `TypedArgs`, `TypedArms` | standard | 01 §6.11 |
 
 ### Traces and monitors
 
@@ -400,7 +400,7 @@ it has two rows.
 | seed; seeds; seed cases; seed corpus | The hand-written corpus cases | [FIELD §7][F7]: "seed cases" differs, partial | — | ours, pending audit | 01 §6.4; 03 “Type safety”; lean/README intro; GUIDE §4; BRIDGE-SENSITIVITY intro; `Checker.Defs` |
 | seed (random); `--seed N` | The number that fixes a generated corpus | [FIELD §7][F7]: random seed (libFuzzer `-seed=N`; Csmith §3.4) | — | standard | 01 §6.4; 03 “Type safety”; lean/README intro; GUIDE “Loops, briefly”; BRIDGE-SENSITIVITY intro; `Checker.Defs` |
 | generated programs; `--gen N` | Corpus programs produced at random by `Gen.lean` | [FIELD §7][F7]: random program generation, clear | — | standard | lean/README “Generated programs”; BRIDGE-SENSITIVITY “Detection rate” |
-| verdict | The checker's accept or reject on a corpus case | [FIELD §7][F7]: "verdict" differs, none | `checkProgram` | ours, pending audit | 03 “Lemmas §7 owes, and the …”; README “The executable oracle”; REDTEAM “Targets”; lean/README “The bridge corpus”; GUIDE §4; BRIDGE-SENSITIVITY “Rule coverage”; `Statics` |
+| verdict | The checker's accept or reject on a corpus case | [FIELD §7][F7]: "verdict" differs, none | `checkProgram` | ours, pending audit | 03 “Lemmas §7 owes, and the …”; README “The executable oracle”; REDTEAM “Targets”; lean/README “The bridge corpus”; GUIDE §4; BRIDGE-SENSITIVITY “Rule coverage”; `Checker.Defs` |
 | red case; disagreement | A corpus case on which two of the compared systems disagree | [FIELD §7][F7]: "red case" differs, partial | — | ours, pending audit | 01 §5.5; 03 “Type safety”; README intro; lean/README “The bridge corpus”; GUIDE “One program, traced both ways”; BRIDGE-SENSITIVITY “Method”; `Statics` |
 | model gap; modeled gap | A behavior the oracle declares it does not model | [FIELD §7][F7]: "model gap" differs, none | — | ours, pending audit | 01 §6.4 |
 | model; model choice; model choices | The Lean definitions as an executable model; a choice the model fixes where the specification leaves one open | [FIELD §7][F7]: executable model (Cedar); "model choice" none | — | ours, pending audit | 01 §2; 03 “Type safety”; REDTEAM “Targets”; lean/README “Generated programs”; GUIDE §2; BRIDGE-SENSITIVITY intro; `Float` |
@@ -419,12 +419,13 @@ it has two rows.
 | axiom | A constant assumed without proof | [FIELD §8][F8]: Reference §8 | — | standard | 03 “Lemmas §7 owes, and the …”; REDTEAM “Targets”; lean/README “Deciding whether to believe it”; GUIDE “What the proof needs”; `Float` |
 | `sorry` | A placeholder that closes any goal by the axiom `sorryAx` | [FIELD §8][F8]: Reference §8.4 | — | standard | REDTEAM “Targets”; lean/README intro; GUIDE §7 |
 | trusted computing base; trusted base | What must be trusted for a guarantee to hold | [FIELD §7][F7]: CakeML §1; [FIELD §8][F8]: Reference, "Validating a Lean Proof" | — | standard | README “Contents”; REDTEAM intro; lean/README “The trusted-base lint” |
+| Lean Comparator; Comparator | A tool that checks proofs against a trusted file of statements, replaying them through the kernel, and checks the proved statements match | [FIELD §8][F8]: comparator | — | standard | REDTEAM “Targets”; lean/README “The statement layer” |
 | trust report | The generated `TRUST.md`: the axioms each theorem uses and what else is trusted | [FIELD §8][F8]: "trust report" differs, partial | — | ours, pending audit | REDTEAM “Targets”; lean/README “What is mechanized”; GUIDE §6 |
 | inductive type; inductive; inductively defined proposition | A type, or a relation in `Prop`, given by its constructors | [FIELD §8][F8]: TPIL §7.3 | `Typed`, `Step` | standard | lean/README “How to read this, with …”; GUIDE §1; `Syntax` |
 | structure fields | The fields of a Lean `structure`; here, the laws the rounded float operations must satisfy | [FIELD §8][F8]: `structure` (Reference §4.4.2) | `FloatModel` | standard | 03 “Lemmas §7 owes, and the …”; GUIDE “What the proof needs” |
 | module; `module` system | A Lean source file, and Lean's module system that controls what one exposes | [FIELD §8][F8]: Reference §§5.3–5.4 | — | standard | 01 §2; lean/README “The bridge corpus”; GUIDE §2; `Float` |
-| L0 syntax; L1 definitions; L2 proofs; L3 tooling; layer | The four layers of the package, each importing only its own or lower ones | none | — | ours, pending audit | 01 §6.13.3; README “Why comptime is elaboration, not …”; REDTEAM intro; lean/README “Layers”; `Statics` |
-| statement layer; spine | The planned layer of headline statements apart from proofs; the chain of theorems the main claim rests on | none | — | ours, pending audit | REDTEAM intro; lean/README “Layers” |
+| L0 syntax; L1 definitions; L2 proofs; L3 tooling; layer | The four layers of the package, each importing only its own or lower ones | none | — | ours, pending audit | 01 §6.13.3; README “Why comptime is elaboration, not …”; REDTEAM intro; lean/README “Deciding whether to believe it”; GUIDE §6; `Statics` |
+| statement layer; spine; Spec statements | The planned layer of headline statements apart from proofs; the chain of theorems the main claim rests on | none | — | ours, pending audit | REDTEAM intro; lean/README “Deciding whether to believe it”; GUIDE §6 |
 | digest | The generated `DIGEST.md`: every theorem's statement as Lean elaborates it | none | — | ours, pending audit | REDTEAM “Targets”; lean/README intro; GUIDE “How to read this guide” |
 | explain rendering; explain | The generated per-case trace of a corpus program under the model | none | — | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “Explaining a program”; GUIDE “One program, traced both ways”; BRIDGE-SENSITIVITY “Rule coverage”; `Dynamics` |
 
@@ -437,7 +438,7 @@ it has two rows.
 | adjudicator; counts; counted (finding) | The coordinator who decides which findings stand; a finding counts once reproduced or independently found twice | none | — | ours, pending audit | 03 “No double-free”; REDTEAM intro; lean/README “Generated programs”; GUIDE §4; BRIDGE-SENSITIVITY “Method”; `Syntax` |
 | full-claim pass; targeted pass | A red-team pass over the whole claim; one over a single changed statement, definition or the compiler-against-model comparison | none | — | ours, pending audit | REDTEAM intro |
 | packet | Exactly what a red agent receives: the statements, the definitions they use, and the calculus | none | — | ours, pending audit | REDTEAM intro; lean/README “The trusted-base lint” |
-| change | One lane's diff, what per-lane review attacks, as opposed to the whole claim | none | — | ours, pending audit | 01 §2; README “Relationship to the prose spec”; REDTEAM intro; lean/README “Explaining a program”; GUIDE “The program”; `Statics` |
+| change | One lane's diff, what per-lane review attacks, as opposed to the whole claim | none | — | ours, pending audit | 01 §2; README “Relationship to the prose spec”; REDTEAM intro; lean/README “Explaining a program”; GUIDE “The program”; `Dynamics` |
 | docs (target); definitions (target); statements (target); bridge (target) | The five red-team targets: statements, definitions, the compiler-against-model comparison, docs, trusted base | none | — | ours, pending audit | 01 §1; 03 intro; README intro; REDTEAM intro; lean/README intro; GUIDE §2; BRIDGE-SENSITIVITY intro; `Float` |
 
 ### General mathematics
@@ -446,7 +447,7 @@ it has two rows.
 |---|---|---|---|---|---|
 | lattice; least upper bound | A partial order in which any two elements have a least upper bound (their join) and a greatest lower bound (their meet) | [FIELD §9][F9]: Tarski 1955 §1; Tov & Pucella §4.1 (a two-element lattice of qualifiers) | `Mult` | standard | 01 §3; README “Contents”; lean/README “What is mechanized”; `Syntax` |
 | associative; commutative; idempotent; associativity; commutativity | `(a ⊔ b) ⊔ c = a ⊔ (b ⊔ c)`; `a ⊔ b = b ⊔ a`; `a ⊔ a = a` | none fetched; no FIELD.md source states these laws ([FIELD §9][F9] says so) | `OwnSt.join` | ours, pending audit | 03 “Lemmas §7 owes, and the …”; lean/README “What is mechanized”; GUIDE “What the checker demands”; `Statics` |
-| absorbs | Of the join: joining a second copy of one argument changes nothing, `join(join(a, b), b) = join(a, b)` | none; lattice absorption is a different law, `a ⊔ (a ⊓ b) = a` | `Ctx.join` | ours, pending audit | 03 “Lemmas §7 owes, and the …”; GUIDE §2; `Statics` |
+| absorbs | Of the join: joining a second copy of one argument changes nothing, `join(join(a, b), b) = join(a, b)` | none; lattice absorption is a different law, `a ⊔ (a ⊓ b) = a` | `Ctx.join` | ours, pending audit | 03 “Lemmas §7 owes, and the …”; GUIDE §2; `Dynamics` |
 | relation; partial equivalence relation | A set of pairs; one that is symmetric and transitive but need not be reflexive | none fetched | — | ours, pending audit | 01 §2; 03 intro; REDTEAM “Targets”; lean/README “What is mechanized”; GUIDE intro; `Statics` |
 | partition | Splitting a set into disjoint parts that together cover it | none fetched | — | ours, pending audit | 01 §6.4; 03 “Lemmas §7 owes, and the …”; lean/README “Deciding whether to believe it”; GUIDE “What the proof needs”; `Float` |
 | prefix; proper prefix; longest proper prefix | An initial part of a sequence; one shorter than the whole; the longest such with a given property | [FIELD §6][F6]: prefix (Alpern & Schneider) | — | standard | 01 §4.2; 03 intro; lean/README “Generated programs”; GUIDE §1; `Syntax` |
@@ -681,13 +682,13 @@ documents rely on.
 | `Decls.byValue` | `Statics` | The types a declaration contains by value: a struct's fields, an enum's payload components (`3.0:5`) | Rue-specific, grounded (spec 3.0:5) | — |
 | `Decls.Names` | `Statics` | One step of the contains-by-value relation between declarations (`3.0:5`) | ours, pending audit | 03 “Type safety”; `Statics` |
 | `WfNames` | `Statics` | The contains-by-value relation is well-founded: no declaration contains itself (`3.0:5`, E0483) | standard (FIELD §8: well-founded recursion, Reference §7.6) | 03 intro; lean/README “What is mechanized”; `Statics` |
-| `WfDecls` | `Statics` | The declarations are well formed: no containment cycle, and every struct and enum class is correct | standard (FIELD §9: well-formed, PFPL §1.2) | 03 “Type safety”; `Statics` |
+| `WfDecls` | `Statics` | The declarations are well formed: no containment cycle, and every struct and enum class is correct | standard (FIELD §9: well-formed, PFPL §1.2) | 03 “Type safety”; `Checker.Defs` |
 | `OwnSt` | `Statics` | A variable's ownership state, as a tree over its paths: owned, moved out, or per-field states after a partial move (§5) | Rue-specific, grounded (spec 3.8:79) | lean/README “The trusted-base lint”; GUIDE §3 |
 | `OwnSt.decEq` | `Statics` | Decides equality of two ownership states | helper | — |
 | `OwnSt.decEqList` | `Statics` | Decides equality of two lists of ownership states | helper | — |
 | `OwnSt.fieldStates` | `Statics` | The recorded states of a node's fields | helper | — |
 | `OwnSt.fieldAt` | `Statics` | The state recorded for one field, owned by default | helper | `Soundness.Defs` |
-| `OwnSt.setField` | `Statics` | Writes one field's state | helper | `Statics` |
+| `OwnSt.setField` | `Statics` | Writes one field's state | helper | — |
 | `OwnSt.get` | `Statics` | The ownership state at a path, or none when a proper prefix of it is moved out (`Σ(p)`, §5) | Rue-specific, grounded (spec 3.8:79) | 03 “No use-after-move”; `Statics` |
 | `OwnSt.setAt` | `Statics` | Writes an ownership state at a path and removes every path under it (§5.1–§5.3) | Rue-specific, grounded (spec 3.8:79) | `Statics` |
 | `OwnSt.isOwned` | `Statics` | The node at a path is owned, whether or not something under it was moved out | helper | — |
@@ -699,7 +700,7 @@ documents rely on.
 | `assignArrayOk` | `Statics` | An assignment into an array needs the whole array owned, with no element moved out (`3.8:72`, E0480) | Rue-specific, grounded (spec 3.8:72) | 03 intro; GUIDE “What the checker demands”; `Syntax` |
 | `overwriteOk` | `Statics` | An assignment may overwrite a place only when it is moved out or its type carries no linear value (`3.8:77`) | Rue-specific, grounded (spec 3.8:77) | GUIDE “What the checker demands”; `Statics` |
 | `Entry` | `Statics` | One typing-context entry: a variable's declared type, mutability, and ownership state | ours, pending audit | — |
-| `Entry.setSt` | `Statics` | Replaces an entry's ownership state | helper | `Statics` |
+| `Entry.setSt` | `Statics` | Replaces an entry's ownership state | helper | — |
 | `Ctx` | `Statics` | The typing context `Γ ; Σ` of §5, innermost variable first | standard (FIELD §4: typing context `Γ`, Walker) | lean/README “Deciding whether to believe it”; GUIDE §1; `Statics` |
 | `Entry.skel` | `Statics` | An entry without its ownership state | helper | — |
 | `Ctx.skel` | `Statics` | A context without its ownership states | helper | — |
@@ -731,9 +732,9 @@ documents rely on.
 | `WfFn` | `Statics` | A function is well formed: its body types at its return type and leaves no by-value parameter owning a linear value (§5.8's (Fn)) | standard (FIELD §9: well-formed, PFPL §1.2) | `Statics` |
 | `WfProgram` | `Statics` | A program is well formed: its declarations and every function | standard (FIELD §9: well-formed, PFPL §1.2) | — |
 | `ProgramTyped` | `Statics` | A program ready to run: well formed, with an entry function that takes no parameters (§6.12) | standard (FIELD §2: typing judgment) | 03 “Type safety”; GUIDE §4 |
-| `Ctx.SameSkel` | `Statics` | Every context in a list has the same variables and types as a given one | helper | `Statics` |
+| `Ctx.SameSkel` | `Statics` | Every context in a list has the same variables and types as a given one | helper | — |
 | `Ctx.Extends` | `Statics` | A context is a given one with zero or more variables added on top | helper | — |
-| `Out.SkelOk` | `Statics` | A result's contexts keep the incoming variables and types, possibly with more on top | helper | `Statics` |
+| `Out.SkelOk` | `Statics` | A result's contexts keep the incoming variables and types, possibly with more on top | helper | — |
 | `Out.Wf` | `Statics` | Every state in a result fits its declared types | helper | — |
 | `Out.WfPres` | `Statics` | A well-formed incoming context gives a result whose states are well formed | helper | — |
 | `Out.WfArms` | `Statics` | The same for a `match`'s arms | helper | — |
@@ -816,7 +817,7 @@ documents rely on.
 | `Frame.popScope` | `Step` | Removes the cells an `endscope` marker owes from the frame's environment and drop list (§6.7) | ours, pending audit | `Step` |
 | `Kont.toCall` | `Step` | The nearest call frame below the top of the stack | helper | — |
 | `Kont.toLoop` | `Step` | The nearest loop frame below the top, if no call frame comes first | helper | — |
-| `rootCell` | `Step` | The live cell of a place's root binding | helper | `Step` |
+| `rootCell` | `Step` | The live cell of a place's root binding | helper | — |
 | `plainDropRetire` | `Step` | `drop-retire` as §6.1 writes it, without the interpreter's leak check | helper | `Step` |
 | `plainUnwind` | `Step` | `run-scope-drops` as §6.1 writes it, without the leak check | helper | `Step` |
 | `plainResidue` | `Step` | Drops the unselected parts of a destructured value as §6.3 writes it, without the interpreter's extra check | helper | — |
@@ -824,16 +825,16 @@ documents rely on.
 | `Step` | `Step` | §6's reduction relation `C → C′`: one constructor per §6 rule, plus the search rules of §6.2 | standard (FIELD §1: small-step transition relation) | 03 intro; REDTEAM “Targets”; lean/README “Layers”; GUIDE §2; `Dynamics` |
 | `Steps` | `Step` | `→*` (§6.12): the reflexive-transitive closure of `Step` | standard (FIELD §1: `→*` reflexive-transitive closure) | — |
 | `StepOut` | `Step` | What `step` finds: the next configuration, a final one, or a stuck one with its reason | helper | — |
-| `stepEval` | `Step` | `step` at an expression in focus | helper | `Step` |
-| `stepArgs` | `Step` | `step` at a completed argument list | helper | `Step` |
+| `stepEval` | `Step` | `step` at an expression in focus | helper | — |
+| `stepArgs` | `Step` | `step` at a completed argument list | helper | — |
 | `OpRes.toStep` | `Step` | An operator's outcome as a step: a value, a trap (Panic-Lift), or stuck | helper | — |
-| `stepRet` | `Step` | `step` when a value returns into the top frame | helper | `Step` |
+| `stepRet` | `Step` | `step` when a value returns into the top frame | helper | — |
 | `step` | `Step` | `Step` as a function: the one step a configuration takes, or why it takes none (halted or stuck) | standard (FIELD §1: small-step transition relation) | 03 “Lemmas §7 owes, and the …”; lean/README “What is mechanized”; `Step` |
-| `Config.Stuck` | `Step` | A stuck configuration (§6, §7): not final, and no §6 rule applies | standard (FIELD §1: stuck) | `Step` |
+| `Config.Stuck` | `Step` | A stuck configuration (§6, §7): not final, and no §6 rule applies | standard (FIELD §1: stuck) | — |
 | `Violation.isStuckState` | `Step` | Whether a refusal is one §6 itself has no rule for, rather than one of the four extra checks `eval` adds | standard (FIELD §1: stuck) | — |
-| `stepN` | `Step` | Takes up to `n` steps, stopping early | helper | GUIDE §2; `Step` |
+| `stepN` | `Step` | Takes up to `n` steps, stopping early | helper | lean/README “What is mechanized”; GUIDE §2 |
 | `letAddProgram` | `Step` | Demo program `let x = 40; x + 2` | helper | — |
-| `demoDecls` | `Step` | Demo declarations: an affine struct with a destructor and an enum carrying it | helper | `Step` |
+| `demoDecls` | `Step` | Demo declarations: an affine struct with a destructor and an enum carrying it | helper | — |
 | `demoProgram` | `Step` | Demo program over `demoDecls` | helper | — |
 | `demoS` | `Step` | Demo expressions `S{}` and an `i32` literal | helper | — |
 | `demoI32` | `Step` | Demo `i32` literal | helper | — |
@@ -863,7 +864,7 @@ documents rely on.
 | `Decls.peel` | `Checker.Defs` | The containment check's flags after `n` rounds | helper | — |
 | `checkNoCycle` | `Checker.Defs` | `3.0:5` as an algorithm: no struct or enum contains itself by value | Rue-specific, grounded (spec 3.0:5) | 03 intro; `Statics` |
 | `checkDecls` | `Checker.Defs` | Checks a whole declaration environment: struct classes, enum classes, and no containment cycle | Rue-specific, grounded (spec 3.0:5) | 03 intro; lean/README “What is mechanized”; `Statics` |
-| `checkProgram` | `Checker.Defs` | Checks a whole program: its declarations, every function, and an entry point with no parameters | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | 03 “Linear values are consumed exactly …”; lean/README “What is mechanized”; GUIDE §4; BRIDGE-SENSITIVITY “Never exercised”; `Statics` |
+| `checkProgram` | `Checker.Defs` | Checks a whole program: its declarations, every function, and an entry point with no parameters | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | 03 “Linear values are consumed exactly …”; lean/README “What is mechanized”; GUIDE §4; BRIDGE-SENSITIVITY “Never exercised”; `Checker.Defs` |
 | `HasTy` | `Soundness.Defs` | Value typing: a machine value has a type (integer ranges, struct fields against the declaration) | standard (FIELD §2: typing judgment `⊢ v : τ`) | REDTEAM “Targets”; lean/README “What is mechanized”; GUIDE “What the proof needs”; `Statics` |
 | `HasTys` | `Soundness.Defs` | Value typing for a list, position by position | standard (FIELD §2: typing judgment `⊢ v : τ`) | — |
 | `Contents.holeFree` | `Soundness.Defs` | Whether a contents tree has no moved-out position | helper | — |
@@ -935,7 +936,7 @@ check normalizes them (a leading article dropped).
 
 Run-in headings, lemma titles and emphasized phrases:
 
-- `3.0:5` (E0483), mechanized; A `@panic` (by design); Accessor calls
+- In RUE-2241's Linux lane; The lint; On macOS; Read the claim; Running Comparator; unsandboxed and says nothing; `3.0:5` (E0483), mechanized; A `@panic` (by design); Accessor calls
   (ADR-0062); Across cells; argument's syntax alone; Array construction; The
   array step; as well as; At every horizon; at the access; At the arm's end;
   At the result; The audit; Axioms; Axioms, by allow-list; The bound suffices;
