@@ -548,6 +548,15 @@ MUTANTS = [
       [E(FL, "        (sig % 2 = 1 ∧ sig < 2 ^ w.prec ∧ w.eMin ≤ exp ∧ exp ≤ w.eTop ∧\n          sig < 2 ^ (w.eTop - exp).toNat)",
          "        (sig < 2 ^ w.prec ∧ w.eMin ≤ exp ∧ exp ≤ w.eTop ∧\n          sig < 2 ^ (w.eTop - exp).toNat)")],
       "a non-canonical (even-significand) finite datum is Wf"),
+    # RUE-2500: the hypothesis-side control RUE-2490's review asked for. `ContentsMatches` sits
+    # in `FrameMatches`, a hypothesis of `soundness`, `drop_exactly_once` and
+    # `rest_exactly_once`; demanding `False` of an `Owned` path makes those hypotheses
+    # unsatisfiable at any frame with an owned binding, so the theorems become vacuous there,
+    # and only a witness that states `FrameMatches` of such a frame can notice.
+    M("contentsmatches-owned-false", "§7", "ContentsMatches.owned", "strengthen",
+      [E(SD, "  | owned {c T} : ContentsTy D c T → c.holeFree = true → ContentsMatches D c .owned T",
+         "  | owned {c T} : ContentsTy D c T → False → ContentsMatches D c .owned T")],
+      "strengthen a hypothesis: no Owned path matches any contents, so no frame with an owned binding agrees with its store"),
 ]
 
 
@@ -644,27 +653,32 @@ RULINGS = {
     "copy-monitor-off": ("statement", "`Sharp.copy` is false: an owned value under a `Copy` one is no longer refused (RUE-2485); the build stops first at `Cons.intro`, a ledger step for `introVal`"),
     "dyn-residual-declared": ("statement", "`Sharp.leak` and `Sharp.overwrite` are false: a declared-linear struct with no linear field owes nothing, so its leak and its overwrite are no longer refused (RUE-2485)"),
     # RUE-2490: over the statement vocabulary and Float, from the --only run at trunk 1b58cdc26.
+    # RUE-2500 re-read six of them by hand (the six survivors), each now killed by a new Sharp
+    # statement; the kill is a hand-checked refutation, since the tool cannot build the Spec
+    # layer under these mutants (RUE-2499).
     # Corrected by RUE-2490's review (rue-2490-review.md): the proofs-off pass sorries
     # Sharp/Nonvacuous/Spine/both Glue.lean (layer 3), so no automated pass ever checks
     # them for these mutants; the readings below are by hand, against the repro files in
     # scratch/rue-2490-review/. A weakened definition in a hypothesis or under `¬` (every
     # Sharp `¬ EvalOk`/`¬ Exact`/`¬ Blocks`/`¬ SafeAt`) can make a statement false even
     # though it is a weakening; a weakened definition in a conclusion only, never.
-    "hasty-int-any-value": ("helper", "no Spec statement is false: `HasTy` occurs only in conclusions, and every negated occurrence (`Sharp.stuck`, `.stuck_step`, `.no_entry`, `.entry_param`) sits in a disjunct whose run is already stuck or reaches no value; `FrameMatches` rests on `ContentsTy`, which this mutant leaves alone. `HasTy.contentsTy` is a genuinely false helper. Survivor"),
-    "hasty-float-any-value": ("helper", "the same argument, over `f.Wf w`: no Spec statement is false; `HasTy.contentsTy` is again the false helper. Survivor"),
+    "hasty-int-any-value": ("statement", "`Sharp.out_of_range_halt` is false (RUE-2500): its `¬ HasTy` of `2^63` at `i64`, and its `¬ SafeAt` of the configuration halted with it, rest on `HasTy.int`'s bounds, which the mutant drops (kernel-checked refutation, scratch/rue-2500/hasty-int-any-value-T.lean). Before RUE-2500 no Spec statement was false: `HasTy` occurred only in conclusions and in `¬` claims about stuck or valueless runs; `HasTy.contentsTy` is also a false helper"),
+    "hasty-float-any-value": ("statement", "`Sharp.float_halt` is false (RUE-2500): the configurations halted with `30 · 2^-2` and `1 · 2^-1075` are now `SafeAt` `f64`, since `HasTy.float` no longer asks `Wf` (scratch/rue-2500/hasty-float-any-value-T.lean); `HasTy.contentsTy` is also a false helper"),
     "evalok-stuck-ok": ("statement", "`Sharp.stuck`, `.typed` and `.frame` are false: each asserts `¬ EvalOk … (.stuck _)`, now `¬ True`. `Spec.soundness_stmt` is only weakened by this mutant, not false, so that is not the kill"),
     "contentsmatches-moved-residue": ("statement", "`Spec.soundness_stmt` — the headline — and `drop_exactly_once_stmt` are both false: the dropped residual-linear check sits in `FrameMatches`, a *hypothesis* of `soundness`, so weakening it strengthens the claim; a live linear overwrite `check` now accepts still runs to `.stuck .linearOverwrite` (kernel-checked counterexample, contentsmatches-moved-residue-T.lean)"),
     "exact-at-most": ("statement", "`Sharp.pending_program`, `.pending_expr` and `.no_lead` are false: each `¬ Exact` rested on a strict `<` that the weakened `≤` now satisfies; `Sharp.store_cc` stays true, since its `¬ Exact` rests on `StoreCC` instead"),
     "blocks-any-trace": ("statement", "`Sharp.bare_dtor`, `.unreached` and `.unreached_panic` are false via `Blocks.not_dtor`; `Sharp.leak`, `.overwrite`, `.discard`, `.discard_loop` and `.copy` never mention `Blocks` and stay true"),
-    "lifo-vacuous": ("helper", "no Spec statement is false: `Lifo.newer` is an L2 helper, not a stated property, and the only negated `Lifo` occurrences (`Sharp.unordered`, `.not_a_step`) stay true through `[1, 0].Pairwise (<)` and through `[] = tr ++ evs` with `tr ≠ []`; `drop_order` is only weakened. Survivor"),
+    "lifo-vacuous": ("statement", "`Sharp.uncut_drop` is false (RUE-2500): its `¬ Lifo [0, 1] [0] [0]` (a pop that cut cell 1 and dropped cell 0) is now `¬ True`, and so is its refutation of `drop_order`'s last half, where `NewestFirst` and the stack's order hold (scratch/rue-2500/lifo-vacuous-T.lean). `Sharp.unordered` and `.not_a_step` stay true through other conjuncts"),
     "newestfirst-vacuous": ("helper", "no Spec statement is false (the same two Sharp conjuncts as `lifo-vacuous` stay true); killed instead by `Witnesses.lean`'s `unorderedRecord_rejected`, a layer-4 witness, not a stated property"),
     "ordered-vacuous": ("helper", "`Config.Ordered` occurs in no Spec, Sharp, Nonvacuous or Glue statement; killed by the same witness, `unorderedRecord_rejected`, not a stated property"),
     "safeat-progress-vacuous": ("statement", "`Sharp.unreachable_stuck` and `.stuck_step` are false: dropping the progress conjunct lets `¬ SafeAt` of a stuck configuration hold vacuously on typing alone, and the stuck program's reachable-value claim is refuted by `Step.det`"),
-    "safeat-typing-vacuous": ("helper", "no Spec statement is false: both Sharp `¬ SafeAt` claims rest on the progress conjunct, which this mutant leaves alone (proved for `unreachable_stuck`). Survivor"),
+    "safeat-typing-vacuous": ("statement", "`Sharp.ill_typed_halt` is false (RUE-2500): the configuration halted with `true` is terminal, so with the typing conjunct gone it is `SafeAt` `i64` (scratch/rue-2500/safeat-typing-vacuous-T.lean); `Sharp.out_of_range_halt` and `.float_halt` are false too. `unreachable_stuck` and `.stuck_step` rest on the progress conjunct and stay true"),
     "safeat-terminal-only": ("statement", "`Spec.step_preservation_stmt` is false, refuted at `Config.init` of `loop {()}`, which is not terminal"),
     "stepsn-one-step-only": ("statement", "`Spec.eval_diverges_iff_stmt` and `Sharp.discard_loop` are false: `loop {()}` exhausts every fuel but has no `StepsN 2`; `step_type_safety_stmt` is false by the same argument"),
-    "float-wf-no-emin": ("holds", "every statement holds (sampled, not exhaustive): `exactOps` on data that are Wf′ but not `Wf` still satisfies `arith_wf`/`sqrt_wf`/`narrow_wf`/`div_by_zero`, so `Nonvacuous.exact_model` stands and `eval` has no float-dependent refusal; the four named helpers (`canonNum_wf`, `one_wf`, `widen_wf`, `roundOp_wf`) conclude a weaker `Wf` and stay true — script failures, not false helpers"),
-    "float-wf-noncanonical": ("holds", "every statement holds, by the same sampling argument"),
+    "float-wf-no-emin": ("statement", "`Sharp.float_halt` is false (RUE-2500): its `¬ (num false 1 (-1075)).Wf .w64`, half the least subnormal, is refuted (scratch/rue-2500/float-wf-no-emin-T.lean). The float laws still hold on the mutant's larger `Wf` as far as RUE-2490 sampled, and the four Float lemmas that fail conclude a weaker `Wf` and stay true, so without that statement nothing would be false"),
+    "float-wf-noncanonical": ("statement", "`Sharp.float_halt` is false (RUE-2500): its `¬ (num false 30 (-2)).Wf .w64`, the non-canonical spelling of the `7.5` `Nonvacuous.float` returns, is refuted (scratch/rue-2500/float-wf-noncanonical-T.lean); the float laws and the four Float lemmas stay true as for `float-wf-no-emin`"),
+    # RUE-2500: the hypothesis-side control, read by hand (scratch/rue-2500/), as for the 15 above.
+    "contentsmatches-owned-false": ("statement", "`Nonvacuous.open_frame` is false: its `FrameMatches` of the owned binding `s : S0` against the cell `S0 { 5 }` needs `ContentsMatches .owned`, whose premise is now `False` (scratch/rue-2500/contentsmatches-owned-false-T.lean). No other witness states `FrameMatches` at a frame with an owned binding: `empty_frame` and `Sharp.stuck` state it of the empty frame, and `Nonvacuous.dtor` does not state it at all, so `soundness`, `drop_exactly_once` and `rest_exactly_once` would be vacuous at every open frame and only `open_frame` shows it"),
 }
 
 

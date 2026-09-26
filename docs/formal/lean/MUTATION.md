@@ -58,6 +58,13 @@ rows 81–95 of the table and have their own score
 (["RUE-2490: the statement vocabulary and Float"](#rue-2490-the-statement-vocabulary-and-float));
 the 80-mutant score above is unaffected and still means the same six-seeds
 comparison it always did.
+RUE-2500 added four sharpness counter-examples (`Sharp.uncut_drop`,
+`.ill_typed_halt`, `.out_of_range_halt`, `.float_halt`) that make each of
+RUE-2490's six survivors false, and one more mutant, the hypothesis-side
+control `contentsmatches-owned-false` (row 96). Those seven rows and the
+RUE-2490 block's score were updated by hand, from kernel-checked refutations
+in the loop's `scratch/rue-2500/`, not from a `mutate.py` run: the tool cannot
+yet build the Spec layer under these mutants (RUE-2499).
 
 ## What is mutated
 
@@ -91,18 +98,19 @@ definitions the statements are written in is a different exercise
 (RUE-2465's original scope card this page as "Not mutated," reasoning that
 "what would notice it is a different question": the Spec layer's non-vacuity
 witnesses and sharpness counter-examples, RUE-2469). RUE-2490 runs that
-exercise: 15 mutants over these four modules, added after RUE-2469/2485/2495
+exercise: 15 mutants over these four modules (and RUE-2500 one more), added after RUE-2469/2485/2495
 gave the page a non-vacuity witness and a sharpness counter-example for
 several of the statements that rest on them, which — per this page's own
 method — a weakened rule keeps proofs building past, but a weakened
 statement definition should break directly, since the witness or
 counter-example is stated in terms of the very thing that was weakened.
-["The mutants"](#the-mutants) below has all 95; the RUE-2490 block's own
+["The mutants"](#the-mutants) below has all 96; the RUE-2490 block's own
 readings, at trunk `1b58cdc26`, are in
 ["RUE-2490: the statement vocabulary and Float"](#rue-2490-the-statement-vocabulary-and-float).
 
-There are 95 mutants, 80 over §3, §§5.1–5.8 and §§6.2–6.12 (the semantics and
-the checker) and 15 over the statement vocabulary and Float (RUE-2490, cited
+There are 96 mutants, 80 over §3, §§5.1–5.8 and §§6.2–6.12 (the semantics and
+the checker) and 16 over the statement vocabulary and Float (RUE-2490's 15 and
+RUE-2500's control, cited
 by §7 throughout since that is where the headline statements live). They use
 the issue's operators and a few classic ones:
 
@@ -123,7 +131,7 @@ the issue's operators and a few classic ones:
 | vacuous (RUE-2490) | 6 | replace a whole clause or definition by `True`: `Lifo`, `NewestFirst`, `Config.Ordered`, `EvalOk`'s `.stuck` clause, and each conjunct of `Config.SafeAt` |
 | wildcard (RUE-2490) | 1 | add an unconstrained constructor to an inductive relation: `Blocks` accepts any trace |
 | count (RUE-2490) | 1 | weaken an exact ledger's `=` to `≤`: `Exact` |
-| strengthen (RUE-2490) | 2 | add a premise or drop a disjunct — the reverse of `premise` — where the strengthening could make the statement vacuous: `StepsN.step`, `Config.SafeAt`'s progress conjunct |
+| strengthen (RUE-2490, RUE-2500) | 3 | add a premise or drop a disjunct — the reverse of `premise` — where the strengthening could make the statement vacuous: `StepsN.step`, `Config.SafeAt`'s progress conjunct, and (RUE-2500) `ContentsMatches.owned` demanding `False`, which sits in a hypothesis |
 
 Most mutants change the rule *and* the checker together, the way a real
 mistake in the calculus or in its transcription would. Some change one side
@@ -554,23 +562,34 @@ and `ordered-vacuous` — are killed by the same existing witness,
 `unorderedRecord_rejected` (`Witnesses.lean`), which happens to state both
 `¬ NewestFirst` and `¬ Config.Ordered` of one concrete configuration.
 
+RUE-2500 re-read rows 81, 82, 87, 91, 94 and 95, RUE-2490's six survivors:
+each now falsifies a Sharp statement added for it (`Sharp.out_of_range_halt`,
+`.float_halt`, `.uncut_drop`, `.ill_typed_halt`), and their "Stated
+properties" and "Why" cells say so. Their first three columns are still
+RUE-2490's measurement: the tool's passes stop before the Spec layer, so they
+cannot see the new kill (RUE-2499). Row 96, `contentsmatches-owned-false`, is
+RUE-2500's hypothesis-side control. It has not been run through `mutate.py`:
+its "Killed first by" is the first error of a plain `lake build` of the
+mutated copy, and the two pass columns are "—", unmeasured.
+
 | # | Mutant | § | Rule | Operator | Killed first by | Without the proofs | Corpus and bridge alone | Stated properties | Why | s |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 81 | `hasty-int-any-value` | §6.1 | HasTy.int | premise | proof: `HasTy.int_inv` (`Soundness.lean`) | survived | (same) | only a helper is false | no Spec statement is false: `HasTy` occurs only in conclusions, and every negated occurrence (`Sharp.stuck`, `.stuck_step`, `.no_entry`, `.entry_param`) sits in a disjunct whose run is already stuck or reaches no value; `FrameMatches` rests on `ContentsTy`, which this mutant leaves alone. `HasTy.contentsTy` is a genuinely false helper. Survivor | 43 |
-| 82 | `hasty-float-any-value` | §6.1 | HasTy.float | premise | proof: `HasTy.float_inv` (`Soundness.lean`) | survived | (same) | only a helper is false | the same argument, over `f.Wf w`: no Spec statement is false; `HasTy.contentsTy` is again the false helper. Survivor | 43 |
+| 81 | `hasty-int-any-value` | §6.1 | HasTy.int | premise | proof: `HasTy.int_inv` (`Soundness.lean`) | survived | (same) | a stated property is false | `Sharp.out_of_range_halt` is false (RUE-2500): its `¬ HasTy` of `2^63` at `i64`, and its `¬ SafeAt` of the configuration halted with it, rest on `HasTy.int`'s bounds, which the mutant drops (kernel-checked refutation, scratch/rue-2500/hasty-int-any-value-T.lean). Before RUE-2500 no Spec statement was false: `HasTy` occurred only in conclusions and in `¬` claims about stuck or valueless runs; `HasTy.contentsTy` is also a false helper | 43 |
+| 82 | `hasty-float-any-value` | §6.1 | HasTy.float | premise | proof: `HasTy.float_inv` (`Soundness.lean`) | survived | (same) | a stated property is false | `Sharp.float_halt` is false (RUE-2500): the configurations halted with `30 · 2^-2` and `1 · 2^-1075` are now `SafeAt` `f64`, since `HasTy.float` no longer asks `Wf` (scratch/rue-2500/hasty-float-any-value-T.lean); `HasTy.contentsTy` is also a false helper | 43 |
 | 83 | `evalok-stuck-ok` | §7 | EvalOk (progress) | vacuous | proof: `EvalOk.mono_store` (`Soundness.lean`) | survived | (same) | a stated property is false | `Sharp.stuck`, `.typed` and `.frame` are false: each asserts `¬ EvalOk … (.stuck _)`, now `¬ True`. `Spec.soundness_stmt` is only weakened by this mutant, not false, so that is not the kill | 44 |
 | 84 | `contentsmatches-moved-residue` | §7 | ContentsMatches.moved | premise | proof: `ContentsMatches.hole` (`Soundness.lean`) | survived | (same) | a stated property is false | `Spec.soundness_stmt` — the headline — and `drop_exactly_once_stmt` are both false: the dropped residual-linear check sits in `FrameMatches`, a hypothesis of `soundness`, so weakening it strengthens the claim; a live linear overwrite `check` now accepts still runs to `.stuck .linearOverwrite` (kernel-checked counterexample, `contentsmatches-moved-residue-T.lean`) | 51 |
 | 85 | `exact-at-most` | §7 | Exact (ok/returned) | count | proof: `Exact.bind` (`TraceExact.lean`) | survived | (same) | a stated property is false | `Sharp.pending_program`, `.pending_expr` and `.no_lead` are false: each `¬ Exact` rested on a strict `<` that the weakened `≤` now satisfies; `Sharp.store_cc` stays true, since its `¬ Exact` rests on `StoreCC` instead | 76 |
 | 86 | `blocks-any-trace` | §6.11 | Blocks | wildcard | proof: `Blocks.append` (`TraceOrder.lean`) | survived | (same) | a stated property is false | `Sharp.bare_dtor`, `.unreached` and `.unreached_panic` are false via `Blocks.not_dtor`; `Sharp.leak`, `.overwrite`, `.discard`, `.discard_loop` and `.copy` never mention `Blocks` and stay true | 72 |
-| 87 | `lifo-vacuous` | §6.11 | Lifo | vacuous | proof: `Lifo.newer` (`TraceOrder.lean`) | survived | (same) | only a helper is false | no Spec statement is false: `Lifo.newer` is an L2 helper, not a stated property, and the only negated `Lifo` occurrences (`Sharp.unordered`, `.not_a_step`) stay true through `[1, 0].Pairwise (<)` and through `[] = tr ++ evs` with `tr ≠ []`; `drop_order` is only weakened. Survivor | 68 |
+| 87 | `lifo-vacuous` | §6.11 | Lifo | vacuous | proof: `Lifo.newer` (`TraceOrder.lean`) | survived | (same) | a stated property is false | `Sharp.uncut_drop` is false (RUE-2500): its `¬ Lifo [0, 1] [0] [0]` (a pop that cut cell 1 and dropped cell 0) is now `¬ True`, and so is its refutation of `drop_order`'s last half, where `NewestFirst` and the stack's order hold (scratch/rue-2500/lifo-vacuous-T.lean). `Sharp.unordered` and `.not_a_step` stay true through other conjuncts | 68 |
 | 88 | `newestfirst-vacuous` | §6.11 | NewestFirst | vacuous | proof: `NewestFirst.teardown` (`TraceOrder.lean`) | witness: `unorderedRecord_rejected` (`Witnesses.lean`) | survived | only a helper is false | no Spec statement is false (the same two Sharp conjuncts as `lifo-vacuous` stay true); killed instead by `Witnesses.lean`'s `unorderedRecord_rejected`, a layer-4 witness, not a stated property | 73 |
 | 89 | `ordered-vacuous` | §6.11 | Config.Ordered | vacuous | proof: `Config.Ordered.keep` (`TraceOrder.lean`) | witness: `unorderedRecord_rejected` (`Witnesses.lean`) | survived | only a helper is false | `Config.Ordered` occurs in no Spec, Sharp, Nonvacuous or Glue statement; killed by the same witness, `unorderedRecord_rejected`, not a stated property | 72 |
 | 90 | `safeat-progress-vacuous` | §7 | Config.SafeAt (progress) | vacuous | proof: `Config.SafeAt.progress` (`Adequacy.lean`) | survived | (same) | a stated property is false | `Sharp.unreachable_stuck` and `.stuck_step` are false: dropping the progress conjunct lets `¬ SafeAt` of a stuck configuration hold vacuously on typing alone, and the stuck program's reachable-value claim is refuted by `Step.det` | 68 |
-| 91 | `safeat-typing-vacuous` | §7 | Config.SafeAt (typing) | vacuous | proof: `Config.SafeAt.preservation` (`Adequacy.lean`) | survived | (same) | only a helper is false | no Spec statement is false: both Sharp `¬ SafeAt` claims rest on the progress conjunct, which this mutant leaves alone (proved for `unreachable_stuck`). Survivor | 7 |
+| 91 | `safeat-typing-vacuous` | §7 | Config.SafeAt (typing) | vacuous | proof: `Config.SafeAt.preservation` (`Adequacy.lean`) | survived | (same) | a stated property is false | `Sharp.ill_typed_halt` is false (RUE-2500): the configuration halted with `true` is terminal, so with the typing conjunct gone it is `SafeAt` `i64` (scratch/rue-2500/safeat-typing-vacuous-T.lean); `Sharp.out_of_range_halt` and `.float_halt` are false too. `unreachable_stuck` and `.stuck_step` rest on the progress conjunct and stay true | 7 |
 | 92 | `safeat-terminal-only` | §7 | Config.SafeAt (progress) | strengthen | proof: `Config.SafeAt.progress` (`Adequacy.lean`) | survived | (same) | a stated property is false | `Spec.step_preservation_stmt` is false, refuted at `Config.init` of `loop {()}`, which is not terminal | 7 |
 | 93 | `stepsn-one-step-only` | §7 | StepsN.step | strengthen | proof: `StepsN.toSteps` (`Adequacy.lean`) | survived | (same) | a stated property is false | `Spec.eval_diverges_iff_stmt` and `Sharp.discard_loop` are false: `loop {()}` exhausts every fuel but has no `StepsN 2`; `step_type_safety_stmt` is false by the same argument | 7 |
-| 94 | `float-wf-no-emin` | §7 | FloatDatum.Wf | bounds | proof: `canonNum_wf` (`Float.lean`) | survived | (same) | every statement holds | every statement holds (sampled, not exhaustive): `exactOps` on data that satisfy the mutant's weaker `Wf` but not the real one still satisfies `arith_wf`/`sqrt_wf`/`narrow_wf`/`div_by_zero`, so `Nonvacuous.exact_model` stands and `eval` has no float-dependent refusal; the four named helpers (`canonNum_wf`, `one_wf`, `widen_wf`, `roundOp_wf`) conclude a weaker `Wf` and stay true — script failures, not false helpers | 43 |
-| 95 | `float-wf-noncanonical` | §7 | FloatDatum.Wf | bounds | proof: `canonNum_wf` (`Float.lean`) | survived | (same) | every statement holds | every statement holds, by the same sampling argument | 43 |
+| 94 | `float-wf-no-emin` | §7 | FloatDatum.Wf | bounds | proof: `canonNum_wf` (`Float.lean`) | survived | (same) | a stated property is false | `Sharp.float_halt` is false (RUE-2500): its `¬ (num false 1 (-1075)).Wf .w64`, half the least subnormal, is refuted (scratch/rue-2500/float-wf-no-emin-T.lean). The float laws still hold on the mutant's larger `Wf` as far as RUE-2490 sampled, and the four Float lemmas that fail conclude a weaker `Wf` and stay true, so without that statement nothing would be false | 43 |
+| 95 | `float-wf-noncanonical` | §7 | FloatDatum.Wf | bounds | proof: `canonNum_wf` (`Float.lean`) | survived | (same) | a stated property is false | `Sharp.float_halt` is false (RUE-2500): its `¬ (num false 30 (-2)).Wf .w64`, the non-canonical spelling of the `7.5` `Nonvacuous.float` returns, is refuted (scratch/rue-2500/float-wf-noncanonical-T.lean); the float laws and the four Float lemmas stay true as for `float-wf-no-emin` | 43 |
+| 96 | `contentsmatches-owned-false` | §7 | ContentsMatches.owned | strengthen | proof: `ContentsMatchesList.of_owned` (`Soundness.lean`) | — | — | a stated property is false | `Nonvacuous.open_frame` is false: its `FrameMatches` of the owned binding `s : S0` against the cell `S0 { 5 }` needs `ContentsMatches .owned`, whose premise is now `False` (scratch/rue-2500/contentsmatches-owned-false-T.lean). No other witness states `FrameMatches` at a frame with an owned binding: `empty_frame` and `Sharp.stuck` state it of the empty frame, and `Nonvacuous.dtor` does not state it at all, so `soundness`, `drop_exactly_once` and `rest_exactly_once` would be vacuous at every open frame and only `open_frame` shows it | — |
 
 Rows 91–93's "s" column (7 s) is the cached build the review's rerun reused, not a
 per-mutant timing; the first measurement (43–76 s, rows 81–90 and 94–95) is the real one.
@@ -582,24 +601,68 @@ they sit downstream of the layer-2 module that fails first (`Layers.lean:53–57
 `PROOF_LAYERS = (0, 1, 2, 3)`). Every "a stated property is false" and "only a helper is
 false" reading above for rows 81–95 is therefore by hand, against a kernel-checked repro
 file in `scratch/rue-2490-review/` (sorry-free, and confirmed to fail on the unmutated
-package). The rule the first pass of readings missed: a weakened definition that occurs in
+package); RUE-2500's readings of rows 81, 82, 87, 91 and 94–96 are checked the same way,
+against `scratch/rue-2500/` (for the two `Float` mutants the mutated copy's L0/L1 lemmas
+are given `sorry` first, since `Float.lean`'s own lemmas break as scripts; the refutation
+uses only the definitions, and `#print axioms` shows no `sorryAx`). The rule the first pass of readings missed: a weakened definition that occurs in
 a hypothesis, or under a `¬` — every Sharp `¬ EvalOk`/`¬ Exact`/`¬ Blocks`/`¬ SafeAt`
 statement negates the mutated thing — makes the statement stronger, and a stronger
 statement can be false; only a weakening that occurs solely in a conclusion is safe.
 
-The score, this block alone (15 mutants, none equivalent, so the denominator
-is 15; `mutate.py --score` over this page's own `--work`):
+The score, this block alone (none equivalent, so the denominator is the
+number of mutants). The first column is RUE-2490's (`mutate.py --score` over
+this page's own `--work`). The other two are by hand, updated by RUE-2500
+from its refutations and not recomputed by the tool; the "(16)" column adds
+row 96, the hypothesis-side control, whose two pass columns were never run.
 
-| Measure | RUE-2490's 15 |
-|---|---:|
-| **Killed: a stated property is false, or a witness, seed or generated case fails** | 9/15 (60%) |
-| A stated property is false (proof reading) | 7/15 (47%) |
-| A stated property or a helper lemma is false | 13/15 (87%) |
-| The tests with the proofs off: witnesses, seeds, generated cases | 2/15 (13%) |
-| The seeds and the bridge alone | 0/15 (0%) |
-| The build or the corpus fails at all (a proof script, a helper or the Explain mirror included) | 15/15 (100%) |
+| Measure | RUE-2490's 15, as measured | The 15, after RUE-2500 | With row 96 (16) |
+|---|---:|---:|---:|
+| **Killed: a stated property is false, or a witness, seed or generated case fails** | 9/15 (60%) | 15/15 (100%) | 16/16 (100%) |
+| A stated property is false (proof reading) | 7/15 (47%) | 13/15 (87%) | 14/16 (88%) |
+| A stated property or a helper lemma is false | 13/15 (87%) | 15/15 (100%) | 16/16 (100%) |
+| The tests with the proofs off: witnesses, seeds, generated cases | 2/15 (13%) | 2/15 (13%) | not run for row 96 |
+| The seeds and the bridge alone | 0/15 (0%) | 0/15 (0%) | not run for row 96 |
+| The build or the corpus fails at all (a proof script, a helper or the Explain mirror included) | 15/15 (100%) | 15/15 (100%) | 16/16 (100%) |
 
-Why 60%, not higher: `mutate.py`'s automated passes never reach `Sharp.lean`,
+After RUE-2500 every one of the 16 falsifies a stated property except
+`newestfirst-vacuous` and `ordered-vacuous`, which the layer-4 witness
+`unorderedRecord_rejected` kills. Each of the six former survivors falsifies a
+Sharp statement written to negate the mutated definition at a configuration
+or datum that fails only that definition:
+
+* `hasty-int-any-value`: `Sharp.out_of_range_halt`, whose `¬ HasTy` of `2^63`
+  at `i64` (one past the maximum) is false once `HasTy.int` drops its bounds;
+* `hasty-float-any-value`, `float-wf-noncanonical`, `float-wf-no-emin`:
+  `Sharp.float_halt`. For the checked float program of `Nonvacuous.float`, the
+  configurations halted with `30 · 2^-2` (the non-canonical spelling of the
+  `7.5` the program returns) and with `1 · 2^-1075` (half the least subnormal)
+  are not `SafeAt` `f64`, and neither datum is `Wf`. The first mutant makes
+  both configurations `SafeAt`. The other two each make one datum `Wf`;
+* `lifo-vacuous`: `Sharp.uncut_drop`, a step from an unreached configuration
+  that cuts cell `1` off the registration stack and drops cell `0`. Its
+  markers are newest first and its stack is in order, so only `Lifo` fails.
+  `¬ Lifo` of it becomes `¬ True`;
+* `safeat-typing-vacuous`: `Sharp.ill_typed_halt`, a configuration halted
+  with `true` for a program returning `i64`. It is terminal, so with the
+  typing conjunct gone it is `SafeAt`.
+
+Each refutes `step_preservation` (hypothesis 2) or `drop_order` (hypothesis
+4) without the hypothesis that the configuration is reached, so they are
+sharpness counter-examples in the lint's sense, glued in the kernel
+(`Sharp/Glue.lean`). They sit where a weakened definition can make a
+statement false: under a `¬`.
+
+The control `contentsmatches-owned-false` (row 96) strengthens a hypothesis:
+no `Owned` path matches any contents. `soundness`, `drop_exactly_once` and
+`rest_exactly_once` take `FrameMatches` as a hypothesis, so they become
+vacuous at every frame with an owned binding. `Nonvacuous.open_frame` is the
+only witness that states `FrameMatches` of such a frame, and it becomes false.
+`empty_frame` and `Sharp.stuck` state it only of the empty frame, and
+`Nonvacuous.dtor` does not state `FrameMatches` or `StoreCC` at all, contrary
+to what RUE-2490 expected. So one witness carries this direction; a
+`StoreCC` strengthening would also be caught by `empty_frame`.
+
+What RUE-2490 found before RUE-2500 (its "60%"): `mutate.py`'s automated passes never reach `Sharp.lean`,
 `Nonvacuous.lean`, `Spine.lean` or either `Glue.lean` for these 15 mutants —
 all five are layer 3, so the proofs-off pass sorries them, and in the first
 pass they sit downstream of the layer-2 module (`Soundness`/`TraceExact`/
@@ -639,7 +702,7 @@ hypothesis-side strengthening (`ContentsMatches.owned` demanding
 `False`, say, or `StoreCC` demanding a false conjunct) would instead make
 `soundness`/`drop_exactly_once` vacuous, and only a non-vacuity witness that
 states `FrameMatches`/`StoreCC` positively (`Nonvacuous.open_frame`,
-`.dtor`) could catch it — a control this block does not yet have.
+`.dtor`) could catch it — the control row 96 now is.
 
 ### Equivalent mutants
 
@@ -702,6 +765,17 @@ All six seeds agree with the compiler (`bin/verify.py`: 180 seeds, the one
 disagreement the allowed red).
 
 ### RUE-2490's survivors
+
+**Resolved by RUE-2500.** Each of the six below now falsifies a Sharp
+statement. The "Proposed witness" column is what RUE-2490 asked for; what
+was built is in the list after the score block above. It differs from the
+proposal in two places. The `HasTy` witnesses are sharpness
+counter-examples of `step_preservation` over a halted, unreached
+configuration, not witnesses about a checked program's contents: a value
+`HasTy` must reject cannot be written by a checked program, and no run
+produces one. And the float witness needs no proof about the `FloatModel`
+laws, since `¬ Wf` of the datum is what the mutant falsifies. The table is
+kept as RUE-2490's record.
 
 Six of the 15 statement-vocabulary mutants are genuine survivors: no Spec,
 Sharp, Nonvacuous or Glue statement is false for them (checked by hand,
@@ -848,7 +922,7 @@ need a non-vacuity witness that states `FrameMatches`/`StoreCC` positively
      iterated build with axiom tracing that `#print axioms` every
      `Spine`/`Sharp`/`Nonvacuous`/`Glue` theorem under the mutant, so a
      layer-3 kill is never hidden behind a sorried dependency again.
-   * **The six real survivors are RUE-2500**: `hasty-int-any-value`,
+   * **The six real survivors are RUE-2500 (done)**: `hasty-int-any-value`,
      `hasty-float-any-value`, `lifo-vacuous`, `safeat-typing-vacuous`,
      `float-wf-no-emin` and `float-wf-noncanonical` — each because the
      mutated definition occurs only in a conclusion, so a weakening can only
@@ -857,6 +931,10 @@ need a non-vacuity witness that states `FrameMatches`/`StoreCC` positively
      control (`ContentsMatches.owned` demanding `False`, or `StoreCC`
      demanding a false conjunct) that the two strengthening mutants here do
      not exercise, since `SafeAt` and `StepsN` occur only positively.
+     RUE-2500 added `Sharp.out_of_range_halt`, `.float_halt`, `.uncut_drop`
+     and `.ill_typed_halt`, one of which each survivor falsifies, and the
+     control `contentsmatches-owned-false` (row 96), which falsifies
+     `Nonvacuous.open_frame`.
    The coordinator decides which of RUE-2499/RUE-2500 to run next; RUE-2499
    first, since S1(b)'s cheaper variant (keep the layer-3 Spec modules on,
    sorry the rest) is not enough by itself — it would still miss row 84
@@ -898,4 +976,6 @@ need a non-vacuity witness that states `FrameMatches`/`StoreCC` positively
   list plus an iterated build that `#print axioms` every `Spine`/`Sharp`/
   `Nonvacuous`/`Glue` theorem under the mutant, so a layer-3 kill can never
   hide behind a sorried dependency — is RUE-2499. The six mutants that
-  survive even by hand (§"RUE-2490's survivors") are RUE-2500.
+  survived even by hand (§"RUE-2490's survivors") are killed by RUE-2500's
+  statements, again by hand (`scratch/rue-2500/`); until RUE-2499 the tool's
+  own columns for them still read "survived".
