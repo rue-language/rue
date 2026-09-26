@@ -26,6 +26,12 @@ definitions they unfold to (`TRUST.md`, "Trusted base") and nothing else:
 * `Spec/Step.lean` — §6's relation's own properties, and §7 over it;
 * `Spec/Adequacy.lean` — `eval` and §6's relation agree.
 
+Beside them, `Spec/Nonvacuous.lean` holds the non-vacuity witnesses
+(`witnesses` below, RUE-2469) and `Spec/Sharp.lean` the sharpness
+counter-examples (`sharpness`, RUE-2485): statements about particular
+programs that show each spine statement's hypotheses satisfiable, and each of
+them needed.
+
 `spine` below is the one list of them. It pairs each statement with the
 theorem that proves it (in layer L2, stated in its own words), and it is read
 by the tools: `Spine.lean` (layer L2) restates each theorem as
