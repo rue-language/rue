@@ -595,3 +595,48 @@ What the mutants could not get past:
     which no statement claims.
   - `03-metatheory.md`'s exactly-once passage does not cite the new theorem
     yet; that edit is a PR for the calculus's owner.
+
+## 2026-09-26 — fresh-context statement audit, Claude run (RUE-2470, run 1 of 2)
+
+- **Trunk:** `815c460d0` plus #3287, so 41 spine statements.
+- **Kind:** targeted, on the **Statements** target. It is an independent reading
+  of every spine statement by a model that saw only the artifact:
+  - the five `RueCore/Spec` statement files;
+  - the nine trusted-base modules (TRUST.md), with every comment stripped;
+  - 01-core-calculus §§5–7.
+
+  It had no GUIDE, no SPINE.md readings, no doc-comments and no history. For
+  each statement it gave its own English reading, the calculus paragraph, the
+  strength relative to that paragraph, and the hypotheses it distrusts.
+  Probes were allowed through `lake env lean`, on names only.
+- **Models:** one Claude Opus session with a fresh context audited. A second
+  Opus session then adjudicated its readings against SPINE.md, 03, GUIDE and
+  Linear, and reproduced each new finding. The cross-model run (Codex) is
+  pending, as run 2 of RUE-2470.
+- **Result:** 39 of 41 statements were read as SPINE.md reads them, and 2
+  mismatched. Of the audit's 29 findings, 25 were already recorded (RUE-2316,
+  2314, 2423, 2477, 2496/2497, 2498; R1–R7), 4 were new, and 2 were partly
+  misattributed.
+
+### Findings (counted)
+
+| # | Target | Severity | Issue | Finding / evidence |
+|---|---|---|---|---|
+| S1 | statements | medium | fixed here | `no_linear_leak`'s reading claimed "no scope exit or unwind meets a live linear value". The auditor's `f1(Tok{}, return 7)`, with `Tok` linear, is checked and runs to `ok 7` with the token in no trace: an operand value abandoned by a sibling's `return` is in no scope record (RUE-2316). The reading now names the three things outside it. |
+| S2 | statements | low | fixed here | `Config.trichotomy`'s Literature row said the statement "has content here". It does not: `Config.Stuck` is `step`'s verdict, and `step` is total. The row now says what the statement adds. |
+| S3 | statements | low | fixed here | `freed_once` and `dtor_once` read as if a property of the type system. A refused or fuel-exhausted run has an empty trace, so on unchecked programs the bound rests on `eval`'s refusals. Both readings now say so. |
+| S4 | definitions | low | fixed here (disclosed) | `WfProgram` admits any entry-point return type, while 01 §2 fixes `i32 \| unit`. A checked `fn main() -> Tok { Tok{} }` returns a live linear value, and `whole_program_exactly_once` counts it as ended. It is disclosed in `run_safe` and `whole_program_exactly_once` rather than restricted, because restricting it would empty `Nonvacuous.whole_result`. |
+| S5 | definitions | low | fixed here | `@panic`'s message is not modelled, but a comment in `Dynamics.lean` said it "is emitted". The comment and INDEX now say the bridge compares the panic category only. |
+| S6 | calculus | low | RUE-2507 (Steve) | 03's float row does not account for §7's "`≺_w` is a total order". `totalCmp_trichotomy` proves only the −1/0/1 range. |
+| S7 | calculus | low | RUE-2508 (Steve) | 01 §§5–7 have no paragraph ids, so a statement's "§7 paragraph" link can't be checked. |
+
+### Dropped in adjudication
+
+| Candidate | Why dropped |
+|---|---|
+| "`t4` (`let t = Tok{}; loop {}`) shows the checker is incomplete" | `Typed.loopDiv` rejects it too. It is the reading of RUE-2369, which 03 records, not checker incompleteness. |
+| "`Step` is blind to linearity, so the step statements say nothing" | Known and disclosed (R3, RUE-2314, Step.lean's header). On checked programs `Step` and `eval` agree (`eval_sound`, `eval_complete`), so it matters only off the checked domain. |
+
+### Read the same way by the auditor and SPINE.md
+
+All of the statements except `no_linear_leak` and `Config.trichotomy`. That agreement is this run's evidence: a reader with no framing read SPINE.md's claims off the Lean text. The second, cross-model reading is RUE-2470's run 2.
