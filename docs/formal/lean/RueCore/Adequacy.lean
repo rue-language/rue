@@ -268,22 +268,22 @@ theorem Sim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Frame}
     {r : EvalRes} (h₁ : Sim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
     (hk : ∀ H₁ v tr₁, r = .ok H₁ v tr₁ →
       Sim M P φ (fun K tr => .run H₁ φ₁ (.call φ :: K) (.ret v) tr) (k H₁ v)) :
-    Sim M P φ C (r.absorb k) := by
+    Sim M P φ C (r.bindCall k) := by
   cases r with
   | ok H₁ v tr₁ =>
-      simp only [EvalRes.absorb]
+      simp only [EvalRes.bindCall]
       exact Sim.withTrace (fun K tr => (hC K tr).trans (h₁ (.call φ :: K) tr)) (hk H₁ v tr₁ rfl)
   | returned H₁ v tr₁ =>
-      simp only [EvalRes.absorb, Sim] at h₁ ⊢
+      simp only [EvalRes.bindCall, Sim] at h₁ ⊢
       intro K tr
       exact (hC K tr).trans (h₁ (.call φ :: K) tr φ K rfl)
-  | broke H₁ sc tr₁ => simp [EvalRes.absorb, Sim]
+  | broke H₁ sc tr₁ => simp [EvalRes.bindCall, Sim]
   | panic κ tr₁ =>
-      simp only [EvalRes.absorb, Sim] at h₁ ⊢
+      simp only [EvalRes.bindCall, Sim] at h₁ ⊢
       intro K tr
       exact (hC K tr).trans (h₁ (.call φ :: K) tr)
-  | stuck w => simp [EvalRes.absorb, Sim]
-  | outOfFuel => simp [EvalRes.absorb, Sim]
+  | stuck w => simp [EvalRes.bindCall, Sim]
+  | outOfFuel => simp [EvalRes.bindCall, Sim]
 
 /-- §6.4's operator frames: a value plugs the hole, a trap is (Panic-Lift)
 (helper). -/
@@ -1592,7 +1592,7 @@ theorem long_call (IH : LongIH M P fuel) (f : Nat) (args : List Expr) :
           revert h
           cases eval M fuel P (mintParams H₁ vs).1
               { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 } fd.body
-          all_goals simp only [EvalRes.absorb, EvalRes.withTrace_outOfFuel_iff, imp_self]
+          all_goals simp only [EvalRes.bindCall, EvalRes.withTrace_outOfFuel_iff, imp_self]
           all_goals (try split)
           all_goals simp
         exact Long.pre1 (C₂ := fun K tr => evalConf _ _ fd.body (.call φ :: K) tr)
@@ -1697,13 +1697,13 @@ theorem EvalRes.withTrace_ne_broke {r : EvalRes} {t : List Event}
   cases r <;> simp_all [EvalRes.withTrace]
 
 /-- The call boundary never passes an unwinding `break` on (helper). -/
-theorem EvalRes.absorb_ne_broke {r : EvalRes} {k : Store → Val → EvalRes}
-    (hk : ∀ H v H' sc tr, k H v ≠ .broke H' sc tr) : ∀ H sc tr, r.absorb k ≠ .broke H sc tr := by
+theorem EvalRes.bindCall_ne_broke {r : EvalRes} {k : Store → Val → EvalRes}
+    (hk : ∀ H v H' sc tr, k H v ≠ .broke H' sc tr) : ∀ H sc tr, r.bindCall k ≠ .broke H sc tr := by
   cases r with
   | ok H₁ v₁ tr₁ =>
-      simp only [EvalRes.absorb]
+      simp only [EvalRes.bindCall]
       exact EvalRes.withTrace_ne_broke (fun H' sc' tr' => hk H₁ v₁ H' sc' tr')
-  | _ => simp [EvalRes.absorb]
+  | _ => simp [EvalRes.bindCall]
 
 /-- A program's outcome is never an unwinding `break`: the entry point is a
 call, and the call boundary turns a `break` that reached it into
@@ -1722,7 +1722,7 @@ theorem run_ne_broke (M : FloatSig) {P : Program} {fuel : Nat} :
       | some fd =>
           simp only []
           split
-          · exact EvalRes.absorb_ne_broke (by intro _ _ _ _ _; split <;> simp)
+          · exact EvalRes.bindCall_ne_broke (by intro _ _ _ _ _; split <;> simp)
           · simp
 
 /-- **Where a run of `Step` ends, `run` answers** (§6.12, `Step.det`): if

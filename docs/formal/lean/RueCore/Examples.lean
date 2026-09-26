@@ -3943,7 +3943,7 @@ example : checkProgram (prog tI64 loopDivergeLinear) = false := by rfl
 
 /-- **A `break` outside every loop**: (Fn) §5.8 gives a function body no
 `⟨break, _⟩` delivery, so `checkFn` refuses it, and the machine's call
-boundary refuses the `break` that reaches it (`EvalRes.absorb`). -/
+boundary refuses the `break` that reaches it (`EvalRes.bindCall`). -/
 example : checkProgram (prog tI64 brk) = false := by rfl
 example : run demoOps (prog tI64 brk) demoFuel = .stuck .typeConfusion := by rfl
 

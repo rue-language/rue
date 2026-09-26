@@ -535,7 +535,7 @@ theorem longc_call (hF : TraceMeasure P.decls F) (IH : LongCIH M P F fuel)
           revert h
           cases eval M fuel P (mintParams H₁ vs).1
               { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 } fd.body
-          all_goals simp only [EvalRes.absorb, EvalRes.withTrace_outOfFuel_iff, imp_self]
+          all_goals simp only [EvalRes.bindCall, EvalRes.withTrace_outOfFuel_iff, imp_self]
           all_goals (try split)
           all_goals simp
         have ka := evalArgs_cons (fun H'' e' hc' => eval_conserves M hF fuel H'' φ e' hc') H args hcc
