@@ -35,16 +35,19 @@ dynamic index is at a `Copy` leaf, a `loop` body is `unit`-typed, a
 `break` stands only inside a loop body and only as the **last** form of its
 block (below, "Loops"), and a `return` or `@panic` only where a break arm could
 stand or as the function body's last form, never in an operand (below, "Return
-and panic arms"). So `Print.tyOf` succeeds on every generated
-program, and whatever the verified checker rejects, it rejects for an
-ownership reason — a use after move, a use of a partially moved value, a
+and panic arms"). So, by design, `Print.tyOf` succeeds on every generated
+program, and whatever the checker rejects, it rejects for an ownership
+reason — a use after move, a use of a partially moved value, a
 linear leak, a linear discard or overwrite, a disagreeing join, a move out of
 a destructor-bearing value, a destructure whose residue carries a linear
 value, a write into an array with a moved-out element, a dynamic index into
 one, a dynamic index under a declared-`linear` struct, a value moved by one
 loop turn and used by the next, loop exits that disagree on a linear value, a
 `break` past a live linear local — which is what the bridge's refusal table
-covers.
+covers. Both halves are design intents, not theorems: nothing in this module
+is proved, and a generated case that `Print.tyOf` fails on, or that the checker
+refuses for another reason, shows up in a corpus run as an error or an
+uncovered refusal.
 
 Exhaustiveness is a property of the *draw* rather than a premise the draw
 might miss: `expr` builds the arm list by mapping over the declaration's own

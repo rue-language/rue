@@ -1758,7 +1758,7 @@ set_option maxHeartbeats 400000 in
 mutual
 /-- **The derivation is the checker.** Projecting a derivation to its
 conclusion reproduces `check P R Γ e` exactly, so a rendered derivation can
-never claim an acceptance or a rejection the verified checker (§5,
+never claim an acceptance or a rejection the checker (§5,
 `check_sound`) does not make. -/
 theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
     (explain P R Γ e).result = check P R Γ e

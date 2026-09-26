@@ -6,14 +6,14 @@ public import RueCore.Checker.Defs
 @[expose] public section
 
 /-!
-# RueCore.Checker — a decidable, verified checker for the §5 rules
+# RueCore.Checker — a decidable checker for the §5 rules, proved sound
 
 The `Typed` judgment is syntax-directed, so it has a computable image:
 `check P R Γ e` either produces `(T, Γ')` or rejects. `check_sound` proves
 every acceptance is backed by a real derivation — so the §7 safety theorems
 apply to anything `check` accepts. This is the seed of the "second,
 independent implementation" purpose of the formal core
-(`docs/formal/README.md`): a verified reference for what the compiler's
+(`docs/formal/README.md`): a reference, proved sound but not complete, for what the compiler's
 semantic phase must accept.
 
 `checkProgram` lifts it to a whole program: the declarations are well-formed

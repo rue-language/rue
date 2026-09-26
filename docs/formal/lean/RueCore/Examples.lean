@@ -2691,7 +2691,7 @@ def linearLostAtArrayElem : Program :=
 /-!
 ## Static acceptance and rejection, mechanically
 
-The well-typed examples are accepted by the verified checker — so the §7
+The well-typed examples are accepted by the checker, which is proved sound, so the §7
 theorems apply to them; the violating ones are rejected by the same checker
 that `checkProgram_sound` ties to the judgment. `rfl`/`decide` makes these
 kernel-checked facts, not test assertions.
