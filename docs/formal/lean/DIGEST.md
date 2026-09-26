@@ -12,8 +12,11 @@ procedure that uses both.
 What is *not* here, deliberately: proof bodies. A proof is checked by the
 kernel, and `TRUST.md` reports the axioms that check appealed to; reading
 the tactic script is not how this is validated. A definition's body *is*
-here whenever it is a type or a predicate (`Ctx`, `CellMatches`,
-`InBounds`) or is short enough to read, because a signature alone cannot
+here whenever it is a type or a predicate, `Prop`- or `Bool`-valued
+(`Ctx`, `CellMatches`, `InBounds`, `Expr.pendingSafe`, `noDtorPrefix`),
+or a result a hypothesis compares (`OwnSt.join`), whatever its size,
+because a hypothesis says what that body says; otherwise whenever it is
+short enough to read, because a signature alone cannot
 tell `Ty.mult` from `fun _ => .copy` or `Ctx.join` from `fun _ _ => none`,
 and under either of those the linearity claims below would be nearly
 vacuous. A long body (`eval`, `check`, `explain`) is left to the module
@@ -21,7 +24,7 @@ named beside its signature. Where the compiled value is the elaborator's
 own output rather than what was written, the entry prints the defining
 equations Lean derived from it.
 
-Two properties of this file are checked by the generator, which exits
+Three properties of this file are checked by the generator, which exits
 non-zero and names the miss rather than printing a file whose preamble is
 false. First, closure: every `RueCore` constant occurring in a signature or
 a body printed below has an entry of its own below, or is a constructor
@@ -29,7 +32,10 @@ listed under its type's entry. Second, completeness against `INDEX.md`,
 which a different tool generates by reading the sources rather than the
 compiled environment: every declaration it names in a module this file
 covers is a constant that survived the generated-declaration filter, and
-every theorem it names has an entry here.
+every theorem it names has an entry here. Third, the predicates the
+red-team pass found printed by signature alone (`Expr.pendingSafe`,
+`Expr.breaks`, `OwnSt.join`, `noDtorPrefix`, `linearResidue`) each have
+their body or their defining equations here.
 
 Doc-comments are reproduced verbatim from the sources, and cite the
 calculus rule, section, or specification paragraph the declaration
