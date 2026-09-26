@@ -120,7 +120,7 @@ the issue's operators and a few classic ones:
 | monitor | 4 | remove one of the machine's run-time refusals (`linearLeak`, `linearOverwrite`, `linearDiscard`, `ownedUnderCopy`) |
 | completeness | 4 | make the checker refuse more: an arm type, the loop-head bound, the acyclicity rounds |
 | equivalent-candidate | 2 | a change believed harmless, as a control |
-| vacuous (RUE-2490) | 6 | replace a whole clause or definition by `True`: `Lifo`, `NewestFirst`, `Config.Ordered`, one or both conjuncts of `Config.SafeAt` |
+| vacuous (RUE-2490) | 6 | replace a whole clause or definition by `True`: `Lifo`, `NewestFirst`, `Config.Ordered`, `EvalOk`'s `.stuck` clause, and each conjunct of `Config.SafeAt` |
 | wildcard (RUE-2490) | 1 | add an unconstrained constructor to an inductive relation: `Blocks` accepts any trace |
 | count (RUE-2490) | 1 | weaken an exact ledger's `=` to `≤`: `Exact` |
 | strengthen (RUE-2490) | 2 | add a premise or drop a disjunct — the reverse of `premise` — where the strengthening could make the statement vacuous: `StepsN.step`, `Config.SafeAt`'s progress conjunct |
@@ -556,55 +556,90 @@ and `ordered-vacuous` — are killed by the same existing witness,
 
 | # | Mutant | § | Rule | Operator | Killed first by | Without the proofs | Corpus and bridge alone | Stated properties | Why | s |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 81 | `hasty-int-any-value` | §6.1 | HasTy.int | premise | proof: `HasTy.int_inv` (`Soundness.lean`) | survived | (same) | only a helper is false | `HasTy.int_inv` and seven more (`HasTy.contentsTy`, `ContentsTy.toVal`, `intResult_res`, `binOpInt_res`, `evalUnOp_int_res`, `evalIntCast_res`, `evalFintrin_float_res`) restate `InBounds w s n` from a `HasTy`/`ContentsTy` derivation; `eval`'s own traps keep every computed int genuinely InBounds regardless | 43 |
-| 82 | `hasty-float-any-value` | §6.1 | HasTy.float | premise | proof: `HasTy.float_inv` (`Soundness.lean`) | survived | (same) | only a helper is false | `HasTy.float_inv` and four more (`HasTy.contentsTy`, `ContentsTy.toVal`, `binOpFloat_res`, `evalUnOp_float_res`) restate `f.Wf w` from a `HasTy`/`ContentsTy` derivation; the float ops' own closure laws keep every computed datum genuinely `Wf` regardless | 43 |
-| 83 | `evalok-stuck-ok` | §7 | EvalOk (progress) | vacuous | proof: `EvalOk.mono_store` (`Soundness.lean`) | survived | (same) | a stated property is false | `Spec.soundness_stmt` (`Spec/Safety.lean:32`) is `EvalOk`, so this weakens the headline, kernel-checked claim itself to no longer state progress; `no_violation_stmt` and its four `no_use_after_*`/leak/overwrite/discard corollaries are stated independently as `run ... ≠ .stuck w` and lose their derivation from `soundness` too | 44 |
-| 84 | `contentsmatches-moved-residue` | §7 | ContentsMatches.moved | premise | proof: `ContentsMatches.hole` (`Soundness.lean`) | survived | (same) | only a helper is false | `ContentsMatches.hole` and four more (`residualLinear_false`, `ownedJoinOk_matches`, `OwnSt.join_matches` ×2) restate that a `MovedOut` node carries no live linear residue; no witness or corpus case builds a `MovedOut` node with a live linear sub-value to notice the gap directly | 51 |
-| 85 | `exact-at-most` | §7 | Exact (ok/returned) | count | proof: `Exact.bind` (`TraceExact.lean`) | survived | (same) | only a helper is false | `Exact.bind` and six more (`bindHeld`, `absorb`, `evalArgs_exactQuiet`, `evalArgs_exact`, `eval_exact`, `pendingSafe_needed`, `orphan_rejected`) restate the exact per-identity count; each fails feeding a `≤` fact where the composition needs `=`, not because a Spec statement is shown false | 76 |
-| 86 | `blocks-any-trace` | §6.11 | Blocks | wildcard | proof: `Blocks.append` (`TraceOrder.lean`) | survived | (same) | a stated property is false | `Blocks.not_dtor` (`TraceOrder.lean:1279`) becomes false, and `bare_dtor`'s `¬ Blocks P.decls tr` conjunct — the concrete witness RUE-2485's `Sharp.leak`, `.overwrite`, `.discard`, `.discard_loop` and `.copy` all rest on — is no longer provable: one wildcard defeats the whole sharpness-counter-example family, checked by hand since the build stops first in `TraceOrder.lean` | 72 |
-| 87 | `lifo-vacuous` | §6.11 | Lifo | vacuous | proof: `Lifo.newer` (`TraceOrder.lean`) | survived | (same) | a stated property is false | `Lifo.newer`'s conclusion — a torn-down cell is gone from the surviving stack and newer than everything left in it — no longer follows from a vacuous hypothesis, and nothing else reasserts it | 68 |
-| 88 | `newestfirst-vacuous` | §6.11 | NewestFirst | vacuous | proof: `NewestFirst.teardown` (`TraceOrder.lean`) | witness: `unorderedRecord_rejected` (`Witnesses.lean`) | survived | a stated property is false | `Witnesses.lean`'s `unorderedRecord_rejected` proves `¬ NewestFirst [1, 3]` of a concrete unordered teardown; that conjunct is false once `NewestFirst` is `True` | 73 |
-| 89 | `ordered-vacuous` | §6.11 | Config.Ordered | vacuous | proof: `Config.Ordered.keep` (`TraceOrder.lean`) | witness: `unorderedRecord_rejected` (`Witnesses.lean`) | survived | a stated property is false | the same `unorderedRecord_rejected` witness's `¬ C.Ordered` conjunct is false once `Config.Ordered`'s `.run` case is `True` | 72 |
-| 90 | `safeat-progress-vacuous` | §7 | Config.SafeAt (progress) | vacuous | proof: `Config.SafeAt.progress` (`Adequacy.lean`) | survived | (same) | only a helper is false | `Config.SafeAt.progress` and two siblings (`preservation`, `steps`) restate `SafeAt`'s two conjuncts; `init_safeAt` only projects them too, so nothing independently re-checks progress | 68 |
-| 91 | `safeat-typing-vacuous` | §7 | Config.SafeAt (typing) | vacuous | proof: `Config.SafeAt.preservation` (`Adequacy.lean`) | survived | (same) | only a helper is false | `Config.SafeAt.preservation` and siblings (`steps`, `step_value_typed`) restate `SafeAt`'s typing conjunct; nothing outside these projections checks a halted value's type independently | 7 |
-| 92 | `safeat-terminal-only` | §7 | Config.SafeAt (progress) | strengthen | proof: `Config.SafeAt.progress` (`Adequacy.lean`) | survived | (same) | a stated property is false | `adequacy`'s progress proof produces `D.Terminal ∨ ∃ D', Step M P D D'` for an intermediate reachable state, not `D.Terminal` alone; requiring only `D.Terminal` makes `SafeAt` false of any program that takes more than zero steps | 7 |
-| 93 | `stepsn-one-step-only` | §7 | StepsN.step | strengthen | proof: `StepsN.toSteps` (`Adequacy.lean`) | survived | (same) | a stated property is false | the added `n = 0` premise makes every `StepsN` chain of more than one real step uninhabited, so a completeness argument needing an `n`-step run for `n ≥ 2` is no longer even statable | 7 |
-| 94 | `float-wf-no-emin` | §7 | FloatDatum.Wf | bounds | proof: `canonNum_wf` (`Float.lean`) | survived | (same) | only a helper is false | `canonNum_wf` and three more (`one_wf`, `widen_wf`, `roundOp_wf`) restate the `eMin` lower bound from `Wf`; nothing outside `FloatModel`'s own closure-law helpers checks a datum's exponent independently of them | 43 |
-| 95 | `float-wf-noncanonical` | §7 | FloatDatum.Wf | bounds | proof: `canonNum_wf` (`Float.lean`) | survived | (same) | only a helper is false | the same four helpers restate the canonical (odd-significand) requirement; RUE-2490's Float scope stops at this first layer of restating lemmas | 43 |
+| 81 | `hasty-int-any-value` | §6.1 | HasTy.int | premise | proof: `HasTy.int_inv` (`Soundness.lean`) | survived | (same) | only a helper is false | no Spec statement is false: `HasTy` occurs only in conclusions, and every negated occurrence (`Sharp.stuck`, `.stuck_step`, `.no_entry`, `.entry_param`) sits in a disjunct whose run is already stuck or reaches no value; `FrameMatches` rests on `ContentsTy`, which this mutant leaves alone. `HasTy.contentsTy` is a genuinely false helper. Survivor | 43 |
+| 82 | `hasty-float-any-value` | §6.1 | HasTy.float | premise | proof: `HasTy.float_inv` (`Soundness.lean`) | survived | (same) | only a helper is false | the same argument, over `f.Wf w`: no Spec statement is false; `HasTy.contentsTy` is again the false helper. Survivor | 43 |
+| 83 | `evalok-stuck-ok` | §7 | EvalOk (progress) | vacuous | proof: `EvalOk.mono_store` (`Soundness.lean`) | survived | (same) | a stated property is false | `Sharp.stuck`, `.typed` and `.frame` are false: each asserts `¬ EvalOk … (.stuck _)`, now `¬ True`. `Spec.soundness_stmt` is only weakened by this mutant, not false, so that is not the kill | 44 |
+| 84 | `contentsmatches-moved-residue` | §7 | ContentsMatches.moved | premise | proof: `ContentsMatches.hole` (`Soundness.lean`) | survived | (same) | a stated property is false | `Spec.soundness_stmt` — the headline — and `drop_exactly_once_stmt` are both false: the dropped residual-linear check sits in `FrameMatches`, a hypothesis of `soundness`, so weakening it strengthens the claim; a live linear overwrite `check` now accepts still runs to `.stuck .linearOverwrite` (kernel-checked counterexample, `contentsmatches-moved-residue-T.lean`) | 51 |
+| 85 | `exact-at-most` | §7 | Exact (ok/returned) | count | proof: `Exact.bind` (`TraceExact.lean`) | survived | (same) | a stated property is false | `Sharp.pending_program`, `.pending_expr` and `.no_lead` are false: each `¬ Exact` rested on a strict `<` that the weakened `≤` now satisfies; `Sharp.store_cc` stays true, since its `¬ Exact` rests on `StoreCC` instead | 76 |
+| 86 | `blocks-any-trace` | §6.11 | Blocks | wildcard | proof: `Blocks.append` (`TraceOrder.lean`) | survived | (same) | a stated property is false | `Sharp.bare_dtor`, `.unreached` and `.unreached_panic` are false via `Blocks.not_dtor`; `Sharp.leak`, `.overwrite`, `.discard`, `.discard_loop` and `.copy` never mention `Blocks` and stay true | 72 |
+| 87 | `lifo-vacuous` | §6.11 | Lifo | vacuous | proof: `Lifo.newer` (`TraceOrder.lean`) | survived | (same) | only a helper is false | no Spec statement is false: `Lifo.newer` is an L2 helper, not a stated property, and the only negated `Lifo` occurrences (`Sharp.unordered`, `.not_a_step`) stay true through `[1, 0].Pairwise (<)` and through `[] = tr ++ evs` with `tr ≠ []`; `drop_order` is only weakened. Survivor | 68 |
+| 88 | `newestfirst-vacuous` | §6.11 | NewestFirst | vacuous | proof: `NewestFirst.teardown` (`TraceOrder.lean`) | witness: `unorderedRecord_rejected` (`Witnesses.lean`) | survived | only a helper is false | no Spec statement is false (the same two Sharp conjuncts as `lifo-vacuous` stay true); killed instead by `Witnesses.lean`'s `unorderedRecord_rejected`, a layer-4 witness, not a stated property | 73 |
+| 89 | `ordered-vacuous` | §6.11 | Config.Ordered | vacuous | proof: `Config.Ordered.keep` (`TraceOrder.lean`) | witness: `unorderedRecord_rejected` (`Witnesses.lean`) | survived | only a helper is false | `Config.Ordered` occurs in no Spec, Sharp, Nonvacuous or Glue statement; killed by the same witness, `unorderedRecord_rejected`, not a stated property | 72 |
+| 90 | `safeat-progress-vacuous` | §7 | Config.SafeAt (progress) | vacuous | proof: `Config.SafeAt.progress` (`Adequacy.lean`) | survived | (same) | a stated property is false | `Sharp.unreachable_stuck` and `.stuck_step` are false: dropping the progress conjunct lets `¬ SafeAt` of a stuck configuration hold vacuously on typing alone, and the stuck program's reachable-value claim is refuted by `Step.det` | 68 |
+| 91 | `safeat-typing-vacuous` | §7 | Config.SafeAt (typing) | vacuous | proof: `Config.SafeAt.preservation` (`Adequacy.lean`) | survived | (same) | only a helper is false | no Spec statement is false: both Sharp `¬ SafeAt` claims rest on the progress conjunct, which this mutant leaves alone (proved for `unreachable_stuck`). Survivor | 7 |
+| 92 | `safeat-terminal-only` | §7 | Config.SafeAt (progress) | strengthen | proof: `Config.SafeAt.progress` (`Adequacy.lean`) | survived | (same) | a stated property is false | `Spec.step_preservation_stmt` is false, refuted at `Config.init` of `loop {()}`, which is not terminal | 7 |
+| 93 | `stepsn-one-step-only` | §7 | StepsN.step | strengthen | proof: `StepsN.toSteps` (`Adequacy.lean`) | survived | (same) | a stated property is false | `Spec.eval_diverges_iff_stmt` and `Sharp.discard_loop` are false: `loop {()}` exhausts every fuel but has no `StepsN 2`; `step_type_safety_stmt` is false by the same argument | 7 |
+| 94 | `float-wf-no-emin` | §7 | FloatDatum.Wf | bounds | proof: `canonNum_wf` (`Float.lean`) | survived | (same) | every statement holds | every statement holds (sampled, not exhaustive): `exactOps` on data that satisfy the mutant's weaker `Wf` but not the real one still satisfies `arith_wf`/`sqrt_wf`/`narrow_wf`/`div_by_zero`, so `Nonvacuous.exact_model` stands and `eval` has no float-dependent refusal; the four named helpers (`canonNum_wf`, `one_wf`, `widen_wf`, `roundOp_wf`) conclude a weaker `Wf` and stay true — script failures, not false helpers | 43 |
+| 95 | `float-wf-noncanonical` | §7 | FloatDatum.Wf | bounds | proof: `canonNum_wf` (`Float.lean`) | survived | (same) | every statement holds | every statement holds, by the same sampling argument | 43 |
+
+Rows 91–93's "s" column (7 s) is the cached build the review's rerun reused, not a
+per-mutant timing; the first measurement (43–76 s, rows 81–90 and 94–95) is the real one.
+
+Corrected by RUE-2490's review (`rue-2490-review.md`): the automated pipeline never checks
+`Sharp`, `Nonvacuous`, `Spine` or either `Glue.lean` against any of these 15 mutants,
+because all five are layer 3 and the proofs-off pass sorries them, and in the first pass
+they sit downstream of the layer-2 module that fails first (`Layers.lean:53–57`,
+`PROOF_LAYERS = (0, 1, 2, 3)`). Every "a stated property is false" and "only a helper is
+false" reading above for rows 81–95 is therefore by hand, against a kernel-checked repro
+file in `scratch/rue-2490-review/` (sorry-free, and confirmed to fail on the unmutated
+package). The rule the first pass of readings missed: a weakened definition that occurs in
+a hypothesis, or under a `¬` — every Sharp `¬ EvalOk`/`¬ Exact`/`¬ Blocks`/`¬ SafeAt`
+statement negates the mutated thing — makes the statement stronger, and a stronger
+statement can be false; only a weakening that occurs solely in a conclusion is safe.
 
 The score, this block alone (15 mutants, none equivalent, so the denominator
 is 15; `mutate.py --score` over this page's own `--work`):
 
 | Measure | RUE-2490's 15 |
 |---|---:|
-| **Killed: a stated property is false, or a witness, seed or generated case fails** | 7/15 (47%) |
+| **Killed: a stated property is false, or a witness, seed or generated case fails** | 9/15 (60%) |
 | A stated property is false (proof reading) | 7/15 (47%) |
-| A stated property or a helper lemma is false | 15/15 (100%) |
+| A stated property or a helper lemma is false | 13/15 (87%) |
 | The tests with the proofs off: witnesses, seeds, generated cases | 2/15 (13%) |
 | The seeds and the bridge alone | 0/15 (0%) |
 | The build or the corpus fails at all (a proof script, a helper or the Explain mirror included) | 15/15 (100%) |
 
-Why 47%, not higher: every one of the 15 fails the whole build (a proof
-notices something), so "the build fails at all" is 100%, same as the main
-80's. But the main 80's proofs are strongest on the statics precisely
-because a wrong rule is exercised by `soundness`/`check_sound` against a
-real derivation; a wrong statement definition is instead first noticed by
-a helper lemma that restates it (`HasTy.int_inv`, `ContentsMatches.hole`,
-`Exact.bind`, `Config.SafeAt.progress`, `canonNum_wf`, and their siblings) —
-exactly the pattern this page's method calls out for a `Typed` premise
-("even so, `check_sound` builds each rule from the checker's tests," Method,
-above): the helper's failure is a difference between two texts, not between
-a definition and what it should mean, so 8 of the 15 do not count as kills.
-Only where a **non-vacuity witness or a sharpness counter-example is stated
-directly in terms of the mutated definition** does the mutant fall — and
-RUE-2469/2485/2495's witnesses cover `NewestFirst` and `Config.Ordered`
-(`unorderedRecord_rejected`) and `Blocks` (`Blocks.not_dtor`, under
-`bare_dtor`, under `Sharp.leak` and its four siblings), but not `HasTy`,
-`ContentsTy`, `ContentsMatches`, `Exact`, `Config.SafeAt` or `FloatDatum.Wf`.
-Two mutants (`safeat-terminal-only`, `stepsn-one-step-only`) are
-strengthenings, and both are caught immediately — not by a witness, but
-because the strengthened statement is one `adequacy`'s own proof cannot
-meet, the pattern §"Reading a proof failure" already expects.
+Why 60%, not higher: `mutate.py`'s automated passes never reach `Sharp.lean`,
+`Nonvacuous.lean`, `Spine.lean` or either `Glue.lean` for these 15 mutants —
+all five are layer 3, so the proofs-off pass sorries them, and in the first
+pass they sit downstream of the layer-2 module (`Soundness`/`TraceExact`/
+`TraceOrder`/`Adequacy`/`Float`) that fails first. So every row's "Stated
+properties" reading above is by hand, against a kernel-checked repro in
+`scratch/rue-2490-review/`, not against anything the tool ran. Read that way,
+the sharpness/non-vacuity layer (RUE-2469/2485/2495) is not the gap this
+block found: it already pins `Exact` (`Sharp.pending_program`,
+`.pending_expr`, `.no_lead`, `.store_cc`), `Config.SafeAt`
+(`Sharp.stuck_step`, `.unreachable_stuck`) and `EvalOk`
+(`Sharp.stuck`, `.typed`, `.frame`), each via a Sharp statement whose `¬`
+sits directly on the mutated definition — and `Spine.lean` pins
+`ContentsMatches` through `soundness` itself. Six mutants are genuine
+survivors, all because the mutated definition occurs only in a
+conclusion, where a weakening can only weaken, never falsify: `HasTy`
+(`hasty-int-any-value`, `hasty-float-any-value` — an out-of-range int or a
+non-`Wf` float still only sits in `HasTy`'s conclusion, and every Sharp
+`¬ HasTy`-adjacent claim is really about a stuck or valueless run), `Lifo`
+(`lifo-vacuous` — an L2 helper, not a stated property, and the two Sharp
+`¬ Lifo` claims rest on other facts), the typing half of `Config.SafeAt`
+(`safeat-typing-vacuous` — both Sharp `¬ SafeAt` claims rest on the progress
+conjunct instead) and both `FloatDatum.Wf` mutants (`float-wf-no-emin`,
+`float-wf-noncanonical` — sampled, not proved: `exactOps`'s closure laws hold
+on data that satisfy the mutant's weaker `Wf` but not the real one with no counterexample found, so these read "every
+statement holds" rather than "helper", pending a proof). Two more
+(`newestfirst-vacuous`, `ordered-vacuous`) are real kills, but by a layer-4
+witness (`unorderedRecord_rejected`), not a stated property; `NewestFirst`
+and `Config.Ordered` occur in no Spec, Sharp, Nonvacuous or Glue statement.
+The two strengthening controls (`safeat-terminal-only`, `stepsn-one-step-only`)
+are caught immediately by a false Spec statement (`step_preservation`,
+`eval_diverges_iff` and `Sharp.discard_loop`), exactly as expected of a
+strengthening — but they test the trivial direction only: `SafeAt` and
+`StepsN` occur positively in a conclusion, so any non-equivalent
+strengthening must break the theorem's own proof. They say nothing about
+whether the witness and sharpness layers pin the vocabulary; a
+hypothesis-side strengthening (`ContentsMatches.owned` demanding
+`False`, say, or `StoreCC` demanding a false conjunct) would instead make
+`soundness`/`drop_exactly_once` vacuous, and only a non-vacuity witness that
+states `FrameMatches`/`StoreCC` positively (`Nonvacuous.open_frame`,
+`.dtor`) could catch it — a control this block does not yet have.
 
 ### Equivalent mutants
 
@@ -668,47 +703,62 @@ disagreement the allowed red).
 
 ### RUE-2490's survivors
 
-Eight of the 15 statement-vocabulary mutants are killed only because a
-stated property is false for them, with no test failing — the same shape as
-the nine rows above, before RUE-2465's seeds. Each is a **weakened statement
-definition nothing but its own restating helper notices**:
+Six of the 15 statement-vocabulary mutants are genuine survivors: no Spec,
+Sharp, Nonvacuous or Glue statement is false for them (checked by hand,
+`scratch/rue-2490-review/`). Each is killed only by a helper lemma that
+restates the mutated definition (or, for the two float mutants, not even
+that — the helper's own conclusion is merely weaker, still true), and would
+survive with the proofs off. The other nine are killed, six of them (rows
+83, 84, 85, 86, 90, 92, 93) by a false Spec or Sharp statement, and two more
+(88, 89) by an existing layer-4 witness (`unorderedRecord_rejected`); see the
+score block above for the full breakdown.
 
-| Mutant | Killed only by | Proposed witness |
+| Mutant | Why it survives | Proposed witness |
 |---|---|---|
-| `hasty-int-any-value` (`HasTy.int` drops `InBounds`) | `HasTy.int_inv` and seven siblings restate the dropped fact | a `Nonvacuous`-style witness that a concrete out-of-range int's contents are never `ContentsTy`-well-typed at its width — mirrors `Sharp`'s shape: state the fact `HasTy`/`ContentsTy` currently entail as a fact about a value, so a weakening of the constructor falsifies it directly |
-| `hasty-float-any-value` (`HasTy.float` drops `f.Wf w`) | `HasTy.float_inv` and four siblings | the same shape, for a concrete `FloatDatum` that is not `Wf` (e.g. an even significand) |
-| `evalok-stuck-ok` (`EvalOk`'s `.stuck` clause, `False → True`) | none — `Spec.soundness_stmt` itself is weakened, and the four `no_use_after_*`/leak/overwrite/discard corollaries lose their derivation; only helper lemmas (`EvalOk.mono_store` and seven siblings) restate pieces of it | add `EvalOk`'s progress half to the sharpness/non-vacuity ledger directly: a `Nonvacuous`-style statement `∀ ..., eval ... ≠ .stuck _` for a checked program, proved once from `soundness` as written today, so a future weakening of `EvalOk.stuck` must falsify that statement to survive, not just the internal helpers |
-| `contentsmatches-moved-residue` (`ContentsMatches.moved` drops the residual-linear side condition) | `ContentsMatches.hole` and four siblings | a witness building a `.movedOut` node over contents with a live linear sub-value, showing it is not `ContentsMatches` today (the mirror of `Sharp`'s "an unchecked leak is refused") |
-| `exact-at-most` (`Exact`'s `=` weakened to `≤`) | `Exact.bind` and six siblings | a witness exhibiting a concrete evaluation where the ledger's current equality is strict information beyond `Cons`'s inequality — e.g. that `drop_exactly_once`'s count is exact, not just bounded, on a seed that discards and reallocates an identity |
-| `safeat-progress-vacuous`, `safeat-typing-vacuous` (`Config.SafeAt`'s two conjuncts, each `→ True`) | `Config.SafeAt.progress`/`.preservation` and siblings | a `Nonvacuous`-style statement over `init_safeAt` naming each conjunct separately, so a future weakening of either falsifies a fact with its own name, rather than only the projection lemma that shares it |
-| `float-wf-no-emin`, `float-wf-noncanonical` (`FloatDatum.Wf`'s subnormal floor / canonical form dropped) | `canonNum_wf` and three siblings | a witness that a datum below `eMin`, or with an even significand, is not `Wf` today — the float counterpart of `Syntax.lean`'s `InBounds` witnesses |
+| `hasty-int-any-value` (`HasTy.int` drops `InBounds`) | `HasTy` occurs only in conclusions; every negated `HasTy`-adjacent Sharp claim (`.stuck`, `.stuck_step`, `.no_entry`, `.entry_param`) is really about a stuck or valueless run, not about `HasTy` itself | a Sharp- or Nonvacuous-style witness that a concrete out-of-range int's contents are never `HasTy`/`ContentsTy`-well-typed at its width |
+| `hasty-float-any-value` (`HasTy.float` drops `f.Wf w`) | the same argument, over `f.Wf w` | the same shape, for a concrete `FloatDatum` that is not `Wf` |
+| `lifo-vacuous` (`Lifo → True`) | `Lifo.newer` is an L2 helper, not a stated property; the two Sharp `¬ Lifo` claims (`.unordered`, `.not_a_step`) stay true through other facts, not through `Lifo` | a Sharp statement with `¬ Lifo` of a pop that drops a cell it did not cut — the counterpart of `unorderedRecord_rejected`, in the Spec layer rather than a witness |
+| `safeat-typing-vacuous` (`Config.SafeAt`'s typing conjunct `→ True`) | both Sharp `¬ SafeAt` claims (`.stuck_step`, `.unreachable_stuck`) rest on the progress conjunct, which this mutant leaves alone | a `¬ SafeAt` of a configuration that halts with an ill-typed value, naming the typing conjunct the way `unreachable_stuck` names progress |
+| `float-wf-no-emin` (`FloatDatum.Wf` drops the `eMin` floor) | sampled, not proved: `exactOps` on data that satisfy the mutant's weaker `Wf` but not the real one still satisfies `arith_wf`/`sqrt_wf`/`narrow_wf`/`div_by_zero` on the cases checked, so `Nonvacuous.exact_model` stands | a `¬ Wf` witness for a below-`eMin` datum, and a proof (not a sample) that no `FloatModel` law is vacuous on it |
+| `float-wf-noncanonical` (drops the odd-significand requirement) | the same sampling argument | a `¬ Wf` witness for an even-significand datum |
 
-Three more are killed, but by a route worth flagging for the coordinator
-rather than filing quietly:
+Two kills are worth flagging for the coordinator, not because they are
+misread now but because of what made them hard to see:
 
-* **`blocks-any-trace`** (`Blocks` gains a wildcard case) is killed by a
-  proof script (`Blocks.append`'s induction has no case for it) before the
-  build ever reaches `Sharp.lean` — but by hand, `Blocks.not_dtor`
-  (`TraceOrder.lean:1279`) is exactly what `bare_dtor` uses to give
-  `Sharp.leak`, `.overwrite`, `.discard`, `.discard_loop` and `.copy` their
-  witnessing trace's `¬ Blocks` conjunct. **A single wildcard constructor
-  defeats every one of RUE-2485's sharpness counter-examples at once.** They
-  survive only because `Blocks.append` and `Blocks.drop_inv`, both used
-  pervasively by structural induction, break first as a script failure; a
-  narrower weakening of one existing `Blocks` constructor (rather than an
-  added case) would not trip that induction and could reach `Sharp.lean`
-  untouched. Worth a standing note in `REDTEAM-LOG.md`: the sharpness
-  counter-examples' protection of `Blocks` is real but incidental to how the
-  induction lemmas are written, not to `Blocks`'s own definition.
-* **`lifo-vacuous`** (`Lifo → True`) is killed by `Lifo.newer`'s own
-  statement becoming false (a real fact, not a restatement), but nothing
-  else — no witness in `Witnesses.lean` states a `Lifo` fact directly the
-  way `unorderedRecord_rejected` states one for `NewestFirst`/`Config.Ordered`.
-  Worth the same kind of witness `unorderedRecord_rejected` gives its two
-  neighbors.
-* **`safeat-terminal-only`, `stepsn-one-step-only`** (both strengthenings)
-  are caught immediately by `adequacy`'s own proof, as expected: no action
-  needed, this is the strengthening case working as designed.
+* `blocks-any-trace` (`Blocks` gains a wildcard case) is killed by
+  `Sharp.bare_dtor`, `.unreached` and `.unreached_panic` — all three via
+  `Blocks.not_dtor` (`TraceOrder.lean:1279`), which each of them uses to
+  name a trace with no drop marker around a bare destructor. `Sharp.leak`,
+  `.overwrite`, `.discard`, `.discard_loop` and `.copy` do not mention
+  `Blocks` and stay true regardless. The automated pipeline never sees any
+  of this — `Sharp.lean` is layer 3, sorried by the proofs-off pass, and in
+  the first pass it sits downstream of `TraceOrder.lean`'s own script
+  failure (`Blocks.append`, `Blocks.drop_inv`, both ordinary
+  structural-induction helpers with no case for the new constructor). A
+  narrower weakening of one existing `Blocks` constructor, rather than an
+  added case, would not trip that induction, would reach `Sharp.lean`
+  untouched by the tool, and would still be killed there — by `bare_dtor`,
+  `unreached` or `unreached_panic`, read by hand. `REDTEAM-LOG.md` should
+  note that these three statements are `Blocks`'s real protection, not the
+  induction helpers that happen to break first.
+* `safeat-progress-vacuous` (`Config.SafeAt`'s progress conjunct `→ True`)
+  is killed by `Sharp.unreachable_stuck` and `.stuck_step`, again invisible
+  to the automated passes for the same layer-3 reason.
+
+`safeat-terminal-only` and `stepsn-one-step-only` (the two strengthening
+controls) are caught immediately by a false Spec statement
+(`step_preservation`; `eval_diverges_iff` and `Sharp.discard_loop`), exactly
+as a strengthening is expected to work — but they exercise only the trivial
+direction. `SafeAt` and `StepsN` occur positively in a conclusion, so any
+non-equivalent strengthening there must break `adequacy`'s own proof; they
+say nothing about whether the witness and sharpness layers pin the
+vocabulary against a hypothesis-side strengthening, which is the direction
+that can make a theorem vacuous rather than merely false. A control for that
+direction — for example `ContentsMatches.owned` demanding `False`, or
+`StoreCC` demanding a false conjunct, either of which would make
+`soundness`/`drop_exactly_once` vacuous — is not in this block, and would
+need a non-vacuity witness that states `FrameMatches`/`StoreCC` positively
+(`Nonvacuous.open_frame`, `.dtor`) to catch.
 
 ### Proposed issues (for the coordinator)
 
@@ -771,28 +821,47 @@ rather than filing quietly:
    `Layers.lean` or left on by the proofs-off copy. Adding it to `chain.sh`
    would keep the mutants current as the definitions change, and REDTEAM.md's
    cadence could rerun the analysis per milestone. The coordinator decides.
-5. **[Formal/Assurance] Give the statement vocabulary its own non-vacuity
-   coverage (RUE-2490, done).** 15 mutants over `Soundness/Defs`,
-   `Trace/Defs`, `Adequacy/Defs` and `Float` (["RUE-2490: the statement
-   vocabulary and Float"](#rue-2490-the-statement-vocabulary-and-float))
-   found that 8 of the 15 are noticed only by a helper lemma that restates
-   the weakened fact, and would survive with the proofs off — the same shape
-   RUE-2465's original nine survivors had, before its seeds. Chief among
-   them: weakening `EvalOk`'s `.stuck` clause directly weakens
-   `Spec.soundness_stmt`, the headline kernel-checked claim, to no longer
-   state progress, and nothing outside `EvalOk`'s own helper lemmas would
-   notice. A second finding, orthogonal to "noticed or not": `blocks-any-trace`
-   (a wildcard case added to `Blocks`) would defeat all five of RUE-2485's
-   sharpness counter-examples at once (`Sharp.leak`, `.overwrite`,
-   `.discard`, `.discard_loop`, `.copy`, via `Blocks.not_dtor`) were it not
-   for an unrelated induction lemma (`Blocks.append`) breaking first as a
-   script failure — the protection is real today but incidental, not built
-   into `Blocks`'s own definition. ["RUE-2490's survivors"](#rue-2490s-survivors),
-   above, proposes a small non-vacuity witness for each; none is
-   implemented here (RUE-2490's brief allows but does not require it, and
-   the ones for `HasTy`/`ContentsTy`/`EvalOk`/`Config.SafeAt` want the same
-   Spec-layer review the Sharpness/Nonvacuous work already goes through).
-   The coordinator decides which to file and which to seed directly.
+5. **[Formal/Assurance] The statement-vocabulary mutants, and what they still
+   need (RUE-2490; open).** 15 mutants over `Soundness/Defs`, `Trace/Defs`,
+   `Adequacy/Defs` and `Float` (["RUE-2490: the statement vocabulary and
+   Float"](#rue-2490-the-statement-vocabulary-and-float)) found the analysis
+   cannot see the Spec layer for these mutants at all: `Sharp.lean`,
+   `Nonvacuous.lean`, `Spine.lean` and both `Glue.lean` files are layer 3, so
+   the proofs-off pass sorries them, and in the first pass they sit
+   downstream of the layer-2 module that fails first. Every "Stated
+   properties" reading for rows 81–95 is therefore by hand
+   (`scratch/rue-2490-review/`), not by the tool. Read that way, the
+   sharpness/non-vacuity layer already pins more of the vocabulary than the
+   first pass of readings credited it for: `Exact` (`Sharp.pending_*`,
+   `.no_lead`, `.store_cc`), `Config.SafeAt` (`Sharp.stuck_step`,
+   `.unreachable_stuck`) and `EvalOk` (`Sharp.stuck`, `.typed`, `.frame`)
+   are each pinned by a Sharp statement whose `¬` sits directly on the
+   mutated definition, and `ContentsMatches` is pinned by `soundness` itself
+   through `Spine.lean`. `blocks-any-trace` is killed the same way, by
+   `Sharp.bare_dtor`/`.unreached`/`.unreached_panic` (not, as first read, by
+   `Sharp.leak`/`.overwrite`/`.discard`/`.discard_loop`/`.copy`, which never
+   mention `Blocks`).
+   * **The method fix is RUE-2499**: a polarity-aware pass that lists, per
+     mutant, which Spec/Sharp/Nonvacuous/Glue statements the mutated
+     definition occurs in negatively (a hypothesis, under `¬`, or on either
+     side of `↔`) — only those can be falsified by a weakening — and an
+     iterated build with axiom tracing that `#print axioms` every
+     `Spine`/`Sharp`/`Nonvacuous`/`Glue` theorem under the mutant, so a
+     layer-3 kill is never hidden behind a sorried dependency again.
+   * **The six real survivors are RUE-2500**: `hasty-int-any-value`,
+     `hasty-float-any-value`, `lifo-vacuous`, `safeat-typing-vacuous`,
+     `float-wf-no-emin` and `float-wf-noncanonical` — each because the
+     mutated definition occurs only in a conclusion, so a weakening can only
+     weaken. ["RUE-2490's survivors"](#rue-2490s-survivors), above, proposes
+     a witness for each. It also proposes a hypothesis-side strengthening
+     control (`ContentsMatches.owned` demanding `False`, or `StoreCC`
+     demanding a false conjunct) that the two strengthening mutants here do
+     not exercise, since `SafeAt` and `StepsN` occur only positively.
+   The coordinator decides which of RUE-2499/RUE-2500 to run next; RUE-2499
+   first, since S1(b)'s cheaper variant (keep the layer-3 Spec modules on,
+   sorry the rest) is not enough by itself — it would still miss row 84
+   (`soundness` is aliased in `Spine.lean` to a sorried L2 theorem) and row
+   86 (`bare_dtor`/`unreached` use `TraceOrder`'s `Blocks.not_dtor`).
 
 ### Limits
 
@@ -817,3 +886,16 @@ rather than filing quietly:
   The mutant is killed either way, but the export would crash the same way on
   any non-terminating seed.
 * **The equivalence of the four equivalent mutants is argued, not proved.**
+* **Statement kills in `Sharp`, `Nonvacuous`, `Spine` and `Glue` are not
+  detected automatically, for any RUE-2490 mutant.** `mutate.py`'s
+  proofs-off pass sorries all five (they are layer 3), and in the first
+  pass they sit downstream of the layer-2 module that fails first, so no
+  automated pass ever builds them under a statement-vocabulary mutant. Rows
+  81–95's "Stated properties" readings were checked by hand instead,
+  against kernel-checked repro files (RUE-2490's review,
+  `scratch/rue-2490-review/`), the same way the equivalent mutants above are
+  argued rather than proved. The method fix — a polarity-aware candidate
+  list plus an iterated build that `#print axioms` every `Spine`/`Sharp`/
+  `Nonvacuous`/`Glue` theorem under the mutant, so a layer-3 kill can never
+  hide behind a sorried dependency — is RUE-2499. The six mutants that
+  survive even by hand (§"RUE-2490's survivors") are RUE-2500.
