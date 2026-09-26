@@ -1,18 +1,18 @@
-# RueCore — Lean 4 mechanization spike
+# RueCore — the Lean 4 mechanization
 
 A machine-checked mechanization of a fragment of the Rue core calculus
 (`../01-core-calculus.md`), proving the fragment's slice of the §7
-memory-safety theorems in Lean 4. This is the spike for making mechanized
-proofs part of the formal core; the findings and project outline live in
+memory-safety theorems in Lean 4. Adopted as the fourth view of the language
+by ADR-0097 (`docs/designs/0097-mechanized-formal-core.md`); the spike that
+motivated adoption, its findings, and the project outline (the milestone
+ladder that grows this fragment) live in
 `../../notes/lean-mechanization-spike.md`.
 
 **Status: zero `sorry`, axioms `propext`/`Quot.sound` only**
 (no `Classical.choice`, no `native_decide`; `TRUST.md` is the generated
-evidence, and `DIGEST.md` is every statement it is evidence for). Adopted as
-the fourth view of the language by ADR-0097
-(`docs/designs/0097-mechanized-formal-core.md`), which
+evidence, and `DIGEST.md` is every statement it is evidence for). ADR-0097
 fixes the theorem shape, the authority rule, and the non-blocking posture the
-project "Formal core mechanization" grows this seed under.
+project "Formal core mechanization" grows this fragment under.
 
 ## Building
 
@@ -41,14 +41,16 @@ declaration or a stale `INDEX.md`.
 
 `lake exe ruecore-corpus` (or the `corpus.json` output of `scripts/rue lean`)
 prints every corpus case as JSON: the fragment program — a list of function
-definitions — printed as a complete Rue module, the verified checker's
-verdict, and the interpreter's outcome at one fixed fuel bound (a case that
-bound does not complete is left out rather than given an outcome).
+definitions — printed as a complete Rue module, the proved-sound checker's
+verdict, and the model's interpreter's outcome at one fixed fuel bound (a case
+that bound does not complete is left out rather than given an outcome).
 `crates/rue-oracle-diff` consumes it (RUE-2228) and runs the compiler, the
-oracle, and the native binary on each source. Any pairwise disagreement is a
-defect in one of the four views (RUE-305). One exclusion: the checker types nothing
-past a `return` or `@panic` (§5.3's `-Bottom` rules), so it accepts dead code
-the compiler may reject, as §5.3 allows; a program with syntax after a
+oracle, and the native binary on each source. A disagreement means the
+compiler, the model, the spec or the printer is wrong, or it is a pending
+decision (e.g. RUE-2346); a person decides which (RUE-305). One exclusion:
+the checker types nothing past a `return` or `@panic` (§5.3's `-Bottom`
+rules), so it accepts dead code the compiler may reject, as §5.3 allows; a
+program with syntax after a
 diverging form is outside the verdict contract, and no case has one
 (`Checker.lean`, "Dead code").
 
@@ -281,7 +283,7 @@ outcome in words, so `corpus.json` doubles as a readable example set.
 
 `lake exe ruecore-explain` turns any corpus case into a page a reader can
 follow without Lean: the program's `fn` items in Rue surface syntax, the
-verified checker's verdict, one §5 derivation per function body as a tree
+proved-sound checker's verdict, one §5 derivation per function body as a tree
 with the fused `Γ;Σ` at every node, and the §6 run as a single step table in
 execution order — across frames, with the store before and after each node
 and the drop events it emitted. Three administrative rows make the frames
@@ -1109,5 +1111,8 @@ into exhaustion for a program some fuel completes.
 The dynamics deliberately mirror `crates/rue-oracle`: an interpreter
 producing a result plus a drop trace. `eval` runs under `#eval`, so every
 semantic question ("what does this program drop, in what order?") is
-answerable by execution — and the Lean model can seed a differential
-harness against the Rust oracle (the Cedar pattern; see the outline doc).
+answerable by execution — and the Lean model already seeds a
+differential-testing harness against the Rust oracle: differential testing
+against an executable model, Cedar-style, though only `--gen` mode is random,
+and at a far smaller scale than Cedar's DRT (see the outline doc, and
+`FIELD.md`, "Where the bridge sits").

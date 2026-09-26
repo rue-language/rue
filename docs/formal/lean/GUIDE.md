@@ -2202,12 +2202,14 @@ program, exhaustion at every fuel is divergence. `03-metatheory.md`'s
 *A defect looks like:* any of these stated with `P` fixed or with an extra
 hypothesis beyond `ProgramTyped`.
 
-**5. Run the three-way bridge (three minutes).**
+**5. Run the bridge across four views (three minutes).**
 
 The theorems are about `eval` and `check`, not about the compiler. The bridge
-ties the two together: every corpus case is printed as a Rue program, and the
-compiler, the reference oracle and the native binary are run on it and
-compared with what the mechanization says (`README.md`, "The bridge corpus").
+compares four views — the mechanization, the compiler, the reference oracle
+and the native binary — over four pairs: every corpus case is printed as a
+Rue program, and the compiler, the reference oracle and the native binary are
+run on it and compared with what the mechanization says (`README.md`, "The
+bridge corpus").
 
 ```bash
 scripts/rue lean-bridge
@@ -2236,11 +2238,11 @@ deliberately and stays until its issue is decided:
 
 Other seeded cases were red until the compiler defect they found was fixed,
 and stay as regression signals; `README.md`, "The bridge corpus", lists them.
-*A defect looks like:* any **other** case disagreeing. A disagreement is a
-defect in one of the four views (the mechanization, the compiler, the oracle,
-or the printed program), and the case's `explain/<case>.txt` rendering (the
-tables of section 5, from `lake exe ruecore-explain <case>`) is meant to say
-which.
+*A defect looks like:* any **other** case disagreeing. A disagreement means
+the compiler, the model, the spec or the printer is wrong, or it is a pending
+decision (e.g. RUE-2346); a person decides which, and the case's
+`explain/<case>.txt` rendering (the tables of section 5, from `lake exe
+ruecore-explain <case>`) is meant to help.
 
 **6. Spot-check statements against the calculus (five minutes).**
 

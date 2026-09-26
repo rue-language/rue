@@ -1,11 +1,12 @@
 //! `lean-corpus` — the Rust half of ADR-0097's differential bridge (RUE-2228).
 //!
 //! The Lean mechanization (`docs/formal/lean`) exports a corpus of small Rue
-//! programs, each carrying what the *verified* checker and interpreter say
-//! about it: an accept/reject verdict and the outcome its evaluation produces:
-//! the stdout and exit status, the trap, or — for a rejected program whose
-//! executed path reaches the violation — the machine's refusal. A rejected
-//! program can also evaluate cleanly, when the refusal lies on a path the
+//! programs, each carrying what the proved-sound checker and the model's
+//! interpreter say about it: an accept/reject verdict and the outcome its
+//! evaluation produces: the stdout and exit status, the trap, or — for a
+//! rejected program whose executed path reaches the violation — the
+//! machine's refusal. A rejected program can also evaluate cleanly, when the
+//! refusal lies on a path the
 //! program does not take (a §5.5 join disagreement, or a refusal inside the
 //! arm the condition skips); its expectation is then the clean outcome, so
 //! that a compiler which accepts it unsoundly is still compared against what
@@ -180,7 +181,7 @@ struct RawExpected {
     violation: Option<String>,
 }
 
-/// What the verified checker says about a case.
+/// What the proved-sound checker says about a case.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Verdict {
     Accept { ty: String },
@@ -196,7 +197,7 @@ impl Verdict {
     }
 }
 
-/// What the verified interpreter says a case does.
+/// What the model's interpreter says a case does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Expectation {
     /// Normal completion: one stdout line per *observable event* the run
