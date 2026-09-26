@@ -420,8 +420,13 @@ What the mutants could not get past:
     `DropGlue` takes a struct's `k`-th member to be its `k`-th declared
     field, which is how the machine stores it; the link between the list
     and `StructDecl.fields` is the typing's (`ContentsTy`), not stated in
-    `GlueBlocks`. A mutant that built a struct's contents in another order
-    would be caught by the corpus, not by this statement.
+    `GlueBlocks`. A mutant storing fields in another order is still caught
+    by the statements when the fields' types differ, because typing ties
+    contents to the declared fields (`step_preservation`, `soundness`). Two
+    cases escape every statement: a permutation among fields of the same
+    type, with projections permuted to match, and a drop marker that
+    records permuted contents. The corpus is what would catch those
+    (RUE-2501).
   - **G2, "bindings newest first" was already stated** (confirmation, no
     issue). `drop_order`'s `NewestFirst` and `Lifo` read the drop markers'
     cells and the scope records, not `dropEvents`, and `scope-fifo` and
