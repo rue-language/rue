@@ -762,17 +762,24 @@ def Sharp.stuck_stmt : Prop :=
                                   EvalRes.stuck Violation.useAfterMove ∧
                                 eval Float.exactOps 201 P [] Frame.empty (Expr.call 0 []) =
                                     EvalRes.stuck Violation.useAfterMove ∧
-                                  run Float.exactOps P 200 = EvalRes.stuck Violation.useAfterMove ∧
-                                    run Float.exactOps P 0 = EvalRes.outOfFuel ∧
-                                      ¬(run Float.exactOps P 200 = EvalRes.outOfFuel ∨
-                                          (∃ (k : PanicKind),
-                                              ∃ (tr : List Event),
-                                                run Float.exactOps P 200 = EvalRes.panic k tr) ∨
-                                            ∃ (H : Store),
-                                              ∃ (v : Val),
-                                                ∃ (tr : List Event),
-                                                  run Float.exactOps P 200 = EvalRes.ok H v tr ∧
-                                                    HasTy P.decls v (Ty.int IntWidth.w64 Sign.signed))
+                                  eval Float.exactOps 201 P [] Frame.empty (Expr.call 0 []) =
+                                      EvalRes.withTrace [] (EvalRes.stuck Violation.useAfterMove) ∧
+                                    (∀ (n : Nat),
+                                        run Float.exactOps P n =
+                                          eval Float.exactOps n P [] Frame.empty (Expr.call 0 [])) ∧
+                                      run Float.exactOps P 200 =
+                                          EvalRes.stuck Violation.useAfterMove ∧
+                                        run Float.exactOps P 0 = EvalRes.outOfFuel ∧
+                                          ¬(run Float.exactOps P 200 = EvalRes.outOfFuel ∨
+                                              (∃ (k : PanicKind),
+                                                  ∃ (tr : List Event),
+                                                    run Float.exactOps P 200 = EvalRes.panic k tr) ∨
+                                                ∃ (H : Store),
+                                                  ∃ (v : Val),
+                                                    ∃ (tr : List Event),
+                                                      run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                                                        HasTy P.decls v
+                                                          (Ty.int IntWidth.w64 Sign.signed))
 
 /-- The statement `Sharp.stuck_step` proves. -/
 def Sharp.stuck_step_stmt : Prop :=
@@ -860,9 +867,13 @@ def Sharp.typed_stmt : Prop :=
                                     EvalRes.stuck Violation.useAfterMove ∧
                                   eval Float.exactOps 201 P [] Frame.empty e =
                                       EvalRes.stuck Violation.useAfterMove ∧
-                                    ∀ (T : Ty) (Ω : Out),
-                                      ¬EvalOk P.decls T (Ty.int IntWidth.w64 Sign.signed) Ω.norm Ω.brk
-                                          Frame.empty [] (eval Float.exactOps 200 P [] Frame.empty e)
+                                    eval Float.exactOps 201 P [] Frame.empty e =
+                                        EvalRes.withTrace [] (EvalRes.stuck Violation.useAfterMove) ∧
+                                      CTy.never.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                                        ∀ (T : Ty) (Ω : Out),
+                                          ¬EvalOk P.decls T (Ty.int IntWidth.w64 Sign.signed) Ω.norm
+                                              Ω.brk Frame.empty []
+                                              (eval Float.exactOps 200 P [] Frame.empty e)
 
 /-- The statement `Sharp.frame` proves. -/
 def Sharp.frame_stmt : Prop :=
@@ -886,34 +897,37 @@ def Sharp.frame_stmt : Prop :=
           ∀ (e : Expr),
             e = (Expr.intLit IntWidth.w64 Sign.signed 1).seq (Expr.use (Place.var 0)) →
               ProgramTyped P ∧
-                P.pendingSafe = true ∧
-                  e.pendingSafe = true ∧
-                    StoreCC P.decls [] ∧
-                      (∃ (c : CTy),
-                          ∃ (Ω : Out),
-                            check P (Ty.int IntWidth.w64 Sign.signed)
-                                  [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false,
-                                      st := OwnSt.owned }]
-                                  e =
-                                some (c, Ω) ∧
-                              c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
-                                Typed P (Ty.int IntWidth.w64 Sign.signed)
+                WfProgram P ∧
+                  P.pendingSafe = true ∧
+                    e.pendingSafe = true ∧
+                      StoreCC P.decls [] ∧
+                        (∃ (c : CTy),
+                            ∃ (Ω : Out),
+                              check P (Ty.int IntWidth.w64 Sign.signed)
                                     [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false,
                                         st := OwnSt.owned }]
-                                    e (Ty.int IntWidth.w64 Sign.signed) Ω ∧
-                                  ¬EvalOk P.decls (Ty.int IntWidth.w64 Sign.signed)
-                                      (Ty.int IntWidth.w64 Sign.signed) Ω.norm Ω.brk Frame.empty []
-                                      (eval Float.exactOps 200 P [] Frame.empty e)) ∧
-                        ¬FrameMatches P.decls
-                              [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false,
-                                  st := OwnSt.owned }]
-                              Frame.empty [] ∧
-                          Lead Float.exactOps P 200 [] Frame.empty []
-                              [Val.int IntWidth.w64 Sign.signed 1] [] e ∧
-                            eval Float.exactOps 200 P [] Frame.empty e =
-                                EvalRes.stuck Violation.unbound ∧
-                              eval Float.exactOps 201 P [] Frame.empty e =
-                                EvalRes.stuck Violation.unbound
+                                    e =
+                                  some (c, Ω) ∧
+                                c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                                  Typed P (Ty.int IntWidth.w64 Sign.signed)
+                                      [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false,
+                                          st := OwnSt.owned }]
+                                      e (Ty.int IntWidth.w64 Sign.signed) Ω ∧
+                                    ¬EvalOk P.decls (Ty.int IntWidth.w64 Sign.signed)
+                                        (Ty.int IntWidth.w64 Sign.signed) Ω.norm Ω.brk Frame.empty []
+                                        (eval Float.exactOps 200 P [] Frame.empty e)) ∧
+                          ¬FrameMatches P.decls
+                                [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false,
+                                    st := OwnSt.owned }]
+                                Frame.empty [] ∧
+                            Lead Float.exactOps P 200 [] Frame.empty []
+                                [Val.int IntWidth.w64 Sign.signed 1] [] e ∧
+                              eval Float.exactOps 200 P [] Frame.empty e =
+                                  EvalRes.stuck Violation.unbound ∧
+                                eval Float.exactOps 201 P [] Frame.empty e =
+                                    EvalRes.stuck Violation.unbound ∧
+                                  eval Float.exactOps 201 P [] Frame.empty e =
+                                    EvalRes.withTrace [] (EvalRes.stuck Violation.unbound)
 
 /-- The statement `Sharp.no_entry` proves. -/
 def Sharp.no_entry_stmt : Prop :=
@@ -1122,20 +1136,22 @@ def Sharp.fuel_stmt : Prop :=
                   enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
               fns := [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
-            run Float.exactOps P 0 = EvalRes.outOfFuel ∧
-              ∃ (H : Store),
-                ∃ (v : Val),
-                  ∃ (tr : List Event),
-                    run Float.exactOps P 200 = EvalRes.ok H v tr ∧
-                      Steps Float.exactOps P Config.init
-                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
-                        ¬200 ≤ 0 ∧
-                          0 ≤ 200 ∧
-                            run Float.exactOps P 0 ≠ run Float.exactOps P 200 ∧
-                              (∀ (w : Violation), run Float.exactOps P 200 ≠ EvalRes.stuck w) ∧
-                                ¬∀ (fuel : Nat),
-                                    run Float.exactOps P fuel = EvalRes.ok H v tr ∨
-                                      ∃ (w : Violation), run Float.exactOps P fuel = EvalRes.stuck w
+            (∀ (n : Nat),
+                run Float.exactOps P n = eval Float.exactOps n P [] Frame.empty (Expr.call 0 [])) ∧
+              run Float.exactOps P 0 = EvalRes.outOfFuel ∧
+                ∃ (H : Store),
+                  ∃ (v : Val),
+                    ∃ (tr : List Event),
+                      run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                        Steps Float.exactOps P Config.init
+                            (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          ¬200 ≤ 0 ∧
+                            0 ≤ 200 ∧
+                              run Float.exactOps P 0 ≠ run Float.exactOps P 200 ∧
+                                (∀ (w : Violation), run Float.exactOps P 200 ≠ EvalRes.stuck w) ∧
+                                  ¬∀ (fuel : Nat),
+                                      run Float.exactOps P fuel = EvalRes.ok H v tr ∨
+                                        ∃ (w : Violation), run Float.exactOps P fuel = EvalRes.stuck w
 
 /-- The statement `Sharp.fuel_panic` proves. -/
 def Sharp.fuel_panic_stmt : Prop :=

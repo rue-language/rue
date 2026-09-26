@@ -52,10 +52,10 @@ db7f2bcc157ca022 RueCore.Spec.Nonvacuous.early_return_stmt
 00563ce1a9156fe6 RueCore.Spec.Nonvacuous.float_stmt
 63565e3a853693fd RueCore.Spec.Nonvacuous.diverges_stmt
 c7aba5633581109d RueCore.Spec.Nonvacuous.stuck_stmt
-c298fd67b988f8f2 RueCore.Spec.Sharp.stuck_stmt
+1ef1be27364a12d3 RueCore.Spec.Sharp.stuck_stmt
 48a2258053023624 RueCore.Spec.Sharp.stuck_step_stmt
-7c58af8be0fc0726 RueCore.Spec.Sharp.typed_stmt
-b54e31874b5f3413 RueCore.Spec.Sharp.frame_stmt
+96056f9202e2fa96 RueCore.Spec.Sharp.typed_stmt
+88493a3d970e5941 RueCore.Spec.Sharp.frame_stmt
 4efc7e719bf4ee06 RueCore.Spec.Sharp.no_entry_stmt
 1d6f79a7d83d9dcd RueCore.Spec.Sharp.entry_param_stmt
 e49f76b60968299c RueCore.Spec.Sharp.copy_stmt
@@ -63,7 +63,7 @@ d45b95ca22904f66 RueCore.Spec.Sharp.leak_stmt
 eab032436ca1e6a6 RueCore.Spec.Sharp.overwrite_stmt
 6134f30b1dbff866 RueCore.Spec.Sharp.discard_stmt
 e3159320bc3bc2ff RueCore.Spec.Sharp.discard_loop_stmt
-ace5d83cceab8a99 RueCore.Spec.Sharp.fuel_stmt
+0667350eaf3af6ea RueCore.Spec.Sharp.fuel_stmt
 44d1737dca0fdae7 RueCore.Spec.Sharp.fuel_panic_stmt
 47f13401dcd49303 RueCore.Spec.Sharp.not_fits_stmt
 eb86d787f4ef7dfd RueCore.Spec.Sharp.double_drop_stmt
