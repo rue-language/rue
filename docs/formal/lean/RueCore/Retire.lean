@@ -159,7 +159,7 @@ theorem LivePost.lift {H H₁ : Store} {φ : Frame} {r : EvalRes} (hg : Grow H H
 /-- §6.2's search keeps the promise (helper). -/
 theorem LivePost.andThen {H : Store} {φ : Frame} {r : EvalRes} {k : Store → Val → EvalRes}
     (h : LivePost H φ r) (hk : ∀ H₁ v, Grow H H₁ → LivePost H₁ φ (k H₁ v)) :
-    LivePost H φ (r.andThen k) := by
+    LivePost H φ (r.bind k) := by
   cases r with
   | ok H₁ v tr => exact ((hk H₁ v h).lift h).withTrace tr
   | _ => exact h
@@ -172,7 +172,7 @@ theorem LivePost.scoped {H H₁ : Store} {φ φ' : Frame} {ys : List Nat} {r : E
     (hg : Grow H H₁) (hys : ∀ ℓ ∈ ys, H.length ≤ ℓ ∧ Live H₁ ℓ) (hnd : ys.Nodup)
     (hsc : φ'.scope = φ.scope ++ ys) (h : LivePost H₁ φ' r)
     (hk : ∀ H₂ v, Grow H₁ H₂ → LivePost H φ (k H₂ v)) :
-    LivePost H φ (r.andThen k) := by
+    LivePost H φ (r.bind k) := by
   cases r with
   | ok H₂ v tr => exact (hk H₂ v h).withTrace tr
   | returned H' v tr =>

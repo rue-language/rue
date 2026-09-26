@@ -2972,28 +2972,28 @@ theorem traceEval_res (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
           simp only [traceEval, eval]
           (repeat' split) <;> first | rfl | (simp_all [traced, refused] <;> grind)
       | binop op e₁ e₂ =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
+          simp only [traceEval, eval, EvalRes.bind, ih]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, didNotRun, propagate, confused, refused,
               OpRes.toRes, EvalRes.withTrace] <;> grind)
       | unop op e₁ =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
+          simp only [traceEval, eval, EvalRes.bind, ih]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, confused, refused,
               OpRes.toRes, EvalRes.withTrace] <;> grind)
       | fintrin k e₁ =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
+          simp only [traceEval, eval, EvalRes.bind, ih]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, confused, refused,
               OpRes.toRes, EvalRes.withTrace] <;> grind)
       | intCast w sg e₁ =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
+          simp only [traceEval, eval, EvalRes.bind, ih]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, confused, refused,
               OpRes.toRes, EvalRes.withTrace] <;> grind)
       | panic msg => rfl
       | dbg e₁ =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
+          simp only [traceEval, eval, EvalRes.bind, ih]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, refused,
               EvalRes.withTrace] <;> grind)
@@ -3010,7 +3010,7 @@ theorem traceEval_res (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
             first | rfl | (simp_all [traced, tracedIntro, introVal, didNotRun, refused,
               EvalRes.withTrace] <;> split <;> simp_all)
       | «match» scrut arms =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
+          simp only [traceEval, eval, EvalRes.bind, ih]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, tracedAs, didNotRun, refused, confused,
               EvalRes.withTrace] <;> grind)
@@ -3021,7 +3021,7 @@ theorem traceEval_res (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
             first | rfl | (simp_all [traced, tracedIntro, introVal, didNotRun, refused,
               EvalRes.withTrace] <;> split <;> simp_all)
       | repeatArray Te e₁ n =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
+          simp only [traceEval, eval, EvalRes.bind, ih]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, tracedIntro, introVal, didNotRun, refused,
               EvalRes.withTrace] <;> split <;> simp_all)
@@ -3032,37 +3032,37 @@ theorem traceEval_res (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
             first | rfl | (simp_all [traced, didNotRun, refused,
               EvalRes.withTrace] <;> grind)
       | indexDrop pl idx πs =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
+          simp only [traceEval, eval, EvalRes.bind, ih]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, EvalRes.withTrace] <;> grind)
       | indexWrite pl idx πs e₁ =>
-          simp only [traceEval, eval, EvalRes.andThen, ih,
+          simp only [traceEval, eval, EvalRes.bind, ih,
             traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, refused, didNotRun,
               EvalRes.withTrace] <;> grind)
       | letIn m e₁ e₂ =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
+          simp only [traceEval, eval, EvalRes.bind, ih]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, tracedAs, didNotRun, refused,
               EvalRes.withTrace] <;> grind)
       | assign i e₁ =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
+          simp only [traceEval, eval, EvalRes.bind, ih]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, refused,
               EvalRes.withTrace] <;> grind)
       | seq e₁ e₂ =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
+          simp only [traceEval, eval, EvalRes.bind, ih]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, refused,
               EvalRes.withTrace] <;> grind)
       | ite c e₁ e₂ =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
+          simp only [traceEval, eval, EvalRes.bind, ih]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, confused, refused,
               EvalRes.withTrace] <;> grind)
       | ret e₁ =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
+          simp only [traceEval, eval, EvalRes.bind, ih]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, tracedAs, refused,
               EvalRes.withTrace] <;> grind)

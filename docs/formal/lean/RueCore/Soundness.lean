@@ -2678,8 +2678,8 @@ theorem EvalOk.bot_abort {D T R B φ H r} (h : EvalOk D T R none B φ H r) : Abo
 /-- §6.2's search past a divergent operand: the operand produced no value, so
 the context never runs and its outcome is the whole form's — which is what the
 `-Bottom` rules' conclusions promise, at whatever type they name (helper). -/
-theorem EvalOk.bot_andThen {D T T₀ R B φ H r} {k : Store → Val → EvalRes}
-    (h : EvalOk D T₀ R none B φ H r) : EvalOk D T R none B φ H (r.andThen k) := by
+theorem EvalOk.bot_bind {D T T₀ R B φ H r} {k : Store → Val → EvalRes}
+    (h : EvalOk D T₀ R none B φ H r) : EvalOk D T R none B φ H (r.bind k) := by
   have ha := h.bot_abort
   cases r with
   | ok H' v tr => exact ha.elim
@@ -2699,7 +2699,7 @@ theorem EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ : Ctx} {
     (hr : EvalOk D T₀ R (some Γ₀) B₀ φ H r) (hB : B₀ ⊆ B)
     (hk : ∀ H₁ v tr, r = .ok H₁ v tr → HasTy D v T₀ → FrameMatches D Γ₀ φ H₁ →
             EvalOk D T R o B φ H₁ (k H₁ v)) :
-    EvalOk D T R o B φ H (r.andThen k) := by
+    EvalOk D T R o B φ H (r.bind k) := by
   cases r with
   | ok H₁ v tr =>
       obtain ⟨hty, hfm, hu⟩ := hr
@@ -2718,9 +2718,9 @@ theorem EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {B : List C
     (hr : EvalOk D T₀ R o B φ H r)
     (hk : ∀ H₁ v tr Γ₀, r = .ok H₁ v tr → HasTy D v T₀ → FrameMatches D Γ₀ φ H₁ →
             EvalOk D T R (some Γ₀) B φ H₁ (k H₁ v)) :
-    EvalOk D T R o B φ H (r.andThen k) := by
+    EvalOk D T R o B φ H (r.bind k) := by
   cases o with
-  | none => exact hr.bot_andThen
+  | none => exact hr.bot_bind
   | some Γ₀ => exact EvalOk.bind hr (List.Subset.refl _) (fun H₁ v tr h hty hfm => hk H₁ v tr Γ₀ h hty hfm)
 
 /-! ## The main theorem -/
@@ -3104,10 +3104,10 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           -- (Strict-Bottom) §5.3: the left operand produced no value, so the
           -- right one never runs and its outcome is the form's.
           simp only [eval]
-          exact (ih h₁ hfm).bot_andThen
+          exact (ih h₁ hfm).bot_bind
       | @floatBinopBot Γ Δ₁ op e₁ e₂ w h₁ hop =>
           simp only [eval]
-          exact (ih h₁ hfm).bot_andThen
+          exact (ih h₁ hfm).bot_bind
       | @floatBinop Γ Γ₁ Ω₂ Δ₁ op e₁ e₂ w h₁ h₂ hop =>
           -- (Float-Arith)/(Float-Ord)/(Total-Cmp) §5.8 with §6.4's dynamics:
           -- the operands reduce left to right (§6.2) and the operator is
@@ -3239,7 +3239,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
       | @matchBot Γ Δ₀ scrut arms e T hscrut =>
           -- (Strict-Bottom) §5.3 at the scrutinee: no tag is read, no arm runs.
           simp only [eval]
-          exact (ih hscrut hfm).bot_andThen
+          exact (ih hscrut hfm).bot_bind
       | @«match» Γ Γ₀ Δ₀ o os Δs scrut arms e ed T hscrut hd hlen harms hjoin =>
           -- (D-Match) §6.6: the scrutinee's use, the tag switch, the payload
           -- cells bound as (D-Let) binds one, and their newest-first drop at the
@@ -3300,24 +3300,24 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                 rw [hsplitT] at hout₃
                 rw [hout₃ ℓ hnotminted]
                 exact hu₀₂.2 ℓ hlt hnin
-              simp only [EvalRes.andThen, hunw, EvalRes.withTrace]
+              simp only [EvalRes.bind, hunw, EvalRes.withTrace]
               exact ⟨hty₂,
                 ⟨Matches.joinAll hwf.decls hjall harms.arm_skel hmemΓ hm₃, hfm.record⟩, hu₀₃⟩
           | returned H₂ v₂ tr₂ =>
               rw [hrb] at kb
-              simp only [EvalRes.andThen]
+              simp only [EvalRes.bind]
               exact ⟨kb.1, Untouched.under_binders hpre hkeep hfresh kb.2⟩
           | broke H₂ sc tr₂ =>
               -- (D-Break) §6.10 from inside the arm: the arm's `endscope` is
               -- discarded, and its payload cells travel with the `break` as
               -- bindings still open where it fired.
               rw [hrb] at kb
-              simp only [EvalRes.andThen]
+              simp only [EvalRes.bind]
               exact BrokeOk.mono_brk (hΔb.trans (List.subset_append_left _ _))
                 (BrokeOk.under_binders hpre hkeep (fun ℓ hℓ => mintParams_fresh H₀ vs ℓ hℓ) kb)
-          | panic pk tr₂ => simp only [EvalRes.andThen]; trivial
+          | panic pk tr₂ => simp only [EvalRes.bind]; trivial
           | stuck w => rw [hrb] at kb; exact kb.elim
-          | outOfFuel => simp only [EvalRes.andThen]; trivial
+          | outOfFuel => simp only [EvalRes.bind]; trivial
       | @mkArray Γ Ω T args hta =>
           -- (D-Array) §6.5 over §6.2's left-to-right search: the same
           -- argument-list lemma (Struct-Intro) uses, then the literal. There
@@ -3416,7 +3416,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           -- (Strict-Bottom) §5.3 at the right-hand side, which `5.2:14` runs
           -- first: nothing after it runs.
           simp only [eval]
-          exact (ih h₁ hfm).bot_andThen
+          exact (ih h₁ hfm).bot_bind
       | @indexWriteBotIdx Γ Γ₁ Δ₁ Δ₂ p idx πs e en₀ Ts Ta T _ _ _ h₁ hta _ =>
           -- (Strict-Bottom) §5.3 at an index, after the right-hand side ran:
           -- the list aborts and the destination is never reached.
@@ -3560,7 +3560,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           -- (Let-Bottom) §5.3: the initializer produced no value, so no cell
           -- is minted and the body never runs.
           simp only [eval]
-          exact (ih h₁ hfm).bot_andThen
+          exact (ih h₁ hfm).bot_bind
       | @letInDiv Γ Γ₁ Δ₁ Δ₂ m e₁ e₂ T₁ T₂ h₁ h₂ =>
           -- (Let) with a divergent tail: the body never completes, so the
           -- `endscope` never runs; a `return` in it unwound past the binder.
@@ -3582,17 +3582,17 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           | ok H₂ v₂ tr₂ => rw [hrb] at kb; exact kb.elim
           | returned H₂ v₂ tr₂ =>
               rw [hrb] at kb
-              simp only [EvalRes.andThen]
+              simp only [EvalRes.bind]
               exact ⟨kb.1, kb.2.under_binder⟩
           | broke H₂ sc tr₂ =>
               -- (D-Break) §6.10 from the body: the `endscope` marker is
               -- discarded, and the binder's cell travels with the `break`.
               rw [hrb] at kb
-              simp only [EvalRes.andThen]
+              simp only [EvalRes.bind]
               exact BrokeOk.mono_brk (by brk_sub) kb.under_binder
-          | panic pk tr => simp only [EvalRes.andThen]; trivial
+          | panic pk tr => simp only [EvalRes.bind]; trivial
           | stuck w => rw [hrb] at kb; exact kb.elim
-          | outOfFuel => simp only [EvalRes.andThen]; trivial
+          | outOfFuel => simp only [EvalRes.bind]; trivial
       | @letIn Γ Γ₁ Γ₂ Δ₁ Δ₂ m e₁ e₂ T₁ T₂ en' h₁ h₂ hres =>
           simp only [eval]
           refine EvalOk.bind (ih h₁ hfm) (by brk_sub) ?_
@@ -3620,26 +3620,26 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               have hdrop : residualLinear P.decls en'.st en'.ty = false := hres
               obtain ⟨c', hcell, hty', hres'⟩ := hcm.dropOk hwf.decls hdrop
               obtain ⟨evs, hdr⟩ := dropRetire_ok hc hcell hty' hres'
-              simp only [EvalRes.andThen, hdr, EvalRes.withTrace]
+              simp only [EvalRes.bind, hdr, EvalRes.withTrace]
               exact ⟨hty₂, ⟨hrest.set_outside hnin, hfm.record⟩,
                 Untouched.trans_set hu₂.under_binder (Or.inl (Nat.le_refl _))⟩
           | returned H₂ v₂ tr₂ =>
               rw [hrb] at kb
-              simp only [EvalRes.andThen]
+              simp only [EvalRes.bind]
               exact ⟨kb.1, kb.2.under_binder⟩
           | broke H₂ sc tr₂ =>
               -- (D-Break) §6.10 from the body: the `endscope` marker is
               -- discarded, and the binder's cell travels with the `break`.
               rw [hrb] at kb
-              simp only [EvalRes.andThen]
+              simp only [EvalRes.bind]
               exact BrokeOk.mono_brk (by brk_sub) kb.under_binder
-          | panic pk tr => simp only [EvalRes.andThen]; trivial
+          | panic pk tr => simp only [EvalRes.bind]; trivial
           | stuck w => rw [hrb] at kb; exact kb.elim
-          | outOfFuel => simp only [EvalRes.andThen]; trivial
+          | outOfFuel => simp only [EvalRes.bind]; trivial
       | @assignBot Γ Δ pl e T h =>
           -- (Strict-Bottom) §5.3 at the right-hand side: nothing is stored.
           simp only [eval]
-          exact (ih h hfm).bot_andThen
+          exact (ih h hfm).bot_bind
       | @assign Γ Γ₁ Δ pl e en₀ en₁ u₀ u₁ T hget₀ hmut hg₀ hty₀ h hget₁ hg₁ _ hover =>
           -- (D-Assign) §6.8 at a sub-position: drop what is live there (a `⊘`
           -- drops nothing — reinitialization, `3.8:55`), then store.
@@ -3670,7 +3670,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
       | @seqBot Γ Δ₁ e₁ e₂ T₁ T h₁ =>
           -- (Seq-Bottom) §5.3: the prefix produced no value; the tail never runs.
           simp only [eval]
-          exact (ih h₁ hfm).bot_andThen
+          exact (ih h₁ hfm).bot_bind
       | @seq Γ Γ₁ Δ₁ Ω₂ e₁ e₂ T₁ T₂ h₁ hnl h₂ =>
           simp only [eval]
           refine EvalOk.bind (ih h₁ hfm) (by brk_sub) ?_
@@ -3686,7 +3686,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
       | @iteBot Γ Δ₀ c e₁ e₂ T hc =>
           -- (Strict-Bottom) §5.3 at the condition: neither arm runs.
           simp only [eval]
-          exact (ih hc hfm).bot_andThen
+          exact (ih hc hfm).bot_bind
       | @ite Γ Γ₀ Δ₀ Ω₁ Ω₂ o c e₁ e₂ T hc h₁ h₂ hjoin =>
           -- (If) §5.5: the arm that runs promises its own normal state, which
           -- the join over the continuing arms carries on; an arm typed `⊥`
@@ -3834,7 +3834,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           -- (Return-Bottom) §5.7: the operand produced no value, so the
           -- `return` never fires.
           simp only [eval]
-          exact (ih hty hfm).bot_andThen
+          exact (ih hty hfm).bot_bind
       | @ret Γ Γ₁ Δ e T hty hnl =>
           simp only [eval]
           refine EvalOk.bind (ih hty hfm) (by brk_sub) ?_
@@ -3863,14 +3863,14 @@ theorem EvalRes.withTrace_outOfFuel_iff {r : EvalRes} {tr : List Event} :
 /-- §6.2's search is monotone in the fuel: if the operand's result is stable
 and the context's result is stable on that value, the whole form's result is
 (helper). -/
-theorem EvalRes.andThen_mono {r r' : EvalRes} {k k' : Store → Val → EvalRes}
+theorem EvalRes.bind_mono {r r' : EvalRes} {k k' : Store → Val → EvalRes}
     (hr : r ≠ .outOfFuel → r' = r)
     (hk : ∀ H v tr, r = .ok H v tr → k H v ≠ .outOfFuel → k' H v = k H v)
-    (h : r.andThen k ≠ .outOfFuel) : r'.andThen k' = r.andThen k := by
+    (h : r.bind k ≠ .outOfFuel) : r'.bind k' = r.bind k := by
   cases r with
   | ok H v tr =>
       rw [hr (by simp)]
-      simp only [EvalRes.andThen] at h ⊢
+      simp only [EvalRes.bind] at h ⊢
       have hkne : k H v ≠ .outOfFuel := by
         intro hc
         exact h (by rw [hc]; simp [EvalRes.withTrace])
@@ -3879,7 +3879,7 @@ theorem EvalRes.andThen_mono {r r' : EvalRes} {k k' : Store → Val → EvalRes}
   | broke H sc tr => rw [hr (by simp)]; rfl
   | panic pk tr => rw [hr (by simp)]; rfl
   | stuck w => rw [hr (by simp)]; rfl
-  | outOfFuel => simp only [EvalRes.andThen] at h; exact absurd rfl h
+  | outOfFuel => simp only [EvalRes.bind] at h; exact absurd rfl h
 
 /-- §6.9's call boundary is monotone in the fuel, for the same reason
 (helper). -/
@@ -3966,29 +3966,29 @@ theorem eval_succ (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
           | outOfFuel => rw [hr] at h; exact absurd rfl h
       | binop op e₁ e₂ =>
           simp only [eval] at h ⊢
-          refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
+          refine EvalRes.bind_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ hkne
-          refine EvalRes.andThen_mono (fun hne => ih H₁ φ e₂ hne) ?_ hkne
+          refine EvalRes.bind_mono (fun hne => ih H₁ φ e₂ hne) ?_ hkne
           intro H₂ v₂ tr₂ _ _
           rfl
       | unop op e₁ =>
           simp only [eval] at h ⊢
-          refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
+          refine EvalRes.bind_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ _
           rfl
       | fintrin k e₁ =>
           simp only [eval] at h ⊢
-          refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
+          refine EvalRes.bind_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ _
           rfl
       | intCast w sg e₁ =>
           simp only [eval] at h ⊢
-          refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
+          refine EvalRes.bind_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ _
           rfl
       | dbg e₁ =>
           simp only [eval] at h ⊢
-          refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
+          refine EvalRes.bind_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ _
           rfl
       | mkStruct s' args =>
@@ -4008,7 +4008,7 @@ theorem eval_succ (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
           simp only [eval, heq]
       | «match» scrut arms =>
           simp only [eval] at h ⊢
-          refine EvalRes.andThen_mono (fun hne => ih H φ scrut hne) ?_ h
+          refine EvalRes.bind_mono (fun hne => ih H φ scrut hne) ?_ h
           intro H₀ v tr _ hkne
           cases v with
           | int w sg m => rfl
@@ -4024,7 +4024,7 @@ theorem eval_succ (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
               | some body =>
                   simp only [harm] at hkne ⊢
                   have hkne' := mt EvalRes.withTrace_outOfFuel_iff.mpr hkne
-                  rw [EvalRes.andThen_mono (fun hne => ih _ _ body hne)
+                  rw [EvalRes.bind_mono (fun hne => ih _ _ body hne)
                     (fun _ _ _ _ _ => rfl) hkne']
       | mkArray T args =>
           have hargs : evalArgs (fun H' e' => eval M n P H' φ e') H args ≠ .abort .outOfFuel := by
@@ -4035,7 +4035,7 @@ theorem eval_succ (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
           simp only [eval, heq]
       | repeatArray T e₁ n' =>
           simp only [eval] at h ⊢
-          refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
+          refine EvalRes.bind_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ _
           rfl
       | indexRead pl idx πs =>
@@ -4047,12 +4047,12 @@ theorem eval_succ (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
           simp only [eval, heq]
       | indexDrop pl idx πs =>
           simp only [eval] at h ⊢
-          refine EvalRes.andThen_mono (fun hne => ih H φ _ hne) ?_ h
+          refine EvalRes.bind_mono (fun hne => ih H φ _ hne) ?_ h
           intro H₁ v tr _ _
           rfl
       | indexWrite pl idx πs e₁ =>
           simp only [eval] at h ⊢
-          refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
+          refine EvalRes.bind_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ hkne
           have hargs : evalArgs (fun H' e' => eval M n P H' φ e') H₁ idx ≠ .abort .outOfFuel := by
             intro hc
@@ -4062,19 +4062,19 @@ theorem eval_succ (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
           simp only [heq]
       | letIn m e₁ e₂ =>
           simp only [eval] at h ⊢
-          refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
+          refine EvalRes.bind_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ hkne
-          refine EvalRes.andThen_mono (fun hne => ih _ _ e₂ hne) ?_ hkne
+          refine EvalRes.bind_mono (fun hne => ih _ _ e₂ hne) ?_ hkne
           intro H₂ v₂ tr₂ _ _
           rfl
       | assign i e₁ =>
           simp only [eval] at h ⊢
-          refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
+          refine EvalRes.bind_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ _
           rfl
       | seq e₁ e₂ =>
           simp only [eval] at h ⊢
-          refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
+          refine EvalRes.bind_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ hkne
           cases hml : v.mult P.decls with
           | linear => rfl
@@ -4090,7 +4090,7 @@ theorem eval_succ (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
               rw [ih H₁ φ e₂ hkne]
       | ite c e₁ e₂ =>
           simp only [eval] at h ⊢
-          refine EvalRes.andThen_mono (fun hne => ih H φ c hne) ?_ h
+          refine EvalRes.bind_mono (fun hne => ih H φ c hne) ?_ h
           intro H₀ v tr _ hkne
           cases v with
           | float w f => rfl
@@ -4108,7 +4108,7 @@ theorem eval_succ (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
           | array T vs => rfl
       | ret e₁ =>
           simp only [eval] at h ⊢
-          refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
+          refine EvalRes.bind_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ _
           rfl
       | call f args =>

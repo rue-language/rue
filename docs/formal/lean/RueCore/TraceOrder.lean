@@ -376,7 +376,7 @@ theorem GlueBlocks.withTrace {D : Decls} {tr : List Event} {r : EvalRes} (h₁ :
 /-- §6.2's search keeps the grammar (helper). -/
 theorem GlueBlocks.bind {D : Decls} {r : EvalRes} {k : Store → Val → EvalRes}
     (hr : GlueBlocks D r.trace) (hk : ∀ H₁ v tr, r = .ok H₁ v tr → GlueBlocks D (k H₁ v).trace) :
-    GlueBlocks D (r.andThen k).trace := by
+    GlueBlocks D (r.bind k).trace := by
   cases r with
   | ok H₁ v tr => exact GlueBlocks.withTrace hr (hk H₁ v tr rfl)
   | _ => exact hr

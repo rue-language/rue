@@ -3620,7 +3620,7 @@ theorem floatDivZeroToInt_traps (M : FloatModel) (P : Program) (H : Store) (φ :
       = .panic .overflow [] := by
   have hdiv : M.toFloatSig.arith w .div (.num false 1 0) (.num false 0 0) = .inf false :=
     M.div_by_zero w (.num false 1 0) false 1 0 (one_wf w) rfl (by decide) false
-  simp [eval, EvalRes.andThen, EvalRes.withTrace, evalBinOp, binOpFloat, evalFintrin,
+  simp [eval, EvalRes.bind, EvalRes.withTrace, evalBinOp, binOpFloat, evalFintrin,
     OpRes.toRes, M.ofLit_one, M.ofLit_zero, hdiv, FloatDatum.toIntIn, FloatDatum.truncToInt]
 
 /-! ## Where `eval` and §6 part on invalid input

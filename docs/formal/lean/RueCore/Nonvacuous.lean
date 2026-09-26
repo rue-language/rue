@@ -362,7 +362,7 @@ theorem dropTurn_eval (M : FloatSig) (fns : List FnDef) : ∀ m H φ, ∃ H' tr,
         fns := fns } H φ
       (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) .unitLit) = .ok H' .unit tr := by
   intro m H φ
-  simp only [eval, evalArgs, introVal, EvalRes.andThen, EvalRes.withTrace]
+  simp only [eval, evalArgs, introVal, EvalRes.bind, EvalRes.withTrace]
   simp [dropRetire]
   exact ⟨_, _, rfl⟩
 

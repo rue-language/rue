@@ -259,18 +259,18 @@ theorem MSim.andThen {φ φ₁ : Frame} {C C₁ : List Kont → List Event → C
     {r : EvalRes} (h₁ : MSim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
     (hk : ∀ H₁ v tr₁, r = .ok H₁ v tr₁ →
       MSim M P φ (fun K tr => .run H₁ φ₁ (F :: K) (.ret v) tr) (k H₁ v)) :
-    MSim M P φ C (r.andThen k) := by
+    MSim M P φ C (r.bind k) := by
   cases r with
   | ok H₁ v tr₁ =>
-      simp only [EvalRes.andThen]
+      simp only [EvalRes.bind]
       exact MSim.withTrace (fun K tr => (hC K tr).trans (h₁ (F :: K) tr)) (hk H₁ v tr₁ rfl)
   | returned H₁ v tr₁ =>
-      simp only [EvalRes.andThen, MSim] at h₁ ⊢
+      simp only [EvalRes.bind, MSim] at h₁ ⊢
       intro K tr φs K' hK hs
       exact (hC K tr).trans (h₁ (F :: K) tr φs K' (by rw [(hF K).1]; exact hK)
         (by rw [stackOwn_cons_nil hFo]; exact hs))
   | broke H₁ sc tr₁ =>
-      simp only [EvalRes.andThen, MSim] at h₁ ⊢
+      simp only [EvalRes.bind, MSim] at h₁ ⊢
       intro K tr φs K' H' evs hK hs hu
       exact (hC K tr).trans (h₁ (F :: K) tr φs K' H' evs (by rw [(hF K).2]; exact hK)
         (by rw [stackOwn_cons_nil hFo]; exact hs) hu)
@@ -286,10 +286,10 @@ theorem MSim.andThenHeld {φ φ₁ : Frame} {C C₁ : List Kont → List Event �
     {r : EvalRes} (hq : r.NoRet ∧ r.NoBrk) (h₁ : MSim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
     (hk : ∀ H₁ v tr₁, r = .ok H₁ v tr₁ →
       MSim M P φ (fun K tr => .run H₁ φ₁ (F :: K) (.ret v) tr) (k H₁ v)) :
-    MSim M P φ C (r.andThen k) := by
+    MSim M P φ C (r.bind k) := by
   cases r with
   | ok H₁ v tr₁ =>
-      simp only [EvalRes.andThen]
+      simp only [EvalRes.bind]
       exact MSim.withTrace (fun K tr => (hC K tr).trans (h₁ (F :: K) tr)) (hk H₁ v tr₁ rfl)
   | returned => exact hq.1.elim
   | broke => exact hq.2.elim
@@ -306,7 +306,7 @@ theorem MSim.lift {φ φ₁ : Frame} {C C₁ : List Kont → List Event → Conf
     MSim M P φ C r := by
   have := MSim.andThen (φ := φ) (k := fun _ _ => .outOfFuel) hF hFo hC h₁
     (fun H v tr h => absurd h (hr H v tr))
-  cases r <;> simp_all [EvalRes.andThen]
+  cases r <;> simp_all [EvalRes.bind]
 
 /-- §6.9's call boundary, losslessly: the body's `returned` is caught at the
 `call φ` frame, which holds nothing (helper). -/
@@ -1046,12 +1046,12 @@ theorem msim_indexDrop (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   split
   · rename_i r hr
     have hne := evalArgs_abort_ne_ok hr
-    have : r.andThen (fun H' _ => .ok H' .unit []) = r := by
-      cases r <;> simp_all [EvalRes.andThen]
+    have : r.bind (fun H' _ => .ok H' .unit []) = r := by
+      cases r <;> simp_all [EvalRes.bind]
     rw [this]
     exact MSim.pre hent (evalArgs_msimAbort IH (.indexDrop p πs) rfl idx H he.1 he.2 hcc r hr)
   · rename_i H₁ vs tr₁ hr
-    rw [EvalRes.withTrace_andThen]
+    rw [EvalRes.withTrace_bind]
     refine MSim.withTrace (C₂ := argsConf H₁ φ (.indexDrop p πs) vs [])
       (fun K tr => (hent K tr).trans
         (by simpa using evalArgs_msimOk hp IH _ idx H [] he.1 hcc _ _ _ hr K tr)) ?_
@@ -1070,7 +1070,7 @@ theorem msim_indexDrop (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
           · rename_i hcopy
             rw [← Contents.mult_toVal _ _ _ hv] at hcopy
             intro K tr
-            simpa [EvalRes.andThen] using MSteps.single (.indexDrop hd hleaf hv hcopy)
+            simpa [EvalRes.bind] using MSteps.single (.indexDrop hd hleaf hv hcopy)
               (ledger_le_run0 (tr := tr) fun a => by
                 simp only [Focus.own, ArgsTag.own, Val.ints_own (D := P.decls) his, List.append_nil,
                   Val.own_unit, List.count_nil]
@@ -1486,7 +1486,7 @@ theorem eval_msim (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) (fuel
     | indexWrite p idx πs e => exact msim_indexWrite hp IH hcc p idx πs e he
     | indexDrop p idx πs =>
         cases fuel with
-        | zero => simp [eval, EvalRes.andThen, MSim]
+        | zero => simp [eval, EvalRes.bind, MSim]
         | succ f => exact msim_indexDrop hp (ih f (by omega)) hcc p idx πs he
     | drop p => exact msim_drop hcc p
     | letIn m e₁ e₂ => exact msim_letIn hp IH hcc m e₁ e₂ he

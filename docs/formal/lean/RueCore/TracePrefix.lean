@@ -158,7 +158,7 @@ theorem LongC.step1 {H : Store} {X Y : List Nat} {C C₂ : List Kont → List Ev
   LongC.pre1 (t := []) (Nat.le_refl _) (fun a => by have := hXY a; simp; omega)
     (fun K tr => ⟨_, hpre K tr, by simpa using Steps.refl _⟩) h
 
-/-- **§6.2's (Search), counted, with its ledger**: the twin of `Long.andThen`.
+/-- **§6.2's (Search), counted, with its ledger**: the twin of `Long.bind`.
 If `eval` spent its fuel on the operand, the operand's run is the long one;
 if the operand finished, `Sim` gives the run to its value and `Cons` its
 ledger, and the context's run is the long one (helper). -/
@@ -171,11 +171,11 @@ theorem LongC.andThen {H : Store} {X : List Nat} {φ₁ : Frame}
     (hk : ∀ H₁ v tr₁, r = .ok H₁ v tr₁ → StoreCC P.decls H₁ →
       (Contents.ofVal v).copyClosed P.decls = true → k H₁ v = .outOfFuel →
       LongC M P F H₁ (v.own P.decls) (fun K tr => .run H₁ φ₁ (Fr :: K) (.ret v) tr) fuel) :
-    r.andThen k = .outOfFuel → LongC M P F H X C (fuel + 1) := by
+    r.bind k = .outOfFuel → LongC M P F H X C (fuel + 1) := by
   intro hr
   cases r with
   | ok H₁ v tr₁ =>
-      simp only [EvalRes.andThen, EvalRes.withTrace_outOfFuel_iff] at hr
+      simp only [EvalRes.bind, EvalRes.withTrace_outOfFuel_iff] at hr
       obtain ⟨l, c, cv, i⟩ := hcons
       exact LongC.pre1 (t := tr₁) l (fun a => by have := i a; omega)
         (fun K tr => ⟨_, hC K tr, hsim (Fr :: K) tr⟩) (hk H₁ v tr₁ rfl c cv hr)
@@ -183,7 +183,7 @@ theorem LongC.andThen {H : Store} {X : List Nat} {φ₁ : Frame}
       have h := h₁ rfl
       exact LongC.step1 (C₂ := fun K tr => C₁ (Fr :: K) tr) (fun a => Nat.le_refl _) hC
         (fun K tr => h (Fr :: K) tr)
-  | _ => simp [EvalRes.andThen] at hr
+  | _ => simp [EvalRes.bind] at hr
 
 /-- The induction hypothesis: at fuel `fuel`, exhaustion from a copy-closed
 store is a run of at least `fuel` steps with the ledger (helper). -/
@@ -262,7 +262,7 @@ theorem longc_one (hF : TraceMeasure P.decls F) (IH : LongCIH M P F fuel)
     (hcc : StoreCC P.decls H) {e e' : Expr} {Fr : Kont} {k : Store → Val → EvalRes}
     (hent : ∀ K tr, Step M P (evalConf H φ e' K tr) (evalConf H φ e (Fr :: K) tr))
     (hk : ∀ H₁ v, k H₁ v ≠ .outOfFuel) :
-    (eval M fuel P H φ e).andThen k = .outOfFuel →
+    (eval M fuel P H φ e).bind k = .outOfFuel →
       LongC M P F H [] (evalConf H φ e') (fuel + 1) :=
   LongC.andThen (C₁ := evalConf H φ e) (Fr := Fr) hent (eval_sim M P fuel H φ e)
     (eval_conserves M hF fuel H φ e hcc) (IH H φ e hcc)
@@ -330,8 +330,8 @@ theorem longc_match (hF : TraceMeasure P.decls F) (IH : LongCIH M P F fuel)
         cases eval M fuel P (mintParams H₀ vs).1
             { env := (mintParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (mintParams H₀ vs).2 }
             body with
-        | ok H₂ v₂ tr₂ => simp only [EvalRes.andThen]; split <;> simp [EvalRes.withTrace]
-        | _ => simp [EvalRes.andThen]
+        | ok H₂ v₂ tr₂ => simp only [EvalRes.bind]; split <;> simp [EvalRes.withTrace]
+        | _ => simp [EvalRes.bind]
       have hpay := Contents.enum_payload hv
       have hcm := hc₀.mintParams (hpay 0).2
       refine LongC.mono (Nat.le_succ _) (LongC.pre1 (t := matchConsume P.decls e k i vs)
@@ -469,12 +469,12 @@ theorem longc_indexDrop (hF : TraceMeasure P.decls F) (IH : LongCIH M P F fuel)
       LongC M P F H [] (evalConf H φ (.indexDrop p idx πs)) (fuel + 2) := by
   intro h
   have he : eval M (fuel + 2) P H φ (.indexDrop p idx πs) =
-      (eval M (fuel + 1) P H φ (.indexRead p idx πs)).andThen (fun H' _ => .ok H' .unit []) := by
+      (eval M (fuel + 1) P H φ (.indexRead p idx πs)).bind (fun H' _ => .ok H' .unit []) := by
     simp only [eval]
   have hr : eval M (fuel + 1) P H φ (.indexRead p idx πs) = .outOfFuel := by
     rw [he] at h
     revert h
-    cases eval M (fuel + 1) P H φ (.indexRead p idx πs) <;> simp [EvalRes.andThen, EvalRes.withTrace]
+    cases eval M (fuel + 1) P H φ (.indexRead p idx πs) <;> simp [EvalRes.bind, EvalRes.withTrace]
   simp only [eval] at hr
   split at hr
   · subst hr
