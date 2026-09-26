@@ -8,6 +8,7 @@ public import RueCore.TraceExact
 public import RueCore.TraceOrder
 public import RueCore.Adequacy
 public import RueCore.Nonvacuous
+public import RueCore.Sharp
 
 @[expose] public section
 
@@ -134,5 +135,63 @@ theorem Nonvacuous.float : Spec.Nonvacuous.float_stmt := @RueCore.Nonvacuous.flo
 theorem Nonvacuous.diverges : Spec.Nonvacuous.diverges_stmt := @RueCore.Nonvacuous.diverges
 /-- `Spec.Nonvacuous.stuck_stmt`, by `RueCore.Nonvacuous.stuck` (helper). -/
 theorem Nonvacuous.stuck : Spec.Nonvacuous.stuck_stmt := @RueCore.Nonvacuous.stuck
+
+/-! ## The sharpness counter-examples (`Spec.sharpness`) -/
+
+/-- `Spec.Sharp.stuck_stmt`, by `RueCore.Sharp.stuck` (helper). -/
+theorem Sharp.stuck : Spec.Sharp.stuck_stmt := @RueCore.Sharp.stuck
+/-- `Spec.Sharp.stuck_step_stmt`, by `RueCore.Sharp.stuck_step` (helper). -/
+theorem Sharp.stuck_step : Spec.Sharp.stuck_step_stmt := @RueCore.Sharp.stuck_step
+/-- `Spec.Sharp.typed_stmt`, by `RueCore.Sharp.typed` (helper). -/
+theorem Sharp.typed : Spec.Sharp.typed_stmt := @RueCore.Sharp.typed
+/-- `Spec.Sharp.frame_stmt`, by `RueCore.Sharp.frame` (helper). -/
+theorem Sharp.frame : Spec.Sharp.frame_stmt := @RueCore.Sharp.frame
+/-- `Spec.Sharp.no_entry_stmt`, by `RueCore.Sharp.no_entry` (helper). -/
+theorem Sharp.no_entry : Spec.Sharp.no_entry_stmt := @RueCore.Sharp.no_entry
+/-- `Spec.Sharp.entry_param_stmt`, by `RueCore.Sharp.entry_param` (helper). -/
+theorem Sharp.entry_param : Spec.Sharp.entry_param_stmt := @RueCore.Sharp.entry_param
+/-- `Spec.Sharp.copy_stmt`, by `RueCore.Sharp.copy` (helper). -/
+theorem Sharp.copy : Spec.Sharp.copy_stmt := @RueCore.Sharp.copy
+/-- `Spec.Sharp.leak_stmt`, by `RueCore.Sharp.leak` (helper). -/
+theorem Sharp.leak : Spec.Sharp.leak_stmt := @RueCore.Sharp.leak
+/-- `Spec.Sharp.overwrite_stmt`, by `RueCore.Sharp.overwrite` (helper). -/
+theorem Sharp.overwrite : Spec.Sharp.overwrite_stmt := @RueCore.Sharp.overwrite
+/-- `Spec.Sharp.discard_stmt`, by `RueCore.Sharp.discard` (helper). -/
+theorem Sharp.discard : Spec.Sharp.discard_stmt := @RueCore.Sharp.discard
+/-- `Spec.Sharp.discard_loop_stmt`, by `RueCore.Sharp.discard_loop` (helper). -/
+theorem Sharp.discard_loop : Spec.Sharp.discard_loop_stmt := @RueCore.Sharp.discard_loop
+/-- `Spec.Sharp.fuel_stmt`, by `RueCore.Sharp.fuel` (helper). -/
+theorem Sharp.fuel : Spec.Sharp.fuel_stmt := @RueCore.Sharp.fuel
+/-- `Spec.Sharp.fuel_panic_stmt`, by `RueCore.Sharp.fuel_panic` (helper). -/
+theorem Sharp.fuel_panic : Spec.Sharp.fuel_panic_stmt := @RueCore.Sharp.fuel_panic
+/-- `Spec.Sharp.not_fits_stmt`, by `RueCore.Sharp.not_fits` (helper). -/
+theorem Sharp.not_fits : Spec.Sharp.not_fits_stmt := @RueCore.Sharp.not_fits
+/-- `Spec.Sharp.double_drop_stmt`, by `RueCore.Sharp.double_drop` (helper). -/
+theorem Sharp.double_drop : Spec.Sharp.double_drop_stmt := @RueCore.Sharp.double_drop
+/-- `Spec.Sharp.bare_dtor_stmt`, by `RueCore.Sharp.bare_dtor` (helper). -/
+theorem Sharp.bare_dtor : Spec.Sharp.bare_dtor_stmt := @RueCore.Sharp.bare_dtor
+/-- `Spec.Sharp.pending_program_stmt`, by `RueCore.Sharp.pending_program` (helper). -/
+theorem Sharp.pending_program : Spec.Sharp.pending_program_stmt := @RueCore.Sharp.pending_program
+/-- `Spec.Sharp.pending_expr_stmt`, by `RueCore.Sharp.pending_expr` (helper). -/
+theorem Sharp.pending_expr : Spec.Sharp.pending_expr_stmt := @RueCore.Sharp.pending_expr
+/-- `Spec.Sharp.store_cc_stmt`, by `RueCore.Sharp.store_cc` (helper). -/
+theorem Sharp.store_cc : Spec.Sharp.store_cc_stmt := @RueCore.Sharp.store_cc
+/-- `Spec.Sharp.no_lead_stmt`, by `RueCore.Sharp.no_lead` (helper). -/
+theorem Sharp.no_lead : Spec.Sharp.no_lead_stmt := @RueCore.Sharp.no_lead
+/-- `Spec.Sharp.no_eval_stmt`, by `RueCore.Sharp.no_eval` (helper). -/
+theorem Sharp.no_eval : Spec.Sharp.no_eval_stmt := @RueCore.Sharp.no_eval
+/-- `Spec.Sharp.unreached_stmt`, by `RueCore.Sharp.unreached` (helper). -/
+theorem Sharp.unreached : Spec.Sharp.unreached_stmt := @RueCore.Sharp.unreached
+/-- `Spec.Sharp.unreached_panic_stmt`, by `RueCore.Sharp.unreached_panic` (helper). -/
+theorem Sharp.unreached_panic : Spec.Sharp.unreached_panic_stmt := @RueCore.Sharp.unreached_panic
+/-- `Spec.Sharp.unordered_stmt`, by `RueCore.Sharp.unordered` (helper). -/
+theorem Sharp.unordered : Spec.Sharp.unordered_stmt := @RueCore.Sharp.unordered
+/-- `Spec.Sharp.not_a_step_stmt`, by `RueCore.Sharp.not_a_step` (helper). -/
+theorem Sharp.not_a_step : Spec.Sharp.not_a_step_stmt := @RueCore.Sharp.not_a_step
+/-- `Spec.Sharp.init_steps_stmt`, by `RueCore.Sharp.init_steps` (helper). -/
+theorem Sharp.init_steps : Spec.Sharp.init_steps_stmt := @RueCore.Sharp.init_steps
+/-- `Spec.Sharp.unreachable_stuck_stmt`, by `RueCore.Sharp.unreachable_stuck` (helper). -/
+theorem Sharp.unreachable_stuck : Spec.Sharp.unreachable_stuck_stmt := @RueCore.Sharp.unreachable_stuck
+
 
 end RueCore.Spine

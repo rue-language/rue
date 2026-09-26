@@ -37,6 +37,7 @@ def table : List (Name × Nat) := [
   (`RueCore.Spec.Step, 2),
   (`RueCore.Spec.Adequacy, 2),
   (`RueCore.Spec.Nonvacuous, 2),
+  (`RueCore.Spec.Sharp, 2),
   (`RueCore.Spec, 2),
   -- L2 proofs
   (`RueCore.Float.Lemmas, 3),
@@ -50,6 +51,7 @@ def table : List (Name × Nat) := [
   (`RueCore.TraceExact, 3),
   (`RueCore.TraceOrder, 3),
   (`RueCore.Nonvacuous, 3),
+  (`RueCore.Sharp, 3),
   (`RueCore.Spine, 3),
   (`RueCore.Nonvacuous.Glue, 3),
   -- L3 tooling
