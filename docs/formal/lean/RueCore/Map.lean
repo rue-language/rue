@@ -58,95 +58,155 @@ namespace RueCore.Map
 /-- (helper) The milestone lemmas: load-bearing internal lemmas besides the
 36-theorem spine (`Lint.headline`), picked from the preservation invariants,
 the `eval`/`Step` simulation lemmas, and the key trace lemmas — the three
-groups RUE-2468 asks for. Each entry's reason is the comment beside it.
-`milestoneProblems` fails the generator when one is not a theorem of the
-environment; nothing here is a spine theorem already (the two lists are
-disjoint, so the map's marked set has no duplicate node). -/
-def milestones : List Name := [
+groups RUE-2468 asks for. Each entry's second component is its one-line
+reason, kept as data (not only a source comment) so `mapReport` can print it
+in `MAP.md`'s "Milestone lemmas" table. `milestoneProblems` fails the
+generator when a listed name is not a theorem of the environment; nothing
+here is a spine theorem already (the two lists are disjoint, so the map's
+marked set has no duplicate node). -/
+def milestones : List (Name × String) := [
   -- preservation invariants (Statics/Lemmas.lean, Soundness.lean)
-  ``Typed.wf,                  -- every derivation preserves the state-shape invariant `OwnSt.wf`, which the join and the loop lemmas below all lean on
-  ``Ctx.join_absorb,           -- the join's absorption law: re-entering a loop at its head with the same body derivation is sound (`LoopHead.backEdge`'s proof)
-  ``Ctx.joinAll_perm,          -- the §5.5 n-way join fold is invariant under a permutation of the match arms it folds
-  ``LoopHead.enter,            -- a loop body is typed at its head state on first entry
-  ``LoopHead.backEdge,         -- a loop body re-typed at its head state after one turn still satisfies the head equation
-  ``loop_exit_ok,              -- every one of a loop's delivered exits is typed at the state its `break` fires with
-  ``class_unique,              -- §3's class assignment is unique; every derivation that reads a class off a type leans on this
-  ``struct_carriesLinear_iff,  -- a struct's class carries `linear` iff a field's does — read off by the checker and by the destructure rules
-  ``enum_carriesLinear_iff,    -- the same equation for an enum's variants
+  (``Typed.wf, "every derivation preserves the state-shape invariant `OwnSt.wf`, which the join and the loop lemmas below all lean on"),
+  (``Ctx.join_absorb, "the join's absorption law: re-entering a loop at its head with the same body derivation is sound (`LoopHead.backEdge`'s proof)"),
+  (``Ctx.joinAll_perm, "the §5.5 n-way join fold is invariant under a permutation of the match arms it folds"),
+  (``LoopHead.enter, "a loop body is typed at its head state on first entry"),
+  (``LoopHead.backEdge, "a loop body re-typed at its head state after one turn still satisfies the head equation"),
+  (``loop_exit_ok, "every one of a loop's delivered exits is typed at the state its `break` fires with"),
+  (``class_unique, "§3's class assignment is unique; every derivation that reads a class off a type leans on this"),
+  (``struct_carriesLinear_iff, "a struct's class carries `linear` iff a field's does — read off by the checker and by the destructure rules"),
+  (``enum_carriesLinear_iff, "the same equation for an enum's variants"),
   -- eval/Step simulation
-  ``init_safeAt,               -- `Config.init` is semantically safe; the fundamental lemma `step_preservation` inducts from
-  ``eval_sim,                  -- the simulation relation between `eval` and `Step`, proved for every expression, fuel and program
-  ``eval_steps_of_outOfFuel,   -- exhausted fuel is a run of that many `Step`s — completeness modulo fuel, behind `eval_complete`
-  ``step_value_typed,          -- every value a reachable `Step` configuration carries is typed
-  ``destructure_plain,         -- a monitor removes no behaviour: the declared-linear destructure's residue check changes no step it does not refuse
-  ``unwindLocs_plain,          -- a monitor removes no behaviour: an unwind's drops are the same with or without the monitors
+  (``init_safeAt, "`Config.init` is semantically safe; the fundamental lemma `step_preservation` inducts from"),
+  (``eval_sim, "the simulation relation between `eval` and `Step`, proved for every expression, fuel and program"),
+  (``eval_steps_of_outOfFuel, "exhausted fuel is a run of that many `Step`s — completeness modulo fuel, behind `eval_complete`"),
+  (``step_value_typed, "every value a reachable `Step` configuration carries is typed"),
+  (``destructure_plain, "a monitor removes no behaviour: the declared-linear destructure's residue check changes no step it does not refuse"),
+  (``unwindLocs_plain, "a monitor removes no behaviour: an unwind's drops are the same with or without the monitors"),
   -- key trace lemmas
-  ``eval_conserves,            -- the conservation law over `eval`'s identities, proved by fuel induction, that `no_double_free` follows from
-  ``eval_tidy,                 -- every cell an evaluation allocates is retired by its end — the frame-pop invariant behind `drop_exactly_once`
-  ``rest_step,                 -- the ledger for the rest of every form, behind `rest_exactly_once`
-  ``run_blocks,                -- every finished run's trace is in the block grammar `Blocks`: each drop marker followed by exactly its own walk
-  ``step_blocks,               -- carries `run_blocks` to `Step`
-  ``reachable_ordered,         -- every scope record is in location order
-  ``reachable_nested,          -- scopes nest, a pending `endscope` being the tail of its record
-  ``reachable_lifo,            -- the registration stack is dropped newest-first
-  ``pendingSafe_needed,        -- the RUE-2316 carve-out (a by-value argument a sibling's `return` destroys) is load-bearing, not vacuous
-  ``roundRat_wf                -- rounding an exact rational lands in 𝔽_w — the float model's closure law the non-vacuity witness rests on
+  (``eval_conserves, "the conservation law over `eval`'s identities, proved by fuel induction, that `no_double_free` follows from"),
+  (``eval_tidy, "every cell an evaluation allocates is retired by its end — the frame-pop invariant behind `drop_exactly_once`"),
+  (``rest_step, "the ledger for the rest of every form, behind `rest_exactly_once`"),
+  (``run_blocks, "every finished run's trace is in the block grammar `Blocks`: each drop marker followed by exactly its own walk"),
+  (``step_blocks, "carries `run_blocks` to `Step`"),
+  (``reachable_ordered, "every scope record is in location order"),
+  (``reachable_nested, "scopes nest, a pending `endscope` being the tail of its record"),
+  (``reachable_lifo, "the registration stack is dropped newest-first"),
+  (``pendingSafe_needed, "the RUE-2316 carve-out (a by-value argument a sibling's `return` destroys) is load-bearing, not vacuous"),
+  (``roundRat_wf, "rounding an exact rational lands in 𝔽_w — the float model's closure law the non-vacuity witness rests on")
 ]
+
+/-- (helper) The milestone names alone, without their reasons. -/
+def milestoneNames : List Name := milestones.map (·.1)
 
 /-- (helper) Every marked node the map draws: the spine (`Lint.headline`),
 then the milestones, in that order and without duplicates. -/
-def marked : List Name := Digest.dedup (Lint.headline ++ milestones).toArray |>.toList
+def marked : List Name := Digest.dedup (Lint.headline ++ milestoneNames).toArray |>.toList
 
 /-- (helper) Every milestone name that is not a theorem of the environment —
 the generator's own check, since a stale or renamed entry in `milestones`
 would otherwise silently draw no edges rather than fail loudly. -/
 def milestoneProblems (env : Environment) : Array String :=
-  milestones.foldl (init := #[]) fun acc n =>
+  milestones.foldl (init := #[]) fun acc (n, _) =>
     match Lint.find? env n with
     | some (.thmInfo _) => acc
     | _ => acc.push s!"{n}: listed in Map.milestones, but not a theorem of the environment"
 
 /-! ## Walking a proof term for its marked ancestors -/
 
-/-- (helper) The memo of the walk: every theorem visited, with the unmarked
-helper theorems its own proof walks through before the next marked node
-(first), and the marked nodes that walk meets (second) — both before any
-filtering, so a caller reads whichever half it needs. -/
-abbrev MarkM := ReaderT (Environment × NameSet) (StateM (NameMap (Array Name × Array Name)))
+/-- (helper) The memo of the walk: every theorem, and every proof-bearing
+`def` `followsInto` passes through, with the unmarked helper theorems its own
+proof walks through before the next marked node (first), and the marked
+nodes that walk meets (second) — both before any filtering, so a caller
+reads whichever half it needs. In `CoreM` because `followsInto` asks the
+environment (`isAutoDeclOrPrivate_Internal`) and elaborates a type
+(`Meta.isProp`). -/
+abbrev MarkM := ReaderT (Environment × NameSet) (StateT (NameMap (Array Name × Array Name)) CoreM)
 
-/-- (helper) A constant's theorem body, with private bodies visible
-(`Lint.find?`), or `none` when it is not a theorem. -/
-def theoremValue? (env : Environment) (n : Name) : Option Lean.Expr :=
+/-- (helper) Should `walk` recurse into this constant's *value* the way it
+does a theorem's — i.e. can this `def`'s body carry a further proof step
+that a theorem's own `.value` does not mention directly, even though the
+constant itself is never a marked node? Two cases, either sufficient on its
+own:
+
+* **compiler-generated** (`isAutoDeclOrPrivate_Internal`, the same predicate
+  `Digest.isGenerated` starts from): a pattern-matched (`| pat => …`)
+  theorem's equation-compiler auxiliary is a `def`, not a `theorem` — for
+  example `Ctx.join_assoc`'s clause bodies live in `Ctx.join_assoc._f`, a
+  `.defnInfo` the walk would otherwise treat as a dead end, silently losing
+  every theorem that clause body calls;
+* **Prop-valued** (`Meta.isProp` of the body under the type's own binders): a
+  hand-written helper lemma that happens to be declared `def` rather than
+  `theorem` is still a proof, whatever its keyword.
+
+Neither test asks what a `def` *is about*, so an ordinary data or type
+definition (`Ctx`, `OwnSt`, `check`, …) — which is Type- or data-valued, and
+not compiler-generated merely for being pattern-matched itself — never
+qualifies, and the walk does not wander from a theorem's proof into the
+definition layer this way. A `def` is never itself a marked node, so
+following one only ever adds edges and unmarked helper theorems already
+reachable through it; it never changes what counts as marked. -/
+def followsInto (info : ConstantInfo) (n : Name) : CoreM Bool := do
+  if ← isAutoDeclOrPrivate_Internal n then return true
+  Meta.MetaM.run' do
+    Meta.forallTelescope info.type fun _ body => Meta.isProp body
+
+/-- (helper) The value to walk for one constant: a theorem's proof, or —
+only when `followsInto` says so — a proof-bearing `def`'s value; `none` for
+everything else (a type, a structure, an ordinary computation, a
+constructor, …). -/
+def proofValue? (env : Environment) (n : Name) : CoreM (Option Lean.Expr) := do
   match Lint.find? env n with
-  | some (.thmInfo v) => some v.value
-  | _ => none
+  | some (.thmInfo v) => return some v.value
+  | some ((.defnInfo v) : ConstantInfo) =>
+      if ← followsInto (.defnInfo v) n then return some v.value else return none
+  | _ => return none
 
 /-- (helper) The unmarked helper theorems a marked or unmarked node's own
-proof walks through, and the marked nodes each path meets, stopping at the
-first marked theorem it reaches rather than recursing into it — the shape of
+proof walks through — transparently, through any `followsInto` def in
+between — and the marked nodes each path meets, stopping at the first marked
+theorem it reaches rather than recursing into it — the shape of
 `Lint.axiomsOf`'s memoized pass, for reachable marked theorems instead of
-axioms. Every theorem is walked once regardless of how many marked nodes
-reach it: the result depends only on the theorem and the marked set, not on
+axioms. Every constant is walked once regardless of how many marked nodes
+reach it: the result depends only on the constant and the marked set, not on
 who is asking, so the top-level call on a marked node `B` itself (not a
 recursive one) still walks `B`'s own proof — marking only applies to a
-constant *met while walking*, never to the walk's own starting point. -/
+constant *met while walking*, never to the walk's own starting point. A
+`followsInto` def passed through on the way is never itself added to the
+helper count (it is plumbing, not a theorem); only the theorems reached
+through it are. The walk never leaves the package (`Lint.inPackage`): a tactic
+proof routinely mentions a Lean/Std theorem directly (`Eq.mpr`, a `List` or
+`Nat` fact from `simp`), and following one of those into its own
+equation-compiler auxiliaries — the same shape `followsInto` exists to see
+past inside the package — would otherwise pull in an unrelated, effectively
+unbounded slice of the standard library rather than RueCore's own proof
+structure. -/
 partial def walk (n : Name) : MarkM (Array Name × Array Name) := do
   if let some r := (← get).find? n then return r
   let (env, markedSet) ← read
   modify (·.insert n (#[], #[]))
   let mut helpers : Array Name := #[]
   let mut ancestors : Array Name := #[]
-  match theoremValue? env n with
+  match ← proofValue? env n with
   | none => pure ()
   | some v =>
       for c in v.getUsedConstants do
-        if c == n then continue
+        -- stay inside the package: a proof that reaches a Lean/Std library lemma
+        -- (say, a `List` or `Nat` fact) directly, or through one of its own
+        -- pattern-matched auxiliaries, is not something RUE-2468's map is about,
+        -- and following into the standard library's own `._f`/`.match_1`
+        -- bridges would otherwise pull in an unrelated, unbounded amount of it
+        if c == n || !Lint.inPackage env c then continue
         match Lint.find? env c with
         | some (.thmInfo _) =>
             if markedSet.contains c then
               ancestors := Lint.union ancestors #[c]
             else
               helpers := Lint.union helpers #[c]
+              let (h2, a2) ← walk c
+              helpers := Lint.union helpers h2
+              ancestors := Lint.union ancestors a2
+        | some ((.defnInfo v) : ConstantInfo) =>
+            if ← followsInto (.defnInfo v) c then
               let (h2, a2) ← walk c
               helpers := Lint.union helpers h2
               ancestors := Lint.union ancestors a2
@@ -160,13 +220,13 @@ all of them: the marked ancestors reached from each (for the spine diagram's
 edges and a spine theorem's milestone ancestors), and the distinct unmarked
 helper theorem count under each (the size stats). -/
 def walkAll (env : Environment) (markedList : List Name) :
-    NameMap (Array Name) × NameMap Nat := Id.run do
+    CoreM (NameMap (Array Name) × NameMap Nat) := do
   let markedSet := markedList.foldl (init := NameSet.empty) (·.insert ·)
   let mut memo : NameMap (Array Name × Array Name) := {}
   let mut ancestorsOf : NameMap (Array Name) := {}
   let mut helperCountOf : NameMap Nat := {}
   for n in markedList do
-    let ((helpers, ancestors), memo') := ((walk n).run (env, markedSet)).run memo
+    let ((helpers, ancestors), memo') ← ((walk n).run (env, markedSet)).run memo
     memo := memo'
     ancestorsOf := ancestorsOf.insert n ancestors
     helperCountOf := helperCountOf.insert n helpers.size

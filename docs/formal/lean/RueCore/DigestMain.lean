@@ -510,6 +510,9 @@ def renderTheoremDiagram (env : Environment) (milestoneSet : NameSet)
     | none => #[]
   let cap := 25
   let shown := if closure.size > cap then closure.extract 0 cap else closure
+  let citesOf (d : Name) : CoreM (Array String) := do
+    let doc := ((← findDocString? env d)).getD ""
+    return Map.sectionCitations doc ++ Map.ruleCitations doc
   let mut out : Array String := #["```mermaid", "flowchart BT",
     s!"  thm[\"{Digest.shortName h}\"]"]
   if !milestoneAnc.isEmpty then
@@ -522,8 +525,7 @@ def renderTheoremDiagram (env : Environment) (milestoneSet : NameSet)
   if !shown.isEmpty then
     out := out.push "  subgraph defs_[\"Definitions the statement depends on\"]"
     for d in shown do
-      let doc := ((← findDocString? env d)).getD ""
-      let cites := Map.sectionCitations doc ++ Map.ruleCitations doc
+      let cites ← citesOf d
       let label := Digest.shortName d ++
         (if cites.isEmpty then "" else "<br/>" ++ String.intercalate ", " cites.toList)
       out := out.push s!"    {Map.sanitizeId (Digest.shortName d)}[\"{label}\"]"
@@ -532,7 +534,21 @@ def renderTheoremDiagram (env : Environment) (milestoneSet : NameSet)
       out := out.push s!"  {Map.sanitizeId (Digest.shortName d)} -.-> thm"
   out := out.push "```"
   if closure.size > cap then
+    out := out.push ""
     out := out.push s!"({closure.size - shown.size} more definitions the statement depends on, past the {cap} cap.)"
+    -- the diagram alone answers "which definitions does this cap short of the
+    -- full count", but a reader wanting the complete list (RUE-2468's review,
+    -- S2) gets it here, collapsed so the 36 per-theorem sections stay skimmable
+    out := out.push ""
+    out := out.push "<details>"
+    out := out.push s!"<summary>All {closure.size} definitions {Digest.shortName h}'s statement depends on</summary>"
+    out := out.push ""
+    for d in closure do
+      let cites ← citesOf d
+      let suffix := if cites.isEmpty then "" else " — " ++ String.intercalate ", " cites.toList
+      out := out.push s!"- `{Digest.shortName d}`{suffix}"
+    out := out.push ""
+    out := out.push "</details>"
   return out.toList
 
 /-- (helper) `MAP.md` (RUE-2468): the spine diagram, one small diagram per
@@ -543,8 +559,8 @@ def mapReport (env : Environment) : CoreM (String × UInt32) := do
   let problems := Lint.spineProblems env ++ Map.milestoneProblems env
   for p in problems do IO.eprintln s!"ruecore-digest --map: {p}"
   let markedList := Map.marked
-  let milestoneSet := Map.milestones.foldl (init := NameSet.empty) (·.insert ·)
-  let (ancestorsOf, helperCountOf) := Map.walkAll env markedList
+  let milestoneSet := Map.milestoneNames.foldl (init := NameSet.empty) (·.insert ·)
+  let (ancestorsOf, helperCountOf) ← Map.walkAll env markedList
   let mut out : Array String := #[
     "# The proof map",
     "",
@@ -569,8 +585,15 @@ def mapReport (env : Environment) : CoreM (String × UInt32) := do
   out := out ++ (renderSpineDiagram env markedList ancestorsOf).toArray ++ #[""]
   out := out ++ #["## Milestone lemmas", "",
     "The load-bearing lemmas besides the spine (`RueCore/Map.lean`'s `milestones`",
-    "list; each entry's comment there is its one-line reason):", ""]
-  out := out ++ Map.milestones.toArray.map (fun n => s!"- `{Digest.shortName n}`")
+    "list), each with its one-line reason, its proof size, and the unmarked",
+    "helper theorems `Map.walk` counted under it before the next marked node:",
+    "",
+    "| Milestone | Reason | Proof lines | Unmarked helpers under it |",
+    "| --- | --- | --- | --- |"]
+  for (n, reason) in Map.milestones do
+    let lines ← Map.declLines n
+    let helpers := (helperCountOf.find? n).getD 0
+    out := out.push s!"| `{Digest.shortName n}` | {reason} | {lines} | {helpers} |"
   out := out ++ #["", "## Per-spine-theorem diagrams", "",
     "One small diagram per spine theorem: its milestone ancestors, and the",
     "definitions its statement depends on (the per-statement trusted-base",
