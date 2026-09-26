@@ -3192,6 +3192,41 @@ A *declared*-linear struct with no linear field may have one (`S3` above). -/
 example : checkStructs (Decls.ofStructs (structEnv ++
     [{ attr := .none, fields := [.struct 2], dtor := true, cls := .linear }])) = false := by rfl
 
+/-- **RUE-2486**: the `@copy`-struct-with-a-destructor declaration above
+(`3.9:31`, E0457), wrapped as a whole program whose `main` never uses it.
+`checkDecls` checks every declaration whether or not anything refers to it,
+so `checkProgram` refuses the program on the declaration alone; there is no
+dynamics to compare, since `main` never runs the struct at all. -/
+def dCopyDtor : StructDecl := { attr := .copy, fields := [tI64], dtor := true, cls := .copy }
+
+def copyStructDtorProgram : Program :=
+  { decls := Decls.ofStructs (structEnv ++ [dCopyDtor]),
+    fns := [{ params := [], ret := tI64, body := lit 0 }] }
+
+example : checkProgram copyStructDtorProgram = false := by rfl
+
+/-- **RUE-2486**: the destructor-with-a-linear-field declaration above
+(`3.9:44`, E0462), wrapped the same way: `main` never uses the struct, and
+`checkDecls` refuses the declaration on its own. -/
+def dDtorLinearField : StructDecl :=
+  { attr := .none, fields := [.struct sLinear], dtor := true, cls := .linear }
+
+def dtorLinearFieldProgram : Program :=
+  { decls := Decls.ofStructs (structEnv ++ [dDtorLinearField]),
+    fns := [{ params := [], ret := tI64, body := lit 0 }] }
+
+example : checkProgram dtorLinearFieldProgram = false := by rfl
+
+/-- **RUE-2486**: an integer literal one past `i64`'s maximum, `2^63`
+(`3.1:17`, E0800). `InBounds` refuses it statically; the machine's literal
+evaluation is defined on any `Int`, so the run produces the out-of-range
+value itself rather than a trap — a static discipline with no dynamic
+counterpart, like `arrayElemMoveThroughField`'s root-index rule
+(`use-move-rootidx`, RUE-2486 part 1). -/
+def litOutOfRangeI64 : Expr := lit (2 ^ 63)
+
+example : checkProgram (scalarProg tI64 litOutOfRangeI64) = false := by rfl
+
 /-- **Why §5.5's associativity is stated over `OwnSt.wf`.** It is false of
 states no rule can write: `.fields` at a scalar type is one, and `ownedJoinOk`
 refuses it while `residualLinear` sees nothing in it. So at `int` the two
