@@ -384,6 +384,9 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Examples` | `RueCore.Examples.linearLostAtCallArg` | def | (Fn), (Return-Value), §5.7, §5.8 | — |
 | `RueCore.Examples` | `RueCore.Examples.linearLostAtBreakArg` | def | (D-Break), §6.10 | — |
 | `RueCore.Examples` | `RueCore.Examples.dynWriteUnderDeclared` | def | (Use-Untrackable-Dynamic-Copy) | — |
+| `RueCore.Examples` | `RueCore.Examples.dCopyDtor` | def | — | `3.9:31` |
+| `RueCore.Examples` | `RueCore.Examples.dDtorLinearField` | def | — | `3.9:44` |
+| `RueCore.Examples` | `RueCore.Examples.litOutOfRangeI64` | def | — | `3.1:17` |
 | `RueCore.Examples` | `RueCore.Examples.joinAssocBadDecls` | def | §3 | — |
 | `RueCore.Examples` | `RueCore.Examples.cycAffine` | def | §3 | — |
 | `RueCore.Examples` | `RueCore.Examples.cycLinear` | def | §3 | — |
@@ -1646,6 +1649,7 @@ Cited sections the calculus has no heading for:
 | `3.0:5` | Defs.lean (module), `RueCore.checkStructDecl`, `RueCore.Ty.grounded`, `RueCore.checkNoCycle`, `RueCore.checkDecls`, `RueCore.checkProgram`, Checker.lean (module), `RueCore.checkNoCycle_sound`, `RueCore.checkDecls_sound`, Examples.lean (module), Gen.lean (module), `RueCore.Gen.fieldTyBase`, `RueCore.Gen.fieldTy`, `RueCore.Gen.genEnums`, `RueCore.Gen.leastValue`, `RueCore.Gen.declFuel`, `RueCore.Gen.genCase`, Lemmas.lean (module), `RueCore.class_unique`, `RueCore.struct_class_unique`, Statics.lean (module), `RueCore.StructDecl.Wf`, `RueCore.EnumDecl.Wf`, `RueCore.DeclId`, `RueCore.Ty.declIds`, `RueCore.Decls.byValue`, `RueCore.Decls.Names`, `RueCore.WfNames`, `RueCore.WfDecls`, `RueCore.WfProgram`, Syntax.lean (module) |
 | `3.1:6` | Dynamics.lean (module), `RueCore.Examples.u8Underflow`, Syntax.lean (module), `RueCore.InBounds`, `RueCore.wrapInt` |
 | `3.1:15` | Print.lean (module) |
+| `3.1:17` | `RueCore.Examples.litOutOfRangeI64` |
 | `3.4:1` | Statics.lean (module) |
 | `3.5:1` | `RueCore.Ty` |
 | `3.5:2` | `RueCore.Ty` |
@@ -1691,12 +1695,12 @@ Cited sections the calculus has no heading for:
 | `3.9:15` | Dynamics.lean (module), `RueCore.dropContentsList`, `RueCore.dropEventsList`, `RueCore.Examples.arrayAffineDropOrder`, `RueCore.Examples.arrayElemMoveFirst`, `RueCore.Gen.isAggregate`, Soundness.lean (module), `RueCore.dropContents_array_events`, TraceOrder.lean (module), `RueCore.run_blocks`, `RueCore.drop_order` |
 | `3.9:18` | Dynamics.lean (module) |
 | `3.9:28` | Dynamics.lean (module), `RueCore.dropContents`, `RueCore.dropEvents`, Soundness.lean (module), `RueCore.dropContents_events`, `RueCore.dropContents_struct_events`, `RueCore.Spec.dtor_once_stmt`, `RueCore.StructDecl`, `RueCore.Event.dtorIds`, `RueCore.dtorIds`, `RueCore.dtor_once`, TraceOrder.lean (module), `RueCore.run_blocks`, `RueCore.drop_order` |
-| `3.9:31` | `RueCore.checkStructDecl`, Checker.lean (module), Gen.lean (module), Print.lean (module), `RueCore.Spec.dtor_once_stmt`, Statics.lean (module), `RueCore.StructDecl.Wf`, Syntax.lean (module), `RueCore.Attr.lift`, `RueCore.DtorNotCopy`, Trace.lean (module), `RueCore.WfDecls.dtorNotCopy`, `RueCore.dropContents_allCopy_dtor`, `RueCore.dtor_once`, TraceOrder.lean (module), `RueCore.dropEvents_allCopy` |
+| `3.9:31` | `RueCore.checkStructDecl`, Checker.lean (module), `RueCore.Examples.dCopyDtor`, Gen.lean (module), Print.lean (module), `RueCore.Spec.dtor_once_stmt`, Statics.lean (module), `RueCore.StructDecl.Wf`, Syntax.lean (module), `RueCore.Attr.lift`, `RueCore.DtorNotCopy`, Trace.lean (module), `RueCore.WfDecls.dtorNotCopy`, `RueCore.dropContents_allCopy_dtor`, `RueCore.dtor_once`, TraceOrder.lean (module), `RueCore.dropEvents_allCopy` |
 | `3.9:33` | `RueCore.dropContents` |
 | `3.9:34` | Corpus.lean (module), `RueCore.Corpus.dtorLine`, `RueCore.Event.consume`, `RueCore.dropContents`, Examples.lean (module), `RueCore.Examples.dLinearDtor`, `RueCore.Examples.partialUnderDtor`, `RueCore.Examples.overwritePastPartialLinear`, `RueCore.Examples.enumPayloadMovedIntoCall`, `RueCore.Examples.dDestrDtor`, `RueCore.Examples.destructureUnderDtor`, `RueCore.Explain.Premise.moveUnderDtor`, Gen.lean (module), `RueCore.Gen.projSlots`, `RueCore.Gen.pathOk`, Statics.lean (module), `RueCore.Typed.useMove`, `RueCore.Typed.useDeclared`, `RueCore.Typed.dropRes`, `RueCore.noDtorPrefix`, TraceOrder.lean (module) |
 | `3.9:37` | `RueCore.Typed.dropDeclared` |
 | `3.9:39` | Print.lean (module), `RueCore.residualLinearBelow`, `RueCore.Typed.dropRes`, `RueCore.Typed.dropDeclared` |
-| `3.9:44` | `RueCore.checkStructDecl`, Checker.lean (module), `RueCore.Examples.dDestrDtor`, Gen.lean (module), Statics.lean (module), `RueCore.StructDecl.Wf` |
+| `3.9:44` | `RueCore.checkStructDecl`, Checker.lean (module), `RueCore.Examples.dDestrDtor`, `RueCore.Examples.dDtorLinearField`, Gen.lean (module), Statics.lean (module), `RueCore.StructDecl.Wf` |
 | `3.12:1` | `RueCore.FloatWidth`, `RueCore.FloatDatum.zero` |
 | `3.12:2` | `RueCore.Examples.floatCopy`, `RueCore.Ty.mult` |
 | `3.12:7` | Float.lean (module), `RueCore.Typed.floatLit`, `RueCore.Expr` |

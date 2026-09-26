@@ -1,0 +1,159 @@
+════════════════════════════════════════════════════════════════════════════════
+ copy_monitor_off
+════════════════════════════════════════════════════════════════════════════════
+The one shape §7's no-double-free conservation law needs excluded: an owned,
+destructor-bearing S1 value placed under a Copy S0's field, by an ill-typed
+program the checker already refuses for an unrelated reason (the field's
+declared type is i64, not S1). No well-typed program can reach this state, so
+this is the machine's own last line of defense: eval refuses to build the
+value with ownedUnderCopy, where Step (which has no monitor) would run S1's
+destructor on the same identity twice. Seeded by the definition mutation
+analysis (RUE-2486): mutant `copy-monitor-off`.
+
+Rules exercised: ownedUnderCopy monitor §6.5 · §7 no-double-free
+
+── The program ─────────────────────────────────────────────────────────────────
+
+@copy struct S0 { x0: i64 }
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+fn f0() -> i64 {
+    {
+        let v0: S0 = S0 { x0: S1 { x0: 1 } };
+        {
+            let v1: S0 = v0;
+            {
+                @drop(v0.x0);
+                {
+                    @drop(v1.x0);
+                    0
+                }
+            }
+        }
+    }
+}
+
+
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: REJECTED by the checker (§5).
+
+The premise that fails, in fn f0() -> i64, at (Struct-Intro) §5.8:
+
+    on  S0 { x0: S1 { x0: 1 } }
+
+    a field initializer has type S1 but its field is declared i64
+    ((Struct-Intro) premise `Γ;Σ_{i-1};Λ ⊢ ei ⇒ Ti ⊣ Σi`, §5.8; initializers
+    are presented in declaration order, 3.6:15)
+
+── The derivations (§5) ────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order. One tree per
+function body, checked from (Fn) §5.8's entry context.
+
+  fn f0() -> i64
+
+  (Let) §5.3 + the §5.6 scope-exit leak check
+    e       { let v0: S0 = S0 { x0: S1 { x0: 1 } }; { let v1: S0 = v0; { @drop(v0.x0); { @d…
+    Γ;Σ     (empty)
+    ✗       this premise fails:
+            a premise's own derivation failed — the reason is the rejected
+            premise nested under this rule
+      (Struct-Intro) §5.8
+        e       S0 { x0: S1 { x0: 1 } }
+        Γ;Σ     (empty)
+        ✗       this premise fails:
+                a field initializer has type S1 but its field is declared i64
+                ((Struct-Intro) premise `Γ;Σ_{i-1};Λ ⊢ ei ⇒ Ti ⊣ Σi`, §5.8;
+                initializers are presented in declaration order, 3.6:15)
+          (Struct-Intro) §5.8
+            e       S1 { x0: 1 }
+            Γ;Σ     (empty)
+            ⇒       S1  ⊣  (empty)
+              (Lit) §5.8
+                e       1
+                Γ;Σ     (empty)
+                ⇒       i64  ⊣  (empty)
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth — a callee's rows are deeper than its call's — and `>>`
+marks a drop event. The run enters at f0(), as `Dynamics.run` does.
+`#n` after an aggregate is its identity, minted when it was built; a `†`
+cell is a retired binding or an identity's reserved slot (`introVal`).
+
+  [1]   d1    (D-Call) §6.9 (push the frame)
+         expr    fn f0() -> i64  with []
+         store   (empty)
+           →     (empty)
+         result  value ()
+  [2]   d5            literal §6.3
+         expr    1
+         store   (empty)
+           →     (empty)
+         result  value 1
+  [3]   d4          (D-Struct) §6.5 (mint #0)
+         expr    S1 { x0: 1 }
+         store   (empty)
+           →     [ℓ0 = †]
+         result  value S1 { 1 }#0
+  [4]   d3        (D-Struct) §6.5
+         expr    S0 { x0: S1 { x0: 1 } }
+         store   (empty)
+           →     [ℓ0 = †]
+         result  REFUSED (ownedUnderCopy)
+                 an owned value under a Copy node: a Copy type's fields, payloads and
+                 elements are Copy (§3, 3.8:18, 6.3:19), so a copy of this aggregate
+                 would duplicate an owner; the machine's copy-closure monitor refuses
+                 it (§7 “no double free”), and `soundness` proves a checked program
+                 never reaches it
+  [5]   d2      (D-Let) §6.7 — a premise did not complete
+         expr    { let v0: S0 = S0 { x0: S1 { x0: 1 } }; { let v1: S0 = v0; { @drop(v0.x0); { @d…
+         store   (empty)
+           →     [ℓ0 = †]
+         result  REFUSED (ownedUnderCopy)
+                 an owned value under a Copy node: a Copy type's fields, payloads and
+                 elements are Copy (§3, 3.8:18, 6.3:19), so a copy of this aggregate
+                 would duplicate an owner; the machine's copy-closure monitor refuses
+                 it (§7 “no double free”), and `soundness` proves a checked program
+                 never reaches it
+  [6]   d0  (D-Return-Value) §6.9 (pop the frame)
+         expr    f0()
+         store   (empty)
+           →     [ℓ0 = †]
+         result  REFUSED (ownedUnderCopy)
+                 an owned value under a Copy node: a Copy type's fields, payloads and
+                 elements are Copy (§3, 3.8:18, 6.3:19), so a copy of this aggregate
+                 would duplicate an owner; the machine's copy-closure monitor refuses
+                 it (§7 “no double free”), and `soundness` proves a checked program
+                 never reaches it
+
+── Identities (§7) ─────────────────────────────────────────────────────────────
+
+One line per owned identity: the step that minted it, the steps that ended
+it (a drop marker, a discarded temporary, a consumption), and the steps whose
+destructor ran on it. `drop_exactly_once` is one entry in the ended column
+per identity. Read in row order, and `[n.k]` (the k-th end of row n) inside a
+row, the ends are the trace's order, which `drop_order` fixes: a value's
+destructors inside its drop in §6.11's order, and cells last-in first-out.
+
+  id    minted  ended                             destructor  verdict
+  ────────────────────────────────────────────────────────────────────────
+  #0    [3]     —                                 —           the run was refused (§6)
+
+  The run was refused (§6), which a checked program's never is (`soundness`);
+  the ledger is what the table recorded before the refusal.
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: REFUSED (ownedUnderCopy)
+         an owned value under a Copy node: a Copy type's fields, payloads and
+         elements are Copy (§3, 3.8:18, 6.3:19), so a copy of this aggregate
+         would duplicate an owner; the machine's copy-closure monitor refuses
+         it (§7 “no double free”), and `soundness` proves a checked program
+         never reaches it
+

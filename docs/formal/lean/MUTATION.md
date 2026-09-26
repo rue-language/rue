@@ -538,16 +538,16 @@ disagreement the allowed red).
    `Trace.lean` refusal witness and by no seed or generated case, each a
    refusal the compiler should make too, that the bridge never compared. Two
    PRs seeded all 13:
-   * **Part 1** (seven): moving an element out below a projection
+   * Part 1 (seven): moving an element out below a projection
      (`use-move-rootidx`); a dynamic-index read, `@drop` or write of a
      non-Copy or linear element (`index-read-copy`,
      `index-drop-copy-checker`, `index-write-linear`); a constant index
      equal to the length (`const-index-off-by-one`); a partially reassigned
      declared-linear struct that leaks (`residual-declared`); and a linear
      field after a moved slot that leaks (`residual-untracked`).
-   * **Part 2** (six): an out-of-range literal (`lit-bounds`); `@dbg` of an
-     aggregate (`dbg-observable`); `[e; n]` of a non-Copy element
-     (`repeat-copy`); a `@copy` struct with a destructor, and a
+   * Part 2 (the remaining six): an out-of-range literal (`lit-bounds`);
+     `@dbg` of an aggregate (`dbg-observable`); `[e; n]` of a non-Copy
+     element (`repeat-copy`); a `@copy` struct with a destructor, and a
      destructor-bearing struct with a linear field (`copy-struct-dtor`,
      `dtor-linear-field`); and the `ownedUnderCopy` refusal
      (`copy-monitor-off`). The last two seeds (`copy_struct_dtor`,
