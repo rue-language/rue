@@ -419,7 +419,8 @@ The seeds were already fully observable (hand-written to have an `int` first
 field); only the generator was blind, and now is not.
 
 **Rechecking the three mutants this was filed for, plus `h2335b`**, with
-`drill.sh` against the regenerated corpus. The first pass wrongly credited
+`drill.sh` (a local, uncommitted script — "Reproducing" below) against the
+regenerated corpus. The first pass wrongly credited
 the fix with catching all four at `gen_7_3` — the program that turned out to
 be `array_elem_self_assign`'s shape, disagreeing on the unmutated compiler
 too (below); once `gen_7_3` (and `gen_23_343`, the other unmutated
@@ -759,6 +760,11 @@ blind spot, get a generator or tooling proposal too.
   `rue-oracle-diff lean-corpus --corpus <file>` for the full harness.
 * The rule counts come from `Explain.programDerivs` and `Explain.runTrace`
   over the same cases.
+* `drill.sh`, cited throughout this page, is a local convenience script for
+  this loop: it is not checked into the repo. It automates the three bullets
+  above for one mutant at a time — apply the mutant to a scratch worktree,
+  run it against the seed corpus, and if the seeds agree, against `--gen 200`
+  and then `--gen 1000`, stopping at the first disagreement.
 
 Most mutants are one- or two-line patches against `f4ac09fc9`; the clean
 reverts (`h2335b`, `h2341`, `h2442`) are the fix's full non-test diff. They
