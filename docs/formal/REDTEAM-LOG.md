@@ -211,7 +211,7 @@ Do not edit any file. Write your full report to <packet>/red-docs-report.md and 
     proves every `FloatModel` law of `Float.exactOps`, so the laws have a
     model. No law turned out false of `exactOps`.
   - **Every spine theorem is witnessed.** Twelve Spec statements
-    (`lean/RueCore/Spec/Witnesses.lean`, listed in `Spec.witnesses`) show the
+    (`lean/RueCore/Spec/Nonvacuous.lean`, listed in `Spec.witnesses`) show the
     hypotheses of all 36 satisfiable by non-trivial programs, written out:
     one per construct class (destructors, linear values, loops, arrays, enums
     with `match`, early `return`, `@panic`, floats), a divergent one, an

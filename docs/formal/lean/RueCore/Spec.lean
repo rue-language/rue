@@ -5,7 +5,7 @@ public import RueCore.Spec.Checker
 public import RueCore.Spec.Trace
 public import RueCore.Spec.Step
 public import RueCore.Spec.Adequacy
-public import RueCore.Spec.Witnesses
+public import RueCore.Spec.Nonvacuous
 
 @[expose] public section
 
@@ -95,7 +95,7 @@ def spine : List (Lean.Name × Lean.Name) := [
 ]
 
 /-- The non-vacuity witnesses (RUE-2469): each statement of
-`Spec/Witnesses.lean` with the theorem that proves it, and the spine theorems
+`Spec/Nonvacuous.lean` with the theorem that proves it, and the spine theorems
 whose hypotheses it shows satisfiable by a non-trivial program, in `spine`'s
 order. The tools read it beside `spine`: `Spine.lean` binds each proof to its
 statement, the lint holds each to the same checks as a spine entry and fails
