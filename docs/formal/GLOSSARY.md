@@ -387,7 +387,7 @@ it has two rows.
 | `Tidy` | Every cell an evaluation allocated has been marked dead by its end | [FIELD §6][F6]: `Tidy` differs, none | `Tidy` | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “What is mechanized”; GUIDE “The three trace theorems, one …”; `Trace.Defs` |
 | frame-pop invariant | Every cell an evaluation allocated is marked dead by its end, except the cells an unwinding `break` leaves for its loop; `Tidy` states it | none | `Tidy` | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “What is mechanized”; `Trace.Defs` |
 | identity ledger; ended | The explain rendering's table: per owned identity, the step that created it, the steps that ended it, and its destructor runs | [FIELD §6][F6]: "identity ledger" differs, none | — | ours, pending audit | 03 “No double-free”; lean/README “What is mechanized”; GUIDE “The three trace theorems, one …”; MUTATION “The mutants”; `Trace.Defs` |
-| LIFO; `Lifo`; last-in first-out | Each step drops only cells it deregistered, newest first, all newer than every cell still registered | none; FIELD §5's drop order (reverse order of declaration) is the nearest accepted term ([FIELD §5][F5]) | `Lifo`, `NewestFirst` | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “What is mechanized”; GUIDE “The three trace theorems, one …”; MUTATION “What is mutated”; `Trace.Defs` |
+| LIFO; `Lifo`; last-in first-out | Each step drops only cells it deregistered, newest first, all newer than every cell still registered | none; FIELD §5's drop order (reverse order of declaration) is the nearest accepted term ([FIELD §5][F5]) | `Lifo`, `NewestFirst` | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “Sharpness counter-examples”; GUIDE “The three trace theorems, one …”; MUTATION “What is mutated”; `Trace.Defs` |
 | unwind (of an expression); `unwinds` | Whether an expression can leave its context by `return` or `break` | none | `Expr.unwinds` | ours, pending audit | 01 §2; 03 intro; lean/README “What is mechanized”; GUIDE §2; BRIDGE-SENSITIVITY “§6 step rows”; MUTATION “What is mutated”; `Statics` |
 
 ### Testing and the bridge
@@ -826,7 +826,7 @@ documents rely on.
 | `plainResidue` | `Step` | Drops the unselected parts of a destructured value as §6.3 writes it, without the interpreter's extra check | helper | — |
 | `plainDestructure` | `Step` | §6.3's `destructure` as written, without the interpreter's extra check | helper | `Step` |
 | `Step` | `Step` | §6's reduction relation `C → C′`: one constructor per §6 rule, plus the search rules of §6.2 | standard (FIELD §1: small-step transition relation) | 03 intro; REDTEAM “Targets”; lean/README “The bridge corpus”; GUIDE §2; MUTATION “What is mutated”; `Dynamics` |
-| `Steps` | `Step` | `→*` (§6.12): the reflexive-transitive closure of `Step` | standard (FIELD §1: `→*` reflexive-transitive closure) | — |
+| `Steps` | `Step` | `→*` (§6.12): the reflexive-transitive closure of `Step` | standard (FIELD §1: `→*` reflexive-transitive closure) | lean/README “Sharpness counter-examples” |
 | `StepOut` | `Step` | What `step` finds: the next configuration, a final one, or a stuck one with its reason | helper | — |
 | `stepEval` | `Step` | `step` at an expression in focus | helper | — |
 | `stepArgs` | `Step` | `step` at a completed argument list | helper | — |
@@ -911,7 +911,7 @@ documents rely on.
 | `Retired` | `Trace.Defs` | Every cell allocated since a store is marked dead, except the named ones | helper | — |
 | `Tidy` | `Trace.Defs` | For one evaluation: every cell it allocated is marked dead by its end, and cells outside the frame were only marked dead | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “What is mechanized”; GUIDE “The three trace theorems, one …”; `Trace.Defs` |
 | `Settled` | `Trace.Defs` | What the rest of a form owes cells allocated after its leading operands: marked dead by its end, with the unwinding exceptions | ours, pending audit | 03 “No use-after-drop / no leak …”; `Trace.Defs` |
-| `Blocks` | `Trace.Defs` | §6.11's drop order as a grammar over traces: a trace is a sequence of `@dbg` lines, consumptions, and drop-start events each followed by the events of that drop | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “What is mechanized”; GUIDE “The three trace theorems, one …”; MUTATION “What is mutated”; `Trace.Defs` |
+| `Blocks` | `Trace.Defs` | §6.11's drop order as a grammar over traces: a trace is a sequence of `@dbg` lines, consumptions, and drop-start events each followed by the events of that drop | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “Sharpness counter-examples”; GUIDE “The three trace theorems, one …”; MUTATION “What is mutated”; `Trace.Defs` |
 | `Rec` | `Trace.Defs` | A drop list whose cells are strictly increasing and below the store length | helper | — |
 | `Kont.Ordered` | `Trace.Defs` | Every drop list a stack frame holds is in allocation order | helper | — |
 | `Config.Ordered` | `Trace.Defs` | Every drop list of a configuration, current and on the stack, is in allocation order | ours, pending audit | lean/README “What is mechanized”; `Trace.Defs` |
@@ -922,7 +922,7 @@ documents rely on.
 | `Stk` | `Trace.Defs` | The drop lists of the suspended callers, bottom first | helper | — |
 | `Config.stack` | `Trace.Defs` | Every frame's drop list, bottom first, then the current frame's | helper | 03 “No use-after-drop / no leak …” |
 | `Config.Nested` | `Trace.Defs` | Scopes nest: each frame's pending `endscope` markers are the tail of its drop list, and all lists are in location order | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “What is mechanized”; `Trace.Defs` |
-| `Lifo` | `Trace.Defs` | One step either only pushes onto the stack of drop lists, or cuts it back and drops the removed cells newest first | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “What is mechanized”; GUIDE “The three trace theorems, one …”; MUTATION “What is mutated”; `Trace.Defs` |
+| `Lifo` | `Trace.Defs` | One step either only pushes onto the stack of drop lists, or cuts it back and drops the removed cells newest first | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “Sharpness counter-examples”; GUIDE “The three trace theorems, one …”; MUTATION “What is mutated”; `Trace.Defs` |
 | `Frame.empty` | `Adequacy.Defs` | The empty frame the entry point is called from | helper | lean/README “What is mechanized”; `Adequacy.Defs` |
 | `StepsN` | `Adequacy.Defs` | `→ⁿ`: exactly `n` steps of §6's reduction | helper | lean/README “What is mechanized”; `Adequacy.Defs` |
 | `Config.SafeAt` | `Adequacy.Defs` | Every configuration reachable from `C` steps or has halted, and every final value has type `T` (§7) | ours, pending audit | 03 “Type safety”; lean/README “Layers”; GUIDE “One program, traced both ways”; MUTATION “What is mutated”; `Adequacy.Defs` |
