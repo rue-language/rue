@@ -179,7 +179,7 @@ theorem loop_forever (M : FloatOps) : ∀ n, ∃ D, StepsN M loopProg n Config.i
   obtain ⟨D, hD⟩ := loopTurn_forever M n [] []
   exact (h3.trans hD).prefix (by omega)
 
-/-- `Spec.Sharp.stuck_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.stuck_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem stuck :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -220,7 +220,7 @@ theorem stuck :
   rw [exact_ops, hr] at this
   exact this
 
-/-- `Spec.Sharp.stuck_step_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.stuck_step_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem stuck_step :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -274,7 +274,7 @@ theorem stuck_step :
     rw [h0] at hw
     cases hw
 
-/-- `Spec.Sharp.typed_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.typed_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem typed :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -308,7 +308,7 @@ theorem typed :
     fun _ _ h => by simp at h, by subst he hB hP; rfl, hnt, by subst he hB hP; exact ⟨_, rfl, by rfl⟩,
     hr, by subst he hB hP; rfl, fun T Ω => by rw [hr]; exact id⟩
 
-/-- `Spec.Sharp.frame_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.frame_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem frame :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -343,7 +343,7 @@ theorem frame :
   rw [exact_ops, hr] at this
   exact this
 
-/-- `Spec.Sharp.no_entry_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.no_entry_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem no_entry :
   ∀ P : Program, P =
       { decls :=
@@ -360,7 +360,7 @@ theorem no_entry :
   refine ⟨⟨by subst hP; exact checkDecls_sound (by rfl), fun fd h => by subst hP; simp at h⟩,
     by subst hP; rfl, hr, stuck_not_safe hr⟩
 
-/-- `Spec.Sharp.entry_param_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.entry_param_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem entry_param :
   ∀ P : Program, P =
       { decls :=
@@ -385,7 +385,7 @@ theorem entry_param :
   exact ⟨hwf, fun h => no_violation Float.exactModel h 200 _ hr,
     ⟨{ params := [{ ty := .int .w64 .signed, mu := false }], ret := .int .w64 .signed, body := .use (.var 0) }, by subst hP; rfl, by simp, stuck_not_safe hr _⟩, hr⟩
 
-/-- `Spec.Sharp.copy_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.copy_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem copy :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.mkStruct 1 [.intLit .w64 .signed 1]])
@@ -404,7 +404,7 @@ theorem copy :
   have hr : run Float.exactOps P 200 = .stuck .ownedUnderCopy := by subst hB hP; rfl
   exact ⟨by subst hB hP; rfl, fun h => no_violation Float.exactModel h 200 _ hr, hr⟩
 
-/-- `Spec.Sharp.leak_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.leak_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem leak :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 1 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0) →
@@ -425,7 +425,7 @@ theorem leak :
   exact ⟨by subst hB hP; rfl, fun h => no_linear_leak Float.exactModel h 200 hr, hr, H, Frame.empty, v, tr, hs,
     not_eventually hr (by simp) (· = .ok H v tr) (by simp)⟩
 
-/-- `Spec.Sharp.overwrite_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.overwrite_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem overwrite :
   ∀ B : Expr, B =
       .letIn true (.mkStruct 1 [.intLit .w64 .signed 1])
@@ -443,7 +443,7 @@ theorem overwrite :
   have hr : run Float.exactOps P 200 = .stuck .linearOverwrite := by subst hB hP; rfl
   exact ⟨by subst hB hP; rfl, fun h => no_linear_overwrite Float.exactModel h 200 hr, hr⟩
 
-/-- `Spec.Sharp.discard_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.discard_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem discard :
   ∀ B : Expr, B =
       .seq (.mkStruct 1 [.intLit .w64 .signed 3]) (.panic "boom") →
@@ -464,7 +464,7 @@ theorem discard :
   exact ⟨by subst hB hP; rfl, fun h => no_linear_discard Float.exactModel h 200 hr, hr, κ, tr, hs,
     not_eventually hr (by simp) (· = .panic κ tr) (by simp)⟩
 
-/-- `Spec.Sharp.discard_loop_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.discard_loop_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem discard_loop :
   ∀ B : Expr, B =
       .loop (.seq (.mkStruct 1 [.intLit .w64 .signed 3]) .unitLit) →
@@ -491,7 +491,7 @@ theorem discard_loop :
   rw [hr] at this
   cases this
 
-/-- `Spec.Sharp.fuel_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.fuel_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem fuel :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -518,7 +518,7 @@ theorem fuel :
     by rw [h0, hr]; simp, fun w => by rw [hr]; simp, fun h => ?_⟩
   rcases h 0 with h' | ⟨w, h'⟩ <;> rw [h0] at h' <;> cases h'
 
-/-- `Spec.Sharp.fuel_panic_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.fuel_panic_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem fuel_panic :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -541,7 +541,7 @@ theorem fuel_panic :
   refine ⟨hPT, h0, (eval_sound Float.exactModel hPT 200).2.2 _ _ hr, fun h => ?_⟩
   rcases h 0 with h' | ⟨w, h'⟩ <;> rw [h0] at h' <;> cases h'
 
-/-- `Spec.Sharp.not_fits_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.not_fits_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem not_fits :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -570,7 +570,7 @@ theorem not_fits :
   | none => exact id
   | some Γ' => exact fun h => by cases h.1
 
-/-- `Spec.Sharp.double_drop_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.double_drop_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem double_drop :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -599,7 +599,7 @@ theorem double_drop :
   exact ⟨by subst hB hP; rfl, fun hPT => hnd (no_double_free Float.exactModel hPT 200).2.2,
     fun hdt => hnd (dtor_once _ hdt 200), H, v, tr, hr, hc, hnd⟩
 
-/-- `Spec.Sharp.bare_dtor_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.bare_dtor_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem bare_dtor :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 2 [.mkStruct 0 [.intLit .w64 .signed 1], .mkStruct 3 [.intLit .w64 .signed 2]])
@@ -622,7 +622,7 @@ theorem bare_dtor :
   exact ⟨by subst hB hP; rfl, fun hPT => hb ((drop_order Float.exactModel hPT).1 _ _ _ _ hs),
     H, Frame.empty, v, tr, hs, hb⟩
 
-/-- `Spec.Sharp.pending_program_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.pending_program_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem pending_program :
   ∀ P : Program, P =
       { decls :=
@@ -657,7 +657,7 @@ theorem pending_program :
   · rw [hr]; exact not_exact_ok 0 (by decide) (by subst hP; decide)
   · rw [hr']; exact not_exact_ok 0 (by decide) (by subst hP; decide)
 
-/-- `Spec.Sharp.pending_expr_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.pending_expr_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem pending_expr :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -694,7 +694,7 @@ theorem pending_expr :
   · rw [hr]; exact not_exact_returned 0 (by decide) (by subst hB hP; decide)
   · rw [hr']; exact not_exact_returned 0 (by decide) (by subst hB hP; decide)
 
-/-- `Spec.Sharp.store_cc_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.store_cc_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem store_cc :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -733,7 +733,7 @@ theorem store_cc :
   · rw [hr]; exact not_exact_cc hcc
   · rw [hr']; exact not_exact_cc hcc
 
-/-- `Spec.Sharp.no_lead_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.no_lead_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem no_lead :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -769,7 +769,7 @@ theorem no_lead :
   rintro ⟨v, _, h⟩
   cases h
 
-/-- `Spec.Sharp.no_eval_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.no_eval_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem no_eval :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -798,7 +798,7 @@ theorem no_eval :
   rw [hr] at h
   cases h
 
-/-- `Spec.Sharp.unreached_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.unreached_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem unreached :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -827,7 +827,7 @@ theorem unreached :
     not_eventually hr (by simp) (fun r => r = .ok [] (.int .w64 .signed 8) [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])] ∨ ∃ w, r = .stuck w)
       (by simp)⟩
 
-/-- `Spec.Sharp.unreached_panic_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.unreached_panic_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem unreached_panic :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -856,7 +856,7 @@ theorem unreached_panic :
     not_eventually hr (by simp) (fun r => r = .panic .user [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])] ∨ ∃ w, r = .stuck w)
       (by simp)⟩
 
-/-- `Spec.Sharp.unordered_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.unordered_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem unordered :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -893,7 +893,7 @@ theorem unordered :
   · rintro ⟨_, _, _, _, hp⟩
     exact hnp hp
 
-/-- `Spec.Sharp.not_a_step_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.not_a_step_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem not_a_step :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -922,7 +922,7 @@ theorem not_a_step :
   simp only [Config.trace] at h
   exact htr (List.append_eq_nil_iff.mp h.symm).1
 
-/-- `Spec.Sharp.init_steps_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.init_steps_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem init_steps :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -951,7 +951,7 @@ theorem init_steps :
   · have := (step_iff.mp hs).symm.trans h
     cases this
 
-/-- `Spec.Sharp.unreachable_stuck_stmt`, proved: a counter-example (RUE-2485). -/
+/-- `Spec.Sharp.unreachable_stuck_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem unreachable_stuck :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])

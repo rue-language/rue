@@ -45,7 +45,7 @@ fingerprints cover these statements as they cover the spine's.
 namespace RueCore.Spec.Sharp
 
 /-- **An unchecked program that reads a moved-out value, run by `eval`**
-(sharpness, RUE-2485; the program is `Nonvacuous.stuck`'s). `let a = S0 { 1 };
+(§7 sharpness, RUE-2485; the program is `Nonvacuous.stuck`'s). `let a = S0 { 1 };
 @drop(a); a.x0` as the entry point: the checker rejects it and it is neither
 `ProgramTyped` nor `WfProgram`, while its entry point exists and takes no
 parameters, and its body is `pendingSafe`; `main()`, the call `run` makes, is
@@ -83,7 +83,7 @@ def stuck_stmt : Prop :=
       ¬ (run Float.exactOps P 200 = .outOfFuel ∨ (∃ k tr, run Float.exactOps P 200 = .panic k tr) ∨
         ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧ HasTy P.decls v (.int .w64 .signed))
 
-/-- **The same program, run by §6's relation** (sharpness, RUE-2485). `Step`
+/-- **The same program, run by §6's relation** (§7 sharpness, RUE-2485). `Step`
 reaches a configuration stuck with `useAfterMove` from `Config.init`, and
 `run` refuses at fuel `200` and exhausts fuel `0`. So once `ProgramTyped` is
 dropped, `step_progress`, `step_preservation` and `step_type_safety` fail
@@ -115,7 +115,7 @@ def stuck_step_stmt : Prop :=
         (∃ κ tr, Steps Float.exactOps P Config.init (.panic κ tr))) ∧
       ¬ ∀ fuel, ∃ w', run Float.exactOps P fuel = .stuck w'
 
-/-- **An ill-typed expression of a checked program** (sharpness, RUE-2485).
+/-- **An ill-typed expression of a checked program** (§7 sharpness, RUE-2485).
 Over the checked program of `Nonvacuous.dtor`, the expression `let a = S0 { 1
 }; @drop(a); a.x0`, from the empty frame and store, is typed at no type and no
 outcome, and `check` rejects it; everything else `soundness`,
@@ -148,7 +148,7 @@ def typed_stmt : Prop :=
         (eval Float.exactOps 200 P [] Frame.empty e)
 
 /-- **A typed expression run in a frame that does not match its context**
-(sharpness, RUE-2485). `1; x`, typed by `check` in the context `x : i64` over
+(§7 sharpness, RUE-2485). `1; x`, typed by `check` in the context `x : i64` over
 the checked program of `Nonvacuous.dtor`, is run from the empty frame and
 store, which do not match that context (`FrameMatches` fails); everything else
 `soundness`, `drop_exactly_once` and `rest_exactly_once` ask holds, a `Lead`
@@ -175,7 +175,7 @@ def frame_stmt : Prop :=
       eval Float.exactOps 200 P [] Frame.empty e = .stuck .unbound ∧
       eval Float.exactOps 201 P [] Frame.empty e = .stuck .unbound
 
-/-- **A well-formed program with no entry point** (sharpness, RUE-2485). The
+/-- **A well-formed program with no entry point** (§7 sharpness, RUE-2485). The
 program with the witnesses' declarations and no function is `WfProgram`, and
 `P.fns[0]?` is `none`; `run` refuses the call of function `0` with `unbound`,
 so for no entry point `fd` does `run_safe`'s conclusion hold. -/
@@ -191,7 +191,7 @@ def no_entry_stmt : Prop :=
       ∀ fd : FnDef, ¬ (run Float.exactOps P 200 = .outOfFuel ∨ (∃ k tr, run Float.exactOps P 200 = .panic k tr) ∨
         ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧ HasTy P.decls v fd.ret)
 
-/-- **A well-formed program whose entry point takes a parameter** (sharpness,
+/-- **A well-formed program whose entry point takes a parameter** (§7 sharpness,
 RUE-2485). `fn main(x: i64) -> i64 { x }` is `WfProgram`, but its entry point
 has a parameter, so it is not `ProgramTyped`; `run` calls it with no
 arguments, and `eval` refuses the call with `typeConfusion`. So `run_safe`
@@ -211,7 +211,7 @@ def entry_param_stmt : Prop :=
           ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧ HasTy P.decls v fd.ret)) ∧
       run Float.exactOps P 200 = .stuck .typeConfusion
 
-/-- **The copy monitor fires** (R3 of `REDTEAM-LOG.md`; sharpness, RUE-2485). An
+/-- **The copy monitor fires** (R3 of `REDTEAM-LOG.md`; §7 sharpness, RUE-2485). An
 unchecked program puts an owned value under a `Copy` one, the shape a copy
 would duplicate an owner through: over `S0 = @copy struct { x0: i64 }` and
 `S1`, affine with a destructor, `let p = S0 { x0: S1 { 1 } }; let q = p;
@@ -235,7 +235,7 @@ def copy_stmt : Prop :=
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       checkProgram P = false ∧ ¬ ProgramTyped P ∧ run Float.exactOps P 200 = .stuck .ownedUnderCopy
 
-/-- **The leak monitor fires** (R3 of `REDTEAM-LOG.md`; sharpness, RUE-2485).
+/-- **The leak monitor fires** (R3 of `REDTEAM-LOG.md`; §7 sharpness, RUE-2485).
 `let x = S1 { 1 }; 0`, with `S1` declared `linear`, leaves a live linear
 value at the scope's end. It is not `ProgramTyped`, and `eval` refuses it with
 `linearLeak`: `no_linear_leak`'s conclusion fails once `ProgramTyped` is
@@ -257,7 +257,7 @@ def leak_stmt : Prop :=
       ∃ H φ v tr, Steps Float.exactOps P Config.init (.run H φ [] (.ret v) tr) ∧
         ¬ ∃ n, ∀ fuel, n < fuel → run Float.exactOps P fuel = .ok H v tr
 
-/-- **The overwrite monitor fires** (R3 of `REDTEAM-LOG.md`; sharpness,
+/-- **The overwrite monitor fires** (R3 of `REDTEAM-LOG.md`; §7 sharpness,
 RUE-2485). `let mut x = S1 { 1 }; x = S1 { 2 }; @drop(x); 0` overwrites a live
 linear value. It is not `ProgramTyped`, and `eval` refuses the assignment with
 `linearOverwrite`: `no_linear_overwrite`'s conclusion fails once
@@ -277,7 +277,7 @@ def overwrite_stmt : Prop :=
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       checkProgram P = false ∧ ¬ ProgramTyped P ∧ run Float.exactOps P 200 = .stuck .linearOverwrite
 
-/-- **The discard monitor fires** (R3 of `REDTEAM-LOG.md`; sharpness, RUE-2485).
+/-- **The discard monitor fires** (R3 of `REDTEAM-LOG.md`; §7 sharpness, RUE-2485).
 `S1 { 3 }; @panic("boom")` discards a linear value. It is not `ProgramTyped`,
 and `eval` refuses the sequence with `linearDiscard`: `no_linear_discard`'s
 conclusion fails once `ProgramTyped` is dropped. §6's relation drops the
@@ -298,7 +298,7 @@ def discard_stmt : Prop :=
       ∃ κ tr, Steps Float.exactOps P Config.init (.panic κ tr) ∧
         ¬ ∃ n, ∀ fuel, n < fuel → run Float.exactOps P fuel = .panic κ tr
 
-/-- **A loop that discards a linear value each turn** (sharpness, RUE-2485).
+/-- **A loop that discards a linear value each turn** (§7 sharpness, RUE-2485).
 `loop { S1 { 3 }; () }` is not `ProgramTyped`. `eval` refuses its first turn
 with `linearDiscard`, while §6's relation, which has no monitor, turns forever:
 it has runs of every length from `Config.init`, and every configuration they
@@ -322,7 +322,7 @@ def discard_loop_stmt : Prop :=
       ¬ ((∀ fuel w, run Float.exactOps P fuel ≠ .stuck w) ↔
         ∀ C, Steps Float.exactOps P Config.init C → C.Terminal ∨ ∃ C', Step Float.exactOps P C C')
 
-/-- **Fuel bounds, dropped** (sharpness, RUE-2485). The checked program of
+/-- **Fuel bounds, dropped** (§7 sharpness, RUE-2485). The checked program of
 `Nonvacuous.dtor` exhausts fuel `0` and returns at fuel `200`, a value §6's
 relation reaches. So `fuel_mono` fails without `n ≤ m` (`n = 200`, `m = 0`) and
 without `eval n ≠ outOfFuel` (`n = 0`, `m = 200`); `no_masking` fails without
@@ -348,7 +348,7 @@ def fuel_stmt : Prop :=
         (∀ w, run Float.exactOps P 200 ≠ .stuck w) ∧
         ¬ ∀ fuel, run Float.exactOps P fuel = .ok H v tr ∨ ∃ w, run Float.exactOps P fuel = .stuck w
 
-/-- **Fuel bounds, dropped, at a panic** (sharpness, RUE-2485). The checked
+/-- **Fuel bounds, dropped, at a panic** (§7 sharpness, RUE-2485). The checked
 program of `Nonvacuous.panic` panics, and §6's relation reaches the panic, but
 fuel `0` is exhausted: `eval_complete`'s and `run_complete`'s panic halves
 fail without `n < fuel`. -/
@@ -368,7 +368,7 @@ def fuel_panic_stmt : Prop :=
       ¬ ∀ fuel, run Float.exactOps P fuel = .panic .user [.dbg (.int .w64 .signed 5)] ∨
         ∃ w, run Float.exactOps P fuel = .stuck w
 
-/-- **A checked expression at a type its result does not fit** (sharpness,
+/-- **A checked expression at a type its result does not fit** (§7 sharpness,
 RUE-2485). `check` accepts the literal `1` at `i64` in the checked program of
 `Nonvacuous.dtor`, and its result does not fit `bool`; no derivation types it
 at `bool`. So `check_sound` needs `c.fits T = true`. -/
@@ -387,7 +387,7 @@ def not_fits_stmt : Prop :=
         c.fits .bool = false ∧ ¬ Typed P (.int .w64 .signed) [] (.intLit .w64 .signed 1) .bool Ω
 
 /-- **An unchecked program that runs a destructor twice on one value**
-(sharpness, RUE-2485). Over a `@copy` struct `C` that declares a destructor
+(§7 sharpness, RUE-2485). Over a `@copy` struct `C` that declares a destructor
 (which `DtorNotCopy`, and `WfDecls`, exclude) and an affine `W { x0: C }`,
 `let c = C { 1 }; let a = W { c }; let b = W { c }; 0` copies `c` into two
 `W`s, and dropping both runs `C`'s destructor on identity `0` twice. It is not
@@ -414,7 +414,7 @@ def double_drop_stmt : Prop :=
         ¬ (∀ a, (dtorIds (run Float.exactOps P 200).trace).count a ≤ 1)
 
 /-- **An unchecked program whose trace runs a destructor outside a drop**
-(sharpness, RUE-2485). Over the same `@copy` struct `C` with a destructor, a
+(§7 sharpness, RUE-2485). Over the same `@copy` struct `C` with a destructor, a
 declared-`linear` `L { x0: C, x1: A }` and an affine `A` with a destructor,
 `let l = L { C { 1 }, A { 2 } }; let s = l.x1; 0` destructures `l`: its
 residue `C { 1 }` is `Copy`, so it is dropped with no marker, and its
@@ -437,7 +437,7 @@ def bare_dtor_stmt : Prop :=
       checkProgram P = false ∧ ¬ ProgramTyped P ∧
       ∃ H φ v tr, Steps Float.exactOps P Config.init (.run H φ [] (.ret v) tr) ∧ ¬ Blocks P.decls tr
 
-/-- **A checked program with a function that is not `pendingSafe`** (sharpness,
+/-- **A checked program with a function that is not `pendingSafe`** (§7 sharpness,
 RUE-2485; RUE-2316's carve-out). Beside an entry point returning `0`, `fn
 g(s: S0) -> i64 { [s, return 7]; 0 }` is typed, but the array literal's first
 element is pending when the second unwinds, so the program is not
@@ -467,7 +467,7 @@ def pending_program_stmt : Prop :=
       ¬ Exact P.decls [.full .hole] (Contents.ownList P.decls (Contents.ofVals [(.struct 0 0 [.int .w64 .signed 5])]))
         (eval Float.exactOps 201 P [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } e)
 
-/-- **An expression that is not `pendingSafe`** (sharpness, RUE-2485; RUE-2316's
+/-- **An expression that is not `pendingSafe`** (§7 sharpness, RUE-2485; RUE-2316's
 carve-out). In the checked program of `Nonvacuous.dtor`, `0; [s, return 7];
 1` is typed in the context `s : S0`, but the array literal's first element is
 pending when the second unwinds. From a frame holding `s` at cell `0`, the
@@ -499,7 +499,7 @@ def pending_expr_stmt : Prop :=
       ¬ Exact P.decls [.full (.struct 0 0 [.int .w64 .signed 5])] (Contents.ownList P.decls (Contents.ofVals [.int .w64 .signed 0]))
         (eval Float.exactOps 201 P [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } e)
 
-/-- **A store that is not copy-closed** (sharpness, RUE-2485). The store's one
+/-- **A store that is not copy-closed** (§7 sharpness, RUE-2485). The store's one
 cell holds an `[i64; 1]` array (a `Copy` type) with an owned `S0` inside it,
 outside the frame. `1; 2` is typed and run from the empty frame over it, which
 agrees with the empty context, in the checked program of `Nonvacuous.dtor`;
@@ -528,7 +528,7 @@ def store_cc_stmt : Prop :=
       ¬ Exact P.decls [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] (Contents.ownList P.decls (Contents.ofVals [.int .w64 .signed 1]))
         (eval Float.exactOps 201 P [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] Frame.empty e)
 
-/-- **A `Lead` that did not happen** (sharpness, RUE-2485). For the body of
+/-- **A `Lead` that did not happen** (§7 sharpness, RUE-2485). For the body of
 `Nonvacuous.dtor`, run from the empty frame, take the store `ℓ0 ↦ S0 { 1 }`
 and the pending value `S0 { 1 }` (identity `0`) as if the leading operand had
 produced them; it did not (`Lead` fails: it minted identity `0` into a reserved
@@ -556,7 +556,7 @@ def no_lead_stmt : Prop :=
         (Contents.ownList P.decls (Contents.ofVals [.struct 0 0 [.int .w64 .signed 1]]))
         (eval Float.exactOps 201 P [] Frame.empty B)
 
-/-- **A result that is not the evaluation's** (sharpness, RUE-2485). For the body
+/-- **A result that is not the evaluation's** (§7 sharpness, RUE-2485). For the body
 of `Nonvacuous.dtor`, whose leading operand has a `Lead`, a refusal is not
 what the evaluation at `fuel + 1` answers, and `rest_exactly_once`'s
 conclusion, which starts with "never refused", fails for it: the hypothesis
@@ -579,7 +579,7 @@ def no_eval_stmt : Prop :=
       ∃ H₁ vs tr, Lead Float.exactOps P 200 [] Frame.empty H₁ vs tr B ∧
         ∀ w, eval Float.exactOps 201 P [] Frame.empty B ≠ (EvalRes.stuck w).withTrace tr
 
-/-- **A value §6's relation does not reach** (sharpness, RUE-2485). For the
+/-- **A value §6's relation does not reach** (§7 sharpness, RUE-2485). For the
 checked program of `Nonvacuous.dtor`, the terminal configuration with the
 value `8`, the empty store and a trace that opens with a destructor event is
 not reached from `Config.init`, is not `run`'s answer at any fuel past any
@@ -606,7 +606,7 @@ def unreached_stmt : Prop :=
       ¬ ∃ n, ∀ fuel, n < fuel → run Float.exactOps P fuel = .ok [] (.int .w64 .signed 8) [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])] ∨
         ∃ w, run Float.exactOps P fuel = .stuck w
 
-/-- **A panic §6's relation does not reach** (sharpness, RUE-2485). The same, for
+/-- **A panic §6's relation does not reach** (§7 sharpness, RUE-2485). The same, for
 the panic whose trace opens with a destructor event: not reached, not `run`'s
 answer past any bound (the program returns), not in the block grammar. So
 `eval_sound`'s and `run_sim`'s `run … = .panic k tr`, `eval_complete`'s and
@@ -630,7 +630,7 @@ def unreached_panic_stmt : Prop :=
         ∃ w, run Float.exactOps P fuel = .stuck w
 
 /-- **An unreachable configuration whose registration stack is out of order**
-(sharpness, RUE-2485). For the checked program of `Nonvacuous.dtor`, a
+(§7 sharpness, RUE-2485). For the checked program of `Nonvacuous.dtor`, a
 configuration whose frame registers cell `1` before cell `0` takes a step, but
 `Config.init` does not reach it: `drop_order`'s last half fails without the
 hypothesis that the configuration is reached. -/
@@ -657,7 +657,7 @@ def unordered_stmt : Prop :=
           (Config.run [] { env := [], scope := [1, 0] } [] (.ret (.int .w64 .signed 1)) []).stack (dropLocs evs) ∧
         (Config.run [] { env := [], scope := [1, 0] } [] (.eval (.intLit .w64 .signed 1)) []).stack.Pairwise (· < ·)
 
-/-- **A pair that is not a step** (sharpness, RUE-2485). For the checked program
+/-- **A pair that is not a step** (§7 sharpness, RUE-2485). For the checked program
 of `Nonvacuous.dtor`, the value `run` returns is reached, with a trace that is
 not empty, and the panic with an empty trace does not follow it by a step; its
 trace does not extend the value's, so `drop_order`'s last half fails without
@@ -681,7 +681,7 @@ def not_a_step_stmt : Prop :=
             (dropLocs evs) ∧
           (Config.run H Frame.empty [] (.ret v) tr).stack.Pairwise (· < ·)
 
-/-- **The initial configuration, which steps** (sharpness, RUE-2485). For the
+/-- **The initial configuration, which steps** (§7 sharpness, RUE-2485). For the
 checked program of `Nonvacuous.dtor`, `Config.init` steps to the argument
 list of `main()`, and not to itself; it is not terminal and not stuck (with
 `linearLeak`, a monitor's tag, not one of §6's stuck states); and `run` is
@@ -705,7 +705,7 @@ def init_steps_stmt : Prop :=
       Steps Float.exactOps P Config.init Config.init ∧
       ¬ ∃ n, ∀ fuel, n < fuel → ∃ w', run Float.exactOps P fuel = .stuck w'
 
-/-- **A stuck configuration that is not reached** (sharpness, RUE-2485). For the
+/-- **A stuck configuration that is not reached** (§7 sharpness, RUE-2485). For the
 checked program of `Nonvacuous.dtor`, whose `run` is never stuck, a
 configuration reading an unbound name is stuck and is not reached from
 `Config.init`. So `step_progress`, `step_preservation`,

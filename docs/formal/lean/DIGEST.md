@@ -3747,6 +3747,1566 @@ theorem RueCore.Blocks.not_dtor {D : Decls} {s : Nat} {c : Contents}
   {t : List Event} : ¬Blocks D (Event.dtor s c :: t)
 ```
 
+### `Sharp.stuck`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.stuck_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.stuck (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        ((Expr.drop (Place.var 0)).seq (Expr.use ((Place.var 0).proj 0))) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = false ∧
+          ¬ProgramTyped P ∧
+            ¬WfProgram P ∧
+              (∃ fd, P.fns[0]? = some fd ∧ fd.params = []) ∧
+                P.pendingSafe = true ∧
+                  (Expr.call 0 []).pendingSafe = true ∧
+                    FrameMatches P.decls [] Frame.empty [] ∧
+                      StoreCC P.decls [] ∧
+                        (∃ c Ω,
+                            check P (Ty.int IntWidth.w64 Sign.signed) []
+                                  (Expr.call 0 []) =
+                                some (c, Ω) ∧
+                              c.fits (Ty.int IntWidth.w64 Sign.signed) =
+                                  true ∧
+                                Typed P (Ty.int IntWidth.w64 Sign.signed) []
+                                    (Expr.call 0 [])
+                                    (Ty.int IntWidth.w64 Sign.signed) Ω ∧
+                                  ¬EvalOk P.decls
+                                      (Ty.int IntWidth.w64 Sign.signed)
+                                      (Ty.int IntWidth.w64 Sign.signed) Ω.norm
+                                      Ω.brk Frame.empty []
+                                      (eval Float.exactOps 200 P []
+                                        Frame.empty (Expr.call 0 []))) ∧
+                          Lead Float.exactOps P 200 [] Frame.empty [] [] []
+                              (Expr.call 0 []) ∧
+                            eval Float.exactOps 200 P [] Frame.empty
+                                  (Expr.call 0 []) =
+                                EvalRes.stuck Violation.useAfterMove ∧
+                              eval Float.exactOps 201 P [] Frame.empty
+                                    (Expr.call 0 []) =
+                                  EvalRes.stuck Violation.useAfterMove ∧
+                                run Float.exactOps P 200 =
+                                    EvalRes.stuck Violation.useAfterMove ∧
+                                  run Float.exactOps P 0 = EvalRes.outOfFuel ∧
+                                    ¬(run Float.exactOps P 200 =
+                                          EvalRes.outOfFuel ∨
+                                        (∃ k tr,
+                                            run Float.exactOps P 200 =
+                                              EvalRes.panic k tr) ∨
+                                          ∃ H v tr,
+                                            run Float.exactOps P 200 =
+                                                EvalRes.ok H v tr ∧
+                                              HasTy P.decls v
+                                                (Ty.int IntWidth.w64
+                                                  Sign.signed))
+```
+
+### `Sharp.stuck_step`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.stuck_step_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.stuck_step (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        ((Expr.drop (Place.var 0)).seq (Expr.use ((Place.var 0).proj 0))) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ¬ProgramTyped P ∧
+          (∃ C,
+              Steps Float.exactOps P Config.init C ∧
+                Config.Stuck Float.exactOps P C Violation.useAfterMove) ∧
+            run Float.exactOps P 200 = EvalRes.stuck Violation.useAfterMove ∧
+              run Float.exactOps P 0 = EvalRes.outOfFuel ∧
+                (¬∀ (C : Config),
+                      Steps Float.exactOps P Config.init C →
+                        C.Terminal ∨ ∃ C', Step Float.exactOps P C C') ∧
+                  (¬∃ fd,
+                        P.fns[0]? = some fd ∧
+                          ∀ (C : Config),
+                            Steps Float.exactOps P Config.init C →
+                              Config.SafeAt Float.exactOps P fd.ret C) ∧
+                    (¬∃ fd,
+                          P.fns[0]? = some fd ∧
+                            ∀ (n : Nat),
+                              (∃ D, StepsN Float.exactOps P n Config.init D) ∨
+                                (∃ H v tr,
+                                    Steps Float.exactOps P Config.init
+                                        (Config.run H Frame.empty []
+                                          (Focus.ret v) tr) ∧
+                                      HasTy P.decls v fd.ret) ∨
+                                  ∃ κ tr,
+                                    Steps Float.exactOps P Config.init
+                                      (Config.panic κ tr)) ∧
+                      ¬∀ (fuel : Nat),
+                          ∃ w', run Float.exactOps P fuel = EvalRes.stuck w'
+```
+
+### `Sharp.typed`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.typed_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.typed (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ∀ (e : Expr),
+          e =
+              Expr.letIn false
+                (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+                ((Expr.drop (Place.var 0)).seq
+                  (Expr.use ((Place.var 0).proj 0))) →
+            ProgramTyped P ∧
+              WfProgram P ∧
+                P.pendingSafe = true ∧
+                  e.pendingSafe = true ∧
+                    FrameMatches P.decls [] Frame.empty [] ∧
+                      StoreCC P.decls [] ∧
+                        check P (Ty.int IntWidth.w64 Sign.signed) [] e =
+                            none ∧
+                          (∀ (T : Ty) (Ω : Out),
+                              ¬Typed P (Ty.int IntWidth.w64 Sign.signed) [] e
+                                  T Ω) ∧
+                            Lead Float.exactOps P 200 [] Frame.empty
+                                [Cell.dead]
+                                [Val.struct 0 0
+                                    [Val.int IntWidth.w64 Sign.signed 1]]
+                                [] e ∧
+                              eval Float.exactOps 200 P [] Frame.empty e =
+                                  EvalRes.stuck Violation.useAfterMove ∧
+                                eval Float.exactOps 201 P [] Frame.empty e =
+                                    EvalRes.stuck Violation.useAfterMove ∧
+                                  ∀ (T : Ty) (Ω : Out),
+                                    ¬EvalOk P.decls T
+                                        (Ty.int IntWidth.w64 Sign.signed)
+                                        Ω.norm Ω.brk Frame.empty []
+                                        (eval Float.exactOps 200 P []
+                                          Frame.empty e)
+```
+
+### `Sharp.frame`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.frame_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.frame (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ∀ (e : Expr),
+          e =
+              (Expr.intLit IntWidth.w64 Sign.signed 1).seq
+                (Expr.use (Place.var 0)) →
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                e.pendingSafe = true ∧
+                  StoreCC P.decls [] ∧
+                    (∃ c Ω,
+                        check P (Ty.int IntWidth.w64 Sign.signed)
+                              [{ ty := Ty.int IntWidth.w64 Sign.signed,
+                                  mu := false, st := OwnSt.owned }]
+                              e =
+                            some (c, Ω) ∧
+                          c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                            Typed P (Ty.int IntWidth.w64 Sign.signed)
+                                [{ ty := Ty.int IntWidth.w64 Sign.signed,
+                                    mu := false, st := OwnSt.owned }]
+                                e (Ty.int IntWidth.w64 Sign.signed) Ω ∧
+                              ¬EvalOk P.decls
+                                  (Ty.int IntWidth.w64 Sign.signed)
+                                  (Ty.int IntWidth.w64 Sign.signed) Ω.norm
+                                  Ω.brk Frame.empty []
+                                  (eval Float.exactOps 200 P [] Frame.empty
+                                    e)) ∧
+                      ¬FrameMatches P.decls
+                            [{ ty := Ty.int IntWidth.w64 Sign.signed,
+                                mu := false, st := OwnSt.owned }]
+                            Frame.empty [] ∧
+                        Lead Float.exactOps P 200 [] Frame.empty []
+                            [Val.int IntWidth.w64 Sign.signed 1] [] e ∧
+                          eval Float.exactOps 200 P [] Frame.empty e =
+                              EvalRes.stuck Violation.unbound ∧
+                            eval Float.exactOps 201 P [] Frame.empty e =
+                              EvalRes.stuck Violation.unbound
+```
+
+### `Sharp.no_entry`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.no_entry_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.no_entry (P : Program) :
+  P =
+      {
+        decls :=
+          {
+            structs :=
+              [{ attr := Attr.none,
+                  fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                  cls := Mult.affine },
+                { attr := Attr.linear,
+                  fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
+                  cls := Mult.linear }],
+            enums :=
+              [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+        fns := [] } →
+    WfProgram P ∧
+      P.fns[0]? = none ∧
+        run Float.exactOps P 200 = EvalRes.stuck Violation.unbound ∧
+          ∀ (fd : FnDef),
+            ¬(run Float.exactOps P 200 = EvalRes.outOfFuel ∨
+                (∃ k tr, run Float.exactOps P 200 = EvalRes.panic k tr) ∨
+                  ∃ H v tr,
+                    run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                      HasTy P.decls v fd.ret)
+```
+
+### `Sharp.entry_param`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.entry_param_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.entry_param (P : Program) :
+  P =
+      {
+        decls :=
+          {
+            structs :=
+              [{ attr := Attr.none,
+                  fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                  cls := Mult.affine },
+                { attr := Attr.linear,
+                  fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
+                  cls := Mult.linear }],
+            enums :=
+              [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+        fns :=
+          [{
+              params :=
+                [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false }],
+              ret := Ty.int IntWidth.w64 Sign.signed,
+              body := Expr.use (Place.var 0) }] } →
+    WfProgram P ∧
+      ¬ProgramTyped P ∧
+        (∃ fd,
+            P.fns[0]? = some fd ∧
+              fd.params ≠ [] ∧
+                ¬(run Float.exactOps P 200 = EvalRes.outOfFuel ∨
+                    (∃ k tr, run Float.exactOps P 200 = EvalRes.panic k tr) ∨
+                      ∃ H v tr,
+                        run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                          HasTy P.decls v fd.ret)) ∧
+          run Float.exactOps P 200 = EvalRes.stuck Violation.typeConfusion
+```
+
+### `Sharp.copy`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.copy_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.copy (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0
+          [Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 1]])
+        (Expr.letIn false (Expr.use (Place.var 0))
+          ((Expr.drop ((Place.var 1).proj 0)).seq
+            ((Expr.drop ((Place.var 0).proj 0)).seq
+              (Expr.intLit IntWidth.w64 Sign.signed 0)))) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.copy,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.copy },
+                    { attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine }],
+                enums := [] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = false ∧
+          ¬ProgramTyped P ∧
+            run Float.exactOps P 200 = EvalRes.stuck Violation.ownedUnderCopy
+```
+
+### `Sharp.leak`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.leak_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.leak (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.intLit IntWidth.w64 Sign.signed 0) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = false ∧
+          ¬ProgramTyped P ∧
+            run Float.exactOps P 200 = EvalRes.stuck Violation.linearLeak ∧
+              ∃ H φ v tr,
+                Steps Float.exactOps P Config.init
+                    (Config.run H φ [] (Focus.ret v) tr) ∧
+                  ¬∃ n,
+                      ∀ (fuel : Nat),
+                        n < fuel →
+                          run Float.exactOps P fuel = EvalRes.ok H v tr
+```
+
+### `Sharp.overwrite`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.overwrite_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.overwrite (B : Expr) :
+  B =
+      Expr.letIn true
+        (Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        ((Expr.assign (Place.var 0)
+              (Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 2])).seq
+          ((Expr.drop (Place.var 0)).seq
+            (Expr.intLit IntWidth.w64 Sign.signed 0))) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = false ∧
+          ¬ProgramTyped P ∧
+            run Float.exactOps P 200 = EvalRes.stuck Violation.linearOverwrite
+```
+
+### `Sharp.discard`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.discard_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.discard (B : Expr) :
+  B =
+      (Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 3]).seq
+        (Expr.panic "boom") →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = false ∧
+          ¬ProgramTyped P ∧
+            run Float.exactOps P 200 = EvalRes.stuck Violation.linearDiscard ∧
+              ∃ κ tr,
+                Steps Float.exactOps P Config.init (Config.panic κ tr) ∧
+                  ¬∃ n,
+                      ∀ (fuel : Nat),
+                        n < fuel →
+                          run Float.exactOps P fuel = EvalRes.panic κ tr
+```
+
+### `Sharp.discard_loop`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.discard_loop_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.discard_loop (B : Expr) :
+  B =
+      ((Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 3]).seq
+          Expr.unitLit).loop →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns := [{ params := [], ret := Ty.unit, body := B }] } →
+        checkProgram P = false ∧
+          ¬ProgramTyped P ∧
+            run Float.exactOps P 200 = EvalRes.stuck Violation.linearDiscard ∧
+              (∀ (n : Nat), ∃ D, StepsN Float.exactOps P n Config.init D) ∧
+                (∀ (C : Config),
+                    Steps Float.exactOps P Config.init C →
+                      C.Terminal ∨ ∃ C', Step Float.exactOps P C C') ∧
+                  ¬((∀ (fuel : Nat),
+                          run Float.exactOps P fuel = EvalRes.outOfFuel) ↔
+                        ∀ (n : Nat),
+                          ∃ D, StepsN Float.exactOps P n Config.init D) ∧
+                    ¬((∀ (fuel : Nat) (w : Violation),
+                          run Float.exactOps P fuel ≠ EvalRes.stuck w) ↔
+                        ∀ (C : Config),
+                          Steps Float.exactOps P Config.init C →
+                            C.Terminal ∨ ∃ C', Step Float.exactOps P C C')
+```
+
+### `Sharp.fuel`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.fuel_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.fuel (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ProgramTyped P ∧
+          run Float.exactOps P 0 = EvalRes.outOfFuel ∧
+            ∃ H v tr,
+              run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                Steps Float.exactOps P Config.init
+                    (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                  ¬200 ≤ 0 ∧
+                    0 ≤ 200 ∧
+                      run Float.exactOps P 0 ≠ run Float.exactOps P 200 ∧
+                        (∀ (w : Violation),
+                            run Float.exactOps P 200 ≠ EvalRes.stuck w) ∧
+                          ¬∀ (fuel : Nat),
+                              run Float.exactOps P fuel = EvalRes.ok H v tr ∨
+                                ∃ w,
+                                  run Float.exactOps P fuel = EvalRes.stuck w
+```
+
+### `Sharp.fuel_panic`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.fuel_panic_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.fuel_panic (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        ((Expr.intLit IntWidth.w64 Sign.signed 5).dbg.seq
+          (Expr.panic "boom")) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ProgramTyped P ∧
+          run Float.exactOps P 0 = EvalRes.outOfFuel ∧
+            Steps Float.exactOps P Config.init
+                (Config.panic PanicKind.user
+                  [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)]) ∧
+              ¬∀ (fuel : Nat),
+                  run Float.exactOps P fuel =
+                      EvalRes.panic PanicKind.user
+                        [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)] ∨
+                    ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+```
+
+### `Sharp.not_fits`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.not_fits_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.not_fits (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ProgramTyped P ∧
+          ∃ c Ω,
+            check P (Ty.int IntWidth.w64 Sign.signed) []
+                  (Expr.intLit IntWidth.w64 Sign.signed 1) =
+                some (c, Ω) ∧
+              c.fits Ty.bool = false ∧
+                ¬Typed P (Ty.int IntWidth.w64 Sign.signed) []
+                    (Expr.intLit IntWidth.w64 Sign.signed 1) Ty.bool Ω
+```
+
+### `Sharp.double_drop`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.double_drop_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.double_drop (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false (Expr.mkStruct 1 [Expr.use (Place.var 0)])
+          (Expr.letIn false (Expr.mkStruct 1 [Expr.use (Place.var 1)])
+            (Expr.intLit IntWidth.w64 Sign.signed 0))) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.copy,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.copy },
+                    { attr := Attr.none, fields := [Ty.struct 0],
+                      dtor := false, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.struct 0, Ty.struct 3], dtor := false,
+                      cls := Mult.linear },
+                    { attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine }],
+                enums := [] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = false ∧
+          ¬ProgramTyped P ∧
+            ¬DtorNotCopy P.decls ∧
+              ∃ H v tr,
+                run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                  List.count 0 (dtorIds tr) = 2 ∧
+                    ¬∀ (a : Nat),
+                        List.count a
+                            (dtorIds (run Float.exactOps P 200).trace) ≤
+                          1
+```
+
+### `Sharp.bare_dtor`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.bare_dtor_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.bare_dtor (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 2
+          [Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1],
+            Expr.mkStruct 3 [Expr.intLit IntWidth.w64 Sign.signed 2]])
+        (Expr.letIn false (Expr.use ((Place.var 0).proj 1))
+          (Expr.intLit IntWidth.w64 Sign.signed 0)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.copy,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.copy },
+                    { attr := Attr.none, fields := [Ty.struct 0],
+                      dtor := false, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.struct 0, Ty.struct 3], dtor := false,
+                      cls := Mult.linear },
+                    { attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine }],
+                enums := [] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = false ∧
+          ¬ProgramTyped P ∧
+            ∃ H φ v tr,
+              Steps Float.exactOps P Config.init
+                  (Config.run H φ [] (Focus.ret v) tr) ∧
+                ¬Blocks P.decls tr
+```
+
+### `Sharp.pending_program`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.pending_program_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.pending_program (P : Program) :
+  P =
+      {
+        decls :=
+          {
+            structs :=
+              [{ attr := Attr.none,
+                  fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                  cls := Mult.affine },
+                { attr := Attr.linear,
+                  fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
+                  cls := Mult.linear }],
+            enums :=
+              [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+        fns :=
+          [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+              body := Expr.intLit IntWidth.w64 Sign.signed 0 },
+            { params := [{ ty := Ty.struct 0, mu := false }],
+              ret := Ty.int IntWidth.w64 Sign.signed,
+              body :=
+                (Expr.mkArray (Ty.struct 0)
+                      [Expr.use (Place.var 0),
+                        (Expr.intLit IntWidth.w64 Sign.signed 7).ret]).seq
+                  (Expr.intLit IntWidth.w64 Sign.signed 0) }] } →
+    ∀ (e : Expr),
+      e = Expr.call 1 [Expr.use (Place.var 0)] →
+        ProgramTyped P ∧
+          P.pendingSafe = false ∧
+            e.pendingSafe = true ∧
+              FrameMatches P.decls
+                  [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
+                  { env := [0], scope := [0] }
+                  [Cell.full
+                      (Contents.struct 0 0
+                        [Contents.int IntWidth.w64 Sign.signed 5])] ∧
+                StoreCC P.decls
+                    [Cell.full
+                        (Contents.struct 0 0
+                          [Contents.int IntWidth.w64 Sign.signed 5])] ∧
+                  (∃ c Ω,
+                      check P (Ty.int IntWidth.w64 Sign.signed)
+                            [{ ty := Ty.struct 0, mu := false,
+                                st := OwnSt.owned }]
+                            e =
+                          some (c, Ω) ∧
+                        c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                          Typed P (Ty.int IntWidth.w64 Sign.signed)
+                            [{ ty := Ty.struct 0, mu := false,
+                                st := OwnSt.owned }]
+                            e (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                    Lead Float.exactOps P 200
+                        [Cell.full
+                            (Contents.struct 0 0
+                              [Contents.int IntWidth.w64 Sign.signed 5])]
+                        { env := [0], scope := [0] } [Cell.full Contents.hole]
+                        [Val.struct 0 0 [Val.int IntWidth.w64 Sign.signed 5]]
+                        [] e ∧
+                      eval Float.exactOps 201 P
+                            [Cell.full
+                                (Contents.struct 0 0
+                                  [Contents.int IntWidth.w64 Sign.signed 5])]
+                            { env := [0], scope := [0] } e =
+                          EvalRes.withTrace []
+                            (eval Float.exactOps 201 P
+                              [Cell.full
+                                  (Contents.struct 0 0
+                                    [Contents.int IntWidth.w64 Sign.signed
+                                        5])]
+                              { env := [0], scope := [0] } e) ∧
+                        ¬Exact P.decls
+                              [Cell.full
+                                  (Contents.struct 0 0
+                                    [Contents.int IntWidth.w64 Sign.signed
+                                        5])]
+                              []
+                              (eval Float.exactOps 200 P
+                                [Cell.full
+                                    (Contents.struct 0 0
+                                      [Contents.int IntWidth.w64 Sign.signed
+                                          5])]
+                                { env := [0], scope := [0] } e) ∧
+                          ¬Exact P.decls [Cell.full Contents.hole]
+                              (Contents.ownList P.decls
+                                (Contents.ofVals
+                                  [Val.struct 0 0
+                                      [Val.int IntWidth.w64 Sign.signed 5]]))
+                              (eval Float.exactOps 201 P
+                                [Cell.full
+                                    (Contents.struct 0 0
+                                      [Contents.int IntWidth.w64 Sign.signed
+                                          5])]
+                                { env := [0], scope := [0] } e)
+```
+
+### `Sharp.pending_expr`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.pending_expr_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.pending_expr (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ∀ (e : Expr),
+          e =
+              (Expr.intLit IntWidth.w64 Sign.signed 0).seq
+                ((Expr.mkArray (Ty.struct 0)
+                      [Expr.use (Place.var 0),
+                        (Expr.intLit IntWidth.w64 Sign.signed 7).ret]).seq
+                  (Expr.intLit IntWidth.w64 Sign.signed 1)) →
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                e.pendingSafe = false ∧
+                  FrameMatches P.decls
+                      [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
+                      { env := [0], scope := [0] }
+                      [Cell.full
+                          (Contents.struct 0 0
+                            [Contents.int IntWidth.w64 Sign.signed 5])] ∧
+                    StoreCC P.decls
+                        [Cell.full
+                            (Contents.struct 0 0
+                              [Contents.int IntWidth.w64 Sign.signed 5])] ∧
+                      (∃ c Ω,
+                          check P (Ty.int IntWidth.w64 Sign.signed)
+                                [{ ty := Ty.struct 0, mu := false,
+                                    st := OwnSt.owned }]
+                                e =
+                              some (c, Ω) ∧
+                            c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                              Typed P (Ty.int IntWidth.w64 Sign.signed)
+                                [{ ty := Ty.struct 0, mu := false,
+                                    st := OwnSt.owned }]
+                                e (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                        Lead Float.exactOps P 200
+                            [Cell.full
+                                (Contents.struct 0 0
+                                  [Contents.int IntWidth.w64 Sign.signed 5])]
+                            { env := [0], scope := [0] }
+                            [Cell.full
+                                (Contents.struct 0 0
+                                  [Contents.int IntWidth.w64 Sign.signed 5])]
+                            [Val.int IntWidth.w64 Sign.signed 0] [] e ∧
+                          eval Float.exactOps 201 P
+                                [Cell.full
+                                    (Contents.struct 0 0
+                                      [Contents.int IntWidth.w64 Sign.signed
+                                          5])]
+                                { env := [0], scope := [0] } e =
+                              EvalRes.withTrace []
+                                (eval Float.exactOps 201 P
+                                  [Cell.full
+                                      (Contents.struct 0 0
+                                        [Contents.int IntWidth.w64 Sign.signed
+                                            5])]
+                                  { env := [0], scope := [0] } e) ∧
+                            ¬Exact P.decls
+                                  [Cell.full
+                                      (Contents.struct 0 0
+                                        [Contents.int IntWidth.w64 Sign.signed
+                                            5])]
+                                  []
+                                  (eval Float.exactOps 200 P
+                                    [Cell.full
+                                        (Contents.struct 0 0
+                                          [Contents.int IntWidth.w64
+                                              Sign.signed 5])]
+                                    { env := [0], scope := [0] } e) ∧
+                              ¬Exact P.decls
+                                  [Cell.full
+                                      (Contents.struct 0 0
+                                        [Contents.int IntWidth.w64 Sign.signed
+                                            5])]
+                                  (Contents.ownList P.decls
+                                    (Contents.ofVals
+                                      [Val.int IntWidth.w64 Sign.signed 0]))
+                                  (eval Float.exactOps 201 P
+                                    [Cell.full
+                                        (Contents.struct 0 0
+                                          [Contents.int IntWidth.w64
+                                              Sign.signed 5])]
+                                    { env := [0], scope := [0] } e)
+```
+
+### `Sharp.store_cc`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.store_cc_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.store_cc (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ∀ (e : Expr),
+          e =
+              (Expr.intLit IntWidth.w64 Sign.signed 1).seq
+                (Expr.intLit IntWidth.w64 Sign.signed 2) →
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                e.pendingSafe = true ∧
+                  FrameMatches P.decls [] Frame.empty
+                      [Cell.full
+                          (Contents.array (Ty.int IntWidth.w64 Sign.signed) 0
+                            [Contents.struct 0 1
+                                [Contents.int IntWidth.w64 Sign.signed 1]])] ∧
+                    ¬StoreCC P.decls
+                          [Cell.full
+                              (Contents.array
+                                (Ty.int IntWidth.w64 Sign.signed) 0
+                                [Contents.struct 0 1
+                                    [Contents.int IntWidth.w64 Sign.signed
+                                        1]])] ∧
+                      (∃ c Ω,
+                          check P (Ty.int IntWidth.w64 Sign.signed) [] e =
+                              some (c, Ω) ∧
+                            c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                              Typed P (Ty.int IntWidth.w64 Sign.signed) [] e
+                                (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                        Lead Float.exactOps P 200
+                            [Cell.full
+                                (Contents.array
+                                  (Ty.int IntWidth.w64 Sign.signed) 0
+                                  [Contents.struct 0 1
+                                      [Contents.int IntWidth.w64 Sign.signed
+                                          1]])]
+                            Frame.empty
+                            [Cell.full
+                                (Contents.array
+                                  (Ty.int IntWidth.w64 Sign.signed) 0
+                                  [Contents.struct 0 1
+                                      [Contents.int IntWidth.w64 Sign.signed
+                                          1]])]
+                            [Val.int IntWidth.w64 Sign.signed 1] [] e ∧
+                          eval Float.exactOps 201 P
+                                [Cell.full
+                                    (Contents.array
+                                      (Ty.int IntWidth.w64 Sign.signed) 0
+                                      [Contents.struct 0 1
+                                          [Contents.int IntWidth.w64
+                                              Sign.signed 1]])]
+                                Frame.empty e =
+                              EvalRes.withTrace []
+                                (eval Float.exactOps 201 P
+                                  [Cell.full
+                                      (Contents.array
+                                        (Ty.int IntWidth.w64 Sign.signed) 0
+                                        [Contents.struct 0 1
+                                            [Contents.int IntWidth.w64
+                                                Sign.signed 1]])]
+                                  Frame.empty e) ∧
+                            ¬Exact P.decls
+                                  [Cell.full
+                                      (Contents.array
+                                        (Ty.int IntWidth.w64 Sign.signed) 0
+                                        [Contents.struct 0 1
+                                            [Contents.int IntWidth.w64
+                                                Sign.signed 1]])]
+                                  []
+                                  (eval Float.exactOps 200 P
+                                    [Cell.full
+                                        (Contents.array
+                                          (Ty.int IntWidth.w64 Sign.signed) 0
+                                          [Contents.struct 0 1
+                                              [Contents.int IntWidth.w64
+                                                  Sign.signed 1]])]
+                                    Frame.empty e) ∧
+                              ¬Exact P.decls
+                                  [Cell.full
+                                      (Contents.array
+                                        (Ty.int IntWidth.w64 Sign.signed) 0
+                                        [Contents.struct 0 1
+                                            [Contents.int IntWidth.w64
+                                                Sign.signed 1]])]
+                                  (Contents.ownList P.decls
+                                    (Contents.ofVals
+                                      [Val.int IntWidth.w64 Sign.signed 1]))
+                                  (eval Float.exactOps 201 P
+                                    [Cell.full
+                                        (Contents.array
+                                          (Ty.int IntWidth.w64 Sign.signed) 0
+                                          [Contents.struct 0 1
+                                              [Contents.int IntWidth.w64
+                                                  Sign.signed 1]])]
+                                    Frame.empty e)
+```
+
+### `Sharp.no_lead`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.no_lead_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.no_lead (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ProgramTyped P ∧
+          P.pendingSafe = true ∧
+            B.pendingSafe = true ∧
+              FrameMatches P.decls [] Frame.empty [] ∧
+                StoreCC P.decls [] ∧
+                  (∃ c Ω,
+                      check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                          some (c, Ω) ∧
+                        c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                          Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                            (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                    ¬Lead Float.exactOps P 200 [] Frame.empty
+                          [Cell.full
+                              (Contents.struct 0 0
+                                [Contents.int IntWidth.w64 Sign.signed 1])]
+                          [Val.struct 0 0
+                              [Val.int IntWidth.w64 Sign.signed 1]]
+                          [] B ∧
+                      eval Float.exactOps 201 P [] Frame.empty B =
+                          EvalRes.withTrace []
+                            (eval Float.exactOps 201 P [] Frame.empty B) ∧
+                        ¬Exact P.decls
+                            [Cell.full
+                                (Contents.struct 0 0
+                                  [Contents.int IntWidth.w64 Sign.signed 1])]
+                            (Contents.ownList P.decls
+                              (Contents.ofVals
+                                [Val.struct 0 0
+                                    [Val.int IntWidth.w64 Sign.signed 1]]))
+                            (eval Float.exactOps 201 P [] Frame.empty B)
+```
+
+### `Sharp.no_eval`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.no_eval_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.no_eval (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ProgramTyped P ∧
+          P.pendingSafe = true ∧
+            B.pendingSafe = true ∧
+              FrameMatches P.decls [] Frame.empty [] ∧
+                StoreCC P.decls [] ∧
+                  (∃ c Ω,
+                      check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                          some (c, Ω) ∧
+                        c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                          Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                            (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                    ∃ H₁ vs tr,
+                      Lead Float.exactOps P 200 [] Frame.empty H₁ vs tr B ∧
+                        ∀ (w : Violation),
+                          eval Float.exactOps 201 P [] Frame.empty B ≠
+                            EvalRes.withTrace tr (EvalRes.stuck w)
+```
+
+### `Sharp.unreached`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.unreached_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.unreached (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ProgramTyped P ∧
+          ¬Steps Float.exactOps P Config.init
+                (Config.run [] Frame.empty []
+                  (Focus.ret (Val.int IntWidth.w64 Sign.signed 8))
+                  [Event.dtor 0
+                      (Contents.struct 0 0
+                        [Contents.int IntWidth.w64 Sign.signed 1])]) ∧
+            run Float.exactOps P 200 ≠
+                EvalRes.ok [] (Val.int IntWidth.w64 Sign.signed 8)
+                  [Event.dtor 0
+                      (Contents.struct 0 0
+                        [Contents.int IntWidth.w64 Sign.signed 1])] ∧
+              ¬Blocks P.decls
+                    [Event.dtor 0
+                        (Contents.struct 0 0
+                          [Contents.int IntWidth.w64 Sign.signed 1])] ∧
+                ¬∃ n,
+                    ∀ (fuel : Nat),
+                      n < fuel →
+                        run Float.exactOps P fuel =
+                            EvalRes.ok [] (Val.int IntWidth.w64 Sign.signed 8)
+                              [Event.dtor 0
+                                  (Contents.struct 0 0
+                                    [Contents.int IntWidth.w64 Sign.signed
+                                        1])] ∨
+                          ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+```
+
+### `Sharp.unreached_panic`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.unreached_panic_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.unreached_panic (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ProgramTyped P ∧
+          ¬Steps Float.exactOps P Config.init
+                (Config.panic PanicKind.user
+                  [Event.dtor 0
+                      (Contents.struct 0 0
+                        [Contents.int IntWidth.w64 Sign.signed 1])]) ∧
+            run Float.exactOps P 200 ≠
+                EvalRes.panic PanicKind.user
+                  [Event.dtor 0
+                      (Contents.struct 0 0
+                        [Contents.int IntWidth.w64 Sign.signed 1])] ∧
+              ¬Blocks P.decls
+                    [Event.dtor 0
+                        (Contents.struct 0 0
+                          [Contents.int IntWidth.w64 Sign.signed 1])] ∧
+                ¬∃ n,
+                    ∀ (fuel : Nat),
+                      n < fuel →
+                        run Float.exactOps P fuel =
+                            EvalRes.panic PanicKind.user
+                              [Event.dtor 0
+                                  (Contents.struct 0 0
+                                    [Contents.int IntWidth.w64 Sign.signed
+                                        1])] ∨
+                          ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+```
+
+### `Sharp.unordered`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.unordered_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.unordered (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ProgramTyped P ∧
+          ¬Steps Float.exactOps P Config.init
+                (Config.run [] { env := [], scope := [1, 0] } []
+                  (Focus.eval (Expr.intLit IntWidth.w64 Sign.signed 1)) []) ∧
+            Step Float.exactOps P
+                (Config.run [] { env := [], scope := [1, 0] } []
+                  (Focus.eval (Expr.intLit IntWidth.w64 Sign.signed 1)) [])
+                (Config.run [] { env := [], scope := [1, 0] } []
+                  (Focus.ret (Val.int IntWidth.w64 Sign.signed 1)) []) ∧
+              ¬∃ evs,
+                  (Config.run [] { env := [], scope := [1, 0] } []
+                          (Focus.ret (Val.int IntWidth.w64 Sign.signed 1))
+                          []).trace =
+                      (Config.run [] { env := [], scope := [1, 0] } []
+                            (Focus.eval
+                              (Expr.intLit IntWidth.w64 Sign.signed 1))
+                            []).trace ++
+                        evs ∧
+                    NewestFirst (dropLocs evs) ∧
+                      Lifo
+                          (Config.run [] { env := [], scope := [1, 0] } []
+                              (Focus.eval
+                                (Expr.intLit IntWidth.w64 Sign.signed 1))
+                              []).stack
+                          (Config.run [] { env := [], scope := [1, 0] } []
+                              (Focus.ret (Val.int IntWidth.w64 Sign.signed 1))
+                              []).stack
+                          (dropLocs evs) ∧
+                        List.Pairwise (fun x1 x2 => x1 < x2)
+                          (Config.run [] { env := [], scope := [1, 0] } []
+                              (Focus.eval
+                                (Expr.intLit IntWidth.w64 Sign.signed 1))
+                              []).stack
+```
+
+### `Sharp.not_a_step`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.not_a_step_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.not_a_step (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ProgramTyped P ∧
+          ∃ H v tr,
+            Steps Float.exactOps P Config.init
+                (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+              tr ≠ [] ∧
+                ¬Step Float.exactOps P
+                      (Config.run H Frame.empty [] (Focus.ret v) tr)
+                      (Config.panic PanicKind.user []) ∧
+                  ¬∃ evs,
+                      (Config.panic PanicKind.user []).trace =
+                          (Config.run H Frame.empty [] (Focus.ret v)
+                                tr).trace ++
+                            evs ∧
+                        NewestFirst (dropLocs evs) ∧
+                          Lifo
+                              (Config.run H Frame.empty [] (Focus.ret v)
+                                  tr).stack
+                              (Config.panic PanicKind.user []).stack
+                              (dropLocs evs) ∧
+                            List.Pairwise (fun x1 x2 => x1 < x2)
+                              (Config.run H Frame.empty [] (Focus.ret v)
+                                  tr).stack
+```
+
+### `Sharp.init_steps`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.init_steps_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.init_steps (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ProgramTyped P ∧
+          Step Float.exactOps P Config.init
+              (Config.run [] Frame.empty []
+                (Focus.args (ArgsTag.call 0) [] []) []) ∧
+            ¬Step Float.exactOps P Config.init Config.init ∧
+              Config.run [] Frame.empty [] (Focus.args (ArgsTag.call 0) [] [])
+                    [] ≠
+                  Config.init ∧
+                ¬Config.init.Terminal ∧
+                  ¬Config.Stuck Float.exactOps P Config.init
+                        Violation.linearLeak ∧
+                    Violation.linearLeak.isStuckState = false ∧
+                      Steps Float.exactOps P Config.init Config.init ∧
+                        ¬∃ n,
+                            ∀ (fuel : Nat),
+                              n < fuel →
+                                ∃ w',
+                                  run Float.exactOps P fuel = EvalRes.stuck w'
+```
+
+### `Sharp.unreachable_stuck`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.unreachable_stuck_stmt`, proved: a counter-example (RUE-2485).
+
+```lean
+theorem RueCore.Sharp.unreachable_stuck (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ProgramTyped P ∧
+          Config.Stuck Float.exactOps P
+              (Config.run [] Frame.empty []
+                (Focus.eval (Expr.use (Place.var 0))) [])
+              Violation.unbound ∧
+            ¬Steps Float.exactOps P Config.init
+                  (Config.run [] Frame.empty []
+                    (Focus.eval (Expr.use (Place.var 0))) []) ∧
+              (∀ (fuel : Nat) (w : Violation),
+                  run Float.exactOps P fuel ≠ EvalRes.stuck w) ∧
+                ¬((Config.run [] Frame.empty []
+                          (Focus.eval (Expr.use (Place.var 0))) []).Terminal ∨
+                      ∃ C',
+                        Step Float.exactOps P
+                          (Config.run [] Frame.empty []
+                            (Focus.eval (Expr.use (Place.var 0))) [])
+                          C') ∧
+                  (∀ (T : Ty),
+                      ¬Config.SafeAt Float.exactOps P T
+                          (Config.run [] Frame.empty []
+                            (Focus.eval (Expr.use (Place.var 0))) [])) ∧
+                    (¬∀ (C : Config),
+                          C.Terminal ∨ ∃ C', Step Float.exactOps P C C') ∧
+                      ¬∃ n,
+                          ∀ (fuel : Nat),
+                            n < fuel →
+                              ∃ w',
+                                run Float.exactOps P fuel = EvalRes.stuck w'
+```
+
 ### `Examples.dynReadAffine_refused`
 
 *theorem* · module `RueCore.Examples`
@@ -13205,6 +14765,239 @@ theorem RueCore.Blocks.drop_inv {D : Decls} {ℓ : Nat} {c : Contents} {t : List
   ∃ t', t = dropEvents D c ++ t' ∧ Blocks D t'
 ```
 
+### `Sharp.exact_ops`
+
+*theorem* · module `RueCore.Sharp`
+
+The model the statements run on is `Float.exactOps` (helper).
+
+```lean
+theorem RueCore.Sharp.exact_ops : Float.exactModel.toFloatOps = Float.exactOps
+```
+
+### `Sharp.withTrace_nil`
+
+*theorem* · module `RueCore.Sharp`
+
+Prefixing an empty trace changes nothing (helper).
+
+```lean
+theorem RueCore.Sharp.withTrace_nil (r : EvalRes) : EvalRes.withTrace [] r = r
+```
+
+### `Sharp.noStep_of_stuck`
+
+*theorem* · module `RueCore.Sharp`
+
+A stuck configuration takes no step (helper).
+
+```lean
+theorem RueCore.Sharp.noStep_of_stuck {M : FloatOps} {P : Program} {C : Config}
+  {w : Violation} (h : Config.Stuck M P C w) (C' : Config) : ¬Step M P C C'
+```
+
+### `Sharp.not_terminal_of_stuck`
+
+*theorem* · module `RueCore.Sharp`
+
+A stuck configuration is not terminal (helper).
+
+```lean
+theorem RueCore.Sharp.not_terminal_of_stuck {M : FloatOps} {P : Program} {C : Config}
+  {w : Violation} (h : Config.Stuck M P C w) : ¬C.Terminal
+```
+
+### `Sharp.noStep_of_terminal`
+
+*theorem* · module `RueCore.Sharp`
+
+A terminal configuration takes no step (helper).
+
+```lean
+theorem RueCore.Sharp.noStep_of_terminal {M : FloatOps} {P : Program} {C : Config}
+  (h : C.Terminal) (C' : Config) : ¬Step M P C C'
+```
+
+### `Sharp.not_steps_of_final`
+
+*theorem* · module `RueCore.Sharp`
+
+Of two configurations with no step, a run from `Config.init` reaches at
+most one (`Step.det`) (helper).
+
+```lean
+theorem RueCore.Sharp.not_steps_of_final {M : FloatOps} {P : Program} {T X : Config}
+  (hT : Steps M P Config.init T) (hTf : ∀ (C' : Config), ¬Step M P T C')
+  (hXf : ∀ (C' : Config), ¬Step M P X C') (hne : T ≠ X) :
+  ¬Steps M P Config.init X
+```
+
+### `Sharp.run_from`
+
+*theorem* · module `RueCore.Sharp`
+
+An answer other than `outOfFuel` is `run`'s at every larger fuel
+(`fuel_mono`) (helper).
+
+```lean
+theorem RueCore.Sharp.run_from {M : FloatOps} {P : Program} {n : Nat} {r : EvalRes}
+  (h : run M P n = r) (hr : r ≠ EvalRes.outOfFuel) (fuel : Nat) :
+  n ≤ fuel → run M P fuel = r
+```
+
+### `Sharp.not_eventually`
+
+*theorem* · module `RueCore.Sharp`
+
+Once `run` answers `r`, no property `r` lacks holds of `run`'s answer at
+every fuel past a bound (helper).
+
+```lean
+theorem RueCore.Sharp.not_eventually {M : FloatOps} {P : Program} {n : Nat}
+  {r : EvalRes} (h : run M P n = r) (hr : r ≠ EvalRes.outOfFuel)
+  (Q : EvalRes → Prop) (hQ : ¬Q r) :
+  ¬∃ k, ∀ (fuel : Nat), k < fuel → Q (run M P fuel)
+```
+
+### `Sharp.stuck_not_safe`
+
+*theorem* · module `RueCore.Sharp`
+
+A refusal is none of `run_safe`'s outcomes, for any entry point (helper).
+
+```lean
+theorem RueCore.Sharp.stuck_not_safe {M : FloatOps} {P : Program} {n : Nat}
+  {w : Violation} (h : run M P n = EvalRes.stuck w) (fd : FnDef) :
+  ¬(run M P n = EvalRes.outOfFuel ∨
+      (∃ k tr, run M P n = EvalRes.panic k tr) ∨
+        ∃ H v tr, run M P n = EvalRes.ok H v tr ∧ HasTy P.decls v fd.ret)
+```
+
+### `Sharp.not_exact_ok`
+
+*theorem* · module `RueCore.Sharp`
+
+`Exact` fails at a value whose counts miss one identity the evaluation
+started with (helper).
+
+```lean
+theorem RueCore.Sharp.not_exact_ok {D : Decls} {H H' : Store} {v : Val}
+  {tr : List Event} {Y : List Nat} (a : Nat) (ha : a < List.length H)
+  (hne :
+    List.count a (storeOwn D H') + List.count a (Val.own D v) +
+        List.count a (freedIds D tr) ≠
+      List.count a (storeOwn D H) + List.count a Y) :
+  ¬Exact D H Y (EvalRes.ok H' v tr)
+```
+
+### `Sharp.not_exact_returned`
+
+*theorem* · module `RueCore.Sharp`
+
+The same at an unwinding `return` (helper).
+
+```lean
+theorem RueCore.Sharp.not_exact_returned {D : Decls} {H H' : Store} {v : Val}
+  {tr : List Event} {Y : List Nat} (a : Nat) (ha : a < List.length H)
+  (hne :
+    List.count a (storeOwn D H') + List.count a (Val.own D v) +
+        List.count a (freedIds D tr) ≠
+      List.count a (storeOwn D H) + List.count a Y) :
+  ¬Exact D H Y (EvalRes.returned H' v tr)
+```
+
+### `Sharp.not_exact_cc`
+
+*theorem* · module `RueCore.Sharp`
+
+`Exact` fails at a value whose final store is not copy-closed (helper).
+
+```lean
+theorem RueCore.Sharp.not_exact_cc {D : Decls} {H H' : Store} {v : Val}
+  {tr : List Event} {Y : List Nat} (h : ¬StoreCC D H') :
+  ¬Exact D H Y (EvalRes.ok H' v tr)
+```
+
+### `Sharp.storeCC_one`
+
+*theorem* · module `RueCore.Sharp`
+
+A one-cell store is copy-closed when its cell is (helper).
+
+```lean
+theorem RueCore.Sharp.storeCC_one {D : Decls} {c : Contents}
+  (h : Contents.copyClosed D c = true) : StoreCC D [Cell.full c]
+```
+
+### `Sharp.StepsN.steps_of_longer`
+
+*theorem* · module `RueCore.Sharp`
+
+In a run with a longer one beside it from the same start, the shorter
+one's end steps (`Step.det`) (helper).
+
+```lean
+theorem RueCore.Sharp.StepsN.steps_of_longer {M : FloatOps} {P : Program} {k : Nat}
+  {C₀ C D : Config} :
+  StepsN M P k C₀ C → StepsN M P (k + 1) C₀ D → ∃ C', Step M P C C'
+```
+
+### `Sharp.steps_of_forever`
+
+*theorem* · module `RueCore.Sharp`
+
+A machine with runs of every length never reaches a configuration that
+does not step (helper).
+
+```lean
+theorem RueCore.Sharp.steps_of_forever {M : FloatOps} {P : Program}
+  (h : ∀ (n : Nat), ∃ D, StepsN M P n Config.init D) (C : Config) :
+  Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
+```
+
+### `Sharp.loopTurn_step`
+
+*theorem* · module `RueCore.Sharp`
+
+One turn is nine steps of §6's relation, which has no monitor: the
+literal is minted into a reserved slot, discarded, and the loop starts again
+(helper).
+
+```lean
+theorem RueCore.Sharp.loopTurn_step (M : FloatOps) (H : Store) (tr : List Event) :
+  StepsN M Sharp.loopProg 9 (Sharp.loopTurn H tr)
+    (Sharp.loopTurn (H ++ [Cell.dead])
+      (tr ++
+          [Event.dropTemp
+              (Val.struct 1 (List.length H)
+                [Val.int IntWidth.w64 Sign.signed 3])] ++
+        []))
+```
+
+### `Sharp.loopTurn_forever`
+
+*theorem* · module `RueCore.Sharp`
+
+So the loop has runs of every multiple of nine steps from any turn
+(helper).
+
+```lean
+theorem RueCore.Sharp.loopTurn_forever (M : FloatOps) (m : Nat) (H : Store)
+  (tr : List Event) :
+  ∃ D, StepsN M Sharp.loopProg (9 * m) (Sharp.loopTurn H tr) D
+```
+
+### `Sharp.loop_forever`
+
+*theorem* · module `RueCore.Sharp`
+
+And runs of every length from `Config.init` (helper).
+
+```lean
+theorem RueCore.Sharp.loop_forever (M : FloatOps) (n : Nat) :
+  ∃ D, StepsN M Sharp.loopProg n Config.init D
+```
+
 ### `Spine.soundness`
 
 *theorem* · module `RueCore.Spine`
@@ -13693,6 +15486,276 @@ theorem RueCore.Spine.Nonvacuous.diverges : Spec.Nonvacuous.diverges_stmt
 
 ```lean
 theorem RueCore.Spine.Nonvacuous.stuck : Spec.Nonvacuous.stuck_stmt
+```
+
+### `Spine.Sharp.stuck`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.stuck_stmt`, by `RueCore.Sharp.stuck` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.stuck : Spec.Sharp.stuck_stmt
+```
+
+### `Spine.Sharp.stuck_step`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.stuck_step_stmt`, by `RueCore.Sharp.stuck_step` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.stuck_step : Spec.Sharp.stuck_step_stmt
+```
+
+### `Spine.Sharp.typed`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.typed_stmt`, by `RueCore.Sharp.typed` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.typed : Spec.Sharp.typed_stmt
+```
+
+### `Spine.Sharp.frame`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.frame_stmt`, by `RueCore.Sharp.frame` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.frame : Spec.Sharp.frame_stmt
+```
+
+### `Spine.Sharp.no_entry`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.no_entry_stmt`, by `RueCore.Sharp.no_entry` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.no_entry : Spec.Sharp.no_entry_stmt
+```
+
+### `Spine.Sharp.entry_param`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.entry_param_stmt`, by `RueCore.Sharp.entry_param` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.entry_param : Spec.Sharp.entry_param_stmt
+```
+
+### `Spine.Sharp.copy`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.copy_stmt`, by `RueCore.Sharp.copy` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.copy : Spec.Sharp.copy_stmt
+```
+
+### `Spine.Sharp.leak`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.leak_stmt`, by `RueCore.Sharp.leak` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.leak : Spec.Sharp.leak_stmt
+```
+
+### `Spine.Sharp.overwrite`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.overwrite_stmt`, by `RueCore.Sharp.overwrite` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.overwrite : Spec.Sharp.overwrite_stmt
+```
+
+### `Spine.Sharp.discard`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.discard_stmt`, by `RueCore.Sharp.discard` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.discard : Spec.Sharp.discard_stmt
+```
+
+### `Spine.Sharp.discard_loop`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.discard_loop_stmt`, by `RueCore.Sharp.discard_loop` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.discard_loop : Spec.Sharp.discard_loop_stmt
+```
+
+### `Spine.Sharp.fuel`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.fuel_stmt`, by `RueCore.Sharp.fuel` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.fuel : Spec.Sharp.fuel_stmt
+```
+
+### `Spine.Sharp.fuel_panic`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.fuel_panic_stmt`, by `RueCore.Sharp.fuel_panic` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.fuel_panic : Spec.Sharp.fuel_panic_stmt
+```
+
+### `Spine.Sharp.not_fits`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.not_fits_stmt`, by `RueCore.Sharp.not_fits` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.not_fits : Spec.Sharp.not_fits_stmt
+```
+
+### `Spine.Sharp.double_drop`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.double_drop_stmt`, by `RueCore.Sharp.double_drop` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.double_drop : Spec.Sharp.double_drop_stmt
+```
+
+### `Spine.Sharp.bare_dtor`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.bare_dtor_stmt`, by `RueCore.Sharp.bare_dtor` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.bare_dtor : Spec.Sharp.bare_dtor_stmt
+```
+
+### `Spine.Sharp.pending_program`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.pending_program_stmt`, by `RueCore.Sharp.pending_program` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.pending_program : Spec.Sharp.pending_program_stmt
+```
+
+### `Spine.Sharp.pending_expr`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.pending_expr_stmt`, by `RueCore.Sharp.pending_expr` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.pending_expr : Spec.Sharp.pending_expr_stmt
+```
+
+### `Spine.Sharp.store_cc`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.store_cc_stmt`, by `RueCore.Sharp.store_cc` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.store_cc : Spec.Sharp.store_cc_stmt
+```
+
+### `Spine.Sharp.no_lead`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.no_lead_stmt`, by `RueCore.Sharp.no_lead` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.no_lead : Spec.Sharp.no_lead_stmt
+```
+
+### `Spine.Sharp.no_eval`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.no_eval_stmt`, by `RueCore.Sharp.no_eval` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.no_eval : Spec.Sharp.no_eval_stmt
+```
+
+### `Spine.Sharp.unreached`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.unreached_stmt`, by `RueCore.Sharp.unreached` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.unreached : Spec.Sharp.unreached_stmt
+```
+
+### `Spine.Sharp.unreached_panic`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.unreached_panic_stmt`, by `RueCore.Sharp.unreached_panic` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.unreached_panic : Spec.Sharp.unreached_panic_stmt
+```
+
+### `Spine.Sharp.unordered`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.unordered_stmt`, by `RueCore.Sharp.unordered` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.unordered : Spec.Sharp.unordered_stmt
+```
+
+### `Spine.Sharp.not_a_step`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.not_a_step_stmt`, by `RueCore.Sharp.not_a_step` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.not_a_step : Spec.Sharp.not_a_step_stmt
+```
+
+### `Spine.Sharp.init_steps`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.init_steps_stmt`, by `RueCore.Sharp.init_steps` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.init_steps : Spec.Sharp.init_steps_stmt
+```
+
+### `Spine.Sharp.unreachable_stuck`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.unreachable_stuck_stmt`, by `RueCore.Sharp.unreachable_stuck` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.unreachable_stuck : Spec.Sharp.unreachable_stuck_stmt
 ```
 
 ### `Nonvacuous.Glue.dtor.soundness`
@@ -20522,6 +22585,24 @@ Constructors:
 RueCore.Out.mk (norm : Option Ctx) (brk : List Ctx) : Out
 ```
 
+### `Sharp.loopBody`
+
+*def* · module `RueCore.Sharp`
+
+`discard_loop`'s loop body, `S1 { 3 }; ()` (helper).
+
+```lean
+def RueCore.Sharp.loopBody : Expr
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Sharp.loopBody =
+  (Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 3]).seq
+    Expr.unitLit
+```
+
 ### `Store`
 
 *abbrev* · module `RueCore.Dynamics`
@@ -22551,6 +24632,27 @@ RueCore.Explain.Trace.mk (steps : List Explain.Step) (res : EvalRes) :
   Explain.Trace
 ```
 
+### `Float.exactModel`
+
+*def* · module `RueCore.Float.Lemmas`
+
+**The laws have a model: `Float.exactOps`** (§7's float lemma). Every field of `FloatModel` proved of the executable instance, so the 19 spine statements that quantify over `M : FloatModel` are not vacuous in `M` (RUE-2469), and each applies to the model the corpus runs on. Satisfying the laws does not make `exactOps` IEEE 754: the laws say nothing about which datum a rounding returns. What they leave open, `exactOps` decides by its own definition — the value of every rounding (correct rounding, ties to even, the overflow threshold), which NaN a propagating operation returns, and `σ_NaN` — and those are checked against the compiler by the corpus, not proved.
+
+```lean
+def RueCore.Float.exactModel : FloatModel
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Float.exactModel =
+  { toFloatOps := Float.exactOps, arith_wf := ⋯, sqrt_wf := ⋯,
+    ofLit_wf := Float.ofLit_wf, ofInt_wf := Float.ofInt_wf,
+    narrow_wf := ⋯, arith_nan := ⋯, narrow_nan := Float.narrow_nan,
+    div_by_zero := ⋯, zero_div_zero := ⋯, ofLit_zero := Float.ofLit_zero,
+    ofLit_one := Float.ofLit_one }
+```
+
 ### `KillsOnly`
 
 *def* · module `RueCore.TraceExact`
@@ -22693,6 +24795,57 @@ def RueCore.Settled (φ : Frame) (H₁ : Store) : EvalRes → Prop :=
   | EvalRes.panic k tr => True
   | EvalRes.stuck why => True
   | EvalRes.outOfFuel => True
+```
+
+### `Sharp.loopProg`
+
+*def* · module `RueCore.Sharp`
+
+`discard_loop`'s program (helper).
+
+```lean
+def RueCore.Sharp.loopProg : Program
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Sharp.loopProg =
+  {
+    decls :=
+      {
+        structs :=
+          [{ attr := Attr.none,
+              fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+              cls := Mult.affine },
+            { attr := Attr.linear,
+              fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
+              cls := Mult.linear }],
+        enums :=
+          [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+    fns :=
+      [{ params := [], ret := Ty.unit, body := Sharp.loopBody.loop }] }
+```
+
+### `Sharp.loopTurn`
+
+*def* · module `RueCore.Sharp`
+
+`discard_loop`'s configuration at the head of a turn, over any store and
+trace (helper).
+
+```lean
+def RueCore.Sharp.loopTurn (H : Store) (tr : List Event) : Config
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (H : Store) (tr : List Event),
+  Sharp.loopTurn H tr =
+    Config.run H Frame.empty
+      [Kont.loop Sharp.loopBody Frame.empty, Kont.call Frame.empty]
+      (Focus.eval Sharp.loopBody) tr
 ```
 
 ### `Spec.Nonvacuous.exact_model_stmt`
@@ -27980,6 +30133,940 @@ def RueCore.Spec.Nonvacuous.diverges_stmt : Prop :=
           ∀ (fuel : Nat), run Float.exactOps P fuel = EvalRes.outOfFuel
 ```
 
+### `Spec.Sharp.bare_dtor_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**An unchecked program whose trace runs a destructor outside a drop**
+(sharpness, RUE-2485). Over the same `@copy` struct `C` with a destructor, a
+declared-`linear` `L { x0: C, x1: A }` and an affine `A` with a destructor,
+`let l = L { C { 1 }, A { 2 } }; let s = l.x1; 0` destructures `l`: its
+residue `C { 1 }` is `Copy`, so it is dropped with no marker, and its
+destructor event opens the trace. It is not `ProgramTyped`, and §6's relation
+runs it to a value whose trace is not in §6.11's block grammar: `drop_order`
+fails without `ProgramTyped` (through `DtorNotCopy`).
+
+```lean
+def RueCore.Spec.Sharp.bare_dtor_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 2
+            [Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1],
+              Expr.mkStruct 3 [Expr.intLit IntWidth.w64 Sign.signed 2]])
+          (Expr.letIn false (Expr.use ((Place.var 0).proj 1))
+            (Expr.intLit IntWidth.w64 Sign.signed 0)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.copy,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.copy },
+                      { attr := Attr.none, fields := [Ty.struct 0],
+                        dtor := false, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.struct 0, Ty.struct 3], dtor := false,
+                        cls := Mult.linear },
+                      { attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine }],
+                  enums := [] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = false ∧
+            ¬ProgramTyped P ∧
+              ∃ H φ v tr,
+                Steps Float.exactOps P Config.init
+                    (Config.run H φ [] (Focus.ret v) tr) ∧
+                  ¬Blocks P.decls tr
+```
+
+### `Spec.Sharp.copy_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**The copy monitor fires** (R3 of `REDTEAM-LOG.md`; sharpness, RUE-2485). An
+unchecked program puts an owned value under a `Copy` one, the shape a copy
+would duplicate an owner through: over `S0 = @copy struct { x0: i64 }` and
+`S1`, affine with a destructor, `let p = S0 { x0: S1 { 1 } }; let q = p;
+@drop(p.x0); @drop(q.x0); 0` (`Trace.lean`'s `dupProgram`). It is not
+`ProgramTyped`, and `eval` refuses it with `ownedUnderCopy`, at the literal:
+`no_violation`'s conclusion fails once `ProgramTyped` is dropped, and a machine
+without the copy-closure monitor (`Contents.copyClosed` in `introVal`) makes
+this statement false.
+
+```lean
+def RueCore.Spec.Sharp.copy_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0
+            [Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 1]])
+          (Expr.letIn false (Expr.use (Place.var 0))
+            ((Expr.drop ((Place.var 1).proj 0)).seq
+              ((Expr.drop ((Place.var 0).proj 0)).seq
+                (Expr.intLit IntWidth.w64 Sign.signed 0)))) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.copy,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.copy },
+                      { attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine }],
+                  enums := [] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = false ∧
+            ¬ProgramTyped P ∧
+              run Float.exactOps P 200 =
+                EvalRes.stuck Violation.ownedUnderCopy
+```
+
+### `Spec.Sharp.discard_loop_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A loop that discards a linear value each turn** (sharpness, RUE-2485).
+`loop { S1 { 3 }; () }` is not `ProgramTyped`. `eval` refuses its first turn
+with `linearDiscard`, while §6's relation, which has no monitor, turns forever:
+it has runs of every length from `Config.init`, and every configuration they
+reach steps. So `eval_diverges_iff` and `never_stuck_iff` fail once
+`ProgramTyped` is dropped: one side of each holds and the other does not. A
+machine without the discard monitor makes this statement false.
+
+```lean
+def RueCore.Spec.Sharp.discard_loop_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        ((Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 3]).seq
+            Expr.unitLit).loop →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns := [{ params := [], ret := Ty.unit, body := B }] } →
+          checkProgram P = false ∧
+            ¬ProgramTyped P ∧
+              run Float.exactOps P 200 =
+                  EvalRes.stuck Violation.linearDiscard ∧
+                (∀ (n : Nat),
+                    ∃ D, StepsN Float.exactOps P n Config.init D) ∧
+                  (∀ (C : Config),
+                      Steps Float.exactOps P Config.init C →
+                        C.Terminal ∨ ∃ C', Step Float.exactOps P C C') ∧
+                    ¬((∀ (fuel : Nat),
+                            run Float.exactOps P fuel = EvalRes.outOfFuel) ↔
+                          ∀ (n : Nat),
+                            ∃ D, StepsN Float.exactOps P n Config.init D) ∧
+                      ¬((∀ (fuel : Nat) (w : Violation),
+                            run Float.exactOps P fuel ≠ EvalRes.stuck w) ↔
+                          ∀ (C : Config),
+                            Steps Float.exactOps P Config.init C →
+                              C.Terminal ∨ ∃ C', Step Float.exactOps P C C')
+```
+
+### `Spec.Sharp.discard_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**The discard monitor fires** (R3 of `REDTEAM-LOG.md`; sharpness, RUE-2485).
+`S1 { 3 }; @panic("boom")` discards a linear value. It is not `ProgramTyped`,
+and `eval` refuses the sequence with `linearDiscard`: `no_linear_discard`'s
+conclusion fails once `ProgramTyped` is dropped. §6's relation drops the
+value and reaches the panic, which `run` never answers: `eval_complete`'s
+panic half needs `ProgramTyped` too. A machine without the discard monitor
+makes this statement false.
+
+```lean
+def RueCore.Spec.Sharp.discard_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        (Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 3]).seq
+          (Expr.panic "boom") →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = false ∧
+            ¬ProgramTyped P ∧
+              run Float.exactOps P 200 =
+                  EvalRes.stuck Violation.linearDiscard ∧
+                ∃ κ tr,
+                  Steps Float.exactOps P Config.init (Config.panic κ tr) ∧
+                    ¬∃ n,
+                        ∀ (fuel : Nat),
+                          n < fuel →
+                            run Float.exactOps P fuel = EvalRes.panic κ tr
+```
+
+### `Spec.Sharp.double_drop_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**An unchecked program that runs a destructor twice on one value**
+(sharpness, RUE-2485). Over a `@copy` struct `C` that declares a destructor
+(which `DtorNotCopy`, and `WfDecls`, exclude) and an affine `W { x0: C }`,
+`let c = C { 1 }; let a = W { c }; let b = W { c }; 0` copies `c` into two
+`W`s, and dropping both runs `C`'s destructor on identity `0` twice. It is not
+`ProgramTyped`, and `run` returns: `dtor_once` fails without `DtorNotCopy`, and
+`no_double_free` without `ProgramTyped`. (RUE-2400's cases, a dynamic read and
+an array repeat of an affine value, no longer double-drop: `eval` refuses them
+with `typeConfusion`.)
+
+```lean
+def RueCore.Spec.Sharp.double_drop_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 1 [Expr.use (Place.var 0)])
+            (Expr.letIn false (Expr.mkStruct 1 [Expr.use (Place.var 1)])
+              (Expr.intLit IntWidth.w64 Sign.signed 0))) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.copy,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.copy },
+                      { attr := Attr.none, fields := [Ty.struct 0],
+                        dtor := false, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.struct 0, Ty.struct 3], dtor := false,
+                        cls := Mult.linear },
+                      { attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine }],
+                  enums := [] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = false ∧
+            ¬ProgramTyped P ∧
+              ¬DtorNotCopy P.decls ∧
+                ∃ H v tr,
+                  run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                    List.count 0 (dtorIds tr) = 2 ∧
+                      ¬∀ (a : Nat),
+                          List.count a
+                              (dtorIds (run Float.exactOps P 200).trace) ≤
+                            1
+```
+
+### `Spec.Sharp.fuel_panic_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**Fuel bounds, dropped, at a panic** (sharpness, RUE-2485). The checked
+program of `Nonvacuous.panic` panics, and §6's relation reaches the panic, but
+fuel `0` is exhausted: `eval_complete`'s and `run_complete`'s panic halves
+fail without `n < fuel`.
+
+```lean
+def RueCore.Spec.Sharp.fuel_panic_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          ((Expr.intLit IntWidth.w64 Sign.signed 5).dbg.seq
+            (Expr.panic "boom")) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            run Float.exactOps P 0 = EvalRes.outOfFuel ∧
+              Steps Float.exactOps P Config.init
+                  (Config.panic PanicKind.user
+                    [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)]) ∧
+                ¬∀ (fuel : Nat),
+                    run Float.exactOps P fuel =
+                        EvalRes.panic PanicKind.user
+                          [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)] ∨
+                      ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+```
+
+### `Spec.Sharp.fuel_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**Fuel bounds, dropped** (sharpness, RUE-2485). The checked program of
+`Nonvacuous.dtor` exhausts fuel `0` and returns at fuel `200`, a value §6's
+relation reaches. So `fuel_mono` fails without `n ≤ m` (`n = 200`, `m = 0`) and
+without `eval n ≠ outOfFuel` (`n = 0`, `m = 200`); `no_masking` fails without
+its first hypothesis (`eval n` is a value, not a refusal); and
+`eval_complete`'s and `run_complete`'s value halves fail without `n < fuel`:
+no `n` makes the value, or a refusal, the answer at every fuel. `run P fuel`
+is `eval` at `main()` (`run`'s definition).
+
+```lean
+def RueCore.Spec.Sharp.fuel_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            run Float.exactOps P 0 = EvalRes.outOfFuel ∧
+              ∃ H v tr,
+                run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                  Steps Float.exactOps P Config.init
+                      (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                    ¬200 ≤ 0 ∧
+                      0 ≤ 200 ∧
+                        run Float.exactOps P 0 ≠ run Float.exactOps P 200 ∧
+                          (∀ (w : Violation),
+                              run Float.exactOps P 200 ≠ EvalRes.stuck w) ∧
+                            ¬∀ (fuel : Nat),
+                                run Float.exactOps P fuel =
+                                    EvalRes.ok H v tr ∨
+                                  ∃ w,
+                                    run Float.exactOps P fuel =
+                                      EvalRes.stuck w
+```
+
+### `Spec.Sharp.init_steps_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**The initial configuration, which steps** (sharpness, RUE-2485). For the
+checked program of `Nonvacuous.dtor`, `Config.init` steps to the argument
+list of `main()`, and not to itself; it is not terminal and not stuck (with
+`linearLeak`, a monitor's tag, not one of §6's stuck states); and `run` is
+never stuck. So `Step.det` fails without either of its step hypotheses,
+`Step.terminal` without `C.Terminal`, `step_stuck_isStuckState` without
+`C.Stuck`, and `run_stuck_of_step_stuck` without `C.Stuck`.
+
+```lean
+def RueCore.Spec.Sharp.init_steps_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            Step Float.exactOps P Config.init
+                (Config.run [] Frame.empty []
+                  (Focus.args (ArgsTag.call 0) [] []) []) ∧
+              ¬Step Float.exactOps P Config.init Config.init ∧
+                Config.run [] Frame.empty []
+                      (Focus.args (ArgsTag.call 0) [] []) [] ≠
+                    Config.init ∧
+                  ¬Config.init.Terminal ∧
+                    ¬Config.Stuck Float.exactOps P Config.init
+                          Violation.linearLeak ∧
+                      Violation.linearLeak.isStuckState = false ∧
+                        Steps Float.exactOps P Config.init Config.init ∧
+                          ¬∃ n,
+                              ∀ (fuel : Nat),
+                                n < fuel →
+                                  ∃ w',
+                                    run Float.exactOps P fuel =
+                                      EvalRes.stuck w'
+```
+
+### `Spec.Sharp.leak_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**The leak monitor fires** (R3 of `REDTEAM-LOG.md`; sharpness, RUE-2485).
+`let x = S1 { 1 }; 0`, with `S1` declared `linear`, leaves a live linear
+value at the scope's end. It is not `ProgramTyped`, and `eval` refuses it with
+`linearLeak`: `no_linear_leak`'s conclusion fails once `ProgramTyped` is
+dropped. §6's relation, which has no monitor, runs it to a value, which `run`
+never returns at any fuel: `eval_complete` needs `ProgramTyped` too. A machine
+whose leak monitor is off, or does not read a declared-`linear` struct's own
+obligation (`Contents.residualLinear`), makes this statement false.
+
+```lean
+def RueCore.Spec.Sharp.leak_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.intLit IntWidth.w64 Sign.signed 0) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = false ∧
+            ¬ProgramTyped P ∧
+              run Float.exactOps P 200 =
+                  EvalRes.stuck Violation.linearLeak ∧
+                ∃ H φ v tr,
+                  Steps Float.exactOps P Config.init
+                      (Config.run H φ [] (Focus.ret v) tr) ∧
+                    ¬∃ n,
+                        ∀ (fuel : Nat),
+                          n < fuel →
+                            run Float.exactOps P fuel = EvalRes.ok H v tr
+```
+
+### `Spec.Sharp.not_a_step_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A pair that is not a step** (sharpness, RUE-2485). For the checked program
+of `Nonvacuous.dtor`, the value `run` returns is reached, with a trace that is
+not empty, and the panic with an empty trace does not follow it by a step; its
+trace does not extend the value's, so `drop_order`'s last half fails without
+the hypothesis `Step … C C'`.
+
+```lean
+def RueCore.Spec.Sharp.not_a_step_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            ∃ H v tr,
+              Steps Float.exactOps P Config.init
+                  (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                tr ≠ [] ∧
+                  ¬Step Float.exactOps P
+                        (Config.run H Frame.empty [] (Focus.ret v) tr)
+                        (Config.panic PanicKind.user []) ∧
+                    ¬∃ evs,
+                        (Config.panic PanicKind.user []).trace =
+                            (Config.run H Frame.empty [] (Focus.ret v)
+                                  tr).trace ++
+                              evs ∧
+                          NewestFirst (dropLocs evs) ∧
+                            Lifo
+                                (Config.run H Frame.empty [] (Focus.ret v)
+                                    tr).stack
+                                (Config.panic PanicKind.user []).stack
+                                (dropLocs evs) ∧
+                              List.Pairwise (fun x1 x2 => x1 < x2)
+                                (Config.run H Frame.empty [] (Focus.ret v)
+                                    tr).stack
+```
+
+### `Spec.Sharp.overwrite_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**The overwrite monitor fires** (R3 of `REDTEAM-LOG.md`; sharpness,
+RUE-2485). `let mut x = S1 { 1 }; x = S1 { 2 }; @drop(x); 0` overwrites a live
+linear value. It is not `ProgramTyped`, and `eval` refuses the assignment with
+`linearOverwrite`: `no_linear_overwrite`'s conclusion fails once
+`ProgramTyped` is dropped, and a machine without the overwrite monitor makes
+this statement false.
+
+```lean
+def RueCore.Spec.Sharp.overwrite_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn true
+          (Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          ((Expr.assign (Place.var 0)
+                (Expr.mkStruct 1
+                  [Expr.intLit IntWidth.w64 Sign.signed 2])).seq
+            ((Expr.drop (Place.var 0)).seq
+              (Expr.intLit IntWidth.w64 Sign.signed 0))) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = false ∧
+            ¬ProgramTyped P ∧
+              run Float.exactOps P 200 =
+                EvalRes.stuck Violation.linearOverwrite
+```
+
+### `Spec.Sharp.stuck_step_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**The same program, run by §6's relation** (sharpness, RUE-2485). `Step`
+reaches a configuration stuck with `useAfterMove` from `Config.init`, and
+`run` refuses at fuel `200` and exhausts fuel `0`. So once `ProgramTyped` is
+dropped, `step_progress`, `step_preservation` and `step_type_safety` fail
+(no horizon passes the stuck configuration, which is not a value or a
+panic); once `step_never_stuck_of_run`'s hypothesis that `run` is never stuck
+is dropped, its conclusion fails; and once `run_stuck_of_step_stuck`'s bound
+`n < fuel` is dropped, no `n` makes `run` stuck at every fuel.
+
+```lean
+def RueCore.Spec.Sharp.stuck_step_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          ((Expr.drop (Place.var 0)).seq
+            (Expr.use ((Place.var 0).proj 0))) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ¬ProgramTyped P ∧
+            (∃ C,
+                Steps Float.exactOps P Config.init C ∧
+                  Config.Stuck Float.exactOps P C Violation.useAfterMove) ∧
+              run Float.exactOps P 200 =
+                  EvalRes.stuck Violation.useAfterMove ∧
+                run Float.exactOps P 0 = EvalRes.outOfFuel ∧
+                  (¬∀ (C : Config),
+                        Steps Float.exactOps P Config.init C →
+                          C.Terminal ∨ ∃ C', Step Float.exactOps P C C') ∧
+                    (¬∃ fd,
+                          P.fns[0]? = some fd ∧
+                            ∀ (C : Config),
+                              Steps Float.exactOps P Config.init C →
+                                Config.SafeAt Float.exactOps P fd.ret C) ∧
+                      (¬∃ fd,
+                            P.fns[0]? = some fd ∧
+                              ∀ (n : Nat),
+                                (∃ D,
+                                    StepsN Float.exactOps P n Config.init
+                                      D) ∨
+                                  (∃ H v tr,
+                                      Steps Float.exactOps P Config.init
+                                          (Config.run H Frame.empty []
+                                            (Focus.ret v) tr) ∧
+                                        HasTy P.decls v fd.ret) ∨
+                                    ∃ κ tr,
+                                      Steps Float.exactOps P Config.init
+                                        (Config.panic κ tr)) ∧
+                        ¬∀ (fuel : Nat),
+                            ∃ w',
+                              run Float.exactOps P fuel = EvalRes.stuck w'
+```
+
+### `Spec.Sharp.unordered_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**An unreachable configuration whose registration stack is out of order**
+(sharpness, RUE-2485). For the checked program of `Nonvacuous.dtor`, a
+configuration whose frame registers cell `1` before cell `0` takes a step, but
+`Config.init` does not reach it: `drop_order`'s last half fails without the
+hypothesis that the configuration is reached.
+
+```lean
+def RueCore.Spec.Sharp.unordered_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            ¬Steps Float.exactOps P Config.init
+                  (Config.run [] { env := [], scope := [1, 0] } []
+                    (Focus.eval (Expr.intLit IntWidth.w64 Sign.signed 1))
+                    []) ∧
+              Step Float.exactOps P
+                  (Config.run [] { env := [], scope := [1, 0] } []
+                    (Focus.eval (Expr.intLit IntWidth.w64 Sign.signed 1))
+                    [])
+                  (Config.run [] { env := [], scope := [1, 0] } []
+                    (Focus.ret (Val.int IntWidth.w64 Sign.signed 1)) []) ∧
+                ¬∃ evs,
+                    (Config.run [] { env := [], scope := [1, 0] } []
+                            (Focus.ret (Val.int IntWidth.w64 Sign.signed 1))
+                            []).trace =
+                        (Config.run [] { env := [], scope := [1, 0] } []
+                              (Focus.eval
+                                (Expr.intLit IntWidth.w64 Sign.signed 1))
+                              []).trace ++
+                          evs ∧
+                      NewestFirst (dropLocs evs) ∧
+                        Lifo
+                            (Config.run [] { env := [], scope := [1, 0] } []
+                                (Focus.eval
+                                  (Expr.intLit IntWidth.w64 Sign.signed 1))
+                                []).stack
+                            (Config.run [] { env := [], scope := [1, 0] } []
+                                (Focus.ret
+                                  (Val.int IntWidth.w64 Sign.signed 1))
+                                []).stack
+                            (dropLocs evs) ∧
+                          List.Pairwise (fun x1 x2 => x1 < x2)
+                            (Config.run [] { env := [], scope := [1, 0] } []
+                                (Focus.eval
+                                  (Expr.intLit IntWidth.w64 Sign.signed 1))
+                                []).stack
+```
+
+### `Spec.Sharp.unreachable_stuck_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A stuck configuration that is not reached** (sharpness, RUE-2485). For the
+checked program of `Nonvacuous.dtor`, whose `run` is never stuck, a
+configuration reading an unbound name is stuck and is not reached from
+`Config.init`. So `step_progress`, `step_preservation`,
+`step_never_stuck_of_run` and `run_stuck_of_step_stuck` fail without the
+hypothesis that the configuration is reached, and so does `never_stuck_iff`:
+its left side holds and its right side, over every configuration, does not.
+
+```lean
+def RueCore.Spec.Sharp.unreachable_stuck_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            Config.Stuck Float.exactOps P
+                (Config.run [] Frame.empty []
+                  (Focus.eval (Expr.use (Place.var 0))) [])
+                Violation.unbound ∧
+              ¬Steps Float.exactOps P Config.init
+                    (Config.run [] Frame.empty []
+                      (Focus.eval (Expr.use (Place.var 0))) []) ∧
+                (∀ (fuel : Nat) (w : Violation),
+                    run Float.exactOps P fuel ≠ EvalRes.stuck w) ∧
+                  ¬((Config.run [] Frame.empty []
+                            (Focus.eval (Expr.use (Place.var 0)))
+                            []).Terminal ∨
+                        ∃ C',
+                          Step Float.exactOps P
+                            (Config.run [] Frame.empty []
+                              (Focus.eval (Expr.use (Place.var 0))) [])
+                            C') ∧
+                    (∀ (T : Ty),
+                        ¬Config.SafeAt Float.exactOps P T
+                            (Config.run [] Frame.empty []
+                              (Focus.eval (Expr.use (Place.var 0))) [])) ∧
+                      (¬∀ (C : Config),
+                            C.Terminal ∨ ∃ C', Step Float.exactOps P C C') ∧
+                        ¬∃ n,
+                            ∀ (fuel : Nat),
+                              n < fuel →
+                                ∃ w',
+                                  run Float.exactOps P fuel =
+                                    EvalRes.stuck w'
+```
+
+### `Spec.Sharp.unreached_panic_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A panic §6's relation does not reach** (sharpness, RUE-2485). The same, for
+the panic whose trace opens with a destructor event: not reached, not `run`'s
+answer past any bound (the program returns), not in the block grammar. So
+`eval_sound`'s and `run_sim`'s `run … = .panic k tr`, `eval_complete`'s and
+`run_complete`'s `Steps … (.panic κ tr)`, and `drop_order`'s are needed.
+
+```lean
+def RueCore.Spec.Sharp.unreached_panic_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            ¬Steps Float.exactOps P Config.init
+                  (Config.panic PanicKind.user
+                    [Event.dtor 0
+                        (Contents.struct 0 0
+                          [Contents.int IntWidth.w64 Sign.signed 1])]) ∧
+              run Float.exactOps P 200 ≠
+                  EvalRes.panic PanicKind.user
+                    [Event.dtor 0
+                        (Contents.struct 0 0
+                          [Contents.int IntWidth.w64 Sign.signed 1])] ∧
+                ¬Blocks P.decls
+                      [Event.dtor 0
+                          (Contents.struct 0 0
+                            [Contents.int IntWidth.w64 Sign.signed 1])] ∧
+                  ¬∃ n,
+                      ∀ (fuel : Nat),
+                        n < fuel →
+                          run Float.exactOps P fuel =
+                              EvalRes.panic PanicKind.user
+                                [Event.dtor 0
+                                    (Contents.struct 0 0
+                                      [Contents.int IntWidth.w64 Sign.signed
+                                          1])] ∨
+                            ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+```
+
+### `Spec.Sharp.unreached_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A value §6's relation does not reach** (sharpness, RUE-2485). For the
+checked program of `Nonvacuous.dtor`, the terminal configuration with the
+value `8`, the empty store and a trace that opens with a destructor event is
+not reached from `Config.init`, is not `run`'s answer at any fuel past any
+bound, and its trace is not in §6.11's block grammar. So each statement
+whose conclusion claims something of a reached or answered value fails once
+the hypothesis naming that value is dropped: `eval_sound`'s and `run_sim`'s
+`run … = .ok H v tr`, `eval_complete`'s and `run_complete`'s `Steps … (.ret
+v)`, and `drop_order`'s.
+
+```lean
+def RueCore.Spec.Sharp.unreached_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            ¬Steps Float.exactOps P Config.init
+                  (Config.run [] Frame.empty []
+                    (Focus.ret (Val.int IntWidth.w64 Sign.signed 8))
+                    [Event.dtor 0
+                        (Contents.struct 0 0
+                          [Contents.int IntWidth.w64 Sign.signed 1])]) ∧
+              run Float.exactOps P 200 ≠
+                  EvalRes.ok [] (Val.int IntWidth.w64 Sign.signed 8)
+                    [Event.dtor 0
+                        (Contents.struct 0 0
+                          [Contents.int IntWidth.w64 Sign.signed 1])] ∧
+                ¬Blocks P.decls
+                      [Event.dtor 0
+                          (Contents.struct 0 0
+                            [Contents.int IntWidth.w64 Sign.signed 1])] ∧
+                  ¬∃ n,
+                      ∀ (fuel : Nat),
+                        n < fuel →
+                          run Float.exactOps P fuel =
+                              EvalRes.ok []
+                                (Val.int IntWidth.w64 Sign.signed 8)
+                                [Event.dtor 0
+                                    (Contents.struct 0 0
+                                      [Contents.int IntWidth.w64 Sign.signed
+                                          1])] ∨
+                            ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+```
+
 ### `Spec.checkProgram_sound_stmt`
 
 *def* · module `RueCore.Spec.Checker`
@@ -28857,6 +31944,892 @@ def RueCore.Spec.Nonvacuous.panic_stmt : Prop :=
                     Steps Float.exactOps P Config.init
                       (Config.panic PanicKind.user
                         [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)])
+```
+
+### `Spec.Sharp.entry_param_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A well-formed program whose entry point takes a parameter** (sharpness,
+RUE-2485). `fn main(x: i64) -> i64 { x }` is `WfProgram`, but its entry point
+has a parameter, so it is not `ProgramTyped`; `run` calls it with no
+arguments, and `eval` refuses the call with `typeConfusion`. So `run_safe`
+needs its hypothesis `fd.params = []`, and `no_violation` needs the entry
+clause of `ProgramTyped`, not only `WfProgram`.
+
+```lean
+def RueCore.Spec.Sharp.entry_param_stmt : Prop :=
+  ∀ (P : Program),
+    P =
+        {
+          decls :=
+            {
+              structs :=
+                [{ attr := Attr.none,
+                    fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := true, cls := Mult.affine },
+                  { attr := Attr.linear,
+                    fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := false, cls := Mult.linear }],
+              enums :=
+                [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+          fns :=
+            [{
+                params :=
+                  [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false }],
+                ret := Ty.int IntWidth.w64 Sign.signed,
+                body := Expr.use (Place.var 0) }] } →
+      WfProgram P ∧
+        ¬ProgramTyped P ∧
+          (∃ fd,
+              P.fns[0]? = some fd ∧
+                fd.params ≠ [] ∧
+                  ¬(run Float.exactOps P 200 = EvalRes.outOfFuel ∨
+                      (∃ k tr,
+                          run Float.exactOps P 200 = EvalRes.panic k tr) ∨
+                        ∃ H v tr,
+                          run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                            HasTy P.decls v fd.ret)) ∧
+            run Float.exactOps P 200 = EvalRes.stuck Violation.typeConfusion
+```
+
+### `Spec.Sharp.frame_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A typed expression run in a frame that does not match its context**
+(sharpness, RUE-2485). `1; x`, typed by `check` in the context `x : i64` over
+the checked program of `Nonvacuous.dtor`, is run from the empty frame and
+store, which do not match that context (`FrameMatches` fails); everything else
+`soundness`, `drop_exactly_once` and `rest_exactly_once` ask holds, a `Lead`
+(the discarded `1`) included. `eval` refuses the read of `x` with `unbound`.
+
+```lean
+def RueCore.Spec.Sharp.frame_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ∀ (e : Expr),
+            e =
+                (Expr.intLit IntWidth.w64 Sign.signed 1).seq
+                  (Expr.use (Place.var 0)) →
+              ProgramTyped P ∧
+                P.pendingSafe = true ∧
+                  e.pendingSafe = true ∧
+                    StoreCC P.decls [] ∧
+                      (∃ c Ω,
+                          check P (Ty.int IntWidth.w64 Sign.signed)
+                                [{ ty := Ty.int IntWidth.w64 Sign.signed,
+                                    mu := false, st := OwnSt.owned }]
+                                e =
+                              some (c, Ω) ∧
+                            c.fits (Ty.int IntWidth.w64 Sign.signed) =
+                                true ∧
+                              Typed P (Ty.int IntWidth.w64 Sign.signed)
+                                  [{ ty := Ty.int IntWidth.w64 Sign.signed,
+                                      mu := false, st := OwnSt.owned }]
+                                  e (Ty.int IntWidth.w64 Sign.signed) Ω ∧
+                                ¬EvalOk P.decls
+                                    (Ty.int IntWidth.w64 Sign.signed)
+                                    (Ty.int IntWidth.w64 Sign.signed) Ω.norm
+                                    Ω.brk Frame.empty []
+                                    (eval Float.exactOps 200 P []
+                                      Frame.empty e)) ∧
+                        ¬FrameMatches P.decls
+                              [{ ty := Ty.int IntWidth.w64 Sign.signed,
+                                  mu := false, st := OwnSt.owned }]
+                              Frame.empty [] ∧
+                          Lead Float.exactOps P 200 [] Frame.empty []
+                              [Val.int IntWidth.w64 Sign.signed 1] [] e ∧
+                            eval Float.exactOps 200 P [] Frame.empty e =
+                                EvalRes.stuck Violation.unbound ∧
+                              eval Float.exactOps 201 P [] Frame.empty e =
+                                EvalRes.stuck Violation.unbound
+```
+
+### `Spec.Sharp.no_entry_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A well-formed program with no entry point** (sharpness, RUE-2485). The
+program with the witnesses' declarations and no function is `WfProgram`, and
+`P.fns[0]?` is `none`; `run` refuses the call of function `0` with `unbound`,
+so for no entry point `fd` does `run_safe`'s conclusion hold.
+
+```lean
+def RueCore.Spec.Sharp.no_entry_stmt : Prop :=
+  ∀ (P : Program),
+    P =
+        {
+          decls :=
+            {
+              structs :=
+                [{ attr := Attr.none,
+                    fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := true, cls := Mult.affine },
+                  { attr := Attr.linear,
+                    fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := false, cls := Mult.linear }],
+              enums :=
+                [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+          fns := [] } →
+      WfProgram P ∧
+        P.fns[0]? = none ∧
+          run Float.exactOps P 200 = EvalRes.stuck Violation.unbound ∧
+            ∀ (fd : FnDef),
+              ¬(run Float.exactOps P 200 = EvalRes.outOfFuel ∨
+                  (∃ k tr, run Float.exactOps P 200 = EvalRes.panic k tr) ∨
+                    ∃ H v tr,
+                      run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                        HasTy P.decls v fd.ret)
+```
+
+### `Spec.Sharp.no_eval_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A result that is not the evaluation's** (sharpness, RUE-2485). For the body
+of `Nonvacuous.dtor`, whose leading operand has a `Lead`, a refusal is not
+what the evaluation at `fuel + 1` answers, and `rest_exactly_once`'s
+conclusion, which starts with "never refused", fails for it: the hypothesis
+`eval (fuel + 1) … = r.withTrace tr` is what ties `r` to the program.
+
+```lean
+def RueCore.Spec.Sharp.no_eval_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              B.pendingSafe = true ∧
+                FrameMatches P.decls [] Frame.empty [] ∧
+                  StoreCC P.decls [] ∧
+                    (∃ c Ω,
+                        check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                            some (c, Ω) ∧
+                          c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                            Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                              (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                      ∃ H₁ vs tr,
+                        Lead Float.exactOps P 200 [] Frame.empty H₁ vs tr
+                            B ∧
+                          ∀ (w : Violation),
+                            eval Float.exactOps 201 P [] Frame.empty B ≠
+                              EvalRes.withTrace tr (EvalRes.stuck w)
+```
+
+### `Spec.Sharp.no_lead_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A `Lead` that did not happen** (sharpness, RUE-2485). For the body of
+`Nonvacuous.dtor`, run from the empty frame, take the store `ℓ0 ↦ S0 { 1 }`
+and the pending value `S0 { 1 }` (identity `0`) as if the leading operand had
+produced them; it did not (`Lead` fails: it minted identity `0` into a reserved
+slot). Everything else `rest_exactly_once` asks holds, and the evaluation ends
+identity `0` once, not the twice those counts ask: `Exact` fails.
+
+```lean
+def RueCore.Spec.Sharp.no_lead_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              B.pendingSafe = true ∧
+                FrameMatches P.decls [] Frame.empty [] ∧
+                  StoreCC P.decls [] ∧
+                    (∃ c Ω,
+                        check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                            some (c, Ω) ∧
+                          c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                            Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                              (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                      ¬Lead Float.exactOps P 200 [] Frame.empty
+                            [Cell.full
+                                (Contents.struct 0 0
+                                  [Contents.int IntWidth.w64 Sign.signed
+                                      1])]
+                            [Val.struct 0 0
+                                [Val.int IntWidth.w64 Sign.signed 1]]
+                            [] B ∧
+                        eval Float.exactOps 201 P [] Frame.empty B =
+                            EvalRes.withTrace []
+                              (eval Float.exactOps 201 P [] Frame.empty B) ∧
+                          ¬Exact P.decls
+                              [Cell.full
+                                  (Contents.struct 0 0
+                                    [Contents.int IntWidth.w64 Sign.signed
+                                        1])]
+                              (Contents.ownList P.decls
+                                (Contents.ofVals
+                                  [Val.struct 0 0
+                                      [Val.int IntWidth.w64 Sign.signed
+                                          1]]))
+                              (eval Float.exactOps 201 P [] Frame.empty B)
+```
+
+### `Spec.Sharp.not_fits_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A checked expression at a type its result does not fit** (sharpness,
+RUE-2485). `check` accepts the literal `1` at `i64` in the checked program of
+`Nonvacuous.dtor`, and its result does not fit `bool`; no derivation types it
+at `bool`. So `check_sound` needs `c.fits T = true`.
+
+```lean
+def RueCore.Spec.Sharp.not_fits_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            ∃ c Ω,
+              check P (Ty.int IntWidth.w64 Sign.signed) []
+                    (Expr.intLit IntWidth.w64 Sign.signed 1) =
+                  some (c, Ω) ∧
+                c.fits Ty.bool = false ∧
+                  ¬Typed P (Ty.int IntWidth.w64 Sign.signed) []
+                      (Expr.intLit IntWidth.w64 Sign.signed 1) Ty.bool Ω
+```
+
+### `Spec.Sharp.pending_expr_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**An expression that is not `pendingSafe`** (sharpness, RUE-2485; RUE-2316's
+carve-out). In the checked program of `Nonvacuous.dtor`, `0; [s, return 7];
+1` is typed in the context `s : S0`, but the array literal's first element is
+pending when the second unwinds. From a frame holding `s` at cell `0`, the
+`return` retires the frame and ends `s`'s identity nowhere. So
+`drop_exactly_once` and `rest_exactly_once` fail without `e.pendingSafe`
+(`Exact` fails); everything else they ask holds, a `Lead` (the discarded `0`)
+included.
+
+```lean
+def RueCore.Spec.Sharp.pending_expr_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ∀ (e : Expr),
+            e =
+                (Expr.intLit IntWidth.w64 Sign.signed 0).seq
+                  ((Expr.mkArray (Ty.struct 0)
+                        [Expr.use (Place.var 0),
+                          (Expr.intLit IntWidth.w64 Sign.signed 7).ret]).seq
+                    (Expr.intLit IntWidth.w64 Sign.signed 1)) →
+              ProgramTyped P ∧
+                P.pendingSafe = true ∧
+                  e.pendingSafe = false ∧
+                    FrameMatches P.decls
+                        [{ ty := Ty.struct 0, mu := false,
+                            st := OwnSt.owned }]
+                        { env := [0], scope := [0] }
+                        [Cell.full
+                            (Contents.struct 0 0
+                              [Contents.int IntWidth.w64 Sign.signed 5])] ∧
+                      StoreCC P.decls
+                          [Cell.full
+                              (Contents.struct 0 0
+                                [Contents.int IntWidth.w64 Sign.signed
+                                    5])] ∧
+                        (∃ c Ω,
+                            check P (Ty.int IntWidth.w64 Sign.signed)
+                                  [{ ty := Ty.struct 0, mu := false,
+                                      st := OwnSt.owned }]
+                                  e =
+                                some (c, Ω) ∧
+                              c.fits (Ty.int IntWidth.w64 Sign.signed) =
+                                  true ∧
+                                Typed P (Ty.int IntWidth.w64 Sign.signed)
+                                  [{ ty := Ty.struct 0, mu := false,
+                                      st := OwnSt.owned }]
+                                  e (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                          Lead Float.exactOps P 200
+                              [Cell.full
+                                  (Contents.struct 0 0
+                                    [Contents.int IntWidth.w64 Sign.signed
+                                        5])]
+                              { env := [0], scope := [0] }
+                              [Cell.full
+                                  (Contents.struct 0 0
+                                    [Contents.int IntWidth.w64 Sign.signed
+                                        5])]
+                              [Val.int IntWidth.w64 Sign.signed 0] [] e ∧
+                            eval Float.exactOps 201 P
+                                  [Cell.full
+                                      (Contents.struct 0 0
+                                        [Contents.int IntWidth.w64
+                                            Sign.signed 5])]
+                                  { env := [0], scope := [0] } e =
+                                EvalRes.withTrace []
+                                  (eval Float.exactOps 201 P
+                                    [Cell.full
+                                        (Contents.struct 0 0
+                                          [Contents.int IntWidth.w64
+                                              Sign.signed 5])]
+                                    { env := [0], scope := [0] } e) ∧
+                              ¬Exact P.decls
+                                    [Cell.full
+                                        (Contents.struct 0 0
+                                          [Contents.int IntWidth.w64
+                                              Sign.signed 5])]
+                                    []
+                                    (eval Float.exactOps 200 P
+                                      [Cell.full
+                                          (Contents.struct 0 0
+                                            [Contents.int IntWidth.w64
+                                                Sign.signed 5])]
+                                      { env := [0], scope := [0] } e) ∧
+                                ¬Exact P.decls
+                                    [Cell.full
+                                        (Contents.struct 0 0
+                                          [Contents.int IntWidth.w64
+                                              Sign.signed 5])]
+                                    (Contents.ownList P.decls
+                                      (Contents.ofVals
+                                        [Val.int IntWidth.w64 Sign.signed
+                                            0]))
+                                    (eval Float.exactOps 201 P
+                                      [Cell.full
+                                          (Contents.struct 0 0
+                                            [Contents.int IntWidth.w64
+                                                Sign.signed 5])]
+                                      { env := [0], scope := [0] } e)
+```
+
+### `Spec.Sharp.pending_program_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A checked program with a function that is not `pendingSafe`** (sharpness,
+RUE-2485; RUE-2316's carve-out). Beside an entry point returning `0`, `fn
+g(s: S0) -> i64 { [s, return 7]; 0 }` is typed, but the array literal's first
+element is pending when the second unwinds, so the program is not
+`pendingSafe`. The call `g(s)`, from a frame holding `s : S0` at cell `0`,
+returns `7` and ends `s`'s identity nowhere: it is in no cell, not in the
+result and not in the trace. So `drop_exactly_once` and `rest_exactly_once`
+fail without `P.pendingSafe` (`Exact` fails); everything else they ask holds.
+
+```lean
+def RueCore.Spec.Sharp.pending_program_stmt : Prop :=
+  ∀ (P : Program),
+    P =
+        {
+          decls :=
+            {
+              structs :=
+                [{ attr := Attr.none,
+                    fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := true, cls := Mult.affine },
+                  { attr := Attr.linear,
+                    fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := false, cls := Mult.linear }],
+              enums :=
+                [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+          fns :=
+            [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                body := Expr.intLit IntWidth.w64 Sign.signed 0 },
+              { params := [{ ty := Ty.struct 0, mu := false }],
+                ret := Ty.int IntWidth.w64 Sign.signed,
+                body :=
+                  (Expr.mkArray (Ty.struct 0)
+                        [Expr.use (Place.var 0),
+                          (Expr.intLit IntWidth.w64 Sign.signed 7).ret]).seq
+                    (Expr.intLit IntWidth.w64 Sign.signed 0) }] } →
+      ∀ (e : Expr),
+        e = Expr.call 1 [Expr.use (Place.var 0)] →
+          ProgramTyped P ∧
+            P.pendingSafe = false ∧
+              e.pendingSafe = true ∧
+                FrameMatches P.decls
+                    [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
+                    { env := [0], scope := [0] }
+                    [Cell.full
+                        (Contents.struct 0 0
+                          [Contents.int IntWidth.w64 Sign.signed 5])] ∧
+                  StoreCC P.decls
+                      [Cell.full
+                          (Contents.struct 0 0
+                            [Contents.int IntWidth.w64 Sign.signed 5])] ∧
+                    (∃ c Ω,
+                        check P (Ty.int IntWidth.w64 Sign.signed)
+                              [{ ty := Ty.struct 0, mu := false,
+                                  st := OwnSt.owned }]
+                              e =
+                            some (c, Ω) ∧
+                          c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                            Typed P (Ty.int IntWidth.w64 Sign.signed)
+                              [{ ty := Ty.struct 0, mu := false,
+                                  st := OwnSt.owned }]
+                              e (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                      Lead Float.exactOps P 200
+                          [Cell.full
+                              (Contents.struct 0 0
+                                [Contents.int IntWidth.w64 Sign.signed 5])]
+                          { env := [0], scope := [0] }
+                          [Cell.full Contents.hole]
+                          [Val.struct 0 0
+                              [Val.int IntWidth.w64 Sign.signed 5]]
+                          [] e ∧
+                        eval Float.exactOps 201 P
+                              [Cell.full
+                                  (Contents.struct 0 0
+                                    [Contents.int IntWidth.w64 Sign.signed
+                                        5])]
+                              { env := [0], scope := [0] } e =
+                            EvalRes.withTrace []
+                              (eval Float.exactOps 201 P
+                                [Cell.full
+                                    (Contents.struct 0 0
+                                      [Contents.int IntWidth.w64 Sign.signed
+                                          5])]
+                                { env := [0], scope := [0] } e) ∧
+                          ¬Exact P.decls
+                                [Cell.full
+                                    (Contents.struct 0 0
+                                      [Contents.int IntWidth.w64 Sign.signed
+                                          5])]
+                                []
+                                (eval Float.exactOps 200 P
+                                  [Cell.full
+                                      (Contents.struct 0 0
+                                        [Contents.int IntWidth.w64
+                                            Sign.signed 5])]
+                                  { env := [0], scope := [0] } e) ∧
+                            ¬Exact P.decls [Cell.full Contents.hole]
+                                (Contents.ownList P.decls
+                                  (Contents.ofVals
+                                    [Val.struct 0 0
+                                        [Val.int IntWidth.w64 Sign.signed
+                                            5]]))
+                                (eval Float.exactOps 201 P
+                                  [Cell.full
+                                      (Contents.struct 0 0
+                                        [Contents.int IntWidth.w64
+                                            Sign.signed 5])]
+                                  { env := [0], scope := [0] } e)
+```
+
+### `Spec.Sharp.store_cc_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A store that is not copy-closed** (sharpness, RUE-2485). The store's one
+cell holds an `[i64; 1]` array (a `Copy` type) with an owned `S0` inside it,
+outside the frame. `1; 2` is typed and run from the empty frame over it, which
+agrees with the empty context, in the checked program of `Nonvacuous.dtor`;
+everything else `drop_exactly_once` and `rest_exactly_once` ask holds. The
+evaluation leaves the cell alone, and `Exact` asks the final store to be
+copy-closed, which it is not: both fail without `StoreCC`.
+
+```lean
+def RueCore.Spec.Sharp.store_cc_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ∀ (e : Expr),
+            e =
+                (Expr.intLit IntWidth.w64 Sign.signed 1).seq
+                  (Expr.intLit IntWidth.w64 Sign.signed 2) →
+              ProgramTyped P ∧
+                P.pendingSafe = true ∧
+                  e.pendingSafe = true ∧
+                    FrameMatches P.decls [] Frame.empty
+                        [Cell.full
+                            (Contents.array
+                              (Ty.int IntWidth.w64 Sign.signed) 0
+                              [Contents.struct 0 1
+                                  [Contents.int IntWidth.w64 Sign.signed
+                                      1]])] ∧
+                      ¬StoreCC P.decls
+                            [Cell.full
+                                (Contents.array
+                                  (Ty.int IntWidth.w64 Sign.signed) 0
+                                  [Contents.struct 0 1
+                                      [Contents.int IntWidth.w64 Sign.signed
+                                          1]])] ∧
+                        (∃ c Ω,
+                            check P (Ty.int IntWidth.w64 Sign.signed) [] e =
+                                some (c, Ω) ∧
+                              c.fits (Ty.int IntWidth.w64 Sign.signed) =
+                                  true ∧
+                                Typed P (Ty.int IntWidth.w64 Sign.signed) []
+                                  e (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                          Lead Float.exactOps P 200
+                              [Cell.full
+                                  (Contents.array
+                                    (Ty.int IntWidth.w64 Sign.signed) 0
+                                    [Contents.struct 0 1
+                                        [Contents.int IntWidth.w64
+                                            Sign.signed 1]])]
+                              Frame.empty
+                              [Cell.full
+                                  (Contents.array
+                                    (Ty.int IntWidth.w64 Sign.signed) 0
+                                    [Contents.struct 0 1
+                                        [Contents.int IntWidth.w64
+                                            Sign.signed 1]])]
+                              [Val.int IntWidth.w64 Sign.signed 1] [] e ∧
+                            eval Float.exactOps 201 P
+                                  [Cell.full
+                                      (Contents.array
+                                        (Ty.int IntWidth.w64 Sign.signed) 0
+                                        [Contents.struct 0 1
+                                            [Contents.int IntWidth.w64
+                                                Sign.signed 1]])]
+                                  Frame.empty e =
+                                EvalRes.withTrace []
+                                  (eval Float.exactOps 201 P
+                                    [Cell.full
+                                        (Contents.array
+                                          (Ty.int IntWidth.w64 Sign.signed)
+                                          0
+                                          [Contents.struct 0 1
+                                              [Contents.int IntWidth.w64
+                                                  Sign.signed 1]])]
+                                    Frame.empty e) ∧
+                              ¬Exact P.decls
+                                    [Cell.full
+                                        (Contents.array
+                                          (Ty.int IntWidth.w64 Sign.signed)
+                                          0
+                                          [Contents.struct 0 1
+                                              [Contents.int IntWidth.w64
+                                                  Sign.signed 1]])]
+                                    []
+                                    (eval Float.exactOps 200 P
+                                      [Cell.full
+                                          (Contents.array
+                                            (Ty.int IntWidth.w64
+                                              Sign.signed)
+                                            0
+                                            [Contents.struct 0 1
+                                                [Contents.int IntWidth.w64
+                                                    Sign.signed 1]])]
+                                      Frame.empty e) ∧
+                                ¬Exact P.decls
+                                    [Cell.full
+                                        (Contents.array
+                                          (Ty.int IntWidth.w64 Sign.signed)
+                                          0
+                                          [Contents.struct 0 1
+                                              [Contents.int IntWidth.w64
+                                                  Sign.signed 1]])]
+                                    (Contents.ownList P.decls
+                                      (Contents.ofVals
+                                        [Val.int IntWidth.w64 Sign.signed
+                                            1]))
+                                    (eval Float.exactOps 201 P
+                                      [Cell.full
+                                          (Contents.array
+                                            (Ty.int IntWidth.w64
+                                              Sign.signed)
+                                            0
+                                            [Contents.struct 0 1
+                                                [Contents.int IntWidth.w64
+                                                    Sign.signed 1]])]
+                                      Frame.empty e)
+```
+
+### `Spec.Sharp.stuck_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**An unchecked program that reads a moved-out value, run by `eval`**
+(sharpness, RUE-2485; the program is `Nonvacuous.stuck`'s). `let a = S0 { 1 };
+@drop(a); a.x0` as the entry point: the checker rejects it and it is neither
+`ProgramTyped` nor `WfProgram`, while its entry point exists and takes no
+parameters, and its body is `pendingSafe`; `main()`, the call `run` makes, is
+typed by `check` from the empty frame and store, which agree with the empty
+context, and has a `Lead` (its empty argument list). `eval` refuses it with
+`useAfterMove`, and at fuel `0` it answers `outOfFuel`. So each of these
+conclusions fails once its program hypothesis is dropped: `soundness`
+(`WfProgram`), `run_safe` (`WfProgram`), `no_violation`, `no_use_after_move`,
+`checkProgram_sound` (`checkProgram P = true`), `eval_sound`,
+`drop_exactly_once` and `rest_exactly_once` (`ProgramTyped`), and `no_masking`
+(its second hypothesis, `eval m ≠ outOfFuel`, at `m = 0`).
+
+```lean
+def RueCore.Spec.Sharp.stuck_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          ((Expr.drop (Place.var 0)).seq
+            (Expr.use ((Place.var 0).proj 0))) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = false ∧
+            ¬ProgramTyped P ∧
+              ¬WfProgram P ∧
+                (∃ fd, P.fns[0]? = some fd ∧ fd.params = []) ∧
+                  P.pendingSafe = true ∧
+                    (Expr.call 0 []).pendingSafe = true ∧
+                      FrameMatches P.decls [] Frame.empty [] ∧
+                        StoreCC P.decls [] ∧
+                          (∃ c Ω,
+                              check P (Ty.int IntWidth.w64 Sign.signed) []
+                                    (Expr.call 0 []) =
+                                  some (c, Ω) ∧
+                                c.fits (Ty.int IntWidth.w64 Sign.signed) =
+                                    true ∧
+                                  Typed P (Ty.int IntWidth.w64 Sign.signed)
+                                      [] (Expr.call 0 [])
+                                      (Ty.int IntWidth.w64 Sign.signed) Ω ∧
+                                    ¬EvalOk P.decls
+                                        (Ty.int IntWidth.w64 Sign.signed)
+                                        (Ty.int IntWidth.w64 Sign.signed)
+                                        Ω.norm Ω.brk Frame.empty []
+                                        (eval Float.exactOps 200 P []
+                                          Frame.empty (Expr.call 0 []))) ∧
+                            Lead Float.exactOps P 200 [] Frame.empty [] []
+                                [] (Expr.call 0 []) ∧
+                              eval Float.exactOps 200 P [] Frame.empty
+                                    (Expr.call 0 []) =
+                                  EvalRes.stuck Violation.useAfterMove ∧
+                                eval Float.exactOps 201 P [] Frame.empty
+                                      (Expr.call 0 []) =
+                                    EvalRes.stuck Violation.useAfterMove ∧
+                                  run Float.exactOps P 200 =
+                                      EvalRes.stuck Violation.useAfterMove ∧
+                                    run Float.exactOps P 0 =
+                                        EvalRes.outOfFuel ∧
+                                      ¬(run Float.exactOps P 200 =
+                                            EvalRes.outOfFuel ∨
+                                          (∃ k tr,
+                                              run Float.exactOps P 200 =
+                                                EvalRes.panic k tr) ∨
+                                            ∃ H v tr,
+                                              run Float.exactOps P 200 =
+                                                  EvalRes.ok H v tr ∧
+                                                HasTy P.decls v
+                                                  (Ty.int IntWidth.w64
+                                                    Sign.signed))
+```
+
+### `Spec.Sharp.typed_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**An ill-typed expression of a checked program** (sharpness, RUE-2485).
+Over the checked program of `Nonvacuous.dtor`, the expression `let a = S0 { 1
+}; @drop(a); a.x0`, from the empty frame and store, is typed at no type and no
+outcome, and `check` rejects it; everything else `soundness`,
+`drop_exactly_once` and `rest_exactly_once` ask holds, the leading `S0 { 1 }`
+included (`Lead`). Its evaluation is refused with `useAfterMove`, so none of
+their conclusions holds of it: the typing hypothesis `Typed` is needed. It is
+also `check_sound`'s first hypothesis dropped: `check` does not accept it, and
+no type fits a derivation.
+
+```lean
+def RueCore.Spec.Sharp.typed_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ∀ (e : Expr),
+            e =
+                Expr.letIn false
+                  (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+                  ((Expr.drop (Place.var 0)).seq
+                    (Expr.use ((Place.var 0).proj 0))) →
+              ProgramTyped P ∧
+                WfProgram P ∧
+                  P.pendingSafe = true ∧
+                    e.pendingSafe = true ∧
+                      FrameMatches P.decls [] Frame.empty [] ∧
+                        StoreCC P.decls [] ∧
+                          check P (Ty.int IntWidth.w64 Sign.signed) [] e =
+                              none ∧
+                            (∀ (T : Ty) (Ω : Out),
+                                ¬Typed P (Ty.int IntWidth.w64 Sign.signed)
+                                    [] e T Ω) ∧
+                              Lead Float.exactOps P 200 [] Frame.empty
+                                  [Cell.dead]
+                                  [Val.struct 0 0
+                                      [Val.int IntWidth.w64 Sign.signed 1]]
+                                  [] e ∧
+                                eval Float.exactOps 200 P [] Frame.empty e =
+                                    EvalRes.stuck Violation.useAfterMove ∧
+                                  eval Float.exactOps 201 P [] Frame.empty
+                                        e =
+                                      EvalRes.stuck Violation.useAfterMove ∧
+                                    ∀ (T : Ty) (Ω : Out),
+                                      ¬EvalOk P.decls T
+                                          (Ty.int IntWidth.w64 Sign.signed)
+                                          Ω.norm Ω.brk Frame.empty []
+                                          (eval Float.exactOps 200 P []
+                                            Frame.empty e)
 ```
 
 ### `Spec.check_sound_stmt`
