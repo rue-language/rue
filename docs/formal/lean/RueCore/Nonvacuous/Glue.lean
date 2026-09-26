@@ -448,6 +448,18 @@ theorem dtor.run_complete : True := by
   have := (Spine.run_complete M.toFloatOps P).1 _ _ _ _ hSteps
   trivial
 
+/-- `dtor` applied to `step_no_double_free` (helper). -/
+theorem dtor.step_no_double_free : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
+    H, v, tr, hrun, hSteps, -⟩ :=
+    Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
+  rw [← hM] at hStep hns hLead hEv hrun hSteps
+  let P := progDtor
+  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.step_no_double_free M hPT hSteps
+  trivial
+
 /-- `dtor` applied to `freed_once` (helper). -/
 theorem dtor.freed_once : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
@@ -2520,6 +2532,18 @@ theorem exact_model.no_double_free : True := by
   let P := progDtor
   have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_double_free M hPT 200
+  trivial
+
+/-- `exact_model` applied to `step_no_double_free`, through the `dtor` program (helper). -/
+theorem exact_model.step_no_double_free : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
+    H, v, tr, hrun, hSteps, -⟩ :=
+    Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
+  rw [← hM] at hStep hns hLead hEv hrun hSteps
+  let P := progDtor
+  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.step_no_double_free M hPT hSteps
   trivial
 
 /-- `exact_model` applied to `drop_exactly_once`, through the `dtor` program (helper). -/
