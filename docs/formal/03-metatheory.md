@@ -256,7 +256,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   literals (RUE-2322), the constant-index element move and its `MovedOut`
   element state (RUE-2327), and places below a dynamic index (RUE-2342) — and
   it also widened `3.0:5`'s own relation: `RueCore.Decls.Names` reaches a
-  declaration through `RueCore.Ty.declIds`, which peels array wrappers, so a
+  declaration through `RueCore.Ty.tyNames`, which peels array wrappers, so a
   struct that names itself through an array element is refused rather than
   grounded. RUE-2331 then put the array forms under the generator, and at
   `--gen 200 --seed 7` and `--gen 1000 --seed 23` the model's verdicts and

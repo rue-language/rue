@@ -392,21 +392,21 @@ What the mutants could not get past:
     declaration has one (`3.9:28`), then its fields in declaration order
     (`3.9:13`); an array's elements go in ascending index order (`3.9:15`);
     an enum's active payload only (`6.3:20`). Neither mentions
-    `dropContents` or `dropEvents`. `GlueBlocks` is `Blocks`' grammar with
+    `dropContents` or `dropEvents`. `DropGlueBlocks` is `Blocks`' grammar with
     each drop's events given by `DropGlue`.
   - **The statement.** `drop_glue_order` (Spec `drop_glue_order_stmt`,
     proved in `TraceOrder.lean`, bound in `Spine.lean`): on a checked
     program, every trace §6's relation finishes with (a value or a panic)
-    is in `GlueBlocks`. The proof shows the machine's walk meets the rules
+    is in `DropGlueBlocks`. The proof shows the machine's walk meets the rules
     whenever it succeeds (`dropContents_glue`), so `eval_blocks` now builds
-    `GlueBlocks`, and `Blocks` follows (`GlueBlocks.toBlocks`). Non-vacuity
+    `DropGlueBlocks`, and `Blocks` follows (`DropGlueBlocks.toBlocks`). Non-vacuity
     glue on the nine witnesses `drop_order` has; sharpness pairs on
     `Sharp.bare_dtor`, `Sharp.unreached` and `Sharp.unreached_panic`, the
     three that already refute `drop_order` 1–3, through `toBlocks`.
   - **The mutants.** `dtor-skip`, `dtor-after-fields` and `fields-reverse`
     rerun (`mutate.py --only`): each now falsifies `drop_glue_order`
     ([lean/MUTATION.md](lean/MUTATION.md), rows 65–67). The traces each
-    mutant's machine emits are rejected by `GlueBlocks` in
+    mutant's machine emits are rejected by `DropGlueBlocks` in
     `Witnesses.lean` (`glue_dtorSkipped_rejected`,
     `glue_dtorAfterFields_rejected`, `glue_fieldsSwapped_rejected`), and on
     each mutant's proofs-off copy a checked program run by `stepN` to such
@@ -420,7 +420,7 @@ What the mutants could not get past:
     `DropGlue` takes a struct's `k`-th member to be its `k`-th declared
     field, which is how the machine stores it; the link between the list
     and `StructDecl.fields` is the typing's (`ContentsTy`), not stated in
-    `GlueBlocks`. A mutant storing fields in another order is still caught
+    `DropGlueBlocks`. A mutant storing fields in another order is still caught
     by the statements when the fields' types differ, because typing ties
     contents to the declared fields (`step_preservation`, `soundness`). Two
     cases escape every statement: a permutation among fields of the same
