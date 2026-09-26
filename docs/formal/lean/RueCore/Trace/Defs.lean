@@ -236,7 +236,7 @@ after trace `tr`. A `@drop` below a dynamic index runs the read first. A
 `loop`'s lead is its body **breaking**: its rest is (D-Break)'s unwind, which
 ends the values the body still held — the cells the carried record owes, the
 body's own bindings included (§6.10). -/
-def Lead (M : FloatOps) (P : Program) (fuel : Nat) (H : Store) (φ : Frame) (H₁ : Store)
+def Lead (M : FloatSig) (P : Program) (fuel : Nat) (H : Store) (φ : Frame) (H₁ : Store)
     (vs : List Val) (tr : List Event) : Expr → Prop
   | .letIn _ e₁ _ | .seq e₁ _ | .«match» e₁ _ | .assign _ e₁ | .ret e₁ | .dbg e₁
   | .repeatArray _ e₁ _ | .indexWrite _ _ _ e₁ | .binop _ e₁ _ | .unop _ e₁

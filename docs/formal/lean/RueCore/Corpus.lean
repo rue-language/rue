@@ -140,7 +140,7 @@ renders a NaN as `NaN` whatever its sign (`3.12:42`) and nothing reads one
 through `@total_cmp`, the only form that can see it — no seed case applies
 `@total_cmp` to anything but a float literal, and `Gen` draws its operands as
 literals, which are finite by construction. -/
-def exportOps : FloatOps := Float.exactOps
+def exportOps : FloatSig := Float.exactOps
 
 /-! ## The seed corpus
 

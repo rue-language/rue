@@ -142,7 +142,7 @@ context ((Panic-Lift) §6.2), an unwinding `return` reaches the nearest caller
 ((D-Return) §6.9), and an unwinding `break` reaches the nearest loop's context
 ((D-Break) §6.10). Part 3's completeness (`eval_complete`) takes its runs
 through already-reduced operands from this relation's `ok` clause. -/
-def Sim (M : FloatOps) (P : Program) (φ : Frame) (C : List Kont → List Event → Config) :
+def Sim (M : FloatSig) (P : Program) (φ : Frame) (C : List Kont → List Event → Config) :
     EvalRes → Prop
   | .ok H v tr' => ∀ K tr, Steps M P (C K tr) (.run H φ K (.ret v) (tr ++ tr'))
   | .panic k tr' => ∀ K tr, Steps M P (C K tr) (.panic k (tr ++ tr'))
@@ -157,14 +157,14 @@ def Sim (M : FloatOps) (P : Program) (φ : Frame) (C : List Kont → List Event 
 /-! ## `→*` -/
 
 /-- `→*` composes (§6.12) (helper). -/
-theorem Steps.trans {M : FloatOps} {P : Program} {C₁ C₂ C₃ : Config}
+theorem Steps.trans {M : FloatSig} {P : Program} {C₁ C₂ C₃ : Config}
     (h₁ : Steps M P C₁ C₂) (h₂ : Steps M P C₂ C₃) : Steps M P C₁ C₃ := by
   induction h₁ with
   | refl => exact h₂
   | step s _ ih => exact .step s (ih h₂)
 
 /-- One step is a run (§6.12) (helper). -/
-theorem Steps.single {M : FloatOps} {P : Program} {C₁ C₂ : Config}
+theorem Steps.single {M : FloatSig} {P : Program} {C₁ C₂ : Config}
     (h : Step M P C₁ C₂) : Steps M P C₁ C₂ := .step h (.refl _)
 
 /-- Whether a configuration has an expression in focus (helper). -/
@@ -175,7 +175,7 @@ def Config.evalFocus : Config → Prop
 /-- **Peeling a step by determinism** (`Step.det`, §6): a run from `C` that
 ends at a configuration with no expression in focus passes through `C`'s one
 successor (helper). -/
-theorem Steps.peel {M : FloatOps} {P : Program} {C C' D : Config}
+theorem Steps.peel {M : FloatSig} {P : Program} {C C' D : Config}
     (hs : Step M P C C') (h : Steps M P C D) (hC : C.evalFocus) (hD : ¬ D.evalFocus) :
     Steps M P C' D := by
   cases h with
@@ -192,7 +192,7 @@ def Kont.Transparent (F : Kont) : Prop :=
 /-! ## Combinators -/
 
 /-- A run into the family carries its simulation back (helper). -/
-theorem Sim.pre {M : FloatOps} {P : Program} {φ : Frame} {C C₂ : List Kont → List Event → Config}
+theorem Sim.pre {M : FloatSig} {P : Program} {φ : Frame} {C C₂ : List Kont → List Event → Config}
     {r : EvalRes} (hpre : ∀ K tr, Steps M P (C K tr) (C₂ K tr)) (h : Sim M P φ C₂ r) :
     Sim M P φ C r := by
   cases r <;> simp only [Sim] at h ⊢
@@ -203,7 +203,7 @@ theorem Sim.pre {M : FloatOps} {P : Program} {φ : Frame} {C C₂ : List Kont �
 
 /-- A run into the family that emits `tr₁` carries its simulation back to
 the result with `tr₁` prefixed (§6.12's accumulating output) (helper). -/
-theorem Sim.withTrace {M : FloatOps} {P : Program} {φ : Frame}
+theorem Sim.withTrace {M : FloatSig} {P : Program} {φ : Frame}
     {C C₂ : List Kont → List Event → Config} {r : EvalRes} {tr₁ : List Event}
     (hpre : ∀ K tr, Steps M P (C K tr) (C₂ K (tr ++ tr₁))) (h : Sim M P φ C₂ r) :
     Sim M P φ C (r.withTrace tr₁) := by
@@ -223,7 +223,7 @@ frame `F`, the operand run under `F`, and a plug of its value into `F`'s hole.
 A `return` or a `break` passes through `F` unchanged because `F` is neither a
 call frame nor a loop boundary, and a panic because (Panic-Lift) discards
 every context (helper). -/
-theorem Sim.andThen {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+theorem Sim.andThen {M : FloatSig} {P : Program} {φ φ₁ : Frame}
     {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
     (hC : ∀ K tr, Steps M P (C K tr) (C₁ (F :: K) tr))
     {r : EvalRes} (h₁ : Sim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
@@ -251,7 +251,7 @@ theorem Sim.andThen {M : FloatOps} {P : Program} {φ φ₁ : Frame}
 
 /-- A result that is not a value passes through a transparent frame unchanged
 (helper). -/
-theorem Sim.lift {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+theorem Sim.lift {M : FloatSig} {P : Program} {φ φ₁ : Frame}
     {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
     (hC : ∀ K tr, Steps M P (C K tr) (C₁ (F :: K) tr))
     {r : EvalRes} (h₁ : Sim M P φ₁ C₁ r) (hr : ∀ H v tr, r ≠ .ok H v tr) :
@@ -262,7 +262,7 @@ theorem Sim.lift {M : FloatOps} {P : Program} {φ φ₁ : Frame}
 
 /-- §6.9's call boundary: the body's `returned` is caught at the `call φ`
 frame, which is what `absorb` turns into a value (helper). -/
-theorem Sim.absorb {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+theorem Sim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Frame}
     {C C₁ : List Kont → List Event → Config}
     (hC : ∀ K tr, Steps M P (C K tr) (C₁ (.call φ :: K) tr))
     {r : EvalRes} (h₁ : Sim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
@@ -287,7 +287,7 @@ theorem Sim.absorb {M : FloatOps} {P : Program} {φ φ₁ : Frame}
 
 /-- §6.4's operator frames: a value plugs the hole, a trap is (Panic-Lift)
 (helper). -/
-theorem OpRes.sim {M : FloatOps} {P : Program} {φ : Frame} {H : Store} {F : Kont} {v : Val}
+theorem OpRes.sim {M : FloatSig} {P : Program} {φ : Frame} {H : Store} {F : Kont} {v : Val}
     (o : OpRes)
     (hv : ∀ K tr v', o = .val v' → Step M P (.run H φ (F :: K) (.ret v) tr) (.run H φ K (.ret v') tr))
     (ht : ∀ K tr κ, o = .trap κ → Step M P (.run H φ (F :: K) (.ret v) tr) (.panic κ tr)) :
@@ -298,7 +298,7 @@ theorem OpRes.sim {M : FloatOps} {P : Program} {φ : Frame} {H : Store} {F : Kon
   | confused => trivial
 
 /-- The induction hypothesis: `eval` at fuel `fuel` is simulated (helper). -/
-def SimIH (M : FloatOps) (P : Program) (fuel : Nat) : Prop :=
+def SimIH (M : FloatSig) (P : Program) (fuel : Nat) : Prop :=
   ∀ H φ e, Sim M P φ (evalConf H φ e) (eval M fuel P H φ e)
 
 /-- A list context `…( v̄, E, ē )` at a store (helper). -/
@@ -309,7 +309,7 @@ abbrev argsConf (H : Store) (φ : Frame) (t : ArgsTag) (vs : List Val) (es : Lis
 /-- **Argument lists** (§6.2's `…( v̄, E, ē )`): where `evalArgs` finishes,
 `→*` walks the list to its redex; where it aborts, the aborting element's
 result is simulated from the list context (helper). -/
-theorem evalArgs_sim {M : FloatOps} {P : Program} {fuel : Nat} {φ : Frame}
+theorem evalArgs_sim {M : FloatSig} {P : Program} {fuel : Nat} {φ : Frame}
     (IH : SimIH M P fuel) (t : ArgsTag) : ∀ (es : List Expr) (H : Store) (vs₀ : List Val),
     (∀ H' vs tr', evalArgs (fun H e => eval M fuel P H φ e) H es = .ok H' vs tr' →
       ∀ K tr, Steps M P (.run H φ K (.args t vs₀ es) tr)
@@ -361,7 +361,7 @@ theorem evalArgs_sim {M : FloatOps} {P : Program} {fuel : Nat} {φ : Frame}
 
 /-- Where no `Sim` target has an expression in focus, a first step of `C`
 can be peeled off by determinism (helper). -/
-theorem Sim.peel {M : FloatOps} {P : Program} {φ : Frame}
+theorem Sim.peel {M : FloatSig} {P : Program} {φ : Frame}
     {C C₂ : List Kont → List Event → Config} {r : EvalRes}
     (hs : ∀ K tr, Step M P (C K tr) (C₂ K tr)) (hC : ∀ K tr, (C K tr).evalFocus)
     (h : Sim M P φ C r) : Sim M P φ C₂ r := by
@@ -425,7 +425,7 @@ theorem plainUnwind_single {D : Decls} {H H' : Store} {ℓ : Nat} {evs : List Ev
   simp [plainUnwind, dropRetire_plain h]
 
 section forms
-variable {M : FloatOps} {P : Program} {fuel : Nat} {H : Store} {φ : Frame}
+variable {M : FloatSig} {P : Program} {fuel : Nat} {H : Store} {φ : Frame}
 
 /-- (D-Use-Declared-Linear), (D-Use-Copy), (D-Use-Move) §6.3 (helper). -/
 theorem sim_use (p : Place) :
@@ -988,7 +988,7 @@ panic, an unwinding `return` and an unwinding `break` are each reached by
 `Step` from the expression in focus under any context, as `Sim` reads them
 (§6.2's (Search) and (Panic-Lift), (D-Return) §6.9, (D-Break) §6.10). The
 proof is a strong induction on fuel with one lemma per form. -/
-theorem eval_sim (M : FloatOps) (P : Program) (fuel : Nat) : SimIH M P fuel := by
+theorem eval_sim (M : FloatSig) (P : Program) (fuel : Nat) : SimIH M P fuel := by
   induction fuel using Nat.strongRecOn with
   | ind n ih =>
   intro H φ e
@@ -1035,7 +1035,7 @@ every program: a value `run` returns is a terminal configuration `✓` that
 (Result-Ok) §6.12), and a panic is `↯κ` after the same trace ((Result-Panic)
 §6.12). No typing hypothesis: every place `eval` and `Step` differ is a
 refusal on `eval`'s side. -/
-theorem run_sim (M : FloatOps) (P : Program) (fuel : Nat) :
+theorem run_sim (M : FloatSig) (P : Program) (fuel : Nat) :
     (∀ H v tr, run M P fuel = .ok H v tr →
       Steps M P Config.init (.run H Frame.empty [] (.ret v) tr)) ∧
     (∀ k tr, run M P fuel = .panic k tr → Steps M P Config.init (.panic k tr)) := by
@@ -1059,17 +1059,17 @@ store and trace, and a panic as `↯κ` after the same trace (§6.2, §6.12).
 is not a state of §6's machine. The converse, completeness modulo fuel, is
 `eval_complete`. -/
 theorem eval_sound (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
-    (∀ H v tr, run M.toFloatOps P fuel = .ok H v tr →
-      Steps M.toFloatOps P Config.init (.run H Frame.empty [] (.ret v) tr)) ∧
-    (∀ k tr, run M.toFloatOps P fuel = .panic k tr →
-      Steps M.toFloatOps P Config.init (.panic k tr)) :=
-  ⟨no_violation M h fuel, (run_sim M.toFloatOps P fuel).1, (run_sim M.toFloatOps P fuel).2⟩
+    (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
+    (∀ H v tr, run M.toFloatSig P fuel = .ok H v tr →
+      Steps M.toFloatSig P Config.init (.run H Frame.empty [] (.ret v) tr)) ∧
+    (∀ k tr, run M.toFloatSig P fuel = .panic k tr →
+      Steps M.toFloatSig P Config.init (.panic k tr)) :=
+  ⟨no_violation M h fuel, (run_sim M.toFloatSig P fuel).1, (run_sim M.toFloatSig P fuel).2⟩
 
 /-! ## Counted runs -/
 
 section counted
-variable {M : FloatOps} {P : Program}
+variable {M : FloatSig} {P : Program}
 
 /-- A counted run is a run (§6.12's `→*`) (helper). -/
 theorem StepsN.toSteps {n : Nat} {C D : Config} (h : StepsN M P n C D) : Steps M P C D := by
@@ -1156,7 +1156,7 @@ theorem Steps.final_unique {C T₁ T₂ : Config} (h₁ : Steps M P C T₁) (h�
 
 /-- A run of `n` steps from every member of a configuration family: from
 `⟨H ; φ ; K ; E[e]⟩`, for every context `K` and trace `tr` (helper). -/
-def Long (M : FloatOps) (P : Program) (C : List Kont → List Event → Config) (n : Nat) : Prop :=
+def Long (M : FloatSig) (P : Program) (C : List Kont → List Event → Config) (n : Nat) : Prop :=
   ∀ K tr, ∃ D, StepsN M P n (C K tr) D
 
 /-- A family with long runs has shorter ones (helper). -/
@@ -1229,7 +1229,7 @@ theorem Long.andThen0 {φ₁ : Frame} {C₁ : List Kont → List Event → Confi
 
 /-- The induction hypothesis: at fuel `fuel`, exhaustion is a run of `fuel`
 steps (helper). -/
-def LongIH (M : FloatOps) (P : Program) (fuel : Nat) : Prop :=
+def LongIH (M : FloatSig) (P : Program) (fuel : Nat) : Prop :=
   ∀ H φ e, eval M fuel P H φ e = .outOfFuel → Long M P (evalConf H φ e) fuel
 
 /-- **Argument lists, counted** (§6.2's `…( v̄, E, ē )`): a list that spent
@@ -1274,7 +1274,7 @@ end counted
 /-! ## Fuel counts steps, per form -/
 
 section longForms
-variable {M : FloatOps} {P : Program} {fuel : Nat} {H : Store} {φ : Frame}
+variable {M : FloatSig} {P : Program} {fuel : Nat} {H : Store} {φ : Frame}
 
 /-- Every family has runs of no steps (helper). -/
 theorem Long.zero {C : List Kont → List Event → Config} : Long M P C 0 :=
@@ -1654,7 +1654,7 @@ enter step (§6.2) before every recursive call, the operands already reduced
 before it (`eval_sim`'s `ok` clause), and (D-Loop-Iter) (§6.10) for the loop's
 re-evaluation. No typing hypothesis. The proof is a strong induction on fuel,
 as `eval_sim`'s is. -/
-theorem eval_steps_of_outOfFuel (M : FloatOps) (P : Program) (fuel : Nat) : LongIH M P fuel := by
+theorem eval_steps_of_outOfFuel (M : FloatSig) (P : Program) (fuel : Nat) : LongIH M P fuel := by
   induction fuel using Nat.strongRecOn with
   | ind n ih =>
   intro H φ e
@@ -1709,7 +1709,7 @@ theorem EvalRes.absorb_ne_broke {r : EvalRes} {k : Store → Val → EvalRes}
 call, and the call boundary turns a `break` that reached it into
 `typeConfusion` (§6.10: "a `break` in a callee would be ill-formed")
 (helper). -/
-theorem run_ne_broke (M : FloatOps) {P : Program} {fuel : Nat} :
+theorem run_ne_broke (M : FloatSig) {P : Program} {fuel : Nat} :
     ∀ H sc tr, run M P fuel ≠ .broke H sc tr := by
   unfold run
   cases fuel with
@@ -1732,7 +1732,7 @@ terminal configuration is that one, a panic that is that one, or a refusal.
 Exhaustion is ruled out by `eval_steps_of_outOfFuel` (it would be a longer run
 than `StepsN.bound` allows), an `ok` or a `panic` is placed by `run_sim` and
 `Steps.final_unique`, and `run` is never `returned` or `broke` (helper). -/
-theorem run_classify {M : FloatOps} {P : Program} {T : Config} (hT : Steps M P Config.init T)
+theorem run_classify {M : FloatSig} {P : Program} {T : Config} (hT : Steps M P Config.init T)
     (hfin : ∀ C', ¬ Step M P T C') :
     ∃ n, ∀ fuel, n < fuel →
       (∃ H v tr, run M P fuel = .ok H v tr ∧ T = .run H Frame.empty [] (.ret v) tr) ∨
@@ -1761,7 +1761,7 @@ the number of steps, `run` answers that value with the same store and trace,
 or refuses; likewise for `↯κ`. The refusal disjunct is where `eval`'s
 monitors and its `@drop ⊘` refusal sit (RUE-2314); `eval_complete` removes it
 on checked programs. -/
-theorem run_complete (M : FloatOps) (P : Program) :
+theorem run_complete (M : FloatSig) (P : Program) :
     (∀ H φ v tr, Steps M P Config.init (.run H φ [] (.ret v) tr) →
       ∃ n, ∀ fuel, n < fuel → run M P fuel = .ok H v tr ∨ ∃ w, run M P fuel = .stuck w) ∧
     (∀ κ tr, Steps M P Config.init (.panic κ tr) →
@@ -1791,11 +1791,11 @@ adequacy in both directions: on checked programs, `run`'s values and panics
 are exactly the ends of §6's runs, and `outOfFuel` at every fuel is exactly
 divergence (`eval_diverges_iff`). -/
 theorem eval_complete (M : FloatModel) {P : Program} (h : ProgramTyped P) :
-    (∀ H φ v tr, Steps M.toFloatOps P Config.init (.run H φ [] (.ret v) tr) →
-      ∃ n, ∀ fuel, n < fuel → run M.toFloatOps P fuel = .ok H v tr) ∧
-    (∀ κ tr, Steps M.toFloatOps P Config.init (.panic κ tr) →
-      ∃ n, ∀ fuel, n < fuel → run M.toFloatOps P fuel = .panic κ tr) := by
-  obtain ⟨hv, hp⟩ := run_complete M.toFloatOps P
+    (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) →
+      ∃ n, ∀ fuel, n < fuel → run M.toFloatSig P fuel = .ok H v tr) ∧
+    (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) →
+      ∃ n, ∀ fuel, n < fuel → run M.toFloatSig P fuel = .panic κ tr) := by
+  obtain ⟨hv, hp⟩ := run_complete M.toFloatSig P
   refine ⟨fun H φ v tr hT => ?_, fun κ tr hT => ?_⟩
   · obtain ⟨n, hn⟩ := hv H φ v tr hT
     exact ⟨n, fun fuel hlt =>
@@ -1810,7 +1810,7 @@ theorem eval_complete (M : FloatModel) {P : Program} (h : ProgramTyped P) :
 if `→*` takes the initial configuration to a stuck one, then at every fuel past
 the number of steps `run` refuses. The refusal need not name the same
 `Violation`: `eval` inspects operand shapes in its own order (RUE-2314). -/
-theorem run_stuck_of_step_stuck (M : FloatOps) (P : Program) {C : Config} {w : Violation}
+theorem run_stuck_of_step_stuck (M : FloatSig) (P : Program) {C : Config} {w : Violation}
     (hC : Steps M P Config.init C) (hs : C.Stuck M P w) :
     ∃ n, ∀ fuel, n < fuel → ∃ w', run M P fuel = .stuck w' := by
   obtain ⟨n, hn⟩ := run_classify hC (fun _ => hs.no_step)
@@ -1827,7 +1827,7 @@ reaches from the initial one is terminal or takes a step. The converse fails
 off the checked domain (RUE-2314): `@drop` of a `⊘` place is a refusal of
 `eval` and a no-op of §6.11, and `eval` refuses `true + 1/0` where §6.2 panics
 first. -/
-theorem step_never_stuck_of_run (M : FloatOps) (P : Program)
+theorem step_never_stuck_of_run (M : FloatSig) (P : Program)
     (hnv : ∀ fuel w, run M P fuel ≠ .stuck w) :
     ∀ C, Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C' := by
   intro C hC
@@ -1849,9 +1849,9 @@ backward one is `no_violation`, and off it the backward one fails
 say the same stability from `eval`'s side: its answer, once it is not
 `outOfFuel`, is the answer at every larger fuel. -/
 theorem never_stuck_iff (M : FloatModel) {P : Program} (h : ProgramTyped P) :
-    (∀ fuel w, run M.toFloatOps P fuel ≠ .stuck w) ↔
-      ∀ C, Steps M.toFloatOps P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatOps P C C' :=
-  ⟨step_never_stuck_of_run M.toFloatOps P, fun _ fuel w => no_violation M h fuel w⟩
+    (∀ fuel w, run M.toFloatSig P fuel ≠ .stuck w) ↔
+      ∀ C, Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C' :=
+  ⟨step_never_stuck_of_run M.toFloatSig P, fun _ fuel w => no_violation M h fuel w⟩
 
 /-- **Divergence is exhaustion at every fuel** (RUE-2289 part 3, ADR-0097
 decision 3). For a program `check` accepts, `run` is `outOfFuel` at every
@@ -1860,13 +1860,13 @@ configuration — by `Step.det`, one infinite run. So `outOfFuel` is never a
 premature stop on a checked program: past the length of §6's run, `eval`
 answers (`eval_complete`), and where it never answers §6 never halts. -/
 theorem eval_diverges_iff (M : FloatModel) {P : Program} (h : ProgramTyped P) :
-    (∀ fuel, run M.toFloatOps P fuel = .outOfFuel) ↔
-      ∀ n, ∃ D, StepsN M.toFloatOps P n Config.init D := by
+    (∀ fuel, run M.toFloatSig P fuel = .outOfFuel) ↔
+      ∀ n, ∃ D, StepsN M.toFloatSig P n Config.init D := by
   constructor
   · intro hf n
     exact eval_steps_of_outOfFuel _ P n [] Frame.empty (.call 0 []) (hf n) [] []
   · intro hd fuel
-    cases hr : run M.toFloatOps P fuel with
+    cases hr : run M.toFloatSig P fuel with
     | outOfFuel => rfl
     | ok H v tr =>
         obtain ⟨k, hk⟩ := ((run_sim _ P fuel).1 H v tr hr).toN
@@ -1903,19 +1903,19 @@ corollary of the first, and is not claimed here. -/
 /-- **Progress for a typed configuration** (§7, first bullet): it has halted
 with a value or a defined panic, or it takes a step (§6.12's terminal
 configurations; `Config.trichotomy` leaves stuck as the only other case). -/
-theorem Config.SafeAt.progress {M : FloatOps} {P : Program} {T : Ty} {C : Config}
+theorem Config.SafeAt.progress {M : FloatSig} {P : Program} {T : Ty} {C : Config}
     (h : C.SafeAt M P T) : C.Terminal ∨ ∃ C', Step M P C C' :=
   h.1 C (.refl C)
 
 /-- **Preservation for a typed configuration** (§7, first bullet: "types are
 preserved under reduction"): a step of §6's `→` from a configuration typed at
 `T` lands on one typed at `T`. -/
-theorem Config.SafeAt.preservation {M : FloatOps} {P : Program} {T : Ty} {C C' : Config}
+theorem Config.SafeAt.preservation {M : FloatSig} {P : Program} {T : Ty} {C C' : Config}
     (h : C.SafeAt M P T) (hs : Step M P C C') : C'.SafeAt M P T :=
   ⟨fun D hD => h.1 D (.step hs hD), fun H φ v tr hD => h.2 H φ v tr (.step hs hD)⟩
 
 /-- Preservation along `→*` (§6.12) (helper). -/
-theorem Config.SafeAt.steps {M : FloatOps} {P : Program} {T : Ty} {C C' : Config}
+theorem Config.SafeAt.steps {M : FloatSig} {P : Program} {T : Ty} {C C' : Config}
     (h : C.SafeAt M P T) (hs : Steps M P C C') : C'.SafeAt M P T :=
   ⟨fun D hD => h.1 D (hs.trans hD), fun H φ v tr hD => h.2 H φ v tr (hs.trans hD)⟩
 
@@ -1927,7 +1927,7 @@ typing half takes a value §6 halts with to `run`'s answer at some fuel
 (`eval_complete`), where `run_safe` (`soundness` over a whole program) types
 it. This is the one place `soundness` enters the `Step` form. -/
 theorem init_safeAt (M : FloatModel) {P : Program} (h : ProgramTyped P) :
-    ∃ fd, P.fns[0]? = some fd ∧ Config.init.SafeAt M.toFloatOps P fd.ret := by
+    ∃ fd, P.fns[0]? = some fd ∧ Config.init.SafeAt M.toFloatSig P fd.ret := by
   obtain ⟨fd, h0, hp⟩ := h.entry
   refine ⟨fd, h0, step_never_stuck_of_run _ P (no_violation M h), ?_⟩
   intro H φ v tr hT
@@ -1947,7 +1947,7 @@ initial configuration is terminal or takes a step, so none is stuck
 (`no_violation`), and `step_never_stuck_of_run` — built from `run_sim` and
 the step count `eval_steps_of_outOfFuel` — carries it to `Step`. -/
 theorem step_progress (M : FloatModel) {P : Program} (h : ProgramTyped P) :
-    ∀ C, Steps M.toFloatOps P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatOps P C C' :=
+    ∀ C, Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C' :=
   step_never_stuck_of_run _ P (no_violation M h)
 
 /-- **Preservation over §6's reduction** (§7, first bullet: "types are
@@ -1960,7 +1960,7 @@ form. The typing is semantic, not a syntactic `⊢ C : T`; this section's
 docstring says what that does and does not claim. -/
 theorem step_preservation (M : FloatModel) {P : Program} (h : ProgramTyped P) :
     ∃ fd, P.fns[0]? = some fd ∧
-      ∀ C, Steps M.toFloatOps P Config.init C → C.SafeAt M.toFloatOps P fd.ret := by
+      ∀ C, Steps M.toFloatSig P Config.init C → C.SafeAt M.toFloatSig P fd.ret := by
   obtain ⟨fd, h0, hs⟩ := init_safeAt M h
   exact ⟨fd, h0, fun C hC => hs.steps hC⟩
 
@@ -1971,7 +1971,7 @@ type. This is preservation read at the result, `Config.SafeAt`'s second half
 at `Config.init`. -/
 theorem step_value_typed (M : FloatModel) {P : Program} (h : ProgramTyped P) :
     ∃ fd, P.fns[0]? = some fd ∧ ∀ H φ v tr,
-      Steps M.toFloatOps P Config.init (.run H φ [] (.ret v) tr) → HasTy P.decls v fd.ret := by
+      Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → HasTy P.decls v fd.ret := by
   obtain ⟨fd, h0, hs⟩ := init_safeAt M h
   exact ⟨fd, h0, hs.2⟩
 
@@ -1990,10 +1990,10 @@ at fuel `n` is out of fuel (then §6 has an `n`-step run,
 `run_sim`), or a panic (reached by `run_sim`); never `.stuck`. -/
 theorem step_type_safety (M : FloatModel) {P : Program} (h : ProgramTyped P) :
     ∃ fd, P.fns[0]? = some fd ∧ ∀ n,
-      (∃ D, StepsN M.toFloatOps P n Config.init D) ∨
-      (∃ H v tr, Steps M.toFloatOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+      (∃ D, StepsN M.toFloatSig P n Config.init D) ∨
+      (∃ H v tr, Steps M.toFloatSig P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
         HasTy P.decls v fd.ret) ∨
-      (∃ κ tr, Steps M.toFloatOps P Config.init (.panic κ tr)) := by
+      (∃ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr)) := by
   obtain ⟨fd, h0, hp⟩ := h.entry
   refine ⟨fd, h0, fun n => ?_⟩
   rcases run_safe M h.wf h0 hp n with ho | ⟨κ, tr, hr⟩ | ⟨H, v, tr, hr, hty⟩

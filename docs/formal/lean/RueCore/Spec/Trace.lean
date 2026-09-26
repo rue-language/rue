@@ -25,9 +25,9 @@ so a run that never finishes is not covered here; `step_no_double_free`
 covers it, over every configuration a run reaches (RUE-2477). -/
 def no_double_free_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
-    (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
-      (∀ a, (freedIds P.decls (run M.toFloatOps P fuel).trace).count a ≤ 1) ∧
-      (∀ a, (dtorIds (run M.toFloatOps P fuel).trace).count a ≤ 1)
+    (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
+      (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
+      (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1)
 
 /-- **No double free, on every prefix of a run** (§7 "No double-free", read as a
 safety property; RUE-2477). For a checked program, every configuration §6's
@@ -40,7 +40,7 @@ included; `no_double_free` over a finished run follows from it
 (`no_double_free_of_step`). -/
 def step_no_double_free_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) {C : Config}
-    (_ : Steps M.toFloatOps P Config.init C),
+    (_ : Steps M.toFloatSig P Config.init C),
     (∀ a, (freedIds P.decls C.trace).count a ≤ 1) ∧ (∀ a, (dtorIds C.trace).count a ≤ 1)
 
 /-- **Nothing freed twice, on every program** (§6.11): a run that answers a
@@ -51,7 +51,7 @@ refusals: a second `@drop` of one place is refused `useAfterMove`, and an
 owned value under a `Copy` one is refused `ownedUnderCopy`. `Step` has neither
 refusal, and its bound is `step_no_double_free`, which needs `ProgramTyped`. -/
 def freed_once_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) (fuel : Nat),
+  ∀ (M : FloatSig) (P : Program) (fuel : Nat),
     ∀ a, (freedIds P.decls (run M P fuel).trace).count a ≤ 1
 
 /-- **No destructor twice on one value** (§6.11, `3.9:28`), given only that a
@@ -59,7 +59,7 @@ destructor-bearing struct is not `Copy` (`3.9:31`). As for `freed_once`, a
 refused or fuel-exhausted run has an empty trace, so the bound is over the
 runs `eval` finishes. -/
 def dtor_once_stmt : Prop :=
-  ∀ (M : FloatOps) {P : Program} (_ : DtorNotCopy P.decls) (fuel : Nat),
+  ∀ (M : FloatSig) {P : Program} (_ : DtorNotCopy P.decls) (fuel : Nat),
     ∀ a, (dtorIds (run M P fuel).trace).count a ≤ 1
 
 /-- **Every owned value ends exactly once** (§7 "No use-after-drop / no leak of
@@ -76,9 +76,9 @@ def drop_exactly_once_stmt : Prop :=
     (_ : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
     {φ : Frame} {H : Store} (_ : Typed P R Γ e T Ω) (_ : FrameMatches P.decls Γ φ H)
     (_ : StoreCC P.decls H) (_ : e.pendingSafe = true),
-    (∀ w, eval M.toFloatOps fuel P H φ e ≠ .stuck w) ∧
-      Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
-      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+    (∀ w, eval M.toFloatSig fuel P H φ e ≠ .stuck w) ∧
+      Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
+      Tidy φ H (eval M.toFloatSig fuel P H φ e)
 
 /-- **Values minted during an evaluation end exactly once too** (the same §7
 bullet; §6.7, §6.9, §6.10): under the same hypotheses, once a form's leading
@@ -92,8 +92,8 @@ def rest_exactly_once_stmt : Prop :=
     (_ : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
     {φ : Frame} {H : Store} (_ : Typed P R Γ e T Ω) (_ : FrameMatches P.decls Γ φ H)
     (_ : StoreCC P.decls H) (_ : e.pendingSafe = true)
-    {H₁ : Store} {vs : List Val} {tr : List Event} (_ : Lead M.toFloatOps P fuel H φ H₁ vs tr e)
-    {r : EvalRes} (_ : eval M.toFloatOps (fuel + 1) P H φ e = r.withTrace tr),
+    {H₁ : Store} {vs : List Val} {tr : List Event} (_ : Lead M.toFloatSig P fuel H φ H₁ vs tr e)
+    {r : EvalRes} (_ : eval M.toFloatSig (fuel + 1) P H φ e = r.withTrace tr),
     (∀ w, r ≠ .stuck w) ∧
       Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧ Settled φ H₁ r
 
@@ -114,9 +114,9 @@ what it abandons is not ended), and nothing about a run that never finishes
 (`step_no_double_free` bounds every prefix from above). -/
 def whole_program_exactly_once_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (_ : P.pendingSafe = true)
-    {C : Config} (_ : Steps M.toFloatOps P Config.init C) {a : Nat} (_ : a ∈ C.held P.decls)
+    {C : Config} (_ : Steps M.toFloatSig P Config.init C) {a : Nat} (_ : a ∈ C.held P.decls)
     {H : Store} {φ : Frame} {v : Val} {tr : List Event}
-    (_ : Steps M.toFloatOps P C (.run H φ [] (.ret v) tr)),
+    (_ : Steps M.toFloatSig P C (.run H φ [] (.ret v) tr)),
     (v.own P.decls).count a + (freedIds P.decls tr).count a = 1
 
 /-- **Drop order** (§7 "No use-after-drop / no leak of drops", "at the end of
@@ -129,9 +129,9 @@ pops: the cells it drops are among those it cut, newest first (R7 of
 `REDTEAM-LOG.md`). -/
 def drop_order_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P),
-    (∀ H φ v tr, Steps M.toFloatOps P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
-    (∀ κ tr, Steps M.toFloatOps P Config.init (.panic κ tr) → Blocks P.decls tr) ∧
-    ∀ C C', Steps M.toFloatOps P Config.init C → Step M.toFloatOps P C C' →
+    (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
+    (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → Blocks P.decls tr) ∧
+    ∀ C C', Steps M.toFloatSig P Config.init C → Step M.toFloatSig P C C' →
       ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) ∧
         Lifo C.stack C'.stack (dropLocs evs) ∧ (C.stack.Pairwise (· < ·))
 
@@ -146,8 +146,8 @@ function `dropEvents` the machine's walk is proved equal to, so a change to the
 machine's drop glue cannot carry this statement with it. -/
 def drop_glue_order_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P),
-    (∀ H φ v tr, Steps M.toFloatOps P Config.init (.run H φ [] (.ret v) tr) →
+    (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) →
       GlueBlocks P.decls tr) ∧
-    (∀ κ tr, Steps M.toFloatOps P Config.init (.panic κ tr) → GlueBlocks P.decls tr)
+    (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → GlueBlocks P.decls tr)
 
 end RueCore.Spec

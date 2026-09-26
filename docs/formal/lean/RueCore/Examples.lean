@@ -43,7 +43,7 @@ arithmetic and never touches Lean's `Float`, pinning them costs no axiom
 exception: they are stated over an arbitrary `FloatModel` and proved from its
 laws, which is what makes them claims about IEEE 754 rather than about this
 instance. -/
-abbrev demoOps : FloatOps := Float.exactOps
+abbrev demoOps : FloatSig := Float.exactOps
 
 /-! ## The fixture vocabulary
 
@@ -1332,7 +1332,7 @@ machine as well as the statics: (D-Use-Untrackable-Dynamic-Copy) §6.3 is the
 only rule there and it wants `class(T) = Copy`, so `eval` answers
 `typeConfusion` instead of duplicating the leaf. `Step.demo_dynamicRead_stuck`
 is the same program, stuck at the same rule in `Step`. -/
-theorem dynReadAffine_refused (M : FloatOps) :
+theorem dynReadAffine_refused (M : FloatSig) :
     run M (prog tI64 dynReadAffineCopied) demoFuel = .stuck .typeConfusion := by rfl
 
 /-- (RUE-2400) `@drop(a[i])` of an affine leaf is refused by the machine: the
@@ -1340,7 +1340,7 @@ dynamic `@drop` is the read with its value discarded, so it inherits the
 read's `Copy` check, and no `@dbg` output or destructor event is produced.
 `Step.demo_dynamicDrop_stuck` is the same program, stuck at the same rule in
 `Step`. -/
-theorem dynDropAffine_refused (M : FloatOps) :
+theorem dynDropAffine_refused (M : FloatSig) :
     run M (prog tI64 dynDropAffineSkipped) demoFuel = .stuck .typeConfusion := by rfl
 
 /-- (RUE-2400) The repeat form at an affine operand is refused by the
@@ -1348,7 +1348,7 @@ machine: §2's elaboration `let t = v; [t, t]` would be stuck at the second use
 of `t`, and `eval` answers `typeConfusion` rather than replicating `v`.
 `Step.demo_repeat_stuck` is the same program, stuck at the same rule in
 `Step`. -/
-theorem repeatAffine_refused (M : FloatOps) :
+theorem repeatAffine_refused (M : FloatSig) :
     run M (prog tI64 repeatAffineDuplicated) demoFuel = .stuck .typeConfusion := by rfl
 
 /-- The existing repeat (probe `a2b`) and dynamic-read (probe `a5`)
@@ -3599,13 +3599,13 @@ infinities as failures" — and the category is `↯overflow`, the one §6.12
 already lists (`8.1:7`), not a new one. -/
 theorem floatToInt_inf_traps (M : FloatModel) (w : FloatWidth) (w' : IntWidth) (s' : Sign)
     (b : Bool) :
-    evalFintrin M.toFloatOps (.floatToInt w' s') (.float w (.inf b)) = .trap .overflow := rfl
+    evalFintrin M.toFloatSig (.floatToInt w' s') (.float w (.inf b)) = .trap .overflow := rfl
 
 /-- **`@float_to_int` of a NaN traps**, the other half of
 `(D-Float-To-Int-Trap)`'s premise (`3.12:18`). -/
 theorem floatToInt_nan_traps (M : FloatModel) (w : FloatWidth) (w' : IntWidth) (s' : Sign)
     (b : Bool) :
-    evalFintrin M.toFloatOps (.floatToInt w' s') (.float w (.nan b)) = .trap .overflow := rfl
+    evalFintrin M.toFloatSig (.floatToInt w' s') (.float w (.nan b)) = .trap .overflow := rfl
 
 /-- **A whole redex: `@float_to_int(1.0 / 0.0)` traps at every model.** The
 division is `3.12:22`'s (`FloatModel.div_by_zero`), the literals are
@@ -3615,10 +3615,10 @@ every model satisfying the laws — including, but not only, `Float.exactOps`,
 which the corpus runs and the compiler agrees with. -/
 theorem floatDivZeroToInt_traps (M : FloatModel) (P : Program) (H : Store) (φ : Frame)
     (w : FloatWidth) (w' : IntWidth) (s' : Sign) :
-    eval M.toFloatOps 8 P H φ
+    eval M.toFloatSig 8 P H φ
         (fintrin (.floatToInt w' s') (binop .div (flE w 1 0) (flE w 0 0)))
       = .panic .overflow [] := by
-  have hdiv : M.toFloatOps.arith w .div (.num false 1 0) (.num false 0 0) = .inf false :=
+  have hdiv : M.toFloatSig.arith w .div (.num false 1 0) (.num false 0 0) = .inf false :=
     M.div_by_zero w (.num false 1 0) false 1 0 (one_wf w) rfl (by decide) false
   simp [eval, EvalRes.andThen, EvalRes.withTrace, evalBinOp, binOpFloat, evalFintrin,
     OpRes.toRes, M.ofLit_one, M.ofLit_zero, hdiv, FloatDatum.toIntIn, FloatDatum.truncToInt]
@@ -4006,7 +4006,7 @@ example : run demoOps (prog tI64 loopNestedMoveOuter) demoFuel = .stuck .useAfte
 
 /-- (D-Loop-Iter) §6.10, as an equation: a body that completes with `⟨⟩`
 re-enters the loop at one unit of fuel less (helper). -/
-theorem eval_loop_ok {M : FloatOps} {P : Program} {n : Nat} {H H₁ : Store} {φ : Frame}
+theorem eval_loop_ok {M : FloatSig} {P : Program} {n : Nat} {H H₁ : Store} {φ : Frame}
     {e : Expr} {tr : List Event} (h : eval M n P H φ e = .ok H₁ .unit tr) :
     eval M (n + 1) P H φ (.loop e) = (eval M n P H₁ φ (.loop e)).withTrace tr := by
   simp only [eval, h]
@@ -4015,7 +4015,7 @@ theorem eval_loop_ok {M : FloatOps} {P : Program} {n : Nat} {H H₁ : Store} {φ
 turn runs the body at one unit less and re-enters at one unit less, so no fuel
 completes it — `outOfFuel` is its answer at every bound, which is what
 `Corpus.lean`'s export leaves out. -/
-theorem infiniteLoop_outOfFuel (M : FloatOps) (P : Program) :
+theorem infiniteLoop_outOfFuel (M : FloatSig) (P : Program) :
     ∀ (fuel : Nat) (H : Store) (φ : Frame), eval M fuel P H φ infiniteLoop = .outOfFuel := by
   intro fuel
   induction fuel with

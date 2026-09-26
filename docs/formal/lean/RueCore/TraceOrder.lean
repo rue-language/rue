@@ -401,7 +401,7 @@ theorem GlueBlocks.intro {D D' : Decls} {H : Store} {mk : Nat → Val} :
 
 /-- A copy-closed store is one step further along an evaluation that reached
 a value (helper). -/
-theorem eval_ok_cc (M : FloatOps) {P : Program} {n : Nat} {H H₁ : Store} {φ : Frame} {e : Expr}
+theorem eval_ok_cc (M : FloatSig) {P : Program} {n : Nat} {H H₁ : Store} {φ : Frame} {e : Expr}
     {v : Val} {tr : List Event} (hcc : StoreCC P.decls H)
     (hr : eval M n P H φ e = .ok H₁ v tr) :
     StoreCC P.decls H₁ ∧ (Contents.ofVal v).copyClosed P.decls = true := by
@@ -438,7 +438,7 @@ every evaluation, of every expression, from every copy-closed store, at every
 fuel. By fuel induction over `eval`; no typing derivation, only
 `DtorNotCopy`, which a destructure's `Copy` residue needs (module
 docstring). -/
-theorem eval_glue_blocks (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls) :
+theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls) :
     ∀ (fuel : Nat) (H : Store) (φ : Frame) (e : Expr), StoreCC P.decls H →
       GlueBlocks P.decls (eval M fuel P H φ e).trace := by
   intro fuel
@@ -686,14 +686,14 @@ marker before it — the value's own destructor first (`3.9:28`), then its
 fields in declaration order (`3.9:13`), an array's elements ascending
 (`3.9:15`), an enum's active payload only (`6.3:20`), every `⊘` skipped —
 and nowhere else. It needs only `DtorNotCopy`, which `WfDecls` gives. -/
-theorem run_glue_blocks (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls) (fuel : Nat) :
+theorem run_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls) (fuel : Nat) :
     GlueBlocks P.decls (run M P fuel).trace :=
   eval_glue_blocks M hdt fuel [] _ _ (fun ℓ c hc => by simp at hc)
 
 /-- **Every finished run's trace is in the block grammar `Blocks`** (§3.9,
 §6.11), each drop marker followed by exactly `dropEvents` of what it names:
 `run_glue_blocks` read through `GlueBlocks.toBlocks`. -/
-theorem run_blocks (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls) (fuel : Nat) :
+theorem run_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls) (fuel : Nat) :
     Blocks P.decls (run M P fuel).trace :=
   (run_glue_blocks M hdt fuel).toBlocks
 
@@ -834,7 +834,7 @@ theorem mintParams_eq {H H' : Store} {vs : List Val} {ls : List Nat}
 step — (D-Let)'s one, (D-Match)'s payload cells, (D-Call)'s parameter cells —
 which are past every cell already in it, and only ever shortened from its
 end ((D-EndScope)'s pop) or replaced by one the stack held. -/
-theorem step_ordered {M : FloatOps} {P : Program} {C C' : Config} (h : Step M P C C')
+theorem step_ordered {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P C C')
     (hC : C.Ordered) : C'.Ordered := by
   cases h
   case «match» H φ K tr arms e k i vs body H' ls _ hm =>
@@ -897,7 +897,7 @@ theorem step_ordered {M : FloatOps} {P : Program} {C C' : Config} (h : Step M P 
 initial one, every scope record — the current frame's, every suspended
 caller's and loop boundary's, and every pending `endscope` marker's — lists
 its cells in strictly increasing location order. No typing hypothesis. -/
-theorem reachable_ordered {M : FloatOps} {P : Program} {C : Config}
+theorem reachable_ordered {M : FloatSig} {P : Program} {C : Config}
     (h : Steps M P Config.init C) : C.Ordered := by
   have key : ∀ {C₁ C₂ : Config}, Steps M P C₁ C₂ → C₁.Ordered → C₂.Ordered := by
     intro C₁ C₂ hs
@@ -1038,7 +1038,7 @@ decreasing location order. A teardown — (D-EndScope), (D-Return-Value)'s
 frame pop, (D-Return)'s σ-walk, (D-Loop-Iter)'s end of a turn and
 (D-Break)'s unwind — walks an ordered record backwards
 (`NewestFirst.teardown`). -/
-theorem step_drop_order {M : FloatOps} {P : Program} {C C' : Config} (h : Step M P C C')
+theorem step_drop_order {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P C C')
     (hC : C.Ordered) : ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) := by
   have one : ∀ {evs : List Event} (ℓ : Nat), (∀ x ∈ dropLocs evs, x = ℓ) →
       NewestFirst (dropLocs evs) := fun ℓ h => .inl ⟨ℓ, h⟩
@@ -1081,7 +1081,7 @@ theorem step_drop_order {M : FloatOps} {P : Program} {C C' : Config} (h : Step M
 from every configuration reachable from §6.12's initial one, every step's
 `drop` markers name one cell or distinct cells newest-first. No typing
 hypothesis. -/
-theorem reachable_drop_order {M : FloatOps} {P : Program} {C C' : Config}
+theorem reachable_drop_order {M : FloatSig} {P : Program} {C C' : Config}
     (hr : Steps M P Config.init C) (h : Step M P C C') :
     ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) :=
   step_drop_order h (reachable_ordered hr)
@@ -1174,7 +1174,7 @@ theorem Lifo.cut {A m ls : List Nat} (h : ls.Sublist m.reverse) : Lifo (A ++ m) 
 (D-Match) push a marker equal to the cells they append to the record,
 (D-EndScope) pops both together, a call starts a frame of its own, and a
 return, a loop turn's end and a `break` restore a record the stack held. -/
-theorem step_nested {M : FloatOps} {P : Program} {C C' : Config} (h : Step M P C C')
+theorem step_nested {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P C C')
     (hC : C.Nested) : C'.Nested := by
   cases h
   case «match» H φ K tr arms e k i vs body H' ls _ hm =>
@@ -1230,7 +1230,7 @@ theorem step_nested {M : FloatOps} {P : Program} {C C' : Config} (h : Step M P C
 in every configuration reachable from §6.12's initial one. In particular
 (D-EndScope)'s pop by count always removes the marker's own cells
 (`Frame.popScope_tail`). No typing hypothesis. -/
-theorem reachable_nested {M : FloatOps} {P : Program} {C : Config}
+theorem reachable_nested {M : FloatSig} {P : Program} {C : Config}
     (h : Steps M P Config.init C) : C.Nested := by
   have key : ∀ {C₁ C₂ : Config}, Steps M P C₁ C₂ → C₁.Nested → C₂.Nested := by
     intro C₁ C₂ hs
@@ -1243,7 +1243,7 @@ theorem reachable_nested {M : FloatOps} {P : Program} {C : Config}
 configuration, a step appends `evs` to the trace and either keeps the
 registration stack as a prefix of the new one, or cuts it back and drops
 only cells of the cut suffix, newest first (`Lifo`). -/
-theorem step_lifo {M : FloatOps} {P : Program} {C C' : Config} (h : Step M P C C')
+theorem step_lifo {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P C C')
     (hC : C.Nested) :
     ∃ evs, C'.trace = C.trace ++ evs ∧ Lifo C.stack C'.stack (dropLocs evs) := by
   have keep : ∀ {evs : List Event} {S S' : List Nat}, S <+: S' → Lifo S S' (dropLocs evs) :=
@@ -1292,7 +1292,7 @@ registered. So a cell dropped at one teardown and a cell dropped at a later
 one, still registered at the first, drop newest first: `{ let a; let b; }`
 drops `b` before `a` over its two (D-EndScope) steps. No typing
 hypothesis. -/
-theorem reachable_lifo {M : FloatOps} {P : Program} {C C' : Config}
+theorem reachable_lifo {M : FloatSig} {P : Program} {C C' : Config}
     (hr : Steps M P Config.init C) (h : Step M P C C') :
     ∃ evs, C'.trace = C.trace ++ evs ∧ Lifo C.stack C'.stack (dropLocs evs) ∧
       (¬ C.stack <+: C'.stack → ∀ ℓ ∈ dropLocs evs, ℓ ∉ C'.stack ∧ ∀ ℓ' ∈ C'.stack, ℓ' < ℓ) := by
@@ -1309,17 +1309,17 @@ theorem reachable_lifo {M : FloatOps} {P : Program} {C C' : Config}
 is the one `eval` answers (`eval_complete`), so it is in the block grammar
 (helper). -/
 theorem step_blocks (M : FloatModel) {P : Program} (h : ProgramTyped P) :
-    (∀ H φ v tr, Steps M.toFloatOps P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
-    (∀ κ tr, Steps M.toFloatOps P Config.init (.panic κ tr) → Blocks P.decls tr) := by
+    (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
+    (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → Blocks P.decls tr) := by
   obtain ⟨hv, hp⟩ := eval_complete M h
   have hdt := h.wf.decls.dtorNotCopy
   refine ⟨fun H φ v tr hs => ?_, fun κ tr hs => ?_⟩
   · obtain ⟨n, hn⟩ := hv H φ v tr hs
-    have := run_blocks M.toFloatOps hdt (n + 1)
+    have := run_blocks M.toFloatSig hdt (n + 1)
     rw [hn (n + 1) (Nat.lt_succ_self n)] at this
     exact this
   · obtain ⟨n, hn⟩ := hp κ tr hs
-    have := run_blocks M.toFloatOps hdt (n + 1)
+    have := run_blocks M.toFloatSig hdt (n + 1)
     rw [hn (n + 1) (Nat.lt_succ_self n)] at this
     exact this
 
@@ -1334,18 +1334,18 @@ elements ascending (`3.9:15`), an enum's active payload only (`6.3:20`), every
 statement does not go through it, so a machine whose walk and `dropEvents`
 change together still fails it. -/
 theorem drop_glue_order (M : FloatModel) {P : Program} (h : ProgramTyped P) :
-    (∀ H φ v tr, Steps M.toFloatOps P Config.init (.run H φ [] (.ret v) tr) →
+    (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) →
       GlueBlocks P.decls tr) ∧
-    (∀ κ tr, Steps M.toFloatOps P Config.init (.panic κ tr) → GlueBlocks P.decls tr) := by
+    (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → GlueBlocks P.decls tr) := by
   obtain ⟨hv, hp⟩ := eval_complete M h
   have hdt := h.wf.decls.dtorNotCopy
   refine ⟨fun H φ v tr hs => ?_, fun κ tr hs => ?_⟩
   · obtain ⟨n, hn⟩ := hv H φ v tr hs
-    have := run_glue_blocks M.toFloatOps hdt (n + 1)
+    have := run_glue_blocks M.toFloatSig hdt (n + 1)
     rw [hn (n + 1) (Nat.lt_succ_self n)] at this
     exact this
   · obtain ⟨n, hn⟩ := hp κ tr hs
-    have := run_glue_blocks M.toFloatOps hdt (n + 1)
+    have := run_glue_blocks M.toFloatSig hdt (n + 1)
     rw [hn (n + 1) (Nat.lt_succ_self n)] at this
     exact this
 
@@ -1370,9 +1370,9 @@ checker accepts:
 Only the first half reads the typing hypothesis, through `eval_complete` and
 `DtorNotCopy`. -/
 theorem drop_order (M : FloatModel) {P : Program} (h : ProgramTyped P) :
-    (∀ H φ v tr, Steps M.toFloatOps P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
-    (∀ κ tr, Steps M.toFloatOps P Config.init (.panic κ tr) → Blocks P.decls tr) ∧
-    ∀ C C', Steps M.toFloatOps P Config.init C → Step M.toFloatOps P C C' →
+    (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
+    (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → Blocks P.decls tr) ∧
+    ∀ C C', Steps M.toFloatSig P Config.init C → Step M.toFloatSig P C C' →
       ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) ∧
         Lifo C.stack C'.stack (dropLocs evs) ∧ (C.stack.Pairwise (· < ·)) := by
   refine ⟨(step_blocks M h).1, (step_blocks M h).2, fun C C' hr hs => ?_⟩

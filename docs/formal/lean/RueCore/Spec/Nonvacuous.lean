@@ -49,7 +49,7 @@ float operations"; RUE-2469). Some `FloatModel` has the executable instance
 model the corpus runs on, and the laws are jointly satisfiable: the 22 spine
 statements that quantify over `M : FloatModel` are not vacuous in `M`. -/
 def exact_model_stmt : Prop :=
-  ∃ M : FloatModel, M.toFloatOps = Float.exactOps
+  ∃ M : FloatModel, M.toFloatSig = Float.exactOps
 
 /-- **The initial frame agrees with the empty context** (§6.12's initial
 configuration): at every declaration environment, the empty frame over the

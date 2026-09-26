@@ -49,10 +49,10 @@ datum built from `Nat`/`Int` costs nothing.
 * **Rounded** — the result is `rnd_w` of an exact value that need not be in
   `𝔽_w`, which is §2's second model parameter: the four arithmetic operators,
   `@sqrt`, `@int_to_float`, a literal's own conversion (`3.12:9`), and the
-  narrowing half of `@float_cast`. Those are the fields of `FloatOps`, and
-  `FloatModel` is a `FloatOps` together with the laws §7's "totality of the
+  narrowing half of `@float_cast`. Those are the fields of `FloatSig`, and
+  `FloatModel` is a `FloatSig` together with the laws §7's "totality of the
   float operations" lemma names. The machine (`Dynamics.lean`) takes a
-  `FloatOps`; every theorem quantifies over a `FloatModel`, so it holds for
+  `FloatSig`; every theorem quantifies over a `FloatModel`, so it holds for
   every model satisfying the laws.
 
 `Float.exactOps` is the executable instance the corpus and the printer run on.
@@ -565,7 +565,7 @@ in `𝔽_w`, and the target parameter `σ_NaN` they *create* NaNs at. §2 fixes 
 per target rather than per rule, so they are the interface the development is
 parameterized over; every exact operation is a function of this module
 instead. -/
-structure FloatOps where
+structure FloatSig where
   /-- `(D-Float-Arith)`: `f₁ ⊕_w f₂`, the exact mathematical result rounded by
   `rnd_w`, with IEEE's special cases for zero, infinite and NaN operands
   (`3.12:21`, `3.12:22`, `3.12:23`). Total: no float arithmetic redex steps to
@@ -595,7 +595,7 @@ structure FloatOps where
 /-- `(D-Float-Cast)` §6.4 at either direction, given the model's narrowing.
 `(Float-Cast)` §5.8 imposes `w' ≠ w`, so the equal-width case is unreachable
 from a well-typed program and is the identity here. -/
-def FloatOps.cast (M : FloatOps) (w w' : FloatWidth) (f : FloatDatum) : FloatDatum :=
+def FloatSig.cast (M : FloatSig) (w w' : FloatWidth) (f : FloatDatum) : FloatDatum :=
   match w, w' with
   | .w64, .w32 => M.narrow f
   | .w32, .w64 => f.widen
@@ -610,7 +610,7 @@ deriving DecidableEq, Repr
 
 /-- The five `3.12:34` intrinsics applied (`(D-Float-Round)`). None traps
 (`3.12:37`). -/
-def FloatOps.roundIntrin (M : FloatOps) (w : FloatWidth) :
+def FloatSig.roundIntrin (M : FloatSig) (w : FloatWidth) :
     FloatUnIntrin → FloatDatum → FloatDatum
   | .sqrt, f => M.sqrt w f
   | .round op, f => f.roundOp op
@@ -634,7 +634,7 @@ Mechanized, that lemma splits three ways.
   arithmetic.
 * **Closure in `𝔽_w`** — that `rnd_w` and each rounded operation land *in*
   `𝔽_w` rather than on some datum outside it — is what cannot be proved of an
-  arbitrary `FloatOps`, and it is the content of the fields below. It is the
+  arbitrary `FloatSig`, and it is the content of the fields below. It is the
   float counterpart of `valOf_inBounds` (`Syntax.lean`), which *is* proved,
   because `val_{w,s}` is arithmetic and `rnd_w` is IEEE.
 
@@ -654,7 +654,7 @@ against the compiler case by case, never a theorem here. §9 item 5 (RUE-2283)
 is where the target-defined part is tracked. -/
 
 /-- **§7's "totality of the float operations", as an interface.** A
-`FloatOps` together with the laws §7 owes for floats and §6.4 quotes from
+`FloatSig` together with the laws §7 owes for floats and §6.4 quotes from
 `3.12:9`, `3.12:22` and `3.12:44`. Every field is a statement that is true of
 IEEE 754 *and* of the compiler — which is why the NaN laws below say only that
 a NaN comes out, and leave its sign to the model (see the section note above).
@@ -662,49 +662,49 @@ They are *fields* rather than `axiom` declarations so that every theorem
 resting on one carries it in its own statement (`TRUST.md`, "Assumptions
 carried as interfaces"). §7 says the lemma is "discharged against the standard
 rather than against Rue"; this is that sentence, mechanized. -/
-structure FloatModel extends FloatOps where
+structure FloatModel extends FloatSig where
   /-- **Closure of `⊕_w`** (§7): the four arithmetic operators map `𝔽_w × 𝔽_w`
   into `𝔽_w`. With Lean totality this is §7's "`⊕_w` is a total function
   `𝔽_w × 𝔽_w → 𝔽_w`". -/
-  arith_wf : ∀ w op a b, a.Wf w → b.Wf w → (toFloatOps.arith w op a b).Wf w
+  arith_wf : ∀ w op a b, a.Wf w → b.Wf w → (toFloatSig.arith w op a b).Wf w
   /-- **Closure of `@sqrt`** (§7's "each `⊙_w` is total on `𝔽_w`"; the other
   four `⊙_w` are exact and proved closed here). -/
-  sqrt_wf : ∀ w f, f.Wf w → (toFloatOps.sqrt w f).Wf w
+  sqrt_wf : ∀ w f, f.Wf w → (toFloatSig.sqrt w f).Wf w
   /-- **Closure of `rnd_w` on a literal** (`3.12:9`, and §7's "`rnd_w` is
   total into `𝔽_w`"). -/
-  ofLit_wf : ∀ w m ne e, (toFloatOps.ofLit w m ne e).Wf w
+  ofLit_wf : ∀ w m ne e, (toFloatSig.ofLit w m ne e).Wf w
   /-- **Closure of `rnd_w` on an integer** (`(D-Int-To-Float)`, `3.12:16`). -/
-  ofInt_wf : ∀ w n, (toFloatOps.ofInt w n).Wf w
+  ofInt_wf : ∀ w n, (toFloatSig.ofInt w n).Wf w
   /-- **Closure of the narrowing cast** (`(D-Float-Cast)`, `3.12:19`). -/
-  narrow_wf : ∀ f, f.Wf .w64 → (toFloatOps.narrow f).Wf .w32
+  narrow_wf : ∀ f, f.Wf .w64 → (toFloatSig.narrow f).Wf .w32
   /-- **A NaN operand yields a NaN** (IEEE 754, and §6.4 lists it among the
   consequences of `⊕_w`). The *sign* is deliberately left open: IEEE 754 says
   only that a NaN comes out, both of Rue's targets propagate the operand's
   sign rather than substituting `σ_NaN`, and `3.12:44` fixes `σ_NaN` for a NaN
   an invalid operation *creates* — which `zero_div_zero` below is. -/
   arith_nan : ∀ w op a b, (a.isNaN = true ∨ b.isNaN = true) →
-    (toFloatOps.arith w op a b).isNaN = true
+    (toFloatSig.arith w op a b).isNaN = true
   /-- **A cast of a NaN is a NaN** (`(D-Float-Cast)`, `3.12:19`): the sibling
   of `arith_nan` at the narrowing half, again with the sign left open. The
   widening half needs no law — it is `FloatDatum.widen`, the identity
   (`cast_nan`). -/
-  narrow_nan : ∀ f, f.isNaN = true → (toFloatOps.narrow f).isNaN = true
+  narrow_nan : ∀ f, f.isNaN = true → (toFloatSig.narrow f).isNaN = true
   /-- **A finite non-zero divided by a zero is the infinity of the xor sign**
   (`3.12:22`, quoted in §6.4). This is the law a `@float_to_int` trap witness
   rests on: it is how a core program reaches an infinity at all. -/
   div_by_zero : ∀ w a n s e, a.Wf w → a = .num n s e → s ≠ 0 →
-    ∀ n₂, toFloatOps.arith w .div a (.num n₂ 0 0) = .inf (xor n n₂)
+    ∀ n₂, toFloatSig.arith w .div a (.num n₂ 0 0) = .inf (xor n n₂)
   /-- **A zero divided by a zero is `NaN(σ_NaN)`** (`3.12:22`, quoted in
   §6.4). -/
   zero_div_zero : ∀ w n₁ n₂,
-    toFloatOps.arith w .div (.num n₁ 0 0) (.num n₂ 0 0) = .nan toFloatOps.nanSign
+    toFloatSig.arith w .div (.num n₁ 0 0) (.num n₂ 0 0) = .nan toFloatSig.nanSign
   /-- **The decimal zero is `+0`** — `3.12:9`'s last sentence, "a literal that
   is representable in the target type denotes exactly that value", at the one
   literal every width represents. -/
-  ofLit_zero : ∀ w ne e, toFloatOps.ofLit w 0 ne e = .num false 0 0
+  ofLit_zero : ∀ w ne e, toFloatSig.ofLit w 0 ne e = .num false 0 0
   /-- **The decimal one is `1 · 2^0`** — the same sentence of `3.12:9` at the
   other literal this slice's witnesses need. -/
-  ofLit_one : ∀ w, toFloatOps.ofLit w 1 false 0 = .num false 1 0
+  ofLit_one : ∀ w, toFloatSig.ofLit w 1 false 0 = .num false 1 0
 
 /-- **`@float_cast` of a NaN is a NaN, in either direction** —
 `(D-Float-Cast)` §6.4 on a special (`3.12:19`). The narrowing half is
@@ -712,9 +712,9 @@ structure FloatModel extends FloatOps where
 *proved* rather than assumed. As with `arith_nan`, the sign is not fixed: both
 targets keep the operand's. -/
 theorem FloatModel.cast_nan (M : FloatModel) (w w' : FloatWidth) {f : FloatDatum}
-    (h : f.isNaN = true) : (M.toFloatOps.cast w w' f).isNaN = true := by
+    (h : f.isNaN = true) : (M.toFloatSig.cast w w' f).isNaN = true := by
   cases w <;> cases w' <;>
-    simp only [FloatOps.cast, FloatDatum.widen] <;>
+    simp only [FloatSig.cast, FloatDatum.widen] <;>
     first
       | exact h
       | exact M.narrow_nan f h
@@ -990,7 +990,7 @@ both).
 
 It is stated against the *threshold* rather than as
 `(M.ofLit w l).isFinite` deliberately: the statics then say what they say for
-every `FloatModel`, with no instance and no `FloatOps` argument in the typing
+every `FloatModel`, with no instance and no `FloatSig` argument in the typing
 judgment, and `check` decides it by comparing two naturals. A law tying the two
 together — `RoundsFinite w l → (ofLit w l).isFinite` — is not needed by
 anything here and is not assumed. -/
@@ -1184,7 +1184,7 @@ B.1, which is the host this slice's corpus was checked against. Positive is
 is the *sign bit*, so `nanSign := false` is `+NaN` and `true` is `-NaN`, and
 `FloatDatum.totalRank (.nan false) = 3`, the top of `≺_w`. Flipping this one
 `Bool` is the whole of retargeting the instance to x86-64. -/
-def exactOps : FloatOps where
+def exactOps : FloatSig where
   arith := arith false
   sqrt := sqrtD false
   ofLit := ofLit

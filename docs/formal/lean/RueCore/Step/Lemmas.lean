@@ -22,7 +22,7 @@ namespace RueCore
 /-! ## The sanity theorems -/
 
 /-- Every `Step` is the one `step` computes (§6). -/
-theorem Step.step_eq {M : FloatOps} {P : Program} {C C' : Config} (h : Step M P C C') :
+theorem Step.step_eq {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P C C') :
     step M P C = .next C' := by
   cases h <;> simp_all [step, stepEval, stepArgs, stepRet, OpRes.toStep]
 
@@ -32,14 +32,14 @@ and the pairs that share one — (D-Use-Copy)/(D-Use-Move)/(D-Use-Declared-Linea
 (D-Seq)'s two cases, (D-If-T)/(D-If-F), an operator's value and trap rules,
 (D-Index)/(D-Index-Trap) — are split by premises that are functions of the
 configuration. -/
-theorem Step.det {M : FloatOps} {P : Program} {C C₁ C₂ : Config}
+theorem Step.det {M : FloatSig} {P : Program} {C C₁ C₂ : Config}
     (h₁ : Step M P C C₁) (h₂ : Step M P C C₂) : C₁ = C₂ := by
   have e₁ := h₁.step_eq
   rw [h₂.step_eq] at e₁
   exact (StepOut.next.inj e₁).symm
 
 /-- A terminal configuration takes no step: `✓n` and `↯κ` are final (§6.12). -/
-theorem Step.terminal {M : FloatOps} {P : Program} {C C' : Config}
+theorem Step.terminal {M : FloatSig} {P : Program} {C C' : Config}
     (hC : C.Terminal) : ¬ Step M P C C' := by
   intro h
   cases h <;> simp [Config.Terminal] at hC
@@ -47,7 +47,7 @@ theorem Step.terminal {M : FloatOps} {P : Program} {C C' : Config}
 /-! ## `step` is `Step`, and the enumeration of what a configuration can be -/
 
 /-- `stepEval`'s `next` is a `Step` (helper). -/
-theorem stepEval_complete {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+theorem stepEval_complete {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
     {K : List Kont} {tr : List Event} {e : Expr} {C' : Config}
     (h : stepEval M P H φ K tr e = .next C') : Step M P (.run H φ K (.eval e) tr) C' := by
   cases e <;> simp only [stepEval] at h
@@ -58,7 +58,7 @@ theorem stepEval_complete {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
   all_goals (constructor <;> first | assumption | rfl)
 
 /-- `stepArgs`'s `next` is a `Step` (helper). -/
-theorem stepArgs_complete {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+theorem stepArgs_complete {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
     {K : List Kont} {tr : List Event} {vs : List Val} {t : ArgsTag} {C' : Config}
     (h : stepArgs P H φ K tr vs t = .next C') : Step M P (.run H φ K (.args t vs []) tr) C' := by
   cases t <;> simp only [stepArgs] at h
@@ -68,7 +68,7 @@ theorem stepArgs_complete {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
   all_goals (constructor <;> first | assumption | rfl)
 
 /-- `stepRet`'s `next` is a `Step` (helper). -/
-theorem stepRet_complete {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+theorem stepRet_complete {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
     {K : List Kont} {tr : List Event} {v : Val} {k : Kont} {C' : Config}
     (h : stepRet M P H φ K tr v k = .next C') : Step M P (.run H φ (k :: K) (.ret v) tr) C' := by
   cases k <;> simp only [stepRet, OpRes.toStep] at h
@@ -80,7 +80,7 @@ theorem stepRet_complete {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 /-- **`step` is `Step`** (§6): the function computes exactly the relation's
 one step. With `Step.step_eq` this is what makes `step`'s other two answers
 an enumeration of the configurations that take no step. -/
-theorem step_iff {M : FloatOps} {P : Program} {C C' : Config} :
+theorem step_iff {M : FloatSig} {P : Program} {C C' : Config} :
     Step M P C C' ↔ step M P C = .next C' := by
   refine ⟨Step.step_eq, fun h => ?_⟩
   match C, h with
@@ -93,7 +93,7 @@ theorem step_iff {M : FloatOps} {P : Program} {C C' : Config} :
   | .run H φ (k :: K) (.ret v) tr, h => exact stepRet_complete h
 
 /-- `stepEval` never answers `halted` (helper). -/
-theorem stepEval_ne_halted {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+theorem stepEval_ne_halted {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
     {K : List Kont} {tr : List Event} {e : Expr} : stepEval M P H φ K tr e ≠ .halted := by
   intro h
   cases e <;> simp only [stepEval] at h
@@ -109,7 +109,7 @@ theorem stepArgs_ne_halted {P : Program} {H : Store} {φ : Frame} {K : List Kont
   all_goals simp at h
 
 /-- `stepRet` never answers `halted` (helper). -/
-theorem stepRet_ne_halted {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+theorem stepRet_ne_halted {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
     {K : List Kont} {tr : List Event} {v : Val} {k : Kont} : stepRet M P H φ K tr v k ≠ .halted := by
   intro h
   cases k <;> simp only [stepRet, OpRes.toStep] at h
@@ -118,7 +118,7 @@ theorem stepRet_ne_halted {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 
 /-- `step` answers `halted` exactly at the terminal configurations: `✓n` and
 `↯κ` (§6.12's (Result-Ok) and (Result-Panic)). -/
-theorem step_halted_iff {M : FloatOps} {P : Program} {C : Config} :
+theorem step_halted_iff {M : FloatSig} {P : Program} {C : Config} :
     step M P C = .halted ↔ C.Terminal := by
   match C with
   | .panic _ _ => simp [step, Config.Terminal]
@@ -133,7 +133,7 @@ theorem step_halted_iff {M : FloatOps} {P : Program} {C : Config} :
 /-- **Every configuration is terminal, steps, or is stuck** (§6, §7's
 phrasing of progress): the three cases are exclusive (`step` is a function)
 and exhaustive, and a stuck one is named. -/
-theorem Config.trichotomy (M : FloatOps) (P : Program) (C : Config) :
+theorem Config.trichotomy (M : FloatSig) (P : Program) (C : Config) :
     (∃ C', Step M P C C') ∨ C.Terminal ∨ ∃ w, C.Stuck M P w := by
   cases h : step M P C with
   | next C' => exact .inl ⟨C', step_iff.mpr h⟩
@@ -144,7 +144,7 @@ theorem Config.trichotomy (M : FloatOps) (P : Program) (C : Config) :
 not terminal, and no rule of §6 applies to it — exactly when `step` names it
 stuck. This is what makes `Config.Stuck` a statement about the relation and not
 only about the function's labels. -/
-theorem Config.stuck_iff {M : FloatOps} {P : Program} {C : Config} :
+theorem Config.stuck_iff {M : FloatSig} {P : Program} {C : Config} :
     (¬ C.Terminal ∧ ∀ C', ¬ Step M P C C') ↔ ∃ w, C.Stuck M P w := by
   cases h : step M P C with
   | next C' =>
@@ -159,7 +159,7 @@ theorem Config.stuck_iff {M : FloatOps} {P : Program} {C : Config} :
       · rw [step_iff.mp hs] at h; cases h
 
 /-- A stuck configuration takes no step (§6). -/
-theorem Config.Stuck.no_step {M : FloatOps} {P : Program} {C C' : Config} {w : Violation}
+theorem Config.Stuck.no_step {M : FloatSig} {P : Program} {C C' : Config} {w : Violation}
     (h : C.Stuck M P w) : ¬ Step M P C C' := by
   intro hs
   have := hs.step_eq
@@ -342,7 +342,7 @@ theorem dynPlace_err {H : Store} {φ : Frame} {p : Place} {vs : List Val}
 is stuck on `useAfterMove`, `useAfterDrop`, `unbound` or `typeConfusion` —
 never on `linearLeak`, `linearOverwrite`, `linearDiscard` or `ownedUnderCopy`,
 the four monitors `eval` adds and §6.3, §6.5, §6.7 and §6.8 do not have. -/
-theorem step_stuck_isStuckState {M : FloatOps} {P : Program} {C : Config} {w : Violation}
+theorem step_stuck_isStuckState {M : FloatSig} {P : Program} {C : Config} {w : Violation}
     (h : C.Stuck M P w) : w.isStuckState = true := by
   simp only [Config.Stuck] at h
   match C, h with
@@ -467,7 +467,7 @@ theorem destructure_plain {D : Decls} {ℓ : Nat} {c : Contents} {πs : List Nat
 
 /-- Whatever `stepN` reaches, `→*` reaches (§6.12's `→*`), so a run of the
 function is a derivation of the relation (helper). -/
-theorem stepN_steps {M : FloatOps} {P : Program} : ∀ {n : Nat} {C : Config},
+theorem stepN_steps {M : FloatSig} {P : Program} : ∀ {n : Nat} {C : Config},
     Steps M P C (stepN M P n C)
   | 0, C => .refl C
   | n + 1, C => by

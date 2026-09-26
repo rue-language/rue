@@ -58,7 +58,7 @@ what typing excludes (`no_violation`), and nothing else is an answer of
 namespace RueCore
 
 section prefixLedger
-variable {M : FloatOps} {P : Program} {F : Event → List Nat}
+variable {M : FloatSig} {P : Program} {F : Event → List Nat}
 
 /-! ## Runs, counted from one start -/
 
@@ -100,7 +100,7 @@ theorem Steps.trace_ext {C D : Config} (hC : Steps M P Config.init C) (h : Steps
 whose end has appended to the trace only what the conservation law allows a
 trap from store `H` holding `X` (`Cons`'s `panic` clause): at most what `H` and
 `X` own, plus a range of fresh identities (helper). -/
-def LongC (M : FloatOps) (P : Program) (F : Event → List Nat) (H : Store) (X : List Nat)
+def LongC (M : FloatSig) (P : Program) (F : Event → List Nat) (H : Store) (X : List Nat)
     (C : List Kont → List Event → Config) (n : Nat) : Prop :=
   ∀ K tr, ∃ m D, n ≤ m ∧ StepsN M P m (C K tr) D ∧
     ∃ δ, D.trace = tr ++ δ ∧ Cons P.decls F H X (.panic .user δ)
@@ -187,7 +187,7 @@ theorem LongC.andThen {H : Store} {X : List Nat} {φ₁ : Frame}
 
 /-- The induction hypothesis: at fuel `fuel`, exhaustion from a copy-closed
 store is a run of at least `fuel` steps with the ledger (helper). -/
-def LongCIH (M : FloatOps) (P : Program) (F : Event → List Nat) (fuel : Nat) : Prop :=
+def LongCIH (M : FloatSig) (P : Program) (F : Event → List Nat) (fuel : Nat) : Prop :=
   ∀ H φ e, StoreCC P.decls H → eval M fuel P H φ e = .outOfFuel →
     LongC M P F H [] (evalConf H φ e) fuel
 
@@ -242,7 +242,7 @@ end prefixLedger
 /-! ## The ledger, per form -/
 
 section longcForms
-variable {M : FloatOps} {P : Program} {F : Event → List Nat} {fuel : Nat} {H : Store} {φ : Frame}
+variable {M : FloatSig} {P : Program} {F : Event → List Nat} {fuel : Nat} {H : Store} {φ : Frame}
 
 /-- Close a context `k H v = .outOfFuel` whose context never spends fuel,
 in `LongC.andThen`'s form (helper). -/
@@ -615,7 +615,7 @@ counts, at most what the store owned plus a range of fresh identities — the
 promise the conservation law makes of a trap. No typing hypothesis. The proof
 is `eval_steps_of_outOfFuel`'s, form by form, with `eval_conserves`'s ledger
 added wherever an operand finished. -/
-theorem eval_longc (M : FloatOps) {P : Program} {F : Event → List Nat}
+theorem eval_longc (M : FloatSig) {P : Program} {F : Event → List Nat}
     (hF : TraceMeasure P.decls F) (fuel : Nat) : LongCIH M P F fuel := by
   induction fuel using Nat.strongRecOn with
   | ind n ih =>
@@ -682,7 +682,7 @@ of `run`'s answer at fuel `k`: before a value or a panic `run_sim` reaches,
 whose trace `run_trace_once` bounds, or before the end of a run of at least
 `k` steps whose ledger `eval_longc` keeps; and a trace only grows along the
 way. -/
-theorem steps_trace_once (M : FloatOps) {P : Program} {F : Event → List Nat}
+theorem steps_trace_once (M : FloatSig) {P : Program} {F : Event → List Nat}
     (hF : TraceMeasure P.decls F) (hns : ∀ fuel w, run M P fuel ≠ .stuck w)
     {C : Config} (hC : Steps M P Config.init C) : ∀ a, (C.trace.flatMap F).count a ≤ 1 := by
   intro a
@@ -733,22 +733,22 @@ destructor twice on one (`dtorIds`). A program that diverges is covered: its
 trace is bounded at every step, where `no_double_free`, over `run`'s answer,
 sees only `outOfFuel` and an empty trace. -/
 theorem step_no_double_free (M : FloatModel) {P : Program} (h : ProgramTyped P) {C : Config}
-    (hC : Steps M.toFloatOps P Config.init C) :
+    (hC : Steps M.toFloatSig P Config.init C) :
     (∀ a, (freedIds P.decls C.trace).count a ≤ 1) ∧ (∀ a, (dtorIds C.trace).count a ≤ 1) :=
-  ⟨steps_trace_once M.toFloatOps (freed_measure P.decls) (no_violation M h) hC,
-    steps_trace_once M.toFloatOps (dtor_measure h.wf.decls.dtorNotCopy) (no_violation M h) hC⟩
+  ⟨steps_trace_once M.toFloatSig (freed_measure P.decls) (no_violation M h) hC,
+    steps_trace_once M.toFloatSig (dtor_measure h.wf.decls.dtorNotCopy) (no_violation M h) hC⟩
 
 /-- `no_double_free` for a finished run is a corollary (RUE-2477): a value or a
 panic `run` answers is reached by §6's relation (`eval_sound`), so its trace is
 a reachable configuration's; exhausted fuel carries the empty trace; and a
 checked run is never refused (helper). -/
 theorem no_double_free_of_step (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
-      (∀ a, (freedIds P.decls (run M.toFloatOps P fuel).trace).count a ≤ 1) ∧
-      (∀ a, (dtorIds (run M.toFloatOps P fuel).trace).count a ≤ 1) := by
+    (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
+      (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
+      (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1) := by
   have hs := eval_sound M h fuel
-  have key : ∃ C, Steps M.toFloatOps P Config.init C ∧ C.trace = (run M.toFloatOps P fuel).trace := by
-    cases hr : run M.toFloatOps P fuel with
+  have key : ∃ C, Steps M.toFloatSig P Config.init C ∧ C.trace = (run M.toFloatSig P fuel).trace := by
+    cases hr : run M.toFloatSig P fuel with
     | ok H v tr => exact ⟨_, hs.2.1 H v tr hr, by simp [Config.trace, EvalRes.trace]⟩
     | panic κ tr => exact ⟨_, hs.2.2 κ tr hr, by simp [Config.trace, EvalRes.trace]⟩
     | outOfFuel => exact ⟨_, .refl _, by simp [Config.init, Config.trace, EvalRes.trace]⟩
