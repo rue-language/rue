@@ -4339,12 +4339,15 @@ theorem no_use_after_move (M : FloatModel) {P : Program} (h : ProgramTyped P) (f
     run M.toFloatOps P fuel ≠ .stuck .useAfterMove := no_violation M h fuel _
 
 /-- §7 "No use-after-drop": the machine never touches a retired (`†`) cell.
-With frames, this is a consequence of the invariant rather than a structural
-fact about closed expressions: `run-all-scope-drops` (§6.9) walks the frame's
-scope record at every `return` and at every frame pop, and it is
-`FrameMatches` — the record is the environment, whose cells `Matches` says are
-live or moved out and pairwise distinct — that keeps those walks off a `†`
-cell and stops any cell being retired twice. -/
+Here it is `no_violation` at one tag, over checked programs, but typing is not
+what makes it true: `run_no_use_after_drop` (`Retire.lean`, RUE-2496) proves
+it for every program. `run-all-scope-drops` (§6.9) walks the frame's scope
+record at every `return` and at every frame pop, and what keeps those walks
+off a `†` cell, and stops any cell being retired twice, is structural: a
+binding's cell is minted fresh and retired only when its scope ends, after
+which nothing names it, and a record owes each cell once. `FrameMatches`
+implies as much for a checked program (the record is the environment, whose
+cells `Matches` says are live or moved out and pairwise distinct). -/
 theorem no_use_after_drop (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     run M.toFloatOps P fuel ≠ .stuck .useAfterDrop := no_violation M h fuel _
 

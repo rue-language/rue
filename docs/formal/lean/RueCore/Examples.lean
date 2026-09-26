@@ -3654,13 +3654,13 @@ example : checkProgram (scalarProg tI64 (lit (2 ^ 64))) = false := by rfl
 `useAfterDrop` is the machine's guard on a retired (`†`) cell (§6.1): a use,
 an explicit `@drop`, or an assignment through a binding whose cell has been
 retired is refused. With frames the guard is load-bearing on the unwind path
-too — `run-all-scope-drops` walks the frame's scope record, and it is
-`FrameMatches` (the record *is* the environment, whose cells are pairwise
-distinct and never retired) that keeps that walk off a `†` cell, which is
-what `no_use_after_drop` now rests on. No *closed* fragment program reaches
-the guard through the syntax, so the witnesses below start the machine in an
-open state — a store holding one retired cell and a frame naming it — which
-is the state the guard exists for.
+too — `run-all-scope-drops` walks the frame's scope record. No program
+reaches the guard from `run`'s start, checked or not: a binding's cell is
+minted fresh and retired only when its scope ends, after which nothing names
+it, and a scope record owes each cell once (`run_no_use_after_drop`,
+`step_no_use_after_drop`, `Retire.lean`, RUE-2496). So the witnesses below
+start the machine in an open state — a store holding one retired cell and a
+frame naming it — which is the state the guard exists for.
 -/
 
 example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] }
@@ -3707,8 +3707,9 @@ example : eval demoOps demoFuel (prog tI64 unitLit)
     { env := [0], scope := [] } (drop (.proj (.var 0) 0)) = .stuck .useAfterMove := by rfl
 
 /-- The same guard on the unwind path: a frame whose scope record names a
-retired cell refuses instead of retiring it twice (§6.9). `FrameMatches` is
-what excludes this state for a well-typed program. -/
+retired cell refuses instead of retiring it twice (§6.9). No run from the
+start reaches this state (`run_no_use_after_drop`); for a well-typed program
+`FrameMatches` excludes it as well. -/
 example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [0] }
     (ret (lit 1)) = .stuck .useAfterDrop := by rfl
 
