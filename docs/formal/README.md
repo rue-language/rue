@@ -15,16 +15,18 @@ The prose spec answers "what does this feature do, for a human learning the
 language." The formal core answers "what is the *exact* meaning, for a compiler
 author or a proof." The compiler is a third view — the running realization.
 The mechanization (`lean/`, ADR-0097) is a fourth: for the fragment it covers
-today (no loans, no store), the core's rules and its §7 theorems as
-kernel-checked Lean statements, under the stated hypotheses (`pendingSafe`,
-the `FloatModel` laws), with panics and divergence exactly as the theorems
-state them (see [`lean/DIGEST.md`](lean/DIGEST.md)). All four are views of one
-language and must agree where they overlap; a genuine disagreement is a bug
-in one of them, reconciled by fixing whichever is wrong rather than by
-precedence (RUE-305), and surfaced mechanically by the differential oracle
-and, for the fourth view, by the statement review its checkpoints require —
-run by hand today, not yet wired into CI (RUE-2241).
-Where the core is silent, the prose governs.
+today — a store of cells (`Store`) but no loans or borrows, and none of
+§6.13's allocation store for buffers and views (ADR-0097 Phase D: exclusivity
+RUE-2238, no-use-after-free RUE-2240) — the core's rules and its §7 theorems
+as kernel-checked Lean statements, under the stated hypotheses (`pendingSafe`,
+the `FloatModel` laws); a safe run may still panic or diverge, and
+exactly-once excludes the `@panic` path (see [`lean/DIGEST.md`](lean/DIGEST.md)).
+All four are views of one language and must agree where they overlap; a
+genuine disagreement is a bug in one of them, reconciled by fixing whichever
+is wrong rather than by precedence (RUE-305), and surfaced mechanically by
+the differential oracle and, for the fourth view, by the statement review its
+checkpoints require, done by hand in reviews and red-team passes (see
+REDTEAM.md). Where the core is silent, the prose governs.
 
 > **Status: foundation in progress.** This is being built keystone-first. The
 > core calculus, the definition of *use*, and the shape of the ownership and
@@ -75,11 +77,13 @@ specified too** (what comptime evaluates, how monomorphization assigns identity
 to specializations), but as its own layer, later, once the core is solid. The
 core is what an alternate compiler's *back half* targets; elaboration is its
 *front half*. (Deferring the staging semantics is not deferring correctness:
-for the fragment the mechanization covers today (no loans, no store), the
-core's soundness holds under the stated hypotheses (`pendingSafe`, the
-`FloatModel` laws), with panics and divergence exactly as the theorems state
-them, however the program was elaborated; see
-[`lean/DIGEST.md`](lean/DIGEST.md).)
+for the fragment the mechanization covers today — a store of cells (`Store`)
+but no loans or borrows, and none of §6.13's allocation store for buffers and
+views (ADR-0097 Phase D: exclusivity RUE-2238, no-use-after-free RUE-2240) —
+the core's soundness rests on the `FloatModel` laws, and exactly-once
+additionally on `pendingSafe` (RUE-2316); a safe run may still panic or
+diverge, and exactly-once excludes the `@panic` path, however the program was
+elaborated; see [`lean/DIGEST.md`](lean/DIGEST.md).)
 
 ### Why not just formalize the surface directly
 
@@ -126,7 +130,8 @@ panics, and its drop trace.
 
 This one artifact does three jobs at once:
 
-- it is the compiler's executable reference interpreter (purpose 2);
+- it is an executable reading of §6, related to the Lean `eval` only by
+  testing (the bridge), not by proof (purpose 2);
 - it is the behavioral reference an alternate compiler is checked against
   (purpose 1);
 - it is the **differential-testing oracle** of RUE-50: run a random program

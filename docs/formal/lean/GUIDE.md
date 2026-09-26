@@ -2239,8 +2239,8 @@ deliberately and stays until its issue is decided:
 Other seeded cases were red until the compiler defect they found was fixed,
 and stay as regression signals; `README.md`, "The bridge corpus", lists them.
 *A defect looks like:* any **other** case disagreeing. A disagreement means
-the compiler, the model, the spec or the printer is wrong, or it is a pending
-decision (e.g. RUE-2346); a person decides which, and the case's
+the compiler, the oracle, the model, the spec or the printer is wrong, or it
+is a pending decision (e.g. RUE-2346); a person decides which, and the case's
 `explain/<case>.txt` rendering (the tables of section 5, from `lake exe
 ruecore-explain <case>`) is meant to help.
 
