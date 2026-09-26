@@ -2059,7 +2059,7 @@ back-edge invariance; bringing that wording in line is RUE-2355.
   file compiled. Every refusal and trap the fragment can reach has such a
   witness (`Examples.lean`, `Corpus.lean`), and so does the fuel boundary
   (`run demoOps countdown 16` versus `17`).
-- **Read the claim.** `SPINE.md` is the 39 statements the mechanization
+- **Read the claim.** `SPINE.md` is the 40 statements the mechanization
   claims, each with its English reading and the §7 paragraph it realizes,
   generated from the Spec layer; `lake build` fails unless each is proved
   as stated, and `spine-fingerprints.txt` pins what is stated, so a changed
