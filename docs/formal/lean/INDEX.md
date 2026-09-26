@@ -224,7 +224,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Examples` | `RueCore.Examples.posInf` | def | — | `3.12:22`, `3.12:10` |
 | `RueCore.Examples` | `RueCore.Examples.aNaN` | def | §2 | `3.12:22`, `3.12:42` |
 | `RueCore.Examples` | `RueCore.Examples.floatArith` | def | (Float-Arith), (D-Float-Arith), §5.8, §6.4 | — |
-| `RueCore.Examples` | `RueCore.Examples.floatCopy` | def | — | `3.12:2` |
+| `RueCore.Examples` | `RueCore.Examples.floatCopy` | def | — | `3.12:2a` |
 | `RueCore.Examples` | `RueCore.Examples.floatDivZero` | def | §6.4 | `3.12:22` |
 | `RueCore.Examples` | `RueCore.Examples.floatZeroDivZero` | def | — | `3.12:22` |
 | `RueCore.Examples` | `RueCore.Examples.floatNanUnordered` | def | §6.4 | `3.12:27` |
@@ -1306,7 +1306,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Syntax` | `RueCore.Decls` | structure | §2, §3 | — |
 | `RueCore.Syntax` | `RueCore.Decls.classOf` | def | §3 | — |
 | `RueCore.Syntax` | `RueCore.Decls.enumClassOf` | def | §3 | `6.3:19` |
-| `RueCore.Syntax` | `RueCore.Ty.mult` | def | §3 | `3.12:2`, `3.8:2`, `6.3:19`, `3.8:74` |
+| `RueCore.Syntax` | `RueCore.Ty.mult` | def | §3 | `3.12:2a`, `3.8:2`, `6.3:19`, `3.8:74` |
 | `RueCore.Syntax` | `RueCore.Ty.carriesLinear` | abbrev | §3, §5.3 | — |
 | `RueCore.Syntax` | `RueCore.Place` | inductive | §2, §5, §9 | `3.6:15` |
 | `RueCore.Syntax` | `RueCore.Place.root` | def | §5 | — |
@@ -1325,7 +1325,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Syntax` | `RueCore.declaredPrefix_declaredLinear` | theorem | §5.1 | — |
 | `RueCore.Syntax` | `RueCore.anyLinearOther` | def | §5.1 | — |
 | `RueCore.Syntax` | `RueCore.linearResidue` | def | §5.1 | `3.8:60`, `7.1:9` |
-| `RueCore.Syntax` | `RueCore.BinOp` | inductive | (Arith), (Ord), (Float-Ord), §2, §5.8 | `4.3:3` |
+| `RueCore.Syntax` | `RueCore.BinOp` | inductive | (Arith), (Ord), (Float-Ord), §2, §5.8 | `4.3:3f` |
 | `RueCore.Syntax` | `RueCore.BinOp.isCompare` | def | §2 | — |
 | `RueCore.Syntax` | `RueCore.BinOp.intAdmits` | def | (Arith), (Ord), §5.8 | `3.12:31` |
 | `RueCore.Syntax` | `RueCore.BinOp.floatAdmits` | def | (Float-Arith), (Float-Ord), (Total-Cmp), (Arith), (BitNot), §2, §5.8 | `3.12:25` |
@@ -1830,7 +1830,7 @@ Cited sections the calculus has no heading for:
 | `3.9:39` | Print.lean (module), `RueCore.residualLinearBelow`, `RueCore.Typed.dropRes`, `RueCore.Typed.dropDeclared` |
 | `3.9:44` | `RueCore.checkStructDecl`, Checker.lean (module), `RueCore.Examples.dDestrDtor`, `RueCore.Examples.dDtorLinearField`, Gen.lean (module), `RueCore.Gen.genDecl`, Statics.lean (module), `RueCore.StructDecl.Wf` |
 | `3.12:1` | `RueCore.FloatWidth`, `RueCore.FloatDatum.zero` |
-| `3.12:2` | `RueCore.Examples.floatCopy`, `RueCore.Ty.mult` |
+| `3.12:2a` | `RueCore.Examples.floatCopy`, `RueCore.Ty.mult` |
 | `3.12:7` | Float.lean (module), `RueCore.Typed.floatLit`, `RueCore.Expr` |
 | `3.12:8` | `RueCore.Gen.floatWidth` |
 | `3.12:9` | Examples.lean (module), `RueCore.Examples.floatDivZeroToInt_traps`, `RueCore.Explain.Premise.floatLitInfinite`, `RueCore.Float.ofLit_wf`, `RueCore.Float.ofLit_zero`, `RueCore.Float.ofLit_one`, Float.lean (module), `RueCore.FloatModel`, `RueCore.FloatLit`, `RueCore.FloatLit.spell`, `RueCore.FloatLit.exact`, `RueCore.Float.ofLit`, `RueCore.Typed.floatLit`, `RueCore.Step.floatLit`, `RueCore.Expr` |
@@ -1865,7 +1865,7 @@ Cited sections the calculus has no heading for:
 | `4.2:6` | `RueCore.Explain.Premise.negNotSigned`, `RueCore.Typed.neg` |
 | `4.2:14` | `RueCore.Explain.Premise.negNotSigned`, `RueCore.Typed.neg`, `RueCore.Typed.floatNeg`, `RueCore.UnOp` |
 | `4.3:1` | `RueCore.Typed.binop` |
-| `4.3:3` | `RueCore.BinOp` |
+| `4.3:3f` | `RueCore.BinOp` |
 | `4.4:2` | `RueCore.Examples.boolNegate`, `RueCore.Explain.Premise.notNotBool`, `RueCore.Typed.notOp` |
 | `4.7:9` | Checker.lean (module), `RueCore.Explain.Premise.armCountMismatch`, `RueCore.exhaustive_arm_exists`, `RueCore.Typed.match` |
 | `4.7:10` | Checker.lean (module), `RueCore.Explain.Premise.armCountMismatch`, `RueCore.exhaustive_arm_exists`, `RueCore.Typed.match` |
