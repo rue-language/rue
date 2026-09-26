@@ -449,4 +449,38 @@ then name only cells of the suffix it cut, newest first (helper). -/
 def Lifo (S S' : List Nat) (ls : List Nat) : Prop :=
   S <+: S' ∨ (S' <+: S ∧ ls.Sublist (S.drop S'.length).reverse)
 
+/-- The owned identities an argument list's tag holds: an indexed
+assignment's right-hand side, already a value while its indices are reduced
+(`5.2:14`); no other tag holds a value (helper). -/
+def ArgsTag.own (D : Decls) : ArgsTag → List Nat
+  | .indexWrite _ _ v => v.own D
+  | _ => []
+
+/-- The owned identities one control-stack frame holds (§6.1's `K`, §6.2's
+`E`): a binary operator's left operand, reduced while the right one is, and a
+list context's reduced values. A `call` or loop frame holds a scope record,
+whose cells are in the store, and no other frame holds a value (helper). -/
+def Kont.own (D : Decls) : Kont → List Nat
+  | .binopR _ v => v.own D
+  | .args t vs _ => t.own D ++ Contents.ownList D (Contents.ofVals vs)
+  | _ => []
+
+/-- The owned identities the focus holds: a value returned into the top
+frame's hole, or a list context's reduced values (helper). -/
+def Focus.own (D : Decls) : Focus → List Nat
+  | .eval _ => []
+  | .ret v => v.own D
+  | .args t vs _ => t.own D ++ Contents.ownList D (Contents.ofVals vs)
+
+/-- **What a configuration holds** (§6.1, RUE-2478): the owned identities of
+its store's cells, of the value or values in focus, and of every value its
+control stack holds pending — everywhere a running program keeps an owned
+value. A trap holds nothing: §6.12's `↯κ` keeps a trace and no store. An
+owned identity "allocated along a run" is one some configuration of the run
+holds; (D-Struct), (D-Enum-Intro) and (D-Array) put a non-`Copy` aggregate's
+fresh identity here the step they mint it. -/
+def Config.held (D : Decls) : Config → List Nat
+  | .run H _ K f _ => storeOwn D H ++ f.own D ++ K.flatMap (Kont.own D)
+  | .panic _ _ => []
+
 end RueCore

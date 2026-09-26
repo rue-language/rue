@@ -24,6 +24,7 @@ import RueCore.TraceExact
 import RueCore.TraceOrder
 import RueCore.Retire
 import RueCore.TracePrefix
+import RueCore.TraceWhole
 import RueCore.Witnesses
 import RueCore.Examples
 import RueCore.Print
