@@ -571,7 +571,7 @@ its own layer or a lower one:
 | **L0 syntax** | `Float`, `Syntax` | §2's syntax, types and float data |
 | **L1 definitions** | `Statics`, `Dynamics`, `Step`, `Soundness/Defs`, `Checker/Defs`, `Trace/Defs`, `Adequacy/Defs` | the semantics (§5's judgment, `eval`, §6's `Step`), and every definition a headline statement is written in: value typing and `FrameMatches`, the checker algorithm, the trace projections, ledgers and configuration invariants, `Config.SafeAt` |
 | **Spec statements** | `Spec`, `Spec.Safety`, `Spec.Checker`, `Spec.Trace`, `Spec.Step`, `Spec.Adequacy`, `Spec.Nonvacuous` | the headline statements, each a `def …_stmt : Prop` over L0 and L1 alone, with its English reading; the one list of them, `Spec.spine` ("The statement layer"); and the non-vacuity witnesses with their list, `Spec.witnesses` ("Non-vacuity witnesses") |
-| **L2 proofs** | `Float.Lemmas`, `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder`, `Nonvacuous`, `Spine` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L0's and L1's definitions (`Float.Lemmas`: the `FloatModel` laws of `Float.exactOps`), `Nonvacuous` proves the witness statements, and `Spine` checks each headline and witness proof against its Spec statement |
+| **L2 proofs** | `Float.Lemmas`, `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder`, `Nonvacuous`, `Spine`, `Nonvacuous.Glue` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L0's and L1's definitions (`Float.Lemmas`: the `FloatModel` laws of `Float.exactOps`), `Nonvacuous` proves the witness statements, `Spine` checks each headline and witness proof against its Spec statement, and `Nonvacuous.Glue` applies each witness to the theorems it lists |
 | **L3 tooling** | `Examples`, `Witnesses`, `Print`, `Corpus`, `Gen`, `Explain*`, `Digest`, `Layers`, `Lint`, the `*Main` executables, the root `RueCore` | example and corpus programs and the theorems about them, the printer, the generator, the explain and digest reports, the layer table and the lint |
 
 L3 may import anything; nothing in L0–L2 or Spec imports L3, so no theorem of the
@@ -598,8 +598,8 @@ on any other module in the closure that is not the package's (a library a
 L0–L2 or Spec module importing anything outside the package but `Init`, on
 one that is not a `module`, and on a module missing from the table, a
 stale table entry, or a source file nothing imports. It prints the graph, one
-line per module, and ends with `ruecore-layers: 46 modules, 116 package
-imports, no upward import; import closure: 46 modules outside the toolchain,
+line per module, and ends with `ruecore-layers: 47 modules, 118 package
+imports, no upward import; import closure: 47 modules outside the toolchain,
 all the package's, …`. `lake exe ruecore-layers --closure` prints that
 closure, one module per line: the list the kernel re-check replays. The Buck target runs it as the `layers.txt`
 report, so `./buck2 build root//:lean-ruecore` fails on an upward import;
@@ -662,6 +662,7 @@ flowchart BT
     Dynamics_Lemmas["Dynamics.Lemmas"]
     Float_Lemmas["Float.Lemmas"]
     Nonvacuous["Nonvacuous"]
+    Nonvacuous_Glue["Nonvacuous.Glue"]
     Soundness["Soundness"]
     Spine["Spine"]
     Statics_Lemmas["Statics.Lemmas"]
@@ -718,6 +719,7 @@ flowchart BT
   Trace --> Nonvacuous
   Adequacy --> Nonvacuous
   Nonvacuous --> Spine
+  Spine --> Nonvacuous_Glue
   Adequacy_Defs --> Spec_Adequacy
   Checker_Defs --> Spec_Checker
   Soundness_Defs --> Spec_Safety
@@ -845,7 +847,7 @@ ruecore-layers --closure)`, every module the audit's walk from the `.olean`
 headers reaches outside the toolchain. The toolchain's modules (`Init`,
 `Std`, `Lean`, `Lake`) are not replayed; they are trusted as the toolchain
 is. The audit fails on any other module in the closure, so what is replayed
-is exactly the package's 46 modules. The Buck target runs it after the
+is exactly the package's 47 modules. The Buck target runs it after the
 executables are built; a local check should run it too (about 15 s).
 
 It prints each table, ends with one summary line, and exits non-zero on a
