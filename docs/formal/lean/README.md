@@ -62,11 +62,13 @@ that is wrong, is measured in [BRIDGE-SENSITIVITY.md](BRIDGE-SENSITIVITY.md)
 mutants one at a time and recorded which seed or generated case caught each.
 Whether the proofs, the witnesses, the corpus and the bridge would notice a
 wrong *definition* is measured in [MUTATION.md](MUTATION.md) (RUE-2465):
-95 one-rule mutants, run by `bin/mutate.py`, with what each kill rests on —
+96 one-rule mutants, run by `bin/mutate.py`, with what each kill rests on —
 80 of the semantics and the checker (`Syntax`, `Statics`, `Checker/Defs`,
-`Dynamics`, `Step`), and 15 of the statement vocabulary and `Float`
-(`Soundness/Defs`, `Trace/Defs`, `Adequacy/Defs`; RUE-2490), asking whether a
-weakened statement, as opposed to a weakened rule, is noticed.
+`Dynamics`, `Step`), and 16 of the statement vocabulary and `Float`
+(`Soundness/Defs`, `Trace/Defs`, `Adequacy/Defs`; RUE-2490, RUE-2500), asking
+whether a weakened statement, as opposed to a weakened rule, is noticed.
+Every one of the 16 falsifies a stated property or a witness, checked by hand
+(RUE-2500).
 
 ```bash
 scripts/rue lean-bridge                      # or: ./buck2 run //:lean-bridge
@@ -905,10 +907,10 @@ name definitions outside the trusted base (`Float.exactOps` and its
 `roundRat`): a witness can only fail to witness, never widen a claim; nor
 are the sharpness counter-examples, which say a claim cannot be widened. Today
 the headlines' trusted base is 295 definitions,
-all in L0 and L1 (the package has 1340 theorems besides, 245 of them the
-glue applications of `Nonvacuous/Glue.lean` and 80 the sharpness glue of
-`Sharp/Glue.lean`, and the 83 `Spine`
-restatements: 40 of the spine, 14 of the witnesses, 29 of the sharpness
+all in L0 and L1 (the package has 1348 theorems besides, 245 of them the
+glue applications of `Nonvacuous/Glue.lean` and 84 the sharpness glue of
+`Sharp/Glue.lean`, and the 87 `Spine`
+restatements: 40 of the spine, 14 of the witnesses, 33 of the sharpness
 counter-examples). A
 definition counts as Lean's own, and is only counted, when Lean's own tables
 record it as such (recursors and their auxiliaries, matchers, projections),
@@ -929,8 +931,8 @@ reading, the §7 paragraph of `../01-core-calculus.md` it realizes, and where
 it is narrower than that paragraph. `RueCore.Spec.spine` lists the 40 of them,
 each beside the theorem that proves it; `RueCore.Spec.witnesses` lists the 14
 non-vacuity witnesses the same way ("Non-vacuity witnesses", RUE-2469), and
-`RueCore.Spec.sharpness` the 29 sharpness counter-examples ("Sharpness
-counter-examples", RUE-2485), 83 statements in all. Every tool reads the three
+`RueCore.Spec.sharpness` the 33 sharpness counter-examples ("Sharpness
+counter-examples", RUE-2485), 87 statements in all. Every tool reads the three
 lists:
 
 * **The kernel.** `RueCore/Spine.lean` (L2) restates each theorem as
@@ -957,8 +959,8 @@ lists:
   `def RueCore.Spec.<name>_stmt : Prop` whose body is the Spec statement's
   elaborated body, pretty-printed, and then states each
   `RueCore.Spine.<name> : RueCore.Spec.<name>_stmt` with `sorry`. The solution
-  is `RueCore.Spine`; `comparator/config.json` names its 83 theorems (40 of the
-  spine, 14 witnesses, 29 counter-examples) and allows
+  is `RueCore.Spine`; `comparator/config.json` names its 87 theorems (40 of the
+  spine, 14 witnesses, 33 counter-examples) and allows
   the axioms `propext` and `Quot.sound`. Comparator checks that each solution
   theorem has the challenge's statement, with every constant the statements
   use identical in the two environments — each `_stmt` included, so the
@@ -1168,8 +1170,8 @@ conclusion. No spine statement has a premise under `∨` or `¬` today.
 
 `RueCore.Spec.sharpness` (`Spec.lean`) names each counter-example
 statement, the theorem that proves it (`RueCore/Sharp.lean`, L2), and the
-hypotheses it drops, as (spine theorem, number) pairs: 29 statements, 76
-hypotheses in 80 pairs (four hypotheses by more than one statement). The
+hypotheses it drops, as (spine theorem, number) pairs: 33 statements, 76
+hypotheses in 84 pairs (five hypotheses by more than one statement). The
 lint checks each pair's range and that every hypothesis is covered.
 
 **Every pair is checked in the kernel** (RUE-2495). `RueCore/Sharp/Glue.lean`
@@ -1226,12 +1228,20 @@ The counter-examples, by kind:
   (`Sharp.no_lead`, `Sharp.no_eval`).
 * The premises inside conclusions: a value or a panic §6's relation does
   not reach (`Sharp.unreached`, `Sharp.unreached_panic`), a stuck
-  configuration it does not reach (`Sharp.unreachable_stuck`), a
+  configuration it does not reach (`Sharp.unreachable_stuck`), halted
+  configurations it does not reach whose value is not of the entry type: a
+  `bool` (`Sharp.ill_typed_halt`), an `i64` one past its range
+  (`Sharp.out_of_range_halt`), and two `f64` data outside `𝔽_f64`, one not
+  canonical and one below the subnormal floor (`Sharp.float_halt`) (RUE-2500:
+  these pin `SafeAt`'s typing half, `HasTy` and `FloatDatum.Wf`, which
+  `MUTATION.md`'s statement-vocabulary mutants weaken), a
   configuration whose frame names a retired cell, stuck with `useAfterDrop`
   and not reached either (`Sharp.retired_cell`, RUE-2496), a panic whose
   trace destroys one identity twice, not reached (`Sharp.unreached_double`,
   RUE-2477: `step_no_double_free`'s reachability), an
-  unreachable configuration out of registration order (`Sharp.unordered`), a
+  unreachable configuration out of registration order (`Sharp.unordered`),
+  one whose step cuts one cell off the registration stack and drops another,
+  so that only `Lifo` fails (`Sharp.uncut_drop`, RUE-2500), a
   pair that is not a step (`Sharp.not_a_step`), the initial configuration,
   which steps (`Sharp.init_steps`), and `eval_complete`'s and
   `run_complete`'s `n < fuel` (`Sharp.fuel`, `Sharp.fuel_panic`: fuel `0`

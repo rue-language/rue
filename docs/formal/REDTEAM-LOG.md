@@ -473,3 +473,58 @@ What the mutants could not get past:
     now inside a multiplicity statement. `03-metatheory.md`'s no-double-free
     row does not cite the new theorem yet; that edit is a PR for the
     calculus's owner.
+
+## 2026-09-26 — the statement vocabulary's survivors killed (RUE-2500)
+
+- **Trunk:** `bfbfc49c3`.
+- **Kind:** statements added to close RUE-2490's six surviving
+  statement-vocabulary mutants, not a red-agent pass: no fresh session
+  attacked anything.
+- **What was built.** Four sharpness counter-examples
+  (`lean/RueCore/Spec/Sharp.lean`, proved in `Sharp.lean`, glued in
+  `Sharp/Glue.lean`). Each negates one statement-vocabulary definition at a
+  configuration or datum that fails only that definition:
+  - `Sharp.ill_typed_halt`: a configuration halted with `true`, for a program
+    returning `i64`, is terminal but not `SafeAt` `i64`;
+  - `Sharp.out_of_range_halt`: the same with `2^63`, one past `i64`'s
+    maximum; `HasTy` rejects it;
+  - `Sharp.float_halt`: for `Nonvacuous.float`'s program, the data
+    `30 · 2^-2` (the non-canonical spelling of the `7.5` it returns) and
+    `1 · 2^-1075` (below the subnormal floor) are not `Wf`, and the
+    configurations halted with them are not `SafeAt` `f64`;
+  - `Sharp.uncut_drop`: a step that cuts cell `1` off the registration stack
+    and drops cell `0`, from an unreached configuration. Its markers are newest
+    first and its stack is in order, so only `Lifo` fails.
+
+  The first three refute `step_preservation` without its reachability
+  hypothesis and the last `drop_order` without its own, so the lint
+  holds them to the kernel-checked glue like every counter-example. None
+  adds a hypothesis to cover: all four pairs were already covered.
+- **The mutants.** Each of `hasty-int-any-value`, `hasty-float-any-value`,
+  `lifo-vacuous`, `safeat-typing-vacuous`, `float-wf-no-emin` and
+  `float-wf-noncanonical` now falsifies one of them, and the hypothesis-side
+  control RUE-2490's review asked for, `contentsmatches-owned-false`
+  (`ContentsMatches.owned` demanding `False`), falsifies
+  `Nonvacuous.open_frame` ([lean/MUTATION.md](lean/MUTATION.md), rows 81, 82,
+  87, 91, 94–96). Each kill is a kernel-checked refutation of the statement
+  in the mutated package, sorry-free and failing on the unmutated one, kept
+  in the loop's `scratch/rue-2500/`. The tool cannot see these kills until
+  RUE-2499, so its own columns for the six still read "survived".
+- **Findings.**
+  - **V1, a weakening in a conclusion needs a `¬` to be seen** (confirmation,
+    no issue). RUE-2490's six survivors each weakened a definition that
+    occurred only positively in a stated property. A statement that negates
+    the definition at a value it must reject is what catches such a
+    weakening, and a sharpness counter-example over an unreached halted
+    configuration is a natural home for one: `¬ SafeAt` of it can only fail
+    through the typing half.
+  - **V2, one witness carries the hypothesis direction** (low, disclosure).
+    `Nonvacuous.open_frame` is the only statement that asserts `FrameMatches`
+    of a frame with an owned binding. `Nonvacuous.dtor` does not state
+    `FrameMatches` or `StoreCC` at all, although RUE-2490 expected it to
+    catch the control. A strengthening of `ContentsMatches` that spared
+    `open_frame`'s one `S0` binding (one that only touched arrays, enums or
+    `mut` bindings, say) would make `soundness` vacuous on those frames and
+    falsify no witness. Whether a spine statement would still fail, through
+    `EvalOk`'s own `FrameMatches` (a conclusion), was not checked. Witnesses
+    of `FrameMatches` over more binding shapes would close that.
