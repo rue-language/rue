@@ -6,7 +6,7 @@ import RueCore.Print
 # RueCore.Corpus — the bridge corpus (ADR-0097, RUE-2227)
 
 Every case pairs a fragment program with what the mechanization says about
-it: the verified checker's verdict (§5, `checkProgram_sound`) and the
+it: the checker's verdict (§5; proved sound by `checkProgram_sound`) and the
 interpreter's outcome (§6, `run`). The exporter prints each program as Rue
 source
 (`Print.lean`) and emits the cases as JSON for `crates/rue-oracle-diff`'s
