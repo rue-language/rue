@@ -111,12 +111,20 @@ open Expr
 
 /-- A corpus case: a closed fragment program with its documentation. A
 program is a struct environment and a list of function definitions, entered at
-function index `0` (§6.12). -/
+function index `0` (§6.12). `dtorMark` (RUE-2505's S2 fix) is which field
+each struct declaration's destructor prints, by declaration index
+(`Print.DtorMarks`) — supplied by the case's own producer, not guessed from
+field shape. Its default, `fun _ => some 0`, is every hand-written seed's own
+choice (verified against all eight destructor-bearing declarations in
+`Examples.lean`), so no seed literal below needs to say so; `Gen.genCase`
+overrides it for a generated case, whose destructor-bearing declarations
+always have their id field last (`Gen.genDecl`). -/
 structure Case where
   name : String
   description : String
   rules : List String
   prog : Program
+  dtorMark : Print.DtorMarks := fun _ => some 0
 
 /-- The fuel every exported case is evaluated at. Deep enough for every seed
 case by a wide margin; a case the bound does not complete is left out of the
@@ -1055,24 +1063,28 @@ def dbgLine : Val → Option String
   | .bool b => some (if b then "true" else "false")
   | .unit | .struct _ _ _ | .enum _ _ _ _ | .array _ _ _ => none
 
-/-- The line a user destructor prints (`Print.structItem`/`Print.dtorFieldName`,
-RUE-2505): the struct's **last** field, when that field is an integer — the
-dedicated id field a generated destructor-bearing declaration has — else its
-first field, when *that* is an integer, which is every destructor-bearing seed
-declaration (`Examples.lean`) and so is exactly the field this function read
-before RUE-2505. A declaration with neither has nothing to print, in the
-printed Rue program and here alike. Neither chosen field is ever moved out
-from under it: the id field is always `Copy` (never a hole), and every field
-of a destructor-bearing declaration is unreachable to a partial move anyway
+/-- The line a user destructor prints (`Print.structItem`, RUE-2505's S2
+fix): `marks`' answer for this declaration's own index — the struct index
+`Event.dtor`'s own field and `.struct`'s own first field agree on, since
+whoever emits a `.dtor` event uses the value's own tag for both — read off
+this value's own contents if that slot holds an `int`. `marks` is a
+producer-supplied marker (`Print.DtorMarks`), not a guess from field *shape*:
+`Corpus.Case.dtorMark`'s doc comment says who supplies it and why. A
+declaration with no marked field, or a marker naming a slot this value
+doesn't have, has nothing to print, in the printed Rue program and here
+alike. The marked field is never moved out from under it: the id field a
+generated declaration has is always `Copy` (never a hole), and a seed's own
+field 0 is unreachable to a partial move regardless, since a
+destructor-bearing declaration's fields are unreachable to one at all
 (`3.9:34`). -/
-def dtorLine : Contents → Option String
-  | .struct _ _ cs =>
-      match cs.getLast? with
-      | some (.int w s n) => dbgLine (.int w s n)
-      | _ =>
-          match cs.head? with
-          | some (.int w s n) => dbgLine (.int w s n)
+def dtorLine (marks : Print.DtorMarks) : Contents → Option String
+  | .struct s _ cs =>
+      match marks s with
+      | some j =>
+          match cs[j]? with
+          | some (.int w sg n) => dbgLine (.int w sg n)
           | _ => none
+      | none => none
   | _ => none
 
 /-- One stdout line per *observable* event, in trace order. Two events are
@@ -1084,8 +1096,8 @@ both channels are read off the one trace, a `@dbg` line between two drops
 comes out between them. The projection is total and never panics — an event
 with no line is simply absent from stdout — so no export can be aborted by a
 shape this function did not expect. -/
-def eventLine : Event → Option String
-  | .dtor _ v => dtorLine v
+def eventLine (marks : Print.DtorMarks) : Event → Option String
+  | .dtor _ v => dtorLine marks v
   | .dbg v => dbgLine v
   | .drop _ _ | .dropTemp _ | .consume _ => none
 
@@ -1095,7 +1107,7 @@ scalar prints itself, `()` prints nothing, and a struct or enum value is dropped
 enum is its **active** variant's payload's (`6.3:20`). An `error` is a struct
 naming a declaration the program does not have, which the verdict already
 rejects. -/
-def valueLines (D : Decls) (v : Val) : List String :=
+def valueLines (marks : Print.DtorMarks) (D : Decls) (v : Val) : List String :=
   match v with
   | .int w s n => (dbgLine (.int w s n)).toList
   | .float w f => (dbgLine (.float w f)).toList
@@ -1107,7 +1119,7 @@ def valueLines (D : Decls) (v : Val) : List String :=
   -- ascending index order (`3.9:15`).
   | .struct _ _ _ | .enum _ _ _ _ | .array _ _ _ =>
       match dropContents D (Contents.ofVal v) with
-      | .ok evs => evs.filterMap eventLine
+      | .ok evs => evs.filterMap (eventLine marks)
       | .error _ => []
 
 def panicName : PanicKind → String
@@ -1134,38 +1146,40 @@ observable event the run executed — a user destructor or a `@dbg`
 value. A trapping run has no value line, so the panic arms of
 `outcomeSummary` and `expectedJson` project the trace alone rather than
 calling this. -/
-def outLines (D : Decls) (v : Val) (tr : List Event) : List String :=
-  tr.filterMap eventLine ++ valueLines D v
+def outLines (marks : Print.DtorMarks) (D : Decls) (v : Val) (tr : List Event) : List String :=
+  tr.filterMap (eventLine marks) ++ valueLines marks D v
 
 /-- **The residual drop is path-specific** (`3.8:60`). The §5.5 join marks a
 field `MovedOut` because one arm moved it; the machine keeps the path-specific
 state, so the arm that did *not* move it still drops it at scope exit. The two
 runs therefore print the same lines, which is what a conservatively joined Σ
-costs at the observable level: nothing. -/
+costs at the observable level: nothing. Both are seeds, so `dtorMark`'s
+default (field 0) is the marker (helper's own literal, not `Case.dtorMark`,
+since neither program is wrapped in a `Case` here). -/
 example :
     (match run exportOps (Examples.prog Examples.tI64 Examples.partialMoveOneArm) exportFuel with
-     | .ok _ v tr => outLines (Decls.ofStructs Examples.structEnv) v tr | _ => [])
+     | .ok _ v tr => outLines (fun _ => some 0) (Decls.ofStructs Examples.structEnv) v tr | _ => [])
     = (match run exportOps (Examples.prog Examples.tI64 Examples.partialMoveOtherArm) exportFuel with
-       | .ok _ v tr => outLines (Decls.ofStructs Examples.structEnv) v tr | _ => []) := by rfl
+       | .ok _ v tr => outLines (fun _ => some 0) (Decls.ofStructs Examples.structEnv) v tr | _ => []) := by rfl
 
 /-- A one-line reading of the outcome, for the program's header comment. -/
 def outcomeSummary (c : Case) : String :=
   match checkProgram c.prog, run exportOps c.prog exportFuel with
   | false, .stuck w => "rejected by the checker; the machine would refuse with " ++ violationName w
   | false, .ok _ v tr =>
-      let lines := outLines c.prog.decls v tr
+      let lines := outLines c.dtorMark c.prog.decls v tr
       "rejected by the checker; the machine reaches no refusal on the executed path, which prints " ++
         (if lines.isEmpty then "nothing" else String.intercalate ", " lines) ++ "; exit 0"
   | false, .panic k tr =>
-      let lines := tr.filterMap eventLine
+      let lines := tr.filterMap (eventLine c.dtorMark)
       "rejected by the checker; the machine reaches no refusal on the executed path, which prints " ++
         (if lines.isEmpty then "nothing" else String.intercalate ", " lines) ++
         " and then traps with " ++ panicName k
   | true, .ok _ v tr =>
-      let lines := outLines c.prog.decls v tr
+      let lines := outLines c.dtorMark c.prog.decls v tr
       "accepted; prints " ++ (if lines.isEmpty then "nothing" else String.intercalate ", " lines) ++ "; exit 0"
   | true, .panic k tr =>
-      let lines := tr.filterMap eventLine
+      let lines := tr.filterMap (eventLine c.dtorMark)
       "accepted; prints " ++
         (if lines.isEmpty then "nothing" else String.intercalate ", " lines) ++
         " and traps with " ++ panicName k
@@ -1211,14 +1225,14 @@ here (`EvalRes.absorb`), and an `outOfFuel` one, which `jsonOf` filters out — 
 def expectedJson (c : Case) : String :=
   match run exportOps c.prog exportFuel with
   | .ok _ v tr =>
-      "{\"kind\": \"ok\", \"stdout\": " ++ jsonArray ((outLines c.prog.decls v tr).map jsonString) ++
+      "{\"kind\": \"ok\", \"stdout\": " ++ jsonArray ((outLines c.dtorMark c.prog.decls v tr).map jsonString) ++
         ", \"exit\": 0}"
   | .returned _ v tr =>
-      "{\"kind\": \"ok\", \"stdout\": " ++ jsonArray ((outLines c.prog.decls v tr).map jsonString) ++
+      "{\"kind\": \"ok\", \"stdout\": " ++ jsonArray ((outLines c.dtorMark c.prog.decls v tr).map jsonString) ++
         ", \"exit\": 0}"
   | .panic k tr =>
       "{\"kind\": \"panic\", \"panic\": " ++ jsonString (panicName k) ++
-        ", \"stdout\": " ++ jsonArray ((tr.filterMap eventLine).map jsonString) ++ "}"
+        ", \"stdout\": " ++ jsonArray ((tr.filterMap (eventLine c.dtorMark)).map jsonString) ++ "}"
   | .stuck w => "{\"kind\": \"stuck\", \"violation\": " ++ jsonString (violationName w) ++ "}"
   | .broke _ _ _ => "{\"kind\": \"stuck\", \"violation\": \"typeConfusion\"}"
   | .outOfFuel => "{\"kind\": \"outOfFuel\"}"
@@ -1236,7 +1250,7 @@ def caseJson (c : Case) : String :=
   "    \"name\": " ++ jsonString c.name ++ ",\n" ++
   "    \"description\": " ++ jsonString c.description ++ ",\n" ++
   "    \"rules\": " ++ jsonArray (c.rules.map jsonString) ++ ",\n" ++
-  "    \"source\": " ++ jsonString (Print.program c.name c.description c.rules (outcomeSummary c) c.prog) ++ ",\n" ++
+  "    \"source\": " ++ jsonString (Print.program c.name c.description c.rules (outcomeSummary c) c.dtorMark c.prog) ++ ",\n" ++
   "    \"verdict\": " ++ verdictJson c ++ ",\n" ++
   "    \"expected\": " ++ expectedJson c ++ "\n" ++
   "  }"

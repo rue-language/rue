@@ -27,9 +27,11 @@ trace, so a line of either kind comes out where it happened.
 
 **A user destructor is what makes a *drop* observable**: a Rue program has no
 other way to see a drop happen, so a declaration that says `dtor` prints
-`drop fn S(self) { @dbg(self.f); }`, `f` the field `dtorFieldName` picks (RUE-2505:
-field 0 for a hand-written seed, or the dedicated id field `Gen.genDecl`
-appends for a generated one), one line per drop of a value of that type, and
+`drop fn S(self) { @dbg(self.f); }`, `f` the field a `DtorMarks` marker names
+(RUE-2505's S2 fix: `Corpus.Case.dtorMark`, supplied per program by its
+producer — field 0 for a hand-written seed, or the dedicated id field
+`Gen.genDecl` appends for a generated one — not inferred from field shape),
+one line per drop of a value of that type, and
 the interpreter records the same drop as a `dtor` event (§6.11 runs
 the destructor before the fields, and the compiler agrees — verified by hand
 on a nested pair of destructor-bearing structs). A declaration with no
@@ -102,7 +104,7 @@ binder gets, and Rue's surface permits shadowing in any case (`3.8:12`).
 Together with one form the printer *supplies*, those four are the places where
 the printed program is not the identity elaboration of the core: a
 destructor-bearing declaration prints an invented body
-`drop fn S(self) { @dbg(self.f); }` (`dtorFieldName`), which the core
+`drop fn S(self) { @dbg(self.f); }` (`DtorMarks`), which the core
 declaration does not carry — the core records only *whether* `S` has a
 destructor, and that body is the whole observation channel (above).
 
@@ -225,44 +227,52 @@ def fieldDecls : Nat → List Ty → List String
   | _, [] => []
   | j, T :: rest => (fieldName j ++ ": " ++ tyName T) :: fieldDecls (j + 1) rest
 
-/-- Which field a destructor prints (RUE-2505): the declaration's **last**
-field if it is an `int` — the dedicated id field `Gen.genDecl` appends to
-every destructor-bearing *generated* declaration, filled with a fresh value
-per constructed value (`Gen.freshId`, `Gen.structLitArgs`) rather than an
-ordinary draw of its type — and otherwise field 0 if *that* is an `int`, which
-is every destructor-bearing *seed* declaration (`Examples.lean`) and so keeps
-their printed output exactly as it was before RUE-2505 (none of them has an
-id field, and the last field is field 0 wherever there is only one field). A
-declaration with neither has nothing to print, and the interpreter's `dtor`
-event for it is likewise silent (helper). -/
-def dtorFieldName (fields : List Ty) : Option Nat :=
-  match fields.getLast? with
-  | some T => if T.isInt then some (fields.length - 1)
-    else match fields[0]? with
-      | some T₀ => if T₀.isInt then some 0 else none
-      | none => none
-  | none => none
+/-- Which field a destructor prints, per struct-declaration index (RUE-2505's
+S2 fix): a marker the program's own producer supplies, not a guess this layer
+makes from field *shape*. `Gen.genCase` supplies one that reads its own
+construction discipline directly — a generated destructor-bearing declaration
+always has its id field last (`Gen.genDecl`, `Gen.structLitArgs`) — and
+`Corpus.Case.dtorMark`'s default, `fun _ => some 0`, is every seed's own
+choice (`Examples.lean`; verified by hand against all eight destructor-bearing
+seed declarations, so no seed's printed output changes). Reading the answer
+off a `List Ty` alone — "the last field if it's an `int`, else field 0" — was
+the design this replaced: it could not tell a generated id field from a seed
+whose *last* field happens to be an `int` for an unrelated reason, which
+would have silently picked the wrong field with no warning (helper). -/
+abbrev DtorMarks := Nat → Option Nat
 
 /-- One struct declaration as a Rue item (§2's `S { f1: T1, …, fk: Tk }` with
 its `3.8:18`/`3.8:57` attribute), followed by its `drop fn` when the
-declaration has a destructor (`3.9`). `dtorFieldName` is which field it
-prints, the observation channel the module docstring describes; a declaration
-with no such field has nothing to print, and the interpreter's `dtor` event
-for it is likewise silent. -/
-def structItem (s : Nat) (sd : StructDecl) : String :=
+declaration has a destructor (`3.9`). `marks s` is which field it prints, the
+observation channel the module docstring describes; a declaration with no
+such field, or whose declared `marks s` names a slot it doesn't have or that
+isn't an `int` — the one thing `@dbg` can always render (`Corpus.dbgLine`) —
+has nothing to print, and the interpreter's `dtor` event for it is likewise
+silent (`Corpus.dtorLine` reads the identical marker, and agrees: its own
+`.int` pattern only ever matches an actual `int` value). Checking the marked
+field's type is a well-formedness guard on `marks`' own answer, not a return
+to guessing *which* field from shape — `marks` still says which field, this
+only refuses to print a marker that names an ill-typed one (RUE-2505's S2
+fix; `dtor_linear_field`'s seed, whose sole field is a `struct`, is the one
+case that exercises this: `marks` still answers field 0 by the seed default,
+and this is what keeps it printing nothing, as before). -/
+def structItem (marks : DtorMarks) (s : Nat) (sd : StructDecl) : String :=
   attrPrefix sd.attr ++ "struct " ++ tyName (.struct s) ++ " { " ++
     String.intercalate ", " (fieldDecls 0 sd.fields) ++ " }\n" ++
   (if sd.dtor then
     "drop fn " ++ tyName (.struct s) ++ "(self) { " ++
-      (match dtorFieldName sd.fields with
-       | some j => "@dbg(self." ++ fieldName j ++ "); "
+      (match marks s with
+       | some j =>
+           match sd.fields[j]? with
+           | some T => if T.isInt then "@dbg(self." ++ fieldName j ++ "); " else ""
+           | none => ""
        | none => "") ++ "}\n"
    else "")
 
 /-- Every struct declaration of a program, in program order (helper). -/
-def structItems : Nat → List StructDecl → String
+def structItems (marks : DtorMarks) : Nat → List StructDecl → String
   | _, [] => ""
-  | s, sd :: rest => structItem s sd ++ structItems (s + 1) rest
+  | s, sd :: rest => structItem marks s sd ++ structItems marks (s + 1) rest
 
 /-- The name of a variant at declaration slot `k`. Variants are named by
 position for the reason fields are: the core names them by their slot, which is
@@ -760,8 +770,8 @@ innermost binder first, exactly as (Fn) §5.8's `fnCtx` orders them
 def bodyBinders (fd : FnDef) : List Ty := (fd.params.map Param.ty).reverse
 
 /-- Every struct declaration of a program as Rue items (helper). -/
-def moduleItems (P : Program) : String :=
-  structItems 0 P.decls.structs ++ enumItems 0 P.decls.enums
+def moduleItems (marks : DtorMarks) (P : Program) : String :=
+  structItems marks 0 P.decls.structs ++ enumItems 0 P.decls.enums
 
 /-- One `fn` item: §2's `F` production for a by-value signature. -/
 def fnItem (P : Program) (idx : Nat) (fd : FnDef) : String :=
@@ -782,7 +792,7 @@ The program's own struct declarations come first, then its
 functions as §2 writes them, then `main`, which calls the entry function `f0`
 and observes its value (helper). -/
 def program (name description : String) (rules : List String) (outcome : String)
-    (P : Program) : String :=
+    (marks : DtorMarks) (P : Program) : String :=
   let T := match P.fns[0]? with
     | some fd => fd.ret
     | none => .int .w64 .signed
@@ -793,7 +803,7 @@ def program (name description : String) (rules : List String) (outcome : String)
   "// Printed from the RueCore fragment by docs/formal/lean/RueCore/Print.lean.\n" ++
   "// The struct declarations are the program's own (§2); a `drop fn` is how a\n" ++
   "// drop becomes observable (§6.11).\n" ++
-  moduleItems P ++
+  moduleItems marks P ++
   "\n" ++
   fnItems P 0 P.fns ++
   "fn main() -> i32 {\n" ++

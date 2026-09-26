@@ -988,7 +988,8 @@ Run-in headings, lemma titles and emphasized phrases:
   Checker profile; L4 closed; The float laws have a model; Eight programs, one
   per construct class; Collision rate; Confirming the unmutated compiler;
   dedicated id field; Distinct identities; Observability share; Two more
-  drawn shapes
+  drawn shapes; accept/reject verdict mismatch; each other; independently
+  drawn; printed-output
 
 Emphasized words:
 
@@ -1009,7 +1010,8 @@ Emphasized words:
   survives; taken; that; that operand's; there; through; to; total,
   deterministic, and observable; two places at once; where; where a destructor
   prints; whether; which; whole; why; write; younger; existing;
-  independently; last; program's; regenerated; side; unmutated
+  independently; last; program's; regenerated; side; unmutated; draw;
+  fallback; genuinely; original
 
 ## The check
 

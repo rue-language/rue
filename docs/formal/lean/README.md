@@ -210,17 +210,34 @@ its own, left about 40% of consecutive drop lines from one declaration
 printing the same value, so a swapped order between two equal lines was
 invisible. `genDecl` now appends a **dedicated id field** instead of forcing
 field 0, filled at every construction with a fresh value off a per-program
-counter (`freshId`), so field 0 is free again and two constructed values never
-print the same line. Two shapes still weren't reached by observability alone,
-and are now drawn deliberately: a **block with two or more destructor-bearing
-locals live to its end** — a `match` arm binding two such payload components
-at once, the only fragment shape that shares one scope between two locals,
-since every `let` opens its own nested block — for `c-reverse-scope-drops`;
-and **three declared-`linear` levels nested through field 0**, with a
-destructure through the innermost and a `@drop` of a middle or outer
-ancestor — deeper than the path draws elsewhere in this module ever go — for
-`h2335` and `h2335b`. Both read the side stream, so a program that doesn't
-draw them is unaffected by their addition. `Gen.lean`'s docstring and
+counter (`freshId`), so field 0 is free again and two *independently drawn*
+constructed values never print the same line. That is narrower than "never,"
+by design: `leastValue`'s depth-exhausted fallback has no access to
+`freshId` (it is a pure function), so it gives the id field a fixed sentinel
+instead — two fallback constructions of the *same* declaration in one
+program still print the same line as each other, which an adversarial review
+(RUE-2505's B1) found reproduced in a generated case this page's own drills
+rely on, and which a per-construction counter cannot fix, since a fallback
+isn't a draw at all. Which field a destructor prints is also now an explicit
+marker its producer supplies (`Corpus.Case.dtorMark`), not a guess from field
+shape (S2) — the printer and the model read the identical marker, so they can
+no longer drift apart the way a first pass of the id-field change itself did
+(RUE-2505's own review caught 29 spurious disagreements this fix introduced,
+before it was fixed to match). Two shapes still weren't reached by
+observability alone, and are now drawn deliberately: a **block with two or
+more destructor-bearing locals live to its end** — a `match` arm binding two
+such payload components at once, the only fragment shape that shares one
+scope between two locals, since every `let` opens its own nested block — for
+`c-reverse-scope-drops`; and **three declared-`linear` levels nested through
+field 0**, with a destructure through the innermost and a `@drop` of a middle
+or outer ancestor — deeper than the path draws elsewhere in this module ever
+go — for `h2335` and `h2335b`. Both read the side stream, so *this one case's
+own output* doesn't depend on whether it draws them — but that is not a claim
+that the corpus as a whole holds still: the declared-linear chain's own
+side-stream check runs for every case whether or not it fires, and the
+id-field change shifts the *main* stream for every declaration that ends up
+with a destructor, so regenerating still reshuffles case identities exactly
+as RUE-2480's own regeneration did. `Gen.lean`'s docstring and
 BRIDGE-SENSITIVITY.md have the design and the rerun results.
 
 ```bash

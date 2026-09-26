@@ -225,7 +225,8 @@ def verdictSection (P : Program) (ds : List (Nat × FnDef × Deriv)) : List Stri
 /-- A complete plain-text explanation of one fragment program: its source,
 the checker's verdict and per-function derivations (§5), and the machine's
 run (§6). -/
-def render (name description : String) (rules : List String) (P : Program) : String :=
+def render (name description : String) (rules : List String) (marks : Print.DtorMarks)
+    (P : Program) : String :=
   let ds := programDerivs P 0 P.fns
   let t := runTrace Corpus.exportOps P Corpus.exportFuel
   let lines :=
@@ -233,7 +234,7 @@ def render (name description : String) (rules : List String) (P : Program) : Str
     para 0 78 description ++
     ["", "Rules exercised: " ++ String.intercalate " · " rules] ++
     section' "The program" ++
-    (Print.moduleItems P ++ Print.fnItems P 0 P.fns).splitOn "\n" ++
+    (Print.moduleItems marks P ++ Print.fnItems P 0 P.fns).splitOn "\n" ++
     section' "What the checker says (§5)" ++
     verdictSection P ds ++
     section' "The derivations (§5)" ++
@@ -260,7 +261,7 @@ def render (name description : String) (rules : List String) (P : Program) : Str
 
 /-- (helper) The rendering of one bridge corpus case (`Corpus.lean`). -/
 def renderCase (c : Corpus.Case) : String :=
-  render c.name c.description c.rules c.prog
+  render c.name c.description c.rules c.dtorMark c.prog
 
 end Text
 end Explain
