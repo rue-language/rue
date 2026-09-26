@@ -937,7 +937,31 @@ def cases : List Case := [
   { name := "loop_move_out_then_reinit",
     description := "Each turn of a counted loop moves the mut affine b into t and reinitializes b, and t drops after the reinit: 2 and 21 in the loop, 22 at b's scope exit, then the value 2. Seeded by the bridge sensitivity drills (RUE-2464): with RUE-2380's fix removed the compiler ICEd at -O2 and -O3 (E9000), and no seed or generated case reached the shape. Only the harness's O2/O3 compile lanes (checker <-> compiler [O2]) see that mutant; bin/verify.py runs the default level.",
     rules := ["(Loop-Break) §5.7", "(Use-Move) §5.1", "(Assign) §5.2", "3.8:55", "§5.6 scope exit", "(D-Loop-Iter) §6.10"],
-    prog := Examples.prog Examples.tI64 Examples.loopMoveOutThenReinit }
+    prog := Examples.prog Examples.tI64 Examples.loopMoveOutThenReinit },
+  { name := "join_moved_vs_partial_linear",
+    description := "One arm drops a linear-carrying S10 whole, the other drops only its affine x1 and leaves the linear x0 Owned: §5.5's join of MovedOut with that partial state is undefined (3.8:50; the compiler reports E0443). The run takes the second arm and meets the live x0 at the scope exit: linearLeak. Seeded by the definition mutants (RUE-2465): a join without the residual check passed every seed and generated case, and only a proof noticed it.",
+    rules := ["(If) §5.5", "§5.5 join", "3.8:50", "(@Drop) §5.3", "§5.6 residual-linear leak check"],
+    prog := Examples.prog Examples.tI64 Examples.joinMovedVsPartialLinear },
+  { name := "match_payload_assign",
+    description := "A match arm assigns its i64 payload binding, which (Match) §5.5 binds immutable, so (Assign) §5.2 refuses it (the compiler: cannot assign to immutable). The machine runs the arm: the value is 5. Seeded by the definition mutants (RUE-2465): mutable payload bindings passed every seed and generated case.",
+    rules := ["(Match) §5.5", "(Assign) §5.2"],
+    prog := Examples.enumProg Examples.tI64 Examples.matchPayloadAssign },
+  { name := "loop_inner_break_outer_return",
+    description := "An outer loop whose only break belongs to an inner loop, and which leaves by return: (Loop-Div) types it never, so the i64 body checks. The loop counts to 3 and returns it. Seeded by the definition mutants (RUE-2465): an Expr.breaks that looked inside the nested loop typed the outer loop unit and refused the program, and no seed or generated case noticed.",
+    rules := ["(Loop-Div) §5.7", "(Loop-Break) §5.7", "(Break) §5.7", "(Return-Value) §5.7", "(D-Break) §6.10"],
+    prog := Examples.scalarProg Examples.tI64 Examples.loopInnerBreakOuterReturn },
+  { name := "i8_neg_min",
+    description := "-(-128) at i8: -min_T is one past max_T, so the negation traps with overflow. Seeded by the definition mutants (RUE-2465): a negation without the range check passed every seed and generated case.",
+    rules := ["(Neg) §5.8", "(D-Arith-Trap) §6.4", "8.1:3"],
+    prog := Examples.scalarProg (.int .w8 .signed) Examples.i8NegMin },
+  { name := "params_two_types",
+    description := "f1(a: i64, b: bool) tests b and returns a: the parameters' de Bruijn order is what makes the body well typed ((Fn) §5.8's entry context). main passes 5 and true; the value is 5. Seeded by the definition mutants (RUE-2465): the parameters bound in the wrong order passed every seed and generated case, whose multi-parameter functions all take one type.",
+    rules := ["(Fn) §5.8", "(Call) §5.8", "(If) §5.5", "(D-Call) §6.9"],
+    prog := Examples.paramsTwoTypes },
+  { name := "assign_immutable",
+    description := "let x = 1; x = 2; x: (Assign) §5.2 refuses a write to an immutable binding (the compiler: cannot assign to immutable). The machine performs it: the value is 2. Seeded by the definition mutants (RUE-2465): dropping the mut premise passed every seed and generated case.",
+    rules := ["(Assign) §5.2", "(Let) §5.3"],
+    prog := Examples.scalarProg Examples.tI64 Examples.assignImmutable }
 ]
 
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/

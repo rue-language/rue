@@ -1,0 +1,442 @@
+════════════════════════════════════════════════════════════════════════════════
+ loop_inner_break_outer_return
+════════════════════════════════════════════════════════════════════════════════
+An outer loop whose only break belongs to an inner loop, and which leaves by
+return: (Loop-Div) types it never, so the i64 body checks. The loop counts to
+3 and returns it. Seeded by the definition mutants (RUE-2465): an Expr.breaks
+that looked inside the nested loop typed the outer loop unit and refused the
+program, and no seed or generated case noticed.
+
+Rules exercised: (Loop-Div) §5.7 · (Loop-Break) §5.7 · (Break) §5.7 · (Return-Value) §5.7 · (D-Break) §6.10
+
+── The program ─────────────────────────────────────────────────────────────────
+
+fn f0() -> i64 {
+    {
+        let mut v0: i64 = 0;
+        loop {
+            {
+                loop {
+                    break
+                };
+                {
+                    if { let t5a: i64 = v0; let t5b: i64 = 3; t5a >= t5b } {
+                        return v0
+                    } else {
+                        ()
+                    };
+                    { v0 = (v0 + 1); }
+                }
+            }
+        }
+    }
+}
+
+
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: ACCEPTED by the checker (§5).
+         Every function is well-formed by (Fn) §5.8 and the entry point takes
+         no parameters, so `checkProgram_sound` ties the whole program to a
+         real derivation and the §7 safety theorems apply to it.
+
+         fn f0() -> i64  — body ⇒ never, exit ⊥ (no normal exit)
+
+── The derivations (§5) ────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order. One tree per
+function body, checked from (Fn) §5.8's entry context.
+
+  fn f0() -> i64
+
+  (Let) §5.3, the body diverging
+    e       { let mut v0: i64 = 0; loop { { loop { break }; { if (v0 >= 3) { return v0 } el…
+    Γ;Σ     (empty)
+    ⇒       never  ⊣  ⊥
+      (Lit) §5.8
+        e       0
+        Γ;Σ     (empty)
+        ⇒       i64  ⊣  (empty)
+      (Loop-Div-Backedge) §5.7 + (Sub-Never) §5.7
+        e       loop { { loop { break }; { if (v0 >= 3) { return v0 } else { () }; { v0 = (v0 +…
+        Γ;Σ     [v0: i64 mut = Owned]
+        ⇒       never  ⊣  ⊥
+          (Seq) §5.3, 3.8:64
+            e       { loop { break }; { if (v0 >= 3) { return v0 } else { () }; { v0 = (v0 + 1); } …
+            Γ;Σ     [v0: i64 mut = Owned]
+            ⇒       ()  ⊣  [v0: i64 mut = Owned]
+              (Loop-Break) §5.7
+                e       loop { break }
+                Γ;Σ     [v0: i64 mut = Owned]
+                ⇒       ()  ⊣  [v0: i64 mut = Owned]
+                  (Break) §5.7 + (Sub-Never) §5.7
+                    e       break
+                    Γ;Σ     [v0: i64 mut = Owned]
+                    ⇒       never  ⊣  ⊥; Δ = {⟨break, [v0: i64 mut = Owned]⟩}
+              (Seq) §5.3, 3.8:64
+                e       { if (v0 >= 3) { return v0 } else { () }; { v0 = (v0 + 1); } }
+                Γ;Σ     [v0: i64 mut = Owned]
+                ⇒       ()  ⊣  [v0: i64 mut = Owned]
+                  (If) §5.5 join
+                    e       if (v0 >= 3) { return v0 } else { () }
+                    Γ;Σ     [v0: i64 mut = Owned]
+                    ⇒       ()  ⊣  [v0: i64 mut = Owned]
+                      (Ord) §5.8
+                        e       (v0 >= 3)
+                        Γ;Σ     [v0: i64 mut = Owned]
+                        ⇒       bool  ⊣  [v0: i64 mut = Owned]
+                          (Use-Copy) §5.1
+                            e       v0
+                            Γ;Σ     [v0: i64 mut = Owned]
+                            ⇒       i64  ⊣  [v0: i64 mut = Owned]
+                          (Lit) §5.8
+                            e       3
+                            Γ;Σ     [v0: i64 mut = Owned]
+                            ⇒       i64  ⊣  [v0: i64 mut = Owned]
+                      (Return-Value) §5.7
+                        e       return v0
+                        Γ;Σ     [v0: i64 mut = Owned]
+                        ⇒       never  ⊣  ⊥
+                          (Use-Copy) §5.1
+                            e       v0
+                            Γ;Σ     [v0: i64 mut = Owned]
+                            ⇒       i64  ⊣  [v0: i64 mut = Owned]
+                      (Lit) §5.8
+                        e       ()
+                        Γ;Σ     [v0: i64 mut = Owned]
+                        ⇒       ()  ⊣  [v0: i64 mut = Owned]
+                  (Assign) §5.2, 3.8:77
+                    e       { v0 = (v0 + 1); }
+                    Γ;Σ     [v0: i64 mut = Owned]
+                    ⇒       ()  ⊣  [v0: i64 mut = Owned]
+                      (Arith) §5.8
+                        e       (v0 + 1)
+                        Γ;Σ     [v0: i64 mut = Owned]
+                        ⇒       i64  ⊣  [v0: i64 mut = Owned]
+                          (Use-Copy) §5.1
+                            e       v0
+                            Γ;Σ     [v0: i64 mut = Owned]
+                            ⇒       i64  ⊣  [v0: i64 mut = Owned]
+                          (Lit) §5.8
+                            e       1
+                            Γ;Σ     [v0: i64 mut = Owned]
+                            ⇒       i64  ⊣  [v0: i64 mut = Owned]
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth — a callee's rows are deeper than its call's — and `>>`
+marks a drop event. The run enters at f0(), as `Dynamics.run` does.
+`#n` after an aggregate is its identity, minted when it was built; a `†`
+cell is a retired binding or an identity's reserved slot (`introVal`).
+
+  [1]   d1    (D-Call) §6.9 (push the frame)
+         expr    fn f0() -> i64  with []
+         store   (empty)
+           →     (empty)
+         result  value ()
+  [2]   d3        literal §6.3
+         expr    0
+         store   (empty)
+           →     (empty)
+         result  value 0
+  [3]   d3        (D-Let) §6.7 (mint the binding)
+         expr    let mut v0 = 0 at ℓ0
+         store   (empty)
+           →     [ℓ0 = 0]
+         result  value 0
+  [4]   d6              (D-Break) §6.10
+         expr    break
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 0]
+         result  BREAK — unwinding to the enclosing loop (§6.10)
+  [5]   d5            (D-Break) §6.10 (unwind to the loop)
+         expr    unwind-drops([])
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 0]
+         result  value ()
+  [6]   d8                  (D-Use-Copy) §6.3
+         expr    v0
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 0]
+         result  value 0
+  [7]   d8                  literal §6.3
+         expr    3
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 0]
+         result  value 3
+  [8]   d7                ordering compare §6.4
+         expr    (v0 >= 3)
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 0]
+         result  value false
+  [9]   d7                literal §6.3
+         expr    ()
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 0]
+         result  value ()
+  [10]  d6              (D-If-F) §6.6
+         expr    if (v0 >= 3) { return v0 } else { () }
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 0]
+         result  value ()
+  [11]  d8                  (D-Use-Copy) §6.3
+         expr    v0
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 0]
+         result  value 0
+  [12]  d8                  literal §6.3
+         expr    1
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 0]
+         result  value 1
+  [13]  d7                (D-Arith) §6.4
+         expr    (v0 + 1)
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 0]
+         result  value 1
+  [14]  d6              (D-Assign) §6.8 (overwrite-drop)
+         expr    { v0 = (v0 + 1); }
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 1]
+         result  value ()
+  [15]  d5            (D-Seq) §6.7
+         expr    { if (v0 >= 3) { return v0 } else { () }; { v0 = (v0 + 1); } }
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 1]
+         result  value ()
+  [16]  d4          (D-Seq) §6.7
+         expr    { loop { break }; { if (v0 >= 3) { return v0 } else { () }; { v0 = (v0 + 1); } …
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 1]
+         result  value ()
+  [17]  d7                (D-Break) §6.10
+         expr    break
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 1]
+         result  BREAK — unwinding to the enclosing loop (§6.10)
+  [18]  d6              (D-Break) §6.10 (unwind to the loop)
+         expr    unwind-drops([])
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 1]
+         result  value ()
+  [19]  d9                  (D-Use-Copy) §6.3
+         expr    v0
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 1]
+         result  value 1
+  [20]  d9                  literal §6.3
+         expr    3
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 1]
+         result  value 3
+  [21]  d8                  ordering compare §6.4
+         expr    (v0 >= 3)
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 1]
+         result  value false
+  [22]  d8                  literal §6.3
+         expr    ()
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 1]
+         result  value ()
+  [23]  d7                (D-If-F) §6.6
+         expr    if (v0 >= 3) { return v0 } else { () }
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 1]
+         result  value ()
+  [24]  d9                  (D-Use-Copy) §6.3
+         expr    v0
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 1]
+         result  value 1
+  [25]  d9                  literal §6.3
+         expr    1
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 1]
+         result  value 1
+  [26]  d8                  (D-Arith) §6.4
+         expr    (v0 + 1)
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 1]
+         result  value 2
+  [27]  d7                (D-Assign) §6.8 (overwrite-drop)
+         expr    { v0 = (v0 + 1); }
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 2]
+         result  value ()
+  [28]  d6              (D-Seq) §6.7
+         expr    { if (v0 >= 3) { return v0 } else { () }; { v0 = (v0 + 1); } }
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 2]
+         result  value ()
+  [29]  d5            (D-Seq) §6.7
+         expr    { loop { break }; { if (v0 >= 3) { return v0 } else { () }; { v0 = (v0 + 1); } …
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 2]
+         result  value ()
+  [30]  d8                  (D-Break) §6.10
+         expr    break
+         store   [ℓ0 = 2]
+           →     [ℓ0 = 2]
+         result  BREAK — unwinding to the enclosing loop (§6.10)
+  [31]  d7                (D-Break) §6.10 (unwind to the loop)
+         expr    unwind-drops([])
+         store   [ℓ0 = 2]
+           →     [ℓ0 = 2]
+         result  value ()
+  [32]  d10                  (D-Use-Copy) §6.3
+         expr    v0
+         store   [ℓ0 = 2]
+           →     [ℓ0 = 2]
+         result  value 2
+  [33]  d10                  literal §6.3
+         expr    3
+         store   [ℓ0 = 2]
+           →     [ℓ0 = 2]
+         result  value 3
+  [34]  d9                  ordering compare §6.4
+         expr    (v0 >= 3)
+         store   [ℓ0 = 2]
+           →     [ℓ0 = 2]
+         result  value false
+  [35]  d9                  literal §6.3
+         expr    ()
+         store   [ℓ0 = 2]
+           →     [ℓ0 = 2]
+         result  value ()
+  [36]  d8                  (D-If-F) §6.6
+         expr    if (v0 >= 3) { return v0 } else { () }
+         store   [ℓ0 = 2]
+           →     [ℓ0 = 2]
+         result  value ()
+  [37]  d10                  (D-Use-Copy) §6.3
+         expr    v0
+         store   [ℓ0 = 2]
+           →     [ℓ0 = 2]
+         result  value 2
+  [38]  d10                  literal §6.3
+         expr    1
+         store   [ℓ0 = 2]
+           →     [ℓ0 = 2]
+         result  value 1
+  [39]  d9                  (D-Arith) §6.4
+         expr    (v0 + 1)
+         store   [ℓ0 = 2]
+           →     [ℓ0 = 2]
+         result  value 3
+  [40]  d8                  (D-Assign) §6.8 (overwrite-drop)
+         expr    { v0 = (v0 + 1); }
+         store   [ℓ0 = 2]
+           →     [ℓ0 = 3]
+         result  value ()
+  [41]  d7                (D-Seq) §6.7
+         expr    { if (v0 >= 3) { return v0 } else { () }; { v0 = (v0 + 1); } }
+         store   [ℓ0 = 2]
+           →     [ℓ0 = 3]
+         result  value ()
+  [42]  d6              (D-Seq) §6.7
+         expr    { loop { break }; { if (v0 >= 3) { return v0 } else { () }; { v0 = (v0 + 1); } …
+         store   [ℓ0 = 2]
+           →     [ℓ0 = 3]
+         result  value ()
+  [43]  d9                  (D-Break) §6.10
+         expr    break
+         store   [ℓ0 = 3]
+           →     [ℓ0 = 3]
+         result  BREAK — unwinding to the enclosing loop (§6.10)
+  [44]  d8                  (D-Break) §6.10 (unwind to the loop)
+         expr    unwind-drops([])
+         store   [ℓ0 = 3]
+           →     [ℓ0 = 3]
+         result  value ()
+  [45]  d11                  (D-Use-Copy) §6.3
+         expr    v0
+         store   [ℓ0 = 3]
+           →     [ℓ0 = 3]
+         result  value 3
+  [46]  d11                  literal §6.3
+         expr    3
+         store   [ℓ0 = 3]
+           →     [ℓ0 = 3]
+         result  value 3
+  [47]  d10                  ordering compare §6.4
+         expr    (v0 >= 3)
+         store   [ℓ0 = 3]
+           →     [ℓ0 = 3]
+         result  value true
+  [48]  d11                  (D-Use-Copy) §6.3
+         expr    v0
+         store   [ℓ0 = 3]
+           →     [ℓ0 = 3]
+         result  value 3
+  [49]  d10                  (D-Return) §6.9 (unwind the frame)
+         expr    run-all-scope-drops([ℓ0])
+         store   [ℓ0 = 3]
+           →     [ℓ0 = †]
+         result  value 3 — handed past this node by a `return` (§6.9)
+  [50]  d9                  (D-If-T) §6.6
+         expr    if (v0 >= 3) { return v0 } else { () }
+         store   [ℓ0 = 3]
+           →     [ℓ0 = †]
+         result  value 3 — handed past this node by a `return` (§6.9)
+  [51]  d8                  (D-Seq) §6.7 — a premise did not complete
+         expr    { if (v0 >= 3) { return v0 } else { () }; { v0 = (v0 + 1); } }
+         store   [ℓ0 = 3]
+           →     [ℓ0 = †]
+         result  value 3 — handed past this node by a `return` (§6.9)
+  [52]  d7                (D-Seq) §6.7
+         expr    { loop { break }; { if (v0 >= 3) { return v0 } else { () }; { v0 = (v0 + 1); } …
+         store   [ℓ0 = 3]
+           →     [ℓ0 = †]
+         result  value 3 — handed past this node by a `return` (§6.9)
+  [53]  d6              (D-Loop-Iter) §6.10 — a premise did not complete
+         expr    loop { { loop { break }; { if (v0 >= 3) { return v0 } else { () }; { v0 = (v0 +…
+         store   [ℓ0 = 3]
+           →     [ℓ0 = †]
+         result  value 3 — handed past this node by a `return` (§6.9)
+  [54]  d5            (D-Loop-Iter) §6.10 (re-enter the body)
+         expr    loop { { loop { break }; { if (v0 >= 3) { return v0 } else { () }; { v0 = (v0 +…
+         store   [ℓ0 = 2]
+           →     [ℓ0 = †]
+         result  value 3 — handed past this node by a `return` (§6.9)
+  [55]  d4          (D-Loop-Iter) §6.10 (re-enter the body)
+         expr    loop { { loop { break }; { if (v0 >= 3) { return v0 } else { () }; { v0 = (v0 +…
+         store   [ℓ0 = 1]
+           →     [ℓ0 = †]
+         result  value 3 — handed past this node by a `return` (§6.9)
+  [56]  d3        (D-Loop-Iter) §6.10 (re-enter the body)
+         expr    loop { { loop { break }; { if (v0 >= 3) { return v0 } else { () }; { v0 = (v0 +…
+         store   [ℓ0 = 0]
+           →     [ℓ0 = †]
+         result  value 3 — handed past this node by a `return` (§6.9)
+  [57]  d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
+         expr    { let mut v0: i64 = 0; loop { { loop { break }; { if (v0 >= 3) { return v0 } el…
+         store   (empty)
+           →     [ℓ0 = †]
+         result  value 3 — handed past this node by a `return` (§6.9)
+  [58]  d0  (D-Return)/(D-Return-Main) §6.9 (the callee's return is the call's value)
+         expr    absorb 3
+         store   [ℓ0 = †]
+           →     [ℓ0 = †]
+         result  value 3
+
+── Identities (§7) ─────────────────────────────────────────────────────────────
+
+One line per owned identity: the step that minted it, the steps that ended
+it (a drop marker, a discarded temporary, a consumption), and the steps whose
+destructor ran on it. `drop_exactly_once` is one entry in the ended column
+per identity. Read in row order, and `[n.k]` (the k-th end of row n) inside a
+row, the ends are the trace's order, which `drop_order` fixes: a value's
+destructors inside its drop in §6.11's order, and cells last-in first-out.
+
+  The run owns no identity: nothing to end.
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: ok — value 3
+         drop trace: (no drops)
+

@@ -4049,6 +4049,80 @@ def loopMoveOutThenReinit : Expr :=
 
 example : checkProgram (prog tI64 loopMoveOutThenReinit) = true := by rfl
 
+/-! ### Seeds for the definition mutants nothing but a proof noticed (RUE-2465)
+
+`docs/formal/lean/MUTATION.md` changed the definitions one rule at a time
+(`bin/mutate.py`). Each program below is the smallest one that tells a mutant
+from the definition it came from, for a mutant that no example, corpus case or
+generated case told apart, so that a proof was the only thing that noticed it,
+or nothing did once the proof scripts were set aside. -/
+
+/-- **`MovedOut` against a partially moved linear carrier** (§5.5's join,
+`3.8:50`). `v` is an `S10 { x0: S3, x1: S1 }`, linear through `x0`. One arm
+drops `v` whole; the other drops only `v.x1`, so it leaves the linear `x0`
+`Owned`. The join of `MovedOut` with that partial state is undefined, because
+the partial state still has residual linear content (the compiler reports
+E0443). A join that answered `MovedOut` without the residual check accepted the
+program, and the run takes the second arm and meets the live `x0` at `v`'s
+scope exit: `linearLeak`. -/
+def joinMovedVsPartialLinear : Expr :=
+  letIn false (mkStruct sCarryAffine [resLD (lit 1), resA (lit 2)])
+    (seq (ite (boolLit false) (drop (.var 0)) (drop (.proj (.var 0) 1))) (lit 9))
+
+example : checkProgram (prog tI64 joinMovedVsPartialLinear) = false := by rfl
+example : run demoOps (prog tI64 joinMovedVsPartialLinear) demoFuel = .stuck .linearLeak := by rfl
+
+/-- **A `match` payload binding is immutable** (§5.5's (Match) binds its
+payload locals without `mut`, `armCtx`). The arm assigns the `i64` payload
+binding, which (Assign) §5.2 refuses (the compiler: "cannot assign to
+immutable"). The machine runs the arm and returns `5`. -/
+def matchPayloadAssign : Expr :=
+  letIn false (mkEnum eIntIdx 0 [lit 4])
+    («match» (use (.var 0)) [seq (assign (.var 0) (lit 5)) (use (.var 0)), lit 0])
+
+example : checkProgram (enumProg tI64 matchPayloadAssign) = false := by rfl
+
+/-- **An outer loop that only an inner loop breaks out of** (§5.7). The inner
+`loop { break }` ends its own loop, so the outer loop has no `break` of its own
+and leaves only by `return`: (Loop-Div) types it `never`, and the `i64`
+function body checks. `Expr.breaks` stops at a nested loop for this reason; a
+reading that looked inside it gave the outer loop type `unit` and refused the
+program. The loop counts to 3 and returns it. -/
+def loopInnerBreakOuterReturn : Expr :=
+  letIn true (lit 0)
+    (loop (seq (loop brk)
+      (seq (ite (binop .ge (use (.var 0)) (lit 3)) (ret (use (.var 0))) unitLit)
+        (assign (.var 0) (binop .add (use (.var 0)) (lit 1))))))
+
+example : checkProgram (scalarProg tI64 loopInnerBreakOuterReturn) = true := by rfl
+
+/-- **`-min_T`** at `i8` (§6.4's (D-Arith-Trap) through (Neg) §5.8): the
+negation of `-128` is one past `max_T`, so it traps with `overflow`, as
+`i64_min_times_neg1` does for a multiplication. -/
+def i8NegMin : Expr := unop .neg (intLit .w8 .signed (intMin .w8 .signed))
+
+example : run demoOps (scalarProg (.int .w8 .signed) i8NegMin) demoFuel = .panic .overflow [] := by rfl
+
+/-- **Two parameters of different types** ((Fn) §5.8's entry context). `f1(a:
+i64, b: bool)` reads `b` as its condition and `a` as its result, so binding the
+parameters in the wrong de Bruijn order (`fnCtx` without its `reverse`) makes
+the body ill-typed. `main` passes `5` and `true`; the value is `5`. -/
+def paramsTwoTypes : Program :=
+  { decls := Decls.ofStructs [],
+    fns := [{ params := [], ret := tI64, body := call 1 [lit 5, boolLit true] },
+            { params := [⟨tI64, false⟩, ⟨.bool, false⟩], ret := tI64,
+              body := ite (use (.var 0)) (use (.var 1)) (lit 0) }] }
+
+example : checkProgram paramsTwoTypes = true := by rfl
+
+/-- **An assignment to an immutable binding** ((Assign) §5.2 asks `μ`): `let x
+= 1; x = 2; x` is refused (the compiler: "cannot assign to immutable"). The
+machine performs the write and returns `2`. -/
+def assignImmutable : Expr :=
+  letIn false (lit 1) (seq (assign (.var 0) (lit 2)) (use (.var 0)))
+
+example : checkProgram (scalarProg tI64 assignImmutable) = false := by rfl
+
 #eval checkProgram (scalarProg tI64 scalars)
 #eval checkProgram (prog tI64 linearLeaked)
 
