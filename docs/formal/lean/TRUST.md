@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 1377.
+- Theorems checked: 1423.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -742,6 +742,9 @@ and diffs them against the committed copies.
 | `Nonvacuous.panic` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
 | `Nonvacuous.float` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
 | `Nonvacuous.diverges` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
+| `Nonvacuous.dropTurn_eval` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
+| `Nonvacuous.dropLoop_eval` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
+| `Nonvacuous.diverges_drop` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
 | `Nonvacuous.stuck` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
 | `Expr.pendingSafeList_mem` | `RueCore.TraceExact` | `propext` |
 | `Expr.returnsList_mem` | `RueCore.TraceExact` | `propext` |
@@ -971,6 +974,37 @@ and diffs them against the committed copies.
 | `Retire.steps_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
 | `run_no_use_after_drop` | `RueCore.Retire` | `Quot.sound`, `propext` |
 | `step_no_use_after_drop` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `StepsN.split` | `RueCore.TracePrefix` | `propext` |
+| `StepsN.reaches` | `RueCore.TracePrefix` | `propext` |
+| `Steps.trace_ext` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `LongC.mono` | `RueCore.TracePrefix` | `propext` |
+| `LongC.weaken` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `LongC.pre` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `LongC.pre1` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `LongC.step1` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `LongC.andThen` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `Contents.ownList_ofVals_snoc` | `RueCore.TracePrefix` | `propext` |
+| `evalArgs_longc` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `longc_one` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `longc_binop` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `longc_letIn` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `longc_match` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `longc_seq` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `longc_ite` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `longc_argsForm` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `longc_mkStruct` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `longc_mkEnum` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `longc_mkArray` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `longc_indexRead` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `longc_indexDrop` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `longc_indexDrop_one` | `RueCore.TracePrefix` | `propext` |
+| `longc_indexWrite` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `longc_call` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `longc_loop` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `eval_longc` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `steps_trace_once` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `step_no_double_free` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
+| `no_double_free_of_step` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
 | `Sharp.exact_ops` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.withTrace_nil` | `RueCore.Sharp` | `propext` |
 | `Sharp.noStep_of_stuck` | `RueCore.Sharp` | `Quot.sound`, `propext` |
@@ -1017,6 +1051,7 @@ and diffs them against the committed copies.
 | `Sharp.init_steps` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.unreachable_stuck` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.retired_cell` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.unreached_double` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Spine.soundness` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.run_safe` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.no_violation` | `RueCore.Spine` | `Quot.sound`, `propext` |
@@ -1032,6 +1067,7 @@ and diffs them against the committed copies.
 | `Spine.check_sound` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.checkProgram_sound` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.no_double_free` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.step_no_double_free` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.freed_once` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.dtor_once` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.drop_exactly_once` | `RueCore.Spine` | `Quot.sound`, `propext` |
@@ -1068,6 +1104,7 @@ and diffs them against the committed copies.
 | `Spine.Nonvacuous.panic` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Nonvacuous.float` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Nonvacuous.diverges` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Nonvacuous.diverges_drop` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Nonvacuous.stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.stuck_step` | `RueCore.Spine` | `Quot.sound`, `propext` |
@@ -1097,6 +1134,7 @@ and diffs them against the committed copies.
 | `Spine.Sharp.init_steps` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.unreachable_stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.retired_cell` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.unreached_double` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.run_safe` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.no_violation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1123,6 +1161,7 @@ and diffs them against the committed copies.
 | `Nonvacuous.Glue.dtor.run_sim` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.eval_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.run_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.dtor.step_no_double_free` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.freed_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.dtor_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.drop_exactly_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1310,6 +1349,7 @@ and diffs them against the committed copies.
 | `Nonvacuous.Glue.exact_model.no_linear_overwrite` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.exact_model.no_linear_discard` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.exact_model.no_double_free` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.exact_model.step_no_double_free` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.exact_model.drop_exactly_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.exact_model.rest_exactly_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.exact_model.drop_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1330,6 +1370,10 @@ and diffs them against the committed copies.
 | `Nonvacuous.Glue.open_frame.rest_exactly_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.diverges.checkProgram_sound` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.diverges.eval_diverges_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.diverges_drop.checkProgram_sound` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.diverges_drop.no_double_free` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.diverges_drop.step_no_double_free` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.diverges_drop.eval_diverges_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.stuck.fuel_mono` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.stuck.no_masking` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.stuck.Config.trichotomy` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1378,6 +1422,7 @@ and diffs them against the committed copies.
 | `Sharp.Glue.fuel_panic.run_complete_4` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.not_fits.check_sound_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.double_drop.no_double_free_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.double_drop.step_no_double_free_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.double_drop.dtor_once_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.bare_dtor.drop_order_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.bare_dtor.drop_glue_order_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
@@ -1414,6 +1459,7 @@ and diffs them against the committed copies.
 | `Sharp.Glue.unreachable_stuck.step_never_stuck_of_run_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.unreachable_stuck.run_stuck_of_step_stuck_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.retired_cell.step_no_use_after_drop_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.unreached_double.step_no_double_free_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Examples.dynReadAffine_refused` | `RueCore.Examples` | `propext` |
 | `Examples.dynDropAffine_refused` | `RueCore.Examples` | `propext` |
 | `Examples.repeatAffine_refused` | `RueCore.Examples` | `propext` |
@@ -1538,7 +1584,7 @@ proof is not a claim, and is not a headline. The non-vacuity witnesses
 definitions outside this base (`Float.exactOps` and its `roundRat`, the
 witness programs): a witness can only fail to witness, never widen a claim.
 
-- Headline statements: 39 — `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `run_no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `no_masking`, `run_ne_returned`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `drop_glue_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `Config.stuck_iff`, `step_stuck_isStuckState`, `step_progress`, `step_preservation`, `step_type_safety`, `step_no_use_after_drop`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `run_stuck_of_step_stuck`, `eval_diverges_iff`.
+- Headline statements: 40 — `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `run_no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `no_masking`, `run_ne_returned`, `check_sound`, `checkProgram_sound`, `no_double_free`, `step_no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `drop_glue_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `Config.stuck_iff`, `step_stuck_isStuckState`, `step_progress`, `step_preservation`, `step_type_safety`, `step_no_use_after_drop`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `run_stuck_of_step_stuck`, `eval_diverges_iff`.
 - Definitions to read: **295**, in 9 modules (69 inductive, 223 def, 3 abbrev).
 - Instances they use: 12 — `instDecidableEqAttr`, `instDecidableEqEntry`, `instDecidableEqFloatWidth`, `instDecidableEqIntWidth`, `instDecidableEqMult`, `instDecidableEqOwnSt`, `instDecidableEqSign`, `instDecidableEqTy`, `instDecidableInBounds`, `instDecidableNoResidualLinear`, `instDecidableRoundsFinite`, `instDecidableWf_1`. A `deriving` image says nothing beyond its type; a hand-written one is read with the predicate it decides.
 - Lean-generated auxiliaries passed through (`isLeanAux`): 525. Each is
