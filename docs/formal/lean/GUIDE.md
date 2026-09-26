@@ -1808,9 +1808,10 @@ argument of section 4's theorems), and `TRUST.md` lists them in a section of
 their own. `Float.exactOps`, the instance the corpus and the examples run, is
 constructive integer arithmetic, and it satisfies every law: `Float.exactModel`
 (`RueCore/Float/Lemmas.lean`, RUE-2469) proves each one of it, so the laws have
-a model and the theorems over `M : FloatModel` are not vacuous. That its
-roundings are IEEE 754's beyond what the laws say is checked by running the
-float corpus against the compiler rather than proved.
+a model and the theorems over `M : FloatModel` are not vacuous in `M`. The
+laws say nothing about which datum a rounding returns; that `exactOps`'s
+roundings are IEEE 754's is checked by running the float corpus against the
+compiler rather than proved.
 
 ### Example 11: `loop_move_every_path_breaks` and `loop_linear_one_exit`, a loop's head state and its exits
 

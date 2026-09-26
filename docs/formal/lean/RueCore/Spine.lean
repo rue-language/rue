@@ -14,7 +14,9 @@ public import RueCore.Nonvacuous
 /-!
 # RueCore.Spine — each spine proof, checked against its statement (layer L2)
 
-One theorem per entry of `RueCore.Spec.spine`: `RueCore.Spine.<name>` has
+One theorem per entry of `RueCore.Spec.spine` (36) and of
+`RueCore.Spec.witnesses` (13, the non-vacuity witnesses; RUE-2469), 49 in
+all: `RueCore.Spine.<name>` has
 exactly the type `RueCore.Spec.<name>_stmt` and is proved by the theorem
 `RueCore.<name>` of the proof layer. The kernel accepts each only if that
 theorem's statement is definitionally the Spec statement, so a statement
