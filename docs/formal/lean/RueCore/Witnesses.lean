@@ -478,9 +478,10 @@ The spine's program statements take `ProgramTyped`, which `checkProgram`
 decides soundly (`checkProgram_sound`); `Spec.Nonvacuous` shows the hypothesis
 holds of non-trivial programs, so the checker is not too strict to matter.
 This section is the other side, for the checker's own profile: it **rejects**
-a program of each error class the calculus's statics rule out, each a corpus
-case named here, most beside an accepted corpus case that differs where the
-error is. `lake exe ruecore-corpus --profile` counts acceptances and
+a program of each of the 21 error classes listed below, each a corpus case,
+13 of them beside an accepted corpus case that differs where the error is.
+The list is the classes the corpus exercises, not a proof that the statics
+have no others. `lake exe ruecore-corpus --profile` counts acceptances and
 rejections over the whole corpus and the generated programs. -/
 
 /-- A corpus case's program, by its name (helper). -/
@@ -492,17 +493,28 @@ checker must reject, and an accepted neighbour where the corpus has one
 (helper). -/
 def errorClassCases : List (String × String × Option String) := [
   ("use after move (a moved binding dropped again)", "use_after_move", some "affine_explicit_drop"),
+  ("use after move across a loop's back edge", "loop_moved_prev_iteration", some "loop_reassign_then_move"),
+  ("use after move across an outer loop's back edge", "loop_nested_move_outer", none),
+  ("scrutinee moved by a first match, matched again", "enum_matched_twice_moving",
+    some "enum_copy_matched_twice"),
   ("linear leak at a scope exit", "linear_leaked", some "linear_consumed"),
-  ("linear leak at a branch join", "linear_half_consumed", none),
+  ("linear leak at a branch join", "linear_half_consumed", some "join_agrees"),
+  ("linear-carrying struct field consumed on one branch", "struct_join_disagrees", none),
+  ("linear field left on one path of a join", "join_linear_field_one_arm", none),
   ("linear leak on an early return", "return_past_linear", some "return_past_affine"),
+  ("linear leak at a break", "loop_break_past_linear", some "loop_break_past_local"),
+  ("linear value kept at one of a loop's exits", "loop_linear_one_exit", some "loop_two_exits"),
+  ("linear parameter never consumed", "linear_param_leaked", none),
   ("linear leak by a match arm", "enum_arm_leaks_payload", some "enum_arm_drops_payload"),
   ("linear element consumed on one path only", "array_linear_elem_one_path", none),
   ("linear value discarded by a sequence", "linear_temporary_discarded", none),
   ("linear value overwritten", "linear_overwrite", some "reinit"),
+  ("assignment into an array with a moved-out element", "array_elem_reinit",
+    some "array_whole_reinit"),
   ("use of a partially moved value", "partial_then_whole", some "drop_field_then_whole"),
   ("move out of a destructor-bearing value", "partial_under_dtor", some "partial_move_residue"),
-  ("declared-linear destructure with a linear residue", "destructure_linear_residue",
-    some "destructure_residue_order")]
+  ("destructure out of a destructor-bearing value", "destructure_under_dtor", none),
+  ("declared-linear destructure with a linear residue", "destructure_linear_residue", none)]
 
 /-- **`checkProgram` rejects a program of each error class** (§5's
 premises, `3.8`): every rejected case of `errorClassCases` is in the corpus and
@@ -514,14 +526,23 @@ theorem errorClasses_rejected :
         good.all fun g => (caseProg? g).map checkProgram == some true) = true := by
   decide
 
-/-- **An operand of the wrong type, and a call of the wrong arity, are
-rejected** (§5.8's (Arith) and (Call)): `1 + true`, and the entry point
-calling itself with an argument it does not take. The corpus has neither,
-since the compiler rejects both before the core. -/
+/-- **Type errors are rejected** (§5.8's (Arith), (Call), (If), (Fn), (Field)
+and §5.5's (Match)): `1 + true`; the entry point calling itself with an
+argument it does not take; an `if` on an integer; a body of type `bool` for a
+declared `i64`; a field of an integer; and a `match` on an integer. The corpus
+has none of them, since the compiler rejects each before the core. -/
 theorem typeErrors_rejected :
     checkProgram (Program.entry (Decls.ofStructs []) (.int .w64 .signed)
         (.binop .add (.intLit .w64 .signed 1) (.boolLit true))) = false ∧
     checkProgram (Program.entry (Decls.ofStructs []) (.int .w64 .signed)
-        (.call 0 [.intLit .w64 .signed 1])) = false := ⟨rfl, rfl⟩
+        (.call 0 [.intLit .w64 .signed 1])) = false ∧
+    checkProgram (Program.entry (Decls.ofStructs []) (.int .w64 .signed)
+        (.ite (.intLit .w64 .signed 1) (.intLit .w64 .signed 1) (.intLit .w64 .signed 2))) = false ∧
+    checkProgram (Program.entry (Decls.ofStructs []) (.int .w64 .signed) (.boolLit true)) = false ∧
+    checkProgram (Program.entry (Decls.ofStructs []) (.int .w64 .signed)
+        (.letIn false (.intLit .w64 .signed 1) (.use (.proj (.var 0) 0)))) = false ∧
+    checkProgram (Program.entry (Decls.ofStructs []) (.int .w64 .signed)
+        (.«match» (.intLit .w64 .signed 1) [.intLit .w64 .signed 0])) = false :=
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 end RueCore
