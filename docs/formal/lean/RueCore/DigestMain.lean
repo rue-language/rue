@@ -61,8 +61,16 @@ def digestReport (index : String) (env : Environment) : CoreM (String × UInt32)
   -- The two properties the file's own preamble states, checked before it is
   -- printed: a report that cannot keep them should say so rather than assert
   -- them (RUE-2247's review).
+  -- RUE-2479: the predicates a spine hypothesis tests must be printed with a
+  -- body, not by signature alone.
+  let bodyless := Digest.bodyRequired.filterMap fun n =>
+    match rendered.find? (·.name == n) with
+    | none => some s!"{n}: required to print its body, but not in the digest"
+    | some it =>
+        let hasBody := !it.equations.isEmpty || (it.signature.splitOn " :=\n").length > 1
+        if hasBody then none else some s!"{n}: printed by signature alone (RUE-2479)"
   let problems := Digest.closureViolations env entries rendered
-    ++ Digest.indexCrossCheck env authored entries index
+    ++ Digest.indexCrossCheck env authored entries index ++ bodyless.toArray
   for problem in problems do
     IO.eprintln s!"ruecore-digest: {problem}"
   match Digest.renderDigest index
