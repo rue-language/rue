@@ -19,10 +19,10 @@ or containers, §6.13); both are Phase D (RUE-2238, RUE-2240). So these parts of
   operations' closure is assumed, as the laws of `FloatModel`, of every model
   the statements quantify over (it is proved of `Float.exactOps`).
 
-20 of the 39 statements quantify over `M : FloatModel`, the IEEE 754 laws assumed.
+21 of the 40 statements quantify over `M : FloatModel`, the IEEE 754 laws assumed.
 The laws have a model: `Float.exactModel` (`RueCore/Float/Lemmas.lean`) proves every one
 of them of the executable instance `Float.exactOps`, so they are jointly satisfiable and
-those 20 are not vacuous in `M` (`Nonvacuous.exact_model`, RUE-2469). Several statements say
+those 21 are not vacuous in `M` (`Nonvacuous.exact_model`, RUE-2469). Several statements say
 "`run` is never `.stuck` with violation *v*": they mean what `eval`'s monitors
 watch, since *v* is the tag a monitor raises (`no_violation`, `no_use_after_move`,
 `no_use_after_drop` and `no_linear_discard` say so; RUE-2469).
@@ -59,8 +59,8 @@ conclusion included), each with the counter-examples that drop it
 the statement, of which that hypothesis fails, every other holds, and the
 conclusion fails. So the hypothesis is needed. A hypothesis with no
 counter-example carries a reason (`RueCore.Spec.sharpnessReasons`), and the lint
-fails on one with neither: 74 of the 75 have a counter-example and 1
-has a reason. Of the 74, 21 are premises inside a conclusion, under
+fails on one with neither: 76 of the 77 have a counter-example and 1
+has a reason. Of the 76, 21 are premises inside a conclusion, under
 an `∧`, an `↔` or an `∃` of it (a `run … = .ok`, a `Steps …` or an `n < fuel` that
 a conjunct starts from), not hypotheses about the program. For `drop_order` 2–3,
 `drop_glue_order` 2–3, `eval_sound` 2–3, `run_sim` 1–2, `eval_complete` 2 and 4 and
@@ -69,7 +69,7 @@ the dropped premise is the only thing tying its bound value or trace to the prog
 so the counter-example shows only that the conclusion is not a tautology. The walk does not go
 under `∨` or `¬`, nor into a definition that is not reducible (`Config.SafeAt`,
 `Exact`, `Blocks`, `GlueBlocks`, `Lifo`). Each pairing of a counter-example with a (theorem,
-number) is checked by the kernel (78 pairs): `RueCore/Sharp/Glue.lean` proves,
+number) is checked by the kernel (80 pairs): `RueCore/Sharp/Glue.lean` proves,
 from the counter-example, the negation of the spine statement with that
 hypothesis removed, and the lint computes that weakened statement itself from
 the Spec statement and the number (`Lint.dropHyp`, by the walk that numbers the
@@ -89,7 +89,7 @@ counter-example because it is redundant: `run_no_use_after_drop` proves the
 conclusion for every program, checked or not, and `step_no_use_after_drop` the
 same over `Step` from `Config.init` (RUE-2496).
 
-A statement means its text plus the 295 definitions the 39 statements unfold
+A statement means its text plus the 295 definitions the 40 statements unfold
 to (`TRUST.md`, "Trusted base"; bodies in `DIGEST.md`); "Names" lists
 those an entry mentions.
 
@@ -415,7 +415,7 @@ def Spec.checkProgram_sound_stmt : Prop :=
 
 Proved by `checkProgram_sound` (`RueCore.Checker`). Names `Program`, `checkProgram`, `ProgramTyped`; rests on 134 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.diverges`.
+Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.diverges`, `Nonvacuous.diverges_drop`.
 
 Sharp:
 
@@ -430,7 +430,8 @@ Sharp:
 **No double free** (§7 "No double-free"). A checked program's run is never
 refused, and its trace frees no identity twice and runs no destructor twice
 on one. Narrower than the bullet: an `outOfFuel` result has an empty trace,
-so a run that never finishes is not covered (RUE-2477).
+so a run that never finishes is not covered here; `step_no_double_free`
+covers it, over every configuration a run reaches (RUE-2477).
 
 ```lean
 def Spec.no_double_free_stmt : Prop :=
@@ -445,11 +446,42 @@ def Spec.no_double_free_stmt : Prop :=
 
 Proved by `no_double_free` (`RueCore.Trace`). Names `FloatModel`, `Program`, `ProgramTyped`, `Violation`, `EvalRes`, `run`, `freedIds`, `EvalRes.trace`, `dtorIds`; rests on 204 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.diverges_drop`.
 
 Sharp:
 
 1. `ProgramTyped P` — counter-example `Sharp.double_drop`
+
+### `step_no_double_free`
+
+**No double free, on every prefix of a run** (§7 "No double-free", read as a
+safety property; RUE-2477). For a checked program, every configuration §6's
+relation reaches from `Config.init` — the run so far, whether or not it ever
+finishes — has a trace that frees no identity twice and runs no destructor
+twice on one, in `no_double_free`'s terms (`freedIds`, `dtorIds`). A safety
+property is one a finite prefix of a run can violate (Alpern & Schneider,
+`FIELD.md`), so this is the bullet's form over every run, a diverging one
+included; `no_double_free` over a finished run follows from it
+(`no_double_free_of_step`).
+
+```lean
+def Spec.step_no_double_free_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      ∀ {C : Config},
+        Steps M.toFloatOps P Config.init C →
+          (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
+            ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1
+```
+
+Proved by `step_no_double_free` (`RueCore.TracePrefix`). Names `FloatModel`, `Program`, `ProgramTyped`, `Config`, `Steps`, `Config.init`, `freedIds`, `Config.trace`, `dtorIds`; rests on 200 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.diverges_drop`.
+
+Sharp:
+
+1. `ProgramTyped P` — counter-example `Sharp.double_drop`
+2. `Steps M.toFloatOps P Config.init C` — counter-example `Sharp.unreached_double`
 
 ### `freed_once`
 
@@ -1069,7 +1101,7 @@ def Spec.eval_diverges_iff_stmt : Prop :=
 
 Proved by `eval_diverges_iff` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Config`, `StepsN`, `Config.init`; rests on 212 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.diverges`.
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.diverges`, `Nonvacuous.diverges_drop`.
 
 Sharp:
 
@@ -1598,6 +1630,46 @@ def Spec.Nonvacuous.diverges_stmt : Prop :=
 ```
 
 Proved by `Nonvacuous.diverges` (`RueCore.Nonvacuous`). Witnesses `checkProgram_sound`, `eval_diverges_iff`.
+
+### `Nonvacuous.diverges_drop`
+
+**A checked program that diverges and drops a value on every turn** (§6.10,
+§6.7; RUE-2477). `loop { let s = S0 { 1 }; () }` as the entry point returning
+`()` is accepted and typed, and its run exhausts every fuel, so `run`'s answer
+carries no trace and `no_double_free` says nothing about it. Yet §6's relation
+reaches, from `Config.init`, a configuration two turns in whose trace has run
+`S0`'s destructor on two distinct identities (`0` and `2`, one value minted per
+turn) and freed both. So `step_no_double_free`'s hypotheses hold of a diverging
+run whose trace is not empty: its bound is not vacuous where `no_double_free`'s
+is.
+
+```lean
+def Spec.Nonvacuous.diverges_drop_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+            Expr.unitLit).loop →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns := [{ params := [], ret := Ty.unit, body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              (∀ (fuel : Nat), run Float.exactOps P fuel = EvalRes.outOfFuel) ∧
+                ∃ C,
+                  Steps Float.exactOps P Config.init C ∧
+                    dtorIds C.trace = [0, 2] ∧ 2 ≤ (freedIds P.decls C.trace).length
+```
+
+Proved by `Nonvacuous.diverges_drop` (`RueCore.Nonvacuous`). Witnesses `checkProgram_sound`, `no_double_free`, `step_no_double_free`, `eval_diverges_iff`.
 
 ### `Nonvacuous.stuck`
 
@@ -2363,7 +2435,8 @@ Proved by `Sharp.not_fits` (`RueCore.Sharp`). Drops `check_sound` 2.
 `no_double_free` without `ProgramTyped`. `¬ DtorNotCopy` is shown directly
 (struct `0`); `¬ ProgramTyped` through `no_double_free`. (RUE-2400's cases, a dynamic read and
 an array repeat of an affine value, no longer double-drop: `eval` refuses them
-with `typeConfusion`.)
+with `typeConfusion`.) The same run is reached by §6's relation (`run_sim`), so
+`step_no_double_free` fails without `ProgramTyped` too.
 
 ```lean
 def Spec.Sharp.double_drop_stmt : Prop :=
@@ -2400,7 +2473,7 @@ def Spec.Sharp.double_drop_stmt : Prop :=
                           List.count a (dtorIds (run Float.exactOps P 200).trace) ≤ 1
 ```
 
-Proved by `Sharp.double_drop` (`RueCore.Sharp`). Drops `no_double_free` 1, `dtor_once` 1.
+Proved by `Sharp.double_drop` (`RueCore.Sharp`). Drops `no_double_free` 1, `step_no_double_free` 1, `dtor_once` 1.
 
 ### `Sharp.bare_dtor`
 
@@ -3236,3 +3309,53 @@ def Spec.Sharp.retired_cell_stmt : Prop :=
 ```
 
 Proved by `Sharp.retired_cell` (`RueCore.Sharp`). Drops `step_no_use_after_drop` 1.
+
+### `Sharp.unreached_double`
+
+**A configuration whose trace destroys one value twice, not reached** (§7
+sharpness, RUE-2477). For the checked program of `Nonvacuous.dtor`, the panic
+whose trace runs `S0`'s destructor twice on identity `0` names that identity
+twice among its destructor events, and `Config.init` does not reach it (shown
+through `step_no_double_free` itself). So `step_no_double_free` fails without
+the hypothesis that the configuration is reached: the bound is a property of
+the runs of the program, not of every trace a configuration can carry.
+
+```lean
+def Spec.Sharp.unreached_double_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          ProgramTyped P ∧
+            ¬Steps Float.exactOps P Config.init
+                  (Config.panic PanicKind.user
+                    [Event.dtor 0
+                        (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+                      Event.dtor 0
+                        (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1])]) ∧
+              List.count 0
+                  (dtorIds
+                    (Config.panic PanicKind.user
+                        [Event.dtor 0
+                            (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+                          Event.dtor 0
+                            (Contents.struct 0 0
+                              [Contents.int IntWidth.w64 Sign.signed 1])]).trace) =
+                2
+```
+
+Proved by `Sharp.unreached_double` (`RueCore.Sharp`). Drops `step_no_double_free` 2.

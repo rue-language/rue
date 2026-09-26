@@ -117,6 +117,15 @@ def no_double_free_stmt : Prop :=
           (∀ (a : Nat), List.count a (freedIds P.decls (run M.toFloatOps P fuel).trace) ≤ 1) ∧
             ∀ (a : Nat), List.count a (dtorIds (run M.toFloatOps P fuel).trace) ≤ 1
 
+/-- The statement `step_no_double_free` proves. -/
+def step_no_double_free_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      ∀ {C : Config},
+        Steps M.toFloatOps P Config.init C →
+          (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
+            ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1
+
 /-- The statement `freed_once` proves. -/
 def freed_once_stmt : Prop :=
   ∀ (M : FloatOps) (P : Program) (fuel a : Nat),
@@ -713,6 +722,31 @@ def Nonvacuous.diverges_stmt : Prop :=
           fns := [{ params := [], ret := Ty.unit, body := Expr.unitLit.loop }] } →
       checkProgram P = true ∧
         ProgramTyped P ∧ ∀ (fuel : Nat), run Float.exactOps P fuel = EvalRes.outOfFuel
+
+/-- The statement `Nonvacuous.diverges_drop` proves. -/
+def Nonvacuous.diverges_drop_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+            Expr.unitLit).loop →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                        cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns := [{ params := [], ret := Ty.unit, body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              (∀ (fuel : Nat), run Float.exactOps P fuel = EvalRes.outOfFuel) ∧
+                ∃ (C : Config),
+                  Steps Float.exactOps P Config.init C ∧
+                    dtorIds C.trace = [0, 2] ∧ 2 ≤ (freedIds P.decls C.trace).length
 
 /-- The statement `Nonvacuous.stuck` proves. -/
 def Nonvacuous.stuck_stmt : Prop :=
@@ -1879,6 +1913,38 @@ def Sharp.retired_cell_stmt : Prop :=
                     (Config.run [Cell.dead] { env := [0], scope := [] } []
                       (Focus.eval (Expr.use (Place.var 0))) [])
 
+/-- The statement `Sharp.unreached_double` proves. -/
+def Sharp.unreached_double_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                        cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns := [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          ProgramTyped P ∧
+            ¬Steps Float.exactOps P Config.init
+                  (Config.panic PanicKind.user
+                    [Event.dtor 0 (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+                      Event.dtor 0 (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1])]) ∧
+              List.count 0
+                  (dtorIds
+                    (Config.panic PanicKind.user
+                        [Event.dtor 0 (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+                          Event.dtor 0
+                            (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1])]).trace) =
+                2
+
 end RueCore.Spec
 
 namespace RueCore.Spine
@@ -1898,6 +1964,7 @@ theorem run_ne_returned : RueCore.Spec.run_ne_returned_stmt := sorry
 theorem check_sound : RueCore.Spec.check_sound_stmt := sorry
 theorem checkProgram_sound : RueCore.Spec.checkProgram_sound_stmt := sorry
 theorem no_double_free : RueCore.Spec.no_double_free_stmt := sorry
+theorem step_no_double_free : RueCore.Spec.step_no_double_free_stmt := sorry
 theorem freed_once : RueCore.Spec.freed_once_stmt := sorry
 theorem dtor_once : RueCore.Spec.dtor_once_stmt := sorry
 theorem drop_exactly_once : RueCore.Spec.drop_exactly_once_stmt := sorry
@@ -1934,6 +2001,7 @@ theorem Nonvacuous.early_return : RueCore.Spec.Nonvacuous.early_return_stmt := s
 theorem Nonvacuous.panic : RueCore.Spec.Nonvacuous.panic_stmt := sorry
 theorem Nonvacuous.float : RueCore.Spec.Nonvacuous.float_stmt := sorry
 theorem Nonvacuous.diverges : RueCore.Spec.Nonvacuous.diverges_stmt := sorry
+theorem Nonvacuous.diverges_drop : RueCore.Spec.Nonvacuous.diverges_drop_stmt := sorry
 theorem Nonvacuous.stuck : RueCore.Spec.Nonvacuous.stuck_stmt := sorry
 theorem Sharp.stuck : RueCore.Spec.Sharp.stuck_stmt := sorry
 theorem Sharp.stuck_step : RueCore.Spec.Sharp.stuck_step_stmt := sorry
@@ -1963,5 +2031,6 @@ theorem Sharp.not_a_step : RueCore.Spec.Sharp.not_a_step_stmt := sorry
 theorem Sharp.init_steps : RueCore.Spec.Sharp.init_steps_stmt := sorry
 theorem Sharp.unreachable_stuck : RueCore.Spec.Sharp.unreachable_stuck_stmt := sorry
 theorem Sharp.retired_cell : RueCore.Spec.Sharp.retired_cell_stmt := sorry
+theorem Sharp.unreached_double : RueCore.Spec.Sharp.unreached_double_stmt := sorry
 
 end RueCore.Spine
