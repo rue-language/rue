@@ -59,17 +59,21 @@ conclusion included), each with the counter-examples that drop it
 the statement, of which that hypothesis fails, every other holds, and the
 conclusion fails. So the hypothesis is needed. A hypothesis with no
 counter-example carries a reason (`RueCore.Spec.sharpnessReasons`), and the lint
-fails on one with neither: 70 of the 71 have a counter-example and one has a
-reason. Of the 70, 21 are premises inside a conclusion (a `run … = .ok`, a
-`Steps …` or an `n < fuel` that a conjunct starts from), not hypotheses about the
-program. The walk does not go under `∨` or `¬`, nor into a definition that is not
-reducible (`Config.SafeAt`, `Exact`, `Blocks`, `Lifo`). Two limits: the pairing of
-a counter-example with a (theorem, number) is hand-written and reviewed, and the
-lint checks only its range and coverage, not that the statement drops that
-hypothesis (a kernel-checked tie is RUE-2495); and each counter-example's
-negated hypothesis is proved through the spine theorem itself (from the other
-hypotheses and the failed conclusion, which are established without it), except
-where its doc-comment says it is shown directly. The counter-examples are Spec statements too, proved in
+fails on one with neither: 70 of the 71 have a counter-example and 1
+has a reason. Of the 70, 19 are premises inside a conclusion, under
+an `∧`, an `↔` or an `∃` of it (a `run … = .ok`, a `Steps …` or an `n < fuel` that
+a conjunct starts from), not hypotheses about the program. The walk does not go
+under `∨` or `¬`, nor into a definition that is not reducible (`Config.SafeAt`,
+`Exact`, `Blocks`, `Lifo`). Each pairing of a counter-example with a (theorem,
+number) is checked by the kernel (74 pairs): `RueCore/Sharp/Glue.lean` proves,
+from the counter-example, the negation of the spine statement with that
+hypothesis removed, and the lint computes that weakened statement itself from
+the Spec statement and the number (`Lint.dropHyp`, by the walk that numbers the
+hypotheses) and requires the glue theorem to state exactly its negation (RUE-2495).
+One limit: each counter-example's negated hypothesis is proved through the spine
+theorem itself (from the other hypotheses and the failed conclusion, which are
+established without it), except where its doc-comment says it is shown directly.
+The counter-examples are Spec statements too, proved in
 `RueCore/Sharp.lean` and covered by the kernel, the lint, Comparator and the
 fingerprints. Several are refusals of `eval`'s monitors, so a machine without a
 monitor falsifies one (R3 of `REDTEAM-LOG.md`). The `FloatModel` laws are not
