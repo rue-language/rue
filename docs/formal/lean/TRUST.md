@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 1287.
+- Theorems checked: 1350.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -904,6 +904,62 @@ and diffs them against the committed copies.
 | `drop_order` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `Blocks.drop_inv` | `RueCore.TraceOrder` | `propext` |
 | `Blocks.not_dtor` | `RueCore.TraceOrder` | `propext` |
+| `Retire.Live.lt` | `RueCore.Retire` | `propext` |
+| `Retire.Live.ne_dead` | `RueCore.Retire` | `propext` |
+| `Retire.Live.set_full` | `RueCore.Retire` | `propext` |
+| `Retire.Live.append` | `RueCore.Retire` | `propext` |
+| `Retire.Grow.refl` | `RueCore.Retire` | `propext` |
+| `Retire.Grow.trans` | `RueCore.Retire` | `propext` |
+| `Retire.Grow.append` | `RueCore.Retire` | `propext` |
+| `Retire.Grow.set_full` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `Retire.Live.ne_of_le` | `RueCore.Retire` | `propext` |
+| `Retire.LiveFrame.grow` | `RueCore.Retire` | `propext` |
+| `Retire.LivePost.withTrace` | `RueCore.Retire` | `propext` |
+| `Retire.LivePost.lift` | `RueCore.Retire` | `propext` |
+| `Retire.LivePost.andThen` | `RueCore.Retire` | `propext` |
+| `Retire.LivePost.scoped` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `Retire.Contents.readAt_ne_uad` | `RueCore.Retire` | `propext` |
+| `Retire.Contents.resolveDyn_ne_uad` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `Retire.dynPlace_ne_uad` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `Retire.dropContents_ne_uad` | `RueCore.Retire` | `propext` |
+| `Retire.dropContentsList_ne_uad` | `RueCore.Retire` | `propext` |
+| `Retire.dropCell_ne_uad` | `RueCore.Retire` | `propext` |
+| `Retire.Contents.splitResidue_ne_uad` | `RueCore.Retire` | `propext` |
+| `Retire.Contents.splitFields_ne_uad` | `RueCore.Retire` | `propext` |
+| `Retire.dropResidue_ne_uad` | `RueCore.Retire` | `propext` |
+| `Retire.Contents.destructure_ne_uad` | `RueCore.Retire` | `propext` |
+| `Retire.dropRetire_live` | `RueCore.Retire` | `propext` |
+| `Retire.unwindLocs_live` | `RueCore.Retire` | `propext` |
+| `Retire.nodup_reverse` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `Retire.UnwindPost.grow` | `RueCore.Retire` | `propext` |
+| `Retire.mintParams_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `Retire.OpRes.toRes_live` | `RueCore.Retire` | `propext` |
+| `Retire.introVal_live` | `RueCore.Retire` | `propext` |
+| `Retire.evalArgs_live` | `RueCore.Retire` | `propext` |
+| `Retire.LiveFrame.root` | `RueCore.Retire` | `propext` |
+| `Retire.eval_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `Retire.plainDropRetire_live` | `RueCore.Retire` | `propext` |
+| `Retire.plainUnwind_live` | `RueCore.Retire` | `propext` |
+| `Retire.plainResidue_ne_uad` | `RueCore.Retire` | `propext` |
+| `Retire.plainDestructure_ne_uad` | `RueCore.Retire` | `propext` |
+| `Retire.Shape.env` | `RueCore.Retire` | `propext` |
+| `Retire.Shape.toCall` | `RueCore.Retire` | `propext` |
+| `Retire.Shape.toLoop` | `RueCore.Retire` | `propext` |
+| `Retire.StackLive.env` | `RueCore.Retire` | `propext` |
+| `Retire.StackLive.grow` | `RueCore.Retire` | `propext` |
+| `Retire.rootCell_ne_uad` | `RueCore.Retire` | `propext` |
+| `Retire.unwind_keeps` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `Retire.unwind_err` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `Retire.extend_keeps` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `Retire.Frame.popScope_ext` | `RueCore.Retire` | `propext` |
+| `Retire.OpRes.toStep_live` | `RueCore.Retire` | `propext` |
+| `Retire.stepEval_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `Retire.stepArgs_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `Retire.stepRet_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `Retire.step_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `Retire.steps_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `run_no_use_after_drop` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `step_no_use_after_drop` | `RueCore.Retire` | `Quot.sound`, `propext` |
 | `Sharp.exact_ops` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.withTrace_nil` | `RueCore.Sharp` | `propext` |
 | `Sharp.noStep_of_stuck` | `RueCore.Sharp` | `Quot.sound`, `propext` |
@@ -949,11 +1005,13 @@ and diffs them against the committed copies.
 | `Sharp.not_a_step` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.init_steps` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.unreachable_stuck` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.retired_cell` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Spine.soundness` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.run_safe` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.no_violation` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.no_use_after_move` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.no_use_after_drop` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.run_no_use_after_drop` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.no_linear_leak` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.no_linear_overwrite` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.no_linear_discard` | `RueCore.Spine` | `Quot.sound`, `propext` |
@@ -977,6 +1035,7 @@ and diffs them against the committed copies.
 | `Spine.step_progress` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.step_preservation` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.step_type_safety` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.step_no_use_after_drop` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.eval_sound` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.run_sim` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.eval_complete` | `RueCore.Spine` | `Quot.sound`, `propext` |
@@ -1025,11 +1084,13 @@ and diffs them against the committed copies.
 | `Spine.Sharp.not_a_step` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.init_steps` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.unreachable_stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.retired_cell` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.run_safe` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.no_violation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.no_use_after_move` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.no_use_after_drop` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.dtor.run_no_use_after_drop` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.no_linear_leak` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.no_linear_overwrite` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.no_linear_discard` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1040,6 +1101,7 @@ and diffs them against the committed copies.
 | `Nonvacuous.Glue.dtor.step_progress` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.step_preservation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.step_type_safety` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.dtor.step_no_use_after_drop` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.eval_sound` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.never_stuck_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.eval_diverges_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1327,6 +1389,7 @@ and diffs them against the committed copies.
 | `Sharp.Glue.unreachable_stuck.never_stuck_iff_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.unreachable_stuck.step_never_stuck_of_run_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.unreachable_stuck.run_stuck_of_step_stuck_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.retired_cell.step_no_use_after_drop_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Examples.dynReadAffine_refused` | `RueCore.Examples` | `propext` |
 | `Examples.dynDropAffine_refused` | `RueCore.Examples` | `propext` |
 | `Examples.repeatAffine_refused` | `RueCore.Examples` | `propext` |
@@ -1448,7 +1511,7 @@ proof is not a claim, and is not a headline. The non-vacuity witnesses
 definitions outside this base (`Float.exactOps` and its `roundRat`, the
 witness programs): a witness can only fail to witness, never widen a claim.
 
-- Headline statements: 36 — `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `no_masking`, `run_ne_returned`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `Config.stuck_iff`, `step_stuck_isStuckState`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `run_stuck_of_step_stuck`, `eval_diverges_iff`.
+- Headline statements: 38 — `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `run_no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `no_masking`, `run_ne_returned`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `Config.stuck_iff`, `step_stuck_isStuckState`, `step_progress`, `step_preservation`, `step_type_safety`, `step_no_use_after_drop`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `run_stuck_of_step_stuck`, `eval_diverges_iff`.
 - Definitions to read: **292**, in 9 modules (66 inductive, 223 def, 3 abbrev).
 - Instances they use: 12 — `instDecidableEqAttr`, `instDecidableEqEntry`, `instDecidableEqFloatWidth`, `instDecidableEqIntWidth`, `instDecidableEqMult`, `instDecidableEqOwnSt`, `instDecidableEqSign`, `instDecidableEqTy`, `instDecidableInBounds`, `instDecidableNoResidualLinear`, `instDecidableRoundsFinite`, `instDecidableWf_1`. A `deriving` image says nothing beyond its type; a hand-written one is read with the predicate it decides.
 - Lean-generated auxiliaries passed through (`isLeanAux`): 525. Each is
