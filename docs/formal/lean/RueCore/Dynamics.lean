@@ -1475,8 +1475,10 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
   | fuel + 1, P, H, φ, .fintrin k e =>
       (eval M fuel P H φ e).andThen fun H' v => (evalFintrin M k v).toRes H'
   | _ + 1, _, _, _, .panic _ =>
-      -- (D-Panic) §6.12: the message is emitted and the configuration is
-      -- abandoned. No scope drop runs — §5.7 exempts the `⊥_panic` edge from
+      -- (D-Panic) §6.12: the message is not modelled. `panic msg` carries it as
+      -- a literal, but neither the trace nor `EvalRes.panic` records §6.12's
+      -- `panic: <message>` line, so the outcome is the category `user` alone.
+      -- The configuration is abandoned. No scope drop runs — §5.7 exempts the `⊥_panic` edge from
       -- §5.6's obligation — so the trace this trap carries is exactly the one
       -- the evaluation had already produced, prefixed by `andThen`.
       .panic .user []

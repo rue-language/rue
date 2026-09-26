@@ -43,14 +43,21 @@ def step_no_double_free_stmt : Prop :=
     (_ : Steps M.toFloatOps P Config.init C),
     (∀ a, (freedIds P.decls C.trace).count a ≤ 1) ∧ (∀ a, (dtorIds C.trace).count a ≤ 1)
 
-/-- **Nothing freed twice, on every program** (§6.11): a finished run frees
-each identity at most once, with no typing hypothesis. -/
+/-- **Nothing freed twice, on every program** (§6.11): a run that answers a
+value, an unwind or a panic frees each identity at most once, with no typing
+hypothesis. A refused or fuel-exhausted run has an empty trace
+(`EvalRes.trace`), so on an unchecked program the bound rests on `eval`'s
+refusals: a second `@drop` of one place is refused `useAfterMove`, and an
+owned value under a `Copy` one is refused `ownedUnderCopy`. `Step` has neither
+refusal, and its bound is `step_no_double_free`, which needs `ProgramTyped`. -/
 def freed_once_stmt : Prop :=
   ∀ (M : FloatOps) (P : Program) (fuel : Nat),
     ∀ a, (freedIds P.decls (run M P fuel).trace).count a ≤ 1
 
 /-- **No destructor twice on one value** (§6.11, `3.9:28`), given only that a
-destructor-bearing struct is not `Copy` (`3.9:31`). -/
+destructor-bearing struct is not `Copy` (`3.9:31`). As for `freed_once`, a
+refused or fuel-exhausted run has an empty trace, so the bound is over the
+runs `eval` finishes. -/
 def dtor_once_stmt : Prop :=
   ∀ (M : FloatOps) {P : Program} (_ : DtorNotCopy P.decls) (fuel : Nat),
     ∀ a, (dtorIds (run M P fuel).trace).count a ≤ 1
@@ -98,7 +105,9 @@ cell, in focus, or pending on the control stack (`Config.held`); these are the
 owned values allocated along the run. If the run from `C` finishes with a
 value (`✓v`, a value at an empty stack), then `a` is ended in the final trace
 (a drop, a discarded temporary's drop, or a consumption: `freedIds`) or is
-part of the final value, exactly once between the two: no owned value the
+part of the final value (which counts as ended: §2 restricts `main` to `i32` or
+`unit`, which own nothing, and the fragment does not), exactly once between
+the two: no owned value the
 run holds is lost, and none is ended twice. Narrower than the bullet:
 `pendingSafe` (RUE-2316), nothing about a panic (§6.12's trap runs no drop, so
 what it abandons is not ended), and nothing about a run that never finishes

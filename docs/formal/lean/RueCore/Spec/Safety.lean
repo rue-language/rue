@@ -33,7 +33,11 @@ def soundness_stmt : Prop :=
 
 /-- **Program safety** (§7 "Type safety"). A well-formed program whose entry
 point (`P.fns[0]?`) takes no parameters, run at any fuel, exhausts it,
-panics, or returns a value of its entry point's type. -/
+panics, or returns a value of its entry point's type. The entry point's
+return type is not restricted: §2's grammar fixes `fn main() -> i32 | unit`,
+and (Result-Ok) §6.12 reads only those types, but `WfProgram` admits any type.
+So a checked program may return an owned value from `main`, even a linear one,
+and no drop or monitor sees it (`Nonvacuous.whole_result` returns an `S0`). -/
 def run_safe_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} {fd : FnDef} (_ : WfProgram P)
     (_ : P.fns[0]? = some fd) (_ : fd.params = []) (fuel : Nat),
@@ -90,7 +94,16 @@ def run_no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatOps) (P : Program) (fuel : Nat), run M P fuel ≠ .stuck .useAfterDrop
 
 /-- **No linear leak** (§7 "Linear values are consumed exactly once", §5.6): no
-scope exit or unwind meets a live linear value. -/
+scope exit, frame pop or scope unwind meets a live linear binding. Narrower
+than the bullet:
+- a linear value built for a sibling operand, which a later operand abandons
+  by `return` or `break`, is in no scope record; the unwind discards it
+  unchecked and the run ends normally (RUE-2316;
+  `Examples.linearLostAtCallArg`);
+- a `@panic` abandons live linear bindings by design (§5.7's `⊥_panic`);
+- a linear value the entry point returns is handed to no scope.
+What it rules out is what `eval`'s leak monitor watches (R3 of
+`REDTEAM-LOG.md`). -/
 def no_linear_leak_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     run M.toFloatOps P fuel ≠ .stuck .linearLeak
