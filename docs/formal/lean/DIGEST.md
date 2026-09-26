@@ -18063,6 +18063,1368 @@ theorem RueCore.Nonvacuous.Glue.stuck.step_stuck_isStuckState : True
 theorem RueCore.Nonvacuous.Glue.stuck.run_stuck_of_step_stuck : True
 ```
 
+### `Sharp.Glue.stuck.soundness_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.stuck` refutes `soundness` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.stuck.soundness_1 :
+  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out}
+      {e : Expr} {T : Ty},
+      Typed P R Γ e T Ω →
+        ∀ {φ : Frame} {H : Store},
+          FrameMatches P.decls Γ φ H →
+            EvalOk P.decls T R Ω.norm Ω.brk φ H
+              (eval M.toFloatOps fuel P H φ e)
+```
+
+### `Sharp.Glue.stuck.run_safe_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.stuck` refutes `run_safe` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.stuck.run_safe_1 :
+  ¬∀ (M : FloatModel) {P : Program} {fd : FnDef},
+      P.fns[0]? = some fd →
+        fd.params = [] →
+          ∀ (fuel : Nat),
+            run M.toFloatOps P fuel = EvalRes.outOfFuel ∨
+              (∃ k tr, run M.toFloatOps P fuel = EvalRes.panic k tr) ∨
+                ∃ H v tr,
+                  run M.toFloatOps P fuel = EvalRes.ok H v tr ∧
+                    HasTy P.decls v fd.ret
+```
+
+### `Sharp.Glue.stuck.no_violation_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.stuck` refutes `no_violation` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.stuck.no_violation_1 :
+  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) (w : Violation),
+      run M.toFloatOps P fuel ≠ EvalRes.stuck w
+```
+
+### `Sharp.Glue.stuck.no_use_after_move_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.stuck` refutes `no_use_after_move` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.stuck.no_use_after_move_1 :
+  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
+      run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.useAfterMove
+```
+
+### `Sharp.Glue.stuck.no_masking_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.stuck` refutes `no_masking` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.stuck.no_masking_2 :
+  ¬∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr}
+      {n m : Nat} {w : Violation},
+      eval M n P H φ e = EvalRes.stuck w → eval M m P H φ e = EvalRes.stuck w
+```
+
+### `Sharp.Glue.stuck.checkProgram_sound_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.stuck` refutes `checkProgram_sound` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.stuck.checkProgram_sound_1 :
+  ¬∀ {P : Program}, ProgramTyped P
+```
+
+### `Sharp.Glue.stuck.drop_exactly_once_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.stuck` refutes `drop_exactly_once` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.stuck.drop_exactly_once_1 :
+  ¬∀ (M : FloatModel) {P : Program},
+      P.pendingSafe = true →
+        ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
+          {φ : Frame} {H : Store},
+          Typed P R Γ e T Ω →
+            FrameMatches P.decls Γ φ H →
+              StoreCC P.decls H →
+                e.pendingSafe = true →
+                  (∀ (w : Violation),
+                      eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
+                      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+```
+
+### `Sharp.Glue.stuck.rest_exactly_once_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.stuck` refutes `rest_exactly_once` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.stuck.rest_exactly_once_1 :
+  ¬∀ (M : FloatModel) {P : Program},
+      P.pendingSafe = true →
+        ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
+          {φ : Frame} {H : Store},
+          Typed P R Γ e T Ω →
+            FrameMatches P.decls Γ φ H →
+              StoreCC P.decls H →
+                e.pendingSafe = true →
+                  ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
+                    Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                      ∀ {r : EvalRes},
+                        eval M.toFloatOps (fuel + 1) P H φ e =
+                            EvalRes.withTrace tr r →
+                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                            Exact P.decls H₁
+                                (Contents.ownList P.decls
+                                  (Contents.ofVals vs))
+                                r ∧
+                              Settled φ H₁ r
+```
+
+### `Sharp.Glue.stuck.eval_sound_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.stuck` refutes `eval_sound` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.stuck.eval_sound_1 :
+  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
+      (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+        (∀ (H : Store) (v : Val) (tr : List Event),
+            run M.toFloatOps P fuel = EvalRes.ok H v tr →
+              Steps M.toFloatOps P Config.init
+                (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+          ∀ (k : PanicKind) (tr : List Event),
+            run M.toFloatOps P fuel = EvalRes.panic k tr →
+              Steps M.toFloatOps P Config.init (Config.panic k tr)
+```
+
+### `Sharp.Glue.stuck_step.step_progress_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.stuck_step` refutes `step_progress` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.stuck_step.step_progress_1 :
+  ¬∀ (M : FloatModel) {P : Program} (C : Config),
+      Steps M.toFloatOps P Config.init C →
+        C.Terminal ∨ ∃ C', Step M.toFloatOps P C C'
+```
+
+### `Sharp.Glue.stuck_step.step_preservation_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.stuck_step` refutes `step_preservation` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.stuck_step.step_preservation_1 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ∃ fd,
+        P.fns[0]? = some fd ∧
+          ∀ (C : Config),
+            Steps M.toFloatOps P Config.init C →
+              Config.SafeAt M.toFloatOps P fd.ret C
+```
+
+### `Sharp.Glue.stuck_step.step_type_safety_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.stuck_step` refutes `step_type_safety` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.stuck_step.step_type_safety_1 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ∃ fd,
+        P.fns[0]? = some fd ∧
+          ∀ (n : Nat),
+            (∃ D, StepsN M.toFloatOps P n Config.init D) ∨
+              (∃ H v tr,
+                  Steps M.toFloatOps P Config.init
+                      (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                    HasTy P.decls v fd.ret) ∨
+                ∃ κ tr, Steps M.toFloatOps P Config.init (Config.panic κ tr)
+```
+
+### `Sharp.Glue.stuck_step.step_never_stuck_of_run_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.stuck_step` refutes `step_never_stuck_of_run` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.stuck_step.step_never_stuck_of_run_1 :
+  ¬∀ (M : FloatOps) (P : Program) (C : Config),
+      Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
+```
+
+### `Sharp.Glue.stuck_step.run_stuck_of_step_stuck_3`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.stuck_step` refutes `run_stuck_of_step_stuck` without hypothesis 3 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.stuck_step.run_stuck_of_step_stuck_3 :
+  ¬∀ (M : FloatOps) (P : Program) {C : Config} {w : Violation},
+      Steps M P Config.init C →
+        Config.Stuck M P C w →
+          ∃ _n, ∀ (fuel : Nat), ∃ w', run M P fuel = EvalRes.stuck w'
+```
+
+### `Sharp.Glue.typed.soundness_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.typed` refutes `soundness` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.typed.soundness_2 :
+  ¬∀ (M : FloatModel) {P : Program},
+      WfProgram P →
+        ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty}
+          {φ : Frame} {H : Store},
+          FrameMatches P.decls Γ φ H →
+            EvalOk P.decls T R Ω.norm Ω.brk φ H
+              (eval M.toFloatOps fuel P H φ e)
+```
+
+### `Sharp.Glue.typed.check_sound_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.typed` refutes `check_sound` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.typed.check_sound_1 :
+  ¬∀ {P : Program} {R : Ty} (e : Expr) {Γ : Ctx} {c : CTy} {Ω : Out} (T : Ty),
+      c.fits T = true → Typed P R Γ e T Ω
+```
+
+### `Sharp.Glue.typed.drop_exactly_once_3`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.typed` refutes `drop_exactly_once` without hypothesis 3 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.typed.drop_exactly_once_3 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        P.pendingSafe = true →
+          ∀ {fuel : Nat} {_R : Ty} {Γ : Ctx} {e : Expr} {_T : Ty} {_Ω : Out}
+            {φ : Frame} {H : Store},
+            FrameMatches P.decls Γ φ H →
+              StoreCC P.decls H →
+                e.pendingSafe = true →
+                  (∀ (w : Violation),
+                      eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
+                      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+```
+
+### `Sharp.Glue.typed.rest_exactly_once_3`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.typed` refutes `rest_exactly_once` without hypothesis 3 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.typed.rest_exactly_once_3 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        P.pendingSafe = true →
+          ∀ {fuel : Nat} {_R : Ty} {Γ : Ctx} {e : Expr} {_T : Ty} {_Ω : Out}
+            {φ : Frame} {H : Store},
+            FrameMatches P.decls Γ φ H →
+              StoreCC P.decls H →
+                e.pendingSafe = true →
+                  ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
+                    Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                      ∀ {r : EvalRes},
+                        eval M.toFloatOps (fuel + 1) P H φ e =
+                            EvalRes.withTrace tr r →
+                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                            Exact P.decls H₁
+                                (Contents.ownList P.decls
+                                  (Contents.ofVals vs))
+                                r ∧
+                              Settled φ H₁ r
+```
+
+### `Sharp.Glue.frame.soundness_3`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.frame` refutes `soundness` without hypothesis 3 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.frame.soundness_3 :
+  ¬∀ (M : FloatModel) {P : Program},
+      WfProgram P →
+        ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty},
+          Typed P R Γ e T Ω →
+            ∀ {φ : Frame} {H : Store},
+              EvalOk P.decls T R Ω.norm Ω.brk φ H
+                (eval M.toFloatOps fuel P H φ e)
+```
+
+### `Sharp.Glue.frame.drop_exactly_once_4`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.frame` refutes `drop_exactly_once` without hypothesis 4 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.frame.drop_exactly_once_4 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        P.pendingSafe = true →
+          ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
+            {φ : Frame} {H : Store},
+            Typed P R Γ e T Ω →
+              StoreCC P.decls H →
+                e.pendingSafe = true →
+                  (∀ (w : Violation),
+                      eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
+                      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+```
+
+### `Sharp.Glue.frame.rest_exactly_once_4`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.frame` refutes `rest_exactly_once` without hypothesis 4 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.frame.rest_exactly_once_4 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        P.pendingSafe = true →
+          ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
+            {φ : Frame} {H : Store},
+            Typed P R Γ e T Ω →
+              StoreCC P.decls H →
+                e.pendingSafe = true →
+                  ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
+                    Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                      ∀ {r : EvalRes},
+                        eval M.toFloatOps (fuel + 1) P H φ e =
+                            EvalRes.withTrace tr r →
+                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                            Exact P.decls H₁
+                                (Contents.ownList P.decls
+                                  (Contents.ofVals vs))
+                                r ∧
+                              Settled φ H₁ r
+```
+
+### `Sharp.Glue.no_entry.run_safe_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.no_entry` refutes `run_safe` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.no_entry.run_safe_2 :
+  ¬∀ (M : FloatModel) {P : Program} {fd : FnDef},
+      WfProgram P →
+        fd.params = [] →
+          ∀ (fuel : Nat),
+            run M.toFloatOps P fuel = EvalRes.outOfFuel ∨
+              (∃ k tr, run M.toFloatOps P fuel = EvalRes.panic k tr) ∨
+                ∃ H v tr,
+                  run M.toFloatOps P fuel = EvalRes.ok H v tr ∧
+                    HasTy P.decls v fd.ret
+```
+
+### `Sharp.Glue.entry_param.run_safe_3`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.entry_param` refutes `run_safe` without hypothesis 3 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.entry_param.run_safe_3 :
+  ¬∀ (M : FloatModel) {P : Program} {fd : FnDef},
+      WfProgram P →
+        P.fns[0]? = some fd →
+          ∀ (fuel : Nat),
+            run M.toFloatOps P fuel = EvalRes.outOfFuel ∨
+              (∃ k tr, run M.toFloatOps P fuel = EvalRes.panic k tr) ∨
+                ∃ H v tr,
+                  run M.toFloatOps P fuel = EvalRes.ok H v tr ∧
+                    HasTy P.decls v fd.ret
+```
+
+### `Sharp.Glue.entry_param.no_violation_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.entry_param` refutes `no_violation` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.entry_param.no_violation_1 :
+  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) (w : Violation),
+      run M.toFloatOps P fuel ≠ EvalRes.stuck w
+```
+
+### `Sharp.Glue.copy.no_violation_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.copy` refutes `no_violation` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.copy.no_violation_1 :
+  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) (w : Violation),
+      run M.toFloatOps P fuel ≠ EvalRes.stuck w
+```
+
+### `Sharp.Glue.leak.no_linear_leak_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.leak` refutes `no_linear_leak` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.leak.no_linear_leak_1 :
+  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
+      run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearLeak
+```
+
+### `Sharp.Glue.leak.eval_complete_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.leak` refutes `eval_complete` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.leak.eval_complete_1 :
+  ¬∀ (M : FloatModel) {P : Program},
+      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          Steps M.toFloatOps P Config.init
+              (Config.run H φ [] (Focus.ret v) tr) →
+            ∃ n,
+              ∀ (fuel : Nat),
+                n < fuel → run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+        ∀ (κ : PanicKind) (tr : List Event),
+          Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+            ∃ n,
+              ∀ (fuel : Nat),
+                n < fuel → run M.toFloatOps P fuel = EvalRes.panic κ tr
+```
+
+### `Sharp.Glue.overwrite.no_linear_overwrite_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.overwrite` refutes `no_linear_overwrite` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.overwrite.no_linear_overwrite_1 :
+  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
+      run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearOverwrite
+```
+
+### `Sharp.Glue.discard.no_linear_discard_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.discard` refutes `no_linear_discard` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.discard.no_linear_discard_1 :
+  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
+      run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearDiscard
+```
+
+### `Sharp.Glue.discard.eval_complete_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.discard` refutes `eval_complete` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.discard.eval_complete_1 :
+  ¬∀ (M : FloatModel) {P : Program},
+      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          Steps M.toFloatOps P Config.init
+              (Config.run H φ [] (Focus.ret v) tr) →
+            ∃ n,
+              ∀ (fuel : Nat),
+                n < fuel → run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+        ∀ (κ : PanicKind) (tr : List Event),
+          Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+            ∃ n,
+              ∀ (fuel : Nat),
+                n < fuel → run M.toFloatOps P fuel = EvalRes.panic κ tr
+```
+
+### `Sharp.Glue.discard_loop.no_linear_discard_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.discard_loop` refutes `no_linear_discard` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.discard_loop.no_linear_discard_1 :
+  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
+      run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearDiscard
+```
+
+### `Sharp.Glue.discard_loop.never_stuck_iff_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.discard_loop` refutes `never_stuck_iff` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.discard_loop.never_stuck_iff_1 :
+  ¬∀ (M : FloatModel) {P : Program},
+      (∀ (fuel : Nat) (w : Violation),
+          run M.toFloatOps P fuel ≠ EvalRes.stuck w) ↔
+        ∀ (C : Config),
+          Steps M.toFloatOps P Config.init C →
+            C.Terminal ∨ ∃ C', Step M.toFloatOps P C C'
+```
+
+### `Sharp.Glue.discard_loop.eval_diverges_iff_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.discard_loop` refutes `eval_diverges_iff` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.discard_loop.eval_diverges_iff_1 :
+  ¬∀ (M : FloatModel) {P : Program},
+      (∀ (fuel : Nat), run M.toFloatOps P fuel = EvalRes.outOfFuel) ↔
+        ∀ (n : Nat), ∃ D, StepsN M.toFloatOps P n Config.init D
+```
+
+### `Sharp.Glue.fuel.fuel_mono_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.fuel` refutes `fuel_mono` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.fuel.fuel_mono_1 :
+  ¬∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr}
+      {n m : Nat},
+      eval M n P H φ e ≠ EvalRes.outOfFuel →
+        eval M m P H φ e = eval M n P H φ e
+```
+
+### `Sharp.Glue.fuel.fuel_mono_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.fuel` refutes `fuel_mono` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.fuel.fuel_mono_2 :
+  ¬∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr}
+      {n m : Nat}, n ≤ m → eval M m P H φ e = eval M n P H φ e
+```
+
+### `Sharp.Glue.fuel.no_masking_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.fuel` refutes `no_masking` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.fuel.no_masking_1 :
+  ¬∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr}
+      {_n : Nat} {m : Nat} {w : Violation},
+      eval M m P H φ e ≠ EvalRes.outOfFuel →
+        eval M m P H φ e = EvalRes.stuck w
+```
+
+### `Sharp.Glue.fuel.eval_complete_3`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.fuel` refutes `eval_complete` without hypothesis 3 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.fuel.eval_complete_3 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+            Steps M.toFloatOps P Config.init
+                (Config.run H φ [] (Focus.ret v) tr) →
+              ∃ _n,
+                ∀ (fuel : Nat), run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+          ∀ (κ : PanicKind) (tr : List Event),
+            Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+              ∃ n,
+                ∀ (fuel : Nat),
+                  n < fuel → run M.toFloatOps P fuel = EvalRes.panic κ tr
+```
+
+### `Sharp.Glue.fuel.run_complete_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.fuel` refutes `run_complete` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.fuel.run_complete_2 :
+  ¬∀ (M : FloatOps) (P : Program),
+      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+            ∃ _n,
+              ∀ (fuel : Nat),
+                run M P fuel = EvalRes.ok H v tr ∨
+                  ∃ w, run M P fuel = EvalRes.stuck w) ∧
+        ∀ (κ : PanicKind) (tr : List Event),
+          Steps M P Config.init (Config.panic κ tr) →
+            ∃ n,
+              ∀ (fuel : Nat),
+                n < fuel →
+                  run M P fuel = EvalRes.panic κ tr ∨
+                    ∃ w, run M P fuel = EvalRes.stuck w
+```
+
+### `Sharp.Glue.fuel_panic.eval_complete_5`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.fuel_panic` refutes `eval_complete` without hypothesis 5 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.fuel_panic.eval_complete_5 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+            Steps M.toFloatOps P Config.init
+                (Config.run H φ [] (Focus.ret v) tr) →
+              ∃ n,
+                ∀ (fuel : Nat),
+                  n < fuel → run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+          ∀ (κ : PanicKind) (tr : List Event),
+            Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+              ∃ _n,
+                ∀ (fuel : Nat), run M.toFloatOps P fuel = EvalRes.panic κ tr
+```
+
+### `Sharp.Glue.fuel_panic.run_complete_4`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.fuel_panic` refutes `run_complete` without hypothesis 4 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.fuel_panic.run_complete_4 :
+  ¬∀ (M : FloatOps) (P : Program),
+      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+            ∃ n,
+              ∀ (fuel : Nat),
+                n < fuel →
+                  run M P fuel = EvalRes.ok H v tr ∨
+                    ∃ w, run M P fuel = EvalRes.stuck w) ∧
+        ∀ (κ : PanicKind) (tr : List Event),
+          Steps M P Config.init (Config.panic κ tr) →
+            ∃ _n,
+              ∀ (fuel : Nat),
+                run M P fuel = EvalRes.panic κ tr ∨
+                  ∃ w, run M P fuel = EvalRes.stuck w
+```
+
+### `Sharp.Glue.not_fits.check_sound_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.not_fits` refutes `check_sound` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.not_fits.check_sound_2 :
+  ¬∀ {P : Program} {R : Ty} (e : Expr) {Γ : Ctx} {c : CTy} {Ω : Out},
+      check P R Γ e = some (c, Ω) → ∀ (T : Ty), Typed P R Γ e T Ω
+```
+
+### `Sharp.Glue.double_drop.no_double_free_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.double_drop` refutes `no_double_free` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.double_drop.no_double_free_1 :
+  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
+      (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+        (∀ (a : Nat),
+            List.count a (freedIds P.decls (run M.toFloatOps P fuel).trace) ≤
+              1) ∧
+          ∀ (a : Nat),
+            List.count a (dtorIds (run M.toFloatOps P fuel).trace) ≤ 1
+```
+
+### `Sharp.Glue.double_drop.dtor_once_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.double_drop` refutes `dtor_once` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.double_drop.dtor_once_1 :
+  ¬∀ (M : FloatOps) {P : Program} (fuel a : Nat),
+      List.count a (dtorIds (run M P fuel).trace) ≤ 1
+```
+
+### `Sharp.Glue.bare_dtor.drop_order_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.bare_dtor` refutes `drop_order` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.bare_dtor.drop_order_1 :
+  ¬∀ (M : FloatModel) {P : Program},
+      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          Steps M.toFloatOps P Config.init
+              (Config.run H φ [] (Focus.ret v) tr) →
+            Blocks P.decls tr) ∧
+        (∀ (κ : PanicKind) (tr : List Event),
+            Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+              Blocks P.decls tr) ∧
+          ∀ (C C' : Config),
+            Steps M.toFloatOps P Config.init C →
+              Step M.toFloatOps P C C' →
+                ∃ evs,
+                  C'.trace = C.trace ++ evs ∧
+                    NewestFirst (dropLocs evs) ∧
+                      Lifo C.stack C'.stack (dropLocs evs) ∧
+                        List.Pairwise (fun x1 x2 => x1 < x2) C.stack
+```
+
+### `Sharp.Glue.pending_program.drop_exactly_once_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.pending_program` refutes `drop_exactly_once` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.pending_program.drop_exactly_once_2 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
+          {φ : Frame} {H : Store},
+          Typed P R Γ e T Ω →
+            FrameMatches P.decls Γ φ H →
+              StoreCC P.decls H →
+                e.pendingSafe = true →
+                  (∀ (w : Violation),
+                      eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
+                      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+```
+
+### `Sharp.Glue.pending_program.rest_exactly_once_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.pending_program` refutes `rest_exactly_once` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.pending_program.rest_exactly_once_2 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
+          {φ : Frame} {H : Store},
+          Typed P R Γ e T Ω →
+            FrameMatches P.decls Γ φ H →
+              StoreCC P.decls H →
+                e.pendingSafe = true →
+                  ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
+                    Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                      ∀ {r : EvalRes},
+                        eval M.toFloatOps (fuel + 1) P H φ e =
+                            EvalRes.withTrace tr r →
+                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                            Exact P.decls H₁
+                                (Contents.ownList P.decls
+                                  (Contents.ofVals vs))
+                                r ∧
+                              Settled φ H₁ r
+```
+
+### `Sharp.Glue.pending_expr.drop_exactly_once_6`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.pending_expr` refutes `drop_exactly_once` without hypothesis 6 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.pending_expr.drop_exactly_once_6 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        P.pendingSafe = true →
+          ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
+            {φ : Frame} {H : Store},
+            Typed P R Γ e T Ω →
+              FrameMatches P.decls Γ φ H →
+                StoreCC P.decls H →
+                  (∀ (w : Violation),
+                      eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
+                      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+```
+
+### `Sharp.Glue.pending_expr.rest_exactly_once_6`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.pending_expr` refutes `rest_exactly_once` without hypothesis 6 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.pending_expr.rest_exactly_once_6 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        P.pendingSafe = true →
+          ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
+            {φ : Frame} {H : Store},
+            Typed P R Γ e T Ω →
+              FrameMatches P.decls Γ φ H →
+                StoreCC P.decls H →
+                  ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
+                    Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                      ∀ {r : EvalRes},
+                        eval M.toFloatOps (fuel + 1) P H φ e =
+                            EvalRes.withTrace tr r →
+                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                            Exact P.decls H₁
+                                (Contents.ownList P.decls
+                                  (Contents.ofVals vs))
+                                r ∧
+                              Settled φ H₁ r
+```
+
+### `Sharp.Glue.store_cc.drop_exactly_once_5`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.store_cc` refutes `drop_exactly_once` without hypothesis 5 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.store_cc.drop_exactly_once_5 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        P.pendingSafe = true →
+          ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
+            {φ : Frame} {H : Store},
+            Typed P R Γ e T Ω →
+              FrameMatches P.decls Γ φ H →
+                e.pendingSafe = true →
+                  (∀ (w : Violation),
+                      eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
+                      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+```
+
+### `Sharp.Glue.store_cc.rest_exactly_once_5`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.store_cc` refutes `rest_exactly_once` without hypothesis 5 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.store_cc.rest_exactly_once_5 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        P.pendingSafe = true →
+          ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
+            {φ : Frame} {H : Store},
+            Typed P R Γ e T Ω →
+              FrameMatches P.decls Γ φ H →
+                e.pendingSafe = true →
+                  ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
+                    Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                      ∀ {r : EvalRes},
+                        eval M.toFloatOps (fuel + 1) P H φ e =
+                            EvalRes.withTrace tr r →
+                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                            Exact P.decls H₁
+                                (Contents.ownList P.decls
+                                  (Contents.ofVals vs))
+                                r ∧
+                              Settled φ H₁ r
+```
+
+### `Sharp.Glue.no_lead.rest_exactly_once_7`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.no_lead` refutes `rest_exactly_once` without hypothesis 7 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.no_lead.rest_exactly_once_7 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        P.pendingSafe = true →
+          ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
+            {φ : Frame} {H : Store},
+            Typed P R Γ e T Ω →
+              FrameMatches P.decls Γ φ H →
+                StoreCC P.decls H →
+                  e.pendingSafe = true →
+                    ∀ {H₁ : Store} {vs : List Val} {tr : List Event}
+                      {r : EvalRes},
+                      eval M.toFloatOps (fuel + 1) P H φ e =
+                          EvalRes.withTrace tr r →
+                        (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                          Exact P.decls H₁
+                              (Contents.ownList P.decls (Contents.ofVals vs))
+                              r ∧
+                            Settled φ H₁ r
+```
+
+### `Sharp.Glue.no_eval.rest_exactly_once_8`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.no_eval` refutes `rest_exactly_once` without hypothesis 8 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.no_eval.rest_exactly_once_8 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        P.pendingSafe = true →
+          ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
+            {φ : Frame} {H : Store},
+            Typed P R Γ e T Ω →
+              FrameMatches P.decls Γ φ H →
+                StoreCC P.decls H →
+                  e.pendingSafe = true →
+                    ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
+                      Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                        ∀ {r : EvalRes},
+                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                            Exact P.decls H₁
+                                (Contents.ownList P.decls
+                                  (Contents.ofVals vs))
+                                r ∧
+                              Settled φ H₁ r
+```
+
+### `Sharp.Glue.unreached.drop_order_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreached` refutes `drop_order` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreached.drop_order_2 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        (∀ (_H : Store) (_φ : Frame) (_v : Val) (tr : List Event),
+            Blocks P.decls tr) ∧
+          (∀ (κ : PanicKind) (tr : List Event),
+              Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+                Blocks P.decls tr) ∧
+            ∀ (C C' : Config),
+              Steps M.toFloatOps P Config.init C →
+                Step M.toFloatOps P C C' →
+                  ∃ evs,
+                    C'.trace = C.trace ++ evs ∧
+                      NewestFirst (dropLocs evs) ∧
+                        Lifo C.stack C'.stack (dropLocs evs) ∧
+                          List.Pairwise (fun x1 x2 => x1 < x2) C.stack
+```
+
+### `Sharp.Glue.unreached.eval_sound_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreached` refutes `eval_sound` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreached.eval_sound_2 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        ∀ (fuel : Nat),
+          (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+            (∀ (H : Store) (v : Val) (tr : List Event),
+                Steps M.toFloatOps P Config.init
+                  (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+              ∀ (k : PanicKind) (tr : List Event),
+                run M.toFloatOps P fuel = EvalRes.panic k tr →
+                  Steps M.toFloatOps P Config.init (Config.panic k tr)
+```
+
+### `Sharp.Glue.unreached.run_sim_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreached` refutes `run_sim` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreached.run_sim_1 :
+  ¬∀ (M : FloatOps) (P : Program) (fuel : Nat),
+      (∀ (H : Store) (v : Val) (tr : List Event),
+          Steps M P Config.init
+            (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+        ∀ (k : PanicKind) (tr : List Event),
+          run M P fuel = EvalRes.panic k tr →
+            Steps M P Config.init (Config.panic k tr)
+```
+
+### `Sharp.Glue.unreached.eval_complete_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreached` refutes `eval_complete` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreached.eval_complete_2 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        (∀ (H : Store) (_φ : Frame) (v : Val) (tr : List Event),
+            ∃ n,
+              ∀ (fuel : Nat),
+                n < fuel → run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+          ∀ (κ : PanicKind) (tr : List Event),
+            Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+              ∃ n,
+                ∀ (fuel : Nat),
+                  n < fuel → run M.toFloatOps P fuel = EvalRes.panic κ tr
+```
+
+### `Sharp.Glue.unreached.run_complete_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreached` refutes `run_complete` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreached.run_complete_1 :
+  ¬∀ (M : FloatOps) (P : Program),
+      (∀ (H : Store) (_φ : Frame) (v : Val) (tr : List Event),
+          ∃ n,
+            ∀ (fuel : Nat),
+              n < fuel →
+                run M P fuel = EvalRes.ok H v tr ∨
+                  ∃ w, run M P fuel = EvalRes.stuck w) ∧
+        ∀ (κ : PanicKind) (tr : List Event),
+          Steps M P Config.init (Config.panic κ tr) →
+            ∃ n,
+              ∀ (fuel : Nat),
+                n < fuel →
+                  run M P fuel = EvalRes.panic κ tr ∨
+                    ∃ w, run M P fuel = EvalRes.stuck w
+```
+
+### `Sharp.Glue.unreached_panic.drop_order_3`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreached_panic` refutes `drop_order` without hypothesis 3 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreached_panic.drop_order_3 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+            Steps M.toFloatOps P Config.init
+                (Config.run H φ [] (Focus.ret v) tr) →
+              Blocks P.decls tr) ∧
+          (∀ (_κ : PanicKind) (tr : List Event), Blocks P.decls tr) ∧
+            ∀ (C C' : Config),
+              Steps M.toFloatOps P Config.init C →
+                Step M.toFloatOps P C C' →
+                  ∃ evs,
+                    C'.trace = C.trace ++ evs ∧
+                      NewestFirst (dropLocs evs) ∧
+                        Lifo C.stack C'.stack (dropLocs evs) ∧
+                          List.Pairwise (fun x1 x2 => x1 < x2) C.stack
+```
+
+### `Sharp.Glue.unreached_panic.eval_sound_3`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreached_panic` refutes `eval_sound` without hypothesis 3 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreached_panic.eval_sound_3 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        ∀ (fuel : Nat),
+          (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+            (∀ (H : Store) (v : Val) (tr : List Event),
+                run M.toFloatOps P fuel = EvalRes.ok H v tr →
+                  Steps M.toFloatOps P Config.init
+                    (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+              ∀ (k : PanicKind) (tr : List Event),
+                Steps M.toFloatOps P Config.init (Config.panic k tr)
+```
+
+### `Sharp.Glue.unreached_panic.run_sim_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreached_panic` refutes `run_sim` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreached_panic.run_sim_2 :
+  ¬∀ (M : FloatOps) (P : Program) (fuel : Nat),
+      (∀ (H : Store) (v : Val) (tr : List Event),
+          run M P fuel = EvalRes.ok H v tr →
+            Steps M P Config.init
+              (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+        ∀ (k : PanicKind) (tr : List Event),
+          Steps M P Config.init (Config.panic k tr)
+```
+
+### `Sharp.Glue.unreached_panic.eval_complete_4`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreached_panic` refutes `eval_complete` without hypothesis 4 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreached_panic.eval_complete_4 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+            Steps M.toFloatOps P Config.init
+                (Config.run H φ [] (Focus.ret v) tr) →
+              ∃ n,
+                ∀ (fuel : Nat),
+                  n < fuel → run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+          ∀ (κ : PanicKind) (tr : List Event),
+            ∃ n,
+              ∀ (fuel : Nat),
+                n < fuel → run M.toFloatOps P fuel = EvalRes.panic κ tr
+```
+
+### `Sharp.Glue.unreached_panic.run_complete_3`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreached_panic` refutes `run_complete` without hypothesis 3 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreached_panic.run_complete_3 :
+  ¬∀ (M : FloatOps) (P : Program),
+      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+            ∃ n,
+              ∀ (fuel : Nat),
+                n < fuel →
+                  run M P fuel = EvalRes.ok H v tr ∨
+                    ∃ w, run M P fuel = EvalRes.stuck w) ∧
+        ∀ (κ : PanicKind) (tr : List Event),
+          ∃ n,
+            ∀ (fuel : Nat),
+              n < fuel →
+                run M P fuel = EvalRes.panic κ tr ∨
+                  ∃ w, run M P fuel = EvalRes.stuck w
+```
+
+### `Sharp.Glue.unordered.drop_order_4`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unordered` refutes `drop_order` without hypothesis 4 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unordered.drop_order_4 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+            Steps M.toFloatOps P Config.init
+                (Config.run H φ [] (Focus.ret v) tr) →
+              Blocks P.decls tr) ∧
+          (∀ (κ : PanicKind) (tr : List Event),
+              Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+                Blocks P.decls tr) ∧
+            ∀ (C C' : Config),
+              Step M.toFloatOps P C C' →
+                ∃ evs,
+                  C'.trace = C.trace ++ evs ∧
+                    NewestFirst (dropLocs evs) ∧
+                      Lifo C.stack C'.stack (dropLocs evs) ∧
+                        List.Pairwise (fun x1 x2 => x1 < x2) C.stack
+```
+
+### `Sharp.Glue.not_a_step.drop_order_5`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.not_a_step` refutes `drop_order` without hypothesis 5 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.not_a_step.drop_order_5 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+            Steps M.toFloatOps P Config.init
+                (Config.run H φ [] (Focus.ret v) tr) →
+              Blocks P.decls tr) ∧
+          (∀ (κ : PanicKind) (tr : List Event),
+              Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+                Blocks P.decls tr) ∧
+            ∀ (C C' : Config),
+              Steps M.toFloatOps P Config.init C →
+                ∃ evs,
+                  C'.trace = C.trace ++ evs ∧
+                    NewestFirst (dropLocs evs) ∧
+                      Lifo C.stack C'.stack (dropLocs evs) ∧
+                        List.Pairwise (fun x1 x2 => x1 < x2) C.stack
+```
+
+### `Sharp.Glue.init_steps.Step.det_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.init_steps` refutes `Step.det` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.init_steps.Step.det_1 :
+  ¬∀ {M : FloatOps} {P : Program} {C C₁ C₂ : Config}, Step M P C C₂ → C₁ = C₂
+```
+
+### `Sharp.Glue.init_steps.Step.det_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.init_steps` refutes `Step.det` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.init_steps.Step.det_2 :
+  ¬∀ {M : FloatOps} {P : Program} {C C₁ C₂ : Config}, Step M P C C₁ → C₁ = C₂
+```
+
+### `Sharp.Glue.init_steps.Step.terminal_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.init_steps` refutes `Step.terminal` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.init_steps.Step.terminal_1 :
+  ¬∀ {M : FloatOps} {P : Program} {C C' : Config}, ¬Step M P C C'
+```
+
+### `Sharp.Glue.init_steps.step_stuck_isStuckState_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.init_steps` refutes `step_stuck_isStuckState` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.init_steps.step_stuck_isStuckState_1 :
+  ¬∀ {_M : FloatOps} {_P : Program} {_C : Config} {w : Violation},
+      w.isStuckState = true
+```
+
+### `Sharp.Glue.init_steps.run_stuck_of_step_stuck_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.init_steps` refutes `run_stuck_of_step_stuck` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.init_steps.run_stuck_of_step_stuck_2 :
+  ¬∀ (M : FloatOps) (P : Program) {C : Config} {_w : Violation},
+      Steps M P Config.init C →
+        ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.stuck w'
+```
+
+### `Sharp.Glue.unreachable_stuck.step_progress_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreachable_stuck` refutes `step_progress` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreachable_stuck.step_progress_2 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        ∀ (C : Config), C.Terminal ∨ ∃ C', Step M.toFloatOps P C C'
+```
+
+### `Sharp.Glue.unreachable_stuck.step_preservation_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreachable_stuck` refutes `step_preservation` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreachable_stuck.step_preservation_2 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        ∃ fd,
+          P.fns[0]? = some fd ∧
+            ∀ (C : Config), Config.SafeAt M.toFloatOps P fd.ret C
+```
+
+### `Sharp.Glue.unreachable_stuck.never_stuck_iff_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreachable_stuck` refutes `never_stuck_iff` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreachable_stuck.never_stuck_iff_2 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        ((∀ (fuel : Nat) (w : Violation),
+            run M.toFloatOps P fuel ≠ EvalRes.stuck w) ↔
+          ∀ (C : Config), C.Terminal ∨ ∃ C', Step M.toFloatOps P C C')
+```
+
+### `Sharp.Glue.unreachable_stuck.step_never_stuck_of_run_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreachable_stuck` refutes `step_never_stuck_of_run` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreachable_stuck.step_never_stuck_of_run_2 :
+  ¬∀ (M : FloatOps) (P : Program),
+      (∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w) →
+        ∀ (C : Config), C.Terminal ∨ ∃ C', Step M P C C'
+```
+
+### `Sharp.Glue.unreachable_stuck.run_stuck_of_step_stuck_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreachable_stuck` refutes `run_stuck_of_step_stuck` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreachable_stuck.run_stuck_of_step_stuck_1 :
+  ¬∀ (M : FloatOps) (P : Program) {C : Config} {w : Violation},
+      Config.Stuck M P C w →
+        ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.stuck w'
+```
+
 ### `Examples.eval_loop_ok`
 
 *theorem* · module `RueCore.Examples`
@@ -30476,8 +31838,8 @@ its first hypothesis (`eval n` is a value, not a refusal); and
 no `n` makes the value, or a refusal, the answer at every fuel. `run P fuel`
 is `eval` at `main()` (`run`'s definition). `fuel_mono` and `no_masking` are
 stated over `eval`; the statement gives `run P n` and `eval` at `main()` as
-the same term, for every `n` (`run`'s definition). The pairing is reviewed,
-not yet kernel-checked (RUE-2495).
+the same term, for every `n` (`run`'s definition). The pairing is
+kernel-checked (`Sharp/Glue.lean`, RUE-2495).
 
 ```lean
 def RueCore.Spec.Sharp.fuel_stmt : Prop :=
@@ -32040,7 +33402,7 @@ store, which do not match that context (`FrameMatches` fails); everything else
 (the discarded `1`) included. `eval` refuses the read of `x` with `unbound`. The statement gives `ProgramTyped P` and `WfProgram P`
 (`soundness` asks the second, `drop_exactly_once` the first), and
 `rest_exactly_once`'s hypothesis 8 as `eval … = r.withTrace []` with `r` the
-refusal. The pairing is reviewed, not yet kernel-checked (RUE-2495);
+refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495);
 `¬ FrameMatches` is proved through `soundness`.
 
 ```lean
@@ -32730,8 +34092,7 @@ conclusions fails once its program hypothesis is dropped: `soundness`
 (`no_masking`, `drop_exactly_once`, `rest_exactly_once`), the statement gives
 `run P n` and `eval` at `main()` as the same term (`run`'s definition), and
 `rest_exactly_once`'s hypothesis 8 as `eval … = r.withTrace []` with `r` the
-refusal. That the pairing of this statement with those hypotheses is right is
-reviewed, not yet kernel-checked (RUE-2495). The negations `¬ ProgramTyped`
+refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495). The negations `¬ ProgramTyped`
 and `¬ WfProgram` are proved through the spine theorems themselves
 (`no_use_after_move`, `soundness`), not by inverting the definitions.
 
@@ -32836,7 +34197,7 @@ no `c` to hold of, since `check` answers `none`: the statement gives
 `CTy.never`, which fits every type, and no `Ω` at all; `¬ Typed` is stated
 for every type and outcome, so for any `c`, `Ω` a spine instance picks. And
 `rest_exactly_once`'s hypothesis 8 is `eval … = r.withTrace []` with `r` the
-refusal. The pairing is reviewed, not yet kernel-checked (RUE-2495); `¬ Typed`
+refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495); `¬ Typed`
 is proved through `soundness`.
 
 ```lean
