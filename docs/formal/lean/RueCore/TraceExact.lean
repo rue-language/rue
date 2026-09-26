@@ -51,7 +51,11 @@ evaluation or a form holds it to the end of that evaluation or form:
 What the two do not see is an end emitted *early*, inside the evaluation
 that minted the value: no window holds the value yet, so only
 `no_double_free`'s "at most once" bounds such an end, and `main`'s own result
-is part of `run`'s result, handed to no form.
+is part of `run`'s result, handed to no form. The whole-run statement,
+`whole_program_exactly_once` (`TraceWhole.lean`, RUE-2478), counts every
+owned value a configuration of the run holds, those two included, over §6's
+relation; it is proved by carrying a ledger along `eval`'s simulation, not by
+composing the two statements here.
 
 "Still in the store" is not a hiding place: `Tidy` (`eval_tidy`) says every
 cell an evaluation allocates is retired by its end — §6.9's frame pop, §6.7's
@@ -2601,7 +2605,10 @@ whole run, what is proved is the "at most once" half (`no_double_free`,
 What the two do not see is an end emitted *early*, inside the evaluation
 that minted the value: no window holds the value yet, so only
 `no_double_free`'s "at most once" bounds such an end, and `main`'s own result
-is part of `run`'s result, handed to no form. -/
+is part of `run`'s result, handed to no form. `whole_program_exactly_once`
+(`TraceWhole.lean`, RUE-2478) counts both: over a whole finished run, every
+owned value any configuration of the run holds is ended exactly once or is
+part of the result. -/
 theorem rest_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
     (hp : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
     {φ : Frame} {H : Store} (ht : Typed P R Γ e T Ω) (hfm : FrameMatches P.decls Γ φ H)
