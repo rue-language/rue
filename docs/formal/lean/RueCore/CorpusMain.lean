@@ -1,5 +1,6 @@
 import RueCore.Corpus
 import RueCore.Gen
+import RueCore.Explain.Text
 
 /-!
 `lake exe ruecore-corpus` prints the bridge corpus as JSON on stdout. With
@@ -11,6 +12,17 @@ each group's outcomes under `run`, a refusal by its violation. Without `--gen` t
 `corpus.json` expects it. A generated case the export fuel does not complete is
 an error (exit 1, the cases named on stderr) rather than a silent omission,
 because `Gen.lean` guarantees every one terminates.
+
+The profile also names the checker's **incompleteness** (RUE-2491): a case
+`checkProgram` refuses whose `run` nonetheless reaches an `ok` value at the
+export fuel and model — the checker rejects it, but the interpreter did not
+get stuck on it. Such a case's verdict is never checked against the
+compiler's *run*, only against its accept/reject call (`Corpus.lean`'s
+module docstring), so an over-strict rejection here is invisible to the
+bridge otherwise. Each one is listed with the checker's own refusal, in the
+calculus's own words (`Explain.lean`'s `verdictSection`, the same prose
+`ruecore-explain` prints), so a reader can tell an intended static
+approximation from an accidental one without re-deriving it by hand.
 -/
 
 /-- (helper) The command line. -/
@@ -54,19 +66,33 @@ def tally (keys : List String) : List (String × Nat) :=
     if acc.any (·.1 == k) then acc.map fun (k', n) => if k' == k then (k', n + 1) else (k', n)
     else acc ++ [(k, 1)]
 
+/-- (helper) The checker's refusal for a rejected program, in the calculus's
+own words: the failing premise's rule and citation, or (when no function
+body's own derivation failed) the whole-program premise (`Explain.lean`'s
+`Text.verdictSection`, whose rejection prose this reuses verbatim so the
+profile's reason and `ruecore-explain`'s stay one text rather than two). -/
+def refusalLines (P : RueCore.Program) : List String :=
+  (RueCore.Explain.Text.verdictSection P (RueCore.Explain.programDerivs P 0 P.fns)).drop 2
+
 /-- (helper) One group of the profile: the cases, how many `checkProgram`
-accepts and rejects, and each side's outcomes at the export fuel and model. -/
+accepts and rejects, each side's outcomes at the export fuel and model, and
+(RUE-2491) the rejected cases whose `run` nonetheless reaches an `ok` value —
+the checker's incompleteness, listed with each one's refusal. -/
 def profileLines (title : String) (cs : List RueCore.Corpus.Case) : List String :=
   let judged := cs.map fun c =>
     (RueCore.checkProgram c.prog,
-     outcomeKey (RueCore.run RueCore.Corpus.exportOps c.prog RueCore.Corpus.exportFuel))
+     outcomeKey (RueCore.run RueCore.Corpus.exportOps c.prog RueCore.Corpus.exportFuel), c)
   let acc := judged.filter (·.1)
-  let rej := judged.filter (!·.1)
-  let row (xs : List (Bool × String)) : String :=
-    ", ".intercalate ((tally (xs.map (·.2))).map fun (k, n) => s!"{k} {n}")
+  let rej := judged.filter (fun j => !j.1)
+  let cleanRej := rej.filter (fun j => j.2.1 == "ok")
+  let row (xs : List (Bool × String × RueCore.Corpus.Case)) : String :=
+    ", ".intercalate ((tally (xs.map (·.2.1))).map fun (k, n) => s!"{k} {n}")
   [s!"{title}: {cs.length} programs; checkProgram accepts {acc.length}, rejects {rej.length}",
    s!"  accepted, by outcome: {row acc}",
-   s!"  rejected, by outcome: {row rej}"]
+   s!"  rejected, by outcome: {row rej}",
+   s!"  rejected but runs cleanly (checker refuses, `run` reaches a value; RUE-2491): " ++
+     s!"{cleanRej.length}"] ++
+  (cleanRej.flatMap fun j => [s!"    {j.2.2.name}:"] ++ (refusalLines j.2.2.prog).map ("      " ++ ·))
 
 /-- (helper) Print the corpus, with the generated cases when asked; exit 2 on
 a bad argument. -/
