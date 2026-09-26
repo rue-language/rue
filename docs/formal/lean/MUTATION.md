@@ -27,6 +27,13 @@ Measured on trunk `c2fe428ff` (2026-09-25), with the six seeds this page adds
 The non-vacuity witnesses of RUE-2469 landed after this measurement.
 They add proofs and witnesses, never remove them, so a rerun with them can
 only kill more; the table and score below predate them.
+RUE-2486 (part 1 of 2) seeds seven of proposed issue 1's thirteen
+witness-only refusals — `use-move-rootidx`, `index-read-copy`,
+`index-drop-copy-checker`, `const-index-off-by-one`, `index-write-linear`,
+`residual-declared` and `residual-untracked` — and reruns exactly those seven
+(`mutate.py --only`) to confirm the new seed kills each one at the corpus
+level; their table rows and the "seeds and the bridge alone" score row are
+current, the rest of the table and score still predate RUE-2469 as above.
 
 ## What is mutated
 
@@ -212,7 +219,17 @@ adds (and their six `Examples.lean` witnesses); "after" is with them.
 | **Killed** | 73/76 (96%) | 76/76 (100%) |
 | A stated property is false | 48/76 (63%) | 48/76 (63%) |
 | The tests with the proofs off: witnesses, seeds, generated cases | 66/76 (87%) | 71/76 (93%) |
-| The seeds and the bridge alone | 50/76 (66%) | 56/76 (74%) |
+| The seeds and the bridge alone | 50/76 (66%) | 63/76 (83%) |
+
+The "seeds and the bridge alone" row's "after" figure also counts RUE-2486's
+seven seeds (`use_move_rootidx`, `index_read_copy`,
+`index_drop_copy_checker`, `const_index_off_by_one`, `index_write_linear`,
+`residual_declared`, `residual_untracked`), confirmed by a rerun of exactly
+those seven mutants (`mutate.py --only`). The other three rows are unaffected
+by them: each of the seven was already a proof kill ("Killed" and "a stated
+property is false" do not change), and each already failed its
+`Examples.lean` witness in the proofs-off pass ("the tests with the proofs
+off" does not change either).
 
 These rows are recorded but do not count as kills:
 
@@ -316,24 +333,29 @@ Counted apart:
   `decl-cycle-rounds`. With the proofs off, the bridge is the first test to
   kill `decl-cycle-rounds`: 17 generated cases nest declarations deeper than
   the peel's shortened round count, and no seed does.
-* **20 mutants get past the seeds and the bridge together**, after the seeds.
-  They fall into three groups:
+* **20 mutants got past the seeds and the bridge together**, after the six
+  RUE-2465 seeds and before RUE-2486. They fell into three groups, and
+  RUE-2486 (part 1 of 2) seeds seven of the third group, leaving **13**:
   - 4 no corpus case can show: `loop-div-breaks`, `loop-break-div-brk`,
     `step-usecopy-nondet` and `entry-params`. Each falsifies a stated
     property.
   - 3 are trace-only: `seq-droptemp-skip`, `residue-mark-skip` and
     `match-consume-skip`. Each falsifies `Exact`.
-  - 13 are refusals that a witness proves but no seed exports, so the
-    compiler's matching refusal is never compared. Twelve are in
-    `Examples.lean`:
-    - `use-move-rootidx`, `index-read-copy`, `index-drop-copy-checker`;
-    - `const-index-off-by-one`, `index-write-linear`;
-    - `residual-declared`, `residual-untracked`;
-    - `lit-bounds`, `dbg-observable`, `repeat-copy`;
-    - `copy-struct-dtor`, `dtor-linear-field`.
+  - 6 are refusals that a witness proves but still no seed exports, so the
+    compiler's matching refusal is never compared. Five are in
+    `Examples.lean`: `lit-bounds`, `dbg-observable`, `repeat-copy`,
+    `copy-struct-dtor` and `dtor-linear-field`. The sixth, `copy-monitor-off`,
+    is `Trace.lean`'s `ownedUnderCopy` witness. This remaining group is
+    proposed issue 1's second PR, below.
 
-    The thirteenth, `copy-monitor-off`, is `Trace.lean`'s `ownedUnderCopy`
-    witness. This group is proposed issue 1 below.
+    RUE-2486's seven new seeds (`use_move_rootidx`, `index_read_copy`,
+    `index_drop_copy_checker`, `const_index_off_by_one`, `index_write_linear`,
+    `residual_declared`, `residual_untracked`) each reproduce their mutant's
+    `Examples.lean` witness as a corpus case, so `use-move-rootidx`,
+    `index-read-copy`, `index-drop-copy-checker`, `const-index-off-by-one`,
+    `index-write-linear`, `residual-declared` and `residual-untracked` are now
+    killed at the corpus level (the "Corpus and bridge alone" column of "The
+    mutants", below), the same reading a proof already gave each of them.
 
 ### The mutants
 
@@ -357,16 +379,16 @@ pass leaves as written. `mutate.py --table` prints this table from
 | 1 | `use-move-partial` | §5.1 | (Use-Move) | premise | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 1179) | corpus: `array_zero_length_moved_twice`, `enum_matched_twice_moving` +1 | a stated property is false | moves a partially moved aggregate whole; the machine meets the hole (seed `partial_then_whole`): `soundness`, `check_sound` | 37 |
 | 2 | `use-copy-moved` | §5.1 | (Use-Copy) | premise | proof: `soundness` (`Soundness.lean`) | Explain mirror: `explain_result` (`Explain.lean`) | survived | equivalent | a `Copy` place is never `MovedOut` in a reachable state: a `Copy` `@drop` moves nothing and a `Copy` value is never a hole | 61 |
 | 3 | `use-move-dtor` | §5.1 | (Use-Move) 3.9:34 | premise | proof: `check_sound` (`Checker.lean`) | witness: `Examples.lean` example (l. 2742) | corpus: `partial_under_dtor` | every statement holds | E0456 is a static discipline with no dynamic counterpart: the machine runs the program (`partial_under_dtor`), so no stated property is false | 34 |
-| 4 | `use-move-rootidx` | §5.1 | (Use-Move) 3.8:68 | premise | proof: `check_sound` (`Checker.lean`) | witness: `Examples.lean` example (l. 1262) | survived | every statement holds | a static discipline (`3.8:68`): the machine moves the element out and drops the rest path by path, without a refusal | 35 |
+| 4 | `use-move-rootidx` | §5.1 | (Use-Move) 3.8:68 | premise | proof: `check_sound` (`Checker.lean`) | witness: `Examples.lean` example (l. 1262) | corpus: `use_move_rootidx` | every statement holds | a static discipline (`3.8:68`): the machine moves the element out and drops the rest path by path, without a refusal | 34 |
 | 5 | `use-affine-as-copy` | §5.1 | (Use-Copy)/(Use-Move) | move-copy | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 1170) | corpus: `array_dyn_write_after_field_move`, `array_elem_reinit` +6 | a stated property is false | an affine use leaves the place `Owned`, so a second use is accepted and the machine meets a hole (`use_after_move`): `soundness` | 31 |
 | 6 | `use-declared-residue` | §5.1 | (Use-Declared-Linear-Destructure) | premise | proof: `splitResidue_ok` (`Soundness.lean`) | witness: `Examples.lean` example (l. 2885) | corpus: `destructure_linear_residue` | a stated property is false | accepts a destructure that strands a linear sibling; the machine refuses with `linearLeak` (`destructure_linear_residue`): `soundness` | 34 |
-| 7 | `index-read-copy` | §5.1 | (Use-Untrackable-Dynamic-Copy) | copy-check | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 1275) | survived | a stated property is false | accepts a dynamic-index read of a non-Copy element, which the machine refuses (`typeConfusion`): `soundness` | 34 |
-| 8 | `index-drop-copy-checker` | §5.1 | (Use-Untrackable-Dynamic-Copy), @drop | copy-check | proof: `check_sound` (`Checker.lean`) | witness: `Examples.lean` example (l. 1305) | survived | a stated property is false | the checker accepts `@drop(a[i])` of a non-Copy element, which no `Typed` rule derives: `check_sound` | 34 |
-| 9 | `const-index-off-by-one` | §5.1 | Ty.atPath (7.1:9) | off-by-one | proof: `OwnSt.setAt_wf` (`Statics/Lemmas.lean`) | witness: `Examples.lean` example (l. 1276) | survived | a stated property is false | a constant index equal to the length types, and the machine's read fails (`typeConfusion`): `soundness` | 30 |
+| 7 | `index-read-copy` | §5.1 | (Use-Untrackable-Dynamic-Copy) | copy-check | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 1275) | corpus: `index_read_copy` | a stated property is false | accepts a dynamic-index read of a non-Copy element, which the machine refuses (`typeConfusion`): `soundness` | 30 |
+| 8 | `index-drop-copy-checker` | §5.1 | (Use-Untrackable-Dynamic-Copy), @drop | copy-check | proof: `check_sound` (`Checker.lean`) | witness: `Examples.lean` example (l. 1305) | corpus: `index_drop_copy_checker` | a stated property is false | the checker accepts `@drop(a[i])` of a non-Copy element, which no `Typed` rule derives: `check_sound` | 34 |
+| 9 | `const-index-off-by-one` | §5.1 | Ty.atPath (7.1:9) | off-by-one | proof: `OwnSt.setAt_wf` (`Statics/Lemmas.lean`) | witness: `Examples.lean` example (l. 1276) | corpus: `const_index_off_by_one` | a stated property is false | a constant index equal to the length types, and the machine's read fails (`typeConfusion`): `soundness` | 29 |
 | 10 | `assign-overwrite` | §5.2 | (Assign) 3.8:77 | premise | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 3138) | corpus: `linear_overwrite`, `overwrite_field_past_partial_linear` +1 | a stated property is false | accepts overwriting a live linear place; the machine refuses with `linearOverwrite` (`linear_overwrite`): `soundness` | 34 |
 | 11 | `assign-array-ok` | §5.2 | (Assign) 3.8:72 | premise | proof: `check_sound` (`Checker.lean`) | witness: `Examples.lean` example (l. 1170) | corpus: `array_elem_reinit`, `array_elem_self_assign` | every statement holds | `soundness` does not use the premise (`assignArrayOk`'s doc-comment): the write it refuses runs without a refusal | 34 |
 | 12 | `assign-immutable` | §5.2 | (Assign) mut | premise | witness: `Examples.lean` example (l. 4083) | — | corpus: `assign_immutable`, `match_payload_assign` | every statement holds | mutability is not a safety property: the machine performs the write | 32 |
-| 13 | `index-write-linear` | §5.2 | (Assign) at a dynamic index | premise | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 1278) | survived | a stated property is false | accepts writing a linear element through a dynamic index; the machine refuses with `linearOverwrite`: `soundness` | 31 |
+| 13 | `index-write-linear` | §5.2 | (Assign) at a dynamic index | premise | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 1278) | corpus: `index_write_linear` | a stated property is false | accepts writing a linear element through a dynamic index; the machine refuses with `linearOverwrite`: `soundness` | 34 |
 | 14 | `drop-residual-below` | §5.3 | (@Drop) E0406 | premise | proof: `check_sound` (`Checker.lean`) | witness: `Examples.lean` example (l. 2747) | corpus: `linear_field_stranded` | every statement holds | E0406's residual side condition has no dynamic counterpart (`linear_field_stranded` runs): no stated property is false | 34 |
 | 15 | `drop-moved` | §5.3 | (@Drop) | premise | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 3127) | corpus: `loop_moved_prev_iteration`, `loop_nested_move_outer` +1 | a stated property is false | accepts `@drop` of a moved-out place; the machine meets the hole (`use_after_move`): `soundness` | 31 |
 | 16 | `seq-discard` | §5.3 | (Seq) 3.8:64 | premise | proof: `soundness` (`Soundness.lean`) | witness: `Corpus.lean` example (l. 976) | corpus: `linear_temporary_discarded` | a stated property is false | accepts discarding a linear value; the machine refuses with `linearDiscard` (`linear_temporary_discarded`): `soundness` | 32 |
@@ -380,8 +402,8 @@ pass leaves as written. `mutate.py --table` prints this table from
 | 24 | `arm-leak` | §5.5/§5.6 | (Match) arm scope exit | premise | proof: `TypedArms.at_index` (`Statics/Lemmas.lean`) | witness: `Examples.lean` example (l. 2826) | corpus: `enum_arm_leaks_payload` | a stated property is false | accepts an arm that ends with a live linear payload binding; the machine refuses with `linearLeak` (`enum_arm_leaks_payload`): `soundness` | 27 |
 | 25 | `arm-payload-mutable` | §5.5 | (Match) payload binders | premise | proof: `Ctx.skel_armCtx` (`Statics/Lemmas.lean`) | witness: `Examples.lean` example (l. 4083) | corpus: `match_payload_assign` | only a helper is false | only `Ctx.skel_armCtx`, which restates `armCtx`; mutability is not a safety property | 26 |
 | 26 | `let-leak` | §5.6 | (Let) scope exit | premise | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 1266) | corpus: `linear_leaked`, `struct_linear_field_leaked` | a stated property is false | accepts a `let` that ends with a live linear binding; `linearLeak` (`linear_leaked`): `soundness` | 31 |
-| 27 | `residual-declared` | §5.6 | residual-linear (3.8:74) | affine-linear | proof: `residualLinear_mult_linear` (`Statics/Lemmas.lean`) | witness: `Examples.lean` example (l. 2954) | survived | a stated property is false | a partially moved declared-linear struct owes nothing, so its leak is accepted; the machine's monitor still refuses: `soundness` | 26 |
-| 28 | `residual-untracked` | §5.6 | residual-linear, untracked residue | affine-linear | proof: `ownedJoinOkList_residualLinearFields` (`Statics/Lemmas.lean`) | witness: `Examples.lean` example (l. 1266) | survived | a stated property is false | untouched linear slots owe nothing, so their leak is accepted; the machine refuses: `soundness` | 26 |
+| 27 | `residual-declared` | §5.6 | residual-linear (3.8:74) | affine-linear | proof: `residualLinear_mult_linear` (`Statics/Lemmas.lean`) | witness: `Examples.lean` example (l. 2954) | corpus: `residual_declared` | a stated property is false | a partially moved declared-linear struct owes nothing, so its leak is accepted; the machine's monitor still refuses: `soundness` | 26 |
+| 28 | `residual-untracked` | §5.6 | residual-linear, untracked residue | affine-linear | proof: `ownedJoinOkList_residualLinearFields` (`Statics/Lemmas.lean`) | witness: `Examples.lean` example (l. 1266) | corpus: `residual_untracked` | a stated property is false | untouched linear slots owe nothing, so their leak is accepted; the machine refuses: `soundness` | 26 |
 | 29 | `return-leak` | §5.7 | (Return-Value) | premise | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 3131) | corpus: `return_past_linear` | a stated property is false | accepts a `return` past a live linear binding; `linearLeak` (`return_past_linear`): `soundness` | 32 |
 | 30 | `break-leak` | §5.7 | (Loop-Break) loop locals | premise | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 3874) | corpus: `loop_break_past_linear` | a stated property is false | accepts a `break` past a live linear loop-local; `linearLeak` (`loop_break_past_linear`): `soundness` | 31 |
 | 31 | `loop-div-breaks` | §5.7 | (Loop-Div) | premise | proof: `soundness` (`Soundness.lean`) | survived | (same) | a stated property is false | the rules type a loop that breaks as diverging, so what follows is not typed but runs: `soundness` | 57 |
@@ -498,24 +520,29 @@ disagreement the allowed red).
 ### Proposed issues (for the coordinator)
 
 1. **[Formal/Bridge] Seed the refusals only a witness proves.** 13 mutants
-   are killed by an `Examples.lean` or `Trace.lean` refusal witness and by
+   were killed by an `Examples.lean` or `Trace.lean` refusal witness and by
    no seed or generated case. Each is a refusal the compiler should make too,
-   and the bridge never compares it:
-   * moving an element out below a projection;
-   * a dynamic-index read, `@drop` or write of a non-Copy or linear element;
-   * a constant index equal to the length;
-   * a partially reassigned declared-linear struct that leaks;
-   * a linear field after a moved slot that leaks;
-   * an out-of-range literal;
-   * `@dbg` of an aggregate;
-   * `[e; n]` of a non-Copy element;
-   * a `@copy` struct with a destructor, and a destructor-bearing struct with
-     a linear field;
-   * the `ownedUnderCopy` refusal.
+   and the bridge never compared it. RUE-2486 is this issue's two PRs:
+   * **Part 1 (done, this page's seven `corpus:` rows above):** moving an
+     element out below a projection (`use-move-rootidx`); a dynamic-index
+     read, `@drop` or write of a non-Copy or linear element
+     (`index-read-copy`, `index-drop-copy-checker`, `index-write-linear`); a
+     constant index equal to the length (`const-index-off-by-one`); a
+     partially reassigned declared-linear struct that leaks
+     (`residual-declared`); and a linear field after a moved slot that leaks
+     (`residual-untracked`).
+   * **Part 2 (remaining, 6 mutants):** an out-of-range literal
+     (`lit-bounds`); `@dbg` of an aggregate (`dbg-observable`); `[e; n]` of a
+     non-Copy element (`repeat-copy`); a `@copy` struct with a destructor,
+     and a destructor-bearing struct with a linear field (`copy-struct-dtor`,
+     `dtor-linear-field`); and the `ownedUnderCopy` refusal
+     (`copy-monitor-off`).
 
-   Evidence: the 13 refusal mutants listed under "What the proofs kill".
-   Each shows "survived" in the table's "Corpus and bridge alone" column. At
-   most 6–8 seeds go in one PR, so this is about two PRs.
+   Evidence: the refusal mutants listed under "What the proofs kill". Each
+   still-open one shows "survived" in the table's "Corpus and bridge alone"
+   column; the seven part 1 seeded show `corpus:` there instead, confirmed by
+   a rerun of exactly those seven (`mutate.py --only`). At most 6–8 seeds go
+   in one PR, so this is about two PRs.
 2. **[Formal/Assurance] State §6.11's drop order independently of
    `dropEvents`.** `drop_order`'s `Blocks` is defined through `dropEvents`,
    so changing `dropContents` and `dropEvents` together falsifies no stated
