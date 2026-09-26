@@ -33,7 +33,7 @@ def soundness_stmt : Prop :=
         Typed P R Γ e T Ω →
           ∀ {φ : Frame} {H : Store},
             FrameMatches P.decls Γ φ H →
-              EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatOps fuel P H φ e)
+              EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)
 
 /-- The statement `run_safe` proves. -/
 def run_safe_stmt : Prop :=
@@ -42,61 +42,61 @@ def run_safe_stmt : Prop :=
       P.fns[0]? = some fd →
         fd.params = [] →
           ∀ (fuel : Nat),
-            run M.toFloatOps P fuel = EvalRes.outOfFuel ∨
-              (∃ (k : PanicKind), ∃ (tr : List Event), run M.toFloatOps P fuel = EvalRes.panic k tr) ∨
+            run M.toFloatSig P fuel = EvalRes.outOfFuel ∨
+              (∃ (k : PanicKind), ∃ (tr : List Event), run M.toFloatSig P fuel = EvalRes.panic k tr) ∨
                 ∃ (H : Store),
                   ∃ (v : Val),
                     ∃ (tr : List Event),
-                      run M.toFloatOps P fuel = EvalRes.ok H v tr ∧ HasTy P.decls v fd.ret
+                      run M.toFloatSig P fuel = EvalRes.ok H v tr ∧ HasTy P.decls v fd.ret
 
 /-- The statement `no_violation` proves. -/
 def no_violation_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
-    ProgramTyped P → ∀ (fuel : Nat) (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w
+    ProgramTyped P → ∀ (fuel : Nat) (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w
 
 /-- The statement `no_use_after_move` proves. -/
 def no_use_after_move_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
-    ProgramTyped P → ∀ (fuel : Nat), run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.useAfterMove
+    ProgramTyped P → ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterMove
 
 /-- The statement `no_use_after_drop` proves. -/
 def no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
-    ProgramTyped P → ∀ (fuel : Nat), run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.useAfterDrop
+    ProgramTyped P → ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterDrop
 
 /-- The statement `run_no_use_after_drop` proves. -/
 def run_no_use_after_drop_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) (fuel : Nat), run M P fuel ≠ EvalRes.stuck Violation.useAfterDrop
+  ∀ (M : FloatSig) (P : Program) (fuel : Nat), run M P fuel ≠ EvalRes.stuck Violation.useAfterDrop
 
 /-- The statement `no_linear_leak` proves. -/
 def no_linear_leak_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
-    ProgramTyped P → ∀ (fuel : Nat), run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearLeak
+    ProgramTyped P → ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearLeak
 
 /-- The statement `no_linear_overwrite` proves. -/
 def no_linear_overwrite_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
-    ProgramTyped P → ∀ (fuel : Nat), run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearOverwrite
+    ProgramTyped P → ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearOverwrite
 
 /-- The statement `no_linear_discard` proves. -/
 def no_linear_discard_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
-    ProgramTyped P → ∀ (fuel : Nat), run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearDiscard
+    ProgramTyped P → ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearDiscard
 
 /-- The statement `fuel_mono` proves. -/
 def fuel_mono_stmt : Prop :=
-  ∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat},
+  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat},
     n ≤ m → eval M n P H φ e ≠ EvalRes.outOfFuel → eval M m P H φ e = eval M n P H φ e
 
 /-- The statement `no_masking` proves. -/
 def no_masking_stmt : Prop :=
-  ∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat} {w : Violation},
+  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat} {w : Violation},
     eval M n P H φ e = EvalRes.stuck w →
       eval M m P H φ e ≠ EvalRes.outOfFuel → eval M m P H φ e = EvalRes.stuck w
 
 /-- The statement `run_ne_returned` proves. -/
 def run_ne_returned_stmt : Prop :=
-  ∀ (M : FloatOps) {P : Program} {fuel : Nat} (H : Store) (v : Val) (tr : List Event),
+  ∀ (M : FloatSig) {P : Program} {fuel : Nat} (H : Store) (v : Val) (tr : List Event),
     run M P fuel ≠ EvalRes.returned H v tr
 
 /-- The statement `check_sound` proves. -/
@@ -113,27 +113,27 @@ def no_double_free_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
-          (∀ (a : Nat), List.count a (freedIds P.decls (run M.toFloatOps P fuel).trace) ≤ 1) ∧
-            ∀ (a : Nat), List.count a (dtorIds (run M.toFloatOps P fuel).trace) ≤ 1
+        (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
+          (∀ (a : Nat), List.count a (freedIds P.decls (run M.toFloatSig P fuel).trace) ≤ 1) ∧
+            ∀ (a : Nat), List.count a (dtorIds (run M.toFloatSig P fuel).trace) ≤ 1
 
 /-- The statement `step_no_double_free` proves. -/
 def step_no_double_free_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ {C : Config},
-        Steps M.toFloatOps P Config.init C →
+        Steps M.toFloatSig P Config.init C →
           (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
             ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1
 
 /-- The statement `freed_once` proves. -/
 def freed_once_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) (fuel a : Nat),
+  ∀ (M : FloatSig) (P : Program) (fuel a : Nat),
     List.count a (freedIds P.decls (run M P fuel).trace) ≤ 1
 
 /-- The statement `dtor_once` proves. -/
 def dtor_once_stmt : Prop :=
-  ∀ (M : FloatOps) {P : Program},
+  ∀ (M : FloatSig) {P : Program},
     DtorNotCopy P.decls → ∀ (fuel a : Nat), List.count a (dtorIds (run M P fuel).trace) ≤ 1
 
 /-- The statement `drop_exactly_once` proves. -/
@@ -146,9 +146,9 @@ def drop_exactly_once_stmt : Prop :=
             FrameMatches P.decls Γ φ H →
               StoreCC P.decls H →
                 e.pendingSafe = true →
-                  (∀ (w : Violation), eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
-                    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
-                      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+                  (∀ (w : Violation), eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
+                      Tidy φ H (eval M.toFloatSig fuel P H φ e)
 
 /-- The statement `rest_exactly_once` proves. -/
 def rest_exactly_once_stmt : Prop :=
@@ -161,9 +161,9 @@ def rest_exactly_once_stmt : Prop :=
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
-                    Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                    Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                       ∀ {r : EvalRes},
-                        eval M.toFloatOps (fuel + 1) P H φ e = EvalRes.withTrace tr r →
+                        eval M.toFloatSig (fuel + 1) P H φ e = EvalRes.withTrace tr r →
                           (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
                             Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧
                               Settled φ H₁ r
@@ -174,11 +174,11 @@ def whole_program_exactly_once_stmt : Prop :=
     ProgramTyped P →
       P.pendingSafe = true →
         ∀ {C : Config},
-          Steps M.toFloatOps P Config.init C →
+          Steps M.toFloatSig P Config.init C →
             ∀ {a : Nat},
               a ∈ Config.held P.decls C →
                 ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
-                  Steps M.toFloatOps P C (Config.run H φ [] (Focus.ret v) tr) →
+                  Steps M.toFloatSig P C (Config.run H φ [] (Focus.ret v) tr) →
                     List.count a (Val.own P.decls v) + List.count a (freedIds P.decls tr) = 1
 
 /-- The statement `drop_order` proves. -/
@@ -186,12 +186,12 @@ def drop_order_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-          Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) → Blocks P.decls tr) ∧
+          Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) → Blocks P.decls tr) ∧
         (∀ (κ : PanicKind) (tr : List Event),
-            Steps M.toFloatOps P Config.init (Config.panic κ tr) → Blocks P.decls tr) ∧
+            Steps M.toFloatSig P Config.init (Config.panic κ tr) → Blocks P.decls tr) ∧
           ∀ (C C' : Config),
-            Steps M.toFloatOps P Config.init C →
-              Step M.toFloatOps P C C' →
+            Steps M.toFloatSig P Config.init C →
+              Step M.toFloatSig P C C' →
                 ∃ (evs : List Event),
                   C'.trace = C.trace ++ evs ∧
                     NewestFirst (dropLocs evs) ∧
@@ -203,36 +203,36 @@ def drop_glue_order_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-          Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
-            GlueBlocks P.decls tr) ∧
+          Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+            DropGlueBlocks P.decls tr) ∧
         ∀ (κ : PanicKind) (tr : List Event),
-          Steps M.toFloatOps P Config.init (Config.panic κ tr) → GlueBlocks P.decls tr
+          Steps M.toFloatSig P Config.init (Config.panic κ tr) → DropGlueBlocks P.decls tr
 
 /-- The statement `Step.det` proves. -/
 def Step.det_stmt : Prop :=
-  ∀ {M : FloatOps} {P : Program} {C C₁ C₂ : Config}, Step M P C C₁ → Step M P C C₂ → C₁ = C₂
+  ∀ {M : FloatSig} {P : Program} {C C₁ C₂ : Config}, Step M P C C₁ → Step M P C C₂ → C₁ = C₂
 
 /-- The statement `Step.terminal` proves. -/
 def Step.terminal_stmt : Prop :=
-  ∀ {M : FloatOps} {P : Program} {C C' : Config}, C.Terminal → ¬Step M P C C'
+  ∀ {M : FloatSig} {P : Program} {C C' : Config}, C.Terminal → ¬Step M P C C'
 
 /-- The statement `Config.trichotomy` proves. -/
 def Config.trichotomy_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) (C : Config),
+  ∀ (M : FloatSig) (P : Program) (C : Config),
     (∃ (C' : Config), Step M P C C') ∨ C.Terminal ∨ ∃ (w : Violation), Config.Stuck M P C w
 
 /-- The statement `step_iff` proves. -/
 def step_iff_stmt : Prop :=
-  ∀ {M : FloatOps} {P : Program} {C C' : Config}, Step M P C C' ↔ step M P C = StepOut.next C'
+  ∀ {M : FloatSig} {P : Program} {C C' : Config}, Step M P C C' ↔ step M P C = StepOut.next C'
 
 /-- The statement `Config.stuck_iff` proves. -/
 def Config.stuck_iff_stmt : Prop :=
-  ∀ {M : FloatOps} {P : Program} {C : Config},
+  ∀ {M : FloatSig} {P : Program} {C : Config},
     (¬C.Terminal ∧ ∀ (C' : Config), ¬Step M P C C') ↔ ∃ (w : Violation), Config.Stuck M P C w
 
 /-- The statement `step_stuck_isStuckState` proves. -/
 def step_stuck_isStuckState_stmt : Prop :=
-  ∀ {M : FloatOps} {P : Program} {C : Config} {w : Violation},
+  ∀ {M : FloatSig} {P : Program} {C : Config} {w : Violation},
     Config.Stuck M P C w → w.isStuckState = true
 
 /-- The statement `step_progress` proves. -/
@@ -240,7 +240,7 @@ def step_progress_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ (C : Config),
-        Steps M.toFloatOps P Config.init C → C.Terminal ∨ ∃ (C' : Config), Step M.toFloatOps P C C'
+        Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ (C' : Config), Step M.toFloatSig P C C'
 
 /-- The statement `step_preservation` proves. -/
 def step_preservation_stmt : Prop :=
@@ -248,7 +248,7 @@ def step_preservation_stmt : Prop :=
     ProgramTyped P →
       ∃ (fd : FnDef),
         P.fns[0]? = some fd ∧
-          ∀ (C : Config), Steps M.toFloatOps P Config.init C → Config.SafeAt M.toFloatOps P fd.ret C
+          ∀ (C : Config), Steps M.toFloatSig P Config.init C → Config.SafeAt M.toFloatSig P fd.ret C
 
 /-- The statement `step_type_safety` proves. -/
 def step_type_safety_stmt : Prop :=
@@ -257,19 +257,19 @@ def step_type_safety_stmt : Prop :=
       ∃ (fd : FnDef),
         P.fns[0]? = some fd ∧
           ∀ (n : Nat),
-            (∃ (D : Config), StepsN M.toFloatOps P n Config.init D) ∨
+            (∃ (D : Config), StepsN M.toFloatSig P n Config.init D) ∨
               (∃ (H : Store),
                   ∃ (v : Val),
                     ∃ (tr : List Event),
-                      Steps M.toFloatOps P Config.init
+                      Steps M.toFloatSig P Config.init
                           (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
                         HasTy P.decls v fd.ret) ∨
                 ∃ (κ : PanicKind),
-                  ∃ (tr : List Event), Steps M.toFloatOps P Config.init (Config.panic κ tr)
+                  ∃ (tr : List Event), Steps M.toFloatSig P Config.init (Config.panic κ tr)
 
 /-- The statement `step_no_use_after_drop` proves. -/
 def step_no_use_after_drop_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) {C : Config},
+  ∀ (M : FloatSig) (P : Program) {C : Config},
     Steps M P Config.init C → ¬Config.Stuck M P C Violation.useAfterDrop
 
 /-- The statement `eval_sound` proves. -/
@@ -277,17 +277,17 @@ def eval_sound_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+        (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
           (∀ (H : Store) (v : Val) (tr : List Event),
-              run M.toFloatOps P fuel = EvalRes.ok H v tr →
-                Steps M.toFloatOps P Config.init (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+              run M.toFloatSig P fuel = EvalRes.ok H v tr →
+                Steps M.toFloatSig P Config.init (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
             ∀ (k : PanicKind) (tr : List Event),
-              run M.toFloatOps P fuel = EvalRes.panic k tr →
-                Steps M.toFloatOps P Config.init (Config.panic k tr)
+              run M.toFloatSig P fuel = EvalRes.panic k tr →
+                Steps M.toFloatSig P Config.init (Config.panic k tr)
 
 /-- The statement `run_sim` proves. -/
 def run_sim_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) (fuel : Nat),
+  ∀ (M : FloatSig) (P : Program) (fuel : Nat),
     (∀ (H : Store) (v : Val) (tr : List Event),
         run M P fuel = EvalRes.ok H v tr →
           Steps M P Config.init (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
@@ -299,15 +299,15 @@ def eval_complete_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-          Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
-            ∃ (n : Nat), ∀ (fuel : Nat), n < fuel → run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+          Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+            ∃ (n : Nat), ∀ (fuel : Nat), n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
         ∀ (κ : PanicKind) (tr : List Event),
-          Steps M.toFloatOps P Config.init (Config.panic κ tr) →
-            ∃ (n : Nat), ∀ (fuel : Nat), n < fuel → run M.toFloatOps P fuel = EvalRes.panic κ tr
+          Steps M.toFloatSig P Config.init (Config.panic κ tr) →
+            ∃ (n : Nat), ∀ (fuel : Nat), n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 
 /-- The statement `run_complete` proves. -/
 def run_complete_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program),
+  ∀ (M : FloatSig) (P : Program),
     (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
         Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
           ∃ (n : Nat),
@@ -326,19 +326,19 @@ def run_complete_stmt : Prop :=
 def never_stuck_iff_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
-      ((∀ (fuel : Nat) (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ↔
+      ((∀ (fuel : Nat) (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ↔
         ∀ (C : Config),
-          Steps M.toFloatOps P Config.init C → C.Terminal ∨ ∃ (C' : Config), Step M.toFloatOps P C C')
+          Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ (C' : Config), Step M.toFloatSig P C C')
 
 /-- The statement `step_never_stuck_of_run` proves. -/
 def step_never_stuck_of_run_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program),
+  ∀ (M : FloatSig) (P : Program),
     (∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w) →
       ∀ (C : Config), Steps M P Config.init C → C.Terminal ∨ ∃ (C' : Config), Step M P C C'
 
 /-- The statement `run_stuck_of_step_stuck` proves. -/
 def run_stuck_of_step_stuck_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) {C : Config} {w : Violation},
+  ∀ (M : FloatSig) (P : Program) {C : Config} {w : Violation},
     Steps M P Config.init C →
       Config.Stuck M P C w →
         ∃ (n : Nat), ∀ (fuel : Nat), n < fuel → ∃ (w' : Violation), run M P fuel = EvalRes.stuck w'
@@ -347,12 +347,12 @@ def run_stuck_of_step_stuck_stmt : Prop :=
 def eval_diverges_iff_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
-      ((∀ (fuel : Nat), run M.toFloatOps P fuel = EvalRes.outOfFuel) ↔
-        ∀ (n : Nat), ∃ (D : Config), StepsN M.toFloatOps P n Config.init D)
+      ((∀ (fuel : Nat), run M.toFloatSig P fuel = EvalRes.outOfFuel) ↔
+        ∀ (n : Nat), ∃ (D : Config), StepsN M.toFloatSig P n Config.init D)
 
 /-- The statement `Nonvacuous.exact_model` proves. -/
 def Nonvacuous.exact_model_stmt : Prop :=
-  ∃ (M : FloatModel), M.toFloatOps = Float.exactOps
+  ∃ (M : FloatModel), M.toFloatSig = Float.exactOps
 
 /-- The statement `Nonvacuous.empty_frame` proves. -/
 def Nonvacuous.empty_frame_stmt : Prop :=

@@ -68,7 +68,7 @@ a conjunct starts from), not hypotheses about the program. For `drop_order` 2–
 the dropped premise is the only thing tying its bound value or trace to the program,
 so the counter-example shows only that the conclusion is not a tautology. The walk does not go
 under `∨` or `¬`, nor into a definition that is not reducible (`Config.SafeAt`,
-`Exact`, `Blocks`, `GlueBlocks`, `Lifo`). Each pairing of a counter-example with a (theorem,
+`Exact`, `Blocks`, `DropGlueBlocks`, `Lifo`). Each pairing of a counter-example with a (theorem,
 number) is checked by the kernel (89 pairs): `RueCore/Sharp/Glue.lean` proves,
 from the counter-example, the negation of the spine statement with that
 hypothesis removed, and the lint computes that weakened statement itself from
@@ -136,7 +136,7 @@ Rompf; `../FIELD.md` §3); its Spec module keeps the file name
 | `rest_exactly_once` | Exactly once (as above), for values minted during an evaluation (FIELD §6: Confluent (delivery), Walker (linear use)) | the hypotheses of `drop_exactly_once`, and a form's leading operands evaluated (`Lead`) ⇒ the rest of the form ends them and the store's identities exactly once (`Exact`) and retires what it allocated (`Settled`) | The induction form behind `drop_exactly_once`, listed as a linking statement because it covers the values a form mints mid-evaluation; the literature has no separate counterpart. |
 | `whole_program_exactly_once` | Exactly once = at most once ∧ at least once, over a whole run; a memory leak is a value the run allocates and never releases (FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401) | `ProgramTyped P`, `P.pendingSafe`, `init →* C`, `a` held by `C` (`Config.held`) and `C →* ✓v` with trace `tr` ⇒ `a` is ended in `tr` or owned by `v`, exactly once between the two | Per owned value identity, for every value a finished run holds rather than per allocation site, under `pendingSafe` (RUE-2316), and with nothing about a panic, whose trap runs no drop, or a run that never finishes. |
 | `drop_order` | Drop order: variables are dropped in reverse order of declaration, temporaries in reverse order of creation (FIELD §5: Rust Reference, Destructors; FIELD §6: trace property over finished traces (no accepted name)) | `ProgramTyped P` ⇒ a finished run's trace is in §6.11's block grammar (`Blocks`), and each step from a reachable configuration drops newest first (`NewestFirst`, `Lifo`) from a location-ordered stack | Newest first by location rather than reverse declaration order, where `Lifo` constrains only a step that pops a scope (it holds of every step that keeps its stack), and `Blocks` holds of finished traces only (R7 of `REDTEAM-LOG.md`). |
-| `drop_glue_order` | Drop glue: `Drop::drop` if implemented, then each field's drop glue; struct fields in declaration order, array elements first to last (FIELD §5: rustc-dev-guide, Drop elaboration; Rust Reference, Destructors) | `ProgramTyped P` ⇒ a finished run's trace is in §6.11's block grammar with each drop's events given by §6.11's rules (`GlueBlocks`, `DropGlue`) | The Rust order for structs and arrays, with an enum dropping its active payload only, stated over finished traces only. |
+| `drop_glue_order` | Drop glue: `Drop::drop` if implemented, then each field's drop glue; struct fields in declaration order, array elements first to last (FIELD §5: rustc-dev-guide, Drop elaboration; Rust Reference, Destructors) | `ProgramTyped P` ⇒ a finished run's trace is in §6.11's block grammar with each drop's events given by §6.11's rules (`DropGlueBlocks`, `DropGlue`) | The Rust order for structs and arrays, with an enum dropping its active payload only, stated over finished traces only. |
 | `Step.det` | Determinacy: `e ↦ e′ ∧ e ↦ e″ ⇒ e′ =α e″` (FIELD §1: PFPL Lemma 5.3) | `C → C₁` and `C → C₂` ⇒ `C₁ = C₂` | Identical up to notation, with syntactic equality for `=α` because bindings are de Bruijn indices. |
 | `Step.terminal` | Finality of values: `¬(e val ∧ e ↦ e′)`; a terminal transition system's final configurations take no step (FIELD §1: PFPL Lemma 5.2; Plotkin 1981/2004 §1.2, Def. 2) | `C` terminal (`✓` or `↯κ`) ⇒ no `C → C′` | Identical up to notation, with a trap `↯κ` final too, as PFPL's checked error is. |
 | `Config.trichotomy` | No named theorem: by the definition of stuck, a state is final, steps, or is stuck (FIELD §1: Plotkin 1981/2004 §3.1, Def. 11; PFPL ch. 6) | every `C` steps, is terminal, or is stuck on a named `Violation` | Immediate here, as in the literature. `Config.Stuck` is `step`'s `.stuck` verdict and `step` is total, so what the statement adds is that `step`'s `.halted` is `Config.Terminal` and its `.next` is a `Step`. That stuck means "not terminal, and no rule applies" is `Config.stuck_iff`; that `step` is `Step` is `step_iff`. |
@@ -176,7 +176,7 @@ def Spec.soundness_stmt : Prop :=
         Typed P R Γ e T Ω →
           ∀ {φ : Frame} {H : Store},
             FrameMatches P.decls Γ φ H →
-              EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatOps fuel P H φ e)
+              EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
 Proved by `soundness` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `WfProgram`, `Ty`, `Ctx`, `Out`, `Expr`, `Typed`, `Frame`, `Store`, `FrameMatches`, `EvalOk`, `eval`; rests on 208 definitions.
@@ -206,10 +206,10 @@ def Spec.run_safe_stmt : Prop :=
       P.fns[0]? = some fd →
         fd.params = [] →
           ∀ (fuel : Nat),
-            run M.toFloatOps P fuel = EvalRes.outOfFuel ∨
-              (∃ k tr, run M.toFloatOps P fuel = EvalRes.panic k tr) ∨
+            run M.toFloatSig P fuel = EvalRes.outOfFuel ∨
+              (∃ k tr, run M.toFloatSig P fuel = EvalRes.panic k tr) ∨
                 ∃ H v tr,
-                  run M.toFloatOps P fuel = EvalRes.ok H v tr ∧ HasTy P.decls v fd.ret
+                  run M.toFloatSig P fuel = EvalRes.ok H v tr ∧ HasTy P.decls v fd.ret
 ```
 
 Proved by `run_safe` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `FnDef`, `WfProgram`, `Param`, `EvalRes`, `run`, `PanicKind`, `Event`, `Store`, `Val`, `HasTy`; rests on 198 definitions.
@@ -236,7 +236,7 @@ monitors never fire: what it rules out is what they watch (R3 of
 def Spec.no_violation_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
-      ∀ (fuel : Nat) (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w
+      ∀ (fuel : Nat) (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w
 ```
 
 Proved by `no_violation` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `Violation`, `EvalRes`, `run`; rests on 197 definitions.
@@ -259,7 +259,7 @@ what that monitor watches (R3 of `REDTEAM-LOG.md`; RUE-2469).
 def Spec.no_use_after_move_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
-      ∀ (fuel : Nat), run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.useAfterMove
+      ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterMove
 ```
 
 Proved by `no_use_after_move` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Violation`; rests on 197 definitions.
@@ -288,7 +288,7 @@ consequence of typing; it is kept in §7's form, over checked programs
 def Spec.no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
-      ∀ (fuel : Nat), run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.useAfterDrop
+      ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterDrop
 ```
 
 Proved by `no_use_after_drop` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Violation`; rests on 197 definitions.
@@ -315,11 +315,11 @@ names a cell already retired, `eval` does refuse (`Sharp.retired_cell`). Like
 
 ```lean
 def Spec.run_no_use_after_drop_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) (fuel : Nat),
+  ∀ (M : FloatSig) (P : Program) (fuel : Nat),
     run M P fuel ≠ EvalRes.stuck Violation.useAfterDrop
 ```
 
-Proved by `run_no_use_after_drop` (`RueCore.Retire`). Names `FloatOps`, `Program`, `EvalRes`, `run`, `Violation`; rests on 112 definitions.
+Proved by `run_no_use_after_drop` (`RueCore.Retire`). Names `FloatSig`, `Program`, `EvalRes`, `run`, `Violation`; rests on 112 definitions.
 
 Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.dtor`.
 
@@ -343,7 +343,7 @@ What it rules out is what `eval`'s leak monitor watches (R3 of
 def Spec.no_linear_leak_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
-      ∀ (fuel : Nat), run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearLeak
+      ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearLeak
 ```
 
 Proved by `no_linear_leak` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Violation`; rests on 197 definitions.
@@ -363,7 +363,7 @@ a live linear value.
 def Spec.no_linear_overwrite_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
-      ∀ (fuel : Nat), run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearOverwrite
+      ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearOverwrite
 ```
 
 Proved by `no_linear_overwrite` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Violation`; rests on 197 definitions.
@@ -385,7 +385,7 @@ never fire; what they rule out is what those monitors watch (R3 of
 def Spec.no_linear_discard_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
-      ∀ (fuel : Nat), run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearDiscard
+      ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearDiscard
 ```
 
 Proved by `no_linear_discard` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Violation`; rests on 197 definitions.
@@ -405,11 +405,11 @@ and call "an analogue of determinism" (`FIELD.md`, section 3).
 
 ```lean
 def Spec.fuel_mono_stmt : Prop :=
-  ∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat},
+  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat},
     n ≤ m → eval M n P H φ e ≠ EvalRes.outOfFuel → eval M m P H φ e = eval M n P H φ e
 ```
 
-Proved by `fuel_mono` (`RueCore.Soundness`). Names `FloatOps`, `Program`, `Store`, `Frame`, `Expr`, `EvalRes`, `eval`; rests on 111 definitions.
+Proved by `fuel_mono` (`RueCore.Soundness`). Names `FloatSig`, `Program`, `Store`, `Frame`, `Expr`, `EvalRes`, `eval`; rests on 111 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.stuck`.
 
@@ -426,13 +426,13 @@ refusal at one fuel is the answer at every fuel that answers; a corollary of
 
 ```lean
 def Spec.no_masking_stmt : Prop :=
-  ∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat}
+  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat}
     {w : Violation},
     eval M n P H φ e = EvalRes.stuck w →
       eval M m P H φ e ≠ EvalRes.outOfFuel → eval M m P H φ e = EvalRes.stuck w
 ```
 
-Proved by `no_masking` (`RueCore.Soundness`). Names `FloatOps`, `Program`, `Store`, `Frame`, `Expr`, `Violation`, `EvalRes`, `eval`; rests on 111 definitions.
+Proved by `no_masking` (`RueCore.Soundness`). Names `FloatSig`, `Program`, `Store`, `Frame`, `Expr`, `Violation`, `EvalRes`, `eval`; rests on 111 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.stuck`.
 
@@ -447,11 +447,11 @@ Sharp:
 
 ```lean
 def Spec.run_ne_returned_stmt : Prop :=
-  ∀ (M : FloatOps) {P : Program} {fuel : Nat} (H : Store) (v : Val) (tr : List Event),
+  ∀ (M : FloatSig) {P : Program} {fuel : Nat} (H : Store) (v : Val) (tr : List Event),
     run M P fuel ≠ EvalRes.returned H v tr
 ```
 
-Proved by `run_ne_returned` (`RueCore.Soundness`). Names `FloatOps`, `Program`, `Store`, `Val`, `Event`, `EvalRes`, `run`; rests on 112 definitions.
+Proved by `run_ne_returned` (`RueCore.Soundness`). Names `FloatSig`, `Program`, `Store`, `Val`, `Event`, `EvalRes`, `run`; rests on 112 definitions.
 
 Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.early_return`.
 
@@ -518,10 +518,10 @@ def Spec.no_double_free_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+        (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
           (∀ (a : Nat),
-              List.count a (freedIds P.decls (run M.toFloatOps P fuel).trace) ≤ 1) ∧
-            ∀ (a : Nat), List.count a (dtorIds (run M.toFloatOps P fuel).trace) ≤ 1
+              List.count a (freedIds P.decls (run M.toFloatSig P fuel).trace) ≤ 1) ∧
+            ∀ (a : Nat), List.count a (dtorIds (run M.toFloatSig P fuel).trace) ≤ 1
 ```
 
 Proved by `no_double_free` (`RueCore.Trace`). Names `FloatModel`, `Program`, `ProgramTyped`, `Violation`, `EvalRes`, `run`, `freedIds`, `EvalRes.trace`, `dtorIds`; rests on 204 definitions.
@@ -549,7 +549,7 @@ def Spec.step_no_double_free_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ {C : Config},
-        Steps M.toFloatOps P Config.init C →
+        Steps M.toFloatSig P Config.init C →
           (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
             ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1
 ```
@@ -561,7 +561,7 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 Sharp:
 
 1. `ProgramTyped P` — counter-example `Sharp.double_drop`
-2. `Steps M.toFloatOps P Config.init C` — counter-example `Sharp.unreached_double`
+2. `Steps M.toFloatSig P Config.init C` — counter-example `Sharp.unreached_double`
 
 ### `freed_once`
 
@@ -575,11 +575,11 @@ refusal, and its bound is `step_no_double_free`, which needs `ProgramTyped`.
 
 ```lean
 def Spec.freed_once_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) (fuel a : Nat),
+  ∀ (M : FloatSig) (P : Program) (fuel a : Nat),
     List.count a (freedIds P.decls (run M P fuel).trace) ≤ 1
 ```
 
-Proved by `freed_once` (`RueCore.Trace`). Names `FloatOps`, `Program`, `freedIds`, `EvalRes.trace`, `run`; rests on 117 definitions.
+Proved by `freed_once` (`RueCore.Trace`). Names `FloatSig`, `Program`, `freedIds`, `EvalRes.trace`, `run`; rests on 117 definitions.
 
 Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.dtor`, `Nonvacuous.loop`.
 
@@ -594,11 +594,11 @@ runs `eval` finishes.
 
 ```lean
 def Spec.dtor_once_stmt : Prop :=
-  ∀ (M : FloatOps) {P : Program},
+  ∀ (M : FloatSig) {P : Program},
     DtorNotCopy P.decls → ∀ (fuel a : Nat), List.count a (dtorIds (run M P fuel).trace) ≤ 1
 ```
 
-Proved by `dtor_once` (`RueCore.Trace`). Names `FloatOps`, `Program`, `DtorNotCopy`, `dtorIds`, `EvalRes.trace`, `run`; rests on 116 definitions.
+Proved by `dtor_once` (`RueCore.Trace`). Names `FloatSig`, `Program`, `DtorNotCopy`, `dtorIds`, `EvalRes.trace`, `run`; rests on 116 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`.
 
@@ -629,9 +629,9 @@ def Spec.drop_exactly_once_stmt : Prop :=
             FrameMatches P.decls Γ φ H →
               StoreCC P.decls H →
                 e.pendingSafe = true →
-                  (∀ (w : Violation), eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
-                    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
-                      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+                  (∀ (w : Violation), eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
+                      Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
 Proved by `drop_exactly_once` (`RueCore.TraceExact`). Names `FloatModel`, `Program`, `ProgramTyped`, `Program.pendingSafe`, `Ty`, `Ctx`, `Expr`, `Out`, `Frame`, `Store`, `Typed`, `FrameMatches`, `StoreCC`, `Expr.pendingSafe`, `Violation`, `EvalRes`, `eval`, `Exact`, `Tidy`; rests on 220 definitions.
@@ -669,9 +669,9 @@ def Spec.rest_exactly_once_stmt : Prop :=
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
-                    Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                    Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                       ∀ {r : EvalRes},
-                        eval M.toFloatOps (fuel + 1) P H φ e = EvalRes.withTrace tr r →
+                        eval M.toFloatSig (fuel + 1) P H φ e = EvalRes.withTrace tr r →
                           (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
                             Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs))
                                 r ∧
@@ -690,8 +690,8 @@ Sharp:
 4. `FrameMatches P.decls Γ φ H` — counter-example `Sharp.frame`
 5. `StoreCC P.decls H` — counter-example `Sharp.store_cc`
 6. `e.pendingSafe = true` — counter-example `Sharp.pending_expr`
-7. `Lead M.toFloatOps P fuel H φ H₁ vs tr e` — counter-example `Sharp.no_lead`
-8. `eval M.toFloatOps (fuel + 1) P H φ e = EvalRes.withTrace tr r` — counter-example `Sharp.no_eval`
+7. `Lead M.toFloatSig P fuel H φ H₁ vs tr e` — counter-example `Sharp.no_lead`
+8. `eval M.toFloatSig (fuel + 1) P H φ e = EvalRes.withTrace tr r` — counter-example `Sharp.no_eval`
 
 ### `whole_program_exactly_once`
 
@@ -717,11 +717,11 @@ def Spec.whole_program_exactly_once_stmt : Prop :=
     ProgramTyped P →
       P.pendingSafe = true →
         ∀ {C : Config},
-          Steps M.toFloatOps P Config.init C →
+          Steps M.toFloatSig P Config.init C →
             ∀ {a : Nat},
               a ∈ Config.held P.decls C →
                 ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
-                  Steps M.toFloatOps P C (Config.run H φ [] (Focus.ret v) tr) →
+                  Steps M.toFloatSig P C (Config.run H φ [] (Focus.ret v) tr) →
                     List.count a (Val.own P.decls v) + List.count a (freedIds P.decls tr) =
                       1
 ```
@@ -734,9 +734,9 @@ Sharp:
 
 1. `ProgramTyped P` — counter-example `Sharp.copy_leak`
 2. `P.pendingSafe = true` — counter-example `Sharp.pending_leak`
-3. `Steps M.toFloatOps P Config.init C` — counter-example `Sharp.unreached_held`
+3. `Steps M.toFloatSig P Config.init C` — counter-example `Sharp.unreached_held`
 4. `a ∈ Config.held P.decls C` — counter-example `Sharp.unheld`
-5. `Steps M.toFloatOps P C (Config.run H φ [] (Focus.ret v) tr)` — counter-example `Sharp.off_run`
+5. `Steps M.toFloatSig P C (Config.run H φ [] (Focus.ret v) tr)` — counter-example `Sharp.off_run`
 
 ### `drop_order`
 
@@ -754,13 +754,13 @@ def Spec.drop_order_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-          Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+          Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
             Blocks P.decls tr) ∧
         (∀ (κ : PanicKind) (tr : List Event),
-            Steps M.toFloatOps P Config.init (Config.panic κ tr) → Blocks P.decls tr) ∧
+            Steps M.toFloatSig P Config.init (Config.panic κ tr) → Blocks P.decls tr) ∧
           ∀ (C C' : Config),
-            Steps M.toFloatOps P Config.init C →
-              Step M.toFloatOps P C C' →
+            Steps M.toFloatSig P Config.init C →
+              Step M.toFloatSig P C C' →
                 ∃ evs,
                   C'.trace = C.trace ++ evs ∧
                     NewestFirst (dropLocs evs) ∧
@@ -775,17 +775,17 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 Sharp:
 
 1. `ProgramTyped P` — counter-example `Sharp.bare_dtor`
-2. `Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr)` — counter-example `Sharp.unreached`
-3. `Steps M.toFloatOps P Config.init (Config.panic κ tr)` — counter-example `Sharp.unreached_panic`
-4. `Steps M.toFloatOps P Config.init C` — counter-examples `Sharp.unordered`, `Sharp.uncut_drop`
-5. `Step M.toFloatOps P C C'` — counter-example `Sharp.not_a_step`
+2. `Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr)` — counter-example `Sharp.unreached`
+3. `Steps M.toFloatSig P Config.init (Config.panic κ tr)` — counter-example `Sharp.unreached_panic`
+4. `Steps M.toFloatSig P Config.init C` — counter-examples `Sharp.unordered`, `Sharp.uncut_drop`
+5. `Step M.toFloatSig P C C'` — counter-example `Sharp.not_a_step`
 
 ### `drop_glue_order`
 
 **Drop glue order, in §6.11's own terms** (§3.9, §6.11; §7 "No
 use-after-drop / no leak of drops", *how* a value is dropped; RUE-2487), over
 `Step`. A finished run's trace — value or panic — is in §6.11's block grammar
-with each drop's events given by §6.11's rules (`GlueBlocks`, `DropGlue`):
+with each drop's events given by §6.11's rules (`DropGlueBlocks`, `DropGlue`):
 after each drop marker, the value's destructor first, then its fields in
 declaration order, an array's elements in ascending index order, and an enum's
 active payload only. Unlike `drop_order`'s `Blocks`, the rules are not the
@@ -797,21 +797,21 @@ def Spec.drop_glue_order_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-          Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
-            GlueBlocks P.decls tr) ∧
+          Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+            DropGlueBlocks P.decls tr) ∧
         ∀ (κ : PanicKind) (tr : List Event),
-          Steps M.toFloatOps P Config.init (Config.panic κ tr) → GlueBlocks P.decls tr
+          Steps M.toFloatSig P Config.init (Config.panic κ tr) → DropGlueBlocks P.decls tr
 ```
 
-Proved by `drop_glue_order` (`RueCore.TraceOrder`). Names `FloatModel`, `Program`, `ProgramTyped`, `Store`, `Frame`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `GlueBlocks`, `PanicKind`; rests on 196 definitions.
+Proved by `drop_glue_order` (`RueCore.TraceOrder`). Names `FloatModel`, `Program`, `ProgramTyped`, `Store`, `Frame`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `DropGlueBlocks`, `PanicKind`; rests on 196 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
 Sharp:
 
 1. `ProgramTyped P` — counter-example `Sharp.bare_dtor`
-2. `Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr)` — counter-example `Sharp.unreached`
-3. `Steps M.toFloatOps P Config.init (Config.panic κ tr)` — counter-example `Sharp.unreached_panic`
+2. `Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr)` — counter-example `Sharp.unreached`
+3. `Steps M.toFloatSig P Config.init (Config.panic κ tr)` — counter-example `Sharp.unreached_panic`
 
 ## §6's reduction relation, and §7 over it
 
@@ -825,10 +825,10 @@ indices).
 
 ```lean
 def Spec.Step.det_stmt : Prop :=
-  ∀ {M : FloatOps} {P : Program} {C C₁ C₂ : Config}, Step M P C C₁ → Step M P C C₂ → C₁ = C₂
+  ∀ {M : FloatSig} {P : Program} {C C₁ C₂ : Config}, Step M P C C₁ → Step M P C C₂ → C₁ = C₂
 ```
 
-Proved by `Step.det` (`RueCore.Step.Lemmas`). Names `FloatOps`, `Program`, `Config`, `Step`; rests on 106 definitions.
+Proved by `Step.det` (`RueCore.Step.Lemmas`). Names `FloatSig`, `Program`, `Config`, `Step`; rests on 106 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`.
 
@@ -844,10 +844,10 @@ Lemma 5.2, with a trap final as a checked error is).
 
 ```lean
 def Spec.Step.terminal_stmt : Prop :=
-  ∀ {M : FloatOps} {P : Program} {C C' : Config}, C.Terminal → ¬Step M P C C'
+  ∀ {M : FloatSig} {P : Program} {C C' : Config}, C.Terminal → ¬Step M P C C'
 ```
 
-Proved by `Step.terminal` (`RueCore.Step.Lemmas`). Names `FloatOps`, `Program`, `Config`, `Config.Terminal`, `Step`; rests on 107 definitions.
+Proved by `Step.terminal` (`RueCore.Step.Lemmas`). Names `FloatSig`, `Program`, `Config`, `Config.Terminal`, `Step`; rests on 107 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -862,11 +862,11 @@ some `C → C'`, or `C` is `✓` or `↯κ`, or `step` refuses `C`.
 
 ```lean
 def Spec.Config.trichotomy_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) (C : Config),
+  ∀ (M : FloatSig) (P : Program) (C : Config),
     (∃ C', Step M P C C') ∨ C.Terminal ∨ ∃ w, Config.Stuck M P C w
 ```
 
-Proved by `Config.trichotomy` (`RueCore.Step.Lemmas`). Names `FloatOps`, `Program`, `Config`, `Step`, `Config.Terminal`, `Violation`, `Config.Stuck`; rests on 114 definitions.
+Proved by `Config.trichotomy` (`RueCore.Step.Lemmas`). Names `FloatSig`, `Program`, `Config`, `Step`, `Config.Terminal`, `Violation`, `Config.Stuck`; rests on 114 definitions.
 
 Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.dtor`, `Nonvacuous.stuck`.
 
@@ -879,11 +879,11 @@ answers `C'`.
 
 ```lean
 def Spec.step_iff_stmt : Prop :=
-  ∀ {M : FloatOps} {P : Program} {C C' : Config},
+  ∀ {M : FloatSig} {P : Program} {C C' : Config},
     Step M P C C' ↔ step M P C = StepOut.next C'
 ```
 
-Proved by `step_iff` (`RueCore.Step.Lemmas`). Names `FloatOps`, `Program`, `Config`, `Step`, `StepOut`, `step`; rests on 112 definitions.
+Proved by `step_iff` (`RueCore.Step.Lemmas`). Names `FloatSig`, `Program`, `Config`, `Step`, `StepOut`, `step`; rests on 112 definitions.
 
 Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.dtor`.
 
@@ -896,11 +896,11 @@ Sharp: no hypotheses to drop.
 
 ```lean
 def Spec.Config.stuck_iff_stmt : Prop :=
-  ∀ {M : FloatOps} {P : Program} {C : Config},
+  ∀ {M : FloatSig} {P : Program} {C : Config},
     (¬C.Terminal ∧ ∀ (C' : Config), ¬Step M P C C') ↔ ∃ w, Config.Stuck M P C w
 ```
 
-Proved by `Config.stuck_iff` (`RueCore.Step.Lemmas`). Names `FloatOps`, `Program`, `Config`, `Config.Terminal`, `Step`, `Violation`, `Config.Stuck`; rests on 114 definitions.
+Proved by `Config.stuck_iff` (`RueCore.Step.Lemmas`). Names `FloatSig`, `Program`, `Config`, `Config.Terminal`, `Step`, `Violation`, `Config.Stuck`; rests on 114 definitions.
 
 Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.stuck`.
 
@@ -914,11 +914,11 @@ monitor's.
 
 ```lean
 def Spec.step_stuck_isStuckState_stmt : Prop :=
-  ∀ {M : FloatOps} {P : Program} {C : Config} {w : Violation},
+  ∀ {M : FloatSig} {P : Program} {C : Config} {w : Violation},
     Config.Stuck M P C w → w.isStuckState = true
 ```
 
-Proved by `step_stuck_isStuckState` (`RueCore.Step.Lemmas`). Names `FloatOps`, `Program`, `Config`, `Violation`, `Config.Stuck`, `Violation.isStuckState`; rests on 113 definitions.
+Proved by `step_stuck_isStuckState` (`RueCore.Step.Lemmas`). Names `FloatSig`, `Program`, `Config`, `Violation`, `Config.Stuck`, `Violation.isStuckState`; rests on 113 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.stuck`.
 
@@ -939,7 +939,7 @@ def Spec.step_progress_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ (C : Config),
-        Steps M.toFloatOps P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatOps P C C'
+        Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 ```
 
 Proved by `step_progress` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 194 definitions.
@@ -949,7 +949,7 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 Sharp:
 
 1. `ProgramTyped P` — counter-example `Sharp.stuck_step`
-2. `Steps M.toFloatOps P Config.init C` — counter-example `Sharp.unreachable_stuck`
+2. `Steps M.toFloatSig P Config.init C` — counter-example `Sharp.unreachable_stuck`
 
 ### `step_preservation`
 
@@ -971,7 +971,7 @@ def Spec.step_preservation_stmt : Prop :=
       ∃ fd,
         P.fns[0]? = some fd ∧
           ∀ (C : Config),
-            Steps M.toFloatOps P Config.init C → Config.SafeAt M.toFloatOps P fd.ret C
+            Steps M.toFloatSig P Config.init C → Config.SafeAt M.toFloatSig P fd.ret C
 ```
 
 Proved by `step_preservation` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `FnDef`, `Config`, `Steps`, `Config.init`, `Config.SafeAt`; rests on 197 definitions.
@@ -981,7 +981,7 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 Sharp:
 
 1. `ProgramTyped P` — counter-example `Sharp.stuck_step`
-2. `Steps M.toFloatOps P Config.init C` — counter-examples `Sharp.unreachable_stuck`, `Sharp.ill_typed_halt`, `Sharp.out_of_range_halt`, `Sharp.float_halt`
+2. `Steps M.toFloatSig P Config.init C` — counter-examples `Sharp.unreachable_stuck`, `Sharp.ill_typed_halt`, `Sharp.out_of_range_halt`, `Sharp.float_halt`
 
 ### `step_type_safety`
 
@@ -998,12 +998,12 @@ def Spec.step_type_safety_stmt : Prop :=
       ∃ fd,
         P.fns[0]? = some fd ∧
           ∀ (n : Nat),
-            (∃ D, StepsN M.toFloatOps P n Config.init D) ∨
+            (∃ D, StepsN M.toFloatSig P n Config.init D) ∨
               (∃ H v tr,
-                  Steps M.toFloatOps P Config.init
+                  Steps M.toFloatSig P Config.init
                       (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
                     HasTy P.decls v fd.ret) ∨
-                ∃ κ tr, Steps M.toFloatOps P Config.init (Config.panic κ tr)
+                ∃ κ tr, Steps M.toFloatSig P Config.init (Config.panic κ tr)
 ```
 
 Proved by `step_type_safety` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `FnDef`, `Config`, `StepsN`, `Config.init`, `Store`, `Val`, `Event`, `Steps`, `Frame.empty`, `Kont`, `Focus`, `HasTy`, `PanicKind`; rests on 197 definitions.
@@ -1025,11 +1025,11 @@ needed: a configuration whose frame names a retired cell is stuck so
 
 ```lean
 def Spec.step_no_use_after_drop_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) {C : Config},
+  ∀ (M : FloatSig) (P : Program) {C : Config},
     Steps M P Config.init C → ¬Config.Stuck M P C Violation.useAfterDrop
 ```
 
-Proved by `step_no_use_after_drop` (`RueCore.Retire`). Names `FloatOps`, `Program`, `Config`, `Steps`, `Config.init`, `Config.Stuck`, `Violation`; rests on 115 definitions.
+Proved by `step_no_use_after_drop` (`RueCore.Retire`). Names `FloatSig`, `Program`, `Config`, `Steps`, `Config.init`, `Config.Stuck`, `Violation`; rests on 115 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`.
 
@@ -1053,14 +1053,14 @@ def Spec.eval_sound_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+        (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
           (∀ (H : Store) (v : Val) (tr : List Event),
-              run M.toFloatOps P fuel = EvalRes.ok H v tr →
-                Steps M.toFloatOps P Config.init
+              run M.toFloatSig P fuel = EvalRes.ok H v tr →
+                Steps M.toFloatSig P Config.init
                   (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
             ∀ (k : PanicKind) (tr : List Event),
-              run M.toFloatOps P fuel = EvalRes.panic k tr →
-                Steps M.toFloatOps P Config.init (Config.panic k tr)
+              run M.toFloatSig P fuel = EvalRes.panic k tr →
+                Steps M.toFloatSig P Config.init (Config.panic k tr)
 ```
 
 Proved by `eval_sound` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `Violation`, `EvalRes`, `run`, `Store`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Frame.empty`, `Kont`, `Focus`, `PanicKind`; rests on 213 definitions.
@@ -1070,8 +1070,8 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 Sharp:
 
 1. `ProgramTyped P` — counter-example `Sharp.stuck`
-2. `run M.toFloatOps P fuel = EvalRes.ok H v tr` — counter-example `Sharp.unreached`
-3. `run M.toFloatOps P fuel = EvalRes.panic k tr` — counter-example `Sharp.unreached_panic`
+2. `run M.toFloatSig P fuel = EvalRes.ok H v tr` — counter-example `Sharp.unreached`
+3. `run M.toFloatSig P fuel = EvalRes.panic k tr` — counter-example `Sharp.unreached_panic`
 
 ### `run_sim`
 
@@ -1080,7 +1080,7 @@ no typing hypothesis.
 
 ```lean
 def Spec.run_sim_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) (fuel : Nat),
+  ∀ (M : FloatSig) (P : Program) (fuel : Nat),
     (∀ (H : Store) (v : Val) (tr : List Event),
         run M P fuel = EvalRes.ok H v tr →
           Steps M P Config.init (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
@@ -1088,7 +1088,7 @@ def Spec.run_sim_stmt : Prop :=
         run M P fuel = EvalRes.panic k tr → Steps M P Config.init (Config.panic k tr)
 ```
 
-Proved by `run_sim` (`RueCore.Adequacy`). Names `FloatOps`, `Program`, `Store`, `Val`, `Event`, `EvalRes`, `run`, `Steps`, `Config.init`, `Config`, `Frame.empty`, `Kont`, `Focus`, `PanicKind`; rests on 128 definitions.
+Proved by `run_sim` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Store`, `Val`, `Event`, `EvalRes`, `run`, `Steps`, `Config.init`, `Config`, `Frame.empty`, `Kont`, `Focus`, `PanicKind`; rests on 128 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1109,11 +1109,11 @@ def Spec.eval_complete_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-          Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
-            ∃ n, ∀ (fuel : Nat), n < fuel → run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+          Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+            ∃ n, ∀ (fuel : Nat), n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
         ∀ (κ : PanicKind) (tr : List Event),
-          Steps M.toFloatOps P Config.init (Config.panic κ tr) →
-            ∃ n, ∀ (fuel : Nat), n < fuel → run M.toFloatOps P fuel = EvalRes.panic κ tr
+          Steps M.toFloatSig P Config.init (Config.panic κ tr) →
+            ∃ n, ∀ (fuel : Nat), n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
 Proved by `eval_complete` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `Store`, `Frame`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `PanicKind`; rests on 212 definitions.
@@ -1123,9 +1123,9 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 Sharp:
 
 1. `ProgramTyped P` — counter-examples `Sharp.leak`, `Sharp.discard`
-2. `Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr)` — counter-example `Sharp.unreached`
+2. `Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr)` — counter-example `Sharp.unreached`
 3. `n < fuel` — counter-example `Sharp.fuel`
-4. `Steps M.toFloatOps P Config.init (Config.panic κ tr)` — counter-example `Sharp.unreached_panic`
+4. `Steps M.toFloatSig P Config.init (Config.panic κ tr)` — counter-example `Sharp.unreached_panic`
 5. `n < fuel` — counter-example `Sharp.fuel_panic`
 
 ### `run_complete`
@@ -1136,7 +1136,7 @@ is `.stuck` past some fuel satisfies it, whatever `→*` reaches.
 
 ```lean
 def Spec.run_complete_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program),
+  ∀ (M : FloatSig) (P : Program),
     (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
         Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
           ∃ n,
@@ -1151,7 +1151,7 @@ def Spec.run_complete_stmt : Prop :=
                 run M P fuel = EvalRes.panic κ tr ∨ ∃ w, run M P fuel = EvalRes.stuck w
 ```
 
-Proved by `run_complete` (`RueCore.Adequacy`). Names `FloatOps`, `Program`, `Store`, `Frame`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `Violation`, `PanicKind`; rests on 127 definitions.
+Proved by `run_complete` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Store`, `Frame`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `Violation`, `PanicKind`; rests on 127 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1173,9 +1173,9 @@ sides hold outright, so the equivalence adds nothing; cite
 def Spec.never_stuck_iff_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
-      ((∀ (fuel : Nat) (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ↔
+      ((∀ (fuel : Nat) (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ↔
         ∀ (C : Config),
-          Steps M.toFloatOps P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatOps P C C')
+          Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C')
 ```
 
 Proved by `never_stuck_iff` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `Violation`, `EvalRes`, `run`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 213 definitions.
@@ -1185,7 +1185,7 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 Sharp:
 
 1. `ProgramTyped P` — counter-example `Sharp.discard_loop`
-2. `Steps M.toFloatOps P Config.init C` — counter-example `Sharp.unreachable_stuck`
+2. `Steps M.toFloatSig P Config.init C` — counter-example `Sharp.unreachable_stuck`
 
 ### `step_never_stuck_of_run`
 
@@ -1195,12 +1195,12 @@ defined panics").
 
 ```lean
 def Spec.step_never_stuck_of_run_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program),
+  ∀ (M : FloatSig) (P : Program),
     (∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w) →
       ∀ (C : Config), Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
 ```
 
-Proved by `step_never_stuck_of_run` (`RueCore.Adequacy`). Names `FloatOps`, `Program`, `Violation`, `EvalRes`, `run`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 128 definitions.
+Proved by `step_never_stuck_of_run` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Violation`, `EvalRes`, `run`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 128 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`.
 
@@ -1216,13 +1216,13 @@ fuel, perhaps with another `Violation`.
 
 ```lean
 def Spec.run_stuck_of_step_stuck_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) {C : Config} {w : Violation},
+  ∀ (M : FloatSig) (P : Program) {C : Config} {w : Violation},
     Steps M P Config.init C →
       Config.Stuck M P C w →
         ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.stuck w'
 ```
 
-Proved by `run_stuck_of_step_stuck` (`RueCore.Adequacy`). Names `FloatOps`, `Program`, `Config`, `Violation`, `Steps`, `Config.init`, `Config.Stuck`, `EvalRes`, `run`; rests on 134 definitions.
+Proved by `run_stuck_of_step_stuck` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Config`, `Violation`, `Steps`, `Config.init`, `Config.Stuck`, `EvalRes`, `run`; rests on 134 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.stuck`.
 
@@ -1242,8 +1242,8 @@ every length from `Config.init`.
 def Spec.eval_diverges_iff_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
-      ((∀ (fuel : Nat), run M.toFloatOps P fuel = EvalRes.outOfFuel) ↔
-        ∀ (n : Nat), ∃ D, StepsN M.toFloatOps P n Config.init D)
+      ((∀ (fuel : Nat), run M.toFloatSig P fuel = EvalRes.outOfFuel) ↔
+        ∀ (n : Nat), ∃ D, StepsN M.toFloatSig P n Config.init D)
 ```
 
 Proved by `eval_diverges_iff` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Config`, `StepsN`, `Config.init`; rests on 212 definitions.
@@ -1271,7 +1271,7 @@ statements that quantify over `M : FloatModel` are not vacuous in `M`.
 
 ```lean
 def Spec.Nonvacuous.exact_model_stmt : Prop :=
-  ∃ M, M.toFloatOps = Float.exactOps
+  ∃ M, M.toFloatSig = Float.exactOps
 ```
 
 Proved by `Nonvacuous.exact_model` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `no_double_free`, `step_no_double_free`, `drop_exactly_once`, `rest_exactly_once`, `whole_program_exactly_once`, `drop_order`, `drop_glue_order`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `eval_complete`, `never_stuck_iff`, `eval_diverges_iff`.
@@ -2718,7 +2718,7 @@ residue `C { 1 }` is `Copy`, so it is dropped with no marker, and its
 destructor event opens the trace. It is not `ProgramTyped`, and §6's relation
 runs it to a value whose trace is not in §6.11's block grammar: `drop_order`
 fails without `ProgramTyped` (through `DtorNotCopy`), and so does
-`drop_glue_order`, since a trace outside `Blocks` is outside `GlueBlocks`
+`drop_glue_order`, since a trace outside `Blocks` is outside `DropGlueBlocks`
 (RUE-2487).
 
 ```lean
@@ -3182,7 +3182,7 @@ whose conclusion claims something of a reached or answered value fails once
 the hypothesis naming that value is dropped: `eval_sound`'s and `run_sim`'s
 `run … = .ok H v tr`, `eval_complete`'s and `run_complete`'s `Steps … (.ret
 v)`, and `drop_order`'s and `drop_glue_order`'s (a trace outside `Blocks` is
-outside `GlueBlocks`, RUE-2487).
+outside `DropGlueBlocks`, RUE-2487).
 
 ```lean
 def Spec.Sharp.unreached_stmt : Prop :=
