@@ -37,6 +37,7 @@
   "RueCore.Spine.eval_diverges_iff",
   "RueCore.Spine.Nonvacuous.exact_model",
   "RueCore.Spine.Nonvacuous.empty_frame",
+  "RueCore.Spine.Nonvacuous.open_frame",
   "RueCore.Spine.Nonvacuous.dtor",
   "RueCore.Spine.Nonvacuous.linear",
   "RueCore.Spine.Nonvacuous.loop",

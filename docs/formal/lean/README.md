@@ -870,8 +870,9 @@ claim and is not on the list. Nor are the non-vacuity witnesses, which may
 name definitions outside the trusted base (`Float.exactOps` and its
 `roundRat`): a witness can only fail to witness, never widen a claim. Today
 the headlines' trusted base is 292 definitions,
-all in L0 and L1 (the package has 863 theorems besides, and the 48 `Spine`
-restatements: 36 of the spine, 12 of the witnesses). A
+all in L0 and L1 (the package has 1092 theorems besides, 228 of them the
+glue applications of `Nonvacuous/Glue.lean`, and the 49 `Spine`
+restatements: 36 of the spine, 13 of the witnesses). A
 definition counts as Lean's own, and is only counted, when Lean's own tables
 record it as such (recursors and their auxiliaries, matchers, projections),
 or when it is named as Lean names a by-product and has no source range of its
