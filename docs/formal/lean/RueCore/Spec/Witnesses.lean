@@ -61,8 +61,7 @@ def empty_frame_stmt : Prop :=
   ∀ D : Decls, FrameMatches D [] Frame.empty [] ∧ StoreCC D []
 
 /-- **A checked program that drops two values with destructors** (construct
-class: destructors; the corpus case `struct_nested_dtor_drop`'s shape at a flat
-struct). The program `let a = S0 { 1 }; let b = S0 { 2 }; 3`, over an affine
+class: destructors; the corpus case `affine_scope_drop`, with two bindings). The program `let a = S0 { 1 }; let b = S0 { 2 }; 3`, over an affine
 `S0` that declares a destructor, is accepted, is `ProgramTyped` and
 `pendingSafe`, and its body is typed by `check`. Its run returns, reached by
 `Step` from `Config.init`, and its trace frees two identities and runs two
@@ -221,10 +220,12 @@ def early_return_stmt : Prop :=
         Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
         v = .int .w64 .signed 7 ∧ 2 ≤ (dtorIds tr).length
 
-/-- **A checked program that panics** (construct class: `@panic`; the corpus
-case `panic_after_drop`'s shape). `let a = S0 { 1 }; @dbg(5); @panic("boom")` is
+/-- **A checked program that panics** (construct class: `@panic`;
+`Examples.panicPastAffine` with a `@dbg` line before the trap, beside the
+corpus case `panic_after_drop`). `let a = S0 { 1 }; @dbg(5); @panic("boom")` is
 accepted and typed; its run is the user panic with the `@dbg` line in its
-trace, and §6's relation reaches the same panic from `Config.init`. -/
+trace and no drop (§5.7 exempts the panic edge), and §6's relation reaches
+the same panic from `Config.init`. -/
 def panic_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])

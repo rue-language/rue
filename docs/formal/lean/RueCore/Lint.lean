@@ -103,6 +103,13 @@ def headline : List Name := Spec.spine.map (·.1)
 /-- (helper) The Spec statements, in the order of `headline`. -/
 def statements : List Name := Spec.spine.map (·.2)
 
+/-- (helper) Every entry of the Spec layer, each a theorem beside its
+statement: the spine (`Spec.spine`), then the non-vacuity witnesses
+(`Spec.witnesses`, RUE-2469). The statement/proof checks, Comparator's
+challenge and configuration, and the fingerprints are over all of them; the
+headline list and the trusted base are the spine's alone. -/
+def entries : List (Name × Name) := Spec.spine ++ Spec.witnesses.map fun (h, s, _) => (h, s)
+
 /-! ## Where a declaration lives -/
 
 /-- (helper) The module a constant is declared in, if the environment
@@ -751,8 +758,9 @@ def spineName (thm : Name) : Name :=
 /-- (helper) What is wrong with the statement/proof split, if anything
 (RUE-2460), each as a sentence:
 
-* every entry of `Spec.spine` names a theorem of the environment and a
-  `def … : Prop` declared in a Spec-layer module, and no entry is repeated;
+* every entry of `Spec.spine` and of `Spec.witnesses` (`entries`) names a
+  theorem of the environment and a `def … : Prop` declared in a Spec-layer
+  module, and no entry is repeated;
 * each headline theorem's own statement *is* its Spec statement's body, the
   same term up to binder names and binder annotations (`Expr.eqv`) — so the
   statement a reviewer reads in `Spec` is word for word the one the proof
@@ -760,16 +768,19 @@ def spineName (thm : Name) : Name :=
 * `RueCore.Spine.<name>` exists, is declared in `RueCore.Spine`, and has
   exactly the type `RueCore.Spec.<name>_stmt` (the kernel checked its proof,
   `@RueCore.<name>`, against that type);
-* every `…_stmt` definition of a Spec-layer module is in `Spec.spine`, and
-  `RueCore.Spine` declares no other theorem, so nothing is stated or bound
-  outside the list. -/
+* every `…_stmt` definition of a Spec-layer module is in one of the two
+  lists, and `RueCore.Spine` declares no other theorem, so nothing is stated
+  or bound outside them;
+* every witness names at least one spine theorem, each a theorem of
+  `Spec.spine`, and every spine theorem is named by some witness (RUE-2469):
+  no spine statement is left without a non-vacuity witness. -/
 def spineProblems (env : Environment) : Array String := Id.run do
   let mut out := #[]
   let mut seenT : NameSet := {}
   let mut seenS : NameSet := {}
-  for (h, s) in Spec.spine do
+  for (h, s) in entries do
     if seenT.contains h || seenS.contains s then
-      out := out.push s!"{h}/{s}: listed twice in RueCore.Spec.spine"
+      out := out.push s!"{h}/{s}: listed twice in RueCore.Spec.spine and RueCore.Spec.witnesses"
     seenT := seenT.insert h
     seenS := seenS.insert s
     let sLayer := (moduleOf? env s).bind Layers.layerOf?
@@ -797,11 +808,23 @@ def spineProblems (env : Environment) : Array String := Id.run do
     if Layers.layerOf? m == some Layers.specLayer then
       if let .defnInfo _ := info then
         if (n.toString.endsWith "_stmt") && !seenS.contains n then
-          out := out.push s!"{n}: a Spec statement RueCore.Spec.spine does not list"
+          out := out.push s!"{n}: a Spec statement neither RueCore.Spec.spine nor RueCore.Spec.witnesses lists"
     if m == `RueCore.Spine then
       if let .thmInfo _ := info then
-        if (rangeOf? env n).isSome && !(Spec.spine.any fun (h, _) => spineName h == n) then
-          out := out.push s!"{n}: a theorem of RueCore.Spine that binds no entry of RueCore.Spec.spine"
+        if (rangeOf? env n).isSome && !(entries.any fun (h, _) => spineName h == n) then
+          out := out.push s!"{n}: a theorem of RueCore.Spine that binds no entry of RueCore.Spec.spine or RueCore.Spec.witnesses"
+  -- the witnesses (RUE-2469): each names spine theorems, and every spine
+  -- theorem is named by some witness, so no spine statement is left without
+  -- a non-vacuity witness
+  for (h, _, ts) in Spec.witnesses do
+    if ts.isEmpty then
+      out := out.push s!"{h}: a witness in RueCore.Spec.witnesses that names no spine theorem"
+    for t in ts do
+      if !(headline.contains t) then
+        out := out.push s!"{h}: names {t}, which is not a theorem of RueCore.Spec.spine"
+  for t in headline do
+    if !(Spec.witnesses.any fun (_, _, ts) => ts.contains t) then
+      out := out.push s!"{t}: a spine theorem no entry of RueCore.Spec.witnesses names; it has no non-vacuity witness"
   return out
 
 /-- (helper) What is wrong with the layers' shapes, if anything (RUE-2460),
@@ -816,8 +839,8 @@ each as a sentence. Two invariants the statement/proof split rests on:
   structure's definition. L0 is not held to this:
   `Syntax.lean` and `Float.lean` keep their few well-formedness lemmas.
 * **The Spec layer holds statements only.** Every declaration a Spec module
-  writes is either a `…_stmt` that `Spec.spine` lists or `Spec.spine`
-  itself: no theorem (a proof there would ride into Comparator's challenge,
+  writes is either a `…_stmt` that `Spec.spine` or `Spec.witnesses` lists,
+  or one of the two lists itself: no theorem (a proof there would ride into Comparator's challenge,
   which imports what the statements need) and no helper definition (which
   would enter the trusted base as a statement's word without being one).
 
@@ -825,7 +848,7 @@ A declaration counts as written by the module when it has a source range
 (`rangeOf?`), as every command's declaration does. -/
 def layerShapeProblems (env : Environment) : Array String := Id.run do
   let mut out := #[]
-  let stmts := Spec.spine.map (·.2)
+  let stmts := entries.map (·.2)
   for (n, info) in env.constants.toList do
     let some m := moduleOf? env n | continue
     let some layer := Layers.layerOf? m | continue
@@ -838,8 +861,8 @@ def layerShapeProblems (env : Environment) : Array String := Id.run do
       | .thmInfo _ =>
           out := out.push s!"{n}: a theorem in Spec module {m}; the Spec layer holds statements only, so move it to L2"
       | _ =>
-          if !(stmts.contains n || n == ``Spec.spine) then
-            out := out.push s!"{n}: a declaration of Spec module {m} that is neither Spec.spine nor a `_stmt` it lists; the Spec layer holds statements only"
+          if !(stmts.contains n || n == ``Spec.spine || n == ``Spec.witnesses) then
+            out := out.push s!"{n}: a declaration of Spec module {m} that is neither Spec.spine, Spec.witnesses nor a `_stmt` they list; the Spec layer holds statements only"
   return out
 
 /-- (helper) The trusted base as `TRUST.md`'s "Trusted base" section. -/

@@ -13,8 +13,8 @@ ruecore-digest --comparator-config   its configuration (comparator/config.json)
 ruecore-digest --fingerprint   a hash of each Spec statement (spine-fingerprints.txt)
 ```
 
-The last four are generated from the Spec layer's list, `RueCore.Spec.spine`
-(RUE-2460), and exit non-zero when the lint's spine check
+The last four are generated from the Spec layer's lists, `RueCore.Spec.spine`
+and `RueCore.Spec.witnesses` (RUE-2460, RUE-2469), and exit non-zero when the lint's spine check
 (`RueCore.Lint.spineProblems`) finds the list and the environment disagree.
 
 The trust report ends with the headline statements' trusted base, computed by
@@ -125,6 +125,13 @@ def directDefs (env : Environment) (body : Lean.Expr) : Array Name := Id.run do
     out := out.push c
   return out
 
+/-- (helper) The witnesses a spine theorem is named by, as `SPINE.md`'s
+"Non-vacuous" line writes them (RUE-2469). -/
+def witnessesOf (h : Name) : String :=
+  let ws := Spec.witnesses.filter fun (_, _, ts) => ts.contains h
+  if ws.isEmpty then "no witness (the lint fails on this)"
+  else "witnesses " ++ ", ".intercalate (ws.map fun (w, _, _) => s!"`{Digest.shortName w}`")
+
 /-- (helper) `SPINE.md`: every Spec statement — the Lean statement, its
 English reading and calculus paragraph (its doc-comment), the theorem that
 proves it, and the definitions it rests on — generated from
@@ -156,11 +163,13 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
     "- the lemmas §7 names explicitly: loan/drop non-interference, loan-extent",
     "  nesting, root separation, view-intact (RUE-2238) and handle-uniqueness",
     "  preservation (RUE-2240). Float totality is not a theorem either: the rounded",
-    "  operations' closure is assumed, as the laws of `FloatModel`.",
+    "  operations' closure is assumed, as the laws of `FloatModel`, of every model",
+    "  the statements quantify over (it is proved of `Float.exactOps`).",
     "",
     s!"{floatStmts.length} of the {Spec.spine.length} statements quantify over `M : FloatModel`, the IEEE 754 laws assumed.",
-    "Nothing here shows that some model satisfies those laws; were they jointly",
-    s!"unsatisfiable, those {floatStmts.length} would hold vacuously (RUE-2469). Several statements say",
+    "The laws have a model: `Float.exactModel` (`RueCore/Float/Lemmas.lean`) proves every one",
+    "of them of the executable instance `Float.exactOps`, so they are jointly satisfiable and",
+    s!"those {floatStmts.length} are not vacuous in `M` (`Nonvacuous.exact_model`, RUE-2469). Several statements say",
     "\"`run` is never `.stuck` with violation *v*\": they mean what `eval`'s monitors",
     "watch, since *v* is the tag a monitor raises (`no_violation`, `no_use_after_move`,",
     "`no_use_after_drop` and `no_linear_discard` say so; RUE-2469).",
@@ -178,6 +187,15 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
     "`Quot.sound` only, against a challenge that writes every statement out in full;",
     "`spine-fingerprints.txt` records a hash of each, so a statement that changes",
     "fails the chain until it is regenerated, and the change is reviewed.",
+    "",
+    "**Non-vacuity.** Under each statement, \"Non-vacuous\" names the witnesses",
+    "(`RueCore.Spec.witnesses`, RUE-2469; the last section) that show its hypotheses",
+    "hold together of a non-trivial program: accepted by the checker, typed, run to a",
+    "value, a panic or divergence and reached by `Step`, with the drops, destructors",
+    "or value the witness states. The witnesses are Spec statements too, proved in",
+    "`RueCore/Nonvacuous.lean` and covered by the kernel, the lint, Comparator and",
+    "the fingerprints. That a statement fails once a hypothesis is dropped (its",
+    "sharpness) is RUE-2485's.",
     "",
     s!"A statement means its text plus the {base.definitions.size} definitions the {Lint.headline.length} statements unfold",
     "to (`TRUST.md`, \"Trusted base\"; bodies in `DIGEST.md`); \"Names\" lists",
@@ -200,7 +218,21 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
       doc, "", "```lean", s!"def {Digest.shortName s} : Prop :=", s!"  {("\n  ".intercalate (stmt.splitOn "\n"))}", "```", "",
       s!"Proved by `{Digest.shortName h}` (`{thmModule}`). Names " ++
         ", ".intercalate (direct.toList.map (s!"`{Digest.shortName ·}`")) ++
-        s!"; rests on {closure.size} definitions.", ""]
+        s!"; rests on {closure.size} definitions.", "",
+      "Non-vacuous: " ++ witnessesOf h ++ ".", ""]
+  out := out ++ #["## Non-vacuity witnesses", "", "`RueCore.Spec.Witnesses`", "",
+    "Each statement shows the hypotheses of the spine statements it names satisfiable",
+    "together, by a program written out in the statement (RUE-2469).", ""]
+  for (h, s, ts) in Spec.witnesses do
+    let some (.defnInfo v) := Lint.find? env s | continue
+    let doc := ((← findDocString? env s).map Digest.trimmed).getD "*(no doc-comment)*"
+    let stmt ← Meta.MetaM.run' do
+      return (← Meta.ppExpr v.value).pretty 90
+    let thmModule := (Lint.moduleOf? env h).map toString |>.getD "?"
+    out := out ++ #[s!"### `{Digest.shortName h}`", "",
+      doc, "", "```lean", s!"def {Digest.shortName s} : Prop :=", s!"  {("\n  ".intercalate (stmt.splitOn "\n"))}", "```", "",
+      s!"Proved by `{Digest.shortName h}` (`{thmModule}`). Witnesses " ++
+        ", ".intercalate (ts.map (s!"`{Digest.shortName ·}`")) ++ ".", ""]
   return ("\n".intercalate out.toList, if problems.isEmpty then 0 else 1)
 
 /-- (helper) A Spec statement's body as Lean source that elaborates back to
@@ -247,9 +279,10 @@ def challengeReport (env : Environment) : CoreM (String × UInt32) := do
     "/-!",
     "# Lean Comparator's challenge (RUE-2460)",
     "",
-    "Generated by `lake exe ruecore-digest --challenge` from `RueCore.Spec.spine`; do",
-    "not edit. It restates every Spec statement in full, as the kernel holds it (its",
-    "elaborated body, pretty-printed), over the L0 and L1 modules the Spec layer",
+    "Generated by `lake exe ruecore-digest --challenge` from `RueCore.Spec.spine` and",
+    "`RueCore.Spec.witnesses`; do not edit. It restates every Spec statement in full,",
+    "as the kernel holds it (its elaborated body, pretty-printed), over the L0 and L1",
+    "modules the Spec layer",
     "imports and nothing else; then one theorem per statement, with the statement as",
     "its type and `sorry` for a proof. `RueCore.Spine`, the solution, proves the same",
     "names with the same types; Comparator checks that every constant these",
@@ -264,14 +297,14 @@ def challengeReport (env : Environment) : CoreM (String × UInt32) := do
     "",
     "namespace RueCore.Spec",
     ""]
-  for (h, s) in Spec.spine do
+  for (h, s) in Lint.entries do
     let some (.defnInfo v) := Lint.find? env s | continue
     let body ← stmtSource v
     out := out ++ #[s!"/-- The statement `{Digest.shortName h}` proves. -/",
       s!"def {s.replacePrefix `RueCore.Spec .anonymous} : Prop :=",
       s!"  {("\n  ".intercalate (body.splitOn "\n"))}", ""]
   out := out ++ #["end RueCore.Spec", "", "namespace RueCore.Spine", ""]
-  for (h, s) in Spec.spine do
+  for (h, s) in Lint.entries do
     out := out.push s!"theorem {Digest.shortName h} : {s} := sorry"
   out := out ++ #["", "end RueCore.Spine", ""]
   return ("\n".intercalate out.toList, if problems.isEmpty then 0 else 1)
@@ -290,7 +323,7 @@ def hex16 (h : UInt64) : String :=
   String.ofList (List.replicate (16 - d.length) '0' ++ d)
 
 /-- (helper) The spine's fingerprints (`spine-fingerprints.txt`): one line
-per Spec statement, in `Spec.spine`'s order, with a hash of its elaborated
+per Spec statement, in `Lint.entries`'s order (the spine, then the witnesses), with a hash of its elaborated
 body (the kernel's term, printed with full names and binder names). The file
 is committed, and `bin/chain.sh` fails when a regenerated copy differs from
 it — a statement added, removed or changed — naming each, so that a change
@@ -304,8 +337,8 @@ def fingerprintReport (env : Environment) : CoreM (String × UInt32) := do
     "# Generated by `lake exe ruecore-digest --fingerprint > spine-fingerprints.txt`; do not",
     "# edit. A changed, added or removed line is a change to what the mechanization claims:",
     "# regenerate only with the Spec diff and SPINE.md under review.",
-    s!"# {Spec.spine.length} statements."]
-  for (_, s) in Spec.spine do
+    s!"# {Lint.entries.length} statements."]
+  for (_, s) in Lint.entries do
     let some (.defnInfo v) := Lint.find? env s | continue
     out := out.push s!"{hex16 (fnv1a64 (toString v.value))} {s}"
   return ("\n".intercalate out.toList ++ "\n", if problems.isEmpty then 0 else 1)
@@ -316,7 +349,7 @@ statement — and the axioms this project allows. -/
 def comparatorConfig (env : Environment) : CoreM (String × UInt32) := do
   let problems := Lint.spineProblems env
   for p in problems do IO.eprintln s!"ruecore-digest --comparator-config: {p}"
-  let names := Spec.spine.map fun (h, _) => Json.str (toString (Lint.spineName h))
+  let names := Lint.entries.map fun (h, _) => Json.str (toString (Lint.spineName h))
   let json := Json.mkObj [
     ("challenge_module", "Challenge"),
     ("solution_module", "RueCore.Spine"),
