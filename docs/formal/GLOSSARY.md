@@ -686,9 +686,9 @@ documents rely on.
 | `EnumDecl.payloadJoin` | `Statics` | The join of every payload component's class, over all variants; `Copy` when there are none (`6.3:19`) | Rue-specific, grounded (spec 6.3:19) | — |
 | `EnumDecl.Wf` | `Statics` | An enum declaration is well formed: its recorded class is the join of its payload components' classes | standard (FIELD §9: well-formed, PFPL §1.2) | `Statics` |
 | `WfEnums` | `Statics` | Every enum declaration is well formed | standard (FIELD §9: well-formed, PFPL §1.2) | 03 intro; lean/README “What is mechanized”; `Syntax` |
-| `DeclId` | `Statics` | A struct or enum declaration, named by its kind and index | ours, pending audit | — |
-| `DeclId.ty` | `Statics` | The type that names a declaration | helper | — |
-| `Ty.declIds` | `Statics` | The declarations a type names by value, through any depth of arrays | helper | 03 “Type safety”; lean/README “What is mechanized”; `Statics` |
+| `TyName` | `Statics` | A struct or enum declaration, named by its kind and index | ours, pending audit | — |
+| `TyName.ty` | `Statics` | The type that names a declaration | helper | — |
+| `Ty.tyNames` | `Statics` | The declarations a type names by value, through any depth of arrays | helper | 03 “Type safety”; lean/README “What is mechanized”; `Statics` |
 | `Decls.byValue` | `Statics` | The types a declaration contains by value: a struct's fields, an enum's payload components (`3.0:5`) | Rue-specific, grounded (spec 3.0:5) | — |
 | `Decls.Names` | `Statics` | One step of the contains-by-value relation between declarations (`3.0:5`) | ours, pending audit | 03 “Type safety”; `Statics` |
 | `WfNames` | `Statics` | The contains-by-value relation is well-founded: no declaration contains itself (`3.0:5`, E0483) | standard (FIELD §8: well-founded recursion, Reference §7.6) | 03 intro; lean/README “What is mechanized”; `Statics` |

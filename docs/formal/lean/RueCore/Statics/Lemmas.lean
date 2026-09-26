@@ -153,13 +153,13 @@ paragraph in RUE-2334, and `3.0:5` is the normative form it mechanizes.
 /-- Two environments that give the same class to every declaration a type
 names by value give that type the same class: `class([T; n])` is §3's lift of
 `class(T)`, so peeling the array wrappers loses nothing (helper). -/
-theorem Ty.mult_congr_declIds {D D' : Decls} :
-    ∀ T : Ty, (∀ d ∈ T.declIds, d.ty.mult D = d.ty.mult D') → T.mult D = T.mult D'
-  | .struct s, h => h (.struct s) (by simp [Ty.declIds])
-  | .enum e, h => h (.enum e) (by simp [Ty.declIds])
+theorem Ty.mult_congr_tyNames {D D' : Decls} :
+    ∀ T : Ty, (∀ d ∈ T.tyNames, d.ty.mult D = d.ty.mult D') → T.mult D = T.mult D'
+  | .struct s, h => h (.struct s) (by simp [Ty.tyNames])
+  | .enum e, h => h (.enum e) (by simp [Ty.tyNames])
   | .array T _, h => by
       simp only [Ty.mult,
-        Ty.mult_congr_declIds T (fun d hd => h d (by simpa only [Ty.declIds] using hd))]
+        Ty.mult_congr_tyNames T (fun d hd => h d (by simpa only [Ty.tyNames] using hd))]
   | .int _ _, _ | .float _, _ | .bool, _ | .unit, _ => rfl
 
 /-- The accumulator of the payload join is a lower bound of the result
@@ -307,13 +307,13 @@ theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
     (heshape : ∀ (e : Nat) (ed ed' : EnumDecl),
       D.enums[e]? = some ed → D'.enums[e]? = some ed' → ed.variants = ed'.variants) :
     ∀ T : Ty, T.mult D = T.mult D' := by
-  have key : ∀ d : DeclId, d.ty.mult D = d.ty.mult D' := by
+  have key : ∀ d : TyName, d.ty.mult D = d.ty.mult D' := by
     intro d
     refine WellFounded.induction (C := fun d => d.ty.mult D = d.ty.mult D') hwf.names d ?_
     clear d
     intro d ih
     have hmem : ∀ T ∈ D.byValue d, T.mult D = T.mult D' := fun T hT =>
-      Ty.mult_congr_declIds T (fun d' hd' => ih d' ⟨T, hT, hd'⟩)
+      Ty.mult_congr_tyNames T (fun d' hd' => ih d' ⟨T, hT, hd'⟩)
     cases d with
     | struct s =>
         show D.classOf s = D'.classOf s
@@ -372,7 +372,7 @@ theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
               exact payloadFold_congr ed.variants .copy hpmem
             simp only [Decls.enumClassOf, hd, hd']
             rw [(hwf.enums e ed hd).classIsJoin, (hwf'.enums e ed' hd').classIsJoin, hjoin]
-  exact fun T => Ty.mult_congr_declIds T (fun d _ => key d)
+  exact fun T => Ty.mult_congr_tyNames T (fun d _ => key d)
 
 /-- **§3's class assignment for the struct layer has one solution**, the
 projection of `class_unique` §3's own sentence asks for. It needs the enum
