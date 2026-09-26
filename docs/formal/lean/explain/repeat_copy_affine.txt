@@ -1,0 +1,161 @@
+════════════════════════════════════════════════════════════════════════════════
+ repeat_copy_affine
+════════════════════════════════════════════════════════════════════════════════
+[e; n] of a non-Copy element: rule(id="7.1:36") requires a Copy element type
+for the array-repeat literal (the compiler: E0905). The machine refuses the
+same repeat dynamically with typeConfusion, since the elaboration `let t = v;
+[t, t]` gets stuck at the second use of t. Seeded by the definition mutation
+analysis (RUE-2486): mutant `repeat-copy`.
+
+Rules exercised: array repeat §5.8 · rule(id="7.1:36")
+
+── The program ─────────────────────────────────────────────────────────────────
+
+@copy struct S0 { x0: i64 }
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+linear struct S2 { x0: i64 }
+linear struct S3 { x0: i64 }
+drop fn S3(self) { @dbg(self.x0); }
+struct S4 { x0: i64, x1: S3 }
+struct S5 { x0: i64, x1: S1 }
+drop fn S5(self) { @dbg(self.x0); }
+@copy struct S6 { x0: i64, x1: i64 }
+struct S7 { x0: S1, x1: S1 }
+struct S8 { x0: S1, x1: i64 }
+struct S9 { x0: S7, x1: i64 }
+struct S10 { x0: S3, x1: S1 }
+fn f0() -> i64 {
+    {
+        let v0: [S1; 2] = [S1 { x0: 4 }; 2];
+        {
+            { let t3g: i64 = 20; @dbg(t3g) };
+            7
+        }
+    }
+}
+
+
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: REJECTED by the checker (§5).
+
+The premise that fails, in fn f0() -> i64, at (Array-Intro) §5.8, through §2's repeat elaboration:
+
+    on  [S1 { x0: 4 }; 2]
+
+    the repeat form materializes `n` copies of one value, which is only well
+    defined at a `Copy` element type, and S1 is not one (7.1:38; the compiler
+    reports E0905)
+
+── The derivations (§5) ────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order. One tree per
+function body, checked from (Fn) §5.8's entry context.
+
+  fn f0() -> i64
+
+  (Let) §5.3 + the §5.6 scope-exit leak check
+    e       { let v0: [S1; 2] = [S1 { x0: 4 }; 2]; { @dbg(20); 7 } }
+    Γ;Σ     (empty)
+    ✗       this premise fails:
+            a premise's own derivation failed — the reason is the rejected
+            premise nested under this rule
+      (Array-Intro) §5.8, through §2's repeat elaboration
+        e       [S1 { x0: 4 }; 2]
+        Γ;Σ     (empty)
+        ✗       this premise fails:
+                the repeat form materializes `n` copies of one value, which is only
+                well defined at a `Copy` element type, and S1 is not one (7.1:38;
+                the compiler reports E0905)
+          (Struct-Intro) §5.8
+            e       S1 { x0: 4 }
+            Γ;Σ     (empty)
+            ⇒       S1  ⊣  (empty)
+              (Lit) §5.8
+                e       4
+                Γ;Σ     (empty)
+                ⇒       i64  ⊣  (empty)
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth — a callee's rows are deeper than its call's — and `>>`
+marks a drop event. The run enters at f0(), as `Dynamics.run` does.
+`#n` after an aggregate is its identity, minted when it was built; a `†`
+cell is a retired binding or an identity's reserved slot (`introVal`).
+
+  [1]   d1    (D-Call) §6.9 (push the frame)
+         expr    fn f0() -> i64  with []
+         store   (empty)
+           →     (empty)
+         result  value ()
+  [2]   d5            literal §6.3
+         expr    4
+         store   (empty)
+           →     (empty)
+         result  value 4
+  [3]   d4          (D-Struct) §6.5 (mint #0)
+         expr    S1 { x0: 4 }
+         store   (empty)
+           →     [ℓ0 = †]
+         result  value S1 { 4 }#0
+  [4]   d3        (D-Array) §6.5, through §2's repeat elaboration (7.1:39)
+         expr    [S1 { x0: 4 }; 2]
+         store   (empty)
+           →     [ℓ0 = †]
+         result  REFUSED (typeConfusion)
+                 an operator met a wrong-shaped value, a call's argument count did
+                 not match its callee's parameter list, or a dynamic-index read, a
+                 dynamic-index @drop or a repeat met a non-Copy value
+                 ((D-Use-Untrackable-Dynamic-Copy) §6.3, 7.1:38); the statics (§5)
+                 exclude all three, and `soundness` (§7) is the proof
+  [5]   d2      (D-Let) §6.7 — a premise did not complete
+         expr    { let v0: [S1; 2] = [S1 { x0: 4 }; 2]; { @dbg(20); 7 } }
+         store   (empty)
+           →     [ℓ0 = †]
+         result  REFUSED (typeConfusion)
+                 an operator met a wrong-shaped value, a call's argument count did
+                 not match its callee's parameter list, or a dynamic-index read, a
+                 dynamic-index @drop or a repeat met a non-Copy value
+                 ((D-Use-Untrackable-Dynamic-Copy) §6.3, 7.1:38); the statics (§5)
+                 exclude all three, and `soundness` (§7) is the proof
+  [6]   d0  (D-Return-Value) §6.9 (pop the frame)
+         expr    f0()
+         store   (empty)
+           →     [ℓ0 = †]
+         result  REFUSED (typeConfusion)
+                 an operator met a wrong-shaped value, a call's argument count did
+                 not match its callee's parameter list, or a dynamic-index read, a
+                 dynamic-index @drop or a repeat met a non-Copy value
+                 ((D-Use-Untrackable-Dynamic-Copy) §6.3, 7.1:38); the statics (§5)
+                 exclude all three, and `soundness` (§7) is the proof
+
+── Identities (§7) ─────────────────────────────────────────────────────────────
+
+One line per owned identity: the step that minted it, the steps that ended
+it (a drop marker, a discarded temporary, a consumption), and the steps whose
+destructor ran on it. `drop_exactly_once` is one entry in the ended column
+per identity. Read in row order, and `[n.k]` (the k-th end of row n) inside a
+row, the ends are the trace's order, which `drop_order` fixes: a value's
+destructors inside its drop in §6.11's order, and cells last-in first-out.
+
+  id    minted  ended                             destructor  verdict
+  ────────────────────────────────────────────────────────────────────────
+  #0    [3]     —                                 —           the run was refused (§6)
+
+  The run was refused (§6), which a checked program's never is (`soundness`);
+  the ledger is what the table recorded before the refusal.
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: REFUSED (typeConfusion)
+         an operator met a wrong-shaped value, a call's argument count did
+         not match its callee's parameter list, or a dynamic-index read, a
+         dynamic-index @drop or a repeat met a non-Copy value
+         ((D-Use-Untrackable-Dynamic-Copy) §6.3, 7.1:38); the statics (§5)
+         exclude all three, and `soundness` (§7) is the proof
+
