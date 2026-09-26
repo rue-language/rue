@@ -48,7 +48,7 @@ so it never meets `†` and never retires a cell twice; a lookup through the
 environment finds a live cell; and every other helper a rule calls refuses
 with some other violation, never `useAfterDrop`.
 
-The theorems quantify over any `FloatOps`, not only a `FloatModel`: they hold
+The theorems quantify over any `FloatSig`, not only a `FloatModel`: they hold
 even for float operations satisfying none of the laws. The argument uses that
 in the fragment only a frame's environment names a cell. Loans (§5.4, outside
 the fragment, Phase D, RUE-2238) add references as a second way to name one,
@@ -491,7 +491,7 @@ theorem LiveFrame.root {H : Store} {φ : Frame} {i ℓ : Nat} (h : LiveFrame H �
 
 /-- **The invariant over `eval`**: from a frame whose cells are live and owed
 once, every evaluation keeps `LivePost`, at every fuel (helper). -/
-theorem eval_live (M : FloatOps) (P : Program) :
+theorem eval_live (M : FloatSig) (P : Program) :
     ∀ (fuel : Nat) (H : Store) (φ : Frame) (e : Expr), LiveFrame H φ →
       LivePost H φ (eval M fuel P H φ e) := by
   intro fuel
@@ -1128,7 +1128,7 @@ theorem OpRes.toStep_live {H : Store} {φ : Frame} {K : List Kont} {tr : List Ev
   | confused => simp [OpRes.toStep, StepLive]
 
 /-- `step` at an expression keeps the invariant (helper). -/
-theorem stepEval_live (M : FloatOps) (P : Program) {H : Store} {φ : Frame} {K : List Kont}
+theorem stepEval_live (M : FloatSig) (P : Program) {H : Store} {φ : Frame} {K : List Kont}
     {tr : List Event} (h : StackLive H φ K) (e : Expr) : StepLive (stepEval M P H φ K tr e) := by
   have henv := h.env
   cases e with
@@ -1304,7 +1304,7 @@ theorem stepArgs_live (P : Program) {H : Store} {φ : Frame} {K : List Kont}
 
 /-- `step` at a value returning into the top frame keeps the invariant: every
 teardown walks cells the invariant says are live and owed once (helper). -/
-theorem stepRet_live (M : FloatOps) (P : Program) {H : Store} {φ : Frame} {K : List Kont}
+theorem stepRet_live (M : FloatSig) (P : Program) {H : Store} {φ : Frame} {K : List Kont}
     {tr : List Event} (v : Val) (k : Kont) (h : StackLive H φ (k :: K)) :
     StepLive (stepRet M P H φ K tr v k) := by
   cases k with
@@ -1441,7 +1441,7 @@ theorem stepRet_live (M : FloatOps) (P : Program) {H : Store} {φ : Frame} {K : 
 
 /-- **The invariant over `Step`**: `step` keeps it, and never answers `stuck
 .useAfterDrop` under it (helper). -/
-theorem step_live (M : FloatOps) (P : Program) {C : Config} (h : ConfigLive C) :
+theorem step_live (M : FloatSig) (P : Program) {C : Config} (h : ConfigLive C) :
     StepLive (step M P C) := by
   match C, h with
   | .panic _ _, _ => trivial
@@ -1452,7 +1452,7 @@ theorem step_live (M : FloatOps) (P : Program) {C : Config} (h : ConfigLive C) :
   | .run H φ (k :: K) (.ret v) tr, h => exact stepRet_live M P v k h
 
 /-- `→*` keeps the invariant (helper). -/
-theorem steps_live {M : FloatOps} {P : Program} {C C' : Config} (hs : Steps M P C C') :
+theorem steps_live {M : FloatSig} {P : Program} {C C' : Config} (hs : Steps M P C C') :
     ConfigLive C → ConfigLive C' := by
   induction hs with
   | refl => exact id
@@ -1471,7 +1471,7 @@ open Retire
 /-- **No use-after-drop, on every program** (§7 "No use-after-drop / no leak
 of drops", "never read afterward"; §6.9): `run` never refuses with
 `useAfterDrop`, checked or not. -/
-theorem run_no_use_after_drop (M : FloatOps) (P : Program) (fuel : Nat) :
+theorem run_no_use_after_drop (M : FloatSig) (P : Program) (fuel : Nat) :
     run M P fuel ≠ .stuck .useAfterDrop := by
   intro h
   have := Retire.eval_live M P fuel [] { env := [], scope := [] } (.call 0 [])
@@ -1484,7 +1484,7 @@ theorem run_no_use_after_drop (M : FloatOps) (P : Program) (fuel : Nat) :
 /-- **No use-after-drop over §6's relation, on every program**: a
 configuration `→*` reaches from `Config.init` is never stuck on a retired
 cell, checked or not. -/
-theorem step_no_use_after_drop (M : FloatOps) (P : Program) {C : Config}
+theorem step_no_use_after_drop (M : FloatSig) (P : Program) {C : Config}
     (h : Steps M P Config.init C) : ¬ C.Stuck M P .useAfterDrop := by
   intro hs
   have hl := Retire.step_live M P (Retire.steps_live h ⟨rfl, List.nodup_nil, fun _ h => absurd h List.not_mem_nil⟩)

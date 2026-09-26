@@ -190,7 +190,7 @@ theorem dtor.soundness : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
   trivial
 
@@ -202,7 +202,7 @@ theorem dtor.run_safe : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
@@ -214,7 +214,7 @@ theorem dtor.no_violation : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_violation M hPT 200
   trivial
 
@@ -226,7 +226,7 @@ theorem dtor.no_use_after_move : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_move M hPT 200
   trivial
 
@@ -238,7 +238,7 @@ theorem dtor.no_use_after_drop : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_drop M hPT 200
   trivial
 
@@ -250,8 +250,8 @@ theorem dtor.run_no_use_after_drop : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.run_no_use_after_drop M.toFloatOps P 200
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.run_no_use_after_drop M.toFloatSig P 200
   trivial
 
 /-- `dtor` applied to `no_linear_leak` (helper). -/
@@ -262,7 +262,7 @@ theorem dtor.no_linear_leak : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_leak M hPT 200
   trivial
 
@@ -274,7 +274,7 @@ theorem dtor.no_linear_overwrite : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_overwrite M hPT 200
   trivial
 
@@ -286,7 +286,7 @@ theorem dtor.no_linear_discard : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_discard M hPT 200
   trivial
 
@@ -298,7 +298,7 @@ theorem dtor.check_sound : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.check_sound _ hchk _ hfit
   trivial
 
@@ -310,7 +310,7 @@ theorem dtor.checkProgram_sound : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.checkProgram_sound hc
   trivial
 
@@ -322,7 +322,7 @@ theorem dtor.no_double_free : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_double_free M hPT 200
   trivial
 
@@ -334,7 +334,7 @@ theorem dtor.drop_order : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_order M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -346,7 +346,7 @@ theorem dtor.drop_glue_order : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_glue_order M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -358,7 +358,7 @@ theorem dtor.step_progress : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_progress M hPT
   trivial
 
@@ -370,7 +370,7 @@ theorem dtor.step_preservation : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_preservation M hPT
   trivial
 
@@ -382,7 +382,7 @@ theorem dtor.step_type_safety : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_type_safety M hPT
   trivial
 
@@ -394,8 +394,8 @@ theorem dtor.step_no_use_after_drop : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.step_no_use_after_drop M.toFloatOps P hSteps
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.step_no_use_after_drop M.toFloatSig P hSteps
   trivial
 
 /-- `dtor` applied to `eval_sound` (helper). -/
@@ -406,7 +406,7 @@ theorem dtor.eval_sound : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_sound M hPT 200).2.1 _ _ _ hrun
   trivial
 
@@ -418,7 +418,7 @@ theorem dtor.never_stuck_iff : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.never_stuck_iff M hPT
   trivial
 
@@ -430,7 +430,7 @@ theorem dtor.eval_diverges_iff : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.eval_diverges_iff M hPT
   trivial
 
@@ -442,8 +442,8 @@ theorem dtor.fuel_mono : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.fuel_mono M.toFloatOps (Nat.le_succ 200) hne
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.fuel_mono M.toFloatSig (Nat.le_succ 200) hne
   trivial
 
 /-- `dtor` applied to `Step.terminal` (helper). -/
@@ -454,8 +454,8 @@ theorem dtor.Step.terminal : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.Step.terminal (M := M.toFloatOps) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
   trivial
 
 /-- `dtor` applied to `run_sim` (helper). -/
@@ -466,8 +466,8 @@ theorem dtor.run_sim : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_sim M.toFloatOps P 200).1 _ _ _ hrun
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.run_sim M.toFloatSig P 200).1 _ _ _ hrun
   trivial
 
 /-- `dtor` applied to `eval_complete` (helper). -/
@@ -478,7 +478,7 @@ theorem dtor.eval_complete : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_complete M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -490,8 +490,8 @@ theorem dtor.run_complete : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_complete M.toFloatOps P).1 _ _ _ _ hSteps
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.run_complete M.toFloatSig P).1 _ _ _ _ hSteps
   trivial
 
 /-- `dtor` applied to `step_no_double_free` (helper). -/
@@ -502,7 +502,7 @@ theorem dtor.step_no_double_free : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_no_double_free M hPT hSteps
   trivial
 
@@ -514,8 +514,8 @@ theorem dtor.freed_once : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.freed_once M.toFloatOps P 200
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.freed_once M.toFloatSig P 200
   trivial
 
 /-- `dtor` applied to `dtor_once` (helper). -/
@@ -526,8 +526,8 @@ theorem dtor.dtor_once : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.dtor_once M.toFloatOps hDNC 200
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.dtor_once M.toFloatSig hDNC 200
   trivial
 
 /-- `dtor` applied to `drop_exactly_once` (helper). -/
@@ -538,7 +538,7 @@ theorem dtor.drop_exactly_once : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.drop_exactly_once M hPT hps (fuel := 200) hTy (Spine.Nonvacuous.empty_frame _).1 (Spine.Nonvacuous.empty_frame _).2 (by decide)
   trivial
 
@@ -550,7 +550,7 @@ theorem dtor.rest_exactly_once : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.rest_exactly_once M hPT hps hTy (Spine.Nonvacuous.empty_frame _).1 (Spine.Nonvacuous.empty_frame _).2 (by decide) hLead hEv
   trivial
 
@@ -562,7 +562,7 @@ theorem dtor.Step.det : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.Step.det hStep hStep
   trivial
 
@@ -574,8 +574,8 @@ theorem dtor.Config.trichotomy : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.Config.trichotomy M.toFloatOps P Config.init
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.Config.trichotomy M.toFloatSig P Config.init
   trivial
 
 /-- `dtor` applied to `step_iff` (helper). -/
@@ -586,7 +586,7 @@ theorem dtor.step_iff : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_iff.mp hStep
   trivial
 
@@ -598,8 +598,8 @@ theorem dtor.step_never_stuck_of_run : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.step_never_stuck_of_run M.toFloatOps P hns
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.step_never_stuck_of_run M.toFloatSig P hns
   trivial
 
 /-- `linear` applied to `soundness` (helper). -/
@@ -609,7 +609,7 @@ theorem linear.soundness : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
   trivial
 
@@ -620,7 +620,7 @@ theorem linear.run_safe : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
@@ -631,7 +631,7 @@ theorem linear.no_violation : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_violation M hPT 200
   trivial
 
@@ -642,7 +642,7 @@ theorem linear.no_use_after_move : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_move M hPT 200
   trivial
 
@@ -653,7 +653,7 @@ theorem linear.no_use_after_drop : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_drop M hPT 200
   trivial
 
@@ -664,7 +664,7 @@ theorem linear.no_linear_leak : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_leak M hPT 200
   trivial
 
@@ -675,7 +675,7 @@ theorem linear.no_linear_overwrite : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_overwrite M hPT 200
   trivial
 
@@ -686,7 +686,7 @@ theorem linear.no_linear_discard : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_discard M hPT 200
   trivial
 
@@ -697,7 +697,7 @@ theorem linear.check_sound : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.check_sound _ hchk _ hfit
   trivial
 
@@ -708,7 +708,7 @@ theorem linear.checkProgram_sound : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.checkProgram_sound hc
   trivial
 
@@ -719,7 +719,7 @@ theorem linear.no_double_free : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_double_free M hPT 200
   trivial
 
@@ -730,7 +730,7 @@ theorem linear.drop_order : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_order M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -741,7 +741,7 @@ theorem linear.drop_glue_order : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_glue_order M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -752,7 +752,7 @@ theorem linear.step_progress : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_progress M hPT
   trivial
 
@@ -763,7 +763,7 @@ theorem linear.step_preservation : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_preservation M hPT
   trivial
 
@@ -774,7 +774,7 @@ theorem linear.step_type_safety : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_type_safety M hPT
   trivial
 
@@ -785,7 +785,7 @@ theorem linear.eval_sound : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_sound M hPT 200).2.1 _ _ _ hrun
   trivial
 
@@ -796,7 +796,7 @@ theorem linear.never_stuck_iff : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.never_stuck_iff M hPT
   trivial
 
@@ -807,7 +807,7 @@ theorem linear.eval_diverges_iff : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.eval_diverges_iff M hPT
   trivial
 
@@ -818,8 +818,8 @@ theorem linear.fuel_mono : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.fuel_mono M.toFloatOps (Nat.le_succ 200) hne
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.fuel_mono M.toFloatSig (Nat.le_succ 200) hne
   trivial
 
 /-- `linear` applied to `Step.terminal` (helper). -/
@@ -829,8 +829,8 @@ theorem linear.Step.terminal : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.Step.terminal (M := M.toFloatOps) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
   trivial
 
 /-- `linear` applied to `run_sim` (helper). -/
@@ -840,8 +840,8 @@ theorem linear.run_sim : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_sim M.toFloatOps P 200).1 _ _ _ hrun
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.run_sim M.toFloatSig P 200).1 _ _ _ hrun
   trivial
 
 /-- `linear` applied to `eval_complete` (helper). -/
@@ -851,7 +851,7 @@ theorem linear.eval_complete : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_complete M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -862,8 +862,8 @@ theorem linear.run_complete : True := by
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_complete M.toFloatOps P).1 _ _ _ _ hSteps
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.run_complete M.toFloatSig P).1 _ _ _ _ hSteps
   trivial
 
 /-- `loop` applied to `soundness` (helper). -/
@@ -873,7 +873,7 @@ theorem loop.soundness : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
   trivial
 
@@ -884,7 +884,7 @@ theorem loop.run_safe : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
@@ -895,7 +895,7 @@ theorem loop.no_violation : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_violation M hPT 200
   trivial
 
@@ -906,7 +906,7 @@ theorem loop.no_use_after_move : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_move M hPT 200
   trivial
 
@@ -917,7 +917,7 @@ theorem loop.no_use_after_drop : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_drop M hPT 200
   trivial
 
@@ -928,7 +928,7 @@ theorem loop.no_linear_leak : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_leak M hPT 200
   trivial
 
@@ -939,7 +939,7 @@ theorem loop.no_linear_overwrite : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_overwrite M hPT 200
   trivial
 
@@ -950,7 +950,7 @@ theorem loop.no_linear_discard : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_discard M hPT 200
   trivial
 
@@ -961,7 +961,7 @@ theorem loop.check_sound : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.check_sound _ hchk _ hfit
   trivial
 
@@ -972,7 +972,7 @@ theorem loop.checkProgram_sound : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.checkProgram_sound hc
   trivial
 
@@ -983,7 +983,7 @@ theorem loop.no_double_free : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_double_free M hPT 200
   trivial
 
@@ -994,7 +994,7 @@ theorem loop.drop_order : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_order M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -1005,7 +1005,7 @@ theorem loop.drop_glue_order : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_glue_order M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -1016,7 +1016,7 @@ theorem loop.step_progress : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_progress M hPT
   trivial
 
@@ -1027,7 +1027,7 @@ theorem loop.step_preservation : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_preservation M hPT
   trivial
 
@@ -1038,7 +1038,7 @@ theorem loop.step_type_safety : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_type_safety M hPT
   trivial
 
@@ -1049,7 +1049,7 @@ theorem loop.eval_sound : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_sound M hPT 200).2.1 _ _ _ hrun
   trivial
 
@@ -1060,7 +1060,7 @@ theorem loop.never_stuck_iff : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.never_stuck_iff M hPT
   trivial
 
@@ -1071,7 +1071,7 @@ theorem loop.eval_diverges_iff : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.eval_diverges_iff M hPT
   trivial
 
@@ -1082,8 +1082,8 @@ theorem loop.fuel_mono : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.fuel_mono M.toFloatOps (Nat.le_succ 200) hne
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.fuel_mono M.toFloatSig (Nat.le_succ 200) hne
   trivial
 
 /-- `loop` applied to `Step.terminal` (helper). -/
@@ -1093,8 +1093,8 @@ theorem loop.Step.terminal : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.Step.terminal (M := M.toFloatOps) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
   trivial
 
 /-- `loop` applied to `run_sim` (helper). -/
@@ -1104,8 +1104,8 @@ theorem loop.run_sim : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_sim M.toFloatOps P 200).1 _ _ _ hrun
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.run_sim M.toFloatSig P 200).1 _ _ _ hrun
   trivial
 
 /-- `loop` applied to `eval_complete` (helper). -/
@@ -1115,7 +1115,7 @@ theorem loop.eval_complete : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_complete M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -1126,8 +1126,8 @@ theorem loop.run_complete : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_complete M.toFloatOps P).1 _ _ _ _ hSteps
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.run_complete M.toFloatSig P).1 _ _ _ _ hSteps
   trivial
 
 /-- `loop` applied to `freed_once` (helper). -/
@@ -1137,8 +1137,8 @@ theorem loop.freed_once : True := by
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.freed_once M.toFloatOps P 200
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.freed_once M.toFloatSig P 200
   trivial
 
 /-- `array` applied to `soundness` (helper). -/
@@ -1148,7 +1148,7 @@ theorem array.soundness : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
   trivial
 
@@ -1159,7 +1159,7 @@ theorem array.run_safe : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
@@ -1170,7 +1170,7 @@ theorem array.no_violation : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_violation M hPT 200
   trivial
 
@@ -1181,7 +1181,7 @@ theorem array.no_use_after_move : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_move M hPT 200
   trivial
 
@@ -1192,7 +1192,7 @@ theorem array.no_use_after_drop : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_drop M hPT 200
   trivial
 
@@ -1203,7 +1203,7 @@ theorem array.no_linear_leak : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_leak M hPT 200
   trivial
 
@@ -1214,7 +1214,7 @@ theorem array.no_linear_overwrite : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_overwrite M hPT 200
   trivial
 
@@ -1225,7 +1225,7 @@ theorem array.no_linear_discard : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_discard M hPT 200
   trivial
 
@@ -1236,7 +1236,7 @@ theorem array.check_sound : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.check_sound _ hchk _ hfit
   trivial
 
@@ -1247,7 +1247,7 @@ theorem array.checkProgram_sound : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.checkProgram_sound hc
   trivial
 
@@ -1258,7 +1258,7 @@ theorem array.no_double_free : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_double_free M hPT 200
   trivial
 
@@ -1269,7 +1269,7 @@ theorem array.drop_order : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_order M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -1280,7 +1280,7 @@ theorem array.drop_glue_order : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_glue_order M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -1291,7 +1291,7 @@ theorem array.step_progress : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_progress M hPT
   trivial
 
@@ -1302,7 +1302,7 @@ theorem array.step_preservation : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_preservation M hPT
   trivial
 
@@ -1313,7 +1313,7 @@ theorem array.step_type_safety : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_type_safety M hPT
   trivial
 
@@ -1324,7 +1324,7 @@ theorem array.eval_sound : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_sound M hPT 200).2.1 _ _ _ hrun
   trivial
 
@@ -1335,7 +1335,7 @@ theorem array.never_stuck_iff : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.never_stuck_iff M hPT
   trivial
 
@@ -1346,7 +1346,7 @@ theorem array.eval_diverges_iff : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.eval_diverges_iff M hPT
   trivial
 
@@ -1357,8 +1357,8 @@ theorem array.fuel_mono : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.fuel_mono M.toFloatOps (Nat.le_succ 200) hne
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.fuel_mono M.toFloatSig (Nat.le_succ 200) hne
   trivial
 
 /-- `array` applied to `Step.terminal` (helper). -/
@@ -1368,8 +1368,8 @@ theorem array.Step.terminal : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.Step.terminal (M := M.toFloatOps) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
   trivial
 
 /-- `array` applied to `run_sim` (helper). -/
@@ -1379,8 +1379,8 @@ theorem array.run_sim : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_sim M.toFloatOps P 200).1 _ _ _ hrun
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.run_sim M.toFloatSig P 200).1 _ _ _ hrun
   trivial
 
 /-- `array` applied to `eval_complete` (helper). -/
@@ -1390,7 +1390,7 @@ theorem array.eval_complete : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_complete M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -1401,8 +1401,8 @@ theorem array.run_complete : True := by
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_complete M.toFloatOps P).1 _ _ _ _ hSteps
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.run_complete M.toFloatSig P).1 _ _ _ _ hSteps
   trivial
 
 /-- `enum_match` applied to `soundness` (helper). -/
@@ -1412,7 +1412,7 @@ theorem enum_match.soundness : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
   trivial
 
@@ -1423,7 +1423,7 @@ theorem enum_match.run_safe : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
@@ -1434,7 +1434,7 @@ theorem enum_match.no_violation : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_violation M hPT 200
   trivial
 
@@ -1445,7 +1445,7 @@ theorem enum_match.no_use_after_move : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_move M hPT 200
   trivial
 
@@ -1456,7 +1456,7 @@ theorem enum_match.no_use_after_drop : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_drop M hPT 200
   trivial
 
@@ -1467,7 +1467,7 @@ theorem enum_match.no_linear_leak : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_leak M hPT 200
   trivial
 
@@ -1478,7 +1478,7 @@ theorem enum_match.no_linear_overwrite : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_overwrite M hPT 200
   trivial
 
@@ -1489,7 +1489,7 @@ theorem enum_match.no_linear_discard : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_discard M hPT 200
   trivial
 
@@ -1500,7 +1500,7 @@ theorem enum_match.check_sound : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.check_sound _ hchk _ hfit
   trivial
 
@@ -1511,7 +1511,7 @@ theorem enum_match.checkProgram_sound : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.checkProgram_sound hc
   trivial
 
@@ -1522,7 +1522,7 @@ theorem enum_match.no_double_free : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_double_free M hPT 200
   trivial
 
@@ -1533,7 +1533,7 @@ theorem enum_match.drop_order : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_order M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -1544,7 +1544,7 @@ theorem enum_match.drop_glue_order : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_glue_order M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -1555,7 +1555,7 @@ theorem enum_match.step_progress : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_progress M hPT
   trivial
 
@@ -1566,7 +1566,7 @@ theorem enum_match.step_preservation : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_preservation M hPT
   trivial
 
@@ -1577,7 +1577,7 @@ theorem enum_match.step_type_safety : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_type_safety M hPT
   trivial
 
@@ -1588,7 +1588,7 @@ theorem enum_match.eval_sound : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_sound M hPT 200).2.1 _ _ _ hrun
   trivial
 
@@ -1599,7 +1599,7 @@ theorem enum_match.never_stuck_iff : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.never_stuck_iff M hPT
   trivial
 
@@ -1610,7 +1610,7 @@ theorem enum_match.eval_diverges_iff : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.eval_diverges_iff M hPT
   trivial
 
@@ -1621,8 +1621,8 @@ theorem enum_match.fuel_mono : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.fuel_mono M.toFloatOps (Nat.le_succ 200) hne
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.fuel_mono M.toFloatSig (Nat.le_succ 200) hne
   trivial
 
 /-- `enum_match` applied to `Step.terminal` (helper). -/
@@ -1632,8 +1632,8 @@ theorem enum_match.Step.terminal : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.Step.terminal (M := M.toFloatOps) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
   trivial
 
 /-- `enum_match` applied to `run_sim` (helper). -/
@@ -1643,8 +1643,8 @@ theorem enum_match.run_sim : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_sim M.toFloatOps P 200).1 _ _ _ hrun
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.run_sim M.toFloatSig P 200).1 _ _ _ hrun
   trivial
 
 /-- `enum_match` applied to `eval_complete` (helper). -/
@@ -1654,7 +1654,7 @@ theorem enum_match.eval_complete : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_complete M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -1665,8 +1665,8 @@ theorem enum_match.run_complete : True := by
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_complete M.toFloatOps P).1 _ _ _ _ hSteps
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.run_complete M.toFloatSig P).1 _ _ _ _ hSteps
   trivial
 
 /-- `early_return` applied to `soundness` (helper). -/
@@ -1676,7 +1676,7 @@ theorem early_return.soundness : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
   trivial
 
@@ -1687,7 +1687,7 @@ theorem early_return.run_safe : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
@@ -1698,7 +1698,7 @@ theorem early_return.no_violation : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_violation M hPT 200
   trivial
 
@@ -1709,7 +1709,7 @@ theorem early_return.no_use_after_move : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_move M hPT 200
   trivial
 
@@ -1720,7 +1720,7 @@ theorem early_return.no_use_after_drop : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_drop M hPT 200
   trivial
 
@@ -1731,7 +1731,7 @@ theorem early_return.no_linear_leak : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_leak M hPT 200
   trivial
 
@@ -1742,7 +1742,7 @@ theorem early_return.no_linear_overwrite : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_overwrite M hPT 200
   trivial
 
@@ -1753,7 +1753,7 @@ theorem early_return.no_linear_discard : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_discard M hPT 200
   trivial
 
@@ -1764,7 +1764,7 @@ theorem early_return.check_sound : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.check_sound _ hchk _ hfit
   trivial
 
@@ -1775,7 +1775,7 @@ theorem early_return.checkProgram_sound : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.checkProgram_sound hc
   trivial
 
@@ -1786,7 +1786,7 @@ theorem early_return.no_double_free : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_double_free M hPT 200
   trivial
 
@@ -1797,7 +1797,7 @@ theorem early_return.drop_order : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_order M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -1808,7 +1808,7 @@ theorem early_return.drop_glue_order : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_glue_order M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -1819,7 +1819,7 @@ theorem early_return.step_progress : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_progress M hPT
   trivial
 
@@ -1830,7 +1830,7 @@ theorem early_return.step_preservation : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_preservation M hPT
   trivial
 
@@ -1841,7 +1841,7 @@ theorem early_return.step_type_safety : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_type_safety M hPT
   trivial
 
@@ -1852,7 +1852,7 @@ theorem early_return.eval_sound : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_sound M hPT 200).2.1 _ _ _ hrun
   trivial
 
@@ -1863,7 +1863,7 @@ theorem early_return.never_stuck_iff : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.never_stuck_iff M hPT
   trivial
 
@@ -1874,7 +1874,7 @@ theorem early_return.eval_diverges_iff : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.eval_diverges_iff M hPT
   trivial
 
@@ -1885,8 +1885,8 @@ theorem early_return.fuel_mono : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.fuel_mono M.toFloatOps (Nat.le_succ 200) hne
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.fuel_mono M.toFloatSig (Nat.le_succ 200) hne
   trivial
 
 /-- `early_return` applied to `Step.terminal` (helper). -/
@@ -1896,8 +1896,8 @@ theorem early_return.Step.terminal : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.Step.terminal (M := M.toFloatOps) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
   trivial
 
 /-- `early_return` applied to `run_sim` (helper). -/
@@ -1907,8 +1907,8 @@ theorem early_return.run_sim : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_sim M.toFloatOps P 200).1 _ _ _ hrun
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.run_sim M.toFloatSig P 200).1 _ _ _ hrun
   trivial
 
 /-- `early_return` applied to `eval_complete` (helper). -/
@@ -1918,7 +1918,7 @@ theorem early_return.eval_complete : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_complete M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -1929,8 +1929,8 @@ theorem early_return.run_complete : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_complete M.toFloatOps P).1 _ _ _ _ hSteps
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.run_complete M.toFloatSig P).1 _ _ _ _ hSteps
   trivial
 
 /-- `early_return` applied to `run_ne_returned` (helper). -/
@@ -1940,8 +1940,8 @@ theorem early_return.run_ne_returned : True := by
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.run_ne_returned M.toFloatOps (P := P) (fuel := 200)
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.run_ne_returned M.toFloatSig (P := P) (fuel := 200)
   trivial
 
 /-- `float` applied to `soundness` (helper). -/
@@ -1951,7 +1951,7 @@ theorem float.soundness : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
   trivial
 
@@ -1962,7 +1962,7 @@ theorem float.run_safe : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
@@ -1973,7 +1973,7 @@ theorem float.no_violation : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_violation M hPT 200
   trivial
 
@@ -1984,7 +1984,7 @@ theorem float.no_use_after_move : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_move M hPT 200
   trivial
 
@@ -1995,7 +1995,7 @@ theorem float.no_use_after_drop : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_drop M hPT 200
   trivial
 
@@ -2006,7 +2006,7 @@ theorem float.no_linear_leak : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_leak M hPT 200
   trivial
 
@@ -2017,7 +2017,7 @@ theorem float.no_linear_overwrite : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_overwrite M hPT 200
   trivial
 
@@ -2028,7 +2028,7 @@ theorem float.no_linear_discard : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_discard M hPT 200
   trivial
 
@@ -2039,7 +2039,7 @@ theorem float.check_sound : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.check_sound _ hchk _ hfit
   trivial
 
@@ -2050,7 +2050,7 @@ theorem float.checkProgram_sound : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.checkProgram_sound hc
   trivial
 
@@ -2061,7 +2061,7 @@ theorem float.no_double_free : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_double_free M hPT 200
   trivial
 
@@ -2072,7 +2072,7 @@ theorem float.drop_order : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_order M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -2083,7 +2083,7 @@ theorem float.drop_glue_order : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_glue_order M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -2094,7 +2094,7 @@ theorem float.step_progress : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_progress M hPT
   trivial
 
@@ -2105,7 +2105,7 @@ theorem float.step_preservation : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_preservation M hPT
   trivial
 
@@ -2116,7 +2116,7 @@ theorem float.step_type_safety : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_type_safety M hPT
   trivial
 
@@ -2127,7 +2127,7 @@ theorem float.eval_sound : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_sound M hPT 200).2.1 _ _ _ hrun
   trivial
 
@@ -2138,7 +2138,7 @@ theorem float.never_stuck_iff : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.never_stuck_iff M hPT
   trivial
 
@@ -2149,7 +2149,7 @@ theorem float.eval_diverges_iff : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.eval_diverges_iff M hPT
   trivial
 
@@ -2160,8 +2160,8 @@ theorem float.fuel_mono : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.fuel_mono M.toFloatOps (Nat.le_succ 200) hne
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.fuel_mono M.toFloatSig (Nat.le_succ 200) hne
   trivial
 
 /-- `float` applied to `Step.terminal` (helper). -/
@@ -2171,8 +2171,8 @@ theorem float.Step.terminal : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.Step.terminal (M := M.toFloatOps) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
   trivial
 
 /-- `float` applied to `run_sim` (helper). -/
@@ -2182,8 +2182,8 @@ theorem float.run_sim : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_sim M.toFloatOps P 200).1 _ _ _ hrun
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.run_sim M.toFloatSig P 200).1 _ _ _ hrun
   trivial
 
 /-- `float` applied to `eval_complete` (helper). -/
@@ -2193,7 +2193,7 @@ theorem float.eval_complete : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_complete M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -2204,8 +2204,8 @@ theorem float.run_complete : True := by
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_complete M.toFloatOps P).1 _ _ _ _ hSteps
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.run_complete M.toFloatSig P).1 _ _ _ _ hSteps
   trivial
 
 /-- `panic` applied to `soundness` (helper). -/
@@ -2215,7 +2215,7 @@ theorem panic.soundness : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
   trivial
 
@@ -2226,7 +2226,7 @@ theorem panic.run_safe : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
@@ -2237,7 +2237,7 @@ theorem panic.no_violation : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_violation M hPT 200
   trivial
 
@@ -2248,7 +2248,7 @@ theorem panic.no_use_after_move : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_move M hPT 200
   trivial
 
@@ -2259,7 +2259,7 @@ theorem panic.no_use_after_drop : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_drop M hPT 200
   trivial
 
@@ -2270,7 +2270,7 @@ theorem panic.no_linear_leak : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_leak M hPT 200
   trivial
 
@@ -2281,7 +2281,7 @@ theorem panic.no_linear_overwrite : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_overwrite M hPT 200
   trivial
 
@@ -2292,7 +2292,7 @@ theorem panic.no_linear_discard : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_discard M hPT 200
   trivial
 
@@ -2303,7 +2303,7 @@ theorem panic.check_sound : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.check_sound _ hchk _ hfit
   trivial
 
@@ -2314,7 +2314,7 @@ theorem panic.checkProgram_sound : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.checkProgram_sound hc
   trivial
 
@@ -2325,7 +2325,7 @@ theorem panic.no_double_free : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_double_free M hPT 200
   trivial
 
@@ -2336,7 +2336,7 @@ theorem panic.drop_order : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_order M hPT).2.1 _ _ hSteps
   trivial
 
@@ -2347,7 +2347,7 @@ theorem panic.drop_glue_order : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_glue_order M hPT).2 _ _ hSteps
   trivial
 
@@ -2358,7 +2358,7 @@ theorem panic.step_progress : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_progress M hPT
   trivial
 
@@ -2369,7 +2369,7 @@ theorem panic.step_preservation : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_preservation M hPT
   trivial
 
@@ -2380,7 +2380,7 @@ theorem panic.step_type_safety : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_type_safety M hPT
   trivial
 
@@ -2391,7 +2391,7 @@ theorem panic.eval_sound : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_sound M hPT 200).2.2 _ _ hrun
   trivial
 
@@ -2402,7 +2402,7 @@ theorem panic.never_stuck_iff : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.never_stuck_iff M hPT
   trivial
 
@@ -2413,7 +2413,7 @@ theorem panic.eval_diverges_iff : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.eval_diverges_iff M hPT
   trivial
 
@@ -2424,8 +2424,8 @@ theorem panic.fuel_mono : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.fuel_mono M.toFloatOps (Nat.le_succ 200) hne
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.fuel_mono M.toFloatSig (Nat.le_succ 200) hne
   trivial
 
 /-- `panic` applied to `Step.terminal` (helper). -/
@@ -2435,8 +2435,8 @@ theorem panic.Step.terminal : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.Step.terminal (M := M.toFloatOps) (P := P) (C' := Config.init) (show Config.Terminal (.panic .user [.dbg (.int .w64 .signed 5)]) from trivial)
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.panic .user [.dbg (.int .w64 .signed 5)]) from trivial)
   trivial
 
 /-- `panic` applied to `run_sim` (helper). -/
@@ -2446,8 +2446,8 @@ theorem panic.run_sim : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_sim M.toFloatOps P 200).2 _ _ hrun
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.run_sim M.toFloatSig P 200).2 _ _ hrun
   trivial
 
 /-- `panic` applied to `eval_complete` (helper). -/
@@ -2457,7 +2457,7 @@ theorem panic.eval_complete : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_complete M hPT).2 _ _ hSteps
   trivial
 
@@ -2468,8 +2468,8 @@ theorem panic.run_complete : True := by
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_complete M.toFloatOps P).2 _ _ hSteps
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.run_complete M.toFloatSig P).2 _ _ hSteps
   trivial
 
 /-- `exact_model` applied to `soundness`, through the `dtor` program (helper). -/
@@ -2480,7 +2480,7 @@ theorem exact_model.soundness : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
   trivial
 
@@ -2492,7 +2492,7 @@ theorem exact_model.run_safe : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
@@ -2504,7 +2504,7 @@ theorem exact_model.no_violation : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_violation M hPT 200
   trivial
 
@@ -2516,7 +2516,7 @@ theorem exact_model.no_use_after_move : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_move M hPT 200
   trivial
 
@@ -2528,7 +2528,7 @@ theorem exact_model.no_use_after_drop : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_use_after_drop M hPT 200
   trivial
 
@@ -2540,7 +2540,7 @@ theorem exact_model.no_linear_leak : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_leak M hPT 200
   trivial
 
@@ -2552,7 +2552,7 @@ theorem exact_model.no_linear_overwrite : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_overwrite M hPT 200
   trivial
 
@@ -2564,7 +2564,7 @@ theorem exact_model.no_linear_discard : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_linear_discard M hPT 200
   trivial
 
@@ -2576,7 +2576,7 @@ theorem exact_model.no_double_free : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.no_double_free M hPT 200
   trivial
 
@@ -2588,7 +2588,7 @@ theorem exact_model.step_no_double_free : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_no_double_free M hPT hSteps
   trivial
 
@@ -2600,7 +2600,7 @@ theorem exact_model.drop_exactly_once : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.drop_exactly_once M hPT hps (fuel := 200) hTy (Spine.Nonvacuous.empty_frame _).1 (Spine.Nonvacuous.empty_frame _).2 (by decide)
   trivial
 
@@ -2612,7 +2612,7 @@ theorem exact_model.rest_exactly_once : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.rest_exactly_once M hPT hps hTy (Spine.Nonvacuous.empty_frame _).1 (Spine.Nonvacuous.empty_frame _).2 (by decide) hLead hEv
   trivial
 
@@ -2624,7 +2624,7 @@ theorem exact_model.drop_order : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_order M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -2636,7 +2636,7 @@ theorem exact_model.drop_glue_order : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_glue_order M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -2648,7 +2648,7 @@ theorem exact_model.step_progress : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_progress M hPT
   trivial
 
@@ -2660,7 +2660,7 @@ theorem exact_model.step_preservation : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_preservation M hPT
   trivial
 
@@ -2672,7 +2672,7 @@ theorem exact_model.step_type_safety : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_type_safety M hPT
   trivial
 
@@ -2684,7 +2684,7 @@ theorem exact_model.eval_sound : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_sound M hPT 200).2.1 _ _ _ hrun
   trivial
 
@@ -2696,7 +2696,7 @@ theorem exact_model.eval_complete : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.eval_complete M hPT).1 _ _ _ _ hSteps
   trivial
 
@@ -2708,7 +2708,7 @@ theorem exact_model.never_stuck_iff : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.never_stuck_iff M hPT
   trivial
 
@@ -2720,7 +2720,7 @@ theorem exact_model.eval_diverges_iff : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.eval_diverges_iff M hPT
   trivial
 
@@ -2732,7 +2732,7 @@ theorem empty_frame.soundness : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
   trivial
 
@@ -2744,7 +2744,7 @@ theorem empty_frame.drop_exactly_once : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.drop_exactly_once M hPT hps (fuel := 200) hTy (Spine.Nonvacuous.empty_frame _).1 (Spine.Nonvacuous.empty_frame _).2 (by decide)
   trivial
 
@@ -2756,7 +2756,7 @@ theorem empty_frame.rest_exactly_once : True := by
     Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
-  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.rest_exactly_once M hPT hps hTy (Spine.Nonvacuous.empty_frame _).1 (Spine.Nonvacuous.empty_frame _).2 (by decide) hLead hEv
   trivial
 

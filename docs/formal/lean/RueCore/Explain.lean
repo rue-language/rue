@@ -2414,7 +2414,7 @@ row per evaluated node. `traceEval_res` proves the two agree on the final
 result. `d` is the nesting depth, `Θ` the binder types in scope and `R` the
 enclosing function's return type, all of which travel with `φ` so each row
 prints its expression with the source's names. -/
-def traceEval (M : FloatOps) (P : Program) :
+def traceEval (M : FloatSig) (P : Program) :
     Nat → Nat → List Ty → Ty → Store → Frame → Expr → Trace
   | 0, d, Θ, R, H, _, e =>
       traced [] d Θ R e "out of fuel — the interpreter stopped early (ADR-0097)" H H []
@@ -2952,7 +2952,7 @@ set_option maxHeartbeats 400000 in
 reproduces `eval fuel P H φ e` exactly, so a rendered step table can never
 report an outcome — a value, an unwinding `return`, a §6.12 trap, a refusal,
 or exhausted fuel — the interpreter does not produce. -/
-theorem traceEval_res (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (d : Nat) (Θ : List Ty)
+theorem traceEval_res (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (d : Nat) (Θ : List Ty)
     (R : Ty) (H : Store) (φ : Frame) (e : Expr),
     (traceEval M P fuel d Θ R H φ e).res = eval M fuel P H φ e := by
   intro fuel
@@ -3095,14 +3095,14 @@ def programDerivs (P : Program) : Nat → List FnDef → List (Nat × FnDef × D
 
 /-- The run of a whole program: the entry call, from the empty store and the
 empty frame (§6.12's top-level result). -/
-def runTrace (M : FloatOps) (P : Program) (fuel : Nat) : Trace :=
+def runTrace (M : FloatSig) (P : Program) (fuel : Nat) : Trace :=
   let T := match P.fns[0]? with
     | some fd => fd.ret
     | none => .int .w64 .signed
   traceEval M P fuel 0 [] T [] { env := [], scope := [] } (.call 0 [])
 
 /-- **The program's run is the program's outcome** (§6.12). -/
-theorem runTrace_res (M : FloatOps) (P : Program) (fuel : Nat) :
+theorem runTrace_res (M : FloatSig) (P : Program) (fuel : Nat) :
     (runTrace M P fuel).res = run M P fuel :=
   traceEval_res M fuel 0 [] _ [] _ _
 

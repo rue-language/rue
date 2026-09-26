@@ -44,7 +44,7 @@ theorem of_okFloat {r : EvalRes} {w : FloatWidth} {f : FloatDatum}
 
 /-- `loop { () }` exhausts every fuel, from every store and frame: each turn
 spends one unit and the body never breaks (helper). -/
-theorem loopUnit_eval (M : FloatOps) (P : Program) :
+theorem loopUnit_eval (M : FloatSig) (P : Program) :
     ∀ n H φ, eval M n P H φ (.loop .unitLit) = .outOfFuel
   | 0, _, _ => rfl
   | 1, _, _ => rfl
@@ -65,7 +65,7 @@ theorem loopUnit_run : ∀ fuel, run Float.exactOps
 
 /-- `Spec.Nonvacuous.exact_model_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem exact_model :
-    ∃ M : FloatModel, M.toFloatOps = Float.exactOps := ⟨Float.exactModel, rfl⟩
+    ∃ M : FloatModel, M.toFloatSig = Float.exactOps := ⟨Float.exactModel, rfl⟩
 
 /-- `Spec.Nonvacuous.empty_frame_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem empty_frame :
@@ -352,7 +352,7 @@ theorem diverges :
 /-- One turn of `let s = S0 { 1 }; ()` finishes at every fuel past `3`, from
 every store and frame: it mints `S0 { 1 }`, binds it, and drops it at the
 scope's end (helper). -/
-theorem dropTurn_eval (M : FloatOps) (fns : List FnDef) : ∀ m H φ, ∃ H' tr,
+theorem dropTurn_eval (M : FloatSig) (fns : List FnDef) : ∀ m H φ, ∃ H' tr,
     eval M (m + 3)
       { decls :=
           { structs :=
@@ -368,7 +368,7 @@ theorem dropTurn_eval (M : FloatOps) (fns : List FnDef) : ∀ m H φ, ∃ H' tr,
 
 /-- `loop { let s = S0 { 1 }; () }` exhausts every fuel, from every store and
 frame: each turn finishes and the body never breaks (helper). -/
-theorem dropLoop_eval (M : FloatOps) (fns : List FnDef) : ∀ n H φ,
+theorem dropLoop_eval (M : FloatSig) (fns : List FnDef) : ∀ n H φ,
     eval M n
       { decls :=
           { structs :=

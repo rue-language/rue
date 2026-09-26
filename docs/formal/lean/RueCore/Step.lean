@@ -358,7 +358,7 @@ of the operands), plus §6.2's (Search) as an *enter* and a *plug* constructor
 per evaluation-context production. (Panic-Lift) is the shape of every trap
 constructor. `M` fixes the float operations, as `eval`'s does; `P` supplies the
 declarations and the functions. -/
-inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
+inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   -- ### §6.3: literals and the use of a place
   /-- An integer literal is already a value (§6.3): it takes no step except to
   *be* one, `n_T` at the type elaboration resolved. -/
@@ -747,7 +747,7 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
       Step M P (.run H φ K (.eval .brk) tr) (.run H' φs K' (.ret .unit) (tr ++ evs))
 
 /-- `→*` (§6.12), the reflexive-transitive closure of `Step`. -/
-inductive Steps (M : FloatOps) (P : Program) : Config → Config → Prop where
+inductive Steps (M : FloatSig) (P : Program) : Config → Config → Prop where
   | refl (C : Config) : Steps M P C C
   | step {C₁ C₂ C₃ : Config} : Step M P C₁ C₂ → Steps M P C₂ C₃ → Steps M P C₁ C₃
 
@@ -770,7 +770,7 @@ deriving Repr
 /-- `step` at an expression in focus: the literal rules of §6.3, the place
 rules of §6.3 and §6.11, (D-Panic) §6.12, (D-Loop-Enter) and (D-Break)
 §6.10, and every (Search) enter rule of §6.2 (helper). -/
-def stepEval (M : FloatOps) (P : Program) (H : Store) (φ : Frame) (K : List Kont)
+def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Frame) (K : List Kont)
     (tr : List Event) : Expr → StepOut
   | .intLit w s n => .next (.run H φ K (.ret (.int w s n)) tr)
   | .floatLit w l => .next (.run H φ K (.ret (.float w (M.ofLit w l.sig l.negExp l.e))) tr)
@@ -953,7 +953,7 @@ def OpRes.toStep (H : Store) (φ : Frame) (K : List Kont) (tr : List Event) : Op
 of §6.2 and the redexes that fire there — §6.4's operators, (D-Match),
 (D-If-T)/(D-If-F), (D-Let), (D-EndScope), (D-Seq), (D-Assign),
 (D-Return-Value), (D-Return) and (D-Loop-Iter) (helper). -/
-def stepRet (M : FloatOps) (P : Program) (H : Store) (φ : Frame) (K : List Kont)
+def stepRet (M : FloatSig) (P : Program) (H : Store) (φ : Frame) (K : List Kont)
     (tr : List Event) (v : Val) : Kont → StepOut
   | .binopL op e₂ => .next (.run H φ (.binopR op v :: K) (.eval e₂) tr)
   | .binopR op v₁ => (evalBinOp M op v₁ v).toStep H φ K tr
@@ -1034,7 +1034,7 @@ def stepRet (M : FloatOps) (P : Program) (H : Store) (φ : Frame) (K : List Kont
 takes none — `halted` at a terminal configuration (§6.12's (Result-Ok) and
 (Result-Panic)), `stuck w` where §6 has no rule. `step_iff` is the proof that
 it is `Step`. -/
-def step (M : FloatOps) (P : Program) : Config → StepOut
+def step (M : FloatSig) (P : Program) : Config → StepOut
   | .panic _ _ => .halted
   | .run H φ K (.eval e) tr => stepEval M P H φ K tr e
   | .run H φ K (.args t vs (e :: es)) tr => .next (.run H φ (.args t vs es :: K) (.eval e) tr)
@@ -1047,7 +1047,7 @@ def step (M : FloatOps) (P : Program) : Config → StepOut
 /-- **A stuck configuration** (§6, §7): not terminal, and no rule of §6
 applies. `step` names the reason with the `Violation` the interpreter uses for
 the same configuration. -/
-def Config.Stuck (M : FloatOps) (P : Program) (C : Config) (w : Violation) : Prop :=
+def Config.Stuck (M : FloatSig) (P : Program) (C : Config) (w : Violation) : Prop :=
   step M P C = .stuck w
 
 /-! ## Stuck states are §6's, and the monitors are absent (RUE-2314) -/
@@ -1063,7 +1063,7 @@ def Violation.isStuckState : Violation → Bool
 
 /-- Take up to `n` steps of `step`, stopping early at a configuration that
 takes none (helper). -/
-def stepN (M : FloatOps) (P : Program) : Nat → Config → Config
+def stepN (M : FloatSig) (P : Program) : Nat → Config → Config
   | 0, C => C
   | n + 1, C =>
     match step M P C with

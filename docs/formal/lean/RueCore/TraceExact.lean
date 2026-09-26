@@ -233,7 +233,7 @@ theorem EvalRes.absorb_quiet {r : EvalRes} {k : Store → Val → EvalRes}
 never evaluates to an unwinding `return`, and one with no free `break` never
 to an unwinding `break` — a call absorbs its callee's `return` (§6.9) and a
 loop catches its body's `break` (§6.10) (helper). -/
-theorem eval_quiet (M : FloatOps) (P : Program) : ∀ (fuel : Nat) (H : Store) (φ : Frame)
+theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (φ : Frame)
     (e : Expr), (e.returns = false → (eval M fuel P H φ e).NoRet) ∧
       (e.breaks = false → (eval M fuel P H φ e).NoBrk) := by
   intro fuel
@@ -1110,7 +1110,7 @@ theorem Exact.unwind {D : Decls} {H : Store} {v : Val} {ls : List Nat} (hcc : St
       exact ⟨by omega, c, hv, fun a _ => by have := i a; omega⟩
 
 /-- §6.4's operators produce a value only from scalar operands (helper). -/
-theorem evalBinOp_val_args {M : FloatOps} {op : BinOp} {a b v : Val}
+theorem evalBinOp_val_args {M : FloatSig} {op : BinOp} {a b v : Val}
     (h : evalBinOp M op a b = .val v) : a.scalar ∧ b.scalar := by
   unfold evalBinOp at h
   split at h
@@ -1130,7 +1130,7 @@ theorem evalIntCast_val_arg {w : IntWidth} {sg : Sign} {a v : Val}
   split at h <;> first | trivial | cases h
 
 /-- The same for the float intrinsics (helper). -/
-theorem evalFintrin_val_arg {M : FloatOps} {k : FloatIntrin} {a v : Val}
+theorem evalFintrin_val_arg {M : FloatSig} {k : FloatIntrin} {a v : Val}
     (h : evalFintrin M k a = .val v) : a.scalar := by
   unfold evalFintrin at h
   split at h <;> first | trivial | cases h
@@ -1141,7 +1141,7 @@ theorem Val.observable_scalar {v : Val} (h : v.observable = true) : v.scalar := 
 
 /-- A dynamic read's value is `Copy`: the machine refuses any other (§6.3's
 (D-Use-Untrackable-Dynamic-Copy), RUE-2400) (helper). -/
-theorem eval_indexRead_copy {M : FloatOps} {P : Program} {n : Nat} {H H' : Store} {φ : Frame}
+theorem eval_indexRead_copy {M : FloatSig} {P : Program} {n : Nat} {H H' : Store} {φ : Frame}
     {p : Place} {idx : List Expr} {πs : List (List Nat)} {v : Val} {tr : List Event}
     (h : eval M n P H φ (.indexRead p idx πs) = .ok H' v tr) : v.mult P.decls = .copy := by
   cases n with
@@ -1198,7 +1198,7 @@ theorem Contents.ownList_ofVals_single (D : Decls) (v : Val) :
 of `eval_exact`'s induction step): given the law at fuel `n`, once a form's
 leading operands produced `vs`, whatever the rest of the form yields at
 `n + 1` keeps `Exact` from `H₁` with `vs` held (helper). -/
-theorem rest_step (M : FloatOps) {P : Program} (hp : P.pendingSafe = true) {n : Nat}
+theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : Nat}
     (ih : ∀ (H : Store) (φ : Frame) (e : Expr), StoreCC P.decls H → e.pendingSafe = true →
       Exact P.decls H [] (eval M n P H φ e)) :
     ∀ {H : Store} {φ : Frame} {e : Expr} {H₁ : Store} {vs : List Val} {tr : List Event},
@@ -1528,7 +1528,7 @@ half): every evaluation, of every `pendingSafe` expression of a
 of the store, the result, or the trace's ended identities. By fuel induction
 over `eval`, one case per form, each closed by its exact ledger above; like
 `eval_conserves` it reads no typing derivation. -/
-theorem eval_exact (M : FloatOps) {P : Program} (hp : P.pendingSafe = true) :
+theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
     ∀ (fuel : Nat) (H : Store) (φ : Frame) (e : Expr), StoreCC P.decls H →
       e.pendingSafe = true → Exact P.decls H [] (eval M fuel P H φ e) := by
   intro fuel
@@ -2213,7 +2213,7 @@ theorem Tidy.call {D : Decls} {φ : Frame} {H Hm : Store} {ls : List Nat} {r : E
 /-- **Every allocation is retired** (§6.7, §6.9, §6.10): every evaluation, of
 every expression, in every frame that names only existing cells, keeps
 `Tidy`. By fuel induction over `eval`; no typing derivation. -/
-theorem eval_tidy (M : FloatOps) (P : Program) :
+theorem eval_tidy (M : FloatSig) (P : Program) :
     ∀ (fuel : Nat) (H : Store) (φ : Frame) (e : Expr), φ.In H → Tidy φ H (eval M fuel P H φ e) := by
   intro fuel
   induction fuel with
@@ -2494,11 +2494,11 @@ theorem drop_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
     (hp : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
     {φ : Frame} {H : Store} (ht : Typed P R Γ e T Ω) (hfm : FrameMatches P.decls Γ φ H)
     (hcc : StoreCC P.decls H) (he : e.pendingSafe = true) :
-    (∀ w, eval M.toFloatOps fuel P H φ e ≠ .stuck w) ∧
-      Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
-      Tidy φ H (eval M.toFloatOps fuel P H φ e) := by
-  refine ⟨fun w hw => ?_, eval_exact M.toFloatOps hp fuel H φ e hcc he,
-    eval_tidy M.toFloatOps P fuel H φ e hfm.frameIn⟩
+    (∀ w, eval M.toFloatSig fuel P H φ e ≠ .stuck w) ∧
+      Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
+      Tidy φ H (eval M.toFloatSig fuel P H φ e) := by
+  refine ⟨fun w hw => ?_, eval_exact M.toFloatSig hp fuel H φ e hcc he,
+    eval_tidy M.toFloatSig P fuel H φ e hfm.frameIn⟩
   have := soundness M h.wf fuel ht hfm
   rw [hw] at this
   exact this
@@ -2520,7 +2520,7 @@ theorem Tidy.settled {φ : Frame} {H H₁ : Store} {r : EvalRes} {tr : List Even
 
 /-- A form's leading operands ran from a copy-closed store: the store only
 grew, it stays copy-closed, and the values are (helper). -/
-theorem lead_cc (M : FloatOps) {P : Program} (hp : P.pendingSafe = true) {fuel : Nat}
+theorem lead_cc (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {fuel : Nat}
     {H : Store} {φ : Frame} {e : Expr} {H₁ : Store} {vs : List Val} {tr : List Event}
     (hcc : StoreCC P.decls H) (he : e.pendingSafe = true) (hl : Lead M P fuel H φ H₁ vs tr e) :
     H.length ≤ H₁.length ∧ StoreCC P.decls H₁ ∧
@@ -2611,14 +2611,14 @@ theorem rest_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
     (hp : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
     {φ : Frame} {H : Store} (ht : Typed P R Γ e T Ω) (hfm : FrameMatches P.decls Γ φ H)
     (hcc : StoreCC P.decls H) (he : e.pendingSafe = true)
-    {H₁ : Store} {vs : List Val} {tr : List Event} (hl : Lead M.toFloatOps P fuel H φ H₁ vs tr e)
-    {r : EvalRes} (hr : eval M.toFloatOps (fuel + 1) P H φ e = r.withTrace tr) :
+    {H₁ : Store} {vs : List Val} {tr : List Event} (hl : Lead M.toFloatSig P fuel H φ H₁ vs tr e)
+    {r : EvalRes} (hr : eval M.toFloatSig (fuel + 1) P H φ e = r.withTrace tr) :
     (∀ w, r ≠ .stuck w) ∧
       Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧ Settled φ H₁ r := by
-  obtain ⟨hle, hc₁, hvs⟩ := lead_cc M.toFloatOps hp hcc he hl
-  refine ⟨fun w hw => ?_, rest_step M.toFloatOps hp
-      (fun H' φ' e' hc hps => eval_exact M.toFloatOps hp fuel H' φ' e' hc hps) he hl hc₁ hvs r hr,
-    Tidy.settled hle (hr ▸ eval_tidy M.toFloatOps P (fuel + 1) H φ e hfm.frameIn)⟩
+  obtain ⟨hle, hc₁, hvs⟩ := lead_cc M.toFloatSig hp hcc he hl
+  refine ⟨fun w hw => ?_, rest_step M.toFloatSig hp
+      (fun H' φ' e' hc hps => eval_exact M.toFloatSig hp fuel H' φ' e' hc hps) he hl hc₁ hvs r hr,
+    Tidy.settled hle (hr ▸ eval_tidy M.toFloatSig P (fuel + 1) H φ e hfm.frameIn)⟩
   have := soundness M h.wf (fuel + 1) ht hfm
   rw [hr, hw] at this
   exact this
@@ -2678,7 +2678,7 @@ ledger fails — `x`'s
 `S0` (identity `0`) is held once when `g`'s body starts and is nowhere when
 its `return` has unwound: not in the store, not in the result, not in the
 trace. -/
-theorem pendingSafe_needed (M : FloatOps) :
+theorem pendingSafe_needed (M : FloatSig) :
     Typed lostProgram (.int .w64 .signed) lostCtx lostBody (.int .w64 .signed) ⟨none, []⟩ ∧
       FrameMatches lostProgram.decls lostCtx lostFrame lostStore ∧
       StoreCC lostProgram.decls lostStore ∧
@@ -2768,10 +2768,10 @@ theorem orphan_rejected (M : FloatModel) :
     ProgramTyped orphanProgram ∧ orphanProgram.pendingSafe = true ∧
       (∃ Ω, Typed orphanProgram (.int .w64 .signed) lostCtx (.call 1 [.use (.var 0)])
         (.int .w64 .signed) Ω) ∧
-      eval M.toFloatOps 100 orphanProgram lostStore lostFrame (.call 1 [.use (.var 0)])
+      eval M.toFloatSig 100 orphanProgram lostStore lostFrame (.call 1 [.use (.var 0)])
         = .ok [.dead, .full .hole, .dead] (.int .w64 .signed 0) [.drop 2 s0x, .dtor 0 s0x] ∧
       Tidy lostFrame lostStore
-        (eval M.toFloatOps 100 orphanProgram lostStore lostFrame (.call 1 [.use (.var 0)])) ∧
+        (eval M.toFloatSig 100 orphanProgram lostStore lostFrame (.call 1 [.use (.var 0)])) ∧
       Exact lostDecls lostStore [] orphanResult ∧ ¬ Tidy lostFrame lostStore orphanResult := by
   have hP : ProgramTyped orphanProgram := checkProgram_sound (by rfl)
   obtain ⟨Ω, ht⟩ := typed_of_check (P := orphanProgram) (R := .int .w64 .signed) (Γ := lostCtx)
@@ -2809,9 +2809,9 @@ theorem letDropDeleted_rejected (M : FloatModel) :
       (∃ Ω, Typed orphanProgram (.int .w64 .signed) []
         (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0))
         (.int .w64 .signed) Ω) ∧
-      Lead M.toFloatOps orphanProgram 100 [] { env := [], scope := [] } [.dead] [s0one] []
+      Lead M.toFloatSig orphanProgram 100 [] { env := [], scope := [] } [.dead] [s0one] []
         (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0)) ∧
-      eval M.toFloatOps 101 orphanProgram [] { env := [], scope := [] }
+      eval M.toFloatSig 101 orphanProgram [] { env := [], scope := [] }
           (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0))
         = .ok [.dead, .dead] (.int .w64 .signed 0)
             [.drop 1 (Contents.ofVal s0one), .dtor 0 (Contents.ofVal s0one)] ∧
@@ -2825,7 +2825,7 @@ theorem letDropDeleted_rejected (M : FloatModel) :
   obtain ⟨Ω, ht⟩ := typed_of_check (P := orphanProgram) (R := .int .w64 .signed) (Γ := [])
     (e := .letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0))
     (.int .w64 .signed) (by rfl)
-  have hl : Lead M.toFloatOps orphanProgram 100 [] { env := [], scope := [] } [.dead] [s0one] []
+  have hl : Lead M.toFloatSig orphanProgram 100 [] { env := [], scope := [] } [.dead] [s0one] []
       (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0)) :=
     ⟨s0one, rfl, by rfl⟩
   have real := (rest_exactly_once M hP (by rfl) ht frameMatches_empty emptyStore_cc (by rfl) hl
@@ -2848,9 +2848,9 @@ theorem seqDropDeleted_rejected (M : FloatModel) :
     (∃ Ω, Typed orphanProgram (.int .w64 .signed) []
         (.seq (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0))
         (.int .w64 .signed) Ω) ∧
-      Lead M.toFloatOps orphanProgram 100 [] { env := [], scope := [] } [.dead] [s0one] []
+      Lead M.toFloatSig orphanProgram 100 [] { env := [], scope := [] } [.dead] [s0one] []
         (.seq (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0)) ∧
-      eval M.toFloatOps 101 orphanProgram [] { env := [], scope := [] }
+      eval M.toFloatSig 101 orphanProgram [] { env := [], scope := [] }
           (.seq (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0))
         = .ok [.dead] (.int .w64 .signed 0) [.dropTemp s0one, .dtor 0 (Contents.ofVal s0one)] ∧
       Exact lostDecls [.dead] (Contents.ownList lostDecls (Contents.ofVals [s0one]))
@@ -2861,7 +2861,7 @@ theorem seqDropDeleted_rejected (M : FloatModel) :
   obtain ⟨Ω, ht⟩ := typed_of_check (P := orphanProgram) (R := .int .w64 .signed) (Γ := [])
     (e := .seq (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0))
     (.int .w64 .signed) (by rfl)
-  have hl : Lead M.toFloatOps orphanProgram 100 [] { env := [], scope := [] } [.dead] [s0one] []
+  have hl : Lead M.toFloatSig orphanProgram 100 [] { env := [], scope := [] } [.dead] [s0one] []
       (.seq (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0)) :=
     ⟨s0one, rfl, by rfl⟩
   have real := (rest_exactly_once M hP (by rfl) ht frameMatches_empty emptyStore_cc (by rfl) hl
@@ -2903,8 +2903,8 @@ lead is the body breaking in `breakStore`; the real unwind satisfies it. -/
 theorem breakLeak_rejected (M : FloatModel) :
     ProgramTyped breakProgram ∧ breakProgram.pendingSafe = true ∧
       (∃ Ω, Typed breakProgram (.int .w64 .signed) lostCtx breakLoop .unit Ω) ∧
-      Lead M.toFloatOps breakProgram 100 lostStore lostFrame breakStore [] [] breakLoop ∧
-      eval M.toFloatOps 101 breakProgram lostStore lostFrame breakLoop
+      Lead M.toFloatSig breakProgram 100 lostStore lostFrame breakStore [] [] breakLoop ∧
+      eval M.toFloatSig 101 breakProgram lostStore lostFrame breakLoop
         = .ok [.dead, .full s0x, .dead, .dead] .unit [.drop 3 s0z, .dtor 0 s0z] ∧
       Exact lostDecls breakStore []
         (.ok [.dead, .full s0x, .dead, .dead] .unit [.drop 3 s0z, .dtor 0 s0z]) ∧
@@ -2913,7 +2913,7 @@ theorem breakLeak_rejected (M : FloatModel) :
   have hP : ProgramTyped breakProgram := checkProgram_sound (by rfl)
   obtain ⟨Ω, ht⟩ := typed_of_check (P := breakProgram) (R := .int .w64 .signed) (Γ := lostCtx)
     (e := breakLoop) .unit (by rfl)
-  have hl : Lead M.toFloatOps breakProgram 100 lostStore lostFrame breakStore [] [] breakLoop :=
+  have hl : Lead M.toFloatSig breakProgram 100 lostStore lostFrame breakStore [] [] breakLoop :=
     ⟨[1, 3], rfl, by rfl⟩
   have real := (rest_exactly_once M hP (by rfl) ht lostFrame_matches lostStore_cc (by rfl) hl
     (r := .ok [.dead, .full s0x, .dead, .dead] .unit [.drop 3 s0z, .dtor 0 s0z]) (by rfl)).2.1

@@ -32,36 +32,36 @@ refusal, `¬ Typed` from `soundness` and a refusal, and so on).
 namespace RueCore.Sharp
 
 /-- The model the statements run on is `Float.exactOps` (helper). -/
-theorem exact_ops : Float.exactModel.toFloatOps = Float.exactOps := rfl
+theorem exact_ops : Float.exactModel.toFloatSig = Float.exactOps := rfl
 
 /-- Prefixing an empty trace changes nothing (helper). -/
 theorem withTrace_nil (r : EvalRes) : r.withTrace [] = r := by
   cases r <;> rfl
 
 /-- A stuck configuration takes no step (helper). -/
-theorem noStep_of_stuck {M : FloatOps} {P : Program} {C : Config} {w : Violation}
+theorem noStep_of_stuck {M : FloatSig} {P : Program} {C : Config} {w : Violation}
     (h : C.Stuck M P w) : ∀ C', ¬ Step M P C C' :=
   (Config.stuck_iff.mpr ⟨w, h⟩).2
 
 /-- A stuck configuration is not terminal (helper). -/
-theorem not_terminal_of_stuck {M : FloatOps} {P : Program} {C : Config} {w : Violation}
+theorem not_terminal_of_stuck {M : FloatSig} {P : Program} {C : Config} {w : Violation}
     (h : C.Stuck M P w) : ¬ C.Terminal :=
   (Config.stuck_iff.mpr ⟨w, h⟩).1
 
 /-- A terminal configuration takes no step (helper). -/
-theorem noStep_of_terminal {M : FloatOps} {P : Program} {C : Config} (h : C.Terminal) :
+theorem noStep_of_terminal {M : FloatSig} {P : Program} {C : Config} (h : C.Terminal) :
     ∀ C', ¬ Step M P C C' := fun _ s => Step.terminal h s
 
 /-- Of two configurations with no step, a run from `Config.init` reaches at
 most one (`Step.det`) (helper). -/
-theorem not_steps_of_final {M : FloatOps} {P : Program} {T X : Config}
+theorem not_steps_of_final {M : FloatSig} {P : Program} {T X : Config}
     (hT : Steps M P Config.init T) (hTf : ∀ C', ¬ Step M P T C') (hXf : ∀ C', ¬ Step M P X C')
     (hne : T ≠ X) : ¬ Steps M P Config.init X :=
   fun hX => hne (Steps.final_unique hT hX hTf hXf)
 
 /-- An answer other than `outOfFuel` is `run`'s at every larger fuel
 (`fuel_mono`) (helper). -/
-theorem run_from {M : FloatOps} {P : Program} {n : Nat} {r : EvalRes} (h : run M P n = r)
+theorem run_from {M : FloatSig} {P : Program} {n : Nat} {r : EvalRes} (h : run M P n = r)
     (hr : r ≠ .outOfFuel) : ∀ fuel, n ≤ fuel → run M P fuel = r := by
   intro fuel hf
   have := fuel_mono M (P := P) (H := []) (φ := { env := [], scope := [] }) (e := .call 0 []) hf (by
@@ -71,7 +71,7 @@ theorem run_from {M : FloatOps} {P : Program} {n : Nat} {r : EvalRes} (h : run M
 
 /-- Once `run` answers `r`, no property `r` lacks holds of `run`'s answer at
 every fuel past a bound (helper). -/
-theorem not_eventually {M : FloatOps} {P : Program} {n : Nat} {r : EvalRes} (h : run M P n = r)
+theorem not_eventually {M : FloatSig} {P : Program} {n : Nat} {r : EvalRes} (h : run M P n = r)
     (hr : r ≠ .outOfFuel) (Q : EvalRes → Prop) (hQ : ¬ Q r) :
     ¬ ∃ k, ∀ fuel, k < fuel → Q (run M P fuel) := by
   rintro ⟨k, hk⟩
@@ -80,7 +80,7 @@ theorem not_eventually {M : FloatOps} {P : Program} {n : Nat} {r : EvalRes} (h :
   exact hQ this
 
 /-- A refusal is none of `run_safe`'s outcomes, for any entry point (helper). -/
-theorem stuck_not_safe {M : FloatOps} {P : Program} {n : Nat} {w : Violation}
+theorem stuck_not_safe {M : FloatSig} {P : Program} {n : Nat} {w : Violation}
     (h : run M P n = .stuck w) (fd : FnDef) :
     ¬ (run M P n = .outOfFuel ∨ (∃ k tr, run M P n = .panic k tr) ∨
       ∃ H v tr, run M P n = .ok H v tr ∧ HasTy P.decls v fd.ret) := by
@@ -114,7 +114,7 @@ theorem storeCC_one {D : Decls} {c : Contents} (h : c.copyClosed D = true) : Sto
 
 /-- In a run with a longer one beside it from the same start, the shorter
 one's end steps (`Step.det`) (helper). -/
-theorem StepsN.steps_of_longer {M : FloatOps} {P : Program} :
+theorem StepsN.steps_of_longer {M : FloatSig} {P : Program} :
     ∀ {k : Nat} {C₀ C D : Config}, StepsN M P k C₀ C → StepsN M P (k + 1) C₀ D →
       ∃ C', Step M P C C'
   | 0, _, _, _, h, h' => by
@@ -131,7 +131,7 @@ theorem StepsN.steps_of_longer {M : FloatOps} {P : Program} :
 
 /-- A machine with runs of every length never reaches a configuration that
 does not step (helper). -/
-theorem steps_of_forever {M : FloatOps} {P : Program}
+theorem steps_of_forever {M : FloatSig} {P : Program}
     (h : ∀ n, ∃ D, StepsN M P n Config.init D) :
     ∀ C, Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C' := by
   intro C hC
@@ -159,7 +159,7 @@ def loopTurn (H : Store) (tr : List Event) : Config :=
 /-- One turn is nine steps of §6's relation, which has no monitor: the
 literal is minted into a reserved slot, discarded, and the loop starts again
 (helper). -/
-theorem loopTurn_step (M : FloatOps) (H : Store) (tr : List Event) :
+theorem loopTurn_step (M : FloatSig) (H : Store) (tr : List Event) :
     StepsN M loopProg 9 (loopTurn H tr)
       (loopTurn (H ++ [.dead]) ((tr ++ [.dropTemp (.struct 1 H.length [.int .w64 .signed 3])]) ++ [])) := by
   repeat (refine .step (step_iff.mpr rfl) ?_)
@@ -167,7 +167,7 @@ theorem loopTurn_step (M : FloatOps) (H : Store) (tr : List Event) :
 
 /-- So the loop has runs of every multiple of nine steps from any turn
 (helper). -/
-theorem loopTurn_forever (M : FloatOps) :
+theorem loopTurn_forever (M : FloatSig) :
     ∀ m H tr, ∃ D, StepsN M loopProg (9 * m) (loopTurn H tr) D
   | 0, _, _ => ⟨_, .refl _⟩
   | m + 1, H, tr => by
@@ -175,7 +175,7 @@ theorem loopTurn_forever (M : FloatOps) :
       exact ⟨D, by rw [show 9 * (m + 1) = 9 + 9 * m by omega]; exact (loopTurn_step M H tr).trans hD⟩
 
 /-- And runs of every length from `Config.init` (helper). -/
-theorem loop_forever (M : FloatOps) : ∀ n, ∃ D, StepsN M loopProg n Config.init D := by
+theorem loop_forever (M : FloatSig) : ∀ n, ∃ D, StepsN M loopProg n Config.init D := by
   intro n
   have h3 : StepsN M loopProg 3 Config.init (loopTurn [] []) := by
     repeat (refine .step (step_iff.mpr rfl) ?_)

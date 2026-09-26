@@ -84,7 +84,7 @@ once.
 namespace RueCore
 
 section ledger
-variable {M : FloatOps} {P : Program}
+variable {M : FloatSig} {P : Program}
 
 /-! ## The ledger of a configuration -/
 
@@ -139,7 +139,7 @@ theorem IdLe.trans' {l₁ l₂ l₃ : List Nat} (h₁ : IdLe l₁ l₂) (h₂ : 
 /-- **A run of §6's relation along which no step loses an owned identity**:
 every step's target ledger counts every identity at least as often as its
 source's (helper). -/
-inductive MSteps (M : FloatOps) (P : Program) : Config → Config → Prop where
+inductive MSteps (M : FloatSig) (P : Program) : Config → Config → Prop where
   | refl (C : Config) : MSteps M P C C
   | step {C₁ C₂ C₃ : Config} : Step M P C₁ C₂ → IdLe (C₁.ledger P.decls) (C₂.ledger P.decls) →
       MSteps M P C₂ C₃ → MSteps M P C₁ C₃
@@ -200,7 +200,7 @@ the context that the frames the unwind discards hold no owned value — what
 `pendingSafe` guarantees at every form that pushes such a frame (RUE-2316). A
 trap is not simulated: §6.12's `↯κ` keeps no store, so it holds nothing, and
 §5.7's `⊥_panic` edge runs no drop. -/
-def MSim (M : FloatOps) (P : Program) (φ : Frame) (C : List Kont → List Event → Config) :
+def MSim (M : FloatSig) (P : Program) (φ : Frame) (C : List Kont → List Event → Config) :
     EvalRes → Prop
   | .ok H v tr' => ∀ K tr, MSteps M P (C K tr) (.run H φ K (.ret v) (tr ++ tr'))
   | .returned H v tr' => ∀ K tr φs K', Kont.toCall K = some (φs, K') →
@@ -511,12 +511,12 @@ theorem Contents.own_array_ge {D : Decls} {T : Ty} {i : Nat} {cs : List Contents
 
 /-- The induction hypothesis: `eval` at fuel `fuel` is simulated losslessly
 from every copy-closed store, for every `pendingSafe` expression (helper). -/
-def MSimIH (M : FloatOps) (P : Program) (fuel : Nat) : Prop :=
+def MSimIH (M : FloatSig) (P : Program) (fuel : Nat) : Prop :=
   ∀ H φ e, StoreCC P.decls H → e.pendingSafe = true →
     MSim M P φ (evalConf H φ e) (eval M fuel P H φ e)
 
 section forms
-variable {M : FloatOps} {P : Program} {fuel : Nat} {H : Store} {φ : Frame}
+variable {M : FloatSig} {P : Program} {fuel : Nat} {H : Store} {φ : Frame}
 
 /-- An argument list of `pendingSafe` members that finishes leaves a
 copy-closed store and copy-closed values (`eval_exact`) (helper). -/
@@ -1456,7 +1456,7 @@ owned identity. The proof is `eval_sim`'s, form by form, with each step's
 ledger closed by the matching exact ledger of `TraceExact.lean`; typing
 enters nowhere — `eval`'s monitors are what copy closure needs — and
 `pendingSafe` is what keeps an unwind from discarding a held value. -/
-theorem eval_msim (M : FloatOps) {P : Program} (hp : P.pendingSafe = true) (fuel : Nat) :
+theorem eval_msim (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) (fuel : Nat) :
     MSimIH M P fuel := by
   induction fuel using Nat.strongRecOn with
   | ind n ih =>
@@ -1504,7 +1504,7 @@ theorem eval_msim (M : FloatOps) {P : Program} (hp : P.pendingSafe = true) (fuel
 `run` answers a value, §6's relation reaches that value's terminal
 configuration from `Config.init` by a run along which no step loses an owned
 identity. -/
-theorem run_msteps (M : FloatOps) {P : Program} (hp : P.pendingSafe = true) (fuel : Nat)
+theorem run_msteps (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) (fuel : Nat)
     {H : Store} {v : Val} {tr : List Event} (hr : run M P fuel = .ok H v tr) :
     MSteps M P Config.init (.run H Frame.empty [] (.ret v) tr) := by
   have h := eval_msim M hp fuel [] Frame.empty (.call 0 []) (fun ℓ c hc => by simp at hc) rfl
@@ -1528,7 +1528,7 @@ theorem storeOwn_of_dead {D : Decls} {H : Store}
 most once** (helper): `eval_tidy` retires every cell by the end, and
 `eval_conserves` from the empty store bounds what the result and the trace
 own by the range of identities minted (`run_trace_once`'s argument). -/
-theorem run_final_le (M : FloatOps) (P : Program) (fuel : Nat) {H : Store} {v : Val}
+theorem run_final_le (M : FloatSig) (P : Program) (fuel : Nat) {H : Store} {v : Val}
     {tr : List Event} (hr : run M P fuel = .ok H v tr) :
     storeOwn P.decls H = [] ∧ ∀ a, (v.own P.decls).count a + (freedIds P.decls tr).count a ≤ 1 := by
   have ht := eval_tidy M P fuel [] Frame.empty (.call 0 []) ⟨by simp, by simp⟩
@@ -1567,16 +1567,16 @@ determinism every configuration the run reaches lies on that run
 where `eval_tidy` has retired every cell and `eval_conserves` bounds each
 count by one. -/
 theorem whole_program_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
-    (hp : P.pendingSafe = true) {C : Config} (hC : Steps M.toFloatOps P Config.init C) {a : Nat}
+    (hp : P.pendingSafe = true) {C : Config} (hC : Steps M.toFloatSig P Config.init C) {a : Nat}
     (ha : a ∈ C.held P.decls) {H : Store} {φ : Frame} {v : Val} {tr : List Event}
-    (hT : Steps M.toFloatOps P C (.run H φ [] (.ret v) tr)) :
+    (hT : Steps M.toFloatSig P C (.run H φ [] (.ret v) tr)) :
     (v.own P.decls).count a + (freedIds P.decls tr).count a = 1 := by
   obtain ⟨n, hn⟩ := (eval_complete M h).1 H φ v tr (hC.trans hT)
   have hr := hn (n + 1) (Nat.lt_succ_self n)
-  have hm := (run_msteps M.toFloatOps hp (n + 1) hr).of_steps
+  have hm := (run_msteps M.toFloatSig hp (n + 1) hr).of_steps
     (fun _ => Step.terminal trivial) hC
   have hle := hm.le a
-  obtain ⟨hs, hub⟩ := run_final_le M.toFloatOps P (n + 1) hr
+  obtain ⟨hs, hub⟩ := run_final_le M.toFloatSig P (n + 1) hr
   have hpos : 0 < (C.held P.decls).count a := List.count_pos_iff.mpr ha
   have hub := hub a
   rw [Config.ledger_count_run] at hle

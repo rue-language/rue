@@ -29,7 +29,7 @@ def soundness_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : WfProgram P) (fuel : Nat) {R : Ty} {Γ : Ctx}
     {Ω : Out} {e : Expr} {T : Ty}, Typed P R Γ e T Ω →
       ∀ {φ : Frame} {H : Store}, FrameMatches P.decls Γ φ H →
-        EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatOps fuel P H φ e)
+        EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)
 
 /-- **Program safety** (§7 "Type safety"). A well-formed program whose entry
 point (`P.fns[0]?`) takes no parameters, run at any fuel, exhausts it,
@@ -41,8 +41,8 @@ and no drop or monitor sees it (`Nonvacuous.whole_result` returns an `S0`). -/
 def run_safe_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} {fd : FnDef} (_ : WfProgram P)
     (_ : P.fns[0]? = some fd) (_ : fd.params = []) (fuel : Nat),
-    run M.toFloatOps P fuel = .outOfFuel ∨ (∃ k tr, run M.toFloatOps P fuel = .panic k tr) ∨
-      (∃ H v tr, run M.toFloatOps P fuel = .ok H v tr ∧ HasTy P.decls v fd.ret)
+    run M.toFloatSig P fuel = .outOfFuel ∨ (∃ k tr, run M.toFloatSig P fuel = .panic k tr) ∨
+      (∃ H v tr, run M.toFloatSig P fuel = .ok H v tr ∧ HasTy P.decls v fd.ret)
 
 /-- **No refusal of any kind** (§7's memory-safety bullets). A checked
 program's run is never `.stuck`. Narrower than the bullets: a value built for
@@ -53,7 +53,7 @@ monitors never fire: what it rules out is what they watch (R3 of
 `REDTEAM-LOG.md`; RUE-2469). -/
 def no_violation_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat) (w : Violation),
-    run M.toFloatOps P fuel ≠ .stuck w
+    run M.toFloatSig P fuel ≠ .stuck w
 
 /-- **No use-after-move** (§7 "No use-after-move"): `run` never refuses with
 `useAfterMove`, the tag `eval` raises when it reads a `⊘`. It is
@@ -62,7 +62,7 @@ only as far as `eval` checks every read and labels it so: what it rules out is
 what that monitor watches (R3 of `REDTEAM-LOG.md`; RUE-2469). -/
 def no_use_after_move_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
-    run M.toFloatOps P fuel ≠ .stuck .useAfterMove
+    run M.toFloatSig P fuel ≠ .stuck .useAfterMove
 
 /-- **No use-after-drop** (§7 "No use-after-drop / no leak of drops", "never
 read afterward"): `run` never refuses with `useAfterDrop`, the tag `eval`
@@ -77,7 +77,7 @@ consequence of typing; it is kept in §7's form, over checked programs
 (RUE-2496). -/
 def no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
-    run M.toFloatOps P fuel ≠ .stuck .useAfterDrop
+    run M.toFloatSig P fuel ≠ .stuck .useAfterDrop
 
 /-- **No use-after-drop, on every program** (§7 "No use-after-drop / no leak
 of drops", "never read afterward"; RUE-2496): `run` never refuses with
@@ -91,7 +91,7 @@ names a cell already retired, `eval` does refuse (`Sharp.retired_cell`). Like
 `no_use_after_drop`, it says no retired cell is accessed only as far as
 `eval` checks every access and labels it so (R3 of `REDTEAM-LOG.md`). -/
 def run_no_use_after_drop_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) (fuel : Nat), run M P fuel ≠ .stuck .useAfterDrop
+  ∀ (M : FloatSig) (P : Program) (fuel : Nat), run M P fuel ≠ .stuck .useAfterDrop
 
 /-- **No linear leak** (§7 "Linear values are consumed exactly once", §5.6): no
 scope exit, frame pop or scope unwind meets a live linear binding. Narrower
@@ -106,13 +106,13 @@ What it rules out is what `eval`'s leak monitor watches (R3 of
 `REDTEAM-LOG.md`). -/
 def no_linear_leak_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
-    run M.toFloatOps P fuel ≠ .stuck .linearLeak
+    run M.toFloatSig P fuel ≠ .stuck .linearLeak
 
 /-- **No linear overwrite** (§7, the same bullet, `3.8:77`): no assignment drops
 a live linear value. -/
 def no_linear_overwrite_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
-    run M.toFloatOps P fuel ≠ .stuck .linearOverwrite
+    run M.toFloatSig P fuel ≠ .stuck .linearOverwrite
 
 /-- **No linear discard** (§7, the same bullet, `3.8:64`): no sequence discards
 a linear value. The three linear statements hold because `eval`'s monitors
@@ -120,14 +120,14 @@ never fire; what they rule out is what those monitors watch (R3 of
 `REDTEAM-LOG.md`). -/
 def no_linear_discard_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
-    run M.toFloatOps P fuel ≠ .stuck .linearDiscard
+    run M.toFloatSig P fuel ≠ .stuck .linearDiscard
 
 /-- **Fuel monotonicity** (§6 as `eval` runs it; `03-metatheory.md` "Fuel").
 An answer other than `outOfFuel` is the answer at every larger fuel: the clock
 lemma of functional big-step semantics, which Owens et al. §3.4 leave unnamed
 and call "an analogue of determinism" (`FIELD.md`, section 3). -/
 def fuel_mono_stmt : Prop :=
-  ∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr},
+  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr},
     ∀ {n m : Nat}, n ≤ m → eval M n P H φ e ≠ .outOfFuel →
       eval M m P H φ e = eval M n P H φ e
 
@@ -135,12 +135,12 @@ def fuel_mono_stmt : Prop :=
 refusal at one fuel is the answer at every fuel that answers; a corollary of
 `fuel_mono`, in either order of the two fuels. -/
 def no_masking_stmt : Prop :=
-  ∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat}
+  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat}
     {w : Violation} (_ : eval M n P H φ e = .stuck w) (_ : eval M m P H φ e ≠ .outOfFuel),
     eval M m P H φ e = .stuck w
 
 /-- **No outcome is an unwinding `return`** ((D-Return-Main) §6.9). -/
 def run_ne_returned_stmt : Prop :=
-  ∀ (M : FloatOps) {P : Program} {fuel : Nat}, ∀ H v tr, run M P fuel ≠ .returned H v tr
+  ∀ (M : FloatSig) {P : Program} {fuel : Nat}, ∀ H v tr, run M P fuel ≠ .returned H v tr
 
 end RueCore.Spec

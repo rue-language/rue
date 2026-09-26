@@ -7,7 +7,7 @@ public import RueCore.Float
 /-!
 # RueCore.Float.Lemmas — `Float.exactOps` satisfies the laws (layer L2)
 
-`FloatModel` (`Float.lean`) is a `FloatOps` together with the laws §7's
+`FloatModel` (`Float.lean`) is a `FloatSig` together with the laws §7's
 "totality of the float operations" lemma names, and 19 of the spine's
 statements quantify over one. Were the laws jointly unsatisfiable, those
 statements would hold vacuously (RUE-2469). This module proves every law of
@@ -386,7 +386,7 @@ theorem sqrt_wf (σ : Bool) (w : FloatWidth) (f : FloatDatum) (hf : f.Wf w) :
 
 /-- **The laws have a model: `Float.exactOps`** (§7's float lemma). Every field of `FloatModel` proved of the executable instance, so the 19 spine statements that quantify over `M : FloatModel` are not vacuous in `M` (RUE-2469), and each applies to the model the corpus runs on. Satisfying the laws does not make `exactOps` IEEE 754: the laws say nothing about which datum a rounding returns. What they leave open, `exactOps` decides by its own definition — the value of every rounding (correct rounding, ties to even, the overflow threshold), which NaN a propagating operation returns, and `σ_NaN` — and those are checked against the compiler by the corpus, not proved. -/
 def exactModel : FloatModel where
-  toFloatOps := exactOps
+  toFloatSig := exactOps
   arith_wf w op a b _ _ := arith_wf false w op a b
   sqrt_wf w f hf := sqrt_wf false w f hf
   ofLit_wf := ofLit_wf

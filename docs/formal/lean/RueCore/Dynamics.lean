@@ -1278,7 +1278,7 @@ def binOpInt (op : BinOp) (w : IntWidth) (s : Sign) (n₁ n₂ : Int) : OpRes :=
 * `%` and the bitwise and shift operators have no float rule at all — §5.8
   rejects them by the absence of one (`3.12:25`) — so the machine refuses
   them, as it does two operands of different types. -/
-def binOpFloat (M : FloatOps) (op : BinOp) (w : FloatWidth) (a b : FloatDatum) : OpRes :=
+def binOpFloat (M : FloatSig) (op : BinOp) (w : FloatWidth) (a b : FloatDatum) : OpRes :=
   match op with
   | .add => .val (.float w (M.arith w .add a b))
   | .sub => .val (.float w (M.arith w .sub a b))
@@ -1296,7 +1296,7 @@ operands one `int(w,s)` or one `float(w)`, so operands of two different types
 — two integer types, two float widths (`3.12:13`: no implicit widening), or
 one of each (`3.12:14`) — are a shape no well-typed program produces and the
 machine refuses them. -/
-def evalBinOp (M : FloatOps) (op : BinOp) : Val → Val → OpRes
+def evalBinOp (M : FloatSig) (op : BinOp) : Val → Val → OpRes
   | .int w₁ s₁ n₁, .int w₂ s₂ n₂ =>
       if w₁ = w₂ ∧ s₁ = s₂ then binOpInt op w₁ s₁ n₁ n₂ else .confused
   | .float w₁ f₁, .float w₂ f₂ =>
@@ -1334,7 +1334,7 @@ def evalUnOp : UnOp → Val → OpRes
   narrowing, never trapping (`3.12:19`);
 * the five `3.12:34` intrinsics are `(D-Float-Round)`: `@sqrt` is the model's,
   the other four are exact, and none traps (`3.12:37`). -/
-def evalFintrin (M : FloatOps) : FloatIntrin → Val → OpRes
+def evalFintrin (M : FloatSig) : FloatIntrin → Val → OpRes
   | .intToFloat w, .int _ _ n => .val (.float w (M.ofInt w n))
   | .floatToInt w' s', .float _ f =>
       match f.toIntIn (intMin w' s') (intMax w' s') with
@@ -1379,7 +1379,7 @@ def introVal (D : Decls) (H : Store) (mk : Nat → Val) : EvalRes :=
   if (Contents.ofVal (mk H.length)).copyClosed D then .ok (H ++ [.dead]) (mk H.length) []
   else .stuck .ownedUnderCopy
 
-/-- The interpreter, over a `FloatOps` (`Float.lean`): §2 fixes `rnd_w` and
+/-- The interpreter, over a `FloatSig` (`Float.lean`): §2 fixes `rnd_w` and
 `σ_NaN` per *target*, not per rule, so the machine takes them as a parameter
 and every theorem quantifies over a model that satisfies §7's laws. Rule
 correspondence, per case: `use` is
@@ -1415,7 +1415,7 @@ record.
 Every operand is sequenced with `andThen`, which is §6.2's search through an
 evaluation context; the callee's body is sequenced with `absorb`, the one
 place a `return` stops travelling (§6.9). -/
-def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalRes
+def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalRes
   | 0, _, _, _, _ => .outOfFuel
   | _ + 1, _, H, _, .intLit w s n => .ok H (.int w s n) []
   | _ + 1, _, H, _, .floatLit w l =>
@@ -1834,7 +1834,7 @@ index `0`, with no arguments in an empty store and a frame with no bindings.
 (D-Return-Main) is the same rule as (D-Return-Value) at the bottom of the
 stack, so the entry point is an ordinary call and needs no second path: the
 call boundary absorbs an unwinding `return` exactly as it does anywhere. -/
-def run (M : FloatOps) (P : Program) (fuel : Nat) : EvalRes :=
+def run (M : FloatSig) (P : Program) (fuel : Nat) : EvalRes :=
   eval M fuel P [] { env := [], scope := [] } (.call 0 [])
 
 end RueCore

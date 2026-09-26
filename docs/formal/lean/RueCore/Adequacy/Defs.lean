@@ -23,7 +23,7 @@ abbrev Frame.empty : Frame := { env := [], scope := [] }
 
 /-- `→ⁿ`: a run of exactly `n` steps of §6's reduction (helper). Completeness
 counts steps, because fuel is a bound on them. -/
-inductive StepsN (M : FloatOps) (P : Program) : Nat → Config → Config → Prop where
+inductive StepsN (M : FloatSig) (P : Program) : Nat → Config → Config → Prop where
   | refl (C : Config) : StepsN M P 0 C C
   | step {n : Nat} {C₁ C₂ C₃ : Config} :
       Step M P C₁ C₂ → StepsN M P n C₂ C₃ → StepsN M P (n + 1) C₁ C₃
@@ -34,7 +34,7 @@ configuration `→*` reaches from `C` reduces or has halted ((Result-Ok),
 empty stack — has type `T` (§5's value typing, `HasTy`). The typing is
 defined by reduction, not by a syntactic judgment over the configuration
 (this section's docstring says why). -/
-def Config.SafeAt (M : FloatOps) (P : Program) (T : Ty) (C : Config) : Prop :=
+def Config.SafeAt (M : FloatSig) (P : Program) (T : Ty) (C : Config) : Prop :=
   (∀ D, Steps M P C D → D.Terminal ∨ ∃ D', Step M P D D') ∧
   (∀ H φ v tr, Steps M P C (.run H φ [] (.ret v) tr) → HasTy P.decls v T)
 

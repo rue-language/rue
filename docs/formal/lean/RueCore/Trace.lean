@@ -1615,7 +1615,7 @@ minted fresh. By fuel induction over `eval`, one case per form, each closed by
 its ledger above. It reads no typing derivation: copy closure is what the
 machine maintains itself, and `DtorNotCopy` (inside `TraceMeasure`, for
 `dtorIds`) is the one fact it needs about the declarations. -/
-theorem eval_conserves (M : FloatOps) {P : Program} {F : Event → List Nat}
+theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
     (hF : TraceMeasure P.decls F) :
     ∀ (fuel : Nat) (H : Store) (φ : Frame) (e : Expr), StoreCC P.decls H →
       Cons P.decls F H [] (eval M fuel P H φ e) := by
@@ -2035,7 +2035,7 @@ theorem range'_count_le_one (s n a : Nat) : (List.range' s n).count a ≤ 1 := b
 from the empty store, so everything its trace projects to was minted during
 the run — a range of store indices, each once. Every projection `F` the law
 can count therefore names each identity at most once (helper). -/
-theorem run_trace_once (M : FloatOps) {P : Program} {F : Event → List Nat}
+theorem run_trace_once (M : FloatSig) {P : Program} {F : Event → List Nat}
     (hF : TraceMeasure P.decls F) (fuel : Nat) :
     ∀ a, ((run M P fuel).trace.flatMap F).count a ≤ 1 := by
   intro a
@@ -2079,7 +2079,7 @@ residue and a consumed shell included (RUE-2427). Holds unconditionally, for
 every program, no hypothesis at all: the machine refuses the one shape — an
 owned value hidden under a `Copy` node — that would let a copy duplicate it
 (`Contents.copyClosed`). -/
-theorem freed_once (M : FloatOps) (P : Program) (fuel : Nat) :
+theorem freed_once (M : FloatSig) (P : Program) (fuel : Nat) :
     ∀ a, (freedIds P.decls (run M P fuel).trace).count a ≤ 1 :=
   run_trace_once M (freed_measure P.decls) fuel
 
@@ -2087,7 +2087,7 @@ theorem freed_once (M : FloatOps) (P : Program) (fuel : Nat) :
 each identity occurs at most once among the values the trace's `dtor` events
 ran on. It needs only that a destructor-bearing struct is not `Copy`
 (`3.9:31`), which `WfDecls` gives (`WfDecls.dtorNotCopy`). -/
-theorem dtor_once (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls) (fuel : Nat) :
+theorem dtor_once (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls) (fuel : Nat) :
     ∀ a, (dtorIds (run M P fuel).trace).count a ≤ 1 :=
   run_trace_once M (dtor_measure hdt) fuel
 
@@ -2109,11 +2109,11 @@ leaf is handed on, the residue is dropped once, each retained subtree under
 its own `drop` marker, the path's shell is consumed (`consume`), and the
 place becomes `⊘`. -/
 theorem no_double_free (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
-      (∀ a, (freedIds P.decls (run M.toFloatOps P fuel).trace).count a ≤ 1) ∧
-      (∀ a, (dtorIds (run M.toFloatOps P fuel).trace).count a ≤ 1) :=
-  ⟨no_violation M h fuel, freed_once M.toFloatOps P fuel,
-    dtor_once M.toFloatOps h.wf.decls.dtorNotCopy fuel⟩
+    (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
+      (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
+      (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1) :=
+  ⟨no_violation M h fuel, freed_once M.toFloatSig P fuel,
+    dtor_once M.toFloatSig h.wf.decls.dtorNotCopy fuel⟩
 
 /-! ## Witnesses: what the monitor stands between
 
@@ -2162,7 +2162,7 @@ example : run Float.exactOps dupProgram 100 = .stuck .ownedUnderCopy := by rfl
 /-- **§6's relation, with no monitor, frees one identity twice**: `S1 #0` is
 destroyed through `p.x0` and again through `q.x0`, so `dtorIds` names `0`
 twice. -/
-theorem dupProgram_step_double_free (M : FloatOps) :
+theorem dupProgram_step_double_free (M : FloatSig) :
     ∃ H, Steps M dupProgram Config.init
       (.run H { env := [], scope := [] } [] (.ret (.int .w64 .signed 0))
         [.drop 2 (.struct 1 0 [.int .w64 .signed 1]), .dtor 1 (.struct 1 0 [.int .w64 .signed 1]),
