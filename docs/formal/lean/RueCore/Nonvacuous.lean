@@ -328,6 +328,9 @@ theorem float :
   subst hB
   have h1 : checkProgram P = true := by rw [hPe]; rfl
   have hP := checkProgram_sound h1
+  -- `decide +kernel`: the run's rounding compares against `2 ^ 1076`, past the
+  -- elaborator's `exponentiation.threshold`, so `rfl` stops; the kernel
+  -- evaluates it, and no axiom is added (README, the axiom policy)
   have hf : okFloat? (run Float.exactOps P 200) = some (.w64, .num false 15 (-1)) := by
     rw [hPe]; decide +kernel
   obtain ⟨H, tr, hr⟩ := of_okFloat hf

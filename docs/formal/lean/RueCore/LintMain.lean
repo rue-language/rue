@@ -115,13 +115,13 @@ unsafe def lintMain : IO UInt32 := do
   IO.println ""
   printTable "Axioms outside the allow-list (fail, except `Classical.choice` in an L3 definition, listed)" axiomRows
   printTable "Constructs (fail in L0–L2 and Spec, listed in L3)" constructRows
-  printTable "Options (unbounded or kernel-skipping ones fail; bounded ones are listed)" options
+  printTable "Options and kernel evaluation (unbounded or kernel-skipping options fail; bounded ones, and each `decide +kernel`, are listed)" options
   let failing := (findings ++ options).filter (·.fails)
   for f in failing do
     IO.eprintln s!"ruecore-lint: {Lint.layerLabel f.layer} {f.subject}: {f.detail}"
   for p in problems do IO.eprintln s!"ruecore-lint: {p}"
   if failing.isEmpty && problems.isEmpty then
-    IO.println s!"ruecore-lint: {linted.size} declarations; {Lint.headline.length} spine statements and {RueCore.Spec.witnesses.length} witnesses, each its theorem's statement and bound in RueCore.Spine, every spine theorem witnessed; no authored theorem in L1 and nothing but statements in Spec; axioms within {Lint.allowedAxioms} but for {axiomRows.size} L3 definitions' Classical.choice, listed; no forbidden construct in L0–L2 or Spec, {constructRows.size} uses listed; source scan found no kernel-skipping, unbounded or macro-named option, {options.size} bounded settings listed; kernel re-check (leanchecker over the import closure) is the guarantee"
+    IO.println s!"ruecore-lint: {linted.size} declarations; {Lint.headline.length} spine statements and {RueCore.Spec.witnesses.length} witnesses, each its theorem's statement and bound in RueCore.Spine, every spine theorem witnessed; no authored theorem in L1 and nothing but statements in Spec; axioms within {Lint.allowedAxioms} but for {axiomRows.size} L3 definitions' Classical.choice, listed; no forbidden construct in L0–L2 or Spec, {constructRows.size} uses listed; source scan found no kernel-skipping, unbounded or macro-named option, {options.size} bounded settings and `decide +kernel` uses listed; kernel re-check (leanchecker over the import closure) is the guarantee"
     return 0
   IO.eprintln s!"ruecore-lint: {failing.size + problems.size} violation(s)"
   return 1
