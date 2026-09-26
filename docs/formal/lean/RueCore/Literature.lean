@@ -160,7 +160,7 @@ def rows : List Row := [
   { thm := `RueCore.drop_glue_order
     lit := "Drop glue: `Drop::drop` if implemented, then each field's drop glue; struct fields in declaration order, array elements first to last"
     cite := "FIELD §5: rustc-dev-guide, Drop elaboration; Rust Reference, Destructors"
-    ours := "`ProgramTyped P` ⇒ a finished run's trace is in §6.11's block grammar with each drop's events given by §6.11's rules (`GlueBlocks`, `DropGlue`)"
+    ours := "`ProgramTyped P` ⇒ a finished run's trace is in §6.11's block grammar with each drop's events given by §6.11's rules (`DropGlueBlocks`, `DropGlue`)"
     diff := "The Rust order for structs and arrays, with an enum dropping its active payload only, stated over finished traces only." },
   -- §6's relation, and §7 over it
   { thm := `RueCore.Step.det

@@ -80,16 +80,16 @@ theorem fieldsSwapped_rejected :
 
 open Examples in
 /-- **§6.11's own grammar: fields in declaration order** (`3.9:13`; RUE-2487).
-The trace `fieldsSwapped_rejected` rejects, rejected by `GlueBlocks`, whose
+The trace `fieldsSwapped_rejected` rejects, rejected by `DropGlueBlocks`, whose
 drop blocks are §6.11's rules (`DropGlue`) rather than `dropEvents`: the two
 field destructors of `struct_field_drop_order`'s `S7` the wrong way round,
 which is what a machine whose walk drops fields last to first emits. -/
 theorem glue_fieldsSwapped_rejected :
-    ¬ GlueBlocks (prog tI64 structFieldOrder).decls
+    ¬ DropGlueBlocks (prog tI64 structFieldOrder).decls
       [.drop 3 (.struct sTwoAffine 2 [cA 0 1, cA 1 2]), .dtor sAffine (cA 1 2),
         .dtor sAffine (cA 0 1)] := by
   intro h
-  obtain ⟨evs, t', hg, ht, _⟩ := GlueBlocks.drop_inv h
+  obtain ⟨evs, t', hg, ht, _⟩ := DropGlueBlocks.drop_inv h
   have hr := DropGlue.struct (D := (prog tI64 structFieldOrder).decls) (s := sTwoAffine) (i := 2) (cs := [cA 0 1, cA 1 2]) rfl rfl
     (.cons (.structDtor (s := sAffine) rfl rfl (.cons .int .nil)) (.cons (.structDtor (s := sAffine) rfl rfl (.cons .int .nil)) .nil))
   rw [DropGlue.det hg hr] at ht
@@ -100,13 +100,13 @@ open Examples in
 `struct_nested_dtor_drop` drops `S5 { 1, S1 { 2 }#0 }#1`, whose destructor runs
 before its field's. The same marker followed by the field's destructor and
 then `S5`'s — what a machine that runs the destructor after the fields emits —
-is not in `GlueBlocks`. -/
+is not in `DropGlueBlocks`. -/
 theorem glue_dtorAfterFields_rejected :
-    ¬ GlueBlocks (prog tI64 structNestedDrop).decls
+    ¬ DropGlueBlocks (prog tI64 structNestedDrop).decls
       [.drop 2 (.struct sOuter 1 [c64 1, cA 0 2]), .dtor sAffine (cA 0 2),
         .dtor sOuter (.struct sOuter 1 [c64 1, cA 0 2])] := by
   intro h
-  obtain ⟨evs, t', hg, ht, _⟩ := GlueBlocks.drop_inv h
+  obtain ⟨evs, t', hg, ht, _⟩ := DropGlueBlocks.drop_inv h
   have hr := DropGlue.structDtor (D := (prog tI64 structNestedDrop).decls) (s := sOuter) (i := 1) (cs := [c64 1, cA 0 2]) rfl rfl
     (.cons .int (.cons (.structDtor (s := sAffine) rfl rfl (.cons .int .nil)) .nil))
   rw [DropGlue.det hg hr] at ht
@@ -115,12 +115,12 @@ theorem glue_dtorAfterFields_rejected :
 open Examples in
 /-- **§6.11's own grammar: the destructor runs** (`3.9:28`; RUE-2487). The
 same drop of `S5` with no destructor event at all — what a machine that never
-runs a destructor emits — is not in `GlueBlocks`. -/
+runs a destructor emits — is not in `DropGlueBlocks`. -/
 theorem glue_dtorSkipped_rejected :
-    ¬ GlueBlocks (prog tI64 structNestedDrop).decls
+    ¬ DropGlueBlocks (prog tI64 structNestedDrop).decls
       [.drop 2 (.struct sOuter 1 [c64 1, cA 0 2])] := by
   intro h
-  obtain ⟨evs, t', hg, ht, _⟩ := GlueBlocks.drop_inv h
+  obtain ⟨evs, t', hg, ht, _⟩ := DropGlueBlocks.drop_inv h
   have hr := DropGlue.structDtor (D := (prog tI64 structNestedDrop).decls) (s := sOuter) (i := 1) (cs := [c64 1, cA 0 2]) rfl rfl
     (.cons .int (.cons (.structDtor (s := sAffine) rfl rfl (.cons .int .nil)) .nil))
   rw [DropGlue.det hg hr] at ht

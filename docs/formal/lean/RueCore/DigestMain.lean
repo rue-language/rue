@@ -304,7 +304,7 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
     "the dropped premise is the only thing tying its bound value or trace to the program,",
     "so the counter-example shows only that the conclusion is not a tautology. The walk does not go",
     "under `∨` or `¬`, nor into a definition that is not reducible (`Config.SafeAt`,",
-    "`Exact`, `Blocks`, `GlueBlocks`, `Lifo`). Each pairing of a counter-example with a (theorem,",
+    "`Exact`, `Blocks`, `DropGlueBlocks`, `Lifo`). Each pairing of a counter-example with a (theorem,",
     s!"number) is checked by the kernel ({pairs} pairs): `RueCore/Sharp/Glue.lean` proves,",
     "from the counter-example, the negation of the spine statement with that",
     "hypothesis removed, and the lint computes that weakened statement itself from",

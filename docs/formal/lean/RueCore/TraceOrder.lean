@@ -182,8 +182,8 @@ end
 declarations, without the machine's walk (RUE-2487). The walk `dropContents`
 meets it whenever it succeeds (`dropContents_glue`), and the rules determine
 the events, which are then `dropEvents`'s (`DropGlue.eq_dropEvents`). So the
-block grammar the proofs below build, `GlueBlocks`, is the one stated in
-§6.11's own terms, and `Blocks` follows from it (`GlueBlocks.toBlocks`). -/
+block grammar the proofs below build, `DropGlueBlocks`, is the one stated in
+§6.11's own terms, and `Blocks` follows from it (`DropGlueBlocks.toBlocks`). -/
 
 mutual
 /-- **The machine's walk follows §6.11's rules**: whenever `dropContents`
@@ -249,7 +249,7 @@ theorem DropGlueSeq.eq_dropEventsList {D : Decls} : ∀ {cs : List Contents} {ev
 end
 
 /-- A trace in §6.11's own grammar is in `Blocks` (helper). -/
-theorem GlueBlocks.toBlocks {D : Decls} {t : List Event} (h : GlueBlocks D t) : Blocks D t := by
+theorem DropGlueBlocks.toBlocks {D : Decls} {t : List Event} (h : DropGlueBlocks D t) : Blocks D t := by
   induction h with
   | nil => exact .nil
   | dbg _ ih => exact .dbg ih
@@ -259,20 +259,20 @@ theorem GlueBlocks.toBlocks {D : Decls} {t : List Event} (h : GlueBlocks D t) : 
 
 /-- Two block sequences of §6.11's grammar, one after the other, are one
 (helper). -/
-theorem GlueBlocks.append {D : Decls} {t u : List Event} (h₁ : GlueBlocks D t)
-    (h₂ : GlueBlocks D u) : GlueBlocks D (t ++ u) := by
+theorem DropGlueBlocks.append {D : Decls} {t u : List Event} (h₁ : DropGlueBlocks D t)
+    (h₂ : DropGlueBlocks D u) : DropGlueBlocks D (t ++ u) := by
   induction h₁ with
   | nil => exact h₂
   | dbg _ ih => exact .dbg ih
   | consume _ ih => exact .consume ih
-  | drop hg _ ih => simpa only [List.cons_append, List.append_assoc] using GlueBlocks.drop hg ih
+  | drop hg _ ih => simpa only [List.cons_append, List.append_assoc] using DropGlueBlocks.drop hg ih
   | dropTemp hg _ ih =>
-      simpa only [List.cons_append, List.append_assoc] using GlueBlocks.dropTemp hg ih
+      simpa only [List.cons_append, List.append_assoc] using DropGlueBlocks.dropTemp hg ih
 
 /-- A binding's drop (`dropCell`) is one block, or nothing for `Copy`
 contents (helper). -/
 theorem dropCell_blocks {D : Decls} {ℓ : Nat} {c : Contents} {evs : List Event}
-    (h : dropCell D ℓ c = .ok evs) : GlueBlocks D evs := by
+    (h : dropCell D ℓ c = .ok evs) : DropGlueBlocks D evs := by
   unfold dropCell at h
   split at h
   · cases h; exact .nil
@@ -280,11 +280,11 @@ theorem dropCell_blocks {D : Decls} {ℓ : Nat} {c : Contents} {evs : List Event
     · cases h
     · rename_i evs' hw
       cases h
-      simpa using GlueBlocks.drop (ℓ := ℓ) (dropContents_glue hw) (GlueBlocks.nil (D := D))
+      simpa using DropGlueBlocks.drop (ℓ := ℓ) (dropContents_glue hw) (DropGlueBlocks.nil (D := D))
 
 /-- `drop-retire` (§6.1) is one block or nothing (helper). -/
 theorem dropRetire_blocks {D : Decls} {H H' : Store} {ℓ : Nat} {evs : List Event}
-    (h : dropRetire D H ℓ = .ok (H', evs)) : GlueBlocks D evs := by
+    (h : dropRetire D H ℓ = .ok (H', evs)) : DropGlueBlocks D evs := by
   unfold dropRetire at h
   split at h
   · cases h
@@ -301,7 +301,7 @@ theorem dropRetire_blocks {D : Decls} {H H' : Store} {ℓ : Nat} {evs : List Eve
 non-`Copy` cell, in the order given (helper). -/
 theorem unwindLocs_blocks {D : Decls} :
     ∀ {H H' : Store} {ls : List Nat} {evs : List Event},
-      unwindLocs D H ls = .ok (H', evs) → GlueBlocks D evs
+      unwindLocs D H ls = .ok (H', evs) → DropGlueBlocks D evs
   | _, _, [], _, h => by simp [unwindLocs] at h; obtain ⟨_, rfl⟩ := h; exact .nil
   | H, _, ℓ :: ls, _, h => by
       simp only [unwindLocs] at h
@@ -319,7 +319,7 @@ non-`Copy` subtree's marker and walk, and a `Copy` subtree's empty walk
 (helper). -/
 theorem dropResidue_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat} :
     ∀ {rs : List Contents} {evs : List Event}, Contents.copyClosedList D rs = true →
-      dropResidue D ℓ rs = .ok evs → GlueBlocks D evs
+      dropResidue D ℓ rs = .ok evs → DropGlueBlocks D evs
   | [], _, _, h => by simp [dropResidue] at h; subst h; exact .nil
   | r :: rs, evs, hcc, h => by
       simp only [Contents.copyClosedList, Bool.and_eq_true] at hcc
@@ -339,13 +339,13 @@ theorem dropResidue_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat} :
             · rename_i hm
               rw [dropContents_eq h₁, dropEvents_allCopy hdt (Contents.copyClosed_allCopy hcc.1 hm)]
               simpa using ih
-            · simpa using GlueBlocks.drop (ℓ := ℓ) (dropContents_glue h₁) ih
+            · simpa using DropGlueBlocks.drop (ℓ := ℓ) (dropContents_glue h₁) ih
 
 /-- §6.3's destructure is a sequence of blocks: the residue's, then the
 consumed shell (helper). -/
 theorem destructure_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat} {cd leaf : Contents}
     {πs : List Nat} {evs : List Event} (hcc : cd.copyClosed D = true)
-    (h : cd.destructure D ℓ πs = .ok (leaf, evs)) : GlueBlocks D evs := by
+    (h : cd.destructure D ℓ πs = .ok (leaf, evs)) : DropGlueBlocks D evs := by
   unfold Contents.destructure at h
   split at h
   · cases h
@@ -359,7 +359,7 @@ theorem destructure_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat} {cd lea
 
 /-- (D-Match)'s consumption is a block or nothing (helper). -/
 theorem matchConsume_blocks {D : Decls} {e k i : Nat} {vs : List Val} :
-    GlueBlocks D (matchConsume D e k i vs) := by
+    DropGlueBlocks D (matchConsume D e k i vs) := by
   unfold matchConsume
   split
   · exact .nil
@@ -368,35 +368,35 @@ theorem matchConsume_blocks {D : Decls} {e k i : Nat} {vs : List Val} :
 /-! ## Within a value: every evaluation's trace is blocks -/
 
 /-- A prefix of blocks before a result's blocks (helper). -/
-theorem GlueBlocks.withTrace {D : Decls} {tr : List Event} {r : EvalRes} (h₁ : GlueBlocks D tr)
-    (h₂ : GlueBlocks D r.trace) : GlueBlocks D (r.withTrace tr).trace := by
+theorem DropGlueBlocks.withTrace {D : Decls} {tr : List Event} {r : EvalRes} (h₁ : DropGlueBlocks D tr)
+    (h₂ : DropGlueBlocks D r.trace) : DropGlueBlocks D (r.withTrace tr).trace := by
   cases r <;> simp only [EvalRes.withTrace, EvalRes.trace] at h₂ ⊢ <;>
     first | exact h₁.append h₂ | exact .nil
 
 /-- §6.2's search keeps the grammar (helper). -/
-theorem GlueBlocks.bind {D : Decls} {r : EvalRes} {k : Store → Val → EvalRes}
-    (hr : GlueBlocks D r.trace) (hk : ∀ H₁ v tr, r = .ok H₁ v tr → GlueBlocks D (k H₁ v).trace) :
-    GlueBlocks D (r.bind k).trace := by
+theorem DropGlueBlocks.bind {D : Decls} {r : EvalRes} {k : Store → Val → EvalRes}
+    (hr : DropGlueBlocks D r.trace) (hk : ∀ H₁ v tr, r = .ok H₁ v tr → DropGlueBlocks D (k H₁ v).trace) :
+    DropGlueBlocks D (r.bind k).trace := by
   cases r with
-  | ok H₁ v tr => exact GlueBlocks.withTrace hr (hk H₁ v tr rfl)
+  | ok H₁ v tr => exact DropGlueBlocks.withTrace hr (hk H₁ v tr rfl)
   | _ => exact hr
 
 /-- §6.9's call boundary keeps the grammar (helper). -/
-theorem GlueBlocks.absorb {D : Decls} {r : EvalRes} {k : Store → Val → EvalRes}
-    (hr : GlueBlocks D r.trace) (hk : ∀ H₁ v tr, r = .ok H₁ v tr → GlueBlocks D (k H₁ v).trace) :
-    GlueBlocks D (r.bindCall k).trace := by
+theorem DropGlueBlocks.absorb {D : Decls} {r : EvalRes} {k : Store → Val → EvalRes}
+    (hr : DropGlueBlocks D r.trace) (hk : ∀ H₁ v tr, r = .ok H₁ v tr → DropGlueBlocks D (k H₁ v).trace) :
+    DropGlueBlocks D (r.bindCall k).trace := by
   cases r with
-  | ok H₁ v tr => exact GlueBlocks.withTrace hr (hk H₁ v tr rfl)
+  | ok H₁ v tr => exact DropGlueBlocks.withTrace hr (hk H₁ v tr rfl)
   | broke => exact .nil
   | _ => exact hr
 
 /-- An operator's outcome emits nothing (helper). -/
-theorem GlueBlocks.opRes {D : Decls} {H : Store} {o : OpRes} : GlueBlocks D (o.toRes H).trace := by
+theorem DropGlueBlocks.opRes {D : Decls} {H : Store} {o : OpRes} : DropGlueBlocks D (o.toRes H).trace := by
   cases o <;> exact .nil
 
 /-- Aggregate introduction emits nothing (helper). -/
-theorem GlueBlocks.intro {D D' : Decls} {H : Store} {mk : Nat → Val} :
-    GlueBlocks D (introVal D' H mk).trace := by
+theorem DropGlueBlocks.intro {D D' : Decls} {H : Store} {mk : Nat → Val} :
+    DropGlueBlocks D (introVal D' H mk).trace := by
   unfold introVal; split <;> exact .nil
 
 /-- A copy-closed store is one step further along an evaluation that reached
@@ -410,15 +410,15 @@ theorem eval_ok_cc (M : FloatSig) {P : Program} {n : Nat} {H H₁ : Store} {φ :
   exact ⟨h.2.1, h.2.2.1⟩
 
 /-- The grammar's promise about an argument list (helper). -/
-def ArgsGlueBlocks (D : Decls) : ArgsRes → Prop
-  | .ok _ _ tr => GlueBlocks D tr
-  | .abort r => GlueBlocks D r.trace
+def ArgsDropGlueBlocks (D : Decls) : ArgsRes → Prop
+  | .ok _ _ tr => DropGlueBlocks D tr
+  | .abort r => DropGlueBlocks D r.trace
 
 /-- An argument list keeps the grammar (helper). -/
 theorem evalArgs_blocks {D : Decls} {ev : Store → Expr → EvalRes}
-    (hev : ∀ H e, StoreCC D H → GlueBlocks D (ev H e).trace)
+    (hev : ∀ H e, StoreCC D H → DropGlueBlocks D (ev H e).trace)
     (hcc : ∀ H e H₁ v tr, StoreCC D H → ev H e = .ok H₁ v tr → StoreCC D H₁) :
-    ∀ (H : Store) (es : List Expr), StoreCC D H → ArgsGlueBlocks D (evalArgs ev H es)
+    ∀ (H : Store) (es : List Expr), StoreCC D H → ArgsDropGlueBlocks D (evalArgs ev H es)
   | H, [], _ => .nil
   | H, e :: es, hc => by
       simp only [evalArgs]
@@ -429,8 +429,8 @@ theorem evalArgs_blocks {D : Decls} {ev : Store → Expr → EvalRes}
           have h₂ := evalArgs_blocks hev hcc H₁ es (hcc H e H₁ v tr hc hr)
           dsimp only
           cases hra : evalArgs ev H₁ es with
-          | ok H₂ vs tr₂ => rw [hra] at h₂; exact GlueBlocks.append h₁ h₂
-          | abort r => rw [hra] at h₂; exact GlueBlocks.withTrace h₁ h₂
+          | ok H₂ vs tr₂ => rw [hra] at h₂; exact DropGlueBlocks.append h₁ h₂
+          | abort r => rw [hra] at h₂; exact DropGlueBlocks.withTrace h₁ h₂
       | _ => rw [hr] at h₁; exact h₁
 
 /-- **Every evaluation's trace is in §6.11's block grammar** (§3.9, §6.11):
@@ -440,7 +440,7 @@ fuel. By fuel induction over `eval`; no typing derivation, only
 docstring). -/
 theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls) :
     ∀ (fuel : Nat) (H : Store) (φ : Frame) (e : Expr), StoreCC P.decls H →
-      GlueBlocks P.decls (eval M fuel P H φ e).trace := by
+      DropGlueBlocks P.decls (eval M fuel P H φ e).trace := by
   intro fuel
   induction fuel with
   | zero => intro H φ e _; exact .nil
@@ -515,22 +515,22 @@ theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls
                       · exact dropCell_blocks hd
     | binop op e₁ e₂ =>
         simp only [eval]
-        refine GlueBlocks.bind (ih H φ e₁ hcc) (fun H₁ _ _ hr => ?_)
-        exact GlueBlocks.bind (ih H₁ φ e₂ (hok hcc hr).1) (fun _ _ _ _ => GlueBlocks.opRes)
+        refine DropGlueBlocks.bind (ih H φ e₁ hcc) (fun H₁ _ _ hr => ?_)
+        exact DropGlueBlocks.bind (ih H₁ φ e₂ (hok hcc hr).1) (fun _ _ _ _ => DropGlueBlocks.opRes)
     | unop _ e₁ | intCast _ _ e₁ | fintrin _ e₁ =>
         simp only [eval]
-        exact GlueBlocks.bind (ih H φ e₁ hcc) (fun _ _ _ _ => GlueBlocks.opRes)
+        exact DropGlueBlocks.bind (ih H φ e₁ hcc) (fun _ _ _ _ => DropGlueBlocks.opRes)
     | dbg e₁ =>
         simp only [eval]
-        refine GlueBlocks.bind (ih H φ e₁ hcc) (fun _ _ _ _ => ?_)
+        refine DropGlueBlocks.bind (ih H φ e₁ hcc) (fun _ _ _ _ => ?_)
         split
         · exact .dbg .nil
         · exact .nil
     | repeatArray T e₁ m =>
         simp only [eval]
-        refine GlueBlocks.bind (ih H φ e₁ hcc) (fun _ _ _ _ => ?_)
+        refine DropGlueBlocks.bind (ih H φ e₁ hcc) (fun _ _ _ _ => ?_)
         split
-        · exact GlueBlocks.intro
+        · exact DropGlueBlocks.intro
         · exact .nil
     | mkStruct _ args | mkEnum _ _ args | mkArray _ args =>
         simp only [eval]
@@ -539,8 +539,8 @@ theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls
         · rename_i r hra; rw [hra] at ka; exact ka
         · rename_i H₁ vs tr hra
           rw [hra] at ka
-          refine GlueBlocks.withTrace ka ?_
-          (repeat' split) <;> first | exact .nil | exact GlueBlocks.intro
+          refine DropGlueBlocks.withTrace ka ?_
+          (repeat' split) <;> first | exact .nil | exact DropGlueBlocks.intro
     | indexRead p idx πs =>
         simp only [eval]
         have ka := hargs H idx hcc
@@ -548,20 +548,20 @@ theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls
         · rename_i r hra; rw [hra] at ka; exact ka
         · rename_i H₁ vs tr hra
           rw [hra] at ka
-          refine GlueBlocks.withTrace ka ?_
+          refine DropGlueBlocks.withTrace ka ?_
           (repeat' split) <;> exact .nil
     | indexDrop p idx πs =>
         simp only [eval]
-        exact GlueBlocks.bind (ih H φ _ hcc) (fun _ _ _ _ => .nil)
+        exact DropGlueBlocks.bind (ih H φ _ hcc) (fun _ _ _ _ => .nil)
     | indexWrite p idx πs e₁ =>
         simp only [eval]
-        refine GlueBlocks.bind (ih H φ e₁ hcc) (fun H₁ _ _ hr => ?_)
+        refine DropGlueBlocks.bind (ih H φ e₁ hcc) (fun H₁ _ _ hr => ?_)
         have ka := hargs H₁ idx (hok hcc hr).1
         split
         · rename_i r hra; rw [hra] at ka; exact ka
         · rename_i H₂ vs tr hra
           rw [hra] at ka
-          refine GlueBlocks.withTrace ka ?_
+          refine DropGlueBlocks.withTrace ka ?_
           split
           · exact .nil
           · exact .nil
@@ -575,7 +575,7 @@ theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls
                   (repeat' split) <;> first | exact .nil | exact dropCell_blocks hd
     | «match» scrut arms =>
         simp only [eval]
-        refine GlueBlocks.bind (ih H φ scrut hcc) (fun H₀ v _ hr => ?_)
+        refine DropGlueBlocks.bind (ih H φ scrut hcc) (fun H₀ v _ hr => ?_)
         obtain ⟨hc₀, hv⟩ := hok hcc hr
         cases v with
         | enum e k i vs =>
@@ -583,8 +583,8 @@ theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls
           split
           · exact .nil
           · rename_i body _
-            refine GlueBlocks.withTrace matchConsume_blocks ?_
-            refine GlueBlocks.bind (ih _ _ body (hc₀.mintParams (Contents.enum_payload hv 0).2))
+            refine DropGlueBlocks.withTrace matchConsume_blocks ?_
+            refine DropGlueBlocks.bind (ih _ _ body (hc₀.mintParams (Contents.enum_payload hv 0).2))
               (fun _ _ _ _ => ?_)
             split
             · exact .nil
@@ -593,16 +593,16 @@ theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls
         | _ => exact .nil
     | letIn m e₁ e₂ =>
         simp only [eval]
-        refine GlueBlocks.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ hr => ?_)
+        refine DropGlueBlocks.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ hr => ?_)
         obtain ⟨hc₁, hv₁⟩ := hok hcc hr
-        refine GlueBlocks.bind (ih _ _ e₂ (hc₁.append (StoreCC.single hv₁))) (fun _ _ _ _ => ?_)
+        refine DropGlueBlocks.bind (ih _ _ e₂ (hc₁.append (StoreCC.single hv₁))) (fun _ _ _ _ => ?_)
         split
         · exact .nil
         · rename_i H₃ evs hdr
           exact dropRetire_blocks hdr
     | assign p e₁ =>
         simp only [eval]
-        refine GlueBlocks.bind (ih H φ e₁ hcc) (fun _ _ _ _ => ?_)
+        refine DropGlueBlocks.bind (ih H φ e₁ hcc) (fun _ _ _ _ => ?_)
         split
         · exact .nil
         · split
@@ -618,19 +618,19 @@ theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls
                   (repeat' split) <;> first | exact .nil | exact dropCell_blocks hd
     | seq e₁ e₂ =>
         simp only [eval]
-        refine GlueBlocks.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ hr => ?_)
+        refine DropGlueBlocks.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ hr => ?_)
         have hc₁ := (hok hcc hr).1
         split
         · exact .nil
         · split
           · exact .nil
           · rename_i evs hd
-            refine GlueBlocks.withTrace ?_ (ih H₁ φ e₂ hc₁)
-            simpa using GlueBlocks.dropTemp (v := v₁) (dropContents_glue hd) (GlueBlocks.nil (D := P.decls))
+            refine DropGlueBlocks.withTrace ?_ (ih H₁ φ e₂ hc₁)
+            simpa using DropGlueBlocks.dropTemp (v := v₁) (dropContents_glue hd) (DropGlueBlocks.nil (D := P.decls))
         · exact ih H₁ φ e₂ hc₁
     | ite c e₁ e₂ =>
         simp only [eval]
-        refine GlueBlocks.bind (ih H φ c hcc) (fun H₀ _ _ hr => ?_)
+        refine DropGlueBlocks.bind (ih H φ c hcc) (fun H₀ _ _ hr => ?_)
         have hc₀ := (hok hcc hr).1
         split
         · split
@@ -646,12 +646,12 @@ theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls
         · rename_i H₁ vs tr hra
           rw [hra] at ka kc
           obtain ⟨_, c₁, cv₁, _⟩ := kc
-          refine GlueBlocks.withTrace ka ?_
+          refine DropGlueBlocks.withTrace ka ?_
           split
           · exact .nil
           · rename_i fd _
             split
-            · refine GlueBlocks.absorb (ih _ _ fd.body (c₁.mintParams cv₁)) (fun _ _ _ _ => ?_)
+            · refine DropGlueBlocks.absorb (ih _ _ fd.body (c₁.mintParams cv₁)) (fun _ _ _ _ => ?_)
               split
               · exact .nil
               · rename_i H₄ evs hu
@@ -659,7 +659,7 @@ theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls
             · exact .nil
     | ret e₁ =>
         simp only [eval]
-        refine GlueBlocks.bind (ih H φ e₁ hcc) (fun _ _ _ _ => ?_)
+        refine DropGlueBlocks.bind (ih H φ e₁ hcc) (fun _ _ _ _ => ?_)
         split
         · exact .nil
         · rename_i H₂ evs hu
@@ -670,14 +670,14 @@ theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls
         split
         · rename_i H₁ tr hr
           rw [hr] at hb
-          exact GlueBlocks.withTrace hb (ih H₁ φ (.loop e₁) (hok hcc hr).1)
+          exact DropGlueBlocks.withTrace hb (ih H₁ φ (.loop e₁) (hok hcc hr).1)
         · exact .nil
         · rename_i H₁ sc tr hr
           rw [hr] at hb
           split
           · exact .nil
           · rename_i H₂ evs hu
-            exact GlueBlocks.append hb (unwindLocs_blocks hu)
+            exact DropGlueBlocks.append hb (unwindLocs_blocks hu)
         · exact hb
 
 /-- **Every finished run's trace is in §6.11's block grammar** (§3.9, §6.11):
@@ -687,12 +687,12 @@ fields in declaration order (`3.9:13`), an array's elements ascending
 (`3.9:15`), an enum's active payload only (`6.3:20`), every `⊘` skipped —
 and nowhere else. It needs only `DtorNotCopy`, which `WfDecls` gives. -/
 theorem run_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls) (fuel : Nat) :
-    GlueBlocks P.decls (run M P fuel).trace :=
+    DropGlueBlocks P.decls (run M P fuel).trace :=
   eval_glue_blocks M hdt fuel [] _ _ (fun ℓ c hc => by simp at hc)
 
 /-- **Every finished run's trace is in the block grammar `Blocks`** (§3.9,
 §6.11), each drop marker followed by exactly `dropEvents` of what it names:
-`run_glue_blocks` read through `GlueBlocks.toBlocks`. -/
+`run_glue_blocks` read through `DropGlueBlocks.toBlocks`. -/
 theorem run_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls) (fuel : Nat) :
     Blocks P.decls (run M P fuel).trace :=
   (run_glue_blocks M hdt fuel).toBlocks
@@ -1326,7 +1326,7 @@ theorem step_blocks (M : FloatModel) {P : Program} (h : ProgramTyped P) :
 /-- **§6.11's order within a value, in §6.11's own terms** (§3.9, §6.11;
 RUE-2487), over §6's relation, for a program the checker accepts: every
 finished run's trace — a terminal value or a trap — is in the block grammar
-`GlueBlocks`, whose drop blocks are §6.11's rules (`DropGlue`) rather than the
+`DropGlueBlocks`, whose drop blocks are §6.11's rules (`DropGlue`) rather than the
 machine's walk. So each drop marker is followed by the value's own destructor
 first (`3.9:28`), then its fields in declaration order (`3.9:13`), an array's
 elements ascending (`3.9:15`), an enum's active payload only (`6.3:20`), every
@@ -1335,8 +1335,8 @@ statement does not go through it, so a machine whose walk and `dropEvents`
 change together still fails it. -/
 theorem drop_glue_order (M : FloatModel) {P : Program} (h : ProgramTyped P) :
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) →
-      GlueBlocks P.decls tr) ∧
-    (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → GlueBlocks P.decls tr) := by
+      DropGlueBlocks P.decls tr) ∧
+    (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → DropGlueBlocks P.decls tr) := by
   obtain ⟨hv, hp⟩ := eval_complete M h
   have hdt := h.wf.decls.dtorNotCopy
   refine ⟨fun H φ v tr hs => ?_, fun κ tr hs => ?_⟩
@@ -1424,9 +1424,9 @@ end
 
 /-- A drop marker in §6.11's own grammar is followed by one `DropGlue` walk of
 what it names (helper). -/
-theorem GlueBlocks.drop_inv {D : Decls} {ℓ : Nat} {c : Contents} {t : List Event}
-    (h : GlueBlocks D (.drop ℓ c :: t)) :
-    ∃ evs t', DropGlue D c evs ∧ t = evs ++ t' ∧ GlueBlocks D t' := by
+theorem DropGlueBlocks.drop_inv {D : Decls} {ℓ : Nat} {c : Contents} {t : List Event}
+    (h : DropGlueBlocks D (.drop ℓ c :: t)) :
+    ∃ evs t', DropGlue D c evs ∧ t = evs ++ t' ∧ DropGlueBlocks D t' := by
   cases h with
   | drop hg h' => exact ⟨_, _, hg, rfl, h'⟩
 

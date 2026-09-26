@@ -478,7 +478,7 @@ residue `C { 1 }` is `Copy`, so it is dropped with no marker, and its
 destructor event opens the trace. It is not `ProgramTyped`, and §6's relation
 runs it to a value whose trace is not in §6.11's block grammar: `drop_order`
 fails without `ProgramTyped` (through `DtorNotCopy`), and so does
-`drop_glue_order`, since a trace outside `Blocks` is outside `GlueBlocks`
+`drop_glue_order`, since a trace outside `Blocks` is outside `DropGlueBlocks`
 (RUE-2487). -/
 def bare_dtor_stmt : Prop :=
   ∀ B : Expr, B =
@@ -647,7 +647,7 @@ whose conclusion claims something of a reached or answered value fails once
 the hypothesis naming that value is dropped: `eval_sound`'s and `run_sim`'s
 `run … = .ok H v tr`, `eval_complete`'s and `run_complete`'s `Steps … (.ret
 v)`, and `drop_order`'s and `drop_glue_order`'s (a trace outside `Blocks` is
-outside `GlueBlocks`, RUE-2487). -/
+outside `DropGlueBlocks`, RUE-2487). -/
 def unreached_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])

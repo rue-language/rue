@@ -138,7 +138,7 @@ def drop_order_stmt : Prop :=
 /-- **Drop glue order, in §6.11's own terms** (§3.9, §6.11; §7 "No
 use-after-drop / no leak of drops", *how* a value is dropped; RUE-2487), over
 `Step`. A finished run's trace — value or panic — is in §6.11's block grammar
-with each drop's events given by §6.11's rules (`GlueBlocks`, `DropGlue`):
+with each drop's events given by §6.11's rules (`DropGlueBlocks`, `DropGlue`):
 after each drop marker, the value's destructor first, then its fields in
 declaration order, an array's elements in ascending index order, and an enum's
 active payload only. Unlike `drop_order`'s `Blocks`, the rules are not the
@@ -147,7 +147,7 @@ machine's drop glue cannot carry this statement with it. -/
 def drop_glue_order_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P),
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) →
-      GlueBlocks P.decls tr) ∧
-    (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → GlueBlocks P.decls tr)
+      DropGlueBlocks P.decls tr) ∧
+    (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → DropGlueBlocks P.decls tr)
 
 end RueCore.Spec

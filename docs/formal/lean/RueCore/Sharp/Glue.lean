@@ -624,14 +624,14 @@ theorem bare_dtor.drop_order_1 :
   exact hn ((h Float.exactModel).1 _ _ _ _ hs)
 
 /-- `Sharp.bare_dtor` refutes `drop_glue_order` without hypothesis 1: a trace
-outside `Blocks` is outside `GlueBlocks` (helper). -/
+outside `Blocks` is outside `DropGlueBlocks` (helper). -/
 theorem bare_dtor.drop_glue_order_1 :
     ¬∀ (M : FloatModel) {P : Program},
         (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
             Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
-              GlueBlocks P.decls tr) ∧
+              DropGlueBlocks P.decls tr) ∧
           ∀ (κ : PanicKind) (tr : List Event),
-            Steps M.toFloatSig P Config.init (Config.panic κ tr) → GlueBlocks P.decls tr := by
+            Steps M.toFloatSig P Config.init (Config.panic κ tr) → DropGlueBlocks P.decls tr := by
   intro h
   obtain ⟨-, -, H, φ, v, tr, hs, hn⟩ := Spine.Sharp.bare_dtor _ rfl _ rfl
   exact hn ((h Float.exactModel).1 _ _ _ _ hs).toBlocks
@@ -820,9 +820,9 @@ theorem unreached.drop_order_2 :
 theorem unreached.drop_glue_order_2 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
-          (∀ (_H : Store) (_φ : Frame) (_v : Val) (tr : List Event), GlueBlocks P.decls tr) ∧
+          (∀ (_H : Store) (_φ : Frame) (_v : Val) (tr : List Event), DropGlueBlocks P.decls tr) ∧
             ∀ (κ : PanicKind) (tr : List Event),
-              Steps M.toFloatSig P Config.init (Config.panic κ tr) → GlueBlocks P.decls tr := by
+              Steps M.toFloatSig P Config.init (Config.panic κ tr) → DropGlueBlocks P.decls tr := by
   intro h
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached _ rfl _ rfl
   exact hnb ((h Float.exactModel hPT).1 [] Frame.empty (.int .w64 .signed 8) _).toBlocks
@@ -910,8 +910,8 @@ theorem unreached_panic.drop_glue_order_3 :
         ProgramTyped P →
           (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
               Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
-                GlueBlocks P.decls tr) ∧
-            ∀ (_κ : PanicKind) (tr : List Event), GlueBlocks P.decls tr := by
+                DropGlueBlocks P.decls tr) ∧
+            ∀ (_κ : PanicKind) (tr : List Event), DropGlueBlocks P.decls tr := by
   intro h
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached_panic _ rfl _ rfl
   exact hnb ((h Float.exactModel hPT).2 .user _).toBlocks
