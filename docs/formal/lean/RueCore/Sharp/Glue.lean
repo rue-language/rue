@@ -611,6 +611,19 @@ theorem bare_dtor.drop_order_1 :
   obtain ⟨-, -, H, φ, v, tr, hs, hn⟩ := Spine.Sharp.bare_dtor _ rfl _ rfl
   exact hn ((h Float.exactModel).1 _ _ _ _ hs)
 
+/-- `Sharp.bare_dtor` refutes `drop_glue_order` without hypothesis 1: a trace
+outside `Blocks` is outside `GlueBlocks` (helper). -/
+theorem bare_dtor.drop_glue_order_1 :
+    ¬∀ (M : FloatModel) {P : Program},
+        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+            Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+              GlueBlocks P.decls tr) ∧
+          ∀ (κ : PanicKind) (tr : List Event),
+            Steps M.toFloatOps P Config.init (Config.panic κ tr) → GlueBlocks P.decls tr := by
+  intro h
+  obtain ⟨-, -, H, φ, v, tr, hs, hn⟩ := Spine.Sharp.bare_dtor _ rfl _ rfl
+  exact hn ((h Float.exactModel).1 _ _ _ _ hs).toBlocks
+
 /-- `Sharp.pending_program` refutes `drop_exactly_once` without hypothesis 2 (helper). -/
 theorem pending_program.drop_exactly_once_2 :
     ¬∀ (M : FloatModel) {P : Program},
@@ -791,6 +804,17 @@ theorem unreached.drop_order_2 :
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached _ rfl _ rfl
   exact hnb ((h Float.exactModel hPT).1 [] Frame.empty (.int .w64 .signed 8) _)
 
+/-- `Sharp.unreached` refutes `drop_glue_order` without hypothesis 2 (helper). -/
+theorem unreached.drop_glue_order_2 :
+    ¬∀ (M : FloatModel) {P : Program},
+        ProgramTyped P →
+          (∀ (_H : Store) (_φ : Frame) (_v : Val) (tr : List Event), GlueBlocks P.decls tr) ∧
+            ∀ (κ : PanicKind) (tr : List Event),
+              Steps M.toFloatOps P Config.init (Config.panic κ tr) → GlueBlocks P.decls tr := by
+  intro h
+  obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached _ rfl _ rfl
+  exact hnb ((h Float.exactModel hPT).1 [] Frame.empty (.int .w64 .signed 8) _).toBlocks
+
 /-- `Sharp.unreached` refutes `eval_sound` without hypothesis 2 (helper). -/
 theorem unreached.eval_sound_2 :
     ¬∀ (M : FloatModel) {P : Program},
@@ -867,6 +891,18 @@ theorem unreached_panic.drop_order_3 :
   intro h
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached_panic _ rfl _ rfl
   exact hnb ((h Float.exactModel hPT).2.1 .user _)
+
+/-- `Sharp.unreached_panic` refutes `drop_glue_order` without hypothesis 3 (helper). -/
+theorem unreached_panic.drop_glue_order_3 :
+    ¬∀ (M : FloatModel) {P : Program},
+        ProgramTyped P →
+          (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+              Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+                GlueBlocks P.decls tr) ∧
+            ∀ (_κ : PanicKind) (tr : List Event), GlueBlocks P.decls tr := by
+  intro h
+  obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached_panic _ rfl _ rfl
+  exact hnb ((h Float.exactModel hPT).2 .user _).toBlocks
 
 /-- `Sharp.unreached_panic` refutes `eval_sound` without hypothesis 3 (helper). -/
 theorem unreached_panic.eval_sound_3 :

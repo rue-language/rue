@@ -11,7 +11,7 @@ public import RueCore.Trace.Defs
 read off the trace every run records: each drop, destructor, consumption and
 `@dbg`, in order, with the identity of the value each one is of. The
 multiplicity statements are over `run`'s and `eval`'s results, so over runs
-that finish (a result at some fuel); the order statement is over §6's
+that finish (a result at some fuel); the order statements are over §6's
 relation `Step`.
 -/
 
@@ -88,5 +88,20 @@ def drop_order_stmt : Prop :=
     ∀ C C', Steps M.toFloatOps P Config.init C → Step M.toFloatOps P C C' →
       ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) ∧
         Lifo C.stack C'.stack (dropLocs evs) ∧ (C.stack.Pairwise (· < ·))
+
+/-- **Drop glue order, in §6.11's own terms** (§3.9, §6.11; §7 "No
+use-after-drop / no leak of drops", *how* a value is dropped; RUE-2487), over
+`Step`. A finished run's trace — value or panic — is in §6.11's block grammar
+with each drop's events given by §6.11's rules (`GlueBlocks`, `DropGlue`):
+after each drop marker, the value's destructor first, then its fields in
+declaration order, an array's elements in ascending index order, and an enum's
+active payload only. Unlike `drop_order`'s `Blocks`, the rules are not the
+function `dropEvents` the machine's walk is proved equal to, so a change to the
+machine's drop glue cannot carry this statement with it. -/
+def drop_glue_order_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P),
+    (∀ H φ v tr, Steps M.toFloatOps P Config.init (.run H φ [] (.ret v) tr) →
+      GlueBlocks P.decls tr) ∧
+    (∀ κ tr, Steps M.toFloatOps P Config.init (.panic κ tr) → GlueBlocks P.decls tr)
 
 end RueCore.Spec
