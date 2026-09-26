@@ -144,25 +144,25 @@ def EvalRes.NoBrk : EvalRes → Prop
   | .broke _ _ _ => False
   | _ => True
 
-/-- `andThen` unwinds only where its operand or its context does (helper). -/
-theorem EvalRes.andThen_noRet {r : EvalRes} {k : Store → Val → EvalRes} (hr : r.NoRet)
-    (hk : ∀ H v tr, r = .ok H v tr → (k H v).NoRet) : (r.andThen k).NoRet := by
+/-- `bind` unwinds only where its operand or its context does (helper). -/
+theorem EvalRes.bind_noRet {r : EvalRes} {k : Store → Val → EvalRes} (hr : r.NoRet)
+    (hk : ∀ H v tr, r = .ok H v tr → (k H v).NoRet) : (r.bind k).NoRet := by
   cases r with
   | ok H v tr =>
       have := hk H v tr rfl
-      simp only [EvalRes.andThen]
+      simp only [EvalRes.bind]
       cases h : k H v <;> simp_all [EvalRes.withTrace, EvalRes.NoRet]
-  | _ => simp_all [EvalRes.andThen, EvalRes.NoRet]
+  | _ => simp_all [EvalRes.bind, EvalRes.NoRet]
 
 /-- The same for `break` (helper). -/
-theorem EvalRes.andThen_noBrk {r : EvalRes} {k : Store → Val → EvalRes} (hr : r.NoBrk)
-    (hk : ∀ H v tr, r = .ok H v tr → (k H v).NoBrk) : (r.andThen k).NoBrk := by
+theorem EvalRes.bind_noBrk {r : EvalRes} {k : Store → Val → EvalRes} (hr : r.NoBrk)
+    (hk : ∀ H v tr, r = .ok H v tr → (k H v).NoBrk) : (r.bind k).NoBrk := by
   cases r with
   | ok H v tr =>
       have := hk H v tr rfl
-      simp only [EvalRes.andThen]
+      simp only [EvalRes.bind]
       cases h : k H v <;> simp_all [EvalRes.withTrace, EvalRes.NoBrk]
-  | _ => simp_all [EvalRes.andThen, EvalRes.NoBrk]
+  | _ => simp_all [EvalRes.bind, EvalRes.NoBrk]
 
 /-- A prefixed trace does not change whether a result unwinds (helper). -/
 theorem EvalRes.withTrace_noRet {r : EvalRes} {tr : List Event} (h : r.NoRet) :
@@ -256,35 +256,35 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns, Bool.or_eq_false_iff] at h
-          exact EvalRes.andThen_noRet ((ih H φ e₁).1 h.1) fun H₁ _ _ _ =>
-            EvalRes.andThen_noRet ((ih H₁ φ e₂).1 h.2) fun _ _ _ _ => OpRes.toRes_quiet.1
+          exact EvalRes.bind_noRet ((ih H φ e₁).1 h.1) fun H₁ _ _ _ =>
+            EvalRes.bind_noRet ((ih H₁ φ e₂).1 h.2) fun _ _ _ _ => OpRes.toRes_quiet.1
         · simp only [Expr.breaks, Bool.or_eq_false_iff] at h
-          exact EvalRes.andThen_noBrk ((ih H φ e₁).2 h.1) fun H₁ _ _ _ =>
-            EvalRes.andThen_noBrk ((ih H₁ φ e₂).2 h.2) fun _ _ _ _ => OpRes.toRes_quiet.2
+          exact EvalRes.bind_noBrk ((ih H φ e₁).2 h.1) fun H₁ _ _ _ =>
+            EvalRes.bind_noBrk ((ih H₁ φ e₂).2 h.2) fun _ _ _ _ => OpRes.toRes_quiet.2
     | unop op e₁ | intCast w sg e₁ | fintrin k e₁ =>
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns] at h
-          exact EvalRes.andThen_noRet ((ih H φ e₁).1 h) fun _ _ _ _ => OpRes.toRes_quiet.1
+          exact EvalRes.bind_noRet ((ih H φ e₁).1 h) fun _ _ _ _ => OpRes.toRes_quiet.1
         · simp only [Expr.breaks] at h
-          exact EvalRes.andThen_noBrk ((ih H φ e₁).2 h) fun _ _ _ _ => OpRes.toRes_quiet.2
+          exact EvalRes.bind_noBrk ((ih H φ e₁).2 h) fun _ _ _ _ => OpRes.toRes_quiet.2
     | dbg e₁ =>
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns] at h
-          exact EvalRes.andThen_noRet ((ih H φ e₁).1 h) fun _ _ _ _ => by split <;> trivial
+          exact EvalRes.bind_noRet ((ih H φ e₁).1 h) fun _ _ _ _ => by split <;> trivial
         · simp only [Expr.breaks] at h
-          exact EvalRes.andThen_noBrk ((ih H φ e₁).2 h) fun _ _ _ _ => by split <;> trivial
+          exact EvalRes.bind_noBrk ((ih H φ e₁).2 h) fun _ _ _ _ => by split <;> trivial
     | repeatArray T e₁ m =>
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns] at h
-          exact EvalRes.andThen_noRet ((ih H φ e₁).1 h) fun _ _ _ _ => by
+          exact EvalRes.bind_noRet ((ih H φ e₁).1 h) fun _ _ _ _ => by
             split
             · exact introVal_quiet.1
             · trivial
         · simp only [Expr.breaks] at h
-          exact EvalRes.andThen_noBrk ((ih H φ e₁).2 h) fun _ _ _ _ => by
+          exact EvalRes.bind_noBrk ((ih H φ e₁).2 h) fun _ _ _ _ => by
             split
             · exact introVal_quiet.2
             · trivial
@@ -306,22 +306,22 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
     | indexDrop p idx πs =>
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
-        · exact EvalRes.andThen_noRet ((ih H φ (.indexRead p idx πs)).1 (by
+        · exact EvalRes.bind_noRet ((ih H φ (.indexRead p idx πs)).1 (by
             simpa [Expr.returns] using h)) fun _ _ _ _ => trivial
-        · exact EvalRes.andThen_noBrk ((ih H φ (.indexRead p idx πs)).2 (by
+        · exact EvalRes.bind_noBrk ((ih H φ (.indexRead p idx πs)).2 (by
             simpa [Expr.breaks] using h)) fun _ _ _ _ => trivial
     | indexWrite p idx πs e₁ =>
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns, Bool.or_eq_false_iff] at h
-          refine EvalRes.andThen_noRet ((ih H φ e₁).1 h.1) fun H₁ _ _ _ => ?_
+          refine EvalRes.bind_noRet ((ih H φ e₁).1 h.1) fun H₁ _ _ _ => ?_
           split
           · rename_i r hr
             exact hargR H₁ idx (fun H' e' hm => (ih H' φ e').1 (Expr.returnsList_mem h.2 hm)) r hr
           · apply EvalRes.withTrace_noRet
             (repeat' split) <;> trivial
         · simp only [Expr.breaks, Bool.or_eq_false_iff] at h
-          refine EvalRes.andThen_noBrk ((ih H φ e₁).2 h.1) fun H₁ _ _ _ => ?_
+          refine EvalRes.bind_noBrk ((ih H φ e₁).2 h.1) fun H₁ _ _ _ => ?_
           split
           · rename_i r hr
             exact hargB H₁ idx (fun H' e' hm => (ih H' φ e').2 (Expr.breaksList_mem h.2 hm)) r hr
@@ -331,22 +331,22 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns, Bool.or_eq_false_iff] at h
-          refine EvalRes.andThen_noRet ((ih H φ scrut).1 h.1) fun H₀ v _ _ => ?_
+          refine EvalRes.bind_noRet ((ih H φ scrut).1 h.1) fun H₀ v _ _ => ?_
           split
           · split
             · trivial
             · rename_i body hb
-              exact EvalRes.withTrace_noRet (EvalRes.andThen_noRet
+              exact EvalRes.withTrace_noRet (EvalRes.bind_noRet
                 ((ih _ _ body).1 (Expr.returnsList_mem h.2 (List.mem_of_getElem? hb)))
                 fun _ _ _ _ => by split <;> trivial)
           · trivial
         · simp only [Expr.breaks, Bool.or_eq_false_iff] at h
-          refine EvalRes.andThen_noBrk ((ih H φ scrut).2 h.1) fun H₀ v _ _ => ?_
+          refine EvalRes.bind_noBrk ((ih H φ scrut).2 h.1) fun H₀ v _ _ => ?_
           split
           · split
             · trivial
             · rename_i body hb
-              exact EvalRes.withTrace_noBrk (EvalRes.andThen_noBrk
+              exact EvalRes.withTrace_noBrk (EvalRes.bind_noBrk
                 ((ih _ _ body).2 (Expr.breaksList_mem h.2 (List.mem_of_getElem? hb)))
                 fun _ _ _ _ => by split <;> trivial)
           · trivial
@@ -354,25 +354,25 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns, Bool.or_eq_false_iff] at h
-          exact EvalRes.andThen_noRet ((ih H φ e₁).1 h.1) fun _ _ _ _ =>
-            EvalRes.andThen_noRet ((ih _ _ e₂).1 h.2) fun _ _ _ _ => by split <;> trivial
+          exact EvalRes.bind_noRet ((ih H φ e₁).1 h.1) fun _ _ _ _ =>
+            EvalRes.bind_noRet ((ih _ _ e₂).1 h.2) fun _ _ _ _ => by split <;> trivial
         · simp only [Expr.breaks, Bool.or_eq_false_iff] at h
-          exact EvalRes.andThen_noBrk ((ih H φ e₁).2 h.1) fun _ _ _ _ =>
-            EvalRes.andThen_noBrk ((ih _ _ e₂).2 h.2) fun _ _ _ _ => by split <;> trivial
+          exact EvalRes.bind_noBrk ((ih H φ e₁).2 h.1) fun _ _ _ _ =>
+            EvalRes.bind_noBrk ((ih _ _ e₂).2 h.2) fun _ _ _ _ => by split <;> trivial
     | assign p e₁ =>
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns] at h
-          exact EvalRes.andThen_noRet ((ih H φ e₁).1 h) fun _ _ _ _ => by
+          exact EvalRes.bind_noRet ((ih H φ e₁).1 h) fun _ _ _ _ => by
             (repeat' split) <;> trivial
         · simp only [Expr.breaks] at h
-          exact EvalRes.andThen_noBrk ((ih H φ e₁).2 h) fun _ _ _ _ => by
+          exact EvalRes.bind_noBrk ((ih H φ e₁).2 h) fun _ _ _ _ => by
             (repeat' split) <;> trivial
     | seq e₁ e₂ =>
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns, Bool.or_eq_false_iff] at h
-          exact EvalRes.andThen_noRet ((ih H φ e₁).1 h.1) fun H₁ _ _ _ => by
+          exact EvalRes.bind_noRet ((ih H φ e₁).1 h.1) fun H₁ _ _ _ => by
             split
             · trivial
             · split
@@ -380,7 +380,7 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
               · exact EvalRes.withTrace_noRet ((ih H₁ φ e₂).1 h.2)
             · exact (ih H₁ φ e₂).1 h.2
         · simp only [Expr.breaks, Bool.or_eq_false_iff] at h
-          exact EvalRes.andThen_noBrk ((ih H φ e₁).2 h.1) fun H₁ _ _ _ => by
+          exact EvalRes.bind_noBrk ((ih H φ e₁).2 h.1) fun H₁ _ _ _ => by
             split
             · trivial
             · split
@@ -391,14 +391,14 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns, Bool.or_eq_false_iff] at h
-          exact EvalRes.andThen_noRet ((ih H φ c).1 h.1.1) fun H₀ _ _ _ => by
+          exact EvalRes.bind_noRet ((ih H φ c).1 h.1.1) fun H₀ _ _ _ => by
             split
             · split
               · exact (ih H₀ φ e₁).1 h.1.2
               · exact (ih H₀ φ e₂).1 h.2
             · trivial
         · simp only [Expr.breaks, Bool.or_eq_false_iff] at h
-          exact EvalRes.andThen_noBrk ((ih H φ c).2 h.1.1) fun H₀ _ _ _ => by
+          exact EvalRes.bind_noBrk ((ih H φ c).2 h.1.1) fun H₀ _ _ _ => by
             split
             · split
               · exact (ih H₀ φ e₁).2 h.1.2
@@ -431,7 +431,7 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
         simp only [eval]
         refine ⟨fun h => by simp [Expr.returns] at h, fun h => ?_⟩
         simp only [Expr.breaks] at h
-        exact EvalRes.andThen_noBrk ((ih H φ e₁).2 h) fun _ _ _ _ => by
+        exact EvalRes.bind_noBrk ((ih H φ e₁).2 h) fun _ _ _ _ => by
           split <;> trivial
     | loop e₁ =>
         simp only [eval]
@@ -789,7 +789,7 @@ theorem Exact.bind {D : Decls} {H : Store} {X : List Nat} {r : EvalRes}
     {k : Store → Val → EvalRes} (hr : Exact D H X r)
     (hk : ∀ H₁ v tr, r = .ok H₁ v tr → StoreCC D H₁ → (Contents.ofVal v).copyClosed D = true →
       Exact D H₁ (v.own D) (k H₁ v)) :
-    Exact D H X (r.andThen k) := by
+    Exact D H X (r.bind k) := by
   cases r with
   | ok H₁ v tr =>
       obtain ⟨h1, h2, h3, h4⟩ := hr
@@ -807,7 +807,7 @@ theorem Exact.bindHeld {D : Decls} {H : Store} {Y : List Nat} {r : EvalRes}
     {k : Store → Val → EvalRes} (hr : Exact D H [] r) (hq : r.NoRet ∧ r.NoBrk)
     (hk : ∀ H₁ v tr, r = .ok H₁ v tr → StoreCC D H₁ → (Contents.ofVal v).copyClosed D = true →
       Exact D H₁ (Y ++ v.own D) (k H₁ v)) :
-    Exact D H Y (r.andThen k) := by
+    Exact D H Y (r.bind k) := by
   cases r with
   | ok H₁ v tr =>
       obtain ⟨h1, h2, h3, h4⟩ := hr
@@ -1230,7 +1230,7 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
         exact ⟨by omega, c, rfl, fun a _ => by have := i a; simp [Contents.ofVals, Contents.ownList]; omega⟩
   | binop op e₁ e₂ =>
       obtain ⟨v₁, rfl, hr⟩ := hl
-      simp only [eval, hr, EvalRes.andThen] at heq
+      simp only [eval, hr, EvalRes.bind] at heq
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
       simp only [Expr.pendingSafe, Bool.and_eq_true, Bool.not_eq_eq_eq_not, Bool.not_true,
@@ -1241,28 +1241,28 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
       simp [(Val.scalar_own (D := P.decls) s₁).1, (Val.scalar_own (D := P.decls) s₂).1]
   | unop op e₁ =>
       obtain ⟨v₁, rfl, hr⟩ := hl
-      simp only [eval, hr, EvalRes.andThen] at heq
+      simp only [eval, hr, EvalRes.bind] at heq
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
       refine Exact.opRes hc₁ (fun v h => ⟨evalUnOp_scalar h, fun a _ => ?_⟩)
       simp [(Val.scalar_own (D := P.decls) (evalUnOp_val_arg h)).1]
   | intCast w sg e₁ =>
       obtain ⟨v₁, rfl, hr⟩ := hl
-      simp only [eval, hr, EvalRes.andThen] at heq
+      simp only [eval, hr, EvalRes.bind] at heq
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
       refine Exact.opRes hc₁ (fun v h => ⟨evalIntCast_scalar h, fun a _ => ?_⟩)
       simp [(Val.scalar_own (D := P.decls) (evalIntCast_val_arg h)).1]
   | fintrin k e₁ =>
       obtain ⟨v₁, rfl, hr⟩ := hl
-      simp only [eval, hr, EvalRes.andThen] at heq
+      simp only [eval, hr, EvalRes.bind] at heq
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
       refine Exact.opRes hc₁ (fun v h => ⟨evalFintrin_scalar h, fun a _ => ?_⟩)
       simp [(Val.scalar_own (D := P.decls) (evalFintrin_val_arg h)).1]
   | dbg e₁ =>
       obtain ⟨v₁, rfl, hr⟩ := hl
-      simp only [eval, hr, EvalRes.andThen] at heq
+      simp only [eval, hr, EvalRes.bind] at heq
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
       split
@@ -1272,7 +1272,7 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
       · trivial
   | repeatArray T e₁ m =>
       obtain ⟨v₁, rfl, hr⟩ := hl
-      simp only [eval, hr, EvalRes.andThen] at heq
+      simp only [eval, hr, EvalRes.bind] at heq
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
       split
@@ -1311,7 +1311,7 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
       exact Exact.intro hc₁ (fun hv a ha => Contents.own_array_fresh hv (by omega))
   | «match» scrut arms =>
       obtain ⟨v₀, rfl, hr⟩ := hl
-      simp only [eval, hr, EvalRes.andThen] at heq
+      simp only [eval, hr, EvalRes.bind] at heq
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
       have hv := single v₀ rfl
@@ -1361,13 +1361,13 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
             · trivial
   | indexDrop p idx πs =>
       obtain ⟨v₁, rfl, hr⟩ := hl
-      simp only [eval, hr, EvalRes.andThen] at heq
+      simp only [eval, hr, EvalRes.bind] at heq
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
       exact Exact.pure hc₁ rfl (fun a _ => by simp [Val.own_of_copy (eval_indexRead_copy hr)])
   | indexWrite p idx πs e₁ =>
       obtain ⟨v, rfl, hr⟩ := hl
-      simp only [eval, hr, EvalRes.andThen] at heq
+      simp only [eval, hr, EvalRes.bind] at heq
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
       simp only [Expr.pendingSafe, Bool.and_eq_true] at he
@@ -1417,7 +1417,7 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
                     · trivial
   | letIn m e₁ e₂ =>
       obtain ⟨v₁, rfl, hr⟩ := hl
-      simp only [eval, hr, EvalRes.andThen] at heq
+      simp only [eval, hr, EvalRes.bind] at heq
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
       have hv₁ := single v₁ rfl
@@ -1435,7 +1435,7 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
           exact ⟨by omega, c, hv₂, fun a _ => by have := i a; omega⟩
   | assign p e₁ =>
       obtain ⟨v, rfl, hr⟩ := hl
-      simp only [eval, hr, EvalRes.andThen] at heq
+      simp only [eval, hr, EvalRes.bind] at heq
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
       split
@@ -1461,7 +1461,7 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
                   · trivial
   | seq e₁ e₂ =>
       obtain ⟨v₁, rfl, hr⟩ := hl
-      simp only [eval, hr, EvalRes.andThen] at heq
+      simp only [eval, hr, EvalRes.bind] at heq
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
       simp only [Expr.pendingSafe, Bool.and_eq_true] at he
@@ -1478,7 +1478,7 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
           (ih H₁ φ e₂ hc₁ he.2)
   | ite c e₁ e₂ =>
       obtain ⟨v₀, rfl, hr⟩ := hl
-      simp only [eval, hr, EvalRes.andThen] at heq
+      simp only [eval, hr, EvalRes.bind] at heq
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
       simp only [Expr.pendingSafe, Bool.and_eq_true] at he
@@ -1510,7 +1510,7 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
         · trivial
   | ret e₁ =>
       obtain ⟨v, rfl, hr⟩ := hl
-      simp only [eval, hr, EvalRes.andThen] at heq
+      simp only [eval, hr, EvalRes.bind] at heq
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
       have hv := single v rfl
@@ -1595,7 +1595,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .binop op e₁ e₂) he ⟨v₁, rfl, hr⟩ hc₁
           (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.andThen])
+          (by simp only [eval, hr, EvalRes.bind])
     | unop op e₁ =>
         have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
         simp only [eval]
@@ -1603,7 +1603,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .unop op e₁) he ⟨v₁, rfl, hr⟩ hc₁
           (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.andThen])
+          (by simp only [eval, hr, EvalRes.bind])
     | intCast w sg e₁ =>
         have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
         simp only [eval]
@@ -1611,7 +1611,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .intCast w sg e₁) he ⟨v₁, rfl, hr⟩ hc₁
           (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.andThen])
+          (by simp only [eval, hr, EvalRes.bind])
     | fintrin k e₁ =>
         have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
         simp only [eval]
@@ -1619,7 +1619,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .fintrin k e₁) he ⟨v₁, rfl, hr⟩ hc₁
           (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.andThen])
+          (by simp only [eval, hr, EvalRes.bind])
     | dbg e₁ =>
         have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
         simp only [eval]
@@ -1627,7 +1627,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .dbg e₁) he ⟨v₁, rfl, hr⟩ hc₁
           (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.andThen])
+          (by simp only [eval, hr, EvalRes.bind])
     | mkStruct s args =>
         have he' := he
         simp only [Expr.pendingSafe, Bool.and_eq_true] at he'
@@ -1674,7 +1674,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .«match» scrut arms) he ⟨v₁, rfl, hr⟩ hc₁
           (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.andThen])
+          (by simp only [eval, hr, EvalRes.bind])
     | repeatArray T e₁ m =>
         have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
         simp only [eval]
@@ -1682,7 +1682,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .repeatArray T e₁ m) he ⟨v₁, rfl, hr⟩ hc₁
           (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.andThen])
+          (by simp only [eval, hr, EvalRes.bind])
     | indexRead p idx πs =>
         have he' := he
         simp only [Expr.pendingSafe, Bool.and_eq_true] at he'
@@ -1703,7 +1703,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .indexDrop p idx πs) he ⟨v₁, rfl, hr⟩ hc₁
           (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.andThen])
+          (by simp only [eval, hr, EvalRes.bind])
     | indexWrite p idx πs e₁ =>
         have he₁ : e₁.pendingSafe = true := by have h := he; simp only [Expr.pendingSafe, Bool.and_eq_true] at he; exact he.1.1
         simp only [eval]
@@ -1711,7 +1711,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .indexWrite p idx πs e₁) he ⟨v₁, rfl, hr⟩ hc₁
           (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.andThen])
+          (by simp only [eval, hr, EvalRes.bind])
     | drop p =>
         simp only [eval]
         split
@@ -1758,7 +1758,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .letIn m e₁ e₂) he ⟨v₁, rfl, hr⟩ hc₁
           (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.andThen])
+          (by simp only [eval, hr, EvalRes.bind])
     | assign p e₁ =>
         have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
         simp only [eval]
@@ -1766,7 +1766,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .assign p e₁) he ⟨v₁, rfl, hr⟩ hc₁
           (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.andThen])
+          (by simp only [eval, hr, EvalRes.bind])
     | seq e₁ e₂ =>
         have he₁ : e₁.pendingSafe = true := by have h := he; simp only [Expr.pendingSafe, Bool.and_eq_true] at he; exact he.1
         simp only [eval]
@@ -1774,7 +1774,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .seq e₁ e₂) he ⟨v₁, rfl, hr⟩ hc₁
           (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.andThen])
+          (by simp only [eval, hr, EvalRes.bind])
     | ite c e₁ e₂ =>
         have he₁ : c.pendingSafe = true := by have h := he; simp only [Expr.pendingSafe, Bool.and_eq_true] at he; exact he.1.1
         simp only [eval]
@@ -1782,7 +1782,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .ite c e₁ e₂) he ⟨v₁, rfl, hr⟩ hc₁
           (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.andThen])
+          (by simp only [eval, hr, EvalRes.bind])
     | call f args =>
         have he' := he
         simp only [Expr.pendingSafe, Bool.and_eq_true] at he'
@@ -1803,7 +1803,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .ret e₁) he ⟨v₁, rfl, hr⟩ hc₁
           (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.andThen])
+          (by simp only [eval, hr, EvalRes.bind])
     | loop e₁ =>
         simp only [eval]
         have hbe : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
@@ -1932,7 +1932,7 @@ theorem Tidy.prefix {φ : Frame} {H H₁ : Store} {tr : List Event} {r : EvalRes
 /-- §6.2's search keeps the frame-pop invariant (helper). -/
 theorem Tidy.bind {φ : Frame} {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
     (hf : ∀ ℓ ∈ φ.env, ℓ < H.length) (hr : Tidy φ H r)
-    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → Tidy φ H₁ (k H₁ v)) : Tidy φ H (r.andThen k) := by
+    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → Tidy φ H₁ (k H₁ v)) : Tidy φ H (r.bind k) := by
   cases r with
   | ok H₁ v tr => exact Tidy.prefix hf hr.1 hr.2 (hk H₁ v tr rfl)
   | _ => exact hr
@@ -2038,7 +2038,7 @@ theorem Tidy.scoped {φ : Frame} {H Hm : Store} {ls : List Nat} {r : EvalRes}
     (hpre : ∀ ℓ, ℓ < H.length → Hm[ℓ]? = H[ℓ]?)
     (hr : Tidy { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls } Hm r)
     (hk : ∀ H₂ v tr, r = .ok H₂ v tr → KillsOnly ls H₂ v (k H₂ v)) :
-    Tidy φ H (r.andThen k) := by
+    Tidy φ H (r.bind k) := by
   have loc : ∀ H₂, Local { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls } Hm H₂ →
       Local φ H H₂ := by
     intro H₂ l
@@ -2058,7 +2058,7 @@ theorem Tidy.scoped {φ : Frame} {H Hm : Store} {ls : List Nat} {r : EvalRes}
   cases r with
   | ok H₂ v tr =>
       obtain ⟨l₂, r₂⟩ := hr
-      simp only [EvalRes.andThen]
+      simp only [EvalRes.bind]
       rcases hk H₂ v tr rfl with ⟨w, hw⟩ | ⟨H₃, evs, hw, hlen₃, hd, hu⟩
       · rw [hw]; trivial
       · rw [hw]

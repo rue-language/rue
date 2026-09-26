@@ -209,7 +209,7 @@ later sibling destroys by `return` or by `break`. Every list of subexpressions `
 walks has it: a call's argument list, a struct literal's initializers, and an
 array literal's elements. So does a fourth position, an assignment's
 right-hand side while the target's indices run after it (`5.2:14`, §6.2's
-`assign p[ v̄, E, … ] = v`), which `indexWrite` threads through `andThen`
+`assign p[ v̄, E, … ] = v`), which `indexWrite` threads through `bind`
 rather than `evalArgs`. Such a value lives in no cell and in no scope
 record — between the `use` that produced it and the `mintParams` that gives a
 by-value argument one (§6.9's (D-Call)), between an initializer and the
@@ -242,7 +242,7 @@ alike — probe r14 of RUE-2342), so the bridge cannot see it either.
 `eval` models the calculus rather than patching it, so no monitor is added:
 `evalArgs` passes a `returned` or `broke` abort on untouched — and because the three list
 forms share that one function, all three share the edge; `indexWrite`'s
-`andThen` passes it on the same way at the right-hand side. The shapes are
+`bind` passes it on the same way at the right-hand side. The shapes are
 pinned as kernel-checked witnesses in `Examples.lean`
 (`linearLostAtCallArg`, `affineLostAtCallArg`, `linearLostAtArrayElem`, and
 `linearLostAtBreakArg` for the `break` case, which the compiler matches), the
@@ -818,15 +818,15 @@ outcome — a trap (§6.12), a refusal, exhausted fuel, an unwinding `return`
 unwinding `break` ((D-Break) §6.10, which discards the context `E'` it is
 under, pending `endscope` markers included) — is the whole form's outcome,
 unchanged. -/
-def EvalRes.andThen : EvalRes → (Store → Val → EvalRes) → EvalRes
+def EvalRes.bind : EvalRes → (Store → Val → EvalRes) → EvalRes
   | .ok H v tr, k => (k H v).withTrace tr
   | r, _ => r
 
-/-- §6.9's call boundary, as a combinator: the same search as `andThen`,
+/-- §6.9's call boundary, as a combinator: the same search as `bind`,
 except that an unwinding `return` stops here. (D-Return) hands its value to
 the suspended caller context, so at the one form that suspended a caller — a
 call — a `returned` result becomes the call's value, with the drops its unwind
-already ran. Everywhere else the `return` keeps travelling (`andThen`).
+already ran. Everywhere else the `return` keeps travelling (`bind`).
 
 A `break` never crosses a call boundary: §5.7 makes one well-formed only
 inside a loop, and (Fn) §5.8 gives a function body no `⟨break, _⟩` delivery,
@@ -1354,7 +1354,7 @@ def evalIntCast (w : IntWidth) (s : Sign) : Val → OpRes
 
 /-- An operator's outcome as an evaluation result, at the store the operands
 left: a value carries no events, a trap carries none of its own (the events
-the operands emitted are prefixed by `andThen`), and a refusal is named
+the operands emitted are prefixed by `bind`), and a refusal is named
 (helper). -/
 def OpRes.toRes (H : Store) : OpRes → EvalRes
   | .val v => .ok H v []
@@ -1412,7 +1412,7 @@ fuel less after every turn that completes, and (D-Break)'s unwind when the
 body breaks; `brk` is (D-Break), which hands its loop the frame's scope
 record.
 
-Every operand is sequenced with `andThen`, which is §6.2's search through an
+Every operand is sequenced with `bind`, which is §6.2's search through an
 evaluation context; the callee's body is sequenced with `absorb`, the one
 place a `return` stops travelling (§6.9). -/
 def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalRes
@@ -1465,22 +1465,22 @@ def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalR
                     | none => .stuck .typeConfusion
                     | some c' => .ok (H.set ℓ (.full c')) v []
   | fuel + 1, P, H, φ, .binop op e₁ e₂ =>
-      (eval M fuel P H φ e₁).andThen fun H₁ v₁ =>
-        (eval M fuel P H₁ φ e₂).andThen fun H₂ v₂ =>
+      (eval M fuel P H φ e₁).bind fun H₁ v₁ =>
+        (eval M fuel P H₁ φ e₂).bind fun H₂ v₂ =>
           (evalBinOp M op v₁ v₂).toRes H₂
   | fuel + 1, P, H, φ, .unop op e =>
-      (eval M fuel P H φ e).andThen fun H' v => (evalUnOp op v).toRes H'
+      (eval M fuel P H φ e).bind fun H' v => (evalUnOp op v).toRes H'
   | fuel + 1, P, H, φ, .intCast w s e =>
-      (eval M fuel P H φ e).andThen fun H' v => (evalIntCast w s v).toRes H'
+      (eval M fuel P H φ e).bind fun H' v => (evalIntCast w s v).toRes H'
   | fuel + 1, P, H, φ, .fintrin k e =>
-      (eval M fuel P H φ e).andThen fun H' v => (evalFintrin M k v).toRes H'
+      (eval M fuel P H φ e).bind fun H' v => (evalFintrin M k v).toRes H'
   | _ + 1, _, _, _, .panic _ =>
       -- (D-Panic) §6.12: the message is not modelled. `panic msg` carries it as
       -- a literal, but neither the trace nor `EvalRes.panic` records §6.12's
       -- `panic: <message>` line, so the outcome is the category `user` alone.
       -- The configuration is abandoned. No scope drop runs — §5.7 exempts the `⊥_panic` edge from
       -- §5.6's obligation — so the trace this trap carries is exactly the one
-      -- the evaluation had already produced, prefixed by `andThen`.
+      -- the evaluation had already produced, prefixed by `bind`.
       .panic .user []
   | fuel + 1, P, H, φ, .dbg e =>
       -- The operand must be one §6.12 can render (`Val.observable`): §6 has no
@@ -1488,7 +1488,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalR
       -- stuck rather than silently discarding an owned operand (RUE-2427). A
       -- checked program never reaches it: (Dbg) §5.8 types the operand
       -- `Ty.observable` (`soundness`).
-      (eval M fuel P H φ e).andThen fun H' v =>
+      (eval M fuel P H φ e).bind fun H' v =>
         if v.observable then .ok H' .unit [.dbg v] else .stuck .typeConfusion
   | fuel + 1, P, H, φ, .mkStruct s args =>
       -- (D-Struct) §6.5: a struct literal is a redex once every initializer
@@ -1530,7 +1530,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalR
       -- is read only to class the consumed shell (`matchConsume`): the arms
       -- come from the `match` form, and under `Typed` the index is the
       -- scrutinee's own (`HasTy.enum_inv`).
-      (eval M fuel P H φ scrut).andThen fun H₀ v =>
+      (eval M fuel P H φ scrut).bind fun H₀ v =>
         match v with
         | .enum e k i vs =>
           (match arms[k]? with
@@ -1549,7 +1549,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalR
              EvalRes.withTrace (matchConsume P.decls e k i vs) <|
              (eval M fuel P minted.1
                  { env := minted.2.reverse ++ φ.env, scope := φ.scope ++ minted.2 }
-                 body).andThen
+                 body).bind
                fun H₂ v₂ =>
                  -- (D-EndScope) at the arm's end (`6.3:17`'s timing): the
                  -- payload cells drop-retire **newest-first**, so the last
@@ -1584,7 +1584,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalR
       -- a value §6 would destroy once (RUE-2400). A checked program never
       -- reaches the refusal: `Typed.repeatArray`'s `T.mult = .copy` premise and
       -- `HasTy.mult_eq` give it (`soundness`).
-      (eval M fuel P H φ e).andThen fun H' v =>
+      (eval M fuel P H φ e).bind fun H' v =>
         if v.mult P.decls = .copy then introVal P.decls H' (fun i => .array T i (List.replicate n v))
         else .stuck .typeConfusion
   | fuel + 1, P, H, φ, .indexRead p idx πs =>
@@ -1630,7 +1630,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalR
       -- compiler does the same (probes r08, r14). The `return` case is
       -- RUE-2316's pending-value edge at the right-hand side ("Pending
       -- values" above), affine only because the leaf is never linear.
-      (eval M fuel P H φ e).andThen fun H₁ v =>
+      (eval M fuel P H φ e).bind fun H₁ v =>
         match evalArgs (fun H' e' => eval M fuel P H' φ e') H₁ idx with
         | .abort r => r
         | .ok H₂ vs tr =>
@@ -1666,7 +1666,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalR
       -- a non-`Copy` leaf refuses with `typeConfusion` rather than stepping to
       -- `()` where §6.11's `@drop` would drop the leaf and write `⊘`
       -- (RUE-2400; the statics make that form E0904).
-      (eval M fuel P H φ (.indexRead p idx πs)).andThen fun H' _ => .ok H' .unit []
+      (eval M fuel P H φ (.indexRead p idx πs)).bind fun H' _ => .ok H' .unit []
   | _ + 1, P, H, φ, .drop p =>
       -- §6.11's explicit `@drop(p)`: at a `Declared(d, π_s)` plan it is the
       -- §6.3 destructure with the selected leaf dropped too — residue first,
@@ -1718,12 +1718,12 @@ def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalR
                     | none => .stuck .typeConfusion
                     | some c' => .ok (H.set ℓ (.full c')) .unit evs
   | fuel + 1, P, H, φ, .letIn _m e₁ e₂ =>
-      (eval M fuel P H φ e₁).andThen fun H₁ v₁ =>
+      (eval M fuel P H φ e₁).bind fun H₁ v₁ =>
         -- (D-Let): mint a fresh single-cell binding allocation, bind it, and
         -- register it in the frame's scope record as well as in the
         -- administrative `endscope` the normal path below runs (RUE-1277).
         (eval M fuel P (H₁ ++ [.full (Contents.ofVal v₁)])
-            { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] } e₂).andThen
+            { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] } e₂).bind
           fun H₂ v₂ =>
             -- (D-EndScope): §5.6's obligations, executed. The record this
             -- case returns to is the caller's, which never held the cell, so
@@ -1732,7 +1732,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalR
             | .error w => .stuck w
             | .ok (H₃, evs) => .ok H₃ v₂ evs
   | fuel + 1, P, H, φ, .assign p e =>
-      (eval M fuel P H φ e).andThen fun H₁ v =>
+      (eval M fuel P H φ e).bind fun H₁ v =>
         -- (D-Assign) §6.8, at a sub-position: drop what is live there first
         -- (a `⊘` drops nothing — reinitialization, `3.8:55`), then store.
         match φ.env[p.root]? with
@@ -1757,7 +1757,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalR
                           if c'.copyClosed P.decls then .ok (H₁.set ℓ (.full c')) .unit evs
                           else .stuck .ownedUnderCopy
   | fuel + 1, P, H, φ, .seq e₁ e₂ =>
-      (eval M fuel P H φ e₁).andThen fun H₁ v₁ =>
+      (eval M fuel P H φ e₁).bind fun H₁ v₁ =>
         match v₁.mult P.decls with
         | .linear => .stuck .linearDiscard                         -- 3.8:64
         | .affine =>
@@ -1766,7 +1766,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalR
              | .ok evs => (eval M fuel P H₁ φ e₂).withTrace (.dropTemp v₁ :: evs))
         | .copy => eval M fuel P H₁ φ e₂
   | fuel + 1, P, H, φ, .ite c e₁ e₂ =>
-      (eval M fuel P H φ c).andThen fun H₀ v₀ =>
+      (eval M fuel P H φ c).bind fun H₀ v₀ =>
         match v₀ with
         | .bool b => if b then eval M fuel P H₀ φ e₁ else eval M fuel P H₀ φ e₂
         | _ => .stuck .typeConfusion
@@ -1793,7 +1793,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalR
                 | .ok (H₄, evs) => .ok H₄ v evs
             else .stuck .typeConfusion
   | fuel + 1, P, H, φ, .ret e =>
-      (eval M fuel P H φ e).andThen fun H₁ v =>
+      (eval M fuel P H φ e).bind fun H₁ v =>
         -- (D-Return) §6.9: discard the evaluation context, every pending
         -- `endscope` marker inside it included, and run the frame's scope
         -- record instead — newest binding first.

@@ -222,7 +222,7 @@ of `AbortOk`'s outcomes — never `.stuck` (progress). When `o` is `none`,
 divergent never completes normally. A `break` is one of the deliveries: the
 state it fired at is one the rules recorded. Stating it as a predicate on the
 result, rather than as a disjunction of existentials, is what lets the operand
-combinators (`andThen`) be discharged once and reused at every form
+combinators (`bind`) be discharged once and reused at every form
 (helper). -/
 def EvalOk (D : Decls) (T R : Ty) (o : Option Ctx) (B : List Ctx) (φ : Frame) (H : Store) :
     EvalRes → Prop
