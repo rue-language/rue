@@ -58,11 +58,14 @@ datum built from `Nat`/`Int` costs nothing.
 `Float.exactOps` is the executable instance the corpus and the printer run on.
 It is **constructive**: `roundRat` rounds an exact rational to `𝔽_w` by
 integer arithmetic, so `+ - * /` (exact rationals, then `rnd_w`) and `@sqrt`
-(an integer square root, then `rnd_w`) need no host float and no axiom. What
-the package does *not* prove is that `exactOps` satisfies the laws — that is
-the residual assumption `TRUST.md` records, and it is discharged the way §7
-says the totality lemma is: against IEEE 754, and here also against the
-compiler, case by case, by the corpus.
+(an integer square root, then `rnd_w`) need no host float and no axiom. It
+**satisfies every law** of `FloatModel`: `Float/Lemmas.lean` (layer L2) proves
+each one of it and packages it as `Float.exactModel` (RUE-2469), so the laws
+have a model and the theorems that quantify over one apply to the corpus's.
+What stays unproved is that `exactOps` *is* IEEE 754 and the compiler beyond
+the laws — which NaN a propagating operation returns, `σ_NaN`, and every
+rounded digit — and that is checked the way §7 says the totality lemma is
+discharged: against the compiler, case by case, by the corpus.
 
 ## The rendering
 
@@ -1003,11 +1006,12 @@ Constructive throughout: every rounded operation is an exact rational (or, for
 Lean's `Float`, so nothing here can put `Classical.choice` on a theorem, and
 the corpus runs by ordinary evaluation.
 
-What is **not** proved is that these definitions satisfy `FloatModel`'s laws —
-that is the slice's standing assumption (`TRUST.md`), the same one §7 makes
-when it discharges the totality lemma "against the standard rather than
-against Rue". It is checked instead: every corpus case's printed value is
-compared against the compiler. -/
+These definitions satisfy `FloatModel`'s laws, proved in `Float/Lemmas.lean`
+(`Float.exactModel`, RUE-2469). What is **not** proved is that they are IEEE
+754 beyond the laws — the value of each rounding, which NaN a propagating
+operation returns, and `σ_NaN` — which §7 discharges "against the standard
+rather than against Rue". It is checked instead: every corpus case's printed
+value is compared against the compiler. -/
 
 namespace Float
 

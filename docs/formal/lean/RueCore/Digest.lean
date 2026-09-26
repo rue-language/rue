@@ -866,12 +866,16 @@ def renderTrust (theorems : Array (Item × Array Name)) (declared : Array Item) 
      "The executable instance `RueCore.Float.exactOps` is constructive integer",
      "arithmetic, so nothing here touches Lean's `Float` — whose definition",
      "over an `opaque` constant would put `Classical.choice` on every theorem",
-     "mentioning a value. That `exactOps` *satisfies* the laws is the residual",
-     "assumption: it is checked by running every float corpus case against the",
-     "compiler, not proved. So is everything `exactOps` decides that the laws",
-     "leave open — which NaN a NaN-propagating operation returns, and `σ_NaN`",
-     "itself (`false`, the AArch64/positive choice of `3.12:44`). Those are",
-     "model choices, and retargeting the instance changes no theorem.",
+     "mentioning a value. It *satisfies* every law above: `Float.exactModel`",
+     "(`RueCore/Float/Lemmas.lean`, RUE-2469) proves each one of it, so the laws",
+     "have a model and no theorem quantifying over `M : FloatModel` holds",
+     "vacuously (`Nonvacuous.exact_model` in `SPINE.md`). What stays unproved is",
+     "that `exactOps` is IEEE 754 beyond the laws — the value of each rounding —",
+     "which is checked by running every float corpus case against the compiler;",
+     "so is everything `exactOps` decides that the laws leave open — which NaN a",
+     "NaN-propagating operation returns, and `σ_NaN` itself (`false`, the",
+     "AArch64/positive choice of `3.12:44`). Those are model choices, and",
+     "retargeting the instance changes no theorem.",
      ""]
   let assumptions :=
     if declared.isEmpty then
