@@ -3,7 +3,8 @@
 
 usage: mutate.py --work DIR [--src LEANDIR] [--only ID,...] [--redo] [--compiler-root WT]
                  [--gen N] [--gen-seed S] [--lake-cache DIR]
-       mutate.py --list | --check | --work DIR (--table | --score [--before DIR])
+       mutate.py --list | --check [--work DIR] | --candidates [--only ID,...]
+       mutate.py --work DIR (--table | --score [--before DIR])
 
 Each mutant is a small, deliberate change to the semantics and the checker: the L0 modules
 `Syntax` and `Float`, and all seven of L1's modules (`Statics`, `Checker/Defs`, `Dynamics`,
@@ -15,9 +16,12 @@ For each mutant the script copies the package's pristine sources into a scratch 
 --work (never the package itself), applies the edits, and records the first of these that
 notices (kills) it:
 
-  proof    `lake build` fails in a theorem of layers L0-L2 or the Spec layer (in practice an
-           L2 module: `*/Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`,
-           `TraceOrder`, `Spine`);
+  spec     a *candidate statement* is unproved under the mutant (the spec pass, below): a
+           statement of `RueCore.Spine` (the spine, the non-vacuity witnesses, the sharpness
+           counter-examples) or of either `Glue` module in which a mutated definition occurs
+           where the mutant can make it false, and whose proof rests on a proof that fails;
+  proof    `lake build` fails in a theorem of layers L0-L2 or the Spec layer, and no candidate
+           statement rests on the failure;
   witness  `lake build` fails only in L3 (`Examples`, `Witnesses`, `Corpus`, `Print`,
            `Explain`, ...) or in an `example`;
   mirror   a witness failure that is only in `Explain.lean`, whose checker and interpreter
@@ -54,6 +58,35 @@ exactly. A changed case the mutant's checker accepts and its machine refuses is 
 `unsound`: a concrete counterexample to `check_sound` plus soundness, whatever the proof
 scripts say.
 
+**The spec pass (RUE-2499).** The statements are layer 3, so the proofs-off pass turns
+them off, and in the first pass they sit downstream of the first module that fails: neither
+pass ever says whether a mutant makes one of them false. So every mutant a proof kills is also
+run in a fourth package, `pkg-spec`, built to the statements alone:
+
+* *Candidates.* `bin/mutate_polarity.lean` reads the built pristine package's environment: the
+  definitions each mutant's edits fall in (its *targets*), and, for every theorem's statement,
+  where each target occurs, unfolding the package's `Prop`-valued definitions and inductives:
+  in a conclusion (`+`), in a hypothesis or under `¬` (`-`), or in an `↔` or a term (`±`). A
+  weakened definition can make a statement false only at `-` or `±`, a strengthened one only at
+  `+` or `±` (`DIRECTION` gives each statement-vocabulary mutant's), and a semantics mutant at
+  any occurrence. The statements it can make false are its candidates (`--candidates` prints
+  them, with the definitions unfolded to reach each occurrence).
+* *Markers.* Every theorem of layers 0-3 whose statement does not involve a target is
+  unchanged by the mutant, and every theorem where every occurrence is at a polarity the mutant
+  cannot falsify is implied by the original theorem; both get a marker axiom for a proof, so
+  only what the mutant can change is rebuilt. The build of `RueCore.Sharp.Glue` and
+  `RueCore.Nonvacuous.Glue` is repeated, each failing proof replaced by a failure marker of its
+  own, until it succeeds (a failing definition is a `definition` result; a failing
+  declaration no marker can replace, `blocked`). The markers exist in the scratch copy only.
+* *Trace.* `#print axioms` of every statement then names the failed proofs it rests on. A
+  candidate that rests on one is *unproved*: it may be false, or its proof may have broken as a
+  script. The reading (`RULINGS`) says which; a "helper" or "holds" reading must give, in its
+  third element (`stays`), why each unproved candidate still holds, by the statement or by the
+  failed proofs it rests on (`--check --work`, `--table` and `--score` refuse a gap).
+
+A baseline spec pass with no edit and every mutant's targets (so nearly every proof rebuilt)
+must build with no failure, or the run stops: a failure there is the copy's, not a mutant's.
+
 **The corpus-only pass.** Likewise a witness or mirror kill (at either level) hides what the
 corpus and the bridge alone would say, because `Corpus.lean` imports `Examples.lean`. Such a
 mutant is run a third time, in a third package that also turns off the witnesses: every
@@ -64,14 +97,19 @@ corpus.
 
 The results are written to <work>/results.json (one entry per mutant, merged across runs, so
 an interrupted run resumes where it stopped). `--table` prints them as MUTATION.md's table,
-with the reading of each proof kill (`RULINGS`). The scratch packages' `.lake` directories are
+with the reading of each mutant (`RULINGS`), and the candidates of each mutant with a
+direction. The scratch packages' `.lake` directories are
 reused between mutants; --lake-cache seeds them from an existing build (a warm start). One
 build runs at a time.
 
 The mutants are `MUTANTS` below; `--list` prints them. `--check` checks that every module of
 the package is in Layers.lean's table (and every entry is a module), that every mutant's edits
 apply to the current sources exactly as many times as they say and touch only layers 0-1, and
-that the proofs-off and witnesses-off copies turn off every theorem, example and `#guard`.
+that the proofs-off and witnesses-off copies turn off every theorem, example and `#guard`; and,
+from the built package's environment, that every source theorem of layers 0-3 is the
+environment's, every edit falls in a definition, every mutant has a reading, and every name a
+reading's `stays` gives is a candidate or a theorem mentioning the mutant's targets. With
+--work it also checks that the readings account for every unproved candidate in the results.
 
 Reproduce from a clean checkout:
   python3 docs/formal/lean/bin/mutate.py --work /tmp/rue-mut --compiler-root $PWD
@@ -559,6 +597,25 @@ MUTANTS = [
       "strengthen a hypothesis: no Owned path matches any contents, so no frame with an owned binding agrees with its store"),
 ]
 
+# The direction of each statement-vocabulary mutant (RUE-2499): "weaken" when every edit
+# makes its definition hold of more (a premise or a conjunct becomes `True` or is dropped, a
+# constructor is added, `=` becomes `≤`), "strengthen" when every edit makes it hold of less.
+# The spec pass relies on it: under a weakening, a theorem whose statement has the definition
+# only in conclusions is implied by the original theorem, so its proof is not rebuilt (and the
+# reverse for a strengthening). A mutant not listed changes its definitions both ways (the
+# semantics and the checker are not ordered by a mutant), and every theorem that mentions them
+# is rebuilt.
+DIRECTION = {
+    "hasty-int-any-value": "weaken", "hasty-float-any-value": "weaken",
+    "evalok-stuck-ok": "weaken", "contentsmatches-moved-residue": "weaken",
+    "exact-at-most": "weaken", "blocks-any-trace": "weaken", "lifo-vacuous": "weaken",
+    "newestfirst-vacuous": "weaken", "ordered-vacuous": "weaken",
+    "safeat-progress-vacuous": "weaken", "safeat-typing-vacuous": "weaken",
+    "safeat-terminal-only": "strengthen", "stepsn-one-step-only": "strengthen",
+    "float-wf-no-emin": "weaken", "float-wf-noncanonical": "weaken",
+    "contentsmatches-owned-false": "strengthen",
+}
+
 
 
 
@@ -687,8 +744,11 @@ RULINGS = {
 # by `sorry`, and the witnesses-off copy: every theorem, example and `#guard` of layer 4 too.
 # ---------------------------------------------------------------------------------------
 
-THEOREM = re.compile(r"(?m)^(?:private |protected )?theorem ([^\s:({]+)")
-EXAMPLE = re.compile(r"(?m)^(?:private |protected )?(?:theorem ([^\s:({]+)|example\b)")
+# A top-level `theorem` (or `example`), possibly after an attribute on its own line's start
+# (`@[simp] theorem …`), outside comments and strings.
+ATTR = r"(?:@\[[^\]\n]*\]\s*)?"
+THEOREM = re.compile(r"(?m)^" + ATTR + r"(?:private |protected )?theorem ([^\s:({]+)")
+EXAMPLE = re.compile(r"(?m)^" + ATTR + r"(?:private |protected )?(?:theorem ([^\s:({]+)|example\b)")
 
 
 def comment_mask(t):
@@ -731,20 +791,16 @@ def decl_count(t, witnesses=False):
     return n + (len(re.findall(r"(?m)^#guard ", t)) if witnesses else 0)
 
 
-def sorry_proofs(t, witnesses=False, stats=None):
-    """Replace the proof of every top-level `theorem` with `by sorry`, keeping its statement;
-    with `witnesses`, every `example` too, and comment out every `#guard`. `stats`, when a
-    list, receives the number of declarations turned off."""
+def decl_spans(t, witnesses=False):
+    """Each top-level `theorem` (with `witnesses`, each `example` too) outside comments, as
+    (match, proof start, end): the proof starts at the first `:=`, `where` or equation `|`
+    outside brackets, and the declaration ends at the next column-0 line outside a comment."""
     mask = comment_mask(t)
-    out, pos, done = [], 0, 0
-    if witnesses:
-        t, done = re.subn(r"(?m)^#guard .*$", lambda g: "-- " + g.group(0), t)
-        mask = comment_mask(t)
+    pos = 0
     for mm in (EXAMPLE if witnesses else THEOREM).finditer(t):
         s = mm.start()
         if s < pos or mask[s]:
             continue
-        # The declaration ends at the next column-0 line outside a comment (or a docstring).
         e, k = len(t), t.find("\n", s)
         while k != -1 and k + 1 < len(t):
             c = t[k + 1]
@@ -752,7 +808,6 @@ def sorry_proofs(t, witnesses=False, stats=None):
                 e = k + 1
                 break
             k = t.find("\n", k + 1)
-        # The proof starts at the first `:=`, `where` or equation `|` outside brackets.
         d, i, b = 0, mm.end(), None
         while i < e:
             if mask[i]:
@@ -774,13 +829,279 @@ def sorry_proofs(t, witnesses=False, stats=None):
             i += 1
         if b is None:
             raise ValueError("no proof found for " + mm.group(0))
-        out += [t[pos:b], " := by sorry\n\n"]
+        yield mm, b, e
         pos = e
-        done += 1
+
+
+def replace_proofs(t, proof, witnesses=False):
+    """`t` with the proof of each declaration `decl_spans` finds replaced by `proof(match,
+    old proof text)` (a new proof, ` := …`), or kept where that returns None."""
+    out, pos = [], 0
+    for mm, b, e in decl_spans(t, witnesses):
+        new = proof(mm, t[b:e])
+        if new is None:
+            continue
+        out += [t[pos:b], new]
+        pos = e
     out.append(t[pos:])
-    if stats is not None:
-        stats.append(done)
     return "".join(out)
+
+
+def sorry_proofs(t, witnesses=False, stats=None):
+    """Replace the proof of every top-level `theorem` with `by sorry`, keeping its statement;
+    with `witnesses`, every `example` too, and comment out every `#guard`. `stats`, when a
+    list, receives the number of declarations turned off."""
+    done = 0
+    if witnesses:
+        t, done = re.subn(r"(?m)^#guard .*$", lambda g: "-- " + g.group(0), t)
+    n = [0]
+
+    def off(mm, old):
+        n[0] += 1
+        return " := by sorry\n\n"
+    t = replace_proofs(t, off, witnesses)
+    if stats is not None:
+        stats.append(done + n[0])
+    return t
+
+
+# ---------------------------------------------------------------------------------------
+# The spec pass (RUE-2499): which statements a mutant can make false, and which it leaves
+# unproved. The statements are `RueCore.Spine`'s (the spine, the non-vacuity witnesses and
+# the sharpness counter-examples, each exactly its Spec `_stmt`) and both `Glue` modules'.
+# ---------------------------------------------------------------------------------------
+
+POLARITY = os.path.join(HERE, "mutate_polarity.lean")
+SPEC_ROOTS = ("RueCore.Sharp.Glue", "RueCore.Nonvacuous.Glue")
+STATEMENT_PREFIXES = ("RueCore.Spine.", "RueCore.Sharp.Glue.", "RueCore.Nonvacuous.Glue.")
+# The polarities at which a mutant of each direction can make a statement false: a weakened
+# definition only in a hypothesis or under `¬` (`-`), a strengthened one only in a conclusion
+# (`+`), and anything in a term or an `↔` (`±`). A mutant with no declared direction changes
+# its definition both ways, so every occurrence counts.
+BAD_POLS = {"weaken": ("-", "±"), "strengthen": ("+", "±"), None: ("+", "-", "±")}
+MARK = "mutate"                 # the marker axioms' names start with it (scratch copies only)
+SECTION = "@[expose] public section\n"
+
+
+def short(stmt):
+    """A statement's name as the page writes it: `soundness`, `Sharp.bare_dtor`,
+    `Sharp.Glue.stuck.soundness_1`, `Nonvacuous.Glue.dtor.soundness`."""
+    for p in ("RueCore.Spine.", "RueCore."):
+        if stmt.startswith(p):
+            return stmt[len(p):]
+    return stmt
+
+
+def file_tag(f):
+    return re.sub(r"\W", "_", f[len("RueCore/"):-len(".lean")] if f.startswith("RueCore/") else f)
+
+
+def lean_json(pkg, args):
+    rc, out, err, _ = run(["lake", "env", "lean", "--run", POLARITY] + args, pkg, timeout=1800)
+    if rc != 0:
+        raise ScriptError(f"mutate_polarity.lean {args[0]} failed in {pkg} (is it built?): {(err or out)[-400:]}")
+    return json.loads(out)
+
+
+def line_of(t, i):
+    return t.count("\n", 0, i) + 1
+
+
+class Analysis:
+    """The environment's view of the pristine package (`mutate_polarity.lean`): each mutant's
+    targets (the definitions its edits fall in), each source theorem's name, and where each
+    target occurs in each theorem's statement."""
+
+    def __init__(self, pkg, src_files):
+        self.ranges = lean_json(pkg, ["ranges"])
+        bymod = {}
+        for d in self.ranges:
+            bymod.setdefault(d["module"], []).append(d)
+        self.bymod = bymod
+        # Each proof file's theorems in source order, by name (`decl_spans` over the text).
+        self.theorems = {}
+        self.errors = []
+        for f in PROOF_FILES:
+            t = src_files[f]
+            mod = f[:-len(".lean")].replace("/", ".")
+            sel = {d["sel"]: d["name"] for d in bymod.get(mod, []) if d["kind"] == "theorem"}
+            names = []
+            for mm, _, _ in decl_spans(t):
+                ln = line_of(t, mm.start())
+                n = sel.get(ln)
+                if n is None or not n.split(".")[-1] == mm.group(1).split(".")[-1]:
+                    self.errors.append(f"{f}:{ln}: the theorem `{mm.group(1)}` is not in the environment there")
+                names.append(n or "?")
+            self.theorems[f] = names
+        self.targets = {}
+        for m in MUTANTS:
+            ts = set()
+            for e in m["edits"]:
+                t = src_files[e["file"]]
+                mod = e["file"][:-len(".lean")].replace("/", ".")
+                i = t.find(e["old"])
+                while i != -1:
+                    lo, hi = line_of(t, i), line_of(t, i + len(e["old"]))
+                    hit = [d["name"] for d in bymod.get(mod, []) if d["kind"] in ("def", "inductive", "opaque")
+                           and d["start"] <= hi and d["end"] >= lo]
+                    hit = [n for n in hit if not any(o != n and n.startswith(o + ".") for o in hit)]
+                    if not hit:
+                        self.errors.append(f"{m['id']}: no definition at {e['file']}:{lo}-{hi}")
+                    ts.update(hit)
+                    i = t.find(e["old"], i + 1)
+            self.targets[m["id"]] = sorted(ts)
+        alltargets = sorted({x for ts in self.targets.values() for x in ts})
+        self.stmts = {d["name"]: d for d in lean_json(pkg, ["analyze"] + alltargets)}
+
+    def decision(self, m, name):
+        """How the spec pass treats a theorem under mutant `m`: "trusted" (its statement does
+        not involve a target, so it is unchanged), "implied" (every occurrence is at a
+        polarity where the mutant's change cannot make it false, so the original theorem
+        implies it), or None (its proof is kept)."""
+        d = self.stmts.get(name)
+        if d is None:
+            return None
+        ts = set(self.targets[m["id"]])
+        inv = ts & set(d["involves"])
+        if not inv:
+            return "trusted"
+        bad = BAD_POLS[DIRECTION.get(m["id"])]
+        if all(t in d["pols"] for t in inv) and \
+                not any(p in bad for t in inv for p in d["pols"][t]):
+            return "implied"
+        return None
+
+    def candidates(self, m):
+        """The statements the mutant can make false by polarity, each with its falsifying
+        occurrences: [polarity, positions, definitions unfolded]."""
+        ts, bad = set(self.targets[m["id"]]), BAD_POLS[DIRECTION.get(m["id"])]
+        out = {}
+        for n, d in self.stmts.items():
+            if not n.startswith(STATEMENT_PREFIXES):
+                continue
+            os_ = [o for o in d["occ"] if o[0] in ts and o[1] in bad]
+            if os_:
+                out[short(n)] = os_
+        return out
+
+
+def position(o):
+    """An occurrence's position, for the page: `hyp`, `¬`, `↔`, `term`, or `concl`."""
+    labels = [{"hypothesis": "hyp"}.get(x, x) for x in o[2]]
+    return "/".join(labels) or "concl"
+
+
+def spec_texts(an, m, texts, pristine_texts, failed):
+    """The spec pass's sources: every theorem of layers 0-3 whose statement the mutant
+    cannot make false (`Analysis.decision`) proved by a marker axiom, every theorem whose proof
+    failed in an earlier round (`failed`, name -> index) by one marker each, the rest kept;
+    examples off and `#guard`s commented out. The markers are declared at the top of each file,
+    after its `public section`."""
+    out = {}
+    for f in PROOF_FILES:
+        t = texts.get(f, pristine_texts[f])
+        tag = file_tag(f)
+        names = iter(an.theorems[f])
+        used = []
+
+        def proof(mm, old):
+            if mm.group(1) is None:
+                return " := by sorry\n\n"
+            n = next(names)
+            if n in failed:
+                ax = f"{MARK}Failed_{tag}_{failed[n]}"
+            else:
+                if re.fullmatch(r"\s*:=\s*(by\s+)?rfl\s*", old):
+                    return None   # an `rfl` lemma stays one, for `dsimp`
+                dec = an.decision(m, n)
+                if dec is None:
+                    return None
+                ax = f"{MARK}{dec.capitalize()}_{tag}"
+            used.append(ax)
+            return f" := {ax}\n\n"
+        t = re.sub(r"(?m)^#guard .*$", lambda g: "-- " + g.group(0), t)
+        t = replace_proofs(t, proof, witnesses=True)
+        if used:
+            if SECTION not in t:
+                raise ScriptError(f"{f}: no `{SECTION.strip()}` line to declare the markers after")
+            decls = "".join(f"axiom {ax} {{p : Prop}} : p\n" for ax in sorted(set(used)))
+            t = t.replace(SECTION, SECTION + decls, 1)
+        out[f] = t
+    return out
+
+
+def theorem_at(an, f, t, line):
+    """The theorem (its name) of the spec pass's text `t` of `f` whose declaration contains
+    `line`, or None."""
+    names = iter(an.theorems.get(f, []))
+    for mm, b, e in decl_spans(t, witnesses=True):
+        n = next(names) if mm.group(1) is not None else None
+        if line_of(t, mm.start()) <= line <= line_of(t, e - 1):
+            return n or "example"
+    return None
+
+
+def spec_pass(an, m, pkg, texts, pristine_texts, cands, max_rounds=25):
+    """Build the spec copy of the mutant, turning off (with a failure marker) each theorem
+    whose proof fails, until the statements build; then trace every statement's markers.
+    The result: `killed` "spec" when a candidate statement (`Analysis.candidates`) rests on a
+    failed proof, "none" otherwise, or "definition" / "blocked" when a definition, or a
+    declaration no marker can replace, fails."""
+    failed, rounds, secs = {}, 0, 0
+    r = {}
+    while True:
+        rounds += 1
+        written = spec_texts(an, m, texts, pristine_texts, failed)
+        for f, tx in written.items():
+            open(os.path.join(pkg, f), "w", encoding="utf-8").write(tx)
+        rc, out, err, s = run(["lake", "build", *SPEC_ROOTS], pkg, timeout=7200)
+        secs += s
+        if rc == 0:
+            break
+        errs = re.findall(r"^error: (RueCore/[^:]+\.lean):(\d+):\d+: (.*)$", out + err, re.M)
+        if not errs:
+            r.update(killed="blocked", detail="build failed with no error site: " + (out + err)[-200:])
+            break
+        new, stop = [], None
+        for f, ln, msg in errs:
+            n = theorem_at(an, f, written.get(f, ""), int(ln)) if f in written else None
+            if n and n not in ("example", "?") and n not in failed and an.decision(m, n) is None:
+                new.append(n)
+            elif f in DEFINITION_FILES and n is None:
+                stop = ("definition", f"{f.replace('RueCore/', '')}:{ln} {enclosing_decl(os.path.join(pkg, f), int(ln))}: {msg[:100]}")
+            else:
+                stop = ("blocked", f"{f.replace('RueCore/', '')}:{ln} {n or enclosing_decl(os.path.join(pkg, f), int(ln))}: {msg[:100]}")
+            if stop:
+                break
+        if stop:
+            r.update(killed=stop[0], detail=stop[1])
+            break
+        for n in new:
+            failed.setdefault(n, len(failed))
+        if rounds >= max_rounds:
+            r.update(killed="blocked", detail=f"still failing after {rounds} rounds")
+            break
+    r.update(rounds=rounds, build_s=round(secs), failed=sorted(failed, key=failed.get))
+    if r.get("killed"):
+        return r
+    byax = {}
+    for n, k in failed.items():
+        f = next(f for f, ns in an.theorems.items() if n in ns)
+        byax[f"{MARK}Failed_{file_tag(f)}_{k}"] = n
+    trace = lean_json(pkg, ["axioms"])
+    unproved = {}
+    for s, axs in trace.items():
+        fs = sorted({short(byax[a.split(".")[-1]]) for a in axs if a.split(".")[-1] in byax})
+        if fs:
+            unproved[short(s)] = fs
+    order = lambda s: (".Glue." in s, s)
+    r["unproved"] = {s: unproved[s] for s in sorted(unproved, key=order) if s in cands}
+    r["unproved_other"] = sorted((s for s in unproved if s not in cands), key=order)
+    r["killed"] = "spec" if r["unproved"] else "none"
+    names = list(r["unproved"])
+    r["detail"] = (f"{len(names)} of {len(cands)} candidate statement(s) unproved: " + ", ".join(names[:6])
+                   + (" …" if len(names) > 6 else "")) if names else f"all {len(cands)} candidate statement(s) proved"
+    return r
 
 
 # ---------------------------------------------------------------------------------------
@@ -960,11 +1281,45 @@ def baseline(pkg, a):
     return {"seeds": seeds, "gen": gen}, secs
 
 
-def check(src):
+def stays_of(k):
+    """A reading's `stays` map (RULINGS' optional third element): for a "helper" or "holds"
+    reading, why each candidate statement the spec pass left unproved is still true, keyed by
+    the statement, or by a failed proof it rests on (then every statement resting only on
+    reasons given holds)."""
+    v = RULINGS.get(k, ())
+    return v[2] if len(v) > 2 else {}
+
+
+def uncovered(k, r):
+    """The unproved candidate statements of a "helper" or "holds" reading that its `stays`
+    map does not account for: neither the statement nor every failed proof it rests on is
+    given a reason. Empty for other readings (a "statement" reading names what is false; an
+    "equivalent" one argues every statement at once)."""
+    if RULINGS.get(k, ("",))[0] not in ("helper", "holds"):
+        return []
+    st = stays_of(k)
+    return [s for s, fs in r.get("spec", {}).get("unproved", {}).items()
+            if s not in st and not all(f in st for f in fs)]
+
+
+def coverage_errors(results):
+    return [f"{k}: the {RULINGS[k][0]!r} reading does not say why the unproved candidate "
+            f"`{s}` holds (RULINGS' third element: a reason for it, or for each of "
+            + ", ".join(f"`{f}`" for f in results[k]["spec"]["unproved"][s]) + ")"
+            for k in results if k in RULINGS for s in uncovered(k, results[k])]
+
+
+def check(src, results=None):
     """What `--check` verifies, as a list of one-line errors: every package module is in
     Layers.lean's table and every table entry is a module; every mutant's edits apply exactly
-    and touch only layers 0-1; and in every module the proofs-off copy turns off every theorem
-    (and the witnesses-off copy every example and `#guard`), and doing it twice changes nothing but whitespace."""
+    and touch only layers 0-1; in every module the proofs-off copy turns off every theorem
+    (and the witnesses-off copy every example and `#guard`), and doing it twice changes nothing
+    but whitespace; and, from the built package's environment (`mutate_polarity.lean`), every
+    source theorem of layers 0-3 is the environment's theorem at that line, every mutant's edits
+    fall in a definition, every mutant has a reading, and every name a reading's `stays` map
+    gives is a candidate statement of the mutant or a theorem that mentions its targets. With
+    `results` (a --work directory's), every unproved candidate of a "helper" or "holds" reading
+    is accounted for (`uncovered`)."""
     errs = []
     files = {os.path.relpath(os.path.join(r, f), src) for r, _, fs in os.walk(os.path.join(src, "RueCore"))
              for f in fs if f.endswith(".lean")} | {"RueCore.lean"}
@@ -983,6 +1338,11 @@ def check(src):
         for f in texts:
             if f not in DEFINITION_FILES:
                 errs.append(f"{m['id']} edits {f}, which is not in layers {DEFINITION_LAYERS}")
+        if m["id"] not in RULINGS:
+            errs.append(f"{m['id']} has no reading in RULINGS")
+    for k in DIRECTION:
+        if k not in {m["id"] for m in MUTANTS} or DIRECTION[k] not in ("weaken", "strengthen"):
+            errs.append(f"DIRECTION[{k!r}] names no mutant, or no direction")
     for f in PROOF_FILES + WITNESS_FILES:
         t = open(os.path.join(src, f), encoding="utf-8").read()
         for w in ((False, True) if f in PROOF_FILES else (True,)):
@@ -998,7 +1358,38 @@ def check(src):
             ws = lambda x: re.sub(r"\s+", " ", x)
             if ws(sorry_proofs(once, witnesses=w)) != ws(once):
                 errs.append(f"{f}: turning the {'witnesses' if w else 'proofs'} off twice changes the file")
+    if errs:
+        return errs
+    try:
+        an = Analysis(src, {f: open(os.path.join(src, f), encoding="utf-8").read() for f in LAYER_OF})
+    except ScriptError as e:
+        return [f"{e} (run `lake build` first: the check reads the built environment)"]
+    errs += an.errors
+    thms = {short(n): d for n, d in an.stmts.items()}
+    for m in MUTANTS:
+        cands = an.candidates(m)
+        ts = set(an.targets[m["id"]])
+        for s in stays_of(m["id"]):
+            if s not in cands and not (s in thms and ts & set(thms[s]["involves"])):
+                errs.append(f"{m['id']}: RULINGS' `stays` names `{s}`, which is neither a candidate "
+                            "statement of the mutant nor a theorem that mentions its targets")
+    if results is not None:
+        errs += coverage_errors(results)
     return errs
+
+
+def print_candidates(an, ids):
+    """`--candidates`: each mutant's targets and the statements it can make false, by polarity,
+    with the positions of the falsifying occurrences."""
+    for m in MUTANTS:
+        if ids and m["id"] not in ids:
+            continue
+        c = an.candidates(m)
+        print(f"{m['id']} ({DIRECTION.get(m['id'], 'both ways')}): targets "
+              + ", ".join(x.replace("RueCore.", "") for x in an.targets[m["id"]]) + f"; {len(c)} candidate statement(s)")
+        for s, os_ in sorted(c.items(), key=lambda kv: (".Glue." in kv[0], kv[0])):
+            print(f"  {s}: " + "; ".join(sorted({f"{position(o)} ({o[1]}) via " + " → ".join(
+                x.replace("RueCore.", "") for x in o[3]) if o[3] else f"{position(o)} ({o[1]})" for o in os_})))
 
 
 def main():
@@ -1011,7 +1402,8 @@ def main():
     ap.add_argument("--gen-seed", type=int, default=7)
     ap.add_argument("--lake-cache")
     ap.add_argument("--list", action="store_true")
-    ap.add_argument("--check", action="store_true", help="only check that every edit applies")
+    ap.add_argument("--check", action="store_true", help="check the mutants and the readings (with --work, against its results)")
+    ap.add_argument("--candidates", action="store_true", help="print each mutant's candidate statements (--only to choose)")
     ap.add_argument("--table", action="store_true", help="print the results as Markdown")
     ap.add_argument("--redo", action="store_true", help="rerun mutants that already have a result")
     ap.add_argument("--score", action="store_true", help="print the score table from --work's results")
@@ -1026,15 +1418,28 @@ def main():
             print(f"{m['id']:26} {m['sect']:10} {m['op']:20} {m['rule']}")
         print(f"{len(MUTANTS)} mutants")
         return 0
+    if a.candidates:
+        try:
+            an = Analysis(src, {f: open(os.path.join(src, f), encoding="utf-8").read() for f in LAYER_OF})
+        except ScriptError as e:
+            sys.exit(f"mutate.py: {e}")
+        print_candidates(an, a.only.split(",") if a.only else None)
+        return 0
     if a.check:
-        errs = check(src)
+        results = None
+        if a.work:
+            resf = os.path.join(os.path.abspath(a.work), "results.json")
+            results = json.load(open(resf)) if os.path.exists(resf) else {}
+        errs = check(src, results)
         for e in errs:
             print("mutate.py --check: " + e)
         if errs:
             return 1
         print(f"{len(MUTANTS)} mutants apply cleanly to {src}; {len(LAYER_OF)} modules classified "
               f"({len(DEFINITION_FILES)} definition, {len(PROOF_FILES)} proof-bearing, {len(WITNESS_FILES)} tooling), "
-              "every theorem, example and #guard turned off by the proofs-off and witnesses-off copies")
+              "every theorem, example and #guard turned off by the proofs-off and witnesses-off copies, "
+              "every edit in a definition and every reading's candidates named"
+              + (", every unproved candidate accounted for" if results is not None else ""))
         return 0
     if not a.work:
         ap.error("--work is required")
@@ -1043,6 +1448,10 @@ def main():
         ap.error("--work must lie outside the package")
     resf = os.path.join(work, "results.json")
     results = json.load(open(resf)) if os.path.exists(resf) else {}
+    if a.table or a.score:
+        errs = coverage_errors(results)
+        if errs:
+            sys.exit("\n".join("mutate.py: " + e for e in errs))
     if a.table:
         print_table(results)
         return 0
@@ -1052,13 +1461,16 @@ def main():
         return 0
     os.makedirs(work, exist_ok=True)
     # A pristine copy of the sources (the package itself is never written), then one scratch
-    # package per level: 0 as it is, 1 with the L0-L2 proofs off, 2 with the witnesses off too.
+    # package per level: 0 as it is, 1 with the L0-L2 proofs off, 2 with the witnesses off too,
+    # and the spec pass's copy.
     pristine = os.path.join(work, "pristine")
     if os.path.exists(pristine):
         shutil.rmtree(pristine)
     shutil.copytree(src, pristine, ignore=shutil.ignore_patterns(".lake", "bin", "__pycache__"))
     allfiles = [os.path.relpath(os.path.join(r, f), pristine) for r, _, fs in os.walk(pristine) for f in fs]
-    pkgs = {0: os.path.join(work, "pkg"), 1: os.path.join(work, "pkg-noproofs"), 2: os.path.join(work, "pkg-corpusonly")}
+    pristine_texts = {f: open(os.path.join(pristine, f), encoding="utf-8").read() for f in LAYER_OF}
+    pkgs = {0: os.path.join(work, "pkg"), 1: os.path.join(work, "pkg-noproofs"), 2: os.path.join(work, "pkg-corpusonly"),
+            "spec": os.path.join(work, "pkg-spec")}
     todo = [m for m in MUTANTS if (not a.only or m["id"] in a.only.split(","))
             and (a.redo or m["id"] not in results or pending(results[m["id"]]))]
     bases = {}
@@ -1073,6 +1485,8 @@ def main():
                 p = os.path.join(pkg, d)
                 shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
         shutil.copytree(pristine, pkg, dirs_exist_ok=True)
+        if lv == "spec":
+            continue
         copy_pristine(pristine, pkg, [f for f in allfiles if f in LAYER_OF], lv)
         bases[lv], secs = baseline(pkg, a)
         print(f"baseline, {LEVELS[lv]}: {len(bases[lv]['seeds'])} seeds, "
@@ -1080,19 +1494,37 @@ def main():
         if diff_cases(bases[0]["gen"], bases[lv]["gen"]):
             sys.exit(f"the {LEVELS[lv]} baseline's corpus differs from the baseline's")
     try:
-        run_mutants(a, todo, results, resf, pristine, pkgs, bases, work)
+        an = Analysis(pkgs[0], pristine_texts)
+        if an.errors:
+            raise ScriptError("; ".join(an.errors[:5]))
+        # The spec copy with no mutant and every target of every mutant (so nearly every proof
+        # kept) must build with no failure: otherwise the copy itself, not a mutant, breaks a proof.
+        an.targets[SPEC_BASELINE["id"]] = sorted({x for ts in an.targets.values() for x in ts})
+        sb = spec_pass(an, SPEC_BASELINE, pkgs["spec"], {}, pristine_texts, {})
+        if sb.get("killed") != "none" or sb["failed"]:
+            raise ScriptError(f"the spec copy fails with no mutant: {sb.get('detail')}; failed: {sb['failed'][:5]}")
+        print(f"baseline, spec pass: {sum(len(v) for v in an.theorems.values())} theorems of layers 0-3, "
+              f"{sum(1 for n in an.stmts if n.startswith(STATEMENT_PREFIXES))} statements traced, "
+              f"build {sb['build_s']}s", flush=True)
+        run_mutants(a, todo, results, resf, pristine, pkgs, bases, work, an, pristine_texts)
     except ScriptError as e:
         print(f"mutate.py: script error, stopping: {e}", flush=True)
         return 1
     return 0
 
 
-def run_mutants(a, todo, results, resf, pristine, pkgs, bases, work):
+# The spec pass's baseline: no edit, and every target of every mutant.
+SPEC_BASELINE = {"id": "_baseline", "edits": []}
+
+
+def run_mutants(a, todo, results, resf, pristine, pkgs, bases, work, an, pristine_texts):
     for m in todo:
         t0 = time.time()
         texts = mutated_texts(pristine, m)
         r = {} if a.redo else results.get(m["id"], {})
         r.update(id=m["id"], sect=m["sect"], rule=m["rule"], op=m["op"], note=m["note"])
+        cands = an.candidates(m)
+        r["candidates"] = {s: sorted({position(o) for o in os_}) for s, os_ in sorted(cands.items())}
         lv = 0
         while lv is not None:
             key = PASS_KEYS[lv]
@@ -1106,11 +1538,18 @@ def run_mutants(a, todo, results, resf, pristine, pkgs, bases, work):
                     r.update(res)
                 else:
                     r[key] = res
+            if lv == 0 and r["killed"] == "proof" and (a.redo or "spec" not in r):
+                r["spec"] = spec_pass(an, m, pkgs["spec"], texts, pristine_texts, cands)
             lv = next_level(r, lv)
         r["total_s"] = r.get("total_s", 0) + round(time.time() - t0) if not a.redo else round(time.time() - t0)
         results[m["id"]] = r
         json.dump(results, open(resf, "w"), indent=1, ensure_ascii=False)
-        line = f"{m['id']:26} {r['killed']:9} {r.get('detail', '')[:100]}"
+        line = f"{m['id']:26} {first_kill(r):9} {r.get('detail', '')[:100]}"
+        if "spec" in r:
+            line += f"\n{'':26} spec: {r['spec']['killed']}  {r['spec'].get('detail', '')[:200]}"
+        line += f"\n{'':26} candidates: {len(cands)}" + (": " + ", ".join(
+            f"{s} ({'/'.join(r['candidates'][s])})" for s in list(r["candidates"])[:8])
+            + (" …" if len(cands) > 8 else "") if cands else "")
         for k in (PASS_KEYS[1], PASS_KEYS[2]):
             if k in r:
                 line += f"\n{'':26} {k}: {r[k]['killed']}  {r[k].get('detail', '')[:100]}"
@@ -1124,7 +1563,8 @@ PASS_KEYS = {0: "", 1: "without_proofs", 2: "corpus_only"}
 
 def next_level(r, lv):
     """The next pass a mutant needs: after a proof kill, the proofs-off pass; after a witness
-    kill (at either level), the pass with the witnesses off too."""
+    kill (at either level), the pass with the witnesses off too. (The spec pass runs beside
+    the proofs-off pass, after a proof kill; `run_mutants`.)"""
     k = r["killed"] if lv == 0 else r[PASS_KEYS[lv]]["killed"]
     if lv == 0 and k == "proof":
         return 1
@@ -1135,7 +1575,7 @@ def next_level(r, lv):
 
 def pending(r):
     lv = 0
-    if not r.get("killed"):
+    if not r.get("killed") or "candidates" not in r or (r["killed"] == "proof" and "spec" not in r):
         return True
     while True:
         lv = next_level(r, lv)
@@ -1145,8 +1585,49 @@ def pending(r):
             return True
 
 
+def first_kill(r):
+    """The mutant's first killer in the order of the docstring: `spec` when the spec pass left
+    a candidate statement unproved, else the first pass's result."""
+    return "spec" if r.get("spec", {}).get("killed") == "spec" else r["killed"]
+
+
 READING = {"statement": "a stated property is false", "helper": "only a helper is false",
            "holds": "every statement holds", "equivalent": "equivalent"}
+
+
+def stmt_list(names, cands, n=3):
+    """Statement names for a cell: the spine, witness and sharpness statements first, each with
+    its falsifying positions, then a count of the rest and of the `Glue` theorems."""
+    main = [s for s in names if ".Glue." not in s]
+    glue = len(names) - len(main)
+    out = ", ".join(f"`{s}` ({'/'.join(cands.get(s, []))})" for s in main[:n])
+    more = []
+    if len(main) > n:
+        more.append(f"{len(main) - n} more")
+    if glue:
+        more.append(f"{glue} Glue")
+    return out + (f" +{' +'.join(more)}" if more else "") if out else (" +".join(more) if more else "")
+
+
+def spec_cell(r):
+    """The spec pass, for the table: unproved candidates over all candidates, and the failed
+    proofs they rest on."""
+    sp = r.get("spec")
+    n = len(r.get("candidates", {}))
+    if not sp:
+        return f"0/{n}"
+    if sp["killed"] in ("definition", "blocked"):
+        return f"{sp['killed']}: {sp.get('detail', '')}"
+    u = sp.get("unproved", {})
+    via = []
+    for fs in u.values():
+        for f in fs:
+            if f not in via:
+                via.append(f)
+    s = f"{len(u)}/{n}"
+    if via:
+        s += "; via " + ", ".join(f"`{f}`" for f in via[:3]) + (f" +{len(via) - 3}" if len(via) > 3 else "")
+    return s
 
 
 def cell(v):
@@ -1179,6 +1660,12 @@ def cell(v):
     return k
 
 
+def first_cell(r):
+    if first_kill(r) == "spec":
+        return "spec: " + stmt_list(list(r["spec"]["unproved"]), r.get("candidates", {}))
+    return cell(r)
+
+
 def test_kill(r):
     """What the tests say with the proofs off: the first of witness / Explain mirror / corpus /
     bridge / survived / definition once proof failures are set aside."""
@@ -1195,31 +1682,47 @@ def corpus_kill(r):
 def killed(r):
     """The page's kill: a stated property is false for the mutant, or a witness, a seed or a
     generated case fails on it. A proof script, a helper lemma and the Explain mirror are not
-    kills by themselves."""
+    kills by themselves, and neither is an unproved statement (the spec pass) by itself: the
+    reading says whether it is false."""
     return RULINGS[r["id"]][0] == "statement" or test_kill(r) in ("witness", "corpus", "bridge") \
         or corpus_kill(r) in ("corpus", "bridge")
 
 
+BLOCKS = (("All", lambda k: True),
+          ("The semantics and the checker", lambda k: k not in DIRECTION),
+          ("The statement vocabulary", lambda k: k in DIRECTION))
+
+
 def print_score(results, before=None):
-    """MUTATION.md's score table, from results.json (and, with --before, from a run on the sources
-    without the seeds RUE-2465 added, over the mutants those seeds could affect)."""
+    """MUTATION.md's score table, from results.json: every mutant, then the semantics and the
+    checker (the mutants with no `DIRECTION`) and the statement vocabulary (RUE-2490's and
+    RUE-2500's) apart; with --before, a first column from a run on the sources without the
+    seeds RUE-2465 added."""
     ids = [m["id"] for m in MUTANTS if m["id"] in results]
     eq = [k for k in ids if RULINGS[k][0] == "equivalent"]
     live = [k for k in ids if k not in eq]
-    n = len(live)
     rs = {k: results[k] for k in live}
-    bs = {k: (before.get(k, results[k]) if before else results[k]) for k in live}
+    cols = [(label, [k for k in live if sel(k)]) for label, sel in BLOCKS]
+    bs = {k: before.get(k, results[k]) for k in live} if before else None
 
-    def row(label, f, pre=True):
-        a = sum(1 for k in live if f(rs[k]))
-        b = sum(1 for k in live if f(bs[k])) if before and pre else None
-        pct = lambda x: f"{x}/{n} ({round(100 * x / n)}%)"
-        print(f"| {label} | {pct(b) if b is not None else '—'} | {pct(a)} |")
-    print(f"{len(ids)} mutants, {len(eq)} equivalent ({', '.join(eq)}): the denominator is {n}.\n")
-    print("| Measure | Before the six seeds | After |")
-    print("|---|---:|---:|")
+    def row(label, f):
+        cells = []
+        if before:
+            ks = cols[0][1]
+            x = sum(1 for k in ks if f(bs[k]))
+            cells.append(f"{x}/{len(ks)} ({round(100 * x / len(ks))}%)")
+        for _, ks in cols:
+            x = sum(1 for k in ks if f(rs[k]))
+            cells.append(f"{x}/{len(ks)} ({round(100 * x / len(ks))}%)" if ks else "—")
+        print(f"| {label} | " + " | ".join(cells) + " |")
+    print(f"{len(ids)} mutants, {len(eq)} equivalent ({', '.join(eq)}): the denominator is {len(live)} "
+          f"({', '.join(f'{len(ks)} {label.lower()}' for label, ks in cols[1:])}).\n")
+    heads = (["All, before the six seeds"] if before else []) + [label for label, _ in cols]
+    print("| Measure | " + " | ".join(heads) + " |")
+    print("|---|" + "---:|" * len(heads))
     row("**Killed: a stated property is false, or a witness, seed or generated case fails**", killed)
     row("A stated property is false (proof reading)", lambda r: RULINGS[r["id"]][0] == "statement")
+    row("A candidate statement is unproved under the mutant (the spec pass)", lambda r: first_kill(r) == "spec")
     row("A stated property or a helper lemma is false", lambda r: RULINGS[r["id"]][0] in ("statement", "helper"))
     row("The tests with the proofs off: witnesses, seeds, generated cases", lambda r: test_kill(r) in ("witness", "corpus", "bridge") or corpus_kill(r) in ("corpus", "bridge"))
     row("The seeds and the bridge alone", lambda r: corpus_kill(r) in ("corpus", "bridge"))
@@ -1227,6 +1730,9 @@ def print_score(results, before=None):
     print()
     notk = [k for k in live if not killed(rs[k])]
     for label, sel in (("Not killed", notk),
+                       ("A statement is false, and the spec pass left it unproved", [k for k in live if RULINGS[k][0] == "statement" and first_kill(rs[k]) == "spec"]),
+                       ("A statement is false, and the spec pass left no candidate unproved", [k for k in live if RULINGS[k][0] == "statement" and first_kill(rs[k]) != "spec"]),
+                       ("The spec pass left a candidate unproved, and the reading says it holds (`stays`)", [k for k in ids if first_kill(results[k]) == "spec" and RULINGS[k][0] != "statement"]),
                        ("Killed by a proof script only (every statement holds)",
                         [k for k in live if rs[k]["killed"] == "proof" and RULINGS[k][0] == "holds" and test_kill(rs[k]) not in ("witness", "corpus", "bridge") and corpus_kill(rs[k]) not in ("corpus", "bridge")]),
                        ("Killed by a helper lemma only", [k for k in live if RULINGS[k][0] == "helper" and not killed(rs[k])]),
@@ -1234,26 +1740,44 @@ def print_score(results, before=None):
                        ("Missed by the seeds and the bridge", [k for k in live if corpus_kill(rs[k]) not in ("corpus", "bridge")]),
                        ("Failed in the Explain mirror", [k for k in ids if "mirror" in (results[k]["killed"], results[k].get("without_proofs", {}).get("killed"))]),
                        ("Before the seeds, not killed", [k for k in live if before and not killed(bs[k])])):
+        if label.startswith("Before") and not before:
+            continue
         print(f"- {label}: {len(sel)}" + (": " + ", ".join(f"`{k}`" for k in sel) if sel else ""))
 
 
 def print_table(results):
-    """MUTATION.md's table: each mutant's first killer, the proofs-off and corpus-only passes
+    """MUTATION.md's table: each mutant's first killer, the spec pass (unproved candidates over
+    candidates, and the failed proofs they rest on), the proofs-off and corpus-only passes
     ("—" where the pass did not run, "(same)" where the earlier pass already ended at the corpus,
-    the bridge or `survived`), the reading of the mutant (`RULINGS`) and the wall time."""
+    the bridge or `survived`), the reading of the mutant (`RULINGS`) and the wall time; then,
+    for the mutants with a direction, every candidate statement and where the definition
+    occurs in it."""
     order = {m["id"]: i for i, m in enumerate(MUTANTS)}
-    print("| # | Mutant | § | Rule | Operator | Killed first by | Without the proofs | Corpus and bridge alone "
-          "| Stated properties | Why | s |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|")
-    for i, (k, r) in enumerate(sorted(results.items(), key=lambda kv: order.get(kv[0], 999)), 1):
+    rows = sorted(results.items(), key=lambda kv: order.get(kv[0], 999))
+    print("| # | Mutant | § | Rule | Operator | Killed first by | Spec pass: unproved/candidates | Without the proofs "
+          "| Corpus and bridge alone | Stated properties | Why | s |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    for i, (k, r) in enumerate(rows, 1):
         wp = cell(r.get("without_proofs")) or "—"
         co = cell(r.get("corpus_only"))
         if not co:
             last = r.get("without_proofs", r)["killed"]
             co = "(same)" if last in ("corpus", "bridge", "survived") else "—"
-        reading, why = RULINGS.get(k, ("", ""))
-        print(f"| {i} | `{k}` | {r['sect']} | {r['rule']} | {r['op']} | {cell(r)} | {wp} | {co} "
+        reading, why = RULINGS.get(k, ("", ""))[:2]
+        print(f"| {i} | `{k}` | {r['sect']} | {r['rule']} | {r['op']} | {first_cell(r)} | {spec_cell(r)} | {wp} | {co} "
               f"| {READING.get(reading, reading)} | {why} | {r.get('total_s', '')} |")
+    print()
+    print("| # | Mutant | Direction | Candidate statements (position of the definition; **unproved** under the mutant) |")
+    print("|---|---|---|---|")
+    for i, (k, r) in enumerate(rows, 1):
+        if k not in DIRECTION:
+            continue
+        u = r.get("spec", {}).get("unproved", {})
+        cs = sorted(r.get("candidates", {}).items(), key=lambda kv: (".Glue." in kv[0], kv[0]))
+        main = [f"{'**' if s in u else ''}`{s}`{'**' if s in u else ''} ({'/'.join(p)})" for s, p in cs if ".Glue." not in s]
+        glue = [s for s, _ in cs if ".Glue." in s]
+        gl = f"; {len(glue)} Glue ({sum(1 for s in glue if s in u)} unproved)" if glue else ""
+        print(f"| {i} | `{k}` | {DIRECTION[k]} | {', '.join(main) or 'none'}{gl} |")
 
 
 if __name__ == "__main__":
