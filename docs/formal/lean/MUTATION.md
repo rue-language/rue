@@ -24,6 +24,9 @@ compiler; this page applies it to the Lean definitions.
 Measured on trunk `c2fe428ff` (2026-09-25), with the six seeds this page adds
 (RUE-2465), and again without them for the mutants the seeds could affect
 ("Mutation score").
+The non-vacuity witnesses of RUE-2469 landed after this measurement.
+They add proofs and witnesses, never remove them, so a rerun with them can
+only kill more; the table and score below predate them.
 
 ## What is mutated
 
@@ -303,7 +306,7 @@ Counted apart:
   refuses meets that. The refusal witnesses in `Examples.lean`,
   `Corpus.lean` and `Trace.lean` kill all four, and the seeds whose expected
   outcome is that refusal kill three. This is the red-team log's R3
-  (RUE-2469), measured.
+  (RUE-2485), measured.
 * **Trace-only mutants are invisible to the bridge by construction.**
   `seq-droptemp-skip`, `residue-mark-skip` and `match-consume-skip` remove a
   drop mark or a `consume` event, and none of these is an output line.
