@@ -239,7 +239,7 @@ theorem RueCore.Float.ofLit_wf (w : FloatWidth) (m : Nat) (ne : Bool) (e : Nat) 
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**A NaN operand yields a NaN** for `exactOps` (`FloatModel.arith_nan`): the operand is propagated.
+**A NaN operand yields a NaN** (§6.4) for `exactOps` (`FloatModel.arith_nan`): the operand is propagated.
 
 ```lean
 theorem RueCore.Float.arith_nan (σ : Bool) (w : FloatWidth) (op : FloatArith)
@@ -251,7 +251,7 @@ theorem RueCore.Float.arith_nan (σ : Bool) (w : FloatWidth) (op : FloatArith)
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**A cast of a NaN is a NaN** for `exactOps` (`FloatModel.narrow_nan`).
+**A cast of a NaN is a NaN** (§6.4, `3.12:19`) for `exactOps` (`FloatModel.narrow_nan`).
 
 ```lean
 theorem RueCore.Float.narrow_nan (f : FloatDatum) (h : f.isNaN = true) :
@@ -2651,7 +2651,7 @@ theorem RueCore.step_type_safety (M : FloatModel) {P : Program} (h : ProgramType
 
 *theorem* · module `RueCore.Nonvacuous`
 
-`Spec.Nonvacuous.exact_model_stmt`, proved.
+`Spec.Nonvacuous.exact_model_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
 
 ```lean
 theorem RueCore.Nonvacuous.exact_model : ∃ M, M.toFloatOps = Float.exactOps
@@ -2661,7 +2661,7 @@ theorem RueCore.Nonvacuous.exact_model : ∃ M, M.toFloatOps = Float.exactOps
 
 *theorem* · module `RueCore.Nonvacuous`
 
-`Spec.Nonvacuous.empty_frame_stmt`, proved.
+`Spec.Nonvacuous.empty_frame_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
 
 ```lean
 theorem RueCore.Nonvacuous.empty_frame (D : Decls) :
@@ -2672,7 +2672,7 @@ theorem RueCore.Nonvacuous.empty_frame (D : Decls) :
 
 *theorem* · module `RueCore.Nonvacuous`
 
-`Spec.Nonvacuous.dtor_stmt`, proved.
+`Spec.Nonvacuous.dtor_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
 
 ```lean
 theorem RueCore.Nonvacuous.dtor (B : Expr) :
@@ -2737,7 +2737,7 @@ theorem RueCore.Nonvacuous.dtor (B : Expr) :
 
 *theorem* · module `RueCore.Nonvacuous`
 
-`Spec.Nonvacuous.linear_stmt`, proved.
+`Spec.Nonvacuous.linear_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
 
 ```lean
 theorem RueCore.Nonvacuous.linear (B : Expr) :
@@ -2785,7 +2785,7 @@ theorem RueCore.Nonvacuous.linear (B : Expr) :
 
 *theorem* · module `RueCore.Nonvacuous`
 
-`Spec.Nonvacuous.loop_stmt`, proved.
+`Spec.Nonvacuous.loop_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
 
 ```lean
 theorem RueCore.Nonvacuous.loop (B : Expr) :
@@ -2837,7 +2837,7 @@ theorem RueCore.Nonvacuous.loop (B : Expr) :
 
 *theorem* · module `RueCore.Nonvacuous`
 
-`Spec.Nonvacuous.array_stmt`, proved.
+`Spec.Nonvacuous.array_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
 
 ```lean
 theorem RueCore.Nonvacuous.array (B : Expr) :
@@ -2885,7 +2885,7 @@ theorem RueCore.Nonvacuous.array (B : Expr) :
 
 *theorem* · module `RueCore.Nonvacuous`
 
-`Spec.Nonvacuous.enum_match_stmt`, proved.
+`Spec.Nonvacuous.enum_match_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
 
 ```lean
 theorem RueCore.Nonvacuous.enum_match (B : Expr) :
@@ -2934,7 +2934,7 @@ theorem RueCore.Nonvacuous.enum_match (B : Expr) :
 
 *theorem* · module `RueCore.Nonvacuous`
 
-`Spec.Nonvacuous.early_return_stmt`, proved.
+`Spec.Nonvacuous.early_return_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
 
 ```lean
 theorem RueCore.Nonvacuous.early_return (B : Expr) :
@@ -2983,7 +2983,7 @@ theorem RueCore.Nonvacuous.early_return (B : Expr) :
 
 *theorem* · module `RueCore.Nonvacuous`
 
-`Spec.Nonvacuous.panic_stmt`, proved.
+`Spec.Nonvacuous.panic_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
 
 ```lean
 theorem RueCore.Nonvacuous.panic (B : Expr) :
@@ -3030,7 +3030,7 @@ theorem RueCore.Nonvacuous.panic (B : Expr) :
 
 *theorem* · module `RueCore.Nonvacuous`
 
-`Spec.Nonvacuous.float_stmt`, proved.
+`Spec.Nonvacuous.float_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
 
 ```lean
 theorem RueCore.Nonvacuous.float (B : Expr) :
@@ -3081,7 +3081,7 @@ theorem RueCore.Nonvacuous.float (B : Expr) :
 
 *theorem* · module `RueCore.Nonvacuous`
 
-`Spec.Nonvacuous.diverges_stmt`, proved.
+`Spec.Nonvacuous.diverges_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
 
 ```lean
 theorem RueCore.Nonvacuous.diverges (P : Program) :
@@ -3098,7 +3098,7 @@ theorem RueCore.Nonvacuous.diverges (P : Program) :
 
 *theorem* · module `RueCore.Nonvacuous`
 
-`Spec.Nonvacuous.stuck_stmt`, proved.
+`Spec.Nonvacuous.stuck_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
 
 ```lean
 theorem RueCore.Nonvacuous.stuck (B : Expr) :
@@ -25626,7 +25626,7 @@ def RueCore.Spec.step_type_safety_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Witnesses`
 
-**A checked program with an array** (construct class: arrays; the corpus
+**A checked program with an array** (§6.5, §6.11; construct class: arrays; the corpus
 cases `array_drop_order` and `array_dyn_read_below`). `let a = [S0 { 1 }, S0 {
 2 }]; a[1].x0`, a dynamic-index read of a `Copy` leaf below an array of
 destructor-bearing elements, is accepted and typed; its run returns, reached
@@ -25680,7 +25680,7 @@ def RueCore.Spec.Nonvacuous.array_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Witnesses`
 
-**A checked program that drops two values with destructors** (construct
+**A checked program that drops two values with destructors** (§6.11, §7; construct
 class: destructors; the corpus case `affine_scope_drop`, with two bindings). The program `let a = S0 { 1 }; let b = S0 { 2 }; 3`, over an affine
 `S0` that declares a destructor, is accepted, is `ProgramTyped` and
 `pendingSafe`, and its body is typed by `check`. Its run returns, reached by
@@ -25757,7 +25757,7 @@ def RueCore.Spec.Nonvacuous.dtor_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Witnesses`
 
-**A checked program with an early `return`** (construct class: early
+**A checked program with an early `return`** (§6.9; construct class: early
 `return`; the corpus case `return_past_affine`). `let a = S0 { 1 }; let b = S0
 { 2 }; return 7; 0` is accepted and typed; its run returns `7` as an ordinary
 value (the call boundary absorbs the unwind, which is what `run_ne_returned`
@@ -25812,7 +25812,7 @@ def RueCore.Spec.Nonvacuous.early_return_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Witnesses`
 
-**A checked program with an enum and a `match`** (construct class: enums with
+**A checked program with an enum and a `match`** (§5.5, §6.6; construct class: enums with
 `match`; the corpus case `enum_match_affine`). `let e = E0::K0(S0 { 1 }); match
 e { K0(s) => s.x0, K1 => 0 }` is accepted and typed; its run returns, reached
 by `Step`, and its trace frees two identities (the scrutinee's shell,
@@ -25868,7 +25868,7 @@ def RueCore.Spec.Nonvacuous.enum_match_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Witnesses`
 
-**A checked program that computes with floats** (construct class: floats;
+**A checked program that computes with floats** (§6.4; construct class: floats;
 the corpus case `float_arith`). `let x = 1.5 + 2.25; x * 2.0` at `f64` is
 accepted and typed; run on `Float.exactOps` it returns `7.5`, the datum `15 ·
 2^-1`, reached by `Step`.
@@ -25925,7 +25925,7 @@ def RueCore.Spec.Nonvacuous.float_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Witnesses`
 
-**A checked program with a declared-linear value** (construct class:
+**A checked program with a declared-linear value** (§5.6, §7; construct class:
 declared-linear values; the corpus case `linear_explicit_drop`'s shape). `let x
 = S1 { 1 }; let y = S0 { 2 }; @drop(x); 3`, with `S1` declared `linear`, is
 accepted and typed; its run returns, reached by `Step`, and its trace frees
@@ -25979,7 +25979,7 @@ def RueCore.Spec.Nonvacuous.linear_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Witnesses`
 
-**A checked program with a loop that turns three times** (construct class:
+**A checked program with a loop that turns three times** (§5.7, §6.10; construct class:
 loops; the corpus case `loop_counted`'s shape). A counted loop over a `mut`
 counter, breaking once it reaches `3`, whose body binds an affine `S0` each
 turn, is accepted and typed; its run returns, reached by `Step`, and its trace
