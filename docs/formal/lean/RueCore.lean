@@ -22,6 +22,7 @@ import RueCore.Trace
 import RueCore.Adequacy
 import RueCore.TraceExact
 import RueCore.TraceOrder
+import RueCore.Retire
 import RueCore.Witnesses
 import RueCore.Examples
 import RueCore.Print
