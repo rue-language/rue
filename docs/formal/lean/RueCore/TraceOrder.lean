@@ -1397,6 +1397,39 @@ theorem Blocks.drop_inv {D : Decls} {ℓ : Nat} {c : Contents} {t : List Event}
   cases h with
   | drop h' => exact ⟨_, rfl, h'⟩
 
+mutual
+/-- **§6.11's rules determine a drop's events** (RUE-2487): two derivations of
+`DropGlue` for one contents give the same events. Stated without `dropEvents`,
+so it says the rules themselves fix the order (helper). -/
+theorem DropGlue.det {D : Decls} : ∀ {c : Contents} {e₁ e₂ : List Event},
+    DropGlue D c e₁ → DropGlue D c e₂ → e₁ = e₂
+  | _, _, _, .hole, .hole | _, _, _, .int, .int | _, _, _, .float, .float
+  | _, _, _, .bool, .bool | _, _, _, .unit, .unit => rfl
+  | _, _, _, .struct hd₁ _ hl₁, .struct hd₂ _ hl₂ => DropGlueSeq.det hl₁ hl₂
+  | _, _, _, .structDtor hd₁ _ hl₁, .structDtor hd₂ _ hl₂ => by
+      rw [DropGlueSeq.det hl₁ hl₂]
+  | _, _, _, .struct hd₁ h₁ _, .structDtor hd₂ h₂ _ => by
+      rw [hd₁] at hd₂; cases hd₂; rw [h₁] at h₂; cases h₂
+  | _, _, _, .structDtor hd₁ h₁ _, .struct hd₂ h₂ _ => by
+      rw [hd₁] at hd₂; cases hd₂; rw [h₁] at h₂; cases h₂
+  | _, _, _, .array hl₁, .array hl₂ => DropGlueSeq.det hl₁ hl₂
+  | _, _, _, .enum hl₁, .enum hl₂ => DropGlueSeq.det hl₁ hl₂
+
+/-- The same over a list (helper). -/
+theorem DropGlueSeq.det {D : Decls} : ∀ {cs : List Contents} {e₁ e₂ : List Event},
+    DropGlueSeq D cs e₁ → DropGlueSeq D cs e₂ → e₁ = e₂
+  | _, _, _, .nil, .nil => rfl
+  | _, _, _, .cons h₁ t₁, .cons h₂ t₂ => by rw [DropGlue.det h₁ h₂, DropGlueSeq.det t₁ t₂]
+end
+
+/-- A drop marker in §6.11's own grammar is followed by one `DropGlue` walk of
+what it names (helper). -/
+theorem GlueBlocks.drop_inv {D : Decls} {ℓ : Nat} {c : Contents} {t : List Event}
+    (h : GlueBlocks D (.drop ℓ c :: t)) :
+    ∃ evs t', DropGlue D c evs ∧ t = evs ++ t' ∧ GlueBlocks D t' := by
+  cases h with
+  | drop hg h' => exact ⟨_, _, hg, rfl, h'⟩
+
 /-- **No destructor outside a drop**: a trace that opens with a destructor
 event is not in the grammar (§6.11). -/
 theorem Blocks.not_dtor {D : Decls} {s : Nat} {c : Contents} {t : List Event} :
