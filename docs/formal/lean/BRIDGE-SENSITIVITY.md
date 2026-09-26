@@ -4,16 +4,16 @@ The bridge (ADR-0097; [README.md](README.md), "The bridge corpus") compares
 the compiler with the Lean model on every corpus case. Its agreement rate
 says the compiler and the model agree on those cases. It does not say the
 cases would notice a compiler that is wrong. This page measures that
-**sensitivity** (RUE-2464). We put known bugs back into scratch copies of the
+**mutation score** (RUE-2464). We put known bugs back into scratch copies of the
 compiler, one at a time, and ask whether the seed corpus or the generator
 catches each one. This is mutation analysis (DeMillo, Lipton & Sayward,
 "Hints on Test Data Selection", 1978) applied to the bridge's corpus, with
 real, historical compiler bugs as most of the mutants.
 
-We say a mutant is **caught** when at least one case disagrees with the model
+We say a mutant is **killed** when at least one case disagrees with the model
 under it. The mutation-testing literature says *killed*, and calls the
-fraction killed the *mutation score*. [FIELD.md](../FIELD.md) does not list
-those terms yet.
+fraction killed the *mutation score* ([FIELD.md](../FIELD.md) §7, Jia & Harman
+§II.B).
 
 Measured on trunk `f4ac09fc9` (2026-09-25), before the three seeds this page
 adds. The rule coverage is measured after them.
@@ -68,7 +68,7 @@ aside the same way in that section's reruns.
 
 **Checking the mutants themselves.** A mutant that changes no behaviour
 (an *equivalent* mutant) would count as a miss that means nothing. So we ran
-every mutant that nothing caught on its bug's own reproducer:
+every mutant that nothing killed on its bug's own reproducer:
 
 * the fix's spec case, or
 * the issue's repro.
@@ -132,7 +132,7 @@ truly equivalent) and `h2438` (not shown live, on weaker evidence). See
 | All 21 mutants, seeds + 1,200 generated, per-case test plus the full harness on misses | 18 | **86%** |
 | All 21, per-case stdout-and-exit test only | 17 | 81% |
 | The 20 mutants whose shape is in the fragment | 18 | 90% |
-| The 20, after this page's three seeds (the seeds were written for these mutants; h2380's is caught only at -O2 or by the harness) | 20 | 100% |
+| The 20, after this page's three seeds (the seeds were written for these mutants; h2380's is killed only at -O2 or by the harness) | 20 | 100% |
 | The 11 in-fragment historical mutants, **not counting a bug's own regression seed** | 4 (`h2345`, `h2347`, `h2290`, `h2449`) | 36% |
 | The 9 classic mutants | 9 | 100% |
 | The generator alone (1,200 programs), all 21 (one, `c-overflow-kind`, only by the full harness) | 11 | 52% |
@@ -147,10 +147,10 @@ twelve.
 ### What the numbers say
 
 * **The seeds are strong regression memory and a weaker detector.** Seven of
-  the eleven were caught by nothing but their own regression seed (five:
+  the eleven were killed by nothing but their own regression seed (five:
   `h2318`, `h2335b`, `h2341`, `h2344`, `h2450`) or not at all (two: `h2335`,
   `h2380`). Those seeds do their job, since a reintroduced bug fails at once.
-  But the corpus as it stood before each bug would have caught only four of
+  But the corpus as it stood before each bug would have killed only four of
   the eleven.
 * **The generator reaches ownership and drop-glue bugs quickly, but not
   every shape.** It catches every drop-flag and verifier mutant in 118
@@ -170,7 +170,7 @@ twelve.
     native` comparison sees it.
   * `h2380` shows only at `-O2` and `-O3`. The per-case test compiles at the
     default level, so it cannot see this mutant even with a seed; the new
-    seed `loop_move_out_then_reinit` is caught by the harness's O2/O3
+    seed `loop_move_out_then_reinit` is killed by the harness's O2/O3
     compile lanes (`checker <-> compiler [O2]`) and by the per-case test at
     `-O2`.
 
@@ -382,8 +382,8 @@ accepted programs at seed 7, and 51 of the 569 at seed 23, print any
 destructor line. Among the seeds it is 76 of 140. A drop that prints nothing
 is invisible to the bridge. That is why two drop mutants got past 1,200
 generated programs: `c-skip-overwrite-drop` and `c-reverse-scope-drops`. The
-same mutants are caught by the seeds, where destructors print. `h2335`'s
-miss is different: it is a sema-acceptance mutant, caught by no existing
+same mutants are killed by the seeds, where destructors print. `h2335`'s
+miss is different: it is a sema-acceptance mutant, killed by no existing
 seed and by nothing that prints a destructor; the new seed catches it
 through the verdict (the compiler accepts what the checker rejects), and
 the generator missed it for its shape, not because drops are invisible.
@@ -478,7 +478,7 @@ not fixed:
   ICE, not an unsound accept) from RUE-2346.
 
 Both are set aside next to `array_elem_self_assign` when reproducing this
-section's drills (below).
+section's real-fault mutation runs (below).
 
 ## Distinct identities and two more drawn shapes (RUE-2505)
 
@@ -486,7 +486,7 @@ Follow-up to the two costs above: field 0 forced to `int` lost a shape, and
 colliding values hid a swap even where two destructor-bearing locals did end
 the same block (RUE-2480's comment above, "Two new unmutated disagreements"'s
 review). Both are fixed, and `c-reverse-scope-drops`, `h2335` (root half) and
-`h2335b` — the three RUE-2480 left seed-only — are now caught by the
+`h2335b` — the three RUE-2480 left seed-only — are now killed by the
 generated corpus too, at `--gen 200 --seed 7`.
 
 **Distinct identities.** `genDecl` no longer forces field 0; instead, a
@@ -625,7 +625,7 @@ below for why):
 
 | Mutant | After RUE-2480 | After RUE-2505 |
 |---|---|---|
-| `c-skip-overwrite-drop` | seeds unchanged; generator catches it, `gen_23_689` | confirmed still caught: seeds unchanged (`affine_overwrite`), generator catches it on the regenerated corpus too, `gen_23_476` (`--gen 1000 --seed 23`; `--gen 200 --seed 7` alone does not, as before) |
+| `c-skip-overwrite-drop` | seeds unchanged; generator catches it, `gen_23_689` | confirmed still killed: seeds unchanged (`affine_overwrite`), generator catches it on the regenerated corpus too, `gen_23_476` (`--gen 1000 --seed 23`; `--gen 200 --seed 7` alone does not, as before) |
 | `c-reverse-scope-drops` | seeds only (`enum_two_payload_bindings`) | generator catches it too: `gen_7_27` (`--gen 200 --seed 7`), a `match` arm binding two destructor-bearing payload locals (`pairDtorBlock`) — a **printed-output** difference: the reversed drop order swaps two distinct printed lines |
 | `h2335` (root half) | seeds only (`destructure_root_through_moved_part`) | generator catches it too: `gen_7_3` (`--gen 200 --seed 7`), the declared-linear chain (`rootThroughMovedStmt`) — an **accept/reject verdict mismatch**: the model rejects, the mutant compiler wrongly accepts; the printed leaf values (fixed `leafVal` literals) are incidental, not the detection mechanism |
 | `h2335b` | seeds only (`destructure_ancestor_dropped`) | generator catches it too: `gen_7_10` (`--gen 200 --seed 7`), the declared-linear chain (`ancestorDroppedStmt`) — also an **accept/reject verdict mismatch**: the model accepts, the mutant compiler wrongly rejects |
@@ -647,10 +647,10 @@ byte-for-byte the same source and verdict as before (neither ever exercises
 touch them, and S2 changes nothing for a generated program whose id fields
 were already all real, which both are). `gen_7_27` does exercise the
 fallback (above), so its printed source changed — the two `leastValue`d `S0`
-array elements print `-1` instead of colliding `0`s — but the pair the drill
-needs, the match's own `v0`/`v1` (ids `0` and `2`), was never one of those
+array elements print `-1` instead of colliding `0`s — but the pair the
+real-fault mutation run needs, the match's own `v0`/`v1` (ids `0` and `2`), was never one of those
 three and stays distinct either way, matching the review's own reading. All
-three were rerun with `drill.sh` after the fix and still caught, at the same
+three were rerun with `drill.sh` after the fix and still killed, at the same
 case names.
 
 **Confirming the unmutated compiler** still agrees, on the *regenerated*
@@ -732,14 +732,14 @@ a compiler finding.
 
 ## Follow-ups
 
-Every miss has a follow-up. Mutants caught only by their own seed, and one
+Every miss has a follow-up. Mutants killed only by their own seed, and one
 blind spot, get a generator or tooling proposal too.
 
 | Mutant | Follow-up | Kind |
 |---|---|---|
 | `h2335` (root half) | `destructure_root_through_moved_part`: three declared-linear levels, `@drop(y.x0)` after `y.x0.x0.x0`. The checker rejects it; the mutant accepts it | seed, added here |
 | `h2380` | `loop_move_out_then_reinit`: a counted loop that moves `mut b` into `t` and reinitializes `b`. The mutant ICEs at `-O2`; the harness's O2/O3 compile lanes, and the per-case test at `-O2`, catch it | seed, added here |
-| `c-bounds-off-by-one` (no seed caught it) | `array_bounds_trap_at_len`: reads at `len - 1` and then at `len`. The other bounds seeds index further past the end, or into a zero-length array, which does not go through the length compare | seed, added here |
+| `c-bounds-off-by-one` (no seed killed it) | `array_bounds_trap_at_len`: reads at `len - 1` and then at `len`. The other bounds seeds index further past the end, or into a zero-length array, which does not go through the length compare | seed, added here |
 | `h2442` | named constants and comptime parameters are outside the fragment | scope note |
 | `c-skip-overwrite-drop`, `c-reverse-scope-drops` (generator 0 of 1,200) | done (RUE-2480, above): every generated destructor-bearing struct gets an integer id. Caught `c-skip-overwrite-drop` (`gen_23_689`); `c-reverse-scope-drops` needed its own shape too (below) | generator issue, done |
 | `c-reverse-scope-drops` (still generator 0 of 1,200 after RUE-2480) | done (RUE-2505, above): a `match` arm binding two destructor-bearing payload locals (`pairDtorBlock`) | generator issue, done |
@@ -763,6 +763,6 @@ blind spot, get a generator or tooling proposal too.
 Most mutants are one- or two-line patches against `f4ac09fc9`; the clean
 reverts (`h2335b`, `h2341`, `h2442`) are the fix's full non-test diff. They
 are kept with the run logs in the loop's scratch directory, and are not
-committed. The 171-seed drill corpus there is regenerable from `f4ac09fc9`;
+committed. The 171-seed corpus from that real-fault mutation run is regenerable from `f4ac09fc9`;
 `chain.sh`'s own output later overwrote it with this page's 174-seed export,
 since both land in the same `scratch/<worktree basename>` directory.

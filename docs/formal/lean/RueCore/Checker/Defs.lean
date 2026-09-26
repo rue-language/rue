@@ -626,11 +626,11 @@ def checkEnumDecl (D : Decls) (ed : EnumDecl) : Bool :=
 be `6.3:19`'s join at an enum type. -/
 def checkEnums (D : Decls) : Bool := D.enums.all (checkEnumDecl D)
 
-/-! ### `3.0:5`, decided by peeling
+/-! ### `3.0:5`, decided by a topological sort
 
 `WfNames` (`Statics.lean`) says the by-value "contains" relation over the
-declarations is well-founded. On a finite environment that is decidable by
-**peeling**: a declaration is *grounded* at round `n+1` when every declaration
+declarations is well-founded. On a finite environment that is decidable by a
+**topological sort**: a declaration is *grounded* at round `n+1` when every declaration
 it contains by value is grounded at round `n`, and nothing is grounded at round
 `0`. Grounding is monotone in the round, and while any declaration is
 ungrounded but has all its dependencies grounded, the next round grounds it —
@@ -645,7 +645,7 @@ both layers, as `3.0:5` writes it (E0483).
 
 /-- Whether a type's declaration is already grounded. An array is grounded
 exactly when its element type is — `3.0:5` names array elements beside struct
-fields and enum payloads, so `struct S { x0: [S; 1] }` must peel no further
+fields and enum payloads, so `struct S { x0: [S; 1] }` needs no further sorting
 than `struct S { x0: S }` does (E0483). A scalar names no declaration, so it
 always is (helper). -/
 def Ty.grounded (st : List Bool × List Bool) : Ty → Bool
@@ -654,21 +654,21 @@ def Ty.grounded (st : List Bool × List Bool) : Ty → Bool
   | .array T _ => Ty.grounded st T
   | .int _ _ | .float _ | .bool | .unit => true
 
-/-- One peel round: a declaration is grounded when every type it contains by
+/-- One round of the sort: a declaration is grounded when every type it contains by
 value is — a struct's fields, an enum's payload components over every variant
 (helper). -/
 def Decls.topoSortStep (D : Decls) (st : List Bool × List Bool) : List Bool × List Bool :=
   (D.structs.map (fun sd => sd.fields.all (Ty.grounded st)),
    D.enums.map (fun ed => ed.variants.all (fun Ts => Ts.all (Ty.grounded st))))
 
-/-- The grounded flags after `n` peel rounds, one per declaration of each
+/-- The grounded flags after `n` rounds of the sort, one per declaration of each
 layer; nothing is grounded at round `0` (helper). -/
 def Decls.topoSort (D : Decls) : Nat → List Bool × List Bool
   | 0 => (D.structs.map (fun _ => false), D.enums.map (fun _ => false))
   | n + 1 => D.topoSortStep (D.topoSort n)
 
 /-- **`3.0:5` (E0483) as an algorithm**: every declaration is grounded after
-`|structs| + |enums|` peel rounds, which is "no struct or enum contains itself
+`|structs| + |enums|` rounds of the sort, which is "no struct or enum contains itself
 by value, either directly or through a cycle of struct fields and enum
 payloads". `checkNoCycle_sound` turns an acceptance into `WfNames`, the premise
 that makes §3's two class equations a definition. -/

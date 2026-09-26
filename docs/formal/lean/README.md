@@ -66,10 +66,11 @@ contract, and no case has one (`Checker.lean`, "Dead code").
 Running the consumer needs neither `lake` nor `elan`: the corpus it reads is
 the Buck target's own `corpus.json`.
 
-How sensitive the corpus is, that is, whether it would catch a compiler
-that is wrong, is measured in [BRIDGE-SENSITIVITY.md](BRIDGE-SENSITIVITY.md)
-(RUE-2464). That page reintroduced historical compiler bugs and classic
-mutants one at a time and recorded which seed or generated case caught each.
+The corpus's mutation score against the compiler, that is, whether it would
+catch a compiler that is wrong, is measured in
+[BRIDGE-SENSITIVITY.md](BRIDGE-SENSITIVITY.md) (RUE-2464). That page
+reintroduced historical compiler bugs and classic
+mutants one at a time and recorded which seed or generated case killed each.
 Whether the proofs, the witnesses, the corpus and the bridge would notice a
 wrong *definition* is measured in [MUTATION.md](MUTATION.md) (RUE-2465):
 96 one-rule mutants, run by `bin/mutate.py`, with what each kill rests on —
@@ -146,7 +147,7 @@ the self-assignment now reaches the corpus unmasked once, at `gen_7_3` —
 an array of structs (`v0[0] = v0[0]`), the same RUE-2346 shape, not a new
 bug, but the first time this settings pair shows it unmasked without a wider
 run. It is set aside next to `array_elem_self_assign` in
-BRIDGE-SENSITIVITY.md's mutant drills. The same re-verification also turned
+BRIDGE-SENSITIVITY.md's real-fault mutation runs. The same re-verification also turned
 up one disagreement that is not RUE-2346's shape: `gen_23_343` at `--gen 1000
 --seed 23`, an accepted program where the compiler reports an internal error
 (E9000, CFG verification) on `v0.x1 = v0.x1` — a struct **field**
@@ -220,8 +221,9 @@ by design: `leastValue`'s depth-exhausted fallback has no access to
 `freshId` (it is a pure function), so it gives the id field a fixed sentinel
 instead — two fallback constructions of the *same* declaration in one
 program still print the same line as each other, which an adversarial review
-(RUE-2505's B1) found reproduced in a generated case this page's own drills
-rely on, and which a per-construction counter cannot fix, since a fallback
+(RUE-2505's B1) found reproduced in a generated case this page's own
+real-fault mutation runs rely on, and which a per-construction counter cannot
+fix, since a fallback
 isn't a draw at all. Which field a destructor prints is also now an explicit
 marker its producer supplies (`Corpus.Case.dtorMark`), not a guess from field
 shape (S2) — the printer and the model read the identical marker, so they can
@@ -1483,7 +1485,7 @@ pass is):
 | `RueCore/TraceWhole.lean` | **every owned value of a run that finishes with a value ends exactly once** (RUE-2478): `whole_program_exactly_once`, for a checked, `pendingSafe` program, takes any configuration `Step` reaches from `Config.init` and any owned identity it holds (`Config.held`: in a cell, in focus, or pending on the control stack) and, where the run from it finishes with a value, puts that identity exactly once in the final trace's ended identities or in the final value — the "at least once" half the per-evaluation statements left to prose, and `main`'s result and an end inside the minting evaluation with it. The invariant is a ledger (`Config.ledger`: what a configuration holds plus what its trace ended) that no step of the run loses (`MSteps`); `eval_msim` is `eval_sim` with every run lossless, each step closed by one of `TraceExact.lean`'s exact ledgers read at every identity, copy closure coming from `eval`'s own monitor, not from a configuration typing, and `pendingSafe` from `eval_quiet` wherever an unwind would discard a held value; `MSteps.of_steps` puts every reached configuration on that run by determinism | §6.1, §6.7, §6.9–§6.12, §7 |
 | `RueCore/Adequacy.lean` | **`eval` is adequate to `Step`, both ways, and §7 over `Step`** (RUE-2289 parts 2–4, ADR-0097 decision 3). Soundness: the simulation relation `Sim` between an `eval` result and `→*` from the expression in focus under any context — a value reaches the hole's value in the same frame, a panic reaches `↯κ`, an unwinding `return` the nearest caller, an unwinding `break` the nearest loop's context — proved for every expression and fuel on every program (`eval_sim`, `run_sim`), and `eval_sound`, the statement over checked programs, where `no_violation` rules `.stuck` out. Completeness modulo fuel: exhausted fuel is a run of that many steps (`eval_steps_of_outOfFuel`); with determinism, `eval_complete` says that on a checked program every value or panic `→*` reaches is `run`'s answer at every fuel past the run's length; `never_stuck_iff` is "never `.stuck`" both ways, in §7's phrasing; `eval_diverges_iff` says exhaustion at every fuel is divergence. §7 over `Step` (part 4): `step_progress`, `step_preservation` (for the semantic configuration typing `Config.SafeAt`, whose fundamental lemma is `init_safeAt`), `step_value_typed` and `step_type_safety`; `Frame.empty`, `StepsN` and `Config.SafeAt` are defined in `Adequacy/Defs.lean` (layer L1) | §6.2, §6.9, §6.10, §6.12, §7 |
 | `RueCore/Checker/Defs.lean` | (layer L1) the decidable checker as an algorithm, moved out of `Checker.lean`: `check`, `checkFn`, `checkDecls` and `checkProgram` | §3, §5 as an algorithm |
-| `RueCore/Checker.lean` | decidable checker `check`/`checkProgram` (defined in `Checker/Defs.lean`) + `check_sound`/`checkProgram_sound` (every acceptance is a derivation), with §5.7's loop head found by a bounded iteration (`headIter`) and re-verified, and `checkDecls` — §3's two class equations plus `3.0:5`'s acyclicity, decided by peeling the declarations | §3, §5 as an algorithm |
+| `RueCore/Checker.lean` | decidable checker `check`/`checkProgram` (defined in `Checker/Defs.lean`) + `check_sound`/`checkProgram_sound` (every acceptance is a derivation), with §5.7's loop head found by a bounded iteration (`headIter`) and re-verified, and `checkDecls` — §3's two class equations plus `3.0:5`'s acyclicity, decided by a topological sort of the declarations | §3, §5 as an algorithm |
 | `RueCore/Spec/Nonvacuous.lean`, `RueCore/Nonvacuous.lean` | (layers Spec and L2) the non-vacuity witnesses (RUE-2469, "Non-vacuity witnesses"): sixteen statements, over written-out programs, that the spine's hypotheses hold together of non-trivial programs, and their proofs | §7's hypotheses, satisfied |
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
 | `RueCore/Witnesses.lean` | (layer L3) the theorems at work on example and corpus programs, moved out of the proof modules because they mention the tooling layer: `affineScopeDrop_both_ways` traces one corpus program both ways; `drop_order`'s rejections (`fieldsSwapped_rejected`, `swappedMarkers_rejected`, `unorderedRecord_rejected`) and `returnPastAffine_newestFirst`; `drop_glue_order`'s, the three drop-glue mutants' traces (`glue_fieldsSwapped_rejected`, `glue_dtorAfterFields_rejected`, `glue_dtorSkipped_rejected`, RUE-2487); fourteen order-witnessing corpus cases read through the trace theorems; every accepted seed case is `pendingSafe`; and, moved from `Step.lean` and `Adequacy.lean` (RUE-2460), eleven programs run through §6's relation by `stepN` and `run_sim`'s and `run_complete`'s witnesses on them (`letAddProgram_sound`, `dropMoved_refused`); and the checker's rejections, one corpus case per error class (`errorClasses_rejected`, `typeErrors_rejected`, RUE-2469) | §5, §6.7, §6.9, §6.11, §7 witnesses |
