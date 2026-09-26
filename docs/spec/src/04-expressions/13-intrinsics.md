@@ -458,7 +458,7 @@ The `@intCast` intrinsic converts an integer value from one integer type to anot
 
 {{ rule(id="4.13:25", cat="normative") }}
 
-`@intCast` accepts exactly one argument, which **MUST** be an integer type (any of `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`).
+`@intCast` accepts exactly one argument, which **MUST** be an integer type (any of `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`). The requirement holds up to the one admitted never-type coercion (3.4:3): a diverging argument is accepted.
 
 {{ rule(id="4.13:26", cat="normative") }}
 
@@ -531,7 +531,8 @@ and lets the number change.
 `@bitCast` accepts exactly one argument, which **MUST** be of an integer type
 (any of `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`). The target type
 is inferred from the context where `@bitCast` is used, exactly as `@intCast`'s
-target type is (4.13:26).
+target type is (4.13:26). The argument's type requirement holds up to the one
+admitted never-type coercion (3.4:3): a diverging argument is accepted.
 
 {{ rule(id="4.13:120", cat="legality-rule") }}
 
@@ -545,6 +546,9 @@ job. Each of those failures is reported under its own code: an uninferable
 target is the uninferred cast target of 4.13:27 (E0709), a non-integer argument
 or target is an ordinary type mismatch (E0702), and a width disagreement
 between two integer types is E0950.
+The argument's type is checked up to the one admitted never-type coercion
+(3.4:3): a diverging argument is not a non-integer argument, and has no width
+to disagree with the target's.
 
 {{ rule(id="4.13:121", cat="dynamic-semantics") }}
 

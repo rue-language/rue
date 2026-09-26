@@ -379,3 +379,184 @@ fn main() -> i32 {
 }
 """
 exit_code = 1
+
+# =============================================================================
+# Never Coercion at Operand Positions (RUE-2375)
+# =============================================================================
+# An operand position that asks for a class of types (an integer index, an
+# integer cast operand, a matchable scrutinee) accepts `!` by the one coercion
+# (3.4:3-4) before checking the class, as `(return 1) + 2` always did.
+
+[[case]]
+name = "never_coerces_at_array_index"
+spec = ["3.4:3", "3.4:4", "7.1:7"]
+description = "A diverging index is accepted where an integer index is required"
+source = """
+fn main() -> i32 {
+    let a: [i32; 2] = [1, 2];
+    a[return 8]
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "never_coerces_at_array_index_assignment"
+spec = ["3.4:3", "3.4:4", "7.1:7"]
+description = "A diverging index on the left of an assignment is accepted"
+source = """
+fn main() -> i32 {
+    let mut a: [i32; 2] = [1, 2];
+    a[return 17] = 3;
+    a[0]
+}
+"""
+exit_code = 17
+
+[[case]]
+name = "never_coerces_at_int_cast_operand"
+spec = ["3.4:3", "3.4:4", "4.13:25"]
+description = "A diverging @intCast operand is accepted where an integer is required"
+source = """
+fn main() -> i32 {
+    let narrow: u8 = @intCast(return 27);
+    let wide: i32 = @intCast(narrow);
+    wide
+}
+"""
+exit_code = 27
+
+[[case]]
+name = "never_coerces_at_bit_cast_operand"
+spec = ["3.4:3", "3.4:4", "4.13:119", "4.13:120"]
+description = "A diverging @bitCast operand is accepted; it has no width to compare with the target's"
+source = """
+fn main() -> i32 {
+    let bits: u32 = @bitCast(return 39);
+    let back: i32 = @bitCast(bits);
+    back
+}
+"""
+exit_code = 39
+
+[[case]]
+name = "annotated_let_keeps_its_type_over_a_diverging_initializer"
+spec = ["3.4:3", "3.4:4"]
+description = "A let's annotation types the binding when its initializer diverges, so later uses see i64, not !"
+source = """
+fn f() -> i32 {
+    let t: i64 = return 5;
+    let r: i32 = @intCast(t);
+    r
+}
+fn main() -> i32 { f() }
+"""
+exit_code = 5
+
+[[case]]
+name = "annotated_let_of_struct_type_over_a_diverging_initializer"
+spec = ["3.4:3", "3.4:4"]
+description = "Field access and method calls on a struct-annotated binding with a diverging initializer are typed at the struct"
+source = """
+struct P {
+    x: i32,
+    fn get(self) -> i32 { self.x }
+}
+fn main() -> i32 {
+    let p: P = return 10;
+    p.x + p.get()
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "integer_literal_beside_a_diverging_operand_is_not_typed_never"
+spec = ["3.4:3", "3.4:4", "3.11:9"]
+description = "An integer literal compared with, listed beside, or passed beside a diverging operand takes its own type, not !"
+source = """
+fn main() -> i32 {
+    if (return 18) < 3 { 1 } else { 2 }
+}
+"""
+exit_code = 18
+
+[[case]]
+name = "integer_literal_beside_a_diverging_operand_in_called_helpers"
+spec = ["3.4:3", "3.4:4", "3.11:9"]
+description = "The same, as the right operand of a comparison, beside an array element and beside a wrapping intrinsic's operand; main calls each so every body is analyzed"
+source = """
+fn cmp_rhs() -> i32 { if 3 == (return 1) { 1 } else { 2 } }
+fn elems() -> i32 { let a: [i32; 2] = [return 15, 1]; a[1] }
+fn wrapping() -> i32 { @wrapping_add(return 41, 1) }
+fn main() -> i32 {
+    cmp_rhs() + elems() + wrapping()
+}
+"""
+exit_code = 57
+
+[[case]]
+name = "float_literal_beside_a_diverging_operand_is_not_typed_never"
+spec = ["3.4:3", "3.4:4", "3.11:9"]
+description = "A float literal compared with a diverging operand takes its own type, not !"
+source = """
+fn main() -> i32 {
+    if (return 52) < 2.5 { 1 } else { 2 }
+}
+"""
+exit_code = 52
+
+[[case]]
+name = "never_coerces_at_match_scrutinee"
+spec = ["3.4:3", "3.4:4", "4.7:13"]
+description = "A diverging scrutinee is typed at the type its patterns ask for: integer, bool, or enum"
+source = """
+enum E { A, B }
+fn by_bool() -> i32 { match return 29 { true => 1, false => 2 } }
+fn by_enum() -> i32 { match return 48 { E.A => 1, E.B => 2 } }
+fn by_int() -> i32 { match return 6 { 0 => 1, _ => 2 } }
+fn main() -> i32 {
+    by_bool() + by_enum() + by_int()
+}
+"""
+exit_code = 83
+
+[[case]]
+name = "integer_literal_at_a_declared_never_parameter_rejected"
+spec = ["3.4:3", "3.1:17"]
+description = "The coercion runs from ! only: a literal passed where a parameter declares ! is still rejected"
+source = """
+fn g(x: !) -> i32 { 0 }
+fn main() -> i32 { g(5) }
+"""
+compile_fail = true
+error_contains = "out of range for type '!'"
+
+[[case]]
+name = "wrapping_arithmetic_with_both_operands_diverging_is_never_typed"
+spec = ["3.4:3", "3.4:4", "4.13:98"]
+description = "A wrapping-arithmetic intrinsic whose operands both diverge has type !, in value and statement position"
+source = """
+fn d() -> ! { @panic("unreachable") }
+fn sub_let() -> i32 { let x = @wrapping_sub(return 13, return 8); 0 }
+fn mul_stmt() -> i32 { @wrapping_mul(return 14, return 8); 0 }
+fn to_u8() -> u8 { @wrapping_add(return 18, d()) }
+fn value() -> i32 { @wrapping_add(return 7, return 8) }
+fn main() -> i32 {
+    let narrow: i32 = @intCast(to_u8());
+    sub_let() + mul_stmt() + narrow + value()
+}
+"""
+exit_code = 52
+
+[[case]]
+name = "float_rounding_intrinsic_of_a_diverging_operand_is_never_typed"
+spec = ["3.4:3", "3.4:4", "4.13:143"]
+description = "A rounding intrinsic whose only operand diverges has type !, which coerces to a non-float context"
+source = """
+fn as_let() -> i32 { let x: i32 = @sqrt(return 4); x }
+fn as_bool() -> bool { @floor(return true) }
+fn as_value() -> i32 { @sqrt(return 3) }
+fn main() -> i32 {
+    if as_bool() { as_let() + as_value() } else { 0 }
+}
+"""
+exit_code = 7

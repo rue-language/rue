@@ -785,9 +785,11 @@ impl IntrinsicOperation {
             | Self::FloatCeil
             | Self::FloatTrunc
             | Self::FloatRound => {
+                // A diverging operand makes the call diverge, typed `!`
+                // (RUE-2375).
                 args.len() == 1
-                    && result.is_float()
-                    && (first.ty == result || first.ty == Type::NEVER)
+                    && ((result.is_float() && (first.ty == result || first.ty == Type::NEVER))
+                        || (first.ty == Type::NEVER && result == Type::NEVER))
             }
             Self::IntToPtr => {
                 args.len() == 1
@@ -872,12 +874,14 @@ impl IntrinsicOperation {
             // integer and a float of the same width. Source-level `@bitCast`
             // admits only the integer form (E0950); the float form is how sema
             // moves a float's bit pattern into the integer runtime ABI
-            // (ADR-0065 §6).
+            // (ADR-0065 §6). A diverging operand coerces to the source type
+            // the result's width asks for.
             Self::BitCast => {
                 args.len() == 1
-                    && (first.ty.is_integer() || first.ty.is_float())
                     && (result.is_integer() || result.is_float())
-                    && scalar_bits(first.ty) == scalar_bits(result)
+                    && (first.ty == Type::NEVER
+                        || ((first.ty.is_integer() || first.ty.is_float())
+                            && scalar_bits(first.ty) == scalar_bits(result)))
             }
             Self::AssertFailed
             | Self::BoundsCheck
@@ -1300,6 +1304,11 @@ mod tests {
                 Type::F64,
             ),
             (
+                IntrinsicOperation::FloatSqrt,
+                vec![(Type::NEVER, normal)],
+                Type::NEVER,
+            ),
+            (
                 IntrinsicOperation::FloatRound,
                 vec![(Type::F32, normal)],
                 Type::F32,
@@ -1458,6 +1467,13 @@ mod tests {
         };
 
         let accepted = [
+            // A diverging `@bitCast` operand coerces to the source width the
+            // result asks for (RUE-2375).
+            (
+                IntrinsicOperation::BitCast,
+                vec![value(Type::NEVER)],
+                Type::U64,
+            ),
             (
                 IntrinsicOperation::IntToFloat,
                 vec![value(Type::NEVER)],
@@ -1670,7 +1686,7 @@ mod tests {
             (
                 IntrinsicOperation::BitCast,
                 vec![value(Type::NEVER)],
-                Type::U64,
+                Type::BOOL,
             ),
         ];
         for (operation, args, result) in rejected {

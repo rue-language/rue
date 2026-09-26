@@ -1621,6 +1621,51 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
     }
 
+    /// The type a diverging (`!`-typed) `match` scrutinee coerces to: the one
+    /// its first typed pattern asks for. An integer literal pattern takes the
+    /// literal default `i32` (3.1:14), `true`/`false` ask for `bool`, a
+    /// variant path for its enum, and a struct pattern for its struct. Arms of
+    /// only wildcards ask for nothing, and the scrutinee stays `!`.
+    ///
+    /// The integer case picks the literal default on purpose: no arm fixes a
+    /// width, so the patterns are checked as they would be against an
+    /// unannotated integer scrutinee, and a pattern outside `i32` is E0800.
+    /// This is a sema-side reading of the patterns, not a second inference:
+    /// the scrutinee never produces a value, so the choice only decides how
+    /// the dead arms are checked.
+    fn diverging_scrutinee_type(
+        &mut self,
+        arms: &rue_rir::RirMatchArmsRange,
+        expected_enum: Option<Type>,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<Option<Type>> {
+        enum Asked {
+            Int,
+            Bool,
+            Enum,
+            Struct(rue_rir::RirTypeSyntaxRef),
+        }
+        let asked = self
+            .body_rir_ref()
+            .match_arms(arms)
+            .iter()
+            .find_map(|(pattern, _)| match pattern {
+                RirPatternView::Wildcard(_) => None,
+                RirPatternView::Int { .. } => Some(Asked::Int),
+                RirPatternView::Bool(..) => Some(Asked::Bool),
+                RirPatternView::Path { .. } => Some(Asked::Enum),
+                RirPatternView::Struct { ty, .. } => Some(Asked::Struct(ty)),
+            });
+        Ok(match asked {
+            None => None,
+            Some(Asked::Int) => Some(Type::I32),
+            Some(Asked::Bool) => Some(Type::BOOL),
+            Some(Asked::Enum) => expected_enum,
+            Some(Asked::Struct(ty)) => Some(self.resolve_rir_type_with_ctx(ty, span, ctx)?),
+        })
+    }
+
     /// Analyze a match expression.
     fn analyze_match(
         &mut self,
@@ -1768,7 +1813,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let scrutinee_result = scrutinee_result?;
         let scrutinee_divergence = ctx.divergence_kinds;
         ctx.divergence_kinds = DivergenceKinds::NONE;
-        let scrutinee_type = scrutinee_result.ty;
+        // A diverging scrutinee (`match return 6 { 0 => .., _ => .. }`) has
+        // type `!`, which coerces to the type the patterns ask for (spec
+        // 3.4:4). Check the arms against that type, so the patterns and arm
+        // bodies are analyzed as they would be for a value of that type.
+        let scrutinee_type = if scrutinee_result.ty.is_never() {
+            self.diverging_scrutinee_type(arms, expected_scrutinee, span, ctx)?
+                .unwrap_or(Type::NEVER)
+        } else {
+            scrutinee_result.ty
+        };
         let reachable_edges_after_scrutinee = ctx.ownership.loop_break_stack.clone();
 
         // Validate that we can match on this type: integers, booleans, enums,
@@ -1780,10 +1834,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .match_arms(arms)
             .iter()
             .any(|(pattern, _)| matches!(pattern, RirPatternView::Struct { .. }));
-        let matchable = scrutinee_type.is_integer()
-            || scrutinee_type == Type::BOOL
-            || scrutinee_type.is_enum()
-            || (scrutinee_type.is_struct() && has_struct_pattern_arm);
+        let matchable = scrutinee_type.coerces_into(|ty| {
+            ty.is_integer()
+                || *ty == Type::BOOL
+                || ty.is_enum()
+                || (ty.is_struct() && has_struct_pattern_arm)
+        });
         if !matchable {
             return Err(CompileError::new(
                 ErrorKind::InvalidMatchType(self.format_type_name(scrutinee_type)),

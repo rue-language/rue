@@ -332,10 +332,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         // Verify the type is integer (HM should have enforced this, but check anyway)
-        if !lhs_result.ty.is_integer()
-            && !lhs_result.ty.is_float()
-            && !lhs_result.ty.is_error()
-            && !lhs_result.ty.is_never()
+        if !lhs_result
+            .ty
+            .coerces_into(|ty| ty.is_integer() || ty.is_float())
         {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
