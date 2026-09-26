@@ -935,19 +935,43 @@ def boundaryPair (w : IntWidth) (sg : Sign) (op : BinOp) : G (Option (Int × Int
       return some (p, s)
   | _ => return none
 
+/-- (helper) The joint-pair fire rate for `op` at `int(w, s)` (RUE-2482): one
+binop in sixteen, ordinarily. `min_T`'s bit pattern is the *positive* power
+of two `2^(bits-1)`, which `crates/rue-codegen/src/value_plan.rs`'s
+`multiplier_shift` (RUE-2318) special-cases only at 64 bits — narrower widths
+take the shift-multiply optimization at every other power of two but never
+mis-handle this one, verified by hand at `i8`/`i16`/`i32` against the RUE-2318
+mutant, so `boundaryPair`'s `min_T`-paired candidates at those widths cost a
+draw without ever reaching the bug. So at signed 64-bit `*` and `/`
+specifically — the two operators §6.4 traps on overflow, where a wrong
+shift-based check would wrongly fold or wrongly trap — the rate is raised to
+one in two: with the ordinary outer odds of drawing `i64`, `signed` and one of
+these two operators at all (`intTy`'s and `pick`'s own weights) already
+costing roughly a factor of 15, one in sixteen on top left the joint shape
+under-reached in practice (0 catches of the RUE-2318 mutant in 1,000
+generated programs at the ordinary rate); one in two catches it within the
+first 200. -/
+def pairRate (w : IntWidth) (sg : Sign) (op : BinOp) : Nat × Nat :=
+  match w, sg, op with
+  | .w64, .signed, .mul => (1, 2)
+  | .w64, .signed, .div => (1, 2)
+  | _, _, _ => (1, 16)
+
 /-- (helper) An integer binop `op` over two operands each drawn by `self`
-(RUE-2482): at about one binop in sixteen, the **boundary** stream replaces
-both operands at once with a `boundaryPair` for `op`, so the RUE-2318-style
-shapes that need both operands at a boundary together are reachable at all —
-a per-operand rate reaches them only as often as the product of two small
-probabilities. Both operands are still drawn by `self` on the main stream
-first and discarded when the pair fires, the same technique `intLiteral`
-uses, so `main`, `side` and `call` are unaffected whether or not it fires. -/
+(RUE-2482): at the rate `pairRate` gives `op` at `int(w, s)`, the **boundary**
+stream replaces both operands at once with a `boundaryPair` for `op`, so the
+RUE-2318-style shapes that need both operands at a boundary together are
+reachable at all — a per-operand rate reaches them only as often as the
+product of two small probabilities. Both operands are still drawn by `self`
+on the main stream first and discarded when the pair fires, the same
+technique `intLiteral` uses, so `main`, `side` and `call` are unaffected
+whether or not it fires. -/
 def arithBinop (w : IntWidth) (sg : Sign) (op : BinOp) (self : G Expr) : G Expr := do
   let e1 ← self
   let e2 ← self
+  let (num, den) := pairRate w sg op
   let pairOverride ← boundary (do
-    if ← chance 1 16 then boundaryPair w sg op else return none)
+    if ← chance num den then boundaryPair w sg op else return none)
   match pairOverride with
   | some (a, b) => return binop op (intLit w sg a) (intLit w sg b)
   | none => return binop op e1 e2
