@@ -66,6 +66,7 @@ def table : List (Name × Nat) := [
   (`RueCore.Explain.Text, 4),
   (`RueCore.Explain.Html, 4),
   (`RueCore.Digest, 4),
+  (`RueCore.Map, 4),
   (`RueCore.CorpusMain, 4),
   (`RueCore.ExplainMain, 4),
   (`RueCore.DigestMain, 4),
