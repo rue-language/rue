@@ -16,6 +16,7 @@ import RueCore.Nonvacuous
 import RueCore.Sharp
 import RueCore.Spine
 import RueCore.Nonvacuous.Glue
+import RueCore.Sharp.Glue
 import RueCore.Soundness
 import RueCore.Trace
 import RueCore.Adequacy
