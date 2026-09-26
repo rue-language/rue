@@ -1135,7 +1135,7 @@ hypothesis of a spine statement gets a **sharpness counter-example**: a
 Spec statement (`RueCore/Spec/Sharp.lean`) writing out a program, or a
 configuration, of which that hypothesis fails, every other hypothesis of the
 statement holds, and the conclusion fails. The statement with that hypothesis
-removed is then false. 74 of the 75 hypotheses have one; the other has a
+removed is then false. 76 of the 77 hypotheses have one; the other has a
 written reason: it is redundant, and the theorem without it is proved.
 
 What counts as a hypothesis: the lint numbers them (`Lint.hypotheses`): the
