@@ -417,19 +417,67 @@ An accepted linear move in a loop stays rare because the value then has to be
 consumed after the loop as well, which a random rest of the program seldom
 does.
 
+## Restoring the lost shape and distinct identities, and two more shapes (RUE-2505)
+
+RUE-2480 forced a destructor-bearing declaration's field 0 to a plain `int`,
+so every destructor had something to print; that cost one shape (a
+destructor-bearing struct whose field 0 is itself destructor-bearing) and
+left the printed value colliding often enough that a swapped drop order
+between two equal lines was invisible. `genDecl` no longer forces field 0:
+instead, a destructor-bearing declaration gets one more field, an **id**
+field appended last, filled at every construction with a fresh value off a
+per-program counter (`freshId`, threaded through `GS` beside the three
+streams, and reset for each case) rather than an ordinary draw of its type
+(`structLitArgs`). Field 0 is free again, a struct type included;
+`Print.dtorFieldName` is the printer's matching half — the **last** field if
+it is an `int`, else field 0, which is every seed and so keeps every seed's
+printed output unchanged — and `Corpus.dtorLine`, the model's own prediction
+of what a destructor prints, needs the identical rule.
+
+Two mutants observability alone didn't catch (`c-reverse-scope-drops`,
+`h2335`/`h2335b`; BRIDGE-SENSITIVITY.md) needed shapes no bias on the
+existing draws would reach: a block with two destructor-bearing locals live
+to its end, and three declared-`linear` levels with a destructure through the
+innermost and a `@drop` of an ancestor. `pairDtorBlock` searches the
+program's own declarations for an enum variant with two such payload
+components (`dtorPairVariant`) and, where one exists, matches a fresh value of
+exactly that variant with the target arm left untouched — the only fragment
+shape that puts two locals in one flat scope, since a `let`'s own printed
+block always nests (`Print.expr`'s `.letIn`), unlike a match arm's payload
+binding ((D-Match) §6.6). `linearChainDecls` appends four fixed declarations —
+a destructor-bearing leaf and three declared-`linear` levels nested through
+field 0 — after every other declaration, and `ancestorDroppedStmt`/
+`rootThroughMovedStmt` generate the seeds `destructure_ancestor_dropped`/
+`destructure_root_through_moved_part` (`Examples.lean`) over them, one field
+step deeper than `paths2`'s two-step cap (above, "How deep a place goes")
+ever draws. Both new shapes read the **side** stream, so a program that
+doesn't draw either is unaffected; `genCase` draws the declared-linear chain
+one program in six, and `rootThroughMovedStmt`'s half of that draw rejects on
+purpose, as the seed it generates does, which is part of why the rejected
+share below rose. BRIDGE-SENSITIVITY.md has the collision-rate and
+observability figures and the rerun results.
+
 ## What it deliberately does not guarantee
 
 Ownership. Moves, drops, assignments, `match` arms and scope exits are chosen
 at random, so a large minority of the programs are rejected by the checker and
-refused by the machine — 109 of 200 at `--gen 200 --seed 7` and 487 of 1,000
-at `--gen 1000 --seed 23` (93 and 410 before calls, RUE-2481, and 87 and 438
-before the return and panic arms and RUE-2480's reordered declarations, the
-figures the weights below were tuned against). Both
-are recorded (`Corpus.caseJson` reads them off `checkProgram` and `run` as for
-any case), never filtered: a rejected program checks that the compiler rejects
-it too, an accepted one that the three implementations agree with the
-interpreter's trace. At those two settings 88 of 200 and 427 of 1,000 programs
-contain a `match`.
+refused by the machine — 106 of 200 at `--gen 200 --seed 7` and 603 of 1,000
+at `--gen 1000 --seed 23` after RUE-2505 (109 and 487 before it; 93 and 410
+before calls, RUE-2481; and 87 and 438 before the return and panic arms and
+RUE-2480's reordered declarations, the figures the weights below were tuned
+against). Part of RUE-2505's own rise is deliberate: `rootThroughMovedStmt`
+(above, "Restoring the lost shape and distinct identities") rejects on
+purpose one program in twelve, on the declared-linear chain's own draw, to
+give `h2335` a program to catch on the generated corpus as well as the seed.
+Both accepted and rejected counts are recorded (`Corpus.caseJson` reads them
+off `checkProgram` and `run` as for any case), never filtered: a rejected
+program checks that the compiler rejects it too, an accepted one that the
+three implementations agree with the interpreter's trace. At those two
+settings 88 of 200 and 427 of 1,000 programs contain a `match` (measured
+before RUE-2505; the ones above are the ones this module re-measured after
+it, and every other figure here holds as it stands for the programs a later
+change did not touch, as the return/panic-arm note above says of RUE-2383's
+own figures).
 
 Every figure in this module is a count over the programs `generate` returns at
 the setting named, read off `checkProgram`, `Explain.deepestFailure` (a case's
@@ -448,10 +496,14 @@ the weights can be read and changed:
 * `let` binders are mostly structs and mostly `mut`, so linear values
   reach scope exit and assignments have targets;
 * about half of the declarations not declared `linear` carry a destructor,
-  and every one prints its drop (`genDecl`'s forced slot-0 `int`, RUE-2480),
-  so a drop of that declaration's type is observable wherever it happens; a
-  declaration whose fields join to `Linear` is `Linear` whatever its
-  attribute says (§3), which is how the linear-through-a-field shapes arise;
+  and every one prints its drop — a dedicated appended id field, distinct per
+  constructed value (`genDecl`'s appended id field, `structLitArgs`'s
+  `freshId`, RUE-2505; RUE-2480 introduced the observability, forcing field 0
+  to an `int` to get it, which this superseded) — so a drop of that
+  declaration's type is observable wherever it happens, and two of them
+  reaching the same drop point print two different lines. A declaration whose
+  fields join to `Linear` is `Linear` whatever its attribute says (§3), which
+  is how the linear-through-a-field shapes arise;
 * about two declarations in seven are declared `linear`, which puts one in
   126 of the programs at `--gen 200 --seed 7` and 579 of 1,000 at
   `--gen 1000 --seed 23`, and a path through one is §4.2's declared-linear
@@ -585,20 +637,27 @@ structure Sig where
   ret : Ty
   recursive : Bool
 
-/-- (helper) The generator's state: three `StdGen`s and the signature
-environment. `main` is the stream every draw reads; `side` is the **side**
-stream (`side`), which only the diverging-arm draws (RUE-2383) read, so adding
-them left every other draw of every program where they do not fire unchanged;
-`call` is the **call** stream (`calls`, RUE-2481), which only the call draws
-read, for the same reason. `sigs` is the current case's signature environment
-and `cur` the function whose body is being drawn (`0`, the entry point, or a
-callee `j + 1`), so a call site can name only a later callee (`maybeCall`). -/
+/-- (helper) The generator's state: three `StdGen`s, the signature
+environment, and an identity counter. `main` is the stream every draw reads;
+`side` is the **side** stream (`side`), which only the diverging-arm draws
+(RUE-2383), the paired-locals and declared-linear-chain draws (RUE-2505,
+below) read, so adding them left every other draw of every program where they
+do not fire unchanged; `call` is the **call** stream (`calls`, RUE-2481),
+which only the call draws read, for the same reason. `sigs` is the current
+case's signature environment and `cur` the function whose body is being drawn
+(`0`, the entry point, or a callee `j + 1`), so a call site can name only a
+later callee (`maybeCall`). `idCounter` is RUE-2505's per-program counter
+(`freshId`): it is not one of the three streams, so every helper that swaps or
+splits them (`side`, `calls`) leaves it exactly where it was, counting once
+per constructed value of a destructor-bearing declaration across the whole
+program — the entry point and every callee — in draw order. -/
 structure GS where
   main : StdGen
   side : StdGen
   call : StdGen
   sigs : Array Sig := #[]
   cur : Nat := 0
+  idCounter : Nat := 0
 
 /-- (helper) The generation monad: the state `GS` threaded through. -/
 abbrev G := StateM GS
@@ -813,20 +872,15 @@ def fieldTy (s nEnums : Nat) : G Ty := do
   if ← chance 1 5 then arrayOf T else return T
 
 /-- (helper) One struct declaration, well-formed by construction. `drawnDtor`
-is drawn before the fields so that a declaration heading for a destructor can
-have its slot-0 field forced to a plain `int` (RUE-2480): `structItem`
-(`Print.lean`) only prints a destructor's `@dbg` when the first field is an
-`int`, so a destructor over anything else — a `bool`, a `unit`, an aggregate,
-or an `int` `fieldTy` happened to wrap in an array — drops silently, invisible
-to the bridge. Forcing the slot never changes whether the destructor ends up
-legal: `3.9:44`'s condition below is the join over every field, and an `int`
-is always `Copy`, so it can only ever pull `base` away from `Linear`, never
-toward it. -/
+is drawn before the fields, but (RUE-2505) no longer forces field 0: every
+field draws exactly as `fieldTy` invites, field 0 included, so a
+destructor-bearing struct can once again hold another destructor-bearing
+struct at any position. What a destructor prints instead is a dedicated **id**
+field, appended last, below. -/
 def genDecl (D : Decls) (s nEnums : Nat) : G StructDecl := do
   let drawnDtor ← chance 1 2
   let k ← nat 1 3
-  let fields ← (List.range k).mapM (fun j =>
-    if j = 0 && drawnDtor then intTy else fieldTy s nEnums)
+  let fields ← (List.range k).mapM (fun _ => fieldTy s nEnums)
   let drawn ← weighted Attr.none [(4, Attr.none), (1, Attr.copy), (2, Attr.linear)]
   let base := fieldJoin D fields
   -- `3.9:44` (E0462): a destructor is only legal when no field carries a
@@ -843,7 +897,29 @@ def genDecl (D : Decls) (s nEnums : Nat) : G StructDecl := do
   let attr := match drawn with
     | .copy => if base = .copy && !dtor then Attr.copy else Attr.none
     | a => a
-  return { attr := attr, fields := fields, dtor := dtor, cls := attr.lift base }
+  -- RUE-2505: a destructor-bearing declaration gets one more field, an **id**
+  -- field appended after every declared one, instead of RUE-2480's forced
+  -- slot-0 `int` — restoring the shape that cost (`BRIDGE-SENSITIVITY.md`,
+  -- "Observable destructors"): a destructor-bearing struct whose field 0 is
+  -- itself destructor-bearing. `structLitArgs`, below, is what fills it —
+  -- with a fresh value off `freshId` at every construction, not an ordinary
+  -- draw of its type — and `Print.dtorFieldName` is what a destructor prints
+  -- instead of field 0. Appending it after `dtor` is decided, rather than
+  -- forcing a slot before, keeps `base` (and so `dtor` and `attr`) exactly
+  -- what they would have been without it: an `int` field is always `Copy`,
+  -- so it can only ever pull the join away from `Linear`, never toward it
+  -- (`3.9:44`'s condition is unaffected either way). The id field's own type
+  -- is a fixed `i64` rather than a drawn one (unlike every other field):
+  -- `freshId`'s counter is per-program, not per-declaration, so a program
+  -- that constructs many destructor-bearing values could otherwise overflow
+  -- a narrower width, which `InBounds` (module docstring, "What a generated
+  -- program is guaranteed to be") would then make a bounds refusal rather
+  -- than an ownership one — the one thing this module is designed never to
+  -- do.
+  if dtor then
+    return { attr := attr, fields := fields ++ [.int .w64 .signed], dtor := dtor, cls := attr.lift base }
+  else
+    return { attr := attr, fields := fields, dtor := dtor, cls := attr.lift base }
 
 /-- (helper) `n` more struct declarations, built left to right so each one sees
 the ones before it, and drawn against the `nEnums` enums already in the
@@ -853,6 +929,42 @@ def genEnv (nEnums : Nat) : Nat → Decls → G Decls
   | n + 1, acc => do
       let sd ← genDecl acc acc.structs.length nEnums
       genEnv nEnums n { acc with structs := acc.structs ++ [sd] }
+
+/-- (helper) A fresh natural number, off the generator's own **id counter**
+(RUE-2505) rather than any of the three `StdGen` streams — so `side` and
+`calls`, which swap or split those, leave it exactly where it was. Every
+constructed value of a destructor-bearing declaration draws the next one
+(`structLitArgs`), across the whole program: the entry point and every
+callee, in the order their bodies are drawn. Two values of the same
+declaration therefore never print the same `@dbg` line — unlike a value drawn
+for an ordinary field, which can (module docstring, "What it deliberately does
+not guarantee" figures the review measured: about 42% of consecutive
+destructor lines from one declaration printed the same value before this). -/
+def freshId : G Nat :=
+  modifyGet fun s => (s.idCounter, { s with idCounter := s.idCounter + 1 })
+
+/-- (helper) One struct literal's initializers (RUE-2505): every field draws
+as `draw` invites, except a destructor-bearing declaration's **last**
+field — its dedicated id field, appended by `genDecl` — which draws a fresh
+`i64` literal off `freshId` instead of an ordinary draw of its type. A
+declaration with no destructor has no id field, so every field still draws
+through `draw`, exactly as before RUE-2505. Both call sites that build a
+struct literal (`atom`, `expr`) go through this one helper, so neither can
+forget the id field or draw it the ordinary way — which would let two
+constructed values collide again, or let a random later assignment or a
+`use` of it as an ordinary `int` confuse a reader of the printed source, though
+neither would be unsound: the id field is `Copy`, so nothing about ownership
+rests on it. -/
+def structLitArgs (sd : StructDecl) (draw : Ty → G Expr) : G (List Expr) := do
+  if sd.dtor then
+    let normal ← sd.fields.dropLast.mapM draw
+    let n ← freshId
+    let idLit := match sd.fields.getLast? with
+      | some (.int w sg) => intLit w sg (Int.ofNat n)
+      | _ => intLit .w64 .signed (Int.ofNat n)
+    return normal ++ [idLit]
+  else
+    sd.fields.mapM draw
 
 /-- (helper) One payload component type of enum declaration `e`: a scalar, any
 of the `nStructs` struct declarations — none of which names an enum, since they
@@ -1435,7 +1547,7 @@ def atom (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
       let uses := indicesWhere Γ (fun b => b.ty == .struct s)
       if !uses.isEmpty && (← chance 2 3) then return use (.var (← pick 0 uses))
       match D.structs[s]?, depth with
-      | some sd, d + 1 => return mkStruct s (← sd.fields.mapM (fun T => atom D Γ T d))
+      | some sd, d + 1 => return mkStruct s (← structLitArgs sd (fun T => atom D Γ T d))
       | _, _ => return leastValue D (declFuel D) (.struct s)
   | .enum e, depth => do
       -- (Enum-Intro) §5.5, or a use of an enum already in scope. The tag is
@@ -1737,6 +1849,129 @@ def maybeCall (D : Decls) (Γ : Scope) (T : Ty) (arg : Scope → Ty → G Expr) 
         arg Γ p.ty)
       return call (j + 1) args
 
+/-- (helper) An enum declaration and one of its variants with at least two
+struct-typed payload components whose declaration has a destructor (RUE-2505,
+`pairDtorBlock`): every dtor-bearing declaration is `Affine` by construction
+(`genDecl`: a destructor needs `base != .linear` and `drawn != .linear`), so
+leaving two of them bound and untouched to their arm's end is legal — no
+explicit consumption is owed. Search order is declaration order (enum, then
+variant), so this is a pure function of the program's own declarations, not a
+draw of its own. -/
+def dtorPairVariant (D : Decls) : Option (Nat × Nat) :=
+  (List.range D.enums.length).findSome? (fun e =>
+    match D.enums[e]? with
+    | none => none
+    | some ed =>
+        (List.range ed.variants.length).findSome? (fun k =>
+          let Ts := (ed.variants[k]?).getD []
+          let dtors := Ts.filter (fun T => match T with
+            | .struct s => ((D.structs[s]?).map StructDecl.dtor).getD false
+            | _ => false)
+          if 2 ≤ dtors.length then some (e, k) else none))
+
+/-- (helper) A leak-free arm body over payload types `Ts`, already pushed onto
+the scope (`armScope`): `@drop` every non-`Copy` component, innermost first
+(`armScope`'s reversal), then `()`. Legal whatever the payload holds — a
+declared-`linear` place and one linear only through a field are both
+`@drop`-able (`Print.lean`, "`@drop`") — so it never leaks the way leaving an
+arbitrary variant's payload untouched could (RUE-2505, `pairDtorBlock`'s
+"other" arms). -/
+def dropArmBody (D : Decls) (Ts : List Ty) : Expr :=
+  let n := Ts.length
+  (List.range n).foldr (fun j acc =>
+    if ((Ts[j]?).map (Ty.mult D)) != some .copy then seq (drop (.var (n - 1 - j))) acc else acc)
+    unitLit
+
+/-- (helper) A block binding **two or more** destructor-bearing locals that
+live to their block's end (RUE-2505, `c-reverse-scope-drops`): a fresh
+`match` on an enum declaration some variant of which binds two such
+components at once (`dtorPairVariant`) — the *only* fragment shape that puts
+two locals in one flat scope, since a `let`'s own printed block always
+nests (`Print.expr`'s `.letIn` case opens its own `{ }`), so a chain of
+`let`s never shares a scope with the next the way a match arm's payload
+locals share one with each other ((D-Match) §6.6, `Dynamics.lean`'s "both
+append their cells to the innermost record"). The scrutinee is a freshly
+constructed value of exactly that variant, so the `match` always takes this
+arm at run time; that arm's body is left untouched — both payload locals are
+`Affine` by construction, so falling out of scope together, newest first, at
+the arm's end is legal — and every other arm is `dropArmBody`, safe whatever
+it holds. Reads the **side** stream: `dtorPairVariant` is a pure check,
+consuming no stream at all, so a program that declares no such variant is
+byte-identical to one that never could, and one that does differs only in
+this one statement. -/
+def pairDtorBlock (D : Decls) (Γ : Scope) : G (Option Expr) := do
+  match dtorPairVariant D with
+  | none => return none
+  | some (e, k) =>
+      match D.enums[e]? with
+      | none => return none
+      | some ed =>
+          side do
+            let arms ← (List.range ed.variants.length).mapM (fun j => do
+              let Ts := (ed.variants[j]?).getD []
+              if j == k then return unitLit else return dropArmBody D Ts)
+            let Ts := (ed.variants[k]?).getD []
+            let args ← Ts.mapM (fun T => atom D Γ T 2)
+            return some («match» (mkEnum e k args) arms)
+
+/-- (helper) A destructor-bearing leaf and three declared-`linear` levels
+nested through field 0, each also holding a fresh leaf as a second field
+(RUE-2505, matching the seeds `destructure_ancestor_dropped` and
+`destructure_root_through_moved_part`, `Examples.lean`): `S_leaf` (affine, one
+`i64` field, a destructor), `S_c` (linear, `x0: i64, x1: S_leaf`), `S_b`
+(linear, `x0: S_c, x1: S_leaf`), `S_a` (linear, `x0: S_b, x1: S_leaf`).
+Appended after every other declaration, so no existing index shifts; the
+result's second component is `(leaf, c, b, a)`. -/
+def linearChainDecls (D : Decls) : Decls × (Nat × Nat × Nat × Nat) :=
+  let leaf := D.structs.length
+  let c := leaf + 1
+  let b := c + 1
+  let a := b + 1
+  let dLeaf : StructDecl := { attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine }
+  let dC : StructDecl :=
+    { attr := .linear, fields := [.int .w64 .signed, .struct leaf], dtor := false, cls := .linear }
+  let dB : StructDecl :=
+    { attr := .linear, fields := [.struct c, .struct leaf], dtor := false, cls := .linear }
+  let dA : StructDecl :=
+    { attr := .linear, fields := [.struct b, .struct leaf], dtor := false, cls := .linear }
+  ({ D with structs := D.structs ++ [dLeaf, dC, dB, dA] }, (leaf, c, b, a))
+
+/-- (helper) A destructor-bearing leaf value, `S_leaf { n }` (`linearChainDecls`). -/
+def leafVal (leaf : Nat) (n : Int) : Expr := mkStruct leaf [intLit .w64 .signed n]
+
+/-- (helper) The seed `destructure_ancestor_dropped`'s shape, generated
+(RUE-2505, `h2335b`): `z : S_b`, `z.x0.x0` destructures the innermost
+declared-`linear` level `z.x0` (`S_c`) at its own field 0, dropping `z.x0`'s
+own second field as the destructure's residue (§6.3 split); `@drop(z)` then
+discharges the *outer* root directly — legal because `3.8:74`'s obligation is
+the value itself, not a residue the `@drop` operand's own premises would
+otherwise look for below it (RUE-2335's fix, `Examples.destructureAncestorDropped`).
+The model accepts this program; the mutant `h2335b` targets makes the
+compiler reject it. -/
+def ancestorDroppedStmt (leaf c b : Nat) : Expr :=
+  letIn false (mkStruct b [mkStruct c [intLit .w64 .signed 1, leafVal leaf 2], leafVal leaf 3])
+    (letIn false (use (.proj (.proj (.var 0) 0) 0))
+      (seq (drop (.var 1)) (use (.var 0))))
+
+/-- (helper) The seed `destructure_root_through_moved_part`'s shape, generated
+(RUE-2505, `h2335`'s root half): `y : S_a`, `y.x0.x0.x0` destructures the
+innermost declared-`linear` level `y.x0.x0` (`S_c`); `@drop(y.x0)` then
+reaches the *middle* ancestor through the declared-`linear` root `y`, which
+(Use-Declared-Linear-Destructure) §5.1's `fully-owned(Σ, y)` premise refuses
+because of the hole two levels below (`3.8:26`) — one level further from the
+root than `ancestorDroppedStmt` needs, and one field step further than this
+module's path draws ever reach on their own (module docstring, "How deep a
+place goes": `paths2` tops out at two steps, one short of `y.x0.x0.x0`'s
+three). The model rejects this program (matching
+`Examples.destructureRootThroughMovedPart`'s own `checkProgram`); the mutant
+`h2335` targets makes the compiler accept it. -/
+def rootThroughMovedStmt (leaf c b a : Nat) : Expr :=
+  letIn false
+      (mkStruct a [mkStruct b [mkStruct c [intLit .w64 .signed 1, leafVal leaf 2], leafVal leaf 3],
+        leafVal leaf 4])
+    (letIn false (use (.proj (.proj (.proj (.var 0) 0) 0) 0))
+      (seq (drop (.proj (.var 1) 0)) (use (.var 0))))
+
 /-- (helper) An expression of the wanted type under `Γ`, at most `fuel`
 levels deep. The weights here are the bias the module docstring
 describes. -/
@@ -1990,7 +2225,7 @@ def expr (D : Decls) (R : Ty) : Bool → Bool → Scope → Ty → Nat → G Exp
               let projs := projPlaces D Γ (.struct s)
               if !projs.isEmpty && (← chance 1 3) then return use (← pickPlace (.var 0) projs)
               match D.structs[s]? with
-              | some sd => return mkStruct s (← sd.fields.mapM (fun T' => expr D R false false Γ T' fuel))
+              | some sd => return mkStruct s (← structLitArgs sd (fun T' => expr D R false false Γ T' fuel))
               | none => return mkStruct s []
           | .array E n =>
               -- `atom`'s array draw one level up: a use of an array binder or
@@ -2314,9 +2549,13 @@ callees its call sites named (module docstring, "Calls"). The
 environment is drawn in three rounds — structs, then enums over them, then a
 few more structs that may hold an enum in a field — which is the order the
 declarations section describes and the reason no draw can build `3.0:5`'s
-cycle. -/
+cycle. `idCounter` (RUE-2505) resets to `0` for each case, so it counts a
+*program's* constructed values, not the run's — "distinct per constructed
+value within a program" (RUE-2505's follow-up comment) rather than across the
+whole `--gen N` output, which would grow unboundedly and buys nothing an
+already-distinct-within-the-program id does not. -/
 def genCase (seed i : Nat) : G Corpus.Case := do
-  modify fun s => { s with sigs := #[], cur := 0 }
+  modify fun s => { s with sigs := #[], cur := 0, idCounter := 0 }
   let nDecls ← weighted 2 [(2, 1), (4, 2), (3, 3)]
   let D₀ ← genEnv 0 nDecls (Decls.ofStructs [])
   let nEnums ← weighted 1 [(2, 0), (4, 1), (3, 2)]
@@ -2330,6 +2569,23 @@ def genCase (seed i : Nat) : G Corpus.Case := do
   -- return r`: a return as the last form of the function body (RUE-2383),
   -- drawn on the side stream (`side`).
   let e ← if ← side (chance 1 10) then pure (letIn false e (ret (use (.var 0)))) else pure e
+  -- RUE-2505: two guaranteed shapes for the mutants observability alone
+  -- didn't catch (`BRIDGE-SENSITIVITY.md`, "Observable destructors"), both
+  -- drawn on the side stream so a program that doesn't draw them is
+  -- unaffected. The declared-linear chain needs new declarations, so it runs
+  -- first and rebinds `D` before anything downstream — the callees, `rulesOf`,
+  -- the returned case's own `decls` — reads it; `pairDtorBlock` needs none (it
+  -- only searches what the program already declared).
+  let (D, e) ← do
+    if ← side (chance 1 6) then
+      let (D', (leaf, c, b, a)) := linearChainDecls D
+      let stmt ← if ← side bool then pure (ancestorDroppedStmt leaf c b)
+        else pure (rootThroughMovedStmt leaf c b a)
+      pure (D', seq stmt e)
+    else pure (D, e)
+  let e ← match ← pairDtorBlock D [] with
+    | some blk => pure (seq blk e)
+    | none => pure e
   -- The callees the entry body's call sites named (RUE-2481), drawn on the
   -- call stream after it; a program without a call has none.
   let callees ← if (← get).sigs.isEmpty then pure [] else calls (bodies D maxCallees 0)

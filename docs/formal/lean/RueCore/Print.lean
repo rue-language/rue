@@ -27,8 +27,10 @@ trace, so a line of either kind comes out where it happened.
 
 **A user destructor is what makes a *drop* observable**: a Rue program has no
 other way to see a drop happen, so a declaration that says `dtor` prints
-`drop fn S(self) { @dbg(self.x0); }`, one line per drop of a value of that
-type, and the interpreter records the same drop as a `dtor` event (§6.11 runs
+`drop fn S(self) { @dbg(self.f); }`, `f` the field `dtorFieldName` picks (RUE-2505:
+field 0 for a hand-written seed, or the dedicated id field `Gen.genDecl`
+appends for a generated one), one line per drop of a value of that type, and
+the interpreter records the same drop as a `dtor` event (§6.11 runs
 the destructor before the fields, and the compiler agrees — verified by hand
 on a nested pair of destructor-bearing structs). A declaration with no
 destructor drops silently in both. **`@dbg` is the other kind**, and it needs
@@ -100,9 +102,9 @@ binder gets, and Rue's surface permits shadowing in any case (`3.8:12`).
 Together with one form the printer *supplies*, those four are the places where
 the printed program is not the identity elaboration of the core: a
 destructor-bearing declaration prints an invented body
-`drop fn S(self) { @dbg(self.x0); }`, which the core declaration does not
-carry — the core records only *whether* `S` has a destructor, and that body is
-the whole observation channel (above).
+`drop fn S(self) { @dbg(self.f); }` (`dtorFieldName`), which the core
+declaration does not carry — the core records only *whether* `S` has a
+destructor, and that body is the whole observation channel (above).
 
 ## Functions, calls, and `return`
 
@@ -223,21 +225,38 @@ def fieldDecls : Nat → List Ty → List String
   | _, [] => []
   | j, T :: rest => (fieldName j ++ ": " ++ tyName T) :: fieldDecls (j + 1) rest
 
+/-- Which field a destructor prints (RUE-2505): the declaration's **last**
+field if it is an `int` — the dedicated id field `Gen.genDecl` appends to
+every destructor-bearing *generated* declaration, filled with a fresh value
+per constructed value (`Gen.freshId`, `Gen.structLitArgs`) rather than an
+ordinary draw of its type — and otherwise field 0 if *that* is an `int`, which
+is every destructor-bearing *seed* declaration (`Examples.lean`) and so keeps
+their printed output exactly as it was before RUE-2505 (none of them has an
+id field, and the last field is field 0 wherever there is only one field). A
+declaration with neither has nothing to print, and the interpreter's `dtor`
+event for it is likewise silent (helper). -/
+def dtorFieldName (fields : List Ty) : Option Nat :=
+  match fields.getLast? with
+  | some T => if T.isInt then some (fields.length - 1)
+    else match fields[0]? with
+      | some T₀ => if T₀.isInt then some 0 else none
+      | none => none
+  | none => none
+
 /-- One struct declaration as a Rue item (§2's `S { f1: T1, …, fk: Tk }` with
 its `3.8:18`/`3.8:57` attribute), followed by its `drop fn` when the
-declaration has a destructor (`3.9`). The destructor prints the first field
-when that field is an `int`, which is the observation channel the module
-docstring describes; a declaration whose first field is not an `int` has
-nothing to print, and the interpreter's `dtor` event for it is likewise
-silent. -/
+declaration has a destructor (`3.9`). `dtorFieldName` is which field it
+prints, the observation channel the module docstring describes; a declaration
+with no such field has nothing to print, and the interpreter's `dtor` event
+for it is likewise silent. -/
 def structItem (s : Nat) (sd : StructDecl) : String :=
   attrPrefix sd.attr ++ "struct " ++ tyName (.struct s) ++ " { " ++
     String.intercalate ", " (fieldDecls 0 sd.fields) ++ " }\n" ++
   (if sd.dtor then
     "drop fn " ++ tyName (.struct s) ++ "(self) { " ++
-      (match sd.fields with
-       | T :: _ => if T.isInt then "@dbg(self." ++ fieldName 0 ++ "); " else ""
-       | [] => "") ++ "}\n"
+      (match dtorFieldName sd.fields with
+       | some j => "@dbg(self." ++ fieldName j ++ "); "
+       | none => "") ++ "}\n"
    else "")
 
 /-- Every struct declaration of a program, in program order (helper). -/
