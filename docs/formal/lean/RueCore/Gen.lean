@@ -792,14 +792,48 @@ def intTy : G Ty := do
   let sg ← weighted Sign.signed [(2, Sign.signed), (1, .unsigned)]
   return .int w sg
 
+/-- (helper) The powers of two `InBounds` for `int(w, s)`: `2^e` for `e` from
+`0` up to the widest exponent `max_T` still admits. Every width and
+signedness admits at least `2^0 = 1`, so the list is never empty
+(`boundaryLiteral`, below). -/
+def pow2sInRange (w : IntWidth) (sg : Sign) : List Int :=
+  (List.range w.bits).filterMap (fun e =>
+    let p : Int := 2 ^ e
+    if InBounds w sg p then some p else none)
+
+/-- (helper) A boundary value for `int(w, s)` (RUE-2482): `min_T` and `max_T`,
+one step in from each, `-1` (signed only), `0` and `1`, and a power of two in
+range together with the constants just below and above it — the shapes a
+small literal, and even `intLiteral`'s own occasional bare `min_T`/`max_T`,
+seldom hand an operator, so the RUE-2318 `min_T * -1` fold and a cast's or a
+comparison's own boundary go untested. Every candidate is filtered back to
+`InBounds`, though the power of two is drawn from `pow2sInRange` precisely so
+that filter never actually drops one. -/
+def boundaryLiteral (w : IntWidth) (sg : Sign) : G Int := do
+  let lo := intMin w sg
+  let hi := intMax w sg
+  let p ← pick 1 (pow2sInRange w sg)
+  let cands : List Int :=
+    [lo, hi, lo + 1, hi - 1, 0, 1] ++ (if sg == .signed then [-1] else []) ++
+      [p - 1, p, p + 1]
+  pick lo (cands.filter (fun n => decide (InBounds w sg n)))
+
 /-- (helper) An integer literal of the wanted type: small, with an occasional
 `min_T`/`max_T` so that `+ - * /` can trap (§6.4). A small value is in range
-at every width, so the draw needs no per-width case. -/
+at every width, so the draw needs no per-width case. At a modest rate — one
+operand in eight — the **side** stream (`side`) replaces it with a
+`boundaryLiteral` instead (RUE-2482): the main-stream draw above always runs
+first and is discarded when the side stream fires, exactly as `divArm`'s
+replacement of an arm does (above, "Return and panic arms"), so a program
+with no boundary literal is the program this module drew before RUE-2482,
+and one with a boundary literal differs from it only at that literal. -/
 def intLiteral (w : IntWidth) (sg : Sign) : G Expr := do
   let k ← nat 0 39
   let n : Int :=
     if k = 0 then intMax w sg else if k = 1 then intMin w sg else Int.ofNat (k % 10)
-  return intLit w sg n
+  let boundary ← side (do
+    if ← chance 1 8 then return some (← boundaryLiteral w sg) else return none)
+  return intLit w sg (boundary.getD n)
 
 /-- (helper) A float width: `f64` more often than `f32`, the way `3.12:8`
 defaults an unsuffixed literal. -/
