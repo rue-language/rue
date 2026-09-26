@@ -1112,12 +1112,13 @@ a body of the wrong type, a field of an integer and a `match` on an integer.
 
 A witness shows a statement's hypotheses satisfiable together; it does not
 show that any of them is needed. A hypothesis the proof never uses, or one
-implied by the others, makes the statement read stronger than it is. So every
-hypothesis of every spine statement has a **sharpness counter-example**: a
+implied by the others, makes the statement read stronger than it is. So a
+hypothesis of a spine statement gets a **sharpness counter-example**: a
 Spec statement (`RueCore/Spec/Sharp.lean`) writing out a program, or a
 configuration, of which that hypothesis fails, every other hypothesis of the
 statement holds, and the conclusion fails. The statement with that hypothesis
-removed is then false.
+removed is then false. 70 of the 71 hypotheses have one; the other has a
+written reason.
 
 What counts as a hypothesis: the lint numbers them (`Lint.hypotheses`): the
 premises of `Prop` type, in the order they occur, walking the statement's
@@ -1126,13 +1127,25 @@ conclusion, the same walk that makes five statements hypothesis-free
 ("Non-vacuity witnesses"). So a premise inside a conclusion counts: `run_sim`
 has two, the `run … = .ok H v tr` and `run … = .panic k tr` its two halves
 start from, and `eval_complete`'s `n < fuel` is two hypotheses, one per half.
-The 36 statements have 71 hypotheses. `M : FloatModel` is not one of them:
-it is not a `Prop`.
+The 36 statements have 71 hypotheses, and 21 of the 70 with a
+counter-example are such premises inside a conclusion (`drop_order` 2–5,
+`eval_sound` 2–3, `run_sim` 1–2, `eval_complete` 2–5, `run_complete` 1–4, the
+`Steps init C` of `step_progress`, `step_preservation`, `never_stuck_iff` and
+`step_never_stuck_of_run`, and `run_stuck_of_step_stuck` 3), so "70
+hypotheses needed" is not 70 hypotheses about a program. The walk does not go
+under `∨` or `¬`, nor into a definition that is not reducible: a premise
+inside `Config.SafeAt`, `Exact`, `Blocks` or `Lifo` is part of the
+conclusion. No spine statement has a premise under `∨` or `¬` today.
+`M : FloatModel` is not a hypothesis either: it is not a `Prop`.
 
 `RueCore.Spec.sharpness` (`Spec.lean`) names each counter-example
 statement, the theorem that proves it (`RueCore/Sharp.lean`, L2), and the
 hypotheses it drops, as (spine theorem, number) pairs: 27 statements, 70
-hypotheses. The one hypothesis without a counter-example has its reason in
+hypotheses (four of them by more than one statement). The pairing is
+hand-written and reviewed: the lint checks each pair's range and that every
+hypothesis is covered, not that the statement drops that hypothesis; a
+kernel-checked tie, as `Nonvacuous/Glue.lean` gives the witnesses, is
+RUE-2495. The one hypothesis without a counter-example has its reason in
 `RueCore.Spec.sharpnessReasons`, beside the one reason covering the float
 laws. The tools read the list as they read `Spec.witnesses`: `Spine.lean`
 binds each proof, the lint holds each to a spine entry's checks and fails on
@@ -1175,8 +1188,12 @@ The counter-examples, by kind:
   configuration it does not reach (`Sharp.unreachable_stuck`), an
   unreachable configuration out of registration order (`Sharp.unordered`), a
   pair that is not a step (`Sharp.not_a_step`), the initial configuration,
-  which steps (`Sharp.init_steps`), and the fuel bounds (`Sharp.fuel`,
-  `Sharp.fuel_panic`: fuel `0` answers `outOfFuel`).
+  which steps (`Sharp.init_steps`), and `eval_complete`'s and
+  `run_complete`'s `n < fuel` (`Sharp.fuel`, `Sharp.fuel_panic`: fuel `0`
+  answers `outOfFuel`).
+* The fuel premises of `fuel_mono` (`n ≤ m`, `eval n ≠ outOfFuel`) and
+  `no_masking`, which are the statements' own, top-level (`Sharp.fuel`,
+  `Sharp.stuck`).
 
 The two reasons, both in `Spec.lean`:
 
@@ -1185,21 +1202,29 @@ The two reasons, both in `Spec.lean`:
   counter-example runs on `Float.exactOps`, a model of them
   (`Nonvacuous.exact_model`). Recorded once, in `sharpnessReasons`'
   doc-comment.
-* `no_use_after_drop`'s `ProgramTyped` has no counter-example: no program,
-  checked or not, reaches `eval`'s `useAfterDrop` refusal through `run`. A
-  frame's environment names only cells its own bindings allocated, each
-  dropped from the environment when the cell is retired, and `run` starts
-  from the empty store and frame (`Examples.lean` witnesses the refusal only
-  from an open machine state). So the hypothesis appears redundant; this is a
-  finding, not a theorem.
+* `no_use_after_drop`'s `ProgramTyped` has no counter-example, and none has
+  been found: by reading, a frame's environment names only cells its own
+  bindings allocated, each dropped from the environment when the cell is
+  retired, and `run` starts from the empty store and frame (`Examples.lean`
+  witnesses the refusal only from an open machine state); and a fuzz of
+  78,000 programs, checked and unchecked, reached `useAfterDrop` through
+  neither `run` nor `step`. So the hypothesis appears redundant; the theorem
+  over every program is RUE-2496.
 
 The Spec statement writes the program out; the
 proof runs `check`, `eval` and `step` in the kernel (`rfl`, `decide`), and
-shows a dropped hypothesis false from the spine theorem itself where no
-direct proof is short: for a program of which every other hypothesis holds
-and the conclusion fails, the theorem leaves the dropped one no way to hold
-(`¬ ProgramTyped P` from `no_use_after_move` and a refusal, `¬ Typed` from
-`soundness`). `discard_loop`'s infinite `Step` run is nine steps per turn over
+shows every dropped hypothesis false (`¬ ProgramTyped`, `¬ WfProgram`,
+`¬ Typed`, `¬ FrameMatches`, `¬ Steps …`) through the spine theorem itself:
+for a program of which every other hypothesis holds and the conclusion fails,
+established without the theorem, the theorem leaves the dropped one no way to
+hold (`¬ ProgramTyped P` from `no_use_after_move` and a refusal, `¬ Typed`
+from `soundness`). Two are shown directly instead: `Sharp.double_drop`'s
+`¬ DtorNotCopy` and `Sharp.entry_param`'s `¬ ProgramTyped`. So "an ill-typed
+program" there means one the spine theorem shows ill-typed, not one a
+separate derivation refutes. Where a statement does not give the other
+hypotheses in the spine theorem's literal form (`run` for `eval` at
+`main()`, `ProgramTyped` beside `WfProgram`, `eval … = r.withTrace []`), its
+doc-comment names the spot. `discard_loop`'s infinite `Step` run is nine steps per turn over
 any store, by `rfl` with the store and trace left symbolic
 (`Sharp.loopTurn_step`). No `native_decide`, no new axiom.
 

@@ -59,7 +59,17 @@ conclusion included), each with the counter-examples that drop it
 the statement, of which that hypothesis fails, every other holds, and the
 conclusion fails. So the hypothesis is needed. A hypothesis with no
 counter-example carries a reason (`RueCore.Spec.sharpnessReasons`), and the lint
-fails on one with neither. The counter-examples are Spec statements too, proved in
+fails on one with neither: 70 of the 71 have a counter-example and one has a
+reason. Of the 70, 21 are premises inside a conclusion (a `run … = .ok`, a
+`Steps …` or an `n < fuel` that a conjunct starts from), not hypotheses about the
+program. The walk does not go under `∨` or `¬`, nor into a definition that is not
+reducible (`Config.SafeAt`, `Exact`, `Blocks`, `Lifo`). Two limits: the pairing of
+a counter-example with a (theorem, number) is hand-written and reviewed, and the
+lint checks only its range and coverage, not that the statement drops that
+hypothesis (a kernel-checked tie is RUE-2495); and each counter-example's
+negated hypothesis is proved through the spine theorem itself (from the other
+hypotheses and the failed conclusion, which are established without it), except
+where its doc-comment says it is shown directly. The counter-examples are Spec statements too, proved in
 `RueCore/Sharp.lean` and covered by the kernel, the lint, Comparator and the
 fingerprints. Several are refusals of `eval`'s monitors, so a machine without a
 monitor falsifies one (R3 of `REDTEAM-LOG.md`). The `FloatModel` laws are not
@@ -156,7 +166,7 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 
 Sharp:
 
-1. `ProgramTyped P` — counter-example `Sharp.stuck`, `Sharp.entry_param`, `Sharp.copy`
+1. `ProgramTyped P` — counter-examples `Sharp.stuck`, `Sharp.entry_param`, `Sharp.copy`
 
 ### `no_use_after_move`
 
@@ -204,7 +214,7 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 
 Sharp:
 
-1. `ProgramTyped P` — no counter-example: The hypothesis appears redundant. `run` starts from the empty store and frame, and a frame's environment names only cells its own bindings allocated, each removed from the environment when the cell is retired, so no program, checked or not, reaches `eval`'s `useAfterDrop` refusal through `run` (`Examples.lean` witnesses it only from an open machine state). Unproved; a finding of RUE-2485.
+1. `ProgramTyped P` — no counter-example: No counter-example has been found. By reading `Dynamics.lean`, `.dead` enters the store only as an identity slot no binding names, or when a cell is retired as its binding leaves the environment; and a fuzz of 78,000 programs, checked and unchecked, reached `useAfterDrop` through neither `run` nor `step`. So the hypothesis appears redundant; the theorem over every program is RUE-2496.
 
 ### `no_linear_leak`
 
@@ -266,7 +276,7 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 
 Sharp:
 
-1. `ProgramTyped P` — counter-example `Sharp.discard`, `Sharp.discard_loop`
+1. `ProgramTyped P` — counter-examples `Sharp.discard`, `Sharp.discard_loop`
 
 ### `fuel_mono`
 
@@ -835,7 +845,7 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 
 Sharp:
 
-1. `ProgramTyped P` — counter-example `Sharp.leak`, `Sharp.discard`
+1. `ProgramTyped P` — counter-examples `Sharp.leak`, `Sharp.discard`
 2. `Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr)` — counter-example `Sharp.unreached`
 3. `n < fuel` — counter-example `Sharp.fuel`
 4. `Steps M.toFloatOps P Config.init (Config.panic κ tr)` — counter-example `Sharp.unreached_panic`
@@ -1551,7 +1561,14 @@ conclusions fails once its program hypothesis is dropped: `soundness`
 (`WfProgram`), `run_safe` (`WfProgram`), `no_violation`, `no_use_after_move`,
 `checkProgram_sound` (`checkProgram P = true`), `eval_sound`,
 `drop_exactly_once` and `rest_exactly_once` (`ProgramTyped`), and `no_masking`
-(its second hypothesis, `eval m ≠ outOfFuel`, at `m = 0`).
+(its second hypothesis, `eval m ≠ outOfFuel`, at `m = 0`). Where the spine theorem is stated over `eval`
+(`no_masking`, `drop_exactly_once`, `rest_exactly_once`), the statement gives
+`run P n` and `eval` at `main()` as the same term (`run`'s definition), and
+`rest_exactly_once`'s hypothesis 8 as `eval … = r.withTrace []` with `r` the
+refusal. That the pairing of this statement with those hypotheses is right is
+reviewed, not yet kernel-checked (RUE-2495). The negations `¬ ProgramTyped`
+and `¬ WfProgram` are proved through the spine theorems themselves
+(`no_use_after_move`, `soundness`), not by inverting the definitions.
 
 ```lean
 def Spec.Sharp.stuck_stmt : Prop :=
@@ -1598,17 +1615,26 @@ def Spec.Sharp.stuck_stmt : Prop :=
                                   EvalRes.stuck Violation.useAfterMove ∧
                                 eval Float.exactOps 201 P [] Frame.empty (Expr.call 0 []) =
                                     EvalRes.stuck Violation.useAfterMove ∧
-                                  run Float.exactOps P 200 =
-                                      EvalRes.stuck Violation.useAfterMove ∧
-                                    run Float.exactOps P 0 = EvalRes.outOfFuel ∧
-                                      ¬(run Float.exactOps P 200 = EvalRes.outOfFuel ∨
-                                          (∃ k tr,
-                                              run Float.exactOps P 200 =
-                                                EvalRes.panic k tr) ∨
-                                            ∃ H v tr,
-                                              run Float.exactOps P 200 = EvalRes.ok H v tr ∧
-                                                HasTy P.decls v
-                                                  (Ty.int IntWidth.w64 Sign.signed))
+                                  eval Float.exactOps 201 P [] Frame.empty
+                                        (Expr.call 0 []) =
+                                      EvalRes.withTrace []
+                                        (EvalRes.stuck Violation.useAfterMove) ∧
+                                    (∀ (n : Nat),
+                                        run Float.exactOps P n =
+                                          eval Float.exactOps n P [] Frame.empty
+                                            (Expr.call 0 [])) ∧
+                                      run Float.exactOps P 200 =
+                                          EvalRes.stuck Violation.useAfterMove ∧
+                                        run Float.exactOps P 0 = EvalRes.outOfFuel ∧
+                                          ¬(run Float.exactOps P 200 = EvalRes.outOfFuel ∨
+                                              (∃ k tr,
+                                                  run Float.exactOps P 200 =
+                                                    EvalRes.panic k tr) ∨
+                                                ∃ H v tr,
+                                                  run Float.exactOps P 200 =
+                                                      EvalRes.ok H v tr ∧
+                                                    HasTy P.decls v
+                                                      (Ty.int IntWidth.w64 Sign.signed))
 ```
 
 Proved by `Sharp.stuck` (`RueCore.Sharp`). Drops `soundness` 1, `run_safe` 1, `no_violation` 1, `no_use_after_move` 1, `no_masking` 2, `checkProgram_sound` 1, `drop_exactly_once` 1, `rest_exactly_once` 1, `eval_sound` 1.
@@ -1683,7 +1709,13 @@ outcome, and `check` rejects it; everything else `soundness`,
 included (`Lead`). Its evaluation is refused with `useAfterMove`, so none of
 their conclusions holds of it: the typing hypothesis `Typed` is needed. It is
 also `check_sound`'s first hypothesis dropped: `check` does not accept it, and
-no type fits a derivation.
+no type fits a derivation. `check_sound`'s hypothesis 2 (`c.fits T = true`) has
+no `c` to hold of, since `check` answers `none`: the statement gives
+`CTy.never`, which fits every type, and no `Ω` at all; `¬ Typed` is stated
+for every type and outcome, so for any `c`, `Ω` a spine instance picks. And
+`rest_exactly_once`'s hypothesis 8 is `eval … = r.withTrace []` with `r` the
+refusal. The pairing is reviewed, not yet kernel-checked (RUE-2495); `¬ Typed`
+is proved through `soundness`.
 
 ```lean
 def Spec.Sharp.typed_stmt : Prop :=
@@ -1725,10 +1757,16 @@ def Spec.Sharp.typed_stmt : Prop :=
                                     EvalRes.stuck Violation.useAfterMove ∧
                                   eval Float.exactOps 201 P [] Frame.empty e =
                                       EvalRes.stuck Violation.useAfterMove ∧
-                                    ∀ (T : Ty) (Ω : Out),
-                                      ¬EvalOk P.decls T (Ty.int IntWidth.w64 Sign.signed)
-                                          Ω.norm Ω.brk Frame.empty []
-                                          (eval Float.exactOps 200 P [] Frame.empty e)
+                                    eval Float.exactOps 201 P [] Frame.empty e =
+                                        EvalRes.withTrace []
+                                          (EvalRes.stuck Violation.useAfterMove) ∧
+                                      CTy.never.fits (Ty.int IntWidth.w64 Sign.signed) =
+                                          true ∧
+                                        ∀ (T : Ty) (Ω : Out),
+                                          ¬EvalOk P.decls T
+                                              (Ty.int IntWidth.w64 Sign.signed) Ω.norm Ω.brk
+                                              Frame.empty []
+                                              (eval Float.exactOps 200 P [] Frame.empty e)
 ```
 
 Proved by `Sharp.typed` (`RueCore.Sharp`). Drops `soundness` 2, `check_sound` 1, `drop_exactly_once` 3, `rest_exactly_once` 3.
@@ -1740,7 +1778,11 @@ Proved by `Sharp.typed` (`RueCore.Sharp`). Drops `soundness` 2, `check_sound` 1,
 the checked program of `Nonvacuous.dtor`, is run from the empty frame and
 store, which do not match that context (`FrameMatches` fails); everything else
 `soundness`, `drop_exactly_once` and `rest_exactly_once` ask holds, a `Lead`
-(the discarded `1`) included. `eval` refuses the read of `x` with `unbound`.
+(the discarded `1`) included. `eval` refuses the read of `x` with `unbound`. The statement gives `ProgramTyped P` and `WfProgram P`
+(`soundness` asks the second, `drop_exactly_once` the first), and
+`rest_exactly_once`'s hypothesis 8 as `eval … = r.withTrace []` with `r` the
+refusal. The pairing is reviewed, not yet kernel-checked (RUE-2495);
+`¬ FrameMatches` is proved through `soundness`.
 
 ```lean
 def Spec.Sharp.frame_stmt : Prop :=
@@ -1765,34 +1807,37 @@ def Spec.Sharp.frame_stmt : Prop :=
           ∀ (e : Expr),
             e = (Expr.intLit IntWidth.w64 Sign.signed 1).seq (Expr.use (Place.var 0)) →
               ProgramTyped P ∧
-                P.pendingSafe = true ∧
-                  e.pendingSafe = true ∧
-                    StoreCC P.decls [] ∧
-                      (∃ c Ω,
-                          check P (Ty.int IntWidth.w64 Sign.signed)
-                                [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false,
-                                    st := OwnSt.owned }]
-                                e =
-                              some (c, Ω) ∧
-                            c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
-                              Typed P (Ty.int IntWidth.w64 Sign.signed)
+                WfProgram P ∧
+                  P.pendingSafe = true ∧
+                    e.pendingSafe = true ∧
+                      StoreCC P.decls [] ∧
+                        (∃ c Ω,
+                            check P (Ty.int IntWidth.w64 Sign.signed)
                                   [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false,
                                       st := OwnSt.owned }]
-                                  e (Ty.int IntWidth.w64 Sign.signed) Ω ∧
-                                ¬EvalOk P.decls (Ty.int IntWidth.w64 Sign.signed)
-                                    (Ty.int IntWidth.w64 Sign.signed) Ω.norm Ω.brk
-                                    Frame.empty []
-                                    (eval Float.exactOps 200 P [] Frame.empty e)) ∧
-                        ¬FrameMatches P.decls
-                              [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false,
-                                  st := OwnSt.owned }]
-                              Frame.empty [] ∧
-                          Lead Float.exactOps P 200 [] Frame.empty []
-                              [Val.int IntWidth.w64 Sign.signed 1] [] e ∧
-                            eval Float.exactOps 200 P [] Frame.empty e =
-                                EvalRes.stuck Violation.unbound ∧
-                              eval Float.exactOps 201 P [] Frame.empty e =
-                                EvalRes.stuck Violation.unbound
+                                  e =
+                                some (c, Ω) ∧
+                              c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                                Typed P (Ty.int IntWidth.w64 Sign.signed)
+                                    [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false,
+                                        st := OwnSt.owned }]
+                                    e (Ty.int IntWidth.w64 Sign.signed) Ω ∧
+                                  ¬EvalOk P.decls (Ty.int IntWidth.w64 Sign.signed)
+                                      (Ty.int IntWidth.w64 Sign.signed) Ω.norm Ω.brk
+                                      Frame.empty []
+                                      (eval Float.exactOps 200 P [] Frame.empty e)) ∧
+                          ¬FrameMatches P.decls
+                                [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false,
+                                    st := OwnSt.owned }]
+                                Frame.empty [] ∧
+                            Lead Float.exactOps P 200 [] Frame.empty []
+                                [Val.int IntWidth.w64 Sign.signed 1] [] e ∧
+                              eval Float.exactOps 200 P [] Frame.empty e =
+                                  EvalRes.stuck Violation.unbound ∧
+                                eval Float.exactOps 201 P [] Frame.empty e =
+                                    EvalRes.stuck Violation.unbound ∧
+                                  eval Float.exactOps 201 P [] Frame.empty e =
+                                    EvalRes.withTrace [] (EvalRes.stuck Violation.unbound)
 ```
 
 Proved by `Sharp.frame` (`RueCore.Sharp`). Drops `soundness` 3, `drop_exactly_once` 4, `rest_exactly_once` 4.
@@ -1837,7 +1882,8 @@ RUE-2485). `fn main(x: i64) -> i64 { x }` is `WfProgram`, but its entry point
 has a parameter, so it is not `ProgramTyped`; `run` calls it with no
 arguments, and `eval` refuses the call with `typeConfusion`. So `run_safe`
 needs its hypothesis `fd.params = []`, and `no_violation` needs the entry
-clause of `ProgramTyped`, not only `WfProgram`.
+clause of `ProgramTyped`, not only `WfProgram`. `¬ ProgramTyped` is shown
+directly, from that clause.
 
 ```lean
 def Spec.Sharp.entry_param_stmt : Prop :=
@@ -2084,7 +2130,10 @@ without `eval n ≠ outOfFuel` (`n = 0`, `m = 200`); `no_masking` fails without
 its first hypothesis (`eval n` is a value, not a refusal); and
 `eval_complete`'s and `run_complete`'s value halves fail without `n < fuel`:
 no `n` makes the value, or a refusal, the answer at every fuel. `run P fuel`
-is `eval` at `main()` (`run`'s definition).
+is `eval` at `main()` (`run`'s definition). `fuel_mono` and `no_masking` are
+stated over `eval`; the statement gives `run P n` and `eval` at `main()` as
+the same term, for every `n` (`run`'s definition). The pairing is reviewed,
+not yet kernel-checked (RUE-2495).
 
 ```lean
 def Spec.Sharp.fuel_stmt : Prop :=
@@ -2107,18 +2156,22 @@ def Spec.Sharp.fuel_stmt : Prop :=
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
-            run Float.exactOps P 0 = EvalRes.outOfFuel ∧
-              ∃ H v tr,
-                run Float.exactOps P 200 = EvalRes.ok H v tr ∧
-                  Steps Float.exactOps P Config.init
-                      (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
-                    ¬200 ≤ 0 ∧
-                      0 ≤ 200 ∧
-                        run Float.exactOps P 0 ≠ run Float.exactOps P 200 ∧
-                          (∀ (w : Violation), run Float.exactOps P 200 ≠ EvalRes.stuck w) ∧
-                            ¬∀ (fuel : Nat),
-                                run Float.exactOps P fuel = EvalRes.ok H v tr ∨
-                                  ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+            (∀ (n : Nat),
+                run Float.exactOps P n =
+                  eval Float.exactOps n P [] Frame.empty (Expr.call 0 [])) ∧
+              run Float.exactOps P 0 = EvalRes.outOfFuel ∧
+                ∃ H v tr,
+                  run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                    Steps Float.exactOps P Config.init
+                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      ¬200 ≤ 0 ∧
+                        0 ≤ 200 ∧
+                          run Float.exactOps P 0 ≠ run Float.exactOps P 200 ∧
+                            (∀ (w : Violation),
+                                run Float.exactOps P 200 ≠ EvalRes.stuck w) ∧
+                              ¬∀ (fuel : Nat),
+                                  run Float.exactOps P fuel = EvalRes.ok H v tr ∨
+                                    ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
 ```
 
 Proved by `Sharp.fuel` (`RueCore.Sharp`). Drops `fuel_mono` 1, `fuel_mono` 2, `no_masking` 1, `eval_complete` 3, `run_complete` 2.
@@ -2210,7 +2263,8 @@ Proved by `Sharp.not_fits` (`RueCore.Sharp`). Drops `check_sound` 2.
 `let c = C { 1 }; let a = W { c }; let b = W { c }; 0` copies `c` into two
 `W`s, and dropping both runs `C`'s destructor on identity `0` twice. It is not
 `ProgramTyped`, and `run` returns: `dtor_once` fails without `DtorNotCopy`, and
-`no_double_free` without `ProgramTyped`. (RUE-2400's cases, a dynamic read and
+`no_double_free` without `ProgramTyped`. `¬ DtorNotCopy` is shown directly
+(struct `0`); `¬ ProgramTyped` through `no_double_free`. (RUE-2400's cases, a dynamic read and
 an array repeat of an affine value, no longer double-drop: `eval` refuses them
 with `typeConfusion`.)
 

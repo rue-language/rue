@@ -342,13 +342,14 @@ What the mutants could not get past:
     and an array repeat of an affine value) no longer reproduce on this
     trunk: `eval` refuses them with `typeConfusion`.
 - **Findings.**
-  - **S1, `no_use_after_drop`'s `ProgramTyped` appears redundant** (low; no
-    issue proposed yet). No program, checked or not, seems to reach `eval`'s
+  - **S1, `no_use_after_drop`'s `ProgramTyped` appears redundant** (low;
+    RUE-2496). No program, checked or not, seems to reach `eval`'s
     `useAfterDrop` refusal through `run`: a frame's environment names only
     cells its own bindings allocated, each removed from the environment as
     the cell is retired, and `run` starts from the empty store and frame.
     `Examples.lean` already says no closed program reaches the guard, and
-    witnesses it only from an open state. So the statement holds, it seems,
+    witnesses it only from an open state, and the review's fuzz of 78,000
+    programs reached it through neither `run` nor `step`. So the statement holds, it seems,
     of every program, and says less than its place beside
     `no_use_after_move` suggests. Unproved: a proof is an induction over
     `eval` with the invariant that the frame's environment names no `.dead`
@@ -359,7 +360,7 @@ What the mutants could not get past:
     that breaks it is a `@copy` struct with a destructor left as a
     destructure's residue: dropped with no marker, its destructor event opens
     the trace (`Sharp.bare_dtor`).
-- **Not done.** No kernel-checked tie between a counter-example and the
+- **Not done (RUE-2495).** No kernel-checked tie between a counter-example and the
   hypothesis it names: for a witness, `Nonvacuous/Glue.lean` applies the
   spine theorem; for a counter-example, the dropped hypothesis is a
   hand-written pair `(theorem, number)`, and the statement's doc-comment says

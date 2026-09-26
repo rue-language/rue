@@ -866,7 +866,11 @@ def spineProblems (env : Environment) : Array String := Id.run do
 /-- (helper) A statement's **hypotheses**: its binders of a `Prop` type,
 in the order they occur, walking its `∀`s, and the two sides of an `∧` or an
 `↔` and the body of an `∃` in its conclusion (`SPINE.md`'s "no hypotheses" is
-this list empty). `Spec.sharpness` and `Spec.sharpnessReasons` number a
+this list empty). The walk does not go under `∨` or `¬` (`Not` is not
+reducible) and does not unfold a definition that is not reducible, so a
+premise inside `Config.SafeAt`, `Exact`, `Blocks` or `Lifo` is part of the
+conclusion, not a hypothesis; no spine statement has a premise under `∨` or
+`¬`. `Spec.sharpness` and `Spec.sharpnessReasons` number a
 hypothesis by its place here, from 1. Each is returned as its type, with the
 binders before it in scope, pretty-printed. -/
 partial def hypotheses (e : Lean.Expr) : MetaM (Array String) := do
@@ -897,7 +901,8 @@ each as a sentence:
 
 * every pair of `Spec.sharpness` and `Spec.sharpnessReasons` names a theorem
   of `Spec.spine` and one of its hypotheses (`1 ≤ i ≤` the number
-  `hypotheses` counts), every counter-example names at least one pair, and
+  `hypotheses` counts), every counter-example names at least one pair and
+  none twice (a statement is listed once, by `spineProblems`), and
   every reason is a sentence;
 * **every hypothesis of every spine statement** is named by a counter-example
   or by a reason, and not by both; a statement with no hypotheses (five) is
@@ -918,6 +923,9 @@ def sharpProblems (env : Environment) : MetaM (Array String) := do
           some s!"{what} names hypothesis {i} of {t}, which has {k} hypotheses (`Lint.hypotheses`)"
         else none
   for (h, _, ps) in Spec.sharpness do
+    for (p, k) in ps.zipIdx do
+      if (ps.take k).contains p then
+        out := out.push s!"{h}: names hypothesis {p.2} of {p.1} twice in RueCore.Spec.sharpness"
     if ps.isEmpty then
       out := out.push s!"{h}: a counter-example in RueCore.Spec.sharpness that names no spine hypothesis"
     for (t, i) in ps do
