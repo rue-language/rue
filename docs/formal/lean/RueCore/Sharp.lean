@@ -8,6 +8,7 @@ public import RueCore.TraceOrder
 public import RueCore.Adequacy
 public import RueCore.Retire
 public import RueCore.TracePrefix
+public import RueCore.Nonvacuous
 
 @[expose] public section
 
@@ -1052,5 +1053,192 @@ theorem unreached_double :
   have := (step_no_double_free Float.exactModel hPT hs).2 0
   revert this
   decide
+
+/-- `Spec.Sharp.uncut_drop_stmt`, proved: a §7 hypothesis needed (RUE-2500). -/
+theorem uncut_drop :
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      ProgramTyped P ∧
+      ¬ Steps Float.exactOps P Config.init
+        (.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
+          { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []) ∧
+      Step Float.exactOps P
+        (.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
+          { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) [])
+        (.run [.dead, .full (.struct 0 1 [.int .w64 .signed 2])] { env := [0], scope := [0] } []
+          (.ret (.int .w64 .signed 3))
+          [.drop 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]) ∧
+      NewestFirst [0] ∧ [0, 1].Pairwise (· < ·) ∧ ¬ Lifo [0, 1] [0] [0] ∧
+      ¬ ∃ evs,
+        (Config.run [.dead, .full (.struct 0 1 [.int .w64 .signed 2])] { env := [0], scope := [0] } []
+          (.ret (.int .w64 .signed 3))
+          [.drop 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]).trace =
+          (Config.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
+            { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []).trace ++ evs ∧
+        NewestFirst (dropLocs evs) ∧
+        Lifo
+          (Config.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
+            { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []).stack
+          (Config.run [.dead, .full (.struct 0 1 [.int .w64 .signed 2])] { env := [0], scope := [0] } []
+            (.ret (.int .w64 .signed 3))
+            [.drop 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]).stack
+          (dropLocs evs) ∧
+        (Config.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
+          { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []).stack.Pairwise (· < ·) := by
+  intro B hB P hP
+  have hPT : ProgramTyped P := checkProgram_sound (by subst hB hP; rfl)
+  have hstep : Step Float.exactOps P
+      (.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
+        { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) [])
+      (.run [.dead, .full (.struct 0 1 [.int .w64 .signed 2])] { env := [0], scope := [0] } []
+        (.ret (.int .w64 .signed 3))
+        [.drop 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]) :=
+    step_iff.mpr (by subst hB hP; rfl)
+  have hnl : ¬ Lifo [0, 1] [0] [0] := by
+    rintro (h | ⟨-, h⟩)
+    · exact absurd h.length_le (by decide)
+    · exact absurd (h.subset (List.mem_singleton_self 0)) (by decide)
+  have hno : ¬ ∃ evs,
+      (Config.run [.dead, .full (.struct 0 1 [.int .w64 .signed 2])] { env := [0], scope := [0] } []
+        (.ret (.int .w64 .signed 3))
+        [.drop 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]).trace =
+        (Config.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
+          { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []).trace ++ evs ∧
+      NewestFirst (dropLocs evs) ∧
+      Lifo
+        (Config.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
+          { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []).stack
+        (Config.run [.dead, .full (.struct 0 1 [.int .w64 .signed 2])] { env := [0], scope := [0] } []
+          (.ret (.int .w64 .signed 3))
+          [.drop 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]).stack
+        (dropLocs evs) ∧
+      (Config.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
+        { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []).stack.Pairwise
+        (· < ·) := by
+    rintro ⟨evs, h, -, hl, -⟩
+    simp only [Config.trace, List.nil_append] at h
+    subst h
+    exact hnl hl
+  refine ⟨hPT, fun hs => ?_, hstep, .inl ⟨0, fun _ hx => List.mem_singleton.mp hx⟩, by decide, hnl, hno⟩
+  exact hno ((drop_order Float.exactModel hPT).2.2 _ _ hs hstep)
+
+/-- `Spec.Sharp.ill_typed_halt_stmt`, proved: a §7 hypothesis needed (RUE-2500). -/
+theorem ill_typed_halt :
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      ProgramTyped P ∧ ((.run [] Frame.empty [] (.ret (.bool true)) []) : Config).Terminal ∧
+      ¬ Steps Float.exactOps P Config.init (.run [] Frame.empty [] (.ret (.bool true)) []) ∧
+      ¬ ((.run [] Frame.empty [] (.ret (.bool true)) []) : Config).SafeAt Float.exactOps P
+        (.int .w64 .signed) := by
+  intro B hB P hP
+  have hPT : ProgramTyped P := checkProgram_sound (by subst hB hP; rfl)
+  have hns : ¬ ((.run [] Frame.empty [] (.ret (.bool true)) []) : Config).SafeAt Float.exactOps P
+      (.int .w64 .signed) := fun h => nomatch h.2 _ _ _ _ (.refl _)
+  refine ⟨hPT, trivial, fun hs => ?_, hns⟩
+  obtain ⟨fd, hfd, hsafe⟩ := step_preservation Float.exactModel hPT
+  subst hB hP
+  simp only [List.getElem?_cons_zero, Option.some.injEq] at hfd
+  subst hfd
+  exact hns (hsafe _ hs)
+
+/-- `Spec.Sharp.out_of_range_halt_stmt`, proved: a §7 hypothesis needed (RUE-2500). -/
+theorem out_of_range_halt :
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      ProgramTyped P ∧
+      ((.run [] Frame.empty [] (.ret (.int .w64 .signed 9223372036854775808)) []) : Config).Terminal ∧
+      ¬ HasTy P.decls (.int .w64 .signed 9223372036854775808) (.int .w64 .signed) ∧
+      ¬ Steps Float.exactOps P Config.init
+        (.run [] Frame.empty [] (.ret (.int .w64 .signed 9223372036854775808)) []) ∧
+      ¬ ((.run [] Frame.empty [] (.ret (.int .w64 .signed 9223372036854775808)) []) : Config).SafeAt
+        Float.exactOps P (.int .w64 .signed) := by
+  intro B hB P hP
+  have hPT : ProgramTyped P := checkProgram_sound (by subst hB hP; rfl)
+  have hty : ¬ HasTy P.decls (.int .w64 .signed 9223372036854775808) (.int .w64 .signed) := by
+    intro h
+    cases h with
+    | int hb => revert hb; decide
+  have hns : ¬ ((.run [] Frame.empty [] (.ret (.int .w64 .signed 9223372036854775808)) []) : Config).SafeAt
+      Float.exactOps P (.int .w64 .signed) := fun h => hty (h.2 _ _ _ _ (.refl _))
+  refine ⟨hPT, trivial, hty, fun hs => ?_, hns⟩
+  obtain ⟨fd, hfd, hsafe⟩ := step_preservation Float.exactModel hPT
+  subst hB hP
+  simp only [List.getElem?_cons_zero, Option.some.injEq] at hfd
+  subst hfd
+  exact hns (hsafe _ hs)
+
+/-- `Spec.Sharp.float_halt_stmt`, proved: a §7 hypothesis needed (RUE-2500). -/
+theorem float_halt :
+  ∀ B : Expr, B =
+      .letIn false
+        (.binop .add (.floatLit .w64 { sig := 15, negExp := true, e := 1 })
+          (.floatLit .w64 { sig := 225, negExp := true, e := 2 }))
+        (.binop .mul (.use (.var 0)) (.floatLit .w64 { sig := 2, negExp := false, e := 0 })) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .float .w64, body := B }] } →
+      ProgramTyped P ∧
+      (∃ H tr, Steps Float.exactOps P Config.init
+        (.run H Frame.empty [] (.ret (.float .w64 (.num false 15 (-1)))) tr)) ∧
+      ¬ (FloatDatum.num false 30 (-2)).Wf .w64 ∧ ¬ (FloatDatum.num false 1 (-1075)).Wf .w64 ∧
+      ((.run [] Frame.empty [] (.ret (.float .w64 (.num false 30 (-2)))) []) : Config).Terminal ∧
+      ((.run [] Frame.empty [] (.ret (.float .w64 (.num false 1 (-1075)))) []) : Config).Terminal ∧
+      ¬ Steps Float.exactOps P Config.init
+        (.run [] Frame.empty [] (.ret (.float .w64 (.num false 30 (-2)))) []) ∧
+      ¬ Steps Float.exactOps P Config.init
+        (.run [] Frame.empty [] (.ret (.float .w64 (.num false 1 (-1075)))) []) ∧
+      ¬ ((.run [] Frame.empty [] (.ret (.float .w64 (.num false 30 (-2)))) []) : Config).SafeAt
+        Float.exactOps P (.float .w64) ∧
+      ¬ ((.run [] Frame.empty [] (.ret (.float .w64 (.num false 1 (-1075)))) []) : Config).SafeAt
+        Float.exactOps P (.float .w64) := by
+  intro B hB P hP
+  obtain ⟨-, hPT, -, -, H, v, tr, -, hsv, hv⟩ := Nonvacuous.float B hB P hP
+  subst hv
+  have hw1 : ¬ (FloatDatum.num false 30 (-2)).Wf .w64 := by decide
+  have hw2 : ¬ (FloatDatum.num false 1 (-1075)).Wf .w64 := by decide
+  have hns1 : ¬ ((.run [] Frame.empty [] (.ret (.float .w64 (.num false 30 (-2)))) []) : Config).SafeAt
+      Float.exactOps P (.float .w64) := fun h => by
+    cases h.2 _ _ _ _ (.refl _) with
+    | float hf => exact hw1 hf
+  have hns2 : ¬ ((.run [] Frame.empty [] (.ret (.float .w64 (.num false 1 (-1075)))) []) : Config).SafeAt
+      Float.exactOps P (.float .w64) := fun h => by
+    cases h.2 _ _ _ _ (.refl _) with
+    | float hf => exact hw2 hf
+  obtain ⟨fd, hfd, hsafe⟩ := step_preservation Float.exactModel hPT
+  have hret : fd.ret = .float .w64 := by
+    subst hB hP
+    simp only [List.getElem?_cons_zero, Option.some.injEq] at hfd
+    subst hfd; rfl
+  rw [hret] at hsafe
+  exact ⟨hPT, ⟨H, tr, hsv⟩, hw1, hw2, trivial, trivial, fun hs => hns1 (hsafe _ hs),
+    fun hs => hns2 (hsafe _ hs), hns1, hns2⟩
 
 end RueCore.Sharp

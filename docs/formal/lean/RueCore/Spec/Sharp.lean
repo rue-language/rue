@@ -24,9 +24,14 @@ Most of the programs are unchecked, and several are refused by one of
 `eval`'s monitors (`linearLeak`, `linearOverwrite`, `linearDiscard`,
 `ownedUnderCopy`), so these statements also pin the monitors: a machine with a
 monitor removed makes the matching statement false (R3 of `REDTEAM-LOG.md`;
-the five monitor mutants of `MUTATION.md`). The checked programs are the
-witnesses' (`Nonvacuous.dtor`, `Nonvacuous.panic`), over the same
-declarations, with a few more for a `@copy` struct that declares a destructor.
+the five monitor mutants of `MUTATION.md`). Four more (`uncut_drop`,
+`ill_typed_halt`, `out_of_range_halt`, `float_halt`; RUE-2500) pin the
+definitions the spine is written in the same way: each negates `Lifo`,
+`SafeAt`'s typing half, `HasTy` or `FloatDatum.Wf` at a configuration or
+datum that fails only that definition, so a weakened definition makes the
+statement false (the statement-vocabulary mutants of `MUTATION.md`). The checked programs are the
+witnesses' (`Nonvacuous.dtor`, `Nonvacuous.panic`, `Nonvacuous.float`),
+over the same declarations, with a few more for a `@copy` struct that declares a destructor.
 Every program runs on `Float.exactOps`, a model of the float laws
 (`Nonvacuous.exact_model`); the laws themselves are assumptions about the
 model, not hypotheses about a program, so they have no counter-example here
@@ -835,5 +840,142 @@ def unreached_double_stmt : Prop :=
         (.panic .user [.dtor 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]) ∧
       (dtorIds (Config.panic .user
         [.dtor 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]).trace).count 0 = 2
+
+/-- **A pop that drops a cell it did not cut, not reached** (§7 sharpness,
+RUE-2500). For the checked program of `Nonvacuous.dtor`, a configuration whose
+frame registers cells `0` and `1`, in location order, but whose pending
+`endscope` names cell `0` rather than the newest cell `1` takes a step: (D-EndScope)
+pops one cell off the record, which leaves `[0]`, and drops cell `0`, the cell
+it kept. Its drop markers name one cell, so they are newest first, and its
+stack is in location order; only `Lifo` fails: the step cut cell `1` and
+dropped cell `0`. `Config.init` does not reach it, so `drop_order`'s last half
+fails without the hypothesis that the configuration is reached, on the one
+conjunct `unordered` leaves alone. -/
+def uncut_drop_stmt : Prop :=
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      ProgramTyped P ∧
+      ¬ Steps Float.exactOps P Config.init
+        (.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
+          { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []) ∧
+      Step Float.exactOps P
+        (.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
+          { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) [])
+        (.run [.dead, .full (.struct 0 1 [.int .w64 .signed 2])] { env := [0], scope := [0] } []
+          (.ret (.int .w64 .signed 3))
+          [.drop 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]) ∧
+      NewestFirst [0] ∧ [0, 1].Pairwise (· < ·) ∧ ¬ Lifo [0, 1] [0] [0] ∧
+      ¬ ∃ evs,
+        (Config.run [.dead, .full (.struct 0 1 [.int .w64 .signed 2])] { env := [0], scope := [0] } []
+          (.ret (.int .w64 .signed 3))
+          [.drop 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]).trace =
+          (Config.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
+            { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []).trace ++ evs ∧
+        NewestFirst (dropLocs evs) ∧
+        Lifo
+          (Config.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
+            { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []).stack
+          (Config.run [.dead, .full (.struct 0 1 [.int .w64 .signed 2])] { env := [0], scope := [0] } []
+            (.ret (.int .w64 .signed 3))
+            [.drop 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]).stack
+          (dropLocs evs) ∧
+        (Config.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
+          { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []).stack.Pairwise (· < ·)
+
+/-- **A halted configuration with a value of another type, not reached** (§7
+sharpness, RUE-2500). For the checked program of `Nonvacuous.dtor`, whose entry
+point returns `i64`, the configuration that has halted with `true` is terminal,
+so nothing it reaches is stuck; but its value is not an `i64`, so it is not
+`SafeAt` the entry type, and `Config.init` does not reach it. So
+`step_preservation` fails without the hypothesis that the configuration is
+reached, through `SafeAt`'s typing half, where `unreachable_stuck` fails it
+through the progress half. -/
+def ill_typed_halt_stmt : Prop :=
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      ProgramTyped P ∧ ((.run [] Frame.empty [] (.ret (.bool true)) []) : Config).Terminal ∧
+      ¬ Steps Float.exactOps P Config.init (.run [] Frame.empty [] (.ret (.bool true)) []) ∧
+      ¬ ((.run [] Frame.empty [] (.ret (.bool true)) []) : Config).SafeAt Float.exactOps P
+        (.int .w64 .signed)
+
+/-- **A halted configuration with an `i64` out of range, not reached** (§7
+sharpness, RUE-2500; §6.1's `n_T`). For the same program, the configuration
+that has halted with `2^63`, one past `i64`'s maximum, is terminal, but the
+value is not well typed at `i64` (`HasTy` carries the bounds), so the
+configuration is not `SafeAt` the entry type, and `Config.init` does not reach
+it. So `step_preservation` fails without the hypothesis that the configuration
+is reached, at a value of the right form whose only fault is its range. -/
+def out_of_range_halt_stmt : Prop :=
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      ProgramTyped P ∧
+      ((.run [] Frame.empty [] (.ret (.int .w64 .signed 9223372036854775808)) []) : Config).Terminal ∧
+      ¬ HasTy P.decls (.int .w64 .signed 9223372036854775808) (.int .w64 .signed) ∧
+      ¬ Steps Float.exactOps P Config.init
+        (.run [] Frame.empty [] (.ret (.int .w64 .signed 9223372036854775808)) []) ∧
+      ¬ ((.run [] Frame.empty [] (.ret (.int .w64 .signed 9223372036854775808)) []) : Config).SafeAt
+        Float.exactOps P (.int .w64 .signed)
+
+/-- **Halted configurations with a datum outside `𝔽_f64`, not reached** (§7
+sharpness, RUE-2500; §2's `𝔽_w`, §6.1's `f_T`). For the checked program of
+`Nonvacuous.float`, whose entry point returns `f64` and whose run reaches the
+datum `15 · 2^-1`, two data that are not in `𝔽_f64` are not `Wf`: `30 · 2^-2`,
+the same number with an even significand (not canonical), and `1 · 2^-1075`,
+half the least subnormal (below the floor `eMin`). The configurations that
+have halted with them are terminal, not `SafeAt` the entry type, and not
+reached from `Config.init`. So `step_preservation` fails without the
+hypothesis that the configuration is reached, at a float value whose only
+fault is its datum. -/
+def float_halt_stmt : Prop :=
+  ∀ B : Expr, B =
+      .letIn false
+        (.binop .add (.floatLit .w64 { sig := 15, negExp := true, e := 1 })
+          (.floatLit .w64 { sig := 225, negExp := true, e := 2 }))
+        (.binop .mul (.use (.var 0)) (.floatLit .w64 { sig := 2, negExp := false, e := 0 })) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .float .w64, body := B }] } →
+      ProgramTyped P ∧
+      (∃ H tr, Steps Float.exactOps P Config.init
+        (.run H Frame.empty [] (.ret (.float .w64 (.num false 15 (-1)))) tr)) ∧
+      ¬ (FloatDatum.num false 30 (-2)).Wf .w64 ∧ ¬ (FloatDatum.num false 1 (-1075)).Wf .w64 ∧
+      ((.run [] Frame.empty [] (.ret (.float .w64 (.num false 30 (-2)))) []) : Config).Terminal ∧
+      ((.run [] Frame.empty [] (.ret (.float .w64 (.num false 1 (-1075)))) []) : Config).Terminal ∧
+      ¬ Steps Float.exactOps P Config.init
+        (.run [] Frame.empty [] (.ret (.float .w64 (.num false 30 (-2)))) []) ∧
+      ¬ Steps Float.exactOps P Config.init
+        (.run [] Frame.empty [] (.ret (.float .w64 (.num false 1 (-1075)))) []) ∧
+      ¬ ((.run [] Frame.empty [] (.ret (.float .w64 (.num false 30 (-2)))) []) : Config).SafeAt
+        Float.exactOps P (.float .w64) ∧
+      ¬ ((.run [] Frame.empty [] (.ret (.float .w64 (.num false 1 (-1075)))) []) : Config).SafeAt
+        Float.exactOps P (.float .w64)
 
 end RueCore.Spec.Sharp

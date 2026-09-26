@@ -212,6 +212,14 @@ theorem Sharp.retired_cell : Spec.Sharp.retired_cell_stmt := @RueCore.Sharp.reti
 /-- `Spec.Sharp.unreached_double_stmt`, by `RueCore.Sharp.unreached_double` (helper). -/
 theorem Sharp.unreached_double : Spec.Sharp.unreached_double_stmt :=
   @RueCore.Sharp.unreached_double
+/-- `Spec.Sharp.uncut_drop_stmt`, by `RueCore.Sharp.uncut_drop` (helper). -/
+theorem Sharp.uncut_drop : Spec.Sharp.uncut_drop_stmt := @RueCore.Sharp.uncut_drop
+/-- `Spec.Sharp.ill_typed_halt_stmt`, by `RueCore.Sharp.ill_typed_halt` (helper). -/
+theorem Sharp.ill_typed_halt : Spec.Sharp.ill_typed_halt_stmt := @RueCore.Sharp.ill_typed_halt
+/-- `Spec.Sharp.out_of_range_halt_stmt`, by `RueCore.Sharp.out_of_range_halt` (helper). -/
+theorem Sharp.out_of_range_halt : Spec.Sharp.out_of_range_halt_stmt := @RueCore.Sharp.out_of_range_halt
+/-- `Spec.Sharp.float_halt_stmt`, by `RueCore.Sharp.float_halt` (helper). -/
+theorem Sharp.float_halt : Spec.Sharp.float_halt_stmt := @RueCore.Sharp.float_halt
 
 
 end RueCore.Spine

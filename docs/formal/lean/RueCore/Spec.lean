@@ -498,7 +498,15 @@ def sharpness : List (Lean.Name × Lean.Name × List (Lean.Name × Nat)) := [
   (`RueCore.Sharp.retired_cell, ``Sharp.retired_cell_stmt, [
       (`RueCore.step_no_use_after_drop, 1)]),
   (`RueCore.Sharp.unreached_double, ``Sharp.unreached_double_stmt, [
-      (`RueCore.step_no_double_free, 2)])
+      (`RueCore.step_no_double_free, 2)]),
+  (`RueCore.Sharp.uncut_drop, ``Sharp.uncut_drop_stmt, [
+      (`RueCore.drop_order, 4)]),
+  (`RueCore.Sharp.ill_typed_halt, ``Sharp.ill_typed_halt_stmt, [
+      (`RueCore.step_preservation, 2)]),
+  (`RueCore.Sharp.out_of_range_halt, ``Sharp.out_of_range_halt_stmt, [
+      (`RueCore.step_preservation, 2)]),
+  (`RueCore.Sharp.float_halt, ``Sharp.float_halt_stmt, [
+      (`RueCore.step_preservation, 2)])
 
 ]
 

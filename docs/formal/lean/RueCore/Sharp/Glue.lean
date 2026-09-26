@@ -1113,4 +1113,60 @@ theorem unreached_double.step_no_double_free_2 :
     [.dtor 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])])).2 0
   omega
 
+/-- `Sharp.uncut_drop` refutes `drop_order` without hypothesis 4 (helper). -/
+theorem uncut_drop.drop_order_4 :
+    ¬∀ (M : FloatModel) {P : Program},
+        ProgramTyped P →
+          (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+              Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+                Blocks P.decls tr) ∧
+            (∀ (κ : PanicKind) (tr : List Event),
+                Steps M.toFloatOps P Config.init (Config.panic κ tr) → Blocks P.decls tr) ∧
+              ∀ (C C' : RueCore.Config),
+                Step M.toFloatOps P C C' →
+                  ∃ evs,
+                    C'.trace = C.trace ++ evs ∧
+                      NewestFirst (dropLocs evs) ∧
+                        Lifo C.stack C'.stack (dropLocs evs) ∧
+                          List.Pairwise (fun x1 x2 => x1 < x2) C.stack := by
+  intro h
+  obtain ⟨hPT, -, hs, -, -, -, hn⟩ := Spine.Sharp.uncut_drop _ rfl _ rfl
+  exact hn ((h Float.exactModel hPT).2.2 _ _ hs)
+
+/-- `Sharp.ill_typed_halt` refutes `step_preservation` without hypothesis 2 (helper). -/
+theorem ill_typed_halt.step_preservation_2 :
+    ¬∀ (M : FloatModel) {P : Program},
+        ProgramTyped P →
+          ∃ fd, P.fns[0]? = some fd ∧ ∀ (C : RueCore.Config), Config.SafeAt M.toFloatOps P fd.ret C := by
+  intro h
+  obtain ⟨hPT, -, -, hns⟩ := Spine.Sharp.ill_typed_halt _ rfl _ rfl
+  obtain ⟨fd, hfd, hs⟩ := h Float.exactModel hPT
+  simp only [List.getElem?_cons_zero, Option.some.injEq] at hfd
+  subst hfd
+  exact hns (hs _)
+
+/-- `Sharp.out_of_range_halt` refutes `step_preservation` without hypothesis 2 (helper). -/
+theorem out_of_range_halt.step_preservation_2 :
+    ¬∀ (M : FloatModel) {P : Program},
+        ProgramTyped P →
+          ∃ fd, P.fns[0]? = some fd ∧ ∀ (C : RueCore.Config), Config.SafeAt M.toFloatOps P fd.ret C := by
+  intro h
+  obtain ⟨hPT, -, -, -, hns⟩ := Spine.Sharp.out_of_range_halt _ rfl _ rfl
+  obtain ⟨fd, hfd, hs⟩ := h Float.exactModel hPT
+  simp only [List.getElem?_cons_zero, Option.some.injEq] at hfd
+  subst hfd
+  exact hns (hs _)
+
+/-- `Sharp.float_halt` refutes `step_preservation` without hypothesis 2 (helper). -/
+theorem float_halt.step_preservation_2 :
+    ¬∀ (M : FloatModel) {P : Program},
+        ProgramTyped P →
+          ∃ fd, P.fns[0]? = some fd ∧ ∀ (C : RueCore.Config), Config.SafeAt M.toFloatOps P fd.ret C := by
+  intro h
+  obtain ⟨hPT, -, -, -, -, -, -, -, hns, -⟩ := Spine.Sharp.float_halt _ rfl _ rfl
+  obtain ⟨fd, hfd, hs⟩ := h Float.exactModel hPT
+  simp only [List.getElem?_cons_zero, Option.some.injEq] at hfd
+  subst hfd
+  exact hns (hs _)
+
 end RueCore.Sharp.Glue
