@@ -3533,7 +3533,21 @@ theorem RueCore.dropContents_eq {D : Decls} {c : Contents} {evs : List Event} :
   dropContents D c = Except.ok evs → evs = dropEvents D c
 ```
 
-### `eval_blocks`
+### `dropContents_glue`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**The machine's walk follows §6.11's rules**: whenever `dropContents`
+succeeds, its events are the ones `DropGlue` gives the contents — the
+destructor first, then the fields in declaration order, the elements
+ascending, an enum's stored payload, every `⊘` skipped.
+
+```lean
+theorem RueCore.dropContents_glue {D : Decls} {c : Contents} {evs : List Event} :
+  dropContents D c = Except.ok evs → DropGlue D c evs
+```
+
+### `eval_glue_blocks`
 
 *theorem* · module `RueCore.TraceOrder`
 
@@ -3544,12 +3558,13 @@ fuel. By fuel induction over `eval`; no typing derivation, only
 docstring).
 
 ```lean
-theorem RueCore.eval_blocks (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls)
-  (fuel : Nat) (H : Store) (φ : Frame) (e : Expr) :
-  StoreCC P.decls H → Blocks P.decls (eval M fuel P H φ e).trace
+theorem RueCore.eval_glue_blocks (M : FloatOps) {P : Program}
+  (hdt : DtorNotCopy P.decls) (fuel : Nat) (H : Store) (φ : Frame)
+  (e : Expr) :
+  StoreCC P.decls H → GlueBlocks P.decls (eval M fuel P H φ e).trace
 ```
 
-### `run_blocks`
+### `run_glue_blocks`
 
 *theorem* · module `RueCore.TraceOrder`
 
@@ -3559,6 +3574,20 @@ marker before it — the value's own destructor first (`3.9:28`), then its
 fields in declaration order (`3.9:13`), an array's elements ascending
 (`3.9:15`), an enum's active payload only (`6.3:20`), every `⊘` skipped —
 and nowhere else. It needs only `DtorNotCopy`, which `WfDecls` gives.
+
+```lean
+theorem RueCore.run_glue_blocks (M : FloatOps) {P : Program}
+  (hdt : DtorNotCopy P.decls) (fuel : Nat) :
+  GlueBlocks P.decls (run M P fuel).trace
+```
+
+### `run_blocks`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**Every finished run's trace is in the block grammar `Blocks`** (§3.9,
+§6.11), each drop marker followed by exactly `dropEvents` of what it names:
+`run_glue_blocks` read through `GlueBlocks.toBlocks`.
 
 ```lean
 theorem RueCore.run_blocks (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls)
@@ -3693,6 +3722,31 @@ theorem RueCore.reachable_lifo {M : FloatOps} {P : Program} {C C' : Config}
           ∀ (ℓ : Nat),
             ℓ ∈ dropLocs evs →
               ¬ℓ ∈ C'.stack ∧ ∀ (ℓ' : Nat), ℓ' ∈ C'.stack → ℓ' < ℓ)
+```
+
+### `drop_glue_order`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**§6.11's order within a value, in §6.11's own terms** (§3.9, §6.11;
+RUE-2487), over §6's relation, for a program the checker accepts: every
+finished run's trace — a terminal value or a trap — is in the block grammar
+`GlueBlocks`, whose drop blocks are §6.11's rules (`DropGlue`) rather than the
+machine's walk. So each drop marker is followed by the value's own destructor
+first (`3.9:28`), then its fields in declaration order (`3.9:13`), an array's
+elements ascending (`3.9:15`), an enum's active payload only (`6.3:20`), every
+`⊘` skipped. `drop_order`'s first half says the same of `dropEvents`; this
+statement does not go through it, so a machine whose walk and `dropEvents`
+change together still fails it.
+
+```lean
+theorem RueCore.drop_glue_order (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+  (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+      Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+        GlueBlocks P.decls tr) ∧
+    ∀ (κ : PanicKind) (tr : List Event),
+      Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+        GlueBlocks P.decls tr
 ```
 
 ### `drop_order`
@@ -5608,6 +5662,64 @@ theorem RueCore.fieldsSwapped_rejected :
             [Examples.cA 0 1, Examples.cA 1 2]),
         Event.dtor Examples.sAffine (Examples.cA 1 2),
         Event.dtor Examples.sAffine (Examples.cA 0 1)]
+```
+
+### `glue_fieldsSwapped_rejected`
+
+*theorem* · module `RueCore.Witnesses`
+
+**§6.11's own grammar: fields in declaration order** (`3.9:13`; RUE-2487).
+The trace `fieldsSwapped_rejected` rejects, rejected by `GlueBlocks`, whose
+drop blocks are §6.11's rules (`DropGlue`) rather than `dropEvents`: the two
+field destructors of `struct_field_drop_order`'s `S7` the wrong way round,
+which is what a machine whose walk drops fields last to first emits.
+
+```lean
+theorem RueCore.glue_fieldsSwapped_rejected :
+  ¬GlueBlocks (Examples.prog Examples.tI64 Examples.structFieldOrder).decls
+      [Event.drop 3
+          (Contents.struct Examples.sTwoAffine 2
+            [Examples.cA 0 1, Examples.cA 1 2]),
+        Event.dtor Examples.sAffine (Examples.cA 1 2),
+        Event.dtor Examples.sAffine (Examples.cA 0 1)]
+```
+
+### `glue_dtorAfterFields_rejected`
+
+*theorem* · module `RueCore.Witnesses`
+
+**§6.11's own grammar: the destructor first** (`3.9:28`; RUE-2487).
+`struct_nested_dtor_drop` drops `S5 { 1, S1 { 2 }#0 }#1`, whose destructor runs
+before its field's. The same marker followed by the field's destructor and
+then `S5`'s — what a machine that runs the destructor after the fields emits —
+is not in `GlueBlocks`.
+
+```lean
+theorem RueCore.glue_dtorAfterFields_rejected :
+  ¬GlueBlocks (Examples.prog Examples.tI64 Examples.structNestedDrop).decls
+      [Event.drop 2
+          (Contents.struct Examples.sOuter 1
+            [Examples.c64 1, Examples.cA 0 2]),
+        Event.dtor Examples.sAffine (Examples.cA 0 2),
+        Event.dtor Examples.sOuter
+          (Contents.struct Examples.sOuter 1
+            [Examples.c64 1, Examples.cA 0 2])]
+```
+
+### `glue_dtorSkipped_rejected`
+
+*theorem* · module `RueCore.Witnesses`
+
+**§6.11's own grammar: the destructor runs** (`3.9:28`; RUE-2487). The
+same drop of `S5` with no destructor event at all — what a machine that never
+runs a destructor emits — is not in `GlueBlocks`.
+
+```lean
+theorem RueCore.glue_dtorSkipped_rejected :
+  ¬GlueBlocks (Examples.prog Examples.tI64 Examples.structNestedDrop).decls
+      [Event.drop 2
+          (Contents.struct Examples.sOuter 1
+            [Examples.c64 1, Examples.cA 0 2])]
 ```
 
 ### `returnPastAffine_newestFirst`
@@ -14307,6 +14419,63 @@ theorem RueCore.dropEventsList_allCopy {D : Decls} (hdt : DtorNotCopy D)
   Contents.allCopyList D cs = true → dropEventsList D cs = []
 ```
 
+### `dropContentsList_glue`
+
+*theorem* · module `RueCore.TraceOrder`
+
+The same over a list (helper).
+
+```lean
+theorem RueCore.dropContentsList_glue {D : Decls} {cs : List Contents}
+  {evs : List Event} :
+  dropContentsList D cs = Except.ok evs → DropGlueSeq D cs evs
+```
+
+### `DropGlue.eq_dropEvents`
+
+*theorem* · module `RueCore.TraceOrder`
+
+§6.11's rules determine the events, and they are `dropEvents`'s (helper).
+
+```lean
+theorem RueCore.DropGlue.eq_dropEvents {D : Decls} {c : Contents} {evs : List Event} :
+  DropGlue D c evs → evs = dropEvents D c
+```
+
+### `DropGlueSeq.eq_dropEventsList`
+
+*theorem* · module `RueCore.TraceOrder`
+
+The same over a list (helper).
+
+```lean
+theorem RueCore.DropGlueSeq.eq_dropEventsList {D : Decls} {cs : List Contents}
+  {evs : List Event} : DropGlueSeq D cs evs → evs = dropEventsList D cs
+```
+
+### `GlueBlocks.toBlocks`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A trace in §6.11's own grammar is in `Blocks` (helper).
+
+```lean
+theorem RueCore.GlueBlocks.toBlocks {D : Decls} {t : List Event}
+  (h : GlueBlocks D t) : Blocks D t
+```
+
+### `GlueBlocks.append`
+
+*theorem* · module `RueCore.TraceOrder`
+
+Two block sequences of §6.11's grammar, one after the other, are one
+(helper).
+
+```lean
+theorem RueCore.GlueBlocks.append {D : Decls} {t u : List Event} (h₁ : GlueBlocks D t)
+  (h₂ : GlueBlocks D u) : GlueBlocks D (t ++ u)
+```
+
 ### `dropCell_blocks`
 
 *theorem* · module `RueCore.TraceOrder`
@@ -14316,7 +14485,7 @@ contents (helper).
 
 ```lean
 theorem RueCore.dropCell_blocks {D : Decls} {ℓ : Nat} {c : Contents}
-  {evs : List Event} (h : dropCell D ℓ c = Except.ok evs) : Blocks D evs
+  {evs : List Event} (h : dropCell D ℓ c = Except.ok evs) : GlueBlocks D evs
 ```
 
 ### `dropRetire_blocks`
@@ -14328,7 +14497,7 @@ theorem RueCore.dropCell_blocks {D : Decls} {ℓ : Nat} {c : Contents}
 ```lean
 theorem RueCore.dropRetire_blocks {D : Decls} {H H' : Store} {ℓ : Nat}
   {evs : List Event} (h : dropRetire D H ℓ = Except.ok (H', evs)) :
-  Blocks D evs
+  GlueBlocks D evs
 ```
 
 ### `unwindLocs_blocks`
@@ -14340,7 +14509,8 @@ non-`Copy` cell, in the order given (helper).
 
 ```lean
 theorem RueCore.unwindLocs_blocks {D : Decls} {H H' : Store} {ls : List Nat}
-  {evs : List Event} : unwindLocs D H ls = Except.ok (H', evs) → Blocks D evs
+  {evs : List Event} :
+  unwindLocs D H ls = Except.ok (H', evs) → GlueBlocks D evs
 ```
 
 ### `dropResidue_blocks`
@@ -14355,7 +14525,7 @@ non-`Copy` subtree's marker and walk, and a `Copy` subtree's empty walk
 theorem RueCore.dropResidue_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat}
   {rs : List Contents} {evs : List Event} :
   Contents.copyClosedList D rs = true →
-    dropResidue D ℓ rs = Except.ok evs → Blocks D evs
+    dropResidue D ℓ rs = Except.ok evs → GlueBlocks D evs
 ```
 
 ### `destructure_blocks`
@@ -14369,7 +14539,8 @@ consumed shell (helper).
 theorem RueCore.destructure_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat}
   {cd leaf : Contents} {πs : List Nat} {evs : List Event}
   (hcc : Contents.copyClosed D cd = true)
-  (h : Contents.destructure D ℓ cd πs = Except.ok (leaf, evs)) : Blocks D evs
+  (h : Contents.destructure D ℓ cd πs = Except.ok (leaf, evs)) :
+  GlueBlocks D evs
 ```
 
 ### `matchConsume_blocks`
@@ -14380,71 +14551,71 @@ theorem RueCore.destructure_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat}
 
 ```lean
 theorem RueCore.matchConsume_blocks {D : Decls} {e k i : Nat} {vs : List Val} :
-  Blocks D (matchConsume D e k i vs)
+  GlueBlocks D (matchConsume D e k i vs)
 ```
 
-### `Blocks.withTrace`
+### `GlueBlocks.withTrace`
 
 *theorem* · module `RueCore.TraceOrder`
 
 A prefix of blocks before a result's blocks (helper).
 
 ```lean
-theorem RueCore.Blocks.withTrace {D : Decls} {tr : List Event} {r : EvalRes}
-  (h₁ : Blocks D tr) (h₂ : Blocks D r.trace) :
-  Blocks D (EvalRes.withTrace tr r).trace
+theorem RueCore.GlueBlocks.withTrace {D : Decls} {tr : List Event} {r : EvalRes}
+  (h₁ : GlueBlocks D tr) (h₂ : GlueBlocks D r.trace) :
+  GlueBlocks D (EvalRes.withTrace tr r).trace
 ```
 
-### `Blocks.bind`
+### `GlueBlocks.bind`
 
 *theorem* · module `RueCore.TraceOrder`
 
 §6.2's search keeps the grammar (helper).
 
 ```lean
-theorem RueCore.Blocks.bind {D : Decls} {r : EvalRes} {k : Store → Val → EvalRes}
-  (hr : Blocks D r.trace)
+theorem RueCore.GlueBlocks.bind {D : Decls} {r : EvalRes} {k : Store → Val → EvalRes}
+  (hr : GlueBlocks D r.trace)
   (hk :
     ∀ (H₁ : Store) (v : Val) (tr : List Event),
-      r = EvalRes.ok H₁ v tr → Blocks D (k H₁ v).trace) :
-  Blocks D (r.andThen k).trace
+      r = EvalRes.ok H₁ v tr → GlueBlocks D (k H₁ v).trace) :
+  GlueBlocks D (r.andThen k).trace
 ```
 
-### `Blocks.absorb`
+### `GlueBlocks.absorb`
 
 *theorem* · module `RueCore.TraceOrder`
 
 §6.9's call boundary keeps the grammar (helper).
 
 ```lean
-theorem RueCore.Blocks.absorb {D : Decls} {r : EvalRes} {k : Store → Val → EvalRes}
-  (hr : Blocks D r.trace)
+theorem RueCore.GlueBlocks.absorb {D : Decls} {r : EvalRes}
+  {k : Store → Val → EvalRes} (hr : GlueBlocks D r.trace)
   (hk :
     ∀ (H₁ : Store) (v : Val) (tr : List Event),
-      r = EvalRes.ok H₁ v tr → Blocks D (k H₁ v).trace) :
-  Blocks D (r.absorb k).trace
+      r = EvalRes.ok H₁ v tr → GlueBlocks D (k H₁ v).trace) :
+  GlueBlocks D (r.absorb k).trace
 ```
 
-### `Blocks.opRes`
+### `GlueBlocks.opRes`
 
 *theorem* · module `RueCore.TraceOrder`
 
 An operator's outcome emits nothing (helper).
 
 ```lean
-theorem RueCore.Blocks.opRes {D : Decls} {H : Store} {o : OpRes} :
-  Blocks D (OpRes.toRes H o).trace
+theorem RueCore.GlueBlocks.opRes {D : Decls} {H : Store} {o : OpRes} :
+  GlueBlocks D (OpRes.toRes H o).trace
 ```
 
-### `Blocks.intro`
+### `GlueBlocks.intro`
 
 *theorem* · module `RueCore.TraceOrder`
 
 Aggregate introduction emits nothing (helper).
 
 ```lean
-theorem RueCore.Blocks.intro {D D' : Decls} {H : Store} {mk : Nat → Val} :
-  Blocks D (introVal D' H mk).trace
+theorem RueCore.GlueBlocks.intro {D D' : Decls} {H : Store} {mk : Nat → Val} :
+  GlueBlocks D (introVal D' H mk).trace
 ```
 
 ### `eval_ok_cc`
@@ -14469,11 +14640,12 @@ An argument list keeps the grammar (helper).
 
 ```lean
 theorem RueCore.evalArgs_blocks {D : Decls} {ev : Store → Expr → EvalRes}
-  (hev : ∀ (H : Store) (e : Expr), StoreCC D H → Blocks D (ev H e).trace)
+  (hev : ∀ (H : Store) (e : Expr), StoreCC D H → GlueBlocks D (ev H e).trace)
   (hcc :
     ∀ (H : Store) (e : Expr) (H₁ : Store) (v : Val) (tr : List Event),
       StoreCC D H → ev H e = EvalRes.ok H₁ v tr → StoreCC D H₁)
-  (H : Store) (es : List Expr) : StoreCC D H → ArgsBlocks D (evalArgs ev H es)
+  (H : Store) (es : List Expr) :
+  StoreCC D H → ArgsGlueBlocks D (evalArgs ev H es)
 ```
 
 ### `Rec.mono`
@@ -14861,6 +15033,43 @@ names (helper).
 theorem RueCore.Blocks.drop_inv {D : Decls} {ℓ : Nat} {c : Contents} {t : List Event}
   (h : Blocks D (Event.drop ℓ c :: t)) :
   ∃ t', t = dropEvents D c ++ t' ∧ Blocks D t'
+```
+
+### `DropGlue.det`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**§6.11's rules determine a drop's events** (RUE-2487): two derivations of
+`DropGlue` for one contents give the same events. Stated without `dropEvents`,
+so it says the rules themselves fix the order (helper).
+
+```lean
+theorem RueCore.DropGlue.det {D : Decls} {c : Contents} {e₁ e₂ : List Event} :
+  DropGlue D c e₁ → DropGlue D c e₂ → e₁ = e₂
+```
+
+### `DropGlueSeq.det`
+
+*theorem* · module `RueCore.TraceOrder`
+
+The same over a list (helper).
+
+```lean
+theorem RueCore.DropGlueSeq.det {D : Decls} {cs : List Contents}
+  {e₁ e₂ : List Event} : DropGlueSeq D cs e₁ → DropGlueSeq D cs e₂ → e₁ = e₂
+```
+
+### `GlueBlocks.drop_inv`
+
+*theorem* · module `RueCore.TraceOrder`
+
+A drop marker in §6.11's own grammar is followed by one `DropGlue` walk of
+what it names (helper).
+
+```lean
+theorem RueCore.GlueBlocks.drop_inv {D : Decls} {ℓ : Nat} {c : Contents}
+  {t : List Event} (h : GlueBlocks D (Event.drop ℓ c :: t)) :
+  ∃ evs t', DropGlue D c evs ∧ t = evs ++ t' ∧ GlueBlocks D t'
 ```
 
 ### `Retire.Live.lt`
@@ -15986,6 +16195,16 @@ theorem RueCore.Spine.rest_exactly_once : Spec.rest_exactly_once_stmt
 theorem RueCore.Spine.drop_order : Spec.drop_order_stmt
 ```
 
+### `Spine.drop_glue_order`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.drop_glue_order_stmt`, by `RueCore.drop_glue_order` (helper).
+
+```lean
+theorem RueCore.Spine.drop_glue_order : Spec.drop_glue_order_stmt
+```
+
 ### `Spine.Step.det`
 
 *theorem* · module `RueCore.Spine`
@@ -16706,6 +16925,16 @@ theorem RueCore.Nonvacuous.Glue.dtor.no_double_free : True
 theorem RueCore.Nonvacuous.Glue.dtor.drop_order : True
 ```
 
+### `Nonvacuous.Glue.dtor.drop_glue_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `drop_glue_order` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.drop_glue_order : True
+```
+
 ### `Nonvacuous.Glue.dtor.step_progress`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
@@ -17026,6 +17255,16 @@ theorem RueCore.Nonvacuous.Glue.linear.no_double_free : True
 theorem RueCore.Nonvacuous.Glue.linear.drop_order : True
 ```
 
+### `Nonvacuous.Glue.linear.drop_glue_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `drop_glue_order` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.drop_glue_order : True
+```
+
 ### `Nonvacuous.Glue.linear.step_progress`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
@@ -17254,6 +17493,16 @@ theorem RueCore.Nonvacuous.Glue.loop.no_double_free : True
 
 ```lean
 theorem RueCore.Nonvacuous.Glue.loop.drop_order : True
+```
+
+### `Nonvacuous.Glue.loop.drop_glue_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `drop_glue_order` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.drop_glue_order : True
 ```
 
 ### `Nonvacuous.Glue.loop.step_progress`
@@ -17496,6 +17745,16 @@ theorem RueCore.Nonvacuous.Glue.array.no_double_free : True
 theorem RueCore.Nonvacuous.Glue.array.drop_order : True
 ```
 
+### `Nonvacuous.Glue.array.drop_glue_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `drop_glue_order` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.drop_glue_order : True
+```
+
 ### `Nonvacuous.Glue.array.step_progress`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
@@ -17726,6 +17985,16 @@ theorem RueCore.Nonvacuous.Glue.enum_match.no_double_free : True
 theorem RueCore.Nonvacuous.Glue.enum_match.drop_order : True
 ```
 
+### `Nonvacuous.Glue.enum_match.drop_glue_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `drop_glue_order` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.drop_glue_order : True
+```
+
 ### `Nonvacuous.Glue.enum_match.step_progress`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
@@ -17954,6 +18223,16 @@ theorem RueCore.Nonvacuous.Glue.early_return.no_double_free : True
 
 ```lean
 theorem RueCore.Nonvacuous.Glue.early_return.drop_order : True
+```
+
+### `Nonvacuous.Glue.early_return.drop_glue_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `drop_glue_order` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.drop_glue_order : True
 ```
 
 ### `Nonvacuous.Glue.early_return.step_progress`
@@ -18196,6 +18475,16 @@ theorem RueCore.Nonvacuous.Glue.float.no_double_free : True
 theorem RueCore.Nonvacuous.Glue.float.drop_order : True
 ```
 
+### `Nonvacuous.Glue.float.drop_glue_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `drop_glue_order` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.drop_glue_order : True
+```
+
 ### `Nonvacuous.Glue.float.step_progress`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
@@ -18426,6 +18715,16 @@ theorem RueCore.Nonvacuous.Glue.panic.no_double_free : True
 theorem RueCore.Nonvacuous.Glue.panic.drop_order : True
 ```
 
+### `Nonvacuous.Glue.panic.drop_glue_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `drop_glue_order` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.drop_glue_order : True
+```
+
 ### `Nonvacuous.Glue.panic.step_progress`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
@@ -18654,6 +18953,16 @@ theorem RueCore.Nonvacuous.Glue.exact_model.rest_exactly_once : True
 
 ```lean
 theorem RueCore.Nonvacuous.Glue.exact_model.drop_order : True
+```
+
+### `Nonvacuous.Glue.exact_model.drop_glue_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `drop_glue_order`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.drop_glue_order : True
 ```
 
 ### `Nonvacuous.Glue.exact_model.step_progress`
@@ -19635,6 +19944,25 @@ theorem RueCore.Sharp.Glue.bare_dtor.drop_order_1 :
                         List.Pairwise (fun x1 x2 => x1 < x2) C.stack
 ```
 
+### `Sharp.Glue.bare_dtor.drop_glue_order_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.bare_dtor` refutes `drop_glue_order` without hypothesis 1: a trace
+outside `Blocks` is outside `GlueBlocks` (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.bare_dtor.drop_glue_order_1 :
+  ¬∀ (M : FloatModel) {P : Program},
+      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          Steps M.toFloatOps P Config.init
+              (Config.run H φ [] (Focus.ret v) tr) →
+            GlueBlocks P.decls tr) ∧
+        ∀ (κ : PanicKind) (tr : List Event),
+          Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+            GlueBlocks P.decls tr
+```
+
 ### `Sharp.Glue.pending_program.drop_exactly_once_2`
 
 *theorem* · module `RueCore.Sharp.Glue`
@@ -19869,6 +20197,23 @@ theorem RueCore.Sharp.Glue.unreached.drop_order_2 :
                           List.Pairwise (fun x1 x2 => x1 < x2) C.stack
 ```
 
+### `Sharp.Glue.unreached.drop_glue_order_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreached` refutes `drop_glue_order` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreached.drop_glue_order_2 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        (∀ (_H : Store) (_φ : Frame) (_v : Val) (tr : List Event),
+            GlueBlocks P.decls tr) ∧
+          ∀ (κ : PanicKind) (tr : List Event),
+            Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+              GlueBlocks P.decls tr
+```
+
 ### `Sharp.Glue.unreached.eval_sound_2`
 
 *theorem* · module `RueCore.Sharp.Glue`
@@ -19974,6 +20319,23 @@ theorem RueCore.Sharp.Glue.unreached_panic.drop_order_3 :
                       NewestFirst (dropLocs evs) ∧
                         Lifo C.stack C'.stack (dropLocs evs) ∧
                           List.Pairwise (fun x1 x2 => x1 < x2) C.stack
+```
+
+### `Sharp.Glue.unreached_panic.drop_glue_order_3`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreached_panic` refutes `drop_glue_order` without hypothesis 3 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreached_panic.drop_glue_order_3 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+            Steps M.toFloatOps P Config.init
+                (Config.run H φ [] (Focus.ret v) tr) →
+              GlueBlocks P.decls tr) ∧
+          ∀ (_κ : PanicKind) (tr : List Event), GlueBlocks P.decls tr
 ```
 
 ### `Sharp.Glue.unreached_panic.eval_sound_3`
@@ -20506,6 +20868,22 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 Examples.sLinearDtor = 3
+```
+
+### `Examples.sOuter`
+
+*def* · module `RueCore.Examples`
+
+`S5`'s index in `structEnv`.
+
+```lean
+def RueCore.Examples.sOuter : Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.sOuter = 5
 ```
 
 ### `Examples.sTwoAffine`
@@ -25635,6 +26013,28 @@ Examples.structFieldOrder =
     (Examples.lit 0)
 ```
 
+### `Examples.structNestedDrop`
+
+*def* · module `RueCore.Examples`
+
+A nested destructor-bearing struct at scope exit: §6.11 runs the outer
+destructor first and then the fields in declaration order, so the trace is
+`1` then `2`.
+
+```lean
+def RueCore.Examples.structNestedDrop : Expr
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.structNestedDrop =
+  Expr.letIn false
+    (Expr.mkStruct Examples.sOuter
+      [Examples.lit 1, Examples.resA (Examples.lit 2)])
+    (Examples.lit 9)
+```
+
 ### `Explain.Step`
 
 *inductive* · module `RueCore.Explain`
@@ -29070,19 +29470,6 @@ def RueCore.AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Frame) (H : Store)
   | EvalRes.outOfFuel => True
 ```
 
-### `ArgsBlocks`
-
-*def* · module `RueCore.TraceOrder`
-
-The grammar's promise about an argument list (helper).
-
-```lean
-def RueCore.ArgsBlocks (D : Decls) : ArgsRes → Prop :=
-  match x✝ with
-  | ArgsRes.ok H vs tr => Blocks D tr
-  | ArgsRes.abort r => Blocks D r.trace
-```
-
 ### `ArgsCons`
 
 *def* · module `RueCore.Trace`
@@ -29125,6 +29512,19 @@ def RueCore.ArgsExact (D : Decls) (H : Store) : ArgsRes → Prop :=
                   List.count a (freedIds D tr) =
                 List.count a (storeOwn D H)
   | ArgsRes.abort r => Exact D H [] r
+```
+
+### `ArgsGlueBlocks`
+
+*def* · module `RueCore.TraceOrder`
+
+The grammar's promise about an argument list (helper).
+
+```lean
+def RueCore.ArgsGlueBlocks (D : Decls) : ArgsRes → Prop :=
+  match x✝ with
+  | ArgsRes.ok H vs tr => GlueBlocks D tr
+  | ArgsRes.abort r => GlueBlocks D r.trace
 ```
 
 ### `ArgsOk`
@@ -31733,6 +32133,198 @@ def RueCore.LoopHead (D : Decls) (Γ : Ctx) (o : Option Ctx) (Γh : Ctx) : Prop 
     ∀ (Γe : Ctx), o = some Γe → Ctx.Wf D Γh
 ```
 
+### `DropGlue`
+
+*inductive* · module `RueCore.Trace.Defs`
+
+**§6.11's drop, rule by rule** (RUE-2487): `DropGlue D c evs` says that
+dropping the cell contents `c` emits exactly the events `evs`. It is written
+from §6.11's equations and `3.9`'s order, not from the machine, and mentions
+neither `dropContents` nor `dropEvents`, so a change to the machine's drop glue
+does not change it. One constructor per equation of §6.11:
+
+* `drop(H, ⊘) = H`: a moved-out or uninitialised position emits nothing
+  (`hole`), at every depth, which is `3.8:73`'s "elements that were moved out
+  … are not dropped";
+* `drop(H, n_T) = drop(H, f_T) = drop(H, b) = drop(H, ⟨⟩) = H`: a scalar emits
+  nothing (`int`, `float`, `bool`, `unit`);
+* `drop(H, { c1,…,ck }_S) = drop*(H, [c1,…,ck])` when `S` declares no
+  destructor: the fields' drops in **declaration order** (`3.9:13`)
+  (`struct`);
+* the destructor case: when `S` declares `drop fn S(self)`, the destructor
+  runs **first** (`3.9:28`), then the fields in declaration order
+  (`structDtor`). The destructor is one `dtor` event: the fragment has no
+  destructor bodies, and §6.11's residual fields are the original ones
+  (`3.9:33`, `3.9:34`);
+* `drop(H, [ c1,…,cn ]) = drop*(H, [c1,…,cn])`: the elements in **ascending
+  index order** (`3.9:15`, `3.8:73`) (`array`);
+* `drop(H, Kj⟨ c1,…,ca ⟩) = drop*(H, [c1,…,ca])`: only the **active**
+  variant's payload (`6.3:20`) — an enum's contents hold that payload and no
+  other — and an enum runs no destructor of its own (§3, E0417) (`enum`).
+
+A struct's `k`-th member is its declaration's `k`-th field (`3.9:13`,
+`StructDecl.fields`), so list order is declaration order. A struct index the
+declarations do not have has no rule: §6.11 drops only declared types.
+
+```lean
+inductive RueCore.DropGlue (D : Decls) : Contents → List Event → Prop
+```
+
+Constructors:
+
+**`DropGlue.hole`**
+
+```lean
+RueCore.DropGlue.hole {D : Decls} : DropGlue D Contents.hole []
+```
+
+**`DropGlue.int`**
+
+```lean
+RueCore.DropGlue.int {D : Decls} {w : IntWidth} {s : Sign} {n : Int} :
+  DropGlue D (Contents.int w s n) []
+```
+
+**`DropGlue.float`**
+
+```lean
+RueCore.DropGlue.float {D : Decls} {w : FloatWidth} {f : FloatDatum} :
+  DropGlue D (Contents.float w f) []
+```
+
+**`DropGlue.bool`**
+
+```lean
+RueCore.DropGlue.bool {D : Decls} {b : Bool} : DropGlue D (Contents.bool b) []
+```
+
+**`DropGlue.unit`**
+
+```lean
+RueCore.DropGlue.unit {D : Decls} : DropGlue D Contents.unit []
+```
+
+**`DropGlue.struct`**
+
+```lean
+RueCore.DropGlue.struct {D : Decls} {s i : Nat} {cs : List Contents}
+  {sd : StructDecl} {evs : List Event} :
+  D.structs[s]? = some sd →
+    sd.dtor = false →
+      DropGlueSeq D cs evs → DropGlue D (Contents.struct s i cs) evs
+```
+
+**`DropGlue.structDtor`**
+
+```lean
+RueCore.DropGlue.structDtor {D : Decls} {s i : Nat} {cs : List Contents}
+  {sd : StructDecl} {evs : List Event} :
+  D.structs[s]? = some sd →
+    sd.dtor = true →
+      DropGlueSeq D cs evs →
+        DropGlue D (Contents.struct s i cs)
+          (Event.dtor s (Contents.struct s i cs) :: evs)
+```
+
+**`DropGlue.array`**
+
+```lean
+RueCore.DropGlue.array {D : Decls} {T : Ty} {i : Nat} {cs : List Contents}
+  {evs : List Event} :
+  DropGlueSeq D cs evs → DropGlue D (Contents.array T i cs) evs
+```
+
+**`DropGlue.enum`**
+
+```lean
+RueCore.DropGlue.enum {D : Decls} {e k i : Nat} {cs : List Contents}
+  {evs : List Event} :
+  DropGlueSeq D cs evs → DropGlue D (Contents.enum e k i cs) evs
+```
+
+### `DropGlueSeq`
+
+*inductive* · module `RueCore.Trace.Defs`
+
+**§6.11's `drop*(H, [c1,…,cm])`**, which "folds `drop` over the list
+left-to-right": the first member's drop, then the rest's (RUE-2487).
+
+```lean
+inductive RueCore.DropGlueSeq (D : Decls) : List Contents → List Event → Prop
+```
+
+Constructors:
+
+**`DropGlueSeq.nil`**
+
+```lean
+RueCore.DropGlueSeq.nil {D : Decls} : DropGlueSeq D [] []
+```
+
+**`DropGlueSeq.cons`**
+
+```lean
+RueCore.DropGlueSeq.cons {D : Decls} {c : Contents} {cs : List Contents}
+  {e₁ e₂ : List Event} :
+  DropGlue D c e₁ → DropGlueSeq D cs e₂ → DropGlueSeq D (c :: cs) (e₁ ++ e₂)
+```
+
+### `GlueBlocks`
+
+*inductive* · module `RueCore.Trace.Defs`
+
+**§6.11's order as a grammar over the trace, stated independently of the
+machine** (RUE-2487). The same block grammar as `Blocks` — a `@dbg` line, a
+consumption, or a drop marker followed by its drop's events — except that a
+drop's events are given by §6.11's rules (`DropGlue`) rather than by the
+function `dropEvents` the machine's walk is proved equal to. So a trace in
+this grammar runs each value's destructor first, then its fields in
+declaration order, an array's elements ascending and an enum's active payload
+only, whatever the machine's own drop glue says.
+
+```lean
+inductive RueCore.GlueBlocks (D : Decls) : List Event → Prop
+```
+
+Constructors:
+
+**`GlueBlocks.nil`**
+
+```lean
+RueCore.GlueBlocks.nil {D : Decls} : GlueBlocks D []
+```
+
+**`GlueBlocks.dbg`**
+
+```lean
+RueCore.GlueBlocks.dbg {D : Decls} {v : Val} {t : List Event} :
+  GlueBlocks D t → GlueBlocks D (Event.dbg v :: t)
+```
+
+**`GlueBlocks.consume`**
+
+```lean
+RueCore.GlueBlocks.consume {D : Decls} {c : Contents} {t : List Event} :
+  GlueBlocks D t → GlueBlocks D (Event.consume c :: t)
+```
+
+**`GlueBlocks.drop`**
+
+```lean
+RueCore.GlueBlocks.drop {D : Decls} {ℓ : Nat} {c : Contents}
+  {evs t : List Event} :
+  DropGlue D c evs →
+    GlueBlocks D t → GlueBlocks D (Event.drop ℓ c :: (evs ++ t))
+```
+
+**`GlueBlocks.dropTemp`**
+
+```lean
+RueCore.GlueBlocks.dropTemp {D : Decls} {v : Val} {evs t : List Event} :
+  DropGlue D (Contents.ofVal v) evs →
+    GlueBlocks D t → GlueBlocks D (Event.dropTemp v :: (evs ++ t))
+```
+
 ### `Entry.join`
 
 *def* · module `RueCore.Statics`
@@ -32599,7 +33191,9 @@ declared-`linear` `L { x0: C, x1: A }` and an affine `A` with a destructor,
 residue `C { 1 }` is `Copy`, so it is dropped with no marker, and its
 destructor event opens the trace. It is not `ProgramTyped`, and §6's relation
 runs it to a value whose trace is not in §6.11's block grammar: `drop_order`
-fails without `ProgramTyped` (through `DtorNotCopy`).
+fails without `ProgramTyped` (through `DtorNotCopy`), and so does
+`drop_glue_order`, since a trace outside `Blocks` is outside `GlueBlocks`
+(RUE-2487).
 
 ```lean
 def RueCore.Spec.Sharp.bare_dtor_stmt : Prop :=
@@ -33458,7 +34052,8 @@ def RueCore.Spec.Sharp.unreachable_stuck_stmt : Prop :=
 the panic whose trace opens with a destructor event: not reached, not `run`'s
 answer past any bound (the program returns), not in the block grammar. So
 `eval_sound`'s and `run_sim`'s `run … = .panic k tr`, `eval_complete`'s and
-`run_complete`'s `Steps … (.panic κ tr)`, and `drop_order`'s are needed.
+`run_complete`'s `Steps … (.panic κ tr)`, and `drop_order`'s and
+`drop_glue_order`'s are needed.
 
 ```lean
 def RueCore.Spec.Sharp.unreached_panic_stmt : Prop :=
@@ -33526,7 +34121,8 @@ bound, and its trace is not in §6.11's block grammar. So each statement
 whose conclusion claims something of a reached or answered value fails once
 the hypothesis naming that value is dropped: `eval_sound`'s and `run_sim`'s
 `run … = .ok H v tr`, `eval_complete`'s and `run_complete`'s `Steps … (.ret
-v)`, and `drop_order`'s.
+v)`, and `drop_order`'s and `drop_glue_order`'s (a trace outside `Blocks` is
+outside `GlueBlocks`, RUE-2487).
 
 ```lean
 def RueCore.Spec.Sharp.unreached_stmt : Prop :=
@@ -33595,6 +34191,33 @@ program statements (soundness only: a typed program it rejects is possible).
 ```lean
 def RueCore.Spec.checkProgram_sound_stmt : Prop :=
   ∀ {P : Program}, checkProgram P = true → ProgramTyped P
+```
+
+### `Spec.drop_glue_order_stmt`
+
+*def* · module `RueCore.Spec.Trace`
+
+**Drop glue order, in §6.11's own terms** (§3.9, §6.11; §7 "No
+use-after-drop / no leak of drops", *how* a value is dropped; RUE-2487), over
+`Step`. A finished run's trace — value or panic — is in §6.11's block grammar
+with each drop's events given by §6.11's rules (`GlueBlocks`, `DropGlue`):
+after each drop marker, the value's destructor first, then its fields in
+declaration order, an array's elements in ascending index order, and an enum's
+active payload only. Unlike `drop_order`'s `Blocks`, the rules are not the
+function `dropEvents` the machine's walk is proved equal to, so a change to the
+machine's drop glue cannot carry this statement with it.
+
+```lean
+def RueCore.Spec.drop_glue_order_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          Steps M.toFloatOps P Config.init
+              (Config.run H φ [] (Focus.ret v) tr) →
+            GlueBlocks P.decls tr) ∧
+        ∀ (κ : PanicKind) (tr : List Event),
+          Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+            GlueBlocks P.decls tr
 ```
 
 ### `Spec.drop_order_stmt`
