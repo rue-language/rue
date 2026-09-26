@@ -920,7 +920,10 @@ def renderTrustedBase (tb : TrustedBase) : List String :=
    "as a `def …_stmt : Prop` and proved by the theorem beside it. The pass starts from",
    "those statements' bodies, so the statements themselves are not counted here; they",
    "are read in full, in `SPINE.md`. A lemma `03-metatheory.md` cites as a step of a",
-   "proof is not a claim, and is not a headline.",
+   "proof is not a claim, and is not a headline. The non-vacuity witnesses",
+   "(`RueCore.Spec.witnesses`) are not headlines either, and they may name",
+   "definitions outside this base (`Float.exactOps` and its `roundRat`, the",
+   "witness programs): a witness can only fail to witness, never widen a claim.",
    "",
    s!"- Headline statements: {headline.length} — " ++
      ", ".intercalate (headline.map (s!"`{Digest.shortName ·}`")) ++ ".",

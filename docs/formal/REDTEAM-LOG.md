@@ -199,7 +199,7 @@ Do not edit any file. Write your full report to <packet>/red-docs-report.md and 
 
 ---
 
-## 2026-09-26 — non-vacuity pass (RUE-2469, part 1)
+## 2026-09-25 — non-vacuity pass (RUE-2469, part 1)
 
 - **Trunk:** `1f227dbd3`.
 - **Kind:** witness pass, not a red-agent pass: no fresh session attacked
@@ -210,21 +210,29 @@ Do not edit any file. Write your full report to <packet>/red-docs-report.md and 
   - **L4 closed.** `Float.exactModel` (`lean/RueCore/Float/Lemmas.lean`)
     proves every `FloatModel` law of `Float.exactOps`, so the laws have a
     model. No law turned out false of `exactOps`.
-  - **Every spine theorem is witnessed.** Twelve Spec statements
+  - **Every spine theorem is witnessed.** Thirteen Spec statements
     (`lean/RueCore/Spec/Nonvacuous.lean`, listed in `Spec.witnesses`) show the
     hypotheses of all 36 satisfiable by non-trivial programs, written out:
     one per construct class (destructors, linear values, loops, arrays, enums
     with `match`, early `return`, `@panic`, floats), a divergent one, an
-    unchecked stuck one, the model and the empty frame. The lint now fails on
-    a spine theorem no witness names, and Comparator and the fingerprints
-    cover the witnesses.
+    unchecked stuck one, the model, the empty frame and an open term in a
+    live frame. `lean/RueCore/Nonvacuous/Glue.lean` applies each listed spine
+    theorem to its witness's facts in the kernel, and the lint fails on a
+    listed pair with no such application and on a spine theorem no witness
+    names; Comparator and the fingerprints cover the witnesses. The five
+    spine statements with no hypotheses are marked so in `SPINE.md`.
   - **Checker profile.** `ruecore-corpus --profile`: 140 of 174 seed cases
     accepted, 34 rejected, 13 of those running to a value (conservative
     rejections); 115 of 200 generated programs (seed 7) accepted. No accepted
-    program is refused. `errorClasses_rejected` checks in the kernel one
-    rejected corpus case per error class.
+    program is refused. `errorClasses_rejected` checks in the kernel a
+    rejected corpus case for each of 21 error classes, 13 beside an accepted
+    neighbour; `typeErrors_rejected`, six type errors.
+  - **Review.** An adversarial review found no blocker. Its five should-fixes
+    are resolved: the witness mapping is now kernel-checked (it had one wrong
+    entry, `stuck` for `run_complete`), the open-frame witness, the float
+    wording, the error classes, and the statement-layer docs.
 - **Findings.** None against the claim: every hypothesis was satisfiable by
   the programs tried. One tooling finding: the core library's
   `Nat.lt_of_mul_lt_mul_right`, `Nat.pow_lt_pow_right`,
   `Nat.pow_le_pow_iff_right` and `Nat.sqrt_le` reach `Classical.choice` on
-  this toolchain (4.33.1), so `Float/Lemmas.lean` reproves them.
+  this toolchain (4.33.1), so `Float/Lemmas.lean` reproves them (RUE-2489).

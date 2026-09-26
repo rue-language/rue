@@ -866,7 +866,10 @@ their linking theorems (`checkProgram_sound`, `step_iff`,
 `Config.stuck_iff`, `run_complete`, `run_ne_returned`). A lemma
 `03-metatheory.md` cites as a step of a proof (the trace invariants behind
 `no_double_free`, the drop-order lemmas, the float lemmas §7 owes) is not a
-claim and is not on the list. Today their trusted base is 292 definitions,
+claim and is not on the list. Nor are the non-vacuity witnesses, which may
+name definitions outside the trusted base (`Float.exactOps` and its
+`roundRat`): a witness can only fail to witness, never widen a claim. Today
+the headlines' trusted base is 292 definitions,
 all in L0 and L1 (the package has 863 theorems besides, and the 48 `Spine`
 restatements: 36 of the spine, 12 of the witnesses). A
 definition counts as Lean's own, and is only counted, when Lean's own tables
