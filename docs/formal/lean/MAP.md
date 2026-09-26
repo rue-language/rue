@@ -2245,7 +2245,7 @@ marked node.
 | `no_violation` | `RueCore.Soundness` | 46 | 3 |
 | `no_use_after_move` | `RueCore.Soundness` | 3 | 0 |
 | `no_use_after_drop` | `RueCore.Soundness` | 12 | 0 |
-| `run_no_use_after_drop` | `RueCore.Retire` | 11 | 51 |
+| `run_no_use_after_drop` | `RueCore.Retire` | 12 | 51 |
 | `no_linear_leak` | `RueCore.Soundness` | 4 | 0 |
 | `no_linear_overwrite` | `RueCore.Soundness` | 7 | 0 |
 | `no_linear_discard` | `RueCore.Soundness` | 3 | 0 |

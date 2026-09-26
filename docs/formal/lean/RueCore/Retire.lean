@@ -1468,7 +1468,8 @@ namespace RueCore
 
 open Retire
 
-/-- **No use-after-drop, on every program**: `run` never refuses with
+/-- **No use-after-drop, on every program** (§7 "No use-after-drop / no leak
+of drops", "never read afterward"; §6.9): `run` never refuses with
 `useAfterDrop`, checked or not. -/
 theorem run_no_use_after_drop (M : FloatOps) (P : Program) (fuel : Nat) :
     run M P fuel ≠ .stuck .useAfterDrop := by
