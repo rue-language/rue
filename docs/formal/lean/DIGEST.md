@@ -20254,50 +20254,6 @@ Examples.structEnv =
     Examples.dNested, Examples.dCarryAffine]
 ```
 
-### `Expr.breaks`
-
-*def* · module `RueCore.Syntax`
-
-§5.7's syntactic classification of a loop body, "`e` contains a `break`
-targeting this loop" (`4.8:21`): a `break` anywhere in `e` except inside a
-nested `loop`, whose own breaks target that loop (the core has no labelled
-`break`). Reachability is not consulted — a `break` after a `return` still
-counts — which is what makes (Loop-Break) `unit`-typed "even when every `break`
-is unreachable" (§5.7).
-
-```lean
-def RueCore.Expr.breaks : Expr → Bool
-```
-
-### `Expr.pendingSafe`
-
-*def* · module `RueCore.Trace.Defs`
-
-**The RUE-2316 carve-out, syntactically**: no value computed for one
-operand is pending while a later operand of the same form can unwind — a
-call's arguments, a struct, enum or array literal's members, an index list,
-a binary operator's two operands, and an indexed assignment's right-hand side
-before its indices (`5.2:14`). The first operand may unwind: nothing is
-pending yet. `binop` is in the list although RUE-2316's text does not name it:
-its left operand is a scalar under (Arith) §5.8, so nothing owned is lost
-there on a checked program, but the carve-out is syntactic and cannot see the
-type.
-
-```lean
-def RueCore.Expr.pendingSafe : Expr → Bool
-```
-
-### `Expr.returns`
-
-*def* · module `RueCore.Trace.Defs`
-
-Whether an expression contains a `return` anywhere — including under a
-loop (helper).
-
-```lean
-def RueCore.Expr.returns : Expr → Bool
-```
-
 ### `Float.narrow`
 
 *def* · module `RueCore.Float`
@@ -20558,16 +20514,6 @@ Constructors:
 
 ```lean
 RueCore.Out.mk (norm : Option Ctx) (brk : List Ctx) : Out
-```
-
-### `OwnSt.join`
-
-*def* · module `RueCore.Statics`
-
-The §5.5 branch join, at one path and its subtree (section docstring).
-
-```lean
-def RueCore.OwnSt.join (D : Decls) : OwnSt → OwnSt → Ty → Option OwnSt
 ```
 
 ### `Store`
@@ -20966,43 +20912,6 @@ Defining equations, as Lean derived them from the body:
     else OpRes.trap PanicKind.overflow
 ```
 
-### `linearResidue`
-
-*def* · module `RueCore.Syntax`
-
-**§5.1's `linear-residue(S, π_s)`**: the ordered residue traversal of
-`residue(S, π_s)` — "at a struct step, visit fields in declaration order,
-recurse into the selected field, and retain every unselected field" — asking
-whether one of the *retained* places carries a linear value. The traversal ends
-at the selected leaf, which is not residue, so the empty path is `false`.
-
-It is keyed on the retained field's **type**, not on Σ: the compiler reads the
-declared type of a sibling that has itself already been moved out (probe d5c,
-E0474 on a moved-out linear sibling), and `3.8:60` states the check
-"recursively through nested fields" of the declared-linear place, which is this
-recursion.
-
-**The array step** is §5.1's own clause, "at an array step, visit elements in
-ascending constant-index order, recurse into the selected element, and retain
-every unselected element", and it is the same sentence as the struct step's
-with `n` copies of the element type in place of the declaration's fields
-(`List.replicate n T`, the shape `Ty.fieldAt_inv` hands every array arm in this
-package). An out-of-range index retains nothing and recurses nowhere: the path
-is untypeable there (`7.1:9`, E0902), so no derivation reaches it. Verified
-against the compiler in both directions: probe `b9` — `x.arr[0]` on
-`linear struct L4 { arr: [T0; 2], k: i64 }` — is E0474 "would implicitly drop
-linear field 'array element [1]'", and probe `b3`, the same shape with an
-affine element type, compiles and drops the residue in the traversal's order
-(`arr[1]` before the later sibling `k`, probe `b20` at three elements and two
-siblings).
-
-This is the premise that rejects a destructure before it can silently drop a
-linear sibling; the compiler reports E0474.
-
-```lean
-def RueCore.linearResidue (D : Decls) : Ty → List Nat → Bool
-```
-
 ### `lostBody`
 
 *def* · module `RueCore.TraceExact`
@@ -21037,20 +20946,6 @@ Defining equations, as Lean derived them from the body:
 lostCtx = [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
 ```
 
-### `noArrayStep`
-
-*def* · module `RueCore.Syntax`
-
-Whether the path takes **no** step at an array node — the tail of
-`3.8:68`'s root-index rule, read from the type the walk has reached. A step
-whose type is not a step of what has been reached so far ends the walk at
-`true`: the path is untypeable there (`Ty.atPath` is `none`) and the rule that
-consults this has already failed its `Γ ⊢ p : T` premise (helper).
-
-```lean
-def RueCore.noArrayStep (D : Decls) : Ty → List Nat → Bool
-```
-
 ### `noDtorPrefix`
 
 *def* · module `RueCore.Syntax`
@@ -21071,6 +20966,33 @@ declares one.
 
 ```lean
 def RueCore.noDtorPrefix (D : Decls) : Ty → List Nat → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : Ty), noDtorPrefix D x [] = true
+∀ (D : Decls) (f : Nat) (π : List Nat) (s : Nat),
+  noDtorPrefix D (Ty.struct s) (f :: π) =
+    match D.structs[s]? with
+    | some sd =>
+      !sd.dtor &&
+        match sd.fields[f]? with
+        | some T' => noDtorPrefix D T' π
+        | none => true
+    | none => true
+∀ (D : Decls) (f : Nat) (π : List Nat) (T' : Ty) (n : Nat),
+  noDtorPrefix D (T'.array n) (f :: π) = noDtorPrefix D T' π
+∀ (D : Decls) (f : Nat) (π : List Nat) (w : IntWidth) (s : Sign),
+  noDtorPrefix D (Ty.int w s) (f :: π) = true
+∀ (D : Decls) (f : Nat) (π : List Nat) (w : FloatWidth),
+  noDtorPrefix D (Ty.float w) (f :: π) = true
+∀ (D : Decls) (f : Nat) (π : List Nat),
+  noDtorPrefix D Ty.bool (f :: π) = true
+∀ (D : Decls) (f : Nat) (π : List Nat),
+  noDtorPrefix D Ty.unit (f :: π) = true
+∀ (D : Decls) (f : Nat) (π : List Nat) (e : Nat),
+  noDtorPrefix D (Ty.enum e) (f :: π) = true
 ```
 
 ### `wrapInt`
@@ -21217,24 +21139,6 @@ the declarations the conservation law reads (helper).
 def RueCore.DtorNotCopy (D : Decls) : Prop :=
   ∀ (s : Nat) (sd : StructDecl),
     D.structs[s]? = some sd → sd.dtor = true → D.classOf s ≠ Mult.copy
-```
-
-### `Entry.join`
-
-*def* · module `RueCore.Statics`
-
-The §5.5 branch join, per entry: the two arms' states for the binding,
-joined over its paths at its declared type.
-
-```lean
-def RueCore.Entry.join (D : Decls) (a b : Entry) : Option Entry
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls) (a b : Entry),
-  Entry.join D a b = Option.map a.setSt (OwnSt.join D a.st b.st a.ty)
 ```
 
 ### `EvalRes`
@@ -21479,79 +21383,6 @@ RueCore.Explain.Verdict.accept (ty : CTy) (out : Out) : Explain.Verdict
 
 ```lean
 RueCore.Explain.Verdict.reject (premise : String) : Explain.Verdict
-```
-
-### `Expr.breaksList`
-
-*def* · module `RueCore.Syntax`
-
-`Expr.breaks` over a list of subexpressions (helper).
-
-```lean
-def RueCore.Expr.breaksList : List Expr → Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-Expr.breaksList [] = false
-∀ (e : Expr) (es : List Expr),
-  Expr.breaksList (e :: es) = (e.breaks || Expr.breaksList es)
-```
-
-### `Expr.pendingSafeList`
-
-*def* · module `RueCore.Trace.Defs`
-
-`Expr.pendingSafe` over a list (helper).
-
-```lean
-def RueCore.Expr.pendingSafeList : List Expr → Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-Expr.pendingSafeList [] = true
-∀ (e : Expr) (es : List Expr),
-  Expr.pendingSafeList (e :: es) =
-    (e.pendingSafe && Expr.pendingSafeList es)
-```
-
-### `Expr.returnsList`
-
-*def* · module `RueCore.Trace.Defs`
-
-`Expr.returns` over a list (helper).
-
-```lean
-def RueCore.Expr.returnsList : List Expr → Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-Expr.returnsList [] = false
-∀ (e : Expr) (es : List Expr),
-  Expr.returnsList (e :: es) = (e.returns || Expr.returnsList es)
-```
-
-### `Expr.unwinds`
-
-*def* · module `RueCore.Trace.Defs`
-
-Whether evaluating an expression can **unwind** past its context: it
-contains a `return`, or a `break` its own loops do not catch
-(`Expr.breaks`) (helper).
-
-```lean
-def RueCore.Expr.unwinds (e : Expr) : Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (e : Expr), e.unwinds = (e.returns || e.breaks)
 ```
 
 ### `Float.exactOps`
@@ -22226,6 +22057,58 @@ Defining equations, as Lean derived them from the body:
           (Contents.enum e k i (List.map (fun x => Contents.hole) vs))]
 ```
 
+### `noArrayStep`
+
+*def* · module `RueCore.Syntax`
+
+Whether the path takes **no** step at an array node — the tail of
+`3.8:68`'s root-index rule, read from the type the walk has reached. A step
+whose type is not a step of what has been reached so far ends the walk at
+`true`: the path is untypeable there (`Ty.atPath` is `none`) and the rule that
+consults this has already failed its `Γ ⊢ p : T` premise (helper).
+
+```lean
+def RueCore.noArrayStep (D : Decls) : Ty → List Nat → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : Ty), noArrayStep D x [] = true
+∀ (D : Decls) (f : Nat) (π : List Nat) (elem : Ty) (n : Nat),
+  noArrayStep D (elem.array n) (f :: π) = false
+∀ (D : Decls) (f : Nat) (π : List Nat) (s : Nat),
+  noArrayStep D (Ty.struct s) (f :: π) =
+    match Ty.fieldAt D (Ty.struct s) f with
+    | some T' => noArrayStep D T' π
+    | none => true
+∀ (D : Decls) (f : Nat) (π : List Nat) (w : IntWidth) (s : Sign),
+  noArrayStep D (Ty.int w s) (f :: π) =
+    match Ty.fieldAt D (Ty.int w s) f with
+    | some T' => noArrayStep D T' π
+    | none => true
+∀ (D : Decls) (f : Nat) (π : List Nat) (w : FloatWidth),
+  noArrayStep D (Ty.float w) (f :: π) =
+    match Ty.fieldAt D (Ty.float w) f with
+    | some T' => noArrayStep D T' π
+    | none => true
+∀ (D : Decls) (f : Nat) (π : List Nat),
+  noArrayStep D Ty.bool (f :: π) =
+    match Ty.fieldAt D Ty.bool f with
+    | some T' => noArrayStep D T' π
+    | none => true
+∀ (D : Decls) (f : Nat) (π : List Nat),
+  noArrayStep D Ty.unit (f :: π) =
+    match Ty.fieldAt D Ty.unit f with
+    | some T' => noArrayStep D T' π
+    | none => true
+∀ (D : Decls) (f : Nat) (π : List Nat) (e : Nat),
+  noArrayStep D (Ty.enum e) (f :: π) =
+    match Ty.fieldAt D (Ty.enum e) f with
+    | some T' => noArrayStep D T' π
+    | none => true
+```
+
 ### `rootCell`
 
 *def* · module `RueCore.Step`
@@ -22251,53 +22134,6 @@ Defining equations, as Lean derived them from the body:
       | none => Except.error Violation.unbound
       | some Cell.dead => Except.error Violation.useAfterDrop
       | some (Cell.full c) => Except.ok (ℓ, c)
-```
-
-### `rootIdxOnly`
-
-*def* · module `RueCore.Syntax`
-
-**§4.2's "element moves only at the root"** (`3.8:68`, E0904): "an index
-step `[c]` may appear in a moved path only applied directly to the root
-binding — `x[c]` or `x[c].f…` moves are legal (for constant `c`), but an array
-reached through any projection (`x.f[c]`) … cannot be moved out of". Read as a
-walk: no step is taken at an `.array` node **except** the first step off the
-root, whatever that first step is. A nested index (`x[c][c']`) is refused by
-the same reading, because its second index is taken at the array `x[c]` rather
-than at the root binding; the spec states it as "an array reached through
-another projection … cannot be moved out of" and the compiler agrees (probes
-`a9`, `e1`, `e2`: E0904).
-
-The test is keyed on the **type**, not on the place's spelling. `Place.path`
-and `Ty.fieldAt` are constructor-blind — a field slot and a constant index are
-one production of §5's `Path` and one function here — so reading `.idx` vs
-`.proj` off the place would answer for `h.a[0]` spelled with `Place.idx` and
-not for the same place spelled with `Place.proj`, and would accept an element
-move the compiler rejects (probes `a6`/`a6b`, E0904). It is the type at the
-node that makes a step an index step, so that is what this reads.
-
-The premise is (Use-Move) §5.1's and (@Drop) §5.3's, the two rules that move a
-path out. It is **not** carried by the declared-linear destructure: §4.2's `dl`
-"may pass through nested structs and constant-index arrays", `3.8:71` says
-outright that consuming the linear sub-places of an array reached through a
-field projection discharges the array's obligation, and the compiler accepts
-both (`h.arr[0].x0`, probe `d1b`; `a[0][0].x0` at a nested index, probe `d2b`).
-Nor is it carried by (Assign) §5.2, whose destination is not a move at all
-(`h.a[0] = …` and `a[1][0] = …` both compile; probes `b6`, `c6`).
-
-```lean
-def RueCore.rootIdxOnly (D : Decls) : Ty → List Nat → Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls) (x : Ty), rootIdxOnly D x [] = true
-∀ (D : Decls) (x : Ty) (f : Nat) (π : List Nat),
-  rootIdxOnly D x (f :: π) =
-    match Ty.fieldAt D x f with
-    | some T' => noArrayStep D T' π
-    | none => true
 ```
 
 ### `ArgsRes`
@@ -22500,33 +22336,6 @@ Constructors:
 ```lean
 RueCore.Corpus.Case.mk (name description : String) (rules : List String)
   (prog : Program) : Corpus.Case
-```
-
-### `Ctx.join`
-
-*def* · module `RueCore.Statics`
-
-The §5.5 branch join, pointwise. Defined only on equal-length contexts
-(the two arms extend one incoming context, so lengths always agree).
-
-```lean
-def RueCore.Ctx.join (D : Decls) : Ctx → Ctx → Option Ctx
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls), Ctx.join D [] [] = some []
-∀ (D : Decls) (a : Entry) (as : List Entry) (b : Entry) (bs : List Entry),
-  Ctx.join D (a :: as) (b :: bs) =
-    match Entry.join D a b, Ctx.join D as bs with
-    | some e, some rest => some (e :: rest)
-    | x, x_1 => none
-∀ (D : Decls) (x x_1 : Ctx),
-  (x = [] → x_1 = [] → False) →
-    (∀ (a : Entry) (as : List Entry) (b : Entry) (bs : List Entry),
-        x = a :: as → x_1 = b :: bs → False) →
-      Ctx.join D x x_1 = none
 ```
 
 ### `EnumDecl.payloadJoin`
@@ -22736,22 +22545,6 @@ RueCore.Explain.Trace.mk (steps : List Explain.Step) (res : EvalRes) :
   Explain.Trace
 ```
 
-### `Expr.quietList`
-
-*def* · module `RueCore.Trace.Defs`
-
-No expression of the list unwinds (helper).
-
-```lean
-def RueCore.Expr.quietList (es : List Expr) : Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (es : List Expr), Expr.quietList es = es.all fun e => !e.unwinds
-```
-
 ### `KillsOnly`
 
 *def* · module `RueCore.TraceExact`
@@ -22872,22 +22665,6 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (T : Ty) (e : Expr),
   Program.entry D T e =
     { decls := D, fns := [{ params := [], ret := T, body := e }] }
-```
-
-### `Program.pendingSafe`
-
-*def* · module `RueCore.Trace.Defs`
-
-Every function body of the program is `pendingSafe` (helper).
-
-```lean
-def RueCore.Program.pendingSafe (P : Program) : Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (P : Program), P.pendingSafe = P.fns.all fun fd => fd.body.pendingSafe
 ```
 
 ### `Settled`
@@ -23456,6 +23233,53 @@ Defining equations, as Lean derived them from the body:
   overwriteOk D (OwnSt.fields ts) x = decide (Ty.mult D x ≠ Mult.linear)
 ```
 
+### `rootIdxOnly`
+
+*def* · module `RueCore.Syntax`
+
+**§4.2's "element moves only at the root"** (`3.8:68`, E0904): "an index
+step `[c]` may appear in a moved path only applied directly to the root
+binding — `x[c]` or `x[c].f…` moves are legal (for constant `c`), but an array
+reached through any projection (`x.f[c]`) … cannot be moved out of". Read as a
+walk: no step is taken at an `.array` node **except** the first step off the
+root, whatever that first step is. A nested index (`x[c][c']`) is refused by
+the same reading, because its second index is taken at the array `x[c]` rather
+than at the root binding; the spec states it as "an array reached through
+another projection … cannot be moved out of" and the compiler agrees (probes
+`a9`, `e1`, `e2`: E0904).
+
+The test is keyed on the **type**, not on the place's spelling. `Place.path`
+and `Ty.fieldAt` are constructor-blind — a field slot and a constant index are
+one production of §5's `Path` and one function here — so reading `.idx` vs
+`.proj` off the place would answer for `h.a[0]` spelled with `Place.idx` and
+not for the same place spelled with `Place.proj`, and would accept an element
+move the compiler rejects (probes `a6`/`a6b`, E0904). It is the type at the
+node that makes a step an index step, so that is what this reads.
+
+The premise is (Use-Move) §5.1's and (@Drop) §5.3's, the two rules that move a
+path out. It is **not** carried by the declared-linear destructure: §4.2's `dl`
+"may pass through nested structs and constant-index arrays", `3.8:71` says
+outright that consuming the linear sub-places of an array reached through a
+field projection discharges the array's obligation, and the compiler accepts
+both (`h.arr[0].x0`, probe `d1b`; `a[0][0].x0` at a nested index, probe `d2b`).
+Nor is it carried by (Assign) §5.2, whose destination is not a move at all
+(`h.a[0] = …` and `a[1][0] = …` both compile; probes `b6`, `c6`).
+
+```lean
+def RueCore.rootIdxOnly (D : Decls) : Ty → List Nat → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : Ty), rootIdxOnly D x [] = true
+∀ (D : Decls) (x : Ty) (f : Nat) (π : List Nat),
+  rootIdxOnly D x (f :: π) =
+    match Ty.fieldAt D x f with
+    | some T' => noArrayStep D T' π
+    | none => true
+```
+
 ### `swappedMarkers`
 
 *def* · module `RueCore.Witnesses`
@@ -23502,51 +23326,6 @@ def RueCore.ArgsTidy (φ : Frame) (H : Store) : ArgsRes → Prop :=
 
 ```lean
 def RueCore.Corpus.cases : List Corpus.Case
-```
-
-### `Ctx.joinFold`
-
-*def* · module `RueCore.Statics`
-
-The accumulator step of (Match) §5.5's `join(Σ1, …, Σn)`: fold the binary
-§5.5 join over the remaining arms' outgoing states, left to right.
-
-```lean
-def RueCore.Ctx.joinFold (D : Decls) : Ctx → List Ctx → Option Ctx
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls) (x : Ctx), Ctx.joinFold D x [] = some x
-∀ (D : Decls) (x Γ : Ctx) (Γs : List Ctx),
-  Ctx.joinFold D x (Γ :: Γs) =
-    match Ctx.join D x Γ with
-    | some acc' => Ctx.joinFold D acc' Γs
-    | none => none
-```
-
-### `Ctx.joinOpt`
-
-*def* · module `RueCore.Statics`
-
-§5.5's branch join over `Ω` for two arms: "the normal state is `join` of
-the continuing arms' normal states (`⊥` when no arm continues)". A divergent
-arm contributes nothing, which is how (Sub-Never) §5.7 lets it sit beside a
-continuing one; `none` is a join the continuing arms disagree on.
-
-```lean
-def RueCore.Ctx.joinOpt (D : Decls) :
-  Option Ctx → Option Ctx → Option (Option Ctx)
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls) (x : Option Ctx), Ctx.joinOpt D none x = some x
-∀ (D : Decls) (a : Ctx), Ctx.joinOpt D (some a) none = some (some a)
-∀ (D : Decls) (a b : Ctx),
-  Ctx.joinOpt D (some a) (some b) = Option.map some (Ctx.join D a b)
 ```
 
 ### `EnumDecl.Wf`
@@ -24025,6 +23804,74 @@ letAddProgram =
         (Expr.intLit IntWidth.w32 Sign.signed 2)))
 ```
 
+### `linearResidue`
+
+*def* · module `RueCore.Syntax`
+
+**§5.1's `linear-residue(S, π_s)`**: the ordered residue traversal of
+`residue(S, π_s)` — "at a struct step, visit fields in declaration order,
+recurse into the selected field, and retain every unselected field" — asking
+whether one of the *retained* places carries a linear value. The traversal ends
+at the selected leaf, which is not residue, so the empty path is `false`.
+
+It is keyed on the retained field's **type**, not on Σ: the compiler reads the
+declared type of a sibling that has itself already been moved out (probe d5c,
+E0474 on a moved-out linear sibling), and `3.8:60` states the check
+"recursively through nested fields" of the declared-linear place, which is this
+recursion.
+
+**The array step** is §5.1's own clause, "at an array step, visit elements in
+ascending constant-index order, recurse into the selected element, and retain
+every unselected element", and it is the same sentence as the struct step's
+with `n` copies of the element type in place of the declaration's fields
+(`List.replicate n T`, the shape `Ty.fieldAt_inv` hands every array arm in this
+package). An out-of-range index retains nothing and recurses nowhere: the path
+is untypeable there (`7.1:9`, E0902), so no derivation reaches it. Verified
+against the compiler in both directions: probe `b9` — `x.arr[0]` on
+`linear struct L4 { arr: [T0; 2], k: i64 }` — is E0474 "would implicitly drop
+linear field 'array element [1]'", and probe `b3`, the same shape with an
+affine element type, compiles and drops the residue in the traversal's order
+(`arr[1]` before the later sibling `k`, probe `b20` at three elements and two
+siblings).
+
+This is the premise that rejects a destructure before it can silently drop a
+linear sibling; the compiler reports E0474.
+
+```lean
+def RueCore.linearResidue (D : Decls) : Ty → List Nat → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : Ty), linearResidue D x [] = false
+∀ (D : Decls) (f : Nat) (π : List Nat) (s : Nat),
+  linearResidue D (Ty.struct s) (f :: π) =
+    match D.structs[s]? with
+    | some sd =>
+      anyLinearOther D sd.fields f ||
+        match sd.fields[f]? with
+        | some Tf => linearResidue D Tf π
+        | none => false
+    | none => false
+∀ (D : Decls) (f : Nat) (π : List Nat) (T' : Ty) (n : Nat),
+  linearResidue D (T'.array n) (f :: π) =
+    (anyLinearOther D (List.replicate n T') f ||
+      match (List.replicate n T')[f]? with
+      | some Tf => linearResidue D Tf π
+      | none => false)
+∀ (D : Decls) (f : Nat) (π : List Nat) (w : IntWidth) (s : Sign),
+  linearResidue D (Ty.int w s) (f :: π) = false
+∀ (D : Decls) (f : Nat) (π : List Nat) (w : FloatWidth),
+  linearResidue D (Ty.float w) (f :: π) = false
+∀ (D : Decls) (f : Nat) (π : List Nat),
+  linearResidue D Ty.bool (f :: π) = false
+∀ (D : Decls) (f : Nat) (π : List Nat),
+  linearResidue D Ty.unit (f :: π) = false
+∀ (D : Decls) (f : Nat) (π : List Nat) (e : Nat),
+  linearResidue D (Ty.enum e) (f :: π) = false
+```
+
 ### `residueMark`
 
 *def* · module `RueCore.Dynamics`
@@ -24134,47 +23981,6 @@ the same configuration.
 def RueCore.Config.Stuck (M : FloatOps) (P : Program) (C : Config)
   (w : Violation) : Prop :=
   step M P C = StepOut.stuck w
-```
-
-### `Ctx.joinAll`
-
-*def* · module `RueCore.Statics`
-
-(Match) §5.5's `Σ' = join(Σ1, …, Σn)`: the n-way join of the arms' outgoing
-states, as the left fold of the binary join (section docstring).
-
-```lean
-def RueCore.Ctx.joinAll (D : Decls) : List Ctx → Option Ctx
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls), Ctx.joinAll D [] = none
-∀ (D : Decls) (Γ : Ctx) (Γs : List Ctx),
-  Ctx.joinAll D (Γ :: Γs) = Ctx.joinFold D Γ Γs
-```
-
-### `Ctx.joinOpts`
-
-*def* · module `RueCore.Statics`
-
-(Match) §5.5's n-way join over `Ω`: the fold `Ctx.joinAll` over the
-normal states of the arms that **continue**, or `⊥` when none does.
-
-```lean
-def RueCore.Ctx.joinOpts (D : Decls) (os : List (Option Ctx)) :
-  Option (Option Ctx)
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls) (os : List (Option Ctx)),
-  Ctx.joinOpts D os =
-    match List.filterMap id os with
-    | [] => some none
-    | Γ :: Γs => Option.map some (Ctx.joinFold D Γ Γs)
 ```
 
 ### `Examples.returnPastAffine`
@@ -27137,21 +26943,6 @@ def RueCore.Ctx.Wf (D : Decls) (Γ : Ctx) : Prop :=
   ∀ (en : Entry), en ∈ Γ → Entry.wf D en = true
 ```
 
-### `LoopHead`
-
-*def* · module `RueCore.Statics`
-
-§5.7's loop-head equation `Σ_h = head(Σ, e)`, over the body's normal
-outgoing state `o` (section docstring): `Σ_h` is the §5.5 join of the entry
-state `Γ` with the body's back-edge state when it has one, and is `Γ` itself
-when it has none; a head a back edge produced is a state of its types.
-
-```lean
-def RueCore.LoopHead (D : Decls) (Γ : Ctx) (o : Option Ctx) (Γh : Ctx) : Prop :=
-  Ctx.joinOpt D (some Γ) o = some (some Γh) ∧
-    ∀ (Γe : Ctx), o = some Γe → Ctx.Wf D Γh
-```
-
 ### `Out.Wf`
 
 *inductive* · module `RueCore.Statics`
@@ -27200,6 +26991,152 @@ def RueCore.Out.WfPres (D : Decls) (Γ : Ctx) (Ω : Out) : Prop :=
   Ctx.Wf D Γ → Out.Wf D Ω
 ```
 
+### `Ctx.join`
+
+*def* · module `RueCore.Statics`
+
+The §5.5 branch join, pointwise. Defined only on equal-length contexts
+(the two arms extend one incoming context, so lengths always agree).
+
+```lean
+def RueCore.Ctx.join (D : Decls) : Ctx → Ctx → Option Ctx
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls), Ctx.join D [] [] = some []
+∀ (D : Decls) (a : Entry) (as : List Entry) (b : Entry) (bs : List Entry),
+  Ctx.join D (a :: as) (b :: bs) =
+    match Entry.join D a b, Ctx.join D as bs with
+    | some e, some rest => some (e :: rest)
+    | x, x_1 => none
+∀ (D : Decls) (x x_1 : Ctx),
+  (x = [] → x_1 = [] → False) →
+    (∀ (a : Entry) (as : List Entry) (b : Entry) (bs : List Entry),
+        x = a :: as → x_1 = b :: bs → False) →
+      Ctx.join D x x_1 = none
+```
+
+### `Ctx.joinFold`
+
+*def* · module `RueCore.Statics`
+
+The accumulator step of (Match) §5.5's `join(Σ1, …, Σn)`: fold the binary
+§5.5 join over the remaining arms' outgoing states, left to right.
+
+```lean
+def RueCore.Ctx.joinFold (D : Decls) : Ctx → List Ctx → Option Ctx
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : Ctx), Ctx.joinFold D x [] = some x
+∀ (D : Decls) (x Γ : Ctx) (Γs : List Ctx),
+  Ctx.joinFold D x (Γ :: Γs) =
+    match Ctx.join D x Γ with
+    | some acc' => Ctx.joinFold D acc' Γs
+    | none => none
+```
+
+### `Ctx.joinOpt`
+
+*def* · module `RueCore.Statics`
+
+§5.5's branch join over `Ω` for two arms: "the normal state is `join` of
+the continuing arms' normal states (`⊥` when no arm continues)". A divergent
+arm contributes nothing, which is how (Sub-Never) §5.7 lets it sit beside a
+continuing one; `none` is a join the continuing arms disagree on.
+
+```lean
+def RueCore.Ctx.joinOpt (D : Decls) :
+  Option Ctx → Option Ctx → Option (Option Ctx)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : Option Ctx), Ctx.joinOpt D none x = some x
+∀ (D : Decls) (a : Ctx), Ctx.joinOpt D (some a) none = some (some a)
+∀ (D : Decls) (a b : Ctx),
+  Ctx.joinOpt D (some a) (some b) = Option.map some (Ctx.join D a b)
+```
+
+### `Ctx.joinAll`
+
+*def* · module `RueCore.Statics`
+
+(Match) §5.5's `Σ' = join(Σ1, …, Σn)`: the n-way join of the arms' outgoing
+states, as the left fold of the binary join (section docstring).
+
+```lean
+def RueCore.Ctx.joinAll (D : Decls) : List Ctx → Option Ctx
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls), Ctx.joinAll D [] = none
+∀ (D : Decls) (Γ : Ctx) (Γs : List Ctx),
+  Ctx.joinAll D (Γ :: Γs) = Ctx.joinFold D Γ Γs
+```
+
+### `Ctx.joinOpts`
+
+*def* · module `RueCore.Statics`
+
+(Match) §5.5's n-way join over `Ω`: the fold `Ctx.joinAll` over the
+normal states of the arms that **continue**, or `⊥` when none does.
+
+```lean
+def RueCore.Ctx.joinOpts (D : Decls) (os : List (Option Ctx)) :
+  Option (Option Ctx)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (os : List (Option Ctx)),
+  Ctx.joinOpts D os =
+    match List.filterMap id os with
+    | [] => some none
+    | Γ :: Γs => Option.map some (Ctx.joinFold D Γ Γs)
+```
+
+### `LoopHead`
+
+*def* · module `RueCore.Statics`
+
+§5.7's loop-head equation `Σ_h = head(Σ, e)`, over the body's normal
+outgoing state `o` (section docstring): `Σ_h` is the §5.5 join of the entry
+state `Γ` with the body's back-edge state when it has one, and is `Γ` itself
+when it has none; a head a back edge produced is a state of its types.
+
+```lean
+def RueCore.LoopHead (D : Decls) (Γ : Ctx) (o : Option Ctx) (Γh : Ctx) : Prop :=
+  Ctx.joinOpt D (some Γ) o = some (some Γh) ∧
+    ∀ (Γe : Ctx), o = some Γe → Ctx.Wf D Γh
+```
+
+### `Entry.join`
+
+*def* · module `RueCore.Statics`
+
+The §5.5 branch join, per entry: the two arms' states for the binding,
+joined over its paths at its declared type.
+
+```lean
+def RueCore.Entry.join (D : Decls) (a b : Entry) : Option Entry
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (a b : Entry),
+  Entry.join D a b = Option.map a.setSt (OwnSt.join D a.st b.st a.ty)
+```
+
 ### `Entry.wf`
 
 *def* · module `RueCore.Statics`
@@ -27245,6 +27182,307 @@ def RueCore.EvalOk (D : Decls) (T R : Ty) (o : Option Ctx) (B : List Ctx)
   | EvalRes.panic k tr => True
   | EvalRes.stuck why => False
   | EvalRes.outOfFuel => True
+```
+
+### `Expr.breaks`
+
+*def* · module `RueCore.Syntax`
+
+§5.7's syntactic classification of a loop body, "`e` contains a `break`
+targeting this loop" (`4.8:21`): a `break` anywhere in `e` except inside a
+nested `loop`, whose own breaks target that loop (the core has no labelled
+`break`). Reachability is not consulted — a `break` after a `return` still
+counts — which is what makes (Loop-Break) `unit`-typed "even when every `break`
+is unreachable" (§5.7).
+
+```lean
+def RueCore.Expr.breaks : Expr → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Expr.brk.breaks = true
+∀ (e : Expr), e.loop.breaks = false
+∀ (w : IntWidth) (s : Sign) (n : Int), (Expr.intLit w s n).breaks = false
+∀ (w : FloatWidth) (l : FloatLit), (Expr.floatLit w l).breaks = false
+∀ (b : Bool), (Expr.boolLit b).breaks = false
+Expr.unitLit.breaks = false
+∀ (p : Place), (Expr.use p).breaks = false
+∀ (msg : String), (Expr.panic msg).breaks = false
+∀ (p : Place), (Expr.drop p).breaks = false
+∀ (op : BinOp) (e₁ e₂ : Expr),
+  (Expr.binop op e₁ e₂).breaks = (e₁.breaks || e₂.breaks)
+∀ (m : Bool) (e₁ e₂ : Expr),
+  (Expr.letIn m e₁ e₂).breaks = (e₁.breaks || e₂.breaks)
+∀ (e₁ e₂ : Expr), (e₁.seq e₂).breaks = (e₁.breaks || e₂.breaks)
+∀ (op : UnOp) (e : Expr), (Expr.unop op e).breaks = e.breaks
+∀ (w : IntWidth) (s : Sign) (e : Expr),
+  (Expr.intCast w s e).breaks = e.breaks
+∀ (k : FloatIntrin) (e : Expr), (Expr.fintrin k e).breaks = e.breaks
+∀ (e : Expr), e.dbg.breaks = e.breaks
+∀ (elem : Ty) (e : Expr) (n : Nat),
+  (Expr.repeatArray elem e n).breaks = e.breaks
+∀ (p : Place) (e : Expr), (Expr.assign p e).breaks = e.breaks
+∀ (e : Expr), e.ret.breaks = e.breaks
+∀ (s : Nat) (args : List Expr),
+  (Expr.mkStruct s args).breaks = Expr.breaksList args
+∀ (e k : Nat) (args : List Expr),
+  (Expr.mkEnum e k args).breaks = Expr.breaksList args
+∀ (elem : Ty) (args : List Expr),
+  (Expr.mkArray elem args).breaks = Expr.breaksList args
+∀ (f : Nat) (args : List Expr),
+  (Expr.call f args).breaks = Expr.breaksList args
+∀ (p : Place) (args : List Expr) (πs : List (List Nat)),
+  (Expr.indexRead p args πs).breaks = Expr.breaksList args
+∀ (p : Place) (args : List Expr) (πs : List (List Nat)),
+  (Expr.indexDrop p args πs).breaks = Expr.breaksList args
+∀ (p : Place) (idx : List Expr) (πs : List (List Nat)) (e : Expr),
+  (Expr.indexWrite p idx πs e).breaks = (e.breaks || Expr.breaksList idx)
+∀ (c e₁ e₂ : Expr),
+  (c.ite e₁ e₂).breaks = (c.breaks || e₁.breaks || e₂.breaks)
+∀ (scrut : Expr) (arms : List Expr),
+  (scrut.match arms).breaks = (scrut.breaks || Expr.breaksList arms)
+```
+
+### `Expr.breaksList`
+
+*def* · module `RueCore.Syntax`
+
+`Expr.breaks` over a list of subexpressions (helper).
+
+```lean
+def RueCore.Expr.breaksList : List Expr → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Expr.breaksList [] = false
+∀ (e : Expr) (es : List Expr),
+  Expr.breaksList (e :: es) = (e.breaks || Expr.breaksList es)
+```
+
+### `Expr.pendingSafe`
+
+*def* · module `RueCore.Trace.Defs`
+
+**The RUE-2316 carve-out, syntactically**: no value computed for one
+operand is pending while a later operand of the same form can unwind — a
+call's arguments, a struct, enum or array literal's members, an index list,
+a binary operator's two operands, and an indexed assignment's right-hand side
+before its indices (`5.2:14`). The first operand may unwind: nothing is
+pending yet. `binop` is in the list although RUE-2316's text does not name it:
+its left operand is a scalar under (Arith) §5.8, so nothing owned is lost
+there on a checked program, but the carve-out is syntactic and cannot see the
+type.
+
+```lean
+def RueCore.Expr.pendingSafe : Expr → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (w : IntWidth) (s : Sign) (n : Int),
+  (Expr.intLit w s n).pendingSafe = true
+∀ (w : FloatWidth) (l : FloatLit), (Expr.floatLit w l).pendingSafe = true
+∀ (b : Bool), (Expr.boolLit b).pendingSafe = true
+Expr.unitLit.pendingSafe = true
+∀ (p : Place), (Expr.use p).pendingSafe = true
+∀ (msg : String), (Expr.panic msg).pendingSafe = true
+∀ (p : Place), (Expr.drop p).pendingSafe = true
+Expr.brk.pendingSafe = true
+∀ (op : BinOp) (e₁ e₂ : Expr),
+  (Expr.binop op e₁ e₂).pendingSafe =
+    (e₁.pendingSafe && e₂.pendingSafe && !e₂.unwinds)
+∀ (op : UnOp) (e : Expr), (Expr.unop op e).pendingSafe = e.pendingSafe
+∀ (w : IntWidth) (s : Sign) (e : Expr),
+  (Expr.intCast w s e).pendingSafe = e.pendingSafe
+∀ (k : FloatIntrin) (e : Expr),
+  (Expr.fintrin k e).pendingSafe = e.pendingSafe
+∀ (e : Expr), e.dbg.pendingSafe = e.pendingSafe
+∀ (elem : Ty) (e : Expr) (n : Nat),
+  (Expr.repeatArray elem e n).pendingSafe = e.pendingSafe
+∀ (p : Place) (e : Expr), (Expr.assign p e).pendingSafe = e.pendingSafe
+∀ (e : Expr), e.ret.pendingSafe = e.pendingSafe
+∀ (e : Expr), e.loop.pendingSafe = e.pendingSafe
+∀ (s : Nat) (args : List Expr),
+  (Expr.mkStruct s args).pendingSafe =
+    (Expr.pendingSafeList args && Expr.quietList args.tail)
+∀ (e k : Nat) (args : List Expr),
+  (Expr.mkEnum e k args).pendingSafe =
+    (Expr.pendingSafeList args && Expr.quietList args.tail)
+∀ (elem : Ty) (args : List Expr),
+  (Expr.mkArray elem args).pendingSafe =
+    (Expr.pendingSafeList args && Expr.quietList args.tail)
+∀ (f : Nat) (args : List Expr),
+  (Expr.call f args).pendingSafe =
+    (Expr.pendingSafeList args && Expr.quietList args.tail)
+∀ (p : Place) (args : List Expr) (πs : List (List Nat)),
+  (Expr.indexRead p args πs).pendingSafe =
+    (Expr.pendingSafeList args && Expr.quietList args.tail)
+∀ (p : Place) (args : List Expr) (πs : List (List Nat)),
+  (Expr.indexDrop p args πs).pendingSafe =
+    (Expr.pendingSafeList args && Expr.quietList args.tail)
+∀ (p : Place) (idx : List Expr) (πs : List (List Nat)) (e : Expr),
+  (Expr.indexWrite p idx πs e).pendingSafe =
+    (e.pendingSafe && Expr.pendingSafeList idx && Expr.quietList idx)
+∀ (m : Bool) (e₁ e₂ : Expr),
+  (Expr.letIn m e₁ e₂).pendingSafe = (e₁.pendingSafe && e₂.pendingSafe)
+∀ (e₁ e₂ : Expr),
+  (e₁.seq e₂).pendingSafe = (e₁.pendingSafe && e₂.pendingSafe)
+∀ (c e₁ e₂ : Expr),
+  (c.ite e₁ e₂).pendingSafe =
+    (c.pendingSafe && e₁.pendingSafe && e₂.pendingSafe)
+∀ (scrut : Expr) (arms : List Expr),
+  (scrut.match arms).pendingSafe =
+    (scrut.pendingSafe && Expr.pendingSafeList arms)
+```
+
+### `Expr.pendingSafeList`
+
+*def* · module `RueCore.Trace.Defs`
+
+`Expr.pendingSafe` over a list (helper).
+
+```lean
+def RueCore.Expr.pendingSafeList : List Expr → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Expr.pendingSafeList [] = true
+∀ (e : Expr) (es : List Expr),
+  Expr.pendingSafeList (e :: es) =
+    (e.pendingSafe && Expr.pendingSafeList es)
+```
+
+### `Program.pendingSafe`
+
+*def* · module `RueCore.Trace.Defs`
+
+Every function body of the program is `pendingSafe` (helper).
+
+```lean
+def RueCore.Program.pendingSafe (P : Program) : Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (P : Program), P.pendingSafe = P.fns.all fun fd => fd.body.pendingSafe
+```
+
+### `Expr.quietList`
+
+*def* · module `RueCore.Trace.Defs`
+
+No expression of the list unwinds (helper).
+
+```lean
+def RueCore.Expr.quietList (es : List Expr) : Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (es : List Expr), Expr.quietList es = es.all fun e => !e.unwinds
+```
+
+### `Expr.returns`
+
+*def* · module `RueCore.Trace.Defs`
+
+Whether an expression contains a `return` anywhere — including under a
+loop (helper).
+
+```lean
+def RueCore.Expr.returns : Expr → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (e : Expr), e.ret.returns = true
+Expr.brk.returns = false
+∀ (w : IntWidth) (s : Sign) (n : Int), (Expr.intLit w s n).returns = false
+∀ (w : FloatWidth) (l : FloatLit), (Expr.floatLit w l).returns = false
+∀ (b : Bool), (Expr.boolLit b).returns = false
+Expr.unitLit.returns = false
+∀ (p : Place), (Expr.use p).returns = false
+∀ (msg : String), (Expr.panic msg).returns = false
+∀ (p : Place), (Expr.drop p).returns = false
+∀ (op : BinOp) (e₁ e₂ : Expr),
+  (Expr.binop op e₁ e₂).returns = (e₁.returns || e₂.returns)
+∀ (m : Bool) (e₁ e₂ : Expr),
+  (Expr.letIn m e₁ e₂).returns = (e₁.returns || e₂.returns)
+∀ (e₁ e₂ : Expr), (e₁.seq e₂).returns = (e₁.returns || e₂.returns)
+∀ (op : UnOp) (e : Expr), (Expr.unop op e).returns = e.returns
+∀ (w : IntWidth) (s : Sign) (e : Expr),
+  (Expr.intCast w s e).returns = e.returns
+∀ (k : FloatIntrin) (e : Expr), (Expr.fintrin k e).returns = e.returns
+∀ (e : Expr), e.dbg.returns = e.returns
+∀ (elem : Ty) (e : Expr) (n : Nat),
+  (Expr.repeatArray elem e n).returns = e.returns
+∀ (p : Place) (e : Expr), (Expr.assign p e).returns = e.returns
+∀ (e : Expr), e.loop.returns = e.returns
+∀ (s : Nat) (args : List Expr),
+  (Expr.mkStruct s args).returns = Expr.returnsList args
+∀ (e k : Nat) (args : List Expr),
+  (Expr.mkEnum e k args).returns = Expr.returnsList args
+∀ (elem : Ty) (args : List Expr),
+  (Expr.mkArray elem args).returns = Expr.returnsList args
+∀ (f : Nat) (args : List Expr),
+  (Expr.call f args).returns = Expr.returnsList args
+∀ (p : Place) (args : List Expr) (πs : List (List Nat)),
+  (Expr.indexRead p args πs).returns = Expr.returnsList args
+∀ (p : Place) (args : List Expr) (πs : List (List Nat)),
+  (Expr.indexDrop p args πs).returns = Expr.returnsList args
+∀ (p : Place) (idx : List Expr) (πs : List (List Nat)) (e : Expr),
+  (Expr.indexWrite p idx πs e).returns =
+    (e.returns || Expr.returnsList idx)
+∀ (c e₁ e₂ : Expr),
+  (c.ite e₁ e₂).returns = (c.returns || e₁.returns || e₂.returns)
+∀ (scrut : Expr) (arms : List Expr),
+  (scrut.match arms).returns = (scrut.returns || Expr.returnsList arms)
+```
+
+### `Expr.returnsList`
+
+*def* · module `RueCore.Trace.Defs`
+
+`Expr.returns` over a list (helper).
+
+```lean
+def RueCore.Expr.returnsList : List Expr → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Expr.returnsList [] = false
+∀ (e : Expr) (es : List Expr),
+  Expr.returnsList (e :: es) = (e.returns || Expr.returnsList es)
+```
+
+### `Expr.unwinds`
+
+*def* · module `RueCore.Trace.Defs`
+
+Whether evaluating an expression can **unwind** past its context: it
+contains a `return`, or a `break` its own loops do not catch
+(`Expr.breaks`) (helper).
+
+```lean
+def RueCore.Expr.unwinds (e : Expr) : Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (e : Expr), e.unwinds = (e.returns || e.breaks)
 ```
 
 ### `HasTy`
@@ -27556,6 +27794,51 @@ Defining equations, as Lean derived them from the body:
       match t.get πa with
       | some ua => ua.fullyOwned
       | none => false
+```
+
+### `OwnSt.join`
+
+*def* · module `RueCore.Statics`
+
+The §5.5 branch join, at one path and its subtree (section docstring).
+
+```lean
+def RueCore.OwnSt.join (D : Decls) : OwnSt → OwnSt → Ty → Option OwnSt
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : OwnSt) (x_1 : Ty),
+  OwnSt.join D OwnSt.owned x x_1 =
+    if ownedJoinOk D x x_1 = true then some x else none
+∀ (D : Decls) (x : OwnSt) (x_1 : Ty),
+  (x = OwnSt.owned → False) →
+    OwnSt.join D x OwnSt.owned x_1 =
+      if ownedJoinOk D x x_1 = true then some x else none
+∀ (D : Decls) (x : OwnSt) (x_1 : Ty),
+  (x = OwnSt.owned → False) →
+    OwnSt.join D OwnSt.movedOut x x_1 =
+      if residualLinear D x x_1 = true then none else some OwnSt.movedOut
+∀ (D : Decls) (x : OwnSt) (x_1 : Ty),
+  (x = OwnSt.owned → False) →
+    (x = OwnSt.movedOut → False) →
+      OwnSt.join D x OwnSt.movedOut x_1 =
+        if residualLinear D x x_1 = true then none
+        else some OwnSt.movedOut
+∀ (D : Decls) (as bs : List OwnSt) (s : Nat),
+  OwnSt.join D (OwnSt.fields as) (OwnSt.fields bs) (Ty.struct s) =
+    match D.structs[s]? with
+    | some sd =>
+      Option.map OwnSt.fields (OwnSt.joinList D as bs sd.fields)
+    | none => none
+∀ (D : Decls) (as bs : List OwnSt) (T' : Ty) (n : Nat),
+  OwnSt.join D (OwnSt.fields as) (OwnSt.fields bs) (T'.array n) =
+    Option.map OwnSt.fields (OwnSt.joinList D as bs (List.replicate n T'))
+∀ (D : Decls) (x : Ty) (as bs : List OwnSt),
+  (∀ (s : Nat), x = Ty.struct s → False) →
+    (∀ (T' : Ty) (n : Nat), x = T'.array n → False) →
+      OwnSt.join D (OwnSt.fields as) (OwnSt.fields bs) x = none
 ```
 
 ### `OwnSt.joinList`
