@@ -1311,7 +1311,7 @@ index a call to a second function that returns its argument unchanged
 (`fn f1(x0: i64) -> i64 { x0 }`) rather than a literal. The corpus seed built
 from `dynDropAffineSkipped` printed its literal index as a `let`-bound
 temporary, `{ let t: i64 = 0; t }`, which the compiler's constant folder
-(`8.2:32`) reduces back to a compile-time constant — so the compiler took
+(`8.2:4`) reduces back to a compile-time constant — so the compiler took
 the *constant*-index path and accepted the program, rather than the
 dynamic-index path (Use-Untrackable-Dynamic-Copy) §5.1 refuses. A call
 crosses a function boundary the folder does not reach, so the printed index
