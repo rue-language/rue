@@ -202,6 +202,27 @@ accepts 21 and 106 of those. A callee no reachable call names is removed,
 because the compiler analyzes only referenced declarations (ADR-0045). `Gen.lean`'s "Calls" section has the counts of
 frame pops and early returns they reach.
 
+**Destructor identity, and two more drawn shapes (RUE-2505).** RUE-2480 made
+field 0 a plain `int` on every destructor-bearing declaration, so a
+destructor always has something to print; that cost one shape (a
+destructor-bearing struct whose field 0 is itself destructor-bearing) and, on
+its own, left about 40% of consecutive drop lines from one declaration
+printing the same value, so a swapped order between two equal lines was
+invisible. `genDecl` now appends a **dedicated id field** instead of forcing
+field 0, filled at every construction with a fresh value off a per-program
+counter (`freshId`), so field 0 is free again and two constructed values never
+print the same line. Two shapes still weren't reached by observability alone,
+and are now drawn deliberately: a **block with two or more destructor-bearing
+locals live to its end** — a `match` arm binding two such payload components
+at once, the only fragment shape that shares one scope between two locals,
+since every `let` opens its own nested block — for `c-reverse-scope-drops`;
+and **three declared-`linear` levels nested through field 0**, with a
+destructure through the innermost and a `@drop` of a middle or outer
+ancestor — deeper than the path draws elsewhere in this module ever go — for
+`h2335` and `h2335b`. Both read the side stream, so a program that doesn't
+draw them is unaffected by their addition. `Gen.lean`'s docstring and
+BRIDGE-SENSITIVITY.md have the design and the rerun results.
+
 ```bash
 lake exe ruecore-corpus --gen 1000 --seed 7 > /tmp/gen.json   # seed cases, then 1000 generated
 scripts/rue lean-bridge -- --corpus /tmp/gen.json               # the last --corpus wins

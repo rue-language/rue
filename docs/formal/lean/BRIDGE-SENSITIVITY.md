@@ -447,13 +447,12 @@ is part of the follow-up (RUE-2505). `h2335` and `h2335b` are unaffected by
 observability at all, matching the original follow-up: they need three
 declared-linear levels, a different generator capability.
 
-What the change costs: to give every destructor something to print, a
-destructor-bearing struct's field 0 is now always a plain integer; before,
-about 61% of those fields were arrays, structs, enums, `bool` or `()`. So one
-shape is gone entirely: a destructor-bearing struct whose field 0 is itself
-destructor-bearing, which was common before (46–81% of the struct-typed
-field-0 population, by seed). Restoring it, by printing a dedicated integer
-field instead of `x0`, is part of RUE-2505.
+What the change cost, until RUE-2505 restored it (below): to give every
+destructor something to print, a destructor-bearing struct's field 0 was
+always a plain integer; before RUE-2480, about 61% of those fields were
+arrays, structs, enums, `bool` or `()`. So one shape was gone entirely: a
+destructor-bearing struct whose field 0 is itself destructor-bearing, which
+was common before (46–81% of the struct-typed field-0 population, by seed).
 
 Two new unmutated disagreements, found while confirming the regenerated
 corpus still agrees with the compiler (methodology, above) — reported here,
@@ -480,6 +479,113 @@ not fixed:
 
 Both are set aside next to `array_elem_self_assign` when reproducing this
 section's drills (below).
+
+## Distinct identities and two more drawn shapes (RUE-2505)
+
+Follow-up to the two costs above: field 0 forced to `int` lost a shape, and
+colliding values hid a swap even where two destructor-bearing locals did end
+the same block (RUE-2480's comment above, "Two new unmutated disagreements"'s
+review). Both are fixed, and `c-reverse-scope-drops`, `h2335` (root half) and
+`h2335b` — the three RUE-2480 left seed-only — are now caught by the
+generated corpus too, at `--gen 200 --seed 7`.
+
+**Distinct identities.** `genDecl` no longer forces field 0; instead, a
+destructor-bearing declaration gets one more field, an id field appended
+last, filled at every construction with a fresh value off a per-program
+counter (`Gen.freshId`, threaded through `GS` beside the three `StdGen`
+streams, so `side` and `calls` never disturb it, and reset to `0` at the
+start of each case, so it counts a *program's* constructed values) rather
+than an ordinary draw of its type (`Gen.structLitArgs`). `Print.dtorFieldName`
+is the printer's matching half: a destructor prints its declaration's *last*
+field if that is an `int` — the id field, for a generated declaration — else
+field 0, which is every destructor-bearing seed (`Examples.lean`) and so
+keeps every seed's printed output exactly as it was. `Corpus.dtorLine`, the
+model's own prediction of what a destructor prints, needs the identical rule:
+missing that on the first pass of this change produced dozens of spurious
+disagreements against the *unmutated* compiler at `--gen 200 --seed 7` (29 of
+200, every one the model predicting field 0 while the printed program's
+destructor, now printing the id field for a generated declaration, actually
+ran) until `dtorLine` was brought in step with `dtorFieldName`.
+
+**Two more drawn shapes.** `c-reverse-scope-drops` needs two
+destructor-bearing locals ending the *same* block; the only fragment shape
+that puts two locals in one flat scope is a `match` arm's payload binding
+((D-Match) §6.6 appends both cells to the frame's one scope record at once),
+since every `let`'s own printed block nests (`Print.expr`'s `.letIn` case
+opens a fresh `{ }`), so a chain of `let`s never shares a scope with the
+next. `Gen.pairDtorBlock` searches the program's own declarations for an enum
+variant with two struct-typed payload components whose declaration has a
+destructor (`Gen.dtorPairVariant`) and, where one exists, appends a fresh
+`match` on exactly that variant to the entry body: the target arm is left
+untouched (both locals are `Affine` by construction, so falling out of scope
+together is legal) and every other arm explicitly `@drop`s its own non-`Copy`
+components (`Gen.dropArmBody`), so the statement never leaks whatever the
+variant's other arms hold. `h2335` and `h2335b` need three declared-`linear`
+levels nested through field 0, with a destructure through the innermost and
+a `@drop` of a middle or outer ancestor — one and two field steps further
+than `paths2`'s two-step cap ever reaches (module docstring, "How deep a
+place goes"), so no bias on the *existing* draws would have found it.
+`Gen.linearChainDecls` appends four fixed declarations — a destructor-bearing
+leaf and three nested declared-`linear` levels over it, each with a second,
+leaf-typed field — after every other declaration (so no existing index
+shifts), and `Gen.ancestorDroppedStmt`/`Gen.rootThroughMovedStmt` are the
+seeds `destructure_ancestor_dropped`/`destructure_root_through_moved_part`
+(`Examples.lean`), generated over those four indices. All three shapes read
+the **side** stream, so a program that doesn't draw them — most of them: the
+paired-locals search is a pure check with no chance of its own, and the
+declared-linear chain fires one program in six — is byte-identical to one
+that never could.
+
+**Collision rate**, consecutive destructor lines of one declaration printing
+the same value (a one-off script over `run`'s trace, not committed, the
+methodology the "Observable destructors" review above used): 5 of 8 such
+pairs (62.5%) at `--gen 200 --seed 7` and 19 of 55 (34.5%) at `--gen 1000
+--seed 23` before this change; 12 of 32 (37.5%) and 24 of 102 (23.5%) after.
+Lower, not zero: the residual collisions are copies of the *same* constructed
+value — a destructor-bearing declaration whose field join happens to be
+`Copy` even though it is not declared `@copy` (`genDecl` never excludes
+this), so it may be used more than once, and each copy's drop prints the same
+id along with the rest of its contents — which a per-construction counter
+cannot and should not change, as opposed to two *independently* drawn values
+coinciding, which it eliminates outright.
+
+**Observability share**, accepted programs with at least one printed
+destructor line divided by all accepted programs (a coarser cut than the
+"Observable destructors" review's own "programs that drop anything", but
+measured the same way, before and after, for a fair comparison): 22 of 91
+(24.2%) and 112 of 513 (21.8%) before; 31 of 94 (33.0%) and 119 of 397 (30.0%)
+after — both settings' accepted-program count also falls, mostly because
+`rootThroughMovedStmt` rejects on purpose one program in twelve (the
+declared-linear chain's own draw), to give `h2335` a program to catch on the
+generated corpus as well as the seed.
+
+**Rerunning the four mutants this page and RUE-2480 were about**, with
+`drill.sh` against the regenerated corpus (`seeds.json`, `g200-only.json`,
+`g1000-only.json`, refreshed for this change; `drill.sh`'s own `IGN` updated
+to just `array_elem_self_assign` — see "Confirming the unmutated compiler"
+below for why):
+
+| Mutant | After RUE-2480 | After RUE-2505 |
+|---|---|---|
+| `c-skip-overwrite-drop` | seeds unchanged; generator catches it, `gen_23_689` | confirmed still caught: seeds unchanged (`affine_overwrite`), generator catches it on the regenerated corpus too, `gen_23_476` (`--gen 1000 --seed 23`; `--gen 200 --seed 7` alone does not, as before) |
+| `c-reverse-scope-drops` | seeds only (`enum_two_payload_bindings`) | generator catches it too: `gen_7_27` (`--gen 200 --seed 7`), a `match` arm binding two destructor-bearing payload locals (`pairDtorBlock`) |
+| `h2335` (root half) | seeds only (`destructure_root_through_moved_part`) | generator catches it too: `gen_7_3` (`--gen 200 --seed 7`), the declared-linear chain (`rootThroughMovedStmt`) |
+| `h2335b` | seeds only (`destructure_ancestor_dropped`) | generator catches it too: `gen_7_10` (`--gen 200 --seed 7`), the declared-linear chain (`ancestorDroppedStmt`) |
+
+All three shapes reach the generated corpus at `--gen 200 --seed 7` already,
+so `drill.sh` never needed the wider `--gen 1000 --seed 23` setting to catch
+any of them — RUE-2505's acceptance criterion allows either.
+
+**Confirming the unmutated compiler** still agrees, on the *regenerated*
+`g200-only.json` and `g1000-only.json` (the loop's own `mverify.py`, no
+`--ignore`, no `--stop-first`): 0 disagreements at both settings. The seed corpus's own known
+red is unchanged (`array_elem_self_assign`, RUE-2346, `seeds.json@153`), so
+`drill.sh`'s `IGN` is now just that one name. The `gen_7_3`/`gen_23_343`/
+`gen_23_505` shapes this page reported above are not present, unmasked, in
+this regenerated corpus: regenerating shifted every case's identity and so
+which programs, if any, reach those shapes unmasked, exactly as RUE-2480's
+own regeneration did (above). Any new generated disagreement would be a
+finding to file; the full unignored run found none beyond the seed.
 
 ## Multi-function programs (RUE-2481)
 
@@ -558,9 +664,9 @@ blind spot, get a generator or tooling proposal too.
 | `h2380` | `loop_move_out_then_reinit`: a counted loop that moves `mut b` into `t` and reinitializes `b`. The mutant ICEs at `-O2`; the harness's O2/O3 compile lanes, and the per-case test at `-O2`, catch it | seed, added here |
 | `c-bounds-off-by-one` (no seed caught it) | `array_bounds_trap_at_len`: reads at `len - 1` and then at `len`. The other bounds seeds index further past the end, or into a zero-length array, which does not go through the length compare | seed, added here |
 | `h2442` | named constants and comptime parameters are outside the fragment | scope note |
-| `c-skip-overwrite-drop`, `c-reverse-scope-drops` (generator 0 of 1,200) | done (RUE-2480, above): every generated destructor-bearing struct gets an integer `x0`. Caught `c-skip-overwrite-drop` (`gen_23_689`); `c-reverse-scope-drops` still needs its own shape (below) | generator issue, partly done |
-| `c-reverse-scope-drops` (still generator 0 of 1,200 after RUE-2480) | generate two destructor-bearing locals ending the same inner block | generator issue |
-| `h2335`, `h2335b` (generator 0 of 1,200; unaffected by RUE-2480) | generate three declared-linear levels | generator issue |
+| `c-skip-overwrite-drop`, `c-reverse-scope-drops` (generator 0 of 1,200) | done (RUE-2480, above): every generated destructor-bearing struct gets an integer id. Caught `c-skip-overwrite-drop` (`gen_23_689`); `c-reverse-scope-drops` needed its own shape too (below) | generator issue, done |
+| `c-reverse-scope-drops` (still generator 0 of 1,200 after RUE-2480) | done (RUE-2505, above): a `match` arm binding two destructor-bearing payload locals (`pairDtorBlock`) | generator issue, done |
+| `h2335`, `h2335b` (generator 0 of 1,200; unaffected by RUE-2480) | done (RUE-2505, above): three declared-linear levels nested through field 0 (`linearChainDecls`) | generator issue, done |
 | `h2318` (own seed only) | draw boundary literals (`MIN`, `MAX`, `±1`, powers of two) as arithmetic operands | generator issue |
 | (Call) §5.8 and the call-boundary drop paths (no generated case) | done (RUE-2481, below, "Multi-function programs"): by-value parameters, including destructor-bearing and declared-linear ones, calls in operand position, early returns from a callee, and bounded recursion | generator issue, done |
 | `c-overflow-kind` (the per-case test is blind to it) and `h2380` (default level only) | the loop's per-case check should also compare the trap kind (stderr's panic message) and compile at `-O2` as well as the default level, or the lane should run `scripts/rue lean-bridge`, which does both | tooling issue |
