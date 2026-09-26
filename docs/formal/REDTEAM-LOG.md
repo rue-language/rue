@@ -236,3 +236,60 @@ Do not edit any file. Write your full report to <packet>/red-docs-report.md and 
   `Nat.lt_of_mul_lt_mul_right`, `Nat.pow_lt_pow_right`,
   `Nat.pow_le_pow_iff_right` and `Nat.sqrt_le` reach `Classical.choice` on
   this toolchain (4.33.1), so `Float/Lemmas.lean` reproves them (RUE-2489).
+
+---
+
+## 2026-09-25: targeted pass, definitions (RUE-2465)
+
+- **Trunk:** `41c365ee8`.
+- **Kind:** targeted, on the **Definitions** target: mutation analysis of the
+  definition layer (L0/L1: `Syntax`, `Statics`, `Checker/Defs`, `Dynamics`,
+  `Step`). Results and method in [lean/MUTATION.md](lean/MUTATION.md), and
+  the script in [lean/bin/mutate.py](lean/bin/mutate.py).
+- **Packet:** none. There is no red agent here: the "attack" is 80 mutants,
+  each a one-rule change written as exact-text edits. The script kills each
+  mutant by the first of a proof, a witness, the seed corpus, or the bridge
+  on `--gen 200 --seed 7`. It reruns each proof-killed mutant with the L0–L2
+  proofs given `sorry`, and each witness-killed one with the witnesses off
+  as well.
+- **Models:** one Claude Opus session wrote the mutants, ran the script and
+  adjudicated. Each proof kill is read as S (a stated property is false), H
+  (only a helper that restates a definition), B (no statement false, a
+  script broke) or E (an equivalent mutant). No cross-model auditor ran.
+
+### Findings (counted)
+
+Counted because the script reproduces each one (`--only <id>`).
+
+| # | Target | Severity | Issue | Finding / evidence |
+|---|---|---|---|---|
+| D1 | definitions | medium | proposed (MUTATION.md, proposal 2) | §6.11's destructor-first, declaration-order and ascending-index drop order is fixed by `dropEvents`, not by a statement. `drop_order`'s `Blocks` is defined through `dropEvents`, so `dtor-skip`, `dtor-after-fields` and `fields-reverse` falsify no headline statement (B kills). Only the witnesses and the seeds' destructor lines catch them. |
+| D2 | definitions | medium | RUE-2469 (comment proposed; MUTATION.md, proposal 3) | R3 measured: removing any of the machine's four run-time refusals (`leak-`, `overwrite-`, `discard-`, `copy-monitor-off`, `dyn-residual-declared`) leaves every headline statement true. Only the refusal witnesses and the refusal seeds kill them. |
+| D3 | corpus | medium | proposed (MUTATION.md, proposal 1) | 13 mutants are killed only by a refusal witness in `Examples.lean` or `Trace.lean`. No seed or generated case exports those refusals, so the compiler's matching refusal is never compared (see MUTATION.md for the list). |
+| D4 | corpus | low | pinned (`eb532d8c5`) | Six mutants that only a proof, or only `Explain.lean`'s copy of the checker, noticed now have seeds: `join_moved_vs_partial_linear`, `match_payload_assign`, `loop_inner_break_outer_return`, `i8_neg_min`, `params_two_types`, `assign_immutable`. `breaks-nested` had been noticed by a structural proof break alone. |
+
+### Dropped in adjudication
+
+| Candidate | Why dropped |
+|---|---|
+| 4 mutants killed by a proof script (`use-copy-moved`, `match-exhaustive`, `loop-head-unverified`, `entry-join-bty`) | Equivalent: each changes no decision on any reachable state (MUTATION.md, "Equivalent mutants"). `entry-join-bty` settles the first pass's dropped "`Entry.join` ignores the second entry's type": it is harmless. |
+| 16 B kills | Killed by the letter, not by a statement. Every one of them is also killed by a witness, the corpus or the bridge, except `breaks-nested` (D4). |
+
+### Attacked and survived
+
+What the mutants could not get past:
+
+- `soundness` and `check_sound`, against every mutant that makes the checker
+  or the rules accept a program the machine refuses: 17 of them with a
+  concrete counterexample seed.
+- `Step.det`, against a `Step`-only mutant (`step-usecopy-nondet`).
+- `checkProgram_sound`, against `entry-params`.
+- `drop_order`'s `Lifo`, against the frame-exit and match-exit order mutants
+  (`scope-fifo`, `payload-order`).
+- `Exact` (`drop_exactly_once`, `rest_exactly_once`), against a skipped
+  overwrite drop, a skipped `break` unwind, and the three trace-only mutants.
+- The §5.5 join, the loop rules and the `(Fn)` exit, against every
+  premise-drop mutant.
+
+The pass also measured the corpus and the bridge alone: 50 of 76, and 56
+after the six seeds.

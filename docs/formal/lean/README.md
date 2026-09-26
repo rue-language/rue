@@ -60,6 +60,10 @@ How sensitive the corpus is, that is, whether it would catch a compiler
 that is wrong, is measured in [BRIDGE-SENSITIVITY.md](BRIDGE-SENSITIVITY.md)
 (RUE-2464). That page reintroduced historical compiler bugs and classic
 mutants one at a time and recorded which seed or generated case caught each.
+Whether the proofs, the witnesses, the corpus and the bridge would notice a
+wrong *definition* is measured in [MUTATION.md](MUTATION.md) (RUE-2465):
+80 one-rule mutants of the definition layer, run by `bin/mutate.py`, with
+what each kill rests on.
 
 ```bash
 scripts/rue lean-bridge                      # or: ./buck2 run //:lean-bridge
