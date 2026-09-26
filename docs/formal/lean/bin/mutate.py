@@ -3,7 +3,7 @@
 
 usage: mutate.py --work DIR [--src LEANDIR] [--only ID,...] [--redo] [--compiler-root WT]
                  [--gen N] [--gen-seed S] [--lake-cache DIR]
-       mutate.py --list | --check | --work DIR --table
+       mutate.py --list | --check | --work DIR (--table | --score [--before DIR])
 
 Each mutant is a small, deliberate change to the semantics and the checker: the L0 module
 `Syntax` and five of L1's seven modules (`Statics`, `Checker/Defs`, `Dynamics`, `Step`; README,
@@ -478,6 +478,99 @@ MUTANTS = [
 
 
 # ---------------------------------------------------------------------------------------
+# The reading of each mutant against the stated properties (MUTATION.md, "Reading a proof
+# failure"): "statement" = a stated property (a Spec statement or a linking theorem such as
+# `check_sound`) is false for the mutant; "helper" = only a lemma that restates a definition is
+# false, and every stated property holds; "holds" = every stated property and every lemma's
+# statement still holds (a proof that broke broke as a script); "equivalent" = the mutant
+# decides the same as the original on every state a rule reaches. `--table` prints it.
+# ---------------------------------------------------------------------------------------
+
+RULINGS = {
+    "use-move-partial": ("statement", "moves a partially moved aggregate whole; the machine meets the hole (seed `partial_then_whole`): `soundness`, `check_sound`"),
+    "use-copy-moved": ("equivalent", "a `Copy` place is never `MovedOut` in a reachable state: a `Copy` `@drop` moves nothing and a `Copy` value is never a hole"),
+    "use-move-dtor": ("holds", "E0456 is a static discipline with no dynamic counterpart: the machine runs the program (`partial_under_dtor`), so no stated property is false"),
+    "use-move-rootidx": ("holds", "a static discipline (`3.8:68`): the machine moves the element out and drops the rest path by path, without a refusal"),
+    "use-affine-as-copy": ("statement", "an affine use leaves the place `Owned`, so a second use is accepted and the machine meets a hole (`use_after_move`): `soundness`"),
+    "use-declared-residue": ("statement", "accepts a destructure that strands a linear sibling; the machine refuses with `linearLeak` (`destructure_linear_residue`): `soundness`"),
+    "index-read-copy": ("statement", "accepts a dynamic-index read of a non-Copy element, which the machine refuses (`typeConfusion`): `soundness`"),
+    "index-drop-copy-checker": ("statement", "the checker accepts `@drop(a[i])` of a non-Copy element, which no `Typed` rule derives: `check_sound`"),
+    "const-index-off-by-one": ("statement", "a constant index equal to the length types, and the machine's read fails (`typeConfusion`): `soundness`"),
+    "assign-overwrite": ("statement", "accepts overwriting a live linear place; the machine refuses with `linearOverwrite` (`linear_overwrite`): `soundness`"),
+    "assign-array-ok": ("holds", "`soundness` does not use the premise (`assignArrayOk`'s doc-comment): the write it refuses runs without a refusal"),
+    "assign-immutable": ("holds", "mutability is not a safety property: the machine performs the write"),
+    "index-write-linear": ("statement", "accepts writing a linear element through a dynamic index; the machine refuses with `linearOverwrite`: `soundness`"),
+    "drop-residual-below": ("holds", "E0406's residual side condition has no dynamic counterpart (`linear_field_stranded` runs): no stated property is false"),
+    "drop-moved": ("statement", "accepts `@drop` of a moved-out place; the machine meets the hole (`use_after_move`): `soundness`"),
+    "seq-discard": ("statement", "accepts discarding a linear value; the machine refuses with `linearDiscard` (`linear_temporary_discarded`): `soundness`"),
+    "join-owned-wins": ("statement", "the join keeps `Owned` where one arm moved, so a later use is accepted and meets the hole (`loop_moved_prev_iteration`): `soundness`"),
+    "join-linear-disagree": ("statement", "a linear path `Owned` on one arm and `MovedOut` on the other joins; the run leaks (`linear_half_consumed`): `soundness`"),
+    "join-residual": ("statement", "accepts a leak through the join; `join_moved_vs_partial_linear` is accepted and refused with `linearLeak`: `soundness`"),
+    "join-diverge-arm": ("statement", "one diverging arm makes the branch diverge, so what follows is not typed but runs (`loop_nested_move_outer` refused): `soundness`"),
+    "meet-never": ("holds", "refuses more: no statement is about the checker's completeness"),
+    "first-arm-ty": ("holds", "refuses more: no statement is about the checker's completeness"),
+    "match-exhaustive": ("equivalent", "`TypedArms` and `checkArms` walk arms and variants in step and fail on a length mismatch, so the premise is implied"),
+    "arm-leak": ("statement", "accepts an arm that ends with a live linear payload binding; the machine refuses with `linearLeak` (`enum_arm_leaks_payload`): `soundness`"),
+    "arm-payload-mutable": ("helper", "only `Ctx.skel_armCtx`, which restates `armCtx`; mutability is not a safety property"),
+    "let-leak": ("statement", "accepts a `let` that ends with a live linear binding; `linearLeak` (`linear_leaked`): `soundness`"),
+    "residual-declared": ("statement", "a partially moved declared-linear struct owes nothing, so its leak is accepted; the machine's monitor still refuses: `soundness`"),
+    "residual-untracked": ("statement", "untouched linear slots owe nothing, so their leak is accepted; the machine refuses: `soundness`"),
+    "return-leak": ("statement", "accepts a `return` past a live linear binding; `linearLeak` (`return_past_linear`): `soundness`"),
+    "break-leak": ("statement", "accepts a `break` past a live linear loop-local; `linearLeak` (`loop_break_past_linear`): `soundness`"),
+    "loop-div-breaks": ("statement", "the rules type a loop that breaks as diverging, so what follows is not typed but runs: `soundness`"),
+    "loop-break-div-brk": ("statement", "the rules type a loop with a reachable `break` as diverging: `soundness`"),
+    "loop-head-unverified": ("equivalent", "`headIter` returns a candidate only when one more step leaves it unchanged, and `check` is deterministic, so the re-check always passes"),
+    "head-iter-bound": ("holds", "refuses more: no statement is about the checker's completeness"),
+    "breaks-nested": ("holds", "refuses more: the outer loop is typed `unit` rather than `never`"),
+    "fn-exit-leak": ("statement", "accepts a function body that ends with a live linear parameter; `linearLeak` (`linear_param_leaked`): `soundness`"),
+    "fn-params-order": ("statement", "a body is typed against its parameters in the wrong order, so it runs on values of other types: `soundness`"),
+    "entry-params": ("statement", "`checkProgram` accepts an entry point with parameters, which `ProgramTyped` excludes: `checkProgram_sound`"),
+    "lit-bounds": ("statement", "an out-of-range literal types, and `HasTy.int` requires `InBounds`: `soundness`"),
+    "dbg-observable": ("statement", "`@dbg` of an aggregate types; the machine refuses (`typeConfusion`): `soundness`"),
+    "repeat-copy": ("statement", "`[e; n]` of a non-Copy element types; the machine refuses (`typeConfusion`): `soundness`"),
+    "class-not-infectious": ("statement", "a linear-carrying struct is `Affine`, so dropping it is accepted and the machine's monitor refuses the live linear field: `soundness`"),
+    "mult-join-meet": ("statement", "the class join takes the lesser class, so a linear-carrying struct is not `Linear`; as `class-not-infectious`: `soundness`"),
+    "zero-array-linear": ("helper", "only `Ty.array_mult_linear`, which restates `Ty.mult`; `[T; 0]` being `Linear` refuses more"),
+    "copy-struct-dtor": ("statement", "accepts a `@copy` struct with a destructor, which `WfDecls` excludes: `checkProgram_sound`"),
+    "dtor-linear-field": ("statement", "accepts a destructor-bearing struct with a linear field, which `WfDecls` excludes: `checkProgram_sound`"),
+    "decl-cycle-rounds": ("holds", "refuses more: no statement is about the checker's completeness"),
+    "entry-join-bty": ("equivalent", "every join is of two entries with one skeleton, so the two declared types are equal"),
+    "dyn-move-as-copy": ("statement", "an affine use copies, so both copies drop and a destructor runs twice: `no_double_free`"),
+    "step-usecopy-nondet": ("statement", "two `Step` rules apply to one non-Copy use: `Step.det`"),
+    "bounds-off-by-one": ("statement", "an index equal to the length passes the check and the read fails (`typeConfusion`): `soundness`"),
+    "bounds-negative": ("holds", "a negative index reads element 0: a defined, well-typed result, so every stated property holds"),
+    "bounds-stuck": ("statement", "an out-of-range index is a stuck state: `soundness`"),
+    "repeat-count": ("statement", "`[v; n]` builds `n + 1` elements, not a value of `[T; n]`: `soundness`"),
+    "overflow-wrap": ("holds", "wraparound yields an in-range value: safe, and the spine states safety, not the arithmetic"),
+    "divzero-kind": ("holds", "a trap of the wrong kind is still a defined trap"),
+    "rem-min-overflow": ("holds", "`MIN % -1` yields `0`, an in-range value"),
+    "operand-swap": ("holds", "swapped operands still yield an in-range value or a trap"),
+    "gt-off-by-one": ("holds", "`>` as `>=` still yields a `bool`"),
+    "neg-no-overflow": ("statement", "`-MIN` yields the out-of-range `128` at `i8`, and `HasTy.int` requires `InBounds`: `soundness`"),
+    "cast-kind": ("helper", "only `evalIntCast_res`, which names the trap kind; a trap of the wrong kind is still a defined trap"),
+    "float-to-int-saturate": ("holds", "an out-of-range float-to-int yields `0`, an in-range value"),
+    "binop-eval-order": ("statement", "`eval` runs the right operand first and `Step` the left, so they disagree on a program with effects in both: `eval_sound`, `soundness`"),
+    "index-write-order": ("statement", "`eval` runs the index first and `Step` the right-hand side: `eval_sound`, `soundness`"),
+    "dtor-skip": ("holds", "`drop_order`'s `Blocks` is written in terms of `dropEvents`, which changes with it, and zero destructors satisfy `no_double_free`"),
+    "dtor-after-fields": ("holds", "`Blocks` follows `dropEvents`, which changes with `dropContents`"),
+    "fields-reverse": ("holds", "`Blocks` follows `dropEvents`, which changes with `dropContents`"),
+    "scope-fifo": ("statement", "a frame's bindings are dropped first-declared first: `drop_order`'s `Lifo`"),
+    "payload-order": ("statement", "an arm's payload bindings are dropped first to last: `drop_order`'s `Lifo`"),
+    "overwrite-no-drop": ("statement", "an assignment's old value is never dropped or freed: `Exact` (`drop_exactly_once`)"),
+    "break-skip-local": ("statement", "`break` skips a loop-local's drop, which is never freed: `Exact`"),
+    "seq-affine-as-linear": ("statement", "`eval` refuses to discard an affine temporary in a checked program: `soundness`"),
+    "seq-droptemp-skip": ("statement", "a discarded temporary is never marked freed: `rest_exactly_once`'s `Exact`"),
+    "residue-mark-skip": ("statement", "a destructure's residue is never marked freed: `Exact`"),
+    "match-consume-skip": ("statement", "a matched enum's shell identity is never freed: `Exact`"),
+    "leak-monitor-off": ("holds", "the linear theorems say the machine never refuses a checked program, which a machine with no refusal meets"),
+    "overwrite-monitor-off": ("holds", "as `leak-monitor-off`"),
+    "discard-monitor-off": ("helper", "only `eval_succ`, which restates `eval`; the linear theorems hold as for `leak-monitor-off`"),
+    "copy-monitor-off": ("helper", "only `Cons.intro`, a ledger step for `introVal`; a checked program never builds an owned value under a `Copy` one"),
+    "dyn-residual-declared": ("holds", "the machine's leak monitor is weaker; as `leak-monitor-off`"),
+}
+
+
+# ---------------------------------------------------------------------------------------
 # The proofs-off copy: every theorem of layers 0-3 (`PROOF_FILES`) with its proof replaced
 # by `sorry`, and the witnesses-off copy: every theorem, example and `#guard` of layer 4 too.
 # ---------------------------------------------------------------------------------------
@@ -809,6 +902,8 @@ def main():
     ap.add_argument("--check", action="store_true", help="only check that every edit applies")
     ap.add_argument("--table", action="store_true", help="print the results as Markdown")
     ap.add_argument("--redo", action="store_true", help="rerun mutants that already have a result")
+    ap.add_argument("--score", action="store_true", help="print the score table from --work's results")
+    ap.add_argument("--before", help="with --score: a work dir run on the sources without RUE-2465's seeds")
     a = ap.parse_args()
     src = os.path.abspath(a.src)
     configure(src)
@@ -838,6 +933,10 @@ def main():
     results = json.load(open(resf)) if os.path.exists(resf) else {}
     if a.table:
         print_table(results)
+        return 0
+    if a.score:
+        before = json.load(open(os.path.join(a.before, "results.json"))) if a.before else None
+        print_score(results, before)
         return 0
     os.makedirs(work, exist_ok=True)
     # A pristine copy of the sources (the package itself is never written), then one scratch
@@ -934,14 +1033,115 @@ def pending(r):
             return True
 
 
+READING = {"statement": "a stated property is false", "helper": "only a helper is false",
+           "holds": "every statement holds", "equivalent": "equivalent"}
+
+
+def cell(v):
+    """One pass's result, for the table: the killer and where."""
+    if not v:
+        return ""
+    k, d = v["killed"], v.get("detail", "")
+    if k in ("proof", "witness", "mirror", "definition"):
+        mm = re.match(r"(\S+):(\d+) (\w+) ?(\S*)", d)
+        if mm:
+            f, ln, kind, name = mm.groups()
+            # A line number is kept only where the pass leaves the file as written (layer 4
+            # below the witnesses-off pass); a proof module's lines are the proofs-off copy's.
+            line = f" (l. {ln})" if LAYER_OF.get("RueCore/" + f) in WITNESS_LAYERS else ""
+            where = f"`{f}` example{line}" if kind == "example" else f"`{name}` (`{f}`)"
+        else:
+            where = d
+        return f"{'Explain mirror' if k == 'mirror' else k}: {where}"
+    if k == "corpus":
+        cs = v.get("cases", [])
+        if not cs:
+            return "corpus: the export aborts" + (" (stack overflow)" if "Stack overflow" in d else f" ({d})")
+        return "corpus: " + ", ".join(f"`{c}`" for c in cs[:2]) + (f" +{len(cs) - 2}" if len(cs) > 2 else "")
+    if k == "bridge":
+        mm = re.search(r"disagrees on (\d+) of (\d+).*?: (.*)", d)
+        if mm:
+            names = mm.group(3).split(", ")
+            return f"bridge: `{names[0]}`" + (f" +{int(mm.group(1)) - 1}" if int(mm.group(1)) > 1 else "")
+        return "bridge: " + d
+    return k
+
+
+def test_kill(r):
+    """What the tests say with the proofs off: the first of witness / Explain mirror / corpus /
+    bridge / survived / definition once proof failures are set aside."""
+    return r["killed"] if r["killed"] != "proof" else r.get("without_proofs", {}).get("killed", "?")
+
+
+def corpus_kill(r):
+    """What the corpus and the bridge alone say: the result once the proofs and the witnesses
+    (and the Explain mirror) are set aside."""
+    k = test_kill(r)
+    return r.get("corpus_only", {}).get("killed", "?") if k in ("witness", "mirror") else k
+
+
+def killed(r):
+    """The page's kill: a stated property is false for the mutant, or a witness, a seed or a
+    generated case fails on it. A proof script, a helper lemma and the Explain mirror are not
+    kills by themselves."""
+    return RULINGS[r["id"]][0] == "statement" or test_kill(r) in ("witness", "corpus", "bridge") \
+        or corpus_kill(r) in ("corpus", "bridge")
+
+
+def print_score(results, before=None):
+    """MUTATION.md's score table, from results.json (and, with --before, from a run on the sources
+    without the seeds RUE-2465 added, over the mutants those seeds could affect)."""
+    ids = [m["id"] for m in MUTANTS if m["id"] in results]
+    eq = [k for k in ids if RULINGS[k][0] == "equivalent"]
+    live = [k for k in ids if k not in eq]
+    n = len(live)
+    rs = {k: results[k] for k in live}
+    bs = {k: (before.get(k, results[k]) if before else results[k]) for k in live}
+
+    def row(label, f, pre=True):
+        a = sum(1 for k in live if f(rs[k]))
+        b = sum(1 for k in live if f(bs[k])) if before and pre else None
+        pct = lambda x: f"{x}/{n} ({round(100 * x / n)}%)"
+        print(f"| {label} | {pct(b) if b is not None else '—'} | {pct(a)} |")
+    print(f"{len(ids)} mutants, {len(eq)} equivalent ({', '.join(eq)}): the denominator is {n}.\n")
+    print("| Measure | Before the six seeds | After |")
+    print("|---|---:|---:|")
+    row("**Killed: a stated property is false, or a witness, seed or generated case fails**", killed)
+    row("A stated property is false (proof reading)", lambda r: RULINGS[r["id"]][0] == "statement")
+    row("A stated property or a helper lemma is false", lambda r: RULINGS[r["id"]][0] in ("statement", "helper"))
+    row("The tests with the proofs off: witnesses, seeds, generated cases", lambda r: test_kill(r) in ("witness", "corpus", "bridge") or corpus_kill(r) in ("corpus", "bridge"))
+    row("The seeds and the bridge alone", lambda r: corpus_kill(r) in ("corpus", "bridge"))
+    row("The build or the corpus fails at all (a proof script, a helper or the Explain mirror included)", lambda r: r["killed"] != "survived")
+    print()
+    notk = [k for k in live if not killed(rs[k])]
+    for label, sel in (("Not killed", notk),
+                       ("Killed by a proof script only (every statement holds)",
+                        [k for k in live if rs[k]["killed"] == "proof" and RULINGS[k][0] == "holds" and test_kill(rs[k]) not in ("witness", "corpus", "bridge") and corpus_kill(rs[k]) not in ("corpus", "bridge")]),
+                       ("Killed by a helper lemma only", [k for k in live if RULINGS[k][0] == "helper" and not killed(rs[k])]),
+                       ("Missed by the tests with the proofs off", [k for k in live if test_kill(rs[k]) not in ("witness", "corpus", "bridge") and corpus_kill(rs[k]) not in ("corpus", "bridge")]),
+                       ("Missed by the seeds and the bridge", [k for k in live if corpus_kill(rs[k]) not in ("corpus", "bridge")]),
+                       ("Failed in the Explain mirror", [k for k in ids if "mirror" in (results[k]["killed"], results[k].get("without_proofs", {}).get("killed"))]),
+                       ("Before the seeds, not killed", [k for k in live if before and not killed(bs[k])])):
+        print(f"- {label}: {len(sel)}" + (": " + ", ".join(f"`{k}`" for k in sel) if sel else ""))
+
+
 def print_table(results):
+    """MUTATION.md's table: each mutant's first killer, the proofs-off and corpus-only passes
+    ("—" where the pass did not run, "(same)" where the earlier pass already ended at the corpus,
+    the bridge or `survived`), the reading of the mutant (`RULINGS`) and the wall time."""
     order = {m["id"]: i for i, m in enumerate(MUTANTS)}
-    print("| # | Mutant | § | Rule | Operator | Killed by | Without the proofs | Corpus and bridge alone | Time (s) |")
-    print("|---|---|---|---|---|---|---|---|---|")
+    print("| # | Mutant | § | Rule | Operator | Killed first by | Without the proofs | Corpus and bridge alone "
+          "| Stated properties | Why | s |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|")
     for i, (k, r) in enumerate(sorted(results.items(), key=lambda kv: order.get(kv[0], 999)), 1):
-        np = r.get("without_proofs", {}).get("killed", "")
-        co = r.get("corpus_only", {}).get("killed", "")
-        print(f"| {i} | `{k}` | {r['sect']} | {r['rule']} | {r['op']} | {r['killed']} | {np} | {co} | {r.get('total_s', '')} |")
+        wp = cell(r.get("without_proofs")) or "—"
+        co = cell(r.get("corpus_only"))
+        if not co:
+            last = r.get("without_proofs", r)["killed"]
+            co = "(same)" if last in ("corpus", "bridge", "survived") else "—"
+        reading, why = RULINGS.get(k, ("", ""))
+        print(f"| {i} | `{k}` | {r['sect']} | {r['rule']} | {r['op']} | {cell(r)} | {wp} | {co} "
+              f"| {READING.get(reading, reading)} | {why} | {r.get('total_s', '')} |")
 
 
 if __name__ == "__main__":
