@@ -831,7 +831,8 @@ constants, a definition's body, an inductive type's constructors, but no
 proof). `TRUST.md` prints it in its "Trusted base" section. The headline
 statements are the Spec layer's list, `RueCore.Spec.spine` ("The statement
 layer"): 36 theorems, following the packet `../REDTEAM.md` asks for: the §7
-claims and their linking theorems (`checkProgram_sound`, `step_iff`,
+claims the fragment states (`SPINE.md` opens with those it does not) and
+their linking theorems (`checkProgram_sound`, `step_iff`,
 `Config.stuck_iff`, `run_complete`, `run_ne_returned`). A lemma
 `03-metatheory.md` cites as a step of a proof (the trace invariants behind
 `no_double_free`, the drop-order lemmas, the float lemmas §7 owes) is not a
@@ -867,17 +868,41 @@ each beside the theorem that proves it, and every tool reads that list:
   the one in Spec, not merely definitionally equal to it — that each
   `RueCore.Spine` theorem has exactly its `_stmt` as its type, and that no
   `_stmt` and no `Spine` theorem is outside the list. The lint's headline list
-  and the trusted base are read from `Spec.spine` too.
+  and the trusted base are read from `Spec.spine` too. It also holds the
+  layers to their shapes (`Lint.layerShapeProblems`): an L1 module declares
+  no authored theorem (a structure's proof field is part of its definition),
+  and a Spec module declares nothing but the `_stmt`s `Spec.spine` lists and
+  `Spec.spine` itself, so no proof rides into the challenge and no helper
+  definition enters the trusted base unstated. L0 keeps its few lemmas
+  (`Syntax.lean`, `Float.lean`).
 * **Lean Comparator** ([leanprover/comparator](https://github.com/leanprover/comparator)),
   configured in `comparator/`. Its challenge, `comparator/Challenge.lean`,
-  imports `RueCore.Spec` (so L0 and L1) and nothing else, and states each
-  `RueCore.Spine.<name> : RueCore.Spec.<name>_stmt` with `sorry`; the solution
+  imports the L0 and L1 modules the Spec layer imports and nothing else. It
+  writes every Spec statement out in full, as its own
+  `def RueCore.Spec.<name>_stmt : Prop` whose body is the Spec statement's
+  elaborated body, pretty-printed, and then states each
+  `RueCore.Spine.<name> : RueCore.Spec.<name>_stmt` with `sorry`. The solution
   is `RueCore.Spine`; `comparator/config.json` names the 36 theorems and allows
-  the axioms `propext` and `Quot.sound`. Comparator certifies that each
-  solution theorem has the challenge's statement, with every constant the
-  statements use identical in the two environments, that its proof uses no
-  other axiom, and that the kernel accepts the whole exported solution, which
-  it replays from a `lean4export` export rather than trusting an `.olean`.
+  the axioms `propext` and `Quot.sound`. Comparator checks that each solution
+  theorem has the challenge's statement, with every constant the statements
+  use identical in the two environments — each `_stmt` included, so the
+  challenge's written-out copy must be the Spec layer's term exactly — that
+  its proof uses no other axiom, and that the kernel accepts the whole
+  exported solution, which it replays from a `lean4export` export rather than
+  trusting an `.olean`.
+
+  What Comparator adds is that independent replay and the axiom allow-list,
+  sandboxed on Linux. It does not freeze the claim: the challenge is generated
+  from the Spec layer, so a Spec statement weakened together with its proof
+  and the challenge regenerated passes it. What makes such a change visible is
+  that it cannot stay small: the regenerated challenge shows the new statement
+  in its diff, and **`spine-fingerprints.txt`** (committed, one hash of each
+  statement's elaborated body, `lake exe ruecore-digest --fingerprint`) no
+  longer matches. `bin/chain.sh` fails on a statement added, removed or
+  changed (`spine statement changed: <name> — regenerate and get review`)
+  and never regenerates that file itself. The claim is the Spec layer as
+  reviewed; the fingerprints and the challenge make a change to it a
+  deliberate, reviewed diff.
 
 `SPINE.md`, the challenge and the configuration are generated from
 `Spec.spine`, so none of them is edited by hand:
@@ -886,6 +911,7 @@ each beside the theorem that proves it, and every tool reads that list:
 lake exe ruecore-digest --spine > SPINE.md
 lake exe ruecore-digest --challenge > comparator/Challenge.lean
 lake exe ruecore-digest --comparator-config > comparator/config.json
+lake exe ruecore-digest --fingerprint > spine-fingerprints.txt   # only once the Spec diff is reviewed
 ```
 
 **Running Comparator.** `comparator/run.sh` builds Comparator (tag `v4.33.0`)
@@ -896,13 +922,26 @@ default target and nothing imports it, so only Comparator builds it.
 Comparator runs every build and export under
 [`landrun`](https://github.com/Zouuup/landrun), which needs Linux Landlock.
 It calls `landrun --best-effort`, which on a kernel without Landlock runs the
-command **unsandboxed and says nothing**, so `comparator/run.sh` first probes
-the sandbox the same way (a `landrun --best-effort` that grants only `cat` and
-its libraries must fail to read `/etc/hostname`) and refuses to run when it
-would be a no-op:
+command **unsandboxed and says nothing**. So `comparator/run.sh` runs
+Comparator only on positive evidence that the `landrun` it would use
+sandboxes, called with Comparator's flags (`--best-effort --ldd --add-exec`)
+and write access to one fresh directory:
 
-* **On macOS**, `comparator/run.sh --fake-landrun` uses Comparator's
-  `scripts/fake-landrun.sh`, which runs the same steps unsandboxed. Every
+1. unsandboxed, a shell can write a file in a second directory and read
+   `run.sh` (the control);
+2. under that `landrun`, the write to the granted directory succeeds;
+3. under it, a write to the second directory leaves no file, and a read of
+   `run.sh` fails.
+
+It refuses to run when there is no `landrun`, or when any of the three does
+not hold: a `landrun` that exits non-zero or is too old for those flags fails
+2, and one that is a shim (Comparator's `fake-landrun.sh` put in
+`COMPARATOR_LANDRUN`, or any that execs its command) or runs on a kernel
+without Landlock fails 3.
+
+* **On macOS**, `comparator/run.sh --unsandboxed` uses Comparator's
+  `scripts/fake-landrun.sh`, says on stderr that it is running with no
+  sandbox, and runs the same steps unsandboxed. Every
   check is made, and it passes (`Your solution is okay!`, about 12 s once the
   package is built). What the sandbox adds is protection against a solution
   written to tamper with the build, which our own proofs are not. So does
@@ -910,7 +949,7 @@ would be a no-op:
   `CONFIG_SECURITY_LANDLOCK`; there the script built Comparator, `lean4export`
   and the package from scratch on Linux (aarch64) and Comparator passed, but
   the probe shows `landrun` sandboxing nothing, and the script now refuses
-  without `--fake-landrun`.
+  without `--unsandboxed`.
 * **In RUE-2241's Linux lane**, on a kernel with Landlock active (Linux 5.13 or
   later with `landlock` in `/sys/kernel/security/lsm`, as on GitHub's Ubuntu
   runners): build `landrun` from its `main` branch (`GOBIN=$HOME/.local/bin go
@@ -922,7 +961,8 @@ would be a no-op:
   where no systemd user session exists, `comparator/run.sh` alone (the same
   sandbox without the `AF_UNIX` guard). The lane passes when the script exits
   0. Not yet run on a Landlock kernel: the sandboxed path, and the probe's
-  positive case, are untested.
+  passing case, are untested; the refusals (no `landrun`, one that always
+  fails, a shim, the no-op one) are tested on macOS.
 
 ## What is mechanized
 

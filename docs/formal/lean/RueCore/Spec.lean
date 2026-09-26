@@ -34,7 +34,9 @@ headline list from it and checks that each theorem's own statement is its
 configuration (`comparator/`, README "The statement layer") and
 `SPINE.md` are generated from it.
 
-The list is the §7 claims and their linking theorems. A lemma
+The list is the §7 claims the fragment can state and their linking
+theorems; `SPINE.md` opens by naming the §7 bullets and lemmas with no
+statement here (use-after-free, exclusivity, the loan and view lemmas). A lemma
 `03-metatheory.md` cites as a step of a proof (the trace invariants behind
 `no_double_free`, the drop-order lemmas, the float lemmas §7 owes) is not a
 claim and is not here.

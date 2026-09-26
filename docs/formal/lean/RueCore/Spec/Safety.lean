@@ -31,8 +31,9 @@ def soundness_stmt : Prop :=
       ∀ {φ : Frame} {H : Store}, FrameMatches P.decls Γ φ H →
         EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatOps fuel P H φ e)
 
-/-- **Program safety** (§7 "Type safety"). A well-formed program run at any
-fuel exhausts it, panics, or returns a value of its entry point's type. -/
+/-- **Program safety** (§7 "Type safety"). A well-formed program whose entry
+point (`P.fns[0]?`) takes no parameters, run at any fuel, exhausts it,
+panics, or returns a value of its entry point's type. -/
 def run_safe_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} {fd : FnDef} (_ : WfProgram P)
     (_ : P.fns[0]? = some fd) (_ : fd.params = []) (fuel : Nat),
@@ -42,18 +43,30 @@ def run_safe_stmt : Prop :=
 /-- **No refusal of any kind** (§7's memory-safety bullets). A checked
 program's run is never `.stuck`. Narrower than the bullets: a value built for
 a sibling operand that a later one abandons by `return` or `break` is dropped
-by nobody (RUE-2316), and a `@panic` runs no drop (§5.7's `⊥_panic`). -/
+by nobody (RUE-2316), and a `@panic` runs no drop (§5.7's `⊥_panic`). Like
+every "never `.stuck`" statement, it holds because `eval`'s checks and
+monitors never fire: what it rules out is what they watch (R3 of
+`REDTEAM-LOG.md`; RUE-2469). -/
 def no_violation_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat) (w : Violation),
     run M.toFloatOps P fuel ≠ .stuck w
 
-/-- **No use-after-move** (§7 "No use-after-move"): no read of a `⊘`. -/
+/-- **No use-after-move** (§7 "No use-after-move"): `run` never refuses with
+`useAfterMove`, the tag `eval` raises when it reads a `⊘`. It is
+`no_violation` at one tag, so it says no read of a moved-out place happens
+only as far as `eval` checks every read and labels it so: what it rules out is
+what that monitor watches (R3 of `REDTEAM-LOG.md`; RUE-2469). -/
 def no_use_after_move_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     run M.toFloatOps P fuel ≠ .stuck .useAfterMove
 
 /-- **No use-after-drop** (§7 "No use-after-drop / no leak of drops", "never
-read afterward"): no access to a retired cell. -/
+read afterward"): `run` never refuses with `useAfterDrop`, the tag `eval`
+raises when it reaches a retired cell. It is `no_violation` at one tag, so it
+says no retired cell is accessed only as far as `eval` checks every access
+and labels it so: what it rules out is what that monitor watches (R3 of
+`REDTEAM-LOG.md`; RUE-2469). The buffer half of the bullet, use-after-free,
+has no statement (§6.13 is outside the fragment). -/
 def no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     run M.toFloatOps P fuel ≠ .stuck .useAfterDrop

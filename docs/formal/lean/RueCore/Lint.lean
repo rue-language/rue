@@ -69,7 +69,9 @@ checks that the list and the environment agree: each headline theorem's own
 statement is its `_stmt`'s body, the same term up to binder names;
 `RueCore.Spine.<name>` restates it with exactly the type `…_stmt`, which is
 where the kernel checks the proof against the Spec statement; and no `_stmt`
-or `Spine` theorem is outside the list.
+or `Spine` theorem is outside the list. It also holds the layers to their
+shapes (`layerShapeProblems`): L1 has no authored theorem, and a Spec module
+declares nothing but the listed `_stmt`s and the list itself.
 
 The same pass computes the **trusted base** (`trustedBase`): the package
 definitions the Spec statements transitively unfold to — their constants, a
@@ -800,6 +802,44 @@ def spineProblems (env : Environment) : Array String := Id.run do
       if let .thmInfo _ := info then
         if (rangeOf? env n).isSome && !(Spec.spine.any fun (h, _) => spineName h == n) then
           out := out.push s!"{n}: a theorem of RueCore.Spine that binds no entry of RueCore.Spec.spine"
+  return out
+
+/-- (helper) What is wrong with the layers' shapes, if anything (RUE-2460),
+each as a sentence. Two invariants the statement/proof split rests on:
+
+* **L1 holds no authored theorem.** Its modules are the definitions the
+  statements are written in; a proof about them belongs in L2 (the
+  `…/Lemmas.lean` modules). Instances are definitions, and the constants Lean
+  makes beside a declaration (equation lemmas, a `decreasing_by` proof) have
+  no source range of their own, so they pass; so does a proof-valued field
+  of a structure (`WfProgram.decls`), whose projection is part of the
+  structure's definition. L0 is not held to this:
+  `Syntax.lean` and `Float.lean` keep their few well-formedness lemmas.
+* **The Spec layer holds statements only.** Every declaration a Spec module
+  writes is either a `…_stmt` that `Spec.spine` lists or `Spec.spine`
+  itself: no theorem (a proof there would ride into Comparator's challenge,
+  which imports what the statements need) and no helper definition (which
+  would enter the trusted base as a statement's word without being one).
+
+A declaration counts as written by the module when it has a source range
+(`rangeOf?`), as every command's declaration does. -/
+def layerShapeProblems (env : Environment) : Array String := Id.run do
+  let mut out := #[]
+  let stmts := Spec.spine.map (·.2)
+  for (n, info) in env.constants.toList do
+    let some m := moduleOf? env n | continue
+    let some layer := Layers.layerOf? m | continue
+    if (rangeOf? env n).isNone || env.isProjectionFn n then continue
+    if layer == 1 then
+      if let .thmInfo _ := info then
+        out := out.push s!"{n}: an authored theorem in L1 module {m}; L1 holds definitions only, so move it to L2 (a …/Lemmas.lean module)"
+    if layer == Layers.specLayer then
+      match info with
+      | .thmInfo _ =>
+          out := out.push s!"{n}: a theorem in Spec module {m}; the Spec layer holds statements only, so move it to L2"
+      | _ =>
+          if !(stmts.contains n || n == ``Spec.spine) then
+            out := out.push s!"{n}: a declaration of Spec module {m} that is neither Spec.spine nor a `_stmt` it lists; the Spec layer holds statements only"
   return out
 
 /-- (helper) The trusted base as `TRUST.md`'s "Trusted base" section. -/

@@ -64,6 +64,7 @@ unsafe def lintMain : IO UInt32 := do
   let mut used : Array Name := #[]
   let mut problems : Array String := #[]
   let mut base? : Option Lint.TrustedBase := none
+  let mut layerEnv? : Option Environment := none
   let mut spine : Array String := #["the library root was not linted, so the spine was not checked"]
   for root in Layers.roots do
     let path ← findOLean root
@@ -79,6 +80,7 @@ unsafe def lintMain : IO UInt32 := do
     used := Lint.union used u
     if root == `RueCore then
       spine := Lint.spineProblems env
+      layerEnv? := some env
       let ctx : Core.Context :=
         { fileName := "<ruecore-lint>", fileMap := default, currNamespace := `RueCore }
       let (tb, _) ← (Lint.trustedBase env).toIO ctx { env := env }
@@ -105,6 +107,11 @@ unsafe def lintMain : IO UInt32 := do
   if spine.isEmpty then
     IO.println s!"- Spine: {Lint.headline.length} Spec statements (`RueCore.Spec.spine`); each headline theorem states its `_stmt`'s body word for word (up to binder names), and `RueCore.Spine` restates each as exactly its `_stmt`, checked by the kernel."
   for p in spine do problems := problems.push s!"spine: {p}"
+  if let some env := layerEnv? then
+    let shape := Lint.layerShapeProblems env
+    if shape.isEmpty then
+      IO.println "- Layer shapes: L1 declares no authored theorem; the Spec layer declares only `Spec.spine` and the `_stmt`s it lists."
+    for p in shape do problems := problems.push s!"layers: {p}"
   IO.println ""
   printTable "Axioms outside the allow-list (fail, except `Classical.choice` in an L3 definition, listed)" axiomRows
   printTable "Constructs (fail in L0–L2 and Spec, listed in L3)" constructRows
@@ -114,7 +121,7 @@ unsafe def lintMain : IO UInt32 := do
     IO.eprintln s!"ruecore-lint: {Lint.layerLabel f.layer} {f.subject}: {f.detail}"
   for p in problems do IO.eprintln s!"ruecore-lint: {p}"
   if failing.isEmpty && problems.isEmpty then
-    IO.println s!"ruecore-lint: {linted.size} declarations; {Lint.headline.length} spine statements, each its theorem's statement and bound in RueCore.Spine; axioms within {Lint.allowedAxioms} but for {axiomRows.size} L3 definitions' Classical.choice, listed; no forbidden construct in L0–L2 or Spec, {constructRows.size} uses listed; source scan found no kernel-skipping, unbounded or macro-named option, {options.size} bounded settings listed; kernel re-check (leanchecker over the import closure) is the guarantee"
+    IO.println s!"ruecore-lint: {linted.size} declarations; {Lint.headline.length} spine statements, each its theorem's statement and bound in RueCore.Spine; no authored theorem in L1 and nothing but statements in Spec; axioms within {Lint.allowedAxioms} but for {axiomRows.size} L3 definitions' Classical.choice, listed; no forbidden construct in L0–L2 or Spec, {constructRows.size} uses listed; source scan found no kernel-skipping, unbounded or macro-named option, {options.size} bounded settings listed; kernel re-check (leanchecker over the import closure) is the guarantee"
     return 0
   IO.eprintln s!"ruecore-lint: {failing.size + problems.size} violation(s)"
   return 1

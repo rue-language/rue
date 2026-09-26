@@ -2052,7 +2052,9 @@ back-edge invariance; bringing that wording in line is RUE-2355.
 - **Read the claim.** `SPINE.md` is the 36 statements the mechanization
   claims, each with its English reading and the §7 paragraph it realizes,
   generated from the Spec layer; `lake build` fails unless each is proved
-  as stated (README, "The statement layer").
+  as stated, and `spine-fingerprints.txt` pins what is stated, so a changed
+  statement is a reviewed diff (README, "The statement layer"). Its opening
+  says what the fragment leaves out.
 - **Read the reports.** `DIGEST.md` is every theorem's statement and every
   definition those statements are written in terms of; `TRUST.md` is every
   theorem's axioms. Both are committed, and `lake exe ruecore-digest`

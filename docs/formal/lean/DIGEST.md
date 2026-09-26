@@ -23204,7 +23204,8 @@ def RueCore.Sim (M : FloatOps) (P : Program) (φ : Frame)
 *def* · module `RueCore.Spec.Adequacy`
 
 **Completeness on every program** (§6.12): the same, up to a refusal of
-`run`'s (RUE-2314).
+`run`'s (RUE-2314). With no typing hypothesis the escape is wide: a `run` that
+is `.stuck` past some fuel satisfies it, whatever `→*` reaches.
 
 ```lean
 def RueCore.Spec.run_complete_stmt : Prop :=
@@ -24009,7 +24010,8 @@ RueCore.ProgramTyped.mk {P : Program} (wf : WfProgram P)
 *def* · module `RueCore.Spec.Checker`
 
 **An accepted program is well-typed** (§3, (Fn) §5.8): `checkProgram`
-decides the hypothesis `ProgramTyped` of the program statements.
+accepting a program suffices for the hypothesis `ProgramTyped` of the
+program statements (soundness only: a typed program it rejects is possible).
 
 ```lean
 def RueCore.Spec.checkProgram_sound_stmt : Prop :=
@@ -24209,7 +24211,12 @@ def RueCore.Spec.no_linear_overwrite_stmt : Prop :=
 *def* · module `RueCore.Spec.Safety`
 
 **No use-after-drop** (§7 "No use-after-drop / no leak of drops", "never
-read afterward"): no access to a retired cell.
+read afterward"): `run` never refuses with `useAfterDrop`, the tag `eval`
+raises when it reaches a retired cell. It is `no_violation` at one tag, so it
+says no retired cell is accessed only as far as `eval` checks every access
+and labels it so: what it rules out is what that monitor watches (R3 of
+`REDTEAM-LOG.md`; RUE-2469). The buffer half of the bullet, use-after-free,
+has no statement (§6.13 is outside the fragment).
 
 ```lean
 def RueCore.Spec.no_use_after_drop_stmt : Prop :=
@@ -24223,7 +24230,11 @@ def RueCore.Spec.no_use_after_drop_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Safety`
 
-**No use-after-move** (§7 "No use-after-move"): no read of a `⊘`.
+**No use-after-move** (§7 "No use-after-move"): `run` never refuses with
+`useAfterMove`, the tag `eval` raises when it reads a `⊘`. It is
+`no_violation` at one tag, so it says no read of a moved-out place happens
+only as far as `eval` checks every read and labels it so: what it rules out is
+what that monitor watches (R3 of `REDTEAM-LOG.md`; RUE-2469).
 
 ```lean
 def RueCore.Spec.no_use_after_move_stmt : Prop :=
@@ -24240,7 +24251,10 @@ def RueCore.Spec.no_use_after_move_stmt : Prop :=
 **No refusal of any kind** (§7's memory-safety bullets). A checked
 program's run is never `.stuck`. Narrower than the bullets: a value built for
 a sibling operand that a later one abandons by `return` or `break` is dropped
-by nobody (RUE-2316), and a `@panic` runs no drop (§5.7's `⊥_panic`).
+by nobody (RUE-2316), and a `@panic` runs no drop (§5.7's `⊥_panic`). Like
+every "never `.stuck`" statement, it holds because `eval`'s checks and
+monitors never fire: what it rules out is what they watch (R3 of
+`REDTEAM-LOG.md`; RUE-2469).
 
 ```lean
 def RueCore.Spec.no_violation_stmt : Prop :=
@@ -24332,8 +24346,9 @@ def RueCore.Spec.check_sound_stmt : Prop :=
 *def* · module `RueCore.Spec.Trace`
 
 **Every owned value ends exactly once** (§7 "No use-after-drop / no leak of
-drops"). A typed, `pendingSafe` expression of a checked program, run from
-an agreeing frame and store, is never refused; every identity the store
+drops"). A typed expression of a checked program, the expression and the
+program both `pendingSafe` (`e.pendingSafe`, `P.pendingSafe`), run from an
+agreeing frame and store, is never refused; every identity the store
 holds ends up in an old cell, in the result, or ended in the trace as often
 as held (`Exact`); every cell it allocated is retired (`Tidy`). Narrower
 than the bullet: `pendingSafe` (RUE-2316), nothing about a panic, and per
@@ -24364,7 +24379,9 @@ def RueCore.Spec.drop_exactly_once_stmt : Prop :=
 bullet; §6.7, §6.9, §6.10): under the same hypotheses, once a form's leading
 operands produced `vs` in `H₁` (`Lead`), the rest of the form ends them and
 `H₁`'s identities as `Exact` counts, and retires what it allocated
-(`Settled`).
+(`Settled`). This is the form the proof of `drop_exactly_once` inducts on
+(`Lead`, `fuel + 1`, `withTrace`), listed as a linking statement: it is what
+says the values a form mints mid-evaluation are covered too.
 
 ```lean
 def RueCore.Spec.rest_exactly_once_stmt : Prop :=
@@ -24394,8 +24411,9 @@ def RueCore.Spec.rest_exactly_once_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Safety`
 
-**Program safety** (§7 "Type safety"). A well-formed program run at any
-fuel exhausts it, panics, or returns a value of its entry point's type.
+**Program safety** (§7 "Type safety"). A well-formed program whose entry
+point (`P.fns[0]?`) takes no parameters, run at any fuel, exhausts it,
+panics, or returns a value of its entry point's type.
 
 ```lean
 def RueCore.Spec.run_safe_stmt : Prop :=

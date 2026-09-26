@@ -40,8 +40,9 @@ def dtor_once_stmt : Prop :=
     ∀ a, (dtorIds (run M P fuel).trace).count a ≤ 1
 
 /-- **Every owned value ends exactly once** (§7 "No use-after-drop / no leak of
-drops"). A typed, `pendingSafe` expression of a checked program, run from
-an agreeing frame and store, is never refused; every identity the store
+drops"). A typed expression of a checked program, the expression and the
+program both `pendingSafe` (`e.pendingSafe`, `P.pendingSafe`), run from an
+agreeing frame and store, is never refused; every identity the store
 holds ends up in an old cell, in the result, or ended in the trace as often
 as held (`Exact`); every cell it allocated is retired (`Tidy`). Narrower
 than the bullet: `pendingSafe` (RUE-2316), nothing about a panic, and per
@@ -59,7 +60,9 @@ def drop_exactly_once_stmt : Prop :=
 bullet; §6.7, §6.9, §6.10): under the same hypotheses, once a form's leading
 operands produced `vs` in `H₁` (`Lead`), the rest of the form ends them and
 `H₁`'s identities as `Exact` counts, and retires what it allocated
-(`Settled`). -/
+(`Settled`). This is the form the proof of `drop_exactly_once` inducts on
+(`Lead`, `fuel + 1`, `withTrace`), listed as a linking statement: it is what
+says the values a form mints mid-evaluation are covered too. -/
 def rest_exactly_once_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P)
     (_ : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
