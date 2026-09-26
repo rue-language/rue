@@ -862,7 +862,7 @@ documents rely on.
 | `check` | `Checker.Defs` | The §5 typing judgment as an algorithm: returns the type and the outgoing ownership state, or rejects | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | 03 “Type safety”; lean/README “Explaining a program”; GUIDE §2; BRIDGE-SENSITIVITY “Rule coverage”; MUTATION “What is mutated”; `Float` |
 | `checkArgs` | `Checker.Defs` | (Call) §5.8's argument list as an algorithm, left to right, with the argument count checked | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | — |
 | `checkIdx` | `Checker.Defs` | Checks the run-time index expressions of a place, left to right, at an integer type | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | — |
-| `firstArmTy` | `Checker.Defs` | The type all `match` arms must share, taken from the first arm that has one | ours, pending audit | GUIDE “What the checker demands”; `Checker.Defs` |
+| `armsJoinTy` | `Checker.Defs` | The type all `match` arms must share, taken from the first arm that has one | ours, pending audit | GUIDE “What the checker demands”; `Checker.Defs` |
 | `checkArms` | `Checker.Defs` | (Match) §5.5's arms as an algorithm: each from the same state, at the shared type | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | GUIDE “What the checker demands”; MUTATION “The mutants” |
 | `checkFn` | `Checker.Defs` | (Fn) §5.8 as an algorithm: the body at the declared return type, with the leak check at exit | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | lean/README “What is mechanized”; `Checker.Defs` |
 | `checkStructDecl` | `Checker.Defs` | §3's class assignment for one struct declaration, checked (`@copy`, `linear`, destructor rules) | Rue-specific, grounded (spec 3.8:58) | — |

@@ -46,7 +46,7 @@ that continues. **The folded join**: `Ctx.joinOpts`, the fold `Ctx.joinAll`
 over the continuing arms' outgoing contexts in declaration order.
 
 The one thing `check` must *choose* is the arms' shared type, since §5.5 states
-it as one `T` and lets (Sub-Never) coerce a diverging arm to it. `firstArmTy`
+it as one `T` and lets (Sub-Never) coerce a diverging arm to it. `armsJoinTy`
 takes the first arm's that has one — skipping an arm whose type is `never` —
 and every other arm is compared against that (`CTy.fitsC`), the same choice
 `ite` makes for its two arms (`CTy.meet`). The arms are therefore checked
@@ -159,7 +159,7 @@ theorem CTy.fits_never (T : Ty) : CTy.never.fits T = true := rfl
 theorem CTy.fits_pick (c : CTy) (d : Ty) : c.fits (c.pick d) = true := by
   cases c <;> simp [CTy.fits, CTy.pick]
 
-/-- (helper) An arm whose type fits the one `firstArmTy` fixed admits every type
+/-- (helper) An arm whose type fits the one `armsJoinTy` fixed admits every type
 that one admits. -/
 theorem CTy.fitsC_fits {c' c : CTy} {T : Ty} (h : c'.fitsC c = true) (hT : c.fits T = true) :
     c'.fits T = true := by
@@ -445,7 +445,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
                 simp only [hed] at h
                 by_cases hlen : arms.length = ed.variants.length
                 · simp only [if_pos hlen] at h
-                  cases harms : checkArms P R Γ₀ (firstArmTy P R Γ₀ arms ed.variants) arms
+                  cases harms : checkArms P R Γ₀ (armsJoinTy P R Γ₀ arms ed.variants) arms
                       ed.variants with
                   | none => simp only [harms] at h; cases h
                   | some r =>

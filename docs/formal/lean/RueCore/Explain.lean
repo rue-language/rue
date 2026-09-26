@@ -1176,16 +1176,16 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
          | none => rejected "(Match) §5.5" Γ (.«match» scrut arms) Premise.unknownEnum [ds]
          | some ed =>
            if arms.length = ed.variants.length then
-             (match checkArms P R Γ₀ (firstArmTy P R Γ₀ arms ed.variants) arms ed.variants with
+             (match checkArms P R Γ₀ (armsJoinTy P R Γ₀ arms ed.variants) arms ed.variants with
               | none =>
                   rejected "(Match) §5.5" Γ (.«match» scrut arms)
-                    (armsPremise P R Γ₀ (firstArmTy P R Γ₀ arms ed.variants) arms ed.variants)
+                    (armsPremise P R Γ₀ (armsJoinTy P R Γ₀ arms ed.variants) arms ed.variants)
                     (ds :: explainArms P R Γ₀ arms ed.variants)
               | some (os, Δs) =>
                 (match Ctx.joinOpts P.decls os with
                  | some o =>
                      accepted "(Match) §5.5 join" Γ (.«match» scrut arms)
-                       (firstArmTy P R Γ₀ arms ed.variants) ⟨o, Δs ++ Δ₀⟩
+                       (armsJoinTy P R Γ₀ arms ed.variants) ⟨o, Δs ++ Δ₀⟩
                        (ds :: explainArms P R Γ₀ arms ed.variants)
                  | none =>
                      rejected "(Match) §5.5 join" Γ (.«match» scrut arms)
@@ -1871,7 +1871,7 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
                 dsimp only
                 by_cases hlen : arms.length = ed.variants.length
                 · simp only [if_pos hlen]
-                  cases hc : checkArms P R Γ₀ (firstArmTy P R Γ₀ arms ed.variants) arms
+                  cases hc : checkArms P R Γ₀ (armsJoinTy P R Γ₀ arms ed.variants) arms
                       ed.variants with
                   | none => rfl
                   | some r =>

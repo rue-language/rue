@@ -289,7 +289,7 @@ MUTANTS = [
       [E(CK, "  | .never, c => some c\n  | c, .never => some c", "  | .never, _ => none\n  | _, .never => none")],
       "checker only: a diverging arm no longer meets a typed one"),
     M("first-arm-ty", "§5.5", "(Match) arm type", "completeness",
-      [E(CK, "      | some (.ty T, _) => .ty T\n      | _ => firstArmTy P R Γ₀ es Tss",
+      [E(CK, "      | some (.ty T, _) => .ty T\n      | _ => armsJoinTy P R Γ₀ es Tss",
          "      | some (.ty T, _) => .ty T\n      | _ => .never")],
       "checker only: the arms' type is the first arm's even when it diverges"),
     M("match-exhaustive", "§5.5", "(Match) exhaustiveness", "equivalent-candidate",
