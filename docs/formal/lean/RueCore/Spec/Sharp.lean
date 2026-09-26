@@ -978,4 +978,126 @@ def float_halt_stmt : Prop :=
       ¬ ((.run [] Frame.empty [] (.ret (.float .w64 (.num false 1 (-1075)))) []) : Config).SafeAt
         Float.exactOps P (.float .w64)
 
+/-- **An owned value hidden under a `Copy` node, lost** (§7 sharpness,
+RUE-2478; the ill-typed shape of `double_drop`, without the copies). With `S0`
+a `@copy` struct whose field is an `i64`, `let p = S0 { S1 { 1 } }; 0` is
+rejected by the checker (the field is given an `S1`), so it is not
+`ProgramTyped` (shown through `whole_program_exactly_once` itself), and it is
+`pendingSafe`. §6's relation, which has no copy-closure monitor, runs it: the
+configuration after `S1`'s (D-Struct) holds `S1`'s identity `0`; (D-Struct)
+wraps it in the `Copy` `S0`, which owns nothing, and `p`'s drop at scope exit
+is a `Copy` cell's, which runs nothing; the run finishes with `0` and an empty
+trace. Identity `0` is neither in the result nor ended: without
+`ProgramTyped`, `whole_program_exactly_once` fails. -/
+def copy_leak_stmt : Prop :=
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.mkStruct 1 [.intLit .w64 .signed 1]]) (.intLit .w64 .signed 0) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .copy, fields := [.int .w64 .signed], dtor := false, cls := .copy },
+                { attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine }],
+            enums := [] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      checkProgram P = false ∧ ¬ ProgramTyped P ∧ P.pendingSafe = true ∧
+      ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧
+        ∃ H v tr, Steps Float.exactOps P C (.run H Frame.empty [] (.ret v) tr) ∧
+          (v.own P.decls).count 0 + (freedIds P.decls tr).count 0 = 0
+
+/-- **A pending argument discarded by a `return`** (§7 sharpness, RUE-2478;
+RUE-2316, the shape of `TraceExact.lean`'s `pendingSafe_needed` in `main`
+itself). `fn main() -> i64 { f(S0 { 7 }, return 0) }` with `fn f(a: S0, b:
+i64) -> i64 { @drop(a); b }` is accepted by the checker and is not
+`pendingSafe`: the second argument returns. §6's relation reaches the
+configuration holding the minted `S0` (identity `0`) pending in the call's
+argument list; (D-Return) discards that list, and the run finishes with `0`
+and an empty trace. Identity `0` is neither in the result nor ended: without
+`pendingSafe`, `whole_program_exactly_once` fails on a checked program. -/
+def pending_leak_stmt : Prop :=
+  ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed,
+                  body := .call 1 [.mkStruct 0 [.intLit .w64 .signed 7], .ret (.intLit .w64 .signed 0)] },
+                { params := [⟨.struct 0, false⟩, ⟨.int .w64 .signed, false⟩], ret := .int .w64 .signed,
+                  body := .seq (.drop (.var 1)) (.use (.var 0)) }] } →
+    checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = false ∧
+    ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧
+      ∃ H v tr, Steps Float.exactOps P C (.run H Frame.empty [] (.ret v) tr) ∧
+        (v.own P.decls).count 0 + (freedIds P.decls tr).count 0 = 0
+
+/-- **A configuration holding a value no run holds** (§7 sharpness, RUE-2478).
+For the checked, `pendingSafe` program of `Nonvacuous.dtor`, the terminal
+configuration whose one cell holds an `S0` with identity `5`, and whose
+result `0` and trace are empty, holds identity `5`, reaches itself, and ends
+it nowhere; `Config.init` does not reach it (shown through
+`whole_program_exactly_once` itself). So the statement fails without the
+hypothesis that the configuration is reached: it is about the values a run
+holds, not about every configuration's. -/
+def unreached_held_stmt : Prop :=
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      ProgramTyped P ∧ P.pendingSafe = true ∧
+      ¬ Steps Float.exactOps P Config.init
+        (.run [.full (.struct 0 5 [.int .w64 .signed 1])] Frame.empty [] (.ret (.int .w64 .signed 0)) []) ∧
+      5 ∈ (Config.run [.full (.struct 0 5 [.int .w64 .signed 1])] Frame.empty []
+        (.ret (.int .w64 .signed 0)) []).held P.decls ∧
+      ((Val.int .w64 .signed 0).own P.decls).count 5 + (freedIds P.decls []).count 5 = 0
+
+/-- **An identity the run never holds** (§7 sharpness, RUE-2478). The checked,
+`pendingSafe` program of `Nonvacuous.dtor` finishes from `Config.init`, which
+holds nothing; its trace ends identities `0` and `2` and nothing else, so
+identity `1` — the index of `x`'s cell, which names a cell and no value — is
+neither ended nor in the result. So the statement fails without the
+hypothesis that the configuration holds the identity: it counts owned values,
+not every index. -/
+def unheld_stmt : Prop :=
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      ProgramTyped P ∧ P.pendingSafe = true ∧ 1 ∉ Config.init.held P.decls ∧
+      ∃ H v tr, Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        (v.own P.decls).count 1 + (freedIds P.decls tr).count 1 = 0
+
+/-- **A finished configuration the run does not reach** (§7 sharpness,
+RUE-2478). The checked, `pendingSafe` program of `Nonvacuous.dtor` reaches a
+configuration holding `x`'s `S0`, identity `0`; the terminal configuration
+with an empty store, result `3` and an empty trace ends nothing, and that
+configuration does not reach it (shown through `whole_program_exactly_once`
+itself). So the statement fails without the hypothesis that the end is the
+run's own. -/
+def off_run_stmt : Prop :=
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      ProgramTyped P ∧ P.pendingSafe = true ∧
+      ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧
+        ¬ Steps Float.exactOps P C (.run [] Frame.empty [] (.ret (.int .w64 .signed 3)) []) ∧
+        ((Val.int .w64 .signed 3).own P.decls).count 0 + (freedIds P.decls []).count 0 = 0
+
 end RueCore.Spec.Sharp

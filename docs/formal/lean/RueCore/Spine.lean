@@ -8,6 +8,7 @@ public import RueCore.TraceExact
 public import RueCore.TraceOrder
 public import RueCore.Retire
 public import RueCore.TracePrefix
+public import RueCore.TraceWhole
 public import RueCore.Adequacy
 public import RueCore.Nonvacuous
 public import RueCore.Sharp
@@ -17,9 +18,9 @@ public import RueCore.Sharp
 /-!
 # RueCore.Spine — each spine proof, checked against its statement (layer L2)
 
-One theorem per entry of `RueCore.Spec.spine` (40), of
-`RueCore.Spec.witnesses` (14, the non-vacuity witnesses; RUE-2469) and of
-`RueCore.Spec.sharpness` (29, the sharpness counter-examples; RUE-2485), 83
+One theorem per entry of `RueCore.Spec.spine` (41), of
+`RueCore.Spec.witnesses` (16, the non-vacuity witnesses; RUE-2469) and of
+`RueCore.Spec.sharpness` (38, the sharpness counter-examples; RUE-2485), 95
 in all: `RueCore.Spine.<name>` has
 exactly the type `RueCore.Spec.<name>_stmt` and is proved by the theorem
 `RueCore.<name>` of the proof layer. The kernel accepts each only if that
@@ -77,6 +78,9 @@ theorem dtor_once : Spec.dtor_once_stmt := @RueCore.dtor_once
 theorem drop_exactly_once : Spec.drop_exactly_once_stmt := @RueCore.drop_exactly_once
 /-- `Spec.rest_exactly_once_stmt`, by `RueCore.rest_exactly_once` (helper). -/
 theorem rest_exactly_once : Spec.rest_exactly_once_stmt := @RueCore.rest_exactly_once
+/-- `Spec.whole_program_exactly_once_stmt`, by `RueCore.whole_program_exactly_once` (helper). -/
+theorem whole_program_exactly_once : Spec.whole_program_exactly_once_stmt :=
+  @RueCore.whole_program_exactly_once
 /-- `Spec.drop_order_stmt`, by `RueCore.drop_order` (helper). -/
 theorem drop_order : Spec.drop_order_stmt := @RueCore.drop_order
 /-- `Spec.drop_glue_order_stmt`, by `RueCore.drop_glue_order` (helper). -/
@@ -148,6 +152,12 @@ theorem Nonvacuous.diverges : Spec.Nonvacuous.diverges_stmt := @RueCore.Nonvacuo
 /-- `Spec.Nonvacuous.diverges_drop_stmt`, by `RueCore.Nonvacuous.diverges_drop` (helper). -/
 theorem Nonvacuous.diverges_drop : Spec.Nonvacuous.diverges_drop_stmt :=
   @RueCore.Nonvacuous.diverges_drop
+/-- `Spec.Nonvacuous.whole_drops_stmt`, by `RueCore.Nonvacuous.whole_drops` (helper). -/
+theorem Nonvacuous.whole_drops : Spec.Nonvacuous.whole_drops_stmt :=
+  @RueCore.Nonvacuous.whole_drops
+/-- `Spec.Nonvacuous.whole_result_stmt`, by `RueCore.Nonvacuous.whole_result` (helper). -/
+theorem Nonvacuous.whole_result : Spec.Nonvacuous.whole_result_stmt :=
+  @RueCore.Nonvacuous.whole_result
 /-- `Spec.Nonvacuous.stuck_stmt`, by `RueCore.Nonvacuous.stuck` (helper). -/
 theorem Nonvacuous.stuck : Spec.Nonvacuous.stuck_stmt := @RueCore.Nonvacuous.stuck
 
@@ -220,6 +230,16 @@ theorem Sharp.ill_typed_halt : Spec.Sharp.ill_typed_halt_stmt := @RueCore.Sharp.
 theorem Sharp.out_of_range_halt : Spec.Sharp.out_of_range_halt_stmt := @RueCore.Sharp.out_of_range_halt
 /-- `Spec.Sharp.float_halt_stmt`, by `RueCore.Sharp.float_halt` (helper). -/
 theorem Sharp.float_halt : Spec.Sharp.float_halt_stmt := @RueCore.Sharp.float_halt
+/-- `Spec.Sharp.copy_leak_stmt`, by `RueCore.Sharp.copy_leak` (helper). -/
+theorem Sharp.copy_leak : Spec.Sharp.copy_leak_stmt := @RueCore.Sharp.copy_leak
+/-- `Spec.Sharp.pending_leak_stmt`, by `RueCore.Sharp.pending_leak` (helper). -/
+theorem Sharp.pending_leak : Spec.Sharp.pending_leak_stmt := @RueCore.Sharp.pending_leak
+/-- `Spec.Sharp.unreached_held_stmt`, by `RueCore.Sharp.unreached_held` (helper). -/
+theorem Sharp.unreached_held : Spec.Sharp.unreached_held_stmt := @RueCore.Sharp.unreached_held
+/-- `Spec.Sharp.unheld_stmt`, by `RueCore.Sharp.unheld` (helper). -/
+theorem Sharp.unheld : Spec.Sharp.unheld_stmt := @RueCore.Sharp.unheld
+/-- `Spec.Sharp.off_run_stmt`, by `RueCore.Sharp.off_run` (helper). -/
+theorem Sharp.off_run : Spec.Sharp.off_run_stmt := @RueCore.Sharp.off_run
 
 
 end RueCore.Spine

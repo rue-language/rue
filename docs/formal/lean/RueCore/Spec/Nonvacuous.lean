@@ -46,7 +46,7 @@ namespace RueCore.Spec.Nonvacuous
 /-- **The float laws have a model: `Float.exactOps`** (§7's "totality of the
 float operations"; RUE-2469). Some `FloatModel` has the executable instance
 `Float.exactOps` as its operations, so every law of `FloatModel` holds of the
-model the corpus runs on, and the laws are jointly satisfiable: the 21 spine
+model the corpus runs on, and the laws are jointly satisfiable: the 22 spine
 statements that quantify over `M : FloatModel` are not vacuous in `M`. -/
 def exact_model_stmt : Prop :=
   ∃ M : FloatModel, M.toFloatOps = Float.exactOps
@@ -353,5 +353,48 @@ def stuck_stmt : Prop :=
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       checkProgram P = false ∧ run Float.exactOps P 200 = .stuck .useAfterMove ∧
         ∃ C, Steps Float.exactOps P Config.init C ∧ C.Stuck Float.exactOps P .useAfterMove
+
+/-- **A run that holds two owned values at once and ends each** (§7, over a
+whole program; RUE-2478; the `dtor` witness's program, the corpus case
+`affine_scope_drop` twice over). `let x = S0 { 1 }; let y = S0 { 2 }; 3` is
+checked and `pendingSafe`; §6's relation reaches a configuration that holds
+both values, identities `0` and `2`, in their cells, and from there the run
+finishes with a trace that ends each of them once. So
+`whole_program_exactly_once`'s hypotheses hold of a run that allocates and
+drops several owned values. -/
+def whole_drops_stmt : Prop :=
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
+      ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧ 2 ∈ C.held P.decls ∧
+        ∃ H v tr, Steps Float.exactOps P C (.run H Frame.empty [] (.ret v) tr) ∧
+          (freedIds P.decls tr).count 0 = 1 ∧ (freedIds P.decls tr).count 2 = 1
+
+/-- **A run whose result is an owned value** (§7, over a whole program;
+RUE-2478). `fn main() -> S0 { S0 { 7 } }` is checked and `pendingSafe`; the
+configuration right after (D-Struct) holds the new value's identity `0`, and
+the run finishes with that value as its result — which owns `0` — and a trace
+that ends nothing. So `whole_program_exactly_once`'s other disjunct, an owned
+value accounted for by being part of the final value, is reached too. -/
+def whole_result_stmt : Prop :=
+  ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .struct 0, body := .mkStruct 0 [.intLit .w64 .signed 7] }] } →
+    checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
+    ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧
+      ∃ H v tr, Steps Float.exactOps P C (.run H Frame.empty [] (.ret v) tr) ∧
+        (v.own P.decls).count 0 = 1 ∧ freedIds P.decls tr = []
 
 end RueCore.Spec.Nonvacuous

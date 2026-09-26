@@ -89,6 +89,26 @@ def rest_exactly_once_stmt : Prop :=
     (∀ w, r ≠ .stuck w) ∧
       Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧ Settled φ H₁ r
 
+/-- **Every owned value of a finished run ends exactly once** (§7 "No
+use-after-drop / no leak of drops", over a whole program; RUE-2478). For a
+checked, `pendingSafe` program, take any configuration `C` §6's relation
+reaches from `Config.init` and any owned identity `a` that `C` holds — in a
+cell, in focus, or pending on the control stack (`Config.held`); these are the
+owned values allocated along the run. If the run from `C` finishes with a
+value (`✓v`, a value at an empty stack), then `a` is ended in the final trace
+(a drop, a discarded temporary's drop, or a consumption: `freedIds`) or is
+part of the final value, exactly once between the two: no owned value the
+run holds is lost, and none is ended twice. Narrower than the bullet:
+`pendingSafe` (RUE-2316), nothing about a panic (§6.12's trap runs no drop, so
+what it abandons is not ended), and nothing about a run that never finishes
+(`step_no_double_free` bounds every prefix from above). -/
+def whole_program_exactly_once_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (_ : P.pendingSafe = true)
+    {C : Config} (_ : Steps M.toFloatOps P Config.init C) {a : Nat} (_ : a ∈ C.held P.decls)
+    {H : Store} {φ : Frame} {v : Val} {tr : List Event}
+    (_ : Steps M.toFloatOps P C (.run H φ [] (.ret v) tr)),
+    (v.own P.decls).count a + (freedIds P.decls tr).count a = 1
+
 /-- **Drop order** (§7 "No use-after-drop / no leak of drops", "at the end of
 its scope"; §6.7, §6.9–§6.11), over `Step`. A finished run's trace — value
 or panic — is in §6.11's block grammar (`Blocks`). Each step from a

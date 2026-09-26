@@ -8,6 +8,7 @@ public import RueCore.TraceOrder
 public import RueCore.Adequacy
 public import RueCore.Retire
 public import RueCore.TracePrefix
+public import RueCore.TraceWhole
 public import RueCore.Nonvacuous
 
 @[expose] public section
@@ -1240,5 +1241,122 @@ theorem float_halt :
   rw [hret] at hsafe
   exact ⟨hPT, ⟨H, tr, hsv⟩, hw1, hw2, trivial, trivial, fun hs => hns1 (hsafe _ hs),
     fun hs => hns2 (hsafe _ hs), hns1, hns2⟩
+
+/-- `Spec.Sharp.copy_leak_stmt`, proved: a §7 hypothesis needed (RUE-2478). -/
+theorem copy_leak :
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.mkStruct 1 [.intLit .w64 .signed 1]]) (.intLit .w64 .signed 0) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .copy, fields := [.int .w64 .signed], dtor := false, cls := .copy },
+                { attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine }],
+            enums := [] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      checkProgram P = false ∧ ¬ ProgramTyped P ∧ P.pendingSafe = true ∧
+      ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧
+        ∃ H v tr, Steps Float.exactOps P C (.run H Frame.empty [] (.ret v) tr) ∧
+          (v.own P.decls).count 0 + (freedIds P.decls tr).count 0 = 0 := by
+  intro B hB P hP
+  subst hB hP
+  refine ⟨rfl, fun hPT => ?_, rfl, _, stepN_steps (n := 10), by decide, _, _, _,
+    stepN_steps (n := 10), by decide⟩
+  have := whole_program_exactly_once Float.exactModel hPT rfl (stepN_steps (n := 10)) (a := 0)
+    (by decide) (stepN_steps (n := 10))
+  revert this
+  decide
+
+/-- `Spec.Sharp.pending_leak_stmt`, proved: a §7 hypothesis needed (RUE-2478). -/
+theorem pending_leak :
+  ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed,
+                  body := .call 1 [.mkStruct 0 [.intLit .w64 .signed 7], .ret (.intLit .w64 .signed 0)] },
+                { params := [⟨.struct 0, false⟩, ⟨.int .w64 .signed, false⟩], ret := .int .w64 .signed,
+                  body := .seq (.drop (.var 1)) (.use (.var 0)) }] } →
+    checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = false ∧
+    ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧
+      ∃ H v tr, Steps Float.exactOps P C (.run H Frame.empty [] (.ret v) tr) ∧
+        (v.own P.decls).count 0 + (freedIds P.decls tr).count 0 = 0 := by
+  intro P hP
+  have h1 : checkProgram P = true := by rw [hP]; rfl
+  have hPT := checkProgram_sound h1
+  subst hP
+  exact ⟨h1, hPT, rfl, _, stepN_steps (n := 9), by decide, _, _, _, stepN_steps (n := 10), by decide⟩
+
+/-- `Spec.Sharp.unreached_held_stmt`, proved: a §7 hypothesis needed (RUE-2478). -/
+theorem unreached_held :
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      ProgramTyped P ∧ P.pendingSafe = true ∧
+      ¬ Steps Float.exactOps P Config.init
+        (.run [.full (.struct 0 5 [.int .w64 .signed 1])] Frame.empty [] (.ret (.int .w64 .signed 0)) []) ∧
+      5 ∈ (Config.run [.full (.struct 0 5 [.int .w64 .signed 1])] Frame.empty []
+        (.ret (.int .w64 .signed 0)) []).held P.decls ∧
+      ((Val.int .w64 .signed 0).own P.decls).count 5 + (freedIds P.decls []).count 5 = 0 := by
+  intro B hB P hP
+  have hPT : ProgramTyped P := checkProgram_sound (by subst hB hP; rfl)
+  subst hB hP
+  refine ⟨hPT, rfl, fun hs => ?_, by decide, by decide⟩
+  have := whole_program_exactly_once Float.exactModel hPT rfl hs (a := 5) (by decide) (.refl _)
+  revert this
+  decide
+
+/-- `Spec.Sharp.unheld_stmt`, proved: a §7 hypothesis needed (RUE-2478). -/
+theorem unheld :
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      ProgramTyped P ∧ P.pendingSafe = true ∧ 1 ∉ Config.init.held P.decls ∧
+      ∃ H v tr, Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        (v.own P.decls).count 1 + (freedIds P.decls tr).count 1 = 0 := by
+  intro B hB P hP
+  have hPT : ProgramTyped P := checkProgram_sound (by subst hB hP; rfl)
+  subst hB hP
+  exact ⟨hPT, rfl, by decide, _, _, _, stepN_steps (n := 25), by decide⟩
+
+/-- `Spec.Sharp.off_run_stmt`, proved: a §7 hypothesis needed (RUE-2478). -/
+theorem off_run :
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      ProgramTyped P ∧ P.pendingSafe = true ∧
+      ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧
+        ¬ Steps Float.exactOps P C (.run [] Frame.empty [] (.ret (.int .w64 .signed 3)) []) ∧
+        ((Val.int .w64 .signed 3).own P.decls).count 0 + (freedIds P.decls []).count 0 = 0 := by
+  intro B hB P hP
+  have hPT : ProgramTyped P := checkProgram_sound (by subst hB hP; rfl)
+  subst hB hP
+  refine ⟨hPT, rfl, _, stepN_steps (n := 15), by decide, fun hs => ?_, by decide⟩
+  have := whole_program_exactly_once Float.exactModel hPT rfl (stepN_steps (n := 15)) (a := 0)
+    (by decide) hs
+  revert this
+  decide
 
 end RueCore.Sharp
