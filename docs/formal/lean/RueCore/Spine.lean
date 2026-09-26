@@ -110,6 +110,8 @@ theorem eval_diverges_iff : Spec.eval_diverges_iff_stmt := @RueCore.eval_diverge
 theorem Nonvacuous.exact_model : Spec.Nonvacuous.exact_model_stmt := @RueCore.Nonvacuous.exact_model
 /-- `Spec.Nonvacuous.empty_frame_stmt`, by `RueCore.Nonvacuous.empty_frame` (helper). -/
 theorem Nonvacuous.empty_frame : Spec.Nonvacuous.empty_frame_stmt := @RueCore.Nonvacuous.empty_frame
+/-- `Spec.Nonvacuous.open_frame_stmt`, by `RueCore.Nonvacuous.open_frame` (helper). -/
+theorem Nonvacuous.open_frame : Spec.Nonvacuous.open_frame_stmt := @RueCore.Nonvacuous.open_frame
 /-- `Spec.Nonvacuous.dtor_stmt`, by `RueCore.Nonvacuous.dtor` (helper). -/
 theorem Nonvacuous.dtor : Spec.Nonvacuous.dtor_stmt := @RueCore.Nonvacuous.dtor
 /-- `Spec.Nonvacuous.linear_stmt`, by `RueCore.Nonvacuous.linear` (helper). -/

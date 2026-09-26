@@ -51,6 +51,7 @@ def table : List (Name × Nat) := [
   (`RueCore.TraceOrder, 3),
   (`RueCore.Nonvacuous, 3),
   (`RueCore.Spine, 3),
+  (`RueCore.Nonvacuous.Glue, 3),
   -- L3 tooling
   (`RueCore.Examples, 4),
   (`RueCore.Witnesses, 4),
