@@ -315,20 +315,20 @@ theorem MSim.absorb {φ φ₁ : Frame} {C C₁ : List Kont → List Event → Co
     {r : EvalRes} (h₁ : MSim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
     (hk : ∀ H₁ v tr₁, r = .ok H₁ v tr₁ →
       MSim M P φ (fun K tr => .run H₁ φ₁ (.call φ :: K) (.ret v) tr) (k H₁ v)) :
-    MSim M P φ C (r.absorb k) := by
+    MSim M P φ C (r.bindCall k) := by
   cases r with
   | ok H₁ v tr₁ =>
-      simp only [EvalRes.absorb]
+      simp only [EvalRes.bindCall]
       exact MSim.withTrace (fun K tr => (hC K tr).trans (h₁ (.call φ :: K) tr)) (hk H₁ v tr₁ rfl)
   | returned H₁ v tr₁ =>
-      simp only [EvalRes.absorb, MSim] at h₁ ⊢
+      simp only [EvalRes.bindCall, MSim] at h₁ ⊢
       intro K tr
       exact (hC K tr).trans (h₁ (.call φ :: K) tr φ K rfl
         (by rw [stackOwn_cons_nil rfl]; exact IdLe.refl' _))
-  | broke H₁ sc tr₁ => simp [EvalRes.absorb, MSim]
+  | broke H₁ sc tr₁ => simp [EvalRes.bindCall, MSim]
   | panic κ tr₁ => trivial
-  | stuck w => simp [EvalRes.absorb, MSim]
-  | outOfFuel => simp [EvalRes.absorb, MSim]
+  | stuck w => simp [EvalRes.bindCall, MSim]
+  | outOfFuel => simp [EvalRes.bindCall, MSim]
 
 /-- Where no target has an expression in focus, a first step of the family
 can be peeled off by determinism (helper). -/

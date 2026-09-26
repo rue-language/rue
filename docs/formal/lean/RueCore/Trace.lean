@@ -1174,7 +1174,7 @@ theorem Cons.absorb {D : Decls} {F : Event → List Nat} {H : Store} {X : List N
     {r : EvalRes} {k : Store → Val → EvalRes} (hr : Cons D F H X r)
     (hk : ∀ H₁ v tr, r = .ok H₁ v tr → StoreCC D H₁ → (Contents.ofVal v).copyClosed D = true →
       Cons D F H₁ (v.own D) (k H₁ v)) :
-    Cons D F H X (r.absorb k) := by
+    Cons D F H X (r.bindCall k) := by
   cases r with
   | ok H₁ v tr =>
       obtain ⟨h1, h2, h3, h4⟩ := hr

@@ -59,7 +59,7 @@ theorem loopUnit_run : ∀ fuel, run Float.exactOps
       fns := [{ params := [], ret := .unit, body := .loop .unitLit }] } fuel = .outOfFuel
   | 0 => rfl
   | n + 1 => by
-      show EvalRes.withTrace [] (EvalRes.absorb (eval Float.exactOps n _ [] _ (.loop .unitLit)) _) = _
+      show EvalRes.withTrace [] (EvalRes.bindCall (eval Float.exactOps n _ [] _ (.loop .unitLit)) _) = _
       rw [loopUnit_eval]; rfl
 
 
@@ -409,7 +409,7 @@ theorem diverges_drop :
   cases fuel with
   | zero => rfl
   | succ n =>
-      show EvalRes.withTrace [] (EvalRes.absorb (eval Float.exactOps n _ [] _
+      show EvalRes.withTrace [] (EvalRes.bindCall (eval Float.exactOps n _ [] _
         (.loop (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) .unitLit))) _) = _
       rw [dropLoop_eval]; rfl
 

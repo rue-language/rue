@@ -807,7 +807,7 @@ theorem eval_live (M : FloatSig) (P : Program) :
               intro hb
               cases r with
               | ok H₃ v tr₃ =>
-                  simp only [EvalRes.absorb]
+                  simp only [EvalRes.bindCall]
                   refine LivePost.withTrace ?_ tr₃
                   simp only [runAllScopeDrops]
                   have hu := unwindLocs_live (D := P.decls) (H := H₃)
@@ -822,10 +822,10 @@ theorem eval_live (M : FloatSig) (P : Program) :
                     refine hkeep ℓ (fun hm => ?_) (hb.2 ℓ (hgm.2 ℓ hl))
                     exact hl.ne_of_le (hlm ℓ (List.mem_reverse.mp hm)).1 rfl
               | returned H₃ v tr₃ =>
-                  simp only [EvalRes.absorb]
+                  simp only [EvalRes.bindCall]
                   refine ⟨Nat.le_trans hgm.1 hb.1, fun ℓ hl => ?_⟩
                   exact hb.2 ℓ (fun hm => hl.ne_of_le (hlm ℓ hm).1 rfl) (hgm.2 ℓ hl)
-              | broke H₃ sc tr₃ => simp [EvalRes.absorb, LivePost]
+              | broke H₃ sc tr₃ => simp [EvalRes.bindCall, LivePost]
               | panic k tr₃ => trivial
               | stuck w => exact hb
               | outOfFuel => trivial

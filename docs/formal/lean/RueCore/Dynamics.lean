@@ -834,7 +834,7 @@ so a callee's `break` is caught by a loop of its own body — "a `break` in a
 callee would be ill-formed" (§6.10). One that reached the boundary anyway is
 a configuration §6 leaves undefined, `typeConfusion`; `soundness` proves no
 typed program reaches it. -/
-def EvalRes.absorb : EvalRes → (Store → Val → EvalRes) → EvalRes
+def EvalRes.bindCall : EvalRes → (Store → Val → EvalRes) → EvalRes
   | .ok H v tr, k => (k H v).withTrace tr
   | .returned H v tr, _ => .ok H v tr
   | .broke _ _ _, _ => .stuck .typeConfusion
@@ -1413,7 +1413,7 @@ body breaks; `brk` is (D-Break), which hands its loop the frame's scope
 record.
 
 Every operand is sequenced with `bind`, which is §6.2's search through an
-evaluation context; the callee's body is sequenced with `absorb`, the one
+evaluation context; the callee's body is sequenced with `bindCall`, the one
 place a `return` stops travelling (§6.9). -/
 def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalRes
   | 0, _, _, _, _ => .outOfFuel
@@ -1783,10 +1783,10 @@ def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalR
               -- entry scope owes a drop for exactly those cells.
               let minted := mintParams H₁ vs
               let φg : Frame := { env := minted.2.reverse, scope := minted.2 }
-              (eval M fuel P minted.1 φg fd.body).absorb fun H₃ v =>
+              (eval M fuel P minted.1 φg fd.body).bindCall fun H₃ v =>
                 -- (D-Return-Value): the body became a value; pop the frame,
                 -- running its open scopes' drops. (D-Return) needs no second
-                -- path: `absorb` took its value, and its unwind already ran
+                -- path: `bindCall` took its value, and its unwind already ran
                 -- every one of those drops.
                 match runAllScopeDrops P.decls H₃ φg with
                 | .error w => .stuck w

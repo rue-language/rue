@@ -2930,7 +2930,7 @@ def traceEval (M : FloatSig) (P : Program) :
              | .returned H₃ v tr₃ =>
                  tracedAs (ta.steps ++ [push] ++ tb.steps) d Θ R (.call f args)
                    "(D-Return)/(D-Return-Main) §6.9 (the callee's return is the call's value)"
-                   ("absorb " ++ valLine v)
+                   ("bindCall " ++ valLine v)
                    H₃ H₃ [] (.value v) (.ok H₃ v (tr ++ tr₃))
              | .broke _ _ _ =>
                  refused (ta.steps ++ [push] ++ tb.steps) d Θ R (.call f args)
@@ -3070,7 +3070,7 @@ theorem traceEval_res (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
           simp only [traceEval, eval,
             traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced, tracedAs, didNotRun, refused, EvalRes.absorb,
+            first | rfl | (simp_all [traced, tracedAs, didNotRun, refused, EvalRes.bindCall,
               EvalRes.withTrace] <;> grind)
       | brk => rfl
       | loop e₁ =>

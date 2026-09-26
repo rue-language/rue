@@ -1220,7 +1220,7 @@ def verdictJson (c : Case) : String :=
 document and are here because the function must be total: a `returned` result,
 which the entry call's own frame boundary absorbs (`run_ne_returned`), a
 `broke` one, which the same boundary turns into the refusal it is spelled as
-here (`EvalRes.absorb`), and an `outOfFuel` one, which `jsonOf` filters out — the consumer knows only `ok`,
+here (`EvalRes.bindCall`), and an `outOfFuel` one, which `jsonOf` filters out — the consumer knows only `ok`,
 `panic` and `stuck` (`crates/rue-oracle-diff/src/lean_corpus.rs`). -/
 def expectedJson (c : Case) : String :=
   match run exportOps c.prog exportFuel with

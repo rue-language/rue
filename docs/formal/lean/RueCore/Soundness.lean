@@ -3754,7 +3754,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                   obtain ⟨Γf, hnf, htyv, hfm₃, hu₃⟩ := kb.ok_inv
                   obtain ⟨H₄, evs, hrun, hlen4, hout4⟩ :=
                     runAllScopeDrops_ok hwf.decls hfm₃ (hnlf Γf hnf)
-                  simp only [EvalRes.absorb, hrun, EvalRes.withTrace]
+                  simp only [EvalRes.bindCall, hrun, EvalRes.withTrace]
                   have hu34 : Untouched (mintParams H₁ vs).2.reverse H₃ H₄ :=
                     ⟨by omega, fun ℓ _ hnin => hout4 ℓ hnin⟩
                   have hu4 : Untouched (mintParams H₁ vs).2.reverse (mintParams H₁ vs).1 H₄ :=
@@ -3764,7 +3764,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               | returned H₃ v tr₃ =>
                   rw [hrb] at kb
                   obtain ⟨htyv, hu₃⟩ := kb
-                  simp only [EvalRes.absorb, EvalRes.withTrace]
+                  simp only [EvalRes.bindCall, EvalRes.withTrace]
                   exact ⟨htyv, ⟨hmint.transport hdisj hu₃, hfm.record⟩,
                     hu₁.trans (Untouched.of_fresh hpre hfreshg hkeep hu₃)⟩
               | broke H₃ sc tr₃ =>
@@ -3774,9 +3774,9 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                   obtain ⟨Γb, hb, _⟩ := kb
                   rw [hbrkf] at hb
                   cases hb
-              | panic pk tr => simp only [EvalRes.absorb, EvalRes.withTrace]; trivial
+              | panic pk tr => simp only [EvalRes.bindCall, EvalRes.withTrace]; trivial
               | stuck w => rw [hrb] at kb; exact kb.elim
-              | outOfFuel => simp only [EvalRes.absorb, EvalRes.withTrace]; trivial
+              | outOfFuel => simp only [EvalRes.bindCall, EvalRes.withTrace]; trivial
       | @brk Γ T =>
           -- (D-Break) §6.10: the `break` fires in this very frame, with no
           -- binding opened since the loop's — unless an enclosing `let` or
@@ -3883,14 +3883,14 @@ theorem EvalRes.bind_mono {r r' : EvalRes} {k k' : Store → Val → EvalRes}
 
 /-- §6.9's call boundary is monotone in the fuel, for the same reason
 (helper). -/
-theorem EvalRes.absorb_mono {r r' : EvalRes} {k k' : Store → Val → EvalRes}
+theorem EvalRes.bindCall_mono {r r' : EvalRes} {k k' : Store → Val → EvalRes}
     (hr : r ≠ .outOfFuel → r' = r)
     (hk : ∀ H v tr, r = .ok H v tr → k H v ≠ .outOfFuel → k' H v = k H v)
-    (h : r.absorb k ≠ .outOfFuel) : r'.absorb k' = r.absorb k := by
+    (h : r.bindCall k ≠ .outOfFuel) : r'.bindCall k' = r.bindCall k := by
   cases r with
   | ok H v tr =>
       rw [hr (by simp)]
-      simp only [EvalRes.absorb] at h ⊢
+      simp only [EvalRes.bindCall] at h ⊢
       have hkne : k H v ≠ .outOfFuel := by
         intro hc
         exact h (by rw [hc]; simp [EvalRes.withTrace])
@@ -3899,7 +3899,7 @@ theorem EvalRes.absorb_mono {r r' : EvalRes} {k k' : Store → Val → EvalRes}
   | broke H sc tr => rw [hr (by simp)]; rfl
   | panic pk tr => rw [hr (by simp)]; rfl
   | stuck w => rw [hr (by simp)]; rfl
-  | outOfFuel => simp only [EvalRes.absorb] at h; exact absurd rfl h
+  | outOfFuel => simp only [EvalRes.bindCall] at h; exact absurd rfl h
 
 /-- An argument list's evaluation is monotone in the fuel, argument by
 argument (helper). -/
@@ -4132,7 +4132,7 @@ theorem eval_succ (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
                   · simp only [if_pos hlen] at h ⊢
                     have h' : (eval M n P (mintParams H₁ vs).1
                         { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 }
-                        fd.body).absorb (fun H₃ v =>
+                        fd.body).bindCall (fun H₃ v =>
                           match runAllScopeDrops P.decls H₃
                               { env := (mintParams H₁ vs).2.reverse,
                                 scope := (mintParams H₁ vs).2 } with
@@ -4141,7 +4141,7 @@ theorem eval_succ (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
                       intro hc
                       exact h (EvalRes.withTrace_outOfFuel_iff.mpr hc)
                     refine congrArg (EvalRes.withTrace tr) ?_
-                    exact EvalRes.absorb_mono (fun hne => ih _ _ fd.body hne)
+                    exact EvalRes.bindCall_mono (fun hne => ih _ _ fd.body hne)
                       (fun H₃ v tr₃ _ _ => rfl) h'
                   · simp only [if_neg hlen]
 
@@ -4207,19 +4207,19 @@ theorem EvalRes.withTrace_ne_returned {r : EvalRes} {tr : List Event}
 
 /-- §6.9's call boundary absorbs an unwinding `return`, so a call never hands
 one on (helper). -/
-theorem EvalRes.absorb_ne_returned {r : EvalRes} {k : Store → Val → EvalRes}
+theorem EvalRes.bindCall_ne_returned {r : EvalRes} {k : Store → Val → EvalRes}
     (hk : ∀ H₀ v₀ H' v' tr', k H₀ v₀ ≠ .returned H' v' tr') :
-    ∀ H v tr, r.absorb k ≠ .returned H v tr := by
+    ∀ H v tr, r.bindCall k ≠ .returned H v tr := by
   intro H v tr
   cases r with
   | ok H₁ v₁ tr₁ =>
-      simp only [EvalRes.absorb]
+      simp only [EvalRes.bindCall]
       exact EvalRes.withTrace_ne_returned (fun H' v' tr' => hk H₁ v₁ H' v' tr') H v tr
-  | returned H₁ v₁ tr₁ => simp [EvalRes.absorb]
-  | broke H₁ sc tr₁ => simp [EvalRes.absorb]
-  | panic pk tr => simp [EvalRes.absorb]
-  | stuck w => simp [EvalRes.absorb]
-  | outOfFuel => simp [EvalRes.absorb]
+  | returned H₁ v₁ tr₁ => simp [EvalRes.bindCall]
+  | broke H₁ sc tr₁ => simp [EvalRes.bindCall]
+  | panic pk tr => simp [EvalRes.bindCall]
+  | stuck w => simp [EvalRes.bindCall]
+  | outOfFuel => simp [EvalRes.bindCall]
 
 /-- (D-Return-Main) §6.9 needs no rule of its own here: the entry point is an
 ordinary call, and the call boundary absorbs an unwinding `return` exactly as
@@ -4239,7 +4239,7 @@ theorem run_ne_returned (M : FloatSig) {P : Program} {fuel : Nat} :
       | some fd =>
           simp only []
           split
-          · exact EvalRes.absorb_ne_returned (by
+          · exact EvalRes.bindCall_ne_returned (by
               intro H₀ v₀ H₁ v₁ tr₁
               split <;> simp) H' v' tr'
           · simp

@@ -384,7 +384,7 @@ theorem GlueBlocks.bind {D : Decls} {r : EvalRes} {k : Store → Val → EvalRes
 /-- §6.9's call boundary keeps the grammar (helper). -/
 theorem GlueBlocks.absorb {D : Decls} {r : EvalRes} {k : Store → Val → EvalRes}
     (hr : GlueBlocks D r.trace) (hk : ∀ H₁ v tr, r = .ok H₁ v tr → GlueBlocks D (k H₁ v).trace) :
-    GlueBlocks D (r.absorb k).trace := by
+    GlueBlocks D (r.bindCall k).trace := by
   cases r with
   | ok H₁ v tr => exact GlueBlocks.withTrace hr (hk H₁ v tr rfl)
   | broke => exact .nil

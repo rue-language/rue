@@ -220,12 +220,12 @@ theorem OpRes.toRes_quiet {H : Store} {o : OpRes} : (o.toRes H).NoRet ∧ (o.toR
 
 /-- §6.9's call boundary never hands on an unwinding `return` or `break`
 (helper). -/
-theorem EvalRes.absorb_quiet {r : EvalRes} {k : Store → Val → EvalRes}
+theorem EvalRes.bindCall_quiet {r : EvalRes} {k : Store → Val → EvalRes}
     (hk : ∀ H v, (k H v).NoRet ∧ (k H v).NoBrk) :
-    (r.absorb k).NoRet ∧ (r.absorb k).NoBrk := by
+    (r.bindCall k).NoRet ∧ (r.bindCall k).NoBrk := by
   cases r with
   | ok H v tr =>
-      simp only [EvalRes.absorb]
+      simp only [EvalRes.bindCall]
       exact ⟨EvalRes.withTrace_noRet (hk H v).1, EvalRes.withTrace_noBrk (hk H v).2⟩
   | _ => exact ⟨trivial, trivial⟩
 
@@ -415,7 +415,7 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
             split
             · trivial
             · split
-              · exact (EvalRes.absorb_quiet fun _ _ => by constructor <;> (split <;> trivial)).1
+              · exact (EvalRes.bindCall_quiet fun _ _ => by constructor <;> (split <;> trivial)).1
               · trivial
         · simp only [Expr.breaks] at h
           split
@@ -425,7 +425,7 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
             split
             · trivial
             · split
-              · exact (EvalRes.absorb_quiet fun _ _ => by constructor <;> (split <;> trivial)).2
+              · exact (EvalRes.bindCall_quiet fun _ _ => by constructor <;> (split <;> trivial)).2
               · trivial
     | ret e₁ =>
         simp only [eval]
@@ -826,7 +826,7 @@ theorem Exact.absorb {D : Decls} {H : Store} {X : List Nat} {r : EvalRes}
     {k : Store → Val → EvalRes} (hr : Exact D H X r)
     (hk : ∀ H₁ v tr, r = .ok H₁ v tr → StoreCC D H₁ → (Contents.ofVal v).copyClosed D = true →
       Exact D H₁ (v.own D) (k H₁ v)) :
-    Exact D H X (r.absorb k) := by
+    Exact D H X (r.bindCall k) := by
   cases r with
   | ok H₁ v tr =>
       obtain ⟨h1, h2, h3, h4⟩ := hr
@@ -2168,7 +2168,7 @@ theorem Tidy.call {D : Decls} {φ : Frame} {H Hm : Store} {ls : List Nat} {r : E
     (hls : ∀ ℓ, ℓ ∈ ls ↔ H.length ≤ ℓ ∧ ℓ < Hm.length) (hlen : H.length ≤ Hm.length)
     (hpre : ∀ ℓ, ℓ < H.length → Hm[ℓ]? = H[ℓ]?)
     (hr : Tidy { env := ls.reverse, scope := ls } Hm r) :
-    Tidy φ H (r.absorb fun H₃ v => match runAllScopeDrops D H₃ { env := ls.reverse, scope := ls } with
+    Tidy φ H (r.bindCall fun H₃ v => match runAllScopeDrops D H₃ { env := ls.reverse, scope := ls } with
       | .error w => .stuck w
       | .ok (H₄, evs) => .ok H₄ v evs) := by
   have loc : ∀ H₂, Local { env := ls.reverse, scope := ls } Hm H₂ → Local φ H H₂ := by
@@ -2187,7 +2187,7 @@ theorem Tidy.call {D : Decls} {φ : Frame} {H Hm : Store} {ls : List Nat} {r : E
   cases r with
   | ok H₂ v tr =>
       obtain ⟨l₂, r₂⟩ := hr
-      simp only [EvalRes.absorb, runAllScopeDrops]
+      simp only [EvalRes.bindCall, runAllScopeDrops]
       split
       · trivial
       · rename_i H₃ evs hu
