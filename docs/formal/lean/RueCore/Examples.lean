@@ -1305,6 +1305,28 @@ example : checkProgram (prog tI64 dynReadAffineCopied) = false := by rfl
 example : checkProgram (prog tI64 dynDropAffineSkipped) = false := by rfl
 example : checkProgram (prog tI64 repeatAffineDuplicated) = false := by rfl
 
+/-- **RUE-2486 follow-up**: the same refusal as `dynDropAffineSkipped`
+(`@drop` of a non-`Copy` array element through a dynamic index), but with the
+index a call to a second function that returns its argument unchanged
+(`fn f1(x0: i64) -> i64 { x0 }`) rather than a literal. The corpus seed built
+from `dynDropAffineSkipped` printed its literal index as a `let`-bound
+temporary, `{ let t: i64 = 0; t }`, which the compiler's constant folder
+(`8.2:32`) reduces back to a compile-time constant — so the compiler took
+the *constant*-index path and accepted the program, rather than the
+dynamic-index path (Use-Untrackable-Dynamic-Copy) §5.1 refuses. A call
+crosses a function boundary the folder does not reach, so the printed index
+stays dynamic and the compiler refuses it with E0904, as this program's own
+`checkProgram` does. -/
+def dynDropAffineSkippedDyn : Program :=
+  { decls := Decls.ofStructs structEnv,
+    fns := [{ params := [], ret := tI64,
+              body := letIn false (mkArray (.struct sAffine) [resA (lit 1)])
+                (seq (indexDrop (.var 0) [call 1 [lit 0]] [[]])
+                  (seq (dbg (lit 1)) (lit 0))) },
+            { params := [⟨tI64, false⟩], ret := tI64, body := use (.var 0) }] }
+
+example : checkProgram dynDropAffineSkippedDyn = false := by rfl
+
 /-- (RUE-2400) The dynamic-index read of an affine leaf is refused by the
 machine as well as the statics: (D-Use-Untrackable-Dynamic-Copy) §6.3 is the
 only rule there and it wants `class(T) = Copy`, so `eval` answers
