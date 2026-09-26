@@ -1253,6 +1253,47 @@ needs no bridging lemma. `discard_loop`'s infinite `Step` run is nine steps per 
 any store, by `rfl` with the store and trace left symbolic
 (`Sharp.loopTurn_step`). No `native_decide`, no new axiom.
 
+## The proof map (RUE-2468)
+
+"The model can't optimize what it doesn't see." `lake exe ruecore-digest --map`
+writes `MAP.md` (generated): a **proof map** — Mermaid diagrams of how the
+mechanization's theorems hang together — computed from the compiled
+environment, never by grepping, the way `DIGEST.md` and `TRUST.md` are.
+
+Two lists of marked nodes: the spine (`RueCore.Spec.spine`, above), and about
+twenty to thirty **milestone lemmas** — load-bearing internal lemmas besides
+the spine, picked from the preservation invariants, the `eval`/`Step`
+simulation lemmas and the key trace lemmas (`RueCore/Map.lean`'s `milestones`
+list, each entry's reason in the comment beside it). Neither list is an
+attribute on a proof module: the spine comes from the Spec layer as it always
+has, and the milestones are a plain list in the L3 tooling, so no proof module
+is touched to draw the map. `MAP.md` fails to generate when a listed
+milestone is not a theorem of the environment.
+
+`MAP.md` renders, from the marked nodes and an edge `A → B` for every proof
+that transitively uses another marked node through unmarked helper theorems
+alone (`RueCore/Map.lean`'s `walk`, memoized the way `RueCore.Lint`'s axiom
+pass is):
+
+* the spine diagram: every marked node, grouped by declaring module, with
+  every such edge, so a reader can tell directly which theorems depend on a
+  given one (`Step.det`, say);
+* one small diagram per spine theorem: its milestone ancestors, and the
+  definitions its statement depends on — the same per-statement trusted-base
+  closure `TRUST.md`'s "Trusted base" aggregates over the whole spine
+  (`Lint.unfoldClosure`, `Lint.readable`), computed for one statement,
+  capped at a readable number, and annotated with the calculus citations each
+  definition's own doc-comment carries;
+* the assurance-chain diagram, static: the calculus, the Lean definitions,
+  the Spec statements, the proofs, and where each of the kernel, Lean
+  Comparator and `ruecore-lint` sits below them, beside the printer, the
+  interpreter, the bridge corpus and the compiler — kept in content beside
+  WHAT-IT-MEANS's diagram (RUE-2462) once it lands, without depending on that
+  file existing today;
+* size stats per marked node: its proof size in source lines, and the number
+  of distinct unmarked helper theorems under it before the next marked node —
+  what a later simplification pass reads first.
+
 ## What is mechanized
 
 | File | Contents | Calculus |
