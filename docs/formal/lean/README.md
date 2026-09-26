@@ -66,7 +66,7 @@ wrong *definition* is measured in [MUTATION.md](MUTATION.md) (RUE-2465):
 80 of the semantics and the checker (`Syntax`, `Statics`, `Checker/Defs`,
 `Dynamics`, `Step`), and 15 of the statement vocabulary and `Float`
 (`Soundness/Defs`, `Trace/Defs`, `Adequacy/Defs`; RUE-2490), asking whether a
-weakened *statement* — as opposed to a weakened *rule* — is noticed.
+weakened statement, as opposed to a weakened rule, is noticed.
 
 ```bash
 scripts/rue lean-bridge                      # or: ./buck2 run //:lean-bridge

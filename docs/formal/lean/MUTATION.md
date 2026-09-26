@@ -83,19 +83,19 @@ modules — **and, since RUE-2490, the statement vocabulary itself**: L0's
 * `Float.lean` (RUE-2490): `FloatDatum.Wf`, the float counterpart of
   `InBounds`.
 
-For the first five modules, mutating the rule and asking what a **proof**
+For the first five modules, mutating the rule and asking what a proof
 notices is the point: the statements (`SPINE.md`) are fixed and taken as
-written, so a wrong rule is a wrong *semantics*, caught (or not) by
+written, so a wrong rule is a wrong semantics, caught (or not) by
 `soundness`, `check_sound` and the rest. For the last four, mutating the
-*definitions the statements are written in* is a different exercise
+definitions the statements are written in is a different exercise
 (RUE-2465's original scope card this page as "Not mutated," reasoning that
 "what would notice it is a different question": the Spec layer's non-vacuity
 witnesses and sharpness counter-examples, RUE-2469). RUE-2490 runs that
 exercise: 15 mutants over these four modules, added after RUE-2469/2485/2495
 gave the page a non-vacuity witness and a sharpness counter-example for
 several of the statements that rest on them, which — per this page's own
-method — a weakened *rule* keeps proofs building past, but a weakened
-*statement definition* should break directly, since the witness or
+method — a weakened rule keeps proofs building past, but a weakened
+statement definition should break directly, since the witness or
 counter-example is stated in terms of the very thing that was weakened.
 ["The mutants"](#the-mutants) below has all 95; the RUE-2490 block's own
 readings, at trunk `1b58cdc26`, are in
@@ -108,7 +108,7 @@ the issue's operators and a few classic ones:
 
 | Operator | Mutants | What it does |
 |---|---:|---|
-| premise | 30 | drop a premise from a typing rule, a checker test or a statement definition (in a `Typed` rule or a definition's constructor the premise becomes `True`, see below) |
+| premise | 30 | drop a premise from a typing rule, a checker test or a statement definition (in a `Typed` rule or a definition's constructor, the premise becomes `True`, see below) |
 | join | 4 | change §5.5's join: the less-moved state wins, a linear disagreement joins, the residual check goes, a diverging arm swallows the branch |
 | move-copy | 2 | make a move a copy, in the statics and in the dynamics |
 | drop-skip, drop-order | 9 | skip one drop (a destructor, an overwrite drop, a drop mark, a match consume) or reorder drops (destructor after fields, fields last to first, a frame's bindings first to last, an arm's payload first to last) |
@@ -550,7 +550,7 @@ split to fail a witness first), so "Killed first by" always names a proof.
 "Without the proofs" is the second pass as elsewhere; none of the 15 reaches
 a corpus or generated case, so "Corpus and bridge alone" is "(same)"
 throughout, except the two the witness catches. Two — `newestfirst-vacuous`
-and `ordered-vacuous` — are killed by the *same* existing witness,
+and `ordered-vacuous` — are killed by the same existing witness,
 `unorderedRecord_rejected` (`Witnesses.lean`), which happens to state both
 `¬ NewestFirst` and `¬ Config.Ordered` of one concrete configuration.
 
@@ -558,7 +558,7 @@ and `ordered-vacuous` — are killed by the *same* existing witness,
 |---|---|---|---|---|---|---|---|---|---|---|
 | 81 | `hasty-int-any-value` | §6.1 | HasTy.int | premise | proof: `HasTy.int_inv` (`Soundness.lean`) | survived | (same) | only a helper is false | `HasTy.int_inv` and seven more (`HasTy.contentsTy`, `ContentsTy.toVal`, `intResult_res`, `binOpInt_res`, `evalUnOp_int_res`, `evalIntCast_res`, `evalFintrin_float_res`) restate `InBounds w s n` from a `HasTy`/`ContentsTy` derivation; `eval`'s own traps keep every computed int genuinely InBounds regardless | 43 |
 | 82 | `hasty-float-any-value` | §6.1 | HasTy.float | premise | proof: `HasTy.float_inv` (`Soundness.lean`) | survived | (same) | only a helper is false | `HasTy.float_inv` and four more (`HasTy.contentsTy`, `ContentsTy.toVal`, `binOpFloat_res`, `evalUnOp_float_res`) restate `f.Wf w` from a `HasTy`/`ContentsTy` derivation; the float ops' own closure laws keep every computed datum genuinely `Wf` regardless | 43 |
-| 83 | `evalok-stuck-ok` | §7 | EvalOk (progress) | vacuous | proof: `EvalOk.mono_store` (`Soundness.lean`) | survived | (same) | a stated property is false | `Spec.soundness_stmt` (`Spec/Safety.lean:32`) *is* `EvalOk`, so this weakens the headline, kernel-checked claim itself to no longer state progress; `no_violation_stmt` and its four `no_use_after_*`/leak/overwrite/discard corollaries are stated independently as `run ... ≠ .stuck w` and lose their derivation from `soundness` too | 44 |
+| 83 | `evalok-stuck-ok` | §7 | EvalOk (progress) | vacuous | proof: `EvalOk.mono_store` (`Soundness.lean`) | survived | (same) | a stated property is false | `Spec.soundness_stmt` (`Spec/Safety.lean:32`) is `EvalOk`, so this weakens the headline, kernel-checked claim itself to no longer state progress; `no_violation_stmt` and its four `no_use_after_*`/leak/overwrite/discard corollaries are stated independently as `run ... ≠ .stuck w` and lose their derivation from `soundness` too | 44 |
 | 84 | `contentsmatches-moved-residue` | §7 | ContentsMatches.moved | premise | proof: `ContentsMatches.hole` (`Soundness.lean`) | survived | (same) | only a helper is false | `ContentsMatches.hole` and four more (`residualLinear_false`, `ownedJoinOk_matches`, `OwnSt.join_matches` ×2) restate that a `MovedOut` node carries no live linear residue; no witness or corpus case builds a `MovedOut` node with a live linear sub-value to notice the gap directly | 51 |
 | 85 | `exact-at-most` | §7 | Exact (ok/returned) | count | proof: `Exact.bind` (`TraceExact.lean`) | survived | (same) | only a helper is false | `Exact.bind` and six more (`bindHeld`, `absorb`, `evalArgs_exactQuiet`, `evalArgs_exact`, `eval_exact`, `pendingSafe_needed`, `orphan_rejected`) restate the exact per-identity count; each fails feeding a `≤` fact where the composition needs `=`, not because a Spec statement is shown false | 76 |
 | 86 | `blocks-any-trace` | §6.11 | Blocks | wildcard | proof: `Blocks.append` (`TraceOrder.lean`) | survived | (same) | a stated property is false | `Blocks.not_dtor` (`TraceOrder.lean:1279`) becomes false, and `bare_dtor`'s `¬ Blocks P.decls tr` conjunct — the concrete witness RUE-2485's `Sharp.leak`, `.overwrite`, `.discard`, `.discard_loop` and `.copy` all rest on — is no longer provable: one wildcard defeats the whole sharpness-counter-example family, checked by hand since the build stops first in `TraceOrder.lean` | 72 |
@@ -572,7 +572,7 @@ and `ordered-vacuous` — are killed by the *same* existing witness,
 | 94 | `float-wf-no-emin` | §7 | FloatDatum.Wf | bounds | proof: `canonNum_wf` (`Float.lean`) | survived | (same) | only a helper is false | `canonNum_wf` and three more (`one_wf`, `widen_wf`, `roundOp_wf`) restate the `eMin` lower bound from `Wf`; nothing outside `FloatModel`'s own closure-law helpers checks a datum's exponent independently of them | 43 |
 | 95 | `float-wf-noncanonical` | §7 | FloatDatum.Wf | bounds | proof: `canonNum_wf` (`Float.lean`) | survived | (same) | only a helper is false | the same four helpers restate the canonical (odd-significand) requirement; RUE-2490's Float scope stops at this first layer of restating lemmas | 43 |
 
-**Score**, this block alone (15 mutants, none equivalent, so the denominator
+The score, this block alone (15 mutants, none equivalent, so the denominator
 is 15; `mutate.py --score` over this page's own `--work`):
 
 | Measure | RUE-2490's 15 |
@@ -584,12 +584,12 @@ is 15; `mutate.py --score` over this page's own `--work`):
 | The seeds and the bridge alone | 0/15 (0%) |
 | The build or the corpus fails at all (a proof script, a helper or the Explain mirror included) | 15/15 (100%) |
 
-**Reading the 47%.** Every one of the 15 fails the *full* build (a proof
+Why 47%, not higher: every one of the 15 fails the whole build (a proof
 notices something), so "the build fails at all" is 100%, same as the main
 80's. But the main 80's proofs are strongest on the statics precisely
-because a wrong *rule* is exercised by `soundness`/`check_sound` against a
-real derivation; a wrong *statement definition* is instead first noticed by
-a **helper lemma that restates it** (`HasTy.int_inv`, `ContentsMatches.hole`,
+because a wrong rule is exercised by `soundness`/`check_sound` against a
+real derivation; a wrong statement definition is instead first noticed by
+a helper lemma that restates it (`HasTy.int_inv`, `ContentsMatches.hole`,
 `Exact.bind`, `Config.SafeAt.progress`, `canonNum_wf`, and their siblings) —
 exactly the pattern this page's method calls out for a `Typed` premise
 ("even so, `check_sound` builds each rule from the checker's tests," Method,
@@ -602,7 +602,7 @@ RUE-2469/2485/2495's witnesses cover `NewestFirst` and `Config.Ordered`
 `bare_dtor`, under `Sharp.leak` and its four siblings), but not `HasTy`,
 `ContentsTy`, `ContentsMatches`, `Exact`, `Config.SafeAt` or `FloatDatum.Wf`.
 Two mutants (`safeat-terminal-only`, `stepsn-one-step-only`) are
-*strengthenings*, and both are caught immediately — not by a witness, but
+strengthenings, and both are caught immediately — not by a witness, but
 because the strengthened statement is one `adequacy`'s own proof cannot
 meet, the pattern §"Reading a proof failure" already expects.
 
@@ -675,12 +675,12 @@ definition nothing but its own restating helper notices**:
 
 | Mutant | Killed only by | Proposed witness |
 |---|---|---|
-| `hasty-int-any-value` (`HasTy.int` drops `InBounds`) | `HasTy.int_inv` and seven siblings restate the dropped fact | a `Nonvacuous`-style witness that a concrete out-of-range int's contents are never `ContentsTy`-well-typed at its width — mirrors `Sharp`'s shape: state the fact `HasTy`/`ContentsTy` currently *imply* as a fact about a value, so a weakening of the constructor falsifies it directly |
+| `hasty-int-any-value` (`HasTy.int` drops `InBounds`) | `HasTy.int_inv` and seven siblings restate the dropped fact | a `Nonvacuous`-style witness that a concrete out-of-range int's contents are never `ContentsTy`-well-typed at its width — mirrors `Sharp`'s shape: state the fact `HasTy`/`ContentsTy` currently entail as a fact about a value, so a weakening of the constructor falsifies it directly |
 | `hasty-float-any-value` (`HasTy.float` drops `f.Wf w`) | `HasTy.float_inv` and four siblings | the same shape, for a concrete `FloatDatum` that is not `Wf` (e.g. an even significand) |
-| `evalok-stuck-ok` (`EvalOk`'s `.stuck` clause, `False → True`) | none — **`Spec.soundness_stmt` itself is weakened**, and the four `no_use_after_*`/leak/overwrite/discard corollaries lose their derivation; only helper lemmas (`EvalOk.mono_store` and seven siblings) restate pieces of it | add `EvalOk`'s progress half to the sharpness/non-vacuity ledger directly: a `Nonvacuous`-style statement `∀ ..., eval ... ≠ .stuck _` for a checked program, proved once from `soundness` as written today, so a future weakening of `EvalOk.stuck` must falsify *this* statement to survive, not just the internal helpers |
-| `contentsmatches-moved-residue` (`ContentsMatches.moved` drops the residual-linear side condition) | `ContentsMatches.hole` and four siblings | a witness building a `.movedOut` node over contents with a live linear sub-value, showing it is *not* `ContentsMatches` today (the mirror of `Sharp`'s "an unchecked leak is refused") |
+| `evalok-stuck-ok` (`EvalOk`'s `.stuck` clause, `False → True`) | none — `Spec.soundness_stmt` itself is weakened, and the four `no_use_after_*`/leak/overwrite/discard corollaries lose their derivation; only helper lemmas (`EvalOk.mono_store` and seven siblings) restate pieces of it | add `EvalOk`'s progress half to the sharpness/non-vacuity ledger directly: a `Nonvacuous`-style statement `∀ ..., eval ... ≠ .stuck _` for a checked program, proved once from `soundness` as written today, so a future weakening of `EvalOk.stuck` must falsify that statement to survive, not just the internal helpers |
+| `contentsmatches-moved-residue` (`ContentsMatches.moved` drops the residual-linear side condition) | `ContentsMatches.hole` and four siblings | a witness building a `.movedOut` node over contents with a live linear sub-value, showing it is not `ContentsMatches` today (the mirror of `Sharp`'s "an unchecked leak is refused") |
 | `exact-at-most` (`Exact`'s `=` weakened to `≤`) | `Exact.bind` and six siblings | a witness exhibiting a concrete evaluation where the ledger's current equality is strict information beyond `Cons`'s inequality — e.g. that `drop_exactly_once`'s count is exact, not just bounded, on a seed that discards and reallocates an identity |
-| `safeat-progress-vacuous`, `safeat-typing-vacuous` (`Config.SafeAt`'s two conjuncts, each `→ True`) | `Config.SafeAt.progress`/`.preservation` and siblings | a `Nonvacuous`-style statement over `init_safeAt` naming each conjunct separately, so a future weakening of either falsifies a *named* fact rather than only the projection lemma that shares its name |
+| `safeat-progress-vacuous`, `safeat-typing-vacuous` (`Config.SafeAt`'s two conjuncts, each `→ True`) | `Config.SafeAt.progress`/`.preservation` and siblings | a `Nonvacuous`-style statement over `init_safeAt` naming each conjunct separately, so a future weakening of either falsifies a fact with its own name, rather than only the projection lemma that shares it |
 | `float-wf-no-emin`, `float-wf-noncanonical` (`FloatDatum.Wf`'s subnormal floor / canonical form dropped) | `canonNum_wf` and three siblings | a witness that a datum below `eMin`, or with an even significand, is not `Wf` today — the float counterpart of `Syntax.lean`'s `InBounds` witnesses |
 
 Three more are killed, but by a route worth flagging for the coordinator
