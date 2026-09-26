@@ -46,13 +46,12 @@ verdict, and the model's interpreter's outcome at one fixed fuel bound (a case
 that bound does not complete is left out rather than given an outcome).
 `crates/rue-oracle-diff` consumes it (RUE-2228) and runs the compiler, the
 oracle, and the native binary on each source. A disagreement means the
-compiler, the model, the spec or the printer is wrong, or it is a pending
-decision (e.g. RUE-2346); a person decides which (RUE-305). One exclusion:
-the checker types nothing past a `return` or `@panic` (§5.3's `-Bottom`
-rules), so it accepts dead code the compiler may reject, as §5.3 allows; a
-program with syntax after a
-diverging form is outside the verdict contract, and no case has one
-(`Checker.lean`, "Dead code").
+compiler, the oracle, the model, the spec or the printer is wrong, or it is
+a pending decision (e.g. RUE-2346); a person decides which (RUE-305). One
+exclusion: the checker types nothing past a `return` or `@panic` (§5.3's
+`-Bottom` rules), so it accepts dead code the compiler may reject, as §5.3
+allows; a program with syntax after a diverging form is outside the verdict
+contract, and no case has one (`Checker.lean`, "Dead code").
 
 Running the consumer needs neither `lake` nor `elan`: the corpus it reads is
 the Buck target's own `corpus.json`.
