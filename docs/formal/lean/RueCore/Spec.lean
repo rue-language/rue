@@ -24,7 +24,8 @@ definitions they unfold to (`TRUST.md`, "Trusted base") and nothing else:
 * `Spec/Checker.lean` — the executable checker decides the typing hypothesis;
 * `Spec/Trace.lean` — no double free, exactly-once drops, and drop order;
 * `Spec/Step.lean` — §6's relation's own properties, and §7 over it;
-* `Spec/Adequacy.lean` — `eval` and §6's relation agree.
+* `Spec/Adequacy.lean` — `eval` and §6's relation agree: their semantic
+  equivalence, the calculus's adequacy lemma.
 
 Beside them, `Spec/Nonvacuous.lean` holds the non-vacuity witnesses
 (`witnesses` below, RUE-2469) and `Spec/Sharp.lean` the sharpness
@@ -94,7 +95,7 @@ def spine : List (Lean.Name × Lean.Name) := [
   (`RueCore.step_preservation, ``step_preservation_stmt),
   (`RueCore.step_type_safety, ``step_type_safety_stmt),
   (`RueCore.step_no_use_after_drop, ``step_no_use_after_drop_stmt),
-  -- adequacy
+  -- the semantic equivalence of `eval` and `Step` (the calculus's adequacy)
   (`RueCore.eval_sound, ``eval_sound_stmt),
   (`RueCore.run_sim, ``run_sim_stmt),
   (`RueCore.eval_complete, ``eval_complete_stmt),
