@@ -31,8 +31,8 @@
 //!   `crates/rue-spec/cases`.
 //! - **lean-corpus** (`rue-oracle-diff lean-corpus --corpus <corpus.json>`):
 //!   ADR-0097's differential bridge (RUE-2228). Runs the Lean mechanization's
-//!   exported corpus — each case a small Rue program with the verified
-//!   checker's verdict and the verified interpreter's outcome — through the
+//!   exported corpus — each case a small Rue program with the proved-sound
+//!   checker's verdict and the model's interpreter's outcome — through the
 //!   compiler, the oracle, and native binaries at O1/O2/O3, and names every
 //!   pairwise disagreement among the four views. See [`lean_corpus`]. It is a
 //!   `buck2 run` entry point (`//:lean-bridge`), not a test tier: RUE-2241
