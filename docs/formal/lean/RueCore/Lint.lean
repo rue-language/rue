@@ -863,31 +863,90 @@ def spineProblems (env : Environment) : Array String := Id.run do
 
 /-! ## Sharpness: every hypothesis needed, or a reason (RUE-2485) -/
 
-/-- (helper) A statement's **hypotheses**: its binders of a `Prop` type,
-in the order they occur, walking its `∀`s, and the two sides of an `∧` or an
-`↔` and the body of an `∃` in its conclusion (`SPINE.md`'s "no hypotheses" is
-this list empty). The walk does not go under `∨` or `¬` (`Not` is not
+/-- (helper) One hypothesis of a statement, as the walk (`hypWalk`) meets it:
+its type, pretty-printed with the binders before it in scope, and whether it
+lies **inside the conclusion** — reached through an `∧`, an `↔` or an `∃` —
+rather than among the statement's leading premises. -/
+structure Hyp where
+  /-- Its type, pretty-printed. -/
+  text : String
+  /-- Is it under an `∧`, an `↔` or an `∃` of the conclusion? -/
+  inConclusion : Bool
+deriving Inhabited
+
+/-- (helper) The one walk over a statement's hypotheses (RUE-2485, RUE-2495),
+which both `hypotheses` (the numbering) and `dropHyp` (the weakened statement)
+run, so the two cannot number differently. It visits the statement's binders
+of a `Prop` type in the order they occur, walking its `∀`s, the two sides of an
+`∧` or an `↔` and the body of an `∃` in its conclusion, and numbers each from
+1 by the counter it threads. It does not go under `∨` or `¬` (`Not` is not
 reducible) and does not unfold a definition that is not reducible, so a
 premise inside `Config.SafeAt`, `Exact`, `Blocks` or `Lifo` is part of the
-conclusion, not a hypothesis; no spine statement has a premise under `∨` or
-`¬`. `Spec.sharpness` and `Spec.sharpnessReasons` number a
-hypothesis by its place here, from 1. Each is returned as its type, with the
-binders before it in scope, pretty-printed. -/
-partial def hypotheses (e : Lean.Expr) : MetaM (Array String) := do
-  let e ← Meta.whnfR e
-  match e with
-  | .forallE _ d _ _ =>
-      let here ← if ← Meta.isProp d then pure #[toString (← Meta.ppExpr d)] else pure #[]
-      Meta.forallBoundedTelescope e (some 1) fun _ b => do
-        return here ++ (← hypotheses b)
-  | _ =>
-      match e.getAppFnArgs with
-      | (``And, #[a, b]) | (``Iff, #[a, b]) => return (← hypotheses a) ++ (← hypotheses b)
-      | (``Exists, #[_, f]) =>
-          match f with
-          | .lam n d b bi => Meta.withLocalDecl n bi d fun x => hypotheses (b.instantiate1 x)
-          | _ => return #[]
-      | _ => return #[]
+conclusion, not a hypothesis. It returns the hypotheses met and the statement
+rebuilt with hypothesis number `drop` removed: that binder is left out, and the
+body under it is kept, which is well-formed only if the body does not mention
+the hypothesis's proof (no spine statement's does; the walk throws if one
+did). A subterm the dropped hypothesis is not in is returned as it was, so the
+rebuilt statement differs from the original only along the path to the
+dropped binder. `drop = 0` drops nothing. -/
+partial def hypWalk (drop : Nat) (inConcl : Bool) (e : Lean.Expr) :
+    StateT Nat MetaM (Array Hyp × Lean.Expr) := do
+  let k0 ← get
+  let e' ← Meta.whnfR e
+  let (hs, r) ← match e' with
+    | .forallE n d b bi => do
+        let mut here := #[]
+        let mut dropHere := false
+        if ← Meta.isProp d then
+          let k ← modifyGet fun k => (k + 1, k + 1)
+          here := #[{ text := toString (← Meta.ppExpr d), inConclusion := inConcl }]
+          dropHere := k == drop
+        Meta.withLocalDecl n bi d fun x => do
+          let (hs, b') ← hypWalk drop inConcl (b.instantiate1 x)
+          if dropHere then
+            if b'.containsFVar x.fvarId! then
+              throwError "hypothesis {drop} is used by the statement after it, so it cannot be dropped"
+            return (here ++ hs, b')
+          return (here ++ hs, ← Meta.mkForallFVars #[x] b')
+    | _ =>
+        match e'.getAppFnArgs with
+        | (``And, #[a, b]) | (``Iff, #[a, b]) => do
+            let (ha, a') ← hypWalk drop true a
+            let (hb, b') ← hypWalk drop true b
+            pure (ha ++ hb, mkApp2 e'.getAppFn a' b')
+        | (``Exists, #[α, f]) =>
+            match f with
+            | .lam n d b bi =>
+                Meta.withLocalDecl n bi d fun x => do
+                  let (hs, b') ← hypWalk drop true (b.instantiate1 x)
+                  pure (hs, mkApp2 e'.getAppFn α (← Meta.mkLambdaFVars #[x] b'))
+            | _ => pure (#[], e')
+        | _ => pure (#[], e')
+  -- the dropped hypothesis is not in this subterm: keep it as written
+  if k0 < drop && drop ≤ (← get) then return (hs, r) else return (hs, e)
+
+/-- (helper) A statement's **hypotheses** (`hypWalk`): its binders of a `Prop`
+type, in the order they occur, walking its `∀`s, and the two sides of an `∧`
+or an `↔` and the body of an `∃` in its conclusion (`SPINE.md`'s "no
+hypotheses" is this list empty). No spine statement has a premise under `∨`
+or `¬`. `Spec.sharpness` and `Spec.sharpnessReasons` number a hypothesis by
+its place here, from 1, and so does `dropHyp`. -/
+def hypothesisList (e : Lean.Expr) : MetaM (Array Hyp) :=
+  return (← (hypWalk 0 false e).run' 0).1
+
+/-- (helper) A statement's hypotheses (`hypothesisList`), each as its type,
+with the binders before it in scope, pretty-printed. -/
+def hypotheses (e : Lean.Expr) : MetaM (Array String) :=
+  return (← hypothesisList e).map (·.text)
+
+/-- (helper) The **weakened statement** (RUE-2495): the statement `e` with its
+hypothesis number `i` (as `hypotheses` numbers them, from 1) removed, or
+`none` when it has no hypothesis `i`. A counter-example to the pair
+(statement, `i`) proves its negation (`RueCore/Sharp/Glue.lean`). -/
+def dropHyp (e : Lean.Expr) (i : Nat) : MetaM (Option Lean.Expr) := do
+  let ((hs, r), _) ← (hypWalk i false e).run 0
+  if i == 0 || i > hs.size then return none
+  return some r
 
 /-- (helper) The number of hypotheses of a spine theorem's statement, if the
 environment has the statement. -/
@@ -896,17 +955,38 @@ def hypothesisCount (env : Environment) (thm : Name) : MetaM (Option Nat) := do
   let some (.defnInfo v) := find? env s | return none
   return some (← hypotheses v.value).size
 
+/-- (helper) The theorem of `RueCore.Sharp.Glue` that negates a spine
+statement with one hypothesis dropped, from a counter-example (RUE-2495):
+`RueCore.Sharp.stuck`, `RueCore.soundness` and `1` give
+`RueCore.Sharp.Glue.stuck.soundness_1`, and `RueCore.Sharp.init_steps`,
+`RueCore.Step.det` and `2` give `RueCore.Sharp.Glue.init_steps.Step.det_2`. -/
+def sharpGlueName (cx thm : Name) (i : Nat) : Name :=
+  (`RueCore.Sharp.Glue ++ cx.replacePrefix `RueCore.Sharp .anonymous) ++
+    (thm.replacePrefix `RueCore .anonymous).appendAfter s!"_{i}"
+
 /-- (helper) What is wrong with the sharpness lists, if anything (RUE-2485),
 each as a sentence:
 
 * every pair of `Spec.sharpness` and `Spec.sharpnessReasons` names a theorem
   of `Spec.spine` and one of its hypotheses (`1 ≤ i ≤` the number
   `hypotheses` counts), every counter-example names at least one pair and
-  none twice (a statement is listed once, by `spineProblems`), and
-  every reason is a sentence;
+  none twice (a statement is listed once, by `spineProblems`, so no
+  (statement, theorem, hypothesis) triple is listed twice), and every reason
+  is a sentence;
 * **every hypothesis of every spine statement** is named by a counter-example
   or by a reason, and not by both; a statement with no hypotheses (five) is
-  named by neither.
+  named by neither;
+* **every pair is checked in the kernel** (RUE-2495): for a counter-example
+  `RueCore.Sharp.<x>` naming hypothesis `i` of `RueCore.<t>`, the theorem
+  `RueCore.Sharp.Glue.<x>.<t>_<i>` (`sharpGlueName`) exists, is declared in
+  `RueCore.Sharp.Glue`, uses `RueCore.Spine.Sharp.<x>`, and has exactly the
+  type `¬ W`, where `W` is `<t>`'s Spec statement with hypothesis `i` removed
+  (`dropHyp`). Exactly means the same term up to binder names and binder
+  annotations (`Expr.eqv`, the comparison `spineProblems` makes), not merely
+  definitionally equal. So a pair names a hypothesis the statement refutes:
+  a swapped or invented pair names a glue theorem that is missing, or that
+  states something else. And `RueCore.Sharp.Glue` declares no theorem that
+  ties no listed pair.
 
 The counter-example statements themselves are `entries`, so `spineProblems`
 holds each to a spine entry's checks. -/
@@ -943,6 +1023,32 @@ def sharpProblems (env : Environment) : MetaM (Array String) := do
         out := out.push s!"{t}: hypothesis {i} has no counter-example in RueCore.Spec.sharpness and no reason in RueCore.Spec.sharpnessReasons"
       if byEx && byReason then
         out := out.push s!"{t}: hypothesis {i} has both a counter-example and a reason; keep one"
+  -- every pair is checked in the kernel (RUE-2495): its glue theorem negates
+  -- exactly the statement with that hypothesis dropped
+  let mut glue : NameSet := {}
+  for (h, _, ps) in Spec.sharpness do
+    for (t, i) in ps do
+      let g := sharpGlueName h t i
+      glue := glue.insert g
+      let some (_, s) := Spec.spine.find? (·.1 == t) | continue
+      let some body := statementBody? env s | continue
+      let weak? ← try dropHyp body i catch ex =>
+        out := out.push s!"{h}: hypothesis {i} of {t} cannot be dropped: {← ex.toMessageData.toString}"
+        pure none
+      let some weak := weak? | continue
+      match find? env g with
+      | some (.thmInfo v) =>
+          if !(v.type == mkNot weak) then
+            out := out.push s!"{g}: its statement is not the negation of {s} with hypothesis {i} dropped (`Lint.dropHyp`, up to binder names), so {h} is not shown to refute that pair"
+          if !(v.value.getUsedConstants.contains (spineName h)) then
+            out := out.push s!"{g}: does not use {spineName h}, the counter-example it stands for"
+          if moduleOf? env g != some `RueCore.Sharp.Glue then
+            out := out.push s!"{g}: not declared in RueCore.Sharp.Glue"
+      | _ => out := out.push s!"{h} names hypothesis {i} of {t}, but {g} is missing: no kernel-checked negation of {t} with that hypothesis dropped"
+  for (n, info) in env.constants.toList do
+    if moduleOf? env n == some `RueCore.Sharp.Glue && info matches .thmInfo _ &&
+        (rangeOf? env n).isSome && !glue.contains n then
+      out := out.push s!"{n}: a theorem of RueCore.Sharp.Glue that ties no pair of RueCore.Spec.sharpness"
   return out
 
 /-- (helper) The lists the Spec layer holds beside its statements: the spine,
