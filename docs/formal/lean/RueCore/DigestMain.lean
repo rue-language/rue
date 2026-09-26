@@ -499,15 +499,17 @@ def renderSpineDiagram (env : Environment) (markedList : List Name)
 (solid edges: proof dependencies `Map.walk` found), and the definitions its
 *statement* depends on — the per-statement type-level closure
 `Lint.trustedBase` aggregates over the whole spine, computed here for one
-statement alone (`Lint.unfoldClosure`, `Lint.readable`), capped at 25 and
-annotated with each definition's calculus citations (dashed edges). Answers,
-for `check_sound`, RUE-2468's second acceptance question. -/
+statement alone (`Map.statementClosure`), capped at 25 and annotated with
+each definition's calculus citations (dashed edges). Answers, for
+`check_sound`, RUE-2468's second acceptance question. When the closure is
+capped, the full list follows in a collapsed `<details>` block as one line of
+links into "Definitions the statements rest on" (`renderDefinitionsTable`),
+so the module and the citations are read there once rather than repeated in
+every theorem's block. -/
 def renderTheoremDiagram (env : Environment) (milestoneSet : NameSet)
     (h s : Name) (ancestors : Array Name) : CoreM (List String) := do
   let milestoneAnc := (ancestors.filter milestoneSet.contains).qsort (·.toString < ·.toString)
-  let closure := match Lint.statementBody? env s with
-    | some body => Lint.readable env (Lint.unfoldClosure env body.getUsedConstants)
-    | none => #[]
+  let closure := Map.statementClosure env s
   let cap := 25
   let shown := if closure.size > cap then closure.extract 0 cap else closure
   let citesOf (d : Name) : CoreM (Array String) := do
@@ -515,41 +517,69 @@ def renderTheoremDiagram (env : Environment) (milestoneSet : NameSet)
     return Map.sectionCitations doc ++ Map.ruleCitations doc
   let mut out : Array String := #["```mermaid", "flowchart BT",
     s!"  thm[\"{Digest.shortName h}\"]"]
+  -- each node here has exactly one edge, always to `thm` and never reused
+  -- elsewhere in this diagram, so its label declaration and its edge are one
+  -- Mermaid line, not two (RUE-2468's compaction pass: half the lines, the
+  -- same rendered graph)
   if !milestoneAnc.isEmpty then
     out := out.push "  subgraph mile[\"Milestone ancestors\"]"
     for a in milestoneAnc do
-      out := out.push s!"    {Map.sanitizeId (Digest.shortName a)}[\"{Digest.shortName a}\"]"
+      out := out.push
+        s!"    {Map.sanitizeId (Digest.shortName a)}[\"{Digest.shortName a}\"] --> thm"
     out := out.push "  end"
-    for a in milestoneAnc do
-      out := out.push s!"  {Map.sanitizeId (Digest.shortName a)} --> thm"
   if !shown.isEmpty then
     out := out.push "  subgraph defs_[\"Definitions the statement depends on\"]"
     for d in shown do
       let cites ← citesOf d
       let label := Digest.shortName d ++
         (if cites.isEmpty then "" else "<br/>" ++ String.intercalate ", " cites.toList)
-      out := out.push s!"    {Map.sanitizeId (Digest.shortName d)}[\"{label}\"]"
+      out := out.push
+        s!"    {Map.sanitizeId (Digest.shortName d)}[\"{label}\"] -.-> thm"
     out := out.push "  end"
-    for d in shown do
-      out := out.push s!"  {Map.sanitizeId (Digest.shortName d)} -.-> thm"
   out := out.push "```"
   if closure.size > cap then
     out := out.push ""
     out := out.push s!"({closure.size - shown.size} more definitions the statement depends on, past the {cap} cap.)"
     -- the diagram alone answers "which definitions does this cap short of the
     -- full count", but a reader wanting the complete list (RUE-2468's review,
-    -- S2) gets it here, collapsed so the 36 per-theorem sections stay skimmable
+    -- S2) gets it here, collapsed so the 36 per-theorem sections stay
+    -- skimmable — as one line of links into "Definitions the statements rest
+    -- on" rather than 36 copies of every definition's module and citations
+    -- (RUE-2468's compaction pass)
     out := out.push ""
     out := out.push "<details>"
     out := out.push s!"<summary>All {closure.size} definitions {Digest.shortName h}'s statement depends on</summary>"
     out := out.push ""
-    for d in closure do
-      let cites ← citesOf d
-      let suffix := if cites.isEmpty then "" else " — " ++ String.intercalate ", " cites.toList
-      out := out.push s!"- `{Digest.shortName d}`{suffix}"
+    out := out.push (", ".intercalate
+      (closure.toList.map fun d => s!"[`{Digest.shortName d}`](#{Map.defAnchor d})"))
     out := out.push ""
     out := out.push "</details>"
   return out.toList
+
+/-- (helper) "Definitions the statements rest on": every definition any
+spine theorem's statement depends on (the union of `Map.statementClosure`
+over `Spec.spine`), each listed once with its module and its calculus
+citations, and given an anchor (`Map.defAnchor`) a per-theorem `<details>`
+block links into instead of repeating the same row up to 36 times
+(RUE-2468's compaction pass — MAP.md was 8,656 lines, almost all of it that
+repetition). GitHub does not generate an anchor for a table row on its own,
+so each name cell carries an explicit `<a id="…"></a>`. -/
+def renderDefinitionsTable (env : Environment) (defs : Array Name) : CoreM (List String) := do
+  let mut rows : Array String := #[]
+  for d in defs do
+    let m := (Lint.moduleOf? env d).getD .anonymous
+    let doc := (← findDocString? env d).getD ""
+    let cites := Map.sectionCitations doc ++ Map.ruleCitations doc
+    let citeCell := if cites.isEmpty then "—" else String.intercalate ", " cites.toList
+    rows := rows.push
+      s!"| <a id=\"{Map.defAnchor d}\"></a>`{Digest.shortName d}` | `{m}` | {citeCell} |"
+  return ["## Definitions the statements rest on", "",
+    "Every definition any spine theorem's statement depends on, once each, with",
+    "its module and the calculus citations its doc-comment carries — what the",
+    "36 per-theorem `<details>` blocks below link into instead of repeating.",
+    "",
+    "| Definition | Module | Calculus citations |",
+    "| --- | --- | --- |"] ++ rows.toList ++ [""]
 
 /-- (helper) `MAP.md` (RUE-2468): the spine diagram, one small diagram per
 spine theorem, the static assurance-chain diagram, and the size-stats table
@@ -594,13 +624,18 @@ def mapReport (env : Environment) : CoreM (String × UInt32) := do
     let lines ← Map.declLines n
     let helpers := (helperCountOf.find? n).getD 0
     out := out.push s!"| `{Digest.shortName n}` | {reason} | {lines} | {helpers} |"
-  out := out ++ #["", "## Per-spine-theorem diagrams", "",
+  let allStatementDefs := Digest.dedup
+    ((Spec.spine.map (fun (_, s) => Map.statementClosure env s)).foldl (· ++ ·) #[])
+    |>.qsort (·.toString < ·.toString)
+  out := out ++ (← renderDefinitionsTable env allStatementDefs).toArray
+  out := out ++ #["## Per-spine-theorem diagrams", "",
     "One small diagram per spine theorem: its milestone ancestors, and the",
     "definitions its statement depends on (the per-statement trusted-base",
     "closure, `Lint.trustedBase`'s aggregate computed here one statement at a",
     "time), each with the `§N.M` and `(Rule-Name)` citations its doc-comment",
     "carries. Capped at 25 definitions; a capped diagram says how many more there",
-    "were.", ""]
+    "were, and links the full list into \"Definitions the statements rest on\"",
+    "above.", ""]
   for (h, s) in Spec.spine do
     let ancestors := (ancestorsOf.find? h).getD #[]
     out := out.push s!"### `{Digest.shortName h}`"

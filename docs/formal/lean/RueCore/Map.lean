@@ -310,6 +310,29 @@ def declLines (name : Name) : CoreM Nat := do
   | some ranges => return ranges.range.endPos.line - ranges.range.pos.line + 1
   | none => return 0
 
+/-- (helper) The definitions one Spec statement's *type* depends on: the
+per-statement trusted-base closure (`Lint.unfoldClosure`, `Lint.readable`),
+sorted by name. Both a spine theorem's own per-theorem diagram and the
+shared "Definitions the statements rest on" table start from this one
+function, so the two can never drift apart. -/
+def statementClosure (env : Environment) (s : Name) : Array Name :=
+  match Lint.statementBody? env s with
+  | some body => Lint.readable env (Lint.unfoldClosure env body.getUsedConstants)
+  | none => #[]
+
+/-- (helper) A definition's anchor in MAP.md's "Definitions the statements
+rest on" table (RUE-2468's compaction pass): `def-` plus its sanitized short
+name, case preserved. A link and the table's `<a id=…>` are two independent
+pieces of generated text, so both must go through this one function rather
+than each spelling the anchor its own way. Not lower-cased, although the
+convention a hand-written anchor follows usually is: the package has both
+`DynPlace` and `dynPlace`, and `Step` and `step`, and folding case would make
+those four names collide on two ids. An HTML id and a Markdown link's
+fragment are matched case-sensitively, so keeping each name's own case is
+exact and still resolves. -/
+def defAnchor (n : Name) : String :=
+  "def-" ++ sanitizeId (Digest.shortName n)
+
 /-- (helper) The static assurance-chain diagram (RUE-2468): what the proof
 chain covers, and how the bridge corpus tests the compiler against the same
 model, kept beside `../WHAT-IT-MEANS.md`'s diagram (RUE-2462) in content
