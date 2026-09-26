@@ -9,7 +9,7 @@ public import RueCore.Adequacy.Defs
 @[expose] public section
 
 /-!
-# RueCore.Spec.Witnesses — the spine's hypotheses hold of real programs (Spec layer)
+# RueCore.Spec.Nonvacuous — the spine's hypotheses hold of real programs (Spec layer)
 
 A kernel-checked theorem can still be empty: a checker that accepts nothing
 is trivially sound, and a statement over every `M : FloatModel` holds

@@ -559,7 +559,7 @@ its own layer or a lower one:
 | --- | --- | --- |
 | **L0 syntax** | `Float`, `Syntax` | §2's syntax, types and float data |
 | **L1 definitions** | `Statics`, `Dynamics`, `Step`, `Soundness/Defs`, `Checker/Defs`, `Trace/Defs`, `Adequacy/Defs` | the semantics (§5's judgment, `eval`, §6's `Step`), and every definition a headline statement is written in: value typing and `FrameMatches`, the checker algorithm, the trace projections, ledgers and configuration invariants, `Config.SafeAt` |
-| **Spec statements** | `Spec`, `Spec.Safety`, `Spec.Checker`, `Spec.Trace`, `Spec.Step`, `Spec.Adequacy`, `Spec.Witnesses` | the headline statements, each a `def …_stmt : Prop` over L0 and L1 alone, with its English reading; the one list of them, `Spec.spine` ("The statement layer"); and the non-vacuity witnesses with their list, `Spec.witnesses` ("Non-vacuity witnesses") |
+| **Spec statements** | `Spec`, `Spec.Safety`, `Spec.Checker`, `Spec.Trace`, `Spec.Step`, `Spec.Adequacy`, `Spec.Nonvacuous` | the headline statements, each a `def …_stmt : Prop` over L0 and L1 alone, with its English reading; the one list of them, `Spec.spine` ("The statement layer"); and the non-vacuity witnesses with their list, `Spec.witnesses` ("Non-vacuity witnesses") |
 | **L2 proofs** | `Float.Lemmas`, `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder`, `Nonvacuous`, `Spine` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L0's and L1's definitions (`Float.Lemmas`: the `FloatModel` laws of `Float.exactOps`), `Nonvacuous` proves the witness statements, and `Spine` checks each headline and witness proof against its Spec statement |
 | **L3 tooling** | `Examples`, `Witnesses`, `Print`, `Corpus`, `Gen`, `Explain*`, `Digest`, `Layers`, `Lint`, the `*Main` executables, the root `RueCore` | example and corpus programs and the theorems about them, the printer, the generator, the explain and digest reports, the layer table and the lint |
 
@@ -643,7 +643,7 @@ flowchart BT
     Spec_Safety["Spec.Safety"]
     Spec_Step["Spec.Step"]
     Spec_Trace["Spec.Trace"]
-    Spec_Witnesses["Spec.Witnesses"]
+    Spec_Nonvacuous["Spec.Nonvacuous"]
   end
   subgraph L2["L2 proofs"]
     Adequacy["Adequacy"]
@@ -694,12 +694,12 @@ flowchart BT
   Spec_Trace --> Spec
   Spec_Step --> Spec
   Spec_Adequacy --> Spec
-  Spec_Witnesses --> Spec
-  Float --> Spec_Witnesses
-  Checker_Defs --> Spec_Witnesses
-  Soundness_Defs --> Spec_Witnesses
-  Trace_Defs --> Spec_Witnesses
-  Adequacy_Defs --> Spec_Witnesses
+  Spec_Nonvacuous --> Spec
+  Float --> Spec_Nonvacuous
+  Checker_Defs --> Spec_Nonvacuous
+  Soundness_Defs --> Spec_Nonvacuous
+  Trace_Defs --> Spec_Nonvacuous
+  Adequacy_Defs --> Spec_Nonvacuous
   Float --> Float_Lemmas
   Float_Lemmas --> Nonvacuous
   Checker --> Nonvacuous
@@ -988,7 +988,7 @@ without Landlock fails 3.
 A kernel-checked statement can still be empty: a checker that accepts nothing
 is trivially sound, and a statement over every `M : FloatModel` holds
 vacuously if no model satisfies the laws. So every spine statement has
-**non-vacuity witnesses**: Spec statements (`RueCore/Spec/Witnesses.lean`)
+**non-vacuity witnesses**: Spec statements (`RueCore/Spec/Nonvacuous.lean`)
 saying that its hypotheses hold together of a non-trivial program, written out
 in the statement, with the non-triviality in the statement too.
 
@@ -1063,7 +1063,7 @@ arity.
 | `RueCore/Adequacy.lean` | **`eval` is adequate to `Step`, both ways, and §7 over `Step`** (RUE-2289 parts 2–4, ADR-0097 decision 3). Soundness: the simulation relation `Sim` between an `eval` result and `→*` from the expression in focus under any context — a value reaches the hole's value in the same frame, a panic reaches `↯κ`, an unwinding `return` the nearest caller, an unwinding `break` the nearest loop's context — proved for every expression and fuel on every program (`eval_sim`, `run_sim`), and `eval_sound`, the statement over checked programs, where `no_violation` rules `.stuck` out. Completeness modulo fuel: exhausted fuel is a run of that many steps (`eval_steps_of_outOfFuel`); with determinism, `eval_complete` says that on a checked program every value or panic `→*` reaches is `run`'s answer at every fuel past the run's length; `never_stuck_iff` is "never `.stuck`" both ways, in §7's phrasing; `eval_diverges_iff` says exhaustion at every fuel is divergence. §7 over `Step` (part 4): `step_progress`, `step_preservation` (for the semantic configuration typing `Config.SafeAt`, whose fundamental lemma is `init_safeAt`), `step_value_typed` and `step_type_safety`; `Frame.empty`, `StepsN` and `Config.SafeAt` are defined in `Adequacy/Defs.lean` (layer L1) | §6.2, §6.9, §6.10, §6.12, §7 |
 | `RueCore/Checker/Defs.lean` | (layer L1) the decidable checker as an algorithm, moved out of `Checker.lean`: `check`, `checkFn`, `checkDecls` and `checkProgram` | §3, §5 as an algorithm |
 | `RueCore/Checker.lean` | decidable checker `check`/`checkProgram` (defined in `Checker/Defs.lean`) + `check_sound`/`checkProgram_sound` (every acceptance is a derivation), with §5.7's loop head found by a bounded iteration (`headIter`) and re-verified, and `checkDecls` — §3's two class equations plus `3.0:5`'s acyclicity, decided by peeling the declarations | §3, §5 as an algorithm |
-| `RueCore/Spec/Witnesses.lean`, `RueCore/Nonvacuous.lean` | (layers Spec and L2) the non-vacuity witnesses (RUE-2469, "Non-vacuity witnesses"): twelve statements, over written-out programs, that the spine's hypotheses hold together of non-trivial programs, and their proofs | §7's hypotheses, satisfied |
+| `RueCore/Spec/Nonvacuous.lean`, `RueCore/Nonvacuous.lean` | (layers Spec and L2) the non-vacuity witnesses (RUE-2469, "Non-vacuity witnesses"): twelve statements, over written-out programs, that the spine's hypotheses hold together of non-trivial programs, and their proofs | §7's hypotheses, satisfied |
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
 | `RueCore/Witnesses.lean` | (layer L3) the theorems at work on example and corpus programs, moved out of the proof modules because they mention the tooling layer: `affineScopeDrop_both_ways` traces one corpus program both ways; `drop_order`'s rejections (`fieldsSwapped_rejected`, `swappedMarkers_rejected`, `unorderedRecord_rejected`) and `returnPastAffine_newestFirst`; fourteen order-witnessing corpus cases read through the trace theorems; every accepted seed case is `pendingSafe`; and, moved from `Step.lean` and `Adequacy.lean` (RUE-2460), eleven programs run through §6's relation by `stepN` and `run_sim`'s and `run_complete`'s witnesses on them (`letAddProgram_sound`, `dropMoved_refused`); and the checker's rejections, one corpus case per error class (`errorClasses_rejected`, `typeErrors_rejected`, RUE-2469) | §5, §6.7, §6.9, §6.11, §7 witnesses |
 | `RueCore/Print.lean` | core syntax → Rue source, the program's struct and enum declarations included, and the observation channel (a `drop fn` per destructor-bearing declaration) | §2 elaboration inventory, 3.9 |

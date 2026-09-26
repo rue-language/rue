@@ -12,7 +12,7 @@ public import RueCore.Adequacy
 # RueCore.Nonvacuous — the witness statements, proved (layer L2)
 
 Each theorem here proves the Spec statement of the same name in
-`RueCore/Spec/Witnesses.lean` (`RueCore.Spec.Nonvacuous.<name>_stmt`), stated
+`RueCore/Spec/Nonvacuous.lean` (`RueCore.Spec.Nonvacuous.<name>_stmt`), stated
 word for word, and `Spine.lean` binds it to that statement. The programs are
 written out in the statements, so this module defines none of its own; the
 proofs run the checker and `eval` in the kernel (`rfl`, `decide`, and

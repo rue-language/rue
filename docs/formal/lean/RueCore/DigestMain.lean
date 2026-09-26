@@ -220,7 +220,7 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
         ", ".intercalate (direct.toList.map (s!"`{Digest.shortName ·}`")) ++
         s!"; rests on {closure.size} definitions.", "",
       "Non-vacuous: " ++ witnessesOf h ++ ".", ""]
-  out := out ++ #["## Non-vacuity witnesses", "", "`RueCore.Spec.Witnesses`", "",
+  out := out ++ #["## Non-vacuity witnesses", "", "`RueCore.Spec.Nonvacuous`", "",
     "Each statement shows the hypotheses of the spine statements it names satisfiable",
     "together, by a program written out in the statement (RUE-2469).", ""]
   for (h, s, ts) in Spec.witnesses do
