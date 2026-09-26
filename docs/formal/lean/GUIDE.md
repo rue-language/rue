@@ -715,6 +715,34 @@ live bindings. The σ-walk drops each once (`#2` and `#0`, row 9), and no
 `endscope` runs for either: the ledger has one end per identity, and all of
 them are on the unwind path.
 
+**Exactly once, over a whole run** (`TraceWhole.lean`). *Every owned value
+a finished run of a checked, `pendingSafe` program ever holds is, at the
+end, ended exactly once in the trace or part of the result, and not both.*
+
+```lean
+theorem whole_program_exactly_once (M : FloatModel) (h : ProgramTyped P)
+    (hp : P.pendingSafe = true) (hC : Steps M.toFloatOps P Config.init C)
+    (ha : a ∈ C.held P.decls)
+    (hT : Steps M.toFloatOps P C (.run H φ [] (.ret v) tr)) :
+    (v.own P.decls).count a + (freedIds P.decls tr).count a = 1
+```
+
+`drop_exactly_once` counts only the identities an evaluation starts with,
+and at `run` that is none: the run starts from the empty store. This
+statement counts every identity some configuration of the run holds
+(`Config.held`: in a cell, in focus, or pending on the control stack), so a
+value minted and dropped inside one evaluation, and `main`'s result, are
+counted too. It is the "at least once" half the per-evaluation statements
+leave to an argument; the "at most once" half was already
+`no_double_free`. The proof carries a ledger — what a configuration holds
+plus what its trace has ended — along `eval`'s simulation of the run and
+shows no step loses an identity from it. A panic carries no claim, since a
+trap runs no drop (§6.12).
+
+Witness: `Nonvacuous.whole_drops`, `let x = S0 { 1 }; let y = S0 { 2 }; 3`.
+Fifteen steps in, the configuration holds both values, `#0` and `#2`, in
+their cells; the finished trace drops each once.
+
 **Drop order** (`TraceOrder.lean`). *In every finished run, every
 destructor runs inside the drop of the value that owns it, in §6.11's order;
 and at every step the machine tears cells down last-in first-out: it drops
@@ -2059,7 +2087,7 @@ back-edge invariance; bringing that wording in line is RUE-2355.
   file compiled. Every refusal and trap the fragment can reach has such a
   witness (`Examples.lean`, `Corpus.lean`), and so does the fuel boundary
   (`run demoOps countdown 16` versus `17`).
-- **Read the claim.** `SPINE.md` is the 40 statements the mechanization
+- **Read the claim.** `SPINE.md` is the 41 statements the mechanization
   claims, each with its English reading and the §7 paragraph it realizes,
   generated from the Spec layer; `lake build` fails unless each is proved
   as stated, and `spine-fingerprints.txt` pins what is stated, so a changed

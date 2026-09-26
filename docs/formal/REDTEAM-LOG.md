@@ -56,7 +56,7 @@ issue, or commented onto an existing one.
 | # | Target | Severity | Source | Issue | Proposed issue / evidence |
 |---|---|---|---|---|---|
 | R1 | statement | medium | F2 (raw: HIGH) | RUE-2477 | `no_double_free` says nothing about a run that does not terminate: add a statement over every reachable configuration's trace. `EvalRes.trace` is `[]` for `outOfFuel` (its DIGEST entry: "nothing for a refusal or exhausted fuel"), and by `eval_diverges_iff` a diverging program is `outOfFuel` at every fuel, so both counts are 0 for it. §7's bullet ("every stored value's destructor runs at most once") has no termination proviso; `run_trace_once` and `eval_conserves` are also over `run`/`eval` results. A double drop inside a `loop` that never exits is outside every multiplicity statement. In FIELD.md's terms (§6, Alpern & Schneider), this multiplicity bound is a safety property; R1 is a missing finite-prefix form of it, as RUE-2477 frames it. (Since closed, by RUE-2477: `step_no_double_free` bounds the trace of every configuration `Step` reaches; see the entry below.) |
-| R2 | statement | medium | F7 (raw: medium) | RUE-2478 | Whole-program "every owned value ends exactly once" is a prose composition of `drop_exactly_once` and `rest_exactly_once`, not a theorem. `Exact` quantifies over `a < List.length H`; at the program level (`run`: `H = []`) the quantifier is empty. 03-metatheory's "Why two statements, not one over `run`" argues the composition in prose ("So every owned value a checked run holds ends exactly once …") and names two ends neither theorem sees (an end inside the minting evaluation; `main`'s result). No statement discharges the per-window hypotheses (`FrameMatches`, `StoreCC`) at every intermediate state. |
+| R2 | statement | medium | F7 (raw: medium) | RUE-2478 | Whole-program "every owned value ends exactly once" is a prose composition of `drop_exactly_once` and `rest_exactly_once`, not a theorem. `Exact` quantifies over `a < List.length H`; at the program level (`run`: `H = []`) the quantifier is empty. 03-metatheory's "Why two statements, not one over `run`" argues the composition in prose ("So every owned value a checked run holds ends exactly once …") and names two ends neither theorem sees (an end inside the minting evaluation; `main`'s result). No statement discharges the per-window hypotheses (`FrameMatches`, `StoreCC`) at every intermediate state. (Since closed, by RUE-2478: `whole_program_exactly_once` states the whole-program form over §6's relation and is proved without composing the two; see the entry below.) |
 | R3 | statement | medium | F1 (raw: HIGH) | RUE-2469 (comment) | The linear-consumption guarantee lives only in `eval`'s monitors: bring the monitor-fires witnesses into the statement layer. `Step.assign`, `Step.seqDrop`, `Step.endScope` and the unwinds drop a linear value through the same `dropCell`/`dropContents` path as `@drop`, with the same `Event.drop`. The three linear theorems are `run … ≠ .stuck .linearX`, which hold for an `eval` with no monitors. They are non-vacuous only because of `Examples.lean`'s `run … = .stuck .linearLeak`/`.linearOverwrite` witnesses and `Corpus.lean:938`'s `.linearDiscard` one, which are examples, not part of the stated claim. For RUE-2469 (witnesses) and RUE-2465 (a mutant that removes a monitor). |
 | R4 | statement | medium | F5 (raw: HIGH) | RUE-2423, RUE-2467 (comment) | `step_preservation` states `SafeAt init`: its `∀ C` adds nothing, and no configuration typing is preserved. `Config.SafeAt` quantifies over everything reachable from `C`, so it is closed under `Steps` by transitivity, and the theorem is equivalent to `SafeAt … Config.init`. 03-metatheory l.202–203 and l.211–214 already disclose this ("needs no typing hypothesis"; "holds by construction, and the content is the fundamental lemma `RueCore.init_safeAt`"), as does the semantic form generally (FIELD.md §2, the `SafeAt` docstring). What is not disclosed: no configuration-typing relation is stated at all (RUE-2423), and the theorem's name still reads as the syntactic lemma (RUE-2467, the spine alignment). |
 | R5 | statement | low | F3 (raw: HIGH) | RUE-2467 (comment) | `never_stuck_iff` under `ProgramTyped` is the conjunction of two theorems, not an equivalence with content. Under `h`, its left side is `eval_sound`'s first conjunct and its right side is `step_progress`. Its own docstring says the content is the forward direction on every program (`step_never_stuck_of_run`), which is not the headline. The spine should cite that theorem (RUE-2467, the spine alignment). |
@@ -102,7 +102,7 @@ each raw finding is accounted for here.
 | **F13** bullets 2–4 (statement, MEDIUM): copy/move decided from the runtime value against a declared plan recomputed from contents (§6.3 says the dynamic rules "never … recompute"); aggregate identities minted into the same namespace as binding locations; no `H0` of string literals, no by-ref parameter paths, no buffers (§6.13). Bullet 1 (destructors as events, not nested runs) is dropped above as disclosed. | The copy/move-vs-plan point is equivalent on well-typed programs (see L5) and a candidate mutant for RUE-2465. The shared namespace is disclosed as harmless in the same finding. `H0`/by-ref/buffers are unmechanized scope, alongside R8's buffers gap and the exclusivity/no-use-after-free bullets already disclosed as not yet mechanized (RUE-2238). |
 | **Docs M7** (MEDIUM): "a property proven once about the core holds for all ten" needs elaboration correctness, which is unspecified (`02-elaboration.md` is planned). | The same overclaim shape as R9 (whole-core vs. fragment); not separately counted. Route with R9's citation, RUE-2476. |
 | **Docs M8** (MEDIUM): "kernel-checked" checks the proofs; it does not check that `Typed`/`Step`/`ProgramTyped` faithfully transcribe §5/§6. Faithfulness rests on review and the INDEX cross-reference. | Not a claim about what is proved so much as what "kernel-checked" can be read to promise; route to RUE-2476. |
-| **Docs H4** in full (HIGH): the exactly-once guarantee is expression-level and needs `FrameMatches`/`StoreCC` at every intermediate state, not only `pendingSafe`; no statement instantiates it at `Config.init`. | R9 cites only the `pendingSafe` half. The rest is R2's and R7's territory (RUE-2478, RUE-2467); not separately filed. |
+| **Docs H4** in full (HIGH): the exactly-once guarantee is expression-level and needs `FrameMatches`/`StoreCC` at every intermediate state, not only `pendingSafe`; no statement instantiates it at `Config.init`. | R9 cites only the `pendingSafe` half. The rest is R2's and R7's territory (RUE-2478, RUE-2467); not separately filed. (Since closed for exactly-once, by RUE-2478: `whole_program_exactly_once` is instantiated at `Config.init` and needs no hypothesis at an intermediate state; see the entry below.) |
 | **L1, L3, L5, L8–L11** (statement, LOW): `@drop` of a moved place is a no-op on a hole, not stuck (L1); `WfProgram.fns` requires unreachable functions well typed too, stronger than §7's scope (L3); the dynamic copy/move-vs-declared-plan equivalence (L5, see F13); `step_type_safety` is derivable from `step_progress` + `step_preservation` (L8); the residue-before-leaf drop order for a declared-linear projection is unstated (L9, see F14); `Typed.indexRead`'s `fullyOwned` is stronger than (Use-Untrackable-Dynamic-Copy), rejecting some §5-admitted programs (L10); no (Call-Bottom): a call to a divergent function types as continuing (L11). | Harmless or conservative on inspection. No action. |
 | **Docs Lo1, Lo2, Lo6–Lo8** (LOW): `rue-oracle`'s fuel-bounded outcomes not distinguished from divergence (Lo1); the fixed-fuel corpus outcome is honest for accepted programs but unverified for rejected ones, overlapping H3 (Lo2); "everything hard … lives here and only here" is a design claim outside what predicates cover (Lo6); "precise, mechanizable" / "in time, mechanically proven" are hedged intent (Lo7); "the complete small-step dynamic semantics" is about the paper, not the Lean fragment (Lo8). | Process or hedge claims the statements cannot speak to and the docs do not present as theorems. No action. |
 
@@ -530,3 +530,68 @@ What the mutants could not get past:
     falsify no witness. Whether a spine statement would still fail, through
     `EvalOk`'s own `FrameMatches` (a conclusion), was not checked. Witnesses
     of `FrameMatches` over more binding shapes would close that (RUE-2503).
+
+## 2026-09-26 — every owned value of a run ends exactly once (RUE-2478)
+
+- **Trunk:** `f48700eda`.
+- **Kind:** a statement added to close R2 and the exactly-once half of Docs
+  H4 of the first full-claim pass, not a red-agent pass: no fresh session
+  attacked anything.
+- **Why not from the two existing statements.** A first attempt tried to
+  derive the whole-program statement from `drop_exactly_once` and
+  `rest_exactly_once` and stopped: at `run` both are vacuous (the run starts
+  from the empty store, and the entry call's lead is its empty argument
+  list), a result that allocated, retired and never dropped a cell satisfies
+  both, applying them at every window of a run needs typing hypotheses at
+  intermediate states that no statement provides (RUE-2423), and neither the
+  trace nor the result records which identities a run introduced. What was
+  missing was the "at least once" half: no owned value is lost.
+- **What was built.**
+  - **The statement.** `whole_program_exactly_once` (Spec
+    `whole_program_exactly_once_stmt` in `lean/RueCore/Spec/Trace.lean`,
+    proved in `lean/RueCore/TraceWhole.lean`, bound in `Spine.lean`): for a
+    checked, `pendingSafe` program, any configuration §6's relation reaches
+    from `Config.init`, and any owned identity it holds, if the run from it
+    finishes with a value, the identity is ended in the final trace
+    (`freedIds`) or owned by the final value, exactly once between the two.
+    "Allocated along the run" is `Config.held` (`lean/RueCore/Trace/Defs.lean`,
+    L1): what a configuration holds in its cells, in focus and pending on its
+    control stack. No event was added to the trace and no existing statement
+    changed.
+  - **The invariant.** A configuration's ledger is what it holds plus what
+    its trace has ended; a step loses nothing when the ledger does not shrink
+    (`MSteps`). Stated over `Step` alone, the invariant needs copy closure
+    at every aggregate and assignment, which only a configuration typing
+    would give (`Step` has no monitor; `Sharp.copy_leak`). So it is carried
+    along `eval`'s own run: `eval_msim` is `eval_sim` with every run
+    lossless, each step closed by one of `TraceExact.lean`'s exact ledgers
+    read at every identity, with copy closure from `eval`'s monitor and the
+    store's copy closure from `eval_exact`. The unwinding clauses ask that the
+    frames `return` and `break` discard hold nothing, and `pendingSafe`
+    discharges that through `eval_quiet` wherever a frame holds a value.
+    Determinism puts every reached configuration on the run
+    (`MSteps.of_steps`); at the end `eval_tidy` leaves no owned value in the
+    store and `eval_conserves` bounds each count by one.
+  - **Non-vacuity and sharpness.** `Nonvacuous.whole_drops` reaches a
+    configuration holding two `S0`s and ends each once;
+    `Nonvacuous.whole_result` carries an owned value out as `main`'s result.
+    Each of the five hypotheses has a counter-example, kernel-checked in
+    `Sharp/Glue.lean`: `Sharp.copy_leak` (unchecked: an `S1` inside a `@copy`
+    struct, which §6's relation runs to a value with `S1` never ended),
+    `Sharp.pending_leak` (checked, not `pendingSafe`: `f(S0 { 7 }, return
+    0)` in `main`), `Sharp.unreached_held`, `Sharp.unheld` and
+    `Sharp.off_run`.
+- **Findings.**
+  - **R2 closed** (RUE-2478). The whole-program exactly-once claim is a
+    theorem, over §6's relation, with the panic and RUE-2316 carve-outs as
+    they were.
+  - **H4 closed for exactly-once** (RUE-2478). The statement is instantiated
+    at `Config.init` and asks nothing of an intermediate state; the typing
+    facts the per-window form needed come from `eval`'s run instead.
+  - **W1, a finished run only** (low, disclosure). A run that never
+    finishes has no end to account at; its prefixes are bounded above by
+    `step_no_double_free`, not below. A lower bound for a diverging run
+    would be a liveness property (every held value is eventually ended),
+    which no statement claims.
+  - `03-metatheory.md`'s exactly-once passage does not cite the new theorem
+    yet; that edit is a PR for the calculus's owner.
