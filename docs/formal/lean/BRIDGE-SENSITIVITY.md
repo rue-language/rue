@@ -420,13 +420,13 @@ field); only the generator was blind, and now is not.
 **Rechecking the three mutants this was filed for, plus `h2335b`**, with
 `drill.sh` against the regenerated corpus. The first pass wrongly credited
 the fix with catching all four at `gen_7_3` — the program that turned out to
-be `array_elem_self_assign`'s shape, disagreeing on the *unmutated* compiler
+be `array_elem_self_assign`'s shape, disagreeing on the unmutated compiler
 too (below); once `gen_7_3` (and `gen_23_343`, the other unmutated
 disagreement this turned up) are set aside, one real catch remains:
 
 | Mutant | Before (this page) | After RUE-2480 | Programs to detection |
 |---|---|---|---:|
-| `c-skip-overwrite-drop` | seeds only (`affine_overwrite`, 4 seeds); generator 0 of 1,200 | seeds unchanged; **generator catches it**, `gen_23_689` | 890 |
+| `c-skip-overwrite-drop` | seeds only (`affine_overwrite`, 4 seeds); generator 0 of 1,200 | seeds unchanged; generator catches it, `gen_23_689` | 890 |
 | `c-reverse-scope-drops` | seeds only (`enum_two_payload_bindings`, 1 seed); generator 0 of 1,200 | unchanged: seeds only, generator 0 of 1,200 | — |
 | `h2335` (root half) | seeds only (`destructure_root_through_moved_part`, 1 seed); generator 0 of 1,200 | unchanged: seeds only, generator 0 of 1,200 | — |
 | `h2335b` | seeds only (`destructure_ancestor_dropped`, 1 seed); generator 0 of 1,200 | unchanged: seeds only, generator 0 of 1,200 | — |
@@ -436,14 +436,14 @@ Observability was necessary but not sufficient for three of the four.
 inner block (a follow-up below); a quick check of the fixed generator's own
 traces (`--gen 1000 --seed 23`) finds 20 programs with a pair of consecutive
 `.dtor` events at all, and of those pairs 28 of 50 already print two
-*different* lines (so a swap would be visible) — the miss looks like the
+different lines (so a swap would be visible) — the miss looks like the
 draw not reaching this mutant's exact shape (a block's own scope-exit order,
 not an enum arm's or a struct's field-drop order) within 1,200 programs,
 rather than a values-collide problem. `h2335` and `h2335b` are unaffected by
 observability at all, matching the original follow-up: they need three
 declared-linear levels, a different generator capability.
 
-**Two new unmutated disagreements**, found while confirming the regenerated
+Two new unmutated disagreements, found while confirming the regenerated
 corpus still agrees with the compiler (methodology, above) — reported here,
 not fixed:
 
