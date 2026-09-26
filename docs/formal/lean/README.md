@@ -125,7 +125,7 @@ draws just before the loop generator's restoring statements), which is an
 allowed RUE-2346 disagreement. RUE-2480's `genDecl` draws `drawnDtor` before
 the fields, so it consumes the seed's random stream differently and every
 generated case's identity shifts; at the same two settings on the new stream,
-the self-assignment now reaches the corpus **unmasked** once, at `gen_7_3` —
+the self-assignment now reaches the corpus unmasked once, at `gen_7_3` —
 an array of structs (`v0[0] = v0[0]`), the same RUE-2346 shape, not a new
 bug, but the first time this settings pair shows it unmasked without a wider
 run. It is set aside next to `array_elem_self_assign` in
