@@ -941,12 +941,12 @@ theorem Contents.splitFields_own {D : Decls} (a : Nat) : ∀ (cs : List Contents
         omega
 end
 
-/-- `skelFields` keeps the member count (helper). -/
-theorem Contents.skelFields_length : ∀ (cs : List Contents) (f : Nat) (π : List Nat),
-    (Contents.skelFields cs f π).length = cs.length
-  | [], _, _ => by simp [Contents.skelFields]
-  | c :: cs, 0, π => by simp [Contents.skelFields]
-  | c :: cs, f + 1, π => by simp [Contents.skelFields, Contents.skelFields_length cs f π]
+/-- `pathOnlyFields` keeps the member count (helper). -/
+theorem Contents.pathOnlyFields_length : ∀ (cs : List Contents) (f : Nat) (π : List Nat),
+    (Contents.pathOnlyFields cs f π).length = cs.length
+  | [], _, _ => by simp [Contents.pathOnlyFields]
+  | c :: cs, 0, π => by simp [Contents.pathOnlyFields]
+  | c :: cs, f + 1, π => by simp [Contents.pathOnlyFields, Contents.pathOnlyFields_length cs f π]
 
 /-- A list of `⊘`s owns nothing (helper). -/
 theorem Contents.ownList_holes {α : Type} (D : Decls) :
@@ -956,16 +956,16 @@ theorem Contents.ownList_holes {α : Type} (D : Decls) :
 
 mutual
 /-- **`split` and the consumed shell, counted exactly** (§6.3, RUE-2427): the
-leaf, the residue and the path's shell (`Contents.skeleton`) together own
+leaf, the residue and the path's shell (`Contents.pathOnly`) together own
 exactly what the consumed place owned — every owned node of it is in exactly
 one of the three (helper). -/
-theorem Contents.skeleton_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c leaf : Contents}
+theorem Contents.pathOnly_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c leaf : Contents}
     {rs : List Contents}, c.copyClosed D = true → c.splitResidue D π = .ok (leaf, rs) →
-    (leaf.own D).count a + (Contents.ownList D rs).count a + ((c.skeleton π).own D).count a
+    (leaf.own D).count a + (Contents.ownList D rs).count a + ((c.pathOnly π).own D).count a
       = (c.own D).count a
   | [], c, leaf, rs, _, hs => by
       simp [Contents.splitResidue] at hs; obtain ⟨rfl, rfl⟩ := hs
-      simp [Contents.skeleton, Contents.own, Contents.ownList]
+      simp [Contents.pathOnly, Contents.own, Contents.ownList]
   | f :: π, c, leaf, rs, h, hs => by
       cases c with
       | struct s i cs =>
@@ -974,11 +974,11 @@ theorem Contents.skeleton_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c lea
           split at h
           · rename_i hc
             obtain ⟨hl, hr⟩ := Contents.splitFields_allCopy cs f π h hs
-            simp [Contents.skeleton, Contents.own, hc, Contents.allCopy_own hl,
+            simp [Contents.pathOnly, Contents.own, hc, Contents.allCopy_own hl,
               Contents.allCopyList_own hr]
           · rename_i hc
-            have := Contents.skelFields_own a cs f π h hs
-            simp only [Contents.skeleton, Contents.own, if_neg hc, List.count_cons]
+            have := Contents.pathOnlyFields_own a cs f π h hs
+            simp only [Contents.pathOnly, Contents.own, if_neg hc, List.count_cons]
             omega
       | array T i cs =>
           simp only [Contents.splitResidue] at hs
@@ -986,21 +986,21 @@ theorem Contents.skeleton_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c lea
           split at h
           · rename_i hc
             obtain ⟨hl, hr⟩ := Contents.splitFields_allCopy cs f π h hs
-            simp [Contents.skeleton, Contents.own, Contents.skelFields_length, hc,
+            simp [Contents.pathOnly, Contents.own, Contents.pathOnlyFields_length, hc,
               Contents.allCopy_own hl, Contents.allCopyList_own hr]
           · rename_i hc
-            have := Contents.skelFields_own a cs f π h hs
-            simp only [Contents.skeleton, Contents.own, Contents.skelFields_length, if_neg hc,
+            have := Contents.pathOnlyFields_own a cs f π h hs
+            simp only [Contents.pathOnly, Contents.own, Contents.pathOnlyFields_length, if_neg hc,
               List.count_cons]
             omega
       | _ => simp [Contents.splitResidue] at hs
 
 /-- The same at `split`'s member step (helper). -/
-theorem Contents.skelFields_own {D : Decls} (a : Nat) : ∀ (cs : List Contents) (f : Nat)
+theorem Contents.pathOnlyFields_own {D : Decls} (a : Nat) : ∀ (cs : List Contents) (f : Nat)
     (π : List Nat) {leaf : Contents} {rs : List Contents},
     Contents.copyClosedList D cs = true → Contents.splitFields D cs f π = .ok (leaf, rs) →
     (leaf.own D).count a + (Contents.ownList D rs).count a
-        + (Contents.ownList D (Contents.skelFields cs f π)).count a
+        + (Contents.ownList D (Contents.pathOnlyFields cs f π)).count a
       = (Contents.ownList D cs).count a
   | [], _, _, _, _, _, hs => by simp [Contents.splitFields] at hs
   | c :: cs, 0, π, leaf, rs, h, hs => by
@@ -1010,8 +1010,8 @@ theorem Contents.skelFields_own {D : Decls} (a : Nat) : ∀ (cs : List Contents)
       · cases hs
       · rename_i leaf' inner hsr
         cases hs
-        have := Contents.skeleton_own a π h.1 hsr
-        simp only [Contents.skelFields, Contents.ownList, Contents.ownList_append,
+        have := Contents.pathOnly_own a π h.1 hsr
+        simp only [Contents.pathOnlyFields, Contents.ownList, Contents.ownList_append,
           Contents.ownList_holes, List.count_append, List.count_nil]
         omega
   | c :: cs, f + 1, π, leaf, rs, h, hs => by
@@ -1021,8 +1021,8 @@ theorem Contents.skelFields_own {D : Decls} (a : Nat) : ∀ (cs : List Contents)
       · cases hs
       · rename_i leaf' rest hsf
         cases hs
-        have := Contents.skelFields_own a cs f π h.2 hsf
-        simp only [Contents.skelFields, Contents.ownList, Contents.own, List.count_append,
+        have := Contents.pathOnlyFields_own a cs f π h.2 hsf
+        simp only [Contents.pathOnlyFields, Contents.ownList, Contents.own, List.count_append,
           List.nil_append]
         omega
 end
@@ -1046,9 +1046,9 @@ theorem Contents.destructure_measure {D : Decls} {F : Event → List Nat} (hF : 
       have hl := (Contents.splitResidue_own 0 πs hcc hs).2.1
       have hr := (Contents.splitResidue_own 0 πs hcc hs).2.2
       refine ⟨fun a => ?_, hl⟩
-      have := Contents.skeleton_own a πs hcc hs
+      have := Contents.pathOnly_own a πs hcc hs
       have := dropResidue_measure hF hr hd a
-      have := hF.consume (cd.skeleton πs) a
+      have := hF.consume (cd.pathOnly πs) a
       simp only [List.flatMap_append, List.flatMap_cons, List.flatMap_nil, List.append_nil,
         List.count_append] at *
       omega

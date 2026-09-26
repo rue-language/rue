@@ -1255,7 +1255,7 @@ theorem destructure_ok {D : Decls} (hwf : WfDecls D) (ℓ : Nat) {c : Contents} 
     {πs : List Nat} (hty : ContentsTy D c T) (hhf : c.holeFree = true)
     (hpath : T.atPath D πs = some T') (hres : linearResidue D T πs = false) :
     ∃ leaf rs, Contents.destructure D ℓ c πs
-        = .ok (leaf, dropResidueEvents D ℓ rs ++ [.consume (c.skeleton πs)]) ∧
+        = .ok (leaf, dropResidueEvents D ℓ rs ++ [.consume (c.pathOnly πs)]) ∧
       ContentsTy D leaf T' ∧ leaf.holeFree = true := by
   obtain ⟨leaf, rs, hsp, hlt, hlhf, hro⟩ := splitResidue_ok πs hty hhf hpath hres
   exact ⟨leaf, rs, by simp only [Contents.destructure, hsp, dropResidue_events hwf ℓ hro],
@@ -3083,7 +3083,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨cc', hw, hmm'⟩ :=
             ContentsMatches.writeAt πd hmm hgd htd (ContentsMatches.hole (T := Td))
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.use pl)
-              = .ok (H.set ℓ (.full cc')) v (dropResidueEvents P.decls ℓ rs ++ [.consume (cd.skeleton πs)]) := by
+              = .ok (H.set ℓ (.full cc')) v (dropResidueEvents P.decls ℓ rs ++ [.consume (cd.pathOnly πs)]) := by
             simp [eval, hρ, hc, hpl, hread, hdest, hv, hw]
           rw [hev]
           exact ⟨htyv, ⟨hfm.store.set hρ ⟨cc', rfl, hmm'⟩, hfm.record⟩,
@@ -3551,7 +3551,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨cc', hw, hmm'⟩ :=
             ContentsMatches.writeAt πd hmm hgd htd (ContentsMatches.hole (T := Td))
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.drop pl)
-              = .ok (H.set ℓ (.full cc')) .unit ((dropResidueEvents P.decls ℓ rs ++ [.consume (cd.skeleton πs)]) ++ levs) := by
+              = .ok (H.set ℓ (.full cc')) .unit ((dropResidueEvents P.decls ℓ rs ++ [.consume (cd.pathOnly πs)]) ++ levs) := by
             simp [eval, hρ, hc, hpl, hread, hdest, hnh, hdc, hw]
           rw [hev]
           exact ⟨.unit, ⟨hfm.store.set hρ ⟨cc', rfl, hmm'⟩, hfm.record⟩,

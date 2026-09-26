@@ -348,7 +348,7 @@ def plainDestructure (D : Decls) (ℓ : Nat) (c : Contents) (πs : List Nat) :
   | .ok (leaf, rs) =>
       match plainResidue D ℓ rs with
       | .error w => .error w
-      | .ok evs => .ok (leaf, evs ++ [.consume (c.skeleton πs)])
+      | .ok evs => .ok (leaf, evs ++ [.consume (c.pathOnly πs)])
 
 /-! ## The relation -/
 
