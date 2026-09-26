@@ -22567,6 +22567,28 @@ RueCore.Place.proj (p : Place) (f : Nat) : Place
 RueCore.Place.idx (p : Place) (c : Nat) : Place
 ```
 
+### `Print.DtorMarks`
+
+*abbrev* · module `RueCore.Print`
+
+Which field a destructor prints, per struct-declaration index (RUE-2505's
+S2 fix): a marker the program's own producer supplies, not a guess this layer
+makes from field *shape*. `Gen.genCase` supplies one that reads its own
+construction discipline directly — a generated destructor-bearing declaration
+always has its id field last (`Gen.genDecl`, `Gen.structLitArgs`) — and
+`Corpus.Case.dtorMark`'s default, `fun _ => some 0`, is every seed's own
+choice (`Examples.lean`; verified by hand against all eight destructor-bearing
+seed declarations, so no seed's printed output changes). Reading the answer
+off a `List Ty` alone — "the last field if it's an `int`, else field 0" — was
+the design this replaced: it could not tell a generated id field from a seed
+whose *last* field happens to be an `int` for an unrelated reason, which
+would have silently picked the wrong field with no warning (helper).
+
+```lean
+abbrev RueCore.Print.DtorMarks : Type :=
+  Nat → Option Nat
+```
+
 ### `Rec`
 
 *def* · module `RueCore.Trace.Defs`
@@ -28314,7 +28336,14 @@ Defining equations, as Lean derived them from the body:
 
 A corpus case: a closed fragment program with its documentation. A
 program is a struct environment and a list of function definitions, entered at
-function index `0` (§6.12).
+function index `0` (§6.12). `dtorMark` (RUE-2505's S2 fix) is which field
+each struct declaration's destructor prints, by declaration index
+(`Print.DtorMarks`) — supplied by the case's own producer, not guessed from
+field shape. Its default, `fun _ => some 0`, is every hand-written seed's own
+choice (verified against all eight destructor-bearing declarations in
+`Examples.lean`), so no seed literal below needs to say so; `Gen.genCase`
+overrides it for a generated case, whose destructor-bearing declarations
+always have their id field last (`Gen.genDecl`).
 
 ```lean
 inductive RueCore.Corpus.Case : Type
@@ -28326,7 +28355,7 @@ Constructors:
 
 ```lean
 RueCore.Corpus.Case.mk (name description : String) (rules : List String)
-  (prog : Program) : Corpus.Case
+  (prog : Program) (dtorMark : Print.DtorMarks) : Corpus.Case
 ```
 
 ### `EnumDecl.payloadJoin`
