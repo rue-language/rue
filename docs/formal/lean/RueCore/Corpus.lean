@@ -1055,14 +1055,24 @@ def dbgLine : Val → Option String
   | .bool b => some (if b then "true" else "false")
   | .unit | .struct _ _ _ | .enum _ _ _ _ | .array _ _ _ => none
 
-/-- The line a user destructor prints (`Print.structItem`): the struct's
-first field, when that field is an integer. A declaration whose first field is
-not an integer has nothing to print, in the printed Rue program and here
-alike — and neither has one whose first field has been moved out, which
-`3.9:34` makes unreachable anyway (a destructor-bearing value has no partial
-moves). -/
+/-- The line a user destructor prints (`Print.structItem`/`Print.dtorFieldName`,
+RUE-2505): the struct's **last** field, when that field is an integer — the
+dedicated id field a generated destructor-bearing declaration has — else its
+first field, when *that* is an integer, which is every destructor-bearing seed
+declaration (`Examples.lean`) and so is exactly the field this function read
+before RUE-2505. A declaration with neither has nothing to print, in the
+printed Rue program and here alike. Neither chosen field is ever moved out
+from under it: the id field is always `Copy` (never a hole), and every field
+of a destructor-bearing declaration is unreachable to a partial move anyway
+(`3.9:34`). -/
 def dtorLine : Contents → Option String
-  | .struct _ _ (.int w s n :: _) => dbgLine (.int w s n)
+  | .struct _ _ cs =>
+      match cs.getLast? with
+      | some (.int w s n) => dbgLine (.int w s n)
+      | _ =>
+          match cs.head? with
+          | some (.int w s n) => dbgLine (.int w s n)
+          | _ => none
   | _ => none
 
 /-- One stdout line per *observable* event, in trace order. Two events are
