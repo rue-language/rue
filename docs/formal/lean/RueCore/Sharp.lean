@@ -202,6 +202,9 @@ theorem stuck :
       Lead Float.exactOps P 200 [] Frame.empty [] [] [] (.call 0 []) ∧
       eval Float.exactOps 200 P [] Frame.empty (.call 0 []) = .stuck .useAfterMove ∧
       eval Float.exactOps 201 P [] Frame.empty (.call 0 []) = .stuck .useAfterMove ∧
+      eval Float.exactOps 201 P [] Frame.empty (.call 0 []) =
+        (EvalRes.stuck .useAfterMove).withTrace [] ∧
+      (∀ n, run Float.exactOps P n = eval Float.exactOps n P [] Frame.empty (.call 0 [])) ∧
       run Float.exactOps P 200 = .stuck .useAfterMove ∧ run Float.exactOps P 0 = .outOfFuel ∧
       ¬ (run Float.exactOps P 200 = .outOfFuel ∨ (∃ k tr, run Float.exactOps P 200 = .panic k tr) ∨
         ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧ HasTy P.decls v (.int .w64 .signed)) := by
@@ -215,7 +218,7 @@ theorem stuck :
   refine ⟨by subst hB hP; rfl, fun h => no_use_after_move Float.exactModel h 200 hrun, fun hw => ?_,
     ⟨_, by subst hB hP; rfl, rfl⟩, by subst hB hP; rfl, rfl, frameMatches_empty,
     fun _ _ h => by simp at h, ⟨c, Ω, hc, hf, ht, by rw [hr]; exact id⟩, rfl, hr,
-    by subst hB hP; rfl, hrun, by subst hP; rfl, stuck_not_safe hrun ⟨[], .int .w64 .signed, .unitLit⟩⟩
+    by subst hB hP; rfl, by subst hB hP; rfl, fun _ => rfl, hrun, by subst hP; rfl, stuck_not_safe hrun ⟨[], .int .w64 .signed, .unitLit⟩⟩
   have := soundness Float.exactModel hw 200 ht frameMatches_empty
   rw [exact_ops, hr] at this
   exact this
@@ -295,6 +298,8 @@ theorem typed :
       Lead Float.exactOps P 200 [] Frame.empty [.dead] [.struct 0 0 [.int .w64 .signed 1]] [] e ∧
       eval Float.exactOps 200 P [] Frame.empty e = .stuck .useAfterMove ∧
       eval Float.exactOps 201 P [] Frame.empty e = .stuck .useAfterMove ∧
+      eval Float.exactOps 201 P [] Frame.empty e = (EvalRes.stuck .useAfterMove).withTrace [] ∧
+      CTy.never.fits (.int .w64 .signed) = true ∧
       ∀ (T : Ty) (Ω : Out), ¬ EvalOk P.decls T (.int .w64 .signed) Ω.norm Ω.brk Frame.empty []
         (eval Float.exactOps 200 P [] Frame.empty e) := by
   intro B hB P hP e he
@@ -306,7 +311,7 @@ theorem typed :
     exact this
   exact ⟨hPT, hPT.wf, by subst hB hP; rfl, by subst he; rfl, frameMatches_empty,
     fun _ _ h => by simp at h, by subst he hB hP; rfl, hnt, by subst he hB hP; exact ⟨_, rfl, by rfl⟩,
-    hr, by subst he hB hP; rfl, fun T Ω => by rw [hr]; exact id⟩
+    hr, by subst he hB hP; rfl, by subst he hB hP; rfl, rfl, fun T Ω => by rw [hr]; exact id⟩
 
 /-- `Spec.Sharp.frame_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem frame :
@@ -321,7 +326,7 @@ theorem frame :
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ∀ e : Expr, e = .seq (.intLit .w64 .signed 1) (.use (.var 0)) →
-      ProgramTyped P ∧ P.pendingSafe = true ∧ e.pendingSafe = true ∧ StoreCC P.decls [] ∧
+      ProgramTyped P ∧ WfProgram P ∧ P.pendingSafe = true ∧ e.pendingSafe = true ∧ StoreCC P.decls [] ∧
       (∃ c Ω, check P (.int .w64 .signed) [{ ty := .int .w64 .signed, mu := false, st := .owned }] e = some (c, Ω) ∧
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [{ ty := .int .w64 .signed, mu := false, st := .owned }] e (.int .w64 .signed) Ω ∧
         ¬ EvalOk P.decls (.int .w64 .signed) (.int .w64 .signed) Ω.norm Ω.brk Frame.empty []
@@ -329,16 +334,17 @@ theorem frame :
       ¬ FrameMatches P.decls [{ ty := .int .w64 .signed, mu := false, st := .owned }] Frame.empty [] ∧
       Lead Float.exactOps P 200 [] Frame.empty [] [.int .w64 .signed 1] [] e ∧
       eval Float.exactOps 200 P [] Frame.empty e = .stuck .unbound ∧
-      eval Float.exactOps 201 P [] Frame.empty e = .stuck .unbound := by
+      eval Float.exactOps 201 P [] Frame.empty e = .stuck .unbound ∧
+      eval Float.exactOps 201 P [] Frame.empty e = (EvalRes.stuck .unbound).withTrace [] := by
   intro B hB P hP e he
   have hPT : ProgramTyped P := checkProgram_sound (by subst hB hP; rfl)
   have hr : eval Float.exactOps 200 P [] Frame.empty e = .stuck .unbound := by subst he hB hP; rfl
   obtain ⟨c, Ω, hc, hf, ht⟩ : ∃ c Ω, check P (.int .w64 .signed) [{ ty := .int .w64 .signed, mu := false, st := .owned }] e = some (c, Ω) ∧
       c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [{ ty := .int .w64 .signed, mu := false, st := .owned }] e (.int .w64 .signed) Ω := by
     subst he hB hP; exact ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩
-  refine ⟨hPT, by subst hB hP; rfl, by subst he; rfl, fun _ _ h => by simp at h,
+  refine ⟨hPT, hPT.wf, by subst hB hP; rfl, by subst he; rfl, fun _ _ h => by simp at h,
     ⟨c, Ω, hc, hf, ht, by rw [hr]; exact id⟩, fun hfm => ?_, by subst he; exact ⟨_, rfl, by rfl⟩,
-    hr, by subst he hB hP; rfl⟩
+    hr, by subst he hB hP; rfl, by subst he hB hP; rfl⟩
   have := soundness Float.exactModel hPT.wf 200 ht hfm
   rw [exact_ops, hr] at this
   exact this
@@ -382,7 +388,13 @@ theorem entry_param :
     subst h
     exact checkFn_sound (by rfl)
   have hr : run Float.exactOps P 200 = .stuck .typeConfusion := by subst hP; rfl
-  exact ⟨hwf, fun h => no_violation Float.exactModel h 200 _ hr,
+  have hnpt : ¬ ProgramTyped P := fun h => by
+    obtain ⟨fd, hfd, hp⟩ := h.entry
+    subst hP
+    simp only [List.getElem?_cons_zero, Option.some.injEq] at hfd
+    subst hfd
+    simp at hp
+  exact ⟨hwf, hnpt,
     ⟨{ params := [{ ty := .int .w64 .signed, mu := false }], ret := .int .w64 .signed, body := .use (.var 0) }, by subst hP; rfl, by simp, stuck_not_safe hr _⟩, hr⟩
 
 /-- `Spec.Sharp.copy_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
@@ -503,7 +515,7 @@ theorem fuel :
                 { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
-      ProgramTyped P ∧ run Float.exactOps P 0 = .outOfFuel ∧
+      ProgramTyped P ∧ (∀ n, run Float.exactOps P n = eval Float.exactOps n P [] Frame.empty (.call 0 [])) ∧ run Float.exactOps P 0 = .outOfFuel ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
         Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
         ¬ (200 ≤ 0) ∧ 0 ≤ 200 ∧ run Float.exactOps P 0 ≠ run Float.exactOps P 200 ∧
@@ -514,7 +526,7 @@ theorem fuel :
   have h0 : run Float.exactOps P 0 = .outOfFuel := by subst hP; rfl
   obtain ⟨H, v, tr, hr⟩ : ∃ H v tr, run Float.exactOps P 200 = .ok H v tr := by
     subst hB hP; exact ⟨_, _, _, by rfl⟩
-  refine ⟨hPT, h0, H, v, tr, hr, (eval_sound Float.exactModel hPT 200).2.1 _ _ _ hr, by omega, by omega,
+  refine ⟨hPT, fun _ => rfl, h0, H, v, tr, hr, (eval_sound Float.exactModel hPT 200).2.1 _ _ _ hr, by omega, by omega,
     by rw [h0, hr]; simp, fun w => by rw [hr]; simp, fun h => ?_⟩
   rcases h 0 with h' | ⟨w, h'⟩ <;> rw [h0] at h' <;> cases h'
 
@@ -597,7 +609,8 @@ theorem double_drop :
     simp only [EvalRes.trace] at this
     omega
   exact ⟨by subst hB hP; rfl, fun hPT => hnd (no_double_free Float.exactModel hPT 200).2.2,
-    fun hdt => hnd (dtor_once _ hdt 200), H, v, tr, hr, hc, hnd⟩
+    fun hdt => hdt 0 _ (by subst hB hP; rfl) (by subst hB hP; rfl) (by subst hB hP; rfl),
+    H, v, tr, hr, hc, hnd⟩
 
 /-- `Spec.Sharp.bare_dtor_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem bare_dtor :

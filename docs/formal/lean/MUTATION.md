@@ -29,8 +29,10 @@ They add proofs and witnesses, never remove them, so a rerun with them can
 only kill more; the table and score below predate them, except for the
 five monitor mutants (rows 76–80), which RUE-2485 reran on its branch
 (`mutate.py --only`, trunk `a22c321f4` plus the sharpness statements) and
-whose rows, readings and the two score rows they move were updated by hand
-from that run.
+whose rows, readings and the "After" cells of the two score rows they move
+were updated by hand from that run. The "Before" column stays the historical
+measurement at `c2fe428ff`; a full `mutate.py --score` rerun recomputes both
+from `RULINGS`.
 RUE-2486 seeds all thirteen of proposed issue 1's witness-only refusals, in
 two PRs: part 1 seeded `use-move-rootidx`, `index-read-copy`,
 `index-drop-copy-checker`, `const-index-off-by-one`, `index-write-linear`,
@@ -224,7 +226,7 @@ adds (and their six `Examples.lean` witnesses); "after" is with them.
 | Measure | Before the six seeds | After |
 |---|---:|---:|
 | **Killed** | 73/76 (96%) | 76/76 (100%) |
-| A stated property is false | 53/76 (70%) | 53/76 (70%) |
+| A stated property is false | 48/76 (63%) | 53/76 (70%) |
 | The tests with the proofs off: witnesses, seeds, generated cases | 66/76 (87%) | 71/76 (93%) |
 | The seeds and the bridge alone | 50/76 (66%) | 69/76 (91%) |
 
@@ -246,7 +248,7 @@ These rows are recorded but do not count as kills:
 
 | Also recorded | Before | After |
 |---|---:|---:|
-| A stated property or a helper lemma is false | 56/76 (74%) | 56/76 (74%) |
+| A stated property or a helper lemma is false | 53/76 (70%) | 56/76 (74%) |
 | The build or the corpus fails at all: a proof script, a helper lemma or the Explain mirror included | 76/76 (100%) | 76/76 (100%) |
 
 Before the seeds, three mutants were not killed. Each failed only on

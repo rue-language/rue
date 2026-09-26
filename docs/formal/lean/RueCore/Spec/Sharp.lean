@@ -32,6 +32,20 @@ Every program runs on `Float.exactOps`, a model of the float laws
 model, not hypotheses about a program, so they have no counter-example here
 (`Spec.sharpnessReasons`, `Spec.lean`).
 
+Two things are not shown by the kernel. First, that a statement drops the
+hypothesis `Spec.sharpness` pairs it with: the pairs are hand-written and
+reviewed, and the lint checks only their range and coverage (a kernel-checked
+tie is RUE-2495). Where a statement does not give the other hypotheses in the
+spine theorem's literal form (`run` for `eval` at `main()`, `ProgramTyped`
+for `WfProgram`, `eval … = r.withTrace []`), its doc-comment names the spot.
+Second, that the dropped hypothesis fails independently of the spine: every
+negated hypothesis (`¬ ProgramTyped`, `¬ WfProgram`, `¬ Typed`,
+`¬ FrameMatches`, `¬ Steps …`) is proved through the spine theorem itself,
+from the other hypotheses and the failed conclusion, except where the
+doc-comment says it is shown directly. The content of each counter-example is
+that the other hypotheses hold and the conclusion fails, and both are
+established without the spine theorem.
+
 `Spec.sharpness` (`Spec.lean`) lists each statement with the theorem that
 proves it (`RueCore/Sharp.lean`, layer L2) and the spine hypotheses it refutes,
 each as a spine theorem and a hypothesis number: the hypotheses of a statement
@@ -56,7 +70,14 @@ conclusions fails once its program hypothesis is dropped: `soundness`
 (`WfProgram`), `run_safe` (`WfProgram`), `no_violation`, `no_use_after_move`,
 `checkProgram_sound` (`checkProgram P = true`), `eval_sound`,
 `drop_exactly_once` and `rest_exactly_once` (`ProgramTyped`), and `no_masking`
-(its second hypothesis, `eval m ≠ outOfFuel`, at `m = 0`). -/
+(its second hypothesis, `eval m ≠ outOfFuel`, at `m = 0`). Where the spine theorem is stated over `eval`
+(`no_masking`, `drop_exactly_once`, `rest_exactly_once`), the statement gives
+`run P n` and `eval` at `main()` as the same term (`run`'s definition), and
+`rest_exactly_once`'s hypothesis 8 as `eval … = r.withTrace []` with `r` the
+refusal. That the pairing of this statement with those hypotheses is right is
+reviewed, not yet kernel-checked (RUE-2495). The negations `¬ ProgramTyped`
+and `¬ WfProgram` are proved through the spine theorems themselves
+(`no_use_after_move`, `soundness`), not by inverting the definitions. -/
 def stuck_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -79,6 +100,9 @@ def stuck_stmt : Prop :=
       Lead Float.exactOps P 200 [] Frame.empty [] [] [] (.call 0 []) ∧
       eval Float.exactOps 200 P [] Frame.empty (.call 0 []) = .stuck .useAfterMove ∧
       eval Float.exactOps 201 P [] Frame.empty (.call 0 []) = .stuck .useAfterMove ∧
+      eval Float.exactOps 201 P [] Frame.empty (.call 0 []) =
+        (EvalRes.stuck .useAfterMove).withTrace [] ∧
+      (∀ n, run Float.exactOps P n = eval Float.exactOps n P [] Frame.empty (.call 0 [])) ∧
       run Float.exactOps P 200 = .stuck .useAfterMove ∧ run Float.exactOps P 0 = .outOfFuel ∧
       ¬ (run Float.exactOps P 200 = .outOfFuel ∨ (∃ k tr, run Float.exactOps P 200 = .panic k tr) ∨
         ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧ HasTy P.decls v (.int .w64 .signed))
@@ -123,7 +147,13 @@ outcome, and `check` rejects it; everything else `soundness`,
 included (`Lead`). Its evaluation is refused with `useAfterMove`, so none of
 their conclusions holds of it: the typing hypothesis `Typed` is needed. It is
 also `check_sound`'s first hypothesis dropped: `check` does not accept it, and
-no type fits a derivation. -/
+no type fits a derivation. `check_sound`'s hypothesis 2 (`c.fits T = true`) has
+no `c` to hold of, since `check` answers `none`: the statement gives
+`CTy.never`, which fits every type, and no `Ω` at all; `¬ Typed` is stated
+for every type and outcome, so for any `c`, `Ω` a spine instance picks. And
+`rest_exactly_once`'s hypothesis 8 is `eval … = r.withTrace []` with `r` the
+refusal. The pairing is reviewed, not yet kernel-checked (RUE-2495); `¬ Typed`
+is proved through `soundness`. -/
 def typed_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -144,6 +174,8 @@ def typed_stmt : Prop :=
       Lead Float.exactOps P 200 [] Frame.empty [.dead] [.struct 0 0 [.int .w64 .signed 1]] [] e ∧
       eval Float.exactOps 200 P [] Frame.empty e = .stuck .useAfterMove ∧
       eval Float.exactOps 201 P [] Frame.empty e = .stuck .useAfterMove ∧
+      eval Float.exactOps 201 P [] Frame.empty e = (EvalRes.stuck .useAfterMove).withTrace [] ∧
+      CTy.never.fits (.int .w64 .signed) = true ∧
       ∀ (T : Ty) (Ω : Out), ¬ EvalOk P.decls T (.int .w64 .signed) Ω.norm Ω.brk Frame.empty []
         (eval Float.exactOps 200 P [] Frame.empty e)
 
@@ -152,7 +184,11 @@ def typed_stmt : Prop :=
 the checked program of `Nonvacuous.dtor`, is run from the empty frame and
 store, which do not match that context (`FrameMatches` fails); everything else
 `soundness`, `drop_exactly_once` and `rest_exactly_once` ask holds, a `Lead`
-(the discarded `1`) included. `eval` refuses the read of `x` with `unbound`. -/
+(the discarded `1`) included. `eval` refuses the read of `x` with `unbound`. The statement gives `ProgramTyped P` and `WfProgram P`
+(`soundness` asks the second, `drop_exactly_once` the first), and
+`rest_exactly_once`'s hypothesis 8 as `eval … = r.withTrace []` with `r` the
+refusal. The pairing is reviewed, not yet kernel-checked (RUE-2495);
+`¬ FrameMatches` is proved through `soundness`. -/
 def frame_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -165,7 +201,7 @@ def frame_stmt : Prop :=
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ∀ e : Expr, e = .seq (.intLit .w64 .signed 1) (.use (.var 0)) →
-      ProgramTyped P ∧ P.pendingSafe = true ∧ e.pendingSafe = true ∧ StoreCC P.decls [] ∧
+      ProgramTyped P ∧ WfProgram P ∧ P.pendingSafe = true ∧ e.pendingSafe = true ∧ StoreCC P.decls [] ∧
       (∃ c Ω, check P (.int .w64 .signed) [{ ty := .int .w64 .signed, mu := false, st := .owned }] e = some (c, Ω) ∧
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [{ ty := .int .w64 .signed, mu := false, st := .owned }] e (.int .w64 .signed) Ω ∧
         ¬ EvalOk P.decls (.int .w64 .signed) (.int .w64 .signed) Ω.norm Ω.brk Frame.empty []
@@ -173,7 +209,8 @@ def frame_stmt : Prop :=
       ¬ FrameMatches P.decls [{ ty := .int .w64 .signed, mu := false, st := .owned }] Frame.empty [] ∧
       Lead Float.exactOps P 200 [] Frame.empty [] [.int .w64 .signed 1] [] e ∧
       eval Float.exactOps 200 P [] Frame.empty e = .stuck .unbound ∧
-      eval Float.exactOps 201 P [] Frame.empty e = .stuck .unbound
+      eval Float.exactOps 201 P [] Frame.empty e = .stuck .unbound ∧
+      eval Float.exactOps 201 P [] Frame.empty e = (EvalRes.stuck .unbound).withTrace []
 
 /-- **A well-formed program with no entry point** (§7 sharpness, RUE-2485). The
 program with the witnesses' declarations and no function is `WfProgram`, and
@@ -196,7 +233,8 @@ RUE-2485). `fn main(x: i64) -> i64 { x }` is `WfProgram`, but its entry point
 has a parameter, so it is not `ProgramTyped`; `run` calls it with no
 arguments, and `eval` refuses the call with `typeConfusion`. So `run_safe`
 needs its hypothesis `fd.params = []`, and `no_violation` needs the entry
-clause of `ProgramTyped`, not only `WfProgram`. -/
+clause of `ProgramTyped`, not only `WfProgram`. `¬ ProgramTyped` is shown
+directly, from that clause. -/
 def entry_param_stmt : Prop :=
   ∀ P : Program, P =
       { decls :=
@@ -329,7 +367,10 @@ without `eval n ≠ outOfFuel` (`n = 0`, `m = 200`); `no_masking` fails without
 its first hypothesis (`eval n` is a value, not a refusal); and
 `eval_complete`'s and `run_complete`'s value halves fail without `n < fuel`:
 no `n` makes the value, or a refusal, the answer at every fuel. `run P fuel`
-is `eval` at `main()` (`run`'s definition). -/
+is `eval` at `main()` (`run`'s definition). `fuel_mono` and `no_masking` are
+stated over `eval`; the statement gives `run P n` and `eval` at `main()` as
+the same term, for every `n` (`run`'s definition). The pairing is reviewed,
+not yet kernel-checked (RUE-2495). -/
 def fuel_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -341,7 +382,7 @@ def fuel_stmt : Prop :=
                 { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
-      ProgramTyped P ∧ run Float.exactOps P 0 = .outOfFuel ∧
+      ProgramTyped P ∧ (∀ n, run Float.exactOps P n = eval Float.exactOps n P [] Frame.empty (.call 0 [])) ∧ run Float.exactOps P 0 = .outOfFuel ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
         Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
         ¬ (200 ≤ 0) ∧ 0 ≤ 200 ∧ run Float.exactOps P 0 ≠ run Float.exactOps P 200 ∧
@@ -392,7 +433,8 @@ def not_fits_stmt : Prop :=
 `let c = C { 1 }; let a = W { c }; let b = W { c }; 0` copies `c` into two
 `W`s, and dropping both runs `C`'s destructor on identity `0` twice. It is not
 `ProgramTyped`, and `run` returns: `dtor_once` fails without `DtorNotCopy`, and
-`no_double_free` without `ProgramTyped`. (RUE-2400's cases, a dynamic read and
+`no_double_free` without `ProgramTyped`. `¬ DtorNotCopy` is shown directly
+(struct `0`); `¬ ProgramTyped` through `no_double_free`. (RUE-2400's cases, a dynamic read and
 an array repeat of an affine value, no longer double-drop: `eval` refuses them
 with `typeConfusion`.) -/
 def double_drop_stmt : Prop :=

@@ -484,11 +484,11 @@ the laws have no counter-example, and `M` is not numbered among the
 hypotheses (it is not a `Prop`). -/
 def sharpnessReasons : List (Lean.Name × Nat × String) := [
   (`RueCore.no_use_after_drop, 1,
-    "The hypothesis appears redundant. `run` starts from the empty store \
-    and frame, and a frame's environment names only cells its own bindings allocated, each \
-    removed from the environment when the cell is retired, so no program, checked or not, \
-    reaches `eval`'s `useAfterDrop` refusal through `run` (`Examples.lean` witnesses it only \
-    from an open machine state). Unproved; a finding of RUE-2485.")
+    "No counter-example has been found. By reading `Dynamics.lean`, `.dead` enters the store \
+    only as an identity slot no binding names, or when a cell is retired as its binding leaves \
+    the environment; and a fuzz of 78,000 programs, checked and unchecked, reached \
+    `useAfterDrop` through neither `run` nor `step`. So the hypothesis appears redundant; the \
+    theorem over every program is RUE-2496.")
 ]
 
 end RueCore.Spec
