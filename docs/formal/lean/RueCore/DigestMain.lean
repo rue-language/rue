@@ -1,5 +1,6 @@
 import RueCore.Lint
 import RueCore.Map
+import RueCore.Literature
 
 /-!
 # `lake exe ruecore-digest` — the expert validation surface (RUE-2247)
@@ -172,12 +173,43 @@ def sharpOf (h : Name) (hyps : Array String) : String :=
 where
   oneLine (t : String) : String := " ".intercalate ((t.splitOn "\n").map (·.trimAscii.toString))
 
+/-- (helper) `SPINE.md`'s table "The spine against the literature"
+(RUE-2467): one row of `Literature.rows` per spine theorem, in `Spec.spine`'s
+order, with the theorem, the literature's form and its `../FIELD.md`
+citation, our form, and the difference in one sentence. -/
+def literatureTable : Array String := Id.run do
+  let mut out : Array String := #[
+    "## The spine against the literature",
+    "",
+    "Each spine theorem beside the standard theorem it corresponds to (RUE-2467):",
+    "the literature's form, cited from the field map `../FIELD.md` (its section, then",
+    "the source and the theorem or section number that section records); our form,",
+    "in the notation of `../GLOSSARY.md`; and the difference, in one sentence, or",
+    "\"Identical up to notation.\" Generated from `RueCore.Literature.rows`, a",
+    "tooling-layer table kept beside the Spec layer rather than in it, so a row is",
+    "commentary that no fingerprint or Comparator challenge covers; `--spine` fails",
+    "on a spine theorem with no row. Three names differ from the field's in a way",
+    "the table records rather than renames. `step_preservation` and `step_progress`",
+    "are §7's words for a semantic invariant and its consequence along runs, not the",
+    "one-step lemmas over a syntactic configuration typing, which the calculus does",
+    "not define (RUE-2423 decides which §7 means). The `eval`/`Step` agreement the",
+    "calculus calls the adequacy lemma is, in the field's words, the semantic",
+    "equivalence of a definitional interpreter and a small-step semantics (Amin &",
+    "Rompf; `../FIELD.md` §3); its Spec module keeps the file name",
+    "`RueCore.Spec.Adequacy`, and its title uses the field's name.",
+    "",
+    "| Theorem | Literature (`../FIELD.md`) | Ours | Difference |",
+    "|---|---|---|---|"]
+  for r in Literature.rows do
+    out := out.push s!"| `{Digest.shortName r.thm}` | {r.lit} ({r.cite}) | {r.ours} | {r.diff} |"
+  return out.push ""
+
 /-- (helper) `SPINE.md`: every Spec statement — the Lean statement, its
 English reading and calculus paragraph (its doc-comment), the theorem that
 proves it, and the definitions it rests on — generated from
 `RueCore.Spec.spine`, so it cannot drift from what the kernel checks. -/
 def spineReport (env : Environment) : CoreM (String × UInt32) := do
-  let problems := Lint.spineProblems env
+  let problems := Lint.spineProblems env ++ Literature.problems.toArray
   for p in problems do IO.eprintln s!"ruecore-digest --spine: {p}"
   let base ← Lint.trustedBase env
   let floatStmts := Spec.spine.filter fun (_, s) =>
@@ -297,6 +329,7 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
     "to (`TRUST.md`, \"Trusted base\"; bodies in `DIGEST.md`); \"Names\" lists",
     "those an entry mentions.",
     ""]
+  out := out ++ literatureTable
   let mut group : Option Name := none
   for (h, s) in Spec.spine do
     let some (.defnInfo v) := Lint.find? env s | continue
