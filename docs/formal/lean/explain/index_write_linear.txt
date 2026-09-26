@@ -1,0 +1,319 @@
+════════════════════════════════════════════════════════════════════════════════
+ index_write_linear
+════════════════════════════════════════════════════════════════════════════════
+A dynamic-index write to an array whose element type carries a linear value: a
+runtime index never establishes the element as MovedOut, so (Assign) §5.2's
+3.8:77 premise reduces to not-carries-linear, which is false (the compiler:
+E0493). The machine agrees on its own terms: the overwrite-drop would destroy
+an unconsumed linear value, which is the linearOverwrite monitor. Seeded by
+the definition mutation analysis (RUE-2486): mutant `index-write-linear`.
+
+Rules exercised: (Assign) §5.2 · 3.8:77
+
+── The program ─────────────────────────────────────────────────────────────────
+
+@copy struct S0 { x0: i64 }
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+linear struct S2 { x0: i64 }
+linear struct S3 { x0: i64 }
+drop fn S3(self) { @dbg(self.x0); }
+struct S4 { x0: i64, x1: S3 }
+struct S5 { x0: i64, x1: S1 }
+drop fn S5(self) { @dbg(self.x0); }
+@copy struct S6 { x0: i64, x1: i64 }
+struct S7 { x0: S1, x1: S1 }
+struct S8 { x0: S1, x1: i64 }
+struct S9 { x0: S7, x1: i64 }
+struct S10 { x0: S3, x1: S1 }
+fn f0() -> i64 {
+    f1(0)
+}
+
+fn f1(v0: i64) -> i64 {
+    {
+        let mut v1: [S4; 2] = [S4 { x0: 1, x1: S3 { x0: 1 } }, S4 { x0: 2, x1: S3 { x0: 2 } }];
+        {
+            { v1[{ let t3i0: i64 = v0; t3i0 }] = S4 { x0: 9, x1: S3 { x0: 9 } }; };
+            {
+                @drop(v1);
+                7
+            }
+        }
+    }
+}
+
+
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: REJECTED by the checker (§5).
+
+The premise that fails, in fn f1(v0: i64) -> i64, at (Assign) §5.2 below a dynamic index:
+
+    on  { v1[v0] = S4 { x0: 9, x1: S3 { x0: 9 } }; }
+
+    overwrite of a live linear value: the place is not MovedOut after the
+    right-hand side and its type S4 carries a linear value ((Assign) premise
+    `Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, §5.2, read on the destination's
+    type; 3.8:77; the compiler reports E0493)
+
+── The derivations (§5) ────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order. One tree per
+function body, checked from (Fn) §5.8's entry context.
+
+  fn f0() -> i64
+
+  (Call) §5.8
+    e       f1(0)
+    Γ;Σ     (empty)
+    ⇒       i64  ⊣  (empty)
+      (Lit) §5.8
+        e       0
+        Γ;Σ     (empty)
+        ⇒       i64  ⊣  (empty)
+
+  fn f1(v0: i64) -> i64
+
+  (Let) §5.3 + the §5.6 scope-exit leak check
+    e       { let mut v1: [S4; 2] = [S4 { x0: 1, x1: S3 { x0: 1 } }, S4 { x0: 2, x1: S3 { x…
+    Γ;Σ     [v0: i64 = Owned]
+    ✗       this premise fails:
+            a premise's own derivation failed — the reason is the rejected
+            premise nested under this rule
+      (Array-Intro) §5.8
+        e       [S4 { x0: 1, x1: S3 { x0: 1 } }, S4 { x0: 2, x1: S3 { x0: 2 } }]
+        Γ;Σ     [v0: i64 = Owned]
+        ⇒       [S4; 2]  ⊣  [v0: i64 = Owned]
+          (Struct-Intro) §5.8
+            e       S4 { x0: 1, x1: S3 { x0: 1 } }
+            Γ;Σ     [v0: i64 = Owned]
+            ⇒       S4  ⊣  [v0: i64 = Owned]
+              (Lit) §5.8
+                e       1
+                Γ;Σ     [v0: i64 = Owned]
+                ⇒       i64  ⊣  [v0: i64 = Owned]
+              (Struct-Intro) §5.8
+                e       S3 { x0: 1 }
+                Γ;Σ     [v0: i64 = Owned]
+                ⇒       S3  ⊣  [v0: i64 = Owned]
+                  (Lit) §5.8
+                    e       1
+                    Γ;Σ     [v0: i64 = Owned]
+                    ⇒       i64  ⊣  [v0: i64 = Owned]
+          (Struct-Intro) §5.8
+            e       S4 { x0: 2, x1: S3 { x0: 2 } }
+            Γ;Σ     [v0: i64 = Owned]
+            ⇒       S4  ⊣  [v0: i64 = Owned]
+              (Lit) §5.8
+                e       2
+                Γ;Σ     [v0: i64 = Owned]
+                ⇒       i64  ⊣  [v0: i64 = Owned]
+              (Struct-Intro) §5.8
+                e       S3 { x0: 2 }
+                Γ;Σ     [v0: i64 = Owned]
+                ⇒       S3  ⊣  [v0: i64 = Owned]
+                  (Lit) §5.8
+                    e       2
+                    Γ;Σ     [v0: i64 = Owned]
+                    ⇒       i64  ⊣  [v0: i64 = Owned]
+      (Seq) §5.3, 3.8:64
+        e       { { v1[v0] = S4 { x0: 9, x1: S3 { x0: 9 } }; }; { @drop(v1); 7 } }
+        Γ;Σ     [v1: [S4; 2] mut = Owned, v0: i64 = Owned]
+        ✗       this premise fails:
+                a premise's own derivation failed — the reason is the rejected
+                premise nested under this rule
+          (Assign) §5.2 below a dynamic index
+            e       { v1[v0] = S4 { x0: 9, x1: S3 { x0: 9 } }; }
+            Γ;Σ     [v1: [S4; 2] mut = Owned, v0: i64 = Owned]
+            ✗       this premise fails:
+                    overwrite of a live linear value: the place is not MovedOut after
+                    the right-hand side and its type S4 carries a linear value ((Assign)
+                    premise `Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, §5.2, read on the
+                    destination's type; 3.8:77; the compiler reports E0493)
+              (Struct-Intro) §5.8
+                e       S4 { x0: 9, x1: S3 { x0: 9 } }
+                Γ;Σ     [v1: [S4; 2] mut = Owned, v0: i64 = Owned]
+                ⇒       S4  ⊣  [v1: [S4; 2] mut = Owned, v0: i64 = Owned]
+                  (Lit) §5.8
+                    e       9
+                    Γ;Σ     [v1: [S4; 2] mut = Owned, v0: i64 = Owned]
+                    ⇒       i64  ⊣  [v1: [S4; 2] mut = Owned, v0: i64 = Owned]
+                  (Struct-Intro) §5.8
+                    e       S3 { x0: 9 }
+                    Γ;Σ     [v1: [S4; 2] mut = Owned, v0: i64 = Owned]
+                    ⇒       S3  ⊣  [v1: [S4; 2] mut = Owned, v0: i64 = Owned]
+                      (Lit) §5.8
+                        e       9
+                        Γ;Σ     [v1: [S4; 2] mut = Owned, v0: i64 = Owned]
+                        ⇒       i64  ⊣  [v1: [S4; 2] mut = Owned, v0: i64 = Owned]
+              (Use-Copy) §5.1
+                e       v0
+                Γ;Σ     [v1: [S4; 2] mut = Owned, v0: i64 = Owned]
+                ⇒       i64  ⊣  [v1: [S4; 2] mut = Owned, v0: i64 = Owned]
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth — a callee's rows are deeper than its call's — and `>>`
+marks a drop event. The run enters at f0(), as `Dynamics.run` does.
+`#n` after an aggregate is its identity, minted when it was built; a `†`
+cell is a retired binding or an identity's reserved slot (`introVal`).
+
+  [1]   d1    (D-Call) §6.9 (push the frame)
+         expr    fn f0() -> i64  with []
+         store   (empty)
+           →     (empty)
+         result  value ()
+  [2]   d3        literal §6.3
+         expr    0
+         store   (empty)
+           →     (empty)
+         result  value 0
+  [3]   d3        (D-Call) §6.9 (push the frame)
+         expr    fn f1(v0: i64) -> i64  with [ℓ0]
+         store   (empty)
+           →     [ℓ0 = 0]
+         result  value ()
+  [4]   d7                literal §6.3
+         expr    1
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 0]
+         result  value 1
+  [5]   d8                  literal §6.3
+         expr    1
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 0]
+         result  value 1
+  [6]   d7                (D-Struct) §6.5 (mint #1)
+         expr    S3 { x0: 1 }
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 0, ℓ1 = †]
+         result  value S3 { 1 }#1
+  [7]   d6              (D-Struct) §6.5 (mint #2)
+         expr    S4 { x0: 1, x1: S3 { x0: 1 } }
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
+         result  value S4 { 1, S3 { 1 }#1 }#2
+  [8]   d7                literal §6.3
+         expr    2
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
+         result  value 2
+  [9]   d8                  literal §6.3
+         expr    2
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
+         result  value 2
+  [10]  d7                (D-Struct) §6.5 (mint #3)
+         expr    S3 { x0: 2 }
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †]
+         result  value S3 { 2 }#3
+  [11]  d6              (D-Struct) §6.5 (mint #4)
+         expr    S4 { x0: 2, x1: S3 { x0: 2 } }
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †]
+         result  value S4 { 2, S3 { 2 }#3 }#4
+  [12]  d5            (D-Array) §6.5 (mint #5)
+         expr    [S4 { x0: 1, x1: S3 { x0: 1 } }, S4 { x0: 2, x1: S3 { x0: 2 } }]
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
+         result  value [S4 { 1, S3 { 1 }#1 }#2, S4 { 2, S3 { 2 }#3 }#4]#5
+  [13]  d5            (D-Let) §6.7 (mint the binding)
+         expr    let mut v1 = [S4 { 1, S3 { 1 }#1 }#2, S4 { 2, S3 { 2 }#3 }#4]#5 at ℓ6
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+         result  value [S4 { 1, S3 { 1 }#1 }#2, S4 { 2, S3 { 2 }#3 }#4]#5
+  [14]  d8                  literal §6.3
+         expr    9
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+         result  value 9
+  [15]  d9                  literal §6.3
+         expr    9
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+         result  value 9
+  [16]  d8                  (D-Struct) §6.5 (mint #7)
+         expr    S3 { x0: 9 }
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+         result  value S3 { 9 }#7
+  [17]  d7                (D-Struct) §6.5 (mint #8)
+         expr    S4 { x0: 9, x1: S3 { x0: 9 } }
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+         result  value S4 { 9, S3 { 9 }#7 }#8
+  [18]  d7                (D-Use-Copy) §6.3
+         expr    v0
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+         result  value 0
+  [19]  d6              (D-Assign) §6.8 below a dynamic index
+         expr    { v1[v0] = S4 { x0: 9, x1: S3 { x0: 9 } }; }
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+         result  REFUSED (linearOverwrite)
+                 an overwrite-drop of a live linear value: the assignment would
+                 consume a linear value the program never consumed (§6.8; 3.8:77; §7)
+  [20]  d5            (D-Seq) §6.7 — a premise did not complete
+         expr    { { v1[v0] = S4 { x0: 9, x1: S3 { x0: 9 } }; }; { @drop(v1); 7 } }
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+         result  REFUSED (linearOverwrite)
+                 an overwrite-drop of a live linear value: the assignment would
+                 consume a linear value the program never consumed (§6.8; 3.8:77; §7)
+  [21]  d4          (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
+         expr    { let mut v1: [S4; 2] = [S4 { x0: 1, x1: S3 { x0: 1 } }, S4 { x0: 2, x1: S3 { x…
+         store   [ℓ0 = 0]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+         result  REFUSED (linearOverwrite)
+                 an overwrite-drop of a live linear value: the assignment would
+                 consume a linear value the program never consumed (§6.8; 3.8:77; §7)
+  [22]  d2      (D-Return-Value) §6.9 (pop the frame)
+         expr    f1(0)
+         store   (empty)
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+         result  REFUSED (linearOverwrite)
+                 an overwrite-drop of a live linear value: the assignment would
+                 consume a linear value the program never consumed (§6.8; 3.8:77; §7)
+  [23]  d0  (D-Return-Value) §6.9 (pop the frame)
+         expr    f0()
+         store   (empty)
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S4 { 1, S3 { 1 }…
+         result  REFUSED (linearOverwrite)
+                 an overwrite-drop of a live linear value: the assignment would
+                 consume a linear value the program never consumed (§6.8; 3.8:77; §7)
+
+── Identities (§7) ─────────────────────────────────────────────────────────────
+
+One line per owned identity: the step that minted it, the steps that ended
+it (a drop marker, a discarded temporary, a consumption), and the steps whose
+destructor ran on it. `drop_exactly_once` is one entry in the ended column
+per identity. Read in row order, and `[n.k]` (the k-th end of row n) inside a
+row, the ends are the trace's order, which `drop_order` fixes: a value's
+destructors inside its drop in §6.11's order, and cells last-in first-out.
+
+  id    minted  ended                             destructor  verdict
+  ────────────────────────────────────────────────────────────────────────
+  #1    [6]     —                                 —           the run was refused (§6)
+  #2    [7]     —                                 —           the run was refused (§6)
+  #3    [10]    —                                 —           the run was refused (§6)
+  #4    [11]    —                                 —           the run was refused (§6)
+  #5    [12]    —                                 —           the run was refused (§6)
+  #7    [16]    —                                 —           the run was refused (§6)
+  #8    [17]    —                                 —           the run was refused (§6)
+
+  The run was refused (§6), which a checked program's never is (`soundness`);
+  the ledger is what the table recorded before the refusal.
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: REFUSED (linearOverwrite)
+         an overwrite-drop of a live linear value: the assignment would
+         consume a linear value the program never consumed (§6.8; 3.8:77; §7)
+
