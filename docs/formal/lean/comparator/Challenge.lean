@@ -64,6 +64,10 @@ def no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P → ∀ (fuel : Nat), run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.useAfterDrop
 
+/-- The statement `run_no_use_after_drop` proves. -/
+def run_no_use_after_drop_stmt : Prop :=
+  ∀ (M : FloatOps) (P : Program) (fuel : Nat), run M P fuel ≠ EvalRes.stuck Violation.useAfterDrop
+
 /-- The statement `no_linear_leak` proves. -/
 def no_linear_leak_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
@@ -230,6 +234,11 @@ def step_type_safety_stmt : Prop :=
                         HasTy P.decls v fd.ret) ∨
                 ∃ (κ : PanicKind),
                   ∃ (tr : List Event), Steps M.toFloatOps P Config.init (Config.panic κ tr)
+
+/-- The statement `step_no_use_after_drop` proves. -/
+def step_no_use_after_drop_stmt : Prop :=
+  ∀ (M : FloatOps) (P : Program) {C : Config},
+    Steps M P Config.init C → ¬Config.Stuck M P C Violation.useAfterDrop
 
 /-- The statement `eval_sound` proves. -/
 def eval_sound_stmt : Prop :=
@@ -1830,6 +1839,36 @@ def Sharp.unreachable_stuck_stmt : Prop :=
                               n < fuel →
                                 ∃ (w' : Violation), run Float.exactOps P fuel = EvalRes.stuck w'
 
+/-- The statement `Sharp.retired_cell` proves. -/
+def Sharp.retired_cell_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                        cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns := [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          ProgramTyped P ∧
+            eval Float.exactOps 1 P [Cell.dead] { env := [0], scope := [] } (Expr.use (Place.var 0)) =
+                EvalRes.stuck Violation.useAfterDrop ∧
+              Config.Stuck Float.exactOps P
+                  (Config.run [Cell.dead] { env := [0], scope := [] } []
+                    (Focus.eval (Expr.use (Place.var 0))) [])
+                  Violation.useAfterDrop ∧
+                ¬Steps Float.exactOps P Config.init
+                    (Config.run [Cell.dead] { env := [0], scope := [] } []
+                      (Focus.eval (Expr.use (Place.var 0))) [])
+
 end RueCore.Spec
 
 namespace RueCore.Spine
@@ -1839,6 +1878,7 @@ theorem run_safe : RueCore.Spec.run_safe_stmt := sorry
 theorem no_violation : RueCore.Spec.no_violation_stmt := sorry
 theorem no_use_after_move : RueCore.Spec.no_use_after_move_stmt := sorry
 theorem no_use_after_drop : RueCore.Spec.no_use_after_drop_stmt := sorry
+theorem run_no_use_after_drop : RueCore.Spec.run_no_use_after_drop_stmt := sorry
 theorem no_linear_leak : RueCore.Spec.no_linear_leak_stmt := sorry
 theorem no_linear_overwrite : RueCore.Spec.no_linear_overwrite_stmt := sorry
 theorem no_linear_discard : RueCore.Spec.no_linear_discard_stmt := sorry
@@ -1862,6 +1902,7 @@ theorem step_stuck_isStuckState : RueCore.Spec.step_stuck_isStuckState_stmt := s
 theorem step_progress : RueCore.Spec.step_progress_stmt := sorry
 theorem step_preservation : RueCore.Spec.step_preservation_stmt := sorry
 theorem step_type_safety : RueCore.Spec.step_type_safety_stmt := sorry
+theorem step_no_use_after_drop : RueCore.Spec.step_no_use_after_drop_stmt := sorry
 theorem eval_sound : RueCore.Spec.eval_sound_stmt := sorry
 theorem run_sim : RueCore.Spec.run_sim_stmt := sorry
 theorem eval_complete : RueCore.Spec.eval_complete_stmt := sorry
@@ -1910,5 +1951,6 @@ theorem Sharp.unordered : RueCore.Spec.Sharp.unordered_stmt := sorry
 theorem Sharp.not_a_step : RueCore.Spec.Sharp.not_a_step_stmt := sorry
 theorem Sharp.init_steps : RueCore.Spec.Sharp.init_steps_stmt := sorry
 theorem Sharp.unreachable_stuck : RueCore.Spec.Sharp.unreachable_stuck_stmt := sorry
+theorem Sharp.retired_cell : RueCore.Spec.Sharp.retired_cell_stmt := sorry
 
 end RueCore.Spine

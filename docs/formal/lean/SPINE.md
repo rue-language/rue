@@ -19,7 +19,7 @@ or containers, §6.13); both are Phase D (RUE-2238, RUE-2240). So these parts of
   operations' closure is assumed, as the laws of `FloatModel`, of every model
   the statements quantify over (it is proved of `Float.exactOps`).
 
-19 of the 36 statements quantify over `M : FloatModel`, the IEEE 754 laws assumed.
+19 of the 38 statements quantify over `M : FloatModel`, the IEEE 754 laws assumed.
 The laws have a model: `Float.exactModel` (`RueCore/Float/Lemmas.lean`) proves every one
 of them of the executable instance `Float.exactOps`, so they are jointly satisfiable and
 those 19 are not vacuous in `M` (`Nonvacuous.exact_model`, RUE-2469). Several statements say
@@ -59,8 +59,8 @@ conclusion included), each with the counter-examples that drop it
 the statement, of which that hypothesis fails, every other holds, and the
 conclusion fails. So the hypothesis is needed. A hypothesis with no
 counter-example carries a reason (`RueCore.Spec.sharpnessReasons`), and the lint
-fails on one with neither: 70 of the 71 have a counter-example and 1
-has a reason. Of the 70, 19 are premises inside a conclusion, under
+fails on one with neither: 71 of the 72 have a counter-example and 1
+has a reason. Of the 71, 19 are premises inside a conclusion, under
 an `∧`, an `↔` or an `∃` of it (a `run … = .ok`, a `Steps …` or an `n < fuel` that
 a conjunct starts from), not hypotheses about the program. For `drop_order` 2–3,
 `eval_sound` 2–3, `run_sim` 1–2, `eval_complete` 2 and 4 and `run_complete` 1 and 3,
@@ -68,7 +68,7 @@ the dropped premise is the only thing tying its bound value or trace to the prog
 so the counter-example shows only that the conclusion is not a tautology. The walk does not go
 under `∨` or `¬`, nor into a definition that is not reducible (`Config.SafeAt`,
 `Exact`, `Blocks`, `Lifo`). Each pairing of a counter-example with a (theorem,
-number) is checked by the kernel (74 pairs): `RueCore/Sharp/Glue.lean` proves,
+number) is checked by the kernel (75 pairs): `RueCore/Sharp/Glue.lean` proves,
 from the counter-example, the negation of the spine statement with that
 hypothesis removed, and the lint computes that weakened statement itself from
 the Spec statement and the number (`Lint.dropHyp`, by the walk that numbers the
@@ -83,8 +83,12 @@ monitor falsifies one (R3 of `REDTEAM-LOG.md`). The `FloatModel` laws are not
 numbered: they are assumptions about the model a statement is instantiated at, not
 hypotheses about a program, and every counter-example runs on `Float.exactOps`, a
 model of them; that one reason is recorded with `RueCore.Spec.sharpnessReasons`.
+The listed reason is `no_use_after_drop`'s `ProgramTyped`, which has no
+counter-example because it is redundant: `run_no_use_after_drop` proves the
+conclusion for every program, checked or not, and `step_no_use_after_drop` the
+same over `Step` from `Config.init` (RUE-2496).
 
-A statement means its text plus the 292 definitions the 36 statements unfold
+A statement means its text plus the 292 definitions the 38 statements unfold
 to (`TRUST.md`, "Trusted base"; bodies in `DIGEST.md`); "Names" lists
 those an entry mentions.
 
@@ -206,7 +210,11 @@ raises when it reaches a retired cell. It is `no_violation` at one tag, so it
 says no retired cell is accessed only as far as `eval` checks every access
 and labels it so: what it rules out is what that monitor watches (R3 of
 `REDTEAM-LOG.md`; RUE-2469). The buffer half of the bullet, use-after-free,
-has no statement (§6.13 is outside the fragment).
+has no statement (§6.13 is outside the fragment). Its `ProgramTyped`
+hypothesis is redundant: `run_no_use_after_drop` below proves the same
+conclusion for every program, checked or not, so this statement is not a
+consequence of typing; it is kept in §7's form, over checked programs
+(RUE-2496).
 
 ```lean
 def Spec.no_use_after_drop_stmt : Prop :=
@@ -221,7 +229,33 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 
 Sharp:
 
-1. `ProgramTyped P` — no counter-example: No counter-example has been found. By reading `Dynamics.lean`, `.dead` enters the store only as an identity slot no binding names, or when a cell is retired as its binding leaves the environment; and a fuzz of 78,000 programs, checked and unchecked, reached `useAfterDrop` through neither `run` nor `step`. So the hypothesis appears redundant; the theorem over every program is RUE-2496.
+1. `ProgramTyped P` — no counter-example: No counter-example exists: `run_no_use_after_drop` proves the conclusion for every program, checked or not (and `step_no_use_after_drop` the same over `Step` from `Config.init`), so the hypothesis is redundant for a run from the start. The property is structural: a binding's cell is minted fresh and retired only when its scope ends, after which nothing names it. The statement is kept in §7's form, over checked programs (RUE-2496).
+
+### `run_no_use_after_drop`
+
+**No use-after-drop, on every program** (§7 "No use-after-drop / no leak
+of drops", "never read afterward"; RUE-2496): `run` never refuses with
+`useAfterDrop`, at any fuel and float model, **whether or not the program is
+checked**. The property is structural rather than a consequence of typing: a
+binding's cell is minted fresh and retired only when the scope that bound it
+ends, after which nothing names it, and a scope record owes each cell once.
+So `no_use_after_drop`'s `ProgramTyped` is redundant for a run from the
+start. The guard is not dead code: from an open configuration, a frame that
+names a cell already retired, `eval` does refuse (`Sharp.retired_cell`). Like
+`no_use_after_drop`, it says no retired cell is accessed only as far as
+`eval` checks every access and labels it so (R3 of `REDTEAM-LOG.md`).
+
+```lean
+def Spec.run_no_use_after_drop_stmt : Prop :=
+  ∀ (M : FloatOps) (P : Program) (fuel : Nat),
+    run M P fuel ≠ EvalRes.stuck Violation.useAfterDrop
+```
+
+Proved by `run_no_use_after_drop` (`RueCore.Retire`). Names `FloatOps`, `Program`, `EvalRes`, `run`, `Violation`; rests on 112 definitions.
+
+Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.dtor`.
+
+Sharp: no hypotheses to drop.
 
 ### `no_linear_leak`
 
@@ -769,6 +803,29 @@ Sharp:
 
 1. `ProgramTyped P` — counter-example `Sharp.stuck_step`
 
+### `step_no_use_after_drop`
+
+**No use-after-drop over `Step`, on every program** (§7 "No use-after-drop /
+no leak of drops"; §6.1's retired cell; RUE-2496). No configuration reachable
+from `Config.init` is stuck on a retired (`†`) cell, whether or not the
+program is checked. The hypothesis that the configuration is reached is
+needed: a configuration whose frame names a retired cell is stuck so
+(`Sharp.retired_cell`).
+
+```lean
+def Spec.step_no_use_after_drop_stmt : Prop :=
+  ∀ (M : FloatOps) (P : Program) {C : Config},
+    Steps M P Config.init C → ¬Config.Stuck M P C Violation.useAfterDrop
+```
+
+Proved by `step_no_use_after_drop` (`RueCore.Retire`). Names `FloatOps`, `Program`, `Config`, `Steps`, `Config.init`, `Config.Stuck`, `Violation`; rests on 115 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.dtor`.
+
+Sharp:
+
+1. `Steps M P Config.init C` — counter-example `Sharp.retired_cell`
+
 ## `eval` and `Step` agree
 
 `RueCore.Spec.Adequacy`
@@ -1158,7 +1215,7 @@ def Spec.Nonvacuous.dtor_stmt : Prop :=
                                   2 ≤ (freedIds P.decls tr).length ∧ 2 ≤ (dtorIds tr).length
 ```
 
-Proved by `Nonvacuous.dtor` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `eval_diverges_iff`.
+Proved by `Nonvacuous.dtor` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `run_no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `step_progress`, `step_preservation`, `step_type_safety`, `step_no_use_after_drop`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `eval_diverges_iff`.
 
 ### `Nonvacuous.linear`
 
@@ -3095,3 +3152,49 @@ def Spec.Sharp.unreachable_stuck_stmt : Prop :=
 ```
 
 Proved by `Sharp.unreachable_stuck` (`RueCore.Sharp`). Drops `step_progress` 2, `step_preservation` 2, `never_stuck_iff` 2, `step_never_stuck_of_run` 2, `run_stuck_of_step_stuck` 1.
+
+### `Sharp.retired_cell`
+
+**A configuration that reads a retired cell, not reached** (§7 sharpness,
+RUE-2496). For the checked program of `Nonvacuous.dtor`, a configuration whose
+frame names a cell already retired (`†`) is stuck with `useAfterDrop`, and
+`eval` from the same store and frame refuses the same way; the configuration
+is not reached from `Config.init` (shown through `step_no_use_after_drop`
+itself). So `step_no_use_after_drop` fails without the hypothesis that the
+configuration is reached: the refusal is live from an open configuration, and
+what keeps it away is the start, not the program's typing.
+
+```lean
+def Spec.Sharp.retired_cell_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          ProgramTyped P ∧
+            eval Float.exactOps 1 P [Cell.dead] { env := [0], scope := [] }
+                  (Expr.use (Place.var 0)) =
+                EvalRes.stuck Violation.useAfterDrop ∧
+              Config.Stuck Float.exactOps P
+                  (Config.run [Cell.dead] { env := [0], scope := [] } []
+                    (Focus.eval (Expr.use (Place.var 0))) [])
+                  Violation.useAfterDrop ∧
+                ¬Steps Float.exactOps P Config.init
+                    (Config.run [Cell.dead] { env := [0], scope := [] } []
+                      (Focus.eval (Expr.use (Place.var 0))) [])
+```
+
+Proved by `Sharp.retired_cell` (`RueCore.Sharp`). Drops `step_no_use_after_drop` 1.
