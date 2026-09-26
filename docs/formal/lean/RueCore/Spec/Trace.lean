@@ -11,8 +11,9 @@ public import RueCore.Trace.Defs
 read off the trace every run records: each drop, destructor, consumption and
 `@dbg`, in order, with the identity of the value each one is of. The
 multiplicity statements are over `run`'s and `eval`'s results, so over runs
-that finish (a result at some fuel); the order statements are over §6's
-relation `Step`.
+that finish (a result at some fuel), except `step_no_double_free`, which bounds
+the trace of every configuration §6's relation `Step` reaches, finished or
+not; the order statements are over `Step` too.
 -/
 
 namespace RueCore.Spec
@@ -20,12 +21,27 @@ namespace RueCore.Spec
 /-- **No double free** (§7 "No double-free"). A checked program's run is never
 refused, and its trace frees no identity twice and runs no destructor twice
 on one. Narrower than the bullet: an `outOfFuel` result has an empty trace,
-so a run that never finishes is not covered (RUE-2477). -/
+so a run that never finishes is not covered here; `step_no_double_free`
+covers it, over every configuration a run reaches (RUE-2477). -/
 def no_double_free_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
       (∀ a, (freedIds P.decls (run M.toFloatOps P fuel).trace).count a ≤ 1) ∧
       (∀ a, (dtorIds (run M.toFloatOps P fuel).trace).count a ≤ 1)
+
+/-- **No double free, on every prefix of a run** (§7 "No double-free", read as a
+safety property; RUE-2477). For a checked program, every configuration §6's
+relation reaches from `Config.init` — the run so far, whether or not it ever
+finishes — has a trace that frees no identity twice and runs no destructor
+twice on one, in `no_double_free`'s terms (`freedIds`, `dtorIds`). A safety
+property is one a finite prefix of a run can violate (Alpern & Schneider,
+`FIELD.md`), so this is the bullet's form over every run, a diverging one
+included; `no_double_free` over a finished run follows from it
+(`no_double_free_of_step`). -/
+def step_no_double_free_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) {C : Config}
+    (_ : Steps M.toFloatOps P Config.init C),
+    (∀ a, (freedIds P.decls C.trace).count a ≤ 1) ∧ (∀ a, (dtorIds C.trace).count a ≤ 1)
 
 /-- **Nothing freed twice, on every program** (§6.11): a finished run frees
 each identity at most once, with no typing hypothesis. -/

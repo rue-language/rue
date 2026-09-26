@@ -7,6 +7,7 @@ public import RueCore.Trace
 public import RueCore.TraceExact
 public import RueCore.TraceOrder
 public import RueCore.Retire
+public import RueCore.TracePrefix
 public import RueCore.Adequacy
 public import RueCore.Nonvacuous
 public import RueCore.Sharp
@@ -66,6 +67,8 @@ theorem check_sound : Spec.check_sound_stmt := @RueCore.check_sound
 theorem checkProgram_sound : Spec.checkProgram_sound_stmt := @RueCore.checkProgram_sound
 /-- `Spec.no_double_free_stmt`, by `RueCore.no_double_free` (helper). -/
 theorem no_double_free : Spec.no_double_free_stmt := @RueCore.no_double_free
+/-- `Spec.step_no_double_free_stmt`, by `RueCore.step_no_double_free` (helper). -/
+theorem step_no_double_free : Spec.step_no_double_free_stmt := @RueCore.step_no_double_free
 /-- `Spec.freed_once_stmt`, by `RueCore.freed_once` (helper). -/
 theorem freed_once : Spec.freed_once_stmt := @RueCore.freed_once
 /-- `Spec.dtor_once_stmt`, by `RueCore.dtor_once` (helper). -/
@@ -142,6 +145,9 @@ theorem Nonvacuous.panic : Spec.Nonvacuous.panic_stmt := @RueCore.Nonvacuous.pan
 theorem Nonvacuous.float : Spec.Nonvacuous.float_stmt := @RueCore.Nonvacuous.float
 /-- `Spec.Nonvacuous.diverges_stmt`, by `RueCore.Nonvacuous.diverges` (helper). -/
 theorem Nonvacuous.diverges : Spec.Nonvacuous.diverges_stmt := @RueCore.Nonvacuous.diverges
+/-- `Spec.Nonvacuous.diverges_drop_stmt`, by `RueCore.Nonvacuous.diverges_drop` (helper). -/
+theorem Nonvacuous.diverges_drop : Spec.Nonvacuous.diverges_drop_stmt :=
+  @RueCore.Nonvacuous.diverges_drop
 /-- `Spec.Nonvacuous.stuck_stmt`, by `RueCore.Nonvacuous.stuck` (helper). -/
 theorem Nonvacuous.stuck : Spec.Nonvacuous.stuck_stmt := @RueCore.Nonvacuous.stuck
 
@@ -203,6 +209,9 @@ theorem Sharp.init_steps : Spec.Sharp.init_steps_stmt := @RueCore.Sharp.init_ste
 theorem Sharp.unreachable_stuck : Spec.Sharp.unreachable_stuck_stmt := @RueCore.Sharp.unreachable_stuck
 /-- `Spec.Sharp.retired_cell_stmt`, by `RueCore.Sharp.retired_cell` (helper). -/
 theorem Sharp.retired_cell : Spec.Sharp.retired_cell_stmt := @RueCore.Sharp.retired_cell
+/-- `Spec.Sharp.unreached_double_stmt`, by `RueCore.Sharp.unreached_double` (helper). -/
+theorem Sharp.unreached_double : Spec.Sharp.unreached_double_stmt :=
+  @RueCore.Sharp.unreached_double
 
 
 end RueCore.Spine

@@ -119,6 +119,14 @@ abbrev bodyFloat : Expr :=
 abbrev progFloat : Program :=
   { decls := decls, fns := [{ params := [], ret := .float .w64, body := bodyFloat }] }
 
+/-- The `diverges_drop` witness's body (helper). -/
+abbrev bodyDivergesDrop : Expr :=
+  .loop (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) .unitLit)
+
+/-- The `diverges_drop` witness's program (helper). -/
+abbrev progDivergesDrop : Program :=
+  { decls := decls, fns := [{ params := [], ret := .unit, body := bodyDivergesDrop }] }
+
 /-- The `stuck` witness's body (helper). -/
 abbrev bodyStuck : Expr :=
   .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -2739,6 +2747,42 @@ theorem diverges.eval_diverges_iff : True := by
     { decls := { structs := [], enums := [] },
       fns := [{ params := [], ret := .unit, body := .loop .unitLit }] } rfl
   rw [← hM] at hoof
+  have := (Spine.eval_diverges_iff M hPT).mp hoof
+  trivial
+
+/-- `diverges_drop` applied to `checkProgram_sound` (helper). -/
+theorem diverges_drop.checkProgram_sound : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hoof, C, hSteps, -, -⟩ :=
+    Spine.Nonvacuous.diverges_drop bodyDivergesDrop rfl progDivergesDrop rfl
+  rw [← hM] at hoof hSteps
+  have := Spine.checkProgram_sound hc
+  trivial
+
+/-- `diverges_drop` applied to `no_double_free` (helper). -/
+theorem diverges_drop.no_double_free : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hoof, C, hSteps, -, -⟩ :=
+    Spine.Nonvacuous.diverges_drop bodyDivergesDrop rfl progDivergesDrop rfl
+  rw [← hM] at hoof hSteps
+  have := Spine.no_double_free M hPT 200
+  trivial
+
+/-- `diverges_drop` applied to `step_no_double_free` (helper). -/
+theorem diverges_drop.step_no_double_free : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hoof, C, hSteps, -, -⟩ :=
+    Spine.Nonvacuous.diverges_drop bodyDivergesDrop rfl progDivergesDrop rfl
+  rw [← hM] at hoof hSteps
+  have := Spine.step_no_double_free M hPT hSteps
+  trivial
+
+/-- `diverges_drop` applied to `eval_diverges_iff` (helper). -/
+theorem diverges_drop.eval_diverges_iff : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hoof, C, hSteps, -, -⟩ :=
+    Spine.Nonvacuous.diverges_drop bodyDivergesDrop rfl progDivergesDrop rfl
+  rw [← hM] at hoof hSteps
   have := (Spine.eval_diverges_iff M hPT).mp hoof
   trivial
 

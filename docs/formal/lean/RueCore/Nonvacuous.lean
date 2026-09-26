@@ -349,6 +349,70 @@ theorem diverges :
   subst hPe
   exact ⟨h1, checkProgram_sound h1, loopUnit_run⟩
 
+/-- One turn of `let s = S0 { 1 }; ()` finishes at every fuel past `3`, from
+every store and frame: it mints `S0 { 1 }`, binds it, and drops it at the
+scope's end (helper). -/
+theorem dropTurn_eval (M : FloatOps) (fns : List FnDef) : ∀ m H φ, ∃ H' tr,
+    eval M (m + 3)
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := fns } H φ
+      (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) .unitLit) = .ok H' .unit tr := by
+  intro m H φ
+  simp only [eval, evalArgs, introVal, EvalRes.andThen, EvalRes.withTrace]
+  simp [dropRetire]
+  exact ⟨_, _, rfl⟩
+
+/-- `loop { let s = S0 { 1 }; () }` exhausts every fuel, from every store and
+frame: each turn finishes and the body never breaks (helper). -/
+theorem dropLoop_eval (M : FloatOps) (fns : List FnDef) : ∀ n H φ,
+    eval M n
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := fns } H φ
+      (.loop (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) .unitLit)) = .outOfFuel
+  | 0, _, _ => rfl
+  | 1, _, _ => rfl
+  | 2, _, _ => rfl
+  | 3, _, _ => rfl
+  | m + 4, H, φ => by
+      obtain ⟨H', tr, h⟩ := dropTurn_eval M fns m H φ
+      rw [eval, h]
+      dsimp only
+      rw [dropLoop_eval M fns (m + 3) H' φ]; rfl
+
+/-- `Spec.Nonvacuous.diverges_drop_stmt`, proved: §7's hypotheses, satisfied (RUE-2477). -/
+theorem diverges_drop :
+  ∀ B : Expr, B = .loop (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) .unitLit) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .unit, body := B }] } →
+      checkProgram P = true ∧ ProgramTyped P ∧ (∀ fuel, run Float.exactOps P fuel = .outOfFuel) ∧
+      ∃ C, Steps Float.exactOps P Config.init C ∧ dtorIds C.trace = [0, 2] ∧
+        2 ≤ (freedIds P.decls C.trace).length := by
+  intro B hB P hPe
+  subst hB
+  have h1 : checkProgram P = true := by rw [hPe]; rfl
+  have hP := checkProgram_sound h1
+  subst hPe
+  refine ⟨h1, hP, fun fuel => ?_, _, stepN_steps (n := 22), by rfl, by decide⟩
+  cases fuel with
+  | zero => rfl
+  | succ n =>
+      show EvalRes.withTrace [] (EvalRes.absorb (eval Float.exactOps n _ [] _
+        (.loop (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) .unitLit))) _) = _
+      rw [dropLoop_eval]; rfl
+
 /-- `Spec.Nonvacuous.stuck_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem stuck :
     ∀ B : Expr, B =

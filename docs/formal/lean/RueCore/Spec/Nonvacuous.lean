@@ -311,6 +311,28 @@ def diverges_stmt : Prop :=
         fns := [{ params := [], ret := .unit, body := .loop .unitLit }] } →
       checkProgram P = true ∧ ProgramTyped P ∧ ∀ fuel, run Float.exactOps P fuel = .outOfFuel
 
+/-- **A checked program that diverges and drops a value on every turn** (§6.10,
+§6.7; RUE-2477). `loop { let s = S0 { 1 }; () }` as the entry point returning
+`()` is accepted and typed, and its run exhausts every fuel, so `run`'s answer
+carries no trace and `no_double_free` says nothing about it. Yet §6's relation
+reaches, from `Config.init`, a configuration two turns in whose trace has run
+`S0`'s destructor on two distinct identities (`0` and `2`, one value minted per
+turn) and freed both. So `step_no_double_free`'s hypotheses hold of a diverging
+run whose trace is not empty: its bound is not vacuous where `no_double_free`'s
+is. -/
+def diverges_drop_stmt : Prop :=
+  ∀ B : Expr, B = .loop (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) .unitLit) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .unit, body := B }] } →
+      checkProgram P = true ∧ ProgramTyped P ∧ (∀ fuel, run Float.exactOps P fuel = .outOfFuel) ∧
+      ∃ C, Steps Float.exactOps P Config.init C ∧ dtorIds C.trace = [0, 2] ∧
+        2 ≤ (freedIds P.decls C.trace).length
+
 /-- **An unchecked program that gets stuck** (§6.3's read of a `⊘`; the corpus
 case `use_after_move` reads its moved binding the same way). `let a = S0 { 1
 }; @drop(a); a.x0` is rejected by the checker; run

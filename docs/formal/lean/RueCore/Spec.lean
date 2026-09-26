@@ -76,6 +76,7 @@ def spine : List (Lean.Name × Lean.Name) := [
   (`RueCore.checkProgram_sound, ``checkProgram_sound_stmt),
   -- the trace
   (`RueCore.no_double_free, ``no_double_free_stmt),
+  (`RueCore.step_no_double_free, ``step_no_double_free_stmt),
   (`RueCore.freed_once, ``freed_once_stmt),
   (`RueCore.dtor_once, ``dtor_once_stmt),
   (`RueCore.drop_exactly_once, ``drop_exactly_once_stmt),
@@ -357,6 +358,11 @@ def witnesses : List (Lean.Name × Lean.Name × List Lean.Name) := [
   (`RueCore.Nonvacuous.diverges, ``Nonvacuous.diverges_stmt, [
       `RueCore.checkProgram_sound,
       `RueCore.eval_diverges_iff]),
+  (`RueCore.Nonvacuous.diverges_drop, ``Nonvacuous.diverges_drop_stmt, [
+      `RueCore.checkProgram_sound,
+      `RueCore.no_double_free,
+      `RueCore.step_no_double_free,
+      `RueCore.eval_diverges_iff]),
   (`RueCore.Nonvacuous.stuck, ``Nonvacuous.stuck_stmt, [
       `RueCore.fuel_mono,
       `RueCore.no_masking,
@@ -439,6 +445,7 @@ def sharpness : List (Lean.Name × Lean.Name × List (Lean.Name × Nat)) := [
       (`RueCore.check_sound, 2)]),
   (`RueCore.Sharp.double_drop, ``Sharp.double_drop_stmt, [
       (`RueCore.no_double_free, 1),
+      (`RueCore.step_no_double_free, 1),
       (`RueCore.dtor_once, 1)]),
   (`RueCore.Sharp.bare_dtor, ``Sharp.bare_dtor_stmt, [
       (`RueCore.drop_order, 1),
@@ -487,7 +494,9 @@ def sharpness : List (Lean.Name × Lean.Name × List (Lean.Name × Nat)) := [
       (`RueCore.step_never_stuck_of_run, 2),
       (`RueCore.run_stuck_of_step_stuck, 1)]),
   (`RueCore.Sharp.retired_cell, ``Sharp.retired_cell_stmt, [
-      (`RueCore.step_no_use_after_drop, 1)])
+      (`RueCore.step_no_use_after_drop, 1)]),
+  (`RueCore.Sharp.unreached_double, ``Sharp.unreached_double_stmt, [
+      (`RueCore.step_no_double_free, 2)])
 
 ]
 
