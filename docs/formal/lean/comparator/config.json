@@ -19,6 +19,7 @@
   "RueCore.Spine.drop_exactly_once",
   "RueCore.Spine.rest_exactly_once",
   "RueCore.Spine.drop_order",
+  "RueCore.Spine.drop_glue_order",
   "RueCore.Spine.Step.det",
   "RueCore.Spine.Step.terminal",
   "RueCore.Spine.Config.trichotomy",

@@ -471,7 +471,9 @@ declared-`linear` `L { x0: C, x1: A }` and an affine `A` with a destructor,
 residue `C { 1 }` is `Copy`, so it is dropped with no marker, and its
 destructor event opens the trace. It is not `ProgramTyped`, and §6's relation
 runs it to a value whose trace is not in §6.11's block grammar: `drop_order`
-fails without `ProgramTyped` (through `DtorNotCopy`). -/
+fails without `ProgramTyped` (through `DtorNotCopy`), and so does
+`drop_glue_order`, since a trace outside `Blocks` is outside `GlueBlocks`
+(RUE-2487). -/
 def bare_dtor_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 2 [.mkStruct 0 [.intLit .w64 .signed 1], .mkStruct 3 [.intLit .w64 .signed 2]])
@@ -638,7 +640,8 @@ bound, and its trace is not in §6.11's block grammar. So each statement
 whose conclusion claims something of a reached or answered value fails once
 the hypothesis naming that value is dropped: `eval_sound`'s and `run_sim`'s
 `run … = .ok H v tr`, `eval_complete`'s and `run_complete`'s `Steps … (.ret
-v)`, and `drop_order`'s. -/
+v)`, and `drop_order`'s and `drop_glue_order`'s (a trace outside `Blocks` is
+outside `GlueBlocks`, RUE-2487). -/
 def unreached_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -661,7 +664,8 @@ def unreached_stmt : Prop :=
 the panic whose trace opens with a destructor event: not reached, not `run`'s
 answer past any bound (the program returns), not in the block grammar. So
 `eval_sound`'s and `run_sim`'s `run … = .panic k tr`, `eval_complete`'s and
-`run_complete`'s `Steps … (.panic κ tr)`, and `drop_order`'s are needed. -/
+`run_complete`'s `Steps … (.panic κ tr)`, and `drop_order`'s and
+`drop_glue_order`'s are needed. -/
 def unreached_panic_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])

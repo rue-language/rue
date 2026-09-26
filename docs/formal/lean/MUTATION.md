@@ -43,6 +43,13 @@ mutants (`mutate.py --only`) to confirm the new seed kills each one at the
 corpus level; these thirteen table rows and the "seeds and the bridge alone"
 score row are current, the rest of the table and score still predate
 RUE-2469 as above.
+RUE-2487 added `drop_glue_order`, §6.11's drop order stated in its own
+terms, and reran the three drop-glue mutants `dtor-skip`,
+`dtor-after-fields` and `fields-reverse` (`mutate.py --only`, trunk
+`b9814bc61` plus the new statement). Their three table rows, and the
+"After" cells of the "a stated property is false" and "a stated property
+or a helper lemma is false" score rows, were updated by hand from that
+run.
 
 ## What is mutated
 
@@ -226,7 +233,7 @@ adds (and their six `Examples.lean` witnesses); "after" is with them.
 | Measure | Before the six seeds | After |
 |---|---:|---:|
 | **Killed** | 73/76 (96%) | 76/76 (100%) |
-| A stated property is false | 48/76 (63%) | 53/76 (70%) |
+| A stated property is false | 48/76 (63%) | 56/76 (74%) |
 | The tests with the proofs off: witnesses, seeds, generated cases | 66/76 (87%) | 71/76 (93%) |
 | The seeds and the bridge alone | 50/76 (66%) | 69/76 (91%) |
 
@@ -248,7 +255,7 @@ These rows are recorded but do not count as kills:
 
 | Also recorded | Before | After |
 |---|---:|---:|
-| A stated property or a helper lemma is false | 53/76 (70%) | 56/76 (74%) |
+| A stated property or a helper lemma is false | 53/76 (70%) | 59/76 (78%) |
 | The build or the corpus fails at all: a proof script, a helper lemma or the Explain mirror included | 76/76 (100%) | 76/76 (100%) |
 
 Before the seeds, three mutants were not killed. Each failed only on
@@ -277,8 +284,10 @@ Counted apart:
   killed after the seeds by a witness or a seed. (Before RUE-2485 it was
   also the reading of `discard-monitor-off` and `copy-monitor-off`; see the
   monitors below.)
-* **A proof script only**: 16 mutants fail a proof while every statement
-  holds. All 16 are killed after the seeds by a witness, a seed or the bridge.
+* **A proof script only**: 13 mutants fail a proof while every statement
+  holds. All 13 are killed after the seeds by a witness, a seed or the bridge.
+  (There were 16 until RUE-2487 made the three drop-glue mutants falsify a
+  statement.)
 
 ### What the proofs kill, and what needs the corpus or the bridge
 
@@ -317,18 +326,32 @@ Counted apart:
   `array_dyn_write_trap_negative`, and others. This is by design: the Spec
   states safety, not functional correctness, and the corpus compares the
   functional content with the compiler.
-* **§6.11's drop order is fixed by a definition, not by a statement.** Three
+* **§6.11's drop order is fixed by a statement since RUE-2487.** Three
   drop-glue mutants change `dropContents` and `dropEvents` together:
   - `dtor-skip`, where no destructor runs;
   - `dtor-after-fields`;
   - `fields-reverse`.
 
-  For each, every statement holds. `drop_order`'s `Blocks` is written in
-  terms of `dropEvents`, so it follows whatever `dropEvents` says, and
-  `no_double_free` counts at most one destructor, which zero satisfies. The
-  witnesses and 89, 2 and 24 seeds kill them through their destructor lines.
-  The frame-exit and match-exit order mutants (`scope-fifo`,
-  `payload-order`) do falsify `drop_order`'s `Lifo`.
+  Until RUE-2487 every statement held for each of them: `drop_order`'s
+  `Blocks` is written in terms of `dropEvents`, so it follows whatever
+  `dropEvents` says, and `no_double_free` counts at most one destructor,
+  which zero satisfies. `drop_glue_order` states the order in §6.11's own
+  terms: a finished run's trace is in the grammar `GlueBlocks`, whose drop
+  blocks are the rules `DropGlue`, written from §6.11's equations over the
+  declarations and not through `dropEvents`. Each mutant's machine emits a
+  trace that grammar rejects, so each now falsifies a statement. The
+  rejected traces are `Witnesses.lean`'s `glue_dtorSkipped_rejected`,
+  `glue_dtorAfterFields_rejected` and `glue_fieldsSwapped_rejected`. The
+  falsity was also checked in the kernel on the proofs-off copy of each
+  mutant: a checked program the mutant's `stepN` runs to such a trace
+  refutes `Spec.drop_glue_order_stmt`, resting only on `checkProgram_sound`
+  and `stepN_steps`, whose proofs that copy turns off and which the
+  mutants do not touch. The build still stops first at a proof script
+  upstream (`dropContents_events`, `dropContents_struct_events`,
+  `dropEventsList_eq_flatten`), before `drop_glue_order`'s own proof
+  (`dropContents_glue`). The witnesses and 90, 2 and 24 seeds kill them
+  through their destructor lines. The frame-exit and match-exit order
+  mutants (`scope-fifo`, `payload-order`) falsify `drop_order`'s `Lifo`.
 * **The monitors are pinned by the sharpness statements.** The linear
   theorems say the machine never refuses a checked program, and a machine
   that never refuses meets that: removing the `linearLeak`,
@@ -470,9 +493,9 @@ pass leaves as written. `mutate.py --table` prints this table from
 | 62 | `float-to-int-saturate` | §6.4 | (D-Float-To-Int) | trap | proof: `evalFintrin_float_res` (`Soundness.lean`) | witness: `Examples.lean` example (l. 3540) | corpus: `float_to_int_trap_inf`, `float_to_int_trap_nan` +1 | every statement holds | an out-of-range float-to-int yields `0`, an in-range value | 22 |
 | 63 | `binop-eval-order` | §6.2 | evaluation order, eval only | order | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 1710) | bridge: `gen_7_118` +1 | a stated property is false | `eval` runs the right operand first and `Step` the left, so they disagree on a program with effects in both: `eval_sound`, `soundness` | 24 |
 | 64 | `index-write-order` | §6.2 | evaluation order, eval only | order | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 1680) | corpus: `array_dyn_write_rhs_first` | a stated property is false | `eval` runs the index first and `Step` the right-hand side: `eval_sound`, `soundness` | 22 |
-| 65 | `dtor-skip` | §6.11 | drop glue: destructor | drop-skip | proof: `dropContents_events` (`Soundness.lean`) | witness: `Examples.lean` example (l. 1068) | corpus: `affine_explicit_drop`, `affine_overwrite` +87 | every statement holds | `drop_order`'s `Blocks` is written in terms of `dropEvents`, which changes with it, and zero destructors satisfy `no_double_free` | 23 |
-| 66 | `dtor-after-fields` | §6.11 | drop glue order (3.9:15) | drop-order | proof: `dropContents_struct_events` (`Soundness.lean`) | witness: `Examples.lean` example (l. 3442) | corpus: `struct_nested_dtor_drop`, `two_params_dropped_at_pop` | every statement holds | `Blocks` follows `dropEvents`, which changes with `dropContents` | 22 |
-| 67 | `fields-reverse` | §6.11 | drop glue order (3.9:15) | drop-order | proof: `dropEventsList_eq_flatten` (`Dynamics/Lemmas.lean`) | witness: `Examples.lean` example (l. 1068) | corpus: `array_drop_order`, `array_dyn_read_after_sibling_move` +22 | every statement holds | `Blocks` follows `dropEvents`, which changes with `dropContents` | 20 |
+| 65 | `dtor-skip` | §6.11 | drop glue: destructor | drop-skip | proof: `dropContents_events` (`Soundness.lean`) | witness: `Examples.lean` example (l. 1068) | corpus: `affine_explicit_drop`, `affine_overwrite` +88 | a stated property is false | `drop_glue_order` is false: a destructor-bearing struct is dropped with no `dtor` event, which `GlueBlocks` rejects (`glue_dtorSkipped_rejected`; RUE-2487) | 23 |
+| 66 | `dtor-after-fields` | §6.11 | drop glue order (3.9:15) | drop-order | proof: `dropContents_struct_events` (`Soundness.lean`) | witness: `Examples.lean` example (l. 3499) | corpus: `struct_nested_dtor_drop`, `two_params_dropped_at_pop` | a stated property is false | `drop_glue_order` is false: a field's destructor runs before its owner's, which `GlueBlocks` rejects (`glue_dtorAfterFields_rejected`; RUE-2487) | 23 |
+| 67 | `fields-reverse` | §6.11 | drop glue order (3.9:15) | drop-order | proof: `dropEventsList_eq_flatten` (`Dynamics/Lemmas.lean`) | witness: `Examples.lean` example (l. 1068) | corpus: `array_drop_order`, `array_dyn_read_after_sibling_move` +22 | a stated property is false | `drop_glue_order` is false: fields drop last to first, which `GlueBlocks` rejects (`glue_fieldsSwapped_rejected`; RUE-2487) | 20 |
 | 68 | `scope-fifo` | §6.9 | frame exit drop order | drop-order | proof: `runAllScopeDrops_ok` (`Soundness.lean`) | witness: `Examples.lean` example (l. 3435) | corpus: `enum_return_past_payload`, `return_past_affine` +2 | a stated property is false | a frame's bindings are dropped first-declared first: `drop_order`'s `Lifo` | 22 |
 | 69 | `payload-order` | §6.6 | match arm exit order | drop-order | proof: `soundness` (`Soundness.lean`) | witness: `Witnesses.lean` example (l. 187) | corpus: `enum_two_payload_bindings` | a stated property is false | an arm's payload bindings are dropped first to last: `drop_order`'s `Lifo` | 54 |
 | 70 | `overwrite-no-drop` | §6.8 | (D-Assign) overwrite drop | drop-skip | proof: `sim_assign` (`Adequacy.lean`) | witness: `Examples.lean` example (l. 1078) | corpus: `affine_overwrite`, `array_elem_overwrite` +7 | a stated property is false | an assignment's old value is never dropped or freed: `Exact` (`drop_exactly_once`) | 32 |
@@ -584,18 +607,17 @@ disagreement the allowed red).
    respectively).
 2. **[Formal/Assurance] State §6.11's drop order independently of
    `dropEvents`.** `drop_order`'s `Blocks` is defined through `dropEvents`,
-   so changing `dropContents` and `dropEvents` together falsifies no stated
-   property. That covers:
+   so changing `dropContents` and `dropEvents` together falsified no stated
+   property. That covered:
    * no destructor at all (`dtor-skip`);
    * the destructor after the fields (`dtor-after-fields`);
    * the fields last to first (`fields-reverse`).
 
-   The destructor-first, declaration-order and ascending-index claims live
-   in a definition, not in a statement. A Spec statement would put them in
-   the claim, for example: "`dropEvents` of a destructor-bearing struct
-   starts with its `dtor` event, then its fields' blocks in declaration
-   order". That is for the Spec layer's review, and for Steve if the order
-   should be a §7 bullet.
+   Done in RUE-2487: `drop_glue_order` states the destructor-first,
+   declaration-order and ascending-index order over §6.11's own rules
+   (`DropGlue`, `GlueBlocks`), and each of the three mutants now falsifies
+   it ("What the proofs kill", above). Whether the order should be a §7
+   bullet is for Steve.
 3. **[Formal/Assurance] The linear theorems are satisfied by a machine with
    no monitors.** Removing any of the four run-time refusals leaves every
    spine statement true. Evidence: `leak-monitor-off`,
