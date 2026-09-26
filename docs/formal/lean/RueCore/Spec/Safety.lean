@@ -111,7 +111,8 @@ def no_linear_discard_stmt : Prop :=
 
 /-- **Fuel monotonicity** (§6 as `eval` runs it; `03-metatheory.md` "Fuel").
 An answer other than `outOfFuel` is the answer at every larger fuel: the clock
-lemma of functional big-step semantics (Owens et al.; `FIELD.md`, section 3). -/
+lemma of functional big-step semantics, which Owens et al. §3.4 leave unnamed
+and call "an analogue of determinism" (`FIELD.md`, section 3). -/
 def fuel_mono_stmt : Prop :=
   ∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr},
     ∀ {n m : Nat}, n ≤ m → eval M n P H φ e ≠ .outOfFuel →
