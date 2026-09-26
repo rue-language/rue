@@ -55,7 +55,7 @@ issue, or commented onto an existing one.
 
 | # | Target | Severity | Source | Issue | Proposed issue / evidence |
 |---|---|---|---|---|---|
-| R1 | statement | medium | F2 (raw: HIGH) | RUE-2477 | `no_double_free` says nothing about a run that does not terminate: add a statement over every reachable configuration's trace. `EvalRes.trace` is `[]` for `outOfFuel` (its DIGEST entry: "nothing for a refusal or exhausted fuel"), and by `eval_diverges_iff` a diverging program is `outOfFuel` at every fuel, so both counts are 0 for it. §7's bullet ("every stored value's destructor runs at most once") has no termination proviso; `run_trace_once` and `eval_conserves` are also over `run`/`eval` results. A double drop inside a `loop` that never exits is outside every multiplicity statement. In FIELD.md's terms (§6, Alpern & Schneider), this multiplicity bound is a safety property; R1 is a missing finite-prefix form of it, as RUE-2477 frames it. |
+| R1 | statement | medium | F2 (raw: HIGH) | RUE-2477 | `no_double_free` says nothing about a run that does not terminate: add a statement over every reachable configuration's trace. `EvalRes.trace` is `[]` for `outOfFuel` (its DIGEST entry: "nothing for a refusal or exhausted fuel"), and by `eval_diverges_iff` a diverging program is `outOfFuel` at every fuel, so both counts are 0 for it. §7's bullet ("every stored value's destructor runs at most once") has no termination proviso; `run_trace_once` and `eval_conserves` are also over `run`/`eval` results. A double drop inside a `loop` that never exits is outside every multiplicity statement. In FIELD.md's terms (§6, Alpern & Schneider), this multiplicity bound is a safety property; R1 is a missing finite-prefix form of it, as RUE-2477 frames it. (Since closed, by RUE-2477: `step_no_double_free` bounds the trace of every configuration `Step` reaches; see the entry below.) |
 | R2 | statement | medium | F7 (raw: medium) | RUE-2478 | Whole-program "every owned value ends exactly once" is a prose composition of `drop_exactly_once` and `rest_exactly_once`, not a theorem. `Exact` quantifies over `a < List.length H`; at the program level (`run`: `H = []`) the quantifier is empty. 03-metatheory's "Why two statements, not one over `run`" argues the composition in prose ("So every owned value a checked run holds ends exactly once …") and names two ends neither theorem sees (an end inside the minting evaluation; `main`'s result). No statement discharges the per-window hypotheses (`FrameMatches`, `StoreCC`) at every intermediate state. |
 | R3 | statement | medium | F1 (raw: HIGH) | RUE-2469 (comment) | The linear-consumption guarantee lives only in `eval`'s monitors: bring the monitor-fires witnesses into the statement layer. `Step.assign`, `Step.seqDrop`, `Step.endScope` and the unwinds drop a linear value through the same `dropCell`/`dropContents` path as `@drop`, with the same `Event.drop`. The three linear theorems are `run … ≠ .stuck .linearX`, which hold for an `eval` with no monitors. They are non-vacuous only because of `Examples.lean`'s `run … = .stuck .linearLeak`/`.linearOverwrite` witnesses and `Corpus.lean:938`'s `.linearDiscard` one, which are examples, not part of the stated claim. For RUE-2469 (witnesses) and RUE-2465 (a mutant that removes a monitor). |
 | R4 | statement | medium | F5 (raw: HIGH) | RUE-2423, RUE-2467 (comment) | `step_preservation` states `SafeAt init`: its `∀ C` adds nothing, and no configuration typing is preserved. `Config.SafeAt` quantifies over everything reachable from `C`, so it is closed under `Steps` by transitivity, and the theorem is equivalent to `SafeAt … Config.init`. 03-metatheory l.202–203 and l.211–214 already disclose this ("needs no typing hypothesis"; "holds by construction, and the content is the fundamental lemma `RueCore.init_safeAt`"), as does the semantic form generally (FIELD.md §2, the `SafeAt` docstring). What is not disclosed: no configuration-typing relation is stated at all (RUE-2423), and the theorem's name still reads as the syntactic lemma (RUE-2467, the spine alignment). |
@@ -431,3 +431,45 @@ What the mutants could not get past:
     issue). `drop_order`'s `NewestFirst` and `Lifo` read the drop markers'
     cells and the scope records, not `dropEvents`, and `scope-fifo` and
     `payload-order` falsify them (RUE-2465).
+
+## 2026-09-26 — no double free on every prefix of a run (RUE-2477)
+
+- **Trunk:** `73f6dfa8b`.
+- **Kind:** a statement added to close R1 of the first full-claim pass, not a
+  red-agent pass: no fresh session attacked anything.
+- **What was built.**
+  - **The statement.** `step_no_double_free` (Spec `step_no_double_free_stmt`
+    in `lean/RueCore/Spec/Trace.lean`, proved in `lean/RueCore/TracePrefix.lean`,
+    bound in `Spine.lean`): for a checked program, every configuration §6's
+    relation reaches from `Config.init` has a trace that frees no identity
+    twice (`freedIds`) and runs no destructor twice on one (`dtorIds`), the
+    vocabulary of `no_double_free`. It is the at-most-once bound in safety
+    form ([FIELD.md](FIELD.md) §6, Alpern & Schneider): over every finite
+    prefix of a run, whether or not the run finishes. `no_double_free` for a
+    finished run follows (`no_double_free_of_step`); its statement is
+    unchanged, and its doc-comment now points at the new one.
+  - **The invariant.** When `eval` exhausts its fuel from a copy-closed
+    store, `Step` has a run at least that long whose appended trace keeps
+    the conservation law's trap ledger: it owns at most what the store owned
+    plus a range of fresh identities (`LongC`, `eval_longc`). The proof is
+    `eval_steps_of_outOfFuel`'s, form by form, with `eval_conserves`' ledger
+    added wherever an operand finished and wherever a step emits events of
+    its own. A trace only grows along `Step`, so a bound at a later
+    configuration bounds every earlier one; for a configuration reached in
+    `k` steps, `run` at fuel `k` either exhausts it (a run of at least `k`
+    steps with the ledger) or answers a value or a panic `Step` reaches past
+    it. Typing enters only through `no_violation`: the bound holds of every
+    program `run` never refuses (`steps_trace_once`).
+  - **Non-vacuity and sharpness.** `Nonvacuous.diverges_drop`: `loop { let s
+    = S0 { 1 }; () }` is checked, `outOfFuel` at every fuel, and `Step`
+    reaches a configuration two turns in whose trace has run `S0`'s
+    destructor on identities `0` and `2`. `Sharp.double_drop`, reached by
+    `Step` through `run_sim`, refutes the statement without `ProgramTyped`;
+    `Sharp.unreached_double`, a panic whose trace destroys identity `0` twice,
+    not reached from `Config.init`, refutes it without reachability. Both
+    pairs are kernel-checked in `Sharp/Glue.lean`.
+- **Findings.**
+  - **R1 closed** (RUE-2477). A double drop inside a loop that never exits is
+    now inside a multiplicity statement. `03-metatheory.md`'s no-double-free
+    row does not cite the new theorem yet; that edit is a PR for the
+    calculus's owner.

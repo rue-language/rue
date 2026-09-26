@@ -475,7 +475,9 @@ finite prefix of a run. Schneider 2000's safety quantifies over finite and
 infinite executions and is credited to Lamport 1985, so it differs from Alpern
 & Schneider's. Our properties over *finished* traces (`Blocks`, `no_double_free`)
 become ordinary trace properties in the infinite-trace sense by the same
-stuttering padding.
+stuttering padding. `step_no_double_free` states the at-most-once bound in the
+safety form itself: over the trace of every configuration a run reaches, a
+finite prefix, whether or not the run finishes (RUE-2477).
 
 ### Terms we currently use that differ from this
 
