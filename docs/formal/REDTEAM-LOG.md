@@ -378,3 +378,51 @@ What the mutants could not get past:
   `lean/RueCore/Sharp/Glue.lean` negates each weakened statement, and the lint
   computes the weakened statement itself, `Lint.dropHyp`, and requires the
   glue theorem to state exactly its negation.)
+
+## 2026-09-26 — §6.11's drop order as a statement (RUE-2487)
+
+- **Trunk:** `b9814bc61`.
+- **Kind:** a statement added to close D1 of the RUE-2465 pass, not a
+  red-agent pass: no fresh session attacked anything.
+- **What was built.**
+  - **§6.11's drop, rule by rule.** `DropGlue` and `DropGlueSeq`
+    (`lean/RueCore/Trace/Defs.lean`, L1) write §6.11's equations as an
+    inductive relation over cell contents and the declarations: `⊘` and
+    scalars emit nothing; a struct emits its destructor event first when its
+    declaration has one (`3.9:28`), then its fields in declaration order
+    (`3.9:13`); an array's elements go in ascending index order (`3.9:15`);
+    an enum's active payload only (`6.3:20`). Neither mentions
+    `dropContents` or `dropEvents`. `GlueBlocks` is `Blocks`' grammar with
+    each drop's events given by `DropGlue`.
+  - **The statement.** `drop_glue_order` (Spec `drop_glue_order_stmt`,
+    proved in `TraceOrder.lean`, bound in `Spine.lean`): on a checked
+    program, every trace §6's relation finishes with (a value or a panic)
+    is in `GlueBlocks`. The proof shows the machine's walk meets the rules
+    whenever it succeeds (`dropContents_glue`), so `eval_blocks` now builds
+    `GlueBlocks`, and `Blocks` follows (`GlueBlocks.toBlocks`). Non-vacuity
+    glue on the nine witnesses `drop_order` has; sharpness pairs on
+    `Sharp.bare_dtor`, `Sharp.unreached` and `Sharp.unreached_panic`, the
+    three that already refute `drop_order` 1–3, through `toBlocks`.
+  - **The mutants.** `dtor-skip`, `dtor-after-fields` and `fields-reverse`
+    rerun (`mutate.py --only`): each now falsifies `drop_glue_order`
+    ([lean/MUTATION.md](lean/MUTATION.md), rows 65–67). The traces each
+    mutant's machine emits are rejected by `GlueBlocks` in
+    `Witnesses.lean` (`glue_dtorSkipped_rejected`,
+    `glue_dtorAfterFields_rejected`, `glue_fieldsSwapped_rejected`), and on
+    each mutant's proofs-off copy a checked program run by `stepN` to such
+    a trace refutes `Spec.drop_glue_order_stmt` in the kernel, resting only
+    on `checkProgram_sound` and `stepN_steps`, which the mutants do not
+    touch.
+- **Findings.**
+  - **D1 closed** (RUE-2487). The destructor-first, declaration-order and
+    ascending-index order is now in a statement.
+  - **G1, declaration order is read off the contents** (low, disclosure).
+    `DropGlue` takes a struct's `k`-th member to be its `k`-th declared
+    field, which is how the machine stores it; the link between the list
+    and `StructDecl.fields` is the typing's (`ContentsTy`), not stated in
+    `GlueBlocks`. A mutant that built a struct's contents in another order
+    would be caught by the corpus, not by this statement.
+  - **G2, "bindings newest first" was already stated** (confirmation, no
+    issue). `drop_order`'s `NewestFirst` and `Lifo` read the drop markers'
+    cells and the scope records, not `dropEvents`, and `scope-fifo` and
+    `payload-order` falsify them (RUE-2465).

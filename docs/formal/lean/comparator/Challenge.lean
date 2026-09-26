@@ -176,6 +176,16 @@ def drop_order_stmt : Prop :=
                       Lifo C.stack C'.stack (dropLocs evs) ∧
                         List.Pairwise (fun (x1 x2 : Nat) => x1 < x2) C.stack
 
+/-- The statement `drop_glue_order` proves. -/
+def drop_glue_order_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+            GlueBlocks P.decls tr) ∧
+        ∀ (κ : PanicKind) (tr : List Event),
+          Steps M.toFloatOps P Config.init (Config.panic κ tr) → GlueBlocks P.decls tr
+
 /-- The statement `Step.det` proves. -/
 def Step.det_stmt : Prop :=
   ∀ {M : FloatOps} {P : Program} {C C₁ C₂ : Config}, Step M P C C₁ → Step M P C C₂ → C₁ = C₂
@@ -1893,6 +1903,7 @@ theorem dtor_once : RueCore.Spec.dtor_once_stmt := sorry
 theorem drop_exactly_once : RueCore.Spec.drop_exactly_once_stmt := sorry
 theorem rest_exactly_once : RueCore.Spec.rest_exactly_once_stmt := sorry
 theorem drop_order : RueCore.Spec.drop_order_stmt := sorry
+theorem drop_glue_order : RueCore.Spec.drop_glue_order_stmt := sorry
 theorem Step.det : RueCore.Spec.Step.det_stmt := sorry
 theorem Step.terminal : RueCore.Spec.Step.terminal_stmt := sorry
 theorem Config.trichotomy : RueCore.Spec.Config.trichotomy_stmt := sorry
