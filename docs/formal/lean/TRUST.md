@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 1141.
+- Theorems checked: 1213.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -904,6 +904,51 @@ and diffs them against the committed copies.
 | `drop_order` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `Blocks.drop_inv` | `RueCore.TraceOrder` | `propext` |
 | `Blocks.not_dtor` | `RueCore.TraceOrder` | `propext` |
+| `Sharp.exact_ops` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.withTrace_nil` | `RueCore.Sharp` | `propext` |
+| `Sharp.noStep_of_stuck` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.not_terminal_of_stuck` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.noStep_of_terminal` | `RueCore.Sharp` | `propext` |
+| `Sharp.not_steps_of_final` | `RueCore.Sharp` | `propext` |
+| `Sharp.run_from` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.not_eventually` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.stuck_not_safe` | `RueCore.Sharp` | `propext` |
+| `Sharp.not_exact_ok` | `RueCore.Sharp` | `propext` |
+| `Sharp.not_exact_returned` | `RueCore.Sharp` | `propext` |
+| `Sharp.not_exact_cc` | `RueCore.Sharp` | `propext` |
+| `Sharp.storeCC_one` | `RueCore.Sharp` | `propext` |
+| `Sharp.StepsN.steps_of_longer` | `RueCore.Sharp` | `propext` |
+| `Sharp.steps_of_forever` | `RueCore.Sharp` | `propext` |
+| `Sharp.loopTurn_step` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.loopTurn_forever` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.loop_forever` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.stuck` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.stuck_step` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.typed` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.frame` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.no_entry` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.entry_param` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.copy` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.leak` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.overwrite` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.discard` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.discard_loop` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.fuel` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.fuel_panic` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.not_fits` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.double_drop` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.bare_dtor` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.pending_program` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.pending_expr` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.store_cc` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.no_lead` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.no_eval` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.unreached` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.unreached_panic` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.unordered` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.not_a_step` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.init_steps` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.unreachable_stuck` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Spine.soundness` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.run_safe` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.no_violation` | `RueCore.Spine` | `Quot.sound`, `propext` |
@@ -953,6 +998,33 @@ and diffs them against the committed copies.
 | `Spine.Nonvacuous.float` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Nonvacuous.diverges` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Nonvacuous.stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.stuck_step` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.typed` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.frame` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.no_entry` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.entry_param` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.copy` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.leak` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.overwrite` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.discard` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.discard_loop` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.fuel` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.fuel_panic` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.not_fits` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.double_drop` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.bare_dtor` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.pending_program` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.pending_expr` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.store_cc` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.no_lead` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.no_eval` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.unreached` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.unreached_panic` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.unordered` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.not_a_step` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.init_steps` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.unreachable_stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.run_safe` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.no_violation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |

@@ -1540,7 +1540,7 @@ program written out in the statement, every other holds, and the conclusion fail
 ### `Sharp.stuck`
 
 **An unchecked program that reads a moved-out value, run by `eval`**
-(sharpness, RUE-2485; the program is `Nonvacuous.stuck`'s). `let a = S0 { 1 };
+(§7 sharpness, RUE-2485; the program is `Nonvacuous.stuck`'s). `let a = S0 { 1 };
 @drop(a); a.x0` as the entry point: the checker rejects it and it is neither
 `ProgramTyped` nor `WfProgram`, while its entry point exists and takes no
 parameters, and its body is `pendingSafe`; `main()`, the call `run` makes, is
@@ -1615,7 +1615,7 @@ Proved by `Sharp.stuck` (`RueCore.Sharp`). Drops `soundness` 1, `run_safe` 1, `n
 
 ### `Sharp.stuck_step`
 
-**The same program, run by §6's relation** (sharpness, RUE-2485). `Step`
+**The same program, run by §6's relation** (§7 sharpness, RUE-2485). `Step`
 reaches a configuration stuck with `useAfterMove` from `Config.init`, and
 `run` refuses at fuel `200` and exhausts fuel `0`. So once `ProgramTyped` is
 dropped, `step_progress`, `step_preservation` and `step_type_safety` fail
@@ -1675,7 +1675,7 @@ Proved by `Sharp.stuck_step` (`RueCore.Sharp`). Drops `step_progress` 1, `step_p
 
 ### `Sharp.typed`
 
-**An ill-typed expression of a checked program** (sharpness, RUE-2485).
+**An ill-typed expression of a checked program** (§7 sharpness, RUE-2485).
 Over the checked program of `Nonvacuous.dtor`, the expression `let a = S0 { 1
 }; @drop(a); a.x0`, from the empty frame and store, is typed at no type and no
 outcome, and `check` rejects it; everything else `soundness`,
@@ -1736,7 +1736,7 @@ Proved by `Sharp.typed` (`RueCore.Sharp`). Drops `soundness` 2, `check_sound` 1,
 ### `Sharp.frame`
 
 **A typed expression run in a frame that does not match its context**
-(sharpness, RUE-2485). `1; x`, typed by `check` in the context `x : i64` over
+(§7 sharpness, RUE-2485). `1; x`, typed by `check` in the context `x : i64` over
 the checked program of `Nonvacuous.dtor`, is run from the empty frame and
 store, which do not match that context (`FrameMatches` fails); everything else
 `soundness`, `drop_exactly_once` and `rest_exactly_once` ask holds, a `Lead`
@@ -1799,7 +1799,7 @@ Proved by `Sharp.frame` (`RueCore.Sharp`). Drops `soundness` 3, `drop_exactly_on
 
 ### `Sharp.no_entry`
 
-**A well-formed program with no entry point** (sharpness, RUE-2485). The
+**A well-formed program with no entry point** (§7 sharpness, RUE-2485). The
 program with the witnesses' declarations and no function is `WfProgram`, and
 `P.fns[0]?` is `none`; `run` refuses the call of function `0` with `unbound`,
 so for no entry point `fd` does `run_safe`'s conclusion hold.
@@ -1832,7 +1832,7 @@ Proved by `Sharp.no_entry` (`RueCore.Sharp`). Drops `run_safe` 2.
 
 ### `Sharp.entry_param`
 
-**A well-formed program whose entry point takes a parameter** (sharpness,
+**A well-formed program whose entry point takes a parameter** (§7 sharpness,
 RUE-2485). `fn main(x: i64) -> i64 { x }` is `WfProgram`, but its entry point
 has a parameter, so it is not `ProgramTyped`; `run` calls it with no
 arguments, and `eval` refuses the call with `typeConfusion`. So `run_safe`
@@ -1873,7 +1873,7 @@ Proved by `Sharp.entry_param` (`RueCore.Sharp`). Drops `run_safe` 3, `no_violati
 
 ### `Sharp.copy`
 
-**The copy monitor fires** (R3 of `REDTEAM-LOG.md`; sharpness, RUE-2485). An
+**The copy monitor fires** (R3 of `REDTEAM-LOG.md`; §7 sharpness, RUE-2485). An
 unchecked program puts an owned value under a `Copy` one, the shape a copy
 would duplicate an owner through: over `S0 = @copy struct { x0: i64 }` and
 `S1`, affine with a destructor, `let p = S0 { x0: S1 { 1 } }; let q = p;
@@ -1915,7 +1915,7 @@ Proved by `Sharp.copy` (`RueCore.Sharp`). Drops `no_violation` 1.
 
 ### `Sharp.leak`
 
-**The leak monitor fires** (R3 of `REDTEAM-LOG.md`; sharpness, RUE-2485).
+**The leak monitor fires** (R3 of `REDTEAM-LOG.md`; §7 sharpness, RUE-2485).
 `let x = S1 { 1 }; 0`, with `S1` declared `linear`, leaves a live linear
 value at the scope's end. It is not `ProgramTyped`, and `eval` refuses it with
 `linearLeak`: `no_linear_leak`'s conclusion fails once `ProgramTyped` is
@@ -1957,7 +1957,7 @@ Proved by `Sharp.leak` (`RueCore.Sharp`). Drops `no_linear_leak` 1, `eval_comple
 
 ### `Sharp.overwrite`
 
-**The overwrite monitor fires** (R3 of `REDTEAM-LOG.md`; sharpness,
+**The overwrite monitor fires** (R3 of `REDTEAM-LOG.md`; §7 sharpness,
 RUE-2485). `let mut x = S1 { 1 }; x = S1 { 2 }; @drop(x); 0` overwrites a live
 linear value. It is not `ProgramTyped`, and `eval` refuses the assignment with
 `linearOverwrite`: `no_linear_overwrite`'s conclusion fails once
@@ -1994,7 +1994,7 @@ Proved by `Sharp.overwrite` (`RueCore.Sharp`). Drops `no_linear_overwrite` 1.
 
 ### `Sharp.discard`
 
-**The discard monitor fires** (R3 of `REDTEAM-LOG.md`; sharpness, RUE-2485).
+**The discard monitor fires** (R3 of `REDTEAM-LOG.md`; §7 sharpness, RUE-2485).
 `S1 { 3 }; @panic("boom")` discards a linear value. It is not `ProgramTyped`,
 and `eval` refuses the sequence with `linearDiscard`: `no_linear_discard`'s
 conclusion fails once `ProgramTyped` is dropped. §6's relation drops the
@@ -2033,7 +2033,7 @@ Proved by `Sharp.discard` (`RueCore.Sharp`). Drops `no_linear_discard` 1, `eval_
 
 ### `Sharp.discard_loop`
 
-**A loop that discards a linear value each turn** (sharpness, RUE-2485).
+**A loop that discards a linear value each turn** (§7 sharpness, RUE-2485).
 `loop { S1 { 3 }; () }` is not `ProgramTyped`. `eval` refuses its first turn
 with `linearDiscard`, while §6's relation, which has no monitor, turns forever:
 it has runs of every length from `Config.init`, and every configuration they
@@ -2077,7 +2077,7 @@ Proved by `Sharp.discard_loop` (`RueCore.Sharp`). Drops `no_linear_discard` 1, `
 
 ### `Sharp.fuel`
 
-**Fuel bounds, dropped** (sharpness, RUE-2485). The checked program of
+**Fuel bounds, dropped** (§7 sharpness, RUE-2485). The checked program of
 `Nonvacuous.dtor` exhausts fuel `0` and returns at fuel `200`, a value §6's
 relation reaches. So `fuel_mono` fails without `n ≤ m` (`n = 200`, `m = 0`) and
 without `eval n ≠ outOfFuel` (`n = 0`, `m = 200`); `no_masking` fails without
@@ -2125,7 +2125,7 @@ Proved by `Sharp.fuel` (`RueCore.Sharp`). Drops `fuel_mono` 1, `fuel_mono` 2, `n
 
 ### `Sharp.fuel_panic`
 
-**Fuel bounds, dropped, at a panic** (sharpness, RUE-2485). The checked
+**Fuel bounds, dropped, at a panic** (§7 sharpness, RUE-2485). The checked
 program of `Nonvacuous.panic` panics, and §6's relation reaches the panic, but
 fuel `0` is exhausted: `eval_complete`'s and `run_complete`'s panic halves
 fail without `n < fuel`.
@@ -2165,7 +2165,7 @@ Proved by `Sharp.fuel_panic` (`RueCore.Sharp`). Drops `eval_complete` 5, `run_co
 
 ### `Sharp.not_fits`
 
-**A checked expression at a type its result does not fit** (sharpness,
+**A checked expression at a type its result does not fit** (§7 sharpness,
 RUE-2485). `check` accepts the literal `1` at `i64` in the checked program of
 `Nonvacuous.dtor`, and its result does not fit `bool`; no derivation types it
 at `bool`. So `check_sound` needs `c.fits T = true`.
@@ -2205,7 +2205,7 @@ Proved by `Sharp.not_fits` (`RueCore.Sharp`). Drops `check_sound` 2.
 ### `Sharp.double_drop`
 
 **An unchecked program that runs a destructor twice on one value**
-(sharpness, RUE-2485). Over a `@copy` struct `C` that declares a destructor
+(§7 sharpness, RUE-2485). Over a `@copy` struct `C` that declares a destructor
 (which `DtorNotCopy`, and `WfDecls`, exclude) and an affine `W { x0: C }`,
 `let c = C { 1 }; let a = W { c }; let b = W { c }; 0` copies `c` into two
 `W`s, and dropping both runs `C`'s destructor on identity `0` twice. It is not
@@ -2254,7 +2254,7 @@ Proved by `Sharp.double_drop` (`RueCore.Sharp`). Drops `no_double_free` 1, `dtor
 ### `Sharp.bare_dtor`
 
 **An unchecked program whose trace runs a destructor outside a drop**
-(sharpness, RUE-2485). Over the same `@copy` struct `C` with a destructor, a
+(§7 sharpness, RUE-2485). Over the same `@copy` struct `C` with a destructor, a
 declared-`linear` `L { x0: C, x1: A }` and an affine `A` with a destructor,
 `let l = L { C { 1 }, A { 2 } }; let s = l.x1; 0` destructures `l`: its
 residue `C { 1 }` is `Copy`, so it is dropped with no marker, and its
@@ -2300,7 +2300,7 @@ Proved by `Sharp.bare_dtor` (`RueCore.Sharp`). Drops `drop_order` 1.
 
 ### `Sharp.pending_program`
 
-**A checked program with a function that is not `pendingSafe`** (sharpness,
+**A checked program with a function that is not `pendingSafe`** (§7 sharpness,
 RUE-2485; RUE-2316's carve-out). Beside an entry point returning `0`, `fn
 g(s: S0) -> i64 { [s, return 7]; 0 }` is typed, but the array literal's first
 element is pending when the second unwinds, so the program is not
@@ -2394,7 +2394,7 @@ Proved by `Sharp.pending_program` (`RueCore.Sharp`). Drops `drop_exactly_once` 2
 
 ### `Sharp.pending_expr`
 
-**An expression that is not `pendingSafe`** (sharpness, RUE-2485; RUE-2316's
+**An expression that is not `pendingSafe`** (§7 sharpness, RUE-2485; RUE-2316's
 carve-out). In the checked program of `Nonvacuous.dtor`, `0; [s, return 7];
 1` is typed in the context `s : S0`, but the array literal's first element is
 pending when the second unwinds. From a frame holding `s` at cell `0`, the
@@ -2500,7 +2500,7 @@ Proved by `Sharp.pending_expr` (`RueCore.Sharp`). Drops `drop_exactly_once` 6, `
 
 ### `Sharp.store_cc`
 
-**A store that is not copy-closed** (sharpness, RUE-2485). The store's one
+**A store that is not copy-closed** (§7 sharpness, RUE-2485). The store's one
 cell holds an `[i64; 1]` array (a `Copy` type) with an owned `S0` inside it,
 outside the frame. `1; 2` is typed and run from the empty frame over it, which
 agrees with the empty context, in the checked program of `Nonvacuous.dtor`;
@@ -2608,7 +2608,7 @@ Proved by `Sharp.store_cc` (`RueCore.Sharp`). Drops `drop_exactly_once` 5, `rest
 
 ### `Sharp.no_lead`
 
-**A `Lead` that did not happen** (sharpness, RUE-2485). For the body of
+**A `Lead` that did not happen** (§7 sharpness, RUE-2485). For the body of
 `Nonvacuous.dtor`, run from the empty frame, take the store `ℓ0 ↦ S0 { 1 }`
 and the pending value `S0 { 1 }` (identity `0`) as if the leading operand had
 produced them; it did not (`Lead` fails: it minted identity `0` into a reserved
@@ -2667,7 +2667,7 @@ Proved by `Sharp.no_lead` (`RueCore.Sharp`). Drops `rest_exactly_once` 7.
 
 ### `Sharp.no_eval`
 
-**A result that is not the evaluation's** (sharpness, RUE-2485). For the body
+**A result that is not the evaluation's** (§7 sharpness, RUE-2485). For the body
 of `Nonvacuous.dtor`, whose leading operand has a `Lead`, a refusal is not
 what the evaluation at `fuel + 1` answers, and `rest_exactly_once`'s
 conclusion, which starts with "never refused", fails for it: the hypothesis
@@ -2714,7 +2714,7 @@ Proved by `Sharp.no_eval` (`RueCore.Sharp`). Drops `rest_exactly_once` 8.
 
 ### `Sharp.unreached`
 
-**A value §6's relation does not reach** (sharpness, RUE-2485). For the
+**A value §6's relation does not reach** (§7 sharpness, RUE-2485). For the
 checked program of `Nonvacuous.dtor`, the terminal configuration with the
 value `8`, the empty store and a trace that opens with a destructor event is
 not reached from `Config.init`, is not `run`'s answer at any fuel past any
@@ -2772,7 +2772,7 @@ Proved by `Sharp.unreached` (`RueCore.Sharp`). Drops `drop_order` 2, `eval_sound
 
 ### `Sharp.unreached_panic`
 
-**A panic §6's relation does not reach** (sharpness, RUE-2485). The same, for
+**A panic §6's relation does not reach** (§7 sharpness, RUE-2485). The same, for
 the panic whose trace opens with a destructor event: not reached, not `run`'s
 answer past any bound (the program returns), not in the block grammar. So
 `eval_sound`'s and `run_sim`'s `run … = .panic k tr`, `eval_complete`'s and
@@ -2826,7 +2826,7 @@ Proved by `Sharp.unreached_panic` (`RueCore.Sharp`). Drops `drop_order` 3, `eval
 ### `Sharp.unordered`
 
 **An unreachable configuration whose registration stack is out of order**
-(sharpness, RUE-2485). For the checked program of `Nonvacuous.dtor`, a
+(§7 sharpness, RUE-2485). For the checked program of `Nonvacuous.dtor`, a
 configuration whose frame registers cell `1` before cell `0` takes a step, but
 `Config.init` does not reach it: `drop_order`'s last half fails without the
 hypothesis that the configuration is reached.
@@ -2885,7 +2885,7 @@ Proved by `Sharp.unordered` (`RueCore.Sharp`). Drops `drop_order` 4.
 
 ### `Sharp.not_a_step`
 
-**A pair that is not a step** (sharpness, RUE-2485). For the checked program
+**A pair that is not a step** (§7 sharpness, RUE-2485). For the checked program
 of `Nonvacuous.dtor`, the value `run` returns is reached, with a trace that is
 not empty, and the panic with an empty trace does not follow it by a step; its
 trace does not extend the value's, so `drop_order`'s last half fails without
@@ -2932,7 +2932,7 @@ Proved by `Sharp.not_a_step` (`RueCore.Sharp`). Drops `drop_order` 5.
 
 ### `Sharp.init_steps`
 
-**The initial configuration, which steps** (sharpness, RUE-2485). For the
+**The initial configuration, which steps** (§7 sharpness, RUE-2485). For the
 checked program of `Nonvacuous.dtor`, `Config.init` steps to the argument
 list of `main()`, and not to itself; it is not terminal and not stuck (with
 `linearLeak`, a monitor's tag, not one of §6's stuck states); and `run` is
@@ -2980,7 +2980,7 @@ Proved by `Sharp.init_steps` (`RueCore.Sharp`). Drops `Step.det` 1, `Step.det` 2
 
 ### `Sharp.unreachable_stuck`
 
-**A stuck configuration that is not reached** (sharpness, RUE-2485). For the
+**A stuck configuration that is not reached** (§7 sharpness, RUE-2485). For the
 checked program of `Nonvacuous.dtor`, whose `run` is never stuck, a
 configuration reading an unbound name is stuck and is not reached from
 `Config.init`. So `step_progress`, `step_preservation`,
