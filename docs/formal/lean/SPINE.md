@@ -19,10 +19,10 @@ or containers, §6.13); both are Phase D (RUE-2238, RUE-2240). So these parts of
   operations' closure is assumed, as the laws of `FloatModel`, of every model
   the statements quantify over (it is proved of `Float.exactOps`).
 
-19 of the 38 statements quantify over `M : FloatModel`, the IEEE 754 laws assumed.
+20 of the 39 statements quantify over `M : FloatModel`, the IEEE 754 laws assumed.
 The laws have a model: `Float.exactModel` (`RueCore/Float/Lemmas.lean`) proves every one
 of them of the executable instance `Float.exactOps`, so they are jointly satisfiable and
-those 19 are not vacuous in `M` (`Nonvacuous.exact_model`, RUE-2469). Several statements say
+those 20 are not vacuous in `M` (`Nonvacuous.exact_model`, RUE-2469). Several statements say
 "`run` is never `.stuck` with violation *v*": they mean what `eval`'s monitors
 watch, since *v* is the tag a monitor raises (`no_violation`, `no_use_after_move`,
 `no_use_after_drop` and `no_linear_discard` say so; RUE-2469).
@@ -59,16 +59,17 @@ conclusion included), each with the counter-examples that drop it
 the statement, of which that hypothesis fails, every other holds, and the
 conclusion fails. So the hypothesis is needed. A hypothesis with no
 counter-example carries a reason (`RueCore.Spec.sharpnessReasons`), and the lint
-fails on one with neither: 71 of the 72 have a counter-example and 1
-has a reason. Of the 71, 19 are premises inside a conclusion, under
+fails on one with neither: 74 of the 75 have a counter-example and 1
+has a reason. Of the 74, 21 are premises inside a conclusion, under
 an `∧`, an `↔` or an `∃` of it (a `run … = .ok`, a `Steps …` or an `n < fuel` that
 a conjunct starts from), not hypotheses about the program. For `drop_order` 2–3,
-`eval_sound` 2–3, `run_sim` 1–2, `eval_complete` 2 and 4 and `run_complete` 1 and 3,
+`drop_glue_order` 2–3, `eval_sound` 2–3, `run_sim` 1–2, `eval_complete` 2 and 4 and
+`run_complete` 1 and 3,
 the dropped premise is the only thing tying its bound value or trace to the program,
 so the counter-example shows only that the conclusion is not a tautology. The walk does not go
 under `∨` or `¬`, nor into a definition that is not reducible (`Config.SafeAt`,
-`Exact`, `Blocks`, `Lifo`). Each pairing of a counter-example with a (theorem,
-number) is checked by the kernel (75 pairs): `RueCore/Sharp/Glue.lean` proves,
+`Exact`, `Blocks`, `GlueBlocks`, `Lifo`). Each pairing of a counter-example with a (theorem,
+number) is checked by the kernel (78 pairs): `RueCore/Sharp/Glue.lean` proves,
 from the counter-example, the negation of the spine statement with that
 hypothesis removed, and the lint computes that weakened statement itself from
 the Spec statement and the number (`Lint.dropHyp`, by the walk that numbers the
@@ -88,7 +89,7 @@ counter-example because it is redundant: `run_no_use_after_drop` proves the
 conclusion for every program, checked or not, and `step_no_use_after_drop` the
 same over `Step` from `Config.init` (RUE-2496).
 
-A statement means its text plus the 292 definitions the 38 statements unfold
+A statement means its text plus the 295 definitions the 39 statements unfold
 to (`TRUST.md`, "Trusted base"; bodies in `DIGEST.md`); "Names" lists
 those an entry mentions.
 
@@ -614,6 +615,39 @@ Sharp:
 4. `Steps M.toFloatOps P Config.init C` — counter-example `Sharp.unordered`
 5. `Step M.toFloatOps P C C'` — counter-example `Sharp.not_a_step`
 
+### `drop_glue_order`
+
+**Drop glue order, in §6.11's own terms** (§3.9, §6.11; §7 "No
+use-after-drop / no leak of drops", *how* a value is dropped; RUE-2487), over
+`Step`. A finished run's trace — value or panic — is in §6.11's block grammar
+with each drop's events given by §6.11's rules (`GlueBlocks`, `DropGlue`):
+after each drop marker, the value's destructor first, then its fields in
+declaration order, an array's elements in ascending index order, and an enum's
+active payload only. Unlike `drop_order`'s `Blocks`, the rules are not the
+function `dropEvents` the machine's walk is proved equal to, so a change to the
+machine's drop glue cannot carry this statement with it.
+
+```lean
+def Spec.drop_glue_order_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+            GlueBlocks P.decls tr) ∧
+        ∀ (κ : PanicKind) (tr : List Event),
+          Steps M.toFloatOps P Config.init (Config.panic κ tr) → GlueBlocks P.decls tr
+```
+
+Proved by `drop_glue_order` (`RueCore.TraceOrder`). Names `FloatModel`, `Program`, `ProgramTyped`, `Store`, `Frame`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `GlueBlocks`, `PanicKind`; rests on 196 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+
+Sharp:
+
+1. `ProgramTyped P` — counter-example `Sharp.bare_dtor`
+2. `Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr)` — counter-example `Sharp.unreached`
+3. `Steps M.toFloatOps P Config.init (Config.panic κ tr)` — counter-example `Sharp.unreached_panic`
+
 ## §6's reduction relation, and §7 over it
 
 `RueCore.Spec.Step`
@@ -1061,7 +1095,7 @@ def Spec.Nonvacuous.exact_model_stmt : Prop :=
   ∃ M, M.toFloatOps = Float.exactOps
 ```
 
-Proved by `Nonvacuous.exact_model` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `no_double_free`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `eval_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.exact_model` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `no_double_free`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `drop_glue_order`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `eval_complete`, `never_stuck_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.empty_frame`
 
@@ -1215,7 +1249,7 @@ def Spec.Nonvacuous.dtor_stmt : Prop :=
                                   2 ≤ (freedIds P.decls tr).length ∧ 2 ≤ (dtorIds tr).length
 ```
 
-Proved by `Nonvacuous.dtor` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `run_no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `step_progress`, `step_preservation`, `step_type_safety`, `step_no_use_after_drop`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `eval_diverges_iff`.
+Proved by `Nonvacuous.dtor` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `run_no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `drop_glue_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `step_progress`, `step_preservation`, `step_type_safety`, `step_no_use_after_drop`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `eval_diverges_iff`.
 
 ### `Nonvacuous.linear`
 
@@ -1260,7 +1294,7 @@ def Spec.Nonvacuous.linear_stmt : Prop :=
                         2 ≤ (freedIds P.decls tr).length
 ```
 
-Proved by `Nonvacuous.linear` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.linear` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.loop`
 
@@ -1312,7 +1346,7 @@ def Spec.Nonvacuous.loop_stmt : Prop :=
                         3 ≤ (dtorIds tr).length
 ```
 
-Proved by `Nonvacuous.loop` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.loop` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.array`
 
@@ -1359,7 +1393,7 @@ def Spec.Nonvacuous.array_stmt : Prop :=
                         2 ≤ (dtorIds tr).length
 ```
 
-Proved by `Nonvacuous.array` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.array` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.enum_match`
 
@@ -1406,7 +1440,7 @@ def Spec.Nonvacuous.enum_match_stmt : Prop :=
                         2 ≤ (freedIds P.decls tr).length ∧ 1 ≤ (dtorIds tr).length
 ```
 
-Proved by `Nonvacuous.enum_match` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.enum_match` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.early_return`
 
@@ -1452,7 +1486,7 @@ def Spec.Nonvacuous.early_return_stmt : Prop :=
                         v = Val.int IntWidth.w64 Sign.signed 7 ∧ 2 ≤ (dtorIds tr).length
 ```
 
-Proved by `Nonvacuous.early_return` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `run_ne_returned`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.early_return` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `run_ne_returned`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.panic`
 
@@ -1498,7 +1532,7 @@ def Spec.Nonvacuous.panic_stmt : Prop :=
                         [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)])
 ```
 
-Proved by `Nonvacuous.panic` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.panic` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.float`
 
@@ -1544,7 +1578,7 @@ def Spec.Nonvacuous.float_stmt : Prop :=
                         v = Val.float FloatWidth.w64 (FloatDatum.num false 15 (-1))
 ```
 
-Proved by `Nonvacuous.float` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.float` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.diverges`
 
@@ -2377,7 +2411,9 @@ declared-`linear` `L { x0: C, x1: A }` and an affine `A` with a destructor,
 residue `C { 1 }` is `Copy`, so it is dropped with no marker, and its
 destructor event opens the trace. It is not `ProgramTyped`, and §6's relation
 runs it to a value whose trace is not in §6.11's block grammar: `drop_order`
-fails without `ProgramTyped` (through `DtorNotCopy`).
+fails without `ProgramTyped` (through `DtorNotCopy`), and so does
+`drop_glue_order`, since a trace outside `Blocks` is outside `GlueBlocks`
+(RUE-2487).
 
 ```lean
 def Spec.Sharp.bare_dtor_stmt : Prop :=
@@ -2413,7 +2449,7 @@ def Spec.Sharp.bare_dtor_stmt : Prop :=
                   ¬Blocks P.decls tr
 ```
 
-Proved by `Sharp.bare_dtor` (`RueCore.Sharp`). Drops `drop_order` 1.
+Proved by `Sharp.bare_dtor` (`RueCore.Sharp`). Drops `drop_order` 1, `drop_glue_order` 1.
 
 ### `Sharp.pending_program`
 
@@ -2839,7 +2875,8 @@ bound, and its trace is not in §6.11's block grammar. So each statement
 whose conclusion claims something of a reached or answered value fails once
 the hypothesis naming that value is dropped: `eval_sound`'s and `run_sim`'s
 `run … = .ok H v tr`, `eval_complete`'s and `run_complete`'s `Steps … (.ret
-v)`, and `drop_order`'s.
+v)`, and `drop_order`'s and `drop_glue_order`'s (a trace outside `Blocks` is
+outside `GlueBlocks`, RUE-2487).
 
 ```lean
 def Spec.Sharp.unreached_stmt : Prop :=
@@ -2885,7 +2922,7 @@ def Spec.Sharp.unreached_stmt : Prop :=
                             ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
 ```
 
-Proved by `Sharp.unreached` (`RueCore.Sharp`). Drops `drop_order` 2, `eval_sound` 2, `run_sim` 1, `eval_complete` 2, `run_complete` 1.
+Proved by `Sharp.unreached` (`RueCore.Sharp`). Drops `drop_order` 2, `drop_glue_order` 2, `eval_sound` 2, `run_sim` 1, `eval_complete` 2, `run_complete` 1.
 
 ### `Sharp.unreached_panic`
 
@@ -2893,7 +2930,8 @@ Proved by `Sharp.unreached` (`RueCore.Sharp`). Drops `drop_order` 2, `eval_sound
 the panic whose trace opens with a destructor event: not reached, not `run`'s
 answer past any bound (the program returns), not in the block grammar. So
 `eval_sound`'s and `run_sim`'s `run … = .panic k tr`, `eval_complete`'s and
-`run_complete`'s `Steps … (.panic κ tr)`, and `drop_order`'s are needed.
+`run_complete`'s `Steps … (.panic κ tr)`, and `drop_order`'s and
+`drop_glue_order`'s are needed.
 
 ```lean
 def Spec.Sharp.unreached_panic_stmt : Prop :=
@@ -2938,7 +2976,7 @@ def Spec.Sharp.unreached_panic_stmt : Prop :=
                             ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
 ```
 
-Proved by `Sharp.unreached_panic` (`RueCore.Sharp`). Drops `drop_order` 3, `eval_sound` 3, `run_sim` 2, `eval_complete` 4, `run_complete` 3.
+Proved by `Sharp.unreached_panic` (`RueCore.Sharp`). Drops `drop_order` 3, `drop_glue_order` 3, `eval_sound` 3, `run_sim` 2, `eval_complete` 4, `run_complete` 3.
 
 ### `Sharp.unordered`
 
