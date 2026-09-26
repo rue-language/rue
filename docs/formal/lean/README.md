@@ -70,6 +70,13 @@ whether a weakened statement, as opposed to a weakened rule, is noticed.
 Every one of the 16 falsifies a stated property or a witness, checked by hand
 (RUE-2500).
 
+How *incomplete* the checker is on the same corpus — a program it rejects
+that the interpreter nonetheless runs to a value, which the bridge then
+compares only on its accept/reject call and never on its run — is measured
+and classified in [CHECKER-PROFILE.md](CHECKER-PROFILE.md) (RUE-2491): every
+such case traces to a cited static approximation the calculus already
+states, and only one shape (RUE-2346) is a real compiler disagreement.
+
 ```bash
 scripts/rue lean-bridge                      # or: ./buck2 run //:lean-bridge
 scripts/rue lean-bridge -- --case overflow   # one case
@@ -1145,12 +1152,16 @@ once a hypothesis is dropped is the next section's.
 
 **The checker's acceptance profile.** `lake exe ruecore-corpus --profile
 [--gen N --seed S]` counts how many corpus and generated programs
-`checkProgram` accepts and rejects, and each side's outcomes under `run`. At
-this commit: of the 174 seed cases it accepts 140 (116 return, 24 panic) and
-rejects 34 (21 refused by a violation, 13 that run to a value, the checker's
-conservatism: a leak on a path not taken, say); of 200 generated programs
-(seed 7) it accepts 115 and rejects 85 (52 refused, 33 that return or panic).
-No accepted program is refused, as `no_violation` says. `Witnesses.lean`'s
+`checkProgram` accepts and rejects, and each side's outcomes under `run` —
+including, since RUE-2491, how many rejected programs `run` nonetheless
+carries to a value, with each one's refusal reason. At this commit: of the
+193 seed cases it accepts 143 (118 return, 25 panic) and rejects 50 (31
+refused by a violation, 19 that run to a value, the checker's conservatism: a
+leak on a path not taken, say); of 200 generated programs (seed 7) it accepts
+91 and rejects 109 (71 refused, 38 that return or panic). `CHECKER-PROFILE.md`
+classifies every one of the run-to-a-value rejections, at these two settings
+and at `--gen 1000 --seed 23`: 182 cases in all, none an unexpected checker
+bug. No accepted program is refused, as `no_violation` says. `Witnesses.lean`'s
 `errorClasses_rejected` checks in the kernel that it rejects a corpus program
 of each of 21 error classes (`errorClassCases`): use after move, directly,
 across a loop's back edge (two) and by a second `match` of a moved scrutinee;
