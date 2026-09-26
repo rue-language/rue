@@ -2668,6 +2668,82 @@ theorem RueCore.Nonvacuous.empty_frame (D : Decls) :
   FrameMatches D [] Frame.empty [] ∧ StoreCC D []
 ```
 
+### `Nonvacuous.open_frame`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`Spec.Nonvacuous.open_frame_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
+
+```lean
+theorem RueCore.Nonvacuous.open_frame (D : Decls) :
+  D =
+      {
+        structs :=
+          [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+              dtor := true, cls := Mult.affine },
+            { attr := Attr.linear,
+              fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
+              cls := Mult.linear }],
+        enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] } →
+    ∀ (e : Expr),
+      e =
+          (Expr.drop (Place.var 0)).seq
+            (Expr.intLit IntWidth.w64 Sign.signed 1) →
+        ∀ (P : Program),
+          P =
+              { decls := D,
+                fns :=
+                  [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                      body := Expr.intLit IntWidth.w64 Sign.signed 0 }] } →
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                e.pendingSafe = true ∧
+                  FrameMatches D
+                      [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
+                      { env := [0], scope := [0] }
+                      [Cell.full
+                          (Contents.struct 0 0
+                            [Contents.int IntWidth.w64 Sign.signed 5])] ∧
+                    StoreCC D
+                        [Cell.full
+                            (Contents.struct 0 0
+                              [Contents.int IntWidth.w64 Sign.signed 5])] ∧
+                      (∃ c Ω,
+                          check P (Ty.int IntWidth.w64 Sign.signed)
+                                [{ ty := Ty.struct 0, mu := false,
+                                    st := OwnSt.owned }]
+                                e =
+                              some (c, Ω) ∧
+                            c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                              Typed P (Ty.int IntWidth.w64 Sign.signed)
+                                [{ ty := Ty.struct 0, mu := false,
+                                    st := OwnSt.owned }]
+                                e (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                        1 ≤
+                            (dtorIds
+                                (eval Float.exactOps 200 P
+                                    [Cell.full
+                                        (Contents.struct 0 0
+                                          [Contents.int IntWidth.w64
+                                              Sign.signed 5])]
+                                    { env := [0], scope := [0] }
+                                    e).trace).length ∧
+                          ∃ H₁ vs tr r,
+                            Lead Float.exactOps P 200
+                                [Cell.full
+                                    (Contents.struct 0 0
+                                      [Contents.int IntWidth.w64 Sign.signed
+                                          5])]
+                                { env := [0], scope := [0] } H₁ vs tr e ∧
+                              eval Float.exactOps 201 P
+                                  [Cell.full
+                                      (Contents.struct 0 0
+                                        [Contents.int IntWidth.w64 Sign.signed
+                                            5])]
+                                  { env := [0], scope := [0] } e =
+                                EvalRes.withTrace tr r
+```
+
 ### `Nonvacuous.dtor`
 
 *theorem* · module `RueCore.Nonvacuous`
@@ -4273,10 +4349,11 @@ theorem RueCore.errorClasses_rejected :
 
 *theorem* · module `RueCore.Witnesses`
 
-**An operand of the wrong type, and a call of the wrong arity, are
-rejected** (§5.8's (Arith) and (Call)): `1 + true`, and the entry point
-calling itself with an argument it does not take. The corpus has neither,
-since the compiler rejects both before the core.
+**Type errors are rejected** (§5.8's (Arith), (Call), (If), (Fn), (Field)
+and §5.5's (Match)): `1 + true`; the entry point calling itself with an
+argument it does not take; an `if` on an integer; a body of type `bool` for a
+declared `i64`; a field of an integer; and a `match` on an integer. The corpus
+has none of them, since the compiler rejects each before the core.
 
 ```lean
 theorem RueCore.typeErrors_rejected :
@@ -4286,9 +4363,33 @@ theorem RueCore.typeErrors_rejected :
             (Expr.boolLit true))) =
       false ∧
     checkProgram
-        (Program.entry (Decls.ofStructs []) (Ty.int IntWidth.w64 Sign.signed)
-          (Expr.call 0 [Expr.intLit IntWidth.w64 Sign.signed 1])) =
-      false
+          (Program.entry (Decls.ofStructs [])
+            (Ty.int IntWidth.w64 Sign.signed)
+            (Expr.call 0 [Expr.intLit IntWidth.w64 Sign.signed 1])) =
+        false ∧
+      checkProgram
+            (Program.entry (Decls.ofStructs [])
+              (Ty.int IntWidth.w64 Sign.signed)
+              ((Expr.intLit IntWidth.w64 Sign.signed 1).ite
+                (Expr.intLit IntWidth.w64 Sign.signed 1)
+                (Expr.intLit IntWidth.w64 Sign.signed 2))) =
+          false ∧
+        checkProgram
+              (Program.entry (Decls.ofStructs [])
+                (Ty.int IntWidth.w64 Sign.signed) (Expr.boolLit true)) =
+            false ∧
+          checkProgram
+                (Program.entry (Decls.ofStructs [])
+                  (Ty.int IntWidth.w64 Sign.signed)
+                  (Expr.letIn false (Expr.intLit IntWidth.w64 Sign.signed 1)
+                    (Expr.use ((Place.var 0).proj 0)))) =
+              false ∧
+            checkProgram
+                (Program.entry (Decls.ofStructs [])
+                  (Ty.int IntWidth.w64 Sign.signed)
+                  ((Expr.intLit IntWidth.w64 Sign.signed 1).match
+                    [Expr.intLit IntWidth.w64 Sign.signed 0])) =
+              false
 ```
 
 ### `Explain.explain_result`
@@ -13478,6 +13579,16 @@ theorem RueCore.Spine.Nonvacuous.exact_model : Spec.Nonvacuous.exact_model_stmt
 theorem RueCore.Spine.Nonvacuous.empty_frame : Spec.Nonvacuous.empty_frame_stmt
 ```
 
+### `Spine.Nonvacuous.open_frame`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Nonvacuous.open_frame_stmt`, by `RueCore.Nonvacuous.open_frame` (helper).
+
+```lean
+theorem RueCore.Spine.Nonvacuous.open_frame : Spec.Nonvacuous.open_frame_stmt
+```
+
 ### `Spine.Nonvacuous.dtor`
 
 *theorem* · module `RueCore.Spine`
@@ -13576,6 +13687,2286 @@ theorem RueCore.Spine.Nonvacuous.diverges : Spec.Nonvacuous.diverges_stmt
 
 ```lean
 theorem RueCore.Spine.Nonvacuous.stuck : Spec.Nonvacuous.stuck_stmt
+```
+
+### `Nonvacuous.Glue.dtor.soundness`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `soundness` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.soundness : True
+```
+
+### `Nonvacuous.Glue.dtor.run_safe`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `run_safe` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.run_safe : True
+```
+
+### `Nonvacuous.Glue.dtor.no_violation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `no_violation` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.no_violation : True
+```
+
+### `Nonvacuous.Glue.dtor.no_use_after_move`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `no_use_after_move` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.no_use_after_move : True
+```
+
+### `Nonvacuous.Glue.dtor.no_use_after_drop`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `no_use_after_drop` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.no_use_after_drop : True
+```
+
+### `Nonvacuous.Glue.dtor.no_linear_leak`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `no_linear_leak` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.no_linear_leak : True
+```
+
+### `Nonvacuous.Glue.dtor.no_linear_overwrite`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `no_linear_overwrite` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.no_linear_overwrite : True
+```
+
+### `Nonvacuous.Glue.dtor.no_linear_discard`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `no_linear_discard` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.no_linear_discard : True
+```
+
+### `Nonvacuous.Glue.dtor.check_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `check_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.check_sound : True
+```
+
+### `Nonvacuous.Glue.dtor.checkProgram_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `checkProgram_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.checkProgram_sound : True
+```
+
+### `Nonvacuous.Glue.dtor.no_double_free`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `no_double_free` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.no_double_free : True
+```
+
+### `Nonvacuous.Glue.dtor.drop_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `drop_order` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.drop_order : True
+```
+
+### `Nonvacuous.Glue.dtor.step_progress`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `step_progress` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.step_progress : True
+```
+
+### `Nonvacuous.Glue.dtor.step_preservation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `step_preservation` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.step_preservation : True
+```
+
+### `Nonvacuous.Glue.dtor.step_type_safety`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `step_type_safety` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.step_type_safety : True
+```
+
+### `Nonvacuous.Glue.dtor.eval_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `eval_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.eval_sound : True
+```
+
+### `Nonvacuous.Glue.dtor.never_stuck_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `never_stuck_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.never_stuck_iff : True
+```
+
+### `Nonvacuous.Glue.dtor.eval_diverges_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `eval_diverges_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.eval_diverges_iff : True
+```
+
+### `Nonvacuous.Glue.dtor.fuel_mono`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `fuel_mono` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.fuel_mono : True
+```
+
+### `Nonvacuous.Glue.dtor.Step.terminal`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `Step.terminal` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.Step.terminal : True
+```
+
+### `Nonvacuous.Glue.dtor.run_sim`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `run_sim` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.run_sim : True
+```
+
+### `Nonvacuous.Glue.dtor.eval_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `eval_complete` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.eval_complete : True
+```
+
+### `Nonvacuous.Glue.dtor.run_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `run_complete` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.run_complete : True
+```
+
+### `Nonvacuous.Glue.dtor.freed_once`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `freed_once` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.freed_once : True
+```
+
+### `Nonvacuous.Glue.dtor.dtor_once`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `dtor_once` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.dtor_once : True
+```
+
+### `Nonvacuous.Glue.dtor.drop_exactly_once`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `drop_exactly_once` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.drop_exactly_once : True
+```
+
+### `Nonvacuous.Glue.dtor.rest_exactly_once`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `rest_exactly_once` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.rest_exactly_once : True
+```
+
+### `Nonvacuous.Glue.dtor.Step.det`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `Step.det` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.Step.det : True
+```
+
+### `Nonvacuous.Glue.dtor.Config.trichotomy`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `Config.trichotomy` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.Config.trichotomy : True
+```
+
+### `Nonvacuous.Glue.dtor.step_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `step_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.step_iff : True
+```
+
+### `Nonvacuous.Glue.dtor.step_never_stuck_of_run`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `step_never_stuck_of_run` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.step_never_stuck_of_run : True
+```
+
+### `Nonvacuous.Glue.linear.soundness`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `soundness` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.soundness : True
+```
+
+### `Nonvacuous.Glue.linear.run_safe`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `run_safe` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.run_safe : True
+```
+
+### `Nonvacuous.Glue.linear.no_violation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `no_violation` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.no_violation : True
+```
+
+### `Nonvacuous.Glue.linear.no_use_after_move`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `no_use_after_move` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.no_use_after_move : True
+```
+
+### `Nonvacuous.Glue.linear.no_use_after_drop`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `no_use_after_drop` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.no_use_after_drop : True
+```
+
+### `Nonvacuous.Glue.linear.no_linear_leak`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `no_linear_leak` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.no_linear_leak : True
+```
+
+### `Nonvacuous.Glue.linear.no_linear_overwrite`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `no_linear_overwrite` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.no_linear_overwrite : True
+```
+
+### `Nonvacuous.Glue.linear.no_linear_discard`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `no_linear_discard` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.no_linear_discard : True
+```
+
+### `Nonvacuous.Glue.linear.check_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `check_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.check_sound : True
+```
+
+### `Nonvacuous.Glue.linear.checkProgram_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `checkProgram_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.checkProgram_sound : True
+```
+
+### `Nonvacuous.Glue.linear.no_double_free`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `no_double_free` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.no_double_free : True
+```
+
+### `Nonvacuous.Glue.linear.drop_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `drop_order` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.drop_order : True
+```
+
+### `Nonvacuous.Glue.linear.step_progress`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `step_progress` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.step_progress : True
+```
+
+### `Nonvacuous.Glue.linear.step_preservation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `step_preservation` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.step_preservation : True
+```
+
+### `Nonvacuous.Glue.linear.step_type_safety`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `step_type_safety` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.step_type_safety : True
+```
+
+### `Nonvacuous.Glue.linear.eval_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `eval_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.eval_sound : True
+```
+
+### `Nonvacuous.Glue.linear.never_stuck_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `never_stuck_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.never_stuck_iff : True
+```
+
+### `Nonvacuous.Glue.linear.eval_diverges_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `eval_diverges_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.eval_diverges_iff : True
+```
+
+### `Nonvacuous.Glue.linear.fuel_mono`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `fuel_mono` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.fuel_mono : True
+```
+
+### `Nonvacuous.Glue.linear.Step.terminal`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `Step.terminal` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.Step.terminal : True
+```
+
+### `Nonvacuous.Glue.linear.run_sim`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `run_sim` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.run_sim : True
+```
+
+### `Nonvacuous.Glue.linear.eval_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `eval_complete` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.eval_complete : True
+```
+
+### `Nonvacuous.Glue.linear.run_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`linear` applied to `run_complete` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.linear.run_complete : True
+```
+
+### `Nonvacuous.Glue.loop.soundness`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `soundness` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.soundness : True
+```
+
+### `Nonvacuous.Glue.loop.run_safe`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `run_safe` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.run_safe : True
+```
+
+### `Nonvacuous.Glue.loop.no_violation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `no_violation` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.no_violation : True
+```
+
+### `Nonvacuous.Glue.loop.no_use_after_move`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `no_use_after_move` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.no_use_after_move : True
+```
+
+### `Nonvacuous.Glue.loop.no_use_after_drop`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `no_use_after_drop` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.no_use_after_drop : True
+```
+
+### `Nonvacuous.Glue.loop.no_linear_leak`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `no_linear_leak` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.no_linear_leak : True
+```
+
+### `Nonvacuous.Glue.loop.no_linear_overwrite`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `no_linear_overwrite` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.no_linear_overwrite : True
+```
+
+### `Nonvacuous.Glue.loop.no_linear_discard`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `no_linear_discard` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.no_linear_discard : True
+```
+
+### `Nonvacuous.Glue.loop.check_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `check_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.check_sound : True
+```
+
+### `Nonvacuous.Glue.loop.checkProgram_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `checkProgram_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.checkProgram_sound : True
+```
+
+### `Nonvacuous.Glue.loop.no_double_free`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `no_double_free` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.no_double_free : True
+```
+
+### `Nonvacuous.Glue.loop.drop_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `drop_order` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.drop_order : True
+```
+
+### `Nonvacuous.Glue.loop.step_progress`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `step_progress` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.step_progress : True
+```
+
+### `Nonvacuous.Glue.loop.step_preservation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `step_preservation` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.step_preservation : True
+```
+
+### `Nonvacuous.Glue.loop.step_type_safety`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `step_type_safety` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.step_type_safety : True
+```
+
+### `Nonvacuous.Glue.loop.eval_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `eval_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.eval_sound : True
+```
+
+### `Nonvacuous.Glue.loop.never_stuck_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `never_stuck_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.never_stuck_iff : True
+```
+
+### `Nonvacuous.Glue.loop.eval_diverges_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `eval_diverges_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.eval_diverges_iff : True
+```
+
+### `Nonvacuous.Glue.loop.fuel_mono`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `fuel_mono` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.fuel_mono : True
+```
+
+### `Nonvacuous.Glue.loop.Step.terminal`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `Step.terminal` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.Step.terminal : True
+```
+
+### `Nonvacuous.Glue.loop.run_sim`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `run_sim` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.run_sim : True
+```
+
+### `Nonvacuous.Glue.loop.eval_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `eval_complete` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.eval_complete : True
+```
+
+### `Nonvacuous.Glue.loop.run_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `run_complete` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.run_complete : True
+```
+
+### `Nonvacuous.Glue.loop.freed_once`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`loop` applied to `freed_once` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.loop.freed_once : True
+```
+
+### `Nonvacuous.Glue.array.soundness`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `soundness` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.soundness : True
+```
+
+### `Nonvacuous.Glue.array.run_safe`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `run_safe` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.run_safe : True
+```
+
+### `Nonvacuous.Glue.array.no_violation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `no_violation` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.no_violation : True
+```
+
+### `Nonvacuous.Glue.array.no_use_after_move`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `no_use_after_move` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.no_use_after_move : True
+```
+
+### `Nonvacuous.Glue.array.no_use_after_drop`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `no_use_after_drop` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.no_use_after_drop : True
+```
+
+### `Nonvacuous.Glue.array.no_linear_leak`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `no_linear_leak` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.no_linear_leak : True
+```
+
+### `Nonvacuous.Glue.array.no_linear_overwrite`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `no_linear_overwrite` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.no_linear_overwrite : True
+```
+
+### `Nonvacuous.Glue.array.no_linear_discard`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `no_linear_discard` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.no_linear_discard : True
+```
+
+### `Nonvacuous.Glue.array.check_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `check_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.check_sound : True
+```
+
+### `Nonvacuous.Glue.array.checkProgram_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `checkProgram_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.checkProgram_sound : True
+```
+
+### `Nonvacuous.Glue.array.no_double_free`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `no_double_free` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.no_double_free : True
+```
+
+### `Nonvacuous.Glue.array.drop_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `drop_order` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.drop_order : True
+```
+
+### `Nonvacuous.Glue.array.step_progress`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `step_progress` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.step_progress : True
+```
+
+### `Nonvacuous.Glue.array.step_preservation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `step_preservation` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.step_preservation : True
+```
+
+### `Nonvacuous.Glue.array.step_type_safety`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `step_type_safety` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.step_type_safety : True
+```
+
+### `Nonvacuous.Glue.array.eval_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `eval_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.eval_sound : True
+```
+
+### `Nonvacuous.Glue.array.never_stuck_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `never_stuck_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.never_stuck_iff : True
+```
+
+### `Nonvacuous.Glue.array.eval_diverges_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `eval_diverges_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.eval_diverges_iff : True
+```
+
+### `Nonvacuous.Glue.array.fuel_mono`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `fuel_mono` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.fuel_mono : True
+```
+
+### `Nonvacuous.Glue.array.Step.terminal`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `Step.terminal` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.Step.terminal : True
+```
+
+### `Nonvacuous.Glue.array.run_sim`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `run_sim` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.run_sim : True
+```
+
+### `Nonvacuous.Glue.array.eval_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `eval_complete` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.eval_complete : True
+```
+
+### `Nonvacuous.Glue.array.run_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`array` applied to `run_complete` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.array.run_complete : True
+```
+
+### `Nonvacuous.Glue.enum_match.soundness`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `soundness` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.soundness : True
+```
+
+### `Nonvacuous.Glue.enum_match.run_safe`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `run_safe` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.run_safe : True
+```
+
+### `Nonvacuous.Glue.enum_match.no_violation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `no_violation` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.no_violation : True
+```
+
+### `Nonvacuous.Glue.enum_match.no_use_after_move`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `no_use_after_move` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.no_use_after_move : True
+```
+
+### `Nonvacuous.Glue.enum_match.no_use_after_drop`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `no_use_after_drop` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.no_use_after_drop : True
+```
+
+### `Nonvacuous.Glue.enum_match.no_linear_leak`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `no_linear_leak` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.no_linear_leak : True
+```
+
+### `Nonvacuous.Glue.enum_match.no_linear_overwrite`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `no_linear_overwrite` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.no_linear_overwrite : True
+```
+
+### `Nonvacuous.Glue.enum_match.no_linear_discard`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `no_linear_discard` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.no_linear_discard : True
+```
+
+### `Nonvacuous.Glue.enum_match.check_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `check_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.check_sound : True
+```
+
+### `Nonvacuous.Glue.enum_match.checkProgram_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `checkProgram_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.checkProgram_sound : True
+```
+
+### `Nonvacuous.Glue.enum_match.no_double_free`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `no_double_free` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.no_double_free : True
+```
+
+### `Nonvacuous.Glue.enum_match.drop_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `drop_order` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.drop_order : True
+```
+
+### `Nonvacuous.Glue.enum_match.step_progress`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `step_progress` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.step_progress : True
+```
+
+### `Nonvacuous.Glue.enum_match.step_preservation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `step_preservation` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.step_preservation : True
+```
+
+### `Nonvacuous.Glue.enum_match.step_type_safety`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `step_type_safety` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.step_type_safety : True
+```
+
+### `Nonvacuous.Glue.enum_match.eval_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `eval_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.eval_sound : True
+```
+
+### `Nonvacuous.Glue.enum_match.never_stuck_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `never_stuck_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.never_stuck_iff : True
+```
+
+### `Nonvacuous.Glue.enum_match.eval_diverges_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `eval_diverges_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.eval_diverges_iff : True
+```
+
+### `Nonvacuous.Glue.enum_match.fuel_mono`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `fuel_mono` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.fuel_mono : True
+```
+
+### `Nonvacuous.Glue.enum_match.Step.terminal`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `Step.terminal` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.Step.terminal : True
+```
+
+### `Nonvacuous.Glue.enum_match.run_sim`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `run_sim` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.run_sim : True
+```
+
+### `Nonvacuous.Glue.enum_match.eval_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `eval_complete` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.eval_complete : True
+```
+
+### `Nonvacuous.Glue.enum_match.run_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`enum_match` applied to `run_complete` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.enum_match.run_complete : True
+```
+
+### `Nonvacuous.Glue.early_return.soundness`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `soundness` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.soundness : True
+```
+
+### `Nonvacuous.Glue.early_return.run_safe`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `run_safe` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.run_safe : True
+```
+
+### `Nonvacuous.Glue.early_return.no_violation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `no_violation` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.no_violation : True
+```
+
+### `Nonvacuous.Glue.early_return.no_use_after_move`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `no_use_after_move` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.no_use_after_move : True
+```
+
+### `Nonvacuous.Glue.early_return.no_use_after_drop`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `no_use_after_drop` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.no_use_after_drop : True
+```
+
+### `Nonvacuous.Glue.early_return.no_linear_leak`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `no_linear_leak` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.no_linear_leak : True
+```
+
+### `Nonvacuous.Glue.early_return.no_linear_overwrite`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `no_linear_overwrite` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.no_linear_overwrite : True
+```
+
+### `Nonvacuous.Glue.early_return.no_linear_discard`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `no_linear_discard` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.no_linear_discard : True
+```
+
+### `Nonvacuous.Glue.early_return.check_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `check_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.check_sound : True
+```
+
+### `Nonvacuous.Glue.early_return.checkProgram_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `checkProgram_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.checkProgram_sound : True
+```
+
+### `Nonvacuous.Glue.early_return.no_double_free`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `no_double_free` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.no_double_free : True
+```
+
+### `Nonvacuous.Glue.early_return.drop_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `drop_order` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.drop_order : True
+```
+
+### `Nonvacuous.Glue.early_return.step_progress`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `step_progress` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.step_progress : True
+```
+
+### `Nonvacuous.Glue.early_return.step_preservation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `step_preservation` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.step_preservation : True
+```
+
+### `Nonvacuous.Glue.early_return.step_type_safety`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `step_type_safety` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.step_type_safety : True
+```
+
+### `Nonvacuous.Glue.early_return.eval_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `eval_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.eval_sound : True
+```
+
+### `Nonvacuous.Glue.early_return.never_stuck_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `never_stuck_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.never_stuck_iff : True
+```
+
+### `Nonvacuous.Glue.early_return.eval_diverges_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `eval_diverges_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.eval_diverges_iff : True
+```
+
+### `Nonvacuous.Glue.early_return.fuel_mono`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `fuel_mono` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.fuel_mono : True
+```
+
+### `Nonvacuous.Glue.early_return.Step.terminal`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `Step.terminal` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.Step.terminal : True
+```
+
+### `Nonvacuous.Glue.early_return.run_sim`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `run_sim` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.run_sim : True
+```
+
+### `Nonvacuous.Glue.early_return.eval_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `eval_complete` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.eval_complete : True
+```
+
+### `Nonvacuous.Glue.early_return.run_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `run_complete` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.run_complete : True
+```
+
+### `Nonvacuous.Glue.early_return.run_ne_returned`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`early_return` applied to `run_ne_returned` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.early_return.run_ne_returned : True
+```
+
+### `Nonvacuous.Glue.float.soundness`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `soundness` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.soundness : True
+```
+
+### `Nonvacuous.Glue.float.run_safe`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `run_safe` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.run_safe : True
+```
+
+### `Nonvacuous.Glue.float.no_violation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `no_violation` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.no_violation : True
+```
+
+### `Nonvacuous.Glue.float.no_use_after_move`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `no_use_after_move` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.no_use_after_move : True
+```
+
+### `Nonvacuous.Glue.float.no_use_after_drop`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `no_use_after_drop` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.no_use_after_drop : True
+```
+
+### `Nonvacuous.Glue.float.no_linear_leak`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `no_linear_leak` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.no_linear_leak : True
+```
+
+### `Nonvacuous.Glue.float.no_linear_overwrite`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `no_linear_overwrite` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.no_linear_overwrite : True
+```
+
+### `Nonvacuous.Glue.float.no_linear_discard`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `no_linear_discard` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.no_linear_discard : True
+```
+
+### `Nonvacuous.Glue.float.check_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `check_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.check_sound : True
+```
+
+### `Nonvacuous.Glue.float.checkProgram_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `checkProgram_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.checkProgram_sound : True
+```
+
+### `Nonvacuous.Glue.float.no_double_free`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `no_double_free` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.no_double_free : True
+```
+
+### `Nonvacuous.Glue.float.drop_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `drop_order` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.drop_order : True
+```
+
+### `Nonvacuous.Glue.float.step_progress`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `step_progress` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.step_progress : True
+```
+
+### `Nonvacuous.Glue.float.step_preservation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `step_preservation` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.step_preservation : True
+```
+
+### `Nonvacuous.Glue.float.step_type_safety`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `step_type_safety` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.step_type_safety : True
+```
+
+### `Nonvacuous.Glue.float.eval_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `eval_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.eval_sound : True
+```
+
+### `Nonvacuous.Glue.float.never_stuck_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `never_stuck_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.never_stuck_iff : True
+```
+
+### `Nonvacuous.Glue.float.eval_diverges_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `eval_diverges_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.eval_diverges_iff : True
+```
+
+### `Nonvacuous.Glue.float.fuel_mono`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `fuel_mono` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.fuel_mono : True
+```
+
+### `Nonvacuous.Glue.float.Step.terminal`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `Step.terminal` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.Step.terminal : True
+```
+
+### `Nonvacuous.Glue.float.run_sim`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `run_sim` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.run_sim : True
+```
+
+### `Nonvacuous.Glue.float.eval_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `eval_complete` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.eval_complete : True
+```
+
+### `Nonvacuous.Glue.float.run_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`float` applied to `run_complete` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.float.run_complete : True
+```
+
+### `Nonvacuous.Glue.panic.soundness`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `soundness` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.soundness : True
+```
+
+### `Nonvacuous.Glue.panic.run_safe`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `run_safe` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.run_safe : True
+```
+
+### `Nonvacuous.Glue.panic.no_violation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `no_violation` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.no_violation : True
+```
+
+### `Nonvacuous.Glue.panic.no_use_after_move`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `no_use_after_move` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.no_use_after_move : True
+```
+
+### `Nonvacuous.Glue.panic.no_use_after_drop`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `no_use_after_drop` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.no_use_after_drop : True
+```
+
+### `Nonvacuous.Glue.panic.no_linear_leak`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `no_linear_leak` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.no_linear_leak : True
+```
+
+### `Nonvacuous.Glue.panic.no_linear_overwrite`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `no_linear_overwrite` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.no_linear_overwrite : True
+```
+
+### `Nonvacuous.Glue.panic.no_linear_discard`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `no_linear_discard` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.no_linear_discard : True
+```
+
+### `Nonvacuous.Glue.panic.check_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `check_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.check_sound : True
+```
+
+### `Nonvacuous.Glue.panic.checkProgram_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `checkProgram_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.checkProgram_sound : True
+```
+
+### `Nonvacuous.Glue.panic.no_double_free`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `no_double_free` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.no_double_free : True
+```
+
+### `Nonvacuous.Glue.panic.drop_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `drop_order` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.drop_order : True
+```
+
+### `Nonvacuous.Glue.panic.step_progress`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `step_progress` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.step_progress : True
+```
+
+### `Nonvacuous.Glue.panic.step_preservation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `step_preservation` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.step_preservation : True
+```
+
+### `Nonvacuous.Glue.panic.step_type_safety`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `step_type_safety` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.step_type_safety : True
+```
+
+### `Nonvacuous.Glue.panic.eval_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `eval_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.eval_sound : True
+```
+
+### `Nonvacuous.Glue.panic.never_stuck_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `never_stuck_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.never_stuck_iff : True
+```
+
+### `Nonvacuous.Glue.panic.eval_diverges_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `eval_diverges_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.eval_diverges_iff : True
+```
+
+### `Nonvacuous.Glue.panic.fuel_mono`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `fuel_mono` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.fuel_mono : True
+```
+
+### `Nonvacuous.Glue.panic.Step.terminal`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `Step.terminal` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.Step.terminal : True
+```
+
+### `Nonvacuous.Glue.panic.run_sim`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `run_sim` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.run_sim : True
+```
+
+### `Nonvacuous.Glue.panic.eval_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `eval_complete` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.eval_complete : True
+```
+
+### `Nonvacuous.Glue.panic.run_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`panic` applied to `run_complete` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.panic.run_complete : True
+```
+
+### `Nonvacuous.Glue.exact_model.soundness`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `soundness`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.soundness : True
+```
+
+### `Nonvacuous.Glue.exact_model.run_safe`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `run_safe`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.run_safe : True
+```
+
+### `Nonvacuous.Glue.exact_model.no_violation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `no_violation`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.no_violation : True
+```
+
+### `Nonvacuous.Glue.exact_model.no_use_after_move`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `no_use_after_move`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.no_use_after_move : True
+```
+
+### `Nonvacuous.Glue.exact_model.no_use_after_drop`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `no_use_after_drop`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.no_use_after_drop : True
+```
+
+### `Nonvacuous.Glue.exact_model.no_linear_leak`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `no_linear_leak`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.no_linear_leak : True
+```
+
+### `Nonvacuous.Glue.exact_model.no_linear_overwrite`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `no_linear_overwrite`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.no_linear_overwrite : True
+```
+
+### `Nonvacuous.Glue.exact_model.no_linear_discard`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `no_linear_discard`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.no_linear_discard : True
+```
+
+### `Nonvacuous.Glue.exact_model.no_double_free`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `no_double_free`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.no_double_free : True
+```
+
+### `Nonvacuous.Glue.exact_model.drop_exactly_once`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `drop_exactly_once`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.drop_exactly_once : True
+```
+
+### `Nonvacuous.Glue.exact_model.rest_exactly_once`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `rest_exactly_once`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.rest_exactly_once : True
+```
+
+### `Nonvacuous.Glue.exact_model.drop_order`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `drop_order`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.drop_order : True
+```
+
+### `Nonvacuous.Glue.exact_model.step_progress`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `step_progress`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.step_progress : True
+```
+
+### `Nonvacuous.Glue.exact_model.step_preservation`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `step_preservation`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.step_preservation : True
+```
+
+### `Nonvacuous.Glue.exact_model.step_type_safety`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `step_type_safety`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.step_type_safety : True
+```
+
+### `Nonvacuous.Glue.exact_model.eval_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `eval_sound`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.eval_sound : True
+```
+
+### `Nonvacuous.Glue.exact_model.eval_complete`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `eval_complete`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.eval_complete : True
+```
+
+### `Nonvacuous.Glue.exact_model.never_stuck_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `never_stuck_iff`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.never_stuck_iff : True
+```
+
+### `Nonvacuous.Glue.exact_model.eval_diverges_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `eval_diverges_iff`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.eval_diverges_iff : True
+```
+
+### `Nonvacuous.Glue.empty_frame.soundness`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`empty_frame` applied to `soundness`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.empty_frame.soundness : True
+```
+
+### `Nonvacuous.Glue.empty_frame.drop_exactly_once`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`empty_frame` applied to `drop_exactly_once`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.empty_frame.drop_exactly_once : True
+```
+
+### `Nonvacuous.Glue.empty_frame.rest_exactly_once`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`empty_frame` applied to `rest_exactly_once`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.empty_frame.rest_exactly_once : True
+```
+
+### `Nonvacuous.Glue.open_frame.soundness`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`open_frame` applied to `soundness` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.open_frame.soundness : True
+```
+
+### `Nonvacuous.Glue.open_frame.check_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`open_frame` applied to `check_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.open_frame.check_sound : True
+```
+
+### `Nonvacuous.Glue.open_frame.drop_exactly_once`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`open_frame` applied to `drop_exactly_once` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.open_frame.drop_exactly_once : True
+```
+
+### `Nonvacuous.Glue.open_frame.rest_exactly_once`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`open_frame` applied to `rest_exactly_once` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.open_frame.rest_exactly_once : True
+```
+
+### `Nonvacuous.Glue.diverges.checkProgram_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`diverges` applied to `checkProgram_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.diverges.checkProgram_sound : True
+```
+
+### `Nonvacuous.Glue.diverges.eval_diverges_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`diverges` applied to `eval_diverges_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.diverges.eval_diverges_iff : True
+```
+
+### `Nonvacuous.Glue.stuck.fuel_mono`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`stuck` applied to `fuel_mono` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.stuck.fuel_mono : True
+```
+
+### `Nonvacuous.Glue.stuck.no_masking`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`stuck` applied to `no_masking` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.stuck.no_masking : True
+```
+
+### `Nonvacuous.Glue.stuck.Config.trichotomy`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`stuck` applied to `Config.trichotomy` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.stuck.Config.trichotomy : True
+```
+
+### `Nonvacuous.Glue.stuck.Config.stuck_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`stuck` applied to `Config.stuck_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.stuck.Config.stuck_iff : True
+```
+
+### `Nonvacuous.Glue.stuck.step_stuck_isStuckState`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`stuck` applied to `step_stuck_isStuckState` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.stuck.step_stuck_isStuckState : True
+```
+
+### `Nonvacuous.Glue.stuck.run_stuck_of_step_stuck`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`stuck` applied to `run_stuck_of_step_stuck` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.stuck.run_stuck_of_step_stuck : True
 ```
 
 ### `Examples.eval_loop_ok`
@@ -20523,7 +22914,7 @@ def RueCore.Settled (φ : Frame) (H₁ : Store) : EvalRes → Prop :=
 
 ### `Spec.Nonvacuous.exact_model_stmt`
 
-*def* · module `RueCore.Spec.Witnesses`
+*def* · module `RueCore.Spec.Nonvacuous`
 
 **The float laws have a model: `Float.exactOps`** (§7's "totality of the
 float operations"; RUE-2469). Some `FloatModel` has the executable instance
@@ -22741,7 +25132,7 @@ def RueCore.StoreCC (D : Decls) (H : Store) : Prop :=
 
 ### `Spec.Nonvacuous.empty_frame_stmt`
 
-*def* · module `RueCore.Spec.Witnesses`
+*def* · module `RueCore.Spec.Nonvacuous`
 
 **The initial frame agrees with the empty context** (§6.12's initial
 configuration): at every declaration environment, the empty frame over the
@@ -25021,7 +27412,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Spec.Nonvacuous.stuck_stmt`
 
-*def* · module `RueCore.Spec.Witnesses`
+*def* · module `RueCore.Spec.Nonvacuous`
 
 **An unchecked program that gets stuck** (§6.3's read of a `⊘`; the corpus
 case `use_after_move` reads its moved binding the same way). `let a = S0 { 1
@@ -25280,7 +27671,7 @@ RueCore.ProgramTyped.mk {P : Program} (wf : WfProgram P)
 
 ### `Spec.Nonvacuous.diverges_stmt`
 
-*def* · module `RueCore.Spec.Witnesses`
+*def* · module `RueCore.Spec.Nonvacuous`
 
 **A checked program that diverges** (§6.10; the loop with no `break`). `loop
 { () }` as the entry point returning `()` is accepted, and its run exhausts
@@ -25624,7 +28015,7 @@ def RueCore.Spec.step_type_safety_stmt : Prop :=
 
 ### `Spec.Nonvacuous.array_stmt`
 
-*def* · module `RueCore.Spec.Witnesses`
+*def* · module `RueCore.Spec.Nonvacuous`
 
 **A checked program with an array** (§6.5, §6.11; construct class: arrays; the corpus
 cases `array_drop_order` and `array_dyn_read_below`). `let a = [S0 { 1 }, S0 {
@@ -25678,7 +28069,7 @@ def RueCore.Spec.Nonvacuous.array_stmt : Prop :=
 
 ### `Spec.Nonvacuous.dtor_stmt`
 
-*def* · module `RueCore.Spec.Witnesses`
+*def* · module `RueCore.Spec.Nonvacuous`
 
 **A checked program that drops two values with destructors** (§6.11, §7; construct
 class: destructors; the corpus case `affine_scope_drop`, with two bindings). The program `let a = S0 { 1 }; let b = S0 { 2 }; 3`, over an affine
@@ -25755,7 +28146,7 @@ def RueCore.Spec.Nonvacuous.dtor_stmt : Prop :=
 
 ### `Spec.Nonvacuous.early_return_stmt`
 
-*def* · module `RueCore.Spec.Witnesses`
+*def* · module `RueCore.Spec.Nonvacuous`
 
 **A checked program with an early `return`** (§6.9; construct class: early
 `return`; the corpus case `return_past_affine`). `let a = S0 { 1 }; let b = S0
@@ -25810,7 +28201,7 @@ def RueCore.Spec.Nonvacuous.early_return_stmt : Prop :=
 
 ### `Spec.Nonvacuous.enum_match_stmt`
 
-*def* · module `RueCore.Spec.Witnesses`
+*def* · module `RueCore.Spec.Nonvacuous`
 
 **A checked program with an enum and a `match`** (§5.5, §6.6; construct class: enums with
 `match`; the corpus case `enum_match_affine`). `let e = E0::K0(S0 { 1 }); match
@@ -25866,7 +28257,7 @@ def RueCore.Spec.Nonvacuous.enum_match_stmt : Prop :=
 
 ### `Spec.Nonvacuous.float_stmt`
 
-*def* · module `RueCore.Spec.Witnesses`
+*def* · module `RueCore.Spec.Nonvacuous`
 
 **A checked program that computes with floats** (§6.4; construct class: floats;
 the corpus case `float_arith`). `let x = 1.5 + 2.25; x * 2.0` at `f64` is
@@ -25923,7 +28314,7 @@ def RueCore.Spec.Nonvacuous.float_stmt : Prop :=
 
 ### `Spec.Nonvacuous.linear_stmt`
 
-*def* · module `RueCore.Spec.Witnesses`
+*def* · module `RueCore.Spec.Nonvacuous`
 
 **A checked program with a declared-linear value** (§5.6, §7; construct class:
 declared-linear values; the corpus case `linear_explicit_drop`'s shape). `let x
@@ -25977,7 +28368,7 @@ def RueCore.Spec.Nonvacuous.linear_stmt : Prop :=
 
 ### `Spec.Nonvacuous.loop_stmt`
 
-*def* · module `RueCore.Spec.Witnesses`
+*def* · module `RueCore.Spec.Nonvacuous`
 
 **A checked program with a loop that turns three times** (§5.7, §6.10; construct class:
 loops; the corpus case `loop_counted`'s shape). A counted loop over a `mut`
@@ -26034,9 +28425,100 @@ def RueCore.Spec.Nonvacuous.loop_stmt : Prop :=
                         3 ≤ (dtorIds tr).length
 ```
 
+### `Spec.Nonvacuous.open_frame_stmt`
+
+*def* · module `RueCore.Spec.Nonvacuous`
+
+**An open term in a live frame** (§6.1, §7): the evaluation statements apply
+beyond the empty frame. Over the witnesses' declarations, `@drop(s); 1` is
+typed by `check` in the context `s : S0`, owned, and the frame `{ ρ := [ℓ0],
+σ := [ℓ0] }` over the store `ℓ0 ↦ S0 { 5 }` agrees with that context
+(`FrameMatches`) and is copy-closed (`StoreCC`), for a checked, `pendingSafe`
+program. Its evaluation runs the destructor of the value it started with, and
+its leading operand has a `Lead`, so `soundness`, `drop_exactly_once` and
+`rest_exactly_once` apply to a term with a free variable and a store that is
+not empty.
+
+```lean
+def RueCore.Spec.Nonvacuous.open_frame_stmt : Prop :=
+  ∀ (D : Decls),
+    D =
+        {
+          structs :=
+            [{ attr := Attr.none,
+                fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                cls := Mult.affine },
+              { attr := Attr.linear,
+                fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
+                cls := Mult.linear }],
+          enums :=
+            [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] } →
+      ∀ (e : Expr),
+        e =
+            (Expr.drop (Place.var 0)).seq
+              (Expr.intLit IntWidth.w64 Sign.signed 1) →
+          ∀ (P : Program),
+            P =
+                { decls := D,
+                  fns :=
+                    [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                        body :=
+                          Expr.intLit IntWidth.w64 Sign.signed 0 }] } →
+              ProgramTyped P ∧
+                P.pendingSafe = true ∧
+                  e.pendingSafe = true ∧
+                    FrameMatches D
+                        [{ ty := Ty.struct 0, mu := false,
+                            st := OwnSt.owned }]
+                        { env := [0], scope := [0] }
+                        [Cell.full
+                            (Contents.struct 0 0
+                              [Contents.int IntWidth.w64 Sign.signed 5])] ∧
+                      StoreCC D
+                          [Cell.full
+                              (Contents.struct 0 0
+                                [Contents.int IntWidth.w64 Sign.signed
+                                    5])] ∧
+                        (∃ c Ω,
+                            check P (Ty.int IntWidth.w64 Sign.signed)
+                                  [{ ty := Ty.struct 0, mu := false,
+                                      st := OwnSt.owned }]
+                                  e =
+                                some (c, Ω) ∧
+                              c.fits (Ty.int IntWidth.w64 Sign.signed) =
+                                  true ∧
+                                Typed P (Ty.int IntWidth.w64 Sign.signed)
+                                  [{ ty := Ty.struct 0, mu := false,
+                                      st := OwnSt.owned }]
+                                  e (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                          1 ≤
+                              (dtorIds
+                                  (eval Float.exactOps 200 P
+                                      [Cell.full
+                                          (Contents.struct 0 0
+                                            [Contents.int IntWidth.w64
+                                                Sign.signed 5])]
+                                      { env := [0], scope := [0] }
+                                      e).trace).length ∧
+                            ∃ H₁ vs tr r,
+                              Lead Float.exactOps P 200
+                                  [Cell.full
+                                      (Contents.struct 0 0
+                                        [Contents.int IntWidth.w64
+                                            Sign.signed 5])]
+                                  { env := [0], scope := [0] } H₁ vs tr e ∧
+                                eval Float.exactOps 201 P
+                                    [Cell.full
+                                        (Contents.struct 0 0
+                                          [Contents.int IntWidth.w64
+                                              Sign.signed 5])]
+                                    { env := [0], scope := [0] } e =
+                                  EvalRes.withTrace tr r
+```
+
 ### `Spec.Nonvacuous.panic_stmt`
 
-*def* · module `RueCore.Spec.Witnesses`
+*def* · module `RueCore.Spec.Nonvacuous`
 
 **A checked program that panics** (construct class: `@panic`;
 `Examples.panicPastAffine` with a `@dbg` line before the trap, beside the
