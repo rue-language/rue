@@ -115,13 +115,27 @@ evaluated at compile time is a constant index under `8.2:4`. That a
 `let`-bound index stays dynamic rests on the compiler's current reading of
 `8.2:4`'s open list, which is RUE-2349. The draw does not avoid the shapes of
 the array red seeds, so a generated case of one is attributed by hand: the
-self-assignment `a[c] = a[c]` (RUE-2346) is the one still red. On the current draws the acceptance settings (200 at seed 7, 1,000
-at seed 23) reach the self-assignment in four cases (`gen_7_145`, `gen_7_159`,
-`gen_7_181`, `gen_23_752`), each masked by an E0406 the compiler reports
-first, so every one of the 1,200 cases agrees with the compiler; a wider run
-reaches it unmasked (`gen_101_207` at `--gen 400 --seed 101`, on the draws
-just before the loop generator's restoring statements), which is an allowed
-RUE-2346 disagreement. On the draws before loops they reached the
+self-assignment `a[c] = a[c]` (RUE-2346) is the one still red. Before
+RUE-2480 reordered `genDecl`'s draws (below), the settings (200 at seed 7,
+1,000 at seed 23) reached the self-assignment in four cases (`gen_7_145`,
+`gen_7_159`, `gen_7_181`, `gen_23_752`), each masked by an E0406 the compiler
+reports first, so every one of the 1,200 cases agreed with the compiler; a
+wider run reached it unmasked (`gen_101_207` at `--gen 400 --seed 101`, on the
+draws just before the loop generator's restoring statements), which is an
+allowed RUE-2346 disagreement. RUE-2480's `genDecl` draws `drawnDtor` before
+the fields, so it consumes the seed's random stream differently and every
+generated case's identity shifts; at the same two settings on the new stream,
+the self-assignment now reaches the corpus **unmasked** once, at `gen_7_3` —
+an array of structs (`v0[0] = v0[0]`), the same RUE-2346 shape, not a new
+bug, but the first time this settings pair shows it unmasked without a wider
+run. It is set aside next to `array_elem_self_assign` in
+BRIDGE-SENSITIVITY.md's mutant drills. The same re-verification also turned
+up one disagreement that is not RUE-2346's shape: `gen_23_343` at `--gen 1000
+--seed 23`, an accepted program where the compiler reports an internal error
+(E9000, CFG verification) on `v0.x1 = v0.x1` — a struct **field**
+self-assignment, following a conditionally-taken `@drop` of the same binder
+on an earlier loop turn. Filed as a finding (BRIDGE-SENSITIVITY.md), not
+fixed here. On the draws before loops they reached the
 self-assignment (one case at seed 7, three at seed 23) and a dynamic index into a zero-length
 array field (five at seed 23, agreeing since RUE-2345 was fixed); wider runs at
 other seeds reached RUE-2344's shape (`gen_2_1694`, agreeing since RUE-2344
@@ -264,7 +278,18 @@ How a *drop* becomes a printed line is the **user destructor**, and nothing
 else: a Rue program has no other way to observe a drop happening, so a
 declaration that declares one prints `drop fn S(self) { @dbg(self.x0); }` and
 the interpreter records the same drop as a `dtor` event; a declaration with
-no destructor drops silently in both. `@dbg` is the second channel, and the
+no destructor drops silently in both. That print fires only when `x0` is an
+`int` (`Print.structItem`); left to `genDecl`'s ordinary field draw, a
+generated destructor-bearing declaration's first field was an `int` only
+sometimes, so most generated drops were silent — of the accepted generated
+programs that dropped anything, 50% (13 of 26) at `--gen 200 --seed 7` and
+38% (48 of 127) at `--gen 1000 --seed 23` printed a line, against 100% (74 of
+74) of the seeds, which are hand-written to have one. `genDecl` now draws
+`drawnDtor` before the fields and forces field 0 to a plain `int` whenever a
+destructor is coming (RUE-2480; BRIDGE-SENSITIVITY.md's "observable
+destructors" has the mutant-detection effect): every generated
+destructor-bearing declaration's drop now prints (100% at both settings).
+`@dbg` is the second channel, and the
 two share one trace, so a `@dbg` line between two destructor lines comes out
 between them. `RueCore/Print.lean`'s module docstring
 is the reference for the rest. Two of the constraints are the spec's: a
