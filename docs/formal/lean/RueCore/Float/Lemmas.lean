@@ -328,13 +328,13 @@ theorem ofLit_wf (w : FloatWidth) (m : Nat) (ne : Bool) (e : Nat) : (ofLit w m n
   · exact roundRat_wf _ _ _ Nat.one_ne_zero
   · exact roundRat_wf _ _ _ (Nat.pos_iff_ne_zero.mp (Nat.pow_pos (by decide)))
 
-/-- **A NaN operand yields a NaN** for `exactOps` (`FloatModel.arith_nan`): the operand is propagated. -/
+/-- **A NaN operand yields a NaN** (§6.4) for `exactOps` (`FloatModel.arith_nan`): the operand is propagated. -/
 theorem arith_nan (σ : Bool) (w : FloatWidth) (op : FloatArith) (a b : FloatDatum)
     (h : a.isNaN = true ∨ b.isNaN = true) : (arith σ w op a b).isNaN = true := by
   cases op <;> cases a <;> cases b <;>
     simp_all [arith, addD, subD, mulD, divD, FloatDatum.isNaN]
 
-/-- **A cast of a NaN is a NaN** for `exactOps` (`FloatModel.narrow_nan`). -/
+/-- **A cast of a NaN is a NaN** (§6.4, `3.12:19`) for `exactOps` (`FloatModel.narrow_nan`). -/
 theorem narrow_nan (f : FloatDatum) (h : f.isNaN = true) : (narrow f).isNaN = true := by
   cases f <;> simp_all [narrow, FloatDatum.isNaN]
 
@@ -380,7 +380,7 @@ theorem sqrt_wf (σ : Bool) (w : FloatWidth) (f : FloatDatum) (hf : f.Wf w) :
             · exact absurd h0 hs
             · exact sqrt_core htop hlo hhi rfl (sqrt_sq_le _) (ite_succ_le _ _)
 
-/-- **The laws have a model: `Float.exactOps`.** Every field of `FloatModel` proved of the executable instance, so the 19 spine statements that quantify over `M : FloatModel` are not vacuous (RUE-2469), and each applies to the model the corpus runs on. What the laws leave open, `exactOps` still decides by choice — which NaN a propagating operation returns, and `σ_NaN` — and those choices are checked against the compiler by the corpus, not proved. -/
+/-- **The laws have a model: `Float.exactOps`** (§7's float lemma). Every field of `FloatModel` proved of the executable instance, so the 19 spine statements that quantify over `M : FloatModel` are not vacuous (RUE-2469), and each applies to the model the corpus runs on. What the laws leave open, `exactOps` still decides by choice — which NaN a propagating operation returns, and `σ_NaN` — and those choices are checked against the compiler by the corpus, not proved. -/
 def exactModel : FloatModel where
   toFloatOps := exactOps
   arith_wf w op a b _ _ := arith_wf false w op a b

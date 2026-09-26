@@ -100,8 +100,7 @@ whose hypotheses it shows satisfiable by a non-trivial program, in `spine`'s
 order. The tools read it beside `spine`: `Spine.lean` binds each proof to its
 statement, the lint holds each to the same checks as a spine entry and fails
 on a spine theorem no witness names, and Comparator's challenge, the
-fingerprints and `SPINE.md` include every witness statement (helper for the
-tools). -/
+fingerprints and `SPINE.md` include every witness statement (helper). -/
 def witnesses : List (Lean.Name × Lean.Name × List Lean.Name) := [
   (`RueCore.Nonvacuous.exact_model, ``Nonvacuous.exact_model_stmt, [
       `RueCore.soundness,

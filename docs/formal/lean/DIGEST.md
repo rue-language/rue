@@ -178,6 +178,146 @@ theorem RueCore.toIntIn_inf (b : Bool) (lo hi : Int) :
   (FloatDatum.inf b).toIntIn lo hi = none
 ```
 
+### `roundRat_wf`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+**`rnd_w` lands in `𝔽_w`** (§2, §7's "`rnd_w` is total into `𝔽_w`"):
+`roundRat` of any rational with a non-zero denominator is a datum of the
+width.
+
+```lean
+theorem RueCore.roundRat_wf (w : FloatWidth) (neg : Bool) (num : Nat) {den : Nat}
+  (hd : den ≠ 0) : FloatDatum.Wf w (roundRat w neg num den)
+```
+
+### `Float.arith_wf`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+**Closure of `⊕_w`** (§7) for `exactOps`: `FloatModel.arith_wf`, with no hypothesis on the operands.
+
+```lean
+theorem RueCore.Float.arith_wf (σ : Bool) (w : FloatWidth) (op : FloatArith)
+  (a b : FloatDatum) : FloatDatum.Wf w (Float.arith σ w op a b)
+```
+
+### `Float.narrow_wf`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+**Closure of the narrowing cast** (`3.12:19`) for `exactOps`: `FloatModel.narrow_wf`, on any datum.
+
+```lean
+theorem RueCore.Float.narrow_wf (f : FloatDatum) :
+  FloatDatum.Wf FloatWidth.w32 (Float.narrow f)
+```
+
+### `Float.ofInt_wf`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+**Closure of `rnd_w` on an integer** (`3.12:16`) for `exactOps`: `FloatModel.ofInt_wf`.
+
+```lean
+theorem RueCore.Float.ofInt_wf (w : FloatWidth) (n : Int) :
+  FloatDatum.Wf w (Float.ofInt w n)
+```
+
+### `Float.ofLit_wf`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+**Closure of `rnd_w` on a literal** (`3.12:9`) for `exactOps`: `FloatModel.ofLit_wf`.
+
+```lean
+theorem RueCore.Float.ofLit_wf (w : FloatWidth) (m : Nat) (ne : Bool) (e : Nat) :
+  FloatDatum.Wf w (Float.ofLit w m ne e)
+```
+
+### `Float.arith_nan`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+**A NaN operand yields a NaN** for `exactOps` (`FloatModel.arith_nan`): the operand is propagated.
+
+```lean
+theorem RueCore.Float.arith_nan (σ : Bool) (w : FloatWidth) (op : FloatArith)
+  (a b : FloatDatum) (h : a.isNaN = true ∨ b.isNaN = true) :
+  (Float.arith σ w op a b).isNaN = true
+```
+
+### `Float.narrow_nan`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+**A cast of a NaN is a NaN** for `exactOps` (`FloatModel.narrow_nan`).
+
+```lean
+theorem RueCore.Float.narrow_nan (f : FloatDatum) (h : f.isNaN = true) :
+  (Float.narrow f).isNaN = true
+```
+
+### `Float.div_by_zero`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+**A finite non-zero over a zero is the infinity of the xor sign** (`3.12:22`) for `exactOps` (`FloatModel.div_by_zero`).
+
+```lean
+theorem RueCore.Float.div_by_zero (σ : Bool) (w : FloatWidth) (n : Bool) (s : Nat)
+  (e : Int) (hs : s ≠ 0) (n₂ : Bool) :
+  Float.arith σ w FloatArith.div (FloatDatum.num n s e)
+      (FloatDatum.num n₂ 0 0) =
+    FloatDatum.inf (n ^^ n₂)
+```
+
+### `Float.zero_div_zero`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+**`0/0` is `NaN(σ_NaN)`** (`3.12:22`) for `exactOps` (`FloatModel.zero_div_zero`).
+
+```lean
+theorem RueCore.Float.zero_div_zero (σ : Bool) (w : FloatWidth) (n₁ n₂ : Bool) :
+  Float.arith σ w FloatArith.div (FloatDatum.num n₁ 0 0)
+      (FloatDatum.num n₂ 0 0) =
+    FloatDatum.nan σ
+```
+
+### `Float.ofLit_zero`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+**The decimal zero is `+0`** (`3.12:9`) for `exactOps` (`FloatModel.ofLit_zero`).
+
+```lean
+theorem RueCore.Float.ofLit_zero (w : FloatWidth) (ne : Bool) (e : Nat) :
+  Float.ofLit w 0 ne e = FloatDatum.num false 0 0
+```
+
+### `Float.ofLit_one`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+**The decimal one is `1 · 2^0`** (`3.12:9`) for `exactOps` (`FloatModel.ofLit_one`), evaluated in the kernel at each width.
+
+```lean
+theorem RueCore.Float.ofLit_one (w : FloatWidth) :
+  Float.ofLit w 1 false 0 = FloatDatum.num false 1 0
+```
+
+### `Float.sqrt_wf`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+**Closure of `@sqrt`** (`3.12:35`, §7's "each `⊙_w` is total on `𝔽_w`") for `exactOps`: `FloatModel.sqrt_wf`.
+
+```lean
+theorem RueCore.Float.sqrt_wf (σ : Bool) (w : FloatWidth) (f : FloatDatum)
+  (hf : FloatDatum.Wf w f) : FloatDatum.Wf w (Float.sqrtD σ w f)
+```
+
 ### `StructDecl.Wf.field_not_linear`
 
 *theorem* · module `RueCore.Statics.Lemmas`
@@ -2507,6 +2647,489 @@ theorem RueCore.step_type_safety (M : FloatModel) {P : Program} (h : ProgramType
             ∃ κ tr, Steps M.toFloatOps P Config.init (Config.panic κ tr)
 ```
 
+### `Nonvacuous.exact_model`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`Spec.Nonvacuous.exact_model_stmt`, proved.
+
+```lean
+theorem RueCore.Nonvacuous.exact_model : ∃ M, M.toFloatOps = Float.exactOps
+```
+
+### `Nonvacuous.empty_frame`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`Spec.Nonvacuous.empty_frame_stmt`, proved.
+
+```lean
+theorem RueCore.Nonvacuous.empty_frame (D : Decls) :
+  FrameMatches D [] Frame.empty [] ∧ StoreCC D []
+```
+
+### `Nonvacuous.dtor`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`Spec.Nonvacuous.dtor_stmt`, proved.
+
+```lean
+theorem RueCore.Nonvacuous.dtor (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = true ∧
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              (∃ c Ω,
+                  check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                      some (c, Ω) ∧
+                    c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                      Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                        (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                DtorNotCopy P.decls ∧
+                  (∃ C, Step Float.exactOps P Config.init C) ∧
+                    (∀ (fuel : Nat) (w : Violation),
+                        run Float.exactOps P fuel ≠ EvalRes.stuck w) ∧
+                      2 ≤
+                          (freedIds P.decls
+                              (eval Float.exactOps 200 P [] Frame.empty
+                                  B).trace).length ∧
+                        (∃ H₁ vs tr r,
+                            Lead Float.exactOps P 200 [] Frame.empty H₁ vs tr
+                                B ∧
+                              eval Float.exactOps 201 P [] Frame.empty B =
+                                  EvalRes.withTrace tr r ∧
+                                Contents.ownList P.decls
+                                    (Contents.ofVals vs) ≠
+                                  []) ∧
+                          ∃ H v tr,
+                            run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                              Steps Float.exactOps P Config.init
+                                  (Config.run H Frame.empty [] (Focus.ret v)
+                                    tr) ∧
+                                2 ≤ (freedIds P.decls tr).length ∧
+                                  2 ≤ (dtorIds tr).length
+```
+
+### `Nonvacuous.linear`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`Spec.Nonvacuous.linear_stmt`, proved.
+
+```lean
+theorem RueCore.Nonvacuous.linear (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          ((Expr.drop (Place.var 1)).seq
+            (Expr.intLit IntWidth.w64 Sign.signed 3))) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = true ∧
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              (∃ c Ω,
+                  check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                      some (c, Ω) ∧
+                    c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                      Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                        (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                ∃ H v tr,
+                  run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                    Steps Float.exactOps P Config.init
+                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      2 ≤ (freedIds P.decls tr).length
+```
+
+### `Nonvacuous.loop`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`Spec.Nonvacuous.loop_stmt`, proved.
+
+```lean
+theorem RueCore.Nonvacuous.loop (B : Expr) :
+  B =
+      Expr.letIn true (Expr.intLit IntWidth.w64 Sign.signed 0)
+        ((((Expr.binop BinOp.ge (Expr.use (Place.var 0))
+                        (Expr.intLit IntWidth.w64 Sign.signed 3)).ite
+                    Expr.brk Expr.unitLit).seq
+                ((Expr.assign (Place.var 0)
+                      (Expr.binop BinOp.add (Expr.use (Place.var 0))
+                        (Expr.intLit IntWidth.w64 Sign.signed 1))).seq
+                  (Expr.letIn false (Expr.mkStruct 0 [Expr.use (Place.var 0)])
+                    Expr.unitLit))).loop.seq
+          (Expr.use (Place.var 0))) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = true ∧
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              (∃ c Ω,
+                  check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                      some (c, Ω) ∧
+                    c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                      Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                        (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                ∃ H v tr,
+                  run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                    Steps Float.exactOps P Config.init
+                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      3 ≤ (dtorIds tr).length
+```
+
+### `Nonvacuous.array`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`Spec.Nonvacuous.array_stmt`, proved.
+
+```lean
+theorem RueCore.Nonvacuous.array (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkArray (Ty.struct 0)
+          [Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1],
+            Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2]])
+        (Expr.indexRead (Place.var 0) [Expr.intLit IntWidth.w64 Sign.signed 1]
+          [[0]]) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = true ∧
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              (∃ c Ω,
+                  check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                      some (c, Ω) ∧
+                    c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                      Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                        (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                ∃ H v tr,
+                  run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                    Steps Float.exactOps P Config.init
+                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      2 ≤ (dtorIds tr).length
+```
+
+### `Nonvacuous.enum_match`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`Spec.Nonvacuous.enum_match_stmt`, proved.
+
+```lean
+theorem RueCore.Nonvacuous.enum_match (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkEnum 0 0
+          [Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1]])
+        ((Expr.use (Place.var 0)).match
+          [Expr.use ((Place.var 0).proj 0),
+            Expr.intLit IntWidth.w64 Sign.signed 0]) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = true ∧
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              (∃ c Ω,
+                  check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                      some (c, Ω) ∧
+                    c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                      Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                        (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                ∃ H v tr,
+                  run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                    Steps Float.exactOps P Config.init
+                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      2 ≤ (freedIds P.decls tr).length ∧
+                        1 ≤ (dtorIds tr).length
+```
+
+### `Nonvacuous.early_return`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`Spec.Nonvacuous.early_return_stmt`, proved.
+
+```lean
+theorem RueCore.Nonvacuous.early_return (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          ((Expr.intLit IntWidth.w64 Sign.signed 7).ret.seq
+            (Expr.intLit IntWidth.w64 Sign.signed 0))) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = true ∧
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              (∃ c Ω,
+                  check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                      some (c, Ω) ∧
+                    c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                      Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                        (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                ∃ H v tr,
+                  run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                    Steps Float.exactOps P Config.init
+                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      v = Val.int IntWidth.w64 Sign.signed 7 ∧
+                        2 ≤ (dtorIds tr).length
+```
+
+### `Nonvacuous.panic`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`Spec.Nonvacuous.panic_stmt`, proved.
+
+```lean
+theorem RueCore.Nonvacuous.panic (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        ((Expr.intLit IntWidth.w64 Sign.signed 5).dbg.seq
+          (Expr.panic "boom")) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = true ∧
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              (∃ c Ω,
+                  check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                      some (c, Ω) ∧
+                    c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                      Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                        (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                run Float.exactOps P 200 =
+                    EvalRes.panic PanicKind.user
+                      [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)] ∧
+                  Steps Float.exactOps P Config.init
+                    (Config.panic PanicKind.user
+                      [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)])
+```
+
+### `Nonvacuous.float`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`Spec.Nonvacuous.float_stmt`, proved.
+
+```lean
+theorem RueCore.Nonvacuous.float (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.binop BinOp.add
+          (Expr.floatLit FloatWidth.w64 { sig := 15, negExp := true, e := 1 })
+          (Expr.floatLit FloatWidth.w64
+            { sig := 225, negExp := true, e := 2 }))
+        (Expr.binop BinOp.mul (Expr.use (Place.var 0))
+          (Expr.floatLit FloatWidth.w64
+            { sig := 2, negExp := false, e := 0 })) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.float FloatWidth.w64,
+                  body := B }] } →
+        checkProgram P = true ∧
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              (∃ c Ω,
+                  check P (Ty.float FloatWidth.w64) [] B = some (c, Ω) ∧
+                    c.fits (Ty.float FloatWidth.w64) = true ∧
+                      Typed P (Ty.float FloatWidth.w64) [] B
+                        (Ty.float FloatWidth.w64) Ω) ∧
+                ∃ H v tr,
+                  run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                    Steps Float.exactOps P Config.init
+                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      v =
+                        Val.float FloatWidth.w64
+                          (FloatDatum.num false 15 (-1))
+```
+
+### `Nonvacuous.diverges`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`Spec.Nonvacuous.diverges_stmt`, proved.
+
+```lean
+theorem RueCore.Nonvacuous.diverges (P : Program) :
+  P =
+      { decls := { structs := [], enums := [] },
+        fns :=
+          [{ params := [], ret := Ty.unit, body := Expr.unitLit.loop }] } →
+    checkProgram P = true ∧
+      ProgramTyped P ∧
+        ∀ (fuel : Nat), run Float.exactOps P fuel = EvalRes.outOfFuel
+```
+
+### `Nonvacuous.stuck`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`Spec.Nonvacuous.stuck_stmt`, proved.
+
+```lean
+theorem RueCore.Nonvacuous.stuck (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        ((Expr.drop (Place.var 0)).seq (Expr.use ((Place.var 0).proj 0))) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = false ∧
+          run Float.exactOps P 200 = EvalRes.stuck Violation.useAfterMove ∧
+            ∃ C,
+              Steps Float.exactOps P Config.init C ∧
+                Config.Stuck Float.exactOps P C Violation.useAfterMove
+```
+
 ### `eval_exact`
 
 *theorem* · module `RueCore.TraceExact`
@@ -3625,6 +4248,49 @@ theorem RueCore.letAddProgram_sound (M : FloatOps) :
       (Focus.ret (Val.int IntWidth.w32 Sign.signed 42)) [])
 ```
 
+### `errorClasses_rejected`
+
+*theorem* · module `RueCore.Witnesses`
+
+**`checkProgram` rejects a program of each error class** (§5's
+premises, `3.8`): every rejected case of `errorClassCases` is in the corpus and
+rejected, and every accepted neighbour is in the corpus and accepted, checked
+by the kernel.
+
+```lean
+theorem RueCore.errorClasses_rejected :
+  (errorClassCases.all fun x =>
+      match x with
+      | (fst, bad, good) =>
+        Option.map checkProgram (caseProg? bad) == some false &&
+          Option.all
+            (fun g => Option.map checkProgram (caseProg? g) == some true)
+            good) =
+    true
+```
+
+### `typeErrors_rejected`
+
+*theorem* · module `RueCore.Witnesses`
+
+**An operand of the wrong type, and a call of the wrong arity, are
+rejected** (§5.8's (Arith) and (Call)): `1 + true`, and the entry point
+calling itself with an argument it does not take. The corpus has neither,
+since the compiler rejects both before the core.
+
+```lean
+theorem RueCore.typeErrors_rejected :
+  checkProgram
+        (Program.entry (Decls.ofStructs []) (Ty.int IntWidth.w64 Sign.signed)
+          (Expr.binop BinOp.add (Expr.intLit IntWidth.w64 Sign.signed 1)
+            (Expr.boolLit true))) =
+      false ∧
+    checkProgram
+        (Program.entry (Decls.ofStructs []) (Ty.int IntWidth.w64 Sign.signed)
+          (Expr.call 0 [Expr.intLit IntWidth.w64 Sign.signed 1])) =
+      false
+```
+
 ### `Explain.explain_result`
 
 *theorem* · module `RueCore.Explain`
@@ -3857,6 +4523,257 @@ theorem RueCore.declaredPrefix_declaredLinear (D : Decls) (T : Ty)
   (π πd πs : List Nat) :
   declaredPrefix D T π = some (πd, πs) →
     ∃ Td, Ty.atPath D T πd = some Td ∧ Ty.declaredLinear D Td = true
+```
+
+### `lt_of_mul_lt_mul_right'`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+Cancel a common right factor from a strict inequality, without the core library's `Classical.choice` (helper).
+
+```lean
+theorem RueCore.lt_of_mul_lt_mul_right' {a b c : Nat} (h : a * c < b * c) : a < b
+```
+
+### `two_pow_lt_two_pow`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+`2^a < 2^b` when `a < b`, constructively (helper).
+
+```lean
+theorem RueCore.two_pow_lt_two_pow {a b : Nat} (h : a < b) : 2 ^ a < 2 ^ b
+```
+
+### `le_of_two_pow_le`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+`a ≤ b` when `2^a ≤ 2^b`, constructively (helper).
+
+```lean
+theorem RueCore.le_of_two_pow_le {a b : Nat} (h : 2 ^ a ≤ 2 ^ b) : a ≤ b
+```
+
+### `sqrt_iter_sq_le`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+Newton's iteration for `Nat.sqrt` never overshoots: its result squared is at most `n` (helper).
+
+```lean
+theorem RueCore.sqrt_iter_sq_le (n guess : Nat) :
+  Nat.sqrt.iter n guess * Nat.sqrt.iter n guess ≤ n
+```
+
+### `sqrt_sq_le`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+`Nat.sqrt n` squared is at most `n`, proved here because the core
+library's `Nat.sqrt_le` reaches `Classical.choice` (helper).
+
+```lean
+theorem RueCore.sqrt_sq_le (n : Nat) : n.sqrt * n.sqrt ≤ n
+```
+
+### `bitLen_lt`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+`n` is below `2` to the power of its bit length (helper).
+
+```lean
+theorem RueCore.bitLen_lt (n : Nat) : n < 2 ^ bitLen n
+```
+
+### `pow_bitLen_pred_le`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+A non-zero `n` is at least `2` to the power of its bit length less one (helper).
+
+```lean
+theorem RueCore.pow_bitLen_pred_le {n : Nat} (h : n ≠ 0) : 2 ^ (bitLen n - 1) ≤ n
+```
+
+### `pow_scale`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+Move powers of two across a strict inequality `a·2^X < b·2^Y`: it holds with `X', Y'` whenever `X' - Y' ≤ X - Y` (helper).
+
+```lean
+theorem RueCore.pow_scale {a b X Y X' Y' : Nat} (h : a * 2 ^ X < b * 2 ^ Y)
+  (hle : X' + Y ≤ X + Y') : a * 2 ^ X' < b * 2 ^ Y'
+```
+
+### `log2Floor_lt`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+`log2Floor` is not too small: `num/den < 2^(log2Floor num den + 1)`, written over naturals (helper).
+
+```lean
+theorem RueCore.log2Floor_lt {num den : Nat} (hd : den ≠ 0) :
+  num * 2 ^ (-(log2Floor num den + 1)).toNat <
+    den * 2 ^ (log2Floor num den + 1).toNat
+```
+
+### `roundDivHalfEven_le`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+Rounding `a/b` to nearest stays at or below `K` when `a < b·K` (helper).
+
+```lean
+theorem RueCore.roundDivHalfEven_le {a b K : Nat} (hb : 0 < b) (h : a < b * K) :
+  roundDivHalfEven a b ≤ K
+```
+
+### `pow_prec_pos`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+Every width has a positive precision (helper).
+
+```lean
+theorem RueCore.pow_prec_pos (w : FloatWidth) : 0 < w.prec
+```
+
+### `roundTail_wf`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+The last step of `roundRat` lands in `𝔽_w` whenever the rounded significand is at most `2^p` and the exponent is at or above the subnormal floor: renormalizing, the underflow to zero and the overflow test cover the rest (helper).
+
+```lean
+theorem RueCore.roundTail_wf {w : FloatWidth} {neg : Bool} {m : Nat} {e : Int}
+  (hm : m ≤ 2 ^ w.prec) (he : w.eMin ≤ e) :
+  FloatDatum.Wf w
+    (match if m = 2 ^ w.prec then (2 ^ (w.prec - 1), e + 1) else (m, e) with
+    | (m, e) =>
+      if m = 0 then FloatDatum.num neg 0 0
+      else
+        if w.eTop < e ∨ 2 ^ (w.eTop - e).toNat ≤ m then FloatDatum.inf neg
+        else canonNum neg m e)
+```
+
+### `two_pow_ne_zero`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+A power of two is not zero (helper).
+
+```lean
+theorem RueCore.two_pow_ne_zero {n : Nat} : 2 ^ n ≠ 0
+```
+
+### `bitLen_le_of_lt`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+A number below `2^E` has at most `E` bits (helper).
+
+```lean
+theorem RueCore.bitLen_le_of_lt {n E : Nat} (h : n < 2 ^ E) : bitLen n ≤ E
+```
+
+### `lt_pow_of_sq_lt`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+`r < 2^E` when `r·r < 2^E·2^E` (helper).
+
+```lean
+theorem RueCore.lt_pow_of_sq_lt {r E : Nat} (h : r * r < 2 ^ E * 2 ^ E) : r < 2 ^ E
+```
+
+### `sqrt_core`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+The last step of `Float.sqrtD` lands in `𝔽_w`: whatever the rounding
+decision, the root `r` of `sig · 2^(exp - 2t)` scaled back by `2^(t + k)` is
+within the width's range, because the square root of a finite magnitude below
+`2^eTop` is below `2^(eTop/2)` (helper).
+
+```lean
+theorem RueCore.sqrt_core {w : FloatWidth} {sig : Nat} {exp : Int}
+  (htop : sig < 2 ^ (w.eTop - exp).toNat) (hlo : w.eMin ≤ exp)
+  (hhi : exp ≤ w.eTop) {t : Int} (ht : t = exp.fdiv 2 - ↑w.prec - 2) {r : Nat}
+  (hr : r * r ≤ sig * 2 ^ (exp - 2 * t).toNat) {m : Nat}
+  (hm : m ≤ r / 2 ^ (bitLen r - w.prec) + 1) :
+  FloatDatum.Wf w
+    (if m = 2 ^ w.prec then
+      canonNum false (2 ^ (w.prec - 1)) (t + ↑(bitLen r - w.prec) + 1)
+    else canonNum false m (t + ↑(bitLen r - w.prec)))
+```
+
+### `Float.ratAdd_den`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+`ratAdd`'s denominator is the product of the two (helper).
+
+```lean
+theorem RueCore.Float.ratAdd_den (n₁ : Bool) (a₁ b₁ : Nat) (n₂ : Bool) (a₂ b₂ : Nat) :
+  (Float.ratAdd n₁ a₁ b₁ n₂ a₂ b₂).snd.snd = b₁ * b₂
+```
+
+### `Float.addD_wf`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+`+` lands in `𝔽_w` (helper).
+
+```lean
+theorem RueCore.Float.addD_wf (σ : Bool) (w : FloatWidth) (a b : FloatDatum) :
+  FloatDatum.Wf w (Float.addD σ w a b)
+```
+
+### `Float.mulD_wf`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+`*` lands in `𝔽_w` (helper).
+
+```lean
+theorem RueCore.Float.mulD_wf (σ : Bool) (w : FloatWidth) (a b : FloatDatum) :
+  FloatDatum.Wf w (Float.mulD σ w a b)
+```
+
+### `Float.divD_wf`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+`/` lands in `𝔽_w` (helper).
+
+```lean
+theorem RueCore.Float.divD_wf (σ : Bool) (w : FloatWidth) (a b : FloatDatum) :
+  FloatDatum.Wf w (Float.divD σ w a b)
+```
+
+### `Float.subD_wf`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+`-` lands in `𝔽_w` (helper).
+
+```lean
+theorem RueCore.Float.subD_wf (σ : Bool) (w : FloatWidth) (a b : FloatDatum) :
+  FloatDatum.Wf w (Float.subD σ w a b)
+```
+
+### `Float.ite_succ_le`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+Rounding up adds at most one (helper).
+
+```lean
+theorem RueCore.Float.ite_succ_le (c : Prop) [Decidable c] (x : Nat) :
+  (if c then x + 1 else x) ≤ x + 1
 ```
 
 ### `Mult.rank_le_join_left`
@@ -10253,6 +11170,57 @@ theorem RueCore.Config.SafeAt.steps {M : FloatOps} {P : Program} {T : Ty}
   Config.SafeAt M P T C'
 ```
 
+### `Nonvacuous.withTrace_nil`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+Prefixing an empty trace changes nothing (helper).
+
+```lean
+theorem RueCore.Nonvacuous.withTrace_nil (r : EvalRes) : EvalRes.withTrace [] r = r
+```
+
+### `Nonvacuous.of_okFloat`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+A result `okFloat?` reads a float off is a returned float (helper).
+
+```lean
+theorem RueCore.Nonvacuous.of_okFloat {r : EvalRes} {w : FloatWidth} {f : FloatDatum}
+  (h : Nonvacuous.okFloat? r = some (w, f)) :
+  ∃ H tr, r = EvalRes.ok H (Val.float w f) tr
+```
+
+### `Nonvacuous.loopUnit_eval`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`loop { () }` exhausts every fuel, from every store and frame: each turn
+spends one unit and the body never breaks (helper).
+
+```lean
+theorem RueCore.Nonvacuous.loopUnit_eval (M : FloatOps) (P : Program) (n : Nat)
+  (H : Store) (φ : Frame) :
+  eval M n P H φ Expr.unitLit.loop = EvalRes.outOfFuel
+```
+
+### `Nonvacuous.loopUnit_run`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+The program whose entry point is `loop { () }` exhausts every fuel
+(helper).
+
+```lean
+theorem RueCore.Nonvacuous.loopUnit_run (fuel : Nat) :
+  run Float.exactOps
+      { decls := { structs := [], enums := [] },
+        fns := [{ params := [], ret := Ty.unit, body := Expr.unitLit.loop }] }
+      fuel =
+    EvalRes.outOfFuel
+```
+
 ### `Expr.pendingSafeList_mem`
 
 *theorem* · module `RueCore.TraceExact`
@@ -12490,6 +13458,126 @@ theorem RueCore.Spine.run_stuck_of_step_stuck : Spec.run_stuck_of_step_stuck_stm
 theorem RueCore.Spine.eval_diverges_iff : Spec.eval_diverges_iff_stmt
 ```
 
+### `Spine.Nonvacuous.exact_model`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Nonvacuous.exact_model_stmt`, by `RueCore.Nonvacuous.exact_model` (helper).
+
+```lean
+theorem RueCore.Spine.Nonvacuous.exact_model : Spec.Nonvacuous.exact_model_stmt
+```
+
+### `Spine.Nonvacuous.empty_frame`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Nonvacuous.empty_frame_stmt`, by `RueCore.Nonvacuous.empty_frame` (helper).
+
+```lean
+theorem RueCore.Spine.Nonvacuous.empty_frame : Spec.Nonvacuous.empty_frame_stmt
+```
+
+### `Spine.Nonvacuous.dtor`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Nonvacuous.dtor_stmt`, by `RueCore.Nonvacuous.dtor` (helper).
+
+```lean
+theorem RueCore.Spine.Nonvacuous.dtor : Spec.Nonvacuous.dtor_stmt
+```
+
+### `Spine.Nonvacuous.linear`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Nonvacuous.linear_stmt`, by `RueCore.Nonvacuous.linear` (helper).
+
+```lean
+theorem RueCore.Spine.Nonvacuous.linear : Spec.Nonvacuous.linear_stmt
+```
+
+### `Spine.Nonvacuous.loop`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Nonvacuous.loop_stmt`, by `RueCore.Nonvacuous.loop` (helper).
+
+```lean
+theorem RueCore.Spine.Nonvacuous.loop : Spec.Nonvacuous.loop_stmt
+```
+
+### `Spine.Nonvacuous.array`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Nonvacuous.array_stmt`, by `RueCore.Nonvacuous.array` (helper).
+
+```lean
+theorem RueCore.Spine.Nonvacuous.array : Spec.Nonvacuous.array_stmt
+```
+
+### `Spine.Nonvacuous.enum_match`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Nonvacuous.enum_match_stmt`, by `RueCore.Nonvacuous.enum_match` (helper).
+
+```lean
+theorem RueCore.Spine.Nonvacuous.enum_match : Spec.Nonvacuous.enum_match_stmt
+```
+
+### `Spine.Nonvacuous.early_return`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Nonvacuous.early_return_stmt`, by `RueCore.Nonvacuous.early_return` (helper).
+
+```lean
+theorem RueCore.Spine.Nonvacuous.early_return : Spec.Nonvacuous.early_return_stmt
+```
+
+### `Spine.Nonvacuous.panic`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Nonvacuous.panic_stmt`, by `RueCore.Nonvacuous.panic` (helper).
+
+```lean
+theorem RueCore.Spine.Nonvacuous.panic : Spec.Nonvacuous.panic_stmt
+```
+
+### `Spine.Nonvacuous.float`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Nonvacuous.float_stmt`, by `RueCore.Nonvacuous.float` (helper).
+
+```lean
+theorem RueCore.Spine.Nonvacuous.float : Spec.Nonvacuous.float_stmt
+```
+
+### `Spine.Nonvacuous.diverges`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Nonvacuous.diverges_stmt`, by `RueCore.Nonvacuous.diverges` (helper).
+
+```lean
+theorem RueCore.Spine.Nonvacuous.diverges : Spec.Nonvacuous.diverges_stmt
+```
+
+### `Spine.Nonvacuous.stuck`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Nonvacuous.stuck_stmt`, by `RueCore.Nonvacuous.stuck` (helper).
+
+```lean
+theorem RueCore.Spine.Nonvacuous.stuck : Spec.Nonvacuous.stuck_stmt
+```
+
 ### `Examples.eval_loop_ok`
 
 *theorem* · module `RueCore.Examples`
@@ -12762,6 +13850,29 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 Examples.sTwoAffine = 7
+```
+
+### `Float.ratAdd`
+
+*def* · module `RueCore.Float`
+
+Add two signed rationals, reporting the sign of the exact sum and its
+magnitude (helper).
+
+```lean
+def RueCore.Float.ratAdd (n₁ : Bool) (a₁ b₁ : Nat) (n₂ : Bool) (a₂ b₂ : Nat) :
+  Bool × Nat × Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (n₁ : Bool) (a₁ b₁ : Nat) (n₂ : Bool) (a₂ b₂ : Nat),
+  Float.ratAdd n₁ a₁ b₁ n₂ a₂ b₂ =
+    if n₁ = n₂ then (n₁, a₁ * b₂ + a₂ * b₁, b₁ * b₂)
+    else
+      if a₂ * b₁ ≤ a₁ * b₂ then (n₁, a₁ * b₂ - a₂ * b₁, b₁ * b₂)
+      else (n₂, a₂ * b₁ - a₁ * b₂, b₁ * b₂)
 ```
 
 ### `Float.ratOf`
@@ -13352,6 +14463,18 @@ Defining equations, as Lean derived them from the body:
     | Ordering.lt => -1
     | Ordering.eq => 0
     | Ordering.gt => 1
+```
+
+### `errorClassCases`
+
+*def* · module `RueCore.Witnesses`
+
+The error classes and their corpus witnesses: the class, a case the
+checker must reject, and an accepted neighbour where the corpus has one
+(helper).
+
+```lean
+def RueCore.errorClassCases : List (String × String × Option String)
 ```
 
 ### `inBoundsIdx`
@@ -18967,6 +20090,27 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls), Contents.mult D Contents.unit = Mult.copy
 ```
 
+### `Corpus.Case`
+
+*inductive* · module `RueCore.Corpus`
+
+A corpus case: a closed fragment program with its documentation. A
+program is a struct environment and a list of function definitions, entered at
+function index `0` (§6.12).
+
+```lean
+inductive RueCore.Corpus.Case : Type
+```
+
+Constructors:
+
+**`Corpus.Case.mk`**
+
+```lean
+RueCore.Corpus.Case.mk (name description : String) (rules : List String)
+  (prog : Program) : Corpus.Case
+```
+
 ### `Ctx.join`
 
 *def* · module `RueCore.Statics`
@@ -19248,6 +20392,29 @@ def RueCore.Kont.Transparent (F : Kont) : Prop :=
       Kont.toLoop (F :: K) = Kont.toLoop K
 ```
 
+### `Nonvacuous.okFloat?`
+
+*def* · module `RueCore.Nonvacuous`
+
+The float an `eval` result returns, with its width, if it returns one:
+decidable, so the kernel can evaluate a float program's run where the
+elaborator's `rfl` would stop at `2^1076` (helper).
+
+```lean
+def RueCore.Nonvacuous.okFloat? : EvalRes → Option (FloatWidth × FloatDatum)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (H : Store) (w : FloatWidth) (f : FloatDatum) (tr : List Event),
+  Nonvacuous.okFloat? (EvalRes.ok H (Val.float w f) tr) = some (w, f)
+∀ (x : EvalRes),
+  (∀ (H : Store) (w : FloatWidth) (f : FloatDatum) (tr : List Event),
+      x = EvalRes.ok H (Val.float w f) tr → False) →
+    Nonvacuous.okFloat? x = none
+```
+
 ### `OpRes.toRes`
 
 *def* · module `RueCore.Dynamics`
@@ -19352,6 +20519,21 @@ def RueCore.Settled (φ : Frame) (H₁ : Store) : EvalRes → Prop :=
   | EvalRes.panic k tr => True
   | EvalRes.stuck why => True
   | EvalRes.outOfFuel => True
+```
+
+### `Spec.Nonvacuous.exact_model_stmt`
+
+*def* · module `RueCore.Spec.Witnesses`
+
+**The float laws have a model: `Float.exactOps`** (§7's "totality of the
+float operations"; RUE-2469). Some `FloatModel` has the executable instance
+`Float.exactOps` as its operations, so every law of `FloatModel` holds of the
+model the corpus runs on, and the laws are jointly satisfiable: the 19 spine
+statements that quantify over `M : FloatModel` are not vacuous in `M`.
+
+```lean
+def RueCore.Spec.Nonvacuous.exact_model_stmt : Prop :=
+  ∃ M, M.toFloatOps = Float.exactOps
 ```
 
 ### `StepOut`
@@ -19919,6 +21101,16 @@ def RueCore.ArgsTidy (φ : Frame) (H : Store) : ArgsRes → Prop :=
   match x✝ with
   | ArgsRes.ok H' vs tr => Local φ H H' ∧ Retired H [] H'
   | ArgsRes.abort r => Tidy φ H r
+```
+
+### `Corpus.cases`
+
+*def* · module `RueCore.Corpus`
+
+*(no doc-comment)*
+
+```lean
+def RueCore.Corpus.cases : List Corpus.Case
 ```
 
 ### `Ctx.joinFold`
@@ -20846,6 +22038,25 @@ Defining equations, as Lean derived them from the body:
 affineScopeDropProgram = Examples.prog Examples.tI64 Examples.affineDrop
 ```
 
+### `caseProg?`
+
+*def* · module `RueCore.Witnesses`
+
+A corpus case's program, by its name (helper).
+
+```lean
+def RueCore.caseProg? (name : String) : Option Program
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (name : String),
+  caseProg? name =
+    Option.map (fun x => x.prog)
+      (List.find? (fun x => x.name == name) Corpus.cases)
+```
+
 ### `checkEnums`
 
 *def* · module `RueCore.Checker.Defs`
@@ -21526,6 +22737,22 @@ Every live cell of the store is copy-closed (helper).
 def RueCore.StoreCC (D : Decls) (H : Store) : Prop :=
   ∀ (ℓ : Nat) (c : Contents),
     H[ℓ]? = some (Cell.full c) → Contents.copyClosed D c = true
+```
+
+### `Spec.Nonvacuous.empty_frame_stmt`
+
+*def* · module `RueCore.Spec.Witnesses`
+
+**The initial frame agrees with the empty context** (§6.12's initial
+configuration): at every declaration environment, the empty frame over the
+empty store matches the empty context (`FrameMatches`) and its store is
+copy-closed (`StoreCC`). With a program's typed body this is the frame and
+store the evaluation statements (`soundness`, `drop_exactly_once`,
+`rest_exactly_once`) are applied at by the witnesses below.
+
+```lean
+def RueCore.Spec.Nonvacuous.empty_frame_stmt : Prop :=
+  ∀ (D : Decls), FrameMatches D [] Frame.empty [] ∧ StoreCC D []
 ```
 
 ### `Contents.destructure`
@@ -23792,6 +25019,52 @@ Defining equations, as Lean derived them from the body:
       | none => false)
 ```
 
+### `Spec.Nonvacuous.stuck_stmt`
+
+*def* · module `RueCore.Spec.Witnesses`
+
+**An unchecked program that gets stuck** (§6.3's read of a `⊘`; the corpus
+case `use_after_move` reads its moved binding the same way). `let a = S0 { 1
+}; @drop(a); a.x0` is rejected by the checker; run
+unchecked, `eval` refuses it with `useAfterMove`, and §6's relation reaches a
+configuration stuck with the same violation from `Config.init`. So the
+statements whose hypothesis is a stuck run or a stuck configuration are not
+vacuous either.
+
+```lean
+def RueCore.Spec.Nonvacuous.stuck_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          ((Expr.drop (Place.var 0)).seq
+            (Expr.use ((Place.var 0).proj 0))) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = false ∧
+            run Float.exactOps P 200 =
+                EvalRes.stuck Violation.useAfterMove ∧
+              ∃ C,
+                Steps Float.exactOps P Config.init C ∧
+                  Config.Stuck Float.exactOps P C Violation.useAfterMove
+```
+
 ### `OwnSt.fullyOwned`
 
 *def* · module `RueCore.Statics`
@@ -24003,6 +25276,28 @@ Constructors:
 ```lean
 RueCore.ProgramTyped.mk {P : Program} (wf : WfProgram P)
   (entry : ∃ fd, P.fns[0]? = some fd ∧ fd.params = []) : ProgramTyped P
+```
+
+### `Spec.Nonvacuous.diverges_stmt`
+
+*def* · module `RueCore.Spec.Witnesses`
+
+**A checked program that diverges** (§6.10; the loop with no `break`). `loop
+{ () }` as the entry point returning `()` is accepted, and its run exhausts
+every fuel, so both sides of `eval_diverges_iff` hold of it, as neither does
+of the witnesses above, which return.
+
+```lean
+def RueCore.Spec.Nonvacuous.diverges_stmt : Prop :=
+  ∀ (P : Program),
+    P =
+        { decls := { structs := [], enums := [] },
+          fns :=
+            [{ params := [], ret := Ty.unit,
+                body := Expr.unitLit.loop }] } →
+      checkProgram P = true ∧
+        ProgramTyped P ∧
+          ∀ (fuel : Nat), run Float.exactOps P fuel = EvalRes.outOfFuel
 ```
 
 ### `Spec.checkProgram_sound_stmt`
@@ -24325,6 +25620,472 @@ def RueCore.Spec.step_type_safety_stmt : Prop :=
                       (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
                     HasTy P.decls v fd.ret) ∨
                 ∃ κ tr, Steps M.toFloatOps P Config.init (Config.panic κ tr)
+```
+
+### `Spec.Nonvacuous.array_stmt`
+
+*def* · module `RueCore.Spec.Witnesses`
+
+**A checked program with an array** (construct class: arrays; the corpus
+cases `array_drop_order` and `array_dyn_read_below`). `let a = [S0 { 1 }, S0 {
+2 }]; a[1].x0`, a dynamic-index read of a `Copy` leaf below an array of
+destructor-bearing elements, is accepted and typed; its run returns, reached
+by `Step`, and its trace runs both elements' destructors.
+
+```lean
+def RueCore.Spec.Nonvacuous.array_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkArray (Ty.struct 0)
+            [Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1],
+              Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2]])
+          (Expr.indexRead (Place.var 0)
+            [Expr.intLit IntWidth.w64 Sign.signed 1] [[0]]) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                (∃ c Ω,
+                    check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                        some (c, Ω) ∧
+                      c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                        Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                          (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                  ∃ H v tr,
+                    run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                      Steps Float.exactOps P Config.init
+                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        2 ≤ (dtorIds tr).length
+```
+
+### `Spec.Nonvacuous.dtor_stmt`
+
+*def* · module `RueCore.Spec.Witnesses`
+
+**A checked program that drops two values with destructors** (construct
+class: destructors; the corpus case `affine_scope_drop`, with two bindings). The program `let a = S0 { 1 }; let b = S0 { 2 }; 3`, over an affine
+`S0` that declares a destructor, is accepted, is `ProgramTyped` and
+`pendingSafe`, and its body is typed by `check`. Its run returns, reached by
+`Step` from `Config.init`, and its trace frees two identities and runs two
+destructors. It also carries the other hypotheses of the trace statements:
+the declarations keep destructor-bearing structs off `Copy` (`DtorNotCopy`),
+the initial configuration steps, no fuel makes the run stuck, the body's own
+evaluation drops two values, and the body's leading operand mints an owned
+identity (`Lead`), so `rest_exactly_once` applies to a value minted
+mid-evaluation.
+
+```lean
+def RueCore.Spec.Nonvacuous.dtor_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                (∃ c Ω,
+                    check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                        some (c, Ω) ∧
+                      c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                        Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                          (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                  DtorNotCopy P.decls ∧
+                    (∃ C, Step Float.exactOps P Config.init C) ∧
+                      (∀ (fuel : Nat) (w : Violation),
+                          run Float.exactOps P fuel ≠ EvalRes.stuck w) ∧
+                        2 ≤
+                            (freedIds P.decls
+                                (eval Float.exactOps 200 P [] Frame.empty
+                                    B).trace).length ∧
+                          (∃ H₁ vs tr r,
+                              Lead Float.exactOps P 200 [] Frame.empty H₁ vs
+                                  tr B ∧
+                                eval Float.exactOps 201 P [] Frame.empty B =
+                                    EvalRes.withTrace tr r ∧
+                                  Contents.ownList P.decls
+                                      (Contents.ofVals vs) ≠
+                                    []) ∧
+                            ∃ H v tr,
+                              run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                                Steps Float.exactOps P Config.init
+                                    (Config.run H Frame.empty []
+                                      (Focus.ret v) tr) ∧
+                                  2 ≤ (freedIds P.decls tr).length ∧
+                                    2 ≤ (dtorIds tr).length
+```
+
+### `Spec.Nonvacuous.early_return_stmt`
+
+*def* · module `RueCore.Spec.Witnesses`
+
+**A checked program with an early `return`** (construct class: early
+`return`; the corpus case `return_past_affine`). `let a = S0 { 1 }; let b = S0
+{ 2 }; return 7; 0` is accepted and typed; its run returns `7` as an ordinary
+value (the call boundary absorbs the unwind, which is what `run_ne_returned`
+says), reached by `Step`, and the unwind runs both destructors.
+
+```lean
+def RueCore.Spec.Nonvacuous.early_return_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            ((Expr.intLit IntWidth.w64 Sign.signed 7).ret.seq
+              (Expr.intLit IntWidth.w64 Sign.signed 0))) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                (∃ c Ω,
+                    check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                        some (c, Ω) ∧
+                      c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                        Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                          (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                  ∃ H v tr,
+                    run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                      Steps Float.exactOps P Config.init
+                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        v = Val.int IntWidth.w64 Sign.signed 7 ∧
+                          2 ≤ (dtorIds tr).length
+```
+
+### `Spec.Nonvacuous.enum_match_stmt`
+
+*def* · module `RueCore.Spec.Witnesses`
+
+**A checked program with an enum and a `match`** (construct class: enums with
+`match`; the corpus case `enum_match_affine`). `let e = E0::K0(S0 { 1 }); match
+e { K0(s) => s.x0, K1 => 0 }` is accepted and typed; its run returns, reached
+by `Step`, and its trace frees two identities (the scrutinee's shell,
+consumed by the match, and the payload, dropped at the arm's end) and runs
+the payload's destructor.
+
+```lean
+def RueCore.Spec.Nonvacuous.enum_match_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkEnum 0 0
+            [Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1]])
+          ((Expr.use (Place.var 0)).match
+            [Expr.use ((Place.var 0).proj 0),
+              Expr.intLit IntWidth.w64 Sign.signed 0]) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                (∃ c Ω,
+                    check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                        some (c, Ω) ∧
+                      c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                        Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                          (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                  ∃ H v tr,
+                    run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                      Steps Float.exactOps P Config.init
+                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        2 ≤ (freedIds P.decls tr).length ∧
+                          1 ≤ (dtorIds tr).length
+```
+
+### `Spec.Nonvacuous.float_stmt`
+
+*def* · module `RueCore.Spec.Witnesses`
+
+**A checked program that computes with floats** (construct class: floats;
+the corpus case `float_arith`). `let x = 1.5 + 2.25; x * 2.0` at `f64` is
+accepted and typed; run on `Float.exactOps` it returns `7.5`, the datum `15 ·
+2^-1`, reached by `Step`.
+
+```lean
+def RueCore.Spec.Nonvacuous.float_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.binop BinOp.add
+            (Expr.floatLit FloatWidth.w64
+              { sig := 15, negExp := true, e := 1 })
+            (Expr.floatLit FloatWidth.w64
+              { sig := 225, negExp := true, e := 2 }))
+          (Expr.binop BinOp.mul (Expr.use (Place.var 0))
+            (Expr.floatLit FloatWidth.w64
+              { sig := 2, negExp := false, e := 0 })) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.float FloatWidth.w64,
+                    body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                (∃ c Ω,
+                    check P (Ty.float FloatWidth.w64) [] B = some (c, Ω) ∧
+                      c.fits (Ty.float FloatWidth.w64) = true ∧
+                        Typed P (Ty.float FloatWidth.w64) [] B
+                          (Ty.float FloatWidth.w64) Ω) ∧
+                  ∃ H v tr,
+                    run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                      Steps Float.exactOps P Config.init
+                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        v =
+                          Val.float FloatWidth.w64
+                            (FloatDatum.num false 15 (-1))
+```
+
+### `Spec.Nonvacuous.linear_stmt`
+
+*def* · module `RueCore.Spec.Witnesses`
+
+**A checked program with a declared-linear value** (construct class:
+declared-linear values; the corpus case `linear_explicit_drop`'s shape). `let x
+= S1 { 1 }; let y = S0 { 2 }; @drop(x); 3`, with `S1` declared `linear`, is
+accepted and typed; its run returns, reached by `Step`, and its trace frees
+both values: the linear one at its `@drop`, the affine one at scope exit.
+
+```lean
+def RueCore.Spec.Nonvacuous.linear_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            ((Expr.drop (Place.var 1)).seq
+              (Expr.intLit IntWidth.w64 Sign.signed 3))) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                (∃ c Ω,
+                    check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                        some (c, Ω) ∧
+                      c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                        Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                          (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                  ∃ H v tr,
+                    run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                      Steps Float.exactOps P Config.init
+                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        2 ≤ (freedIds P.decls tr).length
+```
+
+### `Spec.Nonvacuous.loop_stmt`
+
+*def* · module `RueCore.Spec.Witnesses`
+
+**A checked program with a loop that turns three times** (construct class:
+loops; the corpus case `loop_counted`'s shape). A counted loop over a `mut`
+counter, breaking once it reaches `3`, whose body binds an affine `S0` each
+turn, is accepted and typed; its run returns, reached by `Step`, and its trace
+runs three destructors, one per turn.
+
+```lean
+def RueCore.Spec.Nonvacuous.loop_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn true (Expr.intLit IntWidth.w64 Sign.signed 0)
+          ((((Expr.binop BinOp.ge (Expr.use (Place.var 0))
+                          (Expr.intLit IntWidth.w64 Sign.signed 3)).ite
+                      Expr.brk Expr.unitLit).seq
+                  ((Expr.assign (Place.var 0)
+                        (Expr.binop BinOp.add (Expr.use (Place.var 0))
+                          (Expr.intLit IntWidth.w64 Sign.signed 1))).seq
+                    (Expr.letIn false
+                      (Expr.mkStruct 0 [Expr.use (Place.var 0)])
+                      Expr.unitLit))).loop.seq
+            (Expr.use (Place.var 0))) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                (∃ c Ω,
+                    check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                        some (c, Ω) ∧
+                      c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                        Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                          (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                  ∃ H v tr,
+                    run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                      Steps Float.exactOps P Config.init
+                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        3 ≤ (dtorIds tr).length
+```
+
+### `Spec.Nonvacuous.panic_stmt`
+
+*def* · module `RueCore.Spec.Witnesses`
+
+**A checked program that panics** (construct class: `@panic`;
+`Examples.panicPastAffine` with a `@dbg` line before the trap, beside the
+corpus case `panic_after_drop`). `let a = S0 { 1 }; @dbg(5); @panic("boom")` is
+accepted and typed; its run is the user panic with the `@dbg` line in its
+trace and no drop (§5.7 exempts the panic edge), and §6's relation reaches
+the same panic from `Config.init`.
+
+```lean
+def RueCore.Spec.Nonvacuous.panic_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          ((Expr.intLit IntWidth.w64 Sign.signed 5).dbg.seq
+            (Expr.panic "boom")) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                (∃ c Ω,
+                    check P (Ty.int IntWidth.w64 Sign.signed) [] B =
+                        some (c, Ω) ∧
+                      c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                        Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                          (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                  run Float.exactOps P 200 =
+                      EvalRes.panic PanicKind.user
+                        [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)] ∧
+                    Steps Float.exactOps P Config.init
+                      (Config.panic PanicKind.user
+                        [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)])
 ```
 
 ### `Spec.check_sound_stmt`

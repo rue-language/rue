@@ -320,7 +320,7 @@ it has two rows.
 | creates; invalid operation creates; propagated; propagate | A NaN an operation makes from non-NaN operands, and a NaN operand passed through to the result | [spec 3.12:44][s3.12] | `Float.exactOps` | Rue-specific, grounded | 01 §2; 03 “Lemmas §7 owes, and the …”; README “Why comptime is elaboration, not …”; lean/README “Deciding whether to believe it”; `Float` |
 | `rnd_w`; round to nearest, ties to even; rounds; rounded | Rounding an exact value to the nearest `float(w)`, choosing the even significand on a tie | [spec 3.12:9][s3.12], [3.12:21][s3.12] | `roundRat`, `FloatDatum.roundOp` | Rue-specific, grounded | 01 §2; 03 “Lemmas §7 owes, and the …”; lean/README “Deciding whether to believe it”; GUIDE “What the checker demands”; BRIDGE-SENSITIVITY “§6 step rows”; `Float` |
 | exact; rounded (operation) | An operation whose result needs no rounding, and one whose result is `rnd_w` of an exact value | [spec 3.12:36][s3.12] ("each result is exact") | `FloatOps` | Rue-specific, grounded | 01 §5; 03 “No use-after-drop / no leak …”; README intro; REDTEAM “The log”; lean/README “Deciding whether to believe it”; GUIDE §3; `Float` |
-| underflow; overflow threshold; `rnd_w`'s overflow threshold; threshold | A result too small for any subnormal becomes a zero; one past the largest finite value plus half a unit in the last place becomes an infinity | [spec 3.12:23][s3.12] | `FloatWidth.overflowNum` | Rue-specific, grounded | 01 §5.8; GUIDE “What the checker demands”; `Float` |
+| underflow; overflow threshold; `rnd_w`'s overflow threshold; threshold | A result too small for any subnormal becomes a zero; one past the largest finite value plus half a unit in the last place becomes an infinity | [spec 3.12:23][s3.12] | `FloatWidth.overflowNum` | Rue-specific, grounded | 01 §5.8; lean/README “Non-vacuity witnesses”; GUIDE “What the checker demands”; `Float` |
 | subnormal | A finite float below the smallest normal magnitude, with reduced precision | [spec 3.12:10][s3.12] | `FloatWidth.eMin` | Rue-specific, grounded | `Float` |
 | unordered | Of two floats: neither is less than, equal to, or greater than the other, because one is a NaN | [spec 3.12:27][s3.12] | `FloatDatum.lt` | Rue-specific, grounded | 01 §6.4; 03 “Lemmas §7 owes, and the …”; GUIDE “What the checker demands”; `Float` |
 | total order; `totalOrder`; `≺_w` | IEEE 754's total order on floats, which `@total_cmp` computes | [spec 3.12:32][s3.12] | `FloatDatum.totalRank` | Rue-specific, grounded | 01 §6.4; `Float` |
@@ -366,8 +366,8 @@ it has two rows.
 | exactly once; linear values are consumed exactly once | Every owned value is ended once: on the normal path or the unwind path, never both, never neither | [FIELD §6][F6]: "exactly once", partial | `drop_exactly_once`, `Exact` | ours, pending audit | 01 §2; 03 “No double-free”; lean/README “What is mechanized”; GUIDE “The three trace theorems, one …”; `Dynamics` |
 | carve-out; the RUE-2316 carve-out | A stated exception to a theorem: a trap ends nothing, and an operand abandoned by an early exit is excluded | none | `Program.pendingSafe` | ours, pending audit | 03 intro; lean/README “How to read this, with …”; `Dynamics` |
 | Loan/drop non-interference; Loan-extent nesting; Root separation; View-intact; Handle-uniqueness preservation | The lemmas 01 §7 says the metatheory still owes: no live loan's root is dropped or overwritten; a forwarded loan lasts no longer than the loan it came from; distinct roots occupy disjoint storage; nothing under a loaned place is moved out while the loan lasts; reduction keeps every live buffer allocation named by exactly one live handle | none | — | ours, pending audit | 01 §5.8; 03 “Exclusivity / no aliased mutation” |
-| witness | A concrete program, with a checked proof about it, that shows a theorem's case happening | [FIELD §7][F7]: interesting witness (Beer et al. §4.3 Def. 20), partial (theirs is a model or path) | — | ours, pending audit | 01 §8; REDTEAM intro; GUIDE “The three trace theorems, one …”; `Float` |
-| non-vacuity witness | A program meeting every hypothesis of a theorem on which its conclusion is not trivially true | [FIELD §7][F7]: "non-vacuity witness" differs, partial (accepted: interesting witness, Beer et al.) | — | ours, pending audit | REDTEAM intro |
+| witness | A concrete program, with a checked proof about it, that shows a theorem's case happening | [FIELD §7][F7]: interesting witness (Beer et al. §4.3 Def. 20), partial (theirs is a model or path) | — | ours, pending audit | 01 §8; REDTEAM intro; lean/README “Layers”; GUIDE “The three trace theorems, one …”; `Float` |
+| non-vacuity witness; non-vacuity witnesses | A program meeting every hypothesis of a theorem on which its conclusion is not trivially true | [FIELD §7][F7]: "non-vacuity witness" differs, partial (accepted: interesting witness, Beer et al.) | — | ours, pending audit | REDTEAM intro; lean/README “Layers” |
 | sharpness counter-example | A program just outside one hypothesis, showing the hypothesis is needed | [FIELD §7][F7]: "sharpness counter-example" differs, none | — | ours, pending audit | REDTEAM “Targets” |
 | assumption; assumed; assumed, named; assumes | A fact a theorem takes as a hypothesis rather than proves | none | `FloatModel` | ours, pending audit | 01 §2; 03 “Lemmas §7 owes, and the …”; lean/README “Deciding whether to believe it”; GUIDE §4; `Float` |
 | consequence; consequences of | A fact that follows from a rule or definition, as opposed to one stated separately | none | — | ours, pending audit | 01 §4.2; 03 “No use-after-drop / no leak …”; GUIDE §4; `Float` |
@@ -424,7 +424,7 @@ it has two rows.
 | inductive type; inductive; inductively defined proposition | A type, or a relation in `Prop`, given by its constructors | [FIELD §8][F8]: TPIL §7.3 | `Typed`, `Step` | standard | lean/README “How to read this, with …”; GUIDE §1; `Syntax` |
 | structure fields | The fields of a Lean `structure`; here, the laws the rounded float operations must satisfy | [FIELD §8][F8]: `structure` (Reference §4.4.2) | `FloatModel` | standard | 03 “Lemmas §7 owes, and the …”; GUIDE “What the proof needs” |
 | module; `module` system | A Lean source file, and Lean's module system that controls what one exposes | [FIELD §8][F8]: Reference §§5.3–5.4 | — | standard | 01 §2; lean/README “The bridge corpus”; GUIDE §2; `Float` |
-| L0 syntax; L1 definitions; L2 proofs; L3 tooling; layer | The four layers of the package, each importing only its own or lower ones | none | — | ours, pending audit | 01 §6.13.3; README “Why comptime is elaboration, not …”; REDTEAM intro; lean/README “Deciding whether to believe it”; GUIDE §6; `Statics` |
+| L0 syntax; L1 definitions; L2 proofs; L3 tooling; layer | The four layers of the package, each importing only its own or lower ones | none | — | ours, pending audit | 01 §6.13.3; README “Why comptime is elaboration, not …”; REDTEAM intro; lean/README “Deciding whether to believe it”; GUIDE §6; `Float` |
 | statement layer; spine; Spec statements | The planned layer of headline statements apart from proofs; the chain of theorems the main claim rests on | none | — | ours, pending audit | REDTEAM intro; lean/README “Deciding whether to believe it”; GUIDE §6 |
 | digest | The generated `DIGEST.md`: every theorem's statement as Lean elaborates it | none | — | ours, pending audit | README intro; REDTEAM “Targets”; lean/README intro; GUIDE “How to read this guide” |
 | explain rendering; explain | The generated per-case trace of a corpus program under the model | none | — | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “Explaining a program”; GUIDE “One program, traced both ways”; BRIDGE-SENSITIVITY “Rule coverage”; `Dynamics` |
@@ -518,7 +518,7 @@ non-ASCII symbols, which the check extracts.
 | `←` | "from" | In GUIDE's drawings, where a value came from; in Lean code, rewriting right to left (`rw [← h]`) | Lean's `rw [← h]` | none | GUIDE “What the checker demands” |
 | `↔`; `⟺` | "if and only if"; "to and from" | Logical equivalence; in prose, a conversion both ways (float↔integer) | Lean's `↔` (TPIL, [FIELD §8][F8]) | none | 01 §2; lean/README “What is mechanized”; `Statics` |
 | `⟹` | "implies" | Implication, in the float rule tables | Ordinary logic notation | none | 01 §6.4 |
-| `¬`; `∧`; `∨`; `∀`; `∃` | "not", "and", "or", "for all", "there exists" | Logical connectives and quantifiers | Lean's notation for propositions ([FIELD §8][F8]) | none | 01 §5; 03 “Type safety”; lean/README “The main theorem”; GUIDE §4; `Float` |
+| `¬`; `∧`; `∨`; `∀`; `∃` | "not", "and", "or", "for all", "there exists" | Logical connectives and quantifiers | Lean's notation for propositions ([FIELD §8][F8]) | none | 01 §5; 03 “Type safety”; lean/README “Non-vacuity witnesses”; GUIDE §4; `Float` |
 | `∈`; `∉`; `∋`; `∅`; `∪`; `⊂`; `⊆`; `⊊` | "in", "not in", "contains", "empty", "union", "proper subset", "subset", "proper subset" | Set membership and inclusion; `∅` also the empty mutability mark and the empty loan set; `⊊` in `check ⊊ Typed`, "strictly fewer programs than" | Ordinary set notation | none | 01 §2; 03 intro; `Float` |
 | `≠`; `≤`; `≥`; `−`; `±`; `×`; `·` | "not equal", "at most", "at least", "minus", "plus or minus", "times" / "product", "times" / "then" | Arithmetic and comparison; `×` also a pair type; `·` also stack push, `ret(E, φ) · K` | Ordinary notation | none | 01 §2; 03 intro; lean/README “Generated programs”; GUIDE §1; BRIDGE-SENSITIVITY “Follow-ups”; `Float` |
 | `⌊ ⌋` | "floor" | The greatest integer at most the argument | Ordinary notation | none | — |
@@ -731,7 +731,7 @@ documents rely on.
 | `TypedArms` | `Statics` | Typing of a `match`'s arms, each from the same starting state and at one type (§5.5) | standard (FIELD §2: typing judgment) | `Statics` |
 | `WfFn` | `Statics` | A function is well formed: its body types at its return type and leaves no by-value parameter owning a linear value (§5.8's (Fn)) | standard (FIELD §9: well-formed, PFPL §1.2) | `Statics` |
 | `WfProgram` | `Statics` | A program is well formed: its declarations and every function | standard (FIELD §9: well-formed, PFPL §1.2) | — |
-| `ProgramTyped` | `Statics` | A program ready to run: well formed, with an entry function that takes no parameters (§6.12) | standard (FIELD §2: typing judgment) | 03 “Type safety”; GUIDE §4 |
+| `ProgramTyped` | `Statics` | A program ready to run: well formed, with an entry function that takes no parameters (§6.12) | standard (FIELD §2: typing judgment) | 03 “Type safety”; lean/README “Non-vacuity witnesses”; GUIDE §4 |
 | `Ctx.SameSkel` | `Statics` | Every context in a list has the same variables and types as a given one | helper | — |
 | `Ctx.Extends` | `Statics` | A context is a given one with zero or more variables added on top | helper | — |
 | `Out.SkelOk` | `Statics` | A result's contexts keep the incoming variables and types, possibly with more on top | helper | — |
@@ -812,7 +812,7 @@ documents rely on.
 | `Kont` | `Step` | One frame of §6.1's control stack `K`, with §6.2's evaluation contexts laid onto it | ours, pending audit | 03 “Lemmas §7 owes, and the …”; `Step` |
 | `Focus` | `Step` | What the top of a configuration is doing: evaluating an expression, returning a value to the top frame, or moving along an argument list | ours, pending audit | `Step` |
 | `Config` | `Step` | §6.1's machine configuration `⟨H ; φ ; K ; e⟩` with the output so far, or a trap `↯κ` | standard (FIELD §1: configuration) | — |
-| `Config.init` | `Step` | §6.12's initial configuration: empty store, empty frame, the entry function called with no arguments | standard (FIELD §1: configuration) | 03 “No use-after-drop / no leak …”; GUIDE §2; `Step` |
+| `Config.init` | `Step` | §6.12's initial configuration: empty store, empty frame, the entry function called with no arguments | standard (FIELD §1: configuration) | 03 “No use-after-drop / no leak …”; lean/README “Non-vacuity witnesses”; GUIDE §2; `Step` |
 | `Config.Terminal` | `Step` | The final configurations: a finished value `✓n` (Result-Ok) or a trap `↯κ` (Result-Panic) | standard (FIELD §1: terminal transition system) | `Step` |
 | `Frame.popScope` | `Step` | Removes the cells an `endscope` marker owes from the frame's environment and drop list (§6.7) | ours, pending audit | `Step` |
 | `Kont.toCall` | `Step` | The nearest call frame below the top of the stack | helper | — |
@@ -864,7 +864,7 @@ documents rely on.
 | `Decls.peel` | `Checker.Defs` | The containment check's flags after `n` rounds | helper | — |
 | `checkNoCycle` | `Checker.Defs` | `3.0:5` as an algorithm: no struct or enum contains itself by value | Rue-specific, grounded (spec 3.0:5) | 03 intro; `Statics` |
 | `checkDecls` | `Checker.Defs` | Checks a whole declaration environment: struct classes, enum classes, and no containment cycle | Rue-specific, grounded (spec 3.0:5) | 03 intro; lean/README “What is mechanized”; `Statics` |
-| `checkProgram` | `Checker.Defs` | Checks a whole program: its declarations, every function, and an entry point with no parameters | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | 03 “Linear values are consumed exactly …”; lean/README “What is mechanized”; GUIDE §4; BRIDGE-SENSITIVITY “Never exercised”; `Checker.Defs` |
+| `checkProgram` | `Checker.Defs` | Checks a whole program: its declarations, every function, and an entry point with no parameters | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | 03 “Linear values are consumed exactly …”; lean/README “Non-vacuity witnesses”; GUIDE §4; BRIDGE-SENSITIVITY “Never exercised”; `Checker.Defs` |
 | `HasTy` | `Soundness.Defs` | Value typing: a machine value has a type (integer ranges, struct fields against the declaration) | standard (FIELD §2: typing judgment `⊢ v : τ`) | REDTEAM “Targets”; lean/README “What is mechanized”; GUIDE “What the proof needs”; `Statics` |
 | `HasTys` | `Soundness.Defs` | Value typing for a list, position by position | standard (FIELD §2: typing judgment `⊢ v : τ`) | — |
 | `Contents.holeFree` | `Soundness.Defs` | Whether a contents tree has no moved-out position | helper | — |
@@ -884,7 +884,7 @@ documents rely on.
 | `Val.own` | `Trace.Defs` | A value's owned identities | helper | — |
 | `Cell.own` | `Trace.Defs` | A cell's owned identities; a dead cell has none | helper | — |
 | `storeOwn` | `Trace.Defs` | The store's owned identities, cell by cell | helper | — |
-| `StoreCC` | `Trace.Defs` | Every live cell satisfies `Contents.copyClosed` | helper | — |
+| `StoreCC` | `Trace.Defs` | Every live cell satisfies `Contents.copyClosed` | helper | lean/README “Non-vacuity witnesses” |
 | `IdLe` | `Trace.Defs` | Multiset inclusion of identity lists, by counts | helper | — |
 | `Fresh` | `Trace.Defs` | The identities created between two stores | helper | — |
 | `Event.freed` | `Trace.Defs` | The owned identities an event frees: an event that starts a drop, or a consumption | ours, pending audit | — |
@@ -892,7 +892,7 @@ documents rely on.
 | `freedIds` | `Trace.Defs` | The identities a trace frees, in order: what §7's no-double-free bullet counts at a drop | ours, pending audit | 03 “No double-free”; lean/README “What is mechanized”; GUIDE §4; `Trace.Defs` |
 | `dtorIds` | `Trace.Defs` | The identities a trace's destructors ran on, in order (`3.9:28`) | Rue-specific, grounded (spec 3.9:28) | 03 “No double-free”; lean/README “What is mechanized”; GUIDE §4; `Trace.Defs` |
 | `EvalRes.trace` | `Trace.Defs` | The trace a result carries | helper | — |
-| `DtorNotCopy` | `Trace.Defs` | A struct with a destructor is not `Copy` (`3.9:31`) | helper | 03 “No use-after-drop / no leak …” |
+| `DtorNotCopy` | `Trace.Defs` | A struct with a destructor is not `Copy` (`3.9:31`) | helper | 03 “No use-after-drop / no leak …”; lean/README “Non-vacuity witnesses” |
 | `TraceMeasure` | `Trace.Defs` | Conditions on a projection of the trace onto identities, used by the counting statement `Cons` | ours, pending audit | — |
 | `Cons` | `Trace.Defs` | For one evaluation: the result's store, value and freed identities together own at most what the start owned | ours, pending audit | lean/README “What is mechanized”; `Trace.Defs` |
 | `Expr.returns` | `Trace.Defs` | Whether an expression contains a `return` | helper | `Trace.Defs` |
@@ -903,7 +903,7 @@ documents rely on.
 | `Expr.pendingSafeList` | `Trace.Defs` | `Expr.pendingSafe` over a list | helper | — |
 | `Program.pendingSafe` | `Trace.Defs` | Every function body satisfies `Expr.pendingSafe` | helper | 03 “No use-after-drop / no leak …”; lean/README “What is mechanized”; `Trace.Defs` |
 | `Exact` | `Trace.Defs` | For one evaluation: each starting identity is accounted for exactly once, in the result or among what the trace freed | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “What is mechanized”; GUIDE “The three trace theorems, one …”; `Trace.Defs` |
-| `Lead` | `Trace.Defs` | A form's leading operands have run and produced values in a later store | helper | 03 “No use-after-drop / no leak …”; lean/README “What is mechanized”; `Trace.Defs` |
+| `Lead` | `Trace.Defs` | A form's leading operands have run and produced values in a later store | helper | 03 “No use-after-drop / no leak …”; lean/README “Non-vacuity witnesses”; `Trace.Defs` |
 | `Local` | `Trace.Defs` | The store only grew, and cells outside the frame's environment were left alone or marked dead | helper | — |
 | `Retired` | `Trace.Defs` | Every cell allocated since a store is marked dead, except the named ones | helper | — |
 | `Tidy` | `Trace.Defs` | For one evaluation: every cell it allocated is marked dead by its end, and cells outside the frame were only marked dead | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “What is mechanized”; GUIDE “The three trace theorems, one …”; `Trace.Defs` |
@@ -971,7 +971,10 @@ Run-in headings, lemma titles and emphasized phrases:
   The walk's order; What "ended" means; What "typed" means here; What is
   counted; What the checker demands; What the law needs; What the proof needs;
   which ordinary partial moves; Widening preserves representability; Within a
-  value
+  value; checker's acceptance profile; empty frame; one that gets stuck;
+  program that diverges; satisfies every law; Every spine theorem is witnessed;
+  Checker profile; L4 closed; The float laws have a model; Eight programs, one
+  per construct class
 
 Emphasized words:
 

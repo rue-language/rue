@@ -816,7 +816,7 @@ Proved by `Nonvacuous.empty_frame` (`RueCore.Nonvacuous`). Witnesses `soundness`
 
 ### `Nonvacuous.dtor`
 
-**A checked program that drops two values with destructors** (construct
+**A checked program that drops two values with destructors** (§6.11, §7; construct
 class: destructors; the corpus case `affine_scope_drop`, with two bindings). The program `let a = S0 { 1 }; let b = S0 { 2 }; 3`, over an affine
 `S0` that declares a destructor, is accepted, is `ProgramTyped` and
 `pendingSafe`, and its body is typed by `check`. Its run returns, reached by
@@ -879,7 +879,7 @@ Proved by `Nonvacuous.dtor` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_
 
 ### `Nonvacuous.linear`
 
-**A checked program with a declared-linear value** (construct class:
+**A checked program with a declared-linear value** (§5.6, §7; construct class:
 declared-linear values; the corpus case `linear_explicit_drop`'s shape). `let x
 = S1 { 1 }; let y = S0 { 2 }; @drop(x); 3`, with `S1` declared `linear`, is
 accepted and typed; its run returns, reached by `Step`, and its trace frees
@@ -924,7 +924,7 @@ Proved by `Nonvacuous.linear` (`RueCore.Nonvacuous`). Witnesses `soundness`, `ru
 
 ### `Nonvacuous.loop`
 
-**A checked program with a loop that turns three times** (construct class:
+**A checked program with a loop that turns three times** (§5.7, §6.10; construct class:
 loops; the corpus case `loop_counted`'s shape). A counted loop over a `mut`
 counter, breaking once it reaches `3`, whose body binds an affine `S0` each
 turn, is accepted and typed; its run returns, reached by `Step`, and its trace
@@ -976,7 +976,7 @@ Proved by `Nonvacuous.loop` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_
 
 ### `Nonvacuous.array`
 
-**A checked program with an array** (construct class: arrays; the corpus
+**A checked program with an array** (§6.5, §6.11; construct class: arrays; the corpus
 cases `array_drop_order` and `array_dyn_read_below`). `let a = [S0 { 1 }, S0 {
 2 }]; a[1].x0`, a dynamic-index read of a `Copy` leaf below an array of
 destructor-bearing elements, is accepted and typed; its run returns, reached
@@ -1023,7 +1023,7 @@ Proved by `Nonvacuous.array` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run
 
 ### `Nonvacuous.enum_match`
 
-**A checked program with an enum and a `match`** (construct class: enums with
+**A checked program with an enum and a `match`** (§5.5, §6.6; construct class: enums with
 `match`; the corpus case `enum_match_affine`). `let e = E0::K0(S0 { 1 }); match
 e { K0(s) => s.x0, K1 => 0 }` is accepted and typed; its run returns, reached
 by `Step`, and its trace frees two identities (the scrutinee's shell,
@@ -1070,7 +1070,7 @@ Proved by `Nonvacuous.enum_match` (`RueCore.Nonvacuous`). Witnesses `soundness`,
 
 ### `Nonvacuous.early_return`
 
-**A checked program with an early `return`** (construct class: early
+**A checked program with an early `return`** (§6.9; construct class: early
 `return`; the corpus case `return_past_affine`). `let a = S0 { 1 }; let b = S0
 { 2 }; return 7; 0` is accepted and typed; its run returns `7` as an ordinary
 value (the call boundary absorbs the unwind, which is what `run_ne_returned`
@@ -1162,7 +1162,7 @@ Proved by `Nonvacuous.panic` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run
 
 ### `Nonvacuous.float`
 
-**A checked program that computes with floats** (construct class: floats;
+**A checked program that computes with floats** (§6.4; construct class: floats;
 the corpus case `float_arith`). `let x = 1.5 + 2.25; x * 2.0` at `f64` is
 accepted and typed; run on `Float.exactOps` it returns `7.5`, the datum `15 ·
 2^-1`, reached by `Step`.
