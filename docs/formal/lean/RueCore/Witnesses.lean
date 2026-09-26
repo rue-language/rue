@@ -8,8 +8,8 @@ import RueCore.Corpus
 
 Kernel-checked facts about particular programs of `Examples.lean` and
 `Corpus.lean`: one corpus program traced both ways (`Adequacy.lean`'s
-theorems), the traces `drop_order` rejects and the order-witnessing corpus
-cases read through it (`TraceOrder.lean`'s), and the check that the RUE-2316
+theorems), the traces `drop_order` rejects — and `drop_glue_order`, in
+§6.11's own terms — and the order-witnessing corpus cases read through it (`TraceOrder.lean`'s), and the check that the RUE-2316
 carve-out excludes no seed case (`TraceExact.lean`'s).
 
 They are moved here verbatim from those three modules (RUE-2456): they
@@ -77,6 +77,54 @@ theorem fieldsSwapped_rejected :
       = [.dtor sAffine (cA 0 1), .dtor sAffine (cA 1 2)] := by rfl
   rw [this] at ht
   simp [cA, sAffine] at ht
+
+open Examples in
+/-- **§6.11's own grammar: fields in declaration order** (`3.9:13`; RUE-2487).
+The trace `fieldsSwapped_rejected` rejects, rejected by `GlueBlocks`, whose
+drop blocks are §6.11's rules (`DropGlue`) rather than `dropEvents`: the two
+field destructors of `struct_field_drop_order`'s `S7` the wrong way round,
+which is what a machine whose walk drops fields last to first emits. -/
+theorem glue_fieldsSwapped_rejected :
+    ¬ GlueBlocks (prog tI64 structFieldOrder).decls
+      [.drop 3 (.struct sTwoAffine 2 [cA 0 1, cA 1 2]), .dtor sAffine (cA 1 2),
+        .dtor sAffine (cA 0 1)] := by
+  intro h
+  obtain ⟨evs, t', hg, ht, _⟩ := GlueBlocks.drop_inv h
+  have hr := DropGlue.struct (D := (prog tI64 structFieldOrder).decls) (s := sTwoAffine) (i := 2) (cs := [cA 0 1, cA 1 2]) rfl rfl
+    (.cons (.structDtor (s := sAffine) rfl rfl (.cons .int .nil)) (.cons (.structDtor (s := sAffine) rfl rfl (.cons .int .nil)) .nil))
+  rw [DropGlue.det hg hr] at ht
+  simp [cA, sAffine] at ht
+
+open Examples in
+/-- **§6.11's own grammar: the destructor first** (`3.9:28`; RUE-2487).
+`struct_nested_dtor_drop` drops `S5 { 1, S1 { 2 }#0 }#1`, whose destructor runs
+before its field's. The same marker followed by the field's destructor and
+then `S5`'s — what a machine that runs the destructor after the fields emits —
+is not in `GlueBlocks`. -/
+theorem glue_dtorAfterFields_rejected :
+    ¬ GlueBlocks (prog tI64 structNestedDrop).decls
+      [.drop 2 (.struct sOuter 1 [c64 1, cA 0 2]), .dtor sAffine (cA 0 2),
+        .dtor sOuter (.struct sOuter 1 [c64 1, cA 0 2])] := by
+  intro h
+  obtain ⟨evs, t', hg, ht, _⟩ := GlueBlocks.drop_inv h
+  have hr := DropGlue.structDtor (D := (prog tI64 structNestedDrop).decls) (s := sOuter) (i := 1) (cs := [c64 1, cA 0 2]) rfl rfl
+    (.cons .int (.cons (.structDtor (s := sAffine) rfl rfl (.cons .int .nil)) .nil))
+  rw [DropGlue.det hg hr] at ht
+  simp [cA, sAffine, sOuter] at ht
+
+open Examples in
+/-- **§6.11's own grammar: the destructor runs** (`3.9:28`; RUE-2487). The
+same drop of `S5` with no destructor event at all — what a machine that never
+runs a destructor emits — is not in `GlueBlocks`. -/
+theorem glue_dtorSkipped_rejected :
+    ¬ GlueBlocks (prog tI64 structNestedDrop).decls
+      [.drop 2 (.struct sOuter 1 [c64 1, cA 0 2])] := by
+  intro h
+  obtain ⟨evs, t', hg, ht, _⟩ := GlueBlocks.drop_inv h
+  have hr := DropGlue.structDtor (D := (prog tI64 structNestedDrop).decls) (s := sOuter) (i := 1) (cs := [c64 1, cA 0 2]) rfl rfl
+    (.cons .int (.cons (.structDtor (s := sAffine) rfl rfl (.cons .int .nil)) .nil))
+  rw [DropGlue.det hg hr] at ht
+  simp at ht
 
 open Examples in
 /-- **Newest-first on a reachable step** (§6.9's (D-Return)):
