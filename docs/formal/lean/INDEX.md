@@ -903,7 +903,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Spec.Safety` | `RueCore.Spec.no_linear_leak_stmt` | def | §5.6, §7 | — |
 | `RueCore.Spec.Safety` | `RueCore.Spec.no_linear_overwrite_stmt` | def | §7 | `3.8:77` |
 | `RueCore.Spec.Safety` | `RueCore.Spec.no_linear_discard_stmt` | def | §7 | `3.8:64` |
-| `RueCore.Spec.Safety` | `RueCore.Spec.fuel_mono_stmt` | def | §6 | — |
+| `RueCore.Spec.Safety` | `RueCore.Spec.fuel_mono_stmt` | def | §3.4, §6 | — |
 | `RueCore.Spec.Safety` | `RueCore.Spec.no_masking_stmt` | def | §6 | — |
 | `RueCore.Spec.Safety` | `RueCore.Spec.run_ne_returned_stmt` | def | (D-Return-Main), §6.9 | — |
 | `RueCore.Spec.Sharp` | `RueCore.Spec.Sharp.stuck_stmt` | def | §7 | — |
@@ -1773,6 +1773,7 @@ Every heading of the calculus. A citation of a section counts for that section o
 
 Cited sections the calculus has no heading for:
 
+- §3.4: `RueCore.Spec.fuel_mono_stmt`
 - §3.9: `RueCore.Spec.drop_glue_order_stmt`, `RueCore.Blocks`, TraceOrder.lean (module), `RueCore.eval_glue_blocks`, `RueCore.run_glue_blocks`, `RueCore.run_blocks`, `RueCore.drop_glue_order`, `RueCore.drop_order`
 
 ## Prose paragraphs → declarations
