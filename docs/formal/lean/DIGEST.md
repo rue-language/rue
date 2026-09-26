@@ -3251,6 +3251,90 @@ theorem RueCore.Nonvacuous.stuck (B : Expr) :
                 Config.Stuck Float.exactOps P C Violation.useAfterMove
 ```
 
+### `Nonvacuous.whole_drops`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`Spec.Nonvacuous.whole_drops_stmt`, proved: §7's hypotheses, satisfied (RUE-2478).
+
+```lean
+theorem RueCore.Nonvacuous.whole_drops (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = true ∧
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              ∃ C,
+                Steps Float.exactOps P Config.init C ∧
+                  0 ∈ Config.held P.decls C ∧
+                    2 ∈ Config.held P.decls C ∧
+                      ∃ H v tr,
+                        Steps Float.exactOps P C
+                            (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          List.count 0 (freedIds P.decls tr) = 1 ∧
+                            List.count 2 (freedIds P.decls tr) = 1
+```
+
+### `Nonvacuous.whole_result`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`Spec.Nonvacuous.whole_result_stmt`, proved: §7's hypotheses, satisfied (RUE-2478).
+
+```lean
+theorem RueCore.Nonvacuous.whole_result (P : Program) :
+  P =
+      {
+        decls :=
+          {
+            structs :=
+              [{ attr := Attr.none,
+                  fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                  cls := Mult.affine },
+                { attr := Attr.linear,
+                  fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
+                  cls := Mult.linear }],
+            enums :=
+              [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+        fns :=
+          [{ params := [], ret := Ty.struct 0,
+              body :=
+                Expr.mkStruct 0
+                  [Expr.intLit IntWidth.w64 Sign.signed 7] }] } →
+    checkProgram P = true ∧
+      ProgramTyped P ∧
+        P.pendingSafe = true ∧
+          ∃ C,
+            Steps Float.exactOps P Config.init C ∧
+              0 ∈ Config.held P.decls C ∧
+                ∃ H v tr,
+                  Steps Float.exactOps P C
+                      (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                    List.count 0 (Val.own P.decls v) = 1 ∧
+                      freedIds P.decls tr = []
+```
+
 ### `eval_exact`
 
 *theorem* · module `RueCore.TraceExact`
@@ -3381,7 +3465,10 @@ whole run, what is proved is the "at most once" half (`no_double_free`,
 What the two do not see is an end emitted *early*, inside the evaluation
 that minted the value: no window holds the value yet, so only
 `no_double_free`'s "at most once" bounds such an end, and `main`'s own result
-is part of `run`'s result, handed to no form.
+is part of `run`'s result, handed to no form. `whole_program_exactly_once`
+(`TraceWhole.lean`, RUE-2478) counts both: over a whole finished run, every
+owned value any configuration of the run holds is ended exactly once or is
+part of the result.
 
 ```lean
 theorem RueCore.rest_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
@@ -3909,6 +3996,41 @@ theorem RueCore.step_no_double_free (M : FloatModel) {P : Program}
   (hC : Steps M.toFloatOps P Config.init C) :
   (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
     ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1
+```
+
+### `whole_program_exactly_once`
+
+*theorem* · module `RueCore.TraceWhole`
+
+**Every owned value of a finished run ends exactly once** (§7 "No
+use-after-drop / no leak of drops", over a whole program; RUE-2478). For a
+checked program whose functions are all `pendingSafe` (RUE-2316), take any
+configuration `C` §6's relation reaches from `Config.init` and any owned
+identity `a` it holds (`Config.held`: in a cell, in focus, or pending on the
+control stack). If the run from `C` finishes with a value — `✓v`, a value at
+an empty stack — then `a` is ended exactly once in the final trace (a drop, a
+discarded temporary's drop, or a consumption: `freedIds`) or is part of the
+final value, and not both. So no owned value the run ever holds is lost, and
+none is ended twice. A panic carries no claim: §6.12's trap runs no drop
+(§5.7's `⊥_panic` edge), so what it abandons is abandoned by design, and
+`step_no_double_free` already bounds its trace.
+
+The proof is lossless simulation: `eval_msim` follows `eval_sim` form by
+form and shows each step of the run moves an owned identity between the
+store, the focus, the stack and the trace without losing it (`MSteps`); by
+determinism every configuration the run reaches lies on that run
+(`MSteps.of_steps`). `eval_complete` places the run's end at `run`'s answer,
+where `eval_tidy` has retired every cell and `eval_conserves` bounds each
+count by one.
+
+```lean
+theorem RueCore.whole_program_exactly_once (M : FloatModel) {P : Program}
+  (h : ProgramTyped P) (hp : P.pendingSafe = true) {C : Config}
+  (hC : Steps M.toFloatOps P Config.init C) {a : Nat}
+  (ha : a ∈ Config.held P.decls C) {H : Store} {φ : Frame} {v : Val}
+  {tr : List Event}
+  (hT : Steps M.toFloatOps P C (Config.run H φ [] (Focus.ret v) tr)) :
+  List.count a (Val.own P.decls v) + List.count a (freedIds P.decls tr) = 1
 ```
 
 ### `Sharp.stuck`
@@ -5921,6 +6043,240 @@ theorem RueCore.Sharp.float_halt (B : Expr) :
                                   (Val.float FloatWidth.w64
                                     (FloatDatum.num false 1 (-1075))))
                                 [])
+```
+
+### `Sharp.copy_leak`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.copy_leak_stmt`, proved: a §7 hypothesis needed (RUE-2478).
+
+```lean
+theorem RueCore.Sharp.copy_leak (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0
+          [Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 1]])
+        (Expr.intLit IntWidth.w64 Sign.signed 0) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.copy,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.copy },
+                    { attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine }],
+                enums := [] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        checkProgram P = false ∧
+          ¬ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              ∃ C,
+                Steps Float.exactOps P Config.init C ∧
+                  0 ∈ Config.held P.decls C ∧
+                    ∃ H v tr,
+                      Steps Float.exactOps P C
+                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        List.count 0 (Val.own P.decls v) +
+                            List.count 0 (freedIds P.decls tr) =
+                          0
+```
+
+### `Sharp.pending_leak`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.pending_leak_stmt`, proved: a §7 hypothesis needed (RUE-2478).
+
+```lean
+theorem RueCore.Sharp.pending_leak (P : Program) :
+  P =
+      {
+        decls :=
+          {
+            structs :=
+              [{ attr := Attr.none,
+                  fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                  cls := Mult.affine },
+                { attr := Attr.linear,
+                  fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
+                  cls := Mult.linear }],
+            enums :=
+              [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+        fns :=
+          [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+              body :=
+                Expr.call 1
+                  [Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 7],
+                    (Expr.intLit IntWidth.w64 Sign.signed 0).ret] },
+            {
+              params :=
+                [{ ty := Ty.struct 0, mu := false },
+                  { ty := Ty.int IntWidth.w64 Sign.signed, mu := false }],
+              ret := Ty.int IntWidth.w64 Sign.signed,
+              body :=
+                (Expr.drop (Place.var 1)).seq (Expr.use (Place.var 0)) }] } →
+    checkProgram P = true ∧
+      ProgramTyped P ∧
+        P.pendingSafe = false ∧
+          ∃ C,
+            Steps Float.exactOps P Config.init C ∧
+              0 ∈ Config.held P.decls C ∧
+                ∃ H v tr,
+                  Steps Float.exactOps P C
+                      (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                    List.count 0 (Val.own P.decls v) +
+                        List.count 0 (freedIds P.decls tr) =
+                      0
+```
+
+### `Sharp.unreached_held`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.unreached_held_stmt`, proved: a §7 hypothesis needed (RUE-2478).
+
+```lean
+theorem RueCore.Sharp.unreached_held (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ProgramTyped P ∧
+          P.pendingSafe = true ∧
+            ¬Steps Float.exactOps P Config.init
+                  (Config.run
+                    [Cell.full
+                        (Contents.struct 0 5
+                          [Contents.int IntWidth.w64 Sign.signed 1])]
+                    Frame.empty []
+                    (Focus.ret (Val.int IntWidth.w64 Sign.signed 0)) []) ∧
+              5 ∈
+                  Config.held P.decls
+                    (Config.run
+                      [Cell.full
+                          (Contents.struct 0 5
+                            [Contents.int IntWidth.w64 Sign.signed 1])]
+                      Frame.empty []
+                      (Focus.ret (Val.int IntWidth.w64 Sign.signed 0)) []) ∧
+                List.count 5
+                      (Val.own P.decls (Val.int IntWidth.w64 Sign.signed 0)) +
+                    List.count 5 (freedIds P.decls []) =
+                  0
+```
+
+### `Sharp.unheld`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.unheld_stmt`, proved: a §7 hypothesis needed (RUE-2478).
+
+```lean
+theorem RueCore.Sharp.unheld (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ProgramTyped P ∧
+          P.pendingSafe = true ∧
+            ¬1 ∈ Config.held P.decls Config.init ∧
+              ∃ H v tr,
+                Steps Float.exactOps P Config.init
+                    (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                  List.count 1 (Val.own P.decls v) +
+                      List.count 1 (freedIds P.decls tr) =
+                    0
+```
+
+### `Sharp.off_run`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.off_run_stmt`, proved: a §7 hypothesis needed (RUE-2478).
+
+```lean
+theorem RueCore.Sharp.off_run (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ProgramTyped P ∧
+          P.pendingSafe = true ∧
+            ∃ C,
+              Steps Float.exactOps P Config.init C ∧
+                0 ∈ Config.held P.decls C ∧
+                  ¬Steps Float.exactOps P C
+                        (Config.run [] Frame.empty []
+                          (Focus.ret (Val.int IntWidth.w64 Sign.signed 3))
+                          []) ∧
+                    List.count 0
+                          (Val.own P.decls
+                            (Val.int IntWidth.w64 Sign.signed 3)) +
+                        List.count 0 (freedIds P.decls []) =
+                      0
 ```
 
 ### `Examples.dynReadAffine_refused`
@@ -16764,6 +17120,1048 @@ theorem RueCore.no_double_free_of_step (M : FloatModel) {P : Program}
       ∀ (a : Nat), List.count a (dtorIds (run M.toFloatOps P fuel).trace) ≤ 1
 ```
 
+### `Config.ledger_count_run`
+
+*theorem* · module `RueCore.TraceWhole`
+
+A running configuration's ledger, counted part by part (helper).
+
+```lean
+theorem RueCore.Config.ledger_count_run (D : Decls) (H : Store) (φ : Frame)
+  (K : List Kont) (f : Focus) (tr : List Event) (a : Nat) :
+  List.count a (Config.ledger D (Config.run H φ K f tr)) =
+    List.count a (storeOwn D H) + List.count a (Focus.own D f) +
+        List.count a (stackOwn D K) +
+      List.count a (freedIds D tr)
+```
+
+### `ledger_le_run`
+
+*theorem* · module `RueCore.TraceWhole`
+
+A step between running configurations loses nothing when every identity
+the source holds is, after it, held or ended by what the step appended
+(helper).
+
+```lean
+theorem RueCore.ledger_le_run {D : Decls} {H H' : Store} {φ φ' : Frame}
+  {K K' : List Kont} {f f' : Focus} {tr evs : List Event}
+  (h :
+    ∀ (a : Nat),
+      List.count a (storeOwn D H) + List.count a (Focus.own D f) +
+          List.count a (stackOwn D K) ≤
+        List.count a (storeOwn D H') + List.count a (Focus.own D f') +
+            List.count a (stackOwn D K') +
+          List.count a (freedIds D evs)) :
+  IdLe (Config.ledger D (Config.run H φ K f tr))
+    (Config.ledger D (Config.run H' φ' K' f' (tr ++ evs)))
+```
+
+### `ledger_le_run0`
+
+*theorem* · module `RueCore.TraceWhole`
+
+The same for a step that appends nothing to the trace (helper).
+
+```lean
+theorem RueCore.ledger_le_run0 {D : Decls} {H H' : Store} {φ φ' : Frame}
+  {K K' : List Kont} {f f' : Focus} {tr : List Event}
+  (h :
+    ∀ (a : Nat),
+      List.count a (storeOwn D H) + List.count a (Focus.own D f) +
+          List.count a (stackOwn D K) ≤
+        List.count a (storeOwn D H') + List.count a (Focus.own D f') +
+          List.count a (stackOwn D K')) :
+  IdLe (Config.ledger D (Config.run H φ K f tr))
+    (Config.ledger D (Config.run H' φ' K' f' tr))
+```
+
+### `IdLe.refl'`
+
+*theorem* · module `RueCore.TraceWhole`
+
+`IdLe` is reflexive (helper).
+
+```lean
+theorem RueCore.IdLe.refl' (l : List Nat) : IdLe l l
+```
+
+### `IdLe.trans'`
+
+*theorem* · module `RueCore.TraceWhole`
+
+`IdLe` is transitive (helper).
+
+```lean
+theorem RueCore.IdLe.trans' {l₁ l₂ l₃ : List Nat} (h₁ : IdLe l₁ l₂)
+  (h₂ : IdLe l₂ l₃) : IdLe l₁ l₃
+```
+
+### `MSteps.trans`
+
+*theorem* · module `RueCore.TraceWhole`
+
+Lossless runs compose (helper).
+
+```lean
+theorem RueCore.MSteps.trans {M : FloatOps} {P : Program} {C₁ C₂ C₃ : Config}
+  (h₁ : MSteps M P C₁ C₂) (h₂ : MSteps M P C₂ C₃) : MSteps M P C₁ C₃
+```
+
+### `MSteps.single`
+
+*theorem* · module `RueCore.TraceWhole`
+
+One lossless step is a lossless run (helper).
+
+```lean
+theorem RueCore.MSteps.single {M : FloatOps} {P : Program} {C₁ C₂ : Config}
+  (s : Step M P C₁ C₂)
+  (hl : IdLe (Config.ledger P.decls C₁) (Config.ledger P.decls C₂)) :
+  MSteps M P C₁ C₂
+```
+
+### `MSteps.le`
+
+*theorem* · module `RueCore.TraceWhole`
+
+A lossless run's end counts everything its start counts (helper).
+
+```lean
+theorem RueCore.MSteps.le {M : FloatOps} {P : Program} {C₁ C₂ : Config}
+  (h : MSteps M P C₁ C₂) :
+  IdLe (Config.ledger P.decls C₁) (Config.ledger P.decls C₂)
+```
+
+### `MSteps.toSteps`
+
+*theorem* · module `RueCore.TraceWhole`
+
+A lossless run is a run (helper).
+
+```lean
+theorem RueCore.MSteps.toSteps {M : FloatOps} {P : Program} {C₁ C₂ : Config}
+  (h : MSteps M P C₁ C₂) : Steps M P C₁ C₂
+```
+
+### `MSteps.peel`
+
+*theorem* · module `RueCore.TraceWhole`
+
+**Peeling a step by determinism** (`Step.det`): a lossless run from `C`
+that ends where no expression is in focus passes through `C`'s one successor
+(helper).
+
+```lean
+theorem RueCore.MSteps.peel {M : FloatOps} {P : Program} {C C' D : Config}
+  (hs : Step M P C C') (h : MSteps M P C D) (hC : C.evalFocus)
+  (hD : ¬D.evalFocus) : MSteps M P C' D
+```
+
+### `MSteps.of_steps`
+
+*theorem* · module `RueCore.TraceWhole`
+
+**Every configuration a run reaches on the way to a lossless run's
+terminal end loses nothing up to that end** (`Step.det`): if `C` reaches `T`
+losslessly, `T` takes no step, and `C` reaches `D`, then `D` reaches `T`
+losslessly (helper).
+
+```lean
+theorem RueCore.MSteps.of_steps {M : FloatOps} {P : Program} {C D T : Config}
+  (hT : MSteps M P C T) (hfin : ∀ (C' : Config), ¬Step M P T C')
+  (h : Steps M P C D) : MSteps M P D T
+```
+
+### `stackOwn_cons_nil`
+
+*theorem* · module `RueCore.TraceWhole`
+
+A frame that holds nothing leaves the stack's holdings alone (helper).
+
+```lean
+theorem RueCore.stackOwn_cons_nil {D : Decls} {F : Kont} (hF : Kont.own D F = [])
+  (K : List Kont) : stackOwn D (F :: K) = stackOwn D K
+```
+
+### `MSim.pre`
+
+*theorem* · module `RueCore.TraceWhole`
+
+A lossless run into the family carries its simulation back (helper).
+
+```lean
+theorem RueCore.MSim.pre {M : FloatOps} {P : Program} {φ : Frame}
+  {C C₂ : List Kont → List Event → Config} {r : EvalRes}
+  (hpre : ∀ (K : List Kont) (tr : List Event), MSteps M P (C K tr) (C₂ K tr))
+  (h : MSim M P φ C₂ r) : MSim M P φ C r
+```
+
+### `MSim.withTrace`
+
+*theorem* · module `RueCore.TraceWhole`
+
+A lossless run that emits `tr₁` carries the simulation back to the result
+with `tr₁` prefixed (helper).
+
+```lean
+theorem RueCore.MSim.withTrace {M : FloatOps} {P : Program} {φ : Frame}
+  {C C₂ : List Kont → List Event → Config} {r : EvalRes} {tr₁ : List Event}
+  (hpre :
+    ∀ (K : List Kont) (tr : List Event),
+      MSteps M P (C K tr) (C₂ K (tr ++ tr₁)))
+  (h : MSim M P φ C₂ r) : MSim M P φ C (EvalRes.withTrace tr₁ r)
+```
+
+### `MSim.of_quiet`
+
+*theorem* · module `RueCore.TraceWhole`
+
+A result that neither completes nor unwinds is simulated vacuously
+(helper).
+
+```lean
+theorem RueCore.MSim.of_quiet {M : FloatOps} {P : Program} {φ : Frame}
+  {C : List Kont → List Event → Config} {r : EvalRes} (hq : r.NoRet ∧ r.NoBrk)
+  (hok : ∀ (H : Store) (v : Val) (tr : List Event), r ≠ EvalRes.ok H v tr) :
+  MSim M P φ C r
+```
+
+### `MSim.andThen`
+
+*theorem* · module `RueCore.TraceWhole`
+
+**§6.2's (Search), once, losslessly**: an enter run pushing a frame `F`
+that holds nothing, the operand simulated under `F`, and the context's
+simulation from the operand's value (helper).
+
+```lean
+theorem RueCore.MSim.andThen {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+  {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
+  (hFo : Kont.own P.decls F = [])
+  (hC :
+    ∀ (K : List Kont) (tr : List Event), MSteps M P (C K tr) (C₁ (F :: K) tr))
+  {r : EvalRes} (h₁ : MSim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr₁ : List Event),
+      r = EvalRes.ok H₁ v tr₁ →
+        MSim M P φ (fun K tr => Config.run H₁ φ₁ (F :: K) (Focus.ret v) tr)
+          (k H₁ v)) :
+  MSim M P φ C (r.andThen k)
+```
+
+### `MSim.andThenHeld`
+
+*theorem* · module `RueCore.TraceWhole`
+
+**A later operand under a held value** (RUE-2316): the frame holds a
+value, so the operand must not unwind — `pendingSafe` — and then only its
+value matters (helper).
+
+```lean
+theorem RueCore.MSim.andThenHeld {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+  {C C₁ : List Kont → List Event → Config} {F : Kont}
+  (hC :
+    ∀ (K : List Kont) (tr : List Event), MSteps M P (C K tr) (C₁ (F :: K) tr))
+  {r : EvalRes} (hq : r.NoRet ∧ r.NoBrk) (h₁ : MSim M P φ₁ C₁ r)
+  {k : Store → Val → EvalRes}
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr₁ : List Event),
+      r = EvalRes.ok H₁ v tr₁ →
+        MSim M P φ (fun K tr => Config.run H₁ φ₁ (F :: K) (Focus.ret v) tr)
+          (k H₁ v)) :
+  MSim M P φ C (r.andThen k)
+```
+
+### `MSim.lift`
+
+*theorem* · module `RueCore.TraceWhole`
+
+A result that is not a value passes through a frame that holds nothing
+(helper).
+
+```lean
+theorem RueCore.MSim.lift {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+  {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
+  (hFo : Kont.own P.decls F = [])
+  (hC :
+    ∀ (K : List Kont) (tr : List Event), MSteps M P (C K tr) (C₁ (F :: K) tr))
+  {r : EvalRes} (h₁ : MSim M P φ₁ C₁ r)
+  (hr : ∀ (H : Store) (v : Val) (tr : List Event), r ≠ EvalRes.ok H v tr) :
+  MSim M P φ C r
+```
+
+### `MSim.absorb`
+
+*theorem* · module `RueCore.TraceWhole`
+
+§6.9's call boundary, losslessly: the body's `returned` is caught at the
+`call φ` frame, which holds nothing (helper).
+
+```lean
+theorem RueCore.MSim.absorb {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+  {C C₁ : List Kont → List Event → Config}
+  (hC :
+    ∀ (K : List Kont) (tr : List Event),
+      MSteps M P (C K tr) (C₁ (Kont.call φ :: K) tr))
+  {r : EvalRes} (h₁ : MSim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr₁ : List Event),
+      r = EvalRes.ok H₁ v tr₁ →
+        MSim M P φ
+          (fun K tr => Config.run H₁ φ₁ (Kont.call φ :: K) (Focus.ret v) tr)
+          (k H₁ v)) :
+  MSim M P φ C (r.absorb k)
+```
+
+### `MSim.peel`
+
+*theorem* · module `RueCore.TraceWhole`
+
+Where no target has an expression in focus, a first step of the family
+can be peeled off by determinism (helper).
+
+```lean
+theorem RueCore.MSim.peel {M : FloatOps} {P : Program} {φ : Frame}
+  {C C₂ : List Kont → List Event → Config} {r : EvalRes}
+  (hs : ∀ (K : List Kont) (tr : List Event), Step M P (C K tr) (C₂ K tr))
+  (hC : ∀ (K : List Kont) (tr : List Event), (C K tr).evalFocus)
+  (h : MSim M P φ C r) : MSim M P φ C₂ r
+```
+
+### `plainUnwind_count`
+
+*theorem* · module `RueCore.TraceWhole`
+
+`run-scope-drops` without the monitor (§6.1): each cell's owned
+identities leave the store and exactly those reach the trace (helper).
+
+```lean
+theorem RueCore.plainUnwind_count {D : Decls} {H H' : Store} {ls : List Nat}
+  {evs : List Event} :
+  plainUnwind D H ls = Except.ok (H', evs) →
+    ∀ (a : Nat),
+      List.count a (storeOwn D H) =
+        List.count a (storeOwn D H') + List.count a (freedIds D evs)
+```
+
+### `move_count`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Use-Move) §6.3, at every identity (helper).
+
+```lean
+theorem RueCore.move_count {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Contents}
+  {π : List Nat} {v : Val} (hcc : StoreCC D H)
+  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.readAt π = Except.ok sub)
+  (hw : c.writeAt π Contents.hole = some c') (hv : sub.toVal = some v)
+  (a : Nat) :
+  List.count a (storeOwn D H) =
+    List.count a (storeOwn D (List.set H ℓ (Cell.full c'))) +
+      List.count a (Val.own D v)
+```
+
+### `destructure_count`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Use-Declared-Linear) §6.3, at every identity (helper).
+
+```lean
+theorem RueCore.destructure_count {D : Decls} {H : Store} {ℓ : Nat}
+  {c c' cd leaf : Contents} {πd πs : List Nat} {v : Val} {evs : List Event}
+  (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
+  (hr : c.readAt πd = Except.ok cd)
+  (hd : Contents.destructure D ℓ cd πs = Except.ok (leaf, evs))
+  (hv : leaf.toVal = some v) (hw : c.writeAt πd Contents.hole = some c')
+  (a : Nat) :
+  List.count a (storeOwn D H) =
+    List.count a (storeOwn D (List.set H ℓ (Cell.full c'))) +
+        List.count a (Val.own D v) +
+      List.count a (freedIds D evs)
+```
+
+### `dropPlace_count`
+
+*theorem* · module `RueCore.TraceWhole`
+
+§6.11's `@drop`, at every identity (helper).
+
+```lean
+theorem RueCore.dropPlace_count {D : Decls} {H : Store} {ℓ : Nat}
+  {c c' sub : Contents} {π : List Nat} {evs : List Event} (hcc : StoreCC D H)
+  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.readAt π = Except.ok sub)
+  (hd : dropCell D ℓ sub = Except.ok evs)
+  (hw : c.writeAt π Contents.hole = some c') (a : Nat) :
+  List.count a (storeOwn D H) =
+    List.count a (storeOwn D (List.set H ℓ (Cell.full c'))) +
+      List.count a (freedIds D evs)
+```
+
+### `dropDeclared_count`
+
+*theorem* · module `RueCore.TraceWhole`
+
+§6.11's `@drop` at a declared plan, at every identity (helper).
+
+```lean
+theorem RueCore.dropDeclared_count {D : Decls} {H : Store} {ℓ : Nat}
+  {c c' cd leaf : Contents} {πd πs : List Nat} {evs levs : List Event}
+  (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
+  (hr : c.readAt πd = Except.ok cd)
+  (hd : Contents.destructure D ℓ cd πs = Except.ok (leaf, evs))
+  (hl : dropCell D ℓ leaf = Except.ok levs)
+  (hw : c.writeAt πd Contents.hole = some c') (a : Nat) :
+  List.count a (storeOwn D H) =
+    List.count a (storeOwn D (List.set H ℓ (Cell.full c'))) +
+      List.count a (freedIds D (evs ++ levs))
+```
+
+### `assign_count`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Assign) §6.8, at every identity (helper).
+
+```lean
+theorem RueCore.assign_count {D : Decls} {H : Store} {ℓ : Nat} {c c' old : Contents}
+  {π : List Nat} {v : Val} {evs : List Event} (hcc : StoreCC D H)
+  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.readAt π = Except.ok old)
+  (hd : dropCell D ℓ old = Except.ok evs)
+  (hw : c.writeAt π (Contents.ofVal v) = some c')
+  (hc' : Contents.copyClosed D c' = true) (a : Nat) :
+  List.count a (storeOwn D H) + List.count a (Val.own D v) =
+    List.count a (storeOwn D (List.set H ℓ (Cell.full c'))) +
+      List.count a (freedIds D evs)
+```
+
+### `assignDyn_count`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Assign) below a dynamic index, at every identity (helper).
+
+```lean
+theorem RueCore.assignDyn_count {D : Decls} {H : Store} {ℓ : Nat}
+  {c c' sub sub' old : Contents} {π ρ : List Nat} {v : Val} {evs : List Event}
+  (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
+  (hr : c.readAt π = Except.ok sub) (hr' : sub.readAt ρ = Except.ok old)
+  (hd : dropCell D ℓ old = Except.ok evs)
+  (hw' : sub.writeAt ρ (Contents.ofVal v) = some sub')
+  (hw : c.writeAt π sub' = some c') (hc' : Contents.copyClosed D c' = true)
+  (a : Nat) :
+  List.count a (storeOwn D H) + List.count a (Val.own D v) =
+    List.count a (storeOwn D (List.set H ℓ (Cell.full c'))) +
+      List.count a (freedIds D evs)
+```
+
+### `Contents.own_struct_ge`
+
+*theorem* · module `RueCore.TraceWhole`
+
+A fresh struct owns at least its fields, copy-closed (helper).
+
+```lean
+theorem RueCore.Contents.own_struct_ge {D : Decls} {s i : Nat} {cs : List Contents}
+  (h : Contents.copyClosed D (Contents.struct s i cs) = true) (a : Nat) :
+  List.count a (Contents.ownList D cs) ≤
+    List.count a (Contents.own D (Contents.struct s i cs))
+```
+
+### `Contents.own_array_ge`
+
+*theorem* · module `RueCore.TraceWhole`
+
+A fresh array owns at least its elements, copy-closed (helper).
+
+```lean
+theorem RueCore.Contents.own_array_ge {D : Decls} {T : Ty} {i : Nat}
+  {cs : List Contents}
+  (h : Contents.copyClosed D (Contents.array T i cs) = true) (a : Nat) :
+  List.count a (Contents.ownList D cs) ≤
+    List.count a (Contents.own D (Contents.array T i cs))
+```
+
+### `evalArgs_cc`
+
+*theorem* · module `RueCore.TraceWhole`
+
+An argument list of `pendingSafe` members that finishes leaves a
+copy-closed store and copy-closed values (`eval_exact`) (helper).
+
+```lean
+theorem RueCore.evalArgs_cc {M : FloatOps} {P : Program} {fuel : Nat} {φ : Frame}
+  (hp : P.pendingSafe = true) {es : List Expr} {H H' : Store} {vs : List Val}
+  {tr : List Event} :
+  Expr.pendingSafeList es = true →
+    StoreCC P.decls H →
+      evalArgs (fun H e => eval M fuel P H φ e) H es = ArgsRes.ok H' vs tr →
+        StoreCC P.decls H' ∧
+          Contents.copyClosedList P.decls (Contents.ofVals vs) = true
+```
+
+### `evalArgs_msimOk`
+
+*theorem* · module `RueCore.TraceWhole`
+
+**An argument list that finishes, losslessly** (§6.2's `…( v̄, E, ē )`):
+each member is pushed, simulated, and plugged back into the list (helper).
+
+```lean
+theorem RueCore.evalArgs_msimOk {M : FloatOps} {P : Program} {fuel : Nat} {φ : Frame}
+  (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (t : ArgsTag)
+  (es : List Expr) (H : Store) (vs₀ : List Val) :
+  Expr.pendingSafeList es = true →
+    StoreCC P.decls H →
+      ∀ (H' : Store) (vs : List Val) (tr' : List Event),
+        evalArgs (fun H e => eval M fuel P H φ e) H es =
+            ArgsRes.ok H' vs tr' →
+          ∀ (K : List Kont) (tr : List Event),
+            MSteps M P (Config.run H φ K (Focus.args t vs₀ es) tr)
+              (Config.run H' φ K (Focus.args t (vs₀ ++ vs) []) (tr ++ tr'))
+```
+
+### `evalArgs_msimAbort`
+
+*theorem* · module `RueCore.TraceWhole`
+
+**An argument list that aborts, losslessly**, where only its first member
+may unwind (`pendingSafe`): nothing is pending when the first one does, and
+the list's tag holds nothing; a later member's abort is a trap, a refusal or
+exhausted fuel (helper).
+
+```lean
+theorem RueCore.evalArgs_msimAbort {M : FloatOps} {P : Program} {fuel : Nat}
+  {φ : Frame} (IH : MSimIH M P fuel) (t : ArgsTag)
+  (ht : ArgsTag.own P.decls t = []) (es : List Expr) (H : Store) :
+  Expr.pendingSafeList es = true →
+    Expr.quietList es.tail = true →
+      StoreCC P.decls H →
+        ∀ (r : EvalRes),
+          evalArgs (fun H e => eval M fuel P H φ e) H es = ArgsRes.abort r →
+            MSim M P φ (argsConf H φ t [] es) r
+```
+
+### `MSteps.toValue`
+
+*theorem* · module `RueCore.TraceWhole`
+
+A value produced where the store is, the stack untouched, loses nothing:
+the source held no value in focus (helper).
+
+```lean
+theorem RueCore.MSteps.toValue {M : FloatOps} {P : Program} {φ : Frame} {H : Store}
+  {K : List Kont} {tr : List Event} {e : Expr} {v : Val}
+  (s :
+    Step M P (Config.run H φ K (Focus.eval e) tr)
+      (Config.run H φ K (Focus.ret v) tr)) :
+  MSteps M P (Config.run H φ K (Focus.eval e) tr)
+    (Config.run H φ K (Focus.ret v) tr)
+```
+
+### `MSteps.enter`
+
+*theorem* · module `RueCore.TraceWhole`
+
+An enter step of §6.2's (Search) pushing a frame that holds nothing
+(helper).
+
+```lean
+theorem RueCore.MSteps.enter {M : FloatOps} {P : Program} {φ : Frame} {H : Store}
+  {K : List Kont} {tr : List Event} {e e' : Expr} {F : Kont}
+  (hF : Kont.own P.decls F = [])
+  (s :
+    Step M P (Config.run H φ K (Focus.eval e) tr)
+      (Config.run H φ (F :: K) (Focus.eval e') tr)) :
+  MSteps M P (Config.run H φ K (Focus.eval e) tr)
+    (Config.run H φ (F :: K) (Focus.eval e') tr)
+```
+
+### `MSteps.enterArgs`
+
+*theorem* · module `RueCore.TraceWhole`
+
+An enter step into a list context whose tag holds nothing (helper).
+
+```lean
+theorem RueCore.MSteps.enterArgs {M : FloatOps} {P : Program} {φ : Frame} {H : Store}
+  {K : List Kont} {tr : List Event} {e : Expr} {t : ArgsTag} {es : List Expr}
+  (ht : ArgsTag.own P.decls t = [])
+  (s :
+    Step M P (Config.run H φ K (Focus.eval e) tr)
+      (Config.run H φ K (Focus.args t [] es) tr)) :
+  MSteps M P (Config.run H φ K (Focus.eval e) tr)
+    (Config.run H φ K (Focus.args t [] es) tr)
+```
+
+### `OpRes.msim`
+
+*theorem* · module `RueCore.TraceWhole`
+
+§6.4's operator frames, losslessly: the operand and the frame hold
+nothing owned — the operator's operands are scalars (helper).
+
+```lean
+theorem RueCore.OpRes.msim {M : FloatOps} {P : Program} {φ : Frame} {H : Store}
+  {F : Kont} {v : Val} (o : OpRes)
+  (hv :
+    ∀ (K : List Kont) (tr : List Event) (v' : Val),
+      o = OpRes.val v' →
+        Step M P (Config.run H φ (F :: K) (Focus.ret v) tr)
+          (Config.run H φ K (Focus.ret v') tr))
+  (hown :
+    ∀ (v' : Val),
+      o = OpRes.val v' → Kont.own P.decls F = [] ∧ Val.own P.decls v = []) :
+  MSim M P φ (fun K tr => Config.run H φ (F :: K) (Focus.ret v) tr)
+    (OpRes.toRes H o)
+```
+
+### `msim_use`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Use-Declared-Linear), (D-Use-Copy), (D-Use-Move) §6.3 (helper).
+
+```lean
+theorem RueCore.msim_use {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hcc : StoreCC P.decls H) (p : Place) :
+  MSim M P φ (evalConf H φ (Expr.use p))
+    (eval M (fuel + 1) P H φ (Expr.use p))
+```
+
+### `msim_drop`
+
+*theorem* · module `RueCore.TraceWhole`
+
+§6.11's `@drop` at a constant place (helper).
+
+```lean
+theorem RueCore.msim_drop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hcc : StoreCC P.decls H) (p : Place) :
+  MSim M P φ (evalConf H φ (Expr.drop p))
+    (eval M (fuel + 1) P H φ (Expr.drop p))
+```
+
+### `msim_binop`
+
+*theorem* · module `RueCore.TraceWhole`
+
+§6.4's binary operators: the right operand runs under a held left value,
+which `pendingSafe` keeps from unwinding (helper).
+
+```lean
+theorem RueCore.msim_binop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) (op : BinOp) (e₁ e₂ : Expr)
+  (he : (Expr.binop op e₁ e₂).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (Expr.binop op e₁ e₂))
+    (eval M (fuel + 1) P H φ (Expr.binop op e₁ e₂))
+```
+
+### `msim_unop`
+
+*theorem* · module `RueCore.TraceWhole`
+
+§6.4's unary operators (helper).
+
+```lean
+theorem RueCore.msim_unop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (op : UnOp)
+  (e : Expr) (he : (Expr.unop op e).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (Expr.unop op e))
+    (eval M (fuel + 1) P H φ (Expr.unop op e))
+```
+
+### `msim_intCast`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Int-Cast) and its trap (helper).
+
+```lean
+theorem RueCore.msim_intCast {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (w : IntWidth)
+  (sg : Sign) (e : Expr) (he : (Expr.intCast w sg e).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (Expr.intCast w sg e))
+    (eval M (fuel + 1) P H φ (Expr.intCast w sg e))
+```
+
+### `msim_fintrin`
+
+*theorem* · module `RueCore.TraceWhole`
+
+§6.4's float intrinsics (helper).
+
+```lean
+theorem RueCore.msim_fintrin {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H)
+  (k : FloatIntrin) (e : Expr) (he : (Expr.fintrin k e).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (Expr.fintrin k e))
+    (eval M (fuel + 1) P H φ (Expr.fintrin k e))
+```
+
+### `msim_dbg`
+
+*theorem* · module `RueCore.TraceWhole`
+
+`@dbg` (§6.12): the operand is observable, so a scalar (helper).
+
+```lean
+theorem RueCore.msim_dbg {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (e : Expr)
+  (he : e.dbg.pendingSafe = true) :
+  MSim M P φ (evalConf H φ e.dbg) (eval M (fuel + 1) P H φ e.dbg)
+```
+
+### `msim_argsForm`
+
+*theorem* · module `RueCore.TraceWhole`
+
+An argument-list form's prefix: the enter step, and the list run to its
+redex or its abort, losslessly (helper).
+
+```lean
+theorem RueCore.msim_argsForm {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) {e : Expr} {t : ArgsTag}
+  (ht : ArgsTag.own P.decls t = []) {es : List Expr}
+  (hps : Expr.pendingSafeList es = true) (hql : Expr.quietList es.tail = true)
+  (hent :
+    ∀ (K : List Kont) (tr : List Event),
+      MSteps M P (evalConf H φ e K tr) (argsConf H φ t [] es K tr))
+  {k : Store → List Val → List Event → EvalRes}
+  (hk :
+    ∀ (H₁ : Store) (vs : List Val) (tr₁ : List Event),
+      evalArgs (fun H e => eval M fuel P H φ e) H es = ArgsRes.ok H₁ vs tr₁ →
+        MSim M P φ (argsConf H₁ φ t vs []) (k H₁ vs tr₁)) :
+  MSim M P φ (evalConf H φ e)
+    (match evalArgs (fun H e => eval M fuel P H φ e) H es with
+    | ArgsRes.abort r => r
+    | ArgsRes.ok H₁ vs tr₁ => EvalRes.withTrace tr₁ (k H₁ vs tr₁))
+```
+
+### `msim_mkStruct`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Struct) §6.5: the identity is minted as `introVal` mints it, whose
+copy-closure monitor keeps every member's identities in the new value
+(helper).
+
+```lean
+theorem RueCore.msim_mkStruct {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) (s : Nat) (args : List Expr)
+  (he : (Expr.mkStruct s args).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (Expr.mkStruct s args))
+    (eval M (fuel + 1) P H φ (Expr.mkStruct s args))
+```
+
+### `msim_mkEnum`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Enum-Intro) §6.6 (helper).
+
+```lean
+theorem RueCore.msim_mkEnum {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) (en k : Nat) (args : List Expr)
+  (he : (Expr.mkEnum en k args).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (Expr.mkEnum en k args))
+    (eval M (fuel + 1) P H φ (Expr.mkEnum en k args))
+```
+
+### `msim_mkArray`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Array) §6.5 (helper).
+
+```lean
+theorem RueCore.msim_mkArray {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) (T : Ty) (args : List Expr)
+  (he : (Expr.mkArray T args).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (Expr.mkArray T args))
+    (eval M (fuel + 1) P H φ (Expr.mkArray T args))
+```
+
+### `msim_repeat`
+
+*theorem* · module `RueCore.TraceWhole`
+
+The repeat form (`7.1:39`): its operand is `Copy`, so owns nothing
+(helper).
+
+```lean
+theorem RueCore.msim_repeat {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (T : Ty)
+  (e : Expr) (n : Nat) (he : (Expr.repeatArray T e n).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (Expr.repeatArray T e n))
+    (eval M (fuel + 1) P H φ (Expr.repeatArray T e n))
+```
+
+### `msim_indexRead_args`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Index)/(D-Index-Trap) §6.5 and (D-Use-Untrackable-Dynamic-Copy) §6.3,
+from the index list's context: the indices are integers (helper).
+
+```lean
+theorem RueCore.msim_indexRead_args {M : FloatOps} {P : Program} {fuel : Nat}
+  {H : Store} {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) (p : Place) (idx : List Expr)
+  (πs : List (List Nat)) (he : (Expr.indexRead p idx πs).pendingSafe = true) :
+  MSim M P φ (argsConf H φ (ArgsTag.indexRead p πs) [] idx)
+    (eval M (fuel + 1) P H φ (Expr.indexRead p idx πs))
+```
+
+### `msim_indexRead`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Index) at an expression in focus (helper).
+
+```lean
+theorem RueCore.msim_indexRead {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) (p : Place) (idx : List Expr)
+  (πs : List (List Nat)) (he : (Expr.indexRead p idx πs).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (Expr.indexRead p idx πs))
+    (eval M (fuel + 1) P H φ (Expr.indexRead p idx πs))
+```
+
+### `msim_indexDrop`
+
+*theorem* · module `RueCore.TraceWhole`
+
+§6.11's `@drop` at a `Copy` place below a dynamic index (helper).
+
+```lean
+theorem RueCore.msim_indexDrop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) (p : Place) (idx : List Expr)
+  (πs : List (List Nat)) (he : (Expr.indexDrop p idx πs).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (Expr.indexDrop p idx πs))
+    (eval M (fuel + 2) P H φ (Expr.indexDrop p idx πs))
+```
+
+### `msim_indexWrite`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Assign) §6.8 below a dynamic index: the right-hand side is held while
+the indices run, which `pendingSafe` keeps from unwinding (helper).
+
+```lean
+theorem RueCore.msim_indexWrite {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) (p : Place) (idx : List Expr)
+  (πs : List (List Nat)) (e : Expr)
+  (he : (Expr.indexWrite p idx πs e).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (Expr.indexWrite p idx πs e))
+    (eval M (fuel + 1) P H φ (Expr.indexWrite p idx πs e))
+```
+
+### `msim_match`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Match) §6.6: the payload moves into the arm's cells and the shell is
+consumed; the arm runs under its `endscope`, which (D-EndScope) closes
+(helper).
+
+```lean
+theorem RueCore.msim_match {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) (scrut : Expr) (arms : List Expr)
+  (he : (scrut.match arms).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (scrut.match arms))
+    (eval M (fuel + 1) P H φ (scrut.match arms))
+```
+
+### `msim_letIn`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Let) §6.7, then (D-EndScope) (helper).
+
+```lean
+theorem RueCore.msim_letIn {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) (m : Bool) (e₁ e₂ : Expr)
+  (he : (Expr.letIn m e₁ e₂).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (Expr.letIn m e₁ e₂))
+    (eval M (fuel + 1) P H φ (Expr.letIn m e₁ e₂))
+```
+
+### `msim_assign`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Assign) §6.8: `eval`'s copy-closure monitor passed, so the stored
+value's identities stay counted (helper).
+
+```lean
+theorem RueCore.msim_assign {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) (p : Place) (e : Expr)
+  (he : (Expr.assign p e).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (Expr.assign p e))
+    (eval M (fuel + 1) P H φ (Expr.assign p e))
+```
+
+### `msim_seq`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Seq) §6.7: a discarded temporary is ended by its `dropTemp` marker
+(helper).
+
+```lean
+theorem RueCore.msim_seq {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) (e₁ e₂ : Expr)
+  (he : (e₁.seq e₂).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (e₁.seq e₂)) (eval M (fuel + 1) P H φ (e₁.seq e₂))
+```
+
+### `msim_ite`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-If-T)/(D-If-F) §6.6 (helper).
+
+```lean
+theorem RueCore.msim_ite {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) (c e₁ e₂ : Expr)
+  (he : (c.ite e₁ e₂).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (c.ite e₁ e₂))
+    (eval M (fuel + 1) P H φ (c.ite e₁ e₂))
+```
+
+### `msim_call`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Call) §6.9, then (D-Return-Value), or (D-Return)'s value caught at the
+`call` frame (helper).
+
+```lean
+theorem RueCore.msim_call {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) (f : Nat) (args : List Expr)
+  (he : (Expr.call f args).pendingSafe = true) :
+  MSim M P φ (evalConf H φ (Expr.call f args))
+    (eval M (fuel + 1) P H φ (Expr.call f args))
+```
+
+### `msim_ret`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Return) §6.9: the frames it discards hold nothing, by the unwinding
+clause's premise (helper).
+
+```lean
+theorem RueCore.msim_ret {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (e : Expr)
+  (he : e.ret.pendingSafe = true) :
+  MSim M P φ (evalConf H φ e.ret) (eval M (fuel + 1) P H φ e.ret)
+```
+
+### `msim_brk`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Break) §6.10 (helper).
+
+```lean
+theorem RueCore.msim_brk {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} :
+  MSim M P φ (evalConf H φ Expr.brk) (eval M (fuel + 1) P H φ Expr.brk)
+```
+
+### `msim_loop`
+
+*theorem* · module `RueCore.TraceWhole`
+
+(D-Loop-Enter), (D-Loop-Iter) and (D-Break)'s landing §6.10 (helper).
+
+```lean
+theorem RueCore.msim_loop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) (e : Expr) (he : e.loop.pendingSafe = true) :
+  MSim M P φ (evalConf H φ e.loop) (eval M (fuel + 1) P H φ e.loop)
+```
+
+### `eval_msim`
+
+*theorem* · module `RueCore.TraceWhole`
+
+**`eval` is simulated losslessly** (helper): for a `pendingSafe` program,
+every `pendingSafe` expression from every copy-closed store, at every fuel,
+reaches what `Sim` says it reaches by a run along which no step loses an
+owned identity. The proof is `eval_sim`'s, form by form, with each step's
+ledger closed by the matching exact ledger of `TraceExact.lean`; typing
+enters nowhere — `eval`'s monitors are what copy closure needs — and
+`pendingSafe` is what keeps an unwind from discarding a held value.
+
+```lean
+theorem RueCore.eval_msim (M : FloatOps) {P : Program} (hp : P.pendingSafe = true)
+  (fuel : Nat) : MSimIH M P fuel
+```
+
+### `run_msteps`
+
+*theorem* · module `RueCore.TraceWhole`
+
+**A finished run of a `pendingSafe` program is lossless** (helper): where
+`run` answers a value, §6's relation reaches that value's terminal
+configuration from `Config.init` by a run along which no step loses an owned
+identity.
+
+```lean
+theorem RueCore.run_msteps (M : FloatOps) {P : Program} (hp : P.pendingSafe = true)
+  (fuel : Nat) {H : Store} {v : Val} {tr : List Event}
+  (hr : run M P fuel = EvalRes.ok H v tr) :
+  MSteps M P Config.init (Config.run H Frame.empty [] (Focus.ret v) tr)
+```
+
+### `storeOwn_of_dead`
+
+*theorem* · module `RueCore.TraceWhole`
+
+A store whose every cell is retired owns nothing (helper).
+
+```lean
+theorem RueCore.storeOwn_of_dead {D : Decls} {H : Store}
+  (h : ∀ (ℓ : Nat), ℓ < List.length H → H[ℓ]? = some Cell.dead) :
+  storeOwn D H = []
+```
+
+### `run_final_le`
+
+*theorem* · module `RueCore.TraceWhole`
+
+**A finished run ends with an empty store and counts every identity at
+most once** (helper): `eval_tidy` retires every cell by the end, and
+`eval_conserves` from the empty store bounds what the result and the trace
+own by the range of identities minted (`run_trace_once`'s argument).
+
+```lean
+theorem RueCore.run_final_le (M : FloatOps) (P : Program) (fuel : Nat) {H : Store}
+  {v : Val} {tr : List Event} (hr : run M P fuel = EvalRes.ok H v tr) :
+  storeOwn P.decls H = [] ∧
+    ∀ (a : Nat),
+      List.count a (Val.own P.decls v) + List.count a (freedIds P.decls tr) ≤
+        1
+```
+
 ### `Sharp.exact_ops`
 
 *theorem* · module `RueCore.Sharp`
@@ -17197,6 +18595,17 @@ theorem RueCore.Spine.drop_exactly_once : Spec.drop_exactly_once_stmt
 theorem RueCore.Spine.rest_exactly_once : Spec.rest_exactly_once_stmt
 ```
 
+### `Spine.whole_program_exactly_once`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.whole_program_exactly_once_stmt`, by `RueCore.whole_program_exactly_once` (helper).
+
+```lean
+theorem RueCore.Spine.whole_program_exactly_once :
+  Spec.whole_program_exactly_once_stmt
+```
+
 ### `Spine.drop_order`
 
 *theorem* · module `RueCore.Spine`
@@ -17525,6 +18934,26 @@ theorem RueCore.Spine.Nonvacuous.diverges : Spec.Nonvacuous.diverges_stmt
 
 ```lean
 theorem RueCore.Spine.Nonvacuous.diverges_drop : Spec.Nonvacuous.diverges_drop_stmt
+```
+
+### `Spine.Nonvacuous.whole_drops`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Nonvacuous.whole_drops_stmt`, by `RueCore.Nonvacuous.whole_drops` (helper).
+
+```lean
+theorem RueCore.Spine.Nonvacuous.whole_drops : Spec.Nonvacuous.whole_drops_stmt
+```
+
+### `Spine.Nonvacuous.whole_result`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Nonvacuous.whole_result_stmt`, by `RueCore.Nonvacuous.whole_result` (helper).
+
+```lean
+theorem RueCore.Spine.Nonvacuous.whole_result : Spec.Nonvacuous.whole_result_stmt
 ```
 
 ### `Spine.Nonvacuous.stuck`
@@ -17865,6 +19294,108 @@ theorem RueCore.Spine.Sharp.out_of_range_halt : Spec.Sharp.out_of_range_halt_stm
 
 ```lean
 theorem RueCore.Spine.Sharp.float_halt : Spec.Sharp.float_halt_stmt
+```
+
+### `Spine.Sharp.copy_leak`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.copy_leak_stmt`, by `RueCore.Sharp.copy_leak` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.copy_leak : Spec.Sharp.copy_leak_stmt
+```
+
+### `Spine.Sharp.pending_leak`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.pending_leak_stmt`, by `RueCore.Sharp.pending_leak` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.pending_leak : Spec.Sharp.pending_leak_stmt
+```
+
+### `Spine.Sharp.unreached_held`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.unreached_held_stmt`, by `RueCore.Sharp.unreached_held` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.unreached_held : Spec.Sharp.unreached_held_stmt
+```
+
+### `Spine.Sharp.unheld`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.unheld_stmt`, by `RueCore.Sharp.unheld` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.unheld : Spec.Sharp.unheld_stmt
+```
+
+### `Spine.Sharp.off_run`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.off_run_stmt`, by `RueCore.Sharp.off_run` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.off_run : Spec.Sharp.off_run_stmt
+```
+
+### `Nonvacuous.Glue.whole_drops.checkProgram_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`whole_drops` applied to `checkProgram_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.whole_drops.checkProgram_sound : True
+```
+
+### `Nonvacuous.Glue.whole_drops.whole_program_exactly_once`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`whole_drops` applied to `whole_program_exactly_once`, at each of the two
+identities its reached configuration holds (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.whole_drops.whole_program_exactly_once : True
+```
+
+### `Nonvacuous.Glue.whole_result.checkProgram_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`whole_result` applied to `checkProgram_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.whole_result.checkProgram_sound : True
+```
+
+### `Nonvacuous.Glue.whole_result.whole_program_exactly_once`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`whole_result` applied to `whole_program_exactly_once` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.whole_result.whole_program_exactly_once : True
+```
+
+### `Nonvacuous.Glue.exact_model.whole_program_exactly_once`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `whole_program_exactly_once`, through the
+`whole_drops` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.whole_program_exactly_once : True
 ```
 
 ### `Nonvacuous.Glue.dtor.soundness`
@@ -21842,6 +23373,111 @@ theorem RueCore.Sharp.Glue.float_halt.step_preservation_2 :
         ∃ fd,
           P.fns[0]? = some fd ∧
             ∀ (C : Config), Config.SafeAt M.toFloatOps P fd.ret C
+```
+
+### `Sharp.Glue.copy_leak.whole_program_exactly_once_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.copy_leak` refutes `whole_program_exactly_once` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.copy_leak.whole_program_exactly_once_1 :
+  ¬∀ (M : FloatModel) {P : Program},
+      P.pendingSafe = true →
+        ∀ {C : Config},
+          Steps M.toFloatOps P Config.init C →
+            ∀ {a : Nat},
+              a ∈ Config.held P.decls C →
+                ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+                  Steps M.toFloatOps P C
+                      (Config.run H φ [] (Focus.ret v) tr) →
+                    List.count a (Val.own P.decls v) +
+                        List.count a (freedIds P.decls tr) =
+                      1
+```
+
+### `Sharp.Glue.pending_leak.whole_program_exactly_once_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.pending_leak` refutes `whole_program_exactly_once` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.pending_leak.whole_program_exactly_once_2 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        ∀ {C : Config},
+          Steps M.toFloatOps P Config.init C →
+            ∀ {a : Nat},
+              a ∈ Config.held P.decls C →
+                ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+                  Steps M.toFloatOps P C
+                      (Config.run H φ [] (Focus.ret v) tr) →
+                    List.count a (Val.own P.decls v) +
+                        List.count a (freedIds P.decls tr) =
+                      1
+```
+
+### `Sharp.Glue.unreached_held.whole_program_exactly_once_3`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreached_held` refutes `whole_program_exactly_once` without hypothesis 3 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreached_held.whole_program_exactly_once_3 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        P.pendingSafe = true →
+          ∀ {C : Config} {a : Nat},
+            a ∈ Config.held P.decls C →
+              ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+                Steps M.toFloatOps P C (Config.run H φ [] (Focus.ret v) tr) →
+                  List.count a (Val.own P.decls v) +
+                      List.count a (freedIds P.decls tr) =
+                    1
+```
+
+### `Sharp.Glue.unheld.whole_program_exactly_once_4`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unheld` refutes `whole_program_exactly_once` without hypothesis 4 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unheld.whole_program_exactly_once_4 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        P.pendingSafe = true →
+          ∀ {C : Config},
+            Steps M.toFloatOps P Config.init C →
+              ∀ {a : Nat} {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+                Steps M.toFloatOps P C (Config.run H φ [] (Focus.ret v) tr) →
+                  List.count a (Val.own P.decls v) +
+                      List.count a (freedIds P.decls tr) =
+                    1
+```
+
+### `Sharp.Glue.off_run.whole_program_exactly_once_5`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.off_run` refutes `whole_program_exactly_once` without hypothesis 5 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.off_run.whole_program_exactly_once_5 :
+  ¬∀ (M : FloatModel) {P : Program},
+      ProgramTyped P →
+        P.pendingSafe = true →
+          ∀ {C : Config},
+            Steps M.toFloatOps P Config.init C →
+              ∀ {a : Nat},
+                a ∈ Config.held P.decls C →
+                  ∀ {_H : Store} {_φ : Frame} {v : Val} {tr : List Event},
+                    List.count a (Val.own P.decls v) +
+                        List.count a (freedIds P.decls tr) =
+                      1
 ```
 
 ### `Examples.eval_loop_ok`
@@ -28836,7 +30472,7 @@ Defining equations, as Lean derived them from the body:
 **The float laws have a model: `Float.exactOps`** (§7's "totality of the
 float operations"; RUE-2469). Some `FloatModel` has the executable instance
 `Float.exactOps` as its operations, so every law of `FloatModel` holds of the
-model the corpus runs on, and the laws are jointly satisfiable: the 21 spine
+model the corpus runs on, and the laws are jointly satisfiable: the 22 spine
 statements that quantify over `M : FloatModel` are not vacuous in `M`.
 
 ```lean
@@ -30811,6 +32447,29 @@ def RueCore.ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx)
   | ArgsRes.abort r => AbortOk D R B φ H r
 ```
 
+### `ArgsTag.own`
+
+*def* · module `RueCore.Trace.Defs`
+
+The owned identities an argument list's tag holds: an indexed
+assignment's right-hand side, already a value while its indices are reduced
+(`5.2:14`); no other tag holds a value (helper).
+
+```lean
+def RueCore.ArgsTag.own (D : Decls) : ArgsTag → List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (p : Place) (πs : List (List Nat)) (v : Val),
+  ArgsTag.own D (ArgsTag.indexWrite p πs v) = Val.own D v
+∀ (D : Decls) (x : ArgsTag),
+  (∀ (p : Place) (πs : List (List Nat)) (v : Val),
+      x = ArgsTag.indexWrite p πs v → False) →
+    ArgsTag.own D x = []
+```
+
 ### `Blocks`
 
 *inductive* · module `RueCore.Trace.Defs`
@@ -31013,6 +32672,51 @@ def RueCore.Config.SafeAt (M : FloatOps) (P : Program) (T : Ty) (C : Config) :
   (∀ (D : Config), Steps M P C D → D.Terminal ∨ ∃ D', Step M P D D') ∧
     ∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
       Steps M P C (Config.run H φ [] (Focus.ret v) tr) → HasTy P.decls v T
+```
+
+### `Config.held`
+
+*def* · module `RueCore.Trace.Defs`
+
+**What a configuration holds** (§6.1, RUE-2478): the owned identities of
+its store's cells, of the value or values in focus, and of every value its
+control stack holds pending — everywhere a running program keeps an owned
+value. A trap holds nothing: §6.12's `↯κ` keeps a trace and no store. An
+owned identity "allocated along a run" is one some configuration of the run
+holds; (D-Struct), (D-Enum-Intro) and (D-Array) put a non-`Copy` aggregate's
+fresh identity here the step they mint it.
+
+```lean
+def RueCore.Config.held (D : Decls) : Config → List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (H : Store) (φ : Frame) (K : List Kont) (f : Focus)
+  (tr : List Event),
+  Config.held D (Config.run H φ K f tr) =
+    storeOwn D H ++ Focus.own D f ++ List.flatMap (Kont.own D) K
+∀ (D : Decls) (k : PanicKind) (tr : List Event),
+  Config.held D (Config.panic k tr) = []
+```
+
+### `Config.ledger`
+
+*def* · module `RueCore.TraceWhole`
+
+A configuration's **ledger**: what it holds (`Config.held`) and what its
+trace has ended (`freedIds`), as one multiset (helper).
+
+```lean
+def RueCore.Config.ledger (D : Decls) (C : Config) : List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (C : Config),
+  Config.ledger D C = Config.held D C ++ freedIds D C.trace
 ```
 
 ### `Cons`
@@ -31495,6 +33199,55 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (v : Val), Event.freed D (Event.dbg v) = []
 ```
 
+### `Focus.own`
+
+*def* · module `RueCore.Trace.Defs`
+
+The owned identities the focus holds: a value returned into the top
+frame's hole, or a list context's reduced values (helper).
+
+```lean
+def RueCore.Focus.own (D : Decls) : Focus → List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (e : Expr), Focus.own D (Focus.eval e) = []
+∀ (D : Decls) (v : Val), Focus.own D (Focus.ret v) = Val.own D v
+∀ (D : Decls) (t : ArgsTag) (vs : List Val) (es : List Expr),
+  Focus.own D (Focus.args t vs es) =
+    ArgsTag.own D t ++ Contents.ownList D (Contents.ofVals vs)
+```
+
+### `Kont.own`
+
+*def* · module `RueCore.Trace.Defs`
+
+The owned identities one control-stack frame holds (§6.1's `K`, §6.2's
+`E`): a binary operator's left operand, reduced while the right one is, and a
+list context's reduced values. A `call` or loop frame holds a scope record,
+whose cells are in the store, and no other frame holds a value (helper).
+
+```lean
+def RueCore.Kont.own (D : Decls) : Kont → List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (op : BinOp) (v : Val),
+  Kont.own D (Kont.binopR op v) = Val.own D v
+∀ (D : Decls) (t : ArgsTag) (vs : List Val) (es : List Expr),
+  Kont.own D (Kont.args t vs es) =
+    ArgsTag.own D t ++ Contents.ownList D (Contents.ofVals vs)
+∀ (D : Decls) (x : Kont),
+  (∀ (op : BinOp) (v : Val), x = Kont.binopR op v → False) →
+    (∀ (t : ArgsTag) (vs : List Val) (es : List Expr),
+        x = Kont.args t vs es → False) →
+      Kont.own D x = []
+```
+
 ### `TraceMeasure`
 
 *inductive* · module `RueCore.Trace.Defs`
@@ -31550,6 +33303,22 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls) (tr : List Event),
   freedIds D tr = List.flatMap (Event.freed D) tr
+```
+
+### `stackOwn`
+
+*def* · module `RueCore.TraceWhole`
+
+The owned identities a control stack holds pending (helper).
+
+```lean
+def RueCore.stackOwn (D : Decls) (K : List Kont) : List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (K : List Kont), stackOwn D K = List.flatMap (Kont.own D) K
 ```
 
 ### `Exact`
@@ -32716,6 +34485,35 @@ RueCore.Step.brk {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
         (Config.run H' φs K' (Focus.ret Val.unit) (tr ++ evs))
 ```
 
+### `MSteps`
+
+*inductive* · module `RueCore.TraceWhole`
+
+**A run of §6's relation along which no step loses an owned identity**:
+every step's target ledger counts every identity at least as often as its
+source's (helper).
+
+```lean
+inductive RueCore.MSteps (M : FloatOps) (P : Program) : Config → Config → Prop
+```
+
+Constructors:
+
+**`MSteps.refl`**
+
+```lean
+RueCore.MSteps.refl {M : FloatOps} {P : Program} (C : Config) : MSteps M P C C
+```
+
+**`MSteps.step`**
+
+```lean
+RueCore.MSteps.step {M : FloatOps} {P : Program} {C₁ C₂ C₃ : Config} :
+  Step M P C₁ C₂ →
+    IdLe (Config.ledger P.decls C₁) (Config.ledger P.decls C₂) →
+      MSteps M P C₂ C₃ → MSteps M P C₁ C₃
+```
+
 ### `Spec.Config.stuck_iff_stmt`
 
 *def* · module `RueCore.Spec.Step`
@@ -32868,6 +34666,44 @@ def RueCore.LongC (M : FloatOps) (P : Program) (F : Event → List Nat) (H : Sto
           ∃ δ,
             D.trace = tr ++ δ ∧
               Cons P.decls F H X (EvalRes.panic PanicKind.user δ)
+```
+
+### `MSim`
+
+*def* · module `RueCore.TraceWhole`
+
+**`eval`'s result, simulated losslessly** (helper): `Sim`'s clauses
+(`Adequacy.lean`) with every run lossless (`MSteps`), for a value, an
+unwinding `return` and an unwinding `break`. The two unwinding clauses ask of
+the context that the frames the unwind discards hold no owned value — what
+`pendingSafe` guarantees at every form that pushes such a frame (RUE-2316). A
+trap is not simulated: §6.12's `↯κ` keeps no store, so it holds nothing, and
+§5.7's `⊥_panic` edge runs no drop.
+
+```lean
+def RueCore.MSim (M : FloatOps) (P : Program) (φ : Frame)
+  (C : List Kont → List Event → Config) : EvalRes → Prop :=
+  match x✝ with
+  | EvalRes.ok H v tr' =>
+    ∀ (K : List Kont) (tr : List Event),
+      MSteps M P (C K tr) (Config.run H φ K (Focus.ret v) (tr ++ tr'))
+  | EvalRes.returned H v tr' =>
+    ∀ (K : List Kont) (tr : List Event) (φs : Frame) (K' : List Kont),
+      Kont.toCall K = some (φs, K') →
+        IdLe (stackOwn P.decls K) (stackOwn P.decls K') →
+          MSteps M P (C K tr) (Config.run H φs K' (Focus.ret v) (tr ++ tr'))
+  | EvalRes.broke H sc tr' =>
+    ∀ (K : List Kont) (tr : List Event) (φs : Frame) (K' : List Kont)
+      (H' : Store) (evs : List Event),
+      Kont.toLoop K = some (φs, K') →
+        IdLe (stackOwn P.decls K) (stackOwn P.decls K') →
+          plainUnwind P.decls H (List.drop φs.scope.length sc).reverse =
+              Except.ok (H', evs) →
+            MSteps M P (C K tr)
+              (Config.run H' φs K' (Focus.ret Val.unit) (tr ++ tr' ++ evs))
+  | EvalRes.panic k tr => True
+  | EvalRes.stuck why => True
+  | EvalRes.outOfFuel => True
 ```
 
 ### `Sim`
@@ -33871,6 +35707,21 @@ Expr.pendingSafeList [] = true
     (e.pendingSafe && Expr.pendingSafeList es)
 ```
 
+### `MSimIH`
+
+*def* · module `RueCore.TraceWhole`
+
+The induction hypothesis: `eval` at fuel `fuel` is simulated losslessly
+from every copy-closed store, for every `pendingSafe` expression (helper).
+
+```lean
+def RueCore.MSimIH (M : FloatOps) (P : Program) (fuel : Nat) : Prop :=
+  ∀ (H : Store) (φ : Frame) (e : Expr),
+    StoreCC P.decls H →
+      e.pendingSafe = true →
+        MSim M P φ (evalConf H φ e) (eval M fuel P H φ e)
+```
+
 ### `Program.pendingSafe`
 
 *def* · module `RueCore.Trace.Defs`
@@ -34533,6 +36384,106 @@ def RueCore.Spec.Nonvacuous.diverges_stmt : Prop :=
           ∀ (fuel : Nat), run Float.exactOps P fuel = EvalRes.outOfFuel
 ```
 
+### `Spec.Nonvacuous.whole_drops_stmt`
+
+*def* · module `RueCore.Spec.Nonvacuous`
+
+**A run that holds two owned values at once and ends each** (§7, over a
+whole program; RUE-2478; the `dtor` witness's program, the corpus case
+`affine_scope_drop` twice over). `let x = S0 { 1 }; let y = S0 { 2 }; 3` is
+checked and `pendingSafe`; §6's relation reaches a configuration that holds
+both values, identities `0` and `2`, in their cells, and from there the run
+finishes with a trace that ends each of them once. So
+`whole_program_exactly_once`'s hypotheses hold of a run that allocates and
+drops several owned values.
+
+```lean
+def RueCore.Spec.Nonvacuous.whole_drops_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                ∃ C,
+                  Steps Float.exactOps P Config.init C ∧
+                    0 ∈ Config.held P.decls C ∧
+                      2 ∈ Config.held P.decls C ∧
+                        ∃ H v tr,
+                          Steps Float.exactOps P C
+                              (Config.run H Frame.empty [] (Focus.ret v)
+                                tr) ∧
+                            List.count 0 (freedIds P.decls tr) = 1 ∧
+                              List.count 2 (freedIds P.decls tr) = 1
+```
+
+### `Spec.Nonvacuous.whole_result_stmt`
+
+*def* · module `RueCore.Spec.Nonvacuous`
+
+**A run whose result is an owned value** (§7, over a whole program;
+RUE-2478). `fn main() -> S0 { S0 { 7 } }` is checked and `pendingSafe`; the
+configuration right after (D-Struct) holds the new value's identity `0`, and
+the run finishes with that value as its result — which owns `0` — and a trace
+that ends nothing. So `whole_program_exactly_once`'s other disjunct, an owned
+value accounted for by being part of the final value, is reached too.
+
+```lean
+def RueCore.Spec.Nonvacuous.whole_result_stmt : Prop :=
+  ∀ (P : Program),
+    P =
+        {
+          decls :=
+            {
+              structs :=
+                [{ attr := Attr.none,
+                    fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := true, cls := Mult.affine },
+                  { attr := Attr.linear,
+                    fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := false, cls := Mult.linear }],
+              enums :=
+                [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+          fns :=
+            [{ params := [], ret := Ty.struct 0,
+                body :=
+                  Expr.mkStruct 0
+                    [Expr.intLit IntWidth.w64 Sign.signed 7] }] } →
+      checkProgram P = true ∧
+        ProgramTyped P ∧
+          P.pendingSafe = true ∧
+            ∃ C,
+              Steps Float.exactOps P Config.init C ∧
+                0 ∈ Config.held P.decls C ∧
+                  ∃ H v tr,
+                    Steps Float.exactOps P C
+                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      List.count 0 (Val.own P.decls v) = 1 ∧
+                        freedIds P.decls tr = []
+```
+
 ### `Spec.Sharp.bare_dtor_stmt`
 
 *def* · module `RueCore.Spec.Sharp`
@@ -34585,6 +36536,60 @@ def RueCore.Spec.Sharp.bare_dtor_stmt : Prop :=
                 Steps Float.exactOps P Config.init
                     (Config.run H φ [] (Focus.ret v) tr) ∧
                   ¬Blocks P.decls tr
+```
+
+### `Spec.Sharp.copy_leak_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**An owned value hidden under a `Copy` node, lost** (§7 sharpness,
+RUE-2478; the ill-typed shape of `double_drop`, without the copies). With `S0`
+a `@copy` struct whose field is an `i64`, `let p = S0 { S1 { 1 } }; 0` is
+rejected by the checker (the field is given an `S1`), so it is not
+`ProgramTyped` (shown through `whole_program_exactly_once` itself), and it is
+`pendingSafe`. §6's relation, which has no copy-closure monitor, runs it: the
+configuration after `S1`'s (D-Struct) holds `S1`'s identity `0`; (D-Struct)
+wraps it in the `Copy` `S0`, which owns nothing, and `p`'s drop at scope exit
+is a `Copy` cell's, which runs nothing; the run finishes with `0` and an empty
+trace. Identity `0` is neither in the result nor ended: without
+`ProgramTyped`, `whole_program_exactly_once` fails.
+
+```lean
+def RueCore.Spec.Sharp.copy_leak_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0
+            [Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 1]])
+          (Expr.intLit IntWidth.w64 Sign.signed 0) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.copy,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.copy },
+                      { attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine }],
+                  enums := [] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = false ∧
+            ¬ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                ∃ C,
+                  Steps Float.exactOps P Config.init C ∧
+                    0 ∈ Config.held P.decls C ∧
+                      ∃ H v tr,
+                        Steps Float.exactOps P C
+                            (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          List.count 0 (Val.own P.decls v) +
+                              List.count 0 (freedIds P.decls tr) =
+                            0
 ```
 
 ### `Spec.Sharp.copy_stmt`
@@ -35227,6 +37232,61 @@ def RueCore.Spec.Sharp.not_a_step_stmt : Prop :=
                                     tr).stack
 ```
 
+### `Spec.Sharp.off_run_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A finished configuration the run does not reach** (§7 sharpness,
+RUE-2478). The checked, `pendingSafe` program of `Nonvacuous.dtor` reaches a
+configuration holding `x`'s `S0`, identity `0`; the terminal configuration
+with an empty store, result `3` and an empty trace ends nothing, and that
+configuration does not reach it (shown through `whole_program_exactly_once`
+itself). So the statement fails without the hypothesis that the end is the
+run's own.
+
+```lean
+def RueCore.Spec.Sharp.off_run_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              ∃ C,
+                Steps Float.exactOps P Config.init C ∧
+                  0 ∈ Config.held P.decls C ∧
+                    ¬Steps Float.exactOps P C
+                          (Config.run [] Frame.empty []
+                            (Focus.ret (Val.int IntWidth.w64 Sign.signed 3))
+                            []) ∧
+                      List.count 0
+                            (Val.own P.decls
+                              (Val.int IntWidth.w64 Sign.signed 3)) +
+                          List.count 0 (freedIds P.decls []) =
+                        0
+```
+
 ### `Spec.Sharp.out_of_range_halt_stmt`
 
 *def* · module `RueCore.Spec.Sharp`
@@ -35333,6 +37393,65 @@ def RueCore.Spec.Sharp.overwrite_stmt : Prop :=
             ¬ProgramTyped P ∧
               run Float.exactOps P 200 =
                 EvalRes.stuck Violation.linearOverwrite
+```
+
+### `Spec.Sharp.pending_leak_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A pending argument discarded by a `return`** (§7 sharpness, RUE-2478;
+RUE-2316, the shape of `TraceExact.lean`'s `pendingSafe_needed` in `main`
+itself). `fn main() -> i64 { f(S0 { 7 }, return 0) }` with `fn f(a: S0, b:
+i64) -> i64 { @drop(a); b }` is accepted by the checker and is not
+`pendingSafe`: the second argument returns. §6's relation reaches the
+configuration holding the minted `S0` (identity `0`) pending in the call's
+argument list; (D-Return) discards that list, and the run finishes with `0`
+and an empty trace. Identity `0` is neither in the result nor ended: without
+`pendingSafe`, `whole_program_exactly_once` fails on a checked program.
+
+```lean
+def RueCore.Spec.Sharp.pending_leak_stmt : Prop :=
+  ∀ (P : Program),
+    P =
+        {
+          decls :=
+            {
+              structs :=
+                [{ attr := Attr.none,
+                    fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := true, cls := Mult.affine },
+                  { attr := Attr.linear,
+                    fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := false, cls := Mult.linear }],
+              enums :=
+                [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+          fns :=
+            [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                body :=
+                  Expr.call 1
+                    [Expr.mkStruct 0
+                        [Expr.intLit IntWidth.w64 Sign.signed 7],
+                      (Expr.intLit IntWidth.w64 Sign.signed 0).ret] },
+              {
+                params :=
+                  [{ ty := Ty.struct 0, mu := false },
+                    { ty := Ty.int IntWidth.w64 Sign.signed, mu := false }],
+                ret := Ty.int IntWidth.w64 Sign.signed,
+                body :=
+                  (Expr.drop (Place.var 1)).seq
+                    (Expr.use (Place.var 0)) }] } →
+      checkProgram P = true ∧
+        ProgramTyped P ∧
+          P.pendingSafe = false ∧
+            ∃ C,
+              Steps Float.exactOps P Config.init C ∧
+                0 ∈ Config.held P.decls C ∧
+                  ∃ H v tr,
+                    Steps Float.exactOps P C
+                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      List.count 0 (Val.own P.decls v) +
+                          List.count 0 (freedIds P.decls tr) =
+                        0
 ```
 
 ### `Spec.Sharp.retired_cell_stmt`
@@ -35627,6 +37746,56 @@ def RueCore.Spec.Sharp.uncut_drop_stmt : Prop :=
                                       []).stack
 ```
 
+### `Spec.Sharp.unheld_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**An identity the run never holds** (§7 sharpness, RUE-2478). The checked,
+`pendingSafe` program of `Nonvacuous.dtor` finishes from `Config.init`, which
+holds nothing; its trace ends identities `0` and `2` and nothing else, so
+identity `1` — the index of `x`'s cell, which names a cell and no value — is
+neither ended nor in the result. So the statement fails without the
+hypothesis that the configuration holds the identity: it counts owned values,
+not every index.
+
+```lean
+def RueCore.Spec.Sharp.unheld_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              ¬1 ∈ Config.held P.decls Config.init ∧
+                ∃ H v tr,
+                  Steps Float.exactOps P Config.init
+                      (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                    List.count 1 (Val.own P.decls v) +
+                        List.count 1 (freedIds P.decls tr) =
+                      0
+```
+
 ### `Spec.Sharp.unordered_stmt`
 
 *def* · module `RueCore.Spec.Sharp`
@@ -35832,6 +38001,71 @@ def RueCore.Spec.Sharp.unreached_double_stmt : Prop :=
                               [Contents.int IntWidth.w64 Sign.signed
                                   1])]).trace) =
                 2
+```
+
+### `Spec.Sharp.unreached_held_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A configuration holding a value no run holds** (§7 sharpness, RUE-2478).
+For the checked, `pendingSafe` program of `Nonvacuous.dtor`, the terminal
+configuration whose one cell holds an `S0` with identity `5`, and whose
+result `0` and trace are empty, holds identity `5`, reaches itself, and ends
+it nowhere; `Config.init` does not reach it (shown through
+`whole_program_exactly_once` itself). So the statement fails without the
+hypothesis that the configuration is reached: it is about the values a run
+holds, not about every configuration's.
+
+```lean
+def RueCore.Spec.Sharp.unreached_held_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              ¬Steps Float.exactOps P Config.init
+                    (Config.run
+                      [Cell.full
+                          (Contents.struct 0 5
+                            [Contents.int IntWidth.w64 Sign.signed 1])]
+                      Frame.empty []
+                      (Focus.ret (Val.int IntWidth.w64 Sign.signed 0)) []) ∧
+                5 ∈
+                    Config.held P.decls
+                      (Config.run
+                        [Cell.full
+                            (Contents.struct 0 5
+                              [Contents.int IntWidth.w64 Sign.signed 1])]
+                        Frame.empty []
+                        (Focus.ret (Val.int IntWidth.w64 Sign.signed 0))
+                        []) ∧
+                  List.count 5
+                        (Val.own P.decls
+                          (Val.int IntWidth.w64 Sign.signed 0)) +
+                      List.count 5 (freedIds P.decls []) =
+                    0
 ```
 
 ### `Spec.Sharp.unreached_panic_stmt`
@@ -36355,6 +38589,41 @@ def RueCore.Spec.step_type_safety_stmt : Prop :=
                       (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
                     HasTy P.decls v fd.ret) ∨
                 ∃ κ tr, Steps M.toFloatOps P Config.init (Config.panic κ tr)
+```
+
+### `Spec.whole_program_exactly_once_stmt`
+
+*def* · module `RueCore.Spec.Trace`
+
+**Every owned value of a finished run ends exactly once** (§7 "No
+use-after-drop / no leak of drops", over a whole program; RUE-2478). For a
+checked, `pendingSafe` program, take any configuration `C` §6's relation
+reaches from `Config.init` and any owned identity `a` that `C` holds — in a
+cell, in focus, or pending on the control stack (`Config.held`); these are the
+owned values allocated along the run. If the run from `C` finishes with a
+value (`✓v`, a value at an empty stack), then `a` is ended in the final trace
+(a drop, a discarded temporary's drop, or a consumption: `freedIds`) or is
+part of the final value, exactly once between the two: no owned value the
+run holds is lost, and none is ended twice. Narrower than the bullet:
+`pendingSafe` (RUE-2316), nothing about a panic (§6.12's trap runs no drop, so
+what it abandons is not ended), and nothing about a run that never finishes
+(`step_no_double_free` bounds every prefix from above).
+
+```lean
+def RueCore.Spec.whole_program_exactly_once_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      P.pendingSafe = true →
+        ∀ {C : Config},
+          Steps M.toFloatOps P Config.init C →
+            ∀ {a : Nat},
+              a ∈ Config.held P.decls C →
+                ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+                  Steps M.toFloatOps P C
+                      (Config.run H φ [] (Focus.ret v) tr) →
+                    List.count a (Val.own P.decls v) +
+                        List.count a (freedIds P.decls tr) =
+                      1
 ```
 
 ### `Spec.Nonvacuous.array_stmt`
@@ -37870,7 +40139,8 @@ agreeing frame and store, is never refused; every identity the store
 holds ends up in an old cell, in the result, or ended in the trace as often
 as held (`Exact`); every cell it allocated is retired (`Tidy`). Narrower
 than the bullet: `pendingSafe` (RUE-2316), nothing about a panic, and per
-evaluation, not per run (RUE-2478).
+evaluation, not per run; the whole-run form is `whole_program_exactly_once`
+(RUE-2478).
 
 ```lean
 def RueCore.Spec.drop_exactly_once_stmt : Prop :=
