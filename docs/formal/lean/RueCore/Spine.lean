@@ -7,6 +7,7 @@ public import RueCore.Trace
 public import RueCore.TraceExact
 public import RueCore.TraceOrder
 public import RueCore.Adequacy
+public import RueCore.Nonvacuous
 
 @[expose] public section
 
@@ -102,5 +103,32 @@ theorem step_never_stuck_of_run : Spec.step_never_stuck_of_run_stmt := @RueCore.
 theorem run_stuck_of_step_stuck : Spec.run_stuck_of_step_stuck_stmt := @RueCore.run_stuck_of_step_stuck
 /-- `Spec.eval_diverges_iff_stmt`, by `RueCore.eval_diverges_iff` (helper). -/
 theorem eval_diverges_iff : Spec.eval_diverges_iff_stmt := @RueCore.eval_diverges_iff
+
+/-! ## The non-vacuity witnesses (`Spec.witnesses`) -/
+
+/-- `Spec.Nonvacuous.exact_model_stmt`, by `RueCore.Nonvacuous.exact_model` (helper). -/
+theorem Nonvacuous.exact_model : Spec.Nonvacuous.exact_model_stmt := @RueCore.Nonvacuous.exact_model
+/-- `Spec.Nonvacuous.empty_frame_stmt`, by `RueCore.Nonvacuous.empty_frame` (helper). -/
+theorem Nonvacuous.empty_frame : Spec.Nonvacuous.empty_frame_stmt := @RueCore.Nonvacuous.empty_frame
+/-- `Spec.Nonvacuous.dtor_stmt`, by `RueCore.Nonvacuous.dtor` (helper). -/
+theorem Nonvacuous.dtor : Spec.Nonvacuous.dtor_stmt := @RueCore.Nonvacuous.dtor
+/-- `Spec.Nonvacuous.linear_stmt`, by `RueCore.Nonvacuous.linear` (helper). -/
+theorem Nonvacuous.linear : Spec.Nonvacuous.linear_stmt := @RueCore.Nonvacuous.linear
+/-- `Spec.Nonvacuous.loop_stmt`, by `RueCore.Nonvacuous.loop` (helper). -/
+theorem Nonvacuous.loop : Spec.Nonvacuous.loop_stmt := @RueCore.Nonvacuous.loop
+/-- `Spec.Nonvacuous.array_stmt`, by `RueCore.Nonvacuous.array` (helper). -/
+theorem Nonvacuous.array : Spec.Nonvacuous.array_stmt := @RueCore.Nonvacuous.array
+/-- `Spec.Nonvacuous.enum_match_stmt`, by `RueCore.Nonvacuous.enum_match` (helper). -/
+theorem Nonvacuous.enum_match : Spec.Nonvacuous.enum_match_stmt := @RueCore.Nonvacuous.enum_match
+/-- `Spec.Nonvacuous.early_return_stmt`, by `RueCore.Nonvacuous.early_return` (helper). -/
+theorem Nonvacuous.early_return : Spec.Nonvacuous.early_return_stmt := @RueCore.Nonvacuous.early_return
+/-- `Spec.Nonvacuous.panic_stmt`, by `RueCore.Nonvacuous.panic` (helper). -/
+theorem Nonvacuous.panic : Spec.Nonvacuous.panic_stmt := @RueCore.Nonvacuous.panic
+/-- `Spec.Nonvacuous.float_stmt`, by `RueCore.Nonvacuous.float` (helper). -/
+theorem Nonvacuous.float : Spec.Nonvacuous.float_stmt := @RueCore.Nonvacuous.float
+/-- `Spec.Nonvacuous.diverges_stmt`, by `RueCore.Nonvacuous.diverges` (helper). -/
+theorem Nonvacuous.diverges : Spec.Nonvacuous.diverges_stmt := @RueCore.Nonvacuous.diverges
+/-- `Spec.Nonvacuous.stuck_stmt`, by `RueCore.Nonvacuous.stuck` (helper). -/
+theorem Nonvacuous.stuck : Spec.Nonvacuous.stuck_stmt := @RueCore.Nonvacuous.stuck
 
 end RueCore.Spine
