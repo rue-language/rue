@@ -716,7 +716,7 @@ live bindings. The σ-walk drops each once (`#2` and `#0`, row 9), and no
 them are on the unwind path.
 
 **Exactly once, over a whole run** (`TraceWhole.lean`). *Every owned value
-a finished run of a checked, `pendingSafe` program ever holds is, at the
+a run of a checked, `pendingSafe` program that finishes with a value ever holds is, at the
 end, ended exactly once in the trace or part of the result, and not both.*
 
 ```lean

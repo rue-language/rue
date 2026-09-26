@@ -90,7 +90,7 @@ def rest_exactly_once_stmt : Prop :=
     (∀ w, r ≠ .stuck w) ∧
       Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧ Settled φ H₁ r
 
-/-- **Every owned value of a finished run ends exactly once** (§7 "No
+/-- **Every owned value of a run that finishes with a value ends exactly once** (§7 "No
 use-after-drop / no leak of drops", over a whole program; RUE-2478). For a
 checked, `pendingSafe` program, take any configuration `C` §6's relation
 reaches from `Config.init` and any owned identity `a` that `C` holds — in a
