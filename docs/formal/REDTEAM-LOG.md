@@ -365,4 +365,7 @@ What the mutants could not get past:
   spine theorem; for a counter-example, the dropped hypothesis is a
   hand-written pair `(theorem, number)`, and the statement's doc-comment says
   which. A glue for sharpness would state each spine theorem with that
-  hypothesis removed and derive its negation.
+  hypothesis removed and derive its negation. (Since done, by RUE-2495:
+  `lean/RueCore/Sharp/Glue.lean` negates each weakened statement, and the lint
+  computes the weakened statement itself, `Lint.dropHyp`, and requires the
+  glue theorem to state exactly its negation.)

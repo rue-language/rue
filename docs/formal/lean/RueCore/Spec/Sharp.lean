@@ -32,14 +32,16 @@ Every program runs on `Float.exactOps`, a model of the float laws
 model, not hypotheses about a program, so they have no counter-example here
 (`Spec.sharpnessReasons`, `Spec.lean`).
 
-Two things are not shown by the kernel. First, that a statement drops the
-hypothesis `Spec.sharpness` pairs it with: the pairs are hand-written and
-reviewed, and the lint checks only their range and coverage (a kernel-checked
-tie is RUE-2495). Where a statement does not give the other hypotheses in the
-spine theorem's literal form (`run` for `eval` at `main()`, `ProgramTyped`
-for `WfProgram`, `eval … = r.withTrace []`), its doc-comment names the spot.
-Second, that the dropped hypothesis fails independently of the spine: every
-negated hypothesis (`¬ ProgramTyped`, `¬ WfProgram`, `¬ Typed`,
+That a statement refutes each hypothesis `Spec.sharpness` pairs it with is
+checked by the kernel (RUE-2495): `RueCore/Sharp/Glue.lean` proves, from the
+statement, the negation of the spine statement with that hypothesis removed,
+and the lint computes that weakened statement itself (`Lint.dropHyp`) and
+requires the glue theorem to state exactly its negation. So each statement
+gives the other hypotheses in a form the spine statement applies to (`run`
+as `eval` at `main()`, `WfProgram` beside `ProgramTyped`, `eval … =
+r.withTrace []`), and its doc-comment names the spot. One thing the kernel
+does not show is that the dropped hypothesis fails independently of the
+spine. Every negated hypothesis (`¬ ProgramTyped`, `¬ WfProgram`, `¬ Typed`,
 `¬ FrameMatches`, `¬ Steps …`) is proved through the spine theorem itself,
 from the other hypotheses and the failed conclusion, except where the
 doc-comment says it is shown directly. The content of each counter-example is
@@ -47,7 +49,8 @@ that the other hypotheses hold and the conclusion fails, and both are
 established without the spine theorem.
 
 `Spec.sharpness` (`Spec.lean`) lists each statement with the theorem that
-proves it (`RueCore/Sharp.lean`, layer L2) and the spine hypotheses it refutes,
+proves it (`RueCore/Sharp.lean`, layer L2) and the spine hypotheses it refutes
+(each pair checked by `RueCore/Sharp/Glue.lean`),
 each as a spine theorem and a hypothesis number: the hypotheses of a statement
 are its premises of `Prop` type, numbered from 1 in the order they occur,
 premises inside the conclusion included (`Lint.hypotheses`). A statement's
@@ -74,8 +77,7 @@ conclusions fails once its program hypothesis is dropped: `soundness`
 (`no_masking`, `drop_exactly_once`, `rest_exactly_once`), the statement gives
 `run P n` and `eval` at `main()` as the same term (`run`'s definition), and
 `rest_exactly_once`'s hypothesis 8 as `eval … = r.withTrace []` with `r` the
-refusal. That the pairing of this statement with those hypotheses is right is
-reviewed, not yet kernel-checked (RUE-2495). The negations `¬ ProgramTyped`
+refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495). The negations `¬ ProgramTyped`
 and `¬ WfProgram` are proved through the spine theorems themselves
 (`no_use_after_move`, `soundness`), not by inverting the definitions. -/
 def stuck_stmt : Prop :=
@@ -152,7 +154,7 @@ no `c` to hold of, since `check` answers `none`: the statement gives
 `CTy.never`, which fits every type, and no `Ω` at all; `¬ Typed` is stated
 for every type and outcome, so for any `c`, `Ω` a spine instance picks. And
 `rest_exactly_once`'s hypothesis 8 is `eval … = r.withTrace []` with `r` the
-refusal. The pairing is reviewed, not yet kernel-checked (RUE-2495); `¬ Typed`
+refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495); `¬ Typed`
 is proved through `soundness`. -/
 def typed_stmt : Prop :=
   ∀ B : Expr, B =
@@ -187,7 +189,7 @@ store, which do not match that context (`FrameMatches` fails); everything else
 (the discarded `1`) included. `eval` refuses the read of `x` with `unbound`. The statement gives `ProgramTyped P` and `WfProgram P`
 (`soundness` asks the second, `drop_exactly_once` the first), and
 `rest_exactly_once`'s hypothesis 8 as `eval … = r.withTrace []` with `r` the
-refusal. The pairing is reviewed, not yet kernel-checked (RUE-2495);
+refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495);
 `¬ FrameMatches` is proved through `soundness`. -/
 def frame_stmt : Prop :=
   ∀ B : Expr, B =
@@ -369,8 +371,8 @@ its first hypothesis (`eval n` is a value, not a refusal); and
 no `n` makes the value, or a refusal, the answer at every fuel. `run P fuel`
 is `eval` at `main()` (`run`'s definition). `fuel_mono` and `no_masking` are
 stated over `eval`; the statement gives `run P n` and `eval` at `main()` as
-the same term, for every `n` (`run`'s definition). The pairing is reviewed,
-not yet kernel-checked (RUE-2495). -/
+the same term, for every `n` (`run`'s definition). The pairing is
+kernel-checked (`Sharp/Glue.lean`, RUE-2495). -/
 def fuel_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])

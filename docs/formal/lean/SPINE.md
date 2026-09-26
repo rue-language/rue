@@ -1569,8 +1569,7 @@ conclusions fails once its program hypothesis is dropped: `soundness`
 (`no_masking`, `drop_exactly_once`, `rest_exactly_once`), the statement gives
 `run P n` and `eval` at `main()` as the same term (`run`'s definition), and
 `rest_exactly_once`'s hypothesis 8 as `eval … = r.withTrace []` with `r` the
-refusal. That the pairing of this statement with those hypotheses is right is
-reviewed, not yet kernel-checked (RUE-2495). The negations `¬ ProgramTyped`
+refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495). The negations `¬ ProgramTyped`
 and `¬ WfProgram` are proved through the spine theorems themselves
 (`no_use_after_move`, `soundness`), not by inverting the definitions.
 
@@ -1718,7 +1717,7 @@ no `c` to hold of, since `check` answers `none`: the statement gives
 `CTy.never`, which fits every type, and no `Ω` at all; `¬ Typed` is stated
 for every type and outcome, so for any `c`, `Ω` a spine instance picks. And
 `rest_exactly_once`'s hypothesis 8 is `eval … = r.withTrace []` with `r` the
-refusal. The pairing is reviewed, not yet kernel-checked (RUE-2495); `¬ Typed`
+refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495); `¬ Typed`
 is proved through `soundness`.
 
 ```lean
@@ -1785,7 +1784,7 @@ store, which do not match that context (`FrameMatches` fails); everything else
 (the discarded `1`) included. `eval` refuses the read of `x` with `unbound`. The statement gives `ProgramTyped P` and `WfProgram P`
 (`soundness` asks the second, `drop_exactly_once` the first), and
 `rest_exactly_once`'s hypothesis 8 as `eval … = r.withTrace []` with `r` the
-refusal. The pairing is reviewed, not yet kernel-checked (RUE-2495);
+refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495);
 `¬ FrameMatches` is proved through `soundness`.
 
 ```lean
@@ -2136,8 +2135,8 @@ its first hypothesis (`eval n` is a value, not a refusal); and
 no `n` makes the value, or a refusal, the answer at every fuel. `run P fuel`
 is `eval` at `main()` (`run`'s definition). `fuel_mono` and `no_masking` are
 stated over `eval`; the statement gives `run P n` and `eval` at `main()` as
-the same term, for every `n` (`run`'s definition). The pairing is reviewed,
-not yet kernel-checked (RUE-2495).
+the same term, for every `n` (`run`'s definition). The pairing is
+kernel-checked (`Sharp/Glue.lean`, RUE-2495).
 
 ```lean
 def Spec.Sharp.fuel_stmt : Prop :=
