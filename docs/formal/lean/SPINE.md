@@ -120,7 +120,7 @@ Rompf; `../FIELD.md` §3); its Spec module keeps the file name
 | `no_use_after_move` | No named theorem; reading a moved-from (deinitialized) place is a use of uninitialized memory, one of the memory access errors of memory safety (FIELD §5: Rust Reference, Expressions and Glossary (moved from); Hicks 2014 (memory safety)) | `ProgramTyped P` ⇒ `run` never refuses with `useAfterMove` | It is `no_violation` at one tag, so it rules out a read of a `⊘` cell only as far as `eval` checks every read and labels it so. |
 | `no_use_after_drop` | No use after free: the program never "reuses or references memory after it has been freed" (FIELD §5: CWE-416) | `ProgramTyped P` ⇒ `run` never refuses with `useAfterDrop` | The freed object is a dropped binding's retired (`†`) cell rather than heap memory, the error is ruled out as far as `eval` labels an access to it, and the typing hypothesis is redundant (`run_no_use_after_drop`). |
 | `run_no_use_after_drop` | No use after free (CWE-416), as above (FIELD §5: CWE-416) | every program ⇒ `run` never refuses with `useAfterDrop`, at any fuel and any float operations | No typing hypothesis: the property is structural, since a cell is minted fresh and nothing names it once its scope has retired it. |
-| `no_linear_leak` | Linearity: a linear assumption is used exactly once, so there is no weakening; failing the "at least once" half is a leak (FIELD §4: Walker §1.1; FIELD §5: CWE-401) | `ProgramTyped P` ⇒ `run` never refuses with `linearLeak` | Walker's rule is a property of the typing context; ours is its dynamic image, that no scope exit or unwind meets a live linear value, as `eval`'s monitor for it watches. |
+| `no_linear_leak` | Linearity: a linear assumption is used exactly once, so there is no weakening; failing the "at least once" half is a leak (FIELD §4: Walker §1.1; FIELD §5: CWE-401) | `ProgramTyped P` ⇒ `run` never refuses with `linearLeak` | Walker's rule is a property of the typing context. Ours is its dynamic image at the scope records: no scope exit, frame pop or unwind meets a live linear binding, as `eval`'s monitor for it watches. A linear operand value that a sibling's `return` or `break` abandons is outside it (RUE-2316). |
 | `no_linear_overwrite` | Linearity, no weakening (Walker), for an assignment (FIELD §4: Walker §1.1) | `ProgramTyped P` ⇒ `run` never refuses with `linearOverwrite` | The dynamic image of no weakening at an assignment, which would discard the live linear value it overwrites, as `eval`'s monitor for it watches. |
 | `no_linear_discard` | Linearity, no weakening (Walker), for a sequence (FIELD §4: Walker §1.1) | `ProgramTyped P` ⇒ `run` never refuses with `linearDiscard` | The dynamic image of no weakening at a sequence, which would discard a linear value, as `eval`'s monitor for it watches. |
 | `fuel_mono` | The clock lemma: not timed out at clock `c` ⇒ the same result at every `c + k` (FIELD §3: Owens et al. §3.4 (unnamed); Software Foundations `ceval_step_more`) | `n ≤ m` and `eval n … ≠ outOfFuel` ⇒ `eval m … = eval n …` | Identical up to notation. |
@@ -139,7 +139,7 @@ Rompf; `../FIELD.md` §3); its Spec module keeps the file name
 | `drop_glue_order` | Drop glue: `Drop::drop` if implemented, then each field's drop glue; struct fields in declaration order, array elements first to last (FIELD §5: rustc-dev-guide, Drop elaboration; Rust Reference, Destructors) | `ProgramTyped P` ⇒ a finished run's trace is in §6.11's block grammar with each drop's events given by §6.11's rules (`GlueBlocks`, `DropGlue`) | The Rust order for structs and arrays, with an enum dropping its active payload only, stated over finished traces only. |
 | `Step.det` | Determinacy: `e ↦ e′ ∧ e ↦ e″ ⇒ e′ =α e″` (FIELD §1: PFPL Lemma 5.3) | `C → C₁` and `C → C₂` ⇒ `C₁ = C₂` | Identical up to notation, with syntactic equality for `=α` because bindings are de Bruijn indices. |
 | `Step.terminal` | Finality of values: `¬(e val ∧ e ↦ e′)`; a terminal transition system's final configurations take no step (FIELD §1: PFPL Lemma 5.2; Plotkin 1981/2004 §1.2, Def. 2) | `C` terminal (`✓` or `↯κ`) ⇒ no `C → C′` | Identical up to notation, with a trap `↯κ` final too, as PFPL's checked error is. |
-| `Config.trichotomy` | No named theorem: by the definition of stuck, a state is final, steps, or is stuck (FIELD §1: Plotkin 1981/2004 §3.1, Def. 11; PFPL ch. 6) | every `C` steps, is terminal, or is stuck on a named `Violation` | Classically immediate from the definition of stuck, it has content here because `Config.Stuck` is the step function's verdict, so it says that verdict is exhaustive and names the violation. |
+| `Config.trichotomy` | No named theorem: by the definition of stuck, a state is final, steps, or is stuck (FIELD §1: Plotkin 1981/2004 §3.1, Def. 11; PFPL ch. 6) | every `C` steps, is terminal, or is stuck on a named `Violation` | Immediate here, as in the literature. `Config.Stuck` is `step`'s `.stuck` verdict and `step` is total, so what the statement adds is that `step`'s `.halted` is `Config.Terminal` and its `.next` is a `Step`. That stuck means "not terminal, and no rule applies" is `Config.stuck_iff`; that `step` is `Step` is `step_iff`. |
 | `step_iff` | No named counterpart: an executable step function agrees with the transition relation (FIELD §1: small-step transition relation (Plotkin 1981/2004 §1.2)) | `C → C′` ⇔ `step C = .next C′` | Correctness of the executable `step` for the relation `Step`, both ways, which the literature, defining only the relation, does not need. |
 | `Config.stuck_iff` | Stuck: not a value (not final) and no step applies (FIELD §1: Plotkin 1981/2004 §3.1, Def. 11; PFPL ch. 6) | (`C` not terminal and no `C → C′`) ⇔ `C` is stuck on some `Violation` | The accepted definition, proved equal to ours (the step function's verdict), with terminal in the role of value, traps included. |
 | `step_stuck_isStuckState` | No counterpart (FIELD §2: the `Violation` row (four of its constructors are monitors, not stuck states of `Step`)) | `C` stuck on `w` ⇒ `w` is one of §6's own four stuck states | Says that `Step`'s stuck states are §6's own and never one of `eval`'s monitors, which the literature, with no monitors, has no need of. |
@@ -193,7 +193,11 @@ Sharp:
 
 **Program safety** (§7 "Type safety"). A well-formed program whose entry
 point (`P.fns[0]?`) takes no parameters, run at any fuel, exhausts it,
-panics, or returns a value of its entry point's type.
+panics, or returns a value of its entry point's type. The entry point's
+return type is not restricted: §2's grammar fixes `fn main() -> i32 | unit`,
+and (Result-Ok) §6.12 reads only those types, but `WfProgram` admits any type.
+So a checked program may return an owned value from `main`, even a linear one,
+and no drop or monitor sees it (`Nonvacuous.whole_result` returns an `S0`).
 
 ```lean
 def Spec.run_safe_stmt : Prop :=
@@ -324,7 +328,16 @@ Sharp: no hypotheses to drop.
 ### `no_linear_leak`
 
 **No linear leak** (§7 "Linear values are consumed exactly once", §5.6): no
-scope exit or unwind meets a live linear value.
+scope exit, frame pop or scope unwind meets a live linear binding. Narrower
+than the bullet:
+- a linear value built for a sibling operand, which a later operand abandons
+  by `return` or `break`, is in no scope record; the unwind discards it
+  unchecked and the run ends normally (RUE-2316;
+  `Examples.linearLostAtCallArg`);
+- a `@panic` abandons live linear bindings by design (§5.7's `⊥_panic`);
+- a linear value the entry point returns is handed to no scope.
+What it rules out is what `eval`'s leak monitor watches (R3 of
+`REDTEAM-LOG.md`).
 
 ```lean
 def Spec.no_linear_leak_stmt : Prop :=
@@ -552,8 +565,13 @@ Sharp:
 
 ### `freed_once`
 
-**Nothing freed twice, on every program** (§6.11): a finished run frees
-each identity at most once, with no typing hypothesis.
+**Nothing freed twice, on every program** (§6.11): a run that answers a
+value, an unwind or a panic frees each identity at most once, with no typing
+hypothesis. A refused or fuel-exhausted run has an empty trace
+(`EvalRes.trace`), so on an unchecked program the bound rests on `eval`'s
+refusals: a second `@drop` of one place is refused `useAfterMove`, and an
+owned value under a `Copy` one is refused `ownedUnderCopy`. `Step` has neither
+refusal, and its bound is `step_no_double_free`, which needs `ProgramTyped`.
 
 ```lean
 def Spec.freed_once_stmt : Prop :=
@@ -570,7 +588,9 @@ Sharp: no hypotheses to drop.
 ### `dtor_once`
 
 **No destructor twice on one value** (§6.11, `3.9:28`), given only that a
-destructor-bearing struct is not `Copy` (`3.9:31`).
+destructor-bearing struct is not `Copy` (`3.9:31`). As for `freed_once`, a
+refused or fuel-exhausted run has an empty trace, so the bound is over the
+runs `eval` finishes.
 
 ```lean
 def Spec.dtor_once_stmt : Prop :=
@@ -683,7 +703,9 @@ cell, in focus, or pending on the control stack (`Config.held`); these are the
 owned values allocated along the run. If the run from `C` finishes with a
 value (`✓v`, a value at an empty stack), then `a` is ended in the final trace
 (a drop, a discarded temporary's drop, or a consumption: `freedIds`) or is
-part of the final value, exactly once between the two: no owned value the
+part of the final value (which counts as ended: §2 restricts `main` to `i32` or
+`unit`, which own nothing, and the fragment does not), exactly once between
+the two: no owned value the
 run holds is lost, and none is ended twice. Narrower than the bullet:
 `pendingSafe` (RUE-2316), nothing about a panic (§6.12's trap runs no drop, so
 what it abandons is not ended), and nothing about a run that never finishes
