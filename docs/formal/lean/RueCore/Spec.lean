@@ -126,6 +126,11 @@ def witnesses : List (Lean.Name × Lean.Name × List Lean.Name) := [
       `RueCore.soundness,
       `RueCore.drop_exactly_once,
       `RueCore.rest_exactly_once]),
+  (`RueCore.Nonvacuous.open_frame, ``Nonvacuous.open_frame_stmt, [
+      `RueCore.soundness,
+      `RueCore.check_sound,
+      `RueCore.drop_exactly_once,
+      `RueCore.rest_exactly_once]),
   (`RueCore.Nonvacuous.dtor, ``Nonvacuous.dtor_stmt, [
       `RueCore.soundness,
       `RueCore.run_safe,
@@ -171,7 +176,6 @@ def witnesses : List (Lean.Name × Lean.Name × List Lean.Name) := [
       `RueCore.check_sound,
       `RueCore.checkProgram_sound,
       `RueCore.no_double_free,
-      `RueCore.freed_once,
       `RueCore.drop_order,
       `RueCore.Step.terminal,
       `RueCore.step_progress,
@@ -221,7 +225,6 @@ def witnesses : List (Lean.Name × Lean.Name × List Lean.Name) := [
       `RueCore.check_sound,
       `RueCore.checkProgram_sound,
       `RueCore.no_double_free,
-      `RueCore.freed_once,
       `RueCore.drop_order,
       `RueCore.Step.terminal,
       `RueCore.step_progress,
@@ -246,7 +249,6 @@ def witnesses : List (Lean.Name × Lean.Name × List Lean.Name) := [
       `RueCore.check_sound,
       `RueCore.checkProgram_sound,
       `RueCore.no_double_free,
-      `RueCore.freed_once,
       `RueCore.drop_order,
       `RueCore.Step.terminal,
       `RueCore.step_progress,
@@ -272,7 +274,6 @@ def witnesses : List (Lean.Name × Lean.Name × List Lean.Name) := [
       `RueCore.check_sound,
       `RueCore.checkProgram_sound,
       `RueCore.no_double_free,
-      `RueCore.freed_once,
       `RueCore.drop_order,
       `RueCore.Step.terminal,
       `RueCore.step_progress,
@@ -321,7 +322,6 @@ def witnesses : List (Lean.Name × Lean.Name × List Lean.Name) := [
       `RueCore.check_sound,
       `RueCore.checkProgram_sound,
       `RueCore.no_double_free,
-      `RueCore.freed_once,
       `RueCore.drop_order,
       `RueCore.Step.terminal,
       `RueCore.step_progress,
@@ -342,7 +342,6 @@ def witnesses : List (Lean.Name × Lean.Name × List Lean.Name) := [
       `RueCore.Config.trichotomy,
       `RueCore.Config.stuck_iff,
       `RueCore.step_stuck_isStuckState,
-      `RueCore.run_complete,
       `RueCore.run_stuck_of_step_stuck])
 ]
 

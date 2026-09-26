@@ -14,6 +14,7 @@ import RueCore.Step.Lemmas
 import RueCore.Spec
 import RueCore.Nonvacuous
 import RueCore.Spine
+import RueCore.Nonvacuous.Glue
 import RueCore.Soundness
 import RueCore.Trace
 import RueCore.Adequacy

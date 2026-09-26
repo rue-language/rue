@@ -72,6 +72,40 @@ theorem empty_frame :
     ∀ D : Decls, FrameMatches D [] Frame.empty [] ∧ StoreCC D [] :=
   fun _ => ⟨frameMatches_empty, fun _ _ hc => by simp at hc⟩
 
+/-- `Spec.Nonvacuous.open_frame_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
+theorem open_frame :
+    ∀ D : Decls, D =
+      { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] } →
+    ∀ e : Expr, e = .seq (.drop (.var 0)) (.intLit .w64 .signed 1) →
+    ∀ P : Program, P =
+      { decls := D, fns := [{ params := [], ret := .int .w64 .signed, body := .intLit .w64 .signed 0 }] } →
+      ProgramTyped P ∧ P.pendingSafe = true ∧ e.pendingSafe = true ∧
+      FrameMatches D [{ ty := .struct 0, mu := false, st := .owned }]
+        { env := [0], scope := [0] } [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
+      StoreCC D [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
+      (∃ c Ω, check P (.int .w64 .signed) [{ ty := .struct 0, mu := false, st := .owned }] e =
+          some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
+        Typed P (.int .w64 .signed) [{ ty := .struct 0, mu := false, st := .owned }] e
+          (.int .w64 .signed) Ω) ∧
+      1 ≤ (dtorIds (eval Float.exactOps 200 P [.full (.struct 0 0 [.int .w64 .signed 5])]
+        { env := [0], scope := [0] } e).trace).length ∧
+      ∃ H₁ vs tr, ∃ r : EvalRes,
+        Lead Float.exactOps P 200 [.full (.struct 0 0 [.int .w64 .signed 5])]
+          { env := [0], scope := [0] } H₁ vs tr e ∧
+        eval Float.exactOps 201 P [.full (.struct 0 0 [.int .w64 .signed 5])]
+          { env := [0], scope := [0] } e = r.withTrace tr := by
+  intro D hD e he P hP
+  subst hD he hP
+  refine ⟨checkProgram_sound (by rfl), by rfl, by rfl,
+    ⟨.cons rfl ⟨_, rfl, .owned (.struct rfl (.cons (.int (by decide)) .nil)) rfl⟩ (by simp) .nil, rfl⟩,
+    fun ℓ c h => ?_, ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩, by decide,
+    _, _, _, .ok _ (.int .w64 .signed 1) [], ⟨_, rfl, by rfl⟩, by rfl⟩
+  match ℓ, h with
+  | 0, h => cases h; rfl
+
 /-- `Spec.Nonvacuous.dtor_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem dtor :
     ∀ B : Expr, B =

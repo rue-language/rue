@@ -60,6 +60,40 @@ store the evaluation statements (`soundness`, `drop_exactly_once`,
 def empty_frame_stmt : Prop :=
   ∀ D : Decls, FrameMatches D [] Frame.empty [] ∧ StoreCC D []
 
+/-- **An open term in a live frame** (§6.1, §7): the evaluation statements apply
+beyond the empty frame. Over the witnesses' declarations, `@drop(s); 1` is
+typed by `check` in the context `s : S0`, owned, and the frame `{ ρ := [ℓ0],
+σ := [ℓ0] }` over the store `ℓ0 ↦ S0 { 5 }` agrees with that context
+(`FrameMatches`) and is copy-closed (`StoreCC`), for a checked, `pendingSafe`
+program. Its evaluation runs the destructor of the value it started with, and
+its leading operand has a `Lead`, so `soundness`, `drop_exactly_once` and
+`rest_exactly_once` apply to a term with a free variable and a store that is
+not empty. -/
+def open_frame_stmt : Prop :=
+  ∀ D : Decls, D =
+      { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] } →
+    ∀ e : Expr, e = .seq (.drop (.var 0)) (.intLit .w64 .signed 1) →
+    ∀ P : Program, P =
+      { decls := D, fns := [{ params := [], ret := .int .w64 .signed, body := .intLit .w64 .signed 0 }] } →
+      ProgramTyped P ∧ P.pendingSafe = true ∧ e.pendingSafe = true ∧
+      FrameMatches D [{ ty := .struct 0, mu := false, st := .owned }]
+        { env := [0], scope := [0] } [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
+      StoreCC D [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
+      (∃ c Ω, check P (.int .w64 .signed) [{ ty := .struct 0, mu := false, st := .owned }] e =
+          some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
+        Typed P (.int .w64 .signed) [{ ty := .struct 0, mu := false, st := .owned }] e
+          (.int .w64 .signed) Ω) ∧
+      1 ≤ (dtorIds (eval Float.exactOps 200 P [.full (.struct 0 0 [.int .w64 .signed 5])]
+        { env := [0], scope := [0] } e).trace).length ∧
+      ∃ H₁ vs tr, ∃ r : EvalRes,
+        Lead Float.exactOps P 200 [.full (.struct 0 0 [.int .w64 .signed 5])]
+          { env := [0], scope := [0] } H₁ vs tr e ∧
+        eval Float.exactOps 201 P [.full (.struct 0 0 [.int .w64 .signed 5])]
+          { env := [0], scope := [0] } e = r.withTrace tr
+
 /-- **A checked program that drops two values with destructors** (§6.11, §7; construct
 class: destructors; the corpus case `affine_scope_drop`, with two bindings). The program `let a = S0 { 1 }; let b = S0 { 2 }; 3`, over an affine
 `S0` that declares a destructor, is accepted, is `ProgramTyped` and

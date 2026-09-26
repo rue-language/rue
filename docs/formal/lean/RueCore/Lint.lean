@@ -749,6 +749,10 @@ def trustedBase (env : Environment) : CoreM TrustedBase := do
 
 /-! ## The spine: each headline proof against its statement -/
 
+/-- (helper) The module whose theorems apply each witness to the spine
+theorems it lists (RUE-2469). -/
+def glueModule : Name := `RueCore.Nonvacuous.Glue
+
 /-- (helper) The theorem of `Spine.lean` that checks a headline theorem
 against its statement: `RueCore.soundness` is checked by
 `RueCore.Spine.soundness`. -/
@@ -773,7 +777,11 @@ def spineName (thm : Name) : Name :=
   or bound outside them;
 * every witness names at least one spine theorem, each a theorem of
   `Spec.spine`, and every spine theorem is named by some witness (RUE-2469):
-  no spine statement is left without a non-vacuity witness. -/
+  no spine statement is left without a non-vacuity witness;
+* every (witness, spine theorem) pair is applied in the kernel: some theorem
+  of `RueCore.Nonvacuous.Glue` uses both `RueCore.Spine.<witness>` and
+  `RueCore.Spine.<thm>` in its proof, which elaborates only if the witness
+  supplies the theorem's hypotheses. -/
 def spineProblems (env : Environment) : Array String := Id.run do
   let mut out := #[]
   let mut seenT : NameSet := {}
@@ -825,6 +833,19 @@ def spineProblems (env : Environment) : Array String := Id.run do
   for t in headline do
     if !(Spec.witnesses.any fun (_, _, ts) => ts.contains t) then
       out := out.push s!"{t}: a spine theorem no entry of RueCore.Spec.witnesses names; it has no non-vacuity witness"
+  -- every listed pair is applied in the kernel: some theorem of the glue
+  -- module uses both the witness's binding and the spine theorem's
+  let glue : Array NameSet := env.constants.toList.foldl (init := #[]) fun acc (n, info) =>
+    match info, moduleOf? env n with
+    | .thmInfo v, some m =>
+        if m == glueModule then acc.push (NameSet.ofList v.value.getUsedConstants.toList) else acc
+    | _, _ => acc
+  if glue.isEmpty then
+    out := out.push s!"{glueModule}: no theorem found; each pair of RueCore.Spec.witnesses must be applied there"
+  for (h, _, ts) in Spec.witnesses do
+    for t in ts do
+      if !(glue.any fun us => us.contains (spineName h) && us.contains (spineName t)) then
+        out := out.push s!"{h} lists {t}, but no theorem of {glueModule} applies {spineName t} to {spineName h}'s facts"
   return out
 
 /-- (helper) What is wrong with the layers' shapes, if anything (RUE-2460),
