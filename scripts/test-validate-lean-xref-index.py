@@ -169,6 +169,17 @@ class GateTests(unittest.TestCase):
         (self.lean / "RueCore").mkdir(parents=True)
         self.calculus = self.root / "calculus.md"
         self.calculus.write_text(CALCULUS)
+        # Every paragraph the fixture Lean sources cite (`3.8:5`, `3.8:50`,
+        # `3.8:73`), spelled the way `docs/spec/src` itself spells them —
+        # so the fixtures exercise the same shortcode the real spec uses,
+        # not a stand-in format.
+        self.spec = self.root / "spec"
+        self.spec.mkdir()
+        (self.spec / "03-types.md").write_text(
+            '{{ rule(id="3.8:5", cat="normative") }}\n'
+            '{{ rule(id="3.8:50", cat="normative") }}\n'
+            '{{ rule(id="3.8:73", cat="normative") }}\n'
+        )
         self.write("Statics.lean", STATICS)
         self.write("Dynamics.lean", DYNAMICS)
         self.write("Examples.lean", EXAMPLES)
@@ -180,7 +191,7 @@ class GateTests(unittest.TestCase):
         (self.lean / "RueCore" / name).write_text(text)
 
     def collect(self):
-        return self.gate.collect(self.lean, self.calculus)
+        return self.gate.collect(self.lean, self.calculus, self.spec)
 
     def test_calculus_inventory_is_only_labeled_rules_of_5_and_6(self) -> None:
         calculus = self.gate.parse_calculus(self.calculus)
@@ -243,6 +254,37 @@ class GateTests(unittest.TestCase):
         self.assertEqual(len(errors), 2, errors)
         self.assertTrue(any("`(D-If)`" in e for e in errors))
         self.assertTrue(any("`(Not-A-Rule-Here)`" in e for e in errors))
+
+    def test_paragraph_citation_of_a_real_spec_id_passes(self) -> None:
+        modules, _, errors = self.collect()
+        self.assertEqual(errors, [])
+        statics = next(m for m in modules if m.name == "RueCore.Statics")
+        use_copy = next(d for d in statics.declarations if d.name == "RueCore.Typed.useCopy")
+        self.assertEqual(use_copy.paragraphs, ["3.8:5"])
+
+    def test_paragraph_citation_of_a_nonexistent_spec_id_is_an_error(self) -> None:
+        self.write("Statics.lean", STATICS.replace("`3.8:5`", "`3.8:999`"))
+        _, _, errors = self.collect()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("`RueCore.Typed.useCopy` cites `3.8:999`", errors[0])
+        self.assertIn("not a paragraph `docs/spec/src` declares", errors[0])
+
+    def test_section_citation_lookalike_is_not_checked_as_a_paragraph(self) -> None:
+        # `§6.4` names a calculus *section*, not a spec paragraph, even
+        # though its digits could pass for the chapter half of one; only
+        # `PARAGRAPH_CITATION`'s own `N.M:K` shape decides what is checked
+        # against `docs/spec/src`, so a section citation the spec has no
+        # `rule(id=…)` anywhere near is never flagged.
+        self.write(
+            "Dynamics.lean",
+            DYNAMICS.replace(
+                "`letIn` is (D-Let)\n(§6.7)",
+                "`letIn` is (D-Let) (§6.7); see also §6.4, which the spec fixture "
+                "has no paragraph under at all",
+            ),
+        )
+        _, _, errors = self.collect()
+        self.assertEqual(errors, [])
 
     def test_render_marks_unmechanized_rules_and_sections(self) -> None:
         modules, calculus, errors = self.collect()
@@ -396,7 +438,11 @@ end RueCore
         self.assertIn("| `p` | `p . f` | *not yet mechanized* | no projections |", text)
 
     def test_main_checks_and_writes(self) -> None:
-        args = ["--lean-dir", str(self.lean), "--calculus", str(self.calculus)]
+        args = [
+            "--lean-dir", str(self.lean),
+            "--calculus", str(self.calculus),
+            "--spec-dir", str(self.spec),
+        ]
         self.assertEqual(self.gate.main(args), 1)  # missing INDEX.md
         self.assertEqual(self.gate.main(args + ["--write"]), 0)
         self.assertTrue((self.lean / "INDEX.md").exists())
