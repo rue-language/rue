@@ -472,4 +472,56 @@ theorem letAddProgram_sound (M : FloatOps) :
       (.run [.dead] Frame.empty [] (.ret (.int .w32 .signed 42)) []) :=
   (run_sim M letAddProgram 100).1 _ _ _ rfl
 
+/-! ## The checker rejects each error class (RUE-2469)
+
+The spine's program statements take `ProgramTyped`, which `checkProgram`
+decides soundly (`checkProgram_sound`); `Spec.Nonvacuous` shows the hypothesis
+holds of non-trivial programs, so the checker is not too strict to matter.
+This section is the other side, for the checker's own profile: it **rejects**
+a program of each error class the calculus's statics rule out, each a corpus
+case named here, most beside an accepted corpus case that differs where the
+error is. `lake exe ruecore-corpus --profile` counts acceptances and
+rejections over the whole corpus and the generated programs. -/
+
+/-- A corpus case's program, by its name (helper). -/
+def caseProg? (name : String) : Option Program :=
+  (Corpus.cases.find? (·.name == name)).map (·.prog)
+
+/-- The error classes and their corpus witnesses: the class, a case the
+checker must reject, and an accepted neighbour where the corpus has one
+(helper). -/
+def errorClassCases : List (String × String × Option String) := [
+  ("use after move (a moved binding dropped again)", "use_after_move", some "affine_explicit_drop"),
+  ("linear leak at a scope exit", "linear_leaked", some "linear_consumed"),
+  ("linear leak at a branch join", "linear_half_consumed", none),
+  ("linear leak on an early return", "return_past_linear", some "return_past_affine"),
+  ("linear leak by a match arm", "enum_arm_leaks_payload", some "enum_arm_drops_payload"),
+  ("linear element consumed on one path only", "array_linear_elem_one_path", none),
+  ("linear value discarded by a sequence", "linear_temporary_discarded", none),
+  ("linear value overwritten", "linear_overwrite", some "reinit"),
+  ("use of a partially moved value", "partial_then_whole", some "drop_field_then_whole"),
+  ("move out of a destructor-bearing value", "partial_under_dtor", some "partial_move_residue"),
+  ("declared-linear destructure with a linear residue", "destructure_linear_residue",
+    some "destructure_residue_order")]
+
+/-- **`checkProgram` rejects a program of each error class** (§5's
+premises, `3.8`): every rejected case of `errorClassCases` is in the corpus and
+rejected, and every accepted neighbour is in the corpus and accepted, checked
+by the kernel. -/
+theorem errorClasses_rejected :
+    errorClassCases.all (fun (_, bad, good) =>
+      (caseProg? bad).map checkProgram == some false &&
+        good.all fun g => (caseProg? g).map checkProgram == some true) = true := by
+  decide
+
+/-- **An operand of the wrong type, and a call of the wrong arity, are
+rejected** (§5.8's (Arith) and (Call)): `1 + true`, and the entry point
+calling itself with an argument it does not take. The corpus has neither,
+since the compiler rejects both before the core. -/
+theorem typeErrors_rejected :
+    checkProgram (Program.entry (Decls.ofStructs []) (.int .w64 .signed)
+        (.binop .add (.intLit .w64 .signed 1) (.boolLit true))) = false ∧
+    checkProgram (Program.entry (Decls.ofStructs []) (.int .w64 .signed)
+        (.call 0 [.intLit .w64 .signed 1])) = false := ⟨rfl, rfl⟩
+
 end RueCore
