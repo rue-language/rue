@@ -544,8 +544,9 @@ def optionVerdict (name value : String) : Option String :=
     | none => some "a heartbeat limit that is not a number literal"
   else none
 
-/-- (helper) Every option setting in a stripped source, and every other
-mention of the kernel-skipping option, as `(line, what, failure)`: each
+/-- (helper) Every option setting in a stripped source, every other
+mention of the kernel-skipping option, and every `decide +kernel` (listed,
+never failing: RUE-2469's policy), as `(line, what, failure)`: each
 `set_option` with its name and value, where a name that is not a literal
 identifier (a macro's `$o:ident`) fails, because nothing can be said of an
 option a macro names; and any name mentioning `skipKernelTC` anywhere else. -/
@@ -568,6 +569,12 @@ def optionUses (stripped : String) : Array (Nat × String × Option String) := I
           out := out.push (t.line, "set_option", some "the option's name is not a literal identifier")
     else if t.ident && mentionsSkipKernelTC t.text && !named.contains i then
       out := out.push (t.line, t.text, some "names the option that adds declarations the kernel does not check")
+    -- `decide +kernel` and `decide (config := { kernel := true })` (RUE-2469):
+    -- kernel reduction of the `Decidable` instance, no axiom, allowed where
+    -- plain `decide` or `rfl` stops at the elaborator's limits; listed
+    else if t.ident && t.text == "decide" &&
+        ((List.range 8).any fun k => (ts[i+1+k]?.map (·.text)) == some "kernel") then
+      out := out.push (t.line, "decide +kernel (kernel reduction, no axiom)", none)
   return out
 
 /-- (helper) A source path as the module it compiles to. -/
