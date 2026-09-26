@@ -76,7 +76,7 @@ END_LINE = re.compile(r"^end(?:\s+(?P<name>\S+))?\s*$")
 CONTINUATION_LINE = re.compile(r".*\bin$")
 
 SECTION_CITATION = re.compile(r"§(\d+(?:\.\d+)*)")
-PARAGRAPH_CITATION = re.compile(r"(?<![\d.])(\d+\.\d+):(\d+)(?!\d)")
+PARAGRAPH_CITATION = re.compile(r"(?<![\d.])(\d+\.\d+):(\d+[a-z]?)(?![\da-z])")
 # `docs/spec/src`'s own paragraph shortcode: ``{{ rule(id="3.8:73", …) }}``.
 # This is the inventory a doc-comment's `PARAGRAPH_CITATION` is checked
 # against — a citation naming a paragraph the spec does not declare is an
@@ -737,9 +737,12 @@ def _section_key(number: str) -> Tuple[int, ...]:
     return tuple(int(part) for part in number.split("."))
 
 
-def _paragraph_key(ref: str) -> Tuple[int, ...]:
+def _paragraph_key(ref: str) -> Tuple[object, ...]:
+    # A paragraph may carry a letter suffix (`3.12:2a`, RUE-2494); it sorts
+    # right after its number.
     chapter, paragraph = ref.split(":")
-    return _section_key(chapter) + (int(paragraph),)
+    digits = paragraph.rstrip("abcdefghijklmnopqrstuvwxyz")
+    return _section_key(chapter) + (int(digits), paragraph[len(digits):])
 
 
 def _cell(text: str) -> str:

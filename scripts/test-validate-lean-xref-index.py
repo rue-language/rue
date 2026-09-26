@@ -177,6 +177,7 @@ class GateTests(unittest.TestCase):
         self.spec.mkdir()
         (self.spec / "03-types.md").write_text(
             '{{ rule(id="3.8:5", cat="normative") }}\n'
+            '{{ rule(id="3.8:5a", cat="normative") }}\n'
             '{{ rule(id="3.8:50", cat="normative") }}\n'
             '{{ rule(id="3.8:73", cat="normative") }}\n'
         )
@@ -268,6 +269,17 @@ class GateTests(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("`RueCore.Typed.useCopy` cites `3.8:999`", errors[0])
         self.assertIn("not a paragraph `docs/spec/src` declares", errors[0])
+
+    def test_paragraph_citation_keeps_its_letter_suffix(self) -> None:
+        # `3.8:5a` is a paragraph of its own, not `3.8:5`: reading it as
+        # `3.8:5` would file the citation under the wrong paragraph, and the
+        # existence check could not notice, because both exist (RUE-2494).
+        self.write("Statics.lean", STATICS.replace("`3.8:5`", "`3.8:5a`"))
+        modules, _, errors = self.collect()
+        self.assertEqual(errors, [])
+        statics = next(m for m in modules if m.name == "RueCore.Statics")
+        use_copy = next(d for d in statics.declarations if d.name == "RueCore.Typed.useCopy")
+        self.assertEqual(use_copy.paragraphs, ["3.8:5a"])
 
     def test_section_citation_lookalike_is_not_checked_as_a_paragraph(self) -> None:
         # `§6.4` names a calculus *section*, not a spec paragraph, even
