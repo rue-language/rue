@@ -6204,13 +6204,11 @@ compile_fail = true
 error_contains = ["E0205", "use of moved value"]
 
 # Reassign-then-move is legal: the value is moved at the head of every later
-# iteration and reinitialized before the body uses it. This is the loop-head
-# reading of formal core §5.7 (`head(Σ, e)`, rue-language/rue#3181); 3.8:79
-# still words the back-edge rule as invariance, which forbids it, so it is not
-# cited here until RUE-2355 rewords it. Breakless, exited by `return`.
+# iteration and reinitialized before the body uses it (3.8:79's head state;
+# formal core §5.7). Breakless, exited by `return`.
 [[case]]
 name = "reassign_then_move_breakless_is_legal"
-spec = ["3.8:55"]
+spec = ["3.8:55", "3.8:79"]
 description = "Reinitializing before the move in every iteration is legal in a breakless loop."
 source = """
 struct Data { x: i32 }
@@ -6230,12 +6228,11 @@ fn main() -> i32 {
 exit_code = 7
 
 # With a `break` and a reinitialization before the use after the loop, every
-# value is destroyed exactly once. Formal core §5.7's loop-head state admits
-# the reassign-then-move body; 3.8:79 is not cited until RUE-2355 rewords its
-# invariance rule to match.
+# value is destroyed exactly once. The loop-head state (3.8:79) admits the
+# reassign-then-move body.
 [[case]]
 name = "reassign_then_move_with_break_is_legal"
-spec = ["3.8:55", "3.8:80"]
+spec = ["3.8:55", "3.8:79", "3.8:80"]
 description = "Reinitializing before the move in every iteration and after the loop is legal."
 source = """
 struct D { x: i32 }
@@ -6260,13 +6257,11 @@ expected_stdout = "1\n11\n12\n7\n"
 exit_code = 7
 
 # A while loop's condition-false exits are read at the loop-head state
-# (formal core §5.7; 3.8:80): a condition that reinitializes the value leaves
-# it owned on every exit, although the body moved it on the back edge. 3.8:79
-# is not cited until RUE-2355 rewords its invariance rule to the loop-head
-# state.
+# (3.8:79, 3.8:80): a condition that reinitializes the value leaves it owned on
+# every exit, although the body moved it on the back edge.
 [[case]]
 name = "while_condition_reinit_leaves_exit_owned"
-spec = ["3.8:55", "3.8:80"]
+spec = ["3.8:55", "3.8:79", "3.8:80"]
 description = "A while condition that reinitializes a value before every check leaves it owned after the loop."
 source = """
 struct D { x: i32 }
