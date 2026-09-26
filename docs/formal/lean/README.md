@@ -626,7 +626,7 @@ its own layer or a lower one:
 | **L1 definitions** | `Statics`, `Dynamics`, `Step`, `Soundness/Defs`, `Checker/Defs`, `Trace/Defs`, `Adequacy/Defs` | the semantics (§5's judgment, `eval`, §6's `Step`), and every definition a headline statement is written in: value typing and `FrameMatches`, the checker algorithm, the trace projections, ledgers and configuration invariants, `Config.SafeAt` |
 | **Spec statements** | `Spec`, `Spec.Safety`, `Spec.Checker`, `Spec.Trace`, `Spec.Step`, `Spec.Adequacy`, `Spec.Nonvacuous`, `Spec.Sharp` | the headline statements, each a `def …_stmt : Prop` over L0 and L1 alone, with its English reading; the one list of them, `Spec.spine` ("The statement layer"); the non-vacuity witnesses with their list, `Spec.witnesses` ("Non-vacuity witnesses"); and the sharpness counter-examples with theirs, `Spec.sharpness` and `Spec.sharpnessReasons` ("Sharpness counter-examples") |
 | **L2 proofs** | `Float.Lemmas`, `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder`, `Retire`, `TracePrefix`, `Nonvacuous`, `Sharp`, `Spine`, `Nonvacuous.Glue`, `Sharp.Glue` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L0's and L1's definitions (`Float.Lemmas`: the `FloatModel` laws of `Float.exactOps`), `Nonvacuous` proves the witness statements and `Sharp` the counter-example statements, `Spine` checks each headline, witness and counter-example proof against its Spec statement, `Nonvacuous.Glue` applies each witness to the theorems it lists, and `Sharp.Glue` refutes each spine statement with a hypothesis dropped from the counter-example `Spec.sharpness` pairs with it |
-| **L3 tooling** | `Examples`, `Witnesses`, `Print`, `Corpus`, `Gen`, `Explain*`, `Digest`, `Layers`, `Lint`, the `*Main` executables, the root `RueCore` | example and corpus programs and the theorems about them, the printer, the generator, the explain and digest reports, the layer table and the lint |
+| **L3 tooling** | `Examples`, `Witnesses`, `Print`, `Corpus`, `Gen`, `Explain*`, `Digest`, `Map`, `Literature`, `Layers`, `Lint`, the `*Main` executables, the root `RueCore` | example and corpus programs and the theorems about them, the printer, the generator, the explain and digest reports, the proof map's milestone list, the spine's table against the literature, the layer table and the lint |
 
 L3 may import anything; nothing in L0–L2 or Spec imports L3, so no theorem of the
 spine depends on the printer, the generator, the corpus or an example
@@ -652,8 +652,8 @@ on any other module in the closure that is not the package's (a library a
 L0–L2 or Spec module importing anything outside the package but `Init`, on
 one that is not a `module`, and on a module missing from the table, a
 stale table entry, or a source file nothing imports. It prints the graph, one
-line per module, and ends with `ruecore-layers: 53 modules, 145 package
-imports, no upward import; import closure: 53 modules outside the toolchain,
+line per module, and ends with `ruecore-layers: 54 modules, 149 package
+imports, no upward import; import closure: 54 modules outside the toolchain,
 all the package's, …`. `lake exe ruecore-layers --closure` prints that
 closure, one module per line: the list the kernel re-check replays. The Buck target runs it as the `layers.txt`
 report, so `./buck2 build root//:lean-ruecore` fails on an upward import;
