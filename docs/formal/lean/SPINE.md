@@ -45,7 +45,10 @@ fails the chain until it is regenerated, and the change is reviewed.
 (`RueCore.Spec.witnesses`, RUE-2469; the last section) that show its hypotheses
 hold together of a non-trivial program: accepted by the checker, typed, run to a
 value, a panic or divergence and reached by `Step`, with the drops, destructors
-or value the witness states. The witnesses are Spec statements too, proved in
+or value the witness states. Each pair is checked by the kernel:
+`RueCore/Nonvacuous/Glue.lean` applies the statement to the witness's facts, and
+the lint requires that application for every pair listed. A statement with no
+hypotheses is only applied at a witness's program, and its line says so. The witnesses are Spec statements too, proved in
 `RueCore/Nonvacuous.lean` and covered by the kernel, the lint, Comparator and
 the fingerprints. That a statement fails once a hypothesis is dropped (its
 sharpness) is RUE-2485's.
@@ -79,7 +82,7 @@ def Spec.soundness_stmt : Prop :=
 
 Proved by `soundness` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `WfProgram`, `Ty`, `Ctx`, `Out`, `Expr`, `Typed`, `Frame`, `Store`, `FrameMatches`, `EvalOk`, `eval`; rests on 208 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_frame`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_frame`, `Nonvacuous.open_frame`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
 ### `run_safe`
 
@@ -259,7 +262,7 @@ def Spec.run_ne_returned_stmt : Prop :=
 
 Proved by `run_ne_returned` (`RueCore.Soundness`). Names `FloatOps`, `Program`, `Store`, `Val`, `Event`, `EvalRes`, `run`; rests on 112 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.early_return`.
+Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.early_return`.
 
 ## The checker decides the typing hypothesis
 
@@ -278,7 +281,7 @@ def Spec.check_sound_stmt : Prop :=
 
 Proved by `check_sound` (`RueCore.Checker`). Names `Program`, `Ty`, `Expr`, `Ctx`, `CTy`, `Out`, `check`, `CTy.fits`, `Typed`; rests on 104 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+Non-vacuous: witnesses `Nonvacuous.open_frame`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
 ### `checkProgram_sound`
 
@@ -334,7 +337,7 @@ def Spec.freed_once_stmt : Prop :=
 
 Proved by `freed_once` (`RueCore.Trace`). Names `FloatOps`, `Program`, `freedIds`, `EvalRes.trace`, `run`; rests on 117 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.float`.
+Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.dtor`, `Nonvacuous.loop`.
 
 ### `dtor_once`
 
@@ -380,7 +383,7 @@ def Spec.drop_exactly_once_stmt : Prop :=
 
 Proved by `drop_exactly_once` (`RueCore.TraceExact`). Names `FloatModel`, `Program`, `ProgramTyped`, `Program.pendingSafe`, `Ty`, `Ctx`, `Expr`, `Out`, `Frame`, `Store`, `Typed`, `FrameMatches`, `StoreCC`, `Expr.pendingSafe`, `Violation`, `EvalRes`, `eval`, `Exact`, `Tidy`; rests on 220 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_frame`, `Nonvacuous.dtor`.
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_frame`, `Nonvacuous.open_frame`, `Nonvacuous.dtor`.
 
 ### `rest_exactly_once`
 
@@ -415,7 +418,7 @@ def Spec.rest_exactly_once_stmt : Prop :=
 
 Proved by `rest_exactly_once` (`RueCore.TraceExact`). Names `FloatModel`, `Program`, `ProgramTyped`, `Program.pendingSafe`, `Ty`, `Ctx`, `Expr`, `Out`, `Frame`, `Store`, `Typed`, `FrameMatches`, `StoreCC`, `Expr.pendingSafe`, `Val`, `Event`, `Lead`, `EvalRes`, `eval`, `EvalRes.withTrace`, `Violation`, `Exact`, `Contents.ownList`, `Contents.ofVals`, `Settled`; rests on 222 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_frame`, `Nonvacuous.dtor`.
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_frame`, `Nonvacuous.open_frame`, `Nonvacuous.dtor`.
 
 ### `drop_order`
 
@@ -493,7 +496,7 @@ def Spec.Config.trichotomy_stmt : Prop :=
 
 Proved by `Config.trichotomy` (`RueCore.Step.Lemmas`). Names `FloatOps`, `Program`, `Config`, `Step`, `Config.Terminal`, `Violation`, `Config.Stuck`; rests on 114 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.stuck`.
+Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.dtor`, `Nonvacuous.stuck`.
 
 ### `step_iff`
 
@@ -507,7 +510,7 @@ def Spec.step_iff_stmt : Prop :=
 
 Proved by `step_iff` (`RueCore.Step.Lemmas`). Names `FloatOps`, `Program`, `Config`, `Step`, `StepOut`, `step`; rests on 112 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.dtor`.
+Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.dtor`.
 
 ### `Config.stuck_iff`
 
@@ -522,7 +525,7 @@ def Spec.Config.stuck_iff_stmt : Prop :=
 
 Proved by `Config.stuck_iff` (`RueCore.Step.Lemmas`). Names `FloatOps`, `Program`, `Config`, `Config.Terminal`, `Step`, `Violation`, `Config.Stuck`; rests on 114 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.stuck`.
+Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.stuck`.
 
 ### `step_stuck_isStuckState`
 
@@ -702,7 +705,7 @@ def Spec.run_complete_stmt : Prop :=
 
 Proved by `run_complete` (`RueCore.Adequacy`). Names `FloatOps`, `Program`, `Store`, `Frame`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `Violation`, `PanicKind`; rests on 127 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.stuck`.
+Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
 ### `never_stuck_iff`
 
@@ -778,7 +781,7 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 
 ## Non-vacuity witnesses
 
-`RueCore.Spec.Witnesses`
+`RueCore.Spec.Nonvacuous`
 
 Each statement shows the hypotheses of the spine statements it names satisfiable
 together, by a program written out in the statement (RUE-2469).
@@ -813,6 +816,81 @@ def Spec.Nonvacuous.empty_frame_stmt : Prop :=
 ```
 
 Proved by `Nonvacuous.empty_frame` (`RueCore.Nonvacuous`). Witnesses `soundness`, `drop_exactly_once`, `rest_exactly_once`.
+
+### `Nonvacuous.open_frame`
+
+**An open term in a live frame** (§6.1, §7): the evaluation statements apply
+beyond the empty frame. Over the witnesses' declarations, `@drop(s); 1` is
+typed by `check` in the context `s : S0`, owned, and the frame `{ ρ := [ℓ0],
+σ := [ℓ0] }` over the store `ℓ0 ↦ S0 { 5 }` agrees with that context
+(`FrameMatches`) and is copy-closed (`StoreCC`), for a checked, `pendingSafe`
+program. Its evaluation runs the destructor of the value it started with, and
+its leading operand has a `Lead`, so `soundness`, `drop_exactly_once` and
+`rest_exactly_once` apply to a term with a free variable and a store that is
+not empty.
+
+```lean
+def Spec.Nonvacuous.open_frame_stmt : Prop :=
+  ∀ (D : Decls),
+    D =
+        {
+          structs :=
+            [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                cls := Mult.affine },
+              { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                dtor := false, cls := Mult.linear }],
+          enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] } →
+      ∀ (e : Expr),
+        e = (Expr.drop (Place.var 0)).seq (Expr.intLit IntWidth.w64 Sign.signed 1) →
+          ∀ (P : Program),
+            P =
+                { decls := D,
+                  fns :=
+                    [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                        body := Expr.intLit IntWidth.w64 Sign.signed 0 }] } →
+              ProgramTyped P ∧
+                P.pendingSafe = true ∧
+                  e.pendingSafe = true ∧
+                    FrameMatches D [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
+                        { env := [0], scope := [0] }
+                        [Cell.full
+                            (Contents.struct 0 0
+                              [Contents.int IntWidth.w64 Sign.signed 5])] ∧
+                      StoreCC D
+                          [Cell.full
+                              (Contents.struct 0 0
+                                [Contents.int IntWidth.w64 Sign.signed 5])] ∧
+                        (∃ c Ω,
+                            check P (Ty.int IntWidth.w64 Sign.signed)
+                                  [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
+                                  e =
+                                some (c, Ω) ∧
+                              c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                                Typed P (Ty.int IntWidth.w64 Sign.signed)
+                                  [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }] e
+                                  (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                          1 ≤
+                              (dtorIds
+                                  (eval Float.exactOps 200 P
+                                      [Cell.full
+                                          (Contents.struct 0 0
+                                            [Contents.int IntWidth.w64 Sign.signed 5])]
+                                      { env := [0], scope := [0] } e).trace).length ∧
+                            ∃ H₁ vs tr r,
+                              Lead Float.exactOps P 200
+                                  [Cell.full
+                                      (Contents.struct 0 0
+                                        [Contents.int IntWidth.w64 Sign.signed 5])]
+                                  { env := [0], scope := [0] } H₁ vs tr e ∧
+                                eval Float.exactOps 201 P
+                                    [Cell.full
+                                        (Contents.struct 0 0
+                                          [Contents.int IntWidth.w64 Sign.signed 5])]
+                                    { env := [0], scope := [0] } e =
+                                  EvalRes.withTrace tr r
+```
+
+Proved by `Nonvacuous.open_frame` (`RueCore.Nonvacuous`). Witnesses `soundness`, `check_sound`, `drop_exactly_once`, `rest_exactly_once`.
 
 ### `Nonvacuous.dtor`
 
@@ -920,7 +998,7 @@ def Spec.Nonvacuous.linear_stmt : Prop :=
                         2 ≤ (freedIds P.decls tr).length
 ```
 
-Proved by `Nonvacuous.linear` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.linear` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.loop`
 
@@ -1019,7 +1097,7 @@ def Spec.Nonvacuous.array_stmt : Prop :=
                         2 ≤ (dtorIds tr).length
 ```
 
-Proved by `Nonvacuous.array` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.array` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.enum_match`
 
@@ -1066,7 +1144,7 @@ def Spec.Nonvacuous.enum_match_stmt : Prop :=
                         2 ≤ (freedIds P.decls tr).length ∧ 1 ≤ (dtorIds tr).length
 ```
 
-Proved by `Nonvacuous.enum_match` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.enum_match` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.early_return`
 
@@ -1112,7 +1190,7 @@ def Spec.Nonvacuous.early_return_stmt : Prop :=
                         v = Val.int IntWidth.w64 Sign.signed 7 ∧ 2 ≤ (dtorIds tr).length
 ```
 
-Proved by `Nonvacuous.early_return` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `run_ne_returned`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.early_return` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `run_ne_returned`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.panic`
 
@@ -1204,7 +1282,7 @@ def Spec.Nonvacuous.float_stmt : Prop :=
                         v = Val.float FloatWidth.w64 (FloatDatum.num false 15 (-1))
 ```
 
-Proved by `Nonvacuous.float` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.float` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.diverges`
 
@@ -1261,4 +1339,4 @@ def Spec.Nonvacuous.stuck_stmt : Prop :=
                   Config.Stuck Float.exactOps P C Violation.useAfterMove
 ```
 
-Proved by `Nonvacuous.stuck` (`RueCore.Nonvacuous`). Witnesses `fuel_mono`, `no_masking`, `Config.trichotomy`, `Config.stuck_iff`, `step_stuck_isStuckState`, `run_complete`, `run_stuck_of_step_stuck`.
+Proved by `Nonvacuous.stuck` (`RueCore.Nonvacuous`). Witnesses `fuel_mono`, `no_masking`, `Config.trichotomy`, `Config.stuck_iff`, `step_stuck_isStuckState`, `run_stuck_of_step_stuck`.

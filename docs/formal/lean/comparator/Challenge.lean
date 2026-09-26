@@ -317,6 +317,66 @@ def Nonvacuous.exact_model_stmt : Prop :=
 def Nonvacuous.empty_frame_stmt : Prop :=
   ∀ (D : Decls), FrameMatches D [] Frame.empty [] ∧ StoreCC D []
 
+/-- The statement `Nonvacuous.open_frame` proves. -/
+def Nonvacuous.open_frame_stmt : Prop :=
+  ∀ (D : Decls),
+    D =
+        {
+          structs :=
+            [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                cls := Mult.affine },
+              { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
+                cls := Mult.linear }],
+          enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] } →
+      ∀ (e : Expr),
+        e = (Expr.drop (Place.var 0)).seq (Expr.intLit IntWidth.w64 Sign.signed 1) →
+          ∀ (P : Program),
+            P =
+                { decls := D,
+                  fns :=
+                    [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                        body := Expr.intLit IntWidth.w64 Sign.signed 0 }] } →
+              ProgramTyped P ∧
+                P.pendingSafe = true ∧
+                  e.pendingSafe = true ∧
+                    FrameMatches D [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
+                        { env := [0], scope := [0] }
+                        [Cell.full (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 5])] ∧
+                      StoreCC D
+                          [Cell.full
+                              (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 5])] ∧
+                        (∃ (c : CTy),
+                            ∃ (Ω : Out),
+                              check P (Ty.int IntWidth.w64 Sign.signed)
+                                    [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }] e =
+                                  some (c, Ω) ∧
+                                c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                                  Typed P (Ty.int IntWidth.w64 Sign.signed)
+                                    [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }] e
+                                    (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                          1 ≤
+                              (dtorIds
+                                  (eval Float.exactOps 200 P
+                                      [Cell.full
+                                          (Contents.struct 0 0
+                                            [Contents.int IntWidth.w64 Sign.signed 5])]
+                                      { env := [0], scope := [0] } e).trace).length ∧
+                            ∃ (H₁ : Store),
+                              ∃ (vs : List Val),
+                                ∃ (tr : List Event),
+                                  ∃ (r : EvalRes),
+                                    Lead Float.exactOps P 200
+                                        [Cell.full
+                                            (Contents.struct 0 0
+                                              [Contents.int IntWidth.w64 Sign.signed 5])]
+                                        { env := [0], scope := [0] } H₁ vs tr e ∧
+                                      eval Float.exactOps 201 P
+                                          [Cell.full
+                                              (Contents.struct 0 0
+                                                [Contents.int IntWidth.w64 Sign.signed 5])]
+                                          { env := [0], scope := [0] } e =
+                                        EvalRes.withTrace tr r
+
 /-- The statement `Nonvacuous.dtor` proves. -/
 def Nonvacuous.dtor_stmt : Prop :=
   ∀ (B : Expr),
@@ -701,6 +761,7 @@ theorem run_stuck_of_step_stuck : RueCore.Spec.run_stuck_of_step_stuck_stmt := s
 theorem eval_diverges_iff : RueCore.Spec.eval_diverges_iff_stmt := sorry
 theorem Nonvacuous.exact_model : RueCore.Spec.Nonvacuous.exact_model_stmt := sorry
 theorem Nonvacuous.empty_frame : RueCore.Spec.Nonvacuous.empty_frame_stmt := sorry
+theorem Nonvacuous.open_frame : RueCore.Spec.Nonvacuous.open_frame_stmt := sorry
 theorem Nonvacuous.dtor : RueCore.Spec.Nonvacuous.dtor_stmt := sorry
 theorem Nonvacuous.linear : RueCore.Spec.Nonvacuous.linear_stmt := sorry
 theorem Nonvacuous.loop : RueCore.Spec.Nonvacuous.loop_stmt := sorry
