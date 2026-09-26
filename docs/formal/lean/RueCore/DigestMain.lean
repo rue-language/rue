@@ -1,4 +1,5 @@
 import RueCore.Lint
+import RueCore.Map
 
 /-!
 # `lake exe ruecore-digest` — the expert validation surface (RUE-2247)
@@ -11,6 +12,7 @@ ruecore-digest --spine         the spine: every Spec statement (SPINE.md)
 ruecore-digest --challenge     Lean Comparator's challenge (comparator/Challenge.lean)
 ruecore-digest --comparator-config   its configuration (comparator/config.json)
 ruecore-digest --fingerprint   a hash of each Spec statement (spine-fingerprints.txt)
+ruecore-digest --map           the proof map: generated Mermaid diagrams (MAP.md, RUE-2468)
 ```
 
 The last four are generated from the Spec layer's lists, `RueCore.Spec.spine`,
@@ -41,7 +43,8 @@ open Lean RueCore
 
 /-- (helper) How to call the executable. -/
 def usage : String :=
-  "usage: ruecore-digest [--index <path>] | --trust | --spine | --challenge | --comparator-config | --fingerprint"
+  "usage: ruecore-digest [--index <path>] | --trust | --spine | --challenge | \
+    --comparator-config | --fingerprint | --map"
 
 /-- (helper) The statement digest: theorems, helper lemmas, and the
 definitions their statements are written in terms of. -/
@@ -448,6 +451,156 @@ def fingerprintReport (env : Environment) : CoreM (String × UInt32) := do
     out := out.push s!"{hex16 (fnv1a64 (toString v.value))} {s}"
   return ("\n".intercalate out.toList ++ "\n", if problems.isEmpty then 0 else 1)
 
+/-! ## The proof map (RUE-2468) -/
+
+/-- (helper) One marked node's row of `MAP.md`'s size-stats table: its short
+name, its declaring module, its proof size in source lines
+(`Map.declLines`), and the distinct unmarked helper theorems `Map.walk`
+counted under it before the next marked node. -/
+def mapSizeRow (env : Environment) (helperCountOf : NameMap Nat) (n : Name) : CoreM String := do
+  let lines ← Map.declLines n
+  let helpers := (helperCountOf.find? n).getD 0
+  let m := (Lint.moduleOf? env n).getD .anonymous
+  return s!"| `{Digest.shortName n}` | `{m}` | {lines} | {helpers} |"
+
+/-- (helper) The spine diagram: every marked node (the spine and the
+milestones), in Mermaid subgraphs by declaring module, with an edge `A → B`
+for every pair `Map.walkAll` found — so a reader can tell directly from this
+diagram which theorems depend on a given marked node, `Step.det` among them
+(RUE-2468's acceptance check). -/
+def renderSpineDiagram (env : Environment) (markedList : List Name)
+    (ancestorsOf : NameMap (Array Name)) : List String := Id.run do
+  let mut byModule : Array (Name × Array Name) := #[]
+  for n in markedList do
+    let m := (Lint.moduleOf? env n).getD .anonymous
+    match byModule.findIdx? (·.1 == m) with
+    | some i => byModule := byModule.set! i (m, (byModule[i]!).2.push n)
+    | none => byModule := byModule.push (m, #[n])
+  let sortedModules := byModule.qsort (fun a b => a.1.toString < b.1.toString)
+  let mut out : Array String := #["```mermaid", "flowchart BT"]
+  for (m, ns) in sortedModules do
+    let layer := (Layers.layerOf? m).getD 9
+    out := out.push s!"  subgraph {Map.sanitizeId m.toString}[\"{m} ({Lint.layerLabel layer})\"]"
+    for n in ns.qsort (fun a b => a.toString < b.toString) do
+      out := out.push s!"    {Map.sanitizeId (Digest.shortName n)}[\"{Digest.shortName n}\"]"
+    out := out.push "  end"
+  let mut edges : Array (Name × Name) := #[]
+  for n in markedList do
+    for a in (ancestorsOf.find? n).getD #[] do
+      edges := edges.push (a, n)
+  let sortedEdges := edges.qsort fun (a1, b1) (a2, b2) =>
+    Digest.shortName a1 ++ Digest.shortName b1 < Digest.shortName a2 ++ Digest.shortName b2
+  for (a, b) in sortedEdges do
+    out := out.push s!"  {Map.sanitizeId (Digest.shortName a)} --> {Map.sanitizeId (Digest.shortName b)}"
+  out := out.push "```"
+  return out.toList
+
+/-- (helper) One spine theorem's own small diagram: its milestone ancestors
+(solid edges: proof dependencies `Map.walk` found), and the definitions its
+*statement* depends on — the per-statement type-level closure
+`Lint.trustedBase` aggregates over the whole spine, computed here for one
+statement alone (`Lint.unfoldClosure`, `Lint.readable`), capped at 25 and
+annotated with each definition's calculus citations (dashed edges). Answers,
+for `check_sound`, RUE-2468's second acceptance question. -/
+def renderTheoremDiagram (env : Environment) (milestoneSet : NameSet)
+    (h s : Name) (ancestors : Array Name) : CoreM (List String) := do
+  let milestoneAnc := (ancestors.filter milestoneSet.contains).qsort (·.toString < ·.toString)
+  let closure := match Lint.statementBody? env s with
+    | some body => Lint.readable env (Lint.unfoldClosure env body.getUsedConstants)
+    | none => #[]
+  let cap := 25
+  let shown := if closure.size > cap then closure.extract 0 cap else closure
+  let mut out : Array String := #["```mermaid", "flowchart BT",
+    s!"  thm[\"{Digest.shortName h}\"]"]
+  if !milestoneAnc.isEmpty then
+    out := out.push "  subgraph mile[\"Milestone ancestors\"]"
+    for a in milestoneAnc do
+      out := out.push s!"    {Map.sanitizeId (Digest.shortName a)}[\"{Digest.shortName a}\"]"
+    out := out.push "  end"
+    for a in milestoneAnc do
+      out := out.push s!"  {Map.sanitizeId (Digest.shortName a)} --> thm"
+  if !shown.isEmpty then
+    out := out.push "  subgraph defs_[\"Definitions the statement depends on\"]"
+    for d in shown do
+      let doc := ((← findDocString? env d)).getD ""
+      let cites := Map.sectionCitations doc ++ Map.ruleCitations doc
+      let label := Digest.shortName d ++
+        (if cites.isEmpty then "" else "<br/>" ++ String.intercalate ", " cites.toList)
+      out := out.push s!"    {Map.sanitizeId (Digest.shortName d)}[\"{label}\"]"
+    out := out.push "  end"
+    for d in shown do
+      out := out.push s!"  {Map.sanitizeId (Digest.shortName d)} -.-> thm"
+  out := out.push "```"
+  if closure.size > cap then
+    out := out.push s!"({closure.size - shown.size} more definitions the statement depends on, past the {cap} cap.)"
+  return out.toList
+
+/-- (helper) `MAP.md` (RUE-2468): the spine diagram, one small diagram per
+spine theorem, the static assurance-chain diagram, and the size-stats table
+— all computed from the compiled environment (`RueCore.Map`), never by
+grepping. -/
+def mapReport (env : Environment) : CoreM (String × UInt32) := do
+  let problems := Lint.spineProblems env ++ Map.milestoneProblems env
+  for p in problems do IO.eprintln s!"ruecore-digest --map: {p}"
+  let markedList := Map.marked
+  let milestoneSet := Map.milestones.foldl (init := NameSet.empty) (·.insert ·)
+  let (ancestorsOf, helperCountOf) := Map.walkAll env markedList
+  let mut out : Array String := #[
+    "# The proof map",
+    "",
+    "<!-- Generated by `lake exe ruecore-digest --map`; do not edit by hand. -->",
+    "",
+    "How the mechanization's theorems hang together: which marked node's proof",
+    "rests on which, what each spine theorem's statement unfolds to, and where the",
+    "proof chain sits beside the compiler bridge. `README.md`, \"The proof map\",",
+    "explains what a **spine node** and a **milestone lemma** are and how this file",
+    "is generated. GitHub renders every diagram below inline.",
+    "",
+    s!"{Lint.headline.length} spine theorems, {Map.milestones.length} milestone lemmas: " ++
+      s!"{markedList.length} marked nodes in all.",
+    "",
+    "## The spine",
+    "",
+    "Every marked node, grouped by the module it is declared in, with an edge",
+    "`A → B` when `B`'s proof uses `A` transitively through helper theorems that",
+    "are not themselves marked. From this diagram alone: every theorem with an",
+    "incoming edge from `Step.det` depends on it.",
+    ""]
+  out := out ++ (renderSpineDiagram env markedList ancestorsOf).toArray ++ #[""]
+  out := out ++ #["## Milestone lemmas", "",
+    "The load-bearing lemmas besides the spine (`RueCore/Map.lean`'s `milestones`",
+    "list; each entry's comment there is its one-line reason):", ""]
+  out := out ++ Map.milestones.toArray.map (fun n => s!"- `{Digest.shortName n}`")
+  out := out ++ #["", "## Per-spine-theorem diagrams", "",
+    "One small diagram per spine theorem: its milestone ancestors, and the",
+    "definitions its statement depends on (the per-statement trusted-base",
+    "closure, `Lint.trustedBase`'s aggregate computed here one statement at a",
+    "time), each with the `§N.M` and `(Rule-Name)` citations its doc-comment",
+    "carries. Capped at 25 definitions; a capped diagram says how many more there",
+    "were.", ""]
+  for (h, s) in Spec.spine do
+    let ancestors := (ancestorsOf.find? h).getD #[]
+    out := out.push s!"### `{Digest.shortName h}`"
+    out := out.push ""
+    out := out ++ (← renderTheoremDiagram env milestoneSet h s ancestors).toArray
+    out := out.push ""
+  out := out ++ #["## The assurance chain", "",
+    "Static: what the proof chain covers, and how the bridge corpus tests the",
+    "compiler against the same model — kept in content beside",
+    "`../WHAT-IT-MEANS.md`'s diagram (RUE-2462) without depending on that file.",
+    ""]
+  out := out ++ Map.assuranceChainDiagram.toArray ++ #[""]
+  out := out ++ #["## Size stats", "",
+    "Proof size in source lines (from the declaration's range), and the number of",
+    "distinct unmarked helper theorems `Map.walk` counted under it before the next",
+    "marked node.", "",
+    "| Marked node | Module | Proof lines | Unmarked helpers under it |",
+    "| --- | --- | --- | --- |"]
+  for n in markedList do
+    out := out.push (← mapSizeRow env helperCountOf n)
+  out := out.push ""
+  return ("\n".intercalate out.toList, if problems.isEmpty then 0 else 1)
+
 /-- (helper) Lean Comparator's configuration (`comparator/config.json`):
 the challenge and solution modules, the theorems to compare — one per Spec
 statement — and the axioms this project allows. -/
@@ -497,6 +650,7 @@ unsafe def mainUnsafe (args : List String) : IO UInt32 := do
   | ["--challenge"] => withEnvironment challengeReport
   | ["--comparator-config"] => withEnvironment comparatorConfig
   | ["--fingerprint"] => withEnvironment fingerprintReport
+  | ["--map"] => withEnvironment mapReport
   | _ => IO.eprintln usage; pure 1
 
 /-- (helper) The entry point's safe face. -/
