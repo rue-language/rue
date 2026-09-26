@@ -77,4 +77,14 @@ def step_type_safety_stmt : Prop :=
         HasTy P.decls v fd.ret) ∨
       (∃ κ tr, Steps M.toFloatOps P Config.init (.panic κ tr))
 
+/-- **No use-after-drop over `Step`, on every program** (§7 "No use-after-drop /
+no leak of drops"; §6.1's retired cell; RUE-2496). No configuration reachable
+from `Config.init` is stuck on a retired (`†`) cell, whether or not the
+program is checked. The hypothesis that the configuration is reached is
+needed: a configuration whose frame names a retired cell is stuck so
+(`Sharp.retired_cell`). -/
+def step_no_use_after_drop_stmt : Prop :=
+  ∀ (M : FloatOps) (P : Program) {C : Config} (_ : Steps M P Config.init C),
+    ¬ C.Stuck M P .useAfterDrop
+
 end RueCore.Spec

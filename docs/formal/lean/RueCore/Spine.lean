@@ -6,6 +6,7 @@ public import RueCore.Checker
 public import RueCore.Trace
 public import RueCore.TraceExact
 public import RueCore.TraceOrder
+public import RueCore.Retire
 public import RueCore.Adequacy
 public import RueCore.Nonvacuous
 public import RueCore.Sharp
@@ -15,9 +16,9 @@ public import RueCore.Sharp
 /-!
 # RueCore.Spine — each spine proof, checked against its statement (layer L2)
 
-One theorem per entry of `RueCore.Spec.spine` (36), of
+One theorem per entry of `RueCore.Spec.spine` (38), of
 `RueCore.Spec.witnesses` (13, the non-vacuity witnesses; RUE-2469) and of
-`RueCore.Spec.sharpness` (27, the sharpness counter-examples; RUE-2485), 76
+`RueCore.Spec.sharpness` (28, the sharpness counter-examples; RUE-2485), 79
 in all: `RueCore.Spine.<name>` has
 exactly the type `RueCore.Spec.<name>_stmt` and is proved by the theorem
 `RueCore.<name>` of the proof layer. The kernel accepts each only if that
@@ -45,6 +46,8 @@ theorem no_violation : Spec.no_violation_stmt := @RueCore.no_violation
 theorem no_use_after_move : Spec.no_use_after_move_stmt := @RueCore.no_use_after_move
 /-- `Spec.no_use_after_drop_stmt`, by `RueCore.no_use_after_drop` (helper). -/
 theorem no_use_after_drop : Spec.no_use_after_drop_stmt := @RueCore.no_use_after_drop
+/-- `Spec.run_no_use_after_drop_stmt`, by `RueCore.run_no_use_after_drop` (helper). -/
+theorem run_no_use_after_drop : Spec.run_no_use_after_drop_stmt := @RueCore.run_no_use_after_drop
 /-- `Spec.no_linear_leak_stmt`, by `RueCore.no_linear_leak` (helper). -/
 theorem no_linear_leak : Spec.no_linear_leak_stmt := @RueCore.no_linear_leak
 /-- `Spec.no_linear_overwrite_stmt`, by `RueCore.no_linear_overwrite` (helper). -/
@@ -91,6 +94,9 @@ theorem step_progress : Spec.step_progress_stmt := @RueCore.step_progress
 theorem step_preservation : Spec.step_preservation_stmt := @RueCore.step_preservation
 /-- `Spec.step_type_safety_stmt`, by `RueCore.step_type_safety` (helper). -/
 theorem step_type_safety : Spec.step_type_safety_stmt := @RueCore.step_type_safety
+/-- `Spec.step_no_use_after_drop_stmt`, by `RueCore.step_no_use_after_drop` (helper). -/
+theorem step_no_use_after_drop : Spec.step_no_use_after_drop_stmt :=
+  @RueCore.step_no_use_after_drop
 /-- `Spec.eval_sound_stmt`, by `RueCore.eval_sound` (helper). -/
 theorem eval_sound : Spec.eval_sound_stmt := @RueCore.eval_sound
 /-- `Spec.run_sim_stmt`, by `RueCore.run_sim` (helper). -/
@@ -193,6 +199,8 @@ theorem Sharp.not_a_step : Spec.Sharp.not_a_step_stmt := @RueCore.Sharp.not_a_st
 theorem Sharp.init_steps : Spec.Sharp.init_steps_stmt := @RueCore.Sharp.init_steps
 /-- `Spec.Sharp.unreachable_stuck_stmt`, by `RueCore.Sharp.unreachable_stuck` (helper). -/
 theorem Sharp.unreachable_stuck : Spec.Sharp.unreachable_stuck_stmt := @RueCore.Sharp.unreachable_stuck
+/-- `Spec.Sharp.retired_cell_stmt`, by `RueCore.Sharp.retired_cell` (helper). -/
+theorem Sharp.retired_cell : Spec.Sharp.retired_cell_stmt := @RueCore.Sharp.retired_cell
 
 
 end RueCore.Spine
