@@ -175,10 +175,10 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
         (match check P R Γ₁ e₂ with
         | some (.ty (.int w' s'), Ω₂) =>
             if w' = w ∧ s' = s ∧ op.intAdmits = true then
-              some (.ty (op.resultTy (.int w s)), Ω₂.add Δ₁)
+              some (.ty (op.resultTy (.int w s)), Ω₂.merge Δ₁)
             else none
         | some (.never, Ω₂) =>
-            if op.intAdmits = true then some (.ty (op.resultTy (.int w s)), Ω₂.add Δ₁)
+            if op.intAdmits = true then some (.ty (op.resultTy (.int w s)), Ω₂.merge Δ₁)
             else none
         | _ => none)
       | some (.ty (.int w s), ⟨none, Δ₁⟩) =>
@@ -188,10 +188,10 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
         (match check P R Γ₁ e₂ with
         | some (.ty (.float w'), Ω₂) =>
             if w' = w ∧ op.floatAdmits = true then
-              some (.ty (op.resultTy (.float w)), Ω₂.add Δ₁)
+              some (.ty (op.resultTy (.float w)), Ω₂.merge Δ₁)
             else none
         | some (.never, Ω₂) =>
-            if op.floatAdmits = true then some (.ty (op.resultTy (.float w)), Ω₂.add Δ₁)
+            if op.floatAdmits = true then some (.ty (op.resultTy (.float w)), Ω₂.merge Δ₁)
             else none
         | _ => none)
       | some (.ty (.float w), ⟨none, Δ₁⟩) =>
@@ -435,7 +435,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
           if T₁.mult P.decls = .linear then none
           else
             (match check P R Γ₁ e₂ with
-             | some (c₂, Ω₂) => some (c₂, Ω₂.add Δ₁)
+             | some (c₂, Ω₂) => some (c₂, Ω₂.merge Δ₁)
              | none => none)
       | some (_, ⟨none, Δ₁⟩) => some (.never, ⟨none, Δ₁⟩)
       | _ => none
@@ -509,7 +509,7 @@ def checkArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Option 
       | some (c, ⟨some Γ₁, Δ₁⟩) =>
           if c.fits T then
             (match checkArgs P R Γ₁ es Ts with
-             | some Ω => some (Ω.add Δ₁)
+             | some Ω => some (Ω.merge Δ₁)
              | none => none)
           else none
       | some (c, ⟨none, Δ₁⟩) =>
@@ -530,7 +530,7 @@ def checkIdx (P : Program) (R : Ty) : Ctx → List Expr → Option (List Ty × O
       match check P R Γ e with
       | some (.ty (.int w s), ⟨some Γ₁, Δ₁⟩) =>
         (match checkIdx P R Γ₁ es with
-         | some (Ts, Ω) => some (.int w s :: Ts, Ω.add Δ₁)
+         | some (Ts, Ω) => some (.int w s :: Ts, Ω.merge Δ₁)
          | none => none)
       | some (.ty (.int w s), ⟨none, Δ₁⟩) =>
           some (.int w s :: es.map (fun _ => .int w s), ⟨none, Δ₁⟩)

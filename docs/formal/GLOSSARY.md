@@ -730,7 +730,7 @@ documents rely on.
 | `Ctx.joinFold` | `Statics` | One step of joining many arms' contexts, left to right | Rue-specific, grounded (spec 3.8:80) | `Statics` |
 | `Ctx.joinAll` | `Statics` | The join of all arms' outgoing contexts (§5.5's (Match)) | Rue-specific, grounded (spec 3.8:80) | 03 “Lemmas §7 owes, and the …”; GUIDE “What the checker demands”; `Statics` |
 | `Out` | `Statics` | A typing result `Ω`: the outgoing context, or `⊥` when the expression never finishes normally, plus the contexts recorded at its `break`s (§5.3) | ours, pending audit | 03 “Type safety”; GUIDE §1; `Statics` |
-| `Out.add` | `Statics` | Adds an earlier expression's recorded `break` contexts to a result (§5.3's `Ω ⊕ Δ`) | ours, pending audit | — |
+| `Out.merge` | `Statics` | Adds an earlier expression's recorded `break` contexts to a result (§5.3's `Ω ⊕ Δ`) | ours, pending audit | — |
 | `Ctx.joinOpt` | `Statics` | The branch join of two results; a branch that never finishes contributes nothing (§5.5) | Rue-specific, grounded (spec 3.8:80) | 03 “Lemmas §7 owes, and the …”; MUTATION “What is mutated”; `Statics` |
 | `Ctx.joinOpts` | `Statics` | The join of many arms' results, over the arms that finish normally (§5.5) | Rue-specific, grounded (spec 3.8:80) | 03 “Lemmas §7 owes, and the …”; `Statics` |
 | `LoopHead` | `Statics` | The ownership state at the top of a loop: the entry state joined with the state at the end of the body (§5.7) | Rue-specific, grounded (spec 3.8:79) | 03 “Lemmas §7 owes, and the …”; lean/README “What is mechanized”; GUIDE “Loops, briefly”; `Statics` |

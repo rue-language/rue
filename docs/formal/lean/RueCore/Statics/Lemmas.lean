@@ -2271,7 +2271,7 @@ theorem Out.skelOk_of {Γ Γ' : Ctx} (h : Γ'.skel = Γ.skel) : Out.SkelOk Γ �
 followed by a subexpression typed from `Γ₁` preserves the skeleton the
 prefix started from, `Ω ⊕ Δ₁` included (helper). -/
 theorem Out.SkelOk.then {Γ Γ₁ : Ctx} {Δ₁ : List Ctx} {Ω : Out}
-    (h₁ : Out.SkelOk Γ ⟨some Γ₁, Δ₁⟩) (h₂ : Out.SkelOk Γ₁ Ω) : Out.SkelOk Γ (Ω.add Δ₁) := by
+    (h₁ : Out.SkelOk Γ ⟨some Γ₁, Δ₁⟩) (h₂ : Out.SkelOk Γ₁ Ω) : Out.SkelOk Γ (Ω.merge Δ₁) := by
   have hs := h₁.norm Γ₁ rfl
   refine ⟨fun Γ' h => (h₂.norm Γ' h).trans hs, fun Γb hb => ?_⟩
   rcases List.mem_append.mp hb with hb | hb
@@ -2601,7 +2601,7 @@ theorem Out.Wf.of {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) : Out.Wf D ⟨some Γ
 
 /-- (helper) §5.3's threading, read over the shape invariant. -/
 theorem Out.Wf.then {D : Decls} {Γ₁ : Ctx} {Δ₁ : List Ctx} {Ω : Out}
-    (h₁ : Out.Wf D ⟨some Γ₁, Δ₁⟩) (h₂ : Ctx.Wf D Γ₁ → Out.Wf D Ω) : Out.Wf D (Ω.add Δ₁) := by
+    (h₁ : Out.Wf D ⟨some Γ₁, Δ₁⟩) (h₂ : Ctx.Wf D Γ₁ → Out.Wf D Ω) : Out.Wf D (Ω.merge Δ₁) := by
   have k₂ := h₂ (h₁.norm _ rfl)
   refine ⟨k₂.norm, fun Γb hb => ?_⟩
   rcases List.mem_append.mp hb with hb | hb
@@ -2820,7 +2820,7 @@ theorem Typed.brk_nil {P R} : ∀ {Γ : Ctx} {e T} {Ω : Out},
   | _, _, _, _, .binop h₁ h₂ _, hb | _, _, _, _, .floatBinop h₁ h₂ _, hb
   | _, _, _, _, .seq h₁ _ h₂, hb => by
       simp only [Expr.breaks, Bool.or_eq_false_iff] at hb
-      simp [Out.add, Typed.brk_nil h₁ hb.1, Typed.brk_nil h₂ hb.2]
+      simp [Out.merge, Typed.brk_nil h₁ hb.1, Typed.brk_nil h₂ hb.2]
   | _, _, _, _, .binopBot h₁ _, hb | _, _, _, _, .floatBinopBot h₁ _, hb
   | _, _, _, _, .seqBot h₁, hb | _, _, _, _, .letBot h₁, hb => by
       simp only [Expr.breaks, Bool.or_eq_false_iff] at hb
@@ -2884,7 +2884,7 @@ theorem TypedArgs.brk_nil {P R} : ∀ {Γ : Ctx} {es Ts} {Ω : Out},
       simp only [Expr.breaksList, Bool.or_eq_false_iff] at hb
       have h' := Typed.brk_nil h hb.1
       simp only at h'
-      simp [Out.add, h', TypedArgs.brk_nil hs hb.2]
+      simp [Out.merge, h', TypedArgs.brk_nil hs hb.2]
   | _, _, _, _, .consBot h _, hb => by
       simp only [Expr.breaksList, Bool.or_eq_false_iff] at hb
       exact Typed.brk_nil h hb.1
