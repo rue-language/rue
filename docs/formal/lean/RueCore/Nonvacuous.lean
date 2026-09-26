@@ -432,4 +432,48 @@ theorem stuck :
   subst hPe
   exact ⟨by rfl, by rfl, _, stepN_steps (n := 100), by rfl⟩
 
+/-- `Spec.Nonvacuous.whole_drops_stmt`, proved: §7's hypotheses, satisfied (RUE-2478). -/
+theorem whole_drops :
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
+      ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧ 2 ∈ C.held P.decls ∧
+        ∃ H v tr, Steps Float.exactOps P C (.run H Frame.empty [] (.ret v) tr) ∧
+          (freedIds P.decls tr).count 0 = 1 ∧ (freedIds P.decls tr).count 2 = 1 := by
+  intro B hB P hPe
+  subst hB
+  have h1 : checkProgram P = true := by rw [hPe]; rfl
+  have hP := checkProgram_sound h1
+  subst hPe
+  exact ⟨h1, hP, rfl, _, stepN_steps (n := 15), by decide, by decide, _, _, _,
+    stepN_steps (n := 30), by decide, by decide⟩
+
+/-- `Spec.Nonvacuous.whole_result_stmt`, proved: §7's hypotheses, satisfied (RUE-2478). -/
+theorem whole_result :
+  ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .struct 0, body := .mkStruct 0 [.intLit .w64 .signed 7] }] } →
+    checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
+    ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧
+      ∃ H v tr, Steps Float.exactOps P C (.run H Frame.empty [] (.ret v) tr) ∧
+        (v.own P.decls).count 0 = 1 ∧ freedIds P.decls tr = [] := by
+  intro P hPe
+  have h1 : checkProgram P = true := by rw [hPe]; rfl
+  have hP := checkProgram_sound h1
+  subst hPe
+  exact ⟨h1, hP, rfl, _, stepN_steps (n := 7), by decide, _, _, _,
+    stepN_steps (n := 10), by decide, by decide⟩
+
 end RueCore.Nonvacuous

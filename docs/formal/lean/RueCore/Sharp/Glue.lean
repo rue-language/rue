@@ -1169,4 +1169,64 @@ theorem float_halt.step_preservation_2 :
   subst hfd
   exact hns (hs _)
 
+/-- `Sharp.copy_leak` refutes `whole_program_exactly_once` without hypothesis 1 (helper). -/
+theorem copy_leak.whole_program_exactly_once_1 :
+    ¬∀ (M : FloatModel) {P : Program}, P.pendingSafe = true → ∀ {C : RueCore.Config},
+        Steps M.toFloatOps P Config.init C → ∀ {a : Nat}, a ∈ C.held P.decls →
+          ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+            Steps M.toFloatOps P C (.run H φ [] (.ret v) tr) →
+              List.count a (v.own P.decls) + List.count a (freedIds P.decls tr) = 1 := by
+  intro h
+  obtain ⟨-, -, hps, C, hC, ha, H, v, tr, hT, hz⟩ := Spine.Sharp.copy_leak _ rfl _ rfl
+  have := h Float.exactModel hps hC ha hT
+  omega
+
+/-- `Sharp.pending_leak` refutes `whole_program_exactly_once` without hypothesis 2 (helper). -/
+theorem pending_leak.whole_program_exactly_once_2 :
+    ¬∀ (M : FloatModel) {P : Program}, ProgramTyped P → ∀ {C : RueCore.Config},
+        Steps M.toFloatOps P Config.init C → ∀ {a : Nat}, a ∈ C.held P.decls →
+          ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+            Steps M.toFloatOps P C (.run H φ [] (.ret v) tr) →
+              List.count a (v.own P.decls) + List.count a (freedIds P.decls tr) = 1 := by
+  intro h
+  obtain ⟨-, hPT, -, C, hC, ha, H, v, tr, hT, hz⟩ := Spine.Sharp.pending_leak _ rfl
+  have := h Float.exactModel hPT hC ha hT
+  omega
+
+/-- `Sharp.unreached_held` refutes `whole_program_exactly_once` without hypothesis 3 (helper). -/
+theorem unreached_held.whole_program_exactly_once_3 :
+    ¬∀ (M : FloatModel) {P : Program}, ProgramTyped P → P.pendingSafe = true →
+        ∀ {C : RueCore.Config} {a : Nat}, a ∈ C.held P.decls →
+          ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+            Steps M.toFloatOps P C (.run H φ [] (.ret v) tr) →
+              List.count a (v.own P.decls) + List.count a (freedIds P.decls tr) = 1 := by
+  intro h
+  obtain ⟨hPT, hps, -, ha, hz⟩ := Spine.Sharp.unreached_held _ rfl _ rfl
+  have := h Float.exactModel hPT hps ha (.refl _)
+  omega
+
+/-- `Sharp.unheld` refutes `whole_program_exactly_once` without hypothesis 4 (helper). -/
+theorem unheld.whole_program_exactly_once_4 :
+    ¬∀ (M : FloatModel) {P : Program}, ProgramTyped P → P.pendingSafe = true →
+        ∀ {C : RueCore.Config}, Steps M.toFloatOps P Config.init C →
+          ∀ {a : Nat} {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+            Steps M.toFloatOps P C (.run H φ [] (.ret v) tr) →
+              List.count a (v.own P.decls) + List.count a (freedIds P.decls tr) = 1 := by
+  intro h
+  obtain ⟨hPT, hps, -, H, v, tr, hT, hz⟩ := Spine.Sharp.unheld _ rfl _ rfl
+  have := h Float.exactModel hPT hps (.refl _) (a := 1) hT
+  omega
+
+/-- `Sharp.off_run` refutes `whole_program_exactly_once` without hypothesis 5 (helper). -/
+theorem off_run.whole_program_exactly_once_5 :
+    ¬∀ (M : FloatModel) {P : Program}, ProgramTyped P → P.pendingSafe = true →
+        ∀ {C : RueCore.Config}, Steps M.toFloatOps P Config.init C → ∀ {a : Nat},
+          a ∈ C.held P.decls → ∀ {_H : Store} {_φ : Frame} {v : Val} {tr : List Event},
+            List.count a (v.own P.decls) + List.count a (freedIds P.decls tr) = 1 := by
+  intro h
+  obtain ⟨hPT, hps, C, hC, ha, -, hz⟩ := Spine.Sharp.off_run _ rfl _ rfl
+  have := h Float.exactModel hPT hps hC ha (_H := []) (_φ := Frame.empty)
+    (v := .int .w64 .signed 3) (tr := [])
+  omega
+
 end RueCore.Sharp.Glue

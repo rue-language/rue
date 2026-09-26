@@ -136,6 +136,52 @@ abbrev bodyStuck : Expr :=
 abbrev progStuck : Program :=
   { decls := decls, fns := [{ params := [], ret := .int .w64 .signed, body := bodyStuck }] }
 
+/-- The `whole_result` witness's program (helper). -/
+abbrev progWholeResult : Program :=
+  { decls := decls, fns := [{ params := [], ret := .struct 0, body := .mkStruct 0 [.intLit .w64 .signed 7] }] }
+
+/-- `whole_drops` applied to `checkProgram_sound` (helper). -/
+theorem whole_drops.checkProgram_sound : True := by
+  obtain ⟨hc, -, -, -⟩ := Spine.Nonvacuous.whole_drops bodyDtor rfl progDtor rfl
+  have := Spine.checkProgram_sound hc
+  trivial
+
+/-- `whole_drops` applied to `whole_program_exactly_once`, at each of the two
+identities its reached configuration holds (helper). -/
+theorem whole_drops.whole_program_exactly_once : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨-, hPT, hps, C, hC, h0, h2, H, v, tr, hT, -, -⟩ :=
+    Spine.Nonvacuous.whole_drops bodyDtor rfl progDtor rfl
+  rw [← hM] at hC hT
+  have := Spine.whole_program_exactly_once M hPT hps hC h0 hT
+  have := Spine.whole_program_exactly_once M hPT hps hC h2 hT
+  trivial
+
+/-- `whole_result` applied to `checkProgram_sound` (helper). -/
+theorem whole_result.checkProgram_sound : True := by
+  obtain ⟨hc, -, -, -⟩ := Spine.Nonvacuous.whole_result progWholeResult rfl
+  have := Spine.checkProgram_sound hc
+  trivial
+
+/-- `whole_result` applied to `whole_program_exactly_once` (helper). -/
+theorem whole_result.whole_program_exactly_once : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨-, hPT, hps, C, hC, h0, H, v, tr, hT, -, -⟩ :=
+    Spine.Nonvacuous.whole_result progWholeResult rfl
+  rw [← hM] at hC hT
+  have := Spine.whole_program_exactly_once M hPT hps hC h0 hT
+  trivial
+
+/-- `exact_model` applied to `whole_program_exactly_once`, through the
+`whole_drops` program (helper). -/
+theorem exact_model.whole_program_exactly_once : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨-, hPT, hps, C, hC, h0, -, H, v, tr, hT, -, -⟩ :=
+    Spine.Nonvacuous.whole_drops bodyDtor rfl progDtor rfl
+  rw [← hM] at hC hT
+  have := Spine.whole_program_exactly_once M hPT hps hC h0 hT
+  trivial
+
 /-- `dtor` applied to `soundness` (helper). -/
 theorem dtor.soundness : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model

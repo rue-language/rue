@@ -82,6 +82,7 @@ def spine : List (Lean.Name × Lean.Name) := [
   (`RueCore.dtor_once, ``dtor_once_stmt),
   (`RueCore.drop_exactly_once, ``drop_exactly_once_stmt),
   (`RueCore.rest_exactly_once, ``rest_exactly_once_stmt),
+  (`RueCore.whole_program_exactly_once, ``whole_program_exactly_once_stmt),
   (`RueCore.drop_order, ``drop_order_stmt),
   (`RueCore.drop_glue_order, ``drop_glue_order_stmt),
   -- §6's relation, and §7 over it
@@ -127,6 +128,7 @@ def witnesses : List (Lean.Name × Lean.Name × List Lean.Name) := [
       `RueCore.step_no_double_free,
       `RueCore.drop_exactly_once,
       `RueCore.rest_exactly_once,
+      `RueCore.whole_program_exactly_once,
       `RueCore.drop_order,
       `RueCore.drop_glue_order,
       `RueCore.step_progress,
@@ -366,6 +368,12 @@ def witnesses : List (Lean.Name × Lean.Name × List Lean.Name) := [
       `RueCore.no_double_free,
       `RueCore.step_no_double_free,
       `RueCore.eval_diverges_iff]),
+  (`RueCore.Nonvacuous.whole_drops, ``Nonvacuous.whole_drops_stmt, [
+      `RueCore.checkProgram_sound,
+      `RueCore.whole_program_exactly_once]),
+  (`RueCore.Nonvacuous.whole_result, ``Nonvacuous.whole_result_stmt, [
+      `RueCore.checkProgram_sound,
+      `RueCore.whole_program_exactly_once]),
   (`RueCore.Nonvacuous.stuck, ``Nonvacuous.stuck_stmt, [
       `RueCore.fuel_mono,
       `RueCore.no_masking,
@@ -507,7 +515,17 @@ def sharpness : List (Lean.Name × Lean.Name × List (Lean.Name × Nat)) := [
   (`RueCore.Sharp.out_of_range_halt, ``Sharp.out_of_range_halt_stmt, [
       (`RueCore.step_preservation, 2)]),
   (`RueCore.Sharp.float_halt, ``Sharp.float_halt_stmt, [
-      (`RueCore.step_preservation, 2)])
+      (`RueCore.step_preservation, 2)]),
+  (`RueCore.Sharp.copy_leak, ``Sharp.copy_leak_stmt, [
+      (`RueCore.whole_program_exactly_once, 1)]),
+  (`RueCore.Sharp.pending_leak, ``Sharp.pending_leak_stmt, [
+      (`RueCore.whole_program_exactly_once, 2)]),
+  (`RueCore.Sharp.unreached_held, ``Sharp.unreached_held_stmt, [
+      (`RueCore.whole_program_exactly_once, 3)]),
+  (`RueCore.Sharp.unheld, ``Sharp.unheld_stmt, [
+      (`RueCore.whole_program_exactly_once, 4)]),
+  (`RueCore.Sharp.off_run, ``Sharp.off_run_stmt, [
+      (`RueCore.whole_program_exactly_once, 5)])
 
 ]
 
