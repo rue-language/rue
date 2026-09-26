@@ -62,9 +62,10 @@ integer arithmetic, so `+ - * /` (exact rationals, then `rnd_w`) and `@sqrt`
 **satisfies every law** of `FloatModel`: `Float/Lemmas.lean` (layer L2) proves
 each one of it and packages it as `Float.exactModel` (RUE-2469), so the laws
 have a model and the theorems that quantify over one apply to the corpus's.
-What stays unproved is that `exactOps` *is* IEEE 754 and the compiler beyond
-the laws — which NaN a propagating operation returns, `σ_NaN`, and every
-rounded digit — and that is checked the way §7 says the totality lemma is
+The laws say nothing about which datum a rounding returns, so satisfying them
+does not make `exactOps` IEEE 754: that its roundings are correct (ties to
+even, the overflow threshold), which NaN a propagating operation returns and
+`σ_NaN` are unproved, and are checked the way §7 says the totality lemma is
 discharged: against the compiler, case by case, by the corpus.
 
 ## The rendering
@@ -1007,11 +1008,12 @@ Lean's `Float`, so nothing here can put `Classical.choice` on a theorem, and
 the corpus runs by ordinary evaluation.
 
 These definitions satisfy `FloatModel`'s laws, proved in `Float/Lemmas.lean`
-(`Float.exactModel`, RUE-2469). What is **not** proved is that they are IEEE
-754 beyond the laws — the value of each rounding, which NaN a propagating
-operation returns, and `σ_NaN` — which §7 discharges "against the standard
-rather than against Rue". It is checked instead: every corpus case's printed
-value is compared against the compiler. -/
+(`Float.exactModel`, RUE-2469). The laws say nothing about which datum a
+rounding returns, so what is **not** proved is that these are IEEE 754's
+roundings — correct rounding, ties to even, the overflow threshold — nor
+which NaN a propagating operation returns, nor `σ_NaN`; §7 discharges those
+"against the standard rather than against Rue". They are checked instead:
+every corpus case's printed value is compared against the compiler. -/
 
 namespace Float
 

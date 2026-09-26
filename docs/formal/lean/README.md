@@ -407,13 +407,24 @@ definition over an `opaque` constant would otherwise put `Classical.choice` on
 every theorem that so much as mentions a value. And `exactOps` satisfies the
 laws, as a theorem rather than an assumption: `Float.exactModel`
 (`RueCore/Float/Lemmas.lean`, RUE-2469) proves every one of them of it, so the
-laws have a model and no theorem over `M : FloatModel` holds vacuously. What
-is checked rather than proved is that its roundings are IEEE 754's beyond what
-the laws say, by running every float corpus case against the compiler. `propext` and
+laws have a model and the theorems over `M : FloatModel` are not vacuous in
+`M`: none holds for want of a model. The laws say nothing about which datum a
+rounding returns; that `exactOps`'s roundings are IEEE 754's is checked
+against the compiler by the corpus, not proved. `propext` and
 `Quot.sound` are this project's policy; `Classical.choice` is kernel-checked
 but outside it; `sorryAx` and the axiom `native_decide` adds (one per use
 from Lean 4.29, `foo._native.native_decide.ax_1_1`; `Lean.ofReduceBool`
-before) are holes. The exe exits non-zero on anything outside the
+before) are holes. `decide +kernel` (or `decide (config := { kernel := true
+})`) is allowed, and only where plain `decide` or `rfl` stops at the
+elaborator's limits, with a comment saying so: it is kernel reduction of the
+`Decidable` instance, the same trust as `rfl`, adds no axiom, and `leanchecker`
+replays it; `ruecore-lint` lists each use beside the bounded options (today
+two: `Float.ofLit_one` and `Nonvacuous.float`, whose roundings reach
+`2^1076`). `native_decide`, `Lean.ofReduceBool` and `reduceBool` stay
+forbidden. Four facts of Lean's core library reach `Classical.choice` on this
+toolchain (`Nat.lt_of_mul_lt_mul_right`, `Nat.pow_lt_pow_right`,
+`Nat.pow_le_pow_iff_right`, `Nat.sqrt_le`; RUE-2489): a numeric proof here
+uses the constructive versions in `Float/Lemmas.lean` instead. The exe exits non-zero on anything outside the
 policy, which fails the Buck build too — and unlike the target's `trust` list,
 it covers *every* theorem, including ones no trusted theorem uses.
 
@@ -875,7 +886,9 @@ read; `DIGEST.md` stays the full index.
 over the definitions of L0 and L1 alone, with a doc-comment giving its English
 reading, the §7 paragraph of `../01-core-calculus.md` it realizes, and where
 it is narrower than that paragraph. `RueCore.Spec.spine` lists the 36 of them,
-each beside the theorem that proves it, and every tool reads that list:
+each beside the theorem that proves it; `RueCore.Spec.witnesses` lists the 13
+non-vacuity witnesses the same way ("Non-vacuity witnesses", RUE-2469), 49
+statements in all. Every tool reads the two lists:
 
 * **The kernel.** `RueCore/Spine.lean` (L2) restates each theorem as
   `theorem RueCore.Spine.<name> : RueCore.Spec.<name>_stmt := @RueCore.<name>`,
@@ -886,12 +899,12 @@ each beside the theorem that proves it, and every tool reads that list:
   names — so the statement a reader meets in the proof module is word for word
   the one in Spec, not merely definitionally equal to it — that each
   `RueCore.Spine` theorem has exactly its `_stmt` as its type, and that no
-  `_stmt` and no `Spine` theorem is outside the list. The lint's headline list
-  and the trusted base are read from `Spec.spine` too. It also holds the
+  `_stmt` and no `Spine` theorem is outside the two lists. The lint's headline
+  list and the trusted base are read from `Spec.spine` alone. It also holds the
   layers to their shapes (`Lint.layerShapeProblems`): an L1 module declares
   no authored theorem (a structure's proof field is part of its definition),
-  and a Spec module declares nothing but the `_stmt`s `Spec.spine` lists and
-  `Spec.spine` itself, so no proof rides into the challenge and no helper
+  and a Spec module declares nothing but the `_stmt`s the two lists name and
+  the lists themselves, so no proof rides into the challenge and no helper
   definition enters the trusted base unstated. L0 keeps its few lemmas
   (`Syntax.lean`, `Float.lean`).
 * **Lean Comparator** ([leanprover/comparator](https://github.com/leanprover/comparator)),
@@ -901,7 +914,8 @@ each beside the theorem that proves it, and every tool reads that list:
   `def RueCore.Spec.<name>_stmt : Prop` whose body is the Spec statement's
   elaborated body, pretty-printed, and then states each
   `RueCore.Spine.<name> : RueCore.Spec.<name>_stmt` with `sorry`. The solution
-  is `RueCore.Spine`; `comparator/config.json` names the 36 theorems and allows
+  is `RueCore.Spine`; `comparator/config.json` names its 49 theorems (36 of the
+  spine, 13 witnesses) and allows
   the axioms `propext` and `Quot.sound`. Comparator checks that each solution
   theorem has the challenge's statement, with every constant the statements
   use identical in the two environments — each `_stmt` included, so the
@@ -996,7 +1010,7 @@ in the statement, with the non-triviality in the statement too.
   FloatModel, M.toFloatOps = Float.exactOps`: `RueCore/Float/Lemmas.lean`
   proves every law of the executable instance (closure of `rnd_w` through
   `roundRat_wf` and `@sqrt`'s `sqrt_core`, the NaN, division and literal laws
-  by case analysis), constructively, with three core-library facts that reach
+  by case analysis), constructively, with four core-library facts that reach
   `Classical.choice` reproved. It covers the 19 statements over a model.
 * **Eight programs, one per construct class**: destructors, declared-linear
   values, a loop, an array, an enum with `match`, an early `return`, `@panic`
@@ -1010,8 +1024,12 @@ in the statement, with the non-triviality in the statement too.
 * **A program that diverges** (`loop { () }`, `outOfFuel` at every fuel, both
   sides of `eval_diverges_iff`), **one that gets stuck** unchecked (a read after
   `@drop`: `run` refuses it with `useAfterMove` and `Step` reaches a stuck
-  configuration), and **the empty frame** (`FrameMatches` and `StoreCC` at the
-  empty context, frame and store).
+  configuration), **the empty frame** (`FrameMatches` and `StoreCC` at the
+  empty context, frame and store), and **an open term in a live frame**
+  (`open_frame`: `@drop(s); 1` typed in the context `s : S0`, over a frame and
+  store that hold an `S0`, whose evaluation runs that value's destructor), so
+  `soundness`, `drop_exactly_once` and `rest_exactly_once` are shown to apply
+  beyond the empty frame.
 
 `RueCore.Spec.witnesses` lists each with its theorem (`RueCore/Nonvacuous.lean`,
 L2) and the spine theorems it witnesses. It is read beside `Spec.spine`:
@@ -1022,6 +1040,17 @@ configuration, `spine-fingerprints.txt` and `SPINE.md` (each theorem's
 them. The proofs run the checker and `eval` in the kernel: `rfl`, `decide`,
 and `decide +kernel` for the float program, whose rounding reaches `2^1076`,
 past the elaborator's evaluation threshold; never `native_decide`.
+
+**Every listed pair is applied.** `RueCore/Nonvacuous/Glue.lean` (L2) has one
+theorem per (witness, spine theorem) pair of `Spec.witnesses`,
+`Glue.<witness>.<theorem>`, which takes the witness's facts (with `M` from
+`exact_model` and the frame from `empty_frame` or `open_frame`) and applies
+`RueCore.Spine.<theorem>` to them. It elaborates only if the witness supplies
+that theorem's literal hypotheses, and the lint fails on a listed pair whose
+glue theorem is missing or does not use both constants. Five spine statements
+have no hypotheses (`freed_once`, `run_ne_returned`, `Config.trichotomy`,
+`step_iff`, `Config.stuck_iff`); their witnesses only apply them at a
+non-trivial program, and `SPINE.md` says so on their line.
 
 A witness shows a hypothesis satisfiable, not needed; that a conclusion fails
 once a hypothesis is dropped (sharpness) is RUE-2485's.
@@ -1035,13 +1064,19 @@ conservatism: a leak on a path not taken, say); of 200 generated programs
 (seed 7) it accepts 115 and rejects 85 (52 refused, 33 that return or panic).
 No accepted program is refused, as `no_violation` says. `Witnesses.lean`'s
 `errorClasses_rejected` checks in the kernel that it rejects a corpus program
-of each error class the statics rule out (use after move, a linear leak at a
-scope exit, a join, an early `return` or a match arm, a linear element used on
-one path, a discard, an overwrite, a use of a partially moved value, a move
-out of a destructor-bearing value, a destructure with a linear residue),
-beside an accepted neighbour where the corpus has one, and
-`typeErrors_rejected` an operand of the wrong type and a call of the wrong
-arity.
+of each of 21 error classes (`errorClassCases`): use after move, directly,
+across a loop's back edge (two) and by a second `match` of a moved scrutinee;
+a linear value leaked at a scope exit, a join (three shapes), an early
+`return`, a `break`, one of a loop's exits, a parameter, a match arm or on
+one path of an array element; discarded; overwritten; an assignment into an
+array with a moved-out element; a use of a partially moved value; a move and
+a destructure out of a destructor-bearing value; and a destructure with a
+linear residue. Thirteen stand beside an accepted corpus case that differs
+where the error is. The list is the classes the corpus exercises, not a
+proof that the statics rule out no others. `typeErrors_rejected` adds six
+type errors the corpus cannot hold (the compiler rejects them first): an
+operand of the wrong type, a call of the wrong arity, an `if` on an integer,
+a body of the wrong type, a field of an integer and a `match` on an integer.
 
 ## What is mechanized
 
@@ -1063,7 +1098,7 @@ arity.
 | `RueCore/Adequacy.lean` | **`eval` is adequate to `Step`, both ways, and §7 over `Step`** (RUE-2289 parts 2–4, ADR-0097 decision 3). Soundness: the simulation relation `Sim` between an `eval` result and `→*` from the expression in focus under any context — a value reaches the hole's value in the same frame, a panic reaches `↯κ`, an unwinding `return` the nearest caller, an unwinding `break` the nearest loop's context — proved for every expression and fuel on every program (`eval_sim`, `run_sim`), and `eval_sound`, the statement over checked programs, where `no_violation` rules `.stuck` out. Completeness modulo fuel: exhausted fuel is a run of that many steps (`eval_steps_of_outOfFuel`); with determinism, `eval_complete` says that on a checked program every value or panic `→*` reaches is `run`'s answer at every fuel past the run's length; `never_stuck_iff` is "never `.stuck`" both ways, in §7's phrasing; `eval_diverges_iff` says exhaustion at every fuel is divergence. §7 over `Step` (part 4): `step_progress`, `step_preservation` (for the semantic configuration typing `Config.SafeAt`, whose fundamental lemma is `init_safeAt`), `step_value_typed` and `step_type_safety`; `Frame.empty`, `StepsN` and `Config.SafeAt` are defined in `Adequacy/Defs.lean` (layer L1) | §6.2, §6.9, §6.10, §6.12, §7 |
 | `RueCore/Checker/Defs.lean` | (layer L1) the decidable checker as an algorithm, moved out of `Checker.lean`: `check`, `checkFn`, `checkDecls` and `checkProgram` | §3, §5 as an algorithm |
 | `RueCore/Checker.lean` | decidable checker `check`/`checkProgram` (defined in `Checker/Defs.lean`) + `check_sound`/`checkProgram_sound` (every acceptance is a derivation), with §5.7's loop head found by a bounded iteration (`headIter`) and re-verified, and `checkDecls` — §3's two class equations plus `3.0:5`'s acyclicity, decided by peeling the declarations | §3, §5 as an algorithm |
-| `RueCore/Spec/Nonvacuous.lean`, `RueCore/Nonvacuous.lean` | (layers Spec and L2) the non-vacuity witnesses (RUE-2469, "Non-vacuity witnesses"): twelve statements, over written-out programs, that the spine's hypotheses hold together of non-trivial programs, and their proofs | §7's hypotheses, satisfied |
+| `RueCore/Spec/Nonvacuous.lean`, `RueCore/Nonvacuous.lean` | (layers Spec and L2) the non-vacuity witnesses (RUE-2469, "Non-vacuity witnesses"): thirteen statements, over written-out programs, that the spine's hypotheses hold together of non-trivial programs, and their proofs | §7's hypotheses, satisfied |
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
 | `RueCore/Witnesses.lean` | (layer L3) the theorems at work on example and corpus programs, moved out of the proof modules because they mention the tooling layer: `affineScopeDrop_both_ways` traces one corpus program both ways; `drop_order`'s rejections (`fieldsSwapped_rejected`, `swappedMarkers_rejected`, `unorderedRecord_rejected`) and `returnPastAffine_newestFirst`; fourteen order-witnessing corpus cases read through the trace theorems; every accepted seed case is `pendingSafe`; and, moved from `Step.lean` and `Adequacy.lean` (RUE-2460), eleven programs run through §6's relation by `stepN` and `run_sim`'s and `run_complete`'s witnesses on them (`letAddProgram_sound`, `dropMoved_refused`); and the checker's rejections, one corpus case per error class (`errorClasses_rejected`, `typeErrors_rejected`, RUE-2469) | §5, §6.7, §6.9, §6.11, §7 witnesses |
 | `RueCore/Print.lean` | core syntax → Rue source, the program's struct and enum declarations included, and the observation channel (a `drop fn` per destructor-bearing declaration) | §2 elaboration inventory, 3.9 |
@@ -1074,7 +1109,7 @@ arity.
 | `RueCore/Digest.lean`, `RueCore/DigestMain.lean` | the statement digest and the trust report, walked out of the compiled environment (`lake exe ruecore-digest`) | the claim inventory and its trust boundary |
 | `RueCore/Layers.lean`, `RueCore/LayersMain.lean` | the layer table and the layering audit over the compiled import graph (`lake exe ruecore-layers`, "Layers" above) | what the claims may depend on |
 | `RueCore/Lint.lean`, `RueCore/LintMain.lean` | the headline statements, the trusted-base lint over every declaration of the package, and the trusted base `TRUST.md` prints (`lake exe ruecore-lint`, "The trusted-base lint" above) | what the claims may rest on |
-| `RueCore/Spec.lean`, `RueCore/Spec/*.lean` | (layer Spec) the 36 headline statements, each a `def …_stmt : Prop` over L0 and L1 with its English reading, and `Spec.spine`, the one list of them ("The statement layer"); the twelve non-vacuity witnesses and their list, `Spec.witnesses` ("Non-vacuity witnesses") | §7's claims, stated |
+| `RueCore/Spec.lean`, `RueCore/Spec/*.lean` | (layer Spec) the 36 headline statements, each a `def …_stmt : Prop` over L0 and L1 with its English reading, and `Spec.spine`, the one list of them ("The statement layer"); the thirteen non-vacuity witnesses and their list, `Spec.witnesses` ("Non-vacuity witnesses") | §7's claims, stated |
 | `RueCore/Spine.lean` | (layer L2) each headline theorem restated with its Spec statement as its type, so the kernel checks the proof against it; Lean Comparator's solution | §7's claims, proved |
 | `comparator/` | Lean Comparator's challenge and configuration (generated) and `run.sh`, which builds and runs Comparator | the statement/proof split, certified |
 | `SPINE.md` | (generated) every Spec statement in Lean, its English reading, its §7 paragraph and the definitions it names — the first page a reviewer reads | §7's claims, stated |

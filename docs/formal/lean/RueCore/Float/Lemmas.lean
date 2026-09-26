@@ -29,11 +29,12 @@ model the corpus and the printer run on.
   (`decide +kernel`, no `native_decide`: the exponents reach `2^1076`, past the
   elaborator's evaluation threshold).
 
-Three facts of Lean's core library that the proofs need reach
-`Classical.choice` there (`Nat.lt_of_mul_lt_mul_right`,
-`Nat.pow_lt_pow_right`, `Nat.sqrt_le`), so they are reproved constructively
-here, and every theorem of this module rests on `propext` and `Quot.sound`
-only.
+Four facts of Lean's core library that the proofs need reach
+`Classical.choice` on 4.33.1 (RUE-2489): `Nat.lt_of_mul_lt_mul_right`,
+`Nat.pow_lt_pow_right`, `Nat.pow_le_pow_iff_right` and `Nat.sqrt_le`. They are
+reproved constructively here (`lt_of_mul_lt_mul_right'`, `two_pow_lt_two_pow`,
+`le_of_two_pow_le`, `sqrt_sq_le`), and every theorem of this module rests on
+`propext` and `Quot.sound` only.
 -/
 
 namespace RueCore
@@ -354,6 +355,9 @@ theorem ofLit_zero (w : FloatWidth) (ne : Bool) (e : Nat) : ofLit w 0 ne e = .nu
 
 /-- **The decimal one is `1 · 2^0`** (`3.12:9`) for `exactOps` (`FloatModel.ofLit_one`), evaluated in the kernel at each width. -/
 theorem ofLit_one (w : FloatWidth) : ofLit w 1 false 0 = .num false 1 0 := by
+  -- `decide +kernel`: `roundRat` compares against `2 ^ 1076`, past the
+  -- elaborator's `exponentiation.threshold`, so plain `decide` stops; the
+  -- kernel evaluates it, and no axiom is added (README, the axiom policy)
   cases w <;> decide +kernel
 
 /-- Rounding up adds at most one (helper). -/
@@ -380,7 +384,7 @@ theorem sqrt_wf (σ : Bool) (w : FloatWidth) (f : FloatDatum) (hf : f.Wf w) :
             · exact absurd h0 hs
             · exact sqrt_core htop hlo hhi rfl (sqrt_sq_le _) (ite_succ_le _ _)
 
-/-- **The laws have a model: `Float.exactOps`** (§7's float lemma). Every field of `FloatModel` proved of the executable instance, so the 19 spine statements that quantify over `M : FloatModel` are not vacuous (RUE-2469), and each applies to the model the corpus runs on. What the laws leave open, `exactOps` still decides by choice — which NaN a propagating operation returns, and `σ_NaN` — and those choices are checked against the compiler by the corpus, not proved. -/
+/-- **The laws have a model: `Float.exactOps`** (§7's float lemma). Every field of `FloatModel` proved of the executable instance, so the 19 spine statements that quantify over `M : FloatModel` are not vacuous in `M` (RUE-2469), and each applies to the model the corpus runs on. Satisfying the laws does not make `exactOps` IEEE 754: the laws say nothing about which datum a rounding returns. What they leave open, `exactOps` decides by its own definition — the value of every rounding (correct rounding, ties to even, the overflow threshold), which NaN a propagating operation returns, and `σ_NaN` — and those are checked against the compiler by the corpus, not proved. -/
 def exactModel : FloatModel where
   toFloatOps := exactOps
   arith_wf w op a b _ _ := arith_wf false w op a b
