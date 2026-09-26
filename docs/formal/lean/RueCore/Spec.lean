@@ -6,6 +6,7 @@ public import RueCore.Spec.Trace
 public import RueCore.Spec.Step
 public import RueCore.Spec.Adequacy
 public import RueCore.Spec.Nonvacuous
+public import RueCore.Spec.Sharp
 
 @[expose] public section
 
@@ -343,6 +344,145 @@ def witnesses : List (Lean.Name × Lean.Name × List Lean.Name) := [
       `RueCore.Config.stuck_iff,
       `RueCore.step_stuck_isStuckState,
       `RueCore.run_stuck_of_step_stuck])
+]
+
+/-- The sharpness counter-examples (RUE-2485): each statement of
+`Spec/Sharp.lean` with the theorem that proves it, and the spine hypotheses it
+shows needed, each a spine theorem and a hypothesis number. A statement's
+hypotheses are its premises of `Prop` type, numbered from 1 in the order they
+occur, premises inside a conjunction, an `↔` or an `∃` of the conclusion
+included (`Lint.hypotheses`, the traversal `SPINE.md`'s "no hypotheses" reads).
+For each listed pair the statement writes out a program (or a configuration)
+of which that hypothesis fails, every other hypothesis of the theorem holds,
+and the conclusion fails. The tools read it beside `spine` and `witnesses`:
+`Spine.lean` binds each proof to its statement, the lint holds each to a spine
+entry's checks and fails on a hypothesis that neither this list nor
+`sharpnessReasons` covers, and Comparator's challenge, the fingerprints and
+`SPINE.md` (each theorem's "Sharp" line) include every statement (helper). -/
+def sharpness : List (Lean.Name × Lean.Name × List (Lean.Name × Nat)) := [
+  (`RueCore.Sharp.stuck, ``Sharp.stuck_stmt, [
+      (`RueCore.soundness, 1),
+      (`RueCore.run_safe, 1),
+      (`RueCore.no_violation, 1),
+      (`RueCore.no_use_after_move, 1),
+      (`RueCore.no_masking, 2),
+      (`RueCore.checkProgram_sound, 1),
+      (`RueCore.drop_exactly_once, 1),
+      (`RueCore.rest_exactly_once, 1),
+      (`RueCore.eval_sound, 1)]),
+  (`RueCore.Sharp.stuck_step, ``Sharp.stuck_step_stmt, [
+      (`RueCore.step_progress, 1),
+      (`RueCore.step_preservation, 1),
+      (`RueCore.step_type_safety, 1),
+      (`RueCore.step_never_stuck_of_run, 1),
+      (`RueCore.run_stuck_of_step_stuck, 3)]),
+  (`RueCore.Sharp.typed, ``Sharp.typed_stmt, [
+      (`RueCore.soundness, 2),
+      (`RueCore.check_sound, 1),
+      (`RueCore.drop_exactly_once, 3),
+      (`RueCore.rest_exactly_once, 3)]),
+  (`RueCore.Sharp.frame, ``Sharp.frame_stmt, [
+      (`RueCore.soundness, 3),
+      (`RueCore.drop_exactly_once, 4),
+      (`RueCore.rest_exactly_once, 4)]),
+  (`RueCore.Sharp.no_entry, ``Sharp.no_entry_stmt, [
+      (`RueCore.run_safe, 2)]),
+  (`RueCore.Sharp.entry_param, ``Sharp.entry_param_stmt, [
+      (`RueCore.run_safe, 3),
+      (`RueCore.no_violation, 1)]),
+  (`RueCore.Sharp.copy, ``Sharp.copy_stmt, [
+      (`RueCore.no_violation, 1)]),
+  (`RueCore.Sharp.leak, ``Sharp.leak_stmt, [
+      (`RueCore.no_linear_leak, 1),
+      (`RueCore.eval_complete, 1)]),
+  (`RueCore.Sharp.overwrite, ``Sharp.overwrite_stmt, [
+      (`RueCore.no_linear_overwrite, 1)]),
+  (`RueCore.Sharp.discard, ``Sharp.discard_stmt, [
+      (`RueCore.no_linear_discard, 1),
+      (`RueCore.eval_complete, 1)]),
+  (`RueCore.Sharp.discard_loop, ``Sharp.discard_loop_stmt, [
+      (`RueCore.no_linear_discard, 1),
+      (`RueCore.never_stuck_iff, 1),
+      (`RueCore.eval_diverges_iff, 1)]),
+  (`RueCore.Sharp.fuel, ``Sharp.fuel_stmt, [
+      (`RueCore.fuel_mono, 1),
+      (`RueCore.fuel_mono, 2),
+      (`RueCore.no_masking, 1),
+      (`RueCore.eval_complete, 3),
+      (`RueCore.run_complete, 2)]),
+  (`RueCore.Sharp.fuel_panic, ``Sharp.fuel_panic_stmt, [
+      (`RueCore.eval_complete, 5),
+      (`RueCore.run_complete, 4)]),
+  (`RueCore.Sharp.not_fits, ``Sharp.not_fits_stmt, [
+      (`RueCore.check_sound, 2)]),
+  (`RueCore.Sharp.double_drop, ``Sharp.double_drop_stmt, [
+      (`RueCore.no_double_free, 1),
+      (`RueCore.dtor_once, 1)]),
+  (`RueCore.Sharp.bare_dtor, ``Sharp.bare_dtor_stmt, [
+      (`RueCore.drop_order, 1)]),
+  (`RueCore.Sharp.pending_program, ``Sharp.pending_program_stmt, [
+      (`RueCore.drop_exactly_once, 2),
+      (`RueCore.rest_exactly_once, 2)]),
+  (`RueCore.Sharp.pending_expr, ``Sharp.pending_expr_stmt, [
+      (`RueCore.drop_exactly_once, 6),
+      (`RueCore.rest_exactly_once, 6)]),
+  (`RueCore.Sharp.store_cc, ``Sharp.store_cc_stmt, [
+      (`RueCore.drop_exactly_once, 5),
+      (`RueCore.rest_exactly_once, 5)]),
+  (`RueCore.Sharp.no_lead, ``Sharp.no_lead_stmt, [
+      (`RueCore.rest_exactly_once, 7)]),
+  (`RueCore.Sharp.no_eval, ``Sharp.no_eval_stmt, [
+      (`RueCore.rest_exactly_once, 8)]),
+  (`RueCore.Sharp.unreached, ``Sharp.unreached_stmt, [
+      (`RueCore.drop_order, 2),
+      (`RueCore.eval_sound, 2),
+      (`RueCore.run_sim, 1),
+      (`RueCore.eval_complete, 2),
+      (`RueCore.run_complete, 1)]),
+  (`RueCore.Sharp.unreached_panic, ``Sharp.unreached_panic_stmt, [
+      (`RueCore.drop_order, 3),
+      (`RueCore.eval_sound, 3),
+      (`RueCore.run_sim, 2),
+      (`RueCore.eval_complete, 4),
+      (`RueCore.run_complete, 3)]),
+  (`RueCore.Sharp.unordered, ``Sharp.unordered_stmt, [
+      (`RueCore.drop_order, 4)]),
+  (`RueCore.Sharp.not_a_step, ``Sharp.not_a_step_stmt, [
+      (`RueCore.drop_order, 5)]),
+  (`RueCore.Sharp.init_steps, ``Sharp.init_steps_stmt, [
+      (`RueCore.Step.det, 1),
+      (`RueCore.Step.det, 2),
+      (`RueCore.Step.terminal, 1),
+      (`RueCore.step_stuck_isStuckState, 1),
+      (`RueCore.run_stuck_of_step_stuck, 2)]),
+  (`RueCore.Sharp.unreachable_stuck, ``Sharp.unreachable_stuck_stmt, [
+      (`RueCore.step_progress, 2),
+      (`RueCore.step_preservation, 2),
+      (`RueCore.never_stuck_iff, 2),
+      (`RueCore.step_never_stuck_of_run, 2),
+      (`RueCore.run_stuck_of_step_stuck, 1)])
+
+]
+
+/-- The spine hypotheses with no counter-example, each with the reason
+(RUE-2485), in the form of `sharpness`'s pairs; the lint fails on a
+hypothesis that neither list covers (helper).
+
+One reason covers every statement over `M : FloatModel`, and is recorded here
+once: the laws of `FloatModel` are not a hypothesis about a program but
+assumptions about the float model every statement is instantiated at, and the
+counter-examples all run on `Float.exactOps`, a model of them
+(`Nonvacuous.exact_model`). A statement that failed at a model breaking a law
+would say something about that model, not about the program's hypotheses; so
+the laws have no counter-example, and `M` is not numbered among the
+hypotheses (it is not a `Prop`). -/
+def sharpnessReasons : List (Lean.Name × Nat × String) := [
+  (`RueCore.no_use_after_drop, 1,
+    "No counter-example: the hypothesis appears redundant. `run` starts from the empty store \
+    and frame, and a frame's environment names only cells its own bindings allocated, each \
+    removed from the environment when the cell is retired, so no program, checked or not, \
+    reaches `eval`'s `useAfterDrop` refusal through `run` (`Examples.lean` witnesses it only \
+    from an open machine state). Unproved; a finding of RUE-2485.")
 ]
 
 end RueCore.Spec

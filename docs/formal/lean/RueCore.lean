@@ -13,6 +13,7 @@ import RueCore.Dynamics.Lemmas
 import RueCore.Step.Lemmas
 import RueCore.Spec
 import RueCore.Nonvacuous
+import RueCore.Sharp
 import RueCore.Spine
 import RueCore.Nonvacuous.Glue
 import RueCore.Soundness
