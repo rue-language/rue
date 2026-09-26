@@ -445,7 +445,8 @@ def not_fits_stmt : Prop :=
 `no_double_free` without `ProgramTyped`. `¬ DtorNotCopy` is shown directly
 (struct `0`); `¬ ProgramTyped` through `no_double_free`. (RUE-2400's cases, a dynamic read and
 an array repeat of an affine value, no longer double-drop: `eval` refuses them
-with `typeConfusion`.) -/
+with `typeConfusion`.) The same run is reached by §6's relation (`run_sim`), so
+`step_no_double_free` fails without `ProgramTyped` too. -/
 def double_drop_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -810,5 +811,29 @@ def retired_cell_stmt : Prop :=
       ((.run [.dead] { env := [0], scope := [] } [] (.eval (.use (.var 0))) []) : Config).Stuck
         Float.exactOps P .useAfterDrop ∧
       ¬ Steps Float.exactOps P Config.init (.run [.dead] { env := [0], scope := [] } [] (.eval (.use (.var 0))) [])
+
+/-- **A configuration whose trace destroys one value twice, not reached** (§7
+sharpness, RUE-2477). For the checked program of `Nonvacuous.dtor`, the panic
+whose trace runs `S0`'s destructor twice on identity `0` names that identity
+twice among its destructor events, and `Config.init` does not reach it (shown
+through `step_no_double_free` itself). So `step_no_double_free` fails without
+the hypothesis that the configuration is reached: the bound is a property of
+the runs of the program, not of every trace a configuration can carry. -/
+def unreached_double_stmt : Prop :=
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      ProgramTyped P ∧
+      ¬ Steps Float.exactOps P Config.init
+        (.panic .user [.dtor 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]) ∧
+      (dtorIds (Config.panic .user
+        [.dtor 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]).trace).count 0 = 2
 
 end RueCore.Spec.Sharp
