@@ -5,7 +5,7 @@ public import RueCore.Adequacy.Defs
 @[expose] public section
 
 /-!
-# RueCore.Spec.Adequacy — `eval` and `Step` agree (Spec layer)
+# RueCore.Spec.Adequacy — semantic equivalence of `eval` and `Step` (Spec layer)
 
 §7 says the mechanization states type safety over its interpreter and that
 "the two readings meet in the adequacy lemma `03-metatheory.md` owes"
@@ -13,13 +13,23 @@ public import RueCore.Adequacy.Defs
 `check` accepts, `run`'s values and panics are exactly the ends of §6's runs
 from `Config.init`, `run` is never stuck exactly when no reachable
 configuration is, and exhausting the fuel at every bound is divergence.
-In the literature's terms, the equivalence of a big-step and a small-step
-semantics (`FIELD.md`).
+
+The field's name for it is **semantic equivalence** (Amin & Rompf, Thm 2), the
+equivalence of a definitional interpreter and a small-step semantics, in the
+line of the equivalence of big-step and small-step semantics (Leroy & Grall,
+Thms 9 and 11; `FIELD.md`, section 3). "Adequacy" is the calculus's word, in the sense
+of one operational semantics being adequate with respect to another; in the
+field it more often means computational adequacy or the adequacy of a
+semantic model, neither of which this is. The module keeps its file name,
+which the proof module `RueCore.Adequacy` shares. `eval_sound` and
+`eval_complete` are the equivalence's two directions; "sound" there names a
+simulation direction, not type soundness (`soundness`).
 -/
 
 namespace RueCore.Spec
 
-/-- **`eval` is sound for `Step`** (§7's adequacy sentence; ADR-0097). For a
+/-- **`eval` is sound for `Step`**, the interpreter-to-small-step direction of
+the semantic equivalence (§7's adequacy sentence; ADR-0097). For a
 checked program, `run` is never stuck, and its values and panics are reached
 by `→*` from `Config.init` with the same store and trace. -/
 def eval_sound_stmt : Prop :=
@@ -38,7 +48,8 @@ def run_sim_stmt : Prop :=
       Steps M P Config.init (.run H Frame.empty [] (.ret v) tr)) ∧
     (∀ k tr, run M P fuel = .panic k tr → Steps M P Config.init (.panic k tr))
 
-/-- **`eval` is complete for `Step`, modulo fuel** (§7's adequacy sentence).
+/-- **`eval` is complete for `Step`, modulo fuel**, the small-step-to-interpreter
+direction of the semantic equivalence (§7's adequacy sentence).
 For a checked program, a value or panic `→*` reaches is `run`'s answer at
 every large enough fuel. -/
 def eval_complete_stmt : Prop :=

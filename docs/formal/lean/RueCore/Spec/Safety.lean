@@ -110,14 +110,16 @@ def no_linear_discard_stmt : Prop :=
     run M.toFloatOps P fuel ≠ .stuck .linearDiscard
 
 /-- **Fuel monotonicity** (§6 as `eval` runs it; `03-metatheory.md` "Fuel").
-An answer other than `outOfFuel` is the answer at every larger fuel. -/
+An answer other than `outOfFuel` is the answer at every larger fuel: the clock
+lemma of functional big-step semantics (Owens et al.; `FIELD.md`, section 3). -/
 def fuel_mono_stmt : Prop :=
   ∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr},
     ∀ {n m : Nat}, n ≤ m → eval M n P H φ e ≠ .outOfFuel →
       eval M m P H φ e = eval M n P H φ e
 
 /-- **No masking** (§6 as `eval` runs it; `03-metatheory.md` "Fuel"). A
-refusal at one fuel is the answer at every fuel that answers. -/
+refusal at one fuel is the answer at every fuel that answers; a corollary of
+`fuel_mono`, in either order of the two fuels. -/
 def no_masking_stmt : Prop :=
   ∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat}
     {w : Violation} (_ : eval M n P H φ e = .stuck w) (_ : eval M m P H φ e ≠ .outOfFuel),

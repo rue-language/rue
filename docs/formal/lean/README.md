@@ -1027,6 +1027,21 @@ lists:
   reviewed; the fingerprints and the challenge make a change to it a
   deliberate, reviewed diff.
 
+**Against the literature (RUE-2467).** `SPINE.md` opens with a table that sets
+each spine theorem beside the standard theorem it corresponds to: the
+literature's form, cited from `../FIELD.md`; ours; and the difference in one
+sentence, or "identical up to notation". Its rows are `RueCore.Literature.rows`,
+in the tooling layer rather than the Spec layer: a row is commentary on a
+statement, not part of the claim, so it can be corrected without touching a
+fingerprint or the challenge. `--spine` fails on a spine theorem with no row, a
+row the spine does not list, or a row with no `FIELD.md` citation. Where a name
+differs from the field's only in wording, the Spec doc-comment gives the field's
+name too (determinacy, finality, the semantic equivalence of `eval` and `Step`
+that the calculus calls the adequacy lemma); where the difference is in
+substance (`step_preservation` is a semantic invariant, not subject reduction;
+`step_progress` is `safe` along runs, not the one-step lemma), the statement is
+unchanged and the row says so (RUE-2423).
+
 `SPINE.md`, the challenge and the configuration are generated from
 `Spec.spine`, so none of them is edited by hand:
 
