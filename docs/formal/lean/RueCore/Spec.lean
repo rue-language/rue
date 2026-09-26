@@ -361,9 +361,11 @@ included (`Lint.hypotheses`, the traversal `SPINE.md`'s "no hypotheses" reads).
 For each listed pair the statement writes out a program (or a configuration)
 of which that hypothesis fails, every other hypothesis of the theorem holds,
 and the conclusion fails. The tools read it beside `spine` and `witnesses`:
-`Spine.lean` binds each proof to its statement, the lint holds each to a spine
-entry's checks and fails on a hypothesis that neither this list nor
-`sharpnessReasons` covers, and Comparator's challenge, the fingerprints and
+`Spine.lean` binds each proof to its statement, `Sharp/Glue.lean` proves for
+each pair the negation of the spine statement with that hypothesis removed
+(RUE-2495), the lint holds each to a spine entry's checks, requires each
+pair's glue theorem to state exactly that negation (`Lint.dropHyp`) and fails
+on a hypothesis that neither this list nor `sharpnessReasons` covers, and Comparator's challenge, the fingerprints and
 `SPINE.md` (each theorem's "Sharp" line) include every statement (helper). -/
 def sharpness : List (Lean.Name × Lean.Name × List (Lean.Name × Nat)) := [
   (`RueCore.Sharp.stuck, ``Sharp.stuck_stmt, [

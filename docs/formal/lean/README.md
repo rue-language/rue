@@ -576,7 +576,7 @@ its own layer or a lower one:
 | **L0 syntax** | `Float`, `Syntax` | §2's syntax, types and float data |
 | **L1 definitions** | `Statics`, `Dynamics`, `Step`, `Soundness/Defs`, `Checker/Defs`, `Trace/Defs`, `Adequacy/Defs` | the semantics (§5's judgment, `eval`, §6's `Step`), and every definition a headline statement is written in: value typing and `FrameMatches`, the checker algorithm, the trace projections, ledgers and configuration invariants, `Config.SafeAt` |
 | **Spec statements** | `Spec`, `Spec.Safety`, `Spec.Checker`, `Spec.Trace`, `Spec.Step`, `Spec.Adequacy`, `Spec.Nonvacuous`, `Spec.Sharp` | the headline statements, each a `def …_stmt : Prop` over L0 and L1 alone, with its English reading; the one list of them, `Spec.spine` ("The statement layer"); the non-vacuity witnesses with their list, `Spec.witnesses` ("Non-vacuity witnesses"); and the sharpness counter-examples with theirs, `Spec.sharpness` and `Spec.sharpnessReasons` ("Sharpness counter-examples") |
-| **L2 proofs** | `Float.Lemmas`, `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder`, `Nonvacuous`, `Sharp`, `Spine`, `Nonvacuous.Glue` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L0's and L1's definitions (`Float.Lemmas`: the `FloatModel` laws of `Float.exactOps`), `Nonvacuous` proves the witness statements and `Sharp` the counter-example statements, `Spine` checks each headline, witness and counter-example proof against its Spec statement, and `Nonvacuous.Glue` applies each witness to the theorems it lists |
+| **L2 proofs** | `Float.Lemmas`, `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder`, `Nonvacuous`, `Sharp`, `Spine`, `Nonvacuous.Glue`, `Sharp.Glue` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L0's and L1's definitions (`Float.Lemmas`: the `FloatModel` laws of `Float.exactOps`), `Nonvacuous` proves the witness statements and `Sharp` the counter-example statements, `Spine` checks each headline, witness and counter-example proof against its Spec statement, `Nonvacuous.Glue` applies each witness to the theorems it lists, and `Sharp.Glue` refutes each spine statement with a hypothesis dropped from the counter-example `Spec.sharpness` pairs with it |
 | **L3 tooling** | `Examples`, `Witnesses`, `Print`, `Corpus`, `Gen`, `Explain*`, `Digest`, `Layers`, `Lint`, the `*Main` executables, the root `RueCore` | example and corpus programs and the theorems about them, the printer, the generator, the explain and digest reports, the layer table and the lint |
 
 L3 may import anything; nothing in L0–L2 or Spec imports L3, so no theorem of the
@@ -669,6 +669,7 @@ flowchart BT
     Float_Lemmas["Float.Lemmas"]
     Nonvacuous["Nonvacuous"]
     Nonvacuous_Glue["Nonvacuous.Glue"]
+    Sharp_Glue["Sharp.Glue"]
     Sharp["Sharp"]
     Soundness["Soundness"]
     Spine["Spine"]
@@ -740,6 +741,7 @@ flowchart BT
   Adequacy --> Sharp
   Sharp --> Spine
   Spine --> Nonvacuous_Glue
+  Spine --> Sharp_Glue
   Adequacy_Defs --> Spec_Adequacy
   Checker_Defs --> Spec_Checker
   Soundness_Defs --> Spec_Safety
@@ -893,8 +895,9 @@ name definitions outside the trusted base (`Float.exactOps` and its
 `roundRat`): a witness can only fail to witness, never widen a claim; nor
 are the sharpness counter-examples, which say a claim cannot be widened. Today
 the headlines' trusted base is 292 definitions,
-all in L0 and L1 (the package has 1137 theorems besides, 228 of them the
-glue applications of `Nonvacuous/Glue.lean`, and the 76 `Spine`
+all in L0 and L1 (the package has 1211 theorems besides, 228 of them the
+glue applications of `Nonvacuous/Glue.lean` and 74 the sharpness glue of
+`Sharp/Glue.lean`, and the 76 `Spine`
 restatements: 36 of the spine, 13 of the witnesses, 27 of the sharpness
 counter-examples). A
 definition counts as Lean's own, and is only counted, when Lean's own tables
@@ -1127,12 +1130,15 @@ conclusion, the same walk that makes five statements hypothesis-free
 ("Non-vacuity witnesses"). So a premise inside a conclusion counts: `run_sim`
 has two, the `run … = .ok H v tr` and `run … = .panic k tr` its two halves
 start from, and `eval_complete`'s `n < fuel` is two hypotheses, one per half.
-The 36 statements have 71 hypotheses, and 21 of the 70 with a
-counter-example are such premises inside a conclusion (`drop_order` 2–5,
-`eval_sound` 2–3, `run_sim` 1–2, `eval_complete` 2–5, `run_complete` 1–4, the
-`Steps init C` of `step_progress`, `step_preservation`, `never_stuck_iff` and
-`step_never_stuck_of_run`, and `run_stuck_of_step_stuck` 3), so "70
-hypotheses needed" is not 70 hypotheses about a program. The walk does not go
+The 36 statements have 71 hypotheses, and 19 of the 70 with a
+counter-example are such premises inside a conclusion, reached through an
+`∧`, an `↔` or an `∃` (`drop_order` 2–5, `eval_sound` 2–3, `run_sim` 1–2,
+`eval_complete` 2–5, `run_complete` 1–4, the `Steps init C` of
+`step_preservation` and `never_stuck_iff`, and `run_stuck_of_step_stuck` 3);
+the `Steps init C` of `step_progress` and `step_never_stuck_of_run` is of the
+same kind, a premise about a reached configuration, though no connective
+stands before it. `SPINE.md` computes these counts from the walk (RUE-2495).
+So "70 hypotheses needed" is not 70 hypotheses about a program. The walk does not go
 under `∨` or `¬`, nor into a definition that is not reducible: a premise
 inside `Config.SafeAt`, `Exact`, `Blocks` or `Lifo` is part of the
 conclusion. No spine statement has a premise under `∨` or `¬` today.
@@ -1141,11 +1147,23 @@ conclusion. No spine statement has a premise under `∨` or `¬` today.
 `RueCore.Spec.sharpness` (`Spec.lean`) names each counter-example
 statement, the theorem that proves it (`RueCore/Sharp.lean`, L2), and the
 hypotheses it drops, as (spine theorem, number) pairs: 27 statements, 70
-hypotheses (four of them by more than one statement). The pairing is
-hand-written and reviewed: the lint checks each pair's range and that every
-hypothesis is covered, not that the statement drops that hypothesis; a
-kernel-checked tie, as `Nonvacuous/Glue.lean` gives the witnesses, is
-RUE-2495. The one hypothesis without a counter-example has its reason in
+hypotheses in 74 pairs (four hypotheses by more than one statement). The
+lint checks each pair's range and that every hypothesis is covered.
+
+**Every pair is checked in the kernel** (RUE-2495). `RueCore/Sharp/Glue.lean`
+(L2) has one theorem per pair, `Glue.<counter-example>.<theorem>_<number>`,
+stating `¬ W`, where `W` is the spine statement with that hypothesis removed,
+and proving it from the counter-example's facts (`RueCore.Spine.Sharp.<x>`).
+The lint (`Lint.sharpProblems`) computes `W` itself from the Spec statement
+and the number, by the same walk that numbers the hypotheses (`Lint.dropHyp`,
+`Lint.hypWalk`: the binder is left out, the rest kept), and fails on a listed
+pair whose glue theorem is missing, does not use the counter-example, or does
+not state exactly `¬ W` — the same term up to binder names, not a
+definitionally equal one — and on a glue theorem that ties no pair. So a pair
+names a hypothesis whose removal the counter-example refutes: swapping two
+pairs, or listing a bogus one, fails the lint. Where the dropped hypothesis
+is a premise inside the conclusion, `W` keeps the whole statement with that
+premise removed, and the glue refutes the conjunct it was in. The one hypothesis without a counter-example has its reason in
 `RueCore.Spec.sharpnessReasons`, beside the one reason covering the float
 laws. The tools read the list as they read `Spec.witnesses`: `Spine.lean`
 binds each proof, the lint holds each to a spine entry's checks and fails on
@@ -1221,10 +1239,10 @@ hold (`¬ ProgramTyped P` from `no_use_after_move` and a refusal, `¬ Typed`
 from `soundness`). Two are shown directly instead: `Sharp.double_drop`'s
 `¬ DtorNotCopy` and `Sharp.entry_param`'s `¬ ProgramTyped`. So "an ill-typed
 program" there means one the spine theorem shows ill-typed, not one a
-separate derivation refutes. Where a statement does not give the other
-hypotheses in the spine theorem's literal form (`run` for `eval` at
-`main()`, `ProgramTyped` beside `WfProgram`, `eval … = r.withTrace []`), its
-doc-comment names the spot. `discard_loop`'s infinite `Step` run is nine steps per turn over
+separate derivation refutes. Each statement gives the other hypotheses in a
+form the glue applies the spine statement to (`run` as `eval` at `main()`,
+`ProgramTyped` beside `WfProgram`, `eval … = r.withTrace []`), so the glue
+needs no bridging lemma. `discard_loop`'s infinite `Step` run is nine steps per turn over
 any store, by `rfl` with the store and trace left symbolic
 (`Sharp.loopTurn_step`). No `native_decide`, no new axiom.
 
