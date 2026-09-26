@@ -1,6 +1,7 @@
 import RueCore.Checker
 import RueCore.Examples
 import RueCore.Print
+import RueCore.Trace
 
 /-!
 # RueCore.Corpus — the bridge corpus (ADR-0097, RUE-2227)
@@ -993,7 +994,31 @@ def cases : List Case := [
   { name := "residual_untracked",
     description := "A two-element linear array with only the first element moved out: §5.6's residual-linear check reads the untracked second element at the type level (the second disjunct, an untouched slot carries linear whenever its declared type does), and refuses the leak (the compiler: E0406) even though no tracked state marks that element Owned. The machine's monitor refuses it dynamically with linearLeak. Seeded by the definition mutation analysis (RUE-2486): mutant `residual-untracked`.",
     rules := ["§5.6 residual-linear leak check"],
-    prog := Examples.prog Examples.tI64 Examples.arrayLinearElemStranded }
+    prog := Examples.prog Examples.tI64 Examples.arrayLinearElemStranded },
+  { name := "lit_out_of_range",
+    description := "An integer literal one past i64's maximum, 2^63: rule(id=\"3.1:17\") requires the compiler to reject a literal that exceeds its target type's range (the compiler: E0800). The machine's literal evaluation is defined on any Int, so it produces the out-of-range value itself rather than a trap — a static discipline with no dynamic counterpart. Seeded by the definition mutation analysis (RUE-2486): mutant `lit-bounds`.",
+    rules := ["(Lit) §5.8", "rule(id=\"3.1:17\")"],
+    prog := Examples.scalarProg Examples.tI64 Examples.litOutOfRangeI64 },
+  { name := "dbg_aggregate",
+    description := "@dbg of an aggregate (a destructor-bearing struct literal, discarded immediately): rule(id=\"4.13:7\") admits only an integer, float, bool or string operand (the compiler: E0702). The machine refuses the same operand dynamically with typeConfusion, since Val.observable is false of a struct. Seeded by the definition mutation analysis (RUE-2486): mutant `dbg-observable`.",
+    rules := ["(Dbg) §5.8", "rule(id=\"4.13:7\")"],
+    prog := Examples.prog Examples.tI64 (seq (dbg (Examples.resA (Examples.lit 1))) (Examples.lit 0)) },
+  { name := "repeat_copy_affine",
+    description := "[e; n] of a non-Copy element: rule(id=\"7.1:36\") requires a Copy element type for the array-repeat literal (the compiler: E0905). The machine refuses the same repeat dynamically with typeConfusion, since the elaboration `let t = v; [t, t]` gets stuck at the second use of t. Seeded by the definition mutation analysis (RUE-2486): mutant `repeat-copy`.",
+    rules := ["array repeat §5.8", "rule(id=\"7.1:36\")"],
+    prog := Examples.prog Examples.tI64 Examples.arrayRepeatAffine },
+  { name := "copy_struct_dtor",
+    description := "A @copy struct declaring a destructor, never instantiated by main: rule(id=\"3.9:31\") excludes the declaration itself (the compiler: E0457, since a Copy value is duplicated implicitly and running its destructor once would misrepresent every other copy as still holding the resource). checkDecls checks every declaration whether or not anything refers to it, so checkProgram refuses the program before main runs at all — there is no dynamics to compare. Seeded by the definition mutation analysis (RUE-2486): mutant `copy-struct-dtor`.",
+    rules := ["§3 class and destructor well-formedness", "rule(id=\"3.9:31\")"],
+    prog := Examples.copyStructDtorProgram },
+  { name := "dtor_linear_field",
+    description := "A destructor-bearing struct whose field carries a linear value, never instantiated by main: rule(id=\"3.9:44\") excludes the declaration itself (the compiler: E0462, since the destructor cannot consume the field and nothing else may move a field out of a destructor-bearing value, so the field's obligation could only be met by drop glue that runs after the destructor). checkDecls refuses the declaration on its own, so there is no dynamics to compare. Seeded by the definition mutation analysis (RUE-2486): mutant `dtor-linear-field`.",
+    rules := ["§3 class and destructor well-formedness", "rule(id=\"3.9:44\")"],
+    prog := Examples.dtorLinearFieldProgram },
+  { name := "copy_monitor_off",
+    description := "The one shape §7's no-double-free conservation law needs excluded: an owned, destructor-bearing S1 value placed under a Copy S0's field, by an ill-typed program the checker already refuses for an unrelated reason (the field's declared type is i64, not S1). No well-typed program can reach this state, so this is the machine's own last line of defense: eval refuses to build the value with ownedUnderCopy, where Step (which has no monitor) would run S1's destructor on the same identity twice. Seeded by the definition mutation analysis (RUE-2486): mutant `copy-monitor-off`.",
+    rules := ["ownedUnderCopy monitor §6.5", "§7 no-double-free"],
+    prog := dupProgram }
 ]
 
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/
