@@ -690,9 +690,9 @@ theorem run_glue_blocks (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls)
     GlueBlocks P.decls (run M P fuel).trace :=
   eval_glue_blocks M hdt fuel [] _ _ (fun ℓ c hc => by simp at hc)
 
-/-- **Every finished run's trace is in the block grammar `Blocks`**, each drop
-marker followed by exactly `dropEvents` of what it names: `run_glue_blocks`
-read through `GlueBlocks.toBlocks`. -/
+/-- **Every finished run's trace is in the block grammar `Blocks`** (§3.9,
+§6.11), each drop marker followed by exactly `dropEvents` of what it names:
+`run_glue_blocks` read through `GlueBlocks.toBlocks`. -/
 theorem run_blocks (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls) (fuel : Nat) :
     Blocks P.decls (run M P fuel).trace :=
   (run_glue_blocks M hdt fuel).toBlocks
