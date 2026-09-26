@@ -29711,7 +29711,8 @@ def RueCore.Retire.LivePost (H : Store) (φ : Frame) : EvalRes → Prop :=
 
 **Fuel monotonicity** (§6 as `eval` runs it; `03-metatheory.md` "Fuel").
 An answer other than `outOfFuel` is the answer at every larger fuel: the clock
-lemma of functional big-step semantics (Owens et al.; `FIELD.md`, section 3).
+lemma of functional big-step semantics, which Owens et al. §3.4 leave unnamed
+and call "an analogue of determinism" (`FIELD.md`, section 3).
 
 ```lean
 def RueCore.Spec.fuel_mono_stmt : Prop :=
