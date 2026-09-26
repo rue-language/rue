@@ -720,8 +720,8 @@ documents rely on.
 | `OwnSt.wfList` | `Statics` | The same over a declaration's fields | helper | — |
 | `Entry.wf` | `Statics` | An entry's ownership state fits its declared type | helper | — |
 | `Ctx.Wf` | `Statics` | Every entry's ownership state fits its declared type | standard (FIELD §9: well-formed, PFPL §1.2) | 03 “Lemmas §7 owes, and the …”; `Statics` |
-| `ownedJoinOk` | `Statics` | Whether an owned branch may be joined with a branch that moved something out: nothing moved may be linear (`3.8:50`) | ours, pending audit | GUIDE “What the checker demands”; `Syntax` |
-| `ownedJoinOkList` | `Statics` | The same over a declaration's fields | helper | — |
+| `ownedJoinable` | `Statics` | Whether an owned branch may be joined with a branch that moved something out: nothing moved may be linear (`3.8:50`) | ours, pending audit | GUIDE “What the checker demands”; `Syntax` |
+| `ownedJoinableList` | `Statics` | The same over a declaration's fields | helper | — |
 | `OwnSt.join` | `Statics` | The join of two branches' ownership states at one path (§5.5) | Rue-specific, grounded (spec 3.8:80) | MUTATION “What is mutated” |
 | `OwnSt.joinList` | `Statics` | The same join, field by field | helper | `Statics` |
 | `Entry.join` | `Statics` | The branch join for one context entry (§5.5) | Rue-specific, grounded (spec 3.8:80) | MUTATION “Equivalent mutants” |

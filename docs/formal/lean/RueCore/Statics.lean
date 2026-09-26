@@ -580,7 +580,7 @@ One arm being wholly `Owned` is the case worth naming, because it is what makes
 the join computable by structural recursion: joining `Owned` with `t` at every
 path under `p` yields `t` itself — the `Owned` side never *adds* a move — so
 the only question is whether `t`'s moves are admissible, which is what
-`ownedJoinOk` decides.
+`ownedJoinable` decides.
 -/
 
 /-! #### The states a type has (`OwnSt.wf`)
@@ -637,30 +637,30 @@ mutual
 /-- Whether joining a wholly-`Owned` arm with `t` is well-formed: every path
 `t` has `MovedOut` must be one the `Owned` side may lose, which by §5.6 read on
 an `Owned` subtree is `class(T) ≠ Linear` at that path (`3.8:50`). -/
-def ownedJoinOk (D : Decls) : OwnSt → Ty → Bool
+def ownedJoinable (D : Decls) : OwnSt → Ty → Bool
   | .owned, _ => true
   | .movedOut, T => decide (T.mult D ≠ .linear)
   | .fields ts, .struct s =>
       (match D.structs[s]? with
-       | some sd => ownedJoinOkList D ts sd.fields
+       | some sd => ownedJoinableList D ts sd.fields
        | none => false)
   -- The array node, read element by element (`3.8:73`).
-  | .fields ts, .array T n => ownedJoinOkList D ts (List.replicate n T)
+  | .fields ts, .array T n => ownedJoinableList D ts (List.replicate n T)
   | .fields _, _ => false
 
 /-- The same over a declaration's fields; a slot no partial move touched is
 `owned` and always admissible (helper). -/
-def ownedJoinOkList (D : Decls) : List OwnSt → List Ty → Bool
+def ownedJoinableList (D : Decls) : List OwnSt → List Ty → Bool
   | [], _ => true
   | _ :: _, [] => true
-  | t :: ts, T :: Ts => ownedJoinOk D t T && ownedJoinOkList D ts Ts
+  | t :: ts, T :: Ts => ownedJoinable D t T && ownedJoinableList D ts Ts
 end
 
 mutual
 /-- The §5.5 branch join, at one path and its subtree (section docstring). -/
 def OwnSt.join (D : Decls) : OwnSt → OwnSt → Ty → Option OwnSt
-  | .owned, b, T => if ownedJoinOk D b T then some b else none
-  | a, .owned, T => if ownedJoinOk D a T then some a else none
+  | .owned, b, T => if ownedJoinable D b T then some b else none
+  | a, .owned, T => if ownedJoinable D a T then some a else none
   | .movedOut, b, T => if residualLinear D b T then none else some .movedOut
   | a, .movedOut, T => if residualLinear D a T then none else some .movedOut
   | .fields as, .fields bs, T =>
@@ -675,11 +675,11 @@ def OwnSt.join (D : Decls) : OwnSt → OwnSt → Ty → Option OwnSt
        | _ => none)
 
 /-- The §5.5 join over a declaration's fields, slot by slot; where one arm has
-no record the other arm's is kept, subject to `ownedJoinOk` (helper). -/
+no record the other arm's is kept, subject to `ownedJoinable` (helper). -/
 def OwnSt.joinList (D : Decls) : List OwnSt → List OwnSt → List Ty → Option (List OwnSt)
   | _, _, [] => some []
-  | [], bs, Ts => if ownedJoinOkList D bs Ts then some bs else none
-  | as, [], Ts => if ownedJoinOkList D as Ts then some as else none
+  | [], bs, Ts => if ownedJoinableList D bs Ts then some bs else none
+  | as, [], Ts => if ownedJoinableList D as Ts then some as else none
   | a :: as, b :: bs, T :: Ts =>
       (match OwnSt.join D a b T, OwnSt.joinList D as bs Ts with
        | some e, some rest => some (e :: rest)
