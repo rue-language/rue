@@ -779,7 +779,7 @@ documents rely on.
 | `EvalRes.withTrace` | `Dynamics` | Puts a trace in front of a result's trace | helper | — |
 | `EvalRes.andThen` | `Dynamics` | §6.2's left-to-right evaluation order as a combinator: run an operand, and on a value continue with the rest | ours, pending audit | — |
 | `EvalRes.absorb` | `Dynamics` | §6.9's call boundary: like `EvalRes.andThen`, but an unwinding `return` stops here and becomes the call's value | ours, pending audit | — |
-| `dropContents` | `Dynamics` | `drop(H, c)` (§6.11): drops cell contents; a moved-out position and a scalar drop nothing | Rue-specific, grounded (spec 3.9:1) | MUTATION “What the proofs kill, and …”; `Dynamics` |
+| `dropContents` | `Dynamics` | `drop(H, c)` (§6.11): drops cell contents; a moved-out position and a scalar drop nothing | Rue-specific, grounded (spec 3.9:1) | GUIDE “The three trace theorems, one …”; MUTATION “What the proofs kill, and …”; `Dynamics` |
 | `dropContentsList` | `Dynamics` | `drop*` (§6.11): drops a list of contents left to right, in declaration or ascending index order (`3.9:13`) | Rue-specific, grounded (spec 3.9:1) | — |
 | `dropEvents` | `Dynamics` | §6.11's drop order written out: the trace events dropping some contents emits, destructor first | Rue-specific, grounded (spec 3.9:28) | 03 “No double-free”; lean/README “What is mechanized”; GUIDE “The three trace theorems, one …”; MUTATION “What the proofs kill, and …”; `Trace.Defs` |
 | `dropEventsList` | `Dynamics` | `dropEvents` over a list, concatenated in declaration or ascending index order | Rue-specific, grounded (spec 3.9:13) | — |

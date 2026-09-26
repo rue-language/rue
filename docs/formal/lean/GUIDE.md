@@ -743,8 +743,10 @@ Both halves are over §6's `Step`.
   `Blocks` reads each drop's events off `dropEvents`, so it moves with that
   definition. `drop_glue_order` (RUE-2487) states the same order in §6.11's
   own terms: its grammar `GlueBlocks` gives each drop's events by
-  `DropGlue`, one rule per §6.11 equation, so a change to `dropEvents` that
-  reorders or skips a drop makes it false.
+  `DropGlue`, one rule per §6.11 equation, and never reaches `dropEvents`.
+  A change to `dropEvents` alone only breaks proofs; a change to the
+  machine's walk (`dropContents`) that reorders or skips a drop makes the
+  statement false.
 - **Across cells**, the order comes from the scope records, which the trace
   does not show. `C.stack` is the machine's registration stack: every
   suspended caller's scope record, then the current frame's.
@@ -2057,7 +2059,7 @@ back-edge invariance; bringing that wording in line is RUE-2355.
   file compiled. Every refusal and trap the fragment can reach has such a
   witness (`Examples.lean`, `Corpus.lean`), and so does the fuel boundary
   (`run demoOps countdown 16` versus `17`).
-- **Read the claim.** `SPINE.md` is the 38 statements the mechanization
+- **Read the claim.** `SPINE.md` is the 39 statements the mechanization
   claims, each with its English reading and the §7 paragraph it realizes,
   generated from the Spec layer; `lake build` fails unless each is proved
   as stated, and `spine-fingerprints.txt` pins what is stated, so a changed
