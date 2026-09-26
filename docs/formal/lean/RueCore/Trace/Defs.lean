@@ -301,6 +301,77 @@ inductive Blocks (D : Decls) : List Event → Prop
   | dropTemp {v : Val} {t : List Event} :
       Blocks D t → Blocks D (.dropTemp v :: (dropEvents D (.ofVal v) ++ t))
 
+mutual
+/-- **§6.11's drop, rule by rule** (RUE-2487): `DropGlue D c evs` says that
+dropping the cell contents `c` emits exactly the events `evs`. It is written
+from §6.11's equations and `3.9`'s order, not from the machine, and mentions
+neither `dropContents` nor `dropEvents`, so a change to the machine's drop glue
+does not change it. One constructor per equation of §6.11:
+
+* `drop(H, ⊘) = H`: a moved-out or uninitialised position emits nothing
+  (`hole`), at every depth, which is `3.8:73`'s "elements that were moved out
+  … are not dropped";
+* `drop(H, n_T) = drop(H, f_T) = drop(H, b) = drop(H, ⟨⟩) = H`: a scalar emits
+  nothing (`int`, `float`, `bool`, `unit`);
+* `drop(H, { c1,…,ck }_S) = drop*(H, [c1,…,ck])` when `S` declares no
+  destructor: the fields' drops in **declaration order** (`3.9:13`)
+  (`struct`);
+* the destructor case: when `S` declares `drop fn S(self)`, the destructor
+  runs **first** (`3.9:28`), then the fields in declaration order
+  (`structDtor`). The destructor is one `dtor` event: the fragment has no
+  destructor bodies, and §6.11's residual fields are the original ones
+  (`3.9:33`, `3.9:34`);
+* `drop(H, [ c1,…,cn ]) = drop*(H, [c1,…,cn])`: the elements in **ascending
+  index order** (`3.9:15`, `3.8:73`) (`array`);
+* `drop(H, Kj⟨ c1,…,ca ⟩) = drop*(H, [c1,…,ca])`: only the **active**
+  variant's payload (`6.3:20`) — an enum's contents hold that payload and no
+  other — and an enum runs no destructor of its own (§3, E0417) (`enum`).
+
+A struct's `k`-th member is its declaration's `k`-th field (`3.9:13`,
+`StructDecl.fields`), so list order is declaration order. A struct index the
+declarations do not have has no rule: §6.11 drops only declared types. -/
+inductive DropGlue (D : Decls) : Contents → List Event → Prop
+  | hole : DropGlue D .hole []
+  | int {w : IntWidth} {s : Sign} {n : Int} : DropGlue D (.int w s n) []
+  | float {w : FloatWidth} {f : FloatDatum} : DropGlue D (.float w f) []
+  | bool {b : Bool} : DropGlue D (.bool b) []
+  | unit : DropGlue D .unit []
+  | struct {s i : Nat} {cs : List Contents} {sd : StructDecl} {evs : List Event} :
+      D.structs[s]? = some sd → sd.dtor = false → DropGlueSeq D cs evs →
+      DropGlue D (.struct s i cs) evs
+  | structDtor {s i : Nat} {cs : List Contents} {sd : StructDecl} {evs : List Event} :
+      D.structs[s]? = some sd → sd.dtor = true → DropGlueSeq D cs evs →
+      DropGlue D (.struct s i cs) (.dtor s (.struct s i cs) :: evs)
+  | array {T : Ty} {i : Nat} {cs : List Contents} {evs : List Event} :
+      DropGlueSeq D cs evs → DropGlue D (.array T i cs) evs
+  | enum {e k i : Nat} {cs : List Contents} {evs : List Event} :
+      DropGlueSeq D cs evs → DropGlue D (.enum e k i cs) evs
+
+/-- **§6.11's `drop*(H, [c1,…,cm])`**, which "folds `drop` over the list
+left-to-right": the first member's drop, then the rest's (RUE-2487). -/
+inductive DropGlueSeq (D : Decls) : List Contents → List Event → Prop
+  | nil : DropGlueSeq D [] []
+  | cons {c : Contents} {cs : List Contents} {e₁ e₂ : List Event} :
+      DropGlue D c e₁ → DropGlueSeq D cs e₂ → DropGlueSeq D (c :: cs) (e₁ ++ e₂)
+end
+
+/-- **§6.11's order as a grammar over the trace, stated independently of the
+machine** (RUE-2487). The same block grammar as `Blocks` — a `@dbg` line, a
+consumption, or a drop marker followed by its drop's events — except that a
+drop's events are given by §6.11's rules (`DropGlue`) rather than by the
+function `dropEvents` the machine's walk is proved equal to. So a trace in
+this grammar runs each value's destructor first, then its fields in
+declaration order, an array's elements ascending and an enum's active payload
+only, whatever the machine's own drop glue says. -/
+inductive GlueBlocks (D : Decls) : List Event → Prop
+  | nil : GlueBlocks D []
+  | dbg {v : Val} {t : List Event} : GlueBlocks D t → GlueBlocks D (.dbg v :: t)
+  | consume {c : Contents} {t : List Event} : GlueBlocks D t → GlueBlocks D (.consume c :: t)
+  | drop {ℓ : Nat} {c : Contents} {evs t : List Event} :
+      DropGlue D c evs → GlueBlocks D t → GlueBlocks D (.drop ℓ c :: (evs ++ t))
+  | dropTemp {v : Val} {evs t : List Event} :
+      DropGlue D (.ofVal v) evs → GlueBlocks D t → GlueBlocks D (.dropTemp v :: (evs ++ t))
+
 /-- A scope record in **registration order is location order**: its cells
 strictly increasing, every one below the store's length `n` (helper). -/
 def Rec (n : Nat) (ls : List Nat) : Prop := ls.Pairwise (· < ·) ∧ ∀ ℓ ∈ ls, ℓ < n

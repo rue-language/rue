@@ -284,6 +284,18 @@ theorem dtor.drop_order : True := by
   have := (Spine.drop_order M hPT).1 _ _ _ _ hSteps
   trivial
 
+/-- `dtor` applied to `drop_glue_order` (helper). -/
+theorem dtor.drop_glue_order : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
+    H, v, tr, hrun, hSteps, -⟩ :=
+    Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
+  rw [← hM] at hStep hns hLead hEv hrun hSteps
+  let P := progDtor
+  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.drop_glue_order M hPT).1 _ _ _ _ hSteps
+  trivial
+
 /-- `dtor` applied to `step_progress` (helper). -/
 theorem dtor.step_progress : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
@@ -656,6 +668,17 @@ theorem linear.drop_order : True := by
   have := (Spine.drop_order M hPT).1 _ _ _ _ hSteps
   trivial
 
+/-- `linear` applied to `drop_glue_order` (helper). -/
+theorem linear.drop_glue_order : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
+    Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
+  rw [← hM] at hrun hSteps
+  let P := progLinear
+  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.drop_glue_order M hPT).1 _ _ _ _ hSteps
+  trivial
+
 /-- `linear` applied to `step_progress` (helper). -/
 theorem linear.step_progress : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
@@ -907,6 +930,17 @@ theorem loop.drop_order : True := by
   let P := progLoop
   have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_order M hPT).1 _ _ _ _ hSteps
+  trivial
+
+/-- `loop` applied to `drop_glue_order` (helper). -/
+theorem loop.drop_glue_order : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
+    Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
+  rw [← hM] at hrun hSteps
+  let P := progLoop
+  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.drop_glue_order M hPT).1 _ _ _ _ hSteps
   trivial
 
 /-- `loop` applied to `step_progress` (helper). -/
@@ -1173,6 +1207,17 @@ theorem array.drop_order : True := by
   have := (Spine.drop_order M hPT).1 _ _ _ _ hSteps
   trivial
 
+/-- `array` applied to `drop_glue_order` (helper). -/
+theorem array.drop_glue_order : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
+    Spine.Nonvacuous.array bodyArray rfl progArray rfl
+  rw [← hM] at hrun hSteps
+  let P := progArray
+  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.drop_glue_order M hPT).1 _ _ _ _ hSteps
+  trivial
+
 /-- `array` applied to `step_progress` (helper). -/
 theorem array.step_progress : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
@@ -1426,6 +1471,17 @@ theorem enum_match.drop_order : True := by
   have := (Spine.drop_order M hPT).1 _ _ _ _ hSteps
   trivial
 
+/-- `enum_match` applied to `drop_glue_order` (helper). -/
+theorem enum_match.drop_glue_order : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
+    Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
+  rw [← hM] at hrun hSteps
+  let P := progEnumMatch
+  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.drop_glue_order M hPT).1 _ _ _ _ hSteps
+  trivial
+
 /-- `enum_match` applied to `step_progress` (helper). -/
 theorem enum_match.step_progress : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
@@ -1677,6 +1733,17 @@ theorem early_return.drop_order : True := by
   let P := progEarlyReturn
   have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_order M hPT).1 _ _ _ _ hSteps
+  trivial
+
+/-- `early_return` applied to `drop_glue_order` (helper). -/
+theorem early_return.drop_glue_order : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
+    Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
+  rw [← hM] at hrun hSteps
+  let P := progEarlyReturn
+  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.drop_glue_order M hPT).1 _ _ _ _ hSteps
   trivial
 
 /-- `early_return` applied to `step_progress` (helper). -/
@@ -1943,6 +2010,17 @@ theorem float.drop_order : True := by
   have := (Spine.drop_order M hPT).1 _ _ _ _ hSteps
   trivial
 
+/-- `float` applied to `drop_glue_order` (helper). -/
+theorem float.drop_glue_order : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
+    Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
+  rw [← hM] at hrun hSteps
+  let P := progFloat
+  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.drop_glue_order M hPT).1 _ _ _ _ hSteps
+  trivial
+
 /-- `float` applied to `step_progress` (helper). -/
 theorem float.step_progress : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
@@ -2194,6 +2272,17 @@ theorem panic.drop_order : True := by
   let P := progPanic
   have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_order M hPT).2.1 _ _ hSteps
+  trivial
+
+/-- `panic` applied to `drop_glue_order` (helper). -/
+theorem panic.drop_glue_order : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hrun, hSteps⟩ :=
+    Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
+  rw [← hM] at hrun hSteps
+  let P := progPanic
+  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.drop_glue_order M hPT).2 _ _ hSteps
   trivial
 
 /-- `panic` applied to `step_progress` (helper). -/
@@ -2459,6 +2548,18 @@ theorem exact_model.drop_order : True := by
   let P := progDtor
   have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := (Spine.drop_order M hPT).1 _ _ _ _ hSteps
+  trivial
+
+/-- `exact_model` applied to `drop_glue_order`, through the `dtor` program (helper). -/
+theorem exact_model.drop_glue_order : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
+    H, v, tr, hrun, hSteps, -⟩ :=
+    Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
+  rw [← hM] at hStep hns hLead hEv hrun hSteps
+  let P := progDtor
+  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := (Spine.drop_glue_order M hPT).1 _ _ _ _ hSteps
   trivial
 
 /-- `exact_model` applied to `step_progress`, through the `dtor` program (helper). -/
