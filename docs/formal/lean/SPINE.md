@@ -16,11 +16,13 @@ or containers, §6.13); both are Phase D (RUE-2238, RUE-2240). So these parts of
 - the lemmas §7 names explicitly: loan/drop non-interference, loan-extent
   nesting, root separation, view-intact (RUE-2238) and handle-uniqueness
   preservation (RUE-2240). Float totality is not a theorem either: the rounded
-  operations' closure is assumed, as the laws of `FloatModel`.
+  operations' closure is assumed, as the laws of `FloatModel`, of every model
+  the statements quantify over (it is proved of `Float.exactOps`).
 
 19 of the 36 statements quantify over `M : FloatModel`, the IEEE 754 laws assumed.
-Nothing here shows that some model satisfies those laws; were they jointly
-unsatisfiable, those 19 would hold vacuously (RUE-2469). Several statements say
+The laws have a model: `Float.exactModel` (`RueCore/Float/Lemmas.lean`) proves every one
+of them of the executable instance `Float.exactOps`, so they are jointly satisfiable and
+those 19 are not vacuous in `M` (`Nonvacuous.exact_model`, RUE-2469). Several statements say
 "`run` is never `.stuck` with violation *v*": they mean what `eval`'s monitors
 watch, since *v* is the tag a monitor raises (`no_violation`, `no_use_after_move`,
 `no_use_after_drop` and `no_linear_discard` say so; RUE-2469).
@@ -38,6 +40,15 @@ layer") replays the `Spine` proofs in its own kernel, with `propext` and
 `Quot.sound` only, against a challenge that writes every statement out in full;
 `spine-fingerprints.txt` records a hash of each, so a statement that changes
 fails the chain until it is regenerated, and the change is reviewed.
+
+**Non-vacuity.** Under each statement, "Non-vacuous" names the witnesses
+(`RueCore.Spec.witnesses`, RUE-2469; the last section) that show its hypotheses
+hold together of a non-trivial program: accepted by the checker, typed, run to a
+value, a panic or divergence and reached by `Step`, with the drops, destructors
+or value the witness states. The witnesses are Spec statements too, proved in
+`RueCore/Nonvacuous.lean` and covered by the kernel, the lint, Comparator and
+the fingerprints. That a statement fails once a hypothesis is dropped (its
+sharpness) is RUE-2485's.
 
 A statement means its text plus the 292 definitions the 36 statements unfold
 to (`TRUST.md`, "Trusted base"; bodies in `DIGEST.md`); "Names" lists
@@ -68,6 +79,8 @@ def Spec.soundness_stmt : Prop :=
 
 Proved by `soundness` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `WfProgram`, `Ty`, `Ctx`, `Out`, `Expr`, `Typed`, `Frame`, `Store`, `FrameMatches`, `EvalOk`, `eval`; rests on 208 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_frame`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+
 ### `run_safe`
 
 **Program safety** (§7 "Type safety"). A well-formed program whose entry
@@ -89,6 +102,8 @@ def Spec.run_safe_stmt : Prop :=
 
 Proved by `run_safe` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `FnDef`, `WfProgram`, `Param`, `EvalRes`, `run`, `PanicKind`, `Event`, `Store`, `Val`, `HasTy`; rests on 198 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+
 ### `no_violation`
 
 **No refusal of any kind** (§7's memory-safety bullets). A checked
@@ -108,6 +123,8 @@ def Spec.no_violation_stmt : Prop :=
 
 Proved by `no_violation` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `Violation`, `EvalRes`, `run`; rests on 197 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+
 ### `no_use_after_move`
 
 **No use-after-move** (§7 "No use-after-move"): `run` never refuses with
@@ -124,6 +141,8 @@ def Spec.no_use_after_move_stmt : Prop :=
 ```
 
 Proved by `no_use_after_move` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Violation`; rests on 197 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
 ### `no_use_after_drop`
 
@@ -144,6 +163,8 @@ def Spec.no_use_after_drop_stmt : Prop :=
 
 Proved by `no_use_after_drop` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Violation`; rests on 197 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+
 ### `no_linear_leak`
 
 **No linear leak** (§7 "Linear values are consumed exactly once", §5.6): no
@@ -158,6 +179,8 @@ def Spec.no_linear_leak_stmt : Prop :=
 
 Proved by `no_linear_leak` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Violation`; rests on 197 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+
 ### `no_linear_overwrite`
 
 **No linear overwrite** (§7, the same bullet, `3.8:77`): no assignment drops
@@ -171,6 +194,8 @@ def Spec.no_linear_overwrite_stmt : Prop :=
 ```
 
 Proved by `no_linear_overwrite` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Violation`; rests on 197 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
 ### `no_linear_discard`
 
@@ -188,6 +213,8 @@ def Spec.no_linear_discard_stmt : Prop :=
 
 Proved by `no_linear_discard` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Violation`; rests on 197 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+
 ### `fuel_mono`
 
 **Fuel monotonicity** (§6 as `eval` runs it; `03-metatheory.md` "Fuel").
@@ -200,6 +227,8 @@ def Spec.fuel_mono_stmt : Prop :=
 ```
 
 Proved by `fuel_mono` (`RueCore.Soundness`). Names `FloatOps`, `Program`, `Store`, `Frame`, `Expr`, `EvalRes`, `eval`; rests on 111 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.stuck`.
 
 ### `no_masking`
 
@@ -216,6 +245,8 @@ def Spec.no_masking_stmt : Prop :=
 
 Proved by `no_masking` (`RueCore.Soundness`). Names `FloatOps`, `Program`, `Store`, `Frame`, `Expr`, `Violation`, `EvalRes`, `eval`; rests on 111 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.stuck`.
+
 ### `run_ne_returned`
 
 **No outcome is an unwinding `return`** ((D-Return-Main) §6.9).
@@ -227,6 +258,8 @@ def Spec.run_ne_returned_stmt : Prop :=
 ```
 
 Proved by `run_ne_returned` (`RueCore.Soundness`). Names `FloatOps`, `Program`, `Store`, `Val`, `Event`, `EvalRes`, `run`; rests on 112 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.early_return`.
 
 ## The checker decides the typing hypothesis
 
@@ -245,6 +278,8 @@ def Spec.check_sound_stmt : Prop :=
 
 Proved by `check_sound` (`RueCore.Checker`). Names `Program`, `Ty`, `Expr`, `Ctx`, `CTy`, `Out`, `check`, `CTy.fits`, `Typed`; rests on 104 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+
 ### `checkProgram_sound`
 
 **An accepted program is well-typed** (§3, (Fn) §5.8): `checkProgram`
@@ -257,6 +292,8 @@ def Spec.checkProgram_sound_stmt : Prop :=
 ```
 
 Proved by `checkProgram_sound` (`RueCore.Checker`). Names `Program`, `checkProgram`, `ProgramTyped`; rests on 134 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.diverges`.
 
 ## What the drop trace says
 
@@ -282,6 +319,8 @@ def Spec.no_double_free_stmt : Prop :=
 
 Proved by `no_double_free` (`RueCore.Trace`). Names `FloatModel`, `Program`, `ProgramTyped`, `Violation`, `EvalRes`, `run`, `freedIds`, `EvalRes.trace`, `dtorIds`; rests on 204 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+
 ### `freed_once`
 
 **Nothing freed twice, on every program** (§6.11): a finished run frees
@@ -295,6 +334,8 @@ def Spec.freed_once_stmt : Prop :=
 
 Proved by `freed_once` (`RueCore.Trace`). Names `FloatOps`, `Program`, `freedIds`, `EvalRes.trace`, `run`; rests on 117 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.float`.
+
 ### `dtor_once`
 
 **No destructor twice on one value** (§6.11, `3.9:28`), given only that a
@@ -307,6 +348,8 @@ def Spec.dtor_once_stmt : Prop :=
 ```
 
 Proved by `dtor_once` (`RueCore.Trace`). Names `FloatOps`, `Program`, `DtorNotCopy`, `dtorIds`, `EvalRes.trace`, `run`; rests on 116 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.dtor`.
 
 ### `drop_exactly_once`
 
@@ -336,6 +379,8 @@ def Spec.drop_exactly_once_stmt : Prop :=
 ```
 
 Proved by `drop_exactly_once` (`RueCore.TraceExact`). Names `FloatModel`, `Program`, `ProgramTyped`, `Program.pendingSafe`, `Ty`, `Ctx`, `Expr`, `Out`, `Frame`, `Store`, `Typed`, `FrameMatches`, `StoreCC`, `Expr.pendingSafe`, `Violation`, `EvalRes`, `eval`, `Exact`, `Tidy`; rests on 220 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_frame`, `Nonvacuous.dtor`.
 
 ### `rest_exactly_once`
 
@@ -370,6 +415,8 @@ def Spec.rest_exactly_once_stmt : Prop :=
 
 Proved by `rest_exactly_once` (`RueCore.TraceExact`). Names `FloatModel`, `Program`, `ProgramTyped`, `Program.pendingSafe`, `Ty`, `Ctx`, `Expr`, `Out`, `Frame`, `Store`, `Typed`, `FrameMatches`, `StoreCC`, `Expr.pendingSafe`, `Val`, `Event`, `Lead`, `EvalRes`, `eval`, `EvalRes.withTrace`, `Violation`, `Exact`, `Contents.ownList`, `Contents.ofVals`, `Settled`; rests on 222 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_frame`, `Nonvacuous.dtor`.
+
 ### `drop_order`
 
 **Drop order** (§7 "No use-after-drop / no leak of drops", "at the end of
@@ -402,6 +449,8 @@ def Spec.drop_order_stmt : Prop :=
 
 Proved by `drop_order` (`RueCore.TraceOrder`). Names `FloatModel`, `Program`, `ProgramTyped`, `Store`, `Frame`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `Blocks`, `PanicKind`, `Step`, `Config.trace`, `NewestFirst`, `dropLocs`, `Lifo`, `Config.stack`; rests on 201 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+
 ## §6's reduction relation, and §7 over it
 
 `RueCore.Spec.Step`
@@ -417,6 +466,8 @@ def Spec.Step.det_stmt : Prop :=
 
 Proved by `Step.det` (`RueCore.Step.Lemmas`). Names `FloatOps`, `Program`, `Config`, `Step`; rests on 106 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.dtor`.
+
 ### `Step.terminal`
 
 **Terminal is final** (§6.12): `✓` and `↯κ` take no step.
@@ -427,6 +478,8 @@ def Spec.Step.terminal_stmt : Prop :=
 ```
 
 Proved by `Step.terminal` (`RueCore.Step.Lemmas`). Names `FloatOps`, `Program`, `Config`, `Config.Terminal`, `Step`; rests on 107 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
 ### `Config.trichotomy`
 
@@ -440,6 +493,8 @@ def Spec.Config.trichotomy_stmt : Prop :=
 
 Proved by `Config.trichotomy` (`RueCore.Step.Lemmas`). Names `FloatOps`, `Program`, `Config`, `Step`, `Config.Terminal`, `Violation`, `Config.Stuck`; rests on 114 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.stuck`.
+
 ### `step_iff`
 
 **`step` computes `Step`** (§6).
@@ -451,6 +506,8 @@ def Spec.step_iff_stmt : Prop :=
 ```
 
 Proved by `step_iff` (`RueCore.Step.Lemmas`). Names `FloatOps`, `Program`, `Config`, `Step`, `StepOut`, `step`; rests on 112 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.dtor`.
 
 ### `Config.stuck_iff`
 
@@ -465,6 +522,8 @@ def Spec.Config.stuck_iff_stmt : Prop :=
 
 Proved by `Config.stuck_iff` (`RueCore.Step.Lemmas`). Names `FloatOps`, `Program`, `Config`, `Config.Terminal`, `Step`, `Violation`, `Config.Stuck`; rests on 114 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.stuck`.
+
 ### `step_stuck_isStuckState`
 
 **Only §6's stuck states** (§6.3, §6.5; RUE-2314): a stuck configuration
@@ -478,6 +537,8 @@ def Spec.step_stuck_isStuckState_stmt : Prop :=
 ```
 
 Proved by `step_stuck_isStuckState` (`RueCore.Step.Lemmas`). Names `FloatOps`, `Program`, `Config`, `Violation`, `Config.Stuck`, `Violation.isStuckState`; rests on 113 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.stuck`.
 
 ### `step_progress`
 
@@ -494,6 +555,8 @@ def Spec.step_progress_stmt : Prop :=
 ```
 
 Proved by `step_progress` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 194 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
 ### `step_preservation`
 
@@ -517,6 +580,8 @@ def Spec.step_preservation_stmt : Prop :=
 
 Proved by `step_preservation` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `FnDef`, `Config`, `Steps`, `Config.init`, `Config.SafeAt`; rests on 197 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+
 ### `step_type_safety`
 
 **Type safety over `Step`, per horizon** (§7 "Type safety"; §6.12). For a
@@ -539,6 +604,8 @@ def Spec.step_type_safety_stmt : Prop :=
 ```
 
 Proved by `step_type_safety` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `FnDef`, `Config`, `StepsN`, `Config.init`, `Store`, `Val`, `Event`, `Steps`, `Frame.empty`, `Kont`, `Focus`, `HasTy`, `PanicKind`; rests on 197 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
 ## `eval` and `Step` agree
 
@@ -567,6 +634,8 @@ def Spec.eval_sound_stmt : Prop :=
 
 Proved by `eval_sound` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `Violation`, `EvalRes`, `run`, `Store`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Frame.empty`, `Kont`, `Focus`, `PanicKind`; rests on 213 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+
 ### `run_sim`
 
 **`run` is simulated by `Step`, on every program** (§6.12): the same, with
@@ -583,6 +652,8 @@ def Spec.run_sim_stmt : Prop :=
 ```
 
 Proved by `run_sim` (`RueCore.Adequacy`). Names `FloatOps`, `Program`, `Store`, `Val`, `Event`, `EvalRes`, `run`, `Steps`, `Config.init`, `Config`, `Frame.empty`, `Kont`, `Focus`, `PanicKind`; rests on 128 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
 ### `eval_complete`
 
@@ -603,6 +674,8 @@ def Spec.eval_complete_stmt : Prop :=
 ```
 
 Proved by `eval_complete` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `Store`, `Frame`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `PanicKind`; rests on 212 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
 ### `run_complete`
 
@@ -629,6 +702,8 @@ def Spec.run_complete_stmt : Prop :=
 
 Proved by `run_complete` (`RueCore.Adequacy`). Names `FloatOps`, `Program`, `Store`, `Frame`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `Violation`, `PanicKind`; rests on 127 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.stuck`.
+
 ### `never_stuck_iff`
 
 **Never stuck, both ways** (§7 "Type safety"). For a checked program, `run`
@@ -647,6 +722,8 @@ def Spec.never_stuck_iff_stmt : Prop :=
 
 Proved by `never_stuck_iff` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `Violation`, `EvalRes`, `run`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 213 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+
 ### `step_never_stuck_of_run`
 
 **`eval` never stuck, so `Step` never stuck, on every program** (§7 "Type
@@ -661,6 +738,8 @@ def Spec.step_never_stuck_of_run_stmt : Prop :=
 ```
 
 Proved by `step_never_stuck_of_run` (`RueCore.Adequacy`). Names `FloatOps`, `Program`, `Violation`, `EvalRes`, `run`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 128 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.dtor`.
 
 ### `run_stuck_of_step_stuck`
 
@@ -677,6 +756,8 @@ def Spec.run_stuck_of_step_stuck_stmt : Prop :=
 
 Proved by `run_stuck_of_step_stuck` (`RueCore.Adequacy`). Names `FloatOps`, `Program`, `Config`, `Violation`, `Steps`, `Config.init`, `Config.Stuck`, `EvalRes`, `run`; rests on 134 definitions.
 
+Non-vacuous: witnesses `Nonvacuous.stuck`.
+
 ### `eval_diverges_iff`
 
 **Divergence is exhaustion at every fuel** (§7 "Type safety"; §6.12): for a
@@ -692,3 +773,492 @@ def Spec.eval_diverges_iff_stmt : Prop :=
 ```
 
 Proved by `eval_diverges_iff` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Config`, `StepsN`, `Config.init`; rests on 212 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.diverges`.
+
+## Non-vacuity witnesses
+
+`RueCore.Spec.Witnesses`
+
+Each statement shows the hypotheses of the spine statements it names satisfiable
+together, by a program written out in the statement (RUE-2469).
+
+### `Nonvacuous.exact_model`
+
+**The float laws have a model: `Float.exactOps`** (§7's "totality of the
+float operations"; RUE-2469). Some `FloatModel` has the executable instance
+`Float.exactOps` as its operations, so every law of `FloatModel` holds of the
+model the corpus runs on, and the laws are jointly satisfiable: the 19 spine
+statements that quantify over `M : FloatModel` are not vacuous in `M`.
+
+```lean
+def Spec.Nonvacuous.exact_model_stmt : Prop :=
+  ∃ M, M.toFloatOps = Float.exactOps
+```
+
+Proved by `Nonvacuous.exact_model` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `no_double_free`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `eval_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+
+### `Nonvacuous.empty_frame`
+
+**The initial frame agrees with the empty context** (§6.12's initial
+configuration): at every declaration environment, the empty frame over the
+empty store matches the empty context (`FrameMatches`) and its store is
+copy-closed (`StoreCC`). With a program's typed body this is the frame and
+store the evaluation statements (`soundness`, `drop_exactly_once`,
+`rest_exactly_once`) are applied at by the witnesses below.
+
+```lean
+def Spec.Nonvacuous.empty_frame_stmt : Prop :=
+  ∀ (D : Decls), FrameMatches D [] Frame.empty [] ∧ StoreCC D []
+```
+
+Proved by `Nonvacuous.empty_frame` (`RueCore.Nonvacuous`). Witnesses `soundness`, `drop_exactly_once`, `rest_exactly_once`.
+
+### `Nonvacuous.dtor`
+
+**A checked program that drops two values with destructors** (construct
+class: destructors; the corpus case `affine_scope_drop`, with two bindings). The program `let a = S0 { 1 }; let b = S0 { 2 }; 3`, over an affine
+`S0` that declares a destructor, is accepted, is `ProgramTyped` and
+`pendingSafe`, and its body is typed by `check`. Its run returns, reached by
+`Step` from `Config.init`, and its trace frees two identities and runs two
+destructors. It also carries the other hypotheses of the trace statements:
+the declarations keep destructor-bearing structs off `Copy` (`DtorNotCopy`),
+the initial configuration steps, no fuel makes the run stuck, the body's own
+evaluation drops two values, and the body's leading operand mints an owned
+identity (`Lead`), so `rest_exactly_once` applies to a value minted
+mid-evaluation.
+
+```lean
+def Spec.Nonvacuous.dtor_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                (∃ c Ω,
+                    check P (Ty.int IntWidth.w64 Sign.signed) [] B = some (c, Ω) ∧
+                      c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                        Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                          (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                  DtorNotCopy P.decls ∧
+                    (∃ C, Step Float.exactOps P Config.init C) ∧
+                      (∀ (fuel : Nat) (w : Violation),
+                          run Float.exactOps P fuel ≠ EvalRes.stuck w) ∧
+                        2 ≤
+                            (freedIds P.decls
+                                (eval Float.exactOps 200 P [] Frame.empty B).trace).length ∧
+                          (∃ H₁ vs tr r,
+                              Lead Float.exactOps P 200 [] Frame.empty H₁ vs tr B ∧
+                                eval Float.exactOps 201 P [] Frame.empty B =
+                                    EvalRes.withTrace tr r ∧
+                                  Contents.ownList P.decls (Contents.ofVals vs) ≠ []) ∧
+                            ∃ H v tr,
+                              run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                                Steps Float.exactOps P Config.init
+                                    (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                                  2 ≤ (freedIds P.decls tr).length ∧ 2 ≤ (dtorIds tr).length
+```
+
+Proved by `Nonvacuous.dtor` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `eval_diverges_iff`.
+
+### `Nonvacuous.linear`
+
+**A checked program with a declared-linear value** (construct class:
+declared-linear values; the corpus case `linear_explicit_drop`'s shape). `let x
+= S1 { 1 }; let y = S0 { 2 }; @drop(x); 3`, with `S1` declared `linear`, is
+accepted and typed; its run returns, reached by `Step`, and its trace frees
+both values: the linear one at its `@drop`, the affine one at scope exit.
+
+```lean
+def Spec.Nonvacuous.linear_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            ((Expr.drop (Place.var 1)).seq (Expr.intLit IntWidth.w64 Sign.signed 3))) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                (∃ c Ω,
+                    check P (Ty.int IntWidth.w64 Sign.signed) [] B = some (c, Ω) ∧
+                      c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                        Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                          (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                  ∃ H v tr,
+                    run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                      Steps Float.exactOps P Config.init
+                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        2 ≤ (freedIds P.decls tr).length
+```
+
+Proved by `Nonvacuous.linear` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+
+### `Nonvacuous.loop`
+
+**A checked program with a loop that turns three times** (construct class:
+loops; the corpus case `loop_counted`'s shape). A counted loop over a `mut`
+counter, breaking once it reaches `3`, whose body binds an affine `S0` each
+turn, is accepted and typed; its run returns, reached by `Step`, and its trace
+runs three destructors, one per turn.
+
+```lean
+def Spec.Nonvacuous.loop_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn true (Expr.intLit IntWidth.w64 Sign.signed 0)
+          ((((Expr.binop BinOp.ge (Expr.use (Place.var 0))
+                          (Expr.intLit IntWidth.w64 Sign.signed 3)).ite
+                      Expr.brk Expr.unitLit).seq
+                  ((Expr.assign (Place.var 0)
+                        (Expr.binop BinOp.add (Expr.use (Place.var 0))
+                          (Expr.intLit IntWidth.w64 Sign.signed 1))).seq
+                    (Expr.letIn false (Expr.mkStruct 0 [Expr.use (Place.var 0)])
+                      Expr.unitLit))).loop.seq
+            (Expr.use (Place.var 0))) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                (∃ c Ω,
+                    check P (Ty.int IntWidth.w64 Sign.signed) [] B = some (c, Ω) ∧
+                      c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                        Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                          (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                  ∃ H v tr,
+                    run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                      Steps Float.exactOps P Config.init
+                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        3 ≤ (dtorIds tr).length
+```
+
+Proved by `Nonvacuous.loop` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+
+### `Nonvacuous.array`
+
+**A checked program with an array** (construct class: arrays; the corpus
+cases `array_drop_order` and `array_dyn_read_below`). `let a = [S0 { 1 }, S0 {
+2 }]; a[1].x0`, a dynamic-index read of a `Copy` leaf below an array of
+destructor-bearing elements, is accepted and typed; its run returns, reached
+by `Step`, and its trace runs both elements' destructors.
+
+```lean
+def Spec.Nonvacuous.array_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkArray (Ty.struct 0)
+            [Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1],
+              Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2]])
+          (Expr.indexRead (Place.var 0) [Expr.intLit IntWidth.w64 Sign.signed 1] [[0]]) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                (∃ c Ω,
+                    check P (Ty.int IntWidth.w64 Sign.signed) [] B = some (c, Ω) ∧
+                      c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                        Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                          (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                  ∃ H v tr,
+                    run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                      Steps Float.exactOps P Config.init
+                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        2 ≤ (dtorIds tr).length
+```
+
+Proved by `Nonvacuous.array` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+
+### `Nonvacuous.enum_match`
+
+**A checked program with an enum and a `match`** (construct class: enums with
+`match`; the corpus case `enum_match_affine`). `let e = E0::K0(S0 { 1 }); match
+e { K0(s) => s.x0, K1 => 0 }` is accepted and typed; its run returns, reached
+by `Step`, and its trace frees two identities (the scrutinee's shell,
+consumed by the match, and the payload, dropped at the arm's end) and runs
+the payload's destructor.
+
+```lean
+def Spec.Nonvacuous.enum_match_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkEnum 0 0 [Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1]])
+          ((Expr.use (Place.var 0)).match
+            [Expr.use ((Place.var 0).proj 0), Expr.intLit IntWidth.w64 Sign.signed 0]) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                (∃ c Ω,
+                    check P (Ty.int IntWidth.w64 Sign.signed) [] B = some (c, Ω) ∧
+                      c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                        Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                          (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                  ∃ H v tr,
+                    run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                      Steps Float.exactOps P Config.init
+                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        2 ≤ (freedIds P.decls tr).length ∧ 1 ≤ (dtorIds tr).length
+```
+
+Proved by `Nonvacuous.enum_match` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+
+### `Nonvacuous.early_return`
+
+**A checked program with an early `return`** (construct class: early
+`return`; the corpus case `return_past_affine`). `let a = S0 { 1 }; let b = S0
+{ 2 }; return 7; 0` is accepted and typed; its run returns `7` as an ordinary
+value (the call boundary absorbs the unwind, which is what `run_ne_returned`
+says), reached by `Step`, and the unwind runs both destructors.
+
+```lean
+def Spec.Nonvacuous.early_return_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            ((Expr.intLit IntWidth.w64 Sign.signed 7).ret.seq
+              (Expr.intLit IntWidth.w64 Sign.signed 0))) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                (∃ c Ω,
+                    check P (Ty.int IntWidth.w64 Sign.signed) [] B = some (c, Ω) ∧
+                      c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                        Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                          (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                  ∃ H v tr,
+                    run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                      Steps Float.exactOps P Config.init
+                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        v = Val.int IntWidth.w64 Sign.signed 7 ∧ 2 ≤ (dtorIds tr).length
+```
+
+Proved by `Nonvacuous.early_return` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `run_ne_returned`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+
+### `Nonvacuous.panic`
+
+**A checked program that panics** (construct class: `@panic`;
+`Examples.panicPastAffine` with a `@dbg` line before the trap, beside the
+corpus case `panic_after_drop`). `let a = S0 { 1 }; @dbg(5); @panic("boom")` is
+accepted and typed; its run is the user panic with the `@dbg` line in its
+trace and no drop (§5.7 exempts the panic edge), and §6's relation reaches
+the same panic from `Config.init`.
+
+```lean
+def Spec.Nonvacuous.panic_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          ((Expr.intLit IntWidth.w64 Sign.signed 5).dbg.seq (Expr.panic "boom")) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                (∃ c Ω,
+                    check P (Ty.int IntWidth.w64 Sign.signed) [] B = some (c, Ω) ∧
+                      c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
+                        Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
+                          (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
+                  run Float.exactOps P 200 =
+                      EvalRes.panic PanicKind.user
+                        [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)] ∧
+                    Steps Float.exactOps P Config.init
+                      (Config.panic PanicKind.user
+                        [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)])
+```
+
+Proved by `Nonvacuous.panic` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+
+### `Nonvacuous.float`
+
+**A checked program that computes with floats** (construct class: floats;
+the corpus case `float_arith`). `let x = 1.5 + 2.25; x * 2.0` at `f64` is
+accepted and typed; run on `Float.exactOps` it returns `7.5`, the datum `15 ·
+2^-1`, reached by `Step`.
+
+```lean
+def Spec.Nonvacuous.float_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.binop BinOp.add
+            (Expr.floatLit FloatWidth.w64 { sig := 15, negExp := true, e := 1 })
+            (Expr.floatLit FloatWidth.w64 { sig := 225, negExp := true, e := 2 }))
+          (Expr.binop BinOp.mul (Expr.use (Place.var 0))
+            (Expr.floatLit FloatWidth.w64 { sig := 2, negExp := false, e := 0 })) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns := [{ params := [], ret := Ty.float FloatWidth.w64, body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                (∃ c Ω,
+                    check P (Ty.float FloatWidth.w64) [] B = some (c, Ω) ∧
+                      c.fits (Ty.float FloatWidth.w64) = true ∧
+                        Typed P (Ty.float FloatWidth.w64) [] B (Ty.float FloatWidth.w64)
+                          Ω) ∧
+                  ∃ H v tr,
+                    run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                      Steps Float.exactOps P Config.init
+                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        v = Val.float FloatWidth.w64 (FloatDatum.num false 15 (-1))
+```
+
+Proved by `Nonvacuous.float` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `drop_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+
+### `Nonvacuous.diverges`
+
+**A checked program that diverges** (§6.10; the loop with no `break`). `loop
+{ () }` as the entry point returning `()` is accepted, and its run exhausts
+every fuel, so both sides of `eval_diverges_iff` hold of it, as neither does
+of the witnesses above, which return.
+
+```lean
+def Spec.Nonvacuous.diverges_stmt : Prop :=
+  ∀ (P : Program),
+    P =
+        { decls := { structs := [], enums := [] },
+          fns := [{ params := [], ret := Ty.unit, body := Expr.unitLit.loop }] } →
+      checkProgram P = true ∧
+        ProgramTyped P ∧ ∀ (fuel : Nat), run Float.exactOps P fuel = EvalRes.outOfFuel
+```
+
+Proved by `Nonvacuous.diverges` (`RueCore.Nonvacuous`). Witnesses `checkProgram_sound`, `eval_diverges_iff`.
+
+### `Nonvacuous.stuck`
+
+**An unchecked program that gets stuck** (§6.3's read of a `⊘`; the corpus
+case `use_after_move` reads its moved binding the same way). `let a = S0 { 1
+}; @drop(a); a.x0` is rejected by the checker; run
+unchecked, `eval` refuses it with `useAfterMove`, and §6's relation reaches a
+configuration stuck with the same violation from `Config.init`. So the
+statements whose hypothesis is a stuck run or a stuck configuration are not
+vacuous either.
+
+```lean
+def Spec.Nonvacuous.stuck_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          ((Expr.drop (Place.var 0)).seq (Expr.use ((Place.var 0).proj 0))) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          checkProgram P = false ∧
+            run Float.exactOps P 200 = EvalRes.stuck Violation.useAfterMove ∧
+              ∃ C,
+                Steps Float.exactOps P Config.init C ∧
+                  Config.Stuck Float.exactOps P C Violation.useAfterMove
+```
+
+Proved by `Nonvacuous.stuck` (`RueCore.Nonvacuous`). Witnesses `fuel_mono`, `no_masking`, `Config.trichotomy`, `Config.stuck_iff`, `step_stuck_isStuckState`, `run_complete`, `run_stuck_of_step_stuck`.
