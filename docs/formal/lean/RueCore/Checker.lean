@@ -39,7 +39,7 @@ struct — so `checkNoCycle` decides it once, for the whole environment, and
 it. **Arm count and order**: the arm list must be as long as the variant list,
 and arm `j` is variant `j`'s — that is exhaustiveness (`4.7:9`, `4.7:10`) with no
 coverage search. **Arity**: each arm's payload locals are the variant's declared
-components, which `armCtx` supplies, so a wrong arity is not expressible rather
+components, which `extendArm` supplies, so a wrong arity is not expressible rather
 than rejected. **The per-arm leak check**: `NoResidualLinear` over the entries
 the arm pops, which is `letIn`'s check read over a whole payload, for an arm
 that continues. **The folded join**: `Ctx.joinOpts`, the fold `Ctx.joinAll`
@@ -953,7 +953,7 @@ theorem checkArms_sound {P : Program} {R : Ty} {Γ₀ : Ctx} {c : CTy} :
       | nil => simp [checkArms] at h
       | cons Ts Tss' =>
           simp only [checkArms] at h
-          cases hchk : check P R (armCtx Ts Γ₀) e with
+          cases hchk : check P R (extendArm Ts Γ₀) e with
           | none => simp [hchk] at h
           | some r =>
             obtain ⟨c', o, Δb⟩ := r

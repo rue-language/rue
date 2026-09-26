@@ -545,13 +545,13 @@ does for `ite`'s two arms (`CTy.meet`). -/
 def firstArmTy (P : Program) (R : Ty) (Γ₀ : Ctx) :
     List Expr → List (List Ty) → CTy
   | e :: es, Ts :: Tss =>
-      match check P R (armCtx Ts Γ₀) e with
+      match check P R (extendArm Ts Γ₀) e with
       | some (.ty T, _) => .ty T
       | _ => firstArmTy P R Γ₀ es Tss
   | _, _ => .never
 
 /-- (Match) §5.5's arm premises as an algorithm: every arm from the same
-post-scrutinee state `Γ₀`, each under its variant's payload locals (`armCtx`),
+post-scrutinee state `Γ₀`, each under its variant's payload locals (`extendArm`),
 each at the type `c` the first typed arm fixed, and each that continues
 discharging §5.6 for the locals it pops. The result is one optional outgoing
 context per arm — `none` for an arm that diverges — in declaration order, and
@@ -562,7 +562,7 @@ def checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (c : CTy) :
     List Expr → List (List Ty) → Option (List (Option Ctx) × List Ctx)
   | [], [] => some ([], [])
   | e :: es, Ts :: Tss =>
-      match check P R (armCtx Ts Γ₀) e with
+      match check P R (extendArm Ts Γ₀) e with
       | some (c', ⟨some Γb, Δb⟩) =>
           if c'.fitsC c ∧ NoResidualLinear P.decls (Γb.take Ts.length) then
             (match checkArms P R Γ₀ c es Tss with

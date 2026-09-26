@@ -1709,12 +1709,12 @@ def payloadPremise (P : Program) (R : Ty) : Ctx → List Expr → List Ty → St
   | _, _, _ => Premise.payloadCountMismatch
 
 /-- The sub-derivations of (Match) §5.5's arm premises: one per arm, each under
-that variant's payload locals (`armCtx`), all from the same post-scrutinee
+that variant's payload locals (`extendArm`), all from the same post-scrutinee
 state. -/
 def explainArms (P : Program) (R : Ty) (Γ₀ : Ctx) : List Expr → List (List Ty) → List Deriv
   | [], _ => []
   | _, [] => []
-  | e :: es, Ts :: Tss => explain P R (armCtx Ts Γ₀) e :: explainArms P R Γ₀ es Tss
+  | e :: es, Ts :: Tss => explain P R (extendArm Ts Γ₀) e :: explainArms P R Γ₀ es Tss
 
 /-- The premise a rejected arm list failed: the first arm whose body does not
 check, whose type is not the one the first typed arm fixed, or which, when it
@@ -1723,7 +1723,7 @@ def armsPremise (P : Program) (R : Ty) (Γ₀ : Ctx) (c : CTy) :
     List Expr → List (List Ty) → String
   | [], [] => Premise.subDerivation
   | e :: es, Ts :: Tss =>
-      (match (explain P R (armCtx Ts Γ₀) e).result with
+      (match (explain P R (extendArm Ts Γ₀) e).result with
        | some (c', ⟨some Γb, _⟩) =>
            if !c'.fitsC c then Premise.armTypeMismatchC c' c
            else if !decide (NoResidualLinear P.decls (Γb.take Ts.length)) then Premise.armLeak

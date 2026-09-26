@@ -726,7 +726,7 @@ documents rely on.
 | `OwnSt.joinList` | `Statics` | The same join, field by field | helper | `Statics` |
 | `Entry.join` | `Statics` | The branch join for one context entry (§5.5) | Rue-specific, grounded (spec 3.8:80) | MUTATION “Equivalent mutants” |
 | `Ctx.join` | `Statics` | The branch join of two contexts, entry by entry (§5.5) | Rue-specific, grounded (spec 3.8:80) | lean/README “Deciding whether to believe it”; GUIDE §7; MUTATION “Equivalent mutants” |
-| `armCtx` | `Statics` | A `match` arm's starting context: the payload variables added, owned (§5.5's (Match)) | ours, pending audit | GUIDE “What the checker demands”; MUTATION “What is mutated”; `Statics` |
+| `extendArm` | `Statics` | A `match` arm's starting context: the payload variables added, owned (§5.5's (Match)) | ours, pending audit | GUIDE “What the checker demands”; MUTATION “What is mutated”; `Statics` |
 | `Ctx.joinFold` | `Statics` | One step of joining many arms' contexts, left to right | Rue-specific, grounded (spec 3.8:80) | `Statics` |
 | `Ctx.joinAll` | `Statics` | The join of all arms' outgoing contexts (§5.5's (Match)) | Rue-specific, grounded (spec 3.8:80) | 03 “Lemmas §7 owes, and the …”; GUIDE “What the checker demands”; `Statics` |
 | `Out` | `Statics` | A typing result `Ω`: the outgoing context, or `⊥` when the expression never finishes normally, plus the contexts recorded at its `break`s (§5.3) | ours, pending audit | 03 “Type safety”; GUIDE §1; `Statics` |

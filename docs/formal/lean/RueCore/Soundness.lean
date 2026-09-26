@@ -2379,7 +2379,7 @@ theorem mintParams_locs_length : ∀ (H : Store) (vs : List Val),
       simp [mintParams, mintParams_locs_length (H ++ [Cell.full (Contents.ofVal v)]) vs]
 
 /-- **(D-Match) §6.6 establishes the arm's entry invariant.** The payload cells
-hold the payload components and (Match) §5.5's `Σ0[ x_{ij} ↦ Owned ]` — `armCtx`
+hold the payload components and (Match) §5.5's `Σ0[ x_{ij} ↦ Owned ]` — `extendArm`
 — describes exactly them, on top of the frame the `match` was evaluated in. This
 is `matches_mintParams` read over a non-empty base frame: the same minting, the
 same two `reverse`s (a payload tuple is written left to right while `Ctx` and
@@ -3264,7 +3264,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
             exact List.getElem?_append_left hlt
           have hpre : H₀.length ≤ (mintParams H₀ vs).1.length := by
             rw [mintParams_store]; simp
-          have hfma : FrameMatches P.decls (armCtx Ts Γ₀)
+          have hfma : FrameMatches P.decls (extendArm Ts Γ₀)
               { env := (mintParams H₀ vs).2.reverse ++ φ.env,
                 scope := φ.scope ++ (mintParams H₀ vs).2 } (mintParams H₀ vs).1 := by
             refine ⟨?_, ?_⟩
