@@ -792,8 +792,8 @@ documents rely on.
 | `Contents.splitFields` | `Dynamics` | `split`'s step over one node's fields or elements: keep those before, recurse into the selected one, keep those after | ours, pending audit | `Dynamics` |
 | `residueMark` | `Dynamics` | The trace marker that opens the drop of one unselected part of a destructured value, as `@drop` of that sub-place would | ours, pending audit | 03 “No double-free”; `Dynamics` |
 | `dropResidue` | `Dynamics` | Drops the unselected parts of a destructured value left to right, each immediately and once (§6.3, `3.8:33`) | Rue-specific, grounded (spec 3.8:33) | `Dynamics` |
-| `Contents.skeleton` | `Dynamics` | The consumed outer nodes of a destructure: the path from the declared-`linear` place down to the field, with everything else moved out | ours, pending audit | `Dynamics` |
-| `Contents.skelFields` | `Dynamics` | `Contents.skeleton`'s step over one node's fields | helper | — |
+| `Contents.pathOnly` | `Dynamics` | The consumed outer nodes of a destructure: the path from the declared-`linear` place down to the field, with everything else moved out | ours, pending audit | `Dynamics` |
+| `Contents.pathOnlyFields` | `Dynamics` | `Contents.pathOnly`'s step over one node's fields | helper | — |
 | `Contents.destructure` | `Dynamics` | §6.3's `destructure`: take the selected field of a declared-`linear` value, drop the other parts, record the consumption | Rue-specific, grounded (spec 3.8:33) | `Dynamics` |
 | `dropResidueEvents` | `Dynamics` | The trace `dropResidue` emits, written out in closed form | Rue-specific, grounded (spec 3.8:33) | — |
 | `matchConsume` | `Dynamics` | The consumption event of a `match` on a non-`Copy` scrutinee: the enum node, its payload already bound to the arm | Rue-specific, grounded (spec 3.8:33) | `Dynamics` |

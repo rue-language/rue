@@ -620,7 +620,7 @@ theorem Contents.destructure_exact {D : Decls} {ℓ : Nat} {cd leaf : Contents} 
     · rename_i evs' hd
       cases h
       refine ⟨?_, (Contents.splitResidue_own 0 πs hcc hs).2.1⟩
-      have := Contents.skeleton_own a πs hcc hs
+      have := Contents.pathOnly_own a πs hcc hs
       rw [freedIds_append, dropResidue_freed hd]
       simp only [freedIds, List.flatMap_cons, List.flatMap_nil, Event.freed, List.append_nil,
         List.count_append] at this ⊢

@@ -564,7 +564,7 @@ inductive Event where
   payload to the arm's cells, and the path from a declared-`linear` place `d`
   down to the selected leaf once §6.3's destructure has handed the leaf on and
   dropped the residue. `c` is the shell itself, every member a `⊘`
-  (`matchConsume`, `Contents.skeleton`). No destructor runs: an enum
+  (`matchConsume`, `Contents.pathOnly`). No destructor runs: an enum
   declares none (§3, E0417), and `3.9:34` keeps a destructor-bearing value off
   a destructure's path — a guarantee of the checker, not of the machine, which
   on a program §5 rejects consumes such a node without running its glue
@@ -1044,18 +1044,18 @@ to the leaf's parent — with the leaf and every retained subtree replaced by
 `⊘`. It is what §6.3's destructure consumes without dropping: the leaf is
 handed on, the residue is dropped, and `ℓ@π_d` becomes `⊘`. It walks the path
 exactly as `splitResidue` does (helper). -/
-def Contents.skeleton : Contents → List Nat → Contents
+def Contents.pathOnly : Contents → List Nat → Contents
   | _, [] => .hole
-  | .struct s i cs, f :: π => .struct s i (Contents.skelFields cs f π)
-  | .array T i cs, f :: π => .array T i (Contents.skelFields cs f π)
+  | .struct s i cs, f :: π => .struct s i (Contents.pathOnlyFields cs f π)
+  | .array T i cs, f :: π => .array T i (Contents.pathOnlyFields cs f π)
   | _, _ :: _ => .hole
 
-/-- `skeleton`'s member step: `⊘` at every unselected slot, the recursion at
+/-- `pathOnly`'s member step: `⊘` at every unselected slot, the recursion at
 the selected one (helper). -/
-def Contents.skelFields : List Contents → Nat → List Nat → List Contents
+def Contents.pathOnlyFields : List Contents → Nat → List Nat → List Contents
   | [], _, _ => []
-  | c :: cs, 0, π => Contents.skeleton c π :: cs.map (fun _ => .hole)
-  | _ :: cs, f + 1, π => .hole :: Contents.skelFields cs f π
+  | c :: cs, 0, π => Contents.pathOnly c π :: cs.map (fun _ => .hole)
+  | _ :: cs, f + 1, π => .hole :: Contents.pathOnlyFields cs f π
 end
 
 /-- **§6.3's `destructure(H, ℓ@π_d, π_s)`**, on the contents stored at the
@@ -1072,7 +1072,7 @@ def Contents.destructure (D : Decls) (ℓ : Nat) (c : Contents) (πs : List Nat)
   | .ok (leaf, rs) =>
       match dropResidue D ℓ rs with
       | .error w => .error w
-      | .ok evs => .ok (leaf, evs ++ [.consume (c.skeleton πs)])
+      | .ok evs => .ok (leaf, evs ++ [.consume (c.pathOnly πs)])
 
 /-- **The residue's trace, in closed form**: each retained subtree's marker and
 §6.11's events, in the traversal's own order. `dropResidue_events`
