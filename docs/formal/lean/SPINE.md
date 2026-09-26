@@ -476,7 +476,7 @@ def Spec.step_no_double_free_stmt : Prop :=
 
 Proved by `step_no_double_free` (`RueCore.TracePrefix`). Names `FloatModel`, `Program`, `ProgramTyped`, `Config`, `Steps`, `Config.init`, `freedIds`, `Config.trace`, `dtorIds`; rests on 200 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.diverges_drop`.
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.diverges_drop`.
 
 Sharp:
 
@@ -1119,7 +1119,7 @@ together, by a program written out in the statement (RUE-2469).
 **The float laws have a model: `Float.exactOps`** (§7's "totality of the
 float operations"; RUE-2469). Some `FloatModel` has the executable instance
 `Float.exactOps` as its operations, so every law of `FloatModel` holds of the
-model the corpus runs on, and the laws are jointly satisfiable: the 19 spine
+model the corpus runs on, and the laws are jointly satisfiable: the 21 spine
 statements that quantify over `M : FloatModel` are not vacuous in `M`.
 
 ```lean
@@ -1127,7 +1127,7 @@ def Spec.Nonvacuous.exact_model_stmt : Prop :=
   ∃ M, M.toFloatOps = Float.exactOps
 ```
 
-Proved by `Nonvacuous.exact_model` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `no_double_free`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `drop_glue_order`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `eval_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.exact_model` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `no_double_free`, `step_no_double_free`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `drop_glue_order`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `eval_complete`, `never_stuck_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.empty_frame`
 
@@ -1281,7 +1281,7 @@ def Spec.Nonvacuous.dtor_stmt : Prop :=
                                   2 ≤ (freedIds P.decls tr).length ∧ 2 ≤ (dtorIds tr).length
 ```
 
-Proved by `Nonvacuous.dtor` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `run_no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `drop_glue_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `step_progress`, `step_preservation`, `step_type_safety`, `step_no_use_after_drop`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `eval_diverges_iff`.
+Proved by `Nonvacuous.dtor` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `run_no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `step_no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `drop_glue_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `step_progress`, `step_preservation`, `step_type_safety`, `step_no_use_after_drop`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `eval_diverges_iff`.
 
 ### `Nonvacuous.linear`
 

@@ -46,7 +46,7 @@ namespace RueCore.Spec.Nonvacuous
 /-- **The float laws have a model: `Float.exactOps`** (§7's "totality of the
 float operations"; RUE-2469). Some `FloatModel` has the executable instance
 `Float.exactOps` as its operations, so every law of `FloatModel` holds of the
-model the corpus runs on, and the laws are jointly satisfiable: the 19 spine
+model the corpus runs on, and the laws are jointly satisfiable: the 21 spine
 statements that quantify over `M : FloatModel` are not vacuous in `M`. -/
 def exact_model_stmt : Prop :=
   ∃ M : FloatModel, M.toFloatOps = Float.exactOps
