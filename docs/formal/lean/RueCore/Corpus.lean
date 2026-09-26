@@ -961,7 +961,39 @@ def cases : List Case := [
   { name := "assign_immutable",
     description := "let x = 1; x = 2; x: (Assign) §5.2 refuses a write to an immutable binding (the compiler: cannot assign to immutable). The machine performs it: the value is 2. Seeded by the definition mutants (RUE-2465): dropping the mut premise passed every seed and generated case.",
     rules := ["(Assign) §5.2", "(Let) §5.3"],
-    prog := Examples.scalarProg Examples.tI64 Examples.assignImmutable }
+    prog := Examples.scalarProg Examples.tI64 Examples.assignImmutable },
+  { name := "use_move_rootidx",
+    description := "An affine array reached through a struct field, h.arr[0], moved out by element: (Use-Move) 3.8:68's root-index-only premise refuses it, because the index step is not applied directly to an array variable (the compiler: E0904). The machine moves the element out and drops the rest, field by field, without any refusal — a static discipline with no dynamic counterpart. Seeded by the definition mutation analysis (RUE-2486): mutant `use-move-rootidx`.",
+    rules := ["(Use-Move) §5.1", "3.8:68"],
+    prog := Examples.arrHolderAProg Examples.tI64 Examples.arrayElemMoveThroughField },
+  { name := "index_read_copy",
+    description := "A dynamic-index read of a non-Copy array element: (Use-Untrackable-Dynamic-Copy) §5.1 is the only rule at an Untrackable(OrdinaryDynamic) plan, and it wants a Copy element (the compiler: E0904). The machine refuses the same read with typeConfusion. Seeded by the definition mutation analysis (RUE-2486): mutant `index-read-copy`.",
+    rules := ["(Use-Untrackable-Dynamic-Copy) §5.1"],
+    prog := Examples.arrayDynIndexAffine },
+  { name := "index_drop_copy_checker",
+    description := "@drop of a non-Copy element through a dynamic index: the checker has no test at Untrackable(OrdinaryDynamic) beside (Use-Untrackable-Dynamic-Copy) §5.1's Copy-element one (the compiler: E0904); the typing rule for @drop is unaffected, only the checker's transcription of it. The machine refuses the same drop with typeConfusion. Seeded by the definition mutation analysis (RUE-2486): mutant `index-drop-copy-checker`.",
+    rules := ["(Use-Untrackable-Dynamic-Copy) §5.1", "(@Drop) §5.3"],
+    prog := Examples.prog Examples.tI64 Examples.dynDropAffineSkipped },
+  { name := "const_index_off_by_one",
+    description := "A constant index equal to an array's length: 7.1:9's compile-time bounds check (Ty.atPath) gives the place no type at all, so no rule applies (the compiler: E0902) — the one index error that is never a trap. Seeded by the definition mutation analysis (RUE-2486): mutant `const-index-off-by-one`.",
+    rules := ["Ty.atPath (7.1:9)"],
+    prog := Examples.prog Examples.tI64 Examples.arrayConstIndexOutOfRange },
+  { name := "index_write_linear",
+    description := "A dynamic-index write to an array whose element type carries a linear value: a runtime index never establishes the element as MovedOut, so (Assign) §5.2's 3.8:77 premise reduces to not-carries-linear, which is false (the compiler: E0493). The machine agrees on its own terms: the overwrite-drop would destroy an unconsumed linear value, which is the linearOverwrite monitor. Seeded by the definition mutation analysis (RUE-2486): mutant `index-write-linear`.",
+    rules := ["(Assign) §5.2", "3.8:77"],
+    prog := Examples.arrayDynWriteLinearElem },
+  { name := "residual_declared",
+    description := "Destructuring the innermost declared-linear level of a two-level declared-linear struct (y.x0.x0) leaves the outer struct y Owned: §5.6's residual-linear check reads the declared-linear attribute itself, whatever the fields hold (3.8:74), and refuses the leak (the compiler: E0406). The machine's monitor still refuses it dynamically with linearLeak. Seeded by the definition mutation analysis (RUE-2486): mutant `residual-declared`.",
+    rules := ["§5.6 residual-linear leak check", "3.8:74"],
+    prog := Examples.destrProg Examples.tI64
+      (letIn false (mkStruct Examples.sDestrOuter
+          [mkStruct Examples.sDestrPair [Examples.lit 1, Examples.resA (Examples.lit 2)],
+           Examples.resA (Examples.lit 3)])
+        (letIn false (use (.proj (.proj (.var 0) 0) 0)) (use (.var 0)))) },
+  { name := "residual_untracked",
+    description := "A two-element linear array with only the first element moved out: §5.6's residual-linear check reads the untracked second element at the type level (the second disjunct, an untouched slot carries linear whenever its declared type does), and refuses the leak (the compiler: E0406) even though no tracked state marks that element Owned. The machine's monitor refuses it dynamically with linearLeak. Seeded by the definition mutation analysis (RUE-2486): mutant `residual-untracked`.",
+    rules := ["§5.6 residual-linear leak check"],
+    prog := Examples.prog Examples.tI64 Examples.arrayLinearElemStranded }
 ]
 
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/
