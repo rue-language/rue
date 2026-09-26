@@ -446,7 +446,7 @@ is part of the follow-up (RUE-2505). `h2335` and `h2335b` are unaffected by
 observability at all, matching the original follow-up: they need three
 declared-linear levels, a different generator capability.
 
-**What the change costs.** To give every destructor something to print, a
+What the change costs: to give every destructor something to print, a
 destructor-bearing struct's field 0 is now always a plain integer; before,
 about 61% of those fields were arrays, structs, enums, `bool` or `()`. So one
 shape is gone entirely: a destructor-bearing struct whose field 0 is itself
