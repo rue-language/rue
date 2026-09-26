@@ -196,7 +196,7 @@ therefore by hand, and two were wrong (`blocks-any-trace`,
 fails on is run a fourth time, in a copy built to the statements alone:
 
 * **Candidates, by polarity.** `bin/mutate_polarity.lean` reads the built
-  package's environment. A mutant's *targets* are the definitions its edits
+  package's environment. A mutant's *mutation targets* are the definitions its edits
   fall in. For every theorem it finds where each target occurs in the
   statement, unfolding the package's `Prop`-valued definitions and
   inductives (a constructor's premise occurs at its inductive's polarity):
@@ -207,7 +207,7 @@ fails on is run a fourth time, in a copy built to the statements alone:
   sixteen statement-vocabulary mutants each have a direction (`DIRECTION` in
   `mutate.py`); a semantics or checker mutant changes its definitions both
   ways, so every occurrence counts. The statements a mutant can make false
-  this way are its **candidates** (`mutate.py --candidates` lists them, with
+  this way are its **candidate statements** (`mutate.py --candidates` lists them, with
   each occurrence's position and the definitions unfolded to reach it).
 * **An iterated build with marker axioms.** In the copy, every theorem of
   L0-L2 whose statement does not involve a target is unchanged by the mutant,
