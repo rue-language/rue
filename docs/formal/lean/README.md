@@ -81,7 +81,7 @@ scripts/rue lean-bridge -- --report-json /tmp/bridge.json
 The seed cases are hand-written, so `RueCore/Gen.lean` also generates
 programs: closed, well-scoped, and simply typed by construction, with
 ownership left to chance, so the checker's verdict on each is recorded and
-never filtered (two in five are rejected). The generator is a pure function
+never filtered (about half are rejected). The generator is a pure function
 of its seed, and a case named `gen_<seed>_<i>` is the same in every run with
 that seed and more than `i` cases. Its bias toward moves in one arm of an
 `if`, linear values reaching scope exit, and reassignment after a move is
@@ -175,6 +175,19 @@ arm or the function body's last form, never in an operand, at most one per
 branch. They read a separate random stream, so a program without one is the
 program drawn before; about a quarter of the programs have one (48 of 200 at
 seed 7, 275 of 1,000 at seed 23).
+
+A generated program may also **call** (RUE-2481): any drawn expression is
+replaced by a call one time in 24, to one of up to three callees drawn from a
+per-program signature environment, with by-value parameters
+(destructor-bearing and declared-`linear` struct types weighted up), linear
+parameters consumed, an early `return` in half the callee bodies, and one
+signature in three recursive on an `i64` fuel parameter that every outside
+caller passes as a literal in `[0, 3]`, so recursion is bounded. Calls read a
+third random stream, so a program without one is the program drawn before:
+62 of 200 at seed 7 and 359 of 1,000 at seed 23 have one, and the checker
+accepts 21 and 106 of those. A callee no reachable call names is removed,
+because the compiler analyzes only referenced declarations (ADR-0045). `Gen.lean`'s "Calls" section has the counts of
+frame pops and early returns they reach.
 
 ```bash
 lake exe ruecore-corpus --gen 1000 --seed 7 > /tmp/gen.json   # seed cases, then 1000 generated

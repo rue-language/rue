@@ -208,14 +208,85 @@ generated disagreement is a finding to file.
   operand except directly within an `if`/`while` condition, a `for` iterable
   or a `match` scrutinee.
 
-Calls are **not** generated yet: every generated case is a one-function
-program (`Program.entry`), so the shapes RUE-2233 added that need a callee — a
-frame unwound by an early `return` under a caller's live frame, a by-value
-parameter dropped at a frame pop, recursion — are covered by the hand-written
-seed cases only; an early `return` out of the entry function itself is drawn
-(below, "Return and panic arms"). Generating calls needs a signature environment to draw callees from and a fuel bound that
-recursion cannot escape; it is the follow-up this module's `expr` is shaped
-for (`Corpus.Case` already holds a whole `Program`).
+Calls are drawn too (RUE-2481; below, "Calls"): a generated program may
+declare up to three callees beside its entry point, so a frame unwound by an
+early `return` under a caller's live frame, a by-value parameter dropped at a
+frame pop, and bounded recursion reach the generated corpus as well as the
+hand-written seeds.
+
+## Calls (RUE-2481)
+
+A generated program is the entry function `f0` and up to `maxCallees` (three)
+callees `f1`, `f2`, `f3`, whose signatures form a per-case **signature
+environment** (`GS.sigs`, `Sig`). Any expression `expr` draws, at any type
+and in any position — an operator's operand, an argument, a scrutinee, a
+`let` initializer, a statement — is replaced by a call one time in
+`callDen` (24) (`maybeCall`): (Call) §5.8 at the type the position wanted,
+naming a signature of the environment that returns that type two times in
+three where there is one, and a fresh one otherwise. A fresh signature
+(`drawSig`) has no to three by-value parameters, **destructor-bearing** and
+**declared-`linear`** struct types weighted up (`paramTy`), and every
+parameter unmarked, since Rue has no `mut` parameter. The arguments are drawn
+under the caller's scope like any other expression of their types, so a
+by-value struct argument is often the move of a binder in scope. After the
+entry body, each callee's body is drawn under its parameters (`fnBody`,
+`bodies`), at its own return type, with `return` and `@panic` arms allowed
+where they are in the entry function, and it may itself call a **later**
+callee. Three shapes are drawn on purpose:
+
+* **Recursion.** One signature in three is recursive: parameter `0` is an
+  `i64` fuel, and the body is `if v0 <= 0 { base } else { let r = f<k>(v0 -
+  1, …); rest }`. Every other call site passes the fuel as a literal in `[0,
+  3]`, and a call site names only a later callee (`GS.cur`), so the call graph
+  is acyclic apart from that one guarded self-call and recursion is at most
+  four frames deep whatever the body does.
+* **Linear parameters are consumed.** A linear parameter the drawn body never
+  names is `@drop`ped at the start of the body two times in three and at its
+  end (`let r = body; @drop(v); r`) otherwise (`mentions`); one the body names
+  is left to the body's own draws, and (Fn) §5.8's leak check decides.
+* **An early return.** Half the bodies open with `if c { return v } else { ()
+  }`, whose arm first drops every linear parameter still live there: a frame
+  unwound by (D-Return) §6.9 with the caller's frame live beneath it, dropping
+  the parameters the callee has not consumed (`3.8:62`).
+
+All of this reads the **call stream** (`calls`), a third `StdGen` split afresh
+for each draw, and an expression a call replaces is drawn on the main stream
+first and discarded, as RUE-2383's arms are. So a program in which no call
+fires is **byte-identical** to the program the generator drew before RUE-2481,
+and one with a call differs from it only where a call stands and in its
+callees. At `--gen 200 --seed 7` 62 programs have a call and the other 138 are
+unchanged; at `--gen 1000 --seed 23`, 359 and 641.
+
+A callee no call reachable from `f0` names is **removed** (`pruneFns`): a call
+site can add a signature inside an expression an enclosing call site then
+replaces, which leaves the callee orphaned. Rue analyzes only the declarations
+a program references (ADR-0045), so the compiler never checks an orphan, while
+(Fn) §5.8 checks every function; before pruning, five programs at `--gen 1000
+--seed 23` were refused by the checker inside an orphan and accepted by the
+compiler, a disagreement neither side is wrong about.
+
+Measured at those two settings, as programs with the accepted ones in
+parentheses, from `Explain.programDerivs` and `Explain.runTrace`, a frame
+counted as a callee's
+when a `push the frame` row has put it above the entry's: 101 and 544 callees;
+a (Call) §5.8 derivation node in 56 (21) and 322 (106); a callee frame pushed
+at run time in 39 (16) and 238 (84); a callee frame popped by
+(D-Return-Value) §6.9 in 27 (11) and 176 (63), dropping a parameter or local
+there in 8 (5) and 42 (20), with a printing destructor in 7 (5) and 29 (13); a
+callee's early `return` unwinding its frame under a live caller in 13 (8) and
+49 (16), dropping something in 4 (2) and 15 (5), with a printing destructor in
+3 (1) and 13 (5); a recursive callee in 24 (6) and 140 (25) and three or more
+frames live at once in 12 (7) and 62 (22); a destructor-bearing parameter in
+23 (7) and 116 (26) and a declared-`linear` one in 18 (1) and 117 (16). The
+function-level linear-parameter leak is the deepest refusal of none at either
+setting, and a `return` past a live linear binding of 4 at seed 23.
+
+A callee's body is where most refusals of a program with a call are: it
+starts with owned aggregates in scope, which is where the loop and `@drop`
+weights move a value twice. The checker accepts 21 of the 62 programs with a
+call and 106 of the 359; the same 62 and 359 programs drawn without calls had
+been accepted 37 and 183 times. The acceptance share of the whole setting falls
+accordingly (below, "What it deliberately does not guarantee").
 
 ## Return and panic arms (RUE-2383)
 
@@ -302,7 +373,8 @@ at fuel 0 a loop statement with leaf body and condition precedes the leaf one
 time in four where it does.
 
 The body terminates because every loop inside it is one of these two shapes and
-the fragment has no other back edge (no calls are drawn), so every generated
+the fragment has no other back edge — a call is to a later callee or the one
+self-call a literal fuel bounds (above, "Calls") — so every generated
 program terminates, and within the export fuel: every one of the 200 at
 `--gen 200 --seed 7` and the 1,000 at `--gen 1000 --seed 23` completes and is
 exported. The export enforces it: `lake exe ruecore-corpus --gen N` fails,
@@ -349,8 +421,9 @@ does.
 
 Ownership. Moves, drops, assignments, `match` arms and scope exits are chosen
 at random, so a large minority of the programs are rejected by the checker and
-refused by the machine — 85 of 200 at `--gen 200 --seed 7` and 431 of 1,000 at
-`--gen 1000 --seed 23` (87 and 438 before the return and panic arms, the
+refused by the machine — 109 of 200 at `--gen 200 --seed 7` and 487 of 1,000
+at `--gen 1000 --seed 23` (93 and 410 before calls, RUE-2481, and 87 and 438
+before the return and panic arms and RUE-2480's reordered declarations, the
 figures the weights below were tuned against). Both
 are recorded (`Corpus.caseJson` reads them off `checkProgram` and `run` as for
 any case), never filtered: a rejected program checks that the compiler rejects
@@ -480,7 +553,8 @@ the program's fuel, and each one terminates (above, "Loops").
 ## Determinism
 
 The generator is a pure function of `(n, seed)` for the pinned toolchain:
-`StdGen` from `Init` is threaded through a `StateM`, and nothing reads the
+three `StdGen`s from `Init` (`GS`: the main, side and call streams, the last
+seeded by `callSeed`) are threaded through a `StateM`, and nothing reads the
 environment (a toolchain bump that changes `StdGen` changes every case, so
 a finding filed from a generated run records the seed and quotes the
 program). The first `i` cases of a run are the same for every `n > i`, so a
@@ -2159,6 +2233,57 @@ def rulesArms (D : Decls) (F : List FnDef) (Γ₀ : List Ty) : List Expr → Lis
   | a :: rest, Ts :: Tss => rulesIn D F (Ts.reverse ++ Γ₀) a ++ rulesArms D F Γ₀ rest Tss
 end
 
+/-- (helper) Renumber every call's callee by `σ`. -/
+def mapCalls (σ : Nat → Nat) : Expr → Expr
+  | .call f args => .call (σ f) (args.map (mapCalls σ))
+  | .binop op e₁ e₂ => .binop op (mapCalls σ e₁) (mapCalls σ e₂)
+  | .seq e₁ e₂ => .seq (mapCalls σ e₁) (mapCalls σ e₂)
+  | .letIn m e₁ e₂ => .letIn m (mapCalls σ e₁) (mapCalls σ e₂)
+  | .ite c e₁ e₂ => .ite (mapCalls σ c) (mapCalls σ e₁) (mapCalls σ e₂)
+  | .assign p e₁ => .assign p (mapCalls σ e₁)
+  | .ret e₁ => .ret (mapCalls σ e₁)
+  | .unop op e₁ => .unop op (mapCalls σ e₁)
+  | .intCast w sg e₁ => .intCast w sg (mapCalls σ e₁)
+  | .fintrin k e₁ => .fintrin k (mapCalls σ e₁)
+  | .dbg e₁ => .dbg (mapCalls σ e₁)
+  | .loop e₁ => .loop (mapCalls σ e₁)
+  | .repeatArray T e₁ n => .repeatArray T (mapCalls σ e₁) n
+  | .mkStruct s args => .mkStruct s (args.map (mapCalls σ))
+  | .mkEnum e k args => .mkEnum e k (args.map (mapCalls σ))
+  | .mkArray T args => .mkArray T (args.map (mapCalls σ))
+  | .indexRead p idx πs => .indexRead p (idx.map (mapCalls σ)) πs
+  | .indexDrop p idx πs => .indexDrop p (idx.map (mapCalls σ)) πs
+  | .indexWrite p idx πs e₁ => .indexWrite p (idx.map (mapCalls σ)) πs (mapCalls σ e₁)
+  | .«match» scrut arms => .«match» (mapCalls σ scrut) (arms.map (mapCalls σ))
+  | e => e
+
+/-- (helper) The functions reachable from the entry point through calls,
+walked `n` rounds, in program order. -/
+def reachable (F : List FnDef) : Nat → List Nat → List Nat
+  | 0, acc => acc
+  | n + 1, acc =>
+      let next := acc.flatMap (fun i =>
+        (((F[i]?).map (fun fd => (subexprs fd.body).filterMap (fun e =>
+          match e with
+          | .call f _ => some f
+          | _ => none))).getD []))
+      reachable F n ((List.range F.length).filter (fun i => acc.contains i || next.contains i))
+
+/-- (helper) A program's functions with every callee the entry point cannot
+reach removed and the calls renumbered (RUE-2481). A signature is added to the
+environment when a call site draws it (`maybeCall`), and that call can be
+inside an expression an enclosing call site then replaces, so its callee may
+end up named by no reachable call. Such a callee is **not** kept: Rue analyzes
+only the declarations a program references (ADR-0045), so the compiler would
+never check it, while (Fn) §5.8 checks every function of the core program, and
+a refusal inside it would be a disagreement neither side is wrong about. A
+program whose every call was discarded this way is the one-function program
+the generator drew before calls. -/
+def pruneFns (F : List FnDef) : List FnDef :=
+  let keep := reachable F F.length [0]
+  let σ (f : Nat) : Nat := (keep.idxOf? f).getD f
+  (keep.filterMap (fun i => F[i]?)).map (fun fd => { fd with body := mapCalls σ fd.body })
+
 /-- (helper) The rule labels a program exercises, deduplicated in traversal
 order: `rulesIn` over each function's body under its parameters
 (`Print.bodyBinders`), the no-parameter entry point first. -/
@@ -2183,8 +2308,9 @@ def resultTy (D : Decls) : G Ty := do
     return .enum e
   weighted (← intTy) [(5, ← intTy), (3, ← floatTy), (1, .bool), (1, .unit)]
 
-/-- (helper) One generated case: a declaration environment and a one-function
-program whose entry point takes no parameters and returns the drawn type. The
+/-- (helper) One generated case: a declaration environment and a program whose
+entry point takes no parameters and returns the drawn type, followed by the
+callees its call sites named (module docstring, "Calls"). The
 environment is drawn in three rounds — structs, then enums over them, then a
 few more structs that may hold an enum in a field — which is the order the
 declarations section describes and the reason no draw can build `3.0:5`'s
@@ -2207,7 +2333,8 @@ def genCase (seed i : Nat) : G Corpus.Case := do
   -- The callees the entry body's call sites named (RUE-2481), drawn on the
   -- call stream after it; a program without a call has none.
   let callees ← if (← get).sigs.isEmpty then pure [] else calls (bodies D maxCallees 0)
-  let F : List FnDef := { params := [], ret := T, body := e } :: callees
+  let F : List FnDef := pruneFns ({ params := [], ret := T, body := e } :: callees)
+  let callees := F.drop 1
   let nodes := (F.map (fun fd => size fd.body)).foldl (· + ·) 0
   let shape := if callees.isEmpty then s!"{size e} nodes"
     else s!"{callees.length + 1} functions, {nodes} nodes"

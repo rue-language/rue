@@ -367,10 +367,11 @@ leaves.
 
 **Exercised by the seeds only.** These rules have zero generated cases:
 
-* (Call) §5.8: every generated program is a single function, so the
-  generator never passes an argument, drops a by-value parameter, or returns
-  through a call. The (D-Call) and (D-Return-Value) rows it does reach are
-  the entry call alone.
+* (Call) §5.8: every generated program was a single function, so the
+  generator never passed an argument, dropped a by-value parameter, or
+  returned through a call. The (D-Call) and (D-Return-Value) rows it did reach
+  are the entry call alone. RUE-2481 (below, "Multi-function programs") now
+  draws calls; the tables above are the measurement before it.
 * (D-Int-Cast-Trap) and (D-Float-To-Int-Trap) §6.4, (D-Total-Cmp) §6.4 on an
   accepted case, a `break` unwind that runs a printing destructor, a frame
   pop that runs one, and (D-Use-Declared-Linear) §6.3 with a printing
@@ -480,6 +481,71 @@ not fixed:
 Both are set aside next to `array_elem_self_assign` when reproducing this
 section's drills (below).
 
+## Multi-function programs (RUE-2481)
+
+`Gen.lean` now draws callees (its "Calls" section has the design). Any drawn
+expression is replaced by a call one time in 24, to one of up to three
+callees from a per-program signature environment. Parameters are by value,
+with destructor-bearing and declared-`linear` struct types weighted up. A
+callee consumes a linear parameter its body never names, half the callee
+bodies open with an early `return`, and one signature in three is recursive
+on an `i64` fuel that outside callers pass as a literal in `[0, 3]`. A callee
+that no reachable call names is removed, because the compiler analyzes only
+referenced declarations (ADR-0045). The call draws read a third random
+stream, so a program without a call is byte-identical to the one the
+generator drew before: 138 of the 200 programs at seed 7 and 641 of the
+1,000 at seed 23 are unchanged.
+
+**Rule coverage of the call paths**, before and after. Each cell counts
+programs, with the accepted ones in parentheses. It is measured as the
+tables above are (a one-off tool over `Explain.programDerivs` and
+`Explain.runTrace`, not committed), on trunk `eb2d61133` before and on this
+change after. A frame is a callee's when a `push the frame` row has put it
+above the entry's:
+
+| Row | `--gen 200 --seed 7` before | after | `--gen 1000 --seed 23` before | after |
+|---|---:|---:|---:|---:|
+| Programs with a call | 0 | 62 (21) | 0 | 359 (106) |
+| Callees, all programs | 0 | 101 | 0 | 544 |
+| (Call) §5.8 derivation node | 0 (0) | 56 (21) | 0 (0) | 322 (106) |
+| (D-Call) §6.9, a callee frame pushed | 0 (0) | 39 (16) | 0 (0) | 238 (84) |
+| (D-Return-Value) §6.9, a callee frame popped | 0 (0) | 27 (11) | 0 (0) | 176 (63) |
+| … the pop drops a parameter or local | 0 (0) | 8 (5) | 0 (0) | 42 (20) |
+| … *where a destructor prints* | 0 (0) | 7 (5) | 0 (0) | 29 (13) |
+| (D-Return) §6.9, a callee's early `return` unwinds its frame under a live caller | 0 (0) | 13 (8) | 0 (0) | 49 (16) |
+| … the unwind drops something | 0 (0) | 4 (2) | 0 (0) | 15 (5) |
+| … *where a destructor prints* | 0 (0) | 3 (1) | 0 (0) | 13 (5) |
+| A recursive callee | 0 (0) | 24 (6) | 0 (0) | 140 (25) |
+| Three or more frames live at once | 0 (0) | 12 (7) | 0 (0) | 62 (22) |
+| A destructor-bearing parameter | 0 (0) | 23 (7) | 0 (0) | 116 (26) |
+| A declared-`linear` parameter | 0 (0) | 18 (1) | 0 (0) | 117 (16) |
+| Accepted programs, all | 107 | 91 | 590 | 513 |
+
+What it costs: a callee's body starts with owned aggregates in scope, so the
+generator's loop and `@drop` weights reject it more often than an entry body.
+The checker accepts 21 of the 62 programs with a call at seed 7, which it
+accepted 37 times without their calls, and 106 of 359 at seed 23 (183
+before). Every refusal is still an ownership refusal. The function-level
+linear-parameter leak is the deepest refusal of no program, since the callee
+consumes a linear parameter its body leaves alone.
+
+**Agreement with the unmutated compiler** (`bin/verify.py`, the per-case
+test described under "Method"). At `--gen 1000 --seed 23` the only
+disagreements are the known ones: `gen_23_343` (above), and `gen_23_505`, a
+program with a call whose entry body writes `v0[0] = v0[0]` into an array of
+destructor-bearing structs. That is `array_elem_self_assign`'s shape
+(RUE-2346, the compiler accepts it on purpose), which the call unmasks by
+replacing the code where the compiler used to stop first. Matching was by
+name: `gen_7_3` and `gen_23_343` draw no call, so they are byte-identical to
+their earlier programs, and each disagreeing program with a call was read by
+hand. `--gen 200 --seed 7` is reported by `chain.sh`: GEN200-PLACEHOLDER.
+
+A first draft kept callees that no reachable call names. Five programs at
+seed 23 (`gen_23_63`, `78`, `157`, `401` and `526` on that draft) then
+disagreed: the checker refused each inside an unreferenced callee, and the
+compiler, which never analyzes one, accepted. Pruning removed them; none is
+a compiler finding.
+
 ## Follow-ups
 
 Every miss has a follow-up. Mutants caught only by their own seed, and one
@@ -495,7 +561,7 @@ blind spot, get a generator or tooling proposal too.
 | `c-reverse-scope-drops` (still generator 0 of 1,200 after RUE-2480) | generate two destructor-bearing locals ending the same inner block | generator issue |
 | `h2335`, `h2335b` (generator 0 of 1,200; unaffected by RUE-2480) | generate three declared-linear levels | generator issue |
 | `h2318` (own seed only) | draw boundary literals (`MIN`, `MAX`, `±1`, powers of two) as arithmetic operands | generator issue |
-| (Call) §5.8 and the call-boundary drop paths (no generated case) | generate multi-function programs: by-value parameters, including destructor-bearing ones, and calls in operand position | generator issue |
+| (Call) §5.8 and the call-boundary drop paths (no generated case) | done (RUE-2481, below, "Multi-function programs"): by-value parameters, including destructor-bearing and declared-linear ones, calls in operand position, early returns from a callee, and bounded recursion | generator issue, done |
 | `c-overflow-kind` (the per-case test is blind to it) and `h2380` (default level only) | the loop's per-case check should also compare the trap kind (stderr's panic message) and compile at `-O2` as well as the default level, or the lane should run `scripts/rue lean-bridge`, which does both | tooling issue |
 | The divergence rules (never exercised) | seed one accepted case for each of (Seq-Bottom), (Let-Bottom), (Strict-Bottom) and (Return-Bottom), with syntax after the diverging form where the compiler accepts it. Otherwise record that the bridge does not cover these rules | seed or scope note, for RUE-2376's owner |
 
