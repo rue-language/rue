@@ -2052,7 +2052,7 @@ back-edge invariance; bringing that wording in line is RUE-2355.
   file compiled. Every refusal and trap the fragment can reach has such a
   witness (`Examples.lean`, `Corpus.lean`), and so does the fuel boundary
   (`run demoOps countdown 16` versus `17`).
-- **Read the claim.** `SPINE.md` is the 36 statements the mechanization
+- **Read the claim.** `SPINE.md` is the 38 statements the mechanization
   claims, each with its English reading and the §7 paragraph it realizes,
   generated from the Spec layer; `lake build` fails unless each is proved
   as stated, and `spine-fingerprints.txt` pins what is stated, so a changed
@@ -2185,7 +2185,11 @@ Then read the other field, `record`: the frame's scope record, reversed,
 inclusion, or dropped. Then a cell could sit in the record twice, or stay in
 the record after its `endscope` retired it, and a `return`'s unwind would
 drop-retire it a second time: the `useAfterDrop` that `no_use_after_drop`
-rules out. Row 9 of example 2 is the walk that clause protects.
+rules out. Row 9 of example 2 is the walk that clause protects. The machine
+never reaches that state from `run`'s start in any case, checked or not
+(`run_no_use_after_drop`, RUE-2496); the clause is what `soundness`'s proof
+of the unwind reads, so a weakened one shows as a proof that no longer goes
+through.
 
 Fuel is the other place to look. The theorems say "for every fuel", and
 `outOfFuel` satisfies them for free, so check that `fuel_mono` and
