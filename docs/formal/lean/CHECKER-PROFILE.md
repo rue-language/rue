@@ -85,6 +85,11 @@ module docstring already names:
    Also `3.8:68`'s restriction that an element move applies only "directly
    to the root binding" (E0904) — an absolute syntactic restriction the
    compiler enforces identically, not a path- or value-dependent one.
+   And `5.1:3`'s rule that an immutable binding is never reassigned
+   (E0203): the machine stores the new value just as it would for a `mut`
+   binding, so the two seeds that write an immutable binding or a
+   `match` payload binding (`assign_immutable`, `match_payload_assign`) run
+   cleanly and are still refused.
 5. **A rule no elaborated program can trigger, or a whole-declaration check
    that runs whether or not the declaration is ever used.** `lit_out_of_range`
    probes (Lit) §5.8's range premise directly in the core, past the
