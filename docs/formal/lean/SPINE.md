@@ -675,7 +675,7 @@ Sharp:
 
 ### `whole_program_exactly_once`
 
-**Every owned value of a finished run ends exactly once** (§7 "No
+**Every owned value of a run that finishes with a value ends exactly once** (§7 "No
 use-after-drop / no leak of drops", over a whole program; RUE-2478). For a
 checked, `pendingSafe` program, take any configuration `C` §6's relation
 reaches from `Config.init` and any owned identity `a` that `C` holds — in a
@@ -3928,7 +3928,9 @@ i64) -> i64 { @drop(a); b }` is accepted by the checker and is not
 configuration holding the minted `S0` (identity `0`) pending in the call's
 argument list; (D-Return) discards that list, and the run finishes with `0`
 and an empty trace. Identity `0` is neither in the result nor ended: without
-`pendingSafe`, `whole_program_exactly_once` fails on a checked program.
+`pendingSafe`, `whole_program_exactly_once` fails on a checked program. A
+`break` out of a pending form loses a value the same way (`loop { S2 { S0 { 1 },
+break }; () }; 0`); `pendingSafe` rules out both.
 
 ```lean
 def Spec.Sharp.pending_leak_stmt : Prop :=
