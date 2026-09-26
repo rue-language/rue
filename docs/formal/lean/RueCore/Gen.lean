@@ -605,14 +605,15 @@ the weights can be read and changed:
   of a place of any class;
 * integer literals are small, `0` among them, with an occasional `min_T` or
   `max_T` at the drawn type, so every arithmetic operator can trap — and the
-  narrow types make that likely rather than rare; one operand in eight is a
-  boundary-stream `boundaryLiteral` instead (above, "Boundary integer
-  literals and operand pairs", RUE-2482) — `min_T`/`max_T` again, one step in
-  from each, `-1`/`0`/`1`, or a power of two and its neighbour — for the
-  overflow, cast and comparison traps a small or bare-boundary literal seldom
-  feeds; an arithmetic or shift binop also has its own chance, `pairRate`, of
-  having *both* operands replaced by a `boundaryPair` at once, for the traps
-  a single boundary literal reaches only jointly;
+  narrow types make that likely rather than rare; one `intLiteral` draw in
+  eight is a boundary-stream `boundaryLiteral` instead (above, "Boundary
+  integer literals and operand pairs", RUE-2482) — `min_T`/`max_T` again, one
+  step in from each, `-1`/`0`/`1`, or a power of two and its neighbour — for
+  the overflow, cast and comparison traps a small or bare-boundary literal
+  seldom feeds; an arithmetic or shift binop also has its own chance,
+  `pairRate`, of having *both whole operand subtrees* replaced by a
+  `boundaryPair` at once, for the traps a single boundary literal reaches
+  only jointly;
 * types are drawn from every width and both signednesses, `i64` a little more
   often than the rest, and an operator's operands share the drawn type
   (`4.2:1`, and `4.3a:9` for a shift's amount);
@@ -912,8 +913,8 @@ def boundaryLiteral (w : IntWidth) (sg : Sign) : G Int := do
 /-- (helper) An integer literal of the wanted type: small, with an occasional
 `min_T`/`max_T` so that `+ - * /` can trap (§6.4). A small value is in range
 at every width, so the draw needs no per-width case. At a modest rate — one
-operand in eight — the **boundary** stream (`boundary`, RUE-2482) replaces it
-with a `boundaryLiteral` instead: the main-stream draw above always runs
+`intLiteral` draw in eight — the **boundary** stream (`boundary`, RUE-2482)
+replaces it with a `boundaryLiteral` instead: the main-stream draw above always runs
 first and is discarded when the boundary stream fires, exactly as `divArm`'s
 replacement of an arm does on the side stream (above, "Return and panic
 arms"), so a program with no boundary literal is the program this module drew
@@ -934,20 +935,26 @@ jointly, because the bug needs *both* operands at once — `min_T * -1` folding
 to `min_T` instead of trapping (RUE-2318) is one. For `+ - *`: `(min_T, -1)`
 (signed only), `(max_T, 1)`, `(min_T, 1)` and `(min_T, min_T)` — between them
 these overflow at least one of `+`, `-`, `*` at every signedness, and cost
-nothing at the others. For `/` and `%`, the same pairs (`min_T / -1` also
-overflows) plus `(x, 0)`, `x` itself a `boundaryLiteral`, for the div-by-zero
-trap. For `shl`/`shr`: a power of two and a shift amount at `w.bits - 1`,
-`w.bits` or `w.bits + 1` — `w.bits` and above are past every in-range shift
-amount (`shiftAmount` reduces mod `w.bits`, so the model never traps here,
-but the exact wrap the shift produces is exercised at all three). Any other
-operator gets no pair. -/
+nothing at the others, *except* an unsigned `*`, where none of the four
+overflows (`hi * 1`, `0 * 1`, `0 * 0`): `*` also gets `(max_T, 2)` and
+`(2^(bits-1), 2)` at an unsigned type, both of which do. For `/` and `%`, the
+`+ - *` pairs (`min_T / -1` also overflows) plus `(x, 0)`, `x` itself a
+`boundaryLiteral`, for the div-by-zero trap. For `shl`/`shr`: a power of two
+and a shift amount at `w.bits - 1`, `w.bits` or `w.bits + 1` — `w.bits` and
+above are past every in-range shift amount (`shiftAmount` reduces mod
+`w.bits`, so the model never traps here, but the exact wrap the shift
+produces is exercised at all three). Any other operator gets no pair. -/
 def boundaryPair (w : IntWidth) (sg : Sign) (op : BinOp) : G (Option (Int × Int)) := do
   let lo := intMin w sg
   let hi := intMax w sg
   let base : List (Int × Int) :=
     (if sg == .signed then [(lo, -1)] else []) ++ [(hi, 1), (lo, 1), (lo, lo)]
   match op with
-  | .add | .sub | .mul => return some (← pick (lo, lo) base)
+  | .mul =>
+      let unsignedOverflow : List (Int × Int) :=
+        if sg == .unsigned then [(hi, 2), (2 ^ (w.bits - 1), 2)] else []
+      return some (← pick (lo, lo) (base ++ unsignedOverflow))
+  | .add | .sub => return some (← pick (lo, lo) base)
   | .div | .rem =>
       let x ← boundaryLiteral w sg
       return some (← pick (lo, lo) (base ++ [(x, 0)]))
@@ -965,19 +972,21 @@ of two `2^(bits-1)`, which `crates/rue-codegen/src/value_plan.rs`'s
 take the shift-multiply optimization at every other power of two but never
 mis-handle this one, verified by hand at `i8`/`i16`/`i32` against the RUE-2318
 mutant, so `boundaryPair`'s `min_T`-paired candidates at those widths cost a
-draw without ever reaching the bug. So at signed 64-bit `*` and `/`
-specifically — the two operators §6.4 traps on overflow, where a wrong
-shift-based check would wrongly fold or wrongly trap — the rate is raised to
-one in two: with the ordinary outer odds of drawing `i64`, `signed` and one of
-these two operators at all (`intTy`'s and `pick`'s own weights) already
+draw without ever reaching the bug. So at signed 64-bit `*` specifically — the
+operator §6.4 traps on overflow, where a wrong shift-based check would wrongly
+fold — the rate is raised to one in four (`/` is not raised: `multiplier_shift`
+only ever lowers a *multiply*, and `min_T / -1` traps correctly under the
+RUE-2318 mutant, checked by hand). With the ordinary outer odds of drawing
+`i64`, `signed` and `*` at all (`intTy`'s and `pick`'s own weights) already
 costing roughly a factor of 15, one in sixteen on top left the joint shape
-under-reached in practice (0 catches of the RUE-2318 mutant in 1,000
-generated programs at the ordinary rate); one in two catches it within the
-first 200. -/
+under-reached in practice (0 catches of the RUE-2318 mutant in 1,000 generated
+programs at the ordinary rate); one in four catches it at `--gen 1000 --seed
+23` (`gen_23_73`; `--gen 200 --seed 7` catches nothing — the shape needs a
+seed whose draws put `i64`, `signed` and `*` at a binop the pair reaches at
+all, and 200 programs is not enough for that on its own). -/
 def pairRate (w : IntWidth) (sg : Sign) (op : BinOp) : Nat × Nat :=
   match w, sg, op with
-  | .w64, .signed, .mul => (1, 2)
-  | .w64, .signed, .div => (1, 2)
+  | .w64, .signed, .mul => (1, 4)
   | _, _, _ => (1, 16)
 
 /-- (helper) An integer binop `op` over two operands each drawn by `self`
@@ -988,7 +997,25 @@ reachable at all — a per-operand rate reaches them only as often as the
 product of two small probabilities. Both operands are still drawn by `self`
 on the main stream first and discarded when the pair fires, the same
 technique `intLiteral` uses, so `main`, `side` and `call` are unaffected
-whether or not it fires. -/
+whether or not it fires — but, unlike a single literal replacing a leaf, a
+fired pair replaces *both whole operand subtrees* `self` drew, which can
+delete a nested block, loop, `@drop` or call outright (and, through
+`pruneFns`, a callee left unreferenced by it), and so can change a rejected
+program to an accepted one or the reverse (below, "Boundary integer literals
+and operand pairs", names the counts).
+
+At `min_T * -1` specifically, `multiplier_shift`'s bug is at the constant
+multiplier, not at the other operand being itself a literal: under the
+RUE-2318 mutant, `let a: i64 = min_T; a * -1` traps correctly (the multiplier
+is no longer a literal `Const` the codegen can recognize), while
+`let b: i64 = -1; min_T * b` still folds silently, exactly as `min_T * -1`
+does. So when the drawn pair is exactly `(min_T, -1)` for `*`, one time in two
+the second operand is bound through a `let` first — `let b = -1; min_T * b`
+— instead of appearing as a second literal, which tests the shape
+`multiplier_shift` actually exists for (a literal multiplier against an
+arbitrary runtime value) rather than only literal-times-literal. The `let`
+only ever wraps this one pair, at a type both sides already have, so nothing
+else about the surrounding program's shape changes. -/
 def arithBinop (w : IntWidth) (sg : Sign) (op : BinOp) (self : G Expr) : G Expr := do
   let e1 ← self
   let e2 ← self
@@ -996,7 +1023,15 @@ def arithBinop (w : IntWidth) (sg : Sign) (op : BinOp) (self : G Expr) : G Expr 
   let pairOverride ← boundary (do
     if ← chance num den then boundaryPair w sg op else return none)
   match pairOverride with
-  | some (a, b) => return binop op (intLit w sg a) (intLit w sg b)
+  | some (a, b) =>
+      let asLet ←
+        match op with
+        | .mul => if a = intMin w sg ∧ b = -1 then boundary (chance 1 2) else pure false
+        | _ => pure false
+      if asLet then
+        return letIn false (intLit w sg b) (binop op (intLit w sg a) (use (.var 0)))
+      else
+        return binop op (intLit w sg a) (intLit w sg b)
   | none => return binop op e1 e2
 
 /-- (helper) A float width: `f64` more often than `f32`, the way `3.12:8`
@@ -1156,8 +1191,8 @@ def genEnv (nEnums : Nat) : Nat → Decls → G Decls
       genEnv nEnums n { acc with structs := acc.structs ++ [sd] }
 
 /-- (helper) A fresh natural number, off the generator's own **id counter**
-(RUE-2505) rather than any of the three `StdGen` streams — so `side` and
-`calls`, which swap or split those, leave it exactly where it was. Every
+(RUE-2505) rather than any of the four `StdGen` streams — so `side`, `calls`
+and `boundary`, which swap or split those, leave it exactly where it was. Every
 constructed value of a destructor-bearing declaration draws the next one
 (`structLitArgs`), across the whole program: the entry point and every
 callee, in the order their bodies are drawn. Two values of the same
@@ -2883,11 +2918,15 @@ def callSeed (seed : Nat) : StdGen :=
   ⟨(seed * 1103515245 + 12345) % 2147483562 + 1, (seed * 69069 + 7919) % 2147483398 + 1⟩
 
 /-- (helper) The boundary stream's first state (`boundary`, RUE-2482), by the
-same technique as `callSeed`, with different constants so the two independent
-streams do not share a component. -/
+same technique as `callSeed`, with different multipliers and increments so
+the two independent streams do not share a component, but the same moduli:
+`StdGen`'s two components each range over `[1, 2147483562]` and
+`[1, 2147483398]` respectively (`stdNext`), so a modulus one past either top
+would let that component land on `0` — off `StdGen`'s range and, since
+`stdNext` maps `0` to `0`, stuck there for the rest of the run. -/
 def boundarySeed (seed : Nat) : StdGen :=
-  ⟨(seed * 2246822519 + 3266489917) % 2147483563 + 1,
-    (seed * 668265263 + 374761393) % 2147483399 + 1⟩
+  ⟨(seed * 2246822519 + 3266489917) % 2147483562 + 1,
+    (seed * 668265263 + 374761393) % 2147483398 + 1⟩
 
 /-- (helper) `n` generated cases from `seed`, in order; a pure function of
 its arguments. -/
