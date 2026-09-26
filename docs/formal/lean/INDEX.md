@@ -306,7 +306,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Examples` | `RueCore.Examples.dynReadAffineCopied` | def | §5.1 | — |
 | `RueCore.Examples` | `RueCore.Examples.dynDropAffineSkipped` | def | §6.11 | — |
 | `RueCore.Examples` | `RueCore.Examples.repeatAffineDuplicated` | def | — | `7.1:38` |
-| `RueCore.Examples` | `RueCore.Examples.dynDropAffineSkippedDyn` | def | (Use-Untrackable-Dynamic-Copy), §5.1 | `8.2:32` |
+| `RueCore.Examples` | `RueCore.Examples.dynDropAffineSkippedDyn` | def | (Use-Untrackable-Dynamic-Copy), §5.1 | `8.2:4` |
 | `RueCore.Examples` | `RueCore.Examples.dynReadAffine_refused` | theorem | (D-Use-Untrackable-Dynamic-Copy), §6.3 | — |
 | `RueCore.Examples` | `RueCore.Examples.repeatAffine_refused` | theorem | §2 | — |
 | `RueCore.Examples` | `RueCore.Examples.dynReadBelow` | def | (Use-Untrackable-Dynamic-Copy), §5.1 | — |
@@ -1778,6 +1778,5 @@ Cited sections the calculus has no heading for:
 | `7.1:46` | `RueCore.Examples.arrayElemReinit`, `RueCore.Examples.arrayWholeReinit`, `RueCore.Examples.arrayWriteAfterDestructureViaField`, `RueCore.Examples.arrayElemSelfAssign`, `RueCore.Examples.dynWriteAfterDestructureViaField`, `RueCore.Explain.Premise.assignIntoPartialArray`, Gen.lean (module), `RueCore.assignArrayOk`, `RueCore.Typed.indexWrite`, `RueCore.Typed.assign`, Syntax.lean (module), `RueCore.arrayPrefix` |
 | `8.1:3` | `RueCore.Examples.i64MinTimesNeg1` |
 | `8.1:7` | `RueCore.evalFintrin`, `RueCore.Examples.floatToIntTrapNan`, `RueCore.Examples.floatToInt_inf_traps`, `RueCore.evalFintrin_float_res` |
-| `8.2:4` | `RueCore.Gen.bindIdx`, `RueCore.Print.dynTail` |
-| `8.2:32` | `RueCore.Examples.dynDropAffineSkippedDyn` |
+| `8.2:4` | `RueCore.Examples.dynDropAffineSkippedDyn`, `RueCore.Gen.bindIdx`, `RueCore.Print.dynTail` |
 | `10.5:4` | Statics.lean (module) |
