@@ -1026,21 +1026,21 @@ theorem checkArgs_sound {P : Program} {R : Ty} : ∀ (es : List Expr) {Γ : Ctx}
                 · cases h
 end
 
-/-- A grounded type's every named declaration is grounded: `Ty.declIds` peels
+/-- A grounded type's every named declaration is grounded: `Ty.tyNames` peels
 exactly the array wrappers `Ty.grounded` walks through (helper). -/
-theorem Ty.grounded_declIds {st : List Bool × List Bool} :
-    ∀ {T : Ty} {d : DeclId}, Ty.grounded st T = true → d ∈ T.declIds →
+theorem Ty.grounded_tyNames {st : List Bool × List Bool} :
+    ∀ {T : Ty} {d : TyName}, Ty.grounded st T = true → d ∈ T.tyNames →
       Ty.grounded st d.ty = true
   | .struct _, _, h, hm => by
-      simp only [Ty.declIds, List.mem_singleton] at hm; subst hm; exact h
+      simp only [Ty.tyNames, List.mem_singleton] at hm; subst hm; exact h
   | .enum _, _, h, hm => by
-      simp only [Ty.declIds, List.mem_singleton] at hm; subst hm; exact h
+      simp only [Ty.tyNames, List.mem_singleton] at hm; subst hm; exact h
   | .array T _, _, h, hm =>
-      Ty.grounded_declIds (T := T) h (by simpa only [Ty.declIds] using hm)
-  | .int _ _, _, _, hm => by simp [Ty.declIds] at hm
-  | .float _, _, _, hm => by simp [Ty.declIds] at hm
-  | .bool, _, _, hm => by simp [Ty.declIds] at hm
-  | .unit, _, _, hm => by simp [Ty.declIds] at hm
+      Ty.grounded_tyNames (T := T) h (by simpa only [Ty.tyNames] using hm)
+  | .int _ _, _, _, hm => by simp [Ty.tyNames] at hm
+  | .float _, _, _, hm => by simp [Ty.tyNames] at hm
+  | .bool, _, _, hm => by simp [Ty.tyNames] at hm
+  | .unit, _, _, hm => by simp [Ty.tyNames] at hm
 
 /-- Every `checkFn` acceptance is a real (Fn) §5.8 derivation. -/
 theorem checkFn_sound {P : Program} {fd : FnDef} (h : checkFn P fd = true) : WfFn P fd := by
@@ -1104,25 +1104,25 @@ theorem Decls.topoSort_length (D : Decls) : ∀ n : Nat,
   | _ + 1 => ⟨by simp [Decls.topoSort, Decls.topoSortStep], by simp [Decls.topoSort, Decls.topoSortStep]⟩
 
 /-- Nothing is grounded at round `0` (helper). -/
-theorem Decls.grounded_peel_zero (D : Decls) (d : DeclId) :
+theorem Decls.grounded_peel_zero (D : Decls) (d : TyName) :
     Ty.grounded (D.topoSort 0) d.ty = false := by
   cases d with
   | struct s =>
-      simp only [DeclId.ty, Ty.grounded, Decls.topoSort, List.getElem?_map]
+      simp only [TyName.ty, Ty.grounded, Decls.topoSort, List.getElem?_map]
       cases D.structs[s]? <;> rfl
   | enum e =>
-      simp only [DeclId.ty, Ty.grounded, Decls.topoSort, List.getElem?_map]
+      simp only [TyName.ty, Ty.grounded, Decls.topoSort, List.getElem?_map]
       cases D.enums[e]? <;> rfl
 
 /-- A declaration grounded at round `n+1` contains only declarations grounded
 at round `n`. This is the peel read backwards, and it is what turns an
 acceptance into well-foundedness (helper). -/
-theorem Decls.grounded_pred {D : Decls} {n : Nat} {d d' : DeclId}
+theorem Decls.grounded_pred {D : Decls} {n : Nat} {d d' : TyName}
     (h : Ty.grounded (D.topoSort (n + 1)) d.ty = true) (hn : D.Names d d') :
     Ty.grounded (D.topoSort n) d'.ty = true := by
   cases d with
   | struct s =>
-      simp only [DeclId.ty, Ty.grounded, Decls.topoSort, Decls.topoSortStep, List.getElem?_map] at h
+      simp only [TyName.ty, Ty.grounded, Decls.topoSort, Decls.topoSortStep, List.getElem?_map] at h
       cases hd : D.structs[s]? with
       | none => rw [hd] at h; exact absurd h (by simp)
       | some sd =>
@@ -1130,9 +1130,9 @@ theorem Decls.grounded_pred {D : Decls} {n : Nat} {d d' : DeclId}
           simp only [Option.map_some, Option.getD_some, List.all_eq_true] at h
           simp only [Decls.Names, Decls.byValue, hd] at hn
           obtain ⟨T, hT, hd'⟩ := hn
-          exact Ty.grounded_declIds (h T hT) hd'
+          exact Ty.grounded_tyNames (h T hT) hd'
   | enum e =>
-      simp only [DeclId.ty, Ty.grounded, Decls.topoSort, Decls.topoSortStep, List.getElem?_map] at h
+      simp only [TyName.ty, Ty.grounded, Decls.topoSort, Decls.topoSortStep, List.getElem?_map] at h
       cases hd : D.enums[e]? with
       | none => rw [hd] at h; exact absurd h (by simp)
       | some ed =>
@@ -1141,11 +1141,11 @@ theorem Decls.grounded_pred {D : Decls} {n : Nat} {d d' : DeclId}
           simp only [Decls.Names, Decls.byValue, hd] at hn
           obtain ⟨T, hTmem, hd'⟩ := hn
           obtain ⟨Ts, hTs, hT⟩ := List.mem_flatten.mp hTmem
-          exact Ty.grounded_declIds (h Ts hTs T hT) hd'
+          exact Ty.grounded_tyNames (h Ts hTs T hT) hd'
 
 /-- A declaration grounded at some round is accessible in the by-value
 relation (helper). -/
-theorem Decls.acc_of_grounded (D : Decls) : ∀ (n : Nat) (d : DeclId),
+theorem Decls.acc_of_grounded (D : Decls) : ∀ (n : Nat) (d : TyName),
     Ty.grounded (D.topoSort n) d.ty = true → Acc (fun a b => D.Names b a) d
   | 0, d, h => absurd h (by rw [D.grounded_peel_zero d]; simp)
   | n + 1, d, h =>
@@ -1153,7 +1153,7 @@ theorem Decls.acc_of_grounded (D : Decls) : ∀ (n : Nat) (d : DeclId),
 
 /-- A declaration index the environment does not have contains nothing, so it
 is accessible outright (helper). -/
-theorem Decls.acc_of_empty {D : Decls} {d : DeclId} (h : D.byValue d = []) :
+theorem Decls.acc_of_empty {D : Decls} {d : TyName} (h : D.byValue d = []) :
     Acc (fun a b => D.Names b a) d :=
   Acc.intro d (fun _ hd' => absurd hd' (by simp [Decls.Names, h]))
 
@@ -1181,7 +1181,7 @@ theorem checkNoCycle_sound {D : Decls} (h : checkNoCycle D = true) : WfNames D :
             rw [(D.topoSort_length _).1]
             exact (List.getElem?_eq_some_iff.mp hd).1
           have hb := List.getElem?_eq_getElem hlt
-          simp only [DeclId.ty, Ty.grounded, hb, Option.getD_some]
+          simp only [TyName.ty, Ty.grounded, hb, Option.getD_some]
           exact key _ s _ hs hb
   | enum e =>
       cases hd : D.enums[e]? with
@@ -1192,7 +1192,7 @@ theorem checkNoCycle_sound {D : Decls} (h : checkNoCycle D = true) : WfNames D :
             rw [(D.topoSort_length _).2]
             exact (List.getElem?_eq_some_iff.mp hd).1
           have hb := List.getElem?_eq_getElem hlt
-          simp only [DeclId.ty, Ty.grounded, hb, Option.getD_some]
+          simp only [TyName.ty, Ty.grounded, hb, Option.getD_some]
           exact key _ e _ he hb
 
 /-- Every `checkDecls` acceptance is a well-formed declaration environment:

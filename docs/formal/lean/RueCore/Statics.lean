@@ -196,7 +196,7 @@ paragraph in RUE-2334, and `3.0:5` is the normative form it mechanizes.
 
 /-- A declaration of either kind, named the way a type names it: the domain of
 `3.0:5`'s "contains by value" relation. -/
-inductive DeclId where
+inductive TyName where
   /-- The struct declaration `Ty.struct s` names. -/
   | struct (s : Nat)
   /-- The enum declaration `Ty.enum e` names. -/
@@ -204,7 +204,7 @@ inductive DeclId where
 deriving DecidableEq, Repr
 
 /-- The type that names this declaration (helper). -/
-def DeclId.ty : DeclId → Ty
+def TyName.ty : TyName → Ty
   | .struct s => .struct s
   | .enum e => .enum e
 
@@ -214,16 +214,16 @@ type names its own declaration, an array names whatever its element type names
 an array's storage *is* its elements' (`3.5:4`), so `struct S { x0: [S; 1] }`
 is no less recursive than `struct S { x0: S }` and the compiler reports E0483
 for both — and a scalar names none (helper). -/
-def Ty.declIds : Ty → List DeclId
+def Ty.tyNames : Ty → List TyName
   | .struct s => [.struct s]
   | .enum e => [.enum e]
-  | .array T _ => T.declIds
+  | .array T _ => T.tyNames
   | .int _ _ | .float _ | .bool | .unit => []
 
 /-- The types a declaration contains **by value** (`3.0:5`): a struct's fields
 and an enum's payload components, over every variant. An index the environment
 does not have contains nothing. -/
-def Decls.byValue (D : Decls) : DeclId → List Ty
+def Decls.byValue (D : Decls) : TyName → List Ty
   | .struct s => match D.structs[s]? with
                  | some sd => sd.fields
                  | none => []
@@ -232,11 +232,11 @@ def Decls.byValue (D : Decls) : DeclId → List Ty
                | none => []
 
 /-- `3.0:5`'s relation, one step: `d` contains `d'` by value. A slot reaches
-its declaration **through any depth of array nesting** (`Ty.declIds`), because
+its declaration **through any depth of array nesting** (`Ty.tyNames`), because
 `3.0:5` names array elements beside fields and payloads; without that, a
 struct naming itself through an array element would satisfy `WfNames` and §3's
 equation would have more than one solution at it. -/
-def Decls.Names (D : Decls) (d d' : DeclId) : Prop := ∃ T ∈ D.byValue d, d' ∈ T.declIds
+def Decls.Names (D : Decls) (d d' : TyName) : Prop := ∃ T ∈ D.byValue d, d' ∈ T.tyNames
 
 /-- **`3.0:5` (E0483), mechanized**: the by-value "contains" relation over the
 declarations is well-founded, so no declaration reaches itself through a cycle
