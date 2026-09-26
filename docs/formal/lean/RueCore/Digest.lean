@@ -178,6 +178,25 @@ signatures. Raise it the same way — to the smallest value that keeps the
 preamble true — when a later slice adds arms again. -/
 def maxBodyLines : Nat := 20
 
+/-- (helper) Does this type end in `Bool` — is the declaration a decidable
+predicate? A statement that takes `e.pendingSafe = true` or `noDtorPrefix D τ π
+= true` as a hypothesis says exactly what that body says, so, like a
+`Prop`-valued predicate, its body is printed whatever its size (RUE-2479). -/
+def isBoolValued (type : Lean.Expr) : Bool := type.getForallBody.isConstOf ``Bool
+
+/-- (helper) The non-`Bool` definitions whose result a spine hypothesis
+compares against, and whose body is therefore printed whatever its size: the
+§5.5 join, which a statement meets as `OwnSt.join D a b τ = some s`
+(RUE-2479). Add a name here when a new hypothesis compares a computed result;
+`bodyRequired` below fails the digest if one of these loses its body. -/
+def alwaysBody : List Name := [``OwnSt.join, ``OwnSt.joinList]
+
+/-- (helper) The hypotheses' predicates the digest must print with a body — the
+red-team finding R6 list (RUE-2479). `ruecore-digest` exits non-zero when one of
+these is printed by signature alone. -/
+def bodyRequired : List Name :=
+  [``Expr.pendingSafe, ``Expr.breaks, ``OwnSt.join, ``noDtorPrefix, ``linearResidue]
+
 /-- (helper) Does this value read as the elaborator's output rather than as
 what was written — a `brecOn` application or a well-founded fixpoint? Such a
 body is printed from the equations Lean derived instead, which say the same
@@ -227,8 +246,9 @@ deriving Inhabited
 /-- (helper) An entry that prints its signature and nothing below it. -/
 def signatureOnly : Body := { value := [], equations := #[], uses := #[] }
 
-/-- (helper) The body an entry prints for a constant. A type or a predicate
-prints its body whatever its size, because that body is part of what a
+/-- (helper) The body an entry prints for a constant. A type, a predicate
+(`Prop`- or `Bool`-valued) or a name in `alwaysBody` prints its body whatever
+its size, because that body is part of what a
 statement using it says. Any other definition prints its body when it is
 short enough to read — a signature alone cannot tell `Ty.mult` from
 `fun _ => .copy`, nor `Ctx.join` from `fun _ _ => none`, and those are
@@ -242,17 +262,18 @@ def bodyOf (env : Environment) (name : Name) (info : ConstantInfo) : MetaM Body 
         let text ← ppValue v.value
         return { value := text.splitOn "\n", equations := #[], uses := v.value.getUsedConstants }
       else
+        let full := isBoolValued v.type || alwaysBody.contains name
         let (eqs, eqUses) ← ppEquations name
         let eqLines := eqs.foldl (init := 0) fun acc e => acc + (e.splitOn "\n").length
         if !eqs.isEmpty then
-          if eqLines ≤ maxBodyLines then
+          if full || eqLines ≤ maxBodyLines then
             return { value := [], equations := eqs, uses := eqUses }
           return signatureOnly
         if looksCompiled env v.value then
           return signatureOnly
         let text ← ppValue v.value
         let lines := text.splitOn "\n"
-        if lines.length ≤ maxBodyLines then
+        if full || lines.length ≤ maxBodyLines then
           return { value := lines, equations := #[], uses := v.value.getUsedConstants }
         return signatureOnly
   | _ => return signatureOnly
