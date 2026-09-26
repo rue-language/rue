@@ -782,4 +782,29 @@ def unreachable_stuck_stmt : Prop :=
       ¬ (∀ C, C.Terminal ∨ ∃ C', Step Float.exactOps P C C') ∧
       ¬ ∃ n, ∀ fuel, n < fuel → ∃ w', run Float.exactOps P fuel = .stuck w'
 
+/-- **A configuration that reads a retired cell, not reached** (§7 sharpness,
+RUE-2496). For the checked program of `Nonvacuous.dtor`, a configuration whose
+frame names a cell already retired (`†`) is stuck with `useAfterDrop`, and
+`eval` from the same store and frame refuses the same way; the configuration
+is not reached from `Config.init` (shown through `step_no_use_after_drop`
+itself). So `step_no_use_after_drop` fails without the hypothesis that the
+configuration is reached: the refusal is live from an open configuration, and
+what keeps it away is the start, not the program's typing. -/
+def retired_cell_stmt : Prop :=
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      ProgramTyped P ∧
+      eval Float.exactOps 1 P [.dead] { env := [0], scope := [] } (.use (.var 0)) = .stuck .useAfterDrop ∧
+      ((.run [.dead] { env := [0], scope := [] } [] (.eval (.use (.var 0))) []) : Config).Stuck
+        Float.exactOps P .useAfterDrop ∧
+      ¬ Steps Float.exactOps P Config.init (.run [.dead] { env := [0], scope := [] } [] (.eval (.use (.var 0))) [])
+
 end RueCore.Spec.Sharp

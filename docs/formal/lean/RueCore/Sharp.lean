@@ -6,6 +6,7 @@ public import RueCore.Soundness
 public import RueCore.Trace
 public import RueCore.TraceOrder
 public import RueCore.Adequacy
+public import RueCore.Retire
 
 @[expose] public section
 
@@ -1004,5 +1005,27 @@ theorem unreachable_stuck :
   · rcases h (.run [] Frame.empty [] (.eval (.use (.var 0))) []) with h | ⟨_, s⟩
     · exact hnt h
     · exact hnoC _ s
+
+/-- `Spec.Sharp.retired_cell_stmt`, proved: a §7 hypothesis needed (RUE-2496). -/
+theorem retired_cell :
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      ProgramTyped P ∧
+      eval Float.exactOps 1 P [.dead] { env := [0], scope := [] } (.use (.var 0)) = .stuck .useAfterDrop ∧
+      ((.run [.dead] { env := [0], scope := [] } [] (.eval (.use (.var 0))) []) : Config).Stuck
+        Float.exactOps P .useAfterDrop ∧
+      ¬ Steps Float.exactOps P Config.init (.run [.dead] { env := [0], scope := [] } [] (.eval (.use (.var 0))) []) := by
+  intro B hB P hP
+  have hPT : ProgramTyped P := checkProgram_sound (by subst hB hP; rfl)
+  refine ⟨hPT, by subst hB hP; rfl, by subst hB hP; rfl, fun hs => ?_⟩
+  exact step_no_use_after_drop Float.exactOps P hs (by subst hB hP; rfl)
 
 end RueCore.Sharp

@@ -1047,4 +1047,11 @@ theorem unreachable_stuck.run_stuck_of_step_stuck_1 :
   obtain ⟨hPT, hst, -, hnr, -, hns, hall, hn⟩ := Spine.Sharp.unreachable_stuck _ rfl _ rfl
   exact hn (h _ _ hst)
 
+/-- `Sharp.retired_cell` refutes `step_no_use_after_drop` without hypothesis 1 (helper). -/
+theorem retired_cell.step_no_use_after_drop_1 :
+    ¬∀ (M : FloatOps) (P : Program) {C : RueCore.Config}, ¬C.Stuck M P Violation.useAfterDrop := by
+  intro h
+  obtain ⟨-, -, hst, -⟩ := Spine.Sharp.retired_cell _ rfl _ rfl
+  exact h _ _ hst
+
 end RueCore.Sharp.Glue
