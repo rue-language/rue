@@ -625,35 +625,38 @@ DIRECTION = {
 # `check_sound`) is false for the mutant; "helper" = only a lemma that restates a definition is
 # false, and every stated property holds; "holds" = every stated property and every lemma's
 # statement still holds (a proof that broke broke as a script); "equivalent" = the mutant
-# decides the same as the original on every state a rule reaches. `--table` prints it.
+# decides the same as the original on every state a rule reaches. `--table` prints it. A
+# "helper" or "holds" reading has a third element, `stays`: for each candidate statement the
+# spec pass leaves unproved, why it is still true, keyed by the statement or by the failed
+# proof it rests on (`uncovered`; RUE-2499).
 # ---------------------------------------------------------------------------------------
 
 RULINGS = {
     "use-move-partial": ("statement", "moves a partially moved aggregate whole; the machine meets the hole (seed `partial_then_whole`): `soundness`, `check_sound`"),
     "use-copy-moved": ("equivalent", "a `Copy` place is never `MovedOut` in a reachable state: a `Copy` `@drop` moves nothing and a `Copy` value is never a hole"),
-    "use-move-dtor": ("holds", "E0456 is a static discipline with no dynamic counterpart: the machine runs the program (`partial_under_dtor`), so no stated property is false"),
-    "use-move-rootidx": ("holds", "a static discipline (`3.8:68`): the machine moves the element out and drops the rest path by path, without a refusal"),
+    "use-move-dtor": ("holds", "E0456 is a static discipline with no dynamic counterpart: the machine runs the program (`partial_under_dtor`), so no stated property is false", {"check_sound": "the rule and the checker drop the same premise, so every acceptance is still a derivation"}),
+    "use-move-rootidx": ("holds", "a static discipline (`3.8:68`): the machine moves the element out and drops the rest path by path, without a refusal", {"check_sound": "the rule and the checker drop the same premise, so every acceptance is still a derivation"}),
     "use-affine-as-copy": ("statement", "an affine use leaves the place `Owned`, so a second use is accepted and the machine meets a hole (`use_after_move`): `soundness`"),
     "use-declared-residue": ("statement", "accepts a destructure that strands a linear sibling; the machine refuses with `linearLeak` (`destructure_linear_residue`): `soundness`"),
     "index-read-copy": ("statement", "accepts a dynamic-index read of a non-Copy element, which the machine refuses (`typeConfusion`): `soundness`"),
     "index-drop-copy-checker": ("statement", "the checker accepts `@drop(a[i])` of a non-Copy element, which no `Typed` rule derives: `check_sound`"),
     "const-index-off-by-one": ("statement", "a constant index equal to the length types, and the machine's read fails (`typeConfusion`): `soundness`"),
     "assign-overwrite": ("statement", "accepts overwriting a live linear place; the machine refuses with `linearOverwrite` (`linear_overwrite`): `soundness`"),
-    "assign-array-ok": ("holds", "`soundness` does not use the premise (`assignArrayOk`'s doc-comment): the write it refuses runs without a refusal"),
+    "assign-array-ok": ("holds", "`soundness` does not use the premise (`assignArrayOk`'s doc-comment): the write it refuses runs without a refusal", {"check_sound": "the rule and the checker drop the same premise, so every acceptance is still a derivation"}),
     "assign-immutable": ("holds", "mutability is not a safety property: the machine performs the write"),
     "index-write-linear": ("statement", "accepts writing a linear element through a dynamic index; the machine refuses with `linearOverwrite`: `soundness`"),
-    "drop-residual-below": ("holds", "E0406's residual side condition has no dynamic counterpart (`linear_field_stranded` runs): no stated property is false"),
+    "drop-residual-below": ("holds", "E0406's residual side condition has no dynamic counterpart (`linear_field_stranded` runs): no stated property is false", {"check_sound": "the rule and the checker drop the same premise, so every acceptance is still a derivation"}),
     "drop-moved": ("statement", "accepts `@drop` of a moved-out place; the machine meets the hole (`use_after_move`): `soundness`"),
     "seq-discard": ("statement", "accepts discarding a linear value; the machine refuses with `linearDiscard` (`linear_temporary_discarded`): `soundness`"),
     "join-owned-wins": ("statement", "the join keeps `Owned` where one arm moved, so a later use is accepted and meets the hole (`loop_moved_prev_iteration`): `soundness`"),
     "join-linear-disagree": ("statement", "a linear path `Owned` on one arm and `MovedOut` on the other joins; the run leaks (`linear_half_consumed`): `soundness`"),
     "join-residual": ("statement", "accepts a leak through the join; `join_moved_vs_partial_linear` is accepted and refused with `linearLeak`: `soundness`"),
     "join-diverge-arm": ("statement", "one diverging arm makes the branch diverge, so what follows is not typed but runs (`loop_nested_move_outer` refused): `soundness`"),
-    "meet-never": ("holds", "refuses more: no statement is about the checker's completeness"),
+    "meet-never": ("statement", "`Nonvacuous.loop` is false (RUE-2499's spec pass; kernel-checked refutation, scratch/rue-2499/refute/meet-never-T.lean): its loop body's `if i >= 3 { break }` has a diverging arm, which no longer meets `()`, so `checkProgram` refuses the witness. Refusing more falsifies a non-vacuity witness, which states an acceptance; the first reading, 'no statement is about the checker's completeness', missed the witnesses"),
     "first-arm-ty": ("holds", "refuses more: no statement is about the checker's completeness"),
     "match-exhaustive": ("equivalent", "`TypedArms` and `checkArms` walk arms and variants in step and fail on a length mismatch, so the premise is implied"),
     "arm-leak": ("statement", "accepts an arm that ends with a live linear payload binding; the machine refuses with `linearLeak` (`enum_arm_leaks_payload`): `soundness`"),
-    "arm-payload-mutable": ("helper", "only `Ctx.skel_armCtx`, which restates `armCtx`; mutability is not a safety property"),
+    "arm-payload-mutable": ("helper", "only `Ctx.skel_armCtx`, which restates `armCtx`; mutability is not a safety property", {"soundness": "a payload binding is a cell of its own (the arm mints it), so a write to it is an ordinary assignment; the machine never reads a binding's mutability, and `FrameMatches` does not mention it"}),
     "let-leak": ("statement", "accepts a `let` that ends with a live linear binding; `linearLeak` (`linear_leaked`): `soundness`"),
     "residual-declared": ("statement", "a partially moved declared-linear struct owes nothing, so its leak is accepted; the machine's monitor still refuses: `soundness`"),
     "residual-untracked": ("statement", "untouched linear slots owe nothing, so their leak is accepted; the machine refuses: `soundness`"),
@@ -663,7 +666,7 @@ RULINGS = {
     "loop-break-div-brk": ("statement", "the rules type a loop with a reachable `break` as diverging: `soundness`"),
     "loop-head-unverified": ("equivalent", "`headIter` returns a candidate only when one more step leaves it unchanged, and `check` is deterministic, so the re-check always passes"),
     "head-iter-bound": ("holds", "refuses more: no statement is about the checker's completeness"),
-    "breaks-nested": ("holds", "refuses more: the outer loop is typed `unit` rather than `never`"),
+    "breaks-nested": ("holds", "refuses more: the outer loop is typed `unit` rather than `never`", {"eval_quiet": "true for the mutant: its premise `e.breaks = false` now holds of fewer expressions (an inner loop's break counts), so the lemma is weaker"}),
     "fn-exit-leak": ("statement", "accepts a function body that ends with a live linear parameter; `linearLeak` (`linear_param_leaked`): `soundness`"),
     "fn-params-order": ("statement", "a body is typed against its parameters in the wrong order, so it runs on values of other types: `soundness`"),
     "entry-params": ("statement", "`checkProgram` accepts an entry point with parameters, which `ProgramTyped` excludes: `checkProgram_sound`"),
@@ -672,25 +675,25 @@ RULINGS = {
     "repeat-copy": ("statement", "`[e; n]` of a non-Copy element types; the machine refuses (`typeConfusion`): `soundness`"),
     "class-not-infectious": ("statement", "a linear-carrying struct is `Affine`, so dropping it is accepted and the machine's monitor refuses the live linear field: `soundness`"),
     "mult-join-meet": ("statement", "the class join takes the lesser class, so a linear-carrying struct is not `Linear`; as `class-not-infectious`: `soundness`"),
-    "zero-array-linear": ("helper", "only `Ty.array_mult_linear`, which restates `Ty.mult`; `[T; 0]` being `Linear` refuses more"),
+    "zero-array-linear": ("helper", "only `Ty.array_mult_linear`, which restates `Ty.mult`; `[T; 0]` being `Linear` refuses more", {"Ty.array_copy_elem": "true for the mutant: an array is `Copy` exactly when its element is, at every length"}),
     "copy-struct-dtor": ("statement", "accepts a `@copy` struct with a destructor, which `WfDecls` excludes: `checkProgram_sound`"),
     "dtor-linear-field": ("statement", "accepts a destructor-bearing struct with a linear field, which `WfDecls` excludes: `checkProgram_sound`"),
-    "decl-cycle-rounds": ("holds", "refuses more: no statement is about the checker's completeness"),
+    "decl-cycle-rounds": ("holds", "refuses more: the checker's own completeness is in no statement, and every witness's declarations still pass", {"checkNoCycle_sound": "true for the mutant: fewer peel rounds only refuse more, and a cycle never peels"}),
     "entry-join-bty": ("equivalent", "every join is of two entries with one skeleton, so the two declared types are equal"),
     "dyn-move-as-copy": ("statement", "an affine use copies, so both copies drop and a destructor runs twice: `no_double_free`"),
     "step-usecopy-nondet": ("statement", "two `Step` rules apply to one non-Copy use: `Step.det`"),
     "bounds-off-by-one": ("statement", "an index equal to the length passes the check and the read fails (`typeConfusion`): `soundness`"),
-    "bounds-negative": ("holds", "a negative index reads element 0: a defined, well-typed result, so every stated property holds"),
+    "bounds-negative": ("statement", "`no_violation`, `soundness` and the rest of the safety spine are false (RUE-2499's spec pass; kernel-checked refutation, scratch/rue-2499/refute/bounds-negative-T.lean): `let a: [i64; 0] = []; a[-1]` is checked, `-1 < 0` passes the test, and element `0` of an empty array is a `typeConfusion`. The first reading, 'a negative index reads element 0', missed the empty array"),
     "bounds-stuck": ("statement", "an out-of-range index is a stuck state: `soundness`"),
     "repeat-count": ("statement", "`[v; n]` builds `n + 1` elements, not a value of `[T; n]`: `soundness`"),
-    "overflow-wrap": ("holds", "wraparound yields an in-range value: safe, and the spine states safety, not the arithmetic"),
-    "divzero-kind": ("holds", "a trap of the wrong kind is still a defined trap"),
-    "rem-min-overflow": ("holds", "`MIN % -1` yields `0`, an in-range value"),
-    "operand-swap": ("holds", "swapped operands still yield an in-range value or a trap"),
+    "overflow-wrap": ("holds", "wraparound yields an in-range value: safe, and the spine states safety, not the arithmetic", {"intResult_res": "true for the mutant: the wrapped value is in range, so it is typed", "intResult_scalar": "true for the mutant: an int is a scalar"}),
+    "divzero-kind": ("holds", "a trap of the wrong kind is still a defined trap", {"binOpInt_res": "true for the mutant: it names no trap kind"}),
+    "rem-min-overflow": ("holds", "`MIN % -1` yields `0`, an in-range value", {"binOpInt_res": "true for the mutant: `0` is in range, so it is typed"}),
+    "operand-swap": ("statement", "`Nonvacuous.loop` is false (RUE-2499's spec pass; kernel-checked refutation, scratch/rue-2499/refute/operand-swap-T.lean): `i >= 3` runs as `3 >= i`, so the loop breaks on its first turn and no destructor runs, short of the three it states. Swapped operands still yield a typed value or a trap (`evalBinOp_res` holds), so the safety spine stays true; the witness pins the arithmetic"),
     "gt-off-by-one": ("holds", "`>` as `>=` still yields a `bool`"),
     "neg-no-overflow": ("statement", "`-MIN` yields the out-of-range `128` at `i8`, and `HasTy.int` requires `InBounds`: `soundness`"),
-    "cast-kind": ("helper", "only `evalIntCast_res`, which names the trap kind; a trap of the wrong kind is still a defined trap"),
-    "float-to-int-saturate": ("holds", "an out-of-range float-to-int yields `0`, an in-range value"),
+    "cast-kind": ("helper", "only `evalIntCast_res`, which names the trap kind; a trap of the wrong kind is still a defined trap", {"evalIntCast_res": "false for the mutant (it names `castOverflow`), but every statement resting on it uses only that a cast yields a typed value or a trap, which still holds"}),
+    "float-to-int-saturate": ("holds", "an out-of-range float-to-int yields `0`, an in-range value", {"evalFintrin_float_res": "true for the mutant: `0` is in range, so it is typed"}),
     "binop-eval-order": ("statement", "`eval` runs the right operand first and `Step` the left, so they disagree on a program with effects in both: `eval_sound`, `soundness`"),
     "index-write-order": ("statement", "`eval` runs the index first and `Step` the right-hand side: `eval_sound`, `soundness`"),
     "dtor-skip": ("statement", "`drop_glue_order` is false: a destructor-bearing struct is dropped with no `dtor` event, which `GlueBlocks` rejects (`glue_dtorSkipped_rejected`; RUE-2487)"),
@@ -709,16 +712,10 @@ RULINGS = {
     "discard-monitor-off": ("statement", "`Sharp.discard` and `Sharp.discard_loop` are false: an unchecked discard is no longer refused (RUE-2485); the build stops first at `eval_succ`, which restates `eval`"),
     "copy-monitor-off": ("statement", "`Sharp.copy` is false: an owned value under a `Copy` one is no longer refused (RUE-2485); the build stops first at `Cons.intro`, a ledger step for `introVal`"),
     "dyn-residual-declared": ("statement", "`Sharp.leak` and `Sharp.overwrite` are false: a declared-linear struct with no linear field owes nothing, so its leak and its overwrite are no longer refused (RUE-2485)"),
-    # RUE-2490: over the statement vocabulary and Float, from the --only run at trunk 1b58cdc26.
-    # RUE-2500 re-read six of them by hand (the six survivors), each now killed by a new Sharp
-    # statement; the kill is a hand-checked refutation, since the tool cannot build the Spec
-    # layer under these mutants (RUE-2499).
-    # Corrected by RUE-2490's review (rue-2490-review.md): the proofs-off pass sorries
-    # Sharp/Nonvacuous/Spine/both Glue.lean (layer 3), so no automated pass ever checks
-    # them for these mutants; the readings below are by hand, against the repro files in
-    # scratch/rue-2490-review/. A weakened definition in a hypothesis or under `¬` (every
-    # Sharp `¬ EvalOk`/`¬ Exact`/`¬ Blocks`/`¬ SafeAt`) can make a statement false even
-    # though it is a weakening; a weakened definition in a conclusion only, never.
+    # RUE-2490: over the statement vocabulary and Float. First read by hand (RUE-2490 and its
+    # review, RUE-2500, against kernel-checked refutations in the loop's scratch/rue-2490-review/
+    # and scratch/rue-2500/); since RUE-2499 the spec pass reads the Spec layer under each of
+    # them, and its unproved candidates agree with every one of those refutations.
     "hasty-int-any-value": ("statement", "`Sharp.out_of_range_halt` is false (RUE-2500): its `¬ HasTy` of `2^63` at `i64`, and its `¬ SafeAt` of the configuration halted with it, rest on `HasTy.int`'s bounds, which the mutant drops (kernel-checked refutation, scratch/rue-2500/hasty-int-any-value-T.lean). Before RUE-2500 no Spec statement was false: `HasTy` occurred only in conclusions and in `¬` claims about stuck or valueless runs; `HasTy.contentsTy` is also a false helper"),
     "hasty-float-any-value": ("statement", "`Sharp.float_halt` is false (RUE-2500): the configurations halted with `30 · 2^-2` and `1 · 2^-1075` are now `SafeAt` `f64`, since `HasTy.float` no longer asks `Wf` (scratch/rue-2500/hasty-float-any-value-T.lean); `HasTy.contentsTy` is also a false helper"),
     "evalok-stuck-ok": ("statement", "`Sharp.stuck`, `.typed` and `.frame` are false: each asserts `¬ EvalOk … (.stuck _)`, now `¬ True`. `Spec.soundness_stmt` is only weakened by this mutant, not false, so that is not the kill"),
@@ -726,7 +723,7 @@ RULINGS = {
     "exact-at-most": ("statement", "`Sharp.pending_program`, `.pending_expr` and `.no_lead` are false: each `¬ Exact` rested on a strict `<` that the weakened `≤` now satisfies; `Sharp.store_cc` stays true, since its `¬ Exact` rests on `StoreCC` instead"),
     "blocks-any-trace": ("statement", "`Sharp.bare_dtor`, `.unreached` and `.unreached_panic` are false via `Blocks.not_dtor`; `Sharp.leak`, `.overwrite`, `.discard`, `.discard_loop` and `.copy` never mention `Blocks` and stay true"),
     "lifo-vacuous": ("statement", "`Sharp.uncut_drop` is false (RUE-2500): its `¬ Lifo [0, 1] [0] [0]` (a pop that cut cell 1 and dropped cell 0) is now `¬ True`, and so is its refutation of `drop_order`'s last half, where `NewestFirst` and the stack's order hold (scratch/rue-2500/lifo-vacuous-T.lean). `Sharp.unordered` and `.not_a_step` stay true through other conjuncts"),
-    "newestfirst-vacuous": ("helper", "no Spec statement is false (the same two Sharp conjuncts as `lifo-vacuous` stay true); killed instead by `Witnesses.lean`'s `unorderedRecord_rejected`, a layer-4 witness, not a stated property"),
+    "newestfirst-vacuous": ("helper", "no Spec statement is false: `Sharp.unordered` and `.not_a_step` stay true through other conjuncts, and `Sharp.uncut_drop` through its `¬ Lifo` (`stays`); killed instead by `Witnesses.lean`'s `unorderedRecord_rejected`, a layer-4 witness, not a stated property", {"Sharp.uncut_drop": "true for the mutant: its proof's only error is the conjunct `NewestFirst [0]`, now `True`; its `¬ ∃` still fails at `¬ Lifo [0, 1] [0] [0]`, which the mutant leaves alone"}),
     "ordered-vacuous": ("helper", "`Config.Ordered` occurs in no Spec, Sharp, Nonvacuous or Glue statement; killed by the same witness, `unorderedRecord_rejected`, not a stated property"),
     "safeat-progress-vacuous": ("statement", "`Sharp.unreachable_stuck` and `.stuck_step` are false: dropping the progress conjunct lets `¬ SafeAt` of a stuck configuration hold vacuously on typing alone, and the stuck program's reachable-value claim is refuted by `Step.det`"),
     "safeat-typing-vacuous": ("statement", "`Sharp.ill_typed_halt` is false (RUE-2500): the configuration halted with `true` is terminal, so with the typing conjunct gone it is `SafeAt` `i64` (scratch/rue-2500/safeat-typing-vacuous-T.lean); `Sharp.out_of_range_halt` and `.float_halt` are false too. `unreachable_stuck` and `.stuck_step` rest on the progress conjunct and stay true"),
@@ -1034,9 +1031,15 @@ def theorem_at(an, f, t, line):
     """The theorem (its name) of the spec pass's text `t` of `f` whose declaration contains
     `line`, or None."""
     names = iter(an.theorems.get(f, []))
+    mask = comment_mask(t)
+    starts = [0] + [i + 1 for i, ch in enumerate(t) if ch == "\n"]
+    at = starts[line - 1] if line - 1 < len(starts) else len(t)
     for mm, b, e in decl_spans(t, witnesses=True):
         n = next(names) if mm.group(1) is not None else None
-        if line_of(t, mm.start()) <= line <= line_of(t, e - 1):
+        s = mm.start()
+        # Lean places a declaration's error at its doc-comment when it has one.
+        if at <= s and all(mask[i] or t[i].isspace() for i in range(at, s)) or \
+                line_of(t, s) <= line <= line_of(t, e - 1):
             return n or "example"
     return None
 
@@ -1598,9 +1601,10 @@ READING = {"statement": "a stated property is false", "helper": "only a helper i
 def stmt_list(names, cands, n=3):
     """Statement names for a cell: the spine, witness and sharpness statements first, each with
     its falsifying positions, then a count of the rest and of the `Glue` theorems."""
-    main = [s for s in names if ".Glue." not in s]
+    main = sorted((s for s in names if ".Glue." not in s),
+                  key=lambda s: (s.startswith(("Sharp.", "Nonvacuous.")), s))
     glue = len(names) - len(main)
-    out = ", ".join(f"`{s}` ({'/'.join(cands.get(s, []))})" for s in main[:n])
+    out = ", ".join(f"`{s}` ({', '.join(cands.get(s, []))})" for s in main[:n])
     more = []
     if len(main) > n:
         more.append(f"{len(main) - n} more")
@@ -1774,7 +1778,7 @@ def print_table(results):
             continue
         u = r.get("spec", {}).get("unproved", {})
         cs = sorted(r.get("candidates", {}).items(), key=lambda kv: (".Glue." in kv[0], kv[0]))
-        main = [f"{'**' if s in u else ''}`{s}`{'**' if s in u else ''} ({'/'.join(p)})" for s, p in cs if ".Glue." not in s]
+        main = [f"{'**' if s in u else ''}`{s}`{'**' if s in u else ''} ({', '.join(p)})" for s, p in cs if ".Glue." not in s]
         glue = [s for s, _ in cs if ".Glue." in s]
         gl = f"; {len(glue)} Glue ({sum(1 for s in glue if s in u)} unproved)" if glue else ""
         print(f"| {i} | `{k}` | {DIRECTION[k]} | {', '.join(main) or 'none'}{gl} |")
