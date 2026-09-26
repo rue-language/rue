@@ -29710,7 +29710,8 @@ def RueCore.Retire.LivePost (H : Store) (φ : Frame) : EvalRes → Prop :=
 *def* · module `RueCore.Spec.Safety`
 
 **Fuel monotonicity** (§6 as `eval` runs it; `03-metatheory.md` "Fuel").
-An answer other than `outOfFuel` is the answer at every larger fuel.
+An answer other than `outOfFuel` is the answer at every larger fuel: the clock
+lemma of functional big-step semantics (Owens et al.; `FIELD.md`, section 3).
 
 ```lean
 def RueCore.Spec.fuel_mono_stmt : Prop :=
@@ -29726,7 +29727,8 @@ def RueCore.Spec.fuel_mono_stmt : Prop :=
 *def* · module `RueCore.Spec.Safety`
 
 **No masking** (§6 as `eval` runs it; `03-metatheory.md` "Fuel"). A
-refusal at one fuel is the answer at every fuel that answers.
+refusal at one fuel is the answer at every fuel that answers; a corollary of
+`fuel_mono`, in either order of the two fuels.
 
 ```lean
 def RueCore.Spec.no_masking_stmt : Prop :=
@@ -32695,7 +32697,8 @@ def RueCore.Spec.Config.stuck_iff_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Step`
 
-**Steps, terminal, or stuck** (§6), a stuck one named by a `Violation`.
+**Steps, terminal, or stuck** (§6), a stuck one named by a `Violation`:
+some `C → C'`, or `C` is `✓` or `↯κ`, or `step` refuses `C`.
 
 ```lean
 def RueCore.Spec.Config.trichotomy_stmt : Prop :=
@@ -32707,7 +32710,9 @@ def RueCore.Spec.Config.trichotomy_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Step`
 
-**Determinism** (§6): at most one step.
+**Determinacy** (§6): at most one step, `C → C₁` and `C → C₂` give
+`C₁ = C₂` (PFPL's Lemma 5.3, with equality for `=α`: bindings are de Bruijn
+indices).
 
 ```lean
 def RueCore.Spec.Step.det_stmt : Prop :=
@@ -32719,7 +32724,8 @@ def RueCore.Spec.Step.det_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Step`
 
-**Terminal is final** (§6.12): `✓` and `↯κ` take no step.
+**Terminal is final** (§6.12): `✓` and `↯κ` take no step (finality, PFPL's
+Lemma 5.2, with a trap final as a checked error is).
 
 ```lean
 def RueCore.Spec.Step.terminal_stmt : Prop :=
@@ -32731,7 +32737,8 @@ def RueCore.Spec.Step.terminal_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Step`
 
-**`step` computes `Step`** (§6).
+**`step` computes `Step`** (§6): `C → C'` exactly when the step function
+answers `C'`.
 
 ```lean
 def RueCore.Spec.step_iff_stmt : Prop :=
@@ -36004,7 +36011,8 @@ def RueCore.Spec.drop_order_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Adequacy`
 
-**`eval` is complete for `Step`, modulo fuel** (§7's adequacy sentence).
+**`eval` is complete for `Step`, modulo fuel**, the small-step-to-interpreter
+direction of the semantic equivalence (§7's adequacy sentence).
 For a checked program, a value or panic `→*` reaches is `run`'s answer at
 every large enough fuel.
 
@@ -36045,7 +36053,8 @@ def RueCore.Spec.eval_diverges_iff_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Adequacy`
 
-**`eval` is sound for `Step`** (§7's adequacy sentence; ADR-0097). For a
+**`eval` is sound for `Step`**, the interpreter-to-small-step direction of
+the semantic equivalence (§7's adequacy sentence; ADR-0097). For a
 checked program, `run` is never stuck, and its values and panics are reached
 by `→*` from `Config.init` with the same store and trace.
 
@@ -36247,11 +36256,14 @@ def RueCore.Spec.step_no_double_free_stmt : Prop :=
 
 **The invariant `SafeAt` along every run** (§7 "Type safety"; *not* its
 sentence "types are preserved under reduction"). For a checked program, every
-configuration reachable from `Config.init` is `SafeAt` the entry type: nothing
-reachable from it is stuck, and every value it halts with has that type.
-`SafeAt` is closed under `Steps` by definition, so this is `SafeAt` at
+`C` with `Config.init →* C` is `SafeAt` the entry type: nothing reachable from
+it is stuck, and every value it halts with has that type.
+`SafeAt` is closed under `→*` by definition, so this is `SafeAt` at
 `Config.init` (R4 of `REDTEAM-LOG.md`), a semantic invariant; no
-configuration typing `⊢ C : T` is defined or preserved (RUE-2423).
+configuration typing `⊢ C : T` is defined or preserved (RUE-2423). In the
+field's terms it is not preservation (subject reduction, PFPL's Thm 6.2) but
+the conclusion of Timany et al.'s Cor. 2.3, `safe`, with typed halting values
+(`FIELD.md`, section 2); the name is §7's, and RUE-2423 decides whether it stays.
 
 ```lean
 def RueCore.Spec.step_preservation_stmt : Prop :=
@@ -36269,8 +36281,10 @@ def RueCore.Spec.step_preservation_stmt : Prop :=
 *def* · module `RueCore.Spec.Step`
 
 **Progress over `Step`** (§7 "Type safety": "does not get stuck"). For a
-checked program, every configuration reachable from `Config.init` is
-terminal or steps.
+checked program, every `C` with `Config.init →* C` is terminal or has a step
+`C → C'`. This is not the one-step progress lemma over a typed configuration
+(no configuration typing is defined, RUE-2423) but its consequence along every
+run, Timany et al.'s `safe` of the initial configuration (`FIELD.md`, section 2).
 
 ```lean
 def RueCore.Spec.step_progress_stmt : Prop :=
@@ -36286,8 +36300,10 @@ def RueCore.Spec.step_progress_stmt : Prop :=
 *def* · module `RueCore.Spec.Step`
 
 **Type safety over `Step`, per horizon** (§7 "Type safety"; §6.12). For a
-checked program and every `n`, the machine has run `n` steps, or halted with a
-well-typed value, or halted with a defined panic.
+checked program and every `n`, `Config.init →ⁿ D` for some `D`, or
+`Config.init →* ✓` with a value of the entry type, or `Config.init →* ↯κ`:
+Wright & Felleisen's form (diverge, or a typed value), per horizon and with a
+trap as a third outcome (`FIELD.md`, section 2), rather than progress ∧ preservation.
 
 ```lean
 def RueCore.Spec.step_type_safety_stmt : Prop :=
@@ -37796,7 +37812,8 @@ def RueCore.Spec.Sharp.typed_stmt : Prop :=
 *def* · module `RueCore.Spec.Checker`
 
 **The checker is sound** (§5 as an algorithm). Every `check` acceptance is
-a derivation of `Typed`, at every type the result fits.
+a derivation of `Typed`, at every type the result fits: algorithmic soundness
+in Walker's sense (`FIELD.md`, section 4), and not completeness, which does not hold.
 
 ```lean
 def RueCore.Spec.check_sound_stmt : Prop :=
