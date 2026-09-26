@@ -61,7 +61,10 @@ When all three stages missed a mutant, we also ran the full bridge harness
 on the same 1,371 cases. The harness adds the reference interpreter
 (`rue-oracle`), native code at O1, O2 and O3, and a trap-kind comparison. The
 `array_elem_self_assign` seed (RUE-2346) disagrees on unmutated trunk too, so
-we set it aside everywhere.
+we set it aside everywhere. RUE-2480's re-verification of the generated
+corpus found two more unmutated disagreements at the standard settings,
+`gen_7_3` and `gen_23_343` ("Observable destructors" below); both are set
+aside the same way in that section's reruns.
 
 **Checking the mutants themselves.** A mutant that changes no behaviour
 (an *equivalent* mutant) would count as a miss that means nothing. So we ran
@@ -383,6 +386,88 @@ miss is different: it is a sema-acceptance mutant, caught by no existing
 seed and by nothing that prints a destructor; the new seed catches it
 through the verdict (the compiler accepts what the checker rejects), and
 the generator missed it for its shape, not because drops are invisible.
+RUE-2480 (below, "Observable destructors") fixes the generator so this is no
+longer true — every generated destructor now prints — and rechecks all four
+of these mutants against the fixed generator.
+
+## Observable destructors (RUE-2480)
+
+The measurement above found the cause: `Print.structItem` prints a
+destructor's `@dbg` only when the declaration's first field is an `int`, and
+`genDecl` drew that field like any other, so only some destructor-bearing
+declarations happened to have one. `genDecl` (`Gen.lean`) now draws
+`drawnDtor` *before* the fields and forces field 0 to a plain `int` whenever
+a destructor is coming — never one of `fieldTy`'s array wraps, a struct or an
+enum — which can only ever pull the field join away from `Linear`, never
+toward it (`3.9:44`'s condition is unaffected). Reordering the draw changes
+every case at every seed from that point on, so this also regenerates the
+corpus (README.md's "Generated programs" section has the case-identity
+fallout).
+
+**Share of accepted generated programs that drop anything and print a
+destructor line**, before and after, measured the same way as above (a
+one-off tool over `Explain`'s trace, not committed):
+
+| Setting | Before | After |
+|---|---:|---:|
+| Seeds (193 cases) | 74 of 74 (100%) | 74 of 74 (100%) |
+| `--gen 200 --seed 7` | 13 of 26 (50%) | 16 of 16 (100%) |
+| `--gen 1000 --seed 23` | 48 of 127 (37%) | 114 of 114 (100%) |
+
+The seeds were already fully observable (hand-written to have an `int` first
+field); only the generator was blind, and now is not.
+
+**Rechecking the three mutants this was filed for, plus `h2335b`**, with
+`drill.sh` against the regenerated corpus. The first pass wrongly credited
+the fix with catching all four at `gen_7_3` — the program that turned out to
+be `array_elem_self_assign`'s shape, disagreeing on the *unmutated* compiler
+too (below); once `gen_7_3` (and `gen_23_343`, the other unmutated
+disagreement this turned up) are set aside, one real catch remains:
+
+| Mutant | Before (this page) | After RUE-2480 | Programs to detection |
+|---|---|---|---:|
+| `c-skip-overwrite-drop` | seeds only (`affine_overwrite`, 4 seeds); generator 0 of 1,200 | seeds unchanged; **generator catches it**, `gen_23_689` | 890 |
+| `c-reverse-scope-drops` | seeds only (`enum_two_payload_bindings`, 1 seed); generator 0 of 1,200 | unchanged: seeds only, generator 0 of 1,200 | — |
+| `h2335` (root half) | seeds only (`destructure_root_through_moved_part`, 1 seed); generator 0 of 1,200 | unchanged: seeds only, generator 0 of 1,200 | — |
+| `h2335b` | seeds only (`destructure_ancestor_dropped`, 1 seed); generator 0 of 1,200 | unchanged: seeds only, generator 0 of 1,200 | — |
+
+Observability was necessary but not sufficient for three of the four.
+`c-reverse-scope-drops` needs two destructor-bearing locals ending the *same*
+inner block (a follow-up below); a quick check of the fixed generator's own
+traces (`--gen 1000 --seed 23`) finds 20 programs with a pair of consecutive
+`.dtor` events at all, and of those pairs 28 of 50 already print two
+*different* lines (so a swap would be visible) — the miss looks like the
+draw not reaching this mutant's exact shape (a block's own scope-exit order,
+not an enum arm's or a struct's field-drop order) within 1,200 programs,
+rather than a values-collide problem. `h2335` and `h2335b` are unaffected by
+observability at all, matching the original follow-up: they need three
+declared-linear levels, a different generator capability.
+
+**Two new unmutated disagreements**, found while confirming the regenerated
+corpus still agrees with the compiler (methodology, above) — reported here,
+not fixed:
+
+* `gen_7_3` (`--gen 200 --seed 7`, program 4): the checker rejects it; the
+  unmutated compiler accepts and runs it (exit 0). Its source builds
+  `[[S0; 3]; 2]` (an array of arrays of a destructor-bearing struct) and then
+  writes `v0[0] = v0[0]` — the same shape as the `array_elem_self_assign`
+  seed (RUE-2346, RUE-228: the model refuses the write into the
+  self-move-holed array, `3.8:72`/E0480, and the compiler accepts on
+  purpose). Not a new bug: README.md's "Generated programs" section already
+  documents this shape reaching these settings, masked by an unrelated E0406
+  until now; RUE-2480's reordered draw is what unmasks it here.
+* `gen_23_343` (`--gen 1000 --seed 23`, program 344): both accept it, and the
+  compiler reports an internal error — `E9000`, CFG verification: "reads
+  already-consumed owner root `Local { slot: 0, ... }`" — where the model
+  runs it to `6, 1`. Its source moves a destructor-bearing `S2` into a `let
+  mut v0`, loops with a conditionally-taken `@drop(v0); break` on one arm,
+  and then writes `v0.x1 = v0.x1` (a struct **field** self-assignment, not
+  RUE-2346's array-element one) on the arm that does not drop. A genuinely
+  new finding, different in shape (field, not element) and in symptom (an
+  ICE, not an unsound accept) from RUE-2346.
+
+Both are set aside next to `array_elem_self_assign` when reproducing this
+section's drills (below).
 
 ## Follow-ups
 
@@ -395,8 +480,9 @@ blind spot, get a generator or tooling proposal too.
 | `h2380` | `loop_move_out_then_reinit`: a counted loop that moves `mut b` into `t` and reinitializes `b`. The mutant ICEs at `-O2`; the harness's O2/O3 compile lanes, and the per-case test at `-O2`, catch it | seed, added here |
 | `c-bounds-off-by-one` (no seed caught it) | `array_bounds_trap_at_len`: reads at `len - 1` and then at `len`. The other bounds seeds index further past the end, or into a zero-length array, which does not go through the length compare | seed, added here |
 | `h2442` | named constants and comptime parameters are outside the fragment | scope note |
-| `c-skip-overwrite-drop`, `c-reverse-scope-drops` (generator 0 of 1,200) | make generated destructors observable: give every destructor-bearing struct an integer `x0`, or print a per-declaration tag | generator issue |
-| `h2335`, `h2335b` (generator 0 of 1,200) | generate three declared-linear levels | generator issue |
+| `c-skip-overwrite-drop`, `c-reverse-scope-drops` (generator 0 of 1,200) | done (RUE-2480, above): every generated destructor-bearing struct gets an integer `x0`. Caught `c-skip-overwrite-drop` (`gen_23_689`); `c-reverse-scope-drops` still needs its own shape (below) | generator issue, partly done |
+| `c-reverse-scope-drops` (still generator 0 of 1,200 after RUE-2480) | generate two destructor-bearing locals ending the same inner block | generator issue |
+| `h2335`, `h2335b` (generator 0 of 1,200; unaffected by RUE-2480) | generate three declared-linear levels | generator issue |
 | `h2318` (own seed only) | draw boundary literals (`MIN`, `MAX`, `±1`, powers of two) as arithmetic operands | generator issue |
 | (Call) §5.8 and the call-boundary drop paths (no generated case) | generate multi-function programs: by-value parameters, including destructor-bearing ones, and calls in operand position | generator issue |
 | `c-overflow-kind` (the per-case test is blind to it) and `h2380` (default level only) | the loop's per-case check should also compare the trap kind (stderr's panic message) and compile at `-O2` as well as the default level, or the lane should run `scripts/rue lean-bridge`, which does both | tooling issue |

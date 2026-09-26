@@ -374,10 +374,11 @@ the weights can be read and changed:
   `if`, which is how join disagreements arise;
 * `let` binders are mostly structs and mostly `mut`, so linear values
   reach scope exit and assignments have targets;
-* about half of the declarations not declared `linear` carry a destructor, so
-  a drop is as often observable as not, and a declaration whose fields join to
-  `Linear` is `Linear` whatever its attribute says (§3), which is how the
-  linear-through-a-field shapes arise;
+* about half of the declarations not declared `linear` carry a destructor,
+  and every one prints its drop (`genDecl`'s forced slot-0 `int`, RUE-2480),
+  so a drop of that declaration's type is observable wherever it happens; a
+  declaration whose fields join to `Linear` is `Linear` whatever its
+  attribute says (§3), which is how the linear-through-a-field shapes arise;
 * about two declarations in seven are declared `linear`, which puts one in
   126 of the programs at `--gen 200 --seed 7` and 579 of 1,000 at
   `--gen 1000 --seed 23`, and a path through one is §4.2's declared-linear
@@ -697,11 +698,21 @@ def fieldTy (s nEnums : Nat) : G Ty := do
   let T ← fieldTyBase s nEnums
   if ← chance 1 5 then arrayOf T else return T
 
-/-- (helper) One struct declaration, well-formed by construction. -/
+/-- (helper) One struct declaration, well-formed by construction. `drawnDtor`
+is drawn before the fields so that a declaration heading for a destructor can
+have its slot-0 field forced to a plain `int` (RUE-2480): `structItem`
+(`Print.lean`) only prints a destructor's `@dbg` when the first field is an
+`int`, so a destructor over anything else — a `bool`, a `unit`, an aggregate,
+or an `int` `fieldTy` happened to wrap in an array — drops silently, invisible
+to the bridge. Forcing the slot never changes whether the destructor ends up
+legal: `3.9:44`'s condition below is the join over every field, and an `int`
+is always `Copy`, so it can only ever pull `base` away from `Linear`, never
+toward it. -/
 def genDecl (D : Decls) (s nEnums : Nat) : G StructDecl := do
-  let k ← nat 1 3
-  let fields ← (List.range k).mapM (fun _ => fieldTy s nEnums)
   let drawnDtor ← chance 1 2
+  let k ← nat 1 3
+  let fields ← (List.range k).mapM (fun j =>
+    if j = 0 && drawnDtor then intTy else fieldTy s nEnums)
   let drawn ← weighted Attr.none [(4, Attr.none), (1, Attr.copy), (2, Attr.linear)]
   let base := fieldJoin D fields
   -- `3.9:44` (E0462): a destructor is only legal when no field carries a
