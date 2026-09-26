@@ -210,7 +210,14 @@ def moduleOf (env : Environment) (n : Name) : String :=
 
 /-- The constants a constant's meaning depends on: its type, a definition's body, an
 inductive's constructors. A theorem's proof is left out: by proof irrelevance, changing a
-proof never changes what a definition means. -/
+proof never changes what a definition means.
+
+Two gaps, neither reachable from L0 or L1 today (they use no `Classical`, and no mutant
+targets a structure): a definition built from `Classical.choose h` for a theorem `h` depends
+on `h`'s *statement*, which this leaves out with the proof; and `Expr.getUsedConstants` does
+not report the structure an `Expr.proj` projects from. A mutant that reaches a definition
+only through either would leave that definition untainted, and so let the spec pass trust a
+theorem that mentions it. -/
 def deps (ci : ConstantInfo) : Array Name :=
   match ci with
   | .defnInfo d => (d.type.getUsedConstants ++ d.value.getUsedConstants)

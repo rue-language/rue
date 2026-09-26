@@ -634,18 +634,18 @@ DIRECTION = {
 RULINGS = {
     "use-move-partial": ("statement", "moves a partially moved aggregate whole; the machine meets the hole (seed `partial_then_whole`): `soundness`, `check_sound`"),
     "use-copy-moved": ("equivalent", "a `Copy` place is never `MovedOut` in a reachable state: a `Copy` `@drop` moves nothing and a `Copy` value is never a hole"),
-    "use-move-dtor": ("holds", "E0456 is a static discipline with no dynamic counterpart: the machine runs the program (`partial_under_dtor`), so no stated property is false", {"check_sound": "the rule and the checker drop the same premise, so every acceptance is still a derivation"}),
-    "use-move-rootidx": ("holds", "a static discipline (`3.8:68`): the machine moves the element out and drops the rest path by path, without a refusal", {"check_sound": "the rule and the checker drop the same premise, so every acceptance is still a derivation"}),
+    "use-move-dtor": ("holds", "E0456 is a static discipline with no dynamic counterpart: the machine runs the program (`partial_under_dtor`), so no stated property is false", {"check_sound": "true for the mutant: the rule and the checker drop the same premise, so every acceptance is still a derivation"}),
+    "use-move-rootidx": ("holds", "a static discipline (`3.8:68`): the machine moves the element out and drops the rest path by path, without a refusal", {"check_sound": "true for the mutant: the rule and the checker drop the same premise, so every acceptance is still a derivation"}),
     "use-affine-as-copy": ("statement", "an affine use leaves the place `Owned`, so a second use is accepted and the machine meets a hole (`use_after_move`): `soundness`"),
     "use-declared-residue": ("statement", "accepts a destructure that strands a linear sibling; the machine refuses with `linearLeak` (`destructure_linear_residue`): `soundness`"),
     "index-read-copy": ("statement", "accepts a dynamic-index read of a non-Copy element, which the machine refuses (`typeConfusion`): `soundness`"),
     "index-drop-copy-checker": ("statement", "the checker accepts `@drop(a[i])` of a non-Copy element, which no `Typed` rule derives: `check_sound`"),
     "const-index-off-by-one": ("statement", "a constant index equal to the length types, and the machine's read fails (`typeConfusion`): `soundness`"),
     "assign-overwrite": ("statement", "accepts overwriting a live linear place; the machine refuses with `linearOverwrite` (`linear_overwrite`): `soundness`"),
-    "assign-array-ok": ("holds", "`soundness` does not use the premise (`assignArrayOk`'s doc-comment): the write it refuses runs without a refusal", {"check_sound": "the rule and the checker drop the same premise, so every acceptance is still a derivation"}),
+    "assign-array-ok": ("holds", "`soundness` does not use the premise (`assignArrayOk`'s doc-comment): the write it refuses runs without a refusal", {"check_sound": "true for the mutant: the rule and the checker drop the same premise, so every acceptance is still a derivation"}),
     "assign-immutable": ("holds", "mutability is not a safety property: the machine performs the write"),
     "index-write-linear": ("statement", "accepts writing a linear element through a dynamic index; the machine refuses with `linearOverwrite`: `soundness`"),
-    "drop-residual-below": ("holds", "E0406's residual side condition has no dynamic counterpart (`linear_field_stranded` runs): no stated property is false", {"check_sound": "the rule and the checker drop the same premise, so every acceptance is still a derivation"}),
+    "drop-residual-below": ("holds", "E0406's residual side condition has no dynamic counterpart (`linear_field_stranded` runs): no stated property is false", {"check_sound": "true for the mutant: the rule and the checker drop the same premise, so every acceptance is still a derivation"}),
     "drop-moved": ("statement", "accepts `@drop` of a moved-out place; the machine meets the hole (`use_after_move`): `soundness`"),
     "seq-discard": ("statement", "accepts discarding a linear value; the machine refuses with `linearDiscard` (`linear_temporary_discarded`): `soundness`"),
     "join-owned-wins": ("statement", "the join keeps `Owned` where one arm moved, so a later use is accepted and meets the hole (`loop_moved_prev_iteration`): `soundness`"),
@@ -1305,6 +1305,22 @@ def uncovered(k, r):
             if s not in st and not all(f in st for f in fs)]
 
 
+def stays_warnings(results):
+    """The `stays` reasons keyed by a proof that failed under that mutant and not stated as
+    "true for the mutant: …": such a reason vouches for every statement resting on the failed
+    proof (the lemma itself may be false, as `cast-kind`'s is), which `--check` cannot verify.
+    Warnings, not errors."""
+    out = []
+    for k, r in results.items():
+        failed = {short(n) for n in r.get("spec", {}).get("failed", [])}
+        for key, why in stays_of(k).items():
+            if key in failed and not why.startswith("true for the mutant"):
+                n = sum(1 for fs in r["spec"].get("unproved", {}).values() if key in fs)
+                out.append(f"{k}: `stays` reason for `{key}`, a proof that fails under the mutant, "
+                           f"must cover every statement resting on it ({n} unproved candidates)")
+    return out
+
+
 def coverage_errors(results):
     return [f"{k}: the {RULINGS[k][0]!r} reading does not say why the unproved candidate "
             f"`{s}` holds (RULINGS' third element: a reason for it, or for each of "
@@ -1434,6 +1450,8 @@ def main():
             resf = os.path.join(os.path.abspath(a.work), "results.json")
             results = json.load(open(resf)) if os.path.exists(resf) else {}
         errs = check(src, results)
+        for w in stays_warnings(results or {}):
+            print("mutate.py --check: warning: " + w)
         for e in errs:
             print("mutate.py --check: " + e)
         if errs:
@@ -1598,11 +1616,12 @@ READING = {"statement": "a stated property is false", "helper": "only a helper i
            "holds": "every statement holds", "equivalent": "equivalent"}
 
 
-def stmt_list(names, cands, n=3):
-    """Statement names for a cell: the spine, witness and sharpness statements first, each with
-    its falsifying positions, then a count of the rest and of the `Glue` theorems."""
+def stmt_list(names, cands, n=3, first=()):
+    """Statement names for a cell: those in `first` (the ones the reading names), then the
+    spine, witness and sharpness statements, each with its falsifying positions, then a count
+    of the rest and of the `Glue` theorems."""
     main = sorted((s for s in names if ".Glue." not in s),
-                  key=lambda s: (s.startswith(("Sharp.", "Nonvacuous.")), s))
+                  key=lambda s: (s not in first, s.startswith(("Sharp.", "Nonvacuous.")), s))
     glue = len(names) - len(main)
     out = ", ".join(f"`{s}` ({', '.join(cands.get(s, []))})" for s in main[:n])
     more = []
@@ -1666,7 +1685,9 @@ def cell(v):
 
 def first_cell(r):
     if first_kill(r) == "spec":
-        return "spec: " + stmt_list(list(r["spec"]["unproved"]), r.get("candidates", {}))
+        why = RULINGS.get(r["id"], ("", ""))[1]
+        named = set(re.findall(r"`([\w.]+)`", why))
+        return "spec: " + stmt_list(list(r["spec"]["unproved"]), r.get("candidates", {}), first=named)
     return cell(r)
 
 
