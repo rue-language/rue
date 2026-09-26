@@ -12,6 +12,7 @@ import RueCore.Statics.Lemmas
 import RueCore.Dynamics.Lemmas
 import RueCore.Step.Lemmas
 import RueCore.Spec
+import RueCore.Nonvacuous
 import RueCore.Spine
 import RueCore.Soundness
 import RueCore.Trace
