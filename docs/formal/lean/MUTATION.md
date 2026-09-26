@@ -66,7 +66,7 @@ modules — **and, since RUE-2490, the statement vocabulary itself**: L0's
 
 For the first five modules, mutating the rule and asking what a proof
 notices is the point: the statements (`SPINE.md`) are fixed and taken as
-written, so a wrong rule is a wrong semantics, caught (or not) by
+written, so a wrong rule is a wrong semantics, killed (or not) by
 `soundness`, `check_sound` and the rest. For the last four, mutating the
 definitions the statements are written in is a different exercise
 (RUE-2465's original scope card this page as "Not mutated," reasoning that
@@ -386,7 +386,7 @@ work directory is not rerun here (`--before` recomputes the column from one).
     `Typed` is not executable, and the checker is unchanged.
   - `step-usecopy-nondet` changes `Step` only, and only `Step.det` sees it,
     because the corpus runs `eval`.
-  - `entry-params` is caught only by `checkProgram_sound`. The printed corpus
+  - `entry-params` is killed only by `checkProgram_sound`. The printed corpus
     frames `main` itself, so a seed cannot express the shape.
   - `seq-droptemp-skip` removes a drop mark, which no output line shows.
     `rest_exactly_once`'s `Exact` sees it, and so does the Explain mirror,
@@ -460,7 +460,7 @@ work directory is not rerun here (`--before` recomputes the column from one).
   `zero-array-linear`, `repeat-count`, `binop-eval-order` and
   `decl-cycle-rounds`. With the proofs off, the bridge is the first test to
   kill `decl-cycle-rounds`: 17 generated cases nest declarations deeper than
-  the peel's shortened round count, and no seed does.
+  the topological sort's shortened round count, and no seed does.
 * **20 mutants got past the seeds and the bridge together**, after the six
   RUE-2465 seeds and before RUE-2486. They fell into three groups, and
   RUE-2486 seeds all of the third group, leaving **7**:
@@ -836,7 +836,7 @@ misread now but because of what made them hard to see:
   the spec pass now.
 
 `safeat-terminal-only` and `stepsn-one-step-only` (the two strengthening
-controls) are caught immediately by a false Spec statement
+controls) are killed immediately by a false Spec statement
 (`step_preservation`; `eval_diverges_iff` and `Sharp.discard_loop`), exactly
 as a strengthening is expected to work — but they exercise only the trivial
 direction. `SafeAt` and `StepsN` occur positively in a conclusion, so any
