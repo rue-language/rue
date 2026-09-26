@@ -168,6 +168,19 @@ def rest_exactly_once_stmt : Prop :=
                             Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧
                               Settled φ H₁ r
 
+/-- The statement `whole_program_exactly_once` proves. -/
+def whole_program_exactly_once_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      P.pendingSafe = true →
+        ∀ {C : Config},
+          Steps M.toFloatOps P Config.init C →
+            ∀ {a : Nat},
+              a ∈ Config.held P.decls C →
+                ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+                  Steps M.toFloatOps P C (Config.run H φ [] (Focus.ret v) tr) →
+                    List.count a (Val.own P.decls v) + List.count a (freedIds P.decls tr) = 1
+
 /-- The statement `drop_order` proves. -/
 def drop_order_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
@@ -747,6 +760,68 @@ def Nonvacuous.diverges_drop_stmt : Prop :=
                 ∃ (C : Config),
                   Steps Float.exactOps P Config.init C ∧
                     dtorIds C.trace = [0, 2] ∧ 2 ≤ (freedIds P.decls C.trace).length
+
+/-- The statement `Nonvacuous.whole_drops` proves. -/
+def Nonvacuous.whole_drops_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                        cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns := [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                ∃ (C : Config),
+                  Steps Float.exactOps P Config.init C ∧
+                    0 ∈ Config.held P.decls C ∧
+                      2 ∈ Config.held P.decls C ∧
+                        ∃ (H : Store),
+                          ∃ (v : Val),
+                            ∃ (tr : List Event),
+                              Steps Float.exactOps P C
+                                  (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                                List.count 0 (freedIds P.decls tr) = 1 ∧
+                                  List.count 2 (freedIds P.decls tr) = 1
+
+/-- The statement `Nonvacuous.whole_result` proves. -/
+def Nonvacuous.whole_result_stmt : Prop :=
+  ∀ (P : Program),
+    P =
+        {
+          decls :=
+            {
+              structs :=
+                [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                    cls := Mult.affine },
+                  { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
+                    cls := Mult.linear }],
+              enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+          fns :=
+            [{ params := [], ret := Ty.struct 0,
+                body := Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 7] }] } →
+      checkProgram P = true ∧
+        ProgramTyped P ∧
+          P.pendingSafe = true ∧
+            ∃ (C : Config),
+              Steps Float.exactOps P Config.init C ∧
+                0 ∈ Config.held P.decls C ∧
+                  ∃ (H : Store),
+                    ∃ (v : Val),
+                      ∃ (tr : List Event),
+                        Steps Float.exactOps P C (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          List.count 0 (Val.own P.decls v) = 1 ∧ freedIds P.decls tr = []
 
 /-- The statement `Nonvacuous.stuck` proves. -/
 def Nonvacuous.stuck_stmt : Prop :=
@@ -2156,6 +2231,168 @@ def Sharp.float_halt_stmt : Prop :=
                                     (Val.float FloatWidth.w64 (FloatDatum.num false 1 (-1075))))
                                   [])
 
+/-- The statement `Sharp.copy_leak` proves. -/
+def Sharp.copy_leak_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 1]])
+          (Expr.intLit IntWidth.w64 Sign.signed 0) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.copy, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
+                        cls := Mult.copy },
+                      { attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                        cls := Mult.affine }],
+                  enums := [] },
+              fns := [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          checkProgram P = false ∧
+            ¬ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                ∃ (C : Config),
+                  Steps Float.exactOps P Config.init C ∧
+                    0 ∈ Config.held P.decls C ∧
+                      ∃ (H : Store),
+                        ∃ (v : Val),
+                          ∃ (tr : List Event),
+                            Steps Float.exactOps P C (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                              List.count 0 (Val.own P.decls v) + List.count 0 (freedIds P.decls tr) =
+                                0
+
+/-- The statement `Sharp.pending_leak` proves. -/
+def Sharp.pending_leak_stmt : Prop :=
+  ∀ (P : Program),
+    P =
+        {
+          decls :=
+            {
+              structs :=
+                [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                    cls := Mult.affine },
+                  { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
+                    cls := Mult.linear }],
+              enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+          fns :=
+            [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                body :=
+                  Expr.call 1
+                    [Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 7],
+                      (Expr.intLit IntWidth.w64 Sign.signed 0).ret] },
+              {
+                params :=
+                  [{ ty := Ty.struct 0, mu := false },
+                    { ty := Ty.int IntWidth.w64 Sign.signed, mu := false }],
+                ret := Ty.int IntWidth.w64 Sign.signed,
+                body := (Expr.drop (Place.var 1)).seq (Expr.use (Place.var 0)) }] } →
+      checkProgram P = true ∧
+        ProgramTyped P ∧
+          P.pendingSafe = false ∧
+            ∃ (C : Config),
+              Steps Float.exactOps P Config.init C ∧
+                0 ∈ Config.held P.decls C ∧
+                  ∃ (H : Store),
+                    ∃ (v : Val),
+                      ∃ (tr : List Event),
+                        Steps Float.exactOps P C (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          List.count 0 (Val.own P.decls v) + List.count 0 (freedIds P.decls tr) = 0
+
+/-- The statement `Sharp.unreached_held` proves. -/
+def Sharp.unreached_held_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                        cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns := [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              ¬Steps Float.exactOps P Config.init
+                    (Config.run
+                      [Cell.full (Contents.struct 0 5 [Contents.int IntWidth.w64 Sign.signed 1])]
+                      Frame.empty [] (Focus.ret (Val.int IntWidth.w64 Sign.signed 0)) []) ∧
+                5 ∈
+                    Config.held P.decls
+                      (Config.run
+                        [Cell.full (Contents.struct 0 5 [Contents.int IntWidth.w64 Sign.signed 1])]
+                        Frame.empty [] (Focus.ret (Val.int IntWidth.w64 Sign.signed 0)) []) ∧
+                  List.count 5 (Val.own P.decls (Val.int IntWidth.w64 Sign.signed 0)) +
+                      List.count 5 (freedIds P.decls []) =
+                    0
+
+/-- The statement `Sharp.unheld` proves. -/
+def Sharp.unheld_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                        cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns := [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              ¬1 ∈ Config.held P.decls Config.init ∧
+                ∃ (H : Store),
+                  ∃ (v : Val),
+                    ∃ (tr : List Event),
+                      Steps Float.exactOps P Config.init
+                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        List.count 1 (Val.own P.decls v) + List.count 1 (freedIds P.decls tr) = 0
+
+/-- The statement `Sharp.off_run` proves. -/
+def Sharp.off_run_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                        cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns := [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              ∃ (C : Config),
+                Steps Float.exactOps P Config.init C ∧
+                  0 ∈ Config.held P.decls C ∧
+                    ¬Steps Float.exactOps P C
+                          (Config.run [] Frame.empty []
+                            (Focus.ret (Val.int IntWidth.w64 Sign.signed 3)) []) ∧
+                      List.count 0 (Val.own P.decls (Val.int IntWidth.w64 Sign.signed 3)) +
+                          List.count 0 (freedIds P.decls []) =
+                        0
+
 end RueCore.Spec
 
 namespace RueCore.Spine
@@ -2180,6 +2417,7 @@ theorem freed_once : RueCore.Spec.freed_once_stmt := sorry
 theorem dtor_once : RueCore.Spec.dtor_once_stmt := sorry
 theorem drop_exactly_once : RueCore.Spec.drop_exactly_once_stmt := sorry
 theorem rest_exactly_once : RueCore.Spec.rest_exactly_once_stmt := sorry
+theorem whole_program_exactly_once : RueCore.Spec.whole_program_exactly_once_stmt := sorry
 theorem drop_order : RueCore.Spec.drop_order_stmt := sorry
 theorem drop_glue_order : RueCore.Spec.drop_glue_order_stmt := sorry
 theorem Step.det : RueCore.Spec.Step.det_stmt := sorry
@@ -2213,6 +2451,8 @@ theorem Nonvacuous.panic : RueCore.Spec.Nonvacuous.panic_stmt := sorry
 theorem Nonvacuous.float : RueCore.Spec.Nonvacuous.float_stmt := sorry
 theorem Nonvacuous.diverges : RueCore.Spec.Nonvacuous.diverges_stmt := sorry
 theorem Nonvacuous.diverges_drop : RueCore.Spec.Nonvacuous.diverges_drop_stmt := sorry
+theorem Nonvacuous.whole_drops : RueCore.Spec.Nonvacuous.whole_drops_stmt := sorry
+theorem Nonvacuous.whole_result : RueCore.Spec.Nonvacuous.whole_result_stmt := sorry
 theorem Nonvacuous.stuck : RueCore.Spec.Nonvacuous.stuck_stmt := sorry
 theorem Sharp.stuck : RueCore.Spec.Sharp.stuck_stmt := sorry
 theorem Sharp.stuck_step : RueCore.Spec.Sharp.stuck_step_stmt := sorry
@@ -2247,5 +2487,10 @@ theorem Sharp.uncut_drop : RueCore.Spec.Sharp.uncut_drop_stmt := sorry
 theorem Sharp.ill_typed_halt : RueCore.Spec.Sharp.ill_typed_halt_stmt := sorry
 theorem Sharp.out_of_range_halt : RueCore.Spec.Sharp.out_of_range_halt_stmt := sorry
 theorem Sharp.float_halt : RueCore.Spec.Sharp.float_halt_stmt := sorry
+theorem Sharp.copy_leak : RueCore.Spec.Sharp.copy_leak_stmt := sorry
+theorem Sharp.pending_leak : RueCore.Spec.Sharp.pending_leak_stmt := sorry
+theorem Sharp.unreached_held : RueCore.Spec.Sharp.unreached_held_stmt := sorry
+theorem Sharp.unheld : RueCore.Spec.Sharp.unheld_stmt := sorry
+theorem Sharp.off_run : RueCore.Spec.Sharp.off_run_stmt := sorry
 
 end RueCore.Spine

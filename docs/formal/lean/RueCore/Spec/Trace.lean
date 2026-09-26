@@ -62,7 +62,8 @@ agreeing frame and store, is never refused; every identity the store
 holds ends up in an old cell, in the result, or ended in the trace as often
 as held (`Exact`); every cell it allocated is retired (`Tidy`). Narrower
 than the bullet: `pendingSafe` (RUE-2316), nothing about a panic, and per
-evaluation, not per run (RUE-2478). -/
+evaluation, not per run; the whole-run form is `whole_program_exactly_once`
+(RUE-2478). -/
 def drop_exactly_once_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P)
     (_ : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}

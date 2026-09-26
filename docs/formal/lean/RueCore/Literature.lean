@@ -141,12 +141,17 @@ def rows : List Row := [
     lit := "Exactly once = at most once ∧ at least once; linear use is exactly one use; a memory leak is the failure of \"at least once\""
     cite := "FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401"
     ours := "a typed, `pendingSafe` expression of a checked program, from a frame and store agreeing with its context ⇒ its evaluation is not stuck, ends every identity exactly as often as held (`Exact`), and retires what it allocated (`Tidy`)"
-    diff := "Per evaluation of one expression from a matching frame and store, not per run from `Config.init`, under `pendingSafe` (RUE-2316) and with nothing about a panic (RUE-2478)." },
+    diff := "Per evaluation of one expression from a matching frame and store, not per run from `Config.init`, under `pendingSafe` (RUE-2316) and with nothing about a panic; the whole-run form is `whole_program_exactly_once`." },
   { thm := `RueCore.rest_exactly_once
     lit := "Exactly once (as above), for values minted during an evaluation"
     cite := "FIELD §6: Confluent (delivery), Walker (linear use)"
     ours := "the hypotheses of `drop_exactly_once`, and a form's leading operands evaluated (`Lead`) ⇒ the rest of the form ends them and the store's identities exactly once (`Exact`) and retires what it allocated (`Settled`)"
     diff := "The induction form behind `drop_exactly_once`, listed as a linking statement because it covers the values a form mints mid-evaluation; the literature has no separate counterpart." },
+  { thm := `RueCore.whole_program_exactly_once
+    lit := "Exactly once = at most once ∧ at least once, over a whole run; a memory leak is a value the run allocates and never releases"
+    cite := "FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401"
+    ours := "`ProgramTyped P`, `P.pendingSafe`, `init →* C`, `a` held by `C` (`Config.held`) and `C →* ✓v` with trace `tr` ⇒ `a` is ended in `tr` or owned by `v`, exactly once between the two"
+    diff := "Per owned value identity, for every value a finished run holds rather than per allocation site, under `pendingSafe` (RUE-2316), and with nothing about a panic, whose trap runs no drop, or a run that never finishes." },
   { thm := `RueCore.drop_order
     lit := "Drop order: variables are dropped in reverse order of declaration, temporaries in reverse order of creation"
     cite := "FIELD §5: Rust Reference, Destructors; FIELD §6: trace property over finished traces (no accepted name)"
