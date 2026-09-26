@@ -583,7 +583,7 @@ documents rely on.
 | `log2Floor` | `Float` | The floor of the base-2 logarithm of a positive rational, exactly | helper | — |
 | `roundRat` | `Float` | Rounds an exact rational to the nearest float value of a width, ties to even, overflowing to an infinity (`3.12:23`) | Rue-specific, grounded (spec 3.12:23) | lean/README “Deciding whether to believe it”; `Float` |
 | `FloatArith` | `Float` | The four float arithmetic operators `+ - * /`; `%` is not among them (`3.12:21`, `3.12:25`) | Rue-specific, grounded (spec 3.12:21) | — |
-| `FloatSig` | `Float` | The float operations whose results need rounding, and the target's NaN sign, taken as parameters rather than defined (§6.4) | ours, pending audit | `Float` |
+| `FloatSig` | `Float` | The float operations whose results need rounding, and the target's NaN sign, taken as parameters rather than defined (§6.4) | ours, pending audit | lean/README “Deciding whether to believe it”; `Float` |
 | `FloatSig.cast` | `Float` | `@float_cast` in either direction, given the operations' narrowing; the equal-width case is the identity (`3.12:19`) | Rue-specific, grounded (spec 3.12:19) | — |
 | `FloatUnIntrin` | `Float` | All five one-operand rounding intrinsics: `@sqrt` and the four exact ones (`3.12:34`) | Rue-specific, grounded (spec 3.12:34) | — |
 | `FloatSig.roundIntrin` | `Float` | Applies one of the five rounding intrinsics; none traps (`3.12:34`, `3.12:37`) | Rue-specific, grounded (spec 3.12:34) | — |
@@ -687,7 +687,7 @@ documents rely on.
 | `WfEnums` | `Statics` | Every enum declaration is well formed | standard (FIELD §9: well-formed, PFPL §1.2) | 03 intro; lean/README “What is mechanized”; `Syntax` |
 | `TyName` | `Statics` | A struct or enum declaration, named by its kind and index | ours, pending audit | — |
 | `TyName.ty` | `Statics` | The type that names a declaration | helper | — |
-| `Ty.tyNames` | `Statics` | The declarations a type names by value, through any depth of arrays | helper | `Statics` |
+| `Ty.tyNames` | `Statics` | The declarations a type names by value, through any depth of arrays | helper | 03 “Type safety”; lean/README “What is mechanized”; `Statics` |
 | `Decls.byValue` | `Statics` | The types a declaration contains by value: a struct's fields, an enum's payload components (`3.0:5`) | Rue-specific, grounded (spec 3.0:5) | — |
 | `Decls.Names` | `Statics` | One step of the contains-by-value relation between declarations (`3.0:5`) | ours, pending audit | 03 “Type safety”; `Statics` |
 | `WfNames` | `Statics` | The contains-by-value relation is well-founded: no declaration contains itself (`3.0:5`, E0483) | standard (FIELD §8: well-founded recursion, Reference §7.6) | 03 intro; lean/README “What is mechanized”; `Statics` |
@@ -719,13 +719,13 @@ documents rely on.
 | `OwnSt.wfList` | `Statics` | The same over a declaration's fields | helper | — |
 | `Entry.wf` | `Statics` | An entry's ownership state fits its declared type | helper | — |
 | `Ctx.Wf` | `Statics` | Every entry's ownership state fits its declared type | standard (FIELD §9: well-formed, PFPL §1.2) | 03 “Lemmas §7 owes, and the …”; `Statics` |
-| `ownedJoinable` | `Statics` | Whether an owned branch may be joined with a branch that moved something out: nothing moved may be linear (`3.8:50`) | ours, pending audit | `Syntax` |
+| `ownedJoinable` | `Statics` | Whether an owned branch may be joined with a branch that moved something out: nothing moved may be linear (`3.8:50`) | ours, pending audit | GUIDE “What the checker demands”; `Syntax` |
 | `ownedJoinableList` | `Statics` | The same over a declaration's fields | helper | — |
 | `OwnSt.join` | `Statics` | The join of two branches' ownership states at one path (§5.5) | Rue-specific, grounded (spec 3.8:80) | MUTATION “What is mutated” |
 | `OwnSt.joinList` | `Statics` | The same join, field by field | helper | `Statics` |
 | `Entry.join` | `Statics` | The branch join for one context entry (§5.5) | Rue-specific, grounded (spec 3.8:80) | MUTATION “Equivalent mutants” |
 | `Ctx.join` | `Statics` | The branch join of two contexts, entry by entry (§5.5) | Rue-specific, grounded (spec 3.8:80) | lean/README “Deciding whether to believe it”; GUIDE §7; MUTATION “Equivalent mutants” |
-| `extendArm` | `Statics` | A `match` arm's starting context: the payload variables added, owned (§5.5's (Match)) | ours, pending audit | `Statics` |
+| `extendArm` | `Statics` | A `match` arm's starting context: the payload variables added, owned (§5.5's (Match)) | ours, pending audit | GUIDE “What the checker demands”; MUTATION “What is mutated”; `Statics` |
 | `Ctx.joinFold` | `Statics` | One step of joining many arms' contexts, left to right | Rue-specific, grounded (spec 3.8:80) | `Statics` |
 | `Ctx.joinAll` | `Statics` | The join of all arms' outgoing contexts (§5.5's (Match)) | Rue-specific, grounded (spec 3.8:80) | 03 “Lemmas §7 owes, and the …”; GUIDE “What the checker demands”; `Statics` |
 | `Out` | `Statics` | A typing result `Ω`: the outgoing context, or `⊥` when the expression never finishes normally, plus the contexts recorded at its `break`s (§5.3) | ours, pending audit | 03 “Type safety”; GUIDE §1; `Statics` |
@@ -861,7 +861,7 @@ documents rely on.
 | `check` | `Checker.Defs` | The §5 typing judgment as an algorithm: returns the type and the outgoing ownership state, or rejects | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | 03 “Type safety”; lean/README “Explaining a program”; GUIDE §2; BRIDGE-SENSITIVITY “Rule coverage”; MUTATION “What is mutated”; `Float` |
 | `checkArgs` | `Checker.Defs` | (Call) §5.8's argument list as an algorithm, left to right, with the argument count checked | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | — |
 | `checkIdx` | `Checker.Defs` | Checks the run-time index expressions of a place, left to right, at an integer type | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | — |
-| `armsJoinTy` | `Checker.Defs` | The type all `match` arms must share, taken from the first arm that has one | ours, pending audit | `Checker.Defs` |
+| `armsJoinTy` | `Checker.Defs` | The type all `match` arms must share, taken from the first arm that has one | ours, pending audit | GUIDE “What the checker demands”; `Checker.Defs` |
 | `checkArms` | `Checker.Defs` | (Match) §5.5's arms as an algorithm: each from the same state, at the shared type | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | GUIDE “What the checker demands”; MUTATION “The mutants” |
 | `checkFn` | `Checker.Defs` | (Fn) §5.8 as an algorithm: the body at the declared return type, with the leak check at exit | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | lean/README “What is mechanized”; `Checker.Defs` |
 | `checkStructDecl` | `Checker.Defs` | §3's class assignment for one struct declaration, checked (`@copy`, `linear`, destructor rules) | Rue-specific, grounded (spec 3.8:58) | — |
@@ -920,7 +920,7 @@ documents rely on.
 | `Blocks` | `Trace.Defs` | §6.11's drop order as a grammar over traces: a trace is a sequence of `@dbg` lines, consumptions, and drop-start events each followed by the events of that drop | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “Sharpness counter-examples”; GUIDE “The three trace theorems, one …”; MUTATION “What is mutated”; `Trace.Defs` |
 | `DropGlue` | `Trace.Defs` | §6.11's drop written rule by rule, not through the machine: the events dropping some contents emits, its destructor first, then its fields in declaration order or its elements ascending | standard (FIELD §5: drop glue, rustc-dev-guide *Drop elaboration*) | lean/README “What is mechanized”; GUIDE “The three trace theorems, one …”; MUTATION “What the proofs kill, and …”; `Trace.Defs` |
 | `DropGlueSeq` | `Trace.Defs` | §6.11's `drop*`: `DropGlue` over a list, left to right | standard (FIELD §5: drop glue, rustc-dev-guide *Drop elaboration*) | lean/README “What is mechanized” |
-| `DropGlueBlocks` | `Trace.Defs` | `Blocks` with each drop's events given by `DropGlue` rather than by `dropEvents`: §6.11's drop order as a grammar over traces, in §6.11's own terms | ours, pending audit | — |
+| `DropGlueBlocks` | `Trace.Defs` | `Blocks` with each drop's events given by `DropGlue` rather than by `dropEvents`: §6.11's drop order as a grammar over traces, in §6.11's own terms | ours, pending audit | lean/README “Sharpness counter-examples”; GUIDE “The three trace theorems, one …”; MUTATION “What the proofs kill, and …” |
 | `Rec` | `Trace.Defs` | A drop list whose cells are strictly increasing and below the store length | helper | — |
 | `Kont.Ordered` | `Trace.Defs` | Every drop list a stack frame holds is in allocation order | helper | — |
 | `Config.Ordered` | `Trace.Defs` | Every drop list of a configuration, current and on the stack, is in allocation order | ours, pending audit | lean/README “What is mechanized”; MUTATION “What is mutated”; `Trace.Defs` |

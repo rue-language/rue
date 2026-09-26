@@ -144,8 +144,8 @@ reduction relation between them. `Dynamics.lean` gives the same dynamics as a
 definitional interpreter:
 
 ```lean
-def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalRes
-def run (M : FloatOps) (P : Program) (fuel : Nat) : EvalRes :=
+def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalRes
+def run (M : FloatSig) (P : Program) (fuel : Nat) : EvalRes :=
   eval M fuel P [] { env := [], scope := [] } (.call 0 [])
 ```
 
@@ -280,7 +280,7 @@ if it panics, `Step` reaches the same panic after the same trace. The proof is
 a simulation, `Sim`, read off each of `eval`'s outcomes: the expression in
 focus under *any* context reaches the context's hole with the value, or the
 panic, or (for an unwinding `return` or `break`) the nearest caller or loop.
-Each `andThen` in `eval` becomes one enter step, the operand's run, and one
+Each `bind` in `eval` becomes one enter step, the operand's run, and one
 plug step. A surprise: the simulation needs no typing at all (`run_sim` holds
 on every program), because every place `eval` and `Step` differ is a refusal
 on `eval`'s side, and a refusal promises nothing. Typing only fixes the
@@ -542,7 +542,7 @@ signature.
 ```lean
 theorem soundness (M : FloatModel) (hwf : WfProgram P) :
     ∀ fuel, Typed P R Γ e T Ω → FrameMatches P.decls Γ φ H →
-      EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatOps fuel P H φ e)
+      EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
 (implicit arguments omitted). `M` is any float model that satisfies the IEEE
@@ -575,9 +575,9 @@ Over a whole program, `run_safe` says it in the shape a reader wants:
 ```lean
 theorem run_safe (M : FloatModel) (hwf : WfProgram P)
     (h0 : P.fns[0]? = some fd) (hp : fd.params = []) (fuel : Nat) :
-    run M.toFloatOps P fuel = .outOfFuel
-      ∨ (∃ k tr, run M.toFloatOps P fuel = .panic k tr)
-      ∨ (∃ H v tr, run M.toFloatOps P fuel = .ok H v tr ∧ HasTy P.decls v fd.ret)
+    run M.toFloatSig P fuel = .outOfFuel
+      ∨ (∃ k tr, run M.toFloatSig P fuel = .panic k tr)
+      ∨ (∃ H v tr, run M.toFloatSig P fuel = .ok H v tr ∧ HasTy P.decls v fd.ret)
 ```
 
 The named corollaries (`no_use_after_move`, `no_linear_leak`, …) each restate
@@ -588,9 +588,9 @@ The named corollaries (`no_use_after_move`, `no_linear_leak`, …) each restate
 
 ```lean
 theorem no_double_free (M : FloatModel) (h : ProgramTyped P) (fuel : Nat) :
-    (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
-      (∀ a, (freedIds P.decls (run M.toFloatOps P fuel).trace).count a ≤ 1) ∧
-      (∀ a, (dtorIds (run M.toFloatOps P fuel).trace).count a ≤ 1)
+    (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
+      (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
+      (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1)
 ```
 
 In words: the run is never refused, and in its trace no identity has its
@@ -676,9 +676,9 @@ ended twice and no value's destructor runs twice.*
 
 ```lean
 theorem no_double_free (M : FloatModel) (h : ProgramTyped P) (fuel : Nat) :
-    (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
-      (∀ a, (freedIds P.decls (run M.toFloatOps P fuel).trace).count a ≤ 1) ∧
-      (∀ a, (dtorIds (run M.toFloatOps P fuel).trace).count a ≤ 1)
+    (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
+      (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
+      (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1)
 ```
 
 Witness: `partial_move_residue` (example 5). `v0.x0`'s value `#0` is moved
@@ -698,9 +698,9 @@ theorem drop_exactly_once (M : FloatModel) (h : ProgramTyped P)
     (hp : P.pendingSafe = true) (ht : Typed P R Γ e T Ω)
     (hfm : FrameMatches P.decls Γ φ H) (hcc : StoreCC P.decls H)
     (he : e.pendingSafe = true) :
-    (∀ w, eval M.toFloatOps fuel P H φ e ≠ .stuck w) ∧
-      Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
-      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+    (∀ w, eval M.toFloatSig fuel P H φ e ≠ .stuck w) ∧
+      Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
+      Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
 `Exact` is the count equation over the identities the evaluation starts
@@ -721,9 +721,9 @@ end, ended exactly once in the trace or part of the result, and not both.*
 
 ```lean
 theorem whole_program_exactly_once (M : FloatModel) (h : ProgramTyped P)
-    (hp : P.pendingSafe = true) (hC : Steps M.toFloatOps P Config.init C)
+    (hp : P.pendingSafe = true) (hC : Steps M.toFloatSig P Config.init C)
     (ha : a ∈ C.held P.decls)
-    (hT : Steps M.toFloatOps P C (.run H φ [] (.ret v) tr)) :
+    (hT : Steps M.toFloatSig P C (.run H φ [] (.ret v) tr)) :
     (v.own P.decls).count a + (freedIds P.decls tr).count a = 1
 ```
 
@@ -751,9 +751,9 @@ every cell still registered.*
 
 ```lean
 theorem drop_order (M : FloatModel) (h : ProgramTyped P) :
-    (∀ H φ v tr, Steps M.toFloatOps P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
-    (∀ κ tr, Steps M.toFloatOps P Config.init (.panic κ tr) → Blocks P.decls tr) ∧
-    ∀ C C', Steps M.toFloatOps P Config.init C → Step M.toFloatOps P C C' →
+    (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
+    (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → Blocks P.decls tr) ∧
+    ∀ C C', Steps M.toFloatSig P Config.init C → Step M.toFloatSig P C C' →
       ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) ∧
         Lifo C.stack C'.stack (dropLocs evs) ∧ C.stack.Pairwise (· < ·)
 ```
@@ -770,7 +770,7 @@ Both halves are over §6's `Step`.
   (`step_blocks`).
   `Blocks` reads each drop's events off `dropEvents`, so it moves with that
   definition. `drop_glue_order` (RUE-2487) states the same order in §6.11's
-  own terms: its grammar `GlueBlocks` gives each drop's events by
+  own terms: its grammar `DropGlueBlocks` gives each drop's events by
   `DropGlue`, one rule per §6.11 equation, and never reaches `dropEvents`.
   A change to `dropEvents` alone only breaks proofs; a change to the
   machine's walk (`dropContents`) that reorders or skips a drop makes the
@@ -977,7 +977,7 @@ carries a linear value. The compiler agrees (E0493), and the corpus cases
 `overwrite_past_partial_linear` and `overwrite_field_past_partial_linear`
 (one field down) pin it.
 
-§5.5's join and §5.6's leak check do read the residue (`ownedJoinOk`,
+§5.5's join and §5.6's leak check do read the residue (`ownedJoinable`,
 `residualLinear`), because they ask whether an obligation was
 **discharged**. An overwrite discharges nothing, so it reads the type
 (`overwriteOk`). At (Assign) the model is therefore strictly stricter than the
@@ -1097,11 +1097,11 @@ are the `†` slots the two struct literals reserved for their identities,
 | **9** | **(D-Return) §6.9 (unwind the frame)** | `[…, ℓ1 = S1 { 3 }#0, …, ℓ3 = S1 { 4 }#2]` | `run-all-scope-drops(H, φ)` walks `σ` **newest-first**: drop-retire `ℓ3`, then `ℓ1` | `[ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]` | `drop ℓ3 = S1 { 4 }#2`; `run drop fn S1(S1 { 4 }#2)`; `drop ℓ1 = S1 { 3 }#0`; `run drop fn S1(S1 { 3 }#0)` |
 | 10 | inner (D-EndScope): does not run | | the `return` discarded the evaluation context, and the pending `endscope` markers with it; the result travels out unchanged | | |
 | 11 | outer (D-EndScope): does not run | | the same | | |
-| 12 | (D-Return-Main) §6.9 (absorb) | `[ℓ0 = †, …, ℓ3 = †]` | the call boundary turns the unwound `return` into the call's value. `f0` is the bottom of the stack, so this is (D-Return-Main); at an inner call the same row is (D-Return)'s hand-off, which is why the generated table labels it with both | | |
+| 12 | (D-Return-Main) §6.9 (bindCall) | `[ℓ0 = †, …, ℓ3 = †]` | the call boundary turns the unwound `return` into the call's value. `f0` is the bottom of the stack, so this is (D-Return-Main); at an inner call the same row is (D-Return)'s hand-off, which is why the generated table labels it with both | | |
 
 **The drops run once, not twice.** Rows 10 and 11 are the `endscope`s the
 normal path would have run. They see a `.returned` result and pass it on,
-because `eval` sequences a `let` body with `andThen`, which continues only on
+because `eval` sequences a `let` body with `bind`, which continues only on
 a value. Their cells were already retired at row 9; had either tried again,
 `drop-retire` would have found a `†` cell and the machine would have refused
 with `useAfterDrop`. The `record` invariant is what proves it cannot.
@@ -1626,8 +1626,8 @@ not at `v0`'s scope exit and not twice.
   elaboration obligations (`4.7:9`, `4.7:10`). `exhaustive_arm_exists` is the
   one line progress needs.
 - **Every arm is typed from the same post-scrutinee state** (`checkArms`),
-  under its own variant's payload locals (`armCtx`), all at the type
-  `firstArmTy` fixed. An arm is a branch, so Σ is not threaded from arm to
+  under its own variant's payload locals (`extendArm`), all at the type
+  `armsJoinTy` fixed. An arm is a branch, so Σ is not threaded from arm to
   arm.
 - **At the arm's end** the payload locals leave scope under §5.6
   (`NoResidualLinear` over the entries the arm pops), and what is left is that
