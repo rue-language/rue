@@ -711,24 +711,30 @@ structure Sig where
   ret : Ty
   recursive : Bool
 
-/-- (helper) The generator's state: three `StdGen`s, the signature
+/-- (helper) The generator's state: four `StdGen`s, the signature
 environment, and an identity counter. `main` is the stream every draw reads;
 `side` is the **side** stream (`side`), which only the diverging-arm draws
 (RUE-2383), the paired-locals and declared-linear-chain draws (RUE-2505,
 below) read, so adding them left every other draw of every program where they
 do not fire unchanged; `call` is the **call** stream (`calls`, RUE-2481),
-which only the call draws read, for the same reason. `sigs` is the current
-case's signature environment and `cur` the function whose body is being drawn
-(`0`, the entry point, or a callee `j + 1`), so a call site can name only a
-later callee (`maybeCall`). `idCounter` is RUE-2505's per-program counter
-(`freshId`): it is not one of the three streams, so every helper that swaps or
-splits them (`side`, `calls`) leaves it exactly where it was, counting once
-per constructed value of a destructor-bearing declaration across the whole
-program — the entry point and every callee — in draw order. -/
+which only the call draws read, for the same reason; `boundary` is the
+**boundary** stream (`boundary`, RUE-2482, below "Boundary integer
+literals"), which only the boundary-literal and boundary-operand-pair draws
+read, again for the same reason — a program in which none of them fires reads
+`main`, `side` and `call` exactly as it did before RUE-2482. `sigs` is the
+current case's signature environment and `cur` the function whose body is
+being drawn (`0`, the entry point, or a callee `j + 1`), so a call site can
+name only a later callee (`maybeCall`). `idCounter` is RUE-2505's per-program
+counter (`freshId`): it is not one of the four streams, so every helper that
+swaps or splits them (`side`, `calls`, `boundary`) leaves it exactly where it
+was, counting once per constructed value of a destructor-bearing declaration
+across the whole program — the entry point and every callee — in draw
+order. -/
 structure GS where
   main : StdGen
   side : StdGen
   call : StdGen
+  boundary : StdGen
   sigs : Array Sig := #[]
   cur : Nat := 0
   idCounter : Nat := 0
@@ -754,6 +760,21 @@ def side {α : Type} (m : G α) : G α := do
   modify fun s => { s with main := s.side, side := s.main }
   let r ← m
   modify fun s => { s with main := s.side, side := s.main }
+  return r
+
+/-- (helper) Run a draw on the **boundary** stream (RUE-2482, below "Boundary
+integer literals"): the same swap `side` uses, between `main` and `boundary`
+instead of `main` and `side`, so a boundary draw never advances `side` or
+`call` and a draw that does not fire leaves `main` exactly where it was. Every
+boundary-literal and boundary-operand-pair check runs here; where one fires,
+the operand(s) it replaces are still drawn on the main stream first and
+discarded, so a program in which no boundary draw fires is byte-identical to
+the one this module drew before RUE-2482, and one with a boundary draw
+differs from it only where that draw fired. -/
+def boundary {α : Type} (m : G α) : G α := do
+  modify fun s => { s with main := s.boundary, boundary := s.main }
+  let r ← m
+  modify fun s => { s with main := s.boundary, boundary := s.main }
   return r
 
 /-- (helper) Run a draw on the **call** stream (RUE-2481): the call stream is
@@ -868,19 +889,68 @@ def boundaryLiteral (w : IntWidth) (sg : Sign) : G Int := do
 /-- (helper) An integer literal of the wanted type: small, with an occasional
 `min_T`/`max_T` so that `+ - * /` can trap (§6.4). A small value is in range
 at every width, so the draw needs no per-width case. At a modest rate — one
-operand in eight — the **side** stream (`side`) replaces it with a
-`boundaryLiteral` instead (RUE-2482): the main-stream draw above always runs
-first and is discarded when the side stream fires, exactly as `divArm`'s
-replacement of an arm does (above, "Return and panic arms"), so a program
-with no boundary literal is the program this module drew before RUE-2482,
-and one with a boundary literal differs from it only at that literal. -/
+operand in eight — the **boundary** stream (`boundary`, RUE-2482) replaces it
+with a `boundaryLiteral` instead: the main-stream draw above always runs
+first and is discarded when the boundary stream fires, exactly as `divArm`'s
+replacement of an arm does on the side stream (above, "Return and panic
+arms"), so a program with no boundary literal is the program this module drew
+before RUE-2482, and one with a boundary literal differs from it only at that
+literal — and, because the check runs on its own stream rather than `side`,
+`main`, `side` and `call` are unaffected whether or not it fires. -/
 def intLiteral (w : IntWidth) (sg : Sign) : G Expr := do
   let k ← nat 0 39
   let n : Int :=
     if k = 0 then intMax w sg else if k = 1 then intMin w sg else Int.ofNat (k % 10)
-  let boundary ← side (do
+  let override ← boundary (do
     if ← chance 1 8 then return some (← boundaryLiteral w sg) else return none)
-  return intLit w sg (boundary.getD n)
+  return intLit w sg (override.getD n)
+
+/-- (helper) The joint boundary operand pair for an integer binop `op` at
+`int(w, s)` (RUE-2482): the shapes a single boundary literal reaches only
+jointly, because the bug needs *both* operands at once — `min_T * -1` folding
+to `min_T` instead of trapping (RUE-2318) is one. For `+ - *`: `(min_T, -1)`
+(signed only), `(max_T, 1)`, `(min_T, 1)` and `(min_T, min_T)` — between them
+these overflow at least one of `+`, `-`, `*` at every signedness, and cost
+nothing at the others. For `/` and `%`, the same pairs (`min_T / -1` also
+overflows) plus `(x, 0)`, `x` itself a `boundaryLiteral`, for the div-by-zero
+trap. For `shl`/`shr`: a power of two and a shift amount at `w.bits - 1`,
+`w.bits` or `w.bits + 1` — `w.bits` and above are past every in-range shift
+amount (`shiftAmount` reduces mod `w.bits`, so the model never traps here,
+but the exact wrap the shift produces is exercised at all three). Any other
+operator gets no pair. -/
+def boundaryPair (w : IntWidth) (sg : Sign) (op : BinOp) : G (Option (Int × Int)) := do
+  let lo := intMin w sg
+  let hi := intMax w sg
+  let base : List (Int × Int) :=
+    (if sg == .signed then [(lo, -1)] else []) ++ [(hi, 1), (lo, 1), (lo, lo)]
+  match op with
+  | .add | .sub | .mul => return some (← pick (lo, lo) base)
+  | .div | .rem =>
+      let x ← boundaryLiteral w sg
+      return some (← pick (lo, lo) (base ++ [(x, 0)]))
+  | .shl | .shr =>
+      let p ← pick 1 (pow2sInRange w sg)
+      let bw : Int := (w.bits : Int)
+      let s ← pick bw [bw - 1, bw, bw + 1]
+      return some (p, s)
+  | _ => return none
+
+/-- (helper) An integer binop `op` over two operands each drawn by `self`
+(RUE-2482): at about one binop in sixteen, the **boundary** stream replaces
+both operands at once with a `boundaryPair` for `op`, so the RUE-2318-style
+shapes that need both operands at a boundary together are reachable at all —
+a per-operand rate reaches them only as often as the product of two small
+probabilities. Both operands are still drawn by `self` on the main stream
+first and discarded when the pair fires, the same technique `intLiteral`
+uses, so `main`, `side` and `call` are unaffected whether or not it fires. -/
+def arithBinop (w : IntWidth) (sg : Sign) (op : BinOp) (self : G Expr) : G Expr := do
+  let e1 ← self
+  let e2 ← self
+  let pairOverride ← boundary (do
+    if ← chance 1 16 then boundaryPair w sg op else return none)
+  match pairOverride with
+  | some (a, b) => return binop op (intLit w sg a) (intLit w sg b)
+  | none => return binop op e1 e2
 
 /-- (helper) A float width: `f64` more often than `f32`, the way `3.12:8`
 defaults an unsuffixed literal. -/
@@ -2270,10 +2340,10 @@ def expr (D : Decls) (R : Ty) : Bool → Bool → Scope → Ty → Nat → G Exp
               match form with
               | 0 =>
                   let op ← pick BinOp.add [BinOp.add, .sub, .mul, .div, .rem]
-                  return binop op (← self) (← self)
+                  arithBinop w sg op self
               | 1 =>
                   let op ← pick BinOp.bitAnd [BinOp.bitAnd, .bitOr, .bitXor, .shl, .shr]
-                  return binop op (← self) (← self)
+                  arithBinop w sg op self
               | 2 =>
                   -- (Neg) §5.8 takes a signed operand only (`4.2:6`), so the
                   -- unsigned draw falls back to the complement.
@@ -2282,7 +2352,7 @@ def expr (D : Decls) (R : Ty) : Bool → Bool → Scope → Ty → Nat → G Exp
               | 3 =>
                   let projs := projPlaces D Γ (.int w sg)
                   if !projs.isEmpty then return use (← pickPlace (.var 0) projs)
-                  return binop .add (← self) (← self)
+                  arithBinop w sg .add self
               | _ =>
                   -- `@intCast` from an integer, or `@float_to_int` from a
                   -- float — the one float form that can trap (`3.12:18`) —
@@ -2765,11 +2835,18 @@ others. -/
 def callSeed (seed : Nat) : StdGen :=
   ⟨(seed * 1103515245 + 12345) % 2147483562 + 1, (seed * 69069 + 7919) % 2147483398 + 1⟩
 
+/-- (helper) The boundary stream's first state (`boundary`, RUE-2482), by the
+same technique as `callSeed`, with different constants so the two independent
+streams do not share a component. -/
+def boundarySeed (seed : Nat) : StdGen :=
+  ⟨(seed * 2246822519 + 3266489917) % 2147483563 + 1,
+    (seed * 668265263 + 374761393) % 2147483399 + 1⟩
+
 /-- (helper) `n` generated cases from `seed`, in order; a pure function of
 its arguments. -/
 def generate (n seed : Nat) : List Corpus.Case :=
   ((List.range n).mapM (genCase seed)).run'
     { main := mkStdGen seed, side := (stdSplit (mkStdGen seed)).2,
-      call := callSeed seed }
+      call := callSeed seed, boundary := boundarySeed seed }
 
 end RueCore.Gen
