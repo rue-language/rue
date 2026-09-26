@@ -495,17 +495,59 @@ last, filled at every construction with a fresh value off a per-program
 counter (`Gen.freshId`, threaded through `GS` beside the three `StdGen`
 streams, so `side` and `calls` never disturb it, and reset to `0` at the
 start of each case, so it counts a *program's* constructed values) rather
-than an ordinary draw of its type (`Gen.structLitArgs`). `Print.dtorFieldName`
-is the printer's matching half: a destructor prints its declaration's *last*
-field if that is an `int` — the id field, for a generated declaration — else
-field 0, which is every destructor-bearing seed (`Examples.lean`) and so
-keeps every seed's printed output exactly as it was. `Corpus.dtorLine`, the
-model's own prediction of what a destructor prints, needs the identical rule:
-missing that on the first pass of this change produced dozens of spurious
-disagreements against the *unmutated* compiler at `--gen 200 --seed 7` (29 of
-200, every one the model predicting field 0 while the printed program's
-destructor, now printing the id field for a generated declaration, actually
-ran) until `dtorLine` was brought in step with `dtorFieldName`.
+than an ordinary draw of its type (`Gen.structLitArgs`).
+
+Which field a destructor prints is a marker its producer supplies
+(`Corpus.Case.dtorMark`, a `Print.DtorMarks`), not a guess this layer makes
+from field *shape*: `Gen.genDtorMarks` reads it straight off `genDecl`'s own
+guarantee — a generated destructor-bearing declaration's id field is always
+last — and `Case.dtorMark`'s default, `fun _ => some 0`, is every
+destructor-bearing seed's own field (`Examples.lean`), so no seed's printed
+output changes. `Print.structItem` and `Corpus.dtorLine` both read the
+identical marker, and both additionally require the marked field to actually
+be an `int` before printing it: a marker naming an ill-typed field (the seed
+`dtor_linear_field`, whose sole field is a `struct`, is the one case that
+exercises this) prints nothing, exactly as before. A first pass of this fix
+read the marker in `structItem` without that type check and printed
+`@dbg(self.x0)` for `dtor_linear_field` regardless, changing its printed
+source; catching that (byte-for-byte comparison against the pre-fix corpus,
+all 193 seeds) is what caught the missing check. This design (an adversarial
+review's S2) replaces an earlier one — "the *last* field if it's an `int`,
+else field 0" — that inferred the answer from shape alone: it could not tell
+a generated id field from a seed whose last field happens to be an `int` for
+an unrelated reason, and would have silently picked the wrong field with no
+warning had one ever been added. `Corpus.dtorLine` missing the *original*
+(shape-based) rule on the first pass of the original change produced dozens
+of spurious disagreements against the *unmutated* compiler at `--gen 200
+--seed 7` (29 of 200, every one the model predicting field 0 while the
+printed program's destructor, now printing the id field for a generated
+declaration, actually ran) until it was brought in step; the explicit-marker
+design above removes that whole class of drift; both sides read one function.
+
+**The fallback id (an adversarial review's B1).** `freshId` is per-program
+and strictly increasing, so two *independently drawn* values of the same
+destructor-bearing declaration never share an id. But not every construction
+draws independently: `Gen.leastValue`'s depth-exhausted fallback (the one
+place a type-directed draw runs out of fuel and still owes a well-typed
+expression) is a pure function with no access to `freshId`'s counter, so
+before this fix it filled a fallback's id field with its generic `.int` case
+— a literal `0` — same as `idCounter`'s own first output, so a fallback
+collided with the very first *genuinely* fresh construction in the same
+program, every time. Reproduced directly in `gen_7_27` (the case this page's
+own table credits with the `c-reverse-scope-drops` catch, below): three `S0`
+`.dtor` events printed `0, 0, 0` — the match's own matched `S0` (id `0`,
+genuinely fresh) and two `S0` array elements nested inside the `S1` argument
+(both `leastValue` fallbacks). `Gen.leastValueId`, a fixed negative `i64`,
+fixes it: never equal to a `freshId` output (always a cast `Nat`, so never
+negative), so a fallback construction can no longer collide with a genuine
+one. `gen_7_27` now prints `2, -1, -1, 1, 0, …` — the two fallbacks share
+`-1` with *each other*, not with the match's own `0` or `2`. That remaining
+case — two *fallback* constructions of the same declaration in one program —
+is not fixed and is not claimed to be: neither is independently drawn, so it
+sits outside "two independently drawn values never collide," which is the
+guarantee this page and README.md now state exactly (previously both said
+collisions are "eliminated outright" — an overclaim, corrected below and
+there).
 
 **Two more drawn shapes.** `c-reverse-scope-drops` needs two
 destructor-bearing locals ending the *same* block; the only fragment shape
@@ -540,14 +582,30 @@ that never could.
 the same value (a one-off script over `run`'s trace, not committed, the
 methodology the "Observable destructors" review above used): 5 of 8 such
 pairs (62.5%) at `--gen 200 --seed 7` and 19 of 55 (34.5%) at `--gen 1000
---seed 23` before this change; 12 of 32 (37.5%) and 24 of 102 (23.5%) after.
-Lower, not zero: the residual collisions are copies of the *same* constructed
-value — a destructor-bearing declaration whose field join happens to be
-`Copy` even though it is not declared `@copy` (`genDecl` never excludes
-this), so it may be used more than once, and each copy's drop prints the same
-id along with the rest of its contents — which a per-construction counter
-cannot and should not change, as opposed to two *independently* drawn values
-coinciding, which it eliminates outright.
+--seed 23` before this change; 10 of 32 (31.3%) and 22 of 102 (21.6%) after
+both this fix and the fallback-id fix above (12 of 32 and 24 of 102 — 37.5%
+and 23.5% — measured with the id-field change alone, before `leastValueId`;
+the two extra collisions per setting were exactly the fallback-vs-genuine
+kind that fix targets). Lower, not eliminated, and **not** claiming to be:
+two distinct residual sources remain, neither of them "two independently
+drawn values."
+
+1. Two *fallback* constructions of the same declaration in one program
+   collide with each other (above): `leastValue`'s sentinel is fixed, not
+   drawn, so a program that hits the fallback more than once for the same
+   declaration prints the same id both times.
+2. Copies of the *same* constructed value repeat it: a destructor-bearing
+   declaration whose field join happens to be `Copy` even though it is not
+   declared `@copy` (`genDecl` never excludes this) may be used more than
+   once, and each copy's drop prints the same id along with the rest of its
+   contents.
+
+A per-construction counter cannot change either of these — neither is a
+*draw* at all, so there is nothing for `freshId` to make distinct — and
+correcting the record: the guarantee this page and README.md state is now
+"two *independently drawn* values of the same declaration never share an
+id," not "collisions are eliminated outright," which both documents said
+before an adversarial review (RUE-2505's B1) found the fallback gap above.
 
 **Observability share**, accepted programs with at least one printed
 destructor line divided by all accepted programs (a coarser cut than the
@@ -568,13 +626,32 @@ below for why):
 | Mutant | After RUE-2480 | After RUE-2505 |
 |---|---|---|
 | `c-skip-overwrite-drop` | seeds unchanged; generator catches it, `gen_23_689` | confirmed still caught: seeds unchanged (`affine_overwrite`), generator catches it on the regenerated corpus too, `gen_23_476` (`--gen 1000 --seed 23`; `--gen 200 --seed 7` alone does not, as before) |
-| `c-reverse-scope-drops` | seeds only (`enum_two_payload_bindings`) | generator catches it too: `gen_7_27` (`--gen 200 --seed 7`), a `match` arm binding two destructor-bearing payload locals (`pairDtorBlock`) |
-| `h2335` (root half) | seeds only (`destructure_root_through_moved_part`) | generator catches it too: `gen_7_3` (`--gen 200 --seed 7`), the declared-linear chain (`rootThroughMovedStmt`) |
-| `h2335b` | seeds only (`destructure_ancestor_dropped`) | generator catches it too: `gen_7_10` (`--gen 200 --seed 7`), the declared-linear chain (`ancestorDroppedStmt`) |
+| `c-reverse-scope-drops` | seeds only (`enum_two_payload_bindings`) | generator catches it too: `gen_7_27` (`--gen 200 --seed 7`), a `match` arm binding two destructor-bearing payload locals (`pairDtorBlock`) — a **printed-output** difference: the reversed drop order swaps two distinct printed lines |
+| `h2335` (root half) | seeds only (`destructure_root_through_moved_part`) | generator catches it too: `gen_7_3` (`--gen 200 --seed 7`), the declared-linear chain (`rootThroughMovedStmt`) — an **accept/reject verdict mismatch**: the model rejects, the mutant compiler wrongly accepts; the printed leaf values (fixed `leafVal` literals) are incidental, not the detection mechanism |
+| `h2335b` | seeds only (`destructure_ancestor_dropped`) | generator catches it too: `gen_7_10` (`--gen 200 --seed 7`), the declared-linear chain (`ancestorDroppedStmt`) — also an **accept/reject verdict mismatch**: the model accepts, the mutant compiler wrongly rejects |
 
-All three shapes reach the generated corpus at `--gen 200 --seed 7` already,
-so `drill.sh` never needed the wider `--gen 1000 --seed 23` setting to catch
-any of them — RUE-2505's acceptance criterion allows either.
+So the mutant's effect shows in the printed output for exactly one of the
+three (`c-reverse-scope-drops`); for the other two the effect is in the
+accept/reject call itself, which is the frame `drill.sh`'s own `mverify.py`
+already compares regardless of what a case prints. All three shapes reach
+the generated corpus at `--gen 200 --seed 7` already, so `drill.sh` never
+needed the wider `--gen 1000 --seed 23` setting to catch any of them —
+RUE-2505's acceptance criterion allows either.
+
+**Confirmed unaffected by the B1/S2 fixes above.** Neither changes a random
+draw (`leastValueId` is a fixed constant, `genDtorMarks` is a pure function of
+the final declarations, and `structItem`'s added type check consumes no
+stream), so no case's identity moved: `gen_7_3` and `gen_7_10` are
+byte-for-byte the same source and verdict as before (neither ever exercises
+`leastValue`'s fallback — both use fixed `leafVal` literals — so B1 cannot
+touch them, and S2 changes nothing for a generated program whose id fields
+were already all real, which both are). `gen_7_27` does exercise the
+fallback (above), so its printed source changed — the two `leastValue`d `S0`
+array elements print `-1` instead of colliding `0`s — but the pair the drill
+needs, the match's own `v0`/`v1` (ids `0` and `2`), was never one of those
+three and stays distinct either way, matching the review's own reading. All
+three were rerun with `drill.sh` after the fix and still caught, at the same
+case names.
 
 **Confirming the unmutated compiler** still agrees, on the *regenerated*
 `g200-only.json` and `g1000-only.json` (the loop's own `mverify.py`, no

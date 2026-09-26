@@ -428,11 +428,25 @@ instead, a destructor-bearing declaration gets one more field, an **id**
 field appended last, filled at every construction with a fresh value off a
 per-program counter (`freshId`, threaded through `GS` beside the three
 streams, and reset for each case) rather than an ordinary draw of its type
-(`structLitArgs`). Field 0 is free again, a struct type included;
-`Print.dtorFieldName` is the printer's matching half — the **last** field if
-it is an `int`, else field 0, which is every seed and so keeps every seed's
-printed output unchanged — and `Corpus.dtorLine`, the model's own prediction
-of what a destructor prints, needs the identical rule.
+(`structLitArgs`). Field 0 is free again, a struct type included. Which field
+a destructor prints is now an explicit marker its producer supplies
+(`Corpus.Case.dtorMark`, a `Print.DtorMarks`) rather than a guess from field
+*shape*: `genDtorMarks` reads it straight off `genDecl`'s own guarantee — a
+generated destructor-bearing declaration's id field is *always* last — and
+`Corpus.dtorLine`, the model's own prediction of what a destructor prints,
+reads the identical marker (RUE-2505's S2 fix).
+
+Two independently drawn values of the same declaration never share an id —
+`freshId`'s counter is per-program and strictly increasing — but two values
+are not always independently drawn: `leastValue`'s depth-exhausted fallback
+(above, "A canonical value of any type") is pure and has no access to
+`freshId`, so it gives a destructor-bearing declaration's id field a fixed
+sentinel, `leastValueId`, instead. Two *fallback* constructions of the same
+declaration in one program still print the same id as each other — a real,
+if narrow, exception to "distinct identities," not eliminated, and named as
+such in BRIDGE-SENSITIVITY.md and README.md (RUE-2505's B1 fix; `leastValueId`
+is negative, so it is still always distinct from every *genuine* `freshId`
+output).
 
 Two mutants observability alone didn't catch (`c-reverse-scope-drops`,
 `h2335`/`h2335b`; BRIDGE-SENSITIVITY.md) needed shapes no bias on the
@@ -450,11 +464,24 @@ field 0 — after every other declaration, and `ancestorDroppedStmt`/
 `rootThroughMovedStmt` generate the seeds `destructure_ancestor_dropped`/
 `destructure_root_through_moved_part` (`Examples.lean`) over them, one field
 step deeper than `paths2`'s two-step cap (above, "How deep a place goes")
-ever draws. Both new shapes read the **side** stream, so a program that
-doesn't draw either is unaffected; `genCase` draws the declared-linear chain
-one program in six, and `rootThroughMovedStmt`'s half of that draw rejects on
-purpose, as the seed it generates does, which is part of why the rejected
-share below rose. BRIDGE-SENSITIVITY.md has the collision-rate and
+ever draws. Both new shapes read the **side** stream, and `dtorPairVariant`
+draws nothing of its own — but "unaffected" only ever meant *this one case's
+own output*, holding its incoming stream state fixed, not that the corpus as
+a whole stays put: `genCase` never resets `main`/`side`/`call` between cases
+(only `idCounter`, above), and the declared-linear chain's own `side (chance
+1 6)` check runs unconditionally for every case whether or not it fires, so
+its side-stream position — and so every later side-stream draw of that case,
+and of every case after it in the same `--gen N` run — shifts regardless.
+Field 0 drawing normally instead of being forced (the id-field change,
+above) shifts the **main** stream the same way, for every declaration that
+ends up with a destructor, which is drawn before the declaration count is
+fixed. None of this is a new defect: RUE-2383 and RUE-2481 already reshuffle
+the corpus the identical way, and BRIDGE-SENSITIVITY.md is explicit
+elsewhere that regenerating "shifts every case's identity." `genCase` draws
+the declared-linear chain one program in six, and `rootThroughMovedStmt`'s
+half of that draw rejects on purpose, as the seed it generates does, which is
+part of why the rejected share below rose. BRIDGE-SENSITIVITY.md has the
+collision-rate and
 observability figures and the rerun results.
 
 ## What it deliberately does not guarantee
@@ -1009,6 +1036,18 @@ def genEnums : Nat → Decls → G Decls
       let ed ← genEnumDecl acc acc.enums.length
       genEnums n { acc with enums := acc.enums ++ [ed] }
 
+/-- (helper) The id-field value `leastValue`'s depth-exhausted fallback gives
+a destructor-bearing declaration (RUE-2505's B1 fix): a fixed negative `i64`,
+matching the id field's own fixed type (`genDecl`), and never equal to a
+`freshId` output — `freshId`'s counter is a `Nat` cast to `Int`, so always
+`≥ 0`. `leastValue` is pure, with no access to that counter, so this is the
+cheapest value guaranteed distinct from every *genuinely* fresh one, at the
+cost of two fallback constructions of the same declaration still printing the
+same id as each other (module docstring, "Restoring the lost shape and
+distinct identities": not a claim about two fallbacks, only about two
+independently drawn values). -/
+def leastValueId : Expr := intLit .w64 .signed (-1)
+
 /-- (helper) A canonical value of any type, for the one place a type-directed
 draw can run out of depth and still owe a well-typed expression: a literal at a
 scalar (§5.8's (Lit)), one initializer per **declared** field at a struct
@@ -1032,7 +1071,27 @@ def leastValue (D : Decls) : Nat → Ty → Expr
   | 0, .struct s => mkStruct s []
   | fuel + 1, .struct s =>
       match D.structs[s]? with
-      | some sd => mkStruct s (sd.fields.map (leastValue D fuel))
+      | some sd =>
+          -- RUE-2505's B1 fix: a destructor-bearing declaration's id field is
+          -- carved out and given `leastValueId` rather than this function's
+          -- generic `.int` case (`intLit w sg 0`, above), which — being pure,
+          -- with no access to `freshId`'s counter — cannot draw a genuinely
+          -- fresh value here. Left to the generic case, the id field would
+          -- print `0` on every depth-exhausted fallback of the same
+          -- declaration, and `0` is also `idCounter`'s own first output, so
+          -- a fallback would collide with the very first real construction
+          -- in the same program, every time — the one choice guaranteed to
+          -- collide. `leastValueId` is negative, so it can never equal a
+          -- `freshId` output (always a cast `Nat`, never negative); two
+          -- fallback constructions of the *same* declaration in one program
+          -- still print the same id as each other, which this does not fix
+          -- and does not claim to: neither construction is *independently
+          -- drawn* (module docstring, "Restoring the lost shape and distinct
+          -- identities"), so it is outside that claim's scope.
+          if sd.dtor then
+            mkStruct s (sd.fields.dropLast.map (leastValue D fuel) ++ [leastValueId])
+          else
+            mkStruct s (sd.fields.map (leastValue D fuel))
       | none => mkStruct s []
   | 0, .enum e => mkEnum e 0 []
   | fuel + 1, .enum e =>
@@ -2543,6 +2602,20 @@ def resultTy (D : Decls) : G Ty := do
     return .enum e
   weighted (← intTy) [(5, ← intTy), (3, ← floatTy), (1, .bool), (1, .unit)]
 
+/-- (helper) The `dtorMark` a generated case supplies (RUE-2505's S2 fix):
+`genDecl` always gives a destructor-bearing declaration its id field
+*last*, unconditionally, whenever `dtor` is true — a guarantee of this
+module's own construction discipline, not a property `Print`/`Corpus` need to
+infer from field shape. Reading it directly off the final `D` this way is
+exactly as explicit as returning the marker from `genDecl` itself and
+threading it through `genEnv`/`genEnums`'s accumulation would be, and does
+not require making either of those return anything more than the
+`StructDecl` they already do. -/
+def genDtorMarks (D : Decls) : Print.DtorMarks :=
+  fun s => match D.structs[s]? with
+    | some sd => if sd.dtor then some (sd.fields.length - 1) else none
+    | none => none
+
 /-- (helper) One generated case: a declaration environment and a program whose
 entry point takes no parameters and returns the drawn type, followed by the
 callees its call sites named (module docstring, "Calls"). The
@@ -2600,7 +2673,8 @@ def genCase (seed i : Nat) : G Corpus.Case := do
       s!"and {D.enums.length} enum declarations, {shape}); " ++
       s!"regenerate with `lake exe ruecore-corpus --gen N --seed {seed}` for any N > {i}.",
     rules := rulesOf D F,
-    prog := { decls := D, fns := F } }
+    prog := { decls := D, fns := F },
+    dtorMark := genDtorMarks D }
 
 /-- (helper) The call stream's first state (`calls`, RUE-2481), from its own
 two components rather than a split of the other two streams: `mkStdGen seed`

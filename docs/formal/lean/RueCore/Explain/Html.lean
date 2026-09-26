@@ -279,7 +279,8 @@ def ledgerHtml (P : Program) (rows : List (Nat × Step)) (res : EvalRes) : Strin
 
 /-- A complete, self-contained page explaining one fragment program: its
 §5 derivation and its §6 run. -/
-def render (name description : String) (rules : List String) (P : Program) : String :=
+def render (name description : String) (rules : List String) (marks : Print.DtorMarks)
+    (P : Program) : String :=
   let ds := programDerivs P 0 P.fns
   let t := runTrace Corpus.exportOps P Corpus.exportFuel
   page name
@@ -287,7 +288,7 @@ def render (name description : String) (rules : List String) (P : Program) : Str
      tagc "p" "lead" (esc description) ++
      tagc "p" "rules" (String.intercalate "" (rules.map (fun r => tag "span" (esc r)))) ++
      tag "h2" "The program" ++
-     tagc "pre" "program" (esc (Print.moduleItems P ++ Print.fnItems P 0 P.fns)) ++
+     tagc "pre" "program" (esc (Print.moduleItems marks P ++ Print.fnItems P 0 P.fns)) ++
      tag "h2" "What the checker says (§5)" ++
      verdictHtml P ds ++
      tag "h2" "The derivations (§5)" ++
@@ -317,7 +318,7 @@ def render (name description : String) (rules : List String) (P : Program) : Str
 
 /-- (helper) The page for one bridge corpus case (`Corpus.lean`). -/
 def renderCase (c : Corpus.Case) : String :=
-  render c.name c.description c.rules c.prog
+  render c.name c.description c.rules c.dtorMark c.prog
 
 /-- (helper) One row of the index: the case, its checker verdict, and the
 machine's outcome in words. -/
