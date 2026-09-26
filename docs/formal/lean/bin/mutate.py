@@ -5,15 +5,22 @@ usage: mutate.py --work DIR [--src LEANDIR] [--only ID,...] [--redo] [--compiler
                  [--gen N] [--gen-seed S] [--lake-cache DIR]
        mutate.py --list | --check | --work DIR --table
 
-Each mutant is a small, deliberate change to the definition layer (L0/L1 in the README's
-"Layers": `Syntax`, `Statics`, `Checker/Defs`, `Dynamics`, `Step`), written as exact-text
-edits of the package's sources. For each mutant the script copies the package's pristine
-sources into a scratch copy under --work (never the package itself), applies the edits, and
-records the first of these that notices (kills) it:
+Each mutant is a small, deliberate change to the semantics and the checker: the L0 module
+`Syntax` and five of L1's seven modules (`Statics`, `Checker/Defs`, `Dynamics`, `Step`; README,
+"Layers"), written as exact-text edits of the package's sources. L1's statement vocabulary
+(`Soundness/Defs`, `Trace/Defs`, `Adequacy/Defs`) and L0's `Float` are not mutated (RUE-2490).
+For each mutant the script copies the package's pristine sources into a scratch copy under
+--work (never the package itself), applies the edits, and records the first of these that
+notices (kills) it:
 
-  proof    `lake build` fails in a proof: an L1 lemma or an L2 theorem (a proof breaks);
-  witness  `lake build` fails only in an example, witness or `#guard` (`Examples`,
-           `Witnesses`, `Corpus`, `Gen`, `Explain*`, or `Step.lean`'s `demo_*` theorems);
+  proof    `lake build` fails in a theorem of layers L0-L2 or the Spec layer (in practice an
+           L2 module: `*/Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`,
+           `TraceOrder`, `Spine`);
+  witness  `lake build` fails only in L3 (`Examples`, `Witnesses`, `Corpus`, `Print`,
+           `Explain`, ...) or in an `example`;
+  mirror   a witness failure that is only in `Explain.lean`, whose checker and interpreter
+           are second copies of `check` and `eval`: a mismatch between two copies of a
+           definition, not a test of what the definition means;
   corpus   the build succeeds but `lake exe ruecore-corpus` (the seed corpus: verdicts and
            expected outcomes) differs from the unmutated baseline;
   bridge   the seeds are unchanged, but the generated corpus (`--gen N --seed S`, 200 at
@@ -24,6 +31,10 @@ records the first of these that notices (kills) it:
            `gen-changed` and not run;
   survived nothing above notices.
 
+The module lists come from `RueCore/Layers.lean`'s `table`, the list the layering audit checks
+(`configure`): the mutants may edit layers 0-1, the proofs-off copy turns off every theorem of
+layers 0-3 (L0, L1, Spec, L2), and layer 4 (L3) holds the witnesses.
+
 A seed the mutant leaves unchanged cannot make the bridge disagree anew (its expectation is
 the baseline's, which the bridge already compares), so the bridge column is the generated
 cases alone. The kill order is the order above and the first killer is the mutant's result.
@@ -32,27 +43,33 @@ cases alone. The kill order is the order above and the first killer is the mutan
 destructures a rule's premises by position breaks when a premise is deleted, whether or not the
 statement it proves is still true. And the corpus imports the proofs, so a proof kill hides
 what the rest of the suite would say. So every mutant a proof kills is run a second time in a
-second scratch package in which every theorem of L0-L2 (`PROOF_FILES`) has its proof replaced
-by `sorry` (its statement kept; `Step.lean`'s `demo_*` witnesses kept), recording the first of
-witness / corpus / bridge / survived (or `definition`: an L0-L2 definition no longer
-elaborates). The proofs-off baseline must reproduce the baseline's corpus exactly. A changed
-case the mutant's checker accepts and its machine refuses is listed as `unsound`: a concrete
-counterexample to `check_sound` plus soundness, whatever the proof scripts say.
+second scratch package in which every theorem of layers 0-3 (`PROOF_FILES`) has its proof
+replaced by `sorry` (its statement kept), recording the first of witness / mirror / corpus /
+bridge / survived, or `definition` when a layer 0-1 definition no longer elaborates. A failure
+in a layer 2-3 proof there means the proofs-off copy is wrong, and the run stops with a script
+error rather than record it. The proofs-off baseline must reproduce the baseline's corpus
+exactly. A changed case the mutant's checker accepts and its machine refuses is listed as
+`unsound`: a concrete counterexample to `check_sound` plus soundness, whatever the proof
+scripts say.
 
-**The corpus-only pass.** Likewise a witness kill (at either level) hides what the corpus and
-the bridge alone would say, because `Corpus.lean` imports `Examples.lean`. Such a mutant is run
-a third time, in a third package that also turns off the witnesses: every `theorem` and
-`example` of `WITNESS_FILES` (and Step's `demo_*`) gets `sorry`, and each `#guard` is commented
-out. That pass records corpus / bridge / survived (or `definition`/`witness` if something still
-fails to elaborate). Each pass's baseline must reproduce the full baseline's corpus.
+**The corpus-only pass.** Likewise a witness or mirror kill (at either level) hides what the
+corpus and the bridge alone would say, because `Corpus.lean` imports `Examples.lean`. Such a
+mutant is run a third time, in a third package that also turns off the witnesses: every
+`theorem` and `example` of layer 4, and every `example` of layers 0-3, gets `sorry`, and each
+`#guard` is commented out. That pass records corpus / bridge / survived (or `definition` if a
+definition still fails to elaborate). Each pass's baseline must reproduce the full baseline's
+corpus.
 
 The results are written to <work>/results.json (one entry per mutant, merged across runs, so
-an interrupted run resumes where it stopped) and printed as a Markdown table with --table.
-The scratch packages' `.lake` directories are reused between mutants; --lake-cache seeds them
-from an existing build (a warm start). One build runs at a time.
+an interrupted run resumes where it stopped). `--table` prints them as MUTATION.md's table,
+with the reading of each proof kill (`RULINGS`). The scratch packages' `.lake` directories are
+reused between mutants; --lake-cache seeds them from an existing build (a warm start). One
+build runs at a time.
 
-The mutants are `MUTANTS` below; `--list` prints them and `--check` checks that every edit
-applies to the current sources exactly as many times as it says.
+The mutants are `MUTANTS` below; `--list` prints them. `--check` checks that every module of
+the package is in Layers.lean's table (and every entry is a module), that every mutant's edits
+apply to the current sources exactly as many times as they say and touch only layers 0-1, and
+that the proofs-off and witnesses-off copies turn off every theorem, example and `#guard`.
 
 Reproduce from a clean checkout:
   python3 docs/formal/lean/bin/mutate.py --work /tmp/rue-mut --compiler-root $PWD
@@ -62,9 +79,40 @@ import argparse, json, os, re, shutil, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_SRC = os.path.dirname(HERE)
 
-# Modules whose failures are examples/witnesses rather than proofs (README, "Layers": L3).
-WITNESS_MODULES = ("RueCore/Examples.lean", "RueCore/Witnesses.lean", "RueCore/Corpus.lean",
-                   "RueCore/Gen.lean", "RueCore/Explain.lean", "RueCore/Explain/", "RueCore/Print.lean")
+# The package's modules by layer, read from `RueCore/Layers.lean`'s `table` (the one list the
+# layering audit checks), so the lists below cannot drift from the package. The table's layer
+# numbers: 0 = L0 syntax, 1 = L1 definitions, 2 = the Spec statements, 3 = L2 proofs,
+# 4 = L3 tooling (README, "Layers"). `configure` fills them in from --src.
+LAYER_ENTRY = re.compile(r"\(`(RueCore(?:\.[\w.]+)?),\s*(\d+)\)")
+DEFINITION_LAYERS = (0, 1)      # what the mutants may edit
+PROOF_LAYERS = (0, 1, 2, 3)     # whose theorems the proofs-off pass turns off
+WITNESS_LAYERS = (4,)           # examples, witnesses, the corpus, the printer, Explain
+LAYER_OF = {}                   # "RueCore/X/Y.lean" -> layer
+DEFINITION_FILES = ()
+PROOF_FILES = ()
+WITNESS_FILES = ()
+# Explain's executable mirrors of the checker and the interpreter: a failure there is a
+# mismatch between two copies of a definition, not a test of the definition's meaning.
+MIRROR_FILES = ("RueCore/Explain.lean",)
+
+
+def module_path(name):
+    return name.replace(".", "/") + ".lean"
+
+
+def read_layers(src):
+    t = open(os.path.join(src, "RueCore/Layers.lean"), encoding="utf-8").read()
+    i = t.index("def table")
+    j = t.index("]", i)
+    return {module_path(n): int(l) for n, l in LAYER_ENTRY.findall(t[i:j])}
+
+
+def configure(src):
+    global LAYER_OF, DEFINITION_FILES, PROOF_FILES, WITNESS_FILES
+    LAYER_OF = read_layers(src)
+    DEFINITION_FILES = tuple(sorted(f for f, l in LAYER_OF.items() if l in DEFINITION_LAYERS))
+    PROOF_FILES = tuple(sorted(f for f, l in LAYER_OF.items() if l in PROOF_LAYERS))
+    WITNESS_FILES = tuple(sorted(f for f, l in LAYER_OF.items() if l in WITNESS_LAYERS))
 
 
 def E(file, old, new, count=1):
@@ -430,16 +478,10 @@ MUTANTS = [
 
 
 # ---------------------------------------------------------------------------------------
-# The proofs-off copy: every theorem of L0-L2 with its proof replaced by `sorry`.
+# The proofs-off copy: every theorem of layers 0-3 (`PROOF_FILES`) with its proof replaced
+# by `sorry`, and the witnesses-off copy: every theorem, example and `#guard` of layer 4 too.
 # ---------------------------------------------------------------------------------------
 
-PROOF_FILES = ("RueCore/Float.lean", "RueCore/Syntax.lean", "RueCore/Statics.lean",
-               "RueCore/Dynamics.lean", "RueCore/Step.lean", "RueCore/Soundness/Defs.lean",
-               "RueCore/Checker/Defs.lean", "RueCore/Trace/Defs.lean", "RueCore/Adequacy/Defs.lean",
-               "RueCore/Soundness.lean", "RueCore/Checker.lean", "RueCore/Trace.lean",
-               "RueCore/Adequacy.lean", "RueCore/TraceExact.lean", "RueCore/TraceOrder.lean")
-WITNESS_FILES = ("RueCore/Examples.lean", "RueCore/Witnesses.lean", "RueCore/Corpus.lean",
-                 "RueCore/Explain.lean", "RueCore/Print.lean")
 THEOREM = re.compile(r"(?m)^(?:private |protected )?theorem ([^\s:({]+)")
 EXAMPLE = re.compile(r"(?m)^(?:private |protected )?(?:theorem ([^\s:({]+)|example\b)")
 
@@ -476,18 +518,26 @@ def comment_mask(t):
     return m
 
 
-def sorry_proofs(t, witnesses=False):
-    """Replace the proof of every top-level `theorem` with `by sorry`, keeping its statement.
-    Step.lean's `demo_*` theorems are witnesses about example programs and are kept, unless
-    `witnesses` is set, when they go too, with every `example` and every `#guard`."""
+def decl_count(t, witnesses=False):
+    """The top-level declarations `sorry_proofs` must turn off: every `theorem`, and with
+    `witnesses` every `example` and `#guard` as well (outside comments and strings)."""
     mask = comment_mask(t)
-    out, pos = [], 0
+    n = sum(1 for mm in (EXAMPLE if witnesses else THEOREM).finditer(t) if not mask[mm.start()])
+    return n + (len(re.findall(r"(?m)^#guard ", t)) if witnesses else 0)
+
+
+def sorry_proofs(t, witnesses=False, stats=None):
+    """Replace the proof of every top-level `theorem` with `by sorry`, keeping its statement;
+    with `witnesses`, every `example` too, and comment out every `#guard`. `stats`, when a
+    list, receives the number of declarations turned off."""
+    mask = comment_mask(t)
+    out, pos, done = [], 0, 0
     if witnesses:
-        t = re.sub(r"(?m)^#guard .*$", lambda g: "-- " + g.group(0), t)
+        t, done = re.subn(r"(?m)^#guard .*$", lambda g: "-- " + g.group(0), t)
         mask = comment_mask(t)
     for mm in (EXAMPLE if witnesses else THEOREM).finditer(t):
         s = mm.start()
-        if s < pos or mask[s] or (not witnesses and (mm.group(1) or "").startswith("demo_")):
+        if s < pos or mask[s]:
             continue
         # The declaration ends at the next column-0 line outside a comment (or a docstring).
         e, k = len(t), t.find("\n", s)
@@ -521,7 +571,10 @@ def sorry_proofs(t, witnesses=False):
             raise ValueError("no proof found for " + mm.group(0))
         out += [t[pos:b], " := by sorry\n\n"]
         pos = e
+        done += 1
     out.append(t[pos:])
+    if stats is not None:
+        stats.append(done)
     return "".join(out)
 
 
@@ -551,8 +604,9 @@ def mutated_texts(src_dir, m):
 
 
 def write_texts(pkg, texts, level):
-    """Write sources at a level: 0 as they are, 1 with the L0-L2 proofs off, 2 with the
-    witnesses (`WITNESS_FILES`' theorems, examples and `#guard`s) off as well."""
+    """Write sources at a level: 0 as they are, 1 with the proofs of layers 0-3 off, 2 with
+    the witnesses (layer 4's theorems, examples and `#guard`s, and layers 0-3's examples) off
+    as well."""
     for f, t in texts.items():
         if level >= 1 and f in PROOF_FILES:
             t = sorry_proofs(t, witnesses=level >= 2)
@@ -589,16 +643,28 @@ def classify_build(pkg, log, level):
               "msg": msg[:120]} for f, ln, msg in errs]
 
     def witness(s):
-        return s["file"].startswith(WITNESS_MODULES) or s["decl"].split(" ")[-1].startswith("demo_") \
-            or s["decl"].startswith(("example", "#guard"))
+        return LAYER_OF.get(s["file"]) in WITNESS_LAYERS or s["decl"].startswith(("example", "#guard"))
     if all(witness(s) for s in sites):
         kind = "witness"
+    elif not level:
+        kind = "proof"
+    elif all(witness(s) or LAYER_OF.get(s["file"]) in DEFINITION_LAYERS for s in sites):
+        # With the proofs off, a failure in layers 0-1 is a definition that no longer
+        # elaborates (a termination proof, say).
+        kind = "definition"
     else:
-        # With the proofs off, a failure outside the witnesses is a definition (or a proof
-        # inside a definition) that no longer elaborates.
-        kind = "definition" if level else "proof"
+        # A proof in layers 2-3 failed although every proof there is off: the proofs-off copy
+        # is wrong (a module missing from `PROOF_FILES`), not the mutant.
+        raise ScriptError(f"proofs-off build failed in a proof module: {sites[0]}")
     first = next(s for s in sites if kind == "witness" or not witness(s))
-    return kind, f"{first['file'].replace('RueCore/', '')}:{first['line']} {first['decl']}", sites
+    where = f"{first['file'].replace('RueCore/', '')}:{first['line']} {first['decl']}"
+    if kind == "witness" and all(s["file"] in MIRROR_FILES for s in sites):
+        kind = "mirror"
+    return kind, where, sites
+
+
+class ScriptError(Exception):
+    pass
 
 
 def corpus(pkg, args):
@@ -689,6 +755,47 @@ def baseline(pkg, a):
     return {"seeds": seeds, "gen": gen}, secs
 
 
+def check(src):
+    """What `--check` verifies, as a list of one-line errors: every package module is in
+    Layers.lean's table and every table entry is a module; every mutant's edits apply exactly
+    and touch only layers 0-1; and in every module the proofs-off copy turns off every theorem
+    (and the witnesses-off copy every example and `#guard`), and doing it twice changes nothing but whitespace."""
+    errs = []
+    files = {os.path.relpath(os.path.join(r, f), src) for r, _, fs in os.walk(os.path.join(src, "RueCore"))
+             for f in fs if f.endswith(".lean")} | {"RueCore.lean"}
+    for f in sorted(files - set(LAYER_OF)):
+        errs.append(f"{f} is not in RueCore/Layers.lean's table, so no pass knows what it is")
+    for f in sorted(set(LAYER_OF) - files):
+        errs.append(f"{f} is in RueCore/Layers.lean's table but not in the package")
+    if errs:
+        return errs
+    for m in MUTANTS:
+        try:
+            texts = mutated_texts(src, m)
+        except ValueError as e:
+            errs.append(str(e))
+            continue
+        for f in texts:
+            if f not in DEFINITION_FILES:
+                errs.append(f"{m['id']} edits {f}, which is not in layers {DEFINITION_LAYERS}")
+    for f in PROOF_FILES + WITNESS_FILES:
+        t = open(os.path.join(src, f), encoding="utf-8").read()
+        for w in ((False, True) if f in PROOF_FILES else (True,)):
+            st = []
+            try:
+                once = sorry_proofs(t, witnesses=w, stats=st)
+            except ValueError as e:
+                errs.append(f"{f}: {e}")
+                continue
+            want = decl_count(t, witnesses=w)
+            if st[0] != want:
+                errs.append(f"{f}: turned off {st[0]} of {want} declarations ({'witnesses' if w else 'proofs'} off)")
+            ws = lambda x: re.sub(r"\s+", " ", x)
+            if ws(sorry_proofs(once, witnesses=w)) != ws(once):
+                errs.append(f"{f}: turning the {'witnesses' if w else 'proofs'} off twice changes the file")
+    return errs
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--src", default=DEFAULT_SRC)
@@ -704,6 +811,7 @@ def main():
     ap.add_argument("--redo", action="store_true", help="rerun mutants that already have a result")
     a = ap.parse_args()
     src = os.path.abspath(a.src)
+    configure(src)
     ids = [m["id"] for m in MUTANTS]
     assert len(ids) == len(set(ids)), "duplicate mutant id"
     if a.list:
@@ -712,15 +820,14 @@ def main():
         print(f"{len(MUTANTS)} mutants")
         return 0
     if a.check:
-        for m in MUTANTS:
-            for f, t in mutated_texts(src, m).items():
-                if f in PROOF_FILES:
-                    sorry_proofs(t)
-        for f in PROOF_FILES + WITNESS_FILES:
-            t = open(os.path.join(src, f), encoding="utf-8").read()
-            sorry_proofs(t)
-            sorry_proofs(t, witnesses=True)
-        print(f"{len(MUTANTS)} mutants apply cleanly to {src}")
+        errs = check(src)
+        for e in errs:
+            print("mutate.py --check: " + e)
+        if errs:
+            return 1
+        print(f"{len(MUTANTS)} mutants apply cleanly to {src}; {len(LAYER_OF)} modules classified "
+              f"({len(DEFINITION_FILES)} definition, {len(PROOF_FILES)} proof-bearing, {len(WITNESS_FILES)} tooling), "
+              "every theorem, example and #guard turned off by the proofs-off and witnesses-off copies")
         return 0
     if not a.work:
         ap.error("--work is required")
@@ -749,12 +856,27 @@ def main():
             shutil.copytree(pristine, pkg)
             if a.lake_cache:
                 shutil.copytree(os.path.join(a.lake_cache, ".lake"), os.path.join(pkg, ".lake"))
-        copy_pristine(pristine, pkg, allfiles, lv)
+        # Sources afresh: a reused package may hold modules the current sources no longer have.
+        for d in os.listdir(pkg):
+            if d != ".lake":
+                p = os.path.join(pkg, d)
+                shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+        shutil.copytree(pristine, pkg, dirs_exist_ok=True)
+        copy_pristine(pristine, pkg, [f for f in allfiles if f in LAYER_OF], lv)
         bases[lv], secs = baseline(pkg, a)
         print(f"baseline, {LEVELS[lv]}: {len(bases[lv]['seeds'])} seeds, "
-              f"{len(bases[lv]['gen']) - len(bases[lv]['seeds'])} generated ({a.gen} at seed {a.gen_seed}), build {secs:.0f}s", flush=True)
+              f"{len(bases[lv]['gen']) - len(bases[lv]['seeds'])} generated at seed {a.gen_seed}, build {secs:.0f}s", flush=True)
         if diff_cases(bases[0]["gen"], bases[lv]["gen"]):
             sys.exit(f"the {LEVELS[lv]} baseline's corpus differs from the baseline's")
+    try:
+        run_mutants(a, todo, results, resf, pristine, pkgs, bases, work)
+    except ScriptError as e:
+        print(f"mutate.py: script error, stopping: {e}", flush=True)
+        return 1
+    return 0
+
+
+def run_mutants(a, todo, results, resf, pristine, pkgs, bases, work):
     for m in todo:
         t0 = time.time()
         texts = mutated_texts(pristine, m)
@@ -795,7 +917,7 @@ def next_level(r, lv):
     k = r["killed"] if lv == 0 else r[PASS_KEYS[lv]]["killed"]
     if lv == 0 and k == "proof":
         return 1
-    if lv < 2 and k == "witness":
+    if lv < 2 and k in ("witness", "mirror"):
         return 2
     return None
 
