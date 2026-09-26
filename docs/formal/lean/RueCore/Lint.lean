@@ -105,10 +105,13 @@ def statements : List Name := Spec.spine.map (·.2)
 
 /-- (helper) Every entry of the Spec layer, each a theorem beside its
 statement: the spine (`Spec.spine`), then the non-vacuity witnesses
-(`Spec.witnesses`, RUE-2469). The statement/proof checks, Comparator's
+(`Spec.witnesses`, RUE-2469), then the sharpness counter-examples
+(`Spec.sharpness`, RUE-2485). The statement/proof checks, Comparator's
 challenge and configuration, and the fingerprints are over all of them; the
 headline list and the trusted base are the spine's alone. -/
-def entries : List (Name × Name) := Spec.spine ++ Spec.witnesses.map fun (h, s, _) => (h, s)
+def entries : List (Name × Name) :=
+  Spec.spine ++ Spec.witnesses.map (fun (h, s, _) => (h, s)) ++
+    Spec.sharpness.map fun (h, s, _) => (h, s)
 
 /-! ## Where a declaration lives -/
 
@@ -772,7 +775,8 @@ def spineName (thm : Name) : Name :=
 /-- (helper) What is wrong with the statement/proof split, if anything
 (RUE-2460), each as a sentence:
 
-* every entry of `Spec.spine` and of `Spec.witnesses` (`entries`) names a
+* every entry of `Spec.spine`, `Spec.witnesses` and `Spec.sharpness`
+  (`entries`) names a
   theorem of the environment and a `def … : Prop` declared in a Spec-layer
   module, and no entry is repeated;
 * each headline theorem's own statement *is* its Spec statement's body, the
@@ -782,7 +786,7 @@ def spineName (thm : Name) : Name :=
 * `RueCore.Spine.<name>` exists, is declared in `RueCore.Spine`, and has
   exactly the type `RueCore.Spec.<name>_stmt` (the kernel checked its proof,
   `@RueCore.<name>`, against that type);
-* every `…_stmt` definition of a Spec-layer module is in one of the two
+* every `…_stmt` definition of a Spec-layer module is in one of the three
   lists, and `RueCore.Spine` declares no other theorem, so nothing is stated
   or bound outside them;
 * every witness names at least one spine theorem, each a theorem of
@@ -798,7 +802,7 @@ def spineProblems (env : Environment) : Array String := Id.run do
   let mut seenS : NameSet := {}
   for (h, s) in entries do
     if seenT.contains h || seenS.contains s then
-      out := out.push s!"{h}/{s}: listed twice in RueCore.Spec.spine and RueCore.Spec.witnesses"
+      out := out.push s!"{h}/{s}: listed twice in RueCore.Spec.spine, RueCore.Spec.witnesses and RueCore.Spec.sharpness"
     seenT := seenT.insert h
     seenS := seenS.insert s
     let sLayer := (moduleOf? env s).bind Layers.layerOf?
@@ -826,11 +830,11 @@ def spineProblems (env : Environment) : Array String := Id.run do
     if Layers.layerOf? m == some Layers.specLayer then
       if let .defnInfo _ := info then
         if (n.toString.endsWith "_stmt") && !seenS.contains n then
-          out := out.push s!"{n}: a Spec statement neither RueCore.Spec.spine nor RueCore.Spec.witnesses lists"
+          out := out.push s!"{n}: a Spec statement none of RueCore.Spec.spine, RueCore.Spec.witnesses and RueCore.Spec.sharpness lists"
     if m == `RueCore.Spine then
       if let .thmInfo _ := info then
         if (rangeOf? env n).isSome && !(entries.any fun (h, _) => spineName h == n) then
-          out := out.push s!"{n}: a theorem of RueCore.Spine that binds no entry of RueCore.Spec.spine or RueCore.Spec.witnesses"
+          out := out.push s!"{n}: a theorem of RueCore.Spine that binds no entry of RueCore.Spec.spine, RueCore.Spec.witnesses or RueCore.Spec.sharpness"
   -- the witnesses (RUE-2469): each names spine theorems, and every spine
   -- theorem is named by some witness, so no spine statement is left without
   -- a non-vacuity witness
@@ -857,6 +861,88 @@ def spineProblems (env : Environment) : Array String := Id.run do
       | _ => out := out.push s!"{h} lists {t}, but {g} is missing: no kernel-checked application of the pair"
   return out
 
+/-! ## Sharpness: every hypothesis needed, or a reason (RUE-2485) -/
+
+/-- (helper) A statement's **hypotheses**: its binders of a `Prop` type,
+in the order they occur, walking its `∀`s, and the two sides of an `∧` or an
+`↔` and the body of an `∃` in its conclusion (`SPINE.md`'s "no hypotheses" is
+this list empty). `Spec.sharpness` and `Spec.sharpnessReasons` number a
+hypothesis by its place here, from 1. Each is returned as its type, with the
+binders before it in scope, pretty-printed. -/
+partial def hypotheses (e : Lean.Expr) : MetaM (Array String) := do
+  let e ← Meta.whnfR e
+  match e with
+  | .forallE _ d _ _ =>
+      let here ← if ← Meta.isProp d then pure #[toString (← Meta.ppExpr d)] else pure #[]
+      Meta.forallBoundedTelescope e (some 1) fun _ b => do
+        return here ++ (← hypotheses b)
+  | _ =>
+      match e.getAppFnArgs with
+      | (``And, #[a, b]) | (``Iff, #[a, b]) => return (← hypotheses a) ++ (← hypotheses b)
+      | (``Exists, #[_, f]) =>
+          match f with
+          | .lam n d b bi => Meta.withLocalDecl n bi d fun x => hypotheses (b.instantiate1 x)
+          | _ => return #[]
+      | _ => return #[]
+
+/-- (helper) The number of hypotheses of a spine theorem's statement, if the
+environment has the statement. -/
+def hypothesisCount (env : Environment) (thm : Name) : MetaM (Option Nat) := do
+  let some (_, s) := Spec.spine.find? (·.1 == thm) | return none
+  let some (.defnInfo v) := find? env s | return none
+  return some (← hypotheses v.value).size
+
+/-- (helper) What is wrong with the sharpness lists, if anything (RUE-2485),
+each as a sentence:
+
+* every pair of `Spec.sharpness` and `Spec.sharpnessReasons` names a theorem
+  of `Spec.spine` and one of its hypotheses (`1 ≤ i ≤` the number
+  `hypotheses` counts), every counter-example names at least one pair, and
+  every reason is a sentence;
+* **every hypothesis of every spine statement** is named by a counter-example
+  or by a reason, and not by both; a statement with no hypotheses (five) is
+  named by neither.
+
+The counter-example statements themselves are `entries`, so `spineProblems`
+holds each to a spine entry's checks. -/
+def sharpProblems (env : Environment) : MetaM (Array String) := do
+  let mut out := #[]
+  let mut counts : NameMap Nat := {}
+  for (t, _) in Spec.spine do
+    if let some k ← hypothesisCount env t then counts := counts.insert t k
+  let check (what : String) (t : Name) (i : Nat) : Option String :=
+    match counts.find? t with
+    | none => some s!"{what} names {t}, which is not a theorem of RueCore.Spec.spine"
+    | some k =>
+        if i == 0 || i > k then
+          some s!"{what} names hypothesis {i} of {t}, which has {k} hypotheses (`Lint.hypotheses`)"
+        else none
+  for (h, _, ps) in Spec.sharpness do
+    if ps.isEmpty then
+      out := out.push s!"{h}: a counter-example in RueCore.Spec.sharpness that names no spine hypothesis"
+    for (t, i) in ps do
+      if let some p := check s!"{h}" t i then out := out.push p
+  for (t, i, r) in Spec.sharpnessReasons do
+    if let some p := check "RueCore.Spec.sharpnessReasons" t i then out := out.push p
+    if r.all Char.isWhitespace then
+      out := out.push s!"{t}: hypothesis {i} has an empty reason in RueCore.Spec.sharpnessReasons"
+  for (t, _) in Spec.spine do
+    let k := (counts.find? t).getD 0
+    for i in List.range' 1 k do
+      let byEx := Spec.sharpness.any fun (_, _, ps) => ps.contains (t, i)
+      let byReason := Spec.sharpnessReasons.any fun (t', i', _) => t' == t && i' == i
+      if !byEx && !byReason then
+        out := out.push s!"{t}: hypothesis {i} has no counter-example in RueCore.Spec.sharpness and no reason in RueCore.Spec.sharpnessReasons"
+      if byEx && byReason then
+        out := out.push s!"{t}: hypothesis {i} has both a counter-example and a reason; keep one"
+  return out
+
+/-- (helper) The lists the Spec layer holds beside its statements: the spine,
+the non-vacuity witnesses (RUE-2469), and the sharpness counter-examples and
+reasons (RUE-2485). -/
+def specLists : List Name :=
+  [``Spec.spine, ``Spec.witnesses, ``Spec.sharpness, ``Spec.sharpnessReasons]
+
 /-- (helper) What is wrong with the layers' shapes, if anything (RUE-2460),
 each as a sentence. Two invariants the statement/proof split rests on:
 
@@ -869,8 +955,9 @@ each as a sentence. Two invariants the statement/proof split rests on:
   structure's definition. L0 is not held to this:
   `Syntax.lean` and `Float.lean` keep their few well-formedness lemmas.
 * **The Spec layer holds statements only.** Every declaration a Spec module
-  writes is either a `…_stmt` that `Spec.spine` or `Spec.witnesses` lists,
-  or one of the two lists itself: no theorem (a proof there would ride into Comparator's challenge,
+  writes is either a `…_stmt` that `Spec.spine`, `Spec.witnesses` or
+  `Spec.sharpness` lists, or one of the Spec lists itself (`specLists`, with
+  `Spec.sharpnessReasons`): no theorem (a proof there would ride into Comparator's challenge,
   which imports what the statements need) and no helper definition (which
   would enter the trusted base as a statement's word without being one).
 
@@ -891,8 +978,8 @@ def layerShapeProblems (env : Environment) : Array String := Id.run do
       | .thmInfo _ =>
           out := out.push s!"{n}: a theorem in Spec module {m}; the Spec layer holds statements only, so move it to L2"
       | _ =>
-          if !(stmts.contains n || n == ``Spec.spine || n == ``Spec.witnesses) then
-            out := out.push s!"{n}: a declaration of Spec module {m} that is neither Spec.spine, Spec.witnesses nor a `_stmt` they list; the Spec layer holds statements only"
+          if !(stmts.contains n || specLists.contains n) then
+            out := out.push s!"{n}: a declaration of Spec module {m} that is neither one of the Spec lists ({specLists}) nor a `_stmt` they list; the Spec layer holds statements only"
   return out
 
 /-- (helper) The trusted base as `TRUST.md`'s "Trusted base" section. -/
