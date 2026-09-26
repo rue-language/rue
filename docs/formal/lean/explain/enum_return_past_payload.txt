@@ -283,7 +283,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †]
          result  value 5 — handed past this node by a `return` (§6.9)
   [22]  d0  (D-Return)/(D-Return-Main) §6.9 (the callee's return is the call's value)
-         expr    absorb 5
+         expr    bindCall 5
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †]
          result  value 5

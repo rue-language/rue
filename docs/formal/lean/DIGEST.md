@@ -494,7 +494,7 @@ theorem RueCore.overwriteOk_iff {D : Decls} {u : OwnSt} {T : Ty} :
 
 **The §5.5 join is commutative**, at one path and its subtree. Joining is
 symmetric in the two arms: where one side is wholly `Owned` the result is the
-other side subject to `ownedJoinOk`, where one side is `MovedOut` the result is
+other side subject to `ownedJoinable`, where one side is `MovedOut` the result is
 `MovedOut` subject to the other's residue, and two field records join slot by
 slot — each of which reads the same from either side.
 
@@ -546,59 +546,59 @@ theorem RueCore.residualLinear_mult_linear {D : Decls} (hD : WfStructs D) (t : O
   (T : Ty) : residualLinear D t T = true → Ty.mult D T = Mult.linear
 ```
 
-### `ownedJoinOk_residualLinear`
+### `ownedJoinable_residualLinear`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
 **The other half: what an `Owned` arm may absorb still carries the type's
-obligation.** `ownedJoinOk` admits exactly the `MovedOut` paths whose type is
+obligation.** `ownedJoinable` admits exactly the `MovedOut` paths whose type is
 not `Linear` (`3.8:50`), so a state it admits at a `Linear` type still has
 residue somewhere — a wholly moved-out linear subtree is what it refuses.
 
 ```lean
-theorem RueCore.ownedJoinOk_residualLinear {D : Decls} (hD : WfStructs D) (t : OwnSt)
-  (T : Ty) :
-  ownedJoinOk D t T = true →
+theorem RueCore.ownedJoinable_residualLinear {D : Decls} (hD : WfStructs D)
+  (t : OwnSt) (T : Ty) :
+  ownedJoinable D t T = true →
     Ty.mult D T = Mult.linear → residualLinear D t T = true
 ```
 
-### `ownedJoinOk_of_residualLinear_false`
+### `ownedJoinable_of_residualLinear_false`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-**A residue-free state answers `ownedJoinOk` exactly as `MovedOut` does**:
+**A residue-free state answers `ownedJoinable` exactly as `MovedOut` does**:
 joining it with a wholly `Owned` arm is admissible exactly when `class(T)` is
 not `Linear`, which is the same test §5.5 applies at the `MovedOut`/`Owned`
 disagreement (`3.8:50`). This is the step that needs `OwnSt.wf`: at a type with
-no slots, `.fields` is a state `ownedJoinOk` refuses and `residualLinear`
+no slots, `.fields` is a state `ownedJoinable` refuses and `residualLinear`
 cannot see, and that gap is `Examples.lean`'s counterexample to associativity
 without the invariant.
 
 ```lean
-theorem RueCore.ownedJoinOk_of_residualLinear_false {D : Decls} (hD : WfStructs D)
+theorem RueCore.ownedJoinable_of_residualLinear_false {D : Decls} (hD : WfStructs D)
   (t : OwnSt) (T : Ty) :
   OwnSt.wf D t T = true →
     residualLinear D t T = false →
-      ownedJoinOk D t T = decide (Ty.mult D T ≠ Mult.linear)
+      ownedJoinable D t T = decide (Ty.mult D T ≠ Mult.linear)
 ```
 
-### `OwnSt.join_ownedJoinOk`
+### `OwnSt.join_ownedJoinable`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
 **A successful §5.5 join neither adds nor removes an inadmissible
-`MovedOut`**: both arms and the result answer `ownedJoinOk` alike, so joining a
+`MovedOut`**: both arms and the result answer `ownedJoinable` alike, so joining a
 third, wholly `Owned` arm before or after asks the same question (`3.8:50`).
 One of the two facts `OwnSt.join_assoc` turns on.
 
 ```lean
-theorem RueCore.OwnSt.join_ownedJoinOk {D : Decls} (hD : WfStructs D) (b c : OwnSt)
+theorem RueCore.OwnSt.join_ownedJoinable {D : Decls} (hD : WfStructs D) (b c : OwnSt)
   (T : Ty) (r : OwnSt) :
   OwnSt.wf D b T = true →
     OwnSt.wf D c T = true →
       OwnSt.join D b c T = some r →
-        ownedJoinOk D b T = ownedJoinOk D r T ∧
-          ownedJoinOk D c T = ownedJoinOk D r T
+        ownedJoinable D b T = ownedJoinable D r T ∧
+          ownedJoinable D c T = ownedJoinable D r T
 ```
 
 ### `OwnSt.join_residualLinear`
@@ -663,7 +663,7 @@ counterexample each rules out; `WfStructs` is one a
 well-formed program already carries (`checkStructs_sound`).
 
 The nine outer cases reduce to three shapes. Where an arm is wholly `Owned` the
-join is the other arm subject to `ownedJoinOk`, and `OwnSt.join_ownedJoinOk`
+join is the other arm subject to `ownedJoinable`, and `OwnSt.join_ownedJoinable`
 says the result answers that test as its operands do. Where an arm is
 `MovedOut` the join is `MovedOut` subject to the other's residue, and
 `OwnSt.join_residualLinear` with `OwnSt.join_exists` says the two bracketings
@@ -941,7 +941,7 @@ theorem RueCore.Contents.mult_toVal (D : Decls) (c : Contents) (v : Val)
 Every `Step` is the one `step` computes (§6).
 
 ```lean
-theorem RueCore.Step.step_eq {M : FloatOps} {P : Program} {C C' : Config}
+theorem RueCore.Step.step_eq {M : FloatSig} {P : Program} {C C' : Config}
   (h : Step M P C C') : step M P C = StepOut.next C'
 ```
 
@@ -957,7 +957,7 @@ and the pairs that share one — (D-Use-Copy)/(D-Use-Move)/(D-Use-Declared-Linea
 configuration.
 
 ```lean
-theorem RueCore.Step.det {M : FloatOps} {P : Program} {C C₁ C₂ : Config}
+theorem RueCore.Step.det {M : FloatSig} {P : Program} {C C₁ C₂ : Config}
   (h₁ : Step M P C C₁) (h₂ : Step M P C C₂) : C₁ = C₂
 ```
 
@@ -968,7 +968,7 @@ theorem RueCore.Step.det {M : FloatOps} {P : Program} {C C₁ C₂ : Config}
 A terminal configuration takes no step: `✓n` and `↯κ` are final (§6.12).
 
 ```lean
-theorem RueCore.Step.terminal {M : FloatOps} {P : Program} {C C' : Config}
+theorem RueCore.Step.terminal {M : FloatSig} {P : Program} {C C' : Config}
   (hC : C.Terminal) : ¬Step M P C C'
 ```
 
@@ -981,7 +981,7 @@ one step. With `Step.step_eq` this is what makes `step`'s other two answers
 an enumeration of the configurations that take no step.
 
 ```lean
-theorem RueCore.step_iff {M : FloatOps} {P : Program} {C C' : Config} :
+theorem RueCore.step_iff {M : FloatSig} {P : Program} {C C' : Config} :
   Step M P C C' ↔ step M P C = StepOut.next C'
 ```
 
@@ -993,7 +993,7 @@ theorem RueCore.step_iff {M : FloatOps} {P : Program} {C C' : Config} :
 `↯κ` (§6.12's (Result-Ok) and (Result-Panic)).
 
 ```lean
-theorem RueCore.step_halted_iff {M : FloatOps} {P : Program} {C : Config} :
+theorem RueCore.step_halted_iff {M : FloatSig} {P : Program} {C : Config} :
   step M P C = StepOut.halted ↔ C.Terminal
 ```
 
@@ -1006,7 +1006,7 @@ phrasing of progress): the three cases are exclusive (`step` is a function)
 and exhaustive, and a stuck one is named.
 
 ```lean
-theorem RueCore.Config.trichotomy (M : FloatOps) (P : Program) (C : Config) :
+theorem RueCore.Config.trichotomy (M : FloatSig) (P : Program) (C : Config) :
   (∃ C', Step M P C C') ∨ C.Terminal ∨ ∃ w, Config.Stuck M P C w
 ```
 
@@ -1020,7 +1020,7 @@ stuck. This is what makes `Config.Stuck` a statement about the relation and not
 only about the function's labels.
 
 ```lean
-theorem RueCore.Config.stuck_iff {M : FloatOps} {P : Program} {C : Config} :
+theorem RueCore.Config.stuck_iff {M : FloatSig} {P : Program} {C : Config} :
   (¬C.Terminal ∧ ∀ (C' : Config), ¬Step M P C C') ↔ ∃ w, Config.Stuck M P C w
 ```
 
@@ -1031,7 +1031,7 @@ theorem RueCore.Config.stuck_iff {M : FloatOps} {P : Program} {C : Config} :
 A stuck configuration takes no step (§6).
 
 ```lean
-theorem RueCore.Config.Stuck.no_step {M : FloatOps} {P : Program} {C C' : Config}
+theorem RueCore.Config.Stuck.no_step {M : FloatSig} {P : Program} {C C' : Config}
   {w : Violation} (h : Config.Stuck M P C w) : ¬Step M P C C'
 ```
 
@@ -1045,7 +1045,7 @@ never on `linearLeak`, `linearOverwrite`, `linearDiscard` or `ownedUnderCopy`,
 the four monitors `eval` adds and §6.3, §6.5, §6.7 and §6.8 do not have.
 
 ```lean
-theorem RueCore.step_stuck_isStuckState {M : FloatOps} {P : Program} {C : Config}
+theorem RueCore.step_stuck_isStuckState {M : FloatSig} {P : Program} {C : Config}
   {w : Violation} (h : Config.Stuck M P C w) : w.isStuckState = true
 ```
 
@@ -1273,7 +1273,7 @@ The same, over the two machine values §5.8's operator rules give one
 them.
 
 ```lean
-theorem RueCore.evalBinOp_res {D : Decls} (M : FloatOps) (op : BinOp) (w : IntWidth)
+theorem RueCore.evalBinOp_res {D : Decls} (M : FloatSig) (op : BinOp) (w : IntWidth)
   (s : Sign) (n₁ n₂ : Int) (hop : op.intAdmits = true) :
   (∃ v,
       evalBinOp M op (Val.int w s n₁) (Val.int w s n₂) = OpRes.val v ∧
@@ -1290,14 +1290,14 @@ traps.** The value cases are (D-Float-Arith), (D-Float-Ord) and (D-Total-Cmp);
 there is no trap case at all, which is `3.12:21` and §6.4's note that no
 arithmetic trap rule is stated over a float redex. `M.arith_wf` is §7's
 closure law — the one thing about `⊕_w` that cannot be proved of an arbitrary
-`FloatOps` — and it is what re-establishes `HasTy` at the result.
+`FloatSig` — and it is what re-establishes `HasTy` at the result.
 
 ```lean
 theorem RueCore.binOpFloat_res {D : Decls} (M : FloatModel) (op : BinOp)
   (w : FloatWidth) (a b : FloatDatum) (ha : FloatDatum.Wf w a)
   (hb : FloatDatum.Wf w b) (hop : op.floatAdmits = true) :
   ∃ v,
-    binOpFloat M.toFloatOps op w a b = OpRes.val v ∧
+    binOpFloat M.toFloatSig op w a b = OpRes.val v ∧
       HasTy D v (op.resultTy (Ty.float w))
 ```
 
@@ -1314,7 +1314,7 @@ theorem RueCore.evalBinOpFloat_res {D : Decls} (M : FloatModel) (op : BinOp)
   (w : FloatWidth) (a b : FloatDatum) (ha : FloatDatum.Wf w a)
   (hb : FloatDatum.Wf w b) (hop : op.floatAdmits = true) :
   ∃ v,
-    evalBinOp M.toFloatOps op (Val.float w a) (Val.float w b) = OpRes.val v ∧
+    evalBinOp M.toFloatSig op (Val.float w a) (Val.float w b) = OpRes.val v ∧
       HasTy D v (op.resultTy (Ty.float w))
 ```
 
@@ -1388,7 +1388,7 @@ theorem RueCore.evalUnOp_float_res {D : Decls} (w : FloatWidth) (f : FloatDatum)
 theorem RueCore.evalFintrin_int_res {D : Decls} (M : FloatModel) (w : FloatWidth)
   (w' : IntWidth) (s' : Sign) (n : Int) :
   ∃ v,
-    evalFintrin M.toFloatOps (FloatIntrin.intToFloat w) (Val.int w' s' n) =
+    evalFintrin M.toFloatSig (FloatIntrin.intToFloat w) (Val.int w' s' n) =
         OpRes.val v ∧
       HasTy D v (Ty.float w)
 ```
@@ -1411,9 +1411,9 @@ theorem RueCore.evalFintrin_float_res {D : Decls} (M : FloatModel) (k : FloatInt
   (w : FloatWidth) (f : FloatDatum) (hw : FloatDatum.Wf w f)
   (hk : k.floatSrc w = true) :
   (∃ v,
-      evalFintrin M.toFloatOps k (Val.float w f) = OpRes.val v ∧
+      evalFintrin M.toFloatSig k (Val.float w f) = OpRes.val v ∧
         HasTy D v (k.resTy w)) ∨
-    evalFintrin M.toFloatOps k (Val.float w f) = OpRes.trap PanicKind.overflow
+    evalFintrin M.toFloatSig k (Val.float w f) = OpRes.trap PanicKind.overflow
 ```
 
 ### `splitResidue_ok`
@@ -1479,7 +1479,7 @@ theorem RueCore.destructure_ok {D : Decls} (hwf : WfDecls D) (ℓ : Nat) {c : Co
     Contents.destructure D ℓ c πs =
         Except.ok
           (leaf,
-            dropResidueEvents D ℓ rs ++ [Event.consume (c.skeleton πs)]) ∧
+            dropResidueEvents D ℓ rs ++ [Event.consume (c.pathOnly πs)]) ∧
       ContentsTy D leaf T' ∧ leaf.holeFree = true
 ```
 
@@ -1605,20 +1605,20 @@ theorem RueCore.runAllScopeDrops_ok {D : Decls} {Γ : Ctx} {φ : Frame} {H : Sto
         ∀ (ℓ : Nat), ¬ℓ ∈ φ.env → H'[ℓ]? = H[ℓ]?
 ```
 
-### `ownedJoinOk_matches`
+### `ownedJoinable_matches`
 
 *theorem* · module `RueCore.Soundness`
 
 **Joining a wholly-`Owned` arm with `t` yields `t`, and the `Owned` arm's
 contents still matches it.** The `Owned` side never adds a move, so the only
 question the join asks is whether each path `t` has `MovedOut` may be lost —
-which `ownedJoinOk` has answered, and which the invariant's asymmetric
+which `ownedJoinable` has answered, and which the invariant's asymmetric
 `movedOut` clause then admits (`3.8:50`, `3.8:60`).
 
 ```lean
-theorem RueCore.ownedJoinOk_matches {D : Decls} (hwf : WfDecls D) (t : OwnSt) {T : Ty}
-  {c : Contents} :
-  ownedJoinOk D t T = true →
+theorem RueCore.ownedJoinable_matches {D : Decls} (hwf : WfDecls D) (t : OwnSt)
+  {T : Ty} {c : Contents} :
+  ownedJoinable D t T = true →
     ContentsMatches D c OwnSt.owned T → ContentsMatches D c t T
 ```
 
@@ -1754,7 +1754,7 @@ theorem RueCore.matches_mintParams {D : Decls} (ps : List Param) (vs : List Val)
 *theorem* · module `RueCore.Soundness`
 
 **(D-Match) §6.6 establishes the arm's entry invariant.** The payload cells
-hold the payload components and (Match) §5.5's `Σ0[ x_{ij} ↦ Owned ]` — `armCtx`
+hold the payload components and (Match) §5.5's `Σ0[ x_{ij} ↦ Owned ]` — `extendArm`
 — describes exactly them, on top of the frame the `match` was evaluated in. This
 is `matches_mintParams` read over a non-empty base frame: the same minting, the
 same two `reverse`s (a payload tuple is written left to right while `Ctx` and
@@ -1793,13 +1793,13 @@ theorem RueCore.args_sound (M : FloatModel) {P : Program} {fuel : Nat}
         ∀ {φ : Frame} {H : Store},
           FrameMatches P.decls Γ φ H →
             EvalOk P.decls T R Ω.norm Ω.brk φ H
-              (eval M.toFloatOps fuel P H φ e))
+              (eval M.toFloatSig fuel P H φ e))
   (es : List Expr) {R : Ty} {Γ : Ctx} {Ω : Out} {Ts : List Ty} {φ : Frame}
   {H : Store} :
   TypedArgs P R Γ es Ts Ω →
     FrameMatches P.decls Γ φ H →
       ArgsOk P.decls R Ts Ω.norm Ω.brk φ H
-        (evalArgs (fun H' e => eval M.toFloatOps fuel P H' φ e) H es)
+        (evalArgs (fun H' e => eval M.toFloatSig fuel P H' φ e) H es)
 ```
 
 ### `soundness`
@@ -1831,7 +1831,7 @@ theorem RueCore.soundness (M : FloatModel) {P : Program} (hwf : WfProgram P)
   Typed P R Γ e T Ω →
     ∀ {φ : Frame} {H : Store},
       FrameMatches P.decls Γ φ H →
-        EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatOps fuel P H φ e)
+        EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
 ### `fuel_mono`
@@ -1846,7 +1846,7 @@ interpreter's own device, not a §6 notion, so what this lemma is about is the
 claim `eval` makes on behalf of §6's machine.
 
 ```lean
-theorem RueCore.fuel_mono (M : FloatOps) {P : Program} {H : Store} {φ : Frame}
+theorem RueCore.fuel_mono (M : FloatSig) {P : Program} {H : Store} {φ : Frame}
   {e : Expr} {n m : Nat} :
   n ≤ m →
     eval M n P H φ e ≠ EvalRes.outOfFuel → eval M m P H φ e = eval M n P H φ e
@@ -1863,7 +1863,7 @@ program some fuel completes, and the `outOfFuel` escape hatch in the §7
 theorems (§6's machine has no such state) cannot be what makes them true.
 
 ```lean
-theorem RueCore.no_masking (M : FloatOps) {P : Program} {H : Store} {φ : Frame}
+theorem RueCore.no_masking (M : FloatSig) {P : Program} {H : Store} {φ : Frame}
   {e : Expr} {n m : Nat} {w : Violation}
   (hn : eval M n P H φ e = EvalRes.stuck w)
   (hm : eval M m P H φ e ≠ EvalRes.outOfFuel) :
@@ -1879,7 +1879,7 @@ ordinary call, and the call boundary absorbs an unwinding `return` exactly as
 it does anywhere, so a program's outcome is never a `returned` result.
 
 ```lean
-theorem RueCore.run_ne_returned (M : FloatOps) {P : Program} {fuel : Nat} (H : Store)
+theorem RueCore.run_ne_returned (M : FloatSig) {P : Program} {fuel : Nat} (H : Store)
   (v : Val) (tr : List Event) : run M P fuel ≠ EvalRes.returned H v tr
 ```
 
@@ -1896,10 +1896,10 @@ produces a value of the entry point's declared return type. It never reaches a
 theorem RueCore.run_safe (M : FloatModel) {P : Program} {fd : FnDef}
   (hwf : WfProgram P) (h0 : P.fns[0]? = some fd) (hp : fd.params = [])
   (fuel : Nat) :
-  run M.toFloatOps P fuel = EvalRes.outOfFuel ∨
-    (∃ k tr, run M.toFloatOps P fuel = EvalRes.panic k tr) ∨
+  run M.toFloatSig P fuel = EvalRes.outOfFuel ∨
+    (∃ k tr, run M.toFloatSig P fuel = EvalRes.panic k tr) ∨
       ∃ H v tr,
-        run M.toFloatOps P fuel = EvalRes.ok H v tr ∧ HasTy P.decls v fd.ret
+        run M.toFloatSig P fuel = EvalRes.ok H v tr ∧ HasTy P.decls v fd.ret
 ```
 
 ### `ProgramTyped.run_safe`
@@ -1917,10 +1917,10 @@ theorem RueCore.ProgramTyped.run_safe (M : FloatModel) {P : Program}
   (h : ProgramTyped P) (fuel : Nat) :
   ∃ fd,
     P.fns[0]? = some fd ∧
-      (run M.toFloatOps P fuel = EvalRes.outOfFuel ∨
-        (∃ k tr, run M.toFloatOps P fuel = EvalRes.panic k tr) ∨
+      (run M.toFloatSig P fuel = EvalRes.outOfFuel ∨
+        (∃ k tr, run M.toFloatSig P fuel = EvalRes.panic k tr) ∨
           ∃ H v tr,
-            run M.toFloatOps P fuel = EvalRes.ok H v tr ∧
+            run M.toFloatSig P fuel = EvalRes.ok H v tr ∧
               HasTy P.decls v fd.ret)
 ```
 
@@ -1971,7 +1971,7 @@ covered.
 
 ```lean
 theorem RueCore.no_violation (M : FloatModel) {P : Program} (h : ProgramTyped P)
-  (fuel : Nat) (w : Violation) : run M.toFloatOps P fuel ≠ EvalRes.stuck w
+  (fuel : Nat) (w : Violation) : run M.toFloatSig P fuel ≠ EvalRes.stuck w
 ```
 
 ### `no_use_after_move`
@@ -1983,7 +1983,7 @@ theorem RueCore.no_violation (M : FloatModel) {P : Program} (h : ProgramTyped P)
 ```lean
 theorem RueCore.no_use_after_move (M : FloatModel) {P : Program} (h : ProgramTyped P)
   (fuel : Nat) :
-  run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.useAfterMove
+  run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterMove
 ```
 
 ### `no_use_after_drop`
@@ -2004,7 +2004,7 @@ cells `Matches` says are live or moved out and pairwise distinct).
 ```lean
 theorem RueCore.no_use_after_drop (M : FloatModel) {P : Program} (h : ProgramTyped P)
   (fuel : Nat) :
-  run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.useAfterDrop
+  run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterDrop
 ```
 
 ### `no_linear_leak`
@@ -2016,7 +2016,7 @@ exit (§6.7) nor a frame unwind (§6.9) ever sees a live linear value.
 
 ```lean
 theorem RueCore.no_linear_leak (M : FloatModel) {P : Program} (h : ProgramTyped P)
-  (fuel : Nat) : run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearLeak
+  (fuel : Nat) : run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearLeak
 ```
 
 ### `no_linear_overwrite`
@@ -2032,7 +2032,7 @@ accepted.
 ```lean
 theorem RueCore.no_linear_overwrite (M : FloatModel) {P : Program}
   (h : ProgramTyped P) (fuel : Nat) :
-  run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearOverwrite
+  run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearOverwrite
 ```
 
 ### `no_linear_discard`
@@ -2044,7 +2044,7 @@ theorem RueCore.no_linear_overwrite (M : FloatModel) {P : Program}
 ```lean
 theorem RueCore.no_linear_discard (M : FloatModel) {P : Program} (h : ProgramTyped P)
   (fuel : Nat) :
-  run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearDiscard
+  run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearDiscard
 ```
 
 ### `check_sound`
@@ -2198,7 +2198,7 @@ machine maintains itself, and `DtorNotCopy` (inside `TraceMeasure`, for
 `dtorIds`) is the one fact it needs about the declarations.
 
 ```lean
-theorem RueCore.eval_conserves (M : FloatOps) {P : Program} {F : Event → List Nat}
+theorem RueCore.eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
   (hF : TraceMeasure P.decls F) (fuel : Nat) (H : Store) (φ : Frame)
   (e : Expr) : StoreCC P.decls H → Cons P.decls F H [] (eval M fuel P H φ e)
 ```
@@ -2216,7 +2216,7 @@ owned value hidden under a `Copy` node — that would let a copy duplicate it
 (`Contents.copyClosed`).
 
 ```lean
-theorem RueCore.freed_once (M : FloatOps) (P : Program) (fuel a : Nat) :
+theorem RueCore.freed_once (M : FloatSig) (P : Program) (fuel a : Nat) :
   List.count a (freedIds P.decls (run M P fuel).trace) ≤ 1
 ```
 
@@ -2230,7 +2230,7 @@ ran on. It needs only that a destructor-bearing struct is not `Copy`
 (`3.9:31`), which `WfDecls` gives (`WfDecls.dtorNotCopy`).
 
 ```lean
-theorem RueCore.dtor_once (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls)
+theorem RueCore.dtor_once (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls)
   (fuel a : Nat) : List.count a (dtorIds (run M P fuel).trace) ≤ 1
 ```
 
@@ -2259,10 +2259,10 @@ place becomes `⊘`.
 ```lean
 theorem RueCore.no_double_free (M : FloatModel) {P : Program} (h : ProgramTyped P)
   (fuel : Nat) :
-  (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+  (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
     (∀ (a : Nat),
-        List.count a (freedIds P.decls (run M.toFloatOps P fuel).trace) ≤ 1) ∧
-      ∀ (a : Nat), List.count a (dtorIds (run M.toFloatOps P fuel).trace) ≤ 1
+        List.count a (freedIds P.decls (run M.toFloatSig P fuel).trace) ≤ 1) ∧
+      ∀ (a : Nat), List.count a (dtorIds (run M.toFloatSig P fuel).trace) ≤ 1
 ```
 
 ### `dupProgram_step_double_free`
@@ -2274,7 +2274,7 @@ destroyed through `p.x0` and again through `q.x0`, so `dtorIds` names `0`
 twice.
 
 ```lean
-theorem RueCore.dupProgram_step_double_free (M : FloatOps) :
+theorem RueCore.dupProgram_step_double_free (M : FloatSig) :
   ∃ H,
     Steps M dupProgram Config.init
         (Config.run H { env := [], scope := [] } []
@@ -2313,7 +2313,7 @@ panic, an unwinding `return` and an unwinding `break` are each reached by
 proof is a strong induction on fuel with one lemma per form.
 
 ```lean
-theorem RueCore.eval_sim (M : FloatOps) (P : Program) (fuel : Nat) : SimIH M P fuel
+theorem RueCore.eval_sim (M : FloatSig) (P : Program) (fuel : Nat) : SimIH M P fuel
 ```
 
 ### `run_sim`
@@ -2328,7 +2328,7 @@ every program: a value `run` returns is a terminal configuration `✓` that
 refusal on `eval`'s side.
 
 ```lean
-theorem RueCore.run_sim (M : FloatOps) (P : Program) (fuel : Nat) :
+theorem RueCore.run_sim (M : FloatSig) (P : Program) (fuel : Nat) :
   (∀ (H : Store) (v : Val) (tr : List Event),
       run M P fuel = EvalRes.ok H v tr →
         Steps M P Config.init
@@ -2356,14 +2356,14 @@ is not a state of §6's machine. The converse, completeness modulo fuel, is
 ```lean
 theorem RueCore.eval_sound (M : FloatModel) {P : Program} (h : ProgramTyped P)
   (fuel : Nat) :
-  (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+  (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
     (∀ (H : Store) (v : Val) (tr : List Event),
-        run M.toFloatOps P fuel = EvalRes.ok H v tr →
-          Steps M.toFloatOps P Config.init
+        run M.toFloatSig P fuel = EvalRes.ok H v tr →
+          Steps M.toFloatSig P Config.init
             (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
       ∀ (k : PanicKind) (tr : List Event),
-        run M.toFloatOps P fuel = EvalRes.panic k tr →
-          Steps M.toFloatOps P Config.init (Config.panic k tr)
+        run M.toFloatSig P fuel = EvalRes.panic k tr →
+          Steps M.toFloatSig P Config.init (Config.panic k tr)
 ```
 
 ### `eval_steps_of_outOfFuel`
@@ -2380,7 +2380,7 @@ re-evaluation. No typing hypothesis. The proof is a strong induction on fuel,
 as `eval_sim`'s is.
 
 ```lean
-theorem RueCore.eval_steps_of_outOfFuel (M : FloatOps) (P : Program) (fuel : Nat) :
+theorem RueCore.eval_steps_of_outOfFuel (M : FloatSig) (P : Program) (fuel : Nat) :
   LongIH M P fuel
 ```
 
@@ -2397,7 +2397,7 @@ monitors and its `@drop ⊘` refusal sit (RUE-2314); `eval_complete` removes it
 on checked programs.
 
 ```lean
-theorem RueCore.run_complete (M : FloatOps) (P : Program) :
+theorem RueCore.run_complete (M : FloatSig) (P : Program) :
   (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
       Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
         ∃ n,
@@ -2432,15 +2432,15 @@ divergence (`eval_diverges_iff`).
 ```lean
 theorem RueCore.eval_complete (M : FloatModel) {P : Program} (h : ProgramTyped P) :
   (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-      Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+      Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
         ∃ n,
           ∀ (fuel : Nat),
-            n < fuel → run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+            n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
     ∀ (κ : PanicKind) (tr : List Event),
-      Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+      Steps M.toFloatSig P Config.init (Config.panic κ tr) →
         ∃ n,
           ∀ (fuel : Nat),
-            n < fuel → run M.toFloatOps P fuel = EvalRes.panic κ tr
+            n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
 ### `run_stuck_of_step_stuck`
@@ -2453,7 +2453,7 @@ the number of steps `run` refuses. The refusal need not name the same
 `Violation`: `eval` inspects operand shapes in its own order (RUE-2314).
 
 ```lean
-theorem RueCore.run_stuck_of_step_stuck (M : FloatOps) (P : Program) {C : Config}
+theorem RueCore.run_stuck_of_step_stuck (M : FloatSig) (P : Program) {C : Config}
   {w : Violation} (hC : Steps M P Config.init C) (hs : Config.Stuck M P C w) :
   ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.stuck w'
 ```
@@ -2471,7 +2471,7 @@ off the checked domain (RUE-2314): `@drop` of a `⊘` place is a refusal of
 first.
 
 ```lean
-theorem RueCore.step_never_stuck_of_run (M : FloatOps) (P : Program)
+theorem RueCore.step_never_stuck_of_run (M : FloatSig) (P : Program)
   (hnv : ∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w)
   (C : Config) : Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
 ```
@@ -2494,10 +2494,10 @@ say the same stability from `eval`'s side: its answer, once it is not
 ```lean
 theorem RueCore.never_stuck_iff (M : FloatModel) {P : Program} (h : ProgramTyped P) :
   (∀ (fuel : Nat) (w : Violation),
-      run M.toFloatOps P fuel ≠ EvalRes.stuck w) ↔
+      run M.toFloatSig P fuel ≠ EvalRes.stuck w) ↔
     ∀ (C : Config),
-      Steps M.toFloatOps P Config.init C →
-        C.Terminal ∨ ∃ C', Step M.toFloatOps P C C'
+      Steps M.toFloatSig P Config.init C →
+        C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 ```
 
 ### `eval_diverges_iff`
@@ -2514,8 +2514,8 @@ answers (`eval_complete`), and where it never answers §6 never halts.
 ```lean
 theorem RueCore.eval_diverges_iff (M : FloatModel) {P : Program}
   (h : ProgramTyped P) :
-  (∀ (fuel : Nat), run M.toFloatOps P fuel = EvalRes.outOfFuel) ↔
-    ∀ (n : Nat), ∃ D, StepsN M.toFloatOps P n Config.init D
+  (∀ (fuel : Nat), run M.toFloatSig P fuel = EvalRes.outOfFuel) ↔
+    ∀ (n : Nat), ∃ D, StepsN M.toFloatSig P n Config.init D
 ```
 
 ### `Config.SafeAt.progress`
@@ -2527,7 +2527,7 @@ with a value or a defined panic, or it takes a step (§6.12's terminal
 configurations; `Config.trichotomy` leaves stuck as the only other case).
 
 ```lean
-theorem RueCore.Config.SafeAt.progress {M : FloatOps} {P : Program} {T : Ty}
+theorem RueCore.Config.SafeAt.progress {M : FloatSig} {P : Program} {T : Ty}
   {C : Config} (h : Config.SafeAt M P T C) : C.Terminal ∨ ∃ C', Step M P C C'
 ```
 
@@ -2540,7 +2540,7 @@ preserved under reduction"): a step of §6's `→` from a configuration typed at
 `T` lands on one typed at `T`.
 
 ```lean
-theorem RueCore.Config.SafeAt.preservation {M : FloatOps} {P : Program} {T : Ty}
+theorem RueCore.Config.SafeAt.preservation {M : FloatSig} {P : Program} {T : Ty}
   {C C' : Config} (h : Config.SafeAt M P T C) (hs : Step M P C C') :
   Config.SafeAt M P T C'
 ```
@@ -2559,7 +2559,7 @@ it. This is the one place `soundness` enters the `Step` form.
 
 ```lean
 theorem RueCore.init_safeAt (M : FloatModel) {P : Program} (h : ProgramTyped P) :
-  ∃ fd, P.fns[0]? = some fd ∧ Config.SafeAt M.toFloatOps P fd.ret Config.init
+  ∃ fd, P.fns[0]? = some fd ∧ Config.SafeAt M.toFloatSig P fd.ret Config.init
 ```
 
 ### `step_progress`
@@ -2578,8 +2578,8 @@ the step count `eval_steps_of_outOfFuel` — carries it to `Step`.
 ```lean
 theorem RueCore.step_progress (M : FloatModel) {P : Program} (h : ProgramTyped P)
   (C : Config) :
-  Steps M.toFloatOps P Config.init C →
-    C.Terminal ∨ ∃ C', Step M.toFloatOps P C C'
+  Steps M.toFloatSig P Config.init C →
+    C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 ```
 
 ### `step_preservation`
@@ -2601,8 +2601,8 @@ theorem RueCore.step_preservation (M : FloatModel) {P : Program}
   ∃ fd,
     P.fns[0]? = some fd ∧
       ∀ (C : Config),
-        Steps M.toFloatOps P Config.init C →
-          Config.SafeAt M.toFloatOps P fd.ret C
+        Steps M.toFloatSig P Config.init C →
+          Config.SafeAt M.toFloatSig P fd.ret C
 ```
 
 ### `step_value_typed`
@@ -2620,7 +2620,7 @@ theorem RueCore.step_value_typed (M : FloatModel) {P : Program} (h : ProgramType
   ∃ fd,
     P.fns[0]? = some fd ∧
       ∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-        Steps M.toFloatOps P Config.init
+        Steps M.toFloatSig P Config.init
             (Config.run H φ [] (Focus.ret v) tr) →
           HasTy P.decls v fd.ret
 ```
@@ -2648,12 +2648,12 @@ theorem RueCore.step_type_safety (M : FloatModel) {P : Program} (h : ProgramType
   ∃ fd,
     P.fns[0]? = some fd ∧
       ∀ (n : Nat),
-        (∃ D, StepsN M.toFloatOps P n Config.init D) ∨
+        (∃ D, StepsN M.toFloatSig P n Config.init D) ∨
           (∃ H v tr,
-              Steps M.toFloatOps P Config.init
+              Steps M.toFloatSig P Config.init
                   (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
                 HasTy P.decls v fd.ret) ∨
-            ∃ κ tr, Steps M.toFloatOps P Config.init (Config.panic κ tr)
+            ∃ κ tr, Steps M.toFloatSig P Config.init (Config.panic κ tr)
 ```
 
 ### `Nonvacuous.exact_model`
@@ -2663,7 +2663,7 @@ theorem RueCore.step_type_safety (M : FloatModel) {P : Program} (h : ProgramType
 `Spec.Nonvacuous.exact_model_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
 
 ```lean
-theorem RueCore.Nonvacuous.exact_model : ∃ M, M.toFloatOps = Float.exactOps
+theorem RueCore.Nonvacuous.exact_model : ∃ M, M.toFloatSig = Float.exactOps
 ```
 
 ### `Nonvacuous.empty_frame`
@@ -3348,7 +3348,7 @@ over `eval`, one case per form, each closed by its exact ledger above; like
 `eval_conserves` it reads no typing derivation.
 
 ```lean
-theorem RueCore.eval_exact (M : FloatOps) {P : Program} (hp : P.pendingSafe = true)
+theorem RueCore.eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true)
   (fuel : Nat) (H : Store) (φ : Frame) (e : Expr) :
   StoreCC P.decls H →
     e.pendingSafe = true → Exact P.decls H [] (eval M fuel P H φ e)
@@ -3363,7 +3363,7 @@ every expression, in every frame that names only existing cells, keeps
 `Tidy`. By fuel induction over `eval`; no typing derivation.
 
 ```lean
-theorem RueCore.eval_tidy (M : FloatOps) (P : Program) (fuel : Nat) (H : Store)
+theorem RueCore.eval_tidy (M : FloatSig) (P : Program) (fuel : Nat) (H : Store)
   (φ : Frame) (e : Expr) : φ.In H → Tidy φ H (eval M fuel P H φ e)
 ```
 
@@ -3421,9 +3421,9 @@ theorem RueCore.drop_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyp
   {T : Ty} {Ω : Out} {φ : Frame} {H : Store} (ht : Typed P R Γ e T Ω)
   (hfm : FrameMatches P.decls Γ φ H) (hcc : StoreCC P.decls H)
   (he : e.pendingSafe = true) :
-  (∀ (w : Violation), eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
-    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
-      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+  (∀ (w : Violation), eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+    Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
+      Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
 ### `rest_exactly_once`
@@ -3474,8 +3474,8 @@ theorem RueCore.rest_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyp
   {T : Ty} {Ω : Out} {φ : Frame} {H : Store} (ht : Typed P R Γ e T Ω)
   (hfm : FrameMatches P.decls Γ φ H) (hcc : StoreCC P.decls H)
   (he : e.pendingSafe = true) {H₁ : Store} {vs : List Val} {tr : List Event}
-  (hl : Lead M.toFloatOps P fuel H φ H₁ vs tr e) {r : EvalRes}
-  (hr : eval M.toFloatOps (fuel + 1) P H φ e = EvalRes.withTrace tr r) :
+  (hl : Lead M.toFloatSig P fuel H φ H₁ vs tr e) {r : EvalRes}
+  (hr : eval M.toFloatSig (fuel + 1) P H φ e = EvalRes.withTrace tr r) :
   (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
     Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧
       Settled φ H₁ r
@@ -3493,7 +3493,7 @@ its `return` has unwound: not in the store, not in the result, not in the
 trace.
 
 ```lean
-theorem RueCore.pendingSafe_needed (M : FloatOps) :
+theorem RueCore.pendingSafe_needed (M : FloatSig) :
   Typed lostProgram (Ty.int IntWidth.w64 Sign.signed) lostCtx lostBody
       (Ty.int IntWidth.w64 Sign.signed) { norm := none, brk := [] } ∧
     FrameMatches lostProgram.decls lostCtx lostFrame lostStore ∧
@@ -3521,13 +3521,13 @@ theorem RueCore.orphan_rejected (M : FloatModel) :
           Typed orphanProgram (Ty.int IntWidth.w64 Sign.signed) lostCtx
             (Expr.call 1 [Expr.use (Place.var 0)])
             (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
-        eval M.toFloatOps 100 orphanProgram lostStore lostFrame
+        eval M.toFloatSig 100 orphanProgram lostStore lostFrame
               (Expr.call 1 [Expr.use (Place.var 0)]) =
             EvalRes.ok [Cell.dead, Cell.full Contents.hole, Cell.dead]
               (Val.int IntWidth.w64 Sign.signed 0)
               [Event.drop 2 s0x, Event.dtor 0 s0x] ∧
           Tidy lostFrame lostStore
-              (eval M.toFloatOps 100 orphanProgram lostStore lostFrame
+              (eval M.toFloatSig 100 orphanProgram lostStore lostFrame
                 (Expr.call 1 [Expr.use (Place.var 0)])) ∧
             Exact lostDecls lostStore [] orphanResult ∧
               ¬Tidy lostFrame lostStore orphanResult
@@ -3553,12 +3553,12 @@ theorem RueCore.letDropDeleted_rejected (M : FloatModel) :
             (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
             (Expr.intLit IntWidth.w64 Sign.signed 0))
           (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
-      Lead M.toFloatOps orphanProgram 100 [] { env := [], scope := [] }
+      Lead M.toFloatSig orphanProgram 100 [] { env := [], scope := [] }
           [Cell.dead] [s0one] []
           (Expr.letIn false
             (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
             (Expr.intLit IntWidth.w64 Sign.signed 0)) ∧
-        eval M.toFloatOps 101 orphanProgram [] { env := [], scope := [] }
+        eval M.toFloatSig 101 orphanProgram [] { env := [], scope := [] }
               (Expr.letIn false
                 (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
                 (Expr.intLit IntWidth.w64 Sign.signed 0)) =
@@ -3598,11 +3598,11 @@ theorem RueCore.seqDropDeleted_rejected (M : FloatModel) :
         ((Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1]).seq
           (Expr.intLit IntWidth.w64 Sign.signed 0))
         (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
-    Lead M.toFloatOps orphanProgram 100 [] { env := [], scope := [] }
+    Lead M.toFloatSig orphanProgram 100 [] { env := [], scope := [] }
         [Cell.dead] [s0one] []
         ((Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1]).seq
           (Expr.intLit IntWidth.w64 Sign.signed 0)) ∧
-      eval M.toFloatOps 101 orphanProgram [] { env := [], scope := [] }
+      eval M.toFloatSig 101 orphanProgram [] { env := [], scope := [] }
             ((Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1]).seq
               (Expr.intLit IntWidth.w64 Sign.signed 0)) =
           EvalRes.ok [Cell.dead] (Val.int IntWidth.w64 Sign.signed 0)
@@ -3635,9 +3635,9 @@ theorem RueCore.breakLeak_rejected (M : FloatModel) :
       (∃ Ω,
           Typed breakProgram (Ty.int IntWidth.w64 Sign.signed) lostCtx
             breakLoop Ty.unit Ω) ∧
-        Lead M.toFloatOps breakProgram 100 lostStore lostFrame breakStore []
+        Lead M.toFloatSig breakProgram 100 lostStore lostFrame breakStore []
             [] breakLoop ∧
-          eval M.toFloatOps 101 breakProgram lostStore lostFrame breakLoop =
+          eval M.toFloatSig 101 breakProgram lostStore lostFrame breakLoop =
               EvalRes.ok [Cell.dead, Cell.full s0x, Cell.dead, Cell.dead]
                 Val.unit [Event.drop 3 s0z, Event.dtor 0 s0z] ∧
             Exact lostDecls breakStore []
@@ -3686,10 +3686,10 @@ fuel. By fuel induction over `eval`; no typing derivation, only
 docstring).
 
 ```lean
-theorem RueCore.eval_glue_blocks (M : FloatOps) {P : Program}
+theorem RueCore.eval_glue_blocks (M : FloatSig) {P : Program}
   (hdt : DtorNotCopy P.decls) (fuel : Nat) (H : Store) (φ : Frame)
   (e : Expr) :
-  StoreCC P.decls H → GlueBlocks P.decls (eval M fuel P H φ e).trace
+  StoreCC P.decls H → DropGlueBlocks P.decls (eval M fuel P H φ e).trace
 ```
 
 ### `run_glue_blocks`
@@ -3704,9 +3704,9 @@ fields in declaration order (`3.9:13`), an array's elements ascending
 and nowhere else. It needs only `DtorNotCopy`, which `WfDecls` gives.
 
 ```lean
-theorem RueCore.run_glue_blocks (M : FloatOps) {P : Program}
+theorem RueCore.run_glue_blocks (M : FloatSig) {P : Program}
   (hdt : DtorNotCopy P.decls) (fuel : Nat) :
-  GlueBlocks P.decls (run M P fuel).trace
+  DropGlueBlocks P.decls (run M P fuel).trace
 ```
 
 ### `run_blocks`
@@ -3715,10 +3715,10 @@ theorem RueCore.run_glue_blocks (M : FloatOps) {P : Program}
 
 **Every finished run's trace is in the block grammar `Blocks`** (§3.9,
 §6.11), each drop marker followed by exactly `dropEvents` of what it names:
-`run_glue_blocks` read through `GlueBlocks.toBlocks`.
+`run_glue_blocks` read through `DropGlueBlocks.toBlocks`.
 
 ```lean
-theorem RueCore.run_blocks (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls)
+theorem RueCore.run_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls)
   (fuel : Nat) : Blocks P.decls (run M P fuel).trace
 ```
 
@@ -3733,7 +3733,7 @@ which are past every cell already in it, and only ever shortened from its
 end ((D-EndScope)'s pop) or replaced by one the stack held.
 
 ```lean
-theorem RueCore.step_ordered {M : FloatOps} {P : Program} {C C' : Config}
+theorem RueCore.step_ordered {M : FloatSig} {P : Program} {C C' : Config}
   (h : Step M P C C') (hC : C.Ordered) : C'.Ordered
 ```
 
@@ -3748,7 +3748,7 @@ caller's and loop boundary's, and every pending `endscope` marker's — lists
 its cells in strictly increasing location order. No typing hypothesis.
 
 ```lean
-theorem RueCore.reachable_ordered {M : FloatOps} {P : Program} {C : Config}
+theorem RueCore.reachable_ordered {M : FloatSig} {P : Program} {C : Config}
   (h : Steps M P Config.init C) : C.Ordered
 ```
 
@@ -3765,7 +3765,7 @@ frame pop, (D-Return)'s σ-walk, (D-Loop-Iter)'s end of a turn and
 (`NewestFirst.teardown`).
 
 ```lean
-theorem RueCore.step_drop_order {M : FloatOps} {P : Program} {C C' : Config}
+theorem RueCore.step_drop_order {M : FloatSig} {P : Program} {C C' : Config}
   (h : Step M P C C') (hC : C.Ordered) :
   ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs)
 ```
@@ -3780,7 +3780,7 @@ from every configuration reachable from §6.12's initial one, every step's
 hypothesis.
 
 ```lean
-theorem RueCore.reachable_drop_order {M : FloatOps} {P : Program} {C C' : Config}
+theorem RueCore.reachable_drop_order {M : FloatSig} {P : Program} {C C' : Config}
   (hr : Steps M P Config.init C) (h : Step M P C C') :
   ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs)
 ```
@@ -3795,7 +3795,7 @@ theorem RueCore.reachable_drop_order {M : FloatOps} {P : Program} {C C' : Config
 return, a loop turn's end and a `break` restore a record the stack held.
 
 ```lean
-theorem RueCore.step_nested {M : FloatOps} {P : Program} {C C' : Config}
+theorem RueCore.step_nested {M : FloatSig} {P : Program} {C C' : Config}
   (h : Step M P C C') (hC : C.Nested) : C'.Nested
 ```
 
@@ -3809,7 +3809,7 @@ in every configuration reachable from §6.12's initial one. In particular
 (`Frame.popScope_tail`). No typing hypothesis.
 
 ```lean
-theorem RueCore.reachable_nested {M : FloatOps} {P : Program} {C : Config}
+theorem RueCore.reachable_nested {M : FloatSig} {P : Program} {C : Config}
   (h : Steps M P Config.init C) : C.Nested
 ```
 
@@ -3823,7 +3823,7 @@ registration stack as a prefix of the new one, or cuts it back and drops
 only cells of the cut suffix, newest first (`Lifo`).
 
 ```lean
-theorem RueCore.step_lifo {M : FloatOps} {P : Program} {C C' : Config}
+theorem RueCore.step_lifo {M : FloatSig} {P : Program} {C C' : Config}
   (h : Step M P C C') (hC : C.Nested) :
   ∃ evs, C'.trace = C.trace ++ evs ∧ Lifo C.stack C'.stack (dropLocs evs)
 ```
@@ -3841,7 +3841,7 @@ drops `b` before `a` over its two (D-EndScope) steps. No typing
 hypothesis.
 
 ```lean
-theorem RueCore.reachable_lifo {M : FloatOps} {P : Program} {C C' : Config}
+theorem RueCore.reachable_lifo {M : FloatSig} {P : Program} {C C' : Config}
   (hr : Steps M P Config.init C) (h : Step M P C C') :
   ∃ evs,
     C'.trace = C.trace ++ evs ∧
@@ -3859,7 +3859,7 @@ theorem RueCore.reachable_lifo {M : FloatOps} {P : Program} {C C' : Config}
 **§6.11's order within a value, in §6.11's own terms** (§3.9, §6.11;
 RUE-2487), over §6's relation, for a program the checker accepts: every
 finished run's trace — a terminal value or a trap — is in the block grammar
-`GlueBlocks`, whose drop blocks are §6.11's rules (`DropGlue`) rather than the
+`DropGlueBlocks`, whose drop blocks are §6.11's rules (`DropGlue`) rather than the
 machine's walk. So each drop marker is followed by the value's own destructor
 first (`3.9:28`), then its fields in declaration order (`3.9:13`), an array's
 elements ascending (`3.9:15`), an enum's active payload only (`6.3:20`), every
@@ -3870,11 +3870,11 @@ change together still fails it.
 ```lean
 theorem RueCore.drop_glue_order (M : FloatModel) {P : Program} (h : ProgramTyped P) :
   (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-      Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
-        GlueBlocks P.decls tr) ∧
+      Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+        DropGlueBlocks P.decls tr) ∧
     ∀ (κ : PanicKind) (tr : List Event),
-      Steps M.toFloatOps P Config.init (Config.panic κ tr) →
-        GlueBlocks P.decls tr
+      Steps M.toFloatSig P Config.init (Config.panic κ tr) →
+        DropGlueBlocks P.decls tr
 ```
 
 ### `drop_order`
@@ -3905,14 +3905,14 @@ Only the first half reads the typing hypothesis, through `eval_complete` and
 ```lean
 theorem RueCore.drop_order (M : FloatModel) {P : Program} (h : ProgramTyped P) :
   (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-      Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+      Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
         Blocks P.decls tr) ∧
     (∀ (κ : PanicKind) (tr : List Event),
-        Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+        Steps M.toFloatSig P Config.init (Config.panic κ tr) →
           Blocks P.decls tr) ∧
       ∀ (C C' : Config),
-        Steps M.toFloatOps P Config.init C →
-          Step M.toFloatOps P C C' →
+        Steps M.toFloatSig P Config.init C →
+          Step M.toFloatSig P C C' →
             ∃ evs,
               C'.trace = C.trace ++ evs ∧
                 NewestFirst (dropLocs evs) ∧
@@ -3941,7 +3941,7 @@ of drops", "never read afterward"; §6.9): `run` never refuses with
 `useAfterDrop`, checked or not.
 
 ```lean
-theorem RueCore.run_no_use_after_drop (M : FloatOps) (P : Program) (fuel : Nat) :
+theorem RueCore.run_no_use_after_drop (M : FloatSig) (P : Program) (fuel : Nat) :
   run M P fuel ≠ EvalRes.stuck Violation.useAfterDrop
 ```
 
@@ -3954,7 +3954,7 @@ configuration `→*` reaches from `Config.init` is never stuck on a retired
 cell, checked or not.
 
 ```lean
-theorem RueCore.step_no_use_after_drop (M : FloatOps) (P : Program) {C : Config}
+theorem RueCore.step_no_use_after_drop (M : FloatSig) (P : Program) {C : Config}
   (h : Steps M P Config.init C) : ¬Config.Stuck M P C Violation.useAfterDrop
 ```
 
@@ -3972,7 +3972,7 @@ is `eval_steps_of_outOfFuel`'s, form by form, with `eval_conserves`'s ledger
 added wherever an operand finished.
 
 ```lean
-theorem RueCore.eval_longc (M : FloatOps) {P : Program} {F : Event → List Nat}
+theorem RueCore.eval_longc (M : FloatSig) {P : Program} {F : Event → List Nat}
   (hF : TraceMeasure P.decls F) (fuel : Nat) : LongCIH M P F fuel
 ```
 
@@ -3991,7 +3991,7 @@ sees only `outOfFuel` and an empty trace.
 ```lean
 theorem RueCore.step_no_double_free (M : FloatModel) {P : Program}
   (h : ProgramTyped P) {C : Config}
-  (hC : Steps M.toFloatOps P Config.init C) :
+  (hC : Steps M.toFloatSig P Config.init C) :
   (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
     ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1
 ```
@@ -4024,10 +4024,10 @@ count by one.
 ```lean
 theorem RueCore.whole_program_exactly_once (M : FloatModel) {P : Program}
   (h : ProgramTyped P) (hp : P.pendingSafe = true) {C : Config}
-  (hC : Steps M.toFloatOps P Config.init C) {a : Nat}
+  (hC : Steps M.toFloatSig P Config.init C) {a : Nat}
   (ha : a ∈ Config.held P.decls C) {H : Store} {φ : Frame} {v : Val}
   {tr : List Event}
-  (hT : Steps M.toFloatOps P C (Config.run H φ [] (Focus.ret v) tr)) :
+  (hT : Steps M.toFloatSig P C (Config.run H φ [] (Focus.ret v) tr)) :
   List.count a (Val.own P.decls v) + List.count a (freedIds P.decls tr) = 1
 ```
 
@@ -6288,7 +6288,7 @@ only rule there and it wants `class(T) = Copy`, so `eval` answers
 is the same program, stuck at the same rule in `Step`.
 
 ```lean
-theorem RueCore.Examples.dynReadAffine_refused (M : FloatOps) :
+theorem RueCore.Examples.dynReadAffine_refused (M : FloatSig) :
   run M (Examples.prog Examples.tI64 Examples.dynReadAffineCopied)
       Examples.demoFuel =
     EvalRes.stuck Violation.typeConfusion
@@ -6305,7 +6305,7 @@ read's `Copy` check, and no `@dbg` output or destructor event is produced.
 `Step`.
 
 ```lean
-theorem RueCore.Examples.dynDropAffine_refused (M : FloatOps) :
+theorem RueCore.Examples.dynDropAffine_refused (M : FloatSig) :
   run M (Examples.prog Examples.tI64 Examples.dynDropAffineSkipped)
       Examples.demoFuel =
     EvalRes.stuck Violation.typeConfusion
@@ -6322,7 +6322,7 @@ of `t`, and `eval` answers `typeConfusion` rather than replicating `v`.
 `Step`.
 
 ```lean
-theorem RueCore.Examples.repeatAffine_refused (M : FloatOps) :
+theorem RueCore.Examples.repeatAffine_refused (M : FloatSig) :
   run M (Examples.prog Examples.tI64 Examples.repeatAffineDuplicated)
       Examples.demoFuel =
     EvalRes.stuck Violation.typeConfusion
@@ -6371,7 +6371,7 @@ already lists (`8.1:7`), not a new one.
 ```lean
 theorem RueCore.Examples.floatToInt_inf_traps (M : FloatModel) (w : FloatWidth)
   (w' : IntWidth) (s' : Sign) (b : Bool) :
-  evalFintrin M.toFloatOps (FloatIntrin.floatToInt w' s')
+  evalFintrin M.toFloatSig (FloatIntrin.floatToInt w' s')
       (Val.float w (FloatDatum.inf b)) =
     OpRes.trap PanicKind.overflow
 ```
@@ -6386,7 +6386,7 @@ theorem RueCore.Examples.floatToInt_inf_traps (M : FloatModel) (w : FloatWidth)
 ```lean
 theorem RueCore.Examples.floatToInt_nan_traps (M : FloatModel) (w : FloatWidth)
   (w' : IntWidth) (s' : Sign) (b : Bool) :
-  evalFintrin M.toFloatOps (FloatIntrin.floatToInt w' s')
+  evalFintrin M.toFloatSig (FloatIntrin.floatToInt w' s')
       (Val.float w (FloatDatum.nan b)) =
     OpRes.trap PanicKind.overflow
 ```
@@ -6405,7 +6405,7 @@ which the corpus runs and the compiler agrees with.
 ```lean
 theorem RueCore.Examples.floatDivZeroToInt_traps (M : FloatModel) (P : Program)
   (H : Store) (φ : Frame) (w : FloatWidth) (w' : IntWidth) (s' : Sign) :
-  eval M.toFloatOps 8 P H φ
+  eval M.toFloatSig 8 P H φ
       (Expr.fintrin (FloatIntrin.floatToInt w' s')
         (Expr.binop BinOp.div (Examples.flE w 1 0) (Examples.flE w 0 0))) =
     EvalRes.panic PanicKind.overflow []
@@ -6421,7 +6421,7 @@ completes it — `outOfFuel` is its answer at every bound, which is what
 `Corpus.lean`'s export leaves out.
 
 ```lean
-theorem RueCore.Examples.infiniteLoop_outOfFuel (M : FloatOps) (P : Program)
+theorem RueCore.Examples.infiniteLoop_outOfFuel (M : FloatSig) (P : Program)
   (fuel : Nat) (H : Store) (φ : Frame) :
   eval M fuel P H φ Examples.infiniteLoop = EvalRes.outOfFuel
 ```
@@ -6444,7 +6444,7 @@ same program in seven rows: the (Search) steps are the part of `Step` that
 `eval` does by recursion.
 
 ```lean
-theorem RueCore.affineScopeDrop_both_ways (M : FloatOps) :
+theorem RueCore.affineScopeDrop_both_ways (M : FloatSig) :
   checkProgram affineScopeDropProgram = true ∧
     run M affineScopeDropProgram 100 =
         EvalRes.ok [Cell.dead, Cell.dead] (Val.int IntWidth.w64 Sign.signed 1)
@@ -6487,14 +6487,15 @@ theorem RueCore.fieldsSwapped_rejected :
 *theorem* · module `RueCore.Witnesses`
 
 **§6.11's own grammar: fields in declaration order** (`3.9:13`; RUE-2487).
-The trace `fieldsSwapped_rejected` rejects, rejected by `GlueBlocks`, whose
+The trace `fieldsSwapped_rejected` rejects, rejected by `DropGlueBlocks`, whose
 drop blocks are §6.11's rules (`DropGlue`) rather than `dropEvents`: the two
 field destructors of `struct_field_drop_order`'s `S7` the wrong way round,
 which is what a machine whose walk drops fields last to first emits.
 
 ```lean
 theorem RueCore.glue_fieldsSwapped_rejected :
-  ¬GlueBlocks (Examples.prog Examples.tI64 Examples.structFieldOrder).decls
+  ¬DropGlueBlocks
+      (Examples.prog Examples.tI64 Examples.structFieldOrder).decls
       [Event.drop 3
           (Contents.struct Examples.sTwoAffine 2
             [Examples.cA 0 1, Examples.cA 1 2]),
@@ -6510,11 +6511,12 @@ theorem RueCore.glue_fieldsSwapped_rejected :
 `struct_nested_dtor_drop` drops `S5 { 1, S1 { 2 }#0 }#1`, whose destructor runs
 before its field's. The same marker followed by the field's destructor and
 then `S5`'s — what a machine that runs the destructor after the fields emits —
-is not in `GlueBlocks`.
+is not in `DropGlueBlocks`.
 
 ```lean
 theorem RueCore.glue_dtorAfterFields_rejected :
-  ¬GlueBlocks (Examples.prog Examples.tI64 Examples.structNestedDrop).decls
+  ¬DropGlueBlocks
+      (Examples.prog Examples.tI64 Examples.structNestedDrop).decls
       [Event.drop 2
           (Contents.struct Examples.sOuter 1
             [Examples.c64 1, Examples.cA 0 2]),
@@ -6530,11 +6532,12 @@ theorem RueCore.glue_dtorAfterFields_rejected :
 
 **§6.11's own grammar: the destructor runs** (`3.9:28`; RUE-2487). The
 same drop of `S5` with no destructor event at all — what a machine that never
-runs a destructor emits — is not in `GlueBlocks`.
+runs a destructor emits — is not in `DropGlueBlocks`.
 
 ```lean
 theorem RueCore.glue_dtorSkipped_rejected :
-  ¬GlueBlocks (Examples.prog Examples.tI64 Examples.structNestedDrop).decls
+  ¬DropGlueBlocks
+      (Examples.prog Examples.tI64 Examples.structNestedDrop).decls
       [Event.drop 2
           (Contents.struct Examples.sOuter 1
             [Examples.c64 1, Examples.cA 0 2])]
@@ -6609,7 +6612,7 @@ through (D-Call), (D-Let), (D-Use-Copy), (D-Arith), (D-EndScope) and
 `run` answers the same value, store and trace.
 
 ```lean
-theorem RueCore.letAddProgram_runs (M : FloatOps) :
+theorem RueCore.letAddProgram_runs (M : FloatSig) :
   Steps M letAddProgram Config.init
       (Config.run [Cell.dead] { env := [], scope := [] } []
         (Focus.ret (Val.int IntWidth.w32 Sign.signed 42)) []) ∧
@@ -6627,7 +6630,7 @@ leaf is stuck, before any destructor runs. `eval` is stuck at the same read
 (`RueCore.Examples.dynReadAffine_refused`); `check` rejects the program.
 
 ```lean
-theorem RueCore.demo_dynamicRead_stuck (M : FloatOps) :
+theorem RueCore.demo_dynamicRead_stuck (M : FloatSig) :
   ∃ C,
     Steps M
         (demoProgram
@@ -6653,7 +6656,7 @@ is stuck at the `@drop`, with nothing printed. `eval` is stuck at the same
 `@drop` (`RueCore.Examples.dynDropAffine_refused`).
 
 ```lean
-theorem RueCore.demo_dynamicDrop_stuck (M : FloatOps) :
+theorem RueCore.demo_dynamicDrop_stuck (M : FloatSig) :
   ∃ C,
     Steps M
         (demoProgram
@@ -6678,7 +6681,7 @@ stuck at the repeat. `eval` is stuck at the same repeat
 (`RueCore.Examples.repeatAffine_refused`).
 
 ```lean
-theorem RueCore.demo_repeat_stuck (M : FloatOps) :
+theorem RueCore.demo_repeat_stuck (M : FloatSig) :
   ∃ C,
     Steps M
         (demoProgram
@@ -6702,7 +6705,7 @@ destroyed once, when `t` goes out of scope. (`eval` refuses it with
 `useAfterMove`; `check` rejects the program.)
 
 ```lean
-theorem RueCore.demo_dropMoved_runs (M : FloatOps) :
+theorem RueCore.demo_dropMoved_runs (M : FloatSig) :
   ∃ H,
     Steps M
       (demoProgram
@@ -6723,7 +6726,7 @@ theorem RueCore.demo_dropMoved_runs (M : FloatOps) :
 finding): `let x = loop { break }; @dbg(7); 0` prints `7` and reaches `✓0`.
 
 ```lean
-theorem RueCore.demo_loopInLet_runs (M : FloatOps) :
+theorem RueCore.demo_loopInLet_runs (M : FloatSig) :
   ∃ H,
     Steps M
         (demoProgram
@@ -6750,7 +6753,7 @@ theorem RueCore.demo_loopInLet_runs (M : FloatOps) :
 `✓3`.
 
 ```lean
-theorem RueCore.demo_breakDrops_runs (M : FloatOps) :
+theorem RueCore.demo_breakDrops_runs (M : FloatSig) :
   ∃ H,
     Steps M
         (demoProgram ((Expr.letIn false demoS Expr.brk).loop.seq (demoI32 3)))
@@ -6775,7 +6778,7 @@ theorem RueCore.demo_breakDrops_runs (M : FloatOps) :
 `S`, one per turn, and reaches `✓2`.
 
 ```lean
-theorem RueCore.demo_loopTurns_runs (M : FloatOps) :
+theorem RueCore.demo_loopTurns_runs (M : FloatSig) :
   ∃ H,
     Steps M (demoProgram demoCountingLoop) Config.init
         (Config.run H { env := [], scope := [] } []
@@ -6799,7 +6802,7 @@ discards the pending `let` and `endscope`, destroys the `S` from the frame's
 record, and reaches `✓5`.
 
 ```lean
-theorem RueCore.demo_returnInLet_runs (M : FloatOps) :
+theorem RueCore.demo_returnInLet_runs (M : FloatSig) :
   ∃ H,
     Steps M
         (demoProgram
@@ -6828,7 +6831,7 @@ payload and then `x`, newest first, and reaches `✓4`. The match consumes the
 `A`'s shell first (`consume`, RUE-2427).
 
 ```lean
-theorem RueCore.demo_returnInMatch_runs (M : FloatOps) :
+theorem RueCore.demo_returnInMatch_runs (M : FloatSig) :
   ∃ H,
     Steps M
         (demoProgram
@@ -6862,7 +6865,7 @@ reachable from `Config.init` — there `endscope` has always emptied the list �
 but it is one §6.10's rule covers.
 
 ```lean
-theorem RueCore.demo_loopIter_drops (M : FloatOps) (e : Expr) :
+theorem RueCore.demo_loopIter_drops (M : FloatSig) (e : Expr) :
   Step M (demoProgram e)
     (Config.run [Cell.full (demoSc 0)] { env := [0], scope := [0] }
       [Kont.loop Expr.brk { env := [], scope := [] }] (Focus.ret Val.unit) [])
@@ -6882,7 +6885,7 @@ makes `@drop` of a `⊘` place a no-op (`demo_dropMoved_runs`, above).
 `run_complete` allows, and `check` rejects the program.
 
 ```lean
-theorem RueCore.dropMoved_refused (M : FloatOps) :
+theorem RueCore.dropMoved_refused (M : FloatSig) :
   (∃ H,
       Steps M
         (demoProgram
@@ -6912,7 +6915,7 @@ through `run_sim` — `let x = 40; x + 2` reaches `✓42` with the `let`'s cell
 retired and nothing printed (§6.7, §6.9, §6.12).
 
 ```lean
-theorem RueCore.letAddProgram_sound (M : FloatOps) :
+theorem RueCore.letAddProgram_sound (M : FloatSig) :
   Steps M letAddProgram Config.init
     (Config.run [Cell.dead] Frame.empty []
       (Focus.ret (Val.int IntWidth.w32 Sign.signed 42)) [])
@@ -7035,7 +7038,7 @@ report an outcome — a value, an unwinding `return`, a §6.12 trap, a refusal,
 or exhausted fuel — the interpreter does not produce.
 
 ```lean
-theorem RueCore.Explain.traceEval_res (M : FloatOps) {P : Program} (fuel d : Nat)
+theorem RueCore.Explain.traceEval_res (M : FloatSig) {P : Program} (fuel d : Nat)
   (Θ : List Ty) (R : Ty) (H : Store) (φ : Frame) (e : Expr) :
   (Explain.traceEval M P fuel d Θ R H φ e).res = eval M fuel P H φ e
 ```
@@ -7047,7 +7050,7 @@ theorem RueCore.Explain.traceEval_res (M : FloatOps) {P : Program} (fuel d : Nat
 **The program's run is the program's outcome** (§6.12).
 
 ```lean
-theorem RueCore.Explain.runTrace_res (M : FloatOps) (P : Program) (fuel : Nat) :
+theorem RueCore.Explain.runTrace_res (M : FloatSig) (P : Program) (fuel : Nat) :
   (Explain.runTrace M P fuel).res = run M P fuel
 ```
 
@@ -7538,7 +7541,7 @@ theorem RueCore.joinFold_linear_inv (D : Decls) (Ts : List Ty) (acc : Mult) :
     acc = Mult.linear ∨ ∃ T, T ∈ Ts ∧ Ty.mult D T = Mult.linear
 ```
 
-### `Ty.mult_congr_declIds`
+### `Ty.mult_congr_tyNames`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
@@ -7547,8 +7550,8 @@ names by value give that type the same class: `class([T; n])` is §3's lift of
 `class(T)`, so peeling the array wrappers loses nothing (helper).
 
 ```lean
-theorem RueCore.Ty.mult_congr_declIds {D D' : Decls} (T : Ty) :
-  (∀ (d : DeclId), d ∈ T.declIds → Ty.mult D d.ty = Ty.mult D' d.ty) →
+theorem RueCore.Ty.mult_congr_tyNames {D D' : Decls} (T : Ty) :
+  (∀ (d : TyName), d ∈ T.tyNames → Ty.mult D d.ty = Ty.mult D' d.ty) →
     Ty.mult D T = Ty.mult D' T
 ```
 
@@ -7727,32 +7730,32 @@ theorem RueCore.residualLinearFields_mult_linear {D : Decls} (hD : WfStructs D)
     (Ts.any fun U => decide (Ty.mult D U = Mult.linear)) = true
 ```
 
-### `ownedJoinOkList_residualLinearFields`
+### `ownedJoinableList_residualLinearFields`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a declaration's slots (helper).
 
 ```lean
-theorem RueCore.ownedJoinOkList_residualLinearFields {D : Decls} (hD : WfStructs D)
+theorem RueCore.ownedJoinableList_residualLinearFields {D : Decls} (hD : WfStructs D)
   (ts : List OwnSt) (Ts : List Ty) :
-  ownedJoinOkList D ts Ts = true →
+  ownedJoinableList D ts Ts = true →
     (Ts.any fun U => decide (Ty.mult D U = Mult.linear)) = true →
       residualLinearFields D ts Ts = true
 ```
 
-### `ownedJoinOkList_of_residualLinearFields_false`
+### `ownedJoinableList_of_residualLinearFields_false`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a declaration's slots (helper).
 
 ```lean
-theorem RueCore.ownedJoinOkList_of_residualLinearFields_false {D : Decls}
+theorem RueCore.ownedJoinableList_of_residualLinearFields_false {D : Decls}
   (hD : WfStructs D) (ts : List OwnSt) (Ts : List Ty) :
   OwnSt.wfList D ts Ts = true →
     residualLinearFields D ts Ts = false →
-      ownedJoinOkList D ts Ts =
+      ownedJoinableList D ts Ts =
         !Ts.any fun U => decide (Ty.mult D U = Mult.linear)
 ```
 
@@ -7766,7 +7769,7 @@ the other arm (helper).
 ```lean
 theorem RueCore.OwnSt.join_owned_left (D : Decls) (b : OwnSt) (T : Ty) :
   OwnSt.join D OwnSt.owned b T =
-    if ownedJoinOk D b T = true then some b else none
+    if ownedJoinable D b T = true then some b else none
 ```
 
 ### `OwnSt.join_owned_right`
@@ -7779,7 +7782,7 @@ side (`OwnSt.join_comm`) (helper).
 ```lean
 theorem RueCore.OwnSt.join_owned_right (D : Decls) (a : OwnSt) (T : Ty) :
   OwnSt.join D a OwnSt.owned T =
-    if ownedJoinOk D a T = true then some a else none
+    if ownedJoinable D a T = true then some a else none
 ```
 
 ### `OwnSt.join_movedOut_owned_eq`
@@ -7788,12 +7791,12 @@ theorem RueCore.OwnSt.join_owned_right (D : Decls) (a : OwnSt) (T : Ty) :
 
 The one clause the two readings share: joining `MovedOut` with a wholly
 `Owned` arm is admissible exactly when the arm has no residue, because
-`ownedJoinOk` at `MovedOut` and `residualLinear` at `Owned` are complementary
+`ownedJoinable` at `MovedOut` and `residualLinear` at `Owned` are complementary
 tests of `class(T)` (helper).
 
 ```lean
 theorem RueCore.OwnSt.join_movedOut_owned_eq (D : Decls) (T : Ty) :
-  (if ownedJoinOk D OwnSt.movedOut T = true then some OwnSt.movedOut
+  (if ownedJoinable D OwnSt.movedOut T = true then some OwnSt.movedOut
     else none) =
     if residualLinear D OwnSt.owned T = true then none
     else some OwnSt.movedOut
@@ -7829,13 +7832,13 @@ theorem RueCore.OwnSt.join_movedOut_right (D : Decls) (a : OwnSt) (T : Ty) :
 *theorem* · module `RueCore.Statics.Lemmas`
 
 §5.5's slot join where the left arm records no slot: the other arm's record
-survives subject to `ownedJoinOk` (helper).
+survives subject to `ownedJoinable` (helper).
 
 ```lean
 theorem RueCore.OwnSt.joinList_nil_left (D : Decls) (bs : List OwnSt) (T : Ty)
   (Ts : List Ty) :
   OwnSt.joinList D [] bs (T :: Ts) =
-    if ownedJoinOkList D bs (T :: Ts) = true then some bs else none
+    if ownedJoinableList D bs (T :: Ts) = true then some bs else none
 ```
 
 ### `OwnSt.joinList_nil_right`
@@ -7848,7 +7851,7 @@ The same where the right arm records no slot (helper).
 theorem RueCore.OwnSt.joinList_nil_right (D : Decls) (as : List OwnSt) (T : Ty)
   (Ts : List Ty) :
   OwnSt.joinList D as [] (T :: Ts) =
-    if ownedJoinOkList D as (T :: Ts) = true then some as else none
+    if ownedJoinableList D as (T :: Ts) = true then some as else none
 ```
 
 ### `OwnSt.join_fields_bind_left`
@@ -7928,7 +7931,7 @@ theorem RueCore.OwnSt.joinList_cons_bind_right (D : Decls) (a b c : OwnSt)
     | x, x_1 => none
 ```
 
-### `residualLinear_of_ownedJoinOk`
+### `residualLinear_of_ownedJoinable`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
@@ -7936,38 +7939,39 @@ theorem RueCore.OwnSt.joinList_cons_bind_right (D : Decls) (a b c : OwnSt)
 Linear`: the two halves above, taken together (helper).
 
 ```lean
-theorem RueCore.residualLinear_of_ownedJoinOk {D : Decls} (hD : WfStructs D)
-  (t : OwnSt) (T : Ty) (h : ownedJoinOk D t T = true) :
+theorem RueCore.residualLinear_of_ownedJoinable {D : Decls} (hD : WfStructs D)
+  (t : OwnSt) (T : Ty) (h : ownedJoinable D t T = true) :
   residualLinear D t T = decide (Ty.mult D T = Mult.linear)
 ```
 
-### `residualLinearFields_of_ownedJoinOkList`
+### `residualLinearFields_of_ownedJoinableList`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a declaration's slots (helper).
 
 ```lean
-theorem RueCore.residualLinearFields_of_ownedJoinOkList {D : Decls} (hD : WfStructs D)
-  (ts : List OwnSt) (Ts : List Ty) (h : ownedJoinOkList D ts Ts = true) :
+theorem RueCore.residualLinearFields_of_ownedJoinableList {D : Decls}
+  (hD : WfStructs D) (ts : List OwnSt) (Ts : List Ty)
+  (h : ownedJoinableList D ts Ts = true) :
   residualLinearFields D ts Ts =
     Ts.any fun U => decide (Ty.mult D U = Mult.linear)
 ```
 
-### `OwnSt.joinList_ownedJoinOkList`
+### `OwnSt.joinList_ownedJoinableList`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a declaration's slots (helper).
 
 ```lean
-theorem RueCore.OwnSt.joinList_ownedJoinOkList {D : Decls} (hD : WfStructs D)
+theorem RueCore.OwnSt.joinList_ownedJoinableList {D : Decls} (hD : WfStructs D)
   (bs cs : List OwnSt) (Ts : List Ty) (rs : List OwnSt) :
   OwnSt.wfList D bs Ts = true →
     OwnSt.wfList D cs Ts = true →
       OwnSt.joinList D bs cs Ts = some rs →
-        ownedJoinOkList D bs Ts = ownedJoinOkList D rs Ts ∧
-          ownedJoinOkList D cs Ts = ownedJoinOkList D rs Ts
+        ownedJoinableList D bs Ts = ownedJoinableList D rs Ts ∧
+          ownedJoinableList D cs Ts = ownedJoinableList D rs Ts
 ```
 
 ### `OwnSt.joinList_residualLinearFields`
@@ -8354,7 +8358,7 @@ theorem RueCore.TypedArms.at_index {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty}
       arms[k]? = some body →
         Tss[k]? = some Ts →
           ∃ ob Δb,
-            Typed P R (armCtx Ts Γ₀) body T { norm := ob, brk := Δb } ∧
+            Typed P R (extendArm Ts Γ₀) body T { norm := ob, brk := Δb } ∧
               (∀ (Γb : Ctx),
                   ob = some Γb →
                     NoResidualLinear P.decls (List.take Ts.length Γb) ∧
@@ -8416,7 +8420,7 @@ theorem RueCore.skel_set_setSt {Γ : Ctx} {i : Nat} {en : Entry} (h : Γ[i]? = s
   (s : OwnSt) : Ctx.skel (List.set Γ i (en.setSt s)) = Γ.skel
 ```
 
-### `Ctx.skel_armCtx`
+### `Ctx.skel_extendArm`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
@@ -8424,11 +8428,12 @@ A `match` arm's entry context has the arm's payload locals on top of the
 incoming skeleton, so popping them leaves that skeleton (helper).
 
 ```lean
-theorem RueCore.Ctx.skel_armCtx (Ts : List Ty) (Γ : Ctx) :
-  (armCtx Ts Γ).skel = (List.map (fun T => (T, false)) Ts).reverse ++ Γ.skel
+theorem RueCore.Ctx.skel_extendArm (Ts : List Ty) (Γ : Ctx) :
+  (extendArm Ts Γ).skel =
+    (List.map (fun T => (T, false)) Ts).reverse ++ Γ.skel
 ```
 
-### `skel_drop_armCtx`
+### `skel_drop_extendArm`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
@@ -8436,8 +8441,8 @@ The context an arm hands the §5.5 join — its body's outgoing context with
 the payload locals popped — has the skeleton the arm started from (helper).
 
 ```lean
-theorem RueCore.skel_drop_armCtx {Γb : Ctx} {Ts : List Ty} {Γ₀ : Ctx}
-  (h : Γb.skel = (armCtx Ts Γ₀).skel) :
+theorem RueCore.skel_drop_extendArm {Γb : Ctx} {Ts : List Ty} {Γ₀ : Ctx}
+  (h : Γb.skel = (extendArm Ts Γ₀).skel) :
   Ctx.skel (List.drop Ts.length Γb) = Γ₀.skel
 ```
 
@@ -8591,15 +8596,15 @@ theorem RueCore.Ctx.Extends.pop {Γb Γ : Ctx} {en : Entry} (h : Γb.Extends (en
   Γb.Extends Γ
 ```
 
-### `Ctx.Extends.armCtx`
+### `Ctx.Extends.extendArm`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
 The same for a `match` arm's payload locals (helper).
 
 ```lean
-theorem RueCore.Ctx.Extends.armCtx {Γb Γ₀ : Ctx} {Ts : List Ty}
-  (h : Γb.Extends (armCtx Ts Γ₀)) : Γb.Extends Γ₀
+theorem RueCore.Ctx.Extends.extendArm {Γb Γ₀ : Ctx} {Ts : List Ty}
+  (h : Γb.Extends (extendArm Ts Γ₀)) : Γb.Extends Γ₀
 ```
 
 ### `Ctx.Extends.length_le`
@@ -8673,7 +8678,7 @@ prefix started from, `Ω ⊕ Δ₁` included (helper).
 ```lean
 theorem RueCore.Out.SkelOk.then {Γ Γ₁ : Ctx} {Δ₁ : List Ctx} {Ω : Out}
   (h₁ : Out.SkelOk Γ { norm := some Γ₁, brk := Δ₁ }) (h₂ : Out.SkelOk Γ₁ Ω) :
-  Out.SkelOk Γ (Ω.add Δ₁)
+  Out.SkelOk Γ (Ω.merge Δ₁)
 ```
 
 ### `LoopHead.skel`
@@ -8775,7 +8780,7 @@ theorem RueCore.skel_lookup {Γ Γ' : Ctx} (h : Γ'.skel = Γ.skel) {i : Nat}
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-(helper) Every state `fnCtx`/`armCtx`/`let` push is `Owned`, a shape of
+(helper) Every state `fnCtx`/`extendArm`/`let` push is `Owned`, a shape of
 every type.
 
 ```lean
@@ -8811,15 +8816,15 @@ theorem RueCore.Ctx.Wf.set_setAt {D : Decls} {Γ : Ctx} {i : Nat} {en : Entry}
   Ctx.Wf D (List.set Γ i (en.setSt (en.st.setAt π u)))
 ```
 
-### `Ctx.Wf.armCtx`
+### `Ctx.Wf.extendArm`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) A `match` arm's entry context is well-formed when `Σ0` is.
 
 ```lean
-theorem RueCore.Ctx.Wf.armCtx {D : Decls} {Γ₀ : Ctx} (Ts : List Ty)
-  (h : Ctx.Wf D Γ₀) : Ctx.Wf D (armCtx Ts Γ₀)
+theorem RueCore.Ctx.Wf.extendArm {D : Decls} {Γ₀ : Ctx} (Ts : List Ty)
+  (h : Ctx.Wf D Γ₀) : Ctx.Wf D (extendArm Ts Γ₀)
 ```
 
 ### `Ctx.joinOpt_wf`
@@ -8881,7 +8886,7 @@ theorem RueCore.Out.Wf.of {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) :
 ```lean
 theorem RueCore.Out.Wf.then {D : Decls} {Γ₁ : Ctx} {Δ₁ : List Ctx} {Ω : Out}
   (h₁ : Out.Wf D { norm := some Γ₁, brk := Δ₁ })
-  (h₂ : Ctx.Wf D Γ₁ → Out.Wf D Ω) : Out.Wf D (Ω.add Δ₁)
+  (h₂ : Ctx.Wf D Γ₁ → Out.Wf D Ω) : Out.Wf D (Ω.merge Δ₁)
 ```
 
 ### `LoopHead.wf`
@@ -9022,7 +9027,7 @@ theorem RueCore.dropEventsList_eq_flatten (D : Decls) (cs : List Contents) :
 `stepEval`'s `next` is a `Step` (helper).
 
 ```lean
-theorem RueCore.stepEval_complete {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+theorem RueCore.stepEval_complete {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {e : Expr} {C' : Config}
   (h : stepEval M P H φ K tr e = StepOut.next C') :
   Step M P (Config.run H φ K (Focus.eval e) tr) C'
@@ -9035,7 +9040,7 @@ theorem RueCore.stepEval_complete {M : FloatOps} {P : Program} {H : Store} {φ :
 `stepArgs`'s `next` is a `Step` (helper).
 
 ```lean
-theorem RueCore.stepArgs_complete {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+theorem RueCore.stepArgs_complete {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {vs : List Val} {t : ArgsTag}
   {C' : Config} (h : stepArgs P H φ K tr vs t = StepOut.next C') :
   Step M P (Config.run H φ K (Focus.args t vs []) tr) C'
@@ -9048,7 +9053,7 @@ theorem RueCore.stepArgs_complete {M : FloatOps} {P : Program} {H : Store} {φ :
 `stepRet`'s `next` is a `Step` (helper).
 
 ```lean
-theorem RueCore.stepRet_complete {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+theorem RueCore.stepRet_complete {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {v : Val} {k : Kont} {C' : Config}
   (h : stepRet M P H φ K tr v k = StepOut.next C') :
   Step M P (Config.run H φ (k :: K) (Focus.ret v) tr) C'
@@ -9061,7 +9066,7 @@ theorem RueCore.stepRet_complete {M : FloatOps} {P : Program} {H : Store} {φ : 
 `stepEval` never answers `halted` (helper).
 
 ```lean
-theorem RueCore.stepEval_ne_halted {M : FloatOps} {P : Program} {H : Store}
+theorem RueCore.stepEval_ne_halted {M : FloatSig} {P : Program} {H : Store}
   {φ : Frame} {K : List Kont} {tr : List Event} {e : Expr} :
   stepEval M P H φ K tr e ≠ StepOut.halted
 ```
@@ -9085,7 +9090,7 @@ theorem RueCore.stepArgs_ne_halted {P : Program} {H : Store} {φ : Frame}
 `stepRet` never answers `halted` (helper).
 
 ```lean
-theorem RueCore.stepRet_ne_halted {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+theorem RueCore.stepRet_ne_halted {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {v : Val} {k : Kont} :
   stepRet M P H φ K tr v k ≠ StepOut.halted
 ```
@@ -9264,7 +9269,7 @@ Whatever `stepN` reaches, `→*` reaches (§6.12's `→*`), so a run of the
 function is a derivation of the relation (helper).
 
 ```lean
-theorem RueCore.stepN_steps {M : FloatOps} {P : Program} {n : Nat} {C : Config} :
+theorem RueCore.stepN_steps {M : FloatSig} {P : Program} {n : Nat} {C : Config} :
   Steps M P C (stepN M P n C)
 ```
 
@@ -10344,16 +10349,16 @@ theorem RueCore.Matches.unwindPrefix {D : Decls} (hwf : WfDecls D) (n : Nat) (Γ
               ∀ (ℓ : Nat), ¬ℓ ∈ List.take n ρ → H'[ℓ]? = H[ℓ]?
 ```
 
-### `ownedJoinOkList_matches`
+### `ownedJoinableList_matches`
 
 *theorem* · module `RueCore.Soundness`
 
 The same over a declaration's fields (helper).
 
 ```lean
-theorem RueCore.ownedJoinOkList_matches {D : Decls} (hwf : WfDecls D)
+theorem RueCore.ownedJoinableList_matches {D : Decls} (hwf : WfDecls D)
   (ts : List OwnSt) {Ts : List Ty} {cs : List Contents} :
-  ownedJoinOkList D ts Ts = true →
+  ownedJoinableList D ts Ts = true →
     ContentsMatchesList D cs [] Ts → ContentsMatchesList D cs ts Ts
 ```
 
@@ -10754,7 +10759,7 @@ theorem RueCore.EvalOk.bot_abort {D : Decls} {T R : Ty} {B : List Ctx} {φ : Fra
   AbortOk D R B φ H r
 ```
 
-### `EvalOk.bot_andThen`
+### `EvalOk.bot_bind`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10763,9 +10768,9 @@ the context never runs and its outcome is the whole form's — which is what the
 `-Bottom` rules' conclusions promise, at whatever type they name (helper).
 
 ```lean
-theorem RueCore.EvalOk.bot_andThen {D : Decls} {T T₀ R : Ty} {B : List Ctx}
-  {φ : Frame} {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
-  (h : EvalOk D T₀ R none B φ H r) : EvalOk D T R none B φ H (r.andThen k)
+theorem RueCore.EvalOk.bot_bind {D : Decls} {T T₀ R : Ty} {B : List Ctx} {φ : Frame}
+  {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
+  (h : EvalOk D T₀ R none B φ H r) : EvalOk D T R none B φ H (r.bind k)
 ```
 
 ### `EvalOk.bind`
@@ -10788,7 +10793,7 @@ theorem RueCore.EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ 
       r = EvalRes.ok H₁ v tr →
         HasTy D v T₀ →
           FrameMatches D Γ₀ φ H₁ → EvalOk D T R o B φ H₁ (k H₁ v)) :
-  EvalOk D T R o B φ H (r.andThen k)
+  EvalOk D T R o B φ H (r.bind k)
 ```
 
 ### `EvalOk.bindSame`
@@ -10808,7 +10813,7 @@ theorem RueCore.EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx}
       r = EvalRes.ok H₁ v tr →
         HasTy D v T₀ →
           FrameMatches D Γ₀ φ H₁ → EvalOk D T R (some Γ₀) B φ H₁ (k H₁ v)) :
-  EvalOk D T R o B φ H (r.andThen k)
+  EvalOk D T R o B φ H (r.bind k)
 ```
 
 ### `EvalOk.weaken`
@@ -10936,7 +10941,7 @@ promise. An unwinding `return` from the body passes through; a trap and
 exhausted fuel promise nothing (helper).
 
 ```lean
-theorem RueCore.loop_step (M : FloatOps) {P : Program} {fuel : Nat} {D : Decls}
+theorem RueCore.loop_step (M : FloatSig) {P : Program} {fuel : Nat} {D : Decls}
   {T R : Ty} {oe : Option Ctx} {Be : List Ctx} {φ : Frame} {H : Store}
   {e : Expr} {o' : Option Ctx} {B' : List Ctx}
   (kb : EvalOk D Ty.unit R oe Be φ H (eval M fuel P H φ e))
@@ -10967,7 +10972,7 @@ theorem RueCore.EvalRes.withTrace_outOfFuel_iff {r : EvalRes} {tr : List Event} 
   EvalRes.withTrace tr r = EvalRes.outOfFuel ↔ r = EvalRes.outOfFuel
 ```
 
-### `EvalRes.andThen_mono`
+### `EvalRes.bind_mono`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10976,15 +10981,15 @@ and the context's result is stable on that value, the whole form's result is
 (helper).
 
 ```lean
-theorem RueCore.EvalRes.andThen_mono {r r' : EvalRes} {k k' : Store → Val → EvalRes}
+theorem RueCore.EvalRes.bind_mono {r r' : EvalRes} {k k' : Store → Val → EvalRes}
   (hr : r ≠ EvalRes.outOfFuel → r' = r)
   (hk :
     ∀ (H : Store) (v : Val) (tr : List Event),
       r = EvalRes.ok H v tr → k H v ≠ EvalRes.outOfFuel → k' H v = k H v)
-  (h : r.andThen k ≠ EvalRes.outOfFuel) : r'.andThen k' = r.andThen k
+  (h : r.bind k ≠ EvalRes.outOfFuel) : r'.bind k' = r.bind k
 ```
 
-### `EvalRes.absorb_mono`
+### `EvalRes.bindCall_mono`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10992,12 +10997,12 @@ theorem RueCore.EvalRes.andThen_mono {r r' : EvalRes} {k k' : Store → Val → 
 (helper).
 
 ```lean
-theorem RueCore.EvalRes.absorb_mono {r r' : EvalRes} {k k' : Store → Val → EvalRes}
+theorem RueCore.EvalRes.bindCall_mono {r r' : EvalRes} {k k' : Store → Val → EvalRes}
   (hr : r ≠ EvalRes.outOfFuel → r' = r)
   (hk :
     ∀ (H : Store) (v : Val) (tr : List Event),
       r = EvalRes.ok H v tr → k H v ≠ EvalRes.outOfFuel → k' H v = k H v)
-  (h : r.absorb k ≠ EvalRes.outOfFuel) : r'.absorb k' = r.absorb k
+  (h : r.bindCall k ≠ EvalRes.outOfFuel) : r'.bindCall k' = r.bindCall k
 ```
 
 ### `evalArgs_mono`
@@ -11024,7 +11029,7 @@ One step of fuel monotonicity: a bound that answered answers the same at
 the next bound up (helper).
 
 ```lean
-theorem RueCore.eval_succ (M : FloatOps) {P : Program} (fuel : Nat) (H : Store)
+theorem RueCore.eval_succ (M : FloatSig) {P : Program} (fuel : Nat) (H : Store)
   (φ : Frame) (e : Expr) :
   eval M fuel P H φ e ≠ EvalRes.outOfFuel →
     eval M (fuel + 1) P H φ e = eval M fuel P H φ e
@@ -11071,7 +11076,7 @@ theorem RueCore.EvalRes.withTrace_ne_returned {r : EvalRes} {tr : List Event}
   EvalRes.withTrace tr r ≠ EvalRes.returned H v tr'
 ```
 
-### `EvalRes.absorb_ne_returned`
+### `EvalRes.bindCall_ne_returned`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -11079,12 +11084,12 @@ theorem RueCore.EvalRes.withTrace_ne_returned {r : EvalRes} {tr : List Event}
 one on (helper).
 
 ```lean
-theorem RueCore.EvalRes.absorb_ne_returned {r : EvalRes} {k : Store → Val → EvalRes}
+theorem RueCore.EvalRes.bindCall_ne_returned {r : EvalRes} {k : Store → Val → EvalRes}
   (hk :
     ∀ (H₀ : Store) (v₀ : Val) (H' : Store) (v' : Val) (tr' : List Event),
       k H₀ v₀ ≠ EvalRes.returned H' v' tr')
   (H : Store) (v : Val) (tr : List Event) :
-  r.absorb k ≠ EvalRes.returned H v tr
+  r.bindCall k ≠ EvalRes.returned H v tr
 ```
 
 ### `CTy.eq_of_fits`
@@ -11131,7 +11136,7 @@ theorem RueCore.CTy.fits_pick (c : CTy) (d : Ty) : c.fits (c.pick d) = true
 
 *theorem* · module `RueCore.Checker`
 
-(helper) An arm whose type fits the one `firstArmTy` fixed admits every type
+(helper) An arm whose type fits the one `armsJoinTy` fixed admits every type
 that one admits.
 
 ```lean
@@ -11164,20 +11169,20 @@ theorem RueCore.checkIdx_sound {P : Program} {R : Ty} (es : List Expr) {Γ : Ctx
     TypedArgs P R Γ es Ts Ω ∧ Ts.all Ty.isInt = true
 ```
 
-### `Ty.grounded_declIds`
+### `Ty.grounded_tyNames`
 
 *theorem* · module `RueCore.Checker`
 
-A grounded type's every named declaration is grounded: `Ty.declIds` peels
+A grounded type's every named declaration is grounded: `Ty.tyNames` peels
 exactly the array wrappers `Ty.grounded` walks through (helper).
 
 ```lean
-theorem RueCore.Ty.grounded_declIds {st : List Bool × List Bool} {T : Ty}
-  {d : DeclId} :
-  Ty.grounded st T = true → d ∈ T.declIds → Ty.grounded st d.ty = true
+theorem RueCore.Ty.grounded_tyNames {st : List Bool × List Bool} {T : Ty}
+  {d : TyName} :
+  Ty.grounded st T = true → d ∈ T.tyNames → Ty.grounded st d.ty = true
 ```
 
-### `Decls.peel_length`
+### `Decls.topoSort_length`
 
 *theorem* · module `RueCore.Checker`
 
@@ -11185,9 +11190,9 @@ The grounded flags have one entry per declaration at every round
 (helper).
 
 ```lean
-theorem RueCore.Decls.peel_length (D : Decls) (n : Nat) :
-  (D.peel n).fst.length = D.structs.length ∧
-    (D.peel n).snd.length = D.enums.length
+theorem RueCore.Decls.topoSort_length (D : Decls) (n : Nat) :
+  (D.topoSort n).fst.length = D.structs.length ∧
+    (D.topoSort n).snd.length = D.enums.length
 ```
 
 ### `Decls.grounded_peel_zero`
@@ -11197,8 +11202,8 @@ theorem RueCore.Decls.peel_length (D : Decls) (n : Nat) :
 Nothing is grounded at round `0` (helper).
 
 ```lean
-theorem RueCore.Decls.grounded_peel_zero (D : Decls) (d : DeclId) :
-  Ty.grounded (D.peel 0) d.ty = false
+theorem RueCore.Decls.grounded_peel_zero (D : Decls) (d : TyName) :
+  Ty.grounded (D.topoSort 0) d.ty = false
 ```
 
 ### `Decls.grounded_pred`
@@ -11210,9 +11215,9 @@ at round `n`. This is the peel read backwards, and it is what turns an
 acceptance into well-foundedness (helper).
 
 ```lean
-theorem RueCore.Decls.grounded_pred {D : Decls} {n : Nat} {d d' : DeclId}
-  (h : Ty.grounded (D.peel (n + 1)) d.ty = true) (hn : D.Names d d') :
-  Ty.grounded (D.peel n) d'.ty = true
+theorem RueCore.Decls.grounded_pred {D : Decls} {n : Nat} {d d' : TyName}
+  (h : Ty.grounded (D.topoSort (n + 1)) d.ty = true) (hn : D.Names d d') :
+  Ty.grounded (D.topoSort n) d'.ty = true
 ```
 
 ### `Decls.acc_of_grounded`
@@ -11223,8 +11228,8 @@ A declaration grounded at some round is accessible in the by-value
 relation (helper).
 
 ```lean
-theorem RueCore.Decls.acc_of_grounded (D : Decls) (n : Nat) (d : DeclId) :
-  Ty.grounded (D.peel n) d.ty = true → Acc (fun a b => D.Names b a) d
+theorem RueCore.Decls.acc_of_grounded (D : Decls) (n : Nat) (d : TyName) :
+  Ty.grounded (D.topoSort n) d.ty = true → Acc (fun a b => D.Names b a) d
 ```
 
 ### `Decls.acc_of_empty`
@@ -11235,7 +11240,7 @@ A declaration index the environment does not have contains nothing, so it
 is accessible outright (helper).
 
 ```lean
-theorem RueCore.Decls.acc_of_empty {D : Decls} {d : DeclId} (h : D.byValue d = []) :
+theorem RueCore.Decls.acc_of_empty {D : Decls} {d : TyName} (h : D.byValue d = []) :
   Acc (fun a b => D.Names b a) d
 ```
 
@@ -11880,15 +11885,15 @@ theorem RueCore.Contents.splitFields_own {D : Decls} (a : Nat) (cs : List Conten
           Contents.copyClosedList D rs = true
 ```
 
-### `Contents.skelFields_length`
+### `Contents.pathOnlyFields_length`
 
 *theorem* · module `RueCore.Trace`
 
-`skelFields` keeps the member count (helper).
+`pathOnlyFields` keeps the member count (helper).
 
 ```lean
-theorem RueCore.Contents.skelFields_length (cs : List Contents) (f : Nat)
-  (π : List Nat) : (Contents.skelFields cs f π).length = cs.length
+theorem RueCore.Contents.pathOnlyFields_length (cs : List Contents) (f : Nat)
+  (π : List Nat) : (Contents.pathOnlyFields cs f π).length = cs.length
 ```
 
 ### `Contents.ownList_holes`
@@ -11902,40 +11907,40 @@ theorem RueCore.Contents.ownList_holes {α : Type} (D : Decls) (cs : List α) :
   Contents.ownList D (List.map (fun x => Contents.hole) cs) = []
 ```
 
-### `Contents.skeleton_own`
+### `Contents.pathOnly_own`
 
 *theorem* · module `RueCore.Trace`
 
 **`split` and the consumed shell, counted exactly** (§6.3, RUE-2427): the
-leaf, the residue and the path's shell (`Contents.skeleton`) together own
+leaf, the residue and the path's shell (`Contents.pathOnly`) together own
 exactly what the consumed place owned — every owned node of it is in exactly
 one of the three (helper).
 
 ```lean
-theorem RueCore.Contents.skeleton_own {D : Decls} (a : Nat) (π : List Nat)
+theorem RueCore.Contents.pathOnly_own {D : Decls} (a : Nat) (π : List Nat)
   {c leaf : Contents} {rs : List Contents} :
   Contents.copyClosed D c = true →
     Contents.splitResidue D c π = Except.ok (leaf, rs) →
       List.count a (Contents.own D leaf) +
             List.count a (Contents.ownList D rs) +
-          List.count a (Contents.own D (c.skeleton π)) =
+          List.count a (Contents.own D (c.pathOnly π)) =
         List.count a (Contents.own D c)
 ```
 
-### `Contents.skelFields_own`
+### `Contents.pathOnlyFields_own`
 
 *theorem* · module `RueCore.Trace`
 
 The same at `split`'s member step (helper).
 
 ```lean
-theorem RueCore.Contents.skelFields_own {D : Decls} (a : Nat) (cs : List Contents)
+theorem RueCore.Contents.pathOnlyFields_own {D : Decls} (a : Nat) (cs : List Contents)
   (f : Nat) (π : List Nat) {leaf : Contents} {rs : List Contents} :
   Contents.copyClosedList D cs = true →
     Contents.splitFields D cs f π = Except.ok (leaf, rs) →
       List.count a (Contents.own D leaf) +
             List.count a (Contents.ownList D rs) +
-          List.count a (Contents.ownList D (Contents.skelFields cs f π)) =
+          List.count a (Contents.ownList D (Contents.pathOnlyFields cs f π)) =
         List.count a (Contents.ownList D cs)
 ```
 
@@ -12077,7 +12082,7 @@ theorem RueCore.Cons.bind {D : Decls} {F : Event → List Nat} {H : Store}
         StoreCC D H₁ →
           Contents.copyClosed D (Contents.ofVal v) = true →
             Cons D F H₁ (Val.own D v) (k H₁ v)) :
-  Cons D F H X (r.andThen k)
+  Cons D F H X (r.bind k)
 ```
 
 ### `Cons.absorb`
@@ -12097,7 +12102,7 @@ theorem RueCore.Cons.absorb {D : Decls} {F : Event → List Nat} {H : Store}
         StoreCC D H₁ →
           Contents.copyClosed D (Contents.ofVal v) = true →
             Cons D F H₁ (Val.own D v) (k H₁ v)) :
-  Cons D F H X (r.absorb k)
+  Cons D F H X (r.bindCall k)
 ```
 
 ### `Cons.pure`
@@ -12179,7 +12184,7 @@ theorem RueCore.binOpInt_scalar {op : BinOp} {w : IntWidth} {s : Sign} {n₁ n�
 §6.4's float rules produce a scalar (helper).
 
 ```lean
-theorem RueCore.binOpFloat_scalar {M : FloatOps} {op : BinOp} {w : FloatWidth}
+theorem RueCore.binOpFloat_scalar {M : FloatSig} {op : BinOp} {w : FloatWidth}
   {a b : FloatDatum} {v : Val} (h : binOpFloat M op w a b = OpRes.val v) :
   v.scalar
 ```
@@ -12191,7 +12196,7 @@ theorem RueCore.binOpFloat_scalar {M : FloatOps} {op : BinOp} {w : FloatWidth}
 §6.4's binary operators produce a scalar (helper).
 
 ```lean
-theorem RueCore.evalBinOp_scalar {M : FloatOps} {op : BinOp} {a b v : Val}
+theorem RueCore.evalBinOp_scalar {M : FloatSig} {op : BinOp} {a b v : Val}
   (h : evalBinOp M op a b = OpRes.val v) : v.scalar
 ```
 
@@ -12224,7 +12229,7 @@ theorem RueCore.evalIntCast_scalar {w : IntWidth} {s : Sign} {a v : Val}
 §6.4's float intrinsics produce a scalar (helper).
 
 ```lean
-theorem RueCore.evalFintrin_scalar {M : FloatOps} {k : FloatIntrin} {a v : Val}
+theorem RueCore.evalFintrin_scalar {M : FloatSig} {k : FloatIntrin} {a v : Val}
   (h : evalFintrin M k a = OpRes.val v) : v.scalar
 ```
 
@@ -12617,7 +12622,7 @@ the run — a range of store indices, each once. Every projection `F` the law
 can count therefore names each identity at most once (helper).
 
 ```lean
-theorem RueCore.run_trace_once (M : FloatOps) {P : Program} {F : Event → List Nat}
+theorem RueCore.run_trace_once (M : FloatSig) {P : Program} {F : Event → List Nat}
   (hF : TraceMeasure P.decls F) (fuel a : Nat) :
   List.count a (List.flatMap F (run M P fuel).trace) ≤ 1
 ```
@@ -12629,7 +12634,7 @@ theorem RueCore.run_trace_once (M : FloatOps) {P : Program} {F : Event → List 
 `→*` composes (§6.12) (helper).
 
 ```lean
-theorem RueCore.Steps.trans {M : FloatOps} {P : Program} {C₁ C₂ C₃ : Config}
+theorem RueCore.Steps.trans {M : FloatSig} {P : Program} {C₁ C₂ C₃ : Config}
   (h₁ : Steps M P C₁ C₂) (h₂ : Steps M P C₂ C₃) : Steps M P C₁ C₃
 ```
 
@@ -12640,7 +12645,7 @@ theorem RueCore.Steps.trans {M : FloatOps} {P : Program} {C₁ C₂ C₃ : Confi
 One step is a run (§6.12) (helper).
 
 ```lean
-theorem RueCore.Steps.single {M : FloatOps} {P : Program} {C₁ C₂ : Config}
+theorem RueCore.Steps.single {M : FloatSig} {P : Program} {C₁ C₂ : Config}
   (h : Step M P C₁ C₂) : Steps M P C₁ C₂
 ```
 
@@ -12653,7 +12658,7 @@ ends at a configuration with no expression in focus passes through `C`'s one
 successor (helper).
 
 ```lean
-theorem RueCore.Steps.peel {M : FloatOps} {P : Program} {C C' D : Config}
+theorem RueCore.Steps.peel {M : FloatSig} {P : Program} {C C' D : Config}
   (hs : Step M P C C') (h : Steps M P C D) (hC : C.evalFocus)
   (hD : ¬D.evalFocus) : Steps M P C' D
 ```
@@ -12665,7 +12670,7 @@ theorem RueCore.Steps.peel {M : FloatOps} {P : Program} {C C' D : Config}
 A run into the family carries its simulation back (helper).
 
 ```lean
-theorem RueCore.Sim.pre {M : FloatOps} {P : Program} {φ : Frame}
+theorem RueCore.Sim.pre {M : FloatSig} {P : Program} {φ : Frame}
   {C C₂ : List Kont → List Event → Config} {r : EvalRes}
   (hpre : ∀ (K : List Kont) (tr : List Event), Steps M P (C K tr) (C₂ K tr))
   (h : Sim M P φ C₂ r) : Sim M P φ C r
@@ -12679,7 +12684,7 @@ A run into the family that emits `tr₁` carries its simulation back to
 the result with `tr₁` prefixed (§6.12's accumulating output) (helper).
 
 ```lean
-theorem RueCore.Sim.withTrace {M : FloatOps} {P : Program} {φ : Frame}
+theorem RueCore.Sim.withTrace {M : FloatSig} {P : Program} {φ : Frame}
   {C C₂ : List Kont → List Event → Config} {r : EvalRes} {tr₁ : List Event}
   (hpre :
     ∀ (K : List Kont) (tr : List Event),
@@ -12687,18 +12692,18 @@ theorem RueCore.Sim.withTrace {M : FloatOps} {P : Program} {φ : Frame}
   (h : Sim M P φ C₂ r) : Sim M P φ C (EvalRes.withTrace tr₁ r)
 ```
 
-### `Sim.andThen`
+### `Sim.bind`
 
 *theorem* · module `RueCore.Adequacy`
 
-**§6.2's (Search), once**: `eval`'s `andThen` is an enter step pushing a
+**§6.2's (Search), once**: `eval`'s `bind` is an enter step pushing a
 frame `F`, the operand run under `F`, and a plug of its value into `F`'s hole.
 A `return` or a `break` passes through `F` unchanged because `F` is neither a
 call frame nor a loop boundary, and a panic because (Panic-Lift) discards
 every context (helper).
 
 ```lean
-theorem RueCore.Sim.andThen {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+theorem RueCore.Sim.bind {M : FloatSig} {P : Program} {φ φ₁ : Frame}
   {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
   (hC :
     ∀ (K : List Kont) (tr : List Event), Steps M P (C K tr) (C₁ (F :: K) tr))
@@ -12708,7 +12713,7 @@ theorem RueCore.Sim.andThen {M : FloatOps} {P : Program} {φ φ₁ : Frame}
       r = EvalRes.ok H₁ v tr₁ →
         Sim M P φ (fun K tr => Config.run H₁ φ₁ (F :: K) (Focus.ret v) tr)
           (k H₁ v)) :
-  Sim M P φ C (r.andThen k)
+  Sim M P φ C (r.bind k)
 ```
 
 ### `Sim.lift`
@@ -12719,7 +12724,7 @@ A result that is not a value passes through a transparent frame unchanged
 (helper).
 
 ```lean
-theorem RueCore.Sim.lift {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+theorem RueCore.Sim.lift {M : FloatSig} {P : Program} {φ φ₁ : Frame}
   {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
   (hC :
     ∀ (K : List Kont) (tr : List Event), Steps M P (C K tr) (C₁ (F :: K) tr))
@@ -12736,7 +12741,7 @@ theorem RueCore.Sim.lift {M : FloatOps} {P : Program} {φ φ₁ : Frame}
 frame, which is what `absorb` turns into a value (helper).
 
 ```lean
-theorem RueCore.Sim.absorb {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+theorem RueCore.Sim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Frame}
   {C C₁ : List Kont → List Event → Config}
   (hC :
     ∀ (K : List Kont) (tr : List Event),
@@ -12748,7 +12753,7 @@ theorem RueCore.Sim.absorb {M : FloatOps} {P : Program} {φ φ₁ : Frame}
         Sim M P φ
           (fun K tr => Config.run H₁ φ₁ (Kont.call φ :: K) (Focus.ret v) tr)
           (k H₁ v)) :
-  Sim M P φ C (r.absorb k)
+  Sim M P φ C (r.bindCall k)
 ```
 
 ### `OpRes.sim`
@@ -12759,7 +12764,7 @@ theorem RueCore.Sim.absorb {M : FloatOps} {P : Program} {φ φ₁ : Frame}
 (helper).
 
 ```lean
-theorem RueCore.OpRes.sim {M : FloatOps} {P : Program} {φ : Frame} {H : Store}
+theorem RueCore.OpRes.sim {M : FloatSig} {P : Program} {φ : Frame} {H : Store}
   {F : Kont} {v : Val} (o : OpRes)
   (hv :
     ∀ (K : List Kont) (tr : List Event) (v' : Val),
@@ -12784,7 +12789,7 @@ theorem RueCore.OpRes.sim {M : FloatOps} {P : Program} {φ : Frame} {H : Store}
 result is simulated from the list context (helper).
 
 ```lean
-theorem RueCore.evalArgs_sim {M : FloatOps} {P : Program} {fuel : Nat} {φ : Frame}
+theorem RueCore.evalArgs_sim {M : FloatSig} {P : Program} {fuel : Nat} {φ : Frame}
   (IH : SimIH M P fuel) (t : ArgsTag) (es : List Expr) (H : Store)
   (vs₀ : List Val) :
   (∀ (H' : Store) (vs : List Val) (tr' : List Event),
@@ -12805,7 +12810,7 @@ Where no `Sim` target has an expression in focus, a first step of `C`
 can be peeled off by determinism (helper).
 
 ```lean
-theorem RueCore.Sim.peel {M : FloatOps} {P : Program} {φ : Frame}
+theorem RueCore.Sim.peel {M : FloatSig} {P : Program} {φ : Frame}
   {C C₂ : List Kont → List Event → Config} {r : EvalRes}
   (hs : ∀ (K : List Kont) (tr : List Event), Step M P (C K tr) (C₂ K tr))
   (hC : ∀ (K : List Kont) (tr : List Event), (C K tr).evalFocus)
@@ -12825,16 +12830,16 @@ theorem RueCore.evalArgs_abort_ne_ok {ev : Store → Expr → EvalRes} {es : Lis
     ∀ (H' : Store) (v : Val) (tr : List Event), r ≠ EvalRes.ok H' v tr
 ```
 
-### `EvalRes.withTrace_andThen`
+### `EvalRes.withTrace_bind`
 
 *theorem* · module `RueCore.Adequacy`
 
-`andThen` after a trace prefix (helper).
+`bind` after a trace prefix (helper).
 
 ```lean
-theorem RueCore.EvalRes.withTrace_andThen (r : EvalRes) (t : List Event)
+theorem RueCore.EvalRes.withTrace_bind (r : EvalRes) (t : List Event)
   (k : Store → Val → EvalRes) :
-  (EvalRes.withTrace t r).andThen k = EvalRes.withTrace t (r.andThen k)
+  (EvalRes.withTrace t r).bind k = EvalRes.withTrace t (r.bind k)
 ```
 
 ### `rootCell_of`
@@ -12891,7 +12896,7 @@ theorem RueCore.plainUnwind_single {D : Decls} {H H' : Store} {ℓ : Nat}
 (D-Use-Declared-Linear), (D-Use-Copy), (D-Use-Move) §6.3 (helper).
 
 ```lean
-theorem RueCore.sim_use {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_use {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (p : Place) :
   Sim M P φ (evalConf H φ (Expr.use p)) (eval M (fuel + 1) P H φ (Expr.use p))
 ```
@@ -12903,7 +12908,7 @@ theorem RueCore.sim_use {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 §6.11's `@drop` at a constant place (helper).
 
 ```lean
-theorem RueCore.sim_drop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_drop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (p : Place) :
   Sim M P φ (evalConf H φ (Expr.drop p))
     (eval M (fuel + 1) P H φ (Expr.drop p))
@@ -12916,7 +12921,7 @@ theorem RueCore.sim_drop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 §6.4's binary operators after §6.2's `E ⊕ e` and `v ⊕ E` (helper).
 
 ```lean
-theorem RueCore.sim_binop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_binop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (op : BinOp) (e₁ e₂ : Expr) :
   Sim M P φ (evalConf H φ (Expr.binop op e₁ e₂))
     (eval M (fuel + 1) P H φ (Expr.binop op e₁ e₂))
@@ -12929,7 +12934,7 @@ theorem RueCore.sim_binop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 §6.4's unary operators after §6.2's `⊖ E` (helper).
 
 ```lean
-theorem RueCore.sim_unop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_unop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (op : UnOp) (e : Expr) :
   Sim M P φ (evalConf H φ (Expr.unop op e))
     (eval M (fuel + 1) P H φ (Expr.unop op e))
@@ -12942,7 +12947,7 @@ theorem RueCore.sim_unop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-Int-Cast) and its trap after §6.2's `@intCast( E )` (helper).
 
 ```lean
-theorem RueCore.sim_intCast {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_intCast {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (w : IntWidth) (sg : Sign) (e : Expr) :
   Sim M P φ (evalConf H φ (Expr.intCast w sg e))
     (eval M (fuel + 1) P H φ (Expr.intCast w sg e))
@@ -12955,7 +12960,7 @@ theorem RueCore.sim_intCast {M : FloatOps} {P : Program} {fuel : Nat} {H : Store
 §6.4's float intrinsics after §6.2's `@f( E )` (helper).
 
 ```lean
-theorem RueCore.sim_fintrin {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_fintrin {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (k : FloatIntrin) (e : Expr) :
   Sim M P φ (evalConf H φ (Expr.fintrin k e))
     (eval M (fuel + 1) P H φ (Expr.fintrin k e))
@@ -12968,7 +12973,7 @@ theorem RueCore.sim_fintrin {M : FloatOps} {P : Program} {fuel : Nat} {H : Store
 `@dbg` (§6.12) after §6.2's `@dbg( E )` (helper).
 
 ```lean
-theorem RueCore.sim_dbg {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_dbg {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (e : Expr) :
   Sim M P φ (evalConf H φ e.dbg) (eval M (fuel + 1) P H φ e.dbg)
 ```
@@ -12981,7 +12986,7 @@ theorem RueCore.sim_dbg {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 identity is minted as `introVal` mints it (helper).
 
 ```lean
-theorem RueCore.sim_mkStruct {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_mkStruct {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (s : Nat) (args : List Expr) :
   Sim M P φ (evalConf H φ (Expr.mkStruct s args))
     (eval M (fuel + 1) P H φ (Expr.mkStruct s args))
@@ -12994,7 +12999,7 @@ theorem RueCore.sim_mkStruct {M : FloatOps} {P : Program} {fuel : Nat} {H : Stor
 (D-Enum-Intro) §6.6 after §6.2's search through the payload (helper).
 
 ```lean
-theorem RueCore.sim_mkEnum {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_mkEnum {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (e k : Nat) (args : List Expr) :
   Sim M P φ (evalConf H φ (Expr.mkEnum e k args))
     (eval M (fuel + 1) P H φ (Expr.mkEnum e k args))
@@ -13007,7 +13012,7 @@ theorem RueCore.sim_mkEnum {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-Array) §6.5 after §6.2's search through the elements (helper).
 
 ```lean
-theorem RueCore.sim_mkArray {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_mkArray {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (T : Ty) (args : List Expr) :
   Sim M P φ (evalConf H φ (Expr.mkArray T args))
     (eval M (fuel + 1) P H φ (Expr.mkArray T args))
@@ -13020,7 +13025,7 @@ theorem RueCore.sim_mkArray {M : FloatOps} {P : Program} {fuel : Nat} {H : Store
 The repeat form (`7.1:39`) (helper).
 
 ```lean
-theorem RueCore.sim_repeat {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_repeat {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (T : Ty) (e : Expr) (n : Nat) :
   Sim M P φ (evalConf H φ (Expr.repeatArray T e n))
     (eval M (fuel + 1) P H φ (Expr.repeatArray T e n))
@@ -13034,7 +13039,7 @@ theorem RueCore.sim_repeat {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 from the index list's context (helper).
 
 ```lean
-theorem RueCore.sim_indexRead_args {M : FloatOps} {P : Program} {fuel : Nat}
+theorem RueCore.sim_indexRead_args {M : FloatSig} {P : Program} {fuel : Nat}
   {H : Store} {φ : Frame} (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) :
   Sim M P φ (argsConf H φ (ArgsTag.indexRead p πs) [] idx)
@@ -13048,7 +13053,7 @@ theorem RueCore.sim_indexRead_args {M : FloatOps} {P : Program} {fuel : Nat}
 (D-Index) at an expression in focus (helper).
 
 ```lean
-theorem RueCore.sim_indexRead {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_indexRead {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) :
   Sim M P φ (evalConf H φ (Expr.indexRead p idx πs))
@@ -13064,7 +13069,7 @@ as the read with its value discarded, at the same fuel, so the argument list
 is at two less (helper).
 
 ```lean
-theorem RueCore.sim_indexDrop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_indexDrop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) :
   Sim M P φ (evalConf H φ (Expr.indexDrop p idx πs))
@@ -13078,7 +13083,7 @@ theorem RueCore.sim_indexDrop {M : FloatOps} {P : Program} {fuel : Nat} {H : Sto
 (D-Assign) §6.8 below a dynamic index, in `5.2:14`'s order (helper).
 
 ```lean
-theorem RueCore.sim_indexWrite {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_indexWrite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) (e : Expr) :
   Sim M P φ (evalConf H φ (Expr.indexWrite p idx πs e))
@@ -13093,7 +13098,7 @@ theorem RueCore.sim_indexWrite {M : FloatOps} {P : Program} {fuel : Nat} {H : St
 closes (helper).
 
 ```lean
-theorem RueCore.sim_match {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_match {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (scrut : Expr) (arms : List Expr) :
   Sim M P φ (evalConf H φ (scrut.match arms))
     (eval M (fuel + 1) P H φ (scrut.match arms))
@@ -13106,7 +13111,7 @@ theorem RueCore.sim_match {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-Let) §6.7, then (D-EndScope) (helper).
 
 ```lean
-theorem RueCore.sim_letIn {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_letIn {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (m : Bool) (e₁ e₂ : Expr) :
   Sim M P φ (evalConf H φ (Expr.letIn m e₁ e₂))
     (eval M (fuel + 1) P H φ (Expr.letIn m e₁ e₂))
@@ -13119,7 +13124,7 @@ theorem RueCore.sim_letIn {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-Assign) §6.8 (helper).
 
 ```lean
-theorem RueCore.sim_assign {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_assign {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (p : Place) (e : Expr) :
   Sim M P φ (evalConf H φ (Expr.assign p e))
     (eval M (fuel + 1) P H φ (Expr.assign p e))
@@ -13132,7 +13137,7 @@ theorem RueCore.sim_assign {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-Seq) §6.7 (helper).
 
 ```lean
-theorem RueCore.sim_seq {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_seq {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (e₁ e₂ : Expr) :
   Sim M P φ (evalConf H φ (e₁.seq e₂)) (eval M (fuel + 1) P H φ (e₁.seq e₂))
 ```
@@ -13144,7 +13149,7 @@ theorem RueCore.sim_seq {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-If-T)/(D-If-F) §6.6 (helper).
 
 ```lean
-theorem RueCore.sim_ite {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_ite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (c e₁ e₂ : Expr) :
   Sim M P φ (evalConf H φ (c.ite e₁ e₂))
     (eval M (fuel + 1) P H φ (c.ite e₁ e₂))
@@ -13158,7 +13163,7 @@ theorem RueCore.sim_ite {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 `call` frame (helper).
 
 ```lean
-theorem RueCore.sim_call {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_call {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (f : Nat) (args : List Expr) :
   Sim M P φ (evalConf H φ (Expr.call f args))
     (eval M (fuel + 1) P H φ (Expr.call f args))
@@ -13171,7 +13176,7 @@ theorem RueCore.sim_call {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-Return) §6.9 (helper).
 
 ```lean
-theorem RueCore.sim_ret {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_ret {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (e : Expr) :
   Sim M P φ (evalConf H φ e.ret) (eval M (fuel + 1) P H φ e.ret)
 ```
@@ -13183,7 +13188,7 @@ theorem RueCore.sim_ret {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-Break) §6.10 (helper).
 
 ```lean
-theorem RueCore.sim_brk {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_brk {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} :
   Sim M P φ (evalConf H φ Expr.brk) (eval M (fuel + 1) P H φ Expr.brk)
 ```
@@ -13198,7 +13203,7 @@ whose simulation starts one (D-Loop-Enter) earlier, peeled off by
 determinism (helper).
 
 ```lean
-theorem RueCore.sim_loop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.sim_loop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : SimIH M P fuel) (e : Expr) :
   Sim M P φ (evalConf H φ e.loop) (eval M (fuel + 1) P H φ e.loop)
 ```
@@ -13210,7 +13215,7 @@ theorem RueCore.sim_loop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 A counted run is a run (§6.12's `→*`) (helper).
 
 ```lean
-theorem RueCore.StepsN.toSteps {M : FloatOps} {P : Program} {n : Nat} {C D : Config}
+theorem RueCore.StepsN.toSteps {M : FloatSig} {P : Program} {n : Nat} {C D : Config}
   (h : StepsN M P n C D) : Steps M P C D
 ```
 
@@ -13221,7 +13226,7 @@ theorem RueCore.StepsN.toSteps {M : FloatOps} {P : Program} {n : Nat} {C D : Con
 Every run has a length (helper).
 
 ```lean
-theorem RueCore.Steps.toN {M : FloatOps} {P : Program} {C D : Config}
+theorem RueCore.Steps.toN {M : FloatSig} {P : Program} {C D : Config}
   (h : Steps M P C D) : ∃ n, StepsN M P n C D
 ```
 
@@ -13232,7 +13237,7 @@ theorem RueCore.Steps.toN {M : FloatOps} {P : Program} {C D : Config}
 Counted runs compose (helper).
 
 ```lean
-theorem RueCore.StepsN.trans {M : FloatOps} {P : Program} {a b : Nat} {C E D : Config}
+theorem RueCore.StepsN.trans {M : FloatSig} {P : Program} {a b : Nat} {C E D : Config}
   (h₁ : StepsN M P a C E) (h₂ : StepsN M P b E D) : StepsN M P (a + b) C D
 ```
 
@@ -13244,7 +13249,7 @@ A run of `n` steps has a run of every shorter length from the same start
 (helper).
 
 ```lean
-theorem RueCore.StepsN.prefix {M : FloatOps} {P : Program} {n : Nat} {C D : Config}
+theorem RueCore.StepsN.prefix {M : FloatSig} {P : Program} {n : Nat} {C D : Config}
   (h : StepsN M P n C D) {m : Nat} : m ≤ n → ∃ E, StepsN M P m C E
 ```
 
@@ -13256,7 +13261,7 @@ theorem RueCore.StepsN.prefix {M : FloatOps} {P : Program} {n : Nat} {C D : Conf
 from one configuration end at the same configuration (helper).
 
 ```lean
-theorem RueCore.StepsN.det {M : FloatOps} {P : Program} {n : Nat} {C D D' : Config}
+theorem RueCore.StepsN.det {M : FloatSig} {P : Program} {n : Nat} {C D D' : Config}
   (h : StepsN M P n C D) (h' : StepsN M P n C D') : D = D'
 ```
 
@@ -13267,7 +13272,7 @@ theorem RueCore.StepsN.det {M : FloatOps} {P : Program} {n : Nat} {C D D' : Conf
 Peeling a counted run's first step by determinism (helper).
 
 ```lean
-theorem RueCore.StepsN.peel {M : FloatOps} {P : Program} {n : Nat} {C C' D : Config}
+theorem RueCore.StepsN.peel {M : FloatSig} {P : Program} {n : Nat} {C C' D : Config}
   (hs : Step M P C C') (h : StepsN M P (n + 1) C D) : StepsN M P n C' D
 ```
 
@@ -13280,7 +13285,7 @@ by `Step.det`): if `→ᵏ` reaches a configuration with no successor — termin
 or stuck — no run from the same start is longer than `k` (helper).
 
 ```lean
-theorem RueCore.StepsN.bound {M : FloatOps} {P : Program} {k : Nat} {C T : Config}
+theorem RueCore.StepsN.bound {M : FloatSig} {P : Program} {k : Nat} {C T : Config}
   (hT : StepsN M P k C T) (hfin : ∀ (C' : Config), ¬Step M P T C') {n : Nat}
   {D : Config} : StepsN M P n C D → n ≤ k
 ```
@@ -13293,7 +13298,7 @@ theorem RueCore.StepsN.bound {M : FloatOps} {P : Program} {k : Nat} {C T : Confi
 successor reached from the same configuration are the same one (helper).
 
 ```lean
-theorem RueCore.Steps.final_unique {M : FloatOps} {P : Program} {C T₁ T₂ : Config}
+theorem RueCore.Steps.final_unique {M : FloatSig} {P : Program} {C T₁ T₂ : Config}
   (h₁ : Steps M P C T₁) (h₂ : Steps M P C T₂)
   (hf₁ : ∀ (C' : Config), ¬Step M P T₁ C')
   (hf₂ : ∀ (C' : Config), ¬Step M P T₂ C') : T₁ = T₂
@@ -13306,7 +13311,7 @@ theorem RueCore.Steps.final_unique {M : FloatOps} {P : Program} {C T₁ T₂ : C
 A family with long runs has shorter ones (helper).
 
 ```lean
-theorem RueCore.Long.mono {M : FloatOps} {P : Program}
+theorem RueCore.Long.mono {M : FloatSig} {P : Program}
   {C : List Kont → List Event → Config} {m n : Nat} (hmn : m ≤ n)
   (h : Long M P C n) : Long M P C m
 ```
@@ -13318,7 +13323,7 @@ theorem RueCore.Long.mono {M : FloatOps} {P : Program}
 A run into a family with long runs is at least as long (helper).
 
 ```lean
-theorem RueCore.Long.pre {M : FloatOps} {P : Program}
+theorem RueCore.Long.pre {M : FloatSig} {P : Program}
   {C C₂ : List Kont → List Event → Config} {n : Nat}
   (hpre :
     ∀ (K : List Kont) (tr : List Event), ∃ tr', Steps M P (C K tr) (C₂ K tr'))
@@ -13333,7 +13338,7 @@ A step and then a run into a family with long runs is one step longer
 (helper).
 
 ```lean
-theorem RueCore.Long.pre1 {M : FloatOps} {P : Program}
+theorem RueCore.Long.pre1 {M : FloatSig} {P : Program}
   {C C₂ : List Kont → List Event → Config} {n : Nat}
   (hpre :
     ∀ (K : List Kont) (tr : List Event),
@@ -13341,18 +13346,18 @@ theorem RueCore.Long.pre1 {M : FloatOps} {P : Program}
   (h : Long M P C₂ n) : Long M P C (n + 1)
 ```
 
-### `Long.andThen`
+### `Long.bind`
 
 *theorem* · module `RueCore.Adequacy`
 
-**§6.2's (Search), counted**: the twin of `Sim.andThen` for exhausted
+**§6.2's (Search), counted**: the twin of `Sim.bind` for exhausted
 fuel. If `eval` spent its fuel on the operand, the operand's run under the
 pushed frame `F` is the long one, one enter step in; if the operand reached a
 value (`Sim`'s `ok` clause gives the run to it) and the context spent the fuel,
 the context's run is (helper).
 
 ```lean
-theorem RueCore.Long.andThen {M : FloatOps} {P : Program} {φ₁ : Frame}
+theorem RueCore.Long.bind {M : FloatSig} {P : Program} {φ₁ : Frame}
   {C C₁ : List Kont → List Event → Config} {F : Kont} {fuel : Nat}
   (hC :
     ∀ (K : List Kont) (tr : List Event), Step M P (C K tr) (C₁ (F :: K) tr))
@@ -13364,10 +13369,10 @@ theorem RueCore.Long.andThen {M : FloatOps} {P : Program} {φ₁ : Frame}
         k H₁ v = EvalRes.outOfFuel →
           Long M P (fun K tr => Config.run H₁ φ₁ (F :: K) (Focus.ret v) tr)
             fuel) :
-  r.andThen k = EvalRes.outOfFuel → Long M P C (fuel + 1)
+  r.bind k = EvalRes.outOfFuel → Long M P C (fuel + 1)
 ```
 
-### `Long.andThen0`
+### `Long.bind0`
 
 *theorem* · module `RueCore.Adequacy`
 
@@ -13377,7 +13382,7 @@ the payload — so exhaustion is a run of `fuel` steps, not `fuel + 1`
 (helper).
 
 ```lean
-theorem RueCore.Long.andThen0 {M : FloatOps} {P : Program} {φ₁ : Frame}
+theorem RueCore.Long.bind0 {M : FloatSig} {P : Program} {φ₁ : Frame}
   {C₁ : List Kont → List Event → Config} {F : Kont} {fuel : Nat} {r : EvalRes}
   (hsim : Sim M P φ₁ C₁ r) (h₁ : r = EvalRes.outOfFuel → Long M P C₁ fuel)
   {k : Store → Val → EvalRes}
@@ -13387,7 +13392,7 @@ theorem RueCore.Long.andThen0 {M : FloatOps} {P : Program} {φ₁ : Frame}
         k H₁ v = EvalRes.outOfFuel →
           Long M P (fun K tr => Config.run H₁ φ₁ (F :: K) (Focus.ret v) tr)
             fuel) :
-  r.andThen k = EvalRes.outOfFuel → Long M P (fun K tr => C₁ (F :: K) tr) fuel
+  r.bind k = EvalRes.outOfFuel → Long M P (fun K tr => C₁ (F :: K) tr) fuel
 ```
 
 ### `evalArgs_long`
@@ -13399,7 +13404,7 @@ its fuel on an element has a run one step longer than the element's fuel, the
 extra step being the (Search) push into the element's hole (helper).
 
 ```lean
-theorem RueCore.evalArgs_long {M : FloatOps} {P : Program} {fuel : Nat} {φ : Frame}
+theorem RueCore.evalArgs_long {M : FloatSig} {P : Program} {fuel : Nat} {φ : Frame}
   (IH : LongIH M P fuel) (t : ArgsTag) (es : List Expr) (H : Store)
   (vs₀ : List Val) :
   evalArgs (fun H e => eval M fuel P H φ e) H es =
@@ -13414,7 +13419,7 @@ theorem RueCore.evalArgs_long {M : FloatOps} {P : Program} {fuel : Nat} {φ : Fr
 `evalArgs` finishes as `eval_sim` says, from the argument list (helper).
 
 ```lean
-theorem RueCore.evalArgs_ok_steps {M : FloatOps} {P : Program} {fuel : Nat}
+theorem RueCore.evalArgs_ok_steps {M : FloatSig} {P : Program} {fuel : Nat}
   {φ : Frame} {t : ArgsTag} {es : List Expr} {H H' : Store} {vs : List Val}
   {tr' : List Event}
   (h : evalArgs (fun H e => eval M fuel P H φ e) H es = ArgsRes.ok H' vs tr')
@@ -13430,7 +13435,7 @@ theorem RueCore.evalArgs_ok_steps {M : FloatOps} {P : Program} {fuel : Nat}
 Every family has runs of no steps (helper).
 
 ```lean
-theorem RueCore.Long.zero {M : FloatOps} {P : Program}
+theorem RueCore.Long.zero {M : FloatSig} {P : Program}
   {C : List Kont → List Event → Config} : Long M P C 0
 ```
 
@@ -13464,7 +13469,7 @@ The place forms, literals, `@panic` and `break` spend no fuel of their own
 beyond the unit they start with (helper).
 
 ```lean
-theorem RueCore.eval_leaf_ne_outOfFuel {M : FloatOps} {P : Program} {fuel : Nat}
+theorem RueCore.eval_leaf_ne_outOfFuel {M : FloatSig} {P : Program} {fuel : Nat}
   {H : Store} {φ : Frame} {e : Expr}
   (he :
     match e with
@@ -13487,7 +13492,7 @@ theorem RueCore.eval_leaf_ne_outOfFuel {M : FloatOps} {P : Program} {fuel : Nat}
 §6.4's binary operators, counted (helper).
 
 ```lean
-theorem RueCore.long_binop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_binop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (op : BinOp) (e₁ e₂ : Expr) :
   eval M (fuel + 1) P H φ (Expr.binop op e₁ e₂) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.binop op e₁ e₂)) (fuel + 1)
@@ -13500,7 +13505,7 @@ theorem RueCore.long_binop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 §6.4's unary operators, counted (helper).
 
 ```lean
-theorem RueCore.long_unop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_unop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (op : UnOp) (e : Expr) :
   eval M (fuel + 1) P H φ (Expr.unop op e) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.unop op e)) (fuel + 1)
@@ -13513,7 +13518,7 @@ theorem RueCore.long_unop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-Int-Cast), counted (helper).
 
 ```lean
-theorem RueCore.long_intCast {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_intCast {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (w : IntWidth) (sg : Sign) (e : Expr) :
   eval M (fuel + 1) P H φ (Expr.intCast w sg e) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.intCast w sg e)) (fuel + 1)
@@ -13526,7 +13531,7 @@ theorem RueCore.long_intCast {M : FloatOps} {P : Program} {fuel : Nat} {H : Stor
 §6.4's float intrinsics, counted (helper).
 
 ```lean
-theorem RueCore.long_fintrin {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_fintrin {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (k : FloatIntrin) (e : Expr) :
   eval M (fuel + 1) P H φ (Expr.fintrin k e) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.fintrin k e)) (fuel + 1)
@@ -13539,7 +13544,7 @@ theorem RueCore.long_fintrin {M : FloatOps} {P : Program} {fuel : Nat} {H : Stor
 `@dbg` (§6.12), counted (helper).
 
 ```lean
-theorem RueCore.long_dbg {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_dbg {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (e : Expr) :
   eval M (fuel + 1) P H φ e.dbg = EvalRes.outOfFuel →
     Long M P (evalConf H φ e.dbg) (fuel + 1)
@@ -13552,7 +13557,7 @@ theorem RueCore.long_dbg {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 The repeat form (`7.1:39`), counted (helper).
 
 ```lean
-theorem RueCore.long_repeat {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_repeat {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (T : Ty) (e : Expr) (n : Nat) :
   eval M (fuel + 1) P H φ (Expr.repeatArray T e n) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.repeatArray T e n)) (fuel + 1)
@@ -13565,7 +13570,7 @@ theorem RueCore.long_repeat {M : FloatOps} {P : Program} {fuel : Nat} {H : Store
 (D-Return) §6.9, counted (helper).
 
 ```lean
-theorem RueCore.long_ret {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_ret {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (e : Expr) :
   eval M (fuel + 1) P H φ e.ret = EvalRes.outOfFuel →
     Long M P (evalConf H φ e.ret) (fuel + 1)
@@ -13578,7 +13583,7 @@ theorem RueCore.long_ret {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-Assign) §6.8, counted (helper).
 
 ```lean
-theorem RueCore.long_assign {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_assign {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (p : Place) (e : Expr) :
   eval M (fuel + 1) P H φ (Expr.assign p e) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.assign p e)) (fuel + 1)
@@ -13591,7 +13596,7 @@ theorem RueCore.long_assign {M : FloatOps} {P : Program} {fuel : Nat} {H : Store
 (D-Let) §6.7, counted: the body runs after (D-Let)'s step (helper).
 
 ```lean
-theorem RueCore.long_letIn {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_letIn {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (m : Bool) (e₁ e₂ : Expr) :
   eval M (fuel + 1) P H φ (Expr.letIn m e₁ e₂) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.letIn m e₁ e₂)) (fuel + 1)
@@ -13604,7 +13609,7 @@ theorem RueCore.long_letIn {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-Match) §6.6, counted: the arm runs after (D-Match)'s step (helper).
 
 ```lean
-theorem RueCore.long_match {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_match {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (scrut : Expr) (arms : List Expr) :
   eval M (fuel + 1) P H φ (scrut.match arms) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (scrut.match arms)) (fuel + 1)
@@ -13618,7 +13623,7 @@ theorem RueCore.long_match {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (helper).
 
 ```lean
-theorem RueCore.long_seq {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_seq {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (e₁ e₂ : Expr) :
   eval M (fuel + 1) P H φ (e₁.seq e₂) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (e₁.seq e₂)) (fuel + 1)
@@ -13631,7 +13636,7 @@ theorem RueCore.long_seq {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-If-T)/(D-If-F) §6.6, counted (helper).
 
 ```lean
-theorem RueCore.long_ite {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_ite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (c e₁ e₂ : Expr) :
   eval M (fuel + 1) P H φ (c.ite e₁ e₂) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (c.ite e₁ e₂)) (fuel + 1)
@@ -13645,7 +13650,7 @@ An argument-list form whose list spent the fuel, from its enter step
 (helper).
 
 ```lean
-theorem RueCore.long_argsForm {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_argsForm {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} {t : ArgsTag} {es : List Expr} {e : Expr} (IH : LongIH M P fuel)
   (hent :
     ∀ (K : List Kont) (tr : List Event),
@@ -13663,7 +13668,7 @@ theorem RueCore.long_argsForm {M : FloatOps} {P : Program} {fuel : Nat} {H : Sto
 (D-Struct) §6.5, counted (helper).
 
 ```lean
-theorem RueCore.long_mkStruct {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_mkStruct {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (s : Nat) (args : List Expr) :
   eval M (fuel + 1) P H φ (Expr.mkStruct s args) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.mkStruct s args)) (fuel + 1)
@@ -13676,7 +13681,7 @@ theorem RueCore.long_mkStruct {M : FloatOps} {P : Program} {fuel : Nat} {H : Sto
 (D-Enum-Intro) §6.6, counted (helper).
 
 ```lean
-theorem RueCore.long_mkEnum {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_mkEnum {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (e k : Nat) (args : List Expr) :
   eval M (fuel + 1) P H φ (Expr.mkEnum e k args) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.mkEnum e k args)) (fuel + 1)
@@ -13689,7 +13694,7 @@ theorem RueCore.long_mkEnum {M : FloatOps} {P : Program} {fuel : Nat} {H : Store
 (D-Array) §6.5, counted (helper).
 
 ```lean
-theorem RueCore.long_mkArray {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_mkArray {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (T : Ty) (args : List Expr) :
   eval M (fuel + 1) P H φ (Expr.mkArray T args) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.mkArray T args)) (fuel + 1)
@@ -13702,7 +13707,7 @@ theorem RueCore.long_mkArray {M : FloatOps} {P : Program} {fuel : Nat} {H : Stor
 (D-Index) §6.5, counted (helper).
 
 ```lean
-theorem RueCore.long_indexRead {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_indexRead {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) :
   eval M (fuel + 1) P H φ (Expr.indexRead p idx πs) = EvalRes.outOfFuel →
@@ -13718,7 +13723,7 @@ at one less fuel without a step of its own; the (Search) push into the first
 index pays for that unit (helper).
 
 ```lean
-theorem RueCore.long_indexDrop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_indexDrop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) :
   eval M (fuel + 2) P H φ (Expr.indexDrop p idx πs) = EvalRes.outOfFuel →
@@ -13733,7 +13738,7 @@ theorem RueCore.long_indexDrop {M : FloatOps} {P : Program} {fuel : Nat} {H : St
 the indices (helper).
 
 ```lean
-theorem RueCore.long_indexDrop_one {M : FloatOps} {P : Program} {H : Store}
+theorem RueCore.long_indexDrop_one {M : FloatSig} {P : Program} {H : Store}
   {φ : Frame} (p : Place) (idx : List Expr) (πs : List (List Nat)) :
   Long M P (evalConf H φ (Expr.indexDrop p idx πs)) 1
 ```
@@ -13745,7 +13750,7 @@ theorem RueCore.long_indexDrop_one {M : FloatOps} {P : Program} {H : Store}
 (D-Assign) below a dynamic index (§6.8, `5.2:14`), counted (helper).
 
 ```lean
-theorem RueCore.long_indexWrite {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_indexWrite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) (e : Expr) :
   eval M (fuel + 1) P H φ (Expr.indexWrite p idx πs e) = EvalRes.outOfFuel →
@@ -13760,7 +13765,7 @@ theorem RueCore.long_indexWrite {M : FloatOps} {P : Program} {fuel : Nat} {H : S
 step (helper).
 
 ```lean
-theorem RueCore.long_call {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_call {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (f : Nat) (args : List Expr) :
   eval M (fuel + 1) P H φ (Expr.call f args) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.call f args)) (fuel + 1)
@@ -13777,7 +13782,7 @@ off by determinism (`StepsN.peel`), and (D-Loop-Iter) stands in for it
 (helper).
 
 ```lean
-theorem RueCore.long_loop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.long_loop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : LongIH M P fuel) (e : Expr) :
   eval M (fuel + 1) P H φ e.loop = EvalRes.outOfFuel →
     Long M P (evalConf H φ e.loop) (fuel + 1)
@@ -13798,19 +13803,19 @@ theorem RueCore.EvalRes.withTrace_ne_broke {r : EvalRes} {t : List Event}
   EvalRes.withTrace t r ≠ EvalRes.broke H sc tr
 ```
 
-### `EvalRes.absorb_ne_broke`
+### `EvalRes.bindCall_ne_broke`
 
 *theorem* · module `RueCore.Adequacy`
 
 The call boundary never passes an unwinding `break` on (helper).
 
 ```lean
-theorem RueCore.EvalRes.absorb_ne_broke {r : EvalRes} {k : Store → Val → EvalRes}
+theorem RueCore.EvalRes.bindCall_ne_broke {r : EvalRes} {k : Store → Val → EvalRes}
   (hk :
     ∀ (H : Store) (v : Val) (H' : Store) (sc : List Nat) (tr : List Event),
       k H v ≠ EvalRes.broke H' sc tr)
   (H : Store) (sc : List Nat) (tr : List Event) :
-  r.absorb k ≠ EvalRes.broke H sc tr
+  r.bindCall k ≠ EvalRes.broke H sc tr
 ```
 
 ### `run_ne_broke`
@@ -13823,7 +13828,7 @@ call, and the call boundary turns a `break` that reached it into
 (helper).
 
 ```lean
-theorem RueCore.run_ne_broke (M : FloatOps) {P : Program} {fuel : Nat} (H : Store)
+theorem RueCore.run_ne_broke (M : FloatSig) {P : Program} {fuel : Nat} (H : Store)
   (sc : List Nat) (tr : List Event) : run M P fuel ≠ EvalRes.broke H sc tr
 ```
 
@@ -13840,7 +13845,7 @@ than `StepsN.bound` allows), an `ok` or a `panic` is placed by `run_sim` and
 `Steps.final_unique`, and `run` is never `returned` or `broke` (helper).
 
 ```lean
-theorem RueCore.run_classify {M : FloatOps} {P : Program} {T : Config}
+theorem RueCore.run_classify {M : FloatSig} {P : Program} {T : Config}
   (hT : Steps M P Config.init T) (hfin : ∀ (C' : Config), ¬Step M P T C') :
   ∃ n,
     ∀ (fuel : Nat),
@@ -13860,7 +13865,7 @@ theorem RueCore.run_classify {M : FloatOps} {P : Program} {T : Config}
 Preservation along `→*` (§6.12) (helper).
 
 ```lean
-theorem RueCore.Config.SafeAt.steps {M : FloatOps} {P : Program} {T : Ty}
+theorem RueCore.Config.SafeAt.steps {M : FloatSig} {P : Program} {T : Ty}
   {C C' : Config} (h : Config.SafeAt M P T C) (hs : Steps M P C C') :
   Config.SafeAt M P T C'
 ```
@@ -13895,7 +13900,7 @@ theorem RueCore.Nonvacuous.of_okFloat {r : EvalRes} {w : FloatWidth} {f : FloatD
 spends one unit and the body never breaks (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.loopUnit_eval (M : FloatOps) (P : Program) (n : Nat)
+theorem RueCore.Nonvacuous.loopUnit_eval (M : FloatSig) (P : Program) (n : Nat)
   (H : Store) (φ : Frame) :
   eval M n P H φ Expr.unitLit.loop = EvalRes.outOfFuel
 ```
@@ -13925,7 +13930,7 @@ every store and frame: it mints `S0 { 1 }`, binds it, and drops it at the
 scope's end (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.dropTurn_eval (M : FloatOps) (fns : List FnDef) (m : Nat)
+theorem RueCore.Nonvacuous.dropTurn_eval (M : FloatSig) (fns : List FnDef) (m : Nat)
   (H : Store) (φ : Frame) :
   ∃ H' tr,
     eval M (m + 3)
@@ -13957,7 +13962,7 @@ theorem RueCore.Nonvacuous.dropTurn_eval (M : FloatOps) (fns : List FnDef) (m : 
 frame: each turn finishes and the body never breaks (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.dropLoop_eval (M : FloatOps) (fns : List FnDef) (n : Nat)
+theorem RueCore.Nonvacuous.dropLoop_eval (M : FloatSig) (fns : List FnDef) (n : Nat)
   (H : Store) (φ : Frame) :
   eval M n
       {
@@ -14025,34 +14030,34 @@ theorem RueCore.Expr.quietList_mem {es : List Expr} {e : Expr}
   e.returns = false ∧ e.breaks = false
 ```
 
-### `EvalRes.andThen_noRet`
+### `EvalRes.bind_noRet`
 
 *theorem* · module `RueCore.TraceExact`
 
-`andThen` unwinds only where its operand or its context does (helper).
+`bind` unwinds only where its operand or its context does (helper).
 
 ```lean
-theorem RueCore.EvalRes.andThen_noRet {r : EvalRes} {k : Store → Val → EvalRes}
+theorem RueCore.EvalRes.bind_noRet {r : EvalRes} {k : Store → Val → EvalRes}
   (hr : r.NoRet)
   (hk :
     ∀ (H : Store) (v : Val) (tr : List Event),
       r = EvalRes.ok H v tr → (k H v).NoRet) :
-  (r.andThen k).NoRet
+  (r.bind k).NoRet
 ```
 
-### `EvalRes.andThen_noBrk`
+### `EvalRes.bind_noBrk`
 
 *theorem* · module `RueCore.TraceExact`
 
 The same for `break` (helper).
 
 ```lean
-theorem RueCore.EvalRes.andThen_noBrk {r : EvalRes} {k : Store → Val → EvalRes}
+theorem RueCore.EvalRes.bind_noBrk {r : EvalRes} {k : Store → Val → EvalRes}
   (hr : r.NoBrk)
   (hk :
     ∀ (H : Store) (v : Val) (tr : List Event),
       r = EvalRes.ok H v tr → (k H v).NoBrk) :
-  (r.andThen k).NoBrk
+  (r.bind k).NoBrk
 ```
 
 ### `EvalRes.withTrace_noRet`
@@ -14126,7 +14131,7 @@ theorem RueCore.OpRes.toRes_quiet {H : Store} {o : OpRes} :
   (OpRes.toRes H o).NoRet ∧ (OpRes.toRes H o).NoBrk
 ```
 
-### `EvalRes.absorb_quiet`
+### `EvalRes.bindCall_quiet`
 
 *theorem* · module `RueCore.TraceExact`
 
@@ -14134,9 +14139,9 @@ theorem RueCore.OpRes.toRes_quiet {H : Store} {o : OpRes} :
 (helper).
 
 ```lean
-theorem RueCore.EvalRes.absorb_quiet {r : EvalRes} {k : Store → Val → EvalRes}
+theorem RueCore.EvalRes.bindCall_quiet {r : EvalRes} {k : Store → Val → EvalRes}
   (hk : ∀ (H : Store) (v : Val), (k H v).NoRet ∧ (k H v).NoBrk) :
-  (r.absorb k).NoRet ∧ (r.absorb k).NoBrk
+  (r.bindCall k).NoRet ∧ (r.bindCall k).NoBrk
 ```
 
 ### `eval_quiet`
@@ -14149,7 +14154,7 @@ to an unwinding `break` — a call absorbs its callee's `return` (§6.9) and a
 loop catches its body's `break` (§6.10) (helper).
 
 ```lean
-theorem RueCore.eval_quiet (M : FloatOps) (P : Program) (fuel : Nat) (H : Store)
+theorem RueCore.eval_quiet (M : FloatSig) (P : Program) (fuel : Nat) (H : Store)
   (φ : Frame) (e : Expr) :
   (e.returns = false → (eval M fuel P H φ e).NoRet) ∧
     (e.breaks = false → (eval M fuel P H φ e).NoBrk)
@@ -14427,7 +14432,7 @@ theorem RueCore.Exact.bind {D : Decls} {H : Store} {X : List Nat} {r : EvalRes}
         StoreCC D H₁ →
           Contents.copyClosed D (Contents.ofVal v) = true →
             Exact D H₁ (Val.own D v) (k H₁ v)) :
-  Exact D H X (r.andThen k)
+  Exact D H X (r.bind k)
 ```
 
 ### `Exact.bindHeld`
@@ -14447,7 +14452,7 @@ theorem RueCore.Exact.bindHeld {D : Decls} {H : Store} {Y : List Nat} {r : EvalR
         StoreCC D H₁ →
           Contents.copyClosed D (Contents.ofVal v) = true →
             Exact D H₁ (Y ++ Val.own D v) (k H₁ v)) :
-  Exact D H Y (r.andThen k)
+  Exact D H Y (r.bind k)
 ```
 
 ### `Exact.absorb`
@@ -14465,7 +14470,7 @@ theorem RueCore.Exact.absorb {D : Decls} {H : Store} {X : List Nat} {r : EvalRes
         StoreCC D H₁ →
           Contents.copyClosed D (Contents.ofVal v) = true →
             Exact D H₁ (Val.own D v) (k H₁ v)) :
-  Exact D H X (r.absorb k)
+  Exact D H X (r.bindCall k)
 ```
 
 ### `Exact.pure`
@@ -14710,7 +14715,7 @@ theorem RueCore.Exact.unwind {D : Decls} {H : Store} {v : Val} {ls : List Nat}
 §6.4's operators produce a value only from scalar operands (helper).
 
 ```lean
-theorem RueCore.evalBinOp_val_args {M : FloatOps} {op : BinOp} {a b v : Val}
+theorem RueCore.evalBinOp_val_args {M : FloatSig} {op : BinOp} {a b v : Val}
   (h : evalBinOp M op a b = OpRes.val v) : a.scalar ∧ b.scalar
 ```
 
@@ -14743,7 +14748,7 @@ theorem RueCore.evalIntCast_val_arg {w : IntWidth} {sg : Sign} {a v : Val}
 The same for the float intrinsics (helper).
 
 ```lean
-theorem RueCore.evalFintrin_val_arg {M : FloatOps} {k : FloatIntrin} {a v : Val}
+theorem RueCore.evalFintrin_val_arg {M : FloatSig} {k : FloatIntrin} {a v : Val}
   (h : evalFintrin M k a = OpRes.val v) : a.scalar
 ```
 
@@ -14765,7 +14770,7 @@ A dynamic read's value is `Copy`: the machine refuses any other (§6.3's
 (D-Use-Untrackable-Dynamic-Copy), RUE-2400) (helper).
 
 ```lean
-theorem RueCore.eval_indexRead_copy {M : FloatOps} {P : Program} {n : Nat}
+theorem RueCore.eval_indexRead_copy {M : FloatSig} {P : Program} {n : Nat}
   {H H' : Store} {φ : Frame} {p : Place} {idx : List Expr}
   {πs : List (List Nat)} {v : Val} {tr : List Event}
   (h : eval M n P H φ (Expr.indexRead p idx πs) = EvalRes.ok H' v tr) :
@@ -14804,7 +14809,7 @@ leading operands produced `vs`, whatever the rest of the form yields at
 `n + 1` keeps `Exact` from `H₁` with `vs` held (helper).
 
 ```lean
-theorem RueCore.rest_step (M : FloatOps) {P : Program} (hp : P.pendingSafe = true)
+theorem RueCore.rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true)
   {n : Nat}
   (ih :
     ∀ (H : Store) (φ : Frame) (e : Expr),
@@ -14959,7 +14964,7 @@ theorem RueCore.Tidy.bind {φ : Frame} {H : Store} {r : EvalRes}
   (hk :
     ∀ (H₁ : Store) (v : Val) (tr : List Event),
       r = EvalRes.ok H₁ v tr → Tidy φ H₁ (k H₁ v)) :
-  Tidy φ H (r.andThen k)
+  Tidy φ H (r.bind k)
 ```
 
 ### `dropRetire_shape`
@@ -15052,7 +15057,7 @@ theorem RueCore.Tidy.scoped {φ : Frame} {H Hm : Store} {ls : List Nat} {r : Eva
   (hk :
     ∀ (H₂ : Store) (v : Val) (tr : List Event),
       r = EvalRes.ok H₂ v tr → KillsOnly ls H₂ v (k H₂ v)) :
-  Tidy φ H (r.andThen k)
+  Tidy φ H (r.bind k)
 ```
 
 ### `mintParams_locs`
@@ -15131,7 +15136,7 @@ theorem RueCore.Tidy.call {D : Decls} {φ : Frame} {H Hm : Store} {ls : List Nat
   (hpre : ∀ (ℓ : Nat), ℓ < List.length H → Hm[ℓ]? = H[ℓ]?)
   (hr : Tidy { env := ls.reverse, scope := ls } Hm r) :
   Tidy φ H
-    (r.absorb fun H₃ v =>
+    (r.bindCall fun H₃ v =>
       match runAllScopeDrops D H₃ { env := ls.reverse, scope := ls } with
       | Except.error w => EvalRes.stuck w
       | Except.ok (H₄, evs) => EvalRes.ok H₄ v evs)
@@ -15181,7 +15186,7 @@ A form's leading operands ran from a copy-closed store: the store only
 grew, it stays copy-closed, and the values are (helper).
 
 ```lean
-theorem RueCore.lead_cc (M : FloatOps) {P : Program} (hp : P.pendingSafe = true)
+theorem RueCore.lead_cc (M : FloatSig) {P : Program} (hp : P.pendingSafe = true)
   {fuel : Nat} {H : Store} {φ : Frame} {e : Expr} {H₁ : Store} {vs : List Val}
   {tr : List Event} (hcc : StoreCC P.decls H) (he : e.pendingSafe = true)
   (hl : Lead M P fuel H φ H₁ vs tr e) :
@@ -15335,18 +15340,18 @@ theorem RueCore.DropGlueSeq.eq_dropEventsList {D : Decls} {cs : List Contents}
   {evs : List Event} : DropGlueSeq D cs evs → evs = dropEventsList D cs
 ```
 
-### `GlueBlocks.toBlocks`
+### `DropGlueBlocks.toBlocks`
 
 *theorem* · module `RueCore.TraceOrder`
 
 A trace in §6.11's own grammar is in `Blocks` (helper).
 
 ```lean
-theorem RueCore.GlueBlocks.toBlocks {D : Decls} {t : List Event}
-  (h : GlueBlocks D t) : Blocks D t
+theorem RueCore.DropGlueBlocks.toBlocks {D : Decls} {t : List Event}
+  (h : DropGlueBlocks D t) : Blocks D t
 ```
 
-### `GlueBlocks.append`
+### `DropGlueBlocks.append`
 
 *theorem* · module `RueCore.TraceOrder`
 
@@ -15354,8 +15359,9 @@ Two block sequences of §6.11's grammar, one after the other, are one
 (helper).
 
 ```lean
-theorem RueCore.GlueBlocks.append {D : Decls} {t u : List Event} (h₁ : GlueBlocks D t)
-  (h₂ : GlueBlocks D u) : GlueBlocks D (t ++ u)
+theorem RueCore.DropGlueBlocks.append {D : Decls} {t u : List Event}
+  (h₁ : DropGlueBlocks D t) (h₂ : DropGlueBlocks D u) :
+  DropGlueBlocks D (t ++ u)
 ```
 
 ### `dropCell_blocks`
@@ -15367,7 +15373,8 @@ contents (helper).
 
 ```lean
 theorem RueCore.dropCell_blocks {D : Decls} {ℓ : Nat} {c : Contents}
-  {evs : List Event} (h : dropCell D ℓ c = Except.ok evs) : GlueBlocks D evs
+  {evs : List Event} (h : dropCell D ℓ c = Except.ok evs) :
+  DropGlueBlocks D evs
 ```
 
 ### `dropRetire_blocks`
@@ -15379,7 +15386,7 @@ theorem RueCore.dropCell_blocks {D : Decls} {ℓ : Nat} {c : Contents}
 ```lean
 theorem RueCore.dropRetire_blocks {D : Decls} {H H' : Store} {ℓ : Nat}
   {evs : List Event} (h : dropRetire D H ℓ = Except.ok (H', evs)) :
-  GlueBlocks D evs
+  DropGlueBlocks D evs
 ```
 
 ### `unwindLocs_blocks`
@@ -15392,7 +15399,7 @@ non-`Copy` cell, in the order given (helper).
 ```lean
 theorem RueCore.unwindLocs_blocks {D : Decls} {H H' : Store} {ls : List Nat}
   {evs : List Event} :
-  unwindLocs D H ls = Except.ok (H', evs) → GlueBlocks D evs
+  unwindLocs D H ls = Except.ok (H', evs) → DropGlueBlocks D evs
 ```
 
 ### `dropResidue_blocks`
@@ -15407,7 +15414,7 @@ non-`Copy` subtree's marker and walk, and a `Copy` subtree's empty walk
 theorem RueCore.dropResidue_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat}
   {rs : List Contents} {evs : List Event} :
   Contents.copyClosedList D rs = true →
-    dropResidue D ℓ rs = Except.ok evs → GlueBlocks D evs
+    dropResidue D ℓ rs = Except.ok evs → DropGlueBlocks D evs
 ```
 
 ### `destructure_blocks`
@@ -15422,7 +15429,7 @@ theorem RueCore.destructure_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat}
   {cd leaf : Contents} {πs : List Nat} {evs : List Event}
   (hcc : Contents.copyClosed D cd = true)
   (h : Contents.destructure D ℓ cd πs = Except.ok (leaf, evs)) :
-  GlueBlocks D evs
+  DropGlueBlocks D evs
 ```
 
 ### `matchConsume_blocks`
@@ -15433,71 +15440,71 @@ theorem RueCore.destructure_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat}
 
 ```lean
 theorem RueCore.matchConsume_blocks {D : Decls} {e k i : Nat} {vs : List Val} :
-  GlueBlocks D (matchConsume D e k i vs)
+  DropGlueBlocks D (matchConsume D e k i vs)
 ```
 
-### `GlueBlocks.withTrace`
+### `DropGlueBlocks.withTrace`
 
 *theorem* · module `RueCore.TraceOrder`
 
 A prefix of blocks before a result's blocks (helper).
 
 ```lean
-theorem RueCore.GlueBlocks.withTrace {D : Decls} {tr : List Event} {r : EvalRes}
-  (h₁ : GlueBlocks D tr) (h₂ : GlueBlocks D r.trace) :
-  GlueBlocks D (EvalRes.withTrace tr r).trace
+theorem RueCore.DropGlueBlocks.withTrace {D : Decls} {tr : List Event} {r : EvalRes}
+  (h₁ : DropGlueBlocks D tr) (h₂ : DropGlueBlocks D r.trace) :
+  DropGlueBlocks D (EvalRes.withTrace tr r).trace
 ```
 
-### `GlueBlocks.bind`
+### `DropGlueBlocks.bind`
 
 *theorem* · module `RueCore.TraceOrder`
 
 §6.2's search keeps the grammar (helper).
 
 ```lean
-theorem RueCore.GlueBlocks.bind {D : Decls} {r : EvalRes} {k : Store → Val → EvalRes}
-  (hr : GlueBlocks D r.trace)
+theorem RueCore.DropGlueBlocks.bind {D : Decls} {r : EvalRes}
+  {k : Store → Val → EvalRes} (hr : DropGlueBlocks D r.trace)
   (hk :
     ∀ (H₁ : Store) (v : Val) (tr : List Event),
-      r = EvalRes.ok H₁ v tr → GlueBlocks D (k H₁ v).trace) :
-  GlueBlocks D (r.andThen k).trace
+      r = EvalRes.ok H₁ v tr → DropGlueBlocks D (k H₁ v).trace) :
+  DropGlueBlocks D (r.bind k).trace
 ```
 
-### `GlueBlocks.absorb`
+### `DropGlueBlocks.absorb`
 
 *theorem* · module `RueCore.TraceOrder`
 
 §6.9's call boundary keeps the grammar (helper).
 
 ```lean
-theorem RueCore.GlueBlocks.absorb {D : Decls} {r : EvalRes}
-  {k : Store → Val → EvalRes} (hr : GlueBlocks D r.trace)
+theorem RueCore.DropGlueBlocks.absorb {D : Decls} {r : EvalRes}
+  {k : Store → Val → EvalRes} (hr : DropGlueBlocks D r.trace)
   (hk :
     ∀ (H₁ : Store) (v : Val) (tr : List Event),
-      r = EvalRes.ok H₁ v tr → GlueBlocks D (k H₁ v).trace) :
-  GlueBlocks D (r.absorb k).trace
+      r = EvalRes.ok H₁ v tr → DropGlueBlocks D (k H₁ v).trace) :
+  DropGlueBlocks D (r.bindCall k).trace
 ```
 
-### `GlueBlocks.opRes`
+### `DropGlueBlocks.opRes`
 
 *theorem* · module `RueCore.TraceOrder`
 
 An operator's outcome emits nothing (helper).
 
 ```lean
-theorem RueCore.GlueBlocks.opRes {D : Decls} {H : Store} {o : OpRes} :
-  GlueBlocks D (OpRes.toRes H o).trace
+theorem RueCore.DropGlueBlocks.opRes {D : Decls} {H : Store} {o : OpRes} :
+  DropGlueBlocks D (OpRes.toRes H o).trace
 ```
 
-### `GlueBlocks.intro`
+### `DropGlueBlocks.intro`
 
 *theorem* · module `RueCore.TraceOrder`
 
 Aggregate introduction emits nothing (helper).
 
 ```lean
-theorem RueCore.GlueBlocks.intro {D D' : Decls} {H : Store} {mk : Nat → Val} :
-  GlueBlocks D (introVal D' H mk).trace
+theorem RueCore.DropGlueBlocks.intro {D D' : Decls} {H : Store} {mk : Nat → Val} :
+  DropGlueBlocks D (introVal D' H mk).trace
 ```
 
 ### `eval_ok_cc`
@@ -15508,7 +15515,7 @@ A copy-closed store is one step further along an evaluation that reached
 a value (helper).
 
 ```lean
-theorem RueCore.eval_ok_cc (M : FloatOps) {P : Program} {n : Nat} {H H₁ : Store}
+theorem RueCore.eval_ok_cc (M : FloatSig) {P : Program} {n : Nat} {H H₁ : Store}
   {φ : Frame} {e : Expr} {v : Val} {tr : List Event} (hcc : StoreCC P.decls H)
   (hr : eval M n P H φ e = EvalRes.ok H₁ v tr) :
   StoreCC P.decls H₁ ∧ Contents.copyClosed P.decls (Contents.ofVal v) = true
@@ -15522,12 +15529,13 @@ An argument list keeps the grammar (helper).
 
 ```lean
 theorem RueCore.evalArgs_blocks {D : Decls} {ev : Store → Expr → EvalRes}
-  (hev : ∀ (H : Store) (e : Expr), StoreCC D H → GlueBlocks D (ev H e).trace)
+  (hev :
+    ∀ (H : Store) (e : Expr), StoreCC D H → DropGlueBlocks D (ev H e).trace)
   (hcc :
     ∀ (H : Store) (e : Expr) (H₁ : Store) (v : Val) (tr : List Event),
       StoreCC D H → ev H e = EvalRes.ok H₁ v tr → StoreCC D H₁)
   (H : Store) (es : List Expr) :
-  StoreCC D H → ArgsGlueBlocks D (evalArgs ev H es)
+  StoreCC D H → ArgsDropGlueBlocks D (evalArgs ev H es)
 ```
 
 ### `Rec.mono`
@@ -15898,10 +15906,10 @@ is the one `eval` answers (`eval_complete`), so it is in the block grammar
 ```lean
 theorem RueCore.step_blocks (M : FloatModel) {P : Program} (h : ProgramTyped P) :
   (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-      Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+      Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
         Blocks P.decls tr) ∧
     ∀ (κ : PanicKind) (tr : List Event),
-      Steps M.toFloatOps P Config.init (Config.panic κ tr) → Blocks P.decls tr
+      Steps M.toFloatSig P Config.init (Config.panic κ tr) → Blocks P.decls tr
 ```
 
 ### `Blocks.drop_inv`
@@ -15941,7 +15949,7 @@ theorem RueCore.DropGlueSeq.det {D : Decls} {cs : List Contents}
   {e₁ e₂ : List Event} : DropGlueSeq D cs e₁ → DropGlueSeq D cs e₂ → e₁ = e₂
 ```
 
-### `GlueBlocks.drop_inv`
+### `DropGlueBlocks.drop_inv`
 
 *theorem* · module `RueCore.TraceOrder`
 
@@ -15949,9 +15957,9 @@ A drop marker in §6.11's own grammar is followed by one `DropGlue` walk of
 what it names (helper).
 
 ```lean
-theorem RueCore.GlueBlocks.drop_inv {D : Decls} {ℓ : Nat} {c : Contents}
-  {t : List Event} (h : GlueBlocks D (Event.drop ℓ c :: t)) :
-  ∃ evs t', DropGlue D c evs ∧ t = evs ++ t' ∧ GlueBlocks D t'
+theorem RueCore.DropGlueBlocks.drop_inv {D : Decls} {ℓ : Nat} {c : Contents}
+  {t : List Event} (h : DropGlueBlocks D (Event.drop ℓ c :: t)) :
+  ∃ evs t', DropGlue D c evs ∧ t = evs ++ t' ∧ DropGlueBlocks D t'
 ```
 
 ### `Retire.Live.lt`
@@ -16101,7 +16109,7 @@ theorem RueCore.Retire.LivePost.andThen {H : Store} {φ : Frame} {r : EvalRes}
   (hk :
     ∀ (H₁ : Store) (v : Val),
       Retire.Grow H H₁ → Retire.LivePost H₁ φ (k H₁ v)) :
-  Retire.LivePost H φ (r.andThen k)
+  Retire.LivePost H φ (r.bind k)
 ```
 
 ### `Retire.LivePost.scoped`
@@ -16121,7 +16129,7 @@ theorem RueCore.Retire.LivePost.scoped {H H₁ : Store} {φ φ' : Frame} {ys : L
   (hk :
     ∀ (H₂ : Store) (v : Val),
       Retire.Grow H₁ H₂ → Retire.LivePost H φ (k H₂ v)) :
-  Retire.LivePost H φ (r.andThen k)
+  Retire.LivePost H φ (r.bind k)
 ```
 
 ### `Retire.Contents.readAt_ne_uad`
@@ -16372,7 +16380,7 @@ theorem RueCore.Retire.LiveFrame.root {H : Store} {φ : Frame} {i ℓ : Nat}
 once, every evaluation keeps `LivePost`, at every fuel (helper).
 
 ```lean
-theorem RueCore.Retire.eval_live (M : FloatOps) (P : Program) (fuel : Nat) (H : Store)
+theorem RueCore.Retire.eval_live (M : FloatSig) (P : Program) (fuel : Nat) (H : Store)
   (φ : Frame) (e : Expr) :
   Retire.LiveFrame H φ → Retire.LivePost H φ (eval M fuel P H φ e)
 ```
@@ -16589,7 +16597,7 @@ theorem RueCore.Retire.OpRes.toStep_live {H : Store} {φ : Frame} {K : List Kont
 `step` at an expression keeps the invariant (helper).
 
 ```lean
-theorem RueCore.Retire.stepEval_live (M : FloatOps) (P : Program) {H : Store}
+theorem RueCore.Retire.stepEval_live (M : FloatSig) (P : Program) {H : Store}
   {φ : Frame} {K : List Kont} {tr : List Event} (h : Retire.StackLive H φ K)
   (e : Expr) : Retire.StepLive (stepEval M P H φ K tr e)
 ```
@@ -16615,7 +16623,7 @@ theorem RueCore.Retire.stepArgs_live (P : Program) {H : Store} {φ : Frame}
 teardown walks cells the invariant says are live and owed once (helper).
 
 ```lean
-theorem RueCore.Retire.stepRet_live (M : FloatOps) (P : Program) {H : Store}
+theorem RueCore.Retire.stepRet_live (M : FloatSig) (P : Program) {H : Store}
   {φ : Frame} {K : List Kont} {tr : List Event} (v : Val) (k : Kont)
   (h : Retire.StackLive H φ (k :: K)) :
   Retire.StepLive (stepRet M P H φ K tr v k)
@@ -16629,7 +16637,7 @@ theorem RueCore.Retire.stepRet_live (M : FloatOps) (P : Program) {H : Store}
 .useAfterDrop` under it (helper).
 
 ```lean
-theorem RueCore.Retire.step_live (M : FloatOps) (P : Program) {C : Config}
+theorem RueCore.Retire.step_live (M : FloatSig) (P : Program) {C : Config}
   (h : Retire.ConfigLive C) : Retire.StepLive (step M P C)
 ```
 
@@ -16640,7 +16648,7 @@ theorem RueCore.Retire.step_live (M : FloatOps) (P : Program) {C : Config}
 `→*` keeps the invariant (helper).
 
 ```lean
-theorem RueCore.Retire.steps_live {M : FloatOps} {P : Program} {C C' : Config}
+theorem RueCore.Retire.steps_live {M : FloatSig} {P : Program} {C C' : Config}
   (hs : Steps M P C C') : Retire.ConfigLive C → Retire.ConfigLive C'
 ```
 
@@ -16651,7 +16659,7 @@ theorem RueCore.Retire.steps_live {M : FloatOps} {P : Program} {C C' : Config}
 A counted run splits at every shorter length (helper).
 
 ```lean
-theorem RueCore.StepsN.split {M : FloatOps} {P : Program} {m : Nat} {C D : Config}
+theorem RueCore.StepsN.split {M : FloatSig} {P : Program} {m : Nat} {C D : Config}
   (h : StepsN M P m C D) {k : Nat} :
   k ≤ m → ∃ E, StepsN M P k C E ∧ StepsN M P (m - k) E D
 ```
@@ -16664,7 +16672,7 @@ Of two runs from one start, the shorter one's end reaches the longer
 one's (`Step.det`, §6) (helper).
 
 ```lean
-theorem RueCore.StepsN.reaches {M : FloatOps} {P : Program} {k m : Nat}
+theorem RueCore.StepsN.reaches {M : FloatSig} {P : Program} {k m : Nat}
   {C D E : Config} (hk : StepsN M P k C D) (hm : StepsN M P m C E)
   (hle : k ≤ m) : Steps M P D E
 ```
@@ -16677,7 +16685,7 @@ theorem RueCore.StepsN.reaches {M : FloatOps} {P : Program} {k m : Nat}
 (helper).
 
 ```lean
-theorem RueCore.Steps.trace_ext {M : FloatOps} {P : Program} {C D : Config}
+theorem RueCore.Steps.trace_ext {M : FloatSig} {P : Program} {C D : Config}
   (hC : Steps M P Config.init C) (h : Steps M P C D) :
   ∃ evs, D.trace = C.trace ++ evs
 ```
@@ -16689,7 +16697,7 @@ theorem RueCore.Steps.trace_ext {M : FloatOps} {P : Program} {C D : Config}
 A family with long runs has shorter ones (helper).
 
 ```lean
-theorem RueCore.LongC.mono {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.LongC.mono {M : FloatSig} {P : Program} {F : Event → List Nat}
   {H : Store} {X : List Nat} {C : List Kont → List Event → Config} {m n : Nat}
   (hmn : m ≤ n) (h : LongC M P F H X C n) : LongC M P F H X C m
 ```
@@ -16701,7 +16709,7 @@ theorem RueCore.LongC.mono {M : FloatOps} {P : Program} {F : Event → List Nat}
 Holding more does not break the ledger (helper).
 
 ```lean
-theorem RueCore.LongC.weaken {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.LongC.weaken {M : FloatSig} {P : Program} {F : Event → List Nat}
   {H : Store} {X Y : List Nat} {C : List Kont → List Event → Config} {n : Nat}
   (hXY : ∀ (a : Nat), List.count a X ≤ List.count a Y)
   (h : LongC M P F H X C n) : LongC M P F H Y C n
@@ -16715,7 +16723,7 @@ A run into a family with long runs, emitting `t` and moving the ledger from
 `H`, `X` to `H₁`, `Y` as `Cons.prefix` allows, has long runs too (helper).
 
 ```lean
-theorem RueCore.LongC.pre {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.LongC.pre {M : FloatSig} {P : Program} {F : Event → List Nat}
   {H H₁ : Store} {X Y : List Nat} {C C₂ : List Kont → List Event → Config}
   {n : Nat} {t : List Event} (hle : List.length H ≤ List.length H₁)
   (hI :
@@ -16736,7 +16744,7 @@ theorem RueCore.LongC.pre {M : FloatOps} {P : Program} {F : Event → List Nat}
 The same with one step first: the run is one step longer (helper).
 
 ```lean
-theorem RueCore.LongC.pre1 {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.LongC.pre1 {M : FloatSig} {P : Program} {F : Event → List Nat}
   {H H₁ : Store} {X Y : List Nat} {C C₂ : List Kont → List Event → Config}
   {n : Nat} {t : List Event} (hle : List.length H ≤ List.length H₁)
   (hI :
@@ -16759,7 +16767,7 @@ One step that emits nothing and keeps the store, into a family with long
 runs holding at most as much (helper).
 
 ```lean
-theorem RueCore.LongC.step1 {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.LongC.step1 {M : FloatSig} {P : Program} {F : Event → List Nat}
   {H : Store} {X Y : List Nat} {C C₂ : List Kont → List Event → Config}
   {n : Nat} (hXY : ∀ (a : Nat), List.count a Y ≤ List.count a X)
   (hpre : ∀ (K : List Kont) (tr : List Event), Step M P (C K tr) (C₂ K tr))
@@ -16770,13 +16778,13 @@ theorem RueCore.LongC.step1 {M : FloatOps} {P : Program} {F : Event → List Nat
 
 *theorem* · module `RueCore.TracePrefix`
 
-**§6.2's (Search), counted, with its ledger**: the twin of `Long.andThen`.
+**§6.2's (Search), counted, with its ledger**: the twin of `Long.bind`.
 If `eval` spent its fuel on the operand, the operand's run is the long one;
 if the operand finished, `Sim` gives the run to its value and `Cons` its
 ledger, and the context's run is the long one (helper).
 
 ```lean
-theorem RueCore.LongC.andThen {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.LongC.andThen {M : FloatSig} {P : Program} {F : Event → List Nat}
   {H : Store} {X : List Nat} {φ₁ : Frame}
   {C C₁ : List Kont → List Event → Config} {Fr : Kont} {fuel : Nat}
   (hC :
@@ -16793,7 +16801,7 @@ theorem RueCore.LongC.andThen {M : FloatOps} {P : Program} {F : Event → List N
               LongC M P F H₁ (Val.own P.decls v)
                 (fun K tr => Config.run H₁ φ₁ (Fr :: K) (Focus.ret v) tr)
                 fuel) :
-  r.andThen k = EvalRes.outOfFuel → LongC M P F H X C (fuel + 1)
+  r.bind k = EvalRes.outOfFuel → LongC M P F H X C (fuel + 1)
 ```
 
 ### `Contents.ownList_ofVals_snoc`
@@ -16816,7 +16824,7 @@ theorem RueCore.Contents.ownList_ofVals_snoc (D : Decls) (vs : List Val) (v : Va
 values already built are held (`X`) while the next element runs (helper).
 
 ```lean
-theorem RueCore.evalArgs_longc {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.evalArgs_longc {M : FloatSig} {P : Program} {F : Event → List Nat}
   {fuel : Nat} {φ : Frame} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (t : ArgsTag) (es : List Expr) (H : Store)
   (vs₀ : List Val) :
@@ -16834,7 +16842,7 @@ theorem RueCore.evalArgs_longc {M : FloatOps} {P : Program} {F : Event → List 
 A form with one operand and a context that never spends fuel (helper).
 
 ```lean
-theorem RueCore.longc_one {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.longc_one {M : FloatSig} {P : Program} {F : Event → List Nat}
   {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) {e e' : Expr}
   {Fr : Kont} {k : Store → Val → EvalRes}
@@ -16842,7 +16850,7 @@ theorem RueCore.longc_one {M : FloatOps} {P : Program} {F : Event → List Nat}
     ∀ (K : List Kont) (tr : List Event),
       Step M P (evalConf H φ e' K tr) (evalConf H φ e (Fr :: K) tr))
   (hk : ∀ (H₁ : Store) (v : Val), k H₁ v ≠ EvalRes.outOfFuel) :
-  (eval M fuel P H φ e).andThen k = EvalRes.outOfFuel →
+  (eval M fuel P H φ e).bind k = EvalRes.outOfFuel →
     LongC M P F H [] (evalConf H φ e') (fuel + 1)
 ```
 
@@ -16853,7 +16861,7 @@ theorem RueCore.longc_one {M : FloatOps} {P : Program} {F : Event → List Nat}
 §6.4's binary operators, with the ledger (helper).
 
 ```lean
-theorem RueCore.longc_binop {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.longc_binop {M : FloatSig} {P : Program} {F : Event → List Nat}
   {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (op : BinOp)
   (e₁ e₂ : Expr) :
@@ -16869,7 +16877,7 @@ theorem RueCore.longc_binop {M : FloatOps} {P : Program} {F : Event → List Nat
 owned (helper).
 
 ```lean
-theorem RueCore.longc_letIn {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.longc_letIn {M : FloatSig} {P : Program} {F : Event → List Nat}
   {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (m : Bool)
   (e₁ e₂ : Expr) :
@@ -16885,7 +16893,7 @@ theorem RueCore.longc_letIn {M : FloatOps} {P : Program} {F : Event → List Nat
 own what the scrutinee owned (helper).
 
 ```lean
-theorem RueCore.longc_match {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.longc_match {M : FloatSig} {P : Program} {F : Event → List Nat}
   {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (scrut : Expr)
   (arms : List Expr) :
@@ -16901,7 +16909,7 @@ theorem RueCore.longc_match {M : FloatOps} {P : Program} {F : Event → List Nat
 (helper).
 
 ```lean
-theorem RueCore.longc_seq {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.longc_seq {M : FloatSig} {P : Program} {F : Event → List Nat}
   {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (e₁ e₂ : Expr) :
   eval M (fuel + 1) P H φ (e₁.seq e₂) = EvalRes.outOfFuel →
@@ -16915,7 +16923,7 @@ theorem RueCore.longc_seq {M : FloatOps} {P : Program} {F : Event → List Nat}
 (D-If-T)/(D-If-F) §6.6, with the ledger (helper).
 
 ```lean
-theorem RueCore.longc_ite {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.longc_ite {M : FloatSig} {P : Program} {F : Event → List Nat}
   {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (c e₁ e₂ : Expr) :
   eval M (fuel + 1) P H φ (c.ite e₁ e₂) = EvalRes.outOfFuel →
@@ -16930,7 +16938,7 @@ An argument-list form whose list spent the fuel, from its enter step
 (helper).
 
 ```lean
-theorem RueCore.longc_argsForm {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.longc_argsForm {M : FloatSig} {P : Program} {F : Event → List Nat}
   {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
   {t : ArgsTag} {es : List Expr} {e : Expr} (IH : LongCIH M P F fuel)
   (hcc : StoreCC P.decls H)
@@ -16950,7 +16958,7 @@ theorem RueCore.longc_argsForm {M : FloatOps} {P : Program} {F : Event → List 
 (D-Struct) §6.5, with the ledger (helper).
 
 ```lean
-theorem RueCore.longc_mkStruct {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.longc_mkStruct {M : FloatSig} {P : Program} {F : Event → List Nat}
   {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (s : Nat)
   (args : List Expr) :
@@ -16965,7 +16973,7 @@ theorem RueCore.longc_mkStruct {M : FloatOps} {P : Program} {F : Event → List 
 (D-Enum-Intro) §6.6, with the ledger (helper).
 
 ```lean
-theorem RueCore.longc_mkEnum {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.longc_mkEnum {M : FloatSig} {P : Program} {F : Event → List Nat}
   {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (e k : Nat)
   (args : List Expr) :
@@ -16980,7 +16988,7 @@ theorem RueCore.longc_mkEnum {M : FloatOps} {P : Program} {F : Event → List Na
 (D-Array) §6.5, with the ledger (helper).
 
 ```lean
-theorem RueCore.longc_mkArray {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.longc_mkArray {M : FloatSig} {P : Program} {F : Event → List Nat}
   {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (T : Ty)
   (args : List Expr) :
@@ -16995,7 +17003,7 @@ theorem RueCore.longc_mkArray {M : FloatOps} {P : Program} {F : Event → List N
 (D-Index) §6.5, with the ledger (helper).
 
 ```lean
-theorem RueCore.longc_indexRead {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.longc_indexRead {M : FloatSig} {P : Program} {F : Event → List Nat}
   {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (p : Place)
   (idx : List Expr) (πs : List (List Nat)) :
@@ -17011,7 +17019,7 @@ theorem RueCore.longc_indexRead {M : FloatOps} {P : Program} {F : Event → List
 read at one less fuel (helper).
 
 ```lean
-theorem RueCore.longc_indexDrop {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.longc_indexDrop {M : FloatSig} {P : Program} {F : Event → List Nat}
   {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (p : Place)
   (idx : List Expr) (πs : List (List Nat)) :
@@ -17026,7 +17034,7 @@ theorem RueCore.longc_indexDrop {M : FloatOps} {P : Program} {F : Event → List
 `@drop` at a dynamic place at the smallest fuel (helper).
 
 ```lean
-theorem RueCore.longc_indexDrop_one {M : FloatOps} {P : Program}
+theorem RueCore.longc_indexDrop_one {M : FloatSig} {P : Program}
   {F : Event → List Nat} {H : Store} {φ : Frame} (p : Place) (idx : List Expr)
   (πs : List (List Nat)) :
   LongC M P F H [] (evalConf H φ (Expr.indexDrop p idx πs)) 1
@@ -17040,7 +17048,7 @@ theorem RueCore.longc_indexDrop_one {M : FloatOps} {P : Program}
 value is held while the indices run (helper).
 
 ```lean
-theorem RueCore.longc_indexWrite {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.longc_indexWrite {M : FloatSig} {P : Program} {F : Event → List Nat}
   {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (p : Place)
   (idx : List Expr) (πs : List (List Nat)) (e : Expr) :
@@ -17056,7 +17064,7 @@ theorem RueCore.longc_indexWrite {M : FloatOps} {P : Program} {F : Event → Lis
 parameter cells (helper).
 
 ```lean
-theorem RueCore.longc_call {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.longc_call {M : FloatSig} {P : Program} {F : Event → List Nat}
   {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (f : Nat)
   (args : List Expr) :
@@ -17073,7 +17081,7 @@ finishes has its ledger from `eval_conserves`, and the loop's re-evaluation is
 the long run, its (D-Loop-Enter) peeled off by determinism (helper).
 
 ```lean
-theorem RueCore.longc_loop {M : FloatOps} {P : Program} {F : Event → List Nat}
+theorem RueCore.longc_loop {M : FloatSig} {P : Program} {F : Event → List Nat}
   {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (e : Expr) :
   eval M (fuel + 1) P H φ e.loop = EvalRes.outOfFuel →
@@ -17093,7 +17101,7 @@ whose trace `run_trace_once` bounds, or before the end of a run of at least
 way.
 
 ```lean
-theorem RueCore.steps_trace_once (M : FloatOps) {P : Program} {F : Event → List Nat}
+theorem RueCore.steps_trace_once (M : FloatSig) {P : Program} {F : Event → List Nat}
   (hF : TraceMeasure P.decls F)
   (hns : ∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w)
   {C : Config} (hC : Steps M P Config.init C) (a : Nat) :
@@ -17112,10 +17120,10 @@ checked run is never refused (helper).
 ```lean
 theorem RueCore.no_double_free_of_step (M : FloatModel) {P : Program}
   (h : ProgramTyped P) (fuel : Nat) :
-  (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+  (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
     (∀ (a : Nat),
-        List.count a (freedIds P.decls (run M.toFloatOps P fuel).trace) ≤ 1) ∧
-      ∀ (a : Nat), List.count a (dtorIds (run M.toFloatOps P fuel).trace) ≤ 1
+        List.count a (freedIds P.decls (run M.toFloatSig P fuel).trace) ≤ 1) ∧
+      ∀ (a : Nat), List.count a (dtorIds (run M.toFloatSig P fuel).trace) ≤ 1
 ```
 
 ### `Config.ledger_count_run`
@@ -17202,7 +17210,7 @@ theorem RueCore.IdLe.trans' {l₁ l₂ l₃ : List Nat} (h₁ : IdLe l₁ l₂)
 Lossless runs compose (helper).
 
 ```lean
-theorem RueCore.MSteps.trans {M : FloatOps} {P : Program} {C₁ C₂ C₃ : Config}
+theorem RueCore.MSteps.trans {M : FloatSig} {P : Program} {C₁ C₂ C₃ : Config}
   (h₁ : MSteps M P C₁ C₂) (h₂ : MSteps M P C₂ C₃) : MSteps M P C₁ C₃
 ```
 
@@ -17213,7 +17221,7 @@ theorem RueCore.MSteps.trans {M : FloatOps} {P : Program} {C₁ C₂ C₃ : Conf
 One lossless step is a lossless run (helper).
 
 ```lean
-theorem RueCore.MSteps.single {M : FloatOps} {P : Program} {C₁ C₂ : Config}
+theorem RueCore.MSteps.single {M : FloatSig} {P : Program} {C₁ C₂ : Config}
   (s : Step M P C₁ C₂)
   (hl : IdLe (Config.ledger P.decls C₁) (Config.ledger P.decls C₂)) :
   MSteps M P C₁ C₂
@@ -17226,7 +17234,7 @@ theorem RueCore.MSteps.single {M : FloatOps} {P : Program} {C₁ C₂ : Config}
 A lossless run's end counts everything its start counts (helper).
 
 ```lean
-theorem RueCore.MSteps.le {M : FloatOps} {P : Program} {C₁ C₂ : Config}
+theorem RueCore.MSteps.le {M : FloatSig} {P : Program} {C₁ C₂ : Config}
   (h : MSteps M P C₁ C₂) :
   IdLe (Config.ledger P.decls C₁) (Config.ledger P.decls C₂)
 ```
@@ -17238,7 +17246,7 @@ theorem RueCore.MSteps.le {M : FloatOps} {P : Program} {C₁ C₂ : Config}
 A lossless run is a run (helper).
 
 ```lean
-theorem RueCore.MSteps.toSteps {M : FloatOps} {P : Program} {C₁ C₂ : Config}
+theorem RueCore.MSteps.toSteps {M : FloatSig} {P : Program} {C₁ C₂ : Config}
   (h : MSteps M P C₁ C₂) : Steps M P C₁ C₂
 ```
 
@@ -17251,7 +17259,7 @@ that ends where no expression is in focus passes through `C`'s one successor
 (helper).
 
 ```lean
-theorem RueCore.MSteps.peel {M : FloatOps} {P : Program} {C C' D : Config}
+theorem RueCore.MSteps.peel {M : FloatSig} {P : Program} {C C' D : Config}
   (hs : Step M P C C') (h : MSteps M P C D) (hC : C.evalFocus)
   (hD : ¬D.evalFocus) : MSteps M P C' D
 ```
@@ -17266,7 +17274,7 @@ losslessly, `T` takes no step, and `C` reaches `D`, then `D` reaches `T`
 losslessly (helper).
 
 ```lean
-theorem RueCore.MSteps.of_steps {M : FloatOps} {P : Program} {C D T : Config}
+theorem RueCore.MSteps.of_steps {M : FloatSig} {P : Program} {C D T : Config}
   (hT : MSteps M P C T) (hfin : ∀ (C' : Config), ¬Step M P T C')
   (h : Steps M P C D) : MSteps M P D T
 ```
@@ -17289,7 +17297,7 @@ theorem RueCore.stackOwn_cons_nil {D : Decls} {F : Kont} (hF : Kont.own D F = []
 A lossless run into the family carries its simulation back (helper).
 
 ```lean
-theorem RueCore.MSim.pre {M : FloatOps} {P : Program} {φ : Frame}
+theorem RueCore.MSim.pre {M : FloatSig} {P : Program} {φ : Frame}
   {C C₂ : List Kont → List Event → Config} {r : EvalRes}
   (hpre : ∀ (K : List Kont) (tr : List Event), MSteps M P (C K tr) (C₂ K tr))
   (h : MSim M P φ C₂ r) : MSim M P φ C r
@@ -17303,7 +17311,7 @@ A lossless run that emits `tr₁` carries the simulation back to the result
 with `tr₁` prefixed (helper).
 
 ```lean
-theorem RueCore.MSim.withTrace {M : FloatOps} {P : Program} {φ : Frame}
+theorem RueCore.MSim.withTrace {M : FloatSig} {P : Program} {φ : Frame}
   {C C₂ : List Kont → List Event → Config} {r : EvalRes} {tr₁ : List Event}
   (hpre :
     ∀ (K : List Kont) (tr : List Event),
@@ -17319,7 +17327,7 @@ A result that neither completes nor unwinds is simulated vacuously
 (helper).
 
 ```lean
-theorem RueCore.MSim.of_quiet {M : FloatOps} {P : Program} {φ : Frame}
+theorem RueCore.MSim.of_quiet {M : FloatSig} {P : Program} {φ : Frame}
   {C : List Kont → List Event → Config} {r : EvalRes} (hq : r.NoRet ∧ r.NoBrk)
   (hok : ∀ (H : Store) (v : Val) (tr : List Event), r ≠ EvalRes.ok H v tr) :
   MSim M P φ C r
@@ -17334,7 +17342,7 @@ that holds nothing, the operand simulated under `F`, and the context's
 simulation from the operand's value (helper).
 
 ```lean
-theorem RueCore.MSim.andThen {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+theorem RueCore.MSim.andThen {M : FloatSig} {P : Program} {φ φ₁ : Frame}
   {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
   (hFo : Kont.own P.decls F = [])
   (hC :
@@ -17345,7 +17353,7 @@ theorem RueCore.MSim.andThen {M : FloatOps} {P : Program} {φ φ₁ : Frame}
       r = EvalRes.ok H₁ v tr₁ →
         MSim M P φ (fun K tr => Config.run H₁ φ₁ (F :: K) (Focus.ret v) tr)
           (k H₁ v)) :
-  MSim M P φ C (r.andThen k)
+  MSim M P φ C (r.bind k)
 ```
 
 ### `MSim.andThenHeld`
@@ -17357,7 +17365,7 @@ value, so the operand must not unwind — `pendingSafe` — and then only its
 value matters (helper).
 
 ```lean
-theorem RueCore.MSim.andThenHeld {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+theorem RueCore.MSim.andThenHeld {M : FloatSig} {P : Program} {φ φ₁ : Frame}
   {C C₁ : List Kont → List Event → Config} {F : Kont}
   (hC :
     ∀ (K : List Kont) (tr : List Event), MSteps M P (C K tr) (C₁ (F :: K) tr))
@@ -17368,7 +17376,7 @@ theorem RueCore.MSim.andThenHeld {M : FloatOps} {P : Program} {φ φ₁ : Frame}
       r = EvalRes.ok H₁ v tr₁ →
         MSim M P φ (fun K tr => Config.run H₁ φ₁ (F :: K) (Focus.ret v) tr)
           (k H₁ v)) :
-  MSim M P φ C (r.andThen k)
+  MSim M P φ C (r.bind k)
 ```
 
 ### `MSim.lift`
@@ -17379,7 +17387,7 @@ A result that is not a value passes through a frame that holds nothing
 (helper).
 
 ```lean
-theorem RueCore.MSim.lift {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+theorem RueCore.MSim.lift {M : FloatSig} {P : Program} {φ φ₁ : Frame}
   {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
   (hFo : Kont.own P.decls F = [])
   (hC :
@@ -17397,7 +17405,7 @@ theorem RueCore.MSim.lift {M : FloatOps} {P : Program} {φ φ₁ : Frame}
 `call φ` frame, which holds nothing (helper).
 
 ```lean
-theorem RueCore.MSim.absorb {M : FloatOps} {P : Program} {φ φ₁ : Frame}
+theorem RueCore.MSim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Frame}
   {C C₁ : List Kont → List Event → Config}
   (hC :
     ∀ (K : List Kont) (tr : List Event),
@@ -17409,7 +17417,7 @@ theorem RueCore.MSim.absorb {M : FloatOps} {P : Program} {φ φ₁ : Frame}
         MSim M P φ
           (fun K tr => Config.run H₁ φ₁ (Kont.call φ :: K) (Focus.ret v) tr)
           (k H₁ v)) :
-  MSim M P φ C (r.absorb k)
+  MSim M P φ C (r.bindCall k)
 ```
 
 ### `MSim.peel`
@@ -17420,7 +17428,7 @@ Where no target has an expression in focus, a first step of the family
 can be peeled off by determinism (helper).
 
 ```lean
-theorem RueCore.MSim.peel {M : FloatOps} {P : Program} {φ : Frame}
+theorem RueCore.MSim.peel {M : FloatSig} {P : Program} {φ : Frame}
   {C C₂ : List Kont → List Event → Config} {r : EvalRes}
   (hs : ∀ (K : List Kont) (tr : List Event), Step M P (C K tr) (C₂ K tr))
   (hC : ∀ (K : List Kont) (tr : List Event), (C K tr).evalFocus)
@@ -17589,7 +17597,7 @@ An argument list of `pendingSafe` members that finishes leaves a
 copy-closed store and copy-closed values (`eval_exact`) (helper).
 
 ```lean
-theorem RueCore.evalArgs_cc {M : FloatOps} {P : Program} {fuel : Nat} {φ : Frame}
+theorem RueCore.evalArgs_cc {M : FloatSig} {P : Program} {fuel : Nat} {φ : Frame}
   (hp : P.pendingSafe = true) {es : List Expr} {H H' : Store} {vs : List Val}
   {tr : List Event} :
   Expr.pendingSafeList es = true →
@@ -17607,7 +17615,7 @@ theorem RueCore.evalArgs_cc {M : FloatOps} {P : Program} {fuel : Nat} {φ : Fram
 each member is pushed, simulated, and plugged back into the list (helper).
 
 ```lean
-theorem RueCore.evalArgs_msimOk {M : FloatOps} {P : Program} {fuel : Nat} {φ : Frame}
+theorem RueCore.evalArgs_msimOk {M : FloatSig} {P : Program} {fuel : Nat} {φ : Frame}
   (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (t : ArgsTag)
   (es : List Expr) (H : Store) (vs₀ : List Val) :
   Expr.pendingSafeList es = true →
@@ -17630,7 +17638,7 @@ the list's tag holds nothing; a later member's abort is a trap, a refusal or
 exhausted fuel (helper).
 
 ```lean
-theorem RueCore.evalArgs_msimAbort {M : FloatOps} {P : Program} {fuel : Nat}
+theorem RueCore.evalArgs_msimAbort {M : FloatSig} {P : Program} {fuel : Nat}
   {φ : Frame} (IH : MSimIH M P fuel) (t : ArgsTag)
   (ht : ArgsTag.own P.decls t = []) (es : List Expr) (H : Store) :
   Expr.pendingSafeList es = true →
@@ -17649,7 +17657,7 @@ A value produced where the store is, the stack untouched, loses nothing:
 the source held no value in focus (helper).
 
 ```lean
-theorem RueCore.MSteps.toValue {M : FloatOps} {P : Program} {φ : Frame} {H : Store}
+theorem RueCore.MSteps.toValue {M : FloatSig} {P : Program} {φ : Frame} {H : Store}
   {K : List Kont} {tr : List Event} {e : Expr} {v : Val}
   (s :
     Step M P (Config.run H φ K (Focus.eval e) tr)
@@ -17666,7 +17674,7 @@ An enter step of §6.2's (Search) pushing a frame that holds nothing
 (helper).
 
 ```lean
-theorem RueCore.MSteps.enter {M : FloatOps} {P : Program} {φ : Frame} {H : Store}
+theorem RueCore.MSteps.enter {M : FloatSig} {P : Program} {φ : Frame} {H : Store}
   {K : List Kont} {tr : List Event} {e e' : Expr} {F : Kont}
   (hF : Kont.own P.decls F = [])
   (s :
@@ -17683,7 +17691,7 @@ theorem RueCore.MSteps.enter {M : FloatOps} {P : Program} {φ : Frame} {H : Stor
 An enter step into a list context whose tag holds nothing (helper).
 
 ```lean
-theorem RueCore.MSteps.enterArgs {M : FloatOps} {P : Program} {φ : Frame} {H : Store}
+theorem RueCore.MSteps.enterArgs {M : FloatSig} {P : Program} {φ : Frame} {H : Store}
   {K : List Kont} {tr : List Event} {e : Expr} {t : ArgsTag} {es : List Expr}
   (ht : ArgsTag.own P.decls t = [])
   (s :
@@ -17701,7 +17709,7 @@ theorem RueCore.MSteps.enterArgs {M : FloatOps} {P : Program} {φ : Frame} {H : 
 nothing owned — the operator's operands are scalars (helper).
 
 ```lean
-theorem RueCore.OpRes.msim {M : FloatOps} {P : Program} {φ : Frame} {H : Store}
+theorem RueCore.OpRes.msim {M : FloatSig} {P : Program} {φ : Frame} {H : Store}
   {F : Kont} {v : Val} (o : OpRes)
   (hv :
     ∀ (K : List Kont) (tr : List Event) (v' : Val),
@@ -17722,7 +17730,7 @@ theorem RueCore.OpRes.msim {M : FloatOps} {P : Program} {φ : Frame} {H : Store}
 (D-Use-Declared-Linear), (D-Use-Copy), (D-Use-Move) §6.3 (helper).
 
 ```lean
-theorem RueCore.msim_use {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_use {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hcc : StoreCC P.decls H) (p : Place) :
   MSim M P φ (evalConf H φ (Expr.use p))
     (eval M (fuel + 1) P H φ (Expr.use p))
@@ -17735,7 +17743,7 @@ theorem RueCore.msim_use {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 §6.11's `@drop` at a constant place (helper).
 
 ```lean
-theorem RueCore.msim_drop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_drop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hcc : StoreCC P.decls H) (p : Place) :
   MSim M P φ (evalConf H φ (Expr.drop p))
     (eval M (fuel + 1) P H φ (Expr.drop p))
@@ -17749,7 +17757,7 @@ theorem RueCore.msim_drop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 which `pendingSafe` keeps from unwinding (helper).
 
 ```lean
-theorem RueCore.msim_binop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_binop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (op : BinOp) (e₁ e₂ : Expr)
   (he : (Expr.binop op e₁ e₂).pendingSafe = true) :
@@ -17764,7 +17772,7 @@ theorem RueCore.msim_binop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 §6.4's unary operators (helper).
 
 ```lean
-theorem RueCore.msim_unop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_unop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (op : UnOp)
   (e : Expr) (he : (Expr.unop op e).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.unop op e))
@@ -17778,7 +17786,7 @@ theorem RueCore.msim_unop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-Int-Cast) and its trap (helper).
 
 ```lean
-theorem RueCore.msim_intCast {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_intCast {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (w : IntWidth)
   (sg : Sign) (e : Expr) (he : (Expr.intCast w sg e).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.intCast w sg e))
@@ -17792,7 +17800,7 @@ theorem RueCore.msim_intCast {M : FloatOps} {P : Program} {fuel : Nat} {H : Stor
 §6.4's float intrinsics (helper).
 
 ```lean
-theorem RueCore.msim_fintrin {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_fintrin {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H)
   (k : FloatIntrin) (e : Expr) (he : (Expr.fintrin k e).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.fintrin k e))
@@ -17806,7 +17814,7 @@ theorem RueCore.msim_fintrin {M : FloatOps} {P : Program} {fuel : Nat} {H : Stor
 `@dbg` (§6.12): the operand is observable, so a scalar (helper).
 
 ```lean
-theorem RueCore.msim_dbg {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_dbg {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (e : Expr)
   (he : e.dbg.pendingSafe = true) :
   MSim M P φ (evalConf H φ e.dbg) (eval M (fuel + 1) P H φ e.dbg)
@@ -17820,7 +17828,7 @@ An argument-list form's prefix: the enter step, and the list run to its
 redex or its abort, losslessly (helper).
 
 ```lean
-theorem RueCore.msim_argsForm {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_argsForm {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) {e : Expr} {t : ArgsTag}
   (ht : ArgsTag.own P.decls t = []) {es : List Expr}
@@ -17848,7 +17856,7 @@ copy-closure monitor keeps every member's identities in the new value
 (helper).
 
 ```lean
-theorem RueCore.msim_mkStruct {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_mkStruct {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (s : Nat) (args : List Expr)
   (he : (Expr.mkStruct s args).pendingSafe = true) :
@@ -17863,7 +17871,7 @@ theorem RueCore.msim_mkStruct {M : FloatOps} {P : Program} {fuel : Nat} {H : Sto
 (D-Enum-Intro) §6.6 (helper).
 
 ```lean
-theorem RueCore.msim_mkEnum {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_mkEnum {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (en k : Nat) (args : List Expr)
   (he : (Expr.mkEnum en k args).pendingSafe = true) :
@@ -17878,7 +17886,7 @@ theorem RueCore.msim_mkEnum {M : FloatOps} {P : Program} {fuel : Nat} {H : Store
 (D-Array) §6.5 (helper).
 
 ```lean
-theorem RueCore.msim_mkArray {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_mkArray {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (T : Ty) (args : List Expr)
   (he : (Expr.mkArray T args).pendingSafe = true) :
@@ -17894,7 +17902,7 @@ The repeat form (`7.1:39`): its operand is `Copy`, so owns nothing
 (helper).
 
 ```lean
-theorem RueCore.msim_repeat {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_repeat {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (T : Ty)
   (e : Expr) (n : Nat) (he : (Expr.repeatArray T e n).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.repeatArray T e n))
@@ -17909,7 +17917,7 @@ theorem RueCore.msim_repeat {M : FloatOps} {P : Program} {fuel : Nat} {H : Store
 from the index list's context: the indices are integers (helper).
 
 ```lean
-theorem RueCore.msim_indexRead_args {M : FloatOps} {P : Program} {fuel : Nat}
+theorem RueCore.msim_indexRead_args {M : FloatSig} {P : Program} {fuel : Nat}
   {H : Store} {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) (he : (Expr.indexRead p idx πs).pendingSafe = true) :
@@ -17924,7 +17932,7 @@ theorem RueCore.msim_indexRead_args {M : FloatOps} {P : Program} {fuel : Nat}
 (D-Index) at an expression in focus (helper).
 
 ```lean
-theorem RueCore.msim_indexRead {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_indexRead {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) (he : (Expr.indexRead p idx πs).pendingSafe = true) :
@@ -17939,7 +17947,7 @@ theorem RueCore.msim_indexRead {M : FloatOps} {P : Program} {fuel : Nat} {H : St
 §6.11's `@drop` at a `Copy` place below a dynamic index (helper).
 
 ```lean
-theorem RueCore.msim_indexDrop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_indexDrop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) (he : (Expr.indexDrop p idx πs).pendingSafe = true) :
@@ -17955,7 +17963,7 @@ theorem RueCore.msim_indexDrop {M : FloatOps} {P : Program} {fuel : Nat} {H : St
 the indices run, which `pendingSafe` keeps from unwinding (helper).
 
 ```lean
-theorem RueCore.msim_indexWrite {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_indexWrite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) (e : Expr)
@@ -17973,7 +17981,7 @@ consumed; the arm runs under its `endscope`, which (D-EndScope) closes
 (helper).
 
 ```lean
-theorem RueCore.msim_match {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_match {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (scrut : Expr) (arms : List Expr)
   (he : (scrut.match arms).pendingSafe = true) :
@@ -17988,7 +17996,7 @@ theorem RueCore.msim_match {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-Let) §6.7, then (D-EndScope) (helper).
 
 ```lean
-theorem RueCore.msim_letIn {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_letIn {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (m : Bool) (e₁ e₂ : Expr)
   (he : (Expr.letIn m e₁ e₂).pendingSafe = true) :
@@ -18004,7 +18012,7 @@ theorem RueCore.msim_letIn {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 value's identities stay counted (helper).
 
 ```lean
-theorem RueCore.msim_assign {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_assign {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (p : Place) (e : Expr)
   (he : (Expr.assign p e).pendingSafe = true) :
@@ -18020,7 +18028,7 @@ theorem RueCore.msim_assign {M : FloatOps} {P : Program} {fuel : Nat} {H : Store
 (helper).
 
 ```lean
-theorem RueCore.msim_seq {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_seq {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (e₁ e₂ : Expr)
   (he : (e₁.seq e₂).pendingSafe = true) :
@@ -18034,7 +18042,7 @@ theorem RueCore.msim_seq {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-If-T)/(D-If-F) §6.6 (helper).
 
 ```lean
-theorem RueCore.msim_ite {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_ite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (c e₁ e₂ : Expr)
   (he : (c.ite e₁ e₂).pendingSafe = true) :
@@ -18050,7 +18058,7 @@ theorem RueCore.msim_ite {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 `call` frame (helper).
 
 ```lean
-theorem RueCore.msim_call {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_call {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (f : Nat) (args : List Expr)
   (he : (Expr.call f args).pendingSafe = true) :
@@ -18066,7 +18074,7 @@ theorem RueCore.msim_call {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 clause's premise (helper).
 
 ```lean
-theorem RueCore.msim_ret {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_ret {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (e : Expr)
   (he : e.ret.pendingSafe = true) :
   MSim M P φ (evalConf H φ e.ret) (eval M (fuel + 1) P H φ e.ret)
@@ -18079,7 +18087,7 @@ theorem RueCore.msim_ret {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-Break) §6.10 (helper).
 
 ```lean
-theorem RueCore.msim_brk {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_brk {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} :
   MSim M P φ (evalConf H φ Expr.brk) (eval M (fuel + 1) P H φ Expr.brk)
 ```
@@ -18091,7 +18099,7 @@ theorem RueCore.msim_brk {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
 (D-Loop-Enter), (D-Loop-Iter) and (D-Break)'s landing §6.10 (helper).
 
 ```lean
-theorem RueCore.msim_loop {M : FloatOps} {P : Program} {fuel : Nat} {H : Store}
+theorem RueCore.msim_loop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (e : Expr) (he : e.loop.pendingSafe = true) :
   MSim M P φ (evalConf H φ e.loop) (eval M (fuel + 1) P H φ e.loop)
@@ -18110,7 +18118,7 @@ enters nowhere — `eval`'s monitors are what copy closure needs — and
 `pendingSafe` is what keeps an unwind from discarding a held value.
 
 ```lean
-theorem RueCore.eval_msim (M : FloatOps) {P : Program} (hp : P.pendingSafe = true)
+theorem RueCore.eval_msim (M : FloatSig) {P : Program} (hp : P.pendingSafe = true)
   (fuel : Nat) : MSimIH M P fuel
 ```
 
@@ -18124,7 +18132,7 @@ configuration from `Config.init` by a run along which no step loses an owned
 identity.
 
 ```lean
-theorem RueCore.run_msteps (M : FloatOps) {P : Program} (hp : P.pendingSafe = true)
+theorem RueCore.run_msteps (M : FloatSig) {P : Program} (hp : P.pendingSafe = true)
   (fuel : Nat) {H : Store} {v : Val} {tr : List Event}
   (hr : run M P fuel = EvalRes.ok H v tr) :
   MSteps M P Config.init (Config.run H Frame.empty [] (Focus.ret v) tr)
@@ -18152,7 +18160,7 @@ most once** (helper): `eval_tidy` retires every cell by the end, and
 own by the range of identities minted (`run_trace_once`'s argument).
 
 ```lean
-theorem RueCore.run_final_le (M : FloatOps) (P : Program) (fuel : Nat) {H : Store}
+theorem RueCore.run_final_le (M : FloatSig) (P : Program) (fuel : Nat) {H : Store}
   {v : Val} {tr : List Event} (hr : run M P fuel = EvalRes.ok H v tr) :
   storeOwn P.decls H = [] ∧
     ∀ (a : Nat),
@@ -18167,7 +18175,7 @@ theorem RueCore.run_final_le (M : FloatOps) (P : Program) (fuel : Nat) {H : Stor
 The model the statements run on is `Float.exactOps` (helper).
 
 ```lean
-theorem RueCore.Sharp.exact_ops : Float.exactModel.toFloatOps = Float.exactOps
+theorem RueCore.Sharp.exact_ops : Float.exactModel.toFloatSig = Float.exactOps
 ```
 
 ### `Sharp.withTrace_nil`
@@ -18187,7 +18195,7 @@ theorem RueCore.Sharp.withTrace_nil (r : EvalRes) : EvalRes.withTrace [] r = r
 A stuck configuration takes no step (helper).
 
 ```lean
-theorem RueCore.Sharp.noStep_of_stuck {M : FloatOps} {P : Program} {C : Config}
+theorem RueCore.Sharp.noStep_of_stuck {M : FloatSig} {P : Program} {C : Config}
   {w : Violation} (h : Config.Stuck M P C w) (C' : Config) : ¬Step M P C C'
 ```
 
@@ -18198,7 +18206,7 @@ theorem RueCore.Sharp.noStep_of_stuck {M : FloatOps} {P : Program} {C : Config}
 A stuck configuration is not terminal (helper).
 
 ```lean
-theorem RueCore.Sharp.not_terminal_of_stuck {M : FloatOps} {P : Program} {C : Config}
+theorem RueCore.Sharp.not_terminal_of_stuck {M : FloatSig} {P : Program} {C : Config}
   {w : Violation} (h : Config.Stuck M P C w) : ¬C.Terminal
 ```
 
@@ -18209,7 +18217,7 @@ theorem RueCore.Sharp.not_terminal_of_stuck {M : FloatOps} {P : Program} {C : Co
 A terminal configuration takes no step (helper).
 
 ```lean
-theorem RueCore.Sharp.noStep_of_terminal {M : FloatOps} {P : Program} {C : Config}
+theorem RueCore.Sharp.noStep_of_terminal {M : FloatSig} {P : Program} {C : Config}
   (h : C.Terminal) (C' : Config) : ¬Step M P C C'
 ```
 
@@ -18221,7 +18229,7 @@ Of two configurations with no step, a run from `Config.init` reaches at
 most one (`Step.det`) (helper).
 
 ```lean
-theorem RueCore.Sharp.not_steps_of_final {M : FloatOps} {P : Program} {T X : Config}
+theorem RueCore.Sharp.not_steps_of_final {M : FloatSig} {P : Program} {T X : Config}
   (hT : Steps M P Config.init T) (hTf : ∀ (C' : Config), ¬Step M P T C')
   (hXf : ∀ (C' : Config), ¬Step M P X C') (hne : T ≠ X) :
   ¬Steps M P Config.init X
@@ -18235,7 +18243,7 @@ An answer other than `outOfFuel` is `run`'s at every larger fuel
 (`fuel_mono`) (helper).
 
 ```lean
-theorem RueCore.Sharp.run_from {M : FloatOps} {P : Program} {n : Nat} {r : EvalRes}
+theorem RueCore.Sharp.run_from {M : FloatSig} {P : Program} {n : Nat} {r : EvalRes}
   (h : run M P n = r) (hr : r ≠ EvalRes.outOfFuel) (fuel : Nat) :
   n ≤ fuel → run M P fuel = r
 ```
@@ -18248,7 +18256,7 @@ Once `run` answers `r`, no property `r` lacks holds of `run`'s answer at
 every fuel past a bound (helper).
 
 ```lean
-theorem RueCore.Sharp.not_eventually {M : FloatOps} {P : Program} {n : Nat}
+theorem RueCore.Sharp.not_eventually {M : FloatSig} {P : Program} {n : Nat}
   {r : EvalRes} (h : run M P n = r) (hr : r ≠ EvalRes.outOfFuel)
   (Q : EvalRes → Prop) (hQ : ¬Q r) :
   ¬∃ k, ∀ (fuel : Nat), k < fuel → Q (run M P fuel)
@@ -18261,7 +18269,7 @@ theorem RueCore.Sharp.not_eventually {M : FloatOps} {P : Program} {n : Nat}
 A refusal is none of `run_safe`'s outcomes, for any entry point (helper).
 
 ```lean
-theorem RueCore.Sharp.stuck_not_safe {M : FloatOps} {P : Program} {n : Nat}
+theorem RueCore.Sharp.stuck_not_safe {M : FloatSig} {P : Program} {n : Nat}
   {w : Violation} (h : run M P n = EvalRes.stuck w) (fd : FnDef) :
   ¬(run M P n = EvalRes.outOfFuel ∨
       (∃ k tr, run M P n = EvalRes.panic k tr) ∨
@@ -18332,7 +18340,7 @@ In a run with a longer one beside it from the same start, the shorter
 one's end steps (`Step.det`) (helper).
 
 ```lean
-theorem RueCore.Sharp.StepsN.steps_of_longer {M : FloatOps} {P : Program} {k : Nat}
+theorem RueCore.Sharp.StepsN.steps_of_longer {M : FloatSig} {P : Program} {k : Nat}
   {C₀ C D : Config} :
   StepsN M P k C₀ C → StepsN M P (k + 1) C₀ D → ∃ C', Step M P C C'
 ```
@@ -18345,7 +18353,7 @@ A machine with runs of every length never reaches a configuration that
 does not step (helper).
 
 ```lean
-theorem RueCore.Sharp.steps_of_forever {M : FloatOps} {P : Program}
+theorem RueCore.Sharp.steps_of_forever {M : FloatSig} {P : Program}
   (h : ∀ (n : Nat), ∃ D, StepsN M P n Config.init D) (C : Config) :
   Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
 ```
@@ -18359,7 +18367,7 @@ literal is minted into a reserved slot, discarded, and the loop starts again
 (helper).
 
 ```lean
-theorem RueCore.Sharp.loopTurn_step (M : FloatOps) (H : Store) (tr : List Event) :
+theorem RueCore.Sharp.loopTurn_step (M : FloatSig) (H : Store) (tr : List Event) :
   StepsN M Sharp.loopProg 9 (Sharp.loopTurn H tr)
     (Sharp.loopTurn (H ++ [Cell.dead])
       (tr ++
@@ -18377,7 +18385,7 @@ So the loop has runs of every multiple of nine steps from any turn
 (helper).
 
 ```lean
-theorem RueCore.Sharp.loopTurn_forever (M : FloatOps) (m : Nat) (H : Store)
+theorem RueCore.Sharp.loopTurn_forever (M : FloatSig) (m : Nat) (H : Store)
   (tr : List Event) :
   ∃ D, StepsN M Sharp.loopProg (9 * m) (Sharp.loopTurn H tr) D
 ```
@@ -18389,7 +18397,7 @@ theorem RueCore.Sharp.loopTurn_forever (M : FloatOps) (m : Nat) (H : Store)
 And runs of every length from `Config.init` (helper).
 
 ```lean
-theorem RueCore.Sharp.loop_forever (M : FloatOps) (n : Nat) :
+theorem RueCore.Sharp.loop_forever (M : FloatSig) (n : Nat) :
   ∃ D, StepsN M Sharp.loopProg n Config.init D
 ```
 
@@ -21860,7 +21868,7 @@ theorem RueCore.Sharp.Glue.stuck.soundness_1 :
         ∀ {φ : Frame} {H : Store},
           FrameMatches P.decls Γ φ H →
             EvalOk P.decls T R Ω.norm Ω.brk φ H
-              (eval M.toFloatOps fuel P H φ e)
+              (eval M.toFloatSig fuel P H φ e)
 ```
 
 ### `Sharp.Glue.stuck.run_safe_1`
@@ -21875,10 +21883,10 @@ theorem RueCore.Sharp.Glue.stuck.run_safe_1 :
       P.fns[0]? = some fd →
         fd.params = [] →
           ∀ (fuel : Nat),
-            run M.toFloatOps P fuel = EvalRes.outOfFuel ∨
-              (∃ k tr, run M.toFloatOps P fuel = EvalRes.panic k tr) ∨
+            run M.toFloatSig P fuel = EvalRes.outOfFuel ∨
+              (∃ k tr, run M.toFloatSig P fuel = EvalRes.panic k tr) ∨
                 ∃ H v tr,
-                  run M.toFloatOps P fuel = EvalRes.ok H v tr ∧
+                  run M.toFloatSig P fuel = EvalRes.ok H v tr ∧
                     HasTy P.decls v fd.ret
 ```
 
@@ -21891,7 +21899,7 @@ theorem RueCore.Sharp.Glue.stuck.run_safe_1 :
 ```lean
 theorem RueCore.Sharp.Glue.stuck.no_violation_1 :
   ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) (w : Violation),
-      run M.toFloatOps P fuel ≠ EvalRes.stuck w
+      run M.toFloatSig P fuel ≠ EvalRes.stuck w
 ```
 
 ### `Sharp.Glue.stuck.no_use_after_move_1`
@@ -21903,7 +21911,7 @@ theorem RueCore.Sharp.Glue.stuck.no_violation_1 :
 ```lean
 theorem RueCore.Sharp.Glue.stuck.no_use_after_move_1 :
   ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-      run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.useAfterMove
+      run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterMove
 ```
 
 ### `Sharp.Glue.stuck.no_masking_2`
@@ -21914,7 +21922,7 @@ theorem RueCore.Sharp.Glue.stuck.no_use_after_move_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.stuck.no_masking_2 :
-  ¬∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr}
+  ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr}
       {n m : Nat} {w : Violation},
       eval M n P H φ e = EvalRes.stuck w → eval M m P H φ e = EvalRes.stuck w
 ```
@@ -21947,9 +21955,9 @@ theorem RueCore.Sharp.Glue.stuck.drop_exactly_once_1 :
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   (∀ (w : Violation),
-                      eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
-                    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
-                      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
+                      Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
 ### `Sharp.Glue.stuck.rest_exactly_once_1`
@@ -21969,9 +21977,9 @@ theorem RueCore.Sharp.Glue.stuck.rest_exactly_once_1 :
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
-                    Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                    Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                       ∀ {r : EvalRes},
-                        eval M.toFloatOps (fuel + 1) P H φ e =
+                        eval M.toFloatSig (fuel + 1) P H φ e =
                             EvalRes.withTrace tr r →
                           (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
                             Exact P.decls H₁
@@ -21990,14 +21998,14 @@ theorem RueCore.Sharp.Glue.stuck.rest_exactly_once_1 :
 ```lean
 theorem RueCore.Sharp.Glue.stuck.eval_sound_1 :
   ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-      (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+      (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
         (∀ (H : Store) (v : Val) (tr : List Event),
-            run M.toFloatOps P fuel = EvalRes.ok H v tr →
-              Steps M.toFloatOps P Config.init
+            run M.toFloatSig P fuel = EvalRes.ok H v tr →
+              Steps M.toFloatSig P Config.init
                 (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
           ∀ (k : PanicKind) (tr : List Event),
-            run M.toFloatOps P fuel = EvalRes.panic k tr →
-              Steps M.toFloatOps P Config.init (Config.panic k tr)
+            run M.toFloatSig P fuel = EvalRes.panic k tr →
+              Steps M.toFloatSig P Config.init (Config.panic k tr)
 ```
 
 ### `Sharp.Glue.stuck_step.step_progress_1`
@@ -22009,8 +22017,8 @@ theorem RueCore.Sharp.Glue.stuck.eval_sound_1 :
 ```lean
 theorem RueCore.Sharp.Glue.stuck_step.step_progress_1 :
   ¬∀ (M : FloatModel) {P : Program} (C : Config),
-      Steps M.toFloatOps P Config.init C →
-        C.Terminal ∨ ∃ C', Step M.toFloatOps P C C'
+      Steps M.toFloatSig P Config.init C →
+        C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 ```
 
 ### `Sharp.Glue.stuck_step.step_preservation_1`
@@ -22025,8 +22033,8 @@ theorem RueCore.Sharp.Glue.stuck_step.step_preservation_1 :
       ∃ fd,
         P.fns[0]? = some fd ∧
           ∀ (C : Config),
-            Steps M.toFloatOps P Config.init C →
-              Config.SafeAt M.toFloatOps P fd.ret C
+            Steps M.toFloatSig P Config.init C →
+              Config.SafeAt M.toFloatSig P fd.ret C
 ```
 
 ### `Sharp.Glue.stuck_step.step_type_safety_1`
@@ -22041,12 +22049,12 @@ theorem RueCore.Sharp.Glue.stuck_step.step_type_safety_1 :
       ∃ fd,
         P.fns[0]? = some fd ∧
           ∀ (n : Nat),
-            (∃ D, StepsN M.toFloatOps P n Config.init D) ∨
+            (∃ D, StepsN M.toFloatSig P n Config.init D) ∨
               (∃ H v tr,
-                  Steps M.toFloatOps P Config.init
+                  Steps M.toFloatSig P Config.init
                       (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
                     HasTy P.decls v fd.ret) ∨
-                ∃ κ tr, Steps M.toFloatOps P Config.init (Config.panic κ tr)
+                ∃ κ tr, Steps M.toFloatSig P Config.init (Config.panic κ tr)
 ```
 
 ### `Sharp.Glue.stuck_step.step_never_stuck_of_run_1`
@@ -22057,7 +22065,7 @@ theorem RueCore.Sharp.Glue.stuck_step.step_type_safety_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.stuck_step.step_never_stuck_of_run_1 :
-  ¬∀ (M : FloatOps) (P : Program) (C : Config),
+  ¬∀ (M : FloatSig) (P : Program) (C : Config),
       Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
 ```
 
@@ -22069,7 +22077,7 @@ theorem RueCore.Sharp.Glue.stuck_step.step_never_stuck_of_run_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.stuck_step.run_stuck_of_step_stuck_3 :
-  ¬∀ (M : FloatOps) (P : Program) {C : Config} {w : Violation},
+  ¬∀ (M : FloatSig) (P : Program) {C : Config} {w : Violation},
       Steps M P Config.init C →
         Config.Stuck M P C w →
           ∃ _n, ∀ (fuel : Nat), ∃ w', run M P fuel = EvalRes.stuck w'
@@ -22089,7 +22097,7 @@ theorem RueCore.Sharp.Glue.typed.soundness_2 :
           {φ : Frame} {H : Store},
           FrameMatches P.decls Γ φ H →
             EvalOk P.decls T R Ω.norm Ω.brk φ H
-              (eval M.toFloatOps fuel P H φ e)
+              (eval M.toFloatSig fuel P H φ e)
 ```
 
 ### `Sharp.Glue.typed.check_sound_1`
@@ -22121,9 +22129,9 @@ theorem RueCore.Sharp.Glue.typed.drop_exactly_once_3 :
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   (∀ (w : Violation),
-                      eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
-                    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
-                      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
+                      Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
 ### `Sharp.Glue.typed.rest_exactly_once_3`
@@ -22143,9 +22151,9 @@ theorem RueCore.Sharp.Glue.typed.rest_exactly_once_3 :
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
-                    Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                    Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                       ∀ {r : EvalRes},
-                        eval M.toFloatOps (fuel + 1) P H φ e =
+                        eval M.toFloatSig (fuel + 1) P H φ e =
                             EvalRes.withTrace tr r →
                           (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
                             Exact P.decls H₁
@@ -22169,7 +22177,7 @@ theorem RueCore.Sharp.Glue.frame.soundness_3 :
           Typed P R Γ e T Ω →
             ∀ {φ : Frame} {H : Store},
               EvalOk P.decls T R Ω.norm Ω.brk φ H
-                (eval M.toFloatOps fuel P H φ e)
+                (eval M.toFloatSig fuel P H φ e)
 ```
 
 ### `Sharp.Glue.frame.drop_exactly_once_4`
@@ -22189,9 +22197,9 @@ theorem RueCore.Sharp.Glue.frame.drop_exactly_once_4 :
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   (∀ (w : Violation),
-                      eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
-                    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
-                      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
+                      Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
 ### `Sharp.Glue.frame.rest_exactly_once_4`
@@ -22211,9 +22219,9 @@ theorem RueCore.Sharp.Glue.frame.rest_exactly_once_4 :
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
-                    Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                    Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                       ∀ {r : EvalRes},
-                        eval M.toFloatOps (fuel + 1) P H φ e =
+                        eval M.toFloatSig (fuel + 1) P H φ e =
                             EvalRes.withTrace tr r →
                           (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
                             Exact P.decls H₁
@@ -22235,10 +22243,10 @@ theorem RueCore.Sharp.Glue.no_entry.run_safe_2 :
       WfProgram P →
         fd.params = [] →
           ∀ (fuel : Nat),
-            run M.toFloatOps P fuel = EvalRes.outOfFuel ∨
-              (∃ k tr, run M.toFloatOps P fuel = EvalRes.panic k tr) ∨
+            run M.toFloatSig P fuel = EvalRes.outOfFuel ∨
+              (∃ k tr, run M.toFloatSig P fuel = EvalRes.panic k tr) ∨
                 ∃ H v tr,
-                  run M.toFloatOps P fuel = EvalRes.ok H v tr ∧
+                  run M.toFloatSig P fuel = EvalRes.ok H v tr ∧
                     HasTy P.decls v fd.ret
 ```
 
@@ -22254,10 +22262,10 @@ theorem RueCore.Sharp.Glue.entry_param.run_safe_3 :
       WfProgram P →
         P.fns[0]? = some fd →
           ∀ (fuel : Nat),
-            run M.toFloatOps P fuel = EvalRes.outOfFuel ∨
-              (∃ k tr, run M.toFloatOps P fuel = EvalRes.panic k tr) ∨
+            run M.toFloatSig P fuel = EvalRes.outOfFuel ∨
+              (∃ k tr, run M.toFloatSig P fuel = EvalRes.panic k tr) ∨
                 ∃ H v tr,
-                  run M.toFloatOps P fuel = EvalRes.ok H v tr ∧
+                  run M.toFloatSig P fuel = EvalRes.ok H v tr ∧
                     HasTy P.decls v fd.ret
 ```
 
@@ -22270,7 +22278,7 @@ theorem RueCore.Sharp.Glue.entry_param.run_safe_3 :
 ```lean
 theorem RueCore.Sharp.Glue.entry_param.no_violation_1 :
   ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) (w : Violation),
-      run M.toFloatOps P fuel ≠ EvalRes.stuck w
+      run M.toFloatSig P fuel ≠ EvalRes.stuck w
 ```
 
 ### `Sharp.Glue.copy.no_violation_1`
@@ -22282,7 +22290,7 @@ theorem RueCore.Sharp.Glue.entry_param.no_violation_1 :
 ```lean
 theorem RueCore.Sharp.Glue.copy.no_violation_1 :
   ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) (w : Violation),
-      run M.toFloatOps P fuel ≠ EvalRes.stuck w
+      run M.toFloatSig P fuel ≠ EvalRes.stuck w
 ```
 
 ### `Sharp.Glue.leak.no_linear_leak_1`
@@ -22294,7 +22302,7 @@ theorem RueCore.Sharp.Glue.copy.no_violation_1 :
 ```lean
 theorem RueCore.Sharp.Glue.leak.no_linear_leak_1 :
   ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-      run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearLeak
+      run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearLeak
 ```
 
 ### `Sharp.Glue.leak.eval_complete_1`
@@ -22307,16 +22315,16 @@ theorem RueCore.Sharp.Glue.leak.no_linear_leak_1 :
 theorem RueCore.Sharp.Glue.leak.eval_complete_1 :
   ¬∀ (M : FloatModel) {P : Program},
       (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-          Steps M.toFloatOps P Config.init
+          Steps M.toFloatSig P Config.init
               (Config.run H φ [] (Focus.ret v) tr) →
             ∃ n,
               ∀ (fuel : Nat),
-                n < fuel → run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+                n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
         ∀ (κ : PanicKind) (tr : List Event),
-          Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+          Steps M.toFloatSig P Config.init (Config.panic κ tr) →
             ∃ n,
               ∀ (fuel : Nat),
-                n < fuel → run M.toFloatOps P fuel = EvalRes.panic κ tr
+                n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
 ### `Sharp.Glue.overwrite.no_linear_overwrite_1`
@@ -22328,7 +22336,7 @@ theorem RueCore.Sharp.Glue.leak.eval_complete_1 :
 ```lean
 theorem RueCore.Sharp.Glue.overwrite.no_linear_overwrite_1 :
   ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-      run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearOverwrite
+      run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearOverwrite
 ```
 
 ### `Sharp.Glue.discard.no_linear_discard_1`
@@ -22340,7 +22348,7 @@ theorem RueCore.Sharp.Glue.overwrite.no_linear_overwrite_1 :
 ```lean
 theorem RueCore.Sharp.Glue.discard.no_linear_discard_1 :
   ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-      run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearDiscard
+      run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearDiscard
 ```
 
 ### `Sharp.Glue.discard.eval_complete_1`
@@ -22353,16 +22361,16 @@ theorem RueCore.Sharp.Glue.discard.no_linear_discard_1 :
 theorem RueCore.Sharp.Glue.discard.eval_complete_1 :
   ¬∀ (M : FloatModel) {P : Program},
       (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-          Steps M.toFloatOps P Config.init
+          Steps M.toFloatSig P Config.init
               (Config.run H φ [] (Focus.ret v) tr) →
             ∃ n,
               ∀ (fuel : Nat),
-                n < fuel → run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+                n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
         ∀ (κ : PanicKind) (tr : List Event),
-          Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+          Steps M.toFloatSig P Config.init (Config.panic κ tr) →
             ∃ n,
               ∀ (fuel : Nat),
-                n < fuel → run M.toFloatOps P fuel = EvalRes.panic κ tr
+                n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
 ### `Sharp.Glue.discard_loop.no_linear_discard_1`
@@ -22374,7 +22382,7 @@ theorem RueCore.Sharp.Glue.discard.eval_complete_1 :
 ```lean
 theorem RueCore.Sharp.Glue.discard_loop.no_linear_discard_1 :
   ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-      run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearDiscard
+      run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearDiscard
 ```
 
 ### `Sharp.Glue.discard_loop.never_stuck_iff_1`
@@ -22387,10 +22395,10 @@ theorem RueCore.Sharp.Glue.discard_loop.no_linear_discard_1 :
 theorem RueCore.Sharp.Glue.discard_loop.never_stuck_iff_1 :
   ¬∀ (M : FloatModel) {P : Program},
       (∀ (fuel : Nat) (w : Violation),
-          run M.toFloatOps P fuel ≠ EvalRes.stuck w) ↔
+          run M.toFloatSig P fuel ≠ EvalRes.stuck w) ↔
         ∀ (C : Config),
-          Steps M.toFloatOps P Config.init C →
-            C.Terminal ∨ ∃ C', Step M.toFloatOps P C C'
+          Steps M.toFloatSig P Config.init C →
+            C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 ```
 
 ### `Sharp.Glue.discard_loop.eval_diverges_iff_1`
@@ -22402,8 +22410,8 @@ theorem RueCore.Sharp.Glue.discard_loop.never_stuck_iff_1 :
 ```lean
 theorem RueCore.Sharp.Glue.discard_loop.eval_diverges_iff_1 :
   ¬∀ (M : FloatModel) {P : Program},
-      (∀ (fuel : Nat), run M.toFloatOps P fuel = EvalRes.outOfFuel) ↔
-        ∀ (n : Nat), ∃ D, StepsN M.toFloatOps P n Config.init D
+      (∀ (fuel : Nat), run M.toFloatSig P fuel = EvalRes.outOfFuel) ↔
+        ∀ (n : Nat), ∃ D, StepsN M.toFloatSig P n Config.init D
 ```
 
 ### `Sharp.Glue.fuel.fuel_mono_1`
@@ -22414,7 +22422,7 @@ theorem RueCore.Sharp.Glue.discard_loop.eval_diverges_iff_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.fuel.fuel_mono_1 :
-  ¬∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr}
+  ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr}
       {n m : Nat},
       eval M n P H φ e ≠ EvalRes.outOfFuel →
         eval M m P H φ e = eval M n P H φ e
@@ -22428,7 +22436,7 @@ theorem RueCore.Sharp.Glue.fuel.fuel_mono_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.fuel.fuel_mono_2 :
-  ¬∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr}
+  ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr}
       {n m : Nat}, n ≤ m → eval M m P H φ e = eval M n P H φ e
 ```
 
@@ -22440,7 +22448,7 @@ theorem RueCore.Sharp.Glue.fuel.fuel_mono_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.fuel.no_masking_1 :
-  ¬∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr}
+  ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr}
       {_n : Nat} {m : Nat} {w : Violation},
       eval M m P H φ e ≠ EvalRes.outOfFuel →
         eval M m P H φ e = EvalRes.stuck w
@@ -22457,15 +22465,15 @@ theorem RueCore.Sharp.Glue.fuel.eval_complete_3 :
   ¬∀ (M : FloatModel) {P : Program},
       ProgramTyped P →
         (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-            Steps M.toFloatOps P Config.init
+            Steps M.toFloatSig P Config.init
                 (Config.run H φ [] (Focus.ret v) tr) →
               ∃ _n,
-                ∀ (fuel : Nat), run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+                ∀ (fuel : Nat), run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
           ∀ (κ : PanicKind) (tr : List Event),
-            Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+            Steps M.toFloatSig P Config.init (Config.panic κ tr) →
               ∃ n,
                 ∀ (fuel : Nat),
-                  n < fuel → run M.toFloatOps P fuel = EvalRes.panic κ tr
+                  n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
 ### `Sharp.Glue.fuel.run_complete_2`
@@ -22476,7 +22484,7 @@ theorem RueCore.Sharp.Glue.fuel.eval_complete_3 :
 
 ```lean
 theorem RueCore.Sharp.Glue.fuel.run_complete_2 :
-  ¬∀ (M : FloatOps) (P : Program),
+  ¬∀ (M : FloatSig) (P : Program),
       (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
           Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
             ∃ _n,
@@ -22503,15 +22511,15 @@ theorem RueCore.Sharp.Glue.fuel_panic.eval_complete_5 :
   ¬∀ (M : FloatModel) {P : Program},
       ProgramTyped P →
         (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-            Steps M.toFloatOps P Config.init
+            Steps M.toFloatSig P Config.init
                 (Config.run H φ [] (Focus.ret v) tr) →
               ∃ n,
                 ∀ (fuel : Nat),
-                  n < fuel → run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+                  n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
           ∀ (κ : PanicKind) (tr : List Event),
-            Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+            Steps M.toFloatSig P Config.init (Config.panic κ tr) →
               ∃ _n,
-                ∀ (fuel : Nat), run M.toFloatOps P fuel = EvalRes.panic κ tr
+                ∀ (fuel : Nat), run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
 ### `Sharp.Glue.fuel_panic.run_complete_4`
@@ -22522,7 +22530,7 @@ theorem RueCore.Sharp.Glue.fuel_panic.eval_complete_5 :
 
 ```lean
 theorem RueCore.Sharp.Glue.fuel_panic.run_complete_4 :
-  ¬∀ (M : FloatOps) (P : Program),
+  ¬∀ (M : FloatSig) (P : Program),
       (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
           Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
             ∃ n,
@@ -22559,12 +22567,12 @@ theorem RueCore.Sharp.Glue.not_fits.check_sound_2 :
 ```lean
 theorem RueCore.Sharp.Glue.double_drop.no_double_free_1 :
   ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-      (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+      (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
         (∀ (a : Nat),
-            List.count a (freedIds P.decls (run M.toFloatOps P fuel).trace) ≤
+            List.count a (freedIds P.decls (run M.toFloatSig P fuel).trace) ≤
               1) ∧
           ∀ (a : Nat),
-            List.count a (dtorIds (run M.toFloatOps P fuel).trace) ≤ 1
+            List.count a (dtorIds (run M.toFloatSig P fuel).trace) ≤ 1
 ```
 
 ### `Sharp.Glue.double_drop.step_no_double_free_1`
@@ -22576,7 +22584,7 @@ theorem RueCore.Sharp.Glue.double_drop.no_double_free_1 :
 ```lean
 theorem RueCore.Sharp.Glue.double_drop.step_no_double_free_1 :
   ¬∀ (M : FloatModel) {P : Program} {C : Config},
-      Steps M.toFloatOps P Config.init C →
+      Steps M.toFloatSig P Config.init C →
         (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
           ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1
 ```
@@ -22589,7 +22597,7 @@ theorem RueCore.Sharp.Glue.double_drop.step_no_double_free_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.double_drop.dtor_once_1 :
-  ¬∀ (M : FloatOps) {P : Program} (fuel a : Nat),
+  ¬∀ (M : FloatSig) {P : Program} (fuel a : Nat),
       List.count a (dtorIds (run M P fuel).trace) ≤ 1
 ```
 
@@ -22603,15 +22611,15 @@ theorem RueCore.Sharp.Glue.double_drop.dtor_once_1 :
 theorem RueCore.Sharp.Glue.bare_dtor.drop_order_1 :
   ¬∀ (M : FloatModel) {P : Program},
       (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-          Steps M.toFloatOps P Config.init
+          Steps M.toFloatSig P Config.init
               (Config.run H φ [] (Focus.ret v) tr) →
             Blocks P.decls tr) ∧
         (∀ (κ : PanicKind) (tr : List Event),
-            Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+            Steps M.toFloatSig P Config.init (Config.panic κ tr) →
               Blocks P.decls tr) ∧
           ∀ (C C' : Config),
-            Steps M.toFloatOps P Config.init C →
-              Step M.toFloatOps P C C' →
+            Steps M.toFloatSig P Config.init C →
+              Step M.toFloatSig P C C' →
                 ∃ evs,
                   C'.trace = C.trace ++ evs ∧
                     NewestFirst (dropLocs evs) ∧
@@ -22624,18 +22632,18 @@ theorem RueCore.Sharp.Glue.bare_dtor.drop_order_1 :
 *theorem* · module `RueCore.Sharp.Glue`
 
 `Sharp.bare_dtor` refutes `drop_glue_order` without hypothesis 1: a trace
-outside `Blocks` is outside `GlueBlocks` (helper).
+outside `Blocks` is outside `DropGlueBlocks` (helper).
 
 ```lean
 theorem RueCore.Sharp.Glue.bare_dtor.drop_glue_order_1 :
   ¬∀ (M : FloatModel) {P : Program},
       (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-          Steps M.toFloatOps P Config.init
+          Steps M.toFloatSig P Config.init
               (Config.run H φ [] (Focus.ret v) tr) →
-            GlueBlocks P.decls tr) ∧
+            DropGlueBlocks P.decls tr) ∧
         ∀ (κ : PanicKind) (tr : List Event),
-          Steps M.toFloatOps P Config.init (Config.panic κ tr) →
-            GlueBlocks P.decls tr
+          Steps M.toFloatSig P Config.init (Config.panic κ tr) →
+            DropGlueBlocks P.decls tr
 ```
 
 ### `Sharp.Glue.pending_program.drop_exactly_once_2`
@@ -22655,9 +22663,9 @@ theorem RueCore.Sharp.Glue.pending_program.drop_exactly_once_2 :
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   (∀ (w : Violation),
-                      eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
-                    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
-                      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
+                      Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
 ### `Sharp.Glue.pending_program.rest_exactly_once_2`
@@ -22677,9 +22685,9 @@ theorem RueCore.Sharp.Glue.pending_program.rest_exactly_once_2 :
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
-                    Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                    Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                       ∀ {r : EvalRes},
-                        eval M.toFloatOps (fuel + 1) P H φ e =
+                        eval M.toFloatSig (fuel + 1) P H φ e =
                             EvalRes.withTrace tr r →
                           (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
                             Exact P.decls H₁
@@ -22706,9 +22714,9 @@ theorem RueCore.Sharp.Glue.pending_expr.drop_exactly_once_6 :
               FrameMatches P.decls Γ φ H →
                 StoreCC P.decls H →
                   (∀ (w : Violation),
-                      eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
-                    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
-                      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
+                      Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
 ### `Sharp.Glue.pending_expr.rest_exactly_once_6`
@@ -22728,9 +22736,9 @@ theorem RueCore.Sharp.Glue.pending_expr.rest_exactly_once_6 :
               FrameMatches P.decls Γ φ H →
                 StoreCC P.decls H →
                   ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
-                    Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                    Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                       ∀ {r : EvalRes},
-                        eval M.toFloatOps (fuel + 1) P H φ e =
+                        eval M.toFloatSig (fuel + 1) P H φ e =
                             EvalRes.withTrace tr r →
                           (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
                             Exact P.decls H₁
@@ -22757,9 +22765,9 @@ theorem RueCore.Sharp.Glue.store_cc.drop_exactly_once_5 :
               FrameMatches P.decls Γ φ H →
                 e.pendingSafe = true →
                   (∀ (w : Violation),
-                      eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
-                    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
-                      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
+                      Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
 ### `Sharp.Glue.store_cc.rest_exactly_once_5`
@@ -22779,9 +22787,9 @@ theorem RueCore.Sharp.Glue.store_cc.rest_exactly_once_5 :
               FrameMatches P.decls Γ φ H →
                 e.pendingSafe = true →
                   ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
-                    Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                    Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                       ∀ {r : EvalRes},
-                        eval M.toFloatOps (fuel + 1) P H φ e =
+                        eval M.toFloatSig (fuel + 1) P H φ e =
                             EvalRes.withTrace tr r →
                           (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
                             Exact P.decls H₁
@@ -22810,7 +22818,7 @@ theorem RueCore.Sharp.Glue.no_lead.rest_exactly_once_7 :
                   e.pendingSafe = true →
                     ∀ {H₁ : Store} {vs : List Val} {tr : List Event}
                       {r : EvalRes},
-                      eval M.toFloatOps (fuel + 1) P H φ e =
+                      eval M.toFloatSig (fuel + 1) P H φ e =
                           EvalRes.withTrace tr r →
                         (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
                           Exact P.decls H₁
@@ -22837,7 +22845,7 @@ theorem RueCore.Sharp.Glue.no_eval.rest_exactly_once_8 :
                 StoreCC P.decls H →
                   e.pendingSafe = true →
                     ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
-                      Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                      Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                         ∀ {r : EvalRes},
                           (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
                             Exact P.decls H₁
@@ -22860,11 +22868,11 @@ theorem RueCore.Sharp.Glue.unreached.drop_order_2 :
         (∀ (_H : Store) (_φ : Frame) (_v : Val) (tr : List Event),
             Blocks P.decls tr) ∧
           (∀ (κ : PanicKind) (tr : List Event),
-              Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+              Steps M.toFloatSig P Config.init (Config.panic κ tr) →
                 Blocks P.decls tr) ∧
             ∀ (C C' : Config),
-              Steps M.toFloatOps P Config.init C →
-                Step M.toFloatOps P C C' →
+              Steps M.toFloatSig P Config.init C →
+                Step M.toFloatSig P C C' →
                   ∃ evs,
                     C'.trace = C.trace ++ evs ∧
                       NewestFirst (dropLocs evs) ∧
@@ -22883,10 +22891,10 @@ theorem RueCore.Sharp.Glue.unreached.drop_glue_order_2 :
   ¬∀ (M : FloatModel) {P : Program},
       ProgramTyped P →
         (∀ (_H : Store) (_φ : Frame) (_v : Val) (tr : List Event),
-            GlueBlocks P.decls tr) ∧
+            DropGlueBlocks P.decls tr) ∧
           ∀ (κ : PanicKind) (tr : List Event),
-            Steps M.toFloatOps P Config.init (Config.panic κ tr) →
-              GlueBlocks P.decls tr
+            Steps M.toFloatSig P Config.init (Config.panic κ tr) →
+              DropGlueBlocks P.decls tr
 ```
 
 ### `Sharp.Glue.unreached.eval_sound_2`
@@ -22900,13 +22908,13 @@ theorem RueCore.Sharp.Glue.unreached.eval_sound_2 :
   ¬∀ (M : FloatModel) {P : Program},
       ProgramTyped P →
         ∀ (fuel : Nat),
-          (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+          (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
             (∀ (H : Store) (v : Val) (tr : List Event),
-                Steps M.toFloatOps P Config.init
+                Steps M.toFloatSig P Config.init
                   (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
               ∀ (k : PanicKind) (tr : List Event),
-                run M.toFloatOps P fuel = EvalRes.panic k tr →
-                  Steps M.toFloatOps P Config.init (Config.panic k tr)
+                run M.toFloatSig P fuel = EvalRes.panic k tr →
+                  Steps M.toFloatSig P Config.init (Config.panic k tr)
 ```
 
 ### `Sharp.Glue.unreached.run_sim_1`
@@ -22917,7 +22925,7 @@ theorem RueCore.Sharp.Glue.unreached.eval_sound_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreached.run_sim_1 :
-  ¬∀ (M : FloatOps) (P : Program) (fuel : Nat),
+  ¬∀ (M : FloatSig) (P : Program) (fuel : Nat),
       (∀ (H : Store) (v : Val) (tr : List Event),
           Steps M P Config.init
             (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
@@ -22939,12 +22947,12 @@ theorem RueCore.Sharp.Glue.unreached.eval_complete_2 :
         (∀ (H : Store) (_φ : Frame) (v : Val) (tr : List Event),
             ∃ n,
               ∀ (fuel : Nat),
-                n < fuel → run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+                n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
           ∀ (κ : PanicKind) (tr : List Event),
-            Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+            Steps M.toFloatSig P Config.init (Config.panic κ tr) →
               ∃ n,
                 ∀ (fuel : Nat),
-                  n < fuel → run M.toFloatOps P fuel = EvalRes.panic κ tr
+                  n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
 ### `Sharp.Glue.unreached.run_complete_1`
@@ -22955,7 +22963,7 @@ theorem RueCore.Sharp.Glue.unreached.eval_complete_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreached.run_complete_1 :
-  ¬∀ (M : FloatOps) (P : Program),
+  ¬∀ (M : FloatSig) (P : Program),
       (∀ (H : Store) (_φ : Frame) (v : Val) (tr : List Event),
           ∃ n,
             ∀ (fuel : Nat),
@@ -22982,13 +22990,13 @@ theorem RueCore.Sharp.Glue.unreached_panic.drop_order_3 :
   ¬∀ (M : FloatModel) {P : Program},
       ProgramTyped P →
         (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-            Steps M.toFloatOps P Config.init
+            Steps M.toFloatSig P Config.init
                 (Config.run H φ [] (Focus.ret v) tr) →
               Blocks P.decls tr) ∧
           (∀ (_κ : PanicKind) (tr : List Event), Blocks P.decls tr) ∧
             ∀ (C C' : Config),
-              Steps M.toFloatOps P Config.init C →
-                Step M.toFloatOps P C C' →
+              Steps M.toFloatSig P Config.init C →
+                Step M.toFloatSig P C C' →
                   ∃ evs,
                     C'.trace = C.trace ++ evs ∧
                       NewestFirst (dropLocs evs) ∧
@@ -23007,10 +23015,10 @@ theorem RueCore.Sharp.Glue.unreached_panic.drop_glue_order_3 :
   ¬∀ (M : FloatModel) {P : Program},
       ProgramTyped P →
         (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-            Steps M.toFloatOps P Config.init
+            Steps M.toFloatSig P Config.init
                 (Config.run H φ [] (Focus.ret v) tr) →
-              GlueBlocks P.decls tr) ∧
-          ∀ (_κ : PanicKind) (tr : List Event), GlueBlocks P.decls tr
+              DropGlueBlocks P.decls tr) ∧
+          ∀ (_κ : PanicKind) (tr : List Event), DropGlueBlocks P.decls tr
 ```
 
 ### `Sharp.Glue.unreached_panic.eval_sound_3`
@@ -23024,13 +23032,13 @@ theorem RueCore.Sharp.Glue.unreached_panic.eval_sound_3 :
   ¬∀ (M : FloatModel) {P : Program},
       ProgramTyped P →
         ∀ (fuel : Nat),
-          (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+          (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
             (∀ (H : Store) (v : Val) (tr : List Event),
-                run M.toFloatOps P fuel = EvalRes.ok H v tr →
-                  Steps M.toFloatOps P Config.init
+                run M.toFloatSig P fuel = EvalRes.ok H v tr →
+                  Steps M.toFloatSig P Config.init
                     (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
               ∀ (k : PanicKind) (tr : List Event),
-                Steps M.toFloatOps P Config.init (Config.panic k tr)
+                Steps M.toFloatSig P Config.init (Config.panic k tr)
 ```
 
 ### `Sharp.Glue.unreached_panic.run_sim_2`
@@ -23041,7 +23049,7 @@ theorem RueCore.Sharp.Glue.unreached_panic.eval_sound_3 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreached_panic.run_sim_2 :
-  ¬∀ (M : FloatOps) (P : Program) (fuel : Nat),
+  ¬∀ (M : FloatSig) (P : Program) (fuel : Nat),
       (∀ (H : Store) (v : Val) (tr : List Event),
           run M P fuel = EvalRes.ok H v tr →
             Steps M P Config.init
@@ -23061,15 +23069,15 @@ theorem RueCore.Sharp.Glue.unreached_panic.eval_complete_4 :
   ¬∀ (M : FloatModel) {P : Program},
       ProgramTyped P →
         (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-            Steps M.toFloatOps P Config.init
+            Steps M.toFloatSig P Config.init
                 (Config.run H φ [] (Focus.ret v) tr) →
               ∃ n,
                 ∀ (fuel : Nat),
-                  n < fuel → run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+                  n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
           ∀ (κ : PanicKind) (tr : List Event),
             ∃ n,
               ∀ (fuel : Nat),
-                n < fuel → run M.toFloatOps P fuel = EvalRes.panic κ tr
+                n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
 ### `Sharp.Glue.unreached_panic.run_complete_3`
@@ -23080,7 +23088,7 @@ theorem RueCore.Sharp.Glue.unreached_panic.eval_complete_4 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreached_panic.run_complete_3 :
-  ¬∀ (M : FloatOps) (P : Program),
+  ¬∀ (M : FloatSig) (P : Program),
       (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
           Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
             ∃ n,
@@ -23107,14 +23115,14 @@ theorem RueCore.Sharp.Glue.unordered.drop_order_4 :
   ¬∀ (M : FloatModel) {P : Program},
       ProgramTyped P →
         (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-            Steps M.toFloatOps P Config.init
+            Steps M.toFloatSig P Config.init
                 (Config.run H φ [] (Focus.ret v) tr) →
               Blocks P.decls tr) ∧
           (∀ (κ : PanicKind) (tr : List Event),
-              Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+              Steps M.toFloatSig P Config.init (Config.panic κ tr) →
                 Blocks P.decls tr) ∧
             ∀ (C C' : Config),
-              Step M.toFloatOps P C C' →
+              Step M.toFloatSig P C C' →
                 ∃ evs,
                   C'.trace = C.trace ++ evs ∧
                     NewestFirst (dropLocs evs) ∧
@@ -23133,14 +23141,14 @@ theorem RueCore.Sharp.Glue.not_a_step.drop_order_5 :
   ¬∀ (M : FloatModel) {P : Program},
       ProgramTyped P →
         (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-            Steps M.toFloatOps P Config.init
+            Steps M.toFloatSig P Config.init
                 (Config.run H φ [] (Focus.ret v) tr) →
               Blocks P.decls tr) ∧
           (∀ (κ : PanicKind) (tr : List Event),
-              Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+              Steps M.toFloatSig P Config.init (Config.panic κ tr) →
                 Blocks P.decls tr) ∧
             ∀ (C C' : Config),
-              Steps M.toFloatOps P Config.init C →
+              Steps M.toFloatSig P Config.init C →
                 ∃ evs,
                   C'.trace = C.trace ++ evs ∧
                     NewestFirst (dropLocs evs) ∧
@@ -23156,7 +23164,7 @@ theorem RueCore.Sharp.Glue.not_a_step.drop_order_5 :
 
 ```lean
 theorem RueCore.Sharp.Glue.init_steps.Step.det_1 :
-  ¬∀ {M : FloatOps} {P : Program} {C C₁ C₂ : Config}, Step M P C C₂ → C₁ = C₂
+  ¬∀ {M : FloatSig} {P : Program} {C C₁ C₂ : Config}, Step M P C C₂ → C₁ = C₂
 ```
 
 ### `Sharp.Glue.init_steps.Step.det_2`
@@ -23167,7 +23175,7 @@ theorem RueCore.Sharp.Glue.init_steps.Step.det_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.init_steps.Step.det_2 :
-  ¬∀ {M : FloatOps} {P : Program} {C C₁ C₂ : Config}, Step M P C C₁ → C₁ = C₂
+  ¬∀ {M : FloatSig} {P : Program} {C C₁ C₂ : Config}, Step M P C C₁ → C₁ = C₂
 ```
 
 ### `Sharp.Glue.init_steps.Step.terminal_1`
@@ -23178,7 +23186,7 @@ theorem RueCore.Sharp.Glue.init_steps.Step.det_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.init_steps.Step.terminal_1 :
-  ¬∀ {M : FloatOps} {P : Program} {C C' : Config}, ¬Step M P C C'
+  ¬∀ {M : FloatSig} {P : Program} {C C' : Config}, ¬Step M P C C'
 ```
 
 ### `Sharp.Glue.init_steps.step_stuck_isStuckState_1`
@@ -23189,7 +23197,7 @@ theorem RueCore.Sharp.Glue.init_steps.Step.terminal_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.init_steps.step_stuck_isStuckState_1 :
-  ¬∀ {_M : FloatOps} {_P : Program} {_C : Config} {w : Violation},
+  ¬∀ {_M : FloatSig} {_P : Program} {_C : Config} {w : Violation},
       w.isStuckState = true
 ```
 
@@ -23201,7 +23209,7 @@ theorem RueCore.Sharp.Glue.init_steps.step_stuck_isStuckState_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.init_steps.run_stuck_of_step_stuck_2 :
-  ¬∀ (M : FloatOps) (P : Program) {C : Config} {_w : Violation},
+  ¬∀ (M : FloatSig) (P : Program) {C : Config} {_w : Violation},
       Steps M P Config.init C →
         ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.stuck w'
 ```
@@ -23216,7 +23224,7 @@ theorem RueCore.Sharp.Glue.init_steps.run_stuck_of_step_stuck_2 :
 theorem RueCore.Sharp.Glue.unreachable_stuck.step_progress_2 :
   ¬∀ (M : FloatModel) {P : Program},
       ProgramTyped P →
-        ∀ (C : Config), C.Terminal ∨ ∃ C', Step M.toFloatOps P C C'
+        ∀ (C : Config), C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 ```
 
 ### `Sharp.Glue.unreachable_stuck.step_preservation_2`
@@ -23231,7 +23239,7 @@ theorem RueCore.Sharp.Glue.unreachable_stuck.step_preservation_2 :
       ProgramTyped P →
         ∃ fd,
           P.fns[0]? = some fd ∧
-            ∀ (C : Config), Config.SafeAt M.toFloatOps P fd.ret C
+            ∀ (C : Config), Config.SafeAt M.toFloatSig P fd.ret C
 ```
 
 ### `Sharp.Glue.unreachable_stuck.never_stuck_iff_2`
@@ -23245,8 +23253,8 @@ theorem RueCore.Sharp.Glue.unreachable_stuck.never_stuck_iff_2 :
   ¬∀ (M : FloatModel) {P : Program},
       ProgramTyped P →
         ((∀ (fuel : Nat) (w : Violation),
-            run M.toFloatOps P fuel ≠ EvalRes.stuck w) ↔
-          ∀ (C : Config), C.Terminal ∨ ∃ C', Step M.toFloatOps P C C')
+            run M.toFloatSig P fuel ≠ EvalRes.stuck w) ↔
+          ∀ (C : Config), C.Terminal ∨ ∃ C', Step M.toFloatSig P C C')
 ```
 
 ### `Sharp.Glue.unreachable_stuck.step_never_stuck_of_run_2`
@@ -23257,7 +23265,7 @@ theorem RueCore.Sharp.Glue.unreachable_stuck.never_stuck_iff_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreachable_stuck.step_never_stuck_of_run_2 :
-  ¬∀ (M : FloatOps) (P : Program),
+  ¬∀ (M : FloatSig) (P : Program),
       (∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w) →
         ∀ (C : Config), C.Terminal ∨ ∃ C', Step M P C C'
 ```
@@ -23270,7 +23278,7 @@ theorem RueCore.Sharp.Glue.unreachable_stuck.step_never_stuck_of_run_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreachable_stuck.run_stuck_of_step_stuck_1 :
-  ¬∀ (M : FloatOps) (P : Program) {C : Config} {w : Violation},
+  ¬∀ (M : FloatSig) (P : Program) {C : Config} {w : Violation},
       Config.Stuck M P C w →
         ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.stuck w'
 ```
@@ -23283,7 +23291,7 @@ theorem RueCore.Sharp.Glue.unreachable_stuck.run_stuck_of_step_stuck_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.retired_cell.step_no_use_after_drop_1 :
-  ¬∀ (M : FloatOps) (P : Program) {C : Config},
+  ¬∀ (M : FloatSig) (P : Program) {C : Config},
       ¬Config.Stuck M P C Violation.useAfterDrop
 ```
 
@@ -23313,14 +23321,14 @@ theorem RueCore.Sharp.Glue.uncut_drop.drop_order_4 :
   ¬∀ (M : FloatModel) {P : Program},
       ProgramTyped P →
         (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-            Steps M.toFloatOps P Config.init
+            Steps M.toFloatSig P Config.init
                 (Config.run H φ [] (Focus.ret v) tr) →
               Blocks P.decls tr) ∧
           (∀ (κ : PanicKind) (tr : List Event),
-              Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+              Steps M.toFloatSig P Config.init (Config.panic κ tr) →
                 Blocks P.decls tr) ∧
             ∀ (C C' : Config),
-              Step M.toFloatOps P C C' →
+              Step M.toFloatSig P C C' →
                 ∃ evs,
                   C'.trace = C.trace ++ evs ∧
                     NewestFirst (dropLocs evs) ∧
@@ -23340,7 +23348,7 @@ theorem RueCore.Sharp.Glue.ill_typed_halt.step_preservation_2 :
       ProgramTyped P →
         ∃ fd,
           P.fns[0]? = some fd ∧
-            ∀ (C : Config), Config.SafeAt M.toFloatOps P fd.ret C
+            ∀ (C : Config), Config.SafeAt M.toFloatSig P fd.ret C
 ```
 
 ### `Sharp.Glue.out_of_range_halt.step_preservation_2`
@@ -23355,7 +23363,7 @@ theorem RueCore.Sharp.Glue.out_of_range_halt.step_preservation_2 :
       ProgramTyped P →
         ∃ fd,
           P.fns[0]? = some fd ∧
-            ∀ (C : Config), Config.SafeAt M.toFloatOps P fd.ret C
+            ∀ (C : Config), Config.SafeAt M.toFloatSig P fd.ret C
 ```
 
 ### `Sharp.Glue.float_halt.step_preservation_2`
@@ -23370,7 +23378,7 @@ theorem RueCore.Sharp.Glue.float_halt.step_preservation_2 :
       ProgramTyped P →
         ∃ fd,
           P.fns[0]? = some fd ∧
-            ∀ (C : Config), Config.SafeAt M.toFloatOps P fd.ret C
+            ∀ (C : Config), Config.SafeAt M.toFloatSig P fd.ret C
 ```
 
 ### `Sharp.Glue.copy_leak.whole_program_exactly_once_1`
@@ -23384,11 +23392,11 @@ theorem RueCore.Sharp.Glue.copy_leak.whole_program_exactly_once_1 :
   ¬∀ (M : FloatModel) {P : Program},
       P.pendingSafe = true →
         ∀ {C : Config},
-          Steps M.toFloatOps P Config.init C →
+          Steps M.toFloatSig P Config.init C →
             ∀ {a : Nat},
               a ∈ Config.held P.decls C →
                 ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
-                  Steps M.toFloatOps P C
+                  Steps M.toFloatSig P C
                       (Config.run H φ [] (Focus.ret v) tr) →
                     List.count a (Val.own P.decls v) +
                         List.count a (freedIds P.decls tr) =
@@ -23406,11 +23414,11 @@ theorem RueCore.Sharp.Glue.pending_leak.whole_program_exactly_once_2 :
   ¬∀ (M : FloatModel) {P : Program},
       ProgramTyped P →
         ∀ {C : Config},
-          Steps M.toFloatOps P Config.init C →
+          Steps M.toFloatSig P Config.init C →
             ∀ {a : Nat},
               a ∈ Config.held P.decls C →
                 ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
-                  Steps M.toFloatOps P C
+                  Steps M.toFloatSig P C
                       (Config.run H φ [] (Focus.ret v) tr) →
                     List.count a (Val.own P.decls v) +
                         List.count a (freedIds P.decls tr) =
@@ -23431,7 +23439,7 @@ theorem RueCore.Sharp.Glue.unreached_held.whole_program_exactly_once_3 :
           ∀ {C : Config} {a : Nat},
             a ∈ Config.held P.decls C →
               ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
-                Steps M.toFloatOps P C (Config.run H φ [] (Focus.ret v) tr) →
+                Steps M.toFloatSig P C (Config.run H φ [] (Focus.ret v) tr) →
                   List.count a (Val.own P.decls v) +
                       List.count a (freedIds P.decls tr) =
                     1
@@ -23449,9 +23457,9 @@ theorem RueCore.Sharp.Glue.unheld.whole_program_exactly_once_4 :
       ProgramTyped P →
         P.pendingSafe = true →
           ∀ {C : Config},
-            Steps M.toFloatOps P Config.init C →
+            Steps M.toFloatSig P Config.init C →
               ∀ {a : Nat} {H : Store} {φ : Frame} {v : Val} {tr : List Event},
-                Steps M.toFloatOps P C (Config.run H φ [] (Focus.ret v) tr) →
+                Steps M.toFloatSig P C (Config.run H φ [] (Focus.ret v) tr) →
                   List.count a (Val.own P.decls v) +
                       List.count a (freedIds P.decls tr) =
                     1
@@ -23469,7 +23477,7 @@ theorem RueCore.Sharp.Glue.off_run.whole_program_exactly_once_5 :
       ProgramTyped P →
         P.pendingSafe = true →
           ∀ {C : Config},
-            Steps M.toFloatOps P Config.init C →
+            Steps M.toFloatSig P Config.init C →
               ∀ {a : Nat},
                 a ∈ Config.held P.decls C →
                   ∀ {_H : Store} {_φ : Frame} {v : Val} {tr : List Event},
@@ -23486,7 +23494,7 @@ theorem RueCore.Sharp.Glue.off_run.whole_program_exactly_once_5 :
 re-enters the loop at one unit of fuel less (helper).
 
 ```lean
-theorem RueCore.Examples.eval_loop_ok {M : FloatOps} {P : Program} {n : Nat}
+theorem RueCore.Examples.eval_loop_ok {M : FloatSig} {P : Program} {n : Nat}
   {H H₁ : Store} {φ : Frame} {e : Expr} {tr : List Event}
   (h : eval M n P H φ e = EvalRes.ok H₁ Val.unit tr) :
   eval M (n + 1) P H φ e.loop = EvalRes.withTrace tr (eval M n P H₁ φ e.loop)
@@ -23650,31 +23658,6 @@ RueCore.BinOp.ge : BinOp
 
 ```lean
 RueCore.BinOp.totalCmp : BinOp
-```
-
-### `DeclId`
-
-*inductive* · module `RueCore.Statics`
-
-A declaration of either kind, named the way a type names it: the domain of
-`3.0:5`'s "contains by value" relation.
-
-```lean
-inductive RueCore.DeclId : Type
-```
-
-Constructors:
-
-**`DeclId.struct`** — The struct declaration `Ty.struct s` names.
-
-```lean
-RueCore.DeclId.struct (s : Nat) : DeclId
-```
-
-**`DeclId.enum`** — The enum declaration `Ty.enum e` names.
-
-```lean
-RueCore.DeclId.enum (e : Nat) : DeclId
 ```
 
 ### `Env`
@@ -24266,6 +24249,31 @@ RueCore.Sign.signed : Sign
 RueCore.Sign.unsigned : Sign
 ```
 
+### `TyName`
+
+*inductive* · module `RueCore.Statics`
+
+A declaration of either kind, named the way a type names it: the domain of
+`3.0:5`'s "contains by value" relation.
+
+```lean
+inductive RueCore.TyName : Type
+```
+
+Constructors:
+
+**`TyName.struct`** — The struct declaration `Ty.struct s` names.
+
+```lean
+RueCore.TyName.struct (s : Nat) : TyName
+```
+
+**`TyName.enum`** — The enum declaration `Ty.enum e` names.
+
+```lean
+RueCore.TyName.enum (e : Nat) : TyName
+```
+
 ### `UnOp`
 
 *inductive* · module `RueCore.Syntax`
@@ -24796,7 +24804,7 @@ Defining equations, as Lean derived them from the body:
     if l.negExp = true then (l.sig, 10 ^ l.e) else (l.sig * 10 ^ l.e, 1)
 ```
 
-### `FloatOps`
+### `FloatSig`
 
 *inductive* · module `RueCore.Float`
 
@@ -24807,20 +24815,20 @@ parameterized over; every exact operation is a function of this module
 instead.
 
 ```lean
-inductive RueCore.FloatOps : Type
+inductive RueCore.FloatSig : Type
 ```
 
 Constructors:
 
-**`FloatOps.mk`**
+**`FloatSig.mk`**
 
 ```lean
-RueCore.FloatOps.mk
+RueCore.FloatSig.mk
   (arith : FloatWidth → FloatArith → FloatDatum → FloatDatum → FloatDatum)
   (sqrt : FloatWidth → FloatDatum → FloatDatum)
   (ofLit : FloatWidth → Nat → Bool → Nat → FloatDatum)
   (ofInt : FloatWidth → Int → FloatDatum) (narrow : FloatDatum → FloatDatum)
-  (nanSign : Bool) : FloatOps
+  (nanSign : Bool) : FloatSig
 ```
 
 ### `FloatUnIntrin`
@@ -25350,23 +25358,6 @@ RueCore.Contents.enum (e k id : Nat) (cs : List Contents) : Contents
 RueCore.Contents.array (elem : Ty) (id : Nat) (cs : List Contents) : Contents
 ```
 
-### `DeclId.ty`
-
-*def* · module `RueCore.Statics`
-
-The type that names this declaration (helper).
-
-```lean
-def RueCore.DeclId.ty : DeclId → Ty
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (s : Nat), (DeclId.struct s).ty = Ty.struct s
-∀ (e : Nat), (DeclId.enum e).ty = Ty.enum e
-```
-
 ### `Entry`
 
 *inductive* · module `RueCore.Statics`
@@ -25585,7 +25576,7 @@ RueCore.FloatIntrin.floatCast (w : FloatWidth) : FloatIntrin
 RueCore.FloatIntrin.roundOp (k : FloatUnIntrin) : FloatIntrin
 ```
 
-### `FloatOps.cast`
+### `FloatSig.cast`
 
 *def* · module `RueCore.Float`
 
@@ -25594,18 +25585,18 @@ RueCore.FloatIntrin.roundOp (k : FloatUnIntrin) : FloatIntrin
 from a well-typed program and is the identity here.
 
 ```lean
-def RueCore.FloatOps.cast (M : FloatOps) (w w' : FloatWidth) (f : FloatDatum) :
+def RueCore.FloatSig.cast (M : FloatSig) (w w' : FloatWidth) (f : FloatDatum) :
   FloatDatum
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (M : FloatOps) (f : FloatDatum),
+∀ (M : FloatSig) (f : FloatDatum),
   M.cast FloatWidth.w64 FloatWidth.w32 f = M.narrow f
-∀ (M : FloatOps) (f : FloatDatum),
+∀ (M : FloatSig) (f : FloatDatum),
   M.cast FloatWidth.w32 FloatWidth.w64 f = f.widen
-∀ (M : FloatOps) (w w' : FloatWidth) (f : FloatDatum),
+∀ (M : FloatSig) (w w' : FloatWidth) (f : FloatDatum),
   (w = FloatWidth.w64 → w' = FloatWidth.w32 → False) →
     (w = FloatWidth.w32 → w' = FloatWidth.w64 → False) → M.cast w w' f = f
 ```
@@ -25809,40 +25800,13 @@ RueCore.StructDecl.mk (attr : Attr) (fields : List Ty) (dtor : Bool)
   (cls : Mult) : StructDecl
 ```
 
-### `Ty.declIds`
-
-*def* · module `RueCore.Statics`
-
-The declarations a type names **by value** (`3.0:5`): a struct or an enum
-type names its own declaration, an array names whatever its element type names
-— `3.0:5` lists "array elements" beside struct fields and enum payloads, and
-an array's storage *is* its elements' (`3.5:4`), so `struct S { x0: [S; 1] }`
-is no less recursive than `struct S { x0: S }` and the compiler reports E0483
-for both — and a scalar names none (helper).
-
-```lean
-def RueCore.Ty.declIds : Ty → List DeclId
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (s : Nat), (Ty.struct s).declIds = [DeclId.struct s]
-∀ (e : Nat), (Ty.enum e).declIds = [DeclId.enum e]
-∀ (T : Ty) (n : Nat), (T.array n).declIds = T.declIds
-∀ (w : IntWidth) (s : Sign), (Ty.int w s).declIds = []
-∀ (w : FloatWidth), (Ty.float w).declIds = []
-Ty.bool.declIds = []
-Ty.unit.declIds = []
-```
-
 ### `Ty.grounded`
 
 *def* · module `RueCore.Checker.Defs`
 
 Whether a type's declaration is already grounded. An array is grounded
 exactly when its element type is — `3.0:5` names array elements beside struct
-fields and enum payloads, so `struct S { x0: [S; 1] }` must peel no further
+fields and enum payloads, so `struct S { x0: [S; 1] }` needs no further sorting
 than `struct S { x0: S }` does (E0483). A scalar names no declaration, so it
 always is (helper).
 
@@ -25912,6 +25876,50 @@ Ty.unit.observable = false
 ∀ (s : Nat), (Ty.struct s).observable = false
 ∀ (e : Nat), (Ty.enum e).observable = false
 ∀ (elem : Ty) (n : Nat), (elem.array n).observable = false
+```
+
+### `Ty.tyNames`
+
+*def* · module `RueCore.Statics`
+
+The declarations a type names **by value** (`3.0:5`): a struct or an enum
+type names its own declaration, an array names whatever its element type names
+— `3.0:5` lists "array elements" beside struct fields and enum payloads, and
+an array's storage *is* its elements' (`3.5:4`), so `struct S { x0: [S; 1] }`
+is no less recursive than `struct S { x0: S }` and the compiler reports E0483
+for both — and a scalar names none (helper).
+
+```lean
+def RueCore.Ty.tyNames : Ty → List TyName
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (s : Nat), (Ty.struct s).tyNames = [TyName.struct s]
+∀ (e : Nat), (Ty.enum e).tyNames = [TyName.enum e]
+∀ (T : Ty) (n : Nat), (T.array n).tyNames = T.tyNames
+∀ (w : IntWidth) (s : Sign), (Ty.int w s).tyNames = []
+∀ (w : FloatWidth), (Ty.float w).tyNames = []
+Ty.bool.tyNames = []
+Ty.unit.tyNames = []
+```
+
+### `TyName.ty`
+
+*def* · module `RueCore.Statics`
+
+The type that names this declaration (helper).
+
+```lean
+def RueCore.TyName.ty : TyName → Ty
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (s : Nat), (TyName.struct s).ty = Ty.struct s
+∀ (e : Nat), (TyName.enum e).ty = Ty.enum e
 ```
 
 ### `Val`
@@ -26139,7 +26147,7 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Checker.Defs`
 
 Whether one checked type admits every type another admits — the arm
-comparison `match` makes against the type `firstArmTy` fixed (helper).
+comparison `match` makes against the type `armsJoinTy` fixed (helper).
 
 ```lean
 def RueCore.CTy.fitsC : CTy → CTy → Bool
@@ -26433,7 +26441,7 @@ RueCore.Event.dropTemp (v : Val) : Event
 RueCore.Event.dtor (s : Nat) (c : Contents) : Event
 ```
 
-**`Event.consume`** — **A consumption** (RUE-2427): the aggregate nodes of `c` end here without a drop of their own, because every member they held has already been moved out or dropped — a `match`'s scrutinee shell once (D-Match) §6.6 has bound its payload to the arm's cells, and the path from a declared-`linear` place `d` down to the selected leaf once §6.3's destructure has handed the leaf on and dropped the residue. `c` is the shell itself, every member a `⊘` (`matchConsume`, `Contents.skeleton`). No destructor runs: an enum declares none (§3, E0417), and `3.9:34` keeps a destructor-bearing value off a destructure's path — a guarantee of the checker, not of the machine, which on a program §5 rejects consumes such a node without running its glue (`destructure_under_dtor`). Like `drop` and `dropTemp` it is a marker no Rue program can observe (`Corpus.eventLine`); it is what lets `drop_exactly_once` (`TraceExact.lean`) name the end of *every* owned value in the trace.
+**`Event.consume`** — **A consumption** (RUE-2427): the aggregate nodes of `c` end here without a drop of their own, because every member they held has already been moved out or dropped — a `match`'s scrutinee shell once (D-Match) §6.6 has bound its payload to the arm's cells, and the path from a declared-`linear` place `d` down to the selected leaf once §6.3's destructure has handed the leaf on and dropped the residue. `c` is the shell itself, every member a `⊘` (`matchConsume`, `Contents.pathOnly`). No destructor runs: an enum declares none (§3, E0417), and `3.9:34` keeps a destructor-bearing value off a destructure's path — a guarantee of the checker, not of the machine, which on a program §5 rejects consumes such a node without running its glue (`destructure_under_dtor`). Like `drop` and `dropTemp` it is a marker no Rue program can observe (`Corpus.eventLine`); it is what lets `drop_exactly_once` (`TraceExact.lean`) name the end of *every* owned value in the trace.
 
 ```lean
 RueCore.Event.consume (c : Contents) : Event
@@ -27087,7 +27095,7 @@ both).
 
 It is stated against the *threshold* rather than as
 `(M.ofLit w l).isFinite` deliberately: the statics then say what they say for
-every `FloatModel`, with no instance and no `FloatOps` argument in the typing
+every `FloatModel`, with no instance and no `FloatSig` argument in the typing
 judgment, and `check` decides it by comparing two naturals. A law tying the two
 together — `RoundsFinite w l → (ofLit w l).isFinite` — is not needed by
 anything here and is not assumed.
@@ -27102,7 +27110,7 @@ def RueCore.FloatLit.RoundsFinite (w : FloatWidth) (l : FloatLit) : Prop :=
 *inductive* · module `RueCore.Float`
 
 **§7's "totality of the float operations", as an interface.** A
-`FloatOps` together with the laws §7 owes for floats and §6.4 quotes from
+`FloatSig` together with the laws §7 owes for floats and §6.4 quotes from
 `3.12:9`, `3.12:22` and `3.12:44`. Every field is a statement that is true of
 IEEE 754 *and* of the compiler — which is why the NaN laws below say only that
 a NaN comes out, and leave its sign to the model (see the section note above).
@@ -27120,48 +27128,48 @@ Constructors:
 **`FloatModel.mk`**
 
 ```lean
-RueCore.FloatModel.mk (toFloatOps : FloatOps)
+RueCore.FloatModel.mk (toFloatSig : FloatSig)
   (arith_wf :
     ∀ (w : FloatWidth) (op : FloatArith) (a b : FloatDatum),
       FloatDatum.Wf w a →
-        FloatDatum.Wf w b → FloatDatum.Wf w (toFloatOps.arith w op a b))
+        FloatDatum.Wf w b → FloatDatum.Wf w (toFloatSig.arith w op a b))
   (sqrt_wf :
     ∀ (w : FloatWidth) (f : FloatDatum),
-      FloatDatum.Wf w f → FloatDatum.Wf w (toFloatOps.sqrt w f))
+      FloatDatum.Wf w f → FloatDatum.Wf w (toFloatSig.sqrt w f))
   (ofLit_wf :
     ∀ (w : FloatWidth) (m : Nat) (ne : Bool) (e : Nat),
-      FloatDatum.Wf w (toFloatOps.ofLit w m ne e))
+      FloatDatum.Wf w (toFloatSig.ofLit w m ne e))
   (ofInt_wf :
-    ∀ (w : FloatWidth) (n : Int), FloatDatum.Wf w (toFloatOps.ofInt w n))
+    ∀ (w : FloatWidth) (n : Int), FloatDatum.Wf w (toFloatSig.ofInt w n))
   (narrow_wf :
     ∀ (f : FloatDatum),
       FloatDatum.Wf FloatWidth.w64 f →
-        FloatDatum.Wf FloatWidth.w32 (toFloatOps.narrow f))
+        FloatDatum.Wf FloatWidth.w32 (toFloatSig.narrow f))
   (arith_nan :
     ∀ (w : FloatWidth) (op : FloatArith) (a b : FloatDatum),
       a.isNaN = true ∨ b.isNaN = true →
-        (toFloatOps.arith w op a b).isNaN = true)
+        (toFloatSig.arith w op a b).isNaN = true)
   (narrow_nan :
-    ∀ (f : FloatDatum), f.isNaN = true → (toFloatOps.narrow f).isNaN = true)
+    ∀ (f : FloatDatum), f.isNaN = true → (toFloatSig.narrow f).isNaN = true)
   (div_by_zero :
     ∀ (w : FloatWidth) (a : FloatDatum) (n : Bool) (s : Nat) (e : Int),
       FloatDatum.Wf w a →
         a = FloatDatum.num n s e →
           s ≠ 0 →
             ∀ (n₂ : Bool),
-              toFloatOps.arith w FloatArith.div a (FloatDatum.num n₂ 0 0) =
+              toFloatSig.arith w FloatArith.div a (FloatDatum.num n₂ 0 0) =
                 FloatDatum.inf (n ^^ n₂))
   (zero_div_zero :
     ∀ (w : FloatWidth) (n₁ n₂ : Bool),
-      toFloatOps.arith w FloatArith.div (FloatDatum.num n₁ 0 0)
+      toFloatSig.arith w FloatArith.div (FloatDatum.num n₁ 0 0)
           (FloatDatum.num n₂ 0 0) =
-        FloatDatum.nan toFloatOps.nanSign)
+        FloatDatum.nan toFloatSig.nanSign)
   (ofLit_zero :
     ∀ (w : FloatWidth) (ne : Bool) (e : Nat),
-      toFloatOps.ofLit w 0 ne e = FloatDatum.num false 0 0)
+      toFloatSig.ofLit w 0 ne e = FloatDatum.num false 0 0)
   (ofLit_one :
     ∀ (w : FloatWidth),
-      toFloatOps.ofLit w 1 false 0 = FloatDatum.num false 1 0) :
+      toFloatSig.ofLit w 1 false 0 = FloatDatum.num false 1 0) :
   FloatModel
 ```
 
@@ -27547,19 +27555,19 @@ and an enum's payload components, over every variant. An index the environment
 does not have contains nothing.
 
 ```lean
-def RueCore.Decls.byValue (D : Decls) : DeclId → List Ty
+def RueCore.Decls.byValue (D : Decls) : TyName → List Ty
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : Decls) (s : Nat),
-  D.byValue (DeclId.struct s) =
+  D.byValue (TyName.struct s) =
     match D.structs[s]? with
     | some sd => sd.fields
     | none => []
 ∀ (D : Decls) (e : Nat),
-  D.byValue (DeclId.enum e) =
+  D.byValue (TyName.enum e) =
     match D.enums[e]? with
     | some ed => ed.variants.flatten
     | none => []
@@ -27629,16 +27637,16 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : List StructDecl), Decls.ofStructs D = { structs := D, enums := [] }
 ```
 
-### `Decls.peelStep`
+### `Decls.topoSortStep`
 
 *def* · module `RueCore.Checker.Defs`
 
-One peel round: a declaration is grounded when every type it contains by
+One round of the sort: a declaration is grounded when every type it contains by
 value is — a struct's fields, an enum's payload components over every variant
 (helper).
 
 ```lean
-def RueCore.Decls.peelStep (D : Decls) (st : List Bool × List Bool) :
+def RueCore.Decls.topoSortStep (D : Decls) (st : List Bool × List Bool) :
   List Bool × List Bool
 ```
 
@@ -27646,7 +27654,7 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : Decls) (st : List Bool × List Bool),
-  D.peelStep st =
+  D.topoSortStep st =
     (List.map (fun sd => sd.fields.all (Ty.grounded st)) D.structs,
       List.map
         (fun ed => ed.variants.all fun Ts => Ts.all (Ty.grounded st))
@@ -28161,32 +28169,6 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (x e : Nat), Ty.fieldAt D (Ty.enum e) x = none
 ```
 
-### `armCtx`
-
-*def* · module `RueCore.Statics`
-
-One arm's entry context: (Match) §5.5's `Γ, x_{i1}:Ti1, …, x_{i,ai}:Ti_{ai} ;
-Σ0[ x_{ij} ↦ Owned ]`. The payload locals enter `Owned`, unmarked (§2 gives a
-pattern binding no `μ`, so nothing may assign to one), and the list is
-**reversed** for the reason `fnCtx` reverses a parameter list: `Ctx` is
-innermost-binder-first while a payload tuple is written left to right, so
-component 1 is the outermost of the arm's binders and component `ai` has de
-Bruijn index `0`.
-
-```lean
-def RueCore.armCtx (Ts : List Ty) (Γ : Ctx) : Ctx
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (Ts : List Ty) (Γ : Ctx),
-  armCtx Ts Γ =
-    (List.map (fun T => { ty := T, mu := false, st := OwnSt.owned })
-          Ts).reverse ++
-      Γ
-```
-
 ### `arrayPrefix`
 
 *def* · module `RueCore.Syntax`
@@ -28228,7 +28210,7 @@ def RueCore.arrayPrefix (D : Decls) : Ty → List Nat → Option (List Nat)
   them, as it does two operands of different types.
 
 ```lean
-def RueCore.binOpFloat (M : FloatOps) (op : BinOp) (w : FloatWidth)
+def RueCore.binOpFloat (M : FloatSig) (op : BinOp) (w : FloatWidth)
   (a b : FloatDatum) : OpRes
 ```
 
@@ -28428,7 +28410,7 @@ Defining equations, as Lean derived them from the body:
   the other four are exact, and none traps (`3.12:37`).
 
 ```lean
-def RueCore.evalFintrin (M : FloatOps) : FloatIntrin → Val → OpRes
+def RueCore.evalFintrin (M : FloatSig) : FloatIntrin → Val → OpRes
 ```
 
 ### `evalIntCast`
@@ -28454,6 +28436,32 @@ Defining equations, as Lean derived them from the body:
 ∀ (w : IntWidth) (s : Sign) (x : Val),
   (∀ (w : IntWidth) (s : Sign) (n : Int), x = Val.int w s n → False) →
     evalIntCast w s x = OpRes.confused
+```
+
+### `extendArm`
+
+*def* · module `RueCore.Statics`
+
+One arm's entry context: (Match) §5.5's `Γ, x_{i1}:Ti1, …, x_{i,ai}:Ti_{ai} ;
+Σ0[ x_{ij} ↦ Owned ]`. The payload locals enter `Owned`, unmarked (§2 gives a
+pattern binding no `μ`, so nothing may assign to one), and the list is
+**reversed** for the reason `fnCtx` reverses a parameter list: `Ctx` is
+innermost-binder-first while a payload tuple is written left to right, so
+component 1 is the outermost of the arm's binders and component `ai` has de
+Bruijn index `0`.
+
+```lean
+def RueCore.extendArm (Ts : List Ty) (Γ : Ctx) : Ctx
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (Ts : List Ty) (Γ : Ctx),
+  extendArm Ts Γ =
+    (List.map (fun T => { ty := T, mu := false, st := OwnSt.owned })
+          Ts).reverse ++
+      Γ
 ```
 
 ### `intResult`
@@ -28662,35 +28670,35 @@ def RueCore.Ctx.Extends (Γb Γ : Ctx) : Prop :=
 *def* · module `RueCore.Statics`
 
 `3.0:5`'s relation, one step: `d` contains `d'` by value. A slot reaches
-its declaration **through any depth of array nesting** (`Ty.declIds`), because
+its declaration **through any depth of array nesting** (`Ty.tyNames`), because
 `3.0:5` names array elements beside fields and payloads; without that, a
 struct naming itself through an array element would satisfy `WfNames` and §3's
 equation would have more than one solution at it.
 
 ```lean
-def RueCore.Decls.Names (D : Decls) (d d' : DeclId) : Prop :=
-  ∃ T, T ∈ D.byValue d ∧ d' ∈ T.declIds
+def RueCore.Decls.Names (D : Decls) (d d' : TyName) : Prop :=
+  ∃ T, T ∈ D.byValue d ∧ d' ∈ T.tyNames
 ```
 
-### `Decls.peel`
+### `Decls.topoSort`
 
 *def* · module `RueCore.Checker.Defs`
 
-The grounded flags after `n` peel rounds, one per declaration of each
+The grounded flags after `n` rounds of the sort, one per declaration of each
 layer; nothing is grounded at round `0` (helper).
 
 ```lean
-def RueCore.Decls.peel (D : Decls) : Nat → List Bool × List Bool
+def RueCore.Decls.topoSort (D : Decls) : Nat → List Bool × List Bool
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : Decls),
-  D.peel 0 =
+  D.topoSort 0 =
     (List.map (fun x => false) D.structs,
       List.map (fun x => false) D.enums)
-∀ (D : Decls) (n : Nat), D.peel n.succ = D.peelStep (D.peel n)
+∀ (D : Decls) (n : Nat), D.topoSort n.succ = D.topoSortStep (D.topoSort n)
 ```
 
 ### `DtorNotCopy`
@@ -28985,7 +28993,7 @@ is the *sign bit*, so `nanSign := false` is `+NaN` and `true` is `-NaN`, and
 `Bool` is the whole of retargeting the instance to x86-64.
 
 ```lean
-def RueCore.Float.exactOps : FloatOps
+def RueCore.Float.exactOps : FloatSig
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -29124,7 +29132,7 @@ def RueCore.Nest : List Nat → List Kont → Prop :=
   List.brecOn (motive := fun x => List Nat → Prop) x✝ Nest._f x✝¹
 ```
 
-### `Out.add`
+### `Out.merge`
 
 *def* · module `RueCore.Statics`
 
@@ -29133,14 +29141,14 @@ keeps its own continuing-or-divergent shape — `(Σ';Δ') ⊕ Δ = Σ';(Δ' ∪
 `(⊥;Δ') ⊕ Δ = ⊥;(Δ' ∪ Δ)`.
 
 ```lean
-def RueCore.Out.add (Ω : Out) (Δ : List Ctx) : Out
+def RueCore.Out.merge (Ω : Out) (Δ : List Ctx) : Out
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (Ω : Out) (Δ : List Ctx),
-  Ω.add Δ = { norm := Ω.norm, brk := Ω.brk ++ Δ }
+  Ω.merge Δ = { norm := Ω.norm, brk := Ω.brk ++ Δ }
 ```
 
 ### `Program`
@@ -29562,21 +29570,21 @@ one of each (`3.12:14`) — are a shape no well-typed program produces and the
 machine refuses them.
 
 ```lean
-def RueCore.evalBinOp (M : FloatOps) (op : BinOp) : Val → Val → OpRes
+def RueCore.evalBinOp (M : FloatSig) (op : BinOp) : Val → Val → OpRes
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (M : FloatOps) (op : BinOp) (w₁ : IntWidth) (s₁ : Sign) (n₁ : Int)
+∀ (M : FloatSig) (op : BinOp) (w₁ : IntWidth) (s₁ : Sign) (n₁ : Int)
   (w₂ : IntWidth) (s₂ : Sign) (n₂ : Int),
   evalBinOp M op (Val.int w₁ s₁ n₁) (Val.int w₂ s₂ n₂) =
     if w₁ = w₂ ∧ s₁ = s₂ then binOpInt op w₁ s₁ n₁ n₂ else OpRes.confused
-∀ (M : FloatOps) (op : BinOp) (w₁ : FloatWidth) (f₁ : FloatDatum)
+∀ (M : FloatSig) (op : BinOp) (w₁ : FloatWidth) (f₁ : FloatDatum)
   (w₂ : FloatWidth) (f₂ : FloatDatum),
   evalBinOp M op (Val.float w₁ f₁) (Val.float w₂ f₂) =
     if w₁ = w₂ then binOpFloat M op w₁ f₁ f₂ else OpRes.confused
-∀ (M : FloatOps) (op : BinOp) (x x_1 : Val),
+∀ (M : FloatSig) (op : BinOp) (x x_1 : Val),
   (∀ (w₁ : IntWidth) (s₁ : Sign) (n₁ : Int) (w₂ : IntWidth) (s₂ : Sign)
       (n₂ : Int), x = Val.int w₁ s₁ n₁ → x_1 = Val.int w₂ s₂ n₂ → False) →
     (∀ (w₁ : FloatWidth) (f₁ : FloatDatum) (w₂ : FloatWidth)
@@ -30154,7 +30162,7 @@ laws, which is what makes them claims about IEEE 754 rather than about this
 instance.
 
 ```lean
-def RueCore.Examples.demoOps : FloatOps
+def RueCore.Examples.demoOps : FloatSig
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -30220,7 +30228,7 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 Float.exactModel =
-  { toFloatOps := Float.exactOps, arith_wf := ⋯, sqrt_wf := ⋯,
+  { toFloatSig := Float.exactOps, arith_wf := ⋯, sqrt_wf := ⋯,
     ofLit_wf := Float.ofLit_wf, ofInt_wf := Float.ofInt_wf,
     narrow_wf := ⋯, arith_nan := ⋯, narrow_nan := Float.narrow_nan,
     div_by_zero := ⋯, zero_div_zero := ⋯, ofLit_zero := Float.ofLit_zero,
@@ -30287,7 +30295,7 @@ Defining equations, as Lean derived them from the body:
 
 An operator's outcome as an evaluation result, at the store the operands
 left: a value carries no events, a trap carries none of its own (the events
-the operands emitted are prefixed by `andThen`), and a refusal is named
+the operands emitted are prefixed by `bind`), and a refusal is named
 (helper).
 
 ```lean
@@ -30475,7 +30483,7 @@ statements that quantify over `M : FloatModel` are not vacuous in `M`.
 
 ```lean
 def RueCore.Spec.Nonvacuous.exact_model_stmt : Prop :=
-  ∃ M, M.toFloatOps = Float.exactOps
+  ∃ M, M.toFloatSig = Float.exactOps
 ```
 
 ### `StepOut`
@@ -30815,7 +30823,7 @@ def RueCore.checkArgs (P : Program) (R : Ty) :
 *def* · module `RueCore.Checker.Defs`
 
 (Match) §5.5's arm premises as an algorithm: every arm from the same
-post-scrutinee state `Γ₀`, each under its variant's payload locals (`armCtx`),
+post-scrutinee state `Γ₀`, each under its variant's payload locals (`extendArm`),
 each at the type `c` the first typed arm fixed, and each that continues
 discharging §5.6 for the locals it pops. The result is one optional outgoing
 context per arm — `none` for an arm that diverges — in declaration order, and
@@ -30833,7 +30841,7 @@ def RueCore.checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (c : CTy) :
 *def* · module `RueCore.Checker.Defs`
 
 **`3.0:5` (E0483) as an algorithm**: every declaration is grounded after
-`|structs| + |enums|` peel rounds, which is "no struct or enum contains itself
+`|structs| + |enums|` rounds of the sort, which is "no struct or enum contains itself
 by value, either directly or through a cycle of struct fields and enum
 payloads". `checkNoCycle_sound` turns an acceptance into `WfNames`, the premise
 that makes §3's two class equations a definition.
@@ -30847,15 +30855,15 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls),
   checkNoCycle D =
-    ((D.peel (D.structs.length + D.enums.length)).fst.all id &&
-      (D.peel (D.structs.length + D.enums.length)).snd.all id)
+    ((D.topoSort (D.structs.length + D.enums.length)).fst.all id &&
+      (D.topoSort (D.structs.length + D.enums.length)).snd.all id)
 ```
 
 ### `eval`
 
 *def* · module `RueCore.Dynamics`
 
-The interpreter, over a `FloatOps` (`Float.lean`): §2 fixes `rnd_w` and
+The interpreter, over a `FloatSig` (`Float.lean`): §2 fixes `rnd_w` and
 `σ_NaN` per *target*, not per rule, so the machine takes them as a parameter
 and every theorem quantifies over a model that satisfies §7's laws. Rule
 correspondence, per case: `use` is
@@ -30888,12 +30896,12 @@ fuel less after every turn that completes, and (D-Break)'s unwind when the
 body breaks; `brk` is (D-Break), which hands its loop the frame's scope
 record.
 
-Every operand is sequenced with `andThen`, which is §6.2's search through an
-evaluation context; the callee's body is sequenced with `absorb`, the one
+Every operand is sequenced with `bind`, which is §6.2's search through an
+evaluation context; the callee's body is sequenced with `bindCall`, the one
 place a `return` stops travelling (§6.9).
 
 ```lean
-def RueCore.eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalRes
+def RueCore.eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalRes
 ```
 
 ### `evalConf`
@@ -31129,49 +31137,7 @@ RueCore.EnumDecl.Wf.mk {D : Decls} {ed : EnumDecl}
   (classIsJoin : ed.cls = EnumDecl.payloadJoin D ed) : EnumDecl.Wf D ed
 ```
 
-### `EvalRes.absorb`
-
-*def* · module `RueCore.Dynamics`
-
-§6.9's call boundary, as a combinator: the same search as `andThen`,
-except that an unwinding `return` stops here. (D-Return) hands its value to
-the suspended caller context, so at the one form that suspended a caller — a
-call — a `returned` result becomes the call's value, with the drops its unwind
-already ran. Everywhere else the `return` keeps travelling (`andThen`).
-
-A `break` never crosses a call boundary: §5.7 makes one well-formed only
-inside a loop, and (Fn) §5.8 gives a function body no `⟨break, _⟩` delivery,
-so a callee's `break` is caught by a loop of its own body — "a `break` in a
-callee would be ill-formed" (§6.10). One that reached the boundary anyway is
-a configuration §6 leaves undefined, `typeConfusion`; `soundness` proves no
-typed program reaches it.
-
-```lean
-def RueCore.EvalRes.absorb : EvalRes → (Store → Val → EvalRes) → EvalRes
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (x : Store → Val → EvalRes) (H : Store) (v : Val) (tr : List Event),
-  (EvalRes.ok H v tr).absorb x = EvalRes.withTrace tr (x H v)
-∀ (x : Store → Val → EvalRes) (H : Store) (v : Val) (tr : List Event),
-  (EvalRes.returned H v tr).absorb x = EvalRes.ok H v tr
-∀ (x : Store → Val → EvalRes) (H : Store) (scope : List Nat)
-  (tr : List Event),
-  (EvalRes.broke H scope tr).absorb x =
-    EvalRes.stuck Violation.typeConfusion
-∀ (x : EvalRes) (x_1 : Store → Val → EvalRes),
-  (∀ (H : Store) (v : Val) (tr : List Event),
-      x = EvalRes.ok H v tr → False) →
-    (∀ (H : Store) (v : Val) (tr : List Event),
-        x = EvalRes.returned H v tr → False) →
-      (∀ (H : Store) (scope : List Nat) (tr : List Event),
-          x = EvalRes.broke H scope tr → False) →
-        x.absorb x_1 = x
-```
-
-### `EvalRes.andThen`
+### `EvalRes.bind`
 
 *def* · module `RueCore.Dynamics`
 
@@ -31185,18 +31151,60 @@ under, pending `endscope` markers included) — is the whole form's outcome,
 unchanged.
 
 ```lean
-def RueCore.EvalRes.andThen : EvalRes → (Store → Val → EvalRes) → EvalRes
+def RueCore.EvalRes.bind : EvalRes → (Store → Val → EvalRes) → EvalRes
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (x : Store → Val → EvalRes) (H : Store) (v : Val) (tr : List Event),
-  (EvalRes.ok H v tr).andThen x = EvalRes.withTrace tr (x H v)
+  (EvalRes.ok H v tr).bind x = EvalRes.withTrace tr (x H v)
 ∀ (x : EvalRes) (x_1 : Store → Val → EvalRes),
   (∀ (H : Store) (v : Val) (tr : List Event),
       x = EvalRes.ok H v tr → False) →
-    x.andThen x_1 = x
+    x.bind x_1 = x
+```
+
+### `EvalRes.bindCall`
+
+*def* · module `RueCore.Dynamics`
+
+§6.9's call boundary, as a combinator: the same search as `bind`,
+except that an unwinding `return` stops here. (D-Return) hands its value to
+the suspended caller context, so at the one form that suspended a caller — a
+call — a `returned` result becomes the call's value, with the drops its unwind
+already ran. Everywhere else the `return` keeps travelling (`bind`).
+
+A `break` never crosses a call boundary: §5.7 makes one well-formed only
+inside a loop, and (Fn) §5.8 gives a function body no `⟨break, _⟩` delivery,
+so a callee's `break` is caught by a loop of its own body — "a `break` in a
+callee would be ill-formed" (§6.10). One that reached the boundary anyway is
+a configuration §6 leaves undefined, `typeConfusion`; `soundness` proves no
+typed program reaches it.
+
+```lean
+def RueCore.EvalRes.bindCall : EvalRes → (Store → Val → EvalRes) → EvalRes
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (x : Store → Val → EvalRes) (H : Store) (v : Val) (tr : List Event),
+  (EvalRes.ok H v tr).bindCall x = EvalRes.withTrace tr (x H v)
+∀ (x : Store → Val → EvalRes) (H : Store) (v : Val) (tr : List Event),
+  (EvalRes.returned H v tr).bindCall x = EvalRes.ok H v tr
+∀ (x : Store → Val → EvalRes) (H : Store) (scope : List Nat)
+  (tr : List Event),
+  (EvalRes.broke H scope tr).bindCall x =
+    EvalRes.stuck Violation.typeConfusion
+∀ (x : EvalRes) (x_1 : Store → Val → EvalRes),
+  (∀ (H : Store) (v : Val) (tr : List Event),
+      x = EvalRes.ok H v tr → False) →
+    (∀ (H : Store) (v : Val) (tr : List Event),
+        x = EvalRes.returned H v tr → False) →
+      (∀ (H : Store) (scope : List Nat) (tr : List Event),
+          x = EvalRes.broke H scope tr → False) →
+        x.bindCall x_1 = x
 ```
 
 ### `Examples.prog`
@@ -31302,7 +31310,7 @@ enclosing function's return type, all of which travel with `φ` so each row
 prints its expression with the source's names.
 
 ```lean
-def RueCore.Explain.traceEval (M : FloatOps) (P : Program) :
+def RueCore.Explain.traceEval (M : FloatSig) (P : Program) :
   Nat → Nat → List Ty → Ty → Store → Frame → Expr → Explain.Trace
 ```
 
@@ -31386,7 +31394,7 @@ and call "an analogue of determinism" (`FIELD.md`, section 3).
 
 ```lean
 def RueCore.Spec.fuel_mono_stmt : Prop :=
-  ∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr}
+  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr}
     {n m : Nat},
     n ≤ m →
       eval M n P H φ e ≠ EvalRes.outOfFuel →
@@ -31403,7 +31411,7 @@ refusal at one fuel is the answer at every fuel that answers; a corollary of
 
 ```lean
 def RueCore.Spec.no_masking_stmt : Prop :=
-  ∀ (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr}
+  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr}
     {n m : Nat} {w : Violation},
     eval M n P H φ e = EvalRes.stuck w →
       eval M m P H φ e ≠ EvalRes.outOfFuel →
@@ -31489,7 +31497,7 @@ Defining equations, as Lean derived them from the body:
     match check P R x e with
     | some (CTy.ty (Ty.int w s), { norm := some Γ₁, brk := Δ₁ }) =>
       match checkIdx P R Γ₁ es with
-      | some (Ts, Ω) => some (Ty.int w s :: Ts, Ω.add Δ₁)
+      | some (Ts, Ω) => some (Ty.int w s :: Ts, Ω.merge Δ₁)
       | none => none
     | some (CTy.ty (Ty.int w s), { norm := none, brk := Δ₁ }) =>
       some
@@ -31751,13 +31759,13 @@ stack, so the entry point is an ordinary call and needs no second path: the
 call boundary absorbs an unwinding `return` exactly as it does anywhere.
 
 ```lean
-def RueCore.run (M : FloatOps) (P : Program) (fuel : Nat) : EvalRes
+def RueCore.run (M : FloatSig) (P : Program) (fuel : Nat) : EvalRes
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (M : FloatOps) (P : Program) (fuel : Nat),
+∀ (M : FloatSig) (P : Program) (fuel : Nat),
   run M P fuel =
     eval M fuel P [] { env := [], scope := [] } (Expr.call 0 [])
 ```
@@ -31772,7 +31780,7 @@ takes none — `halted` at a terminal configuration (§6.12's (Result-Ok) and
 it is `Step`.
 
 ```lean
-def RueCore.step (M : FloatOps) (P : Program) : Config → StepOut
+def RueCore.step (M : FloatSig) (P : Program) : Config → StepOut
 ```
 
 ### `stepArgs`
@@ -31797,7 +31805,7 @@ rules of §6.3 and §6.11, (D-Panic) §6.12, (D-Loop-Enter) and (D-Break)
 §6.10, and every (Search) enter rule of §6.2 (helper).
 
 ```lean
-def RueCore.stepEval (M : FloatOps) (P : Program) (H : Store) (φ : Frame)
+def RueCore.stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Frame)
   (K : List Kont) (tr : List Event) : Expr → StepOut
 ```
 
@@ -31811,7 +31819,7 @@ of §6.2 and the redexes that fire there — §6.4's operators, (D-Match),
 (D-Return-Value), (D-Return) and (D-Loop-Iter) (helper).
 
 ```lean
-def RueCore.stepRet (M : FloatOps) (P : Program) (H : Store) (φ : Frame)
+def RueCore.stepRet (M : FloatSig) (P : Program) (H : Store) (φ : Frame)
   (K : List Kont) (tr : List Event) (v : Val) : Kont → StepOut
 ```
 
@@ -31824,7 +31832,7 @@ applies. `step` names the reason with the `Violation` the interpreter uses for
 the same configuration.
 
 ```lean
-def RueCore.Config.Stuck (M : FloatOps) (P : Program) (C : Config)
+def RueCore.Config.Stuck (M : FloatSig) (P : Program) (C : Config)
   (w : Violation) : Prop :=
   step M P C = StepOut.stuck w
 ```
@@ -31876,7 +31884,7 @@ Defining equations, as Lean derived them from the body:
     | some (CTy.ty (Ty.int w s), { norm := some Γ₁, brk := Δ₁ }) =>
       have rest := Explain.explainIdx P R Γ₁ es;
       (match rest.fst with
-        | some (Ts, Ω) => some (Ty.int w s :: Ts, Ω.add Δ₁)
+        | some (Ts, Ω) => some (Ty.int w s :: Ts, Ω.merge Δ₁)
         | none => none,
         Explain.explain P R x e :: rest.snd)
     | some (CTy.ty (Ty.int w s), { norm := none, brk := Δ₁ }) =>
@@ -31895,14 +31903,14 @@ The run of a whole program: the entry call, from the empty store and the
 empty frame (§6.12's top-level result).
 
 ```lean
-def RueCore.Explain.runTrace (M : FloatOps) (P : Program) (fuel : Nat) :
+def RueCore.Explain.runTrace (M : FloatSig) (P : Program) (fuel : Nat) :
   Explain.Trace
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (M : FloatOps) (P : Program) (fuel : Nat),
+∀ (M : FloatSig) (P : Program) (fuel : Nat),
   Explain.runTrace M P fuel =
     Explain.traceEval M P fuel 0 []
       (match P.fns[0]? with
@@ -31958,7 +31966,7 @@ ends the values the body still held — the cells the carried record owes, the
 body's own bindings included (§6.10).
 
 ```lean
-def RueCore.Lead (M : FloatOps) (P : Program) (fuel : Nat) (H : Store) (φ : Frame)
+def RueCore.Lead (M : FloatSig) (P : Program) (fuel : Nat) (H : Store) (φ : Frame)
   (H₁ : Store) (vs : List Val) (tr : List Event) : Expr → Prop :=
   match x✝ with
   | Expr.letIn m e₁ e₂ =>
@@ -32047,7 +32055,7 @@ runs `eval` finishes.
 
 ```lean
 def RueCore.Spec.dtor_once_stmt : Prop :=
-  ∀ (M : FloatOps) {P : Program},
+  ∀ (M : FloatSig) {P : Program},
     DtorNotCopy P.decls →
       ∀ (fuel a : Nat), List.count a (dtorIds (run M P fuel).trace) ≤ 1
 ```
@@ -32060,7 +32068,7 @@ def RueCore.Spec.dtor_once_stmt : Prop :=
 
 ```lean
 def RueCore.Spec.run_ne_returned_stmt : Prop :=
-  ∀ (M : FloatOps) {P : Program} {fuel : Nat} (H : Store) (v : Val)
+  ∀ (M : FloatSig) {P : Program} {fuel : Nat} (H : Store) (v : Val)
     (tr : List Event), run M P fuel ≠ EvalRes.returned H v tr
 ```
 
@@ -32082,7 +32090,7 @@ names a cell already retired, `eval` does refuse (`Sharp.retired_cell`). Like
 
 ```lean
 def RueCore.Spec.run_no_use_after_drop_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) (fuel : Nat),
+  ∀ (M : FloatSig) (P : Program) (fuel : Nat),
     run M P fuel ≠ EvalRes.stuck Violation.useAfterDrop
 ```
 
@@ -32249,14 +32257,14 @@ Take up to `n` steps of `step`, stopping early at a configuration that
 takes none (helper).
 
 ```lean
-def RueCore.stepN (M : FloatOps) (P : Program) : Nat → Config → Config
+def RueCore.stepN (M : FloatSig) (P : Program) : Nat → Config → Config
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (M : FloatOps) (P : Program) (x : Config), stepN M P 0 x = x
-∀ (M : FloatOps) (P : Program) (x : Config) (n : Nat),
+∀ (M : FloatSig) (P : Program) (x : Config), stepN M P 0 x = x
+∀ (M : FloatSig) (P : Program) (x : Config) (n : Nat),
   stepN M P n.succ x =
     match step M P x with
     | StepOut.next C' => stepN M P n C'
@@ -32274,7 +32282,7 @@ monitor's.
 
 ```lean
 def RueCore.Spec.step_stuck_isStuckState_stmt : Prop :=
-  ∀ {M : FloatOps} {P : Program} {C : Config} {w : Violation},
+  ∀ {M : FloatSig} {P : Program} {C : Config} {w : Violation},
     Config.Stuck M P C w → w.isStuckState = true
 ```
 
@@ -32392,6 +32400,19 @@ def RueCore.ArgsCons (D : Decls) (F : Event → List Nat) (H : Store) :
   | ArgsRes.abort r => Cons D F H [] r
 ```
 
+### `ArgsDropGlueBlocks`
+
+*def* · module `RueCore.TraceOrder`
+
+The grammar's promise about an argument list (helper).
+
+```lean
+def RueCore.ArgsDropGlueBlocks (D : Decls) : ArgsRes → Prop :=
+  match x✝ with
+  | ArgsRes.ok H vs tr => DropGlueBlocks D tr
+  | ArgsRes.abort r => DropGlueBlocks D r.trace
+```
+
 ### `ArgsExact`
 
 *def* · module `RueCore.TraceExact`
@@ -32412,19 +32433,6 @@ def RueCore.ArgsExact (D : Decls) (H : Store) : ArgsRes → Prop :=
                   List.count a (freedIds D tr) =
                 List.count a (storeOwn D H)
   | ArgsRes.abort r => Exact D H [] r
-```
-
-### `ArgsGlueBlocks`
-
-*def* · module `RueCore.TraceOrder`
-
-The grammar's promise about an argument list (helper).
-
-```lean
-def RueCore.ArgsGlueBlocks (D : Decls) : ArgsRes → Prop :=
-  match x✝ with
-  | ArgsRes.ok H vs tr => GlueBlocks D tr
-  | ArgsRes.abort r => GlueBlocks D r.trace
 ```
 
 ### `ArgsOk`
@@ -32667,7 +32675,7 @@ defined by reduction, not by a syntactic judgment over the configuration
 (this section's docstring says why).
 
 ```lean
-def RueCore.Config.SafeAt (M : FloatOps) (P : Program) (T : Ty) (C : Config) :
+def RueCore.Config.SafeAt (M : FloatSig) (P : Program) (T : Ty) (C : Config) :
   Prop :=
   (∀ (D : Config), Steps M P C D → D.Terminal ∨ ∃ D', Step M P D D') ∧
     ∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
@@ -32945,7 +32953,7 @@ Defining equations, as Lean derived them from the body:
       match dropResidue D ℓ rs with
       | Except.error w => Except.error w
       | Except.ok evs =>
-        Except.ok (leaf, evs ++ [Event.consume (c.skeleton πs)])
+        Except.ok (leaf, evs ++ [Event.consume (c.pathOnly πs)])
 ```
 
 ### `Contents.holeFree`
@@ -33381,8 +33389,95 @@ refusal, and its bound is `step_no_double_free`, which needs `ProgramTyped`.
 
 ```lean
 def RueCore.Spec.freed_once_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) (fuel a : Nat),
+  ∀ (M : FloatSig) (P : Program) (fuel a : Nat),
     List.count a (freedIds P.decls (run M P fuel).trace) ≤ 1
+```
+
+### `Contents.pathOnly`
+
+*def* · module `RueCore.Dynamics`
+
+**The consumed shell of a destructure** (RUE-2427): the nodes on the
+selected path — the declared-`linear` place `d` and every node below it down
+to the leaf's parent — with the leaf and every retained subtree replaced by
+`⊘`. It is what §6.3's destructure consumes without dropping: the leaf is
+handed on, the residue is dropped, and `ℓ@π_d` becomes `⊘`. It walks the path
+exactly as `splitResidue` does (helper).
+
+```lean
+def RueCore.Contents.pathOnly : Contents → List Nat → Contents
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (x : Contents), x.pathOnly [] = Contents.hole
+∀ (s i : Nat) (cs : List Contents) (f : Nat) (π : List Nat),
+  (Contents.struct s i cs).pathOnly (f :: π) =
+    Contents.struct s i (Contents.pathOnlyFields cs f π)
+∀ (T : Ty) (i : Nat) (cs : List Contents) (f : Nat) (π : List Nat),
+  (Contents.array T i cs).pathOnly (f :: π) =
+    Contents.array T i (Contents.pathOnlyFields cs f π)
+∀ (x : Contents) (head : Nat) (tail : List Nat),
+  (∀ (s i : Nat) (cs : List Contents),
+      x = Contents.struct s i cs → False) →
+    (∀ (T : Ty) (i : Nat) (cs : List Contents),
+        x = Contents.array T i cs → False) →
+      x.pathOnly (head :: tail) = Contents.hole
+```
+
+### `Contents.pathOnlyFields`
+
+*def* · module `RueCore.Dynamics`
+
+`pathOnly`'s member step: `⊘` at every unselected slot, the recursion at
+the selected one (helper).
+
+```lean
+def RueCore.Contents.pathOnlyFields :
+  List Contents → Nat → List Nat → List Contents
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (x : Nat) (x_1 : List Nat), Contents.pathOnlyFields [] x x_1 = []
+∀ (x : List Nat) (c : Contents) (cs : List Contents),
+  Contents.pathOnlyFields (c :: cs) 0 x =
+    c.pathOnly x :: List.map (fun x => Contents.hole) cs
+∀ (x : List Nat) (c : Contents) (cs : List Contents) (f : Nat),
+  Contents.pathOnlyFields (c :: cs) f.succ x =
+    Contents.hole :: Contents.pathOnlyFields cs f x
+```
+
+### `plainDestructure`
+
+*def* · module `RueCore.Step`
+
+§6.3's `destructure(H, ℓ@π_d, π_s)` as §6.3 writes it: `split`, then
+`drop*` on the residue left to right, with no residue monitor — the
+(Use-Declared-Linear-Destructure) premise excluded a linear residue before
+(D-Use-Declared-Linear) can fire — and then the path's shell consumed
+(`consume`, RUE-2427), exactly as `eval`'s `Contents.destructure` records it
+(helper).
+
+```lean
+def RueCore.plainDestructure (D : Decls) (ℓ : Nat) (c : Contents)
+  (πs : List Nat) : Except Violation (Contents × List Event)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (ℓ : Nat) (c : Contents) (πs : List Nat),
+  plainDestructure D ℓ c πs =
+    match Contents.splitResidue D c πs with
+    | Except.error w => Except.error w
+    | Except.ok (leaf, rs) =>
+      match plainResidue D ℓ rs with
+      | Except.error w => Except.error w
+      | Except.ok evs =>
+        Except.ok (leaf, evs ++ [Event.consume (c.pathOnly πs)])
 ```
 
 ### `Contents.residualLinear`
@@ -33584,92 +33679,6 @@ Defining equations, as Lean derived them from the body:
   runAllScopeDrops D H φ = unwindLocs D H φ.scope.reverse
 ```
 
-### `Contents.skelFields`
-
-*def* · module `RueCore.Dynamics`
-
-`skeleton`'s member step: `⊘` at every unselected slot, the recursion at
-the selected one (helper).
-
-```lean
-def RueCore.Contents.skelFields : List Contents → Nat → List Nat → List Contents
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (x : Nat) (x_1 : List Nat), Contents.skelFields [] x x_1 = []
-∀ (x : List Nat) (c : Contents) (cs : List Contents),
-  Contents.skelFields (c :: cs) 0 x =
-    c.skeleton x :: List.map (fun x => Contents.hole) cs
-∀ (x : List Nat) (c : Contents) (cs : List Contents) (f : Nat),
-  Contents.skelFields (c :: cs) f.succ x =
-    Contents.hole :: Contents.skelFields cs f x
-```
-
-### `Contents.skeleton`
-
-*def* · module `RueCore.Dynamics`
-
-**The consumed shell of a destructure** (RUE-2427): the nodes on the
-selected path — the declared-`linear` place `d` and every node below it down
-to the leaf's parent — with the leaf and every retained subtree replaced by
-`⊘`. It is what §6.3's destructure consumes without dropping: the leaf is
-handed on, the residue is dropped, and `ℓ@π_d` becomes `⊘`. It walks the path
-exactly as `splitResidue` does (helper).
-
-```lean
-def RueCore.Contents.skeleton : Contents → List Nat → Contents
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (x : Contents), x.skeleton [] = Contents.hole
-∀ (s i : Nat) (cs : List Contents) (f : Nat) (π : List Nat),
-  (Contents.struct s i cs).skeleton (f :: π) =
-    Contents.struct s i (Contents.skelFields cs f π)
-∀ (T : Ty) (i : Nat) (cs : List Contents) (f : Nat) (π : List Nat),
-  (Contents.array T i cs).skeleton (f :: π) =
-    Contents.array T i (Contents.skelFields cs f π)
-∀ (x : Contents) (head : Nat) (tail : List Nat),
-  (∀ (s i : Nat) (cs : List Contents),
-      x = Contents.struct s i cs → False) →
-    (∀ (T : Ty) (i : Nat) (cs : List Contents),
-        x = Contents.array T i cs → False) →
-      x.skeleton (head :: tail) = Contents.hole
-```
-
-### `plainDestructure`
-
-*def* · module `RueCore.Step`
-
-§6.3's `destructure(H, ℓ@π_d, π_s)` as §6.3 writes it: `split`, then
-`drop*` on the residue left to right, with no residue monitor — the
-(Use-Declared-Linear-Destructure) premise excluded a linear residue before
-(D-Use-Declared-Linear) can fire — and then the path's shell consumed
-(`consume`, RUE-2427), exactly as `eval`'s `Contents.destructure` records it
-(helper).
-
-```lean
-def RueCore.plainDestructure (D : Decls) (ℓ : Nat) (c : Contents)
-  (πs : List Nat) : Except Violation (Contents × List Event)
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls) (ℓ : Nat) (c : Contents) (πs : List Nat),
-  plainDestructure D ℓ c πs =
-    match Contents.splitResidue D c πs with
-    | Except.error w => Except.error w
-    | Except.ok (leaf, rs) =>
-      match plainResidue D ℓ rs with
-      | Except.error w => Except.error w
-      | Except.ok evs =>
-        Except.ok (leaf, evs ++ [Event.consume (c.skeleton πs)])
-```
-
 ### `Contents.toVal`
 
 *def* · module `RueCore.Dynamics`
@@ -33736,7 +33745,7 @@ constructor. `M` fixes the float operations, as `eval`'s does; `P` supplies the
 declarations and the functions.
 
 ```lean
-inductive RueCore.Step (M : FloatOps) (P : Program) : Config → Config → Prop
+inductive RueCore.Step (M : FloatSig) (P : Program) : Config → Config → Prop
 ```
 
 Constructors:
@@ -33744,7 +33753,7 @@ Constructors:
 **`Step.intLit`** — An integer literal is already a value (§6.3): it takes no step except to *be* one, `n_T` at the type elaboration resolved.
 
 ```lean
-RueCore.Step.intLit {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.intLit {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {w : IntWidth} {s : Sign} {n : Int} :
   Step M P (Config.run H φ K (Focus.eval (Expr.intLit w s n)) tr)
     (Config.run H φ K (Focus.ret (Val.int w s n)) tr)
@@ -33753,7 +33762,7 @@ RueCore.Step.intLit {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.floatLit`** — A float literal is a value (§6.3): the datum `rnd_w` of its decimal (`3.12:9`).
 
 ```lean
-RueCore.Step.floatLit {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.floatLit {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {w : FloatWidth} {l : FloatLit} :
   Step M P (Config.run H φ K (Focus.eval (Expr.floatLit w l)) tr)
     (Config.run H φ K (Focus.ret (Val.float w (M.ofLit w l.sig l.negExp l.e)))
@@ -33763,7 +33772,7 @@ RueCore.Step.floatLit {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.boolLit`** — A boolean literal is a value (§6.3).
 
 ```lean
-RueCore.Step.boolLit {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.boolLit {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {b : Bool} :
   Step M P (Config.run H φ K (Focus.eval (Expr.boolLit b)) tr)
     (Config.run H φ K (Focus.ret (Val.bool b)) tr)
@@ -33772,7 +33781,7 @@ RueCore.Step.boolLit {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.unitLit`** — The unit literal is a value (§6.3).
 
 ```lean
-RueCore.Step.unitLit {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.unitLit {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} :
   Step M P (Config.run H φ K (Focus.eval Expr.unitLit) tr)
     (Config.run H φ K (Focus.ret Val.unit) tr)
@@ -33781,7 +33790,7 @@ RueCore.Step.unitLit {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.useDeclared`** — (D-Use-Declared-Linear) §6.3: the path has a declared-linear proper prefix `d` (`declaredPlan`); `destructure` splits the aggregate at `d`, drops the residue left to right, and `ℓ@π_d` — the consumed place — becomes `⊘`.
 
 ```lean
-RueCore.Step.useDeclared {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.useDeclared {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {p : Place} {ℓ : Nat} {c : Contents}
   {πd πs : List Nat} {cd leaf : Contents} {evs : List Event} {v : Val}
   {c' : Contents} :
@@ -33799,7 +33808,7 @@ RueCore.Step.useDeclared {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.useCopy`** — (D-Use-Copy) §6.3: an `Ordinary` use of a `Copy` place reads it and leaves the cell untouched.
 
 ```lean
-RueCore.Step.useCopy {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.useCopy {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {p : Place} {ℓ : Nat} {c sub : Contents}
   {v : Val} :
   rootCell H φ p.root = Except.ok (ℓ, c) →
@@ -33814,7 +33823,7 @@ RueCore.Step.useCopy {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.useMove`** — (D-Use-Move) §6.3: an `Ordinary` use of an `Affine` or `Linear` place moves it, writing `⊘` at exactly the sub-position moved — the partial move of §4.2 (`3.8:22`).
 
 ```lean
-RueCore.Step.useMove {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.useMove {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {p : Place} {ℓ : Nat} {c sub : Contents}
   {v : Val} {c' : Contents} :
   rootCell H φ p.root = Except.ok (ℓ, c) →
@@ -33831,7 +33840,7 @@ RueCore.Step.useMove {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.binopEnter`** — (Search) §6.2 into `E ⊕ e`: the left operand first.
 
 ```lean
-RueCore.Step.binopEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.binopEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {op : BinOp} {e₁ e₂ : Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.binop op e₁ e₂)) tr)
     (Config.run H φ (Kont.binopL op e₂ :: K) (Focus.eval e₁) tr)
@@ -33840,7 +33849,7 @@ RueCore.Step.binopEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.binopMid`** — (Search) §6.2 from `E ⊕ e` to `v ⊕ E`: the right operand next.
 
 ```lean
-RueCore.Step.binopMid {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.binopMid {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {op : BinOp} {e₂ : Expr} {v₁ : Val} :
   Step M P (Config.run H φ (Kont.binopL op e₂ :: K) (Focus.ret v₁) tr)
     (Config.run H φ (Kont.binopR op v₁ :: K) (Focus.eval e₂) tr)
@@ -33849,7 +33858,7 @@ RueCore.Step.binopMid {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.binop`** — §6.4's binary rules on two values: (D-Arith), (D-Div), (D-Bit), (D-Shl), (D-Shr), the integer compares, (D-Float-Arith), (D-Float-Ord) and (D-Total-Cmp), computed by `evalBinOp` (`Dynamics.lean`).
 
 ```lean
-RueCore.Step.binop {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.binop {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {op : BinOp} {v₁ v₂ v : Val} :
   evalBinOp M op v₁ v₂ = OpRes.val v →
     Step M P (Config.run H φ (Kont.binopR op v₁ :: K) (Focus.ret v₂) tr)
@@ -33859,7 +33868,7 @@ RueCore.Step.binop {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.binopTrap`** — §6.4's binary traps, (D-Arith-Trap), (D-Div-Zero) and (D-Div-Overflow) with `%`'s `rem-zero`, lifted past every context by (Panic-Lift) §6.2.
 
 ```lean
-RueCore.Step.binopTrap {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.binopTrap {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {op : BinOp} {v₁ v₂ : Val}
   {κ : PanicKind} :
   evalBinOp M op v₁ v₂ = OpRes.trap κ →
@@ -33870,7 +33879,7 @@ RueCore.Step.binopTrap {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.unopEnter`** — (Search) §6.2 into `⊖ E`.
 
 ```lean
-RueCore.Step.unopEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.unopEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {op : UnOp} {e : Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.unop op e)) tr)
     (Config.run H φ (Kont.unop op :: K) (Focus.eval e) tr)
@@ -33879,7 +33888,7 @@ RueCore.Step.unopEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.unop`** — §6.4's unary rules: (D-Arith)'s unary `neg`, (D-Float-Neg), `not`, and (D-Bit)'s complement (`evalUnOp`).
 
 ```lean
-RueCore.Step.unop {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.unop {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {op : UnOp} {v v' : Val} :
   evalUnOp op v = OpRes.val v' →
     Step M P (Config.run H φ (Kont.unop op :: K) (Focus.ret v) tr)
@@ -33889,7 +33898,7 @@ RueCore.Step.unop {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.unopTrap`** — (D-Arith-Trap) §6.4 at `neg (min_T)`, lifted by (Panic-Lift) §6.2.
 
 ```lean
-RueCore.Step.unopTrap {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.unopTrap {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {op : UnOp} {v : Val} {κ : PanicKind} :
   evalUnOp op v = OpRes.trap κ →
     Step M P (Config.run H φ (Kont.unop op :: K) (Focus.ret v) tr)
@@ -33899,7 +33908,7 @@ RueCore.Step.unopTrap {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.intCastEnter`** — (Search) §6.2 into `@intCast( E )`.
 
 ```lean
-RueCore.Step.intCastEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.intCastEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {w : IntWidth} {s : Sign} {e : Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.intCast w s e)) tr)
     (Config.run H φ (Kont.intCast w s :: K) (Focus.eval e) tr)
@@ -33908,7 +33917,7 @@ RueCore.Step.intCastEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.intCast`** — (D-Int-Cast) §6.4.
 
 ```lean
-RueCore.Step.intCast {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.intCast {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {w : IntWidth} {s : Sign} {v v' : Val} :
   evalIntCast w s v = OpRes.val v' →
     Step M P (Config.run H φ (Kont.intCast w s :: K) (Focus.ret v) tr)
@@ -33918,7 +33927,7 @@ RueCore.Step.intCast {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.intCastTrap`** — (D-Int-Cast-Trap) §6.4, lifted by (Panic-Lift) §6.2.
 
 ```lean
-RueCore.Step.intCastTrap {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.intCastTrap {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {w : IntWidth} {s : Sign} {v : Val}
   {κ : PanicKind} :
   evalIntCast w s v = OpRes.trap κ →
@@ -33929,7 +33938,7 @@ RueCore.Step.intCastTrap {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.fintrinEnter`** — (Search) §6.2 into a float intrinsic's operand, `@f( E )`.
 
 ```lean
-RueCore.Step.fintrinEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.fintrinEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {k : FloatIntrin} {e : Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.fintrin k e)) tr)
     (Config.run H φ (Kont.fintrin k :: K) (Focus.eval e) tr)
@@ -33938,7 +33947,7 @@ RueCore.Step.fintrinEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.fintrin`** — §6.4's float intrinsics: (D-Int-To-Float), (D-Float-To-Int), (D-Float-Cast) and (D-Float-Round) (`evalFintrin`).
 
 ```lean
-RueCore.Step.fintrin {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.fintrin {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {k : FloatIntrin} {v v' : Val} :
   evalFintrin M k v = OpRes.val v' →
     Step M P (Config.run H φ (Kont.fintrin k :: K) (Focus.ret v) tr)
@@ -33948,7 +33957,7 @@ RueCore.Step.fintrin {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.fintrinTrap`** — (D-Float-To-Int-Trap) §6.4, lifted by (Panic-Lift) §6.2.
 
 ```lean
-RueCore.Step.fintrinTrap {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.fintrinTrap {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {k : FloatIntrin} {v : Val}
   {κ : PanicKind} :
   evalFintrin M k v = OpRes.trap κ →
@@ -33959,7 +33968,7 @@ RueCore.Step.fintrinTrap {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.panic`** — (D-Panic) §6.12: `@panic` abandons the configuration to `↯user`, which (Panic-Lift) §6.2 carries past every context. The fragment's message is a literal field, so there is no operand to reduce first. §6.12's `panic: msg` output line is not recorded as an event, as in `eval`.
 
 ```lean
-RueCore.Step.panic {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.panic {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {msg : String} :
   Step M P (Config.run H φ K (Focus.eval (Expr.panic msg)) tr)
     (Config.panic PanicKind.user tr)
@@ -33968,7 +33977,7 @@ RueCore.Step.panic {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.dbgEnter`** — (Search) §6.2 into `@dbg( E )`.
 
 ```lean
-RueCore.Step.dbgEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.dbgEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {e : Expr} :
   Step M P (Config.run H φ K (Focus.eval e.dbg) tr)
     (Config.run H φ (Kont.dbg :: K) (Focus.eval e) tr)
@@ -33977,7 +33986,7 @@ RueCore.Step.dbgEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.dbg`** — `@dbg`'s defining equation (§6.9's intrinsic note, §6.12): append the value's rendering to the observable output and yield `⟨⟩`. The rendering is defined on an observable value only (`Val.observable`), so any other operand has no rule (RUE-2427).
 
 ```lean
-RueCore.Step.dbg {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.dbg {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {v : Val} :
   v.observable = true →
     Step M P (Config.run H φ (Kont.dbg :: K) (Focus.ret v) tr)
@@ -33987,7 +33996,7 @@ RueCore.Step.dbg {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.structEnter`** — (Search) §6.2 into a struct literal's initializers, `S{ E, ē }`.
 
 ```lean
-RueCore.Step.structEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.structEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {s : Nat} {args : List Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.mkStruct s args)) tr)
     (Config.run H φ K (Focus.args (ArgsTag.struct s) [] args) tr)
@@ -33996,7 +34005,7 @@ RueCore.Step.structEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.enumEnter`** — (Search) §6.2 into an enum literal's payload, `Kj( E, ē )`.
 
 ```lean
-RueCore.Step.enumEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.enumEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {e k : Nat} {args : List Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.mkEnum e k args)) tr)
     (Config.run H φ K (Focus.args (ArgsTag.enum e k) [] args) tr)
@@ -34005,7 +34014,7 @@ RueCore.Step.enumEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.arrayEnter`** — (Search) §6.2 into an array literal's elements, `[ E, ē ]`.
 
 ```lean
-RueCore.Step.arrayEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.arrayEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {T : Ty} {args : List Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.mkArray T args)) tr)
     (Config.run H φ K (Focus.args (ArgsTag.array T) [] args) tr)
@@ -34014,7 +34023,7 @@ RueCore.Step.arrayEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.callEnter`** — (Search) §6.2 into a call's by-value arguments, `g( E, ē )`.
 
 ```lean
-RueCore.Step.callEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.callEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {f : Nat} {args : List Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.call f args)) tr)
     (Config.run H φ K (Focus.args (ArgsTag.call f) [] args) tr)
@@ -34023,7 +34032,7 @@ RueCore.Step.callEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.indexReadEnter`** — (Search) §6.2 into a dynamic place's indices, `p[ E, ē ]`: "a place … is a redex once its index subexpressions are values".
 
 ```lean
-RueCore.Step.indexReadEnter {M : FloatOps} {P : Program} {H : Store}
+RueCore.Step.indexReadEnter {M : FloatSig} {P : Program} {H : Store}
   {φ : Frame} {K : List Kont} {tr : List Event} {p : Place} {idx : List Expr}
   {πs : List (List Nat)} :
   Step M P (Config.run H φ K (Focus.eval (Expr.indexRead p idx πs)) tr)
@@ -34033,7 +34042,7 @@ RueCore.Step.indexReadEnter {M : FloatOps} {P : Program} {H : Store}
 **`Step.indexDropEnter`** — (Search) §6.2 into the indices of `@drop` at a dynamic place.
 
 ```lean
-RueCore.Step.indexDropEnter {M : FloatOps} {P : Program} {H : Store}
+RueCore.Step.indexDropEnter {M : FloatSig} {P : Program} {H : Store}
   {φ : Frame} {K : List Kont} {tr : List Event} {p : Place} {idx : List Expr}
   {πs : List (List Nat)} :
   Step M P (Config.run H φ K (Focus.eval (Expr.indexDrop p idx πs)) tr)
@@ -34043,7 +34052,7 @@ RueCore.Step.indexDropEnter {M : FloatOps} {P : Program} {H : Store}
 **`Step.indexWriteEnter`** — (Search) §6.2 into an assignment below a dynamic index: `assign p = E`, the right-hand side **first** (`5.2:14`).
 
 ```lean
-RueCore.Step.indexWriteEnter {M : FloatOps} {P : Program} {H : Store}
+RueCore.Step.indexWriteEnter {M : FloatSig} {P : Program} {H : Store}
   {φ : Frame} {K : List Kont} {tr : List Event} {p : Place} {idx : List Expr}
   {πs : List (List Nat)} {e : Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.indexWrite p idx πs e)) tr)
@@ -34053,7 +34062,7 @@ RueCore.Step.indexWriteEnter {M : FloatOps} {P : Program} {H : Store}
 **`Step.indexWriteRhs`** — (Search) §6.2 from `assign p = E` to `assign p[ E, ē ] = v`: the indices next, left to right (`5.2:14`).
 
 ```lean
-RueCore.Step.indexWriteRhs {M : FloatOps} {P : Program} {H : Store}
+RueCore.Step.indexWriteRhs {M : FloatSig} {P : Program} {H : Store}
   {φ : Frame} {K : List Kont} {tr : List Event} {p : Place} {idx : List Expr}
   {πs : List (List Nat)} {v : Val} :
   Step M P
@@ -34064,7 +34073,7 @@ RueCore.Step.indexWriteRhs {M : FloatOps} {P : Program} {H : Store}
 **`Step.argsPush`** — (Search) §6.2 into the next hole of a list context, `…( v̄, E, ē )`.
 
 ```lean
-RueCore.Step.argsPush {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.argsPush {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {t : ArgsTag} {vs : List Val} {e : Expr}
   {es : List Expr} :
   Step M P (Config.run H φ K (Focus.args t vs (e :: es)) tr)
@@ -34074,7 +34083,7 @@ RueCore.Step.argsPush {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.argsPlug`** — (Search) §6.2: a list context's hole became a value; move past it.
 
 ```lean
-RueCore.Step.argsPlug {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.argsPlug {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {t : ArgsTag} {vs : List Val}
   {es : List Expr} {v : Val} :
   Step M P (Config.run H φ (Kont.args t vs es :: K) (Focus.ret v) tr)
@@ -34084,7 +34093,7 @@ RueCore.Step.argsPlug {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.mkStruct`** — (D-Struct) §6.5: every initializer is a value. The value's identity is minted as `eval` mints it (`introVal`): the next index of the store, reserved with `†`.
 
 ```lean
-RueCore.Step.mkStruct {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.mkStruct {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {s : Nat} {vs : List Val}
   {sd : StructDecl} :
   P.decls.structs[s]? = some sd →
@@ -34097,7 +34106,7 @@ RueCore.Step.mkStruct {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.mkEnum`** — (D-Enum-Intro) §6.6: every payload component is a value; the identity is minted as at (D-Struct).
 
 ```lean
-RueCore.Step.mkEnum {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.mkEnum {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {e k : Nat} {vs : List Val}
   {ed : EnumDecl} {Ts : List Ty} :
   P.decls.enums[e]? = some ed →
@@ -34111,7 +34120,7 @@ RueCore.Step.mkEnum {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.mkArray`** — (D-Array) §6.5: every element is a value; the identity is minted as at (D-Struct).
 
 ```lean
-RueCore.Step.mkArray {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.mkArray {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {T : Ty} {vs : List Val} :
   Step M P (Config.run H φ K (Focus.args (ArgsTag.array T) vs []) tr)
     (Config.run (H ++ [Cell.dead]) φ K
@@ -34121,7 +34130,7 @@ RueCore.Step.mkArray {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.repeatEnter`** — (Search) §6.2 into the repeat form's operand (`7.1:39`).
 
 ```lean
-RueCore.Step.repeatEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.repeatEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {T : Ty} {e : Expr} {n : Nat} :
   Step M P (Config.run H φ K (Focus.eval (Expr.repeatArray T e n)) tr)
     (Config.run H φ (Kont.repeatArray T n :: K) (Focus.eval e) tr)
@@ -34130,7 +34139,7 @@ RueCore.Step.repeatEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.repeatArray`** — The repeat form's elaboration (`7.1:39`): the operand, evaluated once, copied into each of the `n` slots. The elaboration `let t = v; [t, …, t]` is defined only at a `Copy` operand (`7.1:38`), so a non-`Copy` one is stuck (`typeConfusion`).
 
 ```lean
-RueCore.Step.repeatArray {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.repeatArray {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {T : Ty} {n : Nat} {v : Val} :
   Val.mult P.decls v = Mult.copy →
     Step M P (Config.run H φ (Kont.repeatArray T n :: K) (Focus.ret v) tr)
@@ -34141,7 +34150,7 @@ RueCore.Step.repeatArray {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.indexRead`** — (D-Index) §6.5 at a dynamic place, every index in range, and (D-Use-Untrackable-Dynamic-Copy) §6.3 reads the `Copy` leaf, leaving the storage live. §6.3 has no rule for a non-`Copy` leaf here, so that configuration is stuck (`typeConfusion`).
 
 ```lean
-RueCore.Step.indexRead {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.indexRead {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {p : Place} {πs : List (List Nat)}
   {vs : List Val} {ℓ : Nat} {c sub : Contents} {ρ : List Nat}
   {leaf : Contents} {v : Val} :
@@ -34157,7 +34166,7 @@ RueCore.Step.indexRead {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.indexReadTrap`** — (D-Index-Trap) §6.5: an index out of range traps `↯bounds`, lifted by (Panic-Lift) §6.2.
 
 ```lean
-RueCore.Step.indexReadTrap {M : FloatOps} {P : Program} {H : Store}
+RueCore.Step.indexReadTrap {M : FloatSig} {P : Program} {H : Store}
   {φ : Frame} {K : List Kont} {tr : List Event} {p : Place}
   {πs : List (List Nat)} {vs : List Val} :
   dynPlace H φ p vs πs = DynPlace.bounds →
@@ -34168,7 +34177,7 @@ RueCore.Step.indexReadTrap {M : FloatOps} {P : Program} {H : Store}
 **`Step.indexDrop`** — §6.11's `@drop` at a `Copy` place below a dynamic index: (D-Index) §6.5 navigates it, nothing is dropped, and the result is `⟨⟩`. The plan is `Untrackable(OrdinaryDynamic)`, whose only rule is §6.3's `Copy` read, so a non-`Copy` leaf is stuck (`typeConfusion`) and so is a `⊘` leaf (`useAfterMove`, the read finding no value).
 
 ```lean
-RueCore.Step.indexDrop {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.indexDrop {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {p : Place} {πs : List (List Nat)}
   {vs : List Val} {ℓ : Nat} {c sub : Contents} {ρ : List Nat}
   {leaf : Contents} {v : Val} :
@@ -34184,7 +34193,7 @@ RueCore.Step.indexDrop {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.indexDropTrap`** — (D-Index-Trap) §6.5 at `@drop`'s dynamic place.
 
 ```lean
-RueCore.Step.indexDropTrap {M : FloatOps} {P : Program} {H : Store}
+RueCore.Step.indexDropTrap {M : FloatSig} {P : Program} {H : Store}
   {φ : Frame} {K : List Kont} {tr : List Event} {p : Place}
   {πs : List (List Nat)} {vs : List Val} :
   dynPlace H φ p vs πs = DynPlace.bounds →
@@ -34195,7 +34204,7 @@ RueCore.Step.indexDropTrap {M : FloatOps} {P : Program} {H : Store}
 **`Step.indexWrite`** — (D-Assign) §6.8 below a dynamic index, every index in range (D-Index) §6.5: overwrite-drop what the position holds, then store.
 
 ```lean
-RueCore.Step.indexWrite {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.indexWrite {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {p : Place} {πs : List (List Nat)}
   {v : Val} {vs : List Val} {ℓ : Nat} {c sub : Contents} {ρ : List Nat}
   {old : Contents} {evs : List Event} {sub' c' : Contents} :
@@ -34214,7 +34223,7 @@ RueCore.Step.indexWrite {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.indexWriteTrap`** — (D-Index-Trap) §6.5 at an assignment's dynamic place: the evaluated right-hand side is abandoned undropped (§6.12: a panic runs no drops).
 
 ```lean
-RueCore.Step.indexWriteTrap {M : FloatOps} {P : Program} {H : Store}
+RueCore.Step.indexWriteTrap {M : FloatSig} {P : Program} {H : Store}
   {φ : Frame} {K : List Kont} {tr : List Event} {p : Place}
   {πs : List (List Nat)} {v : Val} {vs : List Val} :
   dynPlace H φ p vs πs = DynPlace.bounds →
@@ -34226,7 +34235,7 @@ RueCore.Step.indexWriteTrap {M : FloatOps} {P : Program} {H : Store}
 **`Step.matchEnter`** — (Search) §6.2 into `match E { … }`.
 
 ```lean
-RueCore.Step.matchEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.matchEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {scrut : Expr} {arms : List Expr} :
   Step M P (Config.run H φ K (Focus.eval (scrut.match arms)) tr)
     (Config.run H φ (Kont.match arms :: K) (Focus.eval scrut) tr)
@@ -34235,7 +34244,7 @@ RueCore.Step.matchEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.match`** — (D-Match) §6.6: the tag selects the arm; the payload is bound to fresh cells, appended to the scope record *and* owed to the arm's `endscope`; a non-`Copy` scrutinee's shell is consumed (`matchConsume`, RUE-2427).
 
 ```lean
-RueCore.Step.match {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.match {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {arms : List Expr} {e k i : Nat}
   {vs : List Val} {body : Expr} {H' : Store} {ls : List Nat} :
   arms[k]? = some body →
@@ -34251,7 +34260,7 @@ RueCore.Step.match {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.iteEnter`** — (Search) §6.2 into `if E { e1 } else { e2 }`.
 
 ```lean
-RueCore.Step.iteEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.iteEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {c e₁ e₂ : Expr} :
   Step M P (Config.run H φ K (Focus.eval (c.ite e₁ e₂)) tr)
     (Config.run H φ (Kont.ite e₁ e₂ :: K) (Focus.eval c) tr)
@@ -34260,7 +34269,7 @@ RueCore.Step.iteEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.iteTrue`** — (D-If-T) §6.6.
 
 ```lean
-RueCore.Step.iteTrue {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.iteTrue {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {e₁ e₂ : Expr} :
   Step M P
     (Config.run H φ (Kont.ite e₁ e₂ :: K) (Focus.ret (Val.bool true)) tr)
@@ -34270,7 +34279,7 @@ RueCore.Step.iteTrue {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.iteFalse`** — (D-If-F) §6.6.
 
 ```lean
-RueCore.Step.iteFalse {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.iteFalse {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {e₁ e₂ : Expr} :
   Step M P
     (Config.run H φ (Kont.ite e₁ e₂ :: K) (Focus.ret (Val.bool false)) tr)
@@ -34280,7 +34289,7 @@ RueCore.Step.iteFalse {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.letEnter`** — (Search) §6.2 into `let x = E ; e2`.
 
 ```lean
-RueCore.Step.letEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.letEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {m : Bool} {e₁ e₂ : Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.letIn m e₁ e₂)) tr)
     (Config.run H φ (Kont.letIn e₂ :: K) (Focus.eval e₁) tr)
@@ -34289,7 +34298,7 @@ RueCore.Step.letEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.letBind`** — (D-Let) §6.7: a fresh cell, bound, appended to the innermost scope record, and owed to the body's `endscope` (RUE-1277).
 
 ```lean
-RueCore.Step.letBind {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.letBind {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {e₂ : Expr} {v : Val} :
   Step M P (Config.run H φ (Kont.letIn e₂ :: K) (Focus.ret v) tr)
     (Config.run (H ++ [Cell.full (Contents.ofVal v)])
@@ -34300,7 +34309,7 @@ RueCore.Step.letBind {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.endScope`** — (D-EndScope) §6.7: the body is a value; drop-retire the marker's cells newest-first and resume in `⟨ρ; s minus ℓ̄⟩`: the marker's cells popped off the environment and the scope record by count (`Frame.popScope`).
 
 ```lean
-RueCore.Step.endScope {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.endScope {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {ℓs : List Nat} {v : Val} {H' : Store}
   {evs : List Event} :
   plainUnwind P.decls H ℓs.reverse = Except.ok (H', evs) →
@@ -34311,7 +34320,7 @@ RueCore.Step.endScope {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.seqEnter`** — (Search) §6.2 into `E ; e2`.
 
 ```lean
-RueCore.Step.seqEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.seqEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {e₁ e₂ : Expr} :
   Step M P (Config.run H φ K (Focus.eval (e₁.seq e₂)) tr)
     (Config.run H φ (Kont.seq e₂ :: K) (Focus.eval e₁) tr)
@@ -34320,7 +34329,7 @@ RueCore.Step.seqEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.seqCopy`** — (D-Seq) §6.7 at a `Copy` temporary: `drop(H, v)` is `H`.
 
 ```lean
-RueCore.Step.seqCopy {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.seqCopy {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {e₂ : Expr} {v : Val} :
   Val.mult P.decls v = Mult.copy →
     Step M P (Config.run H φ (Kont.seq e₂ :: K) (Focus.ret v) tr)
@@ -34330,7 +34339,7 @@ RueCore.Step.seqCopy {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.seqDrop`** — (D-Seq) §6.7 at a droppable temporary: drop it, then continue. §5.3 guarantees it carries no linear value; the rule does not check.
 
 ```lean
-RueCore.Step.seqDrop {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.seqDrop {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {e₂ : Expr} {v : Val} {evs : List Event} :
   Val.mult P.decls v ≠ Mult.copy →
     dropContents P.decls (Contents.ofVal v) = Except.ok evs →
@@ -34341,7 +34350,7 @@ RueCore.Step.seqDrop {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.assignEnter`** — (Search) §6.2 into `assign p = E`.
 
 ```lean
-RueCore.Step.assignEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.assignEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {p : Place} {e : Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.assign p e)) tr)
     (Config.run H φ (Kont.assign p :: K) (Focus.eval e) tr)
@@ -34350,7 +34359,7 @@ RueCore.Step.assignEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.assign`** — (D-Assign) §6.8: overwrite-drop what the position holds (nothing for a `⊘`, which is reinitialisation), then store. No linearity premise: §5.2's (Assign) excluded a live linear position statically (`3.8:77`).
 
 ```lean
-RueCore.Step.assign {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.assign {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {p : Place} {v : Val} {ℓ : Nat}
   {c old : Contents} {evs : List Event} {c' : Contents} :
   rootCell H φ p.root = Except.ok (ℓ, c) →
@@ -34365,7 +34374,7 @@ RueCore.Step.assign {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.dropDeclared`** — `@drop` at a declared-linear plan, as §5.1 reads §5.3's `(@Drop)` under a `Declared(d, π)` plan (the paragraph after the use rules): §6.3's destructure, then the selected leaf's own drop (§6.11), and `⊘` at the consumed place. A `⊘` leaf has no drop (`drop(H, ⊘) = H`).
 
 ```lean
-RueCore.Step.dropDeclared {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.dropDeclared {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {p : Place} {ℓ : Nat} {c : Contents}
   {πd πs : List Nat} {cd leaf : Contents} {evs levs : List Event}
   {c' : Contents} :
@@ -34383,7 +34392,7 @@ RueCore.Step.dropDeclared {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.dropCopy`** — §6.11's `@drop` of a `Copy` place: `⟨⟩`, the store unchanged. A `⊘` place is `Copy` here (`Contents.mult`), so `@drop` of a moved-out place is §6.11's `drop(H, ⊘) = H` and not a refusal.
 
 ```lean
-RueCore.Step.dropCopy {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.dropCopy {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {p : Place} {ℓ : Nat} {c sub : Contents} :
   rootCell H φ p.root = Except.ok (ℓ, c) →
     Contents.declaredPlan P.decls c p.path = none →
@@ -34396,7 +34405,7 @@ RueCore.Step.dropCopy {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.dropMove`** — §6.11's `@drop` of a non-`Copy` place: run `drop` on what it holds (the walk skips every `⊘` inside), then write `⊘` back.
 
 ```lean
-RueCore.Step.dropMove {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.dropMove {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {p : Place} {ℓ : Nat} {c sub : Contents}
   {evs : List Event} {c' : Contents} :
   rootCell H φ p.root = Except.ok (ℓ, c) →
@@ -34413,7 +34422,7 @@ RueCore.Step.dropMove {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.call`** — (D-Call) §6.9: every argument is a value; mint one cell per by-value argument, suspend the caller as `ret(E, φ)`, and enter the body in the callee's frame, whose entry scope owes exactly those cells.
 
 ```lean
-RueCore.Step.call {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.call {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {f : Nat} {vs : List Val} {fd : FnDef}
   {H' : Store} {ls : List Nat} :
   P.fns[f]? = some fd →
@@ -34427,7 +34436,7 @@ RueCore.Step.call {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.callReturn`** — (D-Return-Value) §6.9: the body is a value; run the frame's scope drops and resume the caller.
 
 ```lean
-RueCore.Step.callReturn {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.callReturn {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {φs : Frame} {v : Val} {H' : Store}
   {evs : List Event} :
   plainUnwind P.decls H φ.scope.reverse = Except.ok (H', evs) →
@@ -34438,7 +34447,7 @@ RueCore.Step.callReturn {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.retEnter`** — (Search) §6.2 into `return E`.
 
 ```lean
-RueCore.Step.retEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.retEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {e : Expr} :
   Step M P (Config.run H φ K (Focus.eval e.ret) tr)
     (Config.run H φ (Kont.ret :: K) (Focus.eval e) tr)
@@ -34447,7 +34456,7 @@ RueCore.Step.retEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.ret`** — (D-Return) §6.9: discard every frame up to the nearest `ret(E, φ)` — pending `endscope` markers and loop boundaries included — run the frame's scope drops from its record, and hand `v` to the caller. At the entry point's `call` frame this is (D-Return-Main) §6.9 (`Config.init`).
 
 ```lean
-RueCore.Step.ret {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.ret {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {v : Val} {φs : Frame} {K' : List Kont}
   {H' : Store} {evs : List Event} :
   Kont.toCall K = some (φs, K') →
@@ -34459,7 +34468,7 @@ RueCore.Step.ret {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.loopEnter`** — (D-Loop-Enter) §6.10: push the loop boundary and enter the body.
 
 ```lean
-RueCore.Step.loopEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.loopEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {e : Expr} :
   Step M P (Config.run H φ K (Focus.eval e.loop) tr)
     (Config.run H φ (Kont.loop e φ :: K) (Focus.eval e) tr)
@@ -34468,7 +34477,7 @@ RueCore.Step.loopEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.loopIter`** — (D-Loop-Iter) §6.10: the body became `⟨⟩` — "necessarily `⟨⟩`", so any other value has no rule (RUE-2427); `run-scope-drops` on the cells the turn still owes (those past the loop's own record, newest-first, as (D-Break) reads them), then re-enter the body in the loop's frame.
 
 ```lean
-RueCore.Step.loopIter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.loopIter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {e : Expr} {φs : Frame} {H' : Store}
   {evs : List Event} :
   plainUnwind P.decls H (List.drop φs.scope.length φ.scope).reverse =
@@ -34480,7 +34489,7 @@ RueCore.Step.loopIter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 **`Step.brk`** — (D-Break) §6.10: discard every frame up to the nearest loop boundary, drop-retire the cells the body still owed newest-first (`unwind-drops(H, φ', φ)`), and yield `⟨⟩` to the loop's context.
 
 ```lean
-RueCore.Step.brk {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.brk {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {φs : Frame} {K' : List Kont} {H' : Store}
   {evs : List Event} :
   Kont.toLoop K = some (φs, K') →
@@ -34499,7 +34508,7 @@ every step's target ledger counts every identity at least as often as its
 source's (helper).
 
 ```lean
-inductive RueCore.MSteps (M : FloatOps) (P : Program) : Config → Config → Prop
+inductive RueCore.MSteps (M : FloatSig) (P : Program) : Config → Config → Prop
 ```
 
 Constructors:
@@ -34507,13 +34516,13 @@ Constructors:
 **`MSteps.refl`**
 
 ```lean
-RueCore.MSteps.refl {M : FloatOps} {P : Program} (C : Config) : MSteps M P C C
+RueCore.MSteps.refl {M : FloatSig} {P : Program} (C : Config) : MSteps M P C C
 ```
 
 **`MSteps.step`**
 
 ```lean
-RueCore.MSteps.step {M : FloatOps} {P : Program} {C₁ C₂ C₃ : Config} :
+RueCore.MSteps.step {M : FloatSig} {P : Program} {C₁ C₂ C₃ : Config} :
   Step M P C₁ C₂ →
     IdLe (Config.ledger P.decls C₁) (Config.ledger P.decls C₂) →
       MSteps M P C₂ C₃ → MSteps M P C₁ C₃
@@ -34528,7 +34537,7 @@ RueCore.MSteps.step {M : FloatOps} {P : Program} {C₁ C₂ C₃ : Config} :
 
 ```lean
 def RueCore.Spec.Config.stuck_iff_stmt : Prop :=
-  ∀ {M : FloatOps} {P : Program} {C : Config},
+  ∀ {M : FloatSig} {P : Program} {C : Config},
     (¬C.Terminal ∧ ∀ (C' : Config), ¬Step M P C C') ↔
       ∃ w, Config.Stuck M P C w
 ```
@@ -34542,7 +34551,7 @@ some `C → C'`, or `C` is `✓` or `↯κ`, or `step` refuses `C`.
 
 ```lean
 def RueCore.Spec.Config.trichotomy_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) (C : Config),
+  ∀ (M : FloatSig) (P : Program) (C : Config),
     (∃ C', Step M P C C') ∨ C.Terminal ∨ ∃ w, Config.Stuck M P C w
 ```
 
@@ -34556,7 +34565,7 @@ indices).
 
 ```lean
 def RueCore.Spec.Step.det_stmt : Prop :=
-  ∀ {M : FloatOps} {P : Program} {C C₁ C₂ : Config},
+  ∀ {M : FloatSig} {P : Program} {C C₁ C₂ : Config},
     Step M P C C₁ → Step M P C C₂ → C₁ = C₂
 ```
 
@@ -34569,7 +34578,7 @@ Lemma 5.2, with a trap final as a checked error is).
 
 ```lean
 def RueCore.Spec.Step.terminal_stmt : Prop :=
-  ∀ {M : FloatOps} {P : Program} {C C' : Config},
+  ∀ {M : FloatSig} {P : Program} {C C' : Config},
     C.Terminal → ¬Step M P C C'
 ```
 
@@ -34582,7 +34591,7 @@ answers `C'`.
 
 ```lean
 def RueCore.Spec.step_iff_stmt : Prop :=
-  ∀ {M : FloatOps} {P : Program} {C C' : Config},
+  ∀ {M : FloatSig} {P : Program} {C C' : Config},
     Step M P C C' ↔ step M P C = StepOut.next C'
 ```
 
@@ -34593,7 +34602,7 @@ def RueCore.Spec.step_iff_stmt : Prop :=
 `→*` (§6.12), the reflexive-transitive closure of `Step`.
 
 ```lean
-inductive RueCore.Steps (M : FloatOps) (P : Program) : Config → Config → Prop
+inductive RueCore.Steps (M : FloatSig) (P : Program) : Config → Config → Prop
 ```
 
 Constructors:
@@ -34601,13 +34610,13 @@ Constructors:
 **`Steps.refl`**
 
 ```lean
-RueCore.Steps.refl {M : FloatOps} {P : Program} (C : Config) : Steps M P C C
+RueCore.Steps.refl {M : FloatSig} {P : Program} (C : Config) : Steps M P C C
 ```
 
 **`Steps.step`**
 
 ```lean
-RueCore.Steps.step {M : FloatOps} {P : Program} {C₁ C₂ C₃ : Config} :
+RueCore.Steps.step {M : FloatSig} {P : Program} {C₁ C₂ C₃ : Config} :
   Step M P C₁ C₂ → Steps M P C₂ C₃ → Steps M P C₁ C₃
 ```
 
@@ -34619,7 +34628,7 @@ RueCore.Steps.step {M : FloatOps} {P : Program} {C₁ C₂ C₃ : Config} :
 counts steps, because fuel is a bound on them.
 
 ```lean
-inductive RueCore.StepsN (M : FloatOps) (P : Program) : Nat → Config → Config → Prop
+inductive RueCore.StepsN (M : FloatSig) (P : Program) : Nat → Config → Config → Prop
 ```
 
 Constructors:
@@ -34627,14 +34636,14 @@ Constructors:
 **`StepsN.refl`**
 
 ```lean
-RueCore.StepsN.refl {M : FloatOps} {P : Program} (C : Config) :
+RueCore.StepsN.refl {M : FloatSig} {P : Program} (C : Config) :
   StepsN M P 0 C C
 ```
 
 **`StepsN.step`**
 
 ```lean
-RueCore.StepsN.step {M : FloatOps} {P : Program} {n : Nat}
+RueCore.StepsN.step {M : FloatSig} {P : Program} {n : Nat}
   {C₁ C₂ C₃ : Config} :
   Step M P C₁ C₂ → StepsN M P n C₂ C₃ → StepsN M P (n + 1) C₁ C₃
 ```
@@ -34647,7 +34656,7 @@ A run of `n` steps from every member of a configuration family: from
 `⟨H ; φ ; K ; E[e]⟩`, for every context `K` and trace `tr` (helper).
 
 ```lean
-def RueCore.Long (M : FloatOps) (P : Program)
+def RueCore.Long (M : FloatSig) (P : Program)
   (C : List Kont → List Event → Config) (n : Nat) : Prop :=
   ∀ (K : List Kont) (tr : List Event), ∃ D, StepsN M P n (C K tr) D
 ```
@@ -34662,7 +34671,7 @@ trap from store `H` holding `X` (`Cons`'s `panic` clause): at most what `H` and
 `X` own, plus a range of fresh identities (helper).
 
 ```lean
-def RueCore.LongC (M : FloatOps) (P : Program) (F : Event → List Nat) (H : Store)
+def RueCore.LongC (M : FloatSig) (P : Program) (F : Event → List Nat) (H : Store)
   (X : List Nat) (C : List Kont → List Event → Config) (n : Nat) : Prop :=
   ∀ (K : List Kont) (tr : List Event),
     ∃ m D,
@@ -34686,7 +34695,7 @@ trap is not simulated: §6.12's `↯κ` keeps no store, so it holds nothing, and
 §5.7's `⊥_panic` edge runs no drop.
 
 ```lean
-def RueCore.MSim (M : FloatOps) (P : Program) (φ : Frame)
+def RueCore.MSim (M : FloatSig) (P : Program) (φ : Frame)
   (C : List Kont → List Event → Config) : EvalRes → Prop :=
   match x✝ with
   | EvalRes.ok H v tr' =>
@@ -34726,7 +34735,7 @@ context ((Panic-Lift) §6.2), an unwinding `return` reaches the nearest caller
 through already-reduced operands from this relation's `ok` clause.
 
 ```lean
-def RueCore.Sim (M : FloatOps) (P : Program) (φ : Frame)
+def RueCore.Sim (M : FloatSig) (P : Program) (φ : Frame)
   (C : List Kont → List Event → Config) : EvalRes → Prop :=
   match x✝ with
   | EvalRes.ok H v tr' =>
@@ -34761,7 +34770,7 @@ is `.stuck` past some fuel satisfies it, whatever `→*` reaches.
 
 ```lean
 def RueCore.Spec.run_complete_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program),
+  ∀ (M : FloatSig) (P : Program),
     (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
         Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
           ∃ n,
@@ -34787,7 +34796,7 @@ no typing hypothesis.
 
 ```lean
 def RueCore.Spec.run_sim_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) (fuel : Nat),
+  ∀ (M : FloatSig) (P : Program) (fuel : Nat),
     (∀ (H : Store) (v : Val) (tr : List Event),
         run M P fuel = EvalRes.ok H v tr →
           Steps M P Config.init
@@ -34806,7 +34815,7 @@ fuel, perhaps with another `Violation`.
 
 ```lean
 def RueCore.Spec.run_stuck_of_step_stuck_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) {C : Config} {w : Violation},
+  ∀ (M : FloatSig) (P : Program) {C : Config} {w : Violation},
     Steps M P Config.init C →
       Config.Stuck M P C w →
         ∃ n,
@@ -34823,7 +34832,7 @@ defined panics").
 
 ```lean
 def RueCore.Spec.step_never_stuck_of_run_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program),
+  ∀ (M : FloatSig) (P : Program),
     (∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w) →
       ∀ (C : Config),
         Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
@@ -34842,7 +34851,7 @@ needed: a configuration whose frame names a retired cell is stuck so
 
 ```lean
 def RueCore.Spec.step_no_use_after_drop_stmt : Prop :=
-  ∀ (M : FloatOps) (P : Program) {C : Config},
+  ∀ (M : FloatSig) (P : Program) {C : Config},
     Steps M P Config.init C → ¬Config.Stuck M P C Violation.useAfterDrop
 ```
 
@@ -34854,7 +34863,7 @@ The induction hypothesis: at fuel `fuel`, exhaustion from a copy-closed
 store is a run of at least `fuel` steps with the ledger (helper).
 
 ```lean
-def RueCore.LongCIH (M : FloatOps) (P : Program) (F : Event → List Nat)
+def RueCore.LongCIH (M : FloatSig) (P : Program) (F : Event → List Nat)
   (fuel : Nat) : Prop :=
   ∀ (H : Store) (φ : Frame) (e : Expr),
     StoreCC P.decls H →
@@ -34870,7 +34879,7 @@ The induction hypothesis: at fuel `fuel`, exhaustion is a run of `fuel`
 steps (helper).
 
 ```lean
-def RueCore.LongIH (M : FloatOps) (P : Program) (fuel : Nat) : Prop :=
+def RueCore.LongIH (M : FloatSig) (P : Program) (fuel : Nat) : Prop :=
   ∀ (H : Store) (φ : Frame) (e : Expr),
     eval M fuel P H φ e = EvalRes.outOfFuel → Long M P (evalConf H φ e) fuel
 ```
@@ -34882,7 +34891,7 @@ def RueCore.LongIH (M : FloatOps) (P : Program) (fuel : Nat) : Prop :=
 The induction hypothesis: `eval` at fuel `fuel` is simulated (helper).
 
 ```lean
-def RueCore.SimIH (M : FloatOps) (P : Program) (fuel : Nat) : Prop :=
+def RueCore.SimIH (M : FloatSig) (P : Program) (fuel : Nat) : Prop :=
   ∀ (H : Store) (φ : Frame) (e : Expr),
     Sim M P φ (evalConf H φ e) (eval M fuel P H φ e)
 ```
@@ -35389,6 +35398,62 @@ RueCore.DropGlue.enum {D : Decls} {e k i : Nat} {cs : List Contents}
   DropGlueSeq D cs evs → DropGlue D (Contents.enum e k i cs) evs
 ```
 
+### `DropGlueBlocks`
+
+*inductive* · module `RueCore.Trace.Defs`
+
+**§6.11's order as a grammar over the trace, stated independently of the
+machine** (RUE-2487). The same block grammar as `Blocks` — a `@dbg` line, a
+consumption, or a drop marker followed by its drop's events — except that a
+drop's events are given by §6.11's rules (`DropGlue`) rather than by the
+function `dropEvents` the machine's walk is proved equal to. So a trace in
+this grammar runs each value's destructor first, then its fields in
+declaration order, an array's elements ascending and an enum's active payload
+only, whatever the machine's own drop glue says.
+
+```lean
+inductive RueCore.DropGlueBlocks (D : Decls) : List Event → Prop
+```
+
+Constructors:
+
+**`DropGlueBlocks.nil`**
+
+```lean
+RueCore.DropGlueBlocks.nil {D : Decls} : DropGlueBlocks D []
+```
+
+**`DropGlueBlocks.dbg`**
+
+```lean
+RueCore.DropGlueBlocks.dbg {D : Decls} {v : Val} {t : List Event} :
+  DropGlueBlocks D t → DropGlueBlocks D (Event.dbg v :: t)
+```
+
+**`DropGlueBlocks.consume`**
+
+```lean
+RueCore.DropGlueBlocks.consume {D : Decls} {c : Contents} {t : List Event} :
+  DropGlueBlocks D t → DropGlueBlocks D (Event.consume c :: t)
+```
+
+**`DropGlueBlocks.drop`**
+
+```lean
+RueCore.DropGlueBlocks.drop {D : Decls} {ℓ : Nat} {c : Contents}
+  {evs t : List Event} :
+  DropGlue D c evs →
+    DropGlueBlocks D t → DropGlueBlocks D (Event.drop ℓ c :: (evs ++ t))
+```
+
+**`DropGlueBlocks.dropTemp`**
+
+```lean
+RueCore.DropGlueBlocks.dropTemp {D : Decls} {v : Val} {evs t : List Event} :
+  DropGlue D (Contents.ofVal v) evs →
+    DropGlueBlocks D t → DropGlueBlocks D (Event.dropTemp v :: (evs ++ t))
+```
+
 ### `DropGlueSeq`
 
 *inductive* · module `RueCore.Trace.Defs`
@@ -35414,62 +35479,6 @@ RueCore.DropGlueSeq.nil {D : Decls} : DropGlueSeq D [] []
 RueCore.DropGlueSeq.cons {D : Decls} {c : Contents} {cs : List Contents}
   {e₁ e₂ : List Event} :
   DropGlue D c e₁ → DropGlueSeq D cs e₂ → DropGlueSeq D (c :: cs) (e₁ ++ e₂)
-```
-
-### `GlueBlocks`
-
-*inductive* · module `RueCore.Trace.Defs`
-
-**§6.11's order as a grammar over the trace, stated independently of the
-machine** (RUE-2487). The same block grammar as `Blocks` — a `@dbg` line, a
-consumption, or a drop marker followed by its drop's events — except that a
-drop's events are given by §6.11's rules (`DropGlue`) rather than by the
-function `dropEvents` the machine's walk is proved equal to. So a trace in
-this grammar runs each value's destructor first, then its fields in
-declaration order, an array's elements ascending and an enum's active payload
-only, whatever the machine's own drop glue says.
-
-```lean
-inductive RueCore.GlueBlocks (D : Decls) : List Event → Prop
-```
-
-Constructors:
-
-**`GlueBlocks.nil`**
-
-```lean
-RueCore.GlueBlocks.nil {D : Decls} : GlueBlocks D []
-```
-
-**`GlueBlocks.dbg`**
-
-```lean
-RueCore.GlueBlocks.dbg {D : Decls} {v : Val} {t : List Event} :
-  GlueBlocks D t → GlueBlocks D (Event.dbg v :: t)
-```
-
-**`GlueBlocks.consume`**
-
-```lean
-RueCore.GlueBlocks.consume {D : Decls} {c : Contents} {t : List Event} :
-  GlueBlocks D t → GlueBlocks D (Event.consume c :: t)
-```
-
-**`GlueBlocks.drop`**
-
-```lean
-RueCore.GlueBlocks.drop {D : Decls} {ℓ : Nat} {c : Contents}
-  {evs t : List Event} :
-  DropGlue D c evs →
-    GlueBlocks D t → GlueBlocks D (Event.drop ℓ c :: (evs ++ t))
-```
-
-**`GlueBlocks.dropTemp`**
-
-```lean
-RueCore.GlueBlocks.dropTemp {D : Decls} {v : Val} {evs t : List Event} :
-  DropGlue D (Contents.ofVal v) evs →
-    GlueBlocks D t → GlueBlocks D (Event.dropTemp v :: (evs ++ t))
 ```
 
 ### `Entry.join`
@@ -35519,7 +35528,7 @@ of `AbortOk`'s outcomes — never `.stuck` (progress). When `o` is `none`,
 divergent never completes normally. A `break` is one of the deliveries: the
 state it fired at is one the rules recorded. Stating it as a predicate on the
 result, rather than as a disjunction of existentials, is what lets the operand
-combinators (`andThen`) be discharged once and reused at every form
+combinators (`bind`) be discharged once and reused at every form
 (helper).
 
 ```lean
@@ -35720,7 +35729,7 @@ The induction hypothesis: `eval` at fuel `fuel` is simulated losslessly
 from every copy-closed store, for every `pendingSafe` expression (helper).
 
 ```lean
-def RueCore.MSimIH (M : FloatOps) (P : Program) (fuel : Nat) : Prop :=
+def RueCore.MSimIH (M : FloatSig) (P : Program) (fuel : Nat) : Prop :=
   ∀ (H : Store) (φ : Frame) (e : Expr),
     StoreCC P.decls H →
       e.pendingSafe = true →
@@ -36179,11 +36188,11 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls) (x : OwnSt) (x_1 : Ty),
   OwnSt.join D OwnSt.owned x x_1 =
-    if ownedJoinOk D x x_1 = true then some x else none
+    if ownedJoinable D x x_1 = true then some x else none
 ∀ (D : Decls) (x : OwnSt) (x_1 : Ty),
   (x = OwnSt.owned → False) →
     OwnSt.join D x OwnSt.owned x_1 =
-      if ownedJoinOk D x x_1 = true then some x else none
+      if ownedJoinable D x x_1 = true then some x else none
 ∀ (D : Decls) (x : OwnSt) (x_1 : Ty),
   (x = OwnSt.owned → False) →
     OwnSt.join D OwnSt.movedOut x x_1 =
@@ -36214,7 +36223,7 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Statics`
 
 The §5.5 join over a declaration's fields, slot by slot; where one arm has
-no record the other arm's is kept, subject to `ownedJoinOk` (helper).
+no record the other arm's is kept, subject to `ownedJoinable` (helper).
 
 ```lean
 def RueCore.OwnSt.joinList (D : Decls) :
@@ -36228,12 +36237,12 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (x : List OwnSt) (x_1 : List Ty),
   (x_1 = [] → False) →
     OwnSt.joinList D [] x x_1 =
-      if ownedJoinOkList D x x_1 = true then some x else none
+      if ownedJoinableList D x x_1 = true then some x else none
 ∀ (D : Decls) (x : List OwnSt) (x_1 : List Ty),
   (x = [] → False) →
     (x_1 = [] → False) →
       OwnSt.joinList D x [] x_1 =
-        if ownedJoinOkList D x x_1 = true then some x else none
+        if ownedJoinableList D x x_1 = true then some x else none
 ∀ (D : Decls) (a : OwnSt) (as : List OwnSt) (b : OwnSt) (bs : List OwnSt)
   (T : Ty) (Ts : List Ty),
   OwnSt.joinList D (a :: as) (b :: bs) (T :: Ts) =
@@ -36501,7 +36510,7 @@ residue `C { 1 }` is `Copy`, so it is dropped with no marker, and its
 destructor event opens the trace. It is not `ProgramTyped`, and §6's relation
 runs it to a value whose trace is not in §6.11's block grammar: `drop_order`
 fails without `ProgramTyped` (through `DtorNotCopy`), and so does
-`drop_glue_order`, since a trace outside `Blocks` is outside `GlueBlocks`
+`drop_glue_order`, since a trace outside `Blocks` is outside `DropGlueBlocks`
 (RUE-2487).
 
 ```lean
@@ -38153,7 +38162,7 @@ whose conclusion claims something of a reached or answered value fails once
 the hypothesis naming that value is dropped: `eval_sound`'s and `run_sim`'s
 `run … = .ok H v tr`, `eval_complete`'s and `run_complete`'s `Steps … (.ret
 v)`, and `drop_order`'s and `drop_glue_order`'s (a trace outside `Blocks` is
-outside `GlueBlocks`, RUE-2487).
+outside `DropGlueBlocks`, RUE-2487).
 
 ```lean
 def RueCore.Spec.Sharp.unreached_stmt : Prop :=
@@ -38231,7 +38240,7 @@ def RueCore.Spec.checkProgram_sound_stmt : Prop :=
 **Drop glue order, in §6.11's own terms** (§3.9, §6.11; §7 "No
 use-after-drop / no leak of drops", *how* a value is dropped; RUE-2487), over
 `Step`. A finished run's trace — value or panic — is in §6.11's block grammar
-with each drop's events given by §6.11's rules (`GlueBlocks`, `DropGlue`):
+with each drop's events given by §6.11's rules (`DropGlueBlocks`, `DropGlue`):
 after each drop marker, the value's destructor first, then its fields in
 declaration order, an array's elements in ascending index order, and an enum's
 active payload only. Unlike `drop_order`'s `Blocks`, the rules are not the
@@ -38243,12 +38252,12 @@ def RueCore.Spec.drop_glue_order_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-          Steps M.toFloatOps P Config.init
+          Steps M.toFloatSig P Config.init
               (Config.run H φ [] (Focus.ret v) tr) →
-            GlueBlocks P.decls tr) ∧
+            DropGlueBlocks P.decls tr) ∧
         ∀ (κ : PanicKind) (tr : List Event),
-          Steps M.toFloatOps P Config.init (Config.panic κ tr) →
-            GlueBlocks P.decls tr
+          Steps M.toFloatSig P Config.init (Config.panic κ tr) →
+            DropGlueBlocks P.decls tr
 ```
 
 ### `Spec.drop_order_stmt`
@@ -38269,15 +38278,15 @@ def RueCore.Spec.drop_order_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-          Steps M.toFloatOps P Config.init
+          Steps M.toFloatSig P Config.init
               (Config.run H φ [] (Focus.ret v) tr) →
             Blocks P.decls tr) ∧
         (∀ (κ : PanicKind) (tr : List Event),
-            Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+            Steps M.toFloatSig P Config.init (Config.panic κ tr) →
               Blocks P.decls tr) ∧
           ∀ (C C' : Config),
-            Steps M.toFloatOps P Config.init C →
-              Step M.toFloatOps P C C' →
+            Steps M.toFloatSig P Config.init C →
+              Step M.toFloatSig P C C' →
                 ∃ evs,
                   C'.trace = C.trace ++ evs ∧
                     NewestFirst (dropLocs evs) ∧
@@ -38299,16 +38308,16 @@ def RueCore.Spec.eval_complete_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
-          Steps M.toFloatOps P Config.init
+          Steps M.toFloatSig P Config.init
               (Config.run H φ [] (Focus.ret v) tr) →
             ∃ n,
               ∀ (fuel : Nat),
-                n < fuel → run M.toFloatOps P fuel = EvalRes.ok H v tr) ∧
+                n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
         ∀ (κ : PanicKind) (tr : List Event),
-          Steps M.toFloatOps P Config.init (Config.panic κ tr) →
+          Steps M.toFloatSig P Config.init (Config.panic κ tr) →
             ∃ n,
               ∀ (fuel : Nat),
-                n < fuel → run M.toFloatOps P fuel = EvalRes.panic κ tr
+                n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
 ### `Spec.eval_diverges_iff_stmt`
@@ -38323,8 +38332,8 @@ every length from `Config.init`.
 def RueCore.Spec.eval_diverges_iff_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
-      ((∀ (fuel : Nat), run M.toFloatOps P fuel = EvalRes.outOfFuel) ↔
-        ∀ (n : Nat), ∃ D, StepsN M.toFloatOps P n Config.init D)
+      ((∀ (fuel : Nat), run M.toFloatSig P fuel = EvalRes.outOfFuel) ↔
+        ∀ (n : Nat), ∃ D, StepsN M.toFloatSig P n Config.init D)
 ```
 
 ### `Spec.eval_sound_stmt`
@@ -38341,14 +38350,14 @@ def RueCore.Spec.eval_sound_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+        (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
           (∀ (H : Store) (v : Val) (tr : List Event),
-              run M.toFloatOps P fuel = EvalRes.ok H v tr →
-                Steps M.toFloatOps P Config.init
+              run M.toFloatSig P fuel = EvalRes.ok H v tr →
+                Steps M.toFloatSig P Config.init
                   (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
             ∀ (k : PanicKind) (tr : List Event),
-              run M.toFloatOps P fuel = EvalRes.panic k tr →
-                Steps M.toFloatOps P Config.init (Config.panic k tr)
+              run M.toFloatSig P fuel = EvalRes.panic k tr →
+                Steps M.toFloatSig P Config.init (Config.panic k tr)
 ```
 
 ### `Spec.never_stuck_iff_stmt`
@@ -38365,10 +38374,10 @@ def RueCore.Spec.never_stuck_iff_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ((∀ (fuel : Nat) (w : Violation),
-          run M.toFloatOps P fuel ≠ EvalRes.stuck w) ↔
+          run M.toFloatSig P fuel ≠ EvalRes.stuck w) ↔
         ∀ (C : Config),
-          Steps M.toFloatOps P Config.init C →
-            C.Terminal ∨ ∃ C', Step M.toFloatOps P C C')
+          Steps M.toFloatSig P Config.init C →
+            C.Terminal ∨ ∃ C', Step M.toFloatSig P C C')
 ```
 
 ### `Spec.no_double_free_stmt`
@@ -38386,13 +38395,13 @@ def RueCore.Spec.no_double_free_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+        (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
           (∀ (a : Nat),
               List.count a
-                  (freedIds P.decls (run M.toFloatOps P fuel).trace) ≤
+                  (freedIds P.decls (run M.toFloatSig P fuel).trace) ≤
                 1) ∧
             ∀ (a : Nat),
-              List.count a (dtorIds (run M.toFloatOps P fuel).trace) ≤ 1
+              List.count a (dtorIds (run M.toFloatSig P fuel).trace) ≤ 1
 ```
 
 ### `Spec.no_linear_discard_stmt`
@@ -38409,7 +38418,7 @@ def RueCore.Spec.no_linear_discard_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearDiscard
+        run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearDiscard
 ```
 
 ### `Spec.no_linear_leak_stmt`
@@ -38433,7 +38442,7 @@ def RueCore.Spec.no_linear_leak_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearLeak
+        run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearLeak
 ```
 
 ### `Spec.no_linear_overwrite_stmt`
@@ -38448,7 +38457,7 @@ def RueCore.Spec.no_linear_overwrite_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearOverwrite
+        run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearOverwrite
 ```
 
 ### `Spec.no_use_after_drop_stmt`
@@ -38472,7 +38481,7 @@ def RueCore.Spec.no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.useAfterDrop
+        run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterDrop
 ```
 
 ### `Spec.no_use_after_move_stmt`
@@ -38490,7 +38499,7 @@ def RueCore.Spec.no_use_after_move_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.useAfterMove
+        run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterMove
 ```
 
 ### `Spec.no_violation_stmt`
@@ -38510,7 +38519,7 @@ def RueCore.Spec.no_violation_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat) (w : Violation),
-        run M.toFloatOps P fuel ≠ EvalRes.stuck w
+        run M.toFloatSig P fuel ≠ EvalRes.stuck w
 ```
 
 ### `Spec.step_no_double_free_stmt`
@@ -38532,7 +38541,7 @@ def RueCore.Spec.step_no_double_free_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ {C : Config},
-        Steps M.toFloatOps P Config.init C →
+        Steps M.toFloatSig P Config.init C →
           (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
             ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1
 ```
@@ -38559,8 +38568,8 @@ def RueCore.Spec.step_preservation_stmt : Prop :=
       ∃ fd,
         P.fns[0]? = some fd ∧
           ∀ (C : Config),
-            Steps M.toFloatOps P Config.init C →
-              Config.SafeAt M.toFloatOps P fd.ret C
+            Steps M.toFloatSig P Config.init C →
+              Config.SafeAt M.toFloatSig P fd.ret C
 ```
 
 ### `Spec.step_progress_stmt`
@@ -38578,8 +38587,8 @@ def RueCore.Spec.step_progress_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program},
     ProgramTyped P →
       ∀ (C : Config),
-        Steps M.toFloatOps P Config.init C →
-          C.Terminal ∨ ∃ C', Step M.toFloatOps P C C'
+        Steps M.toFloatSig P Config.init C →
+          C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 ```
 
 ### `Spec.step_type_safety_stmt`
@@ -38599,12 +38608,12 @@ def RueCore.Spec.step_type_safety_stmt : Prop :=
       ∃ fd,
         P.fns[0]? = some fd ∧
           ∀ (n : Nat),
-            (∃ D, StepsN M.toFloatOps P n Config.init D) ∨
+            (∃ D, StepsN M.toFloatSig P n Config.init D) ∨
               (∃ H v tr,
-                  Steps M.toFloatOps P Config.init
+                  Steps M.toFloatSig P Config.init
                       (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
                     HasTy P.decls v fd.ret) ∨
-                ∃ κ tr, Steps M.toFloatOps P Config.init (Config.panic κ tr)
+                ∃ κ tr, Steps M.toFloatSig P Config.init (Config.panic κ tr)
 ```
 
 ### `Spec.whole_program_exactly_once_stmt`
@@ -38633,11 +38642,11 @@ def RueCore.Spec.whole_program_exactly_once_stmt : Prop :=
     ProgramTyped P →
       P.pendingSafe = true →
         ∀ {C : Config},
-          Steps M.toFloatOps P Config.init C →
+          Steps M.toFloatSig P Config.init C →
             ∀ {a : Nat},
               a ∈ Config.held P.decls C →
                 ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
-                  Steps M.toFloatOps P C
+                  Steps M.toFloatSig P C
                       (Config.run H φ [] (Focus.ret v) tr) →
                     List.count a (Val.own P.decls v) +
                         List.count a (freedIds P.decls tr) =
@@ -40172,9 +40181,9 @@ def RueCore.Spec.drop_exactly_once_stmt : Prop :=
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   (∀ (w : Violation),
-                      eval M.toFloatOps fuel P H φ e ≠ EvalRes.stuck w) ∧
-                    Exact P.decls H [] (eval M.toFloatOps fuel P H φ e) ∧
-                      Tidy φ H (eval M.toFloatOps fuel P H φ e)
+                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
+                      Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
 ### `Spec.rest_exactly_once_stmt`
@@ -40201,9 +40210,9 @@ def RueCore.Spec.rest_exactly_once_stmt : Prop :=
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
-                    Lead M.toFloatOps P fuel H φ H₁ vs tr e →
+                    Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                       ∀ {r : EvalRes},
-                        eval M.toFloatOps (fuel + 1) P H φ e =
+                        eval M.toFloatSig (fuel + 1) P H φ e =
                             EvalRes.withTrace tr r →
                           (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
                             Exact P.decls H₁
@@ -40232,10 +40241,10 @@ def RueCore.Spec.run_safe_stmt : Prop :=
       P.fns[0]? = some fd →
         fd.params = [] →
           ∀ (fuel : Nat),
-            run M.toFloatOps P fuel = EvalRes.outOfFuel ∨
-              (∃ k tr, run M.toFloatOps P fuel = EvalRes.panic k tr) ∨
+            run M.toFloatSig P fuel = EvalRes.outOfFuel ∨
+              (∃ k tr, run M.toFloatSig P fuel = EvalRes.panic k tr) ∨
                 ∃ H v tr,
-                  run M.toFloatOps P fuel = EvalRes.ok H v tr ∧
+                  run M.toFloatSig P fuel = EvalRes.ok H v tr ∧
                     HasTy P.decls v fd.ret
 ```
 
@@ -40258,7 +40267,7 @@ def RueCore.Spec.soundness_stmt : Prop :=
           ∀ {φ : Frame} {H : Store},
             FrameMatches P.decls Γ φ H →
               EvalOk P.decls T R Ω.norm Ω.brk φ H
-                (eval M.toFloatOps fuel P H φ e)
+                (eval M.toFloatSig fuel P H φ e)
 ```
 
 ### `Typed`
@@ -40406,7 +40415,7 @@ RueCore.Typed.binop {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Ω₂ : Out}
     Typed P R Γ₁ e₂ (Ty.int w s) Ω₂ →
       op.intAdmits = true →
         Typed P R Γ (Expr.binop op e₁ e₂) (op.resultTy (Ty.int w s))
-          (Ω₂.add Δ₁)
+          (Ω₂.merge Δ₁)
 ```
 
 **`Typed.binopBot`** — (Strict-Bottom) §5.3 at `binop`'s left operand: once `e₁` diverges the right operand is never reached, so it is not typed, and the form concludes at `⊥` with `e₁`'s deliveries and at its own type `T_E`, (Arith)/(Ord)'s `op.resultTy (int(w,s))` — not at `never`. A right operand that diverges needs no rule of its own: `binop` passes `e₂`'s `Ω` on.
@@ -40429,7 +40438,7 @@ RueCore.Typed.floatBinop {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Ω₂ : Out}
     Typed P R Γ₁ e₂ (Ty.float w) Ω₂ →
       op.floatAdmits = true →
         Typed P R Γ (Expr.binop op e₁ e₂) (op.resultTy (Ty.float w))
-          (Ω₂.add Δ₁)
+          (Ω₂.merge Δ₁)
 ```
 
 **`Typed.floatBinopBot`** — (Strict-Bottom) §5.3 at a float `binop`'s left operand, exactly as `binopBot` is at an integer one.
@@ -40549,7 +40558,7 @@ RueCore.Typed.mkEnum {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {e k : Nat}
         Typed P R Γ (Expr.mkEnum e k args) (Ty.enum e) Ω
 ```
 
-**`Typed.match`** — (Match) §5.5, the elimination form for enums. The scrutinee is typed first, at the enum type, and its Σ effect is whatever typing it did: at a place that is (Use-Copy)/(Use-Move) §5.1 by `class(E)` — a non-`Copy` enum is *consumed* by the match, because a scrutinee is a value context and a use of a move-type place there moves it (`3.8:7`, `3.8:76`; `6.3:17` for the payload the arm binds out of it, and not `3.8:33`'s declared-`linear` destructure, which is a rule this fragment does not mechanize), and a second `match` on it is then the use of a moved-out place the compiler reports as E0205 (`3.8:5`). Exhaustiveness is the arm list's **shape**: `arms.length = ed.variants.length`, with arm `j` the arm for variant `j`, so §5.5's "exactly the variants K1..Kn" needs no coverage search and no ordering side condition (`4.7:9`, `4.7:10`'s enum clause; the wildcard, the repeated pattern and the first-match order are elaboration obligations §5.5 states). Progress rests on it: `exhaustive_arm_exists` (`Soundness.lean`) is that a well-typed tag has an arm. Each arm is typed from the **same** post-scrutinee state `Σ0` under its payload locals (`armCtx`), all arms at one type `T` — the premise a diverging arm satisfies through (Sub-Never), which the `⊥` rules fold in, exactly as an `ite` arm does. An arm that continues leaves its payload locals' scope under §5.6: `TypedArms` carries the same residual-linear check `Typed.letIn` carries for its one binder, over the `ai` entries the arm pops. §5.5 joins the **continuing** arms' outgoing states n-way (`Ctx.joinOpts`, the fold `Ctx.joinAll` over them), and a diverging arm is "excluded from the state join" and contributes only its deliveries. The delivery set is the scrutinee's `Δ_0` with every arm's, continuing or not.
+**`Typed.match`** — (Match) §5.5, the elimination form for enums. The scrutinee is typed first, at the enum type, and its Σ effect is whatever typing it did: at a place that is (Use-Copy)/(Use-Move) §5.1 by `class(E)` — a non-`Copy` enum is *consumed* by the match, because a scrutinee is a value context and a use of a move-type place there moves it (`3.8:7`, `3.8:76`; `6.3:17` for the payload the arm binds out of it, and not `3.8:33`'s declared-`linear` destructure, which is a rule this fragment does not mechanize), and a second `match` on it is then the use of a moved-out place the compiler reports as E0205 (`3.8:5`). Exhaustiveness is the arm list's **shape**: `arms.length = ed.variants.length`, with arm `j` the arm for variant `j`, so §5.5's "exactly the variants K1..Kn" needs no coverage search and no ordering side condition (`4.7:9`, `4.7:10`'s enum clause; the wildcard, the repeated pattern and the first-match order are elaboration obligations §5.5 states). Progress rests on it: `exhaustive_arm_exists` (`Soundness.lean`) is that a well-typed tag has an arm. Each arm is typed from the **same** post-scrutinee state `Σ0` under its payload locals (`extendArm`), all arms at one type `T` — the premise a diverging arm satisfies through (Sub-Never), which the `⊥` rules fold in, exactly as an `ite` arm does. An arm that continues leaves its payload locals' scope under §5.6: `TypedArms` carries the same residual-linear check `Typed.letIn` carries for its one binder, over the `ai` entries the arm pops. §5.5 joins the **continuing** arms' outgoing states n-way (`Ctx.joinOpts`, the fold `Ctx.joinAll` over them), and a diverging arm is "excluded from the state join" and contributes only its deliveries. The delivery set is the scrutinee's `Δ_0` with every arm's, continuing or not.
 
 ```lean
 RueCore.Typed.match {P : Program} {R : Ty} {Γ Γ₀ : Ctx} {Δ₀ : List Ctx}
@@ -40831,7 +40840,7 @@ RueCore.Typed.seq {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ₁ : List Ctx}
   {Ω₂ : Out} {e₁ e₂ : Expr} {T₁ T₂ : Ty} :
   Typed P R Γ e₁ T₁ { norm := some Γ₁, brk := Δ₁ } →
     Ty.mult P.decls T₁ ≠ Mult.linear →
-      Typed P R Γ₁ e₂ T₂ Ω₂ → Typed P R Γ (e₁.seq e₂) T₂ (Ω₂.add Δ₁)
+      Typed P R Γ₁ e₂ T₂ Ω₂ → Typed P R Γ (e₁.seq e₂) T₂ (Ω₂.merge Δ₁)
 ```
 
 **`Typed.seqBot`** — (Seq-Bottom) §5.3 with (Sub-Never) §5.7: the prefix diverges, so the tail is unreachable and not typed, and the form is `never`, at any type.
@@ -40971,7 +40980,8 @@ RueCore.TypedArgs.nil {P : Program} {R : Ty} {Γ : Ctx} :
 RueCore.TypedArgs.cons {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ₁ : List Ctx}
   {Ω : Out} {e : Expr} {es : List Expr} {T : Ty} {Ts : List Ty} :
   Typed P R Γ e T { norm := some Γ₁, brk := Δ₁ } →
-    TypedArgs P R Γ₁ es Ts Ω → TypedArgs P R Γ (e :: es) (T :: Ts) (Ω.add Δ₁)
+    TypedArgs P R Γ₁ es Ts Ω →
+      TypedArgs P R Γ (e :: es) (T :: Ts) (Ω.merge Δ₁)
 ```
 
 **`TypedArgs.consBot`** — (Strict-Bottom) §5.3 at a list member: it diverges, so the members after it are never evaluated and not typed. The list still has one expected type per member — its arity is the construct's (`4.10:3`, `3.6:5`), a fact about the syntax rather than about a reachable state.
@@ -40993,7 +41003,7 @@ post-scrutinee state `Σ0`** (a `match` is a branch, not a sequence, so Σ is no
 threaded from arm to arm) and each at the one type `T` the rule concludes at.
 
 An arm that continues carries two premises of its own. Its body is typed under
-the variant's payload locals (`armCtx`), and at its end those locals leave
+the variant's payload locals (`extendArm`), and at its end those locals leave
 scope under §5.6 — `NoResidualLinear` over the `ai` entries the arm pops is
 the leak check `Typed.letIn` makes for its single binder, read over the whole
 payload (`6.3:17`: a `Linear` payload an arm neither moves nor consumes is a
@@ -41022,7 +41032,7 @@ RueCore.TypedArms.noArms {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty} :
 RueCore.TypedArms.arm {P : Program} {R : Ty} {Γ₀ Γb : Ctx} {Δb : List Ctx}
   {os : List (Option Ctx)} {Δs : List Ctx} {e : Expr} {es : List Expr}
   {Ts : List Ty} {Tss : List (List Ty)} {T : Ty} :
-  Typed P R (armCtx Ts Γ₀) e T { norm := some Γb, brk := Δb } →
+  Typed P R (extendArm Ts Γ₀) e T { norm := some Γb, brk := Δb } →
     NoResidualLinear P.decls (List.take Ts.length Γb) →
       TypedArms P R Γ₀ es Tss T os Δs →
         TypedArms P R Γ₀ (e :: es) (Ts :: Tss) T
@@ -41035,7 +41045,7 @@ RueCore.TypedArms.arm {P : Program} {R : Ty} {Γ₀ Γb : Ctx} {Δb : List Ctx}
 RueCore.TypedArms.armDiv {P : Program} {R : Ty} {Γ₀ : Ctx} {Δb : List Ctx}
   {os : List (Option Ctx)} {Δs : List Ctx} {e : Expr} {es : List Expr}
   {Ts : List Ty} {Tss : List (List Ty)} {T : Ty} :
-  Typed P R (armCtx Ts Γ₀) e T { norm := none, brk := Δb } →
+  Typed P R (extendArm Ts Γ₀) e T { norm := none, brk := Δb } →
     TypedArms P R Γ₀ es Tss T os Δs →
       TypedArms P R Γ₀ (e :: es) (Ts :: Tss) T (none :: os) (Δb ++ Δs)
 ```
@@ -41172,7 +41182,7 @@ Defining equations, as Lean derived them from the body:
     List.flatMap (fun r => residueMark D ℓ r ++ dropEvents D r) rs
 ```
 
-### `ownedJoinOk`
+### `ownedJoinable`
 
 *def* · module `RueCore.Statics`
 
@@ -41181,30 +41191,30 @@ Whether joining a wholly-`Owned` arm with `t` is well-formed: every path
 an `Owned` subtree is `class(T) ≠ Linear` at that path (`3.8:50`).
 
 ```lean
-def RueCore.ownedJoinOk (D : Decls) : OwnSt → Ty → Bool
+def RueCore.ownedJoinable (D : Decls) : OwnSt → Ty → Bool
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls) (x : Ty), ownedJoinOk D OwnSt.owned x = true
+∀ (D : Decls) (x : Ty), ownedJoinable D OwnSt.owned x = true
 ∀ (D : Decls) (x : Ty),
-  ownedJoinOk D OwnSt.movedOut x = decide (Ty.mult D x ≠ Mult.linear)
+  ownedJoinable D OwnSt.movedOut x = decide (Ty.mult D x ≠ Mult.linear)
 ∀ (D : Decls) (ts : List OwnSt) (s : Nat),
-  ownedJoinOk D (OwnSt.fields ts) (Ty.struct s) =
+  ownedJoinable D (OwnSt.fields ts) (Ty.struct s) =
     match D.structs[s]? with
-    | some sd => ownedJoinOkList D ts sd.fields
+    | some sd => ownedJoinableList D ts sd.fields
     | none => false
 ∀ (D : Decls) (ts : List OwnSt) (T : Ty) (n : Nat),
-  ownedJoinOk D (OwnSt.fields ts) (T.array n) =
-    ownedJoinOkList D ts (List.replicate n T)
+  ownedJoinable D (OwnSt.fields ts) (T.array n) =
+    ownedJoinableList D ts (List.replicate n T)
 ∀ (D : Decls) (x : Ty) (ts : List OwnSt),
   (∀ (s : Nat), x = Ty.struct s → False) →
     (∀ (T : Ty) (n : Nat), x = T.array n → False) →
-      ownedJoinOk D (OwnSt.fields ts) x = false
+      ownedJoinable D (OwnSt.fields ts) x = false
 ```
 
-### `ownedJoinOkList`
+### `ownedJoinableList`
 
 *def* · module `RueCore.Statics`
 
@@ -41212,18 +41222,18 @@ The same over a declaration's fields; a slot no partial move touched is
 `owned` and always admissible (helper).
 
 ```lean
-def RueCore.ownedJoinOkList (D : Decls) : List OwnSt → List Ty → Bool
+def RueCore.ownedJoinableList (D : Decls) : List OwnSt → List Ty → Bool
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls) (x : List Ty), ownedJoinOkList D [] x = true
+∀ (D : Decls) (x : List Ty), ownedJoinableList D [] x = true
 ∀ (D : Decls) (head : OwnSt) (tail : List OwnSt),
-  ownedJoinOkList D (head :: tail) [] = true
+  ownedJoinableList D (head :: tail) [] = true
 ∀ (D : Decls) (t : OwnSt) (ts : List OwnSt) (T : Ty) (Ts : List Ty),
-  ownedJoinOkList D (t :: ts) (T :: Ts) =
-    (ownedJoinOk D t T && ownedJoinOkList D ts Ts)
+  ownedJoinableList D (t :: ts) (T :: Ts) =
+    (ownedJoinable D t T && ownedJoinableList D ts Ts)
 ```
 
 ### `residualLinear`
