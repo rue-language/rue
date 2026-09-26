@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 847.
+- Theorems checked: 911.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -90,6 +90,40 @@ and diffs them against the committed copies.
 | `Ty.atPath_append` | `RueCore.Syntax` | `propext` |
 | `declaredPrefix_split` | `RueCore.Syntax` | `propext` |
 | `declaredPrefix_declaredLinear` | `RueCore.Syntax` | `propext` |
+| `lt_of_mul_lt_mul_right'` | `RueCore.Float.Lemmas` | *none* |
+| `two_pow_lt_two_pow` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `le_of_two_pow_le` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `sqrt_iter_sq_le` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `sqrt_sq_le` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `bitLen_lt` | `RueCore.Float.Lemmas` | `propext` |
+| `pow_bitLen_pred_le` | `RueCore.Float.Lemmas` | `propext` |
+| `pow_scale` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `log2Floor_lt` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `roundDivHalfEven_le` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `pow_prec_pos` | `RueCore.Float.Lemmas` | *none* |
+| `roundTail_wf` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `roundRat_wf` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `two_pow_ne_zero` | `RueCore.Float.Lemmas` | *none* |
+| `bitLen_le_of_lt` | `RueCore.Float.Lemmas` | `propext` |
+| `lt_pow_of_sq_lt` | `RueCore.Float.Lemmas` | *none* |
+| `sqrt_core` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `Float.ratAdd_den` | `RueCore.Float.Lemmas` | *none* |
+| `Float.addD_wf` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `Float.mulD_wf` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `Float.divD_wf` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `Float.subD_wf` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `Float.arith_wf` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `Float.narrow_wf` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `Float.ofInt_wf` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `Float.ofLit_wf` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `Float.arith_nan` | `RueCore.Float.Lemmas` | `propext` |
+| `Float.narrow_nan` | `RueCore.Float.Lemmas` | `propext` |
+| `Float.div_by_zero` | `RueCore.Float.Lemmas` | `propext` |
+| `Float.zero_div_zero` | `RueCore.Float.Lemmas` | `propext` |
+| `Float.ofLit_zero` | `RueCore.Float.Lemmas` | `propext` |
+| `Float.ofLit_one` | `RueCore.Float.Lemmas` | *none* |
+| `Float.ite_succ_le` | `RueCore.Float.Lemmas` | *none* |
+| `Float.sqrt_wf` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
 | `Mult.rank_le_join_left` | `RueCore.Statics.Lemmas` | *none* |
 | `Mult.rank_le_join_right` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
 | `Mult.eq_linear_of_rank` | `RueCore.Statics.Lemmas` | `propext` |
@@ -686,6 +720,22 @@ and diffs them against the committed copies.
 | `step_preservation` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `step_value_typed` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `step_type_safety` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `Nonvacuous.withTrace_nil` | `RueCore.Nonvacuous` | `propext` |
+| `Nonvacuous.of_okFloat` | `RueCore.Nonvacuous` | `propext` |
+| `Nonvacuous.loopUnit_eval` | `RueCore.Nonvacuous` | `propext` |
+| `Nonvacuous.loopUnit_run` | `RueCore.Nonvacuous` | `propext` |
+| `Nonvacuous.exact_model` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
+| `Nonvacuous.empty_frame` | `RueCore.Nonvacuous` | `propext` |
+| `Nonvacuous.dtor` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
+| `Nonvacuous.linear` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
+| `Nonvacuous.loop` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
+| `Nonvacuous.array` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
+| `Nonvacuous.enum_match` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
+| `Nonvacuous.early_return` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
+| `Nonvacuous.panic` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
+| `Nonvacuous.float` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
+| `Nonvacuous.diverges` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
+| `Nonvacuous.stuck` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
 | `Expr.pendingSafeList_mem` | `RueCore.TraceExact` | `propext` |
 | `Expr.returnsList_mem` | `RueCore.TraceExact` | `propext` |
 | `Expr.breaksList_mem` | `RueCore.TraceExact` | `propext` |
@@ -883,6 +933,18 @@ and diffs them against the committed copies.
 | `Spine.step_never_stuck_of_run` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.run_stuck_of_step_stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.eval_diverges_iff` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Nonvacuous.exact_model` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Nonvacuous.empty_frame` | `RueCore.Spine` | `propext` |
+| `Spine.Nonvacuous.dtor` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Nonvacuous.linear` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Nonvacuous.loop` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Nonvacuous.array` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Nonvacuous.enum_match` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Nonvacuous.early_return` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Nonvacuous.panic` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Nonvacuous.float` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Nonvacuous.diverges` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Nonvacuous.stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Examples.dynReadAffine_refused` | `RueCore.Examples` | `propext` |
 | `Examples.dynDropAffine_refused` | `RueCore.Examples` | `propext` |
 | `Examples.repeatAffine_refused` | `RueCore.Examples` | `propext` |
@@ -911,6 +973,8 @@ and diffs them against the committed copies.
 | `demo_loopIter_drops` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
 | `dropMoved_refused` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
 | `letAddProgram_sound` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `errorClasses_rejected` | `RueCore.Witnesses` | `propext` |
+| `typeErrors_rejected` | `RueCore.Witnesses` | `propext` |
 | `Explain.explain_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainIdx_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainArgs_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
@@ -962,12 +1026,16 @@ those provable.
 The executable instance `RueCore.Float.exactOps` is constructive integer
 arithmetic, so nothing here touches Lean's `Float` — whose definition
 over an `opaque` constant would put `Classical.choice` on every theorem
-mentioning a value. That `exactOps` *satisfies* the laws is the residual
-assumption: it is checked by running every float corpus case against the
-compiler, not proved. So is everything `exactOps` decides that the laws
-leave open — which NaN a NaN-propagating operation returns, and `σ_NaN`
-itself (`false`, the AArch64/positive choice of `3.12:44`). Those are
-model choices, and retargeting the instance changes no theorem.
+mentioning a value. It *satisfies* every law above: `Float.exactModel`
+(`RueCore/Float/Lemmas.lean`, RUE-2469) proves each one of it, so the laws
+have a model and no theorem quantifying over `M : FloatModel` holds
+vacuously (`Nonvacuous.exact_model` in `SPINE.md`). What stays unproved is
+that `exactOps` is IEEE 754 beyond the laws — the value of each rounding —
+which is checked by running every float corpus case against the compiler;
+so is everything `exactOps` decides that the laws leave open — which NaN a
+NaN-propagating operation returns, and `σ_NaN` itself (`false`, the
+AArch64/positive choice of `3.12:44`). Those are model choices, and
+retargeting the instance changes no theorem.
 
 ## Declared assumptions
 

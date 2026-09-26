@@ -63,16 +63,16 @@ theorem loopUnit_run : ∀ fuel, run Float.exactOps
       rw [loopUnit_eval]; rfl
 
 
-/-- `Spec.Nonvacuous.exact_model_stmt`, proved. -/
+/-- `Spec.Nonvacuous.exact_model_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem exact_model :
     ∃ M : FloatModel, M.toFloatOps = Float.exactOps := ⟨Float.exactModel, rfl⟩
 
-/-- `Spec.Nonvacuous.empty_frame_stmt`, proved. -/
+/-- `Spec.Nonvacuous.empty_frame_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem empty_frame :
     ∀ D : Decls, FrameMatches D [] Frame.empty [] ∧ StoreCC D [] :=
   fun _ => ⟨frameMatches_empty, fun _ _ hc => by simp at hc⟩
 
-/-- `Spec.Nonvacuous.dtor_stmt`, proved. -/
+/-- `Spec.Nonvacuous.dtor_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem dtor :
     ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -106,7 +106,7 @@ theorem dtor :
     by decide, ⟨_, _, _, _, ⟨_, rfl, by rfl⟩, (withTrace_nil _).symm, by decide⟩,
     _, _, _, by rfl, (eval_sound Float.exactModel hP 200).2.1 _ _ _ (by rfl), by decide, by decide⟩
 
-/-- `Spec.Nonvacuous.linear_stmt`, proved. -/
+/-- `Spec.Nonvacuous.linear_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem linear :
     ∀ B : Expr, B =
       .letIn false (.mkStruct 1 [.intLit .w64 .signed 1])
@@ -133,7 +133,7 @@ theorem linear :
   exact ⟨h1, hP, by rfl, ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
     _, _, _, by rfl, (eval_sound Float.exactModel hP 200).2.1 _ _ _ (by rfl), by decide⟩
 
-/-- `Spec.Nonvacuous.loop_stmt`, proved. -/
+/-- `Spec.Nonvacuous.loop_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem loop :
     ∀ B : Expr, B =
       .letIn true (.intLit .w64 .signed 0)
@@ -164,7 +164,7 @@ theorem loop :
   exact ⟨h1, hP, by rfl, ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
     _, _, _, by rfl, (eval_sound Float.exactModel hP 200).2.1 _ _ _ (by rfl), by decide⟩
 
-/-- `Spec.Nonvacuous.array_stmt`, proved. -/
+/-- `Spec.Nonvacuous.array_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem array :
     ∀ B : Expr, B =
       .letIn false
@@ -192,7 +192,7 @@ theorem array :
   exact ⟨h1, hP, by rfl, ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
     _, _, _, by rfl, (eval_sound Float.exactModel hP 200).2.1 _ _ _ (by rfl), by decide⟩
 
-/-- `Spec.Nonvacuous.enum_match_stmt`, proved. -/
+/-- `Spec.Nonvacuous.enum_match_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem enum_match :
     ∀ B : Expr, B =
       .letIn false (.mkEnum 0 0 [(.mkStruct 0 [.intLit .w64 .signed 1])])
@@ -218,7 +218,7 @@ theorem enum_match :
   exact ⟨h1, hP, by rfl, ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
     _, _, _, by rfl, (eval_sound Float.exactModel hP 200).2.1 _ _ _ (by rfl), by decide, by decide⟩
 
-/-- `Spec.Nonvacuous.early_return_stmt`, proved. -/
+/-- `Spec.Nonvacuous.early_return_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem early_return :
     ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -245,7 +245,7 @@ theorem early_return :
   exact ⟨h1, hP, by rfl, ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
     _, _, _, by rfl, (eval_sound Float.exactModel hP 200).2.1 _ _ _ (by rfl), rfl, by decide⟩
 
-/-- `Spec.Nonvacuous.panic_stmt`, proved. -/
+/-- `Spec.Nonvacuous.panic_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem panic :
     ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -270,7 +270,7 @@ theorem panic :
   exact ⟨h1, hP, by rfl, ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
     by rfl, (eval_sound Float.exactModel hP 200).2.2 _ _ (by rfl)⟩
 
-/-- `Spec.Nonvacuous.float_stmt`, proved. -/
+/-- `Spec.Nonvacuous.float_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem float :
     ∀ B : Expr, B =
       .letIn false
@@ -301,7 +301,7 @@ theorem float :
   exact ⟨h1, hP, by rfl, ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
     H, _, tr, hr, (eval_sound Float.exactModel hP 200).2.1 _ _ _ hr, rfl⟩
 
-/-- `Spec.Nonvacuous.diverges_stmt`, proved. -/
+/-- `Spec.Nonvacuous.diverges_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem diverges :
     ∀ P : Program, P =
       { decls := { structs := [], enums := [] },
@@ -312,7 +312,7 @@ theorem diverges :
   subst hPe
   exact ⟨h1, checkProgram_sound h1, loopUnit_run⟩
 
-/-- `Spec.Nonvacuous.stuck_stmt`, proved. -/
+/-- `Spec.Nonvacuous.stuck_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem stuck :
     ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
