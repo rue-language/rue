@@ -38,6 +38,7 @@ def table : List (Name × Nat) := [
   (`RueCore.Spec.Adequacy, 2),
   (`RueCore.Spec, 2),
   -- L2 proofs
+  (`RueCore.Float.Lemmas, 3),
   (`RueCore.Statics.Lemmas, 3),
   (`RueCore.Dynamics.Lemmas, 3),
   (`RueCore.Step.Lemmas, 3),
