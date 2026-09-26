@@ -538,7 +538,8 @@ destructor-bearing structs. That is `array_elem_self_assign`'s shape
 replacing the code where the compiler used to stop first. Matching was by
 name: `gen_7_3` and `gen_23_343` draw no call, so they are byte-identical to
 their earlier programs, and each disagreeing program with a call was read by
-hand. `--gen 200 --seed 7` is reported by `chain.sh`: GEN200-PLACEHOLDER.
+hand. At `--gen 200 --seed 7` the only disagreements are the seed
+`array_elem_self_assign` and `gen_7_3`, as before.
 
 A first draft kept callees that no reachable call names. Five programs at
 seed 23 (`gen_23_63`, `78`, `157`, `401` and `526` on that draft) then
