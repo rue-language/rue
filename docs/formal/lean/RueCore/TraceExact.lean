@@ -2604,7 +2604,7 @@ What the two do not see is an end emitted *early*, inside the evaluation
 that minted the value: no window holds the value yet, so only
 `no_double_free`'s "at most once" bounds such an end, and `main`'s own result
 is part of `run`'s result, handed to no form. `whole_program_exactly_once`
-(`TraceWhole.lean`, RUE-2478) counts both: over a whole finished run, every
+(`TraceWhole.lean`, RUE-2478) counts both: over a whole run that finishes with a value (a trap ends nothing), every
 owned value any configuration of the run holds is ended exactly once or is
 part of the result. -/
 theorem rest_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)

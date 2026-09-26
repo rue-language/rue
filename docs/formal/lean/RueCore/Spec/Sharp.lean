@@ -1012,7 +1012,9 @@ i64) -> i64 { @drop(a); b }` is accepted by the checker and is not
 configuration holding the minted `S0` (identity `0`) pending in the call's
 argument list; (D-Return) discards that list, and the run finishes with `0`
 and an empty trace. Identity `0` is neither in the result nor ended: without
-`pendingSafe`, `whole_program_exactly_once` fails on a checked program. -/
+`pendingSafe`, `whole_program_exactly_once` fails on a checked program. A
+`break` out of a pending form loses a value the same way (`loop { S2 { S0 { 1 },
+break }; () }; 0`); `pendingSafe` rules out both. -/
 def pending_leak_stmt : Prop :=
   ∀ P : Program, P =
       { decls :=
