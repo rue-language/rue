@@ -27,13 +27,16 @@ Measured on trunk `c2fe428ff` (2026-09-25), with the six seeds this page adds
 The non-vacuity witnesses of RUE-2469 landed after this measurement.
 They add proofs and witnesses, never remove them, so a rerun with them can
 only kill more; the table and score below predate them.
-RUE-2486 (part 1 of 2) seeds seven of proposed issue 1's thirteen
-witness-only refusals — `use-move-rootidx`, `index-read-copy`,
+RUE-2486 seeds all thirteen of proposed issue 1's witness-only refusals, in
+two PRs: part 1 seeded `use-move-rootidx`, `index-read-copy`,
 `index-drop-copy-checker`, `const-index-off-by-one`, `index-write-linear`,
-`residual-declared` and `residual-untracked` — and reruns exactly those seven
-(`mutate.py --only`) to confirm the new seed kills each one at the corpus
-level; their table rows and the "seeds and the bridge alone" score row are
-current, the rest of the table and score still predate RUE-2469 as above.
+`residual-declared` and `residual-untracked`; part 2 seeded the remaining
+six, `lit-bounds`, `dbg-observable`, `repeat-copy`, `copy-struct-dtor`,
+`dtor-linear-field` and `copy-monitor-off`. Each part reran exactly its own
+mutants (`mutate.py --only`) to confirm the new seed kills each one at the
+corpus level; these thirteen table rows and the "seeds and the bridge alone"
+score row are current, the rest of the table and score still predate
+RUE-2469 as above.
 
 ## What is mutated
 
@@ -219,17 +222,21 @@ adds (and their six `Examples.lean` witnesses); "after" is with them.
 | **Killed** | 73/76 (96%) | 76/76 (100%) |
 | A stated property is false | 48/76 (63%) | 48/76 (63%) |
 | The tests with the proofs off: witnesses, seeds, generated cases | 66/76 (87%) | 71/76 (93%) |
-| The seeds and the bridge alone | 50/76 (66%) | 63/76 (83%) |
+| The seeds and the bridge alone | 50/76 (66%) | 69/76 (91%) |
 
 The "seeds and the bridge alone" row's "after" figure also counts RUE-2486's
-seven seeds (`use_move_rootidx`, `index_read_copy`,
+thirteen seeds — part 1's seven (`use_move_rootidx`, `index_read_copy`,
 `index_drop_copy_checker`, `const_index_off_by_one`, `index_write_linear`,
-`residual_declared`, `residual_untracked`), confirmed by a rerun of exactly
-those seven mutants (`mutate.py --only`). The other three rows are unaffected
-by them: each of the seven was already a proof kill ("Killed" and "a stated
-property is false" do not change), and each already failed its
-`Examples.lean` witness in the proofs-off pass ("the tests with the proofs
-off" does not change either).
+`residual_declared`, `residual_untracked`) and part 2's six
+(`lit_out_of_range`, `dbg_aggregate`, `repeat_copy_affine`,
+`copy_struct_dtor`, `dtor_linear_field`, `copy_monitor_off`) — each confirmed
+by a rerun of exactly its own mutants (`mutate.py --only`). The other three
+rows are unaffected by them: each of the thirteen was already a proof kill
+("Killed" and "a stated property is false" do not change; `copy-monitor-off`
+alone reads as "only a helper is false", already true before either part),
+and each already failed its witness (`Examples.lean` for twelve,
+`Trace.lean` for `copy-monitor-off`) in the proofs-off pass ("the tests with
+the proofs off" does not change either).
 
 These rows are recorded but do not count as kills:
 
@@ -335,27 +342,34 @@ Counted apart:
   the peel's shortened round count, and no seed does.
 * **20 mutants got past the seeds and the bridge together**, after the six
   RUE-2465 seeds and before RUE-2486. They fell into three groups, and
-  RUE-2486 (part 1 of 2) seeds seven of the third group, leaving **13**:
+  RUE-2486 seeds all of the third group, leaving **7**:
   - 4 no corpus case can show: `loop-div-breaks`, `loop-break-div-brk`,
     `step-usecopy-nondet` and `entry-params`. Each falsifies a stated
     property.
   - 3 are trace-only: `seq-droptemp-skip`, `residue-mark-skip` and
     `match-consume-skip`. Each falsifies `Exact`.
-  - 6 are refusals that a witness proves but still no seed exports, so the
-    compiler's matching refusal is never compared. Five are in
-    `Examples.lean`: `lit-bounds`, `dbg-observable`, `repeat-copy`,
-    `copy-struct-dtor` and `dtor-linear-field`. The sixth, `copy-monitor-off`,
-    is `Trace.lean`'s `ownedUnderCopy` witness. This remaining group is
-    proposed issue 1's second PR, below.
+  - 13 were refusals that a witness proved but no seed exported, so the
+    compiler's matching refusal was never compared. Twelve were in
+    `Examples.lean`: `use-move-rootidx`, `index-read-copy`,
+    `index-drop-copy-checker`, `const-index-off-by-one`, `index-write-linear`,
+    `residual-declared`, `residual-untracked`, `lit-bounds`,
+    `dbg-observable`, `repeat-copy`, `copy-struct-dtor` and
+    `dtor-linear-field`. The thirteenth, `copy-monitor-off`, was
+    `Trace.lean`'s `ownedUnderCopy` witness.
 
-    RUE-2486's seven new seeds (`use_move_rootidx`, `index_read_copy`,
-    `index_drop_copy_checker`, `const_index_off_by_one`, `index_write_linear`,
-    `residual_declared`, `residual_untracked`) each reproduce their mutant's
-    `Examples.lean` witness as a corpus case, so `use-move-rootidx`,
-    `index-read-copy`, `index-drop-copy-checker`, `const-index-off-by-one`,
-    `index-write-linear`, `residual-declared` and `residual-untracked` are now
-    killed at the corpus level (the "Corpus and bridge alone" column of "The
-    mutants", below), the same reading a proof already gave each of them.
+    RUE-2486's thirteen new seeds — part 1's `use_move_rootidx`,
+    `index_read_copy`, `index_drop_copy_checker`, `const_index_off_by_one`,
+    `index_write_linear`, `residual_declared`, `residual_untracked`, and
+    part 2's `lit_out_of_range`, `dbg_aggregate`, `repeat_copy_affine`,
+    `copy_struct_dtor`, `dtor_linear_field`, `copy_monitor_off` — each
+    reproduce their mutant's own witness as a corpus case (`Examples.lean`
+    for twelve, `Trace.lean`'s `dupProgram` for `copy-monitor-off`), so all
+    thirteen mutants above are now killed at the corpus level (the "Corpus
+    and bridge alone" column of "The mutants", below), the same reading a
+    proof already gave each of them. Proposed issue 1 (below) is done.
+
+    The remaining 7 that get past the seeds and the bridge together are the
+    4 no corpus case can show plus the 3 trace-only ones.
 
 ### The mutants
 
@@ -414,14 +428,14 @@ pass leaves as written. `mutate.py --table` prints this table from
 | 36 | `fn-exit-leak` | §5.8 | (Fn) exit edge | premise | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 3132) | corpus: `linear_param_leaked` | a stated property is false | accepts a function body that ends with a live linear parameter; `linearLeak` (`linear_param_leaked`): `soundness` | 34 |
 | 37 | `fn-params-order` | §5.8 | (Fn) entry context | order | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 2976) | corpus: `params_two_types` | a stated property is false | a body is typed against its parameters in the wrong order, so it runs on values of other types: `soundness` | 38 |
 | 38 | `entry-params` | §6.12 | top-level main() | premise | proof: `checkProgram_sound` (`Checker.lean`) | survived | (same) | a stated property is false | `checkProgram` accepts an entry point with parameters, which `ProgramTyped` excludes: `checkProgram_sound` | 61 |
-| 39 | `lit-bounds` | §5.8 | (Lit) | premise | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 3592) | survived | a stated property is false | an out-of-range literal types, and `HasTy.int` requires `InBounds`: `soundness` | 33 |
-| 40 | `dbg-observable` | §5.8 | (Dbg) | premise | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 3124) | survived | a stated property is false | `@dbg` of an aggregate types; the machine refuses (`typeConfusion`): `soundness` | 32 |
-| 41 | `repeat-copy` | §5.8 | array repeat (7.1:36) | copy-check | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 1274) | survived | a stated property is false | `[e; n]` of a non-Copy element types; the machine refuses (`typeConfusion`): `soundness` | 31 |
+| 39 | `lit-bounds` | §5.8 | (Lit) | premise | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 3228) | corpus: `lit_out_of_range` | a stated property is false | an out-of-range literal types, and `HasTy.int` requires `InBounds`: `soundness` | 35 |
+| 40 | `dbg-observable` | §5.8 | (Dbg) | premise | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 3146) | corpus: `dbg_aggregate` | a stated property is false | `@dbg` of an aggregate types; the machine refuses (`typeConfusion`): `soundness` | 35 |
+| 41 | `repeat-copy` | §5.8 | array repeat (7.1:36) | copy-check | proof: `soundness` (`Soundness.lean`) | witness: `Examples.lean` example (l. 1274) | corpus: `repeat_copy_affine` | a stated property is false | `[e; n]` of a non-Copy element types; the machine refuses (`typeConfusion`): `soundness` | 34 |
 | 42 | `class-not-infectious` | §3 | class of a struct (Attr.lift) | affine-linear | proof: `StructDecl.Wf.field_not_linear` (`Statics/Lemmas.lean`) | witness: `Examples.lean` example (l. 1057) | corpus: `affine_explicit_drop`, `affine_overwrite` +94 | a stated property is false | a linear-carrying struct is `Affine`, so dropping it is accepted and the machine's monitor refuses the live linear field: `soundness` | 31 |
 | 43 | `mult-join-meet` | §3 | class join | affine-linear | proof: `Mult.rank_le_join_left` (`Statics/Lemmas.lean`) | witness: `Examples.lean` example (l. 1057) | corpus: `affine_explicit_drop`, `affine_overwrite` +94 | a stated property is false | the class join takes the lesser class, so a linear-carrying struct is not `Linear`; as `class-not-infectious`: `soundness` | 31 |
 | 44 | `zero-array-linear` | §3 | class of [T; 0] (3.8:74) | affine-linear | proof: `Ty.array_mult_linear` (`Statics/Lemmas.lean`) | witness: `Print.lean` example (l. 729) | bridge: `gen_7_185` | only a helper is false | only `Ty.array_mult_linear`, which restates `Ty.mult`; `[T; 0]` being `Linear` refuses more | 31 |
-| 45 | `copy-struct-dtor` | §3 | @copy struct (3.9:31) | premise | proof: `checkStructDecl_sound` (`Checker.lean`) | witness: `Examples.lean` example (l. 3164) | survived | a stated property is false | accepts a `@copy` struct with a destructor, which `WfDecls` excludes: `checkProgram_sound` | 39 |
-| 46 | `dtor-linear-field` | §3 | destructor with a linear field (3.9:44) | premise | proof: `checkStructDecl_sound` (`Checker.lean`) | witness: `Examples.lean` example (l. 3171) | survived | a stated property is false | accepts a destructor-bearing struct with a linear field, which `WfDecls` excludes: `checkProgram_sound` | 19 |
+| 45 | `copy-struct-dtor` | §3 | @copy struct (3.9:31) | premise | proof: `checkStructDecl_sound` (`Checker.lean`) | witness: `Examples.lean` example (l. 3186) | corpus: `copy_struct_dtor` | a stated property is false | accepts a `@copy` struct with a destructor, which `WfDecls` excludes: `checkProgram_sound` | 36 |
+| 46 | `dtor-linear-field` | §3 | destructor with a linear field (3.9:44) | premise | proof: `checkStructDecl_sound` (`Checker.lean`) | witness: `Examples.lean` example (l. 3193) | corpus: `dtor_linear_field` | a stated property is false | accepts a destructor-bearing struct with a linear field, which `WfDecls` excludes: `checkProgram_sound` | 19 |
 | 47 | `decl-cycle-rounds` | §3 | acyclicity 3.0:5 (E0483) | completeness | proof: `checkNoCycle_sound` (`Checker.lean`) | bridge: `gen_7_127` +16 | (same) | every statement holds | refuses more: no statement is about the checker's completeness | 63 |
 | 48 | `entry-join-bty` | §5.5 | Entry.join | equivalent-candidate | proof: `Entry.join_assoc` (`Statics/Lemmas.lean`) | survived | (same) | equivalent | every join is of two entries with one skeleton, so the two declared types are equal | 51 |
 | 49 | `dyn-move-as-copy` | §6.3 | (D-Use-Move) | move-copy | proof: `stepEval_complete` (`Step/Lemmas.lean`) | witness: `Examples.lean` example (l. 1128) | corpus: `array_dyn_read_after_sibling_move`, `array_dyn_write_after_field_move` +24 | a stated property is false | an affine use copies, so both copies drop and a destructor runs twice: `no_double_free` | 30 |
@@ -454,7 +468,7 @@ pass leaves as written. `mutate.py --table` prints this table from
 | 76 | `leak-monitor-off` | §6.11 | linearLeak monitor | monitor | witness: `Examples.lean` example (l. 1347) | — | corpus: `destructure_linear_residue`, `enum_arm_leaks_payload` +9 | every statement holds | the linear theorems say the machine never refuses a checked program, which a machine with no refusal meets | 24 |
 | 77 | `overwrite-monitor-off` | §6.8 | linearOverwrite monitor | monitor | witness: `Corpus.lean` example (l. 972) | — | corpus: `linear_overwrite` | every statement holds | as `leak-monitor-off` | 24 |
 | 78 | `discard-monitor-off` | §6.7 | linearDiscard monitor | monitor | proof: `eval_succ` (`Soundness.lean`) | witness: `Corpus.lean` example (l. 974) | corpus: `linear_temporary_discarded` | only a helper is false | only `eval_succ`, which restates `eval`; the linear theorems hold as for `leak-monitor-off` | 24 |
-| 79 | `copy-monitor-off` | §6.5 | ownedUnderCopy monitor | monitor | proof: `Cons.intro` (`Trace.lean`) | witness: `Trace.lean` example | survived | only a helper is false | only `Cons.intro`, a ledger step for `introVal`; a checked program never builds an owned value under a `Copy` one | 91 |
+| 79 | `copy-monitor-off` | §6.5 | ownedUnderCopy monitor | monitor | proof: `Cons.intro` (`Trace.lean`) | witness: `Trace.lean` example | corpus: `copy_monitor_off` | only a helper is false | only `Cons.intro`, a ledger step for `introVal`; a checked program never builds an owned value under a `Copy` one | 36 |
 | 80 | `dyn-residual-declared` | §6.11 | Contents.residualLinear (3.8:74) | affine-linear | witness: `Examples.lean` example (l. 1342) | — | corpus: `destructure_linear_residue`, `enum_arm_leaks_payload` +10 | every statement holds | the machine's leak monitor is weaker; as `leak-monitor-off` | 24 |
 
 ### Equivalent mutants
@@ -519,30 +533,39 @@ disagreement the allowed red).
 
 ### Proposed issues (for the coordinator)
 
-1. **[Formal/Bridge] Seed the refusals only a witness proves.** 13 mutants
-   were killed by an `Examples.lean` or `Trace.lean` refusal witness and by
-   no seed or generated case. Each is a refusal the compiler should make too,
-   and the bridge never compared it. RUE-2486 is this issue's two PRs:
-   * **Part 1 (done, this page's seven `corpus:` rows above):** moving an
-     element out below a projection (`use-move-rootidx`); a dynamic-index
-     read, `@drop` or write of a non-Copy or linear element
-     (`index-read-copy`, `index-drop-copy-checker`, `index-write-linear`); a
-     constant index equal to the length (`const-index-off-by-one`); a
-     partially reassigned declared-linear struct that leaks
-     (`residual-declared`); and a linear field after a moved slot that leaks
-     (`residual-untracked`).
-   * **Part 2 (remaining, 6 mutants):** an out-of-range literal
-     (`lit-bounds`); `@dbg` of an aggregate (`dbg-observable`); `[e; n]` of a
-     non-Copy element (`repeat-copy`); a `@copy` struct with a destructor,
-     and a destructor-bearing struct with a linear field (`copy-struct-dtor`,
+1. **[Formal/Bridge] Seed the refusals only a witness proves — done
+   (RUE-2486).** 13 mutants were killed by an `Examples.lean` or
+   `Trace.lean` refusal witness and by no seed or generated case, each a
+   refusal the compiler should make too, that the bridge never compared. Two
+   PRs seeded all 13:
+   * **Part 1** (seven): moving an element out below a projection
+     (`use-move-rootidx`); a dynamic-index read, `@drop` or write of a
+     non-Copy or linear element (`index-read-copy`,
+     `index-drop-copy-checker`, `index-write-linear`); a constant index
+     equal to the length (`const-index-off-by-one`); a partially reassigned
+     declared-linear struct that leaks (`residual-declared`); and a linear
+     field after a moved slot that leaks (`residual-untracked`).
+   * **Part 2** (six): an out-of-range literal (`lit-bounds`); `@dbg` of an
+     aggregate (`dbg-observable`); `[e; n]` of a non-Copy element
+     (`repeat-copy`); a `@copy` struct with a destructor, and a
+     destructor-bearing struct with a linear field (`copy-struct-dtor`,
      `dtor-linear-field`); and the `ownedUnderCopy` refusal
-     (`copy-monitor-off`).
+     (`copy-monitor-off`). The last two seeds (`copy_struct_dtor`,
+     `dtor_linear_field`) are declarations `main` never instantiates —
+     `checkDecls` checks every declaration regardless of use, so there is no
+     dynamics to compare — and `copy_monitor_off` reuses `Trace.lean`'s
+     `dupProgram`, an ill-typed program the checker already refuses for an
+     unrelated reason (a struct field's declared type doesn't match its
+     literal), since the state the monitor guards is otherwise unreachable
+     by any well-typed program.
 
-   Evidence: the refusal mutants listed under "What the proofs kill". Each
-   still-open one shows "survived" in the table's "Corpus and bridge alone"
-   column; the seven part 1 seeded show `corpus:` there instead, confirmed by
-   a rerun of exactly those seven (`mutate.py --only`). At most 6–8 seeds go
-   in one PR, so this is about two PRs.
+   Evidence: the refusal mutants listed under "What the proofs kill" now all
+   show `corpus:` in the table's "Corpus and bridge alone" column, each
+   confirmed by a rerun of exactly its own part's mutants
+   (`mutate.py --only`), and each seed's printed source was run through
+   `scripts/rue exec` and confirmed to give the compiler error its
+   description claims (E0800, E0702, E0905, E0457, E0462 and E0206
+   respectively).
 2. **[Formal/Assurance] State §6.11's drop order independently of
    `dropEvents`.** `drop_order`'s `Blocks` is defined through `dropEvents`,
    so changing `dropContents` and `dropEvents` together falsifies no stated
@@ -586,9 +609,11 @@ Mutating the statement vocabulary (`Soundness/Defs`, `Trace/Defs`,
   stopped. A later theorem may also be false, and a helper's failure may
   mask a stated property's.
 * **Seeds and 200 generated cases.** The bridge column uses `--gen 200 --seed
-  7`, the per-lane check's. A larger stream might kill more of the 20 mutants
-  the seeds and the bridge miss; the 13 refusal shapes above are not ones the
-  generator draws.
+  7`, the per-lane check's. A larger stream might kill more of the 7 mutants
+  the seeds and the bridge still miss (the 4 no corpus case can show, and
+  the 3 trace-only ones); the 13 refusal shapes RUE-2486 seeded were never
+  ones the generator drew, which is why a seed rather than a larger stream
+  was the fix.
 * **`operand-swap`'s corpus kill is a crash.** With the operands swapped, a
   seed's counted loop never exits, and `ruecore-corpus` overflows the native
   stack at the export fuel instead of reporting the case as not completed.
