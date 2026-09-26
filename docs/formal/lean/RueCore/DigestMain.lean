@@ -13,8 +13,9 @@ ruecore-digest --comparator-config   its configuration (comparator/config.json)
 ruecore-digest --fingerprint   a hash of each Spec statement (spine-fingerprints.txt)
 ```
 
-The last four are generated from the Spec layer's lists, `RueCore.Spec.spine`
-and `RueCore.Spec.witnesses` (RUE-2460, RUE-2469), and exit non-zero when the lint's spine check
+The last four are generated from the Spec layer's lists, `RueCore.Spec.spine`,
+`RueCore.Spec.witnesses` and `RueCore.Spec.sharpness` (RUE-2460, RUE-2469,
+RUE-2485), and exit non-zero when the lint's spine check
 (`RueCore.Lint.spineProblems`) finds the list and the environment disagree.
 
 The trust report ends with the headline statements' trusted base, computed by
@@ -141,23 +142,32 @@ def witnessesOf (h : Name) : String :=
   else "witnesses " ++ ", ".intercalate (ws.map fun (w, _, _) => s!"`{Digest.shortName w}`")
 
 /-- (helper) Whether a statement has a hypothesis: a binder of a `Prop` type
-anywhere in its `∀`/`∧`/`↔` structure. A statement with none (`freed_once`,
-`step_iff`) has nothing to satisfy, so its witnesses only apply it at a
-non-trivial program, and `SPINE.md` says so. -/
-partial def hasHypotheses (e : Lean.Expr) : MetaM Bool := do
-  let e ← Meta.whnfR e
-  match e with
-  | .forallE _ d b _ =>
-      if ← Meta.isProp d then return true
-      Meta.forallBoundedTelescope e (some 1) fun _ b => hasHypotheses b
-  | _ =>
-      match e.getAppFnArgs with
-      | (``And, #[a, b]) | (``Iff, #[a, b]) => return (← hasHypotheses a) || (← hasHypotheses b)
-      | (``Exists, #[_, f]) =>
-          match f with
-          | .lam n d b bi => Meta.withLocalDecl n bi d fun x => hasHypotheses (b.instantiate1 x)
-          | _ => return false
-      | _ => return false
+anywhere in its `∀`/`∧`/`↔`/`∃` structure (`Lint.hypotheses`, the list the
+sharpness check numbers). A statement with none (`freed_once`, `step_iff`)
+has nothing to satisfy, so its witnesses only apply it at a non-trivial
+program, and `SPINE.md` says so. -/
+def hasHypotheses (e : Lean.Expr) : MetaM Bool := do
+  return !(← Lint.hypotheses e).isEmpty
+
+/-- (helper) A spine theorem's "Sharp" line (RUE-2485): each hypothesis, by
+number and text, with the counter-examples of `Spec.sharpness` that drop it,
+or its reason from `Spec.sharpnessReasons`. -/
+def sharpOf (h : Name) (hyps : Array String) : String :=
+  if hyps.isEmpty then "Sharp: no hypotheses to drop."
+  else
+    let items := (hyps.toList.zipIdx 1).map fun (txt, i) =>
+      let exs : List (Name × Name × List (Name × Nat)) :=
+        Spec.sharpness.filter fun (_, _, ps) => ps.contains (h, i)
+      let why : Option (Name × Nat × String) :=
+        Spec.sharpnessReasons.find? fun (t, j, _) => t == h && j == i
+      let tail := match exs, why with
+        | [], some (_, _, r) => s!"no counter-example: {r}"
+        | [], none => "none (the lint fails on this)"
+        | _, _ => "counter-example " ++ ", ".intercalate (exs.map fun (x : Name × Name × List (Name × Nat)) => s!"`{Digest.shortName x.1}`")
+      s!"{i}. `{oneLine txt}` — {tail}"
+    "Sharp:\n\n" ++ "\n".intercalate items
+where
+  oneLine (t : String) : String := " ".intercalate ((t.splitOn "\n").map (·.trimAscii.toString))
 
 /-- (helper) `SPINE.md`: every Spec statement — the Lean statement, its
 English reading and calculus paragraph (its doc-comment), the theorem that
@@ -224,8 +234,22 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
     "the lint requires that application for every pair listed. A statement with no",
     "hypotheses is only applied at a witness's program, and its line says so. The witnesses are Spec statements too, proved in",
     "`RueCore/Nonvacuous.lean` and covered by the kernel, the lint, Comparator and",
-    "the fingerprints. That a statement fails once a hypothesis is dropped (its",
-    "sharpness) is RUE-2485's.",
+    "the fingerprints.",
+    "",
+    "**Sharpness.** Under each statement, \"Sharp\" lists its hypotheses, numbered as",
+    "`Lint.hypotheses` numbers them (its premises of `Prop` type, those inside the",
+    "conclusion included), each with the counter-examples that drop it",
+    "(`RueCore.Spec.sharpness`, RUE-2485; the last section): a program, written out in",
+    "the statement, of which that hypothesis fails, every other holds, and the",
+    "conclusion fails. So the hypothesis is needed. A hypothesis with no",
+    "counter-example carries a reason (`RueCore.Spec.sharpnessReasons`), and the lint",
+    "fails on one with neither. The counter-examples are Spec statements too, proved in",
+    "`RueCore/Sharp.lean` and covered by the kernel, the lint, Comparator and the",
+    "fingerprints. Several are refusals of `eval`'s monitors, so a machine without a",
+    "monitor falsifies one (R3 of `REDTEAM-LOG.md`). The `FloatModel` laws are not",
+    "numbered: they are assumptions about the model a statement is instantiated at, not",
+    "hypotheses about a program, and every counter-example runs on `Float.exactOps`, a",
+    "model of them; that one reason is recorded with `RueCore.Spec.sharpnessReasons`.",
     "",
     s!"A statement means its text plus the {base.definitions.size} definitions the {Lint.headline.length} statements unfold",
     "to (`TRUST.md`, \"Trusted base\"; bodies in `DIGEST.md`); \"Names\" lists",
@@ -251,7 +275,8 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
         s!"; rests on {closure.size} definitions.", "",
       (if ← Meta.MetaM.run' (hasHypotheses v.value) then "Non-vacuous: " ++ witnessesOf h ++ "."
        else "Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by " ++
-         witnessesOf h ++ "."), ""]
+         witnessesOf h ++ "."), "",
+      sharpOf h (← Meta.MetaM.run' (Lint.hypotheses v.value)), ""]
   out := out ++ #["## Non-vacuity witnesses", "", "`RueCore.Spec.Nonvacuous`", "",
     "Each statement shows the hypotheses of the spine statements it names satisfiable",
     "together, by a program written out in the statement (RUE-2469).", ""]
@@ -265,6 +290,20 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
       doc, "", "```lean", s!"def {Digest.shortName s} : Prop :=", s!"  {("\n  ".intercalate (stmt.splitOn "\n"))}", "```", "",
       s!"Proved by `{Digest.shortName h}` (`{thmModule}`). Witnesses " ++
         ", ".intercalate (ts.map (s!"`{Digest.shortName ·}`")) ++ ".", ""]
+  out := out ++ #["## Sharpness counter-examples", "", "`RueCore.Spec.Sharp`", "",
+    "Each statement drops the spine hypotheses it names: that hypothesis fails of a",
+    "program written out in the statement, every other holds, and the conclusion fails",
+    "(RUE-2485). A hypothesis is a spine theorem and its number in `Lint.hypotheses`.", ""]
+  for (h, s, ps) in Spec.sharpness do
+    let some (.defnInfo v) := Lint.find? env s | continue
+    let doc := ((← findDocString? env s).map Digest.trimmed).getD "*(no doc-comment)*"
+    let stmt ← Meta.MetaM.run' do
+      return (← Meta.ppExpr v.value).pretty 90
+    let thmModule := (Lint.moduleOf? env h).map toString |>.getD "?"
+    out := out ++ #[s!"### `{Digest.shortName h}`", "",
+      doc, "", "```lean", s!"def {Digest.shortName s} : Prop :=", s!"  {("\n  ".intercalate (stmt.splitOn "\n"))}", "```", "",
+      s!"Proved by `{Digest.shortName h}` (`{thmModule}`). Drops " ++
+        ", ".intercalate (ps.map fun (t, i) => s!"`{Digest.shortName t}` {i}") ++ ".", ""]
   return ("\n".intercalate out.toList, if problems.isEmpty then 0 else 1)
 
 /-- (helper) A Spec statement's body as Lean source that elaborates back to
@@ -311,8 +350,8 @@ def challengeReport (env : Environment) : CoreM (String × UInt32) := do
     "/-!",
     "# Lean Comparator's challenge (RUE-2460)",
     "",
-    "Generated by `lake exe ruecore-digest --challenge` from `RueCore.Spec.spine` and",
-    "`RueCore.Spec.witnesses`; do not edit. It restates every Spec statement in full,",
+    "Generated by `lake exe ruecore-digest --challenge` from `RueCore.Spec.spine`,",
+    "`RueCore.Spec.witnesses` and `RueCore.Spec.sharpness`; do not edit. It restates every Spec statement in full,",
     "as the kernel holds it (its elaborated body, pretty-printed), over the L0 and L1",
     "modules the Spec layer",
     "imports and nothing else; then one theorem per statement, with the statement as",

@@ -478,7 +478,7 @@ the laws have no counter-example, and `M` is not numbered among the
 hypotheses (it is not a `Prop`). -/
 def sharpnessReasons : List (Lean.Name × Nat × String) := [
   (`RueCore.no_use_after_drop, 1,
-    "No counter-example: the hypothesis appears redundant. `run` starts from the empty store \
+    "The hypothesis appears redundant. `run` starts from the empty store \
     and frame, and a frame's environment names only cells its own bindings allocated, each \
     removed from the environment when the cell is retired, so no program, checked or not, \
     reaches `eval`'s `useAfterDrop` refusal through `run` (`Examples.lean` witnesses it only \
