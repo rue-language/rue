@@ -48,6 +48,13 @@ doc-comment says it is shown directly. The content of each counter-example is
 that the other hypotheses hold and the conclusion fails, and both are
 established without the spine theorem.
 
+A second limit: For `drop_order` 2–3, `eval_sound` 2–3, `run_sim` 1–2, `eval_complete` 2 and 4,
+and `run_complete` 1 and 3, the dropped premise is the only thing tying its
+bound value or trace to the program; once it is gone the weakened statement
+claims something of *every* such value, so the counter-example shows only that
+the conclusion is not a tautology, not that the premise does the work that
+`ProgramTyped` or an `n < fuel` bound does.
+
 `Spec.sharpness` (`Spec.lean`) lists each statement with the theorem that
 proves it (`RueCore/Sharp.lean`, layer L2) and the spine hypotheses it refutes
 (each pair checked by `RueCore/Sharp/Glue.lean`),
