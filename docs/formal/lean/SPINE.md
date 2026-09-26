@@ -235,7 +235,7 @@ Sharp:
 
 **No use-after-drop, on every program** (§7 "No use-after-drop / no leak
 of drops", "never read afterward"; RUE-2496): `run` never refuses with
-`useAfterDrop`, at any fuel and float model, **whether or not the program is
+`useAfterDrop`, at any fuel and any float operations (not only a `FloatModel`), **whether or not the program is
 checked**. The property is structural rather than a consequence of typing: a
 binding's cell is minted fresh and retired only when the scope that bound it
 ends, after which nothing names it, and a scope record owes each cell once.
