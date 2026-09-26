@@ -436,12 +436,23 @@ Observability was necessary but not sufficient for three of the four.
 inner block (a follow-up below); a quick check of the fixed generator's own
 traces (`--gen 1000 --seed 23`) finds 20 programs with a pair of consecutive
 `.dtor` events at all, and of those pairs 28 of 50 already print two
-different lines (so a swap would be visible) — the miss looks like the
-draw not reaching this mutant's exact shape (a block's own scope-exit order,
-not an enum arm's or a struct's field-drop order) within 1,200 programs,
-rather than a values-collide problem. `h2335` and `h2335b` are unaffected by
+different lines (so a swap would be visible). The miss is mostly the draw
+not reaching this mutant's exact shape (a block's own scope-exit order, not
+an enum arm's or a struct's field-drop order) within 1,200 programs, but
+colliding values also matter: the review measured about 42% of consecutive
+destructor lines from one declaration printing the same value, and a swap of
+two equal lines is invisible. Drawing distinct values per constructed value
+is part of the follow-up (RUE-2505). `h2335` and `h2335b` are unaffected by
 observability at all, matching the original follow-up: they need three
 declared-linear levels, a different generator capability.
+
+**What the change costs.** To give every destructor something to print, a
+destructor-bearing struct's field 0 is now always a plain integer; before,
+about 61% of those fields were arrays, structs, enums, `bool` or `()`. So one
+shape is gone entirely: a destructor-bearing struct whose field 0 is itself
+destructor-bearing, which was common before (46–81% of the struct-typed
+field-0 population, by seed). Restoring it, by printing a dedicated integer
+field instead of `x0`, is part of RUE-2505.
 
 Two new unmutated disagreements, found while confirming the regenerated
 corpus still agrees with the compiler (methodology, above) — reported here,
