@@ -99,7 +99,7 @@ else would have found it.
 
 | # | Mutant | Source and patch | Shape, in the fragment? | Caught? | First seed (its position in 171) | Caught by another seed or the generator? | Programs to detection (generated) | What disagreed |
 |---|---|---|---|---|---|---|---|---|
-| 1 | `h2318` | RUE-2318: `multiplier_shift` takes `2^(bits-1)` for a positive power of two at a signed width (codegen) | `i64::MIN * -1`; yes | yes | `i64_min_times_neg1` (41), own seed | no: generator 0 of 1,200 | — | native exits 0 with `MIN`; the model traps with overflow |
+| 1 | `h2318` | RUE-2318: `multiplier_shift` takes `2^(bits-1)` for a positive power of two at a signed width (codegen) | `i64::MIN * -1`; yes | yes | `i64_min_times_neg1` (41), own seed | no: generator 0 of 1,000 at `--gen 1000 --seed 23`, even after RUE-2482's boundary-literal draw (`min_T`, `max_T`, `-1` and a power of two, one operand in eight) — the bug needs *both* multiply operands at once, one exactly `min_T` and the other exactly `-1` or a power of two, and each is independently a literal with only a modest chance of drawing that value, so the joint shape stays rare at this sample size | — | native exits 0 with `MIN`; the model traps with overflow |
 | 2 | `h2345` | RUE-2345: `frame_place_has_no_storage` sees only a zero-sized root, not a zero-sized field on the path (codegen) | dynamic index into a zero-length array field; yes | yes | `array_zero_length_field_dyn_read` (154), own seed | yes: `gen_23_500` | 701 | the compiler panics (ICE at `place_lower.rs`) |
 | 3 | `h2335` | RUE-2335, root half: a declared-linear destructure of a root skips the moved-descendant check (sema) | three declared-linear levels, `@drop(y.x0)` after `y.x0.x0.x0`; yes | **no** | — | no, not even the full harness | — | (the mutant accepts the program and runs a destructor twice: destructor lines `2 4 2 3`) |
 | 4 | `h2335b` | RUE-2335, drop half: `d7eda72e6` reverted, so `@drop` of a declared-linear ancestor counts its own obligation as residue (sema) | `@drop` of an ancestor after an inner destructure; yes | yes | `destructure_ancestor_dropped` (101), own seed | no | — | the compiler rejects (E0406) a program the checker accepts |
@@ -161,13 +161,23 @@ twelve.
     writes, which the whole-local mutant does not touch. The coverage
     section below has the cause: few generated destructors print anything;
   * two destructor-bearing locals ending in the same inner block;
-  * `i64::MIN * -1`;
+  * `i64::MIN * -1`: RUE-2482 gave `intLiteral` a side-stream draw of `min_T`,
+    `max_T`, one step in from each, `-1`/`0`/`1` and a power of two, one
+    operand in eight, precisely for this shape and the ones like it (the
+    generator's literal range was otherwise small values with an occasional
+    bare `min_T`/`max_T`); at `--gen 1000 --seed 23` it still is not reached,
+    because the bug needs *both* multiply operands to land on a boundary
+    value at once and each is an independent, modestly-weighted draw (above,
+    mutant 1);
   * three declared-linear levels;
   * a move-then-reinitialize inside a loop at an affine type.
 * **Some mutants are invisible to the per-case stdout-and-exit test.**
   * `c-overflow-kind` changes only which trap fires. The exit code is still
     101 and the message is on stderr. Only the full harness's `lean <->
-    native` comparison sees it.
+    native` comparison sees it — RUE-2482 gave the loop's own `verify.py`/
+    `mverify.py` the same stderr-message comparison, which now also catches
+    it (at `gen_23_174`, the `--gen 1000 --seed 23` corpus's program 175);
+    the per-case test proper (`crates/rue-oracle-diff`) is unchanged.
   * `h2380` shows only at `-O2` and `-O3`. The per-case test compiles at the
     default level, so it cannot see this mutant even with a seed; the new
     seed `loop_move_out_then_reinit` is killed by the harness's O2/O3
@@ -745,9 +755,10 @@ blind spot, get a generator or tooling proposal too.
 | `c-skip-overwrite-drop`, `c-reverse-scope-drops` (generator 0 of 1,200) | done (RUE-2480, above): every generated destructor-bearing struct gets an integer id. Caught `c-skip-overwrite-drop` (`gen_23_689`); `c-reverse-scope-drops` needed its own shape too (below) | generator issue, done |
 | `c-reverse-scope-drops` (still generator 0 of 1,200 after RUE-2480) | done (RUE-2505, above): a `match` arm binding two destructor-bearing payload locals (`pairDtorBlock`) | generator issue, done |
 | `h2335`, `h2335b` (generator 0 of 1,200; unaffected by RUE-2480) | done (RUE-2505, above): three declared-linear levels nested through field 0 (`linearChainDecls`) | generator issue, done |
-| `h2318` (own seed only) | draw boundary literals (`MIN`, `MAX`, `±1`, powers of two) as arithmetic operands | generator issue |
+| `h2318` (own seed only) | done (RUE-2482, `RueCore/Gen.lean`'s `intLiteral`, `boundaryLiteral`): draw `min_T`/`max_T`, one step in from each, `-1`/`0`/`1` and a power of two (or its neighbour) as an integer literal, one operand in eight, on the side stream. Still not caught at `--gen 1000 --seed 23` (above): the bug needs two boundary literals at once, one per multiply operand, which the per-operand rate makes jointly rare | generator issue, done (not yet observed) |
 | (Call) §5.8 and the call-boundary drop paths (no generated case) | done (RUE-2481, below, "Multi-function programs"): by-value parameters, including destructor-bearing and declared-linear ones, calls in operand position, early returns from a callee, and bounded recursion | generator issue, done |
-| `c-overflow-kind` (the per-case test is blind to it) and `h2380` (default level only) | the loop's per-case check should also compare the trap kind (stderr's panic message) and compile at `-O2` as well as the default level, or the lane should run `scripts/rue lean-bridge`, which does both | tooling issue |
+| `c-overflow-kind` (the per-case test is blind to it) | done for the loop's own `verify.py`/`mverify.py` (RUE-2482): both now also compare the trapping run's last stderr line against the compiler's fixed message for the corpus's expected panic category (`crates/rue-runtime/src/error.rs`), which caught `c-overflow-kind` at `gen_23_174` (program 175 of the `--gen 1000 --seed 23` set) — the run traps at the right exit code and stdout but with `error: division by zero` where `error: integer overflow` was expected. `crates/rue-oracle-diff/src/lean_corpus.rs` (the CI harness) already compares the trap category this way and is unchanged | tooling issue, done for the loop scripts |
+| `h2380` (default level only) | the per-case check should also compile at `-O2` as well as the default level, or the lane should run `scripts/rue lean-bridge`, which does both | tooling issue |
 | The divergence rules (never exercised) | seed one accepted case for each of (Seq-Bottom), (Let-Bottom), (Strict-Bottom) and (Return-Bottom), with syntax after the diverging form where the compiler accepts it. Otherwise record that the bridge does not cover these rules | seed or scope note, for RUE-2376's owner |
 
 ## Reproducing

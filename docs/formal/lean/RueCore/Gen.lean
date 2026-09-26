@@ -188,7 +188,15 @@ generated disagreement is a finding to file.
   E0205 in `gen_23_752`, which a return arm changed. Before loops, one
   case at seed 7 (`gen_7_101`, disagreeing) and three at seed 23
   (`gen_23_295`, `gen_23_868`, and `gen_23_652`, the last masked by an
-  E0904).
+  E0904). After RUE-2482's boundary-literal draw regenerated the corpus
+  (below, "Boundary integer literals"), the shape is at `gen_7_163` (one
+  case at `--gen 200 --seed 7`, unmasked — the compiler accepts it and runs
+  to exactly the trace the model predicts, `4`, `1`, then a `bounds` trap,
+  disagreeing only on the static verdict) and at six cases at
+  `--gen 1000 --seed 23` (`gen_23_162`, `525`, `742`, `791`, `923`, `926`,
+  all still masked). Names shift with any generator change, as this section
+  already says; the shape itself did not move, and remains RUE-2346's to
+  decide.
 * A dynamic index into a **zero-length array field**, `h.arr[i]` at
   `arr: [T; 0]` (seed `array_zero_length_field_dyn_read`): an internal
   compiler error in code generation where the model traps with `bounds`,
@@ -484,6 +492,41 @@ part of why the rejected share below rose. BRIDGE-SENSITIVITY.md has the
 collision-rate and
 observability figures and the rerun results.
 
+## Boundary integer literals (RUE-2482)
+
+`intLiteral` (above) already drew an occasional `min_T`/`max_T` on the main
+stream, one in twenty each. That alone rarely puts a boundary value where an
+overflow, cast or comparison trap actually lives, because the *other*
+operand of `+ - * /` or a comparison is still an independent small draw most
+of the time, and `min_T + 1`, `max_T − 1`, `-1`, a power of two and its
+neighbours never come up at all — the RUE-2318 mutant (`i64::MIN * -1`
+folded to `i64::MIN` instead of trapping) was one such shape, caught by
+0 of 1,200 generated programs (BRIDGE-SENSITIVITY.md). So every `intLiteral`
+draw also reads the **side** stream: one time in eight (`chance 1 8`), it
+replaces the main-stream draw with a `boundaryLiteral` instead — `min_T` and
+`max_T` again, one step in from each, `-1` (signed only), `0` and `1`, or a
+power of two in range together with the constant just below or above it.
+The main-stream draw always runs first and is discarded when the side
+stream fires, so it costs the main stream nothing — the technique `divArm`
+(above, "Return and panic arms") uses for a diverging arm.
+
+Because every integer literal, not only the diverging-arm and paired-locals
+sites RUE-2383 and RUE-2505 added, now reads the side stream, it advances
+far faster per program than it did before: a typical generated program has
+several integer literals and at most a handful of `divArm`/`pairDtorBlock`/
+declared-linear-chain checks. And because `genCase` never resets the side
+stream between cases (above, "Restoring the lost shape and distinct
+identities..."), that faster advance shifts the *starting* side-stream state
+of every case after the first — which changes what `divArm`, `pairDtorBlock`
+and the declared-linear chain draw there too, not only which literal, if
+any, this change itself replaced. So almost the whole corpus's identity
+moves: 196 of the 200 generated cases at `--gen 200 --seed 7` differ from
+the draw before this change, and 997 of the 1,000 at `--gen 1000 --seed 23`.
+This is the same phenomenon RUE-2505 documented for its own id-field and
+declared-linear-chain reads (above): regenerating shifts every case's
+identity, and a side-stream read that fires once per program shifts it less
+than one that fires once per literal.
+
 ## What it deliberately does not guarantee
 
 Ownership. Moves, drops, assignments, `match` arms and scope exits are chosen
@@ -543,7 +586,11 @@ the weights can be read and changed:
   of a place of any class;
 * integer literals are small, `0` among them, with an occasional `min_T` or
   `max_T` at the drawn type, so every arithmetic operator can trap — and the
-  narrow types make that likely rather than rare;
+  narrow types make that likely rather than rare; one operand in eight is a
+  side-stream `boundaryLiteral` instead (above, "Boundary integer literals",
+  RUE-2482) — `min_T`/`max_T` again, one step in from each, `-1`/`0`/`1`, or a
+  power of two and its neighbour — for the overflow, cast and comparison
+  traps a small or bare-boundary literal seldom feeds;
 * types are drawn from every width and both signednesses, `i64` a little more
   often than the rest, and an operator's operands share the drawn type
   (`4.2:1`, and `4.3a:9` for a shift's amount);
