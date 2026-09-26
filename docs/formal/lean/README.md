@@ -1138,7 +1138,14 @@ counter-example are such premises inside a conclusion, reached through an
 the `Steps init C` of `step_progress` and `step_never_stuck_of_run` is of the
 same kind, a premise about a reached configuration, though no connective
 stands before it. `SPINE.md` computes these counts from the walk (RUE-2495).
-So "70 hypotheses needed" is not 70 hypotheses about a program. The walk does not go
+So "70 hypotheses needed" is not 70 hypotheses about a program.
+For `drop_order` 2–3, `eval_sound` 2–3, `run_sim` 1–2, `eval_complete` 2 and 4,
+and `run_complete` 1 and 3, the dropped premise is the only thing tying its
+bound value or trace to the program; once it is gone the weakened statement
+claims something of *every* such value, so the counter-example shows only that
+the conclusion is not a tautology, not that the premise does the work that
+`ProgramTyped` or an `n < fuel` bound does.
+The walk does not go
 under `∨` or `¬`, nor into a definition that is not reducible: a premise
 inside `Config.SafeAt`, `Exact`, `Blocks` or `Lifo` is part of the
 conclusion. No spine statement has a premise under `∨` or `¬` today.
