@@ -132,6 +132,25 @@ def witnessesOf (h : Name) : String :=
   if ws.isEmpty then "no witness (the lint fails on this)"
   else "witnesses " ++ ", ".intercalate (ws.map fun (w, _, _) => s!"`{Digest.shortName w}`")
 
+/-- (helper) Whether a statement has a hypothesis: a binder of a `Prop` type
+anywhere in its `∀`/`∧`/`↔` structure. A statement with none (`freed_once`,
+`step_iff`) has nothing to satisfy, so its witnesses only apply it at a
+non-trivial program, and `SPINE.md` says so. -/
+partial def hasHypotheses (e : Lean.Expr) : MetaM Bool := do
+  let e ← Meta.whnfR e
+  match e with
+  | .forallE _ d b _ =>
+      if ← Meta.isProp d then return true
+      Meta.forallBoundedTelescope e (some 1) fun _ b => hasHypotheses b
+  | _ =>
+      match e.getAppFnArgs with
+      | (``And, #[a, b]) | (``Iff, #[a, b]) => return (← hasHypotheses a) || (← hasHypotheses b)
+      | (``Exists, #[_, f]) =>
+          match f with
+          | .lam n d b bi => Meta.withLocalDecl n bi d fun x => hasHypotheses (b.instantiate1 x)
+          | _ => return false
+      | _ => return false
+
 /-- (helper) `SPINE.md`: every Spec statement — the Lean statement, its
 English reading and calculus paragraph (its doc-comment), the theorem that
 proves it, and the definitions it rests on — generated from
@@ -192,7 +211,10 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
     "(`RueCore.Spec.witnesses`, RUE-2469; the last section) that show its hypotheses",
     "hold together of a non-trivial program: accepted by the checker, typed, run to a",
     "value, a panic or divergence and reached by `Step`, with the drops, destructors",
-    "or value the witness states. The witnesses are Spec statements too, proved in",
+    "or value the witness states. Each pair is checked by the kernel:",
+    "`RueCore/Nonvacuous/Glue.lean` applies the statement to the witness's facts, and",
+    "the lint requires that application for every pair listed. A statement with no",
+    "hypotheses is only applied at a witness's program, and its line says so. The witnesses are Spec statements too, proved in",
     "`RueCore/Nonvacuous.lean` and covered by the kernel, the lint, Comparator and",
     "the fingerprints. That a statement fails once a hypothesis is dropped (its",
     "sharpness) is RUE-2485's.",
@@ -219,7 +241,9 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
       s!"Proved by `{Digest.shortName h}` (`{thmModule}`). Names " ++
         ", ".intercalate (direct.toList.map (s!"`{Digest.shortName ·}`")) ++
         s!"; rests on {closure.size} definitions.", "",
-      "Non-vacuous: " ++ witnessesOf h ++ ".", ""]
+      (if ← Meta.MetaM.run' (hasHypotheses v.value) then "Non-vacuous: " ++ witnessesOf h ++ "."
+       else "Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by " ++
+         witnessesOf h ++ "."), ""]
   out := out ++ #["## Non-vacuity witnesses", "", "`RueCore.Spec.Nonvacuous`", "",
     "Each statement shows the hypotheses of the spine statements it names satisfiable",
     "together, by a program written out in the statement (RUE-2469).", ""]
