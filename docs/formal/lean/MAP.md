@@ -8,7 +8,7 @@ proof chain sits beside the compiler bridge. `README.md`, "The proof map",
 explains what a **spine node** and a **milestone lemma** are and how this file
 is generated. GitHub renders every diagram below inline.
 
-36 spine theorems, 25 milestone lemmas: 61 marked nodes in all.
+38 spine theorems, 25 milestone lemmas: 63 marked nodes in all.
 
 ## The spine
 
@@ -42,6 +42,10 @@ flowchart BT
   end
   subgraph RueCore_Float_Lemmas["RueCore.Float.Lemmas (L2 proofs)"]
     roundRat_wf["roundRat_wf"]
+  end
+  subgraph RueCore_Retire["RueCore.Retire (L2 proofs)"]
+    run_no_use_after_drop["run_no_use_after_drop"]
+    step_no_use_after_drop["step_no_use_after_drop"]
   end
   subgraph RueCore_Soundness["RueCore.Soundness (L2 proofs)"]
     LoopHead_backEdge["LoopHead.backEdge"]
@@ -171,6 +175,7 @@ flowchart BT
   step_blocks --> drop_order
   step_iff --> Config_stuck_iff
   step_iff --> Config_trichotomy
+  step_iff --> step_no_use_after_drop
   step_never_stuck_of_run --> init_safeAt
   step_never_stuck_of_run --> never_stuck_iff
   step_never_stuck_of_run --> step_progress
@@ -741,6 +746,49 @@ flowchart BT
 <summary>All 197 definitions no_use_after_drop's statement depends on</summary>
 
 [`ArgsRes`](#def-ArgsRes), [`Attr`](#def-Attr), [`Attr.lift`](#def-Attr_lift), [`BinOp`](#def-BinOp), [`BinOp.floatAdmits`](#def-BinOp_floatAdmits), [`BinOp.intAdmits`](#def-BinOp_intAdmits), [`BinOp.isCompare`](#def-BinOp_isCompare), [`BinOp.resultTy`](#def-BinOp_resultTy), [`Cell`](#def-Cell), [`Contents`](#def-Contents), [`Contents.allCopyList`](#def-Contents_allCopyList), [`Contents.copyClosed`](#def-Contents_copyClosed), [`Contents.declaredLinear`](#def-Contents_declaredLinear), [`Contents.declaredPlan`](#def-Contents_declaredPlan), [`Contents.destructure`](#def-Contents_destructure), [`Contents.isHole`](#def-Contents_isHole), [`Contents.mult`](#def-Contents_mult), [`Contents.ofVal`](#def-Contents_ofVal), [`Contents.readAt`](#def-Contents_readAt), [`Contents.residualLinear`](#def-Contents_residualLinear), [`Contents.resolveDyn`](#def-Contents_resolveDyn), [`Contents.skeleton`](#def-Contents_skeleton), [`Contents.splitResidue`](#def-Contents_splitResidue), [`Contents.toVal`](#def-Contents_toVal), [`Contents.writeAt`](#def-Contents_writeAt), [`Ctx`](#def-Ctx), [`Ctx.Wf`](#def-Ctx_Wf), [`Ctx.join`](#def-Ctx_join), [`Ctx.joinAll`](#def-Ctx_joinAll), [`Ctx.joinFold`](#def-Ctx_joinFold), [`Ctx.joinOpt`](#def-Ctx_joinOpt), [`Ctx.joinOpts`](#def-Ctx_joinOpts), [`Ctx.loopLocals`](#def-Ctx_loopLocals), [`Ctx.outsideLoop`](#def-Ctx_outsideLoop), [`DeclId`](#def-DeclId), [`Decls`](#def-Decls), [`Decls.Names`](#def-Decls_Names), [`Decls.byValue`](#def-Decls_byValue), [`Decls.classOf`](#def-Decls_classOf), [`Decls.enumClassOf`](#def-Decls_enumClassOf), [`DynPlace`](#def-DynPlace), [`DynStep`](#def-DynStep), [`Entry`](#def-Entry), [`Entry.join`](#def-Entry_join), [`Entry.setSt`](#def-Entry_setSt), [`Entry.wf`](#def-Entry_wf), [`EnumDecl`](#def-EnumDecl), [`EnumDecl.Wf`](#def-EnumDecl_Wf), [`EnumDecl.payloadJoin`](#def-EnumDecl_payloadJoin), [`Env`](#def-Env), [`EvalRes`](#def-EvalRes), [`EvalRes.absorb`](#def-EvalRes_absorb), [`EvalRes.andThen`](#def-EvalRes_andThen), [`EvalRes.withTrace`](#def-EvalRes_withTrace), [`Event`](#def-Event), [`Expr`](#def-Expr), [`Expr.breaks`](#def-Expr_breaks), [`FloatArith`](#def-FloatArith), [`FloatDatum`](#def-FloatDatum), [`FloatDatum.Wf`](#def-FloatDatum_Wf), [`FloatDatum.isNaN`](#def-FloatDatum_isNaN), [`FloatDatum.le`](#def-FloatDatum_le), [`FloatDatum.lt`](#def-FloatDatum_lt), [`FloatDatum.negate`](#def-FloatDatum_negate), [`FloatDatum.roundOp`](#def-FloatDatum_roundOp), [`FloatDatum.succMag`](#def-FloatDatum_succMag), [`FloatDatum.toIntIn`](#def-FloatDatum_toIntIn), [`FloatDatum.totalCmp`](#def-FloatDatum_totalCmp), [`FloatDatum.totalRank`](#def-FloatDatum_totalRank), [`FloatDatum.truncToInt`](#def-FloatDatum_truncToInt), [`FloatDatum.widen`](#def-FloatDatum_widen), [`FloatIntrin`](#def-FloatIntrin), [`FloatIntrin.floatSrc`](#def-FloatIntrin_floatSrc), [`FloatIntrin.resTy`](#def-FloatIntrin_resTy), [`FloatLit`](#def-FloatLit), [`FloatLit.RoundsFinite`](#def-FloatLit_RoundsFinite), [`FloatLit.exact`](#def-FloatLit_exact), [`FloatModel`](#def-FloatModel), [`FloatOps`](#def-FloatOps), [`FloatOps.cast`](#def-FloatOps_cast), [`FloatOps.roundIntrin`](#def-FloatOps_roundIntrin), [`FloatRoundOp`](#def-FloatRoundOp), [`FloatUnIntrin`](#def-FloatUnIntrin), [`FloatWidth`](#def-FloatWidth), [`FloatWidth.eMin`](#def-FloatWidth_eMin), [`FloatWidth.eTop`](#def-FloatWidth_eTop), [`FloatWidth.overflowNum`](#def-FloatWidth_overflowNum), [`FloatWidth.prec`](#def-FloatWidth_prec), [`FnDef`](#def-FnDef), [`Frame`](#def-Frame), [`InBounds`](#def-InBounds), [`IntWidth`](#def-IntWidth), [`IntWidth.bits`](#def-IntWidth_bits), [`IntWidth.modulus`](#def-IntWidth_modulus), [`LoopHead`](#def-LoopHead), [`Mult`](#def-Mult), [`Mult.join`](#def-Mult_join), [`Mult.rank`](#def-Mult_rank), [`NoResidualLinear`](#def-NoResidualLinear), [`OpRes`](#def-OpRes), [`OpRes.toRes`](#def-OpRes_toRes), [`Out`](#def-Out), [`Out.add`](#def-Out_add), [`OwnSt`](#def-OwnSt), [`OwnSt.fieldAt`](#def-OwnSt_fieldAt), [`OwnSt.fieldStates`](#def-OwnSt_fieldStates), [`OwnSt.fullyOwned`](#def-OwnSt_fullyOwned), [`OwnSt.get`](#def-OwnSt_get), [`OwnSt.isOwned`](#def-OwnSt_isOwned), [`OwnSt.join`](#def-OwnSt_join), [`OwnSt.setAt`](#def-OwnSt_setAt), [`OwnSt.setField`](#def-OwnSt_setField), [`OwnSt.wf`](#def-OwnSt_wf), [`PanicKind`](#def-PanicKind), [`Param`](#def-Param), [`Place`](#def-Place), [`Place.path`](#def-Place_path), [`Place.root`](#def-Place_root), [`Program`](#def-Program), [`ProgramTyped`](#def-ProgramTyped), [`Sign`](#def-Sign), [`Store`](#def-Store), [`StructDecl`](#def-StructDecl), [`StructDecl.Wf`](#def-StructDecl_Wf), [`StructDecl.baseOf`](#def-StructDecl_baseOf), [`Ty`](#def-Ty), [`Ty.atDyn`](#def-Ty_atDyn), [`Ty.atPath`](#def-Ty_atPath), [`Ty.declIds`](#def-Ty_declIds), [`Ty.declaredLinear`](#def-Ty_declaredLinear), [`Ty.dynNoDeclared`](#def-Ty_dynNoDeclared), [`Ty.fieldAt`](#def-Ty_fieldAt), [`Ty.isInt`](#def-Ty_isInt), [`Ty.mult`](#def-Ty_mult), [`Ty.observable`](#def-Ty_observable), [`Typed`](#def-Typed), [`TypedArgs`](#def-TypedArgs), [`TypedArms`](#def-TypedArms), [`UnOp`](#def-UnOp), [`Val`](#def-Val), [`Val.ints`](#def-Val_ints), [`Val.mult`](#def-Val_mult), [`Val.observable`](#def-Val_observable), [`Violation`](#def-Violation), [`WfDecls`](#def-WfDecls), [`WfEnums`](#def-WfEnums), [`WfFn`](#def-WfFn), [`WfNames`](#def-WfNames), [`WfProgram`](#def-WfProgram), [`WfStructs`](#def-WfStructs), [`anyLinearOther`](#def-anyLinearOther), [`armCtx`](#def-armCtx), [`arrayPrefix`](#def-arrayPrefix), [`assignArrayOk`](#def-assignArrayOk), [`binOpFloat`](#def-binOpFloat), [`binOpInt`](#def-binOpInt), [`bitsOf`](#def-bitsOf), [`canonAux`](#def-canonAux), [`canonNum`](#def-canonNum), [`cmpScaled`](#def-cmpScaled), [`declaredPrefix`](#def-declaredPrefix), [`dropCell`](#def-dropCell), [`dropContents`](#def-dropContents), [`dropResidue`](#def-dropResidue), [`dropRetire`](#def-dropRetire), [`dynPlace`](#def-dynPlace), [`eval`](#def-eval), [`evalArgs`](#def-evalArgs), [`evalBinOp`](#def-evalBinOp), [`evalFintrin`](#def-evalFintrin), [`evalIntCast`](#def-evalIntCast), [`evalUnOp`](#def-evalUnOp), [`fnCtx`](#def-fnCtx), [`inBoundsIdx`](#def-inBoundsIdx), [`intMax`](#def-intMax), [`intMin`](#def-intMin), [`intResult`](#def-intResult), [`introVal`](#def-introVal), [`linearResidue`](#def-linearResidue), [`magCmp`](#def-magCmp), [`matchConsume`](#def-matchConsume), [`mintParams`](#def-mintParams), [`noArrayStep`](#def-noArrayStep), [`noDtorPrefix`](#def-noDtorPrefix), [`ownedJoinOk`](#def-ownedJoinOk), [`ownedJoinOkList`](#def-ownedJoinOkList), [`residualLinear`](#def-residualLinear), [`residualLinearBelow`](#def-residualLinearBelow), [`residualLinearFields`](#def-residualLinearFields), [`residueMark`](#def-residueMark), [`rootIdxOnly`](#def-rootIdxOnly), [`run`](#def-run), [`runAllScopeDrops`](#def-runAllScopeDrops), [`shiftAmount`](#def-shiftAmount), [`unwindLocs`](#def-unwindLocs), [`valOf`](#def-valOf), [`wrapInt`](#def-wrapInt)
+
+</details>
+
+### `run_no_use_after_drop`
+
+```mermaid
+flowchart BT
+  thm["run_no_use_after_drop"]
+  subgraph defs_["Definitions the statement depends on"]
+    ArgsRes["ArgsRes<br/>§6.2"] -.-> thm
+    Attr["Attr<br/>§3, (S)"] -.-> thm
+    BinOp["BinOp<br/>§2, §5.8, (Arith), (Ord), (Float-Ord)"] -.-> thm
+    Cell["Cell<br/>§6.1"] -.-> thm
+    Contents["Contents<br/>§6.1, §6.3, §4.2, §6.11, (D-Use-Move)"] -.-> thm
+    Contents_allCopyList["Contents.allCopyList"] -.-> thm
+    Contents_copyClosed["Contents.copyClosed<br/>§3, §6, (D-Use-Copy), (D-Struct)"] -.-> thm
+    Contents_declaredLinear["Contents.declaredLinear<br/>§6.1"] -.-> thm
+    Contents_declaredPlan["Contents.declaredPlan<br/>§6.3, §4.2"] -.-> thm
+    Contents_destructure["Contents.destructure<br/>§6.3"] -.-> thm
+    Contents_isHole["Contents.isHole<br/>§6.1, §7"] -.-> thm
+    Contents_mult["Contents.mult<br/>§3, (T)"] -.-> thm
+    Contents_ofVal["Contents.ofVal<br/>§6.8, §6.7, (D-Let)"] -.-> thm
+    Contents_readAt["Contents.readAt<br/>§6.3, §7"] -.-> thm
+    Contents_residualLinear["Contents.residualLinear<br/>§5.6, §6.7, §6.9, §6.8, §6.11, (E), (E0406)"] -.-> thm
+    Contents_resolveDyn["Contents.resolveDyn<br/>§6.5, §6.3, §6.8, (D-Index), (D-Index-Trap)"] -.-> thm
+    Contents_skeleton["Contents.skeleton<br/>§6.3"] -.-> thm
+    Contents_splitResidue["Contents.splitResidue<br/>§6.3, §5.1"] -.-> thm
+    Contents_toVal["Contents.toVal<br/>§6.3, §7"] -.-> thm
+    Contents_writeAt["Contents.writeAt<br/>§6.3, §6.8, (D-Use-Move)"] -.-> thm
+    Decls["Decls<br/>§2, §3"] -.-> thm
+    Decls_classOf["Decls.classOf<br/>§3, (S)"] -.-> thm
+    Decls_enumClassOf["Decls.enumClassOf<br/>§3, (E)"] -.-> thm
+    DynPlace["DynPlace"] -.-> thm
+    DynStep["DynStep<br/>§6.5"] -.-> thm
+  end
+```
+
+(87 more definitions the statement depends on, past the 25 cap.)
+
+<details>
+<summary>All 112 definitions run_no_use_after_drop's statement depends on</summary>
+
+[`ArgsRes`](#def-ArgsRes), [`Attr`](#def-Attr), [`BinOp`](#def-BinOp), [`Cell`](#def-Cell), [`Contents`](#def-Contents), [`Contents.allCopyList`](#def-Contents_allCopyList), [`Contents.copyClosed`](#def-Contents_copyClosed), [`Contents.declaredLinear`](#def-Contents_declaredLinear), [`Contents.declaredPlan`](#def-Contents_declaredPlan), [`Contents.destructure`](#def-Contents_destructure), [`Contents.isHole`](#def-Contents_isHole), [`Contents.mult`](#def-Contents_mult), [`Contents.ofVal`](#def-Contents_ofVal), [`Contents.readAt`](#def-Contents_readAt), [`Contents.residualLinear`](#def-Contents_residualLinear), [`Contents.resolveDyn`](#def-Contents_resolveDyn), [`Contents.skeleton`](#def-Contents_skeleton), [`Contents.splitResidue`](#def-Contents_splitResidue), [`Contents.toVal`](#def-Contents_toVal), [`Contents.writeAt`](#def-Contents_writeAt), [`Decls`](#def-Decls), [`Decls.classOf`](#def-Decls_classOf), [`Decls.enumClassOf`](#def-Decls_enumClassOf), [`DynPlace`](#def-DynPlace), [`DynStep`](#def-DynStep), [`EnumDecl`](#def-EnumDecl), [`Env`](#def-Env), [`EvalRes`](#def-EvalRes), [`EvalRes.absorb`](#def-EvalRes_absorb), [`EvalRes.andThen`](#def-EvalRes_andThen), [`EvalRes.withTrace`](#def-EvalRes_withTrace), [`Event`](#def-Event), [`Expr`](#def-Expr), [`FloatArith`](#def-FloatArith), [`FloatDatum`](#def-FloatDatum), [`FloatDatum.isNaN`](#def-FloatDatum_isNaN), [`FloatDatum.le`](#def-FloatDatum_le), [`FloatDatum.lt`](#def-FloatDatum_lt), [`FloatDatum.negate`](#def-FloatDatum_negate), [`FloatDatum.roundOp`](#def-FloatDatum_roundOp), [`FloatDatum.succMag`](#def-FloatDatum_succMag), [`FloatDatum.toIntIn`](#def-FloatDatum_toIntIn), [`FloatDatum.totalCmp`](#def-FloatDatum_totalCmp), [`FloatDatum.totalRank`](#def-FloatDatum_totalRank), [`FloatDatum.truncToInt`](#def-FloatDatum_truncToInt), [`FloatDatum.widen`](#def-FloatDatum_widen), [`FloatIntrin`](#def-FloatIntrin), [`FloatLit`](#def-FloatLit), [`FloatOps`](#def-FloatOps), [`FloatOps.cast`](#def-FloatOps_cast), [`FloatOps.roundIntrin`](#def-FloatOps_roundIntrin), [`FloatRoundOp`](#def-FloatRoundOp), [`FloatUnIntrin`](#def-FloatUnIntrin), [`FloatWidth`](#def-FloatWidth), [`FnDef`](#def-FnDef), [`Frame`](#def-Frame), [`InBounds`](#def-InBounds), [`IntWidth`](#def-IntWidth), [`IntWidth.bits`](#def-IntWidth_bits), [`IntWidth.modulus`](#def-IntWidth_modulus), [`Mult`](#def-Mult), [`OpRes`](#def-OpRes), [`OpRes.toRes`](#def-OpRes_toRes), [`PanicKind`](#def-PanicKind), [`Param`](#def-Param), [`Place`](#def-Place), [`Place.path`](#def-Place_path), [`Place.root`](#def-Place_root), [`Program`](#def-Program), [`Sign`](#def-Sign), [`Store`](#def-Store), [`StructDecl`](#def-StructDecl), [`Ty`](#def-Ty), [`Ty.mult`](#def-Ty_mult), [`UnOp`](#def-UnOp), [`Val`](#def-Val), [`Val.ints`](#def-Val_ints), [`Val.mult`](#def-Val_mult), [`Val.observable`](#def-Val_observable), [`Violation`](#def-Violation), [`binOpFloat`](#def-binOpFloat), [`binOpInt`](#def-binOpInt), [`bitsOf`](#def-bitsOf), [`canonAux`](#def-canonAux), [`canonNum`](#def-canonNum), [`cmpScaled`](#def-cmpScaled), [`dropCell`](#def-dropCell), [`dropContents`](#def-dropContents), [`dropResidue`](#def-dropResidue), [`dropRetire`](#def-dropRetire), [`dynPlace`](#def-dynPlace), [`eval`](#def-eval), [`evalArgs`](#def-evalArgs), [`evalBinOp`](#def-evalBinOp), [`evalFintrin`](#def-evalFintrin), [`evalIntCast`](#def-evalIntCast), [`evalUnOp`](#def-evalUnOp), [`inBoundsIdx`](#def-inBoundsIdx), [`intMax`](#def-intMax), [`intMin`](#def-intMin), [`intResult`](#def-intResult), [`introVal`](#def-introVal), [`magCmp`](#def-magCmp), [`matchConsume`](#def-matchConsume), [`mintParams`](#def-mintParams), [`residueMark`](#def-residueMark), [`run`](#def-run), [`runAllScopeDrops`](#def-runAllScopeDrops), [`shiftAmount`](#def-shiftAmount), [`unwindLocs`](#def-unwindLocs), [`valOf`](#def-valOf), [`wrapInt`](#def-wrapInt)
 
 </details>
 
@@ -1758,6 +1806,49 @@ flowchart BT
 
 </details>
 
+### `step_no_use_after_drop`
+
+```mermaid
+flowchart BT
+  thm["step_no_use_after_drop"]
+  subgraph defs_["Definitions the statement depends on"]
+    ArgsTag["ArgsTag<br/>§6.2"] -.-> thm
+    Attr["Attr<br/>§3, (S)"] -.-> thm
+    BinOp["BinOp<br/>§2, §5.8, (Arith), (Ord), (Float-Ord)"] -.-> thm
+    Cell["Cell<br/>§6.1"] -.-> thm
+    Config["Config<br/>§6.1, §6.12, (Result-Ok)"] -.-> thm
+    Config_Stuck["Config.Stuck<br/>§6, §7"] -.-> thm
+    Config_init["Config.init<br/>§6.12, (D-Return-Main), (D-Return)"] -.-> thm
+    Contents["Contents<br/>§6.1, §6.3, §4.2, §6.11, (D-Use-Move)"] -.-> thm
+    Contents_declaredLinear["Contents.declaredLinear<br/>§6.1"] -.-> thm
+    Contents_declaredPlan["Contents.declaredPlan<br/>§6.3, §4.2"] -.-> thm
+    Contents_mult["Contents.mult<br/>§3, (T)"] -.-> thm
+    Contents_ofVal["Contents.ofVal<br/>§6.8, §6.7, (D-Let)"] -.-> thm
+    Contents_readAt["Contents.readAt<br/>§6.3, §7"] -.-> thm
+    Contents_resolveDyn["Contents.resolveDyn<br/>§6.5, §6.3, §6.8, (D-Index), (D-Index-Trap)"] -.-> thm
+    Contents_skeleton["Contents.skeleton<br/>§6.3"] -.-> thm
+    Contents_splitResidue["Contents.splitResidue<br/>§6.3, §5.1"] -.-> thm
+    Contents_toVal["Contents.toVal<br/>§6.3, §7"] -.-> thm
+    Contents_writeAt["Contents.writeAt<br/>§6.3, §6.8, (D-Use-Move)"] -.-> thm
+    Decls["Decls<br/>§2, §3"] -.-> thm
+    Decls_classOf["Decls.classOf<br/>§3, (S)"] -.-> thm
+    Decls_enumClassOf["Decls.enumClassOf<br/>§3, (E)"] -.-> thm
+    DynPlace["DynPlace"] -.-> thm
+    DynStep["DynStep<br/>§6.5"] -.-> thm
+    EnumDecl["EnumDecl<br/>§2, §5.5, §3, §6.11, (Match), (E0417)"] -.-> thm
+    Env["Env<br/>§6.1"] -.-> thm
+  end
+```
+
+(90 more definitions the statement depends on, past the 25 cap.)
+
+<details>
+<summary>All 115 definitions step_no_use_after_drop's statement depends on</summary>
+
+[`ArgsTag`](#def-ArgsTag), [`Attr`](#def-Attr), [`BinOp`](#def-BinOp), [`Cell`](#def-Cell), [`Config`](#def-Config), [`Config.Stuck`](#def-Config_Stuck), [`Config.init`](#def-Config_init), [`Contents`](#def-Contents), [`Contents.declaredLinear`](#def-Contents_declaredLinear), [`Contents.declaredPlan`](#def-Contents_declaredPlan), [`Contents.mult`](#def-Contents_mult), [`Contents.ofVal`](#def-Contents_ofVal), [`Contents.readAt`](#def-Contents_readAt), [`Contents.resolveDyn`](#def-Contents_resolveDyn), [`Contents.skeleton`](#def-Contents_skeleton), [`Contents.splitResidue`](#def-Contents_splitResidue), [`Contents.toVal`](#def-Contents_toVal), [`Contents.writeAt`](#def-Contents_writeAt), [`Decls`](#def-Decls), [`Decls.classOf`](#def-Decls_classOf), [`Decls.enumClassOf`](#def-Decls_enumClassOf), [`DynPlace`](#def-DynPlace), [`DynStep`](#def-DynStep), [`EnumDecl`](#def-EnumDecl), [`Env`](#def-Env), [`Event`](#def-Event), [`Expr`](#def-Expr), [`FloatArith`](#def-FloatArith), [`FloatDatum`](#def-FloatDatum), [`FloatDatum.isNaN`](#def-FloatDatum_isNaN), [`FloatDatum.le`](#def-FloatDatum_le), [`FloatDatum.lt`](#def-FloatDatum_lt), [`FloatDatum.negate`](#def-FloatDatum_negate), [`FloatDatum.roundOp`](#def-FloatDatum_roundOp), [`FloatDatum.succMag`](#def-FloatDatum_succMag), [`FloatDatum.toIntIn`](#def-FloatDatum_toIntIn), [`FloatDatum.totalCmp`](#def-FloatDatum_totalCmp), [`FloatDatum.totalRank`](#def-FloatDatum_totalRank), [`FloatDatum.truncToInt`](#def-FloatDatum_truncToInt), [`FloatDatum.widen`](#def-FloatDatum_widen), [`FloatIntrin`](#def-FloatIntrin), [`FloatLit`](#def-FloatLit), [`FloatOps`](#def-FloatOps), [`FloatOps.cast`](#def-FloatOps_cast), [`FloatOps.roundIntrin`](#def-FloatOps_roundIntrin), [`FloatRoundOp`](#def-FloatRoundOp), [`FloatUnIntrin`](#def-FloatUnIntrin), [`FloatWidth`](#def-FloatWidth), [`FnDef`](#def-FnDef), [`Focus`](#def-Focus), [`Frame`](#def-Frame), [`Frame.popScope`](#def-Frame_popScope), [`InBounds`](#def-InBounds), [`IntWidth`](#def-IntWidth), [`IntWidth.bits`](#def-IntWidth_bits), [`IntWidth.modulus`](#def-IntWidth_modulus), [`Kont`](#def-Kont), [`Kont.toCall`](#def-Kont_toCall), [`Kont.toLoop`](#def-Kont_toLoop), [`Mult`](#def-Mult), [`OpRes`](#def-OpRes), [`OpRes.toStep`](#def-OpRes_toStep), [`PanicKind`](#def-PanicKind), [`Param`](#def-Param), [`Place`](#def-Place), [`Place.path`](#def-Place_path), [`Place.root`](#def-Place_root), [`Program`](#def-Program), [`Sign`](#def-Sign), [`Step`](#def-Step), [`StepOut`](#def-StepOut), [`Steps`](#def-Steps), [`Store`](#def-Store), [`StructDecl`](#def-StructDecl), [`Ty`](#def-Ty), [`Ty.mult`](#def-Ty_mult), [`UnOp`](#def-UnOp), [`Val`](#def-Val), [`Val.ints`](#def-Val_ints), [`Val.mult`](#def-Val_mult), [`Val.observable`](#def-Val_observable), [`Violation`](#def-Violation), [`binOpFloat`](#def-binOpFloat), [`binOpInt`](#def-binOpInt), [`bitsOf`](#def-bitsOf), [`canonAux`](#def-canonAux), [`canonNum`](#def-canonNum), [`cmpScaled`](#def-cmpScaled), [`dropCell`](#def-dropCell), [`dropContents`](#def-dropContents), [`dynPlace`](#def-dynPlace), [`evalBinOp`](#def-evalBinOp), [`evalFintrin`](#def-evalFintrin), [`evalIntCast`](#def-evalIntCast), [`evalUnOp`](#def-evalUnOp), [`inBoundsIdx`](#def-inBoundsIdx), [`intMax`](#def-intMax), [`intMin`](#def-intMin), [`intResult`](#def-intResult), [`magCmp`](#def-magCmp), [`matchConsume`](#def-matchConsume), [`mintParams`](#def-mintParams), [`plainDestructure`](#def-plainDestructure), [`plainDropRetire`](#def-plainDropRetire), [`plainResidue`](#def-plainResidue), [`plainUnwind`](#def-plainUnwind), [`residueMark`](#def-residueMark), [`rootCell`](#def-rootCell), [`shiftAmount`](#def-shiftAmount), [`step`](#def-step), [`stepArgs`](#def-stepArgs), [`stepEval`](#def-stepEval), [`stepRet`](#def-stepRet), [`valOf`](#def-valOf), [`wrapInt`](#def-wrapInt)
+
+</details>
+
 ### `eval_sound`
 
 ```mermaid
@@ -2153,7 +2244,8 @@ marked node.
 | `run_safe` | `RueCore.Soundness` | 24 | 2 |
 | `no_violation` | `RueCore.Soundness` | 46 | 3 |
 | `no_use_after_move` | `RueCore.Soundness` | 3 | 0 |
-| `no_use_after_drop` | `RueCore.Soundness` | 9 | 0 |
+| `no_use_after_drop` | `RueCore.Soundness` | 12 | 0 |
+| `run_no_use_after_drop` | `RueCore.Retire` | 11 | 51 |
 | `no_linear_leak` | `RueCore.Soundness` | 4 | 0 |
 | `no_linear_overwrite` | `RueCore.Soundness` | 7 | 0 |
 | `no_linear_discard` | `RueCore.Soundness` | 3 | 0 |
@@ -2177,6 +2269,7 @@ marked node.
 | `step_progress` | `RueCore.Adequacy` | 11 | 0 |
 | `step_preservation` | `RueCore.Adequacy` | 13 | 2 |
 | `step_type_safety` | `RueCore.Adequacy` | 25 | 2 |
+| `step_no_use_after_drop` | `RueCore.Retire` | 10 | 57 |
 | `eval_sound` | `RueCore.Adequacy` | 17 | 0 |
 | `run_sim` | `RueCore.Adequacy` | 18 | 0 |
 | `eval_complete` | `RueCore.Adequacy` | 23 | 0 |
