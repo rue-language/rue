@@ -62,7 +62,10 @@ counter-example carries a reason (`RueCore.Spec.sharpnessReasons`), and the lint
 fails on one with neither: 70 of the 71 have a counter-example and 1
 has a reason. Of the 70, 19 are premises inside a conclusion, under
 an `∧`, an `↔` or an `∃` of it (a `run … = .ok`, a `Steps …` or an `n < fuel` that
-a conjunct starts from), not hypotheses about the program. The walk does not go
+a conjunct starts from), not hypotheses about the program. For `drop_order` 2–3,
+`eval_sound` 2–3, `run_sim` 1–2, `eval_complete` 2 and 4 and `run_complete` 1 and 3,
+the dropped premise is the only thing tying its bound value or trace to the program,
+so the counter-example shows only that the conclusion is not a tautology. The walk does not go
 under `∨` or `¬`, nor into a definition that is not reducible (`Config.SafeAt`,
 `Exact`, `Blocks`, `Lifo`). Each pairing of a counter-example with a (theorem,
 number) is checked by the kernel (74 pairs): `RueCore/Sharp/Glue.lean` proves,
