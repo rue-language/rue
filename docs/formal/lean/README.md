@@ -37,6 +37,12 @@ Lean build until ADR-0097's gate is met (RUE-2241). CI does read these
 sources: the premerge cross-reference gate below fails on an uncited
 declaration or a stale `INDEX.md`.
 
+Agents writing or reviewing proofs here may use the lean4-skills plugin's
+review, golf and triage workflows; [TOOLING.md](TOOLING.md) (RUE-2455) records
+how they behave on this package (no Mathlib, no LSP server, the module system),
+what they found on `RueCore/TraceOrder.lean`, and which parts the project uses.
+None of it replaces the gates below: the plugin's axiom checker is not ours.
+
 ## The bridge corpus (ADR-0097, RUE-2227)
 
 `lake exe ruecore-corpus` (or the `corpus.json` output of `scripts/rue lean`)
