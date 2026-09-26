@@ -11,7 +11,7 @@ cannot drift from what the kernel checked the way a hand-drawn picture could.
 
 **Marked nodes.** Two lists, both closed over the environment:
 
-* the **spine** — `RueCore.Spec.spine`'s 36 headline theorems (RUE-2460),
+* the **spine** — `RueCore.Spec.spine`'s headline theorems (RUE-2460),
   read here as `Lint.headline`; this file adds no attribute to a spine
   module, and no edit to one;
 * the **milestones** (`milestones` below) — about twenty to thirty load-bearing
@@ -56,7 +56,7 @@ namespace RueCore.Map
 /-! ## Milestone lemmas -/
 
 /-- (helper) The milestone lemmas: load-bearing internal lemmas besides the
-36-theorem spine (`Lint.headline`), picked from the preservation invariants,
+spine (`Lint.headline`), picked from the preservation invariants,
 the `eval`/`Step` simulation lemmas, and the key trace lemmas — the three
 groups RUE-2468 asks for. Each entry's second component is its one-line
 reason, kept as data (not only a source comment) so `mapReport` can print it

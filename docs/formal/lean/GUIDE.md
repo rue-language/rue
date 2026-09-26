@@ -740,6 +740,11 @@ Both halves are over §6's `Step`.
   has no other place in the grammar. It is proved over `eval`
   (`run_blocks`) and carried to `Step`'s finished runs by `eval_complete`
   (`step_blocks`).
+  `Blocks` reads each drop's events off `dropEvents`, so it moves with that
+  definition. `drop_glue_order` (RUE-2487) states the same order in §6.11's
+  own terms: its grammar `GlueBlocks` gives each drop's events by
+  `DropGlue`, one rule per §6.11 equation, so a change to `dropEvents` that
+  reorders or skips a drop makes it false.
 - **Across cells**, the order comes from the scope records, which the trace
   does not show. `C.stack` is the machine's registration stack: every
   suspended caller's scope record, then the current frame's.

@@ -899,8 +899,8 @@ name definitions outside the trusted base (`Float.exactOps` and its
 `roundRat`): a witness can only fail to witness, never widen a claim; nor
 are the sharpness counter-examples, which say a claim cannot be widened. Today
 the headlines' trusted base is 295 definitions,
-all in L0 and L1 (the package has @@BESIDES@@ theorems besides, @@NVGLUE@@ of them the
-glue applications of `Nonvacuous/Glue.lean` and @@SGLUE@@ the sharpness glue of
+all in L0 and L1 (the package has 1297 theorems besides, 239 of them the
+glue applications of `Nonvacuous/Glue.lean` and 78 the sharpness glue of
 `Sharp/Glue.lean`, and the 80 `Spine`
 restatements: 39 of the spine, 13 of the witnesses, 28 of the sharpness
 counter-examples). A
