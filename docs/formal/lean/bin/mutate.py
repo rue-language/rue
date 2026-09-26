@@ -656,7 +656,7 @@ RULINGS = {
     "first-arm-ty": ("holds", "refuses more: no statement is about the checker's completeness"),
     "match-exhaustive": ("equivalent", "`TypedArms` and `checkArms` walk arms and variants in step and fail on a length mismatch, so the premise is implied"),
     "arm-leak": ("statement", "accepts an arm that ends with a live linear payload binding; the machine refuses with `linearLeak` (`enum_arm_leaks_payload`): `soundness`"),
-    "arm-payload-mutable": ("helper", "only `Ctx.skel_armCtx`, which restates `armCtx`; mutability is not a safety property", {"soundness": "a payload binding is a cell of its own (the arm mints it), so a write to it is an ordinary assignment; the machine never reads a binding's mutability, and `FrameMatches` does not mention it"}),
+    "arm-payload-mutable": ("helper", "only `Ctx.skel_extendArm`, which restates `extendArm`; mutability is not a safety property", {"soundness": "a payload binding is a cell of its own (the arm mints it), so a write to it is an ordinary assignment; the machine never reads a binding's mutability, and `FrameMatches` does not mention it"}),
     "let-leak": ("statement", "accepts a `let` that ends with a live linear binding; `linearLeak` (`linear_leaked`): `soundness`"),
     "residual-declared": ("statement", "a partially moved declared-linear struct owes nothing, so its leak is accepted; the machine's monitor still refuses: `soundness`"),
     "residual-untracked": ("statement", "untouched linear slots owe nothing, so their leak is accepted; the machine refuses: `soundness`"),

@@ -4131,7 +4131,7 @@ example : checkProgram (prog tI64 joinMovedVsPartialLinear) = false := by rfl
 example : run demoOps (prog tI64 joinMovedVsPartialLinear) demoFuel = .stuck .linearLeak := by rfl
 
 /-- **A `match` payload binding is immutable** (§5.5's (Match) binds its
-payload locals without `mut`, `armCtx`). The arm assigns the `i64` payload
+payload locals without `mut`, `extendArm`). The arm assigns the `i64` payload
 binding, which (Assign) §5.2 refuses (the compiler: "cannot assign to
 immutable"). The machine runs the arm and returns `5`. -/
 def matchPayloadAssign : Expr :=

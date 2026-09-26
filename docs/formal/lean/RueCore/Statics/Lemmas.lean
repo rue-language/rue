@@ -1908,7 +1908,7 @@ theorem TypedArms.at_index {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty} :
     ∀ {arms : List Expr} {Tss : List (List Ty)} {os : List (Option Ctx)} {Δs : List Ctx},
       TypedArms P R Γ₀ arms Tss T os Δs →
       ∀ (k : Nat) {body : Expr} {Ts : List Ty}, arms[k]? = some body → Tss[k]? = some Ts →
-        ∃ ob Δb, Typed P R (armCtx Ts Γ₀) body T ⟨ob, Δb⟩ ∧
+        ∃ ob Δb, Typed P R (extendArm Ts Γ₀) body T ⟨ob, Δb⟩ ∧
           (∀ Γb, ob = some Γb →
             NoResidualLinear P.decls (Γb.take Ts.length) ∧ some (Γb.drop Ts.length) ∈ os) ∧
           Δb ⊆ Δs
@@ -1979,18 +1979,18 @@ theorem skel_set_setSt {Γ : Ctx} {i : Nat} {en : Entry} (h : Γ[i]? = some en)
 
 /-- A `match` arm's entry context has the arm's payload locals on top of the
 incoming skeleton, so popping them leaves that skeleton (helper). -/
-theorem Ctx.skel_armCtx (Ts : List Ty) (Γ : Ctx) :
-    Ctx.skel (armCtx Ts Γ) = (Ts.map fun T => (T, false)).reverse ++ Ctx.skel Γ := by
-  simp [Ctx.skel, armCtx, Entry.skel, List.map_append, List.map_reverse]
+theorem Ctx.skel_extendArm (Ts : List Ty) (Γ : Ctx) :
+    Ctx.skel (extendArm Ts Γ) = (Ts.map fun T => (T, false)).reverse ++ Ctx.skel Γ := by
+  simp [Ctx.skel, extendArm, Entry.skel, List.map_append, List.map_reverse]
 
 /-- The context an arm hands the §5.5 join — its body's outgoing context with
 the payload locals popped — has the skeleton the arm started from (helper). -/
-theorem skel_drop_armCtx {Γb : Ctx} {Ts : List Ty} {Γ₀ : Ctx}
-    (h : Ctx.skel Γb = Ctx.skel (armCtx Ts Γ₀)) :
+theorem skel_drop_extendArm {Γb : Ctx} {Ts : List Ty} {Γ₀ : Ctx}
+    (h : Ctx.skel Γb = Ctx.skel (extendArm Ts Γ₀)) :
     Ctx.skel (Γb.drop Ts.length) = Ctx.skel Γ₀ := by
   have hmap : Ctx.skel (Γb.drop Ts.length) = (Ctx.skel Γb).drop Ts.length := by
     simp [Ctx.skel, List.map_drop]
-  rw [hmap, h, Ctx.skel_armCtx]
+  rw [hmap, h, Ctx.skel_extendArm]
   have hlen : ((Ts.map fun T => (T, false)).reverse).length = Ts.length := by simp
   rw [← hlen, List.drop_left]
 
@@ -2226,10 +2226,10 @@ theorem Ctx.Extends.pop {Γb Γ : Ctx} {en : Entry} (h : Ctx.Extends Γb (en :: 
   exact ⟨pre ++ [en.skel], by simpa [Ctx.skel] using hp⟩
 
 /-- The same for a `match` arm's payload locals (helper). -/
-theorem Ctx.Extends.armCtx {Γb Γ₀ : Ctx} {Ts : List Ty} (h : Ctx.Extends Γb (armCtx Ts Γ₀)) :
+theorem Ctx.Extends.extendArm {Γb Γ₀ : Ctx} {Ts : List Ty} (h : Ctx.Extends Γb (extendArm Ts Γ₀)) :
     Ctx.Extends Γb Γ₀ := by
   obtain ⟨pre, hp⟩ := h
-  exact ⟨pre ++ (Ts.map fun T => (T, false)).reverse, by rw [hp, Ctx.skel_armCtx]; simp⟩
+  exact ⟨pre ++ (Ts.map fun T => (T, false)).reverse, by rw [hp, Ctx.skel_extendArm]; simp⟩
 
 /-- An extension is at least as long as what it extends (helper). -/
 theorem Ctx.Extends.length_le {Γb Γ : Ctx} (h : Ctx.Extends Γb Γ) : Γ.length ≤ Γb.length := by
@@ -2456,16 +2456,16 @@ theorem TypedArms.skel_all {P R} : ∀ {Γ₀ : Ctx} {arms Tss T} {os : List (Op
   | _, _, _, _, _, _, .arm hbody _ hrest => by
       have kb := Typed.skel_preserved hbody
       have kr := TypedArms.skel_all hrest
-      refine ⟨⟨skel_drop_armCtx (kb.norm _ rfl), kr.1⟩, fun Γb hb => ?_⟩
+      refine ⟨⟨skel_drop_extendArm (kb.norm _ rfl), kr.1⟩, fun Γb hb => ?_⟩
       rcases List.mem_append.mp hb with hb | hb
-      · exact (kb.brk Γb hb).armCtx
+      · exact (kb.brk Γb hb).extendArm
       · exact kr.2 Γb hb
   | _, _, _, _, _, _, .armDiv hbody hrest => by
       have kb := Typed.skel_preserved hbody
       have kr := TypedArms.skel_all hrest
       refine ⟨kr.1, fun Γb hb => ?_⟩
       rcases List.mem_append.mp hb with hb | hb
-      · exact (kb.brk Γb hb).armCtx
+      · exact (kb.brk Γb hb).extendArm
       · exact kr.2 Γb hb
 end
 
@@ -2510,7 +2510,7 @@ gives `⊥` no state at all, so every normal outgoing state is one a rule
 wrote, and `Typed.wf` below proves the invariant is preserved. The premise is
 then discharged once, for every derivation from a well-formed context. -/
 
-/-- (helper) Every state `fnCtx`/`armCtx`/`let` push is `Owned`, a shape of
+/-- (helper) Every state `fnCtx`/`extendArm`/`let` push is `Owned`, a shape of
 every type. -/
 theorem Entry.wf_owned (D : Decls) (T : Ty) (m : Bool) :
     Entry.wf D { ty := T, mu := m, st := .owned } = true := by
@@ -2539,10 +2539,10 @@ theorem Ctx.Wf.set_setAt {D : Decls} {Γ : Ctx} {i : Nat} {en : Entry} {π : Lis
     exact OwnSt.setAt_wf T' u hu π en.st en.ty hen hty
 
 /-- (helper) A `match` arm's entry context is well-formed when `Σ0` is. -/
-theorem Ctx.Wf.armCtx {D : Decls} {Γ₀ : Ctx} (Ts : List Ty) (h : Ctx.Wf D Γ₀) :
-    Ctx.Wf D (armCtx Ts Γ₀) := by
+theorem Ctx.Wf.extendArm {D : Decls} {Γ₀ : Ctx} (Ts : List Ty) (h : Ctx.Wf D Γ₀) :
+    Ctx.Wf D (extendArm Ts Γ₀) := by
   intro en hmem
-  unfold RueCore.armCtx at hmem
+  unfold RueCore.extendArm at hmem
   simp only [List.mem_append, List.mem_reverse, List.mem_map] at hmem
   rcases hmem with ⟨T, _, rfl⟩ | hm
   · exact Entry.wf_owned D T false
@@ -2764,7 +2764,7 @@ theorem TypedArms.wf {P R} : ∀ {Γ₀ : Ctx} {arms Tss T} {os : List (Option C
     {Δs : List Ctx}, TypedArms P R Γ₀ arms Tss T os Δs → Out.WfArms P.decls Γ₀ os Δs
   | _, _, _, _, _, _, .noArms => fun _ => ⟨by simp, by simp⟩
   | _, _, _, _, _, _, .arm hbody _ hrest => fun hw => by
-      have kb := Typed.wf hbody (hw.armCtx _)
+      have kb := Typed.wf hbody (hw.extendArm _)
       have kr := TypedArms.wf hrest hw
       refine ⟨fun Γ hΓ => ?_, fun Γb hb => ?_⟩
       · simp only [List.filterMap_cons, id, List.mem_cons] at hΓ
@@ -2775,7 +2775,7 @@ theorem TypedArms.wf {P R} : ∀ {Γ₀ : Ctx} {arms Tss T} {os : List (Option C
         · exact kb.brk Γb hb
         · exact kr.2 Γb hb
   | _, _, _, _, _, _, .armDiv hbody hrest => fun hw => by
-      have kb := Typed.wf hbody (hw.armCtx _)
+      have kb := Typed.wf hbody (hw.extendArm _)
       have kr := TypedArms.wf hrest hw
       refine ⟨kr.1, fun Γb hb => ?_⟩
       rcases List.mem_append.mp hb with hb | hb

@@ -1504,10 +1504,10 @@ def arrayStmt (D : Decls) (Γ : Scope) (rhs : Scope → Ty → G Expr) (other : 
   | _ => return unitLit
 
 /-- (helper) The binders an arm's body is drawn under: (Match) §5.5's payload
-locals on top of the enclosing scope, in `armCtx`'s order — the tuple
+locals on top of the enclosing scope, in `extendArm`'s order — the tuple
 **reversed**, so component `ai` has de Bruijn index `0` — and unmarked, because
 §2 gives a pattern binding no `μ` (the compiler's parser rejects `mut` there,
-which is what makes `armCtx`'s `mu := false` faithful). -/
+which is what makes `extendArm`'s `mu := false` faithful). -/
 def armScope (Ts : List Ty) (Γ : Scope) : Scope :=
   (Ts.map (fun T => ({ ty := T, mu := false } : Binder))).reverse ++ Γ
 
@@ -2518,7 +2518,7 @@ def rulesIn (D : Decls) (F : List FnDef) (Γ : List Ty) : Expr → List String
 
 /-- (helper) The labels a `match`'s arms exercise, walked alongside the
 declaration's variant list: arm `j` is read under variant `j`'s payload locals
-(`armScope`'s order, which is `armCtx`'s). A `match` whose scrutinee
+(`armScope`'s order, which is `extendArm`'s). A `match` whose scrutinee
 `Print.tyOf` could not type has no variant list, and its arms are then read
 under the enclosing binders alone. -/
 def rulesArms (D : Decls) (F : List FnDef) (Γ₀ : List Ty) : List Expr → List (List Ty) → List String

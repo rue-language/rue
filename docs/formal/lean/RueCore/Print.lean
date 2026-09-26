@@ -710,7 +710,7 @@ partial def dynTail (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) :
 /-- One printed arm per variant: the variant path with its payload binders, then
 the arm body as a block. The binder for payload component `j` is `v<|Γ| + j>`,
 which is the name the body's de Bruijn index resolves to under
-`Ts.reverse ++ Γ` — the same order `armCtx` (`Statics.lean`) builds (helper). -/
+`Ts.reverse ++ Γ` — the same order `extendArm` (`Statics.lean`) builds (helper). -/
 partial def matchArms (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) (name : String) :
     Nat → List Expr → List (List Ty) → List String
   | _, [], _ => []

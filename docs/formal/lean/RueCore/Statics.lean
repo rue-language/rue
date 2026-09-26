@@ -727,7 +727,7 @@ unordered `join(Σ1, …, Σn)` the calculus writes.
 Its premise — every arm's outgoing context a shape of its declared types
 (`Ctx.Wf`) — is one the rules that *write* keep: `OwnSt.setAt_wf` for (Use-Move)
 §5.1, (@Drop) §5.3 and (Assign) §5.2, `Ctx.joinAll_wf` for a nested (Match), and
-`fnCtx`/`armCtx` push `Owned`. §5.7's `⊥` has no state to break it: the
+`fnCtx`/`extendArm` push `Owned`. §5.7's `⊥` has no state to break it: the
 judgment carries §5.3's `Ω`, so a diverging arm contributes nothing to the
 join, and `Typed.wf` (end of this module) proves the invariant preserved
 judgment-wide. The theorems below keep `Ctx.Wf` as a premise, which `Typed.wf`
@@ -742,7 +742,7 @@ pattern binding no `μ`, so nothing may assign to one), and the list is
 innermost-binder-first while a payload tuple is written left to right, so
 component 1 is the outermost of the arm's binders and component `ai` has de
 Bruijn index `0`. -/
-def armCtx (Ts : List Ty) (Γ : Ctx) : Ctx :=
+def extendArm (Ts : List Ty) (Γ : Ctx) : Ctx :=
   (Ts.map fun T => ({ ty := T, mu := false, st := .owned } : Entry)).reverse ++ Γ
 
 /-- The accumulator step of (Match) §5.5's `join(Σ1, …, Σn)`: fold the binary
@@ -1169,7 +1169,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   it: `exhaustive_arm_exists` (`Soundness.lean`) is that a well-typed tag has an arm.
 
   Each arm is typed from the **same** post-scrutinee state `Σ0` under its
-  payload locals (`armCtx`), all arms at one type `T` — the premise a diverging
+  payload locals (`extendArm`), all arms at one type `T` — the premise a diverging
   arm satisfies through (Sub-Never), which the `⊥` rules fold in, exactly as
   an `ite` arm does. An arm that continues leaves its payload locals' scope
   under §5.6: `TypedArms` carries the same residual-linear check `Typed.letIn`
@@ -1710,7 +1710,7 @@ post-scrutinee state `Σ0`** (a `match` is a branch, not a sequence, so Σ is no
 threaded from arm to arm) and each at the one type `T` the rule concludes at.
 
 An arm that continues carries two premises of its own. Its body is typed under
-the variant's payload locals (`armCtx`), and at its end those locals leave
+the variant's payload locals (`extendArm`), and at its end those locals leave
 scope under §5.6 — `NoResidualLinear` over the `ai` entries the arm pops is
 the leak check `Typed.letIn` makes for its single binder, read over the whole
 payload (`6.3:17`: a `Linear` payload an arm neither moves nor consumes is a
@@ -1726,7 +1726,7 @@ inductive TypedArms (P : Program) (R : Ty) : Ctx → List Expr → List (List Ty
   variant's payload locals, those locals discharged by §5.6 at the arm's end,
   and the rest of the arms typed from the same `Σ0`. -/
   | arm {Γ₀ Γb Δb os Δs e es Ts Tss T} :
-      Typed P R (armCtx Ts Γ₀) e T ⟨some Γb, Δb⟩ →
+      Typed P R (extendArm Ts Γ₀) e T ⟨some Γb, Δb⟩ →
       NoResidualLinear P.decls (Γb.take Ts.length) →
       TypedArms P R Γ₀ es Tss T os Δs →
       TypedArms P R Γ₀ (e :: es) (Ts :: Tss) T (some (Γb.drop Ts.length) :: os) (Δb ++ Δs)
@@ -1734,7 +1734,7 @@ inductive TypedArms (P : Program) (R : Ty) : Ctx → List Expr → List (List Ty
   exit is reached on a normal path and it contributes no state to the join
   (§5.5, `3.8:51`), only its deliveries. -/
   | armDiv {Γ₀ Δb os Δs e es Ts Tss T} :
-      Typed P R (armCtx Ts Γ₀) e T ⟨none, Δb⟩ →
+      Typed P R (extendArm Ts Γ₀) e T ⟨none, Δb⟩ →
       TypedArms P R Γ₀ es Tss T os Δs →
       TypedArms P R Γ₀ (e :: es) (Ts :: Tss) T (none :: os) (Δb ++ Δs)
 end
