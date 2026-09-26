@@ -40,7 +40,7 @@ def CTy.fits : CTy → Ty → Bool
   | .ty T', T => decide (T' = T)
 
 /-- Whether one checked type admits every type another admits — the arm
-comparison `match` makes against the type `firstArmTy` fixed (helper). -/
+comparison `match` makes against the type `armsJoinTy` fixed (helper). -/
 def CTy.fitsC : CTy → CTy → Bool
   | .never, _ => true
   | .ty T', .ty T => decide (T' = T)
@@ -253,11 +253,11 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
          | none => none
          | some ed =>
            if arms.length = ed.variants.length then
-             (match checkArms P R Γ₀ (firstArmTy P R Γ₀ arms ed.variants) arms ed.variants with
+             (match checkArms P R Γ₀ (armsJoinTy P R Γ₀ arms ed.variants) arms ed.variants with
               | none => none
               | some (os, Δs) =>
                 (match Ctx.joinOpts P.decls os with
-                 | some o => some (firstArmTy P R Γ₀ arms ed.variants, ⟨o, Δs ++ Δ₀⟩)
+                 | some o => some (armsJoinTy P R Γ₀ arms ed.variants, ⟨o, Δs ++ Δ₀⟩)
                  | none => none))
            else none)
       | some (.ty (.enum _), ⟨none, Δ₀⟩) => some (.never, ⟨none, Δ₀⟩)
@@ -542,12 +542,12 @@ def checkIdx (P : Program) (R : Ty) : Ctx → List Expr → Option (List Ty × O
 type `T` for every arm and lets (Sub-Never) supply it for a diverging one, so
 `check` fixes `T` here and compares the others against it — exactly what it
 does for `ite`'s two arms (`CTy.meet`). -/
-def firstArmTy (P : Program) (R : Ty) (Γ₀ : Ctx) :
+def armsJoinTy (P : Program) (R : Ty) (Γ₀ : Ctx) :
     List Expr → List (List Ty) → CTy
   | e :: es, Ts :: Tss =>
       match check P R (extendArm Ts Γ₀) e with
       | some (.ty T, _) => .ty T
-      | _ => firstArmTy P R Γ₀ es Tss
+      | _ => armsJoinTy P R Γ₀ es Tss
   | _, _ => .never
 
 /-- (Match) §5.5's arm premises as an algorithm: every arm from the same
