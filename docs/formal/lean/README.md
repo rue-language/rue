@@ -404,10 +404,12 @@ rounding intrinsics (`roundOp_wf`), and the widening half of `@float_cast`
 constructive — `roundRat` rounds an exact rational into `𝔽_w` by integer
 arithmetic — so nothing in the package touches Lean's `Float`, whose
 definition over an `opaque` constant would otherwise put `Classical.choice` on
-every theorem that so much as mentions a value. What the package does **not**
-prove is that `exactOps` satisfies the laws; that is the residual assumption,
-and it is checked rather than proved, by running every float corpus case
-against the compiler. `propext` and
+every theorem that so much as mentions a value. And `exactOps` satisfies the
+laws, as a theorem rather than an assumption: `Float.exactModel`
+(`RueCore/Float/Lemmas.lean`, RUE-2469) proves every one of them of it, so the
+laws have a model and no theorem over `M : FloatModel` holds vacuously. What
+is checked rather than proved is that its roundings are IEEE 754's beyond what
+the laws say, by running every float corpus case against the compiler. `propext` and
 `Quot.sound` are this project's policy; `Classical.choice` is kernel-checked
 but outside it; `sorryAx` and the axiom `native_decide` adds (one per use
 from Lean 4.29, `foo._native.native_decide.ax_1_1`; `Lean.ofReduceBool`
@@ -557,8 +559,8 @@ its own layer or a lower one:
 | --- | --- | --- |
 | **L0 syntax** | `Float`, `Syntax` | §2's syntax, types and float data |
 | **L1 definitions** | `Statics`, `Dynamics`, `Step`, `Soundness/Defs`, `Checker/Defs`, `Trace/Defs`, `Adequacy/Defs` | the semantics (§5's judgment, `eval`, §6's `Step`), and every definition a headline statement is written in: value typing and `FrameMatches`, the checker algorithm, the trace projections, ledgers and configuration invariants, `Config.SafeAt` |
-| **Spec statements** | `Spec`, `Spec.Safety`, `Spec.Checker`, `Spec.Trace`, `Spec.Step`, `Spec.Adequacy` | the headline statements, each a `def …_stmt : Prop` over L0 and L1 alone, with its English reading; the one list of them, `Spec.spine` ("The statement layer") |
-| **L2 proofs** | `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder`, `Spine` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L1's definitions, and `Spine` checks each headline proof against its Spec statement |
+| **Spec statements** | `Spec`, `Spec.Safety`, `Spec.Checker`, `Spec.Trace`, `Spec.Step`, `Spec.Adequacy`, `Spec.Witnesses` | the headline statements, each a `def …_stmt : Prop` over L0 and L1 alone, with its English reading; the one list of them, `Spec.spine` ("The statement layer"); and the non-vacuity witnesses with their list, `Spec.witnesses` ("Non-vacuity witnesses") |
+| **L2 proofs** | `Float.Lemmas`, `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder`, `Nonvacuous`, `Spine` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L0's and L1's definitions (`Float.Lemmas`: the `FloatModel` laws of `Float.exactOps`), `Nonvacuous` proves the witness statements, and `Spine` checks each headline and witness proof against its Spec statement |
 | **L3 tooling** | `Examples`, `Witnesses`, `Print`, `Corpus`, `Gen`, `Explain*`, `Digest`, `Layers`, `Lint`, the `*Main` executables, the root `RueCore` | example and corpus programs and the theorems about them, the printer, the generator, the explain and digest reports, the layer table and the lint |
 
 L3 may import anything; nothing in L0–L2 or Spec imports L3, so no theorem of the
@@ -585,8 +587,8 @@ on any other module in the closure that is not the package's (a library a
 L0–L2 or Spec module importing anything outside the package but `Init`, on
 one that is not a `module`, and on a module missing from the table, a
 stale table entry, or a source file nothing imports. It prints the graph, one
-line per module, and ends with `ruecore-layers: 43 modules, 101 package
-imports, no upward import; import closure: 43 modules outside the toolchain,
+line per module, and ends with `ruecore-layers: 46 modules, 116 package
+imports, no upward import; import closure: 46 modules outside the toolchain,
 all the package's, …`. `lake exe ruecore-layers --closure` prints that
 closure, one module per line: the list the kernel re-check replays. The Buck target runs it as the `layers.txt`
 report, so `./buck2 build root//:lean-ruecore` fails on an upward import;
@@ -641,11 +643,14 @@ flowchart BT
     Spec_Safety["Spec.Safety"]
     Spec_Step["Spec.Step"]
     Spec_Trace["Spec.Trace"]
+    Spec_Witnesses["Spec.Witnesses"]
   end
   subgraph L2["L2 proofs"]
     Adequacy["Adequacy"]
     Checker["Checker"]
     Dynamics_Lemmas["Dynamics.Lemmas"]
+    Float_Lemmas["Float.Lemmas"]
+    Nonvacuous["Nonvacuous"]
     Soundness["Soundness"]
     Spine["Spine"]
     Statics_Lemmas["Statics.Lemmas"]
@@ -689,6 +694,19 @@ flowchart BT
   Spec_Trace --> Spec
   Spec_Step --> Spec
   Spec_Adequacy --> Spec
+  Spec_Witnesses --> Spec
+  Float --> Spec_Witnesses
+  Checker_Defs --> Spec_Witnesses
+  Soundness_Defs --> Spec_Witnesses
+  Trace_Defs --> Spec_Witnesses
+  Adequacy_Defs --> Spec_Witnesses
+  Float --> Float_Lemmas
+  Float_Lemmas --> Nonvacuous
+  Checker --> Nonvacuous
+  Soundness --> Nonvacuous
+  Trace --> Nonvacuous
+  Adequacy --> Nonvacuous
+  Nonvacuous --> Spine
   Adequacy_Defs --> Spec_Adequacy
   Checker_Defs --> Spec_Checker
   Soundness_Defs --> Spec_Safety
@@ -816,7 +834,7 @@ ruecore-layers --closure)`, every module the audit's walk from the `.olean`
 headers reaches outside the toolchain. The toolchain's modules (`Init`,
 `Std`, `Lean`, `Lake`) are not replayed; they are trusted as the toolchain
 is. The audit fails on any other module in the closure, so what is replayed
-is exactly the package's 43 modules. The Buck target runs it after the
+is exactly the package's 46 modules. The Buck target runs it after the
 executables are built; a local check should run it too (about 15 s).
 
 It prints each table, ends with one summary line, and exits non-zero on a
@@ -965,11 +983,72 @@ without Landlock fails 3.
   passing case, are untested; the refusals (no `landrun`, one that always
   fails, a shim, the no-op one) are tested on macOS.
 
+## Non-vacuity witnesses (RUE-2469)
+
+A kernel-checked statement can still be empty: a checker that accepts nothing
+is trivially sound, and a statement over every `M : FloatModel` holds
+vacuously if no model satisfies the laws. So every spine statement has
+**non-vacuity witnesses**: Spec statements (`RueCore/Spec/Witnesses.lean`)
+saying that its hypotheses hold together of a non-trivial program, written out
+in the statement, with the non-triviality in the statement too.
+
+* **The float laws have a model.** `Nonvacuous.exact_model` is `∃ M :
+  FloatModel, M.toFloatOps = Float.exactOps`: `RueCore/Float/Lemmas.lean`
+  proves every law of the executable instance (closure of `rnd_w` through
+  `roundRat_wf` and `@sqrt`'s `sqrt_core`, the NaN, division and literal laws
+  by case analysis), constructively, with three core-library facts that reach
+  `Classical.choice` reproved. It covers the 19 statements over a model.
+* **Eight programs, one per construct class**: destructors, declared-linear
+  values, a loop, an array, an enum with `match`, an early `return`, `@panic`
+  and floats. Each statement says the checker accepts the program, it is
+  `ProgramTyped` and `pendingSafe`, its body is typed by `check`, and its run
+  on `Float.exactOps` returns (or panics) and is reached by `Step` from
+  `Config.init`, with, say, two identities freed and two destructors run, or
+  the value `7.5`. The destructor program also carries `DtorNotCopy`, a step
+  from `Config.init`, never-stuck at every fuel, and a `Lead` minting an owned
+  identity, the hypotheses the trace statements add.
+* **A program that diverges** (`loop { () }`, `outOfFuel` at every fuel, both
+  sides of `eval_diverges_iff`), **one that gets stuck** unchecked (a read after
+  `@drop`: `run` refuses it with `useAfterMove` and `Step` reaches a stuck
+  configuration), and **the empty frame** (`FrameMatches` and `StoreCC` at the
+  empty context, frame and store).
+
+`RueCore.Spec.witnesses` lists each with its theorem (`RueCore/Nonvacuous.lean`,
+L2) and the spine theorems it witnesses. It is read beside `Spec.spine`:
+`Spine.lean` binds each proof, the lint holds each to a spine entry's checks
+and fails on a spine theorem no witness names, and Comparator's challenge and
+configuration, `spine-fingerprints.txt` and `SPINE.md` (each theorem's
+"Non-vacuous" line, and a last section with the witnesses in full) include
+them. The proofs run the checker and `eval` in the kernel: `rfl`, `decide`,
+and `decide +kernel` for the float program, whose rounding reaches `2^1076`,
+past the elaborator's evaluation threshold; never `native_decide`.
+
+A witness shows a hypothesis satisfiable, not needed; that a conclusion fails
+once a hypothesis is dropped (sharpness) is RUE-2485's.
+
+**The checker's acceptance profile.** `lake exe ruecore-corpus --profile
+[--gen N --seed S]` counts how many corpus and generated programs
+`checkProgram` accepts and rejects, and each side's outcomes under `run`. At
+this commit: of the 174 seed cases it accepts 140 (116 return, 24 panic) and
+rejects 34 (21 refused by a violation, 13 that run to a value, the checker's
+conservatism: a leak on a path not taken, say); of 200 generated programs
+(seed 7) it accepts 115 and rejects 85 (52 refused, 33 that return or panic).
+No accepted program is refused, as `no_violation` says. `Witnesses.lean`'s
+`errorClasses_rejected` checks in the kernel that it rejects a corpus program
+of each error class the statics rule out (use after move, a linear leak at a
+scope exit, a join, an early `return` or a match arm, a linear element used on
+one path, a discard, an overwrite, a use of a partially moved value, a move
+out of a destructor-bearing value, a destructure with a linear residue),
+beside an accepted neighbour where the corpus has one, and
+`typeErrors_rejected` an operand of the wrong type and a call of the wrong
+arity.
+
 ## What is mechanized
 
 | File | Contents | Calculus |
 | --- | --- | --- |
 | `RueCore/Float.lean` | §2's datum set `𝔽_w` with the operations §6.4 computes exactly, `3.12:40`–`3.12:42`'s shortest round-trip rendering, the `FloatOps`/`FloatModel` interface and its named IEEE laws, and the constructive instance `Float.exactOps` | §2, §6.4, §7's float lemma |
+| `RueCore/Float/Lemmas.lean` | (layer L2) every `FloatModel` law proved of `Float.exactOps`, and `Float.exactModel` (RUE-2469): `roundRat_wf` (`rnd_w` lands in `𝔽_w`), `sqrt_core`/`sqrt_wf`, the NaN, division and literal laws | §2, §6.4, §7's float lemma |
 | `RueCore/Syntax.lean` | multiplicity lattice and its join, §2's declaration environment `D` — struct declarations with their attribute, fields and destructor, and **enum** declarations with one payload tuple per variant — types including `[T; n]`, `class(T)` with §3's four-line array table (`3.8:74`), **places** (§5's `Path`, field steps and **constant** index steps) with the type a path reaches, §4.2's use plan `dl(Γ,p)` (`declaredPrefix`) and §5.1's residue test (`linearResidue`) over it, and §4.2's restrictions on which projections may be moved, expressions | §2, §3, §4.2 |
 | `RueCore/Statics.lean` | §3's class assignment as a checked equation, for both layers, grounded by `3.0:5`'s joint acyclicity read through array nesting (`WfStructs`/`WfEnums`/`WfNames` over `Ty.declIds`, the unconditional `class_unique` and its two projections, `struct_carriesLinear_iff`/`enum_carriesLinear_iff`), the fused flow-sensitive `Γ;Σ` context with Σ **keyed by path** (`OwnSt`, `fullyOwned`, §5.6's recursive `residualLinear`, whose array clause reads the element type `n` times), the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type, and concluding at §5.3's outgoing result `Ω` with the `-Bottom` rules and the join over the arms that continue) — the ordinary place rules and the **declared-linear destructure** of §5.1 beside them — the §5.5 branch join over paths and its n-way fold at a `match` (proved commutative and, over states that are shapes of their declared types (`OwnSt.wf`), associative, so the fold is invariant under a permutation of the arms, `Ctx.joinAll_perm`, idempotent and absorbing its right arm, `Ctx.join_absorb`, and every derivation preserves that shape invariant, `Typed.wf`), §5.7's loop-head equation `LoopHead` with its re-entry lemma, (Fn) and whole-program well-formedness, skeleton preservation | §3, §4.2, §5.1–§5.3, §5.5–§5.8 |
 | `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with observation traces (drops, destructors, `@dbg`); cell **contents as a tree with `⊘` at any node**, navigated by a path (§6.3's `H(ℓ)@π` and `H[ℓ@π ↦ ⊘]`, a constant index being a step like a field slot); §6.3's `split`/`destructure` for the declared-linear redex, with a residue monitor; §6.11's recursive drop (destructor, then fields in declaration order, an enum's active variant's payload, and an array's elements in ascending index order, every `⊘` skipped); frames with scope records and their unwinds, `return`'s and `break`'s; loops, each turn spending fuel; value identities minted at aggregate introduction and carried by values, cells and trace events; violations as named refusals, among them the copy-closure monitor; §6.4's operator rules, §6.5's bounds trap at a dynamic index, and every §6.12 trap the fragment reaches, each carrying the trace up to it | §6.1–§6.12 |
@@ -984,17 +1063,18 @@ without Landlock fails 3.
 | `RueCore/Adequacy.lean` | **`eval` is adequate to `Step`, both ways, and §7 over `Step`** (RUE-2289 parts 2–4, ADR-0097 decision 3). Soundness: the simulation relation `Sim` between an `eval` result and `→*` from the expression in focus under any context — a value reaches the hole's value in the same frame, a panic reaches `↯κ`, an unwinding `return` the nearest caller, an unwinding `break` the nearest loop's context — proved for every expression and fuel on every program (`eval_sim`, `run_sim`), and `eval_sound`, the statement over checked programs, where `no_violation` rules `.stuck` out. Completeness modulo fuel: exhausted fuel is a run of that many steps (`eval_steps_of_outOfFuel`); with determinism, `eval_complete` says that on a checked program every value or panic `→*` reaches is `run`'s answer at every fuel past the run's length; `never_stuck_iff` is "never `.stuck`" both ways, in §7's phrasing; `eval_diverges_iff` says exhaustion at every fuel is divergence. §7 over `Step` (part 4): `step_progress`, `step_preservation` (for the semantic configuration typing `Config.SafeAt`, whose fundamental lemma is `init_safeAt`), `step_value_typed` and `step_type_safety`; `Frame.empty`, `StepsN` and `Config.SafeAt` are defined in `Adequacy/Defs.lean` (layer L1) | §6.2, §6.9, §6.10, §6.12, §7 |
 | `RueCore/Checker/Defs.lean` | (layer L1) the decidable checker as an algorithm, moved out of `Checker.lean`: `check`, `checkFn`, `checkDecls` and `checkProgram` | §3, §5 as an algorithm |
 | `RueCore/Checker.lean` | decidable checker `check`/`checkProgram` (defined in `Checker/Defs.lean`) + `check_sound`/`checkProgram_sound` (every acceptance is a derivation), with §5.7's loop head found by a bounded iteration (`headIter`) and re-verified, and `checkDecls` — §3's two class equations plus `3.0:5`'s acyclicity, decided by peeling the declarations | §3, §5 as an algorithm |
+| `RueCore/Spec/Witnesses.lean`, `RueCore/Nonvacuous.lean` | (layers Spec and L2) the non-vacuity witnesses (RUE-2469, "Non-vacuity witnesses"): twelve statements, over written-out programs, that the spine's hypotheses hold together of non-trivial programs, and their proofs | §7's hypotheses, satisfied |
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
-| `RueCore/Witnesses.lean` | (layer L3) the theorems at work on example and corpus programs, moved out of the proof modules because they mention the tooling layer: `affineScopeDrop_both_ways` traces one corpus program both ways; `drop_order`'s rejections (`fieldsSwapped_rejected`, `swappedMarkers_rejected`, `unorderedRecord_rejected`) and `returnPastAffine_newestFirst`; fourteen order-witnessing corpus cases read through the trace theorems; every accepted seed case is `pendingSafe`; and, moved from `Step.lean` and `Adequacy.lean` (RUE-2460), eleven programs run through §6's relation by `stepN` and `run_sim`'s and `run_complete`'s witnesses on them (`letAddProgram_sound`, `dropMoved_refused`) | §6.7, §6.9, §6.11, §7 witnesses |
+| `RueCore/Witnesses.lean` | (layer L3) the theorems at work on example and corpus programs, moved out of the proof modules because they mention the tooling layer: `affineScopeDrop_both_ways` traces one corpus program both ways; `drop_order`'s rejections (`fieldsSwapped_rejected`, `swappedMarkers_rejected`, `unorderedRecord_rejected`) and `returnPastAffine_newestFirst`; fourteen order-witnessing corpus cases read through the trace theorems; every accepted seed case is `pendingSafe`; and, moved from `Step.lean` and `Adequacy.lean` (RUE-2460), eleven programs run through §6's relation by `stepN` and `run_sim`'s and `run_complete`'s witnesses on them (`letAddProgram_sound`, `dropMoved_refused`); and the checker's rejections, one corpus case per error class (`errorClasses_rejected`, `typeErrors_rejected`, RUE-2469) | §5, §6.7, §6.9, §6.11, §7 witnesses |
 | `RueCore/Print.lean` | core syntax → Rue source, the program's struct and enum declarations included, and the observation channel (a `drop fn` per destructor-bearing declaration) | §2 elaboration inventory, 3.9 |
-| `RueCore/Corpus.lean` | the bridge corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`) | §5, §6, §7 witnesses |
+| `RueCore/Corpus.lean` | the bridge corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`), and the checker's acceptance profile over it (`--profile`, RUE-2469) | §5, §6, §7 witnesses |
 | `RueCore/Gen.lean` | a seeded, type-directed generator of fragment programs — struct **and enum** declarations, enum construction, `match` in §5.5's canonical form, **arrays**: `[T; n]` fields and binders, literal and repeat forms, constant-index reads, writes, element moves and `@drop`s, and dynamic-index reads, writes and `Copy` `@drop`s at and below the element, in and out of bounds — and **loops**: counted and once-through, nested, with `break` arms that may move a binder from outside the loop, every one terminating — appended to the corpus by `lake exe ruecore-corpus --gen N --seed S` | programs, not rules |
 | `RueCore/Explain.lean` | instrumented mirrors of `check` and `eval` — derivation trees with the failing premise named, and step tables with stores and drop events — with the lemmas tying both to the proved definitions | §5, §6 as an explanation |
 | `RueCore/Explain/Text.lean`, `RueCore/Explain/Html.lean`, `RueCore/Explain/Ledger.lean` | the terminal and self-contained-page renderings (`lake exe ruecore-explain`), each ending with the identity ledger: per owned identity, the step that minted it, the steps that ended it and the steps whose destructor ran on it, so "exactly once" and the order are visible; the checked-in text is in `explain/` | §7 |
 | `RueCore/Digest.lean`, `RueCore/DigestMain.lean` | the statement digest and the trust report, walked out of the compiled environment (`lake exe ruecore-digest`) | the claim inventory and its trust boundary |
 | `RueCore/Layers.lean`, `RueCore/LayersMain.lean` | the layer table and the layering audit over the compiled import graph (`lake exe ruecore-layers`, "Layers" above) | what the claims may depend on |
 | `RueCore/Lint.lean`, `RueCore/LintMain.lean` | the headline statements, the trusted-base lint over every declaration of the package, and the trusted base `TRUST.md` prints (`lake exe ruecore-lint`, "The trusted-base lint" above) | what the claims may rest on |
-| `RueCore/Spec.lean`, `RueCore/Spec/*.lean` | (layer Spec) the 36 headline statements, each a `def …_stmt : Prop` over L0 and L1 with its English reading, and `Spec.spine`, the one list of them ("The statement layer") | §7's claims, stated |
+| `RueCore/Spec.lean`, `RueCore/Spec/*.lean` | (layer Spec) the 36 headline statements, each a `def …_stmt : Prop` over L0 and L1 with its English reading, and `Spec.spine`, the one list of them ("The statement layer"); the twelve non-vacuity witnesses and their list, `Spec.witnesses` ("Non-vacuity witnesses") | §7's claims, stated |
 | `RueCore/Spine.lean` | (layer L2) each headline theorem restated with its Spec statement as its type, so the kernel checks the proof against it; Lean Comparator's solution | §7's claims, proved |
 | `comparator/` | Lean Comparator's challenge and configuration (generated) and `run.sh`, which builds and runs Comparator | the statement/proof split, certified |
 | `SPINE.md` | (generated) every Spec statement in Lean, its English reading, its §7 paragraph and the definitions it names — the first page a reviewer reads | §7's claims, stated |

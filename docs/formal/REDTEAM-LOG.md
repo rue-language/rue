@@ -196,3 +196,35 @@ Do not edit any file. Write your full report to <packet>/red-docs-report.md and 
 ```
 
 </details>
+
+---
+
+## 2026-09-26 — non-vacuity pass (RUE-2469, part 1)
+
+- **Trunk:** `1f227dbd3`.
+- **Kind:** witness pass, not a red-agent pass: no fresh session attacked
+  anything. It answers the vacuity findings of the first pass (L4, and the
+  non-vacuity half of R3) by construction; sharpness, including R3's
+  monitor-fires witnesses, is RUE-2485.
+- **What was built.**
+  - **L4 closed.** `Float.exactModel` (`lean/RueCore/Float/Lemmas.lean`)
+    proves every `FloatModel` law of `Float.exactOps`, so the laws have a
+    model. No law turned out false of `exactOps`.
+  - **Every spine theorem is witnessed.** Twelve Spec statements
+    (`lean/RueCore/Spec/Witnesses.lean`, listed in `Spec.witnesses`) show the
+    hypotheses of all 36 satisfiable by non-trivial programs, written out:
+    one per construct class (destructors, linear values, loops, arrays, enums
+    with `match`, early `return`, `@panic`, floats), a divergent one, an
+    unchecked stuck one, the model and the empty frame. The lint now fails on
+    a spine theorem no witness names, and Comparator and the fingerprints
+    cover the witnesses.
+  - **Checker profile.** `ruecore-corpus --profile`: 140 of 174 seed cases
+    accepted, 34 rejected, 13 of those running to a value (conservative
+    rejections); 115 of 200 generated programs (seed 7) accepted. No accepted
+    program is refused. `errorClasses_rejected` checks in the kernel one
+    rejected corpus case per error class.
+- **Findings.** None against the claim: every hypothesis was satisfiable by
+  the programs tried. One tooling finding: the core library's
+  `Nat.lt_of_mul_lt_mul_right`, `Nat.pow_lt_pow_right`,
+  `Nat.pow_le_pow_iff_right` and `Nat.sqrt_le` reach `Classical.choice` on
+  this toolchain (4.33.1), so `Float/Lemmas.lean` reproves them.
