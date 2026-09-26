@@ -239,7 +239,7 @@ it has two rows.
 | deviation | A place where the mechanization states a rule differently from the calculus, with the reason | none | — | ours, pending audit | `Statics` |
 | joint (acyclicity) | Of the no-cycle condition: it spans struct fields, enum payloads and array elements together | [spec 3.0:5][s3] | `WfNames` | Rue-specific, grounded | 03 intro; lean/README “What is mechanized”; `Syntax` |
 | by-value "names" relation | Between declarations: `S` names `T` when a field of `S`, a payload component of `S`, or the element type of such a field or component has type `T`; well-founded on every admitted program, so `class` is defined by recursion on it | [spec 3.0:5][s3] | `Decls.Names`, `WfNames` | Rue-specific, grounded | 01 §3 |
-| peeling; grounded (declaration) | The checker's acyclicity test: repeatedly remove declarations whose by-value components are all already removed | none | `Decls.peel`, `Ty.grounded` | ours, pending audit | 03 intro; README “Contents”; lean/README “What is mechanized”; `Statics` |
+| topological sort; grounded (declaration) | The checker's acyclicity test: repeatedly remove declarations whose by-value components are all already removed | none (Kahn 1962's "Topological sorting of large networks" is the accepted source, but ACM DL blocks it; not cited unseen) | `Decls.topoSort`, `Ty.grounded` | ours, pending audit | 03 intro; README “Contents”; lean/README “What is mechanized”; `Statics` |
 
 ### Dynamics
 
@@ -870,8 +870,8 @@ documents rely on.
 | `checkEnumDecl` | `Checker.Defs` | §3's class assignment for one enum: the join of its payloads' classes (`6.3:19`) | Rue-specific, grounded (spec 6.3:1) | — |
 | `checkEnums` | `Checker.Defs` | §3's class assignment for every enum declaration | Rue-specific, grounded (spec 6.3:1) | 03 intro; `Statics` |
 | `Ty.grounded` | `Checker.Defs` | Whether a type's declaration is already known not to contain itself by value | ours, pending audit | — |
-| `Decls.peelStep` | `Checker.Defs` | One round of the containment check over all declarations | helper | — |
-| `Decls.peel` | `Checker.Defs` | The containment check's flags after `n` rounds | helper | — |
+| `Decls.topoSortStep` | `Checker.Defs` | One round of the containment check over all declarations | helper | — |
+| `Decls.topoSort` | `Checker.Defs` | The containment check's flags after `n` rounds | helper | — |
 | `checkNoCycle` | `Checker.Defs` | `3.0:5` as an algorithm: no struct or enum contains itself by value | Rue-specific, grounded (spec 3.0:5) | 03 intro; `Statics` |
 | `checkDecls` | `Checker.Defs` | Checks a whole declaration environment: struct classes, enum classes, and no containment cycle | Rue-specific, grounded (spec 3.0:5) | 03 intro; lean/README “What is mechanized”; MUTATION “Proposed issues”; CHECKER-PROFILE “Why a rejected program still …”; `Statics` |
 | `checkProgram` | `Checker.Defs` | Checks a whole program: its declarations, every function, and an entry point with no parameters | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | 03 “Linear values are consumed exactly …”; lean/README “Non-vacuity witnesses”; GUIDE §4; BRIDGE-SENSITIVITY “Never exercised”; MUTATION “Method”; CHECKER-PROFILE intro; `Checker.Defs` |

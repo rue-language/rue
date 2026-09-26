@@ -657,15 +657,15 @@ def Ty.grounded (st : List Bool × List Bool) : Ty → Bool
 /-- One peel round: a declaration is grounded when every type it contains by
 value is — a struct's fields, an enum's payload components over every variant
 (helper). -/
-def Decls.peelStep (D : Decls) (st : List Bool × List Bool) : List Bool × List Bool :=
+def Decls.topoSortStep (D : Decls) (st : List Bool × List Bool) : List Bool × List Bool :=
   (D.structs.map (fun sd => sd.fields.all (Ty.grounded st)),
    D.enums.map (fun ed => ed.variants.all (fun Ts => Ts.all (Ty.grounded st))))
 
 /-- The grounded flags after `n` peel rounds, one per declaration of each
 layer; nothing is grounded at round `0` (helper). -/
-def Decls.peel (D : Decls) : Nat → List Bool × List Bool
+def Decls.topoSort (D : Decls) : Nat → List Bool × List Bool
   | 0 => (D.structs.map (fun _ => false), D.enums.map (fun _ => false))
-  | n + 1 => D.peelStep (D.peel n)
+  | n + 1 => D.topoSortStep (D.topoSort n)
 
 /-- **`3.0:5` (E0483) as an algorithm**: every declaration is grounded after
 `|structs| + |enums|` peel rounds, which is "no struct or enum contains itself
@@ -673,7 +673,7 @@ by value, either directly or through a cycle of struct fields and enum
 payloads". `checkNoCycle_sound` turns an acceptance into `WfNames`, the premise
 that makes §3's two class equations a definition. -/
 def checkNoCycle (D : Decls) : Bool :=
-  let st := D.peel (D.structs.length + D.enums.length)
+  let st := D.topoSort (D.structs.length + D.enums.length)
   st.1.all id && st.2.all id
 
 /-- A whole declaration environment as an algorithm: §3's equation for every

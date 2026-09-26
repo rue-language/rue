@@ -1098,31 +1098,31 @@ theorem checkEnums_sound {D : Decls} (h : checkEnums D = true) : WfEnums D := by
 
 /-- The grounded flags have one entry per declaration at every round
 (helper). -/
-theorem Decls.peel_length (D : Decls) : ∀ n : Nat,
-    (D.peel n).1.length = D.structs.length ∧ (D.peel n).2.length = D.enums.length
-  | 0 => ⟨by simp [Decls.peel], by simp [Decls.peel]⟩
-  | _ + 1 => ⟨by simp [Decls.peel, Decls.peelStep], by simp [Decls.peel, Decls.peelStep]⟩
+theorem Decls.topoSort_length (D : Decls) : ∀ n : Nat,
+    (D.topoSort n).1.length = D.structs.length ∧ (D.topoSort n).2.length = D.enums.length
+  | 0 => ⟨by simp [Decls.topoSort], by simp [Decls.topoSort]⟩
+  | _ + 1 => ⟨by simp [Decls.topoSort, Decls.topoSortStep], by simp [Decls.topoSort, Decls.topoSortStep]⟩
 
 /-- Nothing is grounded at round `0` (helper). -/
 theorem Decls.grounded_peel_zero (D : Decls) (d : DeclId) :
-    Ty.grounded (D.peel 0) d.ty = false := by
+    Ty.grounded (D.topoSort 0) d.ty = false := by
   cases d with
   | struct s =>
-      simp only [DeclId.ty, Ty.grounded, Decls.peel, List.getElem?_map]
+      simp only [DeclId.ty, Ty.grounded, Decls.topoSort, List.getElem?_map]
       cases D.structs[s]? <;> rfl
   | enum e =>
-      simp only [DeclId.ty, Ty.grounded, Decls.peel, List.getElem?_map]
+      simp only [DeclId.ty, Ty.grounded, Decls.topoSort, List.getElem?_map]
       cases D.enums[e]? <;> rfl
 
 /-- A declaration grounded at round `n+1` contains only declarations grounded
 at round `n`. This is the peel read backwards, and it is what turns an
 acceptance into well-foundedness (helper). -/
 theorem Decls.grounded_pred {D : Decls} {n : Nat} {d d' : DeclId}
-    (h : Ty.grounded (D.peel (n + 1)) d.ty = true) (hn : D.Names d d') :
-    Ty.grounded (D.peel n) d'.ty = true := by
+    (h : Ty.grounded (D.topoSort (n + 1)) d.ty = true) (hn : D.Names d d') :
+    Ty.grounded (D.topoSort n) d'.ty = true := by
   cases d with
   | struct s =>
-      simp only [DeclId.ty, Ty.grounded, Decls.peel, Decls.peelStep, List.getElem?_map] at h
+      simp only [DeclId.ty, Ty.grounded, Decls.topoSort, Decls.topoSortStep, List.getElem?_map] at h
       cases hd : D.structs[s]? with
       | none => rw [hd] at h; exact absurd h (by simp)
       | some sd =>
@@ -1132,7 +1132,7 @@ theorem Decls.grounded_pred {D : Decls} {n : Nat} {d d' : DeclId}
           obtain ⟨T, hT, hd'⟩ := hn
           exact Ty.grounded_declIds (h T hT) hd'
   | enum e =>
-      simp only [DeclId.ty, Ty.grounded, Decls.peel, Decls.peelStep, List.getElem?_map] at h
+      simp only [DeclId.ty, Ty.grounded, Decls.topoSort, Decls.topoSortStep, List.getElem?_map] at h
       cases hd : D.enums[e]? with
       | none => rw [hd] at h; exact absurd h (by simp)
       | some ed =>
@@ -1146,7 +1146,7 @@ theorem Decls.grounded_pred {D : Decls} {n : Nat} {d d' : DeclId}
 /-- A declaration grounded at some round is accessible in the by-value
 relation (helper). -/
 theorem Decls.acc_of_grounded (D : Decls) : ∀ (n : Nat) (d : DeclId),
-    Ty.grounded (D.peel n) d.ty = true → Acc (fun a b => D.Names b a) d
+    Ty.grounded (D.topoSort n) d.ty = true → Acc (fun a b => D.Names b a) d
   | 0, d, h => absurd h (by rw [D.grounded_peel_zero d]; simp)
   | n + 1, d, h =>
       Acc.intro d (fun d' hd' => D.acc_of_grounded n d' (Decls.grounded_pred h hd'))
@@ -1177,8 +1177,8 @@ theorem checkNoCycle_sound {D : Decls} (h : checkNoCycle D = true) : WfNames D :
       | none => exact Decls.acc_of_empty (by simp [Decls.byValue, hd])
       | some sd =>
           refine D.acc_of_grounded (D.structs.length + D.enums.length) (.struct s) ?_
-          have hlt : s < (D.peel (D.structs.length + D.enums.length)).1.length := by
-            rw [(D.peel_length _).1]
+          have hlt : s < (D.topoSort (D.structs.length + D.enums.length)).1.length := by
+            rw [(D.topoSort_length _).1]
             exact (List.getElem?_eq_some_iff.mp hd).1
           have hb := List.getElem?_eq_getElem hlt
           simp only [DeclId.ty, Ty.grounded, hb, Option.getD_some]
@@ -1188,8 +1188,8 @@ theorem checkNoCycle_sound {D : Decls} (h : checkNoCycle D = true) : WfNames D :
       | none => exact Decls.acc_of_empty (by simp [Decls.byValue, hd])
       | some ed =>
           refine D.acc_of_grounded (D.structs.length + D.enums.length) (.enum e) ?_
-          have hlt : e < (D.peel (D.structs.length + D.enums.length)).2.length := by
-            rw [(D.peel_length _).2]
+          have hlt : e < (D.topoSort (D.structs.length + D.enums.length)).2.length := by
+            rw [(D.topoSort_length _).2]
             exact (List.getElem?_eq_some_iff.mp hd).1
           have hb := List.getElem?_eq_getElem hlt
           simp only [DeclId.ty, Ty.grounded, hb, Option.getD_some]

@@ -194,8 +194,9 @@ data abstraction, and put `unsafe` code behind a safe API out of scope.
 2009; Owens, Myreen, Kumar & Tan 2016; Amin & Rompf 2017; Siek 2013;
 Nipkow & Klein, *Concrete Semantics*, with its Isabelle theory `Small_Step`;
 *Software Foundations* (`Smallstep`, `ImpCEvalFun`); Niu, Sterling & Harper
-2024 (as a secondary source for Plotkin 1977); Charguéraud 2013. Plotkin 1977
-and Reynolds 1972 are cited for existence only.
+2024 (as a secondary source for Plotkin 1977); Charguéraud 2013; Wadler 1992
+("Monads for functional programming"). Plotkin 1977 and Reynolds 1972 are
+cited for existence only.
 
 ### Accepted terms
 
@@ -206,6 +207,7 @@ and Reynolds 1972 are cited for existence only.
 | definitional interpreter | An interpreter that serves as the definition of a language | Amin & Rompf §2.1 ("in the style of Reynolds") |
 | environment | What an environment-passing interpreter looks variables up in; a closure pairs a term with one | Amin & Rompf §§2.1–2.2 |
 | store; store location | The run-time map the evaluator is threaded with; reading or writing a location accesses the store | Amin & Rompf §4.1 (mutable references) |
+| bind (monadic); the sequencing operation `m ⋆ λa. n` | Perform computation `m`, bind its result to `a`, then perform computation `n`; satisfies the left-unit, right-unit and associative monad laws | Wadler 1992 §2.5 (introduces the operation on the exception/state/output evaluators), §3 (the three laws) |
 | functional big-step semantics | Big-step semantics written as a total recursive function with a clock | Owens et al. |
 | clock | A counter in the interpreter state, decremented on recursive calls whose termination is not obvious | Owens et al. |
 | fuel; step index | A bound n on how much work the interpreter may do | Amin & Rompf |
@@ -785,4 +787,5 @@ the secondary source named alongside.
 | TPIL | J. Avigad, L. de Moura, S. Kong, S. Ullrich. *Theorem Proving in Lean 4* | https://lean-lang.org/theorem_proving_in_lean4/ | "Theorem Proving in Lean 4" and its chapters |
 | Tov & Pucella 2011 | J. A. Tov, R. Pucella. Practical affine types. POPL 2011, 447–458 | https://doi.org/10.1145/1926385.1926436 | Crossref; long-version PDF "Practical Affine Types" |
 | Walker 2005 | D. Walker. Substructural Type Systems. In B. C. Pierce (ed.), *Advanced Topics in Types and Programming Languages*, ch. 1, 3–44. MIT Press | https://doi.org/10.7551/mitpress/1104.003.0003 | Crossref (which dates the chapter 2004); MIT Press sample PDF "1 Substructural Type Systems" |
+| Wadler 1992 | P. Wadler. Monads for Functional Programming. In J. Jeuring, E. Meijer (eds.), *Advanced Functional Programming*, LNCS 925, 24–52. Springer, 1995 (notes appear 1992) | https://homepages.inf.ed.ac.uk/wadler/papers/marktoberdorf/baastad.pdf | the author's PDF, "Monads for functional programming" |
 | Wright & Felleisen 1994 | A. K. Wright, M. Felleisen. A Syntactic Approach to Type Soundness. *Inf. Comput.* 115(1):38–94, 1994 | https://doi.org/10.1006/inco.1994.1093 | OpenAlex record; the Rice TR91-160 preprint of the same title (numbering here is the preprint's) |
