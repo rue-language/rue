@@ -363,14 +363,14 @@ function `dropEvents` the machine's walk is proved equal to. So a trace in
 this grammar runs each value's destructor first, then its fields in
 declaration order, an array's elements ascending and an enum's active payload
 only, whatever the machine's own drop glue says. -/
-inductive GlueBlocks (D : Decls) : List Event → Prop
-  | nil : GlueBlocks D []
-  | dbg {v : Val} {t : List Event} : GlueBlocks D t → GlueBlocks D (.dbg v :: t)
-  | consume {c : Contents} {t : List Event} : GlueBlocks D t → GlueBlocks D (.consume c :: t)
+inductive DropGlueBlocks (D : Decls) : List Event → Prop
+  | nil : DropGlueBlocks D []
+  | dbg {v : Val} {t : List Event} : DropGlueBlocks D t → DropGlueBlocks D (.dbg v :: t)
+  | consume {c : Contents} {t : List Event} : DropGlueBlocks D t → DropGlueBlocks D (.consume c :: t)
   | drop {ℓ : Nat} {c : Contents} {evs t : List Event} :
-      DropGlue D c evs → GlueBlocks D t → GlueBlocks D (.drop ℓ c :: (evs ++ t))
+      DropGlue D c evs → DropGlueBlocks D t → DropGlueBlocks D (.drop ℓ c :: (evs ++ t))
   | dropTemp {v : Val} {evs t : List Event} :
-      DropGlue D (.ofVal v) evs → GlueBlocks D t → GlueBlocks D (.dropTemp v :: (evs ++ t))
+      DropGlue D (.ofVal v) evs → DropGlueBlocks D t → DropGlueBlocks D (.dropTemp v :: (evs ++ t))
 
 /-- A scope record in **registration order is location order**: its cells
 strictly increasing, every one below the store's length `n` (helper). -/
