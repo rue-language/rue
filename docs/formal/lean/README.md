@@ -62,8 +62,9 @@ that is wrong, is measured in [BRIDGE-SENSITIVITY.md](BRIDGE-SENSITIVITY.md)
 mutants one at a time and recorded which seed or generated case caught each.
 Whether the proofs, the witnesses, the corpus and the bridge would notice a
 wrong *definition* is measured in [MUTATION.md](MUTATION.md) (RUE-2465):
-80 one-rule mutants of the definition layer, run by `bin/mutate.py`, with
-what each kill rests on.
+80 one-rule mutants of the semantics and the checker (`Syntax`, `Statics`,
+`Checker/Defs`, `Dynamics`, `Step`), run by `bin/mutate.py`, with what each
+kill rests on.
 
 ```bash
 scripts/rue lean-bridge                      # or: ./buck2 run //:lean-bridge
