@@ -562,11 +562,11 @@ RULINGS = {
     "seq-droptemp-skip": ("statement", "a discarded temporary is never marked freed: `rest_exactly_once`'s `Exact`"),
     "residue-mark-skip": ("statement", "a destructure's residue is never marked freed: `Exact`"),
     "match-consume-skip": ("statement", "a matched enum's shell identity is never freed: `Exact`"),
-    "leak-monitor-off": ("holds", "the linear theorems say the machine never refuses a checked program, which a machine with no refusal meets"),
-    "overwrite-monitor-off": ("holds", "as `leak-monitor-off`"),
-    "discard-monitor-off": ("helper", "only `eval_succ`, which restates `eval`; the linear theorems hold as for `leak-monitor-off`"),
-    "copy-monitor-off": ("helper", "only `Cons.intro`, a ledger step for `introVal`; a checked program never builds an owned value under a `Copy` one"),
-    "dyn-residual-declared": ("holds", "the machine's leak monitor is weaker; as `leak-monitor-off`"),
+    "leak-monitor-off": ("statement", "`Sharp.leak` is false: an unchecked leak is no longer refused (RUE-2485); the linear theorems still hold, since a machine with no refusal meets them"),
+    "overwrite-monitor-off": ("statement", "`Sharp.overwrite` is false: an unchecked overwrite of a live linear value is no longer refused (RUE-2485)"),
+    "discard-monitor-off": ("statement", "`Sharp.discard` and `Sharp.discard_loop` are false: an unchecked discard is no longer refused (RUE-2485); the build stops first at `eval_succ`, which restates `eval`"),
+    "copy-monitor-off": ("statement", "`Sharp.copy` is false: an owned value under a `Copy` one is no longer refused (RUE-2485); the build stops first at `Cons.intro`, a ledger step for `introVal`"),
+    "dyn-residual-declared": ("statement", "`Sharp.leak` and `Sharp.overwrite` are false: a declared-linear struct with no linear field owes nothing, so its leak and its overwrite are no longer refused (RUE-2485)"),
 }
 
 

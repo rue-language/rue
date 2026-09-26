@@ -26,7 +26,11 @@ Measured on trunk `c2fe428ff` (2026-09-25), with the six seeds this page adds
 ("Mutation score").
 The non-vacuity witnesses of RUE-2469 landed after this measurement.
 They add proofs and witnesses, never remove them, so a rerun with them can
-only kill more; the table and score below predate them.
+only kill more; the table and score below predate them, except for the
+five monitor mutants (rows 76–80), which RUE-2485 reran on its branch
+(`mutate.py --only`, trunk `a22c321f4` plus the sharpness statements) and
+whose rows, readings and the two score rows they move were updated by hand
+from that run.
 RUE-2486 seeds all thirteen of proposed issue 1's witness-only refusals, in
 two PRs: part 1 seeded `use-move-rootidx`, `index-read-copy`,
 `index-drop-copy-checker`, `const-index-off-by-one`, `index-write-linear`,
@@ -220,7 +224,7 @@ adds (and their six `Examples.lean` witnesses); "after" is with them.
 | Measure | Before the six seeds | After |
 |---|---:|---:|
 | **Killed** | 73/76 (96%) | 76/76 (100%) |
-| A stated property is false | 48/76 (63%) | 48/76 (63%) |
+| A stated property is false | 53/76 (70%) | 53/76 (70%) |
 | The tests with the proofs off: witnesses, seeds, generated cases | 66/76 (87%) | 71/76 (93%) |
 | The seeds and the bridge alone | 50/76 (66%) | 69/76 (91%) |
 
@@ -242,7 +246,7 @@ These rows are recorded but do not count as kills:
 
 | Also recorded | Before | After |
 |---|---:|---:|
-| A stated property or a helper lemma is false | 53/76 (70%) | 53/76 (70%) |
+| A stated property or a helper lemma is false | 56/76 (74%) | 56/76 (74%) |
 | The build or the corpus fails at all: a proof script, a helper lemma or the Explain mirror included | 76/76 (100%) | 76/76 (100%) |
 
 Before the seeds, three mutants were not killed. Each failed only on
@@ -266,11 +270,11 @@ Counted apart:
   - `repeat-count`, `seq-affine-as-linear` and `seq-droptemp-skip`.
 
   It was the only failure of `assign-immutable` before the seeds.
-* **A helper lemma only** is the reading of 5 mutants:
-  - `arm-payload-mutable` and `zero-array-linear`;
-  - `cast-kind`, `discard-monitor-off` and `copy-monitor-off`.
-
-  All five are killed after the seeds by a witness or a seed.
+* **A helper lemma only** is the reading of 3 mutants:
+  `arm-payload-mutable`, `zero-array-linear` and `cast-kind`. All three are
+  killed after the seeds by a witness or a seed. (Before RUE-2485 it was
+  also the reading of `discard-monitor-off` and `copy-monitor-off`; see the
+  monitors below.)
 * **A proof script only**: 16 mutants fail a proof while every statement
   holds. All 16 are killed after the seeds by a witness, a seed or the bridge.
 
@@ -323,14 +327,24 @@ Counted apart:
   witnesses and 89, 2 and 24 seeds kill them through their destructor lines.
   The frame-exit and match-exit order mutants (`scope-fifo`,
   `payload-order`) do falsify `drop_order`'s `Lifo`.
-* **The monitors are pinned only by examples.** Removing the `linearLeak`,
-  `linearOverwrite`, `linearDiscard` or `ownedUnderCopy` refusal leaves every
-  stated property true; two of them fail a helper lemma. The linear theorems
-  say the machine never refuses a checked program, and a machine that never
-  refuses meets that. The refusal witnesses in `Examples.lean`,
-  `Corpus.lean` and `Trace.lean` kill all four, and the seeds whose expected
-  outcome is that refusal kill three. This is the red-team log's R3
-  (RUE-2485), measured.
+* **The monitors are pinned by the sharpness statements.** The linear
+  theorems say the machine never refuses a checked program, and a machine
+  that never refuses meets that: removing the `linearLeak`,
+  `linearOverwrite`, `linearDiscard` or `ownedUnderCopy` refusal, or
+  weakening the leak monitor (`dyn-residual-declared`), leaves every spine
+  statement true. This was the red-team log's R3, measured. Since RUE-2485
+  each of the five falsifies a Spec statement, a sharpness counter-example
+  that states the refusal of an unchecked program (`Sharp.leak`,
+  `Sharp.overwrite`, `Sharp.discard`, `Sharp.discard_loop`, `Sharp.copy`;
+  lean/README "Sharpness counter-examples"). For three the build stops in
+  `Sharp.lean`; for `discard-monitor-off` and `copy-monitor-off` it stops
+  first at a helper upstream (`eval_succ`, `Cons.intro`), and the Sharp
+  statements' falsity was checked by hand: with the mutated `eval`, the
+  discard program panics, the discarding loop exhausts its fuel, and
+  `dupProgram` returns with one destructor run twice, none of them the
+  refusal the statements state. The refusal witnesses in `Examples.lean`,
+  `Corpus.lean` and `Trace.lean` still kill all five with the proofs off,
+  and the seeds whose expected outcome is that refusal kill four.
 * **Trace-only mutants are invisible to the bridge by construction.**
   `seq-droptemp-skip`, `residue-mark-skip` and `match-consume-skip` remove a
   drop mark or a `consume` event, and none of these is an output line.
@@ -465,11 +479,11 @@ pass leaves as written. `mutate.py --table` prints this table from
 | 73 | `seq-droptemp-skip` | §6.7 | (D-Seq) temporary drop mark | drop-skip | proof: `rest_step` (`TraceExact.lean`) | Explain mirror: `traceEval_res` (`Explain.lean`) | survived | a stated property is false | a discarded temporary is never marked freed: `rest_exactly_once`'s `Exact` | 94 |
 | 74 | `residue-mark-skip` | §6.3 | destructure residue drop mark | drop-skip | proof: `residueMark_measure` (`Trace.lean`) | witness: `Examples.lean` example (l. 2921) | survived | a stated property is false | a destructure's residue is never marked freed: `Exact` | 32 |
 | 75 | `match-consume-skip` | §6.6 | (D-Match) consume | drop-skip | proof: `matchConsume_measure` (`Trace.lean`) | witness: `Examples.lean` example (l. 2821) | survived | a stated property is false | a matched enum's shell identity is never freed: `Exact` | 32 |
-| 76 | `leak-monitor-off` | §6.11 | linearLeak monitor | monitor | witness: `Examples.lean` example (l. 1347) | — | corpus: `destructure_linear_residue`, `enum_arm_leaks_payload` +9 | every statement holds | the linear theorems say the machine never refuses a checked program, which a machine with no refusal meets | 24 |
-| 77 | `overwrite-monitor-off` | §6.8 | linearOverwrite monitor | monitor | witness: `Corpus.lean` example (l. 972) | — | corpus: `linear_overwrite` | every statement holds | as `leak-monitor-off` | 24 |
-| 78 | `discard-monitor-off` | §6.7 | linearDiscard monitor | monitor | proof: `eval_succ` (`Soundness.lean`) | witness: `Corpus.lean` example (l. 974) | corpus: `linear_temporary_discarded` | only a helper is false | only `eval_succ`, which restates `eval`; the linear theorems hold as for `leak-monitor-off` | 24 |
-| 79 | `copy-monitor-off` | §6.5 | ownedUnderCopy monitor | monitor | proof: `Cons.intro` (`Trace.lean`) | witness: `Trace.lean` example | corpus: `copy_monitor_off` | only a helper is false | only `Cons.intro`, a ledger step for `introVal`; a checked program never builds an owned value under a `Copy` one | 36 |
-| 80 | `dyn-residual-declared` | §6.11 | Contents.residualLinear (3.8:74) | affine-linear | witness: `Examples.lean` example (l. 1342) | — | corpus: `destructure_linear_residue`, `enum_arm_leaks_payload` +10 | every statement holds | the machine's leak monitor is weaker; as `leak-monitor-off` | 24 |
+| 76 | `leak-monitor-off` | §6.11 | linearLeak monitor | monitor | proof: `leak` (`Sharp.lean`) | witness: `Examples.lean` example (l. 1347) | corpus: `destructure_linear_residue`, `enum_arm_leaks_payload` +9 | a stated property is false | `Sharp.leak` is false: an unchecked leak is no longer refused (RUE-2485); the linear theorems still hold, since a machine with no refusal meets them | 38 |
+| 77 | `overwrite-monitor-off` | §6.8 | linearOverwrite monitor | monitor | proof: `overwrite` (`Sharp.lean`) | witness: `Corpus.lean` example (l. 972) | corpus: `linear_overwrite` | a stated property is false | `Sharp.overwrite` is false: an unchecked overwrite of a live linear value is no longer refused (RUE-2485) | 39 |
+| 78 | `discard-monitor-off` | §6.7 | linearDiscard monitor | monitor | proof: `eval_succ` (`Soundness.lean`) | witness: `Corpus.lean` example (l. 974) | corpus: `linear_temporary_discarded` | a stated property is false | `Sharp.discard` and `Sharp.discard_loop` are false: an unchecked discard is no longer refused (RUE-2485); the build stops first at `eval_succ`, which restates `eval` | 26 |
+| 79 | `copy-monitor-off` | §6.5 | ownedUnderCopy monitor | monitor | proof: `Cons.intro` (`Trace.lean`) | witness: `Trace.lean` example | corpus: `copy_monitor_off` | a stated property is false | `Sharp.copy` is false: an owned value under a `Copy` one is no longer refused (RUE-2485); the build stops first at `Cons.intro`, a ledger step for `introVal` | 100 |
+| 80 | `dyn-residual-declared` | §6.11 | Contents.residualLinear (3.8:74) | affine-linear | proof: `leak` (`Sharp.lean`) | witness: `Examples.lean` example (l. 1342) | corpus: `destructure_linear_residue`, `enum_arm_leaks_payload` +10 | a stated property is false | `Sharp.leak` and `Sharp.overwrite` are false: a declared-linear struct with no linear field owes nothing, so its leak and its overwrite are no longer refused (RUE-2485) | 35 |
 
 ### Equivalent mutants
 
@@ -582,11 +596,11 @@ disagreement the allowed red).
    should be a §7 bullet.
 3. **[Formal/Assurance] The linear theorems are satisfied by a machine with
    no monitors.** Removing any of the four run-time refusals leaves every
-   stated property true. Evidence: `leak-monitor-off`,
+   spine statement true. Evidence: `leak-monitor-off`,
    `overwrite-monitor-off`, `discard-monitor-off`, `copy-monitor-off` and
-   `dyn-residual-declared`. This is R3 of the red-team log, measured. It
-   belongs as a comment on RUE-2469 (bring the monitor-fires witnesses into
-   the statement layer) rather than as a new issue.
+   `dyn-residual-declared`. This is R3 of the red-team log, measured. Done
+   in RUE-2485: the monitor-fires statements are in the Spec layer, and each
+   of the five mutants now falsifies one.
 4. **(Loop tooling, state-dir `bin/`) Keep the mutants applicable.**
    `bin/mutate.py --check` takes a few seconds. It fails when an edit no
    longer matches the sources, and when a module is missing from

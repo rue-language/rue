@@ -307,3 +307,61 @@ What the mutants could not get past:
   `join-linear-disagree`, `join-residual`, `join-diverge-arm`), the leak
   mutants at every scope exit (`let`, arm, `return`, `break`, function
   exit), and the rules-only loop mutants.
+
+---
+
+## 2026-09-26 — sharpness pass (RUE-2485, RUE-2469 part 2)
+
+- **Trunk:** `a22c321f4`.
+- **Kind:** sharpness pass, not a red-agent pass: no fresh session attacked
+  anything. It answers the rest of R3 (the monitor-fires statements) and
+  RUE-2469's deliverable 2 by construction.
+- **What was built.**
+  - **Every spine hypothesis is needed, or has a reason.** The lint numbers
+    each spine statement's hypotheses (`Lint.hypotheses`: its `Prop`
+    premises, those inside the conclusion included): 71 in the 36
+    statements. 27 Spec statements (`lean/RueCore/Spec/Sharp.lean`, listed
+    in `Spec.sharpness` with the hypotheses they drop) are counter-examples
+    for 70 of them: a program or configuration, written out, of which the
+    dropped hypothesis fails, every other holds, and the conclusion fails.
+    The last has a reason in `Spec.sharpnessReasons`, and so do the
+    `FloatModel` laws, once. The lint fails on a hypothesis with neither;
+    Comparator and the fingerprints cover the statements, and `SPINE.md`
+    prints a "Sharp" line per statement.
+  - **R3 closed.** Four statements run a leak, an overwrite, a discard and an
+    owned value under a `Copy` one unchecked and state `eval`'s refusal
+    with its tag; two more state that §6's relation, which has no monitor,
+    runs the leak to a value and a discarding loop forever while `eval`
+    refuses them. The five monitor mutants of RUE-2465 are now killed by a
+    false stated property ([lean/MUTATION.md](lean/MUTATION.md), rows
+    76–80).
+  - **The issue's examples.** An ill-typed expression that gets stuck
+    (`Sharp.typed`), and an unchecked program that runs a destructor twice
+    on one identity: a `@copy` struct with a destructor, copied into two
+    owners (`Sharp.double_drop`). RUE-2400's `eval` cases (a dynamic read
+    and an array repeat of an affine value) no longer reproduce on this
+    trunk: `eval` refuses them with `typeConfusion`.
+- **Findings.**
+  - **S1, `no_use_after_drop`'s `ProgramTyped` appears redundant** (low; no
+    issue proposed yet). No program, checked or not, seems to reach `eval`'s
+    `useAfterDrop` refusal through `run`: a frame's environment names only
+    cells its own bindings allocated, each removed from the environment as
+    the cell is retired, and `run` starts from the empty store and frame.
+    `Examples.lean` already says no closed program reaches the guard, and
+    witnesses it only from an open state. So the statement holds, it seems,
+    of every program, and says less than its place beside
+    `no_use_after_move` suggests. Unproved: a proof is an induction over
+    `eval` with the invariant that the frame's environment names no `.dead`
+    cell. Recorded as the one reason in `Spec.sharpnessReasons`.
+  - **S2, `drop_order` needs `ProgramTyped` only through `DtorNotCopy`**
+    (confirmation, no issue). Its first half is the only one to read the
+    typing hypothesis (its doc-comment says so), and the counter-example
+    that breaks it is a `@copy` struct with a destructor left as a
+    destructure's residue: dropped with no marker, its destructor event opens
+    the trace (`Sharp.bare_dtor`).
+- **Not done.** No kernel-checked tie between a counter-example and the
+  hypothesis it names: for a witness, `Nonvacuous/Glue.lean` applies the
+  spine theorem; for a counter-example, the dropped hypothesis is a
+  hand-written pair `(theorem, number)`, and the statement's doc-comment says
+  which. A glue for sharpness would state each spine theorem with that
+  hypothesis removed and derive its negation.
