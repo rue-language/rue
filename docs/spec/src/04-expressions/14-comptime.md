@@ -118,6 +118,12 @@ fn main() -> i32 {
 
 Comptime parameters enable monomorphization: each unique combination of comptime arguments creates a specialized version of the function.
 
+A float comptime argument is identified by its value (its bit pattern) at its
+parameter's float type, not by its spelling: `3`, `3.0`, and `0.3e1` passed to
+a `comptime v: f32` parameter select one specialization. `-0.0` and `0.0` are
+distinct arguments, as are equal values at different float types; a comptime
+NaN is canonical (3.12:48).
+
 The keyword `type` is a comptime-only type whose values are types themselves. A parameter of type `type` must be marked `comptime`.
 
 ```rue

@@ -3626,10 +3626,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         negated: bool,
         ty: H::Type,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
+        // The canonical float text, so `3` is `3e0` as `3.0` is and both name
+        // one value (RUE-2403).
         let text = if negated {
-            format!("-{magnitude}")
+            crate::negated_integer_float_value_text(magnitude)
         } else {
-            magnitude.to_string()
+            crate::integer_float_value_text(i128::from(magnitude))
         };
         match host_value!(self.host.float_value_from_text(&text, Some(ty))) {
             Some(value) => ComptimeOutcome::Known(value),
@@ -3910,13 +3912,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     // An integer literal is admitted where a float is
                     // expected (spec 3.12:11, ADR-0065 §3): it becomes the
                     // float nearest to it, as `let x: f32 = 3;` does at run
-                    // time. The value keeps the literal's decimal text, which
-                    // every float consumer reads at its own width.
+                    // time. The value keeps the literal's exact decimal in
+                    // the canonical float text, so `3` is `3e0` as `3.0` is
+                    // and both name one value (RUE-2403); every float
+                    // consumer reads it at its own width.
                     if self.host.type_float_width(ty).is_some() {
-                        return match host_value!(
-                            self.host
-                                .float_value_from_text(&v.to_string(), Some(ty.clone()))
-                        ) {
+                        return match host_value!(self.host.float_value_from_text(
+                            &crate::integer_float_value_text(v),
+                            Some(ty.clone())
+                        )) {
                             Some(value) => ComptimeOutcome::Known(value),
                             // A domain without float values. Only the ordinary
                             // body host resolves types, and it always builds
