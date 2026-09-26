@@ -35,8 +35,11 @@ The definitions a statement is "written in terms of" are its transitive
 *type*-level dependencies: the constants of the theorem's statement, of those
 constants' types, of an inductive's constructor types, and of whatever body
 the entry itself prints. An entry prints a body when the definition **is** a
-type or a predicate (its type ends in a sort: `Ctx`, `CellMatches`,
-`InBounds`), and otherwise when the body is short enough to read
+type or a predicate — its type ends in a sort (`Ctx`, `CellMatches`,
+`InBounds`) or in `Bool` (`Expr.pendingSafe`, `noDtorPrefix`), or it is a
+result a hypothesis compares (`OwnSt.join`, `alwaysBody`) — whatever its size,
+because a hypothesis says what that body says (RUE-2479); and otherwise when the
+body is short enough to read
 (`maxBodyLines`) — because a signature alone cannot tell `Ty.mult` from
 `fun _ => .copy`, and a reader deciding whether the linearity theorems are
 vacuous needs to see which it is. A long one (`eval`, `check`, `explain`) is
@@ -45,9 +48,9 @@ beside it. Where the compiled value is the elaborator's output rather than
 what was written — a `brecOn` term — the entry prints the defining equations
 Lean derived instead, which is the same content in readable form.
 
-Two claims the reports make about themselves are checked rather than
+Three claims the reports make about themselves are checked rather than
 asserted, and `lake exe ruecore-digest` exits non-zero, naming the miss, when
-either fails:
+any fails:
 
 * **Closure.** Every `RueCore` constant occurring in a signature or a body
   the digest prints is an entry of the digest, or is a constructor listed
@@ -61,6 +64,11 @@ either fails:
   generated-declaration filter, and — for a theorem or an axiom, which the
   digest lists unconditionally — must have an entry here. That is the
   property an expert wants and the one a name-based filter could not keep.
+* **Hypotheses' predicates have bodies.** Each name in `bodyRequired`, the
+  predicates red-team finding R6 found printed by signature alone
+  (`Expr.pendingSafe`, `Expr.breaks`, `OwnSt.join`, `noDtorPrefix`,
+  `linearResidue`), is an entry with its body or its defining equations
+  (RUE-2479).
 
 The fragment boundary — which calculus rules and which syntactic forms have a
 core image at all — is not something the environment knows; it is `INDEX.md`'s.
