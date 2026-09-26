@@ -785,9 +785,11 @@ impl IntrinsicOperation {
             | Self::FloatCeil
             | Self::FloatTrunc
             | Self::FloatRound => {
+                // A diverging operand makes the call diverge, typed `!`
+                // (RUE-2375).
                 args.len() == 1
-                    && result.is_float()
-                    && (first.ty == result || first.ty == Type::NEVER)
+                    && ((result.is_float() && (first.ty == result || first.ty == Type::NEVER))
+                        || (first.ty == Type::NEVER && result == Type::NEVER))
             }
             Self::IntToPtr => {
                 args.len() == 1
@@ -1300,6 +1302,11 @@ mod tests {
                 IntrinsicOperation::FloatSqrt,
                 vec![(Type::F64, normal)],
                 Type::F64,
+            ),
+            (
+                IntrinsicOperation::FloatSqrt,
+                vec![(Type::NEVER, normal)],
+                Type::NEVER,
             ),
             (
                 IntrinsicOperation::FloatRound,

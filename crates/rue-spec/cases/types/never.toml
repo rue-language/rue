@@ -476,11 +476,22 @@ source = """
 fn main() -> i32 {
     if (return 18) < 3 { 1 } else { 2 }
 }
+"""
+exit_code = 18
+
+[[case]]
+name = "integer_literal_beside_a_diverging_operand_in_called_helpers"
+spec = ["3.4:3", "3.4:4", "3.11:9"]
+description = "The same, as the right operand of a comparison, beside an array element and beside a wrapping intrinsic's operand; main calls each so every body is analyzed"
+source = """
 fn cmp_rhs() -> i32 { if 3 == (return 1) { 1 } else { 2 } }
 fn elems() -> i32 { let a: [i32; 2] = [return 15, 1]; a[1] }
 fn wrapping() -> i32 { @wrapping_add(return 41, 1) }
+fn main() -> i32 {
+    cmp_rhs() + elems() + wrapping()
+}
 """
-exit_code = 18
+exit_code = 57
 
 [[case]]
 name = "float_literal_beside_a_diverging_operand_is_not_typed_never"
@@ -501,11 +512,12 @@ source = """
 enum E { A, B }
 fn by_bool() -> i32 { match return 29 { true => 1, false => 2 } }
 fn by_enum() -> i32 { match return 48 { E.A => 1, E.B => 2 } }
+fn by_int() -> i32 { match return 6 { 0 => 1, _ => 2 } }
 fn main() -> i32 {
-    match return 6 { 0 => 1, _ => 2 }
+    by_bool() + by_enum() + by_int()
 }
 """
-exit_code = 6
+exit_code = 83
 
 [[case]]
 name = "integer_literal_at_a_declared_never_parameter_rejected"
@@ -527,11 +539,13 @@ fn d() -> ! { @panic("unreachable") }
 fn sub_let() -> i32 { let x = @wrapping_sub(return 13, return 8); 0 }
 fn mul_stmt() -> i32 { @wrapping_mul(return 14, return 8); 0 }
 fn to_u8() -> u8 { @wrapping_add(return 18, d()) }
+fn value() -> i32 { @wrapping_add(return 7, return 8) }
 fn main() -> i32 {
-    @wrapping_add(return 7, return 8)
+    let narrow: i32 = @intCast(to_u8());
+    sub_let() + mul_stmt() + narrow + value()
 }
 """
-exit_code = 7
+exit_code = 52
 
 [[case]]
 name = "float_rounding_intrinsic_of_a_diverging_operand_is_never_typed"
@@ -540,8 +554,9 @@ description = "A rounding intrinsic whose only operand diverges has type !, whic
 source = """
 fn as_let() -> i32 { let x: i32 = @sqrt(return 4); x }
 fn as_bool() -> bool { @floor(return true) }
+fn as_value() -> i32 { @sqrt(return 3) }
 fn main() -> i32 {
-    @sqrt(return 3)
+    if as_bool() { as_let() + as_value() } else { 0 }
 }
 """
-exit_code = 3
+exit_code = 7
