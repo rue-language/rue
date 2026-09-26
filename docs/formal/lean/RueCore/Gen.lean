@@ -501,19 +501,41 @@ structure Binder where
 /-- (helper) The binders in scope, innermost first. -/
 abbrev Scope := List Binder
 
-/-- (helper) The generation monad: two `StdGen`s threaded through. The first
-is the **main** stream every draw reads; the second is the **side** stream
-(`side`), which only the diverging-arm draws (RUE-2383) read, so adding them
-left every other draw of every program where they do not fire unchanged. -/
-abbrev G := StateM (StdGen × StdGen)
+/-- (helper) A callee's signature in the signature environment a generated
+program's calls are drawn from (RUE-2481): its by-value parameters and its
+return type, and whether it is **recursive** — then parameter `0` is an `i64`
+fuel that guards the one self-call (`fnBody`). The callee is function `j + 1`
+of the program for signature `j`; function `0` is the entry point. -/
+structure Sig where
+  params : List Param
+  ret : Ty
+  recursive : Bool
+
+/-- (helper) The generator's state: three `StdGen`s and the signature
+environment. `main` is the stream every draw reads; `side` is the **side**
+stream (`side`), which only the diverging-arm draws (RUE-2383) read, so adding
+them left every other draw of every program where they do not fire unchanged;
+`call` is the **call** stream (`calls`, RUE-2481), which only the call draws
+read, for the same reason. `sigs` is the current case's signature environment
+and `cur` the function whose body is being drawn (`0`, the entry point, or a
+callee `j + 1`), so a call site can name only a later callee (`maybeCall`). -/
+structure GS where
+  main : StdGen
+  side : StdGen
+  call : StdGen
+  sigs : Array Sig := #[]
+  cur : Nat := 0
+
+/-- (helper) The generation monad: the state `GS` threaded through. -/
+abbrev G := StateM GS
 
 /-- (helper) A uniform natural number in `[lo, hi]`, off the current stream. -/
 def nat (lo hi : Nat) : G Nat :=
-  modifyGet fun (g, h) => let (n, g') := randNat g lo hi; (n, (g', h))
+  modifyGet fun s => let (n, g') := randNat s.main lo hi; (n, { s with main := g' })
 
 /-- (helper) A uniform boolean, off the current stream. -/
 def bool : G Bool :=
-  modifyGet fun (g, h) => let (b, g') := randBool g; (b, (g', h))
+  modifyGet fun s => let (b, g') := randBool s.main; (b, { s with main := g' })
 
 /-- (helper) Run a draw on the **side** stream: the two streams swap for its
 duration, so whatever it draws leaves the main stream where it was. The
@@ -522,9 +544,27 @@ arm the arm it replaces is still drawn on the main stream first and discarded
 — so a program without a diverging arm is the program the generator drew
 before, and a program with one differs from it only there. -/
 def side {α : Type} (m : G α) : G α := do
-  modify fun (g, h) => (h, g)
+  modify fun s => { s with main := s.side, side := s.main }
   let r ← m
-  modify fun (g, h) => (h, g)
+  modify fun s => { s with main := s.side, side := s.main }
+  return r
+
+/-- (helper) Run a draw on the **call** stream (RUE-2481): the call stream is
+split into a fresh main and a fresh side stream for the draw's duration, and
+the caller's own two streams are put back afterwards untouched. Every draw that
+decides on, builds or draws the body of a call runs here, including the
+`side` draws a callee's body makes and the `calls` draws nested in it, so a
+program in which no call fires reads exactly the main and side streams it read
+before RUE-2481 — the technique RUE-2383 used for the diverging arms, with a
+third stream because a `side` draw nested in a call draw would otherwise read
+the side stream the caller's later arms depend on. -/
+def calls {α : Type} (m : G α) : G α := do
+  let s ← get
+  let (c₁, c') := stdSplit s.call
+  let (c₂, c₃) := stdSplit c'
+  set { s with main := c₁, side := c₂, call := c₃ }
+  let r ← m
+  modify fun t => { t with main := s.main, side := s.side }
   return r
 
 /-- (helper) True with probability `num / den`. -/
@@ -1549,11 +1589,88 @@ back edge and exits say anything about ownership. -/
 def ownedInScope (D : Decls) (Γ : Scope) : Bool :=
   Γ.any (fun b => isAggregate b.ty && b.ty.mult D != .copy)
 
+/-- (helper) The most callees a generated program declares (RUE-2481). -/
+def maxCallees : Nat := 3
+
+/-- (helper) One in `callDen` expression draws is replaced by a call
+(`maybeCall`). -/
+def callDen : Nat := 24
+
+/-- (helper) The type of a callee's by-value parameter (RUE-2481): a
+**destructor-bearing** struct three times in ten and a **declared-`linear`**
+one two times in ten, where the program declares one, because those are the
+parameters a frame pop has something to say about — a destructor that prints
+when the callee leaves the parameter to the pop (§6.9's (D-Return-Value) and
+(D-Return), `3.8:62`), and the linear leak (Fn) §5.8's second clause refuses
+when it does not consume one (E0406). Otherwise the draw a `let` binder's type
+is (`binderTy`), so scalars, enums and arrays are parameters too. -/
+def paramTy (D : Decls) : G Ty := do
+  let dtors := (List.range D.structs.length).filter (fun s =>
+    ((D.structs[s]?).map StructDecl.dtor).getD false)
+  let lins := (List.range D.structs.length).filter (fun s =>
+    ((D.structs[s]?).map (fun sd => sd.attr == .linear)).getD false)
+  let k ← nat 1 10
+  if k ≤ 3 && !dtors.isEmpty then return .struct (← pick 0 dtors)
+  if k ≤ 5 && !lins.isEmpty then return .struct (← pick 0 lins)
+  binderTy D
+
+/-- (helper) A fresh signature returning `T` (RUE-2481): no to three by-value
+parameters (`paramTy`), every one unmarked because Rue has no `mut` parameter
+(`Print.lean`, "Functions, calls, and `return`"), and one signature in three
+**recursive**, with an `i64` fuel as parameter `0` in front of the others. -/
+def drawSig (D : Decls) (T : Ty) : G Sig := do
+  let recursive ← chance 1 3
+  let n ← weighted 1 [(2, 0), (3, 1), (3, 2), (if recursive then 0 else 1, 3)]
+  let ps ← (List.range n).mapM (fun _ => do return ({ ty := ← paramTy D, mu := false } : Param))
+  let fuel : List Param := if recursive then [{ ty := .int .w64 .signed, mu := false }] else []
+  return { params := fuel ++ ps, ret := T, recursive := recursive }
+
+/-- (helper) Replace the expression `e`, already drawn at type `T` under `Γ`,
+by a **call** one time in `callDen` (RUE-2481): (Call) §5.8 in whatever
+position `e` stood — an operand, an argument, a scrutinee, an initializer, a
+statement — with the callee's arguments drawn by `arg` under `Γ`, so a
+by-value argument is as often a move of a binder in scope as any other draw of
+its type. The callee is a signature of the environment returning `T` and
+**later** than the function being drawn (`GS.cur`), two times in three where
+there is one, and otherwise a fresh signature (`drawSig`) while the environment
+has fewer than `maxCallees`: so the call graph is acyclic apart from the
+guarded self-call a recursive callee makes (`fnBody`), and every call
+terminates. A recursive callee's fuel argument is a literal in `[0, 3]`, which
+bounds its recursion depth whatever the caller does. Everything here runs on
+the call stream (`calls`), and `e` was drawn on the main stream first, so the
+rest of the program is the one the generator would have drawn without the
+call. -/
+def maybeCall (D : Decls) (Γ : Scope) (T : Ty) (arg : Scope → Ty → G Expr) (e : Expr) :
+    G Expr := calls do
+  if !(← chance 1 callDen) then return e
+  let s ← get
+  let cands := (List.range s.sigs.size).filter (fun j =>
+    s.cur ≤ j && ((s.sigs[j]?).map (fun sg => sg.ret == T)).getD false)
+  let j ← if !cands.isEmpty && (← chance 2 3) then pure (some (← pick 0 cands))
+    else if s.sigs.size < maxCallees then do
+      let sg ← drawSig D T
+      modify fun t => { t with sigs := t.sigs.push sg }
+      pure (some s.sigs.size)
+    else if !cands.isEmpty then pure (some (← pick 0 cands))
+    else pure none
+  match j with
+  | none => return e
+  | some j =>
+      let sg := ((← get).sigs[j]?).getD { params := [], ret := T, recursive := false }
+      let args ← (List.range sg.params.length).mapM (fun k => do
+        let p := (sg.params[k]?).getD { ty := .unit, mu := false }
+        if sg.recursive && k = 0 then return intLit .w64 .signed (← nat 0 3)
+        arg Γ p.ty)
+      return call (j + 1) args
+
 /-- (helper) An expression of the wanted type under `Γ`, at most `fuel`
 levels deep. The weights here are the bias the module docstring
 describes. -/
 def expr (D : Decls) (R : Ty) : Bool → Bool → Scope → Ty → Nat → G Expr
   | _, rt, Γ, T, 0 => do
+    -- Every draw below may be replaced by a call (`maybeCall`, RUE-2481),
+    -- after it has been drawn, so the main stream is where it would be.
+    let e ← (do
       -- Out of fuel the draw is a leaf, and that is where most of a
       -- program's binders are in scope: a `let` body is drawn one level down
       -- from the `let`. So where the scope has an array to index, the leaf is
@@ -1568,8 +1685,10 @@ def expr (D : Decls) (R : Ty) : Bool → Bool → Scope → Ty → Nat → G Exp
       if ownedInScope D Γ && (← chance 1 4) then
         let lp ← drawLoop D R rt Γ (fun Γ' => leaf D Γ' .unit 2) (fun Γ' => atom D Γ' .bool 2)
         return seq lp (← leaf D Γ T 2)
-      leaf D Γ T 2
+      leaf D Γ T 2 : G Expr)
+    maybeCall D Γ T (fun Γ' T' => atom D Γ' T' 2) e
   | lb, rt, Γ, T, fuel + 1 => do
+    let e ← (do
       if !Γ.isEmpty && (← chance 1 6) then return (← leaf D Γ T 2)
       let form ← weighted 3
         [(4, 0), (3, 1), (3, 2), (4, 3),
@@ -1810,6 +1929,130 @@ def expr (D : Decls) (R : Ty) : Bool → Bool → Scope → Ty → Nat → G Exp
               if !projs.isEmpty && (← chance 1 3) then return use (← pickPlace (.var 0) projs)
               if E.mult D == .copy && (← chance 1 3) then return repeatArray E (← expr D R false false Γ E fuel) n
               return mkArray E (← (List.replicate n E).mapM (fun T' => expr D R false false Γ T' fuel))
+      : G Expr)
+    maybeCall D Γ T (fun Γ' T' => expr D R false false Γ' T' fuel) e
+
+mutual
+/-- (helper) Whether `e`, read under binder types `Γ` (innermost first, as
+`Print.tyOf` reads them), names binder `i` in any place — a use, a `@drop`, an
+assignment or an index form rooted at it. A `let` body and a `match` arm are
+read one binder or one payload local per component further out, the arm's
+count off the scrutinee's enum as `rulesIn` finds it. `fnBody` reads it to
+leave a linear parameter the body already names to the body's own draws. -/
+def mentions (P : Program) (R : Ty) (Γ : List Ty) (i : Nat) : Expr → Bool
+  | .use p | .drop p | .indexRead p [] _ | .indexDrop p [] _ => p.root == i
+  | .assign p e₁ => p.root == i || mentions P R Γ i e₁
+  | .indexRead p idx _ | .indexDrop p idx _ => p.root == i || mentionsList P R Γ i idx
+  | .indexWrite p idx _ e₁ => p.root == i || mentions P R Γ i e₁ || mentionsList P R Γ i idx
+  | .binop _ e₁ e₂ | .seq e₁ e₂ => mentions P R Γ i e₁ || mentions P R Γ i e₂
+  | .letIn _ e₁ e₂ =>
+      mentions P R Γ i e₁ ||
+        mentions P R ((Print.tyOf P R Γ e₁).getD (.int .w64 .signed) :: Γ) (i + 1) e₂
+  | .ite c e₁ e₂ => mentions P R Γ i c || mentions P R Γ i e₁ || mentions P R Γ i e₂
+  | .unop _ e₁ | .intCast _ _ e₁ | .fintrin _ e₁ | .dbg e₁ | .ret e₁ | .loop e₁
+  | .repeatArray _ e₁ _ => mentions P R Γ i e₁
+  | .call _ args | .mkStruct _ args | .mkEnum _ _ args | .mkArray _ args =>
+      mentionsList P R Γ i args
+  | .«match» scrut arms =>
+      let variants := match Print.tyOf P R Γ scrut with
+        | some (.enum e) => ((P.decls.enums[e]?).map EnumDecl.variants).getD []
+        | _ => []
+      mentions P R Γ i scrut || mentionsArms P R Γ i arms variants
+  | .intLit _ _ _ | .floatLit _ _ | .boolLit _ | .unitLit | .panic _ | .brk => false
+
+/-- (helper) `mentions` over a list of operands. -/
+def mentionsList (P : Program) (R : Ty) (Γ : List Ty) (i : Nat) : List Expr → Bool
+  | [] => false
+  | e :: es => mentions P R Γ i e || mentionsList P R Γ i es
+
+/-- (helper) `mentions` over a `match`'s arms, arm `j` under variant `j`'s
+payload locals (`armScope`'s order). -/
+def mentionsArms (P : Program) (R : Ty) (Γ : List Ty) (i : Nat) :
+    List Expr → List (List Ty) → Bool
+  | [], _ => false
+  | a :: rest, [] => mentions P R Γ i a || mentionsArms P R Γ i rest []
+  | a :: rest, Ts :: Tss =>
+      mentions P R (Ts.reverse ++ Γ) (i + Ts.length) a || mentionsArms P R Γ i rest Tss
+end
+
+/-- (helper) The body of callee `idx`, whose signature is `sg` (RUE-2481),
+drawn under its parameters as `expr` draws any body — `rt` on, so a `return`
+or `@panic` arm may stand wherever it may in the entry function, at the
+callee's own return type — and then shaped in three ways:
+
+* a **recursive** callee's body is `if v0 <= 0 { base } else { let r =
+  f<idx>(v0 - 1, …); rest }`: the one self-call is guarded by its fuel
+  parameter `v0` and passes it down decreased by one, and no call site
+  `maybeCall` draws names the callee itself, so with the literal fuel every
+  caller passes the recursion is at most four frames deep;
+* each **linear** parameter is consumed by a `@drop` at the start of the body
+  two times in four and at its end — `let r = body; @drop(v); r` — one time in
+  four, and left to the body's own draws otherwise, where (Fn) §5.8's leak
+  check (E0406) decides the case;
+* half the bodies open with an **early return**, `if c { return v } else { ()
+  }`, `v` an atom at the return type: a frame unwound by (D-Return) §6.9 with
+  its caller's frame live beneath it, whose unconsumed by-value parameters
+  (§6.9, `3.8:62`) drop on the way out.
+
+It runs under `calls`, from `bodies`. -/
+def fnBody (D : Decls) (idx : Nat) (sg : Sig) : G Expr := do
+  modify fun s => { s with cur := idx }
+  let m := sg.params.length
+  let Γ : Scope := (sg.params.map (fun p => ({ ty := p.ty, mu := false } : Binder))).reverse
+  let R := sg.ret
+  let fuel ← weighted 1 [(1, 0), (2, 1), (1, 2)]
+  let lit (n : Int) : Expr := intLit .w64 .signed n
+  let core ← if sg.recursive then do
+      let fv := use (.var (m - 1))
+      let base ← expr D R false true Γ R fuel
+      let args ← (sg.params.drop 1).mapM (fun p => expr D R false false Γ p.ty fuel)
+      let rest ← expr D R false true ({ ty := R, mu := false } :: Γ) R fuel
+      pure (ite (binop .le fv (lit 0)) base
+        (letIn false (call idx (binop .sub fv (lit 1) :: args)) rest))
+    else expr D R false true Γ R fuel
+  -- Parameter `k` is binder `m - 1 - k` at the top of the body. A linear
+  -- parameter the drawn body names is left to it; one it does not name is
+  -- consumed at the start two times in three and at the end otherwise.
+  let sigs := (← get).sigs.toList
+  let F : List FnDef := ({ params := [], ret := R, body := unitLit } : FnDef) ::
+    sigs.map (fun sg' => ({ params := sg'.params, ret := sg'.ret, body := unitLit } : FnDef))
+  let P : Program := { decls := D, fns := F }
+  let Γt := Γ.map Binder.ty
+  let lins := (List.range m).filter (fun k =>
+    (((sg.params[k]?).map (fun p => p.ty.mult D == .linear)).getD false) &&
+      !mentions P R Γt (m - 1 - k) core)
+  let plan ← lins.mapM (fun k => do return (m - 1 - k, ← chance 2 3))
+  let starts := (plan.filter (fun (_, c) => c)).map Prod.fst
+  let ends := (plan.filter (fun (_, c) => !c)).map Prod.fst
+  let body := if ends.isEmpty then core
+    else letIn false core (ends.foldr (fun i acc => seq (drop (.var (i + 1))) acc) (use (.var 0)))
+  -- The early return drops every linear parameter still live where it
+  -- stands, which is each one the start has not consumed.
+  let live := (List.range m).filter (fun k =>
+    (((sg.params[k]?).map (fun p => p.ty.mult D == .linear)).getD false) &&
+      !starts.contains (m - 1 - k))
+  let body ← if ← chance 1 2 then do
+      let c ← expr D R false false Γ .bool 1
+      let v ← atom D Γ R 2
+      let r := live.foldr (fun k acc => seq (drop (.var (m - 1 - k))) acc) (ret v)
+      pure (seq (ite c r unitLit) body)
+    else pure body
+  return starts.foldr (fun i acc => seq (drop (.var i)) acc) body
+
+/-- (helper) The callees' definitions, signature `j` onward, at most `n` of
+them (RUE-2481): each body is drawn by `fnBody`, and a body may add a later
+signature to the environment (`maybeCall`), which this walk then reaches
+because it reads the environment afresh at each step; `maxCallees` bounds
+it. -/
+def bodies (D : Decls) : Nat → Nat → G (List FnDef)
+  | 0, _ => return []
+  | n + 1, j => do
+      match (← get).sigs[j]? with
+      | none => return []
+      | some sg =>
+          let b ← fnBody D (j + 1) sg
+          let rest ← bodies D n (j + 1)
+          return { params := sg.params, ret := sg.ret, body := b } :: rest
 
 /-- (helper) Every subexpression, the expression itself first. -/
 def subexprs : Expr → List Expr
@@ -1834,7 +2077,7 @@ mutual
 spellings where it has one and in traversal order. `Γ` lists the binder types
 innermost first, as `Print.tyOf` reads them, so a use or a `@drop` is labeled
 copy or move by the class of the type its place reaches. -/
-def rulesIn (D : Decls) (Γ : List Ty) : Expr → List String
+def rulesIn (D : Decls) (F : List FnDef) (Γ : List Ty) : Expr → List String
   | use pl =>
       (match Γ[pl.root]? with
        | some T =>
@@ -1847,28 +2090,28 @@ def rulesIn (D : Decls) (Γ : List Ty) : Expr → List String
        | none => [])
   | binop op e₁ e₂ =>
       (if op.isCompare then ["(Ord) §5.8", "§6.4"]
-       else ["(Arith) §5.8", "§6.4 arithmetic traps"]) ++ rulesIn D Γ e₁ ++ rulesIn D Γ e₂
+       else ["(Arith) §5.8", "§6.4 arithmetic traps"]) ++ rulesIn D F Γ e₁ ++ rulesIn D F Γ e₂
   | unop op e₁ =>
       (match op with
        | .neg => ["(Neg) §5.8", "§6.4 arithmetic traps"]
        | .not => ["(Not) §5.8"]
-       | .bitnot => ["(BitNot) §5.8"]) ++ rulesIn D Γ e₁
-  | intCast _ _ e₁ => ["(Int-Cast) §5.8", "(D-Int-Cast-Trap) §6.4"] ++ rulesIn D Γ e₁
+       | .bitnot => ["(BitNot) §5.8"]) ++ rulesIn D F Γ e₁
+  | intCast _ _ e₁ => ["(Int-Cast) §5.8", "(D-Int-Cast-Trap) §6.4"] ++ rulesIn D F Γ e₁
   | Expr.panic _ => ["(Panic) §5.8", "(D-Panic) §6.12"]
-  | dbg e₁ => ["(Dbg) §5.8"] ++ rulesIn D Γ e₁
-  | mkStruct _ args => ["(Struct-Intro) §5.8"] ++ (args.map (rulesIn D Γ)).flatten
+  | dbg e₁ => ["(Dbg) §5.8"] ++ rulesIn D F Γ e₁
+  | mkStruct _ args => ["(Struct-Intro) §5.8"] ++ (args.map (rulesIn D F Γ)).flatten
   | mkEnum _ _ args =>
-      ["(Enum-Intro) §5.5", "(D-Enum-Intro) §6.6"] ++ (args.map (rulesIn D Γ)).flatten
+      ["(Enum-Intro) §5.5", "(D-Enum-Intro) §6.6"] ++ (args.map (rulesIn D F Γ)).flatten
   | .«match» scrut arms =>
       -- The arms are read under their own payload locals, which is what makes
       -- a use of one labeled by the payload's class rather than by whatever
       -- binder happens to sit at that index outside the arm.
-      let P : Program := { decls := D, fns := [] }
+      let P : Program := { decls := D, fns := F }
       let variants := match Print.tyOf P (.int .w64 .signed) Γ scrut with
         | some (.enum e) => ((D.enums[e]?).map EnumDecl.variants).getD []
         | _ => []
       ["(Match) §5.5", "(D-Match) §6.6", "6.3:17", "§5.6 scope exit"] ++
-        rulesIn D Γ scrut ++ rulesArms D Γ arms variants
+        rulesIn D F Γ scrut ++ rulesArms D F Γ arms variants
   | drop pl =>
       (match Γ[pl.root]? with
        | some T =>
@@ -1881,27 +2124,27 @@ def rulesIn (D : Decls) (Γ : List Ty) : Expr → List String
             | none => [])
        | none => [])
   | letIn _ e₁ e₂ =>
-      let P : Program := { decls := D, fns := [] }
-      ["(Let) §5.3", "§5.6 scope exit", "(D-EndScope) §6.7"] ++ rulesIn D Γ e₁ ++
-        rulesIn D ((Print.tyOf P (.int .w64 .signed) Γ e₁).getD (.int .w64 .signed) :: Γ) e₂
-  | assign _ e₁ => ["(Assign) §5.2", "§6.8 overwrite-drop"] ++ rulesIn D Γ e₁
-  | seq e₁ e₂ => ["(Seq) §5.3", "§6.7 temporary drop"] ++ rulesIn D Γ e₁ ++ rulesIn D Γ e₂
+      let P : Program := { decls := D, fns := F }
+      ["(Let) §5.3", "§5.6 scope exit", "(D-EndScope) §6.7"] ++ rulesIn D F Γ e₁ ++
+        rulesIn D F ((Print.tyOf P (.int .w64 .signed) Γ e₁).getD (.int .w64 .signed) :: Γ) e₂
+  | assign _ e₁ => ["(Assign) §5.2", "§6.8 overwrite-drop"] ++ rulesIn D F Γ e₁
+  | seq e₁ e₂ => ["(Seq) §5.3", "§6.7 temporary drop"] ++ rulesIn D F Γ e₁ ++ rulesIn D F Γ e₂
   | .ite c e₁ e₂ =>
-      ["(If) §5.5 join"] ++ rulesIn D Γ c ++ rulesIn D Γ e₁ ++ rulesIn D Γ e₂
-  | call _ args => ["(Call) §5.8", "(D-Call) §6.9"] ++ (args.map (rulesIn D Γ)).flatten
-  | mkArray _ args => ["(Array-Intro) §5.8", "(D-Array) §6.5"] ++ (args.map (rulesIn D Γ)).flatten
-  | repeatArray _ e₁ _ => ["(Array-Intro) §5.8", "(D-Array) §6.5", "7.1:38"] ++ rulesIn D Γ e₁
+      ["(If) §5.5 join"] ++ rulesIn D F Γ c ++ rulesIn D F Γ e₁ ++ rulesIn D F Γ e₂
+  | call _ args => ["(Call) §5.8", "(D-Call) §6.9"] ++ (args.map (rulesIn D F Γ)).flatten
+  | mkArray _ args => ["(Array-Intro) §5.8", "(D-Array) §6.5"] ++ (args.map (rulesIn D F Γ)).flatten
+  | repeatArray _ e₁ _ => ["(Array-Intro) §5.8", "(D-Array) §6.5", "7.1:38"] ++ rulesIn D F Γ e₁
   | indexRead _ idx _ =>
-      ["(Use-Untrackable-Dynamic-Copy) §5.1", "(D-Index) §6.5"] ++ (idx.map (rulesIn D Γ)).flatten
+      ["(Use-Untrackable-Dynamic-Copy) §5.1", "(D-Index) §6.5"] ++ (idx.map (rulesIn D F Γ)).flatten
   | indexWrite _ idx _ e₁ =>
-      ["(Assign) §5.2", "(D-Assign) §6.8", "(D-Index) §6.5", "5.2:14"] ++ rulesIn D Γ e₁ ++
-        (idx.map (rulesIn D Γ)).flatten
+      ["(Assign) §5.2", "(D-Assign) §6.8", "(D-Index) §6.5", "5.2:14"] ++ rulesIn D F Γ e₁ ++
+        (idx.map (rulesIn D F Γ)).flatten
   | indexDrop _ idx _ =>
-      ["(@Drop-Copy) §5.3", "(D-Index) §6.5"] ++ (idx.map (rulesIn D Γ)).flatten
-  | ret e₁ => ["(Return-Value) §5.7", "(D-Return) §6.9"] ++ rulesIn D Γ e₁
+      ["(@Drop-Copy) §5.3", "(D-Index) §6.5"] ++ (idx.map (rulesIn D F Γ)).flatten
+  | ret e₁ => ["(Return-Value) §5.7", "(D-Return) §6.9"] ++ rulesIn D F Γ e₁
   | loop e₁ =>
       (if e₁.breaks then ["(Loop-Break) §5.7", "3.8:79", "3.8:80"] else ["(Loop-Div) §5.7"]) ++
-        ["(D-Loop-Iter) §6.10"] ++ rulesIn D Γ e₁
+        ["(D-Loop-Iter) §6.10"] ++ rulesIn D F Γ e₁
   | brk => ["(Break) §5.7", "(D-Break) §6.10"]
   | _ => []
 
@@ -1910,16 +2153,18 @@ declaration's variant list: arm `j` is read under variant `j`'s payload locals
 (`armScope`'s order, which is `armCtx`'s). A `match` whose scrutinee
 `Print.tyOf` could not type has no variant list, and its arms are then read
 under the enclosing binders alone. -/
-def rulesArms (D : Decls) (Γ₀ : List Ty) : List Expr → List (List Ty) → List String
+def rulesArms (D : Decls) (F : List FnDef) (Γ₀ : List Ty) : List Expr → List (List Ty) → List String
   | [], _ => []
-  | a :: rest, [] => rulesIn D Γ₀ a ++ rulesArms D Γ₀ rest []
-  | a :: rest, Ts :: Tss => rulesIn D (Ts.reverse ++ Γ₀) a ++ rulesArms D Γ₀ rest Tss
+  | a :: rest, [] => rulesIn D F Γ₀ a ++ rulesArms D F Γ₀ rest []
+  | a :: rest, Ts :: Tss => rulesIn D F (Ts.reverse ++ Γ₀) a ++ rulesArms D F Γ₀ rest Tss
 end
 
 /-- (helper) The rule labels a program exercises, deduplicated in traversal
-order: `rulesIn` under the empty scope of a no-parameter entry point. -/
-def rulesOf (D : Decls) (e : Expr) : List String :=
-  (rulesIn D [] e).foldl (fun acc l => if acc.contains l then acc else acc ++ [l]) []
+order: `rulesIn` over each function's body under its parameters
+(`Print.bodyBinders`), the no-parameter entry point first. -/
+def rulesOf (D : Decls) (F : List FnDef) : List String :=
+  ((F.map (fun fd => rulesIn D F (Print.bodyBinders fd) fd.body)).flatten).foldl
+    (fun acc l => if acc.contains l then acc else acc ++ [l]) []
 
 /-- (helper) The result type of a generated program: mostly `int`, so the
 value line is usually present, with a float often enough that `main` prints a
@@ -1945,6 +2190,7 @@ few more structs that may hold an enum in a field — which is the order the
 declarations section describes and the reason no draw can build `3.0:5`'s
 cycle. -/
 def genCase (seed i : Nat) : G Corpus.Case := do
+  modify fun s => { s with sigs := #[], cur := 0 }
   let nDecls ← weighted 2 [(2, 1), (4, 2), (3, 3)]
   let D₀ ← genEnv 0 nDecls (Decls.ofStructs [])
   let nEnums ← weighted 1 [(2, 0), (4, 1), (3, 2)]
@@ -1958,17 +2204,34 @@ def genCase (seed i : Nat) : G Corpus.Case := do
   -- return r`: a return as the last form of the function body (RUE-2383),
   -- drawn on the side stream (`side`).
   let e ← if ← side (chance 1 10) then pure (letIn false e (ret (use (.var 0)))) else pure e
+  -- The callees the entry body's call sites named (RUE-2481), drawn on the
+  -- call stream after it; a program without a call has none.
+  let callees ← if (← get).sigs.isEmpty then pure [] else calls (bodies D maxCallees 0)
+  let F : List FnDef := { params := [], ret := T, body := e } :: callees
+  let nodes := (F.map (fun fd => size fd.body)).foldl (· + ·) 0
+  let shape := if callees.isEmpty then s!"{size e} nodes"
+    else s!"{callees.length + 1} functions, {nodes} nodes"
   return {
     name := s!"gen_{seed}_{i}",
     description := s!"Generated program {i} of seed {seed} ({D.structs.length} struct " ++
-      s!"and {D.enums.length} enum declarations, {size e} nodes); " ++
+      s!"and {D.enums.length} enum declarations, {shape}); " ++
       s!"regenerate with `lake exe ruecore-corpus --gen N --seed {seed}` for any N > {i}.",
-    rules := rulesOf D e,
-    prog := Program.entry D T e }
+    rules := rulesOf D F,
+    prog := { decls := D, fns := F } }
+
+/-- (helper) The call stream's first state (`calls`, RUE-2481), from its own
+two components rather than a split of the other two streams: `mkStdGen seed`
+has first component `seed + 1`, and a split shares a component with the state
+it was split from, so either would run the call stream alongside one of the
+others. -/
+def callSeed (seed : Nat) : StdGen :=
+  ⟨(seed * 1103515245 + 12345) % 2147483562 + 1, (seed * 69069 + 7919) % 2147483398 + 1⟩
 
 /-- (helper) `n` generated cases from `seed`, in order; a pure function of
 its arguments. -/
 def generate (n seed : Nat) : List Corpus.Case :=
-  ((List.range n).mapM (genCase seed)).run' (mkStdGen seed, (stdSplit (mkStdGen seed)).2)
+  ((List.range n).mapM (genCase seed)).run'
+    { main := mkStdGen seed, side := (stdSplit (mkStdGen seed)).2,
+      call := callSeed seed }
 
 end RueCore.Gen
