@@ -208,10 +208,18 @@ def verdictSection (P : Program) (ds : List (Nat × FnDef × Deriv)) : List Stri
          ["The premise that fails, in " ++ fnHeader i fd ++ ", at " ++ r ++ ":", "",
           "    on  " ++ clip 74 (exprLine P fd.ret binders e), ""] ++ para 4 74 why
      | none =>
-         ["No function body's derivation failed, so the rejection is the whole-program",
-          "premise: either a by-value parameter or a body-local binding is still Owned",
-          "at a linear type where its function's body ends ((Fn) §5.8's second clause,",
-          "3.8:62), or the entry point does not take an empty parameter list.", ""] ++
+         (if !checkDecls P.decls then
+            ["No function body's derivation failed, so the rejection is `checkDecls`'s own",
+             "check of the declarations (§3, before any function is checked): a struct or",
+             "enum declaration violates 3.8:18/3.9:31 (a `@copy` declaration may declare no",
+             "destructor) or 3.9:44 (no destructor-bearing declaration may carry a linear",
+             "field), or a declaration contains itself by value, directly or through a",
+             "cycle (3.0:5, E0483).", ""]
+          else
+            ["No function body's derivation failed, so the rejection is the whole-program",
+             "premise: either a by-value parameter or a body-local binding is still Owned",
+             "at a linear type where its function's body ends ((Fn) §5.8's second clause,",
+             "3.8:62), or the entry point does not take an empty parameter list.", ""]) ++
          fnVerdictLines P ds)
 
 /-- A complete plain-text explanation of one fragment program: its source,
