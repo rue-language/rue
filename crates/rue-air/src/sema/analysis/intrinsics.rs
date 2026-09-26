@@ -2299,7 +2299,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         }
-        let result_ty = if arg.ty.is_never() { Type::F64 } else { arg.ty };
+        // A diverging operand makes the call diverge: its type is `!`
+        // (spec 3.4:3-4), as inference types it, so it coerces to any context.
+        let result_ty = arg.ty;
         let air_ref = air.add_intrinsic(operation, name, &[arg.air_ref], result_ty, span)?;
         Ok(AnalysisResult::with_continues(
             air_ref,
