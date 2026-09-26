@@ -766,7 +766,7 @@ disagreement the allowed red).
 
 ### RUE-2490's survivors
 
-**Resolved by RUE-2500.** Each of the six below now falsifies a Sharp
+RUE-2500 resolved these: each of the six below now falsifies a Sharp
 statement. The "Proposed witness" column is what RUE-2490 asked for; what
 was built is in the list after the score block above. It differs from the
 proposal in two places. The `HasTy` witnesses are sharpness

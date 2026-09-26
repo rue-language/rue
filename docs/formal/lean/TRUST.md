@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 1423.
+- Theorems checked: 1435.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -1052,6 +1052,10 @@ and diffs them against the committed copies.
 | `Sharp.unreachable_stuck` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.retired_cell` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.unreached_double` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.uncut_drop` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.ill_typed_halt` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.out_of_range_halt` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.float_halt` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Spine.soundness` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.run_safe` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.no_violation` | `RueCore.Spine` | `Quot.sound`, `propext` |
@@ -1135,6 +1139,10 @@ and diffs them against the committed copies.
 | `Spine.Sharp.unreachable_stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.retired_cell` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.unreached_double` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.uncut_drop` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.ill_typed_halt` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.out_of_range_halt` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.float_halt` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.run_safe` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.no_violation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1460,6 +1468,10 @@ and diffs them against the committed copies.
 | `Sharp.Glue.unreachable_stuck.run_stuck_of_step_stuck_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.retired_cell.step_no_use_after_drop_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.unreached_double.step_no_double_free_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.uncut_drop.drop_order_4` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.ill_typed_halt.step_preservation_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.out_of_range_halt.step_preservation_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.float_halt.step_preservation_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Examples.dynReadAffine_refused` | `RueCore.Examples` | `propext` |
 | `Examples.dynDropAffine_refused` | `RueCore.Examples` | `propext` |
 | `Examples.repeatAffine_refused` | `RueCore.Examples` | `propext` |
