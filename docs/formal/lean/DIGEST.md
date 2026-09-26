@@ -3751,7 +3751,7 @@ theorem RueCore.Blocks.not_dtor {D : Decls} {s : Nat} {c : Contents}
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.stuck_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.stuck_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.stuck (B : Expr) :
@@ -3827,7 +3827,7 @@ theorem RueCore.Sharp.stuck (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.stuck_step_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.stuck_step_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.stuck_step (B : Expr) :
@@ -3886,7 +3886,7 @@ theorem RueCore.Sharp.stuck_step (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.typed_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.typed_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.typed (B : Expr) :
@@ -3951,7 +3951,7 @@ theorem RueCore.Sharp.typed (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.frame_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.frame_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.frame (B : Expr) :
@@ -4019,7 +4019,7 @@ theorem RueCore.Sharp.frame (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.no_entry_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.no_entry_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.no_entry (P : Program) :
@@ -4052,7 +4052,7 @@ theorem RueCore.Sharp.no_entry (P : Program) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.entry_param_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.entry_param_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.entry_param (P : Program) :
@@ -4092,7 +4092,7 @@ theorem RueCore.Sharp.entry_param (P : Program) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.copy_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.copy_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.copy (B : Expr) :
@@ -4129,7 +4129,7 @@ theorem RueCore.Sharp.copy (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.leak_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.leak_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.leak (B : Expr) :
@@ -4170,7 +4170,7 @@ theorem RueCore.Sharp.leak (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.overwrite_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.overwrite_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.overwrite (B : Expr) :
@@ -4207,7 +4207,7 @@ theorem RueCore.Sharp.overwrite (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.discard_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.discard_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.discard (B : Expr) :
@@ -4246,7 +4246,7 @@ theorem RueCore.Sharp.discard (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.discard_loop_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.discard_loop_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.discard_loop (B : Expr) :
@@ -4290,7 +4290,7 @@ theorem RueCore.Sharp.discard_loop (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.fuel_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.fuel_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.fuel (B : Expr) :
@@ -4338,7 +4338,7 @@ theorem RueCore.Sharp.fuel (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.fuel_panic_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.fuel_panic_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.fuel_panic (B : Expr) :
@@ -4380,7 +4380,7 @@ theorem RueCore.Sharp.fuel_panic (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.not_fits_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.not_fits_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.not_fits (B : Expr) :
@@ -4421,7 +4421,7 @@ theorem RueCore.Sharp.not_fits (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.double_drop_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.double_drop_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.double_drop (B : Expr) :
@@ -4468,7 +4468,7 @@ theorem RueCore.Sharp.double_drop (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.bare_dtor_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.bare_dtor_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.bare_dtor (B : Expr) :
@@ -4512,7 +4512,7 @@ theorem RueCore.Sharp.bare_dtor (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.pending_program_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.pending_program_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.pending_program (P : Program) :
@@ -4613,7 +4613,7 @@ theorem RueCore.Sharp.pending_program (P : Program) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.pending_expr_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.pending_expr_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.pending_expr (B : Expr) :
@@ -4725,7 +4725,7 @@ theorem RueCore.Sharp.pending_expr (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.store_cc_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.store_cc_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.store_cc (B : Expr) :
@@ -4849,7 +4849,7 @@ theorem RueCore.Sharp.store_cc (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.no_lead_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.no_lead_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.no_lead (B : Expr) :
@@ -4912,7 +4912,7 @@ theorem RueCore.Sharp.no_lead (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.no_eval_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.no_eval_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.no_eval (B : Expr) :
@@ -4961,7 +4961,7 @@ theorem RueCore.Sharp.no_eval (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.unreached_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.unreached_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.unreached (B : Expr) :
@@ -5020,7 +5020,7 @@ theorem RueCore.Sharp.unreached (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.unreached_panic_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.unreached_panic_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.unreached_panic (B : Expr) :
@@ -5078,7 +5078,7 @@ theorem RueCore.Sharp.unreached_panic (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.unordered_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.unordered_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.unordered (B : Expr) :
@@ -5144,7 +5144,7 @@ theorem RueCore.Sharp.unordered (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.not_a_step_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.not_a_step_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.not_a_step (B : Expr) :
@@ -5199,7 +5199,7 @@ theorem RueCore.Sharp.not_a_step (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.init_steps_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.init_steps_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.init_steps (B : Expr) :
@@ -5250,7 +5250,7 @@ theorem RueCore.Sharp.init_steps (B : Expr) :
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.unreachable_stuck_stmt`, proved: a counter-example (RUE-2485).
+`Spec.Sharp.unreachable_stuck_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
 theorem RueCore.Sharp.unreachable_stuck (B : Expr) :
@@ -30138,7 +30138,7 @@ def RueCore.Spec.Nonvacuous.diverges_stmt : Prop :=
 *def* · module `RueCore.Spec.Sharp`
 
 **An unchecked program whose trace runs a destructor outside a drop**
-(sharpness, RUE-2485). Over the same `@copy` struct `C` with a destructor, a
+(§7 sharpness, RUE-2485). Over the same `@copy` struct `C` with a destructor, a
 declared-`linear` `L { x0: C, x1: A }` and an affine `A` with a destructor,
 `let l = L { C { 1 }, A { 2 } }; let s = l.x1; 0` destructures `l`: its
 residue `C { 1 }` is `Copy`, so it is dropped with no marker, and its
@@ -30189,7 +30189,7 @@ def RueCore.Spec.Sharp.bare_dtor_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**The copy monitor fires** (R3 of `REDTEAM-LOG.md`; sharpness, RUE-2485). An
+**The copy monitor fires** (R3 of `REDTEAM-LOG.md`; §7 sharpness, RUE-2485). An
 unchecked program puts an owned value under a `Copy` one, the shape a copy
 would duplicate an owner through: over `S0 = @copy struct { x0: i64 }` and
 `S1`, affine with a destructor, `let p = S0 { x0: S1 { 1 } }; let q = p;
@@ -30236,7 +30236,7 @@ def RueCore.Spec.Sharp.copy_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**A loop that discards a linear value each turn** (sharpness, RUE-2485).
+**A loop that discards a linear value each turn** (§7 sharpness, RUE-2485).
 `loop { S1 { 3 }; () }` is not `ProgramTyped`. `eval` refuses its first turn
 with `linearDiscard`, while §6's relation, which has no monitor, turns forever:
 it has runs of every length from `Config.init`, and every configuration they
@@ -30290,7 +30290,7 @@ def RueCore.Spec.Sharp.discard_loop_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**The discard monitor fires** (R3 of `REDTEAM-LOG.md`; sharpness, RUE-2485).
+**The discard monitor fires** (R3 of `REDTEAM-LOG.md`; §7 sharpness, RUE-2485).
 `S1 { 3 }; @panic("boom")` discards a linear value. It is not `ProgramTyped`,
 and `eval` refuses the sequence with `linearDiscard`: `no_linear_discard`'s
 conclusion fails once `ProgramTyped` is dropped. §6's relation drops the
@@ -30339,7 +30339,7 @@ def RueCore.Spec.Sharp.discard_stmt : Prop :=
 *def* · module `RueCore.Spec.Sharp`
 
 **An unchecked program that runs a destructor twice on one value**
-(sharpness, RUE-2485). Over a `@copy` struct `C` that declares a destructor
+(§7 sharpness, RUE-2485). Over a `@copy` struct `C` that declares a destructor
 (which `DtorNotCopy`, and `WfDecls`, exclude) and an affine `W { x0: C }`,
 `let c = C { 1 }; let a = W { c }; let b = W { c }; 0` copies `c` into two
 `W`s, and dropping both runs `C`'s destructor on identity `0` twice. It is not
@@ -30394,7 +30394,7 @@ def RueCore.Spec.Sharp.double_drop_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**Fuel bounds, dropped, at a panic** (sharpness, RUE-2485). The checked
+**Fuel bounds, dropped, at a panic** (§7 sharpness, RUE-2485). The checked
 program of `Nonvacuous.panic` panics, and §6's relation reaches the panic, but
 fuel `0` is exhausted: `eval_complete`'s and `run_complete`'s panic halves
 fail without `n < fuel`.
@@ -30441,7 +30441,7 @@ def RueCore.Spec.Sharp.fuel_panic_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**Fuel bounds, dropped** (sharpness, RUE-2485). The checked program of
+**Fuel bounds, dropped** (§7 sharpness, RUE-2485). The checked program of
 `Nonvacuous.dtor` exhausts fuel `0` and returns at fuel `200`, a value §6's
 relation reaches. So `fuel_mono` fails without `n ≤ m` (`n = 200`, `m = 0`) and
 without `eval n ≠ outOfFuel` (`n = 0`, `m = 200`); `no_masking` fails without
@@ -30500,7 +30500,7 @@ def RueCore.Spec.Sharp.fuel_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**The initial configuration, which steps** (sharpness, RUE-2485). For the
+**The initial configuration, which steps** (§7 sharpness, RUE-2485). For the
 checked program of `Nonvacuous.dtor`, `Config.init` steps to the argument
 list of `main()`, and not to itself; it is not terminal and not stuck (with
 `linearLeak`, a monitor's tag, not one of §6's stuck states); and `run` is
@@ -30560,7 +30560,7 @@ def RueCore.Spec.Sharp.init_steps_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**The leak monitor fires** (R3 of `REDTEAM-LOG.md`; sharpness, RUE-2485).
+**The leak monitor fires** (R3 of `REDTEAM-LOG.md`; §7 sharpness, RUE-2485).
 `let x = S1 { 1 }; 0`, with `S1` declared `linear`, leaves a live linear
 value at the scope's end. It is not `ProgramTyped`, and `eval` refuses it with
 `linearLeak`: `no_linear_leak`'s conclusion fails once `ProgramTyped` is
@@ -30611,7 +30611,7 @@ def RueCore.Spec.Sharp.leak_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**A pair that is not a step** (sharpness, RUE-2485). For the checked program
+**A pair that is not a step** (§7 sharpness, RUE-2485). For the checked program
 of `Nonvacuous.dtor`, the value `run` returns is reached, with a trace that is
 not empty, and the panic with an empty trace does not follow it by a step; its
 trace does not extend the value's, so `drop_order`'s last half fails without
@@ -30672,7 +30672,7 @@ def RueCore.Spec.Sharp.not_a_step_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**The overwrite monitor fires** (R3 of `REDTEAM-LOG.md`; sharpness,
+**The overwrite monitor fires** (R3 of `REDTEAM-LOG.md`; §7 sharpness,
 RUE-2485). `let mut x = S1 { 1 }; x = S1 { 2 }; @drop(x); 0` overwrites a live
 linear value. It is not `ProgramTyped`, and `eval` refuses the assignment with
 `linearOverwrite`: `no_linear_overwrite`'s conclusion fails once
@@ -30718,7 +30718,7 @@ def RueCore.Spec.Sharp.overwrite_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**The same program, run by §6's relation** (sharpness, RUE-2485). `Step`
+**The same program, run by §6's relation** (§7 sharpness, RUE-2485). `Step`
 reaches a configuration stuck with `useAfterMove` from `Config.init`, and
 `run` refuses at fuel `200` and exhausts fuel `0`. So once `ProgramTyped` is
 dropped, `step_progress`, `step_preservation` and `step_type_safety` fail
@@ -30792,7 +30792,7 @@ def RueCore.Spec.Sharp.stuck_step_stmt : Prop :=
 *def* · module `RueCore.Spec.Sharp`
 
 **An unreachable configuration whose registration stack is out of order**
-(sharpness, RUE-2485). For the checked program of `Nonvacuous.dtor`, a
+(§7 sharpness, RUE-2485). For the checked program of `Nonvacuous.dtor`, a
 configuration whose frame registers cell `1` before cell `0` takes a step, but
 `Config.init` does not reach it: `drop_order`'s last half fails without the
 hypothesis that the configuration is reached.
@@ -30866,7 +30866,7 @@ def RueCore.Spec.Sharp.unordered_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**A stuck configuration that is not reached** (sharpness, RUE-2485). For the
+**A stuck configuration that is not reached** (§7 sharpness, RUE-2485). For the
 checked program of `Nonvacuous.dtor`, whose `run` is never stuck, a
 configuration reading an unbound name is stuck and is not reached from
 `Config.init`. So `step_progress`, `step_preservation`,
@@ -30937,7 +30937,7 @@ def RueCore.Spec.Sharp.unreachable_stuck_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**A panic §6's relation does not reach** (sharpness, RUE-2485). The same, for
+**A panic §6's relation does not reach** (§7 sharpness, RUE-2485). The same, for
 the panic whose trace opens with a destructor event: not reached, not `run`'s
 answer past any bound (the program returns), not in the block grammar. So
 `eval_sound`'s and `run_sim`'s `run … = .panic k tr`, `eval_complete`'s and
@@ -31001,7 +31001,7 @@ def RueCore.Spec.Sharp.unreached_panic_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**A value §6's relation does not reach** (sharpness, RUE-2485). For the
+**A value §6's relation does not reach** (§7 sharpness, RUE-2485). For the
 checked program of `Nonvacuous.dtor`, the terminal configuration with the
 value `8`, the empty store and a trace that opens with a destructor event is
 not reached from `Config.init`, is not `run`'s answer at any fuel past any
@@ -31950,7 +31950,7 @@ def RueCore.Spec.Nonvacuous.panic_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**A well-formed program whose entry point takes a parameter** (sharpness,
+**A well-formed program whose entry point takes a parameter** (§7 sharpness,
 RUE-2485). `fn main(x: i64) -> i64 { x }` is `WfProgram`, but its entry point
 has a parameter, so it is not `ProgramTyped`; `run` calls it with no
 arguments, and `eval` refuses the call with `typeConfusion`. So `run_safe`
@@ -31998,7 +31998,7 @@ def RueCore.Spec.Sharp.entry_param_stmt : Prop :=
 *def* · module `RueCore.Spec.Sharp`
 
 **A typed expression run in a frame that does not match its context**
-(sharpness, RUE-2485). `1; x`, typed by `check` in the context `x : i64` over
+(§7 sharpness, RUE-2485). `1; x`, typed by `check` in the context `x : i64` over
 the checked program of `Nonvacuous.dtor`, is run from the empty frame and
 store, which do not match that context (`FrameMatches` fails); everything else
 `soundness`, `drop_exactly_once` and `rest_exactly_once` ask holds, a `Lead`
@@ -32073,7 +32073,7 @@ def RueCore.Spec.Sharp.frame_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**A well-formed program with no entry point** (sharpness, RUE-2485). The
+**A well-formed program with no entry point** (§7 sharpness, RUE-2485). The
 program with the witnesses' declarations and no function is `WfProgram`, and
 `P.fns[0]?` is `none`; `run` refuses the call of function `0` with `unbound`,
 so for no entry point `fd` does `run_safe`'s conclusion hold.
@@ -32110,7 +32110,7 @@ def RueCore.Spec.Sharp.no_entry_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**A result that is not the evaluation's** (sharpness, RUE-2485). For the body
+**A result that is not the evaluation's** (§7 sharpness, RUE-2485). For the body
 of `Nonvacuous.dtor`, whose leading operand has a `Lead`, a refusal is not
 what the evaluation at `fuel + 1` answers, and `rest_exactly_once`'s
 conclusion, which starts with "never refused", fails for it: the hypothesis
@@ -32166,7 +32166,7 @@ def RueCore.Spec.Sharp.no_eval_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**A `Lead` that did not happen** (sharpness, RUE-2485). For the body of
+**A `Lead` that did not happen** (§7 sharpness, RUE-2485). For the body of
 `Nonvacuous.dtor`, run from the empty frame, take the store `ℓ0 ↦ S0 { 1 }`
 and the pending value `S0 { 1 }` (identity `0`) as if the leading operand had
 produced them; it did not (`Lead` fails: it minted identity `0` into a reserved
@@ -32239,7 +32239,7 @@ def RueCore.Spec.Sharp.no_lead_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**A checked expression at a type its result does not fit** (sharpness,
+**A checked expression at a type its result does not fit** (§7 sharpness,
 RUE-2485). `check` accepts the literal `1` at `i64` in the checked program of
 `Nonvacuous.dtor`, and its result does not fit `bool`; no derivation types it
 at `bool`. So `check_sound` needs `c.fits T = true`.
@@ -32285,7 +32285,7 @@ def RueCore.Spec.Sharp.not_fits_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**An expression that is not `pendingSafe`** (sharpness, RUE-2485; RUE-2316's
+**An expression that is not `pendingSafe`** (§7 sharpness, RUE-2485; RUE-2316's
 carve-out). In the checked program of `Nonvacuous.dtor`, `0; [s, return 7];
 1` is typed in the context `s : S0`, but the array literal's first element is
 pending when the second unwinds. From a frame holding `s` at cell `0`, the
@@ -32412,7 +32412,7 @@ def RueCore.Spec.Sharp.pending_expr_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**A checked program with a function that is not `pendingSafe`** (sharpness,
+**A checked program with a function that is not `pendingSafe`** (§7 sharpness,
 RUE-2485; RUE-2316's carve-out). Beside an entry point returning `0`, `fn
 g(s: S0) -> i64 { [s, return 7]; 0 }` is typed, but the array literal's first
 element is pending when the second unwinds, so the program is not
@@ -32525,7 +32525,7 @@ def RueCore.Spec.Sharp.pending_program_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**A store that is not copy-closed** (sharpness, RUE-2485). The store's one
+**A store that is not copy-closed** (§7 sharpness, RUE-2485). The store's one
 cell holds an `[i64; 1]` array (a `Copy` type) with an owned `S0` inside it,
 outside the frame. `1; 2` is typed and run from the empty frame over it, which
 agrees with the empty context, in the checked program of `Nonvacuous.dtor`;
@@ -32669,7 +32669,7 @@ def RueCore.Spec.Sharp.store_cc_stmt : Prop :=
 *def* · module `RueCore.Spec.Sharp`
 
 **An unchecked program that reads a moved-out value, run by `eval`**
-(sharpness, RUE-2485; the program is `Nonvacuous.stuck`'s). `let a = S0 { 1 };
+(§7 sharpness, RUE-2485; the program is `Nonvacuous.stuck`'s). `let a = S0 { 1 };
 @drop(a); a.x0` as the entry point: the checker rejects it and it is neither
 `ProgramTyped` nor `WfProgram`, while its entry point exists and takes no
 parameters, and its body is `pendingSafe`; `main()`, the call `run` makes, is
@@ -32760,7 +32760,7 @@ def RueCore.Spec.Sharp.stuck_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**An ill-typed expression of a checked program** (sharpness, RUE-2485).
+**An ill-typed expression of a checked program** (§7 sharpness, RUE-2485).
 Over the checked program of `Nonvacuous.dtor`, the expression `let a = S0 { 1
 }; @drop(a); a.x0`, from the empty frame and store, is typed at no type and no
 outcome, and `check` rejects it; everything else `soundness`,

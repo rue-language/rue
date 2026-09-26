@@ -890,11 +890,13 @@ their linking theorems (`checkProgram_sound`, `step_iff`,
 `no_double_free`, the drop-order lemmas, the float lemmas §7 owes) is not a
 claim and is not on the list. Nor are the non-vacuity witnesses, which may
 name definitions outside the trusted base (`Float.exactOps` and its
-`roundRat`): a witness can only fail to witness, never widen a claim. Today
+`roundRat`): a witness can only fail to witness, never widen a claim; nor
+are the sharpness counter-examples, which say a claim cannot be widened. Today
 the headlines' trusted base is 292 definitions,
-all in L0 and L1 (the package has 1092 theorems besides, 228 of them the
-glue applications of `Nonvacuous/Glue.lean`, and the 49 `Spine`
-restatements: 36 of the spine, 13 of the witnesses). A
+all in L0 and L1 (the package has 1137 theorems besides, 228 of them the
+glue applications of `Nonvacuous/Glue.lean`, and the 76 `Spine`
+restatements: 36 of the spine, 13 of the witnesses, 27 of the sharpness
+counter-examples). A
 definition counts as Lean's own, and is only counted, when Lean's own tables
 record it as such (recursors and their auxiliaries, matchers, projections),
 or when it is named as Lean names a by-product and has no source range of its
