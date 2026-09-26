@@ -804,6 +804,7 @@ lean_package(
         "lint.txt": ["ruecore-lint"],
         "layers.txt": ["ruecore-layers"],
         "spine.md": ["ruecore-digest", "--spine"],
+        "spine-fingerprints.txt": ["ruecore-digest", "--fingerprint"],
     },
     trust = [
         "RueCore.soundness",

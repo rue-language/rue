@@ -49,7 +49,8 @@ def eval_complete_stmt : Prop :=
       ∃ n, ∀ fuel, n < fuel → run M.toFloatOps P fuel = .panic κ tr)
 
 /-- **Completeness on every program** (§6.12): the same, up to a refusal of
-`run`'s (RUE-2314). -/
+`run`'s (RUE-2314). With no typing hypothesis the escape is wide: a `run` that
+is `.stuck` past some fuel satisfies it, whatever `→*` reaches. -/
 def run_complete_stmt : Prop :=
   ∀ (M : FloatOps) (P : Program),
     (∀ H φ v tr, Steps M P Config.init (.run H φ [] (.ret v) tr) →

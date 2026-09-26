@@ -22,8 +22,8 @@ trusted-base lint checks the stronger fact that the two are the same term
 (up to binder names), and that this module declares nothing else.
 
 This module is Lean Comparator's *solution* (README, "The statement layer"):
-the challenge, `comparator/Challenge.lean`, declares the same names with the
-same types and `sorry` for proofs, and Comparator certifies that each of these
+the challenge, `comparator/Challenge.lean`, writes each `_stmt` out in full
+and declares the same names with the same types and `sorry` for proofs, and Comparator certifies that each of these
 theorems has the challenge's statement, is accepted by the kernel, and uses no
 axiom but `propext` and `Quot.sound`.
 -/

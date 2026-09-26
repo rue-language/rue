@@ -23,7 +23,8 @@ def check_sound_stmt : Prop :=
     check P R Γ e = some (c, Ω) → ∀ T, c.fits T = true → Typed P R Γ e T Ω
 
 /-- **An accepted program is well-typed** (§3, (Fn) §5.8): `checkProgram`
-decides the hypothesis `ProgramTyped` of the program statements. -/
+accepting a program suffices for the hypothesis `ProgramTyped` of the
+program statements (soundness only: a typed program it rejects is possible). -/
 def checkProgram_sound_stmt : Prop :=
   ∀ {P : Program} (_ : checkProgram P = true), ProgramTyped P
 

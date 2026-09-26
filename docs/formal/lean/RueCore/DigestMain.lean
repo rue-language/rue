@@ -10,9 +10,10 @@ ruecore-digest --trust         the trust report, on stdout (TRUST.md)
 ruecore-digest --spine         the spine: every Spec statement (SPINE.md)
 ruecore-digest --challenge     Lean Comparator's challenge (comparator/Challenge.lean)
 ruecore-digest --comparator-config   its configuration (comparator/config.json)
+ruecore-digest --fingerprint   a hash of each Spec statement (spine-fingerprints.txt)
 ```
 
-The last three are generated from the Spec layer's list, `RueCore.Spec.spine`
+The last four are generated from the Spec layer's list, `RueCore.Spec.spine`
 (RUE-2460), and exit non-zero when the lint's spine check
 (`RueCore.Lint.spineProblems`) finds the list and the environment disagree.
 
@@ -39,7 +40,7 @@ open Lean RueCore
 
 /-- (helper) How to call the executable. -/
 def usage : String :=
-  "usage: ruecore-digest [--index <path>] | --trust | --spine | --challenge | --comparator-config"
+  "usage: ruecore-digest [--index <path>] | --trust | --spine | --challenge | --comparator-config | --fingerprint"
 
 /-- (helper) The statement digest: theorems, helper lemmas, and the
 definitions their statements are written in terms of. -/
@@ -132,6 +133,10 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
   let problems := Lint.spineProblems env
   for p in problems do IO.eprintln s!"ruecore-digest --spine: {p}"
   let base ← Lint.trustedBase env
+  let floatStmts := Spec.spine.filter fun (_, s) =>
+    match Lint.find? env s with
+    | some (.defnInfo v) => v.value.getUsedConstants.contains ``FloatModel
+    | _ => false
   let mut out : Array String := #[
     "# The spine: what the mechanization claims",
     "",
@@ -139,19 +144,44 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
     "(`RueCore/Spec.lean`, RUE-2460); do not edit, regenerate it whenever a Spec",
     "statement or its doc-comment changes.",
     "",
-    "The claim, statement by statement: read this first. Each entry is a",
-    "`def …_stmt : Prop` of the Spec layer, written over layers L0 and L1 alone,",
-    "with its English reading and the `../01-core-calculus.md` §7 paragraph it",
-    "realizes (and where it is narrower). `RueCore/Spine.lean` restates each",
-    "theorem `RueCore.X` as `RueCore.Spine.X : RueCore.Spec.X_stmt := @RueCore.X`,",
-    "so the kernel checks every proof against its statement; `ruecore-lint` checks",
-    "that the proof layer states each one word for word; Lean Comparator",
-    "(`comparator/`, README \"The statement layer\") certifies the `Spine`",
-    "theorems against a `sorry` challenge, with `propext` and `Quot.sound` only.",
+    "**Scope.** These statements are about a *fragment* of the core calculus",
+    "(`../01-core-calculus.md`; `INDEX.md` draws the boundary rule by rule), and",
+    "nothing outside it is proved by omission. The fragment has no loans or borrows",
+    "(Λ is empty, so §5.4 is not modelled) and no allocation store (no buffers, views",
+    "or containers, §6.13); both are Phase D (RUE-2238, RUE-2240). So these parts of",
+    "§7 have **no statement here** (`../03-metatheory.md`):",
+    "",
+    "- *No use-after-free*, the §6.13 buffer bullet (RUE-2240);",
+    "- *Exclusivity / no aliased mutation* (RUE-2238);",
+    "- the lemmas §7 names explicitly: loan/drop non-interference, loan-extent",
+    "  nesting, root separation, view-intact (RUE-2238) and handle-uniqueness",
+    "  preservation (RUE-2240). Float totality is not a theorem either: the rounded",
+    "  operations' closure is assumed, as the laws of `FloatModel`.",
+    "",
+    s!"{floatStmts.length} of the {Spec.spine.length} statements quantify over `M : FloatModel`, the IEEE 754 laws assumed.",
+    "Nothing here shows that some model satisfies those laws; were they jointly",
+    s!"unsatisfiable, those {floatStmts.length} would hold vacuously (RUE-2469). Several statements say",
+    "\"`run` is never `.stuck` with violation *v*\": they mean what `eval`'s monitors",
+    "watch, since *v* is the tag a monitor raises (`no_violation`, `no_use_after_move`,",
+    "`no_use_after_drop` and `no_linear_discard` say so; RUE-2469).",
+    "What the proof means for the compiler, in plain language, is RUE-2462's",
+    "one-page account, WHAT-IT-MEANS, beside `../README.md` once it lands.",
+    "",
+    "**The statements.** Each entry is a `def …_stmt : Prop` of the Spec layer,",
+    "written over layers L0 and L1 alone, with its English reading and the",
+    "`../01-core-calculus.md` §7 paragraph it realizes (and where it is narrower).",
+    "`RueCore/Spine.lean` restates each theorem `RueCore.X` as",
+    "`RueCore.Spine.X : RueCore.Spec.X_stmt := @RueCore.X`, so the kernel checks every",
+    "proof against its statement; `ruecore-lint` checks that the proof layer states",
+    "each one word for word. Lean Comparator (`comparator/`, README \"The statement",
+    "layer\") replays the `Spine` proofs in its own kernel, with `propext` and",
+    "`Quot.sound` only, against a challenge that writes every statement out in full;",
+    "`spine-fingerprints.txt` records a hash of each, so a statement that changes",
+    "fails the chain until it is regenerated, and the change is reviewed.",
     "",
     s!"A statement means its text plus the {base.definitions.size} definitions the {Lint.headline.length} statements unfold",
     "to (`TRUST.md`, \"Trusted base\"; bodies in `DIGEST.md`); \"Names\" lists",
-    "those an entry mentions. `M : FloatModel` is the IEEE 754 laws assumed.",
+    "those an entry mentions.",
     ""]
   let mut group : Option Name := none
   for (h, s) in Spec.spine do
@@ -173,33 +203,112 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
         s!"; rests on {closure.size} definitions.", ""]
   return ("\n".intercalate out.toList, if problems.isEmpty then 0 else 1)
 
-/-- (helper) Lean Comparator's challenge (`comparator/Challenge.lean`): each
-`RueCore.Spine` theorem with its Spec statement as its type and `sorry` for
-a proof, generated from `RueCore.Spec.spine`. -/
+/-- (helper) A Spec statement's body as Lean source that elaborates back to
+the same term: printed with every function binder's type, in the namespace
+the statement is declared in (`RueCore.Spec`), so that a name the printer
+shortens resolves as it does in the Spec module. Lean Comparator is what
+checks the round trip: it compares the challenge's copy of each `_stmt` with
+the Spec layer's, constant for constant. -/
+def stmtSource (v : DefinitionVal) (width : Nat := 100) : CoreM String :=
+  withReader (fun ctx => { ctx with currNamespace := `RueCore.Spec }) <|
+    withOptions (fun o => o.setBool `pp.funBinderTypes true) do
+      Meta.MetaM.run' do
+        return (← Meta.ppExpr v.value).pretty width
+
+/-- (helper) The modules the Spec layer's modules import from L0 and L1: what
+the challenge imports, so that it states the spine over those layers alone. -/
+def specImports (env : Environment) : Array Name := Id.run do
+  let mut out : Array Name := #[]
+  for m in env.header.moduleNames do
+    unless Layers.layerOf? m == some Layers.specLayer do continue
+    let some i := env.getModuleIdx? m | continue
+    for imp in env.header.moduleData[i.toNat]!.imports do
+      let l := Layers.layerOf? imp.module
+      if (l == some 0 || l == some 1) && !out.contains imp.module then
+        out := out.push imp.module
+  return out.qsort (·.toString < ·.toString)
+
+/-- (helper) Lean Comparator's challenge (`comparator/Challenge.lean`),
+generated from `RueCore.Spec.spine`: every Spec statement written out in full
+— its elaborated body, pretty-printed, as a `def RueCore.Spec.<name>_stmt :
+Prop` of the challenge's own — then each `RueCore.Spine` theorem with that
+statement as its type and `sorry` for a proof. It imports L0 and L1 only (the
+modules the Spec layer imports), not the Spec layer: Comparator compares
+every constant a challenge statement uses with the solution's, the `_stmt`
+definitions included, so the challenge pins the statements' content, and a
+Spec statement changed without regenerating the challenge fails Comparator,
+while one changed and regenerated shows in the challenge's diff. -/
 def challengeReport (env : Environment) : CoreM (String × UInt32) := do
   let problems := Lint.spineProblems env
   for p in problems do IO.eprintln s!"ruecore-digest --challenge: {p}"
-  let mut out : Array String := #[
-    "import RueCore.Spec",
+  let mut out : Array String := (specImports env).map (s!"import {·}")
+  out := out ++ #[
     "",
     "/-!",
     "# Lean Comparator's challenge (RUE-2460)",
     "",
     "Generated by `lake exe ruecore-digest --challenge` from `RueCore.Spec.spine`; do",
-    "not edit. One theorem per Spec statement, with the statement as its type and",
-    "`sorry` for a proof. It imports the Spec layer and, through it, layers L0 and",
-    "L1 only: the part of the package a reviewer trusts. `RueCore.Spine`, the",
-    "solution, states the same names with the same types and proves them;",
-    "`comparator/config.json` names them. How to run it: README, \"The statement",
-    "layer\".",
+    "not edit. It restates every Spec statement in full, as the kernel holds it (its",
+    "elaborated body, pretty-printed), over the L0 and L1 modules the Spec layer",
+    "imports and nothing else; then one theorem per statement, with the statement as",
+    "its type and `sorry` for a proof. `RueCore.Spine`, the solution, proves the same",
+    "names with the same types; Comparator checks that every constant these",
+    "statements use, each `_stmt` included, is the same in the solution's",
+    "environment, so a statement changed in the Spec layer fails Comparator until",
+    "this file is regenerated, and the change is then this file's diff.",
+    "`comparator/config.json` names the theorems. How to run it: README, \"The",
+    "statement layer\".",
     "-/",
     "",
-    "namespace RueCore.Spine",
+    "set_option autoImplicit false",
+    "",
+    "namespace RueCore.Spec",
     ""]
+  for (h, s) in Spec.spine do
+    let some (.defnInfo v) := Lint.find? env s | continue
+    let body ← stmtSource v
+    out := out ++ #[s!"/-- The statement `{Digest.shortName h}` proves. -/",
+      s!"def {s.replacePrefix `RueCore.Spec .anonymous} : Prop :=",
+      s!"  {("\n  ".intercalate (body.splitOn "\n"))}", ""]
+  out := out ++ #["end RueCore.Spec", "", "namespace RueCore.Spine", ""]
   for (h, s) in Spec.spine do
     out := out.push s!"theorem {Digest.shortName h} : {s} := sorry"
   out := out ++ #["", "end RueCore.Spine", ""]
   return ("\n".intercalate out.toList, if problems.isEmpty then 0 else 1)
+
+/-- (helper) FNV-1a, 64 bits, over a string's UTF-8 bytes: a fingerprint
+that is the same on every machine and every run. -/
+def fnv1a64 (s : String) : UInt64 := Id.run do
+  let mut h : UInt64 := 0xcbf29ce484222325
+  for b in s.toUTF8 do
+    h := (h ^^^ b.toUInt64) * 0x100000001b3
+  return h
+
+/-- (helper) A fingerprint as sixteen hex digits. -/
+def hex16 (h : UInt64) : String :=
+  let d := (Nat.toDigits 16 h.toNat)
+  String.ofList (List.replicate (16 - d.length) '0' ++ d)
+
+/-- (helper) The spine's fingerprints (`spine-fingerprints.txt`): one line
+per Spec statement, in `Spec.spine`'s order, with a hash of its elaborated
+body (the kernel's term, printed with full names and binder names). The file
+is committed, and `bin/chain.sh` fails when a regenerated copy differs from
+it — a statement added, removed or changed — naming each, so that a change
+to what the mechanization claims is regenerated deliberately and reviewed,
+not carried along by a proof edit. -/
+def fingerprintReport (env : Environment) : CoreM (String × UInt32) := do
+  let problems := Lint.spineProblems env
+  for p in problems do IO.eprintln s!"ruecore-digest --fingerprint: {p}"
+  let mut out : Array String := #[
+    "# The spine's fingerprints (RUE-2460): a hash of each Spec statement's elaborated body.",
+    "# Generated by `lake exe ruecore-digest --fingerprint > spine-fingerprints.txt`; do not",
+    "# edit. A changed, added or removed line is a change to what the mechanization claims:",
+    "# regenerate only with the Spec diff and SPINE.md under review.",
+    s!"# {Spec.spine.length} statements."]
+  for (_, s) in Spec.spine do
+    let some (.defnInfo v) := Lint.find? env s | continue
+    out := out.push s!"{hex16 (fnv1a64 (toString v.value))} {s}"
+  return ("\n".intercalate out.toList ++ "\n", if problems.isEmpty then 0 else 1)
 
 /-- (helper) Lean Comparator's configuration (`comparator/config.json`):
 the challenge and solution modules, the theorems to compare — one per Spec
@@ -249,6 +358,7 @@ unsafe def mainUnsafe (args : List String) : IO UInt32 := do
   | ["--spine"] => withEnvironment spineReport
   | ["--challenge"] => withEnvironment challengeReport
   | ["--comparator-config"] => withEnvironment comparatorConfig
+  | ["--fingerprint"] => withEnvironment fingerprintReport
   | _ => IO.eprintln usage; pure 1
 
 /-- (helper) The entry point's safe face. -/
