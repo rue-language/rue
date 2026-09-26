@@ -32041,7 +32041,9 @@ def RueCore.Retire.StepLive : StepOut → Prop :=
 *def* · module `RueCore.Spec.Trace`
 
 **No destructor twice on one value** (§6.11, `3.9:28`), given only that a
-destructor-bearing struct is not `Copy` (`3.9:31`).
+destructor-bearing struct is not `Copy` (`3.9:31`). As for `freed_once`, a
+refused or fuel-exhausted run has an empty trace, so the bound is over the
+runs `eval` finishes.
 
 ```lean
 def RueCore.Spec.dtor_once_stmt : Prop :=
@@ -33369,8 +33371,13 @@ def RueCore.Exact (D : Decls) (H : Store) (X : List Nat) : EvalRes → Prop :=
 
 *def* · module `RueCore.Spec.Trace`
 
-**Nothing freed twice, on every program** (§6.11): a finished run frees
-each identity at most once, with no typing hypothesis.
+**Nothing freed twice, on every program** (§6.11): a run that answers a
+value, an unwind or a panic frees each identity at most once, with no typing
+hypothesis. A refused or fuel-exhausted run has an empty trace
+(`EvalRes.trace`), so on an unchecked program the bound rests on `eval`'s
+refusals: a second `@drop` of one place is refused `useAfterMove`, and an
+owned value under a `Copy` one is refused `ownedUnderCopy`. `Step` has neither
+refusal, and its bound is `step_no_double_free`, which needs `ProgramTyped`.
 
 ```lean
 def RueCore.Spec.freed_once_stmt : Prop :=
@@ -38410,7 +38417,16 @@ def RueCore.Spec.no_linear_discard_stmt : Prop :=
 *def* · module `RueCore.Spec.Safety`
 
 **No linear leak** (§7 "Linear values are consumed exactly once", §5.6): no
-scope exit or unwind meets a live linear value.
+scope exit, frame pop or scope unwind meets a live linear binding. Narrower
+than the bullet:
+- a linear value built for a sibling operand, which a later operand abandons
+  by `return` or `break`, is in no scope record; the unwind discards it
+  unchecked and the run ends normally (RUE-2316;
+  `Examples.linearLostAtCallArg`);
+- a `@panic` abandons live linear bindings by design (§5.7's `⊥_panic`);
+- a linear value the entry point returns is handed to no scope.
+What it rules out is what `eval`'s leak monitor watches (R3 of
+`REDTEAM-LOG.md`).
 
 ```lean
 def RueCore.Spec.no_linear_leak_stmt : Prop :=
@@ -38603,7 +38619,9 @@ cell, in focus, or pending on the control stack (`Config.held`); these are the
 owned values allocated along the run. If the run from `C` finishes with a
 value (`✓v`, a value at an empty stack), then `a` is ended in the final trace
 (a drop, a discarded temporary's drop, or a consumption: `freedIds`) or is
-part of the final value, exactly once between the two: no owned value the
+part of the final value (which counts as ended: §2 restricts `main` to `i32` or
+`unit`, which own nothing, and the fragment does not), exactly once between
+the two: no owned value the
 run holds is lost, and none is ended twice. Narrower than the bullet:
 `pendingSafe` (RUE-2316), nothing about a panic (§6.12's trap runs no drop, so
 what it abandons is not ended), and nothing about a run that never finishes
@@ -40201,7 +40219,11 @@ def RueCore.Spec.rest_exactly_once_stmt : Prop :=
 
 **Program safety** (§7 "Type safety"). A well-formed program whose entry
 point (`P.fns[0]?`) takes no parameters, run at any fuel, exhausts it,
-panics, or returns a value of its entry point's type.
+panics, or returns a value of its entry point's type. The entry point's
+return type is not restricted: §2's grammar fixes `fn main() -> i32 | unit`,
+and (Result-Ok) §6.12 reads only those types, but `WfProgram` admits any type.
+So a checked program may return an owned value from `main`, even a linear one,
+and no drop or monitor sees it (`Nonvacuous.whole_result` returns an `S0`).
 
 ```lean
 def RueCore.Spec.run_safe_stmt : Prop :=
