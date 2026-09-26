@@ -2370,7 +2370,7 @@ marked node.
 | `freed_once` | `RueCore.Trace` | 10 | 14 |
 | `dtor_once` | `RueCore.Trace` | 7 | 20 |
 | `drop_exactly_once` | `RueCore.TraceExact` | 55 | 148 |
-| `rest_exactly_once` | `RueCore.TraceExact` | 44 | 151 |
+| `rest_exactly_once` | `RueCore.TraceExact` | 51 | 151 |
 | `drop_order` | `RueCore.TraceOrder` | 36 | 21 |
 | `drop_glue_order` | `RueCore.TraceOrder` | 25 | 82 |
 | `Step.det` | `RueCore.Step.Lemmas` | 11 | 2 |
