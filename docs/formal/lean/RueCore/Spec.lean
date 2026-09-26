@@ -64,6 +64,7 @@ def spine : List (Lean.Name × Lean.Name) := [
   (`RueCore.no_violation, ``no_violation_stmt),
   (`RueCore.no_use_after_move, ``no_use_after_move_stmt),
   (`RueCore.no_use_after_drop, ``no_use_after_drop_stmt),
+  (`RueCore.run_no_use_after_drop, ``run_no_use_after_drop_stmt),
   (`RueCore.no_linear_leak, ``no_linear_leak_stmt),
   (`RueCore.no_linear_overwrite, ``no_linear_overwrite_stmt),
   (`RueCore.no_linear_discard, ``no_linear_discard_stmt),
@@ -90,6 +91,7 @@ def spine : List (Lean.Name × Lean.Name) := [
   (`RueCore.step_progress, ``step_progress_stmt),
   (`RueCore.step_preservation, ``step_preservation_stmt),
   (`RueCore.step_type_safety, ``step_type_safety_stmt),
+  (`RueCore.step_no_use_after_drop, ``step_no_use_after_drop_stmt),
   -- adequacy
   (`RueCore.eval_sound, ``eval_sound_stmt),
   (`RueCore.run_sim, ``run_sim_stmt),
@@ -144,6 +146,7 @@ def witnesses : List (Lean.Name × Lean.Name × List Lean.Name) := [
       `RueCore.no_violation,
       `RueCore.no_use_after_move,
       `RueCore.no_use_after_drop,
+      `RueCore.run_no_use_after_drop,
       `RueCore.no_linear_leak,
       `RueCore.no_linear_overwrite,
       `RueCore.no_linear_discard,
@@ -163,6 +166,7 @@ def witnesses : List (Lean.Name × Lean.Name × List Lean.Name) := [
       `RueCore.step_progress,
       `RueCore.step_preservation,
       `RueCore.step_type_safety,
+      `RueCore.step_no_use_after_drop,
       `RueCore.eval_sound,
       `RueCore.run_sim,
       `RueCore.eval_complete,
@@ -468,7 +472,9 @@ def sharpness : List (Lean.Name × Lean.Name × List (Lean.Name × Nat)) := [
       (`RueCore.step_preservation, 2),
       (`RueCore.never_stuck_iff, 2),
       (`RueCore.step_never_stuck_of_run, 2),
-      (`RueCore.run_stuck_of_step_stuck, 1)])
+      (`RueCore.run_stuck_of_step_stuck, 1)]),
+  (`RueCore.Sharp.retired_cell, ``Sharp.retired_cell_stmt, [
+      (`RueCore.step_no_use_after_drop, 1)])
 
 ]
 
@@ -486,11 +492,12 @@ the laws have no counter-example, and `M` is not numbered among the
 hypotheses (it is not a `Prop`). -/
 def sharpnessReasons : List (Lean.Name × Nat × String) := [
   (`RueCore.no_use_after_drop, 1,
-    "No counter-example has been found. By reading `Dynamics.lean`, `.dead` enters the store \
-    only as an identity slot no binding names, or when a cell is retired as its binding leaves \
-    the environment; and a fuzz of 78,000 programs, checked and unchecked, reached \
-    `useAfterDrop` through neither `run` nor `step`. So the hypothesis appears redundant; the \
-    theorem over every program is RUE-2496.")
+    "No counter-example exists: `run_no_use_after_drop` proves the conclusion for every \
+    program, checked or not (and `step_no_use_after_drop` the same over `Step` from \
+    `Config.init`), so the hypothesis is redundant for a run from the start. The property is \
+    structural: a binding's cell is minted fresh and retired only when its scope ends, after \
+    which nothing names it. The statement is kept in §7's form, over checked programs \
+    (RUE-2496).")
 ]
 
 end RueCore.Spec

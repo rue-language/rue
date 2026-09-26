@@ -188,6 +188,18 @@ theorem dtor.no_use_after_drop : True := by
   have := Spine.no_use_after_drop M hPT 200
   trivial
 
+/-- `dtor` applied to `run_no_use_after_drop` (helper). -/
+theorem dtor.run_no_use_after_drop : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
+    H, v, tr, hrun, hSteps, -⟩ :=
+    Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
+  rw [← hM] at hStep hns hLead hEv hrun hSteps
+  let P := progDtor
+  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.run_no_use_after_drop M.toFloatOps P 200
+  trivial
+
 /-- `dtor` applied to `no_linear_leak` (helper). -/
 theorem dtor.no_linear_leak : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
@@ -306,6 +318,18 @@ theorem dtor.step_type_safety : True := by
   let P := progDtor
   have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
   have := Spine.step_type_safety M hPT
+  trivial
+
+/-- `dtor` applied to `step_no_use_after_drop` (helper). -/
+theorem dtor.step_no_use_after_drop : True := by
+  obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
+  obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
+    H, v, tr, hrun, hSteps, -⟩ :=
+    Spine.Nonvacuous.dtor bodyDtor rfl progDtor rfl
+  rw [← hM] at hStep hns hLead hEv hrun hSteps
+  let P := progDtor
+  have hne : run M.toFloatOps P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
+  have := Spine.step_no_use_after_drop M.toFloatOps P hSteps
   trivial
 
 /-- `dtor` applied to `eval_sound` (helper). -/

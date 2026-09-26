@@ -66,10 +66,28 @@ raises when it reaches a retired cell. It is `no_violation` at one tag, so it
 says no retired cell is accessed only as far as `eval` checks every access
 and labels it so: what it rules out is what that monitor watches (R3 of
 `REDTEAM-LOG.md`; RUE-2469). The buffer half of the bullet, use-after-free,
-has no statement (§6.13 is outside the fragment). -/
+has no statement (§6.13 is outside the fragment). Its `ProgramTyped`
+hypothesis is redundant: `run_no_use_after_drop` below proves the same
+conclusion for every program, checked or not, so this statement is not a
+consequence of typing; it is kept in §7's form, over checked programs
+(RUE-2496). -/
 def no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     run M.toFloatOps P fuel ≠ .stuck .useAfterDrop
+
+/-- **No use-after-drop, on every program** (§7 "No use-after-drop / no leak
+of drops", "never read afterward"; RUE-2496): `run` never refuses with
+`useAfterDrop`, at any fuel and float model, **whether or not the program is
+checked**. The property is structural rather than a consequence of typing: a
+binding's cell is minted fresh and retired only when the scope that bound it
+ends, after which nothing names it, and a scope record owes each cell once.
+So `no_use_after_drop`'s `ProgramTyped` is redundant for a run from the
+start. The guard is not dead code: from an open configuration, a frame that
+names a cell already retired, `eval` does refuse (`Sharp.retired_cell`). Like
+`no_use_after_drop`, it says no retired cell is accessed only as far as
+`eval` checks every access and labels it so (R3 of `REDTEAM-LOG.md`). -/
+def run_no_use_after_drop_stmt : Prop :=
+  ∀ (M : FloatOps) (P : Program) (fuel : Nat), run M P fuel ≠ .stuck .useAfterDrop
 
 /-- **No linear leak** (§7 "Linear values are consumed exactly once", §5.6): no
 scope exit or unwind meets a live linear value. -/
