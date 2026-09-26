@@ -51,6 +51,7 @@ def table : List (Name × Nat) := [
   (`RueCore.TraceExact, 3),
   (`RueCore.TraceOrder, 3),
   (`RueCore.Retire, 3),
+  (`RueCore.TracePrefix, 3),
   (`RueCore.Nonvacuous, 3),
   (`RueCore.Sharp, 3),
   (`RueCore.Spine, 3),
