@@ -765,7 +765,7 @@ def arrayZeroLengthDynTrap : Expr :=
       (letIn false (lit 0) (indexRead (.var 1) [use (.var 0)] [[]])))
 
 /-- **The element move in one arm of an `if`** (probe `a4`/`a4b`): the §5.5
-join meets `MovedOut` at the element against `Owned`, and `ownedJoinOk`'s array
+join meets `MovedOut` at the element against `Owned`, and `ownedJoinable`'s array
 clause admits it because `S1` is not `Linear` (`3.8:50`). The outgoing state has
 the element `MovedOut`, so the scope exit drops only `a[1]` — which is what the
 compiler prints on the taken path, and `3.8:73`'s "elements moved out on only
@@ -801,7 +801,7 @@ def arrayElemFieldMove : Expr :=
 
 /-- **A linear element consumed on one path only** (probe `a7`, E0443): the
 §5.5 join meets `MovedOut` against `Owned` at an element whose type is declared
-`linear`, and `ownedJoinOk`'s array clause refuses (`3.8:50`) — `3.8:71` wants
+`linear`, and `ownedJoinable`'s array clause refuses (`3.8:50`) — `3.8:71` wants
 every element consumed "on every non-diverging path". The compiler names the
 element: "element(s) [0] of 'a' are not consumed on every path". -/
 def arrayLinearElemOnePath : Expr :=
@@ -1224,7 +1224,7 @@ example : run demoOps (prog tI64 arrayElemFieldMove) demoFuel
          .dtor sAffine (cA 2 2)] := by rfl
 
 /-- **A linear element consumed on one path only** (probe `a7`, E0443): the
-§5.5 join refuses at the element, which is `ownedJoinOk`'s array clause. -/
+§5.5 join refuses at the element, which is `ownedJoinable`'s array clause. -/
 example : checkProgram (prog tI64 arrayLinearElemOnePath) = false := by rfl
 
 /-- **The array side condition of (Assign)** (`3.8:72`, E0480): the element
@@ -3228,7 +3228,7 @@ def litOutOfRangeI64 : Expr := lit (2 ^ 63)
 example : checkProgram (scalarProg tI64 litOutOfRangeI64) = false := by rfl
 
 /-- **Why §5.5's associativity is stated over `OwnSt.wf`.** It is false of
-states no rule can write: `.fields` at a scalar type is one, and `ownedJoinOk`
+states no rule can write: `.fields` at a scalar type is one, and `ownedJoinable`
 refuses it while `residualLinear` sees nothing in it. So at `int` the two
 associations of `MovedOut`, `Owned`, `fields [Owned]` disagree — one is
 `MovedOut`, the other ill-formed — and `OwnSt.wf` is exactly the invariant that
@@ -3260,7 +3260,7 @@ example : checkStructs joinAssocBadDecls = false := by rfl
 
 /-- **Why it also needs `WfStructs`.** Over `joinAssocBadDecls` the two
 associations of `MovedOut`, `Owned`, `fields [MovedOut]` disagree the same way,
-although every one of the three states *is* a shape of its type: `ownedJoinOk`
+although every one of the three states *is* a shape of its type: `ownedJoinable`
 reads the moved-out field's own class and `residualLinear` reads the struct's,
 and §3's assignment (`3.8:58`) is what keeps the two answers in step. So
 `OwnSt.join_assoc` carries `WfStructs` as well — a premise every well-formed

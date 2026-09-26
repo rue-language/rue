@@ -1942,49 +1942,49 @@ mutual
 /-- **Joining a wholly-`Owned` arm with `t` yields `t`, and the `Owned` arm's
 contents still matches it.** The `Owned` side never adds a move, so the only
 question the join asks is whether each path `t` has `MovedOut` may be lost —
-which `ownedJoinOk` has answered, and which the invariant's asymmetric
+which `ownedJoinable` has answered, and which the invariant's asymmetric
 `movedOut` clause then admits (`3.8:50`, `3.8:60`). -/
-theorem ownedJoinOk_matches {D : Decls} (hwf : WfDecls D) :
-    ∀ (t : OwnSt) {T : Ty} {c : Contents}, ownedJoinOk D t T = true →
+theorem ownedJoinable_matches {D : Decls} (hwf : WfDecls D) :
+    ∀ (t : OwnSt) {T : Ty} {c : Contents}, ownedJoinable D t T = true →
       ContentsMatches D c .owned T → ContentsMatches D c t T
   | .owned, _, _, _, h => h
   | .movedOut, T, c, hok, h => by
-      simp only [ownedJoinOk, decide_eq_true_eq] at hok
+      simp only [ownedJoinable, decide_eq_true_eq] at hok
       exact .moved h.contentsTy (h.contentsTy.residualLinear_false hwf hok)
   | .fields ts, T, c, hok, h => by
       cases T with
-      | int w sg => simp [ownedJoinOk] at hok
-      | float w => simp [ownedJoinOk] at hok
-      | bool => simp [ownedJoinOk] at hok
-      | unit => simp [ownedJoinOk] at hok
-      | enum e => simp [ownedJoinOk] at hok
+      | int w sg => simp [ownedJoinable] at hok
+      | float w => simp [ownedJoinable] at hok
+      | bool => simp [ownedJoinable] at hok
+      | unit => simp [ownedJoinable] at hok
+      | enum e => simp [ownedJoinable] at hok
       | struct s =>
-        simp only [ownedJoinOk] at hok
+        simp only [ownedJoinable] at hok
         split at hok
         · rename_i sd hd
           obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_struct hd h
-          exact .fields hd (ownedJoinOkList_matches hwf ts hok hl)
+          exact .fields hd (ownedJoinableList_matches hwf ts hok hl)
         · simp at hok
       | array T' n =>
-        simp only [ownedJoinOk] at hok
+        simp only [ownedJoinable] at hok
         obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_array h
-        exact .elems (ownedJoinOkList_matches hwf ts hok hl)
+        exact .elems (ownedJoinableList_matches hwf ts hok hl)
 
 /-- The same over a declaration's fields (helper). -/
-theorem ownedJoinOkList_matches {D : Decls} (hwf : WfDecls D) :
-    ∀ (ts : List OwnSt) {Ts : List Ty} {cs : List Contents}, ownedJoinOkList D ts Ts = true →
+theorem ownedJoinableList_matches {D : Decls} (hwf : WfDecls D) :
+    ∀ (ts : List OwnSt) {Ts : List Ty} {cs : List Contents}, ownedJoinableList D ts Ts = true →
       ContentsMatchesList D cs [] Ts → ContentsMatchesList D cs ts Ts
   | [], _, _, _, h => h
   | _ :: _, [], _, _, h => by cases h; exact .nil
   | t :: ts, T :: Ts, cs, hok, h => by
       cases h with
       | @cons c cs' _ _ _ hhd htl =>
-        simp only [ownedJoinOkList, Bool.and_eq_true] at hok
+        simp only [ownedJoinableList, Bool.and_eq_true] at hok
         refine .cons ?_ ?_
         · simpa only [OwnSt.fieldAt, List.getElem?_cons_zero, Option.getD_some] using
-            ownedJoinOk_matches hwf t hok.1
+            ownedJoinable_matches hwf t hok.1
               (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hhd)
-        · simpa only [List.tail_cons] using ownedJoinOkList_matches hwf ts hok.2
+        · simpa only [List.tail_cons] using ownedJoinableList_matches hwf ts hok.2
             (by simpa only [List.tail_nil] using htl)
 end
 
@@ -2003,7 +2003,7 @@ theorem OwnSt.join_matches {D : Decls} (hwf : WfDecls D) :
       split at hj
       · cases hj
         rcases hc with h | h
-        · exact ownedJoinOk_matches hwf b ‹_› h
+        · exact ownedJoinable_matches hwf b ‹_› h
         · exact h
       · cases hj
   | .movedOut, .owned, e, T, c, hj, hc => by
@@ -2012,7 +2012,7 @@ theorem OwnSt.join_matches {D : Decls} (hwf : WfDecls D) :
       · cases hj
         rcases hc with h | h
         · exact h
-        · exact ownedJoinOk_matches hwf .movedOut ‹_› h
+        · exact ownedJoinable_matches hwf .movedOut ‹_› h
       · cases hj
   | .fields as, .owned, e, T, c, hj, hc => by
       simp only [OwnSt.join] at hj
@@ -2020,7 +2020,7 @@ theorem OwnSt.join_matches {D : Decls} (hwf : WfDecls D) :
       · cases hj
         rcases hc with h | h
         · exact h
-        · exact ownedJoinOk_matches hwf (.fields as) ‹_› h
+        · exact ownedJoinable_matches hwf (.fields as) ‹_› h
       · cases hj
   | .movedOut, .movedOut, e, T, c, hj, hc => by
       simp only [OwnSt.join, residualLinear, Bool.false_eq_true, if_neg,
@@ -2105,7 +2105,7 @@ theorem OwnSt.joinList_matches {D : Decls} (hwf : WfDecls D) :
       split at hj
       · cases hj
         rcases hc with h | h
-        · exact ownedJoinOkList_matches hwf bs ‹_› h
+        · exact ownedJoinableList_matches hwf bs ‹_› h
         · exact h
       · cases hj
   | a :: as, [], T :: Ts, es, cs, hj, hc => by
@@ -2114,7 +2114,7 @@ theorem OwnSt.joinList_matches {D : Decls} (hwf : WfDecls D) :
       · cases hj
         rcases hc with h | h
         · exact h
-        · exact ownedJoinOkList_matches hwf (a :: as) ‹_› h
+        · exact ownedJoinableList_matches hwf (a :: as) ‹_› h
       · cases hj
   | a :: as, b :: bs, T :: Ts, es, cs, hj, hc => by
       simp only [OwnSt.joinList] at hj

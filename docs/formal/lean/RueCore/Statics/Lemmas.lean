@@ -467,7 +467,7 @@ type (`OwnSt.wf`) under §3's class assignment for the struct layer
 (`WfStructs`), and `Entry.join_assoc`/`Ctx.join_assoc` lift it the same way.
 Both hypotheses are needed, and `Examples.lean` pins a counterexample to each.
 Drop `OwnSt.wf` and `.fields` at a scalar type is a state no rule can write:
-`ownedJoinOk` refuses it while `residualLinear` sees nothing in it, so at `int`
+`ownedJoinable` refuses it while `residualLinear` sees nothing in it, so at `int`
 the two associations of `MovedOut`, `Owned`, `fields [Owned]` are `MovedOut`
 and ill-formed respectively. Drop `WfStructs` and a declaration whose recorded
 class is `Affine` over a `Linear` field separates the two associations of
@@ -476,9 +476,9 @@ declaration `checkStructs` rejects, so the premise is one a well-formed program
 already carries.
 
 Two facts about a successful join carry the proof, and both are §5.5's reading
-of §5.6 made precise. `OwnSt.join_ownedJoinOk`: a join neither adds nor removes
+of §5.6 made precise. `OwnSt.join_ownedJoinable`: a join neither adds nor removes
 an inadmissible `MovedOut`, so both operands and the result answer
-`ownedJoinOk` alike — which is what makes the `Owned` cases associate.
+`ownedJoinable` alike — which is what makes the `Owned` cases associate.
 `OwnSt.join_residualLinear`: a join succeeds only between operands carrying the
 same residual linear content, and the result carries the same; with
 `OwnSt.join_exists`, its converse (two residue-free states always join), that
@@ -491,7 +491,7 @@ notation needs: the fold is invariant under a permutation of the arms.
 mutual
 /-- **The §5.5 join is commutative**, at one path and its subtree. Joining is
 symmetric in the two arms: where one side is wholly `Owned` the result is the
-other side subject to `ownedJoinOk`, where one side is `MovedOut` the result is
+other side subject to `ownedJoinable`, where one side is `MovedOut` the result is
 `MovedOut` subject to the other's residue, and two field records join slot by
 slot — each of which reads the same from either side. -/
 theorem OwnSt.join_comm (D : Decls) : ∀ (a b : OwnSt) (T : Ty),
@@ -615,67 +615,67 @@ end
 
 mutual
 /-- **The other half: what an `Owned` arm may absorb still carries the type's
-obligation.** `ownedJoinOk` admits exactly the `MovedOut` paths whose type is
+obligation.** `ownedJoinable` admits exactly the `MovedOut` paths whose type is
 not `Linear` (`3.8:50`), so a state it admits at a `Linear` type still has
 residue somewhere — a wholly moved-out linear subtree is what it refuses. -/
-theorem ownedJoinOk_residualLinear {D : Decls} (hD : WfStructs D) :
-    ∀ (t : OwnSt) (T : Ty), ownedJoinOk D t T = true → T.mult D = .linear →
+theorem ownedJoinable_residualLinear {D : Decls} (hD : WfStructs D) :
+    ∀ (t : OwnSt) (T : Ty), ownedJoinable D t T = true → T.mult D = .linear →
       residualLinear D t T = true
   | .owned, _, _, hlin => by simp [residualLinear, hlin]
-  | .movedOut, _, h, hlin => by simp [ownedJoinOk, hlin] at h
+  | .movedOut, _, h, hlin => by simp [ownedJoinable, hlin] at h
   | .fields ts, T, h, hlin => by
       cases T with
       | struct s =>
           cases hd : D.structs[s]? with
-          | none => simp [ownedJoinOk, hd] at h
+          | none => simp [ownedJoinable, hd] at h
           | some sd =>
-              simp only [ownedJoinOk, hd] at h
+              simp only [ownedJoinable, hd] at h
               simp only [residualLinear, hd, Bool.or_eq_true]
               rcases (struct_carriesLinear_iff hd (hD s sd hd)).1 hlin with hattr | ⟨U, hmem, hU⟩
               · exact Or.inl (decide_eq_true hattr)
-              · exact Or.inr (ownedJoinOkList_residualLinearFields hD ts sd.fields h
+              · exact Or.inr (ownedJoinableList_residualLinearFields hD ts sd.fields h
                   (List.any_eq_true.2 ⟨U, hmem, decide_eq_true hU⟩))
       | array T' n =>
-          simp only [ownedJoinOk] at h
+          simp only [ownedJoinable] at h
           simp only [residualLinear]
-          exact ownedJoinOkList_residualLinearFields hD ts (List.replicate n T') h
+          exact ownedJoinableList_residualLinearFields hD ts (List.replicate n T') h
             (by rw [Ty.any_replicate_mult_linear]; exact decide_eq_true hlin)
-      | int _ _ => simp [ownedJoinOk] at h
-      | float _ => simp [ownedJoinOk] at h
-      | bool => simp [ownedJoinOk] at h
-      | unit => simp [ownedJoinOk] at h
-      | enum _ => simp [ownedJoinOk] at h
+      | int _ _ => simp [ownedJoinable] at h
+      | float _ => simp [ownedJoinable] at h
+      | bool => simp [ownedJoinable] at h
+      | unit => simp [ownedJoinable] at h
+      | enum _ => simp [ownedJoinable] at h
 
 /-- The same over a declaration's slots (helper). -/
-theorem ownedJoinOkList_residualLinearFields {D : Decls} (hD : WfStructs D) :
-    ∀ (ts : List OwnSt) (Ts : List Ty), ownedJoinOkList D ts Ts = true →
+theorem ownedJoinableList_residualLinearFields {D : Decls} (hD : WfStructs D) :
+    ∀ (ts : List OwnSt) (Ts : List Ty), ownedJoinableList D ts Ts = true →
       (Ts.any fun U => decide (U.mult D = .linear)) = true →
       residualLinearFields D ts Ts = true
   | [], _, _, hany => by simpa [residualLinearFields] using hany
   | _ :: _, [], _, hany => by simp at hany
   | t :: ts, T :: Ts, h, hany => by
-      simp only [ownedJoinOkList, Bool.and_eq_true] at h
+      simp only [ownedJoinableList, Bool.and_eq_true] at h
       simp only [List.any_cons, Bool.or_eq_true] at hany
       simp only [residualLinearFields, Bool.or_eq_true]
       rcases hany with hT | hTs
-      · exact Or.inl (ownedJoinOk_residualLinear hD t T h.1 (of_decide_eq_true hT))
-      · exact Or.inr (ownedJoinOkList_residualLinearFields hD ts Ts h.2 hTs)
+      · exact Or.inl (ownedJoinable_residualLinear hD t T h.1 (of_decide_eq_true hT))
+      · exact Or.inr (ownedJoinableList_residualLinearFields hD ts Ts h.2 hTs)
 end
 
 mutual
-/-- **A residue-free state answers `ownedJoinOk` exactly as `MovedOut` does**:
+/-- **A residue-free state answers `ownedJoinable` exactly as `MovedOut` does**:
 joining it with a wholly `Owned` arm is admissible exactly when `class(T)` is
 not `Linear`, which is the same test §5.5 applies at the `MovedOut`/`Owned`
 disagreement (`3.8:50`). This is the step that needs `OwnSt.wf`: at a type with
-no slots, `.fields` is a state `ownedJoinOk` refuses and `residualLinear`
+no slots, `.fields` is a state `ownedJoinable` refuses and `residualLinear`
 cannot see, and that gap is `Examples.lean`'s counterexample to associativity
 without the invariant. -/
-theorem ownedJoinOk_of_residualLinear_false {D : Decls} (hD : WfStructs D) :
+theorem ownedJoinable_of_residualLinear_false {D : Decls} (hD : WfStructs D) :
     ∀ (t : OwnSt) (T : Ty), OwnSt.wf D t T = true → residualLinear D t T = false →
-      ownedJoinOk D t T = decide (T.mult D ≠ .linear)
+      ownedJoinable D t T = decide (T.mult D ≠ .linear)
   | .owned, _, _, h => by
       simp only [residualLinear, decide_eq_false_iff_not] at h
-      simp [ownedJoinOk, h]
+      simp [ownedJoinable, h]
   | .movedOut, _, _, _ => rfl
   | .fields ts, T, hwf, h => by
       cases T with
@@ -686,8 +686,8 @@ theorem ownedJoinOk_of_residualLinear_false {D : Decls} (hD : WfStructs D) :
               have hiff := struct_carriesLinear_iff hd (hD s sd hd)
               simp only [OwnSt.wf, hd] at hwf
               simp only [residualLinear, hd, Bool.or_eq_false_iff, decide_eq_false_iff_not] at h
-              simp only [ownedJoinOk, hd]
-              rw [ownedJoinOkList_of_residualLinearFields_false hD ts sd.fields hwf h.2]
+              simp only [ownedJoinable, hd]
+              rw [ownedJoinableList_of_residualLinearFields_false hD ts sd.fields hwf h.2]
               have key : (sd.fields.any fun U => decide (U.mult D = .linear))
                   = decide ((Ty.struct s).mult D = .linear) := by
                 rw [Bool.eq_iff_iff, decide_eq_true_eq, List.any_eq_true]
@@ -703,8 +703,8 @@ theorem ownedJoinOk_of_residualLinear_false {D : Decls} (hD : WfStructs D) :
       | array T' n =>
           simp only [OwnSt.wf] at hwf
           simp only [residualLinear] at h
-          simp only [ownedJoinOk]
-          rw [ownedJoinOkList_of_residualLinearFields_false hD ts (List.replicate n T') hwf h, Ty.any_replicate_mult_linear]
+          simp only [ownedJoinable]
+          rw [ownedJoinableList_of_residualLinearFields_false hD ts (List.replicate n T') hwf h, Ty.any_replicate_mult_linear]
           simp
       | int _ _ => simp [OwnSt.wf] at hwf
       | float _ => simp [OwnSt.wf] at hwf
@@ -713,41 +713,41 @@ theorem ownedJoinOk_of_residualLinear_false {D : Decls} (hD : WfStructs D) :
       | enum _ => simp [OwnSt.wf] at hwf
 
 /-- The same over a declaration's slots (helper). -/
-theorem ownedJoinOkList_of_residualLinearFields_false {D : Decls} (hD : WfStructs D) :
+theorem ownedJoinableList_of_residualLinearFields_false {D : Decls} (hD : WfStructs D) :
     ∀ (ts : List OwnSt) (Ts : List Ty), OwnSt.wfList D ts Ts = true →
       residualLinearFields D ts Ts = false →
-      ownedJoinOkList D ts Ts = !(Ts.any fun U => decide (U.mult D = .linear))
+      ownedJoinableList D ts Ts = !(Ts.any fun U => decide (U.mult D = .linear))
   | [], _, _, h => by
       simp only [residualLinearFields] at h
-      simp [ownedJoinOkList, h]
+      simp [ownedJoinableList, h]
   | _ :: _, [], hwf, _ => by simp [OwnSt.wfList] at hwf
   | t :: ts, T :: Ts, hwf, h => by
       simp only [OwnSt.wfList, Bool.and_eq_true] at hwf
       simp only [residualLinearFields, Bool.or_eq_false_iff] at h
-      simp only [ownedJoinOkList, List.any_cons]
-      rw [ownedJoinOk_of_residualLinear_false hD t T hwf.1 h.1, ownedJoinOkList_of_residualLinearFields_false hD ts Ts hwf.2 h.2]
+      simp only [ownedJoinableList, List.any_cons]
+      rw [ownedJoinable_of_residualLinear_false hD t T hwf.1 h.1, ownedJoinableList_of_residualLinearFields_false hD ts Ts hwf.2 h.2]
       simp
 end
 
 /-- §5.5's wholly-`Owned` arm on the left, as one equation over every state of
 the other arm (helper). -/
 theorem OwnSt.join_owned_left (D : Decls) (b : OwnSt) (T : Ty) :
-    OwnSt.join D .owned b T = if ownedJoinOk D b T then some b else none := rfl
+    OwnSt.join D .owned b T = if ownedJoinable D b T then some b else none := rfl
 
 /-- §5.5's wholly-`Owned` arm on the right; the join reads the same from either
 side (`OwnSt.join_comm`) (helper). -/
 theorem OwnSt.join_owned_right (D : Decls) (a : OwnSt) (T : Ty) :
-    OwnSt.join D a .owned T = if ownedJoinOk D a T then some a else none := by
+    OwnSt.join D a .owned T = if ownedJoinable D a T then some a else none := by
   cases a <;> rfl
 
 /-- The one clause the two readings share: joining `MovedOut` with a wholly
 `Owned` arm is admissible exactly when the arm has no residue, because
-`ownedJoinOk` at `MovedOut` and `residualLinear` at `Owned` are complementary
+`ownedJoinable` at `MovedOut` and `residualLinear` at `Owned` are complementary
 tests of `class(T)` (helper). -/
 theorem OwnSt.join_movedOut_owned_eq (D : Decls) (T : Ty) :
-    (if ownedJoinOk D .movedOut T then some OwnSt.movedOut else none)
+    (if ownedJoinable D .movedOut T then some OwnSt.movedOut else none)
       = if residualLinear D .owned T then none else some OwnSt.movedOut := by
-  by_cases h : Ty.mult D T = .linear <;> simp [ownedJoinOk, residualLinear, h]
+  by_cases h : Ty.mult D T = .linear <;> simp [ownedJoinable, residualLinear, h]
 
 /-- §5.5's `MovedOut` arm on the left, as one equation over every state of the
 other arm — including the `Owned` one, by the clause above (helper). -/
@@ -767,15 +767,15 @@ theorem OwnSt.join_movedOut_right (D : Decls) (a : OwnSt) (T : Ty) :
   | fields ts => rfl
 
 /-- §5.5's slot join where the left arm records no slot: the other arm's record
-survives subject to `ownedJoinOk` (helper). -/
+survives subject to `ownedJoinable` (helper). -/
 theorem OwnSt.joinList_nil_left (D : Decls) (bs : List OwnSt) (T : Ty) (Ts : List Ty) :
     OwnSt.joinList D [] bs (T :: Ts)
-      = if ownedJoinOkList D bs (T :: Ts) then some bs else none := rfl
+      = if ownedJoinableList D bs (T :: Ts) then some bs else none := rfl
 
 /-- The same where the right arm records no slot (helper). -/
 theorem OwnSt.joinList_nil_right (D : Decls) (as : List OwnSt) (T : Ty) (Ts : List Ty) :
     OwnSt.joinList D as [] (T :: Ts)
-      = if ownedJoinOkList D as (T :: Ts) then some as else none := by
+      = if ownedJoinableList D as (T :: Ts) then some as else none := by
   cases as <;> rfl
 
 /-- Joining a third field record after two is joining their slot lists after two
@@ -839,22 +839,22 @@ theorem OwnSt.joinList_cons_bind_right (D : Decls) (a b c : OwnSt) (as bs cs : L
 
 /-- §5.6's residue of a state a wholly `Owned` arm may absorb *is* `class(T) =
 Linear`: the two halves above, taken together (helper). -/
-theorem residualLinear_of_ownedJoinOk {D : Decls} (hD : WfStructs D) (t : OwnSt) (T : Ty)
-    (h : ownedJoinOk D t T = true) :
+theorem residualLinear_of_ownedJoinable {D : Decls} (hD : WfStructs D) (t : OwnSt) (T : Ty)
+    (h : ownedJoinable D t T = true) :
     residualLinear D t T = decide (T.mult D = .linear) := by
   by_cases hlin : T.mult D = .linear
-  · rw [ownedJoinOk_residualLinear hD t T h hlin, decide_eq_true hlin]
+  · rw [ownedJoinable_residualLinear hD t T h hlin, decide_eq_true hlin]
   · rw [decide_eq_false hlin]
     cases hr : residualLinear D t T with
     | false => rfl
     | true => exact absurd (residualLinear_mult_linear hD t T hr) hlin
 
 /-- The same over a declaration's slots (helper). -/
-theorem residualLinearFields_of_ownedJoinOkList {D : Decls} (hD : WfStructs D) (ts : List OwnSt) (Ts : List Ty)
-    (h : ownedJoinOkList D ts Ts = true) :
+theorem residualLinearFields_of_ownedJoinableList {D : Decls} (hD : WfStructs D) (ts : List OwnSt) (Ts : List Ty)
+    (h : ownedJoinableList D ts Ts = true) :
     residualLinearFields D ts Ts = (Ts.any fun U => decide (U.mult D = .linear)) := by
   cases hany : (Ts.any fun U => decide (U.mult D = .linear)) with
-  | true => exact ownedJoinOkList_residualLinearFields hD ts Ts h hany
+  | true => exact ownedJoinableList_residualLinearFields hD ts Ts h hany
   | false =>
       cases hr : residualLinearFields D ts Ts with
       | false => rfl
@@ -862,13 +862,13 @@ theorem residualLinearFields_of_ownedJoinOkList {D : Decls} (hD : WfStructs D) (
 
 mutual
 /-- **A successful §5.5 join neither adds nor removes an inadmissible
-`MovedOut`**: both arms and the result answer `ownedJoinOk` alike, so joining a
+`MovedOut`**: both arms and the result answer `ownedJoinable` alike, so joining a
 third, wholly `Owned` arm before or after asks the same question (`3.8:50`).
 One of the two facts `OwnSt.join_assoc` turns on. -/
-theorem OwnSt.join_ownedJoinOk {D : Decls} (hD : WfStructs D) :
+theorem OwnSt.join_ownedJoinable {D : Decls} (hD : WfStructs D) :
     ∀ (b c : OwnSt) (T : Ty) (r : OwnSt), OwnSt.wf D b T = true → OwnSt.wf D c T = true →
       OwnSt.join D b c T = some r →
-      ownedJoinOk D b T = ownedJoinOk D r T ∧ ownedJoinOk D c T = ownedJoinOk D r T
+      ownedJoinable D b T = ownedJoinable D r T ∧ ownedJoinable D c T = ownedJoinable D r T
   | .owned, _, _, _, _, _, hj => by
       rw [OwnSt.join_owned_left] at hj
       split at hj
@@ -889,14 +889,14 @@ theorem OwnSt.join_ownedJoinOk {D : Decls} (hD : WfStructs D) :
       · exact absurd hj (by simp)
       · rename_i hres
         obtain rfl := Option.some.inj hj
-        exact ⟨rfl, ownedJoinOk_of_residualLinear_false hD c T hc (by simpa using hres)⟩
+        exact ⟨rfl, ownedJoinable_of_residualLinear_false hD c T hc (by simpa using hres)⟩
   | b, .movedOut, T, _, hb, _, hj => by
       rw [OwnSt.join_movedOut_right] at hj
       split at hj
       · exact absurd hj (by simp)
       · rename_i hres
         obtain rfl := Option.some.inj hj
-        exact ⟨ownedJoinOk_of_residualLinear_false hD b T hb (by simpa using hres), rfl⟩
+        exact ⟨ownedJoinable_of_residualLinear_false hD b T hb (by simpa using hres), rfl⟩
   | .fields bs, .fields cs, T, _, hb, hc, hj => by
       cases T with
       | struct s =>
@@ -906,14 +906,14 @@ theorem OwnSt.join_ownedJoinOk {D : Decls} (hD : WfStructs D) :
               simp only [OwnSt.join, hd, Option.map_eq_some_iff] at hj
               obtain ⟨rs, hjl, rfl⟩ := hj
               simp only [OwnSt.wf, hd] at hb hc
-              simp only [ownedJoinOk, hd]
-              exact OwnSt.joinList_ownedJoinOkList hD bs cs sd.fields rs hb hc hjl
+              simp only [ownedJoinable, hd]
+              exact OwnSt.joinList_ownedJoinableList hD bs cs sd.fields rs hb hc hjl
       | array T' n =>
           simp only [OwnSt.join, Option.map_eq_some_iff] at hj
           obtain ⟨rs, hjl, rfl⟩ := hj
           simp only [OwnSt.wf] at hb hc
-          simp only [ownedJoinOk]
-          exact OwnSt.joinList_ownedJoinOkList hD bs cs (List.replicate n T') rs hb hc hjl
+          simp only [ownedJoinable]
+          exact OwnSt.joinList_ownedJoinableList hD bs cs (List.replicate n T') rs hb hc hjl
       | int _ _ => simp [OwnSt.join] at hj
       | float _ => simp [OwnSt.join] at hj
       | bool => simp [OwnSt.join] at hj
@@ -921,12 +921,12 @@ theorem OwnSt.join_ownedJoinOk {D : Decls} (hD : WfStructs D) :
       | enum _ => simp [OwnSt.join] at hj
 
 /-- The same over a declaration's slots (helper). -/
-theorem OwnSt.joinList_ownedJoinOkList {D : Decls} (hD : WfStructs D) :
+theorem OwnSt.joinList_ownedJoinableList {D : Decls} (hD : WfStructs D) :
     ∀ (bs cs : List OwnSt) (Ts : List Ty) (rs : List OwnSt),
       OwnSt.wfList D bs Ts = true → OwnSt.wfList D cs Ts = true →
       OwnSt.joinList D bs cs Ts = some rs →
-      ownedJoinOkList D bs Ts = ownedJoinOkList D rs Ts ∧
-        ownedJoinOkList D cs Ts = ownedJoinOkList D rs Ts
+      ownedJoinableList D bs Ts = ownedJoinableList D rs Ts ∧
+        ownedJoinableList D cs Ts = ownedJoinableList D rs Ts
   | bs, cs, [], _, _, _, hj => by
       simp only [OwnSt.joinList] at hj
       obtain rfl := Option.some.inj hj
@@ -955,10 +955,10 @@ theorem OwnSt.joinList_ownedJoinOkList {D : Decls} (hD : WfStructs D) :
           | some rest =>
               simp only [OwnSt.joinList, he, hr, Option.some.injEq] at hj
               subst hj
-              obtain ⟨h1, h2⟩ := OwnSt.join_ownedJoinOk hD b c T e hb.1 hc.1 he
-              obtain ⟨h3, h4⟩ := OwnSt.joinList_ownedJoinOkList hD bs cs Ts rest hb.2 hc.2 hr
-              exact ⟨by simp only [ownedJoinOkList, h1, h3],
-                     by simp only [ownedJoinOkList, h2, h4]⟩
+              obtain ⟨h1, h2⟩ := OwnSt.join_ownedJoinable hD b c T e hb.1 hc.1 he
+              obtain ⟨h3, h4⟩ := OwnSt.joinList_ownedJoinableList hD bs cs Ts rest hb.2 hc.2 hr
+              exact ⟨by simp only [ownedJoinableList, h1, h3],
+                     by simp only [ownedJoinableList, h2, h4]⟩
 end
 
 mutual
@@ -976,7 +976,7 @@ theorem OwnSt.join_residualLinear {D : Decls} (hD : WfStructs D) :
       split at hj
       · rename_i hok
         obtain rfl := Option.some.inj hj
-        have h := residualLinear_of_ownedJoinOk hD c T hok
+        have h := residualLinear_of_ownedJoinable hD c T hok
         exact ⟨h.symm, h⟩
       · exact absurd hj (by simp)
   | b, .owned, T, _, hj => by
@@ -984,7 +984,7 @@ theorem OwnSt.join_residualLinear {D : Decls} (hD : WfStructs D) :
       split at hj
       · rename_i hok
         obtain rfl := Option.some.inj hj
-        exact ⟨residualLinear_of_ownedJoinOk hD b T hok, rfl⟩
+        exact ⟨residualLinear_of_ownedJoinable hD b T hok, rfl⟩
       · exact absurd hj (by simp)
   | .movedOut, c, T, _, hj => by
       rw [OwnSt.join_movedOut_left] at hj
@@ -1040,7 +1040,7 @@ theorem OwnSt.joinList_residualLinearFields {D : Decls} (hD : WfStructs D) :
       split at hj
       · rename_i hok
         obtain rfl := Option.some.inj hj
-        have h := residualLinearFields_of_ownedJoinOkList hD cs (T :: Ts) hok
+        have h := residualLinearFields_of_ownedJoinableList hD cs (T :: Ts) hok
         exact ⟨h.symm, h⟩
       · exact absurd hj (by simp)
   | bs, [], T :: Ts, _, hj => by
@@ -1048,7 +1048,7 @@ theorem OwnSt.joinList_residualLinearFields {D : Decls} (hD : WfStructs D) :
       split at hj
       · rename_i hok
         obtain rfl := Option.some.inj hj
-        exact ⟨residualLinearFields_of_ownedJoinOkList hD bs (T :: Ts) hok, rfl⟩
+        exact ⟨residualLinearFields_of_ownedJoinableList hD bs (T :: Ts) hok, rfl⟩
       · exact absurd hj (by simp)
   | b :: bs, c :: cs, T :: Ts, _, hj => by
       cases he : OwnSt.join D b c T with
@@ -1076,14 +1076,14 @@ theorem OwnSt.join_exists {D : Decls} (hD : WfStructs D) :
   | .owned, c, T, _, hc, hb0, hc0 => by
       have hlin : Ty.mult D T ≠ .linear := by
         simpa [residualLinear] using hb0
-      have h : ownedJoinOk D c T = true := by
-        rw [ownedJoinOk_of_residualLinear_false hD c T hc hc0]; exact decide_eq_true hlin
+      have h : ownedJoinable D c T = true := by
+        rw [ownedJoinable_of_residualLinear_false hD c T hc hc0]; exact decide_eq_true hlin
       exact ⟨c, by rw [OwnSt.join_owned_left, if_pos h]⟩
   | b, .owned, T, hb, _, hb0, hc0 => by
       have hlin : Ty.mult D T ≠ .linear := by
         simpa [residualLinear] using hc0
-      have h : ownedJoinOk D b T = true := by
-        rw [ownedJoinOk_of_residualLinear_false hD b T hb hb0]; exact decide_eq_true hlin
+      have h : ownedJoinable D b T = true := by
+        rw [ownedJoinable_of_residualLinear_false hD b T hb hb0]; exact decide_eq_true hlin
       exact ⟨b, by rw [OwnSt.join_owned_right, if_pos h]⟩
   | .movedOut, c, T, _, _, _, hc0 =>
       ⟨.movedOut, by rw [OwnSt.join_movedOut_left, if_neg (by simp [hc0])]⟩
@@ -1120,14 +1120,14 @@ theorem OwnSt.joinList_exists {D : Decls} (hD : WfStructs D) :
   | [], cs, T :: Ts, _, hc, hb0, hc0 => by
       have hany : ((T :: Ts).any fun U => decide (U.mult D = .linear)) = false := by
         simpa [residualLinearFields] using hb0
-      have h : ownedJoinOkList D cs (T :: Ts) = true := by
-        rw [ownedJoinOkList_of_residualLinearFields_false hD cs (T :: Ts) hc hc0, hany]; rfl
+      have h : ownedJoinableList D cs (T :: Ts) = true := by
+        rw [ownedJoinableList_of_residualLinearFields_false hD cs (T :: Ts) hc hc0, hany]; rfl
       exact ⟨cs, by rw [OwnSt.joinList_nil_left, if_pos h]⟩
   | bs, [], T :: Ts, hb, _, hb0, hc0 => by
       have hany : ((T :: Ts).any fun U => decide (U.mult D = .linear)) = false := by
         simpa [residualLinearFields] using hc0
-      have h : ownedJoinOkList D bs (T :: Ts) = true := by
-        rw [ownedJoinOkList_of_residualLinearFields_false hD bs (T :: Ts) hb hb0, hany]; rfl
+      have h : ownedJoinableList D bs (T :: Ts) = true := by
+        rw [ownedJoinableList_of_residualLinearFields_false hD bs (T :: Ts) hb hb0, hany]; rfl
       exact ⟨bs, by rw [OwnSt.joinList_nil_right, if_pos h]⟩
   | b :: bs, c :: cs, T :: Ts, hb, hc, hb0, hc0 => by
       simp only [OwnSt.wfList, Bool.and_eq_true] at hb hc
@@ -1253,7 +1253,7 @@ counterexample each rules out; `WfStructs` is one a
 well-formed program already carries (`checkStructs_sound`).
 
 The nine outer cases reduce to three shapes. Where an arm is wholly `Owned` the
-join is the other arm subject to `ownedJoinOk`, and `OwnSt.join_ownedJoinOk`
+join is the other arm subject to `ownedJoinable`, and `OwnSt.join_ownedJoinable`
 says the result answers that test as its operands do. Where an arm is
 `MovedOut` the join is `MovedOut` subject to the other's residue, and
 `OwnSt.join_residualLinear` with `OwnSt.join_exists` says the two bracketings
@@ -1267,11 +1267,11 @@ theorem OwnSt.join_assoc {D : Decls} (hD : WfStructs D) :
   | .owned, b, c, T, _, hb, hc => by
       simp only [OwnSt.join_owned_left]
       cases hbc : OwnSt.join D b c T with
-      | none => cases hob : ownedJoinOk D b T <;> simp [hbc]
+      | none => cases hob : ownedJoinable D b T <;> simp [hbc]
       | some r =>
-          obtain ⟨h1, _⟩ := OwnSt.join_ownedJoinOk hD b c T r hb hc hbc
+          obtain ⟨h1, _⟩ := OwnSt.join_ownedJoinable hD b c T r hb hc hbc
           rw [h1]
-          cases hor : ownedJoinOk D r T <;> simp [hor, hbc]
+          cases hor : ownedJoinable D r T <;> simp [hor, hbc]
   | .movedOut, b, c, T, _, hb, hc => by
       simp only [OwnSt.join_movedOut_left]
       cases hbc : OwnSt.join D b c T with
@@ -1317,19 +1317,19 @@ theorem OwnSt.join_assoc {D : Decls} (hD : WfStructs D) :
       simp only [OwnSt.join_owned_right, OwnSt.join_owned_left]
       cases hac : OwnSt.join D a c T with
       | none =>
-          cases hoa : ownedJoinOk D a T <;> cases hoc : ownedJoinOk D c T <;> simp [hac]
+          cases hoa : ownedJoinable D a T <;> cases hoc : ownedJoinable D c T <;> simp [hac]
       | some r =>
-          obtain ⟨h1, h2⟩ := OwnSt.join_ownedJoinOk hD a c T r ha hc hac
+          obtain ⟨h1, h2⟩ := OwnSt.join_ownedJoinable hD a c T r ha hc hac
           rw [h1, h2]
-          cases hor : ownedJoinOk D r T <;> simp [hac]
+          cases hor : ownedJoinable D r T <;> simp [hac]
   | a, b, .owned, T, ha, hb, _ => by
       simp only [OwnSt.join_owned_right]
       cases hab : OwnSt.join D a b T with
-      | none => cases hob : ownedJoinOk D b T <;> simp [hab]
+      | none => cases hob : ownedJoinable D b T <;> simp [hab]
       | some r =>
-          obtain ⟨_, h2⟩ := OwnSt.join_ownedJoinOk hD a b T r ha hb hab
+          obtain ⟨_, h2⟩ := OwnSt.join_ownedJoinable hD a b T r ha hb hab
           rw [h2]
-          cases hor : ownedJoinOk D r T <;> simp [hor, hab]
+          cases hor : ownedJoinable D r T <;> simp [hor, hab]
   | .fields as, .fields bs, .fields cs, T, ha, hb, hc => by
       cases T with
       | struct s =>
@@ -1361,29 +1361,29 @@ theorem OwnSt.joinList_assoc {D : Decls} (hD : WfStructs D) :
   | [], bs, cs, T :: Ts, _, hb, hc => by
       simp only [OwnSt.joinList_nil_left]
       cases hbc : OwnSt.joinList D bs cs (T :: Ts) with
-      | none => cases hob : ownedJoinOkList D bs (T :: Ts) <;> simp [hbc]
+      | none => cases hob : ownedJoinableList D bs (T :: Ts) <;> simp [hbc]
       | some rs =>
-          obtain ⟨h1, _⟩ := OwnSt.joinList_ownedJoinOkList hD bs cs (T :: Ts) rs hb hc hbc
+          obtain ⟨h1, _⟩ := OwnSt.joinList_ownedJoinableList hD bs cs (T :: Ts) rs hb hc hbc
           rw [h1]
-          cases hor : ownedJoinOkList D rs (T :: Ts) <;> simp [hor, hbc]
+          cases hor : ownedJoinableList D rs (T :: Ts) <;> simp [hor, hbc]
   | as, [], cs, T :: Ts, ha, _, hc => by
       simp only [OwnSt.joinList_nil_right, OwnSt.joinList_nil_left]
       cases hac : OwnSt.joinList D as cs (T :: Ts) with
       | none =>
-          cases hoa : ownedJoinOkList D as (T :: Ts) <;>
-            cases hoc : ownedJoinOkList D cs (T :: Ts) <;> simp [hac]
+          cases hoa : ownedJoinableList D as (T :: Ts) <;>
+            cases hoc : ownedJoinableList D cs (T :: Ts) <;> simp [hac]
       | some rs =>
-          obtain ⟨h1, h2⟩ := OwnSt.joinList_ownedJoinOkList hD as cs (T :: Ts) rs ha hc hac
+          obtain ⟨h1, h2⟩ := OwnSt.joinList_ownedJoinableList hD as cs (T :: Ts) rs ha hc hac
           rw [h1, h2]
-          cases hor : ownedJoinOkList D rs (T :: Ts) <;> simp [hac]
+          cases hor : ownedJoinableList D rs (T :: Ts) <;> simp [hac]
   | as, bs, [], T :: Ts, ha, hb, _ => by
       simp only [OwnSt.joinList_nil_right]
       cases hab : OwnSt.joinList D as bs (T :: Ts) with
-      | none => cases hob : ownedJoinOkList D bs (T :: Ts) <;> simp [hab]
+      | none => cases hob : ownedJoinableList D bs (T :: Ts) <;> simp [hab]
       | some rs =>
-          obtain ⟨_, h2⟩ := OwnSt.joinList_ownedJoinOkList hD as bs (T :: Ts) rs ha hb hab
+          obtain ⟨_, h2⟩ := OwnSt.joinList_ownedJoinableList hD as bs (T :: Ts) rs ha hb hab
           rw [h2]
-          cases hor : ownedJoinOkList D rs (T :: Ts) <;> simp [hor, hab]
+          cases hor : ownedJoinableList D rs (T :: Ts) <;> simp [hor, hab]
   | a :: as, b :: bs, c :: cs, T :: Ts, ha, hb, hc => by
       simp only [OwnSt.wfList, Bool.and_eq_true] at ha hb hc
       rw [OwnSt.joinList_cons_bind_left, OwnSt.joinList_cons_bind_right, OwnSt.join_assoc hD a b c T ha.1 hb.1 hc.1,
@@ -1516,7 +1516,7 @@ mutual
 path joined with itself is unchanged (helper). -/
 theorem OwnSt.join_idem {D : Decls} : ∀ (b : OwnSt) (T : Ty), OwnSt.wf D b T = true →
     OwnSt.join D b b T = some b
-  | .owned, _, _ => by simp [OwnSt.join_owned_left, ownedJoinOk]
+  | .owned, _, _ => by simp [OwnSt.join_owned_left, ownedJoinable]
   | .movedOut, _, _ => by simp [OwnSt.join_movedOut_left, residualLinear]
   | .fields bs, .struct s, hw => by
       cases hd : D.structs[s]? with
@@ -1536,7 +1536,7 @@ theorem OwnSt.join_idem {D : Decls} : ∀ (b : OwnSt) (T : Ty), OwnSt.wf D b T =
 theorem OwnSt.joinList_idem {D : Decls} : ∀ (bs : List OwnSt) (Ts : List Ty),
     OwnSt.wfList D bs Ts = true → OwnSt.joinList D bs bs Ts = some bs
   | [], [], _ => rfl
-  | [], T :: Ts, _ => by rw [OwnSt.joinList_nil_left]; simp [ownedJoinOkList]
+  | [], T :: Ts, _ => by rw [OwnSt.joinList_nil_left]; simp [ownedJoinableList]
   | _ :: _, [], hw => by simp [OwnSt.wfList] at hw
   | b :: bs, T :: Ts, hw => by
       simp only [OwnSt.wfList, Bool.and_eq_true] at hw
