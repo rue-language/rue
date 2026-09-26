@@ -8,7 +8,7 @@ proof chain sits beside the compiler bridge. `README.md`, "The proof map",
 explains what a **spine node** and a **milestone lemma** are and how this file
 is generated. GitHub renders every diagram below inline.
 
-39 spine theorems, 25 milestone lemmas: 64 marked nodes in all.
+40 spine theorems, 25 milestone lemmas: 65 marked nodes in all.
 
 ## The spine
 
@@ -103,6 +103,9 @@ flowchart BT
     run_blocks["run_blocks"]
     step_blocks["step_blocks"]
   end
+  subgraph RueCore_TracePrefix["RueCore.TracePrefix (L2 proofs)"]
+    step_no_double_free["step_no_double_free"]
+  end
   Config_trichotomy --> step_never_stuck_of_run
   Ctx_join_absorb --> soundness
   LoopHead_backEdge --> soundness
@@ -112,9 +115,11 @@ flowchart BT
   Step_det --> eval_steps_of_outOfFuel
   Step_det --> run_complete
   Step_det --> run_stuck_of_step_stuck
+  Step_det --> step_no_double_free
   Step_terminal --> eval_diverges_iff
   Step_terminal --> run_complete
   Step_terminal --> run_stuck_of_step_stuck
+  Step_terminal --> step_no_double_free
   Typed_wf --> soundness
   check_sound --> checkProgram_sound
   check_sound --> pendingSafe_needed
@@ -127,8 +132,10 @@ flowchart BT
   eval_conserves --> dtor_once
   eval_conserves --> freed_once
   eval_conserves --> run_blocks
+  eval_conserves --> step_no_double_free
   eval_sim --> eval_steps_of_outOfFuel
   eval_sim --> run_sim
+  eval_sim --> step_no_double_free
   eval_steps_of_outOfFuel --> eval_diverges_iff
   eval_steps_of_outOfFuel --> run_complete
   eval_steps_of_outOfFuel --> run_stuck_of_step_stuck
@@ -151,10 +158,12 @@ flowchart BT
   no_violation --> no_linear_overwrite
   no_violation --> no_use_after_drop
   no_violation --> no_use_after_move
+  no_violation --> step_no_double_free
   no_violation --> step_progress
   reachable_nested --> drop_order
   reachable_nested --> reachable_lifo
   reachable_ordered --> drop_order
+  reachable_ordered --> step_no_double_free
   rest_step --> drop_exactly_once
   rest_step --> rest_exactly_once
   run_blocks --> step_blocks
@@ -163,6 +172,7 @@ flowchart BT
   run_ne_returned --> run_complete
   run_ne_returned --> run_safe
   run_ne_returned --> run_stuck_of_step_stuck
+  run_ne_returned --> step_no_double_free
   run_safe --> init_safeAt
   run_safe --> no_violation
   run_safe --> step_type_safety
@@ -170,6 +180,7 @@ flowchart BT
   run_sim --> eval_sound
   run_sim --> run_complete
   run_sim --> run_stuck_of_step_stuck
+  run_sim --> step_no_double_free
   run_sim --> step_type_safety
   run_stuck_of_step_stuck --> step_never_stuck_of_run
   soundness --> drop_exactly_once
@@ -1182,6 +1193,54 @@ flowchart BT
 <summary>All 204 definitions no_double_free's statement depends on</summary>
 
 [`ArgsRes`](#def-ArgsRes), [`Attr`](#def-Attr), [`Attr.lift`](#def-Attr_lift), [`BinOp`](#def-BinOp), [`BinOp.floatAdmits`](#def-BinOp_floatAdmits), [`BinOp.intAdmits`](#def-BinOp_intAdmits), [`BinOp.isCompare`](#def-BinOp_isCompare), [`BinOp.resultTy`](#def-BinOp_resultTy), [`Cell`](#def-Cell), [`Contents`](#def-Contents), [`Contents.allCopyList`](#def-Contents_allCopyList), [`Contents.copyClosed`](#def-Contents_copyClosed), [`Contents.declaredLinear`](#def-Contents_declaredLinear), [`Contents.declaredPlan`](#def-Contents_declaredPlan), [`Contents.destructure`](#def-Contents_destructure), [`Contents.isHole`](#def-Contents_isHole), [`Contents.mult`](#def-Contents_mult), [`Contents.ofVal`](#def-Contents_ofVal), [`Contents.own`](#def-Contents_own), [`Contents.readAt`](#def-Contents_readAt), [`Contents.residualLinear`](#def-Contents_residualLinear), [`Contents.resolveDyn`](#def-Contents_resolveDyn), [`Contents.skeleton`](#def-Contents_skeleton), [`Contents.splitResidue`](#def-Contents_splitResidue), [`Contents.toVal`](#def-Contents_toVal), [`Contents.writeAt`](#def-Contents_writeAt), [`Ctx`](#def-Ctx), [`Ctx.Wf`](#def-Ctx_Wf), [`Ctx.join`](#def-Ctx_join), [`Ctx.joinAll`](#def-Ctx_joinAll), [`Ctx.joinFold`](#def-Ctx_joinFold), [`Ctx.joinOpt`](#def-Ctx_joinOpt), [`Ctx.joinOpts`](#def-Ctx_joinOpts), [`Ctx.loopLocals`](#def-Ctx_loopLocals), [`Ctx.outsideLoop`](#def-Ctx_outsideLoop), [`DeclId`](#def-DeclId), [`Decls`](#def-Decls), [`Decls.Names`](#def-Decls_Names), [`Decls.byValue`](#def-Decls_byValue), [`Decls.classOf`](#def-Decls_classOf), [`Decls.enumClassOf`](#def-Decls_enumClassOf), [`DynPlace`](#def-DynPlace), [`DynStep`](#def-DynStep), [`Entry`](#def-Entry), [`Entry.join`](#def-Entry_join), [`Entry.setSt`](#def-Entry_setSt), [`Entry.wf`](#def-Entry_wf), [`EnumDecl`](#def-EnumDecl), [`EnumDecl.Wf`](#def-EnumDecl_Wf), [`EnumDecl.payloadJoin`](#def-EnumDecl_payloadJoin), [`Env`](#def-Env), [`EvalRes`](#def-EvalRes), [`EvalRes.absorb`](#def-EvalRes_absorb), [`EvalRes.andThen`](#def-EvalRes_andThen), [`EvalRes.trace`](#def-EvalRes_trace), [`EvalRes.withTrace`](#def-EvalRes_withTrace), [`Event`](#def-Event), [`Event.dtorIds`](#def-Event_dtorIds), [`Event.freed`](#def-Event_freed), [`Expr`](#def-Expr), [`Expr.breaks`](#def-Expr_breaks), [`FloatArith`](#def-FloatArith), [`FloatDatum`](#def-FloatDatum), [`FloatDatum.Wf`](#def-FloatDatum_Wf), [`FloatDatum.isNaN`](#def-FloatDatum_isNaN), [`FloatDatum.le`](#def-FloatDatum_le), [`FloatDatum.lt`](#def-FloatDatum_lt), [`FloatDatum.negate`](#def-FloatDatum_negate), [`FloatDatum.roundOp`](#def-FloatDatum_roundOp), [`FloatDatum.succMag`](#def-FloatDatum_succMag), [`FloatDatum.toIntIn`](#def-FloatDatum_toIntIn), [`FloatDatum.totalCmp`](#def-FloatDatum_totalCmp), [`FloatDatum.totalRank`](#def-FloatDatum_totalRank), [`FloatDatum.truncToInt`](#def-FloatDatum_truncToInt), [`FloatDatum.widen`](#def-FloatDatum_widen), [`FloatIntrin`](#def-FloatIntrin), [`FloatIntrin.floatSrc`](#def-FloatIntrin_floatSrc), [`FloatIntrin.resTy`](#def-FloatIntrin_resTy), [`FloatLit`](#def-FloatLit), [`FloatLit.RoundsFinite`](#def-FloatLit_RoundsFinite), [`FloatLit.exact`](#def-FloatLit_exact), [`FloatModel`](#def-FloatModel), [`FloatOps`](#def-FloatOps), [`FloatOps.cast`](#def-FloatOps_cast), [`FloatOps.roundIntrin`](#def-FloatOps_roundIntrin), [`FloatRoundOp`](#def-FloatRoundOp), [`FloatUnIntrin`](#def-FloatUnIntrin), [`FloatWidth`](#def-FloatWidth), [`FloatWidth.eMin`](#def-FloatWidth_eMin), [`FloatWidth.eTop`](#def-FloatWidth_eTop), [`FloatWidth.overflowNum`](#def-FloatWidth_overflowNum), [`FloatWidth.prec`](#def-FloatWidth_prec), [`FnDef`](#def-FnDef), [`Frame`](#def-Frame), [`InBounds`](#def-InBounds), [`IntWidth`](#def-IntWidth), [`IntWidth.bits`](#def-IntWidth_bits), [`IntWidth.modulus`](#def-IntWidth_modulus), [`LoopHead`](#def-LoopHead), [`Mult`](#def-Mult), [`Mult.join`](#def-Mult_join), [`Mult.rank`](#def-Mult_rank), [`NoResidualLinear`](#def-NoResidualLinear), [`OpRes`](#def-OpRes), [`OpRes.toRes`](#def-OpRes_toRes), [`Out`](#def-Out), [`Out.add`](#def-Out_add), [`OwnSt`](#def-OwnSt), [`OwnSt.fieldAt`](#def-OwnSt_fieldAt), [`OwnSt.fieldStates`](#def-OwnSt_fieldStates), [`OwnSt.fullyOwned`](#def-OwnSt_fullyOwned), [`OwnSt.get`](#def-OwnSt_get), [`OwnSt.isOwned`](#def-OwnSt_isOwned), [`OwnSt.join`](#def-OwnSt_join), [`OwnSt.setAt`](#def-OwnSt_setAt), [`OwnSt.setField`](#def-OwnSt_setField), [`OwnSt.wf`](#def-OwnSt_wf), [`PanicKind`](#def-PanicKind), [`Param`](#def-Param), [`Place`](#def-Place), [`Place.path`](#def-Place_path), [`Place.root`](#def-Place_root), [`Program`](#def-Program), [`ProgramTyped`](#def-ProgramTyped), [`Sign`](#def-Sign), [`Store`](#def-Store), [`StructDecl`](#def-StructDecl), [`StructDecl.Wf`](#def-StructDecl_Wf), [`StructDecl.baseOf`](#def-StructDecl_baseOf), [`Ty`](#def-Ty), [`Ty.atDyn`](#def-Ty_atDyn), [`Ty.atPath`](#def-Ty_atPath), [`Ty.declIds`](#def-Ty_declIds), [`Ty.declaredLinear`](#def-Ty_declaredLinear), [`Ty.dynNoDeclared`](#def-Ty_dynNoDeclared), [`Ty.fieldAt`](#def-Ty_fieldAt), [`Ty.isInt`](#def-Ty_isInt), [`Ty.mult`](#def-Ty_mult), [`Ty.observable`](#def-Ty_observable), [`Typed`](#def-Typed), [`TypedArgs`](#def-TypedArgs), [`TypedArms`](#def-TypedArms), [`UnOp`](#def-UnOp), [`Val`](#def-Val), [`Val.ints`](#def-Val_ints), [`Val.mult`](#def-Val_mult), [`Val.observable`](#def-Val_observable), [`Val.own`](#def-Val_own), [`Violation`](#def-Violation), [`WfDecls`](#def-WfDecls), [`WfEnums`](#def-WfEnums), [`WfFn`](#def-WfFn), [`WfNames`](#def-WfNames), [`WfProgram`](#def-WfProgram), [`WfStructs`](#def-WfStructs), [`anyLinearOther`](#def-anyLinearOther), [`armCtx`](#def-armCtx), [`arrayPrefix`](#def-arrayPrefix), [`assignArrayOk`](#def-assignArrayOk), [`binOpFloat`](#def-binOpFloat), [`binOpInt`](#def-binOpInt), [`bitsOf`](#def-bitsOf), [`canonAux`](#def-canonAux), [`canonNum`](#def-canonNum), [`cmpScaled`](#def-cmpScaled), [`declaredPrefix`](#def-declaredPrefix), [`dropCell`](#def-dropCell), [`dropContents`](#def-dropContents), [`dropResidue`](#def-dropResidue), [`dropRetire`](#def-dropRetire), [`dtorIds`](#def-dtorIds), [`dynPlace`](#def-dynPlace), [`eval`](#def-eval), [`evalArgs`](#def-evalArgs), [`evalBinOp`](#def-evalBinOp), [`evalFintrin`](#def-evalFintrin), [`evalIntCast`](#def-evalIntCast), [`evalUnOp`](#def-evalUnOp), [`fnCtx`](#def-fnCtx), [`freedIds`](#def-freedIds), [`inBoundsIdx`](#def-inBoundsIdx), [`intMax`](#def-intMax), [`intMin`](#def-intMin), [`intResult`](#def-intResult), [`introVal`](#def-introVal), [`linearResidue`](#def-linearResidue), [`magCmp`](#def-magCmp), [`matchConsume`](#def-matchConsume), [`mintParams`](#def-mintParams), [`noArrayStep`](#def-noArrayStep), [`noDtorPrefix`](#def-noDtorPrefix), [`ownedJoinOk`](#def-ownedJoinOk), [`ownedJoinOkList`](#def-ownedJoinOkList), [`residualLinear`](#def-residualLinear), [`residualLinearBelow`](#def-residualLinearBelow), [`residualLinearFields`](#def-residualLinearFields), [`residueMark`](#def-residueMark), [`rootIdxOnly`](#def-rootIdxOnly), [`run`](#def-run), [`runAllScopeDrops`](#def-runAllScopeDrops), [`shiftAmount`](#def-shiftAmount), [`unwindLocs`](#def-unwindLocs), [`valOf`](#def-valOf), [`wrapInt`](#def-wrapInt)
+
+</details>
+
+### `step_no_double_free`
+
+```mermaid
+flowchart BT
+  thm["step_no_double_free"]
+  subgraph mile["Milestone ancestors"]
+    eval_conserves["eval_conserves"] --> thm
+    eval_sim["eval_sim"] --> thm
+    reachable_ordered["reachable_ordered"] --> thm
+  end
+  subgraph defs_["Definitions the statement depends on"]
+    ArgsTag["ArgsTag<br/>§6.2"] -.-> thm
+    Attr["Attr<br/>§3, (S)"] -.-> thm
+    Attr_lift["Attr.lift<br/>§3"] -.-> thm
+    BinOp["BinOp<br/>§2, §5.8, (Arith), (Ord), (Float-Ord)"] -.-> thm
+    BinOp_floatAdmits["BinOp.floatAdmits<br/>§5.8, §2, (Float-Arith), (Float-Ord), (Total-Cmp), (Arith), (BitNot)"] -.-> thm
+    BinOp_intAdmits["BinOp.intAdmits<br/>§5.8, (Arith), (Ord)"] -.-> thm
+    BinOp_isCompare["BinOp.isCompare<br/>§2"] -.-> thm
+    BinOp_resultTy["BinOp.resultTy<br/>§5.8, (Float-Ord), (Total-Cmp), (Float-Arith)"] -.-> thm
+    Cell["Cell<br/>§6.1"] -.-> thm
+    Config["Config<br/>§6.1, §6.12, (Result-Ok)"] -.-> thm
+    Config_init["Config.init<br/>§6.12, (D-Return-Main), (D-Return)"] -.-> thm
+    Config_trace["Config.trace<br/>§6.12"] -.-> thm
+    Contents["Contents<br/>§6.1, §6.3, §4.2, §6.11, (D-Use-Move)"] -.-> thm
+    Contents_declaredLinear["Contents.declaredLinear<br/>§6.1"] -.-> thm
+    Contents_declaredPlan["Contents.declaredPlan<br/>§6.3, §4.2"] -.-> thm
+    Contents_mult["Contents.mult<br/>§3, (T)"] -.-> thm
+    Contents_ofVal["Contents.ofVal<br/>§6.8, §6.7, (D-Let)"] -.-> thm
+    Contents_own["Contents.own<br/>§6.11"] -.-> thm
+    Contents_readAt["Contents.readAt<br/>§6.3, §7"] -.-> thm
+    Contents_resolveDyn["Contents.resolveDyn<br/>§6.5, §6.3, §6.8, (D-Index), (D-Index-Trap)"] -.-> thm
+    Contents_skeleton["Contents.skeleton<br/>§6.3"] -.-> thm
+    Contents_splitResidue["Contents.splitResidue<br/>§6.3, §5.1"] -.-> thm
+    Contents_toVal["Contents.toVal<br/>§6.3, §7"] -.-> thm
+    Contents_writeAt["Contents.writeAt<br/>§6.3, §6.8, (D-Use-Move)"] -.-> thm
+    Ctx["Ctx<br/>§5"] -.-> thm
+  end
+```
+
+(175 more definitions the statement depends on, past the 25 cap.)
+
+<details>
+<summary>All 200 definitions step_no_double_free's statement depends on</summary>
+
+[`ArgsTag`](#def-ArgsTag), [`Attr`](#def-Attr), [`Attr.lift`](#def-Attr_lift), [`BinOp`](#def-BinOp), [`BinOp.floatAdmits`](#def-BinOp_floatAdmits), [`BinOp.intAdmits`](#def-BinOp_intAdmits), [`BinOp.isCompare`](#def-BinOp_isCompare), [`BinOp.resultTy`](#def-BinOp_resultTy), [`Cell`](#def-Cell), [`Config`](#def-Config), [`Config.init`](#def-Config_init), [`Config.trace`](#def-Config_trace), [`Contents`](#def-Contents), [`Contents.declaredLinear`](#def-Contents_declaredLinear), [`Contents.declaredPlan`](#def-Contents_declaredPlan), [`Contents.mult`](#def-Contents_mult), [`Contents.ofVal`](#def-Contents_ofVal), [`Contents.own`](#def-Contents_own), [`Contents.readAt`](#def-Contents_readAt), [`Contents.resolveDyn`](#def-Contents_resolveDyn), [`Contents.skeleton`](#def-Contents_skeleton), [`Contents.splitResidue`](#def-Contents_splitResidue), [`Contents.toVal`](#def-Contents_toVal), [`Contents.writeAt`](#def-Contents_writeAt), [`Ctx`](#def-Ctx), [`Ctx.Wf`](#def-Ctx_Wf), [`Ctx.join`](#def-Ctx_join), [`Ctx.joinAll`](#def-Ctx_joinAll), [`Ctx.joinFold`](#def-Ctx_joinFold), [`Ctx.joinOpt`](#def-Ctx_joinOpt), [`Ctx.joinOpts`](#def-Ctx_joinOpts), [`Ctx.loopLocals`](#def-Ctx_loopLocals), [`Ctx.outsideLoop`](#def-Ctx_outsideLoop), [`DeclId`](#def-DeclId), [`Decls`](#def-Decls), [`Decls.Names`](#def-Decls_Names), [`Decls.byValue`](#def-Decls_byValue), [`Decls.classOf`](#def-Decls_classOf), [`Decls.enumClassOf`](#def-Decls_enumClassOf), [`DynPlace`](#def-DynPlace), [`DynStep`](#def-DynStep), [`Entry`](#def-Entry), [`Entry.join`](#def-Entry_join), [`Entry.setSt`](#def-Entry_setSt), [`Entry.wf`](#def-Entry_wf), [`EnumDecl`](#def-EnumDecl), [`EnumDecl.Wf`](#def-EnumDecl_Wf), [`EnumDecl.payloadJoin`](#def-EnumDecl_payloadJoin), [`Env`](#def-Env), [`Event`](#def-Event), [`Event.dtorIds`](#def-Event_dtorIds), [`Event.freed`](#def-Event_freed), [`Expr`](#def-Expr), [`Expr.breaks`](#def-Expr_breaks), [`FloatArith`](#def-FloatArith), [`FloatDatum`](#def-FloatDatum), [`FloatDatum.Wf`](#def-FloatDatum_Wf), [`FloatDatum.isNaN`](#def-FloatDatum_isNaN), [`FloatDatum.le`](#def-FloatDatum_le), [`FloatDatum.lt`](#def-FloatDatum_lt), [`FloatDatum.negate`](#def-FloatDatum_negate), [`FloatDatum.roundOp`](#def-FloatDatum_roundOp), [`FloatDatum.succMag`](#def-FloatDatum_succMag), [`FloatDatum.toIntIn`](#def-FloatDatum_toIntIn), [`FloatDatum.totalCmp`](#def-FloatDatum_totalCmp), [`FloatDatum.totalRank`](#def-FloatDatum_totalRank), [`FloatDatum.truncToInt`](#def-FloatDatum_truncToInt), [`FloatDatum.widen`](#def-FloatDatum_widen), [`FloatIntrin`](#def-FloatIntrin), [`FloatIntrin.floatSrc`](#def-FloatIntrin_floatSrc), [`FloatIntrin.resTy`](#def-FloatIntrin_resTy), [`FloatLit`](#def-FloatLit), [`FloatLit.RoundsFinite`](#def-FloatLit_RoundsFinite), [`FloatLit.exact`](#def-FloatLit_exact), [`FloatModel`](#def-FloatModel), [`FloatOps`](#def-FloatOps), [`FloatOps.cast`](#def-FloatOps_cast), [`FloatOps.roundIntrin`](#def-FloatOps_roundIntrin), [`FloatRoundOp`](#def-FloatRoundOp), [`FloatUnIntrin`](#def-FloatUnIntrin), [`FloatWidth`](#def-FloatWidth), [`FloatWidth.eMin`](#def-FloatWidth_eMin), [`FloatWidth.eTop`](#def-FloatWidth_eTop), [`FloatWidth.overflowNum`](#def-FloatWidth_overflowNum), [`FloatWidth.prec`](#def-FloatWidth_prec), [`FnDef`](#def-FnDef), [`Focus`](#def-Focus), [`Frame`](#def-Frame), [`Frame.popScope`](#def-Frame_popScope), [`InBounds`](#def-InBounds), [`IntWidth`](#def-IntWidth), [`IntWidth.bits`](#def-IntWidth_bits), [`IntWidth.modulus`](#def-IntWidth_modulus), [`Kont`](#def-Kont), [`Kont.toCall`](#def-Kont_toCall), [`Kont.toLoop`](#def-Kont_toLoop), [`LoopHead`](#def-LoopHead), [`Mult`](#def-Mult), [`Mult.join`](#def-Mult_join), [`Mult.rank`](#def-Mult_rank), [`NoResidualLinear`](#def-NoResidualLinear), [`OpRes`](#def-OpRes), [`Out`](#def-Out), [`Out.add`](#def-Out_add), [`OwnSt`](#def-OwnSt), [`OwnSt.fieldAt`](#def-OwnSt_fieldAt), [`OwnSt.fieldStates`](#def-OwnSt_fieldStates), [`OwnSt.fullyOwned`](#def-OwnSt_fullyOwned), [`OwnSt.get`](#def-OwnSt_get), [`OwnSt.isOwned`](#def-OwnSt_isOwned), [`OwnSt.join`](#def-OwnSt_join), [`OwnSt.setAt`](#def-OwnSt_setAt), [`OwnSt.setField`](#def-OwnSt_setField), [`OwnSt.wf`](#def-OwnSt_wf), [`PanicKind`](#def-PanicKind), [`Param`](#def-Param), [`Place`](#def-Place), [`Place.path`](#def-Place_path), [`Place.root`](#def-Place_root), [`Program`](#def-Program), [`ProgramTyped`](#def-ProgramTyped), [`Sign`](#def-Sign), [`Step`](#def-Step), [`Steps`](#def-Steps), [`Store`](#def-Store), [`StructDecl`](#def-StructDecl), [`StructDecl.Wf`](#def-StructDecl_Wf), [`StructDecl.baseOf`](#def-StructDecl_baseOf), [`Ty`](#def-Ty), [`Ty.atDyn`](#def-Ty_atDyn), [`Ty.atPath`](#def-Ty_atPath), [`Ty.declIds`](#def-Ty_declIds), [`Ty.declaredLinear`](#def-Ty_declaredLinear), [`Ty.dynNoDeclared`](#def-Ty_dynNoDeclared), [`Ty.fieldAt`](#def-Ty_fieldAt), [`Ty.isInt`](#def-Ty_isInt), [`Ty.mult`](#def-Ty_mult), [`Ty.observable`](#def-Ty_observable), [`Typed`](#def-Typed), [`TypedArgs`](#def-TypedArgs), [`TypedArms`](#def-TypedArms), [`UnOp`](#def-UnOp), [`Val`](#def-Val), [`Val.ints`](#def-Val_ints), [`Val.mult`](#def-Val_mult), [`Val.observable`](#def-Val_observable), [`Val.own`](#def-Val_own), [`Violation`](#def-Violation), [`WfDecls`](#def-WfDecls), [`WfEnums`](#def-WfEnums), [`WfFn`](#def-WfFn), [`WfNames`](#def-WfNames), [`WfProgram`](#def-WfProgram), [`WfStructs`](#def-WfStructs), [`anyLinearOther`](#def-anyLinearOther), [`armCtx`](#def-armCtx), [`arrayPrefix`](#def-arrayPrefix), [`assignArrayOk`](#def-assignArrayOk), [`binOpFloat`](#def-binOpFloat), [`binOpInt`](#def-binOpInt), [`bitsOf`](#def-bitsOf), [`canonAux`](#def-canonAux), [`canonNum`](#def-canonNum), [`cmpScaled`](#def-cmpScaled), [`declaredPrefix`](#def-declaredPrefix), [`dropCell`](#def-dropCell), [`dropContents`](#def-dropContents), [`dtorIds`](#def-dtorIds), [`dynPlace`](#def-dynPlace), [`evalBinOp`](#def-evalBinOp), [`evalFintrin`](#def-evalFintrin), [`evalIntCast`](#def-evalIntCast), [`evalUnOp`](#def-evalUnOp), [`fnCtx`](#def-fnCtx), [`freedIds`](#def-freedIds), [`inBoundsIdx`](#def-inBoundsIdx), [`intMax`](#def-intMax), [`intMin`](#def-intMin), [`intResult`](#def-intResult), [`linearResidue`](#def-linearResidue), [`magCmp`](#def-magCmp), [`matchConsume`](#def-matchConsume), [`mintParams`](#def-mintParams), [`noArrayStep`](#def-noArrayStep), [`noDtorPrefix`](#def-noDtorPrefix), [`ownedJoinOk`](#def-ownedJoinOk), [`ownedJoinOkList`](#def-ownedJoinOkList), [`plainDestructure`](#def-plainDestructure), [`plainDropRetire`](#def-plainDropRetire), [`plainResidue`](#def-plainResidue), [`plainUnwind`](#def-plainUnwind), [`residualLinear`](#def-residualLinear), [`residualLinearBelow`](#def-residualLinearBelow), [`residualLinearFields`](#def-residualLinearFields), [`residueMark`](#def-residueMark), [`rootCell`](#def-rootCell), [`rootIdxOnly`](#def-rootIdxOnly), [`shiftAmount`](#def-shiftAmount), [`valOf`](#def-valOf), [`wrapInt`](#def-wrapInt)
 
 </details>
 
@@ -2307,6 +2366,7 @@ marked node.
 | `check_sound` | `RueCore.Checker` | 706 | 22 |
 | `checkProgram_sound` | `RueCore.Checker` | 13 | 24 |
 | `no_double_free` | `RueCore.Trace` | 23 | 6 |
+| `step_no_double_free` | `RueCore.TracePrefix` | 12 | 167 |
 | `freed_once` | `RueCore.Trace` | 10 | 14 |
 | `dtor_once` | `RueCore.Trace` | 7 | 20 |
 | `drop_exactly_once` | `RueCore.TraceExact` | 55 | 148 |

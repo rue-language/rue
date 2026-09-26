@@ -3179,6 +3179,42 @@ theorem RueCore.Nonvacuous.diverges (P : Program) :
         ∀ (fuel : Nat), run Float.exactOps P fuel = EvalRes.outOfFuel
 ```
 
+### `Nonvacuous.diverges_drop`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`Spec.Nonvacuous.diverges_drop_stmt`, proved: §7's hypotheses, satisfied (RUE-2477).
+
+```lean
+theorem RueCore.Nonvacuous.diverges_drop (B : Expr) :
+  B =
+      (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          Expr.unitLit).loop →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns := [{ params := [], ret := Ty.unit, body := B }] } →
+        checkProgram P = true ∧
+          ProgramTyped P ∧
+            (∀ (fuel : Nat), run Float.exactOps P fuel = EvalRes.outOfFuel) ∧
+              ∃ C,
+                Steps Float.exactOps P Config.init C ∧
+                  dtorIds C.trace = [0, 2] ∧
+                    2 ≤ (freedIds P.decls C.trace).length
+```
+
 ### `Nonvacuous.stuck`
 
 *theorem* · module `RueCore.Nonvacuous`
@@ -3828,6 +3864,44 @@ cell, checked or not.
 ```lean
 theorem RueCore.step_no_use_after_drop (M : FloatOps) (P : Program) {C : Config}
   (h : Steps M P Config.init C) : ¬Config.Stuck M P C Violation.useAfterDrop
+```
+
+### `eval_longc`
+
+*theorem* · module `RueCore.TracePrefix`
+
+**Exhausted fuel keeps the ledger** (RUE-2477): if `eval` exhausts `fuel`
+on an expression from a copy-closed store, then from that expression in
+focus, under any context and after any trace, §6's relation has a run of at
+least `fuel` steps whose appended trace owns, under any projection the law
+counts, at most what the store owned plus a range of fresh identities — the
+promise the conservation law makes of a trap. No typing hypothesis. The proof
+is `eval_steps_of_outOfFuel`'s, form by form, with `eval_conserves`'s ledger
+added wherever an operand finished.
+
+```lean
+theorem RueCore.eval_longc (M : FloatOps) {P : Program} {F : Event → List Nat}
+  (hF : TraceMeasure P.decls F) (fuel : Nat) : LongCIH M P F fuel
+```
+
+### `step_no_double_free`
+
+*theorem* · module `RueCore.TracePrefix`
+
+**No double free, on every prefix of a run** (§7 "No double-free", as a
+safety property; RUE-2477). For a checked program, every configuration §6's
+relation reaches from `Config.init` — the run so far, whether or not it ever
+finishes — has a trace that frees no identity twice (`freedIds`) and runs no
+destructor twice on one (`dtorIds`). A program that diverges is covered: its
+trace is bounded at every step, where `no_double_free`, over `run`'s answer,
+sees only `outOfFuel` and an empty trace.
+
+```lean
+theorem RueCore.step_no_double_free (M : FloatModel) {P : Program}
+  (h : ProgramTyped P) {C : Config}
+  (hC : Steps M.toFloatOps P Config.init C) :
+  (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
+    ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1
 ```
 
 ### `Sharp.stuck`
@@ -5457,6 +5531,59 @@ theorem RueCore.Sharp.retired_cell (B : Expr) :
               ¬Steps Float.exactOps P Config.init
                   (Config.run [Cell.dead] { env := [0], scope := [] } []
                     (Focus.eval (Expr.use (Place.var 0))) [])
+```
+
+### `Sharp.unreached_double`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.unreached_double_stmt`, proved: a §7 hypothesis needed (RUE-2477).
+
+```lean
+theorem RueCore.Sharp.unreached_double (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ProgramTyped P ∧
+          ¬Steps Float.exactOps P Config.init
+                (Config.panic PanicKind.user
+                  [Event.dtor 0
+                      (Contents.struct 0 0
+                        [Contents.int IntWidth.w64 Sign.signed 1]),
+                    Event.dtor 0
+                      (Contents.struct 0 0
+                        [Contents.int IntWidth.w64 Sign.signed 1])]) ∧
+            List.count 0
+                (dtorIds
+                  (Config.panic PanicKind.user
+                      [Event.dtor 0
+                          (Contents.struct 0 0
+                            [Contents.int IntWidth.w64 Sign.signed 1]),
+                        Event.dtor 0
+                          (Contents.struct 0 0
+                            [Contents.int IntWidth.w64 Sign.signed
+                                1])]).trace) =
+              2
 ```
 
 ### `Examples.dynReadAffine_refused`
@@ -13098,6 +13225,70 @@ theorem RueCore.Nonvacuous.loopUnit_run (fuel : Nat) :
     EvalRes.outOfFuel
 ```
 
+### `Nonvacuous.dropTurn_eval`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+One turn of `let s = S0 { 1 }; ()` finishes at every fuel past `3`, from
+every store and frame: it mints `S0 { 1 }`, binds it, and drops it at the
+scope's end (helper).
+
+```lean
+theorem RueCore.Nonvacuous.dropTurn_eval (M : FloatOps) (fns : List FnDef) (m : Nat)
+  (H : Store) (φ : Frame) :
+  ∃ H' tr,
+    eval M (m + 3)
+        {
+          decls :=
+            {
+              structs :=
+                [{ attr := Attr.none,
+                    fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                    cls := Mult.affine },
+                  { attr := Attr.linear,
+                    fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := false, cls := Mult.linear }],
+              enums :=
+                [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+          fns := fns }
+        H φ
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          Expr.unitLit) =
+      EvalRes.ok H' Val.unit tr
+```
+
+### `Nonvacuous.dropLoop_eval`
+
+*theorem* · module `RueCore.Nonvacuous`
+
+`loop { let s = S0 { 1 }; () }` exhausts every fuel, from every store and
+frame: each turn finishes and the body never breaks (helper).
+
+```lean
+theorem RueCore.Nonvacuous.dropLoop_eval (M : FloatOps) (fns : List FnDef) (n : Nat)
+  (H : Store) (φ : Frame) :
+  eval M n
+      {
+        decls :=
+          {
+            structs :=
+              [{ attr := Attr.none,
+                  fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                  cls := Mult.affine },
+                { attr := Attr.linear,
+                  fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
+                  cls := Mult.linear }],
+            enums :=
+              [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+        fns := fns }
+      H φ
+      (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          Expr.unitLit).loop =
+    EvalRes.outOfFuel
+```
+
 ### `Expr.pendingSafeList_mem`
 
 *theorem* · module `RueCore.TraceExact`
@@ -15762,6 +15953,480 @@ theorem RueCore.Retire.steps_live {M : FloatOps} {P : Program} {C C' : Config}
   (hs : Steps M P C C') : Retire.ConfigLive C → Retire.ConfigLive C'
 ```
 
+### `StepsN.split`
+
+*theorem* · module `RueCore.TracePrefix`
+
+A counted run splits at every shorter length (helper).
+
+```lean
+theorem RueCore.StepsN.split {M : FloatOps} {P : Program} {m : Nat} {C D : Config}
+  (h : StepsN M P m C D) {k : Nat} :
+  k ≤ m → ∃ E, StepsN M P k C E ∧ StepsN M P (m - k) E D
+```
+
+### `StepsN.reaches`
+
+*theorem* · module `RueCore.TracePrefix`
+
+Of two runs from one start, the shorter one's end reaches the longer
+one's (`Step.det`, §6) (helper).
+
+```lean
+theorem RueCore.StepsN.reaches {M : FloatOps} {P : Program} {k m : Nat}
+  {C D E : Config} (hk : StepsN M P k C D) (hm : StepsN M P m C E)
+  (hle : k ≤ m) : Steps M P D E
+```
+
+### `Steps.trace_ext`
+
+*theorem* · module `RueCore.TracePrefix`
+
+**A trace only grows** along §6's relation from a reachable configuration
+(helper).
+
+```lean
+theorem RueCore.Steps.trace_ext {M : FloatOps} {P : Program} {C D : Config}
+  (hC : Steps M P Config.init C) (h : Steps M P C D) :
+  ∃ evs, D.trace = C.trace ++ evs
+```
+
+### `LongC.mono`
+
+*theorem* · module `RueCore.TracePrefix`
+
+A family with long runs has shorter ones (helper).
+
+```lean
+theorem RueCore.LongC.mono {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {H : Store} {X : List Nat} {C : List Kont → List Event → Config} {m n : Nat}
+  (hmn : m ≤ n) (h : LongC M P F H X C n) : LongC M P F H X C m
+```
+
+### `LongC.weaken`
+
+*theorem* · module `RueCore.TracePrefix`
+
+Holding more does not break the ledger (helper).
+
+```lean
+theorem RueCore.LongC.weaken {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {H : Store} {X Y : List Nat} {C : List Kont → List Event → Config} {n : Nat}
+  (hXY : ∀ (a : Nat), List.count a X ≤ List.count a Y)
+  (h : LongC M P F H X C n) : LongC M P F H Y C n
+```
+
+### `LongC.pre`
+
+*theorem* · module `RueCore.TracePrefix`
+
+A run into a family with long runs, emitting `t` and moving the ledger from
+`H`, `X` to `H₁`, `Y` as `Cons.prefix` allows, has long runs too (helper).
+
+```lean
+theorem RueCore.LongC.pre {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {H H₁ : Store} {X Y : List Nat} {C C₂ : List Kont → List Event → Config}
+  {n : Nat} {t : List Event} (hle : List.length H ≤ List.length H₁)
+  (hI :
+    ∀ (a : Nat),
+      List.count a (storeOwn P.decls H₁) + List.count a Y +
+          List.count a (List.flatMap F t) ≤
+        List.count a (storeOwn P.decls H) + List.count a X +
+          List.count a (Fresh H H₁))
+  (hpre :
+    ∀ (K : List Kont) (tr : List Event), Steps M P (C K tr) (C₂ K (tr ++ t)))
+  (h : LongC M P F H₁ Y C₂ n) : LongC M P F H X C n
+```
+
+### `LongC.pre1`
+
+*theorem* · module `RueCore.TracePrefix`
+
+The same with one step first: the run is one step longer (helper).
+
+```lean
+theorem RueCore.LongC.pre1 {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {H H₁ : Store} {X Y : List Nat} {C C₂ : List Kont → List Event → Config}
+  {n : Nat} {t : List Event} (hle : List.length H ≤ List.length H₁)
+  (hI :
+    ∀ (a : Nat),
+      List.count a (storeOwn P.decls H₁) + List.count a Y +
+          List.count a (List.flatMap F t) ≤
+        List.count a (storeOwn P.decls H) + List.count a X +
+          List.count a (Fresh H H₁))
+  (hpre :
+    ∀ (K : List Kont) (tr : List Event),
+      ∃ C', Step M P (C K tr) C' ∧ Steps M P C' (C₂ K (tr ++ t)))
+  (h : LongC M P F H₁ Y C₂ n) : LongC M P F H X C (n + 1)
+```
+
+### `LongC.step1`
+
+*theorem* · module `RueCore.TracePrefix`
+
+One step that emits nothing and keeps the store, into a family with long
+runs holding at most as much (helper).
+
+```lean
+theorem RueCore.LongC.step1 {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {H : Store} {X Y : List Nat} {C C₂ : List Kont → List Event → Config}
+  {n : Nat} (hXY : ∀ (a : Nat), List.count a Y ≤ List.count a X)
+  (hpre : ∀ (K : List Kont) (tr : List Event), Step M P (C K tr) (C₂ K tr))
+  (h : LongC M P F H Y C₂ n) : LongC M P F H X C (n + 1)
+```
+
+### `LongC.andThen`
+
+*theorem* · module `RueCore.TracePrefix`
+
+**§6.2's (Search), counted, with its ledger**: the twin of `Long.andThen`.
+If `eval` spent its fuel on the operand, the operand's run is the long one;
+if the operand finished, `Sim` gives the run to its value and `Cons` its
+ledger, and the context's run is the long one (helper).
+
+```lean
+theorem RueCore.LongC.andThen {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {H : Store} {X : List Nat} {φ₁ : Frame}
+  {C C₁ : List Kont → List Event → Config} {Fr : Kont} {fuel : Nat}
+  (hC :
+    ∀ (K : List Kont) (tr : List Event), Step M P (C K tr) (C₁ (Fr :: K) tr))
+  {r : EvalRes} (hsim : Sim M P φ₁ C₁ r) (hcons : Cons P.decls F H X r)
+  (h₁ : r = EvalRes.outOfFuel → LongC M P F H X C₁ fuel)
+  {k : Store → Val → EvalRes}
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr₁ : List Event),
+      r = EvalRes.ok H₁ v tr₁ →
+        StoreCC P.decls H₁ →
+          Contents.copyClosed P.decls (Contents.ofVal v) = true →
+            k H₁ v = EvalRes.outOfFuel →
+              LongC M P F H₁ (Val.own P.decls v)
+                (fun K tr => Config.run H₁ φ₁ (Fr :: K) (Focus.ret v) tr)
+                fuel) :
+  r.andThen k = EvalRes.outOfFuel → LongC M P F H X C (fuel + 1)
+```
+
+### `Contents.ownList_ofVals_snoc`
+
+*theorem* · module `RueCore.TracePrefix`
+
+The owned identities of a list with one more value (helper).
+
+```lean
+theorem RueCore.Contents.ownList_ofVals_snoc (D : Decls) (vs : List Val) (v : Val) :
+  Contents.ownList D (Contents.ofVals (vs ++ [v])) =
+    Contents.ownList D (Contents.ofVals vs) ++ Val.own D v
+```
+
+### `evalArgs_longc`
+
+*theorem* · module `RueCore.TracePrefix`
+
+**Argument lists, counted, with their ledger** (§6.2's `…( v̄, E, ē )`): the
+values already built are held (`X`) while the next element runs (helper).
+
+```lean
+theorem RueCore.evalArgs_longc {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {fuel : Nat} {φ : Frame} (hF : TraceMeasure P.decls F)
+  (IH : LongCIH M P F fuel) (t : ArgsTag) (es : List Expr) (H : Store)
+  (vs₀ : List Val) :
+  StoreCC P.decls H →
+    evalArgs (fun H e => eval M fuel P H φ e) H es =
+        ArgsRes.abort EvalRes.outOfFuel →
+      LongC M P F H (Contents.ownList P.decls (Contents.ofVals vs₀))
+        (argsConf H φ t vs₀ es) (fuel + 1)
+```
+
+### `longc_one`
+
+*theorem* · module `RueCore.TracePrefix`
+
+A form with one operand and a context that never spends fuel (helper).
+
+```lean
+theorem RueCore.longc_one {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) {e e' : Expr}
+  {Fr : Kont} {k : Store → Val → EvalRes}
+  (hent :
+    ∀ (K : List Kont) (tr : List Event),
+      Step M P (evalConf H φ e' K tr) (evalConf H φ e (Fr :: K) tr))
+  (hk : ∀ (H₁ : Store) (v : Val), k H₁ v ≠ EvalRes.outOfFuel) :
+  (eval M fuel P H φ e).andThen k = EvalRes.outOfFuel →
+    LongC M P F H [] (evalConf H φ e') (fuel + 1)
+```
+
+### `longc_binop`
+
+*theorem* · module `RueCore.TracePrefix`
+
+§6.4's binary operators, with the ledger (helper).
+
+```lean
+theorem RueCore.longc_binop {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (op : BinOp)
+  (e₁ e₂ : Expr) :
+  eval M (fuel + 1) P H φ (Expr.binop op e₁ e₂) = EvalRes.outOfFuel →
+    LongC M P F H [] (evalConf H φ (Expr.binop op e₁ e₂)) (fuel + 1)
+```
+
+### `longc_letIn`
+
+*theorem* · module `RueCore.TracePrefix`
+
+(D-Let) §6.7, with the ledger: the binding's cell holds what the value
+owned (helper).
+
+```lean
+theorem RueCore.longc_letIn {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (m : Bool)
+  (e₁ e₂ : Expr) :
+  eval M (fuel + 1) P H φ (Expr.letIn m e₁ e₂) = EvalRes.outOfFuel →
+    LongC M P F H [] (evalConf H φ (Expr.letIn m e₁ e₂)) (fuel + 1)
+```
+
+### `longc_match`
+
+*theorem* · module `RueCore.TracePrefix`
+
+(D-Match) §6.6, with the ledger: the consumed shell and the payload cells
+own what the scrutinee owned (helper).
+
+```lean
+theorem RueCore.longc_match {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (scrut : Expr)
+  (arms : List Expr) :
+  eval M (fuel + 1) P H φ (scrut.match arms) = EvalRes.outOfFuel →
+    LongC M P F H [] (evalConf H φ (scrut.match arms)) (fuel + 1)
+```
+
+### `longc_seq`
+
+*theorem* · module `RueCore.TracePrefix`
+
+(D-Seq) §6.7, with the ledger: the temporary's drop ends what it owned
+(helper).
+
+```lean
+theorem RueCore.longc_seq {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (e₁ e₂ : Expr) :
+  eval M (fuel + 1) P H φ (e₁.seq e₂) = EvalRes.outOfFuel →
+    LongC M P F H [] (evalConf H φ (e₁.seq e₂)) (fuel + 1)
+```
+
+### `longc_ite`
+
+*theorem* · module `RueCore.TracePrefix`
+
+(D-If-T)/(D-If-F) §6.6, with the ledger (helper).
+
+```lean
+theorem RueCore.longc_ite {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (c e₁ e₂ : Expr) :
+  eval M (fuel + 1) P H φ (c.ite e₁ e₂) = EvalRes.outOfFuel →
+    LongC M P F H [] (evalConf H φ (c.ite e₁ e₂)) (fuel + 1)
+```
+
+### `longc_argsForm`
+
+*theorem* · module `RueCore.TracePrefix`
+
+An argument-list form whose list spent the fuel, from its enter step
+(helper).
+
+```lean
+theorem RueCore.longc_argsForm {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  {t : ArgsTag} {es : List Expr} {e : Expr} (IH : LongCIH M P F fuel)
+  (hcc : StoreCC P.decls H)
+  (hent :
+    ∀ (K : List Kont) (tr : List Event),
+      Step M P (evalConf H φ e K tr) (argsConf H φ t [] es K tr))
+  (h :
+    evalArgs (fun H e => eval M fuel P H φ e) H es =
+      ArgsRes.abort EvalRes.outOfFuel) :
+  LongC M P F H [] (evalConf H φ e) (fuel + 1)
+```
+
+### `longc_mkStruct`
+
+*theorem* · module `RueCore.TracePrefix`
+
+(D-Struct) §6.5, with the ledger (helper).
+
+```lean
+theorem RueCore.longc_mkStruct {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (s : Nat)
+  (args : List Expr) :
+  eval M (fuel + 1) P H φ (Expr.mkStruct s args) = EvalRes.outOfFuel →
+    LongC M P F H [] (evalConf H φ (Expr.mkStruct s args)) (fuel + 1)
+```
+
+### `longc_mkEnum`
+
+*theorem* · module `RueCore.TracePrefix`
+
+(D-Enum-Intro) §6.6, with the ledger (helper).
+
+```lean
+theorem RueCore.longc_mkEnum {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (e k : Nat)
+  (args : List Expr) :
+  eval M (fuel + 1) P H φ (Expr.mkEnum e k args) = EvalRes.outOfFuel →
+    LongC M P F H [] (evalConf H φ (Expr.mkEnum e k args)) (fuel + 1)
+```
+
+### `longc_mkArray`
+
+*theorem* · module `RueCore.TracePrefix`
+
+(D-Array) §6.5, with the ledger (helper).
+
+```lean
+theorem RueCore.longc_mkArray {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (T : Ty)
+  (args : List Expr) :
+  eval M (fuel + 1) P H φ (Expr.mkArray T args) = EvalRes.outOfFuel →
+    LongC M P F H [] (evalConf H φ (Expr.mkArray T args)) (fuel + 1)
+```
+
+### `longc_indexRead`
+
+*theorem* · module `RueCore.TracePrefix`
+
+(D-Index) §6.5, with the ledger (helper).
+
+```lean
+theorem RueCore.longc_indexRead {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (p : Place)
+  (idx : List Expr) (πs : List (List Nat)) :
+  eval M (fuel + 1) P H φ (Expr.indexRead p idx πs) = EvalRes.outOfFuel →
+    LongC M P F H [] (evalConf H φ (Expr.indexRead p idx πs)) (fuel + 1)
+```
+
+### `longc_indexDrop`
+
+*theorem* · module `RueCore.TracePrefix`
+
+`@drop` at a dynamic place, with the ledger: `eval` re-dispatches it to the
+read at one less fuel (helper).
+
+```lean
+theorem RueCore.longc_indexDrop {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (p : Place)
+  (idx : List Expr) (πs : List (List Nat)) :
+  eval M (fuel + 2) P H φ (Expr.indexDrop p idx πs) = EvalRes.outOfFuel →
+    LongC M P F H [] (evalConf H φ (Expr.indexDrop p idx πs)) (fuel + 2)
+```
+
+### `longc_indexDrop_one`
+
+*theorem* · module `RueCore.TracePrefix`
+
+`@drop` at a dynamic place at the smallest fuel (helper).
+
+```lean
+theorem RueCore.longc_indexDrop_one {M : FloatOps} {P : Program}
+  {F : Event → List Nat} {H : Store} {φ : Frame} (p : Place) (idx : List Expr)
+  (πs : List (List Nat)) :
+  LongC M P F H [] (evalConf H φ (Expr.indexDrop p idx πs)) 1
+```
+
+### `longc_indexWrite`
+
+*theorem* · module `RueCore.TracePrefix`
+
+(D-Assign) below a dynamic index, with the ledger: the right-hand side's
+value is held while the indices run (helper).
+
+```lean
+theorem RueCore.longc_indexWrite {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (p : Place)
+  (idx : List Expr) (πs : List (List Nat)) (e : Expr) :
+  eval M (fuel + 1) P H φ (Expr.indexWrite p idx πs e) = EvalRes.outOfFuel →
+    LongC M P F H [] (evalConf H φ (Expr.indexWrite p idx πs e)) (fuel + 1)
+```
+
+### `longc_call`
+
+*theorem* · module `RueCore.TracePrefix`
+
+(D-Call) §6.9, with the ledger: the arguments' values move into the
+parameter cells (helper).
+
+```lean
+theorem RueCore.longc_call {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (f : Nat)
+  (args : List Expr) :
+  eval M (fuel + 1) P H φ (Expr.call f args) = EvalRes.outOfFuel →
+    LongC M P F H [] (evalConf H φ (Expr.call f args)) (fuel + 1)
+```
+
+### `longc_loop`
+
+*theorem* · module `RueCore.TracePrefix`
+
+(D-Loop-Enter) and (D-Loop-Iter) §6.10, with the ledger: a turn that
+finishes has its ledger from `eval_conserves`, and the loop's re-evaluation is
+the long run, its (D-Loop-Enter) peeled off by determinism (helper).
+
+```lean
+theorem RueCore.longc_loop {M : FloatOps} {P : Program} {F : Event → List Nat}
+  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (e : Expr) :
+  eval M (fuel + 1) P H φ e.loop = EvalRes.outOfFuel →
+    LongC M P F H [] (evalConf H φ e.loop) (fuel + 1)
+```
+
+### `steps_trace_once`
+
+*theorem* · module `RueCore.TracePrefix`
+
+**Every prefix of a run counts each identity at most once**, under any
+projection the conservation law counts, for every program no fuel makes
+`run` refuse (helper). A configuration reached in `k` steps is before the end
+of `run`'s answer at fuel `k`: before a value or a panic `run_sim` reaches,
+whose trace `run_trace_once` bounds, or before the end of a run of at least
+`k` steps whose ledger `eval_longc` keeps; and a trace only grows along the
+way.
+
+```lean
+theorem RueCore.steps_trace_once (M : FloatOps) {P : Program} {F : Event → List Nat}
+  (hF : TraceMeasure P.decls F)
+  (hns : ∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w)
+  {C : Config} (hC : Steps M P Config.init C) (a : Nat) :
+  List.count a (List.flatMap F C.trace) ≤ 1
+```
+
+### `no_double_free_of_step`
+
+*theorem* · module `RueCore.TracePrefix`
+
+`no_double_free` for a finished run is a corollary (RUE-2477): a value or a
+panic `run` answers is reached by §6's relation (`eval_sound`), so its trace is
+a reachable configuration's; exhausted fuel carries the empty trace; and a
+checked run is never refused (helper).
+
+```lean
+theorem RueCore.no_double_free_of_step (M : FloatModel) {P : Program}
+  (h : ProgramTyped P) (fuel : Nat) :
+  (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+    (∀ (a : Nat),
+        List.count a (freedIds P.decls (run M.toFloatOps P fuel).trace) ≤ 1) ∧
+      ∀ (a : Nat), List.count a (dtorIds (run M.toFloatOps P fuel).trace) ≤ 1
+```
+
 ### `Sharp.exact_ops`
 
 *theorem* · module `RueCore.Sharp`
@@ -16145,6 +16810,16 @@ theorem RueCore.Spine.checkProgram_sound : Spec.checkProgram_sound_stmt
 theorem RueCore.Spine.no_double_free : Spec.no_double_free_stmt
 ```
 
+### `Spine.step_no_double_free`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.step_no_double_free_stmt`, by `RueCore.step_no_double_free` (helper).
+
+```lean
+theorem RueCore.Spine.step_no_double_free : Spec.step_no_double_free_stmt
+```
+
 ### `Spine.freed_once`
 
 *theorem* · module `RueCore.Spine`
@@ -16505,6 +17180,16 @@ theorem RueCore.Spine.Nonvacuous.float : Spec.Nonvacuous.float_stmt
 theorem RueCore.Spine.Nonvacuous.diverges : Spec.Nonvacuous.diverges_stmt
 ```
 
+### `Spine.Nonvacuous.diverges_drop`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Nonvacuous.diverges_drop_stmt`, by `RueCore.Nonvacuous.diverges_drop` (helper).
+
+```lean
+theorem RueCore.Spine.Nonvacuous.diverges_drop : Spec.Nonvacuous.diverges_drop_stmt
+```
+
 ### `Spine.Nonvacuous.stuck`
 
 *theorem* · module `RueCore.Spine`
@@ -16795,6 +17480,16 @@ theorem RueCore.Spine.Sharp.unreachable_stuck : Spec.Sharp.unreachable_stuck_stm
 theorem RueCore.Spine.Sharp.retired_cell : Spec.Sharp.retired_cell_stmt
 ```
 
+### `Spine.Sharp.unreached_double`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.unreached_double_stmt`, by `RueCore.Sharp.unreached_double` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.unreached_double : Spec.Sharp.unreached_double_stmt
+```
+
 ### `Nonvacuous.Glue.dtor.soundness`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
@@ -17053,6 +17748,16 @@ theorem RueCore.Nonvacuous.Glue.dtor.eval_complete : True
 
 ```lean
 theorem RueCore.Nonvacuous.Glue.dtor.run_complete : True
+```
+
+### `Nonvacuous.Glue.dtor.step_no_double_free`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `step_no_double_free` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.step_no_double_free : True
 ```
 
 ### `Nonvacuous.Glue.dtor.freed_once`
@@ -18925,6 +19630,16 @@ theorem RueCore.Nonvacuous.Glue.exact_model.no_linear_discard : True
 theorem RueCore.Nonvacuous.Glue.exact_model.no_double_free : True
 ```
 
+### `Nonvacuous.Glue.exact_model.step_no_double_free`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`exact_model` applied to `step_no_double_free`, through the `dtor` program (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.exact_model.step_no_double_free : True
+```
+
 ### `Nonvacuous.Glue.exact_model.drop_exactly_once`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
@@ -19123,6 +19838,46 @@ theorem RueCore.Nonvacuous.Glue.diverges.checkProgram_sound : True
 
 ```lean
 theorem RueCore.Nonvacuous.Glue.diverges.eval_diverges_iff : True
+```
+
+### `Nonvacuous.Glue.diverges_drop.checkProgram_sound`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`diverges_drop` applied to `checkProgram_sound` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.diverges_drop.checkProgram_sound : True
+```
+
+### `Nonvacuous.Glue.diverges_drop.no_double_free`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`diverges_drop` applied to `no_double_free` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.diverges_drop.no_double_free : True
+```
+
+### `Nonvacuous.Glue.diverges_drop.step_no_double_free`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`diverges_drop` applied to `step_no_double_free` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.diverges_drop.step_no_double_free : True
+```
+
+### `Nonvacuous.Glue.diverges_drop.eval_diverges_iff`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`diverges_drop` applied to `eval_diverges_iff` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.diverges_drop.eval_diverges_iff : True
 ```
 
 ### `Nonvacuous.Glue.stuck.fuel_mono`
@@ -19906,6 +20661,20 @@ theorem RueCore.Sharp.Glue.double_drop.no_double_free_1 :
             List.count a (dtorIds (run M.toFloatOps P fuel).trace) ≤ 1
 ```
 
+### `Sharp.Glue.double_drop.step_no_double_free_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.double_drop` refutes `step_no_double_free` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.double_drop.step_no_double_free_1 :
+  ¬∀ (M : FloatModel) {P : Program} {C : Config},
+      Steps M.toFloatOps P Config.init C →
+        (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
+          ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1
+```
+
 ### `Sharp.Glue.double_drop.dtor_once_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
@@ -20610,6 +21379,21 @@ theorem RueCore.Sharp.Glue.unreachable_stuck.run_stuck_of_step_stuck_1 :
 theorem RueCore.Sharp.Glue.retired_cell.step_no_use_after_drop_1 :
   ¬∀ (M : FloatOps) (P : Program) {C : Config},
       ¬Config.Stuck M P C Violation.useAfterDrop
+```
+
+### `Sharp.Glue.unreached_double.step_no_double_free_2`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.unreached_double` refutes `step_no_double_free` without hypothesis 2 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.unreached_double.step_no_double_free_2 :
+  ¬∀ (_M : FloatModel) {P : Program},
+      ProgramTyped P →
+        ∀ {C : Config},
+          (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
+            ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1
 ```
 
 ### `Examples.eval_loop_ok`
@@ -27575,7 +28359,7 @@ Defining equations, as Lean derived them from the body:
 **The float laws have a model: `Float.exactOps`** (§7's "totality of the
 float operations"; RUE-2469). Some `FloatModel` has the executable instance
 `Float.exactOps` as its operations, so every law of `FloatModel` holds of the
-model the corpus runs on, and the laws are jointly satisfiable: the 19 spine
+model the corpus runs on, and the laws are jointly satisfiable: the 21 spine
 statements that quantify over `M : FloatModel` are not vacuous in `M`.
 
 ```lean
@@ -31580,6 +32364,27 @@ def RueCore.Long (M : FloatOps) (P : Program)
   ∀ (K : List Kont) (tr : List Event), ∃ D, StepsN M P n (C K tr) D
 ```
 
+### `LongC`
+
+*def* · module `RueCore.TracePrefix`
+
+A run of **at least** `n` steps from every member of a configuration family,
+whose end has appended to the trace only what the conservation law allows a
+trap from store `H` holding `X` (`Cons`'s `panic` clause): at most what `H` and
+`X` own, plus a range of fresh identities (helper).
+
+```lean
+def RueCore.LongC (M : FloatOps) (P : Program) (F : Event → List Nat) (H : Store)
+  (X : List Nat) (C : List Kont → List Event → Config) (n : Nat) : Prop :=
+  ∀ (K : List Kont) (tr : List Event),
+    ∃ m D,
+      n ≤ m ∧
+        StepsN M P m (C K tr) D ∧
+          ∃ δ,
+            D.trace = tr ++ δ ∧
+              Cons P.decls F H X (EvalRes.panic PanicKind.user δ)
+```
+
 ### `Sim`
 
 *def* · module `RueCore.Adequacy`
@@ -31713,6 +32518,22 @@ needed: a configuration whose frame names a retired cell is stuck so
 def RueCore.Spec.step_no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatOps) (P : Program) {C : Config},
     Steps M P Config.init C → ¬Config.Stuck M P C Violation.useAfterDrop
+```
+
+### `LongCIH`
+
+*def* · module `RueCore.TracePrefix`
+
+The induction hypothesis: at fuel `fuel`, exhaustion from a copy-closed
+store is a run of at least `fuel` steps with the ledger (helper).
+
+```lean
+def RueCore.LongCIH (M : FloatOps) (P : Program) (F : Event → List Nat)
+  (fuel : Nat) : Prop :=
+  ∀ (H : Store) (φ : Frame) (e : Expr),
+    StoreCC P.decls H →
+      eval M fuel P H φ e = EvalRes.outOfFuel →
+        LongC M P F H [] (evalConf H φ e) fuel
 ```
 
 ### `LongIH`
@@ -33158,6 +33979,53 @@ RueCore.ProgramTyped.mk {P : Program} (wf : WfProgram P)
   (entry : ∃ fd, P.fns[0]? = some fd ∧ fd.params = []) : ProgramTyped P
 ```
 
+### `Spec.Nonvacuous.diverges_drop_stmt`
+
+*def* · module `RueCore.Spec.Nonvacuous`
+
+**A checked program that diverges and drops a value on every turn** (§6.10,
+§6.7; RUE-2477). `loop { let s = S0 { 1 }; () }` as the entry point returning
+`()` is accepted and typed, and its run exhausts every fuel, so `run`'s answer
+carries no trace and `no_double_free` says nothing about it. Yet §6's relation
+reaches, from `Config.init`, a configuration two turns in whose trace has run
+`S0`'s destructor on two distinct identities (`0` and `2`, one value minted per
+turn) and freed both. So `step_no_double_free`'s hypotheses hold of a diverging
+run whose trace is not empty: its bound is not vacuous where `no_double_free`'s
+is.
+
+```lean
+def RueCore.Spec.Nonvacuous.diverges_drop_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+            Expr.unitLit).loop →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns := [{ params := [], ret := Ty.unit, body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              (∀ (fuel : Nat),
+                  run Float.exactOps P fuel = EvalRes.outOfFuel) ∧
+                ∃ C,
+                  Steps Float.exactOps P Config.init C ∧
+                    dtorIds C.trace = [0, 2] ∧
+                      2 ≤ (freedIds P.decls C.trace).length
+```
+
 ### `Spec.Nonvacuous.diverges_stmt`
 
 *def* · module `RueCore.Spec.Nonvacuous`
@@ -33396,7 +34264,8 @@ def RueCore.Spec.Sharp.discard_stmt : Prop :=
 `no_double_free` without `ProgramTyped`. `¬ DtorNotCopy` is shown directly
 (struct `0`); `¬ ProgramTyped` through `no_double_free`. (RUE-2400's cases, a dynamic read and
 an array repeat of an affine value, no longer double-drop: `eval` refuses them
-with `typeConfusion`.)
+with `typeConfusion`.) The same run is reached by §6's relation (`run_sim`), so
+`step_no_double_free` fails without `ProgramTyped` too.
 
 ```lean
 def RueCore.Spec.Sharp.double_drop_stmt : Prop :=
@@ -34044,6 +34913,67 @@ def RueCore.Spec.Sharp.unreachable_stuck_stmt : Prop :=
                                     EvalRes.stuck w'
 ```
 
+### `Spec.Sharp.unreached_double_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A configuration whose trace destroys one value twice, not reached** (§7
+sharpness, RUE-2477). For the checked program of `Nonvacuous.dtor`, the panic
+whose trace runs `S0`'s destructor twice on identity `0` names that identity
+twice among its destructor events, and `Config.init` does not reach it (shown
+through `step_no_double_free` itself). So `step_no_double_free` fails without
+the hypothesis that the configuration is reached: the bound is a property of
+the runs of the program, not of every trace a configuration can carry.
+
+```lean
+def RueCore.Spec.Sharp.unreached_double_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            ¬Steps Float.exactOps P Config.init
+                  (Config.panic PanicKind.user
+                    [Event.dtor 0
+                        (Contents.struct 0 0
+                          [Contents.int IntWidth.w64 Sign.signed 1]),
+                      Event.dtor 0
+                        (Contents.struct 0 0
+                          [Contents.int IntWidth.w64 Sign.signed 1])]) ∧
+              List.count 0
+                  (dtorIds
+                    (Config.panic PanicKind.user
+                        [Event.dtor 0
+                            (Contents.struct 0 0
+                              [Contents.int IntWidth.w64 Sign.signed 1]),
+                          Event.dtor 0
+                            (Contents.struct 0 0
+                              [Contents.int IntWidth.w64 Sign.signed
+                                  1])]).trace) =
+                2
+```
+
 ### `Spec.Sharp.unreached_panic_stmt`
 
 *def* · module `RueCore.Spec.Sharp`
@@ -34345,7 +35275,8 @@ def RueCore.Spec.never_stuck_iff_stmt : Prop :=
 **No double free** (§7 "No double-free"). A checked program's run is never
 refused, and its trace frees no identity twice and runs no destructor twice
 on one. Narrower than the bullet: an `outOfFuel` result has an empty trace,
-so a run that never finishes is not covered (RUE-2477).
+so a run that never finishes is not covered here; `step_no_double_free`
+covers it, over every configuration a run reaches (RUE-2477).
 
 ```lean
 def RueCore.Spec.no_double_free_stmt : Prop :=
@@ -34468,6 +35399,30 @@ def RueCore.Spec.no_violation_stmt : Prop :=
     ProgramTyped P →
       ∀ (fuel : Nat) (w : Violation),
         run M.toFloatOps P fuel ≠ EvalRes.stuck w
+```
+
+### `Spec.step_no_double_free_stmt`
+
+*def* · module `RueCore.Spec.Trace`
+
+**No double free, on every prefix of a run** (§7 "No double-free", read as a
+safety property; RUE-2477). For a checked program, every configuration §6's
+relation reaches from `Config.init` — the run so far, whether or not it ever
+finishes — has a trace that frees no identity twice and runs no destructor
+twice on one, in `no_double_free`'s terms (`freedIds`, `dtorIds`). A safety
+property is one a finite prefix of a run can violate (Alpern & Schneider,
+`FIELD.md`), so this is the bullet's form over every run, a diverging one
+included; `no_double_free` over a finished run follows from it
+(`no_double_free_of_step`).
+
+```lean
+def RueCore.Spec.step_no_double_free_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      ∀ {C : Config},
+        Steps M.toFloatOps P Config.init C →
+          (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
+            ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1
 ```
 
 ### `Spec.step_preservation_stmt`
