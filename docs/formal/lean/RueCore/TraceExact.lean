@@ -2590,6 +2590,13 @@ unwinds to, or an evaluation that started holding it. So the two theorems
 together say every owned value a checked run holds is ended at most once in
 each window, exactly once by the end of the window that holds it, and never
 left in a cell nobody can reach.
+This is an argument, not a theorem: no statement composes the two over a run
+(RUE-2478). At `run` both are vacuous (the run starts from the empty store and
+the entry call's lead is empty), a result that allocated, retired and never
+dropped a cell satisfies both, and applying them at every window needs typing
+hypotheses at intermediate states that no statement provides (RUE-2423). Over a
+whole run, what is proved is the "at most once" half (`no_double_free`,
+`step_no_double_free`) and that every cell is retired (`Tidy`).
 
 What the two do not see is an end emitted *early*, inside the evaluation
 that minted the value: no window holds the value yet, so only
