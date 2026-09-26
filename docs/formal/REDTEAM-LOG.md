@@ -353,7 +353,16 @@ What the mutants could not get past:
     of every program, and says less than its place beside
     `no_use_after_move` suggests. Unproved: a proof is an induction over
     `eval` with the invariant that the frame's environment names no `.dead`
-    cell. Recorded as the one reason in `Spec.sharpnessReasons`.
+    cell. Recorded as the one reason in `Spec.sharpnessReasons`. (Since
+    proved, by RUE-2496: `run_no_use_after_drop` and `step_no_use_after_drop`,
+    `lean/RueCore/Retire.lean`, state it with no typing hypothesis, over `run`
+    at every fuel and float model and over `Step` from `Config.init`. The
+    invariant is that every cell the frame's environment names or its scope
+    record owes a drop is live and owed once; over `Step`, for every
+    suspended caller's frame too. The reason in `Spec.sharpnessReasons` now
+    cites the proof, and `Sharp.retired_cell` shows the refusal live from an
+    open configuration, so `step_no_use_after_drop` needs its reachability
+    hypothesis.)
   - **S2, `drop_order` needs `ProgramTyped` only through `DtorNotCopy`**
     (confirmation, no issue). Its first half is the only one to read the
     typing hypothesis (its doc-comment says so), and the counter-example

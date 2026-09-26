@@ -330,7 +330,7 @@ list, so their axioms are checked with the safety theorems'.
 
 ## Deciding whether to believe it (RUE-2247)
 
-Start with `SPINE.md` (generated, "The statement layer" below): the 36
+Start with `SPINE.md` (generated, "The statement layer" below): the 38
 statements that are the claim, each with its English reading, the §7
 paragraph it realizes and the definitions it names, and the checks that tie
 each to its proof. Then two generated reports for a reader who knows type
@@ -576,7 +576,7 @@ its own layer or a lower one:
 | **L0 syntax** | `Float`, `Syntax` | §2's syntax, types and float data |
 | **L1 definitions** | `Statics`, `Dynamics`, `Step`, `Soundness/Defs`, `Checker/Defs`, `Trace/Defs`, `Adequacy/Defs` | the semantics (§5's judgment, `eval`, §6's `Step`), and every definition a headline statement is written in: value typing and `FrameMatches`, the checker algorithm, the trace projections, ledgers and configuration invariants, `Config.SafeAt` |
 | **Spec statements** | `Spec`, `Spec.Safety`, `Spec.Checker`, `Spec.Trace`, `Spec.Step`, `Spec.Adequacy`, `Spec.Nonvacuous`, `Spec.Sharp` | the headline statements, each a `def …_stmt : Prop` over L0 and L1 alone, with its English reading; the one list of them, `Spec.spine` ("The statement layer"); the non-vacuity witnesses with their list, `Spec.witnesses` ("Non-vacuity witnesses"); and the sharpness counter-examples with theirs, `Spec.sharpness` and `Spec.sharpnessReasons` ("Sharpness counter-examples") |
-| **L2 proofs** | `Float.Lemmas`, `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder`, `Nonvacuous`, `Sharp`, `Spine`, `Nonvacuous.Glue`, `Sharp.Glue` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L0's and L1's definitions (`Float.Lemmas`: the `FloatModel` laws of `Float.exactOps`), `Nonvacuous` proves the witness statements and `Sharp` the counter-example statements, `Spine` checks each headline, witness and counter-example proof against its Spec statement, `Nonvacuous.Glue` applies each witness to the theorems it lists, and `Sharp.Glue` refutes each spine statement with a hypothesis dropped from the counter-example `Spec.sharpness` pairs with it |
+| **L2 proofs** | `Float.Lemmas`, `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder`, `Retire`, `Nonvacuous`, `Sharp`, `Spine`, `Nonvacuous.Glue`, `Sharp.Glue` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L0's and L1's definitions (`Float.Lemmas`: the `FloatModel` laws of `Float.exactOps`), `Nonvacuous` proves the witness statements and `Sharp` the counter-example statements, `Spine` checks each headline, witness and counter-example proof against its Spec statement, `Nonvacuous.Glue` applies each witness to the theorems it lists, and `Sharp.Glue` refutes each spine statement with a hypothesis dropped from the counter-example `Spec.sharpness` pairs with it |
 | **L3 tooling** | `Examples`, `Witnesses`, `Print`, `Corpus`, `Gen`, `Explain*`, `Digest`, `Layers`, `Lint`, the `*Main` executables, the root `RueCore` | example and corpus programs and the theorems about them, the printer, the generator, the explain and digest reports, the layer table and the lint |
 
 L3 may import anything; nothing in L0–L2 or Spec imports L3, so no theorem of the
@@ -603,8 +603,8 @@ on any other module in the closure that is not the package's (a library a
 L0–L2 or Spec module importing anything outside the package but `Init`, on
 one that is not a `module`, and on a module missing from the table, a
 stale table entry, or a source file nothing imports. It prints the graph, one
-line per module, and ends with `ruecore-layers: 49 modules, 132 package
-imports, no upward import; import closure: 49 modules outside the toolchain,
+line per module, and ends with `ruecore-layers: 51 modules, 139 package
+imports, no upward import; import closure: 51 modules outside the toolchain,
 all the package's, …`. `lake exe ruecore-layers --closure` prints that
 closure, one module per line: the list the kernel re-check replays. The Buck target runs it as the `layers.txt`
 report, so `./buck2 build root//:lean-ruecore` fails on an upward import;
@@ -678,6 +678,7 @@ flowchart BT
     Trace["Trace"]
     TraceExact["TraceExact"]
     TraceOrder["TraceOrder"]
+    Retire["Retire"]
   end
   subgraph L3["L3 tooling"]
     root["RueCore (root)"]
@@ -738,6 +739,7 @@ flowchart BT
   Soundness --> Sharp
   Trace --> Sharp
   TraceOrder --> Sharp
+  Retire --> Sharp
   Adequacy --> Sharp
   Sharp --> Spine
   Spine --> Nonvacuous_Glue
@@ -764,6 +766,7 @@ flowchart BT
   Trace --> Spine
   TraceExact --> Spine
   TraceOrder --> Spine
+  Retire --> Spine
   Adequacy --> Spine
   Statics --> Statics_Lemmas
   Step --> Step_Lemmas
@@ -776,6 +779,7 @@ flowchart BT
   Trace --> TraceExact
   Adequacy --> TraceExact
   TraceExact --> TraceOrder
+  Step_Lemmas --> Retire
   Checker --> Corpus
   Examples --> Corpus
   Print --> Corpus
@@ -869,7 +873,7 @@ ruecore-layers --closure)`, every module the audit's walk from the `.olean`
 headers reaches outside the toolchain. The toolchain's modules (`Init`,
 `Std`, `Lean`, `Lake`) are not replayed; they are trusted as the toolchain
 is. The audit fails on any other module in the closure, so what is replayed
-is exactly the package's 49 modules. The Buck target runs it after the
+is exactly the package's 51 modules. The Buck target runs it after the
 executables are built; a local check should run it too (about 15 s).
 
 It prints each table, ends with one summary line, and exits non-zero on a
@@ -884,7 +888,7 @@ definitions the Spec statements transitively unfold to (a statement's
 constants, a definition's body, an inductive type's constructors, but no
 proof). `TRUST.md` prints it in its "Trusted base" section. The headline
 statements are the Spec layer's list, `RueCore.Spec.spine` ("The statement
-layer"): 36 theorems, following the packet `../REDTEAM.md` asks for: the §7
+layer"): 38 theorems, following the packet `../REDTEAM.md` asks for: the §7
 claims the fragment states (`SPINE.md` opens with those it does not) and
 their linking theorems (`checkProgram_sound`, `step_iff`,
 `Config.stuck_iff`, `run_complete`, `run_ne_returned`). A lemma
@@ -895,10 +899,10 @@ name definitions outside the trusted base (`Float.exactOps` and its
 `roundRat`): a witness can only fail to witness, never widen a claim; nor
 are the sharpness counter-examples, which say a claim cannot be widened. Today
 the headlines' trusted base is 292 definitions,
-all in L0 and L1 (the package has 1211 theorems besides, 228 of them the
-glue applications of `Nonvacuous/Glue.lean` and 74 the sharpness glue of
-`Sharp/Glue.lean`, and the 76 `Spine`
-restatements: 36 of the spine, 13 of the witnesses, 27 of the sharpness
+all in L0 and L1 (the package has 1271 theorems besides, 230 of them the
+glue applications of `Nonvacuous/Glue.lean` and 75 the sharpness glue of
+`Sharp/Glue.lean`, and the 79 `Spine`
+restatements: 38 of the spine, 13 of the witnesses, 28 of the sharpness
 counter-examples). A
 definition counts as Lean's own, and is only counted, when Lean's own tables
 record it as such (recursors and their auxiliaries, matchers, projections),
@@ -916,11 +920,11 @@ read; `DIGEST.md` stays the full index.
 (`RueCore/Spec.lean` and `RueCore/Spec/*.lean`), as a `def <name>_stmt : Prop`
 over the definitions of L0 and L1 alone, with a doc-comment giving its English
 reading, the §7 paragraph of `../01-core-calculus.md` it realizes, and where
-it is narrower than that paragraph. `RueCore.Spec.spine` lists the 36 of them,
+it is narrower than that paragraph. `RueCore.Spec.spine` lists the 38 of them,
 each beside the theorem that proves it; `RueCore.Spec.witnesses` lists the 13
 non-vacuity witnesses the same way ("Non-vacuity witnesses", RUE-2469), and
-`RueCore.Spec.sharpness` the 27 sharpness counter-examples ("Sharpness
-counter-examples", RUE-2485), 76 statements in all. Every tool reads the three
+`RueCore.Spec.sharpness` the 28 sharpness counter-examples ("Sharpness
+counter-examples", RUE-2485), 79 statements in all. Every tool reads the three
 lists:
 
 * **The kernel.** `RueCore/Spine.lean` (L2) restates each theorem as
@@ -947,8 +951,8 @@ lists:
   `def RueCore.Spec.<name>_stmt : Prop` whose body is the Spec statement's
   elaborated body, pretty-printed, and then states each
   `RueCore.Spine.<name> : RueCore.Spec.<name>_stmt` with `sorry`. The solution
-  is `RueCore.Spine`; `comparator/config.json` names its 76 theorems (36 of the
-  spine, 13 witnesses, 27 counter-examples) and allows
+  is `RueCore.Spine`; `comparator/config.json` names its 79 theorems (38 of the
+  spine, 13 witnesses, 28 counter-examples) and allows
   the axioms `propext` and `Quot.sound`. Comparator checks that each solution
   theorem has the challenge's statement, with every constant the statements
   use identical in the two environments — each `_stmt` included, so the
@@ -1080,9 +1084,9 @@ theorem per (witness, spine theorem) pair of `Spec.witnesses`,
 `exact_model` and the frame from `empty_frame` or `open_frame`) and applies
 `RueCore.Spine.<theorem>` to them. It elaborates only if the witness supplies
 that theorem's literal hypotheses, and the lint fails on a listed pair whose
-glue theorem is missing or does not use both constants. Five spine statements
-have no hypotheses (`freed_once`, `run_ne_returned`, `Config.trichotomy`,
-`step_iff`, `Config.stuck_iff`); their witnesses only apply them at a
+glue theorem is missing or does not use both constants. Six spine statements
+have no hypotheses (`run_no_use_after_drop`, `freed_once`, `run_ne_returned`,
+`Config.trichotomy`, `step_iff`, `Config.stuck_iff`); their witnesses only apply them at a
 non-trivial program, and `SPINE.md` says so on their line.
 
 A witness shows a hypothesis satisfiable, not needed; that a conclusion fails
@@ -1120,25 +1124,25 @@ hypothesis of a spine statement gets a **sharpness counter-example**: a
 Spec statement (`RueCore/Spec/Sharp.lean`) writing out a program, or a
 configuration, of which that hypothesis fails, every other hypothesis of the
 statement holds, and the conclusion fails. The statement with that hypothesis
-removed is then false. 70 of the 71 hypotheses have one; the other has a
-written reason.
+removed is then false. 71 of the 72 hypotheses have one; the other has a
+written reason: it is redundant, and the theorem without it is proved.
 
 What counts as a hypothesis: the lint numbers them (`Lint.hypotheses`): the
 premises of `Prop` type, in the order they occur, walking the statement's
 `∀`s and the two sides of an `∧` or `↔` and the body of an `∃` in its
-conclusion, the same walk that makes five statements hypothesis-free
+conclusion, the same walk that makes six statements hypothesis-free
 ("Non-vacuity witnesses"). So a premise inside a conclusion counts: `run_sim`
 has two, the `run … = .ok H v tr` and `run … = .panic k tr` its two halves
 start from, and `eval_complete`'s `n < fuel` is two hypotheses, one per half.
-The 36 statements have 71 hypotheses, and 19 of the 70 with a
+The 38 statements have 72 hypotheses, and 19 of the 71 with a
 counter-example are such premises inside a conclusion, reached through an
 `∧`, an `↔` or an `∃` (`drop_order` 2–5, `eval_sound` 2–3, `run_sim` 1–2,
 `eval_complete` 2–5, `run_complete` 1–4, the `Steps init C` of
 `step_preservation` and `never_stuck_iff`, and `run_stuck_of_step_stuck` 3);
-the `Steps init C` of `step_progress` and `step_never_stuck_of_run` is of the
-same kind, a premise about a reached configuration, though no connective
+the `Steps init C` of `step_progress`, `step_never_stuck_of_run` and
+`step_no_use_after_drop` is of the same kind, a premise about a reached configuration, though no connective
 stands before it. `SPINE.md` computes these counts from the walk (RUE-2495).
-So "70 hypotheses needed" is not 70 hypotheses about a program.
+So "71 hypotheses needed" is not 71 hypotheses about a program.
 For `drop_order` 2–3, `eval_sound` 2–3, `run_sim` 1–2, `eval_complete` 2 and 4,
 and `run_complete` 1 and 3, the dropped premise is the only thing tying its
 bound value or trace to the program; once it is gone the weakened statement
@@ -1153,8 +1157,8 @@ conclusion. No spine statement has a premise under `∨` or `¬` today.
 
 `RueCore.Spec.sharpness` (`Spec.lean`) names each counter-example
 statement, the theorem that proves it (`RueCore/Sharp.lean`, L2), and the
-hypotheses it drops, as (spine theorem, number) pairs: 27 statements, 70
-hypotheses in 74 pairs (four hypotheses by more than one statement). The
+hypotheses it drops, as (spine theorem, number) pairs: 28 statements, 71
+hypotheses in 75 pairs (four hypotheses by more than one statement). The
 lint checks each pair's range and that every hypothesis is covered.
 
 **Every pair is checked in the kernel** (RUE-2495). `RueCore/Sharp/Glue.lean`
@@ -1210,7 +1214,9 @@ The counter-examples, by kind:
   (`Sharp.no_lead`, `Sharp.no_eval`).
 * The premises inside conclusions: a value or a panic §6's relation does
   not reach (`Sharp.unreached`, `Sharp.unreached_panic`), a stuck
-  configuration it does not reach (`Sharp.unreachable_stuck`), an
+  configuration it does not reach (`Sharp.unreachable_stuck`), a
+  configuration whose frame names a retired cell, stuck with `useAfterDrop`
+  and not reached either (`Sharp.retired_cell`, RUE-2496), an
   unreachable configuration out of registration order (`Sharp.unordered`), a
   pair that is not a step (`Sharp.not_a_step`), the initial configuration,
   which steps (`Sharp.init_steps`), and `eval_complete`'s and
@@ -1227,14 +1233,18 @@ The two reasons, both in `Spec.lean`:
   counter-example runs on `Float.exactOps`, a model of them
   (`Nonvacuous.exact_model`). Recorded once, in `sharpnessReasons`'
   doc-comment.
-* `no_use_after_drop`'s `ProgramTyped` has no counter-example, and none has
-  been found: by reading, a frame's environment names only cells its own
-  bindings allocated, each dropped from the environment when the cell is
-  retired, and `run` starts from the empty store and frame (`Examples.lean`
-  witnesses the refusal only from an open machine state); and a fuzz of
-  78,000 programs, checked and unchecked, reached `useAfterDrop` through
-  neither `run` nor `step`. So the hypothesis appears redundant; the theorem
-  over every program is RUE-2496.
+* `no_use_after_drop`'s `ProgramTyped` has no counter-example because it is
+  redundant (RUE-2496): `run_no_use_after_drop` proves the conclusion for
+  every program, checked or not, at every fuel and float model, and
+  `step_no_use_after_drop` the same over `Step` for every configuration
+  reached from `Config.init` (`RueCore/Retire.lean`). The property is
+  structural, not a consequence of typing: a binding's cell is minted fresh
+  and retired only when the scope that bound it ends, after which nothing
+  names it, and a scope record owes each cell once. The guard is still live
+  from an open configuration, a frame naming a cell already retired
+  (`Examples.lean`, `Sharp.retired_cell`), which is why
+  `step_no_use_after_drop`'s reachability hypothesis has a counter-example.
+  `no_use_after_drop` is kept as §7 states it, over checked programs.
 
 The Spec statement writes the program out; the
 proof runs `check`, `eval` and `step` in the kernel (`rfl`, `decide`), and
@@ -1311,6 +1321,7 @@ pass is):
 | `RueCore/Trace.lean` | theorems over the drop trace: owned value identities (`Contents.own`, defined in `Trace/Defs.lean`), copy closure, and the conservation law `eval_conserves`, proved by fuel induction over `eval`, from which `no_double_free` follows — no identity freed twice, no destructor run twice on one value, for every finished run of a checked program; and `dupProgram_step_double_free`, the ill-typed program §6's relation frees twice | §7 |
 | `RueCore/TraceExact.lean` | the exact ledger `eval_exact`, the conservation law read as an equality over the identities an evaluation starts with, proved through `rest_step`, the ledger for the rest of every form; the frame-pop invariant `eval_tidy`, that every cell an evaluation allocates is retired by its end; `drop_exactly_once`, at every well-typed configuration of a checked program — every owned value it starts with ends exactly once, dropped, discarded or consumed on the normal or the unwind path, never both, and every cell it allocated is retired — and `rest_exactly_once`, the same for the values a form's leading operands produce — a loop's lead being its body breaking — which covers values minted inside an evaluation; with the `@panic` carve-out and the RUE-2316 one (`pendingSafe`, witnessed load-bearing by `pendingSafe_needed`), and `orphan_rejected`/`letDropDeleted_rejected`/`seqDropDeleted_rejected`/`breakLeak_rejected`, results the two statements reject at typed configurations of checked programs | §6.7, §6.9, §6.10, §7 |
 | `RueCore/TraceOrder.lean` | **drop order**, `drop_order`, over §6's relation, in two halves. Within a value: every finished run's trace is in the block grammar `Blocks`, each drop marker followed by exactly §6.11's walk of what it names, so every destructor runs inside the drop that owns it, in §6.11's order, and nowhere else (`run_blocks` over `eval`, needing only `3.9:31`, carried to `Step` by `step_blocks`). Across cells: every scope record is in location order, which is registration order (`reachable_ordered`); the scopes nest, pending `endscope` markers being the tail of their record (`reachable_nested`); and every reachable step is last-in first-out on the registration stack, dropping only cells it deregistered, newest first, each newer than every cell still registered (`reachable_lifo`, `Lifo.newer`). Its witnesses on example programs (`fieldsSwapped_rejected`, `swappedMarkers_rejected`, `unorderedRecord_rejected`, `returnPastAffine_newestFirst`) and the order-witnessing corpus cases are in `Witnesses.lean` | §3.9, §6.7, §6.9, §6.10, §6.11, §7 |
+| `RueCore/Retire.lean` | **no program reaches a retired cell** (RUE-2496): `run_no_use_after_drop`, at every fuel and float model, and `step_no_use_after_drop`, from `Config.init`, with no typing hypothesis. The invariant, over `eval` by induction on fuel (`Retire.eval_live`) and over `step` (`Retire.step_live`): every cell a frame's environment names or its scope record owes a drop is live, and the record owes each once; over `Step`, for every suspended caller's frame too, with the stack's shape (`Retire.Shape`: an `endscope` marker or a loop boundary sits under a frame that extends its own at the end of its record) | §6.1, §6.7, §6.9, §6.10, §7 |
 | `RueCore/Adequacy.lean` | **`eval` is adequate to `Step`, both ways, and §7 over `Step`** (RUE-2289 parts 2–4, ADR-0097 decision 3). Soundness: the simulation relation `Sim` between an `eval` result and `→*` from the expression in focus under any context — a value reaches the hole's value in the same frame, a panic reaches `↯κ`, an unwinding `return` the nearest caller, an unwinding `break` the nearest loop's context — proved for every expression and fuel on every program (`eval_sim`, `run_sim`), and `eval_sound`, the statement over checked programs, where `no_violation` rules `.stuck` out. Completeness modulo fuel: exhausted fuel is a run of that many steps (`eval_steps_of_outOfFuel`); with determinism, `eval_complete` says that on a checked program every value or panic `→*` reaches is `run`'s answer at every fuel past the run's length; `never_stuck_iff` is "never `.stuck`" both ways, in §7's phrasing; `eval_diverges_iff` says exhaustion at every fuel is divergence. §7 over `Step` (part 4): `step_progress`, `step_preservation` (for the semantic configuration typing `Config.SafeAt`, whose fundamental lemma is `init_safeAt`), `step_value_typed` and `step_type_safety`; `Frame.empty`, `StepsN` and `Config.SafeAt` are defined in `Adequacy/Defs.lean` (layer L1) | §6.2, §6.9, §6.10, §6.12, §7 |
 | `RueCore/Checker/Defs.lean` | (layer L1) the decidable checker as an algorithm, moved out of `Checker.lean`: `check`, `checkFn`, `checkDecls` and `checkProgram` | §3, §5 as an algorithm |
 | `RueCore/Checker.lean` | decidable checker `check`/`checkProgram` (defined in `Checker/Defs.lean`) + `check_sound`/`checkProgram_sound` (every acceptance is a derivation), with §5.7's loop head found by a bounded iteration (`headIter`) and re-verified, and `checkDecls` — §3's two class equations plus `3.0:5`'s acyclicity, decided by peeling the declarations | §3, §5 as an algorithm |
@@ -1325,7 +1336,7 @@ pass is):
 | `RueCore/Digest.lean`, `RueCore/DigestMain.lean` | the statement digest and the trust report, walked out of the compiled environment (`lake exe ruecore-digest`) | the claim inventory and its trust boundary |
 | `RueCore/Layers.lean`, `RueCore/LayersMain.lean` | the layer table and the layering audit over the compiled import graph (`lake exe ruecore-layers`, "Layers" above) | what the claims may depend on |
 | `RueCore/Lint.lean`, `RueCore/LintMain.lean` | the headline statements, the trusted-base lint over every declaration of the package, and the trusted base `TRUST.md` prints (`lake exe ruecore-lint`, "The trusted-base lint" above) | what the claims may rest on |
-| `RueCore/Spec.lean`, `RueCore/Spec/*.lean` | (layer Spec) the 36 headline statements, each a `def …_stmt : Prop` over L0 and L1 with its English reading, and `Spec.spine`, the one list of them ("The statement layer"); the thirteen non-vacuity witnesses and their list, `Spec.witnesses` ("Non-vacuity witnesses") | §7's claims, stated |
+| `RueCore/Spec.lean`, `RueCore/Spec/*.lean` | (layer Spec) the 38 headline statements, each a `def …_stmt : Prop` over L0 and L1 with its English reading, and `Spec.spine`, the one list of them ("The statement layer"); the thirteen non-vacuity witnesses and their list, `Spec.witnesses` ("Non-vacuity witnesses") | §7's claims, stated |
 | `RueCore/Spine.lean` | (layer L2) each headline theorem restated with its Spec statement as its type, so the kernel checks the proof against it; Lean Comparator's solution | §7's claims, proved |
 | `comparator/` | Lean Comparator's challenge and configuration (generated) and `run.sh`, which builds and runs Comparator | the statement/proof split, certified |
 | `SPINE.md` | (generated) every Spec statement in Lean, its English reading, its §7 paragraph and the definitions it names — the first page a reviewer reads | §7's claims, stated |
