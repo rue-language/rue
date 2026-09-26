@@ -518,13 +518,15 @@ What the mutants could not get past:
     weakening, and a sharpness counter-example over an unreached halted
     configuration is a natural home for one: `¬ SafeAt` of it can only fail
     through the typing half.
-  - **V2, one witness carries the hypothesis direction** (low, disclosure).
-    `Nonvacuous.open_frame` is the only statement that asserts `FrameMatches`
-    of a frame with an owned binding. `Nonvacuous.dtor` does not state
+  - **V2, one binding shape carries the hypothesis direction** (low,
+    disclosure). Three statements assert `FrameMatches` of a frame with an
+    owned binding — `Nonvacuous.open_frame`, `Sharp.pending_program` and
+    `Sharp.pending_expr` — all of the same one-`S0` shape, and all three are
+    false under `contentsmatches-owned-false`. `Nonvacuous.dtor` does not state
     `FrameMatches` or `StoreCC` at all, although RUE-2490 expected it to
     catch the control. A strengthening of `ContentsMatches` that spared
-    `open_frame`'s one `S0` binding (one that only touched arrays, enums or
+    that one `S0` shape (one that only touched arrays, enums or
     `mut` bindings, say) would make `soundness` vacuous on those frames and
     falsify no witness. Whether a spine statement would still fail, through
     `EvalOk`'s own `FrameMatches` (a conclusion), was not checked. Witnesses
-    of `FrameMatches` over more binding shapes would close that.
+    of `FrameMatches` over more binding shapes would close that (RUE-2503).
