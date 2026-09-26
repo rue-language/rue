@@ -10,7 +10,7 @@ use super::super::context::{
     ConstAggregateKind, LocalVar, ParamInfo, comptime_value_within_limits,
 };
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
-use super::super::ownership_state::{FieldPath, VariableMoveState};
+use super::super::ownership_state::{FieldPath, LedgerRoot, VariableMoveState};
 use super::*;
 use crate::inst::AirPlaceRef;
 use crate::scope::ScopedContext;
@@ -1668,8 +1668,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Mutable accessors carry an exclusive loan; shared and exclusive
             // accessor results conflict on the same root. The root loan list
             // is intentionally expression-scoped and root-granular.
+            let key = Self::ledger_root(root, span, ctx)?;
             if ctx.ownership.expression_loans.iter().any(|(r, _, kind)| {
-                *r == root && (*kind == CallLoanKind::Inout || loan_kind == CallLoanKind::Inout)
+                *r == key && (*kind == CallLoanKind::Inout || loan_kind == CallLoanKind::Inout)
             }) {
                 return Err(CompileError::new(
                     ErrorKind::AccessorLoanConflict {
@@ -1679,8 +1680,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     span,
                 ));
             }
-            self.reject_accessor_loan_against_expression_ledgers(root, loan_kind, span, ctx)?;
-            ctx.ownership.expression_loans.push((root, span, loan_kind));
+            self.reject_accessor_loan_against_expression_ledgers(key, loan_kind, span, ctx)?;
+            ctx.ownership.expression_loans.push((key, span, loan_kind));
         }
         // The receiver is loaned for the accessor result's lifetime, so it
         // must be fully owned (core §5.8, (Accessor-Call)): not moved, not
@@ -2443,9 +2444,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> CompileResult<AnalysisResult> {
         // An ordinary value read is a shared use of the root. It cannot
         // overlap an exclusive accessor result in the same full expression.
-        if ctx.ownership.byref_arg_root != Some(name) {
+        // A name that is no runtime binding (a constant, a module) owns no
+        // storage an accessor could loan.
+        if ctx.ownership.byref_arg_root != Some(name)
+            && (ctx.locals.contains_key(&name) || ctx.has_param(name))
+        {
             self.reject_accessor_shared_loan_conflict(name, "by a shared read", span, ctx)?;
-            ctx.ownership.expression_shared_reads.push((name, span));
+            let key = Self::ledger_root(name, span, ctx)?;
+            ctx.ownership.expression_shared_reads.push((key, span));
         }
         // Check if it's a parameter — but a `let` that shadows the parameter
         // rebinds the name to a new local, and that local wins for all later
@@ -2506,7 +2512,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                     .entry(name)
                                     .or_default()
                                     .mark_path_moved(&[], span);
-                                self.record_completed_exclusive_use(name, span, ctx);
+                                self.record_completed_exclusive_use(name, span, ctx)?;
                                 moves_out = true;
                             }
                         }
@@ -2630,7 +2636,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     .entry(name)
                     .or_default()
                     .mark_path_moved(&[], span);
-                self.record_completed_exclusive_use(name, span, ctx);
+                self.record_completed_exclusive_use(name, span, ctx)?;
             }
 
             // Mark variable as used
@@ -3053,7 +3059,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     span,
                 });
                 if value_result.continues {
-                    self.record_completed_exclusive_use(name, span, ctx);
+                    self.record_completed_exclusive_use(name, span, ctx)?;
                 }
                 return Ok(AnalysisResult::with_continues(
                     air_ref,
@@ -3145,7 +3151,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             span,
         });
         if value_result.continues {
-            self.record_completed_exclusive_use(name, span, ctx);
+            self.record_completed_exclusive_use(name, span, ctx)?;
         }
         Ok(AnalysisResult::with_continues(
             air_ref,
@@ -3694,9 +3700,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     span,
                     ctx,
                 )?;
-                ctx.ownership
-                    .expression_shared_reads
-                    .push((trace.root_var, span));
+                let key = Self::ledger_root(trace.root_var, span, ctx)?;
+                ctx.ownership.expression_shared_reads.push((key, span));
             }
             let field_type = trace.result_type();
 
@@ -3892,7 +3897,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     .or_default()
                     .mark_path_moved(&destructured_path, span);
                 if trace.continues {
-                    self.record_completed_exclusive_use(trace.root_var, span, ctx);
+                    self.record_completed_exclusive_use(trace.root_var, span, ctx)?;
                 }
                 emit_move_marker = true;
             } else if !self.is_type_copy(field_type) {
@@ -3948,7 +3953,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     .or_default()
                     .mark_path_moved(&field_path, span);
                 if trace.continues {
-                    self.record_completed_exclusive_use(trace.root_var, span, ctx);
+                    self.record_completed_exclusive_use(trace.root_var, span, ctx)?;
                 }
 
                 // Export statically-trackable partial moves to drop elaboration
@@ -4257,9 +4262,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     span,
                     ctx,
                 )?;
-                ctx.ownership
-                    .expression_shared_reads
-                    .push((trace.root_var, span));
+                let key = Self::ledger_root(trace.root_var, span, ctx)?;
+                ctx.ownership.expression_shared_reads.push((key, span));
             }
             let elem_type = trace.result_type();
 
@@ -4411,7 +4415,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     .or_default()
                     .mark_path_moved(&destructured_path, span);
                 if trace.continues {
-                    self.record_completed_exclusive_use(trace.root_var, span, ctx);
+                    self.record_completed_exclusive_use(trace.root_var, span, ctx)?;
                 }
                 element_move = Some(i64::MIN);
             } else if !self.is_type_copy(elem_type) {
@@ -5246,7 +5250,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         });
         let continues = value_result.continues && place_continues;
         if continues {
-            self.record_completed_exclusive_use(root_var, span, ctx);
+            self.record_completed_exclusive_use(root_var, span, ctx)?;
         }
         Ok(AnalysisResult::with_continues(
             air_ref,
@@ -5464,7 +5468,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             });
             let continues = trace.continues && value_result.continues;
             if continues {
-                self.record_completed_exclusive_use(trace.root_var, span, ctx);
+                self.record_completed_exclusive_use(trace.root_var, span, ctx)?;
             }
             return Ok(AnalysisResult::with_continues(
                 air_ref,
@@ -5739,7 +5743,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             });
             let continues = trace.continues && index_result.continues && value_result.continues;
             if continues {
-                self.record_completed_exclusive_use(trace.root_var, span, ctx);
+                self.record_completed_exclusive_use(trace.root_var, span, ctx)?;
             }
             return Ok(AnalysisResult::with_continues(
                 air_ref,
@@ -6604,7 +6608,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .or_default()
             .mark_path_moved(&elem_path, span);
         if trace.continues {
-            self.record_completed_exclusive_use(trace.root_var, span, ctx);
+            self.record_completed_exclusive_use(trace.root_var, span, ctx)?;
         }
         Ok(Some(k))
     }
@@ -7433,11 +7437,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
+        let Some(key) = Self::bound_ledger_root(root, ctx) else {
+            return Ok(());
+        };
         if let Some((_, loan_span, _kind)) = ctx
             .ownership
             .expression_loans
             .iter()
-            .find(|(r, _, _)| *r == root)
+            .find(|(r, _, _)| *r == key)
         {
             return Err(CompileError::new(
                 ErrorKind::AccessorLoanConflict {
@@ -7451,12 +7458,141 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(())
     }
 
+    /// Reject a by-ref method receiver that conflicts with an accessor-result
+    /// loan on its root in the same full expression (ADR-0062, E0259).
+    ///
+    /// `receiver_accessor_loan` is the loan the receiver place is reached
+    /// through, if any: `Some(true)` for an exclusive (`-> inout`) accessor
+    /// result, `Some(false)` for a shared (`-> borrow`) one. Calling a method
+    /// on that place uses the accessor's own loan rather than taking a new
+    /// one of the root, so it is a conflict only when an `inout self`
+    /// receiver would mutate through a shared result -- the same rule an
+    /// assignment through an accessor place follows (spec 6.6:8, 6.6:10).
+    pub(crate) fn reject_receiver_accessor_loan_conflict(
+        &self,
+        root: Spur,
+        receiver_mode: AirArgMode,
+        receiver_accessor_loan: Option<bool>,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<()> {
+        match (receiver_mode, receiver_accessor_loan) {
+            (AirArgMode::Inout, Some(true)) | (AirArgMode::Borrow, Some(_)) => Ok(()),
+            (AirArgMode::Inout, _) => {
+                self.reject_accessor_loan_conflict(root, "as an `inout self` receiver", span, ctx)
+            }
+            (AirArgMode::Borrow, None) => self.reject_accessor_shared_loan_conflict(
+                root,
+                "as a `borrow self` receiver",
+                span,
+                ctx,
+            ),
+            // Unreachable by contract: callers pass only the by-ref receiver
+            // modes. A by-value receiver is a move, checked on the move path.
+            (AirArgMode::Normal, _) => Ok(()),
+        }
+    }
+
+    /// The ledger identity of the binding `name` resolves to here: the
+    /// visible local's slot, or the parameter's name (see [`LedgerRoot`]).
+    ///
+    /// Every ledger entry names a runtime binding. A name that resolves to
+    /// neither a local nor a parameter would get a slot-less key that could
+    /// collide with a same-named parameter, so it is an internal error.
+    pub(crate) fn ledger_root(
+        name: Spur,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<LedgerRoot> {
+        Self::bound_ledger_root(name, ctx).ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::InternalError(
+                    "accessor-loan ledger root names neither a local nor a parameter".to_string(),
+                ),
+                span,
+            )
+        })
+    }
+
+    /// The ledger identity of `name` when it resolves to a runtime binding,
+    /// for a conflict lookup: a name that is neither a local nor a parameter
+    /// owns no storage, so no accessor loan or recorded use can name it.
+    fn bound_ledger_root(name: Spur, ctx: &AnalysisContext) -> Option<LedgerRoot> {
+        if let Some(local) = ctx.locals.get(&name) {
+            return Some(LedgerRoot {
+                name,
+                slot: Some(local.slot),
+            });
+        }
+        ctx.has_param(name)
+            .then_some(LedgerRoot { name, slot: None })
+    }
+
+    /// Record a borrowing use of a place rooted at a local or parameter in
+    /// the accessor-loan ledgers as a shared use of that root, rejecting it if
+    /// it overlaps an exclusive accessor result in the same full expression
+    /// (spec 6.6:10, E0259).
+    ///
+    /// These operations borrow their place instead of reading it on the
+    /// value path, so the value path's shared-read record never sees them:
+    /// - projection-mode operands (`analyze_inst_for_projection`): `==`, `!=`
+    ///   and the ordering operators (4.3:3f), `StrBuf` `+`, `print` and
+    ///   `println`, the `@assert` and `@panic` messages, `@assert_eq` and
+    ///   `@assert_ne`, and `@parse_*`;
+    /// - the `@dbg` operand and the `for` collection;
+    /// - the address-of operands of `@raw`, `@raw_mut` and `@field_ptr`.
+    ///   Taking an address is not an exclusive use (6.6:10 names moves,
+    ///   `inout`, assignment and `inout self`); a write through the pointer is
+    ///   unchecked code (chapter 9). So a `@raw_mut` beside a shared accessor
+    ///   result is legal, and one inside an exclusive loan is rejected.
+    ///
+    /// Like a value-context read, a shared use cannot overlap an exclusive
+    /// accessor result in either order. Otherwise `w.b.s == w.bmut().bump()`
+    /// would read `w.b.s` after the accessor result mutated it. A place reached
+    /// through an accessor result roots at no plain variable; it is used
+    /// through that result's own loan.
+    ///
+    /// The use is recorded before the place's index subexpressions are
+    /// analyzed. That is sound because a loan taken inside an index
+    /// subexpression either ends with that subexpression's own nested full
+    /// expression or stays in `expression_loans`, where the recorded use
+    /// meets it when the later accessor is expanded.
+    pub(super) fn record_borrowed_place_use(
+        &self,
+        inst_ref: InstRef,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<()> {
+        let Some(root) = root_variable_of(self.body_rir_ref(), inst_ref) else {
+            return Ok(());
+        };
+        if ctx.ownership.byref_arg_root == Some(root)
+            || !(ctx.locals.contains_key(&root) || ctx.has_param(root))
+        {
+            return Ok(());
+        }
+        self.reject_accessor_shared_loan_conflict(root, "by a shared read", span, ctx)?;
+        // A projected chain re-enters here at each level (`a.p.c`, `a.p`,
+        // `a`); one record per root and full expression is enough, since the
+        // ledger is only ever searched for the root.
+        let key = Self::ledger_root(root, span, ctx)?;
+        if !ctx
+            .ownership
+            .expression_shared_reads
+            .iter()
+            .any(|(read_root, _)| *read_root == key)
+        {
+            ctx.ownership.expression_shared_reads.push((key, span));
+        }
+        Ok(())
+    }
+
     /// Check the completed-use ledgers that a nested full-expression boundary
     /// temporarily hides. Direct accessor calls and arm-loan readmission both
     /// use this check so evaluation order has one conflict rule.
     fn reject_accessor_loan_against_expression_ledgers(
         &self,
-        root: Spur,
+        root: LedgerRoot,
         kind: CallLoanKind,
         span: Span,
         ctx: &AnalysisContext,
@@ -7469,7 +7605,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         {
             return Err(CompileError::new(
                 ErrorKind::AccessorLoanConflict {
-                    variable: self.body_interner().resolve(&root).to_string(),
+                    variable: self.body_interner().resolve(&root.name).to_string(),
                     conflict: "for an accessor result after an exclusive use",
                 },
                 span,
@@ -7485,7 +7621,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         {
             return Err(CompileError::new(
                 ErrorKind::AccessorLoanConflict {
-                    variable: self.body_interner().resolve(&root).to_string(),
+                    variable: self.body_interner().resolve(&root.name).to_string(),
                     conflict: "for an exclusive accessor result after a shared read",
                 },
                 span,
@@ -7503,15 +7639,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         root: Spur,
         span: Span,
         ctx: &mut AnalysisContext,
-    ) {
+    ) -> CompileResult<()> {
+        let key = Self::ledger_root(root, span, ctx)?;
         if !ctx
             .ownership
             .expression_exclusive_uses
             .iter()
-            .any(|(used_root, _)| *used_root == root)
+            .any(|(used_root, _)| *used_root == key)
         {
-            ctx.ownership.expression_exclusive_uses.push((root, span));
+            ctx.ownership.expression_exclusive_uses.push((key, span));
         }
+        Ok(())
     }
 
     pub(crate) fn reject_accessor_shared_loan_conflict(
@@ -7521,11 +7659,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
+        let Some(key) = Self::bound_ledger_root(root, ctx) else {
+            return Ok(());
+        };
         if let Some((_, loan_span, _kind)) = ctx
             .ownership
             .expression_loans
             .iter()
-            .find(|(r, _, kind)| *r == root && *kind == CallLoanKind::Inout)
+            .find(|(r, _, kind)| *r == key && *kind == CallLoanKind::Inout)
         {
             return Err(CompileError::new(
                 ErrorKind::AccessorLoanConflict {
@@ -7649,7 +7790,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     pub(crate) fn readmit_arm_accessor_loans(
         &self,
         ctx: &mut AnalysisContext,
-        loans: Vec<(Spur, Span, CallLoanKind)>,
+        loans: Vec<(LedgerRoot, Span, CallLoanKind)>,
         value_continues: bool,
     ) -> CompileResult<()> {
         if loans.is_empty() || !value_continues {
@@ -8082,7 +8223,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         root,
                         self.body_rir_ref().get(arg.value).span,
                         ctx,
-                    );
+                    )?;
                 }
             }
         }

@@ -1416,18 +1416,37 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             value: receiver_result.air_ref,
             mode: receiver_mode,
         }];
+        // A receiver place reached through an accessor result
+        // (`a.pmut().set()`, `h.acc.pmut().q.get()`) is not a fresh use of
+        // the root: it uses the place that accessor's loan already granted,
+        // exactly like `setp(inout a.pmut())` or `a.pmut().c = 5`. Record the
+        // loan's kind -- `Some(true)` for an exclusive (`-> inout`) result --
+        // so the root-granular conflict checks below key on the receiver
+        // place. Mutating through a shared (`-> borrow`) result stays a
+        // conflict with that loan (spec 6.6:8, 6.6:10, E0259).
+        let receiver_accessor_loan = ctx
+            .accessor_place_refs
+            .get(&receiver)
+            .map(|&(_, _, _, exclusive, _)| exclusive);
         let receiver_frame = match (receiver_mode, receiver_var) {
             (AirArgMode::Inout, Some(root)) => {
                 // An `inout self` receiver on a root an accessor result
                 // borrows in the same full expression violates exclusivity
                 // (ADR-0062, E0259).
-                self.reject_accessor_loan_conflict(root, "as an `inout self` receiver", span, ctx)?;
+                self.reject_receiver_accessor_loan_conflict(
+                    root,
+                    receiver_mode,
+                    receiver_accessor_loan,
+                    span,
+                    ctx,
+                )?;
                 Some(vec![(root, CallLoanKind::Inout, false)])
             }
             (AirArgMode::Borrow, Some(root)) => {
-                self.reject_accessor_shared_loan_conflict(
+                self.reject_receiver_accessor_loan_conflict(
                     root,
-                    "as a `borrow self` receiver",
+                    receiver_mode,
+                    receiver_accessor_loan,
                     span,
                     ctx,
                 )?;
@@ -1458,21 +1477,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // analysis, after the pre-frame receiver check above. The by-ref
         // receiver access spans the same full expression as that loan, so it
         // is rejected in either evaluation order (spec 6.6:10, 6.6:16,
-        // E0259). A receiver reached through an accessor result has already
-        // been checked against its own loan above.
-        match (receiver_mode, receiver_var) {
-            (AirArgMode::Inout, Some(root)) => {
-                self.reject_accessor_loan_conflict(root, "as an `inout self` receiver", span, ctx)?;
-            }
-            (AirArgMode::Borrow, Some(root)) => {
-                self.reject_accessor_shared_loan_conflict(
-                    root,
-                    "as a `borrow self` receiver",
-                    span,
-                    ctx,
-                )?;
-            }
-            _ => {}
+        // E0259). A receiver reached through an accessor result needs no
+        // re-check: an argument's own accessor call or by-ref use of the root
+        // is checked against the receiver's loan when it is analyzed.
+        if let Some(root) = receiver_var
+            && receiver_mode != AirArgMode::Normal
+        {
+            self.reject_receiver_accessor_loan_conflict(
+                root,
+                receiver_mode,
+                receiver_accessor_loan,
+                span,
+                ctx,
+            )?;
         }
         air_args.extend(args_result.args);
         // The receiver's materialized owner is entered first: it is created
@@ -1507,7 +1524,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             && receiver_mode == AirArgMode::Inout
             && let Some(root) = self.extract_root_variable(receiver)
         {
-            self.record_completed_exclusive_use(root, span, ctx);
+            self.record_completed_exclusive_use(root, span, ctx)?;
         }
         if !call.continues {
             ctx.ownership

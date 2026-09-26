@@ -841,3 +841,134 @@ fn legal_accessor_body_compiles() {
         .expect("a legal accessor compiles");
     assert_eq!(body.function.air.return_type(), crate::types::Type::I64);
 }
+
+/// `Acc { p: P }` with `P { c: i64 }`: `P` has an `inout self` `set` and a
+/// `borrow self` `get`; `Acc` has an exclusive accessor `pmut`, a shared
+/// accessor `pref`, and an `inout self` method `bump` of its own (RUE-2358).
+fn accessor_result_receiver_fixture() -> ProviderFixture {
+    let mut fixture = ProviderFixture::new();
+    let p = fixture.declare_struct("P", vec![("c", SemanticImportType::I64)], false);
+    let acc = fixture.declare_struct(
+        "Acc",
+        vec![("p", SemanticImportType::Nominal(p.clone()))],
+        false,
+    );
+    for (name, mode) in [
+        ("set", SemanticParameterMode::Inout),
+        ("get", SemanticParameterMode::Borrow),
+    ] {
+        fixture.declare_method_with(
+            &p,
+            name,
+            Vec::new(),
+            SemanticImportType::I64,
+            MethodShape {
+                self_mode: mode,
+                ..MethodShape::default()
+            },
+        );
+    }
+    fixture.declare_method_with(
+        &acc,
+        "pmut",
+        Vec::new(),
+        SemanticImportType::Nominal(p.clone()),
+        mutable_accessor_shape(),
+    );
+    fixture.declare_method_with(
+        &acc,
+        "pref",
+        Vec::new(),
+        SemanticImportType::Nominal(p),
+        accessor_shape(),
+    );
+    fixture.declare_method_with(
+        &acc,
+        "bump",
+        Vec::new(),
+        SemanticImportType::I64,
+        MethodShape {
+            self_mode: SemanticParameterMode::Inout,
+            ..MethodShape::default()
+        },
+    );
+    fixture.declare_function(
+        "use2",
+        vec![
+            value_param("x", SemanticImportType::I64),
+            value_param("y", SemanticImportType::I64),
+        ],
+        SemanticImportType::I64,
+    );
+    fixture.declare_function(
+        "g",
+        vec![mode_param(
+            "a",
+            SemanticImportType::Nominal(acc),
+            SemanticParameterMode::Inout,
+        )],
+        SemanticImportType::I64,
+    );
+    fixture.declare_function("f", Vec::new(), SemanticImportType::I64);
+    fixture
+}
+
+// RUE-2358: a by-ref method receiver reached through an accessor result uses
+// the place that accessor's loan grants; it is not a fresh use of the root.
+// An `inout self` method on an exclusive result, and a `borrow self` method on
+// either kind, are legal, like `set(inout g.at_mut(1))` (6.6:8, 6.6:10).
+#[test]
+fn method_on_accessor_result_uses_its_loan() {
+    let fixture = accessor_result_receiver_fixture();
+    for call in [
+        "a.pmut().set()",
+        "a.pmut().get()",
+        "a.pref().get()",
+        // A shadowing local is a different binding from the loaned root.
+        "use2(a.pmut().get(), { let a = 5; if a == 5 { 1 } else { 2 } })",
+        "use2(a.pmut().get(), { let a = 5; a })",
+    ] {
+        let source = format!(
+            "fn f() -> i64 {{
+    let mut a = Acc {{ p: P {{ c: 1 }} }};
+    {call}
+}}"
+        );
+        fixture
+            .analyze(&source, "f")
+            .unwrap_or_else(|error| panic!("`{call}` uses the accessor's own loan: {error:?}"));
+    }
+}
+
+// RUE-2358: mutating through a shared accessor result, an exclusive use of
+// the root beside an accessor loan in the same full expression, and a compared
+// shared read of the root beside an exclusive accessor result are E0259
+// (6.6:10). Only the compare shapes are new rejections; the rest are controls.
+#[test]
+fn method_on_accessor_result_still_conflicts_with_other_root_uses() {
+    let fixture = accessor_result_receiver_fixture();
+    for expr in [
+        "a.pref().set()",
+        "use2(a.pmut().get(), a.bump())",
+        "use2(a.bump(), a.pmut().get())",
+        "use2(a.pmut().set(), g(inout a))",
+        // An `==` operand borrows its place: a shared use of the root (F1).
+        "if a.p.c == a.pmut().get() { 1 } else { 0 }",
+        "if a.pmut().get() == a.p.c { 1 } else { 0 }",
+    ] {
+        let source = format!(
+            "fn f() -> i64 {{
+    let mut a = Acc {{ p: P {{ c: 1 }} }};
+    {expr}
+}}"
+        );
+        let error = fixture
+            .analyze(&source, "f")
+            .map(|_| ())
+            .expect_err("an exclusive use conflicts with the accessor loan");
+        assert!(
+            matches!(&error.kind, ErrorKind::AccessorLoanConflict { .. }),
+            "`{expr}`: unexpected diagnostic: {error:?}"
+        );
+    }
+}
