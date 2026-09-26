@@ -1945,6 +1945,217 @@ def Sharp.unreached_double_stmt : Prop :=
                             (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1])]).trace) =
                 2
 
+/-- The statement `Sharp.uncut_drop` proves. -/
+def Sharp.uncut_drop_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                        cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns := [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          ProgramTyped P ∧
+            ¬Steps Float.exactOps P Config.init
+                  (Config.run
+                    [Cell.full (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+                      Cell.full (Contents.struct 0 1 [Contents.int IntWidth.w64 Sign.signed 2])]
+                    { env := [1, 0], scope := [0, 1] } [Kont.endscope [0]]
+                    (Focus.ret (Val.int IntWidth.w64 Sign.signed 3)) []) ∧
+              Step Float.exactOps P
+                  (Config.run
+                    [Cell.full (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+                      Cell.full (Contents.struct 0 1 [Contents.int IntWidth.w64 Sign.signed 2])]
+                    { env := [1, 0], scope := [0, 1] } [Kont.endscope [0]]
+                    (Focus.ret (Val.int IntWidth.w64 Sign.signed 3)) [])
+                  (Config.run
+                    [Cell.dead,
+                      Cell.full (Contents.struct 0 1 [Contents.int IntWidth.w64 Sign.signed 2])]
+                    { env := [0], scope := [0] } [] (Focus.ret (Val.int IntWidth.w64 Sign.signed 3))
+                    [Event.drop 0 (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+                      Event.dtor 0 (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1])]) ∧
+                NewestFirst [0] ∧
+                  List.Pairwise (fun (x1 x2 : Nat) => x1 < x2) [0, 1] ∧
+                    ¬Lifo [0, 1] [0] [0] ∧
+                      ¬∃ (evs : List Event),
+                          (Config.run
+                                  [Cell.dead,
+                                    Cell.full
+                                      (Contents.struct 0 1 [Contents.int IntWidth.w64 Sign.signed 2])]
+                                  { env := [0], scope := [0] } []
+                                  (Focus.ret (Val.int IntWidth.w64 Sign.signed 3))
+                                  [Event.drop 0
+                                      (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+                                    Event.dtor 0
+                                      (Contents.struct 0 0
+                                        [Contents.int IntWidth.w64 Sign.signed 1])]).trace =
+                              (Config.run
+                                    [Cell.full
+                                        (Contents.struct 0 0
+                                          [Contents.int IntWidth.w64 Sign.signed 1]),
+                                      Cell.full
+                                        (Contents.struct 0 1
+                                          [Contents.int IntWidth.w64 Sign.signed 2])]
+                                    { env := [1, 0], scope := [0, 1] } [Kont.endscope [0]]
+                                    (Focus.ret (Val.int IntWidth.w64 Sign.signed 3)) []).trace ++
+                                evs ∧
+                            NewestFirst (dropLocs evs) ∧
+                              Lifo
+                                  (Config.run
+                                      [Cell.full
+                                          (Contents.struct 0 0
+                                            [Contents.int IntWidth.w64 Sign.signed 1]),
+                                        Cell.full
+                                          (Contents.struct 0 1
+                                            [Contents.int IntWidth.w64 Sign.signed 2])]
+                                      { env := [1, 0], scope := [0, 1] } [Kont.endscope [0]]
+                                      (Focus.ret (Val.int IntWidth.w64 Sign.signed 3)) []).stack
+                                  (Config.run
+                                      [Cell.dead,
+                                        Cell.full
+                                          (Contents.struct 0 1
+                                            [Contents.int IntWidth.w64 Sign.signed 2])]
+                                      { env := [0], scope := [0] } []
+                                      (Focus.ret (Val.int IntWidth.w64 Sign.signed 3))
+                                      [Event.drop 0
+                                          (Contents.struct 0 0
+                                            [Contents.int IntWidth.w64 Sign.signed 1]),
+                                        Event.dtor 0
+                                          (Contents.struct 0 0
+                                            [Contents.int IntWidth.w64 Sign.signed 1])]).stack
+                                  (dropLocs evs) ∧
+                                List.Pairwise (fun (x1 x2 : Nat) => x1 < x2)
+                                  (Config.run
+                                      [Cell.full
+                                          (Contents.struct 0 0
+                                            [Contents.int IntWidth.w64 Sign.signed 1]),
+                                        Cell.full
+                                          (Contents.struct 0 1
+                                            [Contents.int IntWidth.w64 Sign.signed 2])]
+                                      { env := [1, 0], scope := [0, 1] } [Kont.endscope [0]]
+                                      (Focus.ret (Val.int IntWidth.w64 Sign.signed 3)) []).stack
+
+/-- The statement `Sharp.ill_typed_halt` proves. -/
+def Sharp.ill_typed_halt_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                        cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns := [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          ProgramTyped P ∧
+            (Config.run [] Frame.empty [] (Focus.ret (Val.bool true)) []).Terminal ∧
+              ¬Steps Float.exactOps P Config.init
+                    (Config.run [] Frame.empty [] (Focus.ret (Val.bool true)) []) ∧
+                ¬Config.SafeAt Float.exactOps P (Ty.int IntWidth.w64 Sign.signed)
+                    (Config.run [] Frame.empty [] (Focus.ret (Val.bool true)) [])
+
+/-- The statement `Sharp.out_of_range_halt` proves. -/
+def Sharp.out_of_range_halt_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                        cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns := [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          ProgramTyped P ∧
+            (Config.run [] Frame.empty []
+                  (Focus.ret (Val.int IntWidth.w64 Sign.signed 9223372036854775808)) []).Terminal ∧
+              ¬HasTy P.decls (Val.int IntWidth.w64 Sign.signed 9223372036854775808)
+                    (Ty.int IntWidth.w64 Sign.signed) ∧
+                ¬Steps Float.exactOps P Config.init
+                      (Config.run [] Frame.empty []
+                        (Focus.ret (Val.int IntWidth.w64 Sign.signed 9223372036854775808)) []) ∧
+                  ¬Config.SafeAt Float.exactOps P (Ty.int IntWidth.w64 Sign.signed)
+                      (Config.run [] Frame.empty []
+                        (Focus.ret (Val.int IntWidth.w64 Sign.signed 9223372036854775808)) [])
+
+/-- The statement `Sharp.float_halt` proves. -/
+def Sharp.float_halt_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.binop BinOp.add (Expr.floatLit FloatWidth.w64 { sig := 15, negExp := true, e := 1 })
+            (Expr.floatLit FloatWidth.w64 { sig := 225, negExp := true, e := 2 }))
+          (Expr.binop BinOp.mul (Expr.use (Place.var 0))
+            (Expr.floatLit FloatWidth.w64 { sig := 2, negExp := false, e := 0 })) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
+                        cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns := [{ params := [], ret := Ty.float FloatWidth.w64, body := B }] } →
+          ProgramTyped P ∧
+            (∃ (H : Store),
+                ∃ (tr : List Event),
+                  Steps Float.exactOps P Config.init
+                    (Config.run H Frame.empty []
+                      (Focus.ret (Val.float FloatWidth.w64 (FloatDatum.num false 15 (-1)))) tr)) ∧
+              ¬FloatDatum.Wf FloatWidth.w64 (FloatDatum.num false 30 (-2)) ∧
+                ¬FloatDatum.Wf FloatWidth.w64 (FloatDatum.num false 1 (-1075)) ∧
+                  (Config.run [] Frame.empty []
+                        (Focus.ret (Val.float FloatWidth.w64 (FloatDatum.num false 30 (-2))))
+                        []).Terminal ∧
+                    (Config.run [] Frame.empty []
+                          (Focus.ret (Val.float FloatWidth.w64 (FloatDatum.num false 1 (-1075))))
+                          []).Terminal ∧
+                      ¬Steps Float.exactOps P Config.init
+                            (Config.run [] Frame.empty []
+                              (Focus.ret (Val.float FloatWidth.w64 (FloatDatum.num false 30 (-2))))
+                              []) ∧
+                        ¬Steps Float.exactOps P Config.init
+                              (Config.run [] Frame.empty []
+                                (Focus.ret
+                                  (Val.float FloatWidth.w64 (FloatDatum.num false 1 (-1075))))
+                                []) ∧
+                          ¬Config.SafeAt Float.exactOps P (Ty.float FloatWidth.w64)
+                                (Config.run [] Frame.empty []
+                                  (Focus.ret
+                                    (Val.float FloatWidth.w64 (FloatDatum.num false 30 (-2))))
+                                  []) ∧
+                            ¬Config.SafeAt Float.exactOps P (Ty.float FloatWidth.w64)
+                                (Config.run [] Frame.empty []
+                                  (Focus.ret
+                                    (Val.float FloatWidth.w64 (FloatDatum.num false 1 (-1075))))
+                                  [])
+
 end RueCore.Spec
 
 namespace RueCore.Spine
@@ -2032,5 +2243,9 @@ theorem Sharp.init_steps : RueCore.Spec.Sharp.init_steps_stmt := sorry
 theorem Sharp.unreachable_stuck : RueCore.Spec.Sharp.unreachable_stuck_stmt := sorry
 theorem Sharp.retired_cell : RueCore.Spec.Sharp.retired_cell_stmt := sorry
 theorem Sharp.unreached_double : RueCore.Spec.Sharp.unreached_double_stmt := sorry
+theorem Sharp.uncut_drop : RueCore.Spec.Sharp.uncut_drop_stmt := sorry
+theorem Sharp.ill_typed_halt : RueCore.Spec.Sharp.ill_typed_halt_stmt := sorry
+theorem Sharp.out_of_range_halt : RueCore.Spec.Sharp.out_of_range_halt_stmt := sorry
+theorem Sharp.float_halt : RueCore.Spec.Sharp.float_halt_stmt := sorry
 
 end RueCore.Spine

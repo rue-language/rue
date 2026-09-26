@@ -69,7 +69,7 @@ the dropped premise is the only thing tying its bound value or trace to the prog
 so the counter-example shows only that the conclusion is not a tautology. The walk does not go
 under `∨` or `¬`, nor into a definition that is not reducible (`Config.SafeAt`,
 `Exact`, `Blocks`, `GlueBlocks`, `Lifo`). Each pairing of a counter-example with a (theorem,
-number) is checked by the kernel (80 pairs): `RueCore/Sharp/Glue.lean` proves,
+number) is checked by the kernel (84 pairs): `RueCore/Sharp/Glue.lean` proves,
 from the counter-example, the negation of the spine statement with that
 hypothesis removed, and the lint computes that weakened statement itself from
 the Spec statement and the number (`Lint.dropHyp`, by the walk that numbers the
@@ -644,7 +644,7 @@ Sharp:
 1. `ProgramTyped P` — counter-example `Sharp.bare_dtor`
 2. `Steps M.toFloatOps P Config.init (Config.run H φ [] (Focus.ret v) tr)` — counter-example `Sharp.unreached`
 3. `Steps M.toFloatOps P Config.init (Config.panic κ tr)` — counter-example `Sharp.unreached_panic`
-4. `Steps M.toFloatOps P Config.init C` — counter-example `Sharp.unordered`
+4. `Steps M.toFloatOps P Config.init C` — counter-examples `Sharp.unordered`, `Sharp.uncut_drop`
 5. `Step M.toFloatOps P C C'` — counter-example `Sharp.not_a_step`
 
 ### `drop_glue_order`
@@ -838,7 +838,7 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 Sharp:
 
 1. `ProgramTyped P` — counter-example `Sharp.stuck_step`
-2. `Steps M.toFloatOps P Config.init C` — counter-example `Sharp.unreachable_stuck`
+2. `Steps M.toFloatOps P Config.init C` — counter-examples `Sharp.unreachable_stuck`, `Sharp.ill_typed_halt`, `Sharp.out_of_range_halt`, `Sharp.float_halt`
 
 ### `step_type_safety`
 
@@ -3359,3 +3359,300 @@ def Spec.Sharp.unreached_double_stmt : Prop :=
 ```
 
 Proved by `Sharp.unreached_double` (`RueCore.Sharp`). Drops `step_no_double_free` 2.
+
+### `Sharp.uncut_drop`
+
+**A pop that drops a cell it did not cut, not reached** (§7 sharpness,
+RUE-2500). For the checked program of `Nonvacuous.dtor`, a configuration whose
+frame registers cells `0` and `1`, in location order, but whose pending
+`endscope` names cell `0` rather than the newest cell `1` takes a step: (D-EndScope)
+pops one cell off the record, which leaves `[0]`, and drops cell `0`, the cell
+it kept. Its drop markers name one cell, so they are newest first, and its
+stack is in location order; only `Lifo` fails: the step cut cell `1` and
+dropped cell `0`. `Config.init` does not reach it, so `drop_order`'s last half
+fails without the hypothesis that the configuration is reached, on the one
+conjunct `unordered` leaves alone.
+
+```lean
+def Spec.Sharp.uncut_drop_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          ProgramTyped P ∧
+            ¬Steps Float.exactOps P Config.init
+                  (Config.run
+                    [Cell.full
+                        (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+                      Cell.full
+                        (Contents.struct 0 1 [Contents.int IntWidth.w64 Sign.signed 2])]
+                    { env := [1, 0], scope := [0, 1] } [Kont.endscope [0]]
+                    (Focus.ret (Val.int IntWidth.w64 Sign.signed 3)) []) ∧
+              Step Float.exactOps P
+                  (Config.run
+                    [Cell.full
+                        (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+                      Cell.full
+                        (Contents.struct 0 1 [Contents.int IntWidth.w64 Sign.signed 2])]
+                    { env := [1, 0], scope := [0, 1] } [Kont.endscope [0]]
+                    (Focus.ret (Val.int IntWidth.w64 Sign.signed 3)) [])
+                  (Config.run
+                    [Cell.dead,
+                      Cell.full
+                        (Contents.struct 0 1 [Contents.int IntWidth.w64 Sign.signed 2])]
+                    { env := [0], scope := [0] } []
+                    (Focus.ret (Val.int IntWidth.w64 Sign.signed 3))
+                    [Event.drop 0
+                        (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+                      Event.dtor 0
+                        (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1])]) ∧
+                NewestFirst [0] ∧
+                  List.Pairwise (fun x1 x2 => x1 < x2) [0, 1] ∧
+                    ¬Lifo [0, 1] [0] [0] ∧
+                      ¬∃ evs,
+                          (Config.run
+                                  [Cell.dead,
+                                    Cell.full
+                                      (Contents.struct 0 1
+                                        [Contents.int IntWidth.w64 Sign.signed 2])]
+                                  { env := [0], scope := [0] } []
+                                  (Focus.ret (Val.int IntWidth.w64 Sign.signed 3))
+                                  [Event.drop 0
+                                      (Contents.struct 0 0
+                                        [Contents.int IntWidth.w64 Sign.signed 1]),
+                                    Event.dtor 0
+                                      (Contents.struct 0 0
+                                        [Contents.int IntWidth.w64 Sign.signed 1])]).trace =
+                              (Config.run
+                                    [Cell.full
+                                        (Contents.struct 0 0
+                                          [Contents.int IntWidth.w64 Sign.signed 1]),
+                                      Cell.full
+                                        (Contents.struct 0 1
+                                          [Contents.int IntWidth.w64 Sign.signed 2])]
+                                    { env := [1, 0], scope := [0, 1] } [Kont.endscope [0]]
+                                    (Focus.ret (Val.int IntWidth.w64 Sign.signed 3))
+                                    []).trace ++
+                                evs ∧
+                            NewestFirst (dropLocs evs) ∧
+                              Lifo
+                                  (Config.run
+                                      [Cell.full
+                                          (Contents.struct 0 0
+                                            [Contents.int IntWidth.w64 Sign.signed 1]),
+                                        Cell.full
+                                          (Contents.struct 0 1
+                                            [Contents.int IntWidth.w64 Sign.signed 2])]
+                                      { env := [1, 0], scope := [0, 1] } [Kont.endscope [0]]
+                                      (Focus.ret (Val.int IntWidth.w64 Sign.signed 3))
+                                      []).stack
+                                  (Config.run
+                                      [Cell.dead,
+                                        Cell.full
+                                          (Contents.struct 0 1
+                                            [Contents.int IntWidth.w64 Sign.signed 2])]
+                                      { env := [0], scope := [0] } []
+                                      (Focus.ret (Val.int IntWidth.w64 Sign.signed 3))
+                                      [Event.drop 0
+                                          (Contents.struct 0 0
+                                            [Contents.int IntWidth.w64 Sign.signed 1]),
+                                        Event.dtor 0
+                                          (Contents.struct 0 0
+                                            [Contents.int IntWidth.w64 Sign.signed
+                                                1])]).stack
+                                  (dropLocs evs) ∧
+                                List.Pairwise (fun x1 x2 => x1 < x2)
+                                  (Config.run
+                                      [Cell.full
+                                          (Contents.struct 0 0
+                                            [Contents.int IntWidth.w64 Sign.signed 1]),
+                                        Cell.full
+                                          (Contents.struct 0 1
+                                            [Contents.int IntWidth.w64 Sign.signed 2])]
+                                      { env := [1, 0], scope := [0, 1] } [Kont.endscope [0]]
+                                      (Focus.ret (Val.int IntWidth.w64 Sign.signed 3))
+                                      []).stack
+```
+
+Proved by `Sharp.uncut_drop` (`RueCore.Sharp`). Drops `drop_order` 4.
+
+### `Sharp.ill_typed_halt`
+
+**A halted configuration with a value of another type, not reached** (§7
+sharpness, RUE-2500). For the checked program of `Nonvacuous.dtor`, whose entry
+point returns `i64`, the configuration that has halted with `true` is terminal,
+so nothing it reaches is stuck; but its value is not an `i64`, so it is not
+`SafeAt` the entry type, and `Config.init` does not reach it. So
+`step_preservation` fails without the hypothesis that the configuration is
+reached, through `SafeAt`'s typing half, where `unreachable_stuck` fails it
+through the progress half.
+
+```lean
+def Spec.Sharp.ill_typed_halt_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          ProgramTyped P ∧
+            (Config.run [] Frame.empty [] (Focus.ret (Val.bool true)) []).Terminal ∧
+              ¬Steps Float.exactOps P Config.init
+                    (Config.run [] Frame.empty [] (Focus.ret (Val.bool true)) []) ∧
+                ¬Config.SafeAt Float.exactOps P (Ty.int IntWidth.w64 Sign.signed)
+                    (Config.run [] Frame.empty [] (Focus.ret (Val.bool true)) [])
+```
+
+Proved by `Sharp.ill_typed_halt` (`RueCore.Sharp`). Drops `step_preservation` 2.
+
+### `Sharp.out_of_range_halt`
+
+**A halted configuration with an `i64` out of range, not reached** (§7
+sharpness, RUE-2500; §6.1's `n_T`). For the same program, the configuration
+that has halted with `2^63`, one past `i64`'s maximum, is terminal, but the
+value is not well typed at `i64` (`HasTy` carries the bounds), so the
+configuration is not `SafeAt` the entry type, and `Config.init` does not reach
+it. So `step_preservation` fails without the hypothesis that the configuration
+is reached, at a value of the right form whose only fault is its range.
+
+```lean
+def Spec.Sharp.out_of_range_halt_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          ProgramTyped P ∧
+            (Config.run [] Frame.empty []
+                  (Focus.ret (Val.int IntWidth.w64 Sign.signed 9223372036854775808))
+                  []).Terminal ∧
+              ¬HasTy P.decls (Val.int IntWidth.w64 Sign.signed 9223372036854775808)
+                    (Ty.int IntWidth.w64 Sign.signed) ∧
+                ¬Steps Float.exactOps P Config.init
+                      (Config.run [] Frame.empty []
+                        (Focus.ret (Val.int IntWidth.w64 Sign.signed 9223372036854775808))
+                        []) ∧
+                  ¬Config.SafeAt Float.exactOps P (Ty.int IntWidth.w64 Sign.signed)
+                      (Config.run [] Frame.empty []
+                        (Focus.ret (Val.int IntWidth.w64 Sign.signed 9223372036854775808))
+                        [])
+```
+
+Proved by `Sharp.out_of_range_halt` (`RueCore.Sharp`). Drops `step_preservation` 2.
+
+### `Sharp.float_halt`
+
+**Halted configurations with a datum outside `𝔽_f64`, not reached** (§7
+sharpness, RUE-2500; §2's `𝔽_w`, §6.1's `f_T`). For the checked program of
+`Nonvacuous.float`, whose entry point returns `f64` and whose run reaches the
+datum `15 · 2^-1`, two data that are not in `𝔽_f64` are not `Wf`: `30 · 2^-2`,
+the same number with an even significand (not canonical), and `1 · 2^-1075`,
+half the least subnormal (below the floor `eMin`). The configurations that
+have halted with them are terminal, not `SafeAt` the entry type, and not
+reached from `Config.init`. So `step_preservation` fails without the
+hypothesis that the configuration is reached, at a float value whose only
+fault is its datum.
+
+```lean
+def Spec.Sharp.float_halt_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.binop BinOp.add
+            (Expr.floatLit FloatWidth.w64 { sig := 15, negExp := true, e := 1 })
+            (Expr.floatLit FloatWidth.w64 { sig := 225, negExp := true, e := 2 }))
+          (Expr.binop BinOp.mul (Expr.use (Place.var 0))
+            (Expr.floatLit FloatWidth.w64 { sig := 2, negExp := false, e := 0 })) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns := [{ params := [], ret := Ty.float FloatWidth.w64, body := B }] } →
+          ProgramTyped P ∧
+            (∃ H tr,
+                Steps Float.exactOps P Config.init
+                  (Config.run H Frame.empty []
+                    (Focus.ret (Val.float FloatWidth.w64 (FloatDatum.num false 15 (-1))))
+                    tr)) ∧
+              ¬FloatDatum.Wf FloatWidth.w64 (FloatDatum.num false 30 (-2)) ∧
+                ¬FloatDatum.Wf FloatWidth.w64 (FloatDatum.num false 1 (-1075)) ∧
+                  (Config.run [] Frame.empty []
+                        (Focus.ret
+                          (Val.float FloatWidth.w64 (FloatDatum.num false 30 (-2))))
+                        []).Terminal ∧
+                    (Config.run [] Frame.empty []
+                          (Focus.ret
+                            (Val.float FloatWidth.w64 (FloatDatum.num false 1 (-1075))))
+                          []).Terminal ∧
+                      ¬Steps Float.exactOps P Config.init
+                            (Config.run [] Frame.empty []
+                              (Focus.ret
+                                (Val.float FloatWidth.w64 (FloatDatum.num false 30 (-2))))
+                              []) ∧
+                        ¬Steps Float.exactOps P Config.init
+                              (Config.run [] Frame.empty []
+                                (Focus.ret
+                                  (Val.float FloatWidth.w64
+                                    (FloatDatum.num false 1 (-1075))))
+                                []) ∧
+                          ¬Config.SafeAt Float.exactOps P (Ty.float FloatWidth.w64)
+                                (Config.run [] Frame.empty []
+                                  (Focus.ret
+                                    (Val.float FloatWidth.w64
+                                      (FloatDatum.num false 30 (-2))))
+                                  []) ∧
+                            ¬Config.SafeAt Float.exactOps P (Ty.float FloatWidth.w64)
+                                (Config.run [] Frame.empty []
+                                  (Focus.ret
+                                    (Val.float FloatWidth.w64
+                                      (FloatDatum.num false 1 (-1075))))
+                                  [])
+```
+
+Proved by `Sharp.float_halt` (`RueCore.Sharp`). Drops `step_preservation` 2.
