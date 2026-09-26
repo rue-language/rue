@@ -585,6 +585,18 @@ theorem double_drop.no_double_free_1 :
   obtain ⟨-, -, -, H, v, tr, -, -, hn⟩ := Spine.Sharp.double_drop _ rfl _ rfl
   exact hn (h Float.exactModel 200).2.2
 
+/-- `Sharp.double_drop` refutes `step_no_double_free` without hypothesis 1 (helper). -/
+theorem double_drop.step_no_double_free_1 :
+    ¬∀ (M : FloatModel) {P : Program} {C : RueCore.Config},
+        Steps M.toFloatOps P Config.init C →
+          (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
+            ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1 := by
+  intro h
+  obtain ⟨-, -, -, H, v, tr, hr, hc, -⟩ := Spine.Sharp.double_drop _ rfl _ rfl
+  have := (h Float.exactModel ((Spine.run_sim Float.exactOps _ 200).1 _ _ _ hr)).2 0
+  simp only [Config.trace] at this
+  omega
+
 /-- `Sharp.double_drop` refutes `dtor_once` without hypothesis 1 (helper). -/
 theorem double_drop.dtor_once_1 :
     ¬∀ (M : FloatOps) {P : Program} (fuel a : Nat), List.count a (dtorIds (run M P fuel).trace) ≤ 1 := by
@@ -1089,5 +1101,16 @@ theorem retired_cell.step_no_use_after_drop_1 :
   intro h
   obtain ⟨-, -, hst, -⟩ := Spine.Sharp.retired_cell _ rfl _ rfl
   exact h _ _ hst
+
+/-- `Sharp.unreached_double` refutes `step_no_double_free` without hypothesis 2 (helper). -/
+theorem unreached_double.step_no_double_free_2 :
+    ¬∀ (_M : FloatModel) {P : Program}, ProgramTyped P → ∀ {C : RueCore.Config},
+        (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
+          ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1 := by
+  intro h
+  obtain ⟨hPT, -, hc⟩ := Spine.Sharp.unreached_double _ rfl _ rfl
+  have := (h Float.exactModel hPT (C := .panic .user
+    [.dtor 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])])).2 0
+  omega
 
 end RueCore.Sharp.Glue

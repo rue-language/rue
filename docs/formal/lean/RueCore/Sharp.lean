@@ -7,6 +7,7 @@ public import RueCore.Trace
 public import RueCore.TraceOrder
 public import RueCore.Adequacy
 public import RueCore.Retire
+public import RueCore.TracePrefix
 
 @[expose] public section
 
@@ -1027,5 +1028,29 @@ theorem retired_cell :
   have hPT : ProgramTyped P := checkProgram_sound (by subst hB hP; rfl)
   refine ⟨hPT, by subst hB hP; rfl, by subst hB hP; rfl, fun hs => ?_⟩
   exact step_no_use_after_drop Float.exactOps P hs (by subst hB hP; rfl)
+
+/-- `Spec.Sharp.unreached_double_stmt`, proved: a §7 hypothesis needed (RUE-2477). -/
+theorem unreached_double :
+  ∀ B : Expr, B =
+      .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
+        (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
+    ∀ P : Program, P =
+      { decls :=
+          { structs :=
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
+            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+        fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
+      ProgramTyped P ∧
+      ¬ Steps Float.exactOps P Config.init
+        (.panic .user [.dtor 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]) ∧
+      (dtorIds (Config.panic .user
+        [.dtor 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]).trace).count 0 = 2 := by
+  intro B hB P hP
+  have hPT : ProgramTyped P := checkProgram_sound (by subst hB hP; rfl)
+  refine ⟨hPT, fun hs => ?_, by decide⟩
+  have := (step_no_double_free Float.exactModel hPT hs).2 0
+  revert this
+  decide
 
 end RueCore.Sharp
