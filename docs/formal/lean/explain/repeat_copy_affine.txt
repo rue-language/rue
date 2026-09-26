@@ -1,13 +1,13 @@
 ════════════════════════════════════════════════════════════════════════════════
  repeat_copy_affine
 ════════════════════════════════════════════════════════════════════════════════
-[e; n] of a non-Copy element: rule(id="7.1:36") requires a Copy element type
+[e; n] of a non-Copy element: rule(id="7.1:38") requires a Copy element type
 for the array-repeat literal (the compiler: E0905). The machine refuses the
 same repeat dynamically with typeConfusion, since the elaboration `let t = v;
 [t, t]` gets stuck at the second use of t. Seeded by the definition mutation
 analysis (RUE-2486): mutant `repeat-copy`.
 
-Rules exercised: array repeat §5.8 · rule(id="7.1:36")
+Rules exercised: repeat arrays, elaborated to (Array-Intro) §5.8 · rule(id="7.1:38")
 
 ── The program ─────────────────────────────────────────────────────────────────
 
