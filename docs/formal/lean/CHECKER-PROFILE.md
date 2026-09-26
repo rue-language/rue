@@ -8,7 +8,7 @@ because the judgment itself is a conservative, flow-insensitive
 approximation of what is actually safe (a branch join, a loop head, a
 whole-declaration class). `lake exe ruecore-corpus --profile` (RUE-2469)
 already counts acceptances and rejections; this page (RUE-2491) measures the
-part of that incompleteness visible from *outside* the proof: corpus and
+part of that incompleteness visible from outside the proof: corpus and
 generated programs the checker rejects that the interpreter's `run`
 nonetheless carries to a value at the export fuel and model, so the bridge
 compares them only on their accept/reject call and never on their run
@@ -102,7 +102,7 @@ module docstring already names:
 ## The one exception: RUE-2346, already tracked
 
 `verify.py` (run against the seed corpus and against `--gen 200 --seed 7`,
-393 programs) finds exactly two cases where the *compiler* accepts a program
+393 programs) finds exactly two cases where the compiler accepts a program
 the model rejects: `array_elem_self_assign` (seed) and `gen_7_3` (generated,
 the same shape reached unmasked — README.md, "The bridge corpus"). Both are
 `a[i] = a[i]`, the one shape (Assign) §5.2's `3.8:72`/`7.1:46` premise
@@ -119,7 +119,7 @@ suggests a different outcome there.
 
 ## Finding
 
-**No unexpected strictness.** Every refusal among the 182 traces to a cited
+No unexpected strictness: every refusal among the 182 traces to a cited
 §3/§5/§6/§7 premise the calculus states, and the compiler is exactly as
 strict except for RUE-2346's one open shape. RUE-2491 asked whether a
 checker that is too strict would be visible; it now is (the count and

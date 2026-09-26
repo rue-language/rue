@@ -70,7 +70,7 @@ whether a weakened statement, as opposed to a weakened rule, is noticed.
 Every one of the 16 falsifies a stated property or a witness, checked by hand
 (RUE-2500).
 
-How *incomplete* the checker is on the same corpus — a program it rejects
+How incomplete the checker is on the same corpus — a program it rejects
 that the interpreter nonetheless runs to a value, which the bridge then
 compares only on its accept/reject call and never on its run — is measured
 and classified in [CHECKER-PROFILE.md](CHECKER-PROFILE.md) (RUE-2491): every

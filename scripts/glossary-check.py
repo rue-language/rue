@@ -90,6 +90,7 @@ MARKDOWN_DOCS: List[Tuple[str, str]] = [
     ("lean/GUIDE.md", "GUIDE"),
     ("lean/BRIDGE-SENSITIVITY.md", "BRIDGE-SENSITIVITY"),
     ("lean/MUTATION.md", "MUTATION"),
+    ("lean/CHECKER-PROFILE.md", "CHECKER-PROFILE"),
 ]
 FUTURE_DOCS = {"WHAT-IT-MEANS.md"}
 
