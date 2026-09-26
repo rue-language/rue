@@ -1991,12 +1991,15 @@ theorem RueCore.no_use_after_move (M : FloatModel) {P : Program} (h : ProgramTyp
 *theorem* · module `RueCore.Soundness`
 
 §7 "No use-after-drop": the machine never touches a retired (`†`) cell.
-With frames, this is a consequence of the invariant rather than a structural
-fact about closed expressions: `run-all-scope-drops` (§6.9) walks the frame's
-scope record at every `return` and at every frame pop, and it is
-`FrameMatches` — the record is the environment, whose cells `Matches` says are
-live or moved out and pairwise distinct — that keeps those walks off a `†`
-cell and stops any cell being retired twice.
+Here it is `no_violation` at one tag, over checked programs, but typing is not
+what makes it true: `run_no_use_after_drop` (`Retire.lean`, RUE-2496) proves
+it for every program. `run-all-scope-drops` (§6.9) walks the frame's scope
+record at every `return` and at every frame pop, and what keeps those walks
+off a `†` cell, and stops any cell being retired twice, is structural: a
+binding's cell is minted fresh and retired only when its scope ends, after
+which nothing names it, and a record owes each cell once. `FrameMatches`
+implies as much for a checked program (the record is the environment, whose
+cells `Matches` says are live or moved out and pairwise distinct).
 
 ```lean
 theorem RueCore.no_use_after_drop (M : FloatModel) {P : Program} (h : ProgramTyped P)
@@ -3747,6 +3750,31 @@ theorem RueCore.Blocks.not_dtor {D : Decls} {s : Nat} {c : Contents}
   {t : List Event} : ¬Blocks D (Event.dtor s c :: t)
 ```
 
+### `run_no_use_after_drop`
+
+*theorem* · module `RueCore.Retire`
+
+**No use-after-drop, on every program**: `run` never refuses with
+`useAfterDrop`, checked or not.
+
+```lean
+theorem RueCore.run_no_use_after_drop (M : FloatOps) (P : Program) (fuel : Nat) :
+  run M P fuel ≠ EvalRes.stuck Violation.useAfterDrop
+```
+
+### `step_no_use_after_drop`
+
+*theorem* · module `RueCore.Retire`
+
+**No use-after-drop over §6's relation, on every program**: a
+configuration `→*` reaches from `Config.init` is never stuck on a retired
+cell, checked or not.
+
+```lean
+theorem RueCore.step_no_use_after_drop (M : FloatOps) (P : Program) {C : Config}
+  (h : Steps M P Config.init C) : ¬Config.Stuck M P C Violation.useAfterDrop
+```
+
 ### `Sharp.stuck`
 
 *theorem* · module `RueCore.Sharp`
@@ -5330,6 +5358,50 @@ theorem RueCore.Sharp.unreachable_stuck (B : Expr) :
                             n < fuel →
                               ∃ w',
                                 run Float.exactOps P fuel = EvalRes.stuck w'
+```
+
+### `Sharp.retired_cell`
+
+*theorem* · module `RueCore.Sharp`
+
+`Spec.Sharp.retired_cell_stmt`, proved: a §7 hypothesis needed (RUE-2496).
+
+```lean
+theorem RueCore.Sharp.retired_cell (B : Expr) :
+  B =
+      Expr.letIn false
+        (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+        (Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+          (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+    ∀ (P : Program),
+      P =
+          {
+            decls :=
+              {
+                structs :=
+                  [{ attr := Attr.none,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := true, cls := Mult.affine },
+                    { attr := Attr.linear,
+                      fields := [Ty.int IntWidth.w64 Sign.signed],
+                      dtor := false, cls := Mult.linear }],
+                enums :=
+                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+            fns :=
+              [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                  body := B }] } →
+        ProgramTyped P ∧
+          eval Float.exactOps 1 P [Cell.dead] { env := [0], scope := [] }
+                (Expr.use (Place.var 0)) =
+              EvalRes.stuck Violation.useAfterDrop ∧
+            Config.Stuck Float.exactOps P
+                (Config.run [Cell.dead] { env := [0], scope := [] } []
+                  (Focus.eval (Expr.use (Place.var 0))) [])
+                Violation.useAfterDrop ∧
+              ¬Steps Float.exactOps P Config.init
+                  (Config.run [Cell.dead] { env := [0], scope := [] } []
+                    (Focus.eval (Expr.use (Place.var 0))) [])
 ```
 
 ### `Examples.dynReadAffine_refused`
@@ -14790,6 +14862,696 @@ theorem RueCore.Blocks.drop_inv {D : Decls} {ℓ : Nat} {c : Contents} {t : List
   ∃ t', t = dropEvents D c ++ t' ∧ Blocks D t'
 ```
 
+### `Retire.Live.lt`
+
+*theorem* · module `RueCore.Retire`
+
+A live cell is in the store (helper).
+
+```lean
+theorem RueCore.Retire.Live.lt {H : Store} {ℓ : Nat} (h : Retire.Live H ℓ) :
+  ℓ < List.length H
+```
+
+### `Retire.Live.ne_dead`
+
+*theorem* · module `RueCore.Retire`
+
+A live cell is not retired (helper).
+
+```lean
+theorem RueCore.Retire.Live.ne_dead {H : Store} {ℓ : Nat} (h : Retire.Live H ℓ) :
+  H[ℓ]? ≠ some Cell.dead
+```
+
+### `Retire.Live.set_full`
+
+*theorem* · module `RueCore.Retire`
+
+Writing contents into any cell keeps every live cell live (helper).
+
+```lean
+theorem RueCore.Retire.Live.set_full {H : Store} {ℓ : Nat} (h : Retire.Live H ℓ)
+  (ℓ' : Nat) (c : Contents) : Retire.Live (List.set H ℓ' (Cell.full c)) ℓ
+```
+
+### `Retire.Live.append`
+
+*theorem* · module `RueCore.Retire`
+
+Appending to the store keeps every live cell live (helper).
+
+```lean
+theorem RueCore.Retire.Live.append {H : Store} {ℓ : Nat} (h : Retire.Live H ℓ)
+  (H' : Store) : Retire.Live (H ++ H') ℓ
+```
+
+### `Retire.Grow.refl`
+
+*theorem* · module `RueCore.Retire`
+
+An unchanged store has grown (helper).
+
+```lean
+theorem RueCore.Retire.Grow.refl (H : Store) : Retire.Grow H H
+```
+
+### `Retire.Grow.trans`
+
+*theorem* · module `RueCore.Retire`
+
+Growth composes (helper).
+
+```lean
+theorem RueCore.Retire.Grow.trans {H H₁ H₂ : Store} (h₁ : Retire.Grow H H₁)
+  (h₂ : Retire.Grow H₁ H₂) : Retire.Grow H H₂
+```
+
+### `Retire.Grow.append`
+
+*theorem* · module `RueCore.Retire`
+
+Allocation appends, so it grows the store: a binding cell (§6.7, §6.9) or a
+value identity's reserved `†` slot (`introVal`) (helper).
+
+```lean
+theorem RueCore.Retire.Grow.append (H H' : Store) : Retire.Grow H (H ++ H')
+```
+
+### `Retire.Grow.set_full`
+
+*theorem* · module `RueCore.Retire`
+
+Writing contents into a cell — a move's `⊘`, an assignment, an `@drop` — grows
+the store (helper).
+
+```lean
+theorem RueCore.Retire.Grow.set_full (H : Store) (ℓ : Nat) (c : Contents) :
+  Retire.Grow H (List.set H ℓ (Cell.full c))
+```
+
+### `Retire.Live.ne_of_le`
+
+*theorem* · module `RueCore.Retire`
+
+A cell at or above the old store's length is not one of its live cells
+(helper).
+
+```lean
+theorem RueCore.Retire.Live.ne_of_le {H : Store} {ℓ m : Nat} (h : Retire.Live H ℓ)
+  (hm : List.length H ≤ m) : ℓ ≠ m
+```
+
+### `Retire.LiveFrame.grow`
+
+*theorem* · module `RueCore.Retire`
+
+The frame invariant survives growth (helper).
+
+```lean
+theorem RueCore.Retire.LiveFrame.grow {H H' : Store} {φ : Frame}
+  (h : Retire.LiveFrame H φ) (hg : Retire.Grow H H') : Retire.LiveFrame H' φ
+```
+
+### `Retire.LivePost.withTrace`
+
+*theorem* · module `RueCore.Retire`
+
+Prefixing a trace changes no store (helper).
+
+```lean
+theorem RueCore.Retire.LivePost.withTrace {H : Store} {φ : Frame} {r : EvalRes}
+  (h : Retire.LivePost H φ r) (tr : List Event) :
+  Retire.LivePost H φ (EvalRes.withTrace tr r)
+```
+
+### `Retire.LivePost.lift`
+
+*theorem* · module `RueCore.Retire`
+
+An evaluation that started later, in a grown store, keeps the promise
+relative to the earlier store (helper).
+
+```lean
+theorem RueCore.Retire.LivePost.lift {H H₁ : Store} {φ : Frame} {r : EvalRes}
+  (hg : Retire.Grow H H₁) (h : Retire.LivePost H₁ φ r) : Retire.LivePost H φ r
+```
+
+### `Retire.LivePost.andThen`
+
+*theorem* · module `RueCore.Retire`
+
+§6.2's search keeps the promise (helper).
+
+```lean
+theorem RueCore.Retire.LivePost.andThen {H : Store} {φ : Frame} {r : EvalRes}
+  {k : Store → Val → EvalRes} (h : Retire.LivePost H φ r)
+  (hk :
+    ∀ (H₁ : Store) (v : Val),
+      Retire.Grow H H₁ → Retire.LivePost H₁ φ (k H₁ v)) :
+  Retire.LivePost H φ (r.andThen k)
+```
+
+### `Retire.LivePost.scoped`
+
+*theorem* · module `RueCore.Retire`
+
+A scope opened on top of the frame — a `let`'s cell, a `match` arm's
+payload cells — keeps the promise when the body's non-value outcomes pass
+through it (helper).
+
+```lean
+theorem RueCore.Retire.LivePost.scoped {H H₁ : Store} {φ φ' : Frame} {ys : List Nat}
+  {r : EvalRes} {k : Store → Val → EvalRes} (hg : Retire.Grow H H₁)
+  (hys : ∀ (ℓ : Nat), ℓ ∈ ys → List.length H ≤ ℓ ∧ Retire.Live H₁ ℓ)
+  (hnd : ys.Nodup) (hsc : φ'.scope = φ.scope ++ ys)
+  (h : Retire.LivePost H₁ φ' r)
+  (hk :
+    ∀ (H₂ : Store) (v : Val),
+      Retire.Grow H₁ H₂ → Retire.LivePost H φ (k H₂ v)) :
+  Retire.LivePost H φ (r.andThen k)
+```
+
+### `Retire.Contents.readAt_ne_uad`
+
+*theorem* · module `RueCore.Retire`
+
+`H(ℓ)@π` refuses only with `useAfterMove` or `typeConfusion` (helper).
+
+```lean
+theorem RueCore.Retire.Contents.readAt_ne_uad (π : List Nat) {c : Contents}
+  {w : Violation} : c.readAt π = Except.error w → w ≠ Violation.useAfterDrop
+```
+
+### `Retire.Contents.resolveDyn_ne_uad`
+
+*theorem* · module `RueCore.Retire`
+
+Resolving a dynamic tail never refuses with `useAfterDrop` (helper).
+
+```lean
+theorem RueCore.Retire.Contents.resolveDyn_ne_uad (is : List Int)
+  (πs : List (List Nat)) {c : Contents} {w : Violation} :
+  c.resolveDyn is πs = DynStep.stuck w → w ≠ Violation.useAfterDrop
+```
+
+### `Retire.dynPlace_ne_uad`
+
+*theorem* · module `RueCore.Retire`
+
+Navigating a dynamic place from a frame whose environment names live cells
+never refuses with `useAfterDrop` (helper).
+
+```lean
+theorem RueCore.Retire.dynPlace_ne_uad {H : Store} {φ : Frame} {p : Place}
+  {vs : List Val} {πs : List (List Nat)} {w : Violation}
+  (hφ : ∀ (ℓ : Nat), ℓ ∈ φ.env → Retire.Live H ℓ)
+  (h : dynPlace H φ p vs πs = DynPlace.stuck w) : w ≠ Violation.useAfterDrop
+```
+
+### `Retire.dropContents_ne_uad`
+
+*theorem* · module `RueCore.Retire`
+
+§6.11's walk refuses only with `unbound` (helper).
+
+```lean
+theorem RueCore.Retire.dropContents_ne_uad {D : Decls} {c : Contents}
+  {w : Violation} :
+  dropContents D c = Except.error w → w ≠ Violation.useAfterDrop
+```
+
+### `Retire.dropContentsList_ne_uad`
+
+*theorem* · module `RueCore.Retire`
+
+The same over a list (helper).
+
+```lean
+theorem RueCore.Retire.dropContentsList_ne_uad {D : Decls} {cs : List Contents}
+  {w : Violation} :
+  dropContentsList D cs = Except.error w → w ≠ Violation.useAfterDrop
+```
+
+### `Retire.dropCell_ne_uad`
+
+*theorem* · module `RueCore.Retire`
+
+A binding's drop never refuses with `useAfterDrop` (helper).
+
+```lean
+theorem RueCore.Retire.dropCell_ne_uad {D : Decls} {ℓ : Nat} {c : Contents}
+  {w : Violation} (h : dropCell D ℓ c = Except.error w) :
+  w ≠ Violation.useAfterDrop
+```
+
+### `Retire.Contents.splitResidue_ne_uad`
+
+*theorem* · module `RueCore.Retire`
+
+§6.3's `split` never refuses with `useAfterDrop` (helper).
+
+```lean
+theorem RueCore.Retire.Contents.splitResidue_ne_uad {D : Decls} {c : Contents}
+  {π : List Nat} {w : Violation} :
+  Contents.splitResidue D c π = Except.error w → w ≠ Violation.useAfterDrop
+```
+
+### `Retire.Contents.splitFields_ne_uad`
+
+*theorem* · module `RueCore.Retire`
+
+The same at one node's members (helper).
+
+```lean
+theorem RueCore.Retire.Contents.splitFields_ne_uad {D : Decls} {cs : List Contents}
+  {f : Nat} {π : List Nat} {w : Violation} :
+  Contents.splitFields D cs f π = Except.error w → w ≠ Violation.useAfterDrop
+```
+
+### `Retire.dropResidue_ne_uad`
+
+*theorem* · module `RueCore.Retire`
+
+The residue's `drop*` never refuses with `useAfterDrop` (helper).
+
+```lean
+theorem RueCore.Retire.dropResidue_ne_uad {D : Decls} {ℓ : Nat} {rs : List Contents}
+  {w : Violation} :
+  dropResidue D ℓ rs = Except.error w → w ≠ Violation.useAfterDrop
+```
+
+### `Retire.Contents.destructure_ne_uad`
+
+*theorem* · module `RueCore.Retire`
+
+§6.3's destructure never refuses with `useAfterDrop` (helper).
+
+```lean
+theorem RueCore.Retire.Contents.destructure_ne_uad {D : Decls} {ℓ : Nat}
+  {c : Contents} {πs : List Nat} {w : Violation}
+  (h : Contents.destructure D ℓ c πs = Except.error w) :
+  w ≠ Violation.useAfterDrop
+```
+
+### `Retire.dropRetire_live`
+
+*theorem* · module `RueCore.Retire`
+
+`drop-retire` of a live cell never meets `†`, and retires exactly that
+cell (helper).
+
+```lean
+theorem RueCore.Retire.dropRetire_live {D : Decls} {H : Store} {ℓ : Nat}
+  (hl : Retire.Live H ℓ) :
+  (∀ (w : Violation),
+      dropRetire D H ℓ = Except.error w → w ≠ Violation.useAfterDrop) ∧
+    ∀ (H' : Store) (evs : List Event),
+      dropRetire D H ℓ = Except.ok (H', evs) → H' = List.set H ℓ Cell.dead
+```
+
+### `Retire.unwindLocs_live`
+
+*theorem* · module `RueCore.Retire`
+
+`run-scope-drops` over distinct live cells keeps `UnwindPost` (helper).
+
+```lean
+theorem RueCore.Retire.unwindLocs_live {D : Decls} {H : Store} {ls : List Nat} :
+  ls.Nodup →
+    (∀ (ℓ : Nat), ℓ ∈ ls → Retire.Live H ℓ) →
+      Retire.UnwindPost H ls (unwindLocs D H ls)
+```
+
+### `Retire.nodup_reverse`
+
+*theorem* · module `RueCore.Retire`
+
+A scope record read newest-first owes each cell once, as it did oldest-first
+(helper).
+
+```lean
+theorem RueCore.Retire.nodup_reverse {l : List Nat} (h : l.Nodup) : l.reverse.Nodup
+```
+
+### `Retire.UnwindPost.grow`
+
+*theorem* · module `RueCore.Retire`
+
+Retiring a record's cells leaves every live cell outside it live (helper).
+
+```lean
+theorem RueCore.Retire.UnwindPost.grow {H H' : Store} {ls : List Nat}
+  {evs : List Event} (h : Retire.UnwindPost H ls (Except.ok (H', evs))) :
+  List.length H ≤ List.length H' ∧
+    ∀ (ℓ : Nat), ¬ℓ ∈ ls → Retire.Live H ℓ → Retire.Live H' ℓ
+```
+
+### `Retire.mintParams_live`
+
+*theorem* · module `RueCore.Retire`
+
+(D-Call)'s and (D-Match)'s minting: the new cells are live, distinct, and
+above the old store, and nothing live before is touched (helper).
+
+```lean
+theorem RueCore.Retire.mintParams_live (H : Store) (vs : List Val) :
+  Retire.Grow H (mintParams H vs).fst ∧
+    (mintParams H vs).snd.Nodup ∧
+      ∀ (ℓ : Nat),
+        ℓ ∈ (mintParams H vs).snd →
+          List.length H ≤ ℓ ∧ Retire.Live (mintParams H vs).fst ℓ
+```
+
+### `Retire.OpRes.toRes_live`
+
+*theorem* · module `RueCore.Retire`
+
+§6.4's operators touch no cell (helper).
+
+```lean
+theorem RueCore.Retire.OpRes.toRes_live {H : Store} {φ : Frame} (o : OpRes) :
+  Retire.LivePost H φ (OpRes.toRes H o)
+```
+
+### `Retire.introVal_live`
+
+*theorem* · module `RueCore.Retire`
+
+Minting a value identity appends a `†` slot no binding names (helper).
+
+```lean
+theorem RueCore.Retire.introVal_live {D : Decls} {H : Store} {φ : Frame}
+  (mk : Nat → Val) : Retire.LivePost H φ (introVal D H mk)
+```
+
+### `Retire.evalArgs_live`
+
+*theorem* · module `RueCore.Retire`
+
+An argument list keeps the promise, argument by argument (§6.2's left-to-right
+search) (helper).
+
+```lean
+theorem RueCore.Retire.evalArgs_live {φ : Frame} {ev : Store → Expr → EvalRes}
+  (hev :
+    ∀ (H : Store) (e : Expr),
+      Retire.LiveFrame H φ → Retire.LivePost H φ (ev H e))
+  (H : Store) (es : List Expr) :
+  Retire.LiveFrame H φ → Retire.ArgsLive H φ (evalArgs ev H es)
+```
+
+### `Retire.LiveFrame.root`
+
+*theorem* · module `RueCore.Retire`
+
+A cell the environment names is live (helper).
+
+```lean
+theorem RueCore.Retire.LiveFrame.root {H : Store} {φ : Frame} {i ℓ : Nat}
+  (h : Retire.LiveFrame H φ) (hρ : φ.env[i]? = some ℓ) : Retire.Live H ℓ
+```
+
+### `Retire.eval_live`
+
+*theorem* · module `RueCore.Retire`
+
+**The invariant over `eval`**: from a frame whose cells are live and owed
+once, every evaluation keeps `LivePost`, at every fuel (helper).
+
+```lean
+theorem RueCore.Retire.eval_live (M : FloatOps) (P : Program) (fuel : Nat) (H : Store)
+  (φ : Frame) (e : Expr) :
+  Retire.LiveFrame H φ → Retire.LivePost H φ (eval M fuel P H φ e)
+```
+
+### `Retire.plainDropRetire_live`
+
+*theorem* · module `RueCore.Retire`
+
+The plain `drop-retire` of a live cell never meets `†`, and retires
+exactly that cell (helper).
+
+```lean
+theorem RueCore.Retire.plainDropRetire_live {D : Decls} {H : Store} {ℓ : Nat}
+  (hl : Retire.Live H ℓ) :
+  (∀ (w : Violation),
+      plainDropRetire D H ℓ = Except.error w → w ≠ Violation.useAfterDrop) ∧
+    ∀ (H' : Store) (evs : List Event),
+      plainDropRetire D H ℓ = Except.ok (H', evs) →
+        H' = List.set H ℓ Cell.dead
+```
+
+### `Retire.plainUnwind_live`
+
+*theorem* · module `RueCore.Retire`
+
+The plain `run-scope-drops` over distinct live cells keeps `UnwindPost`
+(helper).
+
+```lean
+theorem RueCore.Retire.plainUnwind_live {D : Decls} {H : Store} {ls : List Nat} :
+  ls.Nodup →
+    (∀ (ℓ : Nat), ℓ ∈ ls → Retire.Live H ℓ) →
+      Retire.UnwindPost H ls (plainUnwind D H ls)
+```
+
+### `Retire.plainResidue_ne_uad`
+
+*theorem* · module `RueCore.Retire`
+
+The plain residue walk never refuses with `useAfterDrop` (helper).
+
+```lean
+theorem RueCore.Retire.plainResidue_ne_uad {D : Decls} {ℓ : Nat} {rs : List Contents}
+  {w : Violation} :
+  plainResidue D ℓ rs = Except.error w → w ≠ Violation.useAfterDrop
+```
+
+### `Retire.plainDestructure_ne_uad`
+
+*theorem* · module `RueCore.Retire`
+
+The plain destructure never refuses with `useAfterDrop` (helper).
+
+```lean
+theorem RueCore.Retire.plainDestructure_ne_uad {D : Decls} {ℓ : Nat} {c : Contents}
+  {πs : List Nat} {w : Violation}
+  (h : plainDestructure D ℓ c πs = Except.error w) :
+  w ≠ Violation.useAfterDrop
+```
+
+### `Retire.Shape.env`
+
+*theorem* · module `RueCore.Retire`
+
+Every frame on a well-shaped stack has its scope record, reversed, as its
+environment (helper).
+
+```lean
+theorem RueCore.Retire.Shape.env {φ : Frame} {K : List Kont} :
+  Retire.Shape φ K → φ.env = φ.scope.reverse
+```
+
+### `Retire.Shape.toCall`
+
+*theorem* · module `RueCore.Retire`
+
+(D-Return)'s search: the caller's frame is well shaped, and the cells the
+suspended callers owe are its own and those below it (helper).
+
+```lean
+theorem RueCore.Retire.Shape.toCall {φ : Frame} {K : List Kont} {φs : Frame}
+  {K' : List Kont} :
+  Retire.Shape φ K →
+    Kont.toCall K = some (φs, K') →
+      Retire.Shape φs K' ∧
+        Retire.callerCells K = Retire.callerCells K' ++ φs.scope
+```
+
+### `Retire.Shape.toLoop`
+
+*theorem* · module `RueCore.Retire`
+
+(D-Break)'s search: the loop's frame is well shaped, no caller is crossed, and
+the frame in force extends the loop's at the end of its scope record (helper).
+
+```lean
+theorem RueCore.Retire.Shape.toLoop {φ : Frame} {K : List Kont} {φs : Frame}
+  {K' : List Kont} :
+  Retire.Shape φ K →
+    Kont.toLoop K = some (φs, K') →
+      Retire.Shape φs K' ∧
+        Retire.callerCells K = Retire.callerCells K' ∧
+          ∃ xs, φ.scope = φs.scope ++ xs
+```
+
+### `Retire.StackLive.env`
+
+*theorem* · module `RueCore.Retire`
+
+A cell the environment names is live (helper).
+
+```lean
+theorem RueCore.Retire.StackLive.env {H : Store} {φ : Frame} {K : List Kont}
+  (h : Retire.StackLive H φ K) (ℓ : Nat) : ℓ ∈ φ.env → Retire.Live H ℓ
+```
+
+### `Retire.StackLive.grow`
+
+*theorem* · module `RueCore.Retire`
+
+The configuration invariant survives growth (helper).
+
+```lean
+theorem RueCore.Retire.StackLive.grow {H H' : Store} {φ : Frame} {K : List Kont}
+  (h : Retire.StackLive H φ K) (hg : Retire.Grow H H') :
+  Retire.StackLive H' φ K
+```
+
+### `Retire.rootCell_ne_uad`
+
+*theorem* · module `RueCore.Retire`
+
+Looking a place's root up in a frame whose environment names live cells never
+refuses with `useAfterDrop` (helper).
+
+```lean
+theorem RueCore.Retire.rootCell_ne_uad {H : Store} {φ : Frame} {i : Nat}
+  {w : Violation} (hφ : ∀ (ℓ : Nat), ℓ ∈ φ.env → Retire.Live H ℓ)
+  (h : rootCell H φ i = Except.error w) : w ≠ Violation.useAfterDrop
+```
+
+### `Retire.unwind_keeps`
+
+*theorem* · module `RueCore.Retire`
+
+Retiring the cells at the end of the owed list keeps the rest live and
+owed once (helper).
+
+```lean
+theorem RueCore.Retire.unwind_keeps {D : Decls} {H H' : Store} {A xs : List Nat}
+  {evs : List Event} (hnd : (A ++ xs).Nodup)
+  (hl : ∀ (ℓ : Nat), ℓ ∈ A ++ xs → Retire.Live H ℓ)
+  (hu : plainUnwind D H xs.reverse = Except.ok (H', evs)) :
+  A.Nodup ∧ ∀ (ℓ : Nat), ℓ ∈ A → Retire.Live H' ℓ
+```
+
+### `Retire.unwind_err`
+
+*theorem* · module `RueCore.Retire`
+
+The same teardown never refuses with `useAfterDrop` (helper).
+
+```lean
+theorem RueCore.Retire.unwind_err {D : Decls} {H : Store} {A xs : List Nat}
+  {w : Violation} (hnd : (A ++ xs).Nodup)
+  (hl : ∀ (ℓ : Nat), ℓ ∈ A ++ xs → Retire.Live H ℓ)
+  (hu : plainUnwind D H xs.reverse = Except.error w) :
+  w ≠ Violation.useAfterDrop
+```
+
+### `Retire.extend_keeps`
+
+*theorem* · module `RueCore.Retire`
+
+Fresh cells appended to the owed list (helper).
+
+```lean
+theorem RueCore.Retire.extend_keeps {H H' : Store} {A ls : List Nat} (hnd : A.Nodup)
+  (hl : ∀ (ℓ : Nat), ℓ ∈ A → Retire.Live H ℓ) (hg : Retire.Grow H H')
+  (hls : ls.Nodup)
+  (hfresh : ∀ (ℓ : Nat), ℓ ∈ ls → List.length H ≤ ℓ ∧ Retire.Live H' ℓ) :
+  (A ++ ls).Nodup ∧ ∀ (ℓ : Nat), ℓ ∈ A ++ ls → Retire.Live H' ℓ
+```
+
+### `Retire.Frame.popScope_ext`
+
+*theorem* · module `RueCore.Retire`
+
+(D-EndScope)'s pop undoes the extension (D-Let) and (D-Match) made (helper).
+
+```lean
+theorem RueCore.Retire.Frame.popScope_ext (φ₀ : Frame) (ls : List Nat) :
+  { env := ls.reverse ++ φ₀.env, scope := φ₀.scope ++ ls }.popScope
+      ls.length =
+    φ₀
+```
+
+### `Retire.OpRes.toStep_live`
+
+*theorem* · module `RueCore.Retire`
+
+An operator's step touches no cell (helper).
+
+```lean
+theorem RueCore.Retire.OpRes.toStep_live {H : Store} {φ : Frame} {K : List Kont}
+  {tr : List Event} (h : Retire.StackLive H φ K) (o : OpRes) :
+  Retire.StepLive (OpRes.toStep H φ K tr o)
+```
+
+### `Retire.stepEval_live`
+
+*theorem* · module `RueCore.Retire`
+
+`step` at an expression keeps the invariant (helper).
+
+```lean
+theorem RueCore.Retire.stepEval_live (M : FloatOps) (P : Program) {H : Store}
+  {φ : Frame} {K : List Kont} {tr : List Event} (h : Retire.StackLive H φ K)
+  (e : Expr) : Retire.StepLive (stepEval M P H φ K tr e)
+```
+
+### `Retire.stepArgs_live`
+
+*theorem* · module `RueCore.Retire`
+
+`step` at a completed argument list keeps the invariant: (D-Call) mints the
+callee's cells fresh (helper).
+
+```lean
+theorem RueCore.Retire.stepArgs_live (P : Program) {H : Store} {φ : Frame}
+  {K : List Kont} {tr : List Event} (h : Retire.StackLive H φ K)
+  (vs : List Val) (t : ArgsTag) : Retire.StepLive (stepArgs P H φ K tr vs t)
+```
+
+### `Retire.stepRet_live`
+
+*theorem* · module `RueCore.Retire`
+
+`step` at a value returning into the top frame keeps the invariant: every
+teardown walks cells the invariant says are live and owed once (helper).
+
+```lean
+theorem RueCore.Retire.stepRet_live (M : FloatOps) (P : Program) {H : Store}
+  {φ : Frame} {K : List Kont} {tr : List Event} (v : Val) (k : Kont)
+  (h : Retire.StackLive H φ (k :: K)) :
+  Retire.StepLive (stepRet M P H φ K tr v k)
+```
+
+### `Retire.step_live`
+
+*theorem* · module `RueCore.Retire`
+
+**The invariant over `Step`**: `step` keeps it, and never answers `stuck
+.useAfterDrop` under it (helper).
+
+```lean
+theorem RueCore.Retire.step_live (M : FloatOps) (P : Program) {C : Config}
+  (h : Retire.ConfigLive C) : Retire.StepLive (step M P C)
+```
+
+### `Retire.steps_live`
+
+*theorem* · module `RueCore.Retire`
+
+`→*` keeps the invariant (helper).
+
+```lean
+theorem RueCore.Retire.steps_live {M : FloatOps} {P : Program} {C C' : Config}
+  (hs : Steps M P C C') : Retire.ConfigLive C → Retire.ConfigLive C'
+```
+
 ### `Sharp.exact_ops`
 
 *theorem* · module `RueCore.Sharp`
@@ -15073,6 +15835,16 @@ theorem RueCore.Spine.no_use_after_move : Spec.no_use_after_move_stmt
 theorem RueCore.Spine.no_use_after_drop : Spec.no_use_after_drop_stmt
 ```
 
+### `Spine.run_no_use_after_drop`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.run_no_use_after_drop_stmt`, by `RueCore.run_no_use_after_drop` (helper).
+
+```lean
+theorem RueCore.Spine.run_no_use_after_drop : Spec.run_no_use_after_drop_stmt
+```
+
 ### `Spine.no_linear_leak`
 
 *theorem* · module `RueCore.Spine`
@@ -15301,6 +16073,16 @@ theorem RueCore.Spine.step_preservation : Spec.step_preservation_stmt
 
 ```lean
 theorem RueCore.Spine.step_type_safety : Spec.step_type_safety_stmt
+```
+
+### `Spine.step_no_use_after_drop`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.step_no_use_after_drop_stmt`, by `RueCore.step_no_use_after_drop` (helper).
+
+```lean
+theorem RueCore.Spine.step_no_use_after_drop : Spec.step_no_use_after_drop_stmt
 ```
 
 ### `Spine.eval_sound`
@@ -15783,6 +16565,16 @@ theorem RueCore.Spine.Sharp.init_steps : Spec.Sharp.init_steps_stmt
 theorem RueCore.Spine.Sharp.unreachable_stuck : Spec.Sharp.unreachable_stuck_stmt
 ```
 
+### `Spine.Sharp.retired_cell`
+
+*theorem* · module `RueCore.Spine`
+
+`Spec.Sharp.retired_cell_stmt`, by `RueCore.Sharp.retired_cell` (helper).
+
+```lean
+theorem RueCore.Spine.Sharp.retired_cell : Spec.Sharp.retired_cell_stmt
+```
+
 ### `Nonvacuous.Glue.dtor.soundness`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
@@ -15831,6 +16623,16 @@ theorem RueCore.Nonvacuous.Glue.dtor.no_use_after_move : True
 
 ```lean
 theorem RueCore.Nonvacuous.Glue.dtor.no_use_after_drop : True
+```
+
+### `Nonvacuous.Glue.dtor.run_no_use_after_drop`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `run_no_use_after_drop` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.run_no_use_after_drop : True
 ```
 
 ### `Nonvacuous.Glue.dtor.no_linear_leak`
@@ -15931,6 +16733,16 @@ theorem RueCore.Nonvacuous.Glue.dtor.step_preservation : True
 
 ```lean
 theorem RueCore.Nonvacuous.Glue.dtor.step_type_safety : True
+```
+
+### `Nonvacuous.Glue.dtor.step_no_use_after_drop`
+
+*theorem* · module `RueCore.Nonvacuous.Glue`
+
+`dtor` applied to `step_no_use_after_drop` (helper).
+
+```lean
+theorem RueCore.Nonvacuous.Glue.dtor.step_no_use_after_drop : True
 ```
 
 ### `Nonvacuous.Glue.dtor.eval_sound`
@@ -19423,6 +20235,18 @@ theorem RueCore.Sharp.Glue.unreachable_stuck.run_stuck_of_step_stuck_1 :
   ¬∀ (M : FloatOps) (P : Program) {C : Config} {w : Violation},
       Config.Stuck M P C w →
         ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.stuck w'
+```
+
+### `Sharp.Glue.retired_cell.step_no_use_after_drop_1`
+
+*theorem* · module `RueCore.Sharp.Glue`
+
+`Sharp.retired_cell` refutes `step_no_use_after_drop` without hypothesis 1 (helper).
+
+```lean
+theorem RueCore.Sharp.Glue.retired_cell.step_no_use_after_drop_1 :
+  ¬∀ (M : FloatOps) (P : Program) {C : Config},
+      ¬Config.Stuck M P C Violation.useAfterDrop
 ```
 
 ### `Examples.eval_loop_ok`
@@ -25052,6 +25876,73 @@ Constructors:
 RueCore.Program.mk (decls : Decls) (fns : List FnDef) : Program
 ```
 
+### `Retire.Live`
+
+*def* · module `RueCore.Retire`
+
+Cell `ℓ` of the store is live: it holds contents, not the retired marker
+`†` (helper).
+
+```lean
+def RueCore.Retire.Live (H : Store) (ℓ : Nat) : Prop :=
+  ∃ c, H[ℓ]? = some (Cell.full c)
+```
+
+### `Retire.Shape`
+
+*def* · module `RueCore.Retire`
+
+**The stack's shape**: what each frame of the control stack says about the
+frame in force above it. An `endscope ℓ̄` marker and a loop boundary sit
+under a frame that extends theirs by cells at the end of its scope record
+(and the front of its environment); a call boundary and the stack's bottom
+sit under a frame whose environment is its scope record reversed; every other
+frame is an evaluation context of the same frame (helper).
+
+```lean
+def RueCore.Retire.Shape : Frame → List Kont → Prop :=
+  List.brecOn (motive := fun x => Frame → Prop) x✝ Retire.Shape._f x✝¹
+```
+
+### `Retire.UnwindPost`
+
+*def* · module `RueCore.Retire`
+
+What `run-scope-drops` over distinct live cells does: it never meets
+`†`, keeps the store's length, and leaves every other cell as it was
+(helper).
+
+```lean
+def RueCore.Retire.UnwindPost (H : Store) (ls : List Nat) :
+  Except Violation (Store × List Event) → Prop :=
+  match x✝ with
+  | Except.error w => w ≠ Violation.useAfterDrop
+  | Except.ok (H', snd) =>
+    List.length H' = List.length H ∧ ∀ (ℓ : Nat), ¬ℓ ∈ ls → H'[ℓ]? = H[ℓ]?
+```
+
+### `Retire.callerCells`
+
+*def* · module `RueCore.Retire`
+
+The cells the suspended callers' frames owe a drop (helper).
+
+```lean
+def RueCore.Retire.callerCells : List Kont → List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Retire.callerCells [] = []
+∀ (φs : Frame) (K : List Kont),
+  Retire.callerCells (Kont.call φs :: K) =
+    Retire.callerCells K ++ φs.scope
+∀ (head : Kont) (K : List Kont),
+  (∀ (φs : Frame), head = Kont.call φs → False) →
+    Retire.callerCells (head :: K) = Retire.callerCells K
+```
+
 ### `Retired`
 
 *def* · module `RueCore.Trace.Defs`
@@ -26162,6 +27053,47 @@ Defining equations, as Lean derived them from the body:
     { decls := D, fns := [{ params := [], ret := T, body := e }] }
 ```
 
+### `Retire.Grow`
+
+*def* · module `RueCore.Retire`
+
+The store grew: it is no shorter, and no live cell was retired (helper).
+
+```lean
+def RueCore.Retire.Grow (H H' : Store) : Prop :=
+  List.length H ≤ List.length H' ∧
+    ∀ (ℓ : Nat), Retire.Live H ℓ → Retire.Live H' ℓ
+```
+
+### `Retire.LiveFrame`
+
+*def* · module `RueCore.Retire`
+
+**The frame invariant**: every cell the environment names, and every cell
+the scope record owes a drop, is live, and the record owes each at most once
+(helper).
+
+```lean
+def RueCore.Retire.LiveFrame (H : Store) (φ : Frame) : Prop :=
+  (∀ (ℓ : Nat), ℓ ∈ φ.env → Retire.Live H ℓ) ∧
+    (∀ (ℓ : Nat), ℓ ∈ φ.scope → Retire.Live H ℓ) ∧ φ.scope.Nodup
+```
+
+### `Retire.StackLive`
+
+*def* · module `RueCore.Retire`
+
+**The configuration invariant**: the stack has its shape, and every cell a
+frame on it owes a drop — the frame in force and every suspended caller — is
+live and owed once (helper).
+
+```lean
+def RueCore.Retire.StackLive (H : Store) (φ : Frame) (K : List Kont) : Prop :=
+  Retire.Shape φ K ∧
+    (Retire.callerCells K ++ φ.scope).Nodup ∧
+      ∀ (ℓ : Nat), ℓ ∈ Retire.callerCells K ++ φ.scope → Retire.Live H ℓ
+```
+
 ### `Settled`
 
 *def* · module `RueCore.Trace.Defs`
@@ -27078,6 +28010,75 @@ def RueCore.Explain.traceEval (M : FloatOps) (P : Program) :
   Nat → Nat → List Ty → Ty → Store → Frame → Expr → Explain.Trace
 ```
 
+### `OpRes.toStep`
+
+*def* · module `RueCore.Step`
+
+An operator's outcome as a step: a value plugs the hole, a trap is
+(Panic-Lift) §6.2, and a wrong-shaped operand is stuck (helper).
+
+```lean
+def RueCore.OpRes.toStep (H : Store) (φ : Frame) (K : List Kont)
+  (tr : List Event) : OpRes → StepOut
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (H : Store) (φ : Frame) (K : List Kont) (tr : List Event) (v : Val),
+  OpRes.toStep H φ K tr (OpRes.val v) =
+    StepOut.next (Config.run H φ K (Focus.ret v) tr)
+∀ (H : Store) (φ : Frame) (K : List Kont) (tr : List Event)
+  (κ : PanicKind),
+  OpRes.toStep H φ K tr (OpRes.trap κ) = StepOut.next (Config.panic κ tr)
+∀ (H : Store) (φ : Frame) (K : List Kont) (tr : List Event),
+  OpRes.toStep H φ K tr OpRes.confused =
+    StepOut.stuck Violation.typeConfusion
+```
+
+### `Retire.ConfigLive`
+
+*def* · module `RueCore.Retire`
+
+The invariant at a configuration; a trap `↯κ` has no store left to check
+(helper).
+
+```lean
+def RueCore.Retire.ConfigLive : Config → Prop :=
+  match x✝ with
+  | Config.run H φ K f tr => Retire.StackLive H φ K
+  | Config.panic k tr => True
+```
+
+### `Retire.LivePost`
+
+*def* · module `RueCore.Retire`
+
+**What an evaluation keeps**, by outcome (helper). A value retires no cell
+that was live before it (only the cells it minted itself). An unwinding
+`return` may retire the frame's scope record, and nothing else live before it.
+A `break` retires nothing live before it, and the scope record it carries is
+the frame's own, extended by distinct cells it minted, still live. And no
+refusal is `useAfterDrop`.
+
+```lean
+def RueCore.Retire.LivePost (H : Store) (φ : Frame) : EvalRes → Prop :=
+  match x✝ with
+  | EvalRes.ok H' v tr => Retire.Grow H H'
+  | EvalRes.returned H' v tr =>
+    List.length H ≤ List.length H' ∧
+      ∀ (ℓ : Nat), ¬ℓ ∈ φ.scope → Retire.Live H ℓ → Retire.Live H' ℓ
+  | EvalRes.broke H' sc tr =>
+    Retire.Grow H H' ∧
+      ∃ xs,
+        sc = φ.scope ++ xs ∧
+          xs.Nodup ∧
+            ∀ (ℓ : Nat), ℓ ∈ xs → List.length H ≤ ℓ ∧ Retire.Live H' ℓ
+  | EvalRes.panic k tr => True
+  | EvalRes.stuck w => w ≠ Violation.useAfterDrop
+  | EvalRes.outOfFuel => True
+```
+
 ### `Spec.fuel_mono_stmt`
 
 *def* · module `RueCore.Spec.Safety`
@@ -27709,6 +28710,33 @@ def RueCore.Lead (M : FloatOps) (P : Program) (fuel : Nat) (H : Store) (φ : Fra
   | Expr.brk => False
 ```
 
+### `Retire.ArgsLive`
+
+*def* · module `RueCore.Retire`
+
+The promise over an argument list (helper).
+
+```lean
+def RueCore.Retire.ArgsLive (H : Store) (φ : Frame) : ArgsRes → Prop :=
+  match x✝ with
+  | ArgsRes.ok H' vs tr => Retire.Grow H H'
+  | ArgsRes.abort r => Retire.LivePost H φ r
+```
+
+### `Retire.StepLive`
+
+*def* · module `RueCore.Retire`
+
+What a step keeps (helper).
+
+```lean
+def RueCore.Retire.StepLive : StepOut → Prop :=
+  match x✝ with
+  | StepOut.next C => Retire.ConfigLive C
+  | StepOut.halted => True
+  | StepOut.stuck w => w ≠ Violation.useAfterDrop
+```
+
 ### `Spec.dtor_once_stmt`
 
 *def* · module `RueCore.Spec.Trace`
@@ -27733,6 +28761,28 @@ def RueCore.Spec.dtor_once_stmt : Prop :=
 def RueCore.Spec.run_ne_returned_stmt : Prop :=
   ∀ (M : FloatOps) {P : Program} {fuel : Nat} (H : Store) (v : Val)
     (tr : List Event), run M P fuel ≠ EvalRes.returned H v tr
+```
+
+### `Spec.run_no_use_after_drop_stmt`
+
+*def* · module `RueCore.Spec.Safety`
+
+**No use-after-drop, on every program** (§7 "No use-after-drop / no leak
+of drops", "never read afterward"; RUE-2496): `run` never refuses with
+`useAfterDrop`, at any fuel and float model, **whether or not the program is
+checked**. The property is structural rather than a consequence of typing: a
+binding's cell is minted fresh and retired only when the scope that bound it
+ends, after which nothing names it, and a scope record owes each cell once.
+So `no_use_after_drop`'s `ProgramTyped` is redundant for a run from the
+start. The guard is not dead code: from an open configuration, a frame that
+names a cell already retired, `eval` does refuse (`Sharp.retired_cell`). Like
+`no_use_after_drop`, it says no retired cell is accessed only as far as
+`eval` checks every access and labels it so (R3 of `REDTEAM-LOG.md`).
+
+```lean
+def RueCore.Spec.run_no_use_after_drop_stmt : Prop :=
+  ∀ (M : FloatOps) (P : Program) (fuel : Nat),
+    run M P fuel ≠ EvalRes.stuck Violation.useAfterDrop
 ```
 
 ### `WfEnums`
@@ -30247,6 +31297,23 @@ def RueCore.Spec.step_never_stuck_of_run_stmt : Prop :=
         Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
 ```
 
+### `Spec.step_no_use_after_drop_stmt`
+
+*def* · module `RueCore.Spec.Step`
+
+**No use-after-drop over `Step`, on every program** (§7 "No use-after-drop /
+no leak of drops"; §6.1's retired cell; RUE-2496). No configuration reachable
+from `Config.init` is stuck on a retired (`†`) cell, whether or not the
+program is checked. The hypothesis that the configuration is reached is
+needed: a configuration whose frame names a retired cell is stuck so
+(`Sharp.retired_cell`).
+
+```lean
+def RueCore.Spec.step_no_use_after_drop_stmt : Prop :=
+  ∀ (M : FloatOps) (P : Program) {C : Config},
+    Steps M P Config.init C → ¬Config.Stuck M P C Violation.useAfterDrop
+```
+
 ### `LongIH`
 
 *def* · module `RueCore.Adequacy`
@@ -32110,6 +33177,59 @@ def RueCore.Spec.Sharp.overwrite_stmt : Prop :=
                 EvalRes.stuck Violation.linearOverwrite
 ```
 
+### `Spec.Sharp.retired_cell_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A configuration that reads a retired cell, not reached** (§7 sharpness,
+RUE-2496). For the checked program of `Nonvacuous.dtor`, a configuration whose
+frame names a cell already retired (`†`) is stuck with `useAfterDrop`, and
+`eval` from the same store and frame refuses the same way; the configuration
+is not reached from `Config.init` (shown through `step_no_use_after_drop`
+itself). So `step_no_use_after_drop` fails without the hypothesis that the
+configuration is reached: the refusal is live from an open configuration, and
+what keeps it away is the start, not the program's typing.
+
+```lean
+def RueCore.Spec.Sharp.retired_cell_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            eval Float.exactOps 1 P [Cell.dead] { env := [0], scope := [] }
+                  (Expr.use (Place.var 0)) =
+                EvalRes.stuck Violation.useAfterDrop ∧
+              Config.Stuck Float.exactOps P
+                  (Config.run [Cell.dead] { env := [0], scope := [] } []
+                    (Focus.eval (Expr.use (Place.var 0))) [])
+                  Violation.useAfterDrop ∧
+                ¬Steps Float.exactOps P Config.init
+                    (Config.run [Cell.dead] { env := [0], scope := [] } []
+                      (Focus.eval (Expr.use (Place.var 0))) [])
+```
+
 ### `Spec.Sharp.stuck_step_stmt`
 
 *def* · module `RueCore.Spec.Sharp`
@@ -32674,7 +33794,11 @@ raises when it reaches a retired cell. It is `no_violation` at one tag, so it
 says no retired cell is accessed only as far as `eval` checks every access
 and labels it so: what it rules out is what that monitor watches (R3 of
 `REDTEAM-LOG.md`; RUE-2469). The buffer half of the bullet, use-after-free,
-has no statement (§6.13 is outside the fragment).
+has no statement (§6.13 is outside the fragment). Its `ProgramTyped`
+hypothesis is redundant: `run_no_use_after_drop` below proves the same
+conclusion for every program, checked or not, so this statement is not a
+consequence of typing; it is kept in §7's form, over checked programs
+(RUE-2496).
 
 ```lean
 def RueCore.Spec.no_use_after_drop_stmt : Prop :=
