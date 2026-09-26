@@ -19,10 +19,10 @@ or containers, §6.13); both are Phase D (RUE-2238, RUE-2240). So these parts of
   operations' closure is assumed, as the laws of `FloatModel`, of every model
   the statements quantify over (it is proved of `Float.exactOps`).
 
-21 of the 40 statements quantify over `M : FloatModel`, the IEEE 754 laws assumed.
+22 of the 41 statements quantify over `M : FloatModel`, the IEEE 754 laws assumed.
 The laws have a model: `Float.exactModel` (`RueCore/Float/Lemmas.lean`) proves every one
 of them of the executable instance `Float.exactOps`, so they are jointly satisfiable and
-those 21 are not vacuous in `M` (`Nonvacuous.exact_model`, RUE-2469). Several statements say
+those 22 are not vacuous in `M` (`Nonvacuous.exact_model`, RUE-2469). Several statements say
 "`run` is never `.stuck` with violation *v*": they mean what `eval`'s monitors
 watch, since *v* is the tag a monitor raises (`no_violation`, `no_use_after_move`,
 `no_use_after_drop` and `no_linear_discard` say so; RUE-2469).
@@ -59,8 +59,8 @@ conclusion included), each with the counter-examples that drop it
 the statement, of which that hypothesis fails, every other holds, and the
 conclusion fails. So the hypothesis is needed. A hypothesis with no
 counter-example carries a reason (`RueCore.Spec.sharpnessReasons`), and the lint
-fails on one with neither: 76 of the 77 have a counter-example and 1
-has a reason. Of the 76, 21 are premises inside a conclusion, under
+fails on one with neither: 81 of the 82 have a counter-example and 1
+has a reason. Of the 81, 21 are premises inside a conclusion, under
 an `∧`, an `↔` or an `∃` of it (a `run … = .ok`, a `Steps …` or an `n < fuel` that
 a conjunct starts from), not hypotheses about the program. For `drop_order` 2–3,
 `drop_glue_order` 2–3, `eval_sound` 2–3, `run_sim` 1–2, `eval_complete` 2 and 4 and
@@ -69,7 +69,7 @@ the dropped premise is the only thing tying its bound value or trace to the prog
 so the counter-example shows only that the conclusion is not a tautology. The walk does not go
 under `∨` or `¬`, nor into a definition that is not reducible (`Config.SafeAt`,
 `Exact`, `Blocks`, `GlueBlocks`, `Lifo`). Each pairing of a counter-example with a (theorem,
-number) is checked by the kernel (84 pairs): `RueCore/Sharp/Glue.lean` proves,
+number) is checked by the kernel (89 pairs): `RueCore/Sharp/Glue.lean` proves,
 from the counter-example, the negation of the spine statement with that
 hypothesis removed, and the lint computes that weakened statement itself from
 the Spec statement and the number (`Lint.dropHyp`, by the walk that numbers the
@@ -89,7 +89,7 @@ counter-example because it is redundant: `run_no_use_after_drop` proves the
 conclusion for every program, checked or not, and `step_no_use_after_drop` the
 same over `Step` from `Config.init` (RUE-2496).
 
-A statement means its text plus the 295 definitions the 40 statements unfold
+A statement means its text plus the 299 definitions the 41 statements unfold
 to (`TRUST.md`, "Trusted base"; bodies in `DIGEST.md`); "Names" lists
 those an entry mentions.
 
@@ -132,8 +132,9 @@ Rompf; `../FIELD.md` §3); its Spec module keeps the file name
 | `step_no_double_free` | A safety property: every violation has a finite prefix no continuation repairs (FIELD §6: Alpern & Schneider §2; FIELD §5: CWE-415) | `ProgramTyped P` and `init →* C` ⇒ `C`'s trace frees each identity, and runs a destructor on each, at most once | The at-most-once bound stated on every finite prefix of every run, as a property of each reachable configuration rather than of Alpern & Schneider's infinite sequences, which for this property is the same content. |
 | `freed_once` | No double free (CWE-415), on every program (FIELD §5: CWE-415) | every program ⇒ a finished run's trace frees each identity at most once | No typing hypothesis and no destructor count, per value identity, over finished runs. |
 | `dtor_once` | No double free (CWE-415), for destructor runs (FIELD §5: CWE-415; Rust Reference, Destructors) | `DtorNotCopy` ⇒ a finished run's trace runs a destructor on each identity at most once | Its only hypothesis is that a destructor-bearing struct is not `Copy`, and it counts destructor runs per identity, over finished runs. |
-| `drop_exactly_once` | Exactly once = at most once ∧ at least once; linear use is exactly one use; a memory leak is the failure of "at least once" (FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401) | a typed, `pendingSafe` expression of a checked program, from a frame and store agreeing with its context ⇒ its evaluation is not stuck, ends every identity exactly as often as held (`Exact`), and retires what it allocated (`Tidy`) | Per evaluation of one expression from a matching frame and store, not per run from `Config.init`, under `pendingSafe` (RUE-2316) and with nothing about a panic (RUE-2478). |
+| `drop_exactly_once` | Exactly once = at most once ∧ at least once; linear use is exactly one use; a memory leak is the failure of "at least once" (FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401) | a typed, `pendingSafe` expression of a checked program, from a frame and store agreeing with its context ⇒ its evaluation is not stuck, ends every identity exactly as often as held (`Exact`), and retires what it allocated (`Tidy`) | Per evaluation of one expression from a matching frame and store, not per run from `Config.init`, under `pendingSafe` (RUE-2316) and with nothing about a panic; the whole-run form is `whole_program_exactly_once`. |
 | `rest_exactly_once` | Exactly once (as above), for values minted during an evaluation (FIELD §6: Confluent (delivery), Walker (linear use)) | the hypotheses of `drop_exactly_once`, and a form's leading operands evaluated (`Lead`) ⇒ the rest of the form ends them and the store's identities exactly once (`Exact`) and retires what it allocated (`Settled`) | The induction form behind `drop_exactly_once`, listed as a linking statement because it covers the values a form mints mid-evaluation; the literature has no separate counterpart. |
+| `whole_program_exactly_once` | Exactly once = at most once ∧ at least once, over a whole run; a memory leak is a value the run allocates and never releases (FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401) | `ProgramTyped P`, `P.pendingSafe`, `init →* C`, `a` held by `C` (`Config.held`) and `C →* ✓v` with trace `tr` ⇒ `a` is ended in `tr` or owned by `v`, exactly once between the two | Per owned value identity, for every value a finished run holds rather than per allocation site, under `pendingSafe` (RUE-2316), and with nothing about a panic, whose trap runs no drop, or a run that never finishes. |
 | `drop_order` | Drop order: variables are dropped in reverse order of declaration, temporaries in reverse order of creation (FIELD §5: Rust Reference, Destructors; FIELD §6: trace property over finished traces (no accepted name)) | `ProgramTyped P` ⇒ a finished run's trace is in §6.11's block grammar (`Blocks`), and each step from a reachable configuration drops newest first (`NewestFirst`, `Lifo`) from a location-ordered stack | Newest first by location rather than reverse declaration order, where `Lifo` constrains only a step that pops a scope (it holds of every step that keeps its stack), and `Blocks` holds of finished traces only (R7 of `REDTEAM-LOG.md`). |
 | `drop_glue_order` | Drop glue: `Drop::drop` if implemented, then each field's drop glue; struct fields in declaration order, array elements first to last (FIELD §5: rustc-dev-guide, Drop elaboration; Rust Reference, Destructors) | `ProgramTyped P` ⇒ a finished run's trace is in §6.11's block grammar with each drop's events given by §6.11's rules (`GlueBlocks`, `DropGlue`) | The Rust order for structs and arrays, with an enum dropping its active payload only, stated over finished traces only. |
 | `Step.det` | Determinacy: `e ↦ e′ ∧ e ↦ e″ ⇒ e′ =α e″` (FIELD §1: PFPL Lemma 5.3) | `C → C₁` and `C → C₂` ⇒ `C₁ = C₂` | Identical up to notation, with syntactic equality for `=α` because bindings are de Bruijn indices. |
@@ -481,7 +482,7 @@ def Spec.checkProgram_sound_stmt : Prop :=
 
 Proved by `checkProgram_sound` (`RueCore.Checker`). Names `Program`, `checkProgram`, `ProgramTyped`; rests on 134 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.diverges`, `Nonvacuous.diverges_drop`.
+Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.diverges`, `Nonvacuous.diverges_drop`, `Nonvacuous.whole_drops`, `Nonvacuous.whole_result`.
 
 Sharp:
 
@@ -594,7 +595,8 @@ agreeing frame and store, is never refused; every identity the store
 holds ends up in an old cell, in the result, or ended in the trace as often
 as held (`Exact`); every cell it allocated is retired (`Tidy`). Narrower
 than the bullet: `pendingSafe` (RUE-2316), nothing about a panic, and per
-evaluation, not per run (RUE-2478).
+evaluation, not per run; the whole-run form is `whole_program_exactly_once`
+(RUE-2478).
 
 ```lean
 def Spec.drop_exactly_once_stmt : Prop :=
@@ -670,6 +672,49 @@ Sharp:
 6. `e.pendingSafe = true` — counter-example `Sharp.pending_expr`
 7. `Lead M.toFloatOps P fuel H φ H₁ vs tr e` — counter-example `Sharp.no_lead`
 8. `eval M.toFloatOps (fuel + 1) P H φ e = EvalRes.withTrace tr r` — counter-example `Sharp.no_eval`
+
+### `whole_program_exactly_once`
+
+**Every owned value of a finished run ends exactly once** (§7 "No
+use-after-drop / no leak of drops", over a whole program; RUE-2478). For a
+checked, `pendingSafe` program, take any configuration `C` §6's relation
+reaches from `Config.init` and any owned identity `a` that `C` holds — in a
+cell, in focus, or pending on the control stack (`Config.held`); these are the
+owned values allocated along the run. If the run from `C` finishes with a
+value (`✓v`, a value at an empty stack), then `a` is ended in the final trace
+(a drop, a discarded temporary's drop, or a consumption: `freedIds`) or is
+part of the final value, exactly once between the two: no owned value the
+run holds is lost, and none is ended twice. Narrower than the bullet:
+`pendingSafe` (RUE-2316), nothing about a panic (§6.12's trap runs no drop, so
+what it abandons is not ended), and nothing about a run that never finishes
+(`step_no_double_free` bounds every prefix from above).
+
+```lean
+def Spec.whole_program_exactly_once_stmt : Prop :=
+  ∀ (M : FloatModel) {P : Program},
+    ProgramTyped P →
+      P.pendingSafe = true →
+        ∀ {C : Config},
+          Steps M.toFloatOps P Config.init C →
+            ∀ {a : Nat},
+              a ∈ Config.held P.decls C →
+                ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+                  Steps M.toFloatOps P C (Config.run H φ [] (Focus.ret v) tr) →
+                    List.count a (Val.own P.decls v) + List.count a (freedIds P.decls tr) =
+                      1
+```
+
+Proved by `whole_program_exactly_once` (`RueCore.TraceWhole`). Names `FloatModel`, `Program`, `ProgramTyped`, `Program.pendingSafe`, `Config`, `Steps`, `Config.init`, `Config.held`, `Store`, `Frame`, `Val`, `Event`, `Kont`, `Focus`, `Val.own`, `freedIds`; rests on 210 definitions.
+
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.whole_drops`, `Nonvacuous.whole_result`.
+
+Sharp:
+
+1. `ProgramTyped P` — counter-example `Sharp.copy_leak`
+2. `P.pendingSafe = true` — counter-example `Sharp.pending_leak`
+3. `Steps M.toFloatOps P Config.init C` — counter-example `Sharp.unreached_held`
+4. `a ∈ Config.held P.decls C` — counter-example `Sharp.unheld`
+5. `Steps M.toFloatOps P C (Config.run H φ [] (Focus.ret v) tr)` — counter-example `Sharp.off_run`
 
 ### `drop_order`
 
@@ -1199,7 +1244,7 @@ together, by a program written out in the statement (RUE-2469).
 **The float laws have a model: `Float.exactOps`** (§7's "totality of the
 float operations"; RUE-2469). Some `FloatModel` has the executable instance
 `Float.exactOps` as its operations, so every law of `FloatModel` holds of the
-model the corpus runs on, and the laws are jointly satisfiable: the 21 spine
+model the corpus runs on, and the laws are jointly satisfiable: the 22 spine
 statements that quantify over `M : FloatModel` are not vacuous in `M`.
 
 ```lean
@@ -1207,7 +1252,7 @@ def Spec.Nonvacuous.exact_model_stmt : Prop :=
   ∃ M, M.toFloatOps = Float.exactOps
 ```
 
-Proved by `Nonvacuous.exact_model` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `no_double_free`, `step_no_double_free`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `drop_glue_order`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `eval_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.exact_model` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `no_double_free`, `step_no_double_free`, `drop_exactly_once`, `rest_exactly_once`, `whole_program_exactly_once`, `drop_order`, `drop_glue_order`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `eval_complete`, `never_stuck_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.empty_frame`
 
@@ -1750,6 +1795,92 @@ def Spec.Nonvacuous.diverges_drop_stmt : Prop :=
 ```
 
 Proved by `Nonvacuous.diverges_drop` (`RueCore.Nonvacuous`). Witnesses `checkProgram_sound`, `no_double_free`, `step_no_double_free`, `eval_diverges_iff`.
+
+### `Nonvacuous.whole_drops`
+
+**A run that holds two owned values at once and ends each** (§7, over a
+whole program; RUE-2478; the `dtor` witness's program, the corpus case
+`affine_scope_drop` twice over). `let x = S0 { 1 }; let y = S0 { 2 }; 3` is
+checked and `pendingSafe`; §6's relation reaches a configuration that holds
+both values, identities `0` and `2`, in their cells, and from there the run
+finishes with a trace that ends each of them once. So
+`whole_program_exactly_once`'s hypotheses hold of a run that allocates and
+drops several owned values.
+
+```lean
+def Spec.Nonvacuous.whole_drops_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          checkProgram P = true ∧
+            ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                ∃ C,
+                  Steps Float.exactOps P Config.init C ∧
+                    0 ∈ Config.held P.decls C ∧
+                      2 ∈ Config.held P.decls C ∧
+                        ∃ H v tr,
+                          Steps Float.exactOps P C
+                              (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                            List.count 0 (freedIds P.decls tr) = 1 ∧
+                              List.count 2 (freedIds P.decls tr) = 1
+```
+
+Proved by `Nonvacuous.whole_drops` (`RueCore.Nonvacuous`). Witnesses `checkProgram_sound`, `whole_program_exactly_once`.
+
+### `Nonvacuous.whole_result`
+
+**A run whose result is an owned value** (§7, over a whole program;
+RUE-2478). `fn main() -> S0 { S0 { 7 } }` is checked and `pendingSafe`; the
+configuration right after (D-Struct) holds the new value's identity `0`, and
+the run finishes with that value as its result — which owns `0` — and a trace
+that ends nothing. So `whole_program_exactly_once`'s other disjunct, an owned
+value accounted for by being part of the final value, is reached too.
+
+```lean
+def Spec.Nonvacuous.whole_result_stmt : Prop :=
+  ∀ (P : Program),
+    P =
+        {
+          decls :=
+            {
+              structs :=
+                [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := true, cls := Mult.affine },
+                  { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := false, cls := Mult.linear }],
+              enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+          fns :=
+            [{ params := [], ret := Ty.struct 0,
+                body := Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 7] }] } →
+      checkProgram P = true ∧
+        ProgramTyped P ∧
+          P.pendingSafe = true ∧
+            ∃ C,
+              Steps Float.exactOps P Config.init C ∧
+                0 ∈ Config.held P.decls C ∧
+                  ∃ H v tr,
+                    Steps Float.exactOps P C
+                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      List.count 0 (Val.own P.decls v) = 1 ∧ freedIds P.decls tr = []
+```
+
+Proved by `Nonvacuous.whole_result` (`RueCore.Nonvacuous`). Witnesses `checkProgram_sound`, `whole_program_exactly_once`.
 
 ### `Nonvacuous.stuck`
 
@@ -3736,3 +3867,245 @@ def Spec.Sharp.float_halt_stmt : Prop :=
 ```
 
 Proved by `Sharp.float_halt` (`RueCore.Sharp`). Drops `step_preservation` 2.
+
+### `Sharp.copy_leak`
+
+**An owned value hidden under a `Copy` node, lost** (§7 sharpness,
+RUE-2478; the ill-typed shape of `double_drop`, without the copies). With `S0`
+a `@copy` struct whose field is an `i64`, `let p = S0 { S1 { 1 } }; 0` is
+rejected by the checker (the field is given an `S1`), so it is not
+`ProgramTyped` (shown through `whole_program_exactly_once` itself), and it is
+`pendingSafe`. §6's relation, which has no copy-closure monitor, runs it: the
+configuration after `S1`'s (D-Struct) holds `S1`'s identity `0`; (D-Struct)
+wraps it in the `Copy` `S0`, which owns nothing, and `p`'s drop at scope exit
+is a `Copy` cell's, which runs nothing; the run finishes with `0` and an empty
+trace. Identity `0` is neither in the result nor ended: without
+`ProgramTyped`, `whole_program_exactly_once` fails.
+
+```lean
+def Spec.Sharp.copy_leak_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 1]])
+          (Expr.intLit IntWidth.w64 Sign.signed 0) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.copy, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.copy },
+                      { attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine }],
+                  enums := [] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          checkProgram P = false ∧
+            ¬ProgramTyped P ∧
+              P.pendingSafe = true ∧
+                ∃ C,
+                  Steps Float.exactOps P Config.init C ∧
+                    0 ∈ Config.held P.decls C ∧
+                      ∃ H v tr,
+                        Steps Float.exactOps P C
+                            (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          List.count 0 (Val.own P.decls v) +
+                              List.count 0 (freedIds P.decls tr) =
+                            0
+```
+
+Proved by `Sharp.copy_leak` (`RueCore.Sharp`). Drops `whole_program_exactly_once` 1.
+
+### `Sharp.pending_leak`
+
+**A pending argument discarded by a `return`** (§7 sharpness, RUE-2478;
+RUE-2316, the shape of `TraceExact.lean`'s `pendingSafe_needed` in `main`
+itself). `fn main() -> i64 { f(S0 { 7 }, return 0) }` with `fn f(a: S0, b:
+i64) -> i64 { @drop(a); b }` is accepted by the checker and is not
+`pendingSafe`: the second argument returns. §6's relation reaches the
+configuration holding the minted `S0` (identity `0`) pending in the call's
+argument list; (D-Return) discards that list, and the run finishes with `0`
+and an empty trace. Identity `0` is neither in the result nor ended: without
+`pendingSafe`, `whole_program_exactly_once` fails on a checked program.
+
+```lean
+def Spec.Sharp.pending_leak_stmt : Prop :=
+  ∀ (P : Program),
+    P =
+        {
+          decls :=
+            {
+              structs :=
+                [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := true, cls := Mult.affine },
+                  { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := false, cls := Mult.linear }],
+              enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+          fns :=
+            [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                body :=
+                  Expr.call 1
+                    [Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 7],
+                      (Expr.intLit IntWidth.w64 Sign.signed 0).ret] },
+              {
+                params :=
+                  [{ ty := Ty.struct 0, mu := false },
+                    { ty := Ty.int IntWidth.w64 Sign.signed, mu := false }],
+                ret := Ty.int IntWidth.w64 Sign.signed,
+                body := (Expr.drop (Place.var 1)).seq (Expr.use (Place.var 0)) }] } →
+      checkProgram P = true ∧
+        ProgramTyped P ∧
+          P.pendingSafe = false ∧
+            ∃ C,
+              Steps Float.exactOps P Config.init C ∧
+                0 ∈ Config.held P.decls C ∧
+                  ∃ H v tr,
+                    Steps Float.exactOps P C
+                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      List.count 0 (Val.own P.decls v) +
+                          List.count 0 (freedIds P.decls tr) =
+                        0
+```
+
+Proved by `Sharp.pending_leak` (`RueCore.Sharp`). Drops `whole_program_exactly_once` 2.
+
+### `Sharp.unreached_held`
+
+**A configuration holding a value no run holds** (§7 sharpness, RUE-2478).
+For the checked, `pendingSafe` program of `Nonvacuous.dtor`, the terminal
+configuration whose one cell holds an `S0` with identity `5`, and whose
+result `0` and trace are empty, holds identity `5`, reaches itself, and ends
+it nowhere; `Config.init` does not reach it (shown through
+`whole_program_exactly_once` itself). So the statement fails without the
+hypothesis that the configuration is reached: it is about the values a run
+holds, not about every configuration's.
+
+```lean
+def Spec.Sharp.unreached_held_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              ¬Steps Float.exactOps P Config.init
+                    (Config.run
+                      [Cell.full
+                          (Contents.struct 0 5 [Contents.int IntWidth.w64 Sign.signed 1])]
+                      Frame.empty [] (Focus.ret (Val.int IntWidth.w64 Sign.signed 0)) []) ∧
+                5 ∈
+                    Config.held P.decls
+                      (Config.run
+                        [Cell.full
+                            (Contents.struct 0 5 [Contents.int IntWidth.w64 Sign.signed 1])]
+                        Frame.empty [] (Focus.ret (Val.int IntWidth.w64 Sign.signed 0))
+                        []) ∧
+                  List.count 5 (Val.own P.decls (Val.int IntWidth.w64 Sign.signed 0)) +
+                      List.count 5 (freedIds P.decls []) =
+                    0
+```
+
+Proved by `Sharp.unreached_held` (`RueCore.Sharp`). Drops `whole_program_exactly_once` 3.
+
+### `Sharp.unheld`
+
+**An identity the run never holds** (§7 sharpness, RUE-2478). The checked,
+`pendingSafe` program of `Nonvacuous.dtor` finishes from `Config.init`, which
+holds nothing; its trace ends identities `0` and `2` and nothing else, so
+identity `1` — the index of `x`'s cell, which names a cell and no value — is
+neither ended nor in the result. So the statement fails without the
+hypothesis that the configuration holds the identity: it counts owned values,
+not every index.
+
+```lean
+def Spec.Sharp.unheld_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              ¬1 ∈ Config.held P.decls Config.init ∧
+                ∃ H v tr,
+                  Steps Float.exactOps P Config.init
+                      (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                    List.count 1 (Val.own P.decls v) + List.count 1 (freedIds P.decls tr) =
+                      0
+```
+
+Proved by `Sharp.unheld` (`RueCore.Sharp`). Drops `whole_program_exactly_once` 4.
+
+### `Sharp.off_run`
+
+**A finished configuration the run does not reach** (§7 sharpness,
+RUE-2478). The checked, `pendingSafe` program of `Nonvacuous.dtor` reaches a
+configuration holding `x`'s `S0`, identity `0`; the terminal configuration
+with an empty store, result `3` and an empty trace ends nothing, and that
+configuration does not reach it (shown through `whole_program_exactly_once`
+itself). So the statement fails without the hypothesis that the end is the
+run's own.
+
+```lean
+def Spec.Sharp.off_run_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Mult.affine },
+                      { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Mult.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
+          ProgramTyped P ∧
+            P.pendingSafe = true ∧
+              ∃ C,
+                Steps Float.exactOps P Config.init C ∧
+                  0 ∈ Config.held P.decls C ∧
+                    ¬Steps Float.exactOps P C
+                          (Config.run [] Frame.empty []
+                            (Focus.ret (Val.int IntWidth.w64 Sign.signed 3)) []) ∧
+                      List.count 0 (Val.own P.decls (Val.int IntWidth.w64 Sign.signed 3)) +
+                          List.count 0 (freedIds P.decls []) =
+                        0
+```
+
+Proved by `Sharp.off_run` (`RueCore.Sharp`). Drops `whole_program_exactly_once` 5.
