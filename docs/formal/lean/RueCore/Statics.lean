@@ -37,7 +37,7 @@ the obligation could only be met by the glue, which is the implicit discard
 §5.6 forbids; §3 states this as a well-formedness condition on the
 declaration, beside the `@copy` one). The equation is a definition rather than
 a fixpoint condition because `3.0:5` (E0483) forbids a declaration to contain
-itself by value, directly or through a cycle — `WfNames` is that rule, joint
+itself by value, directly or through a cycle — `WfByValueEdge` is that rule, joint
 over both layers, and `class_unique` is the statement it buys, proved.
 
 `3.9:44` is stated "through any depth of struct nesting", and `dtorWf` looks
@@ -109,7 +109,7 @@ destructor-bearing declaration carries no linear field.
 
 This is the *equation* only. What makes it solvable — that no declaration
 contains itself by value, directly or through a cycle (`3.0:5`, E0483) — is
-`WfNames`, stated jointly over both layers below, because a field may name an
+`WfByValueEdge`, stated jointly over both layers below, because a field may name an
 enum and a payload may name a struct. -/
 structure StructDecl.Wf (D : Decls) (sd : StructDecl) : Prop where
   /-- §3's assignment: `class(S) = attr(S) lifted over ⊔ { class(Ti) }`. -/
@@ -140,7 +140,7 @@ fact. A discriminant-only enum's join is empty and so `Copy` (`6.3:19`,
 `3.8:2`), which is what makes `enum C { A, B }` a duplicable tag.
 
 `EnumDecl.Wf` is that equation, made a premise of a well-formed program; what
-makes it solvable is `3.0:5`'s acyclicity (`WfNames`), which is joint over the
+makes it solvable is `3.0:5`'s acyclicity (`WfByValueEdge`), which is joint over the
 two layers because a payload may name a struct and a field may name an enum.
 `enum_carriesLinear_iff` is `6.3:19`'s
 must-consume sentence as a biconditional — an enum is `Linear` exactly when some
@@ -156,7 +156,7 @@ def EnumDecl.payloadJoin (D : Decls) (ed : EnumDecl) : Qual :=
   ed.variants.foldl (fun m Ts => Ts.foldl (fun m' T => m'.join (Ty.qual D T)) m) .copy
 
 /-- One enum declaration's well-formedness (§3, `6.3:19`): its recorded class
-is the payload join. As for a struct this is the equation only, and `WfNames`
+is the payload join. As for a struct this is the equation only, and `WfByValueEdge`
 is what makes it solvable (`3.0:5` forbids an enum to contain itself by value
 through any cycle of fields and payloads).
 
@@ -188,7 +188,7 @@ shape both equations solve at more than one assignment
 (`Examples.lean`'s cycle witnesses; the compiler reports E0483).
 
 `Decls.ByValueEdge` is `3.0:5`'s "contains by value" relation, one step, and
-`WfNames` is the rule itself: the relation is **well-founded**, so each
+`WfByValueEdge` is the rule itself: the relation is **well-founded**, so each
 declaration's class is the unique solution of its equation (`class_unique`).
 The calculus states the equations but not this side condition; §3 gains the
 paragraph in RUE-2334, and `3.0:5` is the normative form it mechanizes.
@@ -234,7 +234,7 @@ def Decls.byValue (D : Decls) : TyName → List Ty
 /-- `3.0:5`'s relation, one step: `d` contains `d'` by value. A slot reaches
 its declaration **through any depth of array nesting** (`Ty.tyNames`), because
 `3.0:5` names array elements beside fields and payloads; without that, a
-struct naming itself through an array element would satisfy `WfNames` and §3's
+struct naming itself through an array element would satisfy `WfByValueEdge` and §3's
 equation would have more than one solution at it. -/
 def Decls.ByValueEdge (D : Decls) (d d' : TyName) : Prop := ∃ T ∈ D.byValue d, d' ∈ T.tyNames
 
@@ -243,16 +243,16 @@ declarations is well-founded, so no declaration reaches itself through a cycle
 of struct fields and enum payloads. This is the one premise that makes §3's
 struct and enum equations a *definition* — `class_unique` is the induction it
 licenses — and it is joint over the two layers because `3.0:5` is. -/
-def WfNames (D : Decls) : Prop := WellFounded (fun d' d => D.ByValueEdge d d')
+def WfByValueEdge (D : Decls) : Prop := WellFounded (fun d' d => D.ByValueEdge d d')
 
-/-- A well-formed declaration environment: `3.0:5`'s acyclicity (`WfNames`),
+/-- A well-formed declaration environment: `3.0:5`'s acyclicity (`WfByValueEdge`),
 §3's class assignment for every struct declaration (`WfStructs`) and for every
 enum declaration (`WfEnums`). This is the premise every theorem that reads a
 recorded class through `Ty.qual` carries, and it is what `checkDecls`
 (`Checker/Defs.lean`) decides. -/
 structure WfDecls (D : Decls) : Prop where
   /-- `3.0:5` (E0483): no declaration contains itself by value. -/
-  names : WfNames D
+  byValueEdge : WfByValueEdge D
   /-- §3's class assignment for the struct layer (`3.8:18`, `3.9:31`, `3.9:44`). -/
   structs : WfStructs D
   /-- §3's class assignment for the enum layer (`6.3:19`). -/
@@ -1756,7 +1756,7 @@ def WfFn (P : Program) (fd : FnDef) : Prop :=
 (Fn) §5.8 of every function. Recursion is ordinary — a body may call any
 function of the program, itself included, since (Call) reads only the callee's
 signature (§5.8, "the core is fully monomorphic") — while *declarations* are
-not recursive at all (`3.0:5`, `WfNames`). -/
+not recursive at all (`3.0:5`, `WfByValueEdge`). -/
 structure WfProgram (P : Program) : Prop where
   /-- §3's class assignment, for every declaration of either kind. -/
   decls : WfDecls P.decls

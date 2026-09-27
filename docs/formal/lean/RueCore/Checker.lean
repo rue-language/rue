@@ -1157,11 +1157,11 @@ theorem Decls.acc_of_empty {D : Decls} {d : TyName} (h : D.byValue d = []) :
     Acc (fun a b => D.ByValueEdge b a) d :=
   Acc.intro d (fun _ hd' => absurd hd' (by simp [Decls.ByValueEdge, h]))
 
-/-- **Every `checkNoCycle` acceptance is `3.0:5`** (`WfNames`): the by-value
+/-- **Every `checkNoCycle` acceptance is `3.0:5`** (`WfByValueEdge`): the by-value
 "contains" relation over the declarations is well-founded, so no struct or enum
 contains itself by value through any cycle of fields and payloads. This is the
 premise `class_unique` turns into "§3's class assignment has one solution". -/
-theorem checkNoCycle_sound {D : Decls} (h : checkNoCycle D = true) : WfNames D := by
+theorem checkNoCycle_sound {D : Decls} (h : checkNoCycle D = true) : WfByValueEdge D := by
   have key : ∀ (l : List Bool) (i : Nat) (b : Bool), l.all id = true → l[i]? = some b →
       b = true := by
     intro l i b hall hb

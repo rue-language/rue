@@ -628,7 +628,7 @@ def checkEnums (D : Decls) : Bool := D.enums.all (checkEnumDecl D)
 
 /-! ### `3.0:5`, decided by a topological sort
 
-`WfNames` (`Statics.lean`) says the by-value "contains" relation over the
+`WfByValueEdge` (`Statics.lean`) says the by-value "contains" relation over the
 declarations is well-founded. On a finite environment that is decidable by a
 **topological sort**: a declaration is *grounded* at round `n+1` when every declaration
 it contains by value is grounded at round `n`, and nothing is grounded at round
@@ -670,7 +670,7 @@ def Decls.topoSort (D : Decls) : Nat → List Bool × List Bool
 /-- **`3.0:5` (E0483) as an algorithm**: every declaration is grounded after
 `|structs| + |enums|` rounds of the sort, which is "no struct or enum contains itself
 by value, either directly or through a cycle of struct fields and enum
-payloads". `checkNoCycle_sound` turns an acceptance into `WfNames`, the premise
+payloads". `checkNoCycle_sound` turns an acceptance into `WfByValueEdge`, the premise
 that makes §3's two class equations a definition. -/
 def checkNoCycle (D : Decls) : Bool :=
   let st := D.topoSort (D.structs.length + D.enums.length)
