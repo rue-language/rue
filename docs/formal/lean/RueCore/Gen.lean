@@ -951,9 +951,14 @@ def boundaryPair (w : IntWidth) (sg : Sign) (op : BinOp) : G (Option (Int × Int
     (if sg == .signed then [(lo, -1)] else []) ++ [(hi, 1), (lo, 1), (lo, lo)]
   match op with
   | .mul =>
-      let unsignedOverflow : List (Int × Int) :=
-        if sg == .unsigned then [(hi, 2), (2 ^ (w.bits - 1), 2)] else []
-      return some (← pick (lo, lo) (base ++ unsignedOverflow))
+      -- `(hi, 1)` never overflows a multiply (`max_T * 1 = max_T`) — it is
+      -- `base`'s only entry that is not, so `*` drops it and, at an unsigned
+      -- type, adds the two candidates that do overflow there instead (N4,
+      -- above `boundaryLiteral`'s doc).
+      let mulBase : List (Int × Int) :=
+        (if sg == .signed then [(lo, -1)] else []) ++ [(lo, 1), (lo, lo)] ++
+          (if sg == .unsigned then [(hi, 2), (2 ^ (w.bits - 1), 2)] else [])
+      return some (← pick (lo, lo) mulBase)
   | .add | .sub => return some (← pick (lo, lo) base)
   | .div | .rem =>
       let x ← boundaryLiteral w sg
@@ -976,17 +981,33 @@ draw without ever reaching the bug. So at signed 64-bit `*` specifically — the
 operator §6.4 traps on overflow, where a wrong shift-based check would wrongly
 fold — the rate is raised to one in four (`/` is not raised: `multiplier_shift`
 only ever lowers a *multiply*, and `min_T / -1` traps correctly under the
-RUE-2318 mutant, checked by hand). With the ordinary outer odds of drawing
-`i64`, `signed` and `*` at all (`intTy`'s and `pick`'s own weights) already
-costing roughly a factor of 15, one in sixteen on top left the joint shape
-under-reached in practice (0 catches of the RUE-2318 mutant in 1,000 generated
-programs at the ordinary rate); one in four catches it at `--gen 1000 --seed
-23` (`gen_23_73`; `--gen 200 --seed 7` catches nothing — the shape needs a
-seed whose draws put `i64`, `signed` and `*` at a binop the pair reaches at
-all, and 200 programs is not enough for that on its own). -/
+RUE-2318 mutant, checked by hand).
+
+One in four is `(25, 100)`, not `(1, 4)`: at seed 23's specific stream
+positions for this check, `chance 1 4` (and `chance 1 2`) draws the *same*
+residue every time (checked directly, by instrumenting `nat`'s draw at these
+sites: eight calls, eight even results, for both `den = 2` and `den = 4`),
+because `nat lo hi` for a range this small never needs more than one
+`Init.Data.Random` step (`randNatAux`'s magnitude check), and that one step's
+value happens to be odd at exactly these positions — a low-order-bit
+correlation `StdGen`'s combined generator is not immune to (LCGs are
+well known to have shorter periods, and worse mixing, in their low bits than
+their high ones). Scaling the same ratio up to a modulus that is not a small
+power of two draws on more, and better-mixed, bits of the same value and
+side-steps it, while leaving the probability exactly one in four (`25/100`)
+or one in two (`50/100`, `arithBinop`'s `let`-or-not choice, below) as
+intended. With the ordinary outer odds of drawing `i64`, `signed` and `*` at
+all (`intTy`'s and `pick`'s own weights) already costing roughly a factor of
+15, one in sixteen on top left the joint shape under-reached in practice (0
+catches of the RUE-2318 mutant in 1,000 generated programs at the ordinary
+rate, and 0 at `(1, 4)` and `(1, 2)` too, for the reason above); `(25, 100)`
+catches it at `--gen 1000 --seed 23` (`gen_23_73`; `--gen 200 --seed 7`
+catches nothing — the shape needs a seed whose draws put `i64`, `signed` and
+`*` at a binop the pair reaches at all, and 200 programs is not enough for
+that on its own). -/
 def pairRate (w : IntWidth) (sg : Sign) (op : BinOp) : Nat × Nat :=
   match w, sg, op with
-  | .w64, .signed, .mul => (1, 4)
+  | .w64, .signed, .mul => (25, 100)
   | _, _, _ => (1, 16)
 
 /-- (helper) An integer binop `op` over two operands each drawn by `self`
@@ -1026,7 +1047,8 @@ def arithBinop (w : IntWidth) (sg : Sign) (op : BinOp) (self : G Expr) : G Expr 
   | some (a, b) =>
       let asLet ←
         match op with
-        | .mul => if a = intMin w sg ∧ b = -1 then boundary (chance 1 2) else pure false
+        | .mul =>
+            if a = intMin w sg ∧ b = -1 then boundary (chance 50 100) else pure false
         | _ => pure false
       if asLet then
         return letIn false (intLit w sg b) (binop op (intLit w sg a) (use (.var 0)))
