@@ -6,7 +6,8 @@ Run from `docs/formal/lean` (or pass `--lean-dir`):
     python3 bin/simplify-metrics.py              # everything, build times included
     python3 bin/simplify-metrics.py --no-time    # the deterministic metrics only
 
-It builds the package (`lake build RueCore RueCore.Map`, a no-op on a warm tree), then measures:
+It builds every module of the package (`lake build <module>…`, a no-op on a warm tree), then
+measures:
 
 * lines per module: total lines, and code lines (neither blank nor inside a comment,
   doc-comments included), from the sources;
@@ -152,13 +153,14 @@ def scan_sources(lean_dir, mods):
 WARNING = re.compile(r"^warning: ([\w/.]+\.lean):(\d+):(\d+): (.*)$")
 
 
-def build(lean_dir, log=None):
-    """Build the package and the proof map's module; return the per-module warnings as
+def build(lean_dir, mods, log=None):
+    """Build every module of the package (the executables' roots and the proof map's module
+    included: the library root imports neither); return the per-module warnings as
     {module: {"simp": n, "other": n, "kinds": {first line: n}}}."""
     if log:
         text = open(log, encoding="utf-8").read()
     else:
-        p = run(["lake", "build", "RueCore", "RueCore.Map"], lean_dir, check=False)
+        p = run(["lake", "build"] + [m for m, _ in mods], lean_dir, check=False)
         text = p.stdout + p.stderr
         if p.returncode != 0:
             raise ScriptError("lake build failed:\n" + text[-3000:])
@@ -219,7 +221,7 @@ def is_glue(mods):
 def report(lean_dir, args):
     mods = modules(lean_dir)
     layer = layers(lean_dir)
-    warnings = build(lean_dir, args.build_log)
+    warnings = build(lean_dir, mods, args.build_log)
     env = env_metrics(lean_dir)
     src = scan_sources(lean_dir, mods)
     times = build_times(lean_dir, mods, args.runs) if not args.no_time else None
