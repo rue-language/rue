@@ -250,7 +250,7 @@ theorem MSim.of_quiet {φ : Activation} {C : List Kont → List Event → Config
   | broke => exact hq.2.elim
   | _ => trivial
 
-/-- **§6.2's (Search), once, losslessly**: an enter run pushing a frame `F`
+/-- **§6.2's (Search), once, losslessly**: an evaluation-state run pushing a frame `F`
 that holds nothing, the operand simulated under `F`, and the context's
 simulation from the operand's value (helper). -/
 theorem MSim.andThen {φ φ₁ : Activation} {C C₁ : List Kont → List Event → Config} {F : Kont}
@@ -547,7 +547,7 @@ theorem evalArgs_cc (hp : P.pendingSafe = true) :
       | _ => simp [evalArgs, he] at h
 
 /-- **An argument list that finishes, losslessly** (§6.2's `…( v̄, E, ē )`):
-each member is pushed, simulated, and plugged back into the list (helper). -/
+each member is pushed, simulated, and returned into the list (helper). -/
 theorem evalArgs_msimOk (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (t : ArgsFrame) :
     ∀ (es : List Expr) (H : Store) (vs₀ : List Val), Expr.pendingSafeList es = true →
       StoreCC P.decls H →
@@ -643,7 +643,7 @@ theorem MSteps.toValue {H : Store} {K : List Kont} {tr : List Event} {e : Expr} 
     MSteps M P (.run H φ K (.eval e) tr) (.run H φ K (.ret v) tr) :=
   MSteps.single s (ledger_le_run0 fun a => by simp only [Focus.own, List.count_nil]; omega)
 
-/-- An enter step of §6.2's (Search) pushing a frame that holds nothing
+/-- An evaluation-state step of §6.2's (Search) pushing a frame that holds nothing
 (helper). -/
 theorem MSteps.enter {H : Store} {K : List Kont} {tr : List Event} {e e' : Expr} {F : Kont}
     (hF : F.own P.decls = [])
@@ -652,7 +652,7 @@ theorem MSteps.enter {H : Store} {K : List Kont} {tr : List Event} {e e' : Expr}
   MSteps.single s (ledger_le_run0 fun a => by
     rw [stackOwn_cons_nil hF]; simp only [Focus.own, List.count_nil]; omega)
 
-/-- An enter step into a list context whose tag holds nothing (helper). -/
+/-- An evaluation-state step into a list context whose tag holds nothing (helper). -/
 theorem MSteps.enterArgs {H : Store} {K : List Kont} {tr : List Event} {e : Expr} {t : ArgsFrame}
     {es : List Expr} (ht : t.own P.decls = [])
     (s : Step M P (.run H φ K (.eval e) tr) (.run H φ K (.args t [] es) tr)) :
@@ -863,7 +863,7 @@ theorem msim_dbg (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (e : Expr)
       omega)
   · trivial
 
-/-- An argument-list form's prefix: the enter step, and the list run to its
+/-- An argument-list form's prefix: the evaluation-state step, and the list run to its
 redex or its abort, losslessly (helper). -/
 theorem msim_argsForm (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
     (hcc : StoreCC P.decls H) {e : Expr} {t : ArgsFrame} (ht : t.own P.decls = []) {es : List Expr}
