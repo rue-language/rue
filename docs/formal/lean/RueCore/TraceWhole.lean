@@ -43,7 +43,7 @@ the checked domain step by step would need a typing of every intermediate
 configuration (RUE-2423).
 
 So the ledger is carried along `eval`'s own run instead. `eval_msim` is
-`eval_sim` (`Adequacy.lean`) with every run lossless: form by form, each
+`eval_sim` (`Equivalence.lean`) with every run lossless: form by form, each
 `Step` the simulation takes is shown to lose nothing, from the facts `eval`
 itself established on the way — its copy-closure monitor passed at an
 aggregate or an assignment, its store is copy-closed (`eval_exact`), and its
@@ -194,7 +194,7 @@ theorem MSteps.of_steps {C D T : Config} (hT : MSteps M P C T) (hfin : ∀ C', �
 /-! ## The lossless simulation -/
 
 /-- **`eval`'s result, simulated losslessly** (helper): `Sim`'s clauses
-(`Adequacy.lean`) with every run lossless (`MSteps`), for a value, an
+(`Equivalence.lean`) with every run lossless (`MSteps`), for a value, an
 unwinding `return` and an unwinding `break`. The two unwinding clauses ask of
 the context that the frames the unwind discards hold no owned value — what
 `pendingSafe` guarantees at every form that pushes such a frame (RUE-2316). A

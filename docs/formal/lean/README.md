@@ -76,7 +76,7 @@ wrong *definition* is measured in [MUTATION.md](MUTATION.md) (RUE-2465):
 96 one-rule mutants, run by `bin/mutate.py`, with what each kill rests on —
 80 of the semantics and the checker (`Syntax`, `Statics`, `Checker/Defs`,
 `Dynamics`, `Step`), and 16 of the statement vocabulary and `Float`
-(`Soundness/Defs`, `Trace/Defs`, `Adequacy/Defs`; RUE-2490, RUE-2500), asking
+(`Soundness/Defs`, `Trace/Defs`, `Equivalence/Defs`; RUE-2490, RUE-2500), asking
 whether a weakened statement, as opposed to a weakened rule, is noticed.
 Every one of the 16 falsifies a stated property or a witness, checked by hand
 (RUE-2500).
@@ -717,9 +717,9 @@ its own layer or a lower one:
 | Layer | Modules | What it holds |
 | --- | --- | --- |
 | **L0 syntax** | `Float`, `Syntax` | §2's syntax, types and float data |
-| **L1 definitions** | `Statics`, `Dynamics`, `Step`, `Soundness/Defs`, `Checker/Defs`, `Trace/Defs`, `Adequacy/Defs` | the semantics (§5's judgment, `eval`, §6's `Step`), and every definition a headline statement is written in: value typing and `ActivationTyping`, the checker algorithm, the trace projections, ledgers and configuration invariants, `Config.SafeAt` |
-| **Spec statements** | `Spec`, `Spec.Safety`, `Spec.Checker`, `Spec.Trace`, `Spec.Step`, `Spec.Adequacy`, `Spec.Nonvacuous`, `Spec.Sharp` | the headline statements, each a `def …_stmt : Prop` over L0 and L1 alone, with its English reading; the one list of them, `Spec.spine` ("The statement layer"); the non-vacuity witnesses with their list, `Spec.witnesses` ("Non-vacuity witnesses"); and the sharpness counter-examples with theirs, `Spec.sharpness` and `Spec.sharpnessReasons` ("Sharpness counter-examples") |
-| **L2 proofs** | `Float.Lemmas`, `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder`, `Retire`, `TracePrefix`, `TraceWhole`, `Nonvacuous`, `Sharp`, `Spine`, `Nonvacuous.Glue`, `Sharp.Glue` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L0's and L1's definitions (`Float.Lemmas`: the `FloatLaws` laws of `Float.exactOps`), `Nonvacuous` proves the witness statements and `Sharp` the counter-example statements, `Spine` checks each headline, witness and counter-example proof against its Spec statement, `Nonvacuous.Glue` applies each witness to the theorems it lists, and `Sharp.Glue` refutes each spine statement with a hypothesis dropped from the counter-example `Spec.sharpness` pairs with it |
+| **L1 definitions** | `Statics`, `Dynamics`, `Step`, `Soundness/Defs`, `Checker/Defs`, `Trace/Defs`, `Equivalence/Defs` | the semantics (§5's judgment, `eval`, §6's `Step`), and every definition a headline statement is written in: value typing and `ActivationTyping`, the checker algorithm, the trace projections, ledgers and configuration invariants, `Config.SafeAt` |
+| **Spec statements** | `Spec`, `Spec.Safety`, `Spec.Checker`, `Spec.Trace`, `Spec.Step`, `Spec.Equivalence`, `Spec.Nonvacuous`, `Spec.Sharp` | the headline statements, each a `def …_stmt : Prop` over L0 and L1 alone, with its English reading; the one list of them, `Spec.spine` ("The statement layer"); the non-vacuity witnesses with their list, `Spec.witnesses` ("Non-vacuity witnesses"); and the sharpness counter-examples with theirs, `Spec.sharpness` and `Spec.sharpnessReasons` ("Sharpness counter-examples") |
+| **L2 proofs** | `Float.Lemmas`, `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Equivalence`, `TraceExact`, `TraceOrder`, `Tombstone`, `TracePrefix`, `TraceWhole`, `Nonvacuous`, `Sharp`, `Spine`, `Nonvacuous.Glue`, `Sharp.Glue` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L0's and L1's definitions (`Float.Lemmas`: the `FloatLaws` laws of `Float.exactOps`), `Nonvacuous` proves the witness statements and `Sharp` the counter-example statements, `Spine` checks each headline, witness and counter-example proof against its Spec statement, `Nonvacuous.Glue` applies each witness to the theorems it lists, and `Sharp.Glue` refutes each spine statement with a hypothesis dropped from the counter-example `Spec.sharpness` pairs with it |
 | **L3 tooling** | `Examples`, `Witnesses`, `Print`, `Corpus`, `Gen`, `Explain*`, `Digest`, `Map`, `Literature`, `Layers`, `Lint`, the `*Main` executables, the root `RueCore` | example and corpus programs and the theorems about them, the printer, the generator, the explain and digest reports, the proof map's milestone list, the spine's table against the literature, the layer table and the lint |
 
 L3 may import anything; nothing in L0–L2 or Spec imports L3, so no theorem of the
@@ -729,7 +729,7 @@ layers keep theirs: a statement may mention only syntax and definitions, and
 the audit fails on a Spec module that imports a proof. L1 is definitions only: the 181 theorems its modules held are in
 `Statics/Lemmas.lean`, `Dynamics/Lemmas.lean` and `Step/Lemmas.lean` (L2),
 moved verbatim, and `Step.lean`'s 11 demo witnesses, with the two
-`Adequacy.lean` theorems about their programs, are in `Witnesses.lean`
+`Equivalence.lean` theorems about their programs, are in `Witnesses.lean`
 (RUE-2460). The `*/Defs` modules are the definitions moved verbatim out of the
 proof modules (the `Defs` of a module holds what its headline statements
 mention); `Witnesses.lean` is the theorems moved out of the proof modules
@@ -787,7 +787,7 @@ flowchart BT
     Syntax["Syntax"]
   end
   subgraph L1["L1 definitions"]
-    Adequacy_Defs["Adequacy.Defs"]
+    Equivalence_Defs["Equivalence.Defs"]
     Checker_Defs["Checker.Defs"]
     Dynamics["Dynamics"]
     Soundness_Defs["Soundness.Defs"]
@@ -797,7 +797,7 @@ flowchart BT
   end
   subgraph Spec["Spec statements"]
     Spec["Spec"]
-    Spec_Adequacy["Spec.Adequacy"]
+    Spec_Equivalence["Spec.Equivalence"]
     Spec_Checker["Spec.Checker"]
     Spec_Safety["Spec.Safety"]
     Spec_Step["Spec.Step"]
@@ -806,7 +806,7 @@ flowchart BT
     Spec_Sharp["Spec.Sharp"]
   end
   subgraph L2["L2 proofs"]
-    Adequacy["Adequacy"]
+    Equivalence["Equivalence"]
     Checker["Checker"]
     Dynamics_Lemmas["Dynamics.Lemmas"]
     Float_Lemmas["Float.Lemmas"]
@@ -821,7 +821,7 @@ flowchart BT
     Trace["Trace"]
     TraceExact["TraceExact"]
     TraceOrder["TraceOrder"]
-    Retire["Retire"]
+    Tombstone["Tombstone"]
     TracePrefix["TracePrefix"]
     TraceWhole["TraceWhole"]
   end
@@ -846,8 +846,8 @@ flowchart BT
     Witnesses["Witnesses"]
   end
   Float --> Syntax
-  Step --> Adequacy_Defs
-  Soundness_Defs --> Adequacy_Defs
+  Step --> Equivalence_Defs
+  Soundness_Defs --> Equivalence_Defs
   Statics --> Checker_Defs
   Statics --> Dynamics
   Dynamics --> Soundness_Defs
@@ -859,47 +859,47 @@ flowchart BT
   Spec_Checker --> Spec
   Spec_Trace --> Spec
   Spec_Step --> Spec
-  Spec_Adequacy --> Spec
+  Spec_Equivalence --> Spec
   Spec_Nonvacuous --> Spec
   Float --> Spec_Nonvacuous
   Checker_Defs --> Spec_Nonvacuous
   Soundness_Defs --> Spec_Nonvacuous
   Trace_Defs --> Spec_Nonvacuous
-  Adequacy_Defs --> Spec_Nonvacuous
+  Equivalence_Defs --> Spec_Nonvacuous
   Float --> Float_Lemmas
   Float_Lemmas --> Nonvacuous
   Checker --> Nonvacuous
   Soundness --> Nonvacuous
   Trace --> Nonvacuous
-  Adequacy --> Nonvacuous
+  Equivalence --> Nonvacuous
   Nonvacuous --> Spine
   Spec_Sharp --> Spec
   Float --> Spec_Sharp
   Checker_Defs --> Spec_Sharp
   Soundness_Defs --> Spec_Sharp
   Trace_Defs --> Spec_Sharp
-  Adequacy_Defs --> Spec_Sharp
+  Equivalence_Defs --> Spec_Sharp
   Float_Lemmas --> Sharp
   Checker --> Sharp
   Soundness --> Sharp
   Trace --> Sharp
   TraceOrder --> Sharp
-  Retire --> Sharp
+  Tombstone --> Sharp
   TracePrefix --> Sharp
   TraceWhole --> Sharp
-  Adequacy --> Sharp
+  Equivalence --> Sharp
   Sharp --> Spine
   Spine --> Nonvacuous_Glue
   Spine --> Sharp_Glue
-  Adequacy_Defs --> Spec_Adequacy
+  Equivalence_Defs --> Spec_Equivalence
   Checker_Defs --> Spec_Checker
   Soundness_Defs --> Spec_Safety
-  Adequacy_Defs --> Spec_Step
+  Equivalence_Defs --> Spec_Step
   Trace_Defs --> Spec_Trace
-  Step --> Adequacy
-  Step_Lemmas --> Adequacy
-  Soundness --> Adequacy
-  Adequacy_Defs --> Adequacy
+  Step --> Equivalence
+  Step_Lemmas --> Equivalence
+  Soundness --> Equivalence
+  Equivalence_Defs --> Equivalence
   Soundness --> Checker
   Checker_Defs --> Checker
   Dynamics --> Dynamics_Lemmas
@@ -913,10 +913,10 @@ flowchart BT
   Trace --> Spine
   TraceExact --> Spine
   TraceOrder --> Spine
-  Retire --> Spine
+  Tombstone --> Spine
   TracePrefix --> Spine
   TraceWhole --> Spine
-  Adequacy --> Spine
+  Equivalence --> Spine
   Statics --> Statics_Lemmas
   Step --> Step_Lemmas
   Dynamics_Lemmas --> Step_Lemmas
@@ -926,12 +926,12 @@ flowchart BT
   Step_Lemmas --> Trace
   Trace_Defs --> Trace
   Trace --> TraceExact
-  Adequacy --> TraceExact
+  Equivalence --> TraceExact
   TraceExact --> TraceOrder
   TraceOrder --> TracePrefix
   TraceExact --> TraceWhole
   TracePrefix --> TraceWhole
-  Step_Lemmas --> Retire
+  Step_Lemmas --> Tombstone
   Checker --> Corpus
   Examples --> Corpus
   Print --> Corpus
@@ -953,7 +953,7 @@ flowchart BT
   Layers --> Lint
   Lint --> LintMain
   Syntax --> Print
-  Adequacy --> Witnesses
+  Equivalence --> Witnesses
   TraceExact --> Witnesses
   TraceOrder --> Witnesses
   Corpus --> Witnesses
@@ -1440,7 +1440,7 @@ The two reasons, both in `Spec.lean`:
   redundant (RUE-2496): `run_no_use_after_drop` proves the conclusion for
   every program, checked or not, at every fuel and any float operations (not only a `FloatLaws`), and
   `step_no_use_after_drop` the same over `Step` for every configuration
-  reached from `Config.init` (`RueCore/Retire.lean`). The property is
+  reached from `Config.init` (`RueCore/Tombstone.lean`). The property is
   structural, not a consequence of typing: a binding's cell is minted fresh
   and retired only when the scope that bound it ends, after which nothing
   names it, and a scope record owes each cell once. The guard is still live
@@ -1517,22 +1517,22 @@ pass is):
 | `RueCore/Statics.lean` | §3's class assignment as a checked equation, for both layers, grounded by `3.0:5`'s joint acyclicity read through array nesting (`WfStructs`/`WfEnums`/`WfByValueEdge` over `Ty.tyNames`, the unconditional `class_unique` and its two projections, `struct_carriesLinear_iff`/`enum_carriesLinear_iff`), the fused flow-sensitive `Γ;Σ` context with Σ **keyed by path** (`OwnSt`, `fullyOwned`, §5.6's recursive `residualLinear`, whose array clause reads the element type `n` times), the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type, and concluding at §5.3's outgoing result `Ω` with the `-Bottom` rules and the join over the arms that continue) — the ordinary place rules and the **declared-linear destructure** of §5.1 beside them — the §5.5 branch join over paths and its n-way fold at a `match` (proved commutative and, over states that are shapes of their declared types (`OwnSt.wf`), associative, so the fold is invariant under a permutation of the arms, `Ctx.joinAll_perm`, idempotent and absorbing its right arm, `Ctx.join_absorb`, and every derivation preserves that shape invariant, `Typed.wf`), §5.7's loop-head equation `LoopHead` with its re-entry lemma, (Fn) and whole-program well-formedness, skeleton preservation | §3, §4.2, §5.1–§5.3, §5.5–§5.8 |
 | `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with observation traces (drops, destructors, `@dbg`); cell **contents as a tree with `⊘` at any node**, navigated by a path (§6.3's `H(ℓ)@π` and `H[ℓ@π ↦ ⊘]`, a constant index being a step like a field slot); §6.3's `split`/`destructure` for the declared-linear redex, with a residue monitor; §6.11's recursive drop (destructor, then fields in declaration order, an enum's active variant's payload, and an array's elements in ascending index order, every `⊘` skipped); frames with scope records and their unwinds, `return`'s and `break`'s; loops, each turn spending fuel; value identities minted at aggregate introduction and carried by values, cells and trace events; violations as named refusals, among them the copy-closure monitor; §6.4's operator rules, §6.5's bounds trap at a dynamic index, and every §6.12 trap the fragment reaches, each carrying the trace up to it | §6.1–§6.12 |
 | `RueCore/Statics/Lemmas.lean`, `RueCore/Dynamics/Lemmas.lean`, `RueCore/Step/Lemmas.lean` | (layer L2) the theorems about the three definition modules' definitions, moved out of them verbatim (RUE-2460): the class and join lemmas `Statics.lean`'s row names, the machine's few, and `Step`'s below | as the module each is about |
-| `RueCore/Step.lean` | §6's reduction relation `Step` over the §6.1 configuration, one constructor per rule, with §6.2's evaluation contexts as a stack of frames (enter and plug constructors per context production, (Panic-Lift) folded into every trap); `step`, the same relation as a function, and (in `Step/Lemmas.lean`) `step_iff`; determinism (`Step.det`), no step from a terminal configuration, the terminal/step/stuck trichotomy with every stuck state named by one of §6's own four violations, never a monitor (`step_stuck_isStuckState`); the monitor-free drops and the lemmas that a monitor only removes behaviour (`unwindLocs_plain`, `destructure_plain`). Adequacy to `eval`: soundness is `Adequacy.lean`, completeness proved in `RueCore/Adequacy.lean` (`eval_small_to_big`, `never_refused_iff`) | §6.1–§6.12 |
+| `RueCore/Step.lean` | §6's reduction relation `Step` over the §6.1 configuration, one constructor per rule, with §6.2's evaluation contexts as a stack of frames (enter and plug constructors per context production, (Panic-Lift) folded into every trap); `step`, the same relation as a function, and (in `Step/Lemmas.lean`) `step_iff`; determinism (`Step.det`), no step from a terminal configuration, the terminal/step/stuck trichotomy with every stuck state named by one of §6's own four violations, never a monitor (`step_stuck_isStuckState`); the monitor-free drops and the lemmas that a monitor only removes behaviour (`unwindLocs_plain`, `destructure_plain`). Adequacy to `eval`: soundness is `Equivalence.lean`, completeness proved in `RueCore/Equivalence.lean` (`eval_small_to_big`, `never_refused_iff`) | §6.1–§6.12 |
 | `RueCore/Soundness/Defs.lean` | (layer L1) the definitions §7's statements are written in, moved out of `Soundness.lean`: value and contents typing (`HasTy`, `ContentsTy`), the per-frame agreement invariant `ActivationTyping` with its per-cell and per-node parts, frame locality `FrameProperty`, and `soundness`'s promise `EvalOk` | §6.1, §7 |
 | `RueCore/Soundness.lean` | lemmas about value typing, the per-frame agreement invariant `ActivationTyping` and frame locality `FrameProperty` (all three defined in `Soundness/Defs.lean`), **the safety theorem** — with progress at a `match` resting on exhaustiveness, preservation on the folded join, and a loop's back edge and exits on the head equation (`LoopHead.enter`, `LoopHead.backEdge`, `loop_exit_ok`) — the fuel lemmas, and per-§7-bullet corollaries over a whole program | §7 |
 | `RueCore/Trace/Defs.lean` | (layer L1) the definitions the trace theorems are stated over, moved out of `Trace.lean`, `TraceExact.lean` and `TraceOrder.lean`: owned identities and the trace's projections (`Contents.own`, `freedIds`, `dtorIds`), the ledgers `Cons`, `Exact`, `Lead` and `Tidy`, the carve-out `Program.pendingSafe`, the block grammar `Blocks`, §6.11's drop rules `DropGlue` and `DropGlueSeq` and the block grammar over them `DropGlueBlocks` (RUE-2487), the configuration invariants `Config.Ordered`, `Config.Nested`, `StrictStackOrder` and `StackDiscipline`, and what a configuration holds, `Config.held` with `Kont.own`, `Focus.own` and `ArgsFrame.own` (RUE-2478) | §6.1, §6.7, §6.9–§6.11, §7 |
 | `RueCore/Trace.lean` | theorems over the drop trace: owned value identities (`Contents.own`, defined in `Trace/Defs.lean`), copy closure, and the conservation law `eval_conserves`, proved by fuel induction over `eval`, from which `no_double_free` follows — no identity freed twice, no destructor run twice on one value, for every finished run of a checked program (every prefix of every run: `TracePrefix.lean`); and `dupProgram_step_double_free`, the ill-typed program §6's relation frees twice | §7 |
 | `RueCore/TraceExact.lean` | the exact ledger `eval_exact`, the conservation law read as an equality over the identities an evaluation starts with, proved through `rest_step`, the ledger for the rest of every form; the frame-pop invariant `eval_tidy`, that every cell an evaluation allocates is retired by its end; `drop_exactly_once`, at every well-typed configuration of a checked program — every owned value it starts with ends exactly once, dropped, discarded or consumed on the normal or the unwind path, never both, and every cell it allocated is retired — and `rest_exactly_once`, the same for the values a form's leading operands produce — a loop's lead being its body breaking — which covers values minted inside an evaluation; with the `@panic` carve-out and the RUE-2316 one (`pendingSafe`, witnessed load-bearing by `pendingSafe_needed`), and `orphan_rejected`/`letDropDeleted_rejected`/`seqDropDeleted_rejected`/`breakLeak_rejected`, results the two statements reject at typed configurations of checked programs; the whole-run form is `TraceWhole.lean`'s | §6.7, §6.9, §6.10, §7 |
 | `RueCore/TraceOrder.lean` | **drop order**, `drop_order`, over §6's relation, in two halves, and `drop_glue_order`, its within-value half stated in §6.11's own terms (RUE-2487): every finished run's trace is in `DropGlueBlocks`, whose drop blocks are §6.11's rules `DropGlue` rather than `dropEvents`; the machine's walk meets those rules (`dropContents_glue`), which determine the events (`DropGlue.det`). Within a value: every finished run's trace is in the block grammar `Blocks`, each drop marker followed by exactly §6.11's walk of what it names, so every destructor runs inside the drop that owns it, in §6.11's order, and nowhere else (`run_blocks` over `eval`, needing only `3.9:31`, carried to `Step` by `step_blocks`). Across cells: every scope record is in location order, which is registration order (`reachable_ordered`); the scopes nest, pending `endscope` markers being the tail of their record (`reachable_nested`); and every reachable step is last-in first-out on the registration stack, dropping only cells it deregistered, newest first, each newer than every cell still registered (`reachable_stackDiscipline`, `StackDiscipline.newer`). Its witnesses on example programs (`fieldsSwapped_rejected`, `swappedMarkers_rejected`, `unorderedRecord_rejected`, `returnPastAffine_strictStackOrder`) and the order-witnessing corpus cases are in `Witnesses.lean` | §3.9, §6.7, §6.9, §6.10, §6.11, §7 |
-| `RueCore/Retire.lean` | **no program reaches a retired cell** (RUE-2496): `run_no_use_after_drop`, at every fuel and any float operations, and `step_no_use_after_drop`, from `Config.init`, with no typing hypothesis. The invariant, over `eval` by induction on fuel (`Retire.eval_live`) and over `step` (`Retire.step_live`): every cell a frame's environment names or its scope record owes a drop is live, and the record owes each once; over `Step`, for every suspended caller's frame too, with the stack's shape (`Retire.Shape`: an `endscope` marker or a loop boundary sits under a frame that extends its own at the end of its record) | §6.1, §6.7, §6.9, §6.10, §7 |
+| `RueCore/Tombstone.lean` | **no program reaches a retired cell** (RUE-2496): `run_no_use_after_drop`, at every fuel and any float operations, and `step_no_use_after_drop`, from `Config.init`, with no typing hypothesis. The invariant, over `eval` by induction on fuel (`Tombstone.eval_live`) and over `step` (`Tombstone.step_live`): every cell a frame's environment names or its scope record owes a drop is live, and the record owes each once; over `Step`, for every suspended caller's frame too, with the stack's shape (`Tombstone.Shape`: an `endscope` marker or a loop boundary sits under a frame that extends its own at the end of its record) | §6.1, §6.7, §6.9, §6.10, §7 |
 | `RueCore/TracePrefix.lean` | **no double free on every prefix of a run** (RUE-2477): `step_no_double_free`, for a checked program, bounds the trace of every configuration `Step` reaches from `Config.init` — freed identities and destructor runs at most once each — so a run that never finishes is covered, where `no_double_free` sees only `outOfFuel` and an empty trace. The invariant (`LongC`, `eval_longc`): when `eval` exhausts its fuel from a copy-closed store, `Step` has a run at least that long whose appended trace keeps the conservation law's trap ledger (`Cons`'s `panic` clause), proved as `eval_steps_of_outOfFuel` is, with `eval_conserves`' ledger added wherever an operand finished; a trace only grows along `Step` (`Steps.trace_ext`), so the bound reaches every earlier configuration (`steps_trace_once`, on every program `run` never refuses). `no_double_free_of_step` derives `no_double_free` from it | §6.7, §6.10, §6.11, §7 |
 | `RueCore/TraceWhole.lean` | **every owned value of a run that finishes with a value ends exactly once** (RUE-2478): `whole_program_exactly_once`, for a checked, `pendingSafe` program, takes any configuration `Step` reaches from `Config.init` and any owned identity it holds (`Config.held`: in a cell, in focus, or pending on the control stack) and, where the run from it finishes with a value, puts that identity exactly once in the final trace's ended identities or in the final value — the "at least once" half the per-evaluation statements left to prose, and `main`'s result and an end inside the minting evaluation with it. The invariant is a ledger (`Config.ledger`: what a configuration holds plus what its trace ended) that no step of the run loses (`MSteps`); `eval_msim` is `eval_sim` with every run lossless, each step closed by one of `TraceExact.lean`'s exact ledgers read at every identity, copy closure coming from `eval`'s own monitor, not from a configuration typing, and `pendingSafe` from `eval_quiet` wherever an unwind would discard a held value; `MSteps.of_steps` puts every reached configuration on that run by determinism | §6.1, §6.7, §6.9–§6.12, §7 |
-| `RueCore/Adequacy.lean` | **`eval` is adequate to `Step`, both ways, and §7 over `Step`** (RUE-2289 parts 2–4, ADR-0097 decision 3). Soundness: the simulation relation `Sim` between an `eval` result and `→*` from the expression in focus under any context — a value reaches the hole's value in the same frame, a panic reaches `↯κ`, an unwinding `return` the nearest caller, an unwinding `break` the nearest loop's context — proved for every expression and fuel on every program (`eval_sim`, `run_sim`), and `eval_big_to_small`, the statement over checked programs, where `no_refusal` rules `.refused` out. Completeness modulo fuel: exhausted fuel is a run of that many steps (`eval_steps_of_outOfFuel`); with determinism, `eval_small_to_big` says that on a checked program every value or panic `→*` reaches is `run`'s answer at every fuel past the run's length; `never_refused_iff` is "never `.refused`" both ways, in §7's phrasing; `eval_diverges_iff` says exhaustion at every fuel is divergence. §7 over `Step` (part 4): `step_progress`, `step_safeAt` (for the semantic configuration typing `Config.SafeAt`, whose fundamental lemma is `init_safeAt`), `step_value_typed` and `step_type_safety`; `Activation.empty`, `StepsN` and `Config.SafeAt` are defined in `Adequacy/Defs.lean` (layer L1) | §6.2, §6.9, §6.10, §6.12, §7 |
+| `RueCore/Equivalence.lean` | **`eval` is adequate to `Step`, both ways, and §7 over `Step`** (RUE-2289 parts 2–4, ADR-0097 decision 3). Soundness: the simulation relation `Sim` between an `eval` result and `→*` from the expression in focus under any context — a value reaches the hole's value in the same frame, a panic reaches `↯κ`, an unwinding `return` the nearest caller, an unwinding `break` the nearest loop's context — proved for every expression and fuel on every program (`eval_sim`, `run_sim`), and `eval_big_to_small`, the statement over checked programs, where `no_refusal` rules `.refused` out. Completeness modulo fuel: exhausted fuel is a run of that many steps (`eval_steps_of_outOfFuel`); with determinism, `eval_small_to_big` says that on a checked program every value or panic `→*` reaches is `run`'s answer at every fuel past the run's length; `never_refused_iff` is "never `.refused`" both ways, in §7's phrasing; `eval_diverges_iff` says exhaustion at every fuel is divergence. §7 over `Step` (part 4): `step_progress`, `step_safeAt` (for the semantic configuration typing `Config.SafeAt`, whose fundamental lemma is `init_safeAt`), `step_value_typed` and `step_type_safety`; `Activation.empty`, `StepsN` and `Config.SafeAt` are defined in `Equivalence/Defs.lean` (layer L1) | §6.2, §6.9, §6.10, §6.12, §7 |
 | `RueCore/Checker/Defs.lean` | (layer L1) the decidable checker as an algorithm, moved out of `Checker.lean`: `check`, `checkFn`, `checkDecls` and `checkProgram` | §3, §5 as an algorithm |
 | `RueCore/Checker.lean` | decidable checker `check`/`checkProgram` (defined in `Checker/Defs.lean`) + `check_sound`/`checkProgram_sound` (every acceptance is a derivation), with §5.7's loop head found by a bounded iteration (`headIter`) and re-verified, and `checkDecls` — §3's two class equations plus `3.0:5`'s acyclicity, decided by a topological sort of the declarations | §3, §5 as an algorithm |
 | `RueCore/Spec/Nonvacuous.lean`, `RueCore/Nonvacuous.lean` | (layers Spec and L2) the non-vacuity witnesses (RUE-2469, "Non-vacuity witnesses"): sixteen statements, over written-out programs, that the spine's hypotheses hold together of non-trivial programs, and their proofs | §7's hypotheses, satisfied |
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
-| `RueCore/Witnesses.lean` | (layer L3) the theorems at work on example and corpus programs, moved out of the proof modules because they mention the tooling layer: `affineScopeDrop_both_ways` traces one corpus program both ways; `drop_order`'s rejections (`fieldsSwapped_rejected`, `swappedMarkers_rejected`, `unorderedRecord_rejected`) and `returnPastAffine_strictStackOrder`; `drop_glue_order`'s, the three drop-glue mutants' traces (`glue_fieldsSwapped_rejected`, `glue_dtorAfterFields_rejected`, `glue_dtorSkipped_rejected`, RUE-2487); fourteen order-witnessing corpus cases read through the trace theorems; every accepted seed case is `pendingSafe`; and, moved from `Step.lean` and `Adequacy.lean` (RUE-2460), eleven programs run through §6's relation by `stepN` and `run_sim`'s and `run_small_to_big`'s witnesses on them (`letAddProgram_sound`, `dropMoved_refused`); and the checker's rejections, one corpus case per error class (`errorClasses_rejected`, `typeErrors_rejected`, RUE-2469) | §5, §6.7, §6.9, §6.11, §7 witnesses |
+| `RueCore/Witnesses.lean` | (layer L3) the theorems at work on example and corpus programs, moved out of the proof modules because they mention the tooling layer: `affineScopeDrop_both_ways` traces one corpus program both ways; `drop_order`'s rejections (`fieldsSwapped_rejected`, `swappedMarkers_rejected`, `unorderedRecord_rejected`) and `returnPastAffine_strictStackOrder`; `drop_glue_order`'s, the three drop-glue mutants' traces (`glue_fieldsSwapped_rejected`, `glue_dtorAfterFields_rejected`, `glue_dtorSkipped_rejected`, RUE-2487); fourteen order-witnessing corpus cases read through the trace theorems; every accepted seed case is `pendingSafe`; and, moved from `Step.lean` and `Equivalence.lean` (RUE-2460), eleven programs run through §6's relation by `stepN` and `run_sim`'s and `run_small_to_big`'s witnesses on them (`letAddProgram_sound`, `dropMoved_refused`); and the checker's rejections, one corpus case per error class (`errorClasses_rejected`, `typeErrors_rejected`, RUE-2469) | §5, §6.7, §6.9, §6.11, §7 witnesses |
 | `RueCore/Print.lean` | core syntax → Rue source, the program's struct and enum declarations included, and the observation channel (a `drop fn` per destructor-bearing declaration) | §2 elaboration inventory, 3.9 |
 | `RueCore/Corpus.lean` | the bridge corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`), and the checker's acceptance profile over it (`--profile`, RUE-2469) | §5, §6, §7 witnesses |
 | `RueCore/Gen.lean` | a seeded, type-directed generator of fragment programs — struct **and enum** declarations, enum construction, `match` in §5.5's canonical form, **arrays**: `[T; n]` fields and binders, literal and repeat forms, constant-index reads, writes, element moves and `@drop`s, and dynamic-index reads, writes and `Copy` `@drop`s at and below the element, in and out of bounds — and **loops**: counted and once-through, nested, with `break` arms that may move a binder from outside the loop, every one terminating — appended to the corpus by `lake exe ruecore-corpus --gen N --seed S` | programs, not rules |
@@ -1632,7 +1632,7 @@ of `Ω`'s delivered states; or a *defined* panic; or `outOfFuel`. It is
 (`useAfterMove`, `useAfterDrop`, `linearLeak`, `linearOverwrite`,
 `linearDiscard`, …) is reachable. The interpreter is total, so this is
 progress and preservation in one statement; `run_safe` and the named §7
-corollaries restate it over a whole program. `Adequacy.lean` carries it to
+corollaries restate it over a whole program. `Equivalence.lean` carries it to
 §6's `Step`: `step_progress` (no reachable configuration is stuck) and
 `step_safeAt` (every reachable configuration is typed at the entry
 type, for a semantic configuration typing).

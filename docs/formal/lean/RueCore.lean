@@ -6,7 +6,7 @@ import RueCore.Dynamics
 import RueCore.Step
 import RueCore.Soundness.Defs
 import RueCore.Trace.Defs
-import RueCore.Adequacy.Defs
+import RueCore.Equivalence.Defs
 import RueCore.Float.Lemmas
 import RueCore.Statics.Lemmas
 import RueCore.Dynamics.Lemmas
@@ -19,10 +19,10 @@ import RueCore.Nonvacuous.Glue
 import RueCore.Sharp.Glue
 import RueCore.Soundness
 import RueCore.Trace
-import RueCore.Adequacy
+import RueCore.Equivalence
 import RueCore.TraceExact
 import RueCore.TraceOrder
-import RueCore.Retire
+import RueCore.Tombstone
 import RueCore.TracePrefix
 import RueCore.TraceWhole
 import RueCore.Witnesses

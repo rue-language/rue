@@ -247,7 +247,7 @@ Do not edit any file. Write your full report to <packet>/red-docs-report.md and 
   semantics and the checker. It covers `Syntax` (L0) and four of L1's seven
   modules: `Statics`, `Checker/Defs`, `Dynamics` and `Step`. It does not
   cover `Float` or the statement vocabulary (`Soundness/Defs`, `Trace/Defs`,
-  `Adequacy/Defs`); those are RUE-2490. Results and method are in
+  `Equivalence/Defs`); those are RUE-2490. Results and method are in
   [lean/MUTATION.md](lean/MUTATION.md), the script in
   [lean/bin/mutate.py](lean/bin/mutate.py).
 - **Packet:** none. There is no red agent here. The "attack" is 80 mutants,
@@ -355,7 +355,7 @@ What the mutants could not get past:
     `eval` with the invariant that the frame's environment names no `.dead`
     cell. Recorded as the one reason in `Spec.sharpnessReasons`. (Since
     proved, by RUE-2496: `run_no_use_after_drop` and `step_no_use_after_drop`,
-    `lean/RueCore/Retire.lean`, state it with no typing hypothesis, over `run`
+    `lean/RueCore/Tombstone.lean`, state it with no typing hypothesis, over `run`
     at every fuel and float model and over `Step` from `Config.init`. The
     invariant is that every cell the frame's environment names or its scope
     record owes a drop is live and owed once; over `Step`, for every

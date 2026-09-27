@@ -52,7 +52,7 @@ Design commitments carried over from §6:
     `no_double_free` (`Trace.lean`) be proved without a typing derivation.
 * **The correspondence with §6 is claimed on the checker's input domain.**
   On a program `check` accepts, `eval` and §6 agree: `eval_big_to_small`
-  (`Adequacy.lean`) proves `eval ⇒ Step*` there, and `eval_small_to_big` the
+  (`Equivalence.lean`) proves `eval ⇒ Step*` there, and `eval_small_to_big` the
   converse modulo fuel; on other input they may not. An
   operator reduces both its operands first, in §6.2's own left-to-right
   order, and only then inspects their shapes, so a mismatch is named after

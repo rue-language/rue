@@ -271,7 +271,7 @@ metatheory row and `Step.lean`'s module docstring give the same list:
 On programs `check` rejects, `Step` follows §6 where `eval` does not: `@drop`
 of a `⊘` place is §6.11's no-op where `eval` refuses it.
 
-**Soundness: what `eval` answers, §6 reaches.** `Adequacy.lean` proves the
+**Soundness: what `eval` answers, §6 reaches.** `Equivalence.lean` proves the
 first adequacy theorem. For a program `check` accepts, `eval_big_to_small` says three
 things: `run` is never `.refused` (that is `no_refusal`); if it answers a
 value, §6.12's initial configuration reaches, by `Step`, the terminal

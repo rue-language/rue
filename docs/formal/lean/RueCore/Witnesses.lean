@@ -1,4 +1,4 @@
-import RueCore.Adequacy
+import RueCore.Equivalence
 import RueCore.TraceExact
 import RueCore.TraceOrder
 import RueCore.Corpus
@@ -7,7 +7,7 @@ import RueCore.Corpus
 # RueCore.Witnesses — the theorems at work on the corpus programs (layer L3)
 
 Kernel-checked facts about particular programs of `Examples.lean` and
-`Corpus.lean`: one corpus program traced both ways (`Adequacy.lean`'s
+`Corpus.lean`: one corpus program traced both ways (`Equivalence.lean`'s
 theorems), the traces `drop_order` rejects — and `drop_glue_order`, in
 §6.11's own terms — and the order-witnessing corpus cases read through it (`TraceOrder.lean`'s), and the check that the RUE-2316
 carve-out excludes no seed case (`TraceExact.lean`'s).
@@ -493,7 +493,7 @@ theorem demo_loopIter_drops (M : FloatSig) (e : Expr) :
 
 /-! ## `run_sim` and `run_small_to_big`'s domain at work
 
-Moved here verbatim from `Adequacy.lean` (RUE-2460): they are about the demo
+Moved here verbatim from `Equivalence.lean` (RUE-2460): they are about the demo
 programs above, which left the definitions layer with them. -/
 
 /-- **Why completeness is stated on checked programs** (RUE-2314): in

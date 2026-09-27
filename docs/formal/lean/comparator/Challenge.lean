@@ -1,4 +1,4 @@
-import RueCore.Adequacy.Defs
+import RueCore.Equivalence.Defs
 import RueCore.Checker.Defs
 import RueCore.Float
 import RueCore.Soundness.Defs

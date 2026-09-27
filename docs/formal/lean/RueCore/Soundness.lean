@@ -4340,7 +4340,7 @@ theorem no_use_after_move (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fu
 
 /-- §7 "No use-after-drop": the machine never touches a retired (`†`) cell.
 Here it is `no_refusal` at one tag, over checked programs, but typing is not
-what makes it true: `run_no_use_after_drop` (`Retire.lean`, RUE-2496) proves
+what makes it true: `run_no_use_after_drop` (`Tombstone.lean`, RUE-2496) proves
 it for every program. `run-all-scope-drops` (§6.9) walks the frame's scope
 record at every `return` and at every frame pop, and what keeps those walks
 off a `†` cell, and stops any cell being retired twice, is structural: a

@@ -1,6 +1,6 @@
 module
 
-public import RueCore.Adequacy.Defs
+public import RueCore.Equivalence.Defs
 
 @[expose] public section
 

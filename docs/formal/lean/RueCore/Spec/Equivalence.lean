@@ -1,11 +1,11 @@
 module
 
-public import RueCore.Adequacy.Defs
+public import RueCore.Equivalence.Defs
 
 @[expose] public section
 
 /-!
-# RueCore.Spec.Adequacy — semantic equivalence of `eval` and `Step` (Spec layer)
+# RueCore.Spec.Equivalence — semantic equivalence of `eval` and `Step` (Spec layer)
 
 §7 says the mechanization states type safety over its interpreter and that
 "the two readings meet in the adequacy lemma `03-metatheory.md` owes"
@@ -20,8 +20,9 @@ line of the equivalence of big-step and small-step semantics (Leroy & Grall,
 Thms 9 and 11; `FIELD.md`, section 3). "Adequacy" is the calculus's word, in the sense
 of one operational semantics being adequate with respect to another; in the
 field it more often means computational adequacy or the adequacy of a
-semantic model, neither of which this is. The module keeps its file name,
-which the proof module `RueCore.Adequacy` shares. `eval_big_to_small` and
+semantic model, neither of which this is. RUE-2466 renamed the module to the
+field's term; the proof module `RueCore.Equivalence` took the same name.
+`eval_big_to_small` and
 `eval_small_to_big` are the equivalence's two directions, named as Isabelle's
 HOL-IMP names them (`big_to_small`, `small_to_big`).
 -/
