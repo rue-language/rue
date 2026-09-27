@@ -280,7 +280,7 @@ Each is reproduced by `mutate.py --work <dir> --only <id>` on the tree above.
 | D1 | definitions | medium | proposed (MUTATION.md, proposal 2) | §6.11's destructor-first, declaration-order and ascending-index drop order is fixed by `dropEvents`, not by a statement. `drop_order`'s `Blocks` is defined through `dropEvents`. So `dtor-skip`, `dtor-after-fields` and `fields-reverse` falsify no stated property; only helper proofs fail. Only the witnesses and the seeds' destructor lines catch them. |
 | D2 | definitions | medium | RUE-2469 (comment proposed; MUTATION.md, proposal 3) | R3 measured. Removing any of the machine's four run-time refusals leaves every stated property true: `leak-monitor-off`, `overwrite-monitor-off`, `discard-monitor-off`, `copy-monitor-off`, and also `dyn-residual-declared`. Only the refusal witnesses and the refusal seeds kill them. |
 | D3 | corpus | medium | proposed (MUTATION.md, proposal 1) | 13 mutants are killed only by a refusal witness in `Examples.lean` or `Trace.lean`. No seed or generated case exports those refusals, so the compiler's matching refusal is never compared. MUTATION.md lists them. |
-| D4 | corpus | low | pinned (RUE-2465's seeds) | Before this pass, three mutants survived: `breaks-nested` (a proof script only), `arm-payload-mutable` (a helper lemma only) and `assign-immutable` (the Explain mirror only). Three more were caught by no test at all: `join-residual` and `neg-no-overflow` had only a false stated property, and `fn-params-order` only a witness. Each now has a seed: `loop_inner_break_outer_return`, `match_payload_assign`, `assign_immutable`, `join_moved_vs_partial_linear`, `i8_neg_min` and `params_two_types`. |
+| D4 | corpus | low | pinned (RUE-2465's seeds) | Before this pass, three mutants survived: `breaks-nested` (a proof script only), `arm-payload-mutable` (a helper lemma only) and `assign-immutable` (the Explain mirror only). Three more were killed by no test at all: `join-residual` and `neg-no-overflow` had only a false stated property, and `fn-params-order` only a witness. Each now has a seed: `loop_inner_break_outer_return`, `match_payload_assign`, `assign_immutable`, `join_moved_vs_partial_linear`, `i8_neg_min` and `params_two_types`. |
 
 ### Dropped in adjudication
 
@@ -420,7 +420,7 @@ What the mutants could not get past:
     `DropGlue` takes a struct's `k`-th member to be its `k`-th declared
     field, which is how the machine stores it; the link between the list
     and `StructDecl.fields` is the typing's (`ContentsTy`), not stated in
-    `DropGlueBlocks`. A mutant storing fields in another order is still caught
+    `DropGlueBlocks`. A mutant storing fields in another order is still killed
     by the statements when the fields' types differ, because typing ties
     contents to the declared fields (`step_safeAt`, `soundness`). Two
     cases escape every statement: a permutation among fields of the same

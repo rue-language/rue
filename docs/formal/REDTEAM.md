@@ -11,7 +11,7 @@ and does not replace it. Results go in [REDTEAM-LOG.md](REDTEAM-LOG.md).
 Terms follow [FIELD.md](FIELD.md) where it has them ("trusted base" below
 glosses FIELD.md's *trusted computing base*, §7); the rest — red agent,
 full-claim/targeted pass, packet, adjudicator, non-vacuity witness, mutation
-analysis, sensitivity drill, statement layer, spine — are this program's own
+analysis, real-fault mutation run, statement layer, spine — are this program's own
 process vocabulary, mostly from the issue text, and are a candidate for
 RUE-2461's glossary rather than FIELD.md's theorem-level terms.
 
