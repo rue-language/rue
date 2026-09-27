@@ -65,7 +65,7 @@ A **use** and a **`@drop`** are drawn at a path of one *or two* field steps —
 a field of a field — wherever the declarations reach that far and the place
 rules admit the path (`paths2`, `pathOk`, which is `projSlots`' legality test
 read at a whole path). Depth 2 is where the path machinery actually recurses:
-`OwnSt.get` and `setAt`'s padding, `ContentsOwnTyping.readAt`/`.writeAt`, and
+`OwnSt.get` and `setAt`'s padding, `ContentsOwnTyping.getAt`/`.setAt`, and
 §6.11's nested `⊘`-skip. One seed case (`deep_path`) is not coverage of it.
 
 An **assignment target** is at most **one** field step deep, and that is a
@@ -1448,7 +1448,7 @@ def fieldSlots (D : Decls) : Ty → List Nat
 
 /-- (helper) Every path of **one or two** steps — field slots and constant
 indices alike — under a binder's declared type. Depth 2 is where the path machinery actually recurses —
-`OwnSt.get`/`setAt`'s padding, `readAt`/`writeAt`, and §6.11's nested `⊘`-skip
+`OwnSt.get`/`setAt`'s padding, `getAt`/`setAt`, and §6.11's nested `⊘`-skip
 — and one seed case (`deep_path`) is not coverage of it. -/
 def paths2 (D : Decls) (T₀ : Ty) : List (List Nat) :=
   (fieldSlots D T₀).flatMap fun f =>

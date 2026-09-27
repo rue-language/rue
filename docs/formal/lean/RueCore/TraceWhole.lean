@@ -389,14 +389,14 @@ theorem plainUnwind_count {D : Decls} : ∀ {H H' : Store} {ls : List Nat} {evs 
 
 /-- (D-Use-Move) §6.3, at every identity (helper). -/
 theorem move_count {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Contents} {π : List Nat}
-    {v : Val} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c)) (hr : c.readAt π = .ok sub)
-    (hw : c.writeAt π .movedOut = some c') (hv : sub.toVal = some v) (a : Nat) :
+    {v : Val} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c)) (hr : c.getAt π = .ok sub)
+    (hw : c.setAt π .movedOut = some c') (hv : sub.toVal = some v) (a : Nat) :
     (storeOwn D H).count a = (storeOwn D (H.set ℓ (.full c'))).count a + (v.own D).count a := by
   have hccc := hcc ℓ c hc
-  have hc' := Contents.writeAt_copyClosed π hccc rfl hw
+  have hc' := Contents.setAt_copyContained π hccc rfl hw
   have hsub : Contents.ofVal v = sub := Contents.ofVal_toVal hv
   have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.writeAt_own_eq a π hccc hc' hr hw
+  have h2 := Contents.setAt_own_eq a π hccc hc' hr hw
   simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
   simp only [Val.own, hsub]
   omega
@@ -404,17 +404,17 @@ theorem move_count {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Contents} {π
 /-- (D-Use-Declared-Linear) §6.3, at every identity (helper). -/
 theorem destructure_count {D : Decls} {H : Store} {ℓ : Nat} {c c' cd leaf : Contents}
     {πd πs : List Nat} {v : Val} {evs : List Event} (hcc : StoreCC D H)
-    (hc : H[ℓ]? = some (.full c)) (hr : c.readAt πd = .ok cd)
+    (hc : H[ℓ]? = some (.full c)) (hr : c.getAt πd = .ok cd)
     (hd : cd.destructure D ℓ πs = .ok (leaf, evs)) (hv : leaf.toVal = some v)
-    (hw : c.writeAt πd .movedOut = some c') (a : Nat) :
+    (hw : c.setAt πd .movedOut = some c') (a : Nat) :
     (storeOwn D H).count a = (storeOwn D (H.set ℓ (.full c'))).count a + (v.own D).count a +
       (freedIds D evs).count a := by
   have hccc := hcc ℓ c hc
-  have hcd := Contents.readAt_copyClosed πd hccc hr
-  have hc' := Contents.writeAt_copyClosed πd hccc rfl hw
+  have hcd := Contents.getAt_copyContained πd hccc hr
+  have hc' := Contents.setAt_copyContained πd hccc rfl hw
   have hsub : Contents.ofVal v = leaf := Contents.ofVal_toVal hv
   have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.writeAt_own_eq a πd hccc hc' hr hw
+  have h2 := Contents.setAt_own_eq a πd hccc hc' hr hw
   have h3 := (Contents.destructure_exact hcd hd a).1
   simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
   simp only [Val.own, hsub]
@@ -423,13 +423,13 @@ theorem destructure_count {D : Decls} {H : Store} {ℓ : Nat} {c c' cd leaf : Co
 /-- §6.11's `@drop`, at every identity (helper). -/
 theorem dropPlace_count {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Contents} {π : List Nat}
     {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
-    (hr : c.readAt π = .ok sub) (hd : dropCell D ℓ sub = .ok evs)
-    (hw : c.writeAt π .movedOut = some c') (a : Nat) :
+    (hr : c.getAt π = .ok sub) (hd : dropCell D ℓ sub = .ok evs)
+    (hw : c.setAt π .movedOut = some c') (a : Nat) :
     (storeOwn D H).count a = (storeOwn D (H.set ℓ (.full c'))).count a + (freedIds D evs).count a := by
   have hccc := hcc ℓ c hc
-  have hc' := Contents.writeAt_copyClosed π hccc rfl hw
+  have hc' := Contents.setAt_copyContained π hccc rfl hw
   have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.writeAt_own_eq a π hccc hc' hr hw
+  have h2 := Contents.setAt_own_eq a π hccc hc' hr hw
   rw [dropCell_freed hd]
   simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
   omega
@@ -437,16 +437,16 @@ theorem dropPlace_count {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Contents
 /-- §6.11's `@drop` at a declared plan, at every identity (helper). -/
 theorem dropDeclared_count {D : Decls} {H : Store} {ℓ : Nat} {c c' cd leaf : Contents}
     {πd πs : List Nat} {evs levs : List Event} (hcc : StoreCC D H)
-    (hc : H[ℓ]? = some (.full c)) (hr : c.readAt πd = .ok cd)
+    (hc : H[ℓ]? = some (.full c)) (hr : c.getAt πd = .ok cd)
     (hd : cd.destructure D ℓ πs = .ok (leaf, evs)) (hl : dropCell D ℓ leaf = .ok levs)
-    (hw : c.writeAt πd .movedOut = some c') (a : Nat) :
+    (hw : c.setAt πd .movedOut = some c') (a : Nat) :
     (storeOwn D H).count a =
       (storeOwn D (H.set ℓ (.full c'))).count a + (freedIds D (evs ++ levs)).count a := by
   have hccc := hcc ℓ c hc
-  have hcd := Contents.readAt_copyClosed πd hccc hr
-  have hc' := Contents.writeAt_copyClosed πd hccc rfl hw
+  have hcd := Contents.getAt_copyContained πd hccc hr
+  have hc' := Contents.setAt_copyContained πd hccc rfl hw
   have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.writeAt_own_eq a πd hccc hc' hr hw
+  have h2 := Contents.setAt_own_eq a πd hccc hc' hr hw
   have h3 := (Contents.destructure_exact hcd hd a).1
   rw [freedIds_append, List.count_append, dropCell_freed hl]
   simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
@@ -455,13 +455,13 @@ theorem dropDeclared_count {D : Decls} {H : Store} {ℓ : Nat} {c c' cd leaf : C
 /-- (D-Assign) §6.8, at every identity (helper). -/
 theorem assign_count {D : Decls} {H : Store} {ℓ : Nat} {c c' old : Contents} {π : List Nat}
     {v : Val} {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
-    (hr : c.readAt π = .ok old) (hd : dropCell D ℓ old = .ok evs)
-    (hw : c.writeAt π (Contents.ofVal v) = some c') (hc' : c'.copyClosed D = true) (a : Nat) :
+    (hr : c.getAt π = .ok old) (hd : dropCell D ℓ old = .ok evs)
+    (hw : c.setAt π (Contents.ofVal v) = some c') (hc' : c'.copyContained D = true) (a : Nat) :
     (storeOwn D H).count a + (v.own D).count a =
       (storeOwn D (H.set ℓ (.full c'))).count a + (freedIds D evs).count a := by
   have hccc := hcc ℓ c hc
   have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.writeAt_own_eq a π hccc hc' hr hw
+  have h2 := Contents.setAt_own_eq a π hccc hc' hr hw
   rw [dropCell_freed hd]
   simp only [Cell.own] at h1
   simp only [Val.own] at *
@@ -470,18 +470,18 @@ theorem assign_count {D : Decls} {H : Store} {ℓ : Nat} {c c' old : Contents} {
 /-- (D-Assign) below a dynamic index, at every identity (helper). -/
 theorem assignDyn_count {D : Decls} {H : Store} {ℓ : Nat} {c c' sub sub' old : Contents}
     {π ρ : List Nat} {v : Val} {evs : List Event} (hcc : StoreCC D H)
-    (hc : H[ℓ]? = some (.full c)) (hr : c.readAt π = .ok sub) (hr' : sub.readAt ρ = .ok old)
-    (hd : dropCell D ℓ old = .ok evs) (hw' : sub.writeAt ρ (Contents.ofVal v) = some sub')
-    (hw : c.writeAt π sub' = some c') (hc' : c'.copyClosed D = true) (a : Nat) :
+    (hc : H[ℓ]? = some (.full c)) (hr : c.getAt π = .ok sub) (hr' : sub.getAt ρ = .ok old)
+    (hd : dropCell D ℓ old = .ok evs) (hw' : sub.setAt ρ (Contents.ofVal v) = some sub')
+    (hw : c.setAt π sub' = some c') (hc' : c'.copyContained D = true) (a : Nat) :
     (storeOwn D H).count a + (v.own D).count a =
       (storeOwn D (H.set ℓ (.full c'))).count a + (freedIds D evs).count a := by
   have hccc := hcc ℓ c hc
-  have hsub := Contents.readAt_copyClosed π hccc hr
-  have hsub' : sub'.copyClosed D = true :=
-    Contents.readAt_copyClosed π hc' (Contents.readAt_writeAt π hw)
+  have hsub := Contents.getAt_copyContained π hccc hr
+  have hsub' : sub'.copyContained D = true :=
+    Contents.getAt_copyContained π hc' (Contents.getAt_setAt π hw)
   have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.writeAt_own_eq a π hccc hc' hr hw
-  have h2' := Contents.writeAt_own_eq a ρ hsub hsub' hr' hw'
+  have h2 := Contents.setAt_own_eq a π hccc hc' hr hw
+  have h2' := Contents.setAt_own_eq a ρ hsub hsub' hr' hw'
   rw [dropCell_freed hd]
   simp only [Cell.own] at h1
   simp only [Val.own] at *
@@ -489,9 +489,9 @@ theorem assignDyn_count {D : Decls} {H : Store} {ℓ : Nat} {c c' sub sub' old :
 
 /-- A fresh struct owns at least its fields, copy-closed (helper). -/
 theorem Contents.own_struct_ge {D : Decls} {s i : Nat} {cs : List Contents}
-    (h : (Contents.struct s i cs).copyClosed D = true) (a : Nat) :
+    (h : (Contents.struct s i cs).copyContained D = true) (a : Nat) :
     (Contents.ownList D cs).count a ≤ ((Contents.struct s i cs).own D).count a := by
-  simp only [Contents.copyClosed] at h
+  simp only [Contents.copyContained] at h
   simp only [Contents.own]
   split
   · rename_i hc; rw [if_pos hc] at h; simp [Contents.allCopyList_own h]
@@ -499,9 +499,9 @@ theorem Contents.own_struct_ge {D : Decls} {s i : Nat} {cs : List Contents}
 
 /-- A fresh array owns at least its elements, copy-closed (helper). -/
 theorem Contents.own_array_ge {D : Decls} {T : Ty} {i : Nat} {cs : List Contents}
-    (h : (Contents.array T i cs).copyClosed D = true) (a : Nat) :
+    (h : (Contents.array T i cs).copyContained D = true) (a : Nat) :
     (Contents.ownList D cs).count a ≤ ((Contents.array T i cs).own D).count a := by
-  simp only [Contents.copyClosed] at h
+  simp only [Contents.copyContained] at h
   simp only [Contents.own]
   split
   · rename_i hc; rw [if_pos hc] at h; simp [Contents.allCopyList_own h]
@@ -524,7 +524,7 @@ theorem evalArgs_cc (hp : P.pendingSafe = true) :
     ∀ {es : List Expr} {H H' : Store} {vs : List Val} {tr : List Event},
       Expr.pendingSafeList es = true → StoreCC P.decls H →
       evalArgs (fun H e => eval M fuel P H φ e) H es = .ok H' vs tr →
-      StoreCC P.decls H' ∧ Contents.copyClosedList P.decls (Contents.ofVals vs) = true
+      StoreCC P.decls H' ∧ Contents.copyContainedList P.decls (Contents.ofVals vs) = true
   | [], H, H', vs, tr, _, hcc, h => by
       simp only [evalArgs, ArgsRes.ok.injEq] at h
       obtain ⟨rfl, rfl, rfl⟩ := h
@@ -542,7 +542,7 @@ theorem evalArgs_cc (hp : P.pendingSafe = true) :
             simp only [ArgsRes.ok.injEq] at h
             obtain ⟨rfl, rfl, rfl⟩ := h
             obtain ⟨c₂, v₂⟩ := evalArgs_cc hp hps.2 c₁ h₂
-            exact ⟨c₂, by simp [Contents.ofVals, Contents.copyClosedList, v₁, v₂]⟩
+            exact ⟨c₂, by simp [Contents.ofVals, Contents.copyContainedList, v₁, v₂]⟩
           · cases h
       | _ => simp [evalArgs, he] at h
 
@@ -1160,23 +1160,23 @@ theorem msim_match (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (hcc : Sto
     split
     · trivial
     · rename_i body hbody
-      have hv : (Contents.enum en k i (Contents.ofVals vs)).copyClosed P.decls = true := cv₀
+      have hv : (Contents.enum en k i (Contents.ofVals vs)).copyContained P.decls = true := cv₀
       have hpay := Contents.enum_payload hv
-      refine MSim.withTrace (C₂ := fun K tr => evalConf (mintParams H₀ vs).1
-          { env := (mintParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (mintParams H₀ vs).2 }
-          body (.endscope (mintParams H₀ vs).2 :: K) tr)
+      refine MSim.withTrace (C₂ := fun K tr => evalConf (freshParams H₀ vs).1
+          { env := (freshParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (freshParams H₀ vs).2 }
+          body (.endscope (freshParams H₀ vs).2 :: K) tr)
         (fun _ _ => MSteps.single (.«match» hbody rfl) (ledger_le_run fun a => by
           have := matchConsume_exact hv a
-          rw [storeOwn_mintParams, stackOwn_cons_nil (F := .«match» arms) rfl,
+          rw [storeOwn_freshParams, stackOwn_cons_nil (F := .«match» arms) rfl,
             stackOwn_cons_nil (F := .endscope _) rfl]
           simp only [Focus.own, List.count_append, List.count_nil]
           simp only [Val.own, Contents.ofVal] at this ⊢
           omega)) ?_
-      have hcm : StoreCC P.decls (mintParams H₀ vs).1 := c₀.mintParams (hpay 0).2
+      have hcm : StoreCC P.decls (freshParams H₀ vs).1 := c₀.freshParams (hpay 0).2
       have hb := eval_exact M hp fuel _
-        { env := (mintParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (mintParams H₀ vs).2 }
+        { env := (freshParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (freshParams H₀ vs).2 }
         body hcm (Expr.pendingSafeList_mem he.2 (List.mem_of_getElem? hbody))
-      refine MSim.andThen (F := .endscope (mintParams H₀ vs).2) (fun _ => ⟨rfl, rfl⟩) rfl
+      refine MSim.andThen (F := .endscope (freshParams H₀ vs).2) (fun _ => ⟨rfl, rfl⟩) rfl
         (fun _ _ => .refl _)
         (IH _ _ body hcm (Expr.pendingSafeList_mem he.2 (List.mem_of_getElem? hbody))) ?_
       intro H₂ v₂ _ hr₂
@@ -1185,8 +1185,8 @@ theorem msim_match (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (hcc : Sto
       · rename_i H₃ evs hu
         intro K tr
         have hs := Step.endScope (M := M) (P := P) (K := K) (tr := tr) (v := v₂)
-          (φ := { env := (mintParams H₀ vs).2.reverse ++ φ.env,
-                  scope := φ.scope ++ (mintParams H₀ vs).2 }) (unwindLocs_plain hu)
+          (φ := { env := (freshParams H₀ vs).2.reverse ++ φ.env,
+                  scope := φ.scope ++ (freshParams H₀ vs).2 }) (unwindLocs_plain hu)
         rw [Activation.unwindScope_push] at hs
         exact MSteps.single hs (ledger_le_run fun a => by
           have := plainUnwind_count (unwindLocs_plain hu) a
@@ -1352,10 +1352,10 @@ theorem msim_call (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (hcc : Stor
     split
     · rename_i hlen
       refine MSim.absorb (fun _ _ => MSteps.single (.call hfd hlen rfl) (ledger_le_run0 fun a => by
-          rw [storeOwn_mintParams, stackOwn_cons_nil rfl]
+          rw [storeOwn_freshParams, stackOwn_cons_nil rfl]
           simp only [Focus.own, ArgsFrame.own, List.nil_append, List.count_append, List.count_nil]
           omega))
-        (IH _ _ fd.body (c₁.mintParams cv₁) (hbody f fd hfd)) ?_
+        (IH _ _ fd.body (c₁.freshParams cv₁) (hbody f fd hfd)) ?_
       intro H₃ v _ hr₃
       split
       · trivial

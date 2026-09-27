@@ -70,7 +70,7 @@ drop does the same thing.
 
 `eval`'s fourth monitor, `ownedUnderCopy` (RUE-2323), refuses an aggregate
 literal or an assignment that would put an owned value under a `Copy` node
-(`Contents.copyClosed`, `Dynamics.lean`). §6.5's (D-Struct) and §6.8's
+(`Contents.copyContained`, `Dynamics.lean`). §6.5's (D-Struct) and §6.8's
 (D-Assign) have no such premise and rely on §5.8's typing, so (D-Struct),
 (D-Enum-Intro), (D-Array) and (D-Assign) here carry none either. The one
 program shape it matters on is ill-typed, and there `Step` really does run a
@@ -144,7 +144,7 @@ On programs `check` rejects, `Step` follows §6 where `eval` does not:
   `eval` refuses it with `useAfterMove` (`Contents.isMovedOut`).
 * An aggregate or an assignment that puts an owned value under a `Copy` node
   steps in `Step`; `eval` refuses it with `ownedUnderCopy`
-  (`Contents.copyClosed`).
+  (`Contents.copyContained`).
 
 Both are refusals on `eval`'s side, so neither obstructs part 2's
 `eval ⇒ Step*` simulation, which holds on every program (`run_sim`,
@@ -323,7 +323,7 @@ def plainUnwind (D : Decls) (H : Store) : List Nat → Except Refusal (Store × 
           | .ok (H₂, evs') => .ok (H₂, evs ++ evs')
 
 /-- §6.3's `drop*` on the residue as §6.3 writes it: each retained subtree's
-marker (`residueMark`, RUE-2427) and §6.11's walk, left to right, with no
+marker (`residueDropEvent`, RUE-2427) and §6.11's walk, left to right, with no
 residue monitor (helper). -/
 def plainResidue (D : Decls) (ℓ : Nat) : List Contents → Except Refusal (List Event)
   | [] => .ok []
@@ -333,7 +333,7 @@ def plainResidue (D : Decls) (ℓ : Nat) : List Contents → Except Refusal (Lis
       | .ok evs =>
           match plainResidue D ℓ rs with
           | .error w => .error w
-          | .ok evs' => .ok (residueMark D ℓ r ++ evs ++ evs')
+          | .ok evs' => .ok (residueDropEvent D ℓ r ++ evs ++ evs')
 
 /-- §6.3's `destructure(H, ℓ@π_d, π_s)` as §6.3 writes it: `split`, then
 `drop*` on the residue left to right, with no residue monitor — the
@@ -381,10 +381,10 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   | useDeclared {H φ K tr p ℓ c πd πs cd leaf evs v c'} :
       rootCell H φ p.root = .ok (ℓ, c) →
       c.declaredPlan P.decls p.path = some (πd, πs) →
-      c.readAt πd = .ok cd →
+      c.getAt πd = .ok cd →
       plainDestructure P.decls ℓ cd πs = .ok (leaf, evs) →
       leaf.toVal = some v →
-      c.writeAt πd .movedOut = some c' →
+      c.setAt πd .movedOut = some c' →
       Step M P (.run H φ K (.eval (.use p)) tr)
         (.run (H.set ℓ (.full c')) φ K (.ret v) (tr ++ evs))
   /-- (D-Use-Copy) §6.3: an `Ordinary` use of a `Copy` place reads it and
@@ -392,7 +392,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   | useCopy {H φ K tr p ℓ c sub v} :
       rootCell H φ p.root = .ok (ℓ, c) →
       c.declaredPlan P.decls p.path = none →
-      c.readAt p.path = .ok sub →
+      c.getAt p.path = .ok sub →
       sub.toVal = some v →
       v.qual P.decls = .copy →
       Step M P (.run H φ K (.eval (.use p)) tr) (.run H φ K (.ret v) tr)
@@ -402,10 +402,10 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   | useMove {H φ K tr p ℓ c sub v c'} :
       rootCell H φ p.root = .ok (ℓ, c) →
       c.declaredPlan P.decls p.path = none →
-      c.readAt p.path = .ok sub →
+      c.getAt p.path = .ok sub →
       sub.toVal = some v →
       v.qual P.decls ≠ .copy →
-      c.writeAt p.path .movedOut = some c' →
+      c.setAt p.path .movedOut = some c' →
       Step M P (.run H φ K (.eval (.use p)) tr)
         (.run (H.set ℓ (.full c')) φ K (.ret v) tr)
   -- ### §6.4: operators and intrinsics
@@ -561,7 +561,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   configuration is stuck (`typeConfusion`). -/
   | indexRead {H φ K tr p πs vs ℓ c sub ρ leaf v} :
       dynPlace H φ p vs πs = .at ℓ c sub ρ →
-      sub.readAt ρ = .ok leaf →
+      sub.getAt ρ = .ok leaf →
       leaf.toVal = some v →
       v.qual P.decls = .copy →
       Step M P (.run H φ K (.args (.indexRead p πs) vs []) tr) (.run H φ K (.ret v) tr)
@@ -577,7 +577,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   (`useAfterMove`, the read finding no value). -/
   | indexDrop {H φ K tr p πs vs ℓ c sub ρ leaf v} :
       dynPlace H φ p vs πs = .at ℓ c sub ρ →
-      sub.readAt ρ = .ok leaf →
+      sub.getAt ρ = .ok leaf →
       leaf.toVal = some v →
       leaf.qual P.decls = .copy →
       Step M P (.run H φ K (.args (.indexDrop p πs) vs []) tr) (.run H φ K (.ret .unit) tr)
@@ -589,10 +589,10 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   §6.5: overwrite-drop what the position holds, then store. -/
   | indexWrite {H φ K tr p πs v vs ℓ c sub ρ old evs sub' c'} :
       dynPlace H φ p vs πs = .at ℓ c sub ρ →
-      sub.readAt ρ = .ok old →
+      sub.getAt ρ = .ok old →
       dropCell P.decls ℓ old = .ok evs →
-      sub.writeAt ρ (Contents.ofVal v) = some sub' →
-      c.writeAt p.path sub' = some c' →
+      sub.setAt ρ (Contents.ofVal v) = some sub' →
+      c.setAt p.path sub' = some c' →
       Step M P (.run H φ K (.args (.indexWrite p πs v) vs []) tr)
         (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ evs))
   /-- (D-Index-Trap) §6.5 at an assignment's dynamic place: the evaluated
@@ -609,7 +609,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   non-`Copy` scrutinee's shell is consumed (`matchConsume`, RUE-2427). -/
   | «match» {H φ K tr arms e k i vs body H' ls} :
       arms[k]? = some body →
-      mintParams H vs = (H', ls) →
+      freshParams H vs = (H', ls) →
       Step M P (.run H φ (.«match» arms :: K) (.ret (.enum e k i vs)) tr)
         (.run H' { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls }
           (.endscope ls :: K) (.eval body) (tr ++ matchConsume P.decls e k i vs))
@@ -662,9 +662,9 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   (Assign) excluded a live linear position statically (`3.8:77`). -/
   | assign {H φ K tr p v ℓ c old evs c'} :
       rootCell H φ p.root = .ok (ℓ, c) →
-      c.readAt p.path = .ok old →
+      c.getAt p.path = .ok old →
       dropCell P.decls ℓ old = .ok evs →
-      c.writeAt p.path (Contents.ofVal v) = some c' →
+      c.setAt p.path (Contents.ofVal v) = some c' →
       Step M P (.run H φ (.assign p :: K) (.ret v) tr)
         (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ evs))
   /-- `@drop` at a declared-linear plan, as §5.1 reads §5.3's `(@Drop)` under a
@@ -674,10 +674,10 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   | dropDeclared {H φ K tr p ℓ c πd πs cd leaf evs levs c'} :
       rootCell H φ p.root = .ok (ℓ, c) →
       c.declaredPlan P.decls p.path = some (πd, πs) →
-      c.readAt πd = .ok cd →
+      c.getAt πd = .ok cd →
       plainDestructure P.decls ℓ cd πs = .ok (leaf, evs) →
       dropCell P.decls ℓ leaf = .ok levs →
-      c.writeAt πd .movedOut = some c' →
+      c.setAt πd .movedOut = some c' →
       Step M P (.run H φ K (.eval (.drop p)) tr)
         (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ (evs ++ levs)))
   /-- §6.11's `@drop` of a `Copy` place: `⟨⟩`, the store unchanged. A `⊘`
@@ -686,7 +686,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   | dropCopy {H φ K tr p ℓ c sub} :
       rootCell H φ p.root = .ok (ℓ, c) →
       c.declaredPlan P.decls p.path = none →
-      c.readAt p.path = .ok sub →
+      c.getAt p.path = .ok sub →
       sub.qual P.decls = .copy →
       Step M P (.run H φ K (.eval (.drop p)) tr) (.run H φ K (.ret .unit) tr)
   /-- §6.11's `@drop` of a non-`Copy` place: run `drop` on what it holds (the
@@ -694,10 +694,10 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   | dropMove {H φ K tr p ℓ c sub evs c'} :
       rootCell H φ p.root = .ok (ℓ, c) →
       c.declaredPlan P.decls p.path = none →
-      c.readAt p.path = .ok sub →
+      c.getAt p.path = .ok sub →
       sub.qual P.decls ≠ .copy →
       dropCell P.decls ℓ sub = .ok evs →
-      c.writeAt p.path .movedOut = some c' →
+      c.setAt p.path .movedOut = some c' →
       Step M P (.run H φ K (.eval (.drop p)) tr)
         (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ evs))
   -- ### §6.9: calls and `return`
@@ -707,7 +707,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   | call {H φ K tr f vs fd H' ls} :
       P.fns[f]? = some fd →
       fd.params.length = vs.length →
-      mintParams H vs = (H', ls) →
+      freshParams H vs = (H', ls) →
       Step M P (.run H φ K (.args (.call f) vs []) tr)
         (.run H' { env := ls.reverse, scope := ls } (.call φ :: K) (.eval fd.body) tr)
   /-- (D-Return-Value) §6.9: the body is a value; run the frame's scope drops
@@ -782,7 +782,7 @@ def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : Lis
     | .ok (ℓ, c) =>
       match c.declaredPlan P.decls p.path with
       | some (πd, πs) =>
-        match c.readAt πd with
+        match c.getAt πd with
         | .error w => .stuck w
         | .ok cd =>
           match plainDestructure P.decls ℓ cd πs with
@@ -791,11 +791,11 @@ def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : Lis
             match leaf.toVal with
             | none => .stuck .useAfterMove
             | some v =>
-              match c.writeAt πd .movedOut with
+              match c.setAt πd .movedOut with
               | none => .stuck .typeConfusion
               | some c' => .next (.run (H.set ℓ (.full c')) φ K (.ret v) (tr ++ evs))
       | none =>
-        match c.readAt p.path with
+        match c.getAt p.path with
         | .error w => .stuck w
         | .ok sub =>
           match sub.toVal with
@@ -803,7 +803,7 @@ def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : Lis
           | some v =>
             if v.qual P.decls = .copy then .next (.run H φ K (.ret v) tr)
             else
-              match c.writeAt p.path .movedOut with
+              match c.setAt p.path .movedOut with
               | none => .stuck .typeConfusion
               | some c' => .next (.run (H.set ℓ (.full c')) φ K (.ret v) tr)
   | .binop op e₁ e₂ => .next (.run H φ (.binopL op e₂ :: K) (.eval e₁) tr)
@@ -826,7 +826,7 @@ def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : Lis
     | .ok (ℓ, c) =>
       match c.declaredPlan P.decls p.path with
       | some (πd, πs) =>
-        match c.readAt πd with
+        match c.getAt πd with
         | .error w => .stuck w
         | .ok cd =>
           match plainDestructure P.decls ℓ cd πs with
@@ -835,12 +835,12 @@ def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : Lis
             match dropCell P.decls ℓ leaf with
             | .error w => .stuck w
             | .ok levs =>
-              match c.writeAt πd .movedOut with
+              match c.setAt πd .movedOut with
               | none => .stuck .typeConfusion
               | some c' =>
                 .next (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ (evs ++ levs)))
       | none =>
-        match c.readAt p.path with
+        match c.getAt p.path with
         | .error w => .stuck w
         | .ok sub =>
           if sub.qual P.decls = .copy then .next (.run H φ K (.ret .unit) tr)
@@ -848,7 +848,7 @@ def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : Lis
             match dropCell P.decls ℓ sub with
             | .error w => .stuck w
             | .ok evs =>
-              match c.writeAt p.path .movedOut with
+              match c.setAt p.path .movedOut with
               | none => .stuck .typeConfusion
               | some c' => .next (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ evs))
   | .letIn _ e₁ e₂ => .next (.run H φ (.letIn e₂ :: K) (.eval e₁) tr)
@@ -894,7 +894,7 @@ def stepArgs (P : Program) (H : Store) (φ : Activation) (K : List Kont) (tr : L
     | none => .stuck .unbound
     | some fd =>
       if fd.params.length = vs.length then
-        match mintParams H vs with
+        match freshParams H vs with
         | (H', ls) =>
           .next (.run H' { env := ls.reverse, scope := ls } (.call φ :: K) (.eval fd.body) tr)
       else .stuck .typeConfusion
@@ -903,7 +903,7 @@ def stepArgs (P : Program) (H : Store) (φ : Activation) (K : List Kont) (tr : L
     | .refused w => .stuck w
     | .bounds => .next (.panic .bounds tr)
     | .at _ _ sub ρ =>
-      match sub.readAt ρ with
+      match sub.getAt ρ with
       | .error w => .stuck w
       | .ok leaf =>
         match leaf.toVal with
@@ -916,7 +916,7 @@ def stepArgs (P : Program) (H : Store) (φ : Activation) (K : List Kont) (tr : L
     | .refused w => .stuck w
     | .bounds => .next (.panic .bounds tr)
     | .at _ _ sub ρ =>
-      match sub.readAt ρ with
+      match sub.getAt ρ with
       | .error w => .stuck w
       | .ok leaf =>
         match leaf.toVal with
@@ -929,16 +929,16 @@ def stepArgs (P : Program) (H : Store) (φ : Activation) (K : List Kont) (tr : L
     | .refused w => .stuck w
     | .bounds => .next (.panic .bounds tr)
     | .at ℓ c sub ρ =>
-      match sub.readAt ρ with
+      match sub.getAt ρ with
       | .error w => .stuck w
       | .ok old =>
         match dropCell P.decls ℓ old with
         | .error w => .stuck w
         | .ok evs =>
-          match sub.writeAt ρ (Contents.ofVal v) with
+          match sub.setAt ρ (Contents.ofVal v) with
           | none => .stuck .typeConfusion
           | some sub' =>
-            match c.writeAt p.path sub' with
+            match c.setAt p.path sub' with
             | none => .stuck .typeConfusion
             | some c' => .next (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ evs))
 
@@ -974,7 +974,7 @@ def stepRet (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : List
       match arms[k]? with
       | none => .stuck .typeConfusion
       | some body =>
-        match mintParams H vs with
+        match freshParams H vs with
         | (H', ls) =>
           .next (.run H' { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls }
             (.endscope ls :: K) (.eval body) (tr ++ matchConsume P.decls e k i vs))
@@ -998,13 +998,13 @@ def stepRet (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : List
     match rootCell H φ p.root with
     | .error w => .stuck w
     | .ok (ℓ, c) =>
-      match c.readAt p.path with
+      match c.getAt p.path with
       | .error w => .stuck w
       | .ok old =>
         match dropCell P.decls ℓ old with
         | .error w => .stuck w
         | .ok evs =>
-          match c.writeAt p.path (Contents.ofVal v) with
+          match c.setAt p.path (Contents.ofVal v) with
           | none => .stuck .typeConfusion
           | some c' => .next (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ evs))
   | .ret =>

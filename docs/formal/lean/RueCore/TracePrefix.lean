@@ -169,7 +169,7 @@ theorem LongC.andThen {H : Store} {X : List Nat} {φ₁ : Activation}
     (h₁ : r = .outOfFuel → LongC M P F H X C₁ fuel)
     {k : Store → Val → EvalRes}
     (hk : ∀ H₁ v tr₁, r = .ok H₁ v tr₁ → StoreCC P.decls H₁ →
-      (Contents.ofVal v).copyClosed P.decls = true → k H₁ v = .outOfFuel →
+      (Contents.ofVal v).copyContained P.decls = true → k H₁ v = .outOfFuel →
       LongC M P F H₁ (v.own P.decls) (fun K tr => .run H₁ φ₁ (Fr :: K) (.ret v) tr) fuel) :
     r.bind k = .outOfFuel → LongC M P F H X C (fuel + 1) := by
   intro hr
@@ -323,28 +323,28 @@ theorem longc_match (hF : TraceMeasure P.decls F) (IH : LongCIH M P F fuel)
     · simp at hk
     · rename_i body hbody
       rw [EvalRes.withTrace_outOfFuel_iff] at hk
-      have hbo : eval M fuel P (mintParams H₀ vs).1
-          { env := (mintParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (mintParams H₀ vs).2 }
+      have hbo : eval M fuel P (freshParams H₀ vs).1
+          { env := (freshParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (freshParams H₀ vs).2 }
           body = .outOfFuel := by
         revert hk
-        cases eval M fuel P (mintParams H₀ vs).1
-            { env := (mintParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (mintParams H₀ vs).2 }
+        cases eval M fuel P (freshParams H₀ vs).1
+            { env := (freshParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (freshParams H₀ vs).2 }
             body with
         | ok H₂ v₂ tr₂ => simp only [EvalRes.bind]; split <;> simp [EvalRes.withTrace]
         | _ => simp [EvalRes.bind]
       have hpay := Contents.enum_payload hv
-      have hcm := hc₀.mintParams (hpay 0).2
+      have hcm := hc₀.freshParams (hpay 0).2
       refine LongC.mono (Nat.le_succ _) (LongC.pre1 (t := matchConsume P.decls e k i vs)
-        (H₁ := (mintParams H₀ vs).1) (Y := [])
-        (C₂ := fun K tr => evalConf (mintParams H₀ vs).1
-          { env := (mintParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (mintParams H₀ vs).2 }
-          body (.endscope (mintParams H₀ vs).2 :: K) tr) ?_ ?_
+        (H₁ := (freshParams H₀ vs).1) (Y := [])
+        (C₂ := fun K tr => evalConf (freshParams H₀ vs).1
+          { env := (freshParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (freshParams H₀ vs).2 }
+          body (.endscope (freshParams H₀ vs).2 :: K) tr) ?_ ?_
         (fun K tr => ⟨_, .«match» hbody rfl, .refl _⟩)
         (fun K tr => IH _ _ body hcm hbo _ tr))
-      · rw [mintParams_length]; omega
+      · rw [freshParams_length]; omega
       · intro a
         have := matchConsume_measure hF hv a
-        rw [storeOwn_mintParams]
+        rw [storeOwn_freshParams]
         simp only [List.count_append, List.count_nil]
         show _ ≤ _ + ((Contents.enum e k i (Contents.ofVals vs)).own P.decls).count a + _
         omega
@@ -529,29 +529,29 @@ theorem longc_call (hF : TraceMeasure P.decls F) (IH : LongCIH M P F fuel)
     · rename_i fd hfd
       split at h
       · rename_i hlen
-        have hb : eval M fuel P (mintParams H₁ vs).1
-            { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 } fd.body =
+        have hb : eval M fuel P (freshParams H₁ vs).1
+            { env := (freshParams H₁ vs).2.reverse, scope := (freshParams H₁ vs).2 } fd.body =
               .outOfFuel := by
           revert h
-          cases eval M fuel P (mintParams H₁ vs).1
-              { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 } fd.body
+          cases eval M fuel P (freshParams H₁ vs).1
+              { env := (freshParams H₁ vs).2.reverse, scope := (freshParams H₁ vs).2 } fd.body
           all_goals simp only [EvalRes.bindCall, EvalRes.withTrace_outOfFuel_iff, imp_self]
           all_goals (try split)
           all_goals simp
         have ka := evalArgs_cons (fun H'' e' hc' => eval_conserves M hF fuel H'' φ e' hc') H args hcc
         rw [hr] at ka
         obtain ⟨l₁, c₁, cv₁, i₁⟩ := ka
-        have hcm := c₁.mintParams cv₁
-        refine LongC.pre1 (t := tr₁) (H₁ := (mintParams H₁ vs).1) (Y := [])
+        have hcm := c₁.freshParams cv₁
+        refine LongC.pre1 (t := tr₁) (H₁ := (freshParams H₁ vs).1) (Y := [])
           (C₂ := fun K tr => evalConf _ _ fd.body (.call φ :: K) tr) ?_ ?_
           (fun K tr => ⟨_, .callEnter,
             (evalArgs_ok_steps hr K tr).trans (Steps.single (.call hfd hlen rfl))⟩)
           (fun K tr => IH _ _ _ hcm hb _ tr)
-        · rw [mintParams_length]; omega
+        · rw [freshParams_length]; omega
         · intro a
           have := i₁ a
-          have := Fresh.count_trans l₁ (by rw [mintParams_length]; omega : H₁.length ≤ (mintParams H₁ vs).1.length) a
-          rw [storeOwn_mintParams]
+          have := Fresh.count_trans l₁ (by rw [freshParams_length]; omega : H₁.length ≤ (freshParams H₁ vs).1.length) a
+          rw [storeOwn_freshParams]
           simp only [List.count_append, List.count_nil] at *
           omega
       · simp at h

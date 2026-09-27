@@ -169,24 +169,24 @@ theorem Config.Stuck.no_step {M : FloatSig} {P : Program} {C C' : Config} {w : R
 
 /-! ## Stuck states are §6's, and the monitors are absent (RUE-2314) -/
 
-/-- `readAt` refuses only with §6's stuck states (helper). -/
-theorem Contents.readAt_err : ∀ {c : Contents} {π : List Nat} {w : Refusal},
-    c.readAt π = .error w → w.isStuckState = true
-  | _, [], _, h => by simp [Contents.readAt] at h
-  | .movedOut, _ :: _, _, h => by simp [Contents.readAt] at h; subst h; rfl
+/-- `getAt` refuses only with §6's stuck states (helper). -/
+theorem Contents.getAt_err : ∀ {c : Contents} {π : List Nat} {w : Refusal},
+    c.getAt π = .error w → w.isStuckState = true
+  | _, [], _, h => by simp [Contents.getAt] at h
+  | .movedOut, _ :: _, _, h => by simp [Contents.getAt] at h; subst h; rfl
   | .struct _ _ cs, f :: π, _, h => by
-      simp only [Contents.readAt] at h
+      simp only [Contents.getAt] at h
       split at h
-      · exact Contents.readAt_err h
+      · exact Contents.getAt_err h
       · simp at h; subst h; rfl
   | .array _ _ cs, f :: π, _, h => by
-      simp only [Contents.readAt] at h
+      simp only [Contents.getAt] at h
       split at h
-      · exact Contents.readAt_err h
+      · exact Contents.getAt_err h
       · simp at h; subst h; rfl
   | .int _ _ _, _ :: _, _, h | .float _ _, _ :: _, _, h | .bool _, _ :: _, _, h
   | .unit, _ :: _, _, h | .enum _ _ _ _, _ :: _, _, h => by
-      simp [Contents.readAt] at h; subst h; rfl
+      simp [Contents.getAt] at h; subst h; rfl
 
 mutual
 /-- `split` refuses only with §6's stuck states (helper). -/
@@ -318,7 +318,7 @@ theorem Contents.resolveDyn_err : ∀ {c : Contents} {is : List Int} {πs : List
         · split at h
           · simp at h; subst h; rfl
           · split at h
-            · simp at h; subst h; exact Contents.readAt_err ‹_›
+            · simp at h; subst h; exact Contents.getAt_err ‹_›
             · split at h
               · simp at h
               · exact Contents.resolveDyn_err h
@@ -335,7 +335,7 @@ theorem dynPlace_err {H : Store} {φ : Activation} {p : Place} {vs : List Val}
   repeat' split at h
   all_goals simp at h
   all_goals (try (subst h; rfl))
-  · subst h; exact Contents.readAt_err ‹_›
+  · subst h; exact Contents.getAt_err ‹_›
   · subst h; exact Contents.resolveDyn_err ‹_›
 
 /-- **§6's stuck states only** (RUE-2314): a configuration `step` finds stuck
@@ -358,7 +358,7 @@ theorem step_stuck_isStuckState {M : FloatSig} {P : Program} {C : Config} {w : R
       all_goals subst h
       all_goals first
         | exact rootCell_err ‹_›
-        | exact Contents.readAt_err ‹_›
+        | exact Contents.getAt_err ‹_›
         | exact plainDestructure_err ‹_›
         | exact dropCell_err ‹_›
         | exact plainUnwind_err ‹_›
@@ -371,7 +371,7 @@ theorem step_stuck_isStuckState {M : FloatSig} {P : Program} {C : Config} {w : R
       all_goals subst h
       all_goals first
         | exact dynPlace_err ‹_›
-        | exact Contents.readAt_err ‹_›
+        | exact Contents.getAt_err ‹_›
         | exact dropCell_err ‹_›
   | .run H φ (k :: K) (.ret v) tr, h =>
       simp only [step] at h
@@ -382,7 +382,7 @@ theorem step_stuck_isStuckState {M : FloatSig} {P : Program} {C : Config} {w : R
       all_goals subst h
       all_goals first
         | exact rootCell_err ‹_›
-        | exact Contents.readAt_err ‹_›
+        | exact Contents.getAt_err ‹_›
         | exact dropCell_err ‹_›
         | exact dropContents_err _ ‹_›
         | exact plainUnwind_err ‹_›

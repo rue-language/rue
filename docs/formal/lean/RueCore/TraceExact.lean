@@ -467,99 +467,99 @@ theorem freedIds_append (D : Decls) (l₁ l₂ : List Event) :
   simp [freedIds, List.flatMap_append]
 
 /-- A path written is a path read back (helper). -/
-theorem Contents.readAt_writeAt : ∀ (π : List Nat) {c new c' : Contents},
-    c.writeAt π new = some c' → c'.readAt π = .ok new
-  | [], c, new, c', hw => by simp [Contents.writeAt] at hw; subst hw; rfl
+theorem Contents.getAt_setAt : ∀ (π : List Nat) {c new c' : Contents},
+    c.setAt π new = some c' → c'.getAt π = .ok new
+  | [], c, new, c', hw => by simp [Contents.setAt] at hw; subst hw; rfl
   | f :: π, c, new, c', hw => by
       cases c with
       | struct s i cs =>
-          simp only [Contents.writeAt] at hw
+          simp only [Contents.setAt] at hw
           split at hw
           · rename_i cf hcf
             simp only [Option.map_eq_some_iff] at hw
             obtain ⟨cf', hw', rfl⟩ := hw
             have hlt : f < cs.length := (List.getElem?_eq_some_iff.mp hcf).1
-            simp only [Contents.readAt, List.getElem?_set_self hlt]
-            exact Contents.readAt_writeAt π hw'
+            simp only [Contents.getAt, List.getElem?_set_self hlt]
+            exact Contents.getAt_setAt π hw'
           · cases hw
       | array T i cs =>
-          simp only [Contents.writeAt] at hw
+          simp only [Contents.setAt] at hw
           split at hw
           · rename_i cf hcf
             simp only [Option.map_eq_some_iff] at hw
             obtain ⟨cf', hw', rfl⟩ := hw
             have hlt : f < cs.length := (List.getElem?_eq_some_iff.mp hcf).1
-            simp only [Contents.readAt, List.getElem?_set_self hlt]
-            exact Contents.readAt_writeAt π hw'
+            simp only [Contents.getAt, List.getElem?_set_self hlt]
+            exact Contents.getAt_setAt π hw'
           · cases hw
-      | _ => simp [Contents.writeAt] at hw
+      | _ => simp [Contents.setAt] at hw
 
 /-- **A write at a path, counted exactly**: the contents after the write owns
 what it owned before, less what sat at the path, plus what was written —
 §6.3's move and §6.8's store, read as an equation. Below a `Copy` node both
 sides own nothing, which is where copy closure of both the old and the new
 contents is needed (helper). -/
-theorem Contents.writeAt_own_eq {D : Decls} (a : Nat) : ∀ (π : List Nat) {c sub new c' : Contents},
-    c.copyClosed D = true → c'.copyClosed D = true → c.readAt π = .ok sub →
-    c.writeAt π new = some c' →
+theorem Contents.setAt_own_eq {D : Decls} (a : Nat) : ∀ (π : List Nat) {c sub new c' : Contents},
+    c.copyContained D = true → c'.copyContained D = true → c.getAt π = .ok sub →
+    c.setAt π new = some c' →
     (c'.own D).count a + (sub.own D).count a = (c.own D).count a + (new.own D).count a
   | [], c, sub, new, c', _, _, hr, hw => by
-      simp [Contents.readAt] at hr; simp [Contents.writeAt] at hw; subst hr; subst hw; omega
+      simp [Contents.getAt] at hr; simp [Contents.setAt] at hw; subst hr; subst hw; omega
   | f :: π, c, sub, new, c', hcc, hcc', hr, hw => by
-      have hnew : new.copyClosed D = true :=
-        Contents.readAt_copyClosed (f :: π) hcc' (Contents.readAt_writeAt (f :: π) hw)
+      have hnew : new.copyContained D = true :=
+        Contents.getAt_copyContained (f :: π) hcc' (Contents.getAt_setAt (f :: π) hw)
       cases c with
       | struct s i cs =>
-          simp only [Contents.readAt] at hr
-          simp only [Contents.writeAt] at hw
+          simp only [Contents.getAt] at hr
+          simp only [Contents.setAt] at hw
           split at hr
           · rename_i cf hcf
             rw [hcf] at hw
             simp only [Option.map_eq_some_iff] at hw
             obtain ⟨cf', hw', rfl⟩ := hw
             have hlt : f < cs.length := (List.getElem?_eq_some_iff.mp hcf).1
-            simp only [Contents.copyClosed] at hcc hcc'
+            simp only [Contents.copyContained] at hcc hcc'
             by_cases hc : D.classOf s = .copy
             · rw [if_pos hc] at hcc hcc'
-              have hsub := Contents.readAt_allCopy π (Contents.allCopyList_index hcc hcf) hr
+              have hsub := Contents.getAt_allCopy π (Contents.allCopyList_index hcc hcf) hr
               have hcf' : cf'.allCopy D = true :=
                 Contents.allCopyList_index hcc' (List.getElem?_set_self hlt)
-              have hn := Contents.readAt_allCopy π hcf' (Contents.readAt_writeAt π hw')
+              have hn := Contents.getAt_allCopy π hcf' (Contents.getAt_setAt π hw')
               simp [Contents.own, hc, Contents.allCopy_own hsub, Contents.allCopy_own hn]
             · rw [if_neg hc] at hcc hcc'
-              have hcf' : cf'.copyClosed D = true :=
-                Contents.copyClosedList_index hcc' (List.getElem?_set_self hlt)
-              have ih := Contents.writeAt_own_eq a π (Contents.copyClosedList_index hcc hcf) hcf' hr hw'
+              have hcf' : cf'.copyContained D = true :=
+                Contents.copyContainedList_index hcc' (List.getElem?_set_self hlt)
+              have ih := Contents.setAt_own_eq a π (Contents.copyContainedList_index hcc hcf) hcf' hr hw'
               have hset := Contents.ownList_set_count (D := D) a cf' hcf
               simp only [Contents.own, if_neg hc, List.count_cons]
               omega
           · cases hr
       | array T i cs =>
-          simp only [Contents.readAt] at hr
-          simp only [Contents.writeAt] at hw
+          simp only [Contents.getAt] at hr
+          simp only [Contents.setAt] at hw
           split at hr
           · rename_i cf hcf
             rw [hcf] at hw
             simp only [Option.map_eq_some_iff] at hw
             obtain ⟨cf', hw', rfl⟩ := hw
             have hlt : f < cs.length := (List.getElem?_eq_some_iff.mp hcf).1
-            simp only [Contents.copyClosed, List.length_set] at hcc hcc'
+            simp only [Contents.copyContained, List.length_set] at hcc hcc'
             by_cases hc : Ty.qual D (.array T cs.length) = .copy
             · rw [if_pos hc] at hcc hcc'
-              have hsub := Contents.readAt_allCopy π (Contents.allCopyList_index hcc hcf) hr
+              have hsub := Contents.getAt_allCopy π (Contents.allCopyList_index hcc hcf) hr
               have hcf' : cf'.allCopy D = true :=
                 Contents.allCopyList_index hcc' (List.getElem?_set_self hlt)
-              have hn := Contents.readAt_allCopy π hcf' (Contents.readAt_writeAt π hw')
+              have hn := Contents.getAt_allCopy π hcf' (Contents.getAt_setAt π hw')
               simp [Contents.own, hc, Contents.allCopy_own hsub, Contents.allCopy_own hn]
             · rw [if_neg hc] at hcc hcc'
-              have hcf' : cf'.copyClosed D = true :=
-                Contents.copyClosedList_index hcc' (List.getElem?_set_self hlt)
-              have ih := Contents.writeAt_own_eq a π (Contents.copyClosedList_index hcc hcf) hcf' hr hw'
+              have hcf' : cf'.copyContained D = true :=
+                Contents.copyContainedList_index hcc' (List.getElem?_set_self hlt)
+              have ih := Contents.setAt_own_eq a π (Contents.copyContainedList_index hcc hcf) hcf' hr hw'
               have hset := Contents.ownList_set_count (D := D) a cf' hcf
               simp only [Contents.own, List.length_set, if_neg hc, List.count_cons]
               omega
           · cases hr
-      | _ => simp [Contents.readAt] at hr
+      | _ => simp [Contents.getAt] at hr
 
 /-- **A binding's drop frees exactly the tree it names** (§6.11): the marker
 names every owned node, the walk under it names none, and a `Copy` tree has
@@ -577,10 +577,10 @@ theorem dropCell_freed {D : Decls} {ℓ : Nat} {c : Contents} {evs : List Event}
       simp [freedIds, Event.freed, this]
 
 /-- One residue subtree's drop frees exactly the subtree (helper). -/
-theorem residueMark_freed {D : Decls} {ℓ : Nat} {r : Contents} {evs : List Event}
-    (h : dropContents D r = .ok evs) : freedIds D (residueMark D ℓ r ++ evs) = r.own D := by
+theorem residueDropEvent_freed {D : Decls} {ℓ : Nat} {r : Contents} {evs : List Event}
+    (h : dropContents D r = .ok evs) : freedIds D (residueDropEvent D ℓ r ++ evs) = r.own D := by
   have := dropContents_freed h
-  unfold residueMark
+  unfold residueDropEvent
   split
   · rename_i hm; simp [freedIds, this, Contents.own_of_qual hm]
   · simp [freedIds, Event.freed, this]
@@ -600,17 +600,17 @@ theorem dropResidue_freed {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {ev
           · cases h
           · rename_i e₂ h₂
             cases h
-            rw [freedIds_append, residueMark_freed h₁, dropResidue_freed h₂]
+            rw [freedIds_append, residueDropEvent_freed h₁, dropResidue_freed h₂]
             rfl
 
 /-- **§6.3's destructure, counted exactly**: the leaf it hands on and what its
 trace ends — the residue's drops and the path's consumption — are exactly
 what the consumed place owned (helper). -/
 theorem Contents.destructure_exact {D : Decls} {ℓ : Nat} {cd leaf : Contents} {πs : List Nat}
-    {evs : List Event} (hcc : cd.copyClosed D = true) (h : cd.destructure D ℓ πs = .ok (leaf, evs))
+    {evs : List Event} (hcc : cd.copyContained D = true) (h : cd.destructure D ℓ πs = .ok (leaf, evs))
     (a : Nat) :
     (leaf.own D).count a + (freedIds D evs).count a = (cd.own D).count a ∧
-      leaf.copyClosed D = true := by
+      leaf.copyContained D = true := by
   unfold Contents.destructure at h
   split at h
   · cases h
@@ -677,11 +677,11 @@ theorem unwindLocs_exact {D : Decls} : ∀ {H H' : Store} {ls : List Nat} {evs :
 arm's cells receive and the shell `matchConsume` ends are exactly the
 scrutinee (helper). -/
 theorem matchConsume_exact {D : Decls} {e k i : Nat} {vs : List Val}
-    (h : (Contents.enum e k i (Contents.ofVals vs)).copyClosed D = true) (a : Nat) :
+    (h : (Contents.enum e k i (Contents.ofVals vs)).copyContained D = true) (a : Nat) :
     (Contents.ownList D (Contents.ofVals vs)).count a + (freedIds D (matchConsume D e k i vs)).count a
       = ((Contents.enum e k i (Contents.ofVals vs)).own D).count a := by
   unfold matchConsume
-  simp only [Contents.copyClosed] at h
+  simp only [Contents.copyContained] at h
   split
   · rename_i hc
     rw [if_pos hc] at h
@@ -693,9 +693,9 @@ theorem matchConsume_exact {D : Decls} {e k i : Nat} {vs : List Val}
 a `Copy` node owns nothing, and — copy-closed — neither do its members
 (helper). -/
 theorem Contents.own_struct_fresh {D : Decls} {s i : Nat} {cs : List Contents}
-    (h : (Contents.struct s i cs).copyClosed D = true) {a : Nat} (ha : a ≠ i) :
+    (h : (Contents.struct s i cs).copyContained D = true) {a : Nat} (ha : a ≠ i) :
     ((Contents.struct s i cs).own D).count a = (Contents.ownList D cs).count a := by
-  simp only [Contents.copyClosed] at h
+  simp only [Contents.copyContained] at h
   simp only [Contents.own]
   split
   · rename_i hc; rw [if_pos hc] at h; simp [Contents.allCopyList_own h]
@@ -703,9 +703,9 @@ theorem Contents.own_struct_fresh {D : Decls} {s i : Nat} {cs : List Contents}
 
 /-- The same at an enum (helper). -/
 theorem Contents.own_enum_fresh {D : Decls} {e k i : Nat} {cs : List Contents}
-    (h : (Contents.enum e k i cs).copyClosed D = true) {a : Nat} (ha : a ≠ i) :
+    (h : (Contents.enum e k i cs).copyContained D = true) {a : Nat} (ha : a ≠ i) :
     ((Contents.enum e k i cs).own D).count a = (Contents.ownList D cs).count a := by
-  simp only [Contents.copyClosed] at h
+  simp only [Contents.copyContained] at h
   simp only [Contents.own]
   split
   · rename_i hc; rw [if_pos hc] at h; simp [Contents.allCopyList_own h]
@@ -713,9 +713,9 @@ theorem Contents.own_enum_fresh {D : Decls} {e k i : Nat} {cs : List Contents}
 
 /-- The same at an array (helper). -/
 theorem Contents.own_array_fresh {D : Decls} {T : Ty} {i : Nat} {cs : List Contents}
-    (h : (Contents.array T i cs).copyClosed D = true) {a : Nat} (ha : a ≠ i) :
+    (h : (Contents.array T i cs).copyContained D = true) {a : Nat} (ha : a ≠ i) :
     ((Contents.array T i cs).own D).count a = (Contents.ownList D cs).count a := by
-  simp only [Contents.copyClosed] at h
+  simp only [Contents.copyContained] at h
   simp only [Contents.own]
   split
   · rename_i hc; rw [if_pos hc] at h; simp [Contents.allCopyList_own h]
@@ -787,7 +787,7 @@ theorem Exact.shift {D : Decls} {H H₁ : Store} {X Y : List Nat} {r : EvalRes}
 /-- **§6.2's search, as an exact ledger** (helper). -/
 theorem Exact.bind {D : Decls} {H : Store} {X : List Nat} {r : EvalRes}
     {k : Store → Val → EvalRes} (hr : Exact D H X r)
-    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → StoreCC D H₁ → (Contents.ofVal v).copyClosed D = true →
+    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → StoreCC D H₁ → (Contents.ofVal v).copyContained D = true →
       Exact D H₁ (v.own D) (k H₁ v)) :
     Exact D H X (r.bind k) := by
   cases r with
@@ -805,7 +805,7 @@ unwind — `pendingSafe` — so the held value `Y` is never abandoned, and the
 context receives both. -/
 theorem Exact.bindHeld {D : Decls} {H : Store} {Y : List Nat} {r : EvalRes}
     {k : Store → Val → EvalRes} (hr : Exact D H [] r) (hq : r.NoRet ∧ r.NoBrk)
-    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → StoreCC D H₁ → (Contents.ofVal v).copyClosed D = true →
+    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → StoreCC D H₁ → (Contents.ofVal v).copyContained D = true →
       Exact D H₁ (Y ++ v.own D) (k H₁ v)) :
     Exact D H Y (r.bind k) := by
   cases r with
@@ -824,7 +824,7 @@ theorem Exact.bindHeld {D : Decls} {H : Store} {Y : List Nat} {r : EvalRes}
 /-- §6.9's call boundary, as an exact ledger (helper). -/
 theorem Exact.absorb {D : Decls} {H : Store} {X : List Nat} {r : EvalRes}
     {k : Store → Val → EvalRes} (hr : Exact D H X r)
-    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → StoreCC D H₁ → (Contents.ofVal v).copyClosed D = true →
+    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → StoreCC D H₁ → (Contents.ofVal v).copyContained D = true →
       Exact D H₁ (v.own D) (k H₁ v)) :
     Exact D H X (r.bindCall k) := by
   cases r with
@@ -840,7 +840,7 @@ theorem Exact.absorb {D : Decls} {H : Store} {X : List Nat} {r : EvalRes}
 /-- A value produced where the store is, owning exactly what was held
 (helper). -/
 theorem Exact.pure {D : Decls} {H : Store} {X : List Nat} {v : Val} (hcc : StoreCC D H)
-    (hv : (Contents.ofVal v).copyClosed D = true)
+    (hv : (Contents.ofVal v).copyContained D = true)
     (ho : ∀ a, a < H.length → (v.own D).count a = X.count a) : Exact D H X (.ok H v []) :=
   ⟨Nat.le_refl _, hcc, hv, fun a ha => by have := ho a ha; simp [freedIds]; omega⟩
 
@@ -863,7 +863,7 @@ theorem Exact.opRes {D : Decls} {H : Store} {X : List Nat} {o : OpRes} (hcc : St
 /-- **Aggregate introduction, exactly** (`introVal`): the new value owns
 exactly its members, apart from its own fresh identity (helper). -/
 theorem Exact.intro {D : Decls} {H : Store} {Y : List Nat} {mk : Nat → Val} (hcc : StoreCC D H)
-    (ho : (Contents.ofVal (mk H.length)).copyClosed D = true →
+    (ho : (Contents.ofVal (mk H.length)).copyContained D = true →
       ∀ a, a < H.length → ((mk H.length).own D).count a = Y.count a) :
     Exact D H Y (introVal D H mk) := by
   unfold introVal
@@ -880,7 +880,7 @@ theorem Exact.intro {D : Decls} {H : Store} {Y : List Nat} {mk : Nat → Val} (h
 def ArgsExact (D : Decls) (H : Store) : ArgsRes → Prop
   | .ok H' vs tr =>
       H.length ≤ H'.length ∧ StoreCC D H' ∧
-      Contents.copyClosedList D (Contents.ofVals vs) = true ∧
+      Contents.copyContainedList D (Contents.ofVals vs) = true ∧
       ∀ a, a < H.length → (storeOwn D H').count a + (Contents.ownList D (Contents.ofVals vs)).count a +
           (freedIds D tr).count a = (storeOwn D H).count a
   | .abort r => Exact D H [] r
@@ -924,7 +924,7 @@ theorem evalArgs_exactQuiet {D : Decls} {ev : Store → Expr → EvalRes} :
               rw [hra] at ih
               obtain ⟨⟨l₂, c₂, v₂, i₂⟩, _⟩ := ih
               refine ⟨⟨Nat.le_trans l₁ l₂, c₂, ?_, fun a ha => ?_⟩, fun r h => by cases h⟩
-              · simp [Contents.ofVals, Contents.copyClosedList, v₁, v₂]
+              · simp [Contents.ofVals, Contents.copyContainedList, v₁, v₂]
               · have := i₁ a ha; have := i₂ a (by omega)
                 simp only [Contents.ownList_ofVals_cons, freedIds_append, List.count_append,
                   List.count_nil] at *
@@ -965,7 +965,7 @@ theorem evalArgs_exact {D : Decls} {ev : Store → Expr → EvalRes} {es : List 
               rw [hra] at ih
               obtain ⟨⟨l₂, c₂, v₂, i₂⟩, _⟩ := ih
               refine ⟨Nat.le_trans l₁ l₂, c₂, ?_, fun a ha => ?_⟩
-              · simp [Contents.ofVals, Contents.copyClosedList, v₁, v₂]
+              · simp [Contents.ofVals, Contents.copyContainedList, v₁, v₂]
               · have := i₁ a ha; have := i₂ a (by omega)
                 simp only [Contents.ownList_ofVals_cons, freedIds_append, List.count_append,
                   List.count_nil] at *
@@ -984,16 +984,16 @@ theorem evalArgs_exact {D : Decls} {ev : Store → Expr → EvalRes} {es : List 
 /-- **(D-Use-Move) §6.3, exactly**: the value handed on owns exactly what the
 place owned, and the place holds `⊘` (helper). -/
 theorem Exact.move {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Contents} {π : List Nat}
-    {v : Val} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c)) (hr : c.readAt π = .ok sub)
-    (hw : c.writeAt π .movedOut = some c') (hv : sub.toVal = some v) :
+    {v : Val} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c)) (hr : c.getAt π = .ok sub)
+    (hw : c.setAt π .movedOut = some c') (hv : sub.toVal = some v) :
     Exact D H [] (.ok (H.set ℓ (.full c')) v []) := by
   have hccc := hcc ℓ c hc
-  have hc' := Contents.writeAt_copyClosed π hccc rfl hw
+  have hc' := Contents.setAt_copyContained π hccc rfl hw
   have hsub : Contents.ofVal v = sub := Contents.ofVal_toVal hv
   refine ⟨by simp, hcc.set hc', ?_, fun a _ => ?_⟩
-  · rw [hsub]; exact Contents.readAt_copyClosed π hccc hr
+  · rw [hsub]; exact Contents.getAt_copyContained π hccc hr
   · have h1 := storeOwn_set_count D a (.full c') hc
-    have h2 := Contents.writeAt_own_eq a π hccc hc' hr hw
+    have h2 := Contents.setAt_own_eq a π hccc hc' hr hw
     simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
     simp only [Val.own, hsub, freedIds, List.flatMap_nil, List.count_nil]
     omega
@@ -1003,18 +1003,18 @@ dropped and the shell consumed are exactly the consumed place, which becomes
 `⊘` (helper). -/
 theorem Exact.destructure {D : Decls} {H : Store} {ℓ : Nat} {c c' cd leaf : Contents}
     {πd πs : List Nat} {v : Val} {evs : List Event} (hcc : StoreCC D H)
-    (hc : H[ℓ]? = some (.full c)) (hr : c.readAt πd = .ok cd)
+    (hc : H[ℓ]? = some (.full c)) (hr : c.getAt πd = .ok cd)
     (hd : cd.destructure D ℓ πs = .ok (leaf, evs)) (hv : leaf.toVal = some v)
-    (hw : c.writeAt πd .movedOut = some c') :
+    (hw : c.setAt πd .movedOut = some c') :
     Exact D H [] (.ok (H.set ℓ (.full c')) v evs) := by
   have hccc := hcc ℓ c hc
-  have hcd := Contents.readAt_copyClosed πd hccc hr
-  have hc' := Contents.writeAt_copyClosed πd hccc rfl hw
+  have hcd := Contents.getAt_copyContained πd hccc hr
+  have hc' := Contents.setAt_copyContained πd hccc rfl hw
   have hsub : Contents.ofVal v = leaf := Contents.ofVal_toVal hv
   refine ⟨by simp, hcc.set hc', by rw [hsub]; exact (Contents.destructure_exact hcd hd 0).2,
     fun a _ => ?_⟩
   have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.writeAt_own_eq a πd hccc hc' hr hw
+  have h2 := Contents.setAt_own_eq a πd hccc hc' hr hw
   have h3 := (Contents.destructure_exact hcd hd a).1
   simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
   simp only [Val.own, hsub, List.count_nil]
@@ -1024,14 +1024,14 @@ theorem Exact.destructure {D : Decls} {H : Store} {ℓ : Nat} {c c' cd leaf : Co
 becomes `⊘` (helper). -/
 theorem Exact.dropPlace {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Contents} {π : List Nat}
     {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
-    (hr : c.readAt π = .ok sub) (hd : dropCell D ℓ sub = .ok evs)
-    (hw : c.writeAt π .movedOut = some c') :
+    (hr : c.getAt π = .ok sub) (hd : dropCell D ℓ sub = .ok evs)
+    (hw : c.setAt π .movedOut = some c') :
     Exact D H [] (.ok (H.set ℓ (.full c')) .unit evs) := by
   have hccc := hcc ℓ c hc
-  have hc' := Contents.writeAt_copyClosed π hccc rfl hw
+  have hc' := Contents.setAt_copyContained π hccc rfl hw
   refine ⟨by simp, hcc.set hc', rfl, fun a _ => ?_⟩
   have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.writeAt_own_eq a π hccc hc' hr hw
+  have h2 := Contents.setAt_own_eq a π hccc hc' hr hw
   rw [dropCell_freed hd]
   simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
   simp only [Val.own, Contents.ofVal, Contents.own, List.count_nil]
@@ -1040,16 +1040,16 @@ theorem Exact.dropPlace {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Contents
 /-- **§6.11's `@drop` at a declared plan, exactly** (helper). -/
 theorem Exact.dropDeclared {D : Decls} {H : Store} {ℓ : Nat} {c c' cd leaf : Contents}
     {πd πs : List Nat} {evs levs : List Event} (hcc : StoreCC D H)
-    (hc : H[ℓ]? = some (.full c)) (hr : c.readAt πd = .ok cd)
+    (hc : H[ℓ]? = some (.full c)) (hr : c.getAt πd = .ok cd)
     (hd : cd.destructure D ℓ πs = .ok (leaf, evs)) (hl : dropCell D ℓ leaf = .ok levs)
-    (hw : c.writeAt πd .movedOut = some c') :
+    (hw : c.setAt πd .movedOut = some c') :
     Exact D H [] (.ok (H.set ℓ (.full c')) .unit (evs ++ levs)) := by
   have hccc := hcc ℓ c hc
-  have hcd := Contents.readAt_copyClosed πd hccc hr
-  have hc' := Contents.writeAt_copyClosed πd hccc rfl hw
+  have hcd := Contents.getAt_copyContained πd hccc hr
+  have hc' := Contents.setAt_copyContained πd hccc rfl hw
   refine ⟨by simp, hcc.set hc', rfl, fun a _ => ?_⟩
   have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.writeAt_own_eq a πd hccc hc' hr hw
+  have h2 := Contents.setAt_own_eq a πd hccc hc' hr hw
   have h3 := (Contents.destructure_exact hcd hd a).1
   rw [freedIds_append, List.count_append, dropCell_freed hl]
   simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
@@ -1060,13 +1060,13 @@ theorem Exact.dropDeclared {D : Decls} {H : Store} {ℓ : Nat} {c c' cd leaf : C
 the held value takes its position (helper). -/
 theorem Exact.assign {D : Decls} {H : Store} {ℓ : Nat} {c c' old : Contents} {π : List Nat}
     {v : Val} {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
-    (hr : c.readAt π = .ok old) (hd : dropCell D ℓ old = .ok evs)
-    (hw : c.writeAt π (Contents.ofVal v) = some c') (hc' : c'.copyClosed D = true) :
+    (hr : c.getAt π = .ok old) (hd : dropCell D ℓ old = .ok evs)
+    (hw : c.setAt π (Contents.ofVal v) = some c') (hc' : c'.copyContained D = true) :
     Exact D H (v.own D) (.ok (H.set ℓ (.full c')) .unit evs) := by
   have hccc := hcc ℓ c hc
   refine ⟨by simp, hcc.set hc', rfl, fun a _ => ?_⟩
   have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.writeAt_own_eq a π hccc hc' hr hw
+  have h2 := Contents.setAt_own_eq a π hccc hc' hr hw
   rw [dropCell_freed hd]
   simp only [Cell.own] at h1
   simp only [Val.own_unit, List.count_nil]
@@ -1076,18 +1076,18 @@ theorem Exact.assign {D : Decls} {H : Store} {ℓ : Nat} {c c' old : Contents} {
 /-- **(D-Assign) below a dynamic index, exactly** (helper). -/
 theorem Exact.assignDyn {D : Decls} {H : Store} {ℓ : Nat} {c c' sub sub' old : Contents}
     {π ρ : List Nat} {v : Val} {evs : List Event} (hcc : StoreCC D H)
-    (hc : H[ℓ]? = some (.full c)) (hr : c.readAt π = .ok sub) (hr' : sub.readAt ρ = .ok old)
-    (hd : dropCell D ℓ old = .ok evs) (hw' : sub.writeAt ρ (Contents.ofVal v) = some sub')
-    (hw : c.writeAt π sub' = some c') (hc' : c'.copyClosed D = true) :
+    (hc : H[ℓ]? = some (.full c)) (hr : c.getAt π = .ok sub) (hr' : sub.getAt ρ = .ok old)
+    (hd : dropCell D ℓ old = .ok evs) (hw' : sub.setAt ρ (Contents.ofVal v) = some sub')
+    (hw : c.setAt π sub' = some c') (hc' : c'.copyContained D = true) :
     Exact D H (v.own D) (.ok (H.set ℓ (.full c')) .unit evs) := by
   have hccc := hcc ℓ c hc
-  have hsub := Contents.readAt_copyClosed π hccc hr
-  have hsub' : sub'.copyClosed D = true :=
-    Contents.readAt_copyClosed π hc' (Contents.readAt_writeAt π hw)
+  have hsub := Contents.getAt_copyContained π hccc hr
+  have hsub' : sub'.copyContained D = true :=
+    Contents.getAt_copyContained π hc' (Contents.getAt_setAt π hw)
   refine ⟨by simp, hcc.set hc', rfl, fun a _ => ?_⟩
   have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.writeAt_own_eq a π hccc hc' hr hw
-  have h2' := Contents.writeAt_own_eq a ρ hsub hsub' hr' hw'
+  have h2 := Contents.setAt_own_eq a π hccc hc' hr hw
+  have h2' := Contents.setAt_own_eq a ρ hsub hsub' hr' hw'
   rw [dropCell_freed hd]
   simp only [Cell.own] at h1
   simp only [Val.own_unit, List.count_nil]
@@ -1097,7 +1097,7 @@ theorem Exact.assignDyn {D : Decls} {H : Store} {ℓ : Nat} {c c' sub sub' old :
 /-- A scope teardown after a value (`endscope` §6.7, the frame pop §6.9),
 exactly (helper). -/
 theorem Exact.unwind {D : Decls} {H : Store} {v : Val} {ls : List Nat} (hcc : StoreCC D H)
-    (hv : (Contents.ofVal v).copyClosed D = true) :
+    (hv : (Contents.ofVal v).copyContained D = true) :
     Exact D H (v.own D)
       (match unwindLocs D H ls with
        | .error w => .refused w
@@ -1203,7 +1203,7 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
       Exact P.decls H [] (eval M n P H φ e)) :
     ∀ {H : Store} {φ : Activation} {e : Expr} {H₁ : Store} {vs : List Val} {tr : List Event},
       e.pendingSafe = true → Lead M P n H φ H₁ vs tr e → StoreCC P.decls H₁ →
-      Contents.copyClosedList P.decls (Contents.ofVals vs) = true →
+      Contents.copyContainedList P.decls (Contents.ofVals vs) = true →
       ∀ r, eval M (n + 1) P H φ e = r.withTrace tr →
         Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r := by
   have hbody : ∀ (f : Nat) (fd : FnDef), P.fns[f]? = some fd → fd.body.pendingSafe = true :=
@@ -1212,8 +1212,8 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
   have hq : ∀ H' e', e'.returns = false ∧ e'.breaks = false →
       (eval M n P H' φ e').NoRet ∧ (eval M n P H' φ e').NoBrk := fun H' e' h =>
     ⟨(eval_quiet M P n H' φ e').1 h.1, (eval_quiet M P n H' φ e').2 h.2⟩
-  have single : ∀ v, vs = [v] → (Contents.ofVal v).copyClosed P.decls = true := by
-    intro v hv; subst hv; simpa [Contents.ofVals, Contents.copyClosedList] using hvs
+  have single : ∀ v, vs = [v] → (Contents.ofVal v).copyContained P.decls = true := by
+    intro v hv; subst hv; simpa [Contents.ofVals, Contents.copyContainedList] using hvs
   cases e with
   | intLit | floatLit | boolLit | unitLit | use | panic | drop | brk => exact hl.elim
   | loop e₁ =>
@@ -1323,15 +1323,15 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
         · trivial
         · rename_i body harm
           have hpay := Contents.enum_payload hv
-          refine Exact.prefix (H₁ := (mintParams H₁ vs).1) (Y := []) ?_ ?_ ?_
-          · rw [mintParams_length]; omega
+          refine Exact.prefix (H₁ := (freshParams H₁ vs).1) (Y := []) ?_ ?_ ?_
+          · rw [freshParams_length]; omega
           · intro a _
             have := matchConsume_exact hv a
-            rw [storeOwn_mintParams]
+            rw [storeOwn_freshParams]
             simp only [List.count_append, List.count_nil]
             show _ = _ + ((Contents.enum e k i (Contents.ofVals vs)).own P.decls).count a
             omega
-          · exact Exact.bind (ih _ _ body (hc₁.mintParams (hpay 0).2)
+          · exact Exact.bind (ih _ _ body (hc₁.freshParams (hpay 0).2)
                 (Expr.pendingSafeList_mem he.2 (List.mem_of_getElem? harm)))
               (fun H₂ v₂ _ _ hc₂ hv₂ => Exact.unwind hc₂ hv₂)
       | _ => trivial
@@ -1356,8 +1356,8 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
               refine Exact.pure hc₁ ?_ (fun a _ => by
                 simp [Val.own_of_copy hm, Val.ints_own (D := P.decls) his])
               rw [Contents.ofVal_toVal hv]
-              exact Contents.readAt_copyClosed ρ
-                (Contents.readAt_copyClosed _ (hc₁ ℓ c hc) hr) hr'
+              exact Contents.getAt_copyContained ρ
+                (Contents.getAt_copyContained _ (hc₁ ℓ c hc) hr) hr'
             · trivial
   | indexDrop p idx πs =>
       obtain ⟨v₁, rfl, hr⟩ := hl
@@ -1497,13 +1497,13 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
       · trivial
       · rename_i fd hfd
         split
-        · refine Exact.shift (H₁ := (mintParams H₁ vs).1) (Y := []) ?_ ?_ ?_
-          · rw [mintParams_length]; omega
+        · refine Exact.shift (H₁ := (freshParams H₁ vs).1) (Y := []) ?_ ?_ ?_
+          · rw [freshParams_length]; omega
           · intro a _
-            rw [storeOwn_mintParams]
+            rw [storeOwn_freshParams]
             simp only [List.count_append, List.count_nil]
             omega
-          · refine Exact.absorb (ih _ _ fd.body (hc₁.mintParams hvs) (hbody f fd hfd))
+          · refine Exact.absorb (ih _ _ fd.body (hc₁.freshParams hvs) (hbody f fd hfd))
               (fun H₃ v _ _ hc₃ hv₃ => ?_)
             simp only [runAllScopeDrops]
             exact Exact.unwind hc₃ hv₃
@@ -1583,7 +1583,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
                   split
                   · rename_i hm
                     refine Exact.pure hcc ?_ (fun a _ => by simp [Val.own_of_copy hm])
-                    rw [Contents.ofVal_toVal hv]; exact Contents.readAt_copyClosed _ (hcc ℓ c hc) hr
+                    rw [Contents.ofVal_toVal hv]; exact Contents.getAt_copyContained _ (hcc ℓ c hc) hr
                   · split
                     · trivial
                     · rename_i c' hw
@@ -1594,7 +1594,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .binop op e₁ e₂) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
+          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
           (by simp only [eval, hr, EvalRes.bind])
     | unop op e₁ =>
         have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
@@ -1602,7 +1602,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .unop op e₁) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
+          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
           (by simp only [eval, hr, EvalRes.bind])
     | intCast w sg e₁ =>
         have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
@@ -1610,7 +1610,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .intCast w sg e₁) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
+          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
           (by simp only [eval, hr, EvalRes.bind])
     | fintrin k e₁ =>
         have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
@@ -1618,7 +1618,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .fintrin k e₁) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
+          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
           (by simp only [eval, hr, EvalRes.bind])
     | dbg e₁ =>
         have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
@@ -1626,7 +1626,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .dbg e₁) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
+          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
           (by simp only [eval, hr, EvalRes.bind])
     | mkStruct s args =>
         have he' := he
@@ -1673,7 +1673,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         refine Exact.bind (ih H φ scrut hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .«match» scrut arms) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
+          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
           (by simp only [eval, hr, EvalRes.bind])
     | repeatArray T e₁ m =>
         have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
@@ -1681,7 +1681,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .repeatArray T e₁ m) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
+          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
           (by simp only [eval, hr, EvalRes.bind])
     | indexRead p idx πs =>
         have he' := he
@@ -1702,7 +1702,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         refine Exact.bind (ih H φ (Expr.indexRead p idx πs) hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .indexDrop p idx πs) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
+          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
           (by simp only [eval, hr, EvalRes.bind])
     | indexWrite p idx πs e₁ =>
         have he₁ : e₁.pendingSafe = true := by have h := he; simp only [Expr.pendingSafe, Bool.and_eq_true] at he; exact he.1.1
@@ -1710,7 +1710,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .indexWrite p idx πs e₁) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
+          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
           (by simp only [eval, hr, EvalRes.bind])
     | drop p =>
         simp only [eval]
@@ -1757,7 +1757,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .letIn m e₁ e₂) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
+          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
           (by simp only [eval, hr, EvalRes.bind])
     | assign p e₁ =>
         have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
@@ -1765,7 +1765,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .assign p e₁) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
+          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
           (by simp only [eval, hr, EvalRes.bind])
     | seq e₁ e₂ =>
         have he₁ : e₁.pendingSafe = true := by have h := he; simp only [Expr.pendingSafe, Bool.and_eq_true] at he; exact he.1
@@ -1773,7 +1773,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .seq e₁ e₂) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
+          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
           (by simp only [eval, hr, EvalRes.bind])
     | ite c e₁ e₂ =>
         have he₁ : c.pendingSafe = true := by have h := he; simp only [Expr.pendingSafe, Bool.and_eq_true] at he; exact he.1.1
@@ -1781,7 +1781,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         refine Exact.bind (ih H φ c hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .ite c e₁ e₂) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
+          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
           (by simp only [eval, hr, EvalRes.bind])
     | call f args =>
         have he' := he
@@ -1802,7 +1802,7 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
         refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
         rw [← Contents.ownList_ofVals_single]
         exact rest_step M hp ih (e := .ret e₁) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyClosedList] using hv₁) _
+          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
           (by simp only [eval, hr, EvalRes.bind])
     | loop e₁ =>
         simp only [eval]
@@ -2089,22 +2089,22 @@ theorem Tidy.scoped {φ : Activation} {H Hm : Store} {ls : List Nat} {r : EvalRe
   | _ => trivial
 
 /-- Minted cells are the next indices, in order (helper). -/
-theorem mintParams_locs : ∀ (H : Store) (vs : List Val),
-    (mintParams H vs).2 = List.range' H.length vs.length
+theorem freshParams_locs : ∀ (H : Store) (vs : List Val),
+    (freshParams H vs).2 = List.range' H.length vs.length
   | _, [] => rfl
   | H, v :: vs => by
-      simp only [mintParams, mintParams_locs (H ++ [Cell.full (Contents.ofVal v)]) vs,
+      simp only [freshParams, freshParams_locs (H ++ [Cell.full (Contents.ofVal v)]) vs,
         List.length_append, List.length_cons, List.length_nil, List.range'_succ]
 
 /-- Membership in the minted cells (helper). -/
-theorem mintParams_mem (H : Store) (vs : List Val) (ℓ : Nat) :
-    ℓ ∈ (mintParams H vs).2 ↔ H.length ≤ ℓ ∧ ℓ < (mintParams H vs).1.length := by
-  rw [mintParams_locs, mintParams_length, List.mem_range'_1]
+theorem freshParams_mem (H : Store) (vs : List Val) (ℓ : Nat) :
+    ℓ ∈ (freshParams H vs).2 ↔ H.length ≤ ℓ ∧ ℓ < (freshParams H vs).1.length := by
+  rw [freshParams_locs, freshParams_length, List.mem_range'_1]
 
 /-- Minting leaves the old cells alone (helper). -/
-theorem mintParams_pre (H : Store) (vs : List Val) (ℓ : Nat) (h : ℓ < H.length) :
-    (mintParams H vs).1[ℓ]? = H[ℓ]? := by
-  rw [mintParams_store, List.getElem?_append_left h]
+theorem freshParams_pre (H : Store) (vs : List Val) (ℓ : Nat) (h : ℓ < H.length) :
+    (freshParams H vs).1[ℓ]? = H[ℓ]? := by
+  rw [freshParams_store, List.getElem?_append_left h]
 
 /-- A dynamic place's cell is named by the environment (helper). -/
 theorem dynPlace_env {H : Store} {φ : Activation} {p : Place} {vs : List Val} {πs : List (List Nat)}
@@ -2306,16 +2306,16 @@ theorem eval_tidy (M : FloatSig) (P : Program) :
           · trivial
           · rename_i body _
             refine Tidy.prefix (H₁ := H₀) hf₀.1 (Local.refl φ H₀) (Retired.same (Nat.le_refl _)) ?_
-            have hmem := mintParams_mem H₀ vs
-            refine Tidy.scoped (Hm := (mintParams H₀ vs).1) hmem
-              (by rw [mintParams_length]; omega) (mintParams_pre H₀ vs)
+            have hmem := freshParams_mem H₀ vs
+            refine Tidy.scoped (Hm := (freshParams H₀ vs).1) hmem
+              (by rw [freshParams_length]; omega) (freshParams_pre H₀ vs)
               (ih _ _ body ⟨fun ℓ hm => ?_, fun ℓ hm => ?_⟩)
               (fun H₂ v₂ _ _ => unwind_kills (fun ℓ => by simp))
             · rcases List.mem_append.mp hm with h | h
               · exact ((hmem ℓ).mp (List.mem_reverse.mp h)).2
-              · exact Nat.lt_of_lt_of_le (hf₀.1 ℓ h) (by rw [mintParams_length]; omega)
+              · exact Nat.lt_of_lt_of_le (hf₀.1 ℓ h) (by rw [freshParams_length]; omega)
             · rcases List.mem_append.mp hm with h | h
-              · exact Nat.lt_of_lt_of_le (hf₀.2 ℓ h) (by rw [mintParams_length]; omega)
+              · exact Nat.lt_of_lt_of_le (hf₀.2 ℓ h) (by rw [freshParams_length]; omega)
               · exact ((hmem ℓ).mp h).2
         | _ => trivial
     | letIn m e₁ e₂ =>
@@ -2383,14 +2383,14 @@ theorem eval_tidy (M : FloatSig) (P : Program) :
           · trivial
           · rename_i fd _
             split
-            · have hmem := mintParams_mem H₁ vs
-              have hlen : H₁.length ≤ (mintParams H₁ vs).1.length := by
-                rw [mintParams_length]; omega
-              have hb := ih (mintParams H₁ vs).1
-                { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 } fd.body
+            · have hmem := freshParams_mem H₁ vs
+              have hlen : H₁.length ≤ (freshParams H₁ vs).1.length := by
+                rw [freshParams_length]; omega
+              have hb := ih (freshParams H₁ vs).1
+                { env := (freshParams H₁ vs).2.reverse, scope := (freshParams H₁ vs).2 } fd.body
                 ⟨fun ℓ hm => ((hmem ℓ).mp (List.mem_reverse.mp hm)).2,
                  fun ℓ hm => ((hmem ℓ).mp hm).2⟩
-              exact Tidy.call hmem hlen (mintParams_pre H₁ vs) hb
+              exact Tidy.call hmem hlen (freshParams_pre H₁ vs) hb
             · trivial
     | ret e₁ =>
         simp only [eval]
@@ -2524,19 +2524,19 @@ theorem lead_cc (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {fuel :
     {H : Store} {φ : Activation} {e : Expr} {H₁ : Store} {vs : List Val} {tr : List Event}
     (hcc : StoreCC P.decls H) (he : e.pendingSafe = true) (hl : Lead M P fuel H φ H₁ vs tr e) :
     H.length ≤ H₁.length ∧ StoreCC P.decls H₁ ∧
-      Contents.copyClosedList P.decls (Contents.ofVals vs) = true := by
+      Contents.copyContainedList P.decls (Contents.ofVals vs) = true := by
   have single : ∀ e₁ v, e₁.pendingSafe = true → vs = [v] → eval M fuel P H φ e₁ = .ok H₁ v tr →
       H.length ≤ H₁.length ∧ StoreCC P.decls H₁ ∧
-        Contents.copyClosedList P.decls (Contents.ofVals vs) = true := by
+        Contents.copyContainedList P.decls (Contents.ofVals vs) = true := by
     intro e₁ v hps hv hr
     have := eval_exact M hp fuel H φ e₁ hcc hps
     rw [hr] at this
     subst hv
-    exact ⟨this.1, this.2.1, by simp [Contents.ofVals, Contents.copyClosedList, this.2.2.1]⟩
+    exact ⟨this.1, this.2.1, by simp [Contents.ofVals, Contents.copyContainedList, this.2.2.1]⟩
   have list : ∀ args, Expr.pendingSafeList args = true → Expr.quietList args.tail = true →
       evalArgs (fun H' e => eval M fuel P H' φ e) H args = .ok H₁ vs tr →
       H.length ≤ H₁.length ∧ StoreCC P.decls H₁ ∧
-        Contents.copyClosedList P.decls (Contents.ofVals vs) = true := by
+        Contents.copyContainedList P.decls (Contents.ofVals vs) = true := by
     intro args hps hql hra
     have := evalArgs_exact (ev := fun H' e => eval M fuel P H' φ e) (es := args)
       (fun H' e' hm hc' => eval_exact M hp fuel H' φ e' hc' (Expr.pendingSafeList_mem hps hm))

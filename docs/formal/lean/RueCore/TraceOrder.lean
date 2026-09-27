@@ -318,11 +318,11 @@ theorem unwindLocs_blocks {D : Decls} :
 non-`Copy` subtree's marker and walk, and a `Copy` subtree's empty walk
 (helper). -/
 theorem dropResidue_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat} :
-    ∀ {rs : List Contents} {evs : List Event}, Contents.copyClosedList D rs = true →
+    ∀ {rs : List Contents} {evs : List Event}, Contents.copyContainedList D rs = true →
       dropResidue D ℓ rs = .ok evs → DropGlueBlocks D evs
   | [], _, _, h => by simp [dropResidue] at h; subst h; exact .nil
   | r :: rs, evs, hcc, h => by
-      simp only [Contents.copyClosedList, Bool.and_eq_true] at hcc
+      simp only [Contents.copyContainedList, Bool.and_eq_true] at hcc
       simp only [dropResidue] at h
       split at h
       · cases h
@@ -334,17 +334,17 @@ theorem dropResidue_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat} :
           · rename_i e₂ h₂
             cases h
             have ih := dropResidue_blocks hdt hcc.2 h₂
-            unfold residueMark
+            unfold residueDropEvent
             split
             · rename_i hm
-              rw [dropContents_eq h₁, dropEvents_allCopy hdt (Contents.copyClosed_allCopy hcc.1 hm)]
+              rw [dropContents_eq h₁, dropEvents_allCopy hdt (Contents.copyContained_allCopy hcc.1 hm)]
               simpa using ih
             · simpa using DropGlueBlocks.drop (ℓ := ℓ) (dropContents_glue h₁) ih
 
 /-- §6.3's destructure is a sequence of blocks: the residue's, then the
 consumed shell (helper). -/
 theorem destructure_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat} {cd leaf : Contents}
-    {πs : List Nat} {evs : List Event} (hcc : cd.copyClosed D = true)
+    {πs : List Nat} {evs : List Event} (hcc : cd.copyContained D = true)
     (h : cd.destructure D ℓ πs = .ok (leaf, evs)) : DropGlueBlocks D evs := by
   unfold Contents.destructure at h
   split at h
@@ -404,7 +404,7 @@ a value (helper). -/
 theorem eval_ok_cc (M : FloatSig) {P : Program} {n : Nat} {H H₁ : Store} {φ : Activation} {e : Expr}
     {v : Val} {tr : List Event} (hcc : StoreCC P.decls H)
     (hr : eval M n P H φ e = .ok H₁ v tr) :
-    StoreCC P.decls H₁ ∧ (Contents.ofVal v).copyClosed P.decls = true := by
+    StoreCC P.decls H₁ ∧ (Contents.ofVal v).copyContained P.decls = true := by
   have h := eval_conserves M (freed_measure P.decls) n H φ e hcc
   rw [hr] at h
   exact ⟨h.2.1, h.2.2.1⟩
@@ -473,7 +473,7 @@ theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls
                 · exact .nil
                 · rename_i leaf evs hd
                   have hb := destructure_blocks hdt
-                    (Contents.readAt_copyClosed _ (hcc _ c hc) hr) hd
+                    (Contents.getAt_copyContained _ (hcc _ c hc) hr) hd
                   (repeat' split) <;> first | exact .nil | exact hb
             · (repeat' split) <;> exact .nil
     | drop p =>
@@ -492,7 +492,7 @@ theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls
                 · exact .nil
                 · rename_i leaf evs hd
                   have hb := destructure_blocks hdt
-                    (Contents.readAt_copyClosed _ (hcc _ c hc) hr) hd
+                    (Contents.getAt_copyContained _ (hcc _ c hc) hr) hd
                   split
                   · exact .nil
                   · split
@@ -584,7 +584,7 @@ theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls
           · exact .nil
           · rename_i body _
             refine DropGlueBlocks.withTrace matchConsume_blocks ?_
-            refine DropGlueBlocks.bind (ih _ _ body (hc₀.mintParams (Contents.enum_payload hv 0).2))
+            refine DropGlueBlocks.bind (ih _ _ body (hc₀.freshParams (Contents.enum_payload hv 0).2))
               (fun _ _ _ _ => ?_)
             split
             · exact .nil
@@ -651,7 +651,7 @@ theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls
           · exact .nil
           · rename_i fd _
             split
-            · refine DropGlueBlocks.absorb (ih _ _ fd.body (c₁.mintParams cv₁)) (fun _ _ _ _ => ?_)
+            · refine DropGlueBlocks.absorb (ih _ _ fd.body (c₁.freshParams cv₁)) (fun _ _ _ _ => ?_)
               split
               · exact .nil
               · rename_i H₄ evs hu
@@ -820,12 +820,12 @@ theorem Kont.toLoop_mem : ∀ {K K' : List Kont} {φ : Activation}, Kont.toLoop 
         obtain ⟨⟨e, h₁⟩, h₂⟩ := Kont.toLoop_mem h
         exact ⟨⟨e, List.mem_cons_of_mem _ h₁⟩, fun k hk => List.mem_cons_of_mem _ (h₂ k hk)⟩
 
-/-- `mintParams`' store and cells, as the invariant reads them (helper). -/
-theorem mintParams_eq {H H' : Store} {vs : List Val} {ls : List Nat}
-    (h : mintParams H vs = (H', ls)) :
+/-- `freshParams`' store and cells, as the invariant reads them (helper). -/
+theorem freshParams_eq {H H' : Store} {vs : List Val} {ls : List Nat}
+    (h : freshParams H vs = (H', ls)) :
     H'.length = H.length + vs.length ∧ ls = List.range' H.length vs.length := by
-  have h₁ := mintParams_length H vs
-  have h₂ := mintParams_locs H vs
+  have h₁ := freshParams_length H vs
+  have h₂ := freshParams_locs H vs
   rw [h] at h₁ h₂
   exact ⟨h₁, h₂⟩
 
@@ -838,7 +838,7 @@ theorem step_ordered {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P 
     (hC : C.Ordered) : C'.Ordered := by
   cases h
   case «match» H φ K tr arms e k i vs body H' ls _ hm =>
-    obtain ⟨hl, rfl⟩ := mintParams_eq hm
+    obtain ⟨hl, rfl⟩ := freshParams_eq hm
     refine ⟨hl ▸ hC.1.fresh, fun k hk => ?_⟩
     rcases List.mem_cons.mp hk with rfl | hk
     · exact hl ▸ (⟨range'_increasing _ _, fun ℓ hm => (List.mem_range'_1.mp hm).2⟩ :
@@ -854,7 +854,7 @@ theorem step_ordered {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P 
     refine ⟨(hC.1.sublist (List.take_sublist _ _)).mono (by omega), fun k hk => ?_⟩
     exact (hC.2 k (List.mem_cons_of_mem _ hk)).mono (by omega)
   case call H φ K tr f vs fd H' ls _ _ hm =>
-    obtain ⟨hl, rfl⟩ := mintParams_eq hm
+    obtain ⟨hl, rfl⟩ := freshParams_eq hm
     have h0 : Rec H.length [] := ⟨.nil, by simp⟩
     refine ⟨by simpa [hl] using Rec.fresh (k := vs.length) h0, fun k hk => ?_⟩
     rcases List.mem_cons.mp hk with rfl | hk
@@ -972,7 +972,7 @@ theorem plainResidue_locs {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {ev
           simp only [dropLocs_append, dropContents_eq h₁, dropLocs_dropEvents, List.append_nil,
             List.mem_append] at hx
           rcases hx with hx | hx
-          · unfold residueMark at hx
+          · unfold residueDropEvent at hx
             split at hx
             · simp [dropLocs] at hx
             · simpa [dropLocs] using hx
@@ -1178,7 +1178,7 @@ theorem step_nested {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P C
     (hC : C.Nested) : C'.Nested := by
   cases h
   case «match» H φ K tr arms e k i vs body H' ls _ hm =>
-    obtain ⟨hl, rfl⟩ := mintParams_eq hm
+    obtain ⟨hl, rfl⟩ := freshParams_eq hm
     refine ⟨⟨φ.scope, rfl, hC.1⟩, ?_⟩
     rw [← List.append_assoc, hl]; exact hC.2.fresh
   case letBind H φ K tr e₂ v =>
@@ -1197,7 +1197,7 @@ theorem step_nested {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P C
     refine (h2.sublist ?_).mono (by omega)
     rw [hsc, ← List.append_assoc]; exact List.sublist_append_left _ _
   case call H φ K tr f vs fd H' ls _ _ hm =>
-    obtain ⟨hl, rfl⟩ := mintParams_eq hm
+    obtain ⟨hl, rfl⟩ := freshParams_eq hm
     refine ⟨hC.1, ?_⟩
     simp only [Stk]; rw [hl]; exact hC.2.fresh
   case callReturn H φ K tr φs v H' evs hu =>

@@ -229,7 +229,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   linear sub-value (`3.8:50`). Two lemmas turn that into what the proof uses:
   `RueCore.ContentsOwnTyping.residualLinear_false` says the machine's leak
   monitor sees exactly what §5.6's `residual-linear` computes, and
-  `RueCore.ContentsOwnTyping.readAt`/`.writeAt` say that navigating a path
+  `RueCore.ContentsOwnTyping.getAt`/`.setAt` say that navigating a path
   agrees on the two sides wherever Σ has a state for it — which is wherever no
   proper prefix is `MovedOut`, (Owned-Base) §5.1. And the σ invariant: the frame's scope record,
   read newest-first, *is* its environment, which is what lets `StoreTyping` apply
@@ -348,7 +348,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   value is duplicated freely and has no drop glue, so its copies share an
   identity and neither projection counts them. A declared-linear
   destructure's residue drops each retained subtree under a `drop` marker of
-  its own (`RueCore.residueMark`), and the shell a `match` or a destructure
+  its own (`RueCore.residueDropEvent`), and the shell a `match` or a destructure
   consumes is ended by a `consume` event (RUE-2427), so `freedIds` counts
   both.
 - **Proof.** `RueCore.eval_conserves` is a conservation law, proved by fuel
@@ -365,9 +365,9 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   - a `match` moves the payload whole into the arm's cells, so the
     scrutinee's owner is gone.
 - **What the law needs**:
-  - **Copy closure** (`RueCore.Contents.copyClosed`): nothing owned under a
+  - **Copy closure** (`RueCore.Contents.copyContained`): nothing owned under a
     `Copy` node, or a copy would duplicate it. §3 makes this a property of
-    every well-typed value (`RueCore.ContentsTy.copyClosed`). The machine
+    every well-typed value (`RueCore.ContentsTy.copyContained`). The machine
     also enforces it with a fourth monitor beside the linear three,
     `ownedUnderCopy`, at aggregate introduction and at an assignment. The law
     therefore holds for every finished run of any program with well-formed
@@ -645,7 +645,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     an array literal's element, and an assignment's right-hand side while the
     target's indices run after it (`5.2:14`) — is in no cell and no scope
     record between the subexpression that produced it and the aggregation that would have taken
-    it (§6.9's `mintParams` for an argument). If a *later* sibling
+    it (§6.9's `freshParams` for an argument). If a *later* sibling
     unwinds by `return` or `break`, (D-Return) §6.9 or (D-Break) §6.10
     discards the evaluation context with the pending values in it and
     unwinds only σ, so that value's drop is neither run nor monitored. This

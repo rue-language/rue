@@ -198,23 +198,23 @@ theorem LivePost.scoped {H H₁ : Store} {φ φ' : Activation} {ys : List Nat} {
 /-! ### The helpers never refuse with `useAfterDrop` -/
 
 /-- `H(ℓ)@π` refuses only with `useAfterMove` or `typeConfusion` (helper). -/
-theorem Contents.readAt_ne_uad : ∀ (π : List Nat) {c : Contents} {w : Refusal},
-    c.readAt π = .error w → w ≠ .useAfterDrop
-  | [], c, w, h => by simp [Contents.readAt] at h
+theorem Contents.getAt_ne_uad : ∀ (π : List Nat) {c : Contents} {w : Refusal},
+    c.getAt π = .error w → w ≠ .useAfterDrop
+  | [], c, w, h => by simp [Contents.getAt] at h
   | f :: π, c, w, h => by
       cases c with
-      | movedOut => simp [Contents.readAt] at h; subst h; simp
+      | movedOut => simp [Contents.getAt] at h; subst h; simp
       | struct s i cs =>
-          simp only [Contents.readAt] at h
+          simp only [Contents.getAt] at h
           split at h
-          · exact Contents.readAt_ne_uad π h
+          · exact Contents.getAt_ne_uad π h
           · cases h; simp
       | array T i cs =>
-          simp only [Contents.readAt] at h
+          simp only [Contents.getAt] at h
           split at h
-          · exact Contents.readAt_ne_uad π h
+          · exact Contents.getAt_ne_uad π h
           · cases h; simp
-      | _ => simp [Contents.readAt] at h; subst h; simp
+      | _ => simp [Contents.getAt] at h; subst h; simp
 
 /-- Resolving a dynamic tail never refuses with `useAfterDrop` (helper). -/
 theorem Contents.resolveDyn_ne_uad : ∀ (is : List Int) (πs : List (List Nat)) {c : Contents}
@@ -227,7 +227,7 @@ theorem Contents.resolveDyn_ne_uad : ∀ (is : List Int) (πs : List (List Nat))
         · split at h
           · cases h; simp
           · split at h
-            · cases h; exact Contents.readAt_ne_uad _ (by assumption)
+            · cases h; exact Contents.getAt_ne_uad _ (by assumption)
             · split at h
               · cases h
               · exact Contents.resolveDyn_ne_uad _ _ h
@@ -250,7 +250,7 @@ theorem dynPlace_ne_uad {H : Store} {φ : Activation} {p : Place} {vs : List Val
       · rename_i hd
         exact absurd hd ((hφ ℓ (List.mem_of_getElem? hρ)).ne_dead)
       · split at h
-        · cases h; exact Contents.readAt_ne_uad _ (by assumption)
+        · cases h; exact Contents.getAt_ne_uad _ (by assumption)
         · split at h
           · cases h
           · cases h
@@ -424,13 +424,13 @@ theorem UnwindPost.grow {H H' : Store} {ls : List Nat} {evs : List Event}
 
 /-- (D-Call)'s and (D-Match)'s minting: the new cells are live, distinct, and
 above the old store, and nothing live before is touched (helper). -/
-theorem mintParams_live : ∀ (H : Store) (vs : List Val),
-    Grow H (mintParams H vs).1 ∧ (mintParams H vs).2.Nodup ∧
-      ∀ ℓ ∈ (mintParams H vs).2, H.length ≤ ℓ ∧ Live (mintParams H vs).1 ℓ
-  | H, [] => ⟨Grow.refl H, List.nodup_nil, fun _ h => by simp [mintParams] at h⟩
+theorem freshParams_live : ∀ (H : Store) (vs : List Val),
+    Grow H (freshParams H vs).1 ∧ (freshParams H vs).2.Nodup ∧
+      ∀ ℓ ∈ (freshParams H vs).2, H.length ≤ ℓ ∧ Live (freshParams H vs).1 ℓ
+  | H, [] => ⟨Grow.refl H, List.nodup_nil, fun _ h => by simp [freshParams] at h⟩
   | H, v :: vs => by
-      obtain ⟨hg, hnd, hl⟩ := mintParams_live (H ++ [Cell.full (Contents.ofVal v)]) vs
-      simp only [mintParams]
+      obtain ⟨hg, hnd, hl⟩ := freshParams_live (H ++ [Cell.full (Contents.ofVal v)]) vs
+      simp only [freshParams]
       refine ⟨(Grow.append H _).trans hg, List.nodup_cons.mpr ⟨fun hm => ?_, hnd⟩, ?_⟩
       · have := (hl _ hm).1; simp at this; exact Nat.not_succ_le_self _ this
       · intro ℓ hℓ
@@ -516,7 +516,7 @@ theorem eval_live (M : FloatSig) (P : Program) :
           · rename_i hd; exact absurd hd (hf.root hρ).ne_dead
           · split
             · split
-              · exact Contents.readAt_ne_uad _ (by assumption)
+              · exact Contents.getAt_ne_uad _ (by assumption)
               · split
                 · exact Contents.destructure_ne_uad (by assumption)
                 · split
@@ -525,7 +525,7 @@ theorem eval_live (M : FloatSig) (P : Program) :
                     · simp [LivePost]
                     · exact Grow.set_full H ℓ _
             · split
-              · exact Contents.readAt_ne_uad _ (by assumption)
+              · exact Contents.getAt_ne_uad _ (by assumption)
               · split
                 · simp [LivePost]
                 · split
@@ -592,11 +592,11 @@ theorem eval_live (M : FloatSig) (P : Program) :
           split
           · simp [LivePost]
           · rename_i body harm
-            obtain ⟨hgm, hndm, hlm⟩ := mintParams_live H₀ vs
+            obtain ⟨hgm, hndm, hlm⟩ := freshParams_live H₀ vs
             refine LivePost.withTrace ?_ _
             refine LivePost.scoped
-              (φ' := { env := (mintParams H₀ vs).2.reverse ++ φ.env,
-                       scope := φ.scope ++ (mintParams H₀ vs).2 }) hgm hlm hndm rfl
+              (φ' := { env := (freshParams H₀ vs).2.reverse ++ φ.env,
+                       scope := φ.scope ++ (freshParams H₀ vs).2 }) hgm hlm hndm rfl
               (ih _ _ body ⟨?_, ?_, ?_⟩) (fun H₂ v₂ hg₂ => ?_)
             · intro ℓ hℓ
               rcases List.mem_append.mp hℓ with hm | hm
@@ -646,7 +646,7 @@ theorem eval_live (M : FloatSig) (P : Program) :
           · exact dynPlace_ne_uad (hf.grow ka).1 (by assumption)
           · trivial
           · split
-            · exact Contents.readAt_ne_uad _ (by assumption)
+            · exact Contents.getAt_ne_uad _ (by assumption)
             · split
               · simp [LivePost]
               · split
@@ -666,7 +666,7 @@ theorem eval_live (M : FloatSig) (P : Program) :
           · trivial
           · rename_i ℓ c sub ρ hdp
             split
-            · exact Contents.readAt_ne_uad _ (by assumption)
+            · exact Contents.getAt_ne_uad _ (by assumption)
             · split
               · simp [LivePost]
               · split
@@ -691,7 +691,7 @@ theorem eval_live (M : FloatSig) (P : Program) :
           · rename_i hd; exact absurd hd (hf.root hρ).ne_dead
           · split
             · split
-              · exact Contents.readAt_ne_uad _ (by assumption)
+              · exact Contents.getAt_ne_uad _ (by assumption)
               · split
                 · exact Contents.destructure_ne_uad (by assumption)
                 · split
@@ -702,7 +702,7 @@ theorem eval_live (M : FloatSig) (P : Program) :
                       · simp [LivePost]
                       · exact Grow.set_full H ℓ _
             · split
-              · exact Contents.readAt_ne_uad _ (by assumption)
+              · exact Contents.getAt_ne_uad _ (by assumption)
               · split
                 · simp [LivePost]
                 · split
@@ -758,7 +758,7 @@ theorem eval_live (M : FloatSig) (P : Program) :
           · simp [LivePost]
           · rename_i hd; exact absurd hd (hf₁.root hρ).ne_dead
           · split
-            · exact Contents.readAt_ne_uad _ (by assumption)
+            · exact Contents.getAt_ne_uad _ (by assumption)
             · split
               · simp [LivePost]
               · split
@@ -797,13 +797,13 @@ theorem eval_live (M : FloatSig) (P : Program) :
           · simp [LivePost]
           · rename_i fd hfd
             split
-            · obtain ⟨hgm, hndm, hlm⟩ := mintParams_live H₁ vs
-              have hb := ih _ { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 }
+            · obtain ⟨hgm, hndm, hlm⟩ := freshParams_live H₁ vs
+              have hb := ih _ { env := (freshParams H₁ vs).2.reverse, scope := (freshParams H₁ vs).2 }
                 fd.body ⟨fun ℓ hℓ => (hlm ℓ (List.mem_reverse.mp hℓ)).2,
                   fun ℓ hℓ => (hlm ℓ hℓ).2, hndm⟩
               revert hb
-              generalize eval M n P (mintParams H₁ vs).1
-                { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 } fd.body = r
+              generalize eval M n P (freshParams H₁ vs).1
+                { env := (freshParams H₁ vs).2.reverse, scope := (freshParams H₁ vs).2 } fd.body = r
               intro hb
               cases r with
               | ok H₃ v tr₃ =>
@@ -1143,7 +1143,7 @@ theorem stepEval_live (M : FloatSig) (P : Program) {H : Store} {φ : Activation}
       · rename_i ℓ c _
         split
         · split
-          · exact Contents.readAt_ne_uad _ (by assumption)
+          · exact Contents.getAt_ne_uad _ (by assumption)
           · split
             · exact plainDestructure_ne_uad (by assumption)
             · split
@@ -1152,7 +1152,7 @@ theorem stepEval_live (M : FloatSig) (P : Program) {H : Store} {φ : Activation}
                 · simp [StepLive]
                 · exact h.grow (Grow.set_full H ℓ _)
         · split
-          · exact Contents.readAt_ne_uad _ (by assumption)
+          · exact Contents.getAt_ne_uad _ (by assumption)
           · split
             · simp [StepLive]
             · split
@@ -1181,7 +1181,7 @@ theorem stepEval_live (M : FloatSig) (P : Program) {H : Store} {φ : Activation}
       · rename_i ℓ c _
         split
         · split
-          · exact Contents.readAt_ne_uad _ (by assumption)
+          · exact Contents.getAt_ne_uad _ (by assumption)
           · split
             · exact plainDestructure_ne_uad (by assumption)
             · split
@@ -1190,7 +1190,7 @@ theorem stepEval_live (M : FloatSig) (P : Program) {H : Store} {φ : Activation}
                 · simp [StepLive]
                 · exact h.grow (Grow.set_full H ℓ _)
         · split
-          · exact Contents.readAt_ne_uad _ (by assumption)
+          · exact Contents.getAt_ne_uad _ (by assumption)
           · split
             · exact h
             · split
@@ -1254,9 +1254,9 @@ theorem stepArgs_live (P : Program) {H : Store} {φ : Activation} {K : List Kont
       split
       · simp [StepLive]
       · split
-        · obtain ⟨hgm, hndm, hlm⟩ := mintParams_live H vs
+        · obtain ⟨hgm, hndm, hlm⟩ := freshParams_live H vs
           revert hgm hndm hlm
-          generalize mintParams H vs = m
+          generalize freshParams H vs = m
           obtain ⟨H', ls⟩ := m
           intro hgm hndm hlm
           obtain ⟨hnd, hlv⟩ := extend_keeps h.2.1 h.2.2 hgm hndm hlm
@@ -1268,7 +1268,7 @@ theorem stepArgs_live (P : Program) {H : Store} {φ : Activation} {K : List Kont
       · exact dynPlace_ne_uad henv (by assumption)
       · trivial
       · split
-        · exact Contents.readAt_ne_uad _ (by assumption)
+        · exact Contents.getAt_ne_uad _ (by assumption)
         · split
           · simp [StepLive]
           · split
@@ -1280,7 +1280,7 @@ theorem stepArgs_live (P : Program) {H : Store} {φ : Activation} {K : List Kont
       · exact dynPlace_ne_uad henv (by assumption)
       · trivial
       · split
-        · exact Contents.readAt_ne_uad _ (by assumption)
+        · exact Contents.getAt_ne_uad _ (by assumption)
         · split
           · simp [StepLive]
           · split
@@ -1293,7 +1293,7 @@ theorem stepArgs_live (P : Program) {H : Store} {φ : Activation} {K : List Kont
       · trivial
       · rename_i ℓ c sub ρ _
         split
-        · exact Contents.readAt_ne_uad _ (by assumption)
+        · exact Contents.getAt_ne_uad _ (by assumption)
         · split
           · exact dropCell_ne_uad (by assumption)
           · split
@@ -1331,9 +1331,9 @@ theorem stepRet_live (M : FloatSig) (P : Program) {H : Store} {φ : Activation} 
       · rename_i e k i vs
         split
         · simp [StepLive]
-        · obtain ⟨hgm, hndm, hlm⟩ := mintParams_live H vs
+        · obtain ⟨hgm, hndm, hlm⟩ := freshParams_live H vs
           revert hgm hndm hlm
-          generalize mintParams H vs = m
+          generalize freshParams H vs = m
           obtain ⟨H', ls⟩ := m
           intro hgm hndm hlm
           have hK : StackLive H φ K := h
@@ -1376,7 +1376,7 @@ theorem stepRet_live (M : FloatSig) (P : Program) {H : Store} {φ : Activation} 
       · exact rootCell_ne_uad henv (by assumption)
       · rename_i ℓ c _
         split
-        · exact Contents.readAt_ne_uad _ (by assumption)
+        · exact Contents.getAt_ne_uad _ (by assumption)
         · split
           · exact dropCell_ne_uad (by assumption)
           · split

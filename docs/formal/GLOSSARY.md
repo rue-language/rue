@@ -156,7 +156,7 @@ it has two rows.
 | declared-linear; declared | Of a struct: marked `linear` itself, not linear only by infection | [spec 3.8:30][s3.8], [3.8:33][s3.8] | `Ty.declaredLinear` | Rue-specific, grounded | 01 §3; 03 intro; WHAT-IT-MEANS “What is proved”; lean/README “Generated programs”; GUIDE §1; BRIDGE-SENSITIVITY “Results”; MUTATION “What is mutated”; CHECKER-PROFILE “Why a rejected program still …”; `Syntax` |
 | non-linear | Of a type or content: it carries no linear value | [spec 3.8:57][s3.8] | — | Rue-specific, grounded | 01 §5.6; 03 “Type safety”; lean/README “The main theorem”; GUIDE “The run”; `Statics` |
 | droppability; droppable; trivially droppable | Whether a value may be discarded, and whether discarding it runs anything | [spec 3.9:7][s3.9], [3.8:74][s3.8] | — | Rue-specific, grounded | 01 §2; 03 intro; lean/README “What is mechanized”; BRIDGE-SENSITIVITY “Results”; `Syntax` |
-| Copy closure; copy-closure | The condition that no non-`Copy` value sits inside a `Copy` one | none | `Contents.copyClosed` | ours, pending audit | 03 “No double-free”; lean/README “Sharpness counter-examples”; GUIDE §4; `Dynamics` |
+| Copy closure; copy-closure | The condition that no non-`Copy` value sits inside a `Copy` one | none | `Contents.copyContained` | ours, pending audit | 03 “No double-free”; lean/README “Sharpness counter-examples”; GUIDE §4; `Dynamics` |
 
 ### Places, use and ownership
 
@@ -185,7 +185,7 @@ it has two rows.
 | fully owned; `fully-owned` | A place is owned and no place under it has been moved out | [spec 3.8:26][s3.8] | `OwnSt.fullyOwned` | Rue-specific, grounded | 01 §4.2; 03 intro; lean/README “Generated programs”; GUIDE §1; MUTATION “What the proofs kill, and …”; CHECKER-PROFILE “Why a rejected program still …”; `Syntax` |
 | reinitialization; reinitialize | Assigning to a moved-out place, which makes it owned again | [FIELD §5][F5]: initialized (Rust Reference *Glossary*); [spec 3.8:55][s3.8] | — | standard | 01 §5.2; 03 intro; README “The extension rubric”; lean/README “What is mechanized”; GUIDE “Example 1: reinit, reinitializing a …”; BRIDGE-SENSITIVITY “What the numbers say”; `Syntax` |
 | declared-linear destructure; destructure | Moving a field out of a declared-linear struct: it consumes the struct and disposes of the rest at once | [spec 3.8:33][s3.8], [3.8:60][s3.8] | `Contents.destructure`, `Typed.useDeclared` | Rue-specific, grounded | 01 §4.2; 03 intro; lean/README “Generated programs”; GUIDE §2; BRIDGE-SENSITIVITY “Results”; MUTATION “The mutants”; `Syntax` |
-| residue (of a destructure); retained; residue marker | The places a declared-linear destructure does not select, which are dropped at once | [spec 3.8:33][s3.8], [3.8:60][s3.8] ("droppable residue") | `linearResidue`, `dropResidue`, `residueMark` | Rue-specific, grounded | 01 §4.2; 03 intro; lean/README “Generated programs”; GUIDE §2; BRIDGE-SENSITIVITY “Results”; MUTATION “What is mutated”; CHECKER-PROFILE “Why a rejected program still …”; `Syntax` |
+| residue (of a destructure); retained; residue marker | The places a declared-linear destructure does not select, which are dropped at once | [spec 3.8:33][s3.8], [3.8:60][s3.8] ("droppable residue") | `linearResidue`, `dropResidue`, `residueDropEvent` | Rue-specific, grounded | 01 §4.2; 03 intro; lean/README “Generated programs”; GUIDE §2; BRIDGE-SENSITIVITY “Results”; MUTATION “What is mutated”; CHECKER-PROFILE “Why a rejected program still …”; `Syntax` |
 | residue gate | The premise of a declared-linear destructure that the parts it drops carry no linear value | [spec 3.8:60][s3.8] (a destructure may not drop a residue that carries a linear value) | `linearResidue` | Rue-specific, grounded | 01 §8; 03 intro; lean/README “What is mechanized”; GUIDE “What the checker demands” |
 | residue (of a partial move) | What remains of a partly moved value: its still-owned parts | [FIELD §5][F5]: "residue" differs, partial (no accepted noun) | `Contents.splitResidue` | ours, pending audit | 01 §4.2; 03 intro; lean/README “Generated programs”; GUIDE §2; BRIDGE-SENSITIVITY “Results”; MUTATION “What is mutated”; CHECKER-PROFILE “Why a rejected program still …”; `Syntax` |
 | residual; residual linear content; `residual-linear` | A still-owned linear value left under a place, which the leak check forbids at scope exit | [FIELD §5][F5]: partial move (the initialized fields); no accepted name | `residualLinear` | ours, pending audit | 01 §2; 03 intro; README “Why comptime is elaboration, not …”; lean/README “Generated programs”; GUIDE §3; BRIDGE-SENSITIVITY “Distinct identities and two more …”; MUTATION “What is mutated”; CHECKER-PROFILE “Why a rejected program still …”; `Float` |
@@ -300,8 +300,8 @@ it has two rows.
 | binding allocations; buffer allocations; buffer; buffer cells | Single-cell allocations for local bindings; multi-cell ones for container buffers | none | — | ours, pending audit | 01 §2; 03 “No double-free”; `Dynamics` |
 | owned buffer handle; `buf⟨A⟩` | An opaque value that owns one buffer allocation | none | — | ours, pending audit | 01 §6.1 |
 | view; `view⟨A \| o, k⟩` | A second-class reference to a range of a buffer's cells | [spec 3.7:58][s3.7] | — | Rue-specific, grounded | 01 §2; 03 “Exclusivity / no aliased mutation”; README intro; lean/README intro |
-| retire; retires; retired; dead; `†` | Ending an allocation's life: its identity stays in the store, marked dead, and is never reused | [FIELD §5][F5]: dead (Oxide), partial | `Retired`, `dropRetire` | ours, pending audit | 01 §3; 03 “No double-free”; WHAT-IT-MEANS “What that does and does …”; lean/README “The bridge corpus”; GUIDE §2; BRIDGE-SENSITIVITY “Results”; MUTATION “The mutants”; TOOLING “Golf, on a scratch copy”; `Statics` |
-| mint; mints; fresh; fresh cells | Creating a new allocation or value identity, one never used before | none | `mintParams`, `Fresh` | ours, pending audit | 01 §2; 03 intro; REDTEAM “Targets”; lean/README “Generated programs”; GUIDE §2; BRIDGE-SENSITIVITY “Rule coverage”; `Dynamics` |
+| retire; retires; retired; dead; `†` | Ending an allocation's life: its identity stays in the store, marked dead, and is never reused | [FIELD §5][F5]: dead (Oxide), partial | `Retired`, `dropRetire` | ours, pending audit | 01 §3; 03 “No double-free”; lean/README “The bridge corpus”; GUIDE §2; BRIDGE-SENSITIVITY “Results”; MUTATION “The mutants”; TOOLING “Golf, on a scratch copy”; `Statics` |
+| mint; mints; fresh; fresh cells | Creating a new allocation or value identity, one never used before | none | `freshParams`, `Fresh` | ours, pending audit | 01 §2; 03 intro; REDTEAM “Targets”; lean/README “Generated programs”; GUIDE §2; BRIDGE-SENSITIVITY “Rule coverage”; `Dynamics` |
 | identity; value identity | A unique tag an aggregate value carries from its creation, so a trace can say which value each event is about | none | `Contents.own`, `Val.own` | ours, pending audit | 01 §2; 03 “No double-free”; README “Why comptime is elaboration, not …”; lean/README “Generated programs”; GUIDE §2; BRIDGE-SENSITIVITY “Observable destructors”; MUTATION “The mutants”; `Float` |
 | shell | What remains of a matched enum value after its payload is moved out | none | `matchConsume` | ours, pending audit | 03 “No double-free”; lean/README “The statement layer”; GUIDE §2; MUTATION “The mutants”; TOOLING “How it fits this package”; `Dynamics` |
 | consumption (event) | The trace event a `match` records when it consumes what remains of an enum scrutinee after its payload moves out | none | `Event` | ours, pending audit | 01 intro; 03 “No use-after-drop / no leak …”; README “The architecture: surface → elaboration …”; GUIDE “The run”; `Dynamics` |
@@ -757,11 +757,11 @@ documents rely on.
 | `Contents.qual` | `Dynamics` | The class (§3) of cell contents: a moved-out position has nothing to drop, a struct has its declaration's class | helper | `Dynamics` |
 | `Contents.allCopy` | `Dynamics` | Whether every node of the contents is `Copy` | helper | — |
 | `Contents.allCopyList` | `Dynamics` | `Contents.allCopy` over a list | helper | — |
-| `Contents.copyClosed` | `Dynamics` | No non-`Copy` value sits under a `Copy` node: the store-level form of §3's rule that a `Copy` type's parts are `Copy` (`3.8:18`) | ours, pending audit | 03 “No double-free”; `Dynamics` |
-| `Contents.copyClosedList` | `Dynamics` | `Contents.copyClosed` over a list | helper | — |
+| `Contents.copyContained` | `Dynamics` | No non-`Copy` value sits under a `Copy` node: the store-level form of §3's rule that a `Copy` type's parts are `Copy` (`3.8:18`) | ours, pending audit | 03 “No double-free”; `Dynamics` |
+| `Contents.copyContainedList` | `Dynamics` | `Contents.copyContained` over a list | helper | — |
 | `Contents.residualLinear` | `Dynamics` | §5.6's `residual-linear` read on stored contents: whether a live part of a declared-`linear` struct remains; the interpreter's leak check consults it | ours, pending audit | `Dynamics` |
 | `Contents.residualLinearList` | `Dynamics` | `Contents.residualLinear` over a list | helper | — |
-| `Contents.writeAt` | `Dynamics` | `H[ℓ@π ↦ c′]` (§6.3, §6.8): replaces the part of a cell's contents at a path; fails where the path does not fit | ours, pending audit | — |
+| `Contents.setAt` | `Dynamics` | `H[ℓ@π ↦ c′]` (§6.3, §6.8): replaces the part of a cell's contents at a path; fails where the path does not fit | ours, pending audit | — |
 | `Cell` | `Dynamics` | One store cell per binding allocation (§6.1): live contents, or the dead mark `†` | ours, pending audit | — |
 | `Store` | `Dynamics` | The store `H` (§6.1): a list of cells indexed by location; allocation appends, and indices are never reused | standard (FIELD §3: store, Amin & Rompf §4.1) | README intro; `Step` |
 | `Env` | `Dynamics` | The environment `ρ` (§6.1): maps each de Bruijn index to its store location | standard (FIELD §3: environment, Amin & Rompf §§2.1–2.2) | `Dynamics` |
@@ -769,7 +769,7 @@ documents rely on.
 | `Event` | `Dynamics` | One entry of the drop trace: a drop starting at a binding or temporary, a destructor run, a consumption, or a `@dbg` line | standard (FIELD §6: trace of events) | `Dynamics` |
 | `PanicKind` | `Dynamics` | The kinds of defined trap (§6.12's `↯κ`): overflow, division or remainder by zero, out-of-bounds index, explicit panic, float-to-int range | Rue-specific, grounded (spec 8.1:1) | 03 intro |
 | `Refusal` | `Dynamics` | The named refusals of the machine (use after move, use after drop, …); each §7 memory-safety bullet forbids one | ours, pending audit | 03 “Type safety”; lean/README “How to read this, with …”; GUIDE §2; `Dynamics` |
-| `Contents.readAt` | `Dynamics` | `H(ℓ)@π` (§6.3): follows a path into stored contents; reaching a moved-out position is a use after move | ours, pending audit | — |
+| `Contents.getAt` | `Dynamics` | `H(ℓ)@π` (§6.3): follows a path into stored contents; reaching a moved-out position is a use after move | ours, pending audit | — |
 | `inBoundsIdx` | `Dynamics` | §6.5's bounds check on a run-time index: `0 ≤ i < n` | Rue-specific, grounded (spec 7.1:11) | — |
 | `DynStep` | `Dynamics` | Where the run-time-indexed tail of a place lands: a path with constant indices, the bounds trap, or a refusal | helper | — |
 | `Contents.resolveDyn` | `Dynamics` | Resolves a place's run-time indices against the stored contents, giving a path with constant indices, trapping on an out-of-range index (§6.5) | ours, pending audit | 03 intro; `Syntax` |
@@ -788,7 +788,7 @@ documents rely on.
 | `dropEventsList` | `Dynamics` | `dropEvents` over a list, concatenated in declaration or ascending index order | Rue-specific, grounded (spec 3.9:13) | — |
 | `Contents.splitResidue` | `Dynamics` | §6.3's `split`: separates the selected field of a destructured value from the unselected parts, in order | Rue-specific, grounded (spec 3.8:33) | `Dynamics` |
 | `Contents.splitFields` | `Dynamics` | `split`'s step over one node's fields or elements: keep those before, recurse into the selected one, keep those after | ours, pending audit | `Dynamics` |
-| `residueMark` | `Dynamics` | The trace marker that opens the drop of one unselected part of a destructured value, as `@drop` of that sub-place would | ours, pending audit | 03 “No double-free”; `Dynamics` |
+| `residueDropEvent` | `Dynamics` | The trace marker that opens the drop of one unselected part of a destructured value, as `@drop` of that sub-place would | ours, pending audit | 03 “No double-free”; `Dynamics` |
 | `dropResidue` | `Dynamics` | Drops the unselected parts of a destructured value left to right, each immediately and once (§6.3, `3.8:33`) | Rue-specific, grounded (spec 3.8:33) | `Dynamics` |
 | `Contents.pathOnly` | `Dynamics` | The consumed outer nodes of a destructure: the path from the declared-`linear` place down to the field, with everything else moved out | ours, pending audit | `Dynamics` |
 | `Contents.pathOnlyFields` | `Dynamics` | `Contents.pathOnly`'s step over one node's fields | helper | — |
@@ -800,7 +800,7 @@ documents rely on.
 | `dropRetire` | `Dynamics` | `drop-retire` (§6.1): drops a binding's contents, then marks the cell dead so later access is a use after drop | ours, pending audit | `Dynamics` |
 | `unwindLocs` | `Dynamics` | `run-scope-drops` (§6.1): drops a scope's cells and marks them dead in the order given (newest first) | ours, pending audit | `Dynamics` |
 | `runAllScopeDrops` | `Dynamics` | `run-all-scope-drops` (§6.1, §6.9): drops all of a frame's cells, newest first, when the frame is popped | Rue-specific, grounded (spec 3.9:1) | — |
-| `mintParams` | `Dynamics` | (D-Call) §6.9: allocates one fresh cell per by-value argument, left to right | ours, pending audit | 03 “Linear values are consumed exactly …”; GUIDE “The one edge no monitor …”; `Dynamics` |
+| `freshParams` | `Dynamics` | (D-Call) §6.9: allocates one fresh cell per by-value argument, left to right | ours, pending audit | 03 “Linear values are consumed exactly …”; GUIDE “The one edge no monitor …”; `Dynamics` |
 | `ArgsRes` | `Dynamics` | The result of evaluating an argument list: store, values and trace, or the first argument's non-value result | ours, pending audit | — |
 | `evalArgs` | `Dynamics` | Evaluates a call's by-value arguments left to right, passing the store from each to the next (§6.2, §6.9) | standard (FIELD §3: definitional interpreter) | `Dynamics` |
 | `OpRes` | `Dynamics` | What a primitive operator produced: a value, a trap, or a refusal on a wrong-shaped operand | helper | — |
@@ -892,7 +892,7 @@ documents rely on.
 | `Val.own` | `Trace.Defs` | A value's owned identities | helper | — |
 | `Cell.own` | `Trace.Defs` | A cell's owned identities; a dead cell has none | helper | — |
 | `storeOwn` | `Trace.Defs` | The store's owned identities, cell by cell | helper | — |
-| `StoreCC` | `Trace.Defs` | Every live cell satisfies `Contents.copyClosed` | helper | lean/README “Non-vacuity witnesses”; MUTATION “The mutants” |
+| `StoreCC` | `Trace.Defs` | Every live cell satisfies `Contents.copyContained` | helper | lean/README “Non-vacuity witnesses”; MUTATION “The mutants” |
 | `IdLe` | `Trace.Defs` | Multiset inclusion of identity lists, by counts | helper | — |
 | `Fresh` | `Trace.Defs` | The identities created between two stores | helper | — |
 | `Event.freed` | `Trace.Defs` | The owned identities an event frees: an event that starts a drop, or a consumption | ours, pending audit | — |

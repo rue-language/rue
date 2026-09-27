@@ -2580,7 +2580,7 @@ walks: a call's argument list, a struct literal's initializers, an array
 literal's elements; and, since RUE-2342, an assignment's right-hand side while
 the target's dynamic indices run after it (`5.2:14`). Such a value lives in no cell and in no scope record
 between the subexpression that produced it and the aggregation that would
-have taken it — for an argument, the `mintParams` of §6.9's (D-Call). If a
+have taken it — for an argument, the `freshParams` of §6.9's (D-Call). If a
 later sibling unwinds by `return`, (D-Return) §6.9 discards the evaluation
 context — the pending values with it — and runs `run-all-scope-drops` on the
 frame's records, which never named that value; a `break` does the same with

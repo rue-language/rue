@@ -401,7 +401,7 @@ theorem ContentsTy.qual_eq {D c T} (h : ContentsTy D c T) (hf : c.noMovedOut = t
 
 /-! ## Copy closure: a `Copy` type holds nothing owned
 
-The machine's copy-closure monitor (`Contents.copyClosed`, `Dynamics.lean`)
+The machine's copy-closure monitor (`Contents.copyContained`, `Dynamics.lean`)
 refuses an aggregate whose class is `Copy` but whose members are not. §3 makes
 that a fact about types — `3.8:18` requires every field of a `@copy` struct to
 be `Copy`, `6.3:19` makes an enum `Copy` only when every payload component is,
@@ -493,10 +493,10 @@ end
 
 mutual
 /-- **Well-typed contents is copy-closed**, so the machine's copy-closure
-monitor (`Contents.copyClosed`) lets every checked program's aggregates through
+monitor (`Contents.copyContained`) lets every checked program's aggregates through
 (helper). -/
-theorem ContentsTy.copyClosed {D : Decls} {c : Contents} {T : Ty} (hwf : WfDecls D)
-    (h : ContentsTy D c T) : c.copyClosed D = true := by
+theorem ContentsTy.copyContained {D : Decls} {c : Contents} {T : Ty} (hwf : WfDecls D)
+    (h : ContentsTy D c T) : c.copyContained D = true := by
   cases h with
   | movedOut => rfl
   | int => rfl
@@ -504,45 +504,45 @@ theorem ContentsTy.copyClosed {D : Decls} {c : Contents} {T : Ty} (hwf : WfDecls
   | bool => rfl
   | unit => rfl
   | @struct s sd i cs hd hcs =>
-      simp only [Contents.copyClosed]
+      simp only [Contents.copyContained]
       split
       · rename_i hc'
         have hcls : sd.cls = .copy := by simpa only [Decls.classOf, hd] using hc'
         exact ContentsTys.allCopyList hwf hcs ((hwf.structs s sd hd).field_copy hcls)
-      · exact ContentsTys.copyClosedList hwf hcs
+      · exact ContentsTys.copyContainedList hwf hcs
   | @enum e k ed Ts i cs hd hv hcs =>
-      simp only [Contents.copyClosed]
+      simp only [Contents.copyContained]
       split
       · rename_i hc'
         have hcls : ed.cls = .copy := by simpa only [Decls.enumClassOf, hd] using hc'
         exact ContentsTys.allCopyList hwf hcs
           ((hwf.enums e ed hd).payload_copy hcls Ts (List.mem_of_getElem? hv))
-      · exact ContentsTys.copyClosedList hwf hcs
+      · exact ContentsTys.copyContainedList hwf hcs
   | @array T n i cs hcs =>
       have hlen : cs.length = n := by simpa using hcs.length_eq
-      simp only [Contents.copyClosed, hlen]
+      simp only [Contents.copyContained, hlen]
       split
       · rename_i hc'
         refine ContentsTys.allCopyList hwf hcs ?_
         intro T' hmem
         rw [List.eq_of_mem_replicate hmem]
         exact Ty.array_copy_elem hc'
-      · exact ContentsTys.copyClosedList hwf hcs
+      · exact ContentsTys.copyContainedList hwf hcs
 
 /-- The same over a field list (helper). -/
-theorem ContentsTys.copyClosedList {D : Decls} {cs : List Contents} {Ts : List Ty}
-    (hwf : WfDecls D) (h : ContentsTys D cs Ts) : Contents.copyClosedList D cs = true := by
+theorem ContentsTys.copyContainedList {D : Decls} {cs : List Contents} {Ts : List Ty}
+    (hwf : WfDecls D) (h : ContentsTys D cs Ts) : Contents.copyContainedList D cs = true := by
   cases h with
   | nil => rfl
   | cons h₁ h₂ =>
-      simp only [Contents.copyClosedList, Bool.and_eq_true]
-      exact ⟨ContentsTy.copyClosed hwf h₁, ContentsTys.copyClosedList hwf h₂⟩
+      simp only [Contents.copyContainedList, Bool.and_eq_true]
+      exact ⟨ContentsTy.copyContained hwf h₁, ContentsTys.copyContainedList hwf h₂⟩
 end
 
 /-- A well-typed value is copy-closed (helper). -/
-theorem HasTy.copyClosed {D : Decls} {v : Val} {T : Ty} (hwf : WfDecls D) (h : HasTy D v T) :
-    (Contents.ofVal v).copyClosed D = true :=
-  h.contentsTy.copyClosed hwf
+theorem HasTy.copyContained {D : Decls} {v : Val} {T : Ty} (hwf : WfDecls D) (h : HasTy D v T) :
+    (Contents.ofVal v).copyContained D = true :=
+  h.contentsTy.copyContained hwf
 
 /-! ## §6.11's walk over contents: it never refuses, and it drops in order -/
 
@@ -1356,14 +1356,14 @@ has a state for the path — which is where no proper prefix of it is `MovedOut`
 (§5.1's `Owned-Base`, `3.8:53`) — the store's `H(ℓ)@π` (§6.3) reaches a
 sub-position, and the two match at the path's declared type. This is what makes
 every place rule's premises enough for its dynamic rule to fire. -/
-theorem ContentsOwnTyping.readAt {D : Decls} : ∀ (π : List Nat) {c : Contents}
+theorem ContentsOwnTyping.getAt {D : Decls} : ∀ (π : List Nat) {c : Contents}
     {t u : OwnSt} {T T' : Ty}, ContentsOwnTyping D c t T → t.get π = some u →
-    T.atPath D π = some T' → ∃ sub, c.readAt π = .ok sub ∧ ContentsOwnTyping D sub u T'
+    T.atPath D π = some T' → ∃ sub, c.getAt π = .ok sub ∧ ContentsOwnTyping D sub u T'
   | [], c, t, u, T, T', hm, hg, hty => by
       simp only [OwnSt.get, Option.some.injEq] at hg
       simp only [Ty.atPath, Option.some.injEq] at hty
       subst hg; subst hty
-      exact ⟨c, by simp [Contents.readAt], hm⟩
+      exact ⟨c, by simp [Contents.getAt], hm⟩
   | f :: π, c, t, u, T, T', hm, hg, hty => by
       cases hfa : T.fieldAt D f with
       | none => simp [Ty.atPath, hfa] at hty
@@ -1379,8 +1379,8 @@ theorem ContentsOwnTyping.readAt {D : Decls} : ∀ (π : List Nat) {c : Contents
               obtain ⟨i, cs, rfl, hl⟩ := ContentsOwnTyping.owned_struct hd (.owned hcty hhf)
               obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
-              simp only [Contents.readAt, hcf]
-              exact ContentsOwnTyping.readAt π
+              simp only [Contents.getAt, hcf]
+              exact ContentsOwnTyping.getAt π
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
                 hg hty
           | moved _ _ => simp [OwnSt.get] at hg
@@ -1389,36 +1389,36 @@ theorem ContentsOwnTyping.readAt {D : Decls} : ∀ (π : List Nat) {c : Contents
               subst heq
               obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
-              simp only [Contents.readAt, hcf]
-              exact ContentsOwnTyping.readAt π hmf hg hty
+              simp only [Contents.getAt, hcf]
+              exact ContentsOwnTyping.getAt π hmf hg hty
         · cases hm with
           | owned hcty hhf =>
               obtain ⟨i, cs, rfl, hl⟩ := ContentsOwnTyping.owned_array (.owned hcty hhf)
               obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
-              simp only [Contents.readAt, hcf]
-              exact ContentsOwnTyping.readAt π
+              simp only [Contents.getAt, hcf]
+              exact ContentsOwnTyping.getAt π
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
                 hg hty
           | moved _ _ => simp [OwnSt.get] at hg
           | @elems T'' n' i cs ts hl =>
               obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
-              simp only [Contents.readAt, hcf]
-              exact ContentsOwnTyping.readAt π hmf hg hty
+              simp only [Contents.getAt, hcf]
+              exact ContentsOwnTyping.getAt π hmf hg hty
 
 /-- **Writing a sub-position and its Σ state together keeps the cell
 matched.** (Use-Move) §6.3's `H[ℓ@π ↦ ⊘]`, `@drop`'s write-back (§6.11) and
 (D-Assign)'s store (§6.8) are all this lemma, with a different pair written in
 at the path. -/
-theorem ContentsOwnTyping.writeAt {D : Decls} : ∀ (π : List Nat) {c sub' : Contents}
+theorem ContentsOwnTyping.setAt {D : Decls} : ∀ (π : List Nat) {c sub' : Contents}
     {t u u' : OwnSt} {T T' : Ty}, ContentsOwnTyping D c t T → t.get π = some u →
     T.atPath D π = some T' → ContentsOwnTyping D sub' u' T' →
-    ∃ c', c.writeAt π sub' = some c' ∧ ContentsOwnTyping D c' (t.setAt π u') T
+    ∃ c', c.setAt π sub' = some c' ∧ ContentsOwnTyping D c' (t.setAt π u') T
   | [], c, sub', t, u, u', T, T', hm, hg, hty, hnew => by
       simp only [Ty.atPath, Option.some.injEq] at hty
       subst hty
-      exact ⟨sub', by simp [Contents.writeAt], by simpa only [OwnSt.setAt] using hnew⟩
+      exact ⟨sub', by simp [Contents.setAt], by simpa only [OwnSt.setAt] using hnew⟩
   | f :: π, c, sub', t, u, u', T, T', hm, hg, hty, hnew => by
       cases hfa : T.fieldAt D f with
       | none => simp [Ty.atPath, hfa] at hty
@@ -1430,10 +1430,10 @@ theorem ContentsOwnTyping.writeAt {D : Decls} : ∀ (π : List Nat) {c sub' : Co
               obtain ⟨i, cs, rfl, hl⟩ := ContentsOwnTyping.owned_struct hd (.owned hcty hhf)
               obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
-              obtain ⟨cf', hw, hmf'⟩ := ContentsOwnTyping.writeAt π
+              obtain ⟨cf', hw, hmf'⟩ := ContentsOwnTyping.setAt π
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
                 hg hty hnew
-              refine ⟨.struct s i (cs.set f cf'), by simp only [Contents.writeAt, hcf, hw,
+              refine ⟨.struct s i (cs.set f cf'), by simp only [Contents.setAt, hcf, hw,
                 Option.map_some], ?_⟩
               simp only [OwnSt.setAt]
               exact .fields hd (ContentsOwnTypingList.set f hl hf
@@ -1444,8 +1444,8 @@ theorem ContentsOwnTyping.writeAt {D : Decls} : ∀ (π : List Nat) {c sub' : Co
               subst heq
               obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
-              obtain ⟨cf', hw, hmf'⟩ := ContentsOwnTyping.writeAt π hmf hg hty hnew
-              refine ⟨.struct s i (cs.set f cf'), by simp only [Contents.writeAt, hcf, hw,
+              obtain ⟨cf', hw, hmf'⟩ := ContentsOwnTyping.setAt π hmf hg hty hnew
+              refine ⟨.struct s i (cs.set f cf'), by simp only [Contents.setAt, hcf, hw,
                 Option.map_some], ?_⟩
               simp only [OwnSt.setAt]
               exact .fields hd' (ContentsOwnTypingList.set f hl hf hmf')
@@ -1454,10 +1454,10 @@ theorem ContentsOwnTyping.writeAt {D : Decls} : ∀ (π : List Nat) {c sub' : Co
               obtain ⟨i, cs, rfl, hl⟩ := ContentsOwnTyping.owned_array (.owned hcty hhf)
               obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
-              obtain ⟨cf', hw, hmf'⟩ := ContentsOwnTyping.writeAt π
+              obtain ⟨cf', hw, hmf'⟩ := ContentsOwnTyping.setAt π
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
                 hg hty hnew
-              refine ⟨.array Tf i (cs.set f cf'), by simp only [Contents.writeAt, hcf, hw,
+              refine ⟨.array Tf i (cs.set f cf'), by simp only [Contents.setAt, hcf, hw,
                 Option.map_some], ?_⟩
               simp only [OwnSt.setAt]
               exact .elems (ContentsOwnTypingList.set f hl hf
@@ -1466,8 +1466,8 @@ theorem ContentsOwnTyping.writeAt {D : Decls} : ∀ (π : List Nat) {c sub' : Co
           | @elems _ _ i cs ts hl =>
               obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
-              obtain ⟨cf', hw, hmf'⟩ := ContentsOwnTyping.writeAt π hmf hg hty hnew
-              refine ⟨.array Tf i (cs.set f cf'), by simp only [Contents.writeAt, hcf, hw,
+              obtain ⟨cf', hw, hmf'⟩ := ContentsOwnTyping.setAt π hmf hg hty hnew
+              refine ⟨.array Tf i (cs.set f cf'), by simp only [Contents.setAt, hcf, hw,
                 Option.map_some], ?_⟩
               simp only [OwnSt.setAt]
               exact .elems (ContentsOwnTypingList.set f hl hf hmf')
@@ -2327,22 +2327,22 @@ theorem StoreTyping.joinOpt_right {D : Decls} (hwf : WfDecls D) {a b o : Option 
 
 /-- Minting appends one cell per by-value argument and nothing else
 (helper). -/
-theorem mintParams_store : ∀ (H : Store) (vs : List Val),
-    (mintParams H vs).1 = H ++ vs.map (fun v => Cell.full (Contents.ofVal v))
-  | H, [] => by simp [mintParams]
+theorem freshParams_store : ∀ (H : Store) (vs : List Val),
+    (freshParams H vs).1 = H ++ vs.map (fun v => Cell.full (Contents.ofVal v))
+  | H, [] => by simp [freshParams]
   | H, v :: vs => by
-      simp [mintParams, mintParams_store (H ++ [Cell.full (Contents.ofVal v)]) vs]
+      simp [freshParams, freshParams_store (H ++ [Cell.full (Contents.ofVal v)]) vs]
 
 /-- Every parameter cell is minted above the caller's whole store, which is
 what makes a call local to the caller's frame (helper). -/
-theorem mintParams_fresh : ∀ (H : Store) (vs : List Val) (ℓ : Nat),
-    ℓ ∈ (mintParams H vs).2 → H.length ≤ ℓ
-  | _, [], _, h => by simp [mintParams] at h
+theorem freshParams_fresh : ∀ (H : Store) (vs : List Val) (ℓ : Nat),
+    ℓ ∈ (freshParams H vs).2 → H.length ≤ ℓ
+  | _, [], _, h => by simp [freshParams] at h
   | H, v :: vs, ℓ, h => by
-      simp only [mintParams] at h
+      simp only [freshParams] at h
       rcases List.mem_cons.mp h with rfl | h
       · exact Nat.le_refl _
-      · have := mintParams_fresh (H ++ [Cell.full (Contents.ofVal v)]) vs ℓ h
+      · have := freshParams_fresh (H ++ [Cell.full (Contents.ofVal v)]) vs ℓ h
         simp at this
         omega
 
@@ -2351,46 +2351,46 @@ cells hold the argument values, and (Fn) §5.8's entry context `Γ0;Σ0`
 (`fnCtx`) describes exactly them. The two `reverse`s are the same one: a
 signature lists parameters left to right while `Ctx` and `Env` list the
 innermost binder first. -/
-theorem storeTyping_mintParams {D : Decls} : ∀ (ps : List Param) (vs : List Val) (H : Store),
+theorem storeTyping_freshParams {D : Decls} : ∀ (ps : List Param) (vs : List Val) (H : Store),
     HasTys D vs (ps.map Param.ty) →
     StoreTyping D ((ps.map fun p => ({ ty := p.ty, mu := p.mu, st := .owned } : Entry)).reverse)
-      (mintParams H vs).2.reverse (mintParams H vs).1
+      (freshParams H vs).2.reverse (freshParams H vs).1
   | [], vs, H, h => by cases h; exact .nil
   | p :: ps, vs, H, h => by
       cases h with
       | @cons v vs' _ _ hv hvs =>
-          have ih := storeTyping_mintParams (D := D) ps vs' (H ++ [Cell.full (Contents.ofVal v)]) hvs
-          simp only [List.map_cons, List.reverse_cons, mintParams]
+          have ih := storeTyping_freshParams (D := D) ps vs' (H ++ [Cell.full (Contents.ofVal v)]) hvs
+          simp only [List.map_cons, List.reverse_cons, freshParams]
           refine StoreTyping.snoc ih ?_ ⟨Contents.ofVal v, rfl, ContentsOwnTyping.ofVal hv⟩ ?_
-          · rw [mintParams_store]
+          · rw [freshParams_store]
             rw [List.getElem?_append_left (by simp)]
             simp
           · intro hmem
-            have := mintParams_fresh (H ++ [Cell.full (Contents.ofVal v)]) vs' _
+            have := freshParams_fresh (H ++ [Cell.full (Contents.ofVal v)]) vs' _
               (List.mem_reverse.mp hmem)
             simp at this
             omega
 
 /-- Minting returns one location per value (helper). -/
-theorem mintParams_locs_length : ∀ (H : Store) (vs : List Val),
-    (mintParams H vs).2.length = vs.length
+theorem freshParams_locs_length : ∀ (H : Store) (vs : List Val),
+    (freshParams H vs).2.length = vs.length
   | _, [] => rfl
   | H, v :: vs => by
-      simp [mintParams, mintParams_locs_length (H ++ [Cell.full (Contents.ofVal v)]) vs]
+      simp [freshParams, freshParams_locs_length (H ++ [Cell.full (Contents.ofVal v)]) vs]
 
 /-- **(D-Match) §6.6 establishes the arm's entry invariant.** The payload cells
 hold the payload components and (Match) §5.5's `Σ0[ x_{ij} ↦ Owned ]` — `extendArm`
 — describes exactly them, on top of the frame the `match` was evaluated in. This
-is `storeTyping_mintParams` read over a non-empty base frame: the same minting, the
+is `storeTyping_freshParams` read over a non-empty base frame: the same minting, the
 same two `reverse`s (a payload tuple is written left to right while `Ctx` and
 `Env` list the innermost binder first), with the enclosing frame carried along
 because the cells are minted **above** the whole store. -/
-theorem storeTyping_mintParams_app {D : Decls} :
+theorem storeTyping_freshParams_app {D : Decls} :
     ∀ (Ts : List Ty) (vs : List Val) (Γ : Ctx) (ρ : Env) (H : Store),
       HasTys D vs Ts → StoreTyping D Γ ρ H →
       StoreTyping D ((Ts.map fun T => ({ ty := T, mu := false, st := .owned } : Entry)).reverse ++ Γ)
-        ((mintParams H vs).2.reverse ++ ρ) (mintParams H vs).1
-  | [], vs, Γ, ρ, H, h, hm => by cases h; simpa [mintParams] using hm
+        ((freshParams H vs).2.reverse ++ ρ) (freshParams H vs).1
+  | [], vs, Γ, ρ, H, h, hm => by cases h; simpa [freshParams] using hm
   | T :: Ts, vs, Γ, ρ, H, h, hm => by
       cases h with
       | @cons v vs' _ _ hv hvs =>
@@ -2400,10 +2400,10 @@ theorem storeTyping_mintParams_app {D : Decls} :
             refine .cons ?_ ⟨Contents.ofVal v, rfl, ContentsOwnTyping.ofVal hv⟩ hfresh
               (hm.append _)
             simp
-          have ih := storeTyping_mintParams_app (D := D) Ts vs'
+          have ih := storeTyping_freshParams_app (D := D) Ts vs'
             ({ ty := T, mu := false, st := .owned } :: Γ) (H.length :: ρ)
             (H ++ [Cell.full (Contents.ofVal v)]) hvs hbase
-          simp only [List.map_cons, List.reverse_cons, mintParams, List.reverse_cons,
+          simp only [List.map_cons, List.reverse_cons, freshParams, List.reverse_cons,
             List.append_assoc, List.singleton_append]
           exact ih
 
@@ -2470,7 +2470,7 @@ bound or resolves to a constant path typed at the leaf** (§6.5's
 (D-Index)/(D-Index-Trap), `7.1:10`). Never a refusal: every dynamic step is
 taken at an array (`Ty.atDyn`), the array's length is its type's
 (`ContentsOwnTyping.owned_array`), and an element of an `Owned` array is
-`Owned`, so the constant path after it reads by `ContentsOwnTyping.readAt`
+`Owned`, so the constant path after it reads by `ContentsOwnTyping.getAt`
 (helper). -/
 theorem Contents.resolveDyn_ok {D : Decls} : ∀ (is : List Int) (πs : List (List Nat))
     {c : Contents} {Ta T : Ty}, ContentsOwnTyping D c .owned Ta → Ta.atDyn D πs = some T →
@@ -2503,7 +2503,7 @@ theorem Contents.resolveDyn_ok {D : Decls} : ∀ (is : List Int) (πs : List (Li
             obtain ⟨ce, hce, hme⟩ := ContentsOwnTypingList.index i.toNat hl hTe
             have hme' : ContentsOwnTyping D ce .owned E := by
               simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hme
-            obtain ⟨c', hr', hm'⟩ := ContentsOwnTyping.readAt π hme' (OwnSt.get_owned π) hE
+            obtain ⟨c', hr', hm'⟩ := ContentsOwnTyping.getAt π hme' (OwnSt.get_owned π) hE
             have hlen' : is.length = πs.length := by simpa using hlen
             rcases Contents.resolveDyn_ok is πs hm' hdyn hlen' with hb' | ⟨ρ, hres, hty⟩
             · left
@@ -2751,14 +2751,14 @@ theorem EvalOk.weaken {D T R o₁ o' B φ H r}
 
 /-- **Aggregate introduction keeps the promise** ((D-Struct), (D-Array) §6.5,
 (D-Enum-Intro) §6.6, the repeat form): a well-typed aggregate passes the
-copy-closure monitor (`HasTy.copyClosed`), and the identity it mints reserves
+copy-closure monitor (`HasTy.copyContained`), and the identity it mints reserves
 one `†` slot above the store, which no binding names — so the frame still
 matches and nothing it names was touched (helper). -/
 theorem introVal_ok {D : Decls} {T R : Ty} {Γ : Ctx} {B : List Ctx} {φ : Activation}
     {H₀ H : Store} {mk : Nat → Val} (hwf : WfDecls D) (hty : HasTy D (mk H.length) T)
     (hfm : ActivationTyping D Γ φ H) (hu : FrameProperty φ.env H₀ H) :
     EvalOk D T R (some Γ) B φ H₀ (introVal D H mk) := by
-  simp only [introVal, if_pos (hty.copyClosed hwf)]
+  simp only [introVal, if_pos (hty.copyContained hwf)]
   exact ⟨hty, ⟨hfm.store.append _, hfm.record⟩, hu.trans (FrameProperty.append _)⟩
 
 /-! ## Loops: the head, the back edge, and the exits (§5.7, §6.10) -/
@@ -3031,7 +3031,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
           obtain ⟨cc, rfl, hmm⟩ := hcm
           have hpl : cc.declaredPlan P.decls pl.path = none := by
             rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hg hty]; exact hplan
-          obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt pl.path hmm hg hty
+          obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.getAt pl.path hmm hg hty
           obtain ⟨v, hv, htyv⟩ := hsub.toVal hfo
           have hvm : v.qual P.decls = .copy := by rw [htyv.qual_eq]; exact hcopy
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.use pl) = .ok H v [] := by
@@ -3045,11 +3045,11 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
           obtain ⟨cc, rfl, hmm⟩ := hcm
           have hpl : cc.declaredPlan P.decls pl.path = none := by
             rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hg hty]; exact hplan
-          obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt pl.path hmm hg hty
+          obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.getAt pl.path hmm hg hty
           obtain ⟨v, hv, htyv⟩ := hsub.toVal hfo
           have hvm : v.qual P.decls ≠ .copy := by rw [htyv.qual_eq]; exact hncopy
           obtain ⟨cc', hw, hmm'⟩ :=
-            ContentsOwnTyping.writeAt pl.path hmm hg hty (ContentsOwnTyping.movedOut (T := T))
+            ContentsOwnTyping.setAt pl.path hmm hg hty (ContentsOwnTyping.movedOut (T := T))
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.use pl) = .ok (H.set ℓ (.full cc')) v [] := by
             simp [eval, hρ, hc, hpl, hread, hv, hvm, hw]
           rw [hev]
@@ -3076,12 +3076,12 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
             rw [hsplit, OwnSt.get_append, hgd]; exact hgu
           have hpl : cc.declaredPlan P.decls pl.path = some (πd, πs) := by
             rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hgfull hty]; exact hplan
-          obtain ⟨cd, hread, hsub⟩ := ContentsOwnTyping.readAt πd hmm hgd htd
+          obtain ⟨cd, hread, hsub⟩ := ContentsOwnTyping.getAt πd hmm hgd htd
           obtain ⟨leaf, rs, hdest, hlty, hlhf⟩ :=
             destructure_ok hwf.decls ℓ hsub.contentsTy (hsub.noMovedOut hfo) hleaf hres
           obtain ⟨v, hv, htyv⟩ := hlty.toVal hlhf
           obtain ⟨cc', hw, hmm'⟩ :=
-            ContentsOwnTyping.writeAt πd hmm hgd htd (ContentsOwnTyping.movedOut (T := Td))
+            ContentsOwnTyping.setAt πd hmm hgd htd (ContentsOwnTyping.movedOut (T := Td))
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.use pl)
               = .ok (H.set ℓ (.full cc')) v (dropResidueEvents P.decls ℓ rs ++ [.consume (cd.pathOnly πs)]) := by
             simp [eval, hρ, hc, hpl, hread, hdest, hv, hw]
@@ -3254,32 +3254,32 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
           obtain ⟨body, harm⟩ := exhaustive_arm_exists hlen hv
           obtain ⟨ob, Δb, hbody, hbres, hΔb⟩ := harms.at_index k harm hv
           have hlenvs : vs.length = Ts.length := hvs.length_eq
-          have hlocs : ((mintParams H₀ vs).2.reverse).length = Ts.length := by
-            rw [List.length_reverse, mintParams_locs_length]; exact hlenvs
-          have hfresh : ∀ ℓ ∈ (mintParams H₀ vs).2.reverse, H₀.length ≤ ℓ :=
-            fun ℓ hm => mintParams_fresh H₀ vs ℓ (List.mem_reverse.mp hm)
-          have hkeep : ∀ ℓ, ℓ < H₀.length → (mintParams H₀ vs).1[ℓ]? = H₀[ℓ]? := by
+          have hlocs : ((freshParams H₀ vs).2.reverse).length = Ts.length := by
+            rw [List.length_reverse, freshParams_locs_length]; exact hlenvs
+          have hfresh : ∀ ℓ ∈ (freshParams H₀ vs).2.reverse, H₀.length ≤ ℓ :=
+            fun ℓ hm => freshParams_fresh H₀ vs ℓ (List.mem_reverse.mp hm)
+          have hkeep : ∀ ℓ, ℓ < H₀.length → (freshParams H₀ vs).1[ℓ]? = H₀[ℓ]? := by
             intro ℓ hlt
-            rw [mintParams_store]
+            rw [freshParams_store]
             exact List.getElem?_append_left hlt
-          have hpre : H₀.length ≤ (mintParams H₀ vs).1.length := by
-            rw [mintParams_store]; simp
+          have hpre : H₀.length ≤ (freshParams H₀ vs).1.length := by
+            rw [freshParams_store]; simp
           have hfma : ActivationTyping P.decls (extendArm Ts Γ₀)
-              { env := (mintParams H₀ vs).2.reverse ++ φ.env,
-                scope := φ.scope ++ (mintParams H₀ vs).2 } (mintParams H₀ vs).1 := by
+              { env := (freshParams H₀ vs).2.reverse ++ φ.env,
+                scope := φ.scope ++ (freshParams H₀ vs).2 } (freshParams H₀ vs).1 := by
             refine ⟨?_, ?_⟩
-            · exact storeTyping_mintParams_app Ts vs Γ₀ φ.env H₀ hvs hfm₀.store
+            · exact storeTyping_freshParams_app Ts vs Γ₀ φ.env H₀ hvs hfm₀.store
             · simp [hfm₀.record]
-          have hsplitT : ((mintParams H₀ vs).2.reverse ++ φ.env).take Ts.length
-              = (mintParams H₀ vs).2.reverse := by
+          have hsplitT : ((freshParams H₀ vs).2.reverse ++ φ.env).take Ts.length
+              = (freshParams H₀ vs).2.reverse := by
             rw [← hlocs, List.take_left]
-          have hsplitD : ((mintParams H₀ vs).2.reverse ++ φ.env).drop Ts.length = φ.env := by
+          have hsplitD : ((freshParams H₀ vs).2.reverse ++ φ.env).drop Ts.length = φ.env := by
             rw [← hlocs, List.drop_left]
           have kb := ih hbody hfma
           simp only [harm]
-          cases hrb : eval M.toFloatSig fuel P (mintParams H₀ vs).1
-              { env := (mintParams H₀ vs).2.reverse ++ φ.env,
-                scope := φ.scope ++ (mintParams H₀ vs).2 } body with
+          cases hrb : eval M.toFloatSig fuel P (freshParams H₀ vs).1
+              { env := (freshParams H₀ vs).2.reverse ++ φ.env,
+                scope := φ.scope ++ (freshParams H₀ vs).2 } body with
           | ok H₂ v₂ tr₂ =>
               rw [hrb] at kb
               obtain ⟨Γb, hnb, hty₂, hfm₂, hu₂⟩ := kb.ok_inv
@@ -3287,14 +3287,14 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
               obtain ⟨Γ', rfl, hjall, hmemΓ⟩ := Ctx.joinOpts_mem hjoin hmem
               obtain ⟨H₃, evs, hunw, hm₃, hlen₃, hout₃⟩ :=
                 StoreTyping.unwindPrefix hwf.decls Ts.length Γb
-                  ((mintParams H₀ vs).2.reverse ++ φ.env) H₂ hfm₂.store hres
+                  ((freshParams H₀ vs).2.reverse ++ φ.env) H₂ hfm₂.store hres
               rw [hsplitT] at hunw
               rw [hsplitD] at hm₃
               have hu₀₂ : FrameProperty φ.env H₀ H₂ :=
                 FrameProperty.under_binders hpre hkeep hfresh hu₂
               have hu₀₃ : FrameProperty φ.env H₀ H₃ := by
                 refine ⟨by rw [hlen₃]; exact hu₀₂.1, fun ℓ hlt hnin => ?_⟩
-                have hnotminted : ℓ ∉ (mintParams H₀ vs).2.reverse := by
+                have hnotminted : ℓ ∉ (freshParams H₀ vs).2.reverse := by
                   intro hmem
                   exact absurd (hfresh ℓ hmem) (by omega)
                 rw [hsplitT] at hout₃
@@ -3314,7 +3314,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
               rw [hrb] at kb
               simp only [EvalRes.bind]
               exact BrokeOk.mono_brk (hΔb.trans (List.subset_append_left _ _))
-                (BrokeOk.under_binders hpre hkeep (fun ℓ hℓ => mintParams_fresh H₀ vs ℓ hℓ) kb)
+                (BrokeOk.under_binders hpre hkeep (fun ℓ hℓ => freshParams_fresh H₀ vs ℓ hℓ) kb)
           | panic pk tr₂ => simp only [EvalRes.bind]; trivial
           | refused w => rw [hrb] at kb; exact kb.elim
           | outOfFuel => simp only [EvalRes.bind]; trivial
@@ -3384,7 +3384,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
                 rw [hislen, hvs.length_eq, ← hta.length_eq, hlen]
               obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm₁.store.lookup hget
               obtain ⟨cc, rfl, hmm⟩ := hcm
-              obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt p.path hmm hg hty
+              obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.getAt p.path hmm hg hty
               have hso : ContentsOwnTyping P.decls sub .owned Ta :=
                 .owned hsub.contentsTy (hsub.noMovedOut hfo)
               refine EvalOk.withTrace ?_ tr
@@ -3396,7 +3396,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
               · have hdp : dynPlace H₁ φ p vs πs = .at ℓ cc sub ρ := by
                   simp [dynPlace, his, hρ, hc, hread, hres]
                 obtain ⟨leaf, hrl, hleaf⟩ :=
-                  ContentsOwnTyping.readAt ρ hso (OwnSt.get_owned ρ) hρty
+                  ContentsOwnTyping.getAt ρ hso (OwnSt.get_owned ρ) hρty
                 obtain ⟨v, hv, htyv⟩ := hleaf.toVal rfl
                 -- (D-Use-Untrackable-Dynamic-Copy)'s `class(T) = Copy`, which
                 -- the machine checks on the value (RUE-2400): the rule's own
@@ -3464,7 +3464,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
               have hskel : Ctx.skel Γ₂ = Ctx.skel Γ := hta.skel_of.trans h₁.skel_of
               have htyeq : en₁.ty = en₀.ty := (skel_lookup hskel hget₀ hget₁).1
               have hty₁ : en₁.ty.atPath P.decls p.path = some Ta := htyeq ▸ hty₀
-              obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt p.path hmm hg₁ hty₁
+              obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.getAt p.path hmm hg₁ hty₁
               have hso : ContentsOwnTyping P.decls sub .owned Ta :=
                 .owned hsub.contentsTy (hsub.noMovedOut hfo)
               have hmem : ℓ ∈ φ.env := List.mem_of_getElem? hρ
@@ -3477,17 +3477,17 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
               · have hdp : dynPlace H₂ φ p vs πs = .at ℓ cc sub ρ := by
                   simp [dynPlace, his, hρ, hc, hread, hres]
                 obtain ⟨old, hrl, hold⟩ :=
-                  ContentsOwnTyping.readAt ρ hso (OwnSt.get_owned ρ) hρty
+                  ContentsOwnTyping.getAt ρ hso (OwnSt.get_owned ρ) hρty
                 have hnl : Contents.residualLinear P.decls old = false :=
                   ContentsTy.residualLinear_false hwf.decls hold.contentsTy hnlin
                 obtain ⟨evs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hold.contentsTy
-                obtain ⟨sub', hw', hm'⟩ := ContentsOwnTyping.writeAt ρ hso (OwnSt.get_owned ρ)
+                obtain ⟨sub', hw', hm'⟩ := ContentsOwnTyping.setAt ρ hso (OwnSt.get_owned ρ)
                   hρty (ContentsOwnTyping.ofVal htyv)
                 have hso' : ContentsOwnTyping P.decls sub' .owned Ta :=
                   .owned hm'.contentsTy (hm'.noMovedOut (OwnSt.fullyOwned_setAt_owned ρ))
-                obtain ⟨cc', hw, hmm'⟩ := ContentsOwnTyping.writeAt p.path hmm hg₁ hty₁ hso'
+                obtain ⟨cc', hw, hmm'⟩ := ContentsOwnTyping.setAt p.path hmm hg₁ hty₁ hso'
                 simp only [hdp, hrl, hnl, Bool.false_eq_true, if_false, hdc, hw', hw,
-                  hmm'.contentsTy.copyClosed hwf.decls, if_true]
+                  hmm'.contentsTy.copyContained hwf.decls, if_true]
                 exact ⟨.unit, ⟨hfm₂.store.set hρ ⟨cc', rfl, hmm'⟩, hfm₂.record⟩,
                   FrameProperty.trans_set hu₂ (Or.inr hmem)⟩
       | @dropCopy Γ pl en u T hget hg hfo hty hcopy hplan =>
@@ -3495,7 +3495,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
           obtain ⟨cc, rfl, hmm⟩ := hcm
           have hpl : cc.declaredPlan P.decls pl.path = none := by
             rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hg hty]; exact hplan
-          obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt pl.path hmm hg hty
+          obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.getAt pl.path hmm hg hty
           have hnh : sub.isMovedOut = false :=
             Contents.isMovedOut_eq_false (hsub.ne_movedOut (OwnSt.isOwned_of_fullyOwned hfo))
           have hvm : sub.qual P.decls = .copy := by
@@ -3511,12 +3511,12 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
           obtain ⟨cc, rfl, hmm⟩ := hcm
           have hpl : cc.declaredPlan P.decls pl.path = none := by
             rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hg hty]; exact hplan
-          obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt pl.path hmm hg hty
+          obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.getAt pl.path hmm hg hty
           have hnh : sub.isMovedOut = false := Contents.isMovedOut_eq_false (hsub.ne_movedOut ho)
           have hvm : sub.qual P.decls ≠ .copy := by rw [hsub.qual_eq ho]; exact hncopy
           obtain ⟨evs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hsub.contentsTy
           obtain ⟨cc', hw, hmm'⟩ :=
-            ContentsOwnTyping.writeAt pl.path hmm hg hty (ContentsOwnTyping.movedOut (T := T))
+            ContentsOwnTyping.setAt pl.path hmm hg hty (ContentsOwnTyping.movedOut (T := T))
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.drop pl)
               = .ok (H.set ℓ (.full cc')) .unit evs := by
             simp [eval, hρ, hc, hpl, hread, hnh, hvm, hdc, hw]
@@ -3538,7 +3538,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
             rw [hsplit, OwnSt.get_append, hgd]; exact hgu
           have hpl : cc.declaredPlan P.decls pl.path = some (πd, πs) := by
             rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hgfull hty]; exact hplan
-          obtain ⟨cd, hread, hsub⟩ := ContentsOwnTyping.readAt πd hmm hgd htd
+          obtain ⟨cd, hread, hsub⟩ := ContentsOwnTyping.getAt πd hmm hgd htd
           obtain ⟨leaf, rs, hdest, hlty, hlhf⟩ :=
             destructure_ok hwf.decls ℓ hsub.contentsTy (hsub.noMovedOut hfo) hleaf hres
           -- The machine's hole guard on the leaf (`Dynamics.lean`) is the one
@@ -3549,7 +3549,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
             cases leaf <;> simp_all [Contents.isMovedOut, Contents.noMovedOut]
           obtain ⟨levs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hlty
           obtain ⟨cc', hw, hmm'⟩ :=
-            ContentsOwnTyping.writeAt πd hmm hgd htd (ContentsOwnTyping.movedOut (T := Td))
+            ContentsOwnTyping.setAt πd hmm hgd htd (ContentsOwnTyping.movedOut (T := Td))
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.drop pl)
               = .ok (H.set ℓ (.full cc')) .unit ((dropResidueEvents P.decls ℓ rs ++ [.consume (cd.pathOnly πs)]) ++ levs) := by
             simp [eval, hρ, hc, hpl, hread, hdest, hnh, hdc, hw]
@@ -3651,7 +3651,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
           have hskel := h.skel_of
           have htyeq : en₁.ty = en₀.ty := (skel_lookup hskel hget₀ hget₁).1
           obtain ⟨old, hread, hold⟩ :=
-            ContentsOwnTyping.readAt pl.path hmm hg₁ (htyeq ▸ hty₀)
+            ContentsOwnTyping.getAt pl.path hmm hg₁ (htyeq ▸ hty₀)
           -- §5.2's premise is the type-keyed disjunction; either disjunct gives
           -- the residue the overwrite-drop is about to walk no linear content,
           -- which is why `linearOverwrite` is unreachable from a typed program.
@@ -3660,11 +3660,11 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
             · exact hold.residualLinear_false hwf.decls rfl
             · exact ContentsTy.residualLinear_false hwf.decls hold.contentsTy hnlin
           obtain ⟨evs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hold.contentsTy
-          obtain ⟨cc', hw, hmm'⟩ := ContentsOwnTyping.writeAt pl.path hmm hg₁
+          obtain ⟨cc', hw, hmm'⟩ := ContentsOwnTyping.setAt pl.path hmm hg₁
             (htyeq ▸ hty₀) (ContentsOwnTyping.ofVal hty)
           have hmem : ℓ ∈ φ.env := List.mem_of_getElem? hρ
           simp only [hρ, hc, hread, hnl, Bool.false_eq_true, if_neg, hdc, hw,
-            not_false_eq_true, hmm'.contentsTy.copyClosed hwf.decls, if_true]
+            not_false_eq_true, hmm'.contentsTy.copyContained hwf.decls, if_true]
           exact ⟨.unit, ⟨hfm₁.store.set hρ ⟨cc', rfl, hmm'⟩, hfm₁.record⟩,
             FrameProperty.trans_set FrameProperty.refl (Or.inr hmem)⟩
       | @seqBot Γ Δ₁ e₁ e₂ T₁ T h₁ =>
@@ -3729,25 +3729,25 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
               rw [if_pos hlen]
               obtain ⟨Ωf, hbody, hnlf, hbrkf⟩ := hwf.fns fd (List.mem_of_getElem? hget)
               have hfmg : ActivationTyping P.decls (fnCtx fd)
-                  { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 }
-                  (mintParams H₁ vs).1 :=
-                ⟨storeTyping_mintParams fd.params vs H₁ hvs, rfl⟩
-              have hfreshg : ∀ ℓ ∈ (mintParams H₁ vs).2.reverse, H₁.length ≤ ℓ :=
-                fun ℓ hm => mintParams_fresh H₁ vs ℓ (List.mem_reverse.mp hm)
-              have hkeep : ∀ ℓ, ℓ < H₁.length → (mintParams H₁ vs).1[ℓ]? = H₁[ℓ]? := by
+                  { env := (freshParams H₁ vs).2.reverse, scope := (freshParams H₁ vs).2 }
+                  (freshParams H₁ vs).1 :=
+                ⟨storeTyping_freshParams fd.params vs H₁ hvs, rfl⟩
+              have hfreshg : ∀ ℓ ∈ (freshParams H₁ vs).2.reverse, H₁.length ≤ ℓ :=
+                fun ℓ hm => freshParams_fresh H₁ vs ℓ (List.mem_reverse.mp hm)
+              have hkeep : ∀ ℓ, ℓ < H₁.length → (freshParams H₁ vs).1[ℓ]? = H₁[ℓ]? := by
                 intro ℓ hlt
-                rw [mintParams_store]
+                rw [freshParams_store]
                 exact List.getElem?_append_left hlt
-              have hpre : H₁.length ≤ (mintParams H₁ vs).1.length := by
-                rw [mintParams_store]; simp
-              have hdisj : ∀ ℓ ∈ φ.env, ℓ ∉ (mintParams H₁ vs).2.reverse := by
+              have hpre : H₁.length ≤ (freshParams H₁ vs).1.length := by
+                rw [freshParams_store]; simp
+              have hdisj : ∀ ℓ ∈ φ.env, ℓ ∉ (freshParams H₁ vs).2.reverse := by
                 intro ℓ hm hg
                 exact absurd (hfreshg ℓ hg) (by have := hfm₁.store.mem_lt ℓ hm; omega)
-              have hmint : StoreTyping P.decls Γ' φ.env (mintParams H₁ vs).1 := by
-                rw [mintParams_store]; exact hfm₁.store.append _
+              have hmint : StoreTyping P.decls Γ' φ.env (freshParams H₁ vs).1 := by
+                rw [freshParams_store]; exact hfm₁.store.append _
               have kb := ih hbody hfmg
-              cases hrb : eval M.toFloatSig fuel P (mintParams H₁ vs).1
-                  { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 }
+              cases hrb : eval M.toFloatSig fuel P (freshParams H₁ vs).1
+                  { env := (freshParams H₁ vs).2.reverse, scope := (freshParams H₁ vs).2 }
                   fd.body with
               | ok H₃ v tr₃ =>
                   rw [hrb] at kb
@@ -3755,9 +3755,9 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
                   obtain ⟨H₄, evs, hrun, hlen4, hout4⟩ :=
                     runAllScopeDrops_ok hwf.decls hfm₃ (hnlf Γf hnf)
                   simp only [EvalRes.bindCall, hrun, EvalRes.withTrace]
-                  have hu34 : FrameProperty (mintParams H₁ vs).2.reverse H₃ H₄ :=
+                  have hu34 : FrameProperty (freshParams H₁ vs).2.reverse H₃ H₄ :=
                     ⟨by omega, fun ℓ _ hnin => hout4 ℓ hnin⟩
-                  have hu4 : FrameProperty (mintParams H₁ vs).2.reverse (mintParams H₁ vs).1 H₄ :=
+                  have hu4 : FrameProperty (freshParams H₁ vs).2.reverse (freshParams H₁ vs).1 H₄ :=
                     hu₃.trans hu34
                   exact ⟨htyv, ⟨hmint.transport hdisj hu4, hfm.record⟩,
                     hu₁.trans (FrameProperty.of_fresh hpre hfreshg hkeep hu4)⟩
@@ -4130,12 +4130,12 @@ theorem eval_succ (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
                   simp only [] at h ⊢
                   by_cases hlen : fd.params.length = vs.length
                   · simp only [if_pos hlen] at h ⊢
-                    have h' : (eval M n P (mintParams H₁ vs).1
-                        { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 }
+                    have h' : (eval M n P (freshParams H₁ vs).1
+                        { env := (freshParams H₁ vs).2.reverse, scope := (freshParams H₁ vs).2 }
                         fd.body).bindCall (fun H₃ v =>
                           match runAllScopeDrops P.decls H₃
-                              { env := (mintParams H₁ vs).2.reverse,
-                                scope := (mintParams H₁ vs).2 } with
+                              { env := (freshParams H₁ vs).2.reverse,
+                                scope := (freshParams H₁ vs).2 } with
                           | .error w => .refused w
                           | .ok (H₄, evs) => .ok H₄ v evs) ≠ .outOfFuel := by
                       intro hc
