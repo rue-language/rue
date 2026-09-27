@@ -1068,7 +1068,7 @@ theorem msim_indexDrop (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
         · rename_i v hv
           split
           · rename_i hcopy
-            rw [← Contents.mult_toVal _ _ _ hv] at hcopy
+            rw [← Contents.qual_toVal _ _ _ hv] at hcopy
             intro K tr
             simpa [EvalRes.bind] using MSteps.single (.indexDrop hd hleaf hv hcopy)
               (ledger_le_run0 (tr := tr) fun a => by
@@ -1289,7 +1289,7 @@ theorem msim_seq (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (hcc : Store
     split
     · trivial
     · rename_i evs hd
-      have hne : v₁.mult P.decls ≠ .copy := by rw [hm]; exact nofun
+      have hne : v₁.qual P.decls ≠ .copy := by rw [hm]; exact nofun
       exact MSim.withTrace (C₂ := evalConf H₁ φ e₂)
         (fun _ _ => MSteps.single (.seqDrop hne hd) (ledger_le_run fun a => by
           rw [stackOwn_cons_nil rfl]

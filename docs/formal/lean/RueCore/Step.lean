@@ -394,7 +394,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
       c.declaredPlan P.decls p.path = none →
       c.readAt p.path = .ok sub →
       sub.toVal = some v →
-      v.mult P.decls = .copy →
+      v.qual P.decls = .copy →
       Step M P (.run H φ K (.eval (.use p)) tr) (.run H φ K (.ret v) tr)
   /-- (D-Use-Move) §6.3: an `Ordinary` use of an `Affine` or `Linear` place
   moves it, writing `⊘` at exactly the sub-position moved — the partial move
@@ -404,7 +404,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
       c.declaredPlan P.decls p.path = none →
       c.readAt p.path = .ok sub →
       sub.toVal = some v →
-      v.mult P.decls ≠ .copy →
+      v.qual P.decls ≠ .copy →
       c.writeAt p.path .movedOut = some c' →
       Step M P (.run H φ K (.eval (.use p)) tr)
         (.run (H.set ℓ (.full c')) φ K (.ret v) tr)
@@ -552,7 +552,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   is defined only at a `Copy` operand (`7.1:38`), so a non-`Copy` one is stuck
   (`typeConfusion`). -/
   | repeatArray {H φ K tr T n v} :
-      v.mult P.decls = .copy →
+      v.qual P.decls = .copy →
       Step M P (.run H φ (.repeatArray T n :: K) (.ret v) tr)
         (.run (H ++ [.dead]) φ K (.ret (.array T H.length (List.replicate n v))) tr)
   /-- (D-Index) §6.5 at a dynamic place, every index in range, and
@@ -563,7 +563,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
       dynPlace H φ p vs πs = .at ℓ c sub ρ →
       sub.readAt ρ = .ok leaf →
       leaf.toVal = some v →
-      v.mult P.decls = .copy →
+      v.qual P.decls = .copy →
       Step M P (.run H φ K (.args (.indexRead p πs) vs []) tr) (.run H φ K (.ret v) tr)
   /-- (D-Index-Trap) §6.5: an index out of range traps `↯bounds`, lifted by
   (Panic-Lift) §6.2. -/
@@ -579,7 +579,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
       dynPlace H φ p vs πs = .at ℓ c sub ρ →
       sub.readAt ρ = .ok leaf →
       leaf.toVal = some v →
-      leaf.mult P.decls = .copy →
+      leaf.qual P.decls = .copy →
       Step M P (.run H φ K (.args (.indexDrop p πs) vs []) tr) (.run H φ K (.ret .unit) tr)
   /-- (D-Index-Trap) §6.5 at `@drop`'s dynamic place. -/
   | indexDropTrap {H φ K tr p πs vs} :
@@ -645,12 +645,12 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
       Step M P (.run H φ K (.eval (.seq e₁ e₂)) tr) (.run H φ (.seq e₂ :: K) (.eval e₁) tr)
   /-- (D-Seq) §6.7 at a `Copy` temporary: `drop(H, v)` is `H`. -/
   | seqCopy {H φ K tr e₂ v} :
-      v.mult P.decls = .copy →
+      v.qual P.decls = .copy →
       Step M P (.run H φ (.seq e₂ :: K) (.ret v) tr) (.run H φ K (.eval e₂) tr)
   /-- (D-Seq) §6.7 at a droppable temporary: drop it, then continue. §5.3
   guarantees it carries no linear value; the rule does not check. -/
   | seqDrop {H φ K tr e₂ v evs} :
-      v.mult P.decls ≠ .copy →
+      v.qual P.decls ≠ .copy →
       dropContents P.decls (Contents.ofVal v) = .ok evs →
       Step M P (.run H φ (.seq e₂ :: K) (.ret v) tr)
         (.run H φ K (.eval e₂) (tr ++ (.dropTemp v :: evs)))
@@ -681,13 +681,13 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
       Step M P (.run H φ K (.eval (.drop p)) tr)
         (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ (evs ++ levs)))
   /-- §6.11's `@drop` of a `Copy` place: `⟨⟩`, the store unchanged. A `⊘`
-  place is `Copy` here (`Contents.mult`), so `@drop` of a moved-out place is
+  place is `Copy` here (`Contents.qual`), so `@drop` of a moved-out place is
   §6.11's `drop(H, ⊘) = H` and not a refusal. -/
   | dropCopy {H φ K tr p ℓ c sub} :
       rootCell H φ p.root = .ok (ℓ, c) →
       c.declaredPlan P.decls p.path = none →
       c.readAt p.path = .ok sub →
-      sub.mult P.decls = .copy →
+      sub.qual P.decls = .copy →
       Step M P (.run H φ K (.eval (.drop p)) tr) (.run H φ K (.ret .unit) tr)
   /-- §6.11's `@drop` of a non-`Copy` place: run `drop` on what it holds (the
   walk skips every `⊘` inside), then write `⊘` back. -/
@@ -695,7 +695,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
       rootCell H φ p.root = .ok (ℓ, c) →
       c.declaredPlan P.decls p.path = none →
       c.readAt p.path = .ok sub →
-      sub.mult P.decls ≠ .copy →
+      sub.qual P.decls ≠ .copy →
       dropCell P.decls ℓ sub = .ok evs →
       c.writeAt p.path .movedOut = some c' →
       Step M P (.run H φ K (.eval (.drop p)) tr)
@@ -801,7 +801,7 @@ def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : Lis
           match sub.toVal with
           | none => .stuck .useAfterMove
           | some v =>
-            if v.mult P.decls = .copy then .next (.run H φ K (.ret v) tr)
+            if v.qual P.decls = .copy then .next (.run H φ K (.ret v) tr)
             else
               match c.writeAt p.path .movedOut with
               | none => .stuck .typeConfusion
@@ -843,7 +843,7 @@ def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : Lis
         match c.readAt p.path with
         | .error w => .stuck w
         | .ok sub =>
-          if sub.mult P.decls = .copy then .next (.run H φ K (.ret .unit) tr)
+          if sub.qual P.decls = .copy then .next (.run H φ K (.ret .unit) tr)
           else
             match dropCell P.decls ℓ sub with
             | .error w => .stuck w
@@ -909,7 +909,7 @@ def stepArgs (P : Program) (H : Store) (φ : Activation) (K : List Kont) (tr : L
         match leaf.toVal with
         | none => .stuck .useAfterMove
         | some v =>
-          if v.mult P.decls = .copy then .next (.run H φ K (.ret v) tr)
+          if v.qual P.decls = .copy then .next (.run H φ K (.ret v) tr)
           else .stuck .typeConfusion
   | .indexDrop p πs =>
     match dynPlace H φ p vs πs with
@@ -922,7 +922,7 @@ def stepArgs (P : Program) (H : Store) (φ : Activation) (K : List Kont) (tr : L
         match leaf.toVal with
         | none => .stuck .useAfterMove
         | some _ =>
-          if leaf.mult P.decls = .copy then .next (.run H φ K (.ret .unit) tr)
+          if leaf.qual P.decls = .copy then .next (.run H φ K (.ret .unit) tr)
           else .stuck .typeConfusion
   | .indexWrite p πs v =>
     match dynPlace H φ p vs πs with
@@ -964,7 +964,7 @@ def stepRet (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : List
     else .stuck .typeConfusion
   | .args t vs es => .next (.run H φ K (.args t (vs ++ [v]) es) tr)
   | .repeatArray T n =>
-    if v.mult P.decls = .copy then
+    if v.qual P.decls = .copy then
       .next (.run (H ++ [.dead]) φ K (.ret (.array T H.length (List.replicate n v))) tr)
     else .stuck .typeConfusion
   | .indexWriteRhs p idx πs => .next (.run H φ K (.args (.indexWrite p πs v) [] idx) tr)
@@ -984,7 +984,7 @@ def stepRet (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : List
       { env := H.length :: φ.env, scope := φ.scope ++ [H.length] }
       (.endscope [H.length] :: K) (.eval e₂) tr)
   | .seq e₂ =>
-    if v.mult P.decls = .copy then .next (.run H φ K (.eval e₂) tr)
+    if v.qual P.decls = .copy then .next (.run H φ K (.eval e₂) tr)
     else
       match dropContents P.decls (Contents.ofVal v) with
       | .error w => .stuck w

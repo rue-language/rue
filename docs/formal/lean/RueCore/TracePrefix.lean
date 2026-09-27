@@ -368,7 +368,7 @@ theorem longc_seq (hF : TraceMeasure P.decls F) (IH : LongCIH M P F fuel)
     · simp at hk
     · rename_i evs hd
       rw [EvalRes.withTrace_outOfFuel_iff] at hk
-      have hne : v₁.mult P.decls ≠ .copy := by rw [hm]; exact nofun
+      have hne : v₁.qual P.decls ≠ .copy := by rw [hm]; exact nofun
       refine LongC.mono (Nat.le_succ _) (LongC.pre1 (t := .dropTemp v₁ :: evs) (Nat.le_refl _)
         (Y := []) (fun a => ?_) (C₂ := evalConf H₁ φ e₂)
         (fun K tr => ⟨_, .seqDrop hne hd, .refl _⟩) (IH H₁ φ e₂ hc₁ hk))

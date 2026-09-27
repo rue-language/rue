@@ -163,8 +163,8 @@ at a sibling. `assignArrayOk` (`Statics.lean`) is that side condition, E0480.
 class of `[T; n]` is **not** a function of the elements present. `3.8:74`
 grants a zero-length array of a non-`Copy` element type droppability but not
 duplicability, so §3 classes `[NC; 0]` `Affine` while the value `[]` holds
-nothing at all (RUE-526). Carrying `T` is what makes `Val.mult` agree with
-`Ty.mult` there; §6.1 writes the value as `[v1, …, vn]` because its `class` is
+nothing at all (RUE-526). Carrying `T` is what makes `Val.qual` agree with
+`Ty.qual` there; §6.1 writes the value as `[v1, …, vn]` because its `class` is
 never read in the same breath.
 
 ## An integer value carries its type
@@ -189,7 +189,7 @@ attribute. A declaration *records* that class, and the program well-formedness
 judgment `WfStructs` (`Statics.lean`) is §3's equation: the recorded class is
 the lifted join, and a `@copy` declaration's fields are all `Copy` and it
 declares no destructor (`3.8:18`, `3.9:31`). Recording it is what lets
-`Ty.mult` be a lookup rather than a recursion over the environment.
+`Ty.qual` be a lookup rather than a recursion over the environment.
 
 An enum declaration records its class the same way, and §3 gives it a simpler
 equation: no attribute to lift and no destructor to declare, just the join over
@@ -216,14 +216,14 @@ expressions or values.
 namespace RueCore
 
 /-- The multiplicity lattice (§3): `Copy ⊑ Affine ⊑ Linear`. -/
-inductive Mult where
+inductive Qual where
   | copy
   | affine
   | linear
 deriving DecidableEq, Repr
 
 /-- The lattice order as a number, `Copy ⊑ Affine ⊑ Linear` (§3) (helper). -/
-def Mult.rank : Mult → Nat
+def Qual.rank : Qual → Nat
   | .copy => 0
   | .affine => 1
   | .linear => 2
@@ -231,7 +231,7 @@ def Mult.rank : Mult → Nat
 /-- The join `⊔` of §3's lattice: the least upper bound, which is what makes a
 struct at least as restrictive as its most restrictive field ("infectiousness
 is just the join"). -/
-def Mult.join (a b : Mult) : Mult := if a.rank ≤ b.rank then b else a
+def Qual.join (a b : Qual) : Qual := if a.rank ≤ b.rank then b else a
 
 /-- A struct's declared attribute (§3's `attr(S)`): none, `@copy` (`3.8:18`),
 or `linear` (`3.8:57`). -/
@@ -247,7 +247,7 @@ the join is already `Copy` and the struct declares no destructor — `3.8:18`,
 `3.9:31`, which `WfStructs` requires), and a struct with no attribute is
 `Linear` when its fields join to `Linear` and `Affine` otherwise (`3.8:3`:
 structs are affine by default). -/
-def Attr.lift : Attr → Mult → Mult
+def Attr.lift : Attr → Qual → Qual
   | .linear, _ => .linear
   | .copy, _ => .copy
   | .none, base => if base = .linear then .linear else .affine
@@ -391,7 +391,7 @@ structure StructDecl where
   dtor : Bool
   /-- `class(S)` (§3), the field join lifted by `attr`; `WfStructs`
   (`Statics.lean`) is the equation that pins it. -/
-  cls : Mult
+  cls : Qual
 deriving DecidableEq, Repr
 
 /-- A monomorphic enum declaration: §2's `enum E { K1(T̄1), …, Kn(T̄n) }`, one
@@ -410,7 +410,7 @@ structure EnumDecl where
   /-- `class(E)` (§3, `6.3:19`), the join over **every** payload component of
   **every** variant; `WfEnums` (`Statics.lean`) is the equation that pins it,
   and `enum_carriesLinear_iff` is `6.3:19` read as a biconditional. -/
-  cls : Mult
+  cls : Qual
 deriving DecidableEq, Repr
 
 /-- The program's declaration environment: §2's type-declaration production
@@ -434,7 +434,7 @@ def Decls.ofStructs (D : List StructDecl) : Decls := { structs := D, enums := []
 index the environment does not have is `Affine`, the class of a struct with no
 attribute and no linear field — the conservative reading of a program
 `WfStructs` rejects anyway (helper). -/
-def Decls.classOf (D : Decls) (s : Nat) : Mult :=
+def Decls.classOf (D : Decls) (s : Nat) : Qual :=
   match D.structs[s]? with
   | some sd => sd.cls
   | none => .affine
@@ -443,7 +443,7 @@ def Decls.classOf (D : Decls) (s : Nat) : Mult :=
 declaration. An index the environment does not have is `Affine`, the
 conservative reading of a program `WfEnums` rejects anyway — `Copy` would let
 such a type be duplicated (helper). -/
-def Decls.enumClassOf (D : Decls) (e : Nat) : Mult :=
+def Decls.enumClassOf (D : Decls) (e : Nat) : Qual :=
   match D.enums[e]? with
   | some ed => ed.cls
   | none => .affine
@@ -464,12 +464,12 @@ nothing about duplicability (RUE-526: an earlier table classed every `[T; 0]`
 reading, `let b = a; let c = a;` on an `[NC; 0]` is E0205) — and `class(T)`
 itself otherwise, which is §3's "infectiousness is just the join" with the
 element type as the only member. -/
-def Ty.mult (D : Decls) : Ty → Mult
+def Ty.qual (D : Decls) : Ty → Qual
   | .int _ _ | .float _ | .bool | .unit => .copy
   | .struct s => D.classOf s
   | .enum e => D.enumClassOf e
   | .array T n =>
-      match Ty.mult D T with
+      match Ty.qual D T with
       | .copy => .copy
       | m => if n = 0 then .affine else m
 
@@ -477,7 +477,7 @@ def Ty.mult (D : Decls) : Ty → Mult
 same predicate as "Linear lifted through the aggregates" because `class` *is*
 that join (§3). `struct_carriesLinear_iff` (`Statics/Lemmas.lean`) is the lifting,
 proved through the field join. -/
-abbrev Ty.carriesLinear (D : Decls) (T : Ty) : Prop := T.mult D = .linear
+abbrev Ty.carriesLinear (D : Decls) (T : Ty) : Prop := T.qual D = .linear
 
 /-! ## Places: §5's `Path`, and the type a path reaches -/
 
@@ -808,8 +808,8 @@ fields: every field but the selected one, tested at its declared type
 (helper). -/
 def anyLinearOther (D : Decls) : List Ty → Nat → Bool
   | [], _ => false
-  | _ :: Ts, 0 => Ts.any fun T => decide (T.mult D = .linear)
-  | T :: Ts, f + 1 => decide (T.mult D = .linear) || anyLinearOther D Ts f
+  | _ :: Ts, 0 => Ts.any fun T => decide (T.qual D = .linear)
+  | T :: Ts, f + 1 => decide (T.qual D = .linear) || anyLinearOther D Ts f
 
 /-- **§5.1's `linear-residue(S, π_s)`**: the ordered residue traversal of
 `residue(S, π_s)` — "at a struct step, visit fields in declaration order,

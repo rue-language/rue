@@ -40,7 +40,7 @@ type or a predicate — its type ends in a sort (`Ctx`, `CellTyping`,
 result a hypothesis compares (`OwnSt.join`, `alwaysBody`) — whatever its size,
 because a hypothesis says what that body says (RUE-2479); and otherwise when the
 body is short enough to read
-(`maxBodyLines`) — because a signature alone cannot tell `Ty.mult` from
+(`maxBodyLines`) — because a signature alone cannot tell `Ty.qual` from
 `fun _ => .copy`, and a reader deciding whether the linearity theorems are
 vacuous needs to see which it is. A long one (`eval`, `check`, `explain`) is
 reported by signature and doc-comment, and its body lives in the module named
@@ -179,7 +179,7 @@ definitions over the previous 15 — `Contents.readAt`, `Contents.writeAt`,
 `Contents.residualLinear`, `dropEvents`, `residualLinear`,
 `residualLinearBelow` and `OwnSt.fieldStates` — and three of those are the
 linearity predicates this file's own preamble promises to print ("a signature
-alone cannot tell `Ty.mult` from `fun _ => .copy` … the linearity claims below
+alone cannot tell `Ty.qual` from `fun _ => .copy` … the linearity claims below
 would be nearly vacuous"). 20 is the smallest value that prints all seven
 again, and it still leaves `eval`, `check`, `explain` and `traceEval` at their
 signatures. Raise it the same way — to the smallest value that keeps the
@@ -261,7 +261,7 @@ def signatureOnly : Body := { value := [], equations := #[], uses := #[] }
 (`Prop`- or `Bool`-valued) or a name in `alwaysBody` prints its body whatever
 its size, because that body is part of what a
 statement using it says. Any other definition prints its body when it is
-short enough to read — a signature alone cannot tell `Ty.mult` from
+short enough to read — a signature alone cannot tell `Ty.qual` from
 `fun _ => .copy`, nor `Ctx.join` from `fun _ _ => none`, and those are
 exactly the definitions that decide whether the linearity theorems say
 anything — and prints the derived equations when the compiled value is a
@@ -684,7 +684,7 @@ def renderDigest (index : String) (theorems helpers definitions : Array Item) :
     "or a result a hypothesis compares (`OwnSt.join`), whatever its size,",
     "because a hypothesis says what that body says; otherwise whenever it is",
     "short enough to read, because a signature alone cannot",
-    "tell `Ty.mult` from `fun _ => .copy` or `Ctx.join` from `fun _ _ => none`,",
+    "tell `Ty.qual` from `fun _ => .copy` or `Ctx.join` from `fun _ _ => none`,",
     "and under either of those the linearity claims below would be nearly",
     "vacuous. A long body (`eval`, `check`, `explain`) is left to the module",
     "named beside its signature. Where the compiled value is the elaborator's",

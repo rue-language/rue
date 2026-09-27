@@ -35,7 +35,7 @@ def Contents.own (D : Decls) : Contents → List Nat
   | .struct s i cs => if D.classOf s = .copy then [] else i :: Contents.ownList D cs
   | .enum e _ i cs => if D.enumClassOf e = .copy then [] else i :: Contents.ownList D cs
   | .array T i cs =>
-      if Ty.mult D (.array T cs.length) = .copy then [] else i :: Contents.ownList D cs
+      if Ty.qual D (.array T cs.length) = .copy then [] else i :: Contents.ownList D cs
 
 /-- `own` over a field, payload or element list (helper). -/
 def Contents.ownList (D : Decls) : List Contents → List Nat

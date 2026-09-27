@@ -83,18 +83,18 @@ theorem dtorIds_append (l₁ l₂ : List Event) : dtorIds (l₁ ++ l₂) = dtorI
 /-! ## Owned identities: the node-level facts -/
 
 /-- A `Copy` node owns nothing (helper). -/
-theorem Contents.own_of_mult {D : Decls} {c : Contents} (h : c.mult D = .copy) : c.own D = [] := by
-  cases c <;> simp_all [Contents.mult, Contents.own]
+theorem Contents.own_of_qual {D : Decls} {c : Contents} (h : c.qual D = .copy) : c.own D = [] := by
+  cases c <;> simp_all [Contents.qual, Contents.own]
 
 /-- An all-`Copy` contents is `Copy` at its root (helper). -/
-theorem Contents.allCopy_mult {D : Decls} {c : Contents} (h : c.allCopy D = true) :
-    c.mult D = .copy := by
-  cases c <;> simp_all [Contents.allCopy, Contents.mult]
+theorem Contents.allCopy_qual {D : Decls} {c : Contents} (h : c.allCopy D = true) :
+    c.qual D = .copy := by
+  cases c <;> simp_all [Contents.allCopy, Contents.qual]
 
 /-- An all-`Copy` contents owns nothing (helper). -/
 theorem Contents.allCopy_own {D : Decls} {c : Contents} (h : c.allCopy D = true) :
     c.own D = [] :=
-  Contents.own_of_mult (Contents.allCopy_mult h)
+  Contents.own_of_qual (Contents.allCopy_qual h)
 
 /-- An all-`Copy` list owns nothing (helper). -/
 theorem Contents.allCopyList_own {D : Decls} :
@@ -106,8 +106,8 @@ theorem Contents.allCopyList_own {D : Decls} :
 
 /-- A copy-closed node that is `Copy` is `Copy` all the way down (helper). -/
 theorem Contents.copyClosed_allCopy {D : Decls} {c : Contents} (hc : c.copyClosed D = true)
-    (hm : c.mult D = .copy) : c.allCopy D = true := by
-  cases c <;> simp_all [Contents.copyClosed, Contents.mult, Contents.allCopy]
+    (hm : c.qual D = .copy) : c.allCopy D = true := by
+  cases c <;> simp_all [Contents.copyClosed, Contents.qual, Contents.allCopy]
 
 mutual
 /-- All-`Copy` contents is copy-closed (helper). -/
@@ -406,7 +406,7 @@ theorem Contents.writeAt_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c sub 
             simp only [Option.map_eq_some_iff] at hw
             obtain ⟨cf', hw', rfl⟩ := hw
             simp only [Contents.copyClosed] at hcc
-            by_cases hc : Ty.mult D (.array T cs.length) = .copy
+            by_cases hc : Ty.qual D (.array T cs.length) = .copy
             · rw [if_pos hc] at hcc
               have hsub := Contents.readAt_allCopy π (Contents.allCopyList_index hcc hcf) hr
               simp [Contents.own, hc, Contents.allCopy_own hsub]
@@ -610,7 +610,7 @@ theorem dropContents_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat) :
   | .struct s i cs, evs, hcc, h => by
       by_cases hc : D.classOf s = .copy
       · have hac : (Contents.struct s i cs).allCopy D = true :=
-          Contents.copyClosed_allCopy hcc (by simpa [Contents.mult] using hc)
+          Contents.copyClosed_allCopy hcc (by simpa [Contents.qual] using hc)
         rw [dropContents_allCopy_dtor hdt hac h]; simp
       · simp only [Contents.copyClosed, if_neg hc] at hcc
         simp only [dropContents] at h
@@ -633,7 +633,7 @@ theorem dropContents_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat) :
   | .enum e k i cs, evs, hcc, h => by
       by_cases hc : D.enumClassOf e = .copy
       · have hac : (Contents.enum e k i cs).allCopy D = true :=
-          Contents.copyClosed_allCopy hcc (by simpa [Contents.mult] using hc)
+          Contents.copyClosed_allCopy hcc (by simpa [Contents.qual] using hc)
         rw [dropContents_allCopy_dtor hdt hac h]; simp
       · simp only [Contents.copyClosed, if_neg hc] at hcc
         simp only [dropContents] at h
@@ -641,9 +641,9 @@ theorem dropContents_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat) :
         simp only [Contents.own, if_neg hc, List.count_cons]
         omega
   | .array T i cs, evs, hcc, h => by
-      by_cases hc : Ty.mult D (.array T cs.length) = .copy
+      by_cases hc : Ty.qual D (.array T cs.length) = .copy
       · have hac : (Contents.array T i cs).allCopy D = true :=
-          Contents.copyClosed_allCopy hcc (by simpa [Contents.mult] using hc)
+          Contents.copyClosed_allCopy hcc (by simpa [Contents.qual] using hc)
         rw [dropContents_allCopy_dtor hdt hac h]; simp
       · simp only [Contents.copyClosed, if_neg hc] at hcc
         simp only [dropContents] at h
@@ -1266,14 +1266,14 @@ theorem evalFintrin_scalar {M k a v} (h : evalFintrin M k a = .val v) : v.scalar
   split at h <;> (repeat' split at h) <;> first | (cases h; trivial) | cases h
 
 /-- A value's stored image has the value's class (helper). -/
-theorem Contents.mult_ofVal (D : Decls) (v : Val) : (Contents.ofVal v).mult D = v.mult D := by
+theorem Contents.qual_ofVal (D : Decls) (v : Val) : (Contents.ofVal v).qual D = v.qual D := by
   have h : ∀ vs : List Val, (Contents.ofVals vs).length = vs.length := by
     intro vs; induction vs <;> simp_all [Contents.ofVals]
-  cases v <;> simp [Contents.ofVal, Contents.mult, Val.mult, h]
+  cases v <;> simp [Contents.ofVal, Contents.qual, Val.qual, h]
 
 /-- A `Copy` value owns nothing (helper). -/
-theorem Val.own_of_copy {D : Decls} {v : Val} (h : v.mult D = .copy) : v.own D = [] :=
-  Contents.own_of_mult (by rw [Contents.mult_ofVal]; exact h)
+theorem Val.own_of_copy {D : Decls} {v : Val} (h : v.qual D = .copy) : v.own D = [] :=
+  Contents.own_of_qual (by rw [Contents.qual_ofVal]; exact h)
 
 /-- `ownList` over `ofVals` of a cons (helper). -/
 theorem Contents.ownList_ofVals_cons (D : Decls) (v : Val) (vs : List Val) :
@@ -1281,7 +1281,7 @@ theorem Contents.ownList_ofVals_cons (D : Decls) (v : Val) (vs : List Val) :
   rfl
 
 /-- `n` copies of a `Copy` value own nothing (helper). -/
-theorem Contents.ownList_replicate {D : Decls} {v : Val} (h : v.mult D = .copy) :
+theorem Contents.ownList_replicate {D : Decls} {v : Val} (h : v.qual D = .copy) :
     ∀ n, Contents.ownList D (Contents.ofVals (List.replicate n v)) = []
   | 0 => rfl
   | n + 1 => by
