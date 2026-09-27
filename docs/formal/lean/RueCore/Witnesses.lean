@@ -139,7 +139,7 @@ theorem returnPastAffine_strictStackOrder :
     step_iff.mpr rfl, rfl, rfl⟩
 
 open Examples in
-/-- **The invariant is what orders a teardown.** A frame whose scope record
+/-- **The invariant is what orders a teardown.** A frame whose drop scope
 is *not* in location order — `[3, 1]`, a configuration `reachable_ordered`
 says no run reaches — pops (D-Return-Value) and drops `ℓ1` before `ℓ3`: the
 step is a real step of §6's relation, and its markers are not newest-first.

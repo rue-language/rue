@@ -39,10 +39,10 @@ declares a destructor.
 The order *between* cells is not a property of the trace alone: every
 `drop ℓ c` block is a valid block by itself, so "the trace can be cut into
 newest-first groups" says nothing. What gives it content is the machine's
-scope records, so this half is stated over `Step`, from every configuration
+drop scopes, so this half is stated over `Step`, from every configuration
 reachable from `Config.init`:
 
-* `reachable_ordered`: every scope record in a reachable configuration — the
+* `reachable_ordered`: every drop scope in a reachable configuration — the
   current frame's, every suspended caller's and loop boundary's, and every
   pending `endscope` marker's — lists its cells in strictly increasing
   location order, below the store's length. Records are only ever extended
@@ -697,7 +697,7 @@ theorem run_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls) (fue
     Blocks P.decls (run M P fuel).trace :=
   (run_glue_blocks M hdt fuel).toBlocks
 
-/-! ## Across cells: the scope records of a reachable configuration -/
+/-! ## Across cells: the drop scopes of a reachable configuration -/
 
 /-- A longer store keeps a record ordered (helper). -/
 theorem Rec.mono {n m : Nat} {ls : List Nat} (h : Rec n ls) (hn : n ≤ m) : Rec m ls :=
@@ -829,7 +829,7 @@ theorem freshParams_eq {H H' : Store} {vs : List Val} {ls : List Nat}
   rw [h] at h₁ h₂
   exact ⟨h₁, h₂⟩
 
-/-- **Every step keeps every scope record in registration order** (§6.7,
+/-- **Every step keeps every drop scope in registration order** (§6.7,
 §6.9, §6.10): a record is only ever extended with cells allocated at that
 step — (D-Let)'s one, (D-Match)'s payload cells, (D-Call)'s parameter cells —
 which are past every cell already in it, and only ever shortened from its
@@ -894,7 +894,7 @@ theorem step_ordered {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P 
 
 /-- **Registration order is location order, everywhere the machine goes**
 (§6.1, §6.7, §6.9, §6.10): in every configuration reachable from §6.12's
-initial one, every scope record — the current frame's, every suspended
+initial one, every drop scope — the current frame's, every suspended
 caller's and loop boundary's, and every pending `endscope` marker's — lists
 its cells in strictly increasing location order. No typing hypothesis. -/
 theorem reachable_ordered {M : FloatSig} {P : Program} {C : Config}
@@ -1091,7 +1091,7 @@ theorem reachable_drop_order {M : FloatSig} {P : Program} {C C' : Config}
 `step_drop_order` orders the drops of one step. A source block
 `{ let a; let b; }` exits over **two** (D-EndScope) steps, so ordering them
 needs more: that the pending `endscope` markers are exactly the tail of the
-scope record, innermost last (`Config.Nested`). Then every teardown removes a
+drop scope, innermost last (`Config.Nested`). Then every teardown removes a
 suffix of the machine's whole registration stack — the suspended callers'
 records, then the current frame's — and drops cells only from that suffix,
 newest first (`StackDiscipline`). Since the stack is in location order, a cell a

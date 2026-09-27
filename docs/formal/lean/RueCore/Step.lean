@@ -89,7 +89,7 @@ representation; none changes what a checked program does.
   because elaboration α-renames binders and a dead name is never looked up.
   Bindings here are de Bruijn indices, so (D-EndScope) resumes in `⟨ρ; s minus
   ℓ̄⟩` by popping the marker's cells off the front of the environment and the
-  end of the scope record (`Activation.unwindScope`), which (D-Let) and (D-Match) put
+  end of the drop scope (`Activation.unwindScope`), which (D-Let) and (D-Match) put
   there.
 * **The loop boundary keeps its context** (a calculus finding, recorded in
   RUE-2324's report). §6.10's `loopβ(e, φ)` records no context, so under
@@ -98,8 +98,8 @@ representation; none changes what a checked program does.
   its context explicitly (`ret(E, φ)`); the loop frame here sits above `E`'s
   frames the same way, so the loop yields `()` to its context, as the
   compiler and `eval` do.
-* **One scope record per frame.** §6.10's `push-scope(φ)` is `eval`'s single
-  scope record read by length, as in `Dynamics.lean`: (D-Loop-Iter) and
+* **One drop scope per frame.** §6.10's `push-scope(φ)` is `eval`'s single
+  drop scope read by length, as in `Dynamics.lean`: (D-Loop-Iter) and
   (D-Break) run `run-scope-drops` on the cells past the loop frame's record.
 * **The use plan is recovered from the store** (`Contents.declaredPlan`), as
   `eval` recovers it, rather than read off elaboration's `μ` annotation.
@@ -264,7 +264,7 @@ def Config.Terminal : Config → Prop
 
 /-- §6.7's `⟨ρ; s minus ℓ̄⟩` for the `n` cells an `endscope` marker owes:
 (D-Let) and (D-Match) put them at the front of the environment (de Bruijn
-indices) and at the end of the scope record, so closing the marker drops them
+indices) and at the end of the drop scope, so closing the marker drops them
 from both by count (helper). -/
 def Activation.unwindScope (φ : Activation) (n : Nat) : Activation :=
   { env := φ.env.drop n, scope := φ.scope.take (φ.scope.length - n) }
@@ -606,7 +606,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
       Step M P (.run H φ K (.eval (.«match» scrut arms)) tr)
         (.run H φ (.«match» arms :: K) (.eval scrut) tr)
   /-- (D-Match) §6.6: the tag selects the arm; the payload is bound to fresh
-  cells, appended to the scope record *and* owed to the arm's `endscope`; a
+  cells, appended to the drop scope *and* owed to the arm's `endscope`; a
   non-`Copy` scrutinee's shell is consumed (`matchConsume`, RUE-2427). -/
   | «match» {H φ K tr arms e k i vs body H' ls} :
       arms[k]? = some body →
@@ -636,7 +636,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
           (.endscope [H.length] :: K) (.eval e₂) tr)
   /-- (D-EndScope) §6.7: the body is a value; drop-retire the marker's cells
   newest-first and resume in `⟨ρ; s minus ℓ̄⟩`: the marker's cells popped off
-  the environment and the scope record by count (`Activation.unwindScope`). -/
+  the environment and the drop scope by count (`Activation.unwindScope`). -/
   | endScope {H φ K tr ℓs v H' evs} :
       plainUnwind P.decls H ℓs.reverse = .ok (H', evs) →
       Step M P (.run H φ (.endscope ℓs :: K) (.ret v) tr)

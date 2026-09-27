@@ -1837,7 +1837,7 @@ callee's parameter cell a frame pop forgot to walk — would still count as
 retired (`†`) by its end — a `let`'s at its `endscope` (§6.7), a `match` arm's
 at the arm's end (§6.6), a callee's at the frame pop (§6.9), and each at the
 σ-walk of an unwinding `return` — except, for an unwinding `break`, the cells
-its carried scope record still owes, which the loop retires (§6.10) and
+its carried drop scope still owes, which the loop retires (§6.10) and
 whose values `rest_exactly_once` at the loop counts as ended. Cells
 outside the frame's environment are touched only to be retired, and an
 unwinding `return` has retired the whole frame's record. It is a fact about
@@ -2462,7 +2462,7 @@ never refused, and when it finishes normally or completes abruptly by `return` o
 * **every cell the evaluation allocated is retired** (`Tidy`): a `let`'s at
   its `endscope` (§6.7), a `match` arm's at the arm's end (§6.6), a callee's
   at its frame pop (§6.9) — except, for an unwinding `break`, the cells its
-  scope record still owes, which the loop retires (§6.10) and whose values
+  drop scope still owes, which the loop retires (§6.10) and whose values
   `rest_exactly_once` at the loop counts (`breakLeak_rejected`) — cells outside the
   frame's environment were touched only to be retired, and an unwinding
   `return` has retired the frame's whole record (§6.9's σ-walk). So "still in
@@ -2636,7 +2636,7 @@ fn f(a: S0, b: i64) -> i64 { @drop(b); b }
 
 The checker accepts it. At `g`'s body — a typed configuration whose store
 holds `x`'s `S0` — the argument list moves `x` into the pending first slot,
-the second argument's `return` unwinds `g`'s frame, whose scope record still
+the second argument's `return` unwinds `g`'s frame, whose drop scope still
 names `x`'s cell but finds it `⊘`, and the moved `S0` is dropped by nothing:
 it is in neither the store, the result nor the trace. `drop_exactly_once`'s
 conclusion fails there, which is why it carries `pendingSafe`. -/

@@ -561,7 +561,7 @@ def cases : List Case := [
     prog := Examples.enumProg Examples.tI64 Examples.enumArmMovesAffineDropsLinear
     },
   { name := "enum_return_past_payload",
-    description := "A return out of an arm, past the arm's two payload locals and an outer binding: §6.9's unwind walks σ newest-first, and (D-Match) appended the payload cells to the innermost scope record.",
+    description := "A return out of an arm, past the arm's two payload locals and an outer binding: §6.9's unwind walks σ newest-first, and (D-Match) appended the payload cells to the innermost drop scope.",
     rules := ["(Match) §5.5", "(Return-Value) §5.7", "(D-Return) §6.9", "(D-Match) §6.6", "3.9:4"],
     prog := Examples.enumProg Examples.tI64 Examples.enumReturnPastPayload
     },

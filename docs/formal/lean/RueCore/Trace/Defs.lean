@@ -263,7 +263,7 @@ def Tombstoned (H : Store) (keep : List Nat) (H' : Store) : Prop :=
 /-- **The frame-pop invariant for one evaluation** in frame `φ` from store `H`
 (§6.7, §6.9, §6.10): the store only grew and was touched outside `φ`'s
 environment only to retire; every cell the evaluation allocated is retired by
-its end — for an unwinding `break`, all but the cells of the scope record it
+its end — for an unwinding `break`, all but the cells of the drop scope it
 carries, which extends `φ`'s by cells allocated since `H` and which the loop
 retires; and an unwinding
 `return` has retired every cell of `φ`'s record (§6.9's σ-walk). -/
@@ -372,12 +372,12 @@ inductive DropGlueBlocks (D : Decls) : List Event → Prop
   | dropTemp {v : Val} {evs t : List Event} :
       DropGlue D (.ofVal v) evs → DropGlueBlocks D t → DropGlueBlocks D (.dropTemp v :: (evs ++ t))
 
-/-- A scope record in **registration order is location order**: its cells
+/-- A drop scope in **registration order is location order**: its cells
 strictly increasing, every one below the store's length `n` (helper). -/
 def Rec (n : Nat) (ls : List Nat) : Prop := ls.Pairwise (· < ·) ∧ ∀ ℓ ∈ ls, ℓ < n
 
 /-- What a frame of the control stack owes, ordered: a pending `endscope`
-marker's cells, and the scope record of a suspended caller (`ret(E, φ)`) or
+marker's cells, and the drop scope of a suspended caller (`ret(E, φ)`) or
 of a loop boundary (`loopβ(e, φ)`) (helper). -/
 def Kont.Ordered (n : Nat) : Kont → Prop
   | .endscope ls => Rec n ls
@@ -385,7 +385,7 @@ def Kont.Ordered (n : Nat) : Kont → Prop
   | .call φ => Rec n φ.scope
   | _ => True
 
-/-- **Every scope record of a configuration is in registration order**, which
+/-- **Every drop scope of a configuration is in registration order**, which
 is location order: the current frame's, and every one the control stack
 holds (§6.1's `σ`, §6.7's `endscope`, §6.9's `ret(E, φ)`, §6.10's
 `loopβ(e, φ)`). -/
@@ -408,7 +408,7 @@ def Config.trace : Config → List Event
   | .run _ _ _ _ tr => tr
   | .panic _ tr => tr
 
-/-- The scope record the pending `endscope` markers and loop boundaries of
+/-- The drop scope the pending `endscope` markers and loop boundaries of
 one frame account for (§6.7, §6.10): reading the stack top-down, each
 `endscope ℓs` is the tail of what is left of the record, a loop boundary
 `loopβ(e, φs)` has exactly `φs`'s record left, and a caller's frame
@@ -429,14 +429,14 @@ def Stk : List Kont → List Nat
   | _ :: K => Stk K
 
 /-- The machine's whole **registration stack**: every suspended caller's
-scope record, bottom first, then the current frame's (§6.1's `σ` per frame);
+drop scope, bottom first, then the current frame's (§6.1's `σ` per frame);
 empty at a trap (helper). -/
 def Config.stack : Config → List Nat
   | .run _ φ K _ _ => Stk K ++ φ.scope
   | .panic _ _ => []
 
 /-- **Scopes nest** (§6.7, §6.9, §6.10): every frame's pending `endscope`
-markers are exactly the tail of its scope record, innermost last, and the
+markers are exactly the tail of its drop scope, innermost last, and the
 whole registration stack is in location order, below the store's length. -/
 def Config.Nested : Config → Prop
   | .run H φ K _ _ => Nest φ.scope K ∧ Rec H.length (Stk K ++ φ.scope)
@@ -458,7 +458,7 @@ def ArgsFrame.own (D : Decls) : ArgsFrame → List Nat
 
 /-- The owned identities one control-stack frame holds (§6.1's `K`, §6.2's
 `E`): a binary operator's left operand, reduced while the right one is, and a
-list context's reduced values. A `call` or loop frame holds a scope record,
+list context's reduced values. A `call` or loop frame holds a drop scope,
 whose cells are in the store, and no other frame holds a value (helper). -/
 def Kont.own (D : Decls) : Kont → List Nat
   | .binopR _ v => v.own D

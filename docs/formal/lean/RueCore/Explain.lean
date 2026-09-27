@@ -236,7 +236,7 @@ def cellLine : Cell → String
 (§6.1). -/
 def locName (ℓ : Nat) : String := "ℓ" ++ toString ℓ
 
-/-- (helper) A list of locations, as a scope record is written (§6.1). -/
+/-- (helper) A list of locations, as a drop scope is written (§6.1). -/
 def locsLine (locs : List Nat) : String :=
   "[" ++ String.intercalate ", " (locs.map locName) ++ "]"
 
@@ -2311,13 +2311,13 @@ are the outcomes where the drop still runs, because `run-all-scope-drops`
 a trap (§6.12) abandons the configuration and runs neither. -/
 def scopeNeverClosed : String :=
   "(D-EndScope) §6.7 — the body did not complete, so this scope never closed " ++
-  "(an early return or a break runs the drop through the frame's scope record " ++
+  "(an early return or a break runs the drop through the frame's drop scope " ++
   "instead; a trap runs no drop at all)"
 
 /-- (helper) The label for a call whose callee did not complete because it
 **trapped**. No frame is popped there: §6.2's (Panic-Lift) carries `↯κ` out
 of every evaluation context, the suspended caller's included, so
-`run-all-scope-drops` never runs and the callee's open scopes are abandoned
+`run-all-scope-drops` never runs and the callee's open drop scopes are abandoned
 with the configuration (§6.12). Saying "(D-Return-Value) (pop the frame)"
 here would name a rule that did not fire. -/
 def trapLiftsPastCall : String :=

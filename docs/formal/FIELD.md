@@ -414,7 +414,7 @@ in the Rust Reference, the Book, the Rustonomicon and the rustc-dev-guide
 | `OwnSt.fields` ("a partially moved value") | partial move / partially initialized (Ref.); maybe-dead type (Oxide); the move-path tree (rustc) | clear |
 | "residue": first (§4) `residue(T, π)`, the places a declared-linear destructure leaves unselected, which are dropped at once; also (Dynamics, GUIDE) what remains of a partially moved cell | the initialized fields of a partially moved value. There is no accepted noun | partial |
 | "place", "path" (§4, `Place.path`) | place (Ref., Oxide); path (Polonius); move path (rustc) | clear |
-| scope record `s`, dropped "newest-first" (§6.1) | drop scope; reverse order of declaration | clear |
+| drop scope `s`, dropped "newest-first" (§6.1; formerly "scope record") | drop scope; reverse order of declaration | clear |
 | §6.11's drop order (a value's destructor first, then its contents by kind: a struct's fields in declaration order, an array's elements in ascending order, an enum's active payload only) | drop glue; drop order (Ref. *Destructors*) | clear |
 | the dynamic `⊘` skip during a drop walk | the job drop flags do: conditional and open drops. GUIDE already calls it a per-element drop flag | partial: the same job, but the state lives in the cell rather than in a flag |
 | `Owned` / `MovedOut` (Σ's two states, §5); the `Borrowed` place-use mode; `inout`/`borrow` parameters | owner; moved from; borrow / loan; unique / shared reference | partial |

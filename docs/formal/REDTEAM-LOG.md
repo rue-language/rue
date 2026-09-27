@@ -429,7 +429,7 @@ What the mutants could not get past:
     (RUE-2501).
   - **G2, "bindings newest first" was already stated** (confirmation, no
     issue). `drop_order`'s `StrictStackOrder` and `StackDiscipline` read the drop markers'
-    cells and the scope records, not `dropEvents`, and `scope-fifo` and
+    cells and the drop scopes, not `dropEvents`, and `scope-fifo` and
     `payload-order` falsify them (RUE-2465).
 
 ## 2026-09-26 — no double free on every prefix of a run (RUE-2477)
@@ -622,7 +622,7 @@ What the mutants could not get past:
 
 | # | Target | Severity | Issue | Finding / evidence |
 |---|---|---|---|---|
-| S1 | statements | medium | fixed here | `no_linear_leak`'s reading claimed "no scope exit or unwind meets a live linear value". The auditor's `f1(Tok{}, return 7)`, with `Tok` linear, is checked and runs to `ok 7` with the token in no trace: an operand value abandoned by a sibling's `return` is in no scope record (RUE-2316). The reading now names the three things outside it. |
+| S1 | statements | medium | fixed here | `no_linear_leak`'s reading claimed "no scope exit or unwind meets a live linear value". The auditor's `f1(Tok{}, return 7)`, with `Tok` linear, is checked and runs to `ok 7` with the token in no trace: an operand value abandoned by a sibling's `return` is in no drop scope (RUE-2316). The reading now names the three things outside it. |
 | S2 | statements | low | fixed here | `Config.trichotomy`'s Literature row said the statement "has content here". It does not: `Config.Stuck` is `step`'s verdict, and `step` is total. The row now says what the statement adds. |
 | S3 | statements | low | fixed here | `freed_once` and `dtor_once` read as if a property of the type system. A refused or fuel-exhausted run has an empty trace, so on unchecked programs the bound rests on `eval`'s refusals. Both readings now say so. |
 | S4 | definitions | low | fixed here (disclosed) | `WfProgram` admits any entry-point return type, while 01 §2 fixes `i32 \| unit`. A checked `fn main() -> Tok { Tok{} }` returns a live linear value, and `whole_program_exactly_once` counts it as ended. It is disclosed in `run_safe` and `whole_program_exactly_once` rather than restricted, because restricting it would empty `Nonvacuous.whole_result`. |
