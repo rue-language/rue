@@ -291,7 +291,7 @@ def tyOrNeverName : TyOrNever → String
   | .ty T => Print.tyName T
 
 /-- (helper) §5.3's output result `Ω`: the normal state, or `⊥` when there
-is none, followed by the recorded `⟨break, Σ⟩` deliveries when there are
+is none, followed by the recorded `⟨break, Σ⟩` abrupt-completion contexts when there are
 any. -/
 def outLine (Ω : Out) : String :=
   let norm := match Ω.norm with
@@ -790,11 +790,11 @@ def loopHeadNotFixpoint : String :=
   "the head the iteration found does not solve `Σ_h = head(Σ, e)` (§5.7); the iteration " ++
   "stops only at a head the step leaves unchanged, so no program reaches this premise"
 
-/-- The `⟨diverge, Σ_h⟩` delivery's residual check (§5.6/§5.7's retained
+/-- The `⟨diverge, Σ_h⟩` abrupt-completion context's residual check (§5.6/§5.7's retained
 non-panic check, frame-wide). -/
 def divergeLeak : String :=
   "the loop re-enters itself forever and a binding of this frame is still Owned at a " ++
-  "linear type at the loop head — the `⟨diverge, Σ_h⟩` delivery keeps §5.6's non-panic " ++
+  "linear type at the loop head — the `⟨diverge, Σ_h⟩` abrupt-completion context keeps §5.6's non-panic " ++
   "residual check ((Loop-Div-Backedge) §5.7; (Fn) §5.8; 3.8:62; the compiler reports E0406)"
 
 /-- (Loop-Break) §5.7's discharge of the loop-local scopes an exit ends. -/
@@ -884,7 +884,7 @@ def joinAllConflict (D : Decls) : List Ctx → Option String
   | Γ :: Γs => joinFoldConflict D "arm" "arms" 1 Γ Γs
 
 /-- (helper) The same over a loop's exits, (Loop-Break) §5.7's join over the
-`outside_loop` states of its `break`s, numbered in delivery order. -/
+`outside_loop` states of its `break`s, numbered in the order of their abrupt-completion contexts. -/
 def exitJoinConflict (D : Decls) : List Ctx → Option String
   | [] => none
   | Γ :: Γs => joinFoldConflict D "exit" "exits" 1 Γ Γs
@@ -940,7 +940,7 @@ def accepted (rule : String) (Γ : Ctx) (e : Expr) (c : TyOrNever) (Ω : Out)
     (kids : List Deriv) : Deriv :=
   .node rule Γ e (.accept c Ω) kids
 
-/-- (helper) An accepting node that continues at a type, delivering nothing:
+/-- (helper) An accepting node that completes normally at a type, with no abrupt completion:
 every rule with no subexpression. -/
 def acceptedAt (rule : String) (Γ : Ctx) (e : Expr) (T : Ty) (Γ' : Ctx)
     (kids : List Deriv) : Deriv :=
@@ -1733,7 +1733,7 @@ def explainArms (P : Program) (R : Ty) (Γ₀ : Ctx) : List Expr → List (List 
 
 /-- The premise a rejected arm list failed: the first arm whose body does not
 check, whose type is not the one the first typed arm fixed, or which, when it
-continues, leaves a payload local unconsumed at the arm's end (§5.6). -/
+completes normally, leaves a payload local unconsumed at the arm's end (§5.6). -/
 def armsPremise (P : Program) (R : Ty) (Γ₀ : Ctx) (c : TyOrNever) :
     List Expr → List (List Ty) → String
   | [], [] => Premise.subDerivation
@@ -1766,7 +1766,7 @@ end
 
 -- The budget is per declaration, and the `assign` and `ret` arms of
 -- `explain_result` are where it goes: each `check` arm now splits on the
--- operand's `Ω` (a continuing state or §5.7's `⊥`) as well as on its type, so
+-- operand's `Ω` (a normal state or §5.7's `⊥`) as well as on its type, so
 -- the case analysis roughly doubles (RUE-2368). The default fails at those two
 -- arms and 400000 passes; the proof is unchanged.
 set_option maxHeartbeats 400000 in

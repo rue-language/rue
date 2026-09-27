@@ -1900,9 +1900,9 @@ solve it. With it, re-entering the loop at `Σ_h` solves the equation again
 
 /-- **(Match) §5.5's premises for the arm a tag selects.** Read at the variant
 index `k`: the arm's body is typed under that variant's payload locals, and
-when it continues its locals are discharged by §5.6 at the arm's end and what
+when it completes normally its locals are discharged by §5.6 at the arm's end and what
 it contributes to the n-way join is one of the states the join was taken
-over, and its deliveries are among the arms'. This is the inversion
+over, and its abrupt-completion contexts are among the arms'. This is the inversion
 `soundness` performs once (D-Match) §6.6 has read the tag (helper). -/
 theorem TypedArms.at_index {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty} :
     ∀ {arms : List Expr} {Tss : List (List Ty)} {os : List (Option Ctx)} {Δs : List Ctx},
@@ -2166,7 +2166,7 @@ theorem Ctx.joinAll_wf {D : Decls} {sk : List (Ty × Bool)} {Γs : List Ctx} {Γ
       obtain ⟨hsk, hwf⟩ := hinv Γ List.mem_cons_self
       exact Ctx.joinFold_wf Γs Γ Γ' (fun Δ hΔ => hinv Δ (List.mem_cons_of_mem _ hΔ)) hsk hwf h
 
-/-- The two-arm §5.5 join over `Ω` preserves a skeleton both continuing arms
+/-- The two-arm §5.5 join over `Ω` preserves a skeleton both arms that can complete normally
 have (helper). -/
 theorem Ctx.joinOpt_skel {D : Decls} {a b : Option Ctx} {Γ' : Ctx} {S : List (Ty × Bool)}
     (h : Ctx.joinOpt D a b = some (some Γ'))
@@ -2189,7 +2189,7 @@ theorem Ctx.joinOpt_skel {D : Decls} {a b : Option Ctx} {Γ' : Ctx} {S : List (T
             cases h
             exact (Ctx.join_skel hj).trans (ha _ rfl)
 
-/-- The n-way §5.5 join over `Ω` preserves the skeleton every continuing arm
+/-- The n-way §5.5 join over `Ω` preserves the skeleton every arm that can complete normally
 has (helper). -/
 theorem Ctx.joinOpts_skel {D : Decls} {os : List (Option Ctx)} {Γ₀ Γ' : Ctx}
     (h : Ctx.joinOpts D os = some (some Γ')) (hs : Ctx.SameSkel Γ₀ (os.filterMap id)) :
@@ -2218,7 +2218,7 @@ theorem Ctx.Extends.skel {Γb Γ₁ Γ : Ctx} (h : Ctx.Extends Γb Γ₁) (hs : 
   exact ⟨pre, hp.trans (by rw [hs])⟩
 
 /-- Extending a context with one more binding on top extends the context
-under it: a delivery from a `let` body extends the `let`'s own context
+under it: an abrupt-completion context from a `let` body extends the `let`'s own context
 (helper). -/
 theorem Ctx.Extends.pop {Γb Γ : Ctx} {en : Entry} (h : Ctx.Extends Γb (en :: Γ)) :
     Ctx.Extends Γb Γ := by
@@ -2239,7 +2239,7 @@ theorem Ctx.Extends.length_le {Γb Γ : Ctx} (h : Ctx.Extends Γb Γ) : Γ.lengt
   omega
 
 /-- `outside_loop(Σ_x)` has the loop's own skeleton: popping the loop-local
-bindings off a delivery that extends the head leaves the head's bindings
+bindings off an abrupt-completion context that extends the head leaves the head's bindings
 (helper). -/
 theorem Ctx.outsideLoop_skel {Γh Γb : Ctx} (h : Ctx.Extends Γb Γh) :
     (Ctx.outsideLoop Γh Γb).skel = Γh.skel := by
@@ -2251,23 +2251,23 @@ theorem Ctx.outsideLoop_skel {Γh Γb : Ctx} (h : Ctx.Extends Γb Γh) :
     simp [Ctx.outsideLoop, Ctx.skel, List.map_drop]
   rw [hmap, hp, show Γb.length - Γh.length = pre.length by omega, List.drop_left]
 
-/-- A `⊥` outcome whose deliveries extend the context preserves its skeleton
+/-- A `⊥` outcome whose abrupt-completion contexts extend the context preserves its skeleton
 (helper). -/
 theorem Out.skelOk_bot {Γ : Ctx} {Δ : List Ctx} (h : ∀ Γb ∈ Δ, Ctx.Extends Γb Γ) :
     Out.SkelOk Γ ⟨none, Δ⟩ :=
   ⟨fun _ h => (by cases h), h⟩
 
-/-- An outcome that continues at the input context itself and delivers
-nothing preserves its skeleton (helper). -/
+/-- An outcome that completes normally at the input context itself and
+never abruptly preserves its skeleton (helper). -/
 theorem Out.skelOk_same {Γ : Ctx} : Out.SkelOk Γ ⟨some Γ, []⟩ :=
   ⟨fun _ h => by cases h; rfl, fun _ h => by cases h⟩
 
-/-- An outcome that continues at a context of the input skeleton and
-delivers nothing preserves it (helper). -/
+/-- An outcome that completes normally at a context of the input skeleton
+and never abruptly preserves it (helper). -/
 theorem Out.skelOk_of {Γ Γ' : Ctx} (h : Γ'.skel = Γ.skel) : Out.SkelOk Γ ⟨some Γ', []⟩ :=
   ⟨fun _ hn => by cases hn; exact h, fun _ h => by cases h⟩
 
-/-- §5.3's threading, read over skeletons: a prefix that continues at `Γ₁`
+/-- §5.3's threading, read over skeletons: a prefix that can complete normally at `Γ₁`
 followed by a subexpression typed from `Γ₁` preserves the skeleton the
 prefix started from, `Ω ⊕ Δ₁` included (helper). -/
 theorem Out.SkelOk.then {Γ Γ₁ : Ctx} {Δ₁ : List Ctx} {Ω : Out}
@@ -2328,7 +2328,7 @@ mutual
 This is the fused context's image of §5's convention that `Γ` is fixed while
 `Σ` is threaded through the judgment, read over `Ω` (`Out.SkelOk`): the
 normal output context has the input skeleton, and every `⟨break, Σ⟩`
-delivery extends it. The three judgments are proved together, by recursion
+abrupt-completion context extends it. The three judgments are proved together, by recursion
 on the derivation. -/
 theorem Typed.skel_preserved {P R} : ∀ {Γ : Ctx} {e T} {Ω : Out},
     Typed P R Γ e T Ω → Out.SkelOk Γ Ω
@@ -2445,8 +2445,8 @@ theorem TypedArgs.skel_preserved {P R} : ∀ {Γ : Ctx} {es Ts} {Ω : Out},
   | _, _, _, _, .cons h hs => (Typed.skel_preserved h).then (TypedArgs.skel_preserved hs)
   | _, _, _, _, .consBot h _ => Typed.skel_preserved h
 
-/-- **Every continuing arm of a `match` hands the §5.5 join a context with the
-skeleton the arm started from**, and every delivery an arm makes extends it:
+/-- **Every arm that can complete normally of a `match` hands the §5.5 join a context with the
+skeleton the arm started from**, and every abrupt-completion context an arm makes extends it:
 the arm's payload locals are popped on its normal path, and sit on top of the
 arm's context at a `break` inside it (helper). -/
 theorem TypedArms.skel_all {P R} : ∀ {Γ₀ : Ctx} {arms Tss T} {os : List (Option Ctx)}
@@ -2469,7 +2469,7 @@ theorem TypedArms.skel_all {P R} : ∀ {Γ₀ : Ctx} {arms Tss T} {os : List (Op
       · exact kr.2 Γb hb
 end
 
-/-- **Every continuing arm of a `match` hands the §5.5 join a context with the
+/-- **Every arm that can complete normally of a `match` hands the §5.5 join a context with the
 skeleton the arm started from** (§5's convention that `Γ` is fixed): the arm's
 payload locals are popped, and the body preserved the rest. This is what lets
 the n-way join read either the accumulated state or an arm's, which is the
@@ -2479,7 +2479,7 @@ theorem TypedArms.arm_skel {P R} {Γ₀ : Ctx} {arms Tss T} {os : List (Option C
   (TypedArms.skel_all h).1
 
 
-/-- The skeleton of a continuing outcome, read off a derivation (helper). -/
+/-- The skeleton of an outcome that completes normally, read off a derivation (helper). -/
 theorem Typed.skel_of {P R} {Γ Γ' : Ctx} {e T} {Δ : List Ctx}
     (h : Typed P R Γ e T ⟨some Γ', Δ⟩) : Γ'.skel = Γ.skel :=
   h.skel_preserved.norm Γ' rfl
@@ -2590,12 +2590,12 @@ theorem Ctx.joinOpts_wf {D : Decls} {os : List (Option Ctx)} {Γ' : Ctx} {S : Li
           obtain ⟨hsk, hw⟩ := hinv Γ₁ List.mem_cons_self
           exact Ctx.joinFold_wf Γs Γ₁ _ (fun Γ hΓ => hinv Γ (List.mem_cons_of_mem _ hΓ)) hsk hw hj
 
-/-- (helper) A `⊥` outcome is well formed when its deliveries are. -/
+/-- (helper) A `⊥` outcome is well formed when its abrupt-completion contexts are. -/
 theorem Out.Wf.bot {D : Decls} {Δ : List Ctx} (h : ∀ Γb ∈ Δ, Ctx.Wf D Γb) :
     Out.Wf D ⟨none, Δ⟩ := ⟨fun _ h => (by cases h), h⟩
 
-/-- (helper) An outcome that continues at a well-formed state and delivers
-nothing is well formed. -/
+/-- (helper) An outcome that completes normally at a well-formed state and
+never abruptly is well formed. -/
 theorem Out.Wf.of {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) : Out.Wf D ⟨some Γ, []⟩ :=
   ⟨fun _ hn => by cases hn; exact h, fun _ h => by cases h⟩
 
@@ -2626,7 +2626,7 @@ theorem Ctx.Wf.drop {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) (n : Nat) : Ctx.Wf 
 mutual
 /-- **The shape invariant is preserved judgment-wide** (RUE-2340): from a
 well-formed input context, every normal output context a derivation
-concludes at, and every state it delivers to a loop, is well-formed. With
+concludes at, and every state it completes abruptly with to a loop, is well-formed. With
 `fnCtx_wf` it discharges `Ctx.Wf`, the premise §5.5's associativity carries
 (`Ctx.joinAll_perm`), at every normal output context of a function body
 (`Typed.wf_fnCtx`). The recursion carries the invariant into every arm of
@@ -2637,8 +2637,8 @@ output-state form, not a separate corollary per join. It holds because
 `return` and `@panic` concluded at an arbitrary context and the statement was
 false. A loop body is typed at the loop-head state, which `LoopHead` asks to
 be well formed when a back edge produced it (`LoopHead.wf`); (Loop-Break)'s
-exit state is the join of the deliveries' `outside_loop` parts, each a
-suffix of a well-formed delivery. -/
+exit state is the join of the abrupt-completion contexts' `outside_loop` parts, each a
+suffix of a well-formed abrupt-completion context. -/
 theorem Typed.wf {P R} : ∀ {Γ : Ctx} {e T} {Ω : Out},
     Typed P R Γ e T Ω → Out.WfPres P.decls Γ Ω
   | _, _, _, _, .intLit _ => Out.Wf.of
@@ -2793,19 +2793,19 @@ theorem LoopHead.reenter_body {P R} {Γ Γh : Ctx} {e : Expr} {Ωe : Out}
   h.reenter fun Γe hn =>
     ⟨hbody.skel_preserved.norm Γe hn, (hbody.wf (h.2 Γe hn)).norm Γe hn⟩
 
-/-! ### No `break`, no delivery
+/-! ### No `break`, no abrupt-completion context
 
 §5.7's (Loop-Div) rules are selected by a *syntactic* premise — the body
 contains no `break` targeting the loop — while the loop's output `Δ_out`
-removes the deliveries the body made. The two agree: a derivation of a body
-with no such `break` makes no `⟨break, _⟩` delivery at all, because the only
+removes the abrupt-completion contexts the body made. The two agree: a derivation of a body
+with no such `break` makes no `⟨break, _⟩` abrupt-completion context at all, because the only
 rule that makes one is (Break) and every loop consumes its own. So the
-`break`-less loop rules deliver nothing without a premise saying so, and
+`break`-less loop rules add no abrupt-completion context without a premise saying so, and
 `soundness` uses this to rule out a `break` escaping one. -/
 
 mutual
-/-- **A body with no `break` targeting its loop delivers none** (§5.7): every
-delivery in `Ω.brk` comes from a `break` the syntax has, outside any nested
+/-- **A body with no `break` targeting its loop completes abruptly with none** (§5.7): every
+abrupt-completion context in `Ω.brk` comes from a `break` the syntax has, outside any nested
 loop (`Expr.breaks`). -/
 theorem Typed.brk_nil {P R} : ∀ {Γ : Ctx} {e T} {Ω : Out},
     Typed P R Γ e T Ω → e.breaks = false → Ω.brk = []

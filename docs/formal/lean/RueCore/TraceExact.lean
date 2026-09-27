@@ -11,8 +11,8 @@ public import RueCore.Equivalence
 `no_double_free` (`Trace.lean`) is §7's no-double-free bullet: no identity is
 freed, or destroyed, twice. This module proves the other half of the
 "no use-after-drop / no leak of drops" bullet: **exactly once**. Every owned
-value present when an evaluation starts is, when the evaluation ends normally
-or unwinds (by `return` or by `break`), in exactly one place — still in the
+value present when an evaluation starts is, when the evaluation completes
+normally or abruptly (by `return` or by `break`), in exactly one place — still in the
 store, part of the result, or ended exactly once in the trace — so a value is
 dropped on the normal path (the binding's `endscope`, §6.7) or on the unwind
 path (the σ-walk of §6.9 and §6.10), never both and never neither.
@@ -124,7 +124,7 @@ theorem Expr.breaksList_mem : ∀ {es : List Expr} {e : Expr},
       | head => exact h.1
       | tail _ hm => exact Expr.breaksList_mem h.2 hm
 
-/-- A member of a quiet list does not unwind (helper). -/
+/-- A member of a quiet list does not complete abruptly (helper). -/
 theorem Expr.quietList_mem {es : List Expr} {e : Expr} (h : Expr.quietList es = true)
     (hm : e ∈ es) : e.returns = false ∧ e.breaks = false := by
   simp only [Expr.quietList, List.all_eq_true, Bool.not_eq_eq_eq_not, Bool.not_true] at h
@@ -132,7 +132,7 @@ theorem Expr.quietList_mem {es : List Expr} {e : Expr} (h : Expr.quietList es = 
   simp only [Expr.canCompleteAbruptly, Bool.or_eq_false_iff] at this
   exact this
 
-/-! ## Results that do not unwind -/
+/-! ## Results that do not complete abruptly -/
 
 /-- A result that is not an unwinding `return` (helper). -/
 def EvalRes.NoRet : EvalRes → Prop
@@ -144,7 +144,7 @@ def EvalRes.NoBrk : EvalRes → Prop
   | .broke _ _ _ => False
   | _ => True
 
-/-- `bind` unwinds only where its operand or its context does (helper). -/
+/-- `bind` completes abruptly only where its operand or its context does (helper). -/
 theorem EvalRes.bind_noRet {r : EvalRes} {k : Store → Val → EvalRes} (hr : r.NoRet)
     (hk : ∀ H v tr, r = .ok H v tr → (k H v).NoRet) : (r.bind k).NoRet := by
   cases r with
@@ -164,7 +164,7 @@ theorem EvalRes.bind_noBrk {r : EvalRes} {k : Store → Val → EvalRes} (hr : r
       cases h : k H v <;> simp_all [EvalRes.withTrace, EvalRes.NoBrk]
   | _ => simp_all [EvalRes.bind, EvalRes.NoBrk]
 
-/-- A prefixed trace does not change whether a result unwinds (helper). -/
+/-- A prefixed trace does not change whether a result completes abruptly (helper). -/
 theorem EvalRes.withTrace_noRet {r : EvalRes} {tr : List Event} (h : r.NoRet) :
     (r.withTrace tr).NoRet := by
   cases r <;> simp_all [EvalRes.withTrace, EvalRes.NoRet]
@@ -229,7 +229,7 @@ theorem EvalRes.bindCall_quiet {r : EvalRes} {k : Store → Val → EvalRes}
       exact ⟨EvalRes.withTrace_noRet (hk H v).1, EvalRes.withTrace_noBrk (hk H v).2⟩
   | _ => exact ⟨trivial, trivial⟩
 
-/-- **What does not unwind, does not unwind**: an expression with no `return`
+/-- **What cannot complete abruptly, does not**: an expression with no `return`
 never evaluates to an unwinding `return`, and one with no free `break` never
 to an unwinding `break` — a call absorbs its callee's `return` (§6.9) and a
 loop catches its body's `break` (§6.10) (helper). -/
@@ -801,7 +801,7 @@ theorem Exact.bind {D : Decls} {H : Store} {X : List Nat} {r : EvalRes}
   | outOfFuel => trivial
 
 /-- **A later operand under a held value** (helper): the operand does not
-unwind — `pendingSafe` — so the held value `Y` is never abandoned, and the
+complete abruptly — `pendingSafe` — so the held value `Y` is never abandoned, and the
 context receives both. -/
 theorem Exact.bindHeld {D : Decls} {H : Store} {Y : List Nat} {r : EvalRes}
     {k : Store → Val → EvalRes} (hr : Exact D H [] r) (hq : r.NoRet ∧ r.NoBrk)
@@ -885,7 +885,7 @@ def ArgsExact (D : Decls) (H : Store) : ArgsRes → Prop
           (freedIds D tr).count a = (storeOwn D H).count a
   | .abort r => Exact D H [] r
 
-/-- A result that neither completes nor unwinds keeps every ledger, with any
+/-- A result that completes neither normally nor abruptly keeps every ledger, with any
 trace prefixed (helper). -/
 theorem Exact.of_quiet {D : Decls} {H : Store} {X : List Nat} {r : EvalRes} {tr : List Event}
     (hq : r.NoRet ∧ r.NoBrk) (hok : ∀ H' v tr', r ≠ .ok H' v tr') : Exact D H X (r.withTrace tr) := by
@@ -897,7 +897,7 @@ theorem Exact.of_quiet {D : Decls} {H : Store} {X : List Nat} {r : EvalRes} {tr 
 
 /-- **A quiet argument list keeps the exact ledger** (§6.2's left-to-right
 search), and aborts only with a trap, a refusal or exhausted fuel: no member
-unwinds, so no built value is ever abandoned (helper). -/
+completes abruptly, so no built value is ever abandoned (helper). -/
 theorem evalArgs_exactQuiet {D : Decls} {ev : Store → Expr → EvalRes} :
     ∀ {es : List Expr},
       (∀ H e, e ∈ es → StoreCC D H → Exact D H [] (ev H e)) →
@@ -942,7 +942,7 @@ theorem evalArgs_exactQuiet {D : Decls} {ev : Store → Expr → EvalRes} :
       | outOfFuel => exact ⟨trivial, fun r h => by cases h; exact ⟨trivial, trivial⟩⟩
 
 /-- **An argument list keeps the exact ledger** where only its first member
-may unwind: nothing is pending when the first does (helper). -/
+may complete abruptly: nothing is pending when the first does (helper). -/
 theorem evalArgs_exact {D : Decls} {ev : Store → Expr → EvalRes} {es : List Expr}
     (hev : ∀ H e, e ∈ es → StoreCC D H → Exact D H [] (ev H e))
     (hq : ∀ H e, e ∈ es.tail → (ev H e).NoRet ∧ (ev H e).NoBrk) :
@@ -2452,7 +2452,7 @@ theorem ActivationTyping.activationIn {D : Decls} {Γ : Ctx} {φ : Activation} {
 §6.7, §6.9, §6.10, §6.11). Take any well-typed configuration of a checked
 program — an expression typed in `Γ`, run in a frame and store that agree
 with `Γ` — whose program and expression are `pendingSafe`. Its evaluation is
-never refused, and when it finishes normally or unwinds by `return` or
+never refused, and when it finishes normally or completes abruptly by `return` or
 `break`:
 
 * **every owned identity the store held at the start** is in exactly one

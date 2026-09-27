@@ -122,7 +122,7 @@ fuel less. A `break` is caught by `loop_exit_ok`: the body's open bindings are
 exactly the cells past the loop's scope-record length, `StoreTyping.unwindPrefix`
 drops them without refusal because (Loop-Break) discharged §5.6 for them, and
 what remains agrees with `outside_loop` and so with the exit join. A
-`break`-less loop has no delivery to catch (`Typed.brk_nil`), and (Fn) gives a
+`break`-less loop has no abrupt-completion context to catch (`Typed.brk_nil`), and (Fn) gives a
 function body none, so a `break` never reaches a call boundary.
 
 ## The theorem
@@ -130,7 +130,7 @@ function body none, so a `break` never reaches a call boundary.
 `soundness` is type safety in definitional-interpreter form: a well-typed
 expression evaluates to a well-typed value with the invariant restored
 (preservation), to a value handed back by an unwinding `return`, to a `break`
-unwinding to its loop from one of the recorded delivery states, to a *defined*
+unwinding to its loop from one of the recorded abrupt-completion context states, to a *defined*
 panic, or to `outOfFuel` — never to a `Refusal` (progress). `fuel_mono` and
 `no_masking` are what keep the fuel caveat honest. The corollaries at the
 bottom restate the theorem per §7 bullet, over a whole program.
@@ -2263,9 +2263,9 @@ theorem StoreTyping.joinAll {D : Decls} (hwf : WfDecls D) :
       | tail _ hrest => exact Or.inr ⟨Γᵢ, hrest, hmi⟩
 
 /-- **(Match) §5.5's join over `Ω` holds a state for the arm that ran.** An
-arm that continued contributed its state to the list the join folds, so the
-join is a state — not `⊥` — and the fold `Ctx.joinAll` over the continuing
-arms produced it (helper). -/
+arm that completed normally contributed its state to the list the join folds, so the
+join is a state — not `⊥` — and the fold `Ctx.joinAll` over the arms that
+can complete normally produced it (helper). -/
 theorem Ctx.joinOpts_mem {D : Decls} {os : List (Option Ctx)} {o : Option Ctx} {Γ : Ctx}
     (h : Ctx.joinOpts D os = some o) (hm : some Γ ∈ os) :
     ∃ Γ', o = some Γ' ∧ Ctx.joinAll D (os.filterMap id) = some Γ' ∧ Γ ∈ os.filterMap id := by
@@ -2284,7 +2284,7 @@ theorem Ctx.joinOpts_mem {D : Decls} {os : List (Option Ctx)} {o : Option Ctx} {
           exact ⟨z, h.symm, hj, hmf⟩
 
 /-- **The invariant survives (If) §5.5's join over `Ω` from the left arm**:
-when the left arm continues, the join is a state, and it is the left arm's
+when the left arm can complete normally, the join is a state, and it is the left arm's
 state or its binary join with the right one's (helper). -/
 theorem StoreTyping.joinOpt_left {D : Decls} (hwf : WfDecls D) {a b o : Option Ctx} {Γ₁ : Ctx}
     (h : Ctx.joinOpt D a b = some o) (ha : a = some Γ₁) :
@@ -2303,7 +2303,7 @@ theorem StoreTyping.joinOpt_left {D : Decls} (hwf : WfDecls D) {a b o : Option C
           simp only [Option.map_some, Option.some.injEq] at h
           exact ⟨z, h.symm, fun _ _ hm => StoreTyping.join_left hwf hj hm⟩
 
-/-- The same from the right arm, which needs the two continuing arms to share
+/-- The same from the right arm, which needs the two arms that can complete normally to share
 a skeleton, as `StoreTyping.join_right` does (helper). -/
 theorem StoreTyping.joinOpt_right {D : Decls} (hwf : WfDecls D) {a b o : Option Ctx} {Γ₂ : Ctx}
     (hsk : ∀ x, a = some x → x.skel = Γ₂.skel)
@@ -2521,7 +2521,7 @@ theorem Contents.resolveDyn_ok {D : Decls} : ∀ (is : List Int) (πs : List (Li
 /-- The promise for an evaluation that does **not** produce a value here: an
 unwinding `return` carries a value of the enclosing function's declared return
 type `R` and leaves the frame's neighbours alone; an unwinding `break` is one
-of the deliveries `B` (`BreakOutputOk`); a trap and exhausted fuel promise nothing;
+of the abrupt-completion contexts `B` (`BreakOutputOk`); a trap and exhausted fuel promise nothing;
 a refusal is impossible, which is the whole theorem (helper). -/
 def AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Activation) (H : Store) : EvalRes → Prop
   | .ok _ _ _ => False
@@ -2532,7 +2532,7 @@ def AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Activation) (H : Store) : 
   | .outOfFuel => True
 
 /-- The promise for an argument list (§5.8's (Call), left to right with Σ
-threaded), at the list's normal output context `o` and deliveries `B`
+threaded), at the list's normal output context `o` and abrupt-completion contexts `B`
 (helper). -/
 def ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx) (B : List Ctx) (φ : Activation)
     (H : Store) : ArgsRes → Prop
@@ -2549,7 +2549,7 @@ theorem BreakOutputOk.mono_store {D B φ H H₁ H' sc} (hu : FrameProperty φ.en
   obtain ⟨Γb, hb, locs, hsc, hfm, hfresh, hu'⟩ := h
   exact ⟨Γb, hb, locs, hsc, hfm, fun ℓ hℓ => Nat.le_trans hu.1 (hfresh ℓ hℓ), hu.trans hu'⟩
 
-/-- A `break` at one of some deliveries is at one of any superset of them
+/-- A `break` at one of some abrupt-completion contexts is at one of any superset of them
 (helper). -/
 theorem BreakOutputOk.mono_brk {D B B' φ H H' sc} (hB : B ⊆ B') (h : BreakOutputOk D B φ H H' sc) :
     BreakOutputOk D B' φ H H' sc := by
@@ -2625,8 +2625,8 @@ theorem AbortOk.mono_store {D R B φ H H₁ r} (hu : FrameProperty φ.env H H₁
   | refused w => exact h.elim
   | outOfFuel => trivial
 
-/-- A promise at some deliveries is a promise at any superset of them: a form
-carries its operands' deliveries outward among its own (§5.3's threading)
+/-- A promise at some abrupt-completion contexts is a promise at any superset of them: a form
+carries its operands' abrupt-completion contexts outward among its own (§5.3's threading)
 (helper). -/
 theorem EvalOk.mono_brk {D T R o B B' φ H r} (hB : B ⊆ B') (h : EvalOk D T R o B φ H r) :
     EvalOk D T R o B' φ H r := by
@@ -2691,7 +2691,7 @@ theorem EvalOk.bot_bind {D T T₀ R B φ H r} {k : Store → Val → EvalRes}
 
 /-- **§6.2's search, once and for all.** An operand that promised its own
 outcome, sequenced into a context that promises the form's outcome from the
-operand's value, promises the form's outcome — the operand's deliveries among
+operand's value, promises the form's outcome — the operand's abrupt-completion contexts among
 the form's. Every operand of every form is discharged by this lemma
 (helper). -/
 theorem EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ : Ctx} {B₀ B : List Ctx}
@@ -2711,8 +2711,8 @@ theorem EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ : Ctx} {
   | outOfFuel => trivial
 
 /-- `bind` for an operand whose output `Ω` the form passes on unchanged —
-§5.3's threading convention at a one-operand rule: if the operand continues,
-the form continues at the same state; if it is `⊥`, so is the form (helper). -/
+§5.3's threading convention at a one-operand rule: if the operand can complete normally,
+the form can complete normally at the same state; if it is `⊥`, so is the form (helper). -/
 theorem EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {B : List Ctx} {φ : Activation}
     {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
     (hr : EvalOk D T₀ R o B φ H r)
@@ -2725,8 +2725,8 @@ theorem EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {B : List C
 
 /-! ## The main theorem -/
 
-/-- (helper) Close `B₀ ⊆ B` where `B` is a form's delivery list and `B₀` one of
-its premises': §5.3's threading makes every premise's deliveries a part of
+/-- (helper) Close `B₀ ⊆ B` where `B` is a form's list of abrupt-completion contexts and `B₀` one of
+its premises': §5.3's threading makes every premise's abrupt-completion contexts a part of
 the conclusion's. -/
 local macro "brk_sub" : tactic =>
   `(tactic| (intro _ hx; first | exact hx | (simp only [Out.merge, List.mem_append] at hx ⊢; simp [hx])))
@@ -2817,7 +2817,7 @@ theorem LoopHead.backEdge {D : Decls} (hwf : WfDecls D) {Γ Γh Γe : Ctx}
       exact ⟨StoreTyping.join_right hwf hs hj hfm.store, hfm.record⟩
 
 /-- **The exits** (§5.7's (Loop-Break), §6.10's (D-Break)). A `break` that
-fired at one of the body's deliveries `Γb`, in a frame that is the loop's with
+fired at one of the body's abrupt-completion contexts `Γb`, in a frame that is the loop's with
 the body's still-open bindings `locs` on top, is caught by the loop: it
 drop-retires exactly those bindings, newest first — `unwind-drops(H, φ', φ)`
 — and the rule's premise that they carry no residual linear content is what
@@ -2988,7 +2988,7 @@ A well-typed expression, run at any fuel in any frame and store agreeing with
 its input context, yields a well-typed value with the agreement restored at
 the normal output context of its §5.3 result `Ω` — and no value at all when
 `Ω` is §5.7's `⊥` — a value handed back by an unwinding `return` (§6.9), an
-unwinding `break` (§6.10) that fired at one of `Ω`'s delivered states, a
+unwinding `break` (§6.10) that fired at one of `Ω`'s abrupt-completion contexts, a
 *defined* panic (§6.12), or `outOfFuel` — never `.refused`, so never a
 `Refusal`: no use-after-move, no use-after-drop, no linear leak, no linear
 overwrite, no linear discard (§7's decomposed bullets). The theorem is
@@ -3689,7 +3689,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
           exact (ih hc hfm).bot_bind
       | @ite Γ Γ₀ Δ₀ Ω₁ Ω₂ o c e₁ e₂ T hc h₁ h₂ hjoin =>
           -- (If) §5.5: the arm that runs promises its own normal state, which
-          -- the join over the continuing arms carries on; an arm typed `⊥`
+          -- the join over the arms that can complete normally carries on; an arm typed `⊥`
           -- promises no value at all, so it needs nothing from the join.
           simp only [eval]
           refine EvalOk.bind (ih hc hfm) (by brk_sub) ?_
@@ -3768,7 +3768,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
                   exact ⟨htyv, ⟨hmint.transport hdisj hu₃, hfm.record⟩,
                     hu₁.trans (FrameProperty.of_fresh hpre hfreshg hkeep hu₃)⟩
               | broke H₃ sc tr₃ =>
-                  -- (Fn) §5.8 gives the body no `⟨break, _⟩` delivery, so no
+                  -- (Fn) §5.8 gives the body no `⟨break, _⟩` abrupt-completion context, so no
                   -- `break` reaches the call boundary.
                   rw [hrb] at kb
                   obtain ⟨Γb, hb, _⟩ := kb
@@ -3816,7 +3816,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
       | @loopBreak Γ Γh Ωe Γx e hbody hhead hb' hnl hjoin =>
           -- (Loop-Break) with §6.10: the back edge as for `loopDiv`, and a
           -- `break` from the body is caught here, which unwinds the body's
-          -- open bindings and continues at the join of the exits
+          -- open bindings and completes normally at the join of the exits
           -- (`loop_exit_ok`).
           have hre : Typed P R Γh (.loop e) .unit ⟨some Γx, []⟩ :=
             .loopBreak hbody (hhead.reenter_body hbody) hb' hnl hjoin
@@ -4261,7 +4261,7 @@ theorem run_safe (M : FloatLaws) {P : Program} {fd : FnDef} (hwf : WfProgram P)
       exact Or.inr (Or.inr ⟨H, v, tr, rfl, hok.1⟩)
   | returned H v tr => exact absurd hr (run_ne_returned M.toFloatSig H v tr)
   | broke H sc tr =>
-      -- The entry call delivers no `break` (`entry_typed`'s `Ω` has none).
+      -- The entry call completes abruptly with no `break` (`entry_typed`'s `Ω` has none).
       rw [hr] at hok
       obtain ⟨_, hb, _⟩ := hok
       cases hb

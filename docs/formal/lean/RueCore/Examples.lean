@@ -2581,7 +2581,7 @@ literal's elements; and, since RUE-2342, an assignment's right-hand side while
 the target's dynamic indices run after it (`5.2:14`). Such a value lives in no cell and in no scope record
 between the subexpression that produced it and the aggregation that would
 have taken it — for an argument, the `freshParams` of §6.9's (D-Call). If a
-later sibling unwinds by `return`, (D-Return) §6.9 discards the evaluation
+later sibling completes abruptly by `return`, (D-Return) §6.9 discards the evaluation
 context — the pending values with it — and runs `run-all-scope-drops` on the
 frame's records, which never named that value; a `break` does the same with
 (D-Break) §6.10 and the loop's `unwind-drops`. Its drop is neither run nor
@@ -2640,7 +2640,7 @@ def affineLostAtCallArg : Program :=
               body := seq (drop (.var 1)) (use (.var 0)) }] }
 
 /-- The same loss at an **array element**: the literal's element 0 is a linear
-value, and element 1 unwinds by `return` before `mkArray` aggregates either.
+value, and element 1 completes abruptly by `return` before `mkArray` aggregates either.
 `evalArgs` is the one function all three sibling lists share, so the array
 literal inherits the edge from the argument list rather than adding a second
 one. The compiler behaves the same way — with a destructor-bearing element
@@ -2740,7 +2740,7 @@ diverge quickly at runtime instead of running forever: seeded one below
 inside the fuel bound although the loop has no static exit at all.
 `loop_moved_prev_iteration` (`Corpus.lean`) is (Loop-Div)'s one seed, the
 sibling case where the body itself always diverges; this is the
-always-continues counterpart. The `let`'s body is the `loop` itself — no
+always-completes-normally counterpart. The `let`'s body is the `loop` itself — no
 code follows it, so this needs nothing RUE-2376 leaves unsettled either. The
 compiler agrees: it accepts the unbounded `loop` and traps with the same
 overflow. -/
@@ -3839,7 +3839,7 @@ def ifReturnArmAffine : Expr :=
       (seq (drop (.var 1)) (use (.var 0))))
 
 /-- The same at a `match` over a **linear** binding: arm `K0` consumes it and
-returns, arm `K1` leaves it, and the join over the one continuing arm leaves it
+returns, arm `K1` leaves it, and the join over the one arm that can complete normally leaves it
 `Owned` for the `@drop` after the `match`. §5.5's join with the `return` arm's
 `MovedOut` state in it would be a linear disagreement (E0443), which is what
 the old `check` refused. The run takes `K1`: `S3`'s destructor prints `1`, then
@@ -3893,7 +3893,7 @@ def loopMoveEveryPathBreaks : Expr :=
     (seq (loop (seq (drop (.var 0)) brk)) (lit 5))
 
 /-- **A linear binding consumed on one exit only** (the RUE-1614 shape inside a
-loop, probe l6b): the two `break` sites deliver `MovedOut` and `Owned` for the
+loop, probe l6b): the two `break` sites complete abruptly with `MovedOut` and `Owned` for the
 binding, and §5.7's exit join is §5.5's, which is undefined on a
 linear-carrying path that disagrees (`3.8:50`, `3.8:80`; the compiler reports
 E0443). The machine takes the exit that keeps the binding, and the `let`'s
@@ -4038,7 +4038,7 @@ example : checkProgram (prog tI64 loopBreakPastLinear) = false := by rfl
 example : run demoOps (prog tI64 loopBreakPastLinear) demoFuel = .refused .linearLeak := by rfl
 
 /-- **A linear binding live at a loop that never exits** (E0406): the body
-completes, so the loop delivers `⟨diverge, Σ_h⟩`, and the frame-wide residual
+completes, so the loop completes abruptly with `⟨diverge, Σ_h⟩`, and the frame-wide residual
 check at the head finds the binding (`03-metatheory.md`'s reading). The
 machine never finishes, so it reaches no refusal. -/
 def loopDivergeLinear : Expr :=
@@ -4047,7 +4047,7 @@ def loopDivergeLinear : Expr :=
 example : checkProgram (prog tI64 loopDivergeLinear) = false := by rfl
 
 /-- **A `break` outside every loop**: (Fn) §5.8 gives a function body no
-`⟨break, _⟩` delivery, so `checkFn` refuses it, and the machine's call
+`⟨break, _⟩` abrupt-completion context, so `checkFn` refuses it, and the machine's call
 boundary refuses the `break` that reaches it (`EvalRes.bindCall`). -/
 example : checkProgram (prog tI64 brk) = false := by rfl
 example : run demoOps (prog tI64 brk) demoFuel = .refused .typeConfusion := by rfl

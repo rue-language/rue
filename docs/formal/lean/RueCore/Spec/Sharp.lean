@@ -499,7 +499,7 @@ def bare_dtor_stmt : Prop :=
 /-- **A checked program with a function that is not `pendingSafe`** (§7 sharpness,
 RUE-2485; RUE-2316's carve-out). Beside an entry point returning `0`, `fn
 g(s: S0) -> i64 { [s, return 7]; 0 }` is typed, but the array literal's first
-element is pending when the second unwinds, so the program is not
+element is pending when the second completes abruptly, so the program is not
 `pendingSafe`. The call `g(s)`, from a frame holding `s : S0` at cell `0`,
 returns `7` and ends `s`'s identity nowhere: it is in no cell, not in the
 result and not in the trace. So `drop_exactly_once` and `rest_exactly_once`
@@ -529,7 +529,7 @@ def pending_program_stmt : Prop :=
 /-- **An expression that is not `pendingSafe`** (§7 sharpness, RUE-2485; RUE-2316's
 carve-out). In the checked program of `Nonvacuous.dtor`, `0; [s, return 7];
 1` is typed in the context `s : S0`, but the array literal's first element is
-pending when the second unwinds. From a frame holding `s` at cell `0`, the
+pending when the second completes abruptly. From a frame holding `s` at cell `0`, the
 `return` retires the frame and ends `s`'s identity nowhere. So
 `drop_exactly_once` and `rest_exactly_once` fail without `e.pendingSafe`
 (`Exact` fails); everything else they ask holds, a `Lead` (the discarded `0`)

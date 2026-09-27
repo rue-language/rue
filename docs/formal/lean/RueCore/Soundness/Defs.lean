@@ -203,7 +203,7 @@ structure ActivationTyping (D : Decls) (Γ : Ctx) (φ : Activation) (H : Store) 
 evaluation in frame `φ` from store `H`: the `break` fired in a frame that is
 `φ` with some bindings `locs` opened on top of it — the ones the loop body
 opened and had not closed, each minted above `H` — and at one of the
-delivered states `B` of §5.3's `Ω`, the frame it fired in agrees with the
+abrupt-completion contexts `B` of §5.3's `Ω`, the frame it fired in agrees with the
 store. Its record is `φ`'s with `locs` appended, which is what the loop reads
 to find the drops it owes, and nothing `φ` names outside the frame was
 touched. It is closed under entering a binder (`BreakOutputOk.under_binders`), so a
@@ -215,11 +215,11 @@ def BreakOutputOk (D : Decls) (B : List Ctx) (φ : Activation) (H H' : Store) (s
     (∀ ℓ ∈ locs, H.length ≤ ℓ) ∧ FrameProperty φ.env H H'
 
 /-- The promise `soundness` makes about `eval`'s result, given §5.3's `Ω` —
-its normal output context `o` and its deliveries `B`: a value of the
+its normal output context `o` and its abrupt-completion contexts `B`: a value of the
 expression's type with that state's invariant restored (preservation), or one
 of `AbortOk`'s outcomes — never `.refused` (progress). When `o` is `none`,
 §5.7's `⊥`, a value is **impossible**: an expression the rules type as
-divergent never completes normally. A `break` is one of the deliveries: the
+divergent never completes normally. A `break` is one of the abrupt-completion contexts: the
 state it fired at is one the rules recorded. Stating it as a predicate on the
 result, rather than as a disjunction of existentials, is what lets the operand
 combinators (`bind`) be discharged once and reused at every form

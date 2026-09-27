@@ -42,8 +42,8 @@ coverage search. **Arity**: each arm's payload locals are the variant's declared
 components, which `extendArm` supplies, so a wrong arity is not expressible rather
 than rejected. **The per-arm leak check**: `NoResidualLinear` over the entries
 the arm pops, which is `letIn`'s check read over a whole payload, for an arm
-that continues. **The folded join**: `Ctx.joinOpts`, the fold `Ctx.joinAll`
-over the continuing arms' output contexts in declaration order.
+that can complete normally. **The folded join**: `Ctx.joinOpts`, the fold `Ctx.joinAll`
+over the output contexts of the arms that can complete normally in declaration order.
 
 The one thing `check` must *choose* is the arms' shared type, since §5.5 states
 it as one `T` and lets (Sub-Never) coerce a diverging arm to it. `armsJoinTy`
@@ -59,7 +59,7 @@ twice, which costs time and nothing else.
 `-Bottom` rule — produces `⟨none, Δ⟩`, and the forms that consume a result
 stop exactly where the rules do: a diverging operand ends a strict context
 ((Strict-Bottom) §5.3), a diverging prefix ends a sequence or a `let`
-((Seq-Bottom), (Let-Bottom)), and a branch joins only the arms that continue
+((Seq-Bottom), (Let-Bottom)), and a branch joins only the arms that can complete normally
 (`Ctx.joinOpt`, `Ctx.joinOpts`, §5.5). A `never` result is one whose rule
 concludes at every type, and `check_sound` says so: `check P R Γ e = some (c,
 Ω)` gives a derivation at every type `c` admits (`TyOrNever.fits`).

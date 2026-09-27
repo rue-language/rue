@@ -55,9 +55,9 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop
 
 Read `Typed P R Γ e T Ω` as the judgment above, with §5.3's output result
 `Ω` for `Σ'`: `Ω` (`Out`) is a normal output context `some Σ'`, or `none` for
-§5.7's `⊥` when evaluation never continues past `e`, together with the edge
-deliveries `Δ` a later rule reads a state from. (The fragment records only
-`⟨break, Σ⟩` deliveries, each the whole context in force at its `break`,
+§5.7's `⊥` when evaluation never completes normally past `e`, together with the
+abrupt-completion contexts `Δ` a later rule reads a state from. (The fragment records only
+`⟨break, Σ⟩` abrupt-completion contexts, each the whole context in force at its `break`,
 which the enclosing loop reads; a `return` discharges its obligation where it
 fires.) `P` is the program: its
 functions are where (Call) §5.8 looks up a callee's signature, and its
@@ -90,7 +90,7 @@ Four things differ in shape and not in content:
   value does not exist (`3.4:1`), so nothing is ever typed at it dynamically.
   Instead `Typed.ret`, `Typed.panic`, `Typed.brk`, `Typed.loopDiv` and the
   `-Bottom` rules §5.7 types at `never` conclude at *any* type, and at `⊥`. The `⊥` itself is in the
-  judgment: a branch joins only the arms that continue, and nothing is typed
+  judgment: a branch joins only the arms that can complete normally, and nothing is typed
   past a diverging subexpression, as §5.3's (Strict-Bottom), (Seq-Bottom) and
   (Let-Bottom) say. `INDEX.md` records (Sub-Never) at the rules that fold it
   in.
@@ -133,7 +133,7 @@ Premise by premise:
    step an index step.
 
 The conclusion marks exactly `p`, and its `Ω` is `⟨some Σ', []⟩`: the use
-continues, and makes no delivery. The calculus's one remaining premise,
+completes normally, and never abruptly. The calculus's one remaining premise,
 `p not loaned`, concerns loans, which are outside the fragment; `INDEX.md`
 lists which rules and sections are in.
 
@@ -440,7 +440,7 @@ end, every bound past its length finds the end (`eval_small_to_big`).
 There is one place where the theorems say less than "never a violation"
 suggests, and it concerns `return` and `break`, not fuel. A by-value
 argument's value sits in no cell and no scope record until `freshParams` gives
-it one. If a *later* argument of the same call unwinds by `return` or `break`,
+it one. If a *later* argument of the same call completes abruptly by `return` or `break`,
 (D-Return) §6.9 or (D-Break) §6.10 discards the earlier value with the
 evaluation context. No drop runs and no monitor fires,
 so a linear value is consumed zero times without any violation. That is the
@@ -559,7 +559,7 @@ reuse it at every form. It says:
   expression the rules type as divergent never completes normally;
 - on `.returned`, the value has the enclosing function's return type `R`, and
   the cells outside the frame are untouched;
-- on `.broke`, the `break` fired at one of `Ω`'s delivered states, in the
+- on `.broke`, the `break` fired at one of `Ω`'s abrupt-completion contexts, in the
   frame with the loop body's still-open bindings on top (`BreakOutputOk`);
 - on `.panic` and `.outOfFuel`, nothing;
 - on `.refused`, **`False`**, which is the whole point.
@@ -689,7 +689,7 @@ drops the residue `S7 { ⊘, S1 { 2 }#1 }#2`, and the walk skips the `⊘`, so
 each of `#0`, `#1` and `#2`.
 
 **Exactly once** (`TraceExact.lean`). *Every owned value a well-typed
-evaluation holds is, when the evaluation ends normally or unwinds, still in a
+evaluation holds is, when the evaluation completes normally or abruptly, still in a
 cell, part of the result, or ended exactly once: on the normal path or on
 the unwind path, never both and never neither.*
 
@@ -835,7 +835,7 @@ should know where to find; example 11 works through them.
   at its head, and the same derivation types the loop there again
   (`LoopHead.reenter`, which rests on the join absorbing a second copy of the
   back-edge state), so `soundness`'s fuel induction takes every later turn.
-- **The exits.** A `break` delivers the whole context in force where it fires
+- **The exits.** A `break` completes abruptly with the whole context in force where it fires
   (`Typed.brk`). The loop splits it: the bindings the body opened are dropped
   at the exit (`NoResidualLinear` over `Ctx.loopLocals`, and §6.10's unwind at
   run time), and the rest is joined over every exit (`Ctx.outsideLoop`,
@@ -1895,7 +1895,7 @@ the `break`-less (Loop-Div) forms share the first two:
    (`LoopHead`), and `check` finds it by iterating from the entry state until
    it stops changing (`headIter`).
 2. **Type the body once, at `Σ_h`.** Its output result says where the turn
-   ends: a normal state is the back edge, and each `⟨break, Σ_x⟩` delivery is
+   ends: a normal state is the back edge, and each `⟨break, Σ_x⟩` abrupt-completion context is
    an exit (§5.3's `Ω`).
 3. **Read the exits.** At each exit the bindings the body opened are
    discharged, since their scopes end there (`Ctx.loopLocals`, checked by

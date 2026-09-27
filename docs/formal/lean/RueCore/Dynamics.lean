@@ -214,11 +214,11 @@ rather than `evalArgs`. Such a value lives in no cell and in no scope
 record — between the `use` that produced it and the `freshParams` that gives a
 by-value argument one (§6.9's (D-Call)), between an initializer and the
 `mkStruct`/`mkArray` that would have aggregated it, or between a right-hand
-side and the store that would have written it. If a later sibling unwinds
+side and the store that would have written it. If a later sibling completes abruptly
 by `return`, (D-Return) §6.9 discards the evaluation context — `g(v̄, …, E, …)`,
 the aggregate contexts `S { v̄, …, E, … }` and `[ v̄, …, E, … ]`, and
 `assign p[ v̄, E, … ] = v` with it — and runs `run-all-scope-drops` on the frame's records, which never named that
-value; if it unwinds by `break`, (D-Break) §6.10 discards the same context
+value; if it completes abruptly by `break`, (D-Break) §6.10 discards the same context
 (`E'`) and the loop's `unwind-drops` walks the same records. Its drop is therefore neither run nor monitored, whatever its
 qualifier: an affine sibling emits no `dropTemp`, and a linear one is
 destroyed without a `linearDiscard`. At the right-hand side only the affine
@@ -829,7 +829,7 @@ call — a `returned` result becomes the call's value, with the drops its unwind
 already ran. Everywhere else the `return` keeps travelling (`bind`).
 
 A `break` never crosses a call boundary: §5.7 makes one well-formed only
-inside a loop, and (Fn) §5.8 gives a function body no `⟨break, _⟩` delivery,
+inside a loop, and (Fn) §5.8 gives a function body no `⟨break, _⟩` abrupt-completion context,
 so a callee's `break` is caught by a loop of its own body — "a `break` in a
 callee would be ill-formed" (§6.10). One that reached the boundary anyway is
 a configuration §6 leaves undefined, `typeConfusion`; `soundness` proves no

@@ -38,7 +38,7 @@ One array of case objects. Fields:
   an operator whose operand is `never`, such as `(return 1) + 2`, where it
   names no type (`Checker.lean`, "what completeness still costs"). That shape
   would be a *false* bridge failure, so no seed case has it and `Gen.lean`
-  puts no `return`, `@panic` or `break` in an operand (RUE-2383). A diverging arm beside a continuing one
+  puts no `return`, `@panic` or `break` in an operand (RUE-2383). A diverging arm beside one that can complete normally
   is no longer such a shape, and five seed cases below exercise it.
 
   The `accept` half has one exclusion of its own: **syntax after a diverging

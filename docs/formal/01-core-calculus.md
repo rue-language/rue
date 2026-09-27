@@ -198,7 +198,7 @@ than an accessor's** (the one surviving case, just above), `Self`,
 - **`continue`** (`4.8:8/9/10/13`, `4.8:27`) → the enclosing loop's **back
   edge**, never-typed exactly like `break` (`4.8:10`; §5.7). It is not a
   distinct core form and needs no rule of its own (statically it makes the
-  `⟨continue, Σ⟩` delivery §5.7's loop rules read as a back edge), but the
+  `⟨continue, Σ⟩` abrupt-completion context §5.7's loop rules read as a back edge), but the
   elaboration is only half-stated: `break`'s unwind drops are pinned by §6.10's
   `unwind-drops(H, φ', φ)`, and **`continue`'s are not specified here** —
   which scopes the back edge discards, and in what order, is left open, so a
@@ -655,7 +655,7 @@ one.
 Its second clause covers the paths that never reach a normal state. A body
 ending in `return` has `Ωf = ⊥;Δf` (§5.7) with no normal state to discharge at: the function's scopes
 end at the `return` instead, so the obligation must hold in the state its
-`⟨ret, Σ_edge⟩` delivery records — the state in force *there* — the same "consumed on only some paths" discipline §5.5's join applies
+`⟨ret, Σ_edge⟩` abrupt-completion context records — the state in force *there* — the same "consumed on only some paths" discipline §5.5's join applies
 to branches (`3.8:50`). **Compiler agreement (RUE-1614, resolved).** The
 divergence recorded here — the obligation checked only at fall-through scope
 exits, so a linear binding consumed on the fall-through path but still live
@@ -828,7 +828,7 @@ always rejected.
 ### 5.3 Sequencing, discard, and the linear leak check
 
 Expression evaluation carries an output result `Ω`: an optional normal
-ownership state together with the set of **edge deliveries** made by the
+ownership state together with the set of **abrupt-completion contexts** made by the
 reachable diverging edges of the expression:
 
 ```
@@ -838,14 +838,14 @@ reachable diverging edges of the expression:
 ```
 
 `Σ;Δ` means that evaluation can reach the next expression normally with state
-`Σ` and may also leave through the edges in `Δ`; `⊥;Δ` means there is no
-normal outgoing path. A `⟨ret, Σ_e⟩` delivery is made by a `return` firing in
+`Σ` and may also leave through the edges in `Δ`; `⊥;Δ` means it cannot
+complete normally. A `⟨ret, Σ_e⟩` abrupt-completion context is made by a `return` firing in
 state `Σ_e`, `⟨break, Σ_e⟩` by a `break`, `⟨diverge, Σ_e⟩` by a loop entered in
 state `Σ_e` that never exits or by a call, in state `Σ_e`, to a callee declared
 `never`, and `⟨panic, Σ_e⟩` by the explicit process-aborting edge;
 `⟨continue, Σ_e⟩` is made by no rule of this section (§5.7 says what it is
-for). Write `Δ − κ` for `Δ` with every delivery of kind `κ` removed, and
-`Δ ∋ κ` for "some delivery in `Δ` has kind `κ`". The **provenance** `δ(Δ)` is
+for). Write `Δ − κ` for `Δ` with every abrupt-completion context of kind `κ` removed, and
+`Δ ∋ κ` for "some abrupt-completion context in `Δ` has kind `κ`". The **provenance** `δ(Δ)` is
 the projection that forgets the states and folds the exit kinds together:
 
 ```
@@ -862,7 +862,7 @@ and exit sets (§5.7) — read `Δ` itself.
 
 **Threading.** Every rule of §5 written with bare states — `⊣ Σ₁`, `⊣ Σ₂`, … —
 is read over `Ω`: a premise `⊣ Σᵢ` abbreviates `⊣ Σᵢ;Δᵢ` (the subexpression
-continues, and may also leave through the edges in `Δᵢ`), and the rule's
+can complete normally, and may also leave through the edges in `Δᵢ`), and the rule's
 conclusion `⊣ Σ'` abbreviates `⊣ Σ';(Δ₁ ∪ … ∪ Δₙ)` over the premises the rule
 derives. So (Seq), (Let), (Assign), (Call), the aggregate, projection, and
 operator rules of §5.8, and every strict context carry a `break` or `return`
@@ -872,9 +872,9 @@ position — a `break` in an `if` in a `let` initializer reaches the enclosing
 that say more about `Δ` than this union are written out over `Ω`: the
 `-Bottom` rules, (Seq) and (Let) (whose tail may itself diverge), (Sub-Never),
 the branch join (§5.5), the §5.7 forms, (Fn), (Call-Bottom), and (Panic).
-Where a rule adds a continuing prefix's deliveries to an outcome, it writes
+Where a rule adds the abrupt-completion contexts of a prefix that can complete normally to an outcome, it writes
 `Ω ⊕ Δ`: `(Σ';Δ') ⊕ Δ = Σ';(Δ' ∪ Δ)` and `(⊥;Δ') ⊕ Δ = ⊥;(Δ' ∪ Δ)`, so the
-outcome keeps its own continuing-or-divergent shape and gains the prefix's
+outcome keeps its own normal-or-divergent shape and gains the prefix's
 edges. A conclusion written `⊣ Σ'` with no premise deriving a `Δ` is
 `Σ';∅`. This is separate from the surface result type:
 a call with a diverging argument may retain its declared result type while
@@ -933,9 +933,9 @@ zero-length arrays, whose qualifier never reaches Linear.
 `let x = e1 ; e2` is like `Seq` but binds `x` (with `x` Owned in Σ for `e2`) and
 imposes no discard check on `e1`.
 
-(Seq) and (Let) require only the *prefix* to continue: a tail that diverges —
+(Seq) and (Let) require only the *prefix* to complete normally: a tail that diverges —
 `(unit ; loop { unit })`, `let x = 1 ; return x` — makes the whole sequence
-divergent, `Ω_2 = ⊥;Δ_2`, with the prefix's deliveries `Δ_1` added, so a
+divergent, `Ω_2 = ⊥;Δ_2`, with the prefix's abrupt-completion contexts `Δ_1` added, so a
 `break` in the prefix is still seen by the enclosing loop. `(Seq-Bottom)` and
 `(Let-Bottom)` are the cases where the *prefix* diverges: once `e1` diverges,
 there is no reachable tail and therefore no `Σ2` to propagate. The surface
@@ -1109,13 +1109,13 @@ A branch ending in any never-typed divergence has a divergent output context
 and is excluded from the join (`3.8:51`); its *type* is `never`, which
 (Sub-Never), §5.7, coerces to the sibling arm's type `T`, so a diverging arm
 still satisfies the (If)/(Match) same-type premise. Written over `Ω`, the
-branch rules' `join` is: the normal state is `join` of the continuing arms'
-normal states (`⊥` when no arm continues), and the delivery set is
-`Δ_0 ∪ ⋃ᵢ Δ_i` — the condition's (or scrutinee's) own deliveries `Δ_0`, from
-its judgment `⊣ Σ0;Δ_0`, together with every arm's `Δ_i`, continuing or not.
+branch rules' `join` is: the normal state is `join` of the normal states of the
+arms that can complete normally (`⊥` when no arm can), and the set of abrupt-completion contexts is
+`Δ_0 ∪ ⋃ᵢ Δ_i` — the condition's (or scrutinee's) own abrupt-completion contexts `Δ_0`, from
+its judgment `⊣ Σ0;Δ_0`, together with every arm's `Δ_i`, whether or not it can complete normally.
 A branch preserves every reachable edge of its condition and of every arm,
 which is what lets (Fn) and (Loop-Break) see an edge that fires inside one
-arm, or an early `return` inside a condition that itself still continues.
+arm, or an early `return` inside a condition that itself can still complete normally.
 
 `match` is the elimination form for enums, and its arms join exactly as `if`'s do.
 Typing the scrutinee is a value-context **use** of it (§4.2): a move-typed enum is
@@ -1140,7 +1140,7 @@ bindings and are governed by §5.6 at the arm's end: a `Linear`-carrying payload
 that an arm neither moves nor consumes is a leak error, and an `Affine` payload it
 drops (once) — this is the formal content of "binding a variant's payload moves it
 out; a moved-out payload runs its destructor exactly once when its binding leaves
-scope" (`6.3:17`). Diverging arms contribute their deliveries (`Δ_i`, with
+scope" (`6.3:17`). Diverging arms contribute their abrupt-completion contexts (`Δ_i`, with
 provenance `⊥_exit`, `⊥_diverge`, or `⊥_panic`) and are excluded from the
 state join, as with `if`; only the first two retain the conservative non-panic
 residual check.
@@ -1246,15 +1246,15 @@ An explicit statically-known `@panic` is a distinct aborting divergence, not a
 scope exit. It transfers to the process panic outcome without evaluating any
 scope-end action: the residual-linear premise is not applied on that edge and
 no destructor or synthesized drop glue runs. The state a `⟨ret, Σ⟩`, `⟨break, Σ⟩`, or
-`⟨continue, Σ⟩` delivery records — the ordinary unwinding exits (`return`,
+`⟨continue, Σ⟩` abrupt-completion context records — the ordinary unwinding exits (`return`,
 `break`, `continue`, and `?` failure) — retains the §5.6 obligation at that
 edge. `⊥_diverge` does not assert that a
 scope dynamically unwinds (an infinite loop does not run drop glue), but the
 current conservative ownership check retains the non-panic residual condition
 for such an edge; only `⊥_panic` is exempt. A branch may therefore exclude all
-divergent states from its ownership join while every non-panic delivery it
+divergent states from its ownership join while every non-panic abrupt-completion context it
 carries outward is still checked, on its own recorded state, where it is
-consumed ((Fn), (Loop-Break)); a `⟨panic, _⟩` delivery beside them exempts
+consumed ((Fn), (Loop-Break)); a `⟨panic, _⟩` abrupt-completion context beside them exempts
 nothing but itself.
 
 ### 5.7 Divergence and never-coercion
@@ -1281,7 +1281,7 @@ exactly like `return`, so it may inhabit any value context. `@assert` is **not**
 a never form — it returns on the success path and is typed `unit`.)
 
 For ownership provenance, every judgment's output result `Ω` (§5.3) carries
-the set `Δ` of **edge deliveries** made by the reachable diverging edges of the
+the set `Δ` of **abrupt-completion contexts** made by the reachable diverging edges of the
 expression, each with the ownership state in force where it fires: `⟨ret, Σ⟩`
 for a `return`, `⟨break, Σ⟩` for a `break`, `⟨diverge, Σ_h⟩` for a loop that never
 exits, at its loop-head state `Σ_h` (below), and `⟨panic, Σ⟩` for the explicit
@@ -1289,27 +1289,27 @@ process-aborting edge. The projection `δ(Δ)` names the kinds: a diverging edge
 that ends one or more language scopes is `⊥_exit`, divergence with no reachable
 scope exit (such as an infinite loop) is `⊥_diverge`, and the explicit abort is
 `⊥_panic`. All are type-level `never` and contribute no state to a branch join.
-A `ret`, `break`, or `continue` delivery (`⊥_exit` in `δ`) carries the §5.6
-scope-exit/drop obligation at its recorded state. A `diverge` delivery
+A `ret`, `break`, or `continue` abrupt-completion context (`⊥_exit` in `δ`) carries the §5.6
+scope-exit/drop obligation at its recorded state. A `diverge` abrupt-completion context
 (`⊥_diverge`) does not assert that any scope is unwound; its non-returning
 control flow is handled by the surrounding reachability rules, and the
 compiler's conservative non-panic residual check is retained at its recorded
 state (a linear by-value parameter live at `loop { }` is E0406, by (Fn)). Only
-a `panic` delivery (`⊥_panic`) is exempt from that static check. Throughout,
+a `panic` abrupt-completion context (`⊥_panic`) is exempt from that static check. Throughout,
 `outside_loop(Σ)` is `Σ` restricted to the bindings in scope at the enclosing
 loop's entry: a loop-local binding's scope ends within the iteration, so it
 never survives to be compared or joined.
 
-A delivery enters `Δ` only from a derivation that reaches its edge. That is
+An abrupt-completion context enters `Δ` only from a derivation that reaches its edge. That is
 not a side condition on the rules but a corollary of their shape: the bottom
 rules ((Strict-Bottom), (Seq-Bottom), (Let-Bottom), (Return-Bottom),
 (Call-Bottom), (Panic-Operand), (Loop-Div)) type nothing past a diverging
-subexpression, so an edge in unreachable syntax has no derivation and delivers
-nothing. A wrapper form adds its own delivery only when its operand or body has
-a continuing path; when that subexpression is already divergent, the wrapper
+subexpression, so an edge in unreachable syntax has no derivation and adds no
+abrupt-completion context. A wrapper form adds its own abrupt-completion context only when its operand or body has
+a path that completes normally; when that subexpression is already divergent, the wrapper
 propagates `Δ` unchanged. Sequenced siblings contribute only when the preceding
-sibling continues, while a branch preserves the union of all arms' deliveries
-even when the branch itself has a continuing arm (§5.5). This is the discipline
+sibling can complete normally, while a branch preserves the union of all arms' abrupt-completion contexts
+even when the branch itself has an arm that can complete normally (§5.5). This is the discipline
 the rules below use, and it prevents an unreachable later `@panic` from
 rewriting an earlier non-panic divergence.
 
@@ -1364,20 +1364,20 @@ the `break` expression. The output context of each form is a divergent state
 that §5.5's join excludes: a branch ending in one of these forms contributes no
 ownership state to the merge.
 
-`⟨continue, Σ⟩` is produced by no rule of this section. It is the delivery the
+`⟨continue, Σ⟩` is produced by no rule of this section. It is the abrupt-completion context the
 elaboration of surface `continue` (§2) makes at the state where the `continue`
 fires, listed so that the back-edge sets below are closed under that
 elaboration; a program written directly in the core reaches a loop's back edge
-only by ordinary body completion. A `break`-less loop whose body continues re-
-enters itself forever, so it makes a `⟨diverge, Σ_h⟩` delivery at its loop-head
+only by ordinary body completion. A `break`-less loop whose body can complete normally re-
+enters itself forever, so it makes a `⟨diverge, Σ_h⟩` abrupt-completion context at its loop-head
 state and, like the break-exited loop below, types its body at that state
 (`3.8:79`; a move of an outer binding in `loop { eat(v0); }` makes `v0`
 `MovedOut` at the head, so the body's `eat(v0)` has nothing to move: E0205
 "moved in a previous iteration", whether or not the loop can exit). A
-`break`-less loop whose body never completes and never continues does not
+`break`-less loop whose body never completes normally does not
 re-enter itself: it is exited only by its body's own `return`/`panic`
-deliveries, which pass through unchanged, and it delivers no `⟨diverge, _⟩` of
-its own.
+abrupt-completion contexts, which pass through unchanged, and it completes abruptly with no
+`⟨diverge, _⟩` of its own.
 
 A `loop` that *is* exited by a `break` — the complement of (Loop-Div)'s
 syntactic premise, and the target of every elaborated `while` — is `unit`-typed
@@ -1399,7 +1399,7 @@ which exit it. Both are read off the body's own judgment:
 ```
 
 `B` contains the body's normal completion state when it has one, plus every
-`continue` delivery; `X` contains every `break` delivery. Because a delivery
+`continue` abrupt-completion context; `X` contains every `break` abrupt-completion context. Because an abrupt-completion context
 exists only for a reached edge, both sets contain exactly the *reachable*
 back-edge and exit states, with no separate reachability filter: an
 unreachable targeting `break` can make the loop syntactically (Loop-Break) —
@@ -1410,14 +1410,14 @@ they are in `X` like any other. `for` has no core image in §2, so its
 iterator-exhaustion exit required by 3.8:80 remains a surface/compiler
 obligation and is not modeled by this rule. `X = ∅` means the loop has no
 reachable exit: it has no post-loop ownership state and diverges. If it also
-has a reachable back edge (`B ≠ ∅`) it re-enters itself forever and delivers
+has a reachable back edge (`B ≠ ∅`) it re-enters itself forever and completes abruptly with
 `⟨diverge, Σ_h⟩` at its loop-head state exactly as (Loop-Div-Backedge) does; if it
 has neither (every path through the body returns or panics, and its only
-`break` is unreachable) the body's own `ret`/`panic` deliveries are its only
-exits and it delivers no `diverge` of its own, exactly as (Loop-Div) does — the
-two forms differ only in `4.8:21`'s syntactic type, never in what they
-deliver. These
-deliveries record static ownership states only; they do not specify which
+`break` is unreachable) the body's own `ret`/`panic` abrupt-completion contexts are its only
+exits and it completes abruptly with no `diverge` of its own, exactly as
+(Loop-Div) does — the two forms differ only in `4.8:21`'s syntactic type, never
+in how they complete abruptly. These
+abrupt-completion contexts record static ownership states only; they do not specify which
 loop-local scopes a `continue` dynamically unwinds or the order of its drops,
 which remains outside this rule's scope.
 
@@ -1440,7 +1440,7 @@ which remains outside this rule's scope.
 - **The reachable exit states.** Each reachable targeting `break` contributes
   the ownership state in force where it fires *on any iteration* — read off the
   body typed at `Σ_h`, not at the entry state — restricted to paths rooted
-  outside the loop — read (Break) as *delivering* `unit` at that state to its
+  outside the loop — read (Break) as *completing abruptly with* `unit` at that state to its
   innermost enclosing loop while its own context sees `never ⊣ ⊥;{⟨break, Σ⟩}`.
   The loop's output context is §5.5's `join` over those states (3.8:80): a
   linear-carrying path must agree across every reachable exit (`3.8:50` —
@@ -1450,10 +1450,10 @@ which remains outside this rule's scope.
   exit are not part of `X`; their §5.6 obligations are discharged at the exit
   itself, where their scopes end (dynamically, §6.10's unwind). For arrays,
   `3.8:73` supplies the separate per-element path-specific dropping behavior.
-- **Nesting.** A loop removes its own `break` and `continue` deliveries from
+- **Nesting.** A loop removes its own `break` and `continue` abrupt-completion contexts from
   what it passes outward (`Δ_out`), so an inner loop's `break` is never an
   outer loop's exit and an inner loop's back edge is never the outer loop's;
-  `return` and `panic` deliveries pass through every enclosing loop to (Fn).
+  `return` and `panic` abrupt-completion contexts pass through every enclosing loop to (Fn).
   The core has no labelled `break`, so "innermost enclosing loop" is the only
   target there is. The compiler agrees: an outer binding moved inside an inner
   `loop { …; break; }` whose outer loop then reaches its own back edge is
@@ -1487,9 +1487,9 @@ which remains outside this rule's scope.
 > `break`-less loop is subject to back-edge invariance at all —
 > (Loop-Div-Backedge) had no such premise although the compiler enforces it
 > (E0205 "moved in a previous iteration" in `loop { eat(v0); }`). The
-> deliveries `Δ` are now a component of every judgment (§5.3): reachability is
+> abrupt-completion contexts `Δ` are now a component of every judgment (§5.3): reachability is
 > a corollary of the bottom rules typing nothing past a diverging
-> subexpression, every delivery carries its state, the diverge delivery of a
+> subexpression, every abrupt-completion context carries its state, the diverge abrupt-completion context of a
 > loop carries its loop-head state, and both `loop` forms type their body at
 > that state. Against the old text, three verdicts changed:
 >
@@ -1520,7 +1520,7 @@ which remains outside this rule's scope.
 >
 > The Lean mechanization (`docs/formal/lean`) states the `return`
 > obligation inside its `ret` rule, at the return's own context, rather than as
-> a delivery consumed by (Fn); the two are the same check, and the loop slice
+> an abrupt-completion context consumed by (Fn); the two are the same check, and the loop slice
 > (RUE-2326) may keep that architecture — check each edge where it fires — so
 > long as the sets `B` and `X` it computes are the ones these rules define.
 
@@ -1539,7 +1539,7 @@ cannot misclassify any value. It also creates no ownership obligation: `never` i
 zero-sized (`3.4:9`) and §3 sets `qual(never) = Copy`, so a `never`-typed
 expression has nothing to move, drop, or leak, and (Sub-Never) leaves its
 outcome `Ω` untouched — in particular a divergent `⊥;Δ` stays divergent, with
-its deliveries, when it is re-typed.
+its abrupt-completion contexts, when it is re-typed.
 
 (Sub-Never) is what makes §5.5's (If)/(Match) admit a diverging arm while their
 premises still demand a single common type `T`. In
@@ -1873,9 +1873,9 @@ consuming or partial move of the same root while preserving access-point
 evaluation patterns where a read finishes before the `inout` access begins.
 For a normally reached call whose declared return type is `never`, the callee's
 body is not re-analyzed at the call site: the call contributes conservative
-`⟨diverge, Σm⟩` delivery, at the state after its arguments. If an earlier
+`⟨diverge, Σm⟩` abrupt-completion context, at the state after its arguments. If an earlier
 argument diverges, the call is never reached and only that argument's
-deliveries are propagated; a callee that happens
+abrupt-completion contexts are propagated; a callee that happens
 to panic internally therefore does not turn an ordinary call into an exempt
 panic edge. The three views agree on this rule (the RUE-523 reconciliation recorded by
 RUE-526): the entry recheck here is prose `6.1:36`, which the compiler
@@ -1913,7 +1913,7 @@ value-context use.
 §5.5's join, exactly as `return`/`break` do, while its provenance means that
 §5.6 performs no scope-exit check or drop on that edge — verified against the
 compiler: an `if` arm that moves a value and then panics leaves that value
-usable after the `if`, and it drops exactly once on the continuing arm.
+usable after the `if`, and it drops exactly once on the arm that can complete normally.
 `(Dbg)`'s operand restriction is the compiler's
 (E0702); its dynamics append the operand's rendering to the observable output,
 which is why `@dbg` is part of the `Outcome` the differential harness compares
