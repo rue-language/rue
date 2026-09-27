@@ -229,7 +229,7 @@ Do not edit any file. Write your full report to <packet>/red-docs-report.md and 
     neighbour; `typeErrors_rejected`, six type errors.
   - **Review.** An adversarial review found no blocker. Its five should-fixes
     are resolved: the witness mapping is now kernel-checked (it had one wrong
-    entry, `stuck` for `run_small_to_big`), the open-frame witness, the float
+    entry, `refused_stuck` for `run_small_to_big`), the open-frame witness, the float
     wording, the error classes, and the statement-layer docs.
 - **Findings.** None against the claim: every hypothesis was satisfiable by
   the programs tried. One tooling finding: the core library's
@@ -360,7 +360,7 @@ What the mutants could not get past:
     invariant is that every cell the frame's environment names or its scope
     record owes a drop is live and owed once; over `Step`, for every
     suspended caller's frame too. The reason in `Spec.sharpnessReasons` now
-    cites the proof, and `Sharp.retired_cell` shows the refusal live from an
+    cites the proof, and `Sharp.tombstoned_cell` shows the refusal live from an
     open configuration, so `step_no_use_after_drop` needs its reachability
     hypothesis.)
   - **S2, `drop_order` needs `ProgramTyped` only through `DtorNotCopy`**
@@ -505,7 +505,7 @@ What the mutants could not get past:
   `float-wf-noncanonical` now falsifies one of them, and the hypothesis-side
   control RUE-2490's review asked for, `contentsowntyping-owned-false`
   (`ContentsOwnTyping.owned` demanding `False`), falsifies
-  `Nonvacuous.open_frame` ([lean/MUTATION.md](lean/MUTATION.md), rows 81, 82,
+  `Nonvacuous.open_activation` ([lean/MUTATION.md](lean/MUTATION.md), rows 81, 82,
   87, 91, 94–96). Each kill is a kernel-checked refutation of the statement
   in the mutated package, sorry-free and failing on the unmutated one, kept
   in the loop's `scratch/rue-2500/`. The tool cannot see these kills until
@@ -520,7 +520,7 @@ What the mutants could not get past:
     through the typing half.
   - **V2, one binding shape carries the hypothesis direction** (low,
     disclosure). Three statements assert `ActivationTyping` of a frame with an
-    owned binding — `Nonvacuous.open_frame`, `Sharp.pending_program` and
+    owned binding — `Nonvacuous.open_activation`, `Sharp.pending_program` and
     `Sharp.pending_expr` — all of the same one-`S0` shape, and all three are
     false under `contentsowntyping-owned-false`. `Nonvacuous.dtor` does not state
     `ActivationTyping` or `StoreCC` at all, although RUE-2490 expected it to

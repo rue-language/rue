@@ -80,7 +80,7 @@ theorem not_eventually {M : FloatSig} {P : Program} {n : Nat} {r : EvalRes} (h :
   exact hQ this
 
 /-- A refusal is none of `run_safe`'s outcomes, for any entry point (helper). -/
-theorem stuck_not_safe {M : FloatSig} {P : Program} {n : Nat} {w : Refusal}
+theorem refused_not_safe {M : FloatSig} {P : Program} {n : Nat} {w : Refusal}
     (h : run M P n = .refused w) (fd : FnDef) :
     ¬ (run M P n = .outOfFuel ∨ (∃ k tr, run M P n = .panic k tr) ∨
       ∃ H v tr, run M P n = .ok H v tr ∧ HasTy P.decls v fd.ret) := by
@@ -183,8 +183,8 @@ theorem loop_forever (M : FloatSig) : ∀ n, ∃ D, StepsN M loopProg n Config.i
   obtain ⟨D, hD⟩ := loopTurn_forever M n [] []
   exact (h3.trans hD).prefix (by omega)
 
-/-- `Spec.Sharp.stuck_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
-theorem stuck :
+/-- `Spec.Sharp.refused_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
+theorem refused :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
         (.seq (.drop (.var 0)) (.use (.proj (.var 0) 0))) →
@@ -222,7 +222,7 @@ theorem stuck :
   refine ⟨by subst hB hP; rfl, fun h => no_use_after_move Float.exactModel h 200 hrun, fun hw => ?_,
     ⟨_, by subst hB hP; rfl, rfl⟩, by subst hB hP; rfl, rfl, activationTyping_empty,
     fun _ _ h => by simp at h, ⟨c, Ω, hc, hf, ht, by rw [hr]; exact id⟩, rfl, hr,
-    by subst hB hP; rfl, by subst hB hP; rfl, fun _ => rfl, hrun, by subst hP; rfl, stuck_not_safe hrun ⟨[], .int .w64 .signed, .unitLit⟩⟩
+    by subst hB hP; rfl, by subst hB hP; rfl, fun _ => rfl, hrun, by subst hP; rfl, refused_not_safe hrun ⟨[], .int .w64 .signed, .unitLit⟩⟩
   have := soundness Float.exactModel hw 200 ht activationTyping_empty
   rw [exact_ops, hr] at this
   exact this
@@ -317,8 +317,8 @@ theorem typed :
     fun _ _ h => by simp at h, by subst he hB hP; rfl, hnt, by subst he hB hP; exact ⟨_, rfl, by rfl⟩,
     hr, by subst he hB hP; rfl, by subst he hB hP; rfl, rfl, fun T Ω => by rw [hr]; exact id⟩
 
-/-- `Spec.Sharp.frame_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
-theorem frame :
+/-- `Spec.Sharp.activation_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
+theorem activation :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
         (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
@@ -368,7 +368,7 @@ theorem no_entry :
   intro P hP
   have hr : run Float.exactOps P 200 = .refused .unbound := by subst hP; rfl
   refine ⟨⟨by subst hP; exact checkDecls_sound (by rfl), fun fd h => by subst hP; simp at h⟩,
-    by subst hP; rfl, hr, stuck_not_safe hr⟩
+    by subst hP; rfl, hr, refused_not_safe hr⟩
 
 /-- `Spec.Sharp.entry_param_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem entry_param :
@@ -399,7 +399,7 @@ theorem entry_param :
     subst hfd
     simp at hp
   exact ⟨hwf, hnpt,
-    ⟨{ params := [{ ty := .int .w64 .signed, mu := false }], ret := .int .w64 .signed, body := .use (.var 0) }, by subst hP; rfl, by simp, stuck_not_safe hr _⟩, hr⟩
+    ⟨{ params := [{ ty := .int .w64 .signed, mu := false }], ret := .int .w64 .signed, body := .use (.var 0) }, by subst hP; rfl, by simp, refused_not_safe hr _⟩, hr⟩
 
 /-- `Spec.Sharp.copy_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem copy :
@@ -1009,8 +1009,8 @@ theorem unreachable_stuck :
     · exact hnt h
     · exact hnoC _ s
 
-/-- `Spec.Sharp.retired_cell_stmt`, proved: a §7 hypothesis needed (RUE-2496). -/
-theorem retired_cell :
+/-- `Spec.Sharp.tombstoned_cell_stmt`, proved: a §7 hypothesis needed (RUE-2496). -/
+theorem tombstoned_cell :
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
         (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →

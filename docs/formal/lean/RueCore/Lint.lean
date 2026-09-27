@@ -957,8 +957,8 @@ def hypothesisCount (env : Environment) (thm : Name) : MetaM (Option Nat) := do
 
 /-- (helper) The theorem of `RueCore.Sharp.Glue` that negates a spine
 statement with one hypothesis dropped, from a counter-example (RUE-2495):
-`RueCore.Sharp.stuck`, `RueCore.soundness` and `1` give
-`RueCore.Sharp.Glue.stuck.soundness_1`, and `RueCore.Sharp.init_steps`,
+`RueCore.Sharp.refused`, `RueCore.soundness` and `1` give
+`RueCore.Sharp.Glue.refused.soundness_1`, and `RueCore.Sharp.init_steps`,
 `RueCore.Step.det` and `2` give `RueCore.Sharp.Glue.init_steps.Step.det_2`. -/
 def sharpGlueName (cx thm : Name) (i : Nat) : Name :=
   (`RueCore.Sharp.Glue ++ cx.replacePrefix `RueCore.Sharp .anonymous) ++

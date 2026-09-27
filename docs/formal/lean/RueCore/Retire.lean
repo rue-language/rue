@@ -17,7 +17,7 @@ float model, and `step_no_use_after_drop` over §6's relation from
 §7's invariant; these say its `ProgramTyped` hypothesis is redundant for runs
 from the start. They do not say the guard is dead code: from an *open*
 configuration — a frame naming a cell that is already `†` — the guard does
-fire (`Examples.lean`), and the Spec's counter-example `Sharp.retired_cell`
+fire (`Examples.lean`), and the Spec's counter-example `Sharp.tombstoned_cell`
 is one such configuration, not reached from `Config.init`.
 
 **The invariant** is structural, not a typing fact. `†` enters the store in

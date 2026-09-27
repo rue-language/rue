@@ -11,11 +11,11 @@ public import RueCore.Spine
 hypotheses it shows satisfiable. This module checks every pair in the kernel:
 for each pair, one theorem, `Glue.<witness>.<theorem>`, that takes the witness's facts
 (`RueCore.Spine.Nonvacuous.<w>`, with `M` from `Nonvacuous.exact_model` and
-the frame from `Nonvacuous.empty_frame`) and **applies** each listed
+the frame from `Nonvacuous.empty_activation`) and **applies** each listed
 `RueCore.Spine.<thm>` to them. The exact-model and empty-frame witnesses
 have no program of their own: every program witness takes its `M` from
 `Nonvacuous.exact_model`, and the evaluation statements their frame from
-`Nonvacuous.empty_frame`, so their pairs are applied there. An application elaborates only if the witness
+`Nonvacuous.empty_activation`, so their pairs are applied there. An application elaborates only if the witness
 supplies that theorem's literal hypotheses, so a pair listed without them does
 not compile; and the lint (`Lint.spineProblems`) fails on a listed pair
 whose theorem is missing here or does not use both the witness's and the
@@ -127,14 +127,14 @@ abbrev bodyDivergesDrop : Expr :=
 abbrev progDivergesDrop : Program :=
   { decls := decls, fns := [{ params := [], ret := .unit, body := bodyDivergesDrop }] }
 
-/-- The `stuck` witness's body (helper). -/
-abbrev bodyStuck : Expr :=
+/-- The `refused_stuck` witness's body (helper). -/
+abbrev bodyRefusedStuck : Expr :=
   .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
     (.seq (.drop (.var 0)) (.use (.proj (.var 0) 0)))
 
-/-- The `stuck` witness's program (helper). -/
-abbrev progStuck : Program :=
-  { decls := decls, fns := [{ params := [], ret := .int .w64 .signed, body := bodyStuck }] }
+/-- The `refused_stuck` witness's program (helper). -/
+abbrev progRefusedStuck : Program :=
+  { decls := decls, fns := [{ params := [], ret := .int .w64 .signed, body := bodyRefusedStuck }] }
 
 /-- The `whole_result` witness's program (helper). -/
 abbrev progWholeResult : Program :=
@@ -191,7 +191,7 @@ theorem dtor.soundness : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
+  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_activation _).1
   trivial
 
 /-- `dtor` applied to `run_safe` (helper). -/
@@ -539,7 +539,7 @@ theorem dtor.drop_exactly_once : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.drop_exactly_once M hPT hps (fuel := 200) hTy (Spine.Nonvacuous.empty_frame _).1 (Spine.Nonvacuous.empty_frame _).2 (by decide)
+  have := Spine.drop_exactly_once M hPT hps (fuel := 200) hTy (Spine.Nonvacuous.empty_activation _).1 (Spine.Nonvacuous.empty_activation _).2 (by decide)
   trivial
 
 /-- `dtor` applied to `rest_exactly_once` (helper). -/
@@ -551,7 +551,7 @@ theorem dtor.rest_exactly_once : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.rest_exactly_once M hPT hps hTy (Spine.Nonvacuous.empty_frame _).1 (Spine.Nonvacuous.empty_frame _).2 (by decide) hLead hEv
+  have := Spine.rest_exactly_once M hPT hps hTy (Spine.Nonvacuous.empty_activation _).1 (Spine.Nonvacuous.empty_activation _).2 (by decide) hLead hEv
   trivial
 
 /-- `dtor` applied to `Step.det` (helper). -/
@@ -610,7 +610,7 @@ theorem linear.soundness : True := by
   rw [← hM] at hrun hSteps
   let P := progLinear
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
+  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_activation _).1
   trivial
 
 /-- `linear` applied to `run_safe` (helper). -/
@@ -874,7 +874,7 @@ theorem loop.soundness : True := by
   rw [← hM] at hrun hSteps
   let P := progLoop
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
+  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_activation _).1
   trivial
 
 /-- `loop` applied to `run_safe` (helper). -/
@@ -1149,7 +1149,7 @@ theorem array.soundness : True := by
   rw [← hM] at hrun hSteps
   let P := progArray
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
+  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_activation _).1
   trivial
 
 /-- `array` applied to `run_safe` (helper). -/
@@ -1413,7 +1413,7 @@ theorem enum_match.soundness : True := by
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
+  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_activation _).1
   trivial
 
 /-- `enum_match` applied to `run_safe` (helper). -/
@@ -1677,7 +1677,7 @@ theorem early_return.soundness : True := by
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
+  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_activation _).1
   trivial
 
 /-- `early_return` applied to `run_safe` (helper). -/
@@ -1952,7 +1952,7 @@ theorem float.soundness : True := by
   rw [← hM] at hrun hSteps
   let P := progFloat
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
+  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_activation _).1
   trivial
 
 /-- `float` applied to `run_safe` (helper). -/
@@ -2216,7 +2216,7 @@ theorem panic.soundness : True := by
   rw [← hM] at hrun hSteps
   let P := progPanic
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
+  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_activation _).1
   trivial
 
 /-- `panic` applied to `run_safe` (helper). -/
@@ -2481,7 +2481,7 @@ theorem exact_model.soundness : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
+  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_activation _).1
   trivial
 
 /-- `exact_model` applied to `run_safe`, through the `dtor` program (helper). -/
@@ -2601,7 +2601,7 @@ theorem exact_model.drop_exactly_once : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.drop_exactly_once M hPT hps (fuel := 200) hTy (Spine.Nonvacuous.empty_frame _).1 (Spine.Nonvacuous.empty_frame _).2 (by decide)
+  have := Spine.drop_exactly_once M hPT hps (fuel := 200) hTy (Spine.Nonvacuous.empty_activation _).1 (Spine.Nonvacuous.empty_activation _).2 (by decide)
   trivial
 
 /-- `exact_model` applied to `rest_exactly_once`, through the `dtor` program (helper). -/
@@ -2613,7 +2613,7 @@ theorem exact_model.rest_exactly_once : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.rest_exactly_once M hPT hps hTy (Spine.Nonvacuous.empty_frame _).1 (Spine.Nonvacuous.empty_frame _).2 (by decide) hLead hEv
+  have := Spine.rest_exactly_once M hPT hps hTy (Spine.Nonvacuous.empty_activation _).1 (Spine.Nonvacuous.empty_activation _).2 (by decide) hLead hEv
   trivial
 
 /-- `exact_model` applied to `drop_order`, through the `dtor` program (helper). -/
@@ -2724,8 +2724,8 @@ theorem exact_model.eval_diverges_iff : True := by
   have := Spine.eval_diverges_iff M hPT
   trivial
 
-/-- `empty_frame` applied to `soundness`, through the `dtor` program (helper). -/
-theorem empty_frame.soundness : True := by
+/-- `empty_activation` applied to `soundness`, through the `dtor` program (helper). -/
+theorem empty_activation.soundness : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
     H, v, tr, hrun, hSteps, -⟩ :=
@@ -2733,11 +2733,11 @@ theorem empty_frame.soundness : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_frame _).1
+  have := Spine.soundness M hPT.wf 200 hTy (Spine.Nonvacuous.empty_activation _).1
   trivial
 
-/-- `empty_frame` applied to `drop_exactly_once`, through the `dtor` program (helper). -/
-theorem empty_frame.drop_exactly_once : True := by
+/-- `empty_activation` applied to `drop_exactly_once`, through the `dtor` program (helper). -/
+theorem empty_activation.drop_exactly_once : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
     H, v, tr, hrun, hSteps, -⟩ :=
@@ -2745,11 +2745,11 @@ theorem empty_frame.drop_exactly_once : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.drop_exactly_once M hPT hps (fuel := 200) hTy (Spine.Nonvacuous.empty_frame _).1 (Spine.Nonvacuous.empty_frame _).2 (by decide)
+  have := Spine.drop_exactly_once M hPT hps (fuel := 200) hTy (Spine.Nonvacuous.empty_activation _).1 (Spine.Nonvacuous.empty_activation _).2 (by decide)
   trivial
 
-/-- `empty_frame` applied to `rest_exactly_once`, through the `dtor` program (helper). -/
-theorem empty_frame.rest_exactly_once : True := by
+/-- `empty_activation` applied to `rest_exactly_once`, through the `dtor` program (helper). -/
+theorem empty_activation.rest_exactly_once : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
     H, v, tr, hrun, hSteps, -⟩ :=
@@ -2757,44 +2757,44 @@ theorem empty_frame.rest_exactly_once : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.rest_exactly_once M hPT hps hTy (Spine.Nonvacuous.empty_frame _).1 (Spine.Nonvacuous.empty_frame _).2 (by decide) hLead hEv
+  have := Spine.rest_exactly_once M hPT hps hTy (Spine.Nonvacuous.empty_activation _).1 (Spine.Nonvacuous.empty_activation _).2 (by decide) hLead hEv
   trivial
 
-/-- `open_frame` applied to `soundness` (helper). -/
-theorem open_frame.soundness : True := by
+/-- `open_activation` applied to `soundness` (helper). -/
+theorem open_activation.soundness : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hPT, hps, heps, hFM, hCC, ⟨c, Ω, hchk, hfit, hTy⟩, -, H₁, vs, tr, r, hLead, hEv⟩ :=
-    Spine.Nonvacuous.open_frame decls rfl (.seq (.drop (.var 0)) (.intLit .w64 .signed 1)) rfl
+    Spine.Nonvacuous.open_activation decls rfl (.seq (.drop (.var 0)) (.intLit .w64 .signed 1)) rfl
       { decls := decls, fns := [{ params := [], ret := .int .w64 .signed, body := .intLit .w64 .signed 0 }] } rfl
   rw [← hM] at hLead hEv
   have := Spine.soundness M hPT.wf 200 hTy hFM
   trivial
 
-/-- `open_frame` applied to `check_sound` (helper). -/
-theorem open_frame.check_sound : True := by
+/-- `open_activation` applied to `check_sound` (helper). -/
+theorem open_activation.check_sound : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hPT, hps, heps, hFM, hCC, ⟨c, Ω, hchk, hfit, hTy⟩, -, H₁, vs, tr, r, hLead, hEv⟩ :=
-    Spine.Nonvacuous.open_frame decls rfl (.seq (.drop (.var 0)) (.intLit .w64 .signed 1)) rfl
+    Spine.Nonvacuous.open_activation decls rfl (.seq (.drop (.var 0)) (.intLit .w64 .signed 1)) rfl
       { decls := decls, fns := [{ params := [], ret := .int .w64 .signed, body := .intLit .w64 .signed 0 }] } rfl
   rw [← hM] at hLead hEv
   have := Spine.check_sound _ hchk _ hfit
   trivial
 
-/-- `open_frame` applied to `drop_exactly_once` (helper). -/
-theorem open_frame.drop_exactly_once : True := by
+/-- `open_activation` applied to `drop_exactly_once` (helper). -/
+theorem open_activation.drop_exactly_once : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hPT, hps, heps, hFM, hCC, ⟨c, Ω, hchk, hfit, hTy⟩, -, H₁, vs, tr, r, hLead, hEv⟩ :=
-    Spine.Nonvacuous.open_frame decls rfl (.seq (.drop (.var 0)) (.intLit .w64 .signed 1)) rfl
+    Spine.Nonvacuous.open_activation decls rfl (.seq (.drop (.var 0)) (.intLit .w64 .signed 1)) rfl
       { decls := decls, fns := [{ params := [], ret := .int .w64 .signed, body := .intLit .w64 .signed 0 }] } rfl
   rw [← hM] at hLead hEv
   have := Spine.drop_exactly_once M hPT hps (fuel := 200) hTy hFM hCC heps
   trivial
 
-/-- `open_frame` applied to `rest_exactly_once` (helper). -/
-theorem open_frame.rest_exactly_once : True := by
+/-- `open_activation` applied to `rest_exactly_once` (helper). -/
+theorem open_activation.rest_exactly_once : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hPT, hps, heps, hFM, hCC, ⟨c, Ω, hchk, hfit, hTy⟩, -, H₁, vs, tr, r, hLead, hEv⟩ :=
-    Spine.Nonvacuous.open_frame decls rfl (.seq (.drop (.var 0)) (.intLit .w64 .signed 1)) rfl
+    Spine.Nonvacuous.open_activation decls rfl (.seq (.drop (.var 0)) (.intLit .w64 .signed 1)) rfl
       { decls := decls, fns := [{ params := [], ret := .int .w64 .signed, body := .intLit .w64 .signed 0 }] } rfl
   rw [← hM] at hLead hEv
   have := Spine.rest_exactly_once M hPT hps hTy hFM hCC heps hLead hEv
@@ -2856,52 +2856,52 @@ theorem diverges_drop.eval_diverges_iff : True := by
   have := (Spine.eval_diverges_iff M hPT).mp hoof
   trivial
 
-/-- `stuck` applied to `fuel_mono` (helper). -/
-theorem stuck.fuel_mono : True := by
-  obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.stuck bodyStuck rfl progStuck rfl
-  have h300 : run Float.exactOps progStuck 300 = .refused .useAfterMove := by rfl
-  have hne : run Float.exactOps progStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
+/-- `refused_stuck` applied to `fuel_mono` (helper). -/
+theorem refused_stuck.fuel_mono : True := by
+  obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.refused_stuck bodyRefusedStuck rfl progRefusedStuck rfl
+  have h300 : run Float.exactOps progRefusedStuck 300 = .refused .useAfterMove := by rfl
+  have hne : run Float.exactOps progRefusedStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
   have := Spine.fuel_mono Float.exactOps (Nat.le_succ 200) hne
   trivial
 
-/-- `stuck` applied to `no_masking` (helper). -/
-theorem stuck.no_masking : True := by
-  obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.stuck bodyStuck rfl progStuck rfl
-  have h300 : run Float.exactOps progStuck 300 = .refused .useAfterMove := by rfl
-  have hne : run Float.exactOps progStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
-  have := Spine.no_masking Float.exactOps hr (m := 300) (show run Float.exactOps progStuck 300 ≠ .outOfFuel by rw [h300]; intro h; cases h)
+/-- `refused_stuck` applied to `no_masking` (helper). -/
+theorem refused_stuck.no_masking : True := by
+  obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.refused_stuck bodyRefusedStuck rfl progRefusedStuck rfl
+  have h300 : run Float.exactOps progRefusedStuck 300 = .refused .useAfterMove := by rfl
+  have hne : run Float.exactOps progRefusedStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
+  have := Spine.no_masking Float.exactOps hr (m := 300) (show run Float.exactOps progRefusedStuck 300 ≠ .outOfFuel by rw [h300]; intro h; cases h)
   trivial
 
-/-- `stuck` applied to `Config.trichotomy` (helper). -/
-theorem stuck.Config.trichotomy : True := by
-  obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.stuck bodyStuck rfl progStuck rfl
-  have h300 : run Float.exactOps progStuck 300 = .refused .useAfterMove := by rfl
-  have hne : run Float.exactOps progStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
-  have := Spine.Config.trichotomy Float.exactOps progStuck C
+/-- `refused_stuck` applied to `Config.trichotomy` (helper). -/
+theorem refused_stuck.Config.trichotomy : True := by
+  obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.refused_stuck bodyRefusedStuck rfl progRefusedStuck rfl
+  have h300 : run Float.exactOps progRefusedStuck 300 = .refused .useAfterMove := by rfl
+  have hne : run Float.exactOps progRefusedStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
+  have := Spine.Config.trichotomy Float.exactOps progRefusedStuck C
   trivial
 
-/-- `stuck` applied to `Config.stuck_iff` (helper). -/
-theorem stuck.Config.stuck_iff : True := by
-  obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.stuck bodyStuck rfl progStuck rfl
-  have h300 : run Float.exactOps progStuck 300 = .refused .useAfterMove := by rfl
-  have hne : run Float.exactOps progStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
+/-- `refused_stuck` applied to `Config.stuck_iff` (helper). -/
+theorem refused_stuck.Config.stuck_iff : True := by
+  obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.refused_stuck bodyRefusedStuck rfl progRefusedStuck rfl
+  have h300 : run Float.exactOps progRefusedStuck 300 = .refused .useAfterMove := by rfl
+  have hne : run Float.exactOps progRefusedStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
   have := Spine.Config.stuck_iff.mpr ⟨_, hSt⟩
   trivial
 
-/-- `stuck` applied to `step_stuck_isStuckState` (helper). -/
-theorem stuck.step_stuck_isStuckState : True := by
-  obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.stuck bodyStuck rfl progStuck rfl
-  have h300 : run Float.exactOps progStuck 300 = .refused .useAfterMove := by rfl
-  have hne : run Float.exactOps progStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
+/-- `refused_stuck` applied to `step_stuck_isStuckState` (helper). -/
+theorem refused_stuck.step_stuck_isStuckState : True := by
+  obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.refused_stuck bodyRefusedStuck rfl progRefusedStuck rfl
+  have h300 : run Float.exactOps progRefusedStuck 300 = .refused .useAfterMove := by rfl
+  have hne : run Float.exactOps progRefusedStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
   have := Spine.step_stuck_isStuckState hSt
   trivial
 
-/-- `stuck` applied to `run_refused_of_step_stuck` (helper). -/
-theorem stuck.run_refused_of_step_stuck : True := by
-  obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.stuck bodyStuck rfl progStuck rfl
-  have h300 : run Float.exactOps progStuck 300 = .refused .useAfterMove := by rfl
-  have hne : run Float.exactOps progStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
-  have := Spine.run_refused_of_step_stuck Float.exactOps progStuck hS hSt
+/-- `refused_stuck` applied to `run_refused_of_step_stuck` (helper). -/
+theorem refused_stuck.run_refused_of_step_stuck : True := by
+  obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.refused_stuck bodyRefusedStuck rfl progRefusedStuck rfl
+  have h300 : run Float.exactOps progRefusedStuck 300 = .refused .useAfterMove := by rfl
+  have hne : run Float.exactOps progRefusedStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
+  have := Spine.run_refused_of_step_stuck Float.exactOps progRefusedStuck hS hSt
   trivial
 
 end RueCore.Nonvacuous.Glue
