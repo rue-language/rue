@@ -23,6 +23,12 @@ model the corpus and the printer run on.
   renormalization, underflow and overflow tests do the rest. `sqrt_core` is
   `@sqrt`'s: the root of a magnitude below `2^eTop` is below `2^(eTop/2)`,
   so it never overflows, and its exponent stays above the subnormal floor.
+* **`≺_w` is a total order** (`totalCmp_strictTotalOrder`, RUE-2510): the
+  relation `totalCmp a b = -1` is irreflexive, transitive and, on the
+  well-formed data of a width, trichotomous with datum equality. The
+  magnitude helpers (`magCmp_self`, `magCmp_antisymm`, `magCmp_trans`,
+  `magCmp_eq_zero_iff`) carry it; canonicity is used only by
+  `totalCmp_eq_zero_iff`.
 * **The behavioural laws** (`arith_nan`, `narrow_nan`, `div_by_zero`,
   `zero_div_zero`, `ofLit_zero`, `ofLit_one`) are case analysis on the
   definitions; `ofLit_one` evaluates `roundRat` at each width in the kernel
@@ -400,5 +406,237 @@ def exactModel : FloatLaws where
   ofLit_one := ofLit_one
 
 end Float
+
+/-! ## `≺_w` is a total order (RUE-2510)
+
+§7 says `≺_w`, the order `@total_cmp` computes, is a total order. `magCmp`
+compares two pairs by cross-scaling, and `cmpScaled_at` lets both sides be
+scaled to any common exponent, so three pairs can be compared at one
+exponent and transitivity is `Nat`'s. On canonical pairs (`Wf`'s first
+conjunct, whatever the width) equal scaled magnitudes force the same pair
+(`canon_scaled_eq`), which makes `totalCmp a b = 0` datum equality. -/
+
+/-- A `Nat` comparison is unchanged by a common positive factor (helper). -/
+theorem compare_mul_two_pow (x y d : Nat) :
+    compare (x * 2 ^ d) (y * 2 ^ d) = compare x y := by
+  have hp := Nat.two_pow_pos d
+  rcases Nat.lt_trichotomy x y with h | h | h
+  · rw [Nat.compare_eq_lt.mpr h, Nat.compare_eq_lt]
+    exact Nat.mul_lt_mul_of_pos_right h hp
+  · subst h; rw [Nat.compare_eq_eq.mpr rfl, Nat.compare_eq_eq.mpr rfl]
+  · rw [Nat.compare_eq_gt.mpr h, Nat.compare_eq_gt]
+    exact Nat.mul_lt_mul_of_pos_right h hp
+
+/-- `cmpScaled` may scale both sides to any common exponent `k` at or below
+the two, not only to their minimum (helper). -/
+theorem cmpScaled_at {a b : Nat} {i j k : Int} (hi : k ≤ i) (hj : k ≤ j) :
+    cmpScaled a i b j =
+      match compare (a * 2 ^ (i - k).toNat) (b * 2 ^ (j - k).toNat) with
+      | .lt => -1
+      | .eq => 0
+      | .gt => 1 := by
+  unfold cmpScaled
+  have e₁ : (i - k).toNat = (i - min i j).toNat + (min i j - k).toNat := by omega
+  have e₂ : (j - k).toNat = (j - min i j).toNat + (min i j - k).toNat := by omega
+  rw [e₁, e₂, Nat.pow_add, Nat.pow_add, ← Nat.mul_assoc, ← Nat.mul_assoc,
+    compare_mul_two_pow]
+  rfl
+
+/-- `magCmp` read as the order of the two magnitudes scaled to a common
+exponent `k` (helper). -/
+theorem magCmp_spec {s₁ s₂ : Nat} {e₁ e₂ k : Int} (h₁ : k ≤ e₁) (h₂ : k ≤ e₂) :
+    (magCmp s₁ e₁ s₂ e₂ = -1 ↔ s₁ * 2 ^ (e₁ - k).toNat < s₂ * 2 ^ (e₂ - k).toNat) ∧
+    (magCmp s₁ e₁ s₂ e₂ = 0 ↔ s₁ * 2 ^ (e₁ - k).toNat = s₂ * 2 ^ (e₂ - k).toNat) ∧
+    (magCmp s₁ e₁ s₂ e₂ = 1 ↔ s₂ * 2 ^ (e₂ - k).toNat < s₁ * 2 ^ (e₁ - k).toNat) := by
+  unfold magCmp
+  rw [cmpScaled_at h₁ h₂]
+  rcases Nat.lt_trichotomy (s₁ * 2 ^ (e₁ - k).toNat) (s₂ * 2 ^ (e₂ - k).toNat) with h | h | h
+  · rw [Nat.compare_eq_lt.mpr h]
+    exact ⟨iff_of_true rfl h, iff_of_false (by decide) (Nat.ne_of_lt h),
+      iff_of_false (by decide) (Nat.lt_asymm h)⟩
+  · rw [Nat.compare_eq_eq.mpr h]
+    exact ⟨iff_of_false (by decide) (fun h' => Nat.ne_of_lt h' h), iff_of_true rfl h,
+      iff_of_false (by decide) (fun h' => Nat.ne_of_lt h' h.symm)⟩
+  · rw [Nat.compare_eq_gt.mpr h]
+    exact ⟨iff_of_false (by decide) (Nat.lt_asymm h), iff_of_false (by decide) (Nat.ne_of_gt h),
+      iff_of_true rfl h⟩
+
+/-- `magCmp` is `0` on equal pairs (helper). -/
+theorem magCmp_self (s : Nat) (e : Int) : magCmp s e s e = 0 :=
+  (magCmp_spec (Int.le_refl e) (Int.le_refl e)).2.1.mpr rfl
+
+/-- Swapping `magCmp`'s operands negates it (helper). -/
+theorem magCmp_antisymm (s₁ : Nat) (e₁ : Int) (s₂ : Nat) (e₂ : Int) :
+    magCmp s₂ e₂ s₁ e₁ = -(magCmp s₁ e₁ s₂ e₂) := by
+  have h₁ := magCmp_spec (s₁ := s₁) (s₂ := s₂) (Int.min_le_left e₁ e₂) (Int.min_le_right e₁ e₂)
+  have h₂ := magCmp_spec (s₁ := s₂) (s₂ := s₁) (Int.min_le_right e₁ e₂) (Int.min_le_left e₁ e₂)
+  rcases Nat.lt_trichotomy (s₁ * 2 ^ (e₁ - min e₁ e₂).toNat) (s₂ * 2 ^ (e₂ - min e₁ e₂).toNat)
+    with h | h | h
+  · rw [h₁.1.mpr h, h₂.2.2.mpr h]; rfl
+  · rw [h₁.2.1.mpr h, h₂.2.1.mpr h.symm]; rfl
+  · rw [h₁.2.2.mpr h, h₂.1.mpr h]
+
+/-- `magCmp`'s `-1` is transitive (helper). -/
+theorem magCmp_trans {s₁ s₂ s₃ : Nat} {e₁ e₂ e₃ : Int}
+    (h₁₂ : magCmp s₁ e₁ s₂ e₂ = -1) (h₂₃ : magCmp s₂ e₂ s₃ e₃ = -1) :
+    magCmp s₁ e₁ s₃ e₃ = -1 := by
+  have k₁ : min (min e₁ e₂) e₃ ≤ e₁ := by omega
+  have k₂ : min (min e₁ e₂) e₃ ≤ e₂ := by omega
+  have k₃ : min (min e₁ e₂) e₃ ≤ e₃ := by omega
+  have a := (magCmp_spec (s₁ := s₁) (s₂ := s₂) k₁ k₂).1.mp h₁₂
+  have b := (magCmp_spec (s₁ := s₂) (s₂ := s₃) k₂ k₃).1.mp h₂₃
+  exact (magCmp_spec k₁ k₃).1.mpr (Nat.lt_trans a b)
+
+/-- A canonical odd significand times a positive power of two is even, so
+it is no other canonical significand (helper). -/
+theorem odd_ne_mul_two_pow {s t : Nat} {d : Nat} (hs : s % 2 = 1) (hd : 0 < d) :
+    s ≠ t * 2 ^ d := by
+  obtain ⟨d, rfl⟩ : ∃ d', d = d' + 1 := ⟨d - 1, by omega⟩
+  rw [Nat.pow_succ, ← Nat.mul_assoc]
+  omega
+
+/-- Two canonical pairs naming the same magnitude, scaled to the smaller
+exponent `e₁`, are the same pair (helper). -/
+theorem canon_scaled_eq {s₁ s₂ : Nat} {e₁ e₂ : Int}
+    (h₁ : (s₁ = 0 ∧ e₁ = 0) ∨ s₁ % 2 = 1) (h₂ : (s₂ = 0 ∧ e₂ = 0) ∨ s₂ % 2 = 1)
+    (hle : e₁ ≤ e₂) (h : s₁ = s₂ * 2 ^ (e₂ - e₁).toNat) : s₁ = s₂ ∧ e₁ = e₂ := by
+  by_cases hd : 0 < (e₂ - e₁).toNat
+  · rcases h₁ with ⟨rfl, rfl⟩ | h₁
+    · have hs₂ : s₂ = 0 := by
+        rcases Nat.mul_eq_zero.mp h.symm with h' | h'
+        · exact h'
+        · exact absurd h' two_pow_ne_zero
+      subst hs₂
+      rcases h₂ with ⟨_, rfl⟩ | h₂
+      · exact ⟨rfl, rfl⟩
+      · simp at h₂
+    · exact absurd h (odd_ne_mul_two_pow h₁ hd)
+  · have he : e₁ = e₂ := by omega
+    subst he
+    rw [Int.sub_self, Int.toNat_zero, Nat.pow_zero, Nat.mul_one] at h
+    exact ⟨h, rfl⟩
+
+/-- On canonical pairs `magCmp` is `0` exactly on the same pair: a non-zero
+magnitude has one odd significand, and zero has the one pair `(0, 0)`
+(helper). -/
+theorem magCmp_eq_zero_iff {s₁ s₂ : Nat} {e₁ e₂ : Int}
+    (h₁ : (s₁ = 0 ∧ e₁ = 0) ∨ s₁ % 2 = 1) (h₂ : (s₂ = 0 ∧ e₂ = 0) ∨ s₂ % 2 = 1) :
+    magCmp s₁ e₁ s₂ e₂ = 0 ↔ s₁ = s₂ ∧ e₁ = e₂ := by
+  constructor
+  · intro h
+    rcases Int.le_total e₁ e₂ with hle | hle
+    · have hx := (magCmp_spec (s₁ := s₁) (s₂ := s₂) (Int.le_refl e₁) hle).2.1.mp h
+      rw [Int.sub_self, Int.toNat_zero, Nat.pow_zero, Nat.mul_one] at hx
+      exact canon_scaled_eq h₁ h₂ hle hx
+    · have hx := (magCmp_spec (s₁ := s₁) (s₂ := s₂) hle (Int.le_refl e₂)).2.1.mp h
+      rw [Int.sub_self, Int.toNat_zero, Nat.pow_zero, Nat.mul_one] at hx
+      have := canon_scaled_eq h₂ h₁ hle hx.symm
+      exact ⟨this.1.symm, this.2.symm⟩
+  · rintro ⟨rfl, rfl⟩; exact magCmp_self s₁ e₁
+
+/-- A lower rank is a `-1` (helper). -/
+theorem totalCmp_of_rank_lt {a b : FloatDatum} (h : a.totalRank < b.totalRank) :
+    a.totalCmp b = -1 := by
+  unfold FloatDatum.totalCmp; rw [Int.compare_eq_lt.mpr h]
+
+/-- A higher rank is a `1` (helper). -/
+theorem totalCmp_of_rank_gt {a b : FloatDatum} (h : b.totalRank < a.totalRank) :
+    a.totalCmp b = 1 := by
+  unfold FloatDatum.totalCmp; rw [Int.compare_eq_gt.mpr h]
+
+/-- Two positive finite data compare by magnitude (helper). -/
+theorem totalCmp_pos (s₁ : Nat) (e₁ : Int) (s₂ : Nat) (e₂ : Int) :
+    (FloatDatum.num false s₁ e₁).totalCmp (.num false s₂ e₂) = magCmp s₁ e₁ s₂ e₂ := rfl
+
+/-- Two negative finite data compare by magnitude reversed (helper). -/
+theorem totalCmp_neg (s₁ : Nat) (e₁ : Int) (s₂ : Nat) (e₂ : Int) :
+    (FloatDatum.num true s₁ e₁).totalCmp (.num true s₂ e₂) = -(magCmp s₁ e₁ s₂ e₂) := rfl
+
+/-- Data of one rank are the same special, or two finite data of one sign (helper). -/
+theorem totalRank_eq {a b : FloatDatum} (h : a.totalRank = b.totalRank) :
+    a = b ∨ ∃ n s₁ e₁ s₂ e₂, a = .num n s₁ e₁ ∧ b = .num n s₂ e₂ := by
+  rcases a with ⟨_ | _⟩ | ⟨_ | _⟩ | ⟨_ | _, s₁, e₁⟩ <;>
+  rcases b with ⟨_ | _⟩ | ⟨_ | _⟩ | ⟨_ | _, s₂, e₂⟩ <;>
+    first
+    | exact Or.inl rfl
+    | exact Or.inr ⟨_, _, _, _, _, rfl, rfl⟩
+    | (dsimp only [FloatDatum.totalRank] at h; exact absurd h (by decide))
+
+/-- `≺_w` is reflexive at `0`: every datum, a NaN included, is the same datum as itself. -/
+theorem totalCmp_self (a : FloatDatum) : a.totalCmp a = 0 := by
+  rcases a with ⟨_ | _⟩ | ⟨_ | _⟩ | ⟨_ | _, s, e⟩
+  all_goals first | rfl | (rw [totalCmp_pos, magCmp_self]) | (rw [totalCmp_neg, magCmp_self]; rfl)
+
+/-- Swapping `@total_cmp`'s operands negates it. -/
+theorem totalCmp_antisymm (a b : FloatDatum) : b.totalCmp a = -(a.totalCmp b) := by
+  rcases Int.lt_trichotomy a.totalRank b.totalRank with h | h | h
+  · rw [totalCmp_of_rank_lt h, totalCmp_of_rank_gt h]; rfl
+  · rcases totalRank_eq h with rfl | ⟨n, s₁, e₁, s₂, e₂, rfl, rfl⟩
+    · rw [totalCmp_self]; rfl
+    · cases n
+      · rw [totalCmp_pos, totalCmp_pos, magCmp_antisymm]
+      · rw [totalCmp_neg, totalCmp_neg, magCmp_antisymm]
+  · rw [totalCmp_of_rank_gt h, totalCmp_of_rank_lt h]
+
+/-- A `-1` never goes down in rank (helper). -/
+theorem rank_le_of_totalCmp {a b : FloatDatum} (h : a.totalCmp b = -1) :
+    a.totalRank ≤ b.totalRank :=
+  Int.not_lt.mp fun hlt => absurd (h.symm.trans (totalCmp_of_rank_gt hlt)) (by decide)
+
+/-- Well-formed data sit at canonical significand/exponent pairs (helper). -/
+theorem canon_of_wf {w : FloatWidth} {n : Bool} {s : Nat} {e : Int}
+    (h : (FloatDatum.num n s e).Wf w) : (s = 0 ∧ e = 0) ∨ s % 2 = 1 :=
+  h.imp id (·.1)
+
+/-- **`@total_cmp` is `0` exactly on the same datum**, for well-formed data: §6.4's "`k = 0` holds exactly when the two operands are the same datum". This is where canonicity is used — `±0` are distinct data of distinct rank, the two NaNs likewise, and a finite datum has one significand/exponent pair. -/
+theorem totalCmp_eq_zero_iff {w : FloatWidth} {a b : FloatDatum} (ha : a.Wf w) (hb : b.Wf w) :
+    a.totalCmp b = 0 ↔ a = b := by
+  refine ⟨fun h => ?_, fun h => h ▸ totalCmp_self a⟩
+  rcases Int.lt_trichotomy a.totalRank b.totalRank with hr | hr | hr
+  · exact absurd (h.symm.trans (totalCmp_of_rank_lt hr)) (by decide)
+  · rcases totalRank_eq hr with rfl | ⟨n, s₁, e₁, s₂, e₂, rfl, rfl⟩
+    · rfl
+    · have hm : magCmp s₁ e₁ s₂ e₂ = 0 := by
+        cases n
+        · exact (totalCmp_pos _ _ _ _).symm.trans h
+        · have := (totalCmp_neg s₁ e₁ s₂ e₂).symm.trans h; omega
+      obtain ⟨rfl, rfl⟩ := (magCmp_eq_zero_iff (canon_of_wf ha) (canon_of_wf hb)).mp hm
+      rfl
+  · exact absurd (h.symm.trans (totalCmp_of_rank_gt hr)) (by decide)
+
+/-- **`≺_w` is transitive**, on every datum (no well-formedness needed). -/
+theorem totalCmp_trans {a b c : FloatDatum} (h₁ : a.totalCmp b = -1) (h₂ : b.totalCmp c = -1) :
+    a.totalCmp c = -1 := by
+  have r₁ := rank_le_of_totalCmp h₁
+  have r₂ := rank_le_of_totalCmp h₂
+  rcases Int.lt_or_le a.totalRank c.totalRank with hr | hr
+  · exact totalCmp_of_rank_lt hr
+  · have hab : a.totalRank = b.totalRank := by omega
+    have hbc : b.totalRank = c.totalRank := by omega
+    rcases totalRank_eq hab with rfl | ⟨n, s₁, e₁, s₂, e₂, rfl, rfl⟩
+    · exact absurd ((totalCmp_self a).symm.trans h₁) (by decide)
+    rcases totalRank_eq hbc with h | ⟨n', s₂', e₂', s₃, e₃, hb, rfl⟩
+    · subst h; exact absurd ((totalCmp_self _).symm.trans h₂) (by decide)
+    cases hb
+    cases n
+    · rw [totalCmp_pos] at h₁ h₂ ⊢; exact magCmp_trans h₁ h₂
+    · rw [totalCmp_neg] at h₁ h₂ ⊢
+      have m₁ : magCmp s₂ e₂ s₁ e₁ = -1 := by rw [magCmp_antisymm]; omega
+      have m₂ : magCmp s₃ e₃ s₂ e₂ = -1 := by rw [magCmp_antisymm]; omega
+      have m := magCmp_trans m₂ m₁
+      rw [magCmp_antisymm] at m; omega
+
+/-- **`≺_w` is a strict total order on `𝔽_w`** (§7): the relation `a ≺ b :≡ totalCmp a b = -1` is irreflexive and transitive on every datum, and trichotomous with datum equality on the well-formed data of a width. With `totalCmp_trichotomy` (the result is one of `-1`, `0`, `1`) and `totalCmp_antisymm` (`1` is `≺` read backwards), `@total_cmp` realizes the order. -/
+theorem totalCmp_strictTotalOrder (w : FloatWidth) :
+    (∀ a : FloatDatum, ¬a.totalCmp a = -1) ∧
+    (∀ a b c : FloatDatum, a.totalCmp b = -1 → b.totalCmp c = -1 → a.totalCmp c = -1) ∧
+    (∀ a b : FloatDatum, a.Wf w → b.Wf w →
+      a.totalCmp b = -1 ∨ a = b ∨ b.totalCmp a = -1) := by
+  refine ⟨fun a h => absurd ((totalCmp_self a).symm.trans h) (by decide),
+    fun _ _ _ => totalCmp_trans, fun a b ha hb => ?_⟩
+  rcases totalCmp_trichotomy a b with h | h | h
+  · exact Or.inl h
+  · exact Or.inr (Or.inl ((totalCmp_eq_zero_iff ha hb).mp h))
+  · exact Or.inr (Or.inr (by rw [totalCmp_antisymm, h]))
 
 end RueCore
