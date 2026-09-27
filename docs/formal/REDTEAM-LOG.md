@@ -627,7 +627,7 @@ What the mutants could not get past:
 | S3 | statements | low | fixed here | `freed_once` and `dtor_once` read as if a property of the type system. A refused or fuel-exhausted run has an empty trace, so on unchecked programs the bound rests on `eval`'s refusals. Both readings now say so. |
 | S4 | definitions | low | fixed here (disclosed) | `WfProgram` admits any entry-point return type, while 01 §2 fixes `i32 \| unit`. A checked `fn main() -> Tok { Tok{} }` returns a live linear value, and `whole_program_exactly_once` counts it as ended. It is disclosed in `run_safe` and `whole_program_exactly_once` rather than restricted, because restricting it would empty `Nonvacuous.whole_result`. |
 | S5 | definitions | low | fixed here | `@panic`'s message is not modelled, but a comment in `Dynamics.lean` said it "is emitted". The comment and INDEX now say the bridge compares the panic category only. |
-| S6 | calculus | low | resolved (RUE-2510) | 03's float row does not account for §7's "`≺_w` is a total order". `totalCmp_trichotomy` proves only the −1/0/1 range. RUE-2510 proves the order (`totalCmp_strictTotalOrder`), and 03's row now cites it. |
+| S6 | calculus | low | RUE-2507 (Steve), then RUE-2510 (fixed) | 03's float row does not account for §7's "`≺_w` is a total order". `totalCmp_trichotomy` proves only the −1/0/1 range. RUE-2510 proves the order (`totalCmp_strictTotalOrder`), and 03's row now cites it. |
 | S7 | calculus | low | RUE-2508 (Steve) | 01 §§5–7 have no paragraph ids, so a statement's "§7 paragraph" link can't be checked. |
 
 ### Dropped in adjudication
