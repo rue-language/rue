@@ -588,7 +588,7 @@ The named corollaries (`no_use_after_move`, `no_linear_leak`, …) each restate
 
 ```lean
 theorem no_double_free (M : FloatLaws) (h : ProgramTyped P) (fuel : Nat) :
-    (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
+    (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
       (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
       (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1)
 ```
@@ -676,7 +676,7 @@ ended twice and no value's destructor runs twice.*
 
 ```lean
 theorem no_double_free (M : FloatLaws) (h : ProgramTyped P) (fuel : Nat) :
-    (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
+    (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
       (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
       (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1)
 ```
@@ -698,7 +698,7 @@ theorem drop_exactly_once (M : FloatLaws) (h : ProgramTyped P)
     (hp : P.pendingSafe = true) (ht : Typed P R Γ e T Ω)
     (hfm : ActivationTyping P.decls Γ φ H) (hcc : StoreCC P.decls H)
     (he : e.pendingSafe = true) :
-    (∀ w, eval M.toFloatSig fuel P H φ e ≠ .stuck w) ∧
+    (∀ w, eval M.toFloatSig fuel P H φ e ≠ .refused w) ∧
       Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
       Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```

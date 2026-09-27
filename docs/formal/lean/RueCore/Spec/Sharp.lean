@@ -126,9 +126,9 @@ reaches a configuration stuck with `useAfterMove` from `Config.init`, and
 `run` refuses at fuel `200` and exhausts fuel `0`. So once `ProgramTyped` is
 dropped, `step_progress`, `step_safeAt` and `step_type_safety` fail
 (no horizon passes the stuck configuration, which is not a value or a
-panic); once `step_never_stuck_of_run`'s hypothesis that `run` is never stuck
+panic); once `step_never_stuck_of_run`'s hypothesis that `run` is never refused
 is dropped, its conclusion fails; and once `run_refused_of_step_stuck`'s bound
-`n < fuel` is dropped, no `n` makes `run` stuck at every fuel. -/
+`n < fuel` is dropped, no `n` makes `run` refuse at every fuel. -/
 def stuck_step_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -746,7 +746,7 @@ def not_a_step_stmt : Prop :=
 checked program of `Nonvacuous.dtor`, `Config.init` steps to the argument
 list of `main()`, and not to itself; it is not terminal and not stuck (with
 `linearLeak`, a monitor's tag, not one of §6's stuck states); and `run` is
-never stuck. So `Step.det` fails without either of its step hypotheses,
+never refused. So `Step.det` fails without either of its step hypotheses,
 `Step.terminal` without `C.Terminal`, `step_stuck_isStuckState` without
 `C.Stuck`, and `run_refused_of_step_stuck` without `C.Stuck`. -/
 def init_steps_stmt : Prop :=
@@ -767,7 +767,7 @@ def init_steps_stmt : Prop :=
       ¬ ∃ n, ∀ fuel, n < fuel → ∃ w', run Float.exactOps P fuel = .refused w'
 
 /-- **A stuck configuration that is not reached** (§7 sharpness, RUE-2485). For the
-checked program of `Nonvacuous.dtor`, whose `run` is never stuck, a
+checked program of `Nonvacuous.dtor`, whose `run` is never refused, a
 configuration reading an unbound name is stuck and is not reached from
 `Config.init`. So `step_progress`, `step_safeAt`,
 `step_never_stuck_of_run` and `run_refused_of_step_stuck` fail without the

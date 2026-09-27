@@ -645,7 +645,7 @@ mechanized*. The short version:
   trace lists every drop in order, and every aggregate value carries an
   identity minted at its introduction, so the trace says *which* value each
   drop was of (`no_double_free`, `Trace.lean`).
-- **The theorem says stuck is unreachable.** `soundness` (`Soundness.lean`)
+- **The theorem says a refusal is unreachable.** `soundness` (`Soundness.lean`)
   states: if `Typed P R Γ e T Ω` holds and the activation record agrees with `Γ`, then at
   every fuel `eval` never returns `.refused`. The corollaries name one §7 bullet
   each, over a whole program (`run`) — with one carve-out, named in
@@ -1242,7 +1242,7 @@ in the statement, with the non-triviality in the statement too.
   on `Float.exactOps` returns (or panics) and is reached by `Step` from
   `Config.init`, with, say, two identities freed and two destructors run, or
   the value `7.5`. The destructor program also carries `DtorNotCopy`, a step
-  from `Config.init`, never-stuck at every fuel, and a `Lead` minting an owned
+  from `Config.init`, never refused at every fuel, and a `Lead` minting an owned
   identity, the hypotheses the trace statements add.
 * **A program that diverges** (`loop { () }`, `outOfFuel` at every fuel, both
   sides of `eval_diverges_iff`), **one that diverges dropping a value every

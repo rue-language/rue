@@ -19,7 +19,7 @@ too, with the same store, value and trace (`eval_big_to_small`). Part 3 is
 the small-to-big direction, modulo fuel: whatever terminal configuration §6's `→*` reaches,
 every fuel past the length of the run makes `eval` answer it
 (`eval_small_to_big`); `eval` exhausts every fuel exactly when §6 diverges
-(`eval_diverges_iff`); and "`eval` is never stuck" is "§6 is never stuck", in
+(`eval_diverges_iff`); and "`eval` is never refused" is "§6 is never stuck", in
 §7's phrasing (`never_refused_iff`). Part 4 restates §7's first bullet over
 `Step` itself: progress and preservation (`step_progress`,
 `step_safeAt`, `step_type_safety`).
@@ -1051,7 +1051,7 @@ theorem run_sim (M : FloatSig) (P : Program) (fuel : Nat) :
 /-- **`eval` is sound with respect to §6's reduction** (RUE-2289 part 2;
 ADR-0097 decision 3: "a theorem about `eval` is a theorem about §6 only once
 the two are proved to agree"). For a program `check` accepts
-(`ProgramTyped`, RUE-2314's domain), `run` is never stuck (`no_refusal`),
+(`ProgramTyped`, RUE-2314's domain), `run` is never refused (`no_refusal`),
 so it answers a value, a panic or `outOfFuel`; a value is reached by §6's
 `→*` from the initial configuration as a terminal configuration with the same
 store and trace, and a panic as `↯κ` after the same trace (§6.2, §6.12).
@@ -1804,7 +1804,7 @@ theorem eval_small_to_big (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     exact ⟨n, fun fuel hlt =>
       (hn fuel hlt).resolve_right (fun ⟨w, hw⟩ => no_refusal M h fuel w hw)⟩
 
-/-! ## "Never stuck", both ways -/
+/-! ## "Never refused" iff "never stuck" -/
 
 /-- **A stuck `Step` run is a refusal of `run`, on every program** (§6, §7):
 if `→*` takes the initial configuration to a stuck one, then at every fuel past
@@ -1820,7 +1820,7 @@ theorem run_refused_of_step_stuck (M : FloatSig) (P : Program) {C : Config} {w :
   · subst he; simp [Config.Stuck, step] at hs
   · exact hw
 
-/-- **`eval` never stuck ⇒ `Step` never stuck, on every program** (§7's
+/-- **`eval` never refused ⇒ `Step` never stuck, on every program** (§7's
 phrasing: "it either reduces, halts with a value, or halts with one of the
 defined panics"). If no fuel makes `run` refuse, every configuration `→*`
 reaches from the initial one is terminal or takes a step. The converse fails
@@ -1838,7 +1838,7 @@ theorem step_never_stuck_of_run (M : FloatSig) (P : Program)
     obtain ⟨w', hw'⟩ := hn (n + 1) (Nat.lt_succ_self n)
     exact absurd hw' (hnv _ _)
 
-/-- **"Never stuck", both ways, in §7's phrasing** (RUE-2289 part 3; §7's
+/-- **"Never refused" iff "never stuck", in §7's phrasing** (RUE-2289 part 3; §7's
 type-safety bullet; ADR-0097 decision 3). For a program `check` accepts,
 "for every fuel, `run` is never `.refused`" is equivalent to "every
 configuration §6's `→*` reaches from the initial one reduces or has halted

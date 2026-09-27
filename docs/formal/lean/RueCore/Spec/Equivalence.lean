@@ -11,7 +11,7 @@ public import RueCore.Equivalence.Defs
 "the two readings meet in the adequacy lemma `03-metatheory.md` owes"
 (ADR-0097 decision 3). These statements are that lemma: on the programs
 `check` accepts, `run`'s values and panics are exactly the ends of §6's runs
-from `Config.init`, `run` is never stuck exactly when no reachable
+from `Config.init`, `run` is never refused exactly when no reachable
 configuration is, and exhausting the fuel at every bound is divergence.
 
 The field's name for it is **semantic equivalence** (Amin & Rompf, Thm 2), the
@@ -31,7 +31,7 @@ namespace RueCore.Spec
 
 /-- **The big-to-small direction, `eval` to `Step`**: the interpreter-to-small-step direction of
 the semantic equivalence (§7's adequacy sentence; ADR-0097). For a
-checked program, `run` is never stuck, and its values and panics are reached
+checked program, `run` is never refused, and its values and panics are reached
 by `→*` from `Config.init` with the same store and trace. -/
 def eval_big_to_small_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
@@ -70,8 +70,8 @@ def run_small_to_big_stmt : Prop :=
     (∀ κ tr, Steps M P Config.init (.panic κ tr) →
       ∃ n, ∀ fuel, n < fuel → run M P fuel = .panic κ tr ∨ ∃ w, run M P fuel = .refused w)
 
-/-- **Never stuck, both ways** (§7 "Type safety"). For a checked program, `run`
-is never stuck iff no reachable configuration is. Under `ProgramTyped` both
+/-- **Never refused iff never stuck** (§7 "Type safety"). For a checked program,
+`run` is never refused iff no reachable configuration is stuck. Under `ProgramTyped` both
 sides hold outright, so the equivalence adds nothing; cite
 `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`). -/
 def never_refused_iff_stmt : Prop :=
@@ -79,7 +79,7 @@ def never_refused_iff_stmt : Prop :=
     (∀ fuel w, run M.toFloatSig P fuel ≠ .refused w) ↔
       ∀ C, Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 
-/-- **`eval` never stuck, so `Step` never stuck, on every program** (§7 "Type
+/-- **`eval` never refused, so `Step` never stuck, on every program** (§7 "Type
 safety": "it either reduces, halts with a value, or halts with one of the
 defined panics"). -/
 def step_never_stuck_of_run_stmt : Prop :=

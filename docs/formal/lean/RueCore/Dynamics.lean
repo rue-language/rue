@@ -784,7 +784,7 @@ have already been dropped (§6.9's (D-Return)) and which every enclosing form
 passes on untouched until a call boundary absorbs it; a `break` on its way to
 its loop, which every enclosing form passes on the same way until the loop
 catches it and runs the drops it owes (§6.10's (D-Break)); a defined panic
-(§6.12's `↯κ`); a violation ("stuck": either a configuration §6 leaves
+(§6.12's `↯κ`); a refusal (either a configuration §6 leaves
 undefined or a linear action one of the monitors refuses, named; the module
 docstring says which is which); or exhausted fuel, which is not a machine
 state at all but this interpreter's admission that it stopped early. -/
@@ -1484,8 +1484,8 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       .panic .user []
   | fuel + 1, P, H, φ, .dbg e =>
       -- The operand must be one §6.12 can render (`Val.observable`): §6 has no
-      -- rule that appends the rendering of anything else, so the machine is
-      -- stuck rather than silently discarding an owned operand (RUE-2427). A
+      -- rule that appends the rendering of anything else, so the machine
+      -- refuses rather than silently discarding an owned operand (RUE-2427). A
       -- checked program never reaches it: (Dbg) §5.8 types the operand
       -- `Ty.observable` (`soundness`).
       (eval M fuel P H φ e).bind fun H' v =>
@@ -1812,7 +1812,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- whole loop yields `()`. Every other outcome, an unwinding `return`
       -- included, leaves the loop unchanged.
       -- The body's value is `⟨⟩` (§6.10, "necessarily `⟨⟩`, discarded"); any
-      -- other value is stuck rather than discarded undropped (RUE-2427), and a
+      -- other value is refused rather than discarded undropped (RUE-2427), and a
       -- checked program never reaches it: the body is typed `unit`.
       match eval M fuel P H φ e with
       | .ok H₁ .unit tr => (eval M fuel P H₁ φ (.loop e)).withTrace tr
