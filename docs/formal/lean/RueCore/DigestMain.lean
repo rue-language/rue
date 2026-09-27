@@ -243,7 +243,7 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
     "**Scope.** These statements are about a *fragment* of the core calculus",
     "(`../01-core-calculus.md`; `INDEX.md` draws the boundary rule by rule), and",
     "nothing outside it is proved by omission. The fragment has no loans or borrows",
-    "(Λ is empty, so §5.4 is not modelled) and no allocation store (no buffers, views",
+    "(Λ is empty, so §5.4 is not modelled) and no block store (no buffers, views",
     "or containers, §6.13); both are Phase D (RUE-2238, RUE-2240). So these parts of",
     "§7 have **no statement here** (`../03-metatheory.md`):",
     "",
