@@ -1,5 +1,5 @@
-import RueCore.Equivalence.Defs
 import RueCore.Checker.Defs
+import RueCore.Equivalence.Defs
 import RueCore.Float
 import RueCore.Soundness.Defs
 import RueCore.Trace.Defs

@@ -109,8 +109,8 @@ one-step lemma over a syntactic configuration typing, which the calculus does
 not define (RUE-2423 decides which §7 means). The `eval`/`Step` agreement the
 calculus calls the adequacy lemma is, in the field's words, the semantic
 equivalence of a definitional interpreter and a small-step semantics (Amin &
-Rompf; `../FIELD.md` §3); its Spec module keeps the file name
-`RueCore.Spec.Adequacy`, and its title uses the field's name.
+Rompf; `../FIELD.md` §3); RUE-2466 renamed its Spec module's file to the
+field's name too, `RueCore.Spec.Equivalence`.
 
 | Theorem | Literature (`../FIELD.md`) | Ours | Difference |
 |---|---|---|---|
@@ -319,7 +319,7 @@ def Spec.run_no_use_after_drop_stmt : Prop :=
     run M P fuel ≠ EvalRes.refused Refusal.useAfterDrop
 ```
 
-Proved by `run_no_use_after_drop` (`RueCore.Retire`). Names `FloatSig`, `Program`, `EvalRes`, `run`, `Refusal`; rests on 112 definitions.
+Proved by `run_no_use_after_drop` (`RueCore.Tombstone`). Names `FloatSig`, `Program`, `EvalRes`, `run`, `Refusal`; rests on 112 definitions.
 
 Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.dtor`.
 
@@ -942,7 +942,7 @@ def Spec.step_progress_stmt : Prop :=
         Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 ```
 
-Proved by `step_progress` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 194 definitions.
+Proved by `step_progress` (`RueCore.Equivalence`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 194 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -974,7 +974,7 @@ def Spec.step_safeAt_stmt : Prop :=
             Steps M.toFloatSig P Config.init C → Config.SafeAt M.toFloatSig P fd.ret C
 ```
 
-Proved by `step_safeAt` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `FnDef`, `Config`, `Steps`, `Config.init`, `Config.SafeAt`; rests on 197 definitions.
+Proved by `step_safeAt` (`RueCore.Equivalence`). Names `FloatLaws`, `Program`, `ProgramTyped`, `FnDef`, `Config`, `Steps`, `Config.init`, `Config.SafeAt`; rests on 197 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1006,7 +1006,7 @@ def Spec.step_type_safety_stmt : Prop :=
                 ∃ κ tr, Steps M.toFloatSig P Config.init (Config.panic κ tr)
 ```
 
-Proved by `step_type_safety` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `FnDef`, `Config`, `StepsN`, `Config.init`, `Store`, `Val`, `Event`, `Steps`, `Activation.empty`, `Kont`, `Focus`, `HasTy`, `PanicKind`; rests on 197 definitions.
+Proved by `step_type_safety` (`RueCore.Equivalence`). Names `FloatLaws`, `Program`, `ProgramTyped`, `FnDef`, `Config`, `StepsN`, `Config.init`, `Store`, `Val`, `Event`, `Steps`, `Activation.empty`, `Kont`, `Focus`, `HasTy`, `PanicKind`; rests on 197 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1029,7 +1029,7 @@ def Spec.step_no_use_after_drop_stmt : Prop :=
     Steps M P Config.init C → ¬Config.Stuck M P C Refusal.useAfterDrop
 ```
 
-Proved by `step_no_use_after_drop` (`RueCore.Retire`). Names `FloatSig`, `Program`, `Config`, `Steps`, `Config.init`, `Config.Stuck`, `Refusal`; rests on 115 definitions.
+Proved by `step_no_use_after_drop` (`RueCore.Tombstone`). Names `FloatSig`, `Program`, `Config`, `Steps`, `Config.init`, `Config.Stuck`, `Refusal`; rests on 115 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`.
 
@@ -1039,7 +1039,7 @@ Sharp:
 
 ## Semantic equivalence of `eval` and `Step`
 
-`RueCore.Spec.Adequacy`
+`RueCore.Spec.Equivalence`
 
 ### `eval_big_to_small`
 
@@ -1063,7 +1063,7 @@ def Spec.eval_big_to_small_stmt : Prop :=
                 Steps M.toFloatSig P Config.init (Config.panic k tr)
 ```
 
-Proved by `eval_big_to_small` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Refusal`, `EvalRes`, `run`, `Store`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Activation.empty`, `Kont`, `Focus`, `PanicKind`; rests on 213 definitions.
+Proved by `eval_big_to_small` (`RueCore.Equivalence`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Refusal`, `EvalRes`, `run`, `Store`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Activation.empty`, `Kont`, `Focus`, `PanicKind`; rests on 213 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1088,7 +1088,7 @@ def Spec.run_sim_stmt : Prop :=
         run M P fuel = EvalRes.panic k tr → Steps M P Config.init (Config.panic k tr)
 ```
 
-Proved by `run_sim` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Store`, `Val`, `Event`, `EvalRes`, `run`, `Steps`, `Config.init`, `Config`, `Activation.empty`, `Kont`, `Focus`, `PanicKind`; rests on 128 definitions.
+Proved by `run_sim` (`RueCore.Equivalence`). Names `FloatSig`, `Program`, `Store`, `Val`, `Event`, `EvalRes`, `run`, `Steps`, `Config.init`, `Config`, `Activation.empty`, `Kont`, `Focus`, `PanicKind`; rests on 128 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1116,7 +1116,7 @@ def Spec.eval_small_to_big_stmt : Prop :=
             ∃ n, ∀ (fuel : Nat), n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
-Proved by `eval_small_to_big` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Store`, `Activation`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `PanicKind`; rests on 212 definitions.
+Proved by `eval_small_to_big` (`RueCore.Equivalence`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Store`, `Activation`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `PanicKind`; rests on 212 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1151,7 +1151,7 @@ def Spec.run_small_to_big_stmt : Prop :=
                 run M P fuel = EvalRes.panic κ tr ∨ ∃ w, run M P fuel = EvalRes.refused w
 ```
 
-Proved by `run_small_to_big` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Store`, `Activation`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `Refusal`, `PanicKind`; rests on 127 definitions.
+Proved by `run_small_to_big` (`RueCore.Equivalence`). Names `FloatSig`, `Program`, `Store`, `Activation`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `Refusal`, `PanicKind`; rests on 127 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1178,7 +1178,7 @@ def Spec.never_refused_iff_stmt : Prop :=
           Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C')
 ```
 
-Proved by `never_refused_iff` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Refusal`, `EvalRes`, `run`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 213 definitions.
+Proved by `never_refused_iff` (`RueCore.Equivalence`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Refusal`, `EvalRes`, `run`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 213 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1200,7 +1200,7 @@ def Spec.step_never_stuck_of_run_stmt : Prop :=
       ∀ (C : Config), Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
 ```
 
-Proved by `step_never_stuck_of_run` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Refusal`, `EvalRes`, `run`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 128 definitions.
+Proved by `step_never_stuck_of_run` (`RueCore.Equivalence`). Names `FloatSig`, `Program`, `Refusal`, `EvalRes`, `run`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 128 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`.
 
@@ -1222,7 +1222,7 @@ def Spec.run_refused_of_step_stuck_stmt : Prop :=
         ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.refused w'
 ```
 
-Proved by `run_refused_of_step_stuck` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Config`, `Refusal`, `Steps`, `Config.init`, `Config.Stuck`, `EvalRes`, `run`; rests on 134 definitions.
+Proved by `run_refused_of_step_stuck` (`RueCore.Equivalence`). Names `FloatSig`, `Program`, `Config`, `Refusal`, `Steps`, `Config.init`, `Config.Stuck`, `EvalRes`, `run`; rests on 134 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.refused_stuck`.
 
@@ -1246,7 +1246,7 @@ def Spec.eval_diverges_iff_stmt : Prop :=
         ∀ (n : Nat), ∃ D, StepsN M.toFloatSig P n Config.init D)
 ```
 
-Proved by `eval_diverges_iff` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Config`, `StepsN`, `Config.init`; rests on 212 definitions.
+Proved by `eval_diverges_iff` (`RueCore.Equivalence`). Names `FloatLaws`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Config`, `StepsN`, `Config.init`; rests on 212 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.diverges`, `Nonvacuous.diverges_drop`.
 
