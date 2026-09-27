@@ -741,12 +741,12 @@ fourth random stream, `boundary`, that `intLiteral` reads one draw in eight
 for a single boundary value (`min_T`/`max_T`, one step in from each, `-1`,
 `0`, `1`, or a power of two and its neighbour) and that `arithBinop` reads,
 ordinarily one binop in sixteen and one in four at signed 64-bit `*`
-specifically, for a *pair* of boundary operands at once — the shape `h2318`
+specifically, for a pair of boundary operands at once — the shape `h2318`
 needs, one `min_T` and one `-1` (or, half the time, `-1` bound through a
 `let` first, so the multiplier stays a literal and the other operand does
 not). A boundary draw that does not fire reads only the `boundary` field, so
 `main`, `side` and `call` are exactly what trunk `30ad675b7` draws; a fired
-*pair* discards both of `self`'s drawn operand subtrees whole (`Gen.lean`'s
+pair discards both of `self`'s drawn operand subtrees whole (`Gen.lean`'s
 module doc has the mechanism and the corpus-shape counts).
 
 Rerun at these settings:
