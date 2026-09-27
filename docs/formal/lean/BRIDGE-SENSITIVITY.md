@@ -701,7 +701,7 @@ generator drew before: 138 of the 200 programs at seed 7 and 641 of the
 programs, with the accepted ones in parentheses. It is measured as the
 tables above are (a one-off tool over `Explain.programDerivs` and
 `Explain.runTrace`, not committed), on trunk `eb2d61133` before and on this
-change after. A frame is a callee's when a `push the activation record` row has put it
+change after. An activation record is a callee's when a `push the activation record` row has put it
 above the entry's:
 
 | Row | `--gen 200 --seed 7` before | after | `--gen 1000 --seed 23` before | after |
