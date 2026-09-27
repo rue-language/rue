@@ -1376,8 +1376,8 @@ state and, like the break-exited loop below, types its body at that state
 "moved in a previous iteration", whether or not the loop can exit). A
 `break`-less loop whose body never completes normally does not
 re-enter itself: it is exited only by its body's own `return`/`panic`
-abrupt-completion contexts, which pass through unchanged, and it completes abruptly with no
-`⟨diverge, _⟩` of its own.
+abrupt-completion contexts, which pass through unchanged, and it makes no
+`⟨diverge, _⟩` abrupt-completion context of its own.
 
 A `loop` that *is* exited by a `break` — the complement of (Loop-Div)'s
 syntactic premise, and the target of every elaborated `while` — is `unit`-typed
@@ -1414,7 +1414,7 @@ has a reachable back edge (`B ≠ ∅`) it re-enters itself forever and complete
 `⟨diverge, Σ_h⟩` at its loop-head state exactly as (Loop-Div-Backedge) does; if it
 has neither (every path through the body returns or panics, and its only
 `break` is unreachable) the body's own `ret`/`panic` abrupt-completion contexts are its only
-exits and it completes abruptly with no `diverge` of its own, exactly as
+exits and it makes no `diverge` abrupt-completion context of its own, exactly as
 (Loop-Div) does — the two forms differ only in `4.8:21`'s syntactic type, never
 in how they complete abruptly. These
 abrupt-completion contexts record static ownership states only; they do not specify which
@@ -2053,7 +2053,8 @@ them is a bug (RUE-305) — that is the point of pinning both.
                                              --   throughout §6.3–§6.8; only §6.9's by-ref parameter bindings carry a
                                              --   non-ε path, composed under any further projection)
   Drop scope     s = [ℓ1, …, ℓq]             -- cells with a drop obligation at this scope's exit, in creation order (dropped newest-first)
-  Activation record φ = ⟨ ρ ; σ ⟩ ,  σ = [s1, …, sr]   -- a stack of r ≥ 1 open drop scopes; σ's top is the innermost scope
+  Activation record
+                 φ = ⟨ ρ ; σ ⟩ ,  σ = [s1, …, sr]   -- a stack of r ≥ 1 open drop scopes; σ's top is the innermost scope
   Control stack  K ::= halt                    -- bottom: nothing pending; a returned value is the program result
                      | ret(E, φ) · K           -- a caller suspended in evaluation context E (§6.2), activation record φ, awaiting a callee's value
                      | loopβ(e_body, φ) · K    -- a loop boundary: its body e_body and the activation record φ to resume; break unwinds to here
@@ -2095,7 +2096,7 @@ A discriminant-only enum value `Kj⟨⟩` is stored as its bare tag (the oracle'
 `Value::Int` tag); a payload-carrying `Kj⟨v1..va⟩` as the tagged aggregate
 (`Value::Aggregate`, RUE-285).
 
-Four **unwinding helpers** on activation records, used by the rules below, all defined in terms of
+Five **unwinding helpers** on activation records, used by the rules below, all defined in terms of
 the drop relation `drop(H, ℓ)` of §6.11 (which is itself a no-op on a `⊘` or
 `Copy` cell, so these fold harmlessly over non-droppable bindings):
 
@@ -2104,7 +2105,7 @@ the drop relation `drop(H, ℓ)` of §6.11 (which is itself a no-op on a `⊘` o
   push-scope(⟨ρ;σ⟩)              = ⟨ρ; [] :: σ⟩                    -- open a fresh, empty innermost scope
   run-scope-drops(H, ⟨ρ; s::σ⟩) = drop-retire the cells of s newest-first, yielding H'; resulting activation record ⟨ρ; σ⟩   -- close ONE (innermost) scope
   run-all-scope-drops(H, φ)      = iterate run-scope-drops until φ has no open drop scopes (teardown of the whole activation record, on return)
-  unwind-drops(H, φ', φ)         = run-scope-drops repeatedly on φ' until its open-scope stack equals φ's (break: down to a boundary)
+  unwind-drops(H, φ', φ)         = run-scope-drops repeatedly on φ' until its open-drop-scope stack equals φ's (break: down to a boundary)
 ```
 
 A scope gains a cell to drop when a `let` (§6.7) or a `match` arm (§6.6) binds one;
