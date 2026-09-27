@@ -300,7 +300,7 @@ itself is — so `--gen 200 --seed 7` reaches its one accepted `divZero` at no
 extra draw, from the `remZero` hit it already had (`gen_7_171`). `--gen 1000
 --seed 23` reaches one too, `gen_23_351`: the raised rate fires a root-level
 `(x, 0)` pair against a callee's whole call, `pruneFns` removes the now
-unreferenced callee, and the 3-node result — `let v0: u8 = 0; (255 / v0)`,
+unreferenced callee, and the 3-node result — `let v0: u8 = 0; (0 / v0)`,
 the `0` divisor bound through a `let` (one draw in two, the same technique as
 `min_T * -1`'s `-1` above) — is accepted where trunk's draw was rejected; the
 only verdict change at either setting. `bin/verify.py` agrees with the
