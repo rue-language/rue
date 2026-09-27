@@ -412,6 +412,16 @@ does not need. The edges are MAP.md's; the helper counts are the baseline's.
    Expected: `drop_order`'s helper closure from 478 to about 150, and
    `eval_glue_blocks`, `run_glue_blocks` and `run_blocks` retired if nothing
    else uses them. The clean-room run below tests this detour directly.
+
+   Verdict (part 2): refuted. The clean-room agent, with no sight of
+   `TraceOrder.lean`, reached for exactly this route and could not close it
+   as a plain `Step` invariant: a `Copy` residue's no-event property needs a
+   copy-closed store, and `Step` maintains no such invariant without a
+   configuration typing the package does not have (RUE-2423). It went back
+   through `eval` for the within-value half, the same route `drop_order`
+   already takes. The expected reduction is not available by rewriting
+   inside `Step`; it needs RUE-2423's typing first. Close this detour rather
+   than retry it without that typing.
 2. `step_blocks` re-derives `drop_glue_order`. `step_blocks` (17 lines) and
    `drop_glue_order` (25) are skeleton-equal, and `run_blocks` is already
    `run_glue_blocks` read through `DropGlueBlocks.toBlocks`. So `step_blocks`
@@ -500,7 +510,7 @@ pass.
 
 ## The clean-room re-derivation (part 2)
 
-Not run yet. The protocol:
+Run. The protocol:
 
 - Theorem: `drop_order` (`Spec.drop_order_stmt`). It is mid-sized (a 36-line
   proof with 144 helpers of its own, most of `TraceOrder.lean`'s 73
@@ -547,3 +557,141 @@ Not run yet. The protocol:
   table, and what they say about which parts of `TraceOrder` are essential
   and which are accidental. The clean-room proof is not merged; what it
   teaches goes into part 3 or the follow-ups.
+
+### What the run got, and its deviations
+
+The run started from trunk `e9349bc42`, with `TraceOrder.lean` and its seven
+importers removed, as planned. Two deviations from the protocol above. First,
+the copy withheld more prose than the protocol lists: `03-metatheory.md`,
+`README.md` and `GUIDE.md`, not only `DIGEST.md`, `MAP.md`, `INDEX.md`,
+`TOOLING.md` and `rue-2455-golf.diff`, because those three sketch our proof
+route rather than only quoting it. Second, the copy removed all of L3, not
+only `TraceOrder`'s importers, because `RueCore/Digest.lean` imports the
+package root `RueCore.lean`, which would have pulled `TraceOrder` back in
+through that import; the agent built and worked from L0, L1, the Spec layer
+and the proofs up to and including `TraceExact`, plus `01-core-calculus.md`,
+this page's protocol, and the leaked invariants of `Trace/Defs.lean`.
+
+### Did it close, and how fast
+
+Yes. `#print axioms drop_order'` shows only `propext` and `Quot.sound`, no
+`sorry`, `admit`, `native_decide` or new axiom. About 13 minutes of wall time
+(11:04 to 11:17) and roughly 23 build or check iterations: about 20
+`lake env lean` checks plus 3 `lake build` runs. Its one false start was a
+`Classical.choice` dependency pulled in by core's `List.pairwise_lt_range'`,
+fixed by proving its own `range'_pairwise` by induction instead.
+
+### Size, against `drop_order`'s own closure and against `TraceOrder.lean`
+
+`CleanRoom.lean` is 812 lines, 743 of them code lines by this page's own
+counting method, and 48 theorems (`drop_order'` included; three small `def`s
+and one tactic macro besides). Measured against `drop_order`'s own baseline
+closure of 144 helpers (478 transitively, 7,778 lines of helper proof) and
+against `TraceOrder.lean`'s 1,065 code lines across 73 theorems, it is a
+fraction of either.
+
+That comparison overstates `TraceOrder.lean`'s size for this purpose,
+though: the module also proves `drop_glue_order` and `step_blocks`, so not
+every one of its 73 theorems serves `drop_order` alone. Walking proof terms
+the way `bin/simplify_metrics.lean`'s spine metric does (stopping at spine
+boundaries), `drop_order`'s own reach touches 69 of `TraceOrder.lean`'s own
+theorems (about 1,030 of its lines by the same per-declaration count), and
+`drop_glue_order`'s own reach touches 22 (about 480 lines) — and every one
+of those 22 is also among `drop_order`'s 69. `drop_glue_order` adds nothing
+`drop_order` does not already pull in, because `drop_order`'s within-value
+half already goes through the same `run_blocks`/`run_glue_blocks`/
+`eval_glue_blocks` chain `drop_glue_order` is built from. So of
+`TraceOrder.lean`'s own content, about 47 theorems (roughly 550 lines) serve
+`drop_order` alone, about 22 (roughly 480 lines) serve both, and a further
+handful of exported corollaries — `StackDiscipline.newer`,
+`reachable_stackDiscipline`, `Blocks.append` and its neighbors — serve
+neither proof's own closure directly and are read instead by `TracePrefix`,
+`TraceWhole` or `Witnesses`. Read against that 47-theorem, 550-line figure
+rather than the whole module, the clean-room proof is still smaller, but
+not by nearly as much as 812 lines against 1,065 first suggests.
+
+### Reinvention
+
+Run over a package holding both `TraceOrder.lean` and `CleanRoom.lean`
+together, `bin/simplify_metrics.lean`'s exact and skeleton groups place 25
+of the clean-room's 48 theorems — a little over half — in a group with one
+of ours. Exact matches, up to alpha-equivalence: `Blocks.append`, `Rec.mono`,
+`Rec.range` with our `Rec.fresh`, `dropContents_ok`/`dropContentsList_ok`
+with our `dropContents_eq`/`dropContentsList_eq`, `allCopy_dropEvents`/
+`allCopyList_dropEvents` with our `dropEvents_allCopy`/
+`dropEventsList_allCopy`, `dropLocs_append`, `dropLocs_dropEvents`,
+`dropLocs_dropEventsList`, `cc_ok` with our `eval_ok_cc`, `finished_blocks`
+with our `step_blocks`, and `range'_pairwise` with our
+`range'_increasing` (the one core lemma it had to replace, for the same
+`Classical.choice` reason ours avoids it). Skeleton matches beyond those:
+`bind_blocks`/`bindCall_blocks` with our `DropGlueBlocks.bind`/`.absorb`,
+`destructure_blocks`, `dropCell_blocks`, `dropResidue_blocks`,
+`dropRetire_blocks`, `evalArgs_blocks`, `unwindLocs_blocks`, all matching a
+name of ours the same shape; `introVal_blocks` with our
+`DropGlueBlocks.intro`; `matchConsume_blocks`; `eval_blocks` with our
+`eval_glue_blocks`; and `steps_nested` in a three-way skeleton group with our
+`Tombstone.steps_live`, `step_nested` and `step_ordered` — the "one
+invariant along `Steps`, three times" duplication this page's structural
+candidate 4 already names, so the clean-room proof adds a fourth copy of
+that same shape rather than a new one.
+
+Of the four intermediates the protocol named: it reached the equivalent of
+`reachable_nested` (its `steps_nested` composed with `init_nested`, at the
+call site in `drop_order'`, is exactly `reachable_nested`'s own proof, over
+a general `Steps` instead of one specialized to `Config.init`). It did not
+reach `reachable_ordered`: it proved no `Config.Ordered` at all, since its
+own `Config.Nested` already carries the `Rec` fact `drop_order`'s statement
+needs, and its report says as much (`Kont.Ordered`, `Config.Ordered` among
+what it did not use). It did not reach `StackDiscipline.newer`: the
+statement asks only for the raw `StackDiscipline` and `Pairwise` facts, not
+that corollary, so nothing in its proof called for it. And it did not reach
+`DropGlueBlocks.toBlocks`, or touch `DropGlueBlocks` at all — its brief was
+`drop_order` alone, not `drop_glue_order`.
+
+### Its route
+
+As this page's detour 1 guessed, the within-value half goes through `eval`
+(`eval_small_to_big`, its own `finished_blocks`), not along `Step`, and for
+the reason detour 1's verdict above now gives on the strength of this run: a
+`Copy` residue's no-event property needs a copy-closed store, which `Step`
+does not maintain without a configuration typing the package does not have
+(RUE-2423), so the agent could not keep that invariant over `Step` and went
+back to `eval`, where `eval_conserves` already maintains it. The stack half
+goes over single `Step`s, with `Config.Nested` and no typing, the same
+shape this page's across-cells half already has.
+
+The leak: it used `Config.Nested`, `Nest`, `Stk` and `Rec` from
+`Trace/Defs.lean`, beyond the statement's own vocabulary — every one an
+invariant the protocol accepted leaking, and every one vocabulary the stack
+half needs regardless of who proves it.
+
+### Essential versus accidental, and a recommendation for part 3
+
+Where the two proofs overlap, they agree almost completely: the
+trace-grammar-through-`eval` combinators (`Blocks.append`, the `withTrace`
+and `bind` composition lemmas, one case per `eval` form) are essential, not
+accidental — an independent proof needed nearly the same shapes, in nearly
+the same number, with no shorter route found. The accidental part is what
+`TraceOrder.lean` proves beside `drop_order` in the same file: `drop_order`
+does not need `drop_glue_order`'s own reach for anything beyond what it
+already pulls in on its own route, and it does not need `Config.Ordered` or
+`reachable_ordered` at all, which the clean-room proof confirms by never
+reaching for them.
+
+For part 3: do not adopt the clean-room proof itself. It is not shorter once
+`TraceOrder.lean`'s size is read fairly against `drop_order` alone (47
+theorems, not 73), and it is not committed-quality — a tactic macro under
+`set_option hygiene false`, no doc-comments, and single-letter case
+patterns throughout. `Config.Ordered` and `reachable_ordered` cannot simply
+follow `drop_order` out of the module on this finding, though: `Witnesses.lean`'s
+`swappedMarkers_rejected` reads `Config.Ordered` directly (`swappedMarkers.Ordered`,
+`Kont.Ordered`), to show that nesting, not per-cell order, is what a sibling
+scope's drop order rests on, so `drop_order` is not `Config.Ordered`'s only
+consumer and the definition stays. What the clean-room run does support:
+`Config.Nested` alone is enough for `drop_order`'s own stack half, the way the
+clean-room proof has it, with no separate use of `Config.Ordered` there — one
+data point for a later pass that asks whether `TraceOrder.lean`'s proofs of
+`drop_order` and `reachable_ordered` need to sit as close together as they do
+now, not a change to make on its own. Detour 1 is closed by this run, not
+merely left untried again: no further attempt at a `Step`-only within-value
+proof should be made before RUE-2423 lands.
