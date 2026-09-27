@@ -4040,7 +4040,7 @@ example : run demoOps (prog tI64 loopBreakPastLinear) demoFuel = .refused .linea
 /-- **A linear binding live at a loop that never exits** (E0406): the body
 completes, so the loop completes abruptly with `⟨diverge, Σ_h⟩`, and the activation-record-wide residual
 check at the head finds the binding (`03-metatheory.md`'s reading). The
-machine never finishes, so it reaches no refusal. -/
+machine never terminates, so it reaches no refusal. -/
 def loopDivergeLinear : Expr :=
   letIn false (resLD (lit 1)) (loop unitLit)
 

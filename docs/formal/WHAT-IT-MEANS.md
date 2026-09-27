@@ -43,12 +43,12 @@ For programs in the core fragment that the typing rules accept:
   declared type or a defined trap (overflow, a failed cast, division by zero,
   out of bounds, `@panic`), or runs forever.
 - **No value is dropped twice.**
-- **In a run that finishes with a value, every value needing a drop is
+- **In a run that terminates with a value, every value needing a drop is
   accounted for exactly once.** By the end it has been dropped, consumed whole
   (moved into a `match`, say), or handed back as part of the result. None is
   lost and none is ended twice (`whole_program_exactly_once`). Three kinds of
   run carry no such claim:
-  - a run that never finishes, where a value can stay live inside an infinite
+  - a run that never terminates, where a value can stay live inside an infinite
     loop, so only "no value is dropped twice" holds;
   - a trap, which drops nothing, by design;
   - a run where a later part of an expression `return`s or `break`s after an

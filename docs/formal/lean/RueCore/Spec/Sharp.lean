@@ -986,7 +986,7 @@ rejected by the checker (the field is given an `S1`), so it is not
 `pendingSafe`. §6's relation, which has no copy-closure monitor, runs it: the
 configuration after `S1`'s (D-Struct) holds `S1`'s identity `0`; (D-Struct)
 wraps it in the `Copy` `S0`, which owns nothing, and `p`'s drop at scope exit
-is a `Copy` cell's, which runs nothing; the run finishes with `0` and an empty
+is a `Copy` cell's, which runs nothing; the run terminates with `0` and an empty
 trace. Identity `0` is neither in the result nor ended: without
 `ProgramTyped`, `whole_program_exactly_once` fails. -/
 def copy_leak_stmt : Prop :=
@@ -1010,7 +1010,7 @@ itself). `fn main() -> i64 { f(S0 { 7 }, return 0) }` with `fn f(a: S0, b:
 i64) -> i64 { @drop(a); b }` is accepted by the checker and is not
 `pendingSafe`: the second argument returns. §6's relation reaches the
 configuration holding the minted `S0` (identity `0`) pending in the call's
-argument list; (D-Return) discards that list, and the run finishes with `0`
+argument list; (D-Return) discards that list, and the run terminates with `0`
 and an empty trace. Identity `0` is neither in the result nor ended: without
 `pendingSafe`, `whole_program_exactly_once` fails on a checked program. A
 `break` out of a pending form loses a value the same way (`loop { S2 { S0 { 1 },
@@ -1058,7 +1058,7 @@ def unreached_held_stmt : Prop :=
       ((Val.int .w64 .signed 0).own P.decls).count 5 + (freedIds P.decls []).count 5 = 0
 
 /-- **An identity the run never holds** (§7 sharpness, RUE-2478). The checked,
-`pendingSafe` program of `Nonvacuous.dtor` finishes from `Config.init`, which
+`pendingSafe` program of `Nonvacuous.dtor` terminates from `Config.init`, which
 holds nothing; its trace ends identities `0` and `2` and nothing else, so
 identity `1` — the index of `x`'s cell, which names a cell and no value — is
 neither ended nor in the result. So the statement fails without the
@@ -1079,7 +1079,7 @@ def unheld_stmt : Prop :=
       ∃ H v tr, Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         (v.own P.decls).count 1 + (freedIds P.decls tr).count 1 = 0
 
-/-- **A finished configuration the run does not reach** (§7 sharpness,
+/-- **A terminal configuration the run does not reach** (§7 sharpness,
 RUE-2478). The checked, `pendingSafe` program of `Nonvacuous.dtor` reaches a
 configuration holding `x`'s `S0`, identity `0`; the terminal configuration
 with an empty store, result `3` and an empty trace ends nothing, and that

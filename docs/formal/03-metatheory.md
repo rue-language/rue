@@ -370,7 +370,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     every well-typed value (`RueCore.ContentsTy.copyContained`). The machine
     also enforces it with a fourth monitor beside the linear three,
     `ownedUnderCopy`, at aggregate introduction and at an assignment. The law
-    therefore holds for every finished run of any program with well-formed
+    therefore holds for every terminating run of any program with well-formed
     declarations: `RueCore.freed_once`, and `RueCore.dtor_once`, which uses
     `3.9:31`, "a destructor-bearing struct is not `Copy`".
   - **Typing**, which enters through `RueCore.no_refusal`. A checked
@@ -414,7 +414,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   non-moved value *is* dropped) is `RueCore.drop_exactly_once`, in the next
   section; this section is the "at most once" half. `RueCore.step_blocks`
   (next section; `RueCore.run_blocks` over `eval`, carried to `Step`) lifts the
-  closed form from one drop to every finished run's trace:
+  closed form from one drop to every terminating run's trace:
   every destructor event sits inside the walk of the marker before it.
 
 ## No use-after-drop / no leak of drops
@@ -538,14 +538,14 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   theorems above say every owned value ends exactly once; this one says in
   what order. It is stated over §6's relation, for a program the checker
   accepts, in two halves.
-- **Within a value (§3.9, §6.11):** every **finished** run's trace (a
+- **Within a value (§3.9, §6.11):** every **terminating** run's trace (a
   terminal value or a trap that `→*` reaches from `Config.init`) is in the
   block grammar `RueCore.Blocks` (`RueCore.step_blocks`, which reaches
   `Step` from `eval`'s `RueCore.run_blocks` through `eval_small_to_big`). The
   grammar is a sequence of `@dbg` lines, consumptions, and drop markers
   (`drop ℓ c`, `dropTemp v`), each marker followed by *exactly* §6.11's walk
   of what it names (`RueCore.dropEvents`). The grammar has no other place
-  for a destructor event. So every destructor of every finished run sits
+  for a destructor event. So every destructor of every terminating run sits
   inside the walk of the drop that owns it, in §6.11's order:
   - the value's own destructor first (`3.9:28`);
   - fields in declaration order (`3.9:13`);
@@ -781,7 +781,7 @@ program (`RueCore.step_never_stuck_of_run`), and on a checked program the two
 are equivalent (`RueCore.never_refused_iff`). **(a)**, the safety theorem
 covering every Phase C slice, no longer waits on drop order:
 `RueCore.drop_order` (RUE-2237) states it over §6's relation, within a value
-by §6.11's grammar on every finished run, and across cells last-in first-out
+by §6.11's grammar on every terminating run, and across cells last-in first-out
 on every reachable step. **(c)**, the independent review, is
 checkpoint C (RUE-2251).
 

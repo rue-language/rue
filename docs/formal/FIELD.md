@@ -480,11 +480,11 @@ Clarkson & Schneider's trace are infinite, and a terminating run is padded by
 repeating (stuttering) its final state. Leucker & Schallhart's execution is a
 finite prefix of a run. Schneider 2000's safety quantifies over finite and
 infinite executions and is credited to Lamport 1985, so it differs from Alpern
-& Schneider's. Our properties over *finished* traces (`Blocks`, `no_double_free`)
+& Schneider's. Our properties over *terminating* traces (`Blocks`, `no_double_free`)
 become ordinary trace properties in the infinite-trace sense by the same
 stuttering padding. `step_no_double_free` states the at-most-once bound in the
 safety form itself: over the trace of every configuration a run reaches, a
-finite prefix, whether or not the run finishes (RUE-2477).
+finite prefix, whether or not the run terminates (RUE-2477).
 
 ### Terms we currently use that differ from this
 
@@ -493,8 +493,8 @@ finite prefix, whether or not the run finishes (RUE-2477).
 | "monitor" (`linearLeak`, `linearOverwrite`, `linearDiscard`, `ownedUnderCopy`): a check the interpreter `eval` adds, which refuses the step (`.refused w`); `Step` has none | an EM mechanism (Schneider 2000): it terminates the target before a violating step, and Schneider counts a virtual machine whose instruction cycle is augmented this way as EM. In runtime verification a monitor typically only returns a verdict and does not change the execution (Leucker & Schallhart) | partial. Mechanically ours match Schneider's enforcement sense. But they are part of the definitional interpreter rather than isolated from a target, they exist so the safety proof can go through, they make `eval` stricter than §6, and they never fire on checked programs |
 | drop trace, `Event`, `tr` | trace of events | clear |
 | `no_double_free` (each identity is freed at most once, and each destructor runs at most once, in every run's trace) | an at-most-once **safety** property over traces | clear once stated this way |
-| `drop_exactly_once` ("consumed exactly once") | "exactly once" (delivery) = at most once ∧ at least once; linear use = exactly once. Ours is per value, per finished evaluation | partial |
-| `Blocks`, `run_blocks` (every finished run's trace is in a grammar) | a trace property over finished traces. No accepted name for this shape | none |
+| `drop_exactly_once` ("consumed exactly once") | "exactly once" (delivery) = at most once ∧ at least once; linear use = exactly once. Ours is per value, per terminating evaluation | partial |
+| `Blocks`, `run_blocks` (every terminating run's trace is in a grammar) | a trace property over terminating traces. No accepted name for this shape | none |
 | `Tidy` / `eval_tidy` (every cell an evaluation allocates is retired by its end) | no verified counterpart | none |
 | "identity ledger" (trace renderings; formerly "explain renderings") | no verified counterpart | none |
 | "observable outcome" (`@dbg` output, exit code; GUIDE §2) | observable behavior (C11; CompCert) | clear |

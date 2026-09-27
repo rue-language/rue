@@ -104,7 +104,7 @@ def verdict (D : Decls) (res : EvalRes) (e : Entry) : String :=
           if (v.own D).contains e.id then "held by the result" else "never ended"
       | .panic _ _ => "abandoned by the trap (§6.12)"
       | .refused _ => "the run was refused (§6)"
-      | .broke _ _ _ | .outOfFuel => "the run did not finish"
+      | .broke _ _ _ | .outOfFuel => "the run did not terminate"
   | n => toString n ++ " times"
 
 /-- (helper) The ledger's closing line: every identity once, or which were
@@ -116,7 +116,7 @@ def summary (D : Decls) (res : EvalRes) (es : List Entry) : String :=
   | .refused _ =>
       "The run was refused (§6), which a checked program's never is (`soundness`); " ++
         "the ledger is what the table recorded before the refusal."
-  | .outOfFuel | .broke _ _ _ => "The run did not finish, so the ledger is partial."
+  | .outOfFuel | .broke _ _ _ => "The run did not terminate, so the ledger is partial."
   | _ =>
       if es.isEmpty then "The run owns no identity: nothing to end."
       else if odd.isEmpty then

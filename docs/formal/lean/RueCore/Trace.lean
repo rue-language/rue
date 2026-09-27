@@ -55,7 +55,7 @@ What the law needs from the program is **copy closure** (`Contents.copyContained
 nothing owned hides under a `Copy` node, or a copy would duplicate it. §3 makes
 that a property of every well-typed value, and the machine enforces it with a
 monitor at aggregate introduction and assignment (`Dynamics.lean`), so the law
-holds of every finished run, typed or not, given only `WfDecls`' "a
+holds of every terminating run, typed or not, given only `WfDecls`' "a
 destructor-bearing struct is not `Copy`". Typing enters `no_double_free`
 through `no_refusal`:
 a program the checker accepts never reaches the monitor, or any other
@@ -2073,7 +2073,7 @@ theorem run_trace_once (M : FloatSig) {P : Program} {F : Event → List Nat}
   | outOfFuel => simp [EvalRes.trace]
 
 /-- **No identity appears twice among the `drop`/`dropTemp` free events, on
-any finished run** (§6.11): each owned identity occurs at most once among the
+any terminating run** (§6.11): each owned identity occurs at most once among the
 trees those markers free (`freedIds`), a declared-linear destructure's
 residue and a consumed shell included (RUE-2427). Holds unconditionally, for
 every program, no hypothesis at all: the machine refuses the one shape — an
@@ -2083,7 +2083,7 @@ theorem freed_once (M : FloatSig) (P : Program) (fuel : Nat) :
     ∀ a, (freedIds P.decls (run M P fuel).trace).count a ≤ 1 :=
   run_trace_once M (freed_measure P.decls) fuel
 
-/-- **No destructor runs twice on one value, on any finished run** (§6.11, `3.9:28`):
+/-- **No destructor runs twice on one value, on any terminating run** (§6.11, `3.9:28`):
 each identity occurs at most once among the values the trace's `dtor` events
 ran on. It needs only that a destructor-bearing struct is not `Copy`
 (`3.9:31`), which `WfDecls` gives (`WfDecls.dtorNotCopy`). -/

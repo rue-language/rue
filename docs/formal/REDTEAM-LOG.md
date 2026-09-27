@@ -61,7 +61,7 @@ issue, or commented onto an existing one.
 | R4 | statement | medium | F5 (raw: HIGH) | RUE-2423, RUE-2467 (comment) | `step_safeAt` states `SafeAt init`: its `∀ C` adds nothing, and no configuration typing is preserved. `Config.SafeAt` quantifies over everything reachable from `C`, so it is closed under `Steps` by transitivity, and the theorem is equivalent to `SafeAt … Config.init`. 03-metatheory l.202–203 and l.211–214 already disclose this ("needs no typing hypothesis"; "holds by construction, and the content is the fundamental lemma `RueCore.init_safeAt`"), as does the semantic form generally (FIELD.md §2, the `SafeAt` docstring). What is not disclosed: no configuration-typing relation is stated at all (RUE-2423), and the theorem's name still reads as the syntactic lemma (RUE-2467, the spine alignment). |
 | R5 | statement | low | F3 (raw: HIGH) | RUE-2467 (comment) | `never_refused_iff` under `ProgramTyped` is the conjunction of two theorems, not an equivalence with content. Under `h`, its left side is `eval_big_to_small`'s first conjunct and its right side is `step_progress`. Its own docstring says the content is the forward direction on every program (`step_never_stuck_of_run`), which is not the headline. The spine should cite that theorem (RUE-2467, the spine alignment). |
 | R6 | trusted base / digest | medium | F14 (raw: medium) | RUE-2479 | DIGEST prints no body or defining equations for Bool-valued predicates that are hypotheses or rule premises (`Expr.pendingSafe`, `Expr.breaks`, `OwnSt.join`, `noDtorPrefix`, `linearResidue`, …). DIGEST's preamble promises a body "whenever it is a type or a predicate … or is short enough to read"; these entries (e.g. DIGEST `Expr.pendingSafe`, `Expr.breaks`, `OwnSt.join`) carry the signature only. `pendingSafe` is a hypothesis of two spine theorems and the red agent could not check it is satisfiable; `OwnSt.join` is where §5.5's "consumed on some paths" rejection lives. For RUE-2457's trusted-base list and the statement/proof split. |
-| R7 | statement | low | F11 (raw: medium) | RUE-2467 (comment) | `drop_order`'s `StackDiscipline` constrains nothing on a step that does not pop, and `Blocks` is claimed for finished traces only. `StackDiscipline S S' ls := S <+: S' ∨ …`; the first disjunct holds on every non-popping step. `Sublist` lets a popped cell go without a drop (left to `Exact`). 03-metatheory says "every **finished** run's trace", so the second point is disclosed; the first is not stated as a limit (RUE-2467, the spine alignment). |
+| R7 | statement | low | F11 (raw: medium) | RUE-2467 (comment) | `drop_order`'s `StackDiscipline` constrains nothing on a step that does not pop, and `Blocks` is claimed for terminating traces only. `StackDiscipline S S' ls := S <+: S' ∨ …`; the first disjunct holds on every non-popping step. `Sublist` lets a popped cell go without a drop (left to `Exact`). 03-metatheory says "every **terminating** run's trace", so the second point is disclosed; the first is not stated as a limit (RUE-2467, the spine alignment). |
 | R8 | docs | high | H2 (raw: HIGH) | RUE-2476 (comment) | `docs/formal/README.md` says the calculus "brings `ArrayBuf`/`StrBuf` buffers inside the proved perimeter". README Contents, lines 195–198. Nothing about buffers is mechanized: 03-metatheory's fragment paragraph ends "no … loans, or buffers", and TRUST.md lists the §6.13.5 library obligations as not yet present. "Proved" should be "specified". The README sentence describes `01-core-calculus.md`, so "proved perimeter" may mean the paper's own perimeter rather than the Lean's; the report and the RUE-2476 comment both flag this reading. |
 | R9 | docs | medium | H1 (raw: HIGH), M1 (raw: medium), H4 (raw: HIGH, folded) | RUE-2476 (comment) | `docs/formal/README.md`'s "the core's soundness holds for any well-formed core program" and "its §7 theorems as kernel-checked Lean statements" state for the whole core what is proved for a fragment. Lines 17–18 and 73–75. Proved: a fragment (03-metatheory, "Fragment today"), with exclusivity (RUE-2238) and no-use-after-free (RUE-2240) not mechanized, and exactly-once under `pendingSafe`. `docs/formal/README.md` never says "fragment" in these sentences (`lean/README.md` does, line 3), and neither README mentions the `pendingSafe` restriction, the `FloatLaws` interface, or that "safe" admits panics and divergence. |
 | R10 | docs | low | M6 (raw: medium); second half: adjudicator, not a red finding | RUE-2476 (comment) | `docs/formal/README.md` calls `rue-oracle` "the formal dynamic semantics", and 03-metatheory "a skeleton today". Line 122: since ADR-0097 the proved dynamic semantics is the Lean `Step`/`eval`, and no statement relates it to `rue-oracle`. Line 204: 03-metatheory is filled in (every §7 bullet but exclusivity and no-use-after-free names its theorem); this second half is the adjudicator's own observation from re-reading the docs, not something either red agent reported, and it is correct only because the line is now stale. |
@@ -126,7 +126,7 @@ Read the same way by the red agent and by us, with no gap either found:
   `Step`-reachable with the same store, value and trace.
 - `check_sound`, read as expression-level soundness, with (Sub-Never) folded
   into `TyOrNever.fits` correctly.
-- `no_double_free` on runs that finish or trap: identities are never reused
+- `no_double_free` on runs that terminate or trap: identities are never reused
   and moved-out parts carry no identity.
 - `drop_order`'s `Blocks` conjuncts: within a drop, the destructor first,
   fields in declaration order, elements ascending, an enum's active payload
@@ -396,7 +396,7 @@ What the mutants could not get past:
     each drop's events given by `DropGlue`.
   - **The statement.** `drop_glue_order` (Spec `drop_glue_order_stmt`,
     proved in `TraceOrder.lean`, bound in `Spine.lean`): on a checked
-    program, every trace §6's relation finishes with (a value or a panic)
+    program, every trace §6's relation terminates with (a value or a panic)
     is in `DropGlueBlocks`. The proof shows the machine's walk meets the rules
     whenever it succeeds (`dropContents_glue`), so `eval_blocks` now builds
     `DropGlueBlocks`, and `Blocks` follows (`DropGlueBlocks.toBlocks`). Non-vacuity
@@ -445,8 +445,8 @@ What the mutants could not get past:
     twice (`freedIds`) and runs no destructor twice on one (`dtorIds`), the
     vocabulary of `no_double_free`. It is the at-most-once bound in safety
     form ([FIELD.md](FIELD.md) §6, Alpern & Schneider): over every finite
-    prefix of a run, whether or not the run finishes. `no_double_free` for a
-    finished run follows (`no_double_free_of_step`); its statement is
+    prefix of a run, whether or not the run terminates. `no_double_free` for a
+    terminating run follows (`no_double_free_of_step`); its statement is
     unchanged, and its doc-comment now points at the new one.
   - **The invariant.** When `eval` exhausts its fuel from a copy-closed
     store, `Step` has a run at least that long whose appended trace keeps
@@ -552,7 +552,7 @@ What the mutants could not get past:
     proved in `lean/RueCore/TraceWhole.lean`, bound in `Spine.lean`): for a
     checked, `pendingSafe` program, any configuration §6's relation reaches
     from `Config.init`, and any owned identity it holds, if the run from it
-    finishes with a value, the identity is ended in the final trace
+    terminates with a value, the identity is ended in the final trace
     (`freedIds`) or owned by the final value, exactly once between the two.
     "Allocated along the run" is `Config.held` (`lean/RueCore/Trace/Defs.lean`,
     L1): what a configuration holds in its cells, in focus and pending on its
@@ -588,8 +588,8 @@ What the mutants could not get past:
   - **H4 closed for exactly-once** (RUE-2478). The statement is instantiated
     at `Config.init` and asks nothing of an intermediate state; the typing
     facts the per-window form needed come from `eval`'s run instead.
-  - **W1, a finished run only** (low, disclosure). A run that never
-    finishes has no end to account at; its prefixes are bounded above by
+  - **W1, a terminating run only** (low, disclosure). A run that never
+    terminates has no end to account at; its prefixes are bounded above by
     `step_no_double_free`, not below. A lower bound for a diverging run
     would be a liveness property (every held value is eventually ended),
     which no statement claims.

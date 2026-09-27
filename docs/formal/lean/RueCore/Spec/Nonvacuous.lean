@@ -359,7 +359,7 @@ whole program; RUE-2478; the `dtor` witness's program, the corpus case
 `affine_scope_drop` twice over). `let x = S0 { 1 }; let y = S0 { 2 }; 3` is
 checked and `pendingSafe`; §6's relation reaches a configuration that holds
 both values, identities `0` and `2`, in their cells, and from there the run
-finishes with a trace that ends each of them once. So
+terminates with a trace that ends each of them once. So
 `whole_program_exactly_once`'s hypotheses hold of a run that allocates and
 drops several owned values. -/
 def whole_drops_stmt : Prop :=
@@ -381,7 +381,7 @@ def whole_drops_stmt : Prop :=
 /-- **A run whose result is an owned value** (§7, over a whole program;
 RUE-2478). `fn main() -> S0 { S0 { 7 } }` is checked and `pendingSafe`; the
 configuration right after (D-Struct) holds the new value's identity `0`, and
-the run finishes with that value as its result — which owns `0` — and a trace
+the run terminates with that value as its result — which owns `0` — and a trace
 that ends nothing. So `whole_program_exactly_once`'s other disjunct, an owned
 value accounted for by being part of the final value, is reached too. -/
 def whole_result_stmt : Prop :=

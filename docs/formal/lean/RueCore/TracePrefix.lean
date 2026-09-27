@@ -8,7 +8,7 @@ public import RueCore.TraceOrder
 # RueCore.TracePrefix — no double free on every prefix of a run (§7)
 
 `no_double_free` (`Trace.lean`) bounds the trace of a run that `eval`
-finishes within its fuel. A program that never finishes — a `loop` that
+terminates within its fuel. A program that never terminates — a `loop` that
 drops a value on every turn — has no such run: at every fuel `run` answers
 `outOfFuel`, which carries no trace, so the theorem says nothing about it.
 Yet "no destructor runs twice on one value" is a **safety property**
@@ -18,13 +18,13 @@ RUE-2477).
 
 `step_no_double_free` states it that way, over §6's relation: for a checked
 program, every configuration reachable from `Config.init` — the run so far,
-finished or not — has a trace that frees no identity twice and runs no
+terminating or not — has a trace that frees no identity twice and runs no
 destructor twice on one (`freedIds`, `dtorIds`, the vocabulary of
 `no_double_free`).
 
 ## The invariant: exhausted fuel keeps a ledger
 
-`eval_conserves` is a conservation law over *finished* evaluations: the
+`eval_conserves` is a conservation law over *terminating* evaluations: the
 result's store, value and trace own at most what the start owned plus what
 was minted. A trap is the one outcome that keeps a trace without a store, and
 the law says of it only that the trace owns at most the start plus some
@@ -728,7 +728,7 @@ theorem steps_trace_once (M : FloatSig) {P : Program} {F : Event → List Nat}
 /-- **No double free, on every prefix of a run** (§7 "No double-free", as a
 safety property; RUE-2477). For a checked program, every configuration §6's
 relation reaches from `Config.init` — the run so far, whether or not it ever
-finishes — has a trace that frees no identity twice (`freedIds`) and runs no
+terminates — has a trace that frees no identity twice (`freedIds`) and runs no
 destructor twice on one (`dtorIds`). A program that diverges is covered: its
 trace is bounded at every step, where `no_double_free`, over `run`'s answer,
 sees only `outOfFuel` and an empty trace. -/
@@ -738,7 +738,7 @@ theorem step_no_double_free (M : FloatLaws) {P : Program} (h : ProgramTyped P) {
   ⟨steps_trace_once M.toFloatSig (freed_measure P.decls) (no_refusal M h) hC,
     steps_trace_once M.toFloatSig (dtor_measure h.wf.decls.dtorNotCopy) (no_refusal M h) hC⟩
 
-/-- `no_double_free` for a finished run is a corollary (RUE-2477): a value or a
+/-- `no_double_free` for a terminating run is a corollary (RUE-2477): a value or a
 panic `run` answers is reached by §6's relation (`eval_big_to_small`), so its trace is
 a reachable configuration's; exhausted fuel carries the empty trace; and a
 checked run is never refused (helper). -/
