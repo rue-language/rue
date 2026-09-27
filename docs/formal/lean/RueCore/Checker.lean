@@ -1115,7 +1115,7 @@ theorem Decls.grounded_peel_zero (D : Decls) (d : TyName) :
       cases D.enums[e]? <;> rfl
 
 /-- A declaration grounded at round `n+1` contains only declarations grounded
-at round `n`. This is the peel read backwards, and it is what turns an
+at round `n`. This is the topological sort read backwards, and it is what turns an
 acceptance into well-foundedness (helper). -/
 theorem Decls.grounded_pred {D : Decls} {n : Nat} {d d' : TyName}
     (h : Ty.grounded (D.topoSort (n + 1)) d.ty = true) (hn : D.ByValueEdge d d') :

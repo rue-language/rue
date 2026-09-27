@@ -1399,7 +1399,7 @@ scalar (§5.8's (Lit)), one initializer per **declared** field at a struct
 payload at an enum (`6.3:16`, (Enum-Intro) §5.5), and `n` least elements at
 `[T; n]` ((Array-Intro) §5.8). The fuel is `declFuel`: three rounds per
 declaration, because `3.0:5`'s acyclicity bounds the declaration chain — the
-bound `checkNoCycle` peels with — and a field or a binder wraps its type in at
+bound `checkNoCycle`'s topological sort runs with — and a field or a binder wraps its type in at
 most two array levels (`arrayOf`), each of which spends a round too.
 
 Before this existed the depth-exhausted fallback was `mkStruct s []`, which is
