@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 1526.
+- Theorems checked: 1547.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -130,6 +130,27 @@ and diffs them against the committed copies.
 | `Float.ofLit_one` | `RueCore.Float.Lemmas` | *none* |
 | `Float.ite_succ_le` | `RueCore.Float.Lemmas` | *none* |
 | `Float.sqrt_wf` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `compare_mul_two_pow` | `RueCore.Float.Lemmas` | `propext` |
+| `cmpScaled_at` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `magCmp_spec` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `magCmp_self` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `magCmp_antisymm` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `magCmp_trans` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `odd_ne_mul_two_pow` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `canon_scaled_eq` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `magCmp_eq_zero_iff` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `totalCmp_of_rank_lt` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `totalCmp_of_rank_gt` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `totalCmp_pos` | `RueCore.Float.Lemmas` | `propext` |
+| `totalCmp_neg` | `RueCore.Float.Lemmas` | `propext` |
+| `totalRank_eq` | `RueCore.Float.Lemmas` | *none* |
+| `totalCmp_self` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `totalCmp_antisymm` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `rank_le_of_totalCmp` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `canon_of_wf` | `RueCore.Float.Lemmas` | *none* |
+| `totalCmp_eq_zero_iff` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `totalCmp_trans` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
+| `totalCmp_strictTotalOrder` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
 | `Qual.rank_le_join_left` | `RueCore.Statics.Lemmas` | *none* |
 | `Qual.rank_le_join_right` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
 | `Qual.eq_linear_of_rank` | `RueCore.Statics.Lemmas` | `propext` |

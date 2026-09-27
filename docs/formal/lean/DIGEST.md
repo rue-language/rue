@@ -324,6 +324,64 @@ theorem RueCore.Float.sqrt_wf (σ : Bool) (w : FloatWidth) (f : FloatDatum)
   (hf : FloatDatum.Wf w f) : FloatDatum.Wf w (Float.sqrtD σ w f)
 ```
 
+### `totalCmp_self`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+`(D-Total-Cmp)` §6.4 is `0` on a datum and itself, a NaN included (`3.12:32`).
+
+```lean
+theorem RueCore.totalCmp_self (a : FloatDatum) : a.totalCmp a = 0
+```
+
+### `totalCmp_antisymm`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+Swapping `(D-Total-Cmp)`'s operands negates it: `≺_w` read backwards is `1` (§6.4, `3.12:32`).
+
+```lean
+theorem RueCore.totalCmp_antisymm (a b : FloatDatum) : b.totalCmp a = -a.totalCmp b
+```
+
+### `totalCmp_eq_zero_iff`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+**`@total_cmp` is `0` exactly on the same datum**, for well-formed data: §6.4's "`k = 0` holds exactly when the two operands are the same datum". This is where canonicity is used — `±0` are distinct data of distinct rank, the two NaNs likewise, and a finite datum has one significand/exponent pair.
+
+```lean
+theorem RueCore.totalCmp_eq_zero_iff {w : FloatWidth} {a b : FloatDatum}
+  (ha : FloatDatum.Wf w a) (hb : FloatDatum.Wf w b) : a.totalCmp b = 0 ↔ a = b
+```
+
+### `totalCmp_trans`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+**`≺_w` is transitive** (§7), on every datum: no well-formedness is needed.
+
+```lean
+theorem RueCore.totalCmp_trans {a b c : FloatDatum} (h₁ : a.totalCmp b = -1)
+  (h₂ : b.totalCmp c = -1) : a.totalCmp c = -1
+```
+
+### `totalCmp_strictTotalOrder`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+**`≺_w` is a strict total order on `𝔽_w`** (§7): the relation `a ≺ b :≡ totalCmp a b = -1` is irreflexive and transitive on every datum, and trichotomous with datum equality on the well-formed data of a width. With `totalCmp_trichotomy` (the result is one of `-1`, `0`, `1`) and `totalCmp_antisymm` (`1` is `≺` read backwards), `@total_cmp` realizes the order.
+
+```lean
+theorem RueCore.totalCmp_strictTotalOrder (w : FloatWidth) :
+  (∀ (a : FloatDatum), ¬a.totalCmp a = -1) ∧
+    (∀ (a b c : FloatDatum),
+        a.totalCmp b = -1 → b.totalCmp c = -1 → a.totalCmp c = -1) ∧
+      ∀ (a b : FloatDatum),
+        FloatDatum.Wf w a →
+          FloatDatum.Wf w b → a.totalCmp b = -1 ∨ a = b ∨ b.totalCmp a = -1
+```
+
 ### `StructDecl.Wf.field_not_linear`
 
 *theorem* · module `RueCore.Statics.Lemmas`
@@ -7486,6 +7544,203 @@ Rounding up adds at most one (helper).
 ```lean
 theorem RueCore.Float.ite_succ_le (c : Prop) [Decidable c] (x : Nat) :
   (if c then x + 1 else x) ≤ x + 1
+```
+
+### `compare_mul_two_pow`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+A `Nat` comparison is unchanged by a common positive factor (helper).
+
+```lean
+theorem RueCore.compare_mul_two_pow (x y d : Nat) :
+  compare (x * 2 ^ d) (y * 2 ^ d) = compare x y
+```
+
+### `cmpScaled_at`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+`cmpScaled` may scale both sides to any common exponent `k` at or below
+the two, not only to their minimum (helper).
+
+```lean
+theorem RueCore.cmpScaled_at {a b : Nat} {i j k : Int} (hi : k ≤ i) (hj : k ≤ j) :
+  cmpScaled a i b j =
+    match compare (a * 2 ^ (i - k).toNat) (b * 2 ^ (j - k).toNat) with
+    | Ordering.lt => -1
+    | Ordering.eq => 0
+    | Ordering.gt => 1
+```
+
+### `magCmp_spec`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+`magCmp` read as the order of the two magnitudes scaled to a common
+exponent `k` (helper).
+
+```lean
+theorem RueCore.magCmp_spec {s₁ s₂ : Nat} {e₁ e₂ k : Int} (h₁ : k ≤ e₁)
+  (h₂ : k ≤ e₂) :
+  (magCmp s₁ e₁ s₂ e₂ = -1 ↔
+      s₁ * 2 ^ (e₁ - k).toNat < s₂ * 2 ^ (e₂ - k).toNat) ∧
+    (magCmp s₁ e₁ s₂ e₂ = 0 ↔
+        s₁ * 2 ^ (e₁ - k).toNat = s₂ * 2 ^ (e₂ - k).toNat) ∧
+      (magCmp s₁ e₁ s₂ e₂ = 1 ↔
+        s₂ * 2 ^ (e₂ - k).toNat < s₁ * 2 ^ (e₁ - k).toNat)
+```
+
+### `magCmp_self`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+`magCmp` is `0` on equal pairs (helper).
+
+```lean
+theorem RueCore.magCmp_self (s : Nat) (e : Int) : magCmp s e s e = 0
+```
+
+### `magCmp_antisymm`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+Swapping `magCmp`'s operands negates it (helper).
+
+```lean
+theorem RueCore.magCmp_antisymm (s₁ : Nat) (e₁ : Int) (s₂ : Nat) (e₂ : Int) :
+  magCmp s₂ e₂ s₁ e₁ = -magCmp s₁ e₁ s₂ e₂
+```
+
+### `magCmp_trans`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+`magCmp`'s `-1` is transitive (helper).
+
+```lean
+theorem RueCore.magCmp_trans {s₁ s₂ s₃ : Nat} {e₁ e₂ e₃ : Int}
+  (h₁₂ : magCmp s₁ e₁ s₂ e₂ = -1) (h₂₃ : magCmp s₂ e₂ s₃ e₃ = -1) :
+  magCmp s₁ e₁ s₃ e₃ = -1
+```
+
+### `odd_ne_mul_two_pow`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+A canonical odd significand times a positive power of two is even, so
+it is no other canonical significand (helper).
+
+```lean
+theorem RueCore.odd_ne_mul_two_pow {s t d : Nat} (hs : s % 2 = 1) (hd : 0 < d) :
+  s ≠ t * 2 ^ d
+```
+
+### `canon_scaled_eq`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+Two canonical pairs naming the same magnitude, scaled to the smaller
+exponent `e₁`, are the same pair (helper).
+
+```lean
+theorem RueCore.canon_scaled_eq {s₁ s₂ : Nat} {e₁ e₂ : Int}
+  (h₁ : s₁ = 0 ∧ e₁ = 0 ∨ s₁ % 2 = 1) (h₂ : s₂ = 0 ∧ e₂ = 0 ∨ s₂ % 2 = 1)
+  (hle : e₁ ≤ e₂) (h : s₁ = s₂ * 2 ^ (e₂ - e₁).toNat) : s₁ = s₂ ∧ e₁ = e₂
+```
+
+### `magCmp_eq_zero_iff`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+On canonical pairs `magCmp` is `0` exactly on the same pair: a non-zero
+magnitude has one odd significand, and zero has the one pair `(0, 0)`
+(helper).
+
+```lean
+theorem RueCore.magCmp_eq_zero_iff {s₁ s₂ : Nat} {e₁ e₂ : Int}
+  (h₁ : s₁ = 0 ∧ e₁ = 0 ∨ s₁ % 2 = 1) (h₂ : s₂ = 0 ∧ e₂ = 0 ∨ s₂ % 2 = 1) :
+  magCmp s₁ e₁ s₂ e₂ = 0 ↔ s₁ = s₂ ∧ e₁ = e₂
+```
+
+### `totalCmp_of_rank_lt`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+A lower rank is a `-1` (helper).
+
+```lean
+theorem RueCore.totalCmp_of_rank_lt {a b : FloatDatum}
+  (h : a.totalRank < b.totalRank) : a.totalCmp b = -1
+```
+
+### `totalCmp_of_rank_gt`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+A higher rank is a `1` (helper).
+
+```lean
+theorem RueCore.totalCmp_of_rank_gt {a b : FloatDatum}
+  (h : b.totalRank < a.totalRank) : a.totalCmp b = 1
+```
+
+### `totalCmp_pos`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+Two positive finite data compare by magnitude (helper).
+
+```lean
+theorem RueCore.totalCmp_pos (s₁ : Nat) (e₁ : Int) (s₂ : Nat) (e₂ : Int) :
+  (FloatDatum.num false s₁ e₁).totalCmp (FloatDatum.num false s₂ e₂) =
+    magCmp s₁ e₁ s₂ e₂
+```
+
+### `totalCmp_neg`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+Two negative finite data compare by magnitude reversed (helper).
+
+```lean
+theorem RueCore.totalCmp_neg (s₁ : Nat) (e₁ : Int) (s₂ : Nat) (e₂ : Int) :
+  (FloatDatum.num true s₁ e₁).totalCmp (FloatDatum.num true s₂ e₂) =
+    -magCmp s₁ e₁ s₂ e₂
+```
+
+### `totalRank_eq`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+Data of one rank are the same special, or two finite data of one sign (helper).
+
+```lean
+theorem RueCore.totalRank_eq {a b : FloatDatum} (h : a.totalRank = b.totalRank) :
+  a = b ∨
+    ∃ n s₁ e₁ s₂ e₂, a = FloatDatum.num n s₁ e₁ ∧ b = FloatDatum.num n s₂ e₂
+```
+
+### `rank_le_of_totalCmp`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+A `-1` never goes down in rank (helper).
+
+```lean
+theorem RueCore.rank_le_of_totalCmp {a b : FloatDatum} (h : a.totalCmp b = -1) :
+  a.totalRank ≤ b.totalRank
+```
+
+### `canon_of_wf`
+
+*theorem* · module `RueCore.Float.Lemmas`
+
+Well-formed data sit at canonical significand/exponent pairs (helper).
+
+```lean
+theorem RueCore.canon_of_wf {w : FloatWidth} {n : Bool} {s : Nat} {e : Int}
+  (h : FloatDatum.Wf w (FloatDatum.num n s e)) : s = 0 ∧ e = 0 ∨ s % 2 = 1
 ```
 
 ### `Qual.rank_le_join_left`
