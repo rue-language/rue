@@ -365,7 +365,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   - a `match` moves the payload whole into the arm's cells, so the
     scrutinee's owner is gone.
 - **What the law needs**:
-  - **Copy closure** (`RueCore.Contents.copyContained`): nothing owned under a
+  - **Copy containment** (`RueCore.Contents.copyContained`): nothing owned under a
     `Copy` node, or a copy would duplicate it. §3 makes this a property of
     every well-typed value (`RueCore.ContentsTy.copyContained`). The machine
     also enforces it with a fourth monitor beside the linear three,
@@ -522,7 +522,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     has unwound.
 - **Proof.** `RueCore.eval_exact` is `eval_conserves`' conservation law read
   as an equality over the starting identities, by the same fuel induction.
-  Like it, it needs no typing derivation: copy closure, which the machine
+  Like it, it needs no typing derivation: Copy containment, which the machine
   maintains, closes every case. So do two shape premises, in `eval` and
   `Step` alike: `@dbg`'s operand is observable, the only values §6.12
   renders, and a loop body's value is `⟨⟩` (§6.10). Otherwise a value would
@@ -557,7 +557,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   `run_blocks` reads no typing derivation, only `3.9:31`
   (`RueCore.DtorNotCopy`). A declared-linear destructure's `Copy` residue
   subtree is dropped with no marker, and its walk is empty because no `Copy`
-  struct declares a destructor and, by copy closure, nothing under a `Copy`
+  struct declares a destructor and, by Copy containment, nothing under a `Copy`
   node owns anything. `RueCore.fieldsSwapped_rejected` is the grammar
   rejecting `struct_field_drop_order`'s trace with its two field destructors
   swapped.

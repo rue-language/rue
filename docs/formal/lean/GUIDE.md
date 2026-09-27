@@ -607,7 +607,7 @@ The proof is a **conservation law**, `eval_conserves`, by the same fuel
 induction as `soundness`: what the final store, the result and the trace own,
 counted as a multiset, is at most what the initial store owned plus what was
 minted, and minted identities are store indices, each once. It needs no typing
-derivation. It needs **copy closure**, that nothing owned sits under a `Copy`
+derivation. It needs **Copy containment**, that nothing owned sits under a `Copy`
 node, and the machine enforces that with its fourth monitor. Typing enters
 through the first conjunct, `no_refusal`: a checked program never reaches
 the monitor, so its trace is the whole run's. `dupProgram_step_double_free` is

@@ -101,12 +101,12 @@ theorem not_exact_returned {D : Decls} {H H' : Store} {v : Val} {tr : List Event
       (storeOwn D H).count a + Y.count a) : ¬ Exact D H Y (.returned H' v tr) :=
   fun h => hne (h.2.2.2 a ha)
 
-/-- `Exact` fails at a value whose final store is not copy-closed (helper). -/
+/-- `Exact` fails at a value whose final store is not copy-contained (helper). -/
 theorem not_exact_cc {D : Decls} {H H' : Store} {v : Val} {tr : List Event} {Y : List Nat}
     (h : ¬ StoreCC D H') : ¬ Exact D H Y (.ok H' v tr) :=
   fun he => h he.2.1
 
-/-- A one-cell store is copy-closed when its cell is (helper). -/
+/-- A one-cell store is copy-contained when its cell is (helper). -/
 theorem storeCC_one {D : Decls} {c : Contents} (h : c.copyContained D = true) : StoreCC D [.full c] := by
   intro ℓ c' h'
   match ℓ, h' with

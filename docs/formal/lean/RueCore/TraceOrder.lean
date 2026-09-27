@@ -31,7 +31,7 @@ typing derivation, only `DtorNotCopy` (a destructor-bearing struct is not
 `Copy`, `3.9:31`), which a declared-linear destructure's `Copy` residue
 subtree needs: that subtree is dropped with no marker, as `@drop` of a `Copy`
 place is, and its walk is empty only because nothing under a `Copy` node owns
-anything (copy closure, which the machine maintains) and no `Copy` struct
+anything (Copy containment, which the machine maintains) and no `Copy` struct
 declares a destructor.
 
 ## Across cells: last-in first-out, over §6's relation (§6.7, §6.9, §6.10)
@@ -399,7 +399,7 @@ theorem DropGlueBlocks.intro {D D' : Decls} {H : Store} {mk : Nat → Val} :
     DropGlueBlocks D (introVal D' H mk).trace := by
   unfold introVal; split <;> exact .nil
 
-/-- A copy-closed store is one step further along an evaluation that reached
+/-- A copy-contained store is one step further along an evaluation that reached
 a value (helper). -/
 theorem eval_ok_cc (M : FloatSig) {P : Program} {n : Nat} {H H₁ : Store} {φ : Activation} {e : Expr}
     {v : Val} {tr : List Event} (hcc : StoreCC P.decls H)
@@ -434,7 +434,7 @@ theorem evalArgs_blocks {D : Decls} {ev : Store → Expr → EvalRes}
       | _ => rw [hr] at h₁; exact h₁
 
 /-- **Every evaluation's trace is in §6.11's block grammar** (§3.9, §6.11):
-every evaluation, of every expression, from every copy-closed store, at every
+every evaluation, of every expression, from every copy-contained store, at every
 fuel. By fuel induction over `eval`; no typing derivation, only
 `DtorNotCopy`, which a destructure's `Copy` residue needs (module
 docstring). -/

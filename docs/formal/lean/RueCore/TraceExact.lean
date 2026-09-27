@@ -79,7 +79,7 @@ the enclosing code can still reach (`orphan_rejected`).
 
 The proof is the conservation law of `Trace.lean` read as an **equality**
 (`eval_exact`), by the same fuel induction. It needs no typing derivation:
-copy closure, which the machine maintains, and the two shape premises
+Copy containment, which the machine maintains, and the two shape premises
 RUE-2427 adds — `@dbg`'s operand is observable and a loop body's value is
 `⟨⟩` — are what close every case where a value could otherwise vanish
 unrecorded. Typing enters only through `soundness`: a checked configuration's
@@ -497,7 +497,7 @@ theorem Contents.getAt_setAt : ∀ (π : List Nat) {c new c' : Contents},
 /-- **A write at a path, counted exactly**: the contents after the write owns
 what it owned before, less what sat at the path, plus what was written —
 §6.3's move and §6.8's store, read as an equation. Below a `Copy` node both
-sides own nothing, which is where copy closure of both the old and the new
+sides own nothing, which is where Copy containment of both the old and the new
 contents is needed (helper). -/
 theorem Contents.setAt_own_eq {D : Decls} (a : Nat) : ∀ (π : List Nat) {c sub new c' : Contents},
     c.copyContained D = true → c'.copyContained D = true → c.getAt π = .ok sub →
@@ -690,7 +690,7 @@ theorem matchConsume_exact {D : Decls} {e k i : Nat} {vs : List Val}
     simp [freedIds, Event.freed, Contents.own, hc, Contents.ownList_movedOuts, List.count_cons]
 
 /-- A fresh aggregate owns exactly its members, apart from its own identity:
-a `Copy` node owns nothing, and — copy-closed — neither do its members
+a `Copy` node owns nothing, and — copy-contained — neither do its members
 (helper). -/
 theorem Contents.own_struct_fresh {D : Decls} {s i : Nat} {cs : List Contents}
     (h : (Contents.struct s i cs).copyContained D = true) {a : Nat} (ha : a ≠ i) :
@@ -1523,7 +1523,7 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
 
 /-- **The exact conservation law** (§7's no-leak-of-drops, the invariant
 half): every evaluation, of every `pendingSafe` expression of a
-`pendingSafe` program, from every copy-closed store, at every fuel, keeps
+`pendingSafe` program, from every copy-contained store, at every fuel, keeps
 `Exact` — every owned identity it starts with is, at its end, in exactly one
 of the store, the result, or the trace's ended identities. By fuel induction
 over `eval`, one case per form, each closed by its exact ledger above; like
@@ -2518,8 +2518,8 @@ theorem Tidy.settled {φ : Activation} {H H₁ : Store} {r : EvalRes} {tr : List
   | broke => exact ⟨Tombstoned.mono hle h.2.1, h.2.2.elim fun locs h' => ⟨locs, h'.1⟩⟩
   | _ => trivial
 
-/-- A form's leading operands ran from a copy-closed store: the store only
-grew, it stays copy-closed, and the values are (helper). -/
+/-- A form's leading operands ran from a copy-contained store: the store only
+grew, it stays copy-contained, and the values are (helper). -/
 theorem lead_cc (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {fuel : Nat}
     {H : Store} {φ : Activation} {e : Expr} {H₁ : Store} {vs : List Val} {tr : List Event}
     (hcc : StoreCC P.decls H) (he : e.pendingSafe = true) (hl : Lead M P fuel H φ H₁ vs tr e) :
@@ -2736,7 +2736,7 @@ theorem lostActivation_typing : ActivationTyping lostDecls lostCtx lostActivatio
     (HasTy.struct (by rfl) (.cons (.int (w := .w64) (s := .signed) (n := 7) (by decide)) .nil))⟩
     (by simp) .nil, rfl⟩
 
-/-- `g`'s entry store is copy-closed (helper). -/
+/-- `g`'s entry store is copy-contained (helper). -/
 theorem lostStore_cc : StoreCC lostDecls lostStore := by
   intro ℓ c hc
   match ℓ, hc with
