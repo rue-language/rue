@@ -567,7 +567,7 @@ catches nothing.
 
 Reaching `divZero` (RUE-2512): The `(x, 0)` div-by-zero shape
 `boundaryPair`'s `.div | .rem` case already appends (above) reaches an
-*accepted* program too rarely to be useful as generated coverage: measured
+accepted program too rarely to be useful as generated coverage: measured
 against trunk `3a2432f14` (before this section's own changes), 0 of the 1,200
 generated programs at `--gen 200 --seed 7` and `--gen 1000 --seed 23` end in
 `panic divZero`, against one `remZero` (`gen_7_171`) — partly because `op`
@@ -1041,7 +1041,7 @@ correctly under the RUE-2318 mutant, checked by hand).
 every width and signedness, so an accepted program reaches `panic divZero` at
 all. `boundaryPair`'s `.div | .rem` case (above) appends the div-by-zero shape
 `(x, 0)` to its own candidates already, at the ordinary one-in-sixteen rate —
-too rarely, measured against trunk, to land in an *accepted* program at
+too rarely, measured against trunk, to land in an accepted program at
 either pinned setting: 0 of the 1,200 generated programs at `--gen 200 --seed
 7` and `--gen 1000 --seed 23` end in `panic divZero`, against one `remZero`
 (`gen_7_171`). Part of the gap is that `op` itself has to land on `div` before

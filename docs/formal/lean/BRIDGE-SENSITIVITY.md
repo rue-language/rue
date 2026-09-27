@@ -789,7 +789,7 @@ Rerun at these settings:
   own instances of it.
 
 Reaching `divZero` (RUE-2512): `arithBinop`'s `(x, 0)` div-by-zero pair
-(above) reached an *accepted* program too rarely to be generated coverage at
+(above) reached an accepted program too rarely to be generated coverage at
 all: 0 of the 1,200 generated programs at these two settings ended in `panic
 divZero`, against one `remZero` (`gen_7_171`). `pairRate` raises `/`'s own
 rate to one in six (`rem`'s stays untouched), and this one shape now prints
