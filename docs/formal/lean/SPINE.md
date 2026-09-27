@@ -16,14 +16,14 @@ or containers, §6.13); both are Phase D (RUE-2238, RUE-2240). So these parts of
 - the lemmas §7 names explicitly: loan/drop non-interference, loan-extent
   nesting, root separation, view-intact (RUE-2238) and handle-uniqueness
   preservation (RUE-2240). Float totality is not a theorem either: the rounded
-  operations' closure is assumed, as the laws of `FloatModel`, of every model
+  operations' closure is assumed, as the laws of `FloatLaws`, of every model
   the statements quantify over (it is proved of `Float.exactOps`).
 
-22 of the 41 statements quantify over `M : FloatModel`, the IEEE 754 laws assumed.
+22 of the 41 statements quantify over `M : FloatLaws`, the IEEE 754 laws assumed.
 The laws have a model: `Float.exactModel` (`RueCore/Float/Lemmas.lean`) proves every one
 of them of the executable instance `Float.exactOps`, so they are jointly satisfiable and
 those 22 are not vacuous in `M` (`Nonvacuous.exact_model`, RUE-2469). Several statements say
-"`run` is never `.stuck` with violation *v*": they mean what `eval`'s monitors
+"`run` is never `.refused` with violation *v*": they mean what `eval`'s monitors
 watch, since *v* is the tag a monitor raises (`no_violation`, `no_use_after_move`,
 `no_use_after_drop` and `no_linear_discard` say so; RUE-2469).
 What the proof means for the compiler, in plain language, is RUE-2462's
@@ -68,7 +68,7 @@ a conjunct starts from), not hypotheses about the program. For `drop_order` 2–
 the dropped premise is the only thing tying its bound value or trace to the program,
 so the counter-example shows only that the conclusion is not a tautology. The walk does not go
 under `∨` or `¬`, nor into a definition that is not reducible (`Config.SafeAt`,
-`Exact`, `Blocks`, `DropGlueBlocks`, `Lifo`). Each pairing of a counter-example with a (theorem,
+`Exact`, `Blocks`, `DropGlueBlocks`, `StackDiscipline`). Each pairing of a counter-example with a (theorem,
 number) is checked by the kernel (89 pairs): `RueCore/Sharp/Glue.lean` proves,
 from the counter-example, the negation of the spine statement with that
 hypothesis removed, and the lint computes that weakened statement itself from
@@ -80,7 +80,7 @@ established without it), except where its doc-comment says it is shown directly.
 The counter-examples are Spec statements too, proved in
 `RueCore/Sharp.lean` and covered by the kernel, the lint, Comparator and the
 fingerprints. Several are refusals of `eval`'s monitors, so a machine without a
-monitor falsifies one (R3 of `REDTEAM-LOG.md`). The `FloatModel` laws are not
+monitor falsifies one (R3 of `REDTEAM-LOG.md`). The `FloatLaws` laws are not
 numbered: they are assumptions about the model a statement is instantiated at, not
 hypotheses about a program, and every counter-example runs on `Float.exactOps`, a
 model of them; that one reason is recorded with `RueCore.Spec.sharpnessReasons`.
@@ -114,9 +114,9 @@ Rompf; `../FIELD.md` §3); its Spec module keeps the file name
 
 | Theorem | Literature (`../FIELD.md`) | Ours | Difference |
 |---|---|---|---|
-| `soundness` | Soundness via a definitional interpreter: `⊢ e : T ∧ eval n e = r ≠ Timeout ⇒ r = Val v ∧ v : T` (FIELD §3: Amin & Rompf Lemma 3; Owens et al. §5) | `WfProgram P`, `Typed P R Γ e T Ω` and a frame and store agreeing with `Γ` ⇒ `EvalOk` of `eval` at every fuel | The same theorem for an open expression, from any frame and store that agree with its context (`FrameMatches`), with an unwinding `return` or `break`, a defined panic and exhausted fuel among the allowed outcomes, and with `.stuck` excluded, which covers `eval`'s monitors as well as stuck states. |
+| `soundness` | Soundness via a definitional interpreter: `⊢ e : T ∧ eval n e = r ≠ Timeout ⇒ r = Val v ∧ v : T` (FIELD §3: Amin & Rompf Lemma 3; Owens et al. §5) | `WfProgram P`, `Typed P R Γ e T Ω` and a frame and store agreeing with `Γ` ⇒ `EvalOk` of `eval` at every fuel | The same theorem for an open expression, from any frame and store that agree with its context (`ActivationTyping`), with an unwinding `return` or `break`, a defined panic and exhausted fuel among the allowed outcomes, and with `.refused` excluded, which covers `eval`'s monitors as well as stuck states. |
 | `run_safe` | Syntactic soundness: `⊢ e : τ ⇒ e⇑ ∨ (e ↦* v ∧ ⊢ v : τ)` (FIELD §2: Wright & Felleisen Thm 4.12 (preprint numbering)) | `WfProgram P` and a parameterless entry point ⇒ at every fuel, `run` is out of fuel, a panic, or a value of the entry point's type | Wright & Felleisen's three-way form, read per fuel bound over the interpreter: divergence is exhausting this fuel rather than `⇑`, and a defined panic, PFPL's checked error, is an allowed outcome. |
-| `no_violation` | Weak soundness: a well-typed program never yields `wrong` ("well-typed programs do not go wrong") (FIELD §2: Wright & Felleisen §§1–2; Milner 1978) | `ProgramTyped P` ⇒ `run` is never `.stuck w`, at any fuel and for any `w` | `.stuck w` is wider than `wrong`: it includes the refusals of `eval`'s four monitors, which are not stuck states of §6, so the statement also says that no monitor fires (R3 of `REDTEAM-LOG.md`). |
+| `no_violation` | Weak soundness: a well-typed program never yields `wrong` ("well-typed programs do not go wrong") (FIELD §2: Wright & Felleisen §§1–2; Milner 1978) | `ProgramTyped P` ⇒ `run` is never `.refused w`, at any fuel and for any `w` | `.refused w` is wider than `wrong`: it includes the refusals of `eval`'s four monitors, which are not stuck states of §6, so the statement also says that no monitor fires (R3 of `REDTEAM-LOG.md`). |
 | `no_use_after_move` | No named theorem; reading a moved-from (deinitialized) place is a use of uninitialized memory, one of the memory access errors of memory safety (FIELD §5: Rust Reference, Expressions and Glossary (moved from); Hicks 2014 (memory safety)) | `ProgramTyped P` ⇒ `run` never refuses with `useAfterMove` | It is `no_violation` at one tag, so it rules out a read of a `⊘` cell only as far as `eval` checks every read and labels it so. |
 | `no_use_after_drop` | No use after free: the program never "reuses or references memory after it has been freed" (FIELD §5: CWE-416) | `ProgramTyped P` ⇒ `run` never refuses with `useAfterDrop` | The freed object is a dropped binding's retired (`†`) cell rather than heap memory, the error is ruled out as far as `eval` labels an access to it, and the typing hypothesis is redundant (`run_no_use_after_drop`). |
 | `run_no_use_after_drop` | No use after free (CWE-416), as above (FIELD §5: CWE-416) | every program ⇒ `run` never refuses with `useAfterDrop`, at any fuel and any float operations | No typing hypothesis: the property is structural, since a cell is minted fresh and nothing names it once its scope has retired it. |
@@ -124,7 +124,7 @@ Rompf; `../FIELD.md` §3); its Spec module keeps the file name
 | `no_linear_overwrite` | Linearity, no weakening (Walker), for an assignment (FIELD §4: Walker §1.1) | `ProgramTyped P` ⇒ `run` never refuses with `linearOverwrite` | The dynamic image of no weakening at an assignment, which would discard the live linear value it overwrites, as `eval`'s monitor for it watches. |
 | `no_linear_discard` | Linearity, no weakening (Walker), for a sequence (FIELD §4: Walker §1.1) | `ProgramTyped P` ⇒ `run` never refuses with `linearDiscard` | The dynamic image of no weakening at a sequence, which would discard a linear value, as `eval`'s monitor for it watches. |
 | `fuel_mono` | The clock lemma: not timed out at clock `c` ⇒ the same result at every `c + k` (FIELD §3: Owens et al. §3.4 (unnamed); Software Foundations `ceval_step_more`) | `n ≤ m` and `eval n … ≠ outOfFuel` ⇒ `eval m … = eval n …` | Identical up to notation. |
-| `no_masking` | No named counterpart; a consequence of the clock lemma (FIELD §3: the `no_masking` row (none)) | `eval n … = .stuck w` and `eval m … ≠ outOfFuel` ⇒ `eval m … = .stuck w` | A corollary of `fuel_mono` in either order of `n` and `m`, stated because the ∀-fuel theorems need it and the literature does not state it separately. |
+| `no_masking` | No named counterpart; a consequence of the clock lemma (FIELD §3: the `no_masking` row (none)) | `eval n … = .refused w` and `eval m … ≠ outOfFuel` ⇒ `eval m … = .refused w` | A corollary of `fuel_mono` in either order of `n` and `m`, stated because the ∀-fuel theorems need it and the literature does not state it separately. |
 | `run_ne_returned` | No counterpart: the literature's interpreter result is a timeout, an error or a value (FIELD §3: the result type `Timeout ∣ Done (Error ∣ Val v)` (Owens et al.; Siek 2013)) | `run` never answers an unwinding `return`, on every program | Our result type also has unwinding outcomes (`returned`, `broke`) that the literature's has no counterpart of, and this says an unwinding `return` never escapes `run`, since the entry point's call catches it ((D-Return-Main) §6.9). |
 | `check_sound` | Algorithmic soundness: `Γ₁ ⊢ t : T; Γ₂ ∧ L(Γ₂) = ∅ ⇒ Γ₁ ⊢ t : T` (FIELD §4: Walker 1.2.9) | `check P R Γ e = some (c, Ω)` ⇒ `Typed P R Γ e T Ω` at every `T` that `c` fits | Walker's direction and shape, with the outgoing state `Ω` kept in the declarative judgment rather than required empty, and soundness only: completeness is not stated, and does not hold (a bound on the loop-head iteration can reject a typed program). |
 | `checkProgram_sound` | Algorithmic soundness (Walker 1.2.9), for a whole program (FIELD §4: Walker 1.2.9) | `checkProgram P = true` ⇒ `ProgramTyped P` | Soundness only, lifted to a program; a typed program the checker rejects is possible. |
@@ -135,14 +135,14 @@ Rompf; `../FIELD.md` §3); its Spec module keeps the file name
 | `drop_exactly_once` | Exactly once = at most once ∧ at least once; linear use is exactly one use; a memory leak is the failure of "at least once" (FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401) | a typed, `pendingSafe` expression of a checked program, from a frame and store agreeing with its context ⇒ its evaluation is not stuck, ends every identity exactly as often as held (`Exact`), and retires what it allocated (`Tidy`) | Per evaluation of one expression from a matching frame and store, not per run from `Config.init`, under `pendingSafe` (RUE-2316) and with nothing about a panic; the whole-run form is `whole_program_exactly_once`. |
 | `rest_exactly_once` | Exactly once (as above), for values minted during an evaluation (FIELD §6: Confluent (delivery), Walker (linear use)) | the hypotheses of `drop_exactly_once`, and a form's leading operands evaluated (`Lead`) ⇒ the rest of the form ends them and the store's identities exactly once (`Exact`) and retires what it allocated (`Settled`) | The induction form behind `drop_exactly_once`, listed as a linking statement because it covers the values a form mints mid-evaluation; the literature has no separate counterpart. |
 | `whole_program_exactly_once` | Exactly once = at most once ∧ at least once, over a whole run; a memory leak is a value the run allocates and never releases (FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401) | `ProgramTyped P`, `P.pendingSafe`, `init →* C`, `a` held by `C` (`Config.held`) and `C →* ✓v` with trace `tr` ⇒ `a` is ended in `tr` or owned by `v`, exactly once between the two | Per owned value identity, for every value a finished run holds rather than per allocation site, under `pendingSafe` (RUE-2316), and with nothing about a panic, whose trap runs no drop, or a run that never finishes. |
-| `drop_order` | Drop order: variables are dropped in reverse order of declaration, temporaries in reverse order of creation (FIELD §5: Rust Reference, Destructors; FIELD §6: trace property over finished traces (no accepted name)) | `ProgramTyped P` ⇒ a finished run's trace is in §6.11's block grammar (`Blocks`), and each step from a reachable configuration drops newest first (`NewestFirst`, `Lifo`) from a location-ordered stack | Newest first by location rather than reverse declaration order, where `Lifo` constrains only a step that pops a scope (it holds of every step that keeps its stack), and `Blocks` holds of finished traces only (R7 of `REDTEAM-LOG.md`). |
+| `drop_order` | Drop order: variables are dropped in reverse order of declaration, temporaries in reverse order of creation (FIELD §5: Rust Reference, Destructors; FIELD §6: trace property over finished traces (no accepted name)) | `ProgramTyped P` ⇒ a finished run's trace is in §6.11's block grammar (`Blocks`), and each step from a reachable configuration drops newest first (`StrictStackOrder`, `StackDiscipline`) from a location-ordered stack | Newest first by location rather than reverse declaration order, where `StackDiscipline` constrains only a step that pops a scope (it holds of every step that keeps its stack), and `Blocks` holds of finished traces only (R7 of `REDTEAM-LOG.md`). |
 | `drop_glue_order` | Drop glue: `Drop::drop` if implemented, then each field's drop glue; struct fields in declaration order, array elements first to last (FIELD §5: rustc-dev-guide, Drop elaboration; Rust Reference, Destructors) | `ProgramTyped P` ⇒ a finished run's trace is in §6.11's block grammar with each drop's events given by §6.11's rules (`DropGlueBlocks`, `DropGlue`) | The Rust order for structs and arrays, with an enum dropping its active payload only, stated over finished traces only. |
 | `Step.det` | Determinacy: `e ↦ e′ ∧ e ↦ e″ ⇒ e′ =α e″` (FIELD §1: PFPL Lemma 5.3) | `C → C₁` and `C → C₂` ⇒ `C₁ = C₂` | Identical up to notation, with syntactic equality for `=α` because bindings are de Bruijn indices. |
 | `Step.terminal` | Finality of values: `¬(e val ∧ e ↦ e′)`; a terminal transition system's final configurations take no step (FIELD §1: PFPL Lemma 5.2; Plotkin 1981/2004 §1.2, Def. 2) | `C` terminal (`✓` or `↯κ`) ⇒ no `C → C′` | Identical up to notation, with a trap `↯κ` final too, as PFPL's checked error is. |
-| `Config.trichotomy` | No named theorem: by the definition of stuck, a state is final, steps, or is stuck (FIELD §1: Plotkin 1981/2004 §3.1, Def. 11; PFPL ch. 6) | every `C` steps, is terminal, or is stuck on a named `Violation` | Immediate here, as in the literature. `Config.Stuck` is `step`'s `.stuck` verdict and `step` is total, so what the statement adds is that `step`'s `.halted` is `Config.Terminal` and its `.next` is a `Step`. That stuck means "not terminal, and no rule applies" is `Config.stuck_iff`; that `step` is `Step` is `step_iff`. |
+| `Config.trichotomy` | No named theorem: by the definition of stuck, a state is final, steps, or is stuck (FIELD §1: Plotkin 1981/2004 §3.1, Def. 11; PFPL ch. 6) | every `C` steps, is terminal, or is stuck on a named `Refusal` | Immediate here, as in the literature. `Config.Stuck` is `step`'s `.stuck` verdict and `step` is total, so what the statement adds is that `step`'s `.halted` is `Config.Terminal` and its `.next` is a `Step`. That stuck means "not terminal, and no rule applies" is `Config.stuck_iff`; that `step` is `Step` is `step_iff`. |
 | `step_iff` | No named counterpart: an executable step function agrees with the transition relation (FIELD §1: small-step transition relation (Plotkin 1981/2004 §1.2)) | `C → C′` ⇔ `step C = .next C′` | Correctness of the executable `step` for the relation `Step`, both ways, which the literature, defining only the relation, does not need. |
-| `Config.stuck_iff` | Stuck: not a value (not final) and no step applies (FIELD §1: Plotkin 1981/2004 §3.1, Def. 11; PFPL ch. 6) | (`C` not terminal and no `C → C′`) ⇔ `C` is stuck on some `Violation` | The accepted definition, proved equal to ours (the step function's verdict), with terminal in the role of value, traps included. |
-| `step_stuck_isStuckState` | No counterpart (FIELD §2: the `Violation` row (four of its constructors are monitors, not stuck states of `Step`)) | `C` stuck on `w` ⇒ `w` is one of §6's own four stuck states | Says that `Step`'s stuck states are §6's own and never one of `eval`'s monitors, which the literature, with no monitors, has no need of. |
+| `Config.stuck_iff` | Stuck: not a value (not final) and no step applies (FIELD §1: Plotkin 1981/2004 §3.1, Def. 11; PFPL ch. 6) | (`C` not terminal and no `C → C′`) ⇔ `C` is stuck on some `Refusal` | The accepted definition, proved equal to ours (the step function's verdict), with terminal in the role of value, traps included. |
+| `step_stuck_isStuckState` | No counterpart (FIELD §2: the `Refusal` row (four of its constructors are monitors, not stuck states of `Step`)) | `C` stuck on `w` ⇒ `w` is one of §6's own four stuck states | Says that `Step`'s stuck states are §6's own and never one of `eval`'s monitors, which the literature, with no monitors, has no need of. |
 | `step_progress` | Progress: `⊢ e : τ ⇒ e val ∨ ∃e′. e ↦ e′`; along runs, `safe(e)`: every state reachable from `e` is progressive (FIELD §2: PFPL Thm 6.4; Timany et al. §2.4) | `ProgramTyped P` and `init →* C` ⇒ `C` terminal or `C → C′` for some `C′` | Not the one-step lemma over typed configurations, since no configuration typing is defined (RUE-2423), but its consequence along every run from `Config.init`, Timany's `safe(init)` with traps final. |
 | `step_preservation` | Preservation (subject reduction): `Γ ⊢ e : τ ∧ e ↦ e′ ⇒ Γ ⊢ e′ : τ` (FIELD §2: PFPL Thm 6.2; Wright & Felleisen Lemma 4.3) | `ProgramTyped P` and `init →* C` ⇒ `C.SafeAt` the entry point's return type | Substantive: `SafeAt` is a semantic invariant (Timany's `safe` plus typed halting values), closed under `→*` by definition, so the statement is `SafeAt` at `Config.init`, the conclusion of Timany's Cor. 2.3, and no syntactic `⊢ C : T` is preserved (R4 of `REDTEAM-LOG.md`; RUE-2423). |
 | `step_type_safety` | Type safety = preservation ∧ progress; in Wright & Felleisen's form, `⊢ e : τ ⇒ e⇑ ∨ (e ↦* v ∧ ⊢ v : τ)` (FIELD §2: PFPL Thm 6.1; Wright & Felleisen Thm 4.12) | `ProgramTyped P` ⇒ for every `n`, `init →ⁿ D` for some `D`, or `init →* ✓v` with `v` of the entry point's type, or `init →* ↯κ` | Wright & Felleisen's three-way form per horizon `n`, with a trap as an allowed outcome (PFPL's checked error) and divergence read as having run `n` steps, rather than a conjunction of progress and preservation. |
@@ -153,7 +153,7 @@ Rompf; `../FIELD.md` §3); its Spec module keeps the file name
 | `run_complete` | Semantic equivalence, small-step to interpreter (Amin & Rompf Thm 2), unconditionally (FIELD §3: Amin & Rompf Thm 2) | every program and `init →* ✓v` (or `↯κ`) ⇒ past some fuel, `run` answers that value (or panic) or refuses | On every program only up to a refusal, since `eval`'s monitors are stricter than §6, which makes it much weaker than the literature's unconditional direction. |
 | `never_stuck_iff` | No named counterpart: the interpreter's weak soundness against the small-step `safe(init)` (FIELD §2: Wright & Felleisen §§1–2 (weak soundness); Timany et al. §2.4 (`safe`)) | `ProgramTyped P` ⇒ (`run` never stuck at any fuel ⇔ every `C` with `init →* C` is terminal or steps) | Under `ProgramTyped` both sides hold outright (`no_violation`, `step_progress`), so the `⇔` adds nothing; its content is the forward direction on every program, `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`). |
 | `step_never_stuck_of_run` | No named counterpart: `safe(init)` transferred from the interpreter (FIELD §2: Timany et al. §2.4 (`safe`); FIELD §3: Amin & Rompf Thm 2) | every program, `run` never stuck at any fuel ⇒ every `C` with `init →* C` is terminal or steps | Carries the interpreter's never-stuck to `Step`'s `safe(init)` on every program, a use of the equivalence the literature does not state separately. |
-| `run_stuck_of_step_stuck` | No named counterpart: the stuck case of the equivalence, where `∼` relates an error result to a stuck term (FIELD §3: Amin & Rompf Thm 2) | `init →* C` and `C` stuck ⇒ past some fuel, `run` refuses, perhaps with another `Violation` | The error half of the equivalence, stated separately because `run` and `Step` may name the same failure by different violations. |
+| `run_stuck_of_step_stuck` | No named counterpart: the stuck case of the equivalence, where `∼` relates an error result to a stuck term (FIELD §3: Amin & Rompf Thm 2) | `init →* C` and `C` stuck ⇒ past some fuel, `run` refuses, perhaps with another `Refusal` | The error half of the equivalence, stated separately because `run` and `Step` may name the same failure by different violations. |
 | `eval_diverges_iff` | Big-step/small-step equivalence for diverging runs: `a ⇒∞ ⇔ a →∞`; clock-based divergence, timing out at every clock (FIELD §3: Leroy & Grall Thm 11; Owens et al. §3.4) | `ProgramTyped P` ⇒ (`run` out of fuel at every fuel ⇔ `init →ⁿ D` for every `n` and some `D`) | Restricted to checked programs, with Owens's clocked divergence on the interpreter side and runs of every length instead of a coinductive `→∞` on the small-step side, which agree because `Step` is deterministic. |
 
 ## Type safety over the interpreter
@@ -166,20 +166,20 @@ Rompf; `../FIELD.md` §3); its Spec module keeps the file name
 names). A typed expression of a well-formed program, run at any fuel from a
 frame and store agreeing with its context, ends in `EvalOk`: a well-typed
 value, an unwinding `return` or `break` §5.3's `Ω` allows, a defined panic,
-or exhausted fuel — never `.stuck`.
+or exhausted fuel — never `.refused`.
 
 ```lean
 def Spec.soundness_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     WfProgram P →
       ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty},
         Typed P R Γ e T Ω →
-          ∀ {φ : Frame} {H : Store},
-            FrameMatches P.decls Γ φ H →
+          ∀ {φ : Activation} {H : Store},
+            ActivationTyping P.decls Γ φ H →
               EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
-Proved by `soundness` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `WfProgram`, `Ty`, `Ctx`, `Out`, `Expr`, `Typed`, `Frame`, `Store`, `FrameMatches`, `EvalOk`, `eval`; rests on 208 definitions.
+Proved by `soundness` (`RueCore.Soundness`). Names `FloatLaws`, `Program`, `WfProgram`, `Ty`, `Ctx`, `Out`, `Expr`, `Typed`, `Activation`, `Store`, `ActivationTyping`, `EvalOk`, `eval`; rests on 208 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_frame`, `Nonvacuous.open_frame`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -187,7 +187,7 @@ Sharp:
 
 1. `WfProgram P` — counter-example `Sharp.stuck`
 2. `Typed P R Γ e T Ω` — counter-example `Sharp.typed`
-3. `FrameMatches P.decls Γ φ H` — counter-example `Sharp.frame`
+3. `ActivationTyping P.decls Γ φ H` — counter-example `Sharp.frame`
 
 ### `run_safe`
 
@@ -201,7 +201,7 @@ and no drop or monitor sees it (`Nonvacuous.whole_result` returns an `S0`).
 
 ```lean
 def Spec.run_safe_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} {fd : FnDef},
+  ∀ (M : FloatLaws) {P : Program} {fd : FnDef},
     WfProgram P →
       P.fns[0]? = some fd →
         fd.params = [] →
@@ -212,7 +212,7 @@ def Spec.run_safe_stmt : Prop :=
                   run M.toFloatSig P fuel = EvalRes.ok H v tr ∧ HasTy P.decls v fd.ret
 ```
 
-Proved by `run_safe` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `FnDef`, `WfProgram`, `Param`, `EvalRes`, `run`, `PanicKind`, `Event`, `Store`, `Val`, `HasTy`; rests on 198 definitions.
+Proved by `run_safe` (`RueCore.Soundness`). Names `FloatLaws`, `Program`, `FnDef`, `WfProgram`, `Param`, `EvalRes`, `run`, `PanicKind`, `Event`, `Store`, `Val`, `HasTy`; rests on 198 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -225,21 +225,21 @@ Sharp:
 ### `no_violation`
 
 **No refusal of any kind** (§7's memory-safety bullets). A checked
-program's run is never `.stuck`. Narrower than the bullets: a value built for
+program's run is never `.refused`. Narrower than the bullets: a value built for
 a sibling operand that a later one abandons by `return` or `break` is dropped
 by nobody (RUE-2316), and a `@panic` runs no drop (§5.7's `⊥_panic`). Like
-every "never `.stuck`" statement, it holds because `eval`'s checks and
+every "never `.refused`" statement, it holds because `eval`'s checks and
 monitors never fire: what it rules out is what they watch (R3 of
 `REDTEAM-LOG.md`; RUE-2469).
 
 ```lean
 def Spec.no_violation_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      ∀ (fuel : Nat) (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w
+      ∀ (fuel : Nat) (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w
 ```
 
-Proved by `no_violation` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `Violation`, `EvalRes`, `run`; rests on 197 definitions.
+Proved by `no_violation` (`RueCore.Soundness`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Refusal`, `EvalRes`, `run`; rests on 197 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -257,12 +257,12 @@ what that monitor watches (R3 of `REDTEAM-LOG.md`; RUE-2469).
 
 ```lean
 def Spec.no_use_after_move_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterMove
+      ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.useAfterMove
 ```
 
-Proved by `no_use_after_move` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Violation`; rests on 197 definitions.
+Proved by `no_use_after_move` (`RueCore.Soundness`). Names `FloatLaws`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Refusal`; rests on 197 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -286,12 +286,12 @@ consequence of typing; it is kept in §7's form, over checked programs
 
 ```lean
 def Spec.no_use_after_drop_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterDrop
+      ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.useAfterDrop
 ```
 
-Proved by `no_use_after_drop` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Violation`; rests on 197 definitions.
+Proved by `no_use_after_drop` (`RueCore.Soundness`). Names `FloatLaws`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Refusal`; rests on 197 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -303,7 +303,7 @@ Sharp:
 
 **No use-after-drop, on every program** (§7 "No use-after-drop / no leak
 of drops", "never read afterward"; RUE-2496): `run` never refuses with
-`useAfterDrop`, at any fuel and any float operations (not only a `FloatModel`), **whether or not the program is
+`useAfterDrop`, at any fuel and any float operations (not only a `FloatLaws`), **whether or not the program is
 checked**. The property is structural rather than a consequence of typing: a
 binding's cell is minted fresh and retired only when the scope that bound it
 ends, after which nothing names it, and a scope record owes each cell once.
@@ -316,10 +316,10 @@ names a cell already retired, `eval` does refuse (`Sharp.retired_cell`). Like
 ```lean
 def Spec.run_no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) (fuel : Nat),
-    run M P fuel ≠ EvalRes.stuck Violation.useAfterDrop
+    run M P fuel ≠ EvalRes.refused Refusal.useAfterDrop
 ```
 
-Proved by `run_no_use_after_drop` (`RueCore.Retire`). Names `FloatSig`, `Program`, `EvalRes`, `run`, `Violation`; rests on 112 definitions.
+Proved by `run_no_use_after_drop` (`RueCore.Retire`). Names `FloatSig`, `Program`, `EvalRes`, `run`, `Refusal`; rests on 112 definitions.
 
 Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.dtor`.
 
@@ -341,12 +341,12 @@ What it rules out is what `eval`'s leak monitor watches (R3 of
 
 ```lean
 def Spec.no_linear_leak_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearLeak
+      ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearLeak
 ```
 
-Proved by `no_linear_leak` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Violation`; rests on 197 definitions.
+Proved by `no_linear_leak` (`RueCore.Soundness`). Names `FloatLaws`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Refusal`; rests on 197 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -361,12 +361,12 @@ a live linear value.
 
 ```lean
 def Spec.no_linear_overwrite_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearOverwrite
+      ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearOverwrite
 ```
 
-Proved by `no_linear_overwrite` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Violation`; rests on 197 definitions.
+Proved by `no_linear_overwrite` (`RueCore.Soundness`). Names `FloatLaws`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Refusal`; rests on 197 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -383,12 +383,12 @@ never fire; what they rule out is what those monitors watch (R3 of
 
 ```lean
 def Spec.no_linear_discard_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearDiscard
+      ∀ (fuel : Nat), run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearDiscard
 ```
 
-Proved by `no_linear_discard` (`RueCore.Soundness`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Violation`; rests on 197 definitions.
+Proved by `no_linear_discard` (`RueCore.Soundness`). Names `FloatLaws`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Refusal`; rests on 197 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -405,11 +405,11 @@ and call "an analogue of determinism" (`FIELD.md`, section 3).
 
 ```lean
 def Spec.fuel_mono_stmt : Prop :=
-  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat},
+  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : Expr} {n m : Nat},
     n ≤ m → eval M n P H φ e ≠ EvalRes.outOfFuel → eval M m P H φ e = eval M n P H φ e
 ```
 
-Proved by `fuel_mono` (`RueCore.Soundness`). Names `FloatSig`, `Program`, `Store`, `Frame`, `Expr`, `EvalRes`, `eval`; rests on 111 definitions.
+Proved by `fuel_mono` (`RueCore.Soundness`). Names `FloatSig`, `Program`, `Store`, `Activation`, `Expr`, `EvalRes`, `eval`; rests on 111 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.stuck`.
 
@@ -426,19 +426,19 @@ refusal at one fuel is the answer at every fuel that answers; a corollary of
 
 ```lean
 def Spec.no_masking_stmt : Prop :=
-  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat}
-    {w : Violation},
-    eval M n P H φ e = EvalRes.stuck w →
-      eval M m P H φ e ≠ EvalRes.outOfFuel → eval M m P H φ e = EvalRes.stuck w
+  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : Expr} {n m : Nat}
+    {w : Refusal},
+    eval M n P H φ e = EvalRes.refused w →
+      eval M m P H φ e ≠ EvalRes.outOfFuel → eval M m P H φ e = EvalRes.refused w
 ```
 
-Proved by `no_masking` (`RueCore.Soundness`). Names `FloatSig`, `Program`, `Store`, `Frame`, `Expr`, `Violation`, `EvalRes`, `eval`; rests on 111 definitions.
+Proved by `no_masking` (`RueCore.Soundness`). Names `FloatSig`, `Program`, `Store`, `Activation`, `Expr`, `Refusal`, `EvalRes`, `eval`; rests on 111 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.stuck`.
 
 Sharp:
 
-1. `eval M n P H φ e = EvalRes.stuck w` — counter-example `Sharp.fuel`
+1. `eval M n P H φ e = EvalRes.refused w` — counter-example `Sharp.fuel`
 2. `eval M m P H φ e ≠ EvalRes.outOfFuel` — counter-example `Sharp.stuck`
 
 ### `run_ne_returned`
@@ -469,11 +469,11 @@ in Walker's sense (`FIELD.md`, section 4), and not completeness, which does not 
 
 ```lean
 def Spec.check_sound_stmt : Prop :=
-  ∀ {P : Program} {R : Ty} (e : Expr) {Γ : Ctx} {c : CTy} {Ω : Out},
+  ∀ {P : Program} {R : Ty} (e : Expr) {Γ : Ctx} {c : TyOrNever} {Ω : Out},
     check P R Γ e = some (c, Ω) → ∀ (T : Ty), c.fits T = true → Typed P R Γ e T Ω
 ```
 
-Proved by `check_sound` (`RueCore.Checker`). Names `Program`, `Ty`, `Expr`, `Ctx`, `CTy`, `Out`, `check`, `CTy.fits`, `Typed`; rests on 104 definitions.
+Proved by `check_sound` (`RueCore.Checker`). Names `Program`, `Ty`, `Expr`, `Ctx`, `TyOrNever`, `Out`, `check`, `TyOrNever.fits`, `Typed`; rests on 104 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.open_frame`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -515,16 +515,16 @@ covers it, over every configuration a run reaches (RUE-2477).
 
 ```lean
 def Spec.no_double_free_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
+        (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
           (∀ (a : Nat),
               List.count a (freedIds P.decls (run M.toFloatSig P fuel).trace) ≤ 1) ∧
             ∀ (a : Nat), List.count a (dtorIds (run M.toFloatSig P fuel).trace) ≤ 1
 ```
 
-Proved by `no_double_free` (`RueCore.Trace`). Names `FloatModel`, `Program`, `ProgramTyped`, `Violation`, `EvalRes`, `run`, `freedIds`, `EvalRes.trace`, `dtorIds`; rests on 204 definitions.
+Proved by `no_double_free` (`RueCore.Trace`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Refusal`, `EvalRes`, `run`, `freedIds`, `EvalRes.trace`, `dtorIds`; rests on 204 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.diverges_drop`.
 
@@ -546,7 +546,7 @@ included; `no_double_free` over a finished run follows from it
 
 ```lean
 def Spec.step_no_double_free_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∀ {C : Config},
         Steps M.toFloatSig P Config.init C →
@@ -554,7 +554,7 @@ def Spec.step_no_double_free_stmt : Prop :=
             ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1
 ```
 
-Proved by `step_no_double_free` (`RueCore.TracePrefix`). Names `FloatModel`, `Program`, `ProgramTyped`, `Config`, `Steps`, `Config.init`, `freedIds`, `Config.trace`, `dtorIds`; rests on 200 definitions.
+Proved by `step_no_double_free` (`RueCore.TracePrefix`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Config`, `Steps`, `Config.init`, `freedIds`, `Config.trace`, `dtorIds`; rests on 200 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.diverges_drop`.
 
@@ -620,21 +620,21 @@ evaluation, not per run; the whole-run form is `whole_program_exactly_once`
 
 ```lean
 def Spec.drop_exactly_once_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       P.pendingSafe = true →
-        ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out} {φ : Frame}
+        ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out} {φ : Activation}
           {H : Store},
           Typed P R Γ e T Ω →
-            FrameMatches P.decls Γ φ H →
+            ActivationTyping P.decls Γ φ H →
               StoreCC P.decls H →
                 e.pendingSafe = true →
-                  (∀ (w : Violation), eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                  (∀ (w : Refusal), eval M.toFloatSig fuel P H φ e ≠ EvalRes.refused w) ∧
                     Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
                       Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
-Proved by `drop_exactly_once` (`RueCore.TraceExact`). Names `FloatModel`, `Program`, `ProgramTyped`, `Program.pendingSafe`, `Ty`, `Ctx`, `Expr`, `Out`, `Frame`, `Store`, `Typed`, `FrameMatches`, `StoreCC`, `Expr.pendingSafe`, `Violation`, `EvalRes`, `eval`, `Exact`, `Tidy`; rests on 220 definitions.
+Proved by `drop_exactly_once` (`RueCore.TraceExact`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Program.pendingSafe`, `Ty`, `Ctx`, `Expr`, `Out`, `Activation`, `Store`, `Typed`, `ActivationTyping`, `StoreCC`, `Expr.pendingSafe`, `Refusal`, `EvalRes`, `eval`, `Exact`, `Tidy`; rests on 220 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_frame`, `Nonvacuous.open_frame`, `Nonvacuous.dtor`.
 
@@ -643,7 +643,7 @@ Sharp:
 1. `ProgramTyped P` — counter-example `Sharp.stuck`
 2. `P.pendingSafe = true` — counter-example `Sharp.pending_program`
 3. `Typed P R Γ e T Ω` — counter-example `Sharp.typed`
-4. `FrameMatches P.decls Γ φ H` — counter-example `Sharp.frame`
+4. `ActivationTyping P.decls Γ φ H` — counter-example `Sharp.frame`
 5. `StoreCC P.decls H` — counter-example `Sharp.store_cc`
 6. `e.pendingSafe = true` — counter-example `Sharp.pending_expr`
 
@@ -659,26 +659,26 @@ says the values a form mints mid-evaluation are covered too.
 
 ```lean
 def Spec.rest_exactly_once_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       P.pendingSafe = true →
-        ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out} {φ : Frame}
+        ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out} {φ : Activation}
           {H : Store},
           Typed P R Γ e T Ω →
-            FrameMatches P.decls Γ φ H →
+            ActivationTyping P.decls Γ φ H →
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
                     Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                       ∀ {r : EvalRes},
                         eval M.toFloatSig (fuel + 1) P H φ e = EvalRes.withTrace tr r →
-                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                          (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                             Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs))
                                 r ∧
                               Settled φ H₁ r
 ```
 
-Proved by `rest_exactly_once` (`RueCore.TraceExact`). Names `FloatModel`, `Program`, `ProgramTyped`, `Program.pendingSafe`, `Ty`, `Ctx`, `Expr`, `Out`, `Frame`, `Store`, `Typed`, `FrameMatches`, `StoreCC`, `Expr.pendingSafe`, `Val`, `Event`, `Lead`, `EvalRes`, `eval`, `EvalRes.withTrace`, `Violation`, `Exact`, `Contents.ownList`, `Contents.ofVals`, `Settled`; rests on 222 definitions.
+Proved by `rest_exactly_once` (`RueCore.TraceExact`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Program.pendingSafe`, `Ty`, `Ctx`, `Expr`, `Out`, `Activation`, `Store`, `Typed`, `ActivationTyping`, `StoreCC`, `Expr.pendingSafe`, `Val`, `Event`, `Lead`, `EvalRes`, `eval`, `EvalRes.withTrace`, `Refusal`, `Exact`, `Contents.ownList`, `Contents.ofVals`, `Settled`; rests on 222 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_frame`, `Nonvacuous.open_frame`, `Nonvacuous.dtor`.
 
@@ -687,7 +687,7 @@ Sharp:
 1. `ProgramTyped P` — counter-example `Sharp.stuck`
 2. `P.pendingSafe = true` — counter-example `Sharp.pending_program`
 3. `Typed P R Γ e T Ω` — counter-example `Sharp.typed`
-4. `FrameMatches P.decls Γ φ H` — counter-example `Sharp.frame`
+4. `ActivationTyping P.decls Γ φ H` — counter-example `Sharp.frame`
 5. `StoreCC P.decls H` — counter-example `Sharp.store_cc`
 6. `e.pendingSafe = true` — counter-example `Sharp.pending_expr`
 7. `Lead M.toFloatSig P fuel H φ H₁ vs tr e` — counter-example `Sharp.no_lead`
@@ -713,20 +713,20 @@ what it abandons is not ended), and nothing about a run that never finishes
 
 ```lean
 def Spec.whole_program_exactly_once_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       P.pendingSafe = true →
         ∀ {C : Config},
           Steps M.toFloatSig P Config.init C →
             ∀ {a : Nat},
               a ∈ Config.held P.decls C →
-                ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+                ∀ {H : Store} {φ : Activation} {v : Val} {tr : List Event},
                   Steps M.toFloatSig P C (Config.run H φ [] (Focus.ret v) tr) →
                     List.count a (Val.own P.decls v) + List.count a (freedIds P.decls tr) =
                       1
 ```
 
-Proved by `whole_program_exactly_once` (`RueCore.TraceWhole`). Names `FloatModel`, `Program`, `ProgramTyped`, `Program.pendingSafe`, `Config`, `Steps`, `Config.init`, `Config.held`, `Store`, `Frame`, `Val`, `Event`, `Kont`, `Focus`, `Val.own`, `freedIds`; rests on 210 definitions.
+Proved by `whole_program_exactly_once` (`RueCore.TraceWhole`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Program.pendingSafe`, `Config`, `Steps`, `Config.init`, `Config.held`, `Store`, `Activation`, `Val`, `Event`, `Kont`, `Focus`, `Val.own`, `freedIds`; rests on 210 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.whole_drops`, `Nonvacuous.whole_result`.
 
@@ -744,16 +744,16 @@ Sharp:
 its scope"; §6.7, §6.9–§6.11), over `Step`. A finished run's trace — value
 or panic — is in §6.11's block grammar (`Blocks`). Each step from a
 reachable configuration drops one cell or distinct cells newest first, and
-the registration stack is in location order. `Lifo` holds of every step
+the registration stack is in location order. `StackDiscipline` holds of every step
 that keeps its stack, whatever it drops, so it constrains only a step that
 pops: the cells it drops are among those it cut, newest first (R7 of
 `REDTEAM-LOG.md`).
 
 ```lean
 def Spec.drop_order_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+      (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
             Blocks P.decls tr) ∧
         (∀ (κ : PanicKind) (tr : List Event),
@@ -763,12 +763,12 @@ def Spec.drop_order_stmt : Prop :=
               Step M.toFloatSig P C C' →
                 ∃ evs,
                   C'.trace = C.trace ++ evs ∧
-                    NewestFirst (dropLocs evs) ∧
-                      Lifo C.stack C'.stack (dropLocs evs) ∧
+                    StrictStackOrder (dropLocs evs) ∧
+                      StackDiscipline C.stack C'.stack (dropLocs evs) ∧
                         List.Pairwise (fun x1 x2 => x1 < x2) C.stack
 ```
 
-Proved by `drop_order` (`RueCore.TraceOrder`). Names `FloatModel`, `Program`, `ProgramTyped`, `Store`, `Frame`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `Blocks`, `PanicKind`, `Step`, `Config.trace`, `NewestFirst`, `dropLocs`, `Lifo`, `Config.stack`; rests on 201 definitions.
+Proved by `drop_order` (`RueCore.TraceOrder`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Store`, `Activation`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `Blocks`, `PanicKind`, `Step`, `Config.trace`, `StrictStackOrder`, `dropLocs`, `StackDiscipline`, `Config.stack`; rests on 201 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -794,16 +794,16 @@ machine's drop glue cannot carry this statement with it.
 
 ```lean
 def Spec.drop_glue_order_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+      (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
             DropGlueBlocks P.decls tr) ∧
         ∀ (κ : PanicKind) (tr : List Event),
           Steps M.toFloatSig P Config.init (Config.panic κ tr) → DropGlueBlocks P.decls tr
 ```
 
-Proved by `drop_glue_order` (`RueCore.TraceOrder`). Names `FloatModel`, `Program`, `ProgramTyped`, `Store`, `Frame`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `DropGlueBlocks`, `PanicKind`; rests on 196 definitions.
+Proved by `drop_glue_order` (`RueCore.TraceOrder`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Store`, `Activation`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `DropGlueBlocks`, `PanicKind`; rests on 196 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -857,7 +857,7 @@ Sharp:
 
 ### `Config.trichotomy`
 
-**Steps, terminal, or stuck** (§6), a stuck one named by a `Violation`:
+**Steps, terminal, or stuck** (§6), a stuck one named by a `Refusal`:
 some `C → C'`, or `C` is `✓` or `↯κ`, or `step` refuses `C`.
 
 ```lean
@@ -866,7 +866,7 @@ def Spec.Config.trichotomy_stmt : Prop :=
     (∃ C', Step M P C C') ∨ C.Terminal ∨ ∃ w, Config.Stuck M P C w
 ```
 
-Proved by `Config.trichotomy` (`RueCore.Step.Lemmas`). Names `FloatSig`, `Program`, `Config`, `Step`, `Config.Terminal`, `Violation`, `Config.Stuck`; rests on 114 definitions.
+Proved by `Config.trichotomy` (`RueCore.Step.Lemmas`). Names `FloatSig`, `Program`, `Config`, `Step`, `Config.Terminal`, `Refusal`, `Config.Stuck`; rests on 114 definitions.
 
 Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.dtor`, `Nonvacuous.stuck`.
 
@@ -900,7 +900,7 @@ def Spec.Config.stuck_iff_stmt : Prop :=
     (¬C.Terminal ∧ ∀ (C' : Config), ¬Step M P C C') ↔ ∃ w, Config.Stuck M P C w
 ```
 
-Proved by `Config.stuck_iff` (`RueCore.Step.Lemmas`). Names `FloatSig`, `Program`, `Config`, `Config.Terminal`, `Step`, `Violation`, `Config.Stuck`; rests on 114 definitions.
+Proved by `Config.stuck_iff` (`RueCore.Step.Lemmas`). Names `FloatSig`, `Program`, `Config`, `Config.Terminal`, `Step`, `Refusal`, `Config.Stuck`; rests on 114 definitions.
 
 Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.stuck`.
 
@@ -914,11 +914,11 @@ monitor's.
 
 ```lean
 def Spec.step_stuck_isStuckState_stmt : Prop :=
-  ∀ {M : FloatSig} {P : Program} {C : Config} {w : Violation},
+  ∀ {M : FloatSig} {P : Program} {C : Config} {w : Refusal},
     Config.Stuck M P C w → w.isStuckState = true
 ```
 
-Proved by `step_stuck_isStuckState` (`RueCore.Step.Lemmas`). Names `FloatSig`, `Program`, `Config`, `Violation`, `Config.Stuck`, `Violation.isStuckState`; rests on 113 definitions.
+Proved by `step_stuck_isStuckState` (`RueCore.Step.Lemmas`). Names `FloatSig`, `Program`, `Config`, `Refusal`, `Config.Stuck`, `Refusal.isStuckState`; rests on 113 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.stuck`.
 
@@ -936,13 +936,13 @@ run, Timany et al.'s `safe` of the initial configuration (`FIELD.md`, section 2)
 
 ```lean
 def Spec.step_progress_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∀ (C : Config),
         Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 ```
 
-Proved by `step_progress` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 194 definitions.
+Proved by `step_progress` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 194 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -966,7 +966,7 @@ the conclusion of Timany et al.'s Cor. 2.3, `safe`, with typed halting values
 
 ```lean
 def Spec.step_preservation_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∃ fd,
         P.fns[0]? = some fd ∧
@@ -974,7 +974,7 @@ def Spec.step_preservation_stmt : Prop :=
             Steps M.toFloatSig P Config.init C → Config.SafeAt M.toFloatSig P fd.ret C
 ```
 
-Proved by `step_preservation` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `FnDef`, `Config`, `Steps`, `Config.init`, `Config.SafeAt`; rests on 197 definitions.
+Proved by `step_preservation` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `FnDef`, `Config`, `Steps`, `Config.init`, `Config.SafeAt`; rests on 197 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -993,7 +993,7 @@ trap as a third outcome (`FIELD.md`, section 2), rather than progress ∧ preser
 
 ```lean
 def Spec.step_type_safety_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∃ fd,
         P.fns[0]? = some fd ∧
@@ -1001,12 +1001,12 @@ def Spec.step_type_safety_stmt : Prop :=
             (∃ D, StepsN M.toFloatSig P n Config.init D) ∨
               (∃ H v tr,
                   Steps M.toFloatSig P Config.init
-                      (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                     HasTy P.decls v fd.ret) ∨
                 ∃ κ tr, Steps M.toFloatSig P Config.init (Config.panic κ tr)
 ```
 
-Proved by `step_type_safety` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `FnDef`, `Config`, `StepsN`, `Config.init`, `Store`, `Val`, `Event`, `Steps`, `Frame.empty`, `Kont`, `Focus`, `HasTy`, `PanicKind`; rests on 197 definitions.
+Proved by `step_type_safety` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `FnDef`, `Config`, `StepsN`, `Config.init`, `Store`, `Val`, `Event`, `Steps`, `Activation.empty`, `Kont`, `Focus`, `HasTy`, `PanicKind`; rests on 197 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1026,10 +1026,10 @@ needed: a configuration whose frame names a retired cell is stuck so
 ```lean
 def Spec.step_no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) {C : Config},
-    Steps M P Config.init C → ¬Config.Stuck M P C Violation.useAfterDrop
+    Steps M P Config.init C → ¬Config.Stuck M P C Refusal.useAfterDrop
 ```
 
-Proved by `step_no_use_after_drop` (`RueCore.Retire`). Names `FloatSig`, `Program`, `Config`, `Steps`, `Config.init`, `Config.Stuck`, `Violation`; rests on 115 definitions.
+Proved by `step_no_use_after_drop` (`RueCore.Retire`). Names `FloatSig`, `Program`, `Config`, `Steps`, `Config.init`, `Config.Stuck`, `Refusal`; rests on 115 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`.
 
@@ -1050,20 +1050,20 @@ by `→*` from `Config.init` with the same store and trace.
 
 ```lean
 def Spec.eval_sound_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
+        (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
           (∀ (H : Store) (v : Val) (tr : List Event),
               run M.toFloatSig P fuel = EvalRes.ok H v tr →
                 Steps M.toFloatSig P Config.init
-                  (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+                  (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
             ∀ (k : PanicKind) (tr : List Event),
               run M.toFloatSig P fuel = EvalRes.panic k tr →
                 Steps M.toFloatSig P Config.init (Config.panic k tr)
 ```
 
-Proved by `eval_sound` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `Violation`, `EvalRes`, `run`, `Store`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Frame.empty`, `Kont`, `Focus`, `PanicKind`; rests on 213 definitions.
+Proved by `eval_sound` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Refusal`, `EvalRes`, `run`, `Store`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Activation.empty`, `Kont`, `Focus`, `PanicKind`; rests on 213 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1083,12 +1083,12 @@ def Spec.run_sim_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) (fuel : Nat),
     (∀ (H : Store) (v : Val) (tr : List Event),
         run M P fuel = EvalRes.ok H v tr →
-          Steps M P Config.init (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+          Steps M P Config.init (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
       ∀ (k : PanicKind) (tr : List Event),
         run M P fuel = EvalRes.panic k tr → Steps M P Config.init (Config.panic k tr)
 ```
 
-Proved by `run_sim` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Store`, `Val`, `Event`, `EvalRes`, `run`, `Steps`, `Config.init`, `Config`, `Frame.empty`, `Kont`, `Focus`, `PanicKind`; rests on 128 definitions.
+Proved by `run_sim` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Store`, `Val`, `Event`, `EvalRes`, `run`, `Steps`, `Config.init`, `Config`, `Activation.empty`, `Kont`, `Focus`, `PanicKind`; rests on 128 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1106,9 +1106,9 @@ every large enough fuel.
 
 ```lean
 def Spec.eval_complete_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+      (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
             ∃ n, ∀ (fuel : Nat), n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
         ∀ (κ : PanicKind) (tr : List Event),
@@ -1116,7 +1116,7 @@ def Spec.eval_complete_stmt : Prop :=
             ∃ n, ∀ (fuel : Nat), n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
-Proved by `eval_complete` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `Store`, `Frame`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `PanicKind`; rests on 212 definitions.
+Proved by `eval_complete` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Store`, `Activation`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `PanicKind`; rests on 212 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1132,26 +1132,26 @@ Sharp:
 
 **Completeness on every program** (§6.12): the same, up to a refusal of
 `run`'s (RUE-2314). With no typing hypothesis the escape is wide: a `run` that
-is `.stuck` past some fuel satisfies it, whatever `→*` reaches.
+is `.refused` past some fuel satisfies it, whatever `→*` reaches.
 
 ```lean
 def Spec.run_complete_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program),
-    (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+    (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
         Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
           ∃ n,
             ∀ (fuel : Nat),
               n < fuel →
-                run M P fuel = EvalRes.ok H v tr ∨ ∃ w, run M P fuel = EvalRes.stuck w) ∧
+                run M P fuel = EvalRes.ok H v tr ∨ ∃ w, run M P fuel = EvalRes.refused w) ∧
       ∀ (κ : PanicKind) (tr : List Event),
         Steps M P Config.init (Config.panic κ tr) →
           ∃ n,
             ∀ (fuel : Nat),
               n < fuel →
-                run M P fuel = EvalRes.panic κ tr ∨ ∃ w, run M P fuel = EvalRes.stuck w
+                run M P fuel = EvalRes.panic κ tr ∨ ∃ w, run M P fuel = EvalRes.refused w
 ```
 
-Proved by `run_complete` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Store`, `Frame`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `Violation`, `PanicKind`; rests on 127 definitions.
+Proved by `run_complete` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Store`, `Activation`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `Refusal`, `PanicKind`; rests on 127 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1171,14 +1171,14 @@ sides hold outright, so the equivalence adds nothing; cite
 
 ```lean
 def Spec.never_stuck_iff_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      ((∀ (fuel : Nat) (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ↔
+      ((∀ (fuel : Nat) (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ↔
         ∀ (C : Config),
           Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C')
 ```
 
-Proved by `never_stuck_iff` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `Violation`, `EvalRes`, `run`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 213 definitions.
+Proved by `never_stuck_iff` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Refusal`, `EvalRes`, `run`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 213 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1196,33 +1196,33 @@ defined panics").
 ```lean
 def Spec.step_never_stuck_of_run_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program),
-    (∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w) →
+    (∀ (fuel : Nat) (w : Refusal), run M P fuel ≠ EvalRes.refused w) →
       ∀ (C : Config), Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
 ```
 
-Proved by `step_never_stuck_of_run` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Violation`, `EvalRes`, `run`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 128 definitions.
+Proved by `step_never_stuck_of_run` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Refusal`, `EvalRes`, `run`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 128 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`.
 
 Sharp:
 
-1. `∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w` — counter-example `Sharp.stuck_step`
+1. `∀ (fuel : Nat) (w : Refusal), run M P fuel ≠ EvalRes.refused w` — counter-example `Sharp.stuck_step`
 2. `Steps M P Config.init C` — counter-example `Sharp.unreachable_stuck`
 
 ### `run_stuck_of_step_stuck`
 
 **A stuck `Step` run is a refusal of `run`** (§6), at every large enough
-fuel, perhaps with another `Violation`.
+fuel, perhaps with another `Refusal`.
 
 ```lean
 def Spec.run_stuck_of_step_stuck_stmt : Prop :=
-  ∀ (M : FloatSig) (P : Program) {C : Config} {w : Violation},
+  ∀ (M : FloatSig) (P : Program) {C : Config} {w : Refusal},
     Steps M P Config.init C →
       Config.Stuck M P C w →
-        ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.stuck w'
+        ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.refused w'
 ```
 
-Proved by `run_stuck_of_step_stuck` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Config`, `Violation`, `Steps`, `Config.init`, `Config.Stuck`, `EvalRes`, `run`; rests on 134 definitions.
+Proved by `run_stuck_of_step_stuck` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Config`, `Refusal`, `Steps`, `Config.init`, `Config.Stuck`, `EvalRes`, `run`; rests on 134 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.stuck`.
 
@@ -1240,13 +1240,13 @@ every length from `Config.init`.
 
 ```lean
 def Spec.eval_diverges_iff_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ((∀ (fuel : Nat), run M.toFloatSig P fuel = EvalRes.outOfFuel) ↔
         ∀ (n : Nat), ∃ D, StepsN M.toFloatSig P n Config.init D)
 ```
 
-Proved by `eval_diverges_iff` (`RueCore.Adequacy`). Names `FloatModel`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Config`, `StepsN`, `Config.init`; rests on 212 definitions.
+Proved by `eval_diverges_iff` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `EvalRes`, `run`, `Config`, `StepsN`, `Config.init`; rests on 212 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.diverges`, `Nonvacuous.diverges_drop`.
 
@@ -1264,10 +1264,10 @@ together, by a program written out in the statement (RUE-2469).
 ### `Nonvacuous.exact_model`
 
 **The float laws have a model: `Float.exactOps`** (§7's "totality of the
-float operations"; RUE-2469). Some `FloatModel` has the executable instance
-`Float.exactOps` as its operations, so every law of `FloatModel` holds of the
+float operations"; RUE-2469). Some `FloatLaws` has the executable instance
+`Float.exactOps` as its operations, so every law of `FloatLaws` holds of the
 model the corpus runs on, and the laws are jointly satisfiable: the 22 spine
-statements that quantify over `M : FloatModel` are not vacuous in `M`.
+statements that quantify over `M : FloatLaws` are not vacuous in `M`.
 
 ```lean
 def Spec.Nonvacuous.exact_model_stmt : Prop :=
@@ -1280,14 +1280,14 @@ Proved by `Nonvacuous.exact_model` (`RueCore.Nonvacuous`). Witnesses `soundness`
 
 **The initial frame agrees with the empty context** (§6.12's initial
 configuration): at every declaration environment, the empty frame over the
-empty store matches the empty context (`FrameMatches`) and its store is
+empty store matches the empty context (`ActivationTyping`) and its store is
 copy-closed (`StoreCC`). With a program's typed body this is the frame and
 store the evaluation statements (`soundness`, `drop_exactly_once`,
 `rest_exactly_once`) are applied at by the witnesses below.
 
 ```lean
 def Spec.Nonvacuous.empty_frame_stmt : Prop :=
-  ∀ (D : Decls), FrameMatches D [] Frame.empty [] ∧ StoreCC D []
+  ∀ (D : Decls), ActivationTyping D [] Activation.empty [] ∧ StoreCC D []
 ```
 
 Proved by `Nonvacuous.empty_frame` (`RueCore.Nonvacuous`). Witnesses `soundness`, `drop_exactly_once`, `rest_exactly_once`.
@@ -1298,7 +1298,7 @@ Proved by `Nonvacuous.empty_frame` (`RueCore.Nonvacuous`). Witnesses `soundness`
 beyond the empty frame. Over the witnesses' declarations, `@drop(s); 1` is
 typed by `check` in the context `s : S0`, owned, and the frame `{ ρ := [ℓ0],
 σ := [ℓ0] }` over the store `ℓ0 ↦ S0 { 5 }` agrees with that context
-(`FrameMatches`) and is copy-closed (`StoreCC`), for a checked, `pendingSafe`
+(`ActivationTyping`) and is copy-closed (`StoreCC`), for a checked, `pendingSafe`
 program. Its evaluation runs the destructor of the value it started with, and
 its leading operand has a `Lead`, so `soundness`, `drop_exactly_once` and
 `rest_exactly_once` apply to a term with a free variable and a store that is
@@ -1311,10 +1311,10 @@ def Spec.Nonvacuous.open_frame_stmt : Prop :=
         {
           structs :=
             [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                cls := Mult.affine },
+                cls := Qual.affine },
               { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                dtor := false, cls := Mult.linear }],
-          enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] } →
+                dtor := false, cls := Qual.linear }],
+          enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] } →
       ∀ (e : Expr),
         e = (Expr.drop (Place.var 0)).seq (Expr.intLit IntWidth.w64 Sign.signed 1) →
           ∀ (P : Program),
@@ -1326,7 +1326,8 @@ def Spec.Nonvacuous.open_frame_stmt : Prop :=
               ProgramTyped P ∧
                 P.pendingSafe = true ∧
                   e.pendingSafe = true ∧
-                    FrameMatches D [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
+                    ActivationTyping D
+                        [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
                         { env := [0], scope := [0] }
                         [Cell.full
                             (Contents.struct 0 0
@@ -1395,10 +1396,10 @@ def Spec.Nonvacuous.dtor_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = true ∧
@@ -1411,20 +1412,21 @@ def Spec.Nonvacuous.dtor_stmt : Prop :=
                           (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
                   DtorNotCopy P.decls ∧
                     (∃ C, Step Float.exactOps P Config.init C) ∧
-                      (∀ (fuel : Nat) (w : Violation),
-                          run Float.exactOps P fuel ≠ EvalRes.stuck w) ∧
+                      (∀ (fuel : Nat) (w : Refusal),
+                          run Float.exactOps P fuel ≠ EvalRes.refused w) ∧
                         2 ≤
                             (freedIds P.decls
-                                (eval Float.exactOps 200 P [] Frame.empty B).trace).length ∧
+                                (eval Float.exactOps 200 P [] Activation.empty
+                                    B).trace).length ∧
                           (∃ H₁ vs tr r,
-                              Lead Float.exactOps P 200 [] Frame.empty H₁ vs tr B ∧
-                                eval Float.exactOps 201 P [] Frame.empty B =
+                              Lead Float.exactOps P 200 [] Activation.empty H₁ vs tr B ∧
+                                eval Float.exactOps 201 P [] Activation.empty B =
                                     EvalRes.withTrace tr r ∧
                                   Contents.ownList P.decls (Contents.ofVals vs) ≠ []) ∧
                             ∃ H v tr,
                               run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                                 Steps Float.exactOps P Config.init
-                                    (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                                    (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                                   2 ≤ (freedIds P.decls tr).length ∧ 2 ≤ (dtorIds tr).length
 ```
 
@@ -1452,10 +1454,10 @@ def Spec.Nonvacuous.linear_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = true ∧
@@ -1469,7 +1471,7 @@ def Spec.Nonvacuous.linear_stmt : Prop :=
                   ∃ H v tr,
                     run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                       Steps Float.exactOps P Config.init
-                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                         2 ≤ (freedIds P.decls tr).length
 ```
 
@@ -1504,10 +1506,10 @@ def Spec.Nonvacuous.loop_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = true ∧
@@ -1521,7 +1523,7 @@ def Spec.Nonvacuous.loop_stmt : Prop :=
                   ∃ H v tr,
                     run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                       Steps Float.exactOps P Config.init
-                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                         3 ≤ (dtorIds tr).length
 ```
 
@@ -1551,10 +1553,10 @@ def Spec.Nonvacuous.array_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = true ∧
@@ -1568,7 +1570,7 @@ def Spec.Nonvacuous.array_stmt : Prop :=
                   ∃ H v tr,
                     run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                       Steps Float.exactOps P Config.init
-                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                         2 ≤ (dtorIds tr).length
 ```
 
@@ -1598,10 +1600,10 @@ def Spec.Nonvacuous.enum_match_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = true ∧
@@ -1615,7 +1617,7 @@ def Spec.Nonvacuous.enum_match_stmt : Prop :=
                   ∃ H v tr,
                     run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                       Steps Float.exactOps P Config.init
-                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                         2 ≤ (freedIds P.decls tr).length ∧ 1 ≤ (dtorIds tr).length
 ```
 
@@ -1644,10 +1646,10 @@ def Spec.Nonvacuous.early_return_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = true ∧
@@ -1661,7 +1663,7 @@ def Spec.Nonvacuous.early_return_stmt : Prop :=
                   ∃ H v tr,
                     run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                       Steps Float.exactOps P Config.init
-                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                         v = Val.int IntWidth.w64 Sign.signed 7 ∧ 2 ≤ (dtorIds tr).length
 ```
 
@@ -1689,10 +1691,10 @@ def Spec.Nonvacuous.panic_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = true ∧
@@ -1737,10 +1739,10 @@ def Spec.Nonvacuous.float_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns := [{ params := [], ret := Ty.float FloatWidth.w64, body := B }] } →
           checkProgram P = true ∧
             ProgramTyped P ∧
@@ -1753,7 +1755,7 @@ def Spec.Nonvacuous.float_stmt : Prop :=
                   ∃ H v tr,
                     run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                       Steps Float.exactOps P Config.init
-                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                         v = Val.float FloatWidth.w64 (FloatDatum.num false 15 (-1))
 ```
 
@@ -1803,10 +1805,10 @@ def Spec.Nonvacuous.diverges_drop_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns := [{ params := [], ret := Ty.unit, body := B }] } →
           checkProgram P = true ∧
             ProgramTyped P ∧
@@ -1843,10 +1845,10 @@ def Spec.Nonvacuous.whole_drops_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = true ∧
@@ -1858,7 +1860,7 @@ def Spec.Nonvacuous.whole_drops_stmt : Prop :=
                       2 ∈ Config.held P.decls C ∧
                         ∃ H v tr,
                           Steps Float.exactOps P C
-                              (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                              (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                             List.count 0 (freedIds P.decls tr) = 1 ∧
                               List.count 2 (freedIds P.decls tr) = 1
 ```
@@ -1883,10 +1885,10 @@ def Spec.Nonvacuous.whole_result_stmt : Prop :=
             {
               structs :=
                 [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Mult.affine },
+                    dtor := true, cls := Qual.affine },
                   { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Mult.linear }],
-              enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                    dtor := false, cls := Qual.linear }],
+              enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
           fns :=
             [{ params := [], ret := Ty.struct 0,
                 body := Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 7] }] } →
@@ -1898,7 +1900,7 @@ def Spec.Nonvacuous.whole_result_stmt : Prop :=
                 0 ∈ Config.held P.decls C ∧
                   ∃ H v tr,
                     Steps Float.exactOps P C
-                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                       List.count 0 (Val.own P.decls v) = 1 ∧ freedIds P.decls tr = []
 ```
 
@@ -1927,17 +1929,17 @@ def Spec.Nonvacuous.stuck_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = false ∧
-            run Float.exactOps P 200 = EvalRes.stuck Violation.useAfterMove ∧
+            run Float.exactOps P 200 = EvalRes.refused Refusal.useAfterMove ∧
               ∃ C,
                 Steps Float.exactOps P Config.init C ∧
-                  Config.Stuck Float.exactOps P C Violation.useAfterMove
+                  Config.Stuck Float.exactOps P C Refusal.useAfterMove
 ```
 
 Proved by `Nonvacuous.stuck` (`RueCore.Nonvacuous`). Witnesses `fuel_mono`, `no_masking`, `Config.trichotomy`, `Config.stuck_iff`, `step_stuck_isStuckState`, `run_stuck_of_step_stuck`.
@@ -1985,10 +1987,10 @@ def Spec.Sharp.stuck_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = false ∧
@@ -1997,7 +1999,7 @@ def Spec.Sharp.stuck_stmt : Prop :=
                 (∃ fd, P.fns[0]? = some fd ∧ fd.params = []) ∧
                   P.pendingSafe = true ∧
                     (Expr.call 0 []).pendingSafe = true ∧
-                      FrameMatches P.decls [] Frame.empty [] ∧
+                      ActivationTyping P.decls [] Activation.empty [] ∧
                         StoreCC P.decls [] ∧
                           (∃ c Ω,
                               check P (Ty.int IntWidth.w64 Sign.signed) []
@@ -2008,25 +2010,27 @@ def Spec.Sharp.stuck_stmt : Prop :=
                                       (Expr.call 0 []) (Ty.int IntWidth.w64 Sign.signed) Ω ∧
                                     ¬EvalOk P.decls (Ty.int IntWidth.w64 Sign.signed)
                                         (Ty.int IntWidth.w64 Sign.signed) Ω.norm Ω.brk
-                                        Frame.empty []
-                                        (eval Float.exactOps 200 P [] Frame.empty
+                                        Activation.empty []
+                                        (eval Float.exactOps 200 P [] Activation.empty
                                           (Expr.call 0 []))) ∧
-                            Lead Float.exactOps P 200 [] Frame.empty [] [] []
+                            Lead Float.exactOps P 200 [] Activation.empty [] [] []
                                 (Expr.call 0 []) ∧
-                              eval Float.exactOps 200 P [] Frame.empty (Expr.call 0 []) =
-                                  EvalRes.stuck Violation.useAfterMove ∧
-                                eval Float.exactOps 201 P [] Frame.empty (Expr.call 0 []) =
-                                    EvalRes.stuck Violation.useAfterMove ∧
-                                  eval Float.exactOps 201 P [] Frame.empty
+                              eval Float.exactOps 200 P [] Activation.empty
+                                    (Expr.call 0 []) =
+                                  EvalRes.refused Refusal.useAfterMove ∧
+                                eval Float.exactOps 201 P [] Activation.empty
+                                      (Expr.call 0 []) =
+                                    EvalRes.refused Refusal.useAfterMove ∧
+                                  eval Float.exactOps 201 P [] Activation.empty
                                         (Expr.call 0 []) =
                                       EvalRes.withTrace []
-                                        (EvalRes.stuck Violation.useAfterMove) ∧
+                                        (EvalRes.refused Refusal.useAfterMove) ∧
                                     (∀ (n : Nat),
                                         run Float.exactOps P n =
-                                          eval Float.exactOps n P [] Frame.empty
+                                          eval Float.exactOps n P [] Activation.empty
                                             (Expr.call 0 [])) ∧
                                       run Float.exactOps P 200 =
-                                          EvalRes.stuck Violation.useAfterMove ∧
+                                          EvalRes.refused Refusal.useAfterMove ∧
                                         run Float.exactOps P 0 = EvalRes.outOfFuel ∧
                                           ¬(run Float.exactOps P 200 = EvalRes.outOfFuel ∨
                                               (∃ k tr,
@@ -2065,17 +2069,17 @@ def Spec.Sharp.stuck_step_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ¬ProgramTyped P ∧
             (∃ C,
                 Steps Float.exactOps P Config.init C ∧
-                  Config.Stuck Float.exactOps P C Violation.useAfterMove) ∧
-              run Float.exactOps P 200 = EvalRes.stuck Violation.useAfterMove ∧
+                  Config.Stuck Float.exactOps P C Refusal.useAfterMove) ∧
+              run Float.exactOps P 200 = EvalRes.refused Refusal.useAfterMove ∧
                 run Float.exactOps P 0 = EvalRes.outOfFuel ∧
                   (¬∀ (C : Config),
                         Steps Float.exactOps P Config.init C →
@@ -2091,12 +2095,14 @@ def Spec.Sharp.stuck_step_stmt : Prop :=
                                 (∃ D, StepsN Float.exactOps P n Config.init D) ∨
                                   (∃ H v tr,
                                       Steps Float.exactOps P Config.init
-                                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                                          (Config.run H Activation.empty [] (Focus.ret v)
+                                            tr) ∧
                                         HasTy P.decls v fd.ret) ∨
                                     ∃ κ tr,
                                       Steps Float.exactOps P Config.init
                                         (Config.panic κ tr)) ∧
-                        ¬∀ (fuel : Nat), ∃ w', run Float.exactOps P fuel = EvalRes.stuck w'
+                        ¬∀ (fuel : Nat),
+                            ∃ w', run Float.exactOps P fuel = EvalRes.refused w'
 ```
 
 Proved by `Sharp.stuck_step` (`RueCore.Sharp`). Drops `step_progress` 1, `step_preservation` 1, `step_type_safety` 1, `step_never_stuck_of_run` 1, `run_stuck_of_step_stuck` 3.
@@ -2113,7 +2119,7 @@ their conclusions holds of it: the typing hypothesis `Typed` is needed. It is
 also `check_sound`'s first hypothesis dropped: `check` does not accept it, and
 no type fits a derivation. `check_sound`'s hypothesis 2 (`c.fits T = true`) has
 no `c` to hold of, since `check` answers `none`: the statement gives
-`CTy.never`, which fits every type, and no `Ω` at all; `¬ Typed` is stated
+`TyOrNever.never`, which fits every type, and no `Ω` at all; `¬ Typed` is stated
 for every type and outcome, so for any `c`, `Ω` a spine instance picks. And
 `rest_exactly_once`'s hypothesis 8 is `eval … = r.withTrace []` with `r` the
 refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495); `¬ Typed`
@@ -2133,10 +2139,10 @@ def Spec.Sharp.typed_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ∀ (e : Expr),
@@ -2147,28 +2153,30 @@ def Spec.Sharp.typed_stmt : Prop :=
                 WfProgram P ∧
                   P.pendingSafe = true ∧
                     e.pendingSafe = true ∧
-                      FrameMatches P.decls [] Frame.empty [] ∧
+                      ActivationTyping P.decls [] Activation.empty [] ∧
                         StoreCC P.decls [] ∧
                           check P (Ty.int IntWidth.w64 Sign.signed) [] e = none ∧
                             (∀ (T : Ty) (Ω : Out),
                                 ¬Typed P (Ty.int IntWidth.w64 Sign.signed) [] e T Ω) ∧
-                              Lead Float.exactOps P 200 [] Frame.empty [Cell.dead]
+                              Lead Float.exactOps P 200 [] Activation.empty [Cell.dead]
                                   [Val.struct 0 0 [Val.int IntWidth.w64 Sign.signed 1]] []
                                   e ∧
-                                eval Float.exactOps 200 P [] Frame.empty e =
-                                    EvalRes.stuck Violation.useAfterMove ∧
-                                  eval Float.exactOps 201 P [] Frame.empty e =
-                                      EvalRes.stuck Violation.useAfterMove ∧
-                                    eval Float.exactOps 201 P [] Frame.empty e =
+                                eval Float.exactOps 200 P [] Activation.empty e =
+                                    EvalRes.refused Refusal.useAfterMove ∧
+                                  eval Float.exactOps 201 P [] Activation.empty e =
+                                      EvalRes.refused Refusal.useAfterMove ∧
+                                    eval Float.exactOps 201 P [] Activation.empty e =
                                         EvalRes.withTrace []
-                                          (EvalRes.stuck Violation.useAfterMove) ∧
-                                      CTy.never.fits (Ty.int IntWidth.w64 Sign.signed) =
+                                          (EvalRes.refused Refusal.useAfterMove) ∧
+                                      TyOrNever.never.fits
+                                            (Ty.int IntWidth.w64 Sign.signed) =
                                           true ∧
                                         ∀ (T : Ty) (Ω : Out),
                                           ¬EvalOk P.decls T
                                               (Ty.int IntWidth.w64 Sign.signed) Ω.norm Ω.brk
-                                              Frame.empty []
-                                              (eval Float.exactOps 200 P [] Frame.empty e)
+                                              Activation.empty []
+                                              (eval Float.exactOps 200 P [] Activation.empty
+                                                e)
 ```
 
 Proved by `Sharp.typed` (`RueCore.Sharp`). Drops `soundness` 2, `check_sound` 1, `drop_exactly_once` 3, `rest_exactly_once` 3.
@@ -2178,13 +2186,13 @@ Proved by `Sharp.typed` (`RueCore.Sharp`). Drops `soundness` 2, `check_sound` 1,
 **A typed expression run in a frame that does not match its context**
 (§7 sharpness, RUE-2485). `1; x`, typed by `check` in the context `x : i64` over
 the checked program of `Nonvacuous.dtor`, is run from the empty frame and
-store, which do not match that context (`FrameMatches` fails); everything else
+store, which do not match that context (`ActivationTyping` fails); everything else
 `soundness`, `drop_exactly_once` and `rest_exactly_once` ask holds, a `Lead`
 (the discarded `1`) included. `eval` refuses the read of `x` with `unbound`. The statement gives `ProgramTyped P` and `WfProgram P`
 (`soundness` asks the second, `drop_exactly_once` the first), and
 `rest_exactly_once`'s hypothesis 8 as `eval … = r.withTrace []` with `r` the
 refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495);
-`¬ FrameMatches` is proved through `soundness`.
+`¬ ActivationTyping` is proved through `soundness`.
 
 ```lean
 def Spec.Sharp.frame_stmt : Prop :=
@@ -2200,10 +2208,10 @@ def Spec.Sharp.frame_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ∀ (e : Expr),
@@ -2226,20 +2234,20 @@ def Spec.Sharp.frame_stmt : Prop :=
                                     e (Ty.int IntWidth.w64 Sign.signed) Ω ∧
                                   ¬EvalOk P.decls (Ty.int IntWidth.w64 Sign.signed)
                                       (Ty.int IntWidth.w64 Sign.signed) Ω.norm Ω.brk
-                                      Frame.empty []
-                                      (eval Float.exactOps 200 P [] Frame.empty e)) ∧
-                          ¬FrameMatches P.decls
+                                      Activation.empty []
+                                      (eval Float.exactOps 200 P [] Activation.empty e)) ∧
+                          ¬ActivationTyping P.decls
                                 [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false,
                                     st := OwnSt.owned }]
-                                Frame.empty [] ∧
-                            Lead Float.exactOps P 200 [] Frame.empty []
+                                Activation.empty [] ∧
+                            Lead Float.exactOps P 200 [] Activation.empty []
                                 [Val.int IntWidth.w64 Sign.signed 1] [] e ∧
-                              eval Float.exactOps 200 P [] Frame.empty e =
-                                  EvalRes.stuck Violation.unbound ∧
-                                eval Float.exactOps 201 P [] Frame.empty e =
-                                    EvalRes.stuck Violation.unbound ∧
-                                  eval Float.exactOps 201 P [] Frame.empty e =
-                                    EvalRes.withTrace [] (EvalRes.stuck Violation.unbound)
+                              eval Float.exactOps 200 P [] Activation.empty e =
+                                  EvalRes.refused Refusal.unbound ∧
+                                eval Float.exactOps 201 P [] Activation.empty e =
+                                    EvalRes.refused Refusal.unbound ∧
+                                  eval Float.exactOps 201 P [] Activation.empty e =
+                                    EvalRes.withTrace [] (EvalRes.refused Refusal.unbound)
 ```
 
 Proved by `Sharp.frame` (`RueCore.Sharp`). Drops `soundness` 3, `drop_exactly_once` 4, `rest_exactly_once` 4.
@@ -2260,14 +2268,14 @@ def Spec.Sharp.no_entry_stmt : Prop :=
             {
               structs :=
                 [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Mult.affine },
+                    dtor := true, cls := Qual.affine },
                   { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Mult.linear }],
-              enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                    dtor := false, cls := Qual.linear }],
+              enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
           fns := [] } →
       WfProgram P ∧
         P.fns[0]? = none ∧
-          run Float.exactOps P 200 = EvalRes.stuck Violation.unbound ∧
+          run Float.exactOps P 200 = EvalRes.refused Refusal.unbound ∧
             ∀ (fd : FnDef),
               ¬(run Float.exactOps P 200 = EvalRes.outOfFuel ∨
                   (∃ k tr, run Float.exactOps P 200 = EvalRes.panic k tr) ∨
@@ -2296,10 +2304,10 @@ def Spec.Sharp.entry_param_stmt : Prop :=
             {
               structs :=
                 [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Mult.affine },
+                    dtor := true, cls := Qual.affine },
                   { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Mult.linear }],
-              enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                    dtor := false, cls := Qual.linear }],
+              enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
           fns :=
             [{ params := [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false }],
                 ret := Ty.int IntWidth.w64 Sign.signed,
@@ -2314,7 +2322,7 @@ def Spec.Sharp.entry_param_stmt : Prop :=
                         ∃ H v tr,
                           run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                             HasTy P.decls v fd.ret)) ∧
-            run Float.exactOps P 200 = EvalRes.stuck Violation.typeConfusion
+            run Float.exactOps P 200 = EvalRes.refused Refusal.typeConfusion
 ```
 
 Proved by `Sharp.entry_param` (`RueCore.Sharp`). Drops `run_safe` 3, `no_violation` 1.
@@ -2328,7 +2336,7 @@ would duplicate an owner through: over `S0 = @copy struct { x0: i64 }` and
 @drop(p.x0); @drop(q.x0); 0` (`Trace.lean`'s `dupProgram`). It is not
 `ProgramTyped`, and `eval` refuses it with `ownedUnderCopy`, at the literal:
 `no_violation`'s conclusion fails once `ProgramTyped` is dropped, and a machine
-without the copy-closure monitor (`Contents.copyClosed` in `introVal`) makes
+without the copy-closure monitor (`Contents.copyContained` in `introVal`) makes
 this statement false.
 
 ```lean
@@ -2348,15 +2356,15 @@ def Spec.Sharp.copy_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.copy, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.copy },
+                        dtor := false, cls := Qual.copy },
                       { attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine }],
+                        dtor := true, cls := Qual.affine }],
                   enums := [] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = false ∧
             ¬ProgramTyped P ∧
-              run Float.exactOps P 200 = EvalRes.stuck Violation.ownedUnderCopy
+              run Float.exactOps P 200 = EvalRes.refused Refusal.ownedUnderCopy
 ```
 
 Proved by `Sharp.copy` (`RueCore.Sharp`). Drops `no_violation` 1.
@@ -2385,15 +2393,15 @@ def Spec.Sharp.leak_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = false ∧
             ¬ProgramTyped P ∧
-              run Float.exactOps P 200 = EvalRes.stuck Violation.linearLeak ∧
+              run Float.exactOps P 200 = EvalRes.refused Refusal.linearLeak ∧
                 ∃ H φ v tr,
                   Steps Float.exactOps P Config.init (Config.run H φ [] (Focus.ret v) tr) ∧
                     ¬∃ n,
@@ -2427,15 +2435,15 @@ def Spec.Sharp.overwrite_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = false ∧
             ¬ProgramTyped P ∧
-              run Float.exactOps P 200 = EvalRes.stuck Violation.linearOverwrite
+              run Float.exactOps P 200 = EvalRes.refused Refusal.linearOverwrite
 ```
 
 Proved by `Sharp.overwrite` (`RueCore.Sharp`). Drops `no_linear_overwrite` 1.
@@ -2461,15 +2469,15 @@ def Spec.Sharp.discard_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = false ∧
             ¬ProgramTyped P ∧
-              run Float.exactOps P 200 = EvalRes.stuck Violation.linearDiscard ∧
+              run Float.exactOps P 200 = EvalRes.refused Refusal.linearDiscard ∧
                 ∃ κ tr,
                   Steps Float.exactOps P Config.init (Config.panic κ tr) ∧
                     ¬∃ n,
@@ -2500,22 +2508,22 @@ def Spec.Sharp.discard_loop_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns := [{ params := [], ret := Ty.unit, body := B }] } →
           checkProgram P = false ∧
             ¬ProgramTyped P ∧
-              run Float.exactOps P 200 = EvalRes.stuck Violation.linearDiscard ∧
+              run Float.exactOps P 200 = EvalRes.refused Refusal.linearDiscard ∧
                 (∀ (n : Nat), ∃ D, StepsN Float.exactOps P n Config.init D) ∧
                   (∀ (C : Config),
                       Steps Float.exactOps P Config.init C →
                         C.Terminal ∨ ∃ C', Step Float.exactOps P C C') ∧
                     ¬((∀ (fuel : Nat), run Float.exactOps P fuel = EvalRes.outOfFuel) ↔
                           ∀ (n : Nat), ∃ D, StepsN Float.exactOps P n Config.init D) ∧
-                      ¬((∀ (fuel : Nat) (w : Violation),
-                            run Float.exactOps P fuel ≠ EvalRes.stuck w) ↔
+                      ¬((∀ (fuel : Nat) (w : Refusal),
+                            run Float.exactOps P fuel ≠ EvalRes.refused w) ↔
                           ∀ (C : Config),
                             Steps Float.exactOps P Config.init C →
                               C.Terminal ∨ ∃ C', Step Float.exactOps P C C')
@@ -2551,29 +2559,29 @@ def Spec.Sharp.fuel_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
             (∀ (n : Nat),
                 run Float.exactOps P n =
-                  eval Float.exactOps n P [] Frame.empty (Expr.call 0 [])) ∧
+                  eval Float.exactOps n P [] Activation.empty (Expr.call 0 [])) ∧
               run Float.exactOps P 0 = EvalRes.outOfFuel ∧
                 ∃ H v tr,
                   run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                     Steps Float.exactOps P Config.init
-                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                       ¬200 ≤ 0 ∧
                         0 ≤ 200 ∧
                           run Float.exactOps P 0 ≠ run Float.exactOps P 200 ∧
-                            (∀ (w : Violation),
-                                run Float.exactOps P 200 ≠ EvalRes.stuck w) ∧
+                            (∀ (w : Refusal),
+                                run Float.exactOps P 200 ≠ EvalRes.refused w) ∧
                               ¬∀ (fuel : Nat),
                                   run Float.exactOps P fuel = EvalRes.ok H v tr ∨
-                                    ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+                                    ∃ w, run Float.exactOps P fuel = EvalRes.refused w
 ```
 
 Proved by `Sharp.fuel` (`RueCore.Sharp`). Drops `fuel_mono` 1, `fuel_mono` 2, `no_masking` 1, `eval_complete` 3, `run_complete` 2.
@@ -2598,10 +2606,10 @@ def Spec.Sharp.fuel_panic_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -2613,7 +2621,7 @@ def Spec.Sharp.fuel_panic_stmt : Prop :=
                     run Float.exactOps P fuel =
                         EvalRes.panic PanicKind.user
                           [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)] ∨
-                      ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+                      ∃ w, run Float.exactOps P fuel = EvalRes.refused w
 ```
 
 Proved by `Sharp.fuel_panic` (`RueCore.Sharp`). Drops `eval_complete` 5, `run_complete` 4.
@@ -2639,10 +2647,10 @@ def Spec.Sharp.not_fits_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -2686,13 +2694,13 @@ def Spec.Sharp.double_drop_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.copy, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.copy },
+                        dtor := true, cls := Qual.copy },
                       { attr := Attr.none, fields := [Ty.struct 0], dtor := false,
-                        cls := Mult.affine },
+                        cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.struct 0, Ty.struct 3],
-                        dtor := false, cls := Mult.linear },
+                        dtor := false, cls := Qual.linear },
                       { attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine }],
+                        dtor := true, cls := Qual.affine }],
                   enums := [] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
@@ -2738,13 +2746,13 @@ def Spec.Sharp.bare_dtor_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.copy, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.copy },
+                        dtor := true, cls := Qual.copy },
                       { attr := Attr.none, fields := [Ty.struct 0], dtor := false,
-                        cls := Mult.affine },
+                        cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.struct 0, Ty.struct 3],
-                        dtor := false, cls := Mult.linear },
+                        dtor := false, cls := Qual.linear },
                       { attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine }],
+                        dtor := true, cls := Qual.affine }],
                   enums := [] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
@@ -2777,10 +2785,10 @@ def Spec.Sharp.pending_program_stmt : Prop :=
             {
               structs :=
                 [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Mult.affine },
+                    dtor := true, cls := Qual.affine },
                   { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Mult.linear }],
-              enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                    dtor := false, cls := Qual.linear }],
+              enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
           fns :=
             [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                 body := Expr.intLit IntWidth.w64 Sign.signed 0 },
@@ -2796,7 +2804,8 @@ def Spec.Sharp.pending_program_stmt : Prop :=
           ProgramTyped P ∧
             P.pendingSafe = false ∧
               e.pendingSafe = true ∧
-                FrameMatches P.decls [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
+                ActivationTyping P.decls
+                    [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
                     { env := [0], scope := [0] }
                     [Cell.full
                         (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 5])] ∧
@@ -2815,7 +2824,7 @@ def Spec.Sharp.pending_program_stmt : Prop :=
                           [Cell.full
                               (Contents.struct 0 0
                                 [Contents.int IntWidth.w64 Sign.signed 5])]
-                          { env := [0], scope := [0] } [Cell.full Contents.hole]
+                          { env := [0], scope := [0] } [Cell.full Contents.movedOut]
                           [Val.struct 0 0 [Val.int IntWidth.w64 Sign.signed 5]] [] e ∧
                         eval Float.exactOps 201 P
                               [Cell.full
@@ -2838,7 +2847,7 @@ def Spec.Sharp.pending_program_stmt : Prop :=
                                       (Contents.struct 0 0
                                         [Contents.int IntWidth.w64 Sign.signed 5])]
                                   { env := [0], scope := [0] } e) ∧
-                            ¬Exact P.decls [Cell.full Contents.hole]
+                            ¬Exact P.decls [Cell.full Contents.movedOut]
                                 (Contents.ownList P.decls
                                   (Contents.ofVals
                                     [Val.struct 0 0 [Val.int IntWidth.w64 Sign.signed 5]]))
@@ -2876,10 +2885,10 @@ def Spec.Sharp.pending_expr_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ∀ (e : Expr),
@@ -2892,7 +2901,7 @@ def Spec.Sharp.pending_expr_stmt : Prop :=
               ProgramTyped P ∧
                 P.pendingSafe = true ∧
                   e.pendingSafe = false ∧
-                    FrameMatches P.decls
+                    ActivationTyping P.decls
                         [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
                         { env := [0], scope := [0] }
                         [Cell.full
@@ -2981,10 +2990,10 @@ def Spec.Sharp.store_cc_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ∀ (e : Expr),
@@ -2994,7 +3003,7 @@ def Spec.Sharp.store_cc_stmt : Prop :=
               ProgramTyped P ∧
                 P.pendingSafe = true ∧
                   e.pendingSafe = true ∧
-                    FrameMatches P.decls [] Frame.empty
+                    ActivationTyping P.decls [] Activation.empty
                         [Cell.full
                             (Contents.array (Ty.int IntWidth.w64 Sign.signed) 0
                               [Contents.struct 0 1
@@ -3014,7 +3023,7 @@ def Spec.Sharp.store_cc_stmt : Prop :=
                                   (Contents.array (Ty.int IntWidth.w64 Sign.signed) 0
                                     [Contents.struct 0 1
                                         [Contents.int IntWidth.w64 Sign.signed 1]])]
-                              Frame.empty
+                              Activation.empty
                               [Cell.full
                                   (Contents.array (Ty.int IntWidth.w64 Sign.signed) 0
                                     [Contents.struct 0 1
@@ -3025,14 +3034,14 @@ def Spec.Sharp.store_cc_stmt : Prop :=
                                       (Contents.array (Ty.int IntWidth.w64 Sign.signed) 0
                                         [Contents.struct 0 1
                                             [Contents.int IntWidth.w64 Sign.signed 1]])]
-                                  Frame.empty e =
+                                  Activation.empty e =
                                 EvalRes.withTrace []
                                   (eval Float.exactOps 201 P
                                     [Cell.full
                                         (Contents.array (Ty.int IntWidth.w64 Sign.signed) 0
                                           [Contents.struct 0 1
                                               [Contents.int IntWidth.w64 Sign.signed 1]])]
-                                    Frame.empty e) ∧
+                                    Activation.empty e) ∧
                               ¬Exact P.decls
                                     [Cell.full
                                         (Contents.array (Ty.int IntWidth.w64 Sign.signed) 0
@@ -3045,7 +3054,7 @@ def Spec.Sharp.store_cc_stmt : Prop :=
                                             0
                                             [Contents.struct 0 1
                                                 [Contents.int IntWidth.w64 Sign.signed 1]])]
-                                      Frame.empty e) ∧
+                                      Activation.empty e) ∧
                                 ¬Exact P.decls
                                     [Cell.full
                                         (Contents.array (Ty.int IntWidth.w64 Sign.signed) 0
@@ -3060,7 +3069,7 @@ def Spec.Sharp.store_cc_stmt : Prop :=
                                             0
                                             [Contents.struct 0 1
                                                 [Contents.int IntWidth.w64 Sign.signed 1]])]
-                                      Frame.empty e)
+                                      Activation.empty e)
 ```
 
 Proved by `Sharp.store_cc` (`RueCore.Sharp`). Drops `drop_exactly_once` 5, `rest_exactly_once` 5.
@@ -3088,30 +3097,30 @@ def Spec.Sharp.no_lead_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
             P.pendingSafe = true ∧
               B.pendingSafe = true ∧
-                FrameMatches P.decls [] Frame.empty [] ∧
+                ActivationTyping P.decls [] Activation.empty [] ∧
                   StoreCC P.decls [] ∧
                     (∃ c Ω,
                         check P (Ty.int IntWidth.w64 Sign.signed) [] B = some (c, Ω) ∧
                           c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
                             Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
                               (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
-                      ¬Lead Float.exactOps P 200 [] Frame.empty
+                      ¬Lead Float.exactOps P 200 [] Activation.empty
                             [Cell.full
                                 (Contents.struct 0 0
                                   [Contents.int IntWidth.w64 Sign.signed 1])]
                             [Val.struct 0 0 [Val.int IntWidth.w64 Sign.signed 1]] [] B ∧
-                        eval Float.exactOps 201 P [] Frame.empty B =
+                        eval Float.exactOps 201 P [] Activation.empty B =
                             EvalRes.withTrace []
-                              (eval Float.exactOps 201 P [] Frame.empty B) ∧
+                              (eval Float.exactOps 201 P [] Activation.empty B) ∧
                           ¬Exact P.decls
                               [Cell.full
                                   (Contents.struct 0 0
@@ -3119,7 +3128,7 @@ def Spec.Sharp.no_lead_stmt : Prop :=
                               (Contents.ownList P.decls
                                 (Contents.ofVals
                                   [Val.struct 0 0 [Val.int IntWidth.w64 Sign.signed 1]]))
-                              (eval Float.exactOps 201 P [] Frame.empty B)
+                              (eval Float.exactOps 201 P [] Activation.empty B)
 ```
 
 Proved by `Sharp.no_lead` (`RueCore.Sharp`). Drops `rest_exactly_once` 7.
@@ -3146,16 +3155,16 @@ def Spec.Sharp.no_eval_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
             P.pendingSafe = true ∧
               B.pendingSafe = true ∧
-                FrameMatches P.decls [] Frame.empty [] ∧
+                ActivationTyping P.decls [] Activation.empty [] ∧
                   StoreCC P.decls [] ∧
                     (∃ c Ω,
                         check P (Ty.int IntWidth.w64 Sign.signed) [] B = some (c, Ω) ∧
@@ -3163,10 +3172,10 @@ def Spec.Sharp.no_eval_stmt : Prop :=
                             Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
                               (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
                       ∃ H₁ vs tr,
-                        Lead Float.exactOps P 200 [] Frame.empty H₁ vs tr B ∧
-                          ∀ (w : Violation),
-                            eval Float.exactOps 201 P [] Frame.empty B ≠
-                              EvalRes.withTrace tr (EvalRes.stuck w)
+                        Lead Float.exactOps P 200 [] Activation.empty H₁ vs tr B ∧
+                          ∀ (w : Refusal),
+                            eval Float.exactOps 201 P [] Activation.empty B ≠
+                              EvalRes.withTrace tr (EvalRes.refused w)
 ```
 
 Proved by `Sharp.no_eval` (`RueCore.Sharp`). Drops `rest_exactly_once` 8.
@@ -3198,15 +3207,15 @@ def Spec.Sharp.unreached_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
             ¬Steps Float.exactOps P Config.init
-                  (Config.run [] Frame.empty []
+                  (Config.run [] Activation.empty []
                     (Focus.ret (Val.int IntWidth.w64 Sign.signed 8))
                     [Event.dtor 0
                         (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1])]) ∧
@@ -3225,7 +3234,7 @@ def Spec.Sharp.unreached_stmt : Prop :=
                                 [Event.dtor 0
                                     (Contents.struct 0 0
                                       [Contents.int IntWidth.w64 Sign.signed 1])] ∨
-                            ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+                            ∃ w, run Float.exactOps P fuel = EvalRes.refused w
 ```
 
 Proved by `Sharp.unreached` (`RueCore.Sharp`). Drops `drop_order` 2, `drop_glue_order` 2, `eval_sound` 2, `run_sim` 1, `eval_complete` 2, `run_complete` 1.
@@ -3253,10 +3262,10 @@ def Spec.Sharp.unreached_panic_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3279,7 +3288,7 @@ def Spec.Sharp.unreached_panic_stmt : Prop :=
                                 [Event.dtor 0
                                     (Contents.struct 0 0
                                       [Contents.int IntWidth.w64 Sign.signed 1])] ∨
-                            ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+                            ∃ w, run Float.exactOps P fuel = EvalRes.refused w
 ```
 
 Proved by `Sharp.unreached_panic` (`RueCore.Sharp`). Drops `drop_order` 3, `drop_glue_order` 3, `eval_sound` 3, `run_sim` 2, `eval_complete` 4, `run_complete` 3.
@@ -3306,10 +3315,10 @@ def Spec.Sharp.unordered_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3328,8 +3337,8 @@ def Spec.Sharp.unordered_stmt : Prop :=
                               (Focus.eval (Expr.intLit IntWidth.w64 Sign.signed 1))
                               []).trace ++
                           evs ∧
-                      NewestFirst (dropLocs evs) ∧
-                        Lifo
+                      StrictStackOrder (dropLocs evs) ∧
+                        StackDiscipline
                             (Config.run [] { env := [], scope := [1, 0] } []
                                 (Focus.eval (Expr.intLit IntWidth.w64 Sign.signed 1))
                                 []).stack
@@ -3366,27 +3375,29 @@ def Spec.Sharp.not_a_step_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
             ∃ H v tr,
               Steps Float.exactOps P Config.init
-                  (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                  (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                 tr ≠ [] ∧
-                  ¬Step Float.exactOps P (Config.run H Frame.empty [] (Focus.ret v) tr)
+                  ¬Step Float.exactOps P (Config.run H Activation.empty [] (Focus.ret v) tr)
                         (Config.panic PanicKind.user []) ∧
                     ¬∃ evs,
                         (Config.panic PanicKind.user []).trace =
-                            (Config.run H Frame.empty [] (Focus.ret v) tr).trace ++ evs ∧
-                          NewestFirst (dropLocs evs) ∧
-                            Lifo (Config.run H Frame.empty [] (Focus.ret v) tr).stack
+                            (Config.run H Activation.empty [] (Focus.ret v) tr).trace ++
+                              evs ∧
+                          StrictStackOrder (dropLocs evs) ∧
+                            StackDiscipline
+                                (Config.run H Activation.empty [] (Focus.ret v) tr).stack
                                 (Config.panic PanicKind.user []).stack (dropLocs evs) ∧
                               List.Pairwise (fun x1 x2 => x1 < x2)
-                                (Config.run H Frame.empty [] (Focus.ret v) tr).stack
+                                (Config.run H Activation.empty [] (Focus.ret v) tr).stack
 ```
 
 Proved by `Sharp.not_a_step` (`RueCore.Sharp`). Drops `drop_order` 5.
@@ -3415,26 +3426,27 @@ def Spec.Sharp.init_steps_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
             Step Float.exactOps P Config.init
-                (Config.run [] Frame.empty [] (Focus.args (ArgsTag.call 0) [] []) []) ∧
+                (Config.run [] Activation.empty [] (Focus.args (ArgsFrame.call 0) [] [])
+                  []) ∧
               ¬Step Float.exactOps P Config.init Config.init ∧
-                Config.run [] Frame.empty [] (Focus.args (ArgsTag.call 0) [] []) [] ≠
+                Config.run [] Activation.empty [] (Focus.args (ArgsFrame.call 0) [] []) [] ≠
                     Config.init ∧
                   ¬Config.init.Terminal ∧
-                    ¬Config.Stuck Float.exactOps P Config.init Violation.linearLeak ∧
-                      Violation.linearLeak.isStuckState = false ∧
+                    ¬Config.Stuck Float.exactOps P Config.init Refusal.linearLeak ∧
+                      Refusal.linearLeak.isStuckState = false ∧
                         Steps Float.exactOps P Config.init Config.init ∧
                           ¬∃ n,
                               ∀ (fuel : Nat),
                                 n < fuel →
-                                  ∃ w', run Float.exactOps P fuel = EvalRes.stuck w'
+                                  ∃ w', run Float.exactOps P fuel = EvalRes.refused w'
 ```
 
 Proved by `Sharp.init_steps` (`RueCore.Sharp`). Drops `Step.det` 1, `Step.det` 2, `Step.terminal` 1, `step_stuck_isStuckState` 1, `run_stuck_of_step_stuck` 2.
@@ -3463,36 +3475,37 @@ def Spec.Sharp.unreachable_stuck_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
             Config.Stuck Float.exactOps P
-                (Config.run [] Frame.empty [] (Focus.eval (Expr.use (Place.var 0))) [])
-                Violation.unbound ∧
+                (Config.run [] Activation.empty [] (Focus.eval (Expr.use (Place.var 0))) [])
+                Refusal.unbound ∧
               ¬Steps Float.exactOps P Config.init
-                    (Config.run [] Frame.empty [] (Focus.eval (Expr.use (Place.var 0)))
+                    (Config.run [] Activation.empty [] (Focus.eval (Expr.use (Place.var 0)))
                       []) ∧
-                (∀ (fuel : Nat) (w : Violation),
-                    run Float.exactOps P fuel ≠ EvalRes.stuck w) ∧
-                  ¬((Config.run [] Frame.empty [] (Focus.eval (Expr.use (Place.var 0)))
+                (∀ (fuel : Nat) (w : Refusal),
+                    run Float.exactOps P fuel ≠ EvalRes.refused w) ∧
+                  ¬((Config.run [] Activation.empty [] (Focus.eval (Expr.use (Place.var 0)))
                             []).Terminal ∨
                         ∃ C',
                           Step Float.exactOps P
-                            (Config.run [] Frame.empty []
+                            (Config.run [] Activation.empty []
                               (Focus.eval (Expr.use (Place.var 0))) [])
                             C') ∧
                     (∀ (T : Ty),
                         ¬Config.SafeAt Float.exactOps P T
-                            (Config.run [] Frame.empty []
+                            (Config.run [] Activation.empty []
                               (Focus.eval (Expr.use (Place.var 0))) [])) ∧
                       (¬∀ (C : Config), C.Terminal ∨ ∃ C', Step Float.exactOps P C C') ∧
                         ¬∃ n,
                             ∀ (fuel : Nat),
-                              n < fuel → ∃ w', run Float.exactOps P fuel = EvalRes.stuck w'
+                              n < fuel →
+                                ∃ w', run Float.exactOps P fuel = EvalRes.refused w'
 ```
 
 Proved by `Sharp.unreachable_stuck` (`RueCore.Sharp`). Drops `step_progress` 2, `step_preservation` 2, `never_stuck_iff` 2, `step_never_stuck_of_run` 2, `run_stuck_of_step_stuck` 1.
@@ -3522,20 +3535,20 @@ def Spec.Sharp.retired_cell_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
             eval Float.exactOps 1 P [Cell.dead] { env := [0], scope := [] }
                   (Expr.use (Place.var 0)) =
-                EvalRes.stuck Violation.useAfterDrop ∧
+                EvalRes.refused Refusal.useAfterDrop ∧
               Config.Stuck Float.exactOps P
                   (Config.run [Cell.dead] { env := [0], scope := [] } []
                     (Focus.eval (Expr.use (Place.var 0))) [])
-                  Violation.useAfterDrop ∧
+                  Refusal.useAfterDrop ∧
                 ¬Steps Float.exactOps P Config.init
                     (Config.run [Cell.dead] { env := [0], scope := [] } []
                       (Focus.eval (Expr.use (Place.var 0))) [])
@@ -3567,10 +3580,10 @@ def Spec.Sharp.unreached_double_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3601,7 +3614,7 @@ frame registers cells `0` and `1`, in location order, but whose pending
 `endscope` names cell `0` rather than the newest cell `1` takes a step: (D-EndScope)
 pops one cell off the record, which leaves `[0]`, and drops cell `0`, the cell
 it kept. Its drop markers name one cell, so they are newest first, and its
-stack is in location order; only `Lifo` fails: the step cut cell `1` and
+stack is in location order; only `StackDiscipline` fails: the step cut cell `1` and
 dropped cell `0`. `Config.init` does not reach it, so `drop_order`'s last half
 fails without the hypothesis that the configuration is reached, on the one
 conjunct `unordered` leaves alone.
@@ -3620,10 +3633,10 @@ def Spec.Sharp.uncut_drop_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3653,9 +3666,9 @@ def Spec.Sharp.uncut_drop_stmt : Prop :=
                         (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1]),
                       Event.dtor 0
                         (Contents.struct 0 0 [Contents.int IntWidth.w64 Sign.signed 1])]) ∧
-                NewestFirst [0] ∧
+                StrictStackOrder [0] ∧
                   List.Pairwise (fun x1 x2 => x1 < x2) [0, 1] ∧
-                    ¬Lifo [0, 1] [0] [0] ∧
+                    ¬StackDiscipline [0, 1] [0] [0] ∧
                       ¬∃ evs,
                           (Config.run
                                   [Cell.dead,
@@ -3681,8 +3694,8 @@ def Spec.Sharp.uncut_drop_stmt : Prop :=
                                     (Focus.ret (Val.int IntWidth.w64 Sign.signed 3))
                                     []).trace ++
                                 evs ∧
-                            NewestFirst (dropLocs evs) ∧
-                              Lifo
+                            StrictStackOrder (dropLocs evs) ∧
+                              StackDiscipline
                                   (Config.run
                                       [Cell.full
                                           (Contents.struct 0 0
@@ -3748,18 +3761,18 @@ def Spec.Sharp.ill_typed_halt_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
-            (Config.run [] Frame.empty [] (Focus.ret (Val.bool true)) []).Terminal ∧
+            (Config.run [] Activation.empty [] (Focus.ret (Val.bool true)) []).Terminal ∧
               ¬Steps Float.exactOps P Config.init
-                    (Config.run [] Frame.empty [] (Focus.ret (Val.bool true)) []) ∧
+                    (Config.run [] Activation.empty [] (Focus.ret (Val.bool true)) []) ∧
                 ¬Config.SafeAt Float.exactOps P (Ty.int IntWidth.w64 Sign.signed)
-                    (Config.run [] Frame.empty [] (Focus.ret (Val.bool true)) [])
+                    (Config.run [] Activation.empty [] (Focus.ret (Val.bool true)) [])
 ```
 
 Proved by `Sharp.ill_typed_halt` (`RueCore.Sharp`). Drops `step_preservation` 2.
@@ -3788,24 +3801,24 @@ def Spec.Sharp.out_of_range_halt_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
-            (Config.run [] Frame.empty []
+            (Config.run [] Activation.empty []
                   (Focus.ret (Val.int IntWidth.w64 Sign.signed 9223372036854775808))
                   []).Terminal ∧
               ¬HasTy P.decls (Val.int IntWidth.w64 Sign.signed 9223372036854775808)
                     (Ty.int IntWidth.w64 Sign.signed) ∧
                 ¬Steps Float.exactOps P Config.init
-                      (Config.run [] Frame.empty []
+                      (Config.run [] Activation.empty []
                         (Focus.ret (Val.int IntWidth.w64 Sign.signed 9223372036854775808))
                         []) ∧
                   ¬Config.SafeAt Float.exactOps P (Ty.int IntWidth.w64 Sign.signed)
-                      (Config.run [] Frame.empty []
+                      (Config.run [] Activation.empty []
                         (Focus.ret (Val.int IntWidth.w64 Sign.signed 9223372036854775808))
                         [])
 ```
@@ -3842,46 +3855,46 @@ def Spec.Sharp.float_halt_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns := [{ params := [], ret := Ty.float FloatWidth.w64, body := B }] } →
           ProgramTyped P ∧
             (∃ H tr,
                 Steps Float.exactOps P Config.init
-                  (Config.run H Frame.empty []
+                  (Config.run H Activation.empty []
                     (Focus.ret (Val.float FloatWidth.w64 (FloatDatum.num false 15 (-1))))
                     tr)) ∧
               ¬FloatDatum.Wf FloatWidth.w64 (FloatDatum.num false 30 (-2)) ∧
                 ¬FloatDatum.Wf FloatWidth.w64 (FloatDatum.num false 1 (-1075)) ∧
-                  (Config.run [] Frame.empty []
+                  (Config.run [] Activation.empty []
                         (Focus.ret
                           (Val.float FloatWidth.w64 (FloatDatum.num false 30 (-2))))
                         []).Terminal ∧
-                    (Config.run [] Frame.empty []
+                    (Config.run [] Activation.empty []
                           (Focus.ret
                             (Val.float FloatWidth.w64 (FloatDatum.num false 1 (-1075))))
                           []).Terminal ∧
                       ¬Steps Float.exactOps P Config.init
-                            (Config.run [] Frame.empty []
+                            (Config.run [] Activation.empty []
                               (Focus.ret
                                 (Val.float FloatWidth.w64 (FloatDatum.num false 30 (-2))))
                               []) ∧
                         ¬Steps Float.exactOps P Config.init
-                              (Config.run [] Frame.empty []
+                              (Config.run [] Activation.empty []
                                 (Focus.ret
                                   (Val.float FloatWidth.w64
                                     (FloatDatum.num false 1 (-1075))))
                                 []) ∧
                           ¬Config.SafeAt Float.exactOps P (Ty.float FloatWidth.w64)
-                                (Config.run [] Frame.empty []
+                                (Config.run [] Activation.empty []
                                   (Focus.ret
                                     (Val.float FloatWidth.w64
                                       (FloatDatum.num false 30 (-2))))
                                   []) ∧
                             ¬Config.SafeAt Float.exactOps P (Ty.float FloatWidth.w64)
-                                (Config.run [] Frame.empty []
+                                (Config.run [] Activation.empty []
                                   (Focus.ret
                                     (Val.float FloatWidth.w64
                                       (FloatDatum.num false 1 (-1075))))
@@ -3918,9 +3931,9 @@ def Spec.Sharp.copy_leak_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.copy, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.copy },
+                        dtor := false, cls := Qual.copy },
                       { attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine }],
+                        dtor := true, cls := Qual.affine }],
                   enums := [] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
@@ -3932,7 +3945,7 @@ def Spec.Sharp.copy_leak_stmt : Prop :=
                     0 ∈ Config.held P.decls C ∧
                       ∃ H v tr,
                         Steps Float.exactOps P C
-                            (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                            (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                           List.count 0 (Val.own P.decls v) +
                               List.count 0 (freedIds P.decls tr) =
                             0
@@ -3963,10 +3976,10 @@ def Spec.Sharp.pending_leak_stmt : Prop :=
             {
               structs :=
                 [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Mult.affine },
+                    dtor := true, cls := Qual.affine },
                   { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Mult.linear }],
-              enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                    dtor := false, cls := Qual.linear }],
+              enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
           fns :=
             [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                 body :=
@@ -3987,7 +4000,7 @@ def Spec.Sharp.pending_leak_stmt : Prop :=
                 0 ∈ Config.held P.decls C ∧
                   ∃ H v tr,
                     Steps Float.exactOps P C
-                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                       List.count 0 (Val.own P.decls v) +
                           List.count 0 (freedIds P.decls tr) =
                         0
@@ -4020,10 +4033,10 @@ def Spec.Sharp.unreached_held_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -4032,13 +4045,14 @@ def Spec.Sharp.unreached_held_stmt : Prop :=
                     (Config.run
                       [Cell.full
                           (Contents.struct 0 5 [Contents.int IntWidth.w64 Sign.signed 1])]
-                      Frame.empty [] (Focus.ret (Val.int IntWidth.w64 Sign.signed 0)) []) ∧
+                      Activation.empty [] (Focus.ret (Val.int IntWidth.w64 Sign.signed 0))
+                      []) ∧
                 5 ∈
                     Config.held P.decls
                       (Config.run
                         [Cell.full
                             (Contents.struct 0 5 [Contents.int IntWidth.w64 Sign.signed 1])]
-                        Frame.empty [] (Focus.ret (Val.int IntWidth.w64 Sign.signed 0))
+                        Activation.empty [] (Focus.ret (Val.int IntWidth.w64 Sign.signed 0))
                         []) ∧
                   List.count 5 (Val.own P.decls (Val.int IntWidth.w64 Sign.signed 0)) +
                       List.count 5 (freedIds P.decls []) =
@@ -4071,10 +4085,10 @@ def Spec.Sharp.unheld_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -4082,7 +4096,7 @@ def Spec.Sharp.unheld_stmt : Prop :=
               ¬1 ∈ Config.held P.decls Config.init ∧
                 ∃ H v tr,
                   Steps Float.exactOps P Config.init
-                      (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                     List.count 1 (Val.own P.decls v) + List.count 1 (freedIds P.decls tr) =
                       0
 ```
@@ -4113,10 +4127,10 @@ def Spec.Sharp.off_run_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                        dtor := false, cls := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -4125,7 +4139,7 @@ def Spec.Sharp.off_run_stmt : Prop :=
                 Steps Float.exactOps P Config.init C ∧
                   0 ∈ Config.held P.decls C ∧
                     ¬Steps Float.exactOps P C
-                          (Config.run [] Frame.empty []
+                          (Config.run [] Activation.empty []
                             (Focus.ret (Val.int IntWidth.w64 Sign.signed 3)) []) ∧
                       List.count 0 (Val.own P.decls (Val.int IntWidth.w64 Sign.signed 3)) +
                           List.count 0 (freedIds P.decls []) =
