@@ -562,12 +562,12 @@ theorem totalRank_eq {a b : FloatDatum} (h : a.totalRank = b.totalRank) :
     | exact Or.inr ⟨_, _, _, _, _, rfl, rfl⟩
     | (dsimp only [FloatDatum.totalRank] at h; exact absurd h (by decide))
 
-/-- `≺_w` is reflexive at `0`: every datum, a NaN included, is the same datum as itself. -/
+/-- `(D-Total-Cmp)` §6.4 is `0` on a datum and itself, a NaN included (`3.12:32`). -/
 theorem totalCmp_self (a : FloatDatum) : a.totalCmp a = 0 := by
   rcases a with ⟨_ | _⟩ | ⟨_ | _⟩ | ⟨_ | _, s, e⟩
   all_goals first | rfl | (rw [totalCmp_pos, magCmp_self]) | (rw [totalCmp_neg, magCmp_self]; rfl)
 
-/-- Swapping `@total_cmp`'s operands negates it. -/
+/-- Swapping `(D-Total-Cmp)`'s operands negates it: `≺_w` read backwards is `1` (§6.4, `3.12:32`). -/
 theorem totalCmp_antisymm (a b : FloatDatum) : b.totalCmp a = -(a.totalCmp b) := by
   rcases Int.lt_trichotomy a.totalRank b.totalRank with h | h | h
   · rw [totalCmp_of_rank_lt h, totalCmp_of_rank_gt h]; rfl
@@ -604,7 +604,7 @@ theorem totalCmp_eq_zero_iff {w : FloatWidth} {a b : FloatDatum} (ha : a.Wf w) (
       rfl
   · exact absurd (h.symm.trans (totalCmp_of_rank_gt hr)) (by decide)
 
-/-- **`≺_w` is transitive**, on every datum (no well-formedness needed). -/
+/-- **`≺_w` is transitive** (§7), on every datum: no well-formedness is needed. -/
 theorem totalCmp_trans {a b c : FloatDatum} (h₁ : a.totalCmp b = -1) (h₂ : b.totalCmp c = -1) :
     a.totalCmp c = -1 := by
   have r₁ := rank_le_of_totalCmp h₁
