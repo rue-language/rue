@@ -74,7 +74,7 @@ fingerprints cover these statements as they cover the spine's.
 namespace RueCore.Spec.Sharp
 
 /-- **An unchecked program that reads a moved-out value, run by `eval`**
-(§7 sharpness, RUE-2485; the program is `Nonvacuous.stuck`'s). `let a = S0 { 1 };
+(§7 sharpness, RUE-2485; the program is `Nonvacuous.refused_stuck`'s). `let a = S0 { 1 };
 @drop(a); a.x0` as the entry point: the checker rejects it and it is neither
 `ProgramTyped` nor `WfProgram`, while its entry point exists and takes no
 parameters, and its body is `pendingSafe`; `main()`, the call `run` makes, is
@@ -92,7 +92,7 @@ conclusions fails once its program hypothesis is dropped: `soundness`
 refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495). The negations `¬ ProgramTyped`
 and `¬ WfProgram` are proved through the spine theorems themselves
 (`no_use_after_move`, `soundness`), not by inverting the definitions. -/
-def stuck_stmt : Prop :=
+def refused_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
         (.seq (.drop (.var 0)) (.use (.proj (.var 0) 0))) →
@@ -203,7 +203,7 @@ store, which do not match that context (`ActivationTyping` fails); everything el
 `rest_exactly_once`'s hypothesis 8 as `eval … = r.withTrace []` with `r` the
 refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495);
 `¬ ActivationTyping` is proved through `soundness`. -/
-def frame_stmt : Prop :=
+def activation_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
         (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →
@@ -800,7 +800,7 @@ is not reached from `Config.init` (shown through `step_no_use_after_drop`
 itself). So `step_no_use_after_drop` fails without the hypothesis that the
 configuration is reached: the refusal is live from an open configuration, and
 what keeps it away is the start, not the program's typing. -/
-def retired_cell_stmt : Prop :=
+def tombstoned_cell_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
         (.letIn false (.mkStruct 0 [.intLit .w64 .signed 2]) (.intLit .w64 .signed 3)) →

@@ -138,11 +138,11 @@ def witnesses : List (Lean.Name × Lean.Name × List Lean.Name) := [
       `RueCore.eval_small_to_big,
       `RueCore.never_refused_iff,
       `RueCore.eval_diverges_iff]),
-  (`RueCore.Nonvacuous.empty_frame, ``Nonvacuous.empty_frame_stmt, [
+  (`RueCore.Nonvacuous.empty_activation, ``Nonvacuous.empty_activation_stmt, [
       `RueCore.soundness,
       `RueCore.drop_exactly_once,
       `RueCore.rest_exactly_once]),
-  (`RueCore.Nonvacuous.open_frame, ``Nonvacuous.open_frame_stmt, [
+  (`RueCore.Nonvacuous.open_activation, ``Nonvacuous.open_activation_stmt, [
       `RueCore.soundness,
       `RueCore.check_sound,
       `RueCore.drop_exactly_once,
@@ -374,7 +374,7 @@ def witnesses : List (Lean.Name × Lean.Name × List Lean.Name) := [
   (`RueCore.Nonvacuous.whole_result, ``Nonvacuous.whole_result_stmt, [
       `RueCore.checkProgram_sound,
       `RueCore.whole_program_exactly_once]),
-  (`RueCore.Nonvacuous.stuck, ``Nonvacuous.stuck_stmt, [
+  (`RueCore.Nonvacuous.refused_stuck, ``Nonvacuous.refused_stuck_stmt, [
       `RueCore.fuel_mono,
       `RueCore.no_masking,
       `RueCore.Config.trichotomy,
@@ -399,7 +399,7 @@ pair's glue theorem to state exactly that negation (`Lint.dropHyp`) and fails
 on a hypothesis that neither this list nor `sharpnessReasons` covers, and Comparator's challenge, the fingerprints and
 `SPINE.md` (each theorem's "Sharp" line) include every statement (helper). -/
 def sharpness : List (Lean.Name × Lean.Name × List (Lean.Name × Nat)) := [
-  (`RueCore.Sharp.stuck, ``Sharp.stuck_stmt, [
+  (`RueCore.Sharp.refused, ``Sharp.refused_stmt, [
       (`RueCore.soundness, 1),
       (`RueCore.run_safe, 1),
       (`RueCore.no_refusal, 1),
@@ -420,7 +420,7 @@ def sharpness : List (Lean.Name × Lean.Name × List (Lean.Name × Nat)) := [
       (`RueCore.check_sound, 1),
       (`RueCore.drop_exactly_once, 3),
       (`RueCore.rest_exactly_once, 3)]),
-  (`RueCore.Sharp.frame, ``Sharp.frame_stmt, [
+  (`RueCore.Sharp.activation, ``Sharp.activation_stmt, [
       (`RueCore.soundness, 3),
       (`RueCore.drop_exactly_once, 4),
       (`RueCore.rest_exactly_once, 4)]),
@@ -504,7 +504,7 @@ def sharpness : List (Lean.Name × Lean.Name × List (Lean.Name × Nat)) := [
       (`RueCore.never_refused_iff, 2),
       (`RueCore.step_never_stuck_of_run, 2),
       (`RueCore.run_refused_of_step_stuck, 1)]),
-  (`RueCore.Sharp.retired_cell, ``Sharp.retired_cell_stmt, [
+  (`RueCore.Sharp.tombstoned_cell, ``Sharp.tombstoned_cell_stmt, [
       (`RueCore.step_no_use_after_drop, 1)]),
   (`RueCore.Sharp.unreached_double, ``Sharp.unreached_double_stmt, [
       (`RueCore.step_no_double_free, 2)]),

@@ -718,7 +718,7 @@ RULINGS = {
     # them, and its unproved candidates agree with every one of those refutations.
     "hasty-int-any-value": ("statement", "`Sharp.out_of_range_halt` is false (RUE-2500): its `¬ HasTy` of `2^63` at `i64`, and its `¬ SafeAt` of the configuration halted with it, rest on `HasTy.int`'s bounds, which the mutant drops (kernel-checked refutation, scratch/rue-2500/hasty-int-any-value-T.lean). Before RUE-2500 no Spec statement was false: `HasTy` occurred only in conclusions and in `¬` claims about stuck or valueless runs; `HasTy.contentsTy` is also a false helper"),
     "hasty-float-any-value": ("statement", "`Sharp.float_halt` is false (RUE-2500): the configurations halted with `30 · 2^-2` and `1 · 2^-1075` are now `SafeAt` `f64`, since `HasTy.float` no longer asks `Wf` (scratch/rue-2500/hasty-float-any-value-T.lean); `HasTy.contentsTy` is also a false helper"),
-    "evalok-refused-ok": ("statement", "`Sharp.stuck`, `.typed` and `.frame` are false: each asserts `¬ EvalOk … (.refused _)`, now `¬ True`. `Spec.soundness_stmt` is only weakened by this mutant, not false, so that is not the kill"),
+    "evalok-refused-ok": ("statement", "`Sharp.refused`, `.typed` and `.activation` are false: each asserts `¬ EvalOk … (.refused _)`, now `¬ True`. `Spec.soundness_stmt` is only weakened by this mutant, not false, so that is not the kill"),
     "contentsowntyping-moved-residue": ("statement", "`Spec.soundness_stmt` — the headline — and `drop_exactly_once_stmt` are both false: the dropped residual-linear check sits in `ActivationTyping`, a *hypothesis* of `soundness`, so weakening it strengthens the claim; a live linear overwrite `check` now accepts still runs to `.refused .linearOverwrite` (kernel-checked counterexample, contentsowntyping-moved-residue-T.lean)"),
     "exact-at-most": ("statement", "`Sharp.pending_program`, `.pending_expr` and `.no_lead` are false: each `¬ Exact` rested on a strict `<` that the weakened `≤` now satisfies; `Sharp.store_cc` stays true, since its `¬ Exact` rests on `StoreCC` instead"),
     "blocks-any-trace": ("statement", "`Sharp.bare_dtor`, `.unreached` and `.unreached_panic` are false via `Blocks.not_dtor`; `Sharp.leak`, `.overwrite`, `.discard`, `.discard_loop` and `.copy` never mention `Blocks` and stay true"),
@@ -732,7 +732,7 @@ RULINGS = {
     "float-wf-no-emin": ("statement", "`Sharp.float_halt` is false (RUE-2500): its `¬ (num false 1 (-1075)).Wf .w64`, half the least subnormal, is refuted (scratch/rue-2500/float-wf-no-emin-T.lean). The float laws still hold on the mutant's larger `Wf` as far as RUE-2490 sampled, and the four Float lemmas that fail conclude a weaker `Wf` and stay true, so without that statement nothing would be false"),
     "float-wf-noncanonical": ("statement", "`Sharp.float_halt` is false (RUE-2500): its `¬ (num false 30 (-2)).Wf .w64`, the non-canonical spelling of the `7.5` `Nonvacuous.float` returns, is refuted (scratch/rue-2500/float-wf-noncanonical-T.lean); the float laws and the four Float lemmas stay true as for `float-wf-no-emin`"),
     # RUE-2500: the hypothesis-side control, read by hand (scratch/rue-2500/), as for the 15 above.
-    "contentsowntyping-owned-false": ("statement", "`Nonvacuous.open_frame` is false: its `ActivationTyping` of the owned binding `s : S0` against the cell `S0 { 5 }` needs `ContentsOwnTyping .owned`, whose premise is now `False` (scratch/rue-2500/contentsowntyping-owned-false-T.lean). No other witness states `ActivationTyping` at a frame with an owned binding: `empty_frame` and `Sharp.stuck` state it of the empty frame, and `Nonvacuous.dtor` does not state it at all, so `soundness`, `drop_exactly_once` and `rest_exactly_once` would be vacuous at every open frame and only `open_frame` shows it"),
+    "contentsowntyping-owned-false": ("statement", "`Nonvacuous.open_activation` is false: its `ActivationTyping` of the owned binding `s : S0` against the cell `S0 { 5 }` needs `ContentsOwnTyping .owned`, whose premise is now `False` (scratch/rue-2500/contentsowntyping-owned-false-T.lean). No other witness states `ActivationTyping` at a frame with an owned binding: `empty_activation` and `Sharp.refused` state it of the empty frame, and `Nonvacuous.dtor` does not state it at all, so `soundness`, `drop_exactly_once` and `rest_exactly_once` would be vacuous at every open frame and only `open_activation` shows it"),
 }
 
 
@@ -882,7 +882,7 @@ SECTION = "@[expose] public section\n"
 
 def short(stmt):
     """A statement's name as the page writes it: `soundness`, `Sharp.bare_dtor`,
-    `Sharp.Glue.stuck.soundness_1`, `Nonvacuous.Glue.dtor.soundness`."""
+    `Sharp.Glue.refused.soundness_1`, `Nonvacuous.Glue.dtor.soundness`."""
     for p in ("RueCore.Spine.", "RueCore."):
         if stmt.startswith(p):
             return stmt[len(p):]

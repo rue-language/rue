@@ -1235,7 +1235,7 @@ in the statement, with the non-triviality in the statement too.
   `@drop`: `run` refuses it with `useAfterMove` and `Step` reaches a stuck
   configuration), **the empty frame** (`ActivationTyping` and `StoreCC` at the
   empty context, frame and store), and **an open term in a live frame**
-  (`open_frame`: `@drop(s); 1` typed in the context `s : S0`, over a frame and
+  (`open_activation`: `@drop(s); 1` typed in the context `s : S0`, over a frame and
   store that hold an `S0`, whose evaluation runs that value's destructor), so
   `soundness`, `drop_exactly_once` and `rest_exactly_once` are shown to apply
   beyond the empty frame.
@@ -1260,7 +1260,7 @@ past the elaborator's evaluation threshold; never `native_decide`.
 **Every listed pair is applied.** `RueCore/Nonvacuous/Glue.lean` (L2) has one
 theorem per (witness, spine theorem) pair of `Spec.witnesses`,
 `Glue.<witness>.<theorem>`, which takes the witness's facts (with `M` from
-`exact_model` and the frame from `empty_frame` or `open_frame`) and applies
+`exact_model` and the frame from `empty_activation` or `open_activation`) and applies
 `RueCore.Spine.<theorem>` to them. It elaborates only if the witness supplies
 that theorem's literal hypotheses, and the lint fails on a listed pair whose
 glue theorem is missing or does not use both constants. Six spine statements
@@ -1369,7 +1369,7 @@ the statements; `SPINE.md` prints each theorem's hypotheses, numbered, on its
 The counter-examples, by kind:
 
 * Unchecked programs (`ProgramTyped` or `WfProgram` dropped): a read after
-  `@drop` (`Sharp.stuck`, `Sharp.stuck_step`), refused by `eval` and stuck
+  `@drop` (`Sharp.refused`, `Sharp.stuck_step`), refused by `eval` and stuck
   under `Step`; an entry point with a parameter (`Sharp.entry_param`), which
   is `WfProgram` but not `ProgramTyped`; and a `@copy` struct with a
   destructor copied into two owners, whose run destroys one identity twice
@@ -1394,7 +1394,7 @@ The counter-examples, by kind:
   matching statement false, which is what makes the five monitor mutants
   statement kills (`MUTATION.md`).
 * Checked programs in the wrong place: an ill-typed expression
-  (`Sharp.typed`), a frame that does not match its context (`Sharp.frame`), a
+  (`Sharp.typed`), a frame that does not match its context (`Sharp.activation`), a
   store that is not copy-closed (`Sharp.store_cc`), a function or an
   expression that is not `pendingSafe` (`Sharp.pending_program`,
   `Sharp.pending_expr`: a pending value abandoned by `return` ends nowhere, so
@@ -1411,7 +1411,7 @@ The counter-examples, by kind:
   these pin `SafeAt`'s typing half, `HasTy` and `FloatDatum.Wf`, which
   `MUTATION.md`'s statement-vocabulary mutants weaken), a
   configuration whose frame names a retired cell, stuck with `useAfterDrop`
-  and not reached either (`Sharp.retired_cell`, RUE-2496), a panic whose
+  and not reached either (`Sharp.tombstoned_cell`, RUE-2496), a panic whose
   trace destroys one identity twice, not reached (`Sharp.unreached_double`,
   RUE-2477: `step_no_double_free`'s reachability), for
   `whole_program_exactly_once` (RUE-2478) a terminal configuration holding
@@ -1427,7 +1427,7 @@ The counter-examples, by kind:
   answers `outOfFuel`).
 * The fuel premises of `fuel_mono` (`n ≤ m`, `eval n ≠ outOfFuel`) and
   `no_masking`, which are the statements' own, top-level (`Sharp.fuel`,
-  `Sharp.stuck`).
+  `Sharp.refused`).
 
 The two reasons, both in `Spec.lean`:
 
@@ -1445,7 +1445,7 @@ The two reasons, both in `Spec.lean`:
   and retired only when the scope that bound it ends, after which nothing
   names it, and a scope record owes each cell once. The guard is still live
   from an open configuration, a frame naming a cell already retired
-  (`Examples.lean`, `Sharp.retired_cell`), which is why
+  (`Examples.lean`, `Sharp.tombstoned_cell`), which is why
   `step_no_use_after_drop`'s reachability hypothesis has a counter-example.
   `no_use_after_drop` is kept as §7 states it, over checked programs.
 

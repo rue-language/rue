@@ -57,7 +57,7 @@ empty store matches the empty context (`ActivationTyping`) and its store is
 copy-closed (`StoreCC`). With a program's typed body this is the frame and
 store the evaluation statements (`soundness`, `drop_exactly_once`,
 `rest_exactly_once`) are applied at by the witnesses below. -/
-def empty_frame_stmt : Prop :=
+def empty_activation_stmt : Prop :=
   ∀ D : Decls, ActivationTyping D [] Activation.empty [] ∧ StoreCC D []
 
 /-- **An open term in a live frame** (§6.1, §7): the evaluation statements apply
@@ -69,7 +69,7 @@ program. Its evaluation runs the destructor of the value it started with, and
 its leading operand has a `Lead`, so `soundness`, `drop_exactly_once` and
 `rest_exactly_once` apply to a term with a free variable and a store that is
 not empty. -/
-def open_frame_stmt : Prop :=
+def open_activation_stmt : Prop :=
   ∀ D : Decls, D =
       { structs :=
               [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
@@ -340,7 +340,7 @@ unchecked, `eval` refuses it with `useAfterMove`, and §6's relation reaches a
 configuration stuck with the same violation from `Config.init`. So the
 statements whose hypothesis is a stuck run or a stuck configuration are not
 vacuous either. -/
-def stuck_stmt : Prop :=
+def refused_stuck_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
         (.seq (.drop (.var 0)) (.use (.proj (.var 0) 0))) →

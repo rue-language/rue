@@ -87,7 +87,7 @@ binding's cell is minted fresh and retired only when the scope that bound it
 ends, after which nothing names it, and a scope record owes each cell once.
 So `no_use_after_drop`'s `ProgramTyped` is redundant for a run from the
 start. The guard is not dead code: from an open configuration, a frame that
-names a cell already retired, `eval` does refuse (`Sharp.retired_cell`). Like
+names a cell already retired, `eval` does refuse (`Sharp.tombstoned_cell`). Like
 `no_use_after_drop`, it says no retired cell is accessed only as far as
 `eval` checks every access and labels it so (R3 of `REDTEAM-LOG.md`). -/
 def run_no_use_after_drop_stmt : Prop :=

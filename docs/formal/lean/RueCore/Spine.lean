@@ -127,10 +127,10 @@ theorem eval_diverges_iff : Spec.eval_diverges_iff_stmt := @RueCore.eval_diverge
 
 /-- `Spec.Nonvacuous.exact_model_stmt`, by `RueCore.Nonvacuous.exact_model` (helper). -/
 theorem Nonvacuous.exact_model : Spec.Nonvacuous.exact_model_stmt := @RueCore.Nonvacuous.exact_model
-/-- `Spec.Nonvacuous.empty_frame_stmt`, by `RueCore.Nonvacuous.empty_frame` (helper). -/
-theorem Nonvacuous.empty_frame : Spec.Nonvacuous.empty_frame_stmt := @RueCore.Nonvacuous.empty_frame
-/-- `Spec.Nonvacuous.open_frame_stmt`, by `RueCore.Nonvacuous.open_frame` (helper). -/
-theorem Nonvacuous.open_frame : Spec.Nonvacuous.open_frame_stmt := @RueCore.Nonvacuous.open_frame
+/-- `Spec.Nonvacuous.empty_activation_stmt`, by `RueCore.Nonvacuous.empty_activation` (helper). -/
+theorem Nonvacuous.empty_activation : Spec.Nonvacuous.empty_activation_stmt := @RueCore.Nonvacuous.empty_activation
+/-- `Spec.Nonvacuous.open_activation_stmt`, by `RueCore.Nonvacuous.open_activation` (helper). -/
+theorem Nonvacuous.open_activation : Spec.Nonvacuous.open_activation_stmt := @RueCore.Nonvacuous.open_activation
 /-- `Spec.Nonvacuous.dtor_stmt`, by `RueCore.Nonvacuous.dtor` (helper). -/
 theorem Nonvacuous.dtor : Spec.Nonvacuous.dtor_stmt := @RueCore.Nonvacuous.dtor
 /-- `Spec.Nonvacuous.linear_stmt`, by `RueCore.Nonvacuous.linear` (helper). -/
@@ -158,19 +158,19 @@ theorem Nonvacuous.whole_drops : Spec.Nonvacuous.whole_drops_stmt :=
 /-- `Spec.Nonvacuous.whole_result_stmt`, by `RueCore.Nonvacuous.whole_result` (helper). -/
 theorem Nonvacuous.whole_result : Spec.Nonvacuous.whole_result_stmt :=
   @RueCore.Nonvacuous.whole_result
-/-- `Spec.Nonvacuous.stuck_stmt`, by `RueCore.Nonvacuous.stuck` (helper). -/
-theorem Nonvacuous.stuck : Spec.Nonvacuous.stuck_stmt := @RueCore.Nonvacuous.stuck
+/-- `Spec.Nonvacuous.refused_stuck_stmt`, by `RueCore.Nonvacuous.refused_stuck` (helper). -/
+theorem Nonvacuous.refused_stuck : Spec.Nonvacuous.refused_stuck_stmt := @RueCore.Nonvacuous.refused_stuck
 
 /-! ## The sharpness counter-examples (`Spec.sharpness`) -/
 
-/-- `Spec.Sharp.stuck_stmt`, by `RueCore.Sharp.stuck` (helper). -/
-theorem Sharp.stuck : Spec.Sharp.stuck_stmt := @RueCore.Sharp.stuck
+/-- `Spec.Sharp.refused_stmt`, by `RueCore.Sharp.refused` (helper). -/
+theorem Sharp.refused : Spec.Sharp.refused_stmt := @RueCore.Sharp.refused
 /-- `Spec.Sharp.stuck_step_stmt`, by `RueCore.Sharp.stuck_step` (helper). -/
 theorem Sharp.stuck_step : Spec.Sharp.stuck_step_stmt := @RueCore.Sharp.stuck_step
 /-- `Spec.Sharp.typed_stmt`, by `RueCore.Sharp.typed` (helper). -/
 theorem Sharp.typed : Spec.Sharp.typed_stmt := @RueCore.Sharp.typed
-/-- `Spec.Sharp.frame_stmt`, by `RueCore.Sharp.frame` (helper). -/
-theorem Sharp.frame : Spec.Sharp.frame_stmt := @RueCore.Sharp.frame
+/-- `Spec.Sharp.activation_stmt`, by `RueCore.Sharp.activation` (helper). -/
+theorem Sharp.activation : Spec.Sharp.activation_stmt := @RueCore.Sharp.activation
 /-- `Spec.Sharp.no_entry_stmt`, by `RueCore.Sharp.no_entry` (helper). -/
 theorem Sharp.no_entry : Spec.Sharp.no_entry_stmt := @RueCore.Sharp.no_entry
 /-- `Spec.Sharp.entry_param_stmt`, by `RueCore.Sharp.entry_param` (helper). -/
@@ -217,8 +217,8 @@ theorem Sharp.not_a_step : Spec.Sharp.not_a_step_stmt := @RueCore.Sharp.not_a_st
 theorem Sharp.init_steps : Spec.Sharp.init_steps_stmt := @RueCore.Sharp.init_steps
 /-- `Spec.Sharp.unreachable_stuck_stmt`, by `RueCore.Sharp.unreachable_stuck` (helper). -/
 theorem Sharp.unreachable_stuck : Spec.Sharp.unreachable_stuck_stmt := @RueCore.Sharp.unreachable_stuck
-/-- `Spec.Sharp.retired_cell_stmt`, by `RueCore.Sharp.retired_cell` (helper). -/
-theorem Sharp.retired_cell : Spec.Sharp.retired_cell_stmt := @RueCore.Sharp.retired_cell
+/-- `Spec.Sharp.tombstoned_cell_stmt`, by `RueCore.Sharp.tombstoned_cell` (helper). -/
+theorem Sharp.tombstoned_cell : Spec.Sharp.tombstoned_cell_stmt := @RueCore.Sharp.tombstoned_cell
 /-- `Spec.Sharp.unreached_double_stmt`, by `RueCore.Sharp.unreached_double` (helper). -/
 theorem Sharp.unreached_double : Spec.Sharp.unreached_double_stmt :=
   @RueCore.Sharp.unreached_double

@@ -67,13 +67,13 @@ theorem loopUnit_run : ∀ fuel, run Float.exactOps
 theorem exact_model :
     ∃ M : FloatLaws, M.toFloatSig = Float.exactOps := ⟨Float.exactModel, rfl⟩
 
-/-- `Spec.Nonvacuous.empty_frame_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
-theorem empty_frame :
+/-- `Spec.Nonvacuous.empty_activation_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
+theorem empty_activation :
     ∀ D : Decls, ActivationTyping D [] Activation.empty [] ∧ StoreCC D [] :=
   fun _ => ⟨activationTyping_empty, fun _ _ hc => by simp at hc⟩
 
-/-- `Spec.Nonvacuous.open_frame_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
-theorem open_frame :
+/-- `Spec.Nonvacuous.open_activation_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
+theorem open_activation :
     ∀ D : Decls, D =
       { structs :=
               [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
@@ -413,8 +413,8 @@ theorem diverges_drop :
         (.loop (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) .unitLit))) _) = _
       rw [dropLoop_eval]; rfl
 
-/-- `Spec.Nonvacuous.stuck_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
-theorem stuck :
+/-- `Spec.Nonvacuous.refused_stuck_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
+theorem refused_stuck :
     ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
         (.seq (.drop (.var 0)) (.use (.proj (.var 0) 0))) →
