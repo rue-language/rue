@@ -251,8 +251,8 @@ four violations, never on one of `eval`'s four monitors
 metatheory row and `Step.lean`'s module docstring give the same list:
 
 - §6.2's evaluation context `E` and §6.1's stack `K` are one list of frames,
-  so the rule that searches into a context is two constructors, one entering
-  the hole and one plugging a value back in;
+  so the rule that searches into a context is two constructors, an evaluation-state one
+  entering the hole and a return-state one returning a value into it;
 - `endscope` pops its cells off the frame by count, because bindings are de
   Bruijn indices where §6.7 relies on α-renaming;
 - the loop boundary sits above its context's frames, because §6.10's
@@ -280,8 +280,8 @@ if it panics, `Step` reaches the same panic after the same trace. The proof is
 a simulation, `Sim`, read off each of `eval`'s outcomes: the expression in
 focus under *any* context reaches the context's hole with the value, or the
 panic, or (for an unwinding `return` or `break`) the nearest caller or loop.
-Each `bind` in `eval` becomes one enter step, the operand's run, and one
-plug step. A surprise: the simulation needs no typing at all (`run_sim` holds
+Each `bind` in `eval` becomes one evaluation-state step, the operand's run, and
+one return-state step. A surprise: the simulation needs no typing at all (`run_sim` holds
 on every program), because every place `eval` and `Step` differ is a refusal
 on `eval`'s side, and a refusal promises nothing. Typing only fixes the
 domain, by ruling `.refused` out. `letAddProgram_sound` is the theorem at work:
@@ -351,7 +351,7 @@ first) and `call` the entry point's `ret(E, φ)`:
 Two things differ, and neither is a disagreement:
 
 - Five of the twelve steps are (Search): entering a subexpression, or
-  plugging a value back into its context. `eval` does these by recursion, so
+  returning a value into its context. `eval` does these by recursion, so
   they have no row of their own. Each unit of fuel `eval` spends is paid for
   by at least one step, either an enter step or the rule step that puts the
   next subexpression in focus, which is why `eval_steps_of_outOfFuel` can

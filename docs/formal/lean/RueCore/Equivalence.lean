@@ -51,8 +51,8 @@ promises about `→*` from the family `C`:
 * `.refused` and `.outOfFuel`: nothing.
 
 `eval_sim` is `Sim` for every expression, store, frame and fuel. Each
-`bind` in `eval` is one (Search) enter step, the operand's `Sim` under one
-more frame, and a plug step (`Sim.bind`); argument lists are
+`bind` in `eval` is one (Search) evaluation-state step, the operand's `Sim` under one
+more frame, and a return-state step (`Sim.bind`); argument lists are
 `evalArgs_sim`; the call boundary is `Sim.absorb`; and a loop turn that
 finishes re-enters the body through (D-Loop-Iter) where `eval` re-evaluates
 the whole loop at one less fuel, the one (D-Loop-Enter) between them peeled
@@ -84,7 +84,7 @@ Part 3 needs no converse simulation. Its one new fact is
 `eval_steps_of_outOfFuel`: if `eval` exhausts `fuel` on an expression, §6's
 reduction has a run of exactly `fuel` steps from that expression in focus
 (`StepsN`). Each unit of fuel is paid for by at least one `Step`: every
-recursive call of `eval` sits behind a (Search) enter step (§6.2), and the
+recursive call of `eval` sits behind a (Search) evaluation-state step (§6.2), and the
 operands before it reached values, which `Sim`'s `ok` clause turns into runs.
 Two forms spend fuel without a step of their own, and each is paid for by the
 next step. `@drop` at a dynamic place re-dispatches to the read, and the push
@@ -218,8 +218,8 @@ theorem Sim.withTrace {M : FloatSig} {P : Program} {φ : Activation}
   · intro K tr; have := h K (tr ++ tr₁); simp only [List.append_assoc] at this
     exact (hpre K tr).trans this
 
-/-- **§6.2's (Search), once**: `eval`'s `bind` is an enter step pushing a
-frame `F`, the operand run under `F`, and a plug of its value into `F`'s hole.
+/-- **§6.2's (Search), once**: `eval`'s `bind` is an evaluation-state step pushing a
+frame `F`, the operand run under `F`, and a return-state step of its value into `F`'s hole.
 A `return` or a `break` passes through `F` unchanged because `F` is neither a
 call frame nor a loop boundary, and a panic because (Panic-Lift) discards
 every context (helper). -/
@@ -285,7 +285,7 @@ theorem Sim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Activation}
   | refused w => simp [EvalRes.bindCall, Sim]
   | outOfFuel => simp [EvalRes.bindCall, Sim]
 
-/-- §6.4's operator frames: a value plugs the hole, a trap is (Panic-Lift)
+/-- §6.4's operator frames: a value fills the hole, a trap is (Panic-Lift)
 (helper). -/
 theorem OpRes.sim {M : FloatSig} {P : Program} {φ : Activation} {H : Store} {F : Kont} {v : Val}
     (o : OpRes)
@@ -1209,7 +1209,7 @@ theorem Long.bind {φ₁ : Activation} {C C₁ : List Kont → List Event → Co
         (fun K tr => ⟨_, tr, hC K tr, .refl _⟩) (fun K tr => h₁ rfl (F :: K) tr)
   | _ => simp [EvalRes.bind] at hr
 
-/-- §6.2's (Search) without its enter step, counted: the operand is already in
+/-- §6.2's (Search) without its evaluation-state step, counted: the operand is already in
 focus under the frame `F` — (D-Match) put the arm's body there while binding
 the payload — so exhaustion is a run of `fuel` steps, not `fuel + 1`
 (helper). -/

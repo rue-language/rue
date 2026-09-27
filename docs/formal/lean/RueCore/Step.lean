@@ -47,8 +47,8 @@ converse modulo fuel, is `eval_small_to_big` (`Equivalence.lean`).
 
 §6.2 drives reduction with two structural rules, (Search) and (Panic-Lift).
 Here (Search) is not a single congruence constructor: every `E` production
-contributes an *enter* rule (the focus moves into the hole and the frame is
-pushed) and a *plug* rule (a value returns into the hole: move to the next
+contributes an *evaluation-state* rule (the focus moves into the hole and the
+frame is pushed) and a *return-state* rule (a value returns into the hole: move to the next
 hole, or fire the redex). Decomposition of a configuration into a context and
 a redex is then unique by construction, which is what makes determinism a
 case split (`Step.det`). (Panic-Lift) is folded into every trap rule: the
@@ -82,7 +82,8 @@ Each item is a reading §6 needs before it can be mechanized, or a choice of
 representation; none changes what a checked program does.
 
 * **One list of frames** for §6.2's `E` and §6.1's `K` (above), so (Search) is
-  an enter and a plug constructor per context production rather than one
+  an evaluation-state and a return-state constructor per context production
+  rather than one
   congruence rule, and (Panic-Lift) is the shape of every trap rule.
 * **`endscope` pops by count.** §6.7 never restores `ρ` after a binding dies,
   because elaboration α-renames binders and a dead name is never looked up.
@@ -250,7 +251,7 @@ own initial configuration, with no `call` frame, a `return` would be stuck
 def Config.init : Config :=
   .run [] { env := [], scope := [] } [] (.eval (.call 0 [])) []
 
-/-- The terminal configurations: `✓n`, a value with nothing left to plug it
+/-- The terminal configurations: `✓n`, a value with nothing left to return it into
 into — (Result-Ok) — and `↯κ` — (Result-Panic). Any value counts here, where
 (Result-Ok) reads only an `i32` or `⟨⟩`: reading the exit code is left to the
 observer. -/
@@ -354,7 +355,7 @@ def plainDestructure (D : Decls) (ℓ : Nat) (c : Contents) (πs : List Nat) :
 
 /-- **§6's reduction relation** `C → C'`, over the fragment. One constructor
 per §6 rule (or per rule group, where §6.4's operator tables are one function
-of the operands), plus §6.2's (Search) as an *enter* and a *plug* constructor
+of the operands), plus §6.2's (Search) as an *evaluation-state* and a *return-state* constructor
 per evaluation-context production. (Panic-Lift) is the shape of every trap
 constructor. `M` fixes the float operations, as `eval`'s does; `P` supplies the
 declarations and the functions. -/
@@ -769,7 +770,7 @@ deriving Repr
 
 /-- `step` at an expression in focus: the literal rules of §6.3, the place
 rules of §6.3 and §6.11, (D-Panic) §6.12, (D-Loop-Enter) and (D-Break)
-§6.10, and every (Search) enter rule of §6.2 (helper). -/
+§6.10, and every (Search) evaluation-state rule of §6.2 (helper). -/
 def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : List Kont)
     (tr : List Event) : Expr → StepOut
   | .intLit w s n => .next (.run H φ K (.ret (.int w s n)) tr)
@@ -942,14 +943,14 @@ def stepArgs (P : Program) (H : Store) (φ : Activation) (K : List Kont) (tr : L
             | none => .stuck .typeConfusion
             | some c' => .next (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ evs))
 
-/-- An operator's outcome as a step: a value plugs the hole, a trap is
+/-- An operator's outcome as a step: a value fills the hole, a trap is
 (Panic-Lift) §6.2, and a wrong-shaped operand is stuck (helper). -/
 def OpRes.toStep (H : Store) (φ : Activation) (K : List Kont) (tr : List Event) : OpRes → StepOut
   | .val v => .next (.run H φ K (.ret v) tr)
   | .trap κ => .next (.panic κ tr)
   | .confused => .stuck .typeConfusion
 
-/-- `step` at a value returning into the top frame: every (Search) plug rule
+/-- `step` at a value returning into the top frame: every (Search) return-state rule
 of §6.2 and the redexes that fire there — §6.4's operators, (D-Match),
 (D-If-T)/(D-If-F), (D-Let), (D-EndScope), (D-Seq), (D-Assign),
 (D-Return-Value), (D-Return) and (D-Loop-Iter) (helper). -/

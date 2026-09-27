@@ -34,7 +34,7 @@ the trace "drop `ℓ1`, then `S1`'s destructor"; and §6's `→*` reaches the sa
 terminal configuration by the twelve steps written out here, one `Step`
 constructor each: (Search) into the call's empty argument list, (D-Call),
 (Search) into the `let`, (Search) into the struct literal and its one
-initializer, the literal, the plug, (D-Struct) minting `#0`, (D-Let),
+initializer, the literal, the return-state step, (D-Struct) minting `#0`, (D-Let),
 the body's literal, (D-EndScope) dropping and retiring `ℓ1`, and
 (D-Return-Value). `explain/affine_scope_drop.txt` renders `eval`'s run of the
 same program in seven rows: the (Search) steps are the part of `Step` that
