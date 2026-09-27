@@ -795,7 +795,7 @@ divZero`, against one `remZero` (`gen_7_171`). `pairRate` raises `/`'s own
 rate to one in six (`rem`'s stays untouched), and this one shape now prints
 under `/` whichever of `div` or `rem` the operator itself is — the runtime
 and `lean_corpus.rs` already collapse `divZero` and `remZero` to one message
-and one bridge kind, so a `rem` site reaching `(x, 0)` is as good a witness.
+and one trap kind for differential testing, so a `rem` site reaching `(x, 0)` is as good a witness.
 Rerun at these settings:
 
 * `--gen 200 --seed 7` reaches one accepted `divZero`, at no extra draw —
