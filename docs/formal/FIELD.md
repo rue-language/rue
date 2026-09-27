@@ -752,6 +752,9 @@ Copeland 1986 **(record)**; the Swift performance guide; Rust's
 
 | Our term | Accepted term | Confidence |
 |---|---|---|
+| "abstract data type" (01 §6.13: `ArrayBuf(T)`, `StrBuf`; formerly "library container") | abstract data type (Liskov & Zilles; MIT 6.005) | clear: the core sees the type only through its methods' equations |
+| "trusted code", "trusted-code obligations", "trusted-code bug" (01 §6.13.5; formerly "library obligations", "library bug") | trusted code base (§8 above; CakeML §1) | clear: the theorems hold conditionally on this code meeting (O1)–(O4) |
+| "specification equation" (01 §6.13, the intrinsics of §6.9; formerly "defining equation") | the axioms of an algebraic specification (Guttag & Horning, via Gaudel & Le Gall) | partial: ours give one method's effect on the store, as a function would; algebraic axioms relate the operations to one another |
 
 ---
 
