@@ -17,7 +17,7 @@ vacuously if no model satisfies the laws (RUE-2469). Each statement here says
 that some spine statements' hypotheses **hold together, of a non-trivial
 program**, with the program written out and its non-triviality in the
 statement itself: the checker accepts it, it is `ProgramTyped`, its body is
-typed, its run returns (or panics, or diverges, or is stuck) and is reached by
+typed, its run returns (or panics, or diverges, or is refused) and is reached by
 §6's relation from `Config.init`, and its trace drops several values, runs
 several destructors, or returns a particular value.
 
@@ -101,7 +101,7 @@ class: destructors; the corpus case `affine_scope_drop`, with two bindings). The
 `Step` from `Config.init`, and its trace frees two identities and runs two
 destructors. It also carries the other hypotheses of the trace statements:
 the declarations keep destructor-bearing structs off `Copy` (`DtorNotCopy`),
-the initial configuration steps, no fuel makes the run stuck, the body's own
+the initial configuration steps, no fuel makes the run refused, the body's own
 evaluation drops two values, and the body's leading operand mints an owned
 identity (`Lead`), so `rest_exactly_once` applies to a value minted
 mid-evaluation. -/
@@ -338,7 +338,7 @@ case `use_after_move` reads its moved binding the same way). `let a = S0 { 1
 }; @drop(a); a.x0` is rejected by the checker; run
 unchecked, `eval` refuses it with `useAfterMove`, and §6's relation reaches a
 configuration stuck with the same violation from `Config.init`. So the
-statements whose hypothesis is a stuck run or a stuck configuration are not
+statements whose hypothesis is a refused run or a stuck configuration are not
 vacuous either. -/
 def refused_stuck_stmt : Prop :=
   ∀ B : Expr, B =

@@ -131,8 +131,8 @@ Read the same way by the red agent and by us, with no gap either found:
 - `drop_order`'s `Blocks` conjuncts: within a drop, the destructor first,
   fields in declaration order, elements ascending, an enum's active payload
   only (§6.11).
-- `drop_exactly_once`'s first conjunct: local never-stuck from any matching
-  activation record, stronger than whole-program never-stuck, modulo `pendingSafe` (R6).
+- `drop_exactly_once`'s first conjunct: local never-refused from any matching
+  activation record, stronger than whole-program never-refused, modulo `pendingSafe` (R6).
 - The typing rules checked premise by premise against §5 (the use, drop,
   assign, index-write, seq, let, return, loop and match rules, and `WfFn`
   against (Fn)), as far as the signature-only helpers allowed (R6).

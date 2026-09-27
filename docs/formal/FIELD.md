@@ -106,7 +106,7 @@ redex `r`) is folklore. No fetched source names it as a theorem.
 | "search" in §6.2's title | search rules (PFPL) | clear |
 | `Statics.lean` / `Dynamics.lean` | statics / dynamics (PFPL) | clear |
 | trap `↯κ` (§6.1, §6.12), "defined panic" (§7) | checked error `e err` (PFPL §6.3) | partial: the same role, but a different name and symbol |
-| `EvalRes.refused w`: "stuck" also covers the interpreter's four monitors (GUIDE §2) | stuck = no rule applies. On statically invalid input, a monitored case is a step §6 does take | partial |
+| `EvalRes.refused w`, "refused" (formerly "stuck", which also covered the interpreter's four monitors; GUIDE §2) | stuck = no rule applies. On statically invalid input, a monitored case is a step §6 does take | clear since RUE-2466: "stuck" now means only §6's stuckness, and `eval` refuses, four of its refusals being monitor refusals |
 | "moved-out" for the `⊘` cell content (`Contents.movedOut`; formerly "hole") | the accepted words for a moved-out cell are in §5 below; "hole" is the empty position of a context | clear: since RUE-2466 "hole" means only a context's empty position (or, in proof talk, a proof gap) |
 | control stack `K`, `Kont`, `Focus` (§6.1, `Step.lean`) | control stack (PFPL ch. 28). `Focus.eval` / `Focus.ret` play the roles of PFPL's evaluation state `k ▷ e` and return state `k ◁ e` | clear: the same machine shape; the frames are language-specific |
 

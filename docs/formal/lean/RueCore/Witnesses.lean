@@ -361,7 +361,7 @@ def demoSc (i : Nat) : Contents := .struct 0 i []
 
 /-- **(D-Use-Untrackable-Dynamic-Copy) needs `Copy`** (§6.3): in
 `let a = [S{}, S{}]; let x = a[dyn 0]; 0` the dynamic read of an affine
-leaf is stuck, before any destructor runs. `eval` is stuck at the same read
+leaf is stuck, before any destructor runs. `eval` refuses at the same read
 (`RueCore.Examples.dynReadAffine_refused`); `check` rejects the program. -/
 theorem demo_dynamicRead_stuck (M : FloatSig) :
     ∃ C, Steps M (demoProgram (.letIn false (.mkArray (.struct 0) [demoS, demoS])
@@ -372,7 +372,7 @@ theorem demo_dynamicRead_stuck (M : FloatSig) :
 
 /-- **`@drop` at a dynamic place needs `Copy`** (§6.3's only
 `Untrackable(OrdinaryDynamic)` rule): `let a = [S{}]; @drop(a[dyn 0]); @dbg(1); 0`
-is stuck at the `@drop`, with nothing printed. `eval` is stuck at the same
+is stuck at the `@drop`, with nothing printed. `eval` refuses at the same
 `@drop` (`RueCore.Examples.dynDropAffine_refused`). -/
 theorem demo_dynamicDrop_stuck (M : FloatSig) :
     ∃ C, Steps M (demoProgram (.letIn false (.mkArray (.struct 0) [demoS])
@@ -384,7 +384,7 @@ theorem demo_dynamicDrop_stuck (M : FloatSig) :
   ⟨_, stepN_steps (n := 100), rfl⟩
 
 /-- **The repeat form needs `Copy`** (`7.1:38`): `let a = [S{}; 2]; 0` is
-stuck at the repeat. `eval` is stuck at the same repeat
+stuck at the repeat. `eval` refuses at the same repeat
 (`RueCore.Examples.repeatAffine_refused`). -/
 theorem demo_repeat_stuck (M : FloatSig) :
     ∃ C, Steps M (demoProgram (.letIn false (.repeatArray (.struct 0) demoS 2) (demoI32 0)))
