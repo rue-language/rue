@@ -3363,7 +3363,7 @@ instances of §6.13.3 with these deltas:
 - Equality (§6.4's `≈`) on each canonical text rung compares **content** — the
   live cells in order (`equals_borrowed`) — never allocation identity: two
   distinct allocations with equal bytes are `≈`-equal (`4.3:2`).
-- The UTF-8 **decoder methods** (`char_scalar`, `char_next`, and their `_lossy`
+- The **UTF-8 decoder methods** (`char_scalar`, `char_next`, and their `_lossy`
   variants, still runtime calls dispatched by the oracle) is deliberately
   **not pinned here**: its strict forms introduce a trap category (invalid
   UTF-8) that §6.12's taxonomy does not yet carry, so its equations belong to
