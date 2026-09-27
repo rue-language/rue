@@ -1726,13 +1726,13 @@ theorem StoreTyping.snoc : ∀ {D Γ ρ H} {ℓ : Nat} {en : Entry} {c : Cell},
       exact .cons hc' hcm' hnin''
         (StoreTyping.snoc hrest hc hcm (fun h => hnin (List.mem_cons_of_mem _ h)))
 
-/-! ## The frame property: what a frame's evaluation may touch -/
+/-! ## The frame property: what an evaluation in one activation record may touch -/
 
 /-- The frame property is reflexive (helper). -/
 theorem FrameProperty.refl {ρ : Env} {H : Store} : FrameProperty ρ H H :=
   ⟨Nat.le_refl _, fun _ _ _ => rfl⟩
 
-/-- The frame property composes along a sequence of steps in one frame (helper). -/
+/-- The frame property composes along a sequence of steps in one activation record (helper). -/
 theorem FrameProperty.trans {ρ : Env} {H₁ H₂ H₃ : Store}
     (h₁ : FrameProperty ρ H₁ H₂) (h₂ : FrameProperty ρ H₂ H₃) : FrameProperty ρ H₁ H₃ :=
   ⟨Nat.le_trans h₁.1 h₂.1,
@@ -1750,7 +1750,7 @@ theorem FrameProperty.set {ρ : Env} {H : Store} {ℓ : Nat} {c : Cell} (h : ℓ
   have hne : ℓ ≠ ℓ' := by rintro rfl; exact hnin h
   exact List.getElem?_set_ne hne
 
-/-- The frame property extends across a write to a cell the frame names, or to one
+/-- The frame property extends across a write to a cell the activation record names, or to one
 minted above the store the frame property is measured from (helper). -/
 theorem FrameProperty.trans_set {ρ : Env} {H₀ H : Store} {ℓ : Nat} {c : Cell}
     (hu : FrameProperty ρ H₀ H) (h : H₀.length ≤ ℓ ∨ ℓ ∈ ρ) :

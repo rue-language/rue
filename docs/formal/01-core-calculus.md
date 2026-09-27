@@ -319,7 +319,7 @@ Assignment of the qualifier:
 
 ```
   qual(int(_,_)) = qual(float(_)) = qual(bool) = qual(unit) = Copy
-  qual(never)    = Copy            -- vacuous: no values, so any class is sound; Copy is simplest
+  qual(never)    = Copy            -- vacuous: no values, so any qualifier is sound; Copy is simplest
   qual([T; n])   = Linear   if n > 0 and qual(T) = Linear
                   = Affine   if n > 0 and qual(T) = Affine
                   = Affine   if n = 0 and qual(T) ≠ Copy    -- carries nothing (3.8:74): droppable, but NOT duplicable
@@ -1315,7 +1315,7 @@ rewriting an earlier non-panic divergence.
 
 ```
   Γ;Σ;Λ ⊢ e ⇒ T_ret ⊣ Σ_e;Δ_e  T_ret = the enclosing function's declared return type
-  e continues
+  e can complete normally
   ─────────────────────────────────────────────── (Return-Value)
   Γ;Σ;Λ ⊢ return e ⇒ never ⊣ ⊥; (Δ_e ∪ {⟨ret, Σ_e⟩})
 
@@ -1855,7 +1855,7 @@ and leave Σ unchanged, per §5.4.
   Γ;Σᵢ₋₁;Λᵢ₋₁ ⊢ aᵢ ⇒ Uᵢ ⊣ Ωᵢ       (1 ≤ i ≤ m), with Σ₀ = Σ and Λ₀ = Λ
   Ωᵢ = Σᵢ;Δᵢ for every argument reached before the first one that cannot complete normally
   Δ_args = union of the Δᵢ of the arguments reached
-  Δ_call = Δ_args ∪ {⟨diverge, Σm⟩}  if every argument continues (Σm = the state after the last)
+  Δ_call = Δ_args ∪ {⟨diverge, Σm⟩}  if every argument can complete normally (Σm = the state after the last)
             Δ_args                    otherwise
   ─────────────────────────────────────────────────────────────────────────────── (Call-Bottom)
   Γ;Σ;Λ ⊢ g ( a1, ..., am ) ⇒ never ⊣ ⊥;Δ_call
@@ -1896,7 +1896,7 @@ value-context use.
 
 ```
   Γ;Σ;Λ ⊢ s ⇒ (a string type) ⊣ Σ_s;Δ_s
-  s continues
+  s can complete normally
   ─────────────────────────────────────── (Panic)        -- dynamics: §6.12, (D-Panic)
   Γ;Σ;Λ ⊢ @panic(s) ⇒ never ⊣ ⊥;(Δ_s ∪ {⟨panic, Σ_s⟩})
 
@@ -2973,7 +2973,7 @@ enclosing configuration `↯κ` ((Panic-Lift) extends through the nesting). A
 destructor is permitted to have no observable effect, but need not. For an **abstract
 data type** `S` — `StrBuf`, an `ArrayBuf(T)` instance — the destructor is a
 source-defined `drop fn` whose body contains unchecked code, so in the model
-it steps by the type's defining drop equation instead (§6.13.3: drop the live
+it steps by the type's specification equation for drop instead (§6.13.3: drop the live
 buffer cells in ascending index order, skipping `⊘`, then tombstone the
 allocation — never "no observable effect", which was the `@free`-as-no-op
 vacuity RUE-390 closed). The **enum** case reads the runtime tag `Kj` to
@@ -3307,7 +3307,7 @@ byte-string convention (ADR-0043; the RUE-386 two-types ruling), and like
 unchecked intrinsics — `@byte_copy` for bulk moves, `@ptr_read`/`@ptr_write`
 over a `ptr u8` for single bytes, and
 `@ptr_to_int`/`@int_to_ptr`/`@ptr_offset` directly, plus the `@alloc` of the
-literal-promotion arm below, with the growable `{buf, cap}` allocation itself
+copy-on-write arm below, with the growable `{buf, cap}` allocation itself
 delegated to the same `std/rawbuf.rue` core `ArrayBuf` uses (ADR-0059) — so the
 same specification-equation device applies at its public boundary. Its value is
 `{ h ; len ; cap }_StrBuf` over `u8` cells, with one representation twist the
@@ -3330,7 +3330,7 @@ allocation, copy the live cells, and only then write — the non-owned
 allocation is never written through and never tombstoned. Equations, as `u8`
 instances of §6.13.3 with these deltas:
 
-- `grow(self, additional)` is `reserve` with the promotion arm: `cap = 0`
+- `grow(self, additional)` is `reserve` with the copy-on-write arm: `cap = 0`
   mints and copies (never `realloc`s an allocation it does not own); `cap > 0`
   is §6.13.3's `realloc` arm. The doubling floor is 16.
 - `push`/`append_byte` appends one raw byte; a byte ≥ `0x80` may make the
@@ -3398,7 +3398,7 @@ exactly the position RustBelt gives `Vec`'s unsafe internals:
 - **(O3) Footprint.** A method touches only its own allocation(s) and its
   arguments — never another allocation, live or dead.
 - **(O4) Refinement.** The method's observable behavior — result value, header
-  effect, traps, `@dbg` output, and the cells' contents — equals its defining
+  effect, traps, `@dbg` output, and the cells' contents — equals its specification
   equation's.
 
 A violation inside a checked block is a **trusted-code bug**, not a refutation of
