@@ -169,20 +169,20 @@ def Expr.returnsList : List Expr → Bool
   | e :: es => e.returns || Expr.returnsList es
 end
 
-/-- Whether evaluating an expression can **unwind** past its context: it
+/-- Whether evaluating an expression can **complete abruptly** past its context: it
 contains a `return`, or a `break` its own loops do not catch
 (`Expr.breaks`) (helper). -/
 def Expr.canCompleteAbruptly (e : Expr) : Bool := e.returns || e.breaks
 
-/-- No expression of the list unwinds (helper). -/
+/-- No expression of the list can complete abruptly (helper). -/
 def Expr.quietList (es : List Expr) : Bool := es.all fun e => !e.canCompleteAbruptly
 
 mutual
 /-- **The RUE-2316 carve-out, syntactically**: no value computed for one
-operand is pending while a later operand of the same form can unwind — a
+operand is pending while a later operand of the same form can complete abruptly — a
 call's arguments, a struct, enum or array literal's members, an index list,
 a binary operator's two operands, and an indexed assignment's right-hand side
-before its indices (`5.2:14`). The first operand may unwind: nothing is
+before its indices (`5.2:14`). The first operand may complete abruptly: nothing is
 pending yet. `binop` is in the list although RUE-2316's text does not name it:
 its left operand is a scalar under (Arith) §5.8, so nothing owned is lost
 there on a checked program, but the carve-out is syntactic and cannot see the

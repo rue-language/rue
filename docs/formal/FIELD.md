@@ -766,6 +766,8 @@ Copeland 1986 **(record)**; the Swift performance guide; Rust's
 | "unwinding helpers" (01 §6.1; formerly "scope helpers") | stack unwinding (cppreference) | partial: ours close drop scopes on every scope exit, not only on an exception; the `return`/`break` exits are the unwinding case |
 | "object identity" (the metatheory, `Dynamics.lean`: the tag an aggregate value carries from its creation; formerly "value identity") | object identity (Python Language Reference; Khoshafian & Copeland) | clear for aggregates; scalars carry none |
 | "frame property", `FrameProperty` (the metatheory, `Soundness/Defs.lean`: an evaluation grows the store and changes no cell outside its activation's own; formerly "locality", `Untouched`) | frame property (Yang & O'Hearn, via Raza & Gardner) | partial: the same guarantee, that state outside what the code may touch is unchanged, but ours is a relation between one evaluation's stores, not a condition on a command run on every larger heap |
+| "abrupt-completion context", "completes abruptly with" (01 §5.3: `Ω`'s `Δ`, each exit kind with its ownership state; formerly "edge delivery") | abrupt completion and its reason (JLS §14.1) | partial: ours is static, records the ownership state with each reason, and counts a loop that never exits among them |
+| "can complete normally" (01 §5.3, §5.5; formerly "continuing"); "can complete abruptly", `Expr.canCompleteAbruptly` (formerly "unwinds", `Expr.unwinds`) | can complete normally (JLS §14.22); abrupt completion (JLS §14.1) | clear for "can complete normally"; the abrupt predicate has no JLS name of its own |
 
 ---
 

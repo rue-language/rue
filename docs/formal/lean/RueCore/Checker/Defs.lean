@@ -140,7 +140,7 @@ is the top-level function environment (Call) §5.8 looks a callee up in and
 `R` the enclosing function's declared return type (Return-Value) §5.7 checks
 a `return` operand against. Where an operand's `Ω` is `⊥` the algorithm stops
 exactly where the `-Bottom` rules stop, and a branch joins only the arms that
-continue (`Ctx.joinOpt`, `Ctx.joinOpts`). -/
+can complete normally (`Ctx.joinOpt`, `Ctx.joinOpts`). -/
 def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (TyOrNever × Out)
   | .intLit w s n => if InBounds w s n then some (.ty (.int w s), ⟨some Γ, []⟩) else none
   | .boolLit _ => some (.ty .bool, ⟨some Γ, []⟩)
@@ -552,10 +552,10 @@ def armsJoinTy (P : Program) (R : Ty) (Γ₀ : Ctx) :
 
 /-- (Match) §5.5's arm premises as an algorithm: every arm from the same
 post-scrutinee state `Γ₀`, each under its variant's payload locals (`extendArm`),
-each at the type `c` the first typed arm fixed, and each that continues
+each at the type `c` the first typed arm fixed, and each that can complete normally
 discharging §5.6 for the locals it pops. The result is one optional output
 context per arm — `none` for an arm that diverges — in declaration order, and
-the arms' deliveries, which is what `Ctx.joinOpts` then folds. A count
+the arms' abrupt-completion contexts, which is what `Ctx.joinOpts` then folds. A count
 mismatch between the arms and the variants is the last clause's `none` —
 `check` has already required the counts to agree, so no program reaches it. -/
 def checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (c : TyOrNever) :

@@ -341,7 +341,7 @@ def divergesAll : List Expr → Bool
   | [e] => diverges e
   | e :: es => diverges e && divergesAll es
 
-/-- Whether `check` gives a loop body a `⟨break, _⟩` delivery (§5.3): a
+/-- Whether `check` gives a loop body a `⟨break, _⟩` abrupt-completion context (§5.3): a
 `break` targeting the enclosing loop that a derivation reaches, which is one
 outside any nested loop and not past a diverging subexpression — the same
 structural reachability `diverges` reads (helper). -/

@@ -55,7 +55,7 @@ The one place a step could discard a held value is an unwind: (D-Return) and
 (D-Break) drop every frame above their target. `MSim`'s unwinding clauses
 therefore ask that the discarded frames hold nothing, and `pendingSafe`
 discharges it where a frame holds a value: the operand that runs under it
-does not unwind (`eval_quiet`, `MSim.andThenHeld`). This is RUE-2316's
+does not complete abruptly (`eval_quiet`, `MSim.andThenHeld`). This is RUE-2316's
 carve-out, used exactly where §6 discards a pending value.
 
 ## From one run to every configuration
@@ -240,7 +240,7 @@ theorem MSim.withTrace {φ : Activation} {C C₂ : List Kont → List Event → 
     simp only [List.append_assoc] at this ⊢
     exact (hpre K tr).trans this
 
-/-- A result that neither completes nor unwinds is simulated vacuously
+/-- A result that completes neither normally nor abruptly is simulated vacuously
 (helper). -/
 theorem MSim.of_quiet {φ : Activation} {C : List Kont → List Event → Config} {r : EvalRes}
     (hq : r.NoRet ∧ r.NoBrk) (hok : ∀ H v tr, r ≠ .ok H v tr) : MSim M P φ C r := by
@@ -279,7 +279,7 @@ theorem MSim.andThen {φ φ₁ : Activation} {C C₁ : List Kont → List Event 
   | outOfFuel => trivial
 
 /-- **A later operand under a held value** (RUE-2316): the frame holds a
-value, so the operand must not unwind — `pendingSafe` — and then only its
+value, so the operand must not complete abruptly — `pendingSafe` — and then only its
 value matters (helper). -/
 theorem MSim.andThenHeld {φ φ₁ : Activation} {C C₁ : List Kont → List Event → Config} {F : Kont}
     (hC : ∀ K tr, MSteps M P (C K tr) (C₁ (F :: K) tr))
@@ -590,7 +590,7 @@ theorem evalArgs_msimOk (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (t : 
       | _ => simp [evalArgs, he] at h
 
 /-- **An argument list that aborts, losslessly**, where only its first member
-may unwind (`pendingSafe`): nothing is pending when the first one does, and
+may complete abruptly (`pendingSafe`): nothing is pending when the first one does, and
 the list's tag holds nothing; a later member's abort is a trap, a refusal or
 exhausted fuel (helper). -/
 theorem evalArgs_msimAbort (IH : MSimIH M P fuel) (t : ArgsFrame)

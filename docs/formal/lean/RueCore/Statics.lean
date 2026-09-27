@@ -83,8 +83,8 @@ frame-wide, so `Typed.ret` demands `NoResidualLinear`. `@panic` carries
 `⊥_panic`, which §5.7 exempts from that check — "§5.6 performs no scope-exit
 check or drop on that edge" — so `Typed.panic` demands nothing of the
 context, and §6.12's dynamics run no drop to match. `break` also carries
-`⊥_exit`, but its scopes end at the loop it targets, so it delivers its state
-there (`Typed.brk`) and the loop discharges the obligation for the scopes the
+`⊥_exit`, but its scopes end at the loop it targets, so it completes abruptly
+with its state there (`Typed.brk`) and the loop discharges the obligation for the scopes the
 exit ends (`Typed.loopBreak`). A loop that never exits carries `⊥_diverge`,
 checked frame-wide where it fires (`Typed.loopDiv`).
 
@@ -763,49 +763,50 @@ def Ctx.joinAll (D : Decls) : List Ctx → Option Ctx
 /-! ### The output result `Ω` (§5.3)
 
 §5.3 gives every judgment an output result `Ω ::= Σ;Δ | ⊥;Δ`: an optional
-normal ownership state together with the **edge deliveries** `Δ` the
+normal ownership state together with the **abrupt-completion contexts** `Δ` the
 expression's reachable diverging edges make. `Out` is that pair. `norm` is the
 normal state — `some Σ'` when evaluation can reach the next expression, `none`
 for §5.7's `⊥` — and `brk` is the part of `Δ` a later consumer reads a *state*
 from.
 
-Which deliveries `brk` carries is a choice §5.7's closing note leaves to the
+Which abrupt-completion contexts `brk` carries is a choice §5.7's closing note leaves to the
 mechanization: "check each edge where it fires — so long as the sets `B` and
 `X` it computes are the ones these rules define". The fragment checks a
 `return` where it fires (`Typed.ret` carries (Fn) §5.8's residual-linear
 obligation at the edge), and §5.7 exempts a `@panic` from §5.6, so neither
-needs a consumer and neither is recorded. The deliveries that do need one are
+needs a consumer and neither is recorded. The abrupt-completion contexts that do need one are
 `⟨break, Σ⟩`, which (Loop-Break) §5.7 joins at the loop's exit: (Break)
 (`Typed.brk`) makes one, recording the whole context in force at the edge, and
-every rule carries its premises' deliveries into its conclusion, as §5.3's
+every rule carries its premises' abrupt-completion contexts into its conclusion, as §5.3's
 **Threading** paragraph says, until the innermost enclosing loop consumes
 them. The list is the calculus's set: order and repetition carry no meaning
 (`Ctx.joinAll_perm` is why the exit join may read it in order). -/
 
 /-- §5.3's output result `Ω`: `norm = some Σ'` is `Σ';Δ` and `norm = none`
-is `⊥;Δ`, with `brk` the recorded deliveries `Δ` (section docstring). -/
+is `⊥;Δ`, with `brk` the recorded abrupt-completion contexts `Δ` (section docstring). -/
 structure Out where
   /-- The normal output context, or `none` for §5.7's `⊥`. -/
   norm : Option Ctx
-  /-- The `⟨break, Σ⟩` deliveries, each with the state in force at its edge. -/
+  /-- The `⟨break, Σ⟩` abrupt-completion contexts, each with the state in force at its edge. -/
   brk : List Ctx
 
-/-- §5.3's `Ω ⊕ Δ`: add a continuing prefix's deliveries to an outcome, which
-keeps its own continuing-or-divergent shape — `(Σ';Δ') ⊕ Δ = Σ';(Δ' ∪ Δ)` and
+/-- §5.3's `Ω ⊕ Δ`: add the abrupt-completion contexts of a prefix that can complete normally to an outcome, which
+keeps its own normal-or-divergent shape — `(Σ';Δ') ⊕ Δ = Σ';(Δ' ∪ Δ)` and
 `(⊥;Δ') ⊕ Δ = ⊥;(Δ' ∪ Δ)`. -/
 def Out.merge (Ω : Out) (Δ : List Ctx) : Out := ⟨Ω.norm, Ω.brk ++ Δ⟩
 
 /-- §5.5's branch join over `Ω` for two arms: "the normal state is `join` of
-the continuing arms' normal states (`⊥` when no arm continues)". A divergent
-arm contributes nothing, which is how (Sub-Never) §5.7 lets it sit beside a
-continuing one; `none` is a join the continuing arms disagree on. -/
+the normal states of the arms that can complete normally (`⊥` when no arm can complete normally)". A divergent
+arm contributes nothing, which is how (Sub-Never) §5.7 lets it sit beside one
+that can complete normally; `none` is a join the arms that can complete normally disagree on. -/
 def Ctx.joinOpt (D : Decls) : Option Ctx → Option Ctx → Option (Option Ctx)
   | none, o => some o
   | some a, none => some (some a)
   | some a, some b => (Ctx.join D a b).map some
 
 /-- (Match) §5.5's n-way join over `Ω`: the fold `Ctx.joinAll` over the
-normal states of the arms that **continue**, or `⊥` when none does. -/
+normal states of the arms that **can complete normally**, or `⊥` when none
+can. -/
 def Ctx.joinOpts (D : Decls) (os : List (Option Ctx)) : Option (Option Ctx) :=
   match os.filterMap id with
   | [] => some none
@@ -857,14 +858,14 @@ when it has none; a head a back edge produced is a state of its types. -/
 def LoopHead (D : Decls) (Γ : Ctx) (o : Option Ctx) (Γh : Ctx) : Prop :=
   Ctx.joinOpt D (some Γ) o = some (some Γh) ∧ ∀ Γe, o = some Γe → Ctx.Wf D Γh
 
-/-- The loop-local part of a `⟨break, Σ_x⟩` delivery made by a loop body typed
+/-- The loop-local part of a `⟨break, Σ_x⟩` abrupt-completion context made by a loop body typed
 at `Γh`: the bindings the body opened and had not closed where the `break`
 fired, innermost first. §5.7 discharges their §5.6 obligation "at the exit
 itself, where their scopes end" (helper). -/
 def Ctx.loopLocals (Γh Γb : Ctx) : Ctx := Γb.take (Γb.length - Γh.length)
 
-/-- §5.7's `outside_loop(Σ_x)` for a delivery made by a body typed at `Γh`:
-the bindings in scope at the loop's entry, which are the delivered context's
+/-- §5.7's `outside_loop(Σ_x)` for an abrupt-completion context made by a body typed at `Γh`:
+the bindings in scope at the loop's entry, which are the abrupt-completion context's
 outermost `|Γh|` entries (helper). -/
 def Ctx.outsideLoop (Γh Γb : Ctx) : Ctx := Γb.drop (Γb.length - Γh.length)
 
@@ -1027,7 +1028,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
       Typed P R Γ (.binop op e₁ e₂) (op.resultTy (.int w s)) (Ω₂.merge Δ₁)
   /-- (Strict-Bottom) §5.3 at `binop`'s left operand: once `e₁` diverges the
   right operand is never reached, so it is not typed, and the form concludes
-  at `⊥` with `e₁`'s deliveries and at its own type `T_E`, (Arith)/(Ord)'s
+  at `⊥` with `e₁`'s abrupt-completion contexts and at its own type `T_E`, (Arith)/(Ord)'s
   `op.resultTy (int(w,s))` — not at `never`. A right operand that diverges
   needs no rule of its own: `binop` passes `e₂`'s `Ω` on. -/
   | binopBot {Γ Δ₁ op e₁ e₂ w s} :
@@ -1114,8 +1115,8 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
       Typed P R Γ (.fintrin k e) (k.resTy w) Ω
   /-- (Panic) §5.8 with (Sub-Never) folded in (§5.7), the same fold
   `Typed.ret` makes: `@panic` is `never`-typed, so the rule concludes at an
-  arbitrary type, and at `⊥` with no delivery the fragment records (a
-  `⟨panic, _⟩` delivery has no consumer; §5.7 exempts it). Unlike `ret` it imposes no
+  arbitrary type, and at `⊥` with no abrupt-completion context the fragment records (a
+  `⟨panic, _⟩` abrupt-completion context has no consumer; §5.7 exempts it). Unlike `ret` it imposes no
   residual-linear premise: §5.7 exempts the `⊥_panic` edge from §5.6's
   scope-exit check, and §6.12's own rule runs no drop. The message is a string
   literal the form carries rather than an operand, because the fragment has no
@@ -1171,13 +1172,13 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   Each arm is typed from the **same** post-scrutinee state `Σ0` under its
   payload locals (`extendArm`), all arms at one type `T` — the premise a diverging
   arm satisfies through (Sub-Never), which the `⊥` rules fold in, exactly as
-  an `ite` arm does. An arm that continues leaves its payload locals' scope
+  an `ite` arm does. An arm that can complete normally leaves its payload locals' scope
   under §5.6: `TypedArms` carries the same residual-linear check `Typed.letIn`
   carries for its one binder, over the `ai` entries the arm pops. §5.5 joins
-  the **continuing** arms' output contexts n-way (`Ctx.joinOpts`, the fold
+  the output contexts of the arms that **can complete normally** n-way (`Ctx.joinOpts`, the fold
   `Ctx.joinAll` over them), and a diverging arm is "excluded from the state
-  join" and contributes only its deliveries. The delivery set is the
-  scrutinee's `Δ_0` with every arm's, continuing or not. -/
+  join" and contributes only its abrupt-completion contexts. The set of abrupt-completion contexts is the
+  scrutinee's `Δ_0` with every arm's, whether or not it can complete normally. -/
   | «match» {Γ Γ₀ Δ₀ o os Δs scrut arms e ed T} :
       Typed P R Γ scrut (.enum e) ⟨some Γ₀, Δ₀⟩ →
       P.decls.enums[e]? = some ed →
@@ -1467,7 +1468,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   /-- (Let) + §5.6 scope exit: the binder enters `Owned`; at the body's end
   its residual state must not be an unconsumed linear value (the leak check).
   An `Owned` affine residue is dropped by the machine (§6.7); `MovedOut` needs
-  nothing. The body's deliveries keep the binder on top of the state they
+  nothing. The body's abrupt-completion contexts keep the binder on top of the state they
   record, which is the state in force at their edge; the conclusion is §5.3's
   `Ω_2 ⊕ Δ_1`. -/
   | letIn {Γ Γ₁ Γ₂ Δ₁ Δ₂ m e₁ e₂ T₁ T₂ en'} :
@@ -1547,8 +1548,8 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
       Typed P R Γ e T ⟨none, Δ⟩ →
       Typed P R Γ (.assign p e) .unit ⟨none, Δ⟩
   /-- (Seq): the discarded value must not carry a linear value (`3.8:64`).
-  Only the prefix must continue; the tail's `Ω_2` is the form's, with the
-  prefix's deliveries added (`Ω_2 ⊕ Δ_1`, §5.3). -/
+  Only the prefix must complete normally; the tail's `Ω_2` is the form's, with the
+  prefix's abrupt-completion contexts added (`Ω_2 ⊕ Δ_1`, §5.3). -/
   | seq {Γ Γ₁ Δ₁ Ω₂ e₁ e₂ T₁ T₂} :
       Typed P R Γ e₁ T₁ ⟨some Γ₁, Δ₁⟩ → T₁.qual P.decls ≠ .linear →
       Typed P R Γ₁ e₂ T₂ Ω₂ →
@@ -1560,8 +1561,8 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
       Typed P R Γ (.seq e₁ e₂) T ⟨none, Δ₁⟩
   /-- (If): both arms from the post-condition state, at one type `T` (a
   diverging arm meets it by (Sub-Never) §5.7). The output context is the §5.5
-  join of the arms that **continue** (`Ctx.joinOpt`: a diverging arm is
-  excluded, `3.8:51`, and `⊥` when neither continues), and the deliveries are
+  join of the arms that **can complete normally** (`Ctx.joinOpt`: a diverging arm is
+  excluded, `3.8:51`, and `⊥` when neither can), and the abrupt-completion contexts are
   the condition's `Δ_0` with both arms'. -/
   | ite {Γ Γ₀ Δ₀ Ω₁ Ω₂ o c e₁ e₂ T} :
       Typed P R Γ c .bool ⟨some Γ₀, Δ₀⟩ →
@@ -1591,8 +1592,8 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   current frame still carries residual linear content — `3.8:62`, and (Fn) §5.8's
   second clause, which is why an early `return` past a live linear is
   rejected). The conclusion is at an arbitrary type, which is (Sub-Never)
-  §5.7 applied to `never`, and at `⊥` with the operand's deliveries. The
-  `⟨ret, Σ_e⟩` delivery itself is not recorded: its one consumer, (Fn) §5.8's
+  §5.7 applied to `never`, and at `⊥` with the operand's abrupt-completion contexts. The
+  `⟨ret, Σ_e⟩` abrupt-completion context itself is not recorded: its one consumer, (Fn) §5.8's
   residual check, is this rule's premise, read where the edge fires — the
   architecture §5.7's closing note allows. -/
   | ret {Γ Γ₁ Δ e T} :
@@ -1600,18 +1601,18 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
       NoResidualLinear P.decls Γ₁ →
       Typed P R Γ (.ret e) T ⟨none, Δ⟩
   /-- (Return-Bottom) §5.7 with (Sub-Never): the operand itself diverges, so
-  the `return` never fires, makes no delivery and reads no state. -/
+  the `return` never fires, makes no abrupt-completion context and reads no state. -/
   | retBot {Γ Δ e T} :
       Typed P R Γ e R ⟨none, Δ⟩ →
       Typed P R Γ (.ret e) T ⟨none, Δ⟩
   /-- **(Break) §5.7** with (Sub-Never) folded in: `break` yields no value to
-  its own context, so it concludes at every type and at `⊥`, and it delivers
-  `⟨break, Σ⟩` — the **whole** context in force where it fires, loop-local
+  its own context, so it concludes at every type and at `⊥`, and it completes
+  abruptly with `⟨break, Σ⟩` — the **whole** context in force where it fires, loop-local
   bindings included — to the innermost enclosing loop, which is the one
   consumer that reads it (`loopBreak`). Every rule between the two carries the
-  delivery outward by §5.3's threading, whether or not the `break` is in tail
+  abrupt-completion context outward by §5.3's threading, whether or not the `break` is in tail
   position. "Well-formed only inside a loop" is (Fn)'s premise that a body
-  delivers no `break` (`WfFn`). -/
+  completes abruptly with no `break` (`WfFn`). -/
   | brk {Γ T} :
       Typed P R Γ .brk T ⟨none, [Γ]⟩
   /-- **(Loop-Div-Backedge) and (Loop-Div) §5.7**, in one rule, because they
@@ -1623,16 +1624,16 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   The body is typed once, at the **loop-head state** `Σ_h = head(Σ, e)`
   (`3.8:79`): `LoopHead` is §5.7's defining equation, `Σ_h` the join of the
   entry state with the states at the body's own reachable back edges, read off
-  the very judgment that types the body at `Σ_h`. When the body continues it
-  re-enters itself forever, so it delivers `⟨diverge, Σ_h⟩`; the fragment
-  checks that delivery where it fires, frame-wide, by `NoResidualLinear` —
+  the very judgment that types the body at `Σ_h`. When the body can complete normally it
+  re-enters itself forever, so it completes abruptly with `⟨diverge, Σ_h⟩`; the fragment
+  checks that abrupt-completion context where it fires, frame-wide, by `NoResidualLinear` —
   §5.6/§5.7's retained non-panic residual check, which the compiler enforces
   as E0406 for a linear local or a by-value parameter live at `loop { }`
   (`../03-metatheory.md` records the reading). When the body never completes
-  (Loop-Div), `B_h = ∅`, so `Σ_h = Σ` and there is no diverge delivery: the
+  (Loop-Div), `B_h = ∅`, so `Σ_h = Σ` and there is no diverge abrupt-completion context: the
   loop is left only by the body's own `return`/`@panic`, which were checked
-  where they fired. Either way the loop concludes at `⊥` and delivers no
-  `break` outward (`Δ_out` removes this loop's own edges, and the syntactic
+  where they fired. Either way the loop concludes at `⊥` and completes abruptly
+  with no `break` outward (`Δ_out` removes this loop's own edges, and the syntactic
   premise says there are none — `Typed.brk_nil`).
 
   The diverge premise is there for fidelity to §5.7 and agreement with the
@@ -1650,16 +1651,16 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   a `break` targeting this loop (`4.8:21`), so the loop is `unit`-typed; the
   body is typed at the loop-head state (`LoopHead`, as for `loopDiv`), and the
   exits are read off that one judgment. `X` is the body's `brk`: each
-  delivery is the whole context at its `break`, so the loop splits it at the
+  abrupt-completion context is the whole context at its `break`, so the loop splits it at the
   loop's own depth. The loop-local bindings still open there (the prefix,
   `Ctx.loopLocals`) end at the exit, which discharges §5.6 for them
   ("discharged at the exit itself"; dynamically, §6.10's unwind); the rest
   (`Ctx.outsideLoop`) is `outside_loop(Σ_x)`, and the loop's normal output
-  state is §5.5's join over those (`3.8:80`), `Ctx.joinAll` in delivery
+  state is §5.5's join over those (`3.8:80`), `Ctx.joinAll` in abrupt-completion context
   order (the order is immaterial: `Ctx.joinAll_perm`). The body's normal
   completion is the back edge, which `LoopHead` already reads; it is not an
-  exit. The loop consumes its own `break` deliveries (`Δ_out`), and the
-  fragment has no others, so it delivers none. -/
+  exit. The loop consumes its own `break` abrupt-completion contexts (`Δ_out`), and the
+  fragment has no others, so it completes abruptly with none. -/
   | loopBreak {Γ Γh Ωe Γx e} :
       Typed P R Γh e .unit Ωe →
       LoopHead P.decls Γ Ωe.norm Γh →
@@ -1670,10 +1671,10 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   /-- **(Loop-Break) §5.7 with no reachable exit** (`X = ∅`): every targeting
   `break` is unreachable, so the loop is still `unit`-typed by `4.8:21`'s
   syntactic classification but has no post-loop state, `⊥`. With a reachable
-  back edge it re-enters itself forever and delivers `⟨diverge, Σ_h⟩` exactly
+  back edge it re-enters itself forever and completes abruptly with `⟨diverge, Σ_h⟩` exactly
   as `loopDiv` does, checked the same way; with none, the body's own
   `return`/`@panic` are its only exits. "The two forms differ only in
-  `4.8:21`'s syntactic type, never in what they deliver." -/
+  `4.8:21`'s syntactic type, never in how they complete abruptly." -/
   | loopBreakDiv {Γ Γh Ωe e} :
       Typed P R Γh e .unit Ωe →
       LoopHead P.decls Γ Ωe.norm Γh →
@@ -1693,7 +1694,7 @@ inductive TypedArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → O
   | nil {Γ} : TypedArgs P R Γ [] [] ⟨some Γ, []⟩
   /-- One member is a value-context use at its expected type (§4.2),
   threading Σ into the rest of the list (§5.8), whose outcome is the list's
-  with this member's deliveries added (§5.3's `Ω ⊕ Δ`). -/
+  with this member's abrupt-completion contexts added (§5.3's `Ω ⊕ Δ`). -/
   | cons {Γ Γ₁ Δ₁ Ω e es T Ts} :
       Typed P R Γ e T ⟨some Γ₁, Δ₁⟩ → TypedArgs P R Γ₁ es Ts Ω →
       TypedArgs P R Γ (e :: es) (T :: Ts) (Ω.merge Δ₁)
@@ -1709,20 +1710,20 @@ inductive TypedArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → O
 post-scrutinee state `Σ0`** (a `match` is a branch, not a sequence, so Σ is not
 threaded from arm to arm) and each at the one type `T` the rule concludes at.
 
-An arm that continues carries two premises of its own. Its body is typed under
+An arm that can complete normally carries two premises of its own. Its body is typed under
 the variant's payload locals (`extendArm`), and at its end those locals leave
 scope under §5.6 — `NoResidualLinear` over the `ai` entries the arm pops is
 the leak check `Typed.letIn` makes for its single binder, read over the whole
 payload (`6.3:17`: a `Linear` payload an arm neither moves nor consumes is a
 leak; an `Affine` one the machine drops once). The arm's contribution to the
 join is what is left after popping them. An arm that diverges contributes `⊥`
-to the join (`none`), and only its deliveries. The result is one optional
-state per arm, in declaration order, and the arms' deliveries. -/
+to the join (`none`), and only its abrupt-completion contexts. The result is one optional
+state per arm, in declaration order, and the arms' abrupt-completion contexts. -/
 inductive TypedArms (P : Program) (R : Ty) : Ctx → List Expr → List (List Ty) → Ty →
     List (Option Ctx) → List Ctx → Prop where
   /-- No arms left to type, and so no state to contribute. -/
   | noArms {Γ₀ T} : TypedArms P R Γ₀ [] [] T [] []
-  /-- The arm for the next variant, continuing: its body typed under that
+  /-- The arm for the next variant, completing normally: its body typed under that
   variant's payload locals, those locals discharged by §5.6 at the arm's end,
   and the rest of the arms typed from the same `Σ0`. -/
   | arm {Γ₀ Γb Δb os Δs e es Ts Tss T} :
@@ -1732,7 +1733,7 @@ inductive TypedArms (P : Program) (R : Ty) : Ctx → List Expr → List (List Ty
       TypedArms P R Γ₀ (e :: es) (Ts :: Tss) T (some (Γb.drop Ts.length) :: os) (Δb ++ Δs)
   /-- The arm for the next variant, diverging: its body is `⊥`, so no scope
   exit is reached on a normal path and it contributes no state to the join
-  (§5.5, `3.8:51`), only its deliveries. -/
+  (§5.5, `3.8:51`), only its abrupt-completion contexts. -/
   | armDiv {Γ₀ Δb os Δs e es Ts Tss T} :
       Typed P R (extendArm Ts Γ₀) e T ⟨none, Δb⟩ →
       TypedArms P R Γ₀ es Tss T os Δs →
@@ -1784,8 +1785,8 @@ def Ctx.SameSkel (Γ₀ : Ctx) : List Ctx → Prop
   | [] => True
   | Γ :: Γs => Ctx.skel Γ = Ctx.skel Γ₀ ∧ Ctx.SameSkel Γ₀ Γs
 
-/-- A delivered context **extends** `Γ`: it is `Γ`'s skeleton with zero or
-more bindings pushed on top. A `⟨break, Σ⟩` delivery records the whole
+/-- An abrupt-completion context **extends** `Γ`: it is `Γ`'s skeleton with zero or
+more bindings pushed on top. A `⟨break, Σ⟩` abrupt-completion context records the whole
 context in force at the `break` (`Typed.brk`), so between the loop that reads
 it and the `break` that made it sit the bindings of every `let` and every
 `match` arm the `break` is inside (helper). -/
@@ -1793,13 +1794,13 @@ def Ctx.Extends (Γb Γ : Ctx) : Prop := ∃ pre, Γb.skel = pre ++ Γ.skel
 
 /-- The skeleton half of §5's convention that `Γ` is fixed while `Σ` is
 threaded, read over `Ω`: a normal output context, when there is one, has the
-input skeleton, and every `⟨break, Σ⟩` delivery **extends** it — the
+input skeleton, and every `⟨break, Σ⟩` abrupt-completion context **extends** it — the
 bindings in force at the edge, on top of the input ones. `⊥` has no state,
-so it constrains only the deliveries (helper). -/
+so it constrains only the abrupt-completion contexts (helper). -/
 structure Out.SkelOk (Γ : Ctx) (Ω : Out) : Prop where
   /-- The normal output context has the input skeleton. -/
   norm : ∀ Γ', Ω.norm = some Γ' → Γ'.skel = Γ.skel
-  /-- Every delivered state extends it. -/
+  /-- Every abrupt-completion context extends it. -/
   brk : ∀ Γb ∈ Ω.brk, Ctx.Extends Γb Γ
 
 /-! ### The shape invariant, judgment-wide (RUE-2340)
@@ -1814,20 +1815,20 @@ wrote, and `Typed.wf` below proves the invariant is preserved. The premise is
 then discharged once, for every derivation from a well-formed context. -/
 
 /-- (helper) Every state an outcome carries — its normal output context and
-every delivered one — is a shape of its declared types. -/
+every abrupt-completion one — is a shape of its declared types. -/
 structure Out.Wf (D : Decls) (Ω : Out) : Prop where
   /-- The normal output context. -/
   norm : ∀ Γ', Ω.norm = some Γ' → Ctx.Wf D Γ'
-  /-- Every `⟨break, Σ⟩` delivery. -/
+  /-- Every `⟨break, Σ⟩` abrupt-completion context. -/
   brk : ∀ Γb ∈ Ω.brk, Ctx.Wf D Γb
 
 /-- (helper) `Typed.wf`'s statement for one judgment: a well-formed input
-context gives a well-formed normal output context and well-formed deliveries. -/
+context gives a well-formed normal output context and well-formed abrupt-completion contexts. -/
 def Out.WfPres (D : Decls) (Γ : Ctx) (Ω : Out) : Prop :=
   Ctx.Wf D Γ → Out.Wf D Ω
 
-/-- (helper) The same for a `match`'s arms: every continuing arm's state and
-every arm's deliveries. -/
+/-- (helper) The same for a `match`'s arms: the state of every arm that can complete normally, and
+every arm's abrupt-completion contexts. -/
 def Out.WfArms (D : Decls) (Γ₀ : Ctx) (os : List (Option Ctx)) (Δs : List Ctx) : Prop :=
   Ctx.Wf D Γ₀ → (∀ Γ ∈ os.filterMap id, Ctx.Wf D Γ) ∧ ∀ Γb ∈ Δs, Ctx.Wf D Γb
 

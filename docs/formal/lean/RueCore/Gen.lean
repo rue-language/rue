@@ -2058,7 +2058,7 @@ def maybeDiv (D : Decls) (R : Ty) (rt : Bool) (Γ : Scope) (den : Nat) (a : Expr
 
 /-- (helper) Which arm of a `match` inside a loop body is a break arm, one
 `match` in three: at most **one**, so a `match` of two or more arms always has
-an arm that continues and never diverges as a whole (RUE-2376). Outside a loop
+an arm that can complete normally and never diverges as a whole (RUE-2376). Outside a loop
 body (`lb` false) there is none, because a `break` there targets no loop. -/
 def breakArmIdx (lb : Bool) (n : Nat) : G (Option Nat) := do
   if lb && 2 ≤ n && (← chance 1 3) then return some (← nat 0 (n - 1))

@@ -1041,7 +1041,7 @@ innermost enclosing loop and hands it `()` (§5.7, §6.10). There is no
 value-carrying `break`: §2's grammar has none, and `4.8:22` makes
 `break expr` a compile-time error at the surface. `continue` has no
 constructor either: §2 elaborates it to the loop's back edge, and §5.7
-lists its `⟨continue, Σ⟩` delivery only so the back-edge set is closed under
+lists its `⟨continue, Σ⟩` abrupt-completion context only so the back-edge set is closed under
 that elaboration. Lean spells the constructor `brk` because `break` is one of
 its own keywords. -/
 inductive Expr where
