@@ -42,7 +42,7 @@ theorem of_okFloat {r : EvalRes} {w : FloatWidth} {f : FloatDatum}
   match r, h with
   | .ok H (.float _ _) tr, h => cases h; exact ⟨H, tr, rfl⟩
 
-/-- `loop { () }` exhausts every fuel, from every store and frame: each turn
+/-- `loop { () }` exhausts every fuel, from every store and activation record: each turn
 spends one unit and the body never breaks (helper). -/
 theorem loopUnit_eval (M : FloatSig) (P : Program) :
     ∀ n H φ, eval M n P H φ (.loop .unitLit) = .outOfFuel
@@ -350,7 +350,7 @@ theorem diverges :
   exact ⟨h1, checkProgram_sound h1, loopUnit_run⟩
 
 /-- One turn of `let s = S0 { 1 }; ()` finishes at every fuel past `3`, from
-every store and frame: it mints `S0 { 1 }`, binds it, and drops it at the
+every store and activation record: it mints `S0 { 1 }`, binds it, and drops it at the
 scope's end (helper). -/
 theorem dropTurn_eval (M : FloatSig) (fns : List FnDef) : ∀ m H φ, ∃ H' tr,
     eval M (m + 3)
@@ -367,7 +367,7 @@ theorem dropTurn_eval (M : FloatSig) (fns : List FnDef) : ∀ m H φ, ∃ H' tr,
   exact ⟨_, _, rfl⟩
 
 /-- `loop { let s = S0 { 1 }; () }` exhausts every fuel, from every store and
-frame: each turn finishes and the body never breaks (helper). -/
+activation record: each turn finishes and the body never breaks (helper). -/
 theorem dropLoop_eval (M : FloatSig) (fns : List FnDef) : ∀ n H φ,
     eval M n
       { decls :=

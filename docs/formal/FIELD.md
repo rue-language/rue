@@ -768,6 +768,7 @@ Copeland 1986 **(record)**; the Swift performance guide; Rust's
 | "frame property", `FrameProperty` (the metatheory, `Soundness/Defs.lean`: an evaluation grows the store and changes no cell outside its activation's own; formerly "locality", `Untouched`) | frame property (Yang & O'Hearn, via Raza & Gardner) | partial: the same guarantee, that state outside what the code may touch is unchanged, but ours is a relation between one evaluation's stores, not a condition on a command run on every larger heap |
 | "abrupt-completion context", "completes abruptly with" (01 §5.3: `Ω`'s `Δ`, each exit kind with its ownership state; formerly "edge delivery") | abrupt completion and its reason (JLS §14.1) | partial: ours is static, records the ownership state with each reason, and counts a loop that never exits among them |
 | "can complete normally" (01 §5.3, §5.5; formerly "continuing"); "can complete abruptly", `Expr.canCompleteAbruptly` (formerly "unwinds", `Expr.unwinds`) | can complete normally (JLS §14.22); abrupt completion (JLS §14.1) | clear for "can complete normally"; the abrupt predicate has no JLS name of its own |
+| "activation record" (01 §6.1's `φ = ⟨ρ ; σ⟩`, `Activation`; formerly "frame") | activation record (Wirth §12.1; Appel ch. 6) | clear: one call's environment and locals; ours also carries its drop scopes. "Frame" now means only a control-stack or evaluation-context frame (§1), as in PFPL |
 
 ---
 

@@ -24,16 +24,16 @@ drops such residues path-specifically (`3.8:60`); a statically `Owned` path
 always holds a value; and a live **linear** sub-value is never behind a
 `MovedOut` node, which is what makes the leak/overwrite refusals unreachable.
 
-## The frame invariant (§6.1, §6.9)
+## The activation record invariant (§6.1, §6.9)
 
-A frame carries an environment `ρ` and a drop scope `σ`, and the machine
+An activation record carries an environment `ρ` and a drop scope `σ`, and the machine
 keeps two books on every live binding: `ρ` says where it is, `σ` says it has a
 drop obligation. `ActivationTyping` states both halves at once — `StoreTyping Γ ρ H`, and
 `σ` reversed **is** `ρ`.
 
 The second conjunct is **definitional in this fragment**, and it is worth
-being plain about that. Every frame `eval` builds — the callee's frame at a
-call, the extended frame inside a `let` body — builds σ and ρ from the same
+being plain about that. Every activation record `eval` builds — the callee's activation record at a
+call, the extended activation record inside a `let` body — builds σ and ρ from the same
 list, so σ carries no information ρ does not and the equation cannot fail
 here. It is stated as an invariant because it is what the *teardown* proofs
 consume, and because it is the clause that stops being free the moment
@@ -53,7 +53,7 @@ unwind retires a cell twice or touches a `†` cell.
 
 ## The frame property (`FrameProperty`)
 
-A call runs the callee in a frame of its own, and the caller's invariant has
+A call runs the callee in an activation record of its own, and the caller's invariant has
 to survive it. `FrameProperty ρ H H'` is the statement that carries it: the store
 only grows, and every cell below `|H|` that `ρ` does not name has the contents
 it had. Since a callee's parameter cells are minted above the caller's whole
@@ -1574,7 +1574,7 @@ theorem residualLinearFields_false {D : Decls} : ∀ {ts : List OwnSt} {Ts : Lis
 mutual
 /-- **The machine's leak monitor sees exactly what §5.6 computes.** If Σ says
 the residue at a path carries no linear value, the contents stored there holds
-no live declared-`linear` sub-value — so `endscope` (§6.7), the frame teardown
+no live declared-`linear` sub-value — so `endscope` (§6.7), the activation record teardown
 (§6.9) and the overwrite (§6.8) all let it through. This is the clause that
 makes the RUE-1591 model sound: after a partial move the obligation is the
 residue's, on both sides of the invariant. -/
@@ -1743,7 +1743,7 @@ theorem FrameProperty.trans {ρ : Env} {H₁ H₂ H₃ : Store}
 theorem FrameProperty.append {ρ : Env} {H : Store} (ext : Store) : FrameProperty ρ H (H ++ ext) :=
   ⟨by simp, fun ℓ hlt _ => List.getElem?_append_left hlt⟩
 
-/-- Writing a cell the frame names is local (helper). -/
+/-- Writing a cell the activation record names is local (helper). -/
 theorem FrameProperty.set {ρ : Env} {H : Store} {ℓ : Nat} {c : Cell} (h : ℓ ∈ ρ) :
     FrameProperty ρ H (H.set ℓ c) := by
   refine ⟨by simp, fun ℓ' _ hnin => ?_⟩
@@ -1763,9 +1763,9 @@ theorem FrameProperty.trans_set {ρ : Env} {H₀ H : Store} {ℓ : Nat} {c : Cel
   rw [List.getElem?_set_ne hne]
   exact hu.2 ℓ' hlt hnin
 
-/-- A step that only touches cells the *inner* frame names, all of them minted
-above the outer store, is local for the outer frame too: the shape both a
-`let` body and a callee's frame take (helper). -/
+/-- A step that only touches cells the *inner* activation record names, all of them minted
+above the outer store, is local for the outer activation record too: the shape both a
+`let` body and a callee's activation record take (helper). -/
 theorem FrameProperty.of_fresh {ρ ρ' : Env} {H Hm H' : Store}
     (hpre : H.length ≤ Hm.length)
     (hfresh : ∀ ℓ ∈ ρ', H.length ≤ ℓ)
@@ -1776,8 +1776,8 @@ theorem FrameProperty.of_fresh {ρ ρ' : Env} {H Hm H' : Store}
   rw [h.2 ℓ (Nat.lt_of_lt_of_le hlt hpre) hnin]
   exact hkeep ℓ hlt
 
-/-- A `match` arm runs in the **same** frame with its payload cells prepended,
-all of them minted above the whole store; what it does is local to the frame
+/-- A `match` arm runs in the **same** activation record with its payload cells prepended,
+all of them minted above the whole store; what it does is local to the activation record
 without them too. This is `FrameProperty.under_binder`'s n-ary form, and the shape
 (D-Match) §6.6 needs where a `let` needs the unary one (helper). -/
 theorem FrameProperty.under_binders {ρ locs : Env} {H Hm H' : Store}
@@ -1794,8 +1794,8 @@ theorem FrameProperty.under_binders {ρ locs : Env} {H Hm H' : Store}
   rw [h.2 ℓ (Nat.lt_of_lt_of_le hlt hpre) hnin']
   exact hkeep ℓ hlt
 
-/-- A `let` body runs in a frame with one more binding, minted above the whole
-store; what it does is local to the enclosing frame too (helper). -/
+/-- A `let` body runs in an activation record with one more binding, minted above the whole
+store; what it does is local to the enclosing activation record too (helper). -/
 theorem FrameProperty.under_binder {ρ : Env} {H₁ H₂ : Store} {c : Cell}
     (h : FrameProperty (H₁.length :: ρ) (H₁ ++ [c]) H₂) : FrameProperty ρ H₁ H₂ := by
   have hlen := h.1
@@ -1807,8 +1807,8 @@ theorem FrameProperty.under_binder {ρ : Env} {H₁ H₂ : Store} {c : Cell}
   rw [h.2 ℓ (by simp; omega) hne]
   exact List.getElem?_append_left hlt
 
-/-- The invariant of a frame transports across a step local to a *disjoint*
-frame: the caller's bindings survive a callee's run (helper). -/
+/-- The invariant of an activation record transports across a step local to a *disjoint*
+activation record: the caller's bindings survive a callee's run (helper). -/
 theorem StoreTyping.transport {D Γ ρ₀ ρ H H'} (hm : StoreTyping D Γ ρ₀ H)
     (hdisj : ∀ ℓ ∈ ρ₀, ℓ ∉ ρ) (hu : FrameProperty ρ H H') : StoreTyping D Γ ρ₀ H' := by
   induction hm with
@@ -1818,7 +1818,7 @@ theorem StoreTyping.transport {D Γ ρ₀ ρ H H'} (hm : StoreTyping D Γ ρ₀ 
       rw [hu.2 _ (List.getElem?_eq_some_iff.mp hc |>.1) (hdisj _ (by simp))]
       exact hc
 
-/-! ## Frames: the environment and the drop scope together -/
+/-! ## Activation records: the environment and the drop scope together -/
 
 /-! ## Scope teardown never refuses -/
 
@@ -1855,8 +1855,8 @@ theorem dropRetire_ok {D : Decls} {H : Store} {ℓ : Nat} {cell : Cell} {c : Con
   obtain ⟨evs, hdc⟩ := dropCell_ok (ℓ := ℓ) hty
   exact ⟨evs, by simp only [hnl, Bool.false_eq_true, if_neg, hdc, not_false_eq_true]⟩
 
-/-- **Scope teardown never refuses on a frame the statics cleared.**
-`run-scope-drops` (§6.1) over a frame whose bindings carry no residual linear
+/-- **Scope teardown never refuses on an activation record the statics cleared.**
+`run-scope-drops` (§6.1) over an activation record whose bindings carry no residual linear
 content retires every one of them: none is already retired (`StoreTyping` says
 every bound cell is live and that no two bindings share one — §7's
 no-use-after-drop at an unwinding edge), and none holds a live linear
@@ -1886,11 +1886,11 @@ theorem StoreTyping.unwind {D : Decls} (hwf : WfDecls D) :
           exact List.getElem?_set_ne (fun h => hne h.symm)
 
 /-- **A `match` arm's own cells can be torn down without touching the rest of
-the frame** (§6.6's `endscope([ℓ1,…,ℓa])`, run when the arm's body becomes a
-value). The arm added `n` bindings on top of the frame it was entered in, so the
+the activation record** (§6.6's `endscope([ℓ1,…,ℓa])`, run when the arm's body becomes a
+value). The arm added `n` bindings on top of the activation record it was entered in, so the
 teardown walks the first `n` locations of `ρ` — newest-first, since the arm's
-payload cells sit at the front of the environment — and leaves exactly the frame
-the arm started from. `StoreTyping.unwind` is the whole-frame case of the same walk
+payload cells sit at the front of the environment — and leaves exactly the activation record
+the arm started from. `StoreTyping.unwind` is the whole-activation-record case of the same walk
 (`n = ρ.length`), and this is the prefix one (helper). -/
 theorem StoreTyping.unwindPrefix {D : Decls} (hwf : WfDecls D) :
     ∀ (n : Nat) (Γ : Ctx) (ρ : Env) (H : Store), StoreTyping D Γ ρ H →
@@ -1925,7 +1925,7 @@ theorem StoreTyping.unwindPrefix {D : Decls} (hwf : WfDecls D) :
           rw [hout ℓ' hnin'.2]
           exact List.getElem?_set_ne (fun h => hnin'.1 h.symm)
 
-/-- **A frame's whole teardown never refuses** (§6.9's `run-all-scope-drops`,
+/-- **An activation record's whole teardown never refuses** (§6.9's `run-all-scope-drops`,
 run at (D-Return-Value) and at (D-Return)). The record is the environment
 reversed, so this is `StoreTyping.unwind` read newest-first. -/
 theorem runAllScopeDrops_ok {D Γ φ H} (hwf : WfDecls D) (hfm : ActivationTyping D Γ φ H)
@@ -2334,7 +2334,7 @@ theorem freshParams_store : ∀ (H : Store) (vs : List Val),
       simp [freshParams, freshParams_store (H ++ [Cell.full (Contents.ofVal v)]) vs]
 
 /-- Every parameter cell is minted above the caller's whole store, which is
-what makes a call local to the caller's frame (helper). -/
+what makes a call local to the caller's activation record (helper). -/
 theorem freshParams_fresh : ∀ (H : Store) (vs : List Val) (ℓ : Nat),
     ℓ ∈ (freshParams H vs).2 → H.length ≤ ℓ
   | _, [], _, h => by simp [freshParams] at h
@@ -2380,10 +2380,10 @@ theorem freshParams_locs_length : ∀ (H : Store) (vs : List Val),
 
 /-- **(D-Match) §6.6 establishes the arm's entry invariant.** The payload cells
 hold the payload components and (Match) §5.5's `Σ0[ x_{ij} ↦ Owned ]` — `extendArm`
-— describes exactly them, on top of the frame the `match` was evaluated in. This
-is `storeTyping_freshParams` read over a non-empty base frame: the same minting, the
+— describes exactly them, on top of the activation record the `match` was evaluated in. This
+is `storeTyping_freshParams` read over a non-empty base activation record: the same minting, the
 same two `reverse`s (a payload tuple is written left to right while `Ctx` and
-`Env` list the innermost binder first), with the enclosing frame carried along
+`Env` list the innermost binder first), with the enclosing activation record carried along
 because the cells are minted **above** the whole store. -/
 theorem storeTyping_freshParams_app {D : Decls} :
     ∀ (Ts : List Ty) (vs : List Val) (Γ : Ctx) (ρ : Env) (H : Store),
@@ -2520,7 +2520,7 @@ theorem Contents.resolveDyn_ok {D : Decls} : ∀ (is : List Int) (πs : List (Li
 
 /-- The promise for an evaluation that does **not** produce a value here: an
 unwinding `return` carries a value of the enclosing function's declared return
-type `R` and leaves the frame's neighbours alone; an unwinding `break` is one
+type `R` and leaves the activation record's neighbours alone; an unwinding `break` is one
 of the abrupt-completion contexts `B` (`BreakOutputOk`); a trap and exhausted fuel promise nothing;
 a refusal is impossible, which is the whole theorem (helper). -/
 def AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Activation) (H : Store) : EvalRes → Prop
@@ -2543,7 +2543,7 @@ def ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx) (B : List Ctx) (
   | .abort r => AbortOk D R B φ H r
 
 /-- A `break` promised from a later store is promised from an earlier one,
-given the step between them was local to the frame (helper). -/
+given the step between them was local to the activation record (helper). -/
 theorem BreakOutputOk.mono_store {D B φ H H₁ H' sc} (hu : FrameProperty φ.env H H₁)
     (h : BreakOutputOk D B φ H₁ H' sc) : BreakOutputOk D B φ H H' sc := by
   obtain ⟨Γb, hb, locs, hsc, hfm, hfresh, hu'⟩ := h
@@ -2557,9 +2557,9 @@ theorem BreakOutputOk.mono_brk {D B B' φ H H' sc} (hB : B ⊆ B') (h : BreakOut
   exact ⟨Γb, hB hb, rest⟩
 
 /-- **A `break` passes out through a binder** (§6.10, with §6.7's and §6.6's
-registration): a `break` inside a `let` body or a `match` arm, whose frame is
+registration): a `break` inside a `let` body or a `match` arm, whose activation record is
 the enclosing one with the binder's fresh cells `ls` opened on top, is a
-`break` of the enclosing frame with `ls` among the bindings still open where
+`break` of the enclosing activation record with `ls` among the bindings still open where
 it fired. The unwind the loop runs therefore drops the binder's cells too —
 which is RUE-1277's redundancy read at a `break`: the discarded `endscope`
 marker's cells are found in the drop scope instead (helper). -/
@@ -2600,7 +2600,7 @@ theorem ArgsOk.ok_inv {D R Ts o B φ H H' vs tr} (h : ArgsOk D R Ts o B φ H (.o
   | some Γ' => exact ⟨Γ', rfl, h⟩
 
 /-- A promise made from a later store is a promise from an earlier one, given
-the step between them was local to the frame (helper). -/
+the step between them was local to the activation record (helper). -/
 theorem EvalOk.mono_store {D T R o B φ H H₁ r} (hu : FrameProperty φ.env H H₁)
     (h : EvalOk D T R o B φ H₁ r) : EvalOk D T R o B φ H r := by
   cases r with
@@ -2752,7 +2752,7 @@ theorem EvalOk.weaken {D T R o₁ o' B φ H r}
 /-- **Aggregate introduction keeps the promise** ((D-Struct), (D-Array) §6.5,
 (D-Enum-Intro) §6.6, the repeat form): a well-typed aggregate passes the
 copy-closure monitor (`HasTy.copyContained`), and the identity it mints reserves
-one `†` slot above the store, which no binding names — so the frame still
+one `†` slot above the store, which no binding names — so the activation record still
 matches and nothing it names was touched (helper). -/
 theorem introVal_ok {D : Decls} {T R : Ty} {Γ : Ctx} {B : List Ctx} {φ : Activation}
     {H₀ H : Store} {mk : Nat → Val} (hwf : WfDecls D) (hty : HasTy D (mk H.length) T)
@@ -2817,7 +2817,7 @@ theorem LoopHead.backEdge {D : Decls} (hwf : WfDecls D) {Γ Γh Γe : Ctx}
       exact ⟨StoreTyping.join_right hwf hs hj hfm.store, hfm.record⟩
 
 /-- **The exits** (§5.7's (Loop-Break), §6.10's (D-Break)). A `break` that
-fired at one of the body's abrupt-completion contexts `Γb`, in a frame that is the loop's with
+fired at one of the body's abrupt-completion contexts `Γb`, in an activation record that is the loop's with
 the body's still-open bindings `locs` on top, is caught by the loop: it
 drop-retires exactly those bindings, newest first — `unwind-drops(H, φ', φ)`
 — and the rule's premise that they carry no residual linear content is what
@@ -2984,7 +2984,7 @@ theorem args_sound (M : FloatLaws) {P : Program} {fuel : Nat}
 /-- **Type safety for the fragment** (§7, first bullet, in
 definitional-interpreter form).
 
-A well-typed expression, run at any fuel in any frame and store agreeing with
+A well-typed expression, run at any fuel in any activation record and store agreeing with
 its input context, yields a well-typed value with the agreement restored at
 the normal output context of its §5.3 result `Ω` — and no value at all when
 `Ω` is §5.7's `⊥` — a value handed back by an unwinding `return` (§6.9), an
@@ -3778,7 +3778,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
               | refused w => rw [hrb] at kb; exact kb.elim
               | outOfFuel => simp only [EvalRes.bindCall, EvalRes.withTrace]; trivial
       | @brk Γ T =>
-          -- (D-Break) §6.10: the `break` fires in this very frame, with no
+          -- (D-Break) §6.10: the `break` fires in this very activation record, with no
           -- binding opened since the loop's — unless an enclosing `let` or
           -- arm adds its own on the way out (`BreakOutputOk.under_binders`).
           simp only [eval]
@@ -4190,7 +4190,7 @@ theorem entry_typed {P : Program} {fd : FnDef} (h0 : P.fns[0]? = some fd)
   simp only [hp, List.map_nil]
   exact .nil
 
-/-- The machine's initial state satisfies the frame invariant: no bindings, no
+/-- The machine's initial state satisfies the activation record invariant: no bindings, no
 store, an empty drop scope (helper). -/
 theorem activationTyping_empty {D : Decls} : ActivationTyping D [] { env := [], scope := [] } [] :=
   ⟨.nil, rfl⟩
@@ -4325,7 +4325,7 @@ calculus, the second is the calculus doing what it says.
 
 Every *other* edge — a `let`'s scope exit, a `match` arm's `endscope` over its
 payload locals (`StoreTyping.unwindPrefix`), a `break`'s unwind to its loop
-(`loop_exit_ok`), a frame's normal pop, and a `return`'s unwind — is
+(`loop_exit_ok`), an activation record's normal pop, and a `return`'s unwind — is
 covered. -/
 theorem no_refusal (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) (w : Refusal) :
     run M.toFloatSig P fuel ≠ .refused w := by
@@ -4341,8 +4341,8 @@ theorem no_use_after_move (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fu
 /-- §7 "No use-after-drop": the machine never touches a retired (`†`) cell.
 Here it is `no_refusal` at one tag, over checked programs, but typing is not
 what makes it true: `run_no_use_after_drop` (`Tombstone.lean`, RUE-2496) proves
-it for every program. `run-all-scope-drops` (§6.9) walks the frame's scope
-record at every `return` and at every frame pop, and what keeps those walks
+it for every program. `run-all-scope-drops` (§6.9) walks the activation record's drop
+scope at every `return` and at every activation record pop, and what keeps those walks
 off a `†` cell, and stops any cell being retired twice, is structural: a
 binding's cell is minted fresh and retired only when its scope ends, after
 which nothing names it, and a record owes each cell once. `ActivationTyping`
@@ -4352,7 +4352,7 @@ theorem no_use_after_drop (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fu
     run M.toFloatSig P fuel ≠ .refused .useAfterDrop := no_refusal M h fuel _
 
 /-- §7 "Linear values are consumed exactly once", leak half: neither a scope
-exit (§6.7) nor a frame unwind (§6.9) ever sees a live linear value. -/
+exit (§6.7) nor an activation record unwind (§6.9) ever sees a live linear value. -/
 theorem no_linear_leak (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     run M.toFloatSig P fuel ≠ .refused .linearLeak := no_refusal M h fuel _
 

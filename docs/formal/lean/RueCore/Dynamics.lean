@@ -13,7 +13,7 @@ about them are in `Dynamics/Lemmas.lean` (layer L2), moved there verbatim (RUE-2
 A definitional interpreter over the §6.1 configuration shape, restricted to
 the fragment: a store of single-cell binding allocations (`full c`, whose
 contents is a tree with §6.1's moved-out marker `⊘` allowed at any node, or
-the retired marker `†` = `dead`), a frame holding the environment `ρ` and the
+the retired marker `†` = `dead`), an activation record holding the environment `ρ` and the
 drop scope `σ`, and a drop trace — the fragment's image of the oracle's
 observable `Outcome` (drop trace + result).
 
@@ -130,7 +130,7 @@ A struct's contents is its declaration's index and one contents per field, so
 the drop walk is §6.11's own: the user destructor first (`3.9:28`), then the
 fields in declaration order (`3.9:13`), recursively, skipping every `⊘`. Every
 path that drops — `@drop` (§6.11), scope exit (§6.7), the overwrite (§6.8), a
-discarded temporary (§6.7), and the frame teardown (§6.9) — routes through it,
+discarded temporary (§6.7), and the activation record teardown (§6.9) — routes through it,
 so a trace carries that order wherever a drop happens.
 
 An **array**'s contents is its element type and one contents per element, and
@@ -210,14 +210,14 @@ walks has it: a call's argument list, a struct literal's initializers, and an
 array literal's elements. So does a fourth position, an assignment's
 right-hand side while the target's indices run after it (`5.2:14`, §6.2's
 `assign p[ v̄, E, … ] = v`), which `indexWrite` threads through `bind`
-rather than `evalArgs`. Such a value lives in no cell and in no scope
-record — between the `use` that produced it and the `freshParams` that gives a
+rather than `evalArgs`. Such a value lives in no cell and in no drop
+scope — between the `use` that produced it and the `freshParams` that gives a
 by-value argument one (§6.9's (D-Call)), between an initializer and the
 `mkStruct`/`mkArray` that would have aggregated it, or between a right-hand
 side and the store that would have written it. If a later sibling completes abruptly
 by `return`, (D-Return) §6.9 discards the evaluation context — `g(v̄, …, E, …)`,
 the aggregate contexts `S { v̄, …, E, … }` and `[ v̄, …, E, … ]`, and
-`assign p[ v̄, E, … ] = v` with it — and runs `run-all-scope-drops` on the frame's records, which never named that
+`assign p[ v̄, E, … ] = v` with it — and runs `run-all-scope-drops` on the activation record's drop scopes, which never named that
 value; if it completes abruptly by `break`, (D-Break) §6.10 discards the same context
 (`E'`) and the loop's `unwind-drops` walks the same records. Its drop is therefore neither run nor monitored, whatever its
 qualifier: an affine sibling emits no `dropTemp`, and a linear one is
@@ -232,8 +232,8 @@ strict-context bottom rule, `Strict-Bottom` there, which `Typed.consBot` and
 the other `-Bottom` variants mechanize — carries `⊥;Δ_e` outward without imposing §5.3's discard check on
 the siblings already evaluated, so the statics accept the program exactly as
 the calculus does. §6.9's own justification for
-(D-Return) — "every bound cell is also registered in the frame's scope
-records" — is exactly true and exactly insufficient here, because a sibling
+(D-Return) — "every bound cell is also registered in the activation record's drop
+scopes" — is exactly true and exactly insufficient here, because a sibling
 temporary is not a bound cell. The Rue compiler behaves the same way (a
 destructor-bearing sibling's destructor does not run, at an argument, a
 struct initializer, an array element and an assignment's right-hand side
@@ -252,16 +252,16 @@ the carve-out named (`Soundness.lean`'s `no_refusal`,
 (RUE-2316, the pending-argument decision) — it needs a rule, in §5.7, §6.9
 or §6.10, before a monitor here would mean anything.
 
-## Frames, drop scopes, and unwinding (§6.1, §6.9)
+## Activation records, drop scopes, and unwinding (§6.1, §6.9)
 
-§6.1's frame is `φ = ⟨ρ ; σ⟩` with `σ` a *stack* of open drop scopes.
+§6.1's activation record is `φ = ⟨ρ ; σ⟩` with `σ` a *stack* of open drop scopes.
 (D-Let) §6.7 and (D-Match) §6.6 both **append** their cells to the innermost
 record rather than pushing a new one, so `Activation` carries that one record.
 §6.10's loop does push a scope, `push-scope(φ)`, and `unwind-drops(H, φ', φ)`
 runs the drops of every scope open in `φ'` that is not open in `φ`. The
 fragment keeps one record and reads the loop's boundary as its **length**
 at the loop's entry: a loop body appends to the record like any other form, a
-`break` hands the loop the record of the frame it fired in
+`break` hands the loop the drop scope of the activation record it fired in
 (`EvalRes.broke`), and the cells past the loop's length are exactly the
 scopes §6.10 would pop — which the loop drop-retires newest-first. A body that
 completes has closed its own scopes on the way (§6.7's `endscope`), so
@@ -278,7 +278,7 @@ registers its cell **both** in the drop scope and in the administrative
 `endscope` form that the normal path runs (modelled by the structure of
 `eval`'s `letIn` case). An early `return` throws the `endscope` markers away
 with the evaluation context, and `run-all-scope-drops` walks the record
-instead, so every live binding of the frame is still dropped (`3.9:18`, which
+instead, so every live binding of the activation record is still dropped (`3.9:18`, which
 lists a `return` among the points drops are inserted at), newest-first
 (`3.9:4`, reverse declaration order) — §6.9's (D-Return).
 
@@ -461,7 +461,7 @@ end
 mutual
 /-- §5.6's `residual-linear`, read on the **contents** rather than on Σ: does a
 live sub-value of a declared-`linear` struct type remain? This is the leak
-monitor §6.7's `endscope` and §6.9's frame teardown consult, and the overwrite
+monitor §6.7's `endscope` and §6.9's activation record teardown consult, and the overwrite
 monitor of §6.8. A `⊘` carries nothing (`3.8:60`'s skip), a live
 declared-`linear` struct carries the obligation itself (`3.8:74`), and
 otherwise the obligation is the disjunction over the live fields — exactly the
@@ -530,8 +530,8 @@ abbrev Store := List Cell
 /-- The environment `ρ` (§6.1), de Bruijn: index `i` ↦ its location. -/
 abbrev Env := List Nat
 
-/-- §6.1's frame `φ = ⟨ρ ; σ⟩`: the environment and the frame's open scope
-record — the cells with a drop obligation when the frame's scopes end, in creation order
+/-- §6.1's activation record `φ = ⟨ρ ; σ⟩`: the environment and the activation record's open drop
+scope — the cells with a drop obligation when the activation record's scopes end, in creation order
 (dropped newest-first). Every binding of the fragment is a `let` binding or a
 by-value parameter, and both are registered; `borrow`/`inout` parameters,
 which are deliberately never registered (§6.9, `3.8:62`), are not in the
@@ -599,7 +599,7 @@ inductive Refusal where
   | useAfterMove
   /-- Touching a `†` cell (§7: no use-after-drop). -/
   | useAfterDrop
-  /-- A scope exit — at a `let`'s end (§6.7) or on a frame's unwind (§6.9) —
+  /-- A scope exit — at a `let`'s end (§6.7) or on an activation record's unwind (§6.9) —
   reaching a live linear value (§7: consumed exactly once; §5.6); or a
   declared-linear destructure whose residue holds one, which §5.1's
   `¬ linear-residue(S, π_s)` premise forbids (`3.8:60`, E0474) and which §6.3
@@ -779,7 +779,7 @@ def Contents.declaredPlan (D : Decls) : Contents → List Nat → Option (List N
   | .enum _ _ _ _, _ :: _ => none
 
 /-- Evaluation results: a value with the final store and trace (§6.12's normal
-result); a value handed back by an unwinding `return`, whose frame's scopes
+result); a value handed back by an unwinding `return`, whose activation record's scopes
 have already been dropped (§6.9's (D-Return)) and which every enclosing form
 passes on untouched until a call boundary absorbs it; a `break` on its way to
 its loop, which every enclosing form passes on the same way until the loop
@@ -792,7 +792,7 @@ inductive EvalRes where
   | ok (H : Store) (v : Val) (tr : List Event)
   | returned (H : Store) (v : Val) (tr : List Event)
   /-- A `break` unwinding to its loop (§6.10's (D-Break)): the store, the
-  drop scope of the frame the `break` fired in — the loop reads off it which
+  drop scope of the activation record the `break` fired in — the loop reads off it which
   cells of the body still had a drop obligation — and the trace so far. -/
   | broke (H : Store) (scope : List Nat) (tr : List Event)
   | panic (k : PanicKind) (tr : List Event)
@@ -861,7 +861,7 @@ Two things §6.11 writes out are elided here, both unobservably.
   has one — so there is nothing to step. The Rue program the printer emits
   supplies a body that reproduces the event (`Print.lean`).
 * **The scratch cell is not minted.** §6.11 mints a fresh `ℓ` holding the
-  value, runs the destructor in a frame whose drop scope is empty, drops
+  value, runs the destructor in an activation record whose drop scope is empty, drops
   the *residual* fields `H1(ℓ)` leaves, and then retires `ℓ`. `dropContents`
   mints nothing and drops the original `cs`. Neither difference is
   observable: no `Event` corresponds to minting or retiring the scratch cell,
@@ -1118,7 +1118,7 @@ undischarged, and the machine refuses (`3.8:32`). The monitor reads
 `Contents.residualLinear`, §5.6's own recursion on the store's side, because
 after a partial move the obligation attaches to whatever linear content is
 still present rather than to the binding's type (RUE-1591). This is the one
-scope-teardown path: `let`'s normal `endscope` (§6.7) and the frame unwind of
+scope-teardown path: `let`'s normal `endscope` (§6.7) and the activation record unwind of
 `return` (§6.9) both run it. -/
 def dropRetire (D : Decls) (H : Store) (ℓ : Nat) : Except Refusal (Store × List Event) :=
   match H[ℓ]? with
@@ -1144,9 +1144,9 @@ def unwindLocs (D : Decls) (H : Store) : List Nat → Except Refusal (Store × L
           | .error w => .error w
           | .ok (H₂, evs') => .ok (H₂, evs ++ evs')
 
-/-- `run-all-scope-drops(H, φ)` (§6.1, §6.9): the whole-frame teardown, run
-when a frame is popped — at a normal (D-Return-Value) and at an unwinding
-(D-Return). The frame's record lists its cells in creation order, so the
+/-- `run-all-scope-drops(H, φ)` (§6.1, §6.9): the whole-activation-record teardown, run
+when an activation record is popped — at a normal (D-Return-Value) and at an unwinding
+(D-Return). The activation record's drop scope lists its cells in creation order, so the
 teardown reads it backwards: newest binding first. -/
 def runAllScopeDrops (D : Decls) (H : Store) (φ : Activation) :
     Except Refusal (Store × List Event) :=
@@ -1176,7 +1176,7 @@ inductive ArgsRes where
 (§6.2's evaluation order, §6.9's by-value argument rule). `ev` is the
 interpreter at the fuel the caller has already spent one unit of, which is
 what keeps `eval` structurally recursive on its fuel. A `returned` argument
-aborts the call: its frame has already unwound, and no parameter cell was
+aborts the call: its activation record has already unwound, and no parameter cell was
 minted (helper). -/
 def evalArgs (ev : Store → Expr → EvalRes) : Store → List Expr → ArgsRes
   | H, [] => .ok H [] []
@@ -1406,11 +1406,11 @@ newest-first drop at the arm's end; `ite` is (D-If-T)/(D-If-F) after the §6.2
 search for the scrutinee; `call` is (D-Call)
 followed by (D-Return-Value) when the body completes normally, and by
 (D-Return)'s absorption when it does not; `ret` is (D-Return), which runs the
-frame's scope drops and hands the value past every enclosing form; `loop` is
+activation record's scope drops and hands the value past every enclosing form; `loop` is
 (D-Loop-Enter) and (D-Loop-Iter) §6.10, re-entering the body at one unit of
 fuel less after every turn that completes, and (D-Break)'s unwind when the
-body breaks; `brk` is (D-Break), which hands its loop the frame's scope
-record.
+body breaks; `brk` is (D-Break), which hands its loop the activation record's drop
+scope.
 
 Every operand is sequenced with `bind`, which is §6.2's search through an
 evaluation context; the callee's body is sequenced with `bindCall`, the one
@@ -1537,8 +1537,8 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
            | none => .refused .typeConfusion
            | some body =>
              -- The payload components are bound to fresh cells exactly as
-             -- (D-Let) §6.7 binds one: appended to the frame's innermost scope
-             -- record *and* owed to the arm's `endscope([ℓ1,…,ℓa])` marker,
+             -- (D-Let) §6.7 binds one: appended to the activation record's innermost drop
+             -- scope *and* owed to the arm's `endscope([ℓ1,…,ℓa])` marker,
              -- which the arm's normal path below runs. `freshParams` is the same
              -- minting (D-Call) §6.9 performs, and the two `reverse`s are the
              -- same one it needs: a payload tuple is written left to right while
@@ -1720,7 +1720,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
   | fuel + 1, P, H, φ, .letIn _m e₁ e₂ =>
       (eval M fuel P H φ e₁).bind fun H₁ v₁ =>
         -- (D-Let): mint a fresh single-cell binding allocation, bind it, and
-        -- register it in the frame's drop scope as well as in the
+        -- register it in the activation record's drop scope as well as in the
         -- administrative `endscope` the normal path below runs (RUE-1277).
         (eval M fuel P (H₁ ++ [.full (Contents.ofVal v₁)])
             { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] } e₂).bind
@@ -1784,7 +1784,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
               let minted := freshParams H₁ vs
               let φg : Activation := { env := minted.2.reverse, scope := minted.2 }
               (eval M fuel P minted.1 φg fd.body).bindCall fun H₃ v =>
-                -- (D-Return-Value): the body became a value; pop the frame,
+                -- (D-Return-Value): the body became a value; pop the activation record,
                 -- running its open drop scopes' drops. (D-Return) needs no second
                 -- path: `bindCall` took its value, and its unwind already ran
                 -- every one of those drops.
@@ -1795,18 +1795,18 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
   | fuel + 1, P, H, φ, .ret e =>
       (eval M fuel P H φ e).bind fun H₁ v =>
         -- (D-Return) §6.9: discard the evaluation context, every pending
-        -- `endscope` marker inside it included, and run the frame's scope
-        -- record instead — newest binding first.
+        -- `endscope` marker inside it included, and run the activation record's drop
+        -- scope instead — newest binding first.
         match runAllScopeDrops P.decls H₁ φ with
         | .error w => .refused w
         | .ok (H₂, evs) => .returned H₂ v evs
   | fuel + 1, P, H, φ, .loop e =>
-      -- §6.10: run the body in the loop's frame. (D-Loop-Iter): when it
+      -- §6.10: run the body in the loop's activation record. (D-Loop-Iter): when it
       -- becomes a value — `()`, discarded, since the body is `unit`-typed —
       -- its own `let`s and arms have already dropped what they bound (§6.7's
       -- `endscope`), and the loop re-enters its body; each turn spends a unit
       -- of fuel, so an infinite loop exhausts it. (D-Break): a `break` from
-      -- the body carries the drop scope of the frame it fired in, whose
+      -- the body carries the drop scope of the activation record it fired in, whose
       -- cells past the loop's own are the body's bindings still open there —
       -- `unwind-drops(H, φ', φ)` drop-retires them, newest-first — and the
       -- whole loop yields `()`. Every other outcome, an unwinding `return`
@@ -1824,13 +1824,13 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       | r => r
   | _ + 1, _, H, φ, .brk =>
       -- (D-Break) §6.10: discard the evaluation context — every pending
-      -- `endscope` marker inside it included — and hand the loop the frame's
+      -- `endscope` marker inside it included — and hand the loop the activation record's
       -- drop scope, which is where §6.7 registered every binding the
       -- discarded markers held a drop obligation for (RUE-1277).
       .broke H φ.scope []
 
 /-- A program's outcome (§6.12's top-level result): call the entry function,
-index `0`, with no arguments in an empty store and a frame with no bindings.
+index `0`, with no arguments in an empty store and an activation record with no bindings.
 (D-Return-Main) is the same rule as (D-Return-Value) at the bottom of the
 stack, so the entry point is an ordinary call and needs no second path: the
 call boundary absorbs an unwinding `return` exactly as it does anywhere. -/

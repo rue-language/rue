@@ -157,8 +157,8 @@ def run (M : FloatSig) (P : Program) (fuel : Nat) : EvalRes :=
   §6.1's moved-out marker `⊘` may sit at any node of it, not only at the root:
   a partial move writes `H[ℓ@π ↦ ⊘]` at exactly the sub-position it takes
   (§6.3, §4.2), and a whole-place move is the case `π = ε`.
-- `φ` is §6.1's frame: the environment `ρ` (position `i` ↦ its location in
-  `H`) and the drop scope `σ` (the cells with a drop obligation in this frame, in creation
+- `φ` is §6.1's activation record: the environment `ρ` (position `i` ↦ its location in
+  `H`) and the drop scope `σ` (the cells with a drop obligation in this activation record, in creation
   order).
 - `run` is §6.12's top-level result: call the entry point, function `0`, with
   no arguments.
@@ -170,7 +170,7 @@ of six outcomes:
 | --- | --- |
 | `.ok H' v tr` | the machine halted normally with value `v`, final store `H'`, and trace `tr` |
 | `.returned H' v tr` | an unwinding `return` handed `v` back (§6.9's (D-Return)); every enclosing form passes it on until a call boundary absorbs it |
-| `.broke H' sc tr` | an unwinding `break` (§6.10's (D-Break)), carrying the drop scope `sc` of the frame it fired in; every enclosing form passes it on until its loop catches it and drops the cells the body still owed |
+| `.broke H' sc tr` | an unwinding `break` (§6.10's (D-Break)), carrying the drop scope `sc` of the activation record it fired in; every enclosing form passes it on until its loop catches it and drops the cells the body still owed |
 | `.panic k tr` | the machine halted in a defined trap `↯κ` (§6.12) — `overflow`, `divZero`, `remZero`, `castOverflow`, `bounds` or `user` — carrying the trace `tr` of what ran before it |
 | `.refused w` | the machine refused: `w` names either a configuration §6 leaves undefined or a linear action the machine monitors (see below) |
 | `.outOfFuel` | not a machine state at all: the interpreter's admission that it stopped early (see below) |
@@ -209,7 +209,7 @@ destructor run twice, and no identity appears twice among the
 `drop`/`dropTemp` free events.
 
 A `Refusal` is a refusal: `useAfterMove` (reading a `⊘` cell),
-`useAfterDrop` (touching a `†` cell), `linearLeak` (a scope exit or a frame
+`useAfterDrop` (touching a `†` cell), `linearLeak` (a scope exit or an activation record
 unwind reaching a live linear value), `linearOverwrite` (`3.8:77`),
 `linearDiscard` (`3.8:64`), `ownedUnderCopy` (an owned value put under a
 `Copy` node, which a copy would duplicate), and `unbound` and `typeConfusion`
@@ -233,7 +233,7 @@ second half, the small-to-big direction, modulo fuel (`eval_small_to_big`).
 **Two presentations of one dynamics.** The relation exists too:
 `Step.lean` defines `Step`, §6's `C → C'` itself, one constructor per §6
 rule with the rule's name in its doc-comment, over a configuration built from
-the same store and frame `eval` uses. The two are kept for different jobs.
+the same store and activation record `eval` uses. The two are kept for different jobs.
 `Step` is what §6 *says*, so a reader checks it against the calculus rule by
 rule, and §7's own phrasing ("no reduction sequence reaches a stuck
 configuration") is a statement about it. `eval` is what can be *run* and
@@ -253,7 +253,7 @@ metatheory row and `Step.lean`'s module docstring give the same list:
 - §6.2's evaluation context `E` and §6.1's stack `K` are one list of frames,
   so the rule that searches into a context is two constructors, an evaluation-state one
   entering the hole and a return-state one returning a value into it;
-- `endscope` pops its cells off the frame by count, because bindings are de
+- `endscope` pops its cells off the activation record by count, because bindings are de
   Bruijn indices where §6.7 relies on α-renaming;
 - the loop boundary sits above its context's frames, because §6.10's
   `loopβ(e, φ)` records no context;
@@ -346,7 +346,7 @@ first) and `call` the entry point's `ret(E, φ)`:
 | 9 | `letBind` | (D-Let) §6.7 | store gains `ℓ1 = S1 { 7 }#0`; push `endscope([ℓ1])`; focus on `1` | [4] |
 | 10 | `intLit` | §6.3 | `1` is a value | [5] |
 | 11 | `endScope` | (D-EndScope) §6.7 | `ℓ1` dropped and retired; trace gains `drop ℓ1`, then `S1`'s destructor | [6] |
-| 12 | `callReturn` | (D-Return-Value) §6.9 | pop `call`; the frame's record is empty; `✓1` | [7] |
+| 12 | `callReturn` | (D-Return-Value) §6.9 | pop `call`; the activation record's drop scope is empty; `✓1` | [7] |
 
 Two things differ, and neither is a disagreement:
 
@@ -506,11 +506,11 @@ Two lemmas turn the clause into what the proof uses:
   sub-position, and writing a matching state and contents there leaves the
   cell matched.
 
-**`record`: `φ.scope.reverse = φ.env`.** The frame's drop scope, read
+**`record`: `φ.scope.reverse = φ.env`.** The activation record's drop scope, read
 newest-first, *is* its environment. §6.1 keeps both books: ρ says where a
 binding lives, σ that it has a drop obligation.
 
-In this fragment the equation costs **nothing** to prove. Every frame the
+In this fragment the equation costs **nothing** to prove. Every activation record the
 interpreter builds (the callee's at a call, the extended one inside a `let`
 body) builds σ and ρ from the same list, so the equation holds by definition.
 It is stated as an invariant for two reasons:
@@ -555,12 +555,12 @@ reuse it at every form. It says:
 
 - on `.ok`, the normal output context `Ω.norm` is some `Σ'`, the value has the
   expression's type, the invariant holds at `Σ'`, and the cells outside the
-  frame are untouched — and when `Ω` is `⊥` there is no `.ok` at all, so an
+  activation record are untouched — and when `Ω` is `⊥` there is no `.ok` at all, so an
   expression the rules type as divergent never completes normally;
 - on `.returned`, the value has the enclosing function's return type `R`, and
-  the cells outside the frame are untouched;
+  the cells outside the activation record are untouched;
 - on `.broke`, the `break` fired at one of `Ω`'s abrupt-completion contexts, in the
-  frame with the loop body's still-open bindings on top (`BreakOutputOk`);
+  activation record with the loop body's still-open bindings on top (`BreakOutputOk`);
 - on `.panic` and `.outOfFuel`, nothing;
 - on `.refused`, **`False`**, which is the whole point.
 
@@ -777,10 +777,10 @@ Both halves are over §6's `Step`.
   statement false.
 - **Across cells**, the order comes from the drop scopes, which the trace
   does not show. `C.stack` is the machine's registration stack: every
-  suspended caller's drop scope, then the current frame's.
+  suspended caller's drop scope, then the current activation record's.
   - It is in location order, which is registration order (the last
     conjunct).
-  - The pending `endscope` markers are exactly the tail of their frame's
+  - The pending `endscope` markers are exactly the tail of their activation record's
     record (`reachable_nested`).
   - So every step is `StackDiscipline`: it keeps the stack as a prefix of the new one,
     or cuts it back and drops only cells of the part it cut, newest first.
@@ -801,7 +801,7 @@ Witnesses:
   drops `ℓ3`, then `ℓ1` (`returnPastAffine_strictStackOrder`). In the ledger these
   show as the ends `[9.1]` and `[9.2]`, the first and second end of row 9.
 - `two_params_dropped_at_pop` and `three_params_dropped_at_pop`, for a
-  callee frame's pop. It tears the by-value parameters down last-parameter
+  callee activation record's pop. It tears the by-value parameters down last-parameter
   first (`ℓ4` then `ℓ3`; `ℓ5`, `ℓ4`, `ℓ3`), and the bridge checks the
   compiler does the same. `param_moved_other_dropped` moves the first
   parameter out, so only the second is left to the pop.
@@ -813,7 +813,7 @@ theorems' projections, and has three results the statement rejects:
 - `swappedMarkers_rejected`: two nested `let`s whose markers are swapped.
   Every record is in order and every step drops one cell, yet the run drops
   oldest first. The nesting invariant is what rules it out.
-- `unorderedRecord_rejected`: a frame whose record is out of location order
+- `unorderedRecord_rejected`: an activation record whose drop scope is out of location order
   takes a real step that drops oldest first.
 
 The grammar ties a marker to its walk, not to the cell. That the walk is of
@@ -851,7 +851,7 @@ interpreter and the theorem in full. The others show only what is new.
 | Example | Corpus case | What it teaches |
 | --- | --- | --- |
 | 1 | `reinit` | reading a derivation and a run end to end; the overwrite premise of (Assign) |
-| 2 | `return_past_affine` | an early `return` unwinds the frame's drop scope, newest first |
+| 2 | `return_past_affine` | an early `return` unwinds the activation record's drop scope, newest first |
 | 3 | `panic_after_drop` | a trap keeps the output already printed and runs no drops |
 | 4 | `struct_nested_dtor_drop` | a struct's qualifier, and §6.11's outer-then-fields drop order |
 | 5 | `partial_move_residue` | a partial move: Σ and the store as trees |
@@ -1030,10 +1030,10 @@ the guard is never needed at run time for a program the checker accepts,
 because the checker has already demanded the `MovedOut` state that makes the
 overwrite-drop a no-op.
 
-### Example 2: `return_past_affine`, an early `return` unwinds the frame
+### Example 2: `return_past_affine`, an early `return` unwinds the activation record
 
 A `return` under two open `let` scopes, each holding a live affine resource.
-This is the smallest program in which the frame's **drop scope** σ, rather
+This is the smallest program in which the activation record's **drop scope** σ, rather
 than the pending `endscope` markers, runs the drops: the shape for which
 (D-Return) §6.9 says "in any evaluation context `E'`" (RUE-1277).
 
@@ -1066,9 +1066,9 @@ fn f0() -> i64 {
 
 - the operand is checked at the enclosing function's declared return type:
   `7 ⇒ i64`, and `i64` is `f0`'s return type;
-- `NoResidualLinear P.decls Γ₁`: **no binding of the frame still carries a
+- `NoResidualLinear P.decls Γ₁`: **no binding of the activation record still carries a
   residual linear value** after the operand. This is §5.6's obligation, taken
-  frame-wide because a `return` ends every open scope of the frame at once
+  across the activation record, because a `return` ends every open scope of the activation record at once
   (`3.8:62`, and (Fn) §5.8's second clause);
 - the output context is free (that is `⊥`), restricted only to the same
   skeleton.
@@ -1082,7 +1082,7 @@ which the compiler rejects with E0406 and the machine refuses with
 
 #### The run
 
-At the `return` the frame is `φ = ⟨ρ ; σ⟩` with `ρ = [ℓ3, ℓ1]` (innermost
+At the `return` the activation record is `φ = ⟨ρ ; σ⟩` with `ρ = [ℓ3, ℓ1]` (innermost
 binder first) and `σ = [ℓ1, ℓ3]` (creation order). Each `let` appended to σ,
 so σ reversed is ρ: the `record` invariant of section 3. The even locations
 are the `†` slots the two struct literals reserved for their identities,
@@ -1090,11 +1090,11 @@ are the `†` slots the two struct literals reserved for their identities,
 
 | Row | Rule | Store before | Effect | Store after | Events |
 | --- | --- | --- | --- | --- | --- |
-| 1 | (D-Call) §6.9 (push the frame) | `[]` | `f0` takes no arguments, so no parameter cell is minted; `σ = []` | `[]` | |
+| 1 | (D-Call) §6.9 (push the activation record) | `[]` | `f0` takes no arguments, so no parameter cell is minted; `σ = []` | `[]` | |
 | 2–4 | literal, (D-Struct) §6.5, (D-Let) §6.7 | `[]` | mint identity `#0` at `ℓ0`, then `ℓ1 = S1 { 3 }#0`; `ρ = [ℓ1]`, `σ = [ℓ1]` | `[ℓ0 = †, ℓ1 = S1 { 3 }#0]` | |
 | 5–7 | literal, (D-Struct) §6.5, (D-Let) §6.7 | `[ℓ0 = †, ℓ1 = …]` | mint identity `#2` at `ℓ2`, then `ℓ3 = S1 { 4 }#2`; `ρ = [ℓ3, ℓ1]`, `σ = [ℓ1, ℓ3]` | `[ℓ0 = †, ℓ1 = S1 { 3 }#0, ℓ2 = †, ℓ3 = S1 { 4 }#2]` | |
 | 8 | literal | | the operand `7` becomes a value | | |
-| **9** | **(D-Return) §6.9 (unwind the frame)** | `[…, ℓ1 = S1 { 3 }#0, …, ℓ3 = S1 { 4 }#2]` | `run-all-scope-drops(H, φ)` walks `σ` **newest-first**: drop-retire `ℓ3`, then `ℓ1` | `[ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]` | `drop ℓ3 = S1 { 4 }#2`; `run drop fn S1(S1 { 4 }#2)`; `drop ℓ1 = S1 { 3 }#0`; `run drop fn S1(S1 { 3 }#0)` |
+| **9** | **(D-Return) §6.9 (unwind the activation record)** | `[…, ℓ1 = S1 { 3 }#0, …, ℓ3 = S1 { 4 }#2]` | `run-all-scope-drops(H, φ)` walks `σ` **newest-first**: drop-retire `ℓ3`, then `ℓ1` | `[ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]` | `drop ℓ3 = S1 { 4 }#2`; `run drop fn S1(S1 { 4 }#2)`; `drop ℓ1 = S1 { 3 }#0`; `run drop fn S1(S1 { 3 }#0)` |
 | 10 | inner (D-EndScope): does not run | | the `return` discarded the evaluation context, and the pending `endscope` markers with it; the result travels out unchanged | | |
 | 11 | outer (D-EndScope): does not run | | the same | | |
 | 12 | (D-Return-Main) §6.9 (bindCall) | `[ℓ0 = †, …, ℓ3 = †]` | the call boundary turns the unwound `return` into the call's value. `f0` is the bottom of the stack, so this is (D-Return-Main); at an inner call the same row is (D-Return)'s hand-off, which is why the generated table labels it with both | | |
@@ -1172,7 +1172,7 @@ accepts a `@panic` past a live linear binding too, since it carries `⊥`
 | 5 | `@drop` §6.11 | `[ℓ0 = †, ℓ1 = S1 { 7 }#0]` | the glue runs, with the destructor as its observable half, and the cell is marked `⊘` rather than retired, so the binding stays reinitializable (§6.8, §6.11) | `[ℓ0 = †, ℓ1 = ⊘]` | `drop ℓ1 = S1 { 7 }#0`; `run drop fn S1(S1 { 7 }#0)` |
 | **6** | **(D-Panic) §6.12** | `[ℓ0 = †, ℓ1 = ⊘]` | the configuration is abandoned with `↯user` | | |
 | 7–8 | (D-Seq), then the `let`'s (D-EndScope) | | both pass the trap on. The body did not complete, so the scope never closes and nothing unwinds σ: the dynamic face of §5.7's `⊥_panic` exemption | | |
-| 9 | (Panic-Lift) §6.2 | | the trap is carried out of the suspended `main() → f0()` context: **no frame is popped**, `run-all-scope-drops` never runs, and the callee's open drop scopes go with the configuration | | |
+| 9 | (Panic-Lift) §6.2 | | the trap is carried out of the suspended `main() → f0()` context: **no activation record is popped**, `run-all-scope-drops` never runs, and the callee's open drop scopes go with the configuration | | |
 
 The result is `EvalRes.panic .user [drop ℓ1 …, dtor S1 …]`: the trap, and the
 two events that had already happened. `Corpus.outLines` projects the
@@ -1191,7 +1191,7 @@ The drop that shows is the explicit one. The binding's *scope exit* never
 happened, because row 6 abandoned the configuration. Take the `@drop` away
 and the destructor never runs at all: `panicPastAffine` in `Examples.lean` is
 that program, kernel-checked to an empty trace, and the compiler does the same.
-A `return` in the same position would have unwound the frame and printed the
+A `return` in the same position would have unwound the activation record and printed the
 line, as in example 2.
 
 ### Example 4: `struct_nested_dtor_drop`, a struct's qualifier and §6.11's drop order
@@ -1255,7 +1255,7 @@ it, and the machine then must.
 | 6 | (D-Let) §6.7 | `[ℓ0 = †, ℓ1 = †]` | mint `ℓ2` for `v0` | `[…, ℓ2 = S5 { 1, S1 { 2 }#0 }#1]` | |
 | 7 | literal | | the body's `9` | | |
 | **8** | **(D-EndScope) §6.7 → `drop-retire` → §6.11** | `[…, ℓ2 = S5 { 1, S1 { 2 }#0 }#1]` | the cell holds a live non-`Linear` value, so the monitor lets it through and §6.11's walk runs: **`S5`'s destructor first**, then the fields in **declaration order**: `x0` is an `int` and drops nothing, `x1` is an `S1` and runs *its* destructor | `[…, ℓ2 = †]` | `drop ℓ2 = S5 { 1, S1 { 2 }#0 }#1`; `run drop fn S5(…#1)`; `run drop fn S1(S1 { 2 }#0)` |
-| 9 | (D-Return-Value) §6.9 | | the frame pops with an empty record | | |
+| 9 | (D-Return-Value) §6.9 | | the activation-record pops with an empty drop scope | | |
 
 So the program prints `1` (the outer destructor), then `2` (the inner), then
 its value `9`: the bridge expectation
@@ -1698,7 +1698,7 @@ Row [7] is (D-Match): the tag `K0` selects the covering arm, and the payload
 is bound to **fresh cells**, appended to the innermost drop scope *and*
 owed to an `endscope` marker around the arm's body, exactly as (D-Let) binds
 one. That is why row [12] falls where it does: the drops run when the arm's
-body becomes a value (`6.3:17`), not at a later frame pop. It is also why an
+body becomes a value (`6.3:17`), not at a later activation-record pop. It is also why an
 unwinding `return` inside an arm still finds them in σ
 (`enum_return_past_payload`).
 
@@ -2215,7 +2215,7 @@ through, because the invariant would no longer rule the case out. The
 asymmetry is deliberate, and §5.5's join is why (section 3); the missing
 restriction would not be.
 
-Then read the other field, `record`: the frame's drop scope, reversed,
+Then read the other field, `record`: the activation record's drop scope, reversed,
 *is* its environment. *A defect looks like:* that clause weakened to an
 inclusion, or dropped. Then a cell could sit in the record twice, or stay in
 the record after its `endscope` retired it, and a `return`'s unwind would
@@ -2307,7 +2307,7 @@ Pick two of these three and read the calculus and the Lean side by side.
   evaluation context `E'`, every pending `endscope` marker in it included, and
   runs `run-all-scope-drops(H, φ)` instead: over every live binding of every
   enclosing scope (`3.9:18`), in reverse declaration order (`3.9:4`). The arm
-  should evaluate the operand, then walk the frame's drop scope, then
+  should evaluate the operand, then walk the activation record's drop scope, then
   return `.returned`, which every enclosing form passes on until a `call`
   absorbs it. *A defect looks like:* the arm running the *innermost* scope
   only (then an early return two scopes deep would leak the outer binding,

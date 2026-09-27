@@ -16,7 +16,7 @@ every model of the float algebraic specification, and `step_no_use_after_drop` o
 (`Soundness.lean`) states the first for checked programs, as a corollary of
 §7's invariant; these say its `ProgramTyped` hypothesis is redundant for runs
 from the start. They do not say the guard is dead code: from an *open*
-configuration — a frame naming a cell that is already `†` — the guard does
+configuration — an activation record naming a cell that is already `†` — the guard does
 fire (`Examples.lean`), and the Spec's counter-example `Sharp.tombstoned_cell`
 is one such configuration, not reached from `Config.init`.
 
@@ -27,19 +27,19 @@ drop scope holds a drop obligation for (`dropRetire`, `unwindLocs`, and `Step`'s
 versions). Every binding cell is minted fresh at the end of the store and
 bound at once, and a drop scope lists each cell once. So:
 
-* over `eval` (`Tombstone.eval_live`): if every cell the frame's environment and
+* over `eval` (`Tombstone.eval_live`): if every cell the activation record's environment and
   drop scope name is live, and the record owes each cell once
   (`LiveActivation`), then an evaluation that yields a value retired no cell that
-  was live before it; an unwinding `return` retired at most the frame's
+  was live before it; an unwinding `return` retired at most the activation record's
   drop scope; a `break` retired nothing live before it and hands its loop
-  the frame's record extended by distinct fresh cells, still live; and no
+  the activation record's drop scope extended by distinct fresh cells, still live; and no
   refusal is `useAfterDrop` (`LivePost`). The induction is on fuel, one case
-  per `eval` rule, and the empty frame of `run` starts it.
+  per `eval` rule, and the empty activation record of `run` starts it.
 * over `Step` (`Tombstone.step_live`): every configuration keeps the stack's
-  shape (`Shape`: an `endscope` marker or a loop boundary sits under a frame
-  that extends its own at the end of the drop scope, and every frame's
+  shape (`Shape`: an `endscope` marker or a loop boundary sits under an activation record
+  that extends its own at the end of the drop scope, and every activation record's
   environment is its record reversed), and every cell with a drop obligation in the
-  frame in force or by a suspended caller is live and owed once
+  activation record in force or by a suspended caller is live and owed once
   (`StackLive`). `step` keeps it and never answers `stuck .useAfterDrop`
   under it, and `Config.init` has it.
 
@@ -50,7 +50,7 @@ with some other violation, never `useAfterDrop`.
 
 The theorems quantify over any `FloatSig`, not only a `FloatLaws`: they hold
 even for float operations satisfying none of the laws. The argument uses that
-in the fragment only a frame's environment names a cell. Loans (§5.4, outside
+in the fragment only an activation record's environment names a cell. Loans (§5.4, outside
 the fragment, Phase D, RUE-2238) add references as a second way to name one,
 and there the property is expected to rest on the statics again.
 -/
@@ -111,22 +111,22 @@ theorem Grow.set_full (H : Store) (ℓ : Nat) (c : Contents) : Grow H (H.set ℓ
 theorem Live.ne_of_le {H : Store} {ℓ m : Nat} (h : Live H ℓ) (hm : H.length ≤ m) : ℓ ≠ m := by
   intro he; subst he; exact Nat.lt_irrefl _ (Nat.lt_of_lt_of_le h.lt hm)
 
-/-- **The frame invariant**: every cell the environment names, and every cell
+/-- **The activation record invariant**: every cell the environment names, and every cell
 the drop scope holds a drop obligation for, is live, and the record owes each at most once
 (helper). -/
 def LiveActivation (H : Store) (φ : Activation) : Prop :=
   (∀ ℓ ∈ φ.env, Live H ℓ) ∧ (∀ ℓ ∈ φ.scope, Live H ℓ) ∧ φ.scope.Nodup
 
-/-- The frame invariant survives growth (helper). -/
+/-- The activation record invariant survives growth (helper). -/
 theorem LiveActivation.grow {H H' : Store} {φ : Activation} (h : LiveActivation H φ) (hg : Grow H H') :
     LiveActivation H' φ :=
   ⟨fun ℓ hℓ => hg.2 ℓ (h.1 ℓ hℓ), fun ℓ hℓ => hg.2 ℓ (h.2.1 ℓ hℓ), h.2.2⟩
 
 /-- **What an evaluation keeps**, by outcome (helper). A value retires no cell
 that was live before it (only the cells it minted itself). An unwinding
-`return` may retire the frame's drop scope, and nothing else live before it.
+`return` may retire the activation record's drop scope, and nothing else live before it.
 A `break` retires nothing live before it, and the drop scope it carries is
-the frame's own, extended by distinct cells it minted, still live. And no
+the activation record's own, extended by distinct cells it minted, still live. And no
 refusal is `useAfterDrop`. -/
 def LivePost (H : Store) (φ : Activation) : EvalRes → Prop
   | .ok H' _ _ => Grow H H'
@@ -164,7 +164,7 @@ theorem LivePost.andThen {H : Store} {φ : Activation} {r : EvalRes} {k : Store 
   | ok H₁ v tr => exact ((hk H₁ v h).lift h).withTrace tr
   | _ => exact h
 
-/-- A scope opened on top of the frame — a `let`'s cell, a `match` arm's
+/-- A scope opened on top of the activation record — a `let`'s cell, a `match` arm's
 payload cells — keeps the promise when the body's non-value outcomes pass
 through it (helper). -/
 theorem LivePost.scoped {H H₁ : Store} {φ φ' : Activation} {ys : List Nat} {r : EvalRes}
@@ -234,7 +234,7 @@ theorem Contents.resolveDyn_ne_uad : ∀ (is : List Int) (πs : List (List Nat))
         · cases h
       · cases h; simp
 
-/-- Navigating a dynamic place from a frame whose environment names live cells
+/-- Navigating a dynamic place from an activation record whose environment names live cells
 never refuses with `useAfterDrop` (helper). -/
 theorem dynPlace_ne_uad {H : Store} {φ : Activation} {p : Place} {vs : List Val}
     {πs : List (List Nat)} {w : Refusal} (hφ : ∀ ℓ ∈ φ.env, Live H ℓ)
@@ -489,7 +489,7 @@ theorem LiveActivation.root {H : Store} {φ : Activation} {i ℓ : Nat} (h : Liv
     (hρ : φ.env[i]? = some ℓ) : Live H ℓ :=
   h.1 ℓ (List.mem_of_getElem? hρ)
 
-/-- **The invariant over `eval`**: from a frame whose cells are live and owed
+/-- **The invariant over `eval`**: from an activation record whose cells are live and owed
 once, every evaluation keeps `LivePost`, at every fuel (helper). -/
 theorem eval_live (M : FloatSig) (P : Program) :
     ∀ (fuel : Nat) (H : Store) (φ : Activation) (e : Expr), LiveActivation H φ →
@@ -944,11 +944,11 @@ theorem plainDestructure_ne_uad {D : Decls} {ℓ : Nat} {c : Contents} {πs : Li
     · cases h
 
 /-- **The stack's shape**: what each frame of the control stack says about the
-frame in force above it. An `endscope ℓ̄` marker and a loop boundary sit
-under a frame that extends theirs by cells at the end of its drop scope
+activation record in force above it. An `endscope ℓ̄` marker and a loop boundary sit
+under an activation record that extends theirs by cells at the end of its drop scope
 (and the front of its environment); a call boundary and the stack's bottom
-sit under a frame whose environment is its drop scope reversed; every other
-frame is an evaluation context of the same frame (helper). -/
+sit under an activation record whose environment is its drop scope reversed; every other
+frame is an evaluation context of the same activation record (helper). -/
 def Shape : Activation → List Kont → Prop
   | φ, [] => φ.env = φ.scope.reverse
   | φ, .endscope ℓs :: K => ∃ φ₀ : Activation,
@@ -961,14 +961,14 @@ def Shape : Activation → List Kont → Prop
   | φ, .indexWriteRhs _ _ _ :: K | φ, .«match» _ :: K | φ, .letIn _ :: K | φ, .seq _ :: K
   | φ, .ite _ _ :: K | φ, .assign _ :: K | φ, .ret :: K => Shape φ K
 
-/-- The cells the suspended callers' frames hold a drop obligation for (helper). -/
+/-- The cells the suspended callers' activation records hold a drop obligation for (helper). -/
 def callerCells : List Kont → List Nat
   | [] => []
   | .call φs :: K => callerCells K ++ φs.scope
   | _ :: K => callerCells K
 
 /-- **The configuration invariant**: the stack has its shape, and every cell a
-frame on it holds a drop obligation for — the frame in force and every suspended caller — is
+activation record on it holds a drop obligation for — the activation record in force and every suspended caller — is
 live and owed once (helper). -/
 def StackLive (H : Store) (φ : Activation) (K : List Kont) : Prop :=
   Shape φ K ∧ (callerCells K ++ φ.scope).Nodup ∧ ∀ ℓ ∈ callerCells K ++ φ.scope, Live H ℓ
@@ -979,7 +979,7 @@ def ConfigLive : Config → Prop
   | .run H φ K _ _ => StackLive H φ K
   | .panic _ _ => True
 
-/-- Every frame on a well-shaped stack has its drop scope, reversed, as its
+/-- Every activation record on a well-shaped stack has its drop scope, reversed, as its
 environment (helper). -/
 theorem Shape.env : ∀ {φ : Activation} {K : List Kont}, Shape φ K → φ.env = φ.scope.reverse
   | φ, [], h => h
@@ -996,7 +996,7 @@ theorem Shape.env : ∀ {φ : Activation} {K : List Kont}, Shape φ K → φ.env
   | φ, .«match» _ :: K, h | φ, .letIn _ :: K, h | φ, .seq _ :: K, h | φ, .ite _ _ :: K, h
   | φ, .assign _ :: K, h | φ, .ret :: K, h => Shape.env (K := K) h
 
-/-- (D-Return)'s search: the caller's frame is well shaped, and the cells the
+/-- (D-Return)'s search: the caller's activation record is well shaped, and the cells the
 suspended callers owe are its own and those below it (helper). -/
 theorem Shape.toCall : ∀ {φ : Activation} {K : List Kont} {φs : Activation} {K' : List Kont},
     Shape φ K → Kont.toCall K = some (φs, K') →
@@ -1021,8 +1021,8 @@ theorem Shape.toCall : ∀ {φ : Activation} {K : List Kont} {φs : Activation} 
   | _, .ite _ _ :: K, _, _, hs, h | _, .assign _ :: K, _, _, hs, h
   | _, .ret :: K, _, _, hs, h => Shape.toCall (K := K) hs h
 
-/-- (D-Break)'s search: the loop's frame is well shaped, no caller is crossed, and
-the frame in force extends the loop's at the end of its drop scope (helper). -/
+/-- (D-Break)'s search: the loop's activation record is well shaped, no caller is crossed, and
+the activation record in force extends the loop's at the end of its drop scope (helper). -/
 theorem Shape.toLoop : ∀ {φ : Activation} {K : List Kont} {φs : Activation} {K' : List Kont},
     Shape φ K → Kont.toLoop K = some (φs, K') →
       Shape φs K' ∧ callerCells K = callerCells K' ∧ ∃ xs, φ.scope = φs.scope ++ xs
@@ -1058,7 +1058,7 @@ theorem StackLive.grow {H H' : Store} {φ : Activation} {K : List Kont} (h : Sta
     (hg : Grow H H') : StackLive H' φ K :=
   ⟨h.1, h.2.1, fun ℓ hℓ => hg.2 ℓ (h.2.2 ℓ hℓ)⟩
 
-/-- Looking a place's root up in a frame whose environment names live cells never
+/-- Looking a place's root up in an activation record whose environment names live cells never
 refuses with `useAfterDrop` (helper). -/
 theorem rootCell_ne_uad {H : Store} {φ : Activation} {i : Nat} {w : Refusal}
     (hφ : ∀ ℓ ∈ φ.env, Live H ℓ) (h : rootCell H φ i = .error w) : w ≠ .useAfterDrop := by

@@ -7,7 +7,7 @@ One plain-text page per program: the program in Rue surface syntax, the
 checker's verdict with the failing premise named when it rejects, the §5
 derivation of every function body as an indented tree carrying the fused
 `Γ;Σ` at every node, and the §6 run as one step table in execution order,
-spanning frames, with the store before and after each node and its drop
+spanning activation records, with the store before and after each node and its drop
 events marked.
 
 In an editor, `#eval IO.println (Text.render "demo" "" [] P)` prints the page

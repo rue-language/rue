@@ -229,7 +229,7 @@ def Exact (D : Decls) (H : Store) (X : List Nat) : EvalRes → Prop
         = (storeOwn D H).count a + X.count a
   | .panic _ _ | .refused _ | .outOfFuel => True
 
-/-- **A form's leading operands have run** (helper): from store `H` in frame
+/-- **A form's leading operands have run** (helper): from store `H` in activation record
 `φ` at fuel `fuel`, the form's first operand — or its argument list, for a
 call, a literal and a dynamic read — produced the values `vs` in store `H₁`,
 after trace `tr`. A `@drop` below a dynamic index runs the read first. A
@@ -249,7 +249,7 @@ def Lead (M : FloatSig) (P : Program) (fuel : Nat) (H : Store) (φ : Activation)
   | .intLit _ _ _ | .floatLit _ _ | .boolLit _ | .unitLit | .use _ | .panic _ | .drop _
   | .brk => False
 
-/-- The store only grew, and a cell outside the frame's environment was left
+/-- The store only grew, and a cell outside the activation record's environment was left
 alone or retired (helper). -/
 def Local (φ : Activation) (H H' : Store) : Prop :=
   H.length ≤ H'.length ∧
@@ -260,7 +260,7 @@ def Local (φ : Activation) (H H' : Store) : Prop :=
 def Tombstoned (H : Store) (keep : List Nat) (H' : Store) : Prop :=
   ∀ ℓ, H.length ≤ ℓ → ℓ < H'.length → ℓ ∉ keep → H'[ℓ]? = some .dead
 
-/-- **The frame-pop invariant for one evaluation** in frame `φ` from store `H`
+/-- **The activation-record-pop invariant for one evaluation** in activation record `φ` from store `H`
 (§6.7, §6.9, §6.10): the store only grew and was touched outside `φ`'s
 environment only to retire; every cell the evaluation allocated is retired by
 its end — for an unwinding `break`, all but the cells of the drop scope it
@@ -277,7 +277,7 @@ def Tidy (φ : Activation) (H : Store) : EvalRes → Prop
 /-- What the rest of a form owes the cells allocated after its leading
 operands ran: every one retired by the form's end — but, for an unwinding
 `break`, the ones its record owes the loop — and, for an unwinding `return`,
-the frame's whole record retired (helper). -/
+the activation record's whole drop scope retired (helper). -/
 def Settled (φ : Activation) (H₁ : Store) : EvalRes → Prop
   | .ok H' _ _ => Tombstoned H₁ [] H'
   | .returned H' _ _ => Tombstoned H₁ [] H' ∧ ∀ ℓ ∈ φ.scope, H'[ℓ]? = some .dead
@@ -409,7 +409,7 @@ def Config.trace : Config → List Event
   | .panic _ tr => tr
 
 /-- The drop scope the pending `endscope` markers and loop boundaries of
-one frame account for (§6.7, §6.10): reading the stack top-down, each
+one activation record account for (§6.7, §6.10): reading the stack top-down, each
 `endscope ℓs` is the tail of what is left of the record, a loop boundary
 `loopβ(e, φs)` has exactly `φs`'s record left, and a caller's frame
 `ret(E, φs)` starts the same reading over for the caller's record `φs`
@@ -429,13 +429,13 @@ def Stk : List Kont → List Nat
   | _ :: K => Stk K
 
 /-- The machine's whole **registration stack**: every suspended caller's
-drop scope, bottom first, then the current frame's (§6.1's `σ` per frame);
+drop scope, bottom first, then the current activation record's (§6.1's `σ` per activation record);
 empty at a trap (helper). -/
 def Config.stack : Config → List Nat
   | .run _ φ K _ _ => Stk K ++ φ.scope
   | .panic _ _ => []
 
-/-- **Scopes nest** (§6.7, §6.9, §6.10): every frame's pending `endscope`
+/-- **Scopes nest** (§6.7, §6.9, §6.10): every activation record's pending `endscope`
 markers are exactly the tail of its drop scope, innermost last, and the
 whole registration stack is in location order, below the store's length. -/
 def Config.Nested : Config → Prop
@@ -459,7 +459,7 @@ def ArgsFrame.own (D : Decls) : ArgsFrame → List Nat
 /-- The owned identities one control-stack frame holds (§6.1's `K`, §6.2's
 `E`): a binary operator's left operand, reduced while the right one is, and a
 list context's reduced values. A `call` or loop frame holds a drop scope,
-whose cells are in the store, and no other frame holds a value (helper). -/
+whose cells are in the store, and no other activation record holds a value (helper). -/
 def Kont.own (D : Decls) : Kont → List Nat
   | .binopR _ v => v.own D
   | .args t vs _ => t.own D ++ Contents.ownList D (Contents.ofVals vs)

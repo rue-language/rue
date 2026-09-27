@@ -129,7 +129,7 @@ theorem glue_dtorSkipped_rejected :
 open Examples in
 /-- **Newest-first on a reachable step** (§6.9's (D-Return)):
 `return_past_affine` returns past two live affine bindings, `ℓ1` then `ℓ3`,
-and the one step that runs the frame's σ-walk drops `ℓ3` then `ℓ1` — two
+and the one step that runs the activation record's σ-walk drops `ℓ3` then `ℓ1` — two
 distinct cells, newest first, the teardown `reachable_drop_order` speaks
 of. -/
 theorem returnPastAffine_strictStackOrder :
@@ -139,7 +139,7 @@ theorem returnPastAffine_strictStackOrder :
     step_iff.mpr rfl, rfl, rfl⟩
 
 open Examples in
-/-- **The invariant is what orders a teardown.** A frame whose drop scope
+/-- **The invariant is what orders a teardown.** An activation record whose drop scope
 is *not* in location order — `[3, 1]`, a configuration `reachable_ordered`
 says no run reaches — pops (D-Return-Value) and drops `ℓ1` before `ℓ3`: the
 step is a real step of §6's relation, and its markers are not newest-first.
@@ -159,7 +159,7 @@ theorem unorderedRecord_rejected :
 
 open Examples in
 /-- Two nested `let`s' pending markers, swapped: `endscope [1]` above
-`endscope [3]` in a frame whose record is `[1, 3]` (the review's Probe 2)
+`endscope [3]` in an activation record whose record is `[1, 3]` (the review's Probe 2)
 (helper). -/
 def swappedMarkers : Config :=
   .run [.dead, .full (cA 0 3), .dead, .full (cA 2 4)] { env := [3, 1], scope := [1, 3] }
@@ -268,9 +268,9 @@ example : orderView returnPastAffine.decls (corpusTrace returnPastAffine) = ([2,
   by rfl
 
 open Examples in
-/-- `two_params_dropped_at_pop`: the callee's frame pop tears its by-value
+/-- `two_params_dropped_at_pop`: the callee's activation record pop tears its by-value
 parameters down last-parameter first, `b` (`ℓ4`, the `S5` `#2` and its field
-`#1`) before `a` (`ℓ3`, `#0`) — the LIFO half of `drop_order` at a frame,
+`#1`) before `a` (`ℓ3`, `#0`) — the LIFO half of `drop_order` at an activation record,
 bridge-checked. -/
 example : orderView twoParamsDroppedAtPop.decls (corpusTrace twoParamsDroppedAtPop)
     = ([2, 1, 0], [4, 3], [2, 1, 0]) := by rfl
@@ -450,7 +450,7 @@ theorem demo_loopTurns_runs (M : FloatSig) :
   ⟨_, stepN_steps (n := 300), rfl⟩
 
 /-- **(D-Return) from inside a `let`** (§6.9): `let s = S{}; let y = return 5; 0`
-discards the pending `let` and `endscope`, destroys the `S` from the frame's
+discards the pending `let` and `endscope`, destroys the `S` from the activation record's
 record, and reaches `✓5`. -/
 theorem demo_returnInLet_runs (M : FloatSig) :
     ∃ H, Steps M (demoProgram (.letIn false demoS (.letIn false (.ret (demoI32 5)) (demoI32 0))))
@@ -479,7 +479,7 @@ theorem demo_returnInMatch_runs (M : FloatSig) :
   ⟨_, stepN_steps (n := 100), rfl⟩
 
 /-- **(D-Loop-Iter) runs the turn's drops** (§6.10's `run-scope-drops`): at a
-loop boundary whose frame owes nothing, a body value returned in a frame that
+loop boundary whose activation record owes nothing, a body value returned in an activation record that
 still owes cell 0 destroys it before the next turn. The configuration is not
 reachable from `Config.init` — there `endscope` has always emptied the list —
 but it is one §6.10's rule covers. -/

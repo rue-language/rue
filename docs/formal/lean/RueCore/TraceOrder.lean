@@ -43,7 +43,7 @@ drop scopes, so this half is stated over `Step`, from every configuration
 reachable from `Config.init`:
 
 * `reachable_ordered`: every drop scope in a reachable configuration — the
-  current frame's, every suspended caller's and loop boundary's, and every
+  current activation record's, every suspended caller's and loop boundary's, and every
   pending `endscope` marker's — lists its cells in strictly increasing
   location order, below the store's length. Records are only ever extended
   with freshly allocated cells, so **registration order is location order**.
@@ -51,10 +51,10 @@ reachable from `Config.init`:
   (an overwrite, `@drop`, or a destructure's residue, several sub-positions
   of one binding) or name distinct cells in **strictly decreasing** location
   order — newest registered first.
-* `reachable_nested`: the scopes **nest**. A frame's pending `endscope`
+* `reachable_nested`: the scopes **nest**. An activation record's pending `endscope`
   markers are exactly the tail of its record, innermost last, and the whole
   registration stack — every suspended caller's record, then the current
-  frame's — is in location order. So (D-EndScope)'s pop by count removes the
+  activation record's — is in location order. So (D-EndScope)'s pop by count removes the
   marker's own cells (`Activation.unwindScope_tail`).
 * `reachable_stackDiscipline`: every step is **last-in first-out** on that stack
   (`StackDiscipline`). It keeps the stack as a prefix of the new one, or cuts it back
@@ -728,12 +728,12 @@ theorem Rec.fresh {n k : Nat} {ls : List Nat} (h : Rec n ls) :
     · have := h.2 ℓ h'; omega
     · exact (List.mem_range'_1.mp h').2
 
-/-- A longer store keeps a frame ordered (helper). -/
+/-- A longer store keeps an activation record ordered (helper). -/
 theorem Kont.Ordered.mono {n m : Nat} {k : Kont} (h : k.Ordered n) (hn : n ≤ m) :
     k.Ordered m := by
   cases k <;> first | trivial | exact Rec.mono h hn
 
-/-- A step that leaves the frame alone, grows or keeps the store, and pushes
+/-- A step that leaves the activation record alone, grows or keeps the store, and pushes
 only frames that owe nothing keeps the invariant (helper). -/
 theorem Config.Ordered.keep {H H' : Store} {φ : Activation} {K K' : List Kont} {f f' : Focus}
     {tr tr' : List Event} (h : (Config.run H φ K f tr).Ordered) (hn : H.length ≤ H'.length)
@@ -791,7 +791,7 @@ theorem plainUnwind_length {D : Decls} :
           cases h
           rw [plainUnwind_length h₂, plainDropRetire_length h₁]
 
-/-- (D-Return)'s search: the caller's frame is on the stack, and what is left
+/-- (D-Return)'s search: the caller's activation record is on the stack, and what is left
 under it was under it (helper). -/
 theorem Kont.toCall_mem : ∀ {K K' : List Kont} {φ : Activation}, Kont.toCall K = some (φ, K') →
     Kont.call φ ∈ K ∧ ∀ k ∈ K', k ∈ K
@@ -894,7 +894,7 @@ theorem step_ordered {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P 
 
 /-- **Registration order is location order, everywhere the machine goes**
 (§6.1, §6.7, §6.9, §6.10): in every configuration reachable from §6.12's
-initial one, every drop scope — the current frame's, every suspended
+initial one, every drop scope — the current activation record's, every suspended
 caller's and loop boundary's, and every pending `endscope` marker's — lists
 its cells in strictly increasing location order. No typing hypothesis. -/
 theorem reachable_ordered {M : FloatSig} {P : Program} {C : Config}
@@ -1035,7 +1035,7 @@ theorem StrictStackOrder.teardown {n : Nat} {ls ls' : List Nat} (h : Rec n ls)
 newest-first** (§6.7, §6.9, §6.10, §6.11): it appends to the trace, and the
 `drop` markers it appends name one cell or name distinct cells in strictly
 decreasing location order. A teardown — (D-EndScope), (D-Return-Value)'s
-frame pop, (D-Return)'s σ-walk, (D-Loop-Iter)'s end of a turn and
+activation record pop, (D-Return)'s σ-walk, (D-Loop-Iter)'s end of a turn and
 (D-Break)'s unwind — walks an ordered record backwards
 (`StrictStackOrder.teardown`). -/
 theorem step_drop_order {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P C C')
@@ -1093,10 +1093,10 @@ theorem reachable_drop_order {M : FloatSig} {P : Program} {C C' : Config}
 needs more: that the pending `endscope` markers are exactly the tail of the
 drop scope, innermost last (`Config.Nested`). Then every teardown removes a
 suffix of the machine's whole registration stack — the suspended callers'
-records, then the current frame's — and drops cells only from that suffix,
+records, then the current activation record's — and drops cells only from that suffix,
 newest first (`StackDiscipline`). Since the stack is in location order, a cell a
 teardown deregisters is newer than every cell still registered
-(`StackDiscipline.newer`): across steps, across scopes and across frames, the machine
+(`StackDiscipline.newer`): across steps, across scopes and across activation records, the machine
 drops last-in first-out. -/
 
 /-- (D-EndScope)'s pop by count removes exactly the marker's cells when they
@@ -1126,7 +1126,7 @@ theorem Nest.toCall {K K' : List Kont} {φ : Activation} :
       all_goals exact ih hn h
 
 /-- (D-Break)'s search, read by the nesting: the loop boundary's record is a
-prefix of the frame's, the rest being the cells the body registered, and no
+prefix of the activation record's, the rest being the cells the body registered, and no
 caller's record is crossed (helper). -/
 theorem Nest.toLoop {K K' : List Kont} {φ : Activation} :
     ∀ {sc : List Nat}, Nest sc K → Kont.toLoop K = some (φ, K') →
@@ -1163,16 +1163,16 @@ theorem StackDiscipline.newer {S S' ls : List Nat} (hS : S.Pairwise (· < ·)) (
       (List.pairwise_append.mp hS).2.2 ℓ' hℓ' ℓ hr
     exact ⟨fun hm => Nat.lt_irrefl ℓ (hlt ℓ hm), hlt⟩
 
-/-- A step that keeps the frame and the callers keeps the stack (helper). -/
+/-- A step that keeps the activation record and the callers keeps the stack (helper). -/
 theorem StackDiscipline.same {S ls : List Nat} : StackDiscipline S S ls := .inl (List.prefix_refl S)
 
-/-- A teardown of the current frame's tail (helper). -/
+/-- A teardown of the current activation record's tail (helper). -/
 theorem StackDiscipline.cut {A m ls : List Nat} (h : ls.Sublist m.reverse) : StackDiscipline (A ++ m) A ls :=
   .inr ⟨List.prefix_append A m, by simpa using h⟩
 
 /-- **Every step keeps the scopes nested** (§6.7, §6.9, §6.10): (D-Let) and
 (D-Match) push a marker equal to the cells they append to the record,
-(D-EndScope) pops both together, a call starts a frame of its own, and a
+(D-EndScope) pops both together, a call starts an activation record of its own, and a
 return, a loop turn's end and a `break` restore a record the stack held. -/
 theorem step_nested {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P C C')
     (hC : C.Nested) : C'.Nested := by

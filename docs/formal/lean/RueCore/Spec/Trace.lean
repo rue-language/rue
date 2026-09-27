@@ -65,7 +65,7 @@ def dtor_once_stmt : Prop :=
 /-- **Every owned value ends exactly once** (§7 "No use-after-drop / no leak of
 drops"). A typed expression of a checked program, the expression and the
 program both `pendingSafe` (`e.pendingSafe`, `P.pendingSafe`), run from an
-agreeing frame and store, is never refused; every identity the store
+agreeing activation record and store, is never refused; every identity the store
 holds ends up in an old cell, in the result, or ended in the trace as often
 as held (`Exact`); every cell it allocated is retired (`Tidy`). Narrower
 than the bullet: `pendingSafe` (RUE-2316), nothing about a panic, and per

@@ -58,7 +58,7 @@ relation; it is proved by carrying a ledger along `eval`'s simulation, not by
 composing the two statements here.
 
 "Still in the store" is not a hiding place: `Tidy` (`eval_tidy`) says every
-cell an evaluation allocates is retired by its end — §6.9's frame pop, §6.7's
+cell an evaluation allocates is retired by its end — §6.9's activation record pop, §6.7's
 `endscope`, §6.10's unwind — so a value counted as "in the store" is in a cell
 the enclosing code can still reach (`orphan_rejected`).
 
@@ -1094,7 +1094,7 @@ theorem Exact.assignDyn {D : Decls} {H : Store} {ℓ : Nat} {c c' sub sub' old :
   simp only [Val.own] at *
   omega
 
-/-- A scope teardown after a value (`endscope` §6.7, the frame pop §6.9),
+/-- A scope teardown after a value (`endscope` §6.7, the activation record pop §6.9),
 exactly (helper). -/
 theorem Exact.unwind {D : Decls} {H : Store} {v : Val} {ls : List Nat} (hcc : StoreCC D H)
     (hv : (Contents.ofVal v).copyContained D = true) :
@@ -1828,27 +1828,27 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
             omega
         · exact hb
 
-/-! ## The frame-pop invariant: every allocation is retired
+/-! ## The activation-record-pop invariant: every allocation is retired
 
 `Exact` counts where an owned value *is*; it does not say *which* cell holds
 it, so on its own a value parked in a cell nobody can reach any more — a
-callee's parameter cell a frame pop forgot to walk — would still count as
+callee's parameter cell an activation record pop forgot to walk — would still count as
 "in the store". `Tidy` closes that: every cell an evaluation allocates is
 retired (`†`) by its end — a `let`'s at its `endscope` (§6.7), a `match` arm's
-at the arm's end (§6.6), a callee's at the frame pop (§6.9), and each at the
+at the arm's end (§6.6), a callee's at the activation record pop (§6.9), and each at the
 σ-walk of an unwinding `return` — except, for an unwinding `break`, the cells
 its carried drop scope still owes, which the loop retires (§6.10) and
 whose values `rest_exactly_once` at the loop counts as ended. Cells
-outside the frame's environment are touched only to be retired, and an
-unwinding `return` has retired the whole frame's record. It is a fact about
+outside the activation record's environment are touched only to be retired, and an
+unwinding `return` has retired the whole activation record's drop scope. It is a fact about
 the store's shape alone, proved by its own fuel induction (`eval_tidy`), with
 no typing derivation and no `pendingSafe` hypothesis. -/
 
-/-- The frame names only cells the store already has (helper). -/
+/-- The activation record names only cells the store already has (helper). -/
 def Activation.In (φ : Activation) (H : Store) : Prop :=
   (∀ ℓ ∈ φ.env, ℓ < H.length) ∧ ∀ ℓ ∈ φ.scope, ℓ < H.length
 
-/-- A frame inside a store is inside every store grown from it (helper). -/
+/-- An activation record inside a store is inside every store grown from it (helper). -/
 theorem Activation.In.mono {φ : Activation} {H H' : Store} (h : φ.In H) (hl : H.length ≤ H'.length) :
     φ.In H' :=
   ⟨fun ℓ hm => Nat.lt_of_lt_of_le (h.1 ℓ hm) hl, fun ℓ hm => Nat.lt_of_lt_of_le (h.2 ℓ hm) hl⟩
@@ -1906,7 +1906,7 @@ theorem Tidy.intro {D : Decls} {φ : Activation} {H : Store} {mk : Nat → Val} 
   · trivial
 
 /-- **Composition**: a step that allocated and retired locally, then an
-evaluation in the same frame (helper). -/
+evaluation in the same activation record (helper). -/
 theorem Tidy.prefix {φ : Activation} {H H₁ : Store} {tr : List Event} {r : EvalRes}
     (hf : ∀ ℓ ∈ φ.env, ℓ < H.length) (hl : Local φ H H₁) (hre : Tombstoned H [] H₁)
     (hr : Tidy φ H₁ r) : Tidy φ H (r.withTrace tr) := by
@@ -1929,7 +1929,7 @@ theorem Tidy.prefix {φ : Activation} {H H₁ : Store} {tr : List Event} {r : Ev
         fun ℓ hm => Nat.le_trans hl.1 (hfr ℓ hm)⟩
   | _ => trivial
 
-/-- §6.2's search keeps the frame-pop invariant (helper). -/
+/-- §6.2's search keeps the activation-record-pop invariant (helper). -/
 theorem Tidy.bind {φ : Activation} {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
     (hf : ∀ ℓ ∈ φ.env, ℓ < H.length) (hr : Tidy φ H r)
     (hk : ∀ H₁ v tr, r = .ok H₁ v tr → Tidy φ H₁ (k H₁ v)) : Tidy φ H (r.bind k) := by
@@ -2026,10 +2026,10 @@ theorem dropRetire_kills {D : Decls} {H : Store} {v : Val} {ℓ : Nat} :
     · have : ℓ ≠ ℓ' := fun e => hn (by simp [e])
       rw [List.getElem?_set_ne this]
 
-/-- **A scope opened above the frame and closed at its end** (§6.7's `let`,
-§6.6's `match` arm): an evaluation in the frame extended by fresh cells `ls`,
+/-- **A scope opened above the activation record and closed at its end** (§6.7's `let`,
+§6.6's `match` arm): an evaluation in the activation record extended by fresh cells `ls`,
 followed on a value by a teardown that retires exactly `ls`, keeps the
-frame-pop invariant in the frame it was opened in. An unwinding `return`
+activation-record-pop invariant in the activation record it was opened in. An unwinding `return`
 finds `ls` in the extended record and has retired them; an unwinding `break`
 carries them in its record (helper). -/
 theorem Tidy.scoped {φ : Activation} {H Hm : Store} {ls : List Nat} {r : EvalRes}
@@ -2126,12 +2126,12 @@ theorem dynPlace_env {H : Store} {φ : Activation} {p : Place} {vs : List Val} {
           · cases h
           · cases h
 
-/-- The frame-pop invariant for an argument list (helper). -/
+/-- The activation-record-pop invariant for an argument list (helper). -/
 def ArgsTidy (φ : Activation) (H : Store) : ArgsRes → Prop
   | .ok H' _ _ => Local φ H H' ∧ Tombstoned H [] H'
   | .abort r => Tidy φ H r
 
-/-- An argument list keeps the frame-pop invariant (helper). -/
+/-- An argument list keeps the activation-record-pop invariant (helper). -/
 theorem evalArgs_tidy {φ : Activation} {ev : Store → Expr → EvalRes} :
     ∀ {es : List Expr}, (∀ H e, e ∈ es → φ.In H → Tidy φ H (ev H e)) →
       ∀ H, φ.In H → ArgsTidy φ H (evalArgs ev H es)
@@ -2160,10 +2160,10 @@ theorem evalArgs_tidy {φ : Activation} {ev : Store → Expr → EvalRes} :
       | refused => trivial
       | outOfFuel => trivial
 
-/-- **§6.9's frame, pushed and popped**: a callee's body, run in a frame of
+/-- **§6.9's activation record, pushed and popped**: a callee's body, run in an activation record of
 fresh parameter cells `ls` and absorbed at the call boundary — its value's
-frame popped by `run-all-scope-drops`, its unwinding `return` having popped
-it already — keeps the caller's frame-pop invariant (helper). -/
+activation record popped by `run-all-scope-drops`, its unwinding `return` having popped
+it already — keeps the caller's activation-record-pop invariant (helper). -/
 theorem Tidy.call {D : Decls} {φ : Activation} {H Hm : Store} {ls : List Nat} {r : EvalRes}
     (hls : ∀ ℓ, ℓ ∈ ls ↔ H.length ≤ ℓ ∧ ℓ < Hm.length) (hlen : H.length ≤ Hm.length)
     (hpre : ∀ ℓ, ℓ < H.length → Hm[ℓ]? = H[ℓ]?)
@@ -2211,7 +2211,7 @@ theorem Tidy.call {D : Decls} {φ : Activation} {H Hm : Store} {ls : List Nat} {
   | _ => trivial
 
 /-- **Every allocation is retired** (§6.7, §6.9, §6.10): every evaluation, of
-every expression, in every frame that names only existing cells, keeps
+every expression, in every activation record that names only existing cells, keeps
 `Tidy`. By fuel induction over `eval`; no typing derivation. -/
 theorem eval_tidy (M : FloatSig) (P : Program) :
     ∀ (fuel : Nat) (H : Store) (φ : Activation) (e : Expr), φ.In H → Tidy φ H (eval M fuel P H φ e) := by
@@ -2441,7 +2441,7 @@ theorem eval_tidy (M : FloatSig) (P : Program) :
 
 /-! ## §7: every owned value ends exactly once -/
 
-/-- A frame agreeing with a context names only existing cells (helper). -/
+/-- An activation record agreeing with a context names only existing cells (helper). -/
 theorem ActivationTyping.activationIn {D : Decls} {Γ : Ctx} {φ : Activation} {H : Store}
     (h : ActivationTyping D Γ φ H) : φ.In H := by
   refine ⟨h.store.mem_lt, fun ℓ hm => h.store.mem_lt ℓ ?_⟩
@@ -2450,7 +2450,7 @@ theorem ActivationTyping.activationIn {D : Decls} {Γ : Ctx} {φ : Activation} {
 /-- **No leak of drops: every owned value ends exactly once** (§7's
 "no use-after-drop / no leak of drops" bullet, the "exactly once" half;
 §6.7, §6.9, §6.10, §6.11). Take any well-typed configuration of a checked
-program — an expression typed in `Γ`, run in a frame and store that agree
+program — an expression typed in `Γ`, run in an activation record and store that agree
 with `Γ` — whose program and expression are `pendingSafe`. Its evaluation is
 never refused, and when it finishes normally or completes abruptly by `return` or
 `break`:
@@ -2461,13 +2461,13 @@ never refused, and when it finishes normally or completes abruptly by `return` o
   temporary, a residue drop, or a consumption (`Exact`);
 * **every cell the evaluation allocated is retired** (`Tidy`): a `let`'s at
   its `endscope` (§6.7), a `match` arm's at the arm's end (§6.6), a callee's
-  at its frame pop (§6.9) — except, for an unwinding `break`, the cells its
+  at its activation record pop (§6.9) — except, for an unwinding `break`, the cells its
   drop scope still owes, which the loop retires (§6.10) and whose values
   `rest_exactly_once` at the loop counts (`breakLeak_rejected`) — cells outside the
-  frame's environment were touched only to be retired, and an unwinding
-  `return` has retired the frame's whole record (§6.9's σ-walk). So "still in
+  activation record's environment were touched only to be retired, and an unwinding
+  `return` has retired the activation record's whole drop scope (§6.9's σ-walk). So "still in
   the store" means a cell the enclosing code can still reach, never one a
-  frame pop forgot (`orphan_rejected`).
+  activation record pop forgot (`orphan_rejected`).
 
 So a binding's value is dropped at its scope's end on the normal path
 (`endscope`, §6.7) or by the σ-walk of an unwind (§6.9, §6.10) — never both,
@@ -2509,7 +2509,7 @@ theorem Tombstoned.mono {H H₁ H' : Store} {keep : List Nat} (hle : H.length �
     (h : Tombstoned H keep H') : Tombstoned H₁ keep H' :=
   fun ℓ h₁ h₂ hk => h ℓ (Nat.le_trans hle h₁) h₂ hk
 
-/-- The whole form's frame-pop invariant, read at the rest (helper). -/
+/-- The whole form's activation-record-pop invariant, read at the rest (helper). -/
 theorem Tidy.settled {φ : Activation} {H H₁ : Store} {r : EvalRes} {tr : List Event}
     (hle : H.length ≤ H₁.length) (h : Tidy φ H (r.withTrace tr)) : Settled φ H₁ r := by
   cases r with
@@ -2581,12 +2581,12 @@ after trace `tr` (`Lead`). Whatever the rest of the form yields, `r` with
 or ended in `r`'s trace exactly as many times as it was held; every cell
 allocated since `H₁` is retired (`Settled`). This is where a `let`'s
 initializer is dropped at the `endscope`, a discarded `S { .. };` at the
-`dropTemp`, an argument at the callee's frame pop, and a scrutinee's shell at
+`dropTemp`, an argument at the callee's activation record pop, and a scrutinee's shell at
 its `consume`, and where a `break` unwinds the bindings its loop body still
 held — the loop's lead is its body breaking, so the unwind is that loop's rest
 (`breakLeak_rejected`) — values `drop_exactly_once` alone never sees, because
 no evaluation starts holding them (`letDropDeleted_rejected`). Every place the
-machine ends an owned value — an `endscope`, a discard, a frame pop, a
+machine ends an owned value — an `endscope`, a discard, an activation record pop, a
 `return`'s σ-walk, a `break`'s unwind, a consumption, an overwrite or `@drop`
 — lies inside the window of a statement that already counts the value: the
 rest of the form that bound or received it, the rest of the loop a `break`
@@ -2636,7 +2636,7 @@ fn f(a: S0, b: i64) -> i64 { @drop(b); b }
 
 The checker accepts it. At `g`'s body — a typed configuration whose store
 holds `x`'s `S0` — the argument list moves `x` into the pending first slot,
-the second argument's `return` unwinds `g`'s frame, whose drop scope still
+the second argument's `return` unwinds `g`'s activation record, whose drop scope still
 names `x`'s cell but finds it `⊘`, and the moved `S0` is dropped by nothing:
 it is in neither the store, the result nor the trace. `drop_exactly_once`'s
 conclusion fails there, which is why it carries `pendingSafe`. -/
@@ -2666,7 +2666,7 @@ def lostCtx : Ctx := [{ ty := .struct 0, mu := false, st := .owned }]
 (helper). -/
 def lostStore : Store := [.dead, .full (.struct 0 0 [.int .w64 .signed 7])]
 
-/-- `g`'s entry frame (helper). -/
+/-- `g`'s entry activation record (helper). -/
 def lostActivation : Activation := { env := [1], scope := [1] }
 
 /-- The checker accepts the program (helper). -/
@@ -2710,7 +2710,7 @@ of a checked, `pendingSafe` program — where the real run, by the same
 theorems, satisfies the conclusion.
 
 * **An orphaned parameter** (first review, probe 5): `g(x)` with `g` ignoring
-  its parameter. A frame pop that forgot the σ-walk leaves `g`'s parameter
+  its parameter. An activation record pop that forgot the σ-walk leaves `g`'s parameter
   cell full and emits no drop. The ledger still balances — the `S0` is "still
   in the store" — and `Tidy` rejects it.
 * **A deleted drop of a minted value** (first review, probe 4):
@@ -2730,7 +2730,7 @@ theorem typed_of_check {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} (T : Ty)
   | none => simp [hc] at h
   | some p => obtain ⟨c, Ω⟩ := p; simp [hc] at h; exact ⟨Ω, check_sound e hc T h⟩
 
-/-- `g`'s entry frame agrees with its entry context (helper). -/
+/-- `g`'s entry activation record agrees with its entry context (helper). -/
 theorem lostActivation_typing : ActivationTyping lostDecls lostCtx lostActivation lostStore :=
   ⟨.cons (by rfl) ⟨_, rfl, ContentsOwnTyping.ofVal (v := .struct 0 0 [.int .w64 .signed 7])
     (HasTy.struct (by rfl) (.cons (.int (w := .w64) (s := .signed) (n := 7) (by decide)) .nil))⟩
@@ -2754,14 +2754,14 @@ def orphanProgram : Program :=
 /-- `x`'s `S0` (helper). -/
 def s0x : Contents := .struct 0 0 [.int .w64 .signed 7]
 
-/-- The result of a frame pop that forgot its σ-walk: `g`'s parameter cell
+/-- The result of an activation record pop that forgot its σ-walk: `g`'s parameter cell
 `ℓ2` still full, no drop, the destructor event alone (helper). -/
 def orphanResult : EvalRes :=
   .ok [.dead, .full .movedOut, .full s0x] (.int .w64 .signed 0) [.dtor 0 s0x]
 
 /-- **An orphaned cell balances the ledger but breaks `Tidy`** (§6.9). At the
 typed configuration `g(x)` of a checked, `pendingSafe` program, the real run
-drops `x`'s `S0` at `g`'s frame pop and retires the cell, and satisfies
+drops `x`'s `S0` at `g`'s activation record pop and retires the cell, and satisfies
 `drop_exactly_once`; the orphaned result keeps `Exact` yet fails `Tidy`,
 which `drop_exactly_once` concludes. -/
 theorem orphan_rejected (M : FloatLaws) :
@@ -2794,7 +2794,7 @@ theorem orphan_rejected (M : FloatLaws) :
 /-- The minted `S0 { 1 }` (helper). -/
 def s0one : Val := .struct 0 0 [.int .w64 .signed 1]
 
-/-- The empty frame agrees with the empty context over the empty store
+/-- The empty activation record agrees with the empty context over the empty store
 (helper). -/
 theorem emptyStore_cc : StoreCC lostDecls [] := fun ℓ c hc => by simp at hc
 

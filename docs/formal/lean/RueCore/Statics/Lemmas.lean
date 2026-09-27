@@ -68,7 +68,7 @@ theorem joinFold_linear_inv (D : Decls) : ∀ (Ts : List Ty) (acc : Qual),
 
 /-- **A droppable struct carries no linear field.** If a declaration's qualifier
 is not `Linear`, no field's qualifier is — which is why the machine's leak monitor
-(§6.7's `endscope`, §6.9's frame teardown) needs to look only at the value's
+(§6.7's `endscope`, §6.9's activation record teardown) needs to look only at the value's
 own qualifier and never inside it. This is §3's infectiousness, used. -/
 theorem StructDecl.Wf.field_not_linear {D : Decls} {sd : StructDecl}
     (h : sd.Wf D) (hcls : sd.cls ≠ .linear) : ∀ T ∈ sd.fields, T.qual D ≠ .linear := by
@@ -2516,7 +2516,7 @@ theorem Entry.wf_owned (D : Decls) (T : Ty) (m : Bool) :
     Entry.wf D { ty := T, mu := m, st := .owned } = true := by
   simp [Entry.wf, OwnSt.wf]
 
-/-- (helper) A `let` binder enters `Owned`, so pushing it keeps a frame
+/-- (helper) A `let` binder enters `Owned`, so pushing it keeps an activation record
 well-formed. -/
 theorem Ctx.Wf.cons_owned {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) (T : Ty) (m : Bool) :
     Ctx.Wf D ({ ty := T, mu := m, st := .owned } :: Γ) := by
@@ -2526,7 +2526,7 @@ theorem Ctx.Wf.cons_owned {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) (T : Ty) (m :
   · exact h en hm
 
 /-- (helper) Re-marking one entry at a path of its type with a state that is
-a shape of that path's type keeps a frame well-formed — (Use-Move),
+a shape of that path's type keeps an activation record well-formed — (Use-Move),
 (Use-Declared-Linear-Destructure), (@Drop) and (Assign) all write this way. -/
 theorem Ctx.Wf.set_setAt {D : Decls} {Γ : Ctx} {i : Nat} {en : Entry} {π : List Nat}
     {u : OwnSt} {T' : Ty} (hΓ : Ctx.Wf D Γ) (hget : Γ[i]? = some en)
@@ -2619,7 +2619,7 @@ theorem LoopHead.wf {D : Decls} {Γ Γh : Ctx} {o : Option Ctx} (h : LoopHead D 
       cases h1; exact hw
   | some Γe => exact h.2 Γe rfl
 
-/-- (helper) Dropping bindings off the top keeps a frame well formed. -/
+/-- (helper) Dropping bindings off the top keeps an activation record well formed. -/
 theorem Ctx.Wf.drop {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) (n : Nat) : Ctx.Wf D (Γ.drop n) :=
   fun en hen => h en (List.mem_of_mem_drop hen)
 

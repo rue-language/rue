@@ -220,9 +220,9 @@ generated disagreement is a finding to file.
   or a `match` scrutinee.
 
 Calls are drawn too (RUE-2481; below, "Calls"): a generated program may
-declare up to three callees beside its entry point, so a frame unwound by an
-early `return` under a caller's live frame, a by-value parameter dropped at a
-frame pop, and bounded recursion reach the generated corpus as well as the
+declare up to three callees beside its entry point, so an activation record unwound by an
+early `return` under a caller's live activation record, a by-value parameter dropped at a
+activation record pop, and bounded recursion reach the generated corpus as well as the
 hand-written seeds.
 
 ## Calls (RUE-2481)
@@ -250,14 +250,14 @@ callee. Three shapes are drawn on purpose:
   1, …); rest }`. Every other call site passes the fuel as a literal in `[0,
   3]`, and a call site names only a later callee (`GS.cur`), so the call graph
   is acyclic apart from that one guarded self-call and recursion is at most
-  four frames deep whatever the body does.
+  four activation records deep whatever the body does.
 * **Linear parameters are consumed.** A linear parameter the drawn body never
   names is `@drop`ped at the start of the body two times in three and at its
   end (`let r = body; @drop(v); r`) otherwise (`mentions`); one the body names
   is left to the body's own draws, and (Fn) §5.8's leak check decides.
 * **An early return.** Half the bodies open with `if c { return v } else { ()
-  }`, whose arm first drops every linear parameter still live there: a frame
-  unwound by (D-Return) §6.9 with the caller's frame live beneath it, dropping
+  }`, whose arm first drops every linear parameter still live there: an activation record
+  unwound by (D-Return) §6.9 with the caller's activation record live beneath it, dropping
   the parameters the callee has not consumed (`3.8:62`).
 
 All of this reads the **call stream** (`calls`), a third `StdGen` split afresh
@@ -277,17 +277,17 @@ a program references (ADR-0045), so the compiler never checks an orphan, while
 compiler, a disagreement neither side is wrong about.
 
 Measured at those two settings, as programs with the accepted ones in
-parentheses, from `Explain.programDerivs` and `Explain.runTrace`, a frame
+parentheses, from `Explain.programDerivs` and `Explain.runTrace`, an activation record
 counted as a callee's
 when a `push the frame` row has put it above the entry's: 101 and 544 callees;
-a (Call) §5.8 derivation node in 56 (21) and 322 (106); a callee frame pushed
-at run time in 39 (16) and 238 (84); a callee frame popped by
+a (Call) §5.8 derivation node in 56 (21) and 322 (106); a callee activation record pushed
+at run time in 39 (16) and 238 (84); a callee activation record popped by
 (D-Return-Value) §6.9 in 27 (11) and 176 (63), dropping a parameter or local
 there in 8 (5) and 42 (20), with a printing destructor in 7 (5) and 29 (13); a
-callee's early `return` unwinding its frame under a live caller in 13 (8) and
+callee's early `return` unwinding its activation record under a live caller in 13 (8) and
 49 (16), dropping something in 4 (2) and 15 (5), with a printing destructor in
 3 (1) and 13 (5); a recursive callee in 24 (6) and 140 (25) and three or more
-frames live at once in 12 (7) and 62 (22); a destructor-bearing parameter in
+activation records live at once in 12 (7) and 62 (22); a destructor-bearing parameter in
 23 (7) and 116 (26) and a declared-`linear` one in 18 (1) and 117 (16). The
 function-level linear-parameter leak is the deepest refusal of none at either
 setting, and a `return` past a live linear binding of 4 at seed 23.
@@ -2188,7 +2188,7 @@ def callDen : Nat := 24
 /-- (helper) The type of a callee's by-value parameter (RUE-2481): a
 **destructor-bearing** struct three times in ten and a **declared-`linear`**
 one two times in ten, where the program declares one, because those are the
-parameters a frame pop has something to say about — a destructor that prints
+parameters an activation record pop has something to say about — a destructor that prints
 when the callee leaves the parameter to the pop (§6.9's (D-Return-Value) and
 (D-Return), `3.8:62`), and the linear leak (Fn) §5.8's second clause refuses
 when it does not consume one (E0406). Otherwise the draw a `let` binder's type
@@ -2696,14 +2696,14 @@ callee's own return type — and then shaped in three ways:
   f<idx>(v0 - 1, …); rest }`: the one self-call is guarded by its fuel
   parameter `v0` and passes it down decreased by one, and no call site
   `maybeCall` draws names the callee itself, so with the literal fuel every
-  caller passes the recursion is at most four frames deep;
+  caller passes the recursion is at most four activation records deep;
 * each **linear** parameter is consumed by a `@drop` at the start of the body
   two times in four and at its end — `let r = body; @drop(v); r` — one time in
   four, and left to the body's own draws otherwise, where (Fn) §5.8's leak
   check (E0406) decides the case;
 * half the bodies open with an **early return**, `if c { return v } else { ()
-  }`, `v` an atom at the return type: a frame unwound by (D-Return) §6.9 with
-  its caller's frame live beneath it, whose unconsumed by-value parameters
+  }`, `v` an atom at the return type: an activation record unwound by (D-Return) §6.9 with
+  its caller's activation record live beneath it, whose unconsumed by-value parameters
   (§6.9, `3.8:62`) drop on the way out.
 
 It runs under `calls`, from `bodies`. -/

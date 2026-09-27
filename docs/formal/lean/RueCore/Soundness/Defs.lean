@@ -183,32 +183,32 @@ the callee's `ρ` and survive the call untouched. -/
 def FrameProperty (ρ : Env) (H H' : Store) : Prop :=
   H.length ≤ H'.length ∧ ∀ ℓ, ℓ < H.length → ℓ ∉ ρ → H'[ℓ]? = H[ℓ]?
 
-/-- The per-frame invariant (§6.1): the fused context agrees with the store
-through the frame's environment, and the frame's drop scope, read
+/-- The per-activation-record invariant (§6.1): the fused context agrees with the store
+through the activation record's environment, and the activation record's drop scope, read
 newest-first, **is** that environment. The second clause is the RUE-1277
-redundancy discharged — every live binding of the frame is registered for a
+redundancy discharged — every live binding of the activation record is registered for a
 drop exactly once, which is what makes `run-all-scope-drops` (§6.9) safe at an
 early `return`. -/
 structure ActivationTyping (D : Decls) (Γ : Ctx) (φ : Activation) (H : Store) : Prop where
-  /-- `StoreTyping` through the frame's environment `ρ`. -/
+  /-- `StoreTyping` through the activation record's environment `ρ`. -/
   store : StoreTyping D Γ φ.env H
   /-- The drop scope, newest-first, is the environment (`3.8:62`: every
   by-value binding is registered, and only those). In this fragment both are
-  built from one list at every frame, so the equation holds definitionally;
+  built from one list at every activation record, so the equation holds definitionally;
   it becomes a real obligation when `Activation.scope` is §6.1's stack (§6.6,
   §6.10). -/
   record : φ.scope.reverse = φ.env
 
 /-- The promise for an unwinding `break` (§6.10's (D-Break)), made about an
-evaluation in frame `φ` from store `H`: the `break` fired in a frame that is
+evaluation in activation record `φ` from store `H`: the `break` fired in an activation record that is
 `φ` with some bindings `locs` opened on top of it — the ones the loop body
 opened and had not closed, each minted above `H` — and at one of the
-abrupt-completion contexts `B` of §5.3's `Ω`, the frame it fired in agrees with the
+abrupt-completion contexts `B` of §5.3's `Ω`, the activation record it fired in agrees with the
 store. Its record is `φ`'s with `locs` appended, which is what the loop reads
-to find the drops it owes, and nothing `φ` names outside the frame was
+to find the drops it owes, and nothing `φ` names outside the activation record was
 touched. It is closed under entering a binder (`BreakOutputOk.under_binders`), so a
 `let` or a `match` arm passes it outward unchanged, and the loop that catches
-it reads the frame it fired in straight off it (helper). -/
+it reads the activation record it fired in straight off it (helper). -/
 def BreakOutputOk (D : Decls) (B : List Ctx) (φ : Activation) (H H' : Store) (sc : List Nat) : Prop :=
   ∃ Γb ∈ B, ∃ locs : List Nat, sc = φ.scope ++ locs ∧
     ActivationTyping D Γb { env := locs.reverse ++ φ.env, scope := sc } H' ∧

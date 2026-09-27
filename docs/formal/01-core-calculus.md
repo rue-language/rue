@@ -1987,7 +1987,7 @@ Dynamically an accessor call is not a `(D-Call)`: the call reduces **by the
 accessor's inlined body** — the guards run in the caller (and may trap, §6.12)
 and the redex is then replaced by the projected place itself, `(ℓ, π·π_y)` for
 a user accessor over §6.9's by-ref place plumbing, or `view⟨A | o, 1⟩` for the
-trusted `ArrayBuf(T).get_ref` bridge (§6.13.3). No call frame is pushed and no
+trusted `ArrayBuf(T).get_ref` bridge (§6.13.3). No activation record is pushed and no
 calling convention for
 "returning a place" exists; that absence is the RUE-1012 forward-compatibility
 contract.
@@ -2047,23 +2047,23 @@ them is a bug (RUE-305) — that is the point of pinning both.
                      | Kj⟨ v1, …, va ⟩         -- an enum value: variant tag Kj (0-based index j) + payload v1..va (a = 0 ⇒ just the tag)
                      | buf⟨A⟩                  -- an owned pointer: the opaque identity of a buffer allocation (§6.13)
                      | view⟨A | o, k⟩          -- a second-class view of k cells of allocation A starting at cell o (§6.13)
-  Environment    ρ : Var ⇀ Loc × Path        -- per frame: each in-scope binding → its root cell and a projection path
+  Environment    ρ : Var ⇀ Loc × Path        -- per activation record: each in-scope binding → its root cell and a projection path
                                              --   (RUE-1279: declared here once, not silently widened at §6.9. Every
                                              --   by-value binding has path ε, and ρ(x) = ℓ abbreviates ρ(x) = (ℓ, ε)
                                              --   throughout §6.3–§6.8; only §6.9's by-ref parameter bindings carry a
                                              --   non-ε path, composed under any further projection)
   Drop scope     s = [ℓ1, …, ℓq]             -- cells with a drop obligation at this scope's exit, in creation order (dropped newest-first)
-  Frame          φ = ⟨ ρ ; σ ⟩ ,  σ = [s1, …, sr]   -- a stack of r ≥ 1 open drop scopes; σ's top is the innermost scope
+  Activation record φ = ⟨ ρ ; σ ⟩ ,  σ = [s1, …, sr]   -- a stack of r ≥ 1 open drop scopes; σ's top is the innermost scope
   Control stack  K ::= halt                    -- bottom: nothing pending; a returned value is the program result
-                     | ret(E, φ) · K           -- a caller suspended in evaluation context E (§6.2), frame φ, awaiting a callee's value
-                     | loopβ(e_body, φ) · K    -- a loop boundary: its body e_body and the frame φ to resume; break unwinds to here
-  Config         C ::= ⟨ H ; φ ; K ; e ⟩       -- active frame φ evaluating expression e
+                     | ret(E, φ) · K           -- a caller suspended in evaluation context E (§6.2), activation record φ, awaiting a callee's value
+                     | loopβ(e_body, φ) · K    -- a loop boundary: its body e_body and the activation record φ to resume; break unwinds to here
+  Config         C ::= ⟨ H ; φ ; K ; e ⟩       -- the current activation record φ, evaluating expression e
                      | ↯κ                        -- halted in a trap of category κ ∈ { overflow, div-zero, rem-zero, bounds, cast-overflow, user } (exit 101)
                      | ✓n                        -- halted normally with process exit code n
 ```
 
 The reduction relation is `C → C'`. The store `H` is global (locations never
-alias across frames except through the by-reference sharing of §6.9); `φ` and `K`
+alias across activation records except through the by-reference sharing of §6.9); `φ` and `K`
 carry the per-call control state the sketch attributed to `K`. This matches the
 oracle's `Interp`/`Frame` types: a `Frame` is `φ`, its
 `locals`/`params` vectors are the cells reachable through `ρ`, and its evaluation
@@ -2095,15 +2095,15 @@ A discriminant-only enum value `Kj⟨⟩` is stored as its bare tag (the oracle'
 `Value::Int` tag); a payload-carrying `Kj⟨v1..va⟩` as the tagged aggregate
 (`Value::Aggregate`, RUE-285).
 
-Four **unwinding helpers** on frames, used by the rules below, all defined in terms of
+Four **unwinding helpers** on activation records, used by the rules below, all defined in terms of
 the drop relation `drop(H, ℓ)` of §6.11 (which is itself a no-op on a `⊘` or
 `Copy` cell, so these fold harmlessly over non-droppable bindings):
 
 ```
   drop-retire(H, ℓ)              = drop(H, ℓ) [ℓ ↦ †]              -- scope-exit teardown of one binding: run its drop, then retire it
   push-scope(⟨ρ;σ⟩)              = ⟨ρ; [] :: σ⟩                    -- open a fresh, empty innermost scope
-  run-scope-drops(H, ⟨ρ; s::σ⟩) = drop-retire the cells of s newest-first, yielding H'; result frame ⟨ρ; σ⟩   -- close ONE (innermost) scope
-  run-all-scope-drops(H, φ)      = iterate run-scope-drops until φ has no open drop scopes (whole-frame teardown, on return)
+  run-scope-drops(H, ⟨ρ; s::σ⟩) = drop-retire the cells of s newest-first, yielding H'; resulting activation record ⟨ρ; σ⟩   -- close ONE (innermost) scope
+  run-all-scope-drops(H, φ)      = iterate run-scope-drops until φ has no open drop scopes (teardown of the whole activation record, on return)
   unwind-drops(H, φ', φ)         = run-scope-drops repeatedly on φ' until its open-scope stack equals φ's (break: down to a boundary)
 ```
 
@@ -2155,7 +2155,7 @@ right-hand side to a value first, then `p`'s index subexpressions left to right
 bounds check at its step — for (D-Assign)'s overwrite-drop and store (§6.8). A
 trap or an unwinding `return` in an index therefore abandons an
 already-evaluated right-hand side, which no rule drops (§6.12: a panic runs no
-drops; §6.9: a `return` drops the frame's cells, not the values held in the
+drops; §6.9: a `return` drops the activation record's cells, not the values held in the
 context it discards). The two structural
 rules that drive every reduction:
 
@@ -2170,7 +2170,7 @@ rules that drive every reduction:
 ```
 
 (Search) also carries `Call`/`Return`/`break` steps that rewrite `φ`/`K`; those
-appear below with the frame explicit. (Panic-Lift) is why a trap anywhere
+appear below with the activation record explicit. (Panic-Lift) is why a trap anywhere
 abandons the whole configuration: a panic is not a value and no context can
 consume it, so it propagates to the top and halts (`Interp::run`).
 
@@ -2179,7 +2179,7 @@ consume them, so they discard the context around them — but unlike a panic
 they unwind **with drops**: `(D-Return)`/`(D-Return-Value)` (§6.9) and
 `(D-Break)` (§6.10) fire on `E[return v]` / `E[break]` for any context `E`,
 discarding `E` (including any pending `endscope` markers inside it) and
-running the discarded scopes' drops from the frame's drop scopes σ instead.
+running the discarded scopes' drops from the activation record's drop scopes σ instead.
 That is why §6.7 registers every binding's cell in σ *as well as* in its
 `endscope` marker: the marker is the normal-path close, and σ is what survives
 when an unwinding form throws the marker away (RUE-1277).
@@ -2685,7 +2685,7 @@ those cells; the other arms never come into being (`Terminator::Switch` +
 The payload cells are bound exactly as a `let` binds one (§6.7): appended to the
 innermost drop scope *and* owed to the arm's `endscope` marker, so their drops
 run **when the arm's body becomes a value** — the arm's end, `6.3:17`'s timing —
-rather than at some later frame pop, and an unwinding `return`/`break` inside
+rather than at some later activation-record pop, and an unwinding `return`/`break` inside
 the arm still finds them in σ after discarding the marker (RUE-1277; an earlier
 draft pushed a whole scope here and never closed it on the value path). The
 scrutinee value is **consumed** by the match: its payload now lives in the
@@ -2710,7 +2710,7 @@ payload runs its destructor exactly once when its binding leaves scope"
 `let x = v ; e2` allocates a fresh cell for `x`, binds it, and reduces the body in
 a scope in which **`x` has a drop obligation**. That obligation is recorded in **two places at
 once**, and the redundancy is load-bearing (RUE-1277): the cell is appended to
-the frame's innermost open drop scope `s` — so the frame-level unwinding of
+the activation record's innermost open drop scope `s` — so the activation-record-level unwinding of
 `return` (§6.9) and `break` (§6.10) can find and drop it — *and* the body is
 wrapped in the administrative runtime form `endscope(ℓ̄) in e` (not a §2 surface
 form), which is the normal-path close: it runs the drops of exactly the cells
@@ -2735,7 +2735,7 @@ binding's creation and its `endscope` can leave a *younger* cell in the same
 record (a nested `let`'s or `match`'s marker closes before the enclosing one by
 expression nesting; a nested `loop` pushes and — by `(D-Loop-Iter)`/
 `(D-Break)` — fully pops its *own* drop scopes; a call runs in its own
-frame). Nested `let`s nest their `endscope`s, so cells are dropped in **reverse
+activation record). Nested `let`s nest their `endscope`s, so cells are dropped in **reverse
 declaration order** (RAII) — the innermost/newest binding first.
 
 The environment `ρ[x↦ℓ]` is never restored when the binding dies, and no rule
@@ -2810,7 +2810,7 @@ field/element argument, not the caller's whole root cell. By-value bindings are
 the special case with projection path `ε`; earlier notation such as
 `ρ(root(p)) = ℓ` refers to the first component of this binding and composes the
 stored parameter path with the source projection `π`. When the body reduces to a
-value `v`, the frame is popped: its open drop scopes' drops run (freeing the by-value
+value `v`, the activation record is popped: its open drop scopes' drops run (freeing the by-value
 params and any still-live locals), and `v` is handed back to the suspended caller
 context:
 
@@ -2818,7 +2818,7 @@ context:
   ────────────────────────────────────────────────────────────────────────── (D-Return-Value)
   ⟨ H ; φ_g ; ret(E, φ)·K ; v ⟩ → ⟨ run-all-scope-drops(H, φ_g) ; φ ; K ; E[v] ⟩
 
-  K_g = loopβ(_,_)·…·loopβ(_,_)·ret(E, φ)·K        -- zero or more loop boundaries, discarded with the frame
+  K_g = loopβ(_,_)·…·loopβ(_,_)·ret(E, φ)·K        -- zero or more loop boundaries, discarded with the activation record
   ────────────────────────────────────────────────────────────────────────── (D-Return)
   ⟨ H ; φ_g ; K_g ; E'[return v] ⟩ → ⟨ run-all-scope-drops(H, φ_g) ; φ ; K ; E[v] ⟩
 
@@ -2834,18 +2834,18 @@ with `return v` **in any evaluation context `E'`** (RUE-1277 — the unwinding
 analogue of (Panic-Lift), §6.2): `let y = (return 100); …` and
 `1 + (if c { return 0 } else { 2 })` — the `3.4:5`/`3.4:6b` shapes — reduce by
 discarding `E'`, every pending `endscope` marker inside it included, along with
-any loop boundaries the frame pushed onto `K`. The drops those markers would
-have run are not lost: every bound cell is also registered in the frame's scope
-records (§6.7), and `run-all-scope-drops` walks exactly those records, so an
+any loop boundaries the activation record pushed onto `K`. The drops those markers would
+have run are not lost: every bound cell is also registered in the activation record's drop
+scopes (§6.7), and `run-all-scope-drops` walks exactly those records, so an
 early return runs every live binding's drop, newest-first per scope
 (`3.9:18` — verified against the compiler: an early return with two live
-destructor-bearing locals runs both destructors, then the caller's). The frame
+destructor-bearing locals runs both destructors, then the caller's). The activation record
 is then discarded and `v` handed to the suspended caller context (the oracle's
 `Terminator::Return`, with the compiler having placed the pre-return `Drop`s).
 `(D-Return-Main)` is the same firing at the bottom of the stack, where there is
 no suspended caller: the result configuration is the value configuration that
 §6.12's (Result-Ok) consumes. (Without these context forms, a nested `return`
-was a *stuck* configuration — D-Return required the frame's whole expression to
+was a *stuck* configuration — D-Return required the activation record's whole expression to
 be `return v`, which after one reduction under a `let` it never again was.) The oracle models `inout` by
 **copy-in / copy-out** rather than true sharing — it copies the argument in, runs
 the callee, then copies each `inout` parameter's final value back into the caller
@@ -2944,10 +2944,10 @@ definition connecting the two):
   H1(ℓ) = { c1', …, ck' }_S             -- the residual fields; no ci or ci' can be ⊘ (see the vacuity note below)
 ```
 
-The destructor body runs in its own frame whose single drop scope is
+The destructor body runs in its own activation record whose single drop scope is
 **empty**: `self` is exempt from the drop obligation (§5.6 — otherwise
 dropping `self` would re-run the destructor, an infinite regress), so the
-nested run's frame pop drops only the destructor's own locals. Afterward the
+nested run's activation-record pop drops only the destructor's own locals. Afterward the
 cell contents `c1',…,ck'` as the nested run left them — not the original
 `c1,…,ck` — drop in declaration order; the scratch cell `ℓ` is then retired.
 
@@ -3489,7 +3489,7 @@ neither claims anything about an uninhabited-parameter function such as
   non-moved place is dropped exactly once, at the end of its scope, and never read
   afterward. *Because:* §5.6 schedules the drop, §6 executes it at the scope's
   close — the binding's `endscope` on the normal path, or the σ-walk of a
-  `return`/`break` unwind or frame pop on the early-exit paths (§6.7, §6.9,
+  `return`/`break` unwind or activation-record pop on the early-exit paths (§6.7, §6.9,
   §6.10; each cell is dropped by exactly one of these, since `endscope`
   un-registers what it drops and an unwind discards the markers whose cells it
   drops) — and Σ shows no path live past that point. Scope exit now also *retires* the

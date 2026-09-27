@@ -2120,8 +2120,8 @@ def enumTemporaryScrutinee : Expr :=
     (seq (dbg (lit 20)) (use (.var 0)))
 
 /-- A **call** in scrutinee position: (D-Call) §6.9 hands the enum value back
-across the frame boundary and (D-Match) §6.6 binds its payload in the caller's
-frame, so the payload's drop is owed to the caller's arm and not to the callee's
+across the activation record boundary and (D-Match) §6.6 binds its payload in the caller's
+activation record, so the payload's drop is owed to the caller's arm and not to the callee's
 pop. Same trace as the temporary: `10`, `1`, `20`, `5`. -/
 def enumCallScrutinee : Program :=
   enumProgFns
@@ -2476,7 +2476,7 @@ def dropDeclaredMovedOutLeaf : Expr :=
           (seq (drop (.proj (.var 1) 0))
             (seq (dbg (lit 30)) (use (.var 0)))))))
 
-/-! ## Calls, frames, and `return` (RUE-2233)
+/-! ## Calls, activation records, and `return` (RUE-2233)
 
 Each of these needs more than one function, so it is written as a whole
 `Program` rather than an `Expr`. Function index `0` is the entry point. -/
@@ -2489,7 +2489,7 @@ def callPlain : Program :=
             { params := [⟨tI64, false⟩, ⟨tI64, false⟩], ret := tI64,
               body := binop .add (use (.var 1)) (use (.var 0)) }] }
 
-/-- An early `return` past two live affine bindings: the frame unwinds
+/-- An early `return` past two live affine bindings: the activation record unwinds
 newest-first (§6.9's (D-Return)), so the trace is `4` then `3`, then the
 value `7`. -/
 def returnPastAffine : Program :=
@@ -2504,16 +2504,16 @@ unwind refuses with `linearLeak`. -/
 def returnPastLinear : Program :=
   prog tI64 (letIn false (resL (lit 5)) (ret (lit 1)))
 
-/-- A by-value affine argument the callee never consumes: the callee's frame
+/-- A by-value affine argument the callee never consumes: the callee's activation record
 holds its drop obligation, and (D-Return-Value)'s `run-all-scope-drops` runs it at the
-frame pop — `2`, then the value `1`. -/
+activation record pop — `2`, then the value `1`. -/
 def paramDroppedAtPop : Program :=
   { decls := Decls.ofStructs structEnv,
     fns := [{ params := [], ret := tI64, body := call 1 [resA (lit 2)] },
             { params := [⟨.struct sAffine, false⟩], ret := tI64, body := lit 1 }] }
 
 /-- Two by-value destructor-bearing arguments of two types, `f1(a: S1, b: S5)`,
-neither consumed: the frame pop tears the parameters down last-parameter
+neither consumed: the activation record pop tears the parameters down last-parameter
 first (§6.9's `run-all-scope-drops`, `drop_order`), so `b`'s drop (`2`, then
 its field's `3`, §6.11) comes before `a`'s (`1`), then the value `0`. -/
 def twoParamsDroppedAtPop : Program :=
@@ -2523,7 +2523,7 @@ def twoParamsDroppedAtPop : Program :=
             { params := [⟨.struct sAffine, false⟩, ⟨.struct sOuter, false⟩], ret := tI64,
               body := lit 0 }] }
 
-/-- Three by-value destructor-bearing arguments, none consumed: the frame pop
+/-- Three by-value destructor-bearing arguments, none consumed: the activation record pop
 (§6.9's `run-all-scope-drops`) drops them `3`, `2`, `1`, then the value `0`. -/
 def threeParamsDroppedAtPop : Program :=
   { decls := Decls.ofStructs structEnv,
@@ -2534,7 +2534,7 @@ def threeParamsDroppedAtPop : Program :=
               body := lit 0 }] }
 
 /-- The **first** of two by-value parameters moved out, into a call, and the
-other left to the frame pop (§6.9): `f1(a, b)` moves `a` by (Use-Move) §5.1
+other left to the activation record pop (§6.9): `f1(a, b)` moves `a` by (Use-Move) §5.1
 into `f2(a)`, whose own pop drops `a` (`1`); `f1`'s pop then owes only `b`
 (`2`), and the value is `7`. A moved parameter leaves the teardown, so here
 the first parameter's destructor runs first. -/
@@ -2546,7 +2546,7 @@ def paramMovedOtherDropped : Program :=
             { params := [⟨.struct sAffine, false⟩], ret := tI64, body := lit 7 }] }
 
 /-- A by-value **linear** parameter the callee never consumes: (Fn) §5.8's
-second clause rejects the callee (`3.8:62`), and the frame pop refuses with
+second clause rejects the callee (`3.8:62`), and the activation record pop refuses with
 `linearLeak`. -/
 def linearParamLeaked : Program :=
   { decls := Decls.ofStructs structEnv,
@@ -2554,7 +2554,7 @@ def linearParamLeaked : Program :=
             { params := [⟨.struct sLinear, false⟩], ret := tI64, body := lit 1 }] }
 
 /-- Recursion to a trap: `f1(3)` counts down and divides by zero at the
-bottom, four frames deep. -/
+bottom, four activation records deep. -/
 def recursionTrap : Program :=
   { decls := Decls.ofStructs [],
     fns := [{ params := [], ret := tI64, body := call 1 [lit 3] },
@@ -2583,7 +2583,7 @@ between the subexpression that produced it and the aggregation that would
 have taken it — for an argument, the `freshParams` of §6.9's (D-Call). If a
 later sibling completes abruptly by `return`, (D-Return) §6.9 discards the evaluation
 context — the pending values with it — and runs `run-all-scope-drops` on the
-frame's records, which never named that value; a `break` does the same with
+activation record's drop scopes, which never named that value; a `break` does the same with
 (D-Break) §6.10 and the loop's `unwind-drops`. Its drop is neither run nor
 monitored.
 
@@ -2601,7 +2601,7 @@ carve-out. -/
 `f1`'s first parameter is the consumable linear struct `S2` and its body takes
 it apart, so (Fn) §5.8 is satisfied. `main` moves its linear binding into the
 first argument and then diverges in the second. (Return-Value) §5.7's
-frame-wide residual-linear premise holds at the `return`, because the move
+activation-record-wide residual-linear premise holds at the `return`, because the move
 already marked the *context* `MovedOut` — the obligation has migrated to a
 value the context does not name. `checkProgram` accepts, so
 `checkProgram_sound`, `run_safe`, `no_refusal` and `no_linear_leak` all
@@ -2696,14 +2696,14 @@ def letBottom : Program :=
   scalarProg tI64 (letIn false (ret (lit 1)) (use (.var 0)))
 
 /-- (Return-Bottom) §5.7: `return`'s own operand is itself a `return`, so the
-outer `return` never fires — the inner one already unwound the frame with
+outer `return` never fires — the inner one already unwound the activation record with
 `5`. Nothing follows either `return`. The compiler agrees: it accepts the
 nested `return` and exits with `5`, after the `@dbg` line `1`. -/
 def returnBottom : Program :=
   scalarProg tI64 (seq (dbg (lit 1)) (ret (ret (lit 5))))
 
 /-- (Call-Bottom) §5.3, `f1`'s sole argument: it diverges by `return` before
-the call is reached, so `f1`'s frame is never pushed and its body never
+the call is reached, so `f1`'s activation record is never pushed and its body never
 runs. The mechanization has no separate (Call-Bottom) conclusion for the
 call itself — `Typed.call` always concludes at `fd.ret` (`Statics.lean`'s
 note on what the fragment omits) — so what diverges is `TypedArgs.consBot`,
@@ -3526,7 +3526,7 @@ imposes no residual-linear premise — §5.7 exempts the `⊥_panic` edge from
 §5.6's obligation — and the `let`'s tail is `⊥`, so (Let) with a divergent
 tail (`Typed.letInDiv`) reaches no scope exit and reads no state there. This
 is the one shape where `Typed.panic` and `Typed.ret` differ: `ret` carries the
-frame-wide residual-linear premise, and at an affine binding there is nothing
+activation-record-wide residual-linear premise, and at an affine binding there is nothing
 for either to drop. -/
 theorem panicPastLinear_typed :
     Typed (prog tI64 panicPastLinear) tI64 [] panicPastLinear tI64 ⟨none, []⟩ := by
@@ -3544,7 +3544,7 @@ example : checkProgram (prog tI64 panicPastLinear) = true := by rfl
 /-- **The linear value is consumed zero times, with no violation.** The trap
 carries an empty trace: `S3` declares a destructor and it does not run,
 because §6.12 abandons the configuration where a `return` would have unwound
-the frame. `no_refusal` holds of this program and says nothing about it —
+the activation record. `no_refusal` holds of this program and says nothing about it —
 the `@panic` exit its docstring now names. -/
 example : run demoOps (prog tI64 panicPastLinear) demoFuel = .panic .user [] := by rfl
 
@@ -3587,7 +3587,7 @@ example : run demoOps (scalarProg tI64 (call 7 [])) demoFuel = .refused .unbound
 
 §6.11 fixes the order in which a drop's events come out: a value's own
 destructor first, then its fields in declaration order, recursively; and a
-frame's teardown reads its drop scope newest-first (§6.9). These pin both.
+activation record's teardown reads its drop scope newest-first (§6.9). These pin both.
 -/
 
 /-- The unwind order: an early `return` past two live affine bindings drops
@@ -3654,7 +3654,7 @@ example : run demoOps (prog tI64 overwriteAboveMovedOut) demoFuel
          .drop 4 (.struct sNested 3 [.struct sTwoAffine 7 [cA 5 5, cA 6 6], c64 3]),
          .dtor sAffine (cA 5 5), .dtor sAffine (cA 6 6)] := by rfl
 
-/-- A by-value parameter the callee never consumes is dropped at the frame
+/-- A by-value parameter the callee never consumes is dropped at the activation record
 pop ((D-Return-Value) §6.9), not at the caller. -/
 example : run demoOps paramDroppedAtPop demoFuel
     = .ok [.dead, .dead] (v64 1) [.drop 1 (cA 0 2), .dtor sAffine (cA 0 2)] := by rfl
@@ -3672,7 +3672,7 @@ stops early and says so. -/
 example : run demoOps countdown 16 = .outOfFuel := by rfl
 
 /-- Seventeen is enough, and the answer is a value with five retired
-parameter cells — one per frame the recursion pushed. -/
+parameter cells — one per activation record the recursion pushed. -/
 theorem countdown_at_17 :
     run demoOps countdown 17 = .ok [.dead, .dead, .dead, .dead, .dead] (v64 10) [] := by rfl
 
@@ -3758,14 +3758,14 @@ example : checkProgram (scalarProg tI64 (lit (2 ^ 64))) = false := by rfl
 
 `useAfterDrop` is the machine's guard on a retired (`†`) cell (§6.1): a use,
 an explicit `@drop`, or an assignment through a binding whose cell has been
-retired is refused. With frames the guard is load-bearing on the unwind path
-too — `run-all-scope-drops` walks the frame's drop scope. No program
+retired is refused. With activation records the guard is load-bearing on the unwind path
+too — `run-all-scope-drops` walks the activation record's drop scope. No program
 reaches the guard from `run`'s start, checked or not: a binding's cell is
 minted fresh and retired only when its scope ends, after which nothing names
 it, and a drop scope owes each cell once (`run_no_use_after_drop`,
 `step_no_use_after_drop`, `Tombstone.lean`, RUE-2496). So the witnesses below
 start the machine in an open state — a store holding one retired cell and a
-frame naming it — which is the state the guard exists for.
+activation record naming it — which is the state the guard exists for.
 -/
 
 example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] }
@@ -3811,7 +3811,7 @@ example : eval demoOps demoFuel (prog tI64 unitLit)
     [.full (.struct sTwoAffine 1 [.movedOut, .struct sAffine 0 [c64 2]])]
     { env := [0], scope := [] } (drop (.proj (.var 0) 0)) = .refused .useAfterMove := by rfl
 
-/-- The same guard on the unwind path: a frame whose drop scope names a
+/-- The same guard on the unwind path: an activation record whose drop scope names a
 retired cell refuses instead of retiring it twice (§6.9). No run from the
 start reaches this state (`run_no_use_after_drop`); for a well-typed program
 `ActivationTyping` excludes it as well. -/
@@ -4038,7 +4038,7 @@ example : checkProgram (prog tI64 loopBreakPastLinear) = false := by rfl
 example : run demoOps (prog tI64 loopBreakPastLinear) demoFuel = .refused .linearLeak := by rfl
 
 /-- **A linear binding live at a loop that never exits** (E0406): the body
-completes, so the loop completes abruptly with `⟨diverge, Σ_h⟩`, and the frame-wide residual
+completes, so the loop completes abruptly with `⟨diverge, Σ_h⟩`, and the activation-record-wide residual
 check at the head finds the binding (`03-metatheory.md`'s reading). The
 machine never finishes, so it reaches no refusal. -/
 def loopDivergeLinear : Expr :=

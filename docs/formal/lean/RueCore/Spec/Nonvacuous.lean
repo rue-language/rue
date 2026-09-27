@@ -51,18 +51,18 @@ statements that quantify over `M : FloatLaws` are not vacuous in `M`. -/
 def exact_model_stmt : Prop :=
   ∃ M : FloatLaws, M.toFloatSig = Float.exactOps
 
-/-- **The initial frame agrees with the empty context** (§6.12's initial
-configuration): at every declaration environment, the empty frame over the
+/-- **The initial activation record agrees with the empty context** (§6.12's initial
+configuration): at every declaration environment, the empty activation record over the
 empty store matches the empty context (`ActivationTyping`) and its store is
-copy-closed (`StoreCC`). With a program's typed body this is the frame and
+copy-closed (`StoreCC`). With a program's typed body this is the activation record and
 store the evaluation statements (`soundness`, `drop_exactly_once`,
 `rest_exactly_once`) are applied at by the witnesses below. -/
 def empty_activation_stmt : Prop :=
   ∀ D : Decls, ActivationTyping D [] Activation.empty [] ∧ StoreCC D []
 
-/-- **An open term in a live frame** (§6.1, §7): the evaluation statements apply
-beyond the empty frame. Over the witnesses' declarations, `@drop(s); 1` is
-typed by `check` in the context `s : S0`, owned, and the frame `{ ρ := [ℓ0],
+/-- **An open term in a live activation record** (§6.1, §7): the evaluation statements apply
+beyond the empty activation record. Over the witnesses' declarations, `@drop(s); 1` is
+typed by `check` in the context `s : S0`, owned, and the activation record `{ ρ := [ℓ0],
 σ := [ℓ0] }` over the store `ℓ0 ↦ S0 { 5 }` agrees with that context
 (`ActivationTyping`) and is copy-closed (`StoreCC`), for a checked, `pendingSafe`
 program. Its evaluation runs the destructor of the value it started with, and
