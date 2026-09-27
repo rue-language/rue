@@ -205,7 +205,7 @@ third random stream, so a program without one is the program drawn before:
 62 of 200 at seed 7 and 359 of 1,000 at seed 23 have one, and the checker
 accepts 21 and 106 of those. A callee no reachable call names is removed,
 because the compiler analyzes only referenced declarations (ADR-0045). `Gen.lean`'s "Calls" section has the counts of
-frame pops and early returns they reach.
+activation-record pops and early returns they reach.
 
 **Destructor identity, and two more drawn shapes (RUE-2505).** RUE-2480 made
 field 0 a plain `int` on every destructor-bearing declaration, so a
@@ -450,8 +450,8 @@ outcome in words, so `corpus.json` doubles as a readable example set.
 follow without Lean: the program's `fn` items in Rue surface syntax, the
 proved-sound checker's verdict, one §5 derivation per function body as a tree
 with the fused `Γ;Σ` at every node, and the §6 run as a single step table in
-execution order — across frames, with the store before and after each node
-and the drop events it emitted. Three administrative rows make the frames
+execution order — across activation records, with the store before and after each node
+and the drop events it emitted. Three administrative rows make the activation records
 readable: the push with its minted parameter cells, the pop with the drops
 `run-all-scope-drops` ran, and the same walk taken early by a `return`. When
 the checker rejects, the failing premise is stated first, in the calculus's
@@ -646,7 +646,7 @@ mechanized*. The short version:
   identity minted at its introduction, so the trace says *which* value each
   drop was of (`no_double_free`, `Trace.lean`).
 - **The theorem says stuck is unreachable.** `soundness` (`Soundness.lean`)
-  states: if `Typed P R Γ e T Ω` holds and the frame agrees with `Γ`, then at
+  states: if `Typed P R Γ e T Ω` holds and the activation record agrees with `Γ`, then at
   every fuel `eval` never returns `.refused`. The corollaries name one §7 bullet
   each, over a whole program (`run`) — with one carve-out, named in
   `no_refusal`'s doc-comment: a by-value argument destroyed by a sibling
@@ -655,7 +655,7 @@ mechanized*. The short version:
   written; RUE-2316). `ActivationTyping` is the invariant the proof carries:
   `StoreTyping` — "Σ faithfully tracks the store's initialization", with one
   deliberate asymmetry explained in its doc-comment — plus the σ invariant,
-  that the frame's drop scope read newest-first *is* its environment (which
+  that the activation record's drop scope read newest-first *is* its environment (which
   holds definitionally in this fragment, and becomes an obligation when
   `Activation.scope` is §6.1's stack). `FrameProperty` is the frame property
   that carries a caller's agreement across a callee's run.
@@ -1252,12 +1252,12 @@ in the statement, with the non-triviality in the statement too.
   `step_no_double_free` bounds a non-empty trace of a run that never ends,
   RUE-2477), **one that gets stuck** unchecked (a read after
   `@drop`: `run` refuses it with `useAfterMove` and `Step` reaches a stuck
-  configuration), **the empty frame** (`ActivationTyping` and `StoreCC` at the
-  empty context, frame and store), and **an open term in a live frame**
-  (`open_activation`: `@drop(s); 1` typed in the context `s : S0`, over a frame and
+  configuration), **the empty activation record** (`ActivationTyping` and `StoreCC` at the
+  empty context, activation record and store), and **an open term in a live activation record**
+  (`open_activation`: `@drop(s); 1` typed in the context `s : S0`, over an activation record and
   store that hold an `S0`, whose evaluation runs that value's destructor), so
   `soundness`, `drop_exactly_once` and `rest_exactly_once` are shown to apply
-  beyond the empty frame.
+  beyond the empty activation record.
 * **Two runs for the whole-program ledger** (RUE-2478): `whole_drops` (`let x
   = S0 { 1 }; let y = S0 { 2 }; 3`) reaches a configuration holding both
   values, identities `0` and `2`, and finishes with a trace that ends each
@@ -1279,7 +1279,7 @@ past the elaborator's evaluation threshold; never `native_decide`.
 **Every listed pair is applied.** `RueCore/Nonvacuous/Glue.lean` (L2) has one
 theorem per (witness, spine theorem) pair of `Spec.witnesses`,
 `Glue.<witness>.<theorem>`, which takes the witness's facts (with `M` from
-`exact_model` and the frame from `empty_activation` or `open_activation`) and applies
+`exact_model` and the activation record from `empty_activation` or `open_activation`) and applies
 `RueCore.Spine.<theorem>` to them. It elaborates only if the witness supplies
 that theorem's literal hypotheses, and the lint fails on a listed pair whose
 glue theorem is missing or does not use both constants. Six spine statements
@@ -1413,7 +1413,7 @@ The counter-examples, by kind:
   matching statement false, which is what makes the five monitor mutants
   statement kills (`MUTATION.md`).
 * Checked programs in the wrong place: an ill-typed expression
-  (`Sharp.typed`), a frame that does not match its context (`Sharp.activation`), a
+  (`Sharp.typed`), an activation record that does not match its context (`Sharp.activation`), a
   store that is not copy-closed (`Sharp.store_cc`), a function or an
   expression that is not `pendingSafe` (`Sharp.pending_program`,
   `Sharp.pending_expr`: a pending value abandoned by `return` ends nowhere, so
@@ -1429,7 +1429,7 @@ The counter-examples, by kind:
   canonical and one below the subnormal floor (`Sharp.float_halt`) (RUE-2500:
   these pin `SafeAt`'s typing half, `HasTy` and `FloatDatum.Wf`, which
   `MUTATION.md`'s statement-vocabulary mutants weaken), a
-  configuration whose frame names a retired cell, stuck with `useAfterDrop`
+  configuration whose activation record names a retired cell, stuck with `useAfterDrop`
   and not reached either (`Sharp.tombstoned_cell`, RUE-2496), a panic whose
   trace destroys one identity twice, not reached (`Sharp.unreached_double`,
   RUE-2477: `step_no_double_free`'s reachability), for
@@ -1463,7 +1463,7 @@ The two reasons, both in `Spec.lean`:
   structural, not a corollary of typing: a binding's cell is minted fresh
   and retired only when the scope that bound it ends, after which nothing
   names it, and a drop scope owes each cell once. The guard is still live
-  from an open configuration, a frame naming a cell already retired
+  from an open configuration, an activation record naming a cell already retired
   (`Examples.lean`, `Sharp.tombstoned_cell`), which is why
   `step_no_use_after_drop`'s reachability hypothesis has a counter-example.
   `no_use_after_drop` is kept as §7 states it, over checked programs.
@@ -1534,19 +1534,19 @@ pass is):
 | `RueCore/Float/Lemmas.lean` | (layer L2) every `FloatLaws` law proved of `Float.exactOps`, and `Float.exactModel` (RUE-2469): `roundRat_wf` (`rnd_w` lands in `𝔽_w`), `sqrt_core`/`sqrt_wf`, the NaN, division and literal laws | §2, §6.4, §7's float lemma |
 | `RueCore/Syntax.lean` | multiplicity lattice and its join, §2's declaration environment `D` — struct declarations with their attribute, fields and destructor, and **enum** declarations with one payload tuple per variant — types including `[T; n]`, `qual(T)` with §3's four-line array table (`3.8:74`), **places** (§5's `Path`, field steps and **constant** index steps) with the type a path reaches, §4.2's use plan `dl(Γ,p)` (`declaredPrefix`) and §5.1's residue test (`linearResidue`) over it, and §4.2's restrictions on which projections may be moved, expressions | §2, §3, §4.2 |
 | `RueCore/Statics.lean` | §3's qualifier assignment as a checked equation, for both layers, grounded by `3.0:5`'s joint acyclicity read through array nesting (`WfStructs`/`WfEnums`/`WfByValueEdge` over `Ty.tyNames`, the unconditional `class_unique` and its two projections, `struct_carriesLinear_iff`/`enum_carriesLinear_iff`), the fused flow-sensitive `Γ;Σ` context with Σ **keyed by path** (`OwnSt`, `fullyOwned`, §5.6's recursive `residualLinear`, whose array clause reads the element type `n` times), the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type, and concluding at §5.3's output result `Ω` with the `-Bottom` rules and the join over the arms that can complete normally) — the ordinary place rules and the **declared-linear destructure** of §5.1 beside them — the §5.5 branch join over paths and its n-way fold at a `match` (proved commutative and, over states that are shapes of their declared types (`OwnSt.wf`), associative, so the fold is invariant under a permutation of the arms, `Ctx.joinAll_perm`, idempotent and absorbing its right arm, `Ctx.join_absorb`, and every derivation preserves that shape invariant, `Typed.wf`), §5.7's loop-head equation `LoopHead` with its re-entry lemma, (Fn) and whole-program well-formedness, skeleton preservation | §3, §4.2, §5.1–§5.3, §5.5–§5.8 |
-| `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with observation traces (drops, destructors, `@dbg`); cell **contents as a tree with `⊘` at any node**, navigated by a path (§6.3's `H(ℓ)@π` and `H[ℓ@π ↦ ⊘]`, a constant index being a step like a field slot); §6.3's `split`/`destructure` for the declared-linear redex, with a linear-leak monitor; §6.11's recursive drop (destructor, then fields in declaration order, an enum's active variant's payload, and an array's elements in ascending index order, every `⊘` skipped); frames with drop scopes and their unwinds, `return`'s and `break`'s; loops, each turn spending fuel; object identities minted at aggregate introduction and carried by values, cells and trace events; violations as named refusals, among them the copy-closure monitor; §6.4's operator rules, §6.5's bounds trap at a dynamic index, and every §6.12 trap the fragment reaches, each carrying the trace up to it | §6.1–§6.12 |
+| `RueCore/Dynamics.lean` | store/activation-record machine as a fuel-indexed definitional interpreter with observation traces (drops, destructors, `@dbg`); cell **contents as a tree with `⊘` at any node**, navigated by a path (§6.3's `H(ℓ)@π` and `H[ℓ@π ↦ ⊘]`, a constant index being a step like a field slot); §6.3's `split`/`destructure` for the declared-linear redex, with a linear-leak monitor; §6.11's recursive drop (destructor, then fields in declaration order, an enum's active variant's payload, and an array's elements in ascending index order, every `⊘` skipped); activation records with drop scopes and their unwinds, `return`'s and `break`'s; loops, each turn spending fuel; object identities minted at aggregate introduction and carried by values, cells and trace events; violations as named refusals, among them the copy-closure monitor; §6.4's operator rules, §6.5's bounds trap at a dynamic index, and every §6.12 trap the fragment reaches, each carrying the trace up to it | §6.1–§6.12 |
 | `RueCore/Statics/Lemmas.lean`, `RueCore/Dynamics/Lemmas.lean`, `RueCore/Step/Lemmas.lean` | (layer L2) the theorems about the three definition modules' definitions, moved out of them verbatim (RUE-2460): the qualifier and join lemmas `Statics.lean`'s row names, the machine's few, and `Step`'s below | as the module each is about |
 | `RueCore/Step.lean` | §6's reduction relation `Step` over the §6.1 configuration, one constructor per rule, with §6.2's evaluation contexts as a stack of frames (evaluation-state and return-state constructors per context production, (Panic-Lift) folded into every trap); `step`, the same relation as a function, and (in `Step/Lemmas.lean`) `step_iff`; determinism (`Step.det`), no step from a terminal configuration, the terminal/step/stuck trichotomy with every stuck state named by one of §6's own four violations, never a monitor (`step_stuck_isStuckState`); the monitor-free drops and the lemmas that a monitor only removes behaviour (`unwindLocs_plain`, `destructure_plain`). Adequacy to `eval`: soundness is `Equivalence.lean`, completeness proved in `RueCore/Equivalence.lean` (`eval_small_to_big`, `never_refused_iff`) | §6.1–§6.12 |
-| `RueCore/Soundness/Defs.lean` | (layer L1) the definitions §7's statements are written in, moved out of `Soundness.lean`: value and contents typing (`HasTy`, `ContentsTy`), the per-frame agreement invariant `ActivationTyping` with its per-cell and per-node parts, the frame property `FrameProperty`, and `soundness`'s promise `EvalOk` | §6.1, §7 |
-| `RueCore/Soundness.lean` | lemmas about value typing, the per-frame agreement invariant `ActivationTyping` and the frame property `FrameProperty` (all three defined in `Soundness/Defs.lean`), **the safety theorem** — with progress at a `match` resting on exhaustiveness, preservation on the folded join, and a loop's back edge and exits on the head equation (`LoopHead.enter`, `LoopHead.backEdge`, `loop_exit_ok`) — the fuel lemmas, and per-§7-bullet corollaries over a whole program | §7 |
+| `RueCore/Soundness/Defs.lean` | (layer L1) the definitions §7's statements are written in, moved out of `Soundness.lean`: value and contents typing (`HasTy`, `ContentsTy`), the per-activation-record agreement invariant `ActivationTyping` with its per-cell and per-node parts, the frame property `FrameProperty`, and `soundness`'s promise `EvalOk` | §6.1, §7 |
+| `RueCore/Soundness.lean` | lemmas about value typing, the per-activation-record agreement invariant `ActivationTyping` and the frame property `FrameProperty` (all three defined in `Soundness/Defs.lean`), **the safety theorem** — with progress at a `match` resting on exhaustiveness, preservation on the folded join, and a loop's back edge and exits on the head equation (`LoopHead.enter`, `LoopHead.backEdge`, `loop_exit_ok`) — the fuel lemmas, and per-§7-bullet corollaries over a whole program | §7 |
 | `RueCore/Trace/Defs.lean` | (layer L1) the definitions the trace theorems are stated over, moved out of `Trace.lean`, `TraceExact.lean` and `TraceOrder.lean`: owned identities and the trace's projections (`Contents.own`, `freedIds`, `dtorIds`), the ledgers `Cons`, `Exact`, `Lead` and `Tidy`, the carve-out `Program.pendingSafe`, the block grammar `Blocks`, §6.11's drop rules `DropGlue` and `DropGlueSeq` and the block grammar over them `DropGlueBlocks` (RUE-2487), the configuration invariants `Config.Ordered`, `Config.Nested`, `StrictStackOrder` and `StackDiscipline`, and what a configuration holds, `Config.held` with `Kont.own`, `Focus.own` and `ArgsFrame.own` (RUE-2478) | §6.1, §6.7, §6.9–§6.11, §7 |
 | `RueCore/Trace.lean` | theorems over the drop trace: owned object identities (`Contents.own`, defined in `Trace/Defs.lean`), copy closure, and the conservation law `eval_conserves`, proved by fuel induction over `eval`, from which `no_double_free` follows — no identity freed twice, no destructor run twice on one value, for every finished run of a checked program (every prefix of every run: `TracePrefix.lean`); and `dupProgram_step_double_free`, the ill-typed program §6's relation frees twice | §7 |
-| `RueCore/TraceExact.lean` | the exact ledger `eval_exact`, the conservation law read as an equality over the identities an evaluation starts with, proved through `rest_step`, the ledger for the rest of every form; the frame-pop invariant `eval_tidy`, that every cell an evaluation allocates is retired by its end; `drop_exactly_once`, at every well-typed configuration of a checked program — every owned value it starts with ends exactly once, dropped, discarded or consumed on the normal or the unwind path, never both, and every cell it allocated is retired — and `rest_exactly_once`, the same for the values a form's leading operands produce — a loop's lead being its body breaking — which covers values minted inside an evaluation; with the `@panic` carve-out and the RUE-2316 one (`pendingSafe`, witnessed load-bearing by `pendingSafe_needed`), and `orphan_rejected`/`letDropDeleted_rejected`/`seqDropDeleted_rejected`/`breakLeak_rejected`, results the two statements reject at typed configurations of checked programs; the whole-run form is `TraceWhole.lean`'s | §6.7, §6.9, §6.10, §7 |
+| `RueCore/TraceExact.lean` | the exact ledger `eval_exact`, the conservation law read as an equality over the identities an evaluation starts with, proved through `rest_step`, the ledger for the rest of every form; the activation-record-pop invariant `eval_tidy`, that every cell an evaluation allocates is retired by its end; `drop_exactly_once`, at every well-typed configuration of a checked program — every owned value it starts with ends exactly once, dropped, discarded or consumed on the normal or the unwind path, never both, and every cell it allocated is retired — and `rest_exactly_once`, the same for the values a form's leading operands produce — a loop's lead being its body breaking — which covers values minted inside an evaluation; with the `@panic` carve-out and the RUE-2316 one (`pendingSafe`, witnessed load-bearing by `pendingSafe_needed`), and `orphan_rejected`/`letDropDeleted_rejected`/`seqDropDeleted_rejected`/`breakLeak_rejected`, results the two statements reject at typed configurations of checked programs; the whole-run form is `TraceWhole.lean`'s | §6.7, §6.9, §6.10, §7 |
 | `RueCore/TraceOrder.lean` | **drop order**, `drop_order`, over §6's relation, in two halves, and `drop_glue_order`, its within-value half stated in §6.11's own terms (RUE-2487): every finished run's trace is in `DropGlueBlocks`, whose drop blocks are §6.11's rules `DropGlue` rather than `dropEvents`; the machine's walk meets those rules (`dropContents_glue`), which determine the events (`DropGlue.det`). Within a value: every finished run's trace is in the block grammar `Blocks`, each drop marker followed by exactly §6.11's walk of what it names, so every destructor runs inside the drop that owns it, in §6.11's order, and nowhere else (`run_blocks` over `eval`, needing only `3.9:31`, carried to `Step` by `step_blocks`). Across cells: every drop scope is in location order, which is registration order (`reachable_ordered`); the scopes nest, pending `endscope` markers being the tail of their record (`reachable_nested`); and every reachable step is last-in first-out on the registration stack, dropping only cells it deregistered, newest first, each newer than every cell still registered (`reachable_stackDiscipline`, `StackDiscipline.newer`). Its witnesses on example programs (`fieldsSwapped_rejected`, `swappedMarkers_rejected`, `unorderedRecord_rejected`, `returnPastAffine_strictStackOrder`) and the order-witnessing corpus cases are in `Witnesses.lean` | §3.9, §6.7, §6.9, §6.10, §6.11, §7 |
-| `RueCore/Tombstone.lean` | **no program reaches a retired cell** (RUE-2496): `run_no_use_after_drop`, at every fuel and any float operations, and `step_no_use_after_drop`, from `Config.init`, with no typing hypothesis. The invariant, over `eval` by induction on fuel (`Tombstone.eval_live`) and over `step` (`Tombstone.step_live`): every cell a frame's environment names or its drop scope holds a drop obligation for is live, and the record owes each once; over `Step`, for every suspended caller's frame too, with the stack's shape (`Tombstone.Shape`: an `endscope` marker or a loop boundary sits under a frame that extends its own at the end of its record) | §6.1, §6.7, §6.9, §6.10, §7 |
+| `RueCore/Tombstone.lean` | **no program reaches a retired cell** (RUE-2496): `run_no_use_after_drop`, at every fuel and any float operations, and `step_no_use_after_drop`, from `Config.init`, with no typing hypothesis. The invariant, over `eval` by induction on fuel (`Tombstone.eval_live`) and over `step` (`Tombstone.step_live`): every cell an activation record's environment names or its drop scope holds a drop obligation for is live, and the record owes each once; over `Step`, for every suspended caller's activation record too, with the stack's shape (`Tombstone.Shape`: an `endscope` marker or a loop boundary sits under an activation record that extends its own at the end of its record) | §6.1, §6.7, §6.9, §6.10, §7 |
 | `RueCore/TracePrefix.lean` | **no double free on every prefix of a run** (RUE-2477): `step_no_double_free`, for a checked program, bounds the trace of every configuration `Step` reaches from `Config.init` — freed identities and destructor runs at most once each — so a run that never finishes is covered, where `no_double_free` sees only `outOfFuel` and an empty trace. The invariant (`LongC`, `eval_longc`): when `eval` exhausts its fuel from a copy-closed store, `Step` has a run at least that long whose appended trace keeps the conservation law's trap ledger (`Cons`'s `panic` clause), proved as `eval_steps_of_outOfFuel` is, with `eval_conserves`' ledger added wherever an operand finished; a trace only grows along `Step` (`Steps.trace_ext`), so the bound reaches every earlier configuration (`steps_trace_once`, on every program `run` never refuses). `no_double_free_of_step` derives `no_double_free` from it | §6.7, §6.10, §6.11, §7 |
 | `RueCore/TraceWhole.lean` | **every owned value of a run that finishes with a value ends exactly once** (RUE-2478): `whole_program_exactly_once`, for a checked, `pendingSafe` program, takes any configuration `Step` reaches from `Config.init` and any owned identity it holds (`Config.held`: in a cell, in focus, or pending on the control stack) and, where the run from it finishes with a value, puts that identity exactly once in the final trace's ended identities or in the final value — the "at least once" half the per-evaluation statements left to prose, and `main`'s result and an end inside the minting evaluation with it. The invariant is a ledger (`Config.ledger`: what a configuration holds plus what its trace ended) that no step of the run loses (`MSteps`); `eval_msim` is `eval_sim` with every run lossless, each step closed by one of `TraceExact.lean`'s exact ledgers read at every identity, copy closure coming from `eval`'s own monitor, not from a configuration typing, and `pendingSafe` from `eval_quiet` wherever an unwind would discard a held value; `MSteps.of_steps` puts every reached configuration on that run by determinism | §6.1, §6.7, §6.9–§6.12, §7 |
-| `RueCore/Equivalence.lean` | **`eval` is adequate to `Step`, both ways, and §7 over `Step`** (RUE-2289 parts 2–4, ADR-0097 decision 3). Soundness: the simulation relation `Sim` between an `eval` result and `→*` from the expression in focus under any context — a value reaches the hole's value in the same frame, a panic reaches `↯κ`, an unwinding `return` the nearest caller, an unwinding `break` the nearest loop's context — proved for every expression and fuel on every program (`eval_sim`, `run_sim`), and `eval_big_to_small`, the statement over checked programs, where `no_refusal` rules `.refused` out. The small-to-big direction, modulo fuel: exhausted fuel is a run of that many steps (`eval_steps_of_outOfFuel`); with determinism, `eval_small_to_big` says that on a checked program every value or panic `→*` reaches is `run`'s answer at every fuel past the run's length; `never_refused_iff` is "never `.refused`" both ways, in §7's phrasing; `eval_diverges_iff` says exhaustion at every fuel is divergence. §7 over `Step` (part 4): `step_progress`, `step_safeAt` (for the semantic configuration typing `Config.SafeAt`, whose syntactic type soundness lemma is `init_safeAt`), `step_value_typed` and `step_type_safety`; `Activation.empty`, `StepsN` and `Config.SafeAt` are defined in `Equivalence/Defs.lean` (layer L1) | §6.2, §6.9, §6.10, §6.12, §7 |
+| `RueCore/Equivalence.lean` | **`eval` is adequate to `Step`, both ways, and §7 over `Step`** (RUE-2289 parts 2–4, ADR-0097 decision 3). Soundness: the simulation relation `Sim` between an `eval` result and `→*` from the expression in focus under any context — a value reaches the hole's value in the same activation record, a panic reaches `↯κ`, an unwinding `return` the nearest caller, an unwinding `break` the nearest loop's context — proved for every expression and fuel on every program (`eval_sim`, `run_sim`), and `eval_big_to_small`, the statement over checked programs, where `no_refusal` rules `.refused` out. The small-to-big direction, modulo fuel: exhausted fuel is a run of that many steps (`eval_steps_of_outOfFuel`); with determinism, `eval_small_to_big` says that on a checked program every value or panic `→*` reaches is `run`'s answer at every fuel past the run's length; `never_refused_iff` is "never `.refused`" both ways, in §7's phrasing; `eval_diverges_iff` says exhaustion at every fuel is divergence. §7 over `Step` (part 4): `step_progress`, `step_safeAt` (for the semantic configuration typing `Config.SafeAt`, whose syntactic type soundness lemma is `init_safeAt`), `step_value_typed` and `step_type_safety`; `Activation.empty`, `StepsN` and `Config.SafeAt` are defined in `Equivalence/Defs.lean` (layer L1) | §6.2, §6.9, §6.10, §6.12, §7 |
 | `RueCore/Checker/Defs.lean` | (layer L1) the decidable checker as an algorithm, moved out of `Checker.lean`: `check`, `checkFn`, `checkDecls` and `checkProgram` | §3, §5 as an algorithm |
 | `RueCore/Checker.lean` | decidable checker `check`/`checkProgram` (defined in `Checker/Defs.lean`) + `check_sound`/`checkProgram_sound` (every acceptance is a derivation), with §5.7's loop head found by a bounded iteration (`headIter`) and re-verified, and `checkDecls` — §3's two qualifier equations plus `3.0:5`'s acyclicity, decided by a topological sort of the declarations | §3, §5 as an algorithm |
 | `RueCore/Spec/Nonvacuous.lean`, `RueCore/Nonvacuous.lean` | (layers Spec and L2) the non-vacuity witnesses (RUE-2469, "Non-vacuity witnesses"): sixteen statements, over written-out programs, that the spine's hypotheses hold together of non-trivial programs, and their proofs | §7's hypotheses, satisfied |
@@ -1603,8 +1603,8 @@ premise admits, all with §6.5's bounds trap, the **element-wise partial move** 
 a constant-index path — with `rootIdxOnly` for §4.2's "element moves only at
 the root", the `MovedOut` element state the move leaves, `3.8:73`'s
 path-specific element drop, and `3.8:72`'s refusal to assign into an array that
-has one — and top-level functions, by-value calls with frames and scope
-records, `return` with its σ unwind, and `loop` with its nullary `break`,
+has one — and top-level functions, by-value calls with activation records and drop
+scopes, `return` with its σ unwind, and `loop` with its nullary `break`,
 typed at §5.7's loop-head state and unwound by §6.10's (D-Break). A dynamic index reaches below
 itself: `a[i].x0`, `h.arr[i].x0`, `a[i][j]` and `a[i][0].x1` are read and
 written as the compiler reads and writes them, and dropped when they are `Copy`, with `Place` still
@@ -1629,7 +1629,7 @@ by iterating from the entry state (`headIter`), then checks the equation.
 proof. A `break` completes abruptly with the whole context where it fires; the loop drops the
 bindings its body opened (`Ctx.loopLocals`, §6.10's unwind) and joins the rest
 over every exit (`Ctx.outsideLoop`, `3.8:80`). A `break`-less loop is
-`never`-typed and checks the `⟨diverge, Σ_h⟩` edge frame-wide
+`never`-typed and checks the `⟨diverge, Σ_h⟩` edge across the activation record
 (`03-metatheory.md` records the reading). Eleven corpus cases cover the
 shapes (`Examples.lean`, "Loops and `break`"), and the generator draws
 counted, once-through and nested loops (`Gen.lean`, "Loops"). The guide's
@@ -1644,7 +1644,7 @@ theorem soundness (hwf : WfProgram P) :
 ```
 
 `EvalOk` is a predicate on the result: a well-typed value with the agreement
-restored at `Ω`'s normal output context and the frame's neighbours untouched
+restored at `Ω`'s normal output context and the activation record's neighbours untouched
 (and no value at all when `Ω` is §5.7's `⊥`); or a value
 an unwinding `return` handed back; or an unwinding `break` that fired at one
 of `Ω`'s abrupt-completion contexts; or a *defined* panic; or `outOfFuel`. It is
@@ -1663,7 +1663,7 @@ is the **recursive** `ContentsOwnTyping`, relating the binding's ownership tree
 to the tree stored in its cell path by path and encoding the deliberate
 asymmetry of the §5.5 join (a statically `MovedOut` path may dynamically still
 hold live *non-linear* content, which the machine then drops path-specifically,
-`3.8:60`; a live linear value is never statically lost). And the σ invariant: the frame's drop scope, read
+`3.8:60`; a live linear value is never statically lost). And the σ invariant: the activation record's drop scope, read
 newest-first, **is** its environment, which is what makes `let`'s double
 bookkeeping (RUE-1277) consistent and what keeps an unwind off a retired
 cell.

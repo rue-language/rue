@@ -34,14 +34,14 @@ family `evalConf H φ e K tr`, one configuration for every context `K` and every
 trace `tr` already produced. `Sim M P φ C r` says what `eval`'s result `r`
 promises about `→*` from the family `C`:
 
-* `.ok H' v tr'`: for every context, `E[e] →* E[v]`, in the frame `φ` the
+* `.ok H' v tr'`: for every context, `E[e] →* E[v]`, in the activation record `φ` the
   expression started in, with the store `H'` and the trace extended by `tr'`
   — §6.2's (Search) run to the hole's value;
 * `.panic κ tr'`: for every context, `E[e] →* ↯κ` after `tr'` — (Panic-Lift)
   §6.2;
 * `.returned H' v tr'`: for every context with a `ret(E', φs)` frame
   (`Kont.toCall`), the configuration reaches the caller `E'[v]` in `φs` —
-  (D-Return) §6.9, whose drops `eval` has already run from the same frame;
+  (D-Return) §6.9, whose drops `eval` has already run from the same activation record;
 * `.broke H' sc tr'`: for every context with a loop boundary before any call
   frame (`Kont.toLoop`) and every successful unwind of the cells the body
   still owed, the configuration reaches the loop's context with `⟨⟩` —
@@ -50,9 +50,9 @@ promises about `→*` from the family `C`:
   into the plain one;
 * `.refused` and `.outOfFuel`: nothing.
 
-`eval_sim` is `Sim` for every expression, store, frame and fuel. Each
+`eval_sim` is `Sim` for every expression, store, activation record and fuel. Each
 `bind` in `eval` is one (Search) evaluation-state step, the operand's `Sim` under one
-more frame, and a return-state step (`Sim.bind`); argument lists are
+more activation record, and a return-state step (`Sim.bind`); argument lists are
 `evalArgs_sim`; the call boundary is `Sim.absorb`; and a loop turn that
 finishes re-enters the body through (D-Loop-Iter) where `eval` re-evaluates
 the whole loop at one less fuel, the one (D-Loop-Enter) between them peeled
@@ -137,7 +137,7 @@ abbrev evalConf (H : Store) (φ : Activation) (e : Expr) : List Kont → List Ev
 (RUE-2289, parts 2 and 3; the module docstring reads it clause by clause). `C`
 is a configuration family indexed by the context `K` below the focus and the
 trace `tr` produced before it, §6.2's `⟨H ; φ ; K ; E[e]⟩`: a value reaches
-`E[v]` in the frame `φ` (§6.2's (Search)), a panic reaches `↯κ` from every
+`E[v]` in the activation record `φ` (§6.2's (Search)), a panic reaches `↯κ` from every
 context ((Panic-Lift) §6.2), an unwinding `return` reaches the nearest caller
 ((D-Return) §6.9), and an unwinding `break` reaches the nearest loop's context
 ((D-Break) §6.10). Part 3's completeness (`eval_small_to_big`) takes its runs
@@ -261,7 +261,7 @@ theorem Sim.lift {M : FloatSig} {P : Program} {φ φ₁ : Activation}
   cases r <;> simp_all [EvalRes.bind]
 
 /-- §6.9's call boundary: the body's `returned` is caught at the `call φ`
-frame, which is what `absorb` turns into a value (helper). -/
+activation record, which is what `absorb` turns into a value (helper). -/
 theorem Sim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Activation}
     {C C₁ : List Kont → List Event → Config}
     (hC : ∀ K tr, Steps M P (C K tr) (C₁ (.call φ :: K) tr))
@@ -407,7 +407,7 @@ theorem rootCell_of {H : Store} {φ : Activation} {i ℓ : Nat} {c : Contents}
     (hℓ : φ.env[i]? = some ℓ) (hc : H[ℓ]? = some (.full c)) : rootCell H φ i = .ok (ℓ, c) := by
   simp [rootCell, hℓ, hc]
 
-/-- (D-EndScope) restores the frame (D-Let) or (D-Match) extended (helper). -/
+/-- (D-EndScope) restores the activation record (D-Let) or (D-Match) extended (helper). -/
 theorem Activation.unwindScope_push (φ : Activation) (ls : List Nat) :
     ({ env := ls.reverse ++ φ.env, scope := φ.scope ++ ls } : Activation).unwindScope ls.length = φ := by
   cases φ
@@ -983,7 +983,7 @@ end forms
 /-! ## The big-to-small direction: `eval` to `Step` -/
 
 /-- **`eval` is simulated by §6's `→*`** (RUE-2289 part 2, ADR-0097 decision
-3), for every expression, store, frame and fuel, on every program: a value, a
+3), for every expression, store, activation record and fuel, on every program: a value, a
 panic, an unwinding `return` and an unwinding `break` are each reached by
 `Step` from the expression in focus under any context, as `Sim` reads them
 (§6.2's (Search) and (Panic-Lift), (D-Return) §6.9, (D-Break) §6.10). The

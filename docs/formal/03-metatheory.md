@@ -66,7 +66,7 @@ join, §2's whole integer operator set — `+ - * / %`, `& | ^`, `<< >>`,
 dynamics — and the one-operand float intrinsics `@int_to_float`,
 `@float_to_int` (the one float form that traps, `3.12:18`), `@float_cast` and
 the five of `3.12:34`; top-level function definitions,
-by-value calls with frames and drop scopes ((Fn)/(Call) §5.8,
+by-value calls with activation records and drop scopes ((Fn)/(Call) §5.8,
 (D-Call)/(D-Return-Value) §6.9), `return` with its σ unwind
 ((Return-Value) §5.7, (D-Return) §6.9), and `loop` with its nullary `break`
 ((Break), (Loop-Div-Backedge), (Loop-Div) and (Loop-Break) §5.7, §6.10's
@@ -171,7 +171,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   `RueCore.step_type_safety` (`lean/RueCore/Equivalence.lean`, RUE-2333),
   derived from the `eval` form and the two adequacy directions (the adequacy
   row below).
-- **Statement, in words:** if `Typed P R Γ e T Ω` holds and the frame agrees
+- **Statement, in words:** if `Typed P R Γ e T Ω` holds and the activation record agrees
   with `Γ`, then at every fuel bound `eval` yields a well-typed value with the
   agreement restored at `Ω`'s normal output context, a value handed back by an
   unwinding `return`, an unwinding `break` that fired at one of `Ω`'s
@@ -231,16 +231,16 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   monitor sees exactly what §5.6's `residual-linear` computes, and
   `RueCore.ContentsOwnTyping.getAt`/`.setAt` say that navigating a path
   agrees on the two sides wherever Σ has a state for it — which is wherever no
-  proper prefix is `MovedOut`, (Owned-Base) §5.1. And the σ invariant: the frame's drop scope,
+  proper prefix is `MovedOut`, (Owned-Base) §5.1. And the σ invariant: the activation record's drop scope,
   read newest-first, *is* its environment, which is what lets `StoreTyping` apply
   to `run-all-scope-drops`'s walk. In this fragment that equation is
-  **definitional** — every frame the interpreter builds builds σ and ρ from
+  **definitional** — every activation record the interpreter builds builds σ and ρ from
   one list — so it is not yet evidence about the RUE-1277 redundancy, which
   was raised for scopes pushed and popped independently of the binder chain.
   §6.6's `match` arm **appends** its payload cells to the innermost record, as
   (D-Let) §6.7 does, and so does a loop body: §6.10's `push-scope` is read as
   the record's length at the loop's entry, and a `break` hands the loop the
-  record of the frame it fired in (`RueCore.EvalRes.broke`), whose cells past
+  drop scope of the activation record it fired in (`RueCore.EvalRes.broke`), whose cells past
   that length are exactly the body's still-open bindings. So the equation
   stays definitional, and a `break`'s unwind is `RueCore.StoreTyping.unwindPrefix`
   on those cells (`RueCore.loop_exit_ok`). It becomes a real obligation when
@@ -420,10 +420,10 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 ## No use-after-drop / no leak of drops
 
 - **Theorem:** `RueCore.no_use_after_drop` — the "never read afterward"
-  half: no evaluation touches a retired (`†`) cell. With frames this is a
+  half: no evaluation touches a retired (`†`) cell. With activation records this is a
   corollary of the invariant rather than a structural fact about closed
-  expressions: `run-all-scope-drops` (§6.9) walks the frame's drop scope at
-  every `return` and at every frame pop, and it is `ActivationTyping` — the record
+  expressions: `run-all-scope-drops` (§6.9) walks the activation record's drop scope at
+  every `return` and at every activation-record pop, and it is `ActivationTyping` — the record
   *is* the environment, whose cells `StoreTyping` says are live or moved out and
   pairwise distinct — that keeps those walks off a `†` cell and stops any cell
   being retired twice. The guard is also witnessed directly from an open
@@ -432,23 +432,23 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 - **Theorems:** `RueCore.drop_exactly_once` and `RueCore.rest_exactly_once`
   (`lean/RueCore/TraceExact.lean`, RUE-2427): the "exactly once" half.
 - **In words.** Take a well-typed configuration of a checked program: an
-  expression typed in `Γ`, run in a frame and store that agree with `Γ`. Its
+  expression typed in `Γ`, run in an activation record and store that agree with `Γ`. Its
   evaluation is never refused, and when it completes normally or completes abruptly by
   `return` or `break`, two things hold.
   - **The ledger.** Every owned value the store held when the evaluation
     started is in exactly one place: in a cell that already existed, part of
     the result, or ended in the trace exactly as many times as it was held
     (`RueCore.Exact`).
-  - **The frame-pop invariant.** Every cell the evaluation allocated is
+  - **The activation-record-pop invariant.** Every cell the evaluation allocated is
     retired: a `let`'s at its `endscope`, a `match` arm's at the arm's end,
-    a callee's at its frame pop. The one exception is an unwinding `break`,
+    a callee's at its activation-record pop. The one exception is an unwinding `break`,
     which leaves the cells its drop scope still owes. The loop retires
     them, and `rest_exactly_once` at the loop counts their values as ended
-    (see below). Cells outside the frame's environment were touched only to be
-    retired, and an unwinding `return` has retired the frame's whole record
+    (see below). Cells outside the activation record's environment were touched only to be
+    retired, and an unwinding `return` has retired the activation record's whole drop scope
     (`RueCore.Tidy`, `RueCore.eval_tidy`). So "still in the store" never
     means a cell nobody can reach any more. `RueCore.orphan_rejected` is a
-    frame pop that forgot its σ-walk: the bare ledger balances and `Tidy`
+    activation-record pop that forgot its σ-walk: the bare ledger balances and `Tidy`
     rejects it.
 
   So a binding's value is dropped on the normal path (the binding's
@@ -496,7 +496,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   an owned value lies inside the window of a statement that already counts
   the value: the rest of the form that bound or received it, the rest of
   the loop a `break` unwinds to, or an evaluation that started holding it.
-  The places are an `endscope`, a discard, a frame pop, a `return`'s σ-walk,
+  The places are an `endscope`, a discard, an activation-record pop, a `return`'s σ-walk,
   a `break`'s unwind, a consumption, an overwrite and `@drop`. So every
   owned value a checked run holds ends exactly once by the end of the
   window that holds it, and is never left in a cell nobody can reach.
@@ -575,9 +575,9 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     strictly increasing location order. Records only ever grow by freshly
     allocated cells, so registration order is location order.
   - `RueCore.reachable_nested`: the scopes **nest** (`RueCore.Config.Nested`).
-    A frame's pending `endscope` markers are exactly the tail of its record,
+    An activation record's pending `endscope` markers are exactly the tail of its record,
     innermost last, and the whole registration stack (every suspended
-    caller's record, then the current frame's, `RueCore.Config.stack`) is in
+    caller's record, then the current activation record's, `RueCore.Config.stack`) is in
     location order. In particular (D-EndScope)'s pop by count removes the
     marker's own cells (`RueCore.Activation.unwindScope_tail`), which §6.7 states as
     a set difference and `Step.lean` implements by count.
@@ -601,7 +601,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     run drops `ℓ1` before `ℓ3`, and the first (D-EndScope) pops `ℓ3` off the
     record while its marker drops `ℓ1`. It is not `Nested`, so no run
     reaches it.
-  - `RueCore.unorderedRecord_rejected`: a frame whose record is out of
+  - `RueCore.unorderedRecord_rejected`: an activation record whose drop scope is out of
     location order takes a real step whose drops are not newest-first.
 - **The corpus, read through it.** `Witnesses.lean` pins, for fourteen
   order-witnessing seed cases, the identities the destructors ran on in
@@ -610,11 +610,11 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   the identities the markers end, each once. `nested_scopes` is the
   bridge-checked case of the cross-step order. The trace renderings'
   identity ledger shows the same per case (`lean/explain/*.txt`). The callee
-  frame's last-parameter-first teardown is bridge-checked too:
+  activation record's last-parameter-first teardown is bridge-checked too:
   `two_params_dropped_at_pop` (two parameters of two types) and
   `three_params_dropped_at_pop` drop the last parameter first, and
   `param_moved_other_dropped` moves the first parameter into a further call,
-  so only the second is left to the frame pop (RUE-2432).
+  so only the second is left to the activation-record pop (RUE-2432).
 
 ## No use-after-free
 
@@ -624,13 +624,13 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 
 ## Linear values are consumed exactly once
 
-- **Theorems:** `RueCore.no_linear_leak` (§5.6 scope exit, and §6.9's frame
-  teardown at an early `return` or a frame pop),
+- **Theorems:** `RueCore.no_linear_leak` (§5.6 scope exit, and §6.9's activation record
+  teardown at an early `return` or an activation-record pop),
   `RueCore.no_linear_overwrite` (§5.2, `3.8:77`),
   `RueCore.no_linear_discard` (§5.3, `3.8:64`).
 - **In words:** a well-formed program never reaches the refusal the machine
   raises when a linear value would be leaked, overwritten while live, or
-  discarded. The leak half covers three edges: a `let`'s scope exit, a frame's
+  discarded. The leak half covers three edges: a `let`'s scope exit, an activation record's
   normal pop (a by-value parameter the callee never consumed — (Fn) §5.8's
   second clause, `3.8:62`), and a `return`'s `⊥_exit` unwind. The frame-pop
   edge is reached only through `Examples.lean`'s kernel-checked
@@ -643,8 +643,8 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   - **A pending value (open, RUE-2316).** A value already built for a
     **sibling position** — a call's argument, a struct literal's initializer,
     an array literal's element, and an assignment's right-hand side while the
-    target's indices run after it (`5.2:14`) — is in no cell and no scope
-    record between the subexpression that produced it and the aggregation that would have taken
+    target's indices run after it (`5.2:14`) — is in no cell and no drop
+    scope between the subexpression that produced it and the aggregation that would have taken
     it (§6.9's `freshParams` for an argument). If a *later* sibling
     completes abruptly by `return` or `break`, (D-Return) §6.9 or (D-Break) §6.10
     discards the evaluation context with the pending values in it and
@@ -674,7 +674,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   - **A `@panic` (by design).** §6.12 abandons the configuration and §5.7
     exempts the `⊥_panic` edge from §5.6's obligation, so a trap runs no
     scope drop at all — where a `return` in the same position would have
-    unwound the frame and run every one. A live linear binding at a `@panic`
+    unwound the activation record and run every one. A live linear binding at a `@panic`
     is therefore destroyed with no violation and an empty trace. That is
     (Panic) as specified rather than a gap, and the Rue compiler agrees:
     `RueCore.Examples.panicPastLinear` is the program, with its `Typed`
@@ -741,12 +741,12 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 | Totality of the **integer** operations | discharged where it is needed, by construction rather than as a lemma: `RueCore.valOf_inBounds` says every `w`-bit pattern read at a signedness denotes a value of that type, which is what makes §6.4's bitwise and shift rules total, and `RueCore.binOpInt_res`, `RueCore.evalUnOp_int_res` and `RueCore.evalIntCast_res` say every integer operator lands on a value of its rule's type or on a trap — the operator half of progress. The last two name the category: `neg` traps only as `overflow` and `@intCast` only as `castOverflow`. `binOpInt_res` ranges over §6.12's categories rather than naming one, because `/` and `%` add their own (`lean/RueCore/Soundness.lean`) |
 | Handle-uniqueness preservation (O1) | not yet mechanized (RUE-2240) |
 | §6's reduction relation, mechanized | **defined; `eval` proved adequate to it in both directions** (next row). `RueCore.Step` is §6's `C → C'` over the §6.1 configuration for the fragment, one constructor per §6 rule, each citing it; §6.2's evaluation contexts are a stack of frames (`RueCore.Kont`), so (Search) is an evaluation-state and a return-state constructor per context production and (Panic-Lift) is the shape of every trap rule. Proved about it here: it is deterministic (`RueCore.Step.det`), a terminal configuration takes no step (`RueCore.Step.terminal`), and every configuration is terminal, steps, or is stuck (`RueCore.Config.trichotomy`, through the function `RueCore.step` and `RueCore.step_iff`), with every stuck state named by one of §6's own four violations and never by one of `eval`'s four monitors (`RueCore.step_stuck_isStuckState`). `RueCore.Config.stuck_iff` states stuckness in `Step`'s own terms: not terminal and no step. `RueCore.unwindLocs_plain` and `RueCore.destructure_plain` say a monitor only removes behaviour. Where it departs from §6's text: (Search) is an evaluation-state and a return-state constructor per context production; the `endscope` frame pops its cells by count, because bindings are de Bruijn indices where §6.7 relies on α-renaming; the loop boundary sits above its context's frames, because §6.10's `loopβ(e, φ)` records no context; `push-scope` is one drop scope read by length, so (D-Loop-Iter) and (D-Break) drop the cells past the loop's record; the use plan is recovered from the store rather than read off `μ`; a destructor is one trace event rather than a nested run; aggregate introduction mints a object identity by reserving a `†` store slot, exactly as `eval` does, so the two presentations keep one store (RUE-2323); a `match` and a destructure record the shells they consume with a `consume` event, and the destructure drops each retained residue subtree under a `drop` marker, as `eval` does (RUE-2427); `RueCore.Config.init` calls the entry point, so (D-Return-Main) is (D-Return) reaching its `call` frame; a dynamic read, `@drop` at a dynamic place, or repeat operand that is not `Copy` is stuck, the premise of the rule each cites; and so, in both presentations, are a `@dbg` operand §6.12 cannot render and a loop body value that is not `⟨⟩` (§6.10), which §6 would otherwise discard without a drop (RUE-2427). On programs `check` rejects, `Step` follows §6 where `eval` does not: `@drop` of a `⊘` place is §6.11's no-op where `eval` refuses it, and an owned value put under a `Copy` node steps where `eval` refuses it with `ownedUnderCopy` (`lean/RueCore/Step.lean`; the theorems about it are in `lean/RueCore/Step/Lemmas.lean`) |
-| Adequacy of `eval` to §6's reduction, and progress/preservation derived over the mechanized relation | **proved (both directions), with progress and preservation derived over `Step`**. Its domain is the programs `check` accepts: there `eval`'s `ok`/`panic` outcomes must agree with §6's values and panics, and neither side gets stuck. `.refused` is outside the correspondence, because four of `eval`'s refusals are monitors §6 does not have, and because `eval` names an operand-shape mismatch where §6 simply has no rule (`Dynamics.lean`, "the correspondence with §6"). A raw literal outside its type's `n_T` range is the other known difference, and `check` rejects it. **The big-to-small direction** is `RueCore.eval_big_to_small` (`lean/RueCore/Equivalence.lean`, ADR-0097 decision 3, §6.2): for a checked program, `run` is never `.refused` (`RueCore.no_refusal`); a value it answers is reached by `→*` from §6.12's initial configuration as a terminal configuration with the same store and trace, and a panic as `↯κ` after the same trace. It rests on `RueCore.eval_sim`, a simulation `RueCore.Sim` between each `eval` outcome and `→*` from the expression in focus under any context: a value reaches the hole's value in the same frame ((Search) §6.2), a panic reaches `↯κ` ((Panic-Lift) §6.2), an unwinding `return` the nearest caller ((D-Return) §6.9), an unwinding `break` the nearest loop's context ((D-Break) §6.10). The simulation holds on every program (`RueCore.run_sim`), with no typing hypothesis, because every place `eval` and `Step` differ is a refusal on `eval`'s side; typing only fixes the domain. **The small-to-big direction, modulo fuel,** is `RueCore.eval_small_to_big` (RUE-2332, ADR-0097 decision 3, §6.2, §6.12). For a checked program, if `→*` takes the initial configuration to a terminal configuration, `✓` or `↯κ`, in `n` steps, then at every fuel past `n` `run` answers that value or panic with the same store and trace. It rests on one fact, `RueCore.eval_steps_of_outOfFuel`, which holds on every program: if `eval` exhausts `fuel`, `Step` has a run of `fuel` steps from the same expression in focus. With determinism (`RueCore.StepsN.bound`, `RueCore.Steps.final_unique`), `run` cannot be out of fuel past the length of a run that ends, and `run_sim` places whatever it answers at that end. Off the checked domain the same argument gives `RueCore.run_small_to_big`, up to a refusal of `eval`'s, and `RueCore.dropMoved_refused` shows that the refusal really occurs. **"Never stuck", both ways**, is `RueCore.never_refused_iff`. For a checked program, "at every fuel `run` is never `.refused`" is equivalent to "every configuration `→*` reaches from the initial one reduces or has halted", which is §7's phrasing. The forward direction holds on every program (`RueCore.step_never_stuck_of_run`). The backward one is `no_refusal` on the checked domain, and fails off it (RUE-2314). **Divergence** is `RueCore.eval_diverges_iff`: on a checked program, `run` is out of fuel at every fuel exactly when §6 has runs of every length from the initial configuration, which by determinism is one infinite run. So `outOfFuel` never hides an answer §6 reaches. `fuel_mono` and `no_masking` state the same stability from `eval`'s side. **Progress and preservation over `Step`** (RUE-2333) are `RueCore.step_progress`, `RueCore.step_safeAt` and `RueCore.step_type_safety`, stated in §7's terms and derived from `soundness` and these two directions (the type-safety section, which also says why preservation is stated for a semantic configuration typing). `RueCore.affineScopeDrop_both_ways` is one corpus program, `affine_scope_drop`, in both presentations: `check` accepts it, `run` answers it, and a twelve-step `Step` derivation, written out constructor by constructor, reaches the same end (`lean/GUIDE.md`, "One program, traced both ways") |
+| Adequacy of `eval` to §6's reduction, and progress/preservation derived over the mechanized relation | **proved (both directions), with progress and preservation derived over `Step`**. Its domain is the programs `check` accepts: there `eval`'s `ok`/`panic` outcomes must agree with §6's values and panics, and neither side gets stuck. `.refused` is outside the correspondence, because four of `eval`'s refusals are monitors §6 does not have, and because `eval` names an operand-shape mismatch where §6 simply has no rule (`Dynamics.lean`, "the correspondence with §6"). A raw literal outside its type's `n_T` range is the other known difference, and `check` rejects it. **The big-to-small direction** is `RueCore.eval_big_to_small` (`lean/RueCore/Equivalence.lean`, ADR-0097 decision 3, §6.2): for a checked program, `run` is never `.refused` (`RueCore.no_refusal`); a value it answers is reached by `→*` from §6.12's initial configuration as a terminal configuration with the same store and trace, and a panic as `↯κ` after the same trace. It rests on `RueCore.eval_sim`, a simulation `RueCore.Sim` between each `eval` outcome and `→*` from the expression in focus under any context: a value reaches the hole's value in the same activation record ((Search) §6.2), a panic reaches `↯κ` ((Panic-Lift) §6.2), an unwinding `return` the nearest caller ((D-Return) §6.9), an unwinding `break` the nearest loop's context ((D-Break) §6.10). The simulation holds on every program (`RueCore.run_sim`), with no typing hypothesis, because every place `eval` and `Step` differ is a refusal on `eval`'s side; typing only fixes the domain. **The small-to-big direction, modulo fuel,** is `RueCore.eval_small_to_big` (RUE-2332, ADR-0097 decision 3, §6.2, §6.12). For a checked program, if `→*` takes the initial configuration to a terminal configuration, `✓` or `↯κ`, in `n` steps, then at every fuel past `n` `run` answers that value or panic with the same store and trace. It rests on one fact, `RueCore.eval_steps_of_outOfFuel`, which holds on every program: if `eval` exhausts `fuel`, `Step` has a run of `fuel` steps from the same expression in focus. With determinism (`RueCore.StepsN.bound`, `RueCore.Steps.final_unique`), `run` cannot be out of fuel past the length of a run that ends, and `run_sim` places whatever it answers at that end. Off the checked domain the same argument gives `RueCore.run_small_to_big`, up to a refusal of `eval`'s, and `RueCore.dropMoved_refused` shows that the refusal really occurs. **"Never stuck", both ways**, is `RueCore.never_refused_iff`. For a checked program, "at every fuel `run` is never `.refused`" is equivalent to "every configuration `→*` reaches from the initial one reduces or has halted", which is §7's phrasing. The forward direction holds on every program (`RueCore.step_never_stuck_of_run`). The backward one is `no_refusal` on the checked domain, and fails off it (RUE-2314). **Divergence** is `RueCore.eval_diverges_iff`: on a checked program, `run` is out of fuel at every fuel exactly when §6 has runs of every length from the initial configuration, which by determinism is one infinite run. So `outOfFuel` never hides an answer §6 reaches. `fuel_mono` and `no_masking` state the same stability from `eval`'s side. **Progress and preservation over `Step`** (RUE-2333) are `RueCore.step_progress`, `RueCore.step_safeAt` and `RueCore.step_type_safety`, stated in §7's terms and derived from `soundness` and these two directions (the type-safety section, which also says why preservation is stated for a semantic configuration typing). `RueCore.affineScopeDrop_both_ways` is one corpus program, `affine_scope_drop`, in both presentations: `check` accepts it, `run` answers it, and a twelve-step `Step` derivation, written out constructor by constructor, reaches the same end (`lean/GUIDE.md`, "One program, traced both ways") |
 | §5.5's `join(Σ1, …, Σn)` read unordered and unbracketed | **proved**, over states that are shapes of their declared types. The binary join is commutative (`RueCore.OwnSt.join_comm`, `RueCore.Ctx.join_comm`) and associative (`RueCore.OwnSt.join_assoc`, `RueCore.Ctx.join_assoc`), so `RueCore.Ctx.joinAll_perm` says the left fold the mechanization computes is invariant under a permutation of the arms — which is what licenses reading `RueCore.Ctx.joinAll` as the unordered n-way join §5.5 writes. Associativity carries two premises and `lean/RueCore/Examples.lean` pins a counterexample to each: `RueCore.OwnSt.wf`, the state-against-type invariant (`.fields` at a scalar is a state no rule can write), and `RueCore.WfStructs`, §3's qualifier assignment (a struct whose recorded qualifier disagrees with its field join separates the two associations). `RueCore.OwnSt.setAt_wf` and `RueCore.Ctx.joinAll_wf` say the rules that write and that join keep the first, and `RueCore.Typed.wf` proves it preserved judgment-wide from a well-formed context; with `RueCore.fnCtx_wf` it holds at every normal output context of a function body (`RueCore.Typed.wf_fnCtx`), with no hypothesis left over. It covers every `break` abrupt-completion context too, and `RueCore.Typed.skel_preserved` says each one extends the input skeleton (RUE-2369). That theorem was false while §5.7's `⊥` concluded at *any* context of the input skeleton (RUE-2340); since the judgment carries §5.3's `Ω` (RUE-2368), `⊥` has no state, and every normal output context is one a rule wrote |
 | §5.3's `Ω` and the `-Bottom` rules | **mechanized as written**, with the readings below. `RueCore.Typed` concludes at `RueCore.Out`, an optional normal state with the recorded abrupt-completion contexts; (Strict-Bottom) is one variant per strict context the fragment has (`binopBot`, `floatBinopBot`, `indexReadBot`, `indexWriteBotRhs`, `indexWriteBotIdx`, `assignBot`, `matchBot`, `iteBot`, `TypedArgs.consBot`), concluding at the construct's own type `T_E` with the premises that name it; (Seq-Bottom), (Let-Bottom) and (Return-Bottom) are `seqBot`, `letBot` and `retBot`; (Let) with a divergent tail is `letInDiv`; the branch join is over the arms that can complete normally (`RueCore.Ctx.joinOpt`, `RueCore.Ctx.joinOpts`). (Sub-Never) is folded into the rules §5.7 types at `never`, because the fragment has no `never` type; the checker's `RueCore.TyOrNever.never` is its image. Before RUE-2368 the judgment had no `Ω`: `return` and `@panic` concluded at any context, and the checker, which had to pick one, refused a diverging arm beside one that can complete normally in five seeded shapes the compiler accepts (`if_return_arm_affine`, `match_return_arm_linear`, `match_never_first_arm`, `if_panic_arm_linear`, `panic_past_linear`) |
 | Dead code after a diverging form | **unchecked, as §5.3 writes it**. (Seq-Bottom), (Let-Bottom) and (Strict-Bottom) type nothing past a `return` or `@panic`, so the checker accepts ill-formed dead code the compiler rejects (E0206, E0205, E0406, E0478, E0203, E0600 there), which §5.3 permits a surface checker to do. The corpus verdict contract excludes such programs (`lean/RueCore/Corpus.lean`), and whether the core should say more about unreachable source is a question for the calculus. No seed case has the shape, and the generator draws `break` only as the last form of an arm or of a once-through loop body (RUE-2330), and `return` or `@panic` only as the last form of an arm or of the function body (RUE-2383), with at most one diverging arm per branch, so no generated case has it either; whether errors in unreachable source are normative is RUE-2376 |
 | Reading: `return` and `@panic` checked where they fire | **a reading §5.7's closing note allows**. `RueCore.Out` records no `⟨ret, _⟩` or `⟨panic, _⟩` abrupt-completion context. (Fn) §5.8 consumes a `⟨ret, Σ_e⟩` only for its residual-linear check, and `RueCore.Typed.ret` carries that check as a premise at the edge; §5.7 exempts `⟨panic, _⟩` from §5.6, so nothing consumes it. The recorded abrupt-completion contexts are the `⟨break, Σ⟩` ones (Loop-Break) §5.7 joins, threaded through every rule by §5.3's convention |
-| Reading: the diverge edge checked frame-wide (RUE-2369) | **in effect**. (Fn) §5.8 checks a `⟨diverge, Σ_h⟩` abrupt-completion context against the by-value parameters; `RueCore.Typed.loopDiv` and `RueCore.Typed.loopBreakDiv` check it where it fires, by `NoResidualLinear` at the loop-head state, against every binding in scope — the non-panic residual condition §5.6 and §5.7 retain for a `⊥_diverge` edge. It fires only when the body reaches its back edge, as §5.7 completes abruptly with `diverge` only then. The compiler agrees: a linear **local** live at `loop { }` is E0406, as a linear parameter is (probes recorded in RUE-2326's report) |
+| Reading: the diverge edge checked across the activation record (RUE-2369) | **in effect**. (Fn) §5.8 checks a `⟨diverge, Σ_h⟩` abrupt-completion context against the by-value parameters; `RueCore.Typed.loopDiv` and `RueCore.Typed.loopBreakDiv` check it where it fires, by `NoResidualLinear` at the loop-head state, against every binding in scope — the non-panic residual condition §5.6 and §5.7 retain for a `⊥_diverge` edge. It fires only when the body reaches its back edge, as §5.7 completes abruptly with `diverge` only then. The compiler agrees: a linear **local** live at `loop { }` is E0406, as a linear parameter is (probes recorded in RUE-2326's report) |
 | Reading: `break` carries no value (RUE-2369) | **in effect, as the calculus writes it**. §2, §6.10 and `4.8:22` have no value-carrying `break` ("`break expr` is a compile-time error at the surface"), so `RueCore.Expr.brk` is the nullary `break` §2 writes, and a `break`-exited loop is `unit`-typed |
 | §5.7's loop-head state and the back edge | **mechanized as an equation, with one added premise**. `RueCore.LoopHead` states `Σ_h = head(Σ, e)` over the body judgment at `Σ_h`: the join of the entry with the body's back-edge state, or the entry when the body never completes (the core has no `continue`, so the back-edge set has at most that one state). It admits any solution, as the calculus's `where` clause does; `RueCore.check` computes the least one by §5.7's iteration (`RueCore.headIter`, bounded by the body's size, so `check` stays total and a bound too small costs completeness, never soundness) and re-verifies the equation. The added premise is that a head a back edge produced is a state of its declared types (`Ctx.Wf`): §5's states are, `RueCore.Typed.wf` proves every state a rule writes is, but the equation alone has solutions that are not, because `Σ_h` is on both sides of it. The back-edge proof is `RueCore.LoopHead.reenter`: the join **absorbs** a second copy of its right arm (`RueCore.Ctx.join_absorb`, with idempotence `RueCore.OwnSt.join_idem`), so the loop's derivation at entry types it again at its head, and `soundness`'s fuel induction takes every later turn with the same body derivation; `RueCore.LoopHead.enter` and `RueCore.LoopHead.backEdge` carry the store's agreement onto the head from the entry and from the back edge |
 | (Loop-Break)'s exits | **mechanized as written**. A `⟨break, Σ⟩` abrupt-completion context (`RueCore.Typed.brk`) records the whole context at the `break`; the loop splits it at its own depth into the loop-local bindings still open there, which carry §5.6's obligation discharged at the exit (`RueCore.Ctx.loopLocals`, checked by `NoResidualLinear`), and `outside_loop(Σ_x)` (`RueCore.Ctx.outsideLoop`), which the loop joins over every exit (`3.8:80`). §6.10's unwind drops the loop-local cells newest-first (`RueCore.loop_exit_ok`). A body with no `break` targeting the loop has no `break` abrupt-completion context (`RueCore.Typed.brk_nil`), which is how the syntactic premise of (Loop-Div) and the `Δ_out` of every loop agree. The corpus seeds RUE-1615's shape (a move in a loop whose every path breaks, accepted), RUE-1614's at the exit join (a linear value consumed on one exit only, E0443), a move meeting an outer loop's back edge, and a `break` past a live linear loop-local; the generator draws counted, once-through and nested loops with `break` arms that may move a binder from outside the loop (RUE-2330), and at `--gen 200 --seed 7` and `--gen 1000 --seed 23` every one of the 1,200 generated cases agrees with the compiler |

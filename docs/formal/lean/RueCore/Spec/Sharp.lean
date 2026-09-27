@@ -78,7 +78,7 @@ namespace RueCore.Spec.Sharp
 @drop(a); a.x0` as the entry point: the checker rejects it and it is neither
 `ProgramTyped` nor `WfProgram`, while its entry point exists and takes no
 parameters, and its body is `pendingSafe`; `main()`, the call `run` makes, is
-typed by `check` from the empty frame and store, which agree with the empty
+typed by `check` from the empty activation record and store, which agree with the empty
 context, and has a `Lead` (its empty argument list). `eval` refuses it with
 `useAfterMove`, and at fuel `0` it answers `outOfFuel`. So each of these
 conclusions fails once its program hypothesis is dropped: `soundness`
@@ -155,7 +155,7 @@ def stuck_step_stmt : Prop :=
 
 /-- **An ill-typed expression of a checked program** (§7 sharpness, RUE-2485).
 Over the checked program of `Nonvacuous.dtor`, the expression `let a = S0 { 1
-}; @drop(a); a.x0`, from the empty frame and store, is typed at no type and no
+}; @drop(a); a.x0`, from the empty activation record and store, is typed at no type and no
 outcome, and `check` rejects it; everything else `soundness`,
 `drop_exactly_once` and `rest_exactly_once` ask holds, the leading `S0 { 1 }`
 included (`Lead`). Its evaluation is refused with `useAfterMove`, so none of
@@ -193,9 +193,9 @@ def typed_stmt : Prop :=
       ∀ (T : Ty) (Ω : Out), ¬ EvalOk P.decls T (.int .w64 .signed) Ω.norm Ω.brk Activation.empty []
         (eval Float.exactOps 200 P [] Activation.empty e)
 
-/-- **A typed expression run in a frame that does not match its context**
+/-- **A typed expression run in an activation record that does not match its context**
 (§7 sharpness, RUE-2485). `1; x`, typed by `check` in the context `x : i64` over
-the checked program of `Nonvacuous.dtor`, is run from the empty frame and
+the checked program of `Nonvacuous.dtor`, is run from the empty activation record and
 store, which do not match that context (`ActivationTyping` fails); everything else
 `soundness`, `drop_exactly_once` and `rest_exactly_once` ask holds, a `Lead`
 (the discarded `1`) included. `eval` refuses the read of `x` with `unbound`. The statement gives `ProgramTyped P` and `WfProgram P`
@@ -500,7 +500,7 @@ def bare_dtor_stmt : Prop :=
 RUE-2485; RUE-2316's carve-out). Beside an entry point returning `0`, `fn
 g(s: S0) -> i64 { [s, return 7]; 0 }` is typed, but the array literal's first
 element is pending when the second completes abruptly, so the program is not
-`pendingSafe`. The call `g(s)`, from a frame holding `s : S0` at cell `0`,
+`pendingSafe`. The call `g(s)`, from an activation record holding `s : S0` at cell `0`,
 returns `7` and ends `s`'s identity nowhere: it is in no cell, not in the
 result and not in the trace. So `drop_exactly_once` and `rest_exactly_once`
 fail without `P.pendingSafe` (`Exact` fails); everything else they ask holds. -/
@@ -529,8 +529,8 @@ def pending_program_stmt : Prop :=
 /-- **An expression that is not `pendingSafe`** (§7 sharpness, RUE-2485; RUE-2316's
 carve-out). In the checked program of `Nonvacuous.dtor`, `0; [s, return 7];
 1` is typed in the context `s : S0`, but the array literal's first element is
-pending when the second completes abruptly. From a frame holding `s` at cell `0`, the
-`return` retires the frame and ends `s`'s identity nowhere. So
+pending when the second completes abruptly. From an activation record holding `s` at cell `0`, the
+`return` retires the activation record and ends `s`'s identity nowhere. So
 `drop_exactly_once` and `rest_exactly_once` fail without `e.pendingSafe`
 (`Exact` fails); everything else they ask holds, a `Lead` (the discarded `0`)
 included. -/
@@ -560,7 +560,7 @@ def pending_expr_stmt : Prop :=
 
 /-- **A store that is not copy-closed** (§7 sharpness, RUE-2485). The store's one
 cell holds an `[i64; 1]` array (a `Copy` type) with an owned `S0` inside it,
-outside the frame. `1; 2` is typed and run from the empty frame over it, which
+outside the activation record. `1; 2` is typed and run from the empty activation record over it, which
 agrees with the empty context, in the checked program of `Nonvacuous.dtor`;
 everything else `drop_exactly_once` and `rest_exactly_once` ask holds. The
 evaluation leaves the cell alone, and `Exact` asks the final store to be
@@ -588,7 +588,7 @@ def store_cc_stmt : Prop :=
         (eval Float.exactOps 201 P [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] Activation.empty e)
 
 /-- **A `Lead` that did not happen** (§7 sharpness, RUE-2485). For the body of
-`Nonvacuous.dtor`, run from the empty frame, take the store `ℓ0 ↦ S0 { 1 }`
+`Nonvacuous.dtor`, run from the empty activation record, take the store `ℓ0 ↦ S0 { 1 }`
 and the pending value `S0 { 1 }` (identity `0`) as if the leading operand had
 produced them; it did not (`Lead` fails: it minted identity `0` into a reserved
 slot). Everything else `rest_exactly_once` asks holds, and the evaluation ends
@@ -692,7 +692,7 @@ def unreached_panic_stmt : Prop :=
 
 /-- **An unreachable configuration whose registration stack is out of order**
 (§7 sharpness, RUE-2485). For the checked program of `Nonvacuous.dtor`, a
-configuration whose frame registers cell `1` before cell `0` takes a step, but
+configuration whose activation record registers cell `1` before cell `0` takes a step, but
 `Config.init` does not reach it: `drop_order`'s last half fails without the
 hypothesis that the configuration is reached. -/
 def unordered_stmt : Prop :=
@@ -794,8 +794,8 @@ def unreachable_stuck_stmt : Prop :=
 
 /-- **A configuration that reads a retired cell, not reached** (§7 sharpness,
 RUE-2496). For the checked program of `Nonvacuous.dtor`, a configuration whose
-frame names a cell already retired (`†`) is stuck with `useAfterDrop`, and
-`eval` from the same store and frame refuses the same way; the configuration
+activation record names a cell already retired (`†`) is stuck with `useAfterDrop`, and
+`eval` from the same store and activation record refuses the same way; the configuration
 is not reached from `Config.init` (shown through `step_no_use_after_drop`
 itself). So `step_no_use_after_drop` fails without the hypothesis that the
 configuration is reached: the refusal is live from an open configuration, and
@@ -843,7 +843,7 @@ def unreached_double_stmt : Prop :=
 
 /-- **A pop that drops a cell it did not cut, not reached** (§7 sharpness,
 RUE-2500). For the checked program of `Nonvacuous.dtor`, a configuration whose
-frame registers cells `0` and `1`, in location order, but whose pending
+activation record registers cells `0` and `1`, in location order, but whose pending
 `endscope` names cell `0` rather than the newest cell `1` takes a step: (D-EndScope)
 pops one cell off the record, which leaves `[0]`, and drops cell `0`, the cell
 it kept. Its drop markers name one cell, so they are newest first, and its

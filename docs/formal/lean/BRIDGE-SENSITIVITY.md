@@ -264,7 +264,7 @@ parentheses, and the `(mint #n)` identities are merged into one row.
 | (D-Break) §6.10 | 12 (9) | 61 (37) | 263 (142) |
 | (D-Break) §6.10 (unwind to the loop) | 11 (8) | 61 (37) | 263 (142) |
 | (D-Break) §6.10 (unwind to the loop), *where a destructor prints* | 2 (2) | 0 (0) | 0 (0) |
-| (D-Call) §6.9 (push the frame) | 174 (140) | 200 (115) | 1000 (569) |
+| (D-Call) §6.9 (push the activation record) | 174 (140) | 200 (115) | 1000 (569) |
 | (D-Div) §6.4 | 4 (4) | 2 (2) | 21 (15) |
 | (D-EndScope) §6.6 (end the arm) | 9 (6) | 45 (25) | 240 (113) |
 | (D-EndScope) §6.6 (end the arm), *where a destructor prints* | 8 (7) | 5 (4) | 14 (8) |
@@ -295,11 +295,11 @@ parentheses, and the `(mint #n)` identities are merged into one row.
 | (D-Match) §6.6 (bind the arm's payload) | 18 (14) | 62 (30) | 336 (133) |
 | (D-Panic) §6.12 | 2 (2) | 4 (2) | 16 (10) |
 | (D-Return) §6.9 | 0 (0) | 0 (0) | 1 (0) |
-| (D-Return) §6.9 (unwind the frame) | 1 (0) | 21 (17) | 91 (69) |
-| (D-Return) §6.9 (unwind the frame), *where a destructor prints* | 2 (2) | 0 (0) | 1 (1) |
+| (D-Return) §6.9 (unwind the activation record) | 1 (0) | 21 (17) | 91 (69) |
+| (D-Return) §6.9 (unwind the activation record), *where a destructor prints* | 2 (2) | 0 (0) | 1 (1) |
 | (D-Return)/(D-Return-Main) §6.9 (the callee's return is the call's value) | 2 (2) | 21 (17) | 92 (70) |
-| (D-Return-Value) §6.9 (pop the frame) | 154 (120) | 154 (83) | 819 (450) |
-| (D-Return-Value) §6.9 (pop the frame), *where a destructor prints* | 4 (4) | 0 (0) | 0 (0) |
+| (D-Return-Value) §6.9 (pop the activation record) | 154 (120) | 154 (83) | 819 (450) |
+| (D-Return-Value) §6.9 (pop the activation record), *where a destructor prints* | 4 (4) | 0 (0) | 0 (0) |
 | (D-Seq) §6.7 | 116 (93) | 155 (85) | 754 (410) |
 | (D-Seq) §6.7 (drop the temporary) | 0 (0) | 12 (9) | 60 (44) |
 | (D-Seq) §6.7 (drop the temporary), *where a destructor prints* | 1 (1) | 5 (4) | 15 (12) |
@@ -383,7 +383,7 @@ reaches these:
   are the entry call alone. RUE-2481 (below, "Multi-function programs") now
   draws calls; the tables above are the measurement before it.
 * (D-Int-Cast-Trap) and (D-Float-To-Int-Trap) §6.4, (D-Total-Cmp) §6.4 on an
-  accepted case, a `break` unwind that runs a printing destructor, a frame
+  accepted case, a `break` unwind that runs a printing destructor, an activation record
   pop that runs one, and (D-Use-Declared-Linear) §6.3 with a printing
   residue on an accepted case.
 * (Seq-Bottom), (Let-Bottom) and (Strict-Bottom) §5.3 at an assignment's
@@ -570,7 +570,7 @@ there).
 **Two more drawn shapes.** `c-reverse-scope-drops` needs two
 destructor-bearing locals ending the *same* block; the only fragment shape
 that puts two locals in one flat scope is a `match` arm's payload binding
-((D-Match) §6.6 appends both cells to the frame's one drop scope at once),
+((D-Match) §6.6 appends both cells to the activation record's one drop scope at once),
 since every `let`'s own printed block nests (`Print.expr`'s `.letIn` case
 opens a fresh `{ }`), so a chain of `let`s never shares a scope with the
 next. `Gen.pairDtorBlock` searches the program's own declarations for an enum
@@ -701,7 +701,7 @@ generator drew before: 138 of the 200 programs at seed 7 and 641 of the
 programs, with the accepted ones in parentheses. It is measured as the
 tables above are (a one-off tool over `Explain.programDerivs` and
 `Explain.runTrace`, not committed), on trunk `eb2d61133` before and on this
-change after. A frame is a callee's when a `push the frame` row has put it
+change after. A frame is a callee's when a `push the activation record` row has put it
 above the entry's:
 
 | Row | `--gen 200 --seed 7` before | after | `--gen 1000 --seed 23` before | after |
@@ -709,15 +709,15 @@ above the entry's:
 | Programs with a call | 0 | 62 (21) | 0 | 359 (106) |
 | Callees, all programs | 0 | 101 | 0 | 544 |
 | (Call) §5.8 derivation node | 0 (0) | 56 (21) | 0 (0) | 322 (106) |
-| (D-Call) §6.9, a callee frame pushed | 0 (0) | 39 (16) | 0 (0) | 238 (84) |
-| (D-Return-Value) §6.9, a callee frame popped | 0 (0) | 27 (11) | 0 (0) | 176 (63) |
+| (D-Call) §6.9, a callee activation record pushed | 0 (0) | 39 (16) | 0 (0) | 238 (84) |
+| (D-Return-Value) §6.9, a callee activation record popped | 0 (0) | 27 (11) | 0 (0) | 176 (63) |
 | … the pop drops a parameter or local | 0 (0) | 8 (5) | 0 (0) | 42 (20) |
 | … *where a destructor prints* | 0 (0) | 7 (5) | 0 (0) | 29 (13) |
-| (D-Return) §6.9, a callee's early `return` unwinds its frame under a live caller | 0 (0) | 13 (8) | 0 (0) | 49 (16) |
+| (D-Return) §6.9, a callee's early `return` unwinds its activation record under a live caller | 0 (0) | 13 (8) | 0 (0) | 49 (16) |
 | … the unwind drops something | 0 (0) | 4 (2) | 0 (0) | 15 (5) |
 | … *where a destructor prints* | 0 (0) | 3 (1) | 0 (0) | 13 (5) |
 | A recursive callee | 0 (0) | 24 (6) | 0 (0) | 140 (25) |
-| Three or more frames live at once | 0 (0) | 12 (7) | 0 (0) | 62 (22) |
+| Three or more activation records live at once | 0 (0) | 12 (7) | 0 (0) | 62 (22) |
 | A destructor-bearing parameter | 0 (0) | 23 (7) | 0 (0) | 116 (26) |
 | A declared-`linear` parameter | 0 (0) | 18 (1) | 0 (0) | 117 (16) |
 | Accepted programs, all | 107 | 91 | 590 | 513 |

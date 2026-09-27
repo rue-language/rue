@@ -9,7 +9,7 @@ public import RueCore.Soundness.Defs
 # RueCore.Equivalence.Defs — what the adequacy theorems are stated over (layer L1)
 
 The three definitions `Equivalence.lean`'s headline statements use beyond §6's
-`Step`: the entry point's empty frame (`Activation.empty`), counted runs
+`Step`: the entry point's empty activation record (`Activation.empty`), counted runs
 (`StepsN`), and §7's semantic typing of a configuration (`Config.SafeAt`).
 They are moved here verbatim from `Equivalence.lean` (RUE-2456); the simulation
 relations its proofs are built from (`Sim`, `Long`) stay there, since no
@@ -18,7 +18,7 @@ headline statement mentions them.
 
 namespace RueCore
 
-/-- The empty frame the entry point is called from (helper). -/
+/-- The empty activation record the entry point is called from (helper). -/
 abbrev Activation.empty : Activation := { env := [], scope := [] }
 
 /-- `→ⁿ`: a run of exactly `n` steps of §6's reduction (helper). Completeness

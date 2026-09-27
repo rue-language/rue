@@ -44,13 +44,13 @@ premises: `fully-owned(Σ, d)` read at the **consumed** place, and
 node whose rule the fragment restricts rather than models carries the
 restriction in the rejection text instead of a label it cannot claim.
 
-## Frames in the step table
+## Activation records in the step table
 
-A run spans frames: a call pushes one and a `return` or a normal completion
+A run spans activation records: a call pushes one and a `return` or a normal completion
 pops one. Four administrative rows make that visible, in the machine's own
 vocabulary rather than as the expression they belong to: `(D-Call) §6.9
-(push the frame)`, which shows the minted parameter cells; `(D-Return-Value)
-§6.9 (pop the frame)`, which shows the drops `run-all-scope-drops` ran;
+(push the activation record)`, which shows the minted parameter cells; `(D-Return-Value)
+§6.9 (pop the activation record)`, which shows the drops `run-all-scope-drops` ran;
 `(D-Return) §6.9 (unwind the frame)`, which shows the same walk taken early;
 and the row where a call takes an unwound `return` as its value, labelled
 `(D-Return)/(D-Return-Main)` because which of the two fired depends on
@@ -716,9 +716,9 @@ def returnTypeMismatch (T R : Ty) : String :=
   "one place it is narrower than the rule (`Checker.lean`)"
 
 /-- (Return-Value) §5.7's `⊥_exit` obligation, which is §5.6's scope-exit
-check taken frame-wide (`3.8:62`, and (Fn) §5.8's second clause). -/
+check taken activation-record-wide (`3.8:62`, and (Fn) §5.8's second clause). -/
 def returnLeak : String :=
-  "a binding of this frame is still Owned at a linear type where the `return` ends " ++
+  "a binding of this activation record is still Owned at a linear type where the `return` ends " ++
   "every open scope at once — the `⊥_exit` edge carries §5.6's obligation " ++
   "((Return-Value) §5.7; (Fn) §5.8's second clause; 3.8:62; the compiler reports E0406)"
 
@@ -791,9 +791,9 @@ def loopHeadNotFixpoint : String :=
   "stops only at a head the step leaves unchanged, so no program reaches this premise"
 
 /-- The `⟨diverge, Σ_h⟩` abrupt-completion context's residual check (§5.6/§5.7's retained
-non-panic check, frame-wide). -/
+non-panic check, activation-record-wide). -/
 def divergeLeak : String :=
-  "the loop re-enters itself forever and a binding of this frame is still Owned at a " ++
+  "the loop re-enters itself forever and a binding of this activation record is still Owned at a " ++
   "linear type at the loop head — the `⟨diverge, Σ_h⟩` abrupt-completion context keeps §5.6's non-panic " ++
   "residual check ((Loop-Div-Backedge) §5.7; (Fn) §5.8; 3.8:62; the compiler reports E0406)"
 
@@ -2159,10 +2159,10 @@ def refusalPremise : Refusal → String
       "((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)"
   | .useAfterDrop =>
       "a touch of a retired cell †: the binding's allocation was dropped and retired " ++
-      "at a scope exit or a frame teardown ((D-EndScope) §6.1/§6.7, " ++
+      "at a scope exit or an activation record teardown ((D-EndScope) §6.1/§6.7, " ++
       "`run-all-scope-drops` §6.9; §7 “no use after drop”)"
   | .linearLeak =>
-      "a scope exit or a frame teardown reached a live linear value: a linear " ++
+      "a scope exit or an activation record teardown reached a live linear value: a linear " ++
       "obligation was never discharged (endscope §6.7 / `run-all-scope-drops` §6.9, " ++
       "the §5.6 leak check executed; 3.8:32; §7 “consumed exactly once”)"
   | .linearOverwrite =>
@@ -2217,7 +2217,7 @@ structure Step where
   retTy : Ty
   expr : Expr
   /-- What the expression column shows, when the row is one of the machine's
-  administrative steps (`let`'s mint, `endscope`, a temporary's drop, a frame
+  administrative steps (`let`'s mint, `endscope`, a temporary's drop, an activation record
   push or pop) and the whole expression it belongs to would only repeat the
   row above. -/
   shown : Option String
@@ -2247,7 +2247,7 @@ def adminStep (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr) (rule shown : String)
 
 /-- (helper) What a row's expression column shows: the machine's own form
 for an administrative row, otherwise the node's expression in the surface
-syntax, with the binder names and the return type of the frame the row
+syntax, with the binder names and the return type of the activation record the row
 belongs to. -/
 def Step.text (P : Program) (s : Step) : String :=
   s.shown.getD (exprLine P s.retTy s.binders s.expr)
@@ -2307,21 +2307,21 @@ def refused (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr) (rul
 has already fired — its own row is above — and `(D-EndScope)` never ran, so
 the binding's drop never ran either (§6.7). An early `return` and a `break`
 are the outcomes where the drop still runs, because `run-all-scope-drops`
-(§6.9) and the loop's `unwind-drops` (§6.10) walk the frame's record instead;
+(§6.9) and the loop's `unwind-drops` (§6.10) walk the activation record's drop scope instead;
 a trap (§6.12) abandons the configuration and runs neither. -/
 def scopeNeverClosed : String :=
   "(D-EndScope) §6.7 — the body did not complete, so this scope never closed " ++
-  "(an early return or a break runs the drop through the frame's drop scope " ++
+  "(an early return or a break runs the drop through the activation record's drop scope " ++
   "instead; a trap runs no drop at all)"
 
 /-- (helper) The label for a call whose callee did not complete because it
-**trapped**. No frame is popped there: §6.2's (Panic-Lift) carries `↯κ` out
+**trapped**. No activation record is popped there: §6.2's (Panic-Lift) carries `↯κ` out
 of every evaluation context, the suspended caller's included, so
 `run-all-scope-drops` never runs and the callee's open drop scopes are abandoned
-with the configuration (§6.12). Saying "(D-Return-Value) (pop the frame)"
+with the configuration (§6.12). Saying "(D-Return-Value) (pop the activation record)"
 here would name a rule that did not fire. -/
 def trapLiftsPastCall : String :=
-  "(Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 " ++
+  "(Panic-Lift) §6.2 — the callee trapped, so no activation record is popped: §6.12 " ++
   "abandons the configuration and `run-all-scope-drops` never runs"
 
 /-- (helper) An aggregate's introduction ((D-Struct), (D-Array) §6.5,
@@ -2887,9 +2887,9 @@ def traceEval (M : FloatSig) (P : Program) :
       | .ok H₁ v tr =>
           (match runAllScopeDrops P.decls H₁ φ with
            | .error w =>
-               refused t.steps d Θ R (.ret e) "(D-Return) §6.9 (unwind the frame)" H₁ w
+               refused t.steps d Θ R (.ret e) "(D-Return) §6.9 (unwind the activation record)" H₁ w
            | .ok (H₂, evs) =>
-               tracedAs t.steps d Θ R (.ret e) "(D-Return) §6.9 (unwind the frame)"
+               tracedAs t.steps d Θ R (.ret e) "(D-Return) §6.9 (unwind the activation record)"
                  ("run-all-scope-drops(" ++ locsLine φ.scope.reverse ++ ")")
                  H₁ H₂ evs (.unwound v) (.returned H₂ v (tr ++ evs)))
       | r => propagate t.steps d Θ R (.ret e) "(D-Return) §6.9" H r
@@ -2927,7 +2927,7 @@ def traceEval (M : FloatSig) (P : Program) :
           if fd.params.length = vs.length then
             let minted := freshParams H₁ vs
             let φg : Activation := { env := minted.2.reverse, scope := minted.2 }
-            let push := adminStep (d + 1) Θ R (.call f args) "(D-Call) §6.9 (push the frame)"
+            let push := adminStep (d + 1) Θ R (.call f args) "(D-Call) §6.9 (push the activation record)"
               (fnHeader f fd ++ "  with " ++ locsLine minted.2)
               H₁ minted.1 [] (.value .unit)
             let tb := traceEval M P fuel (d + 2) (Print.bodyBinders fd) fd.ret minted.1 φg fd.body
@@ -2936,10 +2936,10 @@ def traceEval (M : FloatSig) (P : Program) :
                (match runAllScopeDrops P.decls H₃ φg with
                 | .error w =>
                     refused (ta.steps ++ [push] ++ tb.steps) d Θ R (.call f args)
-                      "(D-Return-Value) §6.9 (pop the frame)" H₃ w
+                      "(D-Return-Value) §6.9 (pop the activation record)" H₃ w
                 | .ok (H₄, evs) =>
                     tracedAs (ta.steps ++ [push] ++ tb.steps) d Θ R (.call f args)
-                      "(D-Return-Value) §6.9 (pop the frame)"
+                      "(D-Return-Value) §6.9 (pop the activation record)"
                       ("run-all-scope-drops(" ++ locsLine minted.2.reverse ++ ")")
                       H₃ H₄ evs (.value v) (.ok H₄ v (tr ++ (tr₃ ++ evs))))
              | .returned H₃ v tr₃ =>
@@ -2954,7 +2954,7 @@ def traceEval (M : FloatSig) (P : Program) :
                  didNotRun (ta.steps ++ [push] ++ tb.steps) d Θ R (.call f args)
                    (match r with
                     | .panic _ _ => trapLiftsPastCall
-                    | _ => "(D-Return-Value) §6.9 (pop the frame)")
+                    | _ => "(D-Return-Value) §6.9 (pop the activation record)")
                    H (r.withTrace tr))
           else refused ta.steps d Θ R (.call f args) "(D-Call) §6.9" H .typeConfusion
 
@@ -3109,7 +3109,7 @@ def programDerivs (P : Program) : Nat → List FnDef → List (Nat × FnDef × D
       (i, fd, explain P fd.ret (fnCtx fd) fd.body) :: programDerivs P (i + 1) rest
 
 /-- The run of a whole program: the entry call, from the empty store and the
-empty frame (§6.12's top-level result). -/
+empty activation record (§6.12's top-level result). -/
 def runTrace (M : FloatSig) (P : Program) (fuel : Nat) : Trace :=
   let T := match P.fns[0]? with
     | some fd => fd.ret

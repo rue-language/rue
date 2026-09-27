@@ -55,7 +55,7 @@ issue, or commented onto an existing one.
 
 | # | Target | Severity | Source | Issue | Proposed issue / evidence |
 |---|---|---|---|---|---|
-| R1 | statement | medium | F2 (raw: HIGH) | RUE-2477 | `no_double_free` says nothing about a run that does not terminate: add a statement over every reachable configuration's trace. `EvalRes.trace` is `[]` for `outOfFuel` (its DIGEST entry: "nothing for a refusal or exhausted fuel"), and by `eval_diverges_iff` a diverging program is `outOfFuel` at every fuel, so both counts are 0 for it. §7's bullet ("every stored value's destructor runs at most once") has no termination proviso; `run_trace_once` and `eval_conserves` are also over `run`/`eval` results. A double drop inside a `loop` that never exits is outside every multiplicity statement. In FIELD.md's terms (§6, Alpern & Schneider), this multiplicity bound is a safety property; R1 is a missing finite-prefix form of it, as RUE-2477 frames it. (Since closed, by RUE-2477: `step_no_double_free` bounds the trace of every configuration `Step` reaches; see the entry below.) |
+| R1 | statement | medium | F2 (raw: HIGH) | RUE-2477 | `no_double_free` says nothing about a run that does not terminate: add a statement over every reachable configuration's trace. `EvalRes.trace` is `[]` for `outOfFuel` (its DIGEST entry: "nothing for a refusal or exhausted fuel"), and by `eval_diverges_iff` a diverging program is `outOfFuel` at every fuel, so both counts are 0 for it. §7's bullet ("every stored value's destructor runs at most once") has no termination proviso; `run_trace_once` and `eval_conserves` are also over `run`/`eval` results. A double drop inside a `loop` that never exits is outside every multiplicity statement. In FIELD.md's terms (§6, Alpern & Schneider), this multiplicity bound is a safety property; R1 is a missing finite-prefix form of it, as RUE-2477 activation records it. (Since closed, by RUE-2477: `step_no_double_free` bounds the trace of every configuration `Step` reaches; see the entry below.) |
 | R2 | statement | medium | F7 (raw: medium) | RUE-2478 | Whole-program "every owned value ends exactly once" is a prose composition of `drop_exactly_once` and `rest_exactly_once`, not a theorem. `Exact` quantifies over `a < List.length H`; at the program level (`run`: `H = []`) the quantifier is empty. 03-metatheory's "Why two statements, not one over `run`" argues the composition in prose ("So every owned value a checked run holds ends exactly once …") and names two ends neither theorem sees (an end inside the minting evaluation; `main`'s result). No statement discharges the per-window hypotheses (`ActivationTyping`, `StoreCC`) at every intermediate state. (Since closed, by RUE-2478: `whole_program_exactly_once` states the whole-program form over §6's relation and is proved without composing the two; see the entry below.) |
 | R3 | statement | medium | F1 (raw: HIGH) | RUE-2469 (comment) | The linear-consumption guarantee lives only in `eval`'s monitors: bring the monitor-fires witnesses into the statement layer. `Step.assign`, `Step.seqDrop`, `Step.endScope` and the unwinds drop a linear value through the same `dropCell`/`dropContents` path as `@drop`, with the same `Event.drop`. The three linear theorems are `run … ≠ .refused .linearX`, which hold for an `eval` with no monitors. They are non-vacuous only because of `Examples.lean`'s `run … = .refused .linearLeak`/`.linearOverwrite` witnesses and `Corpus.lean:938`'s `.linearDiscard` one, which are examples, not part of the stated claim. For RUE-2469 (witnesses) and RUE-2465 (a mutant that removes a monitor). |
 | R4 | statement | medium | F5 (raw: HIGH) | RUE-2423, RUE-2467 (comment) | `step_safeAt` states `SafeAt init`: its `∀ C` adds nothing, and no configuration typing is preserved. `Config.SafeAt` quantifies over everything reachable from `C`, so it is closed under `Steps` by transitivity, and the theorem is equivalent to `SafeAt … Config.init`. 03-metatheory l.202–203 and l.211–214 already disclose this ("needs no typing hypothesis"; "holds by construction, and the content is the fundamental lemma `RueCore.init_safeAt`"), as does the semantic form generally (FIELD.md §2, the `SafeAt` docstring). What is not disclosed: no configuration-typing relation is stated at all (RUE-2423), and the theorem's name still reads as the syntactic lemma (RUE-2467, the spine alignment). |
@@ -117,7 +117,7 @@ Read the same way by the red agent and by us, with no gap either found:
   `Contents.toVal`, a dead cell fails `rootCell`), operand confusion (no rule
   for `OpRes.confused`) and an uncovered `match` tag.
 - `step_type_safety`: equal to §7's type-safety bullet on the fragment
-  (slightly stronger: the halting frame is `Activation.empty`).
+  (slightly stronger: the halting activation record is `Activation.empty`).
 - `eval_small_to_big` and `eval_diverges_iff`: the two directions of the
   big-step/small-step equivalence (FIELD.md §3) for terminating and diverging
   runs; `eval_diverges_iff`'s backward direction has content no other
@@ -132,7 +132,7 @@ Read the same way by the red agent and by us, with no gap either found:
   fields in declaration order, elements ascending, an enum's active payload
   only (§6.11).
 - `drop_exactly_once`'s first conjunct: local never-stuck from any matching
-  frame, stronger than whole-program never-stuck, modulo `pendingSafe` (R6).
+  activation record, stronger than whole-program never-stuck, modulo `pendingSafe` (R6).
 - The typing rules checked premise by premise against §5 (the use, drop,
   assign, index-write, seq, let, return, loop and match rules, and `WfFn`
   against (Fn)), as far as the signature-only helpers allowed (R6).
@@ -215,8 +215,8 @@ Do not edit any file. Write your full report to <packet>/red-docs-report.md and 
     hypotheses of all 36 satisfiable by non-trivial programs, written out:
     one per construct class (destructors, linear values, loops, arrays, enums
     with `match`, early `return`, `@panic`, floats), a divergent one, an
-    unchecked stuck one, the model, the empty frame and an open term in a
-    live frame. `lean/RueCore/Nonvacuous/Glue.lean` applies each listed spine
+    unchecked stuck one, the model, the empty activation record and an open term in a
+    live activation record. `lean/RueCore/Nonvacuous/Glue.lean` applies each listed spine
     theorem to its witness's facts in the kernel, and the lint fails on a
     listed pair with no such application and on a spine theorem no witness
     names; Comparator and the fingerprints cover the witnesses. The five
@@ -229,7 +229,7 @@ Do not edit any file. Write your full report to <packet>/red-docs-report.md and 
     neighbour; `typeErrors_rejected`, six type errors.
   - **Review.** An adversarial review found no blocker. Its five should-fixes
     are resolved: the witness mapping is now kernel-checked (it had one wrong
-    entry, `refused_stuck` for `run_small_to_big`), the open-frame witness, the float
+    entry, `refused_stuck` for `run_small_to_big`), the open-activation-record witness, the float
     wording, the error classes, and the statement-layer docs.
 - **Findings.** None against the claim: every hypothesis was satisfiable by
   the programs tried. One tooling finding: the core library's
@@ -297,7 +297,7 @@ What the mutants could not get past:
   that makes the checker or the rules accept a program the machine refuses.
   For 18 of them the corpus holds a concrete counterexample seed.
 - `Step.det`, against a `Step`-only mutant (`step-usecopy-nondet`).
-- `drop_order`'s `StackDiscipline`, against the frame-exit and match-exit order mutants
+- `drop_order`'s `StackDiscipline`, against the activation-record-exit and match-exit order mutants
   (`scope-fifo`, `payload-order`).
 - `Exact` (`drop_exactly_once`, `rest_exactly_once`), against:
   - a skipped overwrite drop;
@@ -344,22 +344,22 @@ What the mutants could not get past:
 - **Findings.**
   - **S1, `no_use_after_drop`'s `ProgramTyped` appears redundant** (low;
     RUE-2496). No program, checked or not, seems to reach `eval`'s
-    `useAfterDrop` refusal through `run`: a frame's environment names only
+    `useAfterDrop` refusal through `run`: an activation record's environment names only
     cells its own bindings allocated, each removed from the environment as
-    the cell is retired, and `run` starts from the empty store and frame.
+    the cell is retired, and `run` starts from the empty store and activation record.
     `Examples.lean` already says no closed program reaches the guard, and
     witnesses it only from an open state, and the review's fuzz of 78,000
     programs reached it through neither `run` nor `step`. So the statement holds, it seems,
     of every program, and says less than its place beside
     `no_use_after_move` suggests. Unproved: a proof is an induction over
-    `eval` with the invariant that the frame's environment names no `.dead`
+    `eval` with the invariant that the activation record's environment names no `.dead`
     cell. Recorded as the one reason in `Spec.sharpnessReasons`. (Since
     proved, by RUE-2496: `run_no_use_after_drop` and `step_no_use_after_drop`,
     `lean/RueCore/Tombstone.lean`, state it with no typing hypothesis, over `run`
     at every fuel and every model of the float algebraic specification and over `Step` from `Config.init`. The
-    invariant is that every cell the frame's environment names or its scope
-    record holds a drop obligation for is live and owed once; over `Step`, for every
-    suspended caller's frame too. The reason in `Spec.sharpnessReasons` now
+    invariant is that every cell the activation record's environment names or its drop
+    scope holds a drop obligation for is live and owed once; over `Step`, for every
+    suspended caller's activation record too. The reason in `Spec.sharpnessReasons` now
     cites the proof, and `Sharp.tombstoned_cell` shows the refusal live from an
     open configuration, so `step_no_use_after_drop` needs its reachability
     hypothesis.)
@@ -519,14 +519,14 @@ What the mutants could not get past:
     configuration is a natural home for one: `¬ SafeAt` of it can only fail
     through the typing half.
   - **V2, one binding shape carries the hypothesis direction** (low,
-    disclosure). Three statements assert `ActivationTyping` of a frame with an
+    disclosure). Three statements assert `ActivationTyping` of an activation record with an
     owned binding — `Nonvacuous.open_activation`, `Sharp.pending_program` and
     `Sharp.pending_expr` — all of the same one-`S0` shape, and all three are
     false under `contentsowntyping-owned-false`. `Nonvacuous.dtor` does not state
     `ActivationTyping` or `StoreCC` at all, although RUE-2490 expected it to
     catch the control. A strengthening of `ContentsOwnTyping` that spared
     that one `S0` shape (one that only touched arrays, enums or
-    `mut` bindings, say) would make `soundness` vacuous on those frames and
+    `mut` bindings, say) would make `soundness` vacuous on those activation records and
     falsify no witness. Whether a spine statement would still fail, through
     `EvalOk`'s own `ActivationTyping` (a conclusion), was not checked. Witnesses
     of `ActivationTyping` over more binding shapes would close that (RUE-2503).
@@ -568,7 +568,7 @@ What the mutants could not get past:
     read at every identity, with copy closure from `eval`'s monitor and the
     store's copy closure from `eval_exact`. The unwinding clauses ask that the
     frames `return` and `break` discard hold nothing, and `pendingSafe`
-    discharges that through `eval_quiet` wherever a frame holds a value.
+    discharges that through `eval_quiet` wherever an activation record holds a value.
     Determinism puts every reached configuration on the run
     (`MSteps.of_steps`); at the end `eval_tidy` leaves no owned value in the
     store and `eval_conserves` bounds each count by one.

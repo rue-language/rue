@@ -79,14 +79,14 @@ cost something: every rule that demands two equal types (§5.5's arms,
 
 The forms differ in what they owe, and the difference is §5.7's provenance.
 `return` carries `⊥_exit`, which is the §5.6 scope-exit obligation taken
-frame-wide, so `Typed.ret` demands `NoResidualLinear`. `@panic` carries
+activation-record-wide, so `Typed.ret` demands `NoResidualLinear`. `@panic` carries
 `⊥_panic`, which §5.7 exempts from that check — "§5.6 performs no scope-exit
 check or drop on that edge" — so `Typed.panic` demands nothing of the
 context, and §6.12's dynamics run no drop to match. `break` also carries
 `⊥_exit`, but its scopes end at the loop it targets, so it completes abruptly
 with its state there (`Typed.brk`) and the loop discharges the obligation for the scopes the
 exit ends (`Typed.loopBreak`). A loop that never exits carries `⊥_diverge`,
-checked frame-wide where it fires (`Typed.loopDiv`).
+checked activation-record-wide where it fires (`Typed.loopDiv`).
 
 An *algorithm* cannot leave a type free, so `check` (`Checker/Defs.lean`) returns
 `never` where a rule concludes at every type, and `Checker.lean`'s module docstring says
@@ -539,11 +539,11 @@ def Entry.skel (en : Entry) : Ty × Bool := (en.ty, en.mu)
 /-- The skeleton of a whole context (helper). -/
 def Ctx.skel (Γ : Ctx) : List (Ty × Bool) := Γ.map Entry.skel
 
-/-- §5.6's residual-linear condition, read over a whole frame: no binding has
+/-- §5.6's residual-linear condition, read over a whole activation record: no binding has
 residual linear content left. This is the premise (Fn) §5.8 imposes on a
 function body's exit edges for its by-value parameters (`3.8:62`) and that
 §5.6's `⊥_exit` carries at an early `return`: at such an edge every open scope
-of the frame ends at once, so the check is frame-wide rather than
+of the activation record ends at once, so the check is activation-record-wide rather than
 per-binding. -/
 def NoResidualLinear (D : Decls) (Γ : Ctx) : Prop :=
   ∀ en ∈ Γ, residualLinear D en.st en.ty = false
@@ -626,7 +626,7 @@ its declared type (helper). -/
 def Entry.wf (D : Decls) (en : Entry) : Bool := OwnSt.wf D en.st en.ty
 
 /-- §5.5's join is associative over contexts whose every entry is a shape of
-its declared type; `Ctx.Wf` reads that invariant over a whole frame, the way
+its declared type; `Ctx.Wf` reads that invariant over a whole activation record, the way
 `NoResidualLinear` reads §5.6's. -/
 def Ctx.Wf (D : Decls) (Γ : Ctx) : Prop := ∀ en ∈ Γ, Entry.wf D en = true
 
@@ -1588,8 +1588,8 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
       Typed P R Γ (.call f args) fd.ret Ω
   /-- (Return-Value) §5.7 with (Sub-Never) folded in: the operand is checked
   against the enclosing function's declared return type `R`; §5.6's `⊥_exit`
-  obligation is the frame-wide residual-linear premise (no binding of the
-  current frame still carries residual linear content — `3.8:62`, and (Fn) §5.8's
+  obligation is the activation-record-wide residual-linear premise (no binding of the
+  current activation record still carries residual linear content — `3.8:62`, and (Fn) §5.8's
   second clause, which is why an early `return` past a live linear is
   rejected). The conclusion is at an arbitrary type, which is (Sub-Never)
   §5.7 applied to `never`, and at `⊥` with the operand's abrupt-completion contexts. The
@@ -1626,7 +1626,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   entry state with the states at the body's own reachable back edges, read off
   the very judgment that types the body at `Σ_h`. When the body can complete normally it
   re-enters itself forever, so it completes abruptly with `⟨diverge, Σ_h⟩`; the fragment
-  checks that abrupt-completion context where it fires, frame-wide, by `NoResidualLinear` —
+  checks that abrupt-completion context where it fires, activation-record-wide, by `NoResidualLinear` —
   §5.6/§5.7's retained non-panic residual check, which the compiler enforces
   as E0406 for a linear local or a by-value parameter live at `loop { }`
   (`../03-metatheory.md` records the reading). When the body never completes
@@ -1746,7 +1746,7 @@ exit edge discharges §5.6's obligation for every by-value parameter and every
 still-open body-local binding (`3.8:62` — a by-value parameter carrying a
 linear value must be consumed on every non-diverging path). The rule's early
 exits are covered by `Typed.ret`, which carries the same premise at the edge
-where the frame's scopes end (§5.7's `⊥_exit`). A body with no normal exit,
+where the activation record's scopes end (§5.7's `⊥_exit`). A body with no normal exit,
 `Ωf = ⊥;Δf`, owes nothing at one. `Δf` has no `⟨break, _⟩`: "a break outside
 a loop is ill-formed" (§5.7), which is (Fn)'s own premise. -/
 def WfFn (P : Program) (fd : FnDef) : Prop :=

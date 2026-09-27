@@ -1586,7 +1586,7 @@ theorem Cons.assignDyn {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D
   simp only [Val.own] at *
   omega
 
-/-- A scope teardown after a value (`endscope` §6.7, the frame pop §6.9), as
+/-- A scope teardown after a value (`endscope` §6.7, the activation record pop §6.9), as
 a ledger (helper). -/
 theorem Cons.unwind {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
     {H : Store} {v : Val} {ls : List Nat} (hcc : StoreCC D H)

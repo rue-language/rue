@@ -93,7 +93,7 @@ def step_type_safety_stmt : Prop :=
 no leak of drops"; §6.1's retired cell; RUE-2496). No configuration reachable
 from `Config.init` is stuck on a retired (`†`) cell, whether or not the
 program is checked. The hypothesis that the configuration is reached is
-needed: a configuration whose frame names a retired cell is stuck so
+needed: a configuration whose activation record names a retired cell is stuck so
 (`Sharp.tombstoned_cell`). -/
 def step_no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) {C : Config} (_ : Steps M P Config.init C),

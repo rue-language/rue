@@ -98,7 +98,7 @@ representation; none changes what a checked program does.
   its context explicitly (`ret(E, φ)`); the loop frame here sits above `E`'s
   frames the same way, so the loop yields `()` to its context, as the
   compiler and `eval` do.
-* **One drop scope per frame.** §6.10's `push-scope(φ)` is `eval`'s single
+* **One drop scope per activation record.** §6.10's `push-scope(φ)` is `eval`'s single
   drop scope read by length, as in `Dynamics.lean`: (D-Loop-Iter) and
   (D-Break) run `run-scope-drops` on the cells past the loop frame's record.
 * **The use plan is recovered from the store** (`Contents.declaredPlan`), as
@@ -213,12 +213,12 @@ inductive Kont where
   /-- `return E` (§6.2). -/
   | ret
   /-- `endscope(ℓ̄) in E` (§6.2, §6.7): the cells the body owes. Closing it
-  pops them off the frame by count (the module docstring says why a pop). -/
+  pops them off the activation record by count (the module docstring says why a pop). -/
   | endscope (ℓs : List Nat)
-  /-- `loopβ(e, φ)` (§6.1, §6.10): the loop's body and the frame each turn
+  /-- `loopβ(e, φ)` (§6.1, §6.10): the loop's body and the activation record each turn
   starts in; `break` unwinds to here. -/
   | loop (e : Expr) (φ : Activation)
-  /-- `ret(E, φ)` (§6.1, §6.9): a caller suspended in frame `φ`, its context
+  /-- `ret(E, φ)` (§6.1, §6.9): a caller suspended in activation record `φ`, its context
   `E` the frames below this one. -/
   | call (φ : Activation)
 deriving Repr
@@ -243,7 +243,7 @@ inductive Config where
 deriving Repr
 
 /-- §6.12's initial configuration: the empty store (the fragment has no
-string literals to pre-allocate), an empty frame, and the entry point called
+string literals to pre-allocate), an empty activation record, and the entry point called
 with no arguments — the same call `run` (`Dynamics.lean`) makes, so
 (D-Return-Main) is (D-Return) reaching the entry `call` frame. From §6.12's
 own initial configuration, with no `call` frame, a `return` would be stuck
@@ -269,7 +269,7 @@ from both by count (helper). -/
 def Activation.unwindScope (φ : Activation) (n : Nat) : Activation :=
   { env := φ.env.drop n, scope := φ.scope.take (φ.scope.length - n) }
 
-/-- The nearest `ret(E, φ)` below the top: its frame and the stack under it.
+/-- The nearest `ret(E, φ)` below the top: its activation record and the stack under it.
 (D-Return) discards everything above it — context frames, pending `endscope`
 markers and loop boundaries alike (§6.9) (helper). -/
 def Kont.toCall : List Kont → Option (Activation × List Kont)
@@ -279,7 +279,7 @@ def Kont.toCall : List Kont → Option (Activation × List Kont)
 
 /-- The nearest `loopβ(e, φ)` below the top, provided no `ret(E, φ)` comes
 first: "a `break` in a callee would be ill-formed" (§6.10), so a `break` with
-no loop in its own frame has no rule (helper). -/
+no loop in its own activation record has no rule (helper). -/
 def Kont.toLoop : List Kont → Option (Activation × List Kont)
   | [] => none
   | .loop _ φ :: K => some (φ, K)
@@ -627,8 +627,8 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   /-- (Search) §6.2 into `let x = E ; e2`. -/
   | letEnter {H φ K tr m e₁ e₂} :
       Step M P (.run H φ K (.eval (.letIn m e₁ e₂)) tr) (.run H φ (.letIn e₂ :: K) (.eval e₁) tr)
-  /-- (D-Let) §6.7: a fresh cell, bound, appended to the innermost scope
-  record, and owed to the body's `endscope` (RUE-1277). -/
+  /-- (D-Let) §6.7: a fresh cell, bound, appended to the innermost drop
+  scope, and owed to the body's `endscope` (RUE-1277). -/
   | letBind {H φ K tr e₂ v} :
       Step M P (.run H φ (.letIn e₂ :: K) (.ret v) tr)
         (.run (H ++ [.full (Contents.ofVal v)])
@@ -704,14 +704,14 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   -- ### §6.9: calls and `return`
   /-- (D-Call) §6.9: every argument is a value; mint one cell per by-value
   argument, suspend the caller as `ret(E, φ)`, and enter the body in the
-  callee's frame, whose entry scope owes exactly those cells. -/
+  callee's activation record, whose entry scope owes exactly those cells. -/
   | call {H φ K tr f vs fd H' ls} :
       P.fns[f]? = some fd →
       fd.params.length = vs.length →
       freshParams H vs = (H', ls) →
       Step M P (.run H φ K (.args (.call f) vs []) tr)
         (.run H' { env := ls.reverse, scope := ls } (.call φ :: K) (.eval fd.body) tr)
-  /-- (D-Return-Value) §6.9: the body is a value; run the frame's scope drops
+  /-- (D-Return-Value) §6.9: the body is a value; run the activation record's scope drops
   and resume the caller. -/
   | callReturn {H φ K tr φs v H' evs} :
       plainUnwind P.decls H φ.scope.reverse = .ok (H', evs) →
@@ -720,7 +720,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   | retEnter {H φ K tr e} :
       Step M P (.run H φ K (.eval (.ret e)) tr) (.run H φ (.ret :: K) (.eval e) tr)
   /-- (D-Return) §6.9: discard every frame up to the nearest `ret(E, φ)` —
-  pending `endscope` markers and loop boundaries included — run the frame's
+  pending `endscope` markers and loop boundaries included — run the activation record's
   scope drops from its record, and hand `v` to the caller. At the entry
   point's `call` frame this is (D-Return-Main) §6.9 (`Config.init`). -/
   | ret {H φ K tr v φs K' H' evs} :
@@ -734,7 +734,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   /-- (D-Loop-Iter) §6.10: the body became `⟨⟩` — "necessarily `⟨⟩`", so any
   other value has no rule (RUE-2427); `run-scope-drops` on the
   cells the turn still owes (those past the loop's own record, newest-first, as
-  (D-Break) reads them), then re-enter the body in the loop's frame. -/
+  (D-Break) reads them), then re-enter the body in the loop's activation record. -/
   | loopIter {H φ K tr e φs H' evs} :
       plainUnwind P.decls H (φ.scope.drop φs.scope.length).reverse = .ok (H', evs) →
       Step M P (.run H φ (.loop e φs :: K) (.ret .unit) tr)

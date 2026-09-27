@@ -11,10 +11,10 @@ public import RueCore.Spine
 hypotheses it shows satisfiable. This module checks every pair in the kernel:
 for each pair, one theorem, `Glue.<witness>.<theorem>`, that takes the witness's facts
 (`RueCore.Spine.Nonvacuous.<w>`, with `M` from `Nonvacuous.exact_model` and
-the frame from `Nonvacuous.empty_activation`) and **applies** each listed
-`RueCore.Spine.<thm>` to them. The exact-model and empty-frame witnesses
+the activation record from `Nonvacuous.empty_activation`) and **applies** each listed
+`RueCore.Spine.<thm>` to them. The exact-model and empty-activation-record witnesses
 have no program of their own: every program witness takes its `M` from
-`Nonvacuous.exact_model`, and the evaluation statements their frame from
+`Nonvacuous.exact_model`, and the evaluation statements their activation record from
 `Nonvacuous.empty_activation`, so their pairs are applied there. An application elaborates only if the witness
 supplies that theorem's literal hypotheses, so a pair listed without them does
 not compile; and the lint (`Lint.spineProblems`) fails on a listed pair
