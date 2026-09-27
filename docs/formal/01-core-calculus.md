@@ -1035,7 +1035,7 @@ choosing between two forms:
 ```
 
 Neither form is a new rule. The promoted form loans an `H0` allocation, which
-by §6.13.2 is minted before `main` and never retired: `Σ(ℓ_e) = Owned` holds
+by §6.13.2 is minted before `main` and never tombstoned: `Σ(ℓ_e) = Owned` holds
 everywhere, no scope contains it, and §5.6 therefore schedules nothing for it —
 that is the precise content of "no drop glue". The temporary form is an
 ordinary `let` whose binding scope is the call, so §5.6 governs it unchanged:
@@ -2073,11 +2073,11 @@ The store's allocations come in two kinds, distinguished only by how they are
 minted (the RUE-390 ruling: stack storage and dynamically allocated buffers
 are both memory blocks, separated only where the semantics requires
 it). **Binding allocations** `ℓ ∈ Loc` are minted by `(D-Let)`, `(D-Match)`,
-and `(D-Call)`, always hold exactly one cell, and are retired by the scope
+and `(D-Call)`, always hold exactly one cell, and are tombstoned by the scope
 exit that drops them; `H(ℓ) = c` and `H[ℓ ↦ c]` throughout §6.3–§6.11
 abbreviate the one-cell forms `H(ℓ) = [c]` and `H[ℓ ↦ [c]]`, so every rule in
 those sections reads unchanged. **Buffer allocations** are minted, read,
-written, resized, and retired only by the machine operations and container
+written, resized, and tombstoned only by the machine operations and container
 specification equations of §6.13; no §2 expression form touches one directly. A
 fresh identity is one not in `dom(H)`; dead allocations stay in the domain as
 `†`, so an identity is never reused — which is what makes a stale `buf⟨A⟩` or
@@ -2100,7 +2100,7 @@ the drop relation `drop(H, ℓ)` of §6.11 (which is itself a no-op on a `⊘` o
 `Copy` cell, so these fold harmlessly over non-droppable bindings):
 
 ```
-  drop-retire(H, ℓ)              = drop(H, ℓ) [ℓ ↦ †]              -- scope-exit teardown of one binding: run its drop, then retire it
+  drop-retire(H, ℓ)              = drop(H, ℓ) [ℓ ↦ †]              -- scope-exit teardown of one binding: run its drop, then tombstone it
   push-scope(⟨ρ;σ⟩)              = ⟨ρ; [] :: σ⟩                    -- open a fresh, empty innermost scope
   run-scope-drops(H, ⟨ρ; s::σ⟩) = drop-retire the cells of s newest-first, yielding H'; resulting activation record ⟨ρ; σ⟩   -- close ONE (innermost) scope
   run-all-scope-drops(H, φ)      = iterate run-scope-drops until φ has no open drop scopes (teardown of the whole activation record, on return)
@@ -2109,11 +2109,11 @@ the drop relation `drop(H, ℓ)` of §6.11 (which is itself a no-op on a `⊘` o
 
 A scope gains a cell to drop when a `let` (§6.7) or a `match` arm (§6.6) binds one;
 `inout`/`borrow` parameters are deliberately never recorded (§6.9), which is how
-they escape the drop obligation (§5.6). Retiring the binding allocation after
+they escape the drop obligation (§5.6). Tombstoning the binding allocation after
 its drop is the RUE-390 change: a scope-exited cell's identity is dead, so any
 residual access to it — which a well-typed program never performs (§7,
 no-use-after-drop) — is *stuck* rather than silently readable. Overwrite-drop
-(§6.8) and `@drop` (§6.11) do **not** retire: the binding stays live and
+(§6.8) and `@drop` (§6.11) do **not** tombstone: the binding stays live and
 reinitializable there.
 
 ### 6.2 Evaluation order: contexts, search, and panic propagation
@@ -2723,7 +2723,7 @@ later exit drops them again.
   ⟨ H ; φ ; K ; let x = v ; e2 ⟩ → ⟨ H[ℓ↦v] ; ⟨ρ[x↦ℓ]; (s ++ [ℓ])::σ⟩ ; K ; endscope([ℓ]) in e2 ⟩
 
   φ = ⟨ρ; s::σ⟩        ℓ1,…,ℓq is a suffix of s (see below)
-  ─────────────────────────────────────────────────────────────────── (D-EndScope)     -- ℓ̄ dropped-and-retired newest-first (§6.1)
+  ─────────────────────────────────────────────────────────────────── (D-EndScope)     -- ℓ̄ dropped-and-tombstoned newest-first (§6.1)
   ⟨ H ; φ ; K ; endscope([ℓ1,…,ℓq]) in v ⟩ → ⟨ drop-retire(H, ℓq) ; …; drop-retire(H, ℓ1) ; ⟨ρ; (s minus ℓ1..ℓq)::σ⟩ ; K ; v ⟩
 ```
 
@@ -2949,7 +2949,7 @@ The destructor body runs in its own activation record whose single drop scope is
 dropping `self` would re-run the destructor, an infinite regress), so the
 nested run's activation-record pop drops only the destructor's own locals. Afterward the
 cell contents `c1',…,ck'` as the nested run left them — not the original
-`c1,…,ck` — drop in declaration order; the scratch cell `ℓ` is then retired.
+`c1,…,ck` — drop in declaration order; the scratch cell `ℓ` is then tombstoned.
 
 **The `⊘` case here is vacuous for well-formed programs** (RUE-1600), and the
 rule is written this way only so it stays honest if that ever changes. No `ci`
@@ -2974,7 +2974,7 @@ destructor is permitted to have no observable effect, but need not. For an **abs
 data type** `S` — `StrBuf`, an `ArrayBuf(T)` instance — the destructor is a
 source-defined `drop fn` whose body contains unchecked code, so in the model
 it steps by the type's defining drop equation instead (§6.13.3: drop the live
-buffer cells in ascending index order, skipping `⊘`, then retire the
+buffer cells in ascending index order, skipping `⊘`, then tombstone the
 allocation — never "no observable effect", which was the `@free`-as-no-op
 vacuity RUE-390 closed). The **enum** case reads the runtime tag `Kj` to
 recurse into the *active* variant's payload only: an inactive variant's payload
@@ -3037,7 +3037,7 @@ previously named by the rules below but never built):
 
 ```
   H0     = one live allocation per distinct string literal occurring in P,
-           minted before main and never retired (§6.13.2), and nothing else
+           minted before main and never tombstoned (§6.13.2), and nothing else
   e_main = the body of P's unique  fn main
   φ_main = ⟨ ∅ ; [[]] ⟩            -- main takes no parameters: an empty environment
                                    --   and one open, empty drop scope
@@ -3091,7 +3091,7 @@ reported).
   mint(H, n)        = (A, H[A ↦ [⊘, …, ⊘]])      where A ∉ dom(H); n ≥ 0 cells, all ⊘
   H(A).i            = ci                           iff H(A) = [c0, …, c_{m-1}] and 0 ≤ i < m      -- cell read
   H[A.i ↦ c]                                       defined under the same conditions               -- cell write
-  retire(H, A)      = H[A ↦ †]                    iff H(A) is live
+  tombstone(H, A)      = H[A ↦ †]                    iff H(A) is live
   realloc(H, A, n') = (A', H2[A ↦ †])             where H(A) = [c0, …, c_{m-1}] is live,
                                                    (A', H1) = mint(H, n'),
                                                    H2 = H1[A'.i ↦ ci  for 0 ≤ i < min(m, n')]
@@ -3111,12 +3111,12 @@ Three commitments, each load-bearing:
   stick — that unreachability is now theorem content, not vacuity.
 - **Identities are never reused.** `mint` freshness is `A ∉ dom(H)`, and dead
   allocations remain in the domain as `†`, so no fresh identity ever collides
-  with a retired one. A dangling handle or view is permanently dead — it cannot
+  with a tombstoned one. A dangling handle or view is permanently dead — it cannot
   come back to life aliasing an unrelated later allocation. (This is the
   abstract form of provenance; concrete address reuse is the runtime's
   business, invisible here.)
 - **`realloc` moves identity.** Growth mints a *fresh* allocation, copies the
-  preserved cells, and retires the old identity (the ruling's stated initial
+  preserved cells, and tombstones the old identity (the ruling's stated initial
   model). Every stale copy of the old handle, and every view into it, is dead
   the moment the container grows — the dangling-after-realloc class that §5.4's
   deferred-view-equality warning describes is stuck here, not silently
@@ -3150,7 +3150,7 @@ Two §6.1 value forms name allocations:
 
 A **static string literal** is an immortal live allocation: the initial store
 `H0` (§6.12) contains one live allocation per distinct literal, minted before
-`main` and never retired. `"hello" : str` is `view⟨A_lit | 0, 5⟩`, and its
+`main` and never tombstoned. `"hello" : str` is `view⟨A_lit | 0, 5⟩`, and its
 `Copy`, storable, cannot-dangle status (ADR-0043's static-backed exemption
 from the second-class rule) is literal: no reduction exists that could kill
 `A_lit`.
@@ -3249,12 +3249,12 @@ byte-oriented allocation family takes (ADR-0059 Phase 3):
     len ↦ 0                                       →  ⟨⟩     -- capacity kept
 
   free(inout self):
-    clear's element drops;  retire(H, A) if h = buf⟨A⟩;
+    clear's element drops;  tombstone(H, A) if h = buf⟨A⟩;
     h ↦ null;  len ↦ 0;  cap ↦ 0                  →  ⟨⟩     -- early release; the later destructor is then a no-op
 
   drop (the §6.11 abstract-data-type destructor):
     for i = 0 … len-1 ascending:  drop(H, H(A).i), skipping any ⊘
-    retire(H, A) if h = buf⟨A⟩
+    tombstone(H, A) if h = buf⟨A⟩
 ```
 
 In `pop`/`get`/`set`/`clear`, `A` names the handle's allocation implicitly:
@@ -3286,7 +3286,7 @@ citation:
   needed to reach `push` conflicts with any live view of `v`. The model and
   the loan rules close the same hole from opposite sides.
 - **The destructor's `⊘`-skip** covers mid-equation states and future move-out
-  APIs (a `swap_remove`, a `take_at`) as well as `pop`'s retired slot; under
+  APIs (a `swap_remove`, a `take_at`) as well as `pop`'s tombstoned slot; under
   `Inv` at boundaries the skip fires only past `len`, so drop glue runs
   exactly once per live element, ascending (`3.9` order, RUE-646).
 - **Capacity policy** (`grow`: double from `max(cap, 4)` until ≥ required)
@@ -3316,18 +3316,18 @@ source pins in its header comment: **`cap = 0` is the non-owning state.**
 ```
   Inv({ h ; len ; cap }_StrBuf):
     cap > 0   ⇒  h = buf⟨A⟩, H(A) live with exactly cap cells, cells 0 … len-1 bytes, cells len … cap-1 ⊘
-                 (the value OWNS A: it retires A at free/drop)
+                 (the value OWNS A: it tombstones A at free/drop)
     cap = 0   ⇒  h = null and len = 0                          -- new()
               ∨  h names an immortal static-literal allocation with ≥ len live byte cells (§6.13.2)
-                 (NON-owning: free/drop must not retire it — a literal-backed value)
+                 (NON-owning: free/drop must not tombstone it — a literal-backed value)
 ```
 
 The `cap = 0` literal-backed state is why a `StrBuf` built from a literal is
 safe to store indefinitely: the allocation it does not own is one of `H0`'s
-immortal literals, which no reduction can retire. Mutation of such a value
+immortal literals, which no reduction can tombstone. Mutation of such a value
 first performs **copy-on-write** (`grow`'s `cap = 0` arm): mint a fresh
 allocation, copy the live cells, and only then write — the non-owned
-allocation is never written through and never retired. Equations, as `u8`
+allocation is never written through and never tombstoned. Equations, as `u8`
 instances of §6.13.3 with these deltas:
 
 - `grow(self, additional)` is `reserve` with the promotion arm: `cap = 0`
@@ -3357,8 +3357,8 @@ instances of §6.13.3 with these deltas:
   canonical bounds diagnostic. The Option-returning `byte_at` is the
   non-trapping companion.)
 - `clear` drops nothing (`u8` is `Copy`) and resets `len` to 0, keeping the
-  capacity. `free` retires only an owned allocation (`cap > 0`) and resets to
-  `new()`'s state; the `drop fn` likewise retires only when `cap > 0` — the
+  capacity. `free` tombstones only an owned allocation (`cap > 0`) and resets to
+  `new()`'s state; the `drop fn` likewise tombstones only when `cap > 0` — the
   non-owning arm of `Inv` is what makes that conditional correct.
 - Equality (§6.4's `≈`) on each canonical text rung compares **content** — the
   live cells in order (`equals_borrowed`) — never allocation identity: two
@@ -3479,7 +3479,7 @@ neither claims anything about an uninhabited-parameter function such as
   (`6.3:20`). Neither the tag switch nor the match can free a payload twice.
   For **buffer cells** the same shape holds one level down (§6.13.3): `pop`
   and the teardown loops write `⊘` as they move or drop cells, the
-  destructor's walk skips `⊘`, and `retire` is defined only on a live
+  destructor's walk skips `⊘`, and `tombstone` is defined only on a live
   allocation — a second `free`, or a destructor after `free`, meets the
   `h = null` reset or sticks, and never frees twice. §6.13.1's never-reused
   identities close the aliasing half: a dead identity cannot come back as
@@ -3492,11 +3492,11 @@ neither claims anything about an uninhabited-parameter function such as
   `return`/`break` unwind or activation-record pop on the early-exit paths (§6.7, §6.9,
   §6.10; each cell is dropped by exactly one of these, since `endscope`
   un-registers what it drops and an unwind discards the markers whose cells it
-  drops) — and Σ shows no path live past that point. Scope exit now also *retires* the
+  drops) — and Σ shows no path live past that point. Scope exit now also *tombstones* the
   binding's allocation (§6.1, `drop-retire`), so a read past the drop is
   **stuck** rather than silently possible — this bullet, too, is now
   falsifiable rather than structural. For buffers: every minted allocation is
-  retired exactly once, by its unique owner's `free`, grow, or destructor
+  tombstoned exactly once, by its unique owner's `free`, grow, or destructor
   (§6.13.3 under (O1)), so buffer storage neither leaks nor outlives its
   owner.
 
@@ -3506,7 +3506,7 @@ neither claims anything about an uninhabited-parameter function such as
   views are second-class — a view exists only inside a call whose loan covers
   the container place it was created from (§5.4), and while that loan is live
   the owner can be neither moved (Use-Move's loan premise) nor reached by a
-  `free`/grow/destructor (exclusivity) — so no reduction that retires an
+  `free`/grow/destructor (exclusivity) — so no reduction that tombstones an
   allocation can fire under a live view; and handles are unique (O1), so no
   *other* place can reach the allocation to kill it. Previously this theorem
   was unstatable: `@free` was modeled as a no-op and buffer cells were not in
@@ -3587,7 +3587,7 @@ The eventual metatheory proof also owes these explicit lemmas:
 - **Handle-uniqueness preservation.** Reduction preserves (O1): every live
   buffer allocation is named by exactly one live handle (plus, transiently,
   the views its loans justify). The §6.13 equations must be audited to
-  preserve it (`clone` mints, `realloc` retires, `free` nulls the header) —
+  preserve it (`clone` mints, `realloc` tombstones, `free` nulls the header) —
   and this lemma is the formal hook the RUE-388 lift (linear elements via
   container/element multiplicity propagation) will be designed against, per
   the ruling.

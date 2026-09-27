@@ -64,7 +64,7 @@ carve-out, used exactly where §6 discards a pending value.
 configuration from `Config.init` losslessly. By determinism (`Step.det`) every
 configuration the run passes through lies on that path
 (`MSteps.of_steps`), so its ledger is at most the end's. At the end the
-store is empty of owned values (`eval_tidy`: every cell retired) and
+store is empty of owned values (`eval_tidy`: every cell tombstoned) and
 `eval_conserves` bounds each identity's count in the value and the trace by
 one. An identity the configuration held counts at least once, so exactly
 once.
@@ -1512,7 +1512,7 @@ theorem run_msteps (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) (fue
   rw [hr] at h
   simpa [Config.init] using h [] []
 
-/-- A store whose every cell is retired owns nothing (helper). -/
+/-- A store whose every cell is tombstoned owns nothing (helper). -/
 theorem storeOwn_of_dead {D : Decls} {H : Store}
     (h : ∀ ℓ, ℓ < H.length → H[ℓ]? = some .dead) : storeOwn D H = [] := by
   unfold storeOwn
@@ -1525,7 +1525,7 @@ theorem storeOwn_of_dead {D : Decls} {H : Store}
   rfl
 
 /-- **A terminating run ends with an empty store and counts every identity at
-most once** (helper): `eval_tidy` retires every cell by the end, and
+most once** (helper): `eval_tidy` tombstones every cell by the end, and
 `eval_conserves` from the empty store bounds what the result and the trace
 own by the range of identities minted (`run_trace_once`'s argument). -/
 theorem run_final_le (M : FloatSig) (P : Program) (fuel : Nat) {H : Store} {v : Val}
@@ -1564,7 +1564,7 @@ form and shows each step of the run moves an owned identity between the
 store, the focus, the stack and the trace without losing it (`MSteps`); by
 determinism every configuration the run reaches lies on that run
 (`MSteps.of_steps`). `eval_small_to_big` places the run's end at `run`'s answer,
-where `eval_tidy` has retired every cell and `eval_conserves` bounds each
+where `eval_tidy` has tombstoned every cell and `eval_conserves` bounds each
 count by one. -/
 theorem whole_program_exactly_once (M : FloatLaws) {P : Program} (h : ProgramTyped P)
     (hp : P.pendingSafe = true) {C : Config} (hC : Steps M.toFloatSig P Config.init C) {a : Nat}

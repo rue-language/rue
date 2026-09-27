@@ -153,7 +153,7 @@ def run (M : FloatSig) (P : Program) (fuel : Nat) : EvalRes :=
 10). The `Nat` is the fuel, explained below.
 
 - `H` is §6.1's store: a list of cells, each `full c` for live contents or
-  `dead` for a retired allocation `†`. The contents `c` is a **tree**, because
+  `dead` for a tombstoned allocation `†`. The contents `c` is a **tree**, because
   §6.1's moved-out marker `⊘` may sit at any node of it, not only at the root:
   a partial move writes `H[ℓ@π ↦ ⊘]` at exactly the sub-position it takes
   (§6.3, §4.2), and a whole-place move is the case `π = ε`.
@@ -345,7 +345,7 @@ first) and `call` the entry point's `ret(E, φ)`:
 | 8 | `mkStruct` | (D-Struct) §6.5 | store `[ℓ0 = †]`: mint `#0`; value `S1 { 7 }#0` | [3] |
 | 9 | `letBind` | (D-Let) §6.7 | store gains `ℓ1 = S1 { 7 }#0`; push `endscope([ℓ1])`; focus on `1` | [4] |
 | 10 | `intLit` | §6.3 | `1` is a value | [5] |
-| 11 | `endScope` | (D-EndScope) §6.7 | `ℓ1` dropped and retired; trace gains `drop ℓ1`, then `S1`'s destructor | [6] |
+| 11 | `endScope` | (D-EndScope) §6.7 | `ℓ1` dropped and tombstoned; trace gains `drop ℓ1`, then `S1`'s destructor | [6] |
 | 12 | `callReturn` | (D-Return-Value) §6.9 | pop `call`; the activation record's drop scope is empty; `✓1` | [7] |
 
 Two things differ, and neither is a disagreement:
@@ -519,7 +519,7 @@ It is stated as an invariant for two reasons:
   σ is ρ, `StoreTyping` applies to the walk: every cell is live or moved out, and
   no two bindings share one. That is why §7's no-use-after-drop bullet follows
   from the invariant rather than from a fact about closed expressions, and why
-  no unwind touches a `†` cell or retires one twice.
+  no unwind touches a `†` cell or tombstones one twice.
 - It stops being free when `Activation.scope` becomes the *stack* §6.1 specifies,
   where scopes are pushed and popped independently of the binder chain and σ
   and ρ are two books to keep in step. That is the shape for which the
@@ -704,7 +704,7 @@ theorem drop_exactly_once (M : FloatLaws) (h : ProgramTyped P)
 ```
 
 `Exact` is the count equation over the identities the evaluation starts
-with. `Tidy` says every cell the evaluation allocated has been retired.
+with. `Tidy` says every cell the evaluation allocated has been tombstoned.
 `rest_exactly_once` is the same for the values a form's leading operands
 produce, which is where a `let`'s initializer or a discarded `S { .. };`
 ends. The carve-outs are a trap, which ends nothing (§6.12), and
@@ -1003,7 +1003,7 @@ slot, so `v0`'s cell is location 1, not 0:
 | `assign (.var 0)`, (D-Assign) §6.8 | `[dead, full ⊘, dead]` | the position is `⊘`, so nothing is dropped; reinitialize | `[dead, full S2 { 2 }#2, dead]` | |
 | inner (D-Seq) discard | | `unit` is `Copy`: no drop | `[dead, full S2 { 2 }#2, dead]` | |
 | `drop (.var 0)`, §6.11 | `[dead, full S2 { 2 }#2, dead]` | the glue runs again; the contents become `⊘` | `[dead, full ⊘, dead]` | `drop ℓ1 = S2 { 2 }#2` |
-| (D-EndScope): retire `v0` | `[dead, full ⊘, dead]` | the contents are `⊘`, so nothing to drop; retire the cell | `[dead, dead, dead]` | |
+| (D-EndScope): tombstone `v0` | `[dead, full ⊘, dead]` | the contents are `⊘`, so nothing to drop; tombstone the cell | `[dead, dead, dead]` | |
 
 The two drops name two identities, `#0` and `#2`: the reinitialization put a
 new value in the old place, and each value was freed once, which is what
@@ -1102,7 +1102,7 @@ are the `†` slots the two struct literals reserved for their identities,
 **The drops run once, not twice.** Rows 10 and 11 are the `endscope`s the
 normal path would have run. They see a `.returned` result and pass it on,
 because `eval` sequences a `let` body with `bind`, which continues only on
-a value. Their cells were already retired at row 9; had either tried again,
+a value. Their cells were already tombstoned at row 9; had either tried again,
 `drop-retire` would have found a `†` cell and the machine would have refused
 with `useAfterDrop`. The `record` invariant is what proves it cannot.
 
@@ -1169,7 +1169,7 @@ accepts a `@panic` past a live linear binding too, since it carries `⊥`
 | --- | --- | --- | --- | --- | --- |
 | 2–3 | literal, (D-Struct) §6.5 | `[]` | the literal becomes `{ 7 }_S1` with identity `#0`, reserving `ℓ0` | `[ℓ0 = †]` | |
 | 4 | (D-Let) §6.7 | `[ℓ0 = †]` | mint `ℓ1` for `v0` | `[ℓ0 = †, ℓ1 = S1 { 7 }#0]` | |
-| 5 | `@drop` §6.11 | `[ℓ0 = †, ℓ1 = S1 { 7 }#0]` | the glue runs, with the destructor as its observable half, and the cell is marked `⊘` rather than retired, so the binding stays reinitializable (§6.8, §6.11) | `[ℓ0 = †, ℓ1 = ⊘]` | `drop ℓ1 = S1 { 7 }#0`; `run drop fn S1(S1 { 7 }#0)` |
+| 5 | `@drop` §6.11 | `[ℓ0 = †, ℓ1 = S1 { 7 }#0]` | the glue runs, with the destructor as its observable half, and the cell is marked `⊘` rather than tombstoned, so the binding stays reinitializable (§6.8, §6.11) | `[ℓ0 = †, ℓ1 = ⊘]` | `drop ℓ1 = S1 { 7 }#0`; `run drop fn S1(S1 { 7 }#0)` |
 | **6** | **(D-Panic) §6.12** | `[ℓ0 = †, ℓ1 = ⊘]` | the configuration is abandoned with `↯user` | | |
 | 7–8 | (D-Seq), then the `let`'s (D-EndScope) | | both pass the trap on. The body did not complete, so the scope never closes and nothing unwinds σ: the dynamic face of §5.7's `⊥_panic` exemption | | |
 | 9 | (Panic-Lift) §6.2 | | the trap is carried out of the suspended `main() → f0()` context: **no activation record is popped**, `run-all-scope-drops` never runs, and the callee's open drop scopes go with the configuration | | |
@@ -2218,7 +2218,7 @@ restriction would not be.
 Then read the other field, `record`: the activation record's drop scope, reversed,
 *is* its environment. *A defect looks like:* that clause weakened to an
 inclusion, or dropped. Then a cell could sit in the record twice, or stay in
-the record after its `endscope` retired it, and a `return`'s unwind would
+the record after its `endscope` tombstoned it, and a `return`'s unwind would
 drop-retire it a second time: the `useAfterDrop` that `no_use_after_drop`
 rules out. Row 9 of example 2 is the walk that clause protects. The machine
 never reaches that state from `run`'s start in any case, checked or not
@@ -2321,11 +2321,11 @@ Pick two of these three and read the calculus and the Lean side by side.
   mints a fresh cell for the binder, runs the body, then at scope exit
   inspects that cell. A live linear value is `linearLeak`, and the machine
   stops there. A live affine value is dropped, its event appended to the
-  trace, and the cell retired (`dead`). A live copy value or a `⊘` cell drops
-  nothing, and the cell is retired just the same. A `†` cell cannot arise
+  trace, and the cell tombstoned (`dead`). A live copy value or a `⊘` cell drops
+  nothing, and the cell is tombstoned just the same. A `†` cell cannot arise
   here, since §6.7 mints the binder's own cell and this arm is where it
-  retires it; the machine refuses one (`useAfterDrop`), as it refuses an
-  unbound index. *A defect looks like:* the retire omitted (then a use after
+  tombstones it; the machine refuses one (`useAfterDrop`), as it refuses an
+  unbound index. *A defect looks like:* the tombstone omitted (then a use after
   scope exit would read a stale value instead of refusing), or the affine
   drop event emitted in the wrong order relative to the body's own trace,
   which step 5's stdout comparison would catch.

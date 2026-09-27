@@ -287,7 +287,7 @@ def Kont.toLoop : List Kont → Option (Activation × List Kont)
   | _ :: K => Kont.toLoop K
 
 /-- The root cell of a place: `ρ(root(p)) = ℓ` and `H(ℓ)` live (§6.3). An
-unbound index is `unbound` and a retired cell is `useAfterDrop`, §6's stuck
+unbound index is `unbound` and a tombstoned cell is `useAfterDrop`, §6's stuck
 states for both (helper). -/
 def rootCell (H : Store) (φ : Activation) (i : Nat) : Except Refusal (Nat × Contents) :=
   match φ.env[i]? with
@@ -299,7 +299,7 @@ def rootCell (H : Store) (φ : Activation) (i : Nat) : Except Refusal (Nat × Co
     | some (.full c) => .ok (ℓ, c)
 
 /-- `drop-retire(H, ℓ)` (§6.1) as §6 writes it: run the binding's drop and
-retire the allocation, with **no** leak monitor — `dropRetire`
+tombstone the allocation, with **no** leak monitor — `dropRetire`
 (`Dynamics.lean`) without its `residualLinear` test (helper). -/
 def plainDropRetire (D : Decls) (H : Store) (ℓ : Nat) : Except Refusal (Store × List Event) :=
   match H[ℓ]? with

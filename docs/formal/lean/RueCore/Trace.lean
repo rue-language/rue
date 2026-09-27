@@ -478,7 +478,7 @@ theorem StoreCC.set {D : Decls} {H : Store} {ℓ : Nat} {c : Contents} (h : Stor
     exact hc
   · rw [List.getElem?_set_ne he] at hc'; exact h ℓ' c' hc'
 
-/-- Retiring a cell keeps the store copy-closed (helper). -/
+/-- Tombstoning a cell keeps the store copy-closed (helper). -/
 theorem StoreCC.set_dead {D : Decls} {H : Store} {ℓ : Nat} (h : StoreCC D H) :
     StoreCC D (H.set ℓ .dead) := by
   intro ℓ' c' hc'

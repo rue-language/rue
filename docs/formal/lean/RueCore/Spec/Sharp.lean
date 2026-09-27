@@ -530,7 +530,7 @@ def pending_program_stmt : Prop :=
 carve-out). In the checked program of `Nonvacuous.dtor`, `0; [s, return 7];
 1` is typed in the context `s : S0`, but the array literal's first element is
 pending when the second completes abruptly. From an activation record holding `s` at cell `0`, the
-`return` retires the activation record and ends `s`'s identity nowhere. So
+`return` tombstones the activation record and ends `s`'s identity nowhere. So
 `drop_exactly_once` and `rest_exactly_once` fail without `e.pendingSafe`
 (`Exact` fails); everything else they ask holds, a `Lead` (the discarded `0`)
 included. -/
@@ -792,9 +792,9 @@ def unreachable_stuck_stmt : Prop :=
       ¬ (∀ C, C.Terminal ∨ ∃ C', Step Float.exactOps P C C') ∧
       ¬ ∃ n, ∀ fuel, n < fuel → ∃ w', run Float.exactOps P fuel = .refused w'
 
-/-- **A configuration that reads a retired cell, not reached** (§7 sharpness,
+/-- **A configuration that reads a tombstoned cell, not reached** (§7 sharpness,
 RUE-2496). For the checked program of `Nonvacuous.dtor`, a configuration whose
-activation record names a cell already retired (`†`) is stuck with `useAfterDrop`, and
+activation record names a cell already tombstoned (`†`) is stuck with `useAfterDrop`, and
 `eval` from the same store and activation record refuses the same way; the configuration
 is not reached from `Config.init` (shown through `step_no_use_after_drop`
 itself). So `step_no_use_after_drop` fails without the hypothesis that the

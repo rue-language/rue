@@ -346,7 +346,7 @@ What the mutants could not get past:
     RUE-2496). No program, checked or not, seems to reach `eval`'s
     `useAfterDrop` refusal through `run`: an activation record's environment names only
     cells its own bindings allocated, each removed from the environment as
-    the cell is retired, and `run` starts from the empty store and activation record.
+    the cell is tombstoned, and `run` starts from the empty store and activation record.
     `Examples.lean` already says no closed program reaches the guard, and
     witnesses it only from an open state, and the review's fuzz of 78,000
     programs reached it through neither `run` nor `step`. So the statement holds, it seems,
@@ -541,7 +541,7 @@ What the mutants could not get past:
   derive the whole-program statement from `drop_exactly_once` and
   `rest_exactly_once` and stopped: at `run` both are vacuous (the run starts
   from the empty store, and the entry call's lead is its empty argument
-  list), a result that allocated, retired and never dropped a cell satisfies
+  list), a result that allocated, tombstoned and never dropped a cell satisfies
   both, applying them at every window of a run needs typing hypotheses at
   intermediate states that no statement provides (RUE-2423), and neither the
   trace nor the result records which identities a run introduced. What was

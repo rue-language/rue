@@ -13,7 +13,7 @@ about them are in `Dynamics/Lemmas.lean` (layer L2), moved there verbatim (RUE-2
 A definitional interpreter over the §6.1 configuration shape, restricted to
 the fragment: a store of single-cell binding allocations (`full c`, whose
 contents is a tree with §6.1's moved-out marker `⊘` allowed at any node, or
-the retired marker `†` = `dead`), an activation record holding the environment `ρ` and the
+the tombstoned marker `†` = `dead`), an activation record holding the environment `ρ` and the
 drop scope `σ`, and a drop trace — the fragment's image of the oracle's
 observable `Outcome` (drop trace + result).
 
@@ -59,13 +59,13 @@ Design commitments carried over from §6:
   the operands have run; but a raw `intLit` outside its type's `n_T` range
   evaluates to its value here, while §6's integer domain is bounded (§6.1)
   and `check` rejects the literal (`Examples.lean` pins both).
-* Scope exit *retires* the binding's allocation (`drop-retire`, §6.1), so a
+* Scope exit *tombstones* the binding's allocation (`drop-retire`, §6.1), so a
   use after scope exit is `useAfterDrop`, distinct from `useAfterMove`.
 * A read that reaches a `⊘` — at the place itself or anywhere inside the
   aggregate it names — is `useAfterMove`. The second case is the one
   `fully-owned(Σ, p)` (§5.1) excludes: handing an aggregate with a moved-out part in it
   to a new owner (`3.8:26`).
-* `@drop` and overwrite-drop do **not** retire (§6.8/§6.11): the binding
+* `@drop` and overwrite-drop do **not** tombstone (§6.8/§6.11): the binding
   stays reinitializable.
 * Arithmetic overflow, a zero divisor, an out-of-range or negative array
   index, an out-of-range `@intCast` and an
@@ -515,7 +515,7 @@ def Contents.setAt : Contents → List Nat → Contents → Option Contents
   -- catch-all above with every other non-struct node.
 
 /-- The store `H` (§6.1) holds one cell per binding allocation; the cell is
-live contents or the retired marker `†`. §6.1's whole-cell `⊘` is
+live contents or the tombstoned marker `†`. §6.1's whole-cell `⊘` is
 `full .movedOut` — a moved-out part at the root of the tree, which is what a whole-place
 move writes. -/
 inductive Cell where
@@ -862,9 +862,9 @@ Two things §6.11 writes out are elided here, both unobservably.
   supplies a body that reproduces the event (`Print.lean`).
 * **The scratch cell is not minted.** §6.11 mints a fresh `ℓ` holding the
   value, runs the destructor in an activation record whose drop scope is empty, drops
-  the *residual* fields `H1(ℓ)` leaves, and then retires `ℓ`. `dropContents`
+  the *residual* fields `H1(ℓ)` leaves, and then tombstones `ℓ`. `dropContents`
   mints nothing and drops the original `cs`. Neither difference is
-  observable: no `Event` corresponds to minting or retiring the scratch cell,
+  observable: no `Event` corresponds to minting or tombstoning the scratch cell,
   and the residual fields *are* the original ones, because `3.9:33` forbids
   moving `self` out of a destructor and `3.9:34` forbids moving a field out
   of a value whose type declares one, so a destructor body cannot change a
@@ -1111,7 +1111,7 @@ def dropCell (D : Decls) (ℓ : Nat) (c : Contents) : Except Refusal (List Event
     | .ok evs => .ok (.drop ℓ c :: evs)
 
 /-- `drop-retire(H, ℓ)` (§6.1): run the binding's drop (§6.11 — a no-op on a
-`⊘` or `Copy` cell), then retire the allocation, so any later access to it is
+`⊘` or `Copy` cell), then tombstone the allocation, so any later access to it is
 `useAfterDrop` rather than silently readable (the RUE-390 change). A live
 linear value here is §5.6's leak: the scope ends with an obligation
 undischarged, and the machine refuses (`3.8:32`). The monitor reads

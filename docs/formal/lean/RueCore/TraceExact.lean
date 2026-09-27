@@ -58,7 +58,7 @@ relation; it is proved by carrying a ledger along `eval`'s simulation, not by
 composing the two statements here.
 
 "Still in the store" is not a hiding place: `Tidy` (`eval_tidy`) says every
-cell an evaluation allocates is retired by its end — §6.9's activation record pop, §6.7's
+cell an evaluation allocates is tombstoned by its end — §6.9's activation record pop, §6.7's
 `endscope`, §6.10's unwind — so a value counted as "in the store" is in a cell
 the enclosing code can still reach (`orphan_rejected`).
 
@@ -1828,19 +1828,19 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
             omega
         · exact hb
 
-/-! ## The activation-record-pop invariant: every allocation is retired
+/-! ## The activation-record-pop invariant: every allocation is tombstoned
 
 `Exact` counts where an owned value *is*; it does not say *which* cell holds
 it, so on its own a value parked in a cell nobody can reach any more — a
 callee's parameter cell an activation record pop forgot to walk — would still count as
 "in the store". `Tidy` closes that: every cell an evaluation allocates is
-retired (`†`) by its end — a `let`'s at its `endscope` (§6.7), a `match` arm's
+tombstoned (`†`) by its end — a `let`'s at its `endscope` (§6.7), a `match` arm's
 at the arm's end (§6.6), a callee's at the activation record pop (§6.9), and each at the
 σ-walk of an unwinding `return` — except, for an unwinding `break`, the cells
-its carried drop scope still owes, which the loop retires (§6.10) and
+its carried drop scope still owes, which the loop tombstones (§6.10) and
 whose values `rest_exactly_once` at the loop counts as ended. Cells
-outside the activation record's environment are touched only to be retired, and an
-unwinding `return` has retired the whole activation record's drop scope. It is a fact about
+outside the activation record's environment are touched only to be tombstoned, and an
+unwinding `return` has tombstoned the whole activation record's drop scope. It is a fact about
 the store's shape alone, proved by its own fuel induction (`eval_tidy`), with
 no typing derivation and no `pendingSafe` hypothesis. -/
 
@@ -1876,7 +1876,7 @@ theorem Local.set {φ : Activation} {H : Store} {ℓ : Nat} (x : Cell) (hℓ : �
 theorem Local.append {φ : Activation} {H : Store} (ext : Store) : Local φ H (H ++ ext) :=
   ⟨by simp, fun ℓ hl _ => .inl (List.getElem?_append_left hl)⟩
 
-/-- Nothing allocated, nothing to retire (helper). -/
+/-- Nothing allocated, nothing to tombstone (helper). -/
 theorem Tombstoned.same {H H' : Store} {keep : List Nat} (h : H'.length ≤ H.length) :
     Tombstoned H keep H' := fun _ h₁ h₂ _ => absurd (Nat.lt_of_lt_of_le h₂ h) (Nat.not_lt.mpr h₁)
 
@@ -1893,7 +1893,7 @@ theorem Tidy.write {φ : Activation} {H : Store} {ℓ : Nat} {x : Cell} {v : Val
 theorem Tidy.opRes {φ : Activation} {H : Store} {o : OpRes} : Tidy φ H (o.toRes H) := by
   cases o <;> first | exact Tidy.same | trivial
 
-/-- Aggregate introduction reserves one retired slot (helper). -/
+/-- Aggregate introduction reserves one tombstoned slot (helper). -/
 theorem Tidy.intro {D : Decls} {φ : Activation} {H : Store} {mk : Nat → Val} :
     Tidy φ H (introVal D H mk) := by
   unfold introVal
@@ -1905,7 +1905,7 @@ theorem Tidy.intro {D : Decls} {φ : Activation} {H : Store} {mk : Nat → Val} 
     simp
   · trivial
 
-/-- **Composition**: a step that allocated and retired locally, then an
+/-- **Composition**: a step that allocated and tombstoned locally, then an
 evaluation in the same activation record (helper). -/
 theorem Tidy.prefix {φ : Activation} {H H₁ : Store} {tr : List Event} {r : EvalRes}
     (hf : ∀ ℓ ∈ φ.env, ℓ < H.length) (hl : Local φ H H₁) (hre : Tombstoned H [] H₁)
@@ -1937,7 +1937,7 @@ theorem Tidy.bind {φ : Activation} {H : Store} {r : EvalRes} {k : Store → Val
   | ok H₁ v tr => exact Tidy.prefix hf hr.1 hr.2 (hk H₁ v tr rfl)
   | _ => exact hr
 
-/-- `drop-retire` retires exactly its cell (helper). -/
+/-- `drop-retire` tombstones exactly its cell (helper). -/
 theorem dropRetire_shape {D : Decls} {H H' : Store} {ℓ : Nat} {evs : List Event}
     (h : dropRetire D H ℓ = .ok (H', evs)) : H' = H.set ℓ .dead := by
   unfold dropRetire at h
@@ -1950,7 +1950,7 @@ theorem dropRetire_shape {D : Decls} {H H' : Store} {ℓ : Nat} {evs : List Even
       · cases h
       · cases h; rfl
 
-/-- The same at a retired cell: `drop-retire` refuses (helper). -/
+/-- The same at a tombstoned cell: `drop-retire` refuses (helper). -/
 theorem dropRetire_live {D : Decls} {H H' : Store} {ℓ : Nat} {evs : List Event}
     (h : dropRetire D H ℓ = .ok (H', evs)) : ℓ < H.length := by
   unfold dropRetire at h
@@ -1959,7 +1959,7 @@ theorem dropRetire_live {D : Decls} {H H' : Store} {ℓ : Nat} {evs : List Event
   · cases h
   · rename_i c hc; exact (List.getElem?_eq_some_iff.mp hc).1
 
-/-- **`run-scope-drops` retires exactly its cells** (§6.1): the store keeps its
+/-- **`run-scope-drops` tombstones exactly its cells** (§6.1): the store keeps its
 length, every listed cell is `†`, every other cell is untouched (helper). -/
 theorem unwindLocs_shape {D : Decls} : ∀ {H H' : Store} {ls : List Nat} {evs : List Event},
     unwindLocs D H ls = .ok (H', evs) →
@@ -1989,7 +1989,7 @@ theorem unwindLocs_shape {D : Decls} : ∀ {H H' : Store} {ls : List Nat} {evs :
           · have hne : ℓ ≠ ℓ' := fun e => hn (e ▸ List.mem_cons_self)
             rw [u₂ ℓ' (fun hm => hn (List.mem_cons_of_mem _ hm)), List.getElem?_set_ne hne]
 
-/-- What a scope teardown after a value does to the store: refuse, or retire
+/-- What a scope teardown after a value does to the store: refuse, or tombstone
 exactly the cells `ls` names (helper). -/
 def KillsOnly (ls : List Nat) (H : Store) (v : Val) (R : EvalRes) : Prop :=
   (∃ w, R = .refused w) ∨
@@ -2028,9 +2028,9 @@ theorem dropRetire_kills {D : Decls} {H : Store} {v : Val} {ℓ : Nat} :
 
 /-- **A scope opened above the activation record and closed at its end** (§6.7's `let`,
 §6.6's `match` arm): an evaluation in the activation record extended by fresh cells `ls`,
-followed on a value by a teardown that retires exactly `ls`, keeps the
+followed on a value by a teardown that tombstones exactly `ls`, keeps the
 activation-record-pop invariant in the activation record it was opened in. An unwinding `return`
-finds `ls` in the extended record and has retired them; an unwinding `break`
+finds `ls` in the extended record and has tombstoned them; an unwinding `break`
 carries them in its record (helper). -/
 theorem Tidy.scoped {φ : Activation} {H Hm : Store} {ls : List Nat} {r : EvalRes}
     {k : Store → Val → EvalRes}
@@ -2210,7 +2210,7 @@ theorem Tidy.call {D : Decls} {φ : Activation} {H Hm : Store} {ls : List Nat} {
       exact ⟨loc H₂ l₂, ret H₂ (fun ℓ hm => s₂ ℓ hm) r₂⟩
   | _ => trivial
 
-/-- **Every allocation is retired** (§6.7, §6.9, §6.10): every evaluation, of
+/-- **Every allocation is tombstoned** (§6.7, §6.9, §6.10): every evaluation, of
 every expression, in every activation record that names only existing cells, keeps
 `Tidy`. By fuel induction over `eval`; no typing derivation. -/
 theorem eval_tidy (M : FloatSig) (P : Program) :
@@ -2459,13 +2459,13 @@ never refused, and when it completes normally or abruptly by `return` or
   place: in a cell that already existed, part of the result, or ended in the
   trace exactly as many times as it was held — by a drop, a discarded
   temporary, a residue drop, or a consumption (`Exact`);
-* **every cell the evaluation allocated is retired** (`Tidy`): a `let`'s at
+* **every cell the evaluation allocated is tombstoned** (`Tidy`): a `let`'s at
   its `endscope` (§6.7), a `match` arm's at the arm's end (§6.6), a callee's
   at its activation record pop (§6.9) — except, for an unwinding `break`, the cells its
-  drop scope still owes, which the loop retires (§6.10) and whose values
+  drop scope still owes, which the loop tombstones (§6.10) and whose values
   `rest_exactly_once` at the loop counts (`breakLeak_rejected`) — cells outside the
-  activation record's environment were touched only to be retired, and an unwinding
-  `return` has retired the activation record's whole drop scope (§6.9's σ-walk). So "still in
+  activation record's environment were touched only to be tombstoned, and an unwinding
+  `return` has tombstoned the activation record's whole drop scope (§6.9's σ-walk). So "still in
   the store" means a cell the enclosing code can still reach, never one a
   activation record pop forgot (`orphan_rejected`).
 
@@ -2579,7 +2579,7 @@ after trace `tr` (`Lead`). Whatever the rest of the form yields, `r` with
 `eval … e = r.withTrace tr`, is not a refusal, and every owned identity of
 `vs` or of `H₁` is, at its end, in a cell that already existed, in the result,
 or ended in `r`'s trace exactly as many times as it was held; every cell
-allocated since `H₁` is retired (`Settled`). This is where a `let`'s
+allocated since `H₁` is tombstoned (`Settled`). This is where a `let`'s
 initializer is dropped at the `endscope`, a discarded `S { .. };` at the
 `dropTemp`, an argument at the callee's activation record pop, and a scrutinee's shell at
 its `consume`, and where a `break` unwinds the bindings its loop body still
@@ -2718,8 +2718,8 @@ theorems, satisfies the conclusion.
   evaluation, so no evaluation starts holding it; `rest_exactly_once`'s ledger,
   taken where the initializer has produced it, rejects the deletion.
 * **A silent `break` unwind** (second review, probe B1): in
-  `loop { let z = S0 { 1 }; break; }`, a loop that retires `z`'s cell without
-  dropping its `S0`. `Tidy` is satisfied — the cell is retired — and the `S0`
+  `loop { let z = S0 { 1 }; break; }`, a loop that tombstones `z`'s cell without
+  dropping its `S0`. `Tidy` is satisfied — the cell is tombstoned — and the `S0`
   was minted after the loop started; `rest_exactly_once` at the loop, whose
   lead is its body breaking, rejects it. -/
 
@@ -2761,7 +2761,7 @@ def orphanResult : EvalRes :=
 
 /-- **An orphaned cell balances the ledger but breaks `Tidy`** (§6.9). At the
 typed configuration `g(x)` of a checked, `pendingSafe` program, the real run
-drops `x`'s `S0` at `g`'s activation record pop and retires the cell, and satisfies
+drops `x`'s `S0` at `g`'s activation record pop and tombstones the cell, and satisfies
 `drop_exactly_once`; the orphaned result keeps `Exact` yet fails `Tidy`,
 which `drop_exactly_once` concludes. -/
 theorem orphan_rejected (M : FloatLaws) :
@@ -2890,15 +2890,15 @@ def s0z : Contents := .struct 0 2 [.int .w64 .signed 1]
 /-- The store the loop body broke in: `z` still bound in `ℓ3` (helper). -/
 def breakStore : Store := [.dead, .full s0x, .dead, .full s0z]
 
-/-- A loop whose `break` unwind retires `z`'s cell with no drop and no
+/-- A loop whose `break` unwind tombstones `z`'s cell with no drop and no
 destructor (helper). -/
 def breakLeak : EvalRes := .ok [.dead, .full s0x, .dead, .dead] .unit []
 
 /-- **A silent `break` unwind of a body-minted value** (§6.10's (D-Break)):
 `g`'s loop is a typed configuration of a checked, `pendingSafe` program. The
-real loop drop-retires `z`'s cell. A loop that retires it silently satisfies
+real loop drop-retires `z`'s cell. A loop that tombstones it silently satisfies
 the bare ledger and `Tidy` — `z`'s `S0` was minted after the loop started, and
-its cell is retired — and is rejected by `rest_exactly_once` at the loop, whose
+its cell is tombstoned — and is rejected by `rest_exactly_once` at the loop, whose
 lead is the body breaking in `breakStore`; the real unwind satisfies it. -/
 theorem breakLeak_rejected (M : FloatLaws) :
     ProgramTyped breakProgram ∧ breakProgram.pendingSafe = true ∧

@@ -420,14 +420,14 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 ## No use-after-drop / no leak of drops
 
 - **Theorem:** `RueCore.no_use_after_drop` — the "never read afterward"
-  half: no evaluation touches a retired (`†`) cell. With activation records this is a
+  half: no evaluation touches a tombstoned (`†`) cell. With activation records this is a
   corollary of the invariant rather than a structural fact about closed
   expressions: `run-all-scope-drops` (§6.9) walks the activation record's drop scope at
   every `return` and at every activation-record pop, and it is `ActivationTyping` — the record
   *is* the environment, whose cells `StoreTyping` says are live or moved out and
   pairwise distinct — that keeps those walks off a `†` cell and stops any cell
-  being retired twice. The guard is also witnessed directly from an open
-  machine state, including one whose drop scope names a retired cell
+  being tombstoned twice. The guard is also witnessed directly from an open
+  machine state, including one whose drop scope names a tombstoned cell
   (`Examples.lean`).
 - **Theorems:** `RueCore.drop_exactly_once` and `RueCore.rest_exactly_once`
   (`lean/RueCore/TraceExact.lean`, RUE-2427): the "exactly once" half.
@@ -440,12 +440,12 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     the result, or ended in the trace exactly as many times as it was held
     (`RueCore.Exact`).
   - **The activation-record-pop invariant.** Every cell the evaluation allocated is
-    retired: a `let`'s at its `endscope`, a `match` arm's at the arm's end,
+    tombstoned: a `let`'s at its `endscope`, a `match` arm's at the arm's end,
     a callee's at its activation-record pop. The one exception is an unwinding `break`,
-    which leaves the cells its drop scope still owes. The loop retires
+    which leaves the cells its drop scope still owes. The loop tombstones
     them, and `rest_exactly_once` at the loop counts their values as ended
     (see below). Cells outside the activation record's environment were touched only to be
-    retired, and an unwinding `return` has retired the activation record's whole drop scope
+    tombstoned, and an unwinding `return` has tombstoned the activation record's whole drop scope
     (`RueCore.Tidy`, `RueCore.eval_tidy`). So "still in the store" never
     means a cell nobody can reach any more. `RueCore.orphan_rejected` is a
     activation-record pop that forgot its σ-walk: the bare ledger balances and `Tidy`
@@ -481,14 +481,14 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   (its first operand, or the argument list of a call, a literal or a dynamic
   read) have produced their values, whatever the rest of the form yields is
   not refused, keeps the same ledger with those values held, and has
-  retired every cell allocated since (`RueCore.Lead`, `RueCore.rest_step`,
+  tombstoned every cell allocated since (`RueCore.Lead`, `RueCore.rest_step`,
   `RueCore.Settled`). A `loop`'s lead is its body **breaking**, so the
   `break`'s unwind of the bindings the body still held is a rest too.
   Three witnesses are each stated at a typed configuration of a checked,
   `pendingSafe` program, and in each the real run satisfies the theorem:
   - `RueCore.letDropDeleted_rejected` deletes the `let`'s drop;
   - `RueCore.seqDropDeleted_rejected` deletes the discard's drop;
-  - `RueCore.breakLeak_rejected` has a loop retire a body-minted binding's
+  - `RueCore.breakLeak_rejected` has a loop tombstone a body-minted binding's
     cell without dropping it.
 
   The bare ledger accepts all three (with `Tidy`, for the loop), and

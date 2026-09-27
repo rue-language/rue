@@ -546,7 +546,7 @@ def sharpnessReasons : List (Lean.Name × Nat × String) := [
     "No counter-example exists: `run_no_use_after_drop` proves the conclusion for every \
     program, checked or not (and `step_no_use_after_drop` the same over `Step` from \
     `Config.init`), so the hypothesis is redundant for a run from the start. The property is \
-    structural: a binding's cell is minted fresh and retired only when its scope ends, after \
+    structural: a binding's cell is minted fresh and tombstoned only when its scope ends, after \
     which nothing names it. The statement is kept in §7's form, over checked programs \
     (RUE-2496).")
 ]

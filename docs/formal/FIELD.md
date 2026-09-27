@@ -422,7 +422,7 @@ in the Rust Reference, the Book, the Rustonomicon and the rustc-dev-guide
 | "memory safety", "the memory-safety-without-GC claim" (README; 01 §7: "These seven are the memory-safety-without-GC claim, decomposed") | memory safety (Hicks 2014): no memory access error | partial: the field has no single definition. Ours is a list of theorems, and two of them go past Hicks's reading: leak-freedom, which he puts outside memory safety, and linear values consumed exactly once |
 | "No use-after-free" (01 §7; the metatheory's heading, not yet mechanized): no reduction applies a §6.13.1 machine operation to a dead buffer allocation | use after free (CWE-416) | clear, for buffers: it is stated only over §6.13's block store |
 | "No double-free", `no_double_free` (01 §7; the metatheory): no destructor runs twice, and no identity is freed twice in a trace | double free (CWE-415) | partial: CWE's is one `free()` of the same address twice; ours counts destructor runs and `drop`/`dropTemp` events per object identity |
-| "No use-after-drop", `no_use_after_drop` (01 §7; the metatheory): no evaluation reads a retired (`†`) cell | use after free (CWE-416), for a dropped binding's cell | partial: the same kind of error. "Drop" is Rust's word (Ref. *Destructors*) for what CWE calls freeing |
+| "No use-after-drop", `no_use_after_drop` (01 §7; the metatheory): no evaluation reads a tombstoned (`†`) cell | use after free (CWE-416), for a dropped binding's cell | partial: the same kind of error. "Drop" is Rust's word (Ref. *Destructors*) for what CWE calls freeing |
 | "no leak of drops" (01 §7; the metatheory; `drop_exactly_once`, `Tidy`): every owned, droppable, non-moved place is dropped exactly once, at the end of its scope | memory leak (CWE-401) is the failure of the "at least once" half | partial: ours also has the "at most once" half, and it counts drops (destructor runs), not memory released |
 | "full expression" (01 §5.8, RUE-1279: the extent of an accessor loan) | full expression (C11 N1570 §6.8¶4) | partial: the same syntactic notion, an expression not inside another, used here for a loan's extent; C uses it for sequence points |
 | "drop obligation", "has a drop obligation" (01 §6.7, §6.9; formerly "owes `x` a drop") | drop obligation (RFC 320; rustc-dev-guide *Drop elaboration*) | clear: a binding the scope will drop at its exit; RFC 320's obligations are per structural path, ours per cell |
@@ -495,7 +495,7 @@ finite prefix, whether or not the run terminates (RUE-2477).
 | `no_double_free` (each identity is freed at most once, and each destructor runs at most once, in every run's trace) | an at-most-once **safety** property over traces | clear once stated this way |
 | `drop_exactly_once` ("consumed exactly once") | "exactly once" (delivery) = at most once ∧ at least once; linear use = exactly once. Ours is per value, per terminating evaluation | partial |
 | `Blocks`, `run_blocks` (every terminating run's trace is in a grammar) | a trace property over terminating traces. No accepted name for this shape | none |
-| `Tidy` / `eval_tidy` (every cell an evaluation allocates is retired by its end) | no verified counterpart | none |
+| `Tidy` / `eval_tidy` (every cell an evaluation allocates is tombstoned by its end) | no verified counterpart | none |
 | "identity ledger" (trace renderings; formerly "explain renderings") | no verified counterpart | none |
 | "observable outcome" (`@dbg` output, exit code; GUIDE §2) | observable behavior (C11; CompCert) | clear |
 
@@ -769,6 +769,7 @@ Copeland 1986 **(record)**; the Swift performance guide; Rust's
 | "abrupt-completion context", "completes abruptly with" (01 §5.3: `Ω`'s `Δ`, each exit kind with its ownership state; formerly "edge delivery") | abrupt completion and its reason (JLS §14.1) | partial: ours is static, records the ownership state with each reason, and counts a loop that never exits among them |
 | "can complete normally" (01 §5.3, §5.5; formerly "continuing"); "can complete abruptly", `Expr.canCompleteAbruptly` (formerly "unwinds", `Expr.unwinds`) | can complete normally (JLS §14.22); abrupt completion (JLS §14.1) | clear for "can complete normally"; the abrupt predicate has no JLS name of its own |
 | "activation record" (01 §6.1's `φ = ⟨ρ ; σ⟩`, `Activation`; formerly "frame") | activation record (Wirth §12.1; Appel ch. 6) | clear: one call's environment and locals; ours also carries its drop scopes. "Frame" now means only a control-stack or evaluation-context frame (§1), as in PFPL |
+| "tombstone", "tombstoned", `†` (01 §6.1, §6.13; `Tombstoned`; formerly "retire", "retired") | tombstone (Wikipedia, after Scott) | clear: the cell stays in the store marked `†` and is never reused, so a later use is refused. `drop-retire` / `dropRetire` keep the old verb (the D179 override), so "dropRetire tombstones the cell" mixes the two |
 
 ---
 
