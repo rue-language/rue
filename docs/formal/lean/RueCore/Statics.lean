@@ -99,8 +99,8 @@ namespace RueCore
 
 /-- §3's field join, over the field types of one declaration: `⊔ { class(Ti) }`
 read left to right. `Attr.lift` then lifts it by the declared attribute. -/
-def StructDecl.baseOf (D : Decls) (sd : StructDecl) : Mult :=
-  sd.fields.foldl (fun m T => m.join (Ty.mult D T)) .copy
+def StructDecl.baseOf (D : Decls) (sd : StructDecl) : Qual :=
+  sd.fields.foldl (fun m T => m.join (Ty.qual D T)) .copy
 
 /-- One declaration's well-formedness (§3, `3.8:18`, `3.9:31`, `3.9:44`): its
 recorded class is §3's field join lifted by its attribute, a `@copy`
@@ -126,7 +126,7 @@ structure StructDecl.Wf (D : Decls) (sd : StructDecl) : Prop where
   dtorWf : sd.dtor = true → sd.baseOf D ≠ .linear
 
 /-- A well-formed struct environment: §3's class assignment holds of every
-declaration (`StructDecl.Wf`). This is the premise that makes `Ty.mult`'s
+declaration (`StructDecl.Wf`). This is the premise that makes `Ty.qual`'s
 lookup §3's join, and it is what `checkStructs` (`Checker/Defs.lean`) decides. -/
 def WfStructs (D : Decls) : Prop :=
   ∀ (s : Nat) (sd : StructDecl), D.structs[s]? = some sd → StructDecl.Wf D sd
@@ -152,8 +152,8 @@ a non-`Linear` enum has no linear payload to leak.
 /-- §3's payload join for one enum declaration: `⊔ { class(Tij) }` over every
 component of every variant, read left to right, variant by variant (`6.3:19`).
 The empty join is `Copy`, which is the discriminant-only case. -/
-def EnumDecl.payloadJoin (D : Decls) (ed : EnumDecl) : Mult :=
-  ed.variants.foldl (fun m Ts => Ts.foldl (fun m' T => m'.join (Ty.mult D T)) m) .copy
+def EnumDecl.payloadJoin (D : Decls) (ed : EnumDecl) : Qual :=
+  ed.variants.foldl (fun m Ts => Ts.foldl (fun m' T => m'.join (Ty.qual D T)) m) .copy
 
 /-- One enum declaration's well-formedness (§3, `6.3:19`): its recorded class
 is the payload join. As for a struct this is the equation only, and `WfNames`
@@ -170,7 +170,7 @@ structure EnumDecl.Wf (D : Decls) (ed : EnumDecl) : Prop where
 
 /-- A well-formed enum environment: §3's class assignment holds of every enum
 declaration (`EnumDecl.Wf`). Together with `WfStructs` this is the premise that
-makes `Ty.mult`'s lookup §3's join at every type, and it is what `checkEnums`
+makes `Ty.qual`'s lookup §3's join at every type, and it is what `checkEnums`
 (`Checker/Defs.lean`) decides. -/
 def WfEnums (D : Decls) : Prop :=
   ∀ (e : Nat) (ed : EnumDecl), D.enums[e]? = some ed → EnumDecl.Wf D ed
@@ -248,7 +248,7 @@ def WfNames (D : Decls) : Prop := WellFounded (fun d' d => D.Names d d')
 /-- A well-formed declaration environment: `3.0:5`'s acyclicity (`WfNames`),
 §3's class assignment for every struct declaration (`WfStructs`) and for every
 enum declaration (`WfEnums`). This is the premise every theorem that reads a
-recorded class through `Ty.mult` carries, and it is what `checkDecls`
+recorded class through `Ty.qual` carries, and it is what `checkDecls`
 (`Checker/Defs.lean`) decides. -/
 structure WfDecls (D : Decls) : Prop where
   /-- `3.0:5` (E0483): no declaration contains itself by value. -/
@@ -400,7 +400,7 @@ elements, each at the element type (`3.8:71`, §5.3's "the element type for an
 array of nonzero length"). §5.6 writes that clause with a second disjunct,
 "(untracked residue carries linear)", for the elements the tracked list does
 not reach. It is not absent here: `residualLinearFields`' `[], Ts` base case
-answers those slots at the **type** level, `Ts.any (·.mult D = .linear)`, and
+answers those slots at the **type** level, `Ts.any (·.qual D = .linear)`, and
 that reading is **exact**, not conservative. An element Σ has no record for
 is one no path has touched, and nothing below a dynamic index is ever moved:
 the calculus has no rule for a move or a `@drop` of an affine or linear place
@@ -410,7 +410,7 @@ probes q02, q11, q15 of RUE-2342); a `@drop` of a `Copy` place there
 an `Owned` element carries a linear value exactly when `class(T) = Linear`. -/
 def residualLinear (D : Decls) : OwnSt → Ty → Bool
   | .movedOut, _ => false
-  | .owned, T => decide (T.mult D = .linear)
+  | .owned, T => decide (T.qual D = .linear)
   | .fields ts, .struct s =>
       (match D.structs[s]? with
        | some sd => sd.attr = .linear || residualLinearFields D ts sd.fields
@@ -424,7 +424,7 @@ def residualLinear (D : Decls) : OwnSt → Ty → Bool
 /-- §5.6's field disjunction: a field slot no partial move touched is `owned`,
 so its clause is the type-level test (helper). -/
 def residualLinearFields (D : Decls) : List OwnSt → List Ty → Bool
-  | [], Ts => Ts.any fun T => decide (T.mult D = .linear)
+  | [], Ts => Ts.any fun T => decide (T.qual D = .linear)
   | _ :: _, [] => false
   | t :: ts, T :: Ts => residualLinear D t T || residualLinearFields D ts Ts
 end
@@ -514,8 +514,8 @@ the residue because the residue is what the machine is about to drop, stays
 reachable only through a program `check` rejects. -/
 def overwriteOk (D : Decls) : OwnSt → Ty → Bool
   | .movedOut, _ => true
-  | .owned, T => decide (T.mult D ≠ .linear)
-  | .fields _, T => decide (T.mult D ≠ .linear)
+  | .owned, T => decide (T.qual D ≠ .linear)
+  | .fields _, T => decide (T.qual D ≠ .linear)
 
 /-- One context entry: the binding's declared type and `μ` mark (fixed at the
 binder: `Γ`'s part) plus the ownership state of every path under it
@@ -639,7 +639,7 @@ mutual
 an `Owned` subtree is `class(T) ≠ Linear` at that path (`3.8:50`). -/
 def ownedJoinable (D : Decls) : OwnSt → Ty → Bool
   | .owned, _ => true
-  | .movedOut, T => decide (T.mult D ≠ .linear)
+  | .movedOut, T => decide (T.qual D ≠ .linear)
   | .fields ts, .struct s =>
       (match D.structs[s]? with
        | some sd => ownedJoinableList D ts sd.fields
@@ -945,7 +945,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
       Γ[p.root]? = some en →
       en.st.get p.path = some u → u.fullyOwned = true →
       en.ty.atPath P.decls p.path = some T →
-      T.mult P.decls = .copy →
+      T.qual P.decls = .copy →
       declaredPrefix P.decls en.ty p.path = none →
       Typed P R Γ (.use p) T ⟨some Γ, []⟩
   /-- (Use-Move) §5.1: a use of an `Affine`/`Linear` place moves it out — at a
@@ -962,7 +962,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
       Γ[p.root]? = some en →
       en.st.get p.path = some u → u.fullyOwned = true →
       en.ty.atPath P.decls p.path = some T →
-      T.mult P.decls ≠ .copy →
+      T.qual P.decls ≠ .copy →
       noDtorPrefix P.decls en.ty p.path = true →
       declaredPrefix P.decls en.ty p.path = none →
       rootIdxOnly P.decls en.ty p.path = true →
@@ -1219,11 +1219,11 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   makes those copies free. The form is kept here as a rule of its own so the
   printer can emit the surface spelling the compiler's E0905 is about and so
   the bridge exercises it; the premise and the dynamics are exactly that
-  elaboration's, and `Ty.mult P.decls T = .copy` is `7.1:38`. That the
+  elaboration's, and `Ty.qual P.decls T = .copy` is `7.1:38`. That the
   calculus and this rule agree is by construction and not by a theorem — it is
   named as a deviation in `../03-metatheory.md`. -/
   | repeatArray {Γ Ω T e n} :
-      Typed P R Γ e T Ω → T.mult P.decls = .copy →
+      Typed P R Γ e T Ω → T.qual P.decls = .copy →
       Typed P R Γ (.repeatArray T e n) (.array T n) Ω
   /-- (Use-Untrackable-Dynamic-Copy) §5.1, at a read `p[e₁]π₁…[eₖ]πₖ` below one
   or more indices that are not compile-time constants: §4.2's
@@ -1273,7 +1273,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
       en.st.get p.path = some u → u.fullyOwned = true →
       en.ty.atPath P.decls p.path = some Ta →
       Ta.atDyn P.decls πs = some T →
-      T.mult P.decls = .copy →
+      T.qual P.decls = .copy →
       declaredPrefix P.decls en.ty p.path = none →
       Ta.dynNoDeclared P.decls πs = true →
       Typed P R Γ (.indexRead p idx πs) T ⟨some Γ₁, Δ⟩
@@ -1344,7 +1344,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
       Γ₂[p.root]? = some en₁ →
       en₁.st.get p.path = some u₁ → u₁.fullyOwned = true →
       assignArrayOk P.decls en₁.st en₁.ty p.path = true →
-      T.mult P.decls ≠ .linear →
+      T.qual P.decls ≠ .linear →
       Typed P R Γ (.indexWrite p idx πs e) .unit
         ⟨some (Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned))), Δ₂ ++ Δ₁⟩
   /-- (Strict-Bottom) §5.3 at a dynamic-index write's right-hand side, which
@@ -1398,7 +1398,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
       Γ[p.root]? = some en →
       en.st.get p.path = some u → u.fullyOwned = true →
       en.ty.atPath P.decls p.path = some T →
-      T.mult P.decls = .copy →
+      T.qual P.decls = .copy →
       declaredPrefix P.decls en.ty p.path = none →
       Typed P R Γ (.drop p) .unit ⟨some Γ, []⟩
   /-- (@Drop) §5.3: consumes the place and discharges its (affine or linear)
@@ -1422,7 +1422,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
       Γ[p.root]? = some en →
       en.st.get p.path = some u → u.isOwned = true →
       en.ty.atPath P.decls p.path = some T →
-      T.mult P.decls ≠ .copy →
+      T.qual P.decls ≠ .copy →
       noDtorPrefix P.decls en.ty p.path = true →
       declaredPrefix P.decls en.ty p.path = none →
       (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) →
@@ -1526,7 +1526,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
       Γ₁[p.root]? = some en₁ →
       en₁.st.get p.path = some u₁ →
       assignArrayOk P.decls en₁.st en₁.ty p.path = true →
-      (u₁ = .movedOut ∨ T.mult P.decls ≠ .linear) →
+      (u₁ = .movedOut ∨ T.qual P.decls ≠ .linear) →
       Typed P R Γ (.assign p e) .unit
         ⟨some (Γ₁.set p.root (en₁.setSt (en₁.st.setAt p.path .owned))), Δ⟩
   /-- (Strict-Bottom) §5.3 at an assignment's right-hand side: it diverges, so
@@ -1550,7 +1550,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   Only the prefix must continue; the tail's `Ω_2` is the form's, with the
   prefix's deliveries added (`Ω_2 ⊕ Δ_1`, §5.3). -/
   | seq {Γ Γ₁ Δ₁ Ω₂ e₁ e₂ T₁ T₂} :
-      Typed P R Γ e₁ T₁ ⟨some Γ₁, Δ₁⟩ → T₁.mult P.decls ≠ .linear →
+      Typed P R Γ e₁ T₁ ⟨some Γ₁, Δ₁⟩ → T₁.qual P.decls ≠ .linear →
       Typed P R Γ₁ e₂ T₂ Ω₂ →
       Typed P R Γ (.seq e₁ e₂) T₂ (Ω₂.merge Δ₁)
   /-- (Seq-Bottom) §5.3 with (Sub-Never) §5.7: the prefix diverges, so the

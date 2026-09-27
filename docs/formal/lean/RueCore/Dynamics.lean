@@ -187,7 +187,7 @@ overwrite already make. `ContentsOwnTyping.destructure_ok` (`Soundness.lean`) is
 the proof that a program `check` accepts never reaches it. `@drop` at a
 declared plan makes the same commitment at the selected **leaf**: a `⊘` there
 refuses with `useAfterMove` rather than dropping nothing, because
-`Contents.mult ⊘ = .copy` would otherwise make the redex succeed in silence
+`Contents.qual ⊘ = .copy` would otherwise make the redex succeed in silence
 (`Examples.dropDeclaredMovedOutLeaf`).
 
 ## The bounds trap (§6.5, §6.12)
@@ -328,10 +328,10 @@ deriving Repr
 
 /-- The dynamic image of `class(T)` (§3) on a value: scalars are `Copy`, a
 struct value has the class its declaration records. -/
-def Val.mult (D : Decls) : Val → Mult
+def Val.qual (D : Decls) : Val → Qual
   | .struct s _ _ => D.classOf s
   | .enum e _ _ _ => D.enumClassOf e
-  | .array T _ vs => Ty.mult D (.array T vs.length)
+  | .array T _ vs => Ty.qual D (.array T vs.length)
   | .int _ _ _ | .float _ _ | .bool _ | .unit => .copy
 
 /-- Cell contents (§6.1's `c ::= v | ⊘`), as a **tree**: `⊘` may sit at any
@@ -404,10 +404,10 @@ def Contents.isMovedOut : Contents → Bool
 
 /-- The dynamic image of `class(T)` (§3) on cell contents: a hole has nothing
 to drop, and a struct has the class its declaration records (helper). -/
-def Contents.mult (D : Decls) : Contents → Mult
+def Contents.qual (D : Decls) : Contents → Qual
   | .struct s _ _ => D.classOf s
   | .enum e _ _ _ => D.enumClassOf e
-  | .array T _ cs => Ty.mult D (.array T cs.length)
+  | .array T _ cs => Ty.qual D (.array T cs.length)
   | .movedOut | .int _ _ _ | .float _ _ | .bool _ | .unit => .copy
 
 mutual
@@ -418,7 +418,7 @@ def Contents.allCopy (D : Decls) : Contents → Bool
   | .struct s _ cs => decide (D.classOf s = .copy) && Contents.allCopyList D cs
   | .enum e _ _ cs => decide (D.enumClassOf e = .copy) && Contents.allCopyList D cs
   | .array T _ cs =>
-      decide (Ty.mult D (.array T cs.length) = .copy) && Contents.allCopyList D cs
+      decide (Ty.qual D (.array T cs.length) = .copy) && Contents.allCopyList D cs
 
 /-- `allCopy` over a field, payload or element list (helper). -/
 def Contents.allCopyList (D : Decls) : List Contents → Bool
@@ -449,7 +449,7 @@ def Contents.copyClosed (D : Decls) : Contents → Bool
       if D.enumClassOf e = .copy then Contents.allCopyList D cs
       else Contents.copyClosedList D cs
   | .array T _ cs =>
-      if Ty.mult D (.array T cs.length) = .copy then Contents.allCopyList D cs
+      if Ty.qual D (.array T cs.length) = .copy then Contents.allCopyList D cs
       else Contents.copyClosedList D cs
 
 /-- `copyClosed` over a field, payload or element list (helper). -/
@@ -1006,7 +1006,7 @@ what `@drop(x.f)` records as `drop ℓ sub`, so its drop starts with the same
 `drop ℓ r` marker — when `r` is not `Copy`, as `dropCell` records one. A
 `Copy` subtree has no drop glue and gets no marker (helper). -/
 def residueMark (D : Decls) (ℓ : Nat) (r : Contents) : List Event :=
-  if r.mult D = .copy then [] else [.drop ℓ r]
+  if r.qual D = .copy then [] else [.drop ℓ r]
 
 /-- §6.3's `drop*` applied to `[r_1, …, r_m]` **left to right**, so "each
 legally droppable residue is destroyed immediately and exactly once". Each
@@ -1104,7 +1104,7 @@ drop glue at all (§6.11: `drop(H, n_T) = H`, `drop(H, ⊘) = H`), so it records
 nothing, which is also why `@drop` of a `Copy` place leaves no trace (§5.3's
 (@Drop-Copy)) (helper). -/
 def dropCell (D : Decls) (ℓ : Nat) (c : Contents) : Except Refusal (List Event) :=
-  if c.mult D = .copy then .ok []
+  if c.qual D = .copy then .ok []
   else
     match dropContents D c with
     | .error w => .error w
@@ -1459,7 +1459,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
               match sub.toVal with
               | none => .refused .useAfterMove
               | some v =>
-                  if v.mult P.decls = .copy then .ok H v []
+                  if v.qual P.decls = .copy then .ok H v []
                   else
                     match c.writeAt p.path .movedOut with
                     | none => .refused .typeConfusion
@@ -1582,10 +1582,10 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- first use and be stuck at the second when `class(v) ≠ Copy`, so a
       -- non-`Copy` operand refuses with `typeConfusion` rather than duplicating
       -- a value §6 would destroy once (RUE-2400). A checked program never
-      -- reaches the refusal: `Typed.repeatArray`'s `T.mult = .copy` premise and
-      -- `HasTy.mult_eq` give it (`soundness`).
+      -- reaches the refusal: `Typed.repeatArray`'s `T.qual = .copy` premise and
+      -- `HasTy.qual_eq` give it (`soundness`).
       (eval M fuel P H φ e).bind fun H' v =>
-        if v.mult P.decls = .copy then introVal P.decls H' (fun i => .array T i (List.replicate n v))
+        if v.qual P.decls = .copy then introVal P.decls H' (fun i => .array T i (List.replicate n v))
         else .refused .typeConfusion
   | fuel + 1, P, H, φ, .indexRead p idx πs =>
       -- (D-Index)/(D-Index-Trap) §6.5 at a place below one or more **dynamic**
@@ -1598,7 +1598,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- non-`Copy` leaf under a dynamic index, so the machine refuses with
       -- `typeConfusion` instead of copying an affine value out of a place it
       -- leaves live (RUE-2400). A checked program never reaches the refusal:
-      -- `Typed.indexRead`'s `T.mult = .copy` premise and `HasTy.mult_eq` give
+      -- `Typed.indexRead`'s `T.qual = .copy` premise and `HasTy.qual_eq` give
       -- it (`soundness`).
       (match evalArgs (fun H' e => eval M fuel P H' φ e) H idx with
        | .abort r => r
@@ -1614,7 +1614,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
                match leaf.toVal with
                | none => .refused .useAfterMove
                | some v =>
-                   if v.mult P.decls = .copy then .ok H₁ v []
+                   if v.qual P.decls = .copy then .ok H₁ v []
                    else .refused .typeConfusion)
   | fuel + 1, P, H, φ, .indexWrite p idx πs e =>
       -- (D-Assign) §6.8 below a dynamic index, in `5.2:14`'s order: the
@@ -1674,7 +1674,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- `⊘`, whatever the leaf's class (§5.3, probe d6). A `⊘` at the selected
       -- leaf refuses with `useAfterMove`, exactly as the ordinary branch below
       -- refuses a `⊘` at the named place and as the declared `.use` branch
-      -- refuses through `toVal`: `Contents.mult ⊘ = .copy`, so without the
+      -- refuses through `toVal`: `Contents.qual ⊘ = .copy`, so without the
       -- guard `dropCell` would report `.ok []` and the redex would complete in
       -- silence. Unreachable for a checked program — `fully-owned(Σ, d)` makes
       -- the whole of `d` hole-free — which is why `soundness`'s `dropDeclared`
@@ -1712,7 +1712,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
               match dropCell P.decls ℓ sub with
               | .error w => .refused w
               | .ok evs =>
-                  if sub.mult P.decls = .copy then .ok H .unit []
+                  if sub.qual P.decls = .copy then .ok H .unit []
                   else
                     match c.writeAt p.path .movedOut with
                     | none => .refused .typeConfusion
@@ -1758,7 +1758,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
                           else .refused .ownedUnderCopy
   | fuel + 1, P, H, φ, .seq e₁ e₂ =>
       (eval M fuel P H φ e₁).bind fun H₁ v₁ =>
-        match v₁.mult P.decls with
+        match v₁.qual P.decls with
         | .linear => .refused .linearDiscard                         -- 3.8:64
         | .affine =>
             (match dropContents P.decls (Contents.ofVal v₁) with

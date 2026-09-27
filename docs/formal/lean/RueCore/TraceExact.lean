@@ -544,7 +544,7 @@ theorem Contents.writeAt_own_eq {D : Decls} (a : Nat) : ∀ (π : List Nat) {c s
             obtain ⟨cf', hw', rfl⟩ := hw
             have hlt : f < cs.length := (List.getElem?_eq_some_iff.mp hcf).1
             simp only [Contents.copyClosed, List.length_set] at hcc hcc'
-            by_cases hc : Ty.mult D (.array T cs.length) = .copy
+            by_cases hc : Ty.qual D (.array T cs.length) = .copy
             · rw [if_pos hc] at hcc hcc'
               have hsub := Contents.readAt_allCopy π (Contents.allCopyList_index hcc hcf) hr
               have hcf' : cf'.allCopy D = true :=
@@ -568,7 +568,7 @@ theorem dropCell_freed {D : Decls} {ℓ : Nat} {c : Contents} {evs : List Event}
     (h : dropCell D ℓ c = .ok evs) : freedIds D evs = c.own D := by
   unfold dropCell at h
   split at h
-  · rename_i hm; cases h; simp [freedIds, Contents.own_of_mult hm]
+  · rename_i hm; cases h; simp [freedIds, Contents.own_of_qual hm]
   · split at h
     · cases h
     · rename_i evs' hw
@@ -582,7 +582,7 @@ theorem residueMark_freed {D : Decls} {ℓ : Nat} {r : Contents} {evs : List Eve
   have := dropContents_freed h
   unfold residueMark
   split
-  · rename_i hm; simp [freedIds, this, Contents.own_of_mult hm]
+  · rename_i hm; simp [freedIds, this, Contents.own_of_qual hm]
   · simp [freedIds, Event.freed, this]
 
 /-- `drop*` over a destructure's residue frees exactly the residue (helper). -/
@@ -1143,7 +1143,7 @@ theorem Val.observable_scalar {v : Val} (h : v.observable = true) : v.scalar := 
 (D-Use-Untrackable-Dynamic-Copy), RUE-2400) (helper). -/
 theorem eval_indexRead_copy {M : FloatSig} {P : Program} {n : Nat} {H H' : Store} {φ : Activation}
     {p : Place} {idx : List Expr} {πs : List (List Nat)} {v : Val} {tr : List Event}
-    (h : eval M n P H φ (.indexRead p idx πs) = .ok H' v tr) : v.mult P.decls = .copy := by
+    (h : eval M n P H φ (.indexRead p idx πs) = .ok H' v tr) : v.qual P.decls = .copy := by
   cases n with
   | zero => simp [eval] at h
   | succ n =>

@@ -2467,7 +2467,7 @@ already a hole when `@drop(y.x0)` reaches it at the plan `([], [0])`. The
 checker refuses the program (the second read of `y.x0` is E0205), and the
 machine refuses the redex with `useAfterMove` — the guard the ordinary `@drop`
 branch makes at the named place, made here at the leaf. Without it
-`Contents.mult ⊘ = .copy` would let the drop complete in silence. -/
+`Contents.qual ⊘ = .copy` would let the drop complete in silence. -/
 def dropDeclaredMovedOutLeaf : Expr :=
   letIn false (mkStruct sDestrOuter [mkStruct sDestrPair [lit 1, resA (lit 2)], resA (lit 3)])
     (seq (dbg (lit 10))
@@ -2818,7 +2818,7 @@ that `checkProgram_sound` ties to the judgment. `rfl`/`decide` makes these
 kernel-checked facts, not test assertions.
 -/
 
-/-- §3's class assignment holds of the fixture declarations, so `Ty.mult`'s
+/-- §3's class assignment holds of the fixture declarations, so `Ty.qual`'s
 lookup is the join §3 defines (`checkStructs_sound`). -/
 example : WfStructs (Decls.ofStructs structEnv) := checkStructs_sound (by rfl)
 
@@ -2890,7 +2890,7 @@ nothing to the join, and `check` accepts that program as the Rue compiler does
 -/
 
 /-- §3's class assignment holds of the enum declarations too (`6.3:19`), so
-`Ty.mult`'s lookup is the payload join at an enum type (`checkEnums_sound`). -/
+`Ty.qual`'s lookup is the payload join at an enum type (`checkEnums_sound`). -/
 example : WfEnums enumDecls := checkEnums_sound (by rfl)
 example : WfStructs enumDecls := checkStructs_sound (by rfl)
 example : WfDecls enumDecls := checkDecls_sound (by rfl)
@@ -3409,7 +3409,7 @@ def cycLinear : Decls :=
 
 example : checkStructs cycAffine = true ∧ checkEnums cycAffine = true := ⟨by rfl, by rfl⟩
 example : checkStructs cycLinear = true ∧ checkEnums cycLinear = true := ⟨by rfl, by rfl⟩
-example : Ty.mult cycAffine (.struct 0) ≠ Ty.mult cycLinear (.struct 0) := by decide
+example : Ty.qual cycAffine (.struct 0) ≠ Ty.qual cycLinear (.struct 0) := by decide
 
 /-- `3.0:5` refuses both, so neither is a `WfDecls` environment and
 `class_unique` is never handed two solutions (E0483; the compiler probe is

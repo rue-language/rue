@@ -178,7 +178,7 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "yes",
         ["Ty.array"],
         "the fixed-length array, whose length elaboration has already folded to a "
-        "constant (`7.1:14`), with §3's four-line class table as `Ty.mult`'s array "
+        "constant (`7.1:14`), with §3's four-line class table as `Ty.qual`'s array "
         "arm — `Copy` whenever `class(T)` is, and `Affine` for a zero-length array "
         "of a non-`Copy` element (`3.8:74`, RUE-526); `Ty.tyNames` is what makes an "
         "`[S; k]` field name `S` for `3.0:5`'s acyclicity condition",

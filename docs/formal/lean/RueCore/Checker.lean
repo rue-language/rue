@@ -22,7 +22,7 @@ semantic phase must accept.
 and the entry point takes no parameters. Its soundness lemma produces the
 `ProgramTyped` hypothesis `Soundness.lean`'s program theorems ask for.
 
-`checkDecls` is what makes `Ty.mult`'s lookup honest, in three parts. A
+`checkDecls` is what makes `Ty.qual`'s lookup honest, in three parts. A
 declaration *records* `class(S)`, and `checkStructs` is the equation §3 writes
 for it, together with `3.8:18`/`3.9:31`'s `@copy` restriction and `3.9:44`'s
 destructor restriction; `checkEnums` is the enum layer's one equation, the

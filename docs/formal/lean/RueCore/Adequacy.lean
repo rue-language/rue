@@ -722,7 +722,7 @@ theorem sim_indexDrop (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
         · rename_i v hv
           split
           · rename_i hcopy
-            rw [← Contents.mult_toVal _ _ _ hv] at hcopy
+            rw [← Contents.qual_toVal _ _ _ hv] at hcopy
             intro K tr; simpa [EvalRes.bind] using Steps.single (.indexDrop hd hleaf hv hcopy)
           · trivial
 
@@ -858,7 +858,7 @@ theorem sim_seq (IH : SimIH M P fuel) (e₁ e₂ : Expr) :
     split
     · trivial
     · rename_i evs hd
-      have hne : v₁.mult P.decls ≠ .copy := by rw [hm]; exact nofun
+      have hne : v₁.qual P.decls ≠ .copy := by rw [hm]; exact nofun
       exact Sim.withTrace (C₂ := evalConf H₁ φ e₂) (fun _ _ => Steps.single (.seqDrop hne hd))
         (IH H₁ φ e₂)
   · rename_i hm
@@ -1441,7 +1441,7 @@ theorem long_seq (IH : LongIH M P fuel) (e₁ e₂ : Expr) :
     · simp at hk
     · rename_i evs hd
       rw [EvalRes.withTrace_outOfFuel_iff] at hk
-      have hne : v₁.mult P.decls ≠ .copy := by rw [hm]; exact nofun
+      have hne : v₁.qual P.decls ≠ .copy := by rw [hm]; exact nofun
       exact Long.mono (Nat.le_succ _) (Long.pre1 (C₂ := evalConf H₁ φ e₂)
         (fun K tr => ⟨_, _, .seqDrop hne hd, .refl _⟩) (IH H₁ φ e₂ hk))
   · rename_i hm

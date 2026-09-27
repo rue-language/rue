@@ -104,7 +104,7 @@ it. In Lean:
     Γ[p.root]? = some en →
     en.st.get p.path = some u → u.fullyOwned = true →
     en.ty.atPath P.decls p.path = some T →
-    T.mult P.decls ≠ .copy →
+    T.qual P.decls ≠ .copy →
     noDtorPrefix P.decls en.ty p.path = true →
     declaredPrefix P.decls en.ty p.path = none →
     rootIdxOnly P.decls en.ty p.path = true →
@@ -121,7 +121,7 @@ Premise by premise:
    with a hole may not be handed to a new owner).
 4. `en.ty.atPath … = some T`: the path reaches a declared field at every step
    and lands at type `T`.
-5. `T.mult P.decls ≠ .copy`: `T`'s class is not `Copy`.
+5. `T.qual P.decls ≠ .copy`: `T`'s class is not `Copy`.
 6. `noDtorPrefix … = true`: no proper prefix of the path declares a destructor
    (`3.9:34`, E0456).
 7. `declaredPrefix … = none`: the use plan §4.2 records for the place is
@@ -2179,7 +2179,7 @@ rules and §2 syntactic forms have a core image at all, quoted from
 `INDEX.md`. Then it gives every theorem's statement as Lean elaborated it,
 then every definition those statements are written in terms of, in
 dependency order. A definition's body is included where it is short enough to
-read, so `Ty.mult` (which is `class(T)`, and so what makes a `linear` struct
+read, so `Ty.qual` (which is `class(T)`, and so what makes a `linear` struct
 linear) and `Ctx.join` (§5.5, a premise of `Typed.ite`) can be read rather
 than taken on their signatures.
 
@@ -2192,7 +2192,7 @@ defect looks like:*
 - a corollary that is not an instance of the main theorem;
 - a definition whose doc-comment describes something other than what its
   signature says;
-- a definition whose body makes the claims about it trivial: a `Ty.mult` that
+- a definition whose body makes the claims about it trivial: a `Ty.qual` that
   answered `.copy` everywhere, or a `Ctx.join` that answered `none`, would
   leave every linearity corollary true and empty.
 

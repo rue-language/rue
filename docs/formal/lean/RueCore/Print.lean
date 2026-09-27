@@ -735,7 +735,7 @@ def observeValue (D : Decls) (T : Ty) : String :=
   | .int _ _ | .float _ | .bool => "    @dbg(result);\n"
   | .unit => ""
   | .struct _ | .enum _ | .array _ _ =>
-      if T.mult D = .linear then "    @drop(result);\n" else ""
+      if T.qual D = .linear then "    @drop(result);\n" else ""
 
 /-! The array arm of `observeValue` at both of its answers. No corpus program
 and no `Examples.lean` witness returns an aggregate from `f0`, so these two

@@ -492,7 +492,7 @@ the scope is visible before the claims are. Proof bodies are deliberately
 absent: a proof is checked by the kernel, and what the kernel appealed to is
 the other report. A definition's body is printed when the definition *is* a
 type or a predicate (`Ctx`, `CellTyping`, `InBounds`) or when it is short
-enough to read: a signature alone cannot tell `Ty.mult` from `fun _ => .copy`
+enough to read: a signature alone cannot tell `Ty.qual` from `fun _ => .copy`
 or `Ctx.join` from `fun _ _ => none`, and the linearity theorems are about
 what those two decide. A long body (`eval`, `check`, `explain`) is left to
 the module named beside its signature, and where the compiled value is the

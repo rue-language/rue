@@ -1139,8 +1139,8 @@ cycle is expressible, because every one of those relations points strictly
 backwards in one global order. -/
 
 /-- (helper) §3's field join, for a field list read against `D`. -/
-def fieldJoin (D : Decls) (fields : List Ty) : Mult :=
-  fields.foldl (fun m T => m.join (Ty.mult D T)) .copy
+def fieldJoin (D : Decls) (fields : List Ty) : Qual :=
+  fields.foldl (fun m T => m.join (Ty.qual D T)) .copy
 
 /-- (helper) One field type of declaration `s`, drawn against the `nEnums`
 enums already in the environment: a scalar, an earlier struct declaration, or
@@ -1393,7 +1393,7 @@ def projSlots (D : Decls) (s : Nat) (T : Ty) : List Nat :=
   match D.structs[s]? with
   | none => []
   | some sd =>
-      if sd.dtor && T.mult D != .copy then []
+      if sd.dtor && T.qual D != .copy then []
       else (List.range sd.fields.length).filter (fun f => sd.fields[f]? == some T)
 
 /-- (helper) The one-step places a drawn **assignment** may target under binder
@@ -1493,7 +1493,7 @@ not drawn around either: the model accepts it, and the compiler has too since
 RUE-2335 was fixed (rare; module docstring). -/
 def pathOk (D : Decls) (T₀ : Ty) (π : List Nat) (T : Ty) : Bool :=
   Ty.atPath D T₀ π == some T &&
-    (T.mult D == .copy ||
+    (T.qual D == .copy ||
       (noDtorPrefix D T₀ π && (rootIdxOnly D T₀ π || (declaredPrefix D T₀ π).isSome)))
 
 /-- (helper) Every place of the wanted type one **or two** field steps under a
@@ -1670,7 +1670,7 @@ where the scope offers a place below a dynamic index at that type: §4.2's
 `other` draws an index expression that is not a literal. -/
 def dynRead (D : Decls) (Γ : Scope) (T : Ty) (other : Scope → Ty → G Expr) :
     G (Option Expr) := do
-  if T.mult D != .copy then return none
+  if T.qual D != .copy then return none
   let ds := (dynPlaces D Γ).filter (fun d => d.leaf == T)
   match ds with
   | [] => return none
@@ -1697,7 +1697,7 @@ def dynUnit (D : Decls) (Γ : Scope) (den : Nat) (rhs : Scope → Ty → G Expr)
     (other : Scope → Ty → G Expr) : G (Option Expr) := do
   let ds := dynPlaces D Γ
   let ws := ds.filter (fun d => ((Γ[d.p.root]?).map Binder.mu).getD false)
-  let cs := ds.filter (fun d => d.leaf.mult D == .copy)
+  let cs := ds.filter (fun d => d.leaf.qual D == .copy)
   let rs := cs.filter (fun d => d.leaf.observable)
   match ds with
   | [] => return none
@@ -1757,7 +1757,7 @@ def arrayStmt (D : Decls) (Γ : Scope) (rhs : Scope → Ty → G Expr) (other : 
     match Γ[pt.1.root]? with
     | some b => pathOk D b.ty pt.1.path pt.2
     | none => false)
-  let moves := drops.filter (fun pt => pt.2.mult D != .copy)
+  let moves := drops.filter (fun pt => pt.2.qual D != .copy)
   let writes := ((List.range Γ.length).filter (fun i => ((Γ[i]?).map Binder.mu).getD false)).flatMap
     (fun i => match (Γ[i]?).map Binder.ty with
       | some (.array E n) => assignSlots D i (.array E n)
@@ -1910,7 +1910,7 @@ def atom (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
       if !uses.isEmpty && (← chance 2 3) then return use (.var (← pick 0 uses))
       match depth with
       | d + 1 =>
-          if T.mult D == .copy && (← chance 1 3) then return repeatArray T (← atom D Γ T d) n
+          if T.qual D == .copy && (← chance 1 3) then return repeatArray T (← atom D Γ T d) n
           return mkArray T (← (List.replicate n T).mapM (fun T' => atom D Γ T' d))
       | 0 => return leastValue D (declFuel D) (.array T n)
 
@@ -1955,7 +1955,7 @@ breaks and RUE-1614's exit join when another exit keeps `x`; otherwise a bare
 `never`-typed, which (Sub-Never) §5.7 coerces to the other arms' type
 (`armsJoinTy` and `CTy.meet` skip it, `Checker/Defs.lean`). -/
 def breakArm (D : Decls) (Γ : Scope) : G Expr := do
-  let owned := indicesWhere Γ (fun b => isAggregate b.ty && b.ty.mult D != .copy)
+  let owned := indicesWhere Γ (fun b => isAggregate b.ty && b.ty.qual D != .copy)
   if !owned.isEmpty && (← chance 1 2) then return seq (drop (.var (← pick 0 owned))) brk
   if ← chance 1 2 then return brk
   return seq (← leaf D Γ .unit 2) brk
@@ -1975,7 +1975,7 @@ def divArm (D : Decls) (R : Ty) (Γ : Scope) : G Expr := side do
   let tail ← do
     if ← chance 2 3 then pure (ret (← atom D Γ R 2)) else pure (Expr.panic "gen")
   if ← chance 1 2 then return tail
-  let owned := indicesWhere Γ (fun b => isAggregate b.ty && b.ty.mult D != .copy)
+  let owned := indicesWhere Γ (fun b => isAggregate b.ty && b.ty.qual D != .copy)
   if !owned.isEmpty && (← chance 1 2) then return seq (drop (.var (← pick 0 owned))) tail
   return seq (← leaf D Γ .unit 2) tail
 
@@ -2019,7 +2019,7 @@ The fresh value is `leastValue`'s literal, which names no binder, so the
 statement moves nothing but `x`. -/
 def restoreStmt (D : Decls) (i : Nat) (T : Ty) : Expr :=
   let fresh := leastValue D (declFuel D) T
-  if T.mult D == .linear then seq (drop (.var i)) (assign (.var i) fresh)
+  if T.qual D == .linear then seq (drop (.var i)) (assign (.var i) fresh)
   else seq (assign (.var i) fresh) (drop (.var i))
 
 /-- (helper) Draw a loop under `Γ` (module docstring, "Loops"): counted three
@@ -2048,7 +2048,7 @@ def drawLoop (D : Decls) (R : Ty) (rt : Bool) (Γ : Scope) (body cond : Scope �
   let b ← body Γl
   let structOrEnum (T : Ty) : Bool := isStruct T || isEnum T
   let b ← if once then pure b else do
-      let rs := indicesWhere Γl (fun bd => bd.mu && structOrEnum bd.ty && bd.ty.mult D != .copy)
+      let rs := indicesWhere Γl (fun bd => bd.mu && structOrEnum bd.ty && bd.ty.qual D != .copy)
       if !rs.isEmpty && (← chance 1 2) then
         let i ← pick 0 rs
         let r := restoreStmt D i (((Γl[i]?).map Binder.ty).getD .unit)
@@ -2056,7 +2056,7 @@ def drawLoop (D : Decls) (R : Ty) (rt : Bool) (Γ : Scope) (body cond : Scope �
         -- random rest cannot undo it (a second move of `x` is the usual one).
         if ← chance 1 2 then pure r else pure (seq r b)
       else pure b
-  let lins := indicesWhere Γl (fun bd => structOrEnum bd.ty && bd.ty.mult D == .linear)
+  let lins := indicesWhere Γl (fun bd => structOrEnum bd.ty && bd.ty.qual D == .linear)
   let consume ← if once && !lins.isEmpty && (← chance 1 2) then some <$> pick 0 lins
     else pure none
   -- Likewise half of the consuming bodies are empty before their exits.
@@ -2106,7 +2106,7 @@ def divArms (D : Decls) (R : Ty) (rt : Bool) (ed : EnumDecl) (Γ : Scope) (bj : 
 something a loop body can move or `@drop`, which is what makes a loop's
 back edge and exits say anything about ownership. -/
 def ownedInScope (D : Decls) (Γ : Scope) : Bool :=
-  Γ.any (fun b => isAggregate b.ty && b.ty.mult D != .copy)
+  Γ.any (fun b => isAggregate b.ty && b.ty.qual D != .copy)
 
 /-- (helper) The most callees a generated program declares (RUE-2481). -/
 def maxCallees : Nat := 3
@@ -2212,7 +2212,7 @@ arbitrary variant's payload untouched could (RUE-2505, `pairDtorBlock`'s
 def dropArmBody (D : Decls) (Ts : List Ty) : Expr :=
   let n := Ts.length
   (List.range n).foldr (fun j acc =>
-    if ((Ts[j]?).map (Ty.mult D)) != some .copy then seq (drop (.var (n - 1 - j))) acc else acc)
+    if ((Ts[j]?).map (Ty.qual D)) != some .copy then seq (drop (.var (n - 1 - j))) acc else acc)
     unitLit
 
 /-- (helper) A block binding **two or more** destructor-bearing locals that
@@ -2569,7 +2569,7 @@ def expr (D : Decls) (R : Ty) : Bool → Bool → Scope → Ty → Nat → G Exp
               if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
               let projs := projPlaces D Γ (.array E n)
               if !projs.isEmpty && (← chance 1 3) then return use (← pickPlace (.var 0) projs)
-              if E.mult D == .copy && (← chance 1 3) then return repeatArray E (← expr D R false false Γ E fuel) n
+              if E.qual D == .copy && (← chance 1 3) then return repeatArray E (← expr D R false false Γ E fuel) n
               return mkArray E (← (List.replicate n E).mapM (fun T' => expr D R false false Γ T' fuel))
       : G Expr)
     maybeCall D Γ T (fun Γ' T' => expr D R false false Γ' T' fuel) e
@@ -2661,7 +2661,7 @@ def fnBody (D : Decls) (idx : Nat) (sg : Sig) : G Expr := do
   let P : Program := { decls := D, fns := F }
   let Γt := Γ.map Binder.ty
   let lins := (List.range m).filter (fun k =>
-    (((sg.params[k]?).map (fun p => p.ty.mult D == .linear)).getD false) &&
+    (((sg.params[k]?).map (fun p => p.ty.qual D == .linear)).getD false) &&
       !mentions P R Γt (m - 1 - k) core)
   let plan ← lins.mapM (fun k => do return (m - 1 - k, ← chance 2 3))
   let starts := (plan.filter (fun (_, c) => c)).map Prod.fst
@@ -2671,7 +2671,7 @@ def fnBody (D : Decls) (idx : Nat) (sg : Sig) : G Expr := do
   -- The early return drops every linear parameter still live where it
   -- stands, which is each one the start has not consumed.
   let live := (List.range m).filter (fun k =>
-    (((sg.params[k]?).map (fun p => p.ty.mult D == .linear)).getD false) &&
+    (((sg.params[k]?).map (fun p => p.ty.qual D == .linear)).getD false) &&
       !starts.contains (m - 1 - k))
   let body ← if ← chance 1 2 then do
       let c ← expr D R false false Γ .bool 1
@@ -2725,9 +2725,9 @@ def rulesIn (D : Decls) (F : List FnDef) (Γ : List Ty) : Expr → List String
        | some T =>
            (match T.atPath D pl.path with
             | some T' =>
-                (if T'.mult D == .copy then ["(Use-Copy) §5.1"] else ["(Use-Move) §5.1"]) ++
+                (if T'.qual D == .copy then ["(Use-Copy) §5.1"] else ["(Use-Move) §5.1"]) ++
                   (if pl.path.isEmpty then [] else ["§4.2 partial move", "3.8:22"]) ++
-                  (if idxStep D T pl.path && T'.mult D != .copy then ["3.8:68"] else [])
+                  (if idxStep D T pl.path && T'.qual D != .copy then ["3.8:68"] else [])
             | none => [])
        | none => [])
   | binop op e₁ e₂ =>
@@ -2759,10 +2759,10 @@ def rulesIn (D : Decls) (F : List FnDef) (Γ : List Ty) : Expr → List String
        | some T =>
            (match T.atPath D pl.path with
             | some T' =>
-                (if T'.mult D == .copy then ["(@Drop-Copy) §5.3"]
+                (if T'.qual D == .copy then ["(@Drop-Copy) §5.3"]
                  else ["(@Drop) §5.3", "§6.11"]) ++
                   (if pl.path.isEmpty then [] else ["§4.2 partial move", "3.8:22"]) ++
-                  (if idxStep D T pl.path && T'.mult D != .copy then ["3.8:68", "3.8:73"] else [])
+                  (if idxStep D T pl.path && T'.qual D != .copy then ["3.8:68", "3.8:73"] else [])
             | none => [])
        | none => [])
   | letIn _ e₁ e₂ =>

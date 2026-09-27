@@ -18,49 +18,49 @@ namespace RueCore
 /-! ## §3's lattice, and the class of a declared struct -/
 
 /-- The join is an upper bound of its left argument (§3) (helper). -/
-theorem Mult.rank_le_join_left (a b : Mult) : a.rank ≤ (a.join b).rank := by
-  unfold Mult.join
+theorem Qual.rank_le_join_left (a b : Qual) : a.rank ≤ (a.join b).rank := by
+  unfold Qual.join
   split
   · omega
   · exact Nat.le_refl _
 
 /-- The join is an upper bound of its right argument (§3) (helper). -/
-theorem Mult.rank_le_join_right (a b : Mult) : b.rank ≤ (a.join b).rank := by
-  unfold Mult.join
+theorem Qual.rank_le_join_right (a b : Qual) : b.rank ≤ (a.join b).rank := by
+  unfold Qual.join
   split
   · exact Nat.le_refl _
   · omega
 
 /-- `Linear` is the top of §3's lattice, so nothing outranks it (helper). -/
-theorem Mult.eq_linear_of_rank {m : Mult} (h : 2 ≤ m.rank) : m = .linear := by
-  cases m <;> simp_all [Mult.rank]
+theorem Qual.eq_linear_of_rank {m : Qual} (h : 2 ≤ m.rank) : m = .linear := by
+  cases m <;> simp_all [Qual.rank]
 
 /-- The accumulator of §3's join is a lower bound of the result (helper). -/
-theorem rank_le_joinFold (D : Decls) : ∀ (Ts : List Ty) (acc : Mult),
-    acc.rank ≤ (Ts.foldl (fun m T => m.join (Ty.mult D T)) acc).rank
+theorem rank_le_joinFold (D : Decls) : ∀ (Ts : List Ty) (acc : Qual),
+    acc.rank ≤ (Ts.foldl (fun m T => m.join (Ty.qual D T)) acc).rank
   | [], _ => Nat.le_refl _
   | _ :: Ts, acc =>
-      Nat.le_trans (Mult.rank_le_join_left acc _) (rank_le_joinFold D Ts _)
+      Nat.le_trans (Qual.rank_le_join_left acc _) (rank_le_joinFold D Ts _)
 
 /-- Every field's class is below §3's join of them (helper). -/
-theorem rank_le_joinFold_of_mem (D : Decls) : ∀ (Ts : List Ty) (acc : Mult) (T : Ty),
-    T ∈ Ts → (T.mult D).rank ≤ (Ts.foldl (fun m T => m.join (Ty.mult D T)) acc).rank
+theorem rank_le_joinFold_of_mem (D : Decls) : ∀ (Ts : List Ty) (acc : Qual) (T : Ty),
+    T ∈ Ts → (T.qual D).rank ≤ (Ts.foldl (fun m T => m.join (Ty.qual D T)) acc).rank
   | T' :: Ts, acc, T, h => by
       cases h with
       | head =>
-          exact Nat.le_trans (Mult.rank_le_join_right acc _) (rank_le_joinFold D Ts _)
+          exact Nat.le_trans (Qual.rank_le_join_right acc _) (rank_le_joinFold D Ts _)
       | tail _ h => exact rank_le_joinFold_of_mem D Ts _ T h
 
 /-- §3's join reaches `Linear` only through a field that does (helper). -/
-theorem joinFold_linear_inv (D : Decls) : ∀ (Ts : List Ty) (acc : Mult),
-    Ts.foldl (fun m T => m.join (Ty.mult D T)) acc = .linear →
-      acc = .linear ∨ ∃ T ∈ Ts, T.mult D = .linear
+theorem joinFold_linear_inv (D : Decls) : ∀ (Ts : List Ty) (acc : Qual),
+    Ts.foldl (fun m T => m.join (Ty.qual D T)) acc = .linear →
+      acc = .linear ∨ ∃ T ∈ Ts, T.qual D = .linear
   | [], _, h => Or.inl h
   | T :: Ts, acc, h => by
       simp only [List.foldl_cons] at h
       rcases joinFold_linear_inv D Ts _ h with h' | ⟨T', hmem, hT'⟩
-      · have h'' : Mult.join acc (Ty.mult D T) = .linear := h'
-        unfold Mult.join at h''
+      · have h'' : Qual.join acc (Ty.qual D T) = .linear := h'
+        unfold Qual.join at h''
         split at h''
         · exact Or.inr ⟨T, List.mem_cons_self, h''⟩
         · exact Or.inl h''
@@ -71,10 +71,10 @@ is not `Linear`, no field's class is — which is why the machine's leak monitor
 (§6.7's `endscope`, §6.9's frame teardown) needs to look only at the value's
 own class and never inside it. This is §3's infectiousness, used. -/
 theorem StructDecl.Wf.field_not_linear {D : Decls} {sd : StructDecl}
-    (h : sd.Wf D) (hcls : sd.cls ≠ .linear) : ∀ T ∈ sd.fields, T.mult D ≠ .linear := by
+    (h : sd.Wf D) (hcls : sd.cls ≠ .linear) : ∀ T ∈ sd.fields, T.qual D ≠ .linear := by
   intro T hmem hlin
   have hbase : sd.baseOf D = .linear := by
-    refine Mult.eq_linear_of_rank ?_
+    refine Qual.eq_linear_of_rank ?_
     have := rank_le_joinFold_of_mem D sd.fields .copy T hmem
     rw [hlin] at this
     exact this
@@ -94,10 +94,10 @@ field carries a linear value (`3.8:58` — infectiousness is the join). Together
 with `Ty.carriesLinear`'s definition this is §5.3's sentence, mechanized. -/
 theorem struct_carriesLinear_iff {D : Decls} {s : Nat} {sd : StructDecl}
     (hd : D.structs[s]? = some sd) (h : sd.Wf D) :
-    (Ty.struct s).mult D = .linear ↔
-      (sd.attr = .linear ∨ ∃ T ∈ sd.fields, T.mult D = .linear) := by
-  have hlookup : (Ty.struct s).mult D = sd.cls := by
-    simp [Ty.mult, Decls.classOf, hd]
+    (Ty.struct s).qual D = .linear ↔
+      (sd.attr = .linear ∨ ∃ T ∈ sd.fields, T.qual D = .linear) := by
+  have hlookup : (Ty.struct s).qual D = sd.cls := by
+    simp [Ty.qual, Decls.classOf, hd]
   constructor
   · intro hlin
     rw [hlookup, h.classIsJoin] at hlin
@@ -118,7 +118,7 @@ theorem struct_carriesLinear_iff {D : Decls} {s : Nat} {sd : StructDecl}
     rcases hsrc with hattr | ⟨T, hmem, hT⟩
     · rw [hattr]; rfl
     · have hbase : sd.baseOf D = .linear := by
-        refine Mult.eq_linear_of_rank ?_
+        refine Qual.eq_linear_of_rank ?_
         have := rank_le_joinFold_of_mem D sd.fields .copy T hmem
         rw [hT] at this
         exact this
@@ -153,19 +153,19 @@ paragraph in RUE-2334, and `3.0:5` is the normative form it mechanizes.
 /-- Two environments that give the same class to every declaration a type
 names by value give that type the same class: `class([T; n])` is §3's lift of
 `class(T)`, so peeling the array wrappers loses nothing (helper). -/
-theorem Ty.mult_congr_tyNames {D D' : Decls} :
-    ∀ T : Ty, (∀ d ∈ T.tyNames, d.ty.mult D = d.ty.mult D') → T.mult D = T.mult D'
+theorem Ty.qual_congr_tyNames {D D' : Decls} :
+    ∀ T : Ty, (∀ d ∈ T.tyNames, d.ty.qual D = d.ty.qual D') → T.qual D = T.qual D'
   | .struct s, h => h (.struct s) (by simp [Ty.tyNames])
   | .enum e, h => h (.enum e) (by simp [Ty.tyNames])
   | .array T _, h => by
-      simp only [Ty.mult,
-        Ty.mult_congr_tyNames T (fun d hd => h d (by simpa only [Ty.tyNames] using hd))]
+      simp only [Ty.qual,
+        Ty.qual_congr_tyNames T (fun d hd => h d (by simpa only [Ty.tyNames] using hd))]
   | .int _ _, _ | .float _, _ | .bool, _ | .unit, _ => rfl
 
 /-- The accumulator of the payload join is a lower bound of the result
 (helper). -/
-theorem rank_le_payloadFold (D : Decls) : ∀ (Tss : List (List Ty)) (acc : Mult),
-    acc.rank ≤ (Tss.foldl (fun m Ts => Ts.foldl (fun m' T => m'.join (Ty.mult D T)) m) acc).rank
+theorem rank_le_payloadFold (D : Decls) : ∀ (Tss : List (List Ty)) (acc : Qual),
+    acc.rank ≤ (Tss.foldl (fun m Ts => Ts.foldl (fun m' T => m'.join (Ty.qual D T)) m) acc).rank
   | [], _ => Nat.le_refl _
   | Ts :: Tss, acc =>
       Nat.le_trans (rank_le_joinFold D Ts acc) (rank_le_payloadFold D Tss _)
@@ -173,9 +173,9 @@ theorem rank_le_payloadFold (D : Decls) : ∀ (Tss : List (List Ty)) (acc : Mult
 /-- Every payload component's class is below §3's join of them (`6.3:19`)
 (helper). -/
 theorem rank_le_payloadFold_of_mem (D : Decls) :
-    ∀ (Tss : List (List Ty)) (acc : Mult) (Ts : List Ty) (T : Ty), Ts ∈ Tss → T ∈ Ts →
-      (T.mult D).rank
-        ≤ (Tss.foldl (fun m Ts' => Ts'.foldl (fun m' T' => m'.join (Ty.mult D T')) m) acc).rank
+    ∀ (Tss : List (List Ty)) (acc : Qual) (Ts : List Ty) (T : Ty), Ts ∈ Tss → T ∈ Ts →
+      (T.qual D).rank
+        ≤ (Tss.foldl (fun m Ts' => Ts'.foldl (fun m' T' => m'.join (Ty.qual D T')) m) acc).rank
   | Ts' :: Tss, acc, Ts, T, hTs, hT => by
       cases hTs with
       | head =>
@@ -185,9 +185,9 @@ theorem rank_le_payloadFold_of_mem (D : Decls) :
 
 /-- §3's payload join reaches `Linear` only through a payload component that
 does (helper). -/
-theorem payloadFold_linear_inv (D : Decls) : ∀ (Tss : List (List Ty)) (acc : Mult),
-    Tss.foldl (fun m Ts => Ts.foldl (fun m' T => m'.join (Ty.mult D T)) m) acc = .linear →
-      acc = .linear ∨ ∃ Ts ∈ Tss, ∃ T ∈ Ts, T.mult D = .linear
+theorem payloadFold_linear_inv (D : Decls) : ∀ (Tss : List (List Ty)) (acc : Qual),
+    Tss.foldl (fun m Ts => Ts.foldl (fun m' T => m'.join (Ty.qual D T)) m) acc = .linear →
+      acc = .linear ∨ ∃ Ts ∈ Tss, ∃ T ∈ Ts, T.qual D = .linear
   | [], _, h => Or.inl h
   | Ts :: Tss, acc, h => by
       simp only [List.foldl_cons] at h
@@ -203,11 +203,11 @@ machine's leak monitor need only read the payload it finds under the active tag
 (§6.11) and never the declaration. This is `6.3:19`'s join, used. -/
 theorem EnumDecl.Wf.payload_not_linear {D : Decls} {ed : EnumDecl}
     (h : ed.Wf D) (hcls : ed.cls ≠ .linear) :
-    ∀ Ts ∈ ed.variants, ∀ T ∈ Ts, T.mult D ≠ .linear := by
+    ∀ Ts ∈ ed.variants, ∀ T ∈ Ts, T.qual D ≠ .linear := by
   intro Ts hTs T hT hlin
   refine hcls ?_
   rw [h.classIsJoin]
-  refine Mult.eq_linear_of_rank ?_
+  refine Qual.eq_linear_of_rank ?_
   have := rank_le_payloadFold_of_mem D ed.variants .copy Ts T hTs hT
   rw [hlin] at this
   exact this
@@ -220,9 +220,9 @@ is a dynamic fact and the class is the type's worst case. This is what makes
 value even though the value it holds carries nothing (probe e11, E0406). -/
 theorem enum_carriesLinear_iff {D : Decls} {e : Nat} {ed : EnumDecl}
     (hd : D.enums[e]? = some ed) (h : ed.Wf D) :
-    (Ty.enum e).mult D = .linear ↔ ∃ Ts ∈ ed.variants, ∃ T ∈ Ts, T.mult D = .linear := by
-  have hlookup : (Ty.enum e).mult D = ed.cls := by
-    simp [Ty.mult, Decls.enumClassOf, hd]
+    (Ty.enum e).qual D = .linear ↔ ∃ Ts ∈ ed.variants, ∃ T ∈ Ts, T.qual D = .linear := by
+  have hlookup : (Ty.enum e).qual D = ed.cls := by
+    simp [Ty.qual, Decls.enumClassOf, hd]
   constructor
   · intro hlin
     rw [hlookup, h.classIsJoin] at hlin
@@ -231,14 +231,14 @@ theorem enum_carriesLinear_iff {D : Decls} {e : Nat} {ed : EnumDecl}
     · exact hex
   · intro ⟨Ts, hTs, T, hT, hlin⟩
     rw [hlookup, h.classIsJoin]
-    refine Mult.eq_linear_of_rank ?_
+    refine Qual.eq_linear_of_rank ?_
     have := rank_le_payloadFold_of_mem D ed.variants .copy Ts T hTs hT
     rw [hlin] at this
     exact this
 
 /-! ## The class a declaration records is determined, not free
 
-A declaration carries `class(S)`/`class(E)` so that `Ty.mult` is a lookup. That
+A declaration carries `class(S)`/`class(E)` so that `Ty.qual` is a lookup. That
 is only honest if §3's equations have one solution, which is what `3.0:5`
 buys: no declaration contains itself by value, so the by-value relation is
 well-founded (`WfNames`) and each declaration's class is fixed by the classes
@@ -262,9 +262,9 @@ without the side condition; the paragraph that adds it is §3 (RUE-2334). -/
 /-- Two environments that give every type of a field list the same class give
 that list the same §3 join (helper). -/
 theorem joinFold_congr {D D' : Decls} :
-    ∀ (Ts : List Ty) (acc : Mult), (∀ T ∈ Ts, T.mult D = T.mult D') →
-      Ts.foldl (fun m T => m.join (Ty.mult D T)) acc
-        = Ts.foldl (fun m T => m.join (Ty.mult D' T)) acc
+    ∀ (Ts : List Ty) (acc : Qual), (∀ T ∈ Ts, T.qual D = T.qual D') →
+      Ts.foldl (fun m T => m.join (Ty.qual D T)) acc
+        = Ts.foldl (fun m T => m.join (Ty.qual D' T)) acc
   | [], _, _ => rfl
   | T :: Ts, acc, h => by
       simp only [List.foldl_cons, h T List.mem_cons_self]
@@ -273,10 +273,10 @@ theorem joinFold_congr {D D' : Decls} :
 /-- The same for `6.3:19`'s payload join, over every component of every variant
 (helper). -/
 theorem payloadFold_congr {D D' : Decls} :
-    ∀ (Tss : List (List Ty)) (acc : Mult),
-      (∀ Ts ∈ Tss, ∀ T ∈ Ts, T.mult D = T.mult D') →
-      Tss.foldl (fun m Ts => Ts.foldl (fun m' T => m'.join (Ty.mult D T)) m) acc
-        = Tss.foldl (fun m Ts => Ts.foldl (fun m' T => m'.join (Ty.mult D' T)) m) acc
+    ∀ (Tss : List (List Ty)) (acc : Qual),
+      (∀ Ts ∈ Tss, ∀ T ∈ Ts, T.qual D = T.qual D') →
+      Tss.foldl (fun m Ts => Ts.foldl (fun m' T => m'.join (Ty.qual D T)) m) acc
+        = Tss.foldl (fun m Ts => Ts.foldl (fun m' T => m'.join (Ty.qual D' T)) m) acc
   | [], _, _ => rfl
   | Ts :: Tss, acc, h => by
       have hhead := joinFold_congr (D := D) (D' := D') Ts acc (h Ts List.mem_cons_self)
@@ -306,14 +306,14 @@ theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
         sd.attr = sd'.attr ∧ sd.fields = sd'.fields)
     (heshape : ∀ (e : Nat) (ed ed' : EnumDecl),
       D.enums[e]? = some ed → D'.enums[e]? = some ed' → ed.variants = ed'.variants) :
-    ∀ T : Ty, T.mult D = T.mult D' := by
-  have key : ∀ d : TyName, d.ty.mult D = d.ty.mult D' := by
+    ∀ T : Ty, T.qual D = T.qual D' := by
+  have key : ∀ d : TyName, d.ty.qual D = d.ty.qual D' := by
     intro d
-    refine WellFounded.induction (C := fun d => d.ty.mult D = d.ty.mult D') hwf.names d ?_
+    refine WellFounded.induction (C := fun d => d.ty.qual D = d.ty.qual D') hwf.names d ?_
     clear d
     intro d ih
-    have hmem : ∀ T ∈ D.byValue d, T.mult D = T.mult D' := fun T hT =>
-      Ty.mult_congr_tyNames T (fun d' hd' => ih d' ⟨T, hT, hd'⟩)
+    have hmem : ∀ T ∈ D.byValue d, T.qual D = T.qual D' := fun T hT =>
+      Ty.qual_congr_tyNames T (fun d' hd' => ih d' ⟨T, hT, hd'⟩)
     cases d with
     | struct s =>
         show D.classOf s = D'.classOf s
@@ -333,7 +333,7 @@ theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
               · exact absurd (List.getElem?_eq_none_iff.mp hd') (by omega)
               · exact ⟨sd', rfl⟩
             obtain ⟨hattr, hfields⟩ := hsshape s sd sd' hd hd'
-            have hfmem : ∀ T ∈ sd.fields, T.mult D = T.mult D' := by
+            have hfmem : ∀ T ∈ sd.fields, T.qual D = T.qual D' := by
               intro T hT
               exact hmem T (by simp only [Decls.byValue, hd]; exact hT)
             have hbase : sd.baseOf D = sd'.baseOf D' := by
@@ -361,7 +361,7 @@ theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
               · exact absurd (List.getElem?_eq_none_iff.mp hd') (by omega)
               · exact ⟨ed', rfl⟩
             have hvar := heshape e ed ed' hd hd'
-            have hpmem : ∀ Ts ∈ ed.variants, ∀ T ∈ Ts, T.mult D = T.mult D' := by
+            have hpmem : ∀ Ts ∈ ed.variants, ∀ T ∈ Ts, T.qual D = T.qual D' := by
               intro Ts hTs T hT
               refine hmem T ?_
               simp only [Decls.byValue, hd]
@@ -372,7 +372,7 @@ theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
               exact payloadFold_congr ed.variants .copy hpmem
             simp only [Decls.enumClassOf, hd, hd']
             rw [(hwf.enums e ed hd).classIsJoin, (hwf'.enums e ed' hd').classIsJoin, hjoin]
-  exact fun T => Ty.mult_congr_tyNames T (fun d _ => key d)
+  exact fun T => Ty.qual_congr_tyNames T (fun d _ => key d)
 
 /-- **§3's class assignment for the struct layer has one solution**, the
 projection of `class_unique` §3's own sentence asks for. It needs the enum
@@ -446,7 +446,7 @@ theorem OwnSt.fullyOwned_get : ∀ {t : OwnSt} (π : List Nat), t.fullyOwned = t
 `Prop` form is what `Typed.assign` carries, the `Bool` form what `check`
 decides. -/
 theorem overwriteOk_iff {D : Decls} {u : OwnSt} {T : Ty} :
-    overwriteOk D u T = true ↔ (u = .movedOut ∨ T.mult D ≠ .linear) := by
+    overwriteOk D u T = true ↔ (u = .movedOut ∨ T.qual D ≠ .linear) := by
   cases u <;> simp [overwriteOk]
 
 /-! ### The join is symmetric, and associative over well-formed states
@@ -551,20 +551,20 @@ theorem Ctx.join_comm {D : Decls} : ∀ (Γ₁ Γ₂ : Ctx), Γ₁.skel = Γ₂.
       simp only [Ctx.join, Entry.join_comm h.1, Ctx.join_comm as bs h.2]
 
 /-- §3's class of an array type reaches `Linear` exactly through a nonempty
-array of a `Linear` element type — `Ty.mult`'s own four-line table read as the
+array of a `Linear` element type — `Ty.qual`'s own four-line table read as the
 biconditional the join proofs need (`3.8:74`; the zero-length reading is
 RUE-526's) (helper). -/
-theorem Ty.array_mult_linear (D : Decls) (T : Ty) (n : Nat) :
-    (Ty.array T n).mult D = .linear ↔ (n ≠ 0 ∧ T.mult D = .linear) := by
-  cases n <;> cases h : Ty.mult D T <;> simp [Ty.mult, h]
+theorem Ty.array_qual_linear (D : Decls) (T : Ty) (n : Nat) :
+    (Ty.array T n).qual D = .linear ↔ (n ≠ 0 ∧ T.qual D = .linear) := by
+  cases n <;> cases h : Ty.qual D T <;> simp [Ty.qual, h]
 
 /-- The same fact in the shape §5.5's array clauses use it: an array node's slot
 types are `List.replicate n T`, so asking whether any slot carries a linear
 value is asking `class([T; n]) = Linear` (helper). -/
-theorem Ty.any_replicate_mult_linear (D : Decls) (T : Ty) (n : Nat) :
-    ((List.replicate n T).any fun U => decide (U.mult D = .linear))
-      = decide ((Ty.array T n).mult D = .linear) := by
-  simp [List.any_replicate, Ty.array_mult_linear]
+theorem Ty.any_replicate_qual_linear (D : Decls) (T : Ty) (n : Nat) :
+    ((List.replicate n T).any fun U => decide (U.qual D = .linear))
+      = decide ((Ty.array T n).qual D = .linear) := by
+  simp [List.any_replicate, Ty.array_qual_linear]
 
 mutual
 /-- **Residue is only ever found where §3's class puts it.** §5.6's
@@ -572,8 +572,8 @@ mutual
 obligation only at a path whose type carries one, so a state with residue is a
 state of a `Linear` type (`3.8:58`, through `struct_carriesLinear_iff`). This
 is one half of the correspondence §5.5's `Owned` arm turns on. -/
-theorem residualLinear_mult_linear {D : Decls} (hD : WfStructs D) :
-    ∀ (t : OwnSt) (T : Ty), residualLinear D t T = true → T.mult D = .linear
+theorem residualLinear_qual_linear {D : Decls} (hD : WfStructs D) :
+    ∀ (t : OwnSt) (T : Ty), residualLinear D t T = true → T.qual D = .linear
   | .owned, _, h => by simpa [residualLinear] using h
   | .movedOut, _, h => by simp [residualLinear] at h
   | .fields ts, T, h => by
@@ -586,12 +586,12 @@ theorem residualLinear_mult_linear {D : Decls} (hD : WfStructs D) :
               refine (struct_carriesLinear_iff hd (hD s sd hd)).2 ?_
               rcases h with hattr | hfields
               · exact Or.inl hattr
-              · exact Or.inr (List.any_eq_true.1 (residualLinearFields_mult_linear hD ts sd.fields hfields)
+              · exact Or.inr (List.any_eq_true.1 (residualLinearFields_qual_linear hD ts sd.fields hfields)
                   |>.imp fun U hU => ⟨hU.1, of_decide_eq_true hU.2⟩)
       | array T' n =>
           simp only [residualLinear] at h
-          have := residualLinearFields_mult_linear hD ts (List.replicate n T') h
-          rw [Ty.any_replicate_mult_linear] at this
+          have := residualLinearFields_qual_linear hD ts (List.replicate n T') h
+          rw [Ty.any_replicate_qual_linear] at this
           exact of_decide_eq_true this
       | int _ _ => simp [residualLinear] at h
       | float _ => simp [residualLinear] at h
@@ -600,17 +600,17 @@ theorem residualLinear_mult_linear {D : Decls} (hD : WfStructs D) :
       | enum _ => simp [residualLinear] at h
 
 /-- The same over a declaration's slots (helper). -/
-theorem residualLinearFields_mult_linear {D : Decls} (hD : WfStructs D) :
+theorem residualLinearFields_qual_linear {D : Decls} (hD : WfStructs D) :
     ∀ (ts : List OwnSt) (Ts : List Ty), residualLinearFields D ts Ts = true →
-      (Ts.any fun U => decide (U.mult D = .linear)) = true
+      (Ts.any fun U => decide (U.qual D = .linear)) = true
   | [], _, h => by simpa [residualLinearFields] using h
   | _ :: _, [], h => by simp [residualLinearFields] at h
   | t :: ts, T :: Ts, h => by
       simp only [residualLinearFields, Bool.or_eq_true] at h
       simp only [List.any_cons, Bool.or_eq_true]
       rcases h with h | h
-      · exact Or.inl (decide_eq_true (residualLinear_mult_linear hD t T h))
-      · exact Or.inr (residualLinearFields_mult_linear hD ts Ts h)
+      · exact Or.inl (decide_eq_true (residualLinear_qual_linear hD t T h))
+      · exact Or.inr (residualLinearFields_qual_linear hD ts Ts h)
 end
 
 mutual
@@ -619,7 +619,7 @@ obligation.** `ownedJoinable` admits exactly the `MovedOut` paths whose type is
 not `Linear` (`3.8:50`), so a state it admits at a `Linear` type still has
 residue somewhere — a wholly moved-out linear subtree is what it refuses. -/
 theorem ownedJoinable_residualLinear {D : Decls} (hD : WfStructs D) :
-    ∀ (t : OwnSt) (T : Ty), ownedJoinable D t T = true → T.mult D = .linear →
+    ∀ (t : OwnSt) (T : Ty), ownedJoinable D t T = true → T.qual D = .linear →
       residualLinear D t T = true
   | .owned, _, _, hlin => by simp [residualLinear, hlin]
   | .movedOut, _, h, hlin => by simp [ownedJoinable, hlin] at h
@@ -639,7 +639,7 @@ theorem ownedJoinable_residualLinear {D : Decls} (hD : WfStructs D) :
           simp only [ownedJoinable] at h
           simp only [residualLinear]
           exact ownedJoinableList_residualLinearFields hD ts (List.replicate n T') h
-            (by rw [Ty.any_replicate_mult_linear]; exact decide_eq_true hlin)
+            (by rw [Ty.any_replicate_qual_linear]; exact decide_eq_true hlin)
       | int _ _ => simp [ownedJoinable] at h
       | float _ => simp [ownedJoinable] at h
       | bool => simp [ownedJoinable] at h
@@ -649,7 +649,7 @@ theorem ownedJoinable_residualLinear {D : Decls} (hD : WfStructs D) :
 /-- The same over a declaration's slots (helper). -/
 theorem ownedJoinableList_residualLinearFields {D : Decls} (hD : WfStructs D) :
     ∀ (ts : List OwnSt) (Ts : List Ty), ownedJoinableList D ts Ts = true →
-      (Ts.any fun U => decide (U.mult D = .linear)) = true →
+      (Ts.any fun U => decide (U.qual D = .linear)) = true →
       residualLinearFields D ts Ts = true
   | [], _, _, hany => by simpa [residualLinearFields] using hany
   | _ :: _, [], _, hany => by simp at hany
@@ -672,7 +672,7 @@ cannot see, and that gap is `Examples.lean`'s counterexample to associativity
 without the invariant. -/
 theorem ownedJoinable_of_residualLinear_false {D : Decls} (hD : WfStructs D) :
     ∀ (t : OwnSt) (T : Ty), OwnSt.wf D t T = true → residualLinear D t T = false →
-      ownedJoinable D t T = decide (T.mult D ≠ .linear)
+      ownedJoinable D t T = decide (T.qual D ≠ .linear)
   | .owned, _, _, h => by
       simp only [residualLinear, decide_eq_false_iff_not] at h
       simp [ownedJoinable, h]
@@ -688,8 +688,8 @@ theorem ownedJoinable_of_residualLinear_false {D : Decls} (hD : WfStructs D) :
               simp only [residualLinear, hd, Bool.or_eq_false_iff, decide_eq_false_iff_not] at h
               simp only [ownedJoinable, hd]
               rw [ownedJoinableList_of_residualLinearFields_false hD ts sd.fields hwf h.2]
-              have key : (sd.fields.any fun U => decide (U.mult D = .linear))
-                  = decide ((Ty.struct s).mult D = .linear) := by
+              have key : (sd.fields.any fun U => decide (U.qual D = .linear))
+                  = decide ((Ty.struct s).qual D = .linear) := by
                 rw [Bool.eq_iff_iff, decide_eq_true_eq, List.any_eq_true]
                 constructor
                 · rintro ⟨U, hmem, hU⟩
@@ -704,7 +704,7 @@ theorem ownedJoinable_of_residualLinear_false {D : Decls} (hD : WfStructs D) :
           simp only [OwnSt.wf] at hwf
           simp only [residualLinear] at h
           simp only [ownedJoinable]
-          rw [ownedJoinableList_of_residualLinearFields_false hD ts (List.replicate n T') hwf h, Ty.any_replicate_mult_linear]
+          rw [ownedJoinableList_of_residualLinearFields_false hD ts (List.replicate n T') hwf h, Ty.any_replicate_qual_linear]
           simp
       | int _ _ => simp [OwnSt.wf] at hwf
       | float _ => simp [OwnSt.wf] at hwf
@@ -716,7 +716,7 @@ theorem ownedJoinable_of_residualLinear_false {D : Decls} (hD : WfStructs D) :
 theorem ownedJoinableList_of_residualLinearFields_false {D : Decls} (hD : WfStructs D) :
     ∀ (ts : List OwnSt) (Ts : List Ty), OwnSt.wfList D ts Ts = true →
       residualLinearFields D ts Ts = false →
-      ownedJoinableList D ts Ts = !(Ts.any fun U => decide (U.mult D = .linear))
+      ownedJoinableList D ts Ts = !(Ts.any fun U => decide (U.qual D = .linear))
   | [], _, _, h => by
       simp only [residualLinearFields] at h
       simp [ownedJoinableList, h]
@@ -747,7 +747,7 @@ tests of `class(T)` (helper). -/
 theorem OwnSt.join_movedOut_owned_eq (D : Decls) (T : Ty) :
     (if ownedJoinable D .movedOut T then some OwnSt.movedOut else none)
       = if residualLinear D .owned T then none else some OwnSt.movedOut := by
-  by_cases h : Ty.mult D T = .linear <;> simp [ownedJoinable, residualLinear, h]
+  by_cases h : Ty.qual D T = .linear <;> simp [ownedJoinable, residualLinear, h]
 
 /-- §5.5's `MovedOut` arm on the left, as one equation over every state of the
 other arm — including the `Owned` one, by the clause above (helper). -/
@@ -841,24 +841,24 @@ theorem OwnSt.joinList_cons_bind_right (D : Decls) (a b c : OwnSt) (as bs cs : L
 Linear`: the two halves above, taken together (helper). -/
 theorem residualLinear_of_ownedJoinable {D : Decls} (hD : WfStructs D) (t : OwnSt) (T : Ty)
     (h : ownedJoinable D t T = true) :
-    residualLinear D t T = decide (T.mult D = .linear) := by
-  by_cases hlin : T.mult D = .linear
+    residualLinear D t T = decide (T.qual D = .linear) := by
+  by_cases hlin : T.qual D = .linear
   · rw [ownedJoinable_residualLinear hD t T h hlin, decide_eq_true hlin]
   · rw [decide_eq_false hlin]
     cases hr : residualLinear D t T with
     | false => rfl
-    | true => exact absurd (residualLinear_mult_linear hD t T hr) hlin
+    | true => exact absurd (residualLinear_qual_linear hD t T hr) hlin
 
 /-- The same over a declaration's slots (helper). -/
 theorem residualLinearFields_of_ownedJoinableList {D : Decls} (hD : WfStructs D) (ts : List OwnSt) (Ts : List Ty)
     (h : ownedJoinableList D ts Ts = true) :
-    residualLinearFields D ts Ts = (Ts.any fun U => decide (U.mult D = .linear)) := by
-  cases hany : (Ts.any fun U => decide (U.mult D = .linear)) with
+    residualLinearFields D ts Ts = (Ts.any fun U => decide (U.qual D = .linear)) := by
+  cases hany : (Ts.any fun U => decide (U.qual D = .linear)) with
   | true => exact ownedJoinableList_residualLinearFields hD ts Ts h hany
   | false =>
       cases hr : residualLinearFields D ts Ts with
       | false => rfl
-      | true => exact absurd (residualLinearFields_mult_linear hD ts Ts hr) (by simp [hany])
+      | true => exact absurd (residualLinearFields_qual_linear hD ts Ts hr) (by simp [hany])
 
 mutual
 /-- **A successful §5.5 join neither adds nor removes an inadmissible
@@ -1074,13 +1074,13 @@ theorem OwnSt.join_exists {D : Decls} (hD : WfStructs D) :
       residualLinear D b T = false → residualLinear D c T = false →
       ∃ r, OwnSt.join D b c T = some r
   | .owned, c, T, _, hc, hb0, hc0 => by
-      have hlin : Ty.mult D T ≠ .linear := by
+      have hlin : Ty.qual D T ≠ .linear := by
         simpa [residualLinear] using hb0
       have h : ownedJoinable D c T = true := by
         rw [ownedJoinable_of_residualLinear_false hD c T hc hc0]; exact decide_eq_true hlin
       exact ⟨c, by rw [OwnSt.join_owned_left, if_pos h]⟩
   | b, .owned, T, hb, _, hb0, hc0 => by
-      have hlin : Ty.mult D T ≠ .linear := by
+      have hlin : Ty.qual D T ≠ .linear := by
         simpa [residualLinear] using hc0
       have h : ownedJoinable D b T = true := by
         rw [ownedJoinable_of_residualLinear_false hD b T hb hb0]; exact decide_eq_true hlin
@@ -1118,13 +1118,13 @@ theorem OwnSt.joinList_exists {D : Decls} (hD : WfStructs D) :
       ∃ rs, OwnSt.joinList D bs cs Ts = some rs
   | _, _, [], _, _, _, _ => ⟨[], by simp [OwnSt.joinList]⟩
   | [], cs, T :: Ts, _, hc, hb0, hc0 => by
-      have hany : ((T :: Ts).any fun U => decide (U.mult D = .linear)) = false := by
+      have hany : ((T :: Ts).any fun U => decide (U.qual D = .linear)) = false := by
         simpa [residualLinearFields] using hb0
       have h : ownedJoinableList D cs (T :: Ts) = true := by
         rw [ownedJoinableList_of_residualLinearFields_false hD cs (T :: Ts) hc hc0, hany]; rfl
       exact ⟨cs, by rw [OwnSt.joinList_nil_left, if_pos h]⟩
   | bs, [], T :: Ts, hb, _, hb0, hc0 => by
-      have hany : ((T :: Ts).any fun U => decide (U.mult D = .linear)) = false := by
+      have hany : ((T :: Ts).any fun U => decide (U.qual D = .linear)) = false := by
         simpa [residualLinearFields] using hc0
       have h : ownedJoinableList D bs (T :: Ts) = true := by
         rw [ownedJoinableList_of_residualLinearFields_false hD bs (T :: Ts) hb hb0, hany]; rfl

@@ -161,7 +161,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
         | none =>
             (match en.st.get p.path, en.ty.atPath P.decls p.path with
              | some u, some T =>
-                 if T.mult P.decls = .copy then
+                 if T.qual P.decls = .copy then
                    (if u.fullyOwned then some (.ty T, ⟨some Γ, []⟩) else none)
                  else
                    (if u.fullyOwned ∧ noDtorPrefix P.decls en.ty p.path ∧
@@ -270,7 +270,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
   | .repeatArray T e n =>
       match check P R Γ e with
       | some (.ty T', Ω) =>
-          if T' = T ∧ T.mult P.decls = .copy then some (.ty (.array T n), Ω) else none
+          if T' = T ∧ T.qual P.decls = .copy then some (.ty (.array T n), Ω) else none
       | _ => none
   | .indexRead p idx πs =>
       match checkIdx P R Γ idx with
@@ -283,7 +283,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
              (match Ta.atDyn P.decls πs with
               | some T =>
                   if idx.length = πs.length ∧ πs ≠ [] ∧ u.fullyOwned ∧
-                      T.mult P.decls = .copy ∧
+                      T.qual P.decls = .copy ∧
                       declaredPrefix P.decls en.ty p.path = none ∧
                       Ta.dynNoDeclared P.decls πs then some (.ty T, ⟨some Γ₁, Δ⟩)
                   else none
@@ -321,7 +321,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
                            | some u₁ =>
                                if idx.length = πs.length ∧ πs ≠ [] ∧ u₁.fullyOwned ∧
                                    assignArrayOk P.decls en₁.st en₁.ty p.path ∧
-                                   T.mult P.decls ≠ .linear then
+                                   T.qual P.decls ≠ .linear then
                                  some (.ty .unit,
                                    ⟨some (Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned))),
                                      Δ₂ ++ Δ₁⟩)
@@ -349,7 +349,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
              (match Ta.atDyn P.decls πs with
               | some T =>
                   if idx.length = πs.length ∧ πs ≠ [] ∧ u.fullyOwned ∧
-                      T.mult P.decls = .copy ∧
+                      T.qual P.decls = .copy ∧
                       declaredPrefix P.decls en.ty p.path = none ∧
                       Ta.dynNoDeclared P.decls πs then some (.ty .unit, ⟨some Γ₁, Δ⟩)
                   else none
@@ -383,7 +383,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
         | none =>
             (match en.st.get p.path, en.ty.atPath P.decls p.path with
              | some u, some T =>
-                 if T.mult P.decls = .copy then
+                 if T.qual P.decls = .copy then
                    (if u.fullyOwned then some (.ty .unit, ⟨some Γ, []⟩) else none)
                  else
                    (if u.isOwned ∧ noDtorPrefix P.decls en.ty p.path ∧
@@ -432,7 +432,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
   | .seq e₁ e₂ =>
       match check P R Γ e₁ with
       | some (.ty T₁, ⟨some Γ₁, Δ₁⟩) =>
-          if T₁.mult P.decls = .linear then none
+          if T₁.qual P.decls = .linear then none
           else
             (match check P R Γ₁ e₂ with
              | some (c₂, Ω₂) => some (c₂, Ω₂.merge Δ₁)
@@ -610,7 +610,7 @@ def checkStructDecl (D : Decls) (sd : StructDecl) : Bool :=
     (!sd.dtor || !decide (sd.baseOf D = .linear))
 
 /-- §3's class assignment for a whole struct environment, as an algorithm.
-`WfStructs` is what it decides, and that is the premise `Ty.mult`'s lookup
+`WfStructs` is what it decides, and that is the premise `Ty.qual`'s lookup
 needs to be §3's join. -/
 def checkStructs (D : Decls) : Bool := D.structs.all (checkStructDecl D)
 
@@ -622,7 +622,7 @@ def checkEnumDecl (D : Decls) (ed : EnumDecl) : Bool :=
   decide (ed.cls = ed.payloadJoin D)
 
 /-- §3's class assignment for a whole enum environment, as an algorithm.
-`WfEnums` is what it decides, and that is the premise `Ty.mult`'s lookup needs to
+`WfEnums` is what it decides, and that is the premise `Ty.qual`'s lookup needs to
 be `6.3:19`'s join at an enum type. -/
 def checkEnums (D : Decls) : Bool := D.enums.all (checkEnumDecl D)
 

@@ -16,7 +16,7 @@ theorem sits under one.
 
 namespace RueCore
 
-/-- `toVals` does not change a list's length, for `mult_toVal`'s array case
+/-- `toVals` does not change a list's length, for `qual_toVal`'s array case
 (helper). -/
 theorem Contents.toVals_length : ∀ (cs : List Contents) (vs : List Val),
     Contents.toVals cs = some vs → vs.length = cs.length
@@ -29,17 +29,17 @@ theorem Contents.toVals_length : ∀ (cs : List Contents) (vs : List Val),
         simp [Contents.toVals_length cs vs' hvs]
       · cases h
 
-/-- `Contents.mult` agrees with `Val.mult` on a hole-free contents: §6's
-`Step.indexDrop` reads `leaf.mult` on the store's `Contents`, while `eval`'s
-dynamic checks (RUE-2400) read `v.mult` on the `Val` a successful read
+/-- `Contents.qual` agrees with `Val.qual` on a hole-free contents: §6's
+`Step.indexDrop` reads `leaf.qual` on the store's `Contents`, while `eval`'s
+dynamic checks (RUE-2400) read `v.qual` on the `Val` a successful read
 produces; this is what lets the two land on the same refusal. Serves
 RUE-2289 part 2, the `eval ⇒ Step*` simulation. -/
-theorem Contents.mult_toVal (D : Decls) (c : Contents) (v : Val) (h : c.toVal = some v) :
-    c.mult D = v.mult D := by
+theorem Contents.qual_toVal (D : Decls) (c : Contents) (v : Val) (h : c.toVal = some v) :
+    c.qual D = v.qual D := by
   cases c <;> simp [Contents.toVal] at h
   all_goals (first | (subst h; rfl) | skip)
   all_goals (obtain ⟨vs, hvs, rfl⟩ := h)
-  all_goals (simp [Contents.mult, Val.mult, Contents.toVals_length _ _ hvs])
+  all_goals (simp [Contents.qual, Val.qual, Contents.toVals_length _ _ hvs])
 
 /-- The bounds test, read as §6.5 states it (helper). -/
 theorem inBoundsIdx_eq_true {i : Int} {n : Nat} :

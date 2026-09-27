@@ -151,10 +151,10 @@ theorem HasTys.length_eq : ∀ {D vs Ts}, HasTys D vs Ts → vs.length = Ts.leng
   | _, _, _, .cons _ h => by simp [HasTys.length_eq h]
 
 /-- A well-typed value has its type's class (helper). -/
-theorem HasTy.mult_eq {D v T} (h : HasTy D v T) : v.mult D = T.mult D := by
+theorem HasTy.qual_eq {D v T} (h : HasTy D v T) : v.qual D = T.qual D := by
   cases h with
   | array hvs =>
-      simp only [Val.mult, HasTys.length_eq hvs, List.length_replicate]
+      simp only [Val.qual, HasTys.length_eq hvs, List.length_replicate]
   | _ => rfl
 
 /-- A value of an observable type is one §6.12 can render: (Dbg) §5.8's
@@ -386,18 +386,18 @@ end
 
 /-- A hole-free well-typed contents has its type's class, which is what the
 `Copy` test of (D-Use-Copy) and of `dropCell` reads (helper). -/
-theorem ContentsTy.mult_eq {D c T} (h : ContentsTy D c T) (hf : c.noMovedOut = true) :
-    c.mult D = T.mult D := by
+theorem ContentsTy.qual_eq {D c T} (h : ContentsTy D c T) (hf : c.noMovedOut = true) :
+    c.qual D = T.qual D := by
   cases h with
   | movedOut => exact absurd hf (by simp [Contents.noMovedOut])
   | int => rfl
   | float => rfl
   | bool => rfl
   | unit => rfl
-  | struct hd _ => simp [Contents.mult, Ty.mult, Decls.classOf, hd]
-  | enum hd _ _ => simp [Contents.mult, Ty.mult, Decls.enumClassOf, hd]
+  | struct hd _ => simp [Contents.qual, Ty.qual, Decls.classOf, hd]
+  | enum hd _ _ => simp [Contents.qual, Ty.qual, Decls.enumClassOf, hd]
   | array hcs =>
-      simp only [Contents.mult, ContentsTys.length_eq hcs, List.length_replicate]
+      simp only [Contents.qual, ContentsTys.length_eq hcs, List.length_replicate]
 
 /-! ## Copy closure: a `Copy` type holds nothing owned
 
@@ -409,14 +409,14 @@ and §3's array lift makes `[T; n]` `Copy` only when `T` is — so well-typed
 contents is copy-closed and the monitor never fires on a checked program. -/
 
 /-- A class of rank `0` is `Copy` (helper). -/
-theorem Mult.eq_copy_of_rank {m : Mult} (h : m.rank = 0) : m = .copy := by
-  cases m <;> simp_all [Mult.rank]
+theorem Qual.eq_copy_of_rank {m : Qual} (h : m.rank = 0) : m = .copy := by
+  cases m <;> simp_all [Qual.rank]
 
 /-- **A `Copy` struct's fields are `Copy`** (`3.8:18`): the class is the
 attribute's lift of the field join, only `@copy` lifts to `Copy`, and a
 well-formed `@copy` declaration's join is already `Copy` (helper). -/
 theorem StructDecl.Wf.field_copy {D : Decls} {sd : StructDecl} (h : sd.Wf D)
-    (hcls : sd.cls = .copy) : ∀ T ∈ sd.fields, T.mult D = .copy := by
+    (hcls : sd.cls = .copy) : ∀ T ∈ sd.fields, T.qual D = .copy := by
   intro T hmem
   have hattr : sd.attr = .copy := by
     have hc := h.classIsJoin
@@ -431,21 +431,21 @@ theorem StructDecl.Wf.field_copy {D : Decls} {sd : StructDecl} (h : sd.Wf D)
   have hbase := (h.copyWf hattr).1
   have hle := rank_le_joinFold_of_mem D sd.fields .copy T hmem
   have : (sd.baseOf D).rank = 0 := by rw [hbase]; rfl
-  exact Mult.eq_copy_of_rank (by unfold StructDecl.baseOf at this; omega)
+  exact Qual.eq_copy_of_rank (by unfold StructDecl.baseOf at this; omega)
 
 /-- **A `Copy` enum's payloads are `Copy`** (`6.3:19`): the class is the join
 over every payload component of every variant (helper). -/
 theorem EnumDecl.Wf.payload_copy {D : Decls} {ed : EnumDecl} (h : ed.Wf D)
-    (hcls : ed.cls = .copy) : ∀ Ts ∈ ed.variants, ∀ T ∈ Ts, T.mult D = .copy := by
+    (hcls : ed.cls = .copy) : ∀ Ts ∈ ed.variants, ∀ T ∈ Ts, T.qual D = .copy := by
   intro Ts hTs T hT
   have hle := rank_le_payloadFold_of_mem D ed.variants .copy Ts T hTs hT
   have : (ed.payloadJoin D).rank = 0 := by rw [← h.classIsJoin, hcls]; rfl
-  exact Mult.eq_copy_of_rank (by unfold EnumDecl.payloadJoin at this; omega)
+  exact Qual.eq_copy_of_rank (by unfold EnumDecl.payloadJoin at this; omega)
 
 /-- **A `Copy` array's element type is `Copy`** (§3's array lift) (helper). -/
 theorem Ty.array_copy_elem {D : Decls} {T : Ty} {n : Nat}
-    (h : Ty.mult D (.array T n) = .copy) : T.mult D = .copy := by
-  simp only [Ty.mult] at h
+    (h : Ty.qual D (.array T n) = .copy) : T.qual D = .copy := by
+  simp only [Ty.qual] at h
   split at h
   · assumption
   · split at h <;> simp_all
@@ -453,7 +453,7 @@ theorem Ty.array_copy_elem {D : Decls} {T : Ty} {n : Nat}
 mutual
 /-- Well-typed contents at a `Copy` type is `Copy` all the way down (helper). -/
 theorem ContentsTy.allCopy {D : Decls} {c : Contents} {T : Ty} (hwf : WfDecls D)
-    (h : ContentsTy D c T) (hc : T.mult D = .copy) : c.allCopy D = true := by
+    (h : ContentsTy D c T) (hc : T.qual D = .copy) : c.allCopy D = true := by
   cases h with
   | movedOut => rfl
   | int => rfl
@@ -461,12 +461,12 @@ theorem ContentsTy.allCopy {D : Decls} {c : Contents} {T : Ty} (hwf : WfDecls D)
   | bool => rfl
   | unit => rfl
   | @struct s sd i cs hd hcs =>
-      have hcls : sd.cls = .copy := by simpa only [Ty.mult, Decls.classOf, hd] using hc
+      have hcls : sd.cls = .copy := by simpa only [Ty.qual, Decls.classOf, hd] using hc
       have hc' : D.classOf s = .copy := by simp only [Decls.classOf, hd]; exact hcls
       simp only [Contents.allCopy, hc', decide_true, Bool.true_and]
       exact ContentsTys.allCopyList hwf hcs ((hwf.structs s sd hd).field_copy hcls)
   | @enum e k ed Ts i cs hd hv hcs =>
-      have hcls : ed.cls = .copy := by simpa only [Ty.mult, Decls.enumClassOf, hd] using hc
+      have hcls : ed.cls = .copy := by simpa only [Ty.qual, Decls.enumClassOf, hd] using hc
       have hc' : D.enumClassOf e = .copy := by simp only [Decls.enumClassOf, hd]; exact hcls
       simp only [Contents.allCopy, hc', decide_true, Bool.true_and]
       exact ContentsTys.allCopyList hwf hcs
@@ -481,7 +481,7 @@ theorem ContentsTy.allCopy {D : Decls} {c : Contents} {T : Ty} (hwf : WfDecls D)
 
 /-- The same over a field list (helper). -/
 theorem ContentsTys.allCopyList {D : Decls} {cs : List Contents} {Ts : List Ty}
-    (hwf : WfDecls D) (h : ContentsTys D cs Ts) (hc : ∀ T ∈ Ts, T.mult D = .copy) :
+    (hwf : WfDecls D) (h : ContentsTys D cs Ts) (hc : ∀ T ∈ Ts, T.qual D = .copy) :
     Contents.allCopyList D cs = true := by
   cases h with
   | nil => rfl
@@ -674,7 +674,7 @@ stored contents looking for a live declared-`linear` struct — finds none. A
 `⊘` contributes nothing whatever its type, so the statement needs no
 hole-freeness. -/
 theorem ContentsTy.residualLinear_false {D : Decls} {c : Contents} {T : Ty}
-    (hwf : WfDecls D) (h : ContentsTy D c T) (hnl : T.mult D ≠ .linear) :
+    (hwf : WfDecls D) (h : ContentsTy D c T) (hnl : T.qual D ≠ .linear) :
     c.residualLinear D = false := by
   cases h with
   | movedOut => rfl
@@ -684,7 +684,7 @@ theorem ContentsTy.residualLinear_false {D : Decls} {c : Contents} {T : Ty}
   | unit => rfl
   | @struct s sd i cs hd hcs =>
       have hcls : sd.cls ≠ .linear := by
-        simpa only [Ty.mult, Decls.classOf, hd] using hnl
+        simpa only [Ty.qual, Decls.classOf, hd] using hnl
       have hw := hwf.structs s sd hd
       have hattr : ¬ (sd.attr = .linear) := by
         intro ha
@@ -696,7 +696,7 @@ theorem ContentsTy.residualLinear_false {D : Decls} {c : Contents} {T : Ty}
       -- (`6.3:19`) makes a non-`Linear` enum one with no linear payload in any
       -- variant, the active one included.
       have hcls : ed.cls ≠ .linear := by
-        simpa only [Ty.mult, Decls.enumClassOf, hd] using hnl
+        simpa only [Ty.qual, Decls.enumClassOf, hd] using hnl
       have hw := hwf.enums e ed hd
       simp only [Contents.residualLinear]
       exact ContentsTys.residualLinearList_false hwf hcs
@@ -713,11 +713,11 @@ theorem ContentsTy.residualLinear_false {D : Decls} {c : Contents} {T : Ty}
       subst hT
       intro hlin
       have hpos : n ≠ 0 := by rintro rfl; simp [List.replicate] at hmem
-      exact hnl (by simp only [Ty.mult, hlin, if_neg hpos])
+      exact hnl (by simp only [Ty.qual, hlin, if_neg hpos])
 
 /-- The same over a field list (helper). -/
 theorem ContentsTys.residualLinearList_false {D : Decls} {cs : List Contents} {Ts : List Ty}
-    (hwf : WfDecls D) (h : ContentsTys D cs Ts) (hnl : ∀ T ∈ Ts, T.mult D ≠ .linear) :
+    (hwf : WfDecls D) (h : ContentsTys D cs Ts) (hnl : ∀ T ∈ Ts, T.qual D ≠ .linear) :
     Contents.residualLinearList D cs = false := by
   cases h with
   | nil => rfl
@@ -1124,12 +1124,12 @@ typed at a type whose class is not `Linear`. This is §5.1's
 `¬ linear-residue(S, π_s)` premise, read on the store side — and it is exactly
 what `dropResidue`'s monitor asks for (helper). -/
 def ResidueOk (D : Decls) (rs : List Contents) : Prop :=
-  ∀ r ∈ rs, ∃ Tr, ContentsTy D r Tr ∧ Tr.mult D ≠ .linear
+  ∀ r ∈ rs, ∃ Tr, ContentsTy D r Tr ∧ Tr.qual D ≠ .linear
 
 /-- A contents list well typed against types none of which is `Linear` is
 droppable residue (helper). -/
 theorem residueOk_of_tys {D : Decls} : ∀ {cs : List Contents} {Ts : List Ty},
-    ContentsTys D cs Ts → (∀ T ∈ Ts, T.mult D ≠ .linear) → ResidueOk D cs
+    ContentsTys D cs Ts → (∀ T ∈ Ts, T.qual D ≠ .linear) → ResidueOk D cs
   | _, _, .nil, _ => by intro r hr; cases hr
   | _, _, .cons hc hcs, h => by
       intro r hr
@@ -1318,14 +1318,14 @@ theorem ContentsOwnTyping.ne_movedOut {D c t T} (h : ContentsOwnTyping D c t T)
 
 /-- A matched node whose state is `Owned` has its type's class, which is what
 `dropCell`'s `Copy` test reads (helper). -/
-theorem ContentsOwnTyping.mult_eq {D c t T} (h : ContentsOwnTyping D c t T)
-    (ho : t.isOwned = true) : c.mult D = T.mult D := by
+theorem ContentsOwnTyping.qual_eq {D c t T} (h : ContentsOwnTyping D c t T)
+    (ho : t.isOwned = true) : c.qual D = T.qual D := by
   cases h with
-  | owned hc hh => exact hc.mult_eq hh
+  | owned hc hh => exact hc.qual_eq hh
   | moved _ _ => simp [OwnSt.isOwned] at ho
-  | fields hd _ => simp [Contents.mult, Ty.mult, Decls.classOf, hd]
+  | fields hd _ => simp [Contents.qual, Ty.qual, Decls.classOf, hd]
   | elems hl =>
-      simp only [Contents.mult,
+      simp only [Contents.qual,
         ContentsTys.length_eq (ContentsOwnTypingList.contentsTys hl), List.length_replicate]
 
 /-- The contents of a value written into a cell matches the `owned` state
@@ -1604,7 +1604,7 @@ theorem ContentsOwnTypingList.residualLinearList_false {D cs ts Ts} (hwf : WfDec
   | @cons c cs ts T Ts hc hl =>
       cases ts with
       | nil =>
-          have hsplit : decide (Ty.mult D T = Mult.linear) = false ∧
+          have hsplit : decide (Ty.qual D T = Qual.linear) = false ∧
               residualLinearFields D [] Ts = false := by
             simpa only [residualLinearFields, List.any_cons, Bool.or_eq_false_iff] using hr
           show (Contents.residualLinear D c || Contents.residualLinearList D cs) = false
@@ -1837,7 +1837,7 @@ theorem CellTyping.dropOk {D cell en} (hwf : WfDecls D) (hcm : CellTyping D cell
 theorem dropCell_ok {D : Decls} {ℓ : Nat} {c : Contents} {T : Ty} (h : ContentsTy D c T) :
     ∃ evs, dropCell D ℓ c = .ok evs := by
   unfold dropCell
-  by_cases hcp : c.mult D = .copy
+  by_cases hcp : c.qual D = .copy
   · exact ⟨[], by simp [hcp]⟩
   · obtain ⟨evs, hevs⟩ := dropContents_ok h
     exact ⟨.drop ℓ c :: evs, by simp [hcp, hevs]⟩
@@ -3033,7 +3033,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
             rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hg hty]; exact hplan
           obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt pl.path hmm hg hty
           obtain ⟨v, hv, htyv⟩ := hsub.toVal hfo
-          have hvm : v.mult P.decls = .copy := by rw [htyv.mult_eq]; exact hcopy
+          have hvm : v.qual P.decls = .copy := by rw [htyv.qual_eq]; exact hcopy
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.use pl) = .ok H v [] := by
             simp [eval, hρ, hc, hpl, hread, hv, hvm]
           rw [hev]
@@ -3047,7 +3047,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
             rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hg hty]; exact hplan
           obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt pl.path hmm hg hty
           obtain ⟨v, hv, htyv⟩ := hsub.toVal hfo
-          have hvm : v.mult P.decls ≠ .copy := by rw [htyv.mult_eq]; exact hncopy
+          have hvm : v.qual P.decls ≠ .copy := by rw [htyv.qual_eq]; exact hncopy
           obtain ⟨cc', hw, hmm'⟩ :=
             ContentsOwnTyping.writeAt pl.path hmm hg hty (ContentsOwnTyping.movedOut (T := T))
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.use pl) = .ok (H.set ℓ (.full cc')) v [] := by
@@ -3339,12 +3339,12 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
           -- `7.1:39`: the operand is evaluated **exactly once** and its result
           -- copied into each of the `n` slots, which `7.1:38`'s `Copy` premise
           -- is what makes well defined. The machine checks that premise on the
-          -- value (RUE-2400), and `HasTy.mult_eq` carries the rule's
-          -- `T.mult = .copy` over to it, so the refusal is never reached.
+          -- value (RUE-2400), and `HasTy.qual_eq` carries the rule's
+          -- `T.qual = .copy` over to it, so the refusal is never reached.
           simp only [eval]
           refine EvalOk.bindSame (ih h hfm) ?_
           intro H' v tr Γ' _ hty hfm'
-          rw [if_pos (hty.mult_eq.trans hcopy)]
+          rw [if_pos (hty.qual_eq.trans hcopy)]
           exact introVal_ok hwf.decls (.array (HasTys.replicate hty n)) hfm' FrameProperty.refl
       | @indexReadBot Γ Δ p idx πs Ts en Ta T hta _ _ _ _ _ _ =>
           -- (Strict-Bottom) §5.3 at an index: the list aborts, and the place
@@ -3400,8 +3400,8 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
                 obtain ⟨v, hv, htyv⟩ := hleaf.toVal rfl
                 -- (D-Use-Untrackable-Dynamic-Copy)'s `class(T) = Copy`, which
                 -- the machine checks on the value (RUE-2400): the rule's own
-                -- premise, carried to `v` by `HasTy.mult_eq`.
-                simp only [hdp, hrl, hv, if_pos (htyv.mult_eq.trans hcopy)]
+                -- premise, carried to `v` by `HasTy.qual_eq`.
+                simp only [hdp, hrl, hv, if_pos (htyv.qual_eq.trans hcopy)]
                 exact ⟨htyv, hfm₁, hu₁⟩
       | @indexDrop Γ Ω p idx πs T h =>
           -- §6.11's `@drop` at a `Copy` place below a dynamic index is the
@@ -3498,8 +3498,8 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
           obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt pl.path hmm hg hty
           have hnh : sub.isMovedOut = false :=
             Contents.isMovedOut_eq_false (hsub.ne_movedOut (OwnSt.isOwned_of_fullyOwned hfo))
-          have hvm : sub.mult P.decls = .copy := by
-            rw [hsub.mult_eq (OwnSt.isOwned_of_fullyOwned hfo)]; exact hcopy
+          have hvm : sub.qual P.decls = .copy := by
+            rw [hsub.qual_eq (OwnSt.isOwned_of_fullyOwned hfo)]; exact hcopy
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.drop pl) = .ok H .unit [] := by
             simp [eval, hρ, hc, hpl, hread, hnh, hvm, dropCell]
           rw [hev]
@@ -3513,7 +3513,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
             rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hg hty]; exact hplan
           obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt pl.path hmm hg hty
           have hnh : sub.isMovedOut = false := Contents.isMovedOut_eq_false (hsub.ne_movedOut ho)
-          have hvm : sub.mult P.decls ≠ .copy := by rw [hsub.mult_eq ho]; exact hncopy
+          have hvm : sub.qual P.decls ≠ .copy := by rw [hsub.qual_eq ho]; exact hncopy
           obtain ⟨evs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hsub.contentsTy
           obtain ⟨cc', hw, hmm'⟩ :=
             ContentsOwnTyping.writeAt pl.path hmm hg hty (ContentsOwnTyping.movedOut (T := T))
@@ -3675,8 +3675,8 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
           simp only [eval]
           refine EvalOk.bind (ih h₁ hfm) (by brk_sub) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
-          have hvnl : v₁.mult P.decls ≠ .linear := by rw [hty₁.mult_eq]; exact hnl
-          cases hml : v₁.mult P.decls with
+          have hvnl : v₁.qual P.decls ≠ .linear := by rw [hty₁.qual_eq]; exact hnl
+          cases hml : v₁.qual P.decls with
           | linear => exact absurd hml hvnl
           | affine =>
               obtain ⟨evs, hevs⟩ := dropContents_ok (D := P.decls) hty₁.contentsTy
@@ -4076,7 +4076,7 @@ theorem eval_succ (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
           simp only [eval] at h ⊢
           refine EvalRes.bind_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ hkne
-          cases hml : v.mult P.decls with
+          cases hml : v.qual P.decls with
           | linear => rfl
           | affine =>
               simp only [hml] at hkne ⊢

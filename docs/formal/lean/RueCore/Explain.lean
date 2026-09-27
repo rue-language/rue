@@ -992,7 +992,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
         | none =>
           (match en.st.get pl.path, en.ty.atPath P.decls pl.path with
            | some u, some T =>
-               if T.mult P.decls = .copy then
+               if T.qual P.decls = .copy then
                  (if u.fullyOwned then acceptedAt "(Use-Copy) §5.1" Γ (.use pl) T Γ []
                   else rejected "(Use-Copy) §5.1" Γ (.use pl) (Premise.usePartiallyMoved T) [])
                else
@@ -1222,7 +1222,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       let d := explain P R Γ e
       (match d.result with
        | some (.ty T', Ω) =>
-           if T' = T ∧ T.mult P.decls = .copy then
+           if T' = T ∧ T.qual P.decls = .copy then
              accepted rule Γ (.repeatArray T e n) (.ty (.array T n)) Ω [d]
            else if T' = T then
              rejected rule Γ (.repeatArray T e n) (Premise.repeatNotCopy T) [d]
@@ -1244,7 +1244,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
               (match Ta.atDyn P.decls πs with
                | some T =>
                    if idx.length = πs.length ∧ πs ≠ [] ∧ u.fullyOwned ∧
-                       T.mult P.decls = .copy ∧
+                       T.qual P.decls = .copy ∧
                        declaredPrefix P.decls en.ty pl.path = none ∧
                        Ta.dynNoDeclared P.decls πs then
                      accepted rule Γ (.indexRead pl idx πs) (.ty T) ⟨some Γ₁, Δ⟩ ri.2
@@ -1298,7 +1298,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                             | some u₁ =>
                                 if idx.length = πs.length ∧ πs ≠ [] ∧ u₁.fullyOwned ∧
                                     assignArrayOk P.decls en₁.st en₁.ty pl.path ∧
-                                    T.mult P.decls ≠ .linear then
+                                    T.qual P.decls ≠ .linear then
                                   accepted rule Γ (.indexWrite pl idx πs e) (.ty .unit)
                                     ⟨some (Γ₂.set pl.root (en₁.setSt (en₁.st.setAt pl.path .owned))),
                                       Δ₂ ++ Δ₁⟩
@@ -1354,7 +1354,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
               (match Ta.atDyn P.decls πs with
                | some T =>
                    if idx.length = πs.length ∧ πs ≠ [] ∧ u.fullyOwned ∧
-                       T.mult P.decls = .copy ∧
+                       T.qual P.decls = .copy ∧
                        declaredPrefix P.decls en.ty pl.path = none ∧
                        Ta.dynNoDeclared P.decls πs then
                      accepted rule Γ (.indexDrop pl idx πs) (.ty .unit) ⟨some Γ₁, Δ⟩ ri.2
@@ -1414,7 +1414,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
         | none =>
           (match en.st.get pl.path, en.ty.atPath P.decls pl.path with
            | some u, some T =>
-               if T.mult P.decls = .copy then
+               if T.qual P.decls = .copy then
                  (if u.fullyOwned then acceptedAt "(@Drop-Copy) §5.3" Γ (.drop pl) .unit Γ []
                   else rejected "(@Drop-Copy) §5.3" Γ (.drop pl) (Premise.usePartiallyMoved T) [])
                else
@@ -1504,7 +1504,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       let d₁ := explain P R Γ e₁
       match d₁.result with
       | some (.ty T₁, ⟨some Γ₁, Δ₁⟩) =>
-          if T₁.mult P.decls = .linear then
+          if T₁.qual P.decls = .linear then
             rejected "(Seq) §5.3, 3.8:64" Γ (.seq e₁ e₂) (Premise.discardsLinear T₁) [d₁]
           else
             let d₂ := explain P R Γ₁ e₂
@@ -2480,7 +2480,7 @@ def traceEval (M : FloatSig) (P : Program) :
               | none =>
                   refused [] d Θ R (.use pl) "(D-Use-Copy)/(D-Use-Move) §6.3" H .useAfterMove
               | some v =>
-                  if v.mult P.decls = .copy then
+                  if v.qual P.decls = .copy then
                     traced [] d Θ R (.use pl) "(D-Use-Copy) §6.3" H H [] (.value v) (.ok H v [])
                   else
                     match c.writeAt pl.path .movedOut with
@@ -2531,7 +2531,7 @@ def traceEval (M : FloatSig) (P : Program) :
               (match dropCell P.decls ℓ sub with
                | .error w => refused [] d Θ R (.drop pl) "@drop §6.11" H w
                | .ok evs =>
-                   if sub.mult P.decls = .copy then
+                   if sub.qual P.decls = .copy then
                      traced [] d Θ R (.drop pl) "@drop §6.11 (Copy: no glue)" H H [] (.value .unit)
                        (.ok H .unit [])
                    else
@@ -2688,7 +2688,7 @@ def traceEval (M : FloatSig) (P : Program) :
       let t := traceEval M P fuel (d + 1) Θ R H φ e
       (match t.res with
        | .ok H₁ v tr =>
-           if v.mult P.decls = .copy then
+           if v.qual P.decls = .copy then
              tracedIntro P t.steps d Θ R (.repeatArray T e n) rule H H₁ tr
                (fun i => .array T i (List.replicate n v))
            else refused t.steps d Θ R (.repeatArray T e n) rule H .typeConfusion
@@ -2712,7 +2712,7 @@ def traceEval (M : FloatSig) (P : Program) :
              match leaf.toVal with
              | none => refused ta.steps d Θ R (.indexRead pl idx πs) rule H .useAfterMove
              | some v =>
-                 if v.mult P.decls = .copy then
+                 if v.qual P.decls = .copy then
                    traced ta.steps d Θ R (.indexRead pl idx πs) rule H H₁ []
                      (.value v) (.ok H₁ v tr)
                  else refused ta.steps d Θ R (.indexRead pl idx πs) rule H .typeConfusion)
@@ -2846,7 +2846,7 @@ def traceEval (M : FloatSig) (P : Program) :
       let t₁ := traceEval M P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
       | .ok H₁ v₁ tr₁ =>
-          (match v₁.mult P.decls with
+          (match v₁.qual P.decls with
            | .linear => refused t₁.steps d Θ R (.seq e₁ e₂) "(D-Seq) §6.7" H .linearDiscard
            | .affine =>
                match dropContents P.decls (Contents.ofVal v₁) with
