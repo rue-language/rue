@@ -184,7 +184,7 @@ def FrameProperty (ρ : Env) (H H' : Store) : Prop :=
   H.length ≤ H'.length ∧ ∀ ℓ, ℓ < H.length → ℓ ∉ ρ → H'[ℓ]? = H[ℓ]?
 
 /-- The per-frame invariant (§6.1): the fused context agrees with the store
-through the frame's environment, and the frame's scope record, read
+through the frame's environment, and the frame's drop scope, read
 newest-first, **is** that environment. The second clause is the RUE-1277
 redundancy discharged — every live binding of the frame is registered for a
 drop exactly once, which is what makes `run-all-scope-drops` (§6.9) safe at an
@@ -192,7 +192,7 @@ early `return`. -/
 structure ActivationTyping (D : Decls) (Γ : Ctx) (φ : Activation) (H : Store) : Prop where
   /-- `StoreTyping` through the frame's environment `ρ`. -/
   store : StoreTyping D Γ φ.env H
-  /-- The scope record, newest-first, is the environment (`3.8:62`: every
+  /-- The drop scope, newest-first, is the environment (`3.8:62`: every
   by-value binding is registered, and only those). In this fragment both are
   built from one list at every frame, so the equation holds definitionally;
   it becomes a real obligation when `Activation.scope` is §6.1's stack (§6.6,

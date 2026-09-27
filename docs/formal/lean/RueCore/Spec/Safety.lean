@@ -84,7 +84,7 @@ of drops", "never read afterward"; RUE-2496): `run` never refuses with
 `useAfterDrop`, at any fuel and any float operations (not only a `FloatLaws`), **whether or not the program is
 checked**. The property is structural rather than a corollary of typing: a
 binding's cell is minted fresh and retired only when the scope that bound it
-ends, after which nothing names it, and a scope record owes each cell once.
+ends, after which nothing names it, and a drop scope owes each cell once.
 So `no_use_after_drop`'s `ProgramTyped` is redundant for a run from the
 start. The guard is not dead code: from an open configuration, a frame that
 names a cell already retired, `eval` does refuse (`Sharp.tombstoned_cell`). Like
@@ -97,7 +97,7 @@ def run_no_use_after_drop_stmt : Prop :=
 scope exit, frame pop or scope unwind meets a live linear binding. Narrower
 than the bullet:
 - a linear value built for a sibling operand, which a later operand abandons
-  by `return` or `break`, is in no scope record; the unwind discards it
+  by `return` or `break`, is in no drop scope; the unwind discards it
   unchecked and the run ends normally (RUE-2316;
   `Examples.linearLostAtCallArg`);
 - a `@panic` abandons live linear bindings by design (§5.7's `⊥_panic`);

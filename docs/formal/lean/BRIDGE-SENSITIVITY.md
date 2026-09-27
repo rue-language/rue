@@ -570,7 +570,7 @@ there).
 **Two more drawn shapes.** `c-reverse-scope-drops` needs two
 destructor-bearing locals ending the *same* block; the only fragment shape
 that puts two locals in one flat scope is a `match` arm's payload binding
-((D-Match) §6.6 appends both cells to the frame's one scope record at once),
+((D-Match) §6.6 appends both cells to the frame's one drop scope at once),
 since every `let`'s own printed block nests (`Print.expr`'s `.letIn` case
 opens a fresh `{ }`), so a chain of `let`s never shares a scope with the
 next. `Gen.pairDtorBlock` searches the program's own declarations for an enum

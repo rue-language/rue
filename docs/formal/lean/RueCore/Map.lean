@@ -88,7 +88,7 @@ def milestones : List (Name × String) := [
   (``rest_step, "the ledger for the rest of every form, behind `rest_exactly_once`"),
   (``run_blocks, "every finished run's trace is in the block grammar `Blocks`: each drop marker followed by exactly its own walk"),
   (``step_blocks, "carries `run_blocks` to `Step`"),
-  (``reachable_ordered, "every scope record is in location order"),
+  (``reachable_ordered, "every drop scope is in location order"),
   (``reachable_nested, "scopes nest, a pending `endscope` being the tail of its record"),
   (``reachable_stackDiscipline, "the registration stack is dropped newest-first"),
   (``pendingSafe_needed, "the RUE-2316 carve-out (a by-value argument a sibling's `return` destroys) is load-bearing, not vacuous"),

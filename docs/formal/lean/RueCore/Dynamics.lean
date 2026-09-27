@@ -14,7 +14,7 @@ A definitional interpreter over the §6.1 configuration shape, restricted to
 the fragment: a store of single-cell binding allocations (`full c`, whose
 contents is a tree with §6.1's moved-out marker `⊘` allowed at any node, or
 the retired marker `†` = `dead`), a frame holding the environment `ρ` and the
-scope record `σ`, and a drop trace — the fragment's image of the oracle's
+drop scope `σ`, and a drop trace — the fragment's image of the oracle's
 observable `Outcome` (drop trace + result).
 
 Design commitments carried over from §6:
@@ -252,9 +252,9 @@ the carve-out named (`Soundness.lean`'s `no_refusal`,
 (RUE-2316, the pending-argument decision) — it needs a rule, in §5.7, §6.9
 or §6.10, before a monitor here would mean anything.
 
-## Frames, scope records, and unwinding (§6.1, §6.9)
+## Frames, drop scopes, and unwinding (§6.1, §6.9)
 
-§6.1's frame is `φ = ⟨ρ ; σ⟩` with `σ` a *stack* of open scope records.
+§6.1's frame is `φ = ⟨ρ ; σ⟩` with `σ` a *stack* of open drop scopes.
 (D-Let) §6.7 and (D-Match) §6.6 both **append** their cells to the innermost
 record rather than pushing a new one, so `Activation` carries that one record.
 §6.10's loop does push a scope, `push-scope(φ)`, and `unwind-drops(H, φ', φ)`
@@ -274,7 +274,7 @@ both books: appended to the record *and* owed to the arm's `endscope` marker
 instead, which is the same RUE-1277 redundancy read at a second binder form.
 
 The record is the RUE-1277 redundancy, and it is load-bearing here: a `let`
-registers its cell **both** in the scope record and in the administrative
+registers its cell **both** in the drop scope and in the administrative
 `endscope` form that the normal path runs (modelled by the structure of
 `eval`'s `letIn` case). An early `return` throws the `endscope` markers away
 with the evaluation context, and `run-all-scope-drops` walks the record
@@ -792,7 +792,7 @@ inductive EvalRes where
   | ok (H : Store) (v : Val) (tr : List Event)
   | returned (H : Store) (v : Val) (tr : List Event)
   /-- A `break` unwinding to its loop (§6.10's (D-Break)): the store, the
-  scope record of the frame the `break` fired in — the loop reads off it which
+  drop scope of the frame the `break` fired in — the loop reads off it which
   cells of the body still had a drop obligation — and the trace so far. -/
   | broke (H : Store) (scope : List Nat) (tr : List Event)
   | panic (k : PanicKind) (tr : List Event)
@@ -844,7 +844,7 @@ mutual
 /-- `drop(H, c)` (§6.11), on the fragment's cell contents. A `⊘` drops
 **nothing** — "this single skip is what makes double-free impossible" — and a
 scalar drops nothing either ("scalars are Copy"; §7 says the same of a float —
-it "has no drop glue, is never registered in a scope record, and never names
+it "has no drop glue, is never registered in a drop scope, and never names
 an allocation"). A struct runs its **user destructor first** (`3.9:28`), if its
 declaration has one, and then drops its fields in **declaration order**
 (`3.9:13`, §6.11's `drop*`), recursively. A field is dropped whatever its
@@ -861,7 +861,7 @@ Two things §6.11 writes out are elided here, both unobservably.
   has one — so there is nothing to step. The Rue program the printer emits
   supplies a body that reproduces the event (`Print.lean`).
 * **The scratch cell is not minted.** §6.11 mints a fresh `ℓ` holding the
-  value, runs the destructor in a frame whose scope record is empty, drops
+  value, runs the destructor in a frame whose drop scope is empty, drops
   the *residual* fields `H1(ℓ)` leaves, and then retires `ℓ`. `dropContents`
   mints nothing and drops the original `cs`. Neither difference is
   observable: no `Event` corresponds to minting or retiring the scratch cell,
@@ -1020,7 +1020,7 @@ unreachable (`ContentsOwnTyping.destructure_ok`, `Soundness.lean`). On a program
 refusal, which is what `3.8:60` (E0474) is about.
 
 The test is per element, immediately before that element's own drop, which is
-`unwindLocs`' shape at a scope record rather than `dropRetire`'s at one cell.
+`unwindLocs`' shape at a drop scope rather than `dropRetire`'s at one cell.
 Nothing is destroyed early by it: `dropContents` writes no store, the `⊘` at
 `ℓ@π_d` is the caller's step *after* `destructure` returns `.ok`, and a
 refusal discards the events, so an earlier residue's drop leaves no trace and
@@ -1154,7 +1154,7 @@ def runAllScopeDrops (D : Decls) (H : Store) (φ : Activation) :
 
 /-- (D-Call) §6.9: mint one fresh single-cell binding allocation per by-value
 argument, left to right, each holding its argument's value. Returns the store
-and the locations in creation order — the callee's entry scope record, which
+and the locations in creation order — the callee's entry drop scope, which
 holds a drop obligation for exactly these cells. The callee's environment is its reverse,
 because `Env` (like `Ctx`) lists the innermost binder first and the last
 parameter is the innermost. -/
@@ -1720,7 +1720,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
   | fuel + 1, P, H, φ, .letIn _m e₁ e₂ =>
       (eval M fuel P H φ e₁).bind fun H₁ v₁ =>
         -- (D-Let): mint a fresh single-cell binding allocation, bind it, and
-        -- register it in the frame's scope record as well as in the
+        -- register it in the frame's drop scope as well as in the
         -- administrative `endscope` the normal path below runs (RUE-1277).
         (eval M fuel P (H₁ ++ [.full (Contents.ofVal v₁)])
             { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] } e₂).bind
@@ -1785,7 +1785,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
               let φg : Activation := { env := minted.2.reverse, scope := minted.2 }
               (eval M fuel P minted.1 φg fd.body).bindCall fun H₃ v =>
                 -- (D-Return-Value): the body became a value; pop the frame,
-                -- running its open scopes' drops. (D-Return) needs no second
+                -- running its open drop scopes' drops. (D-Return) needs no second
                 -- path: `bindCall` took its value, and its unwind already ran
                 -- every one of those drops.
                 match runAllScopeDrops P.decls H₃ φg with
@@ -1806,7 +1806,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- its own `let`s and arms have already dropped what they bound (§6.7's
       -- `endscope`), and the loop re-enters its body; each turn spends a unit
       -- of fuel, so an infinite loop exhausts it. (D-Break): a `break` from
-      -- the body carries the scope record of the frame it fired in, whose
+      -- the body carries the drop scope of the frame it fired in, whose
       -- cells past the loop's own are the body's bindings still open there —
       -- `unwind-drops(H, φ', φ)` drop-retires them, newest-first — and the
       -- whole loop yields `()`. Every other outcome, an unwinding `return`
@@ -1825,7 +1825,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
   | _ + 1, _, H, φ, .brk =>
       -- (D-Break) §6.10: discard the evaluation context — every pending
       -- `endscope` marker inside it included — and hand the loop the frame's
-      -- scope record, which is where §6.7 registered every binding the
+      -- drop scope, which is where §6.7 registered every binding the
       -- discarded markers held a drop obligation for (RUE-1277).
       .broke H φ.scope []
 

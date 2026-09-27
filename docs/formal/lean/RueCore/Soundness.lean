@@ -26,7 +26,7 @@ always holds a value; and a live **linear** sub-value is never behind a
 
 ## The frame invariant (§6.1, §6.9)
 
-A frame carries an environment `ρ` and a scope record `σ`, and the machine
+A frame carries an environment `ρ` and a drop scope `σ`, and the machine
 keeps two books on every live binding: `ρ` says where it is, `σ` says it has a
 drop obligation. `ActivationTyping` states both halves at once — `StoreTyping Γ ρ H`, and
 `σ` reversed **is** `ρ`.
@@ -119,7 +119,7 @@ store agreeing with the back-edge state agrees with the head, the join's right
 arm. And `LoopHead.reenter_body` (`Statics/Lemmas.lean`): the loop's own derivation
 types it again at its head, so the next turn is the same loop at one unit of
 fuel less. A `break` is caught by `loop_exit_ok`: the body's open bindings are
-exactly the cells past the loop's scope-record length, `StoreTyping.unwindPrefix`
+exactly the cells past the loop's drop-scope length, `StoreTyping.unwindPrefix`
 drops them without refusal because (Loop-Break) discharged §5.6 for them, and
 what remains agrees with `outside_loop` and so with the exit join. A
 `break`-less loop has no abrupt-completion context to catch (`Typed.brk_nil`), and (Fn) gives a
@@ -1818,7 +1818,7 @@ theorem StoreTyping.transport {D Γ ρ₀ ρ H H'} (hm : StoreTyping D Γ ρ₀ 
       rw [hu.2 _ (List.getElem?_eq_some_iff.mp hc |>.1) (hdisj _ (by simp))]
       exact hc
 
-/-! ## Frames: the environment and the scope record together -/
+/-! ## Frames: the environment and the drop scope together -/
 
 /-! ## Scope teardown never refuses -/
 
@@ -2562,7 +2562,7 @@ the enclosing one with the binder's fresh cells `ls` opened on top, is a
 `break` of the enclosing frame with `ls` among the bindings still open where
 it fired. The unwind the loop runs therefore drops the binder's cells too —
 which is RUE-1277's redundancy read at a `break`: the discarded `endscope`
-marker's cells are found in the scope record instead (helper). -/
+marker's cells are found in the drop scope instead (helper). -/
 theorem BreakOutputOk.under_binders {D B φ H Hm H' sc} {ls : List Nat}
     (hpre : H.length ≤ Hm.length) (hkeep : ∀ ℓ, ℓ < H.length → Hm[ℓ]? = H[ℓ]?)
     (hfresh : ∀ ℓ ∈ ls, H.length ≤ ℓ)
@@ -4191,7 +4191,7 @@ theorem entry_typed {P : Program} {fd : FnDef} (h0 : P.fns[0]? = some fd)
   exact .nil
 
 /-- The machine's initial state satisfies the frame invariant: no bindings, no
-store, an empty scope record (helper). -/
+store, an empty drop scope (helper). -/
 theorem activationTyping_empty {D : Decls} : ActivationTyping D [] { env := [], scope := [] } [] :=
   ⟨.nil, rfl⟩
 
@@ -4298,7 +4298,7 @@ calculus, the second is the calculus doing what it says.
 * **A pending value (open).** A value already built for a **sibling
   position** that a *later* sibling destroys by `return` or `break` is in no
   cell and no
-  scope record, so its drop is neither run nor monitored and none of the five
+  drop scope, so its drop is neither run nor monitored and none of the five
   violations fires. The sibling positions are every list `evalArgs` walks — a
   call's argument list, a struct literal's initializers, an array literal's
   elements — and an assignment's right-hand side while the target's indices

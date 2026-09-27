@@ -2099,7 +2099,7 @@ def enumArmMovesAffineDropsLinear : Expr :=
 
 /-- A `return` **out of an arm**, past the arm's two payload locals and an
 outer binding: (D-Return) §6.9's unwind walks σ newest-first, and (D-Match)
-§6.6 appended the payload cells to the innermost scope record, so they are the
+§6.6 appended the payload cells to the innermost drop scope, so they are the
 first two it finds — `10`, then component 2's `2`, then component 1's `1`,
 then the outer `3`, then the value `5`. The enum the match moved out drops
 nothing. -/
@@ -2578,7 +2578,7 @@ The shape is a value already built for a **sibling position** that a later
 sibling destroys by `return` or by `break`. The sibling positions are every list `evalArgs`
 walks: a call's argument list, a struct literal's initializers, an array
 literal's elements; and, since RUE-2342, an assignment's right-hand side while
-the target's dynamic indices run after it (`5.2:14`). Such a value lives in no cell and in no scope record
+the target's dynamic indices run after it (`5.2:14`). Such a value lives in no cell and in no drop scope
 between the subexpression that produced it and the aggregation that would
 have taken it — for an argument, the `freshParams` of §6.9's (D-Call). If a
 later sibling completes abruptly by `return`, (D-Return) §6.9 discards the evaluation
@@ -2616,7 +2616,7 @@ def linearLostAtCallArg : Program :=
 /-- The same loss by a **`break`** (§6.10's (D-Break), RUE-2369): the second
 argument breaks out of the enclosing loop, so the linear `S3 { 3 }` already
 built for the first is discarded with the evaluation context, and the loop's
-`unwind-drops` walks a scope record that never named it. The destructor never
+`unwind-drops` walks a drop scope that never named it. The destructor never
 runs and no monitor fires. The compiler agrees: the printed program prints
 only `0` (the RUE-2369 review's probe q30). -/
 def linearLostAtBreakArg : Program :=
@@ -3587,7 +3587,7 @@ example : run demoOps (scalarProg tI64 (call 7 [])) demoFuel = .refused .unbound
 
 §6.11 fixes the order in which a drop's events come out: a value's own
 destructor first, then its fields in declaration order, recursively; and a
-frame's teardown reads its scope record newest-first (§6.9). These pin both.
+frame's teardown reads its drop scope newest-first (§6.9). These pin both.
 -/
 
 /-- The unwind order: an early `return` past two live affine bindings drops
@@ -3759,10 +3759,10 @@ example : checkProgram (scalarProg tI64 (lit (2 ^ 64))) = false := by rfl
 `useAfterDrop` is the machine's guard on a retired (`†`) cell (§6.1): a use,
 an explicit `@drop`, or an assignment through a binding whose cell has been
 retired is refused. With frames the guard is load-bearing on the unwind path
-too — `run-all-scope-drops` walks the frame's scope record. No program
+too — `run-all-scope-drops` walks the frame's drop scope. No program
 reaches the guard from `run`'s start, checked or not: a binding's cell is
 minted fresh and retired only when its scope ends, after which nothing names
-it, and a scope record owes each cell once (`run_no_use_after_drop`,
+it, and a drop scope owes each cell once (`run_no_use_after_drop`,
 `step_no_use_after_drop`, `Tombstone.lean`, RUE-2496). So the witnesses below
 start the machine in an open state — a store holding one retired cell and a
 frame naming it — which is the state the guard exists for.
@@ -3811,7 +3811,7 @@ example : eval demoOps demoFuel (prog tI64 unitLit)
     [.full (.struct sTwoAffine 1 [.movedOut, .struct sAffine 0 [c64 2]])]
     { env := [0], scope := [] } (drop (.proj (.var 0) 0)) = .refused .useAfterMove := by rfl
 
-/-- The same guard on the unwind path: a frame whose scope record names a
+/-- The same guard on the unwind path: a frame whose drop scope names a
 retired cell refuses instead of retiring it twice (§6.9). No run from the
 start reaches this state (`run_no_use_after_drop`); for a well-typed program
 `ActivationTyping` excludes it as well. -/

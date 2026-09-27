@@ -158,7 +158,7 @@ def run (M : FloatSig) (P : Program) (fuel : Nat) : EvalRes :=
   a partial move writes `H[ℓ@π ↦ ⊘]` at exactly the sub-position it takes
   (§6.3, §4.2), and a whole-place move is the case `π = ε`.
 - `φ` is §6.1's frame: the environment `ρ` (position `i` ↦ its location in
-  `H`) and the scope record `σ` (the cells with a drop obligation in this frame, in creation
+  `H`) and the drop scope `σ` (the cells with a drop obligation in this frame, in creation
   order).
 - `run` is §6.12's top-level result: call the entry point, function `0`, with
   no arguments.
@@ -170,7 +170,7 @@ of six outcomes:
 | --- | --- |
 | `.ok H' v tr` | the machine halted normally with value `v`, final store `H'`, and trace `tr` |
 | `.returned H' v tr` | an unwinding `return` handed `v` back (§6.9's (D-Return)); every enclosing form passes it on until a call boundary absorbs it |
-| `.broke H' sc tr` | an unwinding `break` (§6.10's (D-Break)), carrying the scope record `sc` of the frame it fired in; every enclosing form passes it on until its loop catches it and drops the cells the body still owed |
+| `.broke H' sc tr` | an unwinding `break` (§6.10's (D-Break)), carrying the drop scope `sc` of the frame it fired in; every enclosing form passes it on until its loop catches it and drops the cells the body still owed |
 | `.panic k tr` | the machine halted in a defined trap `↯κ` (§6.12) — `overflow`, `divZero`, `remZero`, `castOverflow`, `bounds` or `user` — carrying the trace `tr` of what ran before it |
 | `.refused w` | the machine refused: `w` names either a configuration §6 leaves undefined or a linear action the machine monitors (see below) |
 | `.outOfFuel` | not a machine state at all: the interpreter's admission that it stopped early (see below) |
@@ -257,7 +257,7 @@ metatheory row and `Step.lean`'s module docstring give the same list:
   Bruijn indices where §6.7 relies on α-renaming;
 - the loop boundary sits above its context's frames, because §6.10's
   `loopβ(e, φ)` records no context;
-- `push-scope` is one scope record read by length, so (D-Loop-Iter) and
+- `push-scope` is one drop scope read by length, so (D-Loop-Iter) and
   (D-Break) drop the cells past the loop's record;
 - the use plan is recovered from the store rather than read off `μ`;
 - a destructor is one trace event rather than a nested run;
@@ -439,7 +439,7 @@ end, every bound past its length finds the end (`eval_small_to_big`).
 
 There is one place where the theorems say less than "never a violation"
 suggests, and it concerns `return` and `break`, not fuel. A by-value
-argument's value sits in no cell and no scope record until `freshParams` gives
+argument's value sits in no cell and no drop scope until `freshParams` gives
 it one. If a *later* argument of the same call completes abruptly by `return` or `break`,
 (D-Return) §6.9 or (D-Break) §6.10 discards the earlier value with the
 evaluation context. No drop runs and no monitor fires,
@@ -506,7 +506,7 @@ Two lemmas turn the clause into what the proof uses:
   sub-position, and writing a matching state and contents there leaves the
   cell matched.
 
-**`record`: `φ.scope.reverse = φ.env`.** The frame's scope record, read
+**`record`: `φ.scope.reverse = φ.env`.** The frame's drop scope, read
 newest-first, *is* its environment. §6.1 keeps both books: ρ says where a
 binding lives, σ that it has a drop obligation.
 
@@ -775,9 +775,9 @@ Both halves are over §6's `Step`.
   A change to `dropEvents` alone only breaks proofs; a change to the
   machine's walk (`dropContents`) that reorders or skips a drop makes the
   statement false.
-- **Across cells**, the order comes from the scope records, which the trace
+- **Across cells**, the order comes from the drop scopes, which the trace
   does not show. `C.stack` is the machine's registration stack: every
-  suspended caller's scope record, then the current frame's.
+  suspended caller's drop scope, then the current frame's.
   - It is in location order, which is registration order (the last
     conjunct).
   - The pending `endscope` markers are exactly the tail of their frame's
@@ -851,7 +851,7 @@ interpreter and the theorem in full. The others show only what is new.
 | Example | Corpus case | What it teaches |
 | --- | --- | --- |
 | 1 | `reinit` | reading a derivation and a run end to end; the overwrite premise of (Assign) |
-| 2 | `return_past_affine` | an early `return` unwinds the frame's scope record, newest first |
+| 2 | `return_past_affine` | an early `return` unwinds the frame's drop scope, newest first |
 | 3 | `panic_after_drop` | a trap keeps the output already printed and runs no drops |
 | 4 | `struct_nested_dtor_drop` | a struct's qualifier, and §6.11's outer-then-fields drop order |
 | 5 | `partial_move_residue` | a partial move: Σ and the store as trees |
@@ -1018,7 +1018,7 @@ scope exit finds a `⊘`. The printed program's only output line is the value,
 #### What the proof needs
 
 The initial invariant, `ActivationTyping D [] ⟨[], []⟩ []`, holds trivially: no
-bindings, no store, an empty scope record. `run_safe` then gives, at every
+bindings, no store, an empty drop scope. `run_safe` then gives, at every
 fuel, `outOfFuel`, a defined panic, or `.ok` with a value of the entry
 function's declared return type. The run above is the last case:
 `HasTy D (.int .w64 .signed 2) (.int .w64 .signed)` holds because `2` is in
@@ -1033,7 +1033,7 @@ overwrite-drop a no-op.
 ### Example 2: `return_past_affine`, an early `return` unwinds the frame
 
 A `return` under two open `let` scopes, each holding a live affine resource.
-This is the smallest program in which the frame's **scope record** σ, rather
+This is the smallest program in which the frame's **drop scope** σ, rather
 than the pending `endscope` markers, runs the drops: the shape for which
 (D-Return) §6.9 says "in any evaluation context `E'`" (RUE-1277).
 
@@ -1172,7 +1172,7 @@ accepts a `@panic` past a live linear binding too, since it carries `⊥`
 | 5 | `@drop` §6.11 | `[ℓ0 = †, ℓ1 = S1 { 7 }#0]` | the glue runs, with the destructor as its observable half, and the cell is marked `⊘` rather than retired, so the binding stays reinitializable (§6.8, §6.11) | `[ℓ0 = †, ℓ1 = ⊘]` | `drop ℓ1 = S1 { 7 }#0`; `run drop fn S1(S1 { 7 }#0)` |
 | **6** | **(D-Panic) §6.12** | `[ℓ0 = †, ℓ1 = ⊘]` | the configuration is abandoned with `↯user` | | |
 | 7–8 | (D-Seq), then the `let`'s (D-EndScope) | | both pass the trap on. The body did not complete, so the scope never closes and nothing unwinds σ: the dynamic face of §5.7's `⊥_panic` exemption | | |
-| 9 | (Panic-Lift) §6.2 | | the trap is carried out of the suspended `main() → f0()` context: **no frame is popped**, `run-all-scope-drops` never runs, and the callee's open scopes go with the configuration | | |
+| 9 | (Panic-Lift) §6.2 | | the trap is carried out of the suspended `main() → f0()` context: **no frame is popped**, `run-all-scope-drops` never runs, and the callee's open drop scopes go with the configuration | | |
 
 The result is `EvalRes.panic .user [drop ℓ1 …, dtor S1 …]`: the trap, and the
 two events that had already happened. `Corpus.outLines` projects the
@@ -1695,7 +1695,7 @@ never dropped: the `consume` event on row [7] records the shell's end, every
 payload slot `⊘` (RUE-2427), and the arm's cell is the payload's one owner.
 
 Row [7] is (D-Match): the tag `K0` selects the covering arm, and the payload
-is bound to **fresh cells**, appended to the innermost scope record *and*
+is bound to **fresh cells**, appended to the innermost drop scope *and*
 owed to an `endscope` marker around the arm's body, exactly as (D-Let) binds
 one. That is why row [12] falls where it does: the drops run when the arm's
 body becomes a value (`6.3:17`), not at a later frame pop. It is also why an
@@ -2215,7 +2215,7 @@ through, because the invariant would no longer rule the case out. The
 asymmetry is deliberate, and §5.5's join is why (section 3); the missing
 restriction would not be.
 
-Then read the other field, `record`: the frame's scope record, reversed,
+Then read the other field, `record`: the frame's drop scope, reversed,
 *is* its environment. *A defect looks like:* that clause weakened to an
 inclusion, or dropped. Then a cell could sit in the record twice, or stay in
 the record after its `endscope` retired it, and a `return`'s unwind would
@@ -2307,7 +2307,7 @@ Pick two of these three and read the calculus and the Lean side by side.
   evaluation context `E'`, every pending `endscope` marker in it included, and
   runs `run-all-scope-drops(H, φ)` instead: over every live binding of every
   enclosing scope (`3.9:18`), in reverse declaration order (`3.9:4`). The arm
-  should evaluate the operand, then walk the frame's scope record, then
+  should evaluate the operand, then walk the frame's drop scope, then
   return `.returned`, which every enclosing form passes on until a `call`
   absorbs it. *A defect looks like:* the arm running the *innermost* scope
   only (then an early return two scopes deep would leak the outer binding,

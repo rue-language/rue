@@ -23,21 +23,21 @@ is one such configuration, not reached from `Config.init`.
 **The invariant** is structural, not a typing fact. `†` enters the store in
 two ways only: as the reserved slot of a minted object identity (`introVal`),
 which no binding names, and when a scope teardown retires the cells its
-scope record holds a drop obligation for (`dropRetire`, `unwindLocs`, and `Step`'s plain
+drop scope holds a drop obligation for (`dropRetire`, `unwindLocs`, and `Step`'s plain
 versions). Every binding cell is minted fresh at the end of the store and
-bound at once, and a scope record lists each cell once. So:
+bound at once, and a drop scope lists each cell once. So:
 
 * over `eval` (`Tombstone.eval_live`): if every cell the frame's environment and
-  scope record name is live, and the record owes each cell once
+  drop scope name is live, and the record owes each cell once
   (`LiveActivation`), then an evaluation that yields a value retired no cell that
   was live before it; an unwinding `return` retired at most the frame's
-  scope record; a `break` retired nothing live before it and hands its loop
+  drop scope; a `break` retired nothing live before it and hands its loop
   the frame's record extended by distinct fresh cells, still live; and no
   refusal is `useAfterDrop` (`LivePost`). The induction is on fuel, one case
   per `eval` rule, and the empty frame of `run` starts it.
 * over `Step` (`Tombstone.step_live`): every configuration keeps the stack's
   shape (`Shape`: an `endscope` marker or a loop boundary sits under a frame
-  that extends its own at the end of the scope record, and every frame's
+  that extends its own at the end of the drop scope, and every frame's
   environment is its record reversed), and every cell with a drop obligation in the
   frame in force or by a suspended caller is live and owed once
   (`StackLive`). `step` keeps it and never answers `stuck .useAfterDrop`
@@ -112,7 +112,7 @@ theorem Live.ne_of_le {H : Store} {ℓ m : Nat} (h : Live H ℓ) (hm : H.length 
   intro he; subst he; exact Nat.lt_irrefl _ (Nat.lt_of_lt_of_le h.lt hm)
 
 /-- **The frame invariant**: every cell the environment names, and every cell
-the scope record holds a drop obligation for, is live, and the record owes each at most once
+the drop scope holds a drop obligation for, is live, and the record owes each at most once
 (helper). -/
 def LiveActivation (H : Store) (φ : Activation) : Prop :=
   (∀ ℓ ∈ φ.env, Live H ℓ) ∧ (∀ ℓ ∈ φ.scope, Live H ℓ) ∧ φ.scope.Nodup
@@ -124,8 +124,8 @@ theorem LiveActivation.grow {H H' : Store} {φ : Activation} (h : LiveActivation
 
 /-- **What an evaluation keeps**, by outcome (helper). A value retires no cell
 that was live before it (only the cells it minted itself). An unwinding
-`return` may retire the frame's scope record, and nothing else live before it.
-A `break` retires nothing live before it, and the scope record it carries is
+`return` may retire the frame's drop scope, and nothing else live before it.
+A `break` retires nothing live before it, and the drop scope it carries is
 the frame's own, extended by distinct cells it minted, still live. And no
 refusal is `useAfterDrop`. -/
 def LivePost (H : Store) (φ : Activation) : EvalRes → Prop
@@ -409,7 +409,7 @@ theorem unwindLocs_live {D : Decls} : ∀ {H : Store} {ls : List Nat}, ls.Nodup 
           have hne : ℓ ≠ m := fun he => hm (he ▸ List.mem_cons_self ..)
           rw [heq m (fun h' => hm (List.mem_cons_of_mem _ h')), hH₁, List.getElem?_set_ne hne]
 
-/-- A scope record read newest-first owes each cell once, as it did oldest-first
+/-- A drop scope read newest-first owes each cell once, as it did oldest-first
 (helper). -/
 theorem nodup_reverse {l : List Nat} (h : l.Nodup) : l.reverse.Nodup :=
   List.pairwise_reverse.mpr (h.imp (fun h' he => h' he.symm))
@@ -945,9 +945,9 @@ theorem plainDestructure_ne_uad {D : Decls} {ℓ : Nat} {c : Contents} {πs : Li
 
 /-- **The stack's shape**: what each frame of the control stack says about the
 frame in force above it. An `endscope ℓ̄` marker and a loop boundary sit
-under a frame that extends theirs by cells at the end of its scope record
+under a frame that extends theirs by cells at the end of its drop scope
 (and the front of its environment); a call boundary and the stack's bottom
-sit under a frame whose environment is its scope record reversed; every other
+sit under a frame whose environment is its drop scope reversed; every other
 frame is an evaluation context of the same frame (helper). -/
 def Shape : Activation → List Kont → Prop
   | φ, [] => φ.env = φ.scope.reverse
@@ -979,7 +979,7 @@ def ConfigLive : Config → Prop
   | .run H φ K _ _ => StackLive H φ K
   | .panic _ _ => True
 
-/-- Every frame on a well-shaped stack has its scope record, reversed, as its
+/-- Every frame on a well-shaped stack has its drop scope, reversed, as its
 environment (helper). -/
 theorem Shape.env : ∀ {φ : Activation} {K : List Kont}, Shape φ K → φ.env = φ.scope.reverse
   | φ, [], h => h
@@ -1022,7 +1022,7 @@ theorem Shape.toCall : ∀ {φ : Activation} {K : List Kont} {φs : Activation} 
   | _, .ret :: K, _, _, hs, h => Shape.toCall (K := K) hs h
 
 /-- (D-Break)'s search: the loop's frame is well shaped, no caller is crossed, and
-the frame in force extends the loop's at the end of its scope record (helper). -/
+the frame in force extends the loop's at the end of its drop scope (helper). -/
 theorem Shape.toLoop : ∀ {φ : Activation} {K : List Kont} {φs : Activation} {K' : List Kont},
     Shape φ K → Kont.toLoop K = some (φs, K') →
       Shape φs K' ∧ callerCells K = callerCells K' ∧ ∃ xs, φ.scope = φs.scope ++ xs
