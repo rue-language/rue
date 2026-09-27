@@ -112,12 +112,12 @@ def stuck_stmt : Prop :=
         ¬ EvalOk P.decls (.int .w64 .signed) (.int .w64 .signed) Ω.norm Ω.brk Activation.empty []
           (eval Float.exactOps 200 P [] Activation.empty (.call 0 []))) ∧
       Lead Float.exactOps P 200 [] Activation.empty [] [] [] (.call 0 []) ∧
-      eval Float.exactOps 200 P [] Activation.empty (.call 0 []) = .stuck .useAfterMove ∧
-      eval Float.exactOps 201 P [] Activation.empty (.call 0 []) = .stuck .useAfterMove ∧
+      eval Float.exactOps 200 P [] Activation.empty (.call 0 []) = .refused .useAfterMove ∧
+      eval Float.exactOps 201 P [] Activation.empty (.call 0 []) = .refused .useAfterMove ∧
       eval Float.exactOps 201 P [] Activation.empty (.call 0 []) =
-        (EvalRes.stuck .useAfterMove).withTrace [] ∧
+        (EvalRes.refused .useAfterMove).withTrace [] ∧
       (∀ n, run Float.exactOps P n = eval Float.exactOps n P [] Activation.empty (.call 0 [])) ∧
-      run Float.exactOps P 200 = .stuck .useAfterMove ∧ run Float.exactOps P 0 = .outOfFuel ∧
+      run Float.exactOps P 200 = .refused .useAfterMove ∧ run Float.exactOps P 0 = .outOfFuel ∧
       ¬ (run Float.exactOps P 200 = .outOfFuel ∨ (∃ k tr, run Float.exactOps P 200 = .panic k tr) ∨
         ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧ HasTy P.decls v (.int .w64 .signed))
 
@@ -142,7 +142,7 @@ def stuck_step_stmt : Prop :=
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ¬ ProgramTyped P ∧
       (∃ C, Steps Float.exactOps P Config.init C ∧ C.Stuck Float.exactOps P .useAfterMove) ∧
-      run Float.exactOps P 200 = .stuck .useAfterMove ∧ run Float.exactOps P 0 = .outOfFuel ∧
+      run Float.exactOps P 200 = .refused .useAfterMove ∧ run Float.exactOps P 0 = .outOfFuel ∧
       ¬ (∀ C, Steps Float.exactOps P Config.init C → C.Terminal ∨ ∃ C', Step Float.exactOps P C C') ∧
       ¬ (∃ fd, P.fns[0]? = some fd ∧
         ∀ C, Steps Float.exactOps P Config.init C → C.SafeAt Float.exactOps P fd.ret) ∧
@@ -151,7 +151,7 @@ def stuck_step_stmt : Prop :=
         (∃ H v tr, Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
           HasTy P.decls v fd.ret) ∨
         (∃ κ tr, Steps Float.exactOps P Config.init (.panic κ tr))) ∧
-      ¬ ∀ fuel, ∃ w', run Float.exactOps P fuel = .stuck w'
+      ¬ ∀ fuel, ∃ w', run Float.exactOps P fuel = .refused w'
 
 /-- **An ill-typed expression of a checked program** (§7 sharpness, RUE-2485).
 Over the checked program of `Nonvacuous.dtor`, the expression `let a = S0 { 1
@@ -186,9 +186,9 @@ def typed_stmt : Prop :=
       ActivationTyping P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
       check P (.int .w64 .signed) [] e = none ∧ (∀ (T : Ty) (Ω : Out), ¬ Typed P (.int .w64 .signed) [] e T Ω) ∧
       Lead Float.exactOps P 200 [] Activation.empty [.dead] [.struct 0 0 [.int .w64 .signed 1]] [] e ∧
-      eval Float.exactOps 200 P [] Activation.empty e = .stuck .useAfterMove ∧
-      eval Float.exactOps 201 P [] Activation.empty e = .stuck .useAfterMove ∧
-      eval Float.exactOps 201 P [] Activation.empty e = (EvalRes.stuck .useAfterMove).withTrace [] ∧
+      eval Float.exactOps 200 P [] Activation.empty e = .refused .useAfterMove ∧
+      eval Float.exactOps 201 P [] Activation.empty e = .refused .useAfterMove ∧
+      eval Float.exactOps 201 P [] Activation.empty e = (EvalRes.refused .useAfterMove).withTrace [] ∧
       CTy.never.fits (.int .w64 .signed) = true ∧
       ∀ (T : Ty) (Ω : Out), ¬ EvalOk P.decls T (.int .w64 .signed) Ω.norm Ω.brk Activation.empty []
         (eval Float.exactOps 200 P [] Activation.empty e)
@@ -222,9 +222,9 @@ def frame_stmt : Prop :=
           (eval Float.exactOps 200 P [] Activation.empty e)) ∧
       ¬ ActivationTyping P.decls [{ ty := .int .w64 .signed, mu := false, st := .owned }] Activation.empty [] ∧
       Lead Float.exactOps P 200 [] Activation.empty [] [.int .w64 .signed 1] [] e ∧
-      eval Float.exactOps 200 P [] Activation.empty e = .stuck .unbound ∧
-      eval Float.exactOps 201 P [] Activation.empty e = .stuck .unbound ∧
-      eval Float.exactOps 201 P [] Activation.empty e = (EvalRes.stuck .unbound).withTrace []
+      eval Float.exactOps 200 P [] Activation.empty e = .refused .unbound ∧
+      eval Float.exactOps 201 P [] Activation.empty e = .refused .unbound ∧
+      eval Float.exactOps 201 P [] Activation.empty e = (EvalRes.refused .unbound).withTrace []
 
 /-- **A well-formed program with no entry point** (§7 sharpness, RUE-2485). The
 program with the witnesses' declarations and no function is `WfProgram`, and
@@ -238,7 +238,7 @@ def no_entry_stmt : Prop :=
                 { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [] } →
-      WfProgram P ∧ P.fns[0]? = none ∧ run Float.exactOps P 200 = .stuck .unbound ∧
+      WfProgram P ∧ P.fns[0]? = none ∧ run Float.exactOps P 200 = .refused .unbound ∧
       ∀ fd : FnDef, ¬ (run Float.exactOps P 200 = .outOfFuel ∨ (∃ k tr, run Float.exactOps P 200 = .panic k tr) ∨
         ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧ HasTy P.decls v fd.ret)
 
@@ -261,7 +261,7 @@ def entry_param_stmt : Prop :=
       (∃ fd, P.fns[0]? = some fd ∧ fd.params ≠ [] ∧
         ¬ (run Float.exactOps P 200 = .outOfFuel ∨ (∃ k tr, run Float.exactOps P 200 = .panic k tr) ∨
           ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧ HasTy P.decls v fd.ret)) ∧
-      run Float.exactOps P 200 = .stuck .typeConfusion
+      run Float.exactOps P 200 = .refused .typeConfusion
 
 /-- **The copy monitor fires** (R3 of `REDTEAM-LOG.md`; §7 sharpness, RUE-2485). An
 unchecked program puts an owned value under a `Copy` one, the shape a copy
@@ -285,7 +285,7 @@ def copy_stmt : Prop :=
                 { attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine }],
             enums := [] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
-      checkProgram P = false ∧ ¬ ProgramTyped P ∧ run Float.exactOps P 200 = .stuck .ownedUnderCopy
+      checkProgram P = false ∧ ¬ ProgramTyped P ∧ run Float.exactOps P 200 = .refused .ownedUnderCopy
 
 /-- **The leak monitor fires** (R3 of `REDTEAM-LOG.md`; §7 sharpness, RUE-2485).
 `let x = S1 { 1 }; 0`, with `S1` declared `linear`, leaves a live linear
@@ -305,7 +305,7 @@ def leak_stmt : Prop :=
                 { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
-      checkProgram P = false ∧ ¬ ProgramTyped P ∧ run Float.exactOps P 200 = .stuck .linearLeak ∧
+      checkProgram P = false ∧ ¬ ProgramTyped P ∧ run Float.exactOps P 200 = .refused .linearLeak ∧
       ∃ H φ v tr, Steps Float.exactOps P Config.init (.run H φ [] (.ret v) tr) ∧
         ¬ ∃ n, ∀ fuel, n < fuel → run Float.exactOps P fuel = .ok H v tr
 
@@ -327,7 +327,7 @@ def overwrite_stmt : Prop :=
                 { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
-      checkProgram P = false ∧ ¬ ProgramTyped P ∧ run Float.exactOps P 200 = .stuck .linearOverwrite
+      checkProgram P = false ∧ ¬ ProgramTyped P ∧ run Float.exactOps P 200 = .refused .linearOverwrite
 
 /-- **The discard monitor fires** (R3 of `REDTEAM-LOG.md`; §7 sharpness, RUE-2485).
 `S1 { 3 }; @panic("boom")` discards a linear value. It is not `ProgramTyped`,
@@ -346,7 +346,7 @@ def discard_stmt : Prop :=
                 { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
-      checkProgram P = false ∧ ¬ ProgramTyped P ∧ run Float.exactOps P 200 = .stuck .linearDiscard ∧
+      checkProgram P = false ∧ ¬ ProgramTyped P ∧ run Float.exactOps P 200 = .refused .linearDiscard ∧
       ∃ κ tr, Steps Float.exactOps P Config.init (.panic κ tr) ∧
         ¬ ∃ n, ∀ fuel, n < fuel → run Float.exactOps P fuel = .panic κ tr
 
@@ -367,11 +367,11 @@ def discard_loop_stmt : Prop :=
                 { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .unit, body := B }] } →
-      checkProgram P = false ∧ ¬ ProgramTyped P ∧ run Float.exactOps P 200 = .stuck .linearDiscard ∧
+      checkProgram P = false ∧ ¬ ProgramTyped P ∧ run Float.exactOps P 200 = .refused .linearDiscard ∧
       (∀ n, ∃ D, StepsN Float.exactOps P n Config.init D) ∧
       (∀ C, Steps Float.exactOps P Config.init C → C.Terminal ∨ ∃ C', Step Float.exactOps P C C') ∧
       ¬ ((∀ fuel, run Float.exactOps P fuel = .outOfFuel) ↔ ∀ n, ∃ D, StepsN Float.exactOps P n Config.init D) ∧
-      ¬ ((∀ fuel w, run Float.exactOps P fuel ≠ .stuck w) ↔
+      ¬ ((∀ fuel w, run Float.exactOps P fuel ≠ .refused w) ↔
         ∀ C, Steps Float.exactOps P Config.init C → C.Terminal ∨ ∃ C', Step Float.exactOps P C C')
 
 /-- **Fuel bounds, dropped** (§7 sharpness, RUE-2485). The checked program of
@@ -400,8 +400,8 @@ def fuel_stmt : Prop :=
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
         Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         ¬ (200 ≤ 0) ∧ 0 ≤ 200 ∧ run Float.exactOps P 0 ≠ run Float.exactOps P 200 ∧
-        (∀ w, run Float.exactOps P 200 ≠ .stuck w) ∧
-        ¬ ∀ fuel, run Float.exactOps P fuel = .ok H v tr ∨ ∃ w, run Float.exactOps P fuel = .stuck w
+        (∀ w, run Float.exactOps P 200 ≠ .refused w) ∧
+        ¬ ∀ fuel, run Float.exactOps P fuel = .ok H v tr ∨ ∃ w, run Float.exactOps P fuel = .refused w
 
 /-- **Fuel bounds, dropped, at a panic** (§7 sharpness, RUE-2485). The checked
 program of `Nonvacuous.panic` panics, and §6's relation reaches the panic, but
@@ -421,7 +421,7 @@ def fuel_panic_stmt : Prop :=
       ProgramTyped P ∧ run Float.exactOps P 0 = .outOfFuel ∧
       Steps Float.exactOps P Config.init (.panic .user [.dbg (.int .w64 .signed 5)]) ∧
       ¬ ∀ fuel, run Float.exactOps P fuel = .panic .user [.dbg (.int .w64 .signed 5)] ∨
-        ∃ w, run Float.exactOps P fuel = .stuck w
+        ∃ w, run Float.exactOps P fuel = .refused w
 
 /-- **A checked expression at a type its result does not fit** (§7 sharpness,
 RUE-2485). `check` accepts the literal `1` at `i64` in the checked program of
@@ -636,7 +636,7 @@ def no_eval_stmt : Prop :=
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       ∃ H₁ vs tr, Lead Float.exactOps P 200 [] Activation.empty H₁ vs tr B ∧
-        ∀ w, eval Float.exactOps 201 P [] Activation.empty B ≠ (EvalRes.stuck w).withTrace tr
+        ∀ w, eval Float.exactOps 201 P [] Activation.empty B ≠ (EvalRes.refused w).withTrace tr
 
 /-- **A value §6's relation does not reach** (§7 sharpness, RUE-2485). For the
 checked program of `Nonvacuous.dtor`, the terminal configuration with the
@@ -664,7 +664,7 @@ def unreached_stmt : Prop :=
       run Float.exactOps P 200 ≠ .ok [] (.int .w64 .signed 8) [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])] ∧
       ¬ Blocks P.decls [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])] ∧
       ¬ ∃ n, ∀ fuel, n < fuel → run Float.exactOps P fuel = .ok [] (.int .w64 .signed 8) [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])] ∨
-        ∃ w, run Float.exactOps P fuel = .stuck w
+        ∃ w, run Float.exactOps P fuel = .refused w
 
 /-- **A panic §6's relation does not reach** (§7 sharpness, RUE-2485). The same, for
 the panic whose trace opens with a destructor event: not reached, not `run`'s
@@ -688,7 +688,7 @@ def unreached_panic_stmt : Prop :=
       run Float.exactOps P 200 ≠ .panic .user [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])] ∧
       ¬ Blocks P.decls [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])] ∧
       ¬ ∃ n, ∀ fuel, n < fuel → run Float.exactOps P fuel = .panic .user [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])] ∨
-        ∃ w, run Float.exactOps P fuel = .stuck w
+        ∃ w, run Float.exactOps P fuel = .refused w
 
 /-- **An unreachable configuration whose registration stack is out of order**
 (§7 sharpness, RUE-2485). For the checked program of `Nonvacuous.dtor`, a
@@ -762,9 +762,9 @@ def init_steps_stmt : Prop :=
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ProgramTyped P ∧ Step Float.exactOps P Config.init (.run [] Activation.empty [] (.args (.call 0) [] []) []) ∧ ¬ Step Float.exactOps P Config.init Config.init ∧
       ((.run [] Activation.empty [] (.args (.call 0) [] []) []) : Config) ≠ Config.init ∧ ¬ Config.init.Terminal ∧
-      ¬ Config.init.Stuck Float.exactOps P .linearLeak ∧ Violation.isStuckState .linearLeak = false ∧
+      ¬ Config.init.Stuck Float.exactOps P .linearLeak ∧ Refusal.isStuckState .linearLeak = false ∧
       Steps Float.exactOps P Config.init Config.init ∧
-      ¬ ∃ n, ∀ fuel, n < fuel → ∃ w', run Float.exactOps P fuel = .stuck w'
+      ¬ ∃ n, ∀ fuel, n < fuel → ∃ w', run Float.exactOps P fuel = .refused w'
 
 /-- **A stuck configuration that is not reached** (§7 sharpness, RUE-2485). For the
 checked program of `Nonvacuous.dtor`, whose `run` is never stuck, a
@@ -786,11 +786,11 @@ def unreachable_stuck_stmt : Prop :=
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ProgramTyped P ∧ ((.run [] Activation.empty [] (.eval (.use (.var 0))) []) : Config).Stuck Float.exactOps P .unbound ∧
       ¬ Steps Float.exactOps P Config.init (.run [] Activation.empty [] (.eval (.use (.var 0))) []) ∧
-      (∀ fuel w, run Float.exactOps P fuel ≠ .stuck w) ∧
+      (∀ fuel w, run Float.exactOps P fuel ≠ .refused w) ∧
       ¬ (((.run [] Activation.empty [] (.eval (.use (.var 0))) []) : Config).Terminal ∨ ∃ C', Step Float.exactOps P (.run [] Activation.empty [] (.eval (.use (.var 0))) []) C') ∧
       (∀ T, ¬ ((.run [] Activation.empty [] (.eval (.use (.var 0))) []) : Config).SafeAt Float.exactOps P T) ∧
       ¬ (∀ C, C.Terminal ∨ ∃ C', Step Float.exactOps P C C') ∧
-      ¬ ∃ n, ∀ fuel, n < fuel → ∃ w', run Float.exactOps P fuel = .stuck w'
+      ¬ ∃ n, ∀ fuel, n < fuel → ∃ w', run Float.exactOps P fuel = .refused w'
 
 /-- **A configuration that reads a retired cell, not reached** (§7 sharpness,
 RUE-2496). For the checked program of `Nonvacuous.dtor`, a configuration whose
@@ -812,7 +812,7 @@ def retired_cell_stmt : Prop :=
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ProgramTyped P ∧
-      eval Float.exactOps 1 P [.dead] { env := [0], scope := [] } (.use (.var 0)) = .stuck .useAfterDrop ∧
+      eval Float.exactOps 1 P [.dead] { env := [0], scope := [] } (.use (.var 0)) = .refused .useAfterDrop ∧
       ((.run [.dead] { env := [0], scope := [] } [] (.eval (.use (.var 0))) []) : Config).Stuck
         Float.exactOps P .useAfterDrop ∧
       ¬ Steps Float.exactOps P Config.init (.run [.dead] { env := [0], scope := [] } [] (.eval (.use (.var 0))) [])

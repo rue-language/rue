@@ -149,7 +149,7 @@ On programs `check` rejects, `Step` follows §6 where `eval` does not:
 Both are refusals on `eval`'s side, so neither obstructs part 2's
 `eval ⇒ Step*` simulation, which holds on every program (`run_sim`,
 `Adequacy.lean`); `eval_sound` states it over checked programs (RUE-2289),
-where `no_violation` rules `.stuck` out. They matter for part 3, the converse:
+where `no_violation` rules `.refused` out. They matter for part 3, the converse:
 `run_complete` holds on every program only up to a refusal of `eval`'s, and
 `eval_complete` removes the refusal on checked programs for that reason.
 -/
@@ -288,7 +288,7 @@ def Kont.toLoop : List Kont → Option (Activation × List Kont)
 /-- The root cell of a place: `ρ(root(p)) = ℓ` and `H(ℓ)` live (§6.3). An
 unbound index is `unbound` and a retired cell is `useAfterDrop`, §6's stuck
 states for both (helper). -/
-def rootCell (H : Store) (φ : Activation) (i : Nat) : Except Violation (Nat × Contents) :=
+def rootCell (H : Store) (φ : Activation) (i : Nat) : Except Refusal (Nat × Contents) :=
   match φ.env[i]? with
   | none => .error .unbound
   | some ℓ =>
@@ -300,7 +300,7 @@ def rootCell (H : Store) (φ : Activation) (i : Nat) : Except Violation (Nat × 
 /-- `drop-retire(H, ℓ)` (§6.1) as §6 writes it: run the binding's drop and
 retire the allocation, with **no** leak monitor — `dropRetire`
 (`Dynamics.lean`) without its `residualLinear` test (helper). -/
-def plainDropRetire (D : Decls) (H : Store) (ℓ : Nat) : Except Violation (Store × List Event) :=
+def plainDropRetire (D : Decls) (H : Store) (ℓ : Nat) : Except Refusal (Store × List Event) :=
   match H[ℓ]? with
   | none => .error .unbound
   | some .dead => .error .useAfterDrop
@@ -312,7 +312,7 @@ def plainDropRetire (D : Decls) (H : Store) (ℓ : Nat) : Except Violation (Stor
 /-- `run-scope-drops` over a list of cells in the order given (§6.1), with no
 leak monitor: `unwindLocs` (`Dynamics.lean`) over `plainDropRetire`. (D-EndScope),
 (D-Return-Value), (D-Return) and (D-Break) all run it (helper). -/
-def plainUnwind (D : Decls) (H : Store) : List Nat → Except Violation (Store × List Event)
+def plainUnwind (D : Decls) (H : Store) : List Nat → Except Refusal (Store × List Event)
   | [] => .ok (H, [])
   | ℓ :: rest =>
       match plainDropRetire D H ℓ with
@@ -325,7 +325,7 @@ def plainUnwind (D : Decls) (H : Store) : List Nat → Except Violation (Store �
 /-- §6.3's `drop*` on the residue as §6.3 writes it: each retained subtree's
 marker (`residueMark`, RUE-2427) and §6.11's walk, left to right, with no
 residue monitor (helper). -/
-def plainResidue (D : Decls) (ℓ : Nat) : List Contents → Except Violation (List Event)
+def plainResidue (D : Decls) (ℓ : Nat) : List Contents → Except Refusal (List Event)
   | [] => .ok []
   | r :: rs =>
       match dropContents D r with
@@ -342,7 +342,7 @@ def plainResidue (D : Decls) (ℓ : Nat) : List Contents → Except Violation (L
 (`consume`, RUE-2427), exactly as `eval`'s `Contents.destructure` records it
 (helper). -/
 def plainDestructure (D : Decls) (ℓ : Nat) (c : Contents) (πs : List Nat) :
-    Except Violation (Contents × List Event) :=
+    Except Refusal (Contents × List Event) :=
   match Contents.splitResidue D c πs with
   | .error w => .error w
   | .ok (leaf, rs) =>
@@ -759,12 +759,12 @@ terminal, takes a step, or is stuck on one of §6's own violations, and
 `step_iff` is the proof that the function and the relation agree. -/
 
 /-- What `step` finds at a configuration: the next one, a terminal one
-(`Config.Terminal`), or a stuck one, named by the `Violation` §6 leaves it
+(`Config.Terminal`), or a stuck one, named by the `Refusal` §6 leaves it
 at (helper). -/
 inductive StepOut where
   | next (C : Config)
   | halted
-  | stuck (w : Violation)
+  | stuck (w : Refusal)
 deriving Repr
 
 /-- `step` at an expression in focus: the literal rules of §6.3, the place
@@ -900,7 +900,7 @@ def stepArgs (P : Program) (H : Store) (φ : Activation) (K : List Kont) (tr : L
       else .stuck .typeConfusion
   | .indexRead p πs =>
     match dynPlace H φ p vs πs with
-    | .stuck w => .stuck w
+    | .refused w => .stuck w
     | .bounds => .next (.panic .bounds tr)
     | .at _ _ sub ρ =>
       match sub.readAt ρ with
@@ -913,7 +913,7 @@ def stepArgs (P : Program) (H : Store) (φ : Activation) (K : List Kont) (tr : L
           else .stuck .typeConfusion
   | .indexDrop p πs =>
     match dynPlace H φ p vs πs with
-    | .stuck w => .stuck w
+    | .refused w => .stuck w
     | .bounds => .next (.panic .bounds tr)
     | .at _ _ sub ρ =>
       match sub.readAt ρ with
@@ -926,7 +926,7 @@ def stepArgs (P : Program) (H : Store) (φ : Activation) (K : List Kont) (tr : L
           else .stuck .typeConfusion
   | .indexWrite p πs v =>
     match dynPlace H φ p vs πs with
-    | .stuck w => .stuck w
+    | .refused w => .stuck w
     | .bounds => .next (.panic .bounds tr)
     | .at ℓ c sub ρ =>
       match sub.readAt ρ with
@@ -1045,9 +1045,9 @@ def step (M : FloatSig) (P : Program) : Config → StepOut
 /-! ## `step` is `Step`, and the enumeration of what a configuration can be -/
 
 /-- **A stuck configuration** (§6, §7): not terminal, and no rule of §6
-applies. `step` names the reason with the `Violation` the interpreter uses for
+applies. `step` names the reason with the `Refusal` the interpreter uses for
 the same configuration. -/
-def Config.Stuck (M : FloatSig) (P : Program) (C : Config) (w : Violation) : Prop :=
+def Config.Stuck (M : FloatSig) (P : Program) (C : Config) (w : Refusal) : Prop :=
   step M P C = .stuck w
 
 /-! ## Stuck states are §6's, and the monitors are absent (RUE-2314) -/
@@ -1055,7 +1055,7 @@ def Config.Stuck (M : FloatSig) (P : Program) (C : Config) (w : Violation) : Pro
 /-- Whether a violation is one of **§6's own stuck states** — a read of a `⊘`
 or `†` cell, an unbound index, a wrong-shaped operand — rather than one of the
 four monitors `eval` adds, which §6.3, §6.5, §6.7 and §6.8 do not have. -/
-def Violation.isStuckState : Violation → Bool
+def Refusal.isStuckState : Refusal → Bool
   | .useAfterMove | .useAfterDrop | .unbound | .typeConfusion => true
   | .linearLeak | .linearOverwrite | .linearDiscard | .ownedUnderCopy => false
 

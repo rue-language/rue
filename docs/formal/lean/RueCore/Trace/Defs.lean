@@ -97,7 +97,7 @@ unwinding `return` or `break`, and a trap; nothing for a refusal or exhausted
 fuel (helper). -/
 def EvalRes.trace : EvalRes → List Event
   | .ok _ _ tr | .returned _ _ tr | .broke _ _ tr | .panic _ tr => tr
-  | .stuck _ | .outOfFuel => []
+  | .refused _ | .outOfFuel => []
 
 /-- A destructor-bearing struct is not `Copy` (`3.9:31`): the one fact about
 the declarations the conservation law reads (helper). -/
@@ -144,7 +144,7 @@ def Cons (D : Decls) (F : Event → List Nat) (H : Store) (X : List Nat) : EvalR
   | .panic _ tr =>
       ∃ N, ∀ a, (tr.flatMap F).count a
         ≤ (storeOwn D H).count a + X.count a + (List.range' H.length N).count a
-  | .stuck _ | .outOfFuel => True
+  | .refused _ | .outOfFuel => True
 
 mutual
 /-- Whether an expression contains a `return` anywhere — including under a
@@ -227,7 +227,7 @@ def Exact (D : Decls) (H : Store) (X : List Nat) : EvalRes → Prop
       H.length ≤ H'.length ∧ StoreCC D H' ∧
       ∀ a, a < H.length → (storeOwn D H').count a + (freedIds D tr).count a
         = (storeOwn D H).count a + X.count a
-  | .panic _ _ | .stuck _ | .outOfFuel => True
+  | .panic _ _ | .refused _ | .outOfFuel => True
 
 /-- **A form's leading operands have run** (helper): from store `H` in frame
 `φ` at fuel `fuel`, the form's first operand — or its argument list, for a
@@ -272,7 +272,7 @@ def Tidy (φ : Activation) (H : Store) : EvalRes → Prop
   | .returned H' _ _ => Local φ H H' ∧ Retired H [] H' ∧ ∀ ℓ ∈ φ.scope, H'[ℓ]? = some .dead
   | .broke H' sc _ => Local φ H H' ∧ Retired H sc H' ∧
       ∃ locs, sc = φ.scope ++ locs ∧ ∀ ℓ ∈ locs, H.length ≤ ℓ
-  | .panic _ _ | .stuck _ | .outOfFuel => True
+  | .panic _ _ | .refused _ | .outOfFuel => True
 
 /-- What the rest of a form owes the cells allocated after its leading
 operands ran: every one retired by the form's end — but, for an unwinding
@@ -282,7 +282,7 @@ def Settled (φ : Activation) (H₁ : Store) : EvalRes → Prop
   | .ok H' _ _ => Retired H₁ [] H'
   | .returned H' _ _ => Retired H₁ [] H' ∧ ∀ ℓ ∈ φ.scope, H'[ℓ]? = some .dead
   | .broke H' sc _ => Retired H₁ sc H' ∧ ∃ locs, sc = φ.scope ++ locs
-  | .panic _ _ | .stuck _ | .outOfFuel => True
+  | .panic _ _ | .refused _ | .outOfFuel => True
 
 /-- **§6.11's order, as a grammar over the trace.** A trace is a sequence of
 blocks: a `@dbg` line, a consumption (`consume c`, which runs no drop of its

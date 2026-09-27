@@ -131,7 +131,7 @@ function body none, so a `break` never reaches a call boundary.
 expression evaluates to a well-typed value with the invariant restored
 (preservation), to a value handed back by an unwinding `return`, to a `break`
 unwinding to its loop from one of the recorded delivery states, to a *defined*
-panic, or to `outOfFuel` — never to a `Violation` (progress). `fuel_mono` and
+panic, or to `outOfFuel` — never to a `Refusal` (progress). `fuel_mono` and
 `no_masking` are what keep the fuel caveat honest. The corollaries at the
 bottom restate the theorem per §7 bullet, over a whole program.
 
@@ -2528,7 +2528,7 @@ def AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Activation) (H : Store) : 
   | .returned H' v _ => HasTy D v R ∧ FrameProperty φ.env H H'
   | .broke H' sc _ => BrokeOk D B φ H H' sc
   | .panic _ _ => True
-  | .stuck _ => False
+  | .refused _ => False
   | .outOfFuel => True
 
 /-- The promise for an argument list (§5.8's (Call), left to right with Σ
@@ -2611,7 +2611,7 @@ theorem EvalOk.mono_store {D T R o B φ H H₁ r} (hu : FrameProperty φ.env H H
   | returned H' v tr => exact ⟨h.1, hu.trans h.2⟩
   | broke H' sc tr => exact BrokeOk.mono_store hu h
   | panic k tr => trivial
-  | stuck w => exact h.elim
+  | refused w => exact h.elim
   | outOfFuel => trivial
 
 /-- The same, for a result that is not a value (helper). -/
@@ -2622,7 +2622,7 @@ theorem AbortOk.mono_store {D R B φ H H₁ r} (hu : FrameProperty φ.env H H₁
   | returned H' v tr => exact ⟨h.1, hu.trans h.2⟩
   | broke H' sc tr => exact BrokeOk.mono_store hu h
   | panic k tr => trivial
-  | stuck w => exact h.elim
+  | refused w => exact h.elim
   | outOfFuel => trivial
 
 /-- A promise at some deliveries is a promise at any superset of them: a form
@@ -2667,7 +2667,7 @@ theorem EvalOk.toAbort {D T R o B φ H r} (h : EvalOk D T R o B φ H r)
   | returned H' v tr => exact h
   | broke H' sc tr => exact h
   | panic k tr => trivial
-  | stuck w => exact h.elim
+  | refused w => exact h.elim
   | outOfFuel => trivial
 
 /-- **`⊥` is not a value.** An evaluation promised at §5.7's `⊥` produced no
@@ -2686,7 +2686,7 @@ theorem EvalOk.bot_bind {D T T₀ R B φ H r} {k : Store → Val → EvalRes}
   | returned H' v tr => exact ha
   | broke H' sc tr => exact ha
   | panic k tr => trivial
-  | stuck w => exact ha.elim
+  | refused w => exact ha.elim
   | outOfFuel => trivial
 
 /-- **§6.2's search, once and for all.** An operand that promised its own
@@ -2707,7 +2707,7 @@ theorem EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ : Ctx} {
   | returned H₁ v tr => exact hr
   | broke H₁ sc tr => exact BrokeOk.mono_brk hB hr
   | panic k tr => trivial
-  | stuck w => exact hr.elim
+  | refused w => exact hr.elim
   | outOfFuel => trivial
 
 /-- `bind` for an operand whose outgoing `Ω` the form passes on unchanged —
@@ -2746,7 +2746,7 @@ theorem EvalOk.weaken {D T R o₁ o' B φ H r}
   | returned H' v tr => exact h
   | broke H' sc tr => exact h
   | panic k tr => trivial
-  | stuck w => exact h.elim
+  | refused w => exact h.elim
   | outOfFuel => trivial
 
 /-- **Aggregate introduction keeps the promise** ((D-Struct), (D-Array) §6.5,
@@ -2883,7 +2883,7 @@ theorem loop_step (M : FloatSig) {P : Program} {fuel : Nat} {D : Decls} {T R : T
     (hexit : ∀ H₁ sc, BrokeOk D Be φ H H₁ sc →
       EvalOk D T R o' B' φ H
         (match unwindLocs P.decls H₁ (sc.drop φ.scope.length).reverse with
-         | .error w => .stuck w
+         | .error w => .refused w
          | .ok (H₂, evs) => .ok H₂ .unit evs)) :
     EvalOk D T R o' B' φ H (eval M (fuel + 1) P H φ (.loop e)) := by
   simp only [eval]
@@ -2910,7 +2910,7 @@ theorem loop_step (M : FloatSig) {P : Program} {fuel : Nat} {D : Decls} {T R : T
           | some Γ' => exact k
   | returned H₁ v tr => rw [hrb] at kb; exact kb
   | panic pk tr => trivial
-  | stuck w => rw [hrb] at kb; exact kb.elim
+  | refused w => rw [hrb] at kb; exact kb.elim
   | outOfFuel => trivial
 
 /-- **The argument list of a call is safe** (§5.8's (Call), §6.9's (D-Call)):
@@ -2968,7 +2968,7 @@ theorem args_sound (M : FloatModel) {P : Program} {fuel : Nat}
             try dsimp only
             exact BrokeOk.mono_brk (List.subset_append_right _ _) k₁
         | panic pk tr => try dsimp only; trivial
-        | stuck w => rw [hr] at k₁; exact k₁.elim
+        | refused w => rw [hr] at k₁; exact k₁.elim
         | outOfFuel => try dsimp only; trivial
       | @consBot _ Δ _ _ T Ts' h₁ _ =>
         have k₁ := (ih h₁ hfm).bot_abort
@@ -2978,7 +2978,7 @@ theorem args_sound (M : FloatModel) {P : Program} {fuel : Nat}
         | returned H₁ v tr => rw [hr] at k₁; exact k₁
         | broke H₁ sc tr => rw [hr] at k₁; exact k₁
         | panic pk tr => trivial
-        | stuck w => rw [hr] at k₁; exact k₁.elim
+        | refused w => rw [hr] at k₁; exact k₁.elim
         | outOfFuel => trivial
 
 /-- **Type safety for the fragment** (§7, first bullet, in
@@ -2989,8 +2989,8 @@ its incoming context, yields a well-typed value with the agreement restored at
 the normal outgoing state of its §5.3 result `Ω` — and no value at all when
 `Ω` is §5.7's `⊥` — a value handed back by an unwinding `return` (§6.9), an
 unwinding `break` (§6.10) that fired at one of `Ω`'s delivered states, a
-*defined* panic (§6.12), or `outOfFuel` — never `.stuck`, so never a
-`Violation`: no use-after-move, no use-after-drop, no linear leak, no linear
+*defined* panic (§6.12), or `outOfFuel` — never `.refused`, so never a
+`Refusal`: no use-after-move, no use-after-drop, no linear leak, no linear
 overwrite, no linear discard (§7's decomposed bullets). The theorem is
 quantified over every fuel, and `fuel_mono`/`no_masking` below are what say
 that quantification is not vacuous.
@@ -3316,7 +3316,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               exact BrokeOk.mono_brk (hΔb.trans (List.subset_append_left _ _))
                 (BrokeOk.under_binders hpre hkeep (fun ℓ hℓ => mintParams_fresh H₀ vs ℓ hℓ) kb)
           | panic pk tr₂ => simp only [EvalRes.bind]; trivial
-          | stuck w => rw [hrb] at kb; exact kb.elim
+          | refused w => rw [hrb] at kb; exact kb.elim
           | outOfFuel => simp only [EvalRes.bind]; trivial
       | @mkArray Γ Ω T args hta =>
           -- (D-Array) §6.5 over §6.2's left-to-right search: the same
@@ -3591,7 +3591,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               simp only [EvalRes.bind]
               exact BrokeOk.mono_brk (by brk_sub) kb.under_binder
           | panic pk tr => simp only [EvalRes.bind]; trivial
-          | stuck w => rw [hrb] at kb; exact kb.elim
+          | refused w => rw [hrb] at kb; exact kb.elim
           | outOfFuel => simp only [EvalRes.bind]; trivial
       | @letIn Γ Γ₁ Γ₂ Δ₁ Δ₂ m e₁ e₂ T₁ T₂ en' h₁ h₂ hres =>
           simp only [eval]
@@ -3634,7 +3634,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               simp only [EvalRes.bind]
               exact BrokeOk.mono_brk (by brk_sub) kb.under_binder
           | panic pk tr => simp only [EvalRes.bind]; trivial
-          | stuck w => rw [hrb] at kb; exact kb.elim
+          | refused w => rw [hrb] at kb; exact kb.elim
           | outOfFuel => simp only [EvalRes.bind]; trivial
       | @assignBot Γ Δ pl e T h =>
           -- (Strict-Bottom) §5.3 at the right-hand side: nothing is stored.
@@ -3775,7 +3775,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                   rw [hbrkf] at hb
                   cases hb
               | panic pk tr => simp only [EvalRes.bindCall, EvalRes.withTrace]; trivial
-              | stuck w => rw [hrb] at kb; exact kb.elim
+              | refused w => rw [hrb] at kb; exact kb.elim
               | outOfFuel => simp only [EvalRes.bindCall, EvalRes.withTrace]; trivial
       | @brk Γ T =>
           -- (D-Break) §6.10: the `break` fires in this very frame, with no
@@ -3878,7 +3878,7 @@ theorem EvalRes.bind_mono {r r' : EvalRes} {k k' : Store → Val → EvalRes}
   | returned H v tr => rw [hr (by simp)]; rfl
   | broke H sc tr => rw [hr (by simp)]; rfl
   | panic pk tr => rw [hr (by simp)]; rfl
-  | stuck w => rw [hr (by simp)]; rfl
+  | refused w => rw [hr (by simp)]; rfl
   | outOfFuel => simp only [EvalRes.bind] at h; exact absurd rfl h
 
 /-- §6.9's call boundary is monotone in the fuel, for the same reason
@@ -3898,7 +3898,7 @@ theorem EvalRes.bindCall_mono {r r' : EvalRes} {k k' : Store → Val → EvalRes
   | returned H v tr => rw [hr (by simp)]; rfl
   | broke H sc tr => rw [hr (by simp)]; rfl
   | panic pk tr => rw [hr (by simp)]; rfl
-  | stuck w => rw [hr (by simp)]; rfl
+  | refused w => rw [hr (by simp)]; rfl
   | outOfFuel => simp only [EvalRes.bindCall] at h; exact absurd rfl h
 
 /-- An argument list's evaluation is monotone in the fuel, argument by
@@ -3923,7 +3923,7 @@ theorem evalArgs_mono {ev ev' : Store → Expr → EvalRes}
       | returned H₁ v tr => rw [hev H e (by rw [hr]; simp), hr]
       | broke H₁ sc tr => rw [hev H e (by rw [hr]; simp), hr]
       | panic pk tr' => rw [hev H e (by rw [hr]; simp), hr]
-      | stuck w => rw [hev H e (by rw [hr]; simp), hr]
+      | refused w => rw [hev H e (by rw [hr]; simp), hr]
       | outOfFuel => rw [hr] at hne; exact absurd rfl hne
 
 /-- One step of fuel monotonicity: a bound that answered answers the same at
@@ -3962,7 +3962,7 @@ theorem eval_succ (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
           | broke H₁ sc tr => rw [ih H φ e₁ (by rw [hr]; simp), hr]
           | returned H₁ v tr => rw [ih H φ e₁ (by rw [hr]; simp), hr]
           | panic pk tr => rw [ih H φ e₁ (by rw [hr]; simp), hr]
-          | stuck w => rw [ih H φ e₁ (by rw [hr]; simp), hr]
+          | refused w => rw [ih H φ e₁ (by rw [hr]; simp), hr]
           | outOfFuel => rw [hr] at h; exact absurd rfl h
       | binop op e₁ e₂ =>
           simp only [eval] at h ⊢
@@ -4136,7 +4136,7 @@ theorem eval_succ (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
                           match runAllScopeDrops P.decls H₃
                               { env := (mintParams H₁ vs).2.reverse,
                                 scope := (mintParams H₁ vs).2 } with
-                          | .error w => .stuck w
+                          | .error w => .refused w
                           | .ok (H₄, evs) => .ok H₄ v evs) ≠ .outOfFuel := by
                       intro hc
                       exact h (EvalRes.withTrace_outOfFuel_iff.mpr hc)
@@ -4173,8 +4173,8 @@ violation. So no choice of fuel turns a violation into exhaustion for a
 program some fuel completes, and the `outOfFuel` escape hatch in the §7
 theorems (§6's machine has no such state) cannot be what makes them true. -/
 theorem no_masking (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : Expr} {n m : Nat}
-    {w : Violation} (hn : eval M n P H φ e = .stuck w) (hm : eval M m P H φ e ≠ .outOfFuel) :
-    eval M m P H φ e = .stuck w := by
+    {w : Refusal} (hn : eval M n P H φ e = .refused w) (hm : eval M m P H φ e ≠ .outOfFuel) :
+    eval M m P H φ e = .refused w := by
   rcases Nat.le_total n m with hle | hle
   · rw [fuel_mono M hle (by rw [hn]; simp)]; exact hn
   · rw [← fuel_mono M hle hm]; exact hn
@@ -4218,7 +4218,7 @@ theorem EvalRes.bindCall_ne_returned {r : EvalRes} {k : Store → Val → EvalRe
   | returned H₁ v₁ tr₁ => simp [EvalRes.bindCall]
   | broke H₁ sc tr₁ => simp [EvalRes.bindCall]
   | panic pk tr => simp [EvalRes.bindCall]
-  | stuck w => simp [EvalRes.bindCall]
+  | refused w => simp [EvalRes.bindCall]
   | outOfFuel => simp [EvalRes.bindCall]
 
 /-- (D-Return-Main) §6.9 needs no rule of its own here: the entry point is an
@@ -4247,7 +4247,7 @@ theorem run_ne_returned (M : FloatSig) {P : Program} {fuel : Nat} :
 /-- **Program safety** (§7, over `Dynamics.run`). A well-formed program, run
 at any fuel, either exhausts its fuel, traps in a defined way (§6.12), or
 produces a value of the entry point's declared return type. It never reaches a
-`Violation`. -/
+`Refusal`. -/
 theorem run_safe (M : FloatModel) {P : Program} {fd : FnDef} (hwf : WfProgram P)
     (h0 : P.fns[0]? = some fd) (hp : fd.params = []) (fuel : Nat) :
     run M.toFloatSig P fuel = .outOfFuel ∨ (∃ k tr, run M.toFloatSig P fuel = .panic k tr) ∨
@@ -4266,7 +4266,7 @@ theorem run_safe (M : FloatModel) {P : Program} {fd : FnDef} (hwf : WfProgram P)
       obtain ⟨_, hb, _⟩ := hok
       cases hb
   | panic k tr => exact Or.inr (Or.inl ⟨k, tr, rfl⟩)
-  | stuck w => rw [hr] at hok; exact hok.elim
+  | refused w => rw [hr] at hok; exact hok.elim
   | outOfFuel => exact Or.inl rfl
 
 /-- The same, from the packaged well-formedness of a whole program: §7 over
@@ -4327,8 +4327,8 @@ Every *other* edge — a `let`'s scope exit, a `match` arm's `endscope` over its
 payload locals (`StoreTyping.unwindPrefix`), a `break`'s unwind to its loop
 (`loop_exit_ok`), a frame's normal pop, and a `return`'s unwind — is
 covered. -/
-theorem no_violation (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) (w : Violation) :
-    run M.toFloatSig P fuel ≠ .stuck w := by
+theorem no_violation (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) (w : Refusal) :
+    run M.toFloatSig P fuel ≠ .refused w := by
   obtain ⟨_, _, h₁ | ⟨k, trk, h₂⟩ | ⟨H, v, tr, h₃, _⟩⟩ := h.run_safe M fuel
   · rw [h₁]; simp
   · rw [h₂]; simp
@@ -4336,7 +4336,7 @@ theorem no_violation (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel :
 
 /-- §7 "No use-after-move": the machine never reads a `⊘` cell. -/
 theorem no_use_after_move (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    run M.toFloatSig P fuel ≠ .stuck .useAfterMove := no_violation M h fuel _
+    run M.toFloatSig P fuel ≠ .refused .useAfterMove := no_violation M h fuel _
 
 /-- §7 "No use-after-drop": the machine never touches a retired (`†`) cell.
 Here it is `no_violation` at one tag, over checked programs, but typing is not
@@ -4349,12 +4349,12 @@ which nothing names it, and a record owes each cell once. `ActivationTyping`
 implies as much for a checked program (the record is the environment, whose
 cells `StoreTyping` says are live or moved out and pairwise distinct). -/
 theorem no_use_after_drop (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    run M.toFloatSig P fuel ≠ .stuck .useAfterDrop := no_violation M h fuel _
+    run M.toFloatSig P fuel ≠ .refused .useAfterDrop := no_violation M h fuel _
 
 /-- §7 "Linear values are consumed exactly once", leak half: neither a scope
 exit (§6.7) nor a frame unwind (§6.9) ever sees a live linear value. -/
 theorem no_linear_leak (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    run M.toFloatSig P fuel ≠ .stuck .linearLeak := no_violation M h fuel _
+    run M.toFloatSig P fuel ≠ .refused .linearLeak := no_violation M h fuel _
 
 /-- §7 linear bullet, overwrite half (`3.8:77`, the RUE-387 premise). The
 monitor reads the residue the overwrite-drop is about to walk, and (Assign)
@@ -4362,10 +4362,10 @@ monitor reads the residue the overwrite-drop is about to walk, and (Assign)
 the two — so the residue is empty of linear content whenever the checker
 accepted. -/
 theorem no_linear_overwrite (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    run M.toFloatSig P fuel ≠ .stuck .linearOverwrite := no_violation M h fuel _
+    run M.toFloatSig P fuel ≠ .refused .linearOverwrite := no_violation M h fuel _
 
 /-- §7 linear bullet, discard half (`3.8:64`). -/
 theorem no_linear_discard (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    run M.toFloatSig P fuel ≠ .stuck .linearDiscard := no_violation M h fuel _
+    run M.toFloatSig P fuel ≠ .refused .linearDiscard := no_violation M h fuel _
 
 end RueCore

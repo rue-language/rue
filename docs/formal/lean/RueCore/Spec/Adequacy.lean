@@ -34,7 +34,7 @@ checked program, `run` is never stuck, and its values and panics are reached
 by `→*` from `Config.init` with the same store and trace. -/
 def eval_sound_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
-    (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
+    (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
     (∀ H v tr, run M.toFloatSig P fuel = .ok H v tr →
       Steps M.toFloatSig P Config.init (.run H Activation.empty [] (.ret v) tr)) ∧
     (∀ k tr, run M.toFloatSig P fuel = .panic k tr →
@@ -61,13 +61,13 @@ def eval_complete_stmt : Prop :=
 
 /-- **Completeness on every program** (§6.12): the same, up to a refusal of
 `run`'s (RUE-2314). With no typing hypothesis the escape is wide: a `run` that
-is `.stuck` past some fuel satisfies it, whatever `→*` reaches. -/
+is `.refused` past some fuel satisfies it, whatever `→*` reaches. -/
 def run_complete_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program),
     (∀ H φ v tr, Steps M P Config.init (.run H φ [] (.ret v) tr) →
-      ∃ n, ∀ fuel, n < fuel → run M P fuel = .ok H v tr ∨ ∃ w, run M P fuel = .stuck w) ∧
+      ∃ n, ∀ fuel, n < fuel → run M P fuel = .ok H v tr ∨ ∃ w, run M P fuel = .refused w) ∧
     (∀ κ tr, Steps M P Config.init (.panic κ tr) →
-      ∃ n, ∀ fuel, n < fuel → run M P fuel = .panic κ tr ∨ ∃ w, run M P fuel = .stuck w)
+      ∃ n, ∀ fuel, n < fuel → run M P fuel = .panic κ tr ∨ ∃ w, run M P fuel = .refused w)
 
 /-- **Never stuck, both ways** (§7 "Type safety"). For a checked program, `run`
 is never stuck iff no reachable configuration is. Under `ProgramTyped` both
@@ -75,22 +75,22 @@ sides hold outright, so the equivalence adds nothing; cite
 `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`). -/
 def never_stuck_iff_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P),
-    (∀ fuel w, run M.toFloatSig P fuel ≠ .stuck w) ↔
+    (∀ fuel w, run M.toFloatSig P fuel ≠ .refused w) ↔
       ∀ C, Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 
 /-- **`eval` never stuck, so `Step` never stuck, on every program** (§7 "Type
 safety": "it either reduces, halts with a value, or halts with one of the
 defined panics"). -/
 def step_never_stuck_of_run_stmt : Prop :=
-  ∀ (M : FloatSig) (P : Program) (_ : ∀ fuel w, run M P fuel ≠ .stuck w),
+  ∀ (M : FloatSig) (P : Program) (_ : ∀ fuel w, run M P fuel ≠ .refused w),
     ∀ C, Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
 
 /-- **A stuck `Step` run is a refusal of `run`** (§6), at every large enough
-fuel, perhaps with another `Violation`. -/
+fuel, perhaps with another `Refusal`. -/
 def run_stuck_of_step_stuck_stmt : Prop :=
-  ∀ (M : FloatSig) (P : Program) {C : Config} {w : Violation}
+  ∀ (M : FloatSig) (P : Program) {C : Config} {w : Refusal}
     (_ : Steps M P Config.init C) (_ : C.Stuck M P w),
-    ∃ n, ∀ fuel, n < fuel → ∃ w', run M P fuel = .stuck w'
+    ∃ n, ∀ fuel, n < fuel → ∃ w', run M P fuel = .refused w'
 
 /-- **Divergence is exhaustion at every fuel** (§7 "Type safety"; §6.12): for a
 checked program, `run` is `outOfFuel` at every fuel iff `Step` has runs of

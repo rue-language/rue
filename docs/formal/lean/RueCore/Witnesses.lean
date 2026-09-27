@@ -508,7 +508,7 @@ theorem dropMoved_refused (M : FloatSig) :
         [.drop 2 (demoSc 0), .dtor 0 (demoSc 0)])) ∧
     run M (demoProgram (.letIn false demoS
         (.letIn false (.use (.var 0)) (.seq (.drop (.var 1)) (demoI32 0))))) 100 =
-      .stuck .useAfterMove :=
+      .refused .useAfterMove :=
   ⟨demo_dropMoved_runs M, rfl⟩
 
 /-- **The theorem at work**: `letAddProgram_runs` (above) found its

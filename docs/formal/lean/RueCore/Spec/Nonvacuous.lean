@@ -120,7 +120,7 @@ def dtor_stmt : Prop :=
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       DtorNotCopy P.decls ∧ (∃ C, Step Float.exactOps P Config.init C) ∧
-      (∀ fuel w, run Float.exactOps P fuel ≠ .stuck w) ∧
+      (∀ fuel w, run Float.exactOps P fuel ≠ .refused w) ∧
       2 ≤ (freedIds P.decls (eval Float.exactOps 200 P [] Activation.empty B).trace).length ∧
       (∃ H₁ vs tr, ∃ r : EvalRes, Lead Float.exactOps P 200 [] Activation.empty H₁ vs tr B ∧
         eval Float.exactOps 201 P [] Activation.empty B = r.withTrace tr ∧
@@ -351,7 +351,7 @@ def stuck_stmt : Prop :=
                 { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
-      checkProgram P = false ∧ run Float.exactOps P 200 = .stuck .useAfterMove ∧
+      checkProgram P = false ∧ run Float.exactOps P 200 = .refused .useAfterMove ∧
         ∃ C, Steps Float.exactOps P Config.init C ∧ C.Stuck Float.exactOps P .useAfterMove
 
 /-- **A run that holds two owned values at once and ends each** (§7, over a

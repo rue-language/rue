@@ -2153,7 +2153,7 @@ def ownedUnderCopyPremise : String :=
 
 /-- The machine's refusal, in §6's words, with the §7 bullet it violates
 and the prose paragraph behind it. -/
-def violationPremise : Violation → String
+def refusalPremise : Refusal → String
   | .useAfterMove =>
       "a read of a cell holding ⊘: the value was already moved out of this place " ++
       "((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)"
@@ -2191,7 +2191,7 @@ inductive StepRes where
   | unwound (v : Val)
   | breaking
   | panicked (k : PanicKind)
-  | refuse (why : Violation) (premise : String)
+  | refuse (why : Refusal) (premise : String)
   | exhausted
 
 /-- (helper) How a node reports a sub-result it only passes on. -/
@@ -2200,7 +2200,7 @@ def StepRes.ofRes : EvalRes → StepRes
   | .returned _ v _ => .unwound v
   | .broke _ _ _ => .breaking
   | .panic k _ => .panicked k
-  | .stuck w => .refuse w (violationPremise w)
+  | .refused w => .refuse w (refusalPremise w)
   | .outOfFuel => .exhausted
 
 /-- One row of the step table: the node's nesting depth, the §6 rule it
@@ -2300,8 +2300,8 @@ def propagate (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr) (r
 /-- (helper) A node that refuses (§6's stuck states). Its outgoing store is
 the last one the machine reached, for the same reason as `didNotRun`'s. -/
 def refused (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr) (rule : String)
-    (H : Store) (w : Violation) : Trace :=
-  traced kids d Θ R e rule H (lastStore kids H) [] (.refuse w (violationPremise w)) (.stuck w)
+    (H : Store) (w : Refusal) : Trace :=
+  traced kids d Θ R e rule H (lastStore kids H) [] (.refuse w (refusalPremise w)) (.refused w)
 
 /-- (helper) The label for a `let` whose body did not complete: `(D-Let)`
 has already fired — its own row is above — and `(D-EndScope)` never ran, so
@@ -2700,7 +2700,7 @@ def traceEval (M : FloatSig) (P : Program) :
        | .abort r => didNotRun ta.steps d Θ R (.indexRead pl idx πs) rule H r
        | .ok H₁ vs tr =>
          match dynPlace H₁ φ pl vs πs with
-         | .stuck w => refused ta.steps d Θ R (.indexRead pl idx πs) rule H w
+         | .refused w => refused ta.steps d Θ R (.indexRead pl idx πs) rule H w
          | .bounds =>
              traced ta.steps d Θ R (.indexRead pl idx πs)
                "(D-Index-Trap) §6.5 — the bounds trap of §6.12" H H₁ []
@@ -2737,7 +2737,7 @@ def traceEval (M : FloatSig) (P : Program) :
          (match ta.res with
           | .ok H₂ vs tr₂ =>
             (match dynPlace H₂ φ pl vs πs with
-             | .stuck w =>
+             | .refused w =>
                  refused (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e) rule H w
              | .bounds =>
                  traced (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e)

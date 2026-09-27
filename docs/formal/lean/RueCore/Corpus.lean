@@ -1058,9 +1058,9 @@ def cases : List Case := [
 example : run exportOps (Examples.prog Examples.tI64 (letIn true (Examples.resL (Examples.lit 1))
     (seq (assign (.var 0) (Examples.resL (Examples.lit 2)))
       (seq (drop (.var 0)) (Examples.lit 0))))) exportFuel
-    = .stuck .linearOverwrite := by rfl
+    = .refused .linearOverwrite := by rfl
 example : run exportOps (Examples.prog Examples.tI64 (seq (Examples.resL (Examples.lit 3)) (Examples.lit 4))) exportFuel
-    = .stuck .linearDiscard := by rfl
+    = .refused .linearDiscard := by rfl
 example : checkProgram (Examples.prog Examples.tI64 (seq (Examples.resL (Examples.lit 3)) (Examples.lit 4)))
     = false := by rfl
 
@@ -1069,7 +1069,7 @@ live declared-`linear` value is `linearLeak` rather than a silent drop
 (`3.8:60`, E0474). §5.1's `¬ linear-residue(S, π_s)` premise is what makes it
 unreachable for a program the checker accepts. -/
 example : run exportOps (Examples.destrProg Examples.tI64 Examples.destructureLinearResidue)
-    exportFuel = .stuck .linearLeak := by rfl
+    exportFuel = .refused .linearLeak := by rfl
 
 /-! ## Outcomes, from the mechanization -/
 
@@ -1154,7 +1154,7 @@ def panicName : PanicKind → String
   | .bounds => "bounds"
   | .user => "user"
 
-def violationName : Violation → String
+def refusalName : Refusal → String
   | .useAfterMove => "useAfterMove"
   | .useAfterDrop => "useAfterDrop"
   | .linearLeak => "linearLeak"
@@ -1189,7 +1189,7 @@ example :
 /-- A one-line reading of the outcome, for the program's header comment. -/
 def outcomeSummary (c : Case) : String :=
   match checkProgram c.prog, run exportOps c.prog exportFuel with
-  | false, .stuck w => "rejected by the checker; the machine would refuse with " ++ violationName w
+  | false, .refused w => "rejected by the checker; the machine would refuse with " ++ refusalName w
   | false, .ok _ v tr =>
       let lines := outLines c.dtorMark c.prog.decls v tr
       "rejected by the checker; the machine reaches no refusal on the executed path, which prints " ++
@@ -1207,7 +1207,7 @@ def outcomeSummary (c : Case) : String :=
       "accepted; prints " ++
         (if lines.isEmpty then "nothing" else String.intercalate ", " lines) ++
         " and traps with " ++ panicName k
-  | true, .stuck w => "accepted yet refused with " ++ violationName w ++ " (impossible by soundness)"
+  | true, .refused w => "accepted yet refused with " ++ refusalName w ++ " (impossible by soundness)"
   | _, .returned _ _ _ => "the entry call handed on a return (impossible: the call boundary absorbs it)"
   | _, .broke _ _ _ => "the entry call handed on a break (impossible: the call boundary refuses it)"
   | _, .outOfFuel => "not completed at the export fuel; this case is not exported"
@@ -1257,7 +1257,7 @@ def expectedJson (c : Case) : String :=
   | .panic k tr =>
       "{\"kind\": \"panic\", \"panic\": " ++ jsonString (panicName k) ++
         ", \"stdout\": " ++ jsonArray ((tr.filterMap (eventLine c.dtorMark)).map jsonString) ++ "}"
-  | .stuck w => "{\"kind\": \"stuck\", \"violation\": " ++ jsonString (violationName w) ++ "}"
+  | .refused w => "{\"kind\": \"stuck\", \"violation\": " ++ jsonString (refusalName w) ++ "}"
   | .broke _ _ _ => "{\"kind\": \"stuck\", \"violation\": \"typeConfusion\"}"
   | .outOfFuel => "{\"kind\": \"outOfFuel\"}"
 

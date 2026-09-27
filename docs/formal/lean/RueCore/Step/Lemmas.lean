@@ -159,7 +159,7 @@ theorem Config.stuck_iff {M : FloatSig} {P : Program} {C : Config} :
       · rw [step_iff.mp hs] at h; cases h
 
 /-- A stuck configuration takes no step (§6). -/
-theorem Config.Stuck.no_step {M : FloatSig} {P : Program} {C C' : Config} {w : Violation}
+theorem Config.Stuck.no_step {M : FloatSig} {P : Program} {C C' : Config} {w : Refusal}
     (h : C.Stuck M P w) : ¬ Step M P C C' := by
   intro hs
   have := hs.step_eq
@@ -170,7 +170,7 @@ theorem Config.Stuck.no_step {M : FloatSig} {P : Program} {C C' : Config} {w : V
 /-! ## Stuck states are §6's, and the monitors are absent (RUE-2314) -/
 
 /-- `readAt` refuses only with §6's stuck states (helper). -/
-theorem Contents.readAt_err : ∀ {c : Contents} {π : List Nat} {w : Violation},
+theorem Contents.readAt_err : ∀ {c : Contents} {π : List Nat} {w : Refusal},
     c.readAt π = .error w → w.isStuckState = true
   | _, [], _, h => by simp [Contents.readAt] at h
   | .hole, _ :: _, _, h => by simp [Contents.readAt] at h; subst h; rfl
@@ -190,7 +190,7 @@ theorem Contents.readAt_err : ∀ {c : Contents} {π : List Nat} {w : Violation}
 
 mutual
 /-- `split` refuses only with §6's stuck states (helper). -/
-theorem Contents.splitResidue_err (D : Decls) : ∀ {c : Contents} {π : List Nat} {w : Violation},
+theorem Contents.splitResidue_err (D : Decls) : ∀ {c : Contents} {π : List Nat} {w : Refusal},
     c.splitResidue D π = .error w → w.isStuckState = true
   | _, [], _, h => by simp [Contents.splitResidue] at h
   | .struct _ _ cs, f :: π, _, h => by
@@ -204,7 +204,7 @@ theorem Contents.splitResidue_err (D : Decls) : ∀ {c : Contents} {π : List Na
 
 /-- `split`'s field step refuses only with §6's stuck states (helper). -/
 theorem Contents.splitFields_err (D : Decls) :
-    ∀ {cs : List Contents} {f : Nat} {π : List Nat} {w : Violation},
+    ∀ {cs : List Contents} {f : Nat} {π : List Nat} {w : Refusal},
     Contents.splitFields D cs f π = .error w → w.isStuckState = true
   | [], _, _, _, h => by simp [Contents.splitFields] at h; subst h; rfl
   | c :: _, 0, π, _, h => by
@@ -221,7 +221,7 @@ end
 
 mutual
 /-- §6.11's `drop` refuses only with §6's stuck states (helper). -/
-theorem dropContents_err (D : Decls) : ∀ {c : Contents} {w : Violation},
+theorem dropContents_err (D : Decls) : ∀ {c : Contents} {w : Refusal},
     dropContents D c = .error w → w.isStuckState = true
   | .hole, _, h | .int _ _ _, _, h | .float _ _, _, h | .bool _, _, h | .unit, _, h => by
       simp [dropContents] at h
@@ -236,7 +236,7 @@ theorem dropContents_err (D : Decls) : ∀ {c : Contents} {w : Violation},
   | .array _ _ cs, _, h => by simp only [dropContents] at h; exact dropContentsList_err D h
 
 /-- `drop*` refuses only with §6's stuck states (helper). -/
-theorem dropContentsList_err (D : Decls) : ∀ {cs : List Contents} {w : Violation},
+theorem dropContentsList_err (D : Decls) : ∀ {cs : List Contents} {w : Refusal},
     dropContentsList D cs = .error w → w.isStuckState = true
   | [], _, h => by simp [dropContentsList] at h
   | c :: cs, _, h => by
@@ -249,7 +249,7 @@ theorem dropContentsList_err (D : Decls) : ∀ {cs : List Contents} {w : Violati
 end
 
 /-- A binding's drop refuses only with §6's stuck states (helper). -/
-theorem dropCell_err {D : Decls} {ℓ : Nat} {c : Contents} {w : Violation}
+theorem dropCell_err {D : Decls} {ℓ : Nat} {c : Contents} {w : Refusal}
     (h : dropCell D ℓ c = .error w) : w.isStuckState = true := by
   simp only [dropCell] at h
   split at h
@@ -259,7 +259,7 @@ theorem dropCell_err {D : Decls} {ℓ : Nat} {c : Contents} {w : Violation}
     · simp at h
 
 /-- `plainUnwind` refuses only with §6's stuck states (helper). -/
-theorem plainUnwind_err {D : Decls} : ∀ {H : Store} {ls : List Nat} {w : Violation},
+theorem plainUnwind_err {D : Decls} : ∀ {H : Store} {ls : List Nat} {w : Refusal},
     plainUnwind D H ls = .error w → w.isStuckState = true
   | _, [], _, h => by simp [plainUnwind] at h
   | H, ℓ :: rest, _, h => by
@@ -277,7 +277,7 @@ theorem plainUnwind_err {D : Decls} : ∀ {H : Store} {ls : List Nat} {w : Viola
         · simp at h
 
 /-- The residue's plain `drop*` refuses only with §6's stuck states (helper). -/
-theorem plainResidue_err {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {w : Violation},
+theorem plainResidue_err {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {w : Refusal},
     plainResidue D ℓ rs = .error w → w.isStuckState = true
   | [], _, h => by simp [plainResidue] at h
   | r :: rs, _, h => by
@@ -289,7 +289,7 @@ theorem plainResidue_err {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {w :
         · simp at h
 
 /-- `plainDestructure` refuses only with §6's stuck states (helper). -/
-theorem plainDestructure_err {D : Decls} {ℓ : Nat} {c : Contents} {πs : List Nat} {w : Violation}
+theorem plainDestructure_err {D : Decls} {ℓ : Nat} {c : Contents} {πs : List Nat} {w : Refusal}
     (h : plainDestructure D ℓ c πs = .error w) : w.isStuckState = true := by
   simp only [plainDestructure] at h
   split at h
@@ -299,7 +299,7 @@ theorem plainDestructure_err {D : Decls} {ℓ : Nat} {c : Contents} {πs : List 
     · simp at h
 
 /-- `rootCell` refuses only with §6's stuck states (helper). -/
-theorem rootCell_err {H : Store} {φ : Activation} {i : Nat} {w : Violation}
+theorem rootCell_err {H : Store} {φ : Activation} {i : Nat} {w : Refusal}
     (h : rootCell H φ i = .error w) : w.isStuckState = true := by
   simp only [rootCell] at h
   repeat' split at h
@@ -308,7 +308,7 @@ theorem rootCell_err {H : Store} {φ : Activation} {i : Nat} {w : Violation}
 
 /-- Resolving a dynamic tail refuses only with §6's stuck states (helper). -/
 theorem Contents.resolveDyn_err : ∀ {c : Contents} {is : List Int} {πs : List (List Nat)}
-    {w : Violation}, c.resolveDyn is πs = .stuck w → w.isStuckState = true
+    {w : Refusal}, c.resolveDyn is πs = .refused w → w.isStuckState = true
   | c, [], [], _, h => by cases c <;> simp [Contents.resolveDyn] at h
   | c, i :: is, π :: πs, w, h => by
       cases c
@@ -329,8 +329,8 @@ theorem Contents.resolveDyn_err : ∀ {c : Contents} {is : List Int} {πs : List
 
 /-- Navigating a dynamic place refuses only with §6's stuck states (helper). -/
 theorem dynPlace_err {H : Store} {φ : Activation} {p : Place} {vs : List Val}
-    {πs : List (List Nat)} {w : Violation}
-    (h : dynPlace H φ p vs πs = .stuck w) : w.isStuckState = true := by
+    {πs : List (List Nat)} {w : Refusal}
+    (h : dynPlace H φ p vs πs = .refused w) : w.isStuckState = true := by
   simp only [dynPlace] at h
   repeat' split at h
   all_goals simp at h
@@ -342,7 +342,7 @@ theorem dynPlace_err {H : Store} {φ : Activation} {p : Place} {vs : List Val}
 is stuck on `useAfterMove`, `useAfterDrop`, `unbound` or `typeConfusion` —
 never on `linearLeak`, `linearOverwrite`, `linearDiscard` or `ownedUnderCopy`,
 the four monitors `eval` adds and §6.3, §6.5, §6.7 and §6.8 do not have. -/
-theorem step_stuck_isStuckState {M : FloatSig} {P : Program} {C : Config} {w : Violation}
+theorem step_stuck_isStuckState {M : FloatSig} {P : Program} {C : Config} {w : Refusal}
     (h : C.Stuck M P w) : w.isStuckState = true := by
   simp only [Config.Stuck] at h
   match C, h with

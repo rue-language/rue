@@ -172,7 +172,7 @@ of six outcomes:
 | `.returned H' v tr` | an unwinding `return` handed `v` back (§6.9's (D-Return)); every enclosing form passes it on until a call boundary absorbs it |
 | `.broke H' sc tr` | an unwinding `break` (§6.10's (D-Break)), carrying the scope record `sc` of the frame it fired in; every enclosing form passes it on until its loop catches it and drops the cells the body still owed |
 | `.panic k tr` | the machine halted in a defined trap `↯κ` (§6.12) — `overflow`, `divZero`, `remZero`, `castOverflow`, `bounds` or `user` — carrying the trace `tr` of what ran before it |
-| `.stuck w` | the machine refused: `w` names either a configuration §6 leaves undefined or a linear action the machine monitors (see below) |
+| `.refused w` | the machine refused: `w` names either a configuration §6 leaves undefined or a linear action the machine monitors (see below) |
 | `.outOfFuel` | not a machine state at all: the interpreter's admission that it stopped early (see below) |
 
 The trace lists, in order, everything the machine did that a program can see:
@@ -208,7 +208,7 @@ only for the reader's benefit. What it buys is section 4's last theorem,
 destructor run twice, and no identity appears twice among the
 `drop`/`dropTemp` free events.
 
-A `Violation` is a refusal: `useAfterMove` (reading a `⊘` cell),
+A `Refusal` is a refusal: `useAfterMove` (reading a `⊘` cell),
 `useAfterDrop` (touching a `†` cell), `linearLeak` (a scope exit or a frame
 unwind reaching a live linear value), `linearOverwrite` (`3.8:77`),
 `linearDiscard` (`3.8:64`), `ownedUnderCopy` (an owned value put under a
@@ -223,7 +223,7 @@ accepts, and only there (`Dynamics.lean`).
 Why a function rather than the relation? A function can be *run*, so every
 semantic question about a fragment program can be answered by executing it.
 And a total function always returns one of the six outcomes, so progress
-becomes the single statement "never `.stuck`", which section 4's theorem
+becomes the single statement "never `.refused`", which section 4's theorem
 proves. What the function owes the relation is an adequacy lemma (the two
 agree on every checked program), required before the mechanization gates
 anything (`../03-metatheory.md`, "How to read a theorem here"). Its first
@@ -273,7 +273,7 @@ of a `⊘` place is §6.11's no-op where `eval` refuses it.
 
 **Soundness: what `eval` answers, §6 reaches.** `Adequacy.lean` proves the
 first adequacy theorem. For a program `check` accepts, `eval_sound` says three
-things: `run` is never `.stuck` (that is `no_violation`); if it answers a
+things: `run` is never `.refused` (that is `no_violation`); if it answers a
 value, §6.12's initial configuration reaches, by `Step`, the terminal
 configuration holding that value, with the same store and the same trace; and
 if it panics, `Step` reaches the same panic after the same trace. The proof is
@@ -284,7 +284,7 @@ Each `bind` in `eval` becomes one enter step, the operand's run, and one
 plug step. A surprise: the simulation needs no typing at all (`run_sim` holds
 on every program), because every place `eval` and `Step` differ is a refusal
 on `eval`'s side, and a refusal promises nothing. Typing only fixes the
-domain, by ruling `.stuck` out. `letAddProgram_sound` is the theorem at work:
+domain, by ruling `.refused` out. `letAddProgram_sound` is the theorem at work:
 the same `→*` derivation `letAddProgram_runs` found by stepping, obtained from
 `run`'s answer alone.
 
@@ -297,7 +297,7 @@ above `n`, then, `run` cannot be out of fuel, and whatever it answers,
 soundness places at that same end. On a checked program, that makes
 `eval_complete`: `run` answers §6's value or panic, with the same store and
 trace, at every fuel past the length of §6's run. It also makes
-`never_stuck_iff`: "`run` is never `.stuck`" is equivalent to "every
+`never_stuck_iff`: "`run` is never `.refused`" is equivalent to "every
 configuration `Step` reaches reduces or has halted", which is §7's own
 phrasing. And it makes `eval_diverges_iff`: `run` is out of fuel at every fuel
 exactly when §6's run never ends. On a program `check` rejects, `eval` may
@@ -562,7 +562,7 @@ reuse it at every form. It says:
 - on `.broke`, the `break` fired at one of `Ω`'s delivered states, in the
   frame with the loop body's still-open bindings on top (`BrokeOk`);
 - on `.panic` and `.outOfFuel`, nothing;
-- on `.stuck`, **`False`**, which is the whole point.
+- on `.refused`, **`False`**, which is the whole point.
 
 That is progress and preservation in one statement (§7, first bullet).
 Over §6's `Step`, its whole-program consequence is `step_progress` and
@@ -581,7 +581,7 @@ theorem run_safe (M : FloatModel) (hwf : WfProgram P)
 ```
 
 The named corollaries (`no_use_after_move`, `no_linear_leak`, …) each restate
-"never `.stuck` with this particular violation" for one §7 bullet.
+"never `.refused` with this particular violation" for one §7 bullet.
 
 **No double free** is the one bullet about the trace rather than the result
 (`Trace.lean`):
@@ -883,7 +883,7 @@ proof needs**.
 **How every example ends.** Every example here is accepted, and the chain is
 the same each time: `checkProgram` accepts, `checkProgram_sound` turns the
 acceptance into `ProgramTyped`, and `run_safe` applies. So, for every float
-model satisfying the laws, `run` reaches no `Violation`. The runs shown here
+model satisfying the laws, `run` reaches no `Refusal`. The runs shown here
 use `demoOps` (`Float.exactOps`); that it is such a model is the one
 assumption example 10 names, and a program with no floats never exercises it.
 Most examples have kernel-checked forms in `Examples.lean`, beside the
@@ -2082,7 +2082,7 @@ back-edge invariance; bringing that wording in line is RUE-2355.
   extension shows it inline. Change a program, rebuild, and watch the outcome
   change. `#eval checkProgram p` runs the checker the same way.
 - **Read a kernel-checked fact.**
-  `example : run demoOps returnPastLinear demoFuel = .stuck .linearLeak := by rfl`
+  `example : run demoOps returnPastLinear demoFuel = .refused .linearLeak := by rfl`
   is not a test that ran once; it is a statement the kernel verified when the
   file compiled. Every refusal and trap the fragment can reach has such a
   witness (`Examples.lean`, `Corpus.lean`), and so does the fuel boundary
@@ -2233,7 +2233,7 @@ defect looks like:* either one missing, or stated with a hypothesis that
 makes it vacuous (`no_masking` with `n = m`, say).
 
 Then ask the fuel question from §6's side, which is checkpoint C's: does
-"for every fuel, never `.stuck`" imply that no reduction sequence reaches a
+"for every fuel, never `.refused`" imply that no reduction sequence reaches a
 stuck configuration? `step_never_stuck_of_run` says yes, on every program;
 `never_stuck_iff` is the equivalence on checked programs; and
 `step_progress` is the conclusion for checked programs. Can `outOfFuel` hide

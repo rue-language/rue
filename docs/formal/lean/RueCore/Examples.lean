@@ -1177,7 +1177,7 @@ example : run demoOps arrayZeroLengthFieldDynRead demoFuel = .panic .bounds [] :
 /-- **`[S1; 0]` is moved once and not twice**: the checker refuses the second
 move, and the machine refuses it too. -/
 example : checkProgram (prog tI64 arrayZeroLengthMovedTwice) = false := by rfl
-example : run demoOps (prog tI64 arrayZeroLengthMovedTwice) demoFuel = .stuck .useAfterMove := by rfl
+example : run demoOps (prog tI64 arrayZeroLengthMovedTwice) demoFuel = .refused .useAfterMove := by rfl
 
 /-- **The zero-length array's bounds trap**: accepted, and the run is `10` and
 then `↯bounds`. -/
@@ -1333,7 +1333,7 @@ only rule there and it wants `class(T) = Copy`, so `eval` answers
 `typeConfusion` instead of duplicating the leaf. `Step.demo_dynamicRead_stuck`
 is the same program, stuck at the same rule in `Step`. -/
 theorem dynReadAffine_refused (M : FloatSig) :
-    run M (prog tI64 dynReadAffineCopied) demoFuel = .stuck .typeConfusion := by rfl
+    run M (prog tI64 dynReadAffineCopied) demoFuel = .refused .typeConfusion := by rfl
 
 /-- (RUE-2400) `@drop(a[i])` of an affine leaf is refused by the machine: the
 dynamic `@drop` is the read with its value discarded, so it inherits the
@@ -1341,7 +1341,7 @@ read's `Copy` check, and no `@dbg` output or destructor event is produced.
 `Step.demo_dynamicDrop_stuck` is the same program, stuck at the same rule in
 `Step`. -/
 theorem dynDropAffine_refused (M : FloatSig) :
-    run M (prog tI64 dynDropAffineSkipped) demoFuel = .stuck .typeConfusion := by rfl
+    run M (prog tI64 dynDropAffineSkipped) demoFuel = .refused .typeConfusion := by rfl
 
 /-- (RUE-2400) The repeat form at an affine operand is refused by the
 machine: §2's elaboration `let t = v; [t, t]` would be stuck at the second use
@@ -1349,24 +1349,24 @@ of `t`, and `eval` answers `typeConfusion` rather than replicating `v`.
 `Step.demo_repeat_stuck` is the same program, stuck at the same rule in
 `Step`. -/
 theorem repeatAffine_refused (M : FloatSig) :
-    run M (prog tI64 repeatAffineDuplicated) demoFuel = .stuck .typeConfusion := by rfl
+    run M (prog tI64 repeatAffineDuplicated) demoFuel = .refused .typeConfusion := by rfl
 
 /-- The existing repeat (probe `a2b`) and dynamic-read (probe `a5`)
 refusal fixtures run to the same refusal. -/
-example : run demoOps (prog tI64 arrayRepeatAffine) demoFuel = .stuck .typeConfusion := by rfl
-example : run demoOps arrayDynIndexAffine demoFuel = .stuck .typeConfusion := by rfl
+example : run demoOps (prog tI64 arrayRepeatAffine) demoFuel = .refused .typeConfusion := by rfl
+example : run demoOps arrayDynIndexAffine demoFuel = .refused .typeConfusion := by rfl
 
 /-- The linear-overwrite refusal is the machine's too: `eval`'s
 `indexWrite` arm reads the residue of the element it is about to drop and
 refuses, which is the arm the old `class(T) = Copy` premise made
 unreachable. -/
 example : run demoOps arrayDynWriteLinearElem demoFuel
-    = .stuck .linearOverwrite := by rfl
+    = .refused .linearOverwrite := by rfl
 
 /-- The linear-element leak is refused dynamically too: the monitor reads the
 residue the scope exit is about to drop and finds a live linear value. -/
 example : run demoOps (prog tI64 arrayLinearElemLeaked) demoFuel
-    = .stuck .linearLeak := by rfl
+    = .refused .linearLeak := by rfl
 
 /-! ## Places below a dynamic index (RUE-2342)
 
@@ -1751,8 +1751,8 @@ example : checkProgram dynMoveBelow = false := by rfl
 example : checkProgram dynDropElem = false := by rfl
 /-- The machine refuses q02 and q15 as well (RUE-2400): the dynamic read and
 the dynamic `@drop` of an affine leaf both answer `typeConfusion`. -/
-example : run demoOps dynMoveBelow demoFuel = .stuck .typeConfusion := by rfl
-example : run demoOps dynDropElem demoFuel = .stuck .typeConfusion := by rfl
+example : run demoOps dynMoveBelow demoFuel = .refused .typeConfusion := by rfl
+example : run demoOps dynDropElem demoFuel = .refused .typeConfusion := by rfl
 example : checkProgram dynWriteLinearLeaf = false := by rfl
 example : checkProgram dynReadAfterElemMove = false := by rfl
 example : checkProgram dynWriteAfterElemMove = false := by rfl
@@ -2928,7 +2928,7 @@ the use of a moved-out place (`3.8:5`; the compiler reports E0205), and this
 refusal the machine *does* reach. -/
 example : checkProgram (enumProg tI64 enumMatchedTwiceMoving) = false := by rfl
 example : run Float.exactOps (enumProg tI64 enumMatchedTwiceMoving) demoFuel
-    = .stuck .useAfterMove := by rfl
+    = .refused .useAfterMove := by rfl
 
 /-- (Match) §5.5's join with the enum consumed on one path only: `class(E)` is
 the payload join over every variant, so the `Owned` side is residual and the
@@ -3085,7 +3085,7 @@ refusal**, not a silent drop (`Dynamics.lean`'s `dropResidue`; probe d3). §6.3
 leaves the case unchecked because §5.1's premise has excluded it, and this is
 the state that premise excludes. -/
 example : run demoOps (destrProg tI64 destructureLinearResidue) demoFuel
-    = .stuck .linearLeak := by rfl
+    = .refused .linearLeak := by rfl
 
 /-- The machine's hole guard at the **selected leaf** of a declared plan: an
 already-`⊘` leaf is a refusal, not a silent no-op, exactly as it is at the named
@@ -3095,7 +3095,7 @@ what makes that visible rather than assumed. -/
 example : checkProgram (destrProg tI64 dropDeclaredHoleLeaf) = false := by rfl
 
 example : run demoOps (destrProg tI64 dropDeclaredHoleLeaf) demoFuel
-    = .stuck .useAfterMove := by rfl
+    = .refused .useAfterMove := by rfl
 
 /-! The RUE-2316 witnesses are accepted — which is the point: the §7
 theorems apply to them, and the run below still loses the resource. -/
@@ -3106,11 +3106,11 @@ example : ProgramTyped linearLostAtArrayElem := checkProgram_sound (by rfl)
 example : ProgramTyped linearLostAtBreakArg := checkProgram_sound (by rfl)
 
 /-- The `break` witness: the linear `S3 { 3 }` is destroyed with an empty
-trace — no `drop`, no `dtor`, no `Violation` — and the loop yields `()`. -/
+trace — no `drop`, no `dtor`, no `Refusal` — and the loop yields `()`. -/
 example : run demoOps linearLostAtBreakArg demoFuel = .ok [.dead] (v64 0) [] := by rfl
 
 /-- The linear value is destroyed with an empty trace: no `drop`, no
-`dropTemp`, no `dtor`, and no `Violation`. `no_linear_leak` holds of this
+`dropTemp`, no `dtor`, and no `Refusal`. `no_linear_leak` holds of this
 program and says nothing about it. -/
 example : run demoOps linearLostAtCallArg demoFuel = .ok [.dead, .dead] (v64 0) [] := by rfl
 
@@ -3120,7 +3120,7 @@ example : run demoOps affineLostAtCallArg demoFuel = .ok [.dead, .dead] (v64 0) 
 
 /-- And at an array element: the run ends at the `return`'s own value
 `S3 { 2 }` with the **empty** trace, so element 0's `S3 { 1 }` is destroyed
-without a `drop`, a `dtor` or a `Violation` — the array literal's instance of
+without a `drop`, a `dtor` or a `Refusal` — the array literal's instance of
 the same carve-out. -/
 example : run demoOps linearLostAtArrayElem demoFuel
     = .ok [.dead, .dead] (.struct sLinearDtor 1 [v64 2]) [] := by rfl
@@ -3467,11 +3467,11 @@ by the kernel rather than observed by `#eval` (ADR-0097; the bridge cannot
 observe refusals, because the compiler rejects those programs first).
 -/
 
-example : run demoOps (prog tI64 linearLeaked) demoFuel = .stuck .linearLeak := by rfl
-example : run demoOps (prog tI64 useAfterMove) demoFuel = .stuck .useAfterMove := by rfl
-example : run demoOps (prog tI64 linearHalfConsumed) demoFuel = .stuck .linearLeak := by rfl
-example : run demoOps (prog tI64 structLinearFieldLeaked) demoFuel = .stuck .linearLeak := by rfl
-example : run demoOps (prog tI64 structJoinDisagrees) demoFuel = .stuck .linearLeak := by rfl
+example : run demoOps (prog tI64 linearLeaked) demoFuel = .refused .linearLeak := by rfl
+example : run demoOps (prog tI64 useAfterMove) demoFuel = .refused .useAfterMove := by rfl
+example : run demoOps (prog tI64 linearHalfConsumed) demoFuel = .refused .linearLeak := by rfl
+example : run demoOps (prog tI64 structLinearFieldLeaked) demoFuel = .refused .linearLeak := by rfl
+example : run demoOps (prog tI64 structJoinDisagrees) demoFuel = .refused .linearLeak := by rfl
 example : run demoOps (scalarProg tI64 overflow) demoFuel = .panic .overflow [] := by rfl
 example : run demoOps (scalarProg (.int .w8 .signed) i8Overflow) demoFuel
     = .panic .overflow [] := by rfl
@@ -3555,21 +3555,21 @@ example : run demoOps (prog tI64 dbgBetweenDrops) demoFuel
         [.drop 1 (cA 0 1), .dtor sAffine (cA 0 1), .dbg (v64 2), .drop 3 (cA 2 3),
          .dtor sAffine (cA 2 3)] := by rfl
 example : run demoOps (scalarProg tI64 divZero) demoFuel = .panic .divZero [] := by rfl
-example : run demoOps (scalarProg tI64 (use (.var 0))) demoFuel = .stuck .unbound := by rfl
+example : run demoOps (scalarProg tI64 (use (.var 0))) demoFuel = .refused .unbound := by rfl
 example : run demoOps (scalarProg tI64 (binop .add (boolLit true) (lit 1))) demoFuel
-    = .stuck .typeConfusion := by rfl
-example : run demoOps returnPastLinear demoFuel = .stuck .linearLeak := by rfl
-example : run demoOps linearParamLeaked demoFuel = .stuck .linearLeak := by rfl
+    = .refused .typeConfusion := by rfl
+example : run demoOps returnPastLinear demoFuel = .refused .linearLeak := by rfl
+example : run demoOps linearParamLeaked demoFuel = .refused .linearLeak := by rfl
 
 /-- A struct literal with the wrong number of initializers is `typeConfusion`
 ((Struct-Intro) §5.8's `3.6:5`/`3.6:6`; no well-typed program reaches it). -/
 example : run demoOps (prog tI64 (seq (mkStruct sPair [lit 1]) (lit 0))) demoFuel
-    = .stuck .typeConfusion := by rfl
+    = .refused .typeConfusion := by rfl
 
 /-- A struct literal naming a declaration the program does not have is
 `unbound`; elaboration resolves every type name before the core (§2). -/
 example : run demoOps (prog tI64 (seq (mkStruct 99 []) (lit 0))) demoFuel
-    = .stuck .unbound := by rfl
+    = .refused .unbound := by rfl
 
 /-- A call whose argument count does not match the callee's parameter list is
 `typeConfusion` (§5.8, `4.10:3`); no well-typed program reaches it. -/
@@ -3577,11 +3577,11 @@ example : run M
       { decls := Decls.ofStructs [],
         fns := [{ params := [], ret := tI64, body := call 1 [] },
                 { params := [⟨tI64, false⟩], ret := tI64, body := lit 0 }] } demoFuel
-    = .stuck .typeConfusion := by rfl
+    = .refused .typeConfusion := by rfl
 
 /-- A call of a function the program does not have is `unbound`; elaboration
 resolves every name before the core (§2). -/
-example : run demoOps (scalarProg tI64 (call 7 [])) demoFuel = .stuck .unbound := by rfl
+example : run demoOps (scalarProg tI64 (call 7 [])) demoFuel = .refused .unbound := by rfl
 
 /-! ## Drop order, pinned
 
@@ -3748,7 +3748,7 @@ example : run demoOps (scalarProg tI64 (binop .add (boolLit true) (binop .div (l
     = .panic .divZero [] := by rfl
 example : run demoOps (scalarProg tI64
     (binop .add (lit 1) (.intLit .w8 .signed 1))) demoFuel
-    = .stuck .typeConfusion := by rfl
+    = .refused .typeConfusion := by rfl
 example : run demoOps (scalarProg tI64 (lit (2 ^ 64))) demoFuel
     = .ok [] (v64 (2 ^ 64)) [] := by rfl
 example : checkProgram (scalarProg tI64 (lit (2 ^ 64))) = false := by rfl
@@ -3770,12 +3770,12 @@ frame naming it — which is the state the guard exists for.
 
 example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] }
     (use (.var 0))
-    = .stuck .useAfterDrop := by rfl
+    = .refused .useAfterDrop := by rfl
 example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] }
     (drop (.var 0))
-    = .stuck .useAfterDrop := by rfl
+    = .refused .useAfterDrop := by rfl
 example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] }
-    (assign (.var 0) (lit 1)) = .stuck .useAfterDrop := by rfl
+    (assign (.var 0) (lit 1)) = .refused .useAfterDrop := by rfl
 
 /-! ### The refusals a *path* reaches
 
@@ -3791,32 +3791,32 @@ in an open state. -/
 /-- Reading through a `⊘`: the base was moved out as a whole, so the path has
 nowhere to go (`3.8:53`). -/
 example : eval demoOps demoFuel (prog tI64 unitLit) [.full .hole] { env := [0], scope := [] }
-    (use (.proj (.var 0) 0)) = .stuck .useAfterMove := by rfl
+    (use (.proj (.var 0) 0)) = .refused .useAfterMove := by rfl
 
 /-- Reading a value **with** a `⊘` in it: the place itself is there, but
 handing it on would hand on an aggregate with a hole, which `fully-owned`
 (§5.1, `3.8:26`) is exactly the premise against. -/
 example : eval demoOps demoFuel (prog tI64 unitLit)
     [.full (.struct sTwoAffine 1 [.hole, .struct sAffine 0 [c64 2]])]
-    { env := [0], scope := [] } (use (.var 0)) = .stuck .useAfterMove := by rfl
+    { env := [0], scope := [] } (use (.var 0)) = .refused .useAfterMove := by rfl
 
 /-- A path step that is not a field of what is stored: no elaborated program
 has one (§2 resolves field names to declaration slots, `3.6:15`). -/
 example : eval demoOps demoFuel (prog tI64 unitLit) [.full (c64 7)] { env := [0], scope := [] }
-    (use (.proj (.var 0) 0)) = .stuck .typeConfusion := by rfl
+    (use (.proj (.var 0) 0)) = .refused .typeConfusion := by rfl
 
 /-- `@drop` of a place that is already `⊘`: §5.3 demands `Σ(p) = Owned`, so
 the machine refuses rather than treating the drop as a silent no-op. -/
 example : eval demoOps demoFuel (prog tI64 unitLit)
     [.full (.struct sTwoAffine 1 [.hole, .struct sAffine 0 [c64 2]])]
-    { env := [0], scope := [] } (drop (.proj (.var 0) 0)) = .stuck .useAfterMove := by rfl
+    { env := [0], scope := [] } (drop (.proj (.var 0) 0)) = .refused .useAfterMove := by rfl
 
 /-- The same guard on the unwind path: a frame whose scope record names a
 retired cell refuses instead of retiring it twice (§6.9). No run from the
 start reaches this state (`run_no_use_after_drop`); for a well-typed program
 `ActivationTyping` excludes it as well. -/
 example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [0] }
-    (ret (lit 1)) = .stuck .useAfterDrop := by rfl
+    (ret (lit 1)) = .refused .useAfterDrop := by rfl
 
 /-! ## A diverging arm contributes nothing to the join (RUE-2368)
 
@@ -3962,7 +3962,7 @@ example : checkProgram (prog tI64 loopReassignThenMove) = true := by rfl
 
 /-- The refusal the rejected shape reaches: the kept exit leaves the linear
 binding live at the `let`'s scope exit. -/
-example : run demoOps (prog tI64 loopLinearOneExit) demoFuel = .stuck .linearLeak := by rfl
+example : run demoOps (prog tI64 loopLinearOneExit) demoFuel = .refused .linearLeak := by rfl
 
 /-- The loop-head iteration for `loopReassignThenMove`, read at its loop:
 one step from the entry state marks `d` `MovedOut`, so one step is not a
@@ -4025,7 +4025,7 @@ def loopMovedPrevIteration : Expr :=
   letIn false (resA (lit 1)) (loop (drop (.var 0)))
 
 example : checkProgram (prog tI64 loopMovedPrevIteration) = false := by rfl
-example : run demoOps (prog tI64 loopMovedPrevIteration) demoFuel = .stuck .useAfterMove := by
+example : run demoOps (prog tI64 loopMovedPrevIteration) demoFuel = .refused .useAfterMove := by
   rfl
 
 /-- **A `break` past a live linear loop-local** (E0406): the exit ends the
@@ -4035,7 +4035,7 @@ def loopBreakPastLinear : Expr :=
   seq (loop (letIn false (resLD (lit 1)) brk)) (lit 0)
 
 example : checkProgram (prog tI64 loopBreakPastLinear) = false := by rfl
-example : run demoOps (prog tI64 loopBreakPastLinear) demoFuel = .stuck .linearLeak := by rfl
+example : run demoOps (prog tI64 loopBreakPastLinear) demoFuel = .refused .linearLeak := by rfl
 
 /-- **A linear binding live at a loop that never exits** (E0406): the body
 completes, so the loop delivers `⟨diverge, Σ_h⟩`, and the frame-wide residual
@@ -4050,7 +4050,7 @@ example : checkProgram (prog tI64 loopDivergeLinear) = false := by rfl
 `⟨break, _⟩` delivery, so `checkFn` refuses it, and the machine's call
 boundary refuses the `break` that reaches it (`EvalRes.bindCall`). -/
 example : checkProgram (prog tI64 brk) = false := by rfl
-example : run demoOps (prog tI64 brk) demoFuel = .stuck .typeConfusion := by rfl
+example : run demoOps (prog tI64 brk) demoFuel = .refused .typeConfusion := by rfl
 
 /-! ### The generator's loop shapes (RUE-2330)
 
@@ -4107,7 +4107,7 @@ example : checkProgram (prog tI64 loopCounted) = true := by rfl
 example : checkProgram (prog tI64 loopNestedInnerBreak) = true := by rfl
 example : checkProgram (prog tI64 loopNestedMoveOuter) = false := by rfl
 example : checkProgram (prog tI64 loopNestedEveryPathBreaks) = true := by rfl
-example : run demoOps (prog tI64 loopNestedMoveOuter) demoFuel = .stuck .useAfterMove := by rfl
+example : run demoOps (prog tI64 loopNestedMoveOuter) demoFuel = .refused .useAfterMove := by rfl
 
 /-- (D-Loop-Iter) §6.10, as an equation: a body that completes with `⟨⟩`
 re-enters the loop at one unit of fuel less (helper). -/
@@ -4233,7 +4233,7 @@ def joinMovedVsPartialLinear : Expr :=
     (seq (ite (boolLit false) (drop (.var 0)) (drop (.proj (.var 0) 1))) (lit 9))
 
 example : checkProgram (prog tI64 joinMovedVsPartialLinear) = false := by rfl
-example : run demoOps (prog tI64 joinMovedVsPartialLinear) demoFuel = .stuck .linearLeak := by rfl
+example : run demoOps (prog tI64 joinMovedVsPartialLinear) demoFuel = .refused .linearLeak := by rfl
 
 /-- **A `match` payload binding is immutable** (§5.5's (Match) binds its
 payload locals without `mut`, `extendArm`). The arm assigns the `i64` payload

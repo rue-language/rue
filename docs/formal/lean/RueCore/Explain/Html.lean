@@ -140,7 +140,7 @@ def stepResHtml : StepRes → String
       tagc "span" "ok" "break" ++ tagc "div" "ctx" "unwinding to the enclosing loop (§6.10)"
   | .panicked k => tagc "span" "bad" (esc ("panic: " ++ Corpus.panicName k))
   | .refuse w why =>
-      tagc "span" "bad" (esc ("refused: " ++ Corpus.violationName w)) ++
+      tagc "span" "bad" (esc ("refused: " ++ Corpus.refusalName w)) ++
         tagc "div" "ctx" (esc why)
   | .exhausted =>
       tagc "span" "bad" "out of fuel" ++
@@ -233,9 +233,9 @@ def outcomeHtml : EvalRes → String
       tagc "span" "bad" (esc ("panic: " ++ Corpus.panicName k)) ++
       tagc "div" "ctx" (esc ("a defined trap (§6.12), not a violation; the observable " ++
         "output up to the trap is " ++ (if tr.isEmpty then "empty" else eventsLine tr)))
-  | .stuck w =>
-      tagc "span" "bad" (esc ("refused: " ++ Corpus.violationName w)) ++
-      tagc "div" "ctx" (esc (violationPremise w))
+  | .refused w =>
+      tagc "span" "bad" (esc ("refused: " ++ Corpus.refusalName w)) ++
+      tagc "div" "ctx" (esc (refusalPremise w))
 
 /-- (helper) The document frame. -/
 def page (title body : String) : String :=

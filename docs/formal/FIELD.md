@@ -105,7 +105,7 @@ redex `r`) is folklore. No fetched source names it as a theorem.
 | "search" in §6.2's title | search rules (PFPL) | clear |
 | `Statics.lean` / `Dynamics.lean` | statics / dynamics (PFPL) | clear |
 | trap `↯κ` (§6.1, §6.12), "defined panic" (§7) | checked error `e err` (PFPL §6.3) | partial: the same role, but a different name and symbol |
-| `EvalRes.stuck w`: "stuck" also covers the interpreter's four monitors (GUIDE §2) | stuck = no rule applies. On statically invalid input, a monitored case is a step §6 does take | partial |
+| `EvalRes.refused w`: "stuck" also covers the interpreter's four monitors (GUIDE §2) | stuck = no rule applies. On statically invalid input, a monitored case is a step §6 does take | partial |
 | "hole" for the `⊘` cell content (`Contents.hole`; GUIDE §§2–3; 01 §5.1 and §6.11; the metatheory's "No use-after-move" section) | "hole" is the empty position of a context. The accepted words for a moved-out cell are in §5 below | partial: a second meaning of an accepted term, and both meanings appear in GUIDE §2 |
 | control stack `K`, `Kont`, `Focus` (§6.1, `Step.lean`) | control stack (PFPL ch. 28). `Focus.eval` / `Focus.ret` play the roles of PFPL's evaluation state `k ▷ e` and return state `k ◁ e` | clear: the same machine shape; the frames are language-specific |
 
@@ -183,7 +183,7 @@ data abstraction, and put `unsafe` code behind a safe API out of scope.
 | "fundamental lemma" `init_safeAt` (metatheory): a checked program's initial configuration is `SafeAt` | Timany's fundamental theorem is `⊢ ⇒ ⊨`; `⊢ ⇒ safe` is their Cor. 6.7, which they call semantic type soundness, and also their Cor. 2.3, "Syntactic Type Soundness", proved by progress and preservation. Our proof has no `⊨` and no logical relation, so Cor. 2.3 is the closer counterpart: it is syntactic soundness of `eval` (a `StoreTyping` invariant) followed by the `eval`/`Step` agreement of §3. "The fundamental theorem composed with adequacy" is only an analogy | partial |
 | `ActivationTyping` / `StoreTyping` ("Σ faithfully tracks the store's initialization") | the invariant a syntactic proof carries: store typing / a well-typed machine state. Ours checks each cell against both its ownership state and its type (`ContentsOwnTyping`; "an owned node holds a hole-free well-typed contents"), and `Soundness.lean` calls `StoreTyping` "the §7 preservation invariant" | partial: store typing extended with ownership state |
 | Σ for the ownership state (§5) | Σ is store typing in TAPL and the global environment in Oxide | partial: symbol clash |
-| `Violation` (`useAfterMove`, `useAfterDrop`, …) | `wrong` (Milner), "going wrong" (CompCert), stuck (PFPL) | partial: ours is a named refusal, and four of its eight constructors are the monitors of §6 below, which are not stuck states of §6's `Step` |
+| `Refusal` (`useAfterMove`, `useAfterDrop`, …) | `wrong` (Milner), "going wrong" (CompCert), stuck (PFPL) | partial: ours is a named refusal, and four of its eight constructors are the monitors of §6 below, which are not stuck states of §6's `Step` |
 | `soundness`, `run_safe` over `eval` | type soundness via a definitional interpreter (§3 below) | clear |
 
 ---
@@ -485,7 +485,7 @@ finite prefix, whether or not the run finishes (RUE-2477).
 
 | Our term | Accepted term | Confidence |
 |---|---|---|
-| "monitor" (`linearLeak`, `linearOverwrite`, `linearDiscard`, `ownedUnderCopy`): a check the interpreter `eval` adds, which refuses the step (`.stuck w`); `Step` has none | an EM mechanism (Schneider 2000): it terminates the target before a violating step, and Schneider counts a virtual machine whose instruction cycle is augmented this way as EM. In runtime verification a monitor typically only returns a verdict and does not change the execution (Leucker & Schallhart) | partial. Mechanically ours match Schneider's enforcement sense. But they are part of the definitional interpreter rather than isolated from a target, they exist so the safety proof can go through, they make `eval` stricter than §6, and they never fire on checked programs |
+| "monitor" (`linearLeak`, `linearOverwrite`, `linearDiscard`, `ownedUnderCopy`): a check the interpreter `eval` adds, which refuses the step (`.refused w`); `Step` has none | an EM mechanism (Schneider 2000): it terminates the target before a violating step, and Schneider counts a virtual machine whose instruction cycle is augmented this way as EM. In runtime verification a monitor typically only returns a verdict and does not change the execution (Leucker & Schallhart) | partial. Mechanically ours match Schneider's enforcement sense. But they are part of the definitional interpreter rather than isolated from a target, they exist so the safety proof can go through, they make `eval` stricter than §6, and they never fire on checked programs |
 | drop trace, `Event`, `tr` | trace of events | clear |
 | `no_double_free` (each identity is freed at most once, and each destructor runs at most once, in every run's trace) | an at-most-once **safety** property over traces | clear once stated this way |
 | `drop_exactly_once` ("consumed exactly once") | "exactly once" (delivery) = at most once ∧ at least once; linear use = exactly once. Ours is per value, per finished evaluation | partial |

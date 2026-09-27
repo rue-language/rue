@@ -28,7 +28,7 @@ Lemma 5.2, with a trap final as a checked error is). -/
 def Step.terminal_stmt : Prop :=
   ∀ {M : FloatSig} {P : Program} {C C' : Config} (_ : C.Terminal), ¬ Step M P C C'
 
-/-- **Steps, terminal, or stuck** (§6), a stuck one named by a `Violation`:
+/-- **Steps, terminal, or stuck** (§6), a stuck one named by a `Refusal`:
 some `C → C'`, or `C` is `✓` or `↯κ`, or `step` refuses `C`. -/
 def Config.trichotomy_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) (C : Config),
@@ -49,7 +49,7 @@ def Config.stuck_iff_stmt : Prop :=
 is a use after move or drop, an unbound name or a type confusion, never a
 monitor's. -/
 def step_stuck_isStuckState_stmt : Prop :=
-  ∀ {M : FloatSig} {P : Program} {C : Config} {w : Violation}
+  ∀ {M : FloatSig} {P : Program} {C : Config} {w : Refusal}
     (_ : C.Stuck M P w), w.isStuckState = true
 
 /-- **Progress over `Step`** (§7 "Type safety": "does not get stuck"). For a

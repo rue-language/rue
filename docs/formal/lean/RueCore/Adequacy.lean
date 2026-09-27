@@ -48,7 +48,7 @@ promises about `→*` from the family `C`:
   (D-Break) §6.10. `eval`'s loop supplies both premises: the loop frame is on
   top of the body's context, and `unwindLocs_plain` turns its monitored unwind
   into the plain one;
-* `.stuck` and `.outOfFuel`: nothing.
+* `.refused` and `.outOfFuel`: nothing.
 
 `eval_sim` is `Sim` for every expression, store, frame and fuel. Each
 `bind` in `eval` is one (Search) enter step, the operand's `Sim` under one
@@ -64,15 +64,15 @@ off by determinism (`Sim.peel`, `Step.det`).
 and `Step` differ are all refusals on `eval`'s side: the four monitors
 (`linearLeak`, `linearOverwrite`, `linearDiscard`, `ownedUnderCopy`) and the
 `useAfterMove` refusal of `@drop` at a `⊘` place, which §6.11 makes a no-op.
-A refusal is `.stuck`, about which `Sim` promises nothing, and where a monitor
+A refusal is `.refused`, about which `Sim` promises nothing, and where a monitor
 lets a drop through the plain drop does the same thing (`unwindLocs_plain`,
 `destructure_plain`, `dropRetire_plain`). So soundness needs no typing
 derivation.
 
 Typing is what fixes the domain (RUE-2314): `eval_sound` is stated for the
-programs `check` accepts, where `no_violation` says `run` is never `.stuck`.
+programs `check` accepts, where `no_violation` says `run` is never `.refused`.
 There every outcome is a value, a panic, or `outOfFuel`, and the first two are
-§6's. On other input `run_sim` still holds but says nothing about `.stuck`,
+§6's. On other input `run_sim` still holds but says nothing about `.refused`,
 which is outside the correspondence: four monitors are not §6's, and `eval`
 inspects operand shapes in an order §6.2 does not fix. Completeness (part 3)
 is where the domain does work, because there `Step` can step where `eval`
@@ -151,7 +151,7 @@ def Sim (M : FloatSig) (P : Program) (φ : Activation) (C : List Kont → List E
   | .broke H sc tr' => ∀ K tr φs K' H' evs, Kont.toLoop K = some (φs, K') →
       plainUnwind P.decls H (sc.drop φs.scope.length).reverse = .ok (H', evs) →
       Steps M P (C K tr) (.run H' φs K' (.ret .unit) (tr ++ tr' ++ evs))
-  | .stuck _ => True
+  | .refused _ => True
   | .outOfFuel => True
 
 /-! ## `→*` -/
@@ -246,7 +246,7 @@ theorem Sim.bind {M : FloatSig} {P : Program} {φ φ₁ : Activation}
       simp only [EvalRes.bind, Sim] at h₁ ⊢
       intro K tr
       exact (hC K tr).trans (h₁ (F :: K) tr)
-  | stuck w => simp [EvalRes.bind, Sim]
+  | refused w => simp [EvalRes.bind, Sim]
   | outOfFuel => simp [EvalRes.bind, Sim]
 
 /-- A result that is not a value passes through a transparent frame unchanged
@@ -282,7 +282,7 @@ theorem Sim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Activation}
       simp only [EvalRes.bindCall, Sim] at h₁ ⊢
       intro K tr
       exact (hC K tr).trans (h₁ (.call φ :: K) tr)
-  | stuck w => simp [EvalRes.bindCall, Sim]
+  | refused w => simp [EvalRes.bindCall, Sim]
   | outOfFuel => simp [EvalRes.bindCall, Sim]
 
 /-- §6.4's operator frames: a value plugs the hole, a trap is (Panic-Lift)
@@ -975,7 +975,7 @@ theorem sim_loop (IH : SimIH M P fuel) (e : Expr) :
       simp only [Sim] at h₁ ⊢
       intro K tr
       exact (hent K tr).trans (h₁ (.loop e φ :: K) tr)
-  | stuck w => trivial
+  | refused w => trivial
   | outOfFuel => trivial
 
 end forms
@@ -1055,11 +1055,11 @@ the two are proved to agree"). For a program `check` accepts
 so it answers a value, a panic or `outOfFuel`; a value is reached by §6's
 `→*` from the initial configuration as a terminal configuration with the same
 store and trace, and a panic as `↯κ` after the same trace (§6.2, §6.12).
-`.stuck` is outside the correspondence and does not occur here; `outOfFuel`
+`.refused` is outside the correspondence and does not occur here; `outOfFuel`
 is not a state of §6's machine. The converse, completeness modulo fuel, is
 `eval_complete`. -/
 theorem eval_sound (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
+    (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
     (∀ H v tr, run M.toFloatSig P fuel = .ok H v tr →
       Steps M.toFloatSig P Config.init (.run H Activation.empty [] (.ret v) tr)) ∧
     (∀ k tr, run M.toFloatSig P fuel = .panic k tr →
@@ -1642,7 +1642,7 @@ theorem long_loop (IH : LongIH M P fuel) (e : Expr) :
         (fun K tr => ⟨_, tr, hent K tr, .refl _⟩) (fun K tr => IH H φ e hr _ tr)
   | returned => simp
   | panic => simp
-  | stuck => simp
+  | refused => simp
 
 end longForms
 
@@ -1737,7 +1737,7 @@ theorem run_classify {M : FloatSig} {P : Program} {T : Config} (hT : Steps M P C
     ∃ n, ∀ fuel, n < fuel →
       (∃ H v tr, run M P fuel = .ok H v tr ∧ T = .run H Activation.empty [] (.ret v) tr) ∨
       (∃ κ tr, run M P fuel = .panic κ tr ∧ T = .panic κ tr) ∨
-      (∃ w, run M P fuel = .stuck w) := by
+      (∃ w, run M P fuel = .refused w) := by
   obtain ⟨n, hn⟩ := hT.toN
   refine ⟨n, fun fuel hlt => ?_⟩
   cases hr : run M P fuel with
@@ -1747,7 +1747,7 @@ theorem run_classify {M : FloatSig} {P : Program} {T : Config} (hT : Steps M P C
   | panic κ tr =>
       exact .inr (.inl ⟨κ, tr, rfl, Steps.final_unique hT ((run_sim M P fuel).2 κ tr hr) hfin
         (fun _ => Step.terminal trivial)⟩)
-  | stuck w => exact .inr (.inr ⟨w, rfl⟩)
+  | refused w => exact .inr (.inr ⟨w, rfl⟩)
   | outOfFuel =>
       obtain ⟨D, hD⟩ := eval_steps_of_outOfFuel M P fuel [] Activation.empty (.call 0 []) hr [] []
       exact absurd (hn.bound hfin hD) (by omega)
@@ -1763,9 +1763,9 @@ monitors and its `@drop ⊘` refusal sit (RUE-2314); `eval_complete` removes it
 on checked programs. -/
 theorem run_complete (M : FloatSig) (P : Program) :
     (∀ H φ v tr, Steps M P Config.init (.run H φ [] (.ret v) tr) →
-      ∃ n, ∀ fuel, n < fuel → run M P fuel = .ok H v tr ∨ ∃ w, run M P fuel = .stuck w) ∧
+      ∃ n, ∀ fuel, n < fuel → run M P fuel = .ok H v tr ∨ ∃ w, run M P fuel = .refused w) ∧
     (∀ κ tr, Steps M P Config.init (.panic κ tr) →
-      ∃ n, ∀ fuel, n < fuel → run M P fuel = .panic κ tr ∨ ∃ w, run M P fuel = .stuck w) := by
+      ∃ n, ∀ fuel, n < fuel → run M P fuel = .panic κ tr ∨ ∃ w, run M P fuel = .refused w) := by
   refine ⟨fun H φ v tr hT => ?_, fun κ tr hT => ?_⟩
   · obtain ⟨n, hn⟩ := run_classify hT (fun _ => Step.terminal trivial)
     refine ⟨n, fun fuel hlt => ?_⟩
@@ -1809,10 +1809,10 @@ theorem eval_complete (M : FloatModel) {P : Program} (h : ProgramTyped P) :
 /-- **A stuck `Step` run is a refusal of `run`, on every program** (§6, §7):
 if `→*` takes the initial configuration to a stuck one, then at every fuel past
 the number of steps `run` refuses. The refusal need not name the same
-`Violation`: `eval` inspects operand shapes in its own order (RUE-2314). -/
-theorem run_stuck_of_step_stuck (M : FloatSig) (P : Program) {C : Config} {w : Violation}
+`Refusal`: `eval` inspects operand shapes in its own order (RUE-2314). -/
+theorem run_stuck_of_step_stuck (M : FloatSig) (P : Program) {C : Config} {w : Refusal}
     (hC : Steps M P Config.init C) (hs : C.Stuck M P w) :
-    ∃ n, ∀ fuel, n < fuel → ∃ w', run M P fuel = .stuck w' := by
+    ∃ n, ∀ fuel, n < fuel → ∃ w', run M P fuel = .refused w' := by
   obtain ⟨n, hn⟩ := run_classify hC (fun _ => hs.no_step)
   refine ⟨n, fun fuel hlt => ?_⟩
   rcases hn fuel hlt with ⟨H, v, tr, _, he⟩ | ⟨κ, tr, _, he⟩ | hw
@@ -1828,7 +1828,7 @@ off the checked domain (RUE-2314): `@drop` of a `⊘` place is a refusal of
 `eval` and a no-op of §6.11, and `eval` refuses `true + 1/0` where §6.2 panics
 first. -/
 theorem step_never_stuck_of_run (M : FloatSig) (P : Program)
-    (hnv : ∀ fuel w, run M P fuel ≠ .stuck w) :
+    (hnv : ∀ fuel w, run M P fuel ≠ .refused w) :
     ∀ C, Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C' := by
   intro C hC
   rcases Config.trichotomy M P C with hs | ht | ⟨w, hw⟩
@@ -1840,7 +1840,7 @@ theorem step_never_stuck_of_run (M : FloatSig) (P : Program)
 
 /-- **"Never stuck", both ways, in §7's phrasing** (RUE-2289 part 3; §7's
 type-safety bullet; ADR-0097 decision 3). For a program `check` accepts,
-"for every fuel, `run` is never `.stuck`" is equivalent to "every
+"for every fuel, `run` is never `.refused`" is equivalent to "every
 configuration §6's `→*` reaches from the initial one reduces or has halted
 with a value or a panic". The forward direction holds on every program
 (`step_never_stuck_of_run`) and is the one with content; on this domain the
@@ -1849,7 +1849,7 @@ backward one is `no_violation`, and off it the backward one fails
 say the same stability from `eval`'s side: its answer, once it is not
 `outOfFuel`, is the answer at every larger fuel. -/
 theorem never_stuck_iff (M : FloatModel) {P : Program} (h : ProgramTyped P) :
-    (∀ fuel w, run M.toFloatSig P fuel ≠ .stuck w) ↔
+    (∀ fuel w, run M.toFloatSig P fuel ≠ .refused w) ↔
       ∀ C, Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C' :=
   ⟨step_never_stuck_of_run M.toFloatSig P, fun _ fuel w => no_violation M h fuel w⟩
 
@@ -1876,7 +1876,7 @@ theorem eval_diverges_iff (M : FloatModel) {P : Program} (h : ProgramTyped P) :
         obtain ⟨k, hk⟩ := ((run_sim _ P fuel).2 κ tr hr).toN
         obtain ⟨D, hD⟩ := hd (k + 1)
         exact absurd (hk.bound (fun _ => Step.terminal trivial) hD) (by omega)
-    | stuck w => exact absurd hr (no_violation M h fuel w)
+    | refused w => exact absurd hr (no_violation M h fuel w)
     | returned H v tr => exact absurd hr (run_ne_returned _ H v tr)
     | broke H sc tr => exact absurd hr (run_ne_broke _ H sc tr)
 
@@ -1943,7 +1943,7 @@ theorem init_safeAt (M : FloatModel) {P : Program} (h : ProgramTyped P) :
 a value, or halts with one of the defined panics"; ADR-0097 decision 3). For
 a program `check` accepts, every configuration `→*` reaches from §6.12's
 initial configuration is terminal or takes a step, so none is stuck
-(`Config.stuck_iff`). Derived: `soundness` gives "`run` is never `.stuck`"
+(`Config.stuck_iff`). Derived: `soundness` gives "`run` is never `.refused`"
 (`no_violation`), and `step_never_stuck_of_run` — built from `run_sim` and
 the step count `eval_steps_of_outOfFuel` — carries it to `Step`. -/
 theorem step_progress (M : FloatModel) {P : Program} (h : ProgramTyped P) :
@@ -1987,7 +1987,7 @@ non-decidable property, outside this package's axioms; `eval_diverges_iff` is
 the unbounded form of the first case. Fuel meets `Step` here directly: `run`
 at fuel `n` is out of fuel (then §6 has an `n`-step run,
 `eval_steps_of_outOfFuel`), a value (typed by `run_safe`, reached by
-`run_sim`), or a panic (reached by `run_sim`); never `.stuck`. -/
+`run_sim`), or a panic (reached by `run_sim`); never `.refused`. -/
 theorem step_type_safety (M : FloatModel) {P : Program} (h : ProgramTyped P) :
     ∃ fd, P.fns[0]? = some fd ∧ ∀ n,
       (∃ D, StepsN M.toFloatSig P n Config.init D) ∨

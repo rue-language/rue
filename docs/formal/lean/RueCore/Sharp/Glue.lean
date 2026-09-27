@@ -88,8 +88,8 @@ theorem stuck.run_safe_1 :
 
 /-- `Sharp.stuck` refutes `no_violation` without hypothesis 1 (helper). -/
 theorem stuck.no_violation_1 :
-    ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) (w : Violation),
-        run M.toFloatSig P fuel ≠ EvalRes.stuck w := by
+    ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) (w : Refusal),
+        run M.toFloatSig P fuel ≠ EvalRes.refused w := by
   intro h
   obtain ⟨-, hnpt, hnwf, -, hps, heps, hfm, hcc, ⟨c, Ω, -, -, ht, hne⟩, hl, h200, -, h201, -, hr200, -, hnot⟩ :=
     Spine.Sharp.stuck _ rfl _ rfl
@@ -98,7 +98,7 @@ theorem stuck.no_violation_1 :
 /-- `Sharp.stuck` refutes `no_use_after_move` without hypothesis 1 (helper). -/
 theorem stuck.no_use_after_move_1 :
     ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-        run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterMove := by
+        run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.useAfterMove := by
   intro h
   obtain ⟨-, hnpt, hnwf, -, hps, heps, hfm, hcc, ⟨c, Ω, -, -, ht, hne⟩, hl, h200, -, h201, -, hr200, -, hnot⟩ :=
     Spine.Sharp.stuck _ rfl _ rfl
@@ -107,7 +107,7 @@ theorem stuck.no_use_after_move_1 :
 /-- `Sharp.stuck` refutes `no_masking` without hypothesis 2 (helper). -/
 theorem stuck.no_masking_2 :
     ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : RueCore.Expr} {n m : Nat}
-        {w : Violation}, eval M n P H φ e = EvalRes.stuck w → eval M m P H φ e = EvalRes.stuck w := by
+        {w : Refusal}, eval M n P H φ e = EvalRes.refused w → eval M m P H φ e = EvalRes.refused w := by
   intro h
   obtain ⟨-, hnpt, hnwf, -, hps, heps, hfm, hcc, ⟨c, Ω, -, -, ht, hne⟩, hl, h200, -, h201, -, hr200, -, hnot⟩ :=
     Spine.Sharp.stuck _ rfl _ rfl
@@ -134,7 +134,7 @@ theorem stuck.drop_exactly_once_1 :
               ActivationTyping P.decls Γ φ H →
                 StoreCC P.decls H →
                   e.pendingSafe = true →
-                    (∀ (w : Violation), eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    (∀ (w : Refusal), eval M.toFloatSig fuel P H φ e ≠ EvalRes.refused w) ∧
                       Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
                         Tidy φ H (eval M.toFloatSig fuel P H φ e) := by
   intro h
@@ -156,7 +156,7 @@ theorem stuck.rest_exactly_once_1 :
                       Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                         ∀ {r : EvalRes},
                           eval M.toFloatSig (fuel + 1) P H φ e = EvalRes.withTrace tr r →
-                            (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                            (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                               Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧
                                 Settled φ H₁ r := by
   intro h
@@ -167,7 +167,7 @@ theorem stuck.rest_exactly_once_1 :
 /-- `Sharp.stuck` refutes `eval_sound` without hypothesis 1 (helper). -/
 theorem stuck.eval_sound_1 :
     ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-        (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
+        (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
           (∀ (H : Store) (v : Val) (tr : List Event),
               run M.toFloatSig P fuel = EvalRes.ok H v tr →
                 Steps M.toFloatSig P Config.init (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
@@ -223,9 +223,9 @@ theorem stuck_step.step_never_stuck_of_run_1 :
 
 /-- `Sharp.stuck_step` refutes `run_stuck_of_step_stuck` without hypothesis 3 (helper). -/
 theorem stuck_step.run_stuck_of_step_stuck_3 :
-    ¬∀ (M : FloatSig) (P : Program) {C : RueCore.Config} {w : Violation},
+    ¬∀ (M : FloatSig) (P : Program) {C : RueCore.Config} {w : Refusal},
         Steps M P Config.init C →
-          Config.Stuck M P C w → ∃ _n : Nat, ∀ (fuel : Nat), ∃ w', run M P fuel = EvalRes.stuck w' := by
+          Config.Stuck M P C w → ∃ _n : Nat, ∀ (fuel : Nat), ∃ w', run M P fuel = EvalRes.refused w' := by
   intro h
   obtain ⟨-, ⟨C, hC, hst⟩, -, -, hprog, hpres, hts, hn⟩ := Spine.Sharp.stuck_step _ rfl _ rfl
   obtain ⟨_, hk⟩ := h _ _ hC hst
@@ -265,7 +265,7 @@ theorem typed.drop_exactly_once_3 :
               ActivationTyping P.decls Γ φ H →
                 StoreCC P.decls H →
                   e.pendingSafe = true →
-                    (∀ (w : Violation), eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    (∀ (w : Refusal), eval M.toFloatSig fuel P H φ e ≠ EvalRes.refused w) ∧
                       Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
                         Tidy φ H (eval M.toFloatSig fuel P H φ e) := by
   intro h
@@ -288,7 +288,7 @@ theorem typed.rest_exactly_once_3 :
                       Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                         ∀ {r : EvalRes},
                           eval M.toFloatSig (fuel + 1) P H φ e = EvalRes.withTrace tr r →
-                            (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                            (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                               Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧
                                 Settled φ H₁ r := by
   intro h
@@ -320,7 +320,7 @@ theorem frame.drop_exactly_once_4 :
               Typed P R Γ e T Ω →
                 StoreCC P.decls H →
                   e.pendingSafe = true →
-                    (∀ (w : Violation), eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    (∀ (w : Refusal), eval M.toFloatSig fuel P H φ e ≠ EvalRes.refused w) ∧
                       Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
                         Tidy φ H (eval M.toFloatSig fuel P H φ e) := by
   intro h
@@ -342,7 +342,7 @@ theorem frame.rest_exactly_once_4 :
                       Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                         ∀ {r : EvalRes},
                           eval M.toFloatSig (fuel + 1) P H φ e = EvalRes.withTrace tr r →
-                            (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                            (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                               Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧
                                 Settled φ H₁ r := by
   intro h
@@ -379,16 +379,16 @@ theorem entry_param.run_safe_3 :
 
 /-- `Sharp.entry_param` refutes `no_violation` without hypothesis 1 (helper). -/
 theorem entry_param.no_violation_1 :
-    ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) (w : Violation),
-        run M.toFloatSig P fuel ≠ EvalRes.stuck w := by
+    ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) (w : Refusal),
+        run M.toFloatSig P fuel ≠ EvalRes.refused w := by
   intro h
   obtain ⟨hwf, -, ⟨fd, hfd, -, hn⟩, hr⟩ := Spine.Sharp.entry_param _ rfl
   exact h Float.exactModel 200 _ hr
 
 /-- `Sharp.copy` refutes `no_violation` without hypothesis 1 (helper). -/
 theorem copy.no_violation_1 :
-    ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) (w : Violation),
-        run M.toFloatSig P fuel ≠ EvalRes.stuck w := by
+    ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) (w : Refusal),
+        run M.toFloatSig P fuel ≠ EvalRes.refused w := by
   intro h
   obtain ⟨-, -, hr⟩ := Spine.Sharp.copy _ rfl _ rfl
   exact h Float.exactModel 200 _ hr
@@ -396,7 +396,7 @@ theorem copy.no_violation_1 :
 /-- `Sharp.leak` refutes `no_linear_leak` without hypothesis 1 (helper). -/
 theorem leak.no_linear_leak_1 :
     ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-        run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearLeak := by
+        run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearLeak := by
   intro h
   obtain ⟨-, -, hr, H, φ, v, tr, hs, hn⟩ := Spine.Sharp.leak _ rfl _ rfl
   exact h Float.exactModel 200 hr
@@ -417,7 +417,7 @@ theorem leak.eval_complete_1 :
 /-- `Sharp.overwrite` refutes `no_linear_overwrite` without hypothesis 1 (helper). -/
 theorem overwrite.no_linear_overwrite_1 :
     ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-        run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearOverwrite := by
+        run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearOverwrite := by
   intro h
   obtain ⟨-, -, hr⟩ := Spine.Sharp.overwrite _ rfl _ rfl
   exact h Float.exactModel 200 hr
@@ -425,7 +425,7 @@ theorem overwrite.no_linear_overwrite_1 :
 /-- `Sharp.discard` refutes `no_linear_discard` without hypothesis 1 (helper). -/
 theorem discard.no_linear_discard_1 :
     ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-        run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearDiscard := by
+        run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearDiscard := by
   intro h
   obtain ⟨-, -, hr, κ, tr, hs, hn⟩ := Spine.Sharp.discard _ rfl _ rfl
   exact h Float.exactModel 200 hr
@@ -446,7 +446,7 @@ theorem discard.eval_complete_1 :
 /-- `Sharp.discard_loop` refutes `no_linear_discard` without hypothesis 1 (helper). -/
 theorem discard_loop.no_linear_discard_1 :
     ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-        run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearDiscard := by
+        run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearDiscard := by
   intro h
   obtain ⟨-, -, hr, -, -, hdiv, hns⟩ := Spine.Sharp.discard_loop _ rfl _ rfl
   exact h Float.exactModel 200 hr
@@ -454,7 +454,7 @@ theorem discard_loop.no_linear_discard_1 :
 /-- `Sharp.discard_loop` refutes `never_stuck_iff` without hypothesis 1 (helper). -/
 theorem discard_loop.never_stuck_iff_1 :
     ¬∀ (M : FloatModel) {P : Program},
-        (∀ (fuel : Nat) (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ↔
+        (∀ (fuel : Nat) (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ↔
           ∀ (C : RueCore.Config),
             Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C' := by
   intro h
@@ -494,7 +494,7 @@ theorem fuel.fuel_mono_2 :
 /-- `Sharp.fuel` refutes `no_masking` without hypothesis 1 (helper). -/
 theorem fuel.no_masking_1 :
     ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : RueCore.Expr} {_n : Nat} {m : Nat}
-        {w : Violation}, eval M m P H φ e ≠ EvalRes.outOfFuel → eval M m P H φ e = EvalRes.stuck w := by
+        {w : Refusal}, eval M m P H φ e ≠ EvalRes.outOfFuel → eval M m P H φ e = EvalRes.refused w := by
   intro h
   obtain ⟨hPT, hrun, -, H, v, tr, hr, hs, -, -, hne, hns, hn⟩ := Spine.Sharp.fuel _ rfl _ rfl
   have k := h Float.exactOps (P := progDtor) (H := []) (φ := Activation.empty) (e := .call 0 []) (_n := 0) (m := 200)
@@ -524,12 +524,12 @@ theorem fuel.run_complete_2 :
             Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
               ∃ _n : Nat,
                 ∀ (fuel : Nat),
-                  run M P fuel = EvalRes.ok H v tr ∨ ∃ w, run M P fuel = EvalRes.stuck w) ∧
+                  run M P fuel = EvalRes.ok H v tr ∨ ∃ w, run M P fuel = EvalRes.refused w) ∧
           ∀ (κ : PanicKind) (tr : List Event),
             Steps M P Config.init (Config.panic κ tr) →
               ∃ n : Nat,
                 ∀ (fuel : Nat),
-                  n < fuel → run M P fuel = EvalRes.panic κ tr ∨ ∃ w, run M P fuel = EvalRes.stuck w := by
+                  n < fuel → run M P fuel = EvalRes.panic κ tr ∨ ∃ w, run M P fuel = EvalRes.refused w := by
   intro h
   obtain ⟨hPT, hrun, -, H, v, tr, hr, hs, -, -, hne, hns, hn⟩ := Spine.Sharp.fuel _ rfl _ rfl
   obtain ⟨_, hk⟩ := (h Float.exactOps _).1 _ _ _ _ hs
@@ -557,11 +557,11 @@ theorem fuel_panic.run_complete_4 :
             Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
               ∃ n : Nat,
                 ∀ (fuel : Nat),
-                  n < fuel → run M P fuel = EvalRes.ok H v tr ∨ ∃ w, run M P fuel = EvalRes.stuck w) ∧
+                  n < fuel → run M P fuel = EvalRes.ok H v tr ∨ ∃ w, run M P fuel = EvalRes.refused w) ∧
           ∀ (κ : PanicKind) (tr : List Event),
             Steps M P Config.init (Config.panic κ tr) →
               ∃ _n : Nat,
-                ∀ (fuel : Nat), run M P fuel = EvalRes.panic κ tr ∨ ∃ w, run M P fuel = EvalRes.stuck w := by
+                ∀ (fuel : Nat), run M P fuel = EvalRes.panic κ tr ∨ ∃ w, run M P fuel = EvalRes.refused w := by
   intro h
   obtain ⟨hPT, -, hs, hn⟩ := Spine.Sharp.fuel_panic _ rfl _ rfl
   obtain ⟨_, hk⟩ := (h Float.exactOps _).2 _ _ hs
@@ -578,7 +578,7 @@ theorem not_fits.check_sound_2 :
 /-- `Sharp.double_drop` refutes `no_double_free` without hypothesis 1 (helper). -/
 theorem double_drop.no_double_free_1 :
     ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-        (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
+        (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
           (∀ (a : Nat), List.count a (freedIds P.decls (run M.toFloatSig P fuel).trace) ≤ 1) ∧
             ∀ (a : Nat), List.count a (dtorIds (run M.toFloatSig P fuel).trace) ≤ 1 := by
   intro h
@@ -646,7 +646,7 @@ theorem pending_program.drop_exactly_once_2 :
               ActivationTyping P.decls Γ φ H →
                 StoreCC P.decls H →
                   e.pendingSafe = true →
-                    (∀ (w : Violation), eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    (∀ (w : Refusal), eval M.toFloatSig fuel P H φ e ≠ EvalRes.refused w) ∧
                       Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
                         Tidy φ H (eval M.toFloatSig fuel P H φ e) := by
   intro h
@@ -668,7 +668,7 @@ theorem pending_program.rest_exactly_once_2 :
                       Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                         ∀ {r : EvalRes},
                           eval M.toFloatSig (fuel + 1) P H φ e = EvalRes.withTrace tr r →
-                            (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                            (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                               Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧
                                 Settled φ H₁ r := by
   intro h
@@ -686,7 +686,7 @@ theorem pending_expr.drop_exactly_once_6 :
               Typed P R Γ e T Ω →
                 ActivationTyping P.decls Γ φ H →
                   StoreCC P.decls H →
-                    (∀ (w : Violation), eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    (∀ (w : Refusal), eval M.toFloatSig fuel P H φ e ≠ EvalRes.refused w) ∧
                       Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
                         Tidy φ H (eval M.toFloatSig fuel P H φ e) := by
   intro h
@@ -708,7 +708,7 @@ theorem pending_expr.rest_exactly_once_6 :
                       Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                         ∀ {r : EvalRes},
                           eval M.toFloatSig (fuel + 1) P H φ e = EvalRes.withTrace tr r →
-                            (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                            (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                               Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧
                                 Settled φ H₁ r := by
   intro h
@@ -726,7 +726,7 @@ theorem store_cc.drop_exactly_once_5 :
               Typed P R Γ e T Ω →
                 ActivationTyping P.decls Γ φ H →
                   e.pendingSafe = true →
-                    (∀ (w : Violation), eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                    (∀ (w : Refusal), eval M.toFloatSig fuel P H φ e ≠ EvalRes.refused w) ∧
                       Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
                         Tidy φ H (eval M.toFloatSig fuel P H φ e) := by
   intro h
@@ -748,7 +748,7 @@ theorem store_cc.rest_exactly_once_5 :
                       Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                         ∀ {r : EvalRes},
                           eval M.toFloatSig (fuel + 1) P H φ e = EvalRes.withTrace tr r →
-                            (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                            (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                               Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧
                                 Settled φ H₁ r := by
   intro h
@@ -769,7 +769,7 @@ theorem no_lead.rest_exactly_once_7 :
                     e.pendingSafe = true →
                       ∀ {H₁ : Store} {vs : List Val} {tr : List Event} {r : EvalRes},
                         eval M.toFloatSig (fuel + 1) P H φ e = EvalRes.withTrace tr r →
-                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                          (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                             Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧
                               Settled φ H₁ r := by
   intro h
@@ -790,12 +790,12 @@ theorem no_eval.rest_exactly_once_8 :
                       ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
                         Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                           ∀ {r : EvalRes},
-                            (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                            (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                               Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧
                                 Settled φ H₁ r := by
   intro h
   obtain ⟨hPT, hps, heps, hfm, hcc, ⟨c, Ω, -, -, ht⟩, H₁, vs, tr, hl, -⟩ := Spine.Sharp.no_eval _ rfl _ rfl
-  exact (h Float.exactModel hPT hps ht hfm hcc heps hl (r := .stuck .unbound)).1 _ rfl
+  exact (h Float.exactModel hPT hps ht hfm hcc heps hl (r := .refused .unbound)).1 _ rfl
 
 /-- `Sharp.unreached` refutes `drop_order` without hypothesis 2 (helper). -/
 theorem unreached.drop_order_2 :
@@ -832,7 +832,7 @@ theorem unreached.eval_sound_2 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
           ∀ (fuel : Nat),
-            (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
+            (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
               (∀ (H : Store) (v : Val) (tr : List Event),
                   Steps M.toFloatSig P Config.init (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
                 ∀ (k : PanicKind) (tr : List Event),
@@ -874,12 +874,12 @@ theorem unreached.run_complete_1 :
         (∀ (H : Store) (_φ : Activation) (v : Val) (tr : List Event),
             ∃ n,
               ∀ (fuel : Nat),
-                n < fuel → run M P fuel = EvalRes.ok H v tr ∨ ∃ w, run M P fuel = EvalRes.stuck w) ∧
+                n < fuel → run M P fuel = EvalRes.ok H v tr ∨ ∃ w, run M P fuel = EvalRes.refused w) ∧
           ∀ (κ : PanicKind) (tr : List Event),
             Steps M P Config.init (Config.panic κ tr) →
               ∃ n,
                 ∀ (fuel : Nat),
-                  n < fuel → run M P fuel = EvalRes.panic κ tr ∨ ∃ w, run M P fuel = EvalRes.stuck w := by
+                  n < fuel → run M P fuel = EvalRes.panic κ tr ∨ ∃ w, run M P fuel = EvalRes.refused w := by
   intro h
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached _ rfl _ rfl
   exact hn ((h Float.exactOps _).1 [] Activation.empty (.int .w64 .signed 8) _)
@@ -921,7 +921,7 @@ theorem unreached_panic.eval_sound_3 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
           ∀ (fuel : Nat),
-            (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
+            (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
               (∀ (H : Store) (v : Val) (tr : List Event),
                   run M.toFloatSig P fuel = EvalRes.ok H v tr →
                     Steps M.toFloatSig P Config.init (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
@@ -963,11 +963,11 @@ theorem unreached_panic.run_complete_3 :
             Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
               ∃ n,
                 ∀ (fuel : Nat),
-                  n < fuel → run M P fuel = EvalRes.ok H v tr ∨ ∃ w, run M P fuel = EvalRes.stuck w) ∧
+                  n < fuel → run M P fuel = EvalRes.ok H v tr ∨ ∃ w, run M P fuel = EvalRes.refused w) ∧
           ∀ (κ : PanicKind) (tr : List Event),
             ∃ n,
               ∀ (fuel : Nat),
-                n < fuel → run M P fuel = EvalRes.panic κ tr ∨ ∃ w, run M P fuel = EvalRes.stuck w := by
+                n < fuel → run M P fuel = EvalRes.panic κ tr ∨ ∃ w, run M P fuel = EvalRes.refused w := by
   intro h
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached_panic _ rfl _ rfl
   exact hn ((h Float.exactOps _).2 .user _)
@@ -1035,7 +1035,7 @@ theorem init_steps.Step.terminal_1 :
 
 /-- `Sharp.init_steps` refutes `step_stuck_isStuckState` without hypothesis 1 (helper). -/
 theorem init_steps.step_stuck_isStuckState_1 :
-    ¬∀ {_M : FloatSig} {_P : Program} {_C : RueCore.Config} {w : Violation}, w.isStuckState = true := by
+    ¬∀ {_M : FloatSig} {_P : Program} {_C : RueCore.Config} {w : Refusal}, w.isStuckState = true := by
   intro h
   obtain ⟨-, hs, -, hne, -, -, hf, hinit, hn⟩ := Spine.Sharp.init_steps _ rfl _ rfl
   have := @h Float.exactOps progDtor Config.init .linearLeak
@@ -1044,8 +1044,8 @@ theorem init_steps.step_stuck_isStuckState_1 :
 
 /-- `Sharp.init_steps` refutes `run_stuck_of_step_stuck` without hypothesis 2 (helper). -/
 theorem init_steps.run_stuck_of_step_stuck_2 :
-    ¬∀ (M : FloatSig) (P : Program) {C : RueCore.Config} {_w : Violation},
-        Steps M P Config.init C → ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.stuck w' := by
+    ¬∀ (M : FloatSig) (P : Program) {C : RueCore.Config} {_w : Refusal},
+        Steps M P Config.init C → ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.refused w' := by
   intro h
   obtain ⟨-, hs, -, hne, -, -, hf, hinit, hn⟩ := Spine.Sharp.init_steps _ rfl _ rfl
   exact hn (h _ _ (_w := .unbound) hinit)
@@ -1072,7 +1072,7 @@ theorem unreachable_stuck.step_preservation_2 :
 theorem unreachable_stuck.never_stuck_iff_2 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
-          ((∀ (fuel : Nat) (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ↔
+          ((∀ (fuel : Nat) (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ↔
             ∀ (C : RueCore.Config), C.Terminal ∨ ∃ C', Step M.toFloatSig P C C') := by
   intro h
   obtain ⟨hPT, hst, -, hnr, -, hns, hall, hn⟩ := Spine.Sharp.unreachable_stuck _ rfl _ rfl
@@ -1081,7 +1081,7 @@ theorem unreachable_stuck.never_stuck_iff_2 :
 /-- `Sharp.unreachable_stuck` refutes `step_never_stuck_of_run` without hypothesis 2 (helper). -/
 theorem unreachable_stuck.step_never_stuck_of_run_2 :
     ¬∀ (M : FloatSig) (P : Program),
-        (∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w) →
+        (∀ (fuel : Nat) (w : Refusal), run M P fuel ≠ EvalRes.refused w) →
           ∀ (C : RueCore.Config), C.Terminal ∨ ∃ C', Step M P C C' := by
   intro h
   obtain ⟨hPT, hst, -, hnr, -, hns, hall, hn⟩ := Spine.Sharp.unreachable_stuck _ rfl _ rfl
@@ -1089,15 +1089,15 @@ theorem unreachable_stuck.step_never_stuck_of_run_2 :
 
 /-- `Sharp.unreachable_stuck` refutes `run_stuck_of_step_stuck` without hypothesis 1 (helper). -/
 theorem unreachable_stuck.run_stuck_of_step_stuck_1 :
-    ¬∀ (M : FloatSig) (P : Program) {C : RueCore.Config} {w : Violation},
-        Config.Stuck M P C w → ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.stuck w' := by
+    ¬∀ (M : FloatSig) (P : Program) {C : RueCore.Config} {w : Refusal},
+        Config.Stuck M P C w → ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.refused w' := by
   intro h
   obtain ⟨hPT, hst, -, hnr, -, hns, hall, hn⟩ := Spine.Sharp.unreachable_stuck _ rfl _ rfl
   exact hn (h _ _ hst)
 
 /-- `Sharp.retired_cell` refutes `step_no_use_after_drop` without hypothesis 1 (helper). -/
 theorem retired_cell.step_no_use_after_drop_1 :
-    ¬∀ (M : FloatSig) (P : Program) {C : RueCore.Config}, ¬C.Stuck M P Violation.useAfterDrop := by
+    ¬∀ (M : FloatSig) (P : Program) {C : RueCore.Config}, ¬C.Stuck M P Refusal.useAfterDrop := by
   intro h
   obtain ⟨-, -, hst, -⟩ := Spine.Sharp.retired_cell _ rfl _ rfl
   exact h _ _ hst
