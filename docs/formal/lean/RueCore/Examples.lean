@@ -2656,24 +2656,44 @@ def linearLostAtArrayElem : Program :=
               ret := .struct sLinearDtor,
               body := seq (drop (.var 0)) (resLD (lit 9)) }] }
 
-/-! ## Four never-exercised divergence rules, seeded (RUE-2483)
+/-! ## Six never-exercised divergence rules, seeded (RUE-2483)
 
 `BRIDGE-SENSITIVITY.md`'s rule-coverage table found seven §5.3/§5.7
-"-Bottom" rules with no seed and no generated case. Three of them —
-(Seq-Bottom), (Let-Bottom), and every position of (Strict-Bottom) except the
-one below — type a form *past* a diverging subexpression: an unreached
-sequence tail, `let` body, or branch arm. Seeding those needs the syntax
-RUE-2376 leaves unsettled (code after a `return`/`@panic` the compiler may
-reject as ill-formed dead code), so none is added; `BRIDGE-SENSITIVITY.md`
-and `WHAT-IT-MEANS.md` record the gap instead. (Panic-Operand) is not a gap
-at all: `Expr.panic`'s message is a literal `String` (`Syntax.lean`), not an
-`Expr`, so there is no operand position for it to diverge in — outside the
+"-Bottom" rules with no seed and no generated case. (Panic-Operand) is not a
+gap at all: `Expr.panic`'s message is a literal `String` (`Syntax.lean`), not
+an `Expr`, so there is no operand position for it to diverge in — outside the
 fragment, permanently.
 
-The remaining four need no tail at all — each diverging form is either the
-whole construct or its last sibling — so each gets a seed below. None
-crosses RUE-2316's pending-temporary gap either: none has an earlier
-sibling value already built when a later one diverges. -/
+The other six all get a seed below, including (Seq-Bottom) and (Let-Bottom).
+RUE-2376 is not a reason to skip them: it is about a dead tail that is
+*itself ill-formed* — a type error, a missing match arm, a double `@drop`, a
+linear leak or discard, an assignment to an immutable binding — inside
+otherwise-unreached code, which the checker never sees (§5.3's rules type
+nothing past a diverging form) but the compiler's own reachability analysis
+does, and may reject. A **well-formed** tail has none of those defects, so
+the compiler has nothing to reject: it accepts, with only an
+"unreachable code" warning, and runs to the same value the model predicts —
+verified below and by `bin/verify.py`. `return 1; 2` and `let x: i64 = return
+1; x` are exactly such tails, so (Seq-Bottom) and (Let-Bottom) are seeded the
+same way as the other four. None crosses RUE-2316's pending-temporary gap
+either: none has an earlier sibling value already built when a later one
+diverges. -/
+
+/-- (Seq-Bottom) §5.3: the prefix `return 1` diverges, so `2` is never typed
+and never runs — a well-formed tail, so the compiler only warns
+("unreachable code") rather than rejecting it. Nothing RUE-2376 asks about
+applies: that issue is about a dead tail that is itself ill-formed, and this
+one has no such defect. The compiler agrees: it accepts and exits with the
+`return`'s value, `1`. -/
+def seqBottom : Program :=
+  scalarProg tI64 (seq (ret (lit 1)) (lit 2))
+
+/-- (Let-Bottom) §5.3: the initializer `return 1` diverges, so `x` is never
+bound and its use in the body is never typed or reached — again a
+well-formed tail, so the compiler only warns. The compiler agrees: it
+accepts and exits with the `return`'s value, `1`. -/
+def letBottom : Program :=
+  scalarProg tI64 (letIn false (ret (lit 1)) (use (.var 0)))
 
 /-- (Return-Bottom) §5.7: `return`'s own operand is itself a `return`, so the
 outer `return` never fires — the inner one already unwound the frame with
@@ -2688,9 +2708,10 @@ runs. The mechanization has no separate (Call-Bottom) conclusion for the
 call itself — `Typed.call` always concludes at `fd.ret` (`Statics.lean`'s
 note on what the fragment omits) — so what diverges is `TypedArgs.consBot`,
 labelled "(Strict-Bottom) at a list member"; `Explain.explain`'s `.call` case
-now names the call "(Call-Bottom)" when its argument list does, the same way
-its `.loop` case already picks between (Loop-Div) and (Loop-Div-Backedge).
-Nothing follows the call, and there is no earlier argument to strand. The
+now names the call "(Call-Bottom)" when its argument list does, the way the
+`.loop` case already tells its two divergence cases apart from one Lean
+derivation. Nothing follows the call, and there is no earlier argument to
+strand. The
 compiler agrees: it accepts and exits with the `return`'s value, `0`, after
 the `@dbg` line `1`. -/
 def callBottom : Program :=
@@ -2781,6 +2802,8 @@ def loopDivBackedge : Program :=
 #eval run demoOps (prog tI64 joinWholeAgainstPartial) demoFuel  -- ok: 9, dtors 1 then 2
 #eval run demoOps linearLostAtCallArg demoFuel                  -- ok: 0, EMPTY trace
 #eval run demoOps affineLostAtCallArg demoFuel                  -- ok: 0, EMPTY trace
+#eval run demoOps seqBottom demoFuel                            -- ok: 1, EMPTY trace
+#eval run demoOps letBottom demoFuel                            -- ok: 1, EMPTY trace
 #eval run demoOps returnBottom demoFuel                         -- ok: 5, dbg 1
 #eval run demoOps callBottom demoFuel                           -- ok: 0, dbg 1
 #eval run demoOps strictBottomAssign demoFuel                   -- ok: (), dbg 1
@@ -2813,6 +2836,8 @@ example : ProgramTyped returnPastAffine := checkProgram_sound (by rfl)
 example : ProgramTyped paramDroppedAtPop := checkProgram_sound (by rfl)
 example : ProgramTyped recursionTrap := checkProgram_sound (by rfl)
 example : ProgramTyped countdown := checkProgram_sound (by rfl)
+example : ProgramTyped seqBottom := checkProgram_sound (by rfl)
+example : ProgramTyped letBottom := checkProgram_sound (by rfl)
 example : ProgramTyped returnBottom := checkProgram_sound (by rfl)
 example : ProgramTyped callBottom := checkProgram_sound (by rfl)
 example : ProgramTyped strictBottomAssign := checkProgram_sound (by rfl)
