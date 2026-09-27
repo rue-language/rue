@@ -2,7 +2,8 @@
  three_params_dropped_at_pop
 ════════════════════════════════════════════════════════════════════════════════
 Three by-value destructor-bearing arguments the callee never consumes: the
-frame pop drops them last parameter first, 3, 2, 1, then the value 0.
+activation record pop drops them last parameter first, 3, 2, 1, then the value
+0.
 
 Rules exercised: (Call) §5.8 · (D-Call) §6.9 · (D-Return-Value) §6.9
 
@@ -94,9 +95,9 @@ the node itself, so the table reads top to bottom as the machine ran. `d<n>`
 is the nesting depth — a callee's rows are deeper than its call's — and `>>`
 marks a drop event. The run enters at f0(), as `Dynamics.run` does.
 `#n` after an aggregate is its identity, minted when it was built; a `†`
-cell is a retired binding or an identity's reserved slot (`introVal`).
+cell is a tombstoned binding or an identity's reserved slot (`introVal`).
 
-  [1]   d1    (D-Call) §6.9 (push the frame)
+  [1]   d1    (D-Call) §6.9 (push the activation record)
          expr    fn f0() -> i64  with []
          store   (empty)
            →     (empty)
@@ -131,7 +132,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = †, ℓ1 = †]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †]
          result  value S1 { 3 }#2
-  [8]   d3        (D-Call) §6.9 (push the frame)
+  [8]   d3        (D-Call) §6.9 (push the activation record)
          expr    fn f1(v0: S1, v1: S1, v2: S1) -> i64  with [ℓ3, ℓ4, ℓ5]
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = †]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = S1 { 1 }#0, ℓ4 = S1 { 2 }#1, ℓ5 = S1 { 3 …
@@ -141,13 +142,13 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = S1 { 1 }#0, ℓ4 = S1 { 2 }#1, ℓ5 = S1 { 3 …
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = S1 { 1 }#0, ℓ4 = S1 { 2 }#1, ℓ5 = S1 { 3 …
          result  value 0
-  [10]  d2      (D-Return-Value) §6.9 (pop the frame)
+  [10]  d2      (D-Return-Value) §6.9 (pop the activation record)
          expr    run-all-scope-drops([ℓ5, ℓ4, ℓ3])
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = S1 { 1 }#0, ℓ4 = S1 { 2 }#1, ℓ5 = S1 { 3 …
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
          events  >> drop ℓ5 = S1 { 3 }#2; run drop fn S1(S1 { 3 }#2); drop ℓ4 = S1 { 2 }#1; run drop fn S1(S1 { 2 }#1); drop ℓ3 = S1 { 1 }#0; run drop fn S1(S1 { 1 }#0)
          result  value 0
-  [11]  d0  (D-Return-Value) §6.9 (pop the frame)
+  [11]  d0  (D-Return-Value) §6.9 (pop the activation record)
          expr    run-all-scope-drops([])
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
@@ -156,7 +157,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
 ── Identities (§7) ─────────────────────────────────────────────────────────────
 
 One line per owned identity: the step that minted it, the steps that ended
-it (a drop marker, a discarded temporary, a consumption), and the steps whose
+it (a drop marker, a discarded temporary, a consume event), and the steps whose
 destructor ran on it. `drop_exactly_once` is one entry in the ended column
 per identity. Read in row order, and `[n.k]` (the k-th end of row n) inside a
 row, the ends are the trace's order, which `drop_order` fixes: a value's

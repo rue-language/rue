@@ -1637,7 +1637,8 @@ that rests on one takes the structure as a parameter, so the assumption
 is visible in its own statement and in `DIGEST.md`, and `#print axioms`
 keeps meaning what it says.
 
-One interface exists today, `RueCore.FloatLaws` (`RueCore/Float.lean`),
+One exists today, the float algebraic specification `RueCore.FloatLaws`
+(`RueCore/Float.lean`),
 which is §7's "totality of the float operations" lemma — the one §7
 itself says is "discharged against the standard rather than against
 Rue". Its fields:
@@ -1647,9 +1648,9 @@ Rue". Its fields:
   counterpart of `valOf_inBounds`, which *is* proved, because
   `val_{w,s}` is arithmetic while `rnd_w` is IEEE.
 - `arith_nan`, `narrow_nan`, `div_by_zero`, `zero_div_zero` — the
-  behavioural clauses §6.4 spells out "as consequences of `⊕_w`"
+  behavioural clauses §6.4 spells out "as corollaries of `⊕_w`"
   (`3.12:22`, `3.12:19`). Each is true of IEEE 754 *and* of the
-  compiler, which is why the two NaN laws are the **weak** ones: a NaN
+  compiler, which is why the two NaN laws are the **NaN-unspecified** ones: a NaN
   operand yields *a* NaN, sign unspecified. The standard promises no
   more, and both of Rue's targets propagate an operand's NaN with its
   own sign rather than substituting `σ_NaN` — `3.12:44` fixes `σ_NaN`
@@ -1684,9 +1685,9 @@ retargeting the instance changes no theorem.
 
 None. The package declares no axiom of its own, so nothing here is
 assumed beyond Lean's logic — what it assumes about IEEE 754 is the
-interface above instead. When the project's other obligation
-interfaces arrive (the library obligations of §6.13.5, and the
-adequacy obligation `../03-metatheory.md` records), each will appear
+float algebraic specification above instead. When the project's other obligation
+interfaces arrive (the trusted-code obligations of §6.13.5, and the
+semantic-equivalence obligation `../03-metatheory.md` records), each will appear
 in this section with its doc-comment, which is where its source
 belongs.
 

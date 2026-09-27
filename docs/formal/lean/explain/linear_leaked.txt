@@ -81,9 +81,9 @@ the node itself, so the table reads top to bottom as the machine ran. `d<n>`
 is the nesting depth — a callee's rows are deeper than its call's — and `>>`
 marks a drop event. The run enters at f0(), as `Dynamics.run` does.
 `#n` after an aggregate is its identity, minted when it was built; a `†`
-cell is a retired binding or an identity's reserved slot (`introVal`).
+cell is a tombstoned binding or an identity's reserved slot (`introVal`).
 
-  [1]   d1    (D-Call) §6.9 (push the frame)
+  [1]   d1    (D-Call) §6.9 (push the activation record)
          expr    fn f0() -> i64  with []
          store   (empty)
            →     (empty)
@@ -108,29 +108,29 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = †, ℓ1 = S2 { 7 }#0]
            →     [ℓ0 = †, ℓ1 = S2 { 7 }#0]
          result  value 1
-  [6]   d2      (D-EndScope) §6.7 (retire the binding)
+  [6]   d2      (D-EndScope) §6.7 (tombstone the binding)
          expr    { let v0: S2 = S2 { x0: 7 }; 1 }
          store   [ℓ0 = †, ℓ1 = S2 { 7 }#0]
            →     [ℓ0 = †, ℓ1 = S2 { 7 }#0]
          result  REFUSED (linearLeak)
-                 a scope exit or a frame teardown reached a live linear value: a
-                 linear obligation was never discharged (endscope §6.7 /
+                 a scope exit or an activation record teardown reached a live linear
+                 value: a linear obligation was never discharged (endscope §6.7 /
                  `run-all-scope-drops` §6.9, the §5.6 leak check executed; 3.8:32; §7
                  “consumed exactly once”)
-  [7]   d0  (D-Return-Value) §6.9 (pop the frame)
+  [7]   d0  (D-Return-Value) §6.9 (pop the activation record)
          expr    f0()
          store   (empty)
            →     [ℓ0 = †, ℓ1 = S2 { 7 }#0]
          result  REFUSED (linearLeak)
-                 a scope exit or a frame teardown reached a live linear value: a
-                 linear obligation was never discharged (endscope §6.7 /
+                 a scope exit or an activation record teardown reached a live linear
+                 value: a linear obligation was never discharged (endscope §6.7 /
                  `run-all-scope-drops` §6.9, the §5.6 leak check executed; 3.8:32; §7
                  “consumed exactly once”)
 
 ── Identities (§7) ─────────────────────────────────────────────────────────────
 
 One line per owned identity: the step that minted it, the steps that ended
-it (a drop marker, a discarded temporary, a consumption), and the steps whose
+it (a drop marker, a discarded temporary, a consume event), and the steps whose
 destructor ran on it. `drop_exactly_once` is one entry in the ended column
 per identity. Read in row order, and `[n.k]` (the k-th end of row n) inside a
 row, the ends are the trace's order, which `drop_order` fixes: a value's
@@ -145,8 +145,8 @@ destructors inside its drop in §6.11's order, and cells last-in first-out.
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: REFUSED (linearLeak)
-         a scope exit or a frame teardown reached a live linear value: a
-         linear obligation was never discharged (endscope §6.7 /
+         a scope exit or an activation record teardown reached a live linear
+         value: a linear obligation was never discharged (endscope §6.7 /
          `run-all-scope-drops` §6.9, the §5.6 leak check executed; 3.8:32; §7
          “consumed exactly once”)
 

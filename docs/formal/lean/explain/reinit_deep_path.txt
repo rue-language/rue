@@ -2,8 +2,8 @@
  reinit_deep_path
 ════════════════════════════════════════════════════════════════════════════════
 A moved-out leaf two field steps deep reinitialized by assignment: the
-overwrite-drop over the hole drops nothing, and the new leaf drops once at
-scope exit after its sibling (RUE-2319).
+overwrite-drop over the moved-out part drops nothing, and the new leaf drops
+once at scope exit after its sibling (RUE-2319).
 
 Rules exercised: (Assign) §5.2 · 3.8:55 · §6.8 overwrite-drop · §6.11
 
@@ -124,9 +124,9 @@ the node itself, so the table reads top to bottom as the machine ran. `d<n>`
 is the nesting depth — a callee's rows are deeper than its call's — and `>>`
 marks a drop event. The run enters at f0(), as `Dynamics.run` does.
 `#n` after an aggregate is its identity, minted when it was built; a `†`
-cell is a retired binding or an identity's reserved slot (`introVal`).
+cell is a tombstoned binding or an identity's reserved slot (`introVal`).
 
-  [1]   d1    (D-Call) §6.9 (push the frame)
+  [1]   d1    (D-Call) §6.9 (push the activation record)
          expr    fn f0() -> i64  with []
          store   (empty)
            →     (empty)
@@ -207,13 +207,13 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = S9 { S7 { S1 { 1 }#0, S1 { 2 }#1 …
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = S9 { S7 { S1 { 1 }#0, S1 { 5 }#5 …
          result  value 9
-  [17]  d2      (D-EndScope) §6.7 (retire the binding)
+  [17]  d2      (D-EndScope) §6.7 (tombstone the binding)
          expr    endscope([ℓ4])
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = S9 { S7 { S1 { 1 }#0, S1 { 5 }#5 …
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
          events  >> drop ℓ4 = S9 { S7 { S1 { 1 }#0, S1 { 5 }#5 }#2, 3 }#3; run drop fn S1(S1 { 1 }#0); run drop fn S1(S1 { 5 }#5)
          result  value 9
-  [18]  d0  (D-Return-Value) §6.9 (pop the frame)
+  [18]  d0  (D-Return-Value) §6.9 (pop the activation record)
          expr    run-all-scope-drops([])
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
@@ -222,7 +222,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
 ── Identities (§7) ─────────────────────────────────────────────────────────────
 
 One line per owned identity: the step that minted it, the steps that ended
-it (a drop marker, a discarded temporary, a consumption), and the steps whose
+it (a drop marker, a discarded temporary, a consume event), and the steps whose
 destructor ran on it. `drop_exactly_once` is one entry in the ended column
 per identity. Read in row order, and `[n.k]` (the k-th end of row n) inside a
 row, the ends are the trace's order, which `drop_order` fixes: a value's

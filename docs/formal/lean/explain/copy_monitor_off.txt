@@ -85,9 +85,9 @@ the node itself, so the table reads top to bottom as the machine ran. `d<n>`
 is the nesting depth — a callee's rows are deeper than its call's — and `>>`
 marks a drop event. The run enters at f0(), as `Dynamics.run` does.
 `#n` after an aggregate is its identity, minted when it was built; a `†`
-cell is a retired binding or an identity's reserved slot (`introVal`).
+cell is a tombstoned binding or an identity's reserved slot (`introVal`).
 
-  [1]   d1    (D-Call) §6.9 (push the frame)
+  [1]   d1    (D-Call) §6.9 (push the activation record)
          expr    fn f0() -> i64  with []
          store   (empty)
            →     (empty)
@@ -109,9 +109,9 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          result  REFUSED (ownedUnderCopy)
                  an owned value under a Copy node: a Copy type's fields, payloads and
                  elements are Copy (§3, 3.8:18, 6.3:19), so a copy of this aggregate
-                 would duplicate an owner; the machine's copy-closure monitor refuses
-                 it (§7 “no double free”), and `soundness` proves a checked program
-                 never reaches it
+                 would duplicate an owner; the machine's Copy-containment monitor
+                 refuses it (§7 “no double free”), and `soundness` proves a checked
+                 program never reaches it
   [5]   d2      (D-Let) §6.7 — a premise did not complete
          expr    { let v0: S0 = S0 { x0: S1 { x0: 1 } }; { let v1: S0 = v0; { @drop(v0.x0); { @d…
          store   (empty)
@@ -119,24 +119,24 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          result  REFUSED (ownedUnderCopy)
                  an owned value under a Copy node: a Copy type's fields, payloads and
                  elements are Copy (§3, 3.8:18, 6.3:19), so a copy of this aggregate
-                 would duplicate an owner; the machine's copy-closure monitor refuses
-                 it (§7 “no double free”), and `soundness` proves a checked program
-                 never reaches it
-  [6]   d0  (D-Return-Value) §6.9 (pop the frame)
+                 would duplicate an owner; the machine's Copy-containment monitor
+                 refuses it (§7 “no double free”), and `soundness` proves a checked
+                 program never reaches it
+  [6]   d0  (D-Return-Value) §6.9 (pop the activation record)
          expr    f0()
          store   (empty)
            →     [ℓ0 = †]
          result  REFUSED (ownedUnderCopy)
                  an owned value under a Copy node: a Copy type's fields, payloads and
                  elements are Copy (§3, 3.8:18, 6.3:19), so a copy of this aggregate
-                 would duplicate an owner; the machine's copy-closure monitor refuses
-                 it (§7 “no double free”), and `soundness` proves a checked program
-                 never reaches it
+                 would duplicate an owner; the machine's Copy-containment monitor
+                 refuses it (§7 “no double free”), and `soundness` proves a checked
+                 program never reaches it
 
 ── Identities (§7) ─────────────────────────────────────────────────────────────
 
 One line per owned identity: the step that minted it, the steps that ended
-it (a drop marker, a discarded temporary, a consumption), and the steps whose
+it (a drop marker, a discarded temporary, a consume event), and the steps whose
 destructor ran on it. `drop_exactly_once` is one entry in the ended column
 per identity. Read in row order, and `[n.k]` (the k-th end of row n) inside a
 row, the ends are the trace's order, which `drop_order` fixes: a value's
@@ -153,7 +153,7 @@ destructors inside its drop in §6.11's order, and cells last-in first-out.
 Outcome: REFUSED (ownedUnderCopy)
          an owned value under a Copy node: a Copy type's fields, payloads and
          elements are Copy (§3, 3.8:18, 6.3:19), so a copy of this aggregate
-         would duplicate an owner; the machine's copy-closure monitor refuses
-         it (§7 “no double free”), and `soundness` proves a checked program
-         never reaches it
+         would duplicate an owner; the machine's Copy-containment monitor
+         refuses it (§7 “no double free”), and `soundness` proves a checked
+         program never reaches it
 

@@ -2,12 +2,12 @@
  call_bottom
 ════════════════════════════════════════════════════════════════════════════════
 A one-argument call whose sole argument diverges by return before the call is
-reached, so the callee's frame is never pushed and its body never runs.
-Nothing follows the call, and there is no earlier argument for RUE-2316's
-pending-temporary gap to strand. Seeded for RUE-2483: (Call-Bottom) had no
-seed, no generated case, and no Explain row; Explain now names the call this
-way when its argument list diverges, the way (Loop-Div)/(Loop-Div-Backedge)
-are already told apart.
+reached, so the callee's activation record is never pushed and its body never
+runs. Nothing follows the call, and there is no earlier argument for
+RUE-2316's pending-temporary gap to strand. Seeded for RUE-2483: (Call-Bottom)
+had no seed, no generated case, and no Explain row; Explain now names the call
+this way when its argument list diverges, the way
+(Loop-Div)/(Loop-Div-Backedge) are already told apart.
 
 Rules exercised: (Call-Bottom) §5.3 · (Return-Value) §5.7 · (Dbg) §5.8
 
@@ -84,9 +84,9 @@ the node itself, so the table reads top to bottom as the machine ran. `d<n>`
 is the nesting depth — a callee's rows are deeper than its call's — and `>>`
 marks a drop event. The run enters at f0(), as `Dynamics.run` does.
 `#n` after an aggregate is its identity, minted when it was built; a `†`
-cell is a retired binding or an identity's reserved slot (`introVal`).
+cell is a tombstoned binding or an identity's reserved slot (`introVal`).
 
-  [1]   d1    (D-Call) §6.9 (push the frame)
+  [1]   d1    (D-Call) §6.9 (push the activation record)
          expr    fn f0() -> i64  with []
          store   (empty)
            →     (empty)
@@ -107,7 +107,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          store   (empty)
            →     (empty)
          result  value 0
-  [5]   d4          (D-Return) §6.9 (unwind the frame)
+  [5]   d4          (D-Return) §6.9 (unwind the activation record)
          expr    run-all-scope-drops([])
          store   (empty)
            →     (empty)
@@ -131,7 +131,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
 ── Identities (§7) ─────────────────────────────────────────────────────────────
 
 One line per owned identity: the step that minted it, the steps that ended
-it (a drop marker, a discarded temporary, a consumption), and the steps whose
+it (a drop marker, a discarded temporary, a consume event), and the steps whose
 destructor ran on it. `drop_exactly_once` is one entry in the ended column
 per identity. Read in row order, and `[n.k]` (the k-th end of row n) inside a
 row, the ends are the trace's order, which `drop_order` fixes: a value's

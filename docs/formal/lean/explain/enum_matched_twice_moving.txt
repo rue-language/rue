@@ -150,9 +150,9 @@ the node itself, so the table reads top to bottom as the machine ran. `d<n>`
 is the nesting depth — a callee's rows are deeper than its call's — and `>>`
 marks a drop event. The run enters at f0(), as `Dynamics.run` does.
 `#n` after an aggregate is its identity, minted when it was built; a `†`
-cell is a retired binding or an identity's reserved slot (`introVal`).
+cell is a tombstoned binding or an identity's reserved slot (`introVal`).
 
-  [1]   d1    (D-Call) §6.9 (push the frame)
+  [1]   d1    (D-Call) §6.9 (push the activation record)
          expr    fn f0() -> i64  with []
          store   (empty)
            →     (empty)
@@ -225,21 +225,21 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
-  [14]  d3        (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
+  [14]  d3        (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the activation record's drop scope instead; a trap runs no drop at all)
          expr    { let v1: i64 = match v0 { E0.K0(v1) => 5, E0.K1 => 6 }; { let v2: i64 = match …
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = E0.K0⟨S1 { 1 }#0⟩#1]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = †, ℓ4 = 5]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
-  [15]  d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
+  [15]  d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the activation record's drop scope instead; a trap runs no drop at all)
          expr    { let v0: E0 = E0.K0(S1 { x0: 1 }); { let v1: i64 = match v0 { E0.K0(v1) => 5, …
          store   (empty)
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = †, ℓ4 = 5]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
-  [16]  d0  (D-Return-Value) §6.9 (pop the frame)
+  [16]  d0  (D-Return-Value) §6.9 (pop the activation record)
          expr    f0()
          store   (empty)
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = †, ℓ4 = 5]
@@ -250,7 +250,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
 ── Identities (§7) ─────────────────────────────────────────────────────────────
 
 One line per owned identity: the step that minted it, the steps that ended
-it (a drop marker, a discarded temporary, a consumption), and the steps whose
+it (a drop marker, a discarded temporary, a consume event), and the steps whose
 destructor ran on it. `drop_exactly_once` is one entry in the ended column
 per identity. Read in row order, and `[n.k]` (the k-th end of row n) inside a
 row, the ends are the trace's order, which `drop_order` fixes: a value's
