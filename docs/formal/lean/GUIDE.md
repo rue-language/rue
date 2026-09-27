@@ -530,7 +530,7 @@ It is stated as an invariant for two reasons:
   past that length. The equation stays definitional; what the loop's proof
   uses is `StoreTyping.unwindPrefix`, the arm's own teardown lemma.
 
-**`FrameProperty ρ H H'`** carries frame *locality*: the store only grows, and
+**`FrameProperty ρ H H'`** carries the *frame property*: the store only grows, and
 every allocated cell that ρ does not name keeps its contents. A callee's
 parameter cells are minted above the caller's whole store, so the caller's
 bindings are outside the callee's ρ and their agreement survives the call.
@@ -545,7 +545,7 @@ theorem soundness (M : FloatLaws) (hwf : WfProgram P) :
       EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
-(implicit arguments omitted). `M` is any float model that satisfies the IEEE
+(implicit arguments omitted). `M` is any model of the float algebraic specification, the IEEE
 laws the mechanization assumes (example 10), so the theorem holds for each
 of them.
 

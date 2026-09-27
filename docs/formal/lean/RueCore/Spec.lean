@@ -535,7 +535,7 @@ hypothesis that neither list covers (helper).
 
 One reason covers every statement over `M : FloatLaws`, and is recorded here
 once: the laws of `FloatLaws` are not a hypothesis about a program but
-assumptions about the float model every statement is instantiated at, and the
+assumptions about the model of the float algebraic specification every statement is instantiated at, and the
 counter-examples all run on `Float.exactOps`, a model of them
 (`Nonvacuous.exact_model`). A statement that failed at a model breaking a law
 would say something about that model, not about the program's hypotheses; so

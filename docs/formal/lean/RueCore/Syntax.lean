@@ -510,12 +510,12 @@ def Place.path : Place → List Nat
   | .proj p f => p.path ++ [f]
   | .idx p c => p.path ++ [c]
 
-/-- The type one **step** of a path reaches: a declaration's field at a slot,
+/-- The type one **projection** of a path reaches: a declaration's field at a slot,
 or an array's element at a constant index within its length (`7.1:9` — a
 constant index is bounds-checked at compile time, so an out-of-range one has
 no type and therefore no derivation, which is probe `a9`'s E0902). `none`
-where the step is not a step of the type reached so far — an enum type among
-them, since a payload is not a path. The two kinds that do step share
+where the projection is not one of the type reached so far — an enum type
+among them, since a payload is not a path. The two kinds of projection share
 one function because §5's `Path` puts them on one production, and §6.3's `π`
 is likewise "field indices and already-reduced array indices" (helper). -/
 def Ty.fieldAt (D : Decls) : Ty → Nat → Option Ty

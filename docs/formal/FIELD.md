@@ -764,6 +764,7 @@ Copeland 1986 **(record)**; the Swift performance guide; Rust's
 | "field-sensitive obligations" (the metatheory's leak check; formerly "paths and per-field obligations") | field-sensitive (Pearce, Kelly & Hankin) | partial: the word is from pointer analysis; the idea, per-path obligations, is also RFC 320's drop obligations (§5 above) |
 | "unwinding helpers" (01 §6.1; formerly "scope helpers") | stack unwinding (cppreference) | partial: ours close drop scopes on every scope exit, not only on an exception; the `return`/`break` exits are the unwinding case |
 | "object identity" (the metatheory, `Dynamics.lean`: the tag an aggregate value carries from its creation; formerly "value identity") | object identity (Python Language Reference; Khoshafian & Copeland) | clear for aggregates; scalars carry none |
+| "frame property", `FrameProperty` (the metatheory, `Soundness/Defs.lean`: an evaluation grows the store and changes no cell outside its activation's own; formerly "locality", `Untouched`) | frame property (Yang & O'Hearn, via Raza & Gardner) | partial: the same guarantee, that state outside what the code may touch is unchanged, but ours is a relation between one evaluation's stores, not a condition on a command run on every larger heap |
 
 ---
 
