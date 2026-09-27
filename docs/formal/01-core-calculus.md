@@ -504,7 +504,7 @@ Two static restrictions bound *which ordinary partial moves* may be made:
 - **No moves out of a destructor-bearing value** (`3.9:34`, E0456): a partial
   move of `p.f` (or `p[c]`) is ill-formed if the type of `p` — or of any
   enclosing place along the path — declares a user destructor. The destructor
-  runs on the whole value at drop and would observe the hole. Borrowing such a
+  runs on the whole value at drop and would observe the moved-out part. Borrowing such a
   sub-place, or moving the *whole* value, remains legal.
 - **Element moves only at the root** (`3.8:68`, E0904): an index step `[c]`
   may appear in a moved path only applied directly to the root binding — `x[c]`
@@ -770,7 +770,7 @@ move and residual checking.
 `fully-owned(Σ, p)` (§5 preamble) is the **no-use-after-move** premise
 strengthened to the whole subtree (`3.8:5/24/26/53`): a use requires that `p`
 owns its value *and* that no sub-place of `p` has been partially moved out —
-handing an aggregate with a hole to a new owner is ill-formed (`3.8:26`; the
+handing an aggregate with a moved-out part to a new owner is ill-formed (`3.8:26`; the
 compiler's E0205 "use of partially moved value"). (Use-Copy) needs only
 `Σ(p) = Owned`: every sub-place of a `Copy` type is itself `Copy`, so no
 descendant can be `MovedOut`, and the two premises coincide there. The second
@@ -969,7 +969,7 @@ The last two premises are (Use-Move)'s, for the same reason (RUE-1600):
 `@drop(p)` leaves `p` `MovedOut`, so when `p` is a projection it *is* a partial
 move, and §4.2's two restrictions on which projections may be partially moved
 apply unchanged. Without them the core accepted `@drop(o.f)` on an `Outer` that
-declares a destructor — leaving a hole the destructor would observe, and a
+declares a destructor — leaving a moved-out part the destructor would observe, and a
 field the automatic cleanup after it would drop a second time. Verified against
 the compiler: `@drop(o.a)` where `Outer` has a `drop fn` is E0456;
 `@drop(w.arr[0])` (an index step reached through a field) and `@drop(a[i])`
@@ -2921,7 +2921,7 @@ where `drop*(H, [c1,…,cm])` folds `drop` over the list left-to-right.
 
 The aggregate rules are stated over **cell contents** rather than over values,
 and that is load-bearing. §6.1's value forms write an aggregate's members as
-values `v_i`, but what a cell holds after a partial move is a tree with holes
+values `v_i`, but what a cell holds after a partial move is a tree with moved-out parts
 in it: the `⊘` a (D-Use-Move) writes at `ℓ@π` sits at a field slot or an array
 element, not only at the root of the cell. So the members range over §6.1's
 cell contents `c`, whose aggregate forms hold contents rather than values,
@@ -2955,7 +2955,7 @@ cell contents `c1',…,ck'` as the nested run left them — not the original
 rule is written this way only so it stays honest if that ever changes. No `ci`
 and no `ci'` can be `⊘`: reaching this rule means `S` declares a destructor, and
 `3.9:34` forbids moving a field out of *any* value whose type declares one, so
-the operand reaches the rule hole-free. That includes `self` inside that type's
+the operand reaches the rule moved-out-free. That includes `self` inside that type's
 own destructor, while `3.9:33` forbids moving `self` as a whole, so a
 destructor body has no way to consume a sub-place of the value being dropped
 either. Both halves are verified against the compiler:
@@ -3463,7 +3463,7 @@ neither claims anything about an uninhabited-parameter function such as
   consumed place, while `Borrowed` place reads require an owned base;
   preservation maintains the invariant that Σ faithfully tracks the store's
   initialization. The dynamic declared rule therefore cannot navigate through
-  a hole before its `split`.
+  a moved-out part before its `split`.
 
 - **No double-free.** Every stored value's destructor runs at most once. *Because:*
   an ordinary move sets its consumed place to `MovedOut`, and the

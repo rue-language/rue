@@ -118,7 +118,7 @@ Premise by premise:
    exactly when no *proper prefix* of the path is `MovedOut`, so this lookup
    is (Owned-Base) §5.1 (`3.8:53`).
 3. `u.fullyOwned = true`: the place is `fully-owned` (`3.8:26`: an aggregate
-   with a hole may not be handed to a new owner).
+   with a moved-out part may not be handed to a new owner).
 4. `en.ty.atPath … = some T`: the path reaches a declared field at every step
    and lands at type `T`.
 5. `T.qual P.decls ≠ .copy`: `T`'s qualifier is not `Copy`.
@@ -180,7 +180,7 @@ The trace lists, in order, everything the machine did that a program can see:
 - `drop ℓ c`, a binding's drop (at scope exit, at `@drop`, when
   overwritten, or a retained subtree of a declared-linear destructure's
   residue). It records the *contents* dropped, which after a partial move is
-  a tree with holes in it.
+  a tree with moved-out parts in it.
 - `dropTemp v`, a discarded temporary.
 - `consume c`, the shell a `match` or a destructure consumes: every member
   already moved out or dropped, so no drop of its own runs (RUE-2427).
@@ -468,7 +468,7 @@ output and the drawing in example 5 write this `Owned{ x0: MovedOut }`).
 The cell holds `Contents`: the same shape, with `⊘` admitted at any node.
 `ContentsOwnTyping` relates the two node by node:
 
-- an **`owned`** node holds hole-free, well-typed contents, that is, a value;
+- an **`owned`** node holds moved-out-free, well-typed contents, that is, a value;
 - a **`movedOut`** node holds well-typed contents with **no live linear
   sub-value** in it; it need not hold `⊘`;
 - a **`fields`** node holds the struct its type names, matched field by field,
@@ -1307,7 +1307,7 @@ value context moves *exactly* that field.
 the state for `v0.x0` (and returns `none`, a rejection, when a *proper prefix*
 is `MovedOut`); `en.ty.atPath` types the place; `u.fullyOwned` is `3.8:26`;
 `noDtorPrefix` is `3.9:34`. Before the move, Σ and the cell agree on a
-hole-free tree (`ContentsOwnTyping`'s `owned` clause):
+moved-out-free tree (`ContentsOwnTyping`'s `owned` clause):
 
 ```
   Σ(v0)                      H(ℓ3)
@@ -1341,7 +1341,7 @@ Three things follow, and each is a premise somewhere:
   `@drop(v0)` is legal (§5.3 asks only `Σ(p) = Owned`; the
   `drop_field_then_whole` case);
 - `fully-owned(Σ, v0)` is now **false**, so `let v2 = v0` has no derivation:
-  the aggregate has a hole and (Use-Move) may not hand it to a new owner
+  the aggregate has a moved-out part and (Use-Move) may not hand it to a new owner
   (`3.8:26`; the compiler's E0205, the `partial_then_whole` case);
 - had `S7` declared a destructor, the move would have been rejected
   (`3.9:34`, E0456; the `partial_under_dtor` case), because a destructor runs
@@ -1474,7 +1474,7 @@ The case is `useDeclared` in `soundness`, and it rests on three lemmas:
 
 - `ContentsOwnTyping.declaredPlan_eq`: the plan the machine reads off the store
   is the plan the rule selected;
-- `splitResidue_ok`: `split` never fails on a hole-free, well-typed
+- `splitResidue_ok`: `split` never fails on a moved-out-free, well-typed
   aggregate, and every retained subtree is non-`Linear`;
 - `dropResidue_events`: the residue's trace is §6.11's events concatenated in
   the traversal's order.
@@ -1536,11 +1536,11 @@ This is `3.8:73`'s per-element drop flag, and it is the whole of it: there is
 no separate flag, only the path's `MovedOut`. Two consequences are the
 array's own:
 
-- an access at a **dynamic** index could name the hole, so it is refused
+- an access at a **dynamic** index could name the moved-out part, so it is refused
   (`3.8:70`; E0205 for a read, E0480 for a write,
   `Examples.arrayDynWriteAfterElemMove`);
 - a write into the array, `v0[1] = S1 { 9 }`, is refused whether it targets
-  the hole or a sibling (`3.8:72`, `7.1:46`, E0480;
+  the moved-out part or a sibling (`3.8:72`, `7.1:46`, E0480;
   `Examples.arrayElemReinit`): an element write does not give back
   per-element ownership, and the recovery is the whole-array assignment
   (`Examples.arrayWholeReinit`).
@@ -2205,7 +2205,7 @@ this proof's invariant, and its `store` field, through `CellTyping` and
 `ContentsOwnTyping`, is what §7's no-use-after-move bullet names in words:
 "preservation maintains the invariant that Σ faithfully tracks the store's
 initialization". Check `ContentsOwnTyping`'s clauses against that phrase, as
-section 3 spells them out: an `owned` node holds a hole-free, well-typed
+section 3 spells them out: an `owned` node holds a moved-out-free, well-typed
 value; a `movedOut` node holds well-typed contents whose `residualLinear` is
 `false`, that is, with no live linear sub-value. *A defect looks like:* that
 second clause losing its `residualLinear` condition. Then a live linear value
@@ -2275,7 +2275,7 @@ and the pairs that differ. Last comes a tally:
 deliberately and stays until its issue is decided:
 
 - `array_elem_self_assign`: `a[0] = a[0]`. The model refuses the write into
-  the holed array under `3.8:72`; the compiler accepts it on purpose since
+  the array with a moved-out element under `3.8:72`; the compiler accepts it on purpose since
   RUE-228. Which is right is a decision: RUE-2346.
 
 Other seeded cases were red until the compiler defect they found was fixed,

@@ -122,7 +122,7 @@ def dTwoAffine : StructDecl :=
 
 /-- `S8`: `struct { x0: S1, x1: i64 }`, no destructor. Qualifier `Affine`; its
 first field is droppable and its second is `Copy`, so it is the shape a partial
-move leaves a readable sibling in (`3.8:53` reads it through the hole). -/
+move leaves a readable sibling in (`3.8:53` reads it through the moved-out part). -/
 def dAffineInt : StructDecl :=
   { attr := .none, fields := [.struct 1, tI64], dtor := false, cls := .affine }
 
@@ -446,7 +446,7 @@ def partialThenWhole : Expr :=
 
 /-- Move a field out of a value whose type declares a destructor: `3.9:34`
 (E0456) forbids it, because the destructor runs on the whole value and would
-observe the hole. -/
+observe the moved-out part. -/
 def partialUnderDtor : Expr :=
   letIn false (mkStruct sOuter [lit 1, resA (lit 2)])
     (letIn false (use (.proj (.var 0) 1)) (seq (drop (.var 0)) (lit 9)))
@@ -461,7 +461,7 @@ def copyThroughPartial : Expr :=
 
 /-- `@drop` at a field, then `@drop` of the whole: §5.3 asks only
 `Σ(p) = Owned` of the second, and §6.11's walk drops the owned residue and
-skips the hole. -/
+skips the moved-out part. -/
 def dropFieldThenWhole : Expr :=
   letIn false (mkStruct sTwoAffine [resA (lit 1), resA (lit 2)])
     (seq (drop (.proj (.var 0) 0)) (seq (drop (.var 0)) (lit 9)))
@@ -648,7 +648,7 @@ def arrayElemOverwrite : Expr :=
 
 /-- Probe `a6`: `@drop` of a whole affine array. The walk is §6.11's own —
 the elements ascending — so the trace is `1`, `2`, then `20`, then `7`, and
-the scope exit finds a hole and drops nothing. -/
+the scope exit finds a moved-out part and drops nothing. -/
 def arrayWholeDrop : Expr :=
   letIn false (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
     (seq (drop (.var 0)) (seq (dbg (lit 20)) (lit 7)))
@@ -738,7 +738,7 @@ def arrayElemMove : Expr :=
       (seq (drop (.var 0)) (seq (dbg (lit 20)) (lit 7))))
 
 /-- **The element move at the first position** (RUE-2235's seed shape: move
-`a[0]`, then drop the rest at scope exit). The hole is where §6.11's ascending
+`a[0]`, then drop the rest at scope exit). The moved-out part is where §6.11's ascending
 walk starts, so the scope exit skips first and then drops `2` and `3` in
 order (`3.8:73`, `3.9:15`). -/
 def arrayElemMoveFirst : Expr :=
@@ -826,7 +826,7 @@ def arrayDeclaredElemDestructure : Expr :=
 
 /-- **Reinitializing a moved element is refused** (probe `a5`, E0480): after
 `a[0]` is moved out and dropped, `a[0] = S1 { 9 }` writes into an array with a
-hole in it. `3.8:72`/`7.1:46` forbid that "to an element, or through an
+moved-out part in it. `3.8:72`/`7.1:46` forbid that "to an element, or through an
 element" alike — an element write does not reinstate per-element ownership —
 and `assignArrayOk` (`Statics.lean`) is the premise. §5.2's own disjunction
 read at the element would have admitted exactly this write, which is the
@@ -843,7 +843,7 @@ same program writing `a` rather than `a[0]` is (Assign)'s ordinary case —
 `arrayPrefix` finds no array the path steps *into* — and `7.1:46` names it as
 the way back ("the whole array **MUST** be reinitialized instead, which makes
 every element owned … again"). §6.8's overwrite-drop then runs over the old
-contents `[⊘, S1 { 2 }]`, skipping the hole. -/
+contents `[⊘, S1 { 2 }]`, skipping the moved-out part. -/
 def arrayWholeReinit : Expr :=
   letIn true (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
     (letIn false (use (.idx (.var 0) 0))
@@ -882,7 +882,7 @@ def declLinArrProg (T : Ty) (e : Expr) : Program :=
 
 /-- **The case seeded red for RUE-2341** (review probe `w2`), green since.
 `h.arr[0].x0` destructures
-the declared-linear element `h.arr[0]`, which holes the array `h.arr` even
+the declared-linear element `h.arr[0]`, which leaves a moved-out part in the array `h.arr` even
 though the array is reached through a field. Then `h.arr[0].x0 = S1 { 77 }`
 writes through that element. `3.8:71`/`3.8:72` and `7.1:46` forbid this for an
 array anywhere in a place tree, and `assignArrayOk` refuses it (E0480).
@@ -918,7 +918,7 @@ def dynWriteNestedWhole : Expr :=
     (seq (indexWrite (.idx (.var 0) 1) [lit 0] [[]] (resA (lit 9))) (lit 7))
 
 /-- The same write after `a[0]` was moved out (probe `c8`, E0480). `3.8:72`
-forbids writing *through* an element of an array that has a hole.
+forbids writing *through* an element of an array that has a moved-out part.
 `assignArrayOk` on (IndexWrite) is the premise that refuses it. -/
 def dynWriteNestedAfterMove : Expr :=
   letIn true (mkArray (.array (.struct sAffine) 2)
@@ -1078,7 +1078,7 @@ example : run demoOps (prog tI64 arrayElemOverwrite) demoFuel
          .dtor sAffine (cA 1 2)] := by rfl
 
 /-- Probe `a6`: `@drop` of the whole array runs the same walk scope exit
-would, and leaves a hole the scope exit skips. -/
+would, and leaves a moved-out part the scope exit skips. -/
 example : checkProgram (prog tI64 arrayWholeDrop) = true := by rfl
 example : run demoOps (prog tI64 arrayWholeDrop) demoFuel
     = .ok (List.replicate 4 .dead) (v64 7)
@@ -1212,8 +1212,8 @@ example : run demoOps (prog tI64 arrayElemDrop) demoFuel
          .drop 4 (.array (.struct sAffine) 3 [cA 0 1, .movedOut, cA 2 3]), .dtor sAffine (cA 0 1),
          .dtor sAffine (cA 2 3)] := by rfl
 
-/-- **A move below a constant index** (probe `a10`): the hole is at `a[0].x0`,
-so the scope exit's walk reaches `a[0]`'s `Copy` sibling, skips the hole, and
+/-- **A move below a constant index** (probe `a10`): the moved-out part is at `a[0].x0`,
+so the scope exit's walk reaches `a[0]`'s `Copy` sibling, skips the moved-out part, and
 drops `a[1]` whole. -/
 example : checkProgram (prog tI64 arrayElemFieldMove) = true := by rfl
 example : run demoOps (prog tI64 arrayElemFieldMove) demoFuel
@@ -1494,7 +1494,7 @@ def dynReadAfterSiblingMove : Program :=
 
 /-- The write half of the same shape (probe r02, E0480): `a[0][i].x1 = 5`
 after `a[1]` moved. `fully-owned` at `a[0]` holds, but the constant place
-steps into `a`, which has a hole, so `assignArrayOk` refuses it (`3.8:72`). -/
+steps into `a`, which has a moved-out part, so `assignArrayOk` refuses it (`3.8:72`). -/
 def dynWriteAfterSiblingMove : Program :=
   { decls := Decls.ofStructs structEnv,
     fns := [{ params := [], ret := tI64, body := call 1 [lit 1] },
@@ -1607,7 +1607,7 @@ def dynDropCopyTrap : Program :=
 
 /-- **RUE-2341 at a dynamic index** (review probe w1), red until RUE-2341.
 `h.arr[0].x0`
-destructures the declared-linear element `h.arr[0]`, which holes the array
+destructures the declared-linear element `h.arr[0]`, which leaves a moved-out part in the array
 `h.arr` reached through a field, and `h.arr[i].x0 = S1 { 77 }` then writes
 below a dynamic index into it at `i = 0`. `3.8:72`/`7.1:46` forbid it, and
 `fully-owned` at `h.arr` refuses it (E0480). The compiler's check used to fire
@@ -2400,7 +2400,7 @@ def destructureNestedLinearResidue : Expr :=
 
 /-- **A destructure out of a destructor-bearing value** (probe d7): `3.9:34`
 forbids it at every enclosing value, `d` included, because the destructor would
-observe a hole — here it would not run at all. The compiler reports E0456. No
+observe a moved-out part — here it would not run at all. The compiler reports E0456. No
 monitor enforces it, so the machine runs the program and prints the residue's
 `2` and then the value `1`. -/
 def destructureUnderDtor : Expr :=
@@ -2463,7 +2463,7 @@ def destructureAncestorDropped : Expr :=
             (seq (dbg (lit 30)) (use (.var 0)))))))
 
 /-- **A `⊘` at the selected leaf**: `y.x0.x0` destructures `y.x0`, so `y.x0` is
-already a hole when `@drop(y.x0)` reaches it at the plan `([], [0])`. The
+already a moved-out part when `@drop(y.x0)` reaches it at the plan `([], [0])`. The
 checker refuses the program (the second read of `y.x0` is E0205), and the
 machine refuses the redex with `useAfterMove` — the guard the ordinary `@drop`
 branch makes at the named place, made here at the leaf. Without it
@@ -2844,7 +2844,7 @@ example : ProgramTyped strictBottomAssign := checkProgram_sound (by rfl)
 example : ProgramTyped loopDivBackedge := checkProgram_sound (by rfl)
 
 /-! The partial-move programs (RUE-2231): the accepted ones, so the §7
-theorems apply to a store whose cells hold trees with holes in them. -/
+theorems apply to a store whose cells hold trees with moved-out parts in them. -/
 
 example : ProgramTyped (prog tI64 partialMoveResidue) := checkProgram_sound (by rfl)
 example : ProgramTyped (prog tI64 copyThroughPartial) := checkProgram_sound (by rfl)
@@ -3017,7 +3017,7 @@ to recurse to see it (`3.8:60`, "checked recursively through nested fields" —
 probe d22). -/
 example : checkProgram (destrProg tI64 destructureNestedLinearResidue) = false := by rfl
 
-/-- `fully-owned(Σ, d)` failing at a **hole strictly under** `d`: `y.x0.x0`
+/-- `fully-owned(Σ, d)` failing at a **moved-out part strictly under** `d`: `y.x0.x0`
 destructures the inner declared-`linear` `y.x0`, so a later `y.x1` — whose plan
 is `([], [1])` at `y` itself — reads an `S13` that is no longer whole. The
 compiler refuses it too, naming the retained inner place: E0474 on `x0`. -/
@@ -3087,7 +3087,7 @@ the state that premise excludes. -/
 example : run demoOps (destrProg tI64 destructureLinearResidue) demoFuel
     = .refused .linearLeak := by rfl
 
-/-- The machine's hole guard at the **selected leaf** of a declared plan: an
+/-- The machine's moved-out guard at the **selected leaf** of a declared plan: an
 already-`⊘` leaf is a refusal, not a silent no-op, exactly as it is at the named
 place of an ordinary `@drop` (`dropDeclaredMovedOutLeaf`). The checker refuses the
 program too, so the state is unreachable from a §5 derivation; the monitor is
@@ -3618,7 +3618,7 @@ example : run demoOps (prog tI64 structLinearFieldDropped) demoFuel
          .dtor sLinearDtor (.struct sLinearDtor 0 [c64 2])] := by rfl
 
 /-- **The `⊘`-skip, pinned.** A field is moved out and discharged on its own;
-the scope exit then drops the *residue* — the cell holds a struct with a hole
+the scope exit then drops the *residue* — the cell holds a struct with a moved-out part
 where the moved field was, and §6.11's walk skips it, so the moved value is not
 dropped a second time (`3.8:60`). -/
 example : run demoOps (prog tI64 partialMoveResidue) demoFuel
@@ -3636,7 +3636,7 @@ example : run demoOps (prog tI64 deepPath) demoFuel
          .dtor sAffine (cA 0 1)] := by rfl
 
 /-- A reinitialising assignment at that `⊘` two steps deep drops nothing
-(§6.8 over a hole), and the stored leaf is then dropped once, at scope exit,
+(§6.8 over a moved-out part), and the stored leaf is then dropped once, at scope exit,
 after its sibling (`3.8:55`, RUE-2319). -/
 example : run demoOps (prog tI64 reinitDeepPath) demoFuel
     = .ok (List.replicate 6 .dead) (v64 9)
@@ -3644,7 +3644,7 @@ example : run demoOps (prog tI64 reinitDeepPath) demoFuel
          .drop 4 (.struct sNested 3 [.struct sTwoAffine 2 [cA 0 1, cA 5 5], c64 3]),
          .dtor sAffine (cA 0 1), .dtor sAffine (cA 5 5)] := by rfl
 
-/-- The overwrite-drop of the hole's **parent** walks the old value with the
+/-- The overwrite-drop of the moved-out part's **parent** walks the old value with the
 same `⊘`-skip: only `v.x0.x0` is destroyed at the assignment, and the moved-out
 leaf is not dropped a second time (§6.8 runs §6.11, RUE-2319). -/
 example : run demoOps (prog tI64 overwriteAboveMovedOut) demoFuel
@@ -3794,7 +3794,7 @@ example : eval demoOps demoFuel (prog tI64 unitLit) [.full .movedOut] { env := [
     (use (.proj (.var 0) 0)) = .refused .useAfterMove := by rfl
 
 /-- Reading a value **with** a `⊘` in it: the place itself is there, but
-handing it on would hand on an aggregate with a hole, which `fully-owned`
+handing it on would hand on an aggregate with a moved-out part, which `fully-owned`
 (§5.1, `3.8:26`) is exactly the premise against. -/
 example : eval demoOps demoFuel (prog tI64 unitLit)
     [.full (.struct sTwoAffine 1 [.movedOut, .struct sAffine 0 [c64 2]])]
@@ -4161,10 +4161,10 @@ def destrTripleProg (T : Ty) (e : Expr) : Program :=
 /-- **A root destructure through a moved part** (RUE-2335's root half, the spec
 case `declared_linear_root_destructure_through_partially_moved_field_rejected`).
 `y.x0.x0.x0` destructures `y.x0.x0`, the innermost declared-`linear` place, so
-`y.x0.x0` is a hole. `@drop(y.x0)` then reaches `y.x0` through the declared-`linear`
+`y.x0.x0` is a moved-out part. `@drop(y.x0)` then reaches `y.x0` through the declared-`linear`
 root `y`, and §5.1's (Use-Declared-Linear-Destructure) asks `fully-owned(Σ, y)`,
-which the hole below it refutes (`3.8:26`; the compiler reports E0205). A
-compiler without the root check accepts the program, hands out the hole, and
+which the moved-out part below it refutes (`3.8:26`; the compiler reports E0205). A
+compiler without the root check accepts the program, hands out the moved-out part, and
 runs `S1 { 2 }`'s destructor a second time; the drill's mutant printed
 `2 4 2 3`. -/
 def destructureRootThroughMovedPart : Expr :=

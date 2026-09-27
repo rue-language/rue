@@ -63,7 +63,7 @@ store, the caller's cells are outside the callee's `ρ`, and the caller's
 ## Values, contents, and the drop that never refuses
 
 `HasTy D` types a *value* — the thing an expression evaluates to, which never
-has a hole in it — against §2's types, a struct against its declaration's
+has a moved-out part in it — against §2's types, a struct against its declaration's
 field list ((Struct-Intro) §5.8 read on values), an enum value against the
 **one variant its tag names** ((Enum-Intro) §5.5 read on values), and an array
 against `n` copies of its element type ((Array-Intro) §5.8 read on values).
@@ -76,7 +76,7 @@ every type, because a moved-out position claims nothing about what used to be
 there. `Contents.noMovedOut` is what says a contents *is* a value, and
 `ContentsTy.toVal` is the bridge: that is the half (D-Use-Copy)/(D-Use-Move)
 §6.3 need, since they hand the context a value and `fully-owned(Σ, p)` §5.1 is
-what says the contents they read has no hole in it.
+what says the contents they read has no moved-out part in it.
 
 Statements about §6.11's walk rest on `ContentsTy`. `dropContents_events` and
 `dropContentsList_events` give the walk in **closed form** — for well-typed
@@ -102,7 +102,7 @@ settles a non-linear type.
 progress at a `match`: `exhaustive_arm_exists` (`Statics/Lemmas.lean`) says a well-typed tag
 is an index the arm list has, so the machine is never stuck on an uncovered tag.
 **Dropped exactly once** is the pair of `⊘`s: a `match` on a non-`Copy` enum
-moves the scrutinee out, so §6.11's later walk through that place finds a hole
+moves the scrutinee out, so §6.11's later walk through that place finds a moved-out part
 and drops nothing, while the payload now lives in the arm's own cells and is
 dropped by the arm's `endscope` — `StoreTyping.unwindPrefix` is that teardown, and it
 never refuses because the arm discharged §5.6 for exactly those cells
@@ -197,13 +197,13 @@ theorem HasTy.array_inv {D v T n} (h : HasTy D v (.array T n)) :
 
 /-! ## Typing the contents of a cell
 
-`HasTy` types the machine's *values*, which never have a hole in them. A cell
+`HasTy` types the machine's *values*, which never have a moved-out part in them. A cell
 holds `Contents` — the same trees with §6.1's `⊘` admitted at any node, which
 is what a partial move leaves (§4.2, `3.8:22`) — so the invariant needs the
 analogous relation. `ContentsTy` is it: a `⊘` is well typed at **every** type,
 because a moved-out position makes no claim about what used to be there, and
 everything else types as its value would. `noMovedOut` says the tree has no `⊘`
-in it, and a hole-free well-typed contents is exactly (the image of) a
+in it, and a moved-out-free well-typed contents is exactly (the image of) a
 well-typed value.
 -/
 
@@ -213,18 +213,18 @@ theorem ContentsTys.length_eq : ∀ {D cs Ts}, ContentsTys D cs Ts → cs.length
   | _, _, _, .cons _ h => by simp [ContentsTys.length_eq h]
 
 /-- Inversion of contents typing at a struct type, for a contents that is not
-a hole (helper). -/
+a moved-out part (helper). -/
 theorem ContentsTy.struct_inv {D s i cs T} (h : ContentsTy D (.struct s i cs) T) :
     ∃ sd, T = .struct s ∧ D.structs[s]? = some sd ∧ ContentsTys D cs sd.fields := by
   cases h; exact ⟨_, rfl, ‹_›, ‹_›⟩
 
 /-- Inversion of contents typing at an array type, for a contents that is not
-a hole (helper). -/
+a moved-out part (helper). -/
 theorem ContentsTy.array_inv {D T i cs T₀} (h : ContentsTy D (.array T i cs) T₀) :
     ∃ n, T₀ = .array T n ∧ ContentsTys D cs (List.replicate n T) := by
   cases h; exact ⟨_, rfl, ‹_›⟩
 
-/-- A hole-free contents well typed at `[T; n]` **is** an array of `n`
+/-- A moved-out-free contents well typed at `[T; n]` **is** an array of `n`
 elements: the shape (D-Index) §6.5 needs before it can bounds-check an index
 against `cs.length` (helper). -/
 theorem ContentsTy.array_shape {D : Decls} {c : Contents} {T : Ty} {n : Nat}
@@ -281,7 +281,7 @@ theorem HasTys.contentsTys {D vs Ts} (h : HasTys D vs Ts) :
 end
 
 mutual
-/-- The image of a value has no hole in it (helper). -/
+/-- The image of a value has no moved-out part in it (helper). -/
 theorem Contents.noMovedOut_ofVal (v : Val) : (Contents.ofVal v).noMovedOut = true := by
   cases v with
   | int => rfl
@@ -302,7 +302,7 @@ theorem Contents.noMovedOutList_ofVals : ∀ vs : List Val,
       rfl
 end
 
-/-- A member of a hole-free list is hole-free: what an element read needs
+/-- A member of a moved-out-free list is moved-out-free: what an element read needs
 before it can hand the context a value (helper). -/
 theorem Contents.noMovedOutList_index : ∀ {cs : List Contents} {k : Nat} {c : Contents},
     Contents.noMovedOutList cs = true → cs[k]? = some c → c.noMovedOut = true
@@ -319,7 +319,7 @@ theorem Contents.noMovedOutList_index : ∀ {cs : List Contents} {k : Nat} {c : 
         simpa only [Contents.noMovedOutList, Bool.and_eq_true] using hf
       exact Contents.noMovedOutList_index hf'.2 hg
 
-/-- Writing a hole-free member into a hole-free list keeps it hole-free: what
+/-- Writing a moved-out-free member into a moved-out-free list keeps it moved-out-free: what
 an element write needs before the array it stores back is still a value
 (helper). -/
 theorem Contents.noMovedOutList_set : ∀ (cs : List Contents) (k : Nat) {c : Contents},
@@ -346,10 +346,10 @@ theorem HasTys.replicate {D : Decls} {v : Val} {T : Ty} (h : HasTy D v T) :
   | n + 1 => .cons h (HasTys.replicate h n)
 
 mutual
-/-- **A hole-free well-typed contents is a well-typed value.** This is the
+/-- **A moved-out-free well-typed contents is a well-typed value.** This is the
 half of the correspondence the machine needs at a use: (D-Use-Copy)/(D-Use-Move)
 §6.3 hand the context a *value*, and `fully-owned(Σ, p)` (§5.1) is what says
-the contents they read has no hole in it (helper). -/
+the contents they read has no moved-out part in it (helper). -/
 theorem ContentsTy.toVal {D c T} (h : ContentsTy D c T) (hf : c.noMovedOut = true) :
     ∃ v, c.toVal = some v ∧ HasTy D v T := by
   cases h with
@@ -384,7 +384,7 @@ theorem ContentsTys.toVals {D cs Ts} (h : ContentsTys D cs Ts)
       exact ⟨v :: vs, by simp only [Contents.toVals, hv, hvs], .cons htv htvs⟩
 end
 
-/-- A hole-free well-typed contents has its type's qualifier, which is what the
+/-- A moved-out-free well-typed contents has its type's qualifier, which is what the
 `Copy` test of (D-Use-Copy) and of `dropCell` reads (helper). -/
 theorem ContentsTy.qual_eq {D c T} (h : ContentsTy D c T) (hf : c.noMovedOut = true) :
     c.qual D = T.qual D := by
@@ -672,7 +672,7 @@ a struct whose qualifier is not `Linear` one with no linear field at any depth
 (`StructDecl.Wf.field_not_linear`), so the machine's monitor — which walks the
 stored contents looking for a live declared-`linear` struct — finds none. A
 `⊘` contributes nothing whatever its type, so the statement needs no
-hole-freeness. -/
+moved-out-freeness. -/
 theorem ContentsTy.residualLinear_false {D : Decls} {c : Contents} {T : Ty}
     (hwf : WfDecls D) (h : ContentsTy D c T) (hnl : T.qual D ≠ .linear) :
     c.residualLinear D = false := by
@@ -931,7 +931,7 @@ any node (`Contents`, `Dynamics.lean`), the per-cell clause becomes a
 Three clauses, and the middle one carries the deliberate asymmetry §5.5's join
 produces:
 
-* an **`owned`** node holds a hole-free well-typed contents — a value;
+* an **`owned`** node holds a moved-out-free well-typed contents — a value;
 * a **`movedOut`** node holds well-typed contents with **no live linear
   sub-value** in it. It need not hold `⊘`: a conservative join marks a node
   moved on a path that still holds something (`3.8:60`), and the machine then
@@ -1029,7 +1029,7 @@ theorem ContentsOwnTypingList.set : ∀ {D : Decls} {cs : List Contents} {ts : L
       · simpa only [OwnSt.fieldAt, List.getElem?_cons_zero, Option.getD_some] using hc
       · simpa only [List.tail_cons] using ContentsOwnTypingList.set f hl hT hnew
 
-/-- A hole-free well-typed struct is a matched aggregate whose every slot is
+/-- A moved-out-free well-typed struct is a matched aggregate whose every slot is
 `owned` — which is what lets the §5.5 join read an `Owned` arm field by field
 against a partially moved one (helper). -/
 theorem ContentsOwnTypingList.of_owned : ∀ {D : Decls} {cs : List Contents} {Ts : List Ty},
@@ -1113,7 +1113,7 @@ theorem Ty.fieldAt_inv {D : Decls} {T Tf : Ty} {f : Nat} (h : T.fieldAt D f = so
 (D-Use-Declared-Linear) §6.3 runs `drop*` over the residue `split` exposed, and
 §5.1's `¬ linear-residue(S, π_s)` premise is what makes that safe. These are the
 three statements the two new `soundness` cases consume: `split` never fails on a
-hole-free well-typed aggregate and hands back a leaf that is itself a value;
+moved-out-free well-typed aggregate and hands back a leaf that is itself a value;
 every retained subtree is well typed at a **non-linear** type, so the residue
 monitor lets it through; and the events the residue emits are the concatenation
 of §6.11's own, in the traversal's order.
@@ -1184,12 +1184,12 @@ theorem splitFields_ok {D : Decls} {πs : List Nat} {T' : Ty} :
           | head => exact ⟨T₀, hc, hlin.1⟩
           | tail _ h => exact hro r h
 
-/-- **`split` never fails on a hole-free well-typed aggregate, and the leaf it
+/-- **`split` never fails on a moved-out-free well-typed aggregate, and the leaf it
 exposes is a value.** §6.3's `split(H(ℓ)@π_d, π_s)` is total wherever
 (Use-Declared-Linear-Destructure) §5.1's premises hold: `fully-owned(Σ, d)` is
-what says the aggregate has no hole in it, `Γ ⊢ p : T` is what says every step
+what says the aggregate has no moved-out part in it, `Γ ⊢ p : T` is what says every step
 of `π_s` is a field, and `¬ linear-residue(S, π_s)` is what makes every
-retained subtree droppable. The leaf is hole-free because the whole subtree
+retained subtree droppable. The leaf is moved-out-free because the whole subtree
 was, which is what lets the use hand the context a `Val` (`ContentsTy.toVal`). -/
 theorem splitResidue_ok {D : Decls} : ∀ (πs : List Nat) {c : Contents} {T T' : Ty},
     ContentsTy D c T → c.noMovedOut = true → T.atPath D πs = some T' →
@@ -1248,7 +1248,7 @@ theorem dropResidue_events {D : Decls} (hwf : WfDecls D) (ℓ : Nat) : ∀ {rs :
 trace is the residue's in closed form followed by the consumption of the
 path's shell. This is the statement the two declared-linear `soundness` cases
 consume: the selected leaf comes back well typed at `Γ ⊢ p : T`'s type and
-hole-free — so a use hands on a `Val` and a `@drop` can run §6.11 on it — and
+moved-out-free — so a use hands on a `Val` and a `@drop` can run §6.11 on it — and
 the events are `dropResidueEvents` and one `consume`, with no `linearLeak`
 reachable. -/
 theorem destructure_ok {D : Decls} (hwf : WfDecls D) (ℓ : Nat) {c : Contents} {T T' : Ty}
@@ -1262,8 +1262,8 @@ theorem destructure_ok {D : Decls} (hwf : WfDecls D) (ℓ : Nat) {c : Contents} 
     hlt, hlhf⟩
 
 mutual
-/-- A fully-owned node holds a hole-free contents: `fully-owned(Σ, p)` (§5.1)
-is exactly what says the aggregate a use hands on has no hole in it
+/-- A fully-owned node holds a moved-out-free contents: `fully-owned(Σ, p)` (§5.1)
+is exactly what says the aggregate a use hands on has no moved-out part in it
 (`3.8:26`) (helper). -/
 theorem ContentsOwnTyping.noMovedOut {D c t T} (h : ContentsOwnTyping D c t T)
     (hf : t.fullyOwned = true) : c.noMovedOut = true := by
@@ -1306,7 +1306,7 @@ theorem ContentsOwnTyping.toVal {D c t T} (h : ContentsOwnTyping D c t T)
     (hf : t.fullyOwned = true) : ∃ v, c.toVal = some v ∧ HasTy D v T :=
   h.contentsTy.toVal (h.noMovedOut hf)
 
-/-- A matched node whose state is `Owned` is not itself a hole — which is what
+/-- A matched node whose state is `Owned` is not itself a moved-out part — which is what
 lets `@drop` at a partially moved place run at all (helper). -/
 theorem ContentsOwnTyping.ne_movedOut {D c t T} (h : ContentsOwnTyping D c t T)
     (ho : t.isOwned = true) : c ≠ .movedOut := by
@@ -2412,7 +2412,7 @@ theorem storeTyping_freshParams_app {D : Decls} :
 A dynamic form resolves, at run time, to an ordinary constant path under the
 array place `p` its first dynamic step indexes (`Contents.resolveDyn`,
 `Dynamics.lean`). The lemmas below are what make that resolution safe: under a
-`fully-owned` `p`, every dynamic step is taken at a hole-free array of the
+`fully-owned` `p`, every dynamic step is taken at a moved-out-free array of the
 length its type names, so each step either traps on the bound or lands on an
 element `ContentsOwnTyping` covers, and the resolved path is typed at the leaf. -/
 
@@ -3365,8 +3365,8 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
           -- right (§6.2's `v[E]`), the place is navigated, and each bound is
           -- tested at its step before the leaf is read (`7.1:10`). Out of
           -- range the machine **traps** — a defined outcome `EvalOk` permits,
-          -- not a refusal — and in range the leaf is a hole-free well-typed
-          -- contents, because `fully-owned(Σ, p)` says the array has no hole
+          -- not a refusal — and in range the leaf is a moved-out-free well-typed
+          -- contents, because `fully-owned(Σ, p)` says the array has no moved-out part
           -- in it (`Contents.resolveDyn_ok`).
           simp only [eval]
           have ka := hargs idx hta hfm
@@ -3541,9 +3541,9 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
           obtain ⟨cd, hread, hsub⟩ := ContentsOwnTyping.getAt πd hmm hgd htd
           obtain ⟨leaf, rs, hdest, hlty, hlhf⟩ :=
             destructure_ok hwf.decls ℓ hsub.contentsTy (hsub.noMovedOut hfo) hleaf hres
-          -- The machine's hole guard on the leaf (`Dynamics.lean`) is the one
+          -- The machine's moved-out guard on the leaf (`Dynamics.lean`) is the one
           -- the ordinary `.drop` branch makes; here it is dead, because
-          -- `fully-owned(Σ, d)` left the whole of `d` hole-free and `split`
+          -- `fully-owned(Σ, d)` left the whole of `d` moved-out-free and `split`
           -- carries that to the leaf.
           have hnh : leaf.isMovedOut = false := by
             cases leaf <;> simp_all [Contents.isMovedOut, Contents.noMovedOut]

@@ -416,7 +416,7 @@ def cases : List Case := [
     prog := Examples.scalarProg Examples.tI64 Examples.dbgBeforeTrap
     },
   { name := "partial_move_residue",
-    description := "A field moved out of a two-field struct and discharged, the rest left to scope exit: the moved field's destructor prints at the @drop and the remaining one's at the scope exit, and the hole is skipped so nothing is dropped twice.",
+    description := "A field moved out of a two-field struct and discharged, the rest left to scope exit: the moved field's destructor prints at the @drop and the remaining one's at the scope exit, and the moved-out part is skipped so nothing is dropped twice.",
     rules := ["(Use-Move) §5.1", "§4.2 partial move", "3.8:22", "§6.11", "3.8:60"],
     prog := Examples.prog Examples.tI64 Examples.partialMoveResidue
     },
@@ -426,7 +426,7 @@ def cases : List Case := [
     prog := Examples.prog Examples.tI64 Examples.partialThenWhole
     },
   { name := "partial_under_dtor",
-    description := "A field moved out of a value whose type declares a destructor: 3.9:34 forbids it (E0456), because the destructor runs on the whole value and would observe the hole.",
+    description := "A field moved out of a value whose type declares a destructor: 3.9:34 forbids it (E0456), because the destructor runs on the whole value and would observe the moved-out part.",
     rules := ["(Use-Move) §5.1", "3.9:34"],
     prog := Examples.prog Examples.tI64 Examples.partialUnderDtor
     },
@@ -436,7 +436,7 @@ def cases : List Case := [
     prog := Examples.prog Examples.tI64 Examples.copyThroughPartial
     },
   { name := "drop_field_then_whole",
-    description := "@drop at a field and then @drop of the whole: §5.3 asks only Σ(p) = Owned of the second, and §6.11's walk drops the owned residue and skips the hole.",
+    description := "@drop at a field and then @drop of the whole: §5.3 asks only Σ(p) = Owned of the second, and §6.11's walk drops the owned residue and skips the moved-out part.",
     rules := ["(@Drop) §5.3", "§6.11", "3.8:60"],
     prog := Examples.prog Examples.tI64 Examples.dropFieldThenWhole
     },
@@ -466,12 +466,12 @@ def cases : List Case := [
     prog := Examples.prog Examples.tI64 Examples.deepPath
     },
   { name := "reinit_deep_path",
-    description := "A moved-out leaf two field steps deep reinitialized by assignment: the overwrite-drop over the hole drops nothing, and the new leaf drops once at scope exit after its sibling (RUE-2319).",
+    description := "A moved-out leaf two field steps deep reinitialized by assignment: the overwrite-drop over the moved-out part drops nothing, and the new leaf drops once at scope exit after its sibling (RUE-2319).",
     rules := ["(Assign) §5.2", "3.8:55", "§6.8 overwrite-drop", "§6.11"],
     prog := Examples.prog Examples.tI64 Examples.reinitDeepPath
     },
   { name := "overwrite_above_moved_out",
-    description := "The parent of a moved-out leaf overwritten whole: §6.8's overwrite-drop walks the old value with §6.11's hole-skip, so only the live sibling is destroyed at the assignment and the moved leaf is not dropped again (RUE-2319).",
+    description := "The parent of a moved-out leaf overwritten whole: §6.8's overwrite-drop walks the old value with §6.11's moved-out skip, so only the live sibling is destroyed at the assignment and the moved leaf is not dropped again (RUE-2319).",
     rules := ["(Assign) §5.2", "§6.8 overwrite-drop", "§6.11", "3.9:18"],
     prog := Examples.prog Examples.tI64 Examples.overwriteAboveMovedOut
     },
@@ -748,7 +748,7 @@ def cases : List Case := [
     rules := ["(Assign) §5.2", "§6.8 overwrite-drop", "§6.11", "3.8:55"],
     prog := Examples.prog Examples.tI64 Examples.arrayElemOverwrite },
   { name := "array_whole_drop",
-    description := "@drop of a whole affine array runs the same walk scope exit would — the elements ascending — and leaves a hole the scope exit skips.",
+    description := "@drop of a whole affine array runs the same walk scope exit would — the elements ascending — and leaves a moved-out part the scope exit skips.",
     rules := ["(@Drop) §5.3", "§6.11", "3.9:15"],
     prog := Examples.prog Examples.tI64 Examples.arrayWholeDrop },
   { name := "array_bounds_trap",
@@ -772,7 +772,7 @@ def cases : List Case := [
     rules := ["(Use-Move) §5.1", "(If) §5.5 join", "§6.11", "3.8:50", "3.8:73"],
     prog := Examples.prog Examples.tI64 Examples.arrayElemMoveOneArm },
   { name := "array_elem_drop",
-    description := "@drop at a constant index is 3.8:73's path-specific element drop: §6.11 runs on exactly a[1], writes the hole back there, and the scope exit walks 1, skip, 3.",
+    description := "@drop at a constant index is 3.8:73's path-specific element drop: §6.11 runs on exactly a[1], writes the moved-out part back there, and the scope exit walks 1, skip, 3.",
     rules := ["(@Drop) §5.3", "§6.11", "3.8:68", "3.8:73"],
     prog := Examples.prog Examples.tI64 Examples.arrayElemDrop },
   { name := "array_elem_field_move",
@@ -792,11 +792,11 @@ def cases : List Case := [
     rules := ["(Assign) §5.2", "3.8:72", "3.8:77", "7.1:46"],
     prog := Examples.prog Examples.tI64 Examples.arrayElemReinit },
   { name := "array_write_after_destructure_via_field",
-    description := "A declared-linear destructure at h.arr[0].x0 holes an array reached through a field, and a write through that element follows. 3.8:71/3.8:72 and 7.1:46 forbid it (E0480) for an array anywhere in a place tree. The compiler once accepted it, ran the moved-out element's destructor twice and leaked the written value; RUE-2344 made it refuse it with E0205 (the write's base h.arr[0] is consumed), and since RUE-2341 it reports E0480. The verdicts agree.",
+    description := "A declared-linear destructure at h.arr[0].x0 leaves a moved-out part in an array reached through a field, and a write through that element follows. 3.8:71/3.8:72 and 7.1:46 forbid it (E0480) for an array anywhere in a place tree. The compiler once accepted it, ran the moved-out element's destructor twice and leaked the written value; RUE-2344 made it refuse it with E0205 (the write's base h.arr[0] is consumed), and since RUE-2341 it reports E0480. The verdicts agree.",
     rules := ["(Assign) §5.2", "(Use-Declared-Linear-Destructure) §5.1", "3.8:71", "3.8:72", "7.1:46"],
     prog := Examples.declLinArrProg Examples.tI64 Examples.arrayWriteAfterDestructureViaField },
   { name := "array_whole_reinit",
-    description := "The recovery path 7.1:46 names: after an element move, the whole array is reassigned, §6.8's overwrite-drop runs over the old contents skipping the hole, and every element is owned again.",
+    description := "The recovery path 7.1:46 names: after an element move, the whole array is reassigned, §6.8's overwrite-drop runs over the old contents skipping the moved-out part, and every element is owned again.",
     rules := ["(Assign) §5.2", "§6.8 overwrite-drop", "§6.11", "3.8:55", "7.1:46"],
     prog := Examples.prog Examples.tI64 Examples.arrayWholeReinit },
   { name := "array_dyn_write_trap",
@@ -840,7 +840,7 @@ def cases : List Case := [
     rules := ["(@Drop-Copy) §5.3", "(Use-Untrackable-Dynamic-Copy) §5.1", "(D-Index-Trap) §6.5", "§6.12", "7.1:10"],
     prog := Examples.dynDropCopyTrap },
   { name := "array_dyn_write_after_destructure_via_field",
-    description := "A declared-linear destructure at h.arr[0].x0 holes an array reached through a field, and a write below a dynamic index, h.arr[i].x0 = S1 { 77 } at i = 0, follows. 3.8:72 and 7.1:46 forbid it (E0480): fully-owned at h.arr fails. The compiler once accepted it, ran the moved-out element's destructor twice and leaked the written value, because its E0480 check fired only for an array root binding (RUE-2341, review probe w1); it now refuses it with E0480, and the case stays as the regression signal.",
+    description := "A declared-linear destructure at h.arr[0].x0 leaves a moved-out part in an array reached through a field, and a write below a dynamic index, h.arr[i].x0 = S1 { 77 } at i = 0, follows. 3.8:72 and 7.1:46 forbid it (E0480): fully-owned at h.arr fails. The compiler once accepted it, ran the moved-out element's destructor twice and leaked the written value, because its E0480 check fired only for an array root binding (RUE-2341, review probe w1); it now refuses it with E0480, and the case stays as the regression signal.",
     rules := ["(Assign) §5.2", "(Use-Declared-Linear-Destructure) §5.1", "3.8:71", "3.8:72", "7.1:46"],
     prog := Examples.dynWriteAfterDestructureViaField },
   { name := "array_dyn_write_after_field_move",
@@ -848,7 +848,7 @@ def cases : List Case := [
     rules := ["(Assign) §5.2", "(Use-Move) §5.1", "3.8:70", "3.8:72"],
     prog := Examples.dynWriteAfterFieldMove },
   { name := "array_elem_move_first_rest_ascending",
-    description := "RUE-2235's seed shape: a[0] is moved out of an [S1; 3] and dropped where the @drop is, and the scope exit then walks the array skip, 2, 3 — the hole at the position the ascending walk starts from (3.8:68, 3.8:73, 3.9:15).",
+    description := "RUE-2235's seed shape: a[0] is moved out of an [S1; 3] and dropped where the @drop is, and the scope exit then walks the array skip, 2, 3 — the moved-out part at the position the ascending walk starts from (3.8:68, 3.8:73, 3.9:15).",
     rules := ["(Use-Move) §5.1", "§6.11", "3.8:68", "3.8:73", "3.9:15"],
     prog := Examples.prog Examples.tI64 Examples.arrayElemMoveFirst },
   { name := "array_zero_length_moved_twice",
@@ -936,7 +936,7 @@ def cases : List Case := [
     rules := ["(Loop-Break) §5.7", "(Break) §5.7", "(@Drop) §5.3", "3.8:79", "3.8:80", "(D-Break) §6.10"],
     prog := Examples.prog Examples.tI64 Examples.loopNestedEveryPathBreaks },
   { name := "destructure_root_through_moved_part",
-    description := "Three declared-linear levels: y.x0.x0.x0 destructures the innermost, and @drop(y.x0) then destructures the root y, which a hole below it keeps from being fully owned (3.8:26; the compiler reports E0205). Seeded by the bridge sensitivity drills (RUE-2464): with RUE-2335's root check removed the compiler accepted it and ran the hole's destructor twice, and no seed or generated case caught that.",
+    description := "Three declared-linear levels: y.x0.x0.x0 destructures the innermost, and @drop(y.x0) then destructures the root y, which a moved-out part below it keeps from being fully owned (3.8:26; the compiler reports E0205). Seeded by the bridge sensitivity drills (RUE-2464): with RUE-2335's root check removed the compiler accepted it and ran the moved-out part's destructor twice, and no seed or generated case caught that.",
     rules := ["(Use-Declared-Linear-Destructure) §5.1", "(@Drop) §5.3", "3.8:26", "3.8:33"],
     prog := Examples.destrTripleProg Examples.tI64 Examples.destructureRootThroughMovedPart },
   { name := "array_bounds_trap_at_len",
@@ -1097,7 +1097,7 @@ producer-supplied marker (`Print.DtorMarks`), not a guess from field *shape*:
 declaration with no marked field, or a marker naming a slot this value
 doesn't have, has nothing to print, in the printed Rue program and here
 alike. The marked field is never moved out from under it: the id field a
-generated declaration has is always `Copy` (never a hole), and a seed's own
+generated declaration has is always `Copy` (never a moved-out part), and a seed's own
 field 0 is unreachable to a partial move regardless, since a
 destructor-bearing declaration's fields are unreachable to one at all
 (`3.9:34`). -/

@@ -330,7 +330,7 @@ still-owned linear sub-place remains below it — and the model runs the
 program, while the compiler reported E0406, reading `y`'s own obligation as a
 residue below it. The compiler now accepts it and runs the model's trace.
 `array_dyn_write_after_destructure_via_field` was red until RUE-2341 was
-fixed: a declared-`linear` destructure at `h.arr[0].x0` holes an array reached
+fixed: a declared-`linear` destructure at `h.arr[0].x0` leaves a moved-out part in an array reached
 through a field, and a write below a dynamic index into it follows
 (`h.arr[i].x0 = …`). The model refuses it (E0480, `fully-owned` at `h.arr`
 fails). The compiler's E0480 check fired only when the root binding was an
@@ -338,7 +338,7 @@ array, so it accepted the program, ran the moved-out element's destructor
 twice and leaked the written value; the check now keys on the outermost array
 the write steps into, and the compiler refuses it with E0480 too.
 `array_elem_self_assign` is the red one: `a[0] = a[0]` moves `a[0]` out on the
-right-hand side, so the model refuses the write into the holed array
+right-hand side, so the model refuses the write into the array with a moved-out element
 (`3.8:72`, E0480), while the compiler accepts it on purpose since RUE-228;
 which is right is a decision, RUE-2346. `array_zero_length_field_dyn_read` was
 red until RUE-2345 was fixed: a dynamic-index read from a zero-length array
