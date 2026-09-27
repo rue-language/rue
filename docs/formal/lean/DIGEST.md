@@ -13,11 +13,11 @@ What is *not* here, deliberately: proof bodies. A proof is checked by the
 kernel, and `TRUST.md` reports the axioms that check appealed to; reading
 the tactic script is not how this is validated. A definition's body *is*
 here whenever it is a type or a predicate, `Prop`- or `Bool`-valued
-(`Ctx`, `CellMatches`, `InBounds`, `Expr.pendingSafe`, `noDtorPrefix`),
+(`Ctx`, `CellTyping`, `InBounds`, `Expr.pendingSafe`, `noDtorPrefix`),
 or a result a hypothesis compares (`OwnSt.join`), whatever its size,
 because a hypothesis says what that body says; otherwise whenever it is
 short enough to read, because a signature alone cannot
-tell `Ty.mult` from `fun _ => .copy` or `Ctx.join` from `fun _ _ => none`,
+tell `Ty.qual` from `fun _ => .copy` or `Ctx.join` from `fun _ _ => none`,
 and under either of those the linearity claims below would be nearly
 vacuous. A long body (`eval`, `check`, `explain`) is left to the module
 named beside its signature. Where the compiled value is the elaborator's
@@ -123,14 +123,14 @@ theorem RueCore.widen_wf {f : FloatDatum} (h : FloatDatum.Wf FloatWidth.w32 f) :
 result is exact — an integral value near `x` is always representable"). With
 `negate_wf` and `widen_wf` this discharges §7's "each `⊙_w` of §6.4 is total
 on `𝔽_w`" for every float operation this module defines; `@sqrt`, the one that
-rounds, is `FloatModel.sqrt_wf`.
+rounds, is `FloatLaws.sqrt_wf`.
 
 ```lean
 theorem RueCore.roundOp_wf {w : FloatWidth} {op : FloatRoundOp} {f : FloatDatum}
   (h : FloatDatum.Wf w f) : FloatDatum.Wf w (FloatDatum.roundOp op f)
 ```
 
-### `FloatModel.cast_nan`
+### `FloatLaws.cast_nan`
 
 *theorem* · module `RueCore.Float`
 
@@ -141,7 +141,7 @@ theorem RueCore.roundOp_wf {w : FloatWidth} {op : FloatRoundOp} {f : FloatDatum}
 targets keep the operand's.
 
 ```lean
-theorem RueCore.FloatModel.cast_nan (M : FloatModel) (w w' : FloatWidth)
+theorem RueCore.FloatLaws.cast_nan (M : FloatLaws) (w w' : FloatWidth)
   {f : FloatDatum} (h : f.isNaN = true) : (M.cast w w' f).isNaN = true
 ```
 
@@ -201,7 +201,7 @@ theorem RueCore.roundRat_wf (w : FloatWidth) (neg : Bool) (num : Nat) {den : Nat
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**Closure of `⊕_w`** (§7) for `exactOps`: `FloatModel.arith_wf`, with no hypothesis on the operands.
+**Closure of `⊕_w`** (§7) for `exactOps`: `FloatLaws.arith_wf`, with no hypothesis on the operands.
 
 ```lean
 theorem RueCore.Float.arith_wf (σ : Bool) (w : FloatWidth) (op : FloatArith)
@@ -212,7 +212,7 @@ theorem RueCore.Float.arith_wf (σ : Bool) (w : FloatWidth) (op : FloatArith)
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**Closure of the narrowing cast** (`3.12:19`) for `exactOps`: `FloatModel.narrow_wf`, on any datum.
+**Closure of the narrowing cast** (`3.12:19`) for `exactOps`: `FloatLaws.narrow_wf`, on any datum.
 
 ```lean
 theorem RueCore.Float.narrow_wf (f : FloatDatum) :
@@ -223,7 +223,7 @@ theorem RueCore.Float.narrow_wf (f : FloatDatum) :
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**Closure of `rnd_w` on an integer** (`3.12:16`) for `exactOps`: `FloatModel.ofInt_wf`.
+**Closure of `rnd_w` on an integer** (`3.12:16`) for `exactOps`: `FloatLaws.ofInt_wf`.
 
 ```lean
 theorem RueCore.Float.ofInt_wf (w : FloatWidth) (n : Int) :
@@ -234,7 +234,7 @@ theorem RueCore.Float.ofInt_wf (w : FloatWidth) (n : Int) :
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**Closure of `rnd_w` on a literal** (`3.12:9`) for `exactOps`: `FloatModel.ofLit_wf`.
+**Closure of `rnd_w` on a literal** (`3.12:9`) for `exactOps`: `FloatLaws.ofLit_wf`.
 
 ```lean
 theorem RueCore.Float.ofLit_wf (w : FloatWidth) (m : Nat) (ne : Bool) (e : Nat) :
@@ -245,7 +245,7 @@ theorem RueCore.Float.ofLit_wf (w : FloatWidth) (m : Nat) (ne : Bool) (e : Nat) 
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**A NaN operand yields a NaN** (§6.4) for `exactOps` (`FloatModel.arith_nan`): the operand is propagated.
+**A NaN operand yields a NaN** (§6.4) for `exactOps` (`FloatLaws.arith_nan`): the operand is propagated.
 
 ```lean
 theorem RueCore.Float.arith_nan (σ : Bool) (w : FloatWidth) (op : FloatArith)
@@ -257,7 +257,7 @@ theorem RueCore.Float.arith_nan (σ : Bool) (w : FloatWidth) (op : FloatArith)
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**A cast of a NaN is a NaN** (§6.4, `3.12:19`) for `exactOps` (`FloatModel.narrow_nan`).
+**A cast of a NaN is a NaN** (§6.4, `3.12:19`) for `exactOps` (`FloatLaws.narrow_nan`).
 
 ```lean
 theorem RueCore.Float.narrow_nan (f : FloatDatum) (h : f.isNaN = true) :
@@ -268,7 +268,7 @@ theorem RueCore.Float.narrow_nan (f : FloatDatum) (h : f.isNaN = true) :
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**A finite non-zero over a zero is the infinity of the xor sign** (`3.12:22`) for `exactOps` (`FloatModel.div_by_zero`).
+**A finite non-zero over a zero is the infinity of the xor sign** (`3.12:22`) for `exactOps` (`FloatLaws.div_by_zero`).
 
 ```lean
 theorem RueCore.Float.div_by_zero (σ : Bool) (w : FloatWidth) (n : Bool) (s : Nat)
@@ -282,7 +282,7 @@ theorem RueCore.Float.div_by_zero (σ : Bool) (w : FloatWidth) (n : Bool) (s : N
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**`0/0` is `NaN(σ_NaN)`** (`3.12:22`) for `exactOps` (`FloatModel.zero_div_zero`).
+**`0/0` is `NaN(σ_NaN)`** (`3.12:22`) for `exactOps` (`FloatLaws.zero_div_zero`).
 
 ```lean
 theorem RueCore.Float.zero_div_zero (σ : Bool) (w : FloatWidth) (n₁ n₂ : Bool) :
@@ -295,7 +295,7 @@ theorem RueCore.Float.zero_div_zero (σ : Bool) (w : FloatWidth) (n₁ n₂ : Bo
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**The decimal zero is `+0`** (`3.12:9`) for `exactOps` (`FloatModel.ofLit_zero`).
+**The decimal zero is `+0`** (`3.12:9`) for `exactOps` (`FloatLaws.ofLit_zero`).
 
 ```lean
 theorem RueCore.Float.ofLit_zero (w : FloatWidth) (ne : Bool) (e : Nat) :
@@ -306,7 +306,7 @@ theorem RueCore.Float.ofLit_zero (w : FloatWidth) (ne : Bool) (e : Nat) :
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**The decimal one is `1 · 2^0`** (`3.12:9`) for `exactOps` (`FloatModel.ofLit_one`), evaluated in the kernel at each width.
+**The decimal one is `1 · 2^0`** (`3.12:9`) for `exactOps` (`FloatLaws.ofLit_one`), evaluated in the kernel at each width.
 
 ```lean
 theorem RueCore.Float.ofLit_one (w : FloatWidth) :
@@ -317,7 +317,7 @@ theorem RueCore.Float.ofLit_one (w : FloatWidth) :
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**Closure of `@sqrt`** (`3.12:35`, §7's "each `⊙_w` is total on `𝔽_w`") for `exactOps`: `FloatModel.sqrt_wf`.
+**Closure of `@sqrt`** (`3.12:35`, §7's "each `⊙_w` is total on `𝔽_w`") for `exactOps`: `FloatLaws.sqrt_wf`.
 
 ```lean
 theorem RueCore.Float.sqrt_wf (σ : Bool) (w : FloatWidth) (f : FloatDatum)
@@ -335,8 +335,8 @@ own class and never inside it. This is §3's infectiousness, used.
 
 ```lean
 theorem RueCore.StructDecl.Wf.field_not_linear {D : Decls} {sd : StructDecl}
-  (h : StructDecl.Wf D sd) (hcls : sd.cls ≠ Mult.linear) (T : Ty) :
-  T ∈ sd.fields → Ty.mult D T ≠ Mult.linear
+  (h : StructDecl.Wf D sd) (hcls : sd.cls ≠ Qual.linear) (T : Ty) :
+  T ∈ sd.fields → Ty.qual D T ≠ Qual.linear
 ```
 
 ### `struct_carriesLinear_iff`
@@ -351,8 +351,8 @@ with `Ty.carriesLinear`'s definition this is §5.3's sentence, mechanized.
 ```lean
 theorem RueCore.struct_carriesLinear_iff {D : Decls} {s : Nat} {sd : StructDecl}
   (hd : D.structs[s]? = some sd) (h : StructDecl.Wf D sd) :
-  Ty.mult D (Ty.struct s) = Mult.linear ↔
-    sd.attr = Attr.linear ∨ ∃ T, T ∈ sd.fields ∧ Ty.mult D T = Mult.linear
+  Ty.qual D (Ty.struct s) = Qual.linear ↔
+    sd.attr = Attr.linear ∨ ∃ T, T ∈ sd.fields ∧ Ty.qual D T = Qual.linear
 ```
 
 ### `EnumDecl.Wf.payload_not_linear`
@@ -366,8 +366,8 @@ machine's leak monitor need only read the payload it finds under the active tag
 
 ```lean
 theorem RueCore.EnumDecl.Wf.payload_not_linear {D : Decls} {ed : EnumDecl}
-  (h : EnumDecl.Wf D ed) (hcls : ed.cls ≠ Mult.linear) (Ts : List Ty) :
-  Ts ∈ ed.variants → ∀ (T : Ty), T ∈ Ts → Ty.mult D T ≠ Mult.linear
+  (h : EnumDecl.Wf D ed) (hcls : ed.cls ≠ Qual.linear) (Ts : List Ty) :
+  Ts ∈ ed.variants → ∀ (T : Ty), T ∈ Ts → Ty.qual D T ≠ Qual.linear
 ```
 
 ### `enum_carriesLinear_iff`
@@ -384,8 +384,8 @@ value even though the value it holds carries nothing (probe e11, E0406).
 ```lean
 theorem RueCore.enum_carriesLinear_iff {D : Decls} {e : Nat} {ed : EnumDecl}
   (hd : D.enums[e]? = some ed) (h : EnumDecl.Wf D ed) :
-  Ty.mult D (Ty.enum e) = Mult.linear ↔
-    ∃ Ts, Ts ∈ ed.variants ∧ ∃ T, T ∈ Ts ∧ Ty.mult D T = Mult.linear
+  Ty.qual D (Ty.enum e) = Qual.linear ↔
+    ∃ Ts, Ts ∈ ed.variants ∧ ∃ T, T ∈ Ts ∧ Ty.qual D T = Qual.linear
 ```
 
 ### `class_unique`
@@ -421,7 +421,7 @@ theorem RueCore.class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D'
     ∀ (e : Nat) (ed ed' : EnumDecl),
       D.enums[e]? = some ed →
         D'.enums[e]? = some ed' → ed.variants = ed'.variants)
-  (T : Ty) : Ty.mult D T = Ty.mult D' T
+  (T : Ty) : Ty.qual D T = Ty.qual D' T
 ```
 
 ### `struct_class_unique`
@@ -485,7 +485,7 @@ decides.
 
 ```lean
 theorem RueCore.overwriteOk_iff {D : Decls} {u : OwnSt} {T : Ty} :
-  overwriteOk D u T = true ↔ u = OwnSt.movedOut ∨ Ty.mult D T ≠ Mult.linear
+  overwriteOk D u T = true ↔ u = OwnSt.movedOut ∨ Ty.qual D T ≠ Qual.linear
 ```
 
 ### `OwnSt.join_comm`
@@ -531,7 +531,7 @@ theorem RueCore.Ctx.join_comm {D : Decls} (Γ₁ Γ₂ : Ctx) :
   Γ₁.skel = Γ₂.skel → Ctx.join D Γ₁ Γ₂ = Ctx.join D Γ₂ Γ₁
 ```
 
-### `residualLinear_mult_linear`
+### `residualLinear_qual_linear`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
@@ -542,8 +542,8 @@ state of a `Linear` type (`3.8:58`, through `struct_carriesLinear_iff`). This
 is one half of the correspondence §5.5's `Owned` arm turns on.
 
 ```lean
-theorem RueCore.residualLinear_mult_linear {D : Decls} (hD : WfStructs D) (t : OwnSt)
-  (T : Ty) : residualLinear D t T = true → Ty.mult D T = Mult.linear
+theorem RueCore.residualLinear_qual_linear {D : Decls} (hD : WfStructs D) (t : OwnSt)
+  (T : Ty) : residualLinear D t T = true → Ty.qual D T = Qual.linear
 ```
 
 ### `ownedJoinable_residualLinear`
@@ -559,7 +559,7 @@ residue somewhere — a wholly moved-out linear subtree is what it refuses.
 theorem RueCore.ownedJoinable_residualLinear {D : Decls} (hD : WfStructs D)
   (t : OwnSt) (T : Ty) :
   ownedJoinable D t T = true →
-    Ty.mult D T = Mult.linear → residualLinear D t T = true
+    Ty.qual D T = Qual.linear → residualLinear D t T = true
 ```
 
 ### `ownedJoinable_of_residualLinear_false`
@@ -579,7 +579,7 @@ theorem RueCore.ownedJoinable_of_residualLinear_false {D : Decls} (hD : WfStruct
   (t : OwnSt) (T : Ty) :
   OwnSt.wf D t T = true →
     residualLinear D t T = false →
-      ownedJoinable D t T = decide (Ty.mult D T ≠ Mult.linear)
+      ownedJoinable D t T = decide (Ty.qual D T ≠ Qual.linear)
 ```
 
 ### `OwnSt.join_ownedJoinable`
@@ -919,19 +919,19 @@ theorem RueCore.Typed.wf_fnCtx {P : Program} {R : Ty} {fd : FnDef} {e : Expr} {T
   Ω.norm = some Γ' → Ctx.Wf P.decls Γ'
 ```
 
-### `Contents.mult_toVal`
+### `Contents.qual_toVal`
 
 *theorem* · module `RueCore.Dynamics.Lemmas`
 
-`Contents.mult` agrees with `Val.mult` on a hole-free contents: §6's
-`Step.indexDrop` reads `leaf.mult` on the store's `Contents`, while `eval`'s
-dynamic checks (RUE-2400) read `v.mult` on the `Val` a successful read
+`Contents.qual` agrees with `Val.qual` on a hole-free contents: §6's
+`Step.indexDrop` reads `leaf.qual` on the store's `Contents`, while `eval`'s
+dynamic checks (RUE-2400) read `v.qual` on the `Val` a successful read
 produces; this is what lets the two land on the same refusal. Serves
 RUE-2289 part 2, the `eval ⇒ Step*` simulation.
 
 ```lean
-theorem RueCore.Contents.mult_toVal (D : Decls) (c : Contents) (v : Val)
-  (h : c.toVal = some v) : Contents.mult D c = Val.mult D v
+theorem RueCore.Contents.qual_toVal (D : Decls) (c : Contents) (v : Val)
+  (h : c.toVal = some v) : Contents.qual D c = Val.qual D v
 ```
 
 ### `Step.step_eq`
@@ -1032,7 +1032,7 @@ A stuck configuration takes no step (§6).
 
 ```lean
 theorem RueCore.Config.Stuck.no_step {M : FloatSig} {P : Program} {C C' : Config}
-  {w : Violation} (h : Config.Stuck M P C w) : ¬Step M P C C'
+  {w : Refusal} (h : Config.Stuck M P C w) : ¬Step M P C C'
 ```
 
 ### `step_stuck_isStuckState`
@@ -1046,7 +1046,7 @@ the four monitors `eval` adds and §6.3, §6.5, §6.7 and §6.8 do not have.
 
 ```lean
 theorem RueCore.step_stuck_isStuckState {M : FloatSig} {P : Program} {C : Config}
-  {w : Violation} (h : Config.Stuck M P C w) : w.isStuckState = true
+  {w : Refusal} (h : Config.Stuck M P C w) : w.isStuckState = true
 ```
 
 ### `unwindLocs_plain`
@@ -1133,7 +1133,7 @@ declarations.
 
 Be exact about the `⊘`-skip: this theorem states the **map**, `cs.map
 (dropEvents D)`, and a moved-out field contributes nothing because
-`dropEvents .hole = []` *by definition* (`Dynamics.lean`). So `3.8:60`'s skip
+`dropEvents .movedOut = []` *by definition* (`Dynamics.lean`). So `3.8:60`'s skip
 is carried by the closed form's own leaf case, not concluded here; what the
 theorem adds is that the walk emits exactly that map, in that order.
 
@@ -1158,7 +1158,7 @@ emits, in payload order, and nothing else: no destructor event, because §3 lets
 an enum declare none (E0417), and nothing at all for a discriminant-only variant,
 whose payload list is empty. The inactive variants contribute nothing because
 they have no storage — the value carries one tag — and a payload already moved
-out by a `match` binding left the enum place `⊘`, which `dropEvents .hole = []`
+out by a `match` binding left the enum place `⊘`, which `dropEvents .movedOut = []`
 skips.
 
 ```lean
@@ -1177,7 +1177,7 @@ theorem RueCore.dropContents_enum_events {D : Decls} {e k i : Nat}
 well-typed array's stored contents emits the concatenation of its **elements'**
 drop events in **ascending index order** and nothing else: no destructor event
 of the array's own, because `3.9:14` gives `[T; n]` a destructor exactly when
-`T` has one, and a moved-out element contributes none (`dropEvents .hole = []`,
+`T` has one, and a moved-out element contributes none (`dropEvents .movedOut = []`,
 the same `⊘`-skip `dropContents_struct_events` carries). This is the closed
 form RUE-2237's "dropped exactly once" quantifies over at an array, and it is
 `3.8:73`'s "untouched elements are dropped, in ascending index order" as a
@@ -1241,7 +1241,7 @@ hole-freeness.
 
 ```lean
 theorem RueCore.ContentsTy.residualLinear_false {D : Decls} {c : Contents} {T : Ty}
-  (hwf : WfDecls D) (h : ContentsTy D c T) (hnl : Ty.mult D T ≠ Mult.linear) :
+  (hwf : WfDecls D) (h : ContentsTy D c T) (hnl : Ty.qual D T ≠ Qual.linear) :
   Contents.residualLinear D c = false
 ```
 
@@ -1293,7 +1293,7 @@ closure law — the one thing about `⊕_w` that cannot be proved of an arbitrar
 `FloatSig` — and it is what re-establishes `HasTy` at the result.
 
 ```lean
-theorem RueCore.binOpFloat_res {D : Decls} (M : FloatModel) (op : BinOp)
+theorem RueCore.binOpFloat_res {D : Decls} (M : FloatLaws) (op : BinOp)
   (w : FloatWidth) (a b : FloatDatum) (ha : FloatDatum.Wf w a)
   (hb : FloatDatum.Wf w b) (hop : op.floatAdmits = true) :
   ∃ v,
@@ -1310,7 +1310,7 @@ The same, over the two machine values (Float-Arith)/(Float-Ord)/
 is not reachable from them.
 
 ```lean
-theorem RueCore.evalBinOpFloat_res {D : Decls} (M : FloatModel) (op : BinOp)
+theorem RueCore.evalBinOpFloat_res {D : Decls} (M : FloatLaws) (op : BinOp)
   (w : FloatWidth) (a b : FloatDatum) (ha : FloatDatum.Wf w a)
   (hb : FloatDatum.Wf w b) (hop : op.floatAdmits = true) :
   ∃ v,
@@ -1385,7 +1385,7 @@ theorem RueCore.evalUnOp_float_res {D : Decls} (w : FloatWidth) (f : FloatDatum)
 ((D-Int-To-Float), `3.12:16`).
 
 ```lean
-theorem RueCore.evalFintrin_int_res {D : Decls} (M : FloatModel) (w : FloatWidth)
+theorem RueCore.evalFintrin_int_res {D : Decls} (M : FloatLaws) (w : FloatWidth)
   (w' : IntWidth) (s' : Sign) (n : Int) :
   ∃ v,
     evalFintrin M.toFloatSig (FloatIntrin.intToFloat w) (Val.int w' s' n) =
@@ -1407,7 +1407,7 @@ exact operations (`widen_wf`, `roundOp_wf`) and a law of the model for the
 rounded ones (`narrow_wf`, `sqrt_wf`).
 
 ```lean
-theorem RueCore.evalFintrin_float_res {D : Decls} (M : FloatModel) (k : FloatIntrin)
+theorem RueCore.evalFintrin_float_res {D : Decls} (M : FloatLaws) (k : FloatIntrin)
   (w : FloatWidth) (f : FloatDatum) (hw : FloatDatum.Wf w f)
   (hk : k.floatSrc w = true) :
   (∃ v,
@@ -1432,12 +1432,12 @@ was, which is what lets the use hand the context a `Val` (`ContentsTy.toVal`).
 theorem RueCore.splitResidue_ok {D : Decls} (πs : List Nat) {c : Contents}
   {T T' : Ty} :
   ContentsTy D c T →
-    c.holeFree = true →
+    c.noMovedOut = true →
       Ty.atPath D T πs = some T' →
         linearResidue D T πs = false →
           ∃ leaf rs,
             Contents.splitResidue D c πs = Except.ok (leaf, rs) ∧
-              ContentsTy D leaf T' ∧ leaf.holeFree = true ∧ ResidueOk D rs
+              ContentsTy D leaf T' ∧ leaf.noMovedOut = true ∧ ResidueOk D rs
 ```
 
 ### `dropResidue_events`
@@ -1473,17 +1473,17 @@ reachable.
 ```lean
 theorem RueCore.destructure_ok {D : Decls} (hwf : WfDecls D) (ℓ : Nat) {c : Contents}
   {T T' : Ty} {πs : List Nat} (hty : ContentsTy D c T)
-  (hhf : c.holeFree = true) (hpath : Ty.atPath D T πs = some T')
+  (hhf : c.noMovedOut = true) (hpath : Ty.atPath D T πs = some T')
   (hres : linearResidue D T πs = false) :
   ∃ leaf rs,
     Contents.destructure D ℓ c πs =
         Except.ok
           (leaf,
             dropResidueEvents D ℓ rs ++ [Event.consume (c.pathOnly πs)]) ∧
-      ContentsTy D leaf T' ∧ leaf.holeFree = true
+      ContentsTy D leaf T' ∧ leaf.noMovedOut = true
 ```
 
-### `ContentsMatches.readAt`
+### `ContentsOwnTyping.getAt`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -1494,15 +1494,15 @@ sub-position, and the two match at the path's declared type. This is what makes
 every place rule's premises enough for its dynamic rule to fire.
 
 ```lean
-theorem RueCore.ContentsMatches.readAt {D : Decls} (π : List Nat) {c : Contents}
+theorem RueCore.ContentsOwnTyping.getAt {D : Decls} (π : List Nat) {c : Contents}
   {t u : OwnSt} {T T' : Ty} :
-  ContentsMatches D c t T →
+  ContentsOwnTyping D c t T →
     t.get π = some u →
       Ty.atPath D T π = some T' →
-        ∃ sub, c.readAt π = Except.ok sub ∧ ContentsMatches D sub u T'
+        ∃ sub, c.getAt π = Except.ok sub ∧ ContentsOwnTyping D sub u T'
 ```
 
-### `ContentsMatches.writeAt`
+### `ContentsOwnTyping.setAt`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -1512,17 +1512,17 @@ matched.** (Use-Move) §6.3's `H[ℓ@π ↦ ⊘]`, `@drop`'s write-back (§6.11)
 at the path.
 
 ```lean
-theorem RueCore.ContentsMatches.writeAt {D : Decls} (π : List Nat) {c sub' : Contents}
+theorem RueCore.ContentsOwnTyping.setAt {D : Decls} (π : List Nat) {c sub' : Contents}
   {t u u' : OwnSt} {T T' : Ty} :
-  ContentsMatches D c t T →
+  ContentsOwnTyping D c t T →
     t.get π = some u →
       Ty.atPath D T π = some T' →
-        ContentsMatches D sub' u' T' →
+        ContentsOwnTyping D sub' u' T' →
           ∃ c',
-            c.writeAt π sub' = some c' ∧ ContentsMatches D c' (t.setAt π u') T
+            c.setAt π sub' = some c' ∧ ContentsOwnTyping D c' (t.setAt π u') T
 ```
 
-### `ContentsMatches.declaredPlan_eq`
+### `ContentsOwnTyping.declaredPlan_eq`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -1540,15 +1540,15 @@ on both sides, and the two declared ones because it is the same
 `some (π_d, π_s)`.
 
 ```lean
-theorem RueCore.ContentsMatches.declaredPlan_eq {D : Decls} (π : List Nat)
+theorem RueCore.ContentsOwnTyping.declaredPlan_eq {D : Decls} (π : List Nat)
   {c : Contents} {t u : OwnSt} {T T' : Ty} :
-  ContentsMatches D c t T →
+  ContentsOwnTyping D c t T →
     t.get π = some u →
       Ty.atPath D T π = some T' →
         Contents.declaredPlan D c π = declaredPrefix D T π
 ```
 
-### `ContentsMatches.residualLinear_false`
+### `ContentsOwnTyping.residualLinear_false`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -1560,26 +1560,26 @@ makes the RUE-1591 model sound: after a partial move the obligation is the
 residue's, on both sides of the invariant.
 
 ```lean
-theorem RueCore.ContentsMatches.residualLinear_false {D : Decls} {c : Contents}
-  {t : OwnSt} {T : Ty} (hwf : WfDecls D) (h : ContentsMatches D c t T)
+theorem RueCore.ContentsOwnTyping.residualLinear_false {D : Decls} {c : Contents}
+  {t : OwnSt} {T : Ty} (hwf : WfDecls D) (h : ContentsOwnTyping D c t T)
   (hr : residualLinear D t T = false) : Contents.residualLinear D c = false
 ```
 
-### `Matches.unwind`
+### `StoreTyping.unwind`
 
 *theorem* · module `RueCore.Soundness`
 
 **Scope teardown never refuses on a frame the statics cleared.**
 `run-scope-drops` (§6.1) over a frame whose bindings carry no residual linear
-content retires every one of them: none is already retired (`Matches` says
+content retires every one of them: none is already retired (`StoreTyping` says
 every bound cell is live and that no two bindings share one — §7's
 no-use-after-drop at an unwinding edge), and none holds a live linear
 sub-value (the §5.6 obligation, read on the residue).
 
 ```lean
-theorem RueCore.Matches.unwind {D : Decls} (hwf : WfDecls D) (Γ : Ctx) (ρ : Env)
+theorem RueCore.StoreTyping.unwind {D : Decls} (hwf : WfDecls D) (Γ : Ctx) (ρ : Env)
   (H : Store) :
-  Matches D Γ ρ H →
+  StoreTyping D Γ ρ H →
     NoResidualLinear D Γ →
       ∃ H' evs,
         unwindLocs D H ρ = Except.ok (H', evs) ∧
@@ -1593,11 +1593,11 @@ theorem RueCore.Matches.unwind {D : Decls} (hwf : WfDecls D) (Γ : Ctx) (ρ : En
 
 **A frame's whole teardown never refuses** (§6.9's `run-all-scope-drops`,
 run at (D-Return-Value) and at (D-Return)). The record is the environment
-reversed, so this is `Matches.unwind` read newest-first.
+reversed, so this is `StoreTyping.unwind` read newest-first.
 
 ```lean
-theorem RueCore.runAllScopeDrops_ok {D : Decls} {Γ : Ctx} {φ : Frame} {H : Store}
-  (hwf : WfDecls D) (hfm : FrameMatches D Γ φ H)
+theorem RueCore.runAllScopeDrops_ok {D : Decls} {Γ : Ctx} {φ : Activation} {H : Store}
+  (hwf : WfDecls D) (hfm : ActivationTyping D Γ φ H)
   (hnl : NoResidualLinear D Γ) :
   ∃ H' evs,
     runAllScopeDrops D H φ = Except.ok (H', evs) ∧
@@ -1605,7 +1605,7 @@ theorem RueCore.runAllScopeDrops_ok {D : Decls} {Γ : Ctx} {φ : Frame} {H : Sto
         ∀ (ℓ : Nat), ¬ℓ ∈ φ.env → H'[ℓ]? = H[ℓ]?
 ```
 
-### `ownedJoinable_matches`
+### `ownedJoinable_typing`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -1616,13 +1616,13 @@ which `ownedJoinable` has answered, and which the invariant's asymmetric
 `movedOut` clause then admits (`3.8:50`, `3.8:60`).
 
 ```lean
-theorem RueCore.ownedJoinable_matches {D : Decls} (hwf : WfDecls D) (t : OwnSt)
+theorem RueCore.ownedJoinable_typing {D : Decls} (hwf : WfDecls D) (t : OwnSt)
   {T : Ty} {c : Contents} :
   ownedJoinable D t T = true →
-    ContentsMatches D c OwnSt.owned T → ContentsMatches D c t T
+    ContentsOwnTyping D c OwnSt.owned T → ContentsOwnTyping D c t T
 ```
 
-### `OwnSt.join_matches`
+### `OwnSt.join_typing`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -1634,14 +1634,14 @@ already ruled out live linear content there (`3.8:50`). The machine then drops
 whatever residue the taken path left, path-specifically (`3.8:60`).
 
 ```lean
-theorem RueCore.OwnSt.join_matches {D : Decls} (hwf : WfDecls D) (a b : OwnSt)
+theorem RueCore.OwnSt.join_typing {D : Decls} (hwf : WfDecls D) (a b : OwnSt)
   {e : OwnSt} {T : Ty} {c : Contents} :
   OwnSt.join D a b T = some e →
-    ContentsMatches D c a T ∨ ContentsMatches D c b T →
-      ContentsMatches D c e T
+    ContentsOwnTyping D c a T ∨ ContentsOwnTyping D c b T →
+      ContentsOwnTyping D c e T
 ```
 
-### `Entry.join_matches_left`
+### `Entry.join_typing_left`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -1651,12 +1651,12 @@ the machine drops path-specifically: `3.8:60` for a struct's fields, `3.8:73`
 the array-element form).
 
 ```lean
-theorem RueCore.Entry.join_matches_left {D : Decls} (hwf : WfDecls D) {a b e' : Entry}
-  (hj : Entry.join D a b = some e') {cell : Cell}
-  (hc : CellMatches D cell a) : CellMatches D cell e'
+theorem RueCore.Entry.join_typing_left {D : Decls} (hwf : WfDecls D) {a b e' : Entry}
+  (hj : Entry.join D a b = some e') {cell : Cell} (hc : CellTyping D cell a) :
+  CellTyping D cell e'
 ```
 
-### `Entry.join_matches_right`
+### `Entry.join_typing_right`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -1666,37 +1666,37 @@ path-specifically: `3.8:60` for a struct's fields, `3.8:73` the array-element
 form).
 
 ```lean
-theorem RueCore.Entry.join_matches_right {D : Decls} (hwf : WfDecls D)
-  {a b e' : Entry} (hskel : a.skel = b.skel) (hj : Entry.join D a b = some e')
-  {cell : Cell} (hc : CellMatches D cell b) : CellMatches D cell e'
+theorem RueCore.Entry.join_typing_right {D : Decls} (hwf : WfDecls D) {a b e' : Entry}
+  (hskel : a.skel = b.skel) (hj : Entry.join D a b = some e') {cell : Cell}
+  (hc : CellTyping D cell b) : CellTyping D cell e'
 ```
 
-### `Matches.join_left`
+### `StoreTyping.join_left`
 
 *theorem* · module `RueCore.Soundness`
 
 The invariant survives the §5.5 join from the left arm.
 
 ```lean
-theorem RueCore.Matches.join_left {D : Decls} (hwf : WfDecls D) {Γ₁ Γ₂ Γ' : Ctx}
+theorem RueCore.StoreTyping.join_left {D : Decls} (hwf : WfDecls D) {Γ₁ Γ₂ Γ' : Ctx}
   {ρ : Env} {H : Store} :
-  Ctx.join D Γ₁ Γ₂ = some Γ' → Matches D Γ₁ ρ H → Matches D Γ' ρ H
+  Ctx.join D Γ₁ Γ₂ = some Γ' → StoreTyping D Γ₁ ρ H → StoreTyping D Γ' ρ H
 ```
 
-### `Matches.join_right`
+### `StoreTyping.join_right`
 
 *theorem* · module `RueCore.Soundness`
 
 The invariant survives the §5.5 join from the right arm.
 
 ```lean
-theorem RueCore.Matches.join_right {D : Decls} (hwf : WfDecls D) {Γ₁ Γ₂ Γ' : Ctx}
+theorem RueCore.StoreTyping.join_right {D : Decls} (hwf : WfDecls D) {Γ₁ Γ₂ Γ' : Ctx}
   {ρ : Env} {H : Store} :
   Γ₁.skel = Γ₂.skel →
-    Ctx.join D Γ₁ Γ₂ = some Γ' → Matches D Γ₂ ρ H → Matches D Γ' ρ H
+    Ctx.join D Γ₁ Γ₂ = some Γ' → StoreTyping D Γ₂ ρ H → StoreTyping D Γ' ρ H
 ```
 
-### `Matches.joinFold`
+### `StoreTyping.joinFold`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -1704,15 +1704,15 @@ The invariant survives the **accumulator step** of (Match) §5.5's n-way
 join, from the accumulated state or from any arm still to be folded in.
 
 ```lean
-theorem RueCore.Matches.joinFold {D : Decls} (hwf : WfDecls D) (Γs : List Ctx)
+theorem RueCore.StoreTyping.joinFold {D : Decls} (hwf : WfDecls D) (Γs : List Ctx)
   {acc Γ' : Ctx} {ρ : Env} {H : Store} :
   Ctx.joinFold D acc Γs = some Γ' →
     acc.SameSkel Γs →
-      (Matches D acc ρ H ∨ ∃ Γᵢ, Γᵢ ∈ Γs ∧ Matches D Γᵢ ρ H) →
-        Matches D Γ' ρ H
+      (StoreTyping D acc ρ H ∨ ∃ Γᵢ, Γᵢ ∈ Γs ∧ StoreTyping D Γᵢ ρ H) →
+        StoreTyping D Γ' ρ H
 ```
 
-### `Matches.joinAll`
+### `StoreTyping.joinAll`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -1723,13 +1723,13 @@ which is what the `match` case of `soundness` needs, exactly as `ite` reads
 `join_left`/`join_right`.
 
 ```lean
-theorem RueCore.Matches.joinAll {D : Decls} (hwf : WfDecls D) {Γ₀ : Ctx}
+theorem RueCore.StoreTyping.joinAll {D : Decls} (hwf : WfDecls D) {Γ₀ : Ctx}
   {Γs : List Ctx} {Γ' Γᵢ : Ctx} {ρ : Env} {H : Store} :
   Ctx.joinAll D Γs = some Γ' →
-    Γ₀.SameSkel Γs → Γᵢ ∈ Γs → Matches D Γᵢ ρ H → Matches D Γ' ρ H
+    Γ₀.SameSkel Γs → Γᵢ ∈ Γs → StoreTyping D Γᵢ ρ H → StoreTyping D Γ' ρ H
 ```
 
-### `matches_mintParams`
+### `storeTyping_freshParams`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -1740,37 +1740,37 @@ signature lists parameters left to right while `Ctx` and `Env` list the
 innermost binder first.
 
 ```lean
-theorem RueCore.matches_mintParams {D : Decls} (ps : List Param) (vs : List Val)
+theorem RueCore.storeTyping_freshParams {D : Decls} (ps : List Param) (vs : List Val)
   (H : Store) :
   HasTys D vs (List.map Param.ty ps) →
-    Matches D
+    StoreTyping D
       (List.map (fun p => { ty := p.ty, mu := p.mu, st := OwnSt.owned })
           ps).reverse
-      (mintParams H vs).snd.reverse (mintParams H vs).fst
+      (freshParams H vs).snd.reverse (freshParams H vs).fst
 ```
 
-### `matches_mintParams_app`
+### `storeTyping_freshParams_app`
 
 *theorem* · module `RueCore.Soundness`
 
 **(D-Match) §6.6 establishes the arm's entry invariant.** The payload cells
 hold the payload components and (Match) §5.5's `Σ0[ x_{ij} ↦ Owned ]` — `extendArm`
 — describes exactly them, on top of the frame the `match` was evaluated in. This
-is `matches_mintParams` read over a non-empty base frame: the same minting, the
+is `storeTyping_freshParams` read over a non-empty base frame: the same minting, the
 same two `reverse`s (a payload tuple is written left to right while `Ctx` and
 `Env` list the innermost binder first), with the enclosing frame carried along
 because the cells are minted **above** the whole store.
 
 ```lean
-theorem RueCore.matches_mintParams_app {D : Decls} (Ts : List Ty) (vs : List Val)
+theorem RueCore.storeTyping_freshParams_app {D : Decls} (Ts : List Ty) (vs : List Val)
   (Γ : Ctx) (ρ : Env) (H : Store) :
   HasTys D vs Ts →
-    Matches D Γ ρ H →
-      Matches D
+    StoreTyping D Γ ρ H →
+      StoreTyping D
         ((List.map (fun T => { ty := T, mu := false, st := OwnSt.owned })
               Ts).reverse ++
           Γ)
-        ((mintParams H vs).snd.reverse ++ ρ) (mintParams H vs).fst
+        ((freshParams H vs).snd.reverse ++ ρ) (freshParams H vs).fst
 ```
 
 ### `args_sound`
@@ -1786,18 +1786,18 @@ hypothesis is `soundness` at the fuel the call has already spent one unit of,
 which is why this is a lemma rather than a case of the induction.
 
 ```lean
-theorem RueCore.args_sound (M : FloatModel) {P : Program} {fuel : Nat}
+theorem RueCore.args_sound (M : FloatLaws) {P : Program} {fuel : Nat}
   (ih :
     ∀ {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty},
       Typed P R Γ e T Ω →
-        ∀ {φ : Frame} {H : Store},
-          FrameMatches P.decls Γ φ H →
+        ∀ {φ : Activation} {H : Store},
+          ActivationTyping P.decls Γ φ H →
             EvalOk P.decls T R Ω.norm Ω.brk φ H
               (eval M.toFloatSig fuel P H φ e))
-  (es : List Expr) {R : Ty} {Γ : Ctx} {Ω : Out} {Ts : List Ty} {φ : Frame}
-  {H : Store} :
+  (es : List Expr) {R : Ty} {Γ : Ctx} {Ω : Out} {Ts : List Ty}
+  {φ : Activation} {H : Store} :
   TypedArgs P R Γ es Ts Ω →
-    FrameMatches P.decls Γ φ H →
+    ActivationTyping P.decls Γ φ H →
       ArgsOk P.decls R Ts Ω.norm Ω.brk φ H
         (evalArgs (fun H' e => eval M.toFloatSig fuel P H' φ e) H es)
 ```
@@ -1814,8 +1814,8 @@ its incoming context, yields a well-typed value with the agreement restored at
 the normal outgoing state of its §5.3 result `Ω` — and no value at all when
 `Ω` is §5.7's `⊥` — a value handed back by an unwinding `return` (§6.9), an
 unwinding `break` (§6.10) that fired at one of `Ω`'s delivered states, a
-*defined* panic (§6.12), or `outOfFuel` — never `.stuck`, so never a
-`Violation`: no use-after-move, no use-after-drop, no linear leak, no linear
+*defined* panic (§6.12), or `outOfFuel` — never `.refused`, so never a
+`Refusal`: no use-after-move, no use-after-drop, no linear leak, no linear
 overwrite, no linear discard (§7's decomposed bullets). The theorem is
 quantified over every fuel, and `fuel_mono`/`no_masking` below are what say
 that quantification is not vacuous.
@@ -1826,11 +1826,11 @@ and every subexpression — a call's arguments and the callee's body alike —
 runs at one unit less.
 
 ```lean
-theorem RueCore.soundness (M : FloatModel) {P : Program} (hwf : WfProgram P)
+theorem RueCore.soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P)
   (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty} :
   Typed P R Γ e T Ω →
-    ∀ {φ : Frame} {H : Store},
-      FrameMatches P.decls Γ φ H →
+    ∀ {φ : Activation} {H : Store},
+      ActivationTyping P.decls Γ φ H →
         EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
@@ -1846,7 +1846,7 @@ interpreter's own device, not a §6 notion, so what this lemma is about is the
 claim `eval` makes on behalf of §6's machine.
 
 ```lean
-theorem RueCore.fuel_mono (M : FloatSig) {P : Program} {H : Store} {φ : Frame}
+theorem RueCore.fuel_mono (M : FloatSig) {P : Program} {H : Store} {φ : Activation}
   {e : Expr} {n m : Nat} :
   n ≤ m →
     eval M n P H φ e ≠ EvalRes.outOfFuel → eval M m P H φ e = eval M n P H φ e
@@ -1863,11 +1863,11 @@ program some fuel completes, and the `outOfFuel` escape hatch in the §7
 theorems (§6's machine has no such state) cannot be what makes them true.
 
 ```lean
-theorem RueCore.no_masking (M : FloatSig) {P : Program} {H : Store} {φ : Frame}
-  {e : Expr} {n m : Nat} {w : Violation}
-  (hn : eval M n P H φ e = EvalRes.stuck w)
+theorem RueCore.no_masking (M : FloatSig) {P : Program} {H : Store} {φ : Activation}
+  {e : Expr} {n m : Nat} {w : Refusal}
+  (hn : eval M n P H φ e = EvalRes.refused w)
   (hm : eval M m P H φ e ≠ EvalRes.outOfFuel) :
-  eval M m P H φ e = EvalRes.stuck w
+  eval M m P H φ e = EvalRes.refused w
 ```
 
 ### `run_ne_returned`
@@ -1890,10 +1890,10 @@ theorem RueCore.run_ne_returned (M : FloatSig) {P : Program} {fuel : Nat} (H : S
 **Program safety** (§7, over `Dynamics.run`). A well-formed program, run
 at any fuel, either exhausts its fuel, traps in a defined way (§6.12), or
 produces a value of the entry point's declared return type. It never reaches a
-`Violation`.
+`Refusal`.
 
 ```lean
-theorem RueCore.run_safe (M : FloatModel) {P : Program} {fd : FnDef}
+theorem RueCore.run_safe (M : FloatLaws) {P : Program} {fd : FnDef}
   (hwf : WfProgram P) (h0 : P.fns[0]? = some fd) (hp : fd.params = [])
   (fuel : Nat) :
   run M.toFloatSig P fuel = EvalRes.outOfFuel ∨
@@ -1913,7 +1913,7 @@ value's type is still the one that function declares, so this form claims
 exactly what `run_safe` proves.
 
 ```lean
-theorem RueCore.ProgramTyped.run_safe (M : FloatModel) {P : Program}
+theorem RueCore.ProgramTyped.run_safe (M : FloatLaws) {P : Program}
   (h : ProgramTyped P) (fuel : Nat) :
   ∃ fd,
     P.fns[0]? = some fd ∧
@@ -1965,13 +1965,13 @@ calculus, the second is the calculus doing what it says.
   route as well as the first.
 
 Every *other* edge — a `let`'s scope exit, a `match` arm's `endscope` over its
-payload locals (`Matches.unwindPrefix`), a `break`'s unwind to its loop
+payload locals (`StoreTyping.unwindPrefix`), a `break`'s unwind to its loop
 (`loop_exit_ok`), a frame's normal pop, and a `return`'s unwind — is
 covered.
 
 ```lean
-theorem RueCore.no_violation (M : FloatModel) {P : Program} (h : ProgramTyped P)
-  (fuel : Nat) (w : Violation) : run M.toFloatSig P fuel ≠ EvalRes.stuck w
+theorem RueCore.no_violation (M : FloatLaws) {P : Program} (h : ProgramTyped P)
+  (fuel : Nat) (w : Refusal) : run M.toFloatSig P fuel ≠ EvalRes.refused w
 ```
 
 ### `no_use_after_move`
@@ -1981,9 +1981,9 @@ theorem RueCore.no_violation (M : FloatModel) {P : Program} (h : ProgramTyped P)
 §7 "No use-after-move": the machine never reads a `⊘` cell.
 
 ```lean
-theorem RueCore.no_use_after_move (M : FloatModel) {P : Program} (h : ProgramTyped P)
+theorem RueCore.no_use_after_move (M : FloatLaws) {P : Program} (h : ProgramTyped P)
   (fuel : Nat) :
-  run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterMove
+  run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.useAfterMove
 ```
 
 ### `no_use_after_drop`
@@ -1997,14 +1997,14 @@ it for every program. `run-all-scope-drops` (§6.9) walks the frame's scope
 record at every `return` and at every frame pop, and what keeps those walks
 off a `†` cell, and stops any cell being retired twice, is structural: a
 binding's cell is minted fresh and retired only when its scope ends, after
-which nothing names it, and a record owes each cell once. `FrameMatches`
+which nothing names it, and a record owes each cell once. `ActivationTyping`
 implies as much for a checked program (the record is the environment, whose
-cells `Matches` says are live or moved out and pairwise distinct).
+cells `StoreTyping` says are live or moved out and pairwise distinct).
 
 ```lean
-theorem RueCore.no_use_after_drop (M : FloatModel) {P : Program} (h : ProgramTyped P)
+theorem RueCore.no_use_after_drop (M : FloatLaws) {P : Program} (h : ProgramTyped P)
   (fuel : Nat) :
-  run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterDrop
+  run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.useAfterDrop
 ```
 
 ### `no_linear_leak`
@@ -2015,8 +2015,8 @@ theorem RueCore.no_use_after_drop (M : FloatModel) {P : Program} (h : ProgramTyp
 exit (§6.7) nor a frame unwind (§6.9) ever sees a live linear value.
 
 ```lean
-theorem RueCore.no_linear_leak (M : FloatModel) {P : Program} (h : ProgramTyped P)
-  (fuel : Nat) : run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearLeak
+theorem RueCore.no_linear_leak (M : FloatLaws) {P : Program} (h : ProgramTyped P)
+  (fuel : Nat) : run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearLeak
 ```
 
 ### `no_linear_overwrite`
@@ -2030,9 +2030,9 @@ the two — so the residue is empty of linear content whenever the checker
 accepted.
 
 ```lean
-theorem RueCore.no_linear_overwrite (M : FloatModel) {P : Program}
-  (h : ProgramTyped P) (fuel : Nat) :
-  run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearOverwrite
+theorem RueCore.no_linear_overwrite (M : FloatLaws) {P : Program} (h : ProgramTyped P)
+  (fuel : Nat) :
+  run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearOverwrite
 ```
 
 ### `no_linear_discard`
@@ -2042,9 +2042,9 @@ theorem RueCore.no_linear_overwrite (M : FloatModel) {P : Program}
 §7 linear bullet, discard half (`3.8:64`).
 
 ```lean
-theorem RueCore.no_linear_discard (M : FloatModel) {P : Program} (h : ProgramTyped P)
+theorem RueCore.no_linear_discard (M : FloatLaws) {P : Program} (h : ProgramTyped P)
   (fuel : Nat) :
-  run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearDiscard
+  run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearDiscard
 ```
 
 ### `check_sound`
@@ -2056,8 +2056,8 @@ type the result admits (a `never` result at every type, (Sub-Never) §5.7), so
 the §7 theorems apply to whatever `check` accepts.
 
 ```lean
-theorem RueCore.check_sound {P : Program} {R : Ty} (e : Expr) {Γ : Ctx} {c : CTy}
-  {Ω : Out} :
+theorem RueCore.check_sound {P : Program} {R : Ty} (e : Expr) {Γ : Ctx}
+  {c : TyOrNever} {Ω : Out} :
   check P R Γ e = some (c, Ω) →
     ∀ (T : Ty), c.fits T = true → Typed P R Γ e T Ω
 ```
@@ -2070,7 +2070,7 @@ Every `checkArms` acceptance is a real (Match) §5.5 arm-list derivation, at
 every type the arms' fixed type admits.
 
 ```lean
-theorem RueCore.checkArms_sound {P : Program} {R : Ty} {Γ₀ : Ctx} {c : CTy}
+theorem RueCore.checkArms_sound {P : Program} {R : Ty} {Γ₀ : Ctx} {c : TyOrNever}
   (es : List Expr) {Tss : List (List Ty)} {os : List (Option Ctx)}
   {Δs : List Ctx} :
   checkArms P R Γ₀ c es Tss = some (os, Δs) →
@@ -2199,7 +2199,7 @@ machine maintains itself, and `DtorNotCopy` (inside `TraceMeasure`, for
 
 ```lean
 theorem RueCore.eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
-  (hF : TraceMeasure P.decls F) (fuel : Nat) (H : Store) (φ : Frame)
+  (hF : TraceMeasure P.decls F) (fuel : Nat) (H : Store) (φ : Activation)
   (e : Expr) : StoreCC P.decls H → Cons P.decls F H [] (eval M fuel P H φ e)
 ```
 
@@ -2213,7 +2213,7 @@ trees those markers free (`freedIds`), a declared-linear destructure's
 residue and a consumed shell included (RUE-2427). Holds unconditionally, for
 every program, no hypothesis at all: the machine refuses the one shape — an
 owned value hidden under a `Copy` node — that would let a copy duplicate it
-(`Contents.copyClosed`).
+(`Contents.copyContained`).
 
 ```lean
 theorem RueCore.freed_once (M : FloatSig) (P : Program) (fuel a : Nat) :
@@ -2257,9 +2257,9 @@ its own `drop` marker, the path's shell is consumed (`consume`), and the
 place becomes `⊘`.
 
 ```lean
-theorem RueCore.no_double_free (M : FloatModel) {P : Program} (h : ProgramTyped P)
+theorem RueCore.no_double_free (M : FloatLaws) {P : Program} (h : ProgramTyped P)
   (fuel : Nat) :
-  (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
+  (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
     (∀ (a : Nat),
         List.count a (freedIds P.decls (run M.toFloatSig P fuel).trace) ≤ 1) ∧
       ∀ (a : Nat), List.count a (dtorIds (run M.toFloatSig P fuel).trace) ≤ 1
@@ -2332,7 +2332,7 @@ theorem RueCore.run_sim (M : FloatSig) (P : Program) (fuel : Nat) :
   (∀ (H : Store) (v : Val) (tr : List Event),
       run M P fuel = EvalRes.ok H v tr →
         Steps M P Config.init
-          (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+          (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
     ∀ (k : PanicKind) (tr : List Event),
       run M P fuel = EvalRes.panic k tr →
         Steps M P Config.init (Config.panic k tr)
@@ -2349,18 +2349,18 @@ the two are proved to agree"). For a program `check` accepts
 so it answers a value, a panic or `outOfFuel`; a value is reached by §6's
 `→*` from the initial configuration as a terminal configuration with the same
 store and trace, and a panic as `↯κ` after the same trace (§6.2, §6.12).
-`.stuck` is outside the correspondence and does not occur here; `outOfFuel`
+`.refused` is outside the correspondence and does not occur here; `outOfFuel`
 is not a state of §6's machine. The converse, completeness modulo fuel, is
 `eval_complete`.
 
 ```lean
-theorem RueCore.eval_sound (M : FloatModel) {P : Program} (h : ProgramTyped P)
+theorem RueCore.eval_sound (M : FloatLaws) {P : Program} (h : ProgramTyped P)
   (fuel : Nat) :
-  (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
+  (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
     (∀ (H : Store) (v : Val) (tr : List Event),
         run M.toFloatSig P fuel = EvalRes.ok H v tr →
           Steps M.toFloatSig P Config.init
-            (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+            (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
       ∀ (k : PanicKind) (tr : List Event),
         run M.toFloatSig P fuel = EvalRes.panic k tr →
           Steps M.toFloatSig P Config.init (Config.panic k tr)
@@ -2398,20 +2398,20 @@ on checked programs.
 
 ```lean
 theorem RueCore.run_complete (M : FloatSig) (P : Program) :
-  (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+  (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
       Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
         ∃ n,
           ∀ (fuel : Nat),
             n < fuel →
               run M P fuel = EvalRes.ok H v tr ∨
-                ∃ w, run M P fuel = EvalRes.stuck w) ∧
+                ∃ w, run M P fuel = EvalRes.refused w) ∧
     ∀ (κ : PanicKind) (tr : List Event),
       Steps M P Config.init (Config.panic κ tr) →
         ∃ n,
           ∀ (fuel : Nat),
             n < fuel →
               run M P fuel = EvalRes.panic κ tr ∨
-                ∃ w, run M P fuel = EvalRes.stuck w
+                ∃ w, run M P fuel = EvalRes.refused w
 ```
 
 ### `eval_complete`
@@ -2430,8 +2430,8 @@ are exactly the ends of §6's runs, and `outOfFuel` at every fuel is exactly
 divergence (`eval_diverges_iff`).
 
 ```lean
-theorem RueCore.eval_complete (M : FloatModel) {P : Program} (h : ProgramTyped P) :
-  (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+theorem RueCore.eval_complete (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
+  (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
       Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
         ∃ n,
           ∀ (fuel : Nat),
@@ -2450,12 +2450,12 @@ theorem RueCore.eval_complete (M : FloatModel) {P : Program} (h : ProgramTyped P
 **A stuck `Step` run is a refusal of `run`, on every program** (§6, §7):
 if `→*` takes the initial configuration to a stuck one, then at every fuel past
 the number of steps `run` refuses. The refusal need not name the same
-`Violation`: `eval` inspects operand shapes in its own order (RUE-2314).
+`Refusal`: `eval` inspects operand shapes in its own order (RUE-2314).
 
 ```lean
 theorem RueCore.run_stuck_of_step_stuck (M : FloatSig) (P : Program) {C : Config}
-  {w : Violation} (hC : Steps M P Config.init C) (hs : Config.Stuck M P C w) :
-  ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.stuck w'
+  {w : Refusal} (hC : Steps M P Config.init C) (hs : Config.Stuck M P C w) :
+  ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.refused w'
 ```
 
 ### `step_never_stuck_of_run`
@@ -2472,7 +2472,7 @@ first.
 
 ```lean
 theorem RueCore.step_never_stuck_of_run (M : FloatSig) (P : Program)
-  (hnv : ∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w)
+  (hnv : ∀ (fuel : Nat) (w : Refusal), run M P fuel ≠ EvalRes.refused w)
   (C : Config) : Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
 ```
 
@@ -2482,7 +2482,7 @@ theorem RueCore.step_never_stuck_of_run (M : FloatSig) (P : Program)
 
 **"Never stuck", both ways, in §7's phrasing** (RUE-2289 part 3; §7's
 type-safety bullet; ADR-0097 decision 3). For a program `check` accepts,
-"for every fuel, `run` is never `.stuck`" is equivalent to "every
+"for every fuel, `run` is never `.refused`" is equivalent to "every
 configuration §6's `→*` reaches from the initial one reduces or has halted
 with a value or a panic". The forward direction holds on every program
 (`step_never_stuck_of_run`) and is the one with content; on this domain the
@@ -2492,9 +2492,9 @@ say the same stability from `eval`'s side: its answer, once it is not
 `outOfFuel`, is the answer at every larger fuel.
 
 ```lean
-theorem RueCore.never_stuck_iff (M : FloatModel) {P : Program} (h : ProgramTyped P) :
-  (∀ (fuel : Nat) (w : Violation),
-      run M.toFloatSig P fuel ≠ EvalRes.stuck w) ↔
+theorem RueCore.never_stuck_iff (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
+  (∀ (fuel : Nat) (w : Refusal),
+      run M.toFloatSig P fuel ≠ EvalRes.refused w) ↔
     ∀ (C : Config),
       Steps M.toFloatSig P Config.init C →
         C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
@@ -2512,8 +2512,7 @@ premature stop on a checked program: past the length of §6's run, `eval`
 answers (`eval_complete`), and where it never answers §6 never halts.
 
 ```lean
-theorem RueCore.eval_diverges_iff (M : FloatModel) {P : Program}
-  (h : ProgramTyped P) :
+theorem RueCore.eval_diverges_iff (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
   (∀ (fuel : Nat), run M.toFloatSig P fuel = EvalRes.outOfFuel) ↔
     ∀ (n : Nat), ∃ D, StepsN M.toFloatSig P n Config.init D
 ```
@@ -2558,7 +2557,7 @@ typing half takes a value §6 halts with to `run`'s answer at some fuel
 it. This is the one place `soundness` enters the `Step` form.
 
 ```lean
-theorem RueCore.init_safeAt (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+theorem RueCore.init_safeAt (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
   ∃ fd, P.fns[0]? = some fd ∧ Config.SafeAt M.toFloatSig P fd.ret Config.init
 ```
 
@@ -2571,12 +2570,12 @@ theorem RueCore.init_safeAt (M : FloatModel) {P : Program} (h : ProgramTyped P) 
 a value, or halts with one of the defined panics"; ADR-0097 decision 3). For
 a program `check` accepts, every configuration `→*` reaches from §6.12's
 initial configuration is terminal or takes a step, so none is stuck
-(`Config.stuck_iff`). Derived: `soundness` gives "`run` is never `.stuck`"
+(`Config.stuck_iff`). Derived: `soundness` gives "`run` is never `.refused`"
 (`no_violation`), and `step_never_stuck_of_run` — built from `run_sim` and
 the step count `eval_steps_of_outOfFuel` — carries it to `Step`.
 
 ```lean
-theorem RueCore.step_progress (M : FloatModel) {P : Program} (h : ProgramTyped P)
+theorem RueCore.step_progress (M : FloatLaws) {P : Program} (h : ProgramTyped P)
   (C : Config) :
   Steps M.toFloatSig P Config.init C →
     C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
@@ -2596,8 +2595,7 @@ form. The typing is semantic, not a syntactic `⊢ C : T`; this section's
 docstring says what that does and does not claim.
 
 ```lean
-theorem RueCore.step_preservation (M : FloatModel) {P : Program}
-  (h : ProgramTyped P) :
+theorem RueCore.step_preservation (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
   ∃ fd,
     P.fns[0]? = some fd ∧
       ∀ (C : Config),
@@ -2616,10 +2614,10 @@ type. This is preservation read at the result, `Config.SafeAt`'s second half
 at `Config.init`.
 
 ```lean
-theorem RueCore.step_value_typed (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+theorem RueCore.step_value_typed (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
   ∃ fd,
     P.fns[0]? = some fd ∧
-      ∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+      ∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
         Steps M.toFloatSig P Config.init
             (Config.run H φ [] (Focus.ret v) tr) →
           HasTy P.decls v fd.ret
@@ -2641,17 +2639,17 @@ non-decidable property, outside this package's axioms; `eval_diverges_iff` is
 the unbounded form of the first case. Fuel meets `Step` here directly: `run`
 at fuel `n` is out of fuel (then §6 has an `n`-step run,
 `eval_steps_of_outOfFuel`), a value (typed by `run_safe`, reached by
-`run_sim`), or a panic (reached by `run_sim`); never `.stuck`.
+`run_sim`), or a panic (reached by `run_sim`); never `.refused`.
 
 ```lean
-theorem RueCore.step_type_safety (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+theorem RueCore.step_type_safety (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
   ∃ fd,
     P.fns[0]? = some fd ∧
       ∀ (n : Nat),
         (∃ D, StepsN M.toFloatSig P n Config.init D) ∨
           (∃ H v tr,
               Steps M.toFloatSig P Config.init
-                  (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                  (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                 HasTy P.decls v fd.ret) ∨
             ∃ κ tr, Steps M.toFloatSig P Config.init (Config.panic κ tr)
 ```
@@ -2674,7 +2672,7 @@ theorem RueCore.Nonvacuous.exact_model : ∃ M, M.toFloatSig = Float.exactOps
 
 ```lean
 theorem RueCore.Nonvacuous.empty_frame (D : Decls) :
-  FrameMatches D [] Frame.empty [] ∧ StoreCC D []
+  ActivationTyping D [] Activation.empty [] ∧ StoreCC D []
 ```
 
 ### `Nonvacuous.open_frame`
@@ -2689,11 +2687,11 @@ theorem RueCore.Nonvacuous.open_frame (D : Decls) :
       {
         structs :=
           [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-              dtor := true, cls := Mult.affine },
+              dtor := true, cls := Qual.affine },
             { attr := Attr.linear,
               fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-              cls := Mult.linear }],
-        enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] } →
+              cls := Qual.linear }],
+        enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] } →
     ∀ (e : Expr),
       e =
           (Expr.drop (Place.var 0)).seq
@@ -2707,7 +2705,7 @@ theorem RueCore.Nonvacuous.open_frame (D : Decls) :
             ProgramTyped P ∧
               P.pendingSafe = true ∧
                 e.pendingSafe = true ∧
-                  FrameMatches D
+                  ActivationTyping D
                       [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
                       { env := [0], scope := [0] }
                       [Cell.full
@@ -2775,12 +2773,12 @@ theorem RueCore.Nonvacuous.dtor (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -2795,16 +2793,17 @@ theorem RueCore.Nonvacuous.dtor (B : Expr) :
                         (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
                 DtorNotCopy P.decls ∧
                   (∃ C, Step Float.exactOps P Config.init C) ∧
-                    (∀ (fuel : Nat) (w : Violation),
-                        run Float.exactOps P fuel ≠ EvalRes.stuck w) ∧
+                    (∀ (fuel : Nat) (w : Refusal),
+                        run Float.exactOps P fuel ≠ EvalRes.refused w) ∧
                       2 ≤
                           (freedIds P.decls
-                              (eval Float.exactOps 200 P [] Frame.empty
+                              (eval Float.exactOps 200 P [] Activation.empty
                                   B).trace).length ∧
                         (∃ H₁ vs tr r,
-                            Lead Float.exactOps P 200 [] Frame.empty H₁ vs tr
-                                B ∧
-                              eval Float.exactOps 201 P [] Frame.empty B =
+                            Lead Float.exactOps P 200 [] Activation.empty H₁
+                                vs tr B ∧
+                              eval Float.exactOps 201 P [] Activation.empty
+                                    B =
                                   EvalRes.withTrace tr r ∧
                                 Contents.ownList P.decls
                                     (Contents.ofVals vs) ≠
@@ -2812,8 +2811,8 @@ theorem RueCore.Nonvacuous.dtor (B : Expr) :
                           ∃ H v tr,
                             run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                               Steps Float.exactOps P Config.init
-                                  (Config.run H Frame.empty [] (Focus.ret v)
-                                    tr) ∧
+                                  (Config.run H Activation.empty []
+                                    (Focus.ret v) tr) ∧
                                 2 ≤ (freedIds P.decls tr).length ∧
                                   2 ≤ (dtorIds tr).length
 ```
@@ -2841,12 +2840,12 @@ theorem RueCore.Nonvacuous.linear (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -2862,7 +2861,7 @@ theorem RueCore.Nonvacuous.linear (B : Expr) :
                 ∃ H v tr,
                   run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                     Steps Float.exactOps P Config.init
-                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                       2 ≤ (freedIds P.decls tr).length
 ```
 
@@ -2893,12 +2892,12 @@ theorem RueCore.Nonvacuous.loop (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -2914,7 +2913,7 @@ theorem RueCore.Nonvacuous.loop (B : Expr) :
                 ∃ H v tr,
                   run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                     Steps Float.exactOps P Config.init
-                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                       3 ≤ (dtorIds tr).length
 ```
 
@@ -2941,12 +2940,12 @@ theorem RueCore.Nonvacuous.array (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -2962,7 +2961,7 @@ theorem RueCore.Nonvacuous.array (B : Expr) :
                 ∃ H v tr,
                   run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                     Steps Float.exactOps P Config.init
-                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                       2 ≤ (dtorIds tr).length
 ```
 
@@ -2989,12 +2988,12 @@ theorem RueCore.Nonvacuous.enum_match (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -3010,7 +3009,7 @@ theorem RueCore.Nonvacuous.enum_match (B : Expr) :
                 ∃ H v tr,
                   run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                     Steps Float.exactOps P Config.init
-                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                       2 ≤ (freedIds P.decls tr).length ∧
                         1 ≤ (dtorIds tr).length
 ```
@@ -3038,12 +3037,12 @@ theorem RueCore.Nonvacuous.early_return (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -3059,7 +3058,7 @@ theorem RueCore.Nonvacuous.early_return (B : Expr) :
                 ∃ H v tr,
                   run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                     Steps Float.exactOps P Config.init
-                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                       v = Val.int IntWidth.w64 Sign.signed 7 ∧
                         2 ≤ (dtorIds tr).length
 ```
@@ -3085,12 +3084,12 @@ theorem RueCore.Nonvacuous.panic (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -3136,12 +3135,12 @@ theorem RueCore.Nonvacuous.float (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.float FloatWidth.w64,
                   body := B }] } →
@@ -3156,7 +3155,7 @@ theorem RueCore.Nonvacuous.float (B : Expr) :
                 ∃ H v tr,
                   run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                     Steps Float.exactOps P Config.init
-                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                       v =
                         Val.float FloatWidth.w64
                           (FloatDatum.num false 15 (-1))
@@ -3199,12 +3198,12 @@ theorem RueCore.Nonvacuous.diverges_drop (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns := [{ params := [], ret := Ty.unit, body := B }] } →
         checkProgram P = true ∧
           ProgramTyped P ∧
@@ -3235,20 +3234,20 @@ theorem RueCore.Nonvacuous.stuck (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
         checkProgram P = false ∧
-          run Float.exactOps P 200 = EvalRes.stuck Violation.useAfterMove ∧
+          run Float.exactOps P 200 = EvalRes.refused Refusal.useAfterMove ∧
             ∃ C,
               Steps Float.exactOps P Config.init C ∧
-                Config.Stuck Float.exactOps P C Violation.useAfterMove
+                Config.Stuck Float.exactOps P C Refusal.useAfterMove
 ```
 
 ### `Nonvacuous.whole_drops`
@@ -3273,12 +3272,12 @@ theorem RueCore.Nonvacuous.whole_drops (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -3291,7 +3290,8 @@ theorem RueCore.Nonvacuous.whole_drops (B : Expr) :
                     2 ∈ Config.held P.decls C ∧
                       ∃ H v tr,
                         Steps Float.exactOps P C
-                            (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                            (Config.run H Activation.empty [] (Focus.ret v)
+                              tr) ∧
                           List.count 0 (freedIds P.decls tr) = 1 ∧
                             List.count 2 (freedIds P.decls tr) = 1
 ```
@@ -3311,12 +3311,12 @@ theorem RueCore.Nonvacuous.whole_result (P : Program) :
             structs :=
               [{ attr := Attr.none,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                  cls := Mult.affine },
+                  cls := Qual.affine },
                 { attr := Attr.linear,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-                  cls := Mult.linear }],
+                  cls := Qual.linear }],
             enums :=
-              [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
         fns :=
           [{ params := [], ret := Ty.struct 0,
               body :=
@@ -3330,7 +3330,7 @@ theorem RueCore.Nonvacuous.whole_result (P : Program) :
               0 ∈ Config.held P.decls C ∧
                 ∃ H v tr,
                   Steps Float.exactOps P C
-                      (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                     List.count 0 (Val.own P.decls v) = 1 ∧
                       freedIds P.decls tr = []
 ```
@@ -3349,7 +3349,7 @@ over `eval`, one case per form, each closed by its exact ledger above; like
 
 ```lean
 theorem RueCore.eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true)
-  (fuel : Nat) (H : Store) (φ : Frame) (e : Expr) :
+  (fuel : Nat) (H : Store) (φ : Activation) (e : Expr) :
   StoreCC P.decls H →
     e.pendingSafe = true → Exact P.decls H [] (eval M fuel P H φ e)
 ```
@@ -3364,7 +3364,7 @@ every expression, in every frame that names only existing cells, keeps
 
 ```lean
 theorem RueCore.eval_tidy (M : FloatSig) (P : Program) (fuel : Nat) (H : Store)
-  (φ : Frame) (e : Expr) : φ.In H → Tidy φ H (eval M fuel P H φ e)
+  (φ : Activation) (e : Expr) : φ.In H → Tidy φ H (eval M fuel P H φ e)
 ```
 
 ### `drop_exactly_once`
@@ -3416,12 +3416,12 @@ The carve-outs, stated where they apply:
   without it.
 
 ```lean
-theorem RueCore.drop_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
+theorem RueCore.drop_exactly_once (M : FloatLaws) {P : Program} (h : ProgramTyped P)
   (hp : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr}
-  {T : Ty} {Ω : Out} {φ : Frame} {H : Store} (ht : Typed P R Γ e T Ω)
-  (hfm : FrameMatches P.decls Γ φ H) (hcc : StoreCC P.decls H)
+  {T : Ty} {Ω : Out} {φ : Activation} {H : Store} (ht : Typed P R Γ e T Ω)
+  (hfm : ActivationTyping P.decls Γ φ H) (hcc : StoreCC P.decls H)
   (he : e.pendingSafe = true) :
-  (∀ (w : Violation), eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+  (∀ (w : Refusal), eval M.toFloatSig fuel P H φ e ≠ EvalRes.refused w) ∧
     Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
       Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
@@ -3469,14 +3469,14 @@ owned value any configuration of the run holds is ended exactly once or is
 part of the result.
 
 ```lean
-theorem RueCore.rest_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
+theorem RueCore.rest_exactly_once (M : FloatLaws) {P : Program} (h : ProgramTyped P)
   (hp : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr}
-  {T : Ty} {Ω : Out} {φ : Frame} {H : Store} (ht : Typed P R Γ e T Ω)
-  (hfm : FrameMatches P.decls Γ φ H) (hcc : StoreCC P.decls H)
+  {T : Ty} {Ω : Out} {φ : Activation} {H : Store} (ht : Typed P R Γ e T Ω)
+  (hfm : ActivationTyping P.decls Γ φ H) (hcc : StoreCC P.decls H)
   (he : e.pendingSafe = true) {H₁ : Store} {vs : List Val} {tr : List Event}
   (hl : Lead M.toFloatSig P fuel H φ H₁ vs tr e) {r : EvalRes}
   (hr : eval M.toFloatSig (fuel + 1) P H φ e = EvalRes.withTrace tr r) :
-  (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+  (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
     Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧
       Settled φ H₁ r
 ```
@@ -3496,11 +3496,11 @@ trace.
 theorem RueCore.pendingSafe_needed (M : FloatSig) :
   Typed lostProgram (Ty.int IntWidth.w64 Sign.signed) lostCtx lostBody
       (Ty.int IntWidth.w64 Sign.signed) { norm := none, brk := [] } ∧
-    FrameMatches lostProgram.decls lostCtx lostFrame lostStore ∧
+    ActivationTyping lostProgram.decls lostCtx lostActivation lostStore ∧
       StoreCC lostProgram.decls lostStore ∧
         lostBody.pendingSafe = false ∧
           ¬Exact lostProgram.decls lostStore []
-              (eval M 100 lostProgram lostStore lostFrame lostBody)
+              (eval M 100 lostProgram lostStore lostActivation lostBody)
 ```
 
 ### `orphan_rejected`
@@ -3514,23 +3514,23 @@ drops `x`'s `S0` at `g`'s frame pop and retires the cell, and satisfies
 which `drop_exactly_once` concludes.
 
 ```lean
-theorem RueCore.orphan_rejected (M : FloatModel) :
+theorem RueCore.orphan_rejected (M : FloatLaws) :
   ProgramTyped orphanProgram ∧
     orphanProgram.pendingSafe = true ∧
       (∃ Ω,
           Typed orphanProgram (Ty.int IntWidth.w64 Sign.signed) lostCtx
             (Expr.call 1 [Expr.use (Place.var 0)])
             (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
-        eval M.toFloatSig 100 orphanProgram lostStore lostFrame
+        eval M.toFloatSig 100 orphanProgram lostStore lostActivation
               (Expr.call 1 [Expr.use (Place.var 0)]) =
-            EvalRes.ok [Cell.dead, Cell.full Contents.hole, Cell.dead]
+            EvalRes.ok [Cell.dead, Cell.full Contents.movedOut, Cell.dead]
               (Val.int IntWidth.w64 Sign.signed 0)
               [Event.drop 2 s0x, Event.dtor 0 s0x] ∧
-          Tidy lostFrame lostStore
-              (eval M.toFloatSig 100 orphanProgram lostStore lostFrame
+          Tidy lostActivation lostStore
+              (eval M.toFloatSig 100 orphanProgram lostStore lostActivation
                 (Expr.call 1 [Expr.use (Place.var 0)])) ∧
             Exact lostDecls lostStore [] orphanResult ∧
-              ¬Tidy lostFrame lostStore orphanResult
+              ¬Tidy lostActivation lostStore orphanResult
 ```
 
 ### `letDropDeleted_rejected`
@@ -3545,7 +3545,7 @@ deleted; `rest_exactly_once`'s ledger — from the store the initializer left,
 holding the minted `S0` — holds of the real rest and rejects the deletion.
 
 ```lean
-theorem RueCore.letDropDeleted_rejected (M : FloatModel) :
+theorem RueCore.letDropDeleted_rejected (M : FloatLaws) :
   ProgramTyped orphanProgram ∧
     (∃ Ω,
         Typed orphanProgram (Ty.int IntWidth.w64 Sign.signed) []
@@ -3592,7 +3592,7 @@ with its `dropTemp` deleted is rejected by `rest_exactly_once`'s ledger, which
 holds of the real rest.
 
 ```lean
-theorem RueCore.seqDropDeleted_rejected (M : FloatModel) :
+theorem RueCore.seqDropDeleted_rejected (M : FloatLaws) :
   (∃ Ω,
       Typed orphanProgram (Ty.int IntWidth.w64 Sign.signed) []
         ((Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1]).seq
@@ -3629,22 +3629,23 @@ its cell is retired — and is rejected by `rest_exactly_once` at the loop, whos
 lead is the body breaking in `breakStore`; the real unwind satisfies it.
 
 ```lean
-theorem RueCore.breakLeak_rejected (M : FloatModel) :
+theorem RueCore.breakLeak_rejected (M : FloatLaws) :
   ProgramTyped breakProgram ∧
     breakProgram.pendingSafe = true ∧
       (∃ Ω,
           Typed breakProgram (Ty.int IntWidth.w64 Sign.signed) lostCtx
             breakLoop Ty.unit Ω) ∧
-        Lead M.toFloatSig breakProgram 100 lostStore lostFrame breakStore []
-            [] breakLoop ∧
-          eval M.toFloatSig 101 breakProgram lostStore lostFrame breakLoop =
+        Lead M.toFloatSig breakProgram 100 lostStore lostActivation breakStore
+            [] [] breakLoop ∧
+          eval M.toFloatSig 101 breakProgram lostStore lostActivation
+                breakLoop =
               EvalRes.ok [Cell.dead, Cell.full s0x, Cell.dead, Cell.dead]
                 Val.unit [Event.drop 3 s0z, Event.dtor 0 s0z] ∧
             Exact lostDecls breakStore []
                 (EvalRes.ok [Cell.dead, Cell.full s0x, Cell.dead, Cell.dead]
                   Val.unit [Event.drop 3 s0z, Event.dtor 0 s0z]) ∧
               Exact lostDecls lostStore [] breakLeak ∧
-                Tidy lostFrame lostStore breakLeak ∧
+                Tidy lostActivation lostStore breakLeak ∧
                   ¬Exact lostDecls breakStore [] breakLeak
 ```
 
@@ -3687,7 +3688,7 @@ docstring).
 
 ```lean
 theorem RueCore.eval_glue_blocks (M : FloatSig) {P : Program}
-  (hdt : DtorNotCopy P.decls) (fuel : Nat) (H : Store) (φ : Frame)
+  (hdt : DtorNotCopy P.decls) (fuel : Nat) (H : Store) (φ : Activation)
   (e : Expr) :
   StoreCC P.decls H → DropGlueBlocks P.decls (eval M fuel P H φ e).trace
 ```
@@ -3762,12 +3763,12 @@ newest-first** (§6.7, §6.9, §6.10, §6.11): it appends to the trace, and the
 decreasing location order. A teardown — (D-EndScope), (D-Return-Value)'s
 frame pop, (D-Return)'s σ-walk, (D-Loop-Iter)'s end of a turn and
 (D-Break)'s unwind — walks an ordered record backwards
-(`NewestFirst.teardown`).
+(`StrictStackOrder.teardown`).
 
 ```lean
 theorem RueCore.step_drop_order {M : FloatSig} {P : Program} {C C' : Config}
   (h : Step M P C C') (hC : C.Ordered) :
-  ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs)
+  ∃ evs, C'.trace = C.trace ++ evs ∧ StrictStackOrder (dropLocs evs)
 ```
 
 ### `reachable_drop_order`
@@ -3782,7 +3783,7 @@ hypothesis.
 ```lean
 theorem RueCore.reachable_drop_order {M : FloatSig} {P : Program} {C C' : Config}
   (hr : Steps M P Config.init C) (h : Step M P C C') :
-  ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs)
+  ∃ evs, C'.trace = C.trace ++ evs ∧ StrictStackOrder (dropLocs evs)
 ```
 
 ### `step_nested`
@@ -3806,29 +3807,31 @@ theorem RueCore.step_nested {M : FloatSig} {P : Program} {C C' : Config}
 **The nesting holds everywhere the machine goes** (§6.7, §6.9, §6.10):
 in every configuration reachable from §6.12's initial one. In particular
 (D-EndScope)'s pop by count always removes the marker's own cells
-(`Frame.popScope_tail`). No typing hypothesis.
+(`Activation.unwindScope_tail`). No typing hypothesis.
 
 ```lean
 theorem RueCore.reachable_nested {M : FloatSig} {P : Program} {C : Config}
   (h : Steps M P Config.init C) : C.Nested
 ```
 
-### `step_lifo`
+### `step_stackDiscipline`
 
 *theorem* · module `RueCore.TraceOrder`
 
 **Every step is last-in first-out** (§6.7, §6.9, §6.10): from a nested
 configuration, a step appends `evs` to the trace and either keeps the
 registration stack as a prefix of the new one, or cuts it back and drops
-only cells of the cut suffix, newest first (`Lifo`).
+only cells of the cut suffix, newest first (`StackDiscipline`).
 
 ```lean
-theorem RueCore.step_lifo {M : FloatSig} {P : Program} {C C' : Config}
+theorem RueCore.step_stackDiscipline {M : FloatSig} {P : Program} {C C' : Config}
   (h : Step M P C C') (hC : C.Nested) :
-  ∃ evs, C'.trace = C.trace ++ evs ∧ Lifo C.stack C'.stack (dropLocs evs)
+  ∃ evs,
+    C'.trace = C.trace ++ evs ∧
+      StackDiscipline C.stack C'.stack (dropLocs evs)
 ```
 
-### `reachable_lifo`
+### `reachable_stackDiscipline`
 
 *theorem* · module `RueCore.TraceOrder`
 
@@ -3841,11 +3844,11 @@ drops `b` before `a` over its two (D-EndScope) steps. No typing
 hypothesis.
 
 ```lean
-theorem RueCore.reachable_lifo {M : FloatSig} {P : Program} {C C' : Config}
+theorem RueCore.reachable_stackDiscipline {M : FloatSig} {P : Program} {C C' : Config}
   (hr : Steps M P Config.init C) (h : Step M P C C') :
   ∃ evs,
     C'.trace = C.trace ++ evs ∧
-      Lifo C.stack C'.stack (dropLocs evs) ∧
+      StackDiscipline C.stack C'.stack (dropLocs evs) ∧
         (¬C.stack <+: C'.stack →
           ∀ (ℓ : Nat),
             ℓ ∈ dropLocs evs →
@@ -3868,8 +3871,8 @@ statement does not go through it, so a machine whose walk and `dropEvents`
 change together still fails it.
 
 ```lean
-theorem RueCore.drop_glue_order (M : FloatModel) {P : Program} (h : ProgramTyped P) :
-  (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+theorem RueCore.drop_glue_order (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
+  (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
       Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
         DropGlueBlocks P.decls tr) ∧
     ∀ (κ : PanicKind) (tr : List Event),
@@ -3892,19 +3895,19 @@ checker accepts:
   ascending (`3.9:15`), an enum's stored (active) payload only (`6.3:20`) —
   and nowhere else;
 * **across cells**, at every step from a reachable configuration: its `drop`
-  markers name one cell or distinct cells newest first (`NewestFirst`), and
-  the step is last-in first-out on the registration stack (`Lifo`): it keeps
+  markers name one cell or distinct cells newest first (`StrictStackOrder`), and
+  the step is last-in first-out on the registration stack (`StackDiscipline`): it keeps
   the stack, or cuts it back and drops only cells it deregistered — each
   newer than every cell still registered, by `reachable_nested`'s location
-  order (`reachable_lifo`, `Lifo.newer`). So across all its exit steps a
+  order (`reachable_stackDiscipline`, `StackDiscipline.newer`). So across all its exit steps a
   scope's cells drop newest first, and before any older scope's.
 
 Only the first half reads the typing hypothesis, through `eval_complete` and
 `DtorNotCopy`.
 
 ```lean
-theorem RueCore.drop_order (M : FloatModel) {P : Program} (h : ProgramTyped P) :
-  (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+theorem RueCore.drop_order (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
+  (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
       Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
         Blocks P.decls tr) ∧
     (∀ (κ : PanicKind) (tr : List Event),
@@ -3915,8 +3918,8 @@ theorem RueCore.drop_order (M : FloatModel) {P : Program} (h : ProgramTyped P) :
           Step M.toFloatSig P C C' →
             ∃ evs,
               C'.trace = C.trace ++ evs ∧
-                NewestFirst (dropLocs evs) ∧
-                  Lifo C.stack C'.stack (dropLocs evs) ∧
+                StrictStackOrder (dropLocs evs) ∧
+                  StackDiscipline C.stack C'.stack (dropLocs evs) ∧
                     List.Pairwise (fun x1 x2 => x1 < x2) C.stack
 ```
 
@@ -3942,7 +3945,7 @@ of drops", "never read afterward"; §6.9): `run` never refuses with
 
 ```lean
 theorem RueCore.run_no_use_after_drop (M : FloatSig) (P : Program) (fuel : Nat) :
-  run M P fuel ≠ EvalRes.stuck Violation.useAfterDrop
+  run M P fuel ≠ EvalRes.refused Refusal.useAfterDrop
 ```
 
 ### `step_no_use_after_drop`
@@ -3955,7 +3958,7 @@ cell, checked or not.
 
 ```lean
 theorem RueCore.step_no_use_after_drop (M : FloatSig) (P : Program) {C : Config}
-  (h : Steps M P Config.init C) : ¬Config.Stuck M P C Violation.useAfterDrop
+  (h : Steps M P Config.init C) : ¬Config.Stuck M P C Refusal.useAfterDrop
 ```
 
 ### `eval_longc`
@@ -3989,9 +3992,8 @@ trace is bounded at every step, where `no_double_free`, over `run`'s answer,
 sees only `outOfFuel` and an empty trace.
 
 ```lean
-theorem RueCore.step_no_double_free (M : FloatModel) {P : Program}
-  (h : ProgramTyped P) {C : Config}
-  (hC : Steps M.toFloatSig P Config.init C) :
+theorem RueCore.step_no_double_free (M : FloatLaws) {P : Program} (h : ProgramTyped P)
+  {C : Config} (hC : Steps M.toFloatSig P Config.init C) :
   (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
     ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1
 ```
@@ -4022,10 +4024,10 @@ where `eval_tidy` has retired every cell and `eval_conserves` bounds each
 count by one.
 
 ```lean
-theorem RueCore.whole_program_exactly_once (M : FloatModel) {P : Program}
+theorem RueCore.whole_program_exactly_once (M : FloatLaws) {P : Program}
   (h : ProgramTyped P) (hp : P.pendingSafe = true) {C : Config}
   (hC : Steps M.toFloatSig P Config.init C) {a : Nat}
-  (ha : a ∈ Config.held P.decls C) {H : Store} {φ : Frame} {v : Val}
+  (ha : a ∈ Config.held P.decls C) {H : Store} {φ : Activation} {v : Val}
   {tr : List Event}
   (hT : Steps M.toFloatSig P C (Config.run H φ [] (Focus.ret v) tr)) :
   List.count a (Val.own P.decls v) + List.count a (freedIds P.decls tr) = 1
@@ -4051,12 +4053,12 @@ theorem RueCore.Sharp.stuck (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -4066,7 +4068,7 @@ theorem RueCore.Sharp.stuck (B : Expr) :
               (∃ fd, P.fns[0]? = some fd ∧ fd.params = []) ∧
                 P.pendingSafe = true ∧
                   (Expr.call 0 []).pendingSafe = true ∧
-                    FrameMatches P.decls [] Frame.empty [] ∧
+                    ActivationTyping P.decls [] Activation.empty [] ∧
                       StoreCC P.decls [] ∧
                         (∃ c Ω,
                             check P (Ty.int IntWidth.w64 Sign.signed) []
@@ -4080,27 +4082,27 @@ theorem RueCore.Sharp.stuck (B : Expr) :
                                   ¬EvalOk P.decls
                                       (Ty.int IntWidth.w64 Sign.signed)
                                       (Ty.int IntWidth.w64 Sign.signed) Ω.norm
-                                      Ω.brk Frame.empty []
+                                      Ω.brk Activation.empty []
                                       (eval Float.exactOps 200 P []
-                                        Frame.empty (Expr.call 0 []))) ∧
-                          Lead Float.exactOps P 200 [] Frame.empty [] [] []
-                              (Expr.call 0 []) ∧
-                            eval Float.exactOps 200 P [] Frame.empty
+                                        Activation.empty (Expr.call 0 []))) ∧
+                          Lead Float.exactOps P 200 [] Activation.empty [] []
+                              [] (Expr.call 0 []) ∧
+                            eval Float.exactOps 200 P [] Activation.empty
                                   (Expr.call 0 []) =
-                                EvalRes.stuck Violation.useAfterMove ∧
-                              eval Float.exactOps 201 P [] Frame.empty
+                                EvalRes.refused Refusal.useAfterMove ∧
+                              eval Float.exactOps 201 P [] Activation.empty
                                     (Expr.call 0 []) =
-                                  EvalRes.stuck Violation.useAfterMove ∧
-                                eval Float.exactOps 201 P [] Frame.empty
+                                  EvalRes.refused Refusal.useAfterMove ∧
+                                eval Float.exactOps 201 P [] Activation.empty
                                       (Expr.call 0 []) =
                                     EvalRes.withTrace []
-                                      (EvalRes.stuck Violation.useAfterMove) ∧
+                                      (EvalRes.refused Refusal.useAfterMove) ∧
                                   (∀ (n : Nat),
                                       run Float.exactOps P n =
-                                        eval Float.exactOps n P [] Frame.empty
-                                          (Expr.call 0 [])) ∧
+                                        eval Float.exactOps n P []
+                                          Activation.empty (Expr.call 0 [])) ∧
                                     run Float.exactOps P 200 =
-                                        EvalRes.stuck Violation.useAfterMove ∧
+                                        EvalRes.refused Refusal.useAfterMove ∧
                                       run Float.exactOps P 0 =
                                           EvalRes.outOfFuel ∧
                                         ¬(run Float.exactOps P 200 =
@@ -4136,20 +4138,20 @@ theorem RueCore.Sharp.stuck_step (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
         ¬ProgramTyped P ∧
           (∃ C,
               Steps Float.exactOps P Config.init C ∧
-                Config.Stuck Float.exactOps P C Violation.useAfterMove) ∧
-            run Float.exactOps P 200 = EvalRes.stuck Violation.useAfterMove ∧
+                Config.Stuck Float.exactOps P C Refusal.useAfterMove) ∧
+            run Float.exactOps P 200 = EvalRes.refused Refusal.useAfterMove ∧
               run Float.exactOps P 0 = EvalRes.outOfFuel ∧
                 (¬∀ (C : Config),
                       Steps Float.exactOps P Config.init C →
@@ -4165,14 +4167,14 @@ theorem RueCore.Sharp.stuck_step (B : Expr) :
                               (∃ D, StepsN Float.exactOps P n Config.init D) ∨
                                 (∃ H v tr,
                                     Steps Float.exactOps P Config.init
-                                        (Config.run H Frame.empty []
+                                        (Config.run H Activation.empty []
                                           (Focus.ret v) tr) ∧
                                       HasTy P.decls v fd.ret) ∨
                                   ∃ κ tr,
                                     Steps Float.exactOps P Config.init
                                       (Config.panic κ tr)) ∧
                       ¬∀ (fuel : Nat),
-                          ∃ w', run Float.exactOps P fuel = EvalRes.stuck w'
+                          ∃ w', run Float.exactOps P fuel = EvalRes.refused w'
 ```
 
 ### `Sharp.typed`
@@ -4197,12 +4199,12 @@ theorem RueCore.Sharp.typed (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -4216,35 +4218,38 @@ theorem RueCore.Sharp.typed (B : Expr) :
               WfProgram P ∧
                 P.pendingSafe = true ∧
                   e.pendingSafe = true ∧
-                    FrameMatches P.decls [] Frame.empty [] ∧
+                    ActivationTyping P.decls [] Activation.empty [] ∧
                       StoreCC P.decls [] ∧
                         check P (Ty.int IntWidth.w64 Sign.signed) [] e =
                             none ∧
                           (∀ (T : Ty) (Ω : Out),
                               ¬Typed P (Ty.int IntWidth.w64 Sign.signed) [] e
                                   T Ω) ∧
-                            Lead Float.exactOps P 200 [] Frame.empty
+                            Lead Float.exactOps P 200 [] Activation.empty
                                 [Cell.dead]
                                 [Val.struct 0 0
                                     [Val.int IntWidth.w64 Sign.signed 1]]
                                 [] e ∧
-                              eval Float.exactOps 200 P [] Frame.empty e =
-                                  EvalRes.stuck Violation.useAfterMove ∧
-                                eval Float.exactOps 201 P [] Frame.empty e =
-                                    EvalRes.stuck Violation.useAfterMove ∧
-                                  eval Float.exactOps 201 P [] Frame.empty e =
+                              eval Float.exactOps 200 P [] Activation.empty
+                                    e =
+                                  EvalRes.refused Refusal.useAfterMove ∧
+                                eval Float.exactOps 201 P [] Activation.empty
+                                      e =
+                                    EvalRes.refused Refusal.useAfterMove ∧
+                                  eval Float.exactOps 201 P []
+                                        Activation.empty e =
                                       EvalRes.withTrace []
-                                        (EvalRes.stuck
-                                          Violation.useAfterMove) ∧
-                                    CTy.never.fits
+                                        (EvalRes.refused
+                                          Refusal.useAfterMove) ∧
+                                    TyOrNever.never.fits
                                           (Ty.int IntWidth.w64 Sign.signed) =
                                         true ∧
                                       ∀ (T : Ty) (Ω : Out),
                                         ¬EvalOk P.decls T
                                             (Ty.int IntWidth.w64 Sign.signed)
-                                            Ω.norm Ω.brk Frame.empty []
+                                            Ω.norm Ω.brk Activation.empty []
                                             (eval Float.exactOps 200 P []
-                                              Frame.empty e)
+                                              Activation.empty e)
 ```
 
 ### `Sharp.frame`
@@ -4269,12 +4274,12 @@ theorem RueCore.Sharp.frame (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -4301,22 +4306,24 @@ theorem RueCore.Sharp.frame (B : Expr) :
                                 ¬EvalOk P.decls
                                     (Ty.int IntWidth.w64 Sign.signed)
                                     (Ty.int IntWidth.w64 Sign.signed) Ω.norm
-                                    Ω.brk Frame.empty []
-                                    (eval Float.exactOps 200 P [] Frame.empty
-                                      e)) ∧
-                        ¬FrameMatches P.decls
+                                    Ω.brk Activation.empty []
+                                    (eval Float.exactOps 200 P []
+                                      Activation.empty e)) ∧
+                        ¬ActivationTyping P.decls
                               [{ ty := Ty.int IntWidth.w64 Sign.signed,
                                   mu := false, st := OwnSt.owned }]
-                              Frame.empty [] ∧
-                          Lead Float.exactOps P 200 [] Frame.empty []
+                              Activation.empty [] ∧
+                          Lead Float.exactOps P 200 [] Activation.empty []
                               [Val.int IntWidth.w64 Sign.signed 1] [] e ∧
-                            eval Float.exactOps 200 P [] Frame.empty e =
-                                EvalRes.stuck Violation.unbound ∧
-                              eval Float.exactOps 201 P [] Frame.empty e =
-                                  EvalRes.stuck Violation.unbound ∧
-                                eval Float.exactOps 201 P [] Frame.empty e =
+                            eval Float.exactOps 200 P [] Activation.empty e =
+                                EvalRes.refused Refusal.unbound ∧
+                              eval Float.exactOps 201 P [] Activation.empty
+                                    e =
+                                  EvalRes.refused Refusal.unbound ∧
+                                eval Float.exactOps 201 P [] Activation.empty
+                                    e =
                                   EvalRes.withTrace []
-                                    (EvalRes.stuck Violation.unbound)
+                                    (EvalRes.refused Refusal.unbound)
 ```
 
 ### `Sharp.no_entry`
@@ -4334,16 +4341,16 @@ theorem RueCore.Sharp.no_entry (P : Program) :
             structs :=
               [{ attr := Attr.none,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                  cls := Mult.affine },
+                  cls := Qual.affine },
                 { attr := Attr.linear,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-                  cls := Mult.linear }],
+                  cls := Qual.linear }],
             enums :=
-              [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
         fns := [] } →
     WfProgram P ∧
       P.fns[0]? = none ∧
-        run Float.exactOps P 200 = EvalRes.stuck Violation.unbound ∧
+        run Float.exactOps P 200 = EvalRes.refused Refusal.unbound ∧
           ∀ (fd : FnDef),
             ¬(run Float.exactOps P 200 = EvalRes.outOfFuel ∨
                 (∃ k tr, run Float.exactOps P 200 = EvalRes.panic k tr) ∨
@@ -4367,12 +4374,12 @@ theorem RueCore.Sharp.entry_param (P : Program) :
             structs :=
               [{ attr := Attr.none,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                  cls := Mult.affine },
+                  cls := Qual.affine },
                 { attr := Attr.linear,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-                  cls := Mult.linear }],
+                  cls := Qual.linear }],
             enums :=
-              [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
         fns :=
           [{
               params :=
@@ -4389,7 +4396,7 @@ theorem RueCore.Sharp.entry_param (P : Program) :
                       ∃ H v tr,
                         run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                           HasTy P.decls v fd.ret)) ∧
-          run Float.exactOps P 200 = EvalRes.stuck Violation.typeConfusion
+          run Float.exactOps P 200 = EvalRes.refused Refusal.typeConfusion
 ```
 
 ### `Sharp.copy`
@@ -4416,17 +4423,17 @@ theorem RueCore.Sharp.copy (B : Expr) :
                 structs :=
                   [{ attr := Attr.copy,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.copy },
+                      dtor := false, cls := Qual.copy },
                     { attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine }],
+                      dtor := true, cls := Qual.affine }],
                 enums := [] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
         checkProgram P = false ∧
           ¬ProgramTyped P ∧
-            run Float.exactOps P 200 = EvalRes.stuck Violation.ownedUnderCopy
+            run Float.exactOps P 200 = EvalRes.refused Refusal.ownedUnderCopy
 ```
 
 ### `Sharp.leak`
@@ -4449,18 +4456,18 @@ theorem RueCore.Sharp.leak (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
         checkProgram P = false ∧
           ¬ProgramTyped P ∧
-            run Float.exactOps P 200 = EvalRes.stuck Violation.linearLeak ∧
+            run Float.exactOps P 200 = EvalRes.refused Refusal.linearLeak ∧
               ∃ H φ v tr,
                 Steps Float.exactOps P Config.init
                     (Config.run H φ [] (Focus.ret v) tr) ∧
@@ -4493,18 +4500,18 @@ theorem RueCore.Sharp.overwrite (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
         checkProgram P = false ∧
           ¬ProgramTyped P ∧
-            run Float.exactOps P 200 = EvalRes.stuck Violation.linearOverwrite
+            run Float.exactOps P 200 = EvalRes.refused Refusal.linearOverwrite
 ```
 
 ### `Sharp.discard`
@@ -4526,18 +4533,18 @@ theorem RueCore.Sharp.discard (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
         checkProgram P = false ∧
           ¬ProgramTyped P ∧
-            run Float.exactOps P 200 = EvalRes.stuck Violation.linearDiscard ∧
+            run Float.exactOps P 200 = EvalRes.refused Refusal.linearDiscard ∧
               ∃ κ tr,
                 Steps Float.exactOps P Config.init (Config.panic κ tr) ∧
                   ¬∃ n,
@@ -4565,16 +4572,16 @@ theorem RueCore.Sharp.discard_loop (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns := [{ params := [], ret := Ty.unit, body := B }] } →
         checkProgram P = false ∧
           ¬ProgramTyped P ∧
-            run Float.exactOps P 200 = EvalRes.stuck Violation.linearDiscard ∧
+            run Float.exactOps P 200 = EvalRes.refused Refusal.linearDiscard ∧
               (∀ (n : Nat), ∃ D, StepsN Float.exactOps P n Config.init D) ∧
                 (∀ (C : Config),
                     Steps Float.exactOps P Config.init C →
@@ -4583,8 +4590,8 @@ theorem RueCore.Sharp.discard_loop (B : Expr) :
                           run Float.exactOps P fuel = EvalRes.outOfFuel) ↔
                         ∀ (n : Nat),
                           ∃ D, StepsN Float.exactOps P n Config.init D) ∧
-                    ¬((∀ (fuel : Nat) (w : Violation),
-                          run Float.exactOps P fuel ≠ EvalRes.stuck w) ↔
+                    ¬((∀ (fuel : Nat) (w : Refusal),
+                          run Float.exactOps P fuel ≠ EvalRes.refused w) ↔
                         ∀ (C : Config),
                           Steps Float.exactOps P Config.init C →
                             C.Terminal ∨ ∃ C', Step Float.exactOps P C C')
@@ -4612,35 +4619,36 @@ theorem RueCore.Sharp.fuel (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
         ProgramTyped P ∧
           (∀ (n : Nat),
               run Float.exactOps P n =
-                eval Float.exactOps n P [] Frame.empty (Expr.call 0 [])) ∧
+                eval Float.exactOps n P [] Activation.empty
+                  (Expr.call 0 [])) ∧
             run Float.exactOps P 0 = EvalRes.outOfFuel ∧
               ∃ H v tr,
                 run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                   Steps Float.exactOps P Config.init
-                      (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                     ¬200 ≤ 0 ∧
                       0 ≤ 200 ∧
                         run Float.exactOps P 0 ≠ run Float.exactOps P 200 ∧
-                          (∀ (w : Violation),
-                              run Float.exactOps P 200 ≠ EvalRes.stuck w) ∧
+                          (∀ (w : Refusal),
+                              run Float.exactOps P 200 ≠ EvalRes.refused w) ∧
                             ¬∀ (fuel : Nat),
                                 run Float.exactOps P fuel =
                                     EvalRes.ok H v tr ∨
                                   ∃ w,
                                     run Float.exactOps P fuel =
-                                      EvalRes.stuck w
+                                      EvalRes.refused w
 ```
 
 ### `Sharp.fuel_panic`
@@ -4664,12 +4672,12 @@ theorem RueCore.Sharp.fuel_panic (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -4682,7 +4690,7 @@ theorem RueCore.Sharp.fuel_panic (B : Expr) :
                   run Float.exactOps P fuel =
                       EvalRes.panic PanicKind.user
                         [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)] ∨
-                    ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+                    ∃ w, run Float.exactOps P fuel = EvalRes.refused w
 ```
 
 ### `Sharp.not_fits`
@@ -4707,12 +4715,12 @@ theorem RueCore.Sharp.not_fits (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -4748,15 +4756,15 @@ theorem RueCore.Sharp.double_drop (B : Expr) :
                 structs :=
                   [{ attr := Attr.copy,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.copy },
+                      dtor := true, cls := Qual.copy },
                     { attr := Attr.none, fields := [Ty.struct 0],
-                      dtor := false, cls := Mult.affine },
+                      dtor := false, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.struct 0, Ty.struct 3], dtor := false,
-                      cls := Mult.linear },
+                      cls := Qual.linear },
                     { attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine }],
+                      dtor := true, cls := Qual.affine }],
                 enums := [] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
@@ -4796,15 +4804,15 @@ theorem RueCore.Sharp.bare_dtor (B : Expr) :
                 structs :=
                   [{ attr := Attr.copy,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.copy },
+                      dtor := true, cls := Qual.copy },
                     { attr := Attr.none, fields := [Ty.struct 0],
-                      dtor := false, cls := Mult.affine },
+                      dtor := false, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.struct 0, Ty.struct 3], dtor := false,
-                      cls := Mult.linear },
+                      cls := Qual.linear },
                     { attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine }],
+                      dtor := true, cls := Qual.affine }],
                 enums := [] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
@@ -4832,12 +4840,12 @@ theorem RueCore.Sharp.pending_program (P : Program) :
             structs :=
               [{ attr := Attr.none,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                  cls := Mult.affine },
+                  cls := Qual.affine },
                 { attr := Attr.linear,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-                  cls := Mult.linear }],
+                  cls := Qual.linear }],
             enums :=
-              [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
         fns :=
           [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
               body := Expr.intLit IntWidth.w64 Sign.signed 0 },
@@ -4853,7 +4861,7 @@ theorem RueCore.Sharp.pending_program (P : Program) :
         ProgramTyped P ∧
           P.pendingSafe = false ∧
             e.pendingSafe = true ∧
-              FrameMatches P.decls
+              ActivationTyping P.decls
                   [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
                   { env := [0], scope := [0] }
                   [Cell.full
@@ -4878,7 +4886,8 @@ theorem RueCore.Sharp.pending_program (P : Program) :
                         [Cell.full
                             (Contents.struct 0 0
                               [Contents.int IntWidth.w64 Sign.signed 5])]
-                        { env := [0], scope := [0] } [Cell.full Contents.hole]
+                        { env := [0], scope := [0] }
+                        [Cell.full Contents.movedOut]
                         [Val.struct 0 0 [Val.int IntWidth.w64 Sign.signed 5]]
                         [] e ∧
                       eval Float.exactOps 201 P
@@ -4905,7 +4914,7 @@ theorem RueCore.Sharp.pending_program (P : Program) :
                                       [Contents.int IntWidth.w64 Sign.signed
                                           5])]
                                 { env := [0], scope := [0] } e) ∧
-                          ¬Exact P.decls [Cell.full Contents.hole]
+                          ¬Exact P.decls [Cell.full Contents.movedOut]
                               (Contents.ownList P.decls
                                 (Contents.ofVals
                                   [Val.struct 0 0
@@ -4940,12 +4949,12 @@ theorem RueCore.Sharp.pending_expr (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -4959,7 +4968,7 @@ theorem RueCore.Sharp.pending_expr (B : Expr) :
             ProgramTyped P ∧
               P.pendingSafe = true ∧
                 e.pendingSafe = false ∧
-                  FrameMatches P.decls
+                  ActivationTyping P.decls
                       [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
                       { env := [0], scope := [0] }
                       [Cell.full
@@ -5052,12 +5061,12 @@ theorem RueCore.Sharp.store_cc (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5068,7 +5077,7 @@ theorem RueCore.Sharp.store_cc (B : Expr) :
             ProgramTyped P ∧
               P.pendingSafe = true ∧
                 e.pendingSafe = true ∧
-                  FrameMatches P.decls [] Frame.empty
+                  ActivationTyping P.decls [] Activation.empty
                       [Cell.full
                           (Contents.array (Ty.int IntWidth.w64 Sign.signed) 0
                             [Contents.struct 0 1
@@ -5093,7 +5102,7 @@ theorem RueCore.Sharp.store_cc (B : Expr) :
                                   [Contents.struct 0 1
                                       [Contents.int IntWidth.w64 Sign.signed
                                           1]])]
-                            Frame.empty
+                            Activation.empty
                             [Cell.full
                                 (Contents.array
                                   (Ty.int IntWidth.w64 Sign.signed) 0
@@ -5108,7 +5117,7 @@ theorem RueCore.Sharp.store_cc (B : Expr) :
                                       [Contents.struct 0 1
                                           [Contents.int IntWidth.w64
                                               Sign.signed 1]])]
-                                Frame.empty e =
+                                Activation.empty e =
                               EvalRes.withTrace []
                                 (eval Float.exactOps 201 P
                                   [Cell.full
@@ -5117,7 +5126,7 @@ theorem RueCore.Sharp.store_cc (B : Expr) :
                                         [Contents.struct 0 1
                                             [Contents.int IntWidth.w64
                                                 Sign.signed 1]])]
-                                  Frame.empty e) ∧
+                                  Activation.empty e) ∧
                             ¬Exact P.decls
                                   [Cell.full
                                       (Contents.array
@@ -5133,7 +5142,7 @@ theorem RueCore.Sharp.store_cc (B : Expr) :
                                           [Contents.struct 0 1
                                               [Contents.int IntWidth.w64
                                                   Sign.signed 1]])]
-                                    Frame.empty e) ∧
+                                    Activation.empty e) ∧
                               ¬Exact P.decls
                                   [Cell.full
                                       (Contents.array
@@ -5151,7 +5160,7 @@ theorem RueCore.Sharp.store_cc (B : Expr) :
                                           [Contents.struct 0 1
                                               [Contents.int IntWidth.w64
                                                   Sign.signed 1]])]
-                                    Frame.empty e)
+                                    Activation.empty e)
 ```
 
 ### `Sharp.no_lead`
@@ -5176,19 +5185,19 @@ theorem RueCore.Sharp.no_lead (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
         ProgramTyped P ∧
           P.pendingSafe = true ∧
             B.pendingSafe = true ∧
-              FrameMatches P.decls [] Frame.empty [] ∧
+              ActivationTyping P.decls [] Activation.empty [] ∧
                 StoreCC P.decls [] ∧
                   (∃ c Ω,
                       check P (Ty.int IntWidth.w64 Sign.signed) [] B =
@@ -5196,16 +5205,17 @@ theorem RueCore.Sharp.no_lead (B : Expr) :
                         c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
                           Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
                             (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
-                    ¬Lead Float.exactOps P 200 [] Frame.empty
+                    ¬Lead Float.exactOps P 200 [] Activation.empty
                           [Cell.full
                               (Contents.struct 0 0
                                 [Contents.int IntWidth.w64 Sign.signed 1])]
                           [Val.struct 0 0
                               [Val.int IntWidth.w64 Sign.signed 1]]
                           [] B ∧
-                      eval Float.exactOps 201 P [] Frame.empty B =
+                      eval Float.exactOps 201 P [] Activation.empty B =
                           EvalRes.withTrace []
-                            (eval Float.exactOps 201 P [] Frame.empty B) ∧
+                            (eval Float.exactOps 201 P [] Activation.empty
+                              B) ∧
                         ¬Exact P.decls
                             [Cell.full
                                 (Contents.struct 0 0
@@ -5214,7 +5224,7 @@ theorem RueCore.Sharp.no_lead (B : Expr) :
                               (Contents.ofVals
                                 [Val.struct 0 0
                                     [Val.int IntWidth.w64 Sign.signed 1]]))
-                            (eval Float.exactOps 201 P [] Frame.empty B)
+                            (eval Float.exactOps 201 P [] Activation.empty B)
 ```
 
 ### `Sharp.no_eval`
@@ -5239,19 +5249,19 @@ theorem RueCore.Sharp.no_eval (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
         ProgramTyped P ∧
           P.pendingSafe = true ∧
             B.pendingSafe = true ∧
-              FrameMatches P.decls [] Frame.empty [] ∧
+              ActivationTyping P.decls [] Activation.empty [] ∧
                 StoreCC P.decls [] ∧
                   (∃ c Ω,
                       check P (Ty.int IntWidth.w64 Sign.signed) [] B =
@@ -5260,10 +5270,11 @@ theorem RueCore.Sharp.no_eval (B : Expr) :
                           Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
                             (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
                     ∃ H₁ vs tr,
-                      Lead Float.exactOps P 200 [] Frame.empty H₁ vs tr B ∧
-                        ∀ (w : Violation),
-                          eval Float.exactOps 201 P [] Frame.empty B ≠
-                            EvalRes.withTrace tr (EvalRes.stuck w)
+                      Lead Float.exactOps P 200 [] Activation.empty H₁ vs tr
+                          B ∧
+                        ∀ (w : Refusal),
+                          eval Float.exactOps 201 P [] Activation.empty B ≠
+                            EvalRes.withTrace tr (EvalRes.refused w)
 ```
 
 ### `Sharp.unreached`
@@ -5288,18 +5299,18 @@ theorem RueCore.Sharp.unreached (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
         ProgramTyped P ∧
           ¬Steps Float.exactOps P Config.init
-                (Config.run [] Frame.empty []
+                (Config.run [] Activation.empty []
                   (Focus.ret (Val.int IntWidth.w64 Sign.signed 8))
                   [Event.dtor 0
                       (Contents.struct 0 0
@@ -5322,7 +5333,7 @@ theorem RueCore.Sharp.unreached (B : Expr) :
                                   (Contents.struct 0 0
                                     [Contents.int IntWidth.w64 Sign.signed
                                         1])] ∨
-                          ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+                          ∃ w, run Float.exactOps P fuel = EvalRes.refused w
 ```
 
 ### `Sharp.unreached_panic`
@@ -5347,12 +5358,12 @@ theorem RueCore.Sharp.unreached_panic (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5380,7 +5391,7 @@ theorem RueCore.Sharp.unreached_panic (B : Expr) :
                                   (Contents.struct 0 0
                                     [Contents.int IntWidth.w64 Sign.signed
                                         1])] ∨
-                          ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+                          ∃ w, run Float.exactOps P fuel = EvalRes.refused w
 ```
 
 ### `Sharp.unordered`
@@ -5405,12 +5416,12 @@ theorem RueCore.Sharp.unordered (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5432,8 +5443,8 @@ theorem RueCore.Sharp.unordered (B : Expr) :
                               (Expr.intLit IntWidth.w64 Sign.signed 1))
                             []).trace ++
                         evs ∧
-                    NewestFirst (dropLocs evs) ∧
-                      Lifo
+                    StrictStackOrder (dropLocs evs) ∧
+                      StackDiscipline
                           (Config.run [] { env := [], scope := [1, 0] } []
                               (Focus.eval
                                 (Expr.intLit IntWidth.w64 Sign.signed 1))
@@ -5471,36 +5482,36 @@ theorem RueCore.Sharp.not_a_step (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
         ProgramTyped P ∧
           ∃ H v tr,
             Steps Float.exactOps P Config.init
-                (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
               tr ≠ [] ∧
                 ¬Step Float.exactOps P
-                      (Config.run H Frame.empty [] (Focus.ret v) tr)
+                      (Config.run H Activation.empty [] (Focus.ret v) tr)
                       (Config.panic PanicKind.user []) ∧
                   ¬∃ evs,
                       (Config.panic PanicKind.user []).trace =
-                          (Config.run H Frame.empty [] (Focus.ret v)
+                          (Config.run H Activation.empty [] (Focus.ret v)
                                 tr).trace ++
                             evs ∧
-                        NewestFirst (dropLocs evs) ∧
-                          Lifo
-                              (Config.run H Frame.empty [] (Focus.ret v)
+                        StrictStackOrder (dropLocs evs) ∧
+                          StackDiscipline
+                              (Config.run H Activation.empty [] (Focus.ret v)
                                   tr).stack
                               (Config.panic PanicKind.user []).stack
                               (dropLocs evs) ∧
                             List.Pairwise (fun x1 x2 => x1 < x2)
-                              (Config.run H Frame.empty [] (Focus.ret v)
+                              (Config.run H Activation.empty [] (Focus.ret v)
                                   tr).stack
 ```
 
@@ -5526,33 +5537,34 @@ theorem RueCore.Sharp.init_steps (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
         ProgramTyped P ∧
           Step Float.exactOps P Config.init
-              (Config.run [] Frame.empty []
-                (Focus.args (ArgsTag.call 0) [] []) []) ∧
+              (Config.run [] Activation.empty []
+                (Focus.args (ArgsFrame.call 0) [] []) []) ∧
             ¬Step Float.exactOps P Config.init Config.init ∧
-              Config.run [] Frame.empty [] (Focus.args (ArgsTag.call 0) [] [])
-                    [] ≠
+              Config.run [] Activation.empty []
+                    (Focus.args (ArgsFrame.call 0) [] []) [] ≠
                   Config.init ∧
                 ¬Config.init.Terminal ∧
                   ¬Config.Stuck Float.exactOps P Config.init
-                        Violation.linearLeak ∧
-                    Violation.linearLeak.isStuckState = false ∧
+                        Refusal.linearLeak ∧
+                    Refusal.linearLeak.isStuckState = false ∧
                       Steps Float.exactOps P Config.init Config.init ∧
                         ¬∃ n,
                             ∀ (fuel : Nat),
                               n < fuel →
                                 ∃ w',
-                                  run Float.exactOps P fuel = EvalRes.stuck w'
+                                  run Float.exactOps P fuel =
+                                    EvalRes.refused w'
 ```
 
 ### `Sharp.unreachable_stuck`
@@ -5577,35 +5589,35 @@ theorem RueCore.Sharp.unreachable_stuck (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
         ProgramTyped P ∧
           Config.Stuck Float.exactOps P
-              (Config.run [] Frame.empty []
+              (Config.run [] Activation.empty []
                 (Focus.eval (Expr.use (Place.var 0))) [])
-              Violation.unbound ∧
+              Refusal.unbound ∧
             ¬Steps Float.exactOps P Config.init
-                  (Config.run [] Frame.empty []
+                  (Config.run [] Activation.empty []
                     (Focus.eval (Expr.use (Place.var 0))) []) ∧
-              (∀ (fuel : Nat) (w : Violation),
-                  run Float.exactOps P fuel ≠ EvalRes.stuck w) ∧
-                ¬((Config.run [] Frame.empty []
+              (∀ (fuel : Nat) (w : Refusal),
+                  run Float.exactOps P fuel ≠ EvalRes.refused w) ∧
+                ¬((Config.run [] Activation.empty []
                           (Focus.eval (Expr.use (Place.var 0))) []).Terminal ∨
                       ∃ C',
                         Step Float.exactOps P
-                          (Config.run [] Frame.empty []
+                          (Config.run [] Activation.empty []
                             (Focus.eval (Expr.use (Place.var 0))) [])
                           C') ∧
                   (∀ (T : Ty),
                       ¬Config.SafeAt Float.exactOps P T
-                          (Config.run [] Frame.empty []
+                          (Config.run [] Activation.empty []
                             (Focus.eval (Expr.use (Place.var 0))) [])) ∧
                     (¬∀ (C : Config),
                           C.Terminal ∨ ∃ C', Step Float.exactOps P C C') ∧
@@ -5613,7 +5625,7 @@ theorem RueCore.Sharp.unreachable_stuck (B : Expr) :
                           ∀ (fuel : Nat),
                             n < fuel →
                               ∃ w',
-                                run Float.exactOps P fuel = EvalRes.stuck w'
+                                run Float.exactOps P fuel = EvalRes.refused w'
 ```
 
 ### `Sharp.retired_cell`
@@ -5638,23 +5650,23 @@ theorem RueCore.Sharp.retired_cell (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
         ProgramTyped P ∧
           eval Float.exactOps 1 P [Cell.dead] { env := [0], scope := [] }
                 (Expr.use (Place.var 0)) =
-              EvalRes.stuck Violation.useAfterDrop ∧
+              EvalRes.refused Refusal.useAfterDrop ∧
             Config.Stuck Float.exactOps P
                 (Config.run [Cell.dead] { env := [0], scope := [] } []
                   (Focus.eval (Expr.use (Place.var 0))) [])
-                Violation.useAfterDrop ∧
+                Refusal.useAfterDrop ∧
               ¬Steps Float.exactOps P Config.init
                   (Config.run [Cell.dead] { env := [0], scope := [] } []
                     (Focus.eval (Expr.use (Place.var 0))) [])
@@ -5682,12 +5694,12 @@ theorem RueCore.Sharp.unreached_double (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5735,12 +5747,12 @@ theorem RueCore.Sharp.uncut_drop (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5778,9 +5790,9 @@ theorem RueCore.Sharp.uncut_drop (B : Expr) :
                     Event.dtor 0
                       (Contents.struct 0 0
                         [Contents.int IntWidth.w64 Sign.signed 1])]) ∧
-              NewestFirst [0] ∧
+              StrictStackOrder [0] ∧
                 List.Pairwise (fun x1 x2 => x1 < x2) [0, 1] ∧
-                  ¬Lifo [0, 1] [0] [0] ∧
+                  ¬StackDiscipline [0, 1] [0] [0] ∧
                     ¬∃ evs,
                         (Config.run
                                 [Cell.dead,
@@ -5814,8 +5826,8 @@ theorem RueCore.Sharp.uncut_drop (B : Expr) :
                                     (Val.int IntWidth.w64 Sign.signed 3))
                                   []).trace ++
                               evs ∧
-                          NewestFirst (dropLocs evs) ∧
-                            Lifo
+                          StrictStackOrder (dropLocs evs) ∧
+                            StackDiscipline
                                 (Config.run
                                     [Cell.full
                                         (Contents.struct 0 0
@@ -5887,25 +5899,25 @@ theorem RueCore.Sharp.ill_typed_halt (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
         ProgramTyped P ∧
-          (Config.run [] Frame.empty [] (Focus.ret (Val.bool true))
+          (Config.run [] Activation.empty [] (Focus.ret (Val.bool true))
                 []).Terminal ∧
             ¬Steps Float.exactOps P Config.init
-                  (Config.run [] Frame.empty [] (Focus.ret (Val.bool true))
-                    []) ∧
+                  (Config.run [] Activation.empty []
+                    (Focus.ret (Val.bool true)) []) ∧
               ¬Config.SafeAt Float.exactOps P
                   (Ty.int IntWidth.w64 Sign.signed)
-                  (Config.run [] Frame.empty [] (Focus.ret (Val.bool true))
-                    [])
+                  (Config.run [] Activation.empty []
+                    (Focus.ret (Val.bool true)) [])
 ```
 
 ### `Sharp.out_of_range_halt`
@@ -5930,17 +5942,17 @@ theorem RueCore.Sharp.out_of_range_halt (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
         ProgramTyped P ∧
-          (Config.run [] Frame.empty []
+          (Config.run [] Activation.empty []
                 (Focus.ret
                   (Val.int IntWidth.w64 Sign.signed 9223372036854775808))
                 []).Terminal ∧
@@ -5948,14 +5960,14 @@ theorem RueCore.Sharp.out_of_range_halt (B : Expr) :
                   (Val.int IntWidth.w64 Sign.signed 9223372036854775808)
                   (Ty.int IntWidth.w64 Sign.signed) ∧
               ¬Steps Float.exactOps P Config.init
-                    (Config.run [] Frame.empty []
+                    (Config.run [] Activation.empty []
                       (Focus.ret
                         (Val.int IntWidth.w64 Sign.signed
                           9223372036854775808))
                       []) ∧
                 ¬Config.SafeAt Float.exactOps P
                     (Ty.int IntWidth.w64 Sign.signed)
-                    (Config.run [] Frame.empty []
+                    (Config.run [] Activation.empty []
                       (Focus.ret
                         (Val.int IntWidth.w64 Sign.signed
                           9223372036854775808))
@@ -5987,56 +5999,56 @@ theorem RueCore.Sharp.float_halt (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.float FloatWidth.w64,
                   body := B }] } →
         ProgramTyped P ∧
           (∃ H tr,
               Steps Float.exactOps P Config.init
-                (Config.run H Frame.empty []
+                (Config.run H Activation.empty []
                   (Focus.ret
                     (Val.float FloatWidth.w64 (FloatDatum.num false 15 (-1))))
                   tr)) ∧
             ¬FloatDatum.Wf FloatWidth.w64 (FloatDatum.num false 30 (-2)) ∧
               ¬FloatDatum.Wf FloatWidth.w64 (FloatDatum.num false 1 (-1075)) ∧
-                (Config.run [] Frame.empty []
+                (Config.run [] Activation.empty []
                       (Focus.ret
                         (Val.float FloatWidth.w64
                           (FloatDatum.num false 30 (-2))))
                       []).Terminal ∧
-                  (Config.run [] Frame.empty []
+                  (Config.run [] Activation.empty []
                         (Focus.ret
                           (Val.float FloatWidth.w64
                             (FloatDatum.num false 1 (-1075))))
                         []).Terminal ∧
                     ¬Steps Float.exactOps P Config.init
-                          (Config.run [] Frame.empty []
+                          (Config.run [] Activation.empty []
                             (Focus.ret
                               (Val.float FloatWidth.w64
                                 (FloatDatum.num false 30 (-2))))
                             []) ∧
                       ¬Steps Float.exactOps P Config.init
-                            (Config.run [] Frame.empty []
+                            (Config.run [] Activation.empty []
                               (Focus.ret
                                 (Val.float FloatWidth.w64
                                   (FloatDatum.num false 1 (-1075))))
                               []) ∧
                         ¬Config.SafeAt Float.exactOps P
                               (Ty.float FloatWidth.w64)
-                              (Config.run [] Frame.empty []
+                              (Config.run [] Activation.empty []
                                 (Focus.ret
                                   (Val.float FloatWidth.w64
                                     (FloatDatum.num false 30 (-2))))
                                 []) ∧
                           ¬Config.SafeAt Float.exactOps P
                               (Ty.float FloatWidth.w64)
-                              (Config.run [] Frame.empty []
+                              (Config.run [] Activation.empty []
                                 (Focus.ret
                                   (Val.float FloatWidth.w64
                                     (FloatDatum.num false 1 (-1075))))
@@ -6064,10 +6076,10 @@ theorem RueCore.Sharp.copy_leak (B : Expr) :
                 structs :=
                   [{ attr := Attr.copy,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.copy },
+                      dtor := false, cls := Qual.copy },
                     { attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine }],
+                      dtor := true, cls := Qual.affine }],
                 enums := [] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
@@ -6080,7 +6092,8 @@ theorem RueCore.Sharp.copy_leak (B : Expr) :
                   0 ∈ Config.held P.decls C ∧
                     ∃ H v tr,
                       Steps Float.exactOps P C
-                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          (Config.run H Activation.empty [] (Focus.ret v)
+                            tr) ∧
                         List.count 0 (Val.own P.decls v) +
                             List.count 0 (freedIds P.decls tr) =
                           0
@@ -6101,12 +6114,12 @@ theorem RueCore.Sharp.pending_leak (P : Program) :
             structs :=
               [{ attr := Attr.none,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                  cls := Mult.affine },
+                  cls := Qual.affine },
                 { attr := Attr.linear,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-                  cls := Mult.linear }],
+                  cls := Qual.linear }],
             enums :=
-              [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
         fns :=
           [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
               body :=
@@ -6128,7 +6141,7 @@ theorem RueCore.Sharp.pending_leak (P : Program) :
               0 ∈ Config.held P.decls C ∧
                 ∃ H v tr,
                   Steps Float.exactOps P C
-                      (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                     List.count 0 (Val.own P.decls v) +
                         List.count 0 (freedIds P.decls tr) =
                       0
@@ -6156,12 +6169,12 @@ theorem RueCore.Sharp.unreached_held (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -6172,7 +6185,7 @@ theorem RueCore.Sharp.unreached_held (B : Expr) :
                     [Cell.full
                         (Contents.struct 0 5
                           [Contents.int IntWidth.w64 Sign.signed 1])]
-                    Frame.empty []
+                    Activation.empty []
                     (Focus.ret (Val.int IntWidth.w64 Sign.signed 0)) []) ∧
               5 ∈
                   Config.held P.decls
@@ -6180,7 +6193,7 @@ theorem RueCore.Sharp.unreached_held (B : Expr) :
                       [Cell.full
                           (Contents.struct 0 5
                             [Contents.int IntWidth.w64 Sign.signed 1])]
-                      Frame.empty []
+                      Activation.empty []
                       (Focus.ret (Val.int IntWidth.w64 Sign.signed 0)) []) ∧
                 List.count 5
                       (Val.own P.decls (Val.int IntWidth.w64 Sign.signed 0)) +
@@ -6210,12 +6223,12 @@ theorem RueCore.Sharp.unheld (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -6224,7 +6237,7 @@ theorem RueCore.Sharp.unheld (B : Expr) :
             ¬1 ∈ Config.held P.decls Config.init ∧
               ∃ H v tr,
                 Steps Float.exactOps P Config.init
-                    (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                    (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                   List.count 1 (Val.own P.decls v) +
                       List.count 1 (freedIds P.decls tr) =
                     0
@@ -6252,12 +6265,12 @@ theorem RueCore.Sharp.off_run (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Mult.affine },
+                      dtor := true, cls := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Mult.linear }],
+                      dtor := false, cls := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -6267,7 +6280,7 @@ theorem RueCore.Sharp.off_run (B : Expr) :
               Steps Float.exactOps P Config.init C ∧
                 0 ∈ Config.held P.decls C ∧
                   ¬Steps Float.exactOps P C
-                        (Config.run [] Frame.empty []
+                        (Config.run [] Activation.empty []
                           (Focus.ret (Val.int IntWidth.w64 Sign.signed 3))
                           []) ∧
                     List.count 0
@@ -6291,7 +6304,7 @@ is the same program, stuck at the same rule in `Step`.
 theorem RueCore.Examples.dynReadAffine_refused (M : FloatSig) :
   run M (Examples.prog Examples.tI64 Examples.dynReadAffineCopied)
       Examples.demoFuel =
-    EvalRes.stuck Violation.typeConfusion
+    EvalRes.refused Refusal.typeConfusion
 ```
 
 ### `Examples.dynDropAffine_refused`
@@ -6308,7 +6321,7 @@ read's `Copy` check, and no `@dbg` output or destructor event is produced.
 theorem RueCore.Examples.dynDropAffine_refused (M : FloatSig) :
   run M (Examples.prog Examples.tI64 Examples.dynDropAffineSkipped)
       Examples.demoFuel =
-    EvalRes.stuck Violation.typeConfusion
+    EvalRes.refused Refusal.typeConfusion
 ```
 
 ### `Examples.repeatAffine_refused`
@@ -6325,7 +6338,7 @@ of `t`, and `eval` answers `typeConfusion` rather than replicating `v`.
 theorem RueCore.Examples.repeatAffine_refused (M : FloatSig) :
   run M (Examples.prog Examples.tI64 Examples.repeatAffineDuplicated)
       Examples.demoFuel =
-    EvalRes.stuck Violation.typeConfusion
+    EvalRes.refused Refusal.typeConfusion
 ```
 
 ### `Examples.panicPastLinear_typed`
@@ -6369,7 +6382,7 @@ infinities as failures" — and the category is `↯overflow`, the one §6.12
 already lists (`8.1:7`), not a new one.
 
 ```lean
-theorem RueCore.Examples.floatToInt_inf_traps (M : FloatModel) (w : FloatWidth)
+theorem RueCore.Examples.floatToInt_inf_traps (M : FloatLaws) (w : FloatWidth)
   (w' : IntWidth) (s' : Sign) (b : Bool) :
   evalFintrin M.toFloatSig (FloatIntrin.floatToInt w' s')
       (Val.float w (FloatDatum.inf b)) =
@@ -6384,7 +6397,7 @@ theorem RueCore.Examples.floatToInt_inf_traps (M : FloatModel) (w : FloatWidth)
 `(D-Float-To-Int-Trap)`'s premise (`3.12:18`).
 
 ```lean
-theorem RueCore.Examples.floatToInt_nan_traps (M : FloatModel) (w : FloatWidth)
+theorem RueCore.Examples.floatToInt_nan_traps (M : FloatLaws) (w : FloatWidth)
   (w' : IntWidth) (s' : Sign) (b : Bool) :
   evalFintrin M.toFloatSig (FloatIntrin.floatToInt w' s')
       (Val.float w (FloatDatum.nan b)) =
@@ -6396,15 +6409,15 @@ theorem RueCore.Examples.floatToInt_nan_traps (M : FloatModel) (w : FloatWidth)
 *theorem* · module `RueCore.Examples`
 
 **A whole redex: `@float_to_int(1.0 / 0.0)` traps at every model.** The
-division is `3.12:22`'s (`FloatModel.div_by_zero`), the literals are
+division is `3.12:22`'s (`FloatLaws.div_by_zero`), the literals are
 `3.12:9`'s (`ofLit_one`, `ofLit_zero`), and the trap is the partition. No
 float arithmetic is computed anywhere in the proof, and the theorem holds for
 every model satisfying the laws — including, but not only, `Float.exactOps`,
 which the corpus runs and the compiler agrees with.
 
 ```lean
-theorem RueCore.Examples.floatDivZeroToInt_traps (M : FloatModel) (P : Program)
-  (H : Store) (φ : Frame) (w : FloatWidth) (w' : IntWidth) (s' : Sign) :
+theorem RueCore.Examples.floatDivZeroToInt_traps (M : FloatLaws) (P : Program)
+  (H : Store) (φ : Activation) (w : FloatWidth) (w' : IntWidth) (s' : Sign) :
   eval M.toFloatSig 8 P H φ
       (Expr.fintrin (FloatIntrin.floatToInt w' s')
         (Expr.binop BinOp.div (Examples.flE w 1 0) (Examples.flE w 0 0))) =
@@ -6422,7 +6435,7 @@ completes it — `outOfFuel` is its answer at every bound, which is what
 
 ```lean
 theorem RueCore.Examples.infiniteLoop_outOfFuel (M : FloatSig) (P : Program)
-  (fuel : Nat) (H : Store) (φ : Frame) :
+  (fuel : Nat) (H : Store) (φ : Activation) :
   eval M fuel P H φ Examples.infiniteLoop = EvalRes.outOfFuel
 ```
 
@@ -6454,7 +6467,7 @@ theorem RueCore.affineScopeDrop_both_ways (M : FloatSig) :
               (Contents.struct 1 0
                 [Contents.int IntWidth.w64 Sign.signed 7])] ∧
       Steps M affineScopeDropProgram Config.init
-        (Config.run [Cell.dead, Cell.dead] Frame.empty []
+        (Config.run [Cell.dead, Cell.dead] Activation.empty []
           (Focus.ret (Val.int IntWidth.w64 Sign.signed 1))
           [Event.drop 1
               (Contents.struct 1 0 [Contents.int IntWidth.w64 Sign.signed 7]),
@@ -6543,7 +6556,7 @@ theorem RueCore.glue_dtorSkipped_rejected :
             [Examples.c64 1, Examples.cA 0 2])]
 ```
 
-### `returnPastAffine_newestFirst`
+### `returnPastAffine_strictStackOrder`
 
 *theorem* · module `RueCore.Witnesses`
 
@@ -6554,7 +6567,7 @@ distinct cells, newest first, the teardown `reachable_drop_order` speaks
 of.
 
 ```lean
-theorem RueCore.returnPastAffine_newestFirst :
+theorem RueCore.returnPastAffine_strictStackOrder :
   ∃ C C' evs,
     Steps Examples.demoOps Examples.returnPastAffine Config.init C ∧
       Step Examples.demoOps Examples.returnPastAffine C C' ∧
@@ -6577,7 +6590,7 @@ theorem RueCore.unorderedRecord_rejected :
   ∃ C C' evs,
     ¬C.Ordered ∧
       Step Examples.demoOps Examples.returnPastAffine C C' ∧
-        C'.trace = C.trace ++ evs ∧ ¬NewestFirst (dropLocs evs)
+        C'.trace = C.trace ++ evs ∧ ¬StrictStackOrder (dropLocs evs)
 ```
 
 ### `swappedMarkers_rejected`
@@ -6643,7 +6656,7 @@ theorem RueCore.demo_dynamicRead_stuck (M : FloatSig) :
           (Expr.letIn false (Expr.mkArray (Ty.struct 0) [demoS, demoS])
             (Expr.letIn false (Expr.indexRead (Place.var 0) [demoI32 0] [[]])
               (demoI32 0))))
-        C Violation.typeConfusion
+        C Refusal.typeConfusion
 ```
 
 ### `demo_dynamicDrop_stuck`
@@ -6669,7 +6682,7 @@ theorem RueCore.demo_dynamicDrop_stuck (M : FloatSig) :
           (Expr.letIn false (Expr.mkArray (Ty.struct 0) [demoS])
             ((Expr.indexDrop (Place.var 0) [demoI32 0] [[]]).seq
               ((demoI32 1).dbg.seq (demoI32 0)))))
-        C Violation.typeConfusion
+        C Refusal.typeConfusion
 ```
 
 ### `demo_repeat_stuck`
@@ -6692,7 +6705,7 @@ theorem RueCore.demo_repeat_stuck (M : FloatSig) :
         (demoProgram
           (Expr.letIn false (Expr.repeatArray (Ty.struct 0) demoS 2)
             (demoI32 0)))
-        C Violation.typeConfusion
+        C Refusal.typeConfusion
 ```
 
 ### `demo_dropMoved_runs`
@@ -6840,7 +6853,7 @@ theorem RueCore.demo_returnInMatch_runs (M : FloatSig) :
         Config.init
         (Config.run H { env := [], scope := [] } []
           (Focus.ret (Val.int IntWidth.w32 Sign.signed 4))
-          [Event.consume (Contents.enum 0 0 3 [Contents.hole]),
+          [Event.consume (Contents.enum 0 0 3 [Contents.movedOut]),
             Event.drop 4 (demoSc 2), Event.dtor 0 (demoSc 2),
             Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]) ∧
       run M
@@ -6849,7 +6862,7 @@ theorem RueCore.demo_returnInMatch_runs (M : FloatSig) :
               ((Expr.mkEnum 0 0 [demoS]).match [(demoI32 4).ret, demoI32 0])))
           100 =
         EvalRes.ok H (Val.int IntWidth.w32 Sign.signed 4)
-          [Event.consume (Contents.enum 0 0 3 [Contents.hole]),
+          [Event.consume (Contents.enum 0 0 3 [Contents.movedOut]),
             Event.drop 4 (demoSc 2), Event.dtor 0 (demoSc 2),
             Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]
 ```
@@ -6893,7 +6906,7 @@ theorem RueCore.dropMoved_refused (M : FloatSig) :
             (Expr.letIn false (Expr.use (Place.var 0))
               ((Expr.drop (Place.var 1)).seq (demoI32 0)))))
         Config.init
-        (Config.run H Frame.empty []
+        (Config.run H Activation.empty []
           (Focus.ret (Val.int IntWidth.w32 Sign.signed 0))
           [Event.drop 2 (demoSc 0), Event.dtor 0 (demoSc 0)])) ∧
     run M
@@ -6902,7 +6915,7 @@ theorem RueCore.dropMoved_refused (M : FloatSig) :
             (Expr.letIn false (Expr.use (Place.var 0))
               ((Expr.drop (Place.var 1)).seq (demoI32 0)))))
         100 =
-      EvalRes.stuck Violation.useAfterMove
+      EvalRes.refused Refusal.useAfterMove
 ```
 
 ### `letAddProgram_sound`
@@ -6917,7 +6930,7 @@ retired and nothing printed (§6.7, §6.9, §6.12).
 ```lean
 theorem RueCore.letAddProgram_sound (M : FloatSig) :
   Steps M letAddProgram Config.init
-    (Config.run [Cell.dead] Frame.empty []
+    (Config.run [Cell.dead] Activation.empty []
       (Focus.ret (Val.int IntWidth.w32 Sign.signed 42)) [])
 ```
 
@@ -7039,7 +7052,7 @@ or exhausted fuel — the interpreter does not produce.
 
 ```lean
 theorem RueCore.Explain.traceEval_res (M : FloatSig) {P : Program} (fuel d : Nat)
-  (Θ : List Ty) (R : Ty) (H : Store) (φ : Frame) (e : Expr) :
+  (Θ : List Ty) (R : Ty) (H : Store) (φ : Activation) (e : Expr) :
   (Explain.traceEval M P fuel d Θ R H φ e).res = eval M fuel P H φ e
 ```
 
@@ -7474,34 +7487,34 @@ theorem RueCore.Float.ite_succ_le (c : Prop) [Decidable c] (x : Nat) :
   (if c then x + 1 else x) ≤ x + 1
 ```
 
-### `Mult.rank_le_join_left`
+### `Qual.rank_le_join_left`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
 The join is an upper bound of its left argument (§3) (helper).
 
 ```lean
-theorem RueCore.Mult.rank_le_join_left (a b : Mult) : a.rank ≤ (a.join b).rank
+theorem RueCore.Qual.rank_le_join_left (a b : Qual) : a.rank ≤ (a.join b).rank
 ```
 
-### `Mult.rank_le_join_right`
+### `Qual.rank_le_join_right`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
 The join is an upper bound of its right argument (§3) (helper).
 
 ```lean
-theorem RueCore.Mult.rank_le_join_right (a b : Mult) : b.rank ≤ (a.join b).rank
+theorem RueCore.Qual.rank_le_join_right (a b : Qual) : b.rank ≤ (a.join b).rank
 ```
 
-### `Mult.eq_linear_of_rank`
+### `Qual.eq_linear_of_rank`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
 `Linear` is the top of §3's lattice, so nothing outranks it (helper).
 
 ```lean
-theorem RueCore.Mult.eq_linear_of_rank {m : Mult} (h : 2 ≤ m.rank) : m = Mult.linear
+theorem RueCore.Qual.eq_linear_of_rank {m : Qual} (h : 2 ≤ m.rank) : m = Qual.linear
 ```
 
 ### `rank_le_joinFold`
@@ -7511,8 +7524,8 @@ theorem RueCore.Mult.eq_linear_of_rank {m : Mult} (h : 2 ≤ m.rank) : m = Mult.
 The accumulator of §3's join is a lower bound of the result (helper).
 
 ```lean
-theorem RueCore.rank_le_joinFold (D : Decls) (Ts : List Ty) (acc : Mult) :
-  acc.rank ≤ (List.foldl (fun m T => m.join (Ty.mult D T)) acc Ts).rank
+theorem RueCore.rank_le_joinFold (D : Decls) (Ts : List Ty) (acc : Qual) :
+  acc.rank ≤ (List.foldl (fun m T => m.join (Ty.qual D T)) acc Ts).rank
 ```
 
 ### `rank_le_joinFold_of_mem`
@@ -7522,11 +7535,11 @@ theorem RueCore.rank_le_joinFold (D : Decls) (Ts : List Ty) (acc : Mult) :
 Every field's class is below §3's join of them (helper).
 
 ```lean
-theorem RueCore.rank_le_joinFold_of_mem (D : Decls) (Ts : List Ty) (acc : Mult)
+theorem RueCore.rank_le_joinFold_of_mem (D : Decls) (Ts : List Ty) (acc : Qual)
   (T : Ty) :
   T ∈ Ts →
-    (Ty.mult D T).rank ≤
-      (List.foldl (fun m T => m.join (Ty.mult D T)) acc Ts).rank
+    (Ty.qual D T).rank ≤
+      (List.foldl (fun m T => m.join (Ty.qual D T)) acc Ts).rank
 ```
 
 ### `joinFold_linear_inv`
@@ -7536,12 +7549,12 @@ theorem RueCore.rank_le_joinFold_of_mem (D : Decls) (Ts : List Ty) (acc : Mult)
 §3's join reaches `Linear` only through a field that does (helper).
 
 ```lean
-theorem RueCore.joinFold_linear_inv (D : Decls) (Ts : List Ty) (acc : Mult) :
-  List.foldl (fun m T => m.join (Ty.mult D T)) acc Ts = Mult.linear →
-    acc = Mult.linear ∨ ∃ T, T ∈ Ts ∧ Ty.mult D T = Mult.linear
+theorem RueCore.joinFold_linear_inv (D : Decls) (Ts : List Ty) (acc : Qual) :
+  List.foldl (fun m T => m.join (Ty.qual D T)) acc Ts = Qual.linear →
+    acc = Qual.linear ∨ ∃ T, T ∈ Ts ∧ Ty.qual D T = Qual.linear
 ```
 
-### `Ty.mult_congr_tyNames`
+### `Ty.qual_congr_tyNames`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
@@ -7550,9 +7563,9 @@ names by value give that type the same class: `class([T; n])` is §3's lift of
 `class(T)`, so peeling the array wrappers loses nothing (helper).
 
 ```lean
-theorem RueCore.Ty.mult_congr_tyNames {D D' : Decls} (T : Ty) :
-  (∀ (d : TyName), d ∈ T.tyNames → Ty.mult D d.ty = Ty.mult D' d.ty) →
-    Ty.mult D T = Ty.mult D' T
+theorem RueCore.Ty.qual_congr_tyNames {D D' : Decls} (T : Ty) :
+  (∀ (d : TyName), d ∈ T.tyNames → Ty.qual D d.ty = Ty.qual D' d.ty) →
+    Ty.qual D T = Ty.qual D' T
 ```
 
 ### `rank_le_payloadFold`
@@ -7563,10 +7576,10 @@ The accumulator of the payload join is a lower bound of the result
 (helper).
 
 ```lean
-theorem RueCore.rank_le_payloadFold (D : Decls) (Tss : List (List Ty)) (acc : Mult) :
+theorem RueCore.rank_le_payloadFold (D : Decls) (Tss : List (List Ty)) (acc : Qual) :
   acc.rank ≤
     (List.foldl
-        (fun m Ts => List.foldl (fun m' T => m'.join (Ty.mult D T)) m Ts) acc
+        (fun m Ts => List.foldl (fun m' T => m'.join (Ty.qual D T)) m Ts) acc
         Tss).rank
 ```
 
@@ -7579,13 +7592,13 @@ Every payload component's class is below §3's join of them (`6.3:19`)
 
 ```lean
 theorem RueCore.rank_le_payloadFold_of_mem (D : Decls) (Tss : List (List Ty))
-  (acc : Mult) (Ts : List Ty) (T : Ty) :
+  (acc : Qual) (Ts : List Ty) (T : Ty) :
   Ts ∈ Tss →
     T ∈ Ts →
-      (Ty.mult D T).rank ≤
+      (Ty.qual D T).rank ≤
         (List.foldl
             (fun m Ts' =>
-              List.foldl (fun m' T' => m'.join (Ty.mult D T')) m Ts')
+              List.foldl (fun m' T' => m'.join (Ty.qual D T')) m Ts')
             acc Tss).rank
 ```
 
@@ -7598,12 +7611,12 @@ does (helper).
 
 ```lean
 theorem RueCore.payloadFold_linear_inv (D : Decls) (Tss : List (List Ty))
-  (acc : Mult) :
-  List.foldl (fun m Ts => List.foldl (fun m' T => m'.join (Ty.mult D T)) m Ts)
+  (acc : Qual) :
+  List.foldl (fun m Ts => List.foldl (fun m' T => m'.join (Ty.qual D T)) m Ts)
         acc Tss =
-      Mult.linear →
-    acc = Mult.linear ∨
-      ∃ Ts, Ts ∈ Tss ∧ ∃ T, T ∈ Ts ∧ Ty.mult D T = Mult.linear
+      Qual.linear →
+    acc = Qual.linear ∨
+      ∃ Ts, Ts ∈ Tss ∧ ∃ T, T ∈ Ts ∧ Ty.qual D T = Qual.linear
 ```
 
 ### `joinFold_congr`
@@ -7614,10 +7627,10 @@ Two environments that give every type of a field list the same class give
 that list the same §3 join (helper).
 
 ```lean
-theorem RueCore.joinFold_congr {D D' : Decls} (Ts : List Ty) (acc : Mult) :
-  (∀ (T : Ty), T ∈ Ts → Ty.mult D T = Ty.mult D' T) →
-    List.foldl (fun m T => m.join (Ty.mult D T)) acc Ts =
-      List.foldl (fun m T => m.join (Ty.mult D' T)) acc Ts
+theorem RueCore.joinFold_congr {D D' : Decls} (Ts : List Ty) (acc : Qual) :
+  (∀ (T : Ty), T ∈ Ts → Ty.qual D T = Ty.qual D' T) →
+    List.foldl (fun m T => m.join (Ty.qual D T)) acc Ts =
+      List.foldl (fun m T => m.join (Ty.qual D' T)) acc Ts
 ```
 
 ### `payloadFold_congr`
@@ -7628,14 +7641,14 @@ The same for `6.3:19`'s payload join, over every component of every variant
 (helper).
 
 ```lean
-theorem RueCore.payloadFold_congr {D D' : Decls} (Tss : List (List Ty)) (acc : Mult) :
+theorem RueCore.payloadFold_congr {D D' : Decls} (Tss : List (List Ty)) (acc : Qual) :
   (∀ (Ts : List Ty),
-      Ts ∈ Tss → ∀ (T : Ty), T ∈ Ts → Ty.mult D T = Ty.mult D' T) →
+      Ts ∈ Tss → ∀ (T : Ty), T ∈ Ts → Ty.qual D T = Ty.qual D' T) →
     List.foldl
-        (fun m Ts => List.foldl (fun m' T => m'.join (Ty.mult D T)) m Ts) acc
+        (fun m Ts => List.foldl (fun m' T => m'.join (Ty.qual D T)) m Ts) acc
         Tss =
       List.foldl
-        (fun m Ts => List.foldl (fun m' T => m'.join (Ty.mult D' T)) m Ts) acc
+        (fun m Ts => List.foldl (fun m' T => m'.join (Ty.qual D' T)) m Ts) acc
         Tss
 ```
 
@@ -7689,21 +7702,21 @@ theorem RueCore.OwnSt.joinList_comm (D : Decls) (as bs : List OwnSt) (Ts : List 
   OwnSt.joinList D as bs Ts = OwnSt.joinList D bs as Ts
 ```
 
-### `Ty.array_mult_linear`
+### `Ty.array_qual_linear`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
 §3's class of an array type reaches `Linear` exactly through a nonempty
-array of a `Linear` element type — `Ty.mult`'s own four-line table read as the
+array of a `Linear` element type — `Ty.qual`'s own four-line table read as the
 biconditional the join proofs need (`3.8:74`; the zero-length reading is
 RUE-526's) (helper).
 
 ```lean
-theorem RueCore.Ty.array_mult_linear (D : Decls) (T : Ty) (n : Nat) :
-  Ty.mult D (T.array n) = Mult.linear ↔ n ≠ 0 ∧ Ty.mult D T = Mult.linear
+theorem RueCore.Ty.array_qual_linear (D : Decls) (T : Ty) (n : Nat) :
+  Ty.qual D (T.array n) = Qual.linear ↔ n ≠ 0 ∧ Ty.qual D T = Qual.linear
 ```
 
-### `Ty.any_replicate_mult_linear`
+### `Ty.any_replicate_qual_linear`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
@@ -7712,22 +7725,22 @@ types are `List.replicate n T`, so asking whether any slot carries a linear
 value is asking `class([T; n]) = Linear` (helper).
 
 ```lean
-theorem RueCore.Ty.any_replicate_mult_linear (D : Decls) (T : Ty) (n : Nat) :
-  ((List.replicate n T).any fun U => decide (Ty.mult D U = Mult.linear)) =
-    decide (Ty.mult D (T.array n) = Mult.linear)
+theorem RueCore.Ty.any_replicate_qual_linear (D : Decls) (T : Ty) (n : Nat) :
+  ((List.replicate n T).any fun U => decide (Ty.qual D U = Qual.linear)) =
+    decide (Ty.qual D (T.array n) = Qual.linear)
 ```
 
-### `residualLinearFields_mult_linear`
+### `residualLinearFields_qual_linear`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
 The same over a declaration's slots (helper).
 
 ```lean
-theorem RueCore.residualLinearFields_mult_linear {D : Decls} (hD : WfStructs D)
+theorem RueCore.residualLinearFields_qual_linear {D : Decls} (hD : WfStructs D)
   (ts : List OwnSt) (Ts : List Ty) :
   residualLinearFields D ts Ts = true →
-    (Ts.any fun U => decide (Ty.mult D U = Mult.linear)) = true
+    (Ts.any fun U => decide (Ty.qual D U = Qual.linear)) = true
 ```
 
 ### `ownedJoinableList_residualLinearFields`
@@ -7740,7 +7753,7 @@ The same over a declaration's slots (helper).
 theorem RueCore.ownedJoinableList_residualLinearFields {D : Decls} (hD : WfStructs D)
   (ts : List OwnSt) (Ts : List Ty) :
   ownedJoinableList D ts Ts = true →
-    (Ts.any fun U => decide (Ty.mult D U = Mult.linear)) = true →
+    (Ts.any fun U => decide (Ty.qual D U = Qual.linear)) = true →
       residualLinearFields D ts Ts = true
 ```
 
@@ -7756,7 +7769,7 @@ theorem RueCore.ownedJoinableList_of_residualLinearFields_false {D : Decls}
   OwnSt.wfList D ts Ts = true →
     residualLinearFields D ts Ts = false →
       ownedJoinableList D ts Ts =
-        !Ts.any fun U => decide (Ty.mult D U = Mult.linear)
+        !Ts.any fun U => decide (Ty.qual D U = Qual.linear)
 ```
 
 ### `OwnSt.join_owned_left`
@@ -7941,7 +7954,7 @@ Linear`: the two halves above, taken together (helper).
 ```lean
 theorem RueCore.residualLinear_of_ownedJoinable {D : Decls} (hD : WfStructs D)
   (t : OwnSt) (T : Ty) (h : ownedJoinable D t T = true) :
-  residualLinear D t T = decide (Ty.mult D T = Mult.linear)
+  residualLinear D t T = decide (Ty.qual D T = Qual.linear)
 ```
 
 ### `residualLinearFields_of_ownedJoinableList`
@@ -7955,7 +7968,7 @@ theorem RueCore.residualLinearFields_of_ownedJoinableList {D : Decls}
   (hD : WfStructs D) (ts : List OwnSt) (Ts : List Ty)
   (h : ownedJoinableList D ts Ts = true) :
   residualLinearFields D ts Ts =
-    Ts.any fun U => decide (Ty.mult D U = Mult.linear)
+    Ts.any fun U => decide (Ty.qual D U = Qual.linear)
 ```
 
 ### `OwnSt.joinList_ownedJoinableList`
@@ -8989,7 +9002,7 @@ theorem RueCore.fnCtx_wf (D : Decls) (fd : FnDef) : Ctx.Wf D (fnCtx fd)
 
 *theorem* · module `RueCore.Dynamics.Lemmas`
 
-`toVals` does not change a list's length, for `mult_toVal`'s array case
+`toVals` does not change a list's length, for `qual_toVal`'s array case
 (helper).
 
 ```lean
@@ -9027,8 +9040,8 @@ theorem RueCore.dropEventsList_eq_flatten (D : Decls) (cs : List Contents) :
 `stepEval`'s `next` is a `Step` (helper).
 
 ```lean
-theorem RueCore.stepEval_complete {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {e : Expr} {C' : Config}
+theorem RueCore.stepEval_complete {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {e : Expr} {C' : Config}
   (h : stepEval M P H φ K tr e = StepOut.next C') :
   Step M P (Config.run H φ K (Focus.eval e) tr) C'
 ```
@@ -9040,9 +9053,10 @@ theorem RueCore.stepEval_complete {M : FloatSig} {P : Program} {H : Store} {φ :
 `stepArgs`'s `next` is a `Step` (helper).
 
 ```lean
-theorem RueCore.stepArgs_complete {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {vs : List Val} {t : ArgsTag}
-  {C' : Config} (h : stepArgs P H φ K tr vs t = StepOut.next C') :
+theorem RueCore.stepArgs_complete {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {vs : List Val}
+  {t : ArgsFrame} {C' : Config}
+  (h : stepArgs P H φ K tr vs t = StepOut.next C') :
   Step M P (Config.run H φ K (Focus.args t vs []) tr) C'
 ```
 
@@ -9053,9 +9067,9 @@ theorem RueCore.stepArgs_complete {M : FloatSig} {P : Program} {H : Store} {φ :
 `stepRet`'s `next` is a `Step` (helper).
 
 ```lean
-theorem RueCore.stepRet_complete {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {v : Val} {k : Kont} {C' : Config}
-  (h : stepRet M P H φ K tr v k = StepOut.next C') :
+theorem RueCore.stepRet_complete {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {v : Val} {k : Kont}
+  {C' : Config} (h : stepRet M P H φ K tr v k = StepOut.next C') :
   Step M P (Config.run H φ (k :: K) (Focus.ret v) tr) C'
 ```
 
@@ -9067,7 +9081,7 @@ theorem RueCore.stepRet_complete {M : FloatSig} {P : Program} {H : Store} {φ : 
 
 ```lean
 theorem RueCore.stepEval_ne_halted {M : FloatSig} {P : Program} {H : Store}
-  {φ : Frame} {K : List Kont} {tr : List Event} {e : Expr} :
+  {φ : Activation} {K : List Kont} {tr : List Event} {e : Expr} :
   stepEval M P H φ K tr e ≠ StepOut.halted
 ```
 
@@ -9078,8 +9092,8 @@ theorem RueCore.stepEval_ne_halted {M : FloatSig} {P : Program} {H : Store}
 `stepArgs` never answers `halted` (helper).
 
 ```lean
-theorem RueCore.stepArgs_ne_halted {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {vs : List Val} {t : ArgsTag} :
+theorem RueCore.stepArgs_ne_halted {P : Program} {H : Store} {φ : Activation}
+  {K : List Kont} {tr : List Event} {vs : List Val} {t : ArgsFrame} :
   stepArgs P H φ K tr vs t ≠ StepOut.halted
 ```
 
@@ -9090,20 +9104,20 @@ theorem RueCore.stepArgs_ne_halted {P : Program} {H : Store} {φ : Frame}
 `stepRet` never answers `halted` (helper).
 
 ```lean
-theorem RueCore.stepRet_ne_halted {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {v : Val} {k : Kont} :
+theorem RueCore.stepRet_ne_halted {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {v : Val} {k : Kont} :
   stepRet M P H φ K tr v k ≠ StepOut.halted
 ```
 
-### `Contents.readAt_err`
+### `Contents.getAt_err`
 
 *theorem* · module `RueCore.Step.Lemmas`
 
-`readAt` refuses only with §6's stuck states (helper).
+`getAt` refuses only with §6's stuck states (helper).
 
 ```lean
-theorem RueCore.Contents.readAt_err {c : Contents} {π : List Nat} {w : Violation} :
-  c.readAt π = Except.error w → w.isStuckState = true
+theorem RueCore.Contents.getAt_err {c : Contents} {π : List Nat} {w : Refusal} :
+  c.getAt π = Except.error w → w.isStuckState = true
 ```
 
 ### `Contents.splitResidue_err`
@@ -9114,7 +9128,7 @@ theorem RueCore.Contents.readAt_err {c : Contents} {π : List Nat} {w : Violatio
 
 ```lean
 theorem RueCore.Contents.splitResidue_err (D : Decls) {c : Contents} {π : List Nat}
-  {w : Violation} :
+  {w : Refusal} :
   Contents.splitResidue D c π = Except.error w → w.isStuckState = true
 ```
 
@@ -9126,7 +9140,7 @@ theorem RueCore.Contents.splitResidue_err (D : Decls) {c : Contents} {π : List 
 
 ```lean
 theorem RueCore.Contents.splitFields_err (D : Decls) {cs : List Contents} {f : Nat}
-  {π : List Nat} {w : Violation} :
+  {π : List Nat} {w : Refusal} :
   Contents.splitFields D cs f π = Except.error w → w.isStuckState = true
 ```
 
@@ -9137,7 +9151,7 @@ theorem RueCore.Contents.splitFields_err (D : Decls) {cs : List Contents} {f : N
 §6.11's `drop` refuses only with §6's stuck states (helper).
 
 ```lean
-theorem RueCore.dropContents_err (D : Decls) {c : Contents} {w : Violation} :
+theorem RueCore.dropContents_err (D : Decls) {c : Contents} {w : Refusal} :
   dropContents D c = Except.error w → w.isStuckState = true
 ```
 
@@ -9148,8 +9162,7 @@ theorem RueCore.dropContents_err (D : Decls) {c : Contents} {w : Violation} :
 `drop*` refuses only with §6's stuck states (helper).
 
 ```lean
-theorem RueCore.dropContentsList_err (D : Decls) {cs : List Contents}
-  {w : Violation} :
+theorem RueCore.dropContentsList_err (D : Decls) {cs : List Contents} {w : Refusal} :
   dropContentsList D cs = Except.error w → w.isStuckState = true
 ```
 
@@ -9160,7 +9173,7 @@ theorem RueCore.dropContentsList_err (D : Decls) {cs : List Contents}
 A binding's drop refuses only with §6's stuck states (helper).
 
 ```lean
-theorem RueCore.dropCell_err {D : Decls} {ℓ : Nat} {c : Contents} {w : Violation}
+theorem RueCore.dropCell_err {D : Decls} {ℓ : Nat} {c : Contents} {w : Refusal}
   (h : dropCell D ℓ c = Except.error w) : w.isStuckState = true
 ```
 
@@ -9172,8 +9185,7 @@ theorem RueCore.dropCell_err {D : Decls} {ℓ : Nat} {c : Contents} {w : Violati
 
 ```lean
 theorem RueCore.plainUnwind_err {D : Decls} {H : Store} {ls : List Nat}
-  {w : Violation} :
-  plainUnwind D H ls = Except.error w → w.isStuckState = true
+  {w : Refusal} : plainUnwind D H ls = Except.error w → w.isStuckState = true
 ```
 
 ### `plainResidue_err`
@@ -9184,8 +9196,7 @@ The residue's plain `drop*` refuses only with §6's stuck states (helper).
 
 ```lean
 theorem RueCore.plainResidue_err {D : Decls} {ℓ : Nat} {rs : List Contents}
-  {w : Violation} :
-  plainResidue D ℓ rs = Except.error w → w.isStuckState = true
+  {w : Refusal} : plainResidue D ℓ rs = Except.error w → w.isStuckState = true
 ```
 
 ### `plainDestructure_err`
@@ -9196,7 +9207,7 @@ theorem RueCore.plainResidue_err {D : Decls} {ℓ : Nat} {rs : List Contents}
 
 ```lean
 theorem RueCore.plainDestructure_err {D : Decls} {ℓ : Nat} {c : Contents}
-  {πs : List Nat} {w : Violation}
+  {πs : List Nat} {w : Refusal}
   (h : plainDestructure D ℓ c πs = Except.error w) : w.isStuckState = true
 ```
 
@@ -9207,7 +9218,7 @@ theorem RueCore.plainDestructure_err {D : Decls} {ℓ : Nat} {c : Contents}
 `rootCell` refuses only with §6's stuck states (helper).
 
 ```lean
-theorem RueCore.rootCell_err {H : Store} {φ : Frame} {i : Nat} {w : Violation}
+theorem RueCore.rootCell_err {H : Store} {φ : Activation} {i : Nat} {w : Refusal}
   (h : rootCell H φ i = Except.error w) : w.isStuckState = true
 ```
 
@@ -9219,8 +9230,8 @@ Resolving a dynamic tail refuses only with §6's stuck states (helper).
 
 ```lean
 theorem RueCore.Contents.resolveDyn_err {c : Contents} {is : List Int}
-  {πs : List (List Nat)} {w : Violation} :
-  c.resolveDyn is πs = DynStep.stuck w → w.isStuckState = true
+  {πs : List (List Nat)} {w : Refusal} :
+  c.resolveDyn is πs = DynStep.refused w → w.isStuckState = true
 ```
 
 ### `dynPlace_err`
@@ -9230,9 +9241,9 @@ theorem RueCore.Contents.resolveDyn_err {c : Contents} {is : List Int}
 Navigating a dynamic place refuses only with §6's stuck states (helper).
 
 ```lean
-theorem RueCore.dynPlace_err {H : Store} {φ : Frame} {p : Place} {vs : List Val}
-  {πs : List (List Nat)} {w : Violation}
-  (h : dynPlace H φ p vs πs = DynPlace.stuck w) : w.isStuckState = true
+theorem RueCore.dynPlace_err {H : Store} {φ : Activation} {p : Place} {vs : List Val}
+  {πs : List (List Nat)} {w : Refusal}
+  (h : dynPlace H φ p vs πs = DynPlace.refused w) : w.isStuckState = true
 ```
 
 ### `dropRetire_plain`
@@ -9285,15 +9296,15 @@ theorem RueCore.HasTys.length_eq {D : Decls} {vs : List Val} {Ts : List Ty} :
   HasTys D vs Ts → vs.length = Ts.length
 ```
 
-### `HasTy.mult_eq`
+### `HasTy.qual_eq`
 
 *theorem* · module `RueCore.Soundness`
 
 A well-typed value has its type's class (helper).
 
 ```lean
-theorem RueCore.HasTy.mult_eq {D : Decls} {v : Val} {T : Ty} (h : HasTy D v T) :
-  Val.mult D v = Ty.mult D T
+theorem RueCore.HasTy.qual_eq {D : Decls} {v : Val} {T : Ty} (h : HasTy D v T) :
+  Val.qual D v = Ty.qual D T
 ```
 
 ### `HasTy.observable`
@@ -9430,7 +9441,7 @@ against `cs.length` (helper).
 
 ```lean
 theorem RueCore.ContentsTy.array_shape {D : Decls} {c : Contents} {T : Ty} {n : Nat}
-  (h : ContentsTy D c (T.array n)) (hf : c.holeFree = true) :
+  (h : ContentsTy D c (T.array n)) (hf : c.noMovedOut = true) :
   ∃ i cs, c = Contents.array T i cs ∧ ContentsTys D cs (List.replicate n T)
 ```
 
@@ -9484,28 +9495,29 @@ theorem RueCore.HasTys.contentsTys {D : Decls} {vs : List Val} {Ts : List Ty}
   (h : HasTys D vs Ts) : ContentsTys D (Contents.ofVals vs) Ts
 ```
 
-### `Contents.holeFree_ofVal`
+### `Contents.noMovedOut_ofVal`
 
 *theorem* · module `RueCore.Soundness`
 
 The image of a value has no hole in it (helper).
 
 ```lean
-theorem RueCore.Contents.holeFree_ofVal (v : Val) : (Contents.ofVal v).holeFree = true
+theorem RueCore.Contents.noMovedOut_ofVal (v : Val) :
+  (Contents.ofVal v).noMovedOut = true
 ```
 
-### `Contents.holeFreeList_ofVals`
+### `Contents.noMovedOutList_ofVals`
 
 *theorem* · module `RueCore.Soundness`
 
 The same over a field or element list (helper).
 
 ```lean
-theorem RueCore.Contents.holeFreeList_ofVals (vs : List Val) :
-  Contents.holeFreeList (Contents.ofVals vs) = true
+theorem RueCore.Contents.noMovedOutList_ofVals (vs : List Val) :
+  Contents.noMovedOutList (Contents.ofVals vs) = true
 ```
 
-### `Contents.holeFreeList_index`
+### `Contents.noMovedOutList_index`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -9513,12 +9525,12 @@ A member of a hole-free list is hole-free: what an element read needs
 before it can hand the context a value (helper).
 
 ```lean
-theorem RueCore.Contents.holeFreeList_index {cs : List Contents} {k : Nat}
+theorem RueCore.Contents.noMovedOutList_index {cs : List Contents} {k : Nat}
   {c : Contents} :
-  Contents.holeFreeList cs = true → cs[k]? = some c → c.holeFree = true
+  Contents.noMovedOutList cs = true → cs[k]? = some c → c.noMovedOut = true
 ```
 
-### `Contents.holeFreeList_set`
+### `Contents.noMovedOutList_set`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -9527,10 +9539,10 @@ an element write needs before the array it stores back is still a value
 (helper).
 
 ```lean
-theorem RueCore.Contents.holeFreeList_set (cs : List Contents) (k : Nat)
+theorem RueCore.Contents.noMovedOutList_set (cs : List Contents) (k : Nat)
   {c : Contents} :
-  Contents.holeFreeList cs = true →
-    c.holeFree = true → Contents.holeFreeList (cs.set k c) = true
+  Contents.noMovedOutList cs = true →
+    c.noMovedOut = true → Contents.noMovedOutList (cs.set k c) = true
 ```
 
 ### `HasTys.replicate`
@@ -9557,7 +9569,7 @@ the contents they read has no hole in it (helper).
 
 ```lean
 theorem RueCore.ContentsTy.toVal {D : Decls} {c : Contents} {T : Ty}
-  (h : ContentsTy D c T) (hf : c.holeFree = true) :
+  (h : ContentsTy D c T) (hf : c.noMovedOut = true) :
   ∃ v, c.toVal = some v ∧ HasTy D v T
 ```
 
@@ -9569,11 +9581,11 @@ The same over a field list (helper).
 
 ```lean
 theorem RueCore.ContentsTys.toVals {D : Decls} {cs : List Contents} {Ts : List Ty}
-  (h : ContentsTys D cs Ts) (hf : Contents.holeFreeList cs = true) :
+  (h : ContentsTys D cs Ts) (hf : Contents.noMovedOutList cs = true) :
   ∃ vs, Contents.toVals cs = some vs ∧ HasTys D vs Ts
 ```
 
-### `ContentsTy.mult_eq`
+### `ContentsTy.qual_eq`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -9581,19 +9593,19 @@ A hole-free well-typed contents has its type's class, which is what the
 `Copy` test of (D-Use-Copy) and of `dropCell` reads (helper).
 
 ```lean
-theorem RueCore.ContentsTy.mult_eq {D : Decls} {c : Contents} {T : Ty}
-  (h : ContentsTy D c T) (hf : c.holeFree = true) :
-  Contents.mult D c = Ty.mult D T
+theorem RueCore.ContentsTy.qual_eq {D : Decls} {c : Contents} {T : Ty}
+  (h : ContentsTy D c T) (hf : c.noMovedOut = true) :
+  Contents.qual D c = Ty.qual D T
 ```
 
-### `Mult.eq_copy_of_rank`
+### `Qual.eq_copy_of_rank`
 
 *theorem* · module `RueCore.Soundness`
 
 A class of rank `0` is `Copy` (helper).
 
 ```lean
-theorem RueCore.Mult.eq_copy_of_rank {m : Mult} (h : m.rank = 0) : m = Mult.copy
+theorem RueCore.Qual.eq_copy_of_rank {m : Qual} (h : m.rank = 0) : m = Qual.copy
 ```
 
 ### `StructDecl.Wf.field_copy`
@@ -9606,8 +9618,8 @@ well-formed `@copy` declaration's join is already `Copy` (helper).
 
 ```lean
 theorem RueCore.StructDecl.Wf.field_copy {D : Decls} {sd : StructDecl}
-  (h : StructDecl.Wf D sd) (hcls : sd.cls = Mult.copy) (T : Ty) :
-  T ∈ sd.fields → Ty.mult D T = Mult.copy
+  (h : StructDecl.Wf D sd) (hcls : sd.cls = Qual.copy) (T : Ty) :
+  T ∈ sd.fields → Ty.qual D T = Qual.copy
 ```
 
 ### `EnumDecl.Wf.payload_copy`
@@ -9619,8 +9631,8 @@ over every payload component of every variant (helper).
 
 ```lean
 theorem RueCore.EnumDecl.Wf.payload_copy {D : Decls} {ed : EnumDecl}
-  (h : EnumDecl.Wf D ed) (hcls : ed.cls = Mult.copy) (Ts : List Ty) :
-  Ts ∈ ed.variants → ∀ (T : Ty), T ∈ Ts → Ty.mult D T = Mult.copy
+  (h : EnumDecl.Wf D ed) (hcls : ed.cls = Qual.copy) (Ts : List Ty) :
+  Ts ∈ ed.variants → ∀ (T : Ty), T ∈ Ts → Ty.qual D T = Qual.copy
 ```
 
 ### `Ty.array_copy_elem`
@@ -9631,7 +9643,7 @@ theorem RueCore.EnumDecl.Wf.payload_copy {D : Decls} {ed : EnumDecl}
 
 ```lean
 theorem RueCore.Ty.array_copy_elem {D : Decls} {T : Ty} {n : Nat}
-  (h : Ty.mult D (T.array n) = Mult.copy) : Ty.mult D T = Mult.copy
+  (h : Ty.qual D (T.array n) = Qual.copy) : Ty.qual D T = Qual.copy
 ```
 
 ### `ContentsTy.allCopy`
@@ -9642,7 +9654,7 @@ Well-typed contents at a `Copy` type is `Copy` all the way down (helper).
 
 ```lean
 theorem RueCore.ContentsTy.allCopy {D : Decls} {c : Contents} {T : Ty}
-  (hwf : WfDecls D) (h : ContentsTy D c T) (hc : Ty.mult D T = Mult.copy) :
+  (hwf : WfDecls D) (h : ContentsTy D c T) (hc : Ty.qual D T = Qual.copy) :
   Contents.allCopy D c = true
 ```
 
@@ -9655,44 +9667,44 @@ The same over a field list (helper).
 ```lean
 theorem RueCore.ContentsTys.allCopyList {D : Decls} {cs : List Contents}
   {Ts : List Ty} (hwf : WfDecls D) (h : ContentsTys D cs Ts)
-  (hc : ∀ (T : Ty), T ∈ Ts → Ty.mult D T = Mult.copy) :
+  (hc : ∀ (T : Ty), T ∈ Ts → Ty.qual D T = Qual.copy) :
   Contents.allCopyList D cs = true
 ```
 
-### `ContentsTy.copyClosed`
+### `ContentsTy.copyContained`
 
 *theorem* · module `RueCore.Soundness`
 
 **Well-typed contents is copy-closed**, so the machine's copy-closure
-monitor (`Contents.copyClosed`) lets every checked program's aggregates through
+monitor (`Contents.copyContained`) lets every checked program's aggregates through
 (helper).
 
 ```lean
-theorem RueCore.ContentsTy.copyClosed {D : Decls} {c : Contents} {T : Ty}
-  (hwf : WfDecls D) (h : ContentsTy D c T) : Contents.copyClosed D c = true
+theorem RueCore.ContentsTy.copyContained {D : Decls} {c : Contents} {T : Ty}
+  (hwf : WfDecls D) (h : ContentsTy D c T) : Contents.copyContained D c = true
 ```
 
-### `ContentsTys.copyClosedList`
+### `ContentsTys.copyContainedList`
 
 *theorem* · module `RueCore.Soundness`
 
 The same over a field list (helper).
 
 ```lean
-theorem RueCore.ContentsTys.copyClosedList {D : Decls} {cs : List Contents}
+theorem RueCore.ContentsTys.copyContainedList {D : Decls} {cs : List Contents}
   {Ts : List Ty} (hwf : WfDecls D) (h : ContentsTys D cs Ts) :
-  Contents.copyClosedList D cs = true
+  Contents.copyContainedList D cs = true
 ```
 
-### `HasTy.copyClosed`
+### `HasTy.copyContained`
 
 *theorem* · module `RueCore.Soundness`
 
 A well-typed value is copy-closed (helper).
 
 ```lean
-theorem RueCore.HasTy.copyClosed {D : Decls} {v : Val} {T : Ty} (hwf : WfDecls D)
-  (h : HasTy D v T) : Contents.copyClosed D (Contents.ofVal v) = true
+theorem RueCore.HasTy.copyContained {D : Decls} {v : Val} {T : Ty} (hwf : WfDecls D)
+  (h : HasTy D v T) : Contents.copyContained D (Contents.ofVal v) = true
 ```
 
 ### `ContentsTys.residualLinearList_false`
@@ -9704,7 +9716,7 @@ The same over a field list (helper).
 ```lean
 theorem RueCore.ContentsTys.residualLinearList_false {D : Decls} {cs : List Contents}
   {Ts : List Ty} (hwf : WfDecls D) (h : ContentsTys D cs Ts)
-  (hnl : ∀ (T : Ty), T ∈ Ts → Ty.mult D T ≠ Mult.linear) :
+  (hnl : ∀ (T : Ty), T ∈ Ts → Ty.qual D T ≠ Qual.linear) :
   Contents.residualLinearList D cs = false
 ```
 
@@ -9721,7 +9733,7 @@ theorem RueCore.intResult_res {D : Decls} (w : IntWidth) (s : Sign) (n : Int) :
     intResult w s n = OpRes.trap PanicKind.overflow
 ```
 
-### `ContentsMatches.contentsTy`
+### `ContentsOwnTyping.contentsTy`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -9729,19 +9741,19 @@ Agreement implies contents typing, which is what makes every drop the
 machine runs on a matched cell terminate in an `ok` (helper).
 
 ```lean
-theorem RueCore.ContentsMatches.contentsTy {D : Decls} {c : Contents} {t : OwnSt}
-  {T : Ty} (h : ContentsMatches D c t T) : ContentsTy D c T
+theorem RueCore.ContentsOwnTyping.contentsTy {D : Decls} {c : Contents} {t : OwnSt}
+  {T : Ty} (h : ContentsOwnTyping D c t T) : ContentsTy D c T
 ```
 
-### `ContentsMatchesList.contentsTys`
+### `ContentsOwnTypingList.contentsTys`
 
 *theorem* · module `RueCore.Soundness`
 
 The same over a field list (helper).
 
 ```lean
-theorem RueCore.ContentsMatchesList.contentsTys {D : Decls} {cs : List Contents}
-  {ts : List OwnSt} {Ts : List Ty} (h : ContentsMatchesList D cs ts Ts) :
+theorem RueCore.ContentsOwnTypingList.contentsTys {D : Decls} {cs : List Contents}
+  {ts : List OwnSt} {Ts : List Ty} (h : ContentsOwnTypingList D cs ts Ts) :
   ContentsTys D cs Ts
 ```
 
@@ -9781,21 +9793,21 @@ theorem RueCore.OwnSt.setField_succ (ts : List OwnSt) (f : Nat) (u : OwnSt) :
     OwnSt.fieldAt ts 0 :: OwnSt.setField ts.tail f u
 ```
 
-### `ContentsMatchesList.index`
+### `ContentsOwnTypingList.index`
 
 *theorem* · module `RueCore.Soundness`
 
 A field of a matched aggregate matches its own slot's state (helper).
 
 ```lean
-theorem RueCore.ContentsMatchesList.index {D : Decls} {cs : List Contents}
+theorem RueCore.ContentsOwnTypingList.index {D : Decls} {cs : List Contents}
   {ts : List OwnSt} {Ts : List Ty} (f : Nat) {Tf : Ty} :
-  ContentsMatchesList D cs ts Ts →
+  ContentsOwnTypingList D cs ts Ts →
     Ts[f]? = some Tf →
-      ∃ cf, cs[f]? = some cf ∧ ContentsMatches D cf (OwnSt.fieldAt ts f) Tf
+      ∃ cf, cs[f]? = some cf ∧ ContentsOwnTyping D cf (OwnSt.fieldAt ts f) Tf
 ```
 
-### `ContentsMatchesList.set`
+### `ContentsOwnTypingList.set`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -9805,16 +9817,16 @@ aggregate matched.** This is the list half of the partial move: (Use-Move)
 position (helper).
 
 ```lean
-theorem RueCore.ContentsMatchesList.set {D : Decls} {cs : List Contents}
+theorem RueCore.ContentsOwnTypingList.set {D : Decls} {cs : List Contents}
   {ts : List OwnSt} {Ts : List Ty} (f : Nat) {Tf : Ty} {cf' : Contents}
   {u' : OwnSt} :
-  ContentsMatchesList D cs ts Ts →
+  ContentsOwnTypingList D cs ts Ts →
     Ts[f]? = some Tf →
-      ContentsMatches D cf' u' Tf →
-        ContentsMatchesList D (cs.set f cf') (OwnSt.setField ts f u') Ts
+      ContentsOwnTyping D cf' u' Tf →
+        ContentsOwnTypingList D (cs.set f cf') (OwnSt.setField ts f u') Ts
 ```
 
-### `ContentsMatchesList.of_owned`
+### `ContentsOwnTypingList.of_owned`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -9823,13 +9835,13 @@ A hole-free well-typed struct is a matched aggregate whose every slot is
 against a partially moved one (helper).
 
 ```lean
-theorem RueCore.ContentsMatchesList.of_owned {D : Decls} {cs : List Contents}
+theorem RueCore.ContentsOwnTypingList.of_owned {D : Decls} {cs : List Contents}
   {Ts : List Ty} :
   ContentsTys D cs Ts →
-    Contents.holeFreeList cs = true → ContentsMatchesList D cs [] Ts
+    Contents.noMovedOutList cs = true → ContentsOwnTypingList D cs [] Ts
 ```
 
-### `ContentsMatches.owned_struct`
+### `ContentsOwnTyping.owned_struct`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -9837,13 +9849,13 @@ Inversion of an `Owned` match at a struct type: the cell holds that
 struct, and every slot of it is `owned` (helper).
 
 ```lean
-theorem RueCore.ContentsMatches.owned_struct {D : Decls} {c : Contents} {s : Nat}
+theorem RueCore.ContentsOwnTyping.owned_struct {D : Decls} {c : Contents} {s : Nat}
   {sd : StructDecl} (hd : D.structs[s]? = some sd)
-  (h : ContentsMatches D c OwnSt.owned (Ty.struct s)) :
-  ∃ i cs, c = Contents.struct s i cs ∧ ContentsMatchesList D cs [] sd.fields
+  (h : ContentsOwnTyping D c OwnSt.owned (Ty.struct s)) :
+  ∃ i cs, c = Contents.struct s i cs ∧ ContentsOwnTypingList D cs [] sd.fields
 ```
 
-### `ContentsMatches.owned_array`
+### `ContentsOwnTyping.owned_array`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -9851,11 +9863,11 @@ Inversion of an `Owned` match at an array type: the cell holds that array,
 and every element of it is `owned` (helper).
 
 ```lean
-theorem RueCore.ContentsMatches.owned_array {D : Decls} {c : Contents} {T : Ty}
-  {n : Nat} (h : ContentsMatches D c OwnSt.owned (T.array n)) :
+theorem RueCore.ContentsOwnTyping.owned_array {D : Decls} {c : Contents} {T : Ty}
+  {n : Nat} (h : ContentsOwnTyping D c OwnSt.owned (T.array n)) :
   ∃ i cs,
     c = Contents.array T i cs ∧
-      ContentsMatchesList D cs [] (List.replicate n T)
+      ContentsOwnTypingList D cs [] (List.replicate n T)
 ```
 
 ### `Ty.fieldAt_inv`
@@ -9890,7 +9902,7 @@ droppable residue (helper).
 ```lean
 theorem RueCore.residueOk_of_tys {D : Decls} {cs : List Contents} {Ts : List Ty} :
   ContentsTys D cs Ts →
-    (∀ (T : Ty), T ∈ Ts → Ty.mult D T ≠ Mult.linear) → ResidueOk D cs
+    (∀ (T : Ty), T ∈ Ts → Ty.qual D T ≠ Qual.linear) → ResidueOk D cs
 ```
 
 ### `splitFields_ok`
@@ -9909,22 +9921,22 @@ declaration's fields or `List.replicate n T` for `Ts` (helper).
 theorem RueCore.splitFields_ok {D : Decls} {πs : List Nat} {T' : Ty} (f : Nat)
   {cs : List Contents} {Ts : List Ty} {Tf : Ty} :
   ContentsTys D cs Ts →
-    Contents.holeFreeList cs = true →
+    Contents.noMovedOutList cs = true →
       Ts[f]? = some Tf →
         anyLinearOther D Ts f = false →
           (∀ (cf : Contents),
               ContentsTy D cf Tf →
-                cf.holeFree = true →
+                cf.noMovedOut = true →
                   ∃ leaf rs,
                     Contents.splitResidue D cf πs = Except.ok (leaf, rs) ∧
                       ContentsTy D leaf T' ∧
-                        leaf.holeFree = true ∧ ResidueOk D rs) →
+                        leaf.noMovedOut = true ∧ ResidueOk D rs) →
             ∃ leaf rs,
               Contents.splitFields D cs f πs = Except.ok (leaf, rs) ∧
-                ContentsTy D leaf T' ∧ leaf.holeFree = true ∧ ResidueOk D rs
+                ContentsTy D leaf T' ∧ leaf.noMovedOut = true ∧ ResidueOk D rs
 ```
 
-### `ContentsMatches.holeFree`
+### `ContentsOwnTyping.noMovedOut`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -9933,24 +9945,24 @@ is exactly what says the aggregate a use hands on has no hole in it
 (`3.8:26`) (helper).
 
 ```lean
-theorem RueCore.ContentsMatches.holeFree {D : Decls} {c : Contents} {t : OwnSt}
-  {T : Ty} (h : ContentsMatches D c t T) (hf : t.fullyOwned = true) :
-  c.holeFree = true
+theorem RueCore.ContentsOwnTyping.noMovedOut {D : Decls} {c : Contents} {t : OwnSt}
+  {T : Ty} (h : ContentsOwnTyping D c t T) (hf : t.fullyOwned = true) :
+  c.noMovedOut = true
 ```
 
-### `ContentsMatchesList.holeFreeList`
+### `ContentsOwnTypingList.noMovedOutList`
 
 *theorem* · module `RueCore.Soundness`
 
 The same over a field list (helper).
 
 ```lean
-theorem RueCore.ContentsMatchesList.holeFreeList {D : Decls} {cs : List Contents}
-  {ts : List OwnSt} {Ts : List Ty} (h : ContentsMatchesList D cs ts Ts)
-  (hf : OwnSt.fullyOwnedList ts = true) : Contents.holeFreeList cs = true
+theorem RueCore.ContentsOwnTypingList.noMovedOutList {D : Decls} {cs : List Contents}
+  {ts : List OwnSt} {Ts : List Ty} (h : ContentsOwnTypingList D cs ts Ts)
+  (hf : OwnSt.fullyOwnedList ts = true) : Contents.noMovedOutList cs = true
 ```
 
-### `ContentsMatches.toVal`
+### `ContentsOwnTyping.toVal`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -9958,12 +9970,12 @@ The contents of a matched, fully-owned node is the value the machine hands
 on, well typed at the node's type (helper).
 
 ```lean
-theorem RueCore.ContentsMatches.toVal {D : Decls} {c : Contents} {t : OwnSt} {T : Ty}
-  (h : ContentsMatches D c t T) (hf : t.fullyOwned = true) :
+theorem RueCore.ContentsOwnTyping.toVal {D : Decls} {c : Contents} {t : OwnSt}
+  {T : Ty} (h : ContentsOwnTyping D c t T) (hf : t.fullyOwned = true) :
   ∃ v, c.toVal = some v ∧ HasTy D v T
 ```
 
-### `ContentsMatches.ne_hole`
+### `ContentsOwnTyping.ne_movedOut`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -9971,12 +9983,12 @@ A matched node whose state is `Owned` is not itself a hole — which is what
 lets `@drop` at a partially moved place run at all (helper).
 
 ```lean
-theorem RueCore.ContentsMatches.ne_hole {D : Decls} {c : Contents} {t : OwnSt}
-  {T : Ty} (h : ContentsMatches D c t T) (ho : t.isOwned = true) :
-  c ≠ Contents.hole
+theorem RueCore.ContentsOwnTyping.ne_movedOut {D : Decls} {c : Contents} {t : OwnSt}
+  {T : Ty} (h : ContentsOwnTyping D c t T) (ho : t.isOwned = true) :
+  c ≠ Contents.movedOut
 ```
 
-### `ContentsMatches.mult_eq`
+### `ContentsOwnTyping.qual_eq`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -9984,12 +9996,12 @@ A matched node whose state is `Owned` has its type's class, which is what
 `dropCell`'s `Copy` test reads (helper).
 
 ```lean
-theorem RueCore.ContentsMatches.mult_eq {D : Decls} {c : Contents} {t : OwnSt}
-  {T : Ty} (h : ContentsMatches D c t T) (ho : t.isOwned = true) :
-  Contents.mult D c = Ty.mult D T
+theorem RueCore.ContentsOwnTyping.qual_eq {D : Decls} {c : Contents} {t : OwnSt}
+  {T : Ty} (h : ContentsOwnTyping D c t T) (ho : t.isOwned = true) :
+  Contents.qual D c = Ty.qual D T
 ```
 
-### `ContentsMatches.ofVal`
+### `ContentsOwnTyping.ofVal`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -9997,19 +10009,19 @@ The contents of a value written into a cell matches the `owned` state
 (§6.7's (D-Let), §6.8's store) (helper).
 
 ```lean
-theorem RueCore.ContentsMatches.ofVal {D : Decls} {v : Val} {T : Ty}
-  (h : HasTy D v T) : ContentsMatches D (Contents.ofVal v) OwnSt.owned T
+theorem RueCore.ContentsOwnTyping.ofVal {D : Decls} {v : Val} {T : Ty}
+  (h : HasTy D v T) : ContentsOwnTyping D (Contents.ofVal v) OwnSt.owned T
 ```
 
-### `Contents.isHole_eq_false`
+### `Contents.isMovedOut_eq_false`
 
 *theorem* · module `RueCore.Soundness`
 
 A contents that is not `⊘` fails the `⊘` test (helper).
 
 ```lean
-theorem RueCore.Contents.isHole_eq_false {c : Contents} :
-  c ≠ Contents.hole → c.isHole = false
+theorem RueCore.Contents.isMovedOut_eq_false {c : Contents} :
+  c ≠ Contents.movedOut → c.isMovedOut = false
 ```
 
 ### `OwnSt.isOwned_of_fullyOwned`
@@ -10023,7 +10035,7 @@ theorem RueCore.OwnSt.isOwned_of_fullyOwned {t : OwnSt} :
   t.fullyOwned = true → t.isOwned = true
 ```
 
-### `ContentsMatches.hole`
+### `ContentsOwnTyping.movedOut`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10031,8 +10043,8 @@ A `⊘` matches a `MovedOut` state at every type: nothing is stored, so
 nothing is claimed (helper).
 
 ```lean
-theorem RueCore.ContentsMatches.hole {D : Decls} {T : Ty} :
-  ContentsMatches D Contents.hole OwnSt.movedOut T
+theorem RueCore.ContentsOwnTyping.movedOut {D : Decls} {T : Ty} :
+  ContentsOwnTyping D Contents.movedOut OwnSt.movedOut T
 ```
 
 ### `residualLinearFields_false`
@@ -10048,90 +10060,91 @@ theorem RueCore.residualLinearFields_false {D : Decls} {ts : List OwnSt}
     Ts[f]? = some Tf → residualLinear D (OwnSt.fieldAt ts f) Tf = false
 ```
 
-### `ContentsMatchesList.residualLinearList_false`
+### `ContentsOwnTypingList.residualLinearList_false`
 
 *theorem* · module `RueCore.Soundness`
 
 The same over a field list (helper).
 
 ```lean
-theorem RueCore.ContentsMatchesList.residualLinearList_false {D : Decls}
+theorem RueCore.ContentsOwnTypingList.residualLinearList_false {D : Decls}
   {cs : List Contents} {ts : List OwnSt} {Ts : List Ty} (hwf : WfDecls D)
-  (h : ContentsMatchesList D cs ts Ts)
+  (h : ContentsOwnTypingList D cs ts Ts)
   (hr : residualLinearFields D ts Ts = false) :
   Contents.residualLinearList D cs = false
 ```
 
-### `Matches.mem_lt`
+### `StoreTyping.mem_lt`
 
 *theorem* · module `RueCore.Soundness`
 
 Every bound location is inside the store (helper).
 
 ```lean
-theorem RueCore.Matches.mem_lt {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store}
-  (hm : Matches D Γ ρ H) (ℓ : Nat) : ℓ ∈ ρ → ℓ < List.length H
+theorem RueCore.StoreTyping.mem_lt {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store}
+  (hm : StoreTyping D Γ ρ H) (ℓ : Nat) : ℓ ∈ ρ → ℓ < List.length H
 ```
 
-### `Matches.fresh_not_mem`
+### `StoreTyping.fresh_not_mem`
 
 *theorem* · module `RueCore.Soundness`
 
 The next location to allocate is bound to nothing (helper).
 
 ```lean
-theorem RueCore.Matches.fresh_not_mem {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store}
-  (hm : Matches D Γ ρ H) : ¬List.length H ∈ ρ
+theorem RueCore.StoreTyping.fresh_not_mem {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store}
+  (hm : StoreTyping D Γ ρ H) : ¬List.length H ∈ ρ
 ```
 
-### `Matches.lookup`
+### `StoreTyping.lookup`
 
 *theorem* · module `RueCore.Soundness`
 
 Look a binding up through the invariant (helper).
 
 ```lean
-theorem RueCore.Matches.lookup {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store}
-  (hm : Matches D Γ ρ H) {i : Nat} {en : Entry} (hget : Γ[i]? = some en) :
-  ∃ ℓ c, ρ[i]? = some ℓ ∧ H[ℓ]? = some c ∧ CellMatches D c en
+theorem RueCore.StoreTyping.lookup {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store}
+  (hm : StoreTyping D Γ ρ H) {i : Nat} {en : Entry} (hget : Γ[i]? = some en) :
+  ∃ ℓ c, ρ[i]? = some ℓ ∧ H[ℓ]? = some c ∧ CellTyping D c en
 ```
 
-### `Matches.cons_inv`
+### `StoreTyping.cons_inv`
 
 *theorem* · module `RueCore.Soundness`
 
 Inversion at a non-empty context (helper).
 
 ```lean
-theorem RueCore.Matches.cons_inv {D : Decls} {en : Entry} {Γ : List Entry} {ℓ : Nat}
-  {ρ : List Nat} {H : Store} (h : Matches D (en :: Γ) (ℓ :: ρ) H) :
-  ∃ c, H[ℓ]? = some c ∧ CellMatches D c en ∧ ¬ℓ ∈ ρ ∧ Matches D Γ ρ H
+theorem RueCore.StoreTyping.cons_inv {D : Decls} {en : Entry} {Γ : List Entry}
+  {ℓ : Nat} {ρ : List Nat} {H : Store}
+  (h : StoreTyping D (en :: Γ) (ℓ :: ρ) H) :
+  ∃ c, H[ℓ]? = some c ∧ CellTyping D c en ∧ ¬ℓ ∈ ρ ∧ StoreTyping D Γ ρ H
 ```
 
-### `Matches.append`
+### `StoreTyping.append`
 
 *theorem* · module `RueCore.Soundness`
 
 Store growth by allocation preserves the invariant (helper).
 
 ```lean
-theorem RueCore.Matches.append {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store}
-  (hm : Matches D Γ ρ H) (ext : Store) : Matches D Γ ρ (H ++ ext)
+theorem RueCore.StoreTyping.append {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store}
+  (hm : StoreTyping D Γ ρ H) (ext : Store) : StoreTyping D Γ ρ (H ++ ext)
 ```
 
-### `Matches.set_outside`
+### `StoreTyping.set_outside`
 
 *theorem* · module `RueCore.Soundness`
 
 Writing a cell nobody in `ρ` points at preserves the invariant (helper).
 
 ```lean
-theorem RueCore.Matches.set_outside {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store}
+theorem RueCore.StoreTyping.set_outside {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store}
   {ℓ : Nat} {c : Cell} :
-  Matches D Γ ρ H → ¬ℓ ∈ ρ → Matches D Γ ρ (List.set H ℓ c)
+  StoreTyping D Γ ρ H → ¬ℓ ∈ ρ → StoreTyping D Γ ρ (List.set H ℓ c)
 ```
 
-### `Matches.set`
+### `StoreTyping.set`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10139,14 +10152,15 @@ Updating binding `i`'s cell together with its entry preserves the
 invariant, given the new cell matches the new entry (helper).
 
 ```lean
-theorem RueCore.Matches.set {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store} {i ℓ : Nat}
-  {en' : Entry} {c' : Cell} :
-  Matches D Γ ρ H →
+theorem RueCore.StoreTyping.set {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store}
+  {i ℓ : Nat} {en' : Entry} {c' : Cell} :
+  StoreTyping D Γ ρ H →
     ρ[i]? = some ℓ →
-      CellMatches D c' en' → Matches D (List.set Γ i en') ρ (List.set H ℓ c')
+      CellTyping D c' en' →
+        StoreTyping D (List.set Γ i en') ρ (List.set H ℓ c')
 ```
 
-### `Matches.snoc`
+### `StoreTyping.snoc`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10156,35 +10170,36 @@ and `Env` list the innermost binder first (§5.8's (Fn), §6.9's (D-Call))
 (helper).
 
 ```lean
-theorem RueCore.Matches.snoc {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store} {ℓ : Nat}
+theorem RueCore.StoreTyping.snoc {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store} {ℓ : Nat}
   {en : Entry} {c : Cell} :
-  Matches D Γ ρ H →
+  StoreTyping D Γ ρ H →
     H[ℓ]? = some c →
-      CellMatches D c en → ¬ℓ ∈ ρ → Matches D (Γ ++ [en]) (ρ ++ [ℓ]) H
+      CellTyping D c en → ¬ℓ ∈ ρ → StoreTyping D (Γ ++ [en]) (ρ ++ [ℓ]) H
 ```
 
-### `Untouched.refl`
+### `FrameProperty.refl`
 
 *theorem* · module `RueCore.Soundness`
 
 Locality is reflexive (helper).
 
 ```lean
-theorem RueCore.Untouched.refl {ρ : Env} {H : Store} : Untouched ρ H H
+theorem RueCore.FrameProperty.refl {ρ : Env} {H : Store} : FrameProperty ρ H H
 ```
 
-### `Untouched.trans`
+### `FrameProperty.trans`
 
 *theorem* · module `RueCore.Soundness`
 
 Locality composes along a sequence of steps in one frame (helper).
 
 ```lean
-theorem RueCore.Untouched.trans {ρ : Env} {H₁ H₂ H₃ : Store} (h₁ : Untouched ρ H₁ H₂)
-  (h₂ : Untouched ρ H₂ H₃) : Untouched ρ H₁ H₃
+theorem RueCore.FrameProperty.trans {ρ : Env} {H₁ H₂ H₃ : Store}
+  (h₁ : FrameProperty ρ H₁ H₂) (h₂ : FrameProperty ρ H₂ H₃) :
+  FrameProperty ρ H₁ H₃
 ```
 
-### `Untouched.append`
+### `FrameProperty.append`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10192,22 +10207,22 @@ Allocation is local: appending cells touches nothing already there
 (helper).
 
 ```lean
-theorem RueCore.Untouched.append {ρ : Env} {H : Store} (ext : Store) :
-  Untouched ρ H (H ++ ext)
+theorem RueCore.FrameProperty.append {ρ : Env} {H : Store} (ext : Store) :
+  FrameProperty ρ H (H ++ ext)
 ```
 
-### `Untouched.set`
+### `FrameProperty.set`
 
 *theorem* · module `RueCore.Soundness`
 
 Writing a cell the frame names is local (helper).
 
 ```lean
-theorem RueCore.Untouched.set {ρ : Env} {H : Store} {ℓ : Nat} {c : Cell} (h : ℓ ∈ ρ) :
-  Untouched ρ H (List.set H ℓ c)
+theorem RueCore.FrameProperty.set {ρ : Env} {H : Store} {ℓ : Nat} {c : Cell}
+  (h : ℓ ∈ ρ) : FrameProperty ρ H (List.set H ℓ c)
 ```
 
-### `Untouched.trans_set`
+### `FrameProperty.trans_set`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10215,12 +10230,12 @@ Locality extends across a write to a cell the frame names, or to one
 minted above the store locality is measured from (helper).
 
 ```lean
-theorem RueCore.Untouched.trans_set {ρ : Env} {H₀ H : Store} {ℓ : Nat} {c : Cell}
-  (hu : Untouched ρ H₀ H) (h : List.length H₀ ≤ ℓ ∨ ℓ ∈ ρ) :
-  Untouched ρ H₀ (List.set H ℓ c)
+theorem RueCore.FrameProperty.trans_set {ρ : Env} {H₀ H : Store} {ℓ : Nat} {c : Cell}
+  (hu : FrameProperty ρ H₀ H) (h : List.length H₀ ≤ ℓ ∨ ℓ ∈ ρ) :
+  FrameProperty ρ H₀ (List.set H ℓ c)
 ```
 
-### `Untouched.of_fresh`
+### `FrameProperty.of_fresh`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10229,31 +10244,31 @@ above the outer store, is local for the outer frame too: the shape both a
 `let` body and a callee's frame take (helper).
 
 ```lean
-theorem RueCore.Untouched.of_fresh {ρ ρ' : Env} {H Hm H' : Store}
+theorem RueCore.FrameProperty.of_fresh {ρ ρ' : Env} {H Hm H' : Store}
   (hpre : List.length H ≤ List.length Hm)
   (hfresh : ∀ (ℓ : Nat), ℓ ∈ ρ' → List.length H ≤ ℓ)
   (hkeep : ∀ (ℓ : Nat), ℓ < List.length H → Hm[ℓ]? = H[ℓ]?)
-  (h : Untouched ρ' Hm H') : Untouched ρ H H'
+  (h : FrameProperty ρ' Hm H') : FrameProperty ρ H H'
 ```
 
-### `Untouched.under_binders`
+### `FrameProperty.under_binders`
 
 *theorem* · module `RueCore.Soundness`
 
 A `match` arm runs in the **same** frame with its payload cells prepended,
 all of them minted above the whole store; what it does is local to the frame
-without them too. This is `Untouched.under_binder`'s n-ary form, and the shape
+without them too. This is `FrameProperty.under_binder`'s n-ary form, and the shape
 (D-Match) §6.6 needs where a `let` needs the unary one (helper).
 
 ```lean
-theorem RueCore.Untouched.under_binders {ρ locs : Env} {H Hm H' : Store}
+theorem RueCore.FrameProperty.under_binders {ρ locs : Env} {H Hm H' : Store}
   (hpre : List.length H ≤ List.length Hm)
   (hkeep : ∀ (ℓ : Nat), ℓ < List.length H → Hm[ℓ]? = H[ℓ]?)
   (hfresh : ∀ (ℓ : Nat), ℓ ∈ locs → List.length H ≤ ℓ)
-  (h : Untouched (locs ++ ρ) Hm H') : Untouched ρ H H'
+  (h : FrameProperty (locs ++ ρ) Hm H') : FrameProperty ρ H H'
 ```
 
-### `Untouched.under_binder`
+### `FrameProperty.under_binder`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10261,11 +10276,12 @@ A `let` body runs in a frame with one more binding, minted above the whole
 store; what it does is local to the enclosing frame too (helper).
 
 ```lean
-theorem RueCore.Untouched.under_binder {ρ : Env} {H₁ H₂ : Store} {c : Cell}
-  (h : Untouched (List.length H₁ :: ρ) (H₁ ++ [c]) H₂) : Untouched ρ H₁ H₂
+theorem RueCore.FrameProperty.under_binder {ρ : Env} {H₁ H₂ : Store} {c : Cell}
+  (h : FrameProperty (List.length H₁ :: ρ) (H₁ ++ [c]) H₂) :
+  FrameProperty ρ H₁ H₂
 ```
 
-### `Matches.transport`
+### `StoreTyping.transport`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10273,12 +10289,13 @@ The invariant of a frame transports across a step local to a *disjoint*
 frame: the caller's bindings survive a callee's run (helper).
 
 ```lean
-theorem RueCore.Matches.transport {D : Decls} {Γ : Ctx} {ρ₀ ρ : Env} {H H' : Store}
-  (hm : Matches D Γ ρ₀ H) (hdisj : ∀ (ℓ : Nat), ℓ ∈ ρ₀ → ¬ℓ ∈ ρ)
-  (hu : Untouched ρ H H') : Matches D Γ ρ₀ H'
+theorem RueCore.StoreTyping.transport {D : Decls} {Γ : Ctx} {ρ₀ ρ : Env}
+  {H H' : Store} (hm : StoreTyping D Γ ρ₀ H)
+  (hdisj : ∀ (ℓ : Nat), ℓ ∈ ρ₀ → ¬ℓ ∈ ρ) (hu : FrameProperty ρ H H') :
+  StoreTyping D Γ ρ₀ H'
 ```
 
-### `CellMatches.dropOk`
+### `CellTyping.dropOk`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10289,8 +10306,8 @@ declared-`linear` sub-value (so the leak monitor lets them through)
 (helper).
 
 ```lean
-theorem RueCore.CellMatches.dropOk {D : Decls} {cell : Cell} {en : Entry}
-  (hwf : WfDecls D) (hcm : CellMatches D cell en)
+theorem RueCore.CellTyping.dropOk {D : Decls} {cell : Cell} {en : Entry}
+  (hwf : WfDecls D) (hcm : CellTyping D cell en)
   (h : residualLinear D en.st en.ty = false) :
   ∃ c,
     cell = Cell.full c ∧
@@ -10325,7 +10342,7 @@ theorem RueCore.dropRetire_ok {D : Decls} {H : Store} {ℓ : Nat} {cell : Cell}
   ∃ evs, dropRetire D H ℓ = Except.ok (List.set H ℓ Cell.dead, evs)
 ```
 
-### `Matches.unwindPrefix`
+### `StoreTyping.unwindPrefix`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10334,46 +10351,46 @@ the frame** (§6.6's `endscope([ℓ1,…,ℓa])`, run when the arm's body become
 value). The arm added `n` bindings on top of the frame it was entered in, so the
 teardown walks the first `n` locations of `ρ` — newest-first, since the arm's
 payload cells sit at the front of the environment — and leaves exactly the frame
-the arm started from. `Matches.unwind` is the whole-frame case of the same walk
+the arm started from. `StoreTyping.unwind` is the whole-frame case of the same walk
 (`n = ρ.length`), and this is the prefix one (helper).
 
 ```lean
-theorem RueCore.Matches.unwindPrefix {D : Decls} (hwf : WfDecls D) (n : Nat) (Γ : Ctx)
-  (ρ : Env) (H : Store) :
-  Matches D Γ ρ H →
+theorem RueCore.StoreTyping.unwindPrefix {D : Decls} (hwf : WfDecls D) (n : Nat)
+  (Γ : Ctx) (ρ : Env) (H : Store) :
+  StoreTyping D Γ ρ H →
     NoResidualLinear D (List.take n Γ) →
       ∃ H' evs,
         unwindLocs D H (List.take n ρ) = Except.ok (H', evs) ∧
-          Matches D (List.drop n Γ) (List.drop n ρ) H' ∧
+          StoreTyping D (List.drop n Γ) (List.drop n ρ) H' ∧
             List.length H' = List.length H ∧
               ∀ (ℓ : Nat), ¬ℓ ∈ List.take n ρ → H'[ℓ]? = H[ℓ]?
 ```
 
-### `ownedJoinableList_matches`
+### `ownedJoinableList_typing`
 
 *theorem* · module `RueCore.Soundness`
 
 The same over a declaration's fields (helper).
 
 ```lean
-theorem RueCore.ownedJoinableList_matches {D : Decls} (hwf : WfDecls D)
+theorem RueCore.ownedJoinableList_typing {D : Decls} (hwf : WfDecls D)
   (ts : List OwnSt) {Ts : List Ty} {cs : List Contents} :
   ownedJoinableList D ts Ts = true →
-    ContentsMatchesList D cs [] Ts → ContentsMatchesList D cs ts Ts
+    ContentsOwnTypingList D cs [] Ts → ContentsOwnTypingList D cs ts Ts
 ```
 
-### `OwnSt.joinList_matches`
+### `OwnSt.joinList_typing`
 
 *theorem* · module `RueCore.Soundness`
 
 The same over a declaration's field slots (helper).
 
 ```lean
-theorem RueCore.OwnSt.joinList_matches {D : Decls} (hwf : WfDecls D)
+theorem RueCore.OwnSt.joinList_typing {D : Decls} (hwf : WfDecls D)
   (as bs : List OwnSt) (Ts : List Ty) {es : List OwnSt} {cs : List Contents} :
   OwnSt.joinList D as bs Ts = some es →
-    ContentsMatchesList D cs as Ts ∨ ContentsMatchesList D cs bs Ts →
-      ContentsMatchesList D cs es Ts
+    ContentsOwnTypingList D cs as Ts ∨ ContentsOwnTypingList D cs bs Ts →
+      ContentsOwnTypingList D cs es Ts
 ```
 
 ### `Ctx.joinOpts_mem`
@@ -10394,7 +10411,7 @@ theorem RueCore.Ctx.joinOpts_mem {D : Decls} {os : List (Option Ctx)} {o : Optio
         Γ ∈ List.filterMap id os
 ```
 
-### `Matches.joinOpt_left`
+### `StoreTyping.joinOpt_left`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10403,30 +10420,32 @@ when the left arm continues, the join is a state, and it is the left arm's
 state or its binary join with the right one's (helper).
 
 ```lean
-theorem RueCore.Matches.joinOpt_left {D : Decls} (hwf : WfDecls D)
+theorem RueCore.StoreTyping.joinOpt_left {D : Decls} (hwf : WfDecls D)
   {a b o : Option Ctx} {Γ₁ : Ctx} (h : Ctx.joinOpt D a b = some o)
   (ha : a = some Γ₁) :
   ∃ Γ',
-    o = some Γ' ∧ ∀ (ρ : Env) (H : Store), Matches D Γ₁ ρ H → Matches D Γ' ρ H
+    o = some Γ' ∧
+      ∀ (ρ : Env) (H : Store), StoreTyping D Γ₁ ρ H → StoreTyping D Γ' ρ H
 ```
 
-### `Matches.joinOpt_right`
+### `StoreTyping.joinOpt_right`
 
 *theorem* · module `RueCore.Soundness`
 
 The same from the right arm, which needs the two continuing arms to share
-a skeleton, as `Matches.join_right` does (helper).
+a skeleton, as `StoreTyping.join_right` does (helper).
 
 ```lean
-theorem RueCore.Matches.joinOpt_right {D : Decls} (hwf : WfDecls D)
+theorem RueCore.StoreTyping.joinOpt_right {D : Decls} (hwf : WfDecls D)
   {a b o : Option Ctx} {Γ₂ : Ctx}
   (hsk : ∀ (x : Ctx), a = some x → x.skel = Γ₂.skel)
   (h : Ctx.joinOpt D a b = some o) (hb : b = some Γ₂) :
   ∃ Γ',
-    o = some Γ' ∧ ∀ (ρ : Env) (H : Store), Matches D Γ₂ ρ H → Matches D Γ' ρ H
+    o = some Γ' ∧
+      ∀ (ρ : Env) (H : Store), StoreTyping D Γ₂ ρ H → StoreTyping D Γ' ρ H
 ```
 
-### `mintParams_store`
+### `freshParams_store`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10434,12 +10453,12 @@ Minting appends one cell per by-value argument and nothing else
 (helper).
 
 ```lean
-theorem RueCore.mintParams_store (H : Store) (vs : List Val) :
-  (mintParams H vs).fst =
+theorem RueCore.freshParams_store (H : Store) (vs : List Val) :
+  (freshParams H vs).fst =
     H ++ List.map (fun v => Cell.full (Contents.ofVal v)) vs
 ```
 
-### `mintParams_fresh`
+### `freshParams_fresh`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10447,19 +10466,19 @@ Every parameter cell is minted above the caller's whole store, which is
 what makes a call local to the caller's frame (helper).
 
 ```lean
-theorem RueCore.mintParams_fresh (H : Store) (vs : List Val) (ℓ : Nat) :
-  ℓ ∈ (mintParams H vs).snd → List.length H ≤ ℓ
+theorem RueCore.freshParams_fresh (H : Store) (vs : List Val) (ℓ : Nat) :
+  ℓ ∈ (freshParams H vs).snd → List.length H ≤ ℓ
 ```
 
-### `mintParams_locs_length`
+### `freshParams_locs_length`
 
 *theorem* · module `RueCore.Soundness`
 
 Minting returns one location per value (helper).
 
 ```lean
-theorem RueCore.mintParams_locs_length (H : Store) (vs : List Val) :
-  (mintParams H vs).snd.length = vs.length
+theorem RueCore.freshParams_locs_length (H : Store) (vs : List Val) :
+  (freshParams H vs).snd.length = vs.length
 ```
 
 ### `OwnSt.get_owned`
@@ -10531,21 +10550,21 @@ theorem RueCore.Val.ints_of_hasTys {D : Decls} {vs : List Val} {Ts : List Ty} :
 bound or resolves to a constant path typed at the leaf** (§6.5's
 (D-Index)/(D-Index-Trap), `7.1:10`). Never a refusal: every dynamic step is
 taken at an array (`Ty.atDyn`), the array's length is its type's
-(`ContentsMatches.owned_array`), and an element of an `Owned` array is
-`Owned`, so the constant path after it reads by `ContentsMatches.readAt`
+(`ContentsOwnTyping.owned_array`), and an element of an `Owned` array is
+`Owned`, so the constant path after it reads by `ContentsOwnTyping.getAt`
 (helper).
 
 ```lean
 theorem RueCore.Contents.resolveDyn_ok {D : Decls} (is : List Int)
   (πs : List (List Nat)) {c : Contents} {Ta T : Ty} :
-  ContentsMatches D c OwnSt.owned Ta →
+  ContentsOwnTyping D c OwnSt.owned Ta →
     Ty.atDyn D Ta πs = some T →
       is.length = πs.length →
         c.resolveDyn is πs = DynStep.bounds ∨
           ∃ ρ, c.resolveDyn is πs = DynStep.ok ρ ∧ Ty.atPath D Ta ρ = some T
 ```
 
-### `BrokeOk.mono_store`
+### `BreakOutputOk.mono_store`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10553,12 +10572,12 @@ A `break` promised from a later store is promised from an earlier one,
 given the step between them was local to the frame (helper).
 
 ```lean
-theorem RueCore.BrokeOk.mono_store {D : Decls} {B : List Ctx} {φ : Frame}
-  {H H₁ H' : Store} {sc : List Nat} (hu : Untouched φ.env H H₁)
-  (h : BrokeOk D B φ H₁ H' sc) : BrokeOk D B φ H H' sc
+theorem RueCore.BreakOutputOk.mono_store {D : Decls} {B : List Ctx} {φ : Activation}
+  {H H₁ H' : Store} {sc : List Nat} (hu : FrameProperty φ.env H H₁)
+  (h : BreakOutputOk D B φ H₁ H' sc) : BreakOutputOk D B φ H H' sc
 ```
 
-### `BrokeOk.mono_brk`
+### `BreakOutputOk.mono_brk`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10566,12 +10585,12 @@ A `break` at one of some deliveries is at one of any superset of them
 (helper).
 
 ```lean
-theorem RueCore.BrokeOk.mono_brk {D : Decls} {B B' : List Ctx} {φ : Frame}
-  {H H' : Store} {sc : List Nat} (hB : B ⊆ B') (h : BrokeOk D B φ H H' sc) :
-  BrokeOk D B' φ H H' sc
+theorem RueCore.BreakOutputOk.mono_brk {D : Decls} {B B' : List Ctx} {φ : Activation}
+  {H H' : Store} {sc : List Nat} (hB : B ⊆ B')
+  (h : BreakOutputOk D B φ H H' sc) : BreakOutputOk D B' φ H H' sc
 ```
 
-### `BrokeOk.under_binders`
+### `BreakOutputOk.under_binders`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -10584,31 +10603,32 @@ which is RUE-1277's redundancy read at a `break`: the discarded `endscope`
 marker's cells are found in the scope record instead (helper).
 
 ```lean
-theorem RueCore.BrokeOk.under_binders {D : Decls} {B : List Ctx} {φ : Frame}
-  {H Hm H' : Store} {sc ls : List Nat} (hpre : List.length H ≤ List.length Hm)
+theorem RueCore.BreakOutputOk.under_binders {D : Decls} {B : List Ctx}
+  {φ : Activation} {H Hm H' : Store} {sc ls : List Nat}
+  (hpre : List.length H ≤ List.length Hm)
   (hkeep : ∀ (ℓ : Nat), ℓ < List.length H → Hm[ℓ]? = H[ℓ]?)
   (hfresh : ∀ (ℓ : Nat), ℓ ∈ ls → List.length H ≤ ℓ)
   (h :
-    BrokeOk D B { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls } Hm H'
-      sc) :
-  BrokeOk D B φ H H' sc
+    BreakOutputOk D B { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls }
+      Hm H' sc) :
+  BreakOutputOk D B φ H H' sc
 ```
 
-### `BrokeOk.under_binder`
+### `BreakOutputOk.under_binder`
 
 *theorem* · module `RueCore.Soundness`
 
-`BrokeOk.under_binders` at a `let`'s one binder, whose cell is minted at
+`BreakOutputOk.under_binders` at a `let`'s one binder, whose cell is minted at
 the end of the store (§6.7's (D-Let)) (helper).
 
 ```lean
-theorem RueCore.BrokeOk.under_binder {D : Decls} {B : List Ctx} {φ : Frame}
+theorem RueCore.BreakOutputOk.under_binder {D : Decls} {B : List Ctx} {φ : Activation}
   {H₁ H' : Store} {sc : List Nat} {c : Cell}
   (h :
-    BrokeOk D B
+    BreakOutputOk D B
       { env := List.length H₁ :: φ.env, scope := φ.scope ++ [List.length H₁] }
       (H₁ ++ [c]) H' sc) :
-  BrokeOk D B φ H₁ H' sc
+  BreakOutputOk D B φ H₁ H' sc
 ```
 
 ### `EvalOk.ok_inv`
@@ -10619,10 +10639,11 @@ A value promised at some normal state names that state (helper).
 
 ```lean
 theorem RueCore.EvalOk.ok_inv {D : Decls} {T R : Ty} {o : Option Ctx} {B : List Ctx}
-  {φ : Frame} {H H' : Store} {v : Val} {tr : List Event}
+  {φ : Activation} {H H' : Store} {v : Val} {tr : List Event}
   (h : EvalOk D T R o B φ H (EvalRes.ok H' v tr)) :
   ∃ Γ',
-    o = some Γ' ∧ HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+    o = some Γ' ∧
+      HasTy D v T ∧ ActivationTyping D Γ' φ H' ∧ FrameProperty φ.env H H'
 ```
 
 ### `ArgsOk.ok_inv`
@@ -10633,11 +10654,11 @@ The same, for an argument list (helper).
 
 ```lean
 theorem RueCore.ArgsOk.ok_inv {D : Decls} {R : Ty} {Ts : List Ty} {o : Option Ctx}
-  {B : List Ctx} {φ : Frame} {H H' : Store} {vs : List Val} {tr : List Event}
-  (h : ArgsOk D R Ts o B φ H (ArgsRes.ok H' vs tr)) :
+  {B : List Ctx} {φ : Activation} {H H' : Store} {vs : List Val}
+  {tr : List Event} (h : ArgsOk D R Ts o B φ H (ArgsRes.ok H' vs tr)) :
   ∃ Γ',
     o = some Γ' ∧
-      HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+      HasTys D vs Ts ∧ ActivationTyping D Γ' φ H' ∧ FrameProperty φ.env H H'
 ```
 
 ### `EvalOk.mono_store`
@@ -10649,8 +10670,8 @@ the step between them was local to the frame (helper).
 
 ```lean
 theorem RueCore.EvalOk.mono_store {D : Decls} {T R : Ty} {o : Option Ctx}
-  {B : List Ctx} {φ : Frame} {H H₁ : Store} {r : EvalRes}
-  (hu : Untouched φ.env H H₁) (h : EvalOk D T R o B φ H₁ r) :
+  {B : List Ctx} {φ : Activation} {H H₁ : Store} {r : EvalRes}
+  (hu : FrameProperty φ.env H H₁) (h : EvalOk D T R o B φ H₁ r) :
   EvalOk D T R o B φ H r
 ```
 
@@ -10661,9 +10682,10 @@ theorem RueCore.EvalOk.mono_store {D : Decls} {T R : Ty} {o : Option Ctx}
 The same, for a result that is not a value (helper).
 
 ```lean
-theorem RueCore.AbortOk.mono_store {D : Decls} {R : Ty} {B : List Ctx} {φ : Frame}
-  {H H₁ : Store} {r : EvalRes} (hu : Untouched φ.env H H₁)
-  (h : AbortOk D R B φ H₁ r) : AbortOk D R B φ H r
+theorem RueCore.AbortOk.mono_store {D : Decls} {R : Ty} {B : List Ctx}
+  {φ : Activation} {H H₁ : Store} {r : EvalRes}
+  (hu : FrameProperty φ.env H H₁) (h : AbortOk D R B φ H₁ r) :
+  AbortOk D R B φ H r
 ```
 
 ### `EvalOk.mono_brk`
@@ -10676,7 +10698,7 @@ carries its operands' deliveries outward among its own (§5.3's threading)
 
 ```lean
 theorem RueCore.EvalOk.mono_brk {D : Decls} {T R : Ty} {o : Option Ctx}
-  {B B' : List Ctx} {φ : Frame} {H : Store} {r : EvalRes} (hB : B ⊆ B')
+  {B B' : List Ctx} {φ : Activation} {H : Store} {r : EvalRes} (hB : B ⊆ B')
   (h : EvalOk D T R o B φ H r) : EvalOk D T R o B' φ H r
 ```
 
@@ -10687,9 +10709,9 @@ theorem RueCore.EvalOk.mono_brk {D : Decls} {T R : Ty} {o : Option Ctx}
 The same, for a result that is not a value (helper).
 
 ```lean
-theorem RueCore.AbortOk.mono_brk {D : Decls} {R : Ty} {B B' : List Ctx} {φ : Frame}
-  {H : Store} {r : EvalRes} (hB : B ⊆ B') (h : AbortOk D R B φ H r) :
-  AbortOk D R B' φ H r
+theorem RueCore.AbortOk.mono_brk {D : Decls} {R : Ty} {B B' : List Ctx}
+  {φ : Activation} {H : Store} {r : EvalRes} (hB : B ⊆ B')
+  (h : AbortOk D R B φ H r) : AbortOk D R B' φ H r
 ```
 
 ### `EvalOk.withTrace`
@@ -10701,7 +10723,7 @@ state (helper).
 
 ```lean
 theorem RueCore.EvalOk.withTrace {D : Decls} {T R : Ty} {o : Option Ctx}
-  {B : List Ctx} {φ : Frame} {H : Store} {r : EvalRes}
+  {B : List Ctx} {φ : Activation} {H : Store} {r : EvalRes}
   (h : EvalOk D T R o B φ H r) (tr : List Event) :
   EvalOk D T R o B φ H (EvalRes.withTrace tr r)
 ```
@@ -10713,7 +10735,7 @@ theorem RueCore.EvalOk.withTrace {D : Decls} {T R : Ty} {o : Option Ctx}
 The same, for a result that is not a value (helper).
 
 ```lean
-theorem RueCore.AbortOk.withTrace {D : Decls} {R : Ty} {B : List Ctx} {φ : Frame}
+theorem RueCore.AbortOk.withTrace {D : Decls} {R : Ty} {B : List Ctx} {φ : Activation}
   {H : Store} {r : EvalRes} (h : AbortOk D R B φ H r) (tr : List Event) :
   AbortOk D R B φ H (EvalRes.withTrace tr r)
 ```
@@ -10728,7 +10750,7 @@ outgoing state the form claims — the promise is only about values there
 
 ```lean
 theorem RueCore.EvalOk.of_abort {D : Decls} {T R : Ty} {o : Option Ctx} {B : List Ctx}
-  {φ : Frame} {H : Store} {r : EvalRes} (h : AbortOk D R B φ H r) :
+  {φ : Activation} {H : Store} {r : EvalRes} (h : AbortOk D R B φ H r) :
   EvalOk D T R o B φ H r
 ```
 
@@ -10741,7 +10763,7 @@ outcome (helper).
 
 ```lean
 theorem RueCore.EvalOk.toAbort {D : Decls} {T R : Ty} {o : Option Ctx} {B : List Ctx}
-  {φ : Frame} {H : Store} {r : EvalRes} (h : EvalOk D T R o B φ H r)
+  {φ : Activation} {H : Store} {r : EvalRes} (h : EvalOk D T R o B φ H r)
   (hne : ∀ (H' : Store) (v : Val) (tr : List Event), r ≠ EvalRes.ok H' v tr) :
   AbortOk D R B φ H r
 ```
@@ -10754,8 +10776,8 @@ theorem RueCore.EvalOk.toAbort {D : Decls} {T R : Ty} {o : Option Ctx} {B : List
 value, so it is an `AbortOk` outcome (helper).
 
 ```lean
-theorem RueCore.EvalOk.bot_abort {D : Decls} {T R : Ty} {B : List Ctx} {φ : Frame}
-  {H : Store} {r : EvalRes} (h : EvalOk D T R none B φ H r) :
+theorem RueCore.EvalOk.bot_abort {D : Decls} {T R : Ty} {B : List Ctx}
+  {φ : Activation} {H : Store} {r : EvalRes} (h : EvalOk D T R none B φ H r) :
   AbortOk D R B φ H r
 ```
 
@@ -10768,8 +10790,8 @@ the context never runs and its outcome is the whole form's — which is what the
 `-Bottom` rules' conclusions promise, at whatever type they name (helper).
 
 ```lean
-theorem RueCore.EvalOk.bot_bind {D : Decls} {T T₀ R : Ty} {B : List Ctx} {φ : Frame}
-  {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
+theorem RueCore.EvalOk.bot_bind {D : Decls} {T T₀ R : Ty} {B : List Ctx}
+  {φ : Activation} {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
   (h : EvalOk D T₀ R none B φ H r) : EvalOk D T R none B φ H (r.bind k)
 ```
 
@@ -10785,14 +10807,14 @@ the form's. Every operand of every form is discharged by this lemma
 
 ```lean
 theorem RueCore.EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ : Ctx}
-  {B₀ B : List Ctx} {φ : Frame} {H : Store} {r : EvalRes}
+  {B₀ B : List Ctx} {φ : Activation} {H : Store} {r : EvalRes}
   {k : Store → Val → EvalRes} (hr : EvalOk D T₀ R (some Γ₀) B₀ φ H r)
   (hB : B₀ ⊆ B)
   (hk :
     ∀ (H₁ : Store) (v : Val) (tr : List Event),
       r = EvalRes.ok H₁ v tr →
         HasTy D v T₀ →
-          FrameMatches D Γ₀ φ H₁ → EvalOk D T R o B φ H₁ (k H₁ v)) :
+          ActivationTyping D Γ₀ φ H₁ → EvalOk D T R o B φ H₁ (k H₁ v)) :
   EvalOk D T R o B φ H (r.bind k)
 ```
 
@@ -10806,13 +10828,14 @@ the form continues at the same state; if it is `⊥`, so is the form (helper).
 
 ```lean
 theorem RueCore.EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx}
-  {B : List Ctx} {φ : Frame} {H : Store} {r : EvalRes}
+  {B : List Ctx} {φ : Activation} {H : Store} {r : EvalRes}
   {k : Store → Val → EvalRes} (hr : EvalOk D T₀ R o B φ H r)
   (hk :
     ∀ (H₁ : Store) (v : Val) (tr : List Event) (Γ₀ : Ctx),
       r = EvalRes.ok H₁ v tr →
         HasTy D v T₀ →
-          FrameMatches D Γ₀ φ H₁ → EvalOk D T R (some Γ₀) B φ H₁ (k H₁ v)) :
+          ActivationTyping D Γ₀ φ H₁ →
+            EvalOk D T R (some Γ₀) B φ H₁ (k H₁ v)) :
   EvalOk D T R o B φ H (r.bind k)
 ```
 
@@ -10826,11 +10849,12 @@ carries nothing (helper).
 
 ```lean
 theorem RueCore.EvalOk.weaken {D : Decls} {T R : Ty} {o₁ o' : Option Ctx}
-  {B : List Ctx} {φ : Frame} {H : Store} {r : EvalRes}
+  {B : List Ctx} {φ : Activation} {H : Store} {r : EvalRes}
   (hw :
     ∀ (Γ₁ : Ctx) (H' : Store),
       o₁ = some Γ₁ →
-        FrameMatches D Γ₁ φ H' → ∃ Γ', o' = some Γ' ∧ FrameMatches D Γ' φ H')
+        ActivationTyping D Γ₁ φ H' →
+          ∃ Γ', o' = some Γ' ∧ ActivationTyping D Γ' φ H')
   (h : EvalOk D T R o₁ B φ H r) : EvalOk D T R o' B φ H r
 ```
 
@@ -10840,26 +10864,27 @@ theorem RueCore.EvalOk.weaken {D : Decls} {T R : Ty} {o₁ o' : Option Ctx}
 
 **Aggregate introduction keeps the promise** ((D-Struct), (D-Array) §6.5,
 (D-Enum-Intro) §6.6, the repeat form): a well-typed aggregate passes the
-copy-closure monitor (`HasTy.copyClosed`), and the identity it mints reserves
+copy-closure monitor (`HasTy.copyContained`), and the identity it mints reserves
 one `†` slot above the store, which no binding names — so the frame still
 matches and nothing it names was touched (helper).
 
 ```lean
 theorem RueCore.introVal_ok {D : Decls} {T R : Ty} {Γ : Ctx} {B : List Ctx}
-  {φ : Frame} {H₀ H : Store} {mk : Nat → Val} (hwf : WfDecls D)
-  (hty : HasTy D (mk (List.length H)) T) (hfm : FrameMatches D Γ φ H)
-  (hu : Untouched φ.env H₀ H) : EvalOk D T R (some Γ) B φ H₀ (introVal D H mk)
+  {φ : Activation} {H₀ H : Store} {mk : Nat → Val} (hwf : WfDecls D)
+  (hty : HasTy D (mk (List.length H)) T) (hfm : ActivationTyping D Γ φ H)
+  (hu : FrameProperty φ.env H₀ H) :
+  EvalOk D T R (some Γ) B φ H₀ (introVal D H mk)
 ```
 
-### `Matches.length_eq`
+### `StoreTyping.length_eq`
 
 *theorem* · module `RueCore.Soundness`
 
 The invariant binds exactly one location per binding (helper).
 
 ```lean
-theorem RueCore.Matches.length_eq {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store}
-  (hm : Matches D Γ ρ H) : List.length Γ = List.length ρ
+theorem RueCore.StoreTyping.length_eq {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store}
+  (hm : StoreTyping D Γ ρ H) : List.length Γ = List.length ρ
 ```
 
 ### `Ctx.SameSkel.of_forall`
@@ -10883,8 +10908,8 @@ the back-edge state, and the join weakens its left arm (helper).
 
 ```lean
 theorem RueCore.LoopHead.enter {D : Decls} (hwf : WfDecls D) {Γ Γh : Ctx}
-  {o : Option Ctx} {φ : Frame} {H : Store} (h : LoopHead D Γ o Γh)
-  (hfm : FrameMatches D Γ φ H) : FrameMatches D Γh φ H
+  {o : Option Ctx} {φ : Activation} {H : Store} (h : LoopHead D Γ o Γh)
+  (hfm : ActivationTyping D Γ φ H) : ActivationTyping D Γh φ H
 ```
 
 ### `LoopHead.backEdge`
@@ -10898,9 +10923,9 @@ preservation half of re-entering the body (helper).
 
 ```lean
 theorem RueCore.LoopHead.backEdge {D : Decls} (hwf : WfDecls D) {Γ Γh Γe : Ctx}
-  {φ : Frame} {H : Store} (h : LoopHead D Γ (some Γe) Γh)
-  (hsk : Γe.skel = Γh.skel) (hfm : FrameMatches D Γe φ H) :
-  FrameMatches D Γh φ H
+  {φ : Activation} {H : Store} (h : LoopHead D Γ (some Γe) Γh)
+  (hsk : Γe.skel = Γh.skel) (hfm : ActivationTyping D Γe φ H) :
+  ActivationTyping D Γh φ H
 ```
 
 ### `loop_exit_ok`
@@ -10918,15 +10943,16 @@ so with the loop's outgoing state, the join over every exit (`3.8:80`)
 
 ```lean
 theorem RueCore.loop_exit_ok {D : Decls} (hwf : WfDecls D) {Γh Γx : Ctx}
-  {B : List Ctx} {φ : Frame} {H H₁ : Store} {sc : List Nat}
-  (hfmh : FrameMatches D Γh φ H) (hext : ∀ (Γb : Ctx), Γb ∈ B → Γb.Extends Γh)
+  {B : List Ctx} {φ : Activation} {H H₁ : Store} {sc : List Nat}
+  (hfmh : ActivationTyping D Γh φ H)
+  (hext : ∀ (Γb : Ctx), Γb ∈ B → Γb.Extends Γh)
   (hnl : ∀ (Γb : Ctx), Γb ∈ B → NoResidualLinear D (Γh.loopLocals Γb))
   (hjoin : Ctx.joinAll D (List.map Γh.outsideLoop B) = some Γx)
-  (hb : BrokeOk D B φ H H₁ sc) :
+  (hb : BreakOutputOk D B φ H H₁ sc) :
   ∃ H₂ evs,
     unwindLocs D H₁ (List.drop φ.scope.length sc).reverse =
         Except.ok (H₂, evs) ∧
-      FrameMatches D Γx φ H₂ ∧ Untouched φ.env H H₂
+      ActivationTyping D Γx φ H₂ ∧ FrameProperty φ.env H H₂
 ```
 
 ### `loop_step`
@@ -10942,21 +10968,21 @@ exhausted fuel promise nothing (helper).
 
 ```lean
 theorem RueCore.loop_step (M : FloatSig) {P : Program} {fuel : Nat} {D : Decls}
-  {T R : Ty} {oe : Option Ctx} {Be : List Ctx} {φ : Frame} {H : Store}
+  {T R : Ty} {oe : Option Ctx} {Be : List Ctx} {φ : Activation} {H : Store}
   {e : Expr} {o' : Option Ctx} {B' : List Ctx}
   (kb : EvalOk D Ty.unit R oe Be φ H (eval M fuel P H φ e))
   (hback :
     ∀ (Γe : Ctx) (H₁ : Store),
       oe = some Γe →
-        FrameMatches D Γe φ H₁ →
+        ActivationTyping D Γe φ H₁ →
           EvalOk D T R o' B' φ H₁ (eval M fuel P H₁ φ e.loop))
   (hexit :
     ∀ (H₁ : Store) (sc : List Nat),
-      BrokeOk D Be φ H H₁ sc →
+      BreakOutputOk D Be φ H H₁ sc →
         EvalOk D T R o' B' φ H
           (match
             unwindLocs P.decls H₁ (List.drop φ.scope.length sc).reverse with
-          | Except.error w => EvalRes.stuck w
+          | Except.error w => EvalRes.refused w
           | Except.ok (H₂, evs) => EvalRes.ok H₂ Val.unit evs)) :
   EvalOk D T R o' B' φ H (eval M (fuel + 1) P H φ e.loop)
 ```
@@ -11030,7 +11056,7 @@ the next bound up (helper).
 
 ```lean
 theorem RueCore.eval_succ (M : FloatSig) {P : Program} (fuel : Nat) (H : Store)
-  (φ : Frame) (e : Expr) :
+  (φ : Activation) (e : Expr) :
   eval M fuel P H φ e ≠ EvalRes.outOfFuel →
     eval M (fuel + 1) P H φ e = eval M fuel P H φ e
 ```
@@ -11049,7 +11075,7 @@ theorem RueCore.entry_typed {P : Program} {fd : FnDef} (h0 : P.fns[0]? = some fd
   Typed P R [] (Expr.call 0 []) fd.ret { norm := some [], brk := [] }
 ```
 
-### `frameMatches_empty`
+### `activationTyping_empty`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -11057,8 +11083,8 @@ The machine's initial state satisfies the frame invariant: no bindings, no
 store, an empty scope record (helper).
 
 ```lean
-theorem RueCore.frameMatches_empty {D : Decls} :
-  FrameMatches D [] { env := [], scope := [] } []
+theorem RueCore.activationTyping_empty {D : Decls} :
+  ActivationTyping D [] { env := [], scope := [] } []
 ```
 
 ### `EvalRes.withTrace_ne_returned`
@@ -11092,47 +11118,49 @@ theorem RueCore.EvalRes.bindCall_ne_returned {r : EvalRes} {k : Store → Val �
   r.bindCall k ≠ EvalRes.returned H v tr
 ```
 
-### `CTy.eq_of_fits`
+### `TyOrNever.eq_of_fits`
 
 *theorem* · module `RueCore.Checker`
 
 (helper) `check`'s result type `ty X` admits exactly `X`.
 
 ```lean
-theorem RueCore.CTy.eq_of_fits {T' T : Ty} (h : (CTy.ty T').fits T = true) : T' = T
+theorem RueCore.TyOrNever.eq_of_fits {T' T : Ty}
+  (h : (TyOrNever.ty T').fits T = true) : T' = T
 ```
 
-### `CTy.fits_self`
+### `TyOrNever.fits_self`
 
 *theorem* · module `RueCore.Checker`
 
 (helper) A type admits itself.
 
 ```lean
-theorem RueCore.CTy.fits_self (T : Ty) : (CTy.ty T).fits T = true
+theorem RueCore.TyOrNever.fits_self (T : Ty) : (TyOrNever.ty T).fits T = true
 ```
 
-### `CTy.fits_never`
+### `TyOrNever.fits_never`
 
 *theorem* · module `RueCore.Checker`
 
 (helper) `never` admits every type — (Sub-Never) §5.7.
 
 ```lean
-theorem RueCore.CTy.fits_never (T : Ty) : CTy.never.fits T = true
+theorem RueCore.TyOrNever.fits_never (T : Ty) : TyOrNever.never.fits T = true
 ```
 
-### `CTy.fits_pick`
+### `TyOrNever.fits_pick`
 
 *theorem* · module `RueCore.Checker`
 
 (helper) `pick` chooses a type the checked type admits.
 
 ```lean
-theorem RueCore.CTy.fits_pick (c : CTy) (d : Ty) : c.fits (c.pick d) = true
+theorem RueCore.TyOrNever.fits_pick (c : TyOrNever) (d : Ty) :
+  c.fits (c.pick d) = true
 ```
 
-### `CTy.fitsC_fits`
+### `TyOrNever.fitsC_fits`
 
 *theorem* · module `RueCore.Checker`
 
@@ -11140,19 +11168,20 @@ theorem RueCore.CTy.fits_pick (c : CTy) (d : Ty) : c.fits (c.pick d) = true
 that one admits.
 
 ```lean
-theorem RueCore.CTy.fitsC_fits {c' c : CTy} {T : Ty} (h : c'.fitsC c = true)
-  (hT : c.fits T = true) : c'.fits T = true
+theorem RueCore.TyOrNever.fitsC_fits {c' c : TyOrNever} {T : Ty}
+  (h : c'.fitsC c = true) (hT : c.fits T = true) : c'.fits T = true
 ```
 
-### `CTy.meet_fits`
+### `TyOrNever.meet_fits`
 
 *theorem* · module `RueCore.Checker`
 
 (helper) Two arms whose types meet both admit whatever their meet admits.
 
 ```lean
-theorem RueCore.CTy.meet_fits {c₁ c₂ c' : CTy} {T : Ty} (h : c₁.meet c₂ = some c')
-  (hT : c'.fits T = true) : c₁.fits T = true ∧ c₂.fits T = true
+theorem RueCore.TyOrNever.meet_fits {c₁ c₂ c' : TyOrNever} {T : Ty}
+  (h : c₁.meet c₂ = some c') (hT : c'.fits T = true) :
+  c₁.fits T = true ∧ c₂.fits T = true
 ```
 
 ### `checkIdx_sound`
@@ -11216,8 +11245,8 @@ acceptance into well-foundedness (helper).
 
 ```lean
 theorem RueCore.Decls.grounded_pred {D : Decls} {n : Nat} {d d' : TyName}
-  (h : Ty.grounded (D.topoSort (n + 1)) d.ty = true) (hn : D.Names d d') :
-  Ty.grounded (D.topoSort n) d'.ty = true
+  (h : Ty.grounded (D.topoSort (n + 1)) d.ty = true)
+  (hn : D.ByValueEdge d d') : Ty.grounded (D.topoSort n) d'.ty = true
 ```
 
 ### `Decls.acc_of_grounded`
@@ -11229,7 +11258,8 @@ relation (helper).
 
 ```lean
 theorem RueCore.Decls.acc_of_grounded (D : Decls) (n : Nat) (d : TyName) :
-  Ty.grounded (D.topoSort n) d.ty = true → Acc (fun a b => D.Names b a) d
+  Ty.grounded (D.topoSort n) d.ty = true →
+    Acc (fun a b => D.ByValueEdge b a) d
 ```
 
 ### `Decls.acc_of_empty`
@@ -11241,7 +11271,7 @@ is accessible outright (helper).
 
 ```lean
 theorem RueCore.Decls.acc_of_empty {D : Decls} {d : TyName} (h : D.byValue d = []) :
-  Acc (fun a b => D.Names b a) d
+  Acc (fun a b => D.ByValueEdge b a) d
 ```
 
 ### `dtorIds_append`
@@ -11265,26 +11295,26 @@ theorem RueCore.dtorIds_append (l₁ l₂ : List Event) :
 theorem RueCore.dtorIds_nil : dtorIds [] = []
 ```
 
-### `Contents.own_of_mult`
+### `Contents.own_of_qual`
 
 *theorem* · module `RueCore.Trace`
 
 A `Copy` node owns nothing (helper).
 
 ```lean
-theorem RueCore.Contents.own_of_mult {D : Decls} {c : Contents}
-  (h : Contents.mult D c = Mult.copy) : Contents.own D c = []
+theorem RueCore.Contents.own_of_qual {D : Decls} {c : Contents}
+  (h : Contents.qual D c = Qual.copy) : Contents.own D c = []
 ```
 
-### `Contents.allCopy_mult`
+### `Contents.allCopy_qual`
 
 *theorem* · module `RueCore.Trace`
 
 An all-`Copy` contents is `Copy` at its root (helper).
 
 ```lean
-theorem RueCore.Contents.allCopy_mult {D : Decls} {c : Contents}
-  (h : Contents.allCopy D c = true) : Contents.mult D c = Mult.copy
+theorem RueCore.Contents.allCopy_qual {D : Decls} {c : Contents}
+  (h : Contents.allCopy D c = true) : Contents.qual D c = Qual.copy
 ```
 
 ### `Contents.allCopy_own`
@@ -11309,51 +11339,52 @@ theorem RueCore.Contents.allCopyList_own {D : Decls} {cs : List Contents} :
   Contents.allCopyList D cs = true → Contents.ownList D cs = []
 ```
 
-### `Contents.copyClosed_allCopy`
+### `Contents.copyContained_allCopy`
 
 *theorem* · module `RueCore.Trace`
 
 A copy-closed node that is `Copy` is `Copy` all the way down (helper).
 
 ```lean
-theorem RueCore.Contents.copyClosed_allCopy {D : Decls} {c : Contents}
-  (hc : Contents.copyClosed D c = true) (hm : Contents.mult D c = Mult.copy) :
-  Contents.allCopy D c = true
+theorem RueCore.Contents.copyContained_allCopy {D : Decls} {c : Contents}
+  (hc : Contents.copyContained D c = true)
+  (hm : Contents.qual D c = Qual.copy) : Contents.allCopy D c = true
 ```
 
-### `Contents.allCopy_copyClosed`
+### `Contents.allCopy_copyContained`
 
 *theorem* · module `RueCore.Trace`
 
 All-`Copy` contents is copy-closed (helper).
 
 ```lean
-theorem RueCore.Contents.allCopy_copyClosed {D : Decls} {c : Contents} :
-  Contents.allCopy D c = true → Contents.copyClosed D c = true
+theorem RueCore.Contents.allCopy_copyContained {D : Decls} {c : Contents} :
+  Contents.allCopy D c = true → Contents.copyContained D c = true
 ```
 
-### `Contents.allCopyList_copyClosedList`
+### `Contents.allCopyList_copyContainedList`
 
 *theorem* · module `RueCore.Trace`
 
 The same over a list (helper).
 
 ```lean
-theorem RueCore.Contents.allCopyList_copyClosedList {D : Decls} {cs : List Contents} :
-  Contents.allCopyList D cs = true → Contents.copyClosedList D cs = true
+theorem RueCore.Contents.allCopyList_copyContainedList {D : Decls}
+  {cs : List Contents} :
+  Contents.allCopyList D cs = true → Contents.copyContainedList D cs = true
 ```
 
-### `Contents.copyClosedList_index`
+### `Contents.copyContainedList_index`
 
 *theorem* · module `RueCore.Trace`
 
 A member of a copy-closed list is copy-closed (helper).
 
 ```lean
-theorem RueCore.Contents.copyClosedList_index {D : Decls} {cs : List Contents}
+theorem RueCore.Contents.copyContainedList_index {D : Decls} {cs : List Contents}
   {f : Nat} {c : Contents} :
-  Contents.copyClosedList D cs = true →
-    cs[f]? = some c → Contents.copyClosed D c = true
+  Contents.copyContainedList D cs = true →
+    cs[f]? = some c → Contents.copyContained D c = true
 ```
 
 ### `Contents.allCopyList_index`
@@ -11369,18 +11400,18 @@ theorem RueCore.Contents.allCopyList_index {D : Decls} {cs : List Contents} {f :
     cs[f]? = some c → Contents.allCopy D c = true
 ```
 
-### `Contents.copyClosedList_set`
+### `Contents.copyContainedList_set`
 
 *theorem* · module `RueCore.Trace`
 
 Writing a copy-closed member keeps a copy-closed list so (helper).
 
 ```lean
-theorem RueCore.Contents.copyClosedList_set {D : Decls} {cs : List Contents} (f : Nat)
-  {c : Contents} :
-  Contents.copyClosedList D cs = true →
-    Contents.copyClosed D c = true →
-      Contents.copyClosedList D (cs.set f c) = true
+theorem RueCore.Contents.copyContainedList_set {D : Decls} {cs : List Contents}
+  (f : Nat) {c : Contents} :
+  Contents.copyContainedList D cs = true →
+    Contents.copyContained D c = true →
+      Contents.copyContainedList D (cs.set f c) = true
 ```
 
 ### `Contents.allCopyList_set`
@@ -11434,47 +11465,46 @@ theorem RueCore.Contents.ofVals_toVals {cs : List Contents} {vs : List Val} :
   Contents.toVals cs = some vs → Contents.ofVals vs = cs
 ```
 
-### `Contents.readAt_allCopy`
+### `Contents.getAt_allCopy`
 
 *theorem* · module `RueCore.Trace`
 
 A position read out of an all-`Copy` contents is all-`Copy` (helper).
 
 ```lean
-theorem RueCore.Contents.readAt_allCopy {D : Decls} (π : List Nat)
-  {c sub : Contents} :
+theorem RueCore.Contents.getAt_allCopy {D : Decls} (π : List Nat) {c sub : Contents} :
   Contents.allCopy D c = true →
-    c.readAt π = Except.ok sub → Contents.allCopy D sub = true
+    c.getAt π = Except.ok sub → Contents.allCopy D sub = true
 ```
 
-### `Contents.readAt_copyClosed`
+### `Contents.getAt_copyContained`
 
 *theorem* · module `RueCore.Trace`
 
 A position read out of a copy-closed contents is copy-closed (helper).
 
 ```lean
-theorem RueCore.Contents.readAt_copyClosed {D : Decls} (π : List Nat)
+theorem RueCore.Contents.getAt_copyContained {D : Decls} (π : List Nat)
   {c sub : Contents} :
-  Contents.copyClosed D c = true →
-    c.readAt π = Except.ok sub → Contents.copyClosed D sub = true
+  Contents.copyContained D c = true →
+    c.getAt π = Except.ok sub → Contents.copyContained D sub = true
 ```
 
-### `Contents.writeAt_allCopy`
+### `Contents.setAt_allCopy`
 
 *theorem* · module `RueCore.Trace`
 
 Writing all-`Copy` contents into all-`Copy` contents keeps it so (helper).
 
 ```lean
-theorem RueCore.Contents.writeAt_allCopy {D : Decls} (π : List Nat)
+theorem RueCore.Contents.setAt_allCopy {D : Decls} (π : List Nat)
   {c new c' : Contents} :
   Contents.allCopy D c = true →
     Contents.allCopy D new = true →
-      c.writeAt π new = some c' → Contents.allCopy D c' = true
+      c.setAt π new = some c' → Contents.allCopy D c' = true
 ```
 
-### `Contents.writeAt_copyClosed`
+### `Contents.setAt_copyContained`
 
 *theorem* · module `RueCore.Trace`
 
@@ -11482,14 +11512,14 @@ theorem RueCore.Contents.writeAt_allCopy {D : Decls} (π : List Nat)
 all-`Copy`, so it may sit under any node (helper).
 
 ```lean
-theorem RueCore.Contents.writeAt_copyClosed {D : Decls} (π : List Nat)
+theorem RueCore.Contents.setAt_copyContained {D : Decls} (π : List Nat)
   {c new c' : Contents} :
-  Contents.copyClosed D c = true →
+  Contents.copyContained D c = true →
     Contents.allCopy D new = true →
-      c.writeAt π new = some c' → Contents.copyClosed D c' = true
+      c.setAt π new = some c' → Contents.copyContained D c' = true
 ```
 
-### `Contents.writeAt_own`
+### `Contents.setAt_own`
 
 *theorem* · module `RueCore.Trace`
 
@@ -11500,11 +11530,11 @@ sub-tree, write the new value) read as a ledger. Below a `Copy` node both
 sides own nothing there, which is where copy closure is needed (helper).
 
 ```lean
-theorem RueCore.Contents.writeAt_own {D : Decls} (a : Nat) (π : List Nat)
+theorem RueCore.Contents.setAt_own {D : Decls} (a : Nat) (π : List Nat)
   {c sub new c' : Contents} :
-  Contents.copyClosed D c = true →
-    c.readAt π = Except.ok sub →
-      c.writeAt π new = some c' →
+  Contents.copyContained D c = true →
+    c.getAt π = Except.ok sub →
+      c.setAt π new = some c' →
         List.count a (Contents.own D c') + List.count a (Contents.own D sub) ≤
           List.count a (Contents.own D c) + List.count a (Contents.own D new)
 ```
@@ -11553,7 +11583,7 @@ A store of one copy-closed cell is copy-closed (helper).
 
 ```lean
 theorem RueCore.StoreCC.single {D : Decls} {c : Contents}
-  (h : Contents.copyClosed D c = true) : StoreCC D [Cell.full c]
+  (h : Contents.copyContained D c = true) : StoreCC D [Cell.full c]
 ```
 
 ### `StoreCC.dead`
@@ -11574,7 +11604,7 @@ Writing a copy-closed cell keeps the store copy-closed (helper).
 
 ```lean
 theorem RueCore.StoreCC.set {D : Decls} {H : Store} {ℓ : Nat} {c : Contents}
-  (h : StoreCC D H) (hc : Contents.copyClosed D c = true) :
+  (h : StoreCC D H) (hc : Contents.copyContained D c = true) :
   StoreCC D (List.set H ℓ (Cell.full c))
 ```
 
@@ -11664,7 +11694,7 @@ never `Copy` (helper).
 ```lean
 theorem RueCore.dropContents_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat)
   {c : Contents} {evs : List Event} :
-  Contents.copyClosed D c = true →
+  Contents.copyContained D c = true →
     dropContents D c = Except.ok evs →
       List.count a (dtorIds evs) ≤ List.count a (Contents.own D c)
 ```
@@ -11678,7 +11708,7 @@ The same over a list (helper).
 ```lean
 theorem RueCore.dropContentsList_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat)
   {cs : List Contents} {evs : List Event} :
-  Contents.copyClosedList D cs = true →
+  Contents.copyContainedList D cs = true →
     dropContentsList D cs = Except.ok evs →
       List.count a (dtorIds evs) ≤ List.count a (Contents.ownList D cs)
 ```
@@ -11716,7 +11746,8 @@ the marker and the walk otherwise (helper).
 ```lean
 theorem RueCore.dropCell_measure {D : Decls} {F : Event → List Nat}
   (hF : TraceMeasure D F) {ℓ : Nat} {c : Contents} {evs : List Event}
-  (hc : Contents.copyClosed D c = true) (h : dropCell D ℓ c = Except.ok evs) :
+  (hc : Contents.copyContained D c = true)
+  (h : dropCell D ℓ c = Except.ok evs) :
   IdLe (List.flatMap F evs) (Contents.own D c)
 ```
 
@@ -11754,19 +11785,19 @@ theorem RueCore.unwindLocs_measure {D : Decls} {F : Event → List Nat}
         List.length H' = List.length H ∧ StoreCC D H'
 ```
 
-### `residueMark_measure`
+### `residueDropEvent_measure`
 
 *theorem* · module `RueCore.Trace`
 
-One residue subtree's drop — its marker (`residueMark`), then §6.11's
+One residue subtree's drop — its marker (`residueDropEvent`), then §6.11's
 walk — counted (helper).
 
 ```lean
-theorem RueCore.residueMark_measure {D : Decls} {F : Event → List Nat}
+theorem RueCore.residueDropEvent_measure {D : Decls} {F : Event → List Nat}
   (hF : TraceMeasure D F) {ℓ : Nat} {r : Contents} {evs : List Event}
-  (hcc : Contents.copyClosed D r = true)
+  (hcc : Contents.copyContained D r = true)
   (h : dropContents D r = Except.ok evs) :
-  IdLe (List.flatMap F (residueMark D ℓ r ++ evs)) (Contents.own D r)
+  IdLe (List.flatMap F (residueDropEvent D ℓ r ++ evs)) (Contents.own D r)
 ```
 
 ### `dropResidue_measure`
@@ -11778,7 +11809,7 @@ theorem RueCore.residueMark_measure {D : Decls} {F : Event → List Nat}
 ```lean
 theorem RueCore.dropResidue_measure {D : Decls} {F : Event → List Nat}
   (hF : TraceMeasure D F) {ℓ : Nat} {rs : List Contents} {evs : List Event} :
-  Contents.copyClosedList D rs = true →
+  Contents.copyContainedList D rs = true →
     dropResidue D ℓ rs = Except.ok evs →
       IdLe (List.flatMap F evs) (Contents.ownList D rs)
 ```
@@ -11795,16 +11826,17 @@ theorem RueCore.Contents.ownList_append (D : Decls) (l₁ l₂ : List Contents) 
     Contents.ownList D l₁ ++ Contents.ownList D l₂
 ```
 
-### `Contents.copyClosedList_append`
+### `Contents.copyContainedList_append`
 
 *theorem* · module `RueCore.Trace`
 
-`copyClosedList` distributes over concatenation (helper).
+`copyContainedList` distributes over concatenation (helper).
 
 ```lean
-theorem RueCore.Contents.copyClosedList_append (D : Decls) (l₁ l₂ : List Contents) :
-  Contents.copyClosedList D (l₁ ++ l₂) =
-    (Contents.copyClosedList D l₁ && Contents.copyClosedList D l₂)
+theorem RueCore.Contents.copyContainedList_append (D : Decls)
+  (l₁ l₂ : List Contents) :
+  Contents.copyContainedList D (l₁ ++ l₂) =
+    (Contents.copyContainedList D l₁ && Contents.copyContainedList D l₂)
 ```
 
 ### `Contents.allCopyList_append`
@@ -11858,13 +11890,13 @@ consumed — and both stay copy-closed (helper).
 ```lean
 theorem RueCore.Contents.splitResidue_own {D : Decls} (a : Nat) (π : List Nat)
   {c leaf : Contents} {rs : List Contents} :
-  Contents.copyClosed D c = true →
+  Contents.copyContained D c = true →
     Contents.splitResidue D c π = Except.ok (leaf, rs) →
       List.count a (Contents.own D leaf) +
             List.count a (Contents.ownList D rs) ≤
           List.count a (Contents.own D c) ∧
-        Contents.copyClosed D leaf = true ∧
-          Contents.copyClosedList D rs = true
+        Contents.copyContained D leaf = true ∧
+          Contents.copyContainedList D rs = true
 ```
 
 ### `Contents.splitFields_own`
@@ -11876,13 +11908,13 @@ The same at `split`'s field step (helper).
 ```lean
 theorem RueCore.Contents.splitFields_own {D : Decls} (a : Nat) (cs : List Contents)
   (f : Nat) (π : List Nat) {leaf : Contents} {rs : List Contents} :
-  Contents.copyClosedList D cs = true →
+  Contents.copyContainedList D cs = true →
     Contents.splitFields D cs f π = Except.ok (leaf, rs) →
       List.count a (Contents.own D leaf) +
             List.count a (Contents.ownList D rs) ≤
           List.count a (Contents.ownList D cs) ∧
-        Contents.copyClosed D leaf = true ∧
-          Contents.copyClosedList D rs = true
+        Contents.copyContained D leaf = true ∧
+          Contents.copyContainedList D rs = true
 ```
 
 ### `Contents.pathOnlyFields_length`
@@ -11896,15 +11928,15 @@ theorem RueCore.Contents.pathOnlyFields_length (cs : List Contents) (f : Nat)
   (π : List Nat) : (Contents.pathOnlyFields cs f π).length = cs.length
 ```
 
-### `Contents.ownList_holes`
+### `Contents.ownList_movedOuts`
 
 *theorem* · module `RueCore.Trace`
 
 A list of `⊘`s owns nothing (helper).
 
 ```lean
-theorem RueCore.Contents.ownList_holes {α : Type} (D : Decls) (cs : List α) :
-  Contents.ownList D (List.map (fun x => Contents.hole) cs) = []
+theorem RueCore.Contents.ownList_movedOuts {α : Type} (D : Decls) (cs : List α) :
+  Contents.ownList D (List.map (fun x => Contents.movedOut) cs) = []
 ```
 
 ### `Contents.pathOnly_own`
@@ -11919,7 +11951,7 @@ one of the three (helper).
 ```lean
 theorem RueCore.Contents.pathOnly_own {D : Decls} (a : Nat) (π : List Nat)
   {c leaf : Contents} {rs : List Contents} :
-  Contents.copyClosed D c = true →
+  Contents.copyContained D c = true →
     Contents.splitResidue D c π = Except.ok (leaf, rs) →
       List.count a (Contents.own D leaf) +
             List.count a (Contents.ownList D rs) +
@@ -11936,7 +11968,7 @@ The same at `split`'s member step (helper).
 ```lean
 theorem RueCore.Contents.pathOnlyFields_own {D : Decls} (a : Nat) (cs : List Contents)
   (f : Nat) (π : List Nat) {leaf : Contents} {rs : List Contents} :
-  Contents.copyClosedList D cs = true →
+  Contents.copyContainedList D cs = true →
     Contents.splitFields D cs f π = Except.ok (leaf, rs) →
       List.count a (Contents.own D leaf) +
             List.count a (Contents.ownList D rs) +
@@ -11955,12 +11987,12 @@ consumed place owned (helper).
 ```lean
 theorem RueCore.Contents.destructure_measure {D : Decls} {F : Event → List Nat}
   (hF : TraceMeasure D F) {ℓ : Nat} {cd leaf : Contents} {πs : List Nat}
-  {evs : List Event} (hcc : Contents.copyClosed D cd = true)
+  {evs : List Event} (hcc : Contents.copyContained D cd = true)
   (h : Contents.destructure D ℓ cd πs = Except.ok (leaf, evs)) :
   (∀ (a : Nat),
       List.count a (Contents.own D leaf) + List.count a (List.flatMap F evs) ≤
         List.count a (Contents.own D cd)) ∧
-    Contents.copyClosed D leaf = true
+    Contents.copyContained D leaf = true
 ```
 
 ### `Fresh.count_trans`
@@ -12080,7 +12112,7 @@ theorem RueCore.Cons.bind {D : Decls} {F : Event → List Nat} {H : Store}
     ∀ (H₁ : Store) (v : Val) (tr : List Event),
       r = EvalRes.ok H₁ v tr →
         StoreCC D H₁ →
-          Contents.copyClosed D (Contents.ofVal v) = true →
+          Contents.copyContained D (Contents.ofVal v) = true →
             Cons D F H₁ (Val.own D v) (k H₁ v)) :
   Cons D F H X (r.bind k)
 ```
@@ -12100,7 +12132,7 @@ theorem RueCore.Cons.absorb {D : Decls} {F : Event → List Nat} {H : Store}
     ∀ (H₁ : Store) (v : Val) (tr : List Event),
       r = EvalRes.ok H₁ v tr →
         StoreCC D H₁ →
-          Contents.copyClosed D (Contents.ofVal v) = true →
+          Contents.copyContained D (Contents.ofVal v) = true →
             Cons D F H₁ (Val.own D v) (k H₁ v)) :
   Cons D F H X (r.bindCall k)
 ```
@@ -12114,7 +12146,7 @@ A value produced where the store is, owning nothing held (helper).
 ```lean
 theorem RueCore.Cons.pure {D : Decls} {F : Event → List Nat} {H : Store}
   {X : List Nat} {v : Val} (hcc : StoreCC D H)
-  (hv : Contents.copyClosed D (Contents.ofVal v) = true)
+  (hv : Contents.copyContained D (Contents.ofVal v) = true)
   (ho : ∀ (a : Nat), List.count a (Val.own D v) ≤ List.count a X) :
   Cons D F H X (EvalRes.ok H v [])
 ```
@@ -12127,7 +12159,7 @@ A scalar's ledger (helper).
 
 ```lean
 theorem RueCore.Val.scalar_own {D : Decls} {v : Val} (h : v.scalar) :
-  Val.own D v = [] ∧ Contents.copyClosed D (Contents.ofVal v) = true
+  Val.own D v = [] ∧ Contents.copyContained D (Contents.ofVal v) = true
 ```
 
 ### `Cons.scalar`
@@ -12233,15 +12265,15 @@ theorem RueCore.evalFintrin_scalar {M : FloatSig} {k : FloatIntrin} {a v : Val}
   (h : evalFintrin M k a = OpRes.val v) : v.scalar
 ```
 
-### `Contents.mult_ofVal`
+### `Contents.qual_ofVal`
 
 *theorem* · module `RueCore.Trace`
 
 A value's stored image has the value's class (helper).
 
 ```lean
-theorem RueCore.Contents.mult_ofVal (D : Decls) (v : Val) :
-  Contents.mult D (Contents.ofVal v) = Val.mult D v
+theorem RueCore.Contents.qual_ofVal (D : Decls) (v : Val) :
+  Contents.qual D (Contents.ofVal v) = Val.qual D v
 ```
 
 ### `Val.own_of_copy`
@@ -12251,7 +12283,7 @@ theorem RueCore.Contents.mult_ofVal (D : Decls) (v : Val) :
 A `Copy` value owns nothing (helper).
 
 ```lean
-theorem RueCore.Val.own_of_copy {D : Decls} {v : Val} (h : Val.mult D v = Mult.copy) :
+theorem RueCore.Val.own_of_copy {D : Decls} {v : Val} (h : Val.qual D v = Qual.copy) :
   Val.own D v = []
 ```
 
@@ -12275,46 +12307,46 @@ theorem RueCore.Contents.ownList_ofVals_cons (D : Decls) (v : Val) (vs : List Va
 
 ```lean
 theorem RueCore.Contents.ownList_replicate {D : Decls} {v : Val}
-  (h : Val.mult D v = Mult.copy) (n : Nat) :
+  (h : Val.qual D v = Qual.copy) (n : Nat) :
   Contents.ownList D (Contents.ofVals (List.replicate n v)) = []
 ```
 
-### `storeOwn_mintParams`
+### `storeOwn_freshParams`
 
 *theorem* · module `RueCore.Trace`
 
-The store `mintParams` leaves owns the store's identities and the
+The store `freshParams` leaves owns the store's identities and the
 arguments' (§6.9's (D-Call), §6.6's (D-Match)) (helper).
 
 ```lean
-theorem RueCore.storeOwn_mintParams (D : Decls) (H : Store) (vs : List Val) :
-  storeOwn D (mintParams H vs).fst =
+theorem RueCore.storeOwn_freshParams (D : Decls) (H : Store) (vs : List Val) :
+  storeOwn D (freshParams H vs).fst =
     storeOwn D H ++ Contents.ownList D (Contents.ofVals vs)
 ```
 
-### `StoreCC.mintParams`
+### `StoreCC.freshParams`
 
 *theorem* · module `RueCore.Trace`
 
-The cells `mintParams` adds are copy-closed when the arguments are
+The cells `freshParams` adds are copy-closed when the arguments are
 (helper).
 
 ```lean
-theorem RueCore.StoreCC.mintParams {D : Decls} {H : Store} {vs : List Val}
+theorem RueCore.StoreCC.freshParams {D : Decls} {H : Store} {vs : List Val}
   (h : StoreCC D H)
-  (hv : Contents.copyClosedList D (Contents.ofVals vs) = true) :
-  StoreCC D (mintParams H vs).fst
+  (hv : Contents.copyContainedList D (Contents.ofVals vs) = true) :
+  StoreCC D (freshParams H vs).fst
 ```
 
-### `mintParams_length`
+### `freshParams_length`
 
 *theorem* · module `RueCore.Trace`
 
-The store `mintParams` leaves is the old one grown (helper).
+The store `freshParams` leaves is the old one grown (helper).
 
 ```lean
-theorem RueCore.mintParams_length (H : Store) (vs : List Val) :
-  List.length (mintParams H vs).fst = List.length H + vs.length
+theorem RueCore.freshParams_length (H : Store) (vs : List Val) :
+  List.length (freshParams H vs).fst = List.length H + vs.length
 ```
 
 ### `Contents.own_struct_le`
@@ -12365,10 +12397,10 @@ copy-closed — what (D-Match) §6.6 hands the arm's cells (helper).
 
 ```lean
 theorem RueCore.Contents.enum_payload {D : Decls} {e k i : Nat} {cs : List Contents}
-  (h : Contents.copyClosed D (Contents.enum e k i cs) = true) (a : Nat) :
+  (h : Contents.copyContained D (Contents.enum e k i cs) = true) (a : Nat) :
   List.count a (Contents.ownList D cs) ≤
       List.count a (Contents.own D (Contents.enum e k i cs)) ∧
-    Contents.copyClosedList D cs = true
+    Contents.copyContainedList D cs = true
 ```
 
 ### `matchConsume_measure`
@@ -12384,7 +12416,8 @@ scrutinee — the payload moves, the shell ends, nothing is duplicated
 theorem RueCore.matchConsume_measure {D : Decls} {F : Event → List Nat}
   (hF : TraceMeasure D F) {e k i : Nat} {vs : List Val}
   (h :
-    Contents.copyClosed D (Contents.enum e k i (Contents.ofVals vs)) = true)
+    Contents.copyContained D (Contents.enum e k i (Contents.ofVals vs)) =
+      true)
   (a : Nat) :
   List.count a (Contents.ownList D (Contents.ofVals vs)) +
       List.count a (List.flatMap F (matchConsume D e k i vs)) ≤
@@ -12416,10 +12449,10 @@ theorem RueCore.Cons.intro {D : Decls} {F : Event → List Nat} {H : Store}
 What `dynPlace` lands on is a live cell and a read of it (helper).
 
 ```lean
-theorem RueCore.dynPlace_at {H : Store} {φ : Frame} {p : Place} {vs : List Val}
+theorem RueCore.dynPlace_at {H : Store} {φ : Activation} {p : Place} {vs : List Val}
   {πs : List (List Nat)} {ℓ : Nat} {c sub : Contents} {ρ : List Nat}
   (h : dynPlace H φ p vs πs = DynPlace.at ℓ c sub ρ) :
-  H[ℓ]? = some (Cell.full c) ∧ c.readAt p.path = Except.ok sub
+  H[ℓ]? = some (Cell.full c) ∧ c.getAt p.path = Except.ok sub
 ```
 
 ### `evalArgs_cons`
@@ -12472,8 +12505,8 @@ multiply (helper).
 theorem RueCore.Cons.move {D : Decls} {F : Event → List Nat} {H : Store}
   {X : List Nat} {ℓ : Nat} {c c' sub : Contents} {π : List Nat} {v : Val}
   (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
-  (hr : c.readAt π = Except.ok sub) (hw : c.writeAt π Contents.hole = some c')
-  (hv : sub.toVal = some v) :
+  (hr : c.getAt π = Except.ok sub)
+  (hw : c.setAt π Contents.movedOut = some c') (hv : sub.toVal = some v) :
   Cons D F H X (EvalRes.ok (List.set H ℓ (Cell.full c')) v [])
 ```
 
@@ -12490,9 +12523,9 @@ theorem RueCore.Cons.destructure {D : Decls} {F : Event → List Nat}
   (hF : TraceMeasure D F) {H : Store} {X : List Nat} {ℓ : Nat}
   {c c' cd leaf : Contents} {πd πs : List Nat} {v : Val} {evs : List Event}
   (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
-  (hr : c.readAt πd = Except.ok cd)
+  (hr : c.getAt πd = Except.ok cd)
   (hd : Contents.destructure D ℓ cd πs = Except.ok (leaf, evs))
-  (hv : leaf.toVal = some v) (hw : c.writeAt πd Contents.hole = some c') :
+  (hv : leaf.toVal = some v) (hw : c.setAt πd Contents.movedOut = some c') :
   Cons D F H X (EvalRes.ok (List.set H ℓ (Cell.full c')) v evs)
 ```
 
@@ -12507,9 +12540,9 @@ place becomes `⊘`, so what the trace frees leaves the store (helper).
 theorem RueCore.Cons.dropPlace {D : Decls} {F : Event → List Nat}
   (hF : TraceMeasure D F) {H : Store} {X : List Nat} {ℓ : Nat}
   {c c' sub : Contents} {π : List Nat} {evs : List Event} (hcc : StoreCC D H)
-  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.readAt π = Except.ok sub)
+  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.getAt π = Except.ok sub)
   (hd : dropCell D ℓ sub = Except.ok evs)
-  (hw : c.writeAt π Contents.hole = some c') :
+  (hw : c.setAt π Contents.movedOut = some c') :
   Cons D F H X (EvalRes.ok (List.set H ℓ (Cell.full c')) Val.unit evs)
 ```
 
@@ -12525,10 +12558,10 @@ theorem RueCore.Cons.dropDeclared {D : Decls} {F : Event → List Nat}
   (hF : TraceMeasure D F) {H : Store} {X : List Nat} {ℓ : Nat}
   {c c' cd leaf : Contents} {πd πs : List Nat} {evs levs : List Event}
   (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
-  (hr : c.readAt πd = Except.ok cd)
+  (hr : c.getAt πd = Except.ok cd)
   (hd : Contents.destructure D ℓ cd πs = Except.ok (leaf, evs))
   (hl : dropCell D ℓ leaf = Except.ok levs)
-  (hw : c.writeAt πd Contents.hole = some c') :
+  (hw : c.setAt πd Contents.movedOut = some c') :
   Cons D F H X
     (EvalRes.ok (List.set H ℓ (Cell.full c')) Val.unit (evs ++ levs))
 ```
@@ -12544,10 +12577,10 @@ and the held value takes its position (helper).
 theorem RueCore.Cons.assign {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
   {H : Store} {Y : List Nat} {ℓ : Nat} {c c' old : Contents} {π : List Nat}
   {v : Val} {evs : List Event} (hcc : StoreCC D H)
-  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.readAt π = Except.ok old)
+  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.getAt π = Except.ok old)
   (hd : dropCell D ℓ old = Except.ok evs)
-  (hw : c.writeAt π (Contents.ofVal v) = some c')
-  (hc' : Contents.copyClosed D c' = true) :
+  (hw : c.setAt π (Contents.ofVal v) = some c')
+  (hc' : Contents.copyContained D c' = true) :
   Cons D F H (Val.own D v ++ Y)
     (EvalRes.ok (List.set H ℓ (Cell.full c')) Val.unit evs)
 ```
@@ -12564,10 +12597,10 @@ theorem RueCore.Cons.assignDyn {D : Decls} {F : Event → List Nat}
   (hF : TraceMeasure D F) {H : Store} {Y : List Nat} {ℓ : Nat}
   {c c' sub sub' old : Contents} {π ρ : List Nat} {v : Val} {evs : List Event}
   (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
-  (hr : c.readAt π = Except.ok sub) (hr' : sub.readAt ρ = Except.ok old)
+  (hr : c.getAt π = Except.ok sub) (hr' : sub.getAt ρ = Except.ok old)
   (hd : dropCell D ℓ old = Except.ok evs)
-  (hw' : sub.writeAt ρ (Contents.ofVal v) = some sub')
-  (hw : c.writeAt π sub' = some c') (hc' : Contents.copyClosed D c' = true) :
+  (hw' : sub.setAt ρ (Contents.ofVal v) = some sub')
+  (hw : c.setAt π sub' = some c') (hc' : Contents.copyContained D c' = true) :
   Cons D F H (Val.own D v ++ Y)
     (EvalRes.ok (List.set H ℓ (Cell.full c')) Val.unit evs)
 ```
@@ -12582,10 +12615,10 @@ a ledger (helper).
 ```lean
 theorem RueCore.Cons.unwind {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
   {H : Store} {v : Val} {ls : List Nat} (hcc : StoreCC D H)
-  (hv : Contents.copyClosed D (Contents.ofVal v) = true) :
+  (hv : Contents.copyContained D (Contents.ofVal v) = true) :
   Cons D F H (Val.own D v)
     (match unwindLocs D H ls with
-    | Except.error w => EvalRes.stuck w
+    | Except.error w => EvalRes.refused w
     | Except.ok (H', evs) => EvalRes.ok H' v evs)
 ```
 
@@ -12670,7 +12703,7 @@ theorem RueCore.Steps.peel {M : FloatSig} {P : Program} {C C' D : Config}
 A run into the family carries its simulation back (helper).
 
 ```lean
-theorem RueCore.Sim.pre {M : FloatSig} {P : Program} {φ : Frame}
+theorem RueCore.Sim.pre {M : FloatSig} {P : Program} {φ : Activation}
   {C C₂ : List Kont → List Event → Config} {r : EvalRes}
   (hpre : ∀ (K : List Kont) (tr : List Event), Steps M P (C K tr) (C₂ K tr))
   (h : Sim M P φ C₂ r) : Sim M P φ C r
@@ -12684,7 +12717,7 @@ A run into the family that emits `tr₁` carries its simulation back to
 the result with `tr₁` prefixed (§6.12's accumulating output) (helper).
 
 ```lean
-theorem RueCore.Sim.withTrace {M : FloatSig} {P : Program} {φ : Frame}
+theorem RueCore.Sim.withTrace {M : FloatSig} {P : Program} {φ : Activation}
   {C C₂ : List Kont → List Event → Config} {r : EvalRes} {tr₁ : List Event}
   (hpre :
     ∀ (K : List Kont) (tr : List Event),
@@ -12703,7 +12736,7 @@ call frame nor a loop boundary, and a panic because (Panic-Lift) discards
 every context (helper).
 
 ```lean
-theorem RueCore.Sim.bind {M : FloatSig} {P : Program} {φ φ₁ : Frame}
+theorem RueCore.Sim.bind {M : FloatSig} {P : Program} {φ φ₁ : Activation}
   {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
   (hC :
     ∀ (K : List Kont) (tr : List Event), Steps M P (C K tr) (C₁ (F :: K) tr))
@@ -12724,7 +12757,7 @@ A result that is not a value passes through a transparent frame unchanged
 (helper).
 
 ```lean
-theorem RueCore.Sim.lift {M : FloatSig} {P : Program} {φ φ₁ : Frame}
+theorem RueCore.Sim.lift {M : FloatSig} {P : Program} {φ φ₁ : Activation}
   {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
   (hC :
     ∀ (K : List Kont) (tr : List Event), Steps M P (C K tr) (C₁ (F :: K) tr))
@@ -12741,7 +12774,7 @@ theorem RueCore.Sim.lift {M : FloatSig} {P : Program} {φ φ₁ : Frame}
 frame, which is what `absorb` turns into a value (helper).
 
 ```lean
-theorem RueCore.Sim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Frame}
+theorem RueCore.Sim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Activation}
   {C C₁ : List Kont → List Event → Config}
   (hC :
     ∀ (K : List Kont) (tr : List Event),
@@ -12764,7 +12797,7 @@ theorem RueCore.Sim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Frame}
 (helper).
 
 ```lean
-theorem RueCore.OpRes.sim {M : FloatSig} {P : Program} {φ : Frame} {H : Store}
+theorem RueCore.OpRes.sim {M : FloatSig} {P : Program} {φ : Activation} {H : Store}
   {F : Kont} {v : Val} (o : OpRes)
   (hv :
     ∀ (K : List Kont) (tr : List Event) (v' : Val),
@@ -12789,9 +12822,9 @@ theorem RueCore.OpRes.sim {M : FloatSig} {P : Program} {φ : Frame} {H : Store}
 result is simulated from the list context (helper).
 
 ```lean
-theorem RueCore.evalArgs_sim {M : FloatSig} {P : Program} {fuel : Nat} {φ : Frame}
-  (IH : SimIH M P fuel) (t : ArgsTag) (es : List Expr) (H : Store)
-  (vs₀ : List Val) :
+theorem RueCore.evalArgs_sim {M : FloatSig} {P : Program} {fuel : Nat}
+  {φ : Activation} (IH : SimIH M P fuel) (t : ArgsFrame) (es : List Expr)
+  (H : Store) (vs₀ : List Val) :
   (∀ (H' : Store) (vs : List Val) (tr' : List Event),
       evalArgs (fun H e => eval M fuel P H φ e) H es = ArgsRes.ok H' vs tr' →
         ∀ (K : List Kont) (tr : List Event),
@@ -12810,7 +12843,7 @@ Where no `Sim` target has an expression in focus, a first step of `C`
 can be peeled off by determinism (helper).
 
 ```lean
-theorem RueCore.Sim.peel {M : FloatSig} {P : Program} {φ : Frame}
+theorem RueCore.Sim.peel {M : FloatSig} {P : Program} {φ : Activation}
   {C C₂ : List Kont → List Event → Config} {r : EvalRes}
   (hs : ∀ (K : List Kont) (tr : List Event), Step M P (C K tr) (C₂ K tr))
   (hC : ∀ (K : List Kont) (tr : List Event), (C K tr).evalFocus)
@@ -12849,32 +12882,33 @@ theorem RueCore.EvalRes.withTrace_bind (r : EvalRes) (t : List Event)
 The root of a place, as `eval` resolves it inline, is `rootCell` (helper).
 
 ```lean
-theorem RueCore.rootCell_of {H : Store} {φ : Frame} {i ℓ : Nat} {c : Contents}
+theorem RueCore.rootCell_of {H : Store} {φ : Activation} {i ℓ : Nat} {c : Contents}
   (hℓ : φ.env[i]? = some ℓ) (hc : H[ℓ]? = some (Cell.full c)) :
   rootCell H φ i = Except.ok (ℓ, c)
 ```
 
-### `Frame.popScope_push`
+### `Activation.unwindScope_push`
 
 *theorem* · module `RueCore.Adequacy`
 
 (D-EndScope) restores the frame (D-Let) or (D-Match) extended (helper).
 
 ```lean
-theorem RueCore.Frame.popScope_push (φ : Frame) (ls : List Nat) :
-  { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls }.popScope ls.length =
+theorem RueCore.Activation.unwindScope_push (φ : Activation) (ls : List Nat) :
+  { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls }.unwindScope
+      ls.length =
     φ
 ```
 
-### `Frame.popScope_let`
+### `Activation.unwindScope_let`
 
 *theorem* · module `RueCore.Adequacy`
 
 (D-EndScope) after (D-Let) (helper).
 
 ```lean
-theorem RueCore.Frame.popScope_let (φ : Frame) (ℓ : Nat) :
-  { env := ℓ :: φ.env, scope := φ.scope ++ [ℓ] }.popScope 1 = φ
+theorem RueCore.Activation.unwindScope_let (φ : Activation) (ℓ : Nat) :
+  { env := ℓ :: φ.env, scope := φ.scope ++ [ℓ] }.unwindScope 1 = φ
 ```
 
 ### `plainUnwind_single`
@@ -12897,7 +12931,7 @@ theorem RueCore.plainUnwind_single {D : Decls} {H H' : Store} {ℓ : Nat}
 
 ```lean
 theorem RueCore.sim_use {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (p : Place) :
+  {φ : Activation} (p : Place) :
   Sim M P φ (evalConf H φ (Expr.use p)) (eval M (fuel + 1) P H φ (Expr.use p))
 ```
 
@@ -12909,7 +12943,7 @@ theorem RueCore.sim_use {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.sim_drop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (p : Place) :
+  {φ : Activation} (p : Place) :
   Sim M P φ (evalConf H φ (Expr.drop p))
     (eval M (fuel + 1) P H φ (Expr.drop p))
 ```
@@ -12922,7 +12956,7 @@ theorem RueCore.sim_drop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.sim_binop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (op : BinOp) (e₁ e₂ : Expr) :
+  {φ : Activation} (IH : SimIH M P fuel) (op : BinOp) (e₁ e₂ : Expr) :
   Sim M P φ (evalConf H φ (Expr.binop op e₁ e₂))
     (eval M (fuel + 1) P H φ (Expr.binop op e₁ e₂))
 ```
@@ -12935,7 +12969,7 @@ theorem RueCore.sim_binop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.sim_unop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (op : UnOp) (e : Expr) :
+  {φ : Activation} (IH : SimIH M P fuel) (op : UnOp) (e : Expr) :
   Sim M P φ (evalConf H φ (Expr.unop op e))
     (eval M (fuel + 1) P H φ (Expr.unop op e))
 ```
@@ -12948,7 +12982,8 @@ theorem RueCore.sim_unop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.sim_intCast {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (w : IntWidth) (sg : Sign) (e : Expr) :
+  {φ : Activation} (IH : SimIH M P fuel) (w : IntWidth) (sg : Sign)
+  (e : Expr) :
   Sim M P φ (evalConf H φ (Expr.intCast w sg e))
     (eval M (fuel + 1) P H φ (Expr.intCast w sg e))
 ```
@@ -12961,7 +12996,7 @@ theorem RueCore.sim_intCast {M : FloatSig} {P : Program} {fuel : Nat} {H : Store
 
 ```lean
 theorem RueCore.sim_fintrin {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (k : FloatIntrin) (e : Expr) :
+  {φ : Activation} (IH : SimIH M P fuel) (k : FloatIntrin) (e : Expr) :
   Sim M P φ (evalConf H φ (Expr.fintrin k e))
     (eval M (fuel + 1) P H φ (Expr.fintrin k e))
 ```
@@ -12974,7 +13009,7 @@ theorem RueCore.sim_fintrin {M : FloatSig} {P : Program} {fuel : Nat} {H : Store
 
 ```lean
 theorem RueCore.sim_dbg {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (e : Expr) :
+  {φ : Activation} (IH : SimIH M P fuel) (e : Expr) :
   Sim M P φ (evalConf H φ e.dbg) (eval M (fuel + 1) P H φ e.dbg)
 ```
 
@@ -12987,7 +13022,7 @@ identity is minted as `introVal` mints it (helper).
 
 ```lean
 theorem RueCore.sim_mkStruct {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (s : Nat) (args : List Expr) :
+  {φ : Activation} (IH : SimIH M P fuel) (s : Nat) (args : List Expr) :
   Sim M P φ (evalConf H φ (Expr.mkStruct s args))
     (eval M (fuel + 1) P H φ (Expr.mkStruct s args))
 ```
@@ -13000,7 +13035,7 @@ theorem RueCore.sim_mkStruct {M : FloatSig} {P : Program} {fuel : Nat} {H : Stor
 
 ```lean
 theorem RueCore.sim_mkEnum {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (e k : Nat) (args : List Expr) :
+  {φ : Activation} (IH : SimIH M P fuel) (e k : Nat) (args : List Expr) :
   Sim M P φ (evalConf H φ (Expr.mkEnum e k args))
     (eval M (fuel + 1) P H φ (Expr.mkEnum e k args))
 ```
@@ -13013,7 +13048,7 @@ theorem RueCore.sim_mkEnum {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.sim_mkArray {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (T : Ty) (args : List Expr) :
+  {φ : Activation} (IH : SimIH M P fuel) (T : Ty) (args : List Expr) :
   Sim M P φ (evalConf H φ (Expr.mkArray T args))
     (eval M (fuel + 1) P H φ (Expr.mkArray T args))
 ```
@@ -13026,7 +13061,7 @@ The repeat form (`7.1:39`) (helper).
 
 ```lean
 theorem RueCore.sim_repeat {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (T : Ty) (e : Expr) (n : Nat) :
+  {φ : Activation} (IH : SimIH M P fuel) (T : Ty) (e : Expr) (n : Nat) :
   Sim M P φ (evalConf H φ (Expr.repeatArray T e n))
     (eval M (fuel + 1) P H φ (Expr.repeatArray T e n))
 ```
@@ -13040,9 +13075,9 @@ from the index list's context (helper).
 
 ```lean
 theorem RueCore.sim_indexRead_args {M : FloatSig} {P : Program} {fuel : Nat}
-  {H : Store} {φ : Frame} (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
-  (πs : List (List Nat)) :
-  Sim M P φ (argsConf H φ (ArgsTag.indexRead p πs) [] idx)
+  {H : Store} {φ : Activation} (IH : SimIH M P fuel) (p : Place)
+  (idx : List Expr) (πs : List (List Nat)) :
+  Sim M P φ (argsConf H φ (ArgsFrame.indexRead p πs) [] idx)
     (eval M (fuel + 1) P H φ (Expr.indexRead p idx πs))
 ```
 
@@ -13054,7 +13089,7 @@ theorem RueCore.sim_indexRead_args {M : FloatSig} {P : Program} {fuel : Nat}
 
 ```lean
 theorem RueCore.sim_indexRead {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
+  {φ : Activation} (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) :
   Sim M P φ (evalConf H φ (Expr.indexRead p idx πs))
     (eval M (fuel + 1) P H φ (Expr.indexRead p idx πs))
@@ -13070,7 +13105,7 @@ is at two less (helper).
 
 ```lean
 theorem RueCore.sim_indexDrop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
+  {φ : Activation} (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) :
   Sim M P φ (evalConf H φ (Expr.indexDrop p idx πs))
     (eval M (fuel + 2) P H φ (Expr.indexDrop p idx πs))
@@ -13084,7 +13119,7 @@ theorem RueCore.sim_indexDrop {M : FloatSig} {P : Program} {fuel : Nat} {H : Sto
 
 ```lean
 theorem RueCore.sim_indexWrite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
+  {φ : Activation} (IH : SimIH M P fuel) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) (e : Expr) :
   Sim M P φ (evalConf H φ (Expr.indexWrite p idx πs e))
     (eval M (fuel + 1) P H φ (Expr.indexWrite p idx πs e))
@@ -13099,7 +13134,7 @@ closes (helper).
 
 ```lean
 theorem RueCore.sim_match {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (scrut : Expr) (arms : List Expr) :
+  {φ : Activation} (IH : SimIH M P fuel) (scrut : Expr) (arms : List Expr) :
   Sim M P φ (evalConf H φ (scrut.match arms))
     (eval M (fuel + 1) P H φ (scrut.match arms))
 ```
@@ -13112,7 +13147,7 @@ theorem RueCore.sim_match {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.sim_letIn {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (m : Bool) (e₁ e₂ : Expr) :
+  {φ : Activation} (IH : SimIH M P fuel) (m : Bool) (e₁ e₂ : Expr) :
   Sim M P φ (evalConf H φ (Expr.letIn m e₁ e₂))
     (eval M (fuel + 1) P H φ (Expr.letIn m e₁ e₂))
 ```
@@ -13125,7 +13160,7 @@ theorem RueCore.sim_letIn {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.sim_assign {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (p : Place) (e : Expr) :
+  {φ : Activation} (IH : SimIH M P fuel) (p : Place) (e : Expr) :
   Sim M P φ (evalConf H φ (Expr.assign p e))
     (eval M (fuel + 1) P H φ (Expr.assign p e))
 ```
@@ -13138,7 +13173,7 @@ theorem RueCore.sim_assign {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.sim_seq {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (e₁ e₂ : Expr) :
+  {φ : Activation} (IH : SimIH M P fuel) (e₁ e₂ : Expr) :
   Sim M P φ (evalConf H φ (e₁.seq e₂)) (eval M (fuel + 1) P H φ (e₁.seq e₂))
 ```
 
@@ -13150,7 +13185,7 @@ theorem RueCore.sim_seq {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.sim_ite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (c e₁ e₂ : Expr) :
+  {φ : Activation} (IH : SimIH M P fuel) (c e₁ e₂ : Expr) :
   Sim M P φ (evalConf H φ (c.ite e₁ e₂))
     (eval M (fuel + 1) P H φ (c.ite e₁ e₂))
 ```
@@ -13164,7 +13199,7 @@ theorem RueCore.sim_ite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.sim_call {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (f : Nat) (args : List Expr) :
+  {φ : Activation} (IH : SimIH M P fuel) (f : Nat) (args : List Expr) :
   Sim M P φ (evalConf H φ (Expr.call f args))
     (eval M (fuel + 1) P H φ (Expr.call f args))
 ```
@@ -13177,7 +13212,7 @@ theorem RueCore.sim_call {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.sim_ret {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (e : Expr) :
+  {φ : Activation} (IH : SimIH M P fuel) (e : Expr) :
   Sim M P φ (evalConf H φ e.ret) (eval M (fuel + 1) P H φ e.ret)
 ```
 
@@ -13189,7 +13224,7 @@ theorem RueCore.sim_ret {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.sim_brk {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} :
+  {φ : Activation} :
   Sim M P φ (evalConf H φ Expr.brk) (eval M (fuel + 1) P H φ Expr.brk)
 ```
 
@@ -13204,7 +13239,7 @@ determinism (helper).
 
 ```lean
 theorem RueCore.sim_loop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : SimIH M P fuel) (e : Expr) :
+  {φ : Activation} (IH : SimIH M P fuel) (e : Expr) :
   Sim M P φ (evalConf H φ e.loop) (eval M (fuel + 1) P H φ e.loop)
 ```
 
@@ -13357,7 +13392,7 @@ value (`Sim`'s `ok` clause gives the run to it) and the context spent the fuel,
 the context's run is (helper).
 
 ```lean
-theorem RueCore.Long.bind {M : FloatSig} {P : Program} {φ₁ : Frame}
+theorem RueCore.Long.bind {M : FloatSig} {P : Program} {φ₁ : Activation}
   {C C₁ : List Kont → List Event → Config} {F : Kont} {fuel : Nat}
   (hC :
     ∀ (K : List Kont) (tr : List Event), Step M P (C K tr) (C₁ (F :: K) tr))
@@ -13382,7 +13417,7 @@ the payload — so exhaustion is a run of `fuel` steps, not `fuel + 1`
 (helper).
 
 ```lean
-theorem RueCore.Long.bind0 {M : FloatSig} {P : Program} {φ₁ : Frame}
+theorem RueCore.Long.bind0 {M : FloatSig} {P : Program} {φ₁ : Activation}
   {C₁ : List Kont → List Event → Config} {F : Kont} {fuel : Nat} {r : EvalRes}
   (hsim : Sim M P φ₁ C₁ r) (h₁ : r = EvalRes.outOfFuel → Long M P C₁ fuel)
   {k : Store → Val → EvalRes}
@@ -13404,9 +13439,9 @@ its fuel on an element has a run one step longer than the element's fuel, the
 extra step being the (Search) push into the element's hole (helper).
 
 ```lean
-theorem RueCore.evalArgs_long {M : FloatSig} {P : Program} {fuel : Nat} {φ : Frame}
-  (IH : LongIH M P fuel) (t : ArgsTag) (es : List Expr) (H : Store)
-  (vs₀ : List Val) :
+theorem RueCore.evalArgs_long {M : FloatSig} {P : Program} {fuel : Nat}
+  {φ : Activation} (IH : LongIH M P fuel) (t : ArgsFrame) (es : List Expr)
+  (H : Store) (vs₀ : List Val) :
   evalArgs (fun H e => eval M fuel P H φ e) H es =
       ArgsRes.abort EvalRes.outOfFuel →
     Long M P (argsConf H φ t vs₀ es) (fuel + 1)
@@ -13420,8 +13455,8 @@ theorem RueCore.evalArgs_long {M : FloatSig} {P : Program} {fuel : Nat} {φ : Fr
 
 ```lean
 theorem RueCore.evalArgs_ok_steps {M : FloatSig} {P : Program} {fuel : Nat}
-  {φ : Frame} {t : ArgsTag} {es : List Expr} {H H' : Store} {vs : List Val}
-  {tr' : List Event}
+  {φ : Activation} {t : ArgsFrame} {es : List Expr} {H H' : Store}
+  {vs : List Val} {tr' : List Event}
   (h : evalArgs (fun H e => eval M fuel P H φ e) H es = ArgsRes.ok H' vs tr')
   (K : List Kont) (tr : List Event) :
   Steps M P (argsConf H φ t [] es K tr)
@@ -13470,7 +13505,7 @@ beyond the unit they start with (helper).
 
 ```lean
 theorem RueCore.eval_leaf_ne_outOfFuel {M : FloatSig} {P : Program} {fuel : Nat}
-  {H : Store} {φ : Frame} {e : Expr}
+  {H : Store} {φ : Activation} {e : Expr}
   (he :
     match e with
     | Expr.intLit w s n => True
@@ -13493,7 +13528,7 @@ theorem RueCore.eval_leaf_ne_outOfFuel {M : FloatSig} {P : Program} {fuel : Nat}
 
 ```lean
 theorem RueCore.long_binop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (op : BinOp) (e₁ e₂ : Expr) :
+  {φ : Activation} (IH : LongIH M P fuel) (op : BinOp) (e₁ e₂ : Expr) :
   eval M (fuel + 1) P H φ (Expr.binop op e₁ e₂) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.binop op e₁ e₂)) (fuel + 1)
 ```
@@ -13506,7 +13541,7 @@ theorem RueCore.long_binop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.long_unop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (op : UnOp) (e : Expr) :
+  {φ : Activation} (IH : LongIH M P fuel) (op : UnOp) (e : Expr) :
   eval M (fuel + 1) P H φ (Expr.unop op e) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.unop op e)) (fuel + 1)
 ```
@@ -13519,7 +13554,8 @@ theorem RueCore.long_unop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.long_intCast {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (w : IntWidth) (sg : Sign) (e : Expr) :
+  {φ : Activation} (IH : LongIH M P fuel) (w : IntWidth) (sg : Sign)
+  (e : Expr) :
   eval M (fuel + 1) P H φ (Expr.intCast w sg e) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.intCast w sg e)) (fuel + 1)
 ```
@@ -13532,7 +13568,7 @@ theorem RueCore.long_intCast {M : FloatSig} {P : Program} {fuel : Nat} {H : Stor
 
 ```lean
 theorem RueCore.long_fintrin {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (k : FloatIntrin) (e : Expr) :
+  {φ : Activation} (IH : LongIH M P fuel) (k : FloatIntrin) (e : Expr) :
   eval M (fuel + 1) P H φ (Expr.fintrin k e) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.fintrin k e)) (fuel + 1)
 ```
@@ -13545,7 +13581,7 @@ theorem RueCore.long_fintrin {M : FloatSig} {P : Program} {fuel : Nat} {H : Stor
 
 ```lean
 theorem RueCore.long_dbg {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (e : Expr) :
+  {φ : Activation} (IH : LongIH M P fuel) (e : Expr) :
   eval M (fuel + 1) P H φ e.dbg = EvalRes.outOfFuel →
     Long M P (evalConf H φ e.dbg) (fuel + 1)
 ```
@@ -13558,7 +13594,7 @@ The repeat form (`7.1:39`), counted (helper).
 
 ```lean
 theorem RueCore.long_repeat {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (T : Ty) (e : Expr) (n : Nat) :
+  {φ : Activation} (IH : LongIH M P fuel) (T : Ty) (e : Expr) (n : Nat) :
   eval M (fuel + 1) P H φ (Expr.repeatArray T e n) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.repeatArray T e n)) (fuel + 1)
 ```
@@ -13571,7 +13607,7 @@ theorem RueCore.long_repeat {M : FloatSig} {P : Program} {fuel : Nat} {H : Store
 
 ```lean
 theorem RueCore.long_ret {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (e : Expr) :
+  {φ : Activation} (IH : LongIH M P fuel) (e : Expr) :
   eval M (fuel + 1) P H φ e.ret = EvalRes.outOfFuel →
     Long M P (evalConf H φ e.ret) (fuel + 1)
 ```
@@ -13584,7 +13620,7 @@ theorem RueCore.long_ret {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.long_assign {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (p : Place) (e : Expr) :
+  {φ : Activation} (IH : LongIH M P fuel) (p : Place) (e : Expr) :
   eval M (fuel + 1) P H φ (Expr.assign p e) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.assign p e)) (fuel + 1)
 ```
@@ -13597,7 +13633,7 @@ theorem RueCore.long_assign {M : FloatSig} {P : Program} {fuel : Nat} {H : Store
 
 ```lean
 theorem RueCore.long_letIn {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (m : Bool) (e₁ e₂ : Expr) :
+  {φ : Activation} (IH : LongIH M P fuel) (m : Bool) (e₁ e₂ : Expr) :
   eval M (fuel + 1) P H φ (Expr.letIn m e₁ e₂) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.letIn m e₁ e₂)) (fuel + 1)
 ```
@@ -13610,7 +13646,7 @@ theorem RueCore.long_letIn {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.long_match {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (scrut : Expr) (arms : List Expr) :
+  {φ : Activation} (IH : LongIH M P fuel) (scrut : Expr) (arms : List Expr) :
   eval M (fuel + 1) P H φ (scrut.match arms) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (scrut.match arms)) (fuel + 1)
 ```
@@ -13624,7 +13660,7 @@ theorem RueCore.long_match {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.long_seq {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (e₁ e₂ : Expr) :
+  {φ : Activation} (IH : LongIH M P fuel) (e₁ e₂ : Expr) :
   eval M (fuel + 1) P H φ (e₁.seq e₂) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (e₁.seq e₂)) (fuel + 1)
 ```
@@ -13637,7 +13673,7 @@ theorem RueCore.long_seq {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.long_ite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (c e₁ e₂ : Expr) :
+  {φ : Activation} (IH : LongIH M P fuel) (c e₁ e₂ : Expr) :
   eval M (fuel + 1) P H φ (c.ite e₁ e₂) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (c.ite e₁ e₂)) (fuel + 1)
 ```
@@ -13651,7 +13687,8 @@ An argument-list form whose list spent the fuel, from its enter step
 
 ```lean
 theorem RueCore.long_argsForm {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} {t : ArgsTag} {es : List Expr} {e : Expr} (IH : LongIH M P fuel)
+  {φ : Activation} {t : ArgsFrame} {es : List Expr} {e : Expr}
+  (IH : LongIH M P fuel)
   (hent :
     ∀ (K : List Kont) (tr : List Event),
       Step M P (evalConf H φ e K tr) (argsConf H φ t [] es K tr))
@@ -13669,7 +13706,7 @@ theorem RueCore.long_argsForm {M : FloatSig} {P : Program} {fuel : Nat} {H : Sto
 
 ```lean
 theorem RueCore.long_mkStruct {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (s : Nat) (args : List Expr) :
+  {φ : Activation} (IH : LongIH M P fuel) (s : Nat) (args : List Expr) :
   eval M (fuel + 1) P H φ (Expr.mkStruct s args) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.mkStruct s args)) (fuel + 1)
 ```
@@ -13682,7 +13719,7 @@ theorem RueCore.long_mkStruct {M : FloatSig} {P : Program} {fuel : Nat} {H : Sto
 
 ```lean
 theorem RueCore.long_mkEnum {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (e k : Nat) (args : List Expr) :
+  {φ : Activation} (IH : LongIH M P fuel) (e k : Nat) (args : List Expr) :
   eval M (fuel + 1) P H φ (Expr.mkEnum e k args) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.mkEnum e k args)) (fuel + 1)
 ```
@@ -13695,7 +13732,7 @@ theorem RueCore.long_mkEnum {M : FloatSig} {P : Program} {fuel : Nat} {H : Store
 
 ```lean
 theorem RueCore.long_mkArray {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (T : Ty) (args : List Expr) :
+  {φ : Activation} (IH : LongIH M P fuel) (T : Ty) (args : List Expr) :
   eval M (fuel + 1) P H φ (Expr.mkArray T args) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.mkArray T args)) (fuel + 1)
 ```
@@ -13708,7 +13745,7 @@ theorem RueCore.long_mkArray {M : FloatSig} {P : Program} {fuel : Nat} {H : Stor
 
 ```lean
 theorem RueCore.long_indexRead {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (p : Place) (idx : List Expr)
+  {φ : Activation} (IH : LongIH M P fuel) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) :
   eval M (fuel + 1) P H φ (Expr.indexRead p idx πs) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.indexRead p idx πs)) (fuel + 1)
@@ -13724,7 +13761,7 @@ index pays for that unit (helper).
 
 ```lean
 theorem RueCore.long_indexDrop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (p : Place) (idx : List Expr)
+  {φ : Activation} (IH : LongIH M P fuel) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) :
   eval M (fuel + 2) P H φ (Expr.indexDrop p idx πs) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.indexDrop p idx πs)) (fuel + 2)
@@ -13739,7 +13776,7 @@ the indices (helper).
 
 ```lean
 theorem RueCore.long_indexDrop_one {M : FloatSig} {P : Program} {H : Store}
-  {φ : Frame} (p : Place) (idx : List Expr) (πs : List (List Nat)) :
+  {φ : Activation} (p : Place) (idx : List Expr) (πs : List (List Nat)) :
   Long M P (evalConf H φ (Expr.indexDrop p idx πs)) 1
 ```
 
@@ -13751,7 +13788,7 @@ theorem RueCore.long_indexDrop_one {M : FloatSig} {P : Program} {H : Store}
 
 ```lean
 theorem RueCore.long_indexWrite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (p : Place) (idx : List Expr)
+  {φ : Activation} (IH : LongIH M P fuel) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) (e : Expr) :
   eval M (fuel + 1) P H φ (Expr.indexWrite p idx πs e) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.indexWrite p idx πs e)) (fuel + 1)
@@ -13766,7 +13803,7 @@ step (helper).
 
 ```lean
 theorem RueCore.long_call {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (f : Nat) (args : List Expr) :
+  {φ : Activation} (IH : LongIH M P fuel) (f : Nat) (args : List Expr) :
   eval M (fuel + 1) P H φ (Expr.call f args) = EvalRes.outOfFuel →
     Long M P (evalConf H φ (Expr.call f args)) (fuel + 1)
 ```
@@ -13783,7 +13820,7 @@ off by determinism (`StepsN.peel`), and (D-Loop-Iter) stands in for it
 
 ```lean
 theorem RueCore.long_loop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : LongIH M P fuel) (e : Expr) :
+  {φ : Activation} (IH : LongIH M P fuel) (e : Expr) :
   eval M (fuel + 1) P H φ e.loop = EvalRes.outOfFuel →
     Long M P (evalConf H φ e.loop) (fuel + 1)
 ```
@@ -13852,10 +13889,10 @@ theorem RueCore.run_classify {M : FloatSig} {P : Program} {T : Config}
       n < fuel →
         (∃ H v tr,
             run M P fuel = EvalRes.ok H v tr ∧
-              T = Config.run H Frame.empty [] (Focus.ret v) tr) ∨
+              T = Config.run H Activation.empty [] (Focus.ret v) tr) ∨
           (∃ κ tr,
               run M P fuel = EvalRes.panic κ tr ∧ T = Config.panic κ tr) ∨
-            ∃ w, run M P fuel = EvalRes.stuck w
+            ∃ w, run M P fuel = EvalRes.refused w
 ```
 
 ### `Config.SafeAt.steps`
@@ -13901,7 +13938,7 @@ spends one unit and the body never breaks (helper).
 
 ```lean
 theorem RueCore.Nonvacuous.loopUnit_eval (M : FloatSig) (P : Program) (n : Nat)
-  (H : Store) (φ : Frame) :
+  (H : Store) (φ : Activation) :
   eval M n P H φ Expr.unitLit.loop = EvalRes.outOfFuel
 ```
 
@@ -13931,7 +13968,7 @@ scope's end (helper).
 
 ```lean
 theorem RueCore.Nonvacuous.dropTurn_eval (M : FloatSig) (fns : List FnDef) (m : Nat)
-  (H : Store) (φ : Frame) :
+  (H : Store) (φ : Activation) :
   ∃ H' tr,
     eval M (m + 3)
         {
@@ -13940,12 +13977,12 @@ theorem RueCore.Nonvacuous.dropTurn_eval (M : FloatSig) (fns : List FnDef) (m : 
               structs :=
                 [{ attr := Attr.none,
                     fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                    cls := Mult.affine },
+                    cls := Qual.affine },
                   { attr := Attr.linear,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Mult.linear }],
+                    dtor := false, cls := Qual.linear }],
               enums :=
-                [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
           fns := fns }
         H φ
         (Expr.letIn false
@@ -13963,7 +14000,7 @@ frame: each turn finishes and the body never breaks (helper).
 
 ```lean
 theorem RueCore.Nonvacuous.dropLoop_eval (M : FloatSig) (fns : List FnDef) (n : Nat)
-  (H : Store) (φ : Frame) :
+  (H : Store) (φ : Activation) :
   eval M n
       {
         decls :=
@@ -13971,12 +14008,12 @@ theorem RueCore.Nonvacuous.dropLoop_eval (M : FloatSig) (fns : List FnDef) (n : 
             structs :=
               [{ attr := Attr.none,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                  cls := Mult.affine },
+                  cls := Qual.affine },
                 { attr := Attr.linear,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-                  cls := Mult.linear }],
+                  cls := Qual.linear }],
             enums :=
-              [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+              [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
         fns := fns }
       H φ
       (Expr.letIn false
@@ -14155,7 +14192,7 @@ loop catches its body's `break` (§6.10) (helper).
 
 ```lean
 theorem RueCore.eval_quiet (M : FloatSig) (P : Program) (fuel : Nat) (H : Store)
-  (φ : Frame) (e : Expr) :
+  (φ : Activation) (e : Expr) :
   (e.returns = false → (eval M fuel P H φ e).NoRet) ∧
     (e.breaks = false → (eval M fuel P H φ e).NoBrk)
 ```
@@ -14171,18 +14208,18 @@ theorem RueCore.freedIds_append (D : Decls) (l₁ l₂ : List Event) :
   freedIds D (l₁ ++ l₂) = freedIds D l₁ ++ freedIds D l₂
 ```
 
-### `Contents.readAt_writeAt`
+### `Contents.getAt_setAt`
 
 *theorem* · module `RueCore.TraceExact`
 
 A path written is a path read back (helper).
 
 ```lean
-theorem RueCore.Contents.readAt_writeAt (π : List Nat) {c new c' : Contents} :
-  c.writeAt π new = some c' → c'.readAt π = Except.ok new
+theorem RueCore.Contents.getAt_setAt (π : List Nat) {c new c' : Contents} :
+  c.setAt π new = some c' → c'.getAt π = Except.ok new
 ```
 
-### `Contents.writeAt_own_eq`
+### `Contents.setAt_own_eq`
 
 *theorem* · module `RueCore.TraceExact`
 
@@ -14193,12 +14230,12 @@ sides own nothing, which is where copy closure of both the old and the new
 contents is needed (helper).
 
 ```lean
-theorem RueCore.Contents.writeAt_own_eq {D : Decls} (a : Nat) (π : List Nat)
+theorem RueCore.Contents.setAt_own_eq {D : Decls} (a : Nat) (π : List Nat)
   {c sub new c' : Contents} :
-  Contents.copyClosed D c = true →
-    Contents.copyClosed D c' = true →
-      c.readAt π = Except.ok sub →
-        c.writeAt π new = some c' →
+  Contents.copyContained D c = true →
+    Contents.copyContained D c' = true →
+      c.getAt π = Except.ok sub →
+        c.setAt π new = some c' →
           List.count a (Contents.own D c') +
               List.count a (Contents.own D sub) =
             List.count a (Contents.own D c) +
@@ -14218,16 +14255,16 @@ theorem RueCore.dropCell_freed {D : Decls} {ℓ : Nat} {c : Contents} {evs : Lis
   (h : dropCell D ℓ c = Except.ok evs) : freedIds D evs = Contents.own D c
 ```
 
-### `residueMark_freed`
+### `residueDropEvent_freed`
 
 *theorem* · module `RueCore.TraceExact`
 
 One residue subtree's drop frees exactly the subtree (helper).
 
 ```lean
-theorem RueCore.residueMark_freed {D : Decls} {ℓ : Nat} {r : Contents}
+theorem RueCore.residueDropEvent_freed {D : Decls} {ℓ : Nat} {r : Contents}
   {evs : List Event} (h : dropContents D r = Except.ok evs) :
-  freedIds D (residueMark D ℓ r ++ evs) = Contents.own D r
+  freedIds D (residueDropEvent D ℓ r ++ evs) = Contents.own D r
 ```
 
 ### `dropResidue_freed`
@@ -14252,11 +14289,12 @@ what the consumed place owned (helper).
 
 ```lean
 theorem RueCore.Contents.destructure_exact {D : Decls} {ℓ : Nat} {cd leaf : Contents}
-  {πs : List Nat} {evs : List Event} (hcc : Contents.copyClosed D cd = true)
+  {πs : List Nat} {evs : List Event}
+  (hcc : Contents.copyContained D cd = true)
   (h : Contents.destructure D ℓ cd πs = Except.ok (leaf, evs)) (a : Nat) :
   List.count a (Contents.own D leaf) + List.count a (freedIds D evs) =
       List.count a (Contents.own D cd) ∧
-    Contents.copyClosed D leaf = true
+    Contents.copyContained D leaf = true
 ```
 
 ### `dropRetire_exact`
@@ -14304,7 +14342,8 @@ scrutinee (helper).
 ```lean
 theorem RueCore.matchConsume_exact {D : Decls} {e k i : Nat} {vs : List Val}
   (h :
-    Contents.copyClosed D (Contents.enum e k i (Contents.ofVals vs)) = true)
+    Contents.copyContained D (Contents.enum e k i (Contents.ofVals vs)) =
+      true)
   (a : Nat) :
   List.count a (Contents.ownList D (Contents.ofVals vs)) +
       List.count a (freedIds D (matchConsume D e k i vs)) =
@@ -14321,7 +14360,7 @@ a `Copy` node owns nothing, and — copy-closed — neither do its members
 
 ```lean
 theorem RueCore.Contents.own_struct_fresh {D : Decls} {s i : Nat} {cs : List Contents}
-  (h : Contents.copyClosed D (Contents.struct s i cs) = true) {a : Nat}
+  (h : Contents.copyContained D (Contents.struct s i cs) = true) {a : Nat}
   (ha : a ≠ i) :
   List.count a (Contents.own D (Contents.struct s i cs)) =
     List.count a (Contents.ownList D cs)
@@ -14335,7 +14374,7 @@ The same at an enum (helper).
 
 ```lean
 theorem RueCore.Contents.own_enum_fresh {D : Decls} {e k i : Nat} {cs : List Contents}
-  (h : Contents.copyClosed D (Contents.enum e k i cs) = true) {a : Nat}
+  (h : Contents.copyContained D (Contents.enum e k i cs) = true) {a : Nat}
   (ha : a ≠ i) :
   List.count a (Contents.own D (Contents.enum e k i cs)) =
     List.count a (Contents.ownList D cs)
@@ -14350,7 +14389,7 @@ The same at an array (helper).
 ```lean
 theorem RueCore.Contents.own_array_fresh {D : Decls} {T : Ty} {i : Nat}
   {cs : List Contents}
-  (h : Contents.copyClosed D (Contents.array T i cs) = true) {a : Nat}
+  (h : Contents.copyContained D (Contents.array T i cs) = true) {a : Nat}
   (ha : a ≠ i) :
   List.count a (Contents.own D (Contents.array T i cs)) =
     List.count a (Contents.ownList D cs)
@@ -14374,9 +14413,9 @@ theorem RueCore.Val.ints_own {D : Decls} {vs : List Val} {is : List Int} :
 `dynPlace` lands only after its indices were integers (helper).
 
 ```lean
-theorem RueCore.dynPlace_ints {H : Store} {φ : Frame} {p : Place} {vs : List Val}
+theorem RueCore.dynPlace_ints {H : Store} {φ : Activation} {p : Place} {vs : List Val}
   {πs : List (List Nat)}
-  (h : ∀ (w : Violation), dynPlace H φ p vs πs ≠ DynPlace.stuck w) :
+  (h : ∀ (w : Refusal), dynPlace H φ p vs πs ≠ DynPlace.refused w) :
   ∃ is, Val.ints vs = some is
 ```
 
@@ -14430,7 +14469,7 @@ theorem RueCore.Exact.bind {D : Decls} {H : Store} {X : List Nat} {r : EvalRes}
     ∀ (H₁ : Store) (v : Val) (tr : List Event),
       r = EvalRes.ok H₁ v tr →
         StoreCC D H₁ →
-          Contents.copyClosed D (Contents.ofVal v) = true →
+          Contents.copyContained D (Contents.ofVal v) = true →
             Exact D H₁ (Val.own D v) (k H₁ v)) :
   Exact D H X (r.bind k)
 ```
@@ -14450,7 +14489,7 @@ theorem RueCore.Exact.bindHeld {D : Decls} {H : Store} {Y : List Nat} {r : EvalR
     ∀ (H₁ : Store) (v : Val) (tr : List Event),
       r = EvalRes.ok H₁ v tr →
         StoreCC D H₁ →
-          Contents.copyClosed D (Contents.ofVal v) = true →
+          Contents.copyContained D (Contents.ofVal v) = true →
             Exact D H₁ (Y ++ Val.own D v) (k H₁ v)) :
   Exact D H Y (r.bind k)
 ```
@@ -14468,7 +14507,7 @@ theorem RueCore.Exact.absorb {D : Decls} {H : Store} {X : List Nat} {r : EvalRes
     ∀ (H₁ : Store) (v : Val) (tr : List Event),
       r = EvalRes.ok H₁ v tr →
         StoreCC D H₁ →
-          Contents.copyClosed D (Contents.ofVal v) = true →
+          Contents.copyContained D (Contents.ofVal v) = true →
             Exact D H₁ (Val.own D v) (k H₁ v)) :
   Exact D H X (r.bindCall k)
 ```
@@ -14482,7 +14521,8 @@ A value produced where the store is, owning exactly what was held
 
 ```lean
 theorem RueCore.Exact.pure {D : Decls} {H : Store} {X : List Nat} {v : Val}
-  (hcc : StoreCC D H) (hv : Contents.copyClosed D (Contents.ofVal v) = true)
+  (hcc : StoreCC D H)
+  (hv : Contents.copyContained D (Contents.ofVal v) = true)
   (ho :
     ∀ (a : Nat),
       a < List.length H → List.count a (Val.own D v) = List.count a X) :
@@ -14530,7 +14570,7 @@ exactly its members, apart from its own fresh identity (helper).
 theorem RueCore.Exact.intro {D : Decls} {H : Store} {Y : List Nat} {mk : Nat → Val}
   (hcc : StoreCC D H)
   (ho :
-    Contents.copyClosed D (Contents.ofVal (mk (List.length H))) = true →
+    Contents.copyContained D (Contents.ofVal (mk (List.length H))) = true →
       ∀ (a : Nat),
         a < List.length H →
           List.count a (Val.own D (mk (List.length H))) = List.count a Y) :
@@ -14599,8 +14639,8 @@ place owned, and the place holds `⊘` (helper).
 ```lean
 theorem RueCore.Exact.move {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Contents}
   {π : List Nat} {v : Val} (hcc : StoreCC D H)
-  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.readAt π = Except.ok sub)
-  (hw : c.writeAt π Contents.hole = some c') (hv : sub.toVal = some v) :
+  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.getAt π = Except.ok sub)
+  (hw : c.setAt π Contents.movedOut = some c') (hv : sub.toVal = some v) :
   Exact D H [] (EvalRes.ok (List.set H ℓ (Cell.full c')) v [])
 ```
 
@@ -14616,9 +14656,9 @@ dropped and the shell consumed are exactly the consumed place, which becomes
 theorem RueCore.Exact.destructure {D : Decls} {H : Store} {ℓ : Nat}
   {c c' cd leaf : Contents} {πd πs : List Nat} {v : Val} {evs : List Event}
   (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
-  (hr : c.readAt πd = Except.ok cd)
+  (hr : c.getAt πd = Except.ok cd)
   (hd : Contents.destructure D ℓ cd πs = Except.ok (leaf, evs))
-  (hv : leaf.toVal = some v) (hw : c.writeAt πd Contents.hole = some c') :
+  (hv : leaf.toVal = some v) (hw : c.setAt πd Contents.movedOut = some c') :
   Exact D H [] (EvalRes.ok (List.set H ℓ (Cell.full c')) v evs)
 ```
 
@@ -14632,9 +14672,9 @@ becomes `⊘` (helper).
 ```lean
 theorem RueCore.Exact.dropPlace {D : Decls} {H : Store} {ℓ : Nat}
   {c c' sub : Contents} {π : List Nat} {evs : List Event} (hcc : StoreCC D H)
-  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.readAt π = Except.ok sub)
+  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.getAt π = Except.ok sub)
   (hd : dropCell D ℓ sub = Except.ok evs)
-  (hw : c.writeAt π Contents.hole = some c') :
+  (hw : c.setAt π Contents.movedOut = some c') :
   Exact D H [] (EvalRes.ok (List.set H ℓ (Cell.full c')) Val.unit evs)
 ```
 
@@ -14648,10 +14688,10 @@ theorem RueCore.Exact.dropPlace {D : Decls} {H : Store} {ℓ : Nat}
 theorem RueCore.Exact.dropDeclared {D : Decls} {H : Store} {ℓ : Nat}
   {c c' cd leaf : Contents} {πd πs : List Nat} {evs levs : List Event}
   (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
-  (hr : c.readAt πd = Except.ok cd)
+  (hr : c.getAt πd = Except.ok cd)
   (hd : Contents.destructure D ℓ cd πs = Except.ok (leaf, evs))
   (hl : dropCell D ℓ leaf = Except.ok levs)
-  (hw : c.writeAt πd Contents.hole = some c') :
+  (hw : c.setAt πd Contents.movedOut = some c') :
   Exact D H []
     (EvalRes.ok (List.set H ℓ (Cell.full c')) Val.unit (evs ++ levs))
 ```
@@ -14666,10 +14706,10 @@ the held value takes its position (helper).
 ```lean
 theorem RueCore.Exact.assign {D : Decls} {H : Store} {ℓ : Nat} {c c' old : Contents}
   {π : List Nat} {v : Val} {evs : List Event} (hcc : StoreCC D H)
-  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.readAt π = Except.ok old)
+  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.getAt π = Except.ok old)
   (hd : dropCell D ℓ old = Except.ok evs)
-  (hw : c.writeAt π (Contents.ofVal v) = some c')
-  (hc' : Contents.copyClosed D c' = true) :
+  (hw : c.setAt π (Contents.ofVal v) = some c')
+  (hc' : Contents.copyContained D c' = true) :
   Exact D H (Val.own D v)
     (EvalRes.ok (List.set H ℓ (Cell.full c')) Val.unit evs)
 ```
@@ -14684,10 +14724,10 @@ theorem RueCore.Exact.assign {D : Decls} {H : Store} {ℓ : Nat} {c c' old : Con
 theorem RueCore.Exact.assignDyn {D : Decls} {H : Store} {ℓ : Nat}
   {c c' sub sub' old : Contents} {π ρ : List Nat} {v : Val} {evs : List Event}
   (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
-  (hr : c.readAt π = Except.ok sub) (hr' : sub.readAt ρ = Except.ok old)
+  (hr : c.getAt π = Except.ok sub) (hr' : sub.getAt ρ = Except.ok old)
   (hd : dropCell D ℓ old = Except.ok evs)
-  (hw' : sub.writeAt ρ (Contents.ofVal v) = some sub')
-  (hw : c.writeAt π sub' = some c') (hc' : Contents.copyClosed D c' = true) :
+  (hw' : sub.setAt ρ (Contents.ofVal v) = some sub')
+  (hw : c.setAt π sub' = some c') (hc' : Contents.copyContained D c' = true) :
   Exact D H (Val.own D v)
     (EvalRes.ok (List.set H ℓ (Cell.full c')) Val.unit evs)
 ```
@@ -14701,10 +14741,11 @@ exactly (helper).
 
 ```lean
 theorem RueCore.Exact.unwind {D : Decls} {H : Store} {v : Val} {ls : List Nat}
-  (hcc : StoreCC D H) (hv : Contents.copyClosed D (Contents.ofVal v) = true) :
+  (hcc : StoreCC D H)
+  (hv : Contents.copyContained D (Contents.ofVal v) = true) :
   Exact D H (Val.own D v)
     (match unwindLocs D H ls with
-    | Except.error w => EvalRes.stuck w
+    | Except.error w => EvalRes.refused w
     | Except.ok (H', evs) => EvalRes.ok H' v evs)
 ```
 
@@ -14771,10 +14812,10 @@ A dynamic read's value is `Copy`: the machine refuses any other (§6.3's
 
 ```lean
 theorem RueCore.eval_indexRead_copy {M : FloatSig} {P : Program} {n : Nat}
-  {H H' : Store} {φ : Frame} {p : Place} {idx : List Expr}
+  {H H' : Store} {φ : Activation} {p : Place} {idx : List Expr}
   {πs : List (List Nat)} {v : Val} {tr : List Event}
   (h : eval M n P H φ (Expr.indexRead p idx πs) = EvalRes.ok H' v tr) :
-  Val.mult P.decls v = Mult.copy
+  Val.qual P.decls v = Qual.copy
 ```
 
 ### `EvalRes.withTrace_inj`
@@ -14812,29 +14853,29 @@ leading operands produced `vs`, whatever the rest of the form yields at
 theorem RueCore.rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true)
   {n : Nat}
   (ih :
-    ∀ (H : Store) (φ : Frame) (e : Expr),
+    ∀ (H : Store) (φ : Activation) (e : Expr),
       StoreCC P.decls H →
         e.pendingSafe = true → Exact P.decls H [] (eval M n P H φ e))
-  {H : Store} {φ : Frame} {e : Expr} {H₁ : Store} {vs : List Val}
+  {H : Store} {φ : Activation} {e : Expr} {H₁ : Store} {vs : List Val}
   {tr : List Event} :
   e.pendingSafe = true →
     Lead M P n H φ H₁ vs tr e →
       StoreCC P.decls H₁ →
-        Contents.copyClosedList P.decls (Contents.ofVals vs) = true →
+        Contents.copyContainedList P.decls (Contents.ofVals vs) = true →
           ∀ (r : EvalRes),
             eval M (n + 1) P H φ e = EvalRes.withTrace tr r →
               Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs))
                 r
 ```
 
-### `Frame.In.mono`
+### `Activation.In.mono`
 
 *theorem* · module `RueCore.TraceExact`
 
 A frame inside a store is inside every store grown from it (helper).
 
 ```lean
-theorem RueCore.Frame.In.mono {φ : Frame} {H H' : Store} (h : φ.In H)
+theorem RueCore.Activation.In.mono {φ : Activation} {H H' : Store} (h : φ.In H)
   (hl : List.length H ≤ List.length H') : φ.In H'
 ```
 
@@ -14845,7 +14886,7 @@ theorem RueCore.Frame.In.mono {φ : Frame} {H H' : Store} (h : φ.In H)
 Nothing changed (helper).
 
 ```lean
-theorem RueCore.Local.refl (φ : Frame) (H : Store) : Local φ H H
+theorem RueCore.Local.refl (φ : Activation) (H : Store) : Local φ H H
 ```
 
 ### `Local.trans`
@@ -14855,7 +14896,7 @@ theorem RueCore.Local.refl (φ : Frame) (H : Store) : Local φ H H
 Local steps compose (helper).
 
 ```lean
-theorem RueCore.Local.trans {φ : Frame} {H H₁ H₂ : Store} (h₁ : Local φ H H₁)
+theorem RueCore.Local.trans {φ : Activation} {H H₁ H₂ : Store} (h₁ : Local φ H H₁)
   (h₂ : Local φ H₁ H₂) : Local φ H H₂
 ```
 
@@ -14866,7 +14907,7 @@ theorem RueCore.Local.trans {φ : Frame} {H H₁ H₂ : Store} (h₁ : Local φ 
 A write through the environment is local (helper).
 
 ```lean
-theorem RueCore.Local.set {φ : Frame} {H : Store} {ℓ : Nat} (x : Cell)
+theorem RueCore.Local.set {φ : Activation} {H : Store} {ℓ : Nat} (x : Cell)
   (hℓ : ℓ ∈ φ.env) : Local φ H (List.set H ℓ x)
 ```
 
@@ -14877,19 +14918,19 @@ theorem RueCore.Local.set {φ : Frame} {H : Store} {ℓ : Nat} (x : Cell)
 Growing the store is local (helper).
 
 ```lean
-theorem RueCore.Local.append {φ : Frame} {H : Store} (ext : Store) :
+theorem RueCore.Local.append {φ : Activation} {H : Store} (ext : Store) :
   Local φ H (H ++ ext)
 ```
 
-### `Retired.same`
+### `Tombstoned.same`
 
 *theorem* · module `RueCore.TraceExact`
 
 Nothing allocated, nothing to retire (helper).
 
 ```lean
-theorem RueCore.Retired.same {H H' : Store} {keep : List Nat}
-  (h : List.length H' ≤ List.length H) : Retired H keep H'
+theorem RueCore.Tombstoned.same {H H' : Store} {keep : List Nat}
+  (h : List.length H' ≤ List.length H) : Tombstoned H keep H'
 ```
 
 ### `Tidy.same`
@@ -14899,7 +14940,7 @@ theorem RueCore.Retired.same {H H' : Store} {keep : List Nat}
 A value produced where the store is (helper).
 
 ```lean
-theorem RueCore.Tidy.same {φ : Frame} {H : Store} {v : Val} {tr : List Event} :
+theorem RueCore.Tidy.same {φ : Activation} {H : Store} {v : Val} {tr : List Event} :
   Tidy φ H (EvalRes.ok H v tr)
 ```
 
@@ -14910,7 +14951,7 @@ theorem RueCore.Tidy.same {φ : Frame} {H : Store} {v : Val} {tr : List Event} :
 A write through the environment (helper).
 
 ```lean
-theorem RueCore.Tidy.write {φ : Frame} {H : Store} {ℓ : Nat} {x : Cell} {v : Val}
+theorem RueCore.Tidy.write {φ : Activation} {H : Store} {ℓ : Nat} {x : Cell} {v : Val}
   {tr : List Event} (hℓ : ℓ ∈ φ.env) :
   Tidy φ H (EvalRes.ok (List.set H ℓ x) v tr)
 ```
@@ -14922,7 +14963,7 @@ theorem RueCore.Tidy.write {φ : Frame} {H : Store} {ℓ : Nat} {x : Cell} {v : 
 An operator's outcome (helper).
 
 ```lean
-theorem RueCore.Tidy.opRes {φ : Frame} {H : Store} {o : OpRes} :
+theorem RueCore.Tidy.opRes {φ : Activation} {H : Store} {o : OpRes} :
   Tidy φ H (OpRes.toRes H o)
 ```
 
@@ -14933,7 +14974,7 @@ theorem RueCore.Tidy.opRes {φ : Frame} {H : Store} {o : OpRes} :
 Aggregate introduction reserves one retired slot (helper).
 
 ```lean
-theorem RueCore.Tidy.intro {D : Decls} {φ : Frame} {H : Store} {mk : Nat → Val} :
+theorem RueCore.Tidy.intro {D : Decls} {φ : Activation} {H : Store} {mk : Nat → Val} :
   Tidy φ H (introVal D H mk)
 ```
 
@@ -14945,9 +14986,9 @@ theorem RueCore.Tidy.intro {D : Decls} {φ : Frame} {H : Store} {mk : Nat → Va
 evaluation in the same frame (helper).
 
 ```lean
-theorem RueCore.Tidy.prefix {φ : Frame} {H H₁ : Store} {tr : List Event} {r : EvalRes}
-  (hf : ∀ (ℓ : Nat), ℓ ∈ φ.env → ℓ < List.length H) (hl : Local φ H H₁)
-  (hre : Retired H [] H₁) (hr : Tidy φ H₁ r) :
+theorem RueCore.Tidy.prefix {φ : Activation} {H H₁ : Store} {tr : List Event}
+  {r : EvalRes} (hf : ∀ (ℓ : Nat), ℓ ∈ φ.env → ℓ < List.length H)
+  (hl : Local φ H H₁) (hre : Tombstoned H [] H₁) (hr : Tidy φ H₁ r) :
   Tidy φ H (EvalRes.withTrace tr r)
 ```
 
@@ -14958,7 +14999,7 @@ theorem RueCore.Tidy.prefix {φ : Frame} {H H₁ : Store} {tr : List Event} {r :
 §6.2's search keeps the frame-pop invariant (helper).
 
 ```lean
-theorem RueCore.Tidy.bind {φ : Frame} {H : Store} {r : EvalRes}
+theorem RueCore.Tidy.bind {φ : Activation} {H : Store} {r : EvalRes}
   {k : Store → Val → EvalRes}
   (hf : ∀ (ℓ : Nat), ℓ ∈ φ.env → ℓ < List.length H) (hr : Tidy φ H r)
   (hk :
@@ -15018,7 +15059,7 @@ theorem RueCore.unwind_kills {D : Decls} {H : Store} {v : Val} {ls ls' : List Na
   (hm : ∀ (ℓ : Nat), ℓ ∈ ls' ↔ ℓ ∈ ls) :
   KillsOnly ls H v
     (match unwindLocs D H ls' with
-    | Except.error w => EvalRes.stuck w
+    | Except.error w => EvalRes.refused w
     | Except.ok (H', evs) => EvalRes.ok H' v evs)
 ```
 
@@ -15032,7 +15073,7 @@ theorem RueCore.unwind_kills {D : Decls} {H : Store} {v : Val} {ls ls' : List Na
 theorem RueCore.dropRetire_kills {D : Decls} {H : Store} {v : Val} {ℓ : Nat} :
   KillsOnly [ℓ] H v
     (match dropRetire D H ℓ with
-    | Except.error w => EvalRes.stuck w
+    | Except.error w => EvalRes.refused w
     | Except.ok (H', evs) => EvalRes.ok H' v evs)
 ```
 
@@ -15048,8 +15089,8 @@ finds `ls` in the extended record and has retired them; an unwinding `break`
 carries them in its record (helper).
 
 ```lean
-theorem RueCore.Tidy.scoped {φ : Frame} {H Hm : Store} {ls : List Nat} {r : EvalRes}
-  {k : Store → Val → EvalRes}
+theorem RueCore.Tidy.scoped {φ : Activation} {H Hm : Store} {ls : List Nat}
+  {r : EvalRes} {k : Store → Val → EvalRes}
   (hls : ∀ (ℓ : Nat), ℓ ∈ ls ↔ List.length H ≤ ℓ ∧ ℓ < List.length Hm)
   (hlen : List.length H ≤ List.length Hm)
   (hpre : ∀ (ℓ : Nat), ℓ < List.length H → Hm[ℓ]? = H[ℓ]?)
@@ -15060,38 +15101,38 @@ theorem RueCore.Tidy.scoped {φ : Frame} {H Hm : Store} {ls : List Nat} {r : Eva
   Tidy φ H (r.bind k)
 ```
 
-### `mintParams_locs`
+### `freshParams_locs`
 
 *theorem* · module `RueCore.TraceExact`
 
 Minted cells are the next indices, in order (helper).
 
 ```lean
-theorem RueCore.mintParams_locs (H : Store) (vs : List Val) :
-  (mintParams H vs).snd = List.range' (List.length H) vs.length
+theorem RueCore.freshParams_locs (H : Store) (vs : List Val) :
+  (freshParams H vs).snd = List.range' (List.length H) vs.length
 ```
 
-### `mintParams_mem`
+### `freshParams_mem`
 
 *theorem* · module `RueCore.TraceExact`
 
 Membership in the minted cells (helper).
 
 ```lean
-theorem RueCore.mintParams_mem (H : Store) (vs : List Val) (ℓ : Nat) :
-  ℓ ∈ (mintParams H vs).snd ↔
-    List.length H ≤ ℓ ∧ ℓ < List.length (mintParams H vs).fst
+theorem RueCore.freshParams_mem (H : Store) (vs : List Val) (ℓ : Nat) :
+  ℓ ∈ (freshParams H vs).snd ↔
+    List.length H ≤ ℓ ∧ ℓ < List.length (freshParams H vs).fst
 ```
 
-### `mintParams_pre`
+### `freshParams_pre`
 
 *theorem* · module `RueCore.TraceExact`
 
 Minting leaves the old cells alone (helper).
 
 ```lean
-theorem RueCore.mintParams_pre (H : Store) (vs : List Val) (ℓ : Nat)
-  (h : ℓ < List.length H) : (mintParams H vs).fst[ℓ]? = H[ℓ]?
+theorem RueCore.freshParams_pre (H : Store) (vs : List Val) (ℓ : Nat)
+  (h : ℓ < List.length H) : (freshParams H vs).fst[ℓ]? = H[ℓ]?
 ```
 
 ### `dynPlace_env`
@@ -15101,7 +15142,7 @@ theorem RueCore.mintParams_pre (H : Store) (vs : List Val) (ℓ : Nat)
 A dynamic place's cell is named by the environment (helper).
 
 ```lean
-theorem RueCore.dynPlace_env {H : Store} {φ : Frame} {p : Place} {vs : List Val}
+theorem RueCore.dynPlace_env {H : Store} {φ : Activation} {p : Place} {vs : List Val}
   {πs : List (List Nat)} {ℓ : Nat} {c sub : Contents} {ρ : List Nat}
   (h : dynPlace H φ p vs πs = DynPlace.at ℓ c sub ρ) : ℓ ∈ φ.env
 ```
@@ -15113,7 +15154,7 @@ theorem RueCore.dynPlace_env {H : Store} {φ : Frame} {p : Place} {vs : List Val
 An argument list keeps the frame-pop invariant (helper).
 
 ```lean
-theorem RueCore.evalArgs_tidy {φ : Frame} {ev : Store → Expr → EvalRes}
+theorem RueCore.evalArgs_tidy {φ : Activation} {ev : Store → Expr → EvalRes}
   {es : List Expr} :
   (∀ (H : Store) (e : Expr), e ∈ es → φ.In H → Tidy φ H (ev H e)) →
     ∀ (H : Store), φ.In H → ArgsTidy φ H (evalArgs ev H es)
@@ -15129,7 +15170,7 @@ frame popped by `run-all-scope-drops`, its unwinding `return` having popped
 it already — keeps the caller's frame-pop invariant (helper).
 
 ```lean
-theorem RueCore.Tidy.call {D : Decls} {φ : Frame} {H Hm : Store} {ls : List Nat}
+theorem RueCore.Tidy.call {D : Decls} {φ : Activation} {H Hm : Store} {ls : List Nat}
   {r : EvalRes}
   (hls : ∀ (ℓ : Nat), ℓ ∈ ls ↔ List.length H ≤ ℓ ∧ ℓ < List.length Hm)
   (hlen : List.length H ≤ List.length Hm)
@@ -15138,22 +15179,22 @@ theorem RueCore.Tidy.call {D : Decls} {φ : Frame} {H Hm : Store} {ls : List Nat
   Tidy φ H
     (r.bindCall fun H₃ v =>
       match runAllScopeDrops D H₃ { env := ls.reverse, scope := ls } with
-      | Except.error w => EvalRes.stuck w
+      | Except.error w => EvalRes.refused w
       | Except.ok (H₄, evs) => EvalRes.ok H₄ v evs)
 ```
 
-### `FrameMatches.frameIn`
+### `ActivationTyping.activationIn`
 
 *theorem* · module `RueCore.TraceExact`
 
 A frame agreeing with a context names only existing cells (helper).
 
 ```lean
-theorem RueCore.FrameMatches.frameIn {D : Decls} {Γ : Ctx} {φ : Frame} {H : Store}
-  (h : FrameMatches D Γ φ H) : φ.In H
+theorem RueCore.ActivationTyping.activationIn {D : Decls} {Γ : Ctx} {φ : Activation}
+  {H : Store} (h : ActivationTyping D Γ φ H) : φ.In H
 ```
 
-### `Retired.mono`
+### `Tombstoned.mono`
 
 *theorem* · module `RueCore.TraceExact`
 
@@ -15161,9 +15202,9 @@ Allocations since an earlier store include those since a later one
 (helper).
 
 ```lean
-theorem RueCore.Retired.mono {H H₁ H' : Store} {keep : List Nat}
-  (hle : List.length H ≤ List.length H₁) (h : Retired H keep H') :
-  Retired H₁ keep H'
+theorem RueCore.Tombstoned.mono {H H₁ H' : Store} {keep : List Nat}
+  (hle : List.length H ≤ List.length H₁) (h : Tombstoned H keep H') :
+  Tombstoned H₁ keep H'
 ```
 
 ### `Tidy.settled`
@@ -15173,7 +15214,7 @@ theorem RueCore.Retired.mono {H H₁ H' : Store} {keep : List Nat}
 The whole form's frame-pop invariant, read at the rest (helper).
 
 ```lean
-theorem RueCore.Tidy.settled {φ : Frame} {H H₁ : Store} {r : EvalRes}
+theorem RueCore.Tidy.settled {φ : Activation} {H H₁ : Store} {r : EvalRes}
   {tr : List Event} (hle : List.length H ≤ List.length H₁)
   (h : Tidy φ H (EvalRes.withTrace tr r)) : Settled φ H₁ r
 ```
@@ -15187,12 +15228,12 @@ grew, it stays copy-closed, and the values are (helper).
 
 ```lean
 theorem RueCore.lead_cc (M : FloatSig) {P : Program} (hp : P.pendingSafe = true)
-  {fuel : Nat} {H : Store} {φ : Frame} {e : Expr} {H₁ : Store} {vs : List Val}
-  {tr : List Event} (hcc : StoreCC P.decls H) (he : e.pendingSafe = true)
-  (hl : Lead M P fuel H φ H₁ vs tr e) :
+  {fuel : Nat} {H : Store} {φ : Activation} {e : Expr} {H₁ : Store}
+  {vs : List Val} {tr : List Event} (hcc : StoreCC P.decls H)
+  (he : e.pendingSafe = true) (hl : Lead M P fuel H φ H₁ vs tr e) :
   List.length H ≤ List.length H₁ ∧
     StoreCC P.decls H₁ ∧
-      Contents.copyClosedList P.decls (Contents.ofVals vs) = true
+      Contents.copyContainedList P.decls (Contents.ofVals vs) = true
 ```
 
 ### `lostProgram_typed`
@@ -15217,14 +15258,15 @@ theorem RueCore.typed_of_check {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} (T :
   ∃ Ω, Typed P R Γ e T Ω
 ```
 
-### `lostFrame_matches`
+### `lostActivation_typing`
 
 *theorem* · module `RueCore.TraceExact`
 
 `g`'s entry frame agrees with its entry context (helper).
 
 ```lean
-theorem RueCore.lostFrame_matches : FrameMatches lostDecls lostCtx lostFrame lostStore
+theorem RueCore.lostActivation_typing :
+  ActivationTyping lostDecls lostCtx lostActivation lostStore
 ```
 
 ### `lostStore_cc`
@@ -15413,7 +15455,7 @@ non-`Copy` subtree's marker and walk, and a `Copy` subtree's empty walk
 ```lean
 theorem RueCore.dropResidue_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat}
   {rs : List Contents} {evs : List Event} :
-  Contents.copyClosedList D rs = true →
+  Contents.copyContainedList D rs = true →
     dropResidue D ℓ rs = Except.ok evs → DropGlueBlocks D evs
 ```
 
@@ -15427,7 +15469,7 @@ consumed shell (helper).
 ```lean
 theorem RueCore.destructure_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat}
   {cd leaf : Contents} {πs : List Nat} {evs : List Event}
-  (hcc : Contents.copyClosed D cd = true)
+  (hcc : Contents.copyContained D cd = true)
   (h : Contents.destructure D ℓ cd πs = Except.ok (leaf, evs)) :
   DropGlueBlocks D evs
 ```
@@ -15516,9 +15558,10 @@ a value (helper).
 
 ```lean
 theorem RueCore.eval_ok_cc (M : FloatSig) {P : Program} {n : Nat} {H H₁ : Store}
-  {φ : Frame} {e : Expr} {v : Val} {tr : List Event} (hcc : StoreCC P.decls H)
-  (hr : eval M n P H φ e = EvalRes.ok H₁ v tr) :
-  StoreCC P.decls H₁ ∧ Contents.copyClosed P.decls (Contents.ofVal v) = true
+  {φ : Activation} {e : Expr} {v : Val} {tr : List Event}
+  (hcc : StoreCC P.decls H) (hr : eval M n P H φ e = EvalRes.ok H₁ v tr) :
+  StoreCC P.decls H₁ ∧
+    Contents.copyContained P.decls (Contents.ofVal v) = true
 ```
 
 ### `evalArgs_blocks`
@@ -15603,7 +15646,7 @@ A step that leaves the frame alone, grows or keeps the store, and pushes
 only frames that owe nothing keeps the invariant (helper).
 
 ```lean
-theorem RueCore.Config.Ordered.keep {H H' : Store} {φ : Frame} {K K' : List Kont}
+theorem RueCore.Config.Ordered.keep {H H' : Store} {φ : Activation} {K K' : List Kont}
   {f f' : Focus} {tr tr' : List Event} (h : (Config.run H φ K f tr).Ordered)
   (hn : List.length H ≤ List.length H')
   (hK : ∀ (k : Kont), k ∈ K' → k ∈ K ∨ ∀ (n : Nat), Kont.Ordered n k) :
@@ -15617,7 +15660,7 @@ theorem RueCore.Config.Ordered.keep {H H' : Store} {φ : Frame} {K K' : List Kon
 A step that keeps the stack (helper).
 
 ```lean
-theorem RueCore.Config.Ordered.same {H H' : Store} {φ : Frame} {K : List Kont}
+theorem RueCore.Config.Ordered.same {H H' : Store} {φ : Activation} {K : List Kont}
   {f f' : Focus} {tr tr' : List Event} (h : (Config.run H φ K f tr).Ordered)
   (hn : List.length H ≤ List.length H') : (Config.run H' φ K f' tr').Ordered
 ```
@@ -15629,7 +15672,7 @@ theorem RueCore.Config.Ordered.same {H H' : Store} {φ : Frame} {K : List Kont}
 A step that pushes a context frame, which owes nothing (helper).
 
 ```lean
-theorem RueCore.Config.Ordered.push {H H' : Store} {φ : Frame} {K : List Kont}
+theorem RueCore.Config.Ordered.push {H H' : Store} {φ : Activation} {K : List Kont}
   {k : Kont} {f f' : Focus} {tr tr' : List Event}
   (h : (Config.run H φ K f tr).Ordered) (hn : List.length H ≤ List.length H')
   (hk : ∀ (n : Nat), Kont.Ordered n k) :
@@ -15643,7 +15686,7 @@ theorem RueCore.Config.Ordered.push {H H' : Store} {φ : Frame} {K : List Kont}
 A step that pops a context frame (helper).
 
 ```lean
-theorem RueCore.Config.Ordered.pop {H H' : Store} {φ : Frame} {K : List Kont}
+theorem RueCore.Config.Ordered.pop {H H' : Store} {φ : Activation} {K : List Kont}
   {k : Kont} {f f' : Focus} {tr tr' : List Event}
   (h : (Config.run H φ (k :: K) f tr).Ordered)
   (hn : List.length H ≤ List.length H') : (Config.run H' φ K f' tr').Ordered
@@ -15681,7 +15724,7 @@ theorem RueCore.plainUnwind_length {D : Decls} {H H' : Store} {ls : List Nat}
 under it was under it (helper).
 
 ```lean
-theorem RueCore.Kont.toCall_mem {K K' : List Kont} {φ : Frame} :
+theorem RueCore.Kont.toCall_mem {K K' : List Kont} {φ : Activation} :
   Kont.toCall K = some (φ, K') →
     Kont.call φ ∈ K ∧ ∀ (k : Kont), k ∈ K' → k ∈ K
 ```
@@ -15694,20 +15737,20 @@ theorem RueCore.Kont.toCall_mem {K K' : List Kont} {φ : Frame} :
 under it was under it (helper).
 
 ```lean
-theorem RueCore.Kont.toLoop_mem {K K' : List Kont} {φ : Frame} :
+theorem RueCore.Kont.toLoop_mem {K K' : List Kont} {φ : Activation} :
   Kont.toLoop K = some (φ, K') →
     (∃ e, Kont.loop e φ ∈ K) ∧ ∀ (k : Kont), k ∈ K' → k ∈ K
 ```
 
-### `mintParams_eq`
+### `freshParams_eq`
 
 *theorem* · module `RueCore.TraceOrder`
 
-`mintParams`' store and cells, as the invariant reads them (helper).
+`freshParams`' store and cells, as the invariant reads them (helper).
 
 ```lean
-theorem RueCore.mintParams_eq {H H' : Store} {vs : List Val} {ls : List Nat}
-  (h : mintParams H vs = (H', ls)) :
+theorem RueCore.freshParams_eq {H H' : Store} {vs : List Val} {ls : List Nat}
+  (h : freshParams H vs = (H', ls)) :
   List.length H' = List.length H + vs.length ∧
     ls = List.range' (List.length H) vs.length
 ```
@@ -15807,18 +15850,18 @@ theorem RueCore.plainUnwind_locs {D : Decls} {H H' : Store} {ls : List Nat}
   plainUnwind D H ls = Except.ok (H', evs) → (dropLocs evs).Sublist ls
 ```
 
-### `NewestFirst.teardown`
+### `StrictStackOrder.teardown`
 
 *theorem* · module `RueCore.TraceOrder`
 
 A teardown of an ordered record drops newest-first (helper).
 
 ```lean
-theorem RueCore.NewestFirst.teardown {n : Nat} {ls ls' : List Nat} (h : Rec n ls)
-  (hs : ls'.Sublist ls.reverse) : NewestFirst ls'
+theorem RueCore.StrictStackOrder.teardown {n : Nat} {ls ls' : List Nat} (h : Rec n ls)
+  (hs : ls'.Sublist ls.reverse) : StrictStackOrder ls'
 ```
 
-### `Frame.popScope_tail`
+### `Activation.unwindScope_tail`
 
 *theorem* · module `RueCore.TraceOrder`
 
@@ -15826,8 +15869,8 @@ theorem RueCore.NewestFirst.teardown {n : Nat} {ls ls' : List Nat} (h : Rec n ls
 are the record's tail (helper).
 
 ```lean
-theorem RueCore.Frame.popScope_tail (φ : Frame) {sc ls : List Nat}
-  (h : φ.scope = sc ++ ls) : (φ.popScope ls.length).scope = sc
+theorem RueCore.Activation.unwindScope_tail (φ : Activation) {sc ls : List Nat}
+  (h : φ.scope = sc ++ ls) : (φ.unwindScope ls.length).scope = sc
 ```
 
 ### `Nest.toCall`
@@ -15838,7 +15881,7 @@ theorem RueCore.Frame.popScope_tail (φ : Frame) {sc ls : List Nat}
 next one, and the stack below it is the rest (helper).
 
 ```lean
-theorem RueCore.Nest.toCall {K K' : List Kont} {φ : Frame} {sc : List Nat} :
+theorem RueCore.Nest.toCall {K K' : List Kont} {φ : Activation} {sc : List Nat} :
   Nest sc K →
     Kont.toCall K = some (φ, K') → Nest φ.scope K' ∧ Stk K = Stk K' ++ φ.scope
 ```
@@ -15852,13 +15895,13 @@ prefix of the frame's, the rest being the cells the body registered, and no
 caller's record is crossed (helper).
 
 ```lean
-theorem RueCore.Nest.toLoop {K K' : List Kont} {φ : Frame} {sc : List Nat} :
+theorem RueCore.Nest.toLoop {K K' : List Kont} {φ : Activation} {sc : List Nat} :
   Nest sc K →
     Kont.toLoop K = some (φ, K') →
       (∃ m, sc = φ.scope ++ m) ∧ Nest φ.scope K' ∧ Stk K = Stk K'
 ```
 
-### `Lifo.newer`
+### `StackDiscipline.newer`
 
 *theorem* · module `RueCore.TraceOrder`
 
@@ -15868,31 +15911,31 @@ drops only cells it deregistered, each newer than every cell still
 registered (helper).
 
 ```lean
-theorem RueCore.Lifo.newer {S S' ls : List Nat}
-  (hS : List.Pairwise (fun x1 x2 => x1 < x2) S) (h : Lifo S S' ls)
+theorem RueCore.StackDiscipline.newer {S S' ls : List Nat}
+  (hS : List.Pairwise (fun x1 x2 => x1 < x2) S) (h : StackDiscipline S S' ls)
   (hcut : ¬S <+: S') (ℓ : Nat) :
   ℓ ∈ ls → ¬ℓ ∈ S' ∧ ∀ (ℓ' : Nat), ℓ' ∈ S' → ℓ' < ℓ
 ```
 
-### `Lifo.same`
+### `StackDiscipline.same`
 
 *theorem* · module `RueCore.TraceOrder`
 
 A step that keeps the frame and the callers keeps the stack (helper).
 
 ```lean
-theorem RueCore.Lifo.same {S ls : List Nat} : Lifo S S ls
+theorem RueCore.StackDiscipline.same {S ls : List Nat} : StackDiscipline S S ls
 ```
 
-### `Lifo.cut`
+### `StackDiscipline.cut`
 
 *theorem* · module `RueCore.TraceOrder`
 
 A teardown of the current frame's tail (helper).
 
 ```lean
-theorem RueCore.Lifo.cut {A m ls : List Nat} (h : ls.Sublist m.reverse) :
-  Lifo (A ++ m) A ls
+theorem RueCore.StackDiscipline.cut {A m ls : List Nat} (h : ls.Sublist m.reverse) :
+  StackDiscipline (A ++ m) A ls
 ```
 
 ### `step_blocks`
@@ -15904,8 +15947,8 @@ is the one `eval` answers (`eval_complete`), so it is in the block grammar
 (helper).
 
 ```lean
-theorem RueCore.step_blocks (M : FloatModel) {P : Program} (h : ProgramTyped P) :
-  (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+theorem RueCore.step_blocks (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
+  (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
       Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
         Blocks P.decls tr) ∧
     ∀ (κ : PanicKind) (tr : List Event),
@@ -16062,15 +16105,16 @@ theorem RueCore.Retire.Live.ne_of_le {H : Store} {ℓ m : Nat} (h : Retire.Live 
   (hm : List.length H ≤ m) : ℓ ≠ m
 ```
 
-### `Retire.LiveFrame.grow`
+### `Retire.LiveActivation.grow`
 
 *theorem* · module `RueCore.Retire`
 
 The frame invariant survives growth (helper).
 
 ```lean
-theorem RueCore.Retire.LiveFrame.grow {H H' : Store} {φ : Frame}
-  (h : Retire.LiveFrame H φ) (hg : Retire.Grow H H') : Retire.LiveFrame H' φ
+theorem RueCore.Retire.LiveActivation.grow {H H' : Store} {φ : Activation}
+  (h : Retire.LiveActivation H φ) (hg : Retire.Grow H H') :
+  Retire.LiveActivation H' φ
 ```
 
 ### `Retire.LivePost.withTrace`
@@ -16080,7 +16124,7 @@ theorem RueCore.Retire.LiveFrame.grow {H H' : Store} {φ : Frame}
 Prefixing a trace changes no store (helper).
 
 ```lean
-theorem RueCore.Retire.LivePost.withTrace {H : Store} {φ : Frame} {r : EvalRes}
+theorem RueCore.Retire.LivePost.withTrace {H : Store} {φ : Activation} {r : EvalRes}
   (h : Retire.LivePost H φ r) (tr : List Event) :
   Retire.LivePost H φ (EvalRes.withTrace tr r)
 ```
@@ -16093,7 +16137,7 @@ An evaluation that started later, in a grown store, keeps the promise
 relative to the earlier store (helper).
 
 ```lean
-theorem RueCore.Retire.LivePost.lift {H H₁ : Store} {φ : Frame} {r : EvalRes}
+theorem RueCore.Retire.LivePost.lift {H H₁ : Store} {φ : Activation} {r : EvalRes}
   (hg : Retire.Grow H H₁) (h : Retire.LivePost H₁ φ r) : Retire.LivePost H φ r
 ```
 
@@ -16104,7 +16148,7 @@ theorem RueCore.Retire.LivePost.lift {H H₁ : Store} {φ : Frame} {r : EvalRes}
 §6.2's search keeps the promise (helper).
 
 ```lean
-theorem RueCore.Retire.LivePost.andThen {H : Store} {φ : Frame} {r : EvalRes}
+theorem RueCore.Retire.LivePost.andThen {H : Store} {φ : Activation} {r : EvalRes}
   {k : Store → Val → EvalRes} (h : Retire.LivePost H φ r)
   (hk :
     ∀ (H₁ : Store) (v : Val),
@@ -16121,8 +16165,9 @@ payload cells — keeps the promise when the body's non-value outcomes pass
 through it (helper).
 
 ```lean
-theorem RueCore.Retire.LivePost.scoped {H H₁ : Store} {φ φ' : Frame} {ys : List Nat}
-  {r : EvalRes} {k : Store → Val → EvalRes} (hg : Retire.Grow H H₁)
+theorem RueCore.Retire.LivePost.scoped {H H₁ : Store} {φ φ' : Activation}
+  {ys : List Nat} {r : EvalRes} {k : Store → Val → EvalRes}
+  (hg : Retire.Grow H H₁)
   (hys : ∀ (ℓ : Nat), ℓ ∈ ys → List.length H ≤ ℓ ∧ Retire.Live H₁ ℓ)
   (hnd : ys.Nodup) (hsc : φ'.scope = φ.scope ++ ys)
   (h : Retire.LivePost H₁ φ' r)
@@ -16132,15 +16177,15 @@ theorem RueCore.Retire.LivePost.scoped {H H₁ : Store} {φ φ' : Frame} {ys : L
   Retire.LivePost H φ (r.bind k)
 ```
 
-### `Retire.Contents.readAt_ne_uad`
+### `Retire.Contents.getAt_ne_uad`
 
 *theorem* · module `RueCore.Retire`
 
 `H(ℓ)@π` refuses only with `useAfterMove` or `typeConfusion` (helper).
 
 ```lean
-theorem RueCore.Retire.Contents.readAt_ne_uad (π : List Nat) {c : Contents}
-  {w : Violation} : c.readAt π = Except.error w → w ≠ Violation.useAfterDrop
+theorem RueCore.Retire.Contents.getAt_ne_uad (π : List Nat) {c : Contents}
+  {w : Refusal} : c.getAt π = Except.error w → w ≠ Refusal.useAfterDrop
 ```
 
 ### `Retire.Contents.resolveDyn_ne_uad`
@@ -16151,8 +16196,8 @@ Resolving a dynamic tail never refuses with `useAfterDrop` (helper).
 
 ```lean
 theorem RueCore.Retire.Contents.resolveDyn_ne_uad (is : List Int)
-  (πs : List (List Nat)) {c : Contents} {w : Violation} :
-  c.resolveDyn is πs = DynStep.stuck w → w ≠ Violation.useAfterDrop
+  (πs : List (List Nat)) {c : Contents} {w : Refusal} :
+  c.resolveDyn is πs = DynStep.refused w → w ≠ Refusal.useAfterDrop
 ```
 
 ### `Retire.dynPlace_ne_uad`
@@ -16163,10 +16208,10 @@ Navigating a dynamic place from a frame whose environment names live cells
 never refuses with `useAfterDrop` (helper).
 
 ```lean
-theorem RueCore.Retire.dynPlace_ne_uad {H : Store} {φ : Frame} {p : Place}
-  {vs : List Val} {πs : List (List Nat)} {w : Violation}
+theorem RueCore.Retire.dynPlace_ne_uad {H : Store} {φ : Activation} {p : Place}
+  {vs : List Val} {πs : List (List Nat)} {w : Refusal}
   (hφ : ∀ (ℓ : Nat), ℓ ∈ φ.env → Retire.Live H ℓ)
-  (h : dynPlace H φ p vs πs = DynPlace.stuck w) : w ≠ Violation.useAfterDrop
+  (h : dynPlace H φ p vs πs = DynPlace.refused w) : w ≠ Refusal.useAfterDrop
 ```
 
 ### `Retire.dropContents_ne_uad`
@@ -16176,9 +16221,8 @@ theorem RueCore.Retire.dynPlace_ne_uad {H : Store} {φ : Frame} {p : Place}
 §6.11's walk refuses only with `unbound` (helper).
 
 ```lean
-theorem RueCore.Retire.dropContents_ne_uad {D : Decls} {c : Contents}
-  {w : Violation} :
-  dropContents D c = Except.error w → w ≠ Violation.useAfterDrop
+theorem RueCore.Retire.dropContents_ne_uad {D : Decls} {c : Contents} {w : Refusal} :
+  dropContents D c = Except.error w → w ≠ Refusal.useAfterDrop
 ```
 
 ### `Retire.dropContentsList_ne_uad`
@@ -16189,8 +16233,8 @@ The same over a list (helper).
 
 ```lean
 theorem RueCore.Retire.dropContentsList_ne_uad {D : Decls} {cs : List Contents}
-  {w : Violation} :
-  dropContentsList D cs = Except.error w → w ≠ Violation.useAfterDrop
+  {w : Refusal} :
+  dropContentsList D cs = Except.error w → w ≠ Refusal.useAfterDrop
 ```
 
 ### `Retire.dropCell_ne_uad`
@@ -16201,8 +16245,8 @@ A binding's drop never refuses with `useAfterDrop` (helper).
 
 ```lean
 theorem RueCore.Retire.dropCell_ne_uad {D : Decls} {ℓ : Nat} {c : Contents}
-  {w : Violation} (h : dropCell D ℓ c = Except.error w) :
-  w ≠ Violation.useAfterDrop
+  {w : Refusal} (h : dropCell D ℓ c = Except.error w) :
+  w ≠ Refusal.useAfterDrop
 ```
 
 ### `Retire.Contents.splitResidue_ne_uad`
@@ -16213,8 +16257,8 @@ theorem RueCore.Retire.dropCell_ne_uad {D : Decls} {ℓ : Nat} {c : Contents}
 
 ```lean
 theorem RueCore.Retire.Contents.splitResidue_ne_uad {D : Decls} {c : Contents}
-  {π : List Nat} {w : Violation} :
-  Contents.splitResidue D c π = Except.error w → w ≠ Violation.useAfterDrop
+  {π : List Nat} {w : Refusal} :
+  Contents.splitResidue D c π = Except.error w → w ≠ Refusal.useAfterDrop
 ```
 
 ### `Retire.Contents.splitFields_ne_uad`
@@ -16225,8 +16269,8 @@ The same at one node's members (helper).
 
 ```lean
 theorem RueCore.Retire.Contents.splitFields_ne_uad {D : Decls} {cs : List Contents}
-  {f : Nat} {π : List Nat} {w : Violation} :
-  Contents.splitFields D cs f π = Except.error w → w ≠ Violation.useAfterDrop
+  {f : Nat} {π : List Nat} {w : Refusal} :
+  Contents.splitFields D cs f π = Except.error w → w ≠ Refusal.useAfterDrop
 ```
 
 ### `Retire.dropResidue_ne_uad`
@@ -16237,8 +16281,8 @@ The residue's `drop*` never refuses with `useAfterDrop` (helper).
 
 ```lean
 theorem RueCore.Retire.dropResidue_ne_uad {D : Decls} {ℓ : Nat} {rs : List Contents}
-  {w : Violation} :
-  dropResidue D ℓ rs = Except.error w → w ≠ Violation.useAfterDrop
+  {w : Refusal} :
+  dropResidue D ℓ rs = Except.error w → w ≠ Refusal.useAfterDrop
 ```
 
 ### `Retire.Contents.destructure_ne_uad`
@@ -16249,9 +16293,9 @@ theorem RueCore.Retire.dropResidue_ne_uad {D : Decls} {ℓ : Nat} {rs : List Con
 
 ```lean
 theorem RueCore.Retire.Contents.destructure_ne_uad {D : Decls} {ℓ : Nat}
-  {c : Contents} {πs : List Nat} {w : Violation}
+  {c : Contents} {πs : List Nat} {w : Refusal}
   (h : Contents.destructure D ℓ c πs = Except.error w) :
-  w ≠ Violation.useAfterDrop
+  w ≠ Refusal.useAfterDrop
 ```
 
 ### `Retire.dropRetire_live`
@@ -16264,8 +16308,8 @@ cell (helper).
 ```lean
 theorem RueCore.Retire.dropRetire_live {D : Decls} {H : Store} {ℓ : Nat}
   (hl : Retire.Live H ℓ) :
-  (∀ (w : Violation),
-      dropRetire D H ℓ = Except.error w → w ≠ Violation.useAfterDrop) ∧
+  (∀ (w : Refusal),
+      dropRetire D H ℓ = Except.error w → w ≠ Refusal.useAfterDrop) ∧
     ∀ (H' : Store) (evs : List Event),
       dropRetire D H ℓ = Except.ok (H', evs) → H' = List.set H ℓ Cell.dead
 ```
@@ -16307,7 +16351,7 @@ theorem RueCore.Retire.UnwindPost.grow {H H' : Store} {ls : List Nat}
     ∀ (ℓ : Nat), ¬ℓ ∈ ls → Retire.Live H ℓ → Retire.Live H' ℓ
 ```
 
-### `Retire.mintParams_live`
+### `Retire.freshParams_live`
 
 *theorem* · module `RueCore.Retire`
 
@@ -16315,12 +16359,12 @@ theorem RueCore.Retire.UnwindPost.grow {H H' : Store} {ls : List Nat}
 above the old store, and nothing live before is touched (helper).
 
 ```lean
-theorem RueCore.Retire.mintParams_live (H : Store) (vs : List Val) :
-  Retire.Grow H (mintParams H vs).fst ∧
-    (mintParams H vs).snd.Nodup ∧
+theorem RueCore.Retire.freshParams_live (H : Store) (vs : List Val) :
+  Retire.Grow H (freshParams H vs).fst ∧
+    (freshParams H vs).snd.Nodup ∧
       ∀ (ℓ : Nat),
-        ℓ ∈ (mintParams H vs).snd →
-          List.length H ≤ ℓ ∧ Retire.Live (mintParams H vs).fst ℓ
+        ℓ ∈ (freshParams H vs).snd →
+          List.length H ≤ ℓ ∧ Retire.Live (freshParams H vs).fst ℓ
 ```
 
 ### `Retire.OpRes.toRes_live`
@@ -16330,7 +16374,7 @@ theorem RueCore.Retire.mintParams_live (H : Store) (vs : List Val) :
 §6.4's operators touch no cell (helper).
 
 ```lean
-theorem RueCore.Retire.OpRes.toRes_live {H : Store} {φ : Frame} (o : OpRes) :
+theorem RueCore.Retire.OpRes.toRes_live {H : Store} {φ : Activation} (o : OpRes) :
   Retire.LivePost H φ (OpRes.toRes H o)
 ```
 
@@ -16341,7 +16385,7 @@ theorem RueCore.Retire.OpRes.toRes_live {H : Store} {φ : Frame} (o : OpRes) :
 Minting a value identity appends a `†` slot no binding names (helper).
 
 ```lean
-theorem RueCore.Retire.introVal_live {D : Decls} {H : Store} {φ : Frame}
+theorem RueCore.Retire.introVal_live {D : Decls} {H : Store} {φ : Activation}
   (mk : Nat → Val) : Retire.LivePost H φ (introVal D H mk)
 ```
 
@@ -16353,23 +16397,23 @@ An argument list keeps the promise, argument by argument (§6.2's left-to-right
 search) (helper).
 
 ```lean
-theorem RueCore.Retire.evalArgs_live {φ : Frame} {ev : Store → Expr → EvalRes}
+theorem RueCore.Retire.evalArgs_live {φ : Activation} {ev : Store → Expr → EvalRes}
   (hev :
     ∀ (H : Store) (e : Expr),
-      Retire.LiveFrame H φ → Retire.LivePost H φ (ev H e))
+      Retire.LiveActivation H φ → Retire.LivePost H φ (ev H e))
   (H : Store) (es : List Expr) :
-  Retire.LiveFrame H φ → Retire.ArgsLive H φ (evalArgs ev H es)
+  Retire.LiveActivation H φ → Retire.ArgsLive H φ (evalArgs ev H es)
 ```
 
-### `Retire.LiveFrame.root`
+### `Retire.LiveActivation.root`
 
 *theorem* · module `RueCore.Retire`
 
 A cell the environment names is live (helper).
 
 ```lean
-theorem RueCore.Retire.LiveFrame.root {H : Store} {φ : Frame} {i ℓ : Nat}
-  (h : Retire.LiveFrame H φ) (hρ : φ.env[i]? = some ℓ) : Retire.Live H ℓ
+theorem RueCore.Retire.LiveActivation.root {H : Store} {φ : Activation} {i ℓ : Nat}
+  (h : Retire.LiveActivation H φ) (hρ : φ.env[i]? = some ℓ) : Retire.Live H ℓ
 ```
 
 ### `Retire.eval_live`
@@ -16381,8 +16425,8 @@ once, every evaluation keeps `LivePost`, at every fuel (helper).
 
 ```lean
 theorem RueCore.Retire.eval_live (M : FloatSig) (P : Program) (fuel : Nat) (H : Store)
-  (φ : Frame) (e : Expr) :
-  Retire.LiveFrame H φ → Retire.LivePost H φ (eval M fuel P H φ e)
+  (φ : Activation) (e : Expr) :
+  Retire.LiveActivation H φ → Retire.LivePost H φ (eval M fuel P H φ e)
 ```
 
 ### `Retire.plainDropRetire_live`
@@ -16395,8 +16439,8 @@ exactly that cell (helper).
 ```lean
 theorem RueCore.Retire.plainDropRetire_live {D : Decls} {H : Store} {ℓ : Nat}
   (hl : Retire.Live H ℓ) :
-  (∀ (w : Violation),
-      plainDropRetire D H ℓ = Except.error w → w ≠ Violation.useAfterDrop) ∧
+  (∀ (w : Refusal),
+      plainDropRetire D H ℓ = Except.error w → w ≠ Refusal.useAfterDrop) ∧
     ∀ (H' : Store) (evs : List Event),
       plainDropRetire D H ℓ = Except.ok (H', evs) →
         H' = List.set H ℓ Cell.dead
@@ -16424,8 +16468,8 @@ The plain residue walk never refuses with `useAfterDrop` (helper).
 
 ```lean
 theorem RueCore.Retire.plainResidue_ne_uad {D : Decls} {ℓ : Nat} {rs : List Contents}
-  {w : Violation} :
-  plainResidue D ℓ rs = Except.error w → w ≠ Violation.useAfterDrop
+  {w : Refusal} :
+  plainResidue D ℓ rs = Except.error w → w ≠ Refusal.useAfterDrop
 ```
 
 ### `Retire.plainDestructure_ne_uad`
@@ -16436,9 +16480,8 @@ The plain destructure never refuses with `useAfterDrop` (helper).
 
 ```lean
 theorem RueCore.Retire.plainDestructure_ne_uad {D : Decls} {ℓ : Nat} {c : Contents}
-  {πs : List Nat} {w : Violation}
-  (h : plainDestructure D ℓ c πs = Except.error w) :
-  w ≠ Violation.useAfterDrop
+  {πs : List Nat} {w : Refusal}
+  (h : plainDestructure D ℓ c πs = Except.error w) : w ≠ Refusal.useAfterDrop
 ```
 
 ### `Retire.Shape.env`
@@ -16449,7 +16492,7 @@ Every frame on a well-shaped stack has its scope record, reversed, as its
 environment (helper).
 
 ```lean
-theorem RueCore.Retire.Shape.env {φ : Frame} {K : List Kont} :
+theorem RueCore.Retire.Shape.env {φ : Activation} {K : List Kont} :
   Retire.Shape φ K → φ.env = φ.scope.reverse
 ```
 
@@ -16461,7 +16504,7 @@ theorem RueCore.Retire.Shape.env {φ : Frame} {K : List Kont} :
 suspended callers owe are its own and those below it (helper).
 
 ```lean
-theorem RueCore.Retire.Shape.toCall {φ : Frame} {K : List Kont} {φs : Frame}
+theorem RueCore.Retire.Shape.toCall {φ : Activation} {K : List Kont} {φs : Activation}
   {K' : List Kont} :
   Retire.Shape φ K →
     Kont.toCall K = some (φs, K') →
@@ -16477,7 +16520,7 @@ theorem RueCore.Retire.Shape.toCall {φ : Frame} {K : List Kont} {φs : Frame}
 the frame in force extends the loop's at the end of its scope record (helper).
 
 ```lean
-theorem RueCore.Retire.Shape.toLoop {φ : Frame} {K : List Kont} {φs : Frame}
+theorem RueCore.Retire.Shape.toLoop {φ : Activation} {K : List Kont} {φs : Activation}
   {K' : List Kont} :
   Retire.Shape φ K →
     Kont.toLoop K = some (φs, K') →
@@ -16493,7 +16536,7 @@ theorem RueCore.Retire.Shape.toLoop {φ : Frame} {K : List Kont} {φs : Frame}
 A cell the environment names is live (helper).
 
 ```lean
-theorem RueCore.Retire.StackLive.env {H : Store} {φ : Frame} {K : List Kont}
+theorem RueCore.Retire.StackLive.env {H : Store} {φ : Activation} {K : List Kont}
   (h : Retire.StackLive H φ K) (ℓ : Nat) : ℓ ∈ φ.env → Retire.Live H ℓ
 ```
 
@@ -16504,7 +16547,7 @@ theorem RueCore.Retire.StackLive.env {H : Store} {φ : Frame} {K : List Kont}
 The configuration invariant survives growth (helper).
 
 ```lean
-theorem RueCore.Retire.StackLive.grow {H H' : Store} {φ : Frame} {K : List Kont}
+theorem RueCore.Retire.StackLive.grow {H H' : Store} {φ : Activation} {K : List Kont}
   (h : Retire.StackLive H φ K) (hg : Retire.Grow H H') :
   Retire.StackLive H' φ K
 ```
@@ -16517,9 +16560,9 @@ Looking a place's root up in a frame whose environment names live cells never
 refuses with `useAfterDrop` (helper).
 
 ```lean
-theorem RueCore.Retire.rootCell_ne_uad {H : Store} {φ : Frame} {i : Nat}
-  {w : Violation} (hφ : ∀ (ℓ : Nat), ℓ ∈ φ.env → Retire.Live H ℓ)
-  (h : rootCell H φ i = Except.error w) : w ≠ Violation.useAfterDrop
+theorem RueCore.Retire.rootCell_ne_uad {H : Store} {φ : Activation} {i : Nat}
+  {w : Refusal} (hφ : ∀ (ℓ : Nat), ℓ ∈ φ.env → Retire.Live H ℓ)
+  (h : rootCell H φ i = Except.error w) : w ≠ Refusal.useAfterDrop
 ```
 
 ### `Retire.unwind_keeps`
@@ -16545,10 +16588,10 @@ The same teardown never refuses with `useAfterDrop` (helper).
 
 ```lean
 theorem RueCore.Retire.unwind_err {D : Decls} {H : Store} {A xs : List Nat}
-  {w : Violation} (hnd : (A ++ xs).Nodup)
+  {w : Refusal} (hnd : (A ++ xs).Nodup)
   (hl : ∀ (ℓ : Nat), ℓ ∈ A ++ xs → Retire.Live H ℓ)
   (hu : plainUnwind D H xs.reverse = Except.error w) :
-  w ≠ Violation.useAfterDrop
+  w ≠ Refusal.useAfterDrop
 ```
 
 ### `Retire.extend_keeps`
@@ -16565,15 +16608,15 @@ theorem RueCore.Retire.extend_keeps {H H' : Store} {A ls : List Nat} (hnd : A.No
   (A ++ ls).Nodup ∧ ∀ (ℓ : Nat), ℓ ∈ A ++ ls → Retire.Live H' ℓ
 ```
 
-### `Retire.Frame.popScope_ext`
+### `Retire.Activation.unwindScope_ext`
 
 *theorem* · module `RueCore.Retire`
 
 (D-EndScope)'s pop undoes the extension (D-Let) and (D-Match) made (helper).
 
 ```lean
-theorem RueCore.Retire.Frame.popScope_ext (φ₀ : Frame) (ls : List Nat) :
-  { env := ls.reverse ++ φ₀.env, scope := φ₀.scope ++ ls }.popScope
+theorem RueCore.Retire.Activation.unwindScope_ext (φ₀ : Activation) (ls : List Nat) :
+  { env := ls.reverse ++ φ₀.env, scope := φ₀.scope ++ ls }.unwindScope
       ls.length =
     φ₀
 ```
@@ -16585,7 +16628,7 @@ theorem RueCore.Retire.Frame.popScope_ext (φ₀ : Frame) (ls : List Nat) :
 An operator's step touches no cell (helper).
 
 ```lean
-theorem RueCore.Retire.OpRes.toStep_live {H : Store} {φ : Frame} {K : List Kont}
+theorem RueCore.Retire.OpRes.toStep_live {H : Store} {φ : Activation} {K : List Kont}
   {tr : List Event} (h : Retire.StackLive H φ K) (o : OpRes) :
   Retire.StepLive (OpRes.toStep H φ K tr o)
 ```
@@ -16598,8 +16641,9 @@ theorem RueCore.Retire.OpRes.toStep_live {H : Store} {φ : Frame} {K : List Kont
 
 ```lean
 theorem RueCore.Retire.stepEval_live (M : FloatSig) (P : Program) {H : Store}
-  {φ : Frame} {K : List Kont} {tr : List Event} (h : Retire.StackLive H φ K)
-  (e : Expr) : Retire.StepLive (stepEval M P H φ K tr e)
+  {φ : Activation} {K : List Kont} {tr : List Event}
+  (h : Retire.StackLive H φ K) (e : Expr) :
+  Retire.StepLive (stepEval M P H φ K tr e)
 ```
 
 ### `Retire.stepArgs_live`
@@ -16610,9 +16654,9 @@ theorem RueCore.Retire.stepEval_live (M : FloatSig) (P : Program) {H : Store}
 callee's cells fresh (helper).
 
 ```lean
-theorem RueCore.Retire.stepArgs_live (P : Program) {H : Store} {φ : Frame}
+theorem RueCore.Retire.stepArgs_live (P : Program) {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} (h : Retire.StackLive H φ K)
-  (vs : List Val) (t : ArgsTag) : Retire.StepLive (stepArgs P H φ K tr vs t)
+  (vs : List Val) (t : ArgsFrame) : Retire.StepLive (stepArgs P H φ K tr vs t)
 ```
 
 ### `Retire.stepRet_live`
@@ -16624,7 +16668,7 @@ teardown walks cells the invariant says are live and owed once (helper).
 
 ```lean
 theorem RueCore.Retire.stepRet_live (M : FloatSig) (P : Program) {H : Store}
-  {φ : Frame} {K : List Kont} {tr : List Event} (v : Val) (k : Kont)
+  {φ : Activation} {K : List Kont} {tr : List Event} (v : Val) (k : Kont)
   (h : Retire.StackLive H φ (k :: K)) :
   Retire.StepLive (stepRet M P H φ K tr v k)
 ```
@@ -16785,7 +16829,7 @@ ledger, and the context's run is the long one (helper).
 
 ```lean
 theorem RueCore.LongC.andThen {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {H : Store} {X : List Nat} {φ₁ : Frame}
+  {H : Store} {X : List Nat} {φ₁ : Activation}
   {C C₁ : List Kont → List Event → Config} {Fr : Kont} {fuel : Nat}
   (hC :
     ∀ (K : List Kont) (tr : List Event), Step M P (C K tr) (C₁ (Fr :: K) tr))
@@ -16796,7 +16840,7 @@ theorem RueCore.LongC.andThen {M : FloatSig} {P : Program} {F : Event → List N
     ∀ (H₁ : Store) (v : Val) (tr₁ : List Event),
       r = EvalRes.ok H₁ v tr₁ →
         StoreCC P.decls H₁ →
-          Contents.copyClosed P.decls (Contents.ofVal v) = true →
+          Contents.copyContained P.decls (Contents.ofVal v) = true →
             k H₁ v = EvalRes.outOfFuel →
               LongC M P F H₁ (Val.own P.decls v)
                 (fun K tr => Config.run H₁ φ₁ (Fr :: K) (Focus.ret v) tr)
@@ -16825,8 +16869,8 @@ values already built are held (`X`) while the next element runs (helper).
 
 ```lean
 theorem RueCore.evalArgs_longc {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {fuel : Nat} {φ : Frame} (hF : TraceMeasure P.decls F)
-  (IH : LongCIH M P F fuel) (t : ArgsTag) (es : List Expr) (H : Store)
+  {fuel : Nat} {φ : Activation} (hF : TraceMeasure P.decls F)
+  (IH : LongCIH M P F fuel) (t : ArgsFrame) (es : List Expr) (H : Store)
   (vs₀ : List Val) :
   StoreCC P.decls H →
     evalArgs (fun H e => eval M fuel P H φ e) H es =
@@ -16843,7 +16887,7 @@ A form with one operand and a context that never spends fuel (helper).
 
 ```lean
 theorem RueCore.longc_one {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  {fuel : Nat} {H : Store} {φ : Activation} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) {e e' : Expr}
   {Fr : Kont} {k : Store → Val → EvalRes}
   (hent :
@@ -16862,7 +16906,7 @@ theorem RueCore.longc_one {M : FloatSig} {P : Program} {F : Event → List Nat}
 
 ```lean
 theorem RueCore.longc_binop {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  {fuel : Nat} {H : Store} {φ : Activation} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (op : BinOp)
   (e₁ e₂ : Expr) :
   eval M (fuel + 1) P H φ (Expr.binop op e₁ e₂) = EvalRes.outOfFuel →
@@ -16878,7 +16922,7 @@ owned (helper).
 
 ```lean
 theorem RueCore.longc_letIn {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  {fuel : Nat} {H : Store} {φ : Activation} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (m : Bool)
   (e₁ e₂ : Expr) :
   eval M (fuel + 1) P H φ (Expr.letIn m e₁ e₂) = EvalRes.outOfFuel →
@@ -16894,7 +16938,7 @@ own what the scrutinee owned (helper).
 
 ```lean
 theorem RueCore.longc_match {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  {fuel : Nat} {H : Store} {φ : Activation} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (scrut : Expr)
   (arms : List Expr) :
   eval M (fuel + 1) P H φ (scrut.match arms) = EvalRes.outOfFuel →
@@ -16910,7 +16954,7 @@ theorem RueCore.longc_match {M : FloatSig} {P : Program} {F : Event → List Nat
 
 ```lean
 theorem RueCore.longc_seq {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  {fuel : Nat} {H : Store} {φ : Activation} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (e₁ e₂ : Expr) :
   eval M (fuel + 1) P H φ (e₁.seq e₂) = EvalRes.outOfFuel →
     LongC M P F H [] (evalConf H φ (e₁.seq e₂)) (fuel + 1)
@@ -16924,7 +16968,7 @@ theorem RueCore.longc_seq {M : FloatSig} {P : Program} {F : Event → List Nat}
 
 ```lean
 theorem RueCore.longc_ite {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  {fuel : Nat} {H : Store} {φ : Activation} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (c e₁ e₂ : Expr) :
   eval M (fuel + 1) P H φ (c.ite e₁ e₂) = EvalRes.outOfFuel →
     LongC M P F H [] (evalConf H φ (c.ite e₁ e₂)) (fuel + 1)
@@ -16939,8 +16983,8 @@ An argument-list form whose list spent the fuel, from its enter step
 
 ```lean
 theorem RueCore.longc_argsForm {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
-  {t : ArgsTag} {es : List Expr} {e : Expr} (IH : LongCIH M P F fuel)
+  {fuel : Nat} {H : Store} {φ : Activation} (hF : TraceMeasure P.decls F)
+  {t : ArgsFrame} {es : List Expr} {e : Expr} (IH : LongCIH M P F fuel)
   (hcc : StoreCC P.decls H)
   (hent :
     ∀ (K : List Kont) (tr : List Event),
@@ -16959,7 +17003,7 @@ theorem RueCore.longc_argsForm {M : FloatSig} {P : Program} {F : Event → List 
 
 ```lean
 theorem RueCore.longc_mkStruct {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  {fuel : Nat} {H : Store} {φ : Activation} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (s : Nat)
   (args : List Expr) :
   eval M (fuel + 1) P H φ (Expr.mkStruct s args) = EvalRes.outOfFuel →
@@ -16974,7 +17018,7 @@ theorem RueCore.longc_mkStruct {M : FloatSig} {P : Program} {F : Event → List 
 
 ```lean
 theorem RueCore.longc_mkEnum {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  {fuel : Nat} {H : Store} {φ : Activation} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (e k : Nat)
   (args : List Expr) :
   eval M (fuel + 1) P H φ (Expr.mkEnum e k args) = EvalRes.outOfFuel →
@@ -16989,7 +17033,7 @@ theorem RueCore.longc_mkEnum {M : FloatSig} {P : Program} {F : Event → List Na
 
 ```lean
 theorem RueCore.longc_mkArray {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  {fuel : Nat} {H : Store} {φ : Activation} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (T : Ty)
   (args : List Expr) :
   eval M (fuel + 1) P H φ (Expr.mkArray T args) = EvalRes.outOfFuel →
@@ -17004,7 +17048,7 @@ theorem RueCore.longc_mkArray {M : FloatSig} {P : Program} {F : Event → List N
 
 ```lean
 theorem RueCore.longc_indexRead {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  {fuel : Nat} {H : Store} {φ : Activation} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (p : Place)
   (idx : List Expr) (πs : List (List Nat)) :
   eval M (fuel + 1) P H φ (Expr.indexRead p idx πs) = EvalRes.outOfFuel →
@@ -17020,7 +17064,7 @@ read at one less fuel (helper).
 
 ```lean
 theorem RueCore.longc_indexDrop {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  {fuel : Nat} {H : Store} {φ : Activation} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (p : Place)
   (idx : List Expr) (πs : List (List Nat)) :
   eval M (fuel + 2) P H φ (Expr.indexDrop p idx πs) = EvalRes.outOfFuel →
@@ -17035,8 +17079,8 @@ theorem RueCore.longc_indexDrop {M : FloatSig} {P : Program} {F : Event → List
 
 ```lean
 theorem RueCore.longc_indexDrop_one {M : FloatSig} {P : Program}
-  {F : Event → List Nat} {H : Store} {φ : Frame} (p : Place) (idx : List Expr)
-  (πs : List (List Nat)) :
+  {F : Event → List Nat} {H : Store} {φ : Activation} (p : Place)
+  (idx : List Expr) (πs : List (List Nat)) :
   LongC M P F H [] (evalConf H φ (Expr.indexDrop p idx πs)) 1
 ```
 
@@ -17049,7 +17093,7 @@ value is held while the indices run (helper).
 
 ```lean
 theorem RueCore.longc_indexWrite {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  {fuel : Nat} {H : Store} {φ : Activation} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (p : Place)
   (idx : List Expr) (πs : List (List Nat)) (e : Expr) :
   eval M (fuel + 1) P H φ (Expr.indexWrite p idx πs e) = EvalRes.outOfFuel →
@@ -17065,7 +17109,7 @@ parameter cells (helper).
 
 ```lean
 theorem RueCore.longc_call {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  {fuel : Nat} {H : Store} {φ : Activation} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (f : Nat)
   (args : List Expr) :
   eval M (fuel + 1) P H φ (Expr.call f args) = EvalRes.outOfFuel →
@@ -17082,7 +17126,7 @@ the long run, its (D-Loop-Enter) peeled off by determinism (helper).
 
 ```lean
 theorem RueCore.longc_loop {M : FloatSig} {P : Program} {F : Event → List Nat}
-  {fuel : Nat} {H : Store} {φ : Frame} (hF : TraceMeasure P.decls F)
+  {fuel : Nat} {H : Store} {φ : Activation} (hF : TraceMeasure P.decls F)
   (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H) (e : Expr) :
   eval M (fuel + 1) P H φ e.loop = EvalRes.outOfFuel →
     LongC M P F H [] (evalConf H φ e.loop) (fuel + 1)
@@ -17103,7 +17147,7 @@ way.
 ```lean
 theorem RueCore.steps_trace_once (M : FloatSig) {P : Program} {F : Event → List Nat}
   (hF : TraceMeasure P.decls F)
-  (hns : ∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w)
+  (hns : ∀ (fuel : Nat) (w : Refusal), run M P fuel ≠ EvalRes.refused w)
   {C : Config} (hC : Steps M P Config.init C) (a : Nat) :
   List.count a (List.flatMap F C.trace) ≤ 1
 ```
@@ -17118,9 +17162,9 @@ a reachable configuration's; exhausted fuel carries the empty trace; and a
 checked run is never refused (helper).
 
 ```lean
-theorem RueCore.no_double_free_of_step (M : FloatModel) {P : Program}
+theorem RueCore.no_double_free_of_step (M : FloatLaws) {P : Program}
   (h : ProgramTyped P) (fuel : Nat) :
-  (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
+  (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
     (∀ (a : Nat),
         List.count a (freedIds P.decls (run M.toFloatSig P fuel).trace) ≤ 1) ∧
       ∀ (a : Nat), List.count a (dtorIds (run M.toFloatSig P fuel).trace) ≤ 1
@@ -17133,7 +17177,7 @@ theorem RueCore.no_double_free_of_step (M : FloatModel) {P : Program}
 A running configuration's ledger, counted part by part (helper).
 
 ```lean
-theorem RueCore.Config.ledger_count_run (D : Decls) (H : Store) (φ : Frame)
+theorem RueCore.Config.ledger_count_run (D : Decls) (H : Store) (φ : Activation)
   (K : List Kont) (f : Focus) (tr : List Event) (a : Nat) :
   List.count a (Config.ledger D (Config.run H φ K f tr)) =
     List.count a (storeOwn D H) + List.count a (Focus.own D f) +
@@ -17150,7 +17194,7 @@ the source holds is, after it, held or ended by what the step appended
 (helper).
 
 ```lean
-theorem RueCore.ledger_le_run {D : Decls} {H H' : Store} {φ φ' : Frame}
+theorem RueCore.ledger_le_run {D : Decls} {H H' : Store} {φ φ' : Activation}
   {K K' : List Kont} {f f' : Focus} {tr evs : List Event}
   (h :
     ∀ (a : Nat),
@@ -17170,7 +17214,7 @@ theorem RueCore.ledger_le_run {D : Decls} {H H' : Store} {φ φ' : Frame}
 The same for a step that appends nothing to the trace (helper).
 
 ```lean
-theorem RueCore.ledger_le_run0 {D : Decls} {H H' : Store} {φ φ' : Frame}
+theorem RueCore.ledger_le_run0 {D : Decls} {H H' : Store} {φ φ' : Activation}
   {K K' : List Kont} {f f' : Focus} {tr : List Event}
   (h :
     ∀ (a : Nat),
@@ -17297,7 +17341,7 @@ theorem RueCore.stackOwn_cons_nil {D : Decls} {F : Kont} (hF : Kont.own D F = []
 A lossless run into the family carries its simulation back (helper).
 
 ```lean
-theorem RueCore.MSim.pre {M : FloatSig} {P : Program} {φ : Frame}
+theorem RueCore.MSim.pre {M : FloatSig} {P : Program} {φ : Activation}
   {C C₂ : List Kont → List Event → Config} {r : EvalRes}
   (hpre : ∀ (K : List Kont) (tr : List Event), MSteps M P (C K tr) (C₂ K tr))
   (h : MSim M P φ C₂ r) : MSim M P φ C r
@@ -17311,7 +17355,7 @@ A lossless run that emits `tr₁` carries the simulation back to the result
 with `tr₁` prefixed (helper).
 
 ```lean
-theorem RueCore.MSim.withTrace {M : FloatSig} {P : Program} {φ : Frame}
+theorem RueCore.MSim.withTrace {M : FloatSig} {P : Program} {φ : Activation}
   {C C₂ : List Kont → List Event → Config} {r : EvalRes} {tr₁ : List Event}
   (hpre :
     ∀ (K : List Kont) (tr : List Event),
@@ -17327,7 +17371,7 @@ A result that neither completes nor unwinds is simulated vacuously
 (helper).
 
 ```lean
-theorem RueCore.MSim.of_quiet {M : FloatSig} {P : Program} {φ : Frame}
+theorem RueCore.MSim.of_quiet {M : FloatSig} {P : Program} {φ : Activation}
   {C : List Kont → List Event → Config} {r : EvalRes} (hq : r.NoRet ∧ r.NoBrk)
   (hok : ∀ (H : Store) (v : Val) (tr : List Event), r ≠ EvalRes.ok H v tr) :
   MSim M P φ C r
@@ -17342,7 +17386,7 @@ that holds nothing, the operand simulated under `F`, and the context's
 simulation from the operand's value (helper).
 
 ```lean
-theorem RueCore.MSim.andThen {M : FloatSig} {P : Program} {φ φ₁ : Frame}
+theorem RueCore.MSim.andThen {M : FloatSig} {P : Program} {φ φ₁ : Activation}
   {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
   (hFo : Kont.own P.decls F = [])
   (hC :
@@ -17365,7 +17409,7 @@ value, so the operand must not unwind — `pendingSafe` — and then only its
 value matters (helper).
 
 ```lean
-theorem RueCore.MSim.andThenHeld {M : FloatSig} {P : Program} {φ φ₁ : Frame}
+theorem RueCore.MSim.andThenHeld {M : FloatSig} {P : Program} {φ φ₁ : Activation}
   {C C₁ : List Kont → List Event → Config} {F : Kont}
   (hC :
     ∀ (K : List Kont) (tr : List Event), MSteps M P (C K tr) (C₁ (F :: K) tr))
@@ -17387,7 +17431,7 @@ A result that is not a value passes through a frame that holds nothing
 (helper).
 
 ```lean
-theorem RueCore.MSim.lift {M : FloatSig} {P : Program} {φ φ₁ : Frame}
+theorem RueCore.MSim.lift {M : FloatSig} {P : Program} {φ φ₁ : Activation}
   {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
   (hFo : Kont.own P.decls F = [])
   (hC :
@@ -17405,7 +17449,7 @@ theorem RueCore.MSim.lift {M : FloatSig} {P : Program} {φ φ₁ : Frame}
 `call φ` frame, which holds nothing (helper).
 
 ```lean
-theorem RueCore.MSim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Frame}
+theorem RueCore.MSim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Activation}
   {C C₁ : List Kont → List Event → Config}
   (hC :
     ∀ (K : List Kont) (tr : List Event),
@@ -17428,7 +17472,7 @@ Where no target has an expression in focus, a first step of the family
 can be peeled off by determinism (helper).
 
 ```lean
-theorem RueCore.MSim.peel {M : FloatSig} {P : Program} {φ : Frame}
+theorem RueCore.MSim.peel {M : FloatSig} {P : Program} {φ : Activation}
   {C C₂ : List Kont → List Event → Config} {r : EvalRes}
   (hs : ∀ (K : List Kont) (tr : List Event), Step M P (C K tr) (C₂ K tr))
   (hC : ∀ (K : List Kont) (tr : List Event), (C K tr).evalFocus)
@@ -17460,8 +17504,8 @@ theorem RueCore.plainUnwind_count {D : Decls} {H H' : Store} {ls : List Nat}
 ```lean
 theorem RueCore.move_count {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Contents}
   {π : List Nat} {v : Val} (hcc : StoreCC D H)
-  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.readAt π = Except.ok sub)
-  (hw : c.writeAt π Contents.hole = some c') (hv : sub.toVal = some v)
+  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.getAt π = Except.ok sub)
+  (hw : c.setAt π Contents.movedOut = some c') (hv : sub.toVal = some v)
   (a : Nat) :
   List.count a (storeOwn D H) =
     List.count a (storeOwn D (List.set H ℓ (Cell.full c'))) +
@@ -17478,9 +17522,9 @@ theorem RueCore.move_count {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Conte
 theorem RueCore.destructure_count {D : Decls} {H : Store} {ℓ : Nat}
   {c c' cd leaf : Contents} {πd πs : List Nat} {v : Val} {evs : List Event}
   (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
-  (hr : c.readAt πd = Except.ok cd)
+  (hr : c.getAt πd = Except.ok cd)
   (hd : Contents.destructure D ℓ cd πs = Except.ok (leaf, evs))
-  (hv : leaf.toVal = some v) (hw : c.writeAt πd Contents.hole = some c')
+  (hv : leaf.toVal = some v) (hw : c.setAt πd Contents.movedOut = some c')
   (a : Nat) :
   List.count a (storeOwn D H) =
     List.count a (storeOwn D (List.set H ℓ (Cell.full c'))) +
@@ -17497,9 +17541,9 @@ theorem RueCore.destructure_count {D : Decls} {H : Store} {ℓ : Nat}
 ```lean
 theorem RueCore.dropPlace_count {D : Decls} {H : Store} {ℓ : Nat}
   {c c' sub : Contents} {π : List Nat} {evs : List Event} (hcc : StoreCC D H)
-  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.readAt π = Except.ok sub)
+  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.getAt π = Except.ok sub)
   (hd : dropCell D ℓ sub = Except.ok evs)
-  (hw : c.writeAt π Contents.hole = some c') (a : Nat) :
+  (hw : c.setAt π Contents.movedOut = some c') (a : Nat) :
   List.count a (storeOwn D H) =
     List.count a (storeOwn D (List.set H ℓ (Cell.full c'))) +
       List.count a (freedIds D evs)
@@ -17515,10 +17559,10 @@ theorem RueCore.dropPlace_count {D : Decls} {H : Store} {ℓ : Nat}
 theorem RueCore.dropDeclared_count {D : Decls} {H : Store} {ℓ : Nat}
   {c c' cd leaf : Contents} {πd πs : List Nat} {evs levs : List Event}
   (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
-  (hr : c.readAt πd = Except.ok cd)
+  (hr : c.getAt πd = Except.ok cd)
   (hd : Contents.destructure D ℓ cd πs = Except.ok (leaf, evs))
   (hl : dropCell D ℓ leaf = Except.ok levs)
-  (hw : c.writeAt πd Contents.hole = some c') (a : Nat) :
+  (hw : c.setAt πd Contents.movedOut = some c') (a : Nat) :
   List.count a (storeOwn D H) =
     List.count a (storeOwn D (List.set H ℓ (Cell.full c'))) +
       List.count a (freedIds D (evs ++ levs))
@@ -17533,10 +17577,10 @@ theorem RueCore.dropDeclared_count {D : Decls} {H : Store} {ℓ : Nat}
 ```lean
 theorem RueCore.assign_count {D : Decls} {H : Store} {ℓ : Nat} {c c' old : Contents}
   {π : List Nat} {v : Val} {evs : List Event} (hcc : StoreCC D H)
-  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.readAt π = Except.ok old)
+  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.getAt π = Except.ok old)
   (hd : dropCell D ℓ old = Except.ok evs)
-  (hw : c.writeAt π (Contents.ofVal v) = some c')
-  (hc' : Contents.copyClosed D c' = true) (a : Nat) :
+  (hw : c.setAt π (Contents.ofVal v) = some c')
+  (hc' : Contents.copyContained D c' = true) (a : Nat) :
   List.count a (storeOwn D H) + List.count a (Val.own D v) =
     List.count a (storeOwn D (List.set H ℓ (Cell.full c'))) +
       List.count a (freedIds D evs)
@@ -17552,10 +17596,10 @@ theorem RueCore.assign_count {D : Decls} {H : Store} {ℓ : Nat} {c c' old : Con
 theorem RueCore.assignDyn_count {D : Decls} {H : Store} {ℓ : Nat}
   {c c' sub sub' old : Contents} {π ρ : List Nat} {v : Val} {evs : List Event}
   (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
-  (hr : c.readAt π = Except.ok sub) (hr' : sub.readAt ρ = Except.ok old)
+  (hr : c.getAt π = Except.ok sub) (hr' : sub.getAt ρ = Except.ok old)
   (hd : dropCell D ℓ old = Except.ok evs)
-  (hw' : sub.writeAt ρ (Contents.ofVal v) = some sub')
-  (hw : c.writeAt π sub' = some c') (hc' : Contents.copyClosed D c' = true)
+  (hw' : sub.setAt ρ (Contents.ofVal v) = some sub')
+  (hw : c.setAt π sub' = some c') (hc' : Contents.copyContained D c' = true)
   (a : Nat) :
   List.count a (storeOwn D H) + List.count a (Val.own D v) =
     List.count a (storeOwn D (List.set H ℓ (Cell.full c'))) +
@@ -17570,7 +17614,7 @@ A fresh struct owns at least its fields, copy-closed (helper).
 
 ```lean
 theorem RueCore.Contents.own_struct_ge {D : Decls} {s i : Nat} {cs : List Contents}
-  (h : Contents.copyClosed D (Contents.struct s i cs) = true) (a : Nat) :
+  (h : Contents.copyContained D (Contents.struct s i cs) = true) (a : Nat) :
   List.count a (Contents.ownList D cs) ≤
     List.count a (Contents.own D (Contents.struct s i cs))
 ```
@@ -17584,7 +17628,7 @@ A fresh array owns at least its elements, copy-closed (helper).
 ```lean
 theorem RueCore.Contents.own_array_ge {D : Decls} {T : Ty} {i : Nat}
   {cs : List Contents}
-  (h : Contents.copyClosed D (Contents.array T i cs) = true) (a : Nat) :
+  (h : Contents.copyContained D (Contents.array T i cs) = true) (a : Nat) :
   List.count a (Contents.ownList D cs) ≤
     List.count a (Contents.own D (Contents.array T i cs))
 ```
@@ -17597,14 +17641,14 @@ An argument list of `pendingSafe` members that finishes leaves a
 copy-closed store and copy-closed values (`eval_exact`) (helper).
 
 ```lean
-theorem RueCore.evalArgs_cc {M : FloatSig} {P : Program} {fuel : Nat} {φ : Frame}
+theorem RueCore.evalArgs_cc {M : FloatSig} {P : Program} {fuel : Nat} {φ : Activation}
   (hp : P.pendingSafe = true) {es : List Expr} {H H' : Store} {vs : List Val}
   {tr : List Event} :
   Expr.pendingSafeList es = true →
     StoreCC P.decls H →
       evalArgs (fun H e => eval M fuel P H φ e) H es = ArgsRes.ok H' vs tr →
         StoreCC P.decls H' ∧
-          Contents.copyClosedList P.decls (Contents.ofVals vs) = true
+          Contents.copyContainedList P.decls (Contents.ofVals vs) = true
 ```
 
 ### `evalArgs_msimOk`
@@ -17615,9 +17659,9 @@ theorem RueCore.evalArgs_cc {M : FloatSig} {P : Program} {fuel : Nat} {φ : Fram
 each member is pushed, simulated, and plugged back into the list (helper).
 
 ```lean
-theorem RueCore.evalArgs_msimOk {M : FloatSig} {P : Program} {fuel : Nat} {φ : Frame}
-  (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (t : ArgsTag)
-  (es : List Expr) (H : Store) (vs₀ : List Val) :
+theorem RueCore.evalArgs_msimOk {M : FloatSig} {P : Program} {fuel : Nat}
+  {φ : Activation} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (t : ArgsFrame) (es : List Expr) (H : Store) (vs₀ : List Val) :
   Expr.pendingSafeList es = true →
     StoreCC P.decls H →
       ∀ (H' : Store) (vs : List Val) (tr' : List Event),
@@ -17639,8 +17683,8 @@ exhausted fuel (helper).
 
 ```lean
 theorem RueCore.evalArgs_msimAbort {M : FloatSig} {P : Program} {fuel : Nat}
-  {φ : Frame} (IH : MSimIH M P fuel) (t : ArgsTag)
-  (ht : ArgsTag.own P.decls t = []) (es : List Expr) (H : Store) :
+  {φ : Activation} (IH : MSimIH M P fuel) (t : ArgsFrame)
+  (ht : ArgsFrame.own P.decls t = []) (es : List Expr) (H : Store) :
   Expr.pendingSafeList es = true →
     Expr.quietList es.tail = true →
       StoreCC P.decls H →
@@ -17657,8 +17701,8 @@ A value produced where the store is, the stack untouched, loses nothing:
 the source held no value in focus (helper).
 
 ```lean
-theorem RueCore.MSteps.toValue {M : FloatSig} {P : Program} {φ : Frame} {H : Store}
-  {K : List Kont} {tr : List Event} {e : Expr} {v : Val}
+theorem RueCore.MSteps.toValue {M : FloatSig} {P : Program} {φ : Activation}
+  {H : Store} {K : List Kont} {tr : List Event} {e : Expr} {v : Val}
   (s :
     Step M P (Config.run H φ K (Focus.eval e) tr)
       (Config.run H φ K (Focus.ret v) tr)) :
@@ -17674,7 +17718,7 @@ An enter step of §6.2's (Search) pushing a frame that holds nothing
 (helper).
 
 ```lean
-theorem RueCore.MSteps.enter {M : FloatSig} {P : Program} {φ : Frame} {H : Store}
+theorem RueCore.MSteps.enter {M : FloatSig} {P : Program} {φ : Activation} {H : Store}
   {K : List Kont} {tr : List Event} {e e' : Expr} {F : Kont}
   (hF : Kont.own P.decls F = [])
   (s :
@@ -17691,9 +17735,9 @@ theorem RueCore.MSteps.enter {M : FloatSig} {P : Program} {φ : Frame} {H : Stor
 An enter step into a list context whose tag holds nothing (helper).
 
 ```lean
-theorem RueCore.MSteps.enterArgs {M : FloatSig} {P : Program} {φ : Frame} {H : Store}
-  {K : List Kont} {tr : List Event} {e : Expr} {t : ArgsTag} {es : List Expr}
-  (ht : ArgsTag.own P.decls t = [])
+theorem RueCore.MSteps.enterArgs {M : FloatSig} {P : Program} {φ : Activation}
+  {H : Store} {K : List Kont} {tr : List Event} {e : Expr} {t : ArgsFrame}
+  {es : List Expr} (ht : ArgsFrame.own P.decls t = [])
   (s :
     Step M P (Config.run H φ K (Focus.eval e) tr)
       (Config.run H φ K (Focus.args t [] es) tr)) :
@@ -17709,7 +17753,7 @@ theorem RueCore.MSteps.enterArgs {M : FloatSig} {P : Program} {φ : Frame} {H : 
 nothing owned — the operator's operands are scalars (helper).
 
 ```lean
-theorem RueCore.OpRes.msim {M : FloatSig} {P : Program} {φ : Frame} {H : Store}
+theorem RueCore.OpRes.msim {M : FloatSig} {P : Program} {φ : Activation} {H : Store}
   {F : Kont} {v : Val} (o : OpRes)
   (hv :
     ∀ (K : List Kont) (tr : List Event) (v' : Val),
@@ -17731,7 +17775,7 @@ theorem RueCore.OpRes.msim {M : FloatSig} {P : Program} {φ : Frame} {H : Store}
 
 ```lean
 theorem RueCore.msim_use {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hcc : StoreCC P.decls H) (p : Place) :
+  {φ : Activation} (hcc : StoreCC P.decls H) (p : Place) :
   MSim M P φ (evalConf H φ (Expr.use p))
     (eval M (fuel + 1) P H φ (Expr.use p))
 ```
@@ -17744,7 +17788,7 @@ theorem RueCore.msim_use {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.msim_drop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hcc : StoreCC P.decls H) (p : Place) :
+  {φ : Activation} (hcc : StoreCC P.decls H) (p : Place) :
   MSim M P φ (evalConf H φ (Expr.drop p))
     (eval M (fuel + 1) P H φ (Expr.drop p))
 ```
@@ -17758,7 +17802,7 @@ which `pendingSafe` keeps from unwinding (helper).
 
 ```lean
 theorem RueCore.msim_binop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  {φ : Activation} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (op : BinOp) (e₁ e₂ : Expr)
   (he : (Expr.binop op e₁ e₂).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.binop op e₁ e₂))
@@ -17773,8 +17817,8 @@ theorem RueCore.msim_binop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.msim_unop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (op : UnOp)
-  (e : Expr) (he : (Expr.unop op e).pendingSafe = true) :
+  {φ : Activation} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H)
+  (op : UnOp) (e : Expr) (he : (Expr.unop op e).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.unop op e))
     (eval M (fuel + 1) P H φ (Expr.unop op e))
 ```
@@ -17787,8 +17831,9 @@ theorem RueCore.msim_unop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.msim_intCast {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (w : IntWidth)
-  (sg : Sign) (e : Expr) (he : (Expr.intCast w sg e).pendingSafe = true) :
+  {φ : Activation} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H)
+  (w : IntWidth) (sg : Sign) (e : Expr)
+  (he : (Expr.intCast w sg e).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.intCast w sg e))
     (eval M (fuel + 1) P H φ (Expr.intCast w sg e))
 ```
@@ -17801,7 +17846,7 @@ theorem RueCore.msim_intCast {M : FloatSig} {P : Program} {fuel : Nat} {H : Stor
 
 ```lean
 theorem RueCore.msim_fintrin {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H)
+  {φ : Activation} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H)
   (k : FloatIntrin) (e : Expr) (he : (Expr.fintrin k e).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.fintrin k e))
     (eval M (fuel + 1) P H φ (Expr.fintrin k e))
@@ -17815,7 +17860,7 @@ theorem RueCore.msim_fintrin {M : FloatSig} {P : Program} {fuel : Nat} {H : Stor
 
 ```lean
 theorem RueCore.msim_dbg {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (e : Expr)
+  {φ : Activation} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (e : Expr)
   (he : e.dbg.pendingSafe = true) :
   MSim M P φ (evalConf H φ e.dbg) (eval M (fuel + 1) P H φ e.dbg)
 ```
@@ -17829,9 +17874,9 @@ redex or its abort, losslessly (helper).
 
 ```lean
 theorem RueCore.msim_argsForm {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
-  (hcc : StoreCC P.decls H) {e : Expr} {t : ArgsTag}
-  (ht : ArgsTag.own P.decls t = []) {es : List Expr}
+  {φ : Activation} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  (hcc : StoreCC P.decls H) {e : Expr} {t : ArgsFrame}
+  (ht : ArgsFrame.own P.decls t = []) {es : List Expr}
   (hps : Expr.pendingSafeList es = true) (hql : Expr.quietList es.tail = true)
   (hent :
     ∀ (K : List Kont) (tr : List Event),
@@ -17857,7 +17902,7 @@ copy-closure monitor keeps every member's identities in the new value
 
 ```lean
 theorem RueCore.msim_mkStruct {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  {φ : Activation} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (s : Nat) (args : List Expr)
   (he : (Expr.mkStruct s args).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.mkStruct s args))
@@ -17872,7 +17917,7 @@ theorem RueCore.msim_mkStruct {M : FloatSig} {P : Program} {fuel : Nat} {H : Sto
 
 ```lean
 theorem RueCore.msim_mkEnum {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  {φ : Activation} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (en k : Nat) (args : List Expr)
   (he : (Expr.mkEnum en k args).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.mkEnum en k args))
@@ -17887,7 +17932,7 @@ theorem RueCore.msim_mkEnum {M : FloatSig} {P : Program} {fuel : Nat} {H : Store
 
 ```lean
 theorem RueCore.msim_mkArray {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  {φ : Activation} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (T : Ty) (args : List Expr)
   (he : (Expr.mkArray T args).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.mkArray T args))
@@ -17903,7 +17948,7 @@ The repeat form (`7.1:39`): its operand is `Copy`, so owns nothing
 
 ```lean
 theorem RueCore.msim_repeat {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (T : Ty)
+  {φ : Activation} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (T : Ty)
   (e : Expr) (n : Nat) (he : (Expr.repeatArray T e n).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.repeatArray T e n))
     (eval M (fuel + 1) P H φ (Expr.repeatArray T e n))
@@ -17918,10 +17963,11 @@ from the index list's context: the indices are integers (helper).
 
 ```lean
 theorem RueCore.msim_indexRead_args {M : FloatSig} {P : Program} {fuel : Nat}
-  {H : Store} {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
-  (hcc : StoreCC P.decls H) (p : Place) (idx : List Expr)
-  (πs : List (List Nat)) (he : (Expr.indexRead p idx πs).pendingSafe = true) :
-  MSim M P φ (argsConf H φ (ArgsTag.indexRead p πs) [] idx)
+  {H : Store} {φ : Activation} (hp : P.pendingSafe = true)
+  (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (p : Place)
+  (idx : List Expr) (πs : List (List Nat))
+  (he : (Expr.indexRead p idx πs).pendingSafe = true) :
+  MSim M P φ (argsConf H φ (ArgsFrame.indexRead p πs) [] idx)
     (eval M (fuel + 1) P H φ (Expr.indexRead p idx πs))
 ```
 
@@ -17933,7 +17979,7 @@ theorem RueCore.msim_indexRead_args {M : FloatSig} {P : Program} {fuel : Nat}
 
 ```lean
 theorem RueCore.msim_indexRead {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  {φ : Activation} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) (he : (Expr.indexRead p idx πs).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.indexRead p idx πs))
@@ -17948,7 +17994,7 @@ theorem RueCore.msim_indexRead {M : FloatSig} {P : Program} {fuel : Nat} {H : St
 
 ```lean
 theorem RueCore.msim_indexDrop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  {φ : Activation} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) (he : (Expr.indexDrop p idx πs).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.indexDrop p idx πs))
@@ -17964,7 +18010,7 @@ the indices run, which `pendingSafe` keeps from unwinding (helper).
 
 ```lean
 theorem RueCore.msim_indexWrite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  {φ : Activation} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (p : Place) (idx : List Expr)
   (πs : List (List Nat)) (e : Expr)
   (he : (Expr.indexWrite p idx πs e).pendingSafe = true) :
@@ -17982,7 +18028,7 @@ consumed; the arm runs under its `endscope`, which (D-EndScope) closes
 
 ```lean
 theorem RueCore.msim_match {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  {φ : Activation} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (scrut : Expr) (arms : List Expr)
   (he : (scrut.match arms).pendingSafe = true) :
   MSim M P φ (evalConf H φ (scrut.match arms))
@@ -17997,7 +18043,7 @@ theorem RueCore.msim_match {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.msim_letIn {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  {φ : Activation} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (m : Bool) (e₁ e₂ : Expr)
   (he : (Expr.letIn m e₁ e₂).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.letIn m e₁ e₂))
@@ -18013,7 +18059,7 @@ value's identities stay counted (helper).
 
 ```lean
 theorem RueCore.msim_assign {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  {φ : Activation} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (p : Place) (e : Expr)
   (he : (Expr.assign p e).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.assign p e))
@@ -18029,7 +18075,7 @@ theorem RueCore.msim_assign {M : FloatSig} {P : Program} {fuel : Nat} {H : Store
 
 ```lean
 theorem RueCore.msim_seq {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  {φ : Activation} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (e₁ e₂ : Expr)
   (he : (e₁.seq e₂).pendingSafe = true) :
   MSim M P φ (evalConf H φ (e₁.seq e₂)) (eval M (fuel + 1) P H φ (e₁.seq e₂))
@@ -18043,7 +18089,7 @@ theorem RueCore.msim_seq {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.msim_ite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  {φ : Activation} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (c e₁ e₂ : Expr)
   (he : (c.ite e₁ e₂).pendingSafe = true) :
   MSim M P φ (evalConf H φ (c.ite e₁ e₂))
@@ -18059,7 +18105,7 @@ theorem RueCore.msim_ite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.msim_call {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  {φ : Activation} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (f : Nat) (args : List Expr)
   (he : (Expr.call f args).pendingSafe = true) :
   MSim M P φ (evalConf H φ (Expr.call f args))
@@ -18075,7 +18121,7 @@ clause's premise (helper).
 
 ```lean
 theorem RueCore.msim_ret {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (e : Expr)
+  {φ : Activation} (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (e : Expr)
   (he : e.ret.pendingSafe = true) :
   MSim M P φ (evalConf H φ e.ret) (eval M (fuel + 1) P H φ e.ret)
 ```
@@ -18088,7 +18134,7 @@ theorem RueCore.msim_ret {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.msim_brk {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} :
+  {φ : Activation} :
   MSim M P φ (evalConf H φ Expr.brk) (eval M (fuel + 1) P H φ Expr.brk)
 ```
 
@@ -18100,7 +18146,7 @@ theorem RueCore.msim_brk {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ```lean
 theorem RueCore.msim_loop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Frame} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
+  {φ : Activation} (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   (hcc : StoreCC P.decls H) (e : Expr) (he : e.loop.pendingSafe = true) :
   MSim M P φ (evalConf H φ e.loop) (eval M (fuel + 1) P H φ e.loop)
 ```
@@ -18135,7 +18181,7 @@ identity.
 theorem RueCore.run_msteps (M : FloatSig) {P : Program} (hp : P.pendingSafe = true)
   (fuel : Nat) {H : Store} {v : Val} {tr : List Event}
   (hr : run M P fuel = EvalRes.ok H v tr) :
-  MSteps M P Config.init (Config.run H Frame.empty [] (Focus.ret v) tr)
+  MSteps M P Config.init (Config.run H Activation.empty [] (Focus.ret v) tr)
 ```
 
 ### `storeOwn_of_dead`
@@ -18196,7 +18242,7 @@ A stuck configuration takes no step (helper).
 
 ```lean
 theorem RueCore.Sharp.noStep_of_stuck {M : FloatSig} {P : Program} {C : Config}
-  {w : Violation} (h : Config.Stuck M P C w) (C' : Config) : ¬Step M P C C'
+  {w : Refusal} (h : Config.Stuck M P C w) (C' : Config) : ¬Step M P C C'
 ```
 
 ### `Sharp.not_terminal_of_stuck`
@@ -18207,7 +18253,7 @@ A stuck configuration is not terminal (helper).
 
 ```lean
 theorem RueCore.Sharp.not_terminal_of_stuck {M : FloatSig} {P : Program} {C : Config}
-  {w : Violation} (h : Config.Stuck M P C w) : ¬C.Terminal
+  {w : Refusal} (h : Config.Stuck M P C w) : ¬C.Terminal
 ```
 
 ### `Sharp.noStep_of_terminal`
@@ -18270,7 +18316,7 @@ A refusal is none of `run_safe`'s outcomes, for any entry point (helper).
 
 ```lean
 theorem RueCore.Sharp.stuck_not_safe {M : FloatSig} {P : Program} {n : Nat}
-  {w : Violation} (h : run M P n = EvalRes.stuck w) (fd : FnDef) :
+  {w : Refusal} (h : run M P n = EvalRes.refused w) (fd : FnDef) :
   ¬(run M P n = EvalRes.outOfFuel ∨
       (∃ k tr, run M P n = EvalRes.panic k tr) ∨
         ∃ H v tr, run M P n = EvalRes.ok H v tr ∧ HasTy P.decls v fd.ret)
@@ -18329,7 +18375,7 @@ A one-cell store is copy-closed when its cell is (helper).
 
 ```lean
 theorem RueCore.Sharp.storeCC_one {D : Decls} {c : Contents}
-  (h : Contents.copyClosed D c = true) : StoreCC D [Cell.full c]
+  (h : Contents.copyContained D c = true) : StoreCC D [Cell.full c]
 ```
 
 ### `Sharp.StepsN.steps_of_longer`
@@ -21862,11 +21908,11 @@ theorem RueCore.Nonvacuous.Glue.stuck.run_stuck_of_step_stuck : True
 
 ```lean
 theorem RueCore.Sharp.Glue.stuck.soundness_1 :
-  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out}
+  ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out}
       {e : Expr} {T : Ty},
       Typed P R Γ e T Ω →
-        ∀ {φ : Frame} {H : Store},
-          FrameMatches P.decls Γ φ H →
+        ∀ {φ : Activation} {H : Store},
+          ActivationTyping P.decls Γ φ H →
             EvalOk P.decls T R Ω.norm Ω.brk φ H
               (eval M.toFloatSig fuel P H φ e)
 ```
@@ -21879,7 +21925,7 @@ theorem RueCore.Sharp.Glue.stuck.soundness_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.stuck.run_safe_1 :
-  ¬∀ (M : FloatModel) {P : Program} {fd : FnDef},
+  ¬∀ (M : FloatLaws) {P : Program} {fd : FnDef},
       P.fns[0]? = some fd →
         fd.params = [] →
           ∀ (fuel : Nat),
@@ -21898,8 +21944,8 @@ theorem RueCore.Sharp.Glue.stuck.run_safe_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.stuck.no_violation_1 :
-  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) (w : Violation),
-      run M.toFloatSig P fuel ≠ EvalRes.stuck w
+  ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat) (w : Refusal),
+      run M.toFloatSig P fuel ≠ EvalRes.refused w
 ```
 
 ### `Sharp.Glue.stuck.no_use_after_move_1`
@@ -21910,8 +21956,8 @@ theorem RueCore.Sharp.Glue.stuck.no_violation_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.stuck.no_use_after_move_1 :
-  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-      run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterMove
+  ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat),
+      run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.useAfterMove
 ```
 
 ### `Sharp.Glue.stuck.no_masking_2`
@@ -21922,9 +21968,10 @@ theorem RueCore.Sharp.Glue.stuck.no_use_after_move_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.stuck.no_masking_2 :
-  ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr}
-      {n m : Nat} {w : Violation},
-      eval M n P H φ e = EvalRes.stuck w → eval M m P H φ e = EvalRes.stuck w
+  ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : Expr}
+      {n m : Nat} {w : Refusal},
+      eval M n P H φ e = EvalRes.refused w →
+        eval M m P H φ e = EvalRes.refused w
 ```
 
 ### `Sharp.Glue.stuck.checkProgram_sound_1`
@@ -21946,16 +21993,16 @@ theorem RueCore.Sharp.Glue.stuck.checkProgram_sound_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.stuck.drop_exactly_once_1 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       P.pendingSafe = true →
         ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-          {φ : Frame} {H : Store},
+          {φ : Activation} {H : Store},
           Typed P R Γ e T Ω →
-            FrameMatches P.decls Γ φ H →
+            ActivationTyping P.decls Γ φ H →
               StoreCC P.decls H →
                 e.pendingSafe = true →
-                  (∀ (w : Violation),
-                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                  (∀ (w : Refusal),
+                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.refused w) ∧
                     Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
                       Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
@@ -21968,12 +22015,12 @@ theorem RueCore.Sharp.Glue.stuck.drop_exactly_once_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.stuck.rest_exactly_once_1 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       P.pendingSafe = true →
         ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-          {φ : Frame} {H : Store},
+          {φ : Activation} {H : Store},
           Typed P R Γ e T Ω →
-            FrameMatches P.decls Γ φ H →
+            ActivationTyping P.decls Γ φ H →
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
@@ -21981,7 +22028,7 @@ theorem RueCore.Sharp.Glue.stuck.rest_exactly_once_1 :
                       ∀ {r : EvalRes},
                         eval M.toFloatSig (fuel + 1) P H φ e =
                             EvalRes.withTrace tr r →
-                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                          (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                             Exact P.decls H₁
                                 (Contents.ownList P.decls
                                   (Contents.ofVals vs))
@@ -21997,12 +22044,12 @@ theorem RueCore.Sharp.Glue.stuck.rest_exactly_once_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.stuck.eval_sound_1 :
-  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-      (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
+  ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat),
+      (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
         (∀ (H : Store) (v : Val) (tr : List Event),
             run M.toFloatSig P fuel = EvalRes.ok H v tr →
               Steps M.toFloatSig P Config.init
-                (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+                (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
           ∀ (k : PanicKind) (tr : List Event),
             run M.toFloatSig P fuel = EvalRes.panic k tr →
               Steps M.toFloatSig P Config.init (Config.panic k tr)
@@ -22016,7 +22063,7 @@ theorem RueCore.Sharp.Glue.stuck.eval_sound_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.stuck_step.step_progress_1 :
-  ¬∀ (M : FloatModel) {P : Program} (C : Config),
+  ¬∀ (M : FloatLaws) {P : Program} (C : Config),
       Steps M.toFloatSig P Config.init C →
         C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 ```
@@ -22029,7 +22076,7 @@ theorem RueCore.Sharp.Glue.stuck_step.step_progress_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.stuck_step.step_preservation_1 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ∃ fd,
         P.fns[0]? = some fd ∧
           ∀ (C : Config),
@@ -22045,14 +22092,14 @@ theorem RueCore.Sharp.Glue.stuck_step.step_preservation_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.stuck_step.step_type_safety_1 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ∃ fd,
         P.fns[0]? = some fd ∧
           ∀ (n : Nat),
             (∃ D, StepsN M.toFloatSig P n Config.init D) ∨
               (∃ H v tr,
                   Steps M.toFloatSig P Config.init
-                      (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                     HasTy P.decls v fd.ret) ∨
                 ∃ κ tr, Steps M.toFloatSig P Config.init (Config.panic κ tr)
 ```
@@ -22077,10 +22124,10 @@ theorem RueCore.Sharp.Glue.stuck_step.step_never_stuck_of_run_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.stuck_step.run_stuck_of_step_stuck_3 :
-  ¬∀ (M : FloatSig) (P : Program) {C : Config} {w : Violation},
+  ¬∀ (M : FloatSig) (P : Program) {C : Config} {w : Refusal},
       Steps M P Config.init C →
         Config.Stuck M P C w →
-          ∃ _n, ∀ (fuel : Nat), ∃ w', run M P fuel = EvalRes.stuck w'
+          ∃ _n, ∀ (fuel : Nat), ∃ w', run M P fuel = EvalRes.refused w'
 ```
 
 ### `Sharp.Glue.typed.soundness_2`
@@ -22091,11 +22138,11 @@ theorem RueCore.Sharp.Glue.stuck_step.run_stuck_of_step_stuck_3 :
 
 ```lean
 theorem RueCore.Sharp.Glue.typed.soundness_2 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       WfProgram P →
         ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty}
-          {φ : Frame} {H : Store},
-          FrameMatches P.decls Γ φ H →
+          {φ : Activation} {H : Store},
+          ActivationTyping P.decls Γ φ H →
             EvalOk P.decls T R Ω.norm Ω.brk φ H
               (eval M.toFloatSig fuel P H φ e)
 ```
@@ -22108,8 +22155,8 @@ theorem RueCore.Sharp.Glue.typed.soundness_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.typed.check_sound_1 :
-  ¬∀ {P : Program} {R : Ty} (e : Expr) {Γ : Ctx} {c : CTy} {Ω : Out} (T : Ty),
-      c.fits T = true → Typed P R Γ e T Ω
+  ¬∀ {P : Program} {R : Ty} (e : Expr) {Γ : Ctx} {c : TyOrNever} {Ω : Out}
+      (T : Ty), c.fits T = true → Typed P R Γ e T Ω
 ```
 
 ### `Sharp.Glue.typed.drop_exactly_once_3`
@@ -22120,16 +22167,16 @@ theorem RueCore.Sharp.Glue.typed.check_sound_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.typed.drop_exactly_once_3 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         P.pendingSafe = true →
           ∀ {fuel : Nat} {_R : Ty} {Γ : Ctx} {e : Expr} {_T : Ty} {_Ω : Out}
-            {φ : Frame} {H : Store},
-            FrameMatches P.decls Γ φ H →
+            {φ : Activation} {H : Store},
+            ActivationTyping P.decls Γ φ H →
               StoreCC P.decls H →
                 e.pendingSafe = true →
-                  (∀ (w : Violation),
-                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                  (∀ (w : Refusal),
+                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.refused w) ∧
                     Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
                       Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
@@ -22142,12 +22189,12 @@ theorem RueCore.Sharp.Glue.typed.drop_exactly_once_3 :
 
 ```lean
 theorem RueCore.Sharp.Glue.typed.rest_exactly_once_3 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         P.pendingSafe = true →
           ∀ {fuel : Nat} {_R : Ty} {Γ : Ctx} {e : Expr} {_T : Ty} {_Ω : Out}
-            {φ : Frame} {H : Store},
-            FrameMatches P.decls Γ φ H →
+            {φ : Activation} {H : Store},
+            ActivationTyping P.decls Γ φ H →
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
@@ -22155,7 +22202,7 @@ theorem RueCore.Sharp.Glue.typed.rest_exactly_once_3 :
                       ∀ {r : EvalRes},
                         eval M.toFloatSig (fuel + 1) P H φ e =
                             EvalRes.withTrace tr r →
-                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                          (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                             Exact P.decls H₁
                                 (Contents.ownList P.decls
                                   (Contents.ofVals vs))
@@ -22171,11 +22218,11 @@ theorem RueCore.Sharp.Glue.typed.rest_exactly_once_3 :
 
 ```lean
 theorem RueCore.Sharp.Glue.frame.soundness_3 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       WfProgram P →
         ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty},
           Typed P R Γ e T Ω →
-            ∀ {φ : Frame} {H : Store},
+            ∀ {φ : Activation} {H : Store},
               EvalOk P.decls T R Ω.norm Ω.brk φ H
                 (eval M.toFloatSig fuel P H φ e)
 ```
@@ -22188,16 +22235,16 @@ theorem RueCore.Sharp.Glue.frame.soundness_3 :
 
 ```lean
 theorem RueCore.Sharp.Glue.frame.drop_exactly_once_4 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         P.pendingSafe = true →
           ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-            {φ : Frame} {H : Store},
+            {φ : Activation} {H : Store},
             Typed P R Γ e T Ω →
               StoreCC P.decls H →
                 e.pendingSafe = true →
-                  (∀ (w : Violation),
-                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                  (∀ (w : Refusal),
+                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.refused w) ∧
                     Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
                       Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
@@ -22210,11 +22257,11 @@ theorem RueCore.Sharp.Glue.frame.drop_exactly_once_4 :
 
 ```lean
 theorem RueCore.Sharp.Glue.frame.rest_exactly_once_4 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         P.pendingSafe = true →
           ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-            {φ : Frame} {H : Store},
+            {φ : Activation} {H : Store},
             Typed P R Γ e T Ω →
               StoreCC P.decls H →
                 e.pendingSafe = true →
@@ -22223,7 +22270,7 @@ theorem RueCore.Sharp.Glue.frame.rest_exactly_once_4 :
                       ∀ {r : EvalRes},
                         eval M.toFloatSig (fuel + 1) P H φ e =
                             EvalRes.withTrace tr r →
-                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                          (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                             Exact P.decls H₁
                                 (Contents.ownList P.decls
                                   (Contents.ofVals vs))
@@ -22239,7 +22286,7 @@ theorem RueCore.Sharp.Glue.frame.rest_exactly_once_4 :
 
 ```lean
 theorem RueCore.Sharp.Glue.no_entry.run_safe_2 :
-  ¬∀ (M : FloatModel) {P : Program} {fd : FnDef},
+  ¬∀ (M : FloatLaws) {P : Program} {fd : FnDef},
       WfProgram P →
         fd.params = [] →
           ∀ (fuel : Nat),
@@ -22258,7 +22305,7 @@ theorem RueCore.Sharp.Glue.no_entry.run_safe_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.entry_param.run_safe_3 :
-  ¬∀ (M : FloatModel) {P : Program} {fd : FnDef},
+  ¬∀ (M : FloatLaws) {P : Program} {fd : FnDef},
       WfProgram P →
         P.fns[0]? = some fd →
           ∀ (fuel : Nat),
@@ -22277,8 +22324,8 @@ theorem RueCore.Sharp.Glue.entry_param.run_safe_3 :
 
 ```lean
 theorem RueCore.Sharp.Glue.entry_param.no_violation_1 :
-  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) (w : Violation),
-      run M.toFloatSig P fuel ≠ EvalRes.stuck w
+  ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat) (w : Refusal),
+      run M.toFloatSig P fuel ≠ EvalRes.refused w
 ```
 
 ### `Sharp.Glue.copy.no_violation_1`
@@ -22289,8 +22336,8 @@ theorem RueCore.Sharp.Glue.entry_param.no_violation_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.copy.no_violation_1 :
-  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) (w : Violation),
-      run M.toFloatSig P fuel ≠ EvalRes.stuck w
+  ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat) (w : Refusal),
+      run M.toFloatSig P fuel ≠ EvalRes.refused w
 ```
 
 ### `Sharp.Glue.leak.no_linear_leak_1`
@@ -22301,8 +22348,8 @@ theorem RueCore.Sharp.Glue.copy.no_violation_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.leak.no_linear_leak_1 :
-  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-      run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearLeak
+  ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat),
+      run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearLeak
 ```
 
 ### `Sharp.Glue.leak.eval_complete_1`
@@ -22313,8 +22360,8 @@ theorem RueCore.Sharp.Glue.leak.no_linear_leak_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.leak.eval_complete_1 :
-  ¬∀ (M : FloatModel) {P : Program},
-      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+  ¬∀ (M : FloatLaws) {P : Program},
+      (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M.toFloatSig P Config.init
               (Config.run H φ [] (Focus.ret v) tr) →
             ∃ n,
@@ -22335,8 +22382,8 @@ theorem RueCore.Sharp.Glue.leak.eval_complete_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.overwrite.no_linear_overwrite_1 :
-  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-      run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearOverwrite
+  ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat),
+      run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearOverwrite
 ```
 
 ### `Sharp.Glue.discard.no_linear_discard_1`
@@ -22347,8 +22394,8 @@ theorem RueCore.Sharp.Glue.overwrite.no_linear_overwrite_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.discard.no_linear_discard_1 :
-  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-      run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearDiscard
+  ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat),
+      run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearDiscard
 ```
 
 ### `Sharp.Glue.discard.eval_complete_1`
@@ -22359,8 +22406,8 @@ theorem RueCore.Sharp.Glue.discard.no_linear_discard_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.discard.eval_complete_1 :
-  ¬∀ (M : FloatModel) {P : Program},
-      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+  ¬∀ (M : FloatLaws) {P : Program},
+      (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M.toFloatSig P Config.init
               (Config.run H φ [] (Focus.ret v) tr) →
             ∃ n,
@@ -22381,8 +22428,8 @@ theorem RueCore.Sharp.Glue.discard.eval_complete_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.discard_loop.no_linear_discard_1 :
-  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-      run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearDiscard
+  ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat),
+      run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearDiscard
 ```
 
 ### `Sharp.Glue.discard_loop.never_stuck_iff_1`
@@ -22393,9 +22440,9 @@ theorem RueCore.Sharp.Glue.discard_loop.no_linear_discard_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.discard_loop.never_stuck_iff_1 :
-  ¬∀ (M : FloatModel) {P : Program},
-      (∀ (fuel : Nat) (w : Violation),
-          run M.toFloatSig P fuel ≠ EvalRes.stuck w) ↔
+  ¬∀ (M : FloatLaws) {P : Program},
+      (∀ (fuel : Nat) (w : Refusal),
+          run M.toFloatSig P fuel ≠ EvalRes.refused w) ↔
         ∀ (C : Config),
           Steps M.toFloatSig P Config.init C →
             C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
@@ -22409,7 +22456,7 @@ theorem RueCore.Sharp.Glue.discard_loop.never_stuck_iff_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.discard_loop.eval_diverges_iff_1 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       (∀ (fuel : Nat), run M.toFloatSig P fuel = EvalRes.outOfFuel) ↔
         ∀ (n : Nat), ∃ D, StepsN M.toFloatSig P n Config.init D
 ```
@@ -22422,7 +22469,7 @@ theorem RueCore.Sharp.Glue.discard_loop.eval_diverges_iff_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.fuel.fuel_mono_1 :
-  ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr}
+  ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : Expr}
       {n m : Nat},
       eval M n P H φ e ≠ EvalRes.outOfFuel →
         eval M m P H φ e = eval M n P H φ e
@@ -22436,7 +22483,7 @@ theorem RueCore.Sharp.Glue.fuel.fuel_mono_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.fuel.fuel_mono_2 :
-  ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr}
+  ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : Expr}
       {n m : Nat}, n ≤ m → eval M m P H φ e = eval M n P H φ e
 ```
 
@@ -22448,10 +22495,10 @@ theorem RueCore.Sharp.Glue.fuel.fuel_mono_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.fuel.no_masking_1 :
-  ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr}
-      {_n : Nat} {m : Nat} {w : Violation},
+  ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : Expr}
+      {_n : Nat} {m : Nat} {w : Refusal},
       eval M m P H φ e ≠ EvalRes.outOfFuel →
-        eval M m P H φ e = EvalRes.stuck w
+        eval M m P H φ e = EvalRes.refused w
 ```
 
 ### `Sharp.Glue.fuel.eval_complete_3`
@@ -22462,9 +22509,9 @@ theorem RueCore.Sharp.Glue.fuel.no_masking_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.fuel.eval_complete_3 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
-        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M.toFloatSig P Config.init
                 (Config.run H φ [] (Focus.ret v) tr) →
               ∃ _n,
@@ -22485,19 +22532,19 @@ theorem RueCore.Sharp.Glue.fuel.eval_complete_3 :
 ```lean
 theorem RueCore.Sharp.Glue.fuel.run_complete_2 :
   ¬∀ (M : FloatSig) (P : Program),
-      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+      (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
             ∃ _n,
               ∀ (fuel : Nat),
                 run M P fuel = EvalRes.ok H v tr ∨
-                  ∃ w, run M P fuel = EvalRes.stuck w) ∧
+                  ∃ w, run M P fuel = EvalRes.refused w) ∧
         ∀ (κ : PanicKind) (tr : List Event),
           Steps M P Config.init (Config.panic κ tr) →
             ∃ n,
               ∀ (fuel : Nat),
                 n < fuel →
                   run M P fuel = EvalRes.panic κ tr ∨
-                    ∃ w, run M P fuel = EvalRes.stuck w
+                    ∃ w, run M P fuel = EvalRes.refused w
 ```
 
 ### `Sharp.Glue.fuel_panic.eval_complete_5`
@@ -22508,9 +22555,9 @@ theorem RueCore.Sharp.Glue.fuel.run_complete_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.fuel_panic.eval_complete_5 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
-        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M.toFloatSig P Config.init
                 (Config.run H φ [] (Focus.ret v) tr) →
               ∃ n,
@@ -22531,19 +22578,19 @@ theorem RueCore.Sharp.Glue.fuel_panic.eval_complete_5 :
 ```lean
 theorem RueCore.Sharp.Glue.fuel_panic.run_complete_4 :
   ¬∀ (M : FloatSig) (P : Program),
-      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+      (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
             ∃ n,
               ∀ (fuel : Nat),
                 n < fuel →
                   run M P fuel = EvalRes.ok H v tr ∨
-                    ∃ w, run M P fuel = EvalRes.stuck w) ∧
+                    ∃ w, run M P fuel = EvalRes.refused w) ∧
         ∀ (κ : PanicKind) (tr : List Event),
           Steps M P Config.init (Config.panic κ tr) →
             ∃ _n,
               ∀ (fuel : Nat),
                 run M P fuel = EvalRes.panic κ tr ∨
-                  ∃ w, run M P fuel = EvalRes.stuck w
+                  ∃ w, run M P fuel = EvalRes.refused w
 ```
 
 ### `Sharp.Glue.not_fits.check_sound_2`
@@ -22554,7 +22601,7 @@ theorem RueCore.Sharp.Glue.fuel_panic.run_complete_4 :
 
 ```lean
 theorem RueCore.Sharp.Glue.not_fits.check_sound_2 :
-  ¬∀ {P : Program} {R : Ty} (e : Expr) {Γ : Ctx} {c : CTy} {Ω : Out},
+  ¬∀ {P : Program} {R : Ty} (e : Expr) {Γ : Ctx} {c : TyOrNever} {Ω : Out},
       check P R Γ e = some (c, Ω) → ∀ (T : Ty), Typed P R Γ e T Ω
 ```
 
@@ -22566,8 +22613,8 @@ theorem RueCore.Sharp.Glue.not_fits.check_sound_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.double_drop.no_double_free_1 :
-  ¬∀ (M : FloatModel) {P : Program} (fuel : Nat),
-      (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
+  ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat),
+      (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
         (∀ (a : Nat),
             List.count a (freedIds P.decls (run M.toFloatSig P fuel).trace) ≤
               1) ∧
@@ -22583,7 +22630,7 @@ theorem RueCore.Sharp.Glue.double_drop.no_double_free_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.double_drop.step_no_double_free_1 :
-  ¬∀ (M : FloatModel) {P : Program} {C : Config},
+  ¬∀ (M : FloatLaws) {P : Program} {C : Config},
       Steps M.toFloatSig P Config.init C →
         (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
           ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1
@@ -22609,8 +22656,8 @@ theorem RueCore.Sharp.Glue.double_drop.dtor_once_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.bare_dtor.drop_order_1 :
-  ¬∀ (M : FloatModel) {P : Program},
-      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+  ¬∀ (M : FloatLaws) {P : Program},
+      (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M.toFloatSig P Config.init
               (Config.run H φ [] (Focus.ret v) tr) →
             Blocks P.decls tr) ∧
@@ -22622,8 +22669,8 @@ theorem RueCore.Sharp.Glue.bare_dtor.drop_order_1 :
               Step M.toFloatSig P C C' →
                 ∃ evs,
                   C'.trace = C.trace ++ evs ∧
-                    NewestFirst (dropLocs evs) ∧
-                      Lifo C.stack C'.stack (dropLocs evs) ∧
+                    StrictStackOrder (dropLocs evs) ∧
+                      StackDiscipline C.stack C'.stack (dropLocs evs) ∧
                         List.Pairwise (fun x1 x2 => x1 < x2) C.stack
 ```
 
@@ -22636,8 +22683,8 @@ outside `Blocks` is outside `DropGlueBlocks` (helper).
 
 ```lean
 theorem RueCore.Sharp.Glue.bare_dtor.drop_glue_order_1 :
-  ¬∀ (M : FloatModel) {P : Program},
-      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+  ¬∀ (M : FloatLaws) {P : Program},
+      (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M.toFloatSig P Config.init
               (Config.run H φ [] (Focus.ret v) tr) →
             DropGlueBlocks P.decls tr) ∧
@@ -22654,16 +22701,16 @@ theorem RueCore.Sharp.Glue.bare_dtor.drop_glue_order_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.pending_program.drop_exactly_once_2 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-          {φ : Frame} {H : Store},
+          {φ : Activation} {H : Store},
           Typed P R Γ e T Ω →
-            FrameMatches P.decls Γ φ H →
+            ActivationTyping P.decls Γ φ H →
               StoreCC P.decls H →
                 e.pendingSafe = true →
-                  (∀ (w : Violation),
-                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                  (∀ (w : Refusal),
+                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.refused w) ∧
                     Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
                       Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
@@ -22676,12 +22723,12 @@ theorem RueCore.Sharp.Glue.pending_program.drop_exactly_once_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.pending_program.rest_exactly_once_2 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-          {φ : Frame} {H : Store},
+          {φ : Activation} {H : Store},
           Typed P R Γ e T Ω →
-            FrameMatches P.decls Γ φ H →
+            ActivationTyping P.decls Γ φ H →
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
@@ -22689,7 +22736,7 @@ theorem RueCore.Sharp.Glue.pending_program.rest_exactly_once_2 :
                       ∀ {r : EvalRes},
                         eval M.toFloatSig (fuel + 1) P H φ e =
                             EvalRes.withTrace tr r →
-                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                          (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                             Exact P.decls H₁
                                 (Contents.ownList P.decls
                                   (Contents.ofVals vs))
@@ -22705,16 +22752,16 @@ theorem RueCore.Sharp.Glue.pending_program.rest_exactly_once_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.pending_expr.drop_exactly_once_6 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         P.pendingSafe = true →
           ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-            {φ : Frame} {H : Store},
+            {φ : Activation} {H : Store},
             Typed P R Γ e T Ω →
-              FrameMatches P.decls Γ φ H →
+              ActivationTyping P.decls Γ φ H →
                 StoreCC P.decls H →
-                  (∀ (w : Violation),
-                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                  (∀ (w : Refusal),
+                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.refused w) ∧
                     Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
                       Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
@@ -22727,20 +22774,20 @@ theorem RueCore.Sharp.Glue.pending_expr.drop_exactly_once_6 :
 
 ```lean
 theorem RueCore.Sharp.Glue.pending_expr.rest_exactly_once_6 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         P.pendingSafe = true →
           ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-            {φ : Frame} {H : Store},
+            {φ : Activation} {H : Store},
             Typed P R Γ e T Ω →
-              FrameMatches P.decls Γ φ H →
+              ActivationTyping P.decls Γ φ H →
                 StoreCC P.decls H →
                   ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
                     Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                       ∀ {r : EvalRes},
                         eval M.toFloatSig (fuel + 1) P H φ e =
                             EvalRes.withTrace tr r →
-                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                          (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                             Exact P.decls H₁
                                 (Contents.ownList P.decls
                                   (Contents.ofVals vs))
@@ -22756,16 +22803,16 @@ theorem RueCore.Sharp.Glue.pending_expr.rest_exactly_once_6 :
 
 ```lean
 theorem RueCore.Sharp.Glue.store_cc.drop_exactly_once_5 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         P.pendingSafe = true →
           ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-            {φ : Frame} {H : Store},
+            {φ : Activation} {H : Store},
             Typed P R Γ e T Ω →
-              FrameMatches P.decls Γ φ H →
+              ActivationTyping P.decls Γ φ H →
                 e.pendingSafe = true →
-                  (∀ (w : Violation),
-                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                  (∀ (w : Refusal),
+                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.refused w) ∧
                     Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
                       Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
@@ -22778,20 +22825,20 @@ theorem RueCore.Sharp.Glue.store_cc.drop_exactly_once_5 :
 
 ```lean
 theorem RueCore.Sharp.Glue.store_cc.rest_exactly_once_5 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         P.pendingSafe = true →
           ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-            {φ : Frame} {H : Store},
+            {φ : Activation} {H : Store},
             Typed P R Γ e T Ω →
-              FrameMatches P.decls Γ φ H →
+              ActivationTyping P.decls Γ φ H →
                 e.pendingSafe = true →
                   ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
                     Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                       ∀ {r : EvalRes},
                         eval M.toFloatSig (fuel + 1) P H φ e =
                             EvalRes.withTrace tr r →
-                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                          (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                             Exact P.decls H₁
                                 (Contents.ownList P.decls
                                   (Contents.ofVals vs))
@@ -22807,20 +22854,20 @@ theorem RueCore.Sharp.Glue.store_cc.rest_exactly_once_5 :
 
 ```lean
 theorem RueCore.Sharp.Glue.no_lead.rest_exactly_once_7 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         P.pendingSafe = true →
           ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-            {φ : Frame} {H : Store},
+            {φ : Activation} {H : Store},
             Typed P R Γ e T Ω →
-              FrameMatches P.decls Γ φ H →
+              ActivationTyping P.decls Γ φ H →
                 StoreCC P.decls H →
                   e.pendingSafe = true →
                     ∀ {H₁ : Store} {vs : List Val} {tr : List Event}
                       {r : EvalRes},
                       eval M.toFloatSig (fuel + 1) P H φ e =
                           EvalRes.withTrace tr r →
-                        (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                        (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                           Exact P.decls H₁
                               (Contents.ownList P.decls (Contents.ofVals vs))
                               r ∧
@@ -22835,19 +22882,19 @@ theorem RueCore.Sharp.Glue.no_lead.rest_exactly_once_7 :
 
 ```lean
 theorem RueCore.Sharp.Glue.no_eval.rest_exactly_once_8 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         P.pendingSafe = true →
           ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-            {φ : Frame} {H : Store},
+            {φ : Activation} {H : Store},
             Typed P R Γ e T Ω →
-              FrameMatches P.decls Γ φ H →
+              ActivationTyping P.decls Γ φ H →
                 StoreCC P.decls H →
                   e.pendingSafe = true →
                     ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
                       Lead M.toFloatSig P fuel H φ H₁ vs tr e →
                         ∀ {r : EvalRes},
-                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                          (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                             Exact P.decls H₁
                                 (Contents.ownList P.decls
                                   (Contents.ofVals vs))
@@ -22863,9 +22910,9 @@ theorem RueCore.Sharp.Glue.no_eval.rest_exactly_once_8 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreached.drop_order_2 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
-        (∀ (_H : Store) (_φ : Frame) (_v : Val) (tr : List Event),
+        (∀ (_H : Store) (_φ : Activation) (_v : Val) (tr : List Event),
             Blocks P.decls tr) ∧
           (∀ (κ : PanicKind) (tr : List Event),
               Steps M.toFloatSig P Config.init (Config.panic κ tr) →
@@ -22875,8 +22922,8 @@ theorem RueCore.Sharp.Glue.unreached.drop_order_2 :
                 Step M.toFloatSig P C C' →
                   ∃ evs,
                     C'.trace = C.trace ++ evs ∧
-                      NewestFirst (dropLocs evs) ∧
-                        Lifo C.stack C'.stack (dropLocs evs) ∧
+                      StrictStackOrder (dropLocs evs) ∧
+                        StackDiscipline C.stack C'.stack (dropLocs evs) ∧
                           List.Pairwise (fun x1 x2 => x1 < x2) C.stack
 ```
 
@@ -22888,9 +22935,9 @@ theorem RueCore.Sharp.Glue.unreached.drop_order_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreached.drop_glue_order_2 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
-        (∀ (_H : Store) (_φ : Frame) (_v : Val) (tr : List Event),
+        (∀ (_H : Store) (_φ : Activation) (_v : Val) (tr : List Event),
             DropGlueBlocks P.decls tr) ∧
           ∀ (κ : PanicKind) (tr : List Event),
             Steps M.toFloatSig P Config.init (Config.panic κ tr) →
@@ -22905,13 +22952,13 @@ theorem RueCore.Sharp.Glue.unreached.drop_glue_order_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreached.eval_sound_2 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∀ (fuel : Nat),
-          (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
+          (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
             (∀ (H : Store) (v : Val) (tr : List Event),
                 Steps M.toFloatSig P Config.init
-                  (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+                  (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
               ∀ (k : PanicKind) (tr : List Event),
                 run M.toFloatSig P fuel = EvalRes.panic k tr →
                   Steps M.toFloatSig P Config.init (Config.panic k tr)
@@ -22928,7 +22975,7 @@ theorem RueCore.Sharp.Glue.unreached.run_sim_1 :
   ¬∀ (M : FloatSig) (P : Program) (fuel : Nat),
       (∀ (H : Store) (v : Val) (tr : List Event),
           Steps M P Config.init
-            (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+            (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
         ∀ (k : PanicKind) (tr : List Event),
           run M P fuel = EvalRes.panic k tr →
             Steps M P Config.init (Config.panic k tr)
@@ -22942,9 +22989,9 @@ theorem RueCore.Sharp.Glue.unreached.run_sim_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreached.eval_complete_2 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
-        (∀ (H : Store) (_φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (_φ : Activation) (v : Val) (tr : List Event),
             ∃ n,
               ∀ (fuel : Nat),
                 n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
@@ -22964,19 +23011,19 @@ theorem RueCore.Sharp.Glue.unreached.eval_complete_2 :
 ```lean
 theorem RueCore.Sharp.Glue.unreached.run_complete_1 :
   ¬∀ (M : FloatSig) (P : Program),
-      (∀ (H : Store) (_φ : Frame) (v : Val) (tr : List Event),
+      (∀ (H : Store) (_φ : Activation) (v : Val) (tr : List Event),
           ∃ n,
             ∀ (fuel : Nat),
               n < fuel →
                 run M P fuel = EvalRes.ok H v tr ∨
-                  ∃ w, run M P fuel = EvalRes.stuck w) ∧
+                  ∃ w, run M P fuel = EvalRes.refused w) ∧
         ∀ (κ : PanicKind) (tr : List Event),
           Steps M P Config.init (Config.panic κ tr) →
             ∃ n,
               ∀ (fuel : Nat),
                 n < fuel →
                   run M P fuel = EvalRes.panic κ tr ∨
-                    ∃ w, run M P fuel = EvalRes.stuck w
+                    ∃ w, run M P fuel = EvalRes.refused w
 ```
 
 ### `Sharp.Glue.unreached_panic.drop_order_3`
@@ -22987,9 +23034,9 @@ theorem RueCore.Sharp.Glue.unreached.run_complete_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreached_panic.drop_order_3 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
-        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M.toFloatSig P Config.init
                 (Config.run H φ [] (Focus.ret v) tr) →
               Blocks P.decls tr) ∧
@@ -22999,8 +23046,8 @@ theorem RueCore.Sharp.Glue.unreached_panic.drop_order_3 :
                 Step M.toFloatSig P C C' →
                   ∃ evs,
                     C'.trace = C.trace ++ evs ∧
-                      NewestFirst (dropLocs evs) ∧
-                        Lifo C.stack C'.stack (dropLocs evs) ∧
+                      StrictStackOrder (dropLocs evs) ∧
+                        StackDiscipline C.stack C'.stack (dropLocs evs) ∧
                           List.Pairwise (fun x1 x2 => x1 < x2) C.stack
 ```
 
@@ -23012,9 +23059,9 @@ theorem RueCore.Sharp.Glue.unreached_panic.drop_order_3 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreached_panic.drop_glue_order_3 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
-        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M.toFloatSig P Config.init
                 (Config.run H φ [] (Focus.ret v) tr) →
               DropGlueBlocks P.decls tr) ∧
@@ -23029,14 +23076,14 @@ theorem RueCore.Sharp.Glue.unreached_panic.drop_glue_order_3 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreached_panic.eval_sound_3 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∀ (fuel : Nat),
-          (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
+          (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
             (∀ (H : Store) (v : Val) (tr : List Event),
                 run M.toFloatSig P fuel = EvalRes.ok H v tr →
                   Steps M.toFloatSig P Config.init
-                    (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+                    (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
               ∀ (k : PanicKind) (tr : List Event),
                 Steps M.toFloatSig P Config.init (Config.panic k tr)
 ```
@@ -23053,7 +23100,7 @@ theorem RueCore.Sharp.Glue.unreached_panic.run_sim_2 :
       (∀ (H : Store) (v : Val) (tr : List Event),
           run M P fuel = EvalRes.ok H v tr →
             Steps M P Config.init
-              (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+              (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
         ∀ (k : PanicKind) (tr : List Event),
           Steps M P Config.init (Config.panic k tr)
 ```
@@ -23066,9 +23113,9 @@ theorem RueCore.Sharp.Glue.unreached_panic.run_sim_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreached_panic.eval_complete_4 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
-        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M.toFloatSig P Config.init
                 (Config.run H φ [] (Focus.ret v) tr) →
               ∃ n,
@@ -23089,19 +23136,19 @@ theorem RueCore.Sharp.Glue.unreached_panic.eval_complete_4 :
 ```lean
 theorem RueCore.Sharp.Glue.unreached_panic.run_complete_3 :
   ¬∀ (M : FloatSig) (P : Program),
-      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+      (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
             ∃ n,
               ∀ (fuel : Nat),
                 n < fuel →
                   run M P fuel = EvalRes.ok H v tr ∨
-                    ∃ w, run M P fuel = EvalRes.stuck w) ∧
+                    ∃ w, run M P fuel = EvalRes.refused w) ∧
         ∀ (κ : PanicKind) (tr : List Event),
           ∃ n,
             ∀ (fuel : Nat),
               n < fuel →
                 run M P fuel = EvalRes.panic κ tr ∨
-                  ∃ w, run M P fuel = EvalRes.stuck w
+                  ∃ w, run M P fuel = EvalRes.refused w
 ```
 
 ### `Sharp.Glue.unordered.drop_order_4`
@@ -23112,9 +23159,9 @@ theorem RueCore.Sharp.Glue.unreached_panic.run_complete_3 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unordered.drop_order_4 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
-        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M.toFloatSig P Config.init
                 (Config.run H φ [] (Focus.ret v) tr) →
               Blocks P.decls tr) ∧
@@ -23125,8 +23172,8 @@ theorem RueCore.Sharp.Glue.unordered.drop_order_4 :
               Step M.toFloatSig P C C' →
                 ∃ evs,
                   C'.trace = C.trace ++ evs ∧
-                    NewestFirst (dropLocs evs) ∧
-                      Lifo C.stack C'.stack (dropLocs evs) ∧
+                    StrictStackOrder (dropLocs evs) ∧
+                      StackDiscipline C.stack C'.stack (dropLocs evs) ∧
                         List.Pairwise (fun x1 x2 => x1 < x2) C.stack
 ```
 
@@ -23138,9 +23185,9 @@ theorem RueCore.Sharp.Glue.unordered.drop_order_4 :
 
 ```lean
 theorem RueCore.Sharp.Glue.not_a_step.drop_order_5 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
-        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M.toFloatSig P Config.init
                 (Config.run H φ [] (Focus.ret v) tr) →
               Blocks P.decls tr) ∧
@@ -23151,8 +23198,8 @@ theorem RueCore.Sharp.Glue.not_a_step.drop_order_5 :
               Steps M.toFloatSig P Config.init C →
                 ∃ evs,
                   C'.trace = C.trace ++ evs ∧
-                    NewestFirst (dropLocs evs) ∧
-                      Lifo C.stack C'.stack (dropLocs evs) ∧
+                    StrictStackOrder (dropLocs evs) ∧
+                      StackDiscipline C.stack C'.stack (dropLocs evs) ∧
                         List.Pairwise (fun x1 x2 => x1 < x2) C.stack
 ```
 
@@ -23197,7 +23244,7 @@ theorem RueCore.Sharp.Glue.init_steps.Step.terminal_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.init_steps.step_stuck_isStuckState_1 :
-  ¬∀ {_M : FloatSig} {_P : Program} {_C : Config} {w : Violation},
+  ¬∀ {_M : FloatSig} {_P : Program} {_C : Config} {w : Refusal},
       w.isStuckState = true
 ```
 
@@ -23209,9 +23256,10 @@ theorem RueCore.Sharp.Glue.init_steps.step_stuck_isStuckState_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.init_steps.run_stuck_of_step_stuck_2 :
-  ¬∀ (M : FloatSig) (P : Program) {C : Config} {_w : Violation},
+  ¬∀ (M : FloatSig) (P : Program) {C : Config} {_w : Refusal},
       Steps M P Config.init C →
-        ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.stuck w'
+        ∃ n,
+          ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.refused w'
 ```
 
 ### `Sharp.Glue.unreachable_stuck.step_progress_2`
@@ -23222,7 +23270,7 @@ theorem RueCore.Sharp.Glue.init_steps.run_stuck_of_step_stuck_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreachable_stuck.step_progress_2 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∀ (C : Config), C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 ```
@@ -23235,7 +23283,7 @@ theorem RueCore.Sharp.Glue.unreachable_stuck.step_progress_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreachable_stuck.step_preservation_2 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∃ fd,
           P.fns[0]? = some fd ∧
@@ -23250,10 +23298,10 @@ theorem RueCore.Sharp.Glue.unreachable_stuck.step_preservation_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreachable_stuck.never_stuck_iff_2 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
-        ((∀ (fuel : Nat) (w : Violation),
-            run M.toFloatSig P fuel ≠ EvalRes.stuck w) ↔
+        ((∀ (fuel : Nat) (w : Refusal),
+            run M.toFloatSig P fuel ≠ EvalRes.refused w) ↔
           ∀ (C : Config), C.Terminal ∨ ∃ C', Step M.toFloatSig P C C')
 ```
 
@@ -23266,7 +23314,7 @@ theorem RueCore.Sharp.Glue.unreachable_stuck.never_stuck_iff_2 :
 ```lean
 theorem RueCore.Sharp.Glue.unreachable_stuck.step_never_stuck_of_run_2 :
   ¬∀ (M : FloatSig) (P : Program),
-      (∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w) →
+      (∀ (fuel : Nat) (w : Refusal), run M P fuel ≠ EvalRes.refused w) →
         ∀ (C : Config), C.Terminal ∨ ∃ C', Step M P C C'
 ```
 
@@ -23278,9 +23326,10 @@ theorem RueCore.Sharp.Glue.unreachable_stuck.step_never_stuck_of_run_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreachable_stuck.run_stuck_of_step_stuck_1 :
-  ¬∀ (M : FloatSig) (P : Program) {C : Config} {w : Violation},
+  ¬∀ (M : FloatSig) (P : Program) {C : Config} {w : Refusal},
       Config.Stuck M P C w →
-        ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.stuck w'
+        ∃ n,
+          ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.refused w'
 ```
 
 ### `Sharp.Glue.retired_cell.step_no_use_after_drop_1`
@@ -23292,7 +23341,7 @@ theorem RueCore.Sharp.Glue.unreachable_stuck.run_stuck_of_step_stuck_1 :
 ```lean
 theorem RueCore.Sharp.Glue.retired_cell.step_no_use_after_drop_1 :
   ¬∀ (M : FloatSig) (P : Program) {C : Config},
-      ¬Config.Stuck M P C Violation.useAfterDrop
+      ¬Config.Stuck M P C Refusal.useAfterDrop
 ```
 
 ### `Sharp.Glue.unreached_double.step_no_double_free_2`
@@ -23303,7 +23352,7 @@ theorem RueCore.Sharp.Glue.retired_cell.step_no_use_after_drop_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreached_double.step_no_double_free_2 :
-  ¬∀ (_M : FloatModel) {P : Program},
+  ¬∀ (_M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∀ {C : Config},
           (∀ (a : Nat), List.count a (freedIds P.decls C.trace) ≤ 1) ∧
@@ -23318,9 +23367,9 @@ theorem RueCore.Sharp.Glue.unreached_double.step_no_double_free_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.uncut_drop.drop_order_4 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
-        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M.toFloatSig P Config.init
                 (Config.run H φ [] (Focus.ret v) tr) →
               Blocks P.decls tr) ∧
@@ -23331,8 +23380,8 @@ theorem RueCore.Sharp.Glue.uncut_drop.drop_order_4 :
               Step M.toFloatSig P C C' →
                 ∃ evs,
                   C'.trace = C.trace ++ evs ∧
-                    NewestFirst (dropLocs evs) ∧
-                      Lifo C.stack C'.stack (dropLocs evs) ∧
+                    StrictStackOrder (dropLocs evs) ∧
+                      StackDiscipline C.stack C'.stack (dropLocs evs) ∧
                         List.Pairwise (fun x1 x2 => x1 < x2) C.stack
 ```
 
@@ -23344,7 +23393,7 @@ theorem RueCore.Sharp.Glue.uncut_drop.drop_order_4 :
 
 ```lean
 theorem RueCore.Sharp.Glue.ill_typed_halt.step_preservation_2 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∃ fd,
           P.fns[0]? = some fd ∧
@@ -23359,7 +23408,7 @@ theorem RueCore.Sharp.Glue.ill_typed_halt.step_preservation_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.out_of_range_halt.step_preservation_2 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∃ fd,
           P.fns[0]? = some fd ∧
@@ -23374,7 +23423,7 @@ theorem RueCore.Sharp.Glue.out_of_range_halt.step_preservation_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.float_halt.step_preservation_2 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∃ fd,
           P.fns[0]? = some fd ∧
@@ -23389,13 +23438,13 @@ theorem RueCore.Sharp.Glue.float_halt.step_preservation_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.copy_leak.whole_program_exactly_once_1 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       P.pendingSafe = true →
         ∀ {C : Config},
           Steps M.toFloatSig P Config.init C →
             ∀ {a : Nat},
               a ∈ Config.held P.decls C →
-                ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+                ∀ {H : Store} {φ : Activation} {v : Val} {tr : List Event},
                   Steps M.toFloatSig P C
                       (Config.run H φ [] (Focus.ret v) tr) →
                     List.count a (Val.own P.decls v) +
@@ -23411,13 +23460,13 @@ theorem RueCore.Sharp.Glue.copy_leak.whole_program_exactly_once_1 :
 
 ```lean
 theorem RueCore.Sharp.Glue.pending_leak.whole_program_exactly_once_2 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∀ {C : Config},
           Steps M.toFloatSig P Config.init C →
             ∀ {a : Nat},
               a ∈ Config.held P.decls C →
-                ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+                ∀ {H : Store} {φ : Activation} {v : Val} {tr : List Event},
                   Steps M.toFloatSig P C
                       (Config.run H φ [] (Focus.ret v) tr) →
                     List.count a (Val.own P.decls v) +
@@ -23433,12 +23482,12 @@ theorem RueCore.Sharp.Glue.pending_leak.whole_program_exactly_once_2 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unreached_held.whole_program_exactly_once_3 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         P.pendingSafe = true →
           ∀ {C : Config} {a : Nat},
             a ∈ Config.held P.decls C →
-              ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+              ∀ {H : Store} {φ : Activation} {v : Val} {tr : List Event},
                 Steps M.toFloatSig P C (Config.run H φ [] (Focus.ret v) tr) →
                   List.count a (Val.own P.decls v) +
                       List.count a (freedIds P.decls tr) =
@@ -23453,12 +23502,13 @@ theorem RueCore.Sharp.Glue.unreached_held.whole_program_exactly_once_3 :
 
 ```lean
 theorem RueCore.Sharp.Glue.unheld.whole_program_exactly_once_4 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         P.pendingSafe = true →
           ∀ {C : Config},
             Steps M.toFloatSig P Config.init C →
-              ∀ {a : Nat} {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+              ∀ {a : Nat} {H : Store} {φ : Activation} {v : Val}
+                {tr : List Event},
                 Steps M.toFloatSig P C (Config.run H φ [] (Focus.ret v) tr) →
                   List.count a (Val.own P.decls v) +
                       List.count a (freedIds P.decls tr) =
@@ -23473,14 +23523,15 @@ theorem RueCore.Sharp.Glue.unheld.whole_program_exactly_once_4 :
 
 ```lean
 theorem RueCore.Sharp.Glue.off_run.whole_program_exactly_once_5 :
-  ¬∀ (M : FloatModel) {P : Program},
+  ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         P.pendingSafe = true →
           ∀ {C : Config},
             Steps M.toFloatSig P Config.init C →
               ∀ {a : Nat},
                 a ∈ Config.held P.decls C →
-                  ∀ {_H : Store} {_φ : Frame} {v : Val} {tr : List Event},
+                  ∀ {_H : Store} {_φ : Activation} {v : Val}
+                    {tr : List Event},
                     List.count a (Val.own P.decls v) +
                         List.count a (freedIds P.decls tr) =
                       1
@@ -23495,7 +23546,7 @@ re-enters the loop at one unit of fuel less (helper).
 
 ```lean
 theorem RueCore.Examples.eval_loop_ok {M : FloatSig} {P : Program} {n : Nat}
-  {H H₁ : Store} {φ : Frame} {e : Expr} {tr : List Event}
+  {H H₁ : Store} {φ : Activation} {e : Expr} {tr : List Event}
   (h : eval M n P H φ e = EvalRes.ok H₁ Val.unit tr) :
   eval M (n + 1) P H φ e.loop = EvalRes.withTrace tr (eval M n P H₁ φ e.loop)
 ```
@@ -23998,65 +24049,6 @@ RueCore.IntWidth.w32 : IntWidth
 RueCore.IntWidth.w64 : IntWidth
 ```
 
-### `Lifo`
-
-*def* · module `RueCore.Trace.Defs`
-
-**How one step changes the registration stack, and what it drops**: it
-either keeps the stack as a prefix of the new one — nothing deregistered —
-or cuts the stack back to a prefix of the old one, and its `drop` markers
-then name only cells of the suffix it cut, newest first (helper).
-
-```lean
-def RueCore.Lifo (S S' ls : List Nat) : Prop :=
-  S <+: S' ∨ S' <+: S ∧ ls.Sublist (List.drop S'.length S).reverse
-```
-
-### `Mult`
-
-*inductive* · module `RueCore.Syntax`
-
-The multiplicity lattice (§3): `Copy ⊑ Affine ⊑ Linear`.
-
-```lean
-inductive RueCore.Mult : Type
-```
-
-Constructors:
-
-**`Mult.copy`**
-
-```lean
-RueCore.Mult.copy : Mult
-```
-
-**`Mult.affine`**
-
-```lean
-RueCore.Mult.affine : Mult
-```
-
-**`Mult.linear`**
-
-```lean
-RueCore.Mult.linear : Mult
-```
-
-### `NewestFirst`
-
-*def* · module `RueCore.Trace.Defs`
-
-**The order one step drops cells in**: its `drop` markers either all name
-one cell — an overwrite, an `@drop`, a destructure's residue, several
-sub-positions of one binding — or name distinct cells in strictly decreasing
-location order (helper).
-
-```lean
-def RueCore.NewestFirst (ls : List Nat) : Prop :=
-  (∃ ℓ, ∀ (x : Nat), x ∈ ls → x = ℓ) ∨
-    List.Pairwise (fun x1 x2 => x1 > x2) ls
-```
-
 ### `OwnSt`
 
 *inductive* · module `RueCore.Statics`
@@ -24213,6 +24205,36 @@ abbrev RueCore.Print.DtorMarks : Type :=
   Nat → Option Nat
 ```
 
+### `Qual`
+
+*inductive* · module `RueCore.Syntax`
+
+The multiplicity lattice (§3): `Copy ⊑ Affine ⊑ Linear`.
+
+```lean
+inductive RueCore.Qual : Type
+```
+
+Constructors:
+
+**`Qual.copy`**
+
+```lean
+RueCore.Qual.copy : Qual
+```
+
+**`Qual.affine`**
+
+```lean
+RueCore.Qual.affine : Qual
+```
+
+**`Qual.linear`**
+
+```lean
+RueCore.Qual.linear : Qual
+```
+
 ### `Rec`
 
 *def* · module `RueCore.Trace.Defs`
@@ -24223,6 +24245,67 @@ strictly increasing, every one below the store's length `n` (helper).
 ```lean
 def RueCore.Rec (n : Nat) (ls : List Nat) : Prop :=
   List.Pairwise (fun x1 x2 => x1 < x2) ls ∧ ∀ (ℓ : Nat), ℓ ∈ ls → ℓ < n
+```
+
+### `Refusal`
+
+*inductive* · module `RueCore.Dynamics`
+
+The named memory violations: the machine's refusals. §7's decomposed
+memory-safety bullets each forbid one of these.
+
+```lean
+inductive RueCore.Refusal : Type
+```
+
+Constructors:
+
+**`Refusal.useAfterMove`** — Reading a `⊘` cell (§7: no use-after-move).
+
+```lean
+RueCore.Refusal.useAfterMove : Refusal
+```
+
+**`Refusal.useAfterDrop`** — Touching a `†` cell (§7: no use-after-drop).
+
+```lean
+RueCore.Refusal.useAfterDrop : Refusal
+```
+
+**`Refusal.linearLeak`** — A scope exit — at a `let`'s end (§6.7) or on a frame's unwind (§6.9) — reaching a live linear value (§7: consumed exactly once; §5.6); or a declared-linear destructure whose residue holds one, which §5.1's `¬ linear-residue(S, π_s)` premise forbids (`3.8:60`, E0474) and which §6.3 therefore leaves unchecked.
+
+```lean
+RueCore.Refusal.linearLeak : Refusal
+```
+
+**`Refusal.linearOverwrite`** — Overwrite-drop of a live linear value (§5.2, `3.8:77`).
+
+```lean
+RueCore.Refusal.linearOverwrite : Refusal
+```
+
+**`Refusal.linearDiscard`** — Sequence-discard of a linear value (§5.3, `3.8:64`).
+
+```lean
+RueCore.Refusal.linearDiscard : Refusal
+```
+
+**`Refusal.unbound`** — A dangling index (impossible for elaborated programs; §2).
+
+```lean
+RueCore.Refusal.unbound : Refusal
+```
+
+**`Refusal.typeConfusion`** — An operator on a wrong-shaped value, or a call whose argument count does not match the callee's parameter list (impossible for well-typed programs; §5.8, `4.10:3`).
+
+```lean
+RueCore.Refusal.typeConfusion : Refusal
+```
+
+**`Refusal.ownedUnderCopy`** — An owned value under a `Copy` node (§3: a `Copy` type's fields, payloads and elements are `Copy`, `3.8:18`, `6.3:19`) — the shape a copy would duplicate an owner through, which §7's no-double-free bullet forbids. The copy-closure monitor (`Contents.copyContained`) refuses it where it could be built: at aggregate introduction and at an assignment (RUE-2323).
+
+```lean
+RueCore.Refusal.ownedUnderCopy : Refusal
 ```
 
 ### `Sign`
@@ -24247,6 +24330,35 @@ RueCore.Sign.signed : Sign
 
 ```lean
 RueCore.Sign.unsigned : Sign
+```
+
+### `StackDiscipline`
+
+*def* · module `RueCore.Trace.Defs`
+
+**How one step changes the registration stack, and what it drops**: it
+either keeps the stack as a prefix of the new one — nothing deregistered —
+or cuts the stack back to a prefix of the old one, and its `drop` markers
+then name only cells of the suffix it cut, newest first (helper).
+
+```lean
+def RueCore.StackDiscipline (S S' ls : List Nat) : Prop :=
+  S <+: S' ∨ S' <+: S ∧ ls.Sublist (List.drop S'.length S).reverse
+```
+
+### `StrictStackOrder`
+
+*def* · module `RueCore.Trace.Defs`
+
+**The order one step drops cells in**: its `drop` markers either all name
+one cell — an overwrite, an `@drop`, a destructure's residue, several
+sub-positions of one binding — or name distinct cells in strictly decreasing
+location order (helper).
+
+```lean
+def RueCore.StrictStackOrder (ls : List Nat) : Prop :=
+  (∃ ℓ, ∀ (x : Nat), x ∈ ls → x = ℓ) ∨
+    List.Pairwise (fun x1 x2 => x1 > x2) ls
 ```
 
 ### `TyName`
@@ -24307,67 +24419,6 @@ RueCore.UnOp.not : UnOp
 
 ```lean
 RueCore.UnOp.bitnot : UnOp
-```
-
-### `Violation`
-
-*inductive* · module `RueCore.Dynamics`
-
-The named memory violations: the machine's refusals. §7's decomposed
-memory-safety bullets each forbid one of these.
-
-```lean
-inductive RueCore.Violation : Type
-```
-
-Constructors:
-
-**`Violation.useAfterMove`** — Reading a `⊘` cell (§7: no use-after-move).
-
-```lean
-RueCore.Violation.useAfterMove : Violation
-```
-
-**`Violation.useAfterDrop`** — Touching a `†` cell (§7: no use-after-drop).
-
-```lean
-RueCore.Violation.useAfterDrop : Violation
-```
-
-**`Violation.linearLeak`** — A scope exit — at a `let`'s end (§6.7) or on a frame's unwind (§6.9) — reaching a live linear value (§7: consumed exactly once; §5.6); or a declared-linear destructure whose residue holds one, which §5.1's `¬ linear-residue(S, π_s)` premise forbids (`3.8:60`, E0474) and which §6.3 therefore leaves unchecked.
-
-```lean
-RueCore.Violation.linearLeak : Violation
-```
-
-**`Violation.linearOverwrite`** — Overwrite-drop of a live linear value (§5.2, `3.8:77`).
-
-```lean
-RueCore.Violation.linearOverwrite : Violation
-```
-
-**`Violation.linearDiscard`** — Sequence-discard of a linear value (§5.3, `3.8:64`).
-
-```lean
-RueCore.Violation.linearDiscard : Violation
-```
-
-**`Violation.unbound`** — A dangling index (impossible for elaborated programs; §2).
-
-```lean
-RueCore.Violation.unbound : Violation
-```
-
-**`Violation.typeConfusion`** — An operator on a wrong-shaped value, or a call whose argument count does not match the callee's parameter list (impossible for well-typed programs; §5.8, `4.10:3`).
-
-```lean
-RueCore.Violation.typeConfusion : Violation
-```
-
-**`Violation.ownedUnderCopy`** — An owned value under a `Copy` node (§3: a `Copy` type's fields, payloads and elements are `Copy`, `3.8:18`, `6.3:19`) — the shape a copy would duplicate an owner through, which §7's no-double-free bullet forbids. The copy-closure monitor (`Contents.copyClosed`) refuses it where it could be built: at aggregate introduction and at an assignment (RUE-2323).
-
-```lean
-RueCore.Violation.ownedUnderCopy : Violation
 ```
 
 ### `bitLen`
@@ -24468,6 +24519,29 @@ Defining equations, as Lean derived them from the body:
       else if a / b % 2 = 0 then a / b else a / b + 1
 ```
 
+### `Activation`
+
+*inductive* · module `RueCore.Dynamics`
+
+§6.1's frame `φ = ⟨ρ ; σ⟩`: the environment and the frame's open scope
+record — the cells owed a drop when the frame's scopes end, in creation order
+(dropped newest-first). Every binding of the fragment is a `let` binding or a
+by-value parameter, and both are registered; `borrow`/`inout` parameters,
+which are deliberately never registered (§6.9, `3.8:62`), are not in the
+fragment.
+
+```lean
+inductive RueCore.Activation : Type
+```
+
+Constructors:
+
+**`Activation.mk`**
+
+```lean
+RueCore.Activation.mk (env : Env) (scope : List Nat) : Activation
+```
+
 ### `Attr.lift`
 
 *def* · module `RueCore.Syntax`
@@ -24480,16 +24554,16 @@ the join is already `Copy` and the struct declares no destructor — `3.8:18`,
 structs are affine by default).
 
 ```lean
-def RueCore.Attr.lift : Attr → Mult → Mult
+def RueCore.Attr.lift : Attr → Qual → Qual
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (x : Mult), Attr.linear.lift x = Mult.linear
-∀ (x : Mult), Attr.copy.lift x = Mult.copy
-∀ (x : Mult),
-  Attr.none.lift x = if x = Mult.linear then Mult.linear else Mult.affine
+∀ (x : Qual), Attr.linear.lift x = Qual.linear
+∀ (x : Qual), Attr.copy.lift x = Qual.copy
+∀ (x : Qual),
+  Attr.none.lift x = if x = Qual.linear then Qual.linear else Qual.affine
 ```
 
 ### `BinOp.floatAdmits`
@@ -24598,10 +24672,10 @@ RueCore.DynStep.ok (ρ : List Nat) : DynStep
 RueCore.DynStep.bounds : DynStep
 ```
 
-**`DynStep.stuck`**
+**`DynStep.refused`**
 
 ```lean
-RueCore.DynStep.stuck (w : Violation) : DynStep
+RueCore.DynStep.refused (w : Refusal) : DynStep
 ```
 
 ### `Float.addD`
@@ -24911,29 +24985,6 @@ FloatWidth.w32.prec = 24
 FloatWidth.w64.prec = 53
 ```
 
-### `Frame`
-
-*inductive* · module `RueCore.Dynamics`
-
-§6.1's frame `φ = ⟨ρ ; σ⟩`: the environment and the frame's open scope
-record — the cells owed a drop when the frame's scopes end, in creation order
-(dropped newest-first). Every binding of the fragment is a `let` binding or a
-by-value parameter, and both are registered; `borrow`/`inout` parameters,
-which are deliberately never registered (§6.9, `3.8:62`), are not in the
-fragment.
-
-```lean
-inductive RueCore.Frame : Type
-```
-
-Constructors:
-
-**`Frame.mk`**
-
-```lean
-RueCore.Frame.mk (env : Env) (scope : List Nat) : Frame
-```
-
 ### `IntWidth.bits`
 
 *def* · module `RueCore.Syntax`
@@ -24951,24 +25002,6 @@ IntWidth.w8.bits = 8
 IntWidth.w16.bits = 16
 IntWidth.w32.bits = 32
 IntWidth.w64.bits = 64
-```
-
-### `Mult.rank`
-
-*def* · module `RueCore.Syntax`
-
-The lattice order as a number, `Copy ⊑ Affine ⊑ Linear` (§3) (helper).
-
-```lean
-def RueCore.Mult.rank : Mult → Nat
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-Mult.copy.rank = 0
-Mult.affine.rank = 1
-Mult.linear.rank = 2
 ```
 
 ### `OwnSt.fieldAt`
@@ -25091,6 +25124,49 @@ Defining equations, as Lean derived them from the body:
 ∀ (p : Place) (c : Nat), (p.idx c).root = p.root
 ```
 
+### `Qual.rank`
+
+*def* · module `RueCore.Syntax`
+
+The lattice order as a number, `Copy ⊑ Affine ⊑ Linear` (§3) (helper).
+
+```lean
+def RueCore.Qual.rank : Qual → Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Qual.copy.rank = 0
+Qual.affine.rank = 1
+Qual.linear.rank = 2
+```
+
+### `Refusal.isStuckState`
+
+*def* · module `RueCore.Step`
+
+Whether a violation is one of **§6's own stuck states** — a read of a `⊘`
+or `†` cell, an unbound index, a wrong-shaped operand — rather than one of the
+four monitors `eval` adds, which §6.3, §6.5, §6.7 and §6.8 do not have.
+
+```lean
+def RueCore.Refusal.isStuckState : Refusal → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Refusal.useAfterMove.isStuckState = true
+Refusal.useAfterDrop.isStuckState = true
+Refusal.unbound.isStuckState = true
+Refusal.typeConfusion.isStuckState = true
+Refusal.linearLeak.isStuckState = false
+Refusal.linearOverwrite.isStuckState = false
+Refusal.linearDiscard.isStuckState = false
+Refusal.ownedUnderCopy.isStuckState = false
+```
+
 ### `Ty`
 
 *inductive* · module `RueCore.Syntax`
@@ -25150,31 +25226,6 @@ RueCore.Ty.enum (e : Nat) : Ty
 
 ```lean
 RueCore.Ty.array (elem : Ty) (n : Nat) : Ty
-```
-
-### `Violation.isStuckState`
-
-*def* · module `RueCore.Step`
-
-Whether a violation is one of **§6's own stuck states** — a read of a `⊘`
-or `†` cell, an unbound index, a wrong-shaped operand — rather than one of the
-four monitors `eval` adds, which §6.3, §6.5, §6.7 and §6.8 do not have.
-
-```lean
-def RueCore.Violation.isStuckState : Violation → Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-Violation.useAfterMove.isStuckState = true
-Violation.useAfterDrop.isStuckState = true
-Violation.unbound.isStuckState = true
-Violation.typeConfusion.isStuckState = true
-Violation.linearLeak.isStuckState = false
-Violation.linearOverwrite.isStuckState = false
-Violation.linearDiscard.isStuckState = false
-Violation.ownedUnderCopy.isStuckState = false
 ```
 
 ### `canonAux`
@@ -25240,6 +25291,44 @@ Defining equations, as Lean derived them from the body:
   magCmp s₁ e₁ s₂ e₂ = cmpScaled s₁ e₁ s₂ e₂
 ```
 
+### `Activation.empty`
+
+*def* · module `RueCore.Adequacy.Defs`
+
+The empty frame the entry point is called from (helper).
+
+```lean
+def RueCore.Activation.empty : Activation
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Activation.empty = { env := [], scope := [] }
+```
+
+### `Activation.unwindScope`
+
+*def* · module `RueCore.Step`
+
+§6.7's `⟨ρ; s minus ℓ̄⟩` for the `n` cells an `endscope` marker owes:
+(D-Let) and (D-Match) put them at the front of the environment (de Bruijn
+indices) and at the end of the scope record, so closing the marker drops them
+from both by count (helper).
+
+```lean
+def RueCore.Activation.unwindScope (φ : Activation) (n : Nat) : Activation
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (φ : Activation) (n : Nat),
+  φ.unwindScope n =
+    { env := List.drop n φ.env,
+      scope := List.take (φ.scope.length - n) φ.scope }
+```
+
 ### `BinOp.resultTy`
 
 *def* · module `RueCore.Syntax`
@@ -25263,34 +25352,6 @@ Defining equations, as Lean derived them from the body:
     op.resultTy T = if op.isCompare = true then Ty.bool else T
 ```
 
-### `CTy`
-
-*inductive* · module `RueCore.Checker.Defs`
-
-The type `check` concludes at: a type, or `never` — §5.7's type of the
-diverging forms, which the fragment's rules fold (Sub-Never) into by
-concluding at every type. `check` returns `never` exactly where the rule it
-mirrors concludes at an arbitrary type, and `check_sound` says so: a `never`
-result has a derivation at **every** type (§5.7's (Sub-Never)).
-
-```lean
-inductive RueCore.CTy : Type
-```
-
-Constructors:
-
-**`CTy.never`** — §5.7's `never`: the expression has a derivation at every type.
-
-```lean
-RueCore.CTy.never : CTy
-```
-
-**`CTy.ty`** — An ordinary type.
-
-```lean
-RueCore.CTy.ty (T : Ty) : CTy
-```
-
 ### `Contents`
 
 *inductive* · module `RueCore.Dynamics`
@@ -25310,10 +25371,10 @@ inductive RueCore.Contents : Type
 
 Constructors:
 
-**`Contents.hole`**
+**`Contents.movedOut`**
 
 ```lean
-RueCore.Contents.hole : Contents
+RueCore.Contents.movedOut : Contents
 ```
 
 **`Contents.int`**
@@ -25401,7 +25462,7 @@ Constructors:
 **`EnumDecl.mk`**
 
 ```lean
-RueCore.EnumDecl.mk (variants : List (List Ty)) (cls : Mult) : EnumDecl
+RueCore.EnumDecl.mk (variants : List (List Ty)) (cls : Qual) : EnumDecl
 ```
 
 ### `Examples.tI64`
@@ -25628,44 +25689,6 @@ Defining equations, as Lean derived them from the body:
   w.overflowNum = 1 <<< w.eTop.toNat - 1 <<< (w.eTop - ↑w.prec - 1).toNat
 ```
 
-### `Frame.empty`
-
-*def* · module `RueCore.Adequacy.Defs`
-
-The empty frame the entry point is called from (helper).
-
-```lean
-def RueCore.Frame.empty : Frame
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-Frame.empty = { env := [], scope := [] }
-```
-
-### `Frame.popScope`
-
-*def* · module `RueCore.Step`
-
-§6.7's `⟨ρ; s minus ℓ̄⟩` for the `n` cells an `endscope` marker owes:
-(D-Let) and (D-Match) put them at the front of the environment (de Bruijn
-indices) and at the end of the scope record, so closing the marker drops them
-from both by count (helper).
-
-```lean
-def RueCore.Frame.popScope (φ : Frame) (n : Nat) : Frame
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (φ : Frame) (n : Nat),
-  φ.popScope n =
-    { env := List.drop n φ.env,
-      scope := List.take (φ.scope.length - n) φ.scope }
-```
-
 ### `IntWidth.modulus`
 
 *def* · module `RueCore.Syntax`
@@ -25681,24 +25704,6 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (w : IntWidth), w.modulus = 2 ^ w.bits
-```
-
-### `Mult.join`
-
-*def* · module `RueCore.Syntax`
-
-The join `⊔` of §3's lattice: the least upper bound, which is what makes a
-struct at least as restrictive as its most restrictive field ("infectiousness
-is just the join").
-
-```lean
-def RueCore.Mult.join (a b : Mult) : Mult
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (a b : Mult), a.join b = if a.rank ≤ b.rank then b else a
 ```
 
 ### `OwnSt.get`
@@ -25775,6 +25780,24 @@ Constructors:
 RueCore.Param.mk (ty : Ty) (mu : Bool) : Param
 ```
 
+### `Qual.join`
+
+*def* · module `RueCore.Syntax`
+
+The join `⊔` of §3's lattice: the least upper bound, which is what makes a
+struct at least as restrictive as its most restrictive field ("infectiousness
+is just the join").
+
+```lean
+def RueCore.Qual.join (a b : Qual) : Qual
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (a b : Qual), a.join b = if a.rank ≤ b.rank then b else a
+```
+
 ### `StructDecl`
 
 *inductive* · module `RueCore.Syntax`
@@ -25797,7 +25820,7 @@ Constructors:
 
 ```lean
 RueCore.StructDecl.mk (attr : Attr) (fields : List Ty) (dtor : Bool)
-  (cls : Mult) : StructDecl
+  (cls : Qual) : StructDecl
 ```
 
 ### `Ty.grounded`
@@ -25920,6 +25943,34 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (s : Nat), (TyName.struct s).ty = Ty.struct s
 ∀ (e : Nat), (TyName.enum e).ty = Ty.enum e
+```
+
+### `TyOrNever`
+
+*inductive* · module `RueCore.Checker.Defs`
+
+The type `check` concludes at: a type, or `never` — §5.7's type of the
+diverging forms, which the fragment's rules fold (Sub-Never) into by
+concluding at every type. `check` returns `never` exactly where the rule it
+mirrors concludes at an arbitrary type, and `check_sound` says so: a `never`
+result has a derivation at **every** type (§5.7's (Sub-Never)).
+
+```lean
+inductive RueCore.TyOrNever : Type
+```
+
+Constructors:
+
+**`TyOrNever.never`** — §5.7's `never`: the expression has a derivation at every type.
+
+```lean
+RueCore.TyOrNever.never : TyOrNever
+```
+
+**`TyOrNever.ty`** — An ordinary type.
+
+```lean
+RueCore.TyOrNever.ty (T : Ty) : TyOrNever
 ```
 
 ### `Val`
@@ -26049,23 +26100,23 @@ Defining equations, as Lean derived them from the body:
 ∀ (x : IntWidth), intMin x Sign.signed = -2 ^ (x.bits - 1)
 ```
 
-### `lostFrame`
+### `lostActivation`
 
 *def* · module `RueCore.TraceExact`
 
 `g`'s entry frame (helper).
 
 ```lean
-def RueCore.lostFrame : Frame
+def RueCore.lostActivation : Activation
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-lostFrame = { env := [1], scope := [1] }
+lostActivation = { env := [1], scope := [1] }
 ```
 
-### `ArgsTag`
+### `ArgsFrame`
 
 *inductive* · module `RueCore.Step`
 
@@ -26076,128 +26127,52 @@ which form the list belongs to. `indexWrite` carries the right-hand side's
 value, which §6.2's `assign p = E` reduced before the indices (`5.2:14`).
 
 ```lean
-inductive RueCore.ArgsTag : Type
+inductive RueCore.ArgsFrame : Type
 ```
 
 Constructors:
 
-**`ArgsTag.struct`**
+**`ArgsFrame.struct`**
 
 ```lean
-RueCore.ArgsTag.struct (s : Nat) : ArgsTag
+RueCore.ArgsFrame.struct (s : Nat) : ArgsFrame
 ```
 
-**`ArgsTag.enum`**
+**`ArgsFrame.enum`**
 
 ```lean
-RueCore.ArgsTag.enum (e k : Nat) : ArgsTag
+RueCore.ArgsFrame.enum (e k : Nat) : ArgsFrame
 ```
 
-**`ArgsTag.array`**
+**`ArgsFrame.array`**
 
 ```lean
-RueCore.ArgsTag.array (elem : Ty) : ArgsTag
+RueCore.ArgsFrame.array (elem : Ty) : ArgsFrame
 ```
 
-**`ArgsTag.call`**
+**`ArgsFrame.call`**
 
 ```lean
-RueCore.ArgsTag.call (f : Nat) : ArgsTag
+RueCore.ArgsFrame.call (f : Nat) : ArgsFrame
 ```
 
-**`ArgsTag.indexRead`**
+**`ArgsFrame.indexRead`**
 
 ```lean
-RueCore.ArgsTag.indexRead (p : Place) (πs : List (List Nat)) : ArgsTag
+RueCore.ArgsFrame.indexRead (p : Place) (πs : List (List Nat)) : ArgsFrame
 ```
 
-**`ArgsTag.indexDrop`**
+**`ArgsFrame.indexDrop`**
 
 ```lean
-RueCore.ArgsTag.indexDrop (p : Place) (πs : List (List Nat)) : ArgsTag
+RueCore.ArgsFrame.indexDrop (p : Place) (πs : List (List Nat)) : ArgsFrame
 ```
 
-**`ArgsTag.indexWrite`**
+**`ArgsFrame.indexWrite`**
 
 ```lean
-RueCore.ArgsTag.indexWrite (p : Place) (πs : List (List Nat)) (v : Val) :
-  ArgsTag
-```
-
-### `CTy.fits`
-
-*def* · module `RueCore.Checker.Defs`
-
-Whether a checked type admits `T` — (Sub-Never) §5.7 for `never`, identity
-otherwise (helper).
-
-```lean
-def RueCore.CTy.fits : CTy → Ty → Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (x : Ty), CTy.never.fits x = true
-∀ (x T' : Ty), (CTy.ty T').fits x = decide (T' = x)
-```
-
-### `CTy.fitsC`
-
-*def* · module `RueCore.Checker.Defs`
-
-Whether one checked type admits every type another admits — the arm
-comparison `match` makes against the type `armsJoinTy` fixed (helper).
-
-```lean
-def RueCore.CTy.fitsC : CTy → CTy → Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (x : CTy), CTy.never.fitsC x = true
-∀ (T' T : Ty), (CTy.ty T').fitsC (CTy.ty T) = decide (T' = T)
-∀ (T : Ty), (CTy.ty T).fitsC CTy.never = false
-```
-
-### `CTy.meet`
-
-*def* · module `RueCore.Checker.Defs`
-
-The common type of two branch arms, §5.5's single `T` with (Sub-Never)
-§5.7 applied to a diverging arm: `never` meets anything, two types meet only
-when equal (helper).
-
-```lean
-def RueCore.CTy.meet : CTy → CTy → Option CTy
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (x : CTy), CTy.never.meet x = some x
-∀ (x : CTy), (x = CTy.never → False) → x.meet CTy.never = some x
-∀ (T₁ T₂ : Ty),
-  (CTy.ty T₁).meet (CTy.ty T₂) =
-    if T₁ = T₂ then some (CTy.ty T₁) else none
-```
-
-### `CTy.pick`
-
-*def* · module `RueCore.Checker.Defs`
-
-A type a checked type admits, defaulting when it admits them all (helper).
-
-```lean
-def RueCore.CTy.pick : CTy → Ty → Ty
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (x T : Ty), (CTy.ty T).pick x = T
-∀ (x : Ty), CTy.never.pick x = x
+RueCore.ArgsFrame.indexWrite (p : Place) (πs : List (List Nat)) (v : Val) :
+  ArgsFrame
 ```
 
 ### `Cell`
@@ -26206,7 +26181,7 @@ Defining equations, as Lean derived them from the body:
 
 The store `H` (§6.1) holds one cell per binding allocation; the cell is
 live contents or the retired marker `†`. §6.1's whole-cell `⊘` is
-`full .hole` — a hole at the root of the tree, which is what a whole-place
+`full .movedOut` — a hole at the root of the tree, which is what a whole-place
 move writes.
 
 ```lean
@@ -26227,35 +26202,7 @@ RueCore.Cell.full (c : Contents) : Cell
 RueCore.Cell.dead : Cell
 ```
 
-### `Contents.isHole`
-
-*def* · module `RueCore.Dynamics`
-
-Whether a position holds §6.1's `⊘` — the test `@drop` makes before it
-runs a drop, so that dropping an already moved-out place is the refusal §7's
-no-use-after-move bullet forbids rather than a silent no-op (helper).
-
-```lean
-def RueCore.Contents.isHole : Contents → Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-Contents.hole.isHole = true
-∀ (w : IntWidth) (s : Sign) (n : Int), (Contents.int w s n).isHole = false
-∀ (w : FloatWidth) (f : FloatDatum), (Contents.float w f).isHole = false
-∀ (b : Bool), (Contents.bool b).isHole = false
-Contents.unit.isHole = false
-∀ (s i : Nat) (cs : List Contents),
-  (Contents.struct s i cs).isHole = false
-∀ (e k i : Nat) (cs : List Contents),
-  (Contents.enum e k i cs).isHole = false
-∀ (T : Ty) (i : Nat) (cs : List Contents),
-  (Contents.array T i cs).isHole = false
-```
-
-### `Contents.readAt`
+### `Contents.getAt`
 
 *def* · module `RueCore.Dynamics`
 
@@ -26265,7 +26212,37 @@ step that is not a field of what is stored is a shape no well-typed program
 produces (helper).
 
 ```lean
-def RueCore.Contents.readAt : Contents → List Nat → Except Violation Contents
+def RueCore.Contents.getAt : Contents → List Nat → Except Refusal Contents
+```
+
+### `Contents.isMovedOut`
+
+*def* · module `RueCore.Dynamics`
+
+Whether a position holds §6.1's `⊘` — the test `@drop` makes before it
+runs a drop, so that dropping an already moved-out place is the refusal §7's
+no-use-after-move bullet forbids rather than a silent no-op (helper).
+
+```lean
+def RueCore.Contents.isMovedOut : Contents → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Contents.movedOut.isMovedOut = true
+∀ (w : IntWidth) (s : Sign) (n : Int),
+  (Contents.int w s n).isMovedOut = false
+∀ (w : FloatWidth) (f : FloatDatum),
+  (Contents.float w f).isMovedOut = false
+∀ (b : Bool), (Contents.bool b).isMovedOut = false
+Contents.unit.isMovedOut = false
+∀ (s i : Nat) (cs : List Contents),
+  (Contents.struct s i cs).isMovedOut = false
+∀ (e k i : Nat) (cs : List Contents),
+  (Contents.enum e k i cs).isMovedOut = false
+∀ (T : Ty) (i : Nat) (cs : List Contents),
+  (Contents.array T i cs).isMovedOut = false
 ```
 
 ### `Contents.resolveDyn`
@@ -26279,24 +26256,24 @@ taken left to right, each bounds-checked at the array it indexes before the
 next is looked at; the index *values* were all computed before the first
 check, which is the compiler's order too (probe r11: `a[id(5)][id(0)]` prints
 `5` and `0`, then traps). Once resolved, the place is an ordinary constant
-path, and §6.3's `readAt` and §6.8's `writeAt` take it from there (helper).
+path, and §6.3's `getAt` and §6.8's `setAt` take it from there (helper).
 
 ```lean
 def RueCore.Contents.resolveDyn : Contents → List Int → List (List Nat) → DynStep
 ```
 
-### `Contents.writeAt`
+### `Contents.setAt`
 
 *def* · module `RueCore.Dynamics`
 
 `H[ℓ@π ↦ c']` (§6.3's (D-Use-Move), §6.8's `place_write`): replace the
 sub-position at a path. `none` is a step that is not a field of what is
-stored, which is the same navigation `readAt` refuses with `typeConfusion` —
+stored, which is the same navigation `getAt` refuses with `typeConfusion` —
 so every `eval` arm that writes has already read at the same path, and its
 `none` case is unreachable rather than a second refusal (helper).
 
 ```lean
-def RueCore.Contents.writeAt : Contents → List Nat → Contents → Option Contents
+def RueCore.Contents.setAt : Contents → List Nat → Contents → Option Contents
 ```
 
 ### `Ctx`
@@ -26360,10 +26337,10 @@ RueCore.DynPlace.at (ℓ : Nat) (c sub : Contents) (ρ : List Nat) : DynPlace
 RueCore.DynPlace.bounds : DynPlace
 ```
 
-**`DynPlace.stuck`**
+**`DynPlace.refused`**
 
 ```lean
-RueCore.DynPlace.stuck (w : Violation) : DynPlace
+RueCore.DynPlace.refused (w : Refusal) : DynPlace
 ```
 
 ### `Entry.setSt`
@@ -26487,7 +26464,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dAffine =
   { attr := Attr.none, fields := [Examples.tI64], dtor := true,
-    cls := Mult.affine }
+    cls := Qual.affine }
 ```
 
 ### `Examples.dAffineInt`
@@ -26507,7 +26484,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dAffineInt =
   { attr := Attr.none, fields := [Ty.struct 1, Examples.tI64],
-    dtor := false, cls := Mult.affine }
+    dtor := false, cls := Qual.affine }
 ```
 
 ### `Examples.dCarry`
@@ -26527,7 +26504,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dCarry =
   { attr := Attr.none, fields := [Examples.tI64, Ty.struct 3],
-    dtor := false, cls := Mult.linear }
+    dtor := false, cls := Qual.linear }
 ```
 
 ### `Examples.dCarryAffine`
@@ -26547,7 +26524,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dCarryAffine =
   { attr := Attr.none, fields := [Ty.struct 3, Ty.struct 1],
-    dtor := false, cls := Mult.linear }
+    dtor := false, cls := Qual.linear }
 ```
 
 ### `Examples.dCopy`
@@ -26566,7 +26543,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dCopy =
   { attr := Attr.copy, fields := [Examples.tI64], dtor := false,
-    cls := Mult.copy }
+    cls := Qual.copy }
 ```
 
 ### `Examples.dLinear`
@@ -26590,7 +26567,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dLinear =
   { attr := Attr.linear, fields := [Examples.tI64], dtor := false,
-    cls := Mult.linear }
+    cls := Qual.linear }
 ```
 
 ### `Examples.dLinearDtor`
@@ -26610,7 +26587,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dLinearDtor =
   { attr := Attr.linear, fields := [Examples.tI64], dtor := true,
-    cls := Mult.linear }
+    cls := Qual.linear }
 ```
 
 ### `Examples.dNested`
@@ -26629,7 +26606,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dNested =
   { attr := Attr.none, fields := [Ty.struct 7, Examples.tI64],
-    dtor := false, cls := Mult.affine }
+    dtor := false, cls := Qual.affine }
 ```
 
 ### `Examples.dOuter`
@@ -26649,7 +26626,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dOuter =
   { attr := Attr.none, fields := [Examples.tI64, Ty.struct 1],
-    dtor := true, cls := Mult.affine }
+    dtor := true, cls := Qual.affine }
 ```
 
 ### `Examples.dPair`
@@ -26669,7 +26646,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dPair =
   { attr := Attr.copy, fields := [Examples.tI64, Examples.tI64],
-    dtor := false, cls := Mult.copy }
+    dtor := false, cls := Qual.copy }
 ```
 
 ### `Examples.dTwoAffine`
@@ -26688,7 +26665,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dTwoAffine =
   { attr := Attr.none, fields := [Ty.struct 1, Ty.struct 1],
-    dtor := false, cls := Mult.affine }
+    dtor := false, cls := Qual.affine }
 ```
 
 ### `Examples.v64`
@@ -26749,7 +26726,7 @@ RueCore.Explain.StepRes.panicked (k : PanicKind) : Explain.StepRes
 **`Explain.StepRes.refuse`**
 
 ```lean
-RueCore.Explain.StepRes.refuse (why : Violation) (premise : String) :
+RueCore.Explain.StepRes.refuse (why : Refusal) (premise : String) :
   Explain.StepRes
 ```
 
@@ -27079,33 +27056,7 @@ Defining equations, as Lean derived them from the body:
   (FloatIntrin.roundOp k).resTy x = Ty.float x
 ```
 
-### `FloatLit.RoundsFinite`
-
-*def* · module `RueCore.Float`
-
-**`3.12:10` as a premise of (Lit) §5.8 at a float literal.** `3.12:10` is a *legality* rule —
-"a float literal whose value rounds to an infinity in its target type MUST be
-rejected at compile time (`E0206`)" — and §5.8's own prose in the calculus
-cites it, so the statics owe it. It is stated here as an exact comparison of
-naturals against `overflowNum`, so it is decidable, needs no `FloatModel`, and
-pulls no axiom: `l.exact` is `num / den` and the premise is `num < threshold ·
-den`. *Underflow* needs no premise — `3.12:10` allows a literal to round to
-zero, and the model and the compiler agree that it does (`1e-400` is `0.0` in
-both).
-
-It is stated against the *threshold* rather than as
-`(M.ofLit w l).isFinite` deliberately: the statics then say what they say for
-every `FloatModel`, with no instance and no `FloatSig` argument in the typing
-judgment, and `check` decides it by comparing two naturals. A law tying the two
-together — `RoundsFinite w l → (ofLit w l).isFinite` — is not needed by
-anything here and is not assumed.
-
-```lean
-def RueCore.FloatLit.RoundsFinite (w : FloatWidth) (l : FloatLit) : Prop :=
-  l.exact.fst < w.overflowNum * l.exact.snd
-```
-
-### `FloatModel`
+### `FloatLaws`
 
 *inductive* · module `RueCore.Float`
 
@@ -27120,15 +27071,15 @@ carried as interfaces"). §7 says the lemma is "discharged against the standard
 rather than against Rue"; this is that sentence, mechanized.
 
 ```lean
-inductive RueCore.FloatModel : Type
+inductive RueCore.FloatLaws : Type
 ```
 
 Constructors:
 
-**`FloatModel.mk`**
+**`FloatLaws.mk`**
 
 ```lean
-RueCore.FloatModel.mk (toFloatSig : FloatSig)
+RueCore.FloatLaws.mk (toFloatSig : FloatSig)
   (arith_wf :
     ∀ (w : FloatWidth) (op : FloatArith) (a b : FloatDatum),
       FloatDatum.Wf w a →
@@ -27170,7 +27121,33 @@ RueCore.FloatModel.mk (toFloatSig : FloatSig)
   (ofLit_one :
     ∀ (w : FloatWidth),
       toFloatSig.ofLit w 1 false 0 = FloatDatum.num false 1 0) :
-  FloatModel
+  FloatLaws
+```
+
+### `FloatLit.RoundsFinite`
+
+*def* · module `RueCore.Float`
+
+**`3.12:10` as a premise of (Lit) §5.8 at a float literal.** `3.12:10` is a *legality* rule —
+"a float literal whose value rounds to an infinity in its target type MUST be
+rejected at compile time (`E0206`)" — and §5.8's own prose in the calculus
+cites it, so the statics owe it. It is stated here as an exact comparison of
+naturals against `overflowNum`, so it is decidable, needs no `FloatLaws`, and
+pulls no axiom: `l.exact` is `num / den` and the premise is `num < threshold ·
+den`. *Underflow* needs no premise — `3.12:10` allows a literal to round to
+zero, and the model and the compiler agree that it does (`1e-400` is `0.0` in
+both).
+
+It is stated against the *threshold* rather than as
+`(M.ofLit w l).isFinite` deliberately: the statics then say what they say for
+every `FloatLaws`, with no instance and no `FloatSig` argument in the typing
+judgment, and `check` decides it by comparing two naturals. A law tying the two
+together — `RoundsFinite w l → (ofLit w l).isFinite` — is not needed by
+anything here and is not assumed.
+
+```lean
+def RueCore.FloatLit.RoundsFinite (w : FloatWidth) (l : FloatLit) : Prop :=
+  l.exact.fst < w.overflowNum * l.exact.snd
 ```
 
 ### `InBounds`
@@ -27216,6 +27193,83 @@ RueCore.OpRes.trap (k : PanicKind) : OpRes
 
 ```lean
 RueCore.OpRes.confused : OpRes
+```
+
+### `TyOrNever.fits`
+
+*def* · module `RueCore.Checker.Defs`
+
+Whether a checked type admits `T` — (Sub-Never) §5.7 for `never`, identity
+otherwise (helper).
+
+```lean
+def RueCore.TyOrNever.fits : TyOrNever → Ty → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (x : Ty), TyOrNever.never.fits x = true
+∀ (x T' : Ty), (TyOrNever.ty T').fits x = decide (T' = x)
+```
+
+### `TyOrNever.fitsC`
+
+*def* · module `RueCore.Checker.Defs`
+
+Whether one checked type admits every type another admits — the arm
+comparison `match` makes against the type `armsJoinTy` fixed (helper).
+
+```lean
+def RueCore.TyOrNever.fitsC : TyOrNever → TyOrNever → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (x : TyOrNever), TyOrNever.never.fitsC x = true
+∀ (T' T : Ty), (TyOrNever.ty T').fitsC (TyOrNever.ty T) = decide (T' = T)
+∀ (T : Ty), (TyOrNever.ty T).fitsC TyOrNever.never = false
+```
+
+### `TyOrNever.meet`
+
+*def* · module `RueCore.Checker.Defs`
+
+The common type of two branch arms, §5.5's single `T` with (Sub-Never)
+§5.7 applied to a diverging arm: `never` meets anything, two types meet only
+when equal (helper).
+
+```lean
+def RueCore.TyOrNever.meet : TyOrNever → TyOrNever → Option TyOrNever
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (x : TyOrNever), TyOrNever.never.meet x = some x
+∀ (x : TyOrNever),
+  (x = TyOrNever.never → False) → x.meet TyOrNever.never = some x
+∀ (T₁ T₂ : Ty),
+  (TyOrNever.ty T₁).meet (TyOrNever.ty T₂) =
+    if T₁ = T₂ then some (TyOrNever.ty T₁) else none
+```
+
+### `TyOrNever.pick`
+
+*def* · module `RueCore.Checker.Defs`
+
+A type a checked type admits, defaulting when it admits them all (helper).
+
+```lean
+def RueCore.TyOrNever.pick : TyOrNever → Ty → Ty
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (x T : Ty), (TyOrNever.ty T).pick x = T
+∀ (x : Ty), TyOrNever.never.pick x = x
 ```
 
 ### `Val.ints`
@@ -27437,7 +27491,7 @@ where the path has a proper prefix of declared-`linear` struct type — §4.2's
 
 This is `declaredPrefix` (`Syntax.lean`) with the declaration index taken from
 the value rather than from the type, clause for clause, and
-`ContentsMatches.declaredPlan_eq` (`Soundness.lean`) is the proof that the two
+`ContentsOwnTyping.declaredPlan_eq` (`Soundness.lean`) is the proof that the two
 agree wherever the store and Σ agree. The module docstring says why the plan is
 recovered here rather than carried on the syntax as §6.3 writes it.
 
@@ -27463,7 +27517,7 @@ after it* — nested residue before a later sibling (probe d14), and plain
 declaration order where the leaf is a direct field (probe d13).
 
 An empty path selects the whole aggregate and retains nothing: the leaf "is not
-residue". A `⊘` with path left to walk is `useAfterMove`, as `readAt`'s is; a
+residue". A `⊘` with path left to walk is `useAfterMove`, as `getAt`'s is; a
 step that is not a field of what is stored is a shape no well-typed program
 produces. An **array** step is §5.1's own clause — "at an array step, visit
 elements in ascending constant-index order, recurse into the selected element,
@@ -27474,7 +27528,7 @@ on the compiler: a declared-`linear` `{ p, arr: [S1; 3], q }` destructured at
 
 ```lean
 def RueCore.Contents.splitResidue (D : Decls) :
-  Contents → List Nat → Except Violation (Contents × List Contents)
+  Contents → List Nat → Except Refusal (Contents × List Contents)
 ```
 
 ### `Ctx.SameSkel`
@@ -27583,7 +27637,7 @@ attribute and no linear field — the conservative reading of a program
 `WfStructs` rejects anyway (helper).
 
 ```lean
-def RueCore.Decls.classOf (D : Decls) (s : Nat) : Mult
+def RueCore.Decls.classOf (D : Decls) (s : Nat) : Qual
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -27593,7 +27647,7 @@ Defining equations, as Lean derived them from the body:
   D.classOf s =
     match D.structs[s]? with
     | some sd => sd.cls
-    | none => Mult.affine
+    | none => Qual.affine
 ```
 
 ### `Decls.enumClassOf`
@@ -27606,7 +27660,7 @@ conservative reading of a program `WfEnums` rejects anyway — `Copy` would let
 such a type be duplicated (helper).
 
 ```lean
-def RueCore.Decls.enumClassOf (D : Decls) (e : Nat) : Mult
+def RueCore.Decls.enumClassOf (D : Decls) (e : Nat) : Qual
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -27616,7 +27670,7 @@ Defining equations, as Lean derived them from the body:
   D.enumClassOf e =
     match D.enums[e]? with
     | some ed => ed.cls
-    | none => Mult.affine
+    | none => Qual.affine
 ```
 
 ### `Decls.ofStructs`
@@ -27923,7 +27977,7 @@ RueCore.Focus.ret (v : Val) : Focus
 **`Focus.args`**
 
 ```lean
-RueCore.Focus.args (t : ArgsTag) (vs : List Val) (es : List Expr) : Focus
+RueCore.Focus.args (t : ArgsFrame) (vs : List Val) (es : List Expr) : Focus
 ```
 
 ### `Kont`
@@ -27982,7 +28036,7 @@ RueCore.Kont.dbg : Kont
 **`Kont.args`** — An argument list's next hole, `…( v̄, E, ē )` (§6.2): the values already reduced and the expressions still to come.
 
 ```lean
-RueCore.Kont.args (t : ArgsTag) (vs : List Val) (es : List Expr) : Kont
+RueCore.Kont.args (t : ArgsFrame) (vs : List Val) (es : List Expr) : Kont
 ```
 
 **`Kont.repeatArray`** — `[ E; n ]`, the surface repeat form's operand (`7.1:39`).
@@ -28043,13 +28097,13 @@ RueCore.Kont.endscope (ℓs : List Nat) : Kont
 **`Kont.loop`** — `loopβ(e, φ)` (§6.1, §6.10): the loop's body and the frame each turn starts in; `break` unwinds to here.
 
 ```lean
-RueCore.Kont.loop (e : Expr) (φ : Frame) : Kont
+RueCore.Kont.loop (e : Expr) (φ : Activation) : Kont
 ```
 
 **`Kont.call`** — `ret(E, φ)` (§6.1, §6.9): a caller suspended in frame `φ`, its context `E` the frames below this one.
 
 ```lean
-RueCore.Kont.call (φ : Frame) : Kont
+RueCore.Kont.call (φ : Activation) : Kont
 ```
 
 ### `Out`
@@ -28275,8 +28329,8 @@ demoDecls =
   {
     structs :=
       [{ attr := Attr.none, fields := [], dtor := true,
-          cls := Mult.affine }],
-    enums := [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] }
+          cls := Qual.affine }],
+    enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] }
 ```
 
 ### `demoI32`
@@ -28363,7 +28417,7 @@ nothing to look it up for. Under `Typed` it is pinned anyway
 place `⊘` and is skipped by the `⊘` case above, never dropped twice.
 
 ```lean
-def RueCore.dropContents (D : Decls) : Contents → Except Violation (List Event)
+def RueCore.dropContents (D : Decls) : Contents → Except Refusal (List Event)
 ```
 
 ### `dropLocs`
@@ -28588,6 +28642,18 @@ Defining equations, as Lean derived them from the body:
   wrapInt w s n = valOf w s (bitsOf w n)
 ```
 
+### `Activation.In`
+
+*def* · module `RueCore.TraceExact`
+
+The frame names only cells the store already has (helper).
+
+```lean
+def RueCore.Activation.In (φ : Activation) (H : Store) : Prop :=
+  (∀ (ℓ : Nat), ℓ ∈ φ.env → ℓ < List.length H) ∧
+    ∀ (ℓ : Nat), ℓ ∈ φ.scope → ℓ < List.length H
+```
+
 ### `Config`
 
 *inductive* · module `RueCore.Step`
@@ -28607,7 +28673,7 @@ Constructors:
 **`Config.run`**
 
 ```lean
-RueCore.Config.run (H : Store) (φ : Frame) (K : List Kont) (f : Focus)
+RueCore.Config.run (H : Store) (φ : Activation) (K : List Kont) (f : Focus)
   (tr : List Event) : Config
 ```
 
@@ -28629,14 +28695,14 @@ recursion rather than as a `take`/`drop` (helper).
 
 ```lean
 def RueCore.Contents.splitFields (D : Decls) :
-  List Contents → Nat → List Nat → Except Violation (Contents × List Contents)
+  List Contents → Nat → List Nat → Except Refusal (Contents × List Contents)
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : Decls) (x : Nat) (x_1 : List Nat),
-  Contents.splitFields D [] x x_1 = Except.error Violation.typeConfusion
+  Contents.splitFields D [] x x_1 = Except.error Refusal.typeConfusion
 ∀ (D : Decls) (x : List Nat) (c : Contents) (cs : List Contents),
   Contents.splitFields D (c :: cs) 0 x =
     match Contents.splitResidue D c x with
@@ -28665,7 +28731,7 @@ def RueCore.Ctx.Extends (Γb Γ : Ctx) : Prop :=
   ∃ pre, Γb.skel = pre ++ Γ.skel
 ```
 
-### `Decls.Names`
+### `Decls.ByValueEdge`
 
 *def* · module `RueCore.Statics`
 
@@ -28676,7 +28742,7 @@ struct naming itself through an array element would satisfy `WfNames` and §3's
 equation would have more than one solution at it.
 
 ```lean
-def RueCore.Decls.Names (D : Decls) (d d' : TyName) : Prop :=
+def RueCore.Decls.ByValueEdge (D : Decls) (d d' : TyName) : Prop :=
   ∃ T, T ∈ D.byValue d ∧ d' ∈ T.tyNames
 ```
 
@@ -28711,7 +28777,7 @@ the declarations the conservation law reads (helper).
 ```lean
 def RueCore.DtorNotCopy (D : Decls) : Prop :=
   ∀ (s : Nat) (sd : StructDecl),
-    D.structs[s]? = some sd → sd.dtor = true → D.classOf s ≠ Mult.copy
+    D.structs[s]? = some sd → sd.dtor = true → D.classOf s ≠ Qual.copy
 ```
 
 ### `EvalRes`
@@ -28760,10 +28826,10 @@ RueCore.EvalRes.broke (H : Store) (scope : List Nat) (tr : List Event) :
 RueCore.EvalRes.panic (k : PanicKind) (tr : List Event) : EvalRes
 ```
 
-**`EvalRes.stuck`**
+**`EvalRes.refused`**
 
 ```lean
-RueCore.EvalRes.stuck (why : Violation) : EvalRes
+RueCore.EvalRes.refused (why : Refusal) : EvalRes
 ```
 
 **`EvalRes.outOfFuel`**
@@ -28971,7 +29037,7 @@ Constructors:
 **`Explain.Verdict.accept`**
 
 ```lean
-RueCore.Explain.Verdict.accept (ty : CTy) (out : Out) : Explain.Verdict
+RueCore.Explain.Verdict.accept (ty : TyOrNever) (out : Out) : Explain.Verdict
 ```
 
 **`Explain.Verdict.reject`**
@@ -29005,16 +29071,20 @@ Float.exactOps =
     nanSign := false }
 ```
 
-### `Frame.In`
+### `FrameProperty`
 
-*def* · module `RueCore.TraceExact`
+*def* · module `RueCore.Soundness.Defs`
 
-The frame names only cells the store already has (helper).
+`FrameProperty ρ H H'`: the store only grew, and every cell that was already
+allocated and that `ρ` does not name has the contents it had. This is the
+frame-locality property a call needs — a callee's cells are minted above the
+caller's whole store (§6.9's (D-Call)), so the caller's bindings are outside
+the callee's `ρ` and survive the call untouched.
 
 ```lean
-def RueCore.Frame.In (φ : Frame) (H : Store) : Prop :=
-  (∀ (ℓ : Nat), ℓ ∈ φ.env → ℓ < List.length H) ∧
-    ∀ (ℓ : Nat), ℓ ∈ φ.scope → ℓ < List.length H
+def RueCore.FrameProperty (ρ : Env) (H H' : Store) : Prop :=
+  List.length H ≤ List.length H' ∧
+    ∀ (ℓ : Nat), ℓ < List.length H → ¬ℓ ∈ ρ → H'[ℓ]? = H[ℓ]?
 ```
 
 ### `Fresh`
@@ -29062,17 +29132,17 @@ The nearest `ret(E, φ)` below the top: its frame and the stack under it.
 markers and loop boundaries alike (§6.9) (helper).
 
 ```lean
-def RueCore.Kont.toCall : List Kont → Option (Frame × List Kont)
+def RueCore.Kont.toCall : List Kont → Option (Activation × List Kont)
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
 Kont.toCall [] = none
-∀ (φ : Frame) (K : List Kont),
+∀ (φ : Activation) (K : List Kont),
   Kont.toCall (Kont.call φ :: K) = some (φ, K)
 ∀ (head : Kont) (K : List Kont),
-  (∀ (φ : Frame), head = Kont.call φ → False) →
+  (∀ (φ : Activation), head = Kont.call φ → False) →
     Kont.toCall (head :: K) = Kont.toCall K
 ```
 
@@ -29085,19 +29155,20 @@ first: "a `break` in a callee would be ill-formed" (§6.10), so a `break` with
 no loop in its own frame has no rule (helper).
 
 ```lean
-def RueCore.Kont.toLoop : List Kont → Option (Frame × List Kont)
+def RueCore.Kont.toLoop : List Kont → Option (Activation × List Kont)
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
 Kont.toLoop [] = none
-∀ (e : Expr) (φ : Frame) (K : List Kont),
+∀ (e : Expr) (φ : Activation) (K : List Kont),
   Kont.toLoop (Kont.loop e φ :: K) = some (φ, K)
-∀ (φ : Frame) (tail : List Kont), Kont.toLoop (Kont.call φ :: tail) = none
+∀ (φ : Activation) (tail : List Kont),
+  Kont.toLoop (Kont.call φ :: tail) = none
 ∀ (head : Kont) (K : List Kont),
-  (∀ (e : Expr) (φ : Frame), head = Kont.loop e φ → False) →
-    (∀ (φ : Frame), head = Kont.call φ → False) →
+  (∀ (e : Expr) (φ : Activation), head = Kont.loop e φ → False) →
+    (∀ (φ : Activation), head = Kont.call φ → False) →
       Kont.toLoop (head :: K) = Kont.toLoop K
 ```
 
@@ -29109,7 +29180,7 @@ The store only grew, and a cell outside the frame's environment was left
 alone or retired (helper).
 
 ```lean
-def RueCore.Local (φ : Frame) (H H' : Store) : Prop :=
+def RueCore.Local (φ : Activation) (H H' : Store) : Prop :=
   List.length H ≤ List.length H' ∧
     ∀ (ℓ : Nat),
       ℓ < List.length H →
@@ -29197,8 +29268,8 @@ sit under a frame whose environment is its scope record reversed; every other
 frame is an evaluation context of the same frame (helper).
 
 ```lean
-def RueCore.Retire.Shape : Frame → List Kont → Prop :=
-  List.brecOn (motive := fun x => Frame → Prop) x✝ Retire.Shape._f x✝¹
+def RueCore.Retire.Shape : Activation → List Kont → Prop :=
+  List.brecOn (motive := fun x => Activation → Prop) x✝ Retire.Shape._f x✝¹
 ```
 
 ### `Retire.UnwindPost`
@@ -29211,9 +29282,9 @@ What `run-scope-drops` over distinct live cells does: it never meets
 
 ```lean
 def RueCore.Retire.UnwindPost (H : Store) (ls : List Nat) :
-  Except Violation (Store × List Event) → Prop :=
+  Except Refusal (Store × List Event) → Prop :=
   match x✝ with
-  | Except.error w => w ≠ Violation.useAfterDrop
+  | Except.error w => w ≠ Refusal.useAfterDrop
   | Except.ok (H', snd) =>
     List.length H' = List.length H ∧ ∀ (ℓ : Nat), ¬ℓ ∈ ls → H'[ℓ]? = H[ℓ]?
 ```
@@ -29232,26 +29303,12 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 Retire.callerCells [] = []
-∀ (φs : Frame) (K : List Kont),
+∀ (φs : Activation) (K : List Kont),
   Retire.callerCells (Kont.call φs :: K) =
     Retire.callerCells K ++ φs.scope
 ∀ (head : Kont) (K : List Kont),
-  (∀ (φs : Frame), head = Kont.call φs → False) →
+  (∀ (φs : Activation), head = Kont.call φs → False) →
     Retire.callerCells (head :: K) = Retire.callerCells K
-```
-
-### `Retired`
-
-*def* · module `RueCore.Trace.Defs`
-
-Every cell allocated since `H` is retired, but those `keep` names
-(helper).
-
-```lean
-def RueCore.Retired (H : Store) (keep : List Nat) (H' : Store) : Prop :=
-  ∀ (ℓ : Nat),
-    List.length H ≤ ℓ →
-      ℓ < List.length H' → ¬ℓ ∈ keep → H'[ℓ]? = some Cell.dead
 ```
 
 ### `Stk`
@@ -29269,10 +29326,25 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 Stk [] = []
-∀ (φs : Frame) (K : List Kont),
+∀ (φs : Activation) (K : List Kont),
   Stk (Kont.call φs :: K) = Stk K ++ φs.scope
 ∀ (head : Kont) (K : List Kont),
-  (∀ (φs : Frame), head = Kont.call φs → False) → Stk (head :: K) = Stk K
+  (∀ (φs : Activation), head = Kont.call φs → False) →
+    Stk (head :: K) = Stk K
+```
+
+### `Tombstoned`
+
+*def* · module `RueCore.Trace.Defs`
+
+Every cell allocated since `H` is retired, but those `keep` names
+(helper).
+
+```lean
+def RueCore.Tombstoned (H : Store) (keep : List Nat) (H' : Store) : Prop :=
+  ∀ (ℓ : Nat),
+    List.length H ≤ ℓ →
+      ℓ < List.length H' → ¬ℓ ∈ keep → H'[ℓ]? = some Cell.dead
 ```
 
 ### `Ty.atPath`
@@ -29301,7 +29373,7 @@ Defining equations, as Lean derived them from the body:
     | none => none
 ```
 
-### `Ty.mult`
+### `Ty.qual`
 
 *def* · module `RueCore.Syntax`
 
@@ -29323,40 +29395,24 @@ itself otherwise, which is §3's "infectiousness is just the join" with the
 element type as the only member.
 
 ```lean
-def RueCore.Ty.mult (D : Decls) : Ty → Mult
+def RueCore.Ty.qual (D : Decls) : Ty → Qual
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : Decls) (w : IntWidth) (s : Sign),
-  Ty.mult D (Ty.int w s) = Mult.copy
-∀ (D : Decls) (w : FloatWidth), Ty.mult D (Ty.float w) = Mult.copy
-∀ (D : Decls), Ty.mult D Ty.bool = Mult.copy
-∀ (D : Decls), Ty.mult D Ty.unit = Mult.copy
-∀ (D : Decls) (s : Nat), Ty.mult D (Ty.struct s) = D.classOf s
-∀ (D : Decls) (e : Nat), Ty.mult D (Ty.enum e) = D.enumClassOf e
+  Ty.qual D (Ty.int w s) = Qual.copy
+∀ (D : Decls) (w : FloatWidth), Ty.qual D (Ty.float w) = Qual.copy
+∀ (D : Decls), Ty.qual D Ty.bool = Qual.copy
+∀ (D : Decls), Ty.qual D Ty.unit = Qual.copy
+∀ (D : Decls) (s : Nat), Ty.qual D (Ty.struct s) = D.classOf s
+∀ (D : Decls) (e : Nat), Ty.qual D (Ty.enum e) = D.enumClassOf e
 ∀ (D : Decls) (elem : Ty) (n : Nat),
-  Ty.mult D (elem.array n) =
-    match Ty.mult D elem with
-    | Mult.copy => Mult.copy
-    | m => if n = 0 then Mult.affine else m
-```
-
-### `Untouched`
-
-*def* · module `RueCore.Soundness.Defs`
-
-`Untouched ρ H H'`: the store only grew, and every cell that was already
-allocated and that `ρ` does not name has the contents it had. This is the
-frame-locality property a call needs — a callee's cells are minted above the
-caller's whole store (§6.9's (D-Call)), so the caller's bindings are outside
-the callee's `ρ` and survive the call untouched.
-
-```lean
-def RueCore.Untouched (ρ : Env) (H H' : Store) : Prop :=
-  List.length H ≤ List.length H' ∧
-    ∀ (ℓ : Nat), ℓ < List.length H → ¬ℓ ∈ ρ → H'[ℓ]? = H[ℓ]?
+  Ty.qual D (elem.array n) =
+    match Ty.qual D elem with
+    | Qual.copy => Qual.copy
+    | m => if n = 0 then Qual.affine else m
 ```
 
 ### `breakStore`
@@ -29464,7 +29520,7 @@ elements, ascending index order (`3.9:15`).
 
 ```lean
 def RueCore.dropContentsList (D : Decls) :
-  List Contents → Except Violation (List Event)
+  List Contents → Except Refusal (List Event)
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -29515,9 +29571,9 @@ Defining equations, as Lean derived them from the body:
 dupDecls =
   Decls.ofStructs
     [{ attr := Attr.copy, fields := [Ty.int IntWidth.w64 Sign.signed],
-        dtor := false, cls := Mult.copy },
+        dtor := false, cls := Qual.copy },
       { attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-        dtor := true, cls := Mult.affine }]
+        dtor := true, cls := Qual.affine }]
 ```
 
 ### `dynPlace`
@@ -29530,33 +29586,33 @@ One function for the read and the write, and for `eval` and its instrumented
 mirror (`Explain.lean`), so the four test the same thing (helper).
 
 ```lean
-def RueCore.dynPlace (H : Store) (φ : Frame) (p : Place) (vs : List Val)
+def RueCore.dynPlace (H : Store) (φ : Activation) (p : Place) (vs : List Val)
   (πs : List (List Nat)) : DynPlace
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (H : Store) (φ : Frame) (p : Place) (vs : List Val)
+∀ (H : Store) (φ : Activation) (p : Place) (vs : List Val)
   (πs : List (List Nat)),
   dynPlace H φ p vs πs =
     match Val.ints vs with
-    | none => DynPlace.stuck Violation.typeConfusion
+    | none => DynPlace.refused Refusal.typeConfusion
     | some is =>
       match φ.env[p.root]? with
-      | none => DynPlace.stuck Violation.unbound
+      | none => DynPlace.refused Refusal.unbound
       | some ℓ =>
         match H[ℓ]? with
-        | none => DynPlace.stuck Violation.unbound
-        | some Cell.dead => DynPlace.stuck Violation.useAfterDrop
+        | none => DynPlace.refused Refusal.unbound
+        | some Cell.dead => DynPlace.refused Refusal.useAfterDrop
         | some (Cell.full c) =>
-          match c.readAt p.path with
-          | Except.error w => DynPlace.stuck w
+          match c.getAt p.path with
+          | Except.error w => DynPlace.refused w
           | Except.ok sub =>
             match sub.resolveDyn is πs with
             | DynStep.ok ρ => DynPlace.at ℓ c sub ρ
             | DynStep.bounds => DynPlace.bounds
-            | DynStep.stuck w => DynPlace.stuck w
+            | DynStep.refused w => DynPlace.refused w
 ```
 
 ### `evalBinOp`
@@ -29672,7 +29728,7 @@ Defining equations, as Lean derived them from the body:
 lostDecls =
   Decls.ofStructs
     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-        dtor := true, cls := Mult.affine }]
+        dtor := true, cls := Qual.affine }]
 ```
 
 ### `lostStore`
@@ -29713,10 +29769,11 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls) (e k i : Nat) (vs : List Val),
   matchConsume D e k i vs =
-    if D.enumClassOf e = Mult.copy then []
+    if D.enumClassOf e = Qual.copy then []
     else
       [Event.consume
-          (Contents.enum e k i (List.map (fun x => Contents.hole) vs))]
+          (Contents.enum e k i
+            (List.map (fun x => Contents.movedOut) vs))]
 ```
 
 ### `noArrayStep`
@@ -29780,21 +29837,21 @@ unbound index is `unbound` and a retired cell is `useAfterDrop`, §6's stuck
 states for both (helper).
 
 ```lean
-def RueCore.rootCell (H : Store) (φ : Frame) (i : Nat) :
-  Except Violation (Nat × Contents)
+def RueCore.rootCell (H : Store) (φ : Activation) (i : Nat) :
+  Except Refusal (Nat × Contents)
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (H : Store) (φ : Frame) (i : Nat),
+∀ (H : Store) (φ : Activation) (i : Nat),
   rootCell H φ i =
     match φ.env[i]? with
-    | none => Except.error Violation.unbound
+    | none => Except.error Refusal.unbound
     | some ℓ =>
       match H[ℓ]? with
-      | none => Except.error Violation.unbound
-      | some Cell.dead => Except.error Violation.useAfterDrop
+      | none => Except.error Refusal.unbound
+      | some Cell.dead => Except.error Refusal.useAfterDrop
       | some (Cell.full c) => Except.ok (ℓ, c)
 ```
 
@@ -29927,8 +29984,8 @@ def RueCore.Config.stack : Config → List Nat
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (H : Store) (φ : Frame) (K : List Kont) (f : Focus) (tr : List Event),
-  (Config.run H φ K f tr).stack = Stk K ++ φ.scope
+∀ (H : Store) (φ : Activation) (K : List Kont) (f : Focus)
+  (tr : List Event), (Config.run H φ K f tr).stack = Stk K ++ φ.scope
 ∀ (k : PanicKind) (tr : List Event), (Config.panic k tr).stack = []
 ```
 
@@ -29945,12 +30002,12 @@ def RueCore.Config.trace : Config → List Event
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (H : Store) (φ : Frame) (K : List Kont) (f : Focus) (tr : List Event),
-  (Config.run H φ K f tr).trace = tr
+∀ (H : Store) (φ : Activation) (K : List Kont) (f : Focus)
+  (tr : List Event), (Config.run H φ K f tr).trace = tr
 ∀ (k : PanicKind) (tr : List Event), (Config.panic k tr).trace = tr
 ```
 
-### `Contents.mult`
+### `Contents.qual`
 
 *def* · module `RueCore.Dynamics`
 
@@ -29958,25 +30015,25 @@ The dynamic image of `class(T)` (§3) on cell contents: a hole has nothing
 to drop, and a struct has the class its declaration records (helper).
 
 ```lean
-def RueCore.Contents.mult (D : Decls) : Contents → Mult
+def RueCore.Contents.qual (D : Decls) : Contents → Qual
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : Decls) (s id : Nat) (cs : List Contents),
-  Contents.mult D (Contents.struct s id cs) = D.classOf s
+  Contents.qual D (Contents.struct s id cs) = D.classOf s
 ∀ (D : Decls) (e k id : Nat) (cs : List Contents),
-  Contents.mult D (Contents.enum e k id cs) = D.enumClassOf e
+  Contents.qual D (Contents.enum e k id cs) = D.enumClassOf e
 ∀ (D : Decls) (T : Ty) (id : Nat) (cs : List Contents),
-  Contents.mult D (Contents.array T id cs) = Ty.mult D (T.array cs.length)
-∀ (D : Decls), Contents.mult D Contents.hole = Mult.copy
+  Contents.qual D (Contents.array T id cs) = Ty.qual D (T.array cs.length)
+∀ (D : Decls), Contents.qual D Contents.movedOut = Qual.copy
 ∀ (D : Decls) (w : IntWidth) (s : Sign) (n : Int),
-  Contents.mult D (Contents.int w s n) = Mult.copy
+  Contents.qual D (Contents.int w s n) = Qual.copy
 ∀ (D : Decls) (w : FloatWidth) (f : FloatDatum),
-  Contents.mult D (Contents.float w f) = Mult.copy
-∀ (D : Decls) (b : Bool), Contents.mult D (Contents.bool b) = Mult.copy
-∀ (D : Decls), Contents.mult D Contents.unit = Mult.copy
+  Contents.qual D (Contents.float w f) = Qual.copy
+∀ (D : Decls) (b : Bool), Contents.qual D (Contents.bool b) = Qual.copy
+∀ (D : Decls), Contents.qual D Contents.unit = Qual.copy
 ```
 
 ### `Corpus.Case`
@@ -30016,7 +30073,7 @@ component of every variant, read left to right, variant by variant (`6.3:19`).
 The empty join is `Copy`, which is the discriminant-only case.
 
 ```lean
-def RueCore.EnumDecl.payloadJoin (D : Decls) (ed : EnumDecl) : Mult
+def RueCore.EnumDecl.payloadJoin (D : Decls) (ed : EnumDecl) : Qual
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -30025,8 +30082,8 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (ed : EnumDecl),
   EnumDecl.payloadJoin D ed =
     List.foldl
-      (fun m Ts => List.foldl (fun m' T => m'.join (Ty.mult D T)) m Ts)
-      Mult.copy ed.variants
+      (fun m Ts => List.foldl (fun m' T => m'.join (Ty.qual D T)) m Ts)
+      Qual.copy ed.variants
 ```
 
 ### `EvalRes.NoBrk`
@@ -30076,7 +30133,7 @@ Defining equations, as Lean derived them from the body:
 ∀ (H : Store) (scope : List Nat) (tr : List Event),
   (EvalRes.broke H scope tr).trace = tr
 ∀ (k : PanicKind) (tr : List Event), (EvalRes.panic k tr).trace = tr
-∀ (why : Violation), (EvalRes.stuck why).trace = []
+∀ (why : Refusal), (EvalRes.refused why).trace = []
 EvalRes.outOfFuel.trace = []
 ```
 
@@ -30157,7 +30214,7 @@ this file are *executable* demos, so they are pinned at one model rather than
 quantified over all of them; because `exactOps` is built from `Nat`/`Int`
 arithmetic and never touches Lean's `Float`, pinning them costs no axiom
 (`TRUST.md`). The float **trap** witnesses at the bottom of the file are the
-exception: they are stated over an arbitrary `FloatModel` and proved from its
+exception: they are stated over an arbitrary `FloatLaws` and proved from its
 laws, which is what makes them claims about IEEE 754 rather than about this
 instance.
 
@@ -30218,10 +30275,10 @@ RueCore.Explain.Trace.mk (steps : List Explain.Step) (res : EvalRes) :
 
 *def* · module `RueCore.Float.Lemmas`
 
-**The laws have a model: `Float.exactOps`** (§7's float lemma). Every field of `FloatModel` proved of the executable instance, so the 19 spine statements that quantify over `M : FloatModel` are not vacuous in `M` (RUE-2469), and each applies to the model the corpus runs on. Satisfying the laws does not make `exactOps` IEEE 754: the laws say nothing about which datum a rounding returns. What they leave open, `exactOps` decides by its own definition — the value of every rounding (correct rounding, ties to even, the overflow threshold), which NaN a propagating operation returns, and `σ_NaN` — and those are checked against the compiler by the corpus, not proved.
+**The laws have a model: `Float.exactOps`** (§7's float lemma). Every field of `FloatLaws` proved of the executable instance, so the 19 spine statements that quantify over `M : FloatLaws` are not vacuous in `M` (RUE-2469), and each applies to the model the corpus runs on. Satisfying the laws does not make `exactOps` IEEE 754: the laws say nothing about which datum a rounding returns. What they leave open, `exactOps` decides by its own definition — the value of every rounding (correct rounding, ties to even, the overflow threshold), which NaN a propagating operation returns, and `σ_NaN` — and those are checked against the compiler by the corpus, not proved.
 
 ```lean
-def RueCore.Float.exactModel : FloatModel
+def RueCore.Float.exactModel : FloatLaws
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -30244,7 +30301,7 @@ exactly the cells `ls` names (helper).
 
 ```lean
 def RueCore.KillsOnly (ls : List Nat) (H : Store) (v : Val) (R : EvalRes) : Prop :=
-  (∃ w, R = EvalRes.stuck w) ∨
+  (∃ w, R = EvalRes.refused w) ∨
     ∃ H' evs,
       R = EvalRes.ok H' v evs ∧
         List.length H' = List.length H ∧
@@ -30309,7 +30366,7 @@ Defining equations, as Lean derived them from the body:
 ∀ (H : Store) (k : PanicKind),
   OpRes.toRes H (OpRes.trap k) = EvalRes.panic k []
 ∀ (H : Store),
-  OpRes.toRes H OpRes.confused = EvalRes.stuck Violation.typeConfusion
+  OpRes.toRes H OpRes.confused = EvalRes.refused Refusal.typeConfusion
 ```
 
 ### `Out.SkelOk`
@@ -30369,7 +30426,7 @@ def RueCore.Retire.Grow (H H' : Store) : Prop :=
     ∀ (ℓ : Nat), Retire.Live H ℓ → Retire.Live H' ℓ
 ```
 
-### `Retire.LiveFrame`
+### `Retire.LiveActivation`
 
 *def* · module `RueCore.Retire`
 
@@ -30378,7 +30435,7 @@ the scope record owes a drop, is live, and the record owes each at most once
 (helper).
 
 ```lean
-def RueCore.Retire.LiveFrame (H : Store) (φ : Frame) : Prop :=
+def RueCore.Retire.LiveActivation (H : Store) (φ : Activation) : Prop :=
   (∀ (ℓ : Nat), ℓ ∈ φ.env → Retire.Live H ℓ) ∧
     (∀ (ℓ : Nat), ℓ ∈ φ.scope → Retire.Live H ℓ) ∧ φ.scope.Nodup
 ```
@@ -30392,7 +30449,7 @@ frame on it owes a drop — the frame in force and every suspended caller — is
 live and owed once (helper).
 
 ```lean
-def RueCore.Retire.StackLive (H : Store) (φ : Frame) (K : List Kont) : Prop :=
+def RueCore.Retire.StackLive (H : Store) (φ : Activation) (K : List Kont) : Prop :=
   Retire.Shape φ K ∧
     (Retire.callerCells K ++ φ.scope).Nodup ∧
       ∀ (ℓ : Nat), ℓ ∈ Retire.callerCells K ++ φ.scope → Retire.Live H ℓ
@@ -30408,15 +30465,15 @@ operands ran: every one retired by the form's end — but, for an unwinding
 the frame's whole record retired (helper).
 
 ```lean
-def RueCore.Settled (φ : Frame) (H₁ : Store) : EvalRes → Prop :=
+def RueCore.Settled (φ : Activation) (H₁ : Store) : EvalRes → Prop :=
   match x✝ with
-  | EvalRes.ok H' v tr => Retired H₁ [] H'
+  | EvalRes.ok H' v tr => Tombstoned H₁ [] H'
   | EvalRes.returned H' v tr =>
-    Retired H₁ [] H' ∧ ∀ (ℓ : Nat), ℓ ∈ φ.scope → H'[ℓ]? = some Cell.dead
+    Tombstoned H₁ [] H' ∧ ∀ (ℓ : Nat), ℓ ∈ φ.scope → H'[ℓ]? = some Cell.dead
   | EvalRes.broke H' sc tr =>
-    Retired H₁ sc H' ∧ ∃ locs, sc = φ.scope ++ locs
+    Tombstoned H₁ sc H' ∧ ∃ locs, sc = φ.scope ++ locs
   | EvalRes.panic k tr => True
-  | EvalRes.stuck why => True
+  | EvalRes.refused why => True
   | EvalRes.outOfFuel => True
 ```
 
@@ -30440,12 +30497,12 @@ Sharp.loopProg =
         structs :=
           [{ attr := Attr.none,
               fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-              cls := Mult.affine },
+              cls := Qual.affine },
             { attr := Attr.linear,
               fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-              cls := Mult.linear }],
+              cls := Qual.linear }],
         enums :=
-          [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+          [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
     fns :=
       [{ params := [], ret := Ty.unit, body := Sharp.loopBody.loop }] }
 ```
@@ -30466,8 +30523,9 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (H : Store) (tr : List Event),
   Sharp.loopTurn H tr =
-    Config.run H Frame.empty
-      [Kont.loop Sharp.loopBody Frame.empty, Kont.call Frame.empty]
+    Config.run H Activation.empty
+      [Kont.loop Sharp.loopBody Activation.empty,
+        Kont.call Activation.empty]
       (Focus.eval Sharp.loopBody) tr
 ```
 
@@ -30476,10 +30534,10 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Spec.Nonvacuous`
 
 **The float laws have a model: `Float.exactOps`** (§7's "totality of the
-float operations"; RUE-2469). Some `FloatModel` has the executable instance
-`Float.exactOps` as its operations, so every law of `FloatModel` holds of the
+float operations"; RUE-2469). Some `FloatLaws` has the executable instance
+`Float.exactOps` as its operations, so every law of `FloatLaws` holds of the
 model the corpus runs on, and the laws are jointly satisfiable: the 22 spine
-statements that quantify over `M : FloatModel` are not vacuous in `M`.
+statements that quantify over `M : FloatLaws` are not vacuous in `M`.
 
 ```lean
 def RueCore.Spec.Nonvacuous.exact_model_stmt : Prop :=
@@ -30491,7 +30549,7 @@ def RueCore.Spec.Nonvacuous.exact_model_stmt : Prop :=
 *inductive* · module `RueCore.Step`
 
 What `step` finds at a configuration: the next one, a terminal one
-(`Config.Terminal`), or a stuck one, named by the `Violation` §6 leaves it
+(`Config.Terminal`), or a stuck one, named by the `Refusal` §6 leaves it
 at (helper).
 
 ```lean
@@ -30515,7 +30573,7 @@ RueCore.StepOut.halted : StepOut
 **`StepOut.stuck`**
 
 ```lean
-RueCore.StepOut.stuck (w : Violation) : StepOut
+RueCore.StepOut.stuck (w : Refusal) : StepOut
 ```
 
 ### `StructDecl.baseOf`
@@ -30526,7 +30584,7 @@ RueCore.StepOut.stuck (w : Violation) : StepOut
 read left to right. `Attr.lift` then lifts it by the declared attribute.
 
 ```lean
-def RueCore.StructDecl.baseOf (D : Decls) (sd : StructDecl) : Mult
+def RueCore.StructDecl.baseOf (D : Decls) (sd : StructDecl) : Qual
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -30534,7 +30592,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls) (sd : StructDecl),
   StructDecl.baseOf D sd =
-    List.foldl (fun m T => m.join (Ty.mult D T)) Mult.copy sd.fields
+    List.foldl (fun m T => m.join (Ty.qual D T)) Qual.copy sd.fields
 ```
 
 ### `Tidy`
@@ -30550,19 +30608,20 @@ retires; and an unwinding
 `return` has retired every cell of `φ`'s record (§6.9's σ-walk).
 
 ```lean
-def RueCore.Tidy (φ : Frame) (H : Store) : EvalRes → Prop :=
+def RueCore.Tidy (φ : Activation) (H : Store) : EvalRes → Prop :=
   match x✝ with
-  | EvalRes.ok H' v tr => Local φ H H' ∧ Retired H [] H'
+  | EvalRes.ok H' v tr => Local φ H H' ∧ Tombstoned H [] H'
   | EvalRes.returned H' v tr =>
     Local φ H H' ∧
-      Retired H [] H' ∧ ∀ (ℓ : Nat), ℓ ∈ φ.scope → H'[ℓ]? = some Cell.dead
+      Tombstoned H [] H' ∧
+        ∀ (ℓ : Nat), ℓ ∈ φ.scope → H'[ℓ]? = some Cell.dead
   | EvalRes.broke H' sc tr =>
     Local φ H H' ∧
-      Retired H sc H' ∧
+      Tombstoned H sc H' ∧
         ∃ locs,
           sc = φ.scope ++ locs ∧ ∀ (ℓ : Nat), ℓ ∈ locs → List.length H ≤ ℓ
   | EvalRes.panic k tr => True
-  | EvalRes.stuck why => True
+  | EvalRes.refused why => True
   | EvalRes.outOfFuel => True
 ```
 
@@ -30651,7 +30710,7 @@ Defining equations, as Lean derived them from the body:
   Ty.dynNoDeclared D (Ty.enum e) (head :: tail) = true
 ```
 
-### `Val.mult`
+### `Val.qual`
 
 *def* · module `RueCore.Dynamics`
 
@@ -30659,24 +30718,24 @@ The dynamic image of `class(T)` (§3) on a value: scalars are `Copy`, a
 struct value has the class its declaration records.
 
 ```lean
-def RueCore.Val.mult (D : Decls) : Val → Mult
+def RueCore.Val.qual (D : Decls) : Val → Qual
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : Decls) (s id : Nat) (fields : List Val),
-  Val.mult D (Val.struct s id fields) = D.classOf s
+  Val.qual D (Val.struct s id fields) = D.classOf s
 ∀ (D : Decls) (e k id : Nat) (payload : List Val),
-  Val.mult D (Val.enum e k id payload) = D.enumClassOf e
+  Val.qual D (Val.enum e k id payload) = D.enumClassOf e
 ∀ (D : Decls) (T : Ty) (id : Nat) (vs : List Val),
-  Val.mult D (Val.array T id vs) = Ty.mult D (T.array vs.length)
+  Val.qual D (Val.array T id vs) = Ty.qual D (T.array vs.length)
 ∀ (D : Decls) (w : IntWidth) (s : Sign) (n : Int),
-  Val.mult D (Val.int w s n) = Mult.copy
+  Val.qual D (Val.int w s n) = Qual.copy
 ∀ (D : Decls) (w : FloatWidth) (f : FloatDatum),
-  Val.mult D (Val.float w f) = Mult.copy
-∀ (D : Decls) (b : Bool), Val.mult D (Val.bool b) = Mult.copy
-∀ (D : Decls), Val.mult D Val.unit = Mult.copy
+  Val.qual D (Val.float w f) = Qual.copy
+∀ (D : Decls) (b : Bool), Val.qual D (Val.bool b) = Qual.copy
+∀ (D : Decls), Val.qual D Val.unit = Qual.copy
 ```
 
 ### `WfNames`
@@ -30691,7 +30750,7 @@ licenses — and it is joint over the two layers because `3.0:5` is.
 
 ```lean
 def RueCore.WfNames (D : Decls) : Prop :=
-  WellFounded fun d' d => D.Names d d'
+  WellFounded fun d' d => D.ByValueEdge d d'
 ```
 
 ### `anyLinearOther`
@@ -30712,10 +30771,10 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (x : Nat), anyLinearOther D [] x = false
 ∀ (D : Decls) (head : Ty) (Ts : List Ty),
   anyLinearOther D (head :: Ts) 0 =
-    Ts.any fun T => decide (Ty.mult D T = Mult.linear)
+    Ts.any fun T => decide (Ty.qual D T = Qual.linear)
 ∀ (D : Decls) (T : Ty) (Ts : List Ty) (f : Nat),
   anyLinearOther D (T :: Ts) f.succ =
-    (decide (Ty.mult D T = Mult.linear) || anyLinearOther D Ts f)
+    (decide (Ty.qual D T = Qual.linear) || anyLinearOther D Ts f)
 ```
 
 ### `argsConf`
@@ -30725,15 +30784,15 @@ Defining equations, as Lean derived them from the body:
 A list context `…( v̄, E, ē )` at a store (helper).
 
 ```lean
-def RueCore.argsConf (H : Store) (φ : Frame) (t : ArgsTag) (vs : List Val)
+def RueCore.argsConf (H : Store) (φ : Activation) (t : ArgsFrame) (vs : List Val)
   (es : List Expr) : List Kont → List Event → Config
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (H : Store) (φ : Frame) (t : ArgsTag) (vs : List Val) (es : List Expr)
-  (K : List Kont) (tr : List Event),
+∀ (H : Store) (φ : Activation) (t : ArgsFrame) (vs : List Val)
+  (es : List Expr) (K : List Kont) (tr : List Event),
   argsConf H φ t vs es K tr = Config.run H φ K (Focus.args t vs es) tr
 ```
 
@@ -30793,7 +30852,7 @@ breakProgram =
 *def* · module `RueCore.Checker.Defs`
 
 The §5 judgment as an algorithm: one case per `Typed` rule, in the same
-order, producing the type (`CTy`) and §5.3's outgoing `Ω` or rejecting. `P`
+order, producing the type (`TyOrNever`) and §5.3's outgoing `Ω` or rejecting. `P`
 is the top-level function environment (Call) §5.8 looks a callee up in and
 `R` the enclosing function's declared return type (Return-Value) §5.7 checks
 a `return` operand against. Where an operand's `Ω` is `⊥` the algorithm stops
@@ -30801,7 +30860,8 @@ exactly where the `-Bottom` rules stop, and a branch joins only the arms that
 continue (`Ctx.joinOpt`, `Ctx.joinOpts`).
 
 ```lean
-def RueCore.check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
+def RueCore.check (P : Program) (R : Ty) (Γ : Ctx) :
+  Expr → Option (TyOrNever × Out)
 ```
 
 ### `checkArgs`
@@ -30832,7 +30892,7 @@ mismatch between the arms and the variants is the last clause's `none` —
 `check` has already required the counts to agree, so no program reaches it.
 
 ```lean
-def RueCore.checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (c : CTy) :
+def RueCore.checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (c : TyOrNever) :
   List Expr → List (List Ty) → Option (List (Option Ctx) × List Ctx)
 ```
 
@@ -30901,7 +30961,8 @@ evaluation context; the callee's body is sequenced with `bindCall`, the one
 place a `return` stops travelling (§6.9).
 
 ```lean
-def RueCore.eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalRes
+def RueCore.eval (M : FloatSig) :
+  Nat → Program → Store → Activation → Expr → EvalRes
 ```
 
 ### `evalConf`
@@ -30912,14 +30973,15 @@ The configuration family of an expression in focus: `⟨H ; φ ; K ; E[e]⟩`
 for every context `K` and every trace `tr` already produced (§6.1, §6.2).
 
 ```lean
-def RueCore.evalConf (H : Store) (φ : Frame) (e : Expr) :
+def RueCore.evalConf (H : Store) (φ : Activation) (e : Expr) :
   List Kont → List Event → Config
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (H : Store) (φ : Frame) (e : Expr) (K : List Kont) (tr : List Event),
+∀ (H : Store) (φ : Activation) (e : Expr) (K : List Kont)
+  (tr : List Event),
   evalConf H φ e K tr = Config.run H φ K (Focus.eval e) tr
 ```
 
@@ -30971,7 +31033,7 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 orphanResult =
-  EvalRes.ok [Cell.dead, Cell.full Contents.hole, Cell.full s0x]
+  EvalRes.ok [Cell.dead, Cell.full Contents.movedOut, Cell.full s0x]
     (Val.int IntWidth.w64 Sign.signed 0) [Event.dtor 0 s0x]
 ```
 
@@ -31010,9 +31072,9 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls) (x : Ty), overwriteOk D OwnSt.movedOut x = true
 ∀ (D : Decls) (x : Ty),
-  overwriteOk D OwnSt.owned x = decide (Ty.mult D x ≠ Mult.linear)
+  overwriteOk D OwnSt.owned x = decide (Ty.qual D x ≠ Qual.linear)
 ∀ (D : Decls) (x : Ty) (ts : List OwnSt),
-  overwriteOk D (OwnSt.fields ts) x = decide (Ty.mult D x ≠ Mult.linear)
+  overwriteOk D (OwnSt.fields ts) x = decide (Ty.qual D x ≠ Qual.linear)
 ```
 
 ### `rootIdxOnly`
@@ -31094,9 +31156,9 @@ swappedMarkers =
 The frame-pop invariant for an argument list (helper).
 
 ```lean
-def RueCore.ArgsTidy (φ : Frame) (H : Store) : ArgsRes → Prop :=
+def RueCore.ArgsTidy (φ : Activation) (H : Store) : ArgsRes → Prop :=
   match x✝ with
-  | ArgsRes.ok H' vs tr => Local φ H H' ∧ Retired H [] H'
+  | ArgsRes.ok H' vs tr => Local φ H H' ∧ Tombstoned H [] H'
   | ArgsRes.abort r => Tidy φ H r
 ```
 
@@ -31196,7 +31258,7 @@ Defining equations, as Lean derived them from the body:
 ∀ (x : Store → Val → EvalRes) (H : Store) (scope : List Nat)
   (tr : List Event),
   (EvalRes.broke H scope tr).bindCall x =
-    EvalRes.stuck Violation.typeConfusion
+    EvalRes.refused Refusal.typeConfusion
 ∀ (x : EvalRes) (x_1 : Store → Val → EvalRes),
   (∀ (H : Store) (v : Val) (tr : List Event),
       x = EvalRes.ok H v tr → False) →
@@ -31254,13 +31316,13 @@ The derivation's conclusion, in `check`'s shape: the type and outgoing
 proof that this projection is exactly `check` (§5 as an algorithm).
 
 ```lean
-def RueCore.Explain.Deriv.result : Explain.Deriv → Option (CTy × Out)
+def RueCore.Explain.Deriv.result : Explain.Deriv → Option (TyOrNever × Out)
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (rule : String) (ctxIn : Ctx) (expr : Expr) (c : CTy) (Ω : Out)
+∀ (rule : String) (ctxIn : Ctx) (expr : Expr) (c : TyOrNever) (Ω : Out)
   (kids : List Explain.Deriv),
   (Explain.Deriv.node rule ctxIn expr (Explain.Verdict.accept c Ω)
         kids).result =
@@ -31311,7 +31373,7 @@ prints its expression with the source's names.
 
 ```lean
 def RueCore.Explain.traceEval (M : FloatSig) (P : Program) :
-  Nat → Nat → List Ty → Ty → Store → Frame → Expr → Explain.Trace
+  Nat → Nat → List Ty → Ty → Store → Activation → Expr → Explain.Trace
 ```
 
 ### `OpRes.toStep`
@@ -31322,22 +31384,23 @@ An operator's outcome as a step: a value plugs the hole, a trap is
 (Panic-Lift) §6.2, and a wrong-shaped operand is stuck (helper).
 
 ```lean
-def RueCore.OpRes.toStep (H : Store) (φ : Frame) (K : List Kont)
+def RueCore.OpRes.toStep (H : Store) (φ : Activation) (K : List Kont)
   (tr : List Event) : OpRes → StepOut
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (H : Store) (φ : Frame) (K : List Kont) (tr : List Event) (v : Val),
+∀ (H : Store) (φ : Activation) (K : List Kont) (tr : List Event)
+  (v : Val),
   OpRes.toStep H φ K tr (OpRes.val v) =
     StepOut.next (Config.run H φ K (Focus.ret v) tr)
-∀ (H : Store) (φ : Frame) (K : List Kont) (tr : List Event)
+∀ (H : Store) (φ : Activation) (K : List Kont) (tr : List Event)
   (κ : PanicKind),
   OpRes.toStep H φ K tr (OpRes.trap κ) = StepOut.next (Config.panic κ tr)
-∀ (H : Store) (φ : Frame) (K : List Kont) (tr : List Event),
+∀ (H : Store) (φ : Activation) (K : List Kont) (tr : List Event),
   OpRes.toStep H φ K tr OpRes.confused =
-    StepOut.stuck Violation.typeConfusion
+    StepOut.stuck Refusal.typeConfusion
 ```
 
 ### `Retire.ConfigLive`
@@ -31366,7 +31429,7 @@ the frame's own, extended by distinct cells it minted, still live. And no
 refusal is `useAfterDrop`.
 
 ```lean
-def RueCore.Retire.LivePost (H : Store) (φ : Frame) : EvalRes → Prop :=
+def RueCore.Retire.LivePost (H : Store) (φ : Activation) : EvalRes → Prop :=
   match x✝ with
   | EvalRes.ok H' v tr => Retire.Grow H H'
   | EvalRes.returned H' v tr =>
@@ -31379,7 +31442,7 @@ def RueCore.Retire.LivePost (H : Store) (φ : Frame) : EvalRes → Prop :=
           xs.Nodup ∧
             ∀ (ℓ : Nat), ℓ ∈ xs → List.length H ≤ ℓ ∧ Retire.Live H' ℓ
   | EvalRes.panic k tr => True
-  | EvalRes.stuck w => w ≠ Violation.useAfterDrop
+  | EvalRes.refused w => w ≠ Refusal.useAfterDrop
   | EvalRes.outOfFuel => True
 ```
 
@@ -31394,7 +31457,7 @@ and call "an analogue of determinism" (`FIELD.md`, section 3).
 
 ```lean
 def RueCore.Spec.fuel_mono_stmt : Prop :=
-  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr}
+  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : Expr}
     {n m : Nat},
     n ≤ m →
       eval M n P H φ e ≠ EvalRes.outOfFuel →
@@ -31411,11 +31474,11 @@ refusal at one fuel is the answer at every fuel that answers; a corollary of
 
 ```lean
 def RueCore.Spec.no_masking_stmt : Prop :=
-  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr}
-    {n m : Nat} {w : Violation},
-    eval M n P H φ e = EvalRes.stuck w →
+  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : Expr}
+    {n m : Nat} {w : Refusal},
+    eval M n P H φ e = EvalRes.refused w →
       eval M m P H φ e ≠ EvalRes.outOfFuel →
-        eval M m P H φ e = EvalRes.stuck w
+        eval M m P H φ e = EvalRes.refused w
 ```
 
 ### `StructDecl.Wf`
@@ -31445,8 +31508,8 @@ RueCore.StructDecl.Wf.mk {D : Decls} {sd : StructDecl}
   (classIsJoin : sd.cls = sd.attr.lift (StructDecl.baseOf D sd))
   (copyWf :
     sd.attr = Attr.copy →
-      StructDecl.baseOf D sd = Mult.copy ∧ sd.dtor = false)
-  (dtorWf : sd.dtor = true → StructDecl.baseOf D sd ≠ Mult.linear) :
+      StructDecl.baseOf D sd = Qual.copy ∧ sd.dtor = false)
+  (dtorWf : sd.dtor = true → StructDecl.baseOf D sd ≠ Qual.linear) :
   StructDecl.Wf D sd
 ```
 
@@ -31495,11 +31558,11 @@ Defining equations, as Lean derived them from the body:
 ∀ (P : Program) (R : Ty) (x : Ctx) (e : Expr) (es : List Expr),
   checkIdx P R x (e :: es) =
     match check P R x e with
-    | some (CTy.ty (Ty.int w s), { norm := some Γ₁, brk := Δ₁ }) =>
+    | some (TyOrNever.ty (Ty.int w s), { norm := some Γ₁, brk := Δ₁ }) =>
       match checkIdx P R Γ₁ es with
       | some (Ts, Ω) => some (Ty.int w s :: Ts, Ω.merge Δ₁)
       | none => none
-    | some (CTy.ty (Ty.int w s), { norm := none, brk := Δ₁ }) =>
+    | some (TyOrNever.ty (Ty.int w s), { norm := none, brk := Δ₁ }) =>
       some
         (Ty.int w s :: List.map (fun x => Ty.int w s) es,
           { norm := none, brk := Δ₁ })
@@ -31532,9 +31595,9 @@ Defining equations, as Lean derived them from the body:
     ((decide (sd.cls = sd.attr.lift (StructDecl.baseOf D sd)) &&
         match sd.attr with
         | Attr.copy =>
-          decide (StructDecl.baseOf D sd = Mult.copy) && !sd.dtor
+          decide (StructDecl.baseOf D sd = Qual.copy) && !sd.dtor
         | x => true) &&
-      (!sd.dtor || !decide (StructDecl.baseOf D sd = Mult.linear)))
+      (!sd.dtor || !decide (StructDecl.baseOf D sd = Qual.linear)))
 ```
 
 ### `demoProgram`
@@ -31568,7 +31631,7 @@ nothing, which is also why `@drop` of a `Copy` place leaves no trace (§5.3's
 
 ```lean
 def RueCore.dropCell (D : Decls) (ℓ : Nat) (c : Contents) :
-  Except Violation (List Event)
+  Except Refusal (List Event)
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -31576,7 +31639,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls) (ℓ : Nat) (c : Contents),
   dropCell D ℓ c =
-    if Contents.mult D c = Mult.copy then Except.ok []
+    if Contents.qual D c = Qual.copy then Except.ok []
     else
       match dropContents D c with
       | Except.error w => Except.error w
@@ -31726,7 +31789,7 @@ Defining equations, as Lean derived them from the body:
   linearResidue D (Ty.enum e) (f :: π) = false
 ```
 
-### `residueMark`
+### `residueDropEvent`
 
 *def* · module `RueCore.Dynamics`
 
@@ -31737,15 +31800,15 @@ what `@drop(x.f)` records as `drop ℓ sub`, so its drop starts with the same
 `Copy` subtree has no drop glue and gets no marker (helper).
 
 ```lean
-def RueCore.residueMark (D : Decls) (ℓ : Nat) (r : Contents) : List Event
+def RueCore.residueDropEvent (D : Decls) (ℓ : Nat) (r : Contents) : List Event
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : Decls) (ℓ : Nat) (r : Contents),
-  residueMark D ℓ r =
-    if Contents.mult D r = Mult.copy then [] else [Event.drop ℓ r]
+  residueDropEvent D ℓ r =
+    if Contents.qual D r = Qual.copy then [] else [Event.drop ℓ r]
 ```
 
 ### `run`
@@ -31792,8 +31855,8 @@ def RueCore.step (M : FloatSig) (P : Program) : Config → StepOut
 dynamic place (helper).
 
 ```lean
-def RueCore.stepArgs (P : Program) (H : Store) (φ : Frame) (K : List Kont)
-  (tr : List Event) (vs : List Val) : ArgsTag → StepOut
+def RueCore.stepArgs (P : Program) (H : Store) (φ : Activation) (K : List Kont)
+  (tr : List Event) (vs : List Val) : ArgsFrame → StepOut
 ```
 
 ### `stepEval`
@@ -31805,7 +31868,7 @@ rules of §6.3 and §6.11, (D-Panic) §6.12, (D-Loop-Enter) and (D-Break)
 §6.10, and every (Search) enter rule of §6.2 (helper).
 
 ```lean
-def RueCore.stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Frame)
+def RueCore.stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation)
   (K : List Kont) (tr : List Event) : Expr → StepOut
 ```
 
@@ -31819,7 +31882,7 @@ of §6.2 and the redexes that fire there — §6.4's operators, (D-Match),
 (D-Return-Value), (D-Return) and (D-Loop-Iter) (helper).
 
 ```lean
-def RueCore.stepRet (M : FloatSig) (P : Program) (H : Store) (φ : Frame)
+def RueCore.stepRet (M : FloatSig) (P : Program) (H : Store) (φ : Activation)
   (K : List Kont) (tr : List Event) (v : Val) : Kont → StepOut
 ```
 
@@ -31828,12 +31891,12 @@ def RueCore.stepRet (M : FloatSig) (P : Program) (H : Store) (φ : Frame)
 *def* · module `RueCore.Step`
 
 **A stuck configuration** (§6, §7): not terminal, and no rule of §6
-applies. `step` names the reason with the `Violation` the interpreter uses for
+applies. `step` names the reason with the `Refusal` the interpreter uses for
 the same configuration.
 
 ```lean
-def RueCore.Config.Stuck (M : FloatSig) (P : Program) (C : Config)
-  (w : Violation) : Prop :=
+def RueCore.Config.Stuck (M : FloatSig) (P : Program) (C : Config) (w : Refusal) :
+  Prop :=
   step M P C = StepOut.stuck w
 ```
 
@@ -31881,13 +31944,13 @@ Defining equations, as Lean derived them from the body:
 ∀ (P : Program) (R : Ty) (x : Ctx) (e : Expr) (es : List Expr),
   Explain.explainIdx P R x (e :: es) =
     match (Explain.explain P R x e).result with
-    | some (CTy.ty (Ty.int w s), { norm := some Γ₁, brk := Δ₁ }) =>
+    | some (TyOrNever.ty (Ty.int w s), { norm := some Γ₁, brk := Δ₁ }) =>
       have rest := Explain.explainIdx P R Γ₁ es;
       (match rest.fst with
         | some (Ts, Ω) => some (Ty.int w s :: Ts, Ω.merge Δ₁)
         | none => none,
         Explain.explain P R x e :: rest.snd)
-    | some (CTy.ty (Ty.int w s), { norm := none, brk := Δ₁ }) =>
+    | some (TyOrNever.ty (Ty.int w s), { norm := none, brk := Δ₁ }) =>
       (some
           (Ty.int w s :: List.map (fun x => Ty.int w s) es,
             { norm := none, brk := Δ₁ }),
@@ -31966,8 +32029,9 @@ ends the values the body still held — the cells the carried record owes, the
 body's own bindings included (§6.10).
 
 ```lean
-def RueCore.Lead (M : FloatSig) (P : Program) (fuel : Nat) (H : Store) (φ : Frame)
-  (H₁ : Store) (vs : List Val) (tr : List Event) : Expr → Prop :=
+def RueCore.Lead (M : FloatSig) (P : Program) (fuel : Nat) (H : Store)
+  (φ : Activation) (H₁ : Store) (vs : List Val) (tr : List Event) :
+  Expr → Prop :=
   match x✝ with
   | Expr.letIn m e₁ e₂ =>
     ∃ v, vs = [v] ∧ eval M fuel P H φ e₁ = EvalRes.ok H₁ v tr
@@ -32024,7 +32088,7 @@ def RueCore.Lead (M : FloatSig) (P : Program) (fuel : Nat) (H : Store) (φ : Fra
 The promise over an argument list (helper).
 
 ```lean
-def RueCore.Retire.ArgsLive (H : Store) (φ : Frame) : ArgsRes → Prop :=
+def RueCore.Retire.ArgsLive (H : Store) (φ : Activation) : ArgsRes → Prop :=
   match x✝ with
   | ArgsRes.ok H' vs tr => Retire.Grow H H'
   | ArgsRes.abort r => Retire.LivePost H φ r
@@ -32041,7 +32105,7 @@ def RueCore.Retire.StepLive : StepOut → Prop :=
   match x✝ with
   | StepOut.next C => Retire.ConfigLive C
   | StepOut.halted => True
-  | StepOut.stuck w => w ≠ Violation.useAfterDrop
+  | StepOut.stuck w => w ≠ Refusal.useAfterDrop
 ```
 
 ### `Spec.dtor_once_stmt`
@@ -32078,7 +32142,7 @@ def RueCore.Spec.run_ne_returned_stmt : Prop :=
 
 **No use-after-drop, on every program** (§7 "No use-after-drop / no leak
 of drops", "never read afterward"; RUE-2496): `run` never refuses with
-`useAfterDrop`, at any fuel and any float operations (not only a `FloatModel`), **whether or not the program is
+`useAfterDrop`, at any fuel and any float operations (not only a `FloatLaws`), **whether or not the program is
 checked**. The property is structural rather than a consequence of typing: a
 binding's cell is minted fresh and retired only when the scope that bound it
 ends, after which nothing names it, and a scope record owes each cell once.
@@ -32091,7 +32155,7 @@ names a cell already retired, `eval` does refuse (`Sharp.retired_cell`). Like
 ```lean
 def RueCore.Spec.run_no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) (fuel : Nat),
-    run M P fuel ≠ EvalRes.stuck Violation.useAfterDrop
+    run M P fuel ≠ EvalRes.refused Refusal.useAfterDrop
 ```
 
 ### `WfEnums`
@@ -32100,7 +32164,7 @@ def RueCore.Spec.run_no_use_after_drop_stmt : Prop :=
 
 A well-formed enum environment: §3's class assignment holds of every enum
 declaration (`EnumDecl.Wf`). Together with `WfStructs` this is the premise that
-makes `Ty.mult`'s lookup §3's join at every type, and it is what `checkEnums`
+makes `Ty.qual`'s lookup §3's join at every type, and it is what `checkEnums`
 (`Checker/Defs.lean`) decides.
 
 ```lean
@@ -32113,7 +32177,7 @@ def RueCore.WfEnums (D : Decls) : Prop :=
 *def* · module `RueCore.Statics`
 
 A well-formed struct environment: §3's class assignment holds of every
-declaration (`StructDecl.Wf`). This is the premise that makes `Ty.mult`'s
+declaration (`StructDecl.Wf`). This is the premise that makes `Ty.qual`'s
 lookup §3's join, and it is what `checkStructs` (`Checker/Defs.lean`) decides.
 
 ```lean
@@ -32164,7 +32228,7 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Checker.Defs`
 
 §3's class assignment for a whole enum environment, as an algorithm.
-`WfEnums` is what it decides, and that is the premise `Ty.mult`'s lookup needs to
+`WfEnums` is what it decides, and that is the premise `Ty.qual`'s lookup needs to
 be `6.3:19`'s join at an enum type.
 
 ```lean
@@ -32182,7 +32246,7 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Checker.Defs`
 
 §3's class assignment for a whole struct environment, as an algorithm.
-`WfStructs` is what it decides, and that is the premise `Ty.mult`'s lookup
+`WfStructs` is what it decides, and that is the premise `Ty.qual`'s lookup
 needs to be §3's join.
 
 ```lean
@@ -32205,7 +32269,7 @@ retire the allocation, with **no** leak monitor — `dropRetire`
 
 ```lean
 def RueCore.plainDropRetire (D : Decls) (H : Store) (ℓ : Nat) :
-  Except Violation (Store × List Event)
+  Except Refusal (Store × List Event)
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -32214,8 +32278,8 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (H : Store) (ℓ : Nat),
   plainDropRetire D H ℓ =
     match H[ℓ]? with
-    | none => Except.error Violation.unbound
-    | some Cell.dead => Except.error Violation.useAfterDrop
+    | none => Except.error Refusal.unbound
+    | some Cell.dead => Except.error Refusal.useAfterDrop
     | some (Cell.full c) =>
       match dropCell D ℓ c with
       | Except.error w => Except.error w
@@ -32227,12 +32291,12 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Step`
 
 §6.3's `drop*` on the residue as §6.3 writes it: each retained subtree's
-marker (`residueMark`, RUE-2427) and §6.11's walk, left to right, with no
+marker (`residueDropEvent`, RUE-2427) and §6.11's walk, left to right, with no
 residue monitor (helper).
 
 ```lean
 def RueCore.plainResidue (D : Decls) (ℓ : Nat) :
-  List Contents → Except Violation (List Event)
+  List Contents → Except Refusal (List Event)
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -32246,7 +32310,8 @@ Defining equations, as Lean derived them from the body:
     | Except.ok evs =>
       match plainResidue D ℓ rs with
       | Except.error w => Except.error w
-      | Except.ok evs' => Except.ok (residueMark D ℓ r ++ evs ++ evs')
+      | Except.ok evs' =>
+        Except.ok (residueDropEvent D ℓ r ++ evs ++ evs')
 ```
 
 ### `stepN`
@@ -32282,7 +32347,7 @@ monitor's.
 
 ```lean
 def RueCore.Spec.step_stuck_isStuckState_stmt : Prop :=
-  ∀ {M : FloatSig} {P : Program} {C : Config} {w : Violation},
+  ∀ {M : FloatSig} {P : Program} {C : Config} {w : Refusal},
     Config.Stuck M P C w → w.isStuckState = true
 ```
 
@@ -32293,7 +32358,7 @@ def RueCore.Spec.step_stuck_isStuckState_stmt : Prop :=
 A well-formed declaration environment: `3.0:5`'s acyclicity (`WfNames`),
 §3's class assignment for every struct declaration (`WfStructs`) and for every
 enum declaration (`WfEnums`). This is the premise every theorem that reads a
-recorded class through `Ty.mult` carries, and it is what `checkDecls`
+recorded class through `Ty.qual` carries, and it is what `checkDecls`
 (`Checker/Defs.lean`) decides.
 
 ```lean
@@ -32339,7 +32404,7 @@ leak monitor: `unwindLocs` (`Dynamics.lean`) over `plainDropRetire`. (D-EndScope
 
 ```lean
 def RueCore.plainUnwind (D : Decls) (H : Store) :
-  List Nat → Except Violation (Store × List Event)
+  List Nat → Except Refusal (Store × List Event)
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -32363,19 +32428,73 @@ Defining equations, as Lean derived them from the body:
 The promise for an evaluation that does **not** produce a value here: an
 unwinding `return` carries a value of the enclosing function's declared return
 type `R` and leaves the frame's neighbours alone; an unwinding `break` is one
-of the deliveries `B` (`BrokeOk`); a trap and exhausted fuel promise nothing;
+of the deliveries `B` (`BreakOutputOk`); a trap and exhausted fuel promise nothing;
 a refusal is impossible, which is the whole theorem (helper).
 
 ```lean
-def RueCore.AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Frame) (H : Store) :
-  EvalRes → Prop :=
+def RueCore.AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Activation)
+  (H : Store) : EvalRes → Prop :=
   match x✝ with
   | EvalRes.ok H v tr => False
-  | EvalRes.returned H' v tr => HasTy D v R ∧ Untouched φ.env H H'
-  | EvalRes.broke H' sc tr => BrokeOk D B φ H H' sc
+  | EvalRes.returned H' v tr => HasTy D v R ∧ FrameProperty φ.env H H'
+  | EvalRes.broke H' sc tr => BreakOutputOk D B φ H H' sc
   | EvalRes.panic k tr => True
-  | EvalRes.stuck why => False
+  | EvalRes.refused why => False
   | EvalRes.outOfFuel => True
+```
+
+### `ActivationTyping`
+
+*inductive* · module `RueCore.Soundness.Defs`
+
+The per-frame invariant (§6.1): the fused context agrees with the store
+through the frame's environment, and the frame's scope record, read
+newest-first, **is** that environment. The second clause is the RUE-1277
+redundancy discharged — every live binding of the frame is registered for a
+drop exactly once, which is what makes `run-all-scope-drops` (§6.9) safe at an
+early `return`.
+
+```lean
+inductive RueCore.ActivationTyping (D : Decls) (Γ : Ctx) (φ : Activation) (H : Store) :
+  Prop
+```
+
+Constructors:
+
+**`ActivationTyping.mk`**
+
+```lean
+RueCore.ActivationTyping.mk {D : Decls} {Γ : Ctx} {φ : Activation} {H : Store}
+  (store : StoreTyping D Γ φ.env H) (record : φ.scope.reverse = φ.env) :
+  ActivationTyping D Γ φ H
+```
+
+### `BreakOutputOk`
+
+*def* · module `RueCore.Soundness.Defs`
+
+The promise for an unwinding `break` (§6.10's (D-Break)), made about an
+evaluation in frame `φ` from store `H`: the `break` fired in a frame that is
+`φ` with some bindings `locs` opened on top of it — the ones the loop body
+opened and had not closed, each minted above `H` — and at one of the
+delivered states `B` of §5.3's `Ω`, the frame it fired in agrees with the
+store. Its record is `φ`'s with `locs` appended, which is what the loop reads
+to find the drops it owes, and nothing `φ` names outside the frame was
+touched. It is closed under entering a binder (`BreakOutputOk.under_binders`), so a
+`let` or a `match` arm passes it outward unchanged, and the loop that catches
+it reads the frame it fired in straight off it (helper).
+
+```lean
+def RueCore.BreakOutputOk (D : Decls) (B : List Ctx) (φ : Activation)
+  (H H' : Store) (sc : List Nat) : Prop :=
+  ∃ Γb,
+    Γb ∈ B ∧
+      ∃ locs,
+        sc = φ.scope ++ locs ∧
+          ActivationTyping D Γb
+              { env := locs.reverse ++ φ.env, scope := sc } H' ∧
+            (∀ (ℓ : Nat), ℓ ∈ locs → List.length H ≤ ℓ) ∧
+              FrameProperty φ.env H H'
 ```
 
 ### `ArgsCons`
@@ -32391,7 +32510,7 @@ def RueCore.ArgsCons (D : Decls) (F : Event → List Nat) (H : Store) :
   | ArgsRes.ok H' vs tr =>
     List.length H ≤ List.length H' ∧
       StoreCC D H' ∧
-        Contents.copyClosedList D (Contents.ofVals vs) = true ∧
+        Contents.copyContainedList D (Contents.ofVals vs) = true ∧
           ∀ (a : Nat),
             List.count a (storeOwn D H') +
                   List.count a (Contents.ownList D (Contents.ofVals vs)) +
@@ -32425,7 +32544,7 @@ def RueCore.ArgsExact (D : Decls) (H : Store) : ArgsRes → Prop :=
   | ArgsRes.ok H' vs tr =>
     List.length H ≤ List.length H' ∧
       StoreCC D H' ∧
-        Contents.copyClosedList D (Contents.ofVals vs) = true ∧
+        Contents.copyContainedList D (Contents.ofVals vs) = true ∧
           ∀ (a : Nat),
             a < List.length H →
               List.count a (storeOwn D H') +
@@ -32433,6 +32552,29 @@ def RueCore.ArgsExact (D : Decls) (H : Store) : ArgsRes → Prop :=
                   List.count a (freedIds D tr) =
                 List.count a (storeOwn D H)
   | ArgsRes.abort r => Exact D H [] r
+```
+
+### `ArgsFrame.own`
+
+*def* · module `RueCore.Trace.Defs`
+
+The owned identities an argument list's tag holds: an indexed
+assignment's right-hand side, already a value while its indices are reduced
+(`5.2:14`); no other tag holds a value (helper).
+
+```lean
+def RueCore.ArgsFrame.own (D : Decls) : ArgsFrame → List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (p : Place) (πs : List (List Nat)) (v : Val),
+  ArgsFrame.own D (ArgsFrame.indexWrite p πs v) = Val.own D v
+∀ (D : Decls) (x : ArgsFrame),
+  (∀ (p : Place) (πs : List (List Nat)) (v : Val),
+      x = ArgsFrame.indexWrite p πs v → False) →
+    ArgsFrame.own D x = []
 ```
 
 ### `ArgsOk`
@@ -32445,37 +32587,14 @@ threaded), at the list's normal outgoing state `o` and deliveries `B`
 
 ```lean
 def RueCore.ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx)
-  (B : List Ctx) (φ : Frame) (H : Store) : ArgsRes → Prop :=
+  (B : List Ctx) (φ : Activation) (H : Store) : ArgsRes → Prop :=
   match x✝ with
   | ArgsRes.ok H' vs tr =>
     match o with
     | some Γ' =>
-      HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+      HasTys D vs Ts ∧ ActivationTyping D Γ' φ H' ∧ FrameProperty φ.env H H'
     | none => False
   | ArgsRes.abort r => AbortOk D R B φ H r
-```
-
-### `ArgsTag.own`
-
-*def* · module `RueCore.Trace.Defs`
-
-The owned identities an argument list's tag holds: an indexed
-assignment's right-hand side, already a value while its indices are reduced
-(`5.2:14`); no other tag holds a value (helper).
-
-```lean
-def RueCore.ArgsTag.own (D : Decls) : ArgsTag → List Nat
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls) (p : Place) (πs : List (List Nat)) (v : Val),
-  ArgsTag.own D (ArgsTag.indexWrite p πs v) = Val.own D v
-∀ (D : Decls) (x : ArgsTag),
-  (∀ (p : Place) (πs : List (List Nat)) (v : Val),
-      x = ArgsTag.indexWrite p πs v → False) →
-    ArgsTag.own D x = []
 ```
 
 ### `Blocks`
@@ -32532,34 +32651,6 @@ RueCore.Blocks.dropTemp {D : Decls} {v : Val} {t : List Event} :
     Blocks D (Event.dropTemp v :: (dropEvents D (Contents.ofVal v) ++ t))
 ```
 
-### `BrokeOk`
-
-*def* · module `RueCore.Soundness.Defs`
-
-The promise for an unwinding `break` (§6.10's (D-Break)), made about an
-evaluation in frame `φ` from store `H`: the `break` fired in a frame that is
-`φ` with some bindings `locs` opened on top of it — the ones the loop body
-opened and had not closed, each minted above `H` — and at one of the
-delivered states `B` of §5.3's `Ω`, the frame it fired in agrees with the
-store. Its record is `φ`'s with `locs` appended, which is what the loop reads
-to find the drops it owes, and nothing `φ` names outside the frame was
-touched. It is closed under entering a binder (`BrokeOk.under_binders`), so a
-`let` or a `match` arm passes it outward unchanged, and the loop that catches
-it reads the frame it fired in straight off it (helper).
-
-```lean
-def RueCore.BrokeOk (D : Decls) (B : List Ctx) (φ : Frame) (H H' : Store)
-  (sc : List Nat) : Prop :=
-  ∃ Γb,
-    Γb ∈ B ∧
-      ∃ locs,
-        sc = φ.scope ++ locs ∧
-          FrameMatches D Γb { env := locs.reverse ++ φ.env, scope := sc }
-              H' ∧
-            (∀ (ℓ : Nat), ℓ ∈ locs → List.length H ≤ ℓ) ∧
-              Untouched φ.env H H'
-```
-
 ### `Cell.own`
 
 *def* · module `RueCore.Trace.Defs`
@@ -32594,73 +32685,48 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (H : Store), storeOwn D H = List.flatMap (Cell.own D) H
 ```
 
-### `CellMatches`
+### `CellTyping`
 
 *def* · module `RueCore.Soundness.Defs`
 
 Per-cell agreement between the static entry and the dynamic cell: §7's
 "Σ faithfully tracks the store's initialization", with the §5.5 join's
-asymmetry built into `ContentsMatches`. A retired (`†`) cell matches no entry
+asymmetry built into `ContentsOwnTyping`. A retired (`†`) cell matches no entry
 at all, which is what keeps the unwind off one.
 
 ```lean
-def RueCore.CellMatches (D : Decls) (cell : Cell) (en : Entry) : Prop :=
-  ∃ c, cell = Cell.full c ∧ ContentsMatches D c en.st en.ty
+def RueCore.CellTyping (D : Decls) (cell : Cell) (en : Entry) : Prop :=
+  ∃ c, cell = Cell.full c ∧ ContentsOwnTyping D c en.st en.ty
 ```
 
-### `Matches`
+### `StoreTyping`
 
 *inductive* · module `RueCore.Soundness.Defs`
 
-`Matches Γ ρ H`: each binding's location holds a cell agreeing with its
+`StoreTyping Γ ρ H`: each binding's location holds a cell agreeing with its
 static entry; locations are live (in `H`) and pairwise distinct. This is the
 §7 preservation invariant, over §6.1's environment `ρ` and store `H`.
 
 ```lean
-inductive RueCore.Matches (D : Decls) : Ctx → Env → Store → Prop
+inductive RueCore.StoreTyping (D : Decls) : Ctx → Env → Store → Prop
 ```
 
 Constructors:
 
-**`Matches.nil`**
+**`StoreTyping.nil`**
 
 ```lean
-RueCore.Matches.nil {D : Decls} {H : Store} : Matches D [] [] H
+RueCore.StoreTyping.nil {D : Decls} {H : Store} : StoreTyping D [] [] H
 ```
 
-**`Matches.cons`**
+**`StoreTyping.cons`**
 
 ```lean
-RueCore.Matches.cons {D : Decls} {en : Entry} {Γ : Ctx} {ℓ : Nat} {ρ : Env}
-  {H : Store} {c : Cell} :
+RueCore.StoreTyping.cons {D : Decls} {en : Entry} {Γ : Ctx} {ℓ : Nat}
+  {ρ : Env} {H : Store} {c : Cell} :
   H[ℓ]? = some c →
-    CellMatches D c en →
-      ¬ℓ ∈ ρ → Matches D Γ ρ H → Matches D (en :: Γ) (ℓ :: ρ) H
-```
-
-### `FrameMatches`
-
-*inductive* · module `RueCore.Soundness.Defs`
-
-The per-frame invariant (§6.1): the fused context agrees with the store
-through the frame's environment, and the frame's scope record, read
-newest-first, **is** that environment. The second clause is the RUE-1277
-redundancy discharged — every live binding of the frame is registered for a
-drop exactly once, which is what makes `run-all-scope-drops` (§6.9) safe at an
-early `return`.
-
-```lean
-inductive RueCore.FrameMatches (D : Decls) (Γ : Ctx) (φ : Frame) (H : Store) : Prop
-```
-
-Constructors:
-
-**`FrameMatches.mk`**
-
-```lean
-RueCore.FrameMatches.mk {D : Decls} {Γ : Ctx} {φ : Frame} {H : Store}
-  (store : Matches D Γ φ.env H) (record : φ.scope.reverse = φ.env) :
-  FrameMatches D Γ φ H
+    CellTyping D c en →
+      ¬ℓ ∈ ρ → StoreTyping D Γ ρ H → StoreTyping D (en :: Γ) (ℓ :: ρ) H
 ```
 
 ### `Config.SafeAt`
@@ -32678,7 +32744,7 @@ defined by reduction, not by a syntactic judgment over the configuration
 def RueCore.Config.SafeAt (M : FloatSig) (P : Program) (T : Ty) (C : Config) :
   Prop :=
   (∀ (D : Config), Steps M P C D → D.Terminal ∨ ∃ D', Step M P D D') ∧
-    ∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+    ∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
       Steps M P C (Config.run H φ [] (Focus.ret v) tr) → HasTy P.decls v T
 ```
 
@@ -32701,7 +32767,7 @@ def RueCore.Config.held (D : Decls) : Config → List Nat
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls) (H : Store) (φ : Frame) (K : List Kont) (f : Focus)
+∀ (D : Decls) (H : Store) (φ : Activation) (K : List Kont) (f : Focus)
   (tr : List Event),
   Config.held D (Config.run H φ K f tr) =
     storeOwn D H ++ Focus.own D f ++ List.flatMap (Kont.own D) K
@@ -32746,7 +32812,7 @@ def RueCore.Cons (D : Decls) (F : Event → List Nat) (H : Store) (X : List Nat)
   | EvalRes.ok H' v tr =>
     List.length H ≤ List.length H' ∧
       StoreCC D H' ∧
-        Contents.copyClosed D (Contents.ofVal v) = true ∧
+        Contents.copyContained D (Contents.ofVal v) = true ∧
           ∀ (a : Nat),
             List.count a (storeOwn D H') + List.count a (Val.own D v) +
                 List.count a (List.flatMap F tr) ≤
@@ -32755,7 +32821,7 @@ def RueCore.Cons (D : Decls) (F : Event → List Nat) (H : Store) (X : List Nat)
   | EvalRes.returned H' v tr =>
     List.length H ≤ List.length H' ∧
       StoreCC D H' ∧
-        Contents.copyClosed D (Contents.ofVal v) = true ∧
+        Contents.copyContained D (Contents.ofVal v) = true ∧
           ∀ (a : Nat),
             List.count a (storeOwn D H') + List.count a (Val.own D v) +
                 List.count a (List.flatMap F tr) ≤
@@ -32774,7 +32840,7 @@ def RueCore.Cons (D : Decls) (F : Event → List Nat) (H : Store) (X : List Nat)
         List.count a (List.flatMap F tr) ≤
           List.count a (storeOwn D H) + List.count a X +
             List.count a (List.range' (List.length H) N)
-  | EvalRes.stuck why => True
+  | EvalRes.refused why => True
   | EvalRes.outOfFuel => True
 ```
 
@@ -32792,7 +32858,7 @@ def RueCore.Contents.allCopy (D : Decls) : Contents → Bool
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls), Contents.allCopy D Contents.hole = true
+∀ (D : Decls), Contents.allCopy D Contents.movedOut = true
 ∀ (D : Decls) (w : IntWidth) (s : Sign) (n : Int),
   Contents.allCopy D (Contents.int w s n) = true
 ∀ (D : Decls) (w : FloatWidth) (f : FloatDatum),
@@ -32801,13 +32867,13 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls), Contents.allCopy D Contents.unit = true
 ∀ (D : Decls) (s i : Nat) (cs : List Contents),
   Contents.allCopy D (Contents.struct s i cs) =
-    (decide (D.classOf s = Mult.copy) && Contents.allCopyList D cs)
+    (decide (D.classOf s = Qual.copy) && Contents.allCopyList D cs)
 ∀ (D : Decls) (e k i : Nat) (cs : List Contents),
   Contents.allCopy D (Contents.enum e k i cs) =
-    (decide (D.enumClassOf e = Mult.copy) && Contents.allCopyList D cs)
+    (decide (D.enumClassOf e = Qual.copy) && Contents.allCopyList D cs)
 ∀ (D : Decls) (T : Ty) (i : Nat) (cs : List Contents),
   Contents.allCopy D (Contents.array T i cs) =
-    (decide (Ty.mult D (T.array cs.length) = Mult.copy) &&
+    (decide (Ty.qual D (T.array cs.length) = Qual.copy) &&
       Contents.allCopyList D cs)
 ```
 
@@ -32830,7 +32896,7 @@ Defining equations, as Lean derived them from the body:
     (Contents.allCopy D c && Contents.allCopyList D cs)
 ```
 
-### `Contents.copyClosed`
+### `Contents.copyContained`
 
 *def* · module `RueCore.Dynamics`
 
@@ -32844,57 +32910,58 @@ class is `Copy` but whose members are not, or an assignment that writes an
 owned value under a `Copy` node, is a shape no well-typed program produces;
 the machine refuses it (`ownedUnderCopy`) rather than build a duplicable
 owner, and `soundness` proves a checked program never reaches the refusal
-(`HasTy.copyClosed`, `ContentsTy.copyClosed`, `Soundness.lean`). It is a
+(`HasTy.copyContained`, `ContentsTy.copyContained`, `Soundness.lean`). It is a
 **monitor** in the module docstring's sense — §6's (D-Struct) would build the
 value — and it is what makes `no_double_free`'s conservation law hold without
 a typing derivation (`Trace.lean`) (helper).
 
 ```lean
-def RueCore.Contents.copyClosed (D : Decls) : Contents → Bool
+def RueCore.Contents.copyContained (D : Decls) : Contents → Bool
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls), Contents.copyClosed D Contents.hole = true
+∀ (D : Decls), Contents.copyContained D Contents.movedOut = true
 ∀ (D : Decls) (w : IntWidth) (s : Sign) (n : Int),
-  Contents.copyClosed D (Contents.int w s n) = true
+  Contents.copyContained D (Contents.int w s n) = true
 ∀ (D : Decls) (w : FloatWidth) (f : FloatDatum),
-  Contents.copyClosed D (Contents.float w f) = true
-∀ (D : Decls) (b : Bool), Contents.copyClosed D (Contents.bool b) = true
-∀ (D : Decls), Contents.copyClosed D Contents.unit = true
+  Contents.copyContained D (Contents.float w f) = true
+∀ (D : Decls) (b : Bool),
+  Contents.copyContained D (Contents.bool b) = true
+∀ (D : Decls), Contents.copyContained D Contents.unit = true
 ∀ (D : Decls) (s i : Nat) (cs : List Contents),
-  Contents.copyClosed D (Contents.struct s i cs) =
-    if D.classOf s = Mult.copy then Contents.allCopyList D cs
-    else Contents.copyClosedList D cs
+  Contents.copyContained D (Contents.struct s i cs) =
+    if D.classOf s = Qual.copy then Contents.allCopyList D cs
+    else Contents.copyContainedList D cs
 ∀ (D : Decls) (e k i : Nat) (cs : List Contents),
-  Contents.copyClosed D (Contents.enum e k i cs) =
-    if D.enumClassOf e = Mult.copy then Contents.allCopyList D cs
-    else Contents.copyClosedList D cs
+  Contents.copyContained D (Contents.enum e k i cs) =
+    if D.enumClassOf e = Qual.copy then Contents.allCopyList D cs
+    else Contents.copyContainedList D cs
 ∀ (D : Decls) (T : Ty) (i : Nat) (cs : List Contents),
-  Contents.copyClosed D (Contents.array T i cs) =
-    if Ty.mult D (T.array cs.length) = Mult.copy then
+  Contents.copyContained D (Contents.array T i cs) =
+    if Ty.qual D (T.array cs.length) = Qual.copy then
       Contents.allCopyList D cs
-    else Contents.copyClosedList D cs
+    else Contents.copyContainedList D cs
 ```
 
-### `Contents.copyClosedList`
+### `Contents.copyContainedList`
 
 *def* · module `RueCore.Dynamics`
 
-`copyClosed` over a field, payload or element list (helper).
+`copyContained` over a field, payload or element list (helper).
 
 ```lean
-def RueCore.Contents.copyClosedList (D : Decls) : List Contents → Bool
+def RueCore.Contents.copyContainedList (D : Decls) : List Contents → Bool
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls), Contents.copyClosedList D [] = true
+∀ (D : Decls), Contents.copyContainedList D [] = true
 ∀ (D : Decls) (c : Contents) (cs : List Contents),
-  Contents.copyClosedList D (c :: cs) =
-    (Contents.copyClosed D c && Contents.copyClosedList D cs)
+  Contents.copyContainedList D (c :: cs) =
+    (Contents.copyContained D c && Contents.copyContainedList D cs)
 ```
 
 ### `StoreCC`
@@ -32906,7 +32973,7 @@ Every live cell of the store is copy-closed (helper).
 ```lean
 def RueCore.StoreCC (D : Decls) (H : Store) : Prop :=
   ∀ (ℓ : Nat) (c : Contents),
-    H[ℓ]? = some (Cell.full c) → Contents.copyClosed D c = true
+    H[ℓ]? = some (Cell.full c) → Contents.copyContained D c = true
 ```
 
 ### `Spec.Nonvacuous.empty_frame_stmt`
@@ -32915,14 +32982,14 @@ def RueCore.StoreCC (D : Decls) (H : Store) : Prop :=
 
 **The initial frame agrees with the empty context** (§6.12's initial
 configuration): at every declaration environment, the empty frame over the
-empty store matches the empty context (`FrameMatches`) and its store is
+empty store matches the empty context (`ActivationTyping`) and its store is
 copy-closed (`StoreCC`). With a program's typed body this is the frame and
 store the evaluation statements (`soundness`, `drop_exactly_once`,
 `rest_exactly_once`) are applied at by the witnesses below.
 
 ```lean
 def RueCore.Spec.Nonvacuous.empty_frame_stmt : Prop :=
-  ∀ (D : Decls), FrameMatches D [] Frame.empty [] ∧ StoreCC D []
+  ∀ (D : Decls), ActivationTyping D [] Activation.empty [] ∧ StoreCC D []
 ```
 
 ### `Contents.destructure`
@@ -32939,7 +33006,7 @@ because §6.3 puts it *after* the residue's drops.
 
 ```lean
 def RueCore.Contents.destructure (D : Decls) (ℓ : Nat) (c : Contents)
-  (πs : List Nat) : Except Violation (Contents × List Event)
+  (πs : List Nat) : Except Refusal (Contents × List Event)
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -32956,7 +33023,7 @@ Defining equations, as Lean derived them from the body:
         Except.ok (leaf, evs ++ [Event.consume (c.pathOnly πs)])
 ```
 
-### `Contents.holeFree`
+### `Contents.noMovedOut`
 
 *def* · module `RueCore.Soundness.Defs`
 
@@ -32964,43 +33031,44 @@ Whether a contents tree has no `⊘` anywhere in it — the tree of a value
 (helper).
 
 ```lean
-def RueCore.Contents.holeFree : Contents → Bool
+def RueCore.Contents.noMovedOut : Contents → Bool
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-Contents.hole.holeFree = false
+Contents.movedOut.noMovedOut = false
 ∀ (w : IntWidth) (s : Sign) (n : Int),
-  (Contents.int w s n).holeFree = true
-∀ (w : FloatWidth) (f : FloatDatum), (Contents.float w f).holeFree = true
-∀ (b : Bool), (Contents.bool b).holeFree = true
-Contents.unit.holeFree = true
+  (Contents.int w s n).noMovedOut = true
+∀ (w : FloatWidth) (f : FloatDatum),
+  (Contents.float w f).noMovedOut = true
+∀ (b : Bool), (Contents.bool b).noMovedOut = true
+Contents.unit.noMovedOut = true
 ∀ (s id : Nat) (cs : List Contents),
-  (Contents.struct s id cs).holeFree = Contents.holeFreeList cs
+  (Contents.struct s id cs).noMovedOut = Contents.noMovedOutList cs
 ∀ (elem : Ty) (id : Nat) (cs : List Contents),
-  (Contents.array elem id cs).holeFree = Contents.holeFreeList cs
+  (Contents.array elem id cs).noMovedOut = Contents.noMovedOutList cs
 ∀ (e k id : Nat) (cs : List Contents),
-  (Contents.enum e k id cs).holeFree = Contents.holeFreeList cs
+  (Contents.enum e k id cs).noMovedOut = Contents.noMovedOutList cs
 ```
 
-### `Contents.holeFreeList`
+### `Contents.noMovedOutList`
 
 *def* · module `RueCore.Soundness.Defs`
 
 The same over a field list (helper).
 
 ```lean
-def RueCore.Contents.holeFreeList : List Contents → Bool
+def RueCore.Contents.noMovedOutList : List Contents → Bool
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-Contents.holeFreeList [] = true
+Contents.noMovedOutList [] = true
 ∀ (c : Contents) (cs : List Contents),
-  Contents.holeFreeList (c :: cs) =
-    (c.holeFree && Contents.holeFreeList cs)
+  Contents.noMovedOutList (c :: cs) =
+    (c.noMovedOut && Contents.noMovedOutList cs)
 ```
 
 ### `Contents.ofVal`
@@ -33052,6 +33120,31 @@ Contents.ofVals [] = []
   Contents.ofVals (v :: vs) = Contents.ofVal v :: Contents.ofVals vs
 ```
 
+### `freshParams`
+
+*def* · module `RueCore.Dynamics`
+
+(D-Call) §6.9: mint one fresh single-cell binding allocation per by-value
+argument, left to right, each holding its argument's value. Returns the store
+and the locations in creation order — the callee's entry scope record, which
+owes a drop for exactly these cells. The callee's environment is its reverse,
+because `Env` (like `Ctx`) lists the innermost binder first and the last
+parameter is the innermost.
+
+```lean
+def RueCore.freshParams : Store → List Val → Store × List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (x : Store), freshParams x [] = (x, [])
+∀ (x : Store) (v : Val) (vs : List Val),
+  freshParams x (v :: vs) =
+    match freshParams (x ++ [Cell.full (Contents.ofVal v)]) vs with
+    | (H', locs) => (H', List.length x :: locs)
+```
+
 ### `introVal`
 
 *def* · module `RueCore.Dynamics`
@@ -33068,7 +33161,7 @@ binds it; it is never read. The identity travels with the value — through
 cells and a `match` arm's payload cells — and the drop trace records it
 (`Event`), which is what `no_double_free` (`Trace.lean`) counts.
 
-The copy-closure monitor (`Contents.copyClosed`) runs here, on the finished
+The copy-closure monitor (`Contents.copyContained`) runs here, on the finished
 value (helper).
 
 ```lean
@@ -33081,35 +33174,10 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (H : Store) (mk : Nat → Val),
   introVal D H mk =
     if
-        Contents.copyClosed D (Contents.ofVal (mk (List.length H))) =
+        Contents.copyContained D (Contents.ofVal (mk (List.length H))) =
           true then
       EvalRes.ok (H ++ [Cell.dead]) (mk (List.length H)) []
-    else EvalRes.stuck Violation.ownedUnderCopy
-```
-
-### `mintParams`
-
-*def* · module `RueCore.Dynamics`
-
-(D-Call) §6.9: mint one fresh single-cell binding allocation per by-value
-argument, left to right, each holding its argument's value. Returns the store
-and the locations in creation order — the callee's entry scope record, which
-owes a drop for exactly these cells. The callee's environment is its reverse,
-because `Env` (like `Ctx`) lists the innermost binder first and the last
-parameter is the innermost.
-
-```lean
-def RueCore.mintParams : Store → List Val → Store × List Nat
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (x : Store), mintParams x [] = (x, [])
-∀ (x : Store) (v : Val) (vs : List Val),
-  mintParams x (v :: vs) =
-    match mintParams (x ++ [Cell.full (Contents.ofVal v)]) vs with
-    | (H', locs) => (H', List.length x :: locs)
+    else EvalRes.refused Refusal.ownedUnderCopy
 ```
 
 ### `Contents.own`
@@ -33127,7 +33195,7 @@ def RueCore.Contents.own (D : Decls) : Contents → List Nat
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls), Contents.own D Contents.hole = []
+∀ (D : Decls), Contents.own D Contents.movedOut = []
 ∀ (D : Decls) (w : IntWidth) (s : Sign) (n : Int),
   Contents.own D (Contents.int w s n) = []
 ∀ (D : Decls) (w : FloatWidth) (f : FloatDatum),
@@ -33136,13 +33204,13 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls), Contents.own D Contents.unit = []
 ∀ (D : Decls) (s i : Nat) (cs : List Contents),
   Contents.own D (Contents.struct s i cs) =
-    if D.classOf s = Mult.copy then [] else i :: Contents.ownList D cs
+    if D.classOf s = Qual.copy then [] else i :: Contents.ownList D cs
 ∀ (D : Decls) (e k i : Nat) (cs : List Contents),
   Contents.own D (Contents.enum e k i cs) =
-    if D.enumClassOf e = Mult.copy then [] else i :: Contents.ownList D cs
+    if D.enumClassOf e = Qual.copy then [] else i :: Contents.ownList D cs
 ∀ (D : Decls) (T : Ty) (i : Nat) (cs : List Contents),
   Contents.own D (Contents.array T i cs) =
-    if Ty.mult D (T.array cs.length) = Mult.copy then []
+    if Ty.qual D (T.array cs.length) = Qual.copy then []
     else i :: Contents.ownList D cs
 ```
 
@@ -33223,9 +33291,9 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls) (e : Expr), Focus.own D (Focus.eval e) = []
 ∀ (D : Decls) (v : Val), Focus.own D (Focus.ret v) = Val.own D v
-∀ (D : Decls) (t : ArgsTag) (vs : List Val) (es : List Expr),
+∀ (D : Decls) (t : ArgsFrame) (vs : List Val) (es : List Expr),
   Focus.own D (Focus.args t vs es) =
-    ArgsTag.own D t ++ Contents.ownList D (Contents.ofVals vs)
+    ArgsFrame.own D t ++ Contents.ownList D (Contents.ofVals vs)
 ```
 
 ### `Kont.own`
@@ -33246,12 +33314,12 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls) (op : BinOp) (v : Val),
   Kont.own D (Kont.binopR op v) = Val.own D v
-∀ (D : Decls) (t : ArgsTag) (vs : List Val) (es : List Expr),
+∀ (D : Decls) (t : ArgsFrame) (vs : List Val) (es : List Expr),
   Kont.own D (Kont.args t vs es) =
-    ArgsTag.own D t ++ Contents.ownList D (Contents.ofVals vs)
+    ArgsFrame.own D t ++ Contents.ownList D (Contents.ofVals vs)
 ∀ (D : Decls) (x : Kont),
   (∀ (op : BinOp) (v : Val), x = Kont.binopR op v → False) →
-    (∀ (t : ArgsTag) (vs : List Val) (es : List Expr),
+    (∀ (t : ArgsFrame) (vs : List Val) (es : List Expr),
         x = Kont.args t vs es → False) →
       Kont.own D x = []
 ```
@@ -33278,17 +33346,17 @@ Constructors:
 RueCore.TraceMeasure.mk {D : Decls} {F : Event → List Nat}
   (walk :
     ∀ {c : Contents} {evs : List Event},
-      Contents.copyClosed D c = true →
+      Contents.copyContained D c = true →
         dropContents D c = Except.ok evs →
           IdLe (List.flatMap F evs) (Contents.own D c))
   (marker :
     ∀ {ℓ : Nat} {c : Contents} {evs : List Event},
-      Contents.copyClosed D c = true →
+      Contents.copyContained D c = true →
         dropContents D c = Except.ok evs →
           IdLe (F (Event.drop ℓ c) ++ List.flatMap F evs) (Contents.own D c))
   (temp :
     ∀ {v : Val} {evs : List Event},
-      Contents.copyClosed D (Contents.ofVal v) = true →
+      Contents.copyContained D (Contents.ofVal v) = true →
         dropContents D (Contents.ofVal v) = Except.ok evs →
           IdLe (F (Event.dropTemp v) ++ List.flatMap F evs) (Val.own D v))
   (consume : ∀ (c : Contents), IdLe (F (Event.consume c)) (Contents.own D c))
@@ -33348,7 +33416,7 @@ def RueCore.Exact (D : Decls) (H : Store) (X : List Nat) : EvalRes → Prop :=
   | EvalRes.ok H' v tr =>
     List.length H ≤ List.length H' ∧
       StoreCC D H' ∧
-        Contents.copyClosed D (Contents.ofVal v) = true ∧
+        Contents.copyContained D (Contents.ofVal v) = true ∧
           ∀ (a : Nat),
             a < List.length H →
               List.count a (storeOwn D H') + List.count a (Val.own D v) +
@@ -33357,7 +33425,7 @@ def RueCore.Exact (D : Decls) (H : Store) (X : List Nat) : EvalRes → Prop :=
   | EvalRes.returned H' v tr =>
     List.length H ≤ List.length H' ∧
       StoreCC D H' ∧
-        Contents.copyClosed D (Contents.ofVal v) = true ∧
+        Contents.copyContained D (Contents.ofVal v) = true ∧
           ∀ (a : Nat),
             a < List.length H →
               List.count a (storeOwn D H') + List.count a (Val.own D v) +
@@ -33371,7 +33439,7 @@ def RueCore.Exact (D : Decls) (H : Store) (X : List Nat) : EvalRes → Prop :=
             List.count a (storeOwn D H') + List.count a (freedIds D tr) =
               List.count a (storeOwn D H) + List.count a X
   | EvalRes.panic k tr => True
-  | EvalRes.stuck why => True
+  | EvalRes.refused why => True
   | EvalRes.outOfFuel => True
 ```
 
@@ -33411,7 +33479,7 @@ def RueCore.Contents.pathOnly : Contents → List Nat → Contents
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (x : Contents), x.pathOnly [] = Contents.hole
+∀ (x : Contents), x.pathOnly [] = Contents.movedOut
 ∀ (s i : Nat) (cs : List Contents) (f : Nat) (π : List Nat),
   (Contents.struct s i cs).pathOnly (f :: π) =
     Contents.struct s i (Contents.pathOnlyFields cs f π)
@@ -33423,7 +33491,7 @@ Defining equations, as Lean derived them from the body:
       x = Contents.struct s i cs → False) →
     (∀ (T : Ty) (i : Nat) (cs : List Contents),
         x = Contents.array T i cs → False) →
-      x.pathOnly (head :: tail) = Contents.hole
+      x.pathOnly (head :: tail) = Contents.movedOut
 ```
 
 ### `Contents.pathOnlyFields`
@@ -33444,10 +33512,10 @@ Defining equations, as Lean derived them from the body:
 ∀ (x : Nat) (x_1 : List Nat), Contents.pathOnlyFields [] x x_1 = []
 ∀ (x : List Nat) (c : Contents) (cs : List Contents),
   Contents.pathOnlyFields (c :: cs) 0 x =
-    c.pathOnly x :: List.map (fun x => Contents.hole) cs
+    c.pathOnly x :: List.map (fun x => Contents.movedOut) cs
 ∀ (x : List Nat) (c : Contents) (cs : List Contents) (f : Nat),
   Contents.pathOnlyFields (c :: cs) f.succ x =
-    Contents.hole :: Contents.pathOnlyFields cs f x
+    Contents.movedOut :: Contents.pathOnlyFields cs f x
 ```
 
 ### `plainDestructure`
@@ -33463,7 +33531,7 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 def RueCore.plainDestructure (D : Decls) (ℓ : Nat) (c : Contents)
-  (πs : List Nat) : Except Violation (Contents × List Event)
+  (πs : List Nat) : Except Refusal (Contents × List Event)
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -33509,7 +33577,7 @@ def RueCore.Contents.residualLinear (D : Decls) : Contents → Bool
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls), Contents.residualLinear D Contents.hole = false
+∀ (D : Decls), Contents.residualLinear D Contents.movedOut = false
 ∀ (D : Decls) (w : IntWidth) (s : Sign) (n : Int),
   Contents.residualLinear D (Contents.int w s n) = false
 ∀ (D : Decls) (w : FloatWidth) (f : FloatDatum),
@@ -33556,12 +33624,12 @@ Defining equations, as Lean derived them from the body:
 
 §6.3's `drop*` applied to `[r_1, …, r_m]` **left to right**, so "each
 legally droppable residue is destroyed immediately and exactly once". Each
-element's drop is its marker (`residueMark`) and then §6.11's walk of it.
+element's drop is its marker (`residueDropEvent`) and then §6.11's walk of it.
 
 The `residualLinear` test is the monitor this machine adds and §6.3 does not
 need: §5.1's `¬ linear-residue(S, π_s)` premise has already excluded a linear
 residue before the redex fires, so on a program `check` accepts the branch is
-unreachable (`ContentsMatches.destructure_ok`, `Soundness.lean`). On a program
+unreachable (`ContentsOwnTyping.destructure_ok`, `Soundness.lean`). On a program
 `check` rejects it turns the silent destruction of a linear value into a named
 refusal, which is what `3.8:60` (E0474) is about.
 
@@ -33574,7 +33642,7 @@ no heap effect behind.
 
 ```lean
 def RueCore.dropResidue (D : Decls) (ℓ : Nat) :
-  List Contents → Except Violation (List Event)
+  List Contents → Except Refusal (List Event)
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -33584,14 +33652,15 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (ℓ : Nat) (c : Contents) (cs : List Contents),
   dropResidue D ℓ (c :: cs) =
     if Contents.residualLinear D c = true then
-      Except.error Violation.linearLeak
+      Except.error Refusal.linearLeak
     else
       match dropContents D c with
       | Except.error w => Except.error w
       | Except.ok evs =>
         match dropResidue D ℓ cs with
         | Except.error w => Except.error w
-        | Except.ok evs' => Except.ok (residueMark D ℓ c ++ evs ++ evs')
+        | Except.ok evs' =>
+          Except.ok (residueDropEvent D ℓ c ++ evs ++ evs')
 ```
 
 ### `dropRetire`
@@ -33611,7 +33680,7 @@ scope-teardown path: `let`'s normal `endscope` (§6.7) and the frame unwind of
 
 ```lean
 def RueCore.dropRetire (D : Decls) (H : Store) (ℓ : Nat) :
-  Except Violation (Store × List Event)
+  Except Refusal (Store × List Event)
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -33620,11 +33689,11 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (H : Store) (ℓ : Nat),
   dropRetire D H ℓ =
     match H[ℓ]? with
-    | none => Except.error Violation.unbound
-    | some Cell.dead => Except.error Violation.useAfterDrop
+    | none => Except.error Refusal.unbound
+    | some Cell.dead => Except.error Refusal.useAfterDrop
     | some (Cell.full c) =>
       if Contents.residualLinear D c = true then
-        Except.error Violation.linearLeak
+        Except.error Refusal.linearLeak
       else
         match dropCell D ℓ c with
         | Except.error w => Except.error w
@@ -33641,7 +33710,7 @@ the order §6.1 fixes for a scope's teardown (RAII).
 
 ```lean
 def RueCore.unwindLocs (D : Decls) (H : Store) :
-  List Nat → Except Violation (Store × List Event)
+  List Nat → Except Refusal (Store × List Event)
 ```
 
 Defining equations, as Lean derived them from the body:
@@ -33668,14 +33737,14 @@ when a frame is popped — at a normal (D-Return-Value) and at an unwinding
 teardown reads it backwards: newest binding first.
 
 ```lean
-def RueCore.runAllScopeDrops (D : Decls) (H : Store) (φ : Frame) :
-  Except Violation (Store × List Event)
+def RueCore.runAllScopeDrops (D : Decls) (H : Store) (φ : Activation) :
+  Except Refusal (Store × List Event)
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls) (H : Store) (φ : Frame),
+∀ (D : Decls) (H : Store) (φ : Activation),
   runAllScopeDrops D H φ = unwindLocs D H φ.scope.reverse
 ```
 
@@ -33694,7 +33763,7 @@ def RueCore.Contents.toVal : Contents → Option Val
 Defining equations, as Lean derived them from the body:
 
 ```lean
-Contents.hole.toVal = none
+Contents.movedOut.toVal = none
 ∀ (w : IntWidth) (s : Sign) (n : Int),
   (Contents.int w s n).toVal = some (Val.int w s n)
 ∀ (w : FloatWidth) (f : FloatDatum),
@@ -33753,7 +33822,7 @@ Constructors:
 **`Step.intLit`** — An integer literal is already a value (§6.3): it takes no step except to *be* one, `n_T` at the type elaboration resolved.
 
 ```lean
-RueCore.Step.intLit {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.intLit {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {w : IntWidth} {s : Sign} {n : Int} :
   Step M P (Config.run H φ K (Focus.eval (Expr.intLit w s n)) tr)
     (Config.run H φ K (Focus.ret (Val.int w s n)) tr)
@@ -33762,8 +33831,9 @@ RueCore.Step.intLit {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.floatLit`** — A float literal is a value (§6.3): the datum `rnd_w` of its decimal (`3.12:9`).
 
 ```lean
-RueCore.Step.floatLit {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {w : FloatWidth} {l : FloatLit} :
+RueCore.Step.floatLit {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {w : FloatWidth}
+  {l : FloatLit} :
   Step M P (Config.run H φ K (Focus.eval (Expr.floatLit w l)) tr)
     (Config.run H φ K (Focus.ret (Val.float w (M.ofLit w l.sig l.negExp l.e)))
       tr)
@@ -33772,7 +33842,7 @@ RueCore.Step.floatLit {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.boolLit`** — A boolean literal is a value (§6.3).
 
 ```lean
-RueCore.Step.boolLit {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.boolLit {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {b : Bool} :
   Step M P (Config.run H φ K (Focus.eval (Expr.boolLit b)) tr)
     (Config.run H φ K (Focus.ret (Val.bool b)) tr)
@@ -33781,7 +33851,7 @@ RueCore.Step.boolLit {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.unitLit`** — The unit literal is a value (§6.3).
 
 ```lean
-RueCore.Step.unitLit {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.unitLit {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} :
   Step M P (Config.run H φ K (Focus.eval Expr.unitLit) tr)
     (Config.run H φ K (Focus.ret Val.unit) tr)
@@ -33790,16 +33860,16 @@ RueCore.Step.unitLit {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.useDeclared`** — (D-Use-Declared-Linear) §6.3: the path has a declared-linear proper prefix `d` (`declaredPlan`); `destructure` splits the aggregate at `d`, drops the residue left to right, and `ℓ@π_d` — the consumed place — becomes `⊘`.
 
 ```lean
-RueCore.Step.useDeclared {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {p : Place} {ℓ : Nat} {c : Contents}
-  {πd πs : List Nat} {cd leaf : Contents} {evs : List Event} {v : Val}
-  {c' : Contents} :
+RueCore.Step.useDeclared {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {p : Place} {ℓ : Nat}
+  {c : Contents} {πd πs : List Nat} {cd leaf : Contents} {evs : List Event}
+  {v : Val} {c' : Contents} :
   rootCell H φ p.root = Except.ok (ℓ, c) →
     Contents.declaredPlan P.decls c p.path = some (πd, πs) →
-      c.readAt πd = Except.ok cd →
+      c.getAt πd = Except.ok cd →
         plainDestructure P.decls ℓ cd πs = Except.ok (leaf, evs) →
           leaf.toVal = some v →
-            c.writeAt πd Contents.hole = some c' →
+            c.setAt πd Contents.movedOut = some c' →
               Step M P (Config.run H φ K (Focus.eval (Expr.use p)) tr)
                 (Config.run (List.set H ℓ (Cell.full c')) φ K (Focus.ret v)
                   (tr ++ evs))
@@ -33808,14 +33878,14 @@ RueCore.Step.useDeclared {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.useCopy`** — (D-Use-Copy) §6.3: an `Ordinary` use of a `Copy` place reads it and leaves the cell untouched.
 
 ```lean
-RueCore.Step.useCopy {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.useCopy {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {p : Place} {ℓ : Nat} {c sub : Contents}
   {v : Val} :
   rootCell H φ p.root = Except.ok (ℓ, c) →
     Contents.declaredPlan P.decls c p.path = none →
-      c.readAt p.path = Except.ok sub →
+      c.getAt p.path = Except.ok sub →
         sub.toVal = some v →
-          Val.mult P.decls v = Mult.copy →
+          Val.qual P.decls v = Qual.copy →
             Step M P (Config.run H φ K (Focus.eval (Expr.use p)) tr)
               (Config.run H φ K (Focus.ret v) tr)
 ```
@@ -33823,15 +33893,15 @@ RueCore.Step.useCopy {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.useMove`** — (D-Use-Move) §6.3: an `Ordinary` use of an `Affine` or `Linear` place moves it, writing `⊘` at exactly the sub-position moved — the partial move of §4.2 (`3.8:22`).
 
 ```lean
-RueCore.Step.useMove {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.useMove {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {p : Place} {ℓ : Nat} {c sub : Contents}
   {v : Val} {c' : Contents} :
   rootCell H φ p.root = Except.ok (ℓ, c) →
     Contents.declaredPlan P.decls c p.path = none →
-      c.readAt p.path = Except.ok sub →
+      c.getAt p.path = Except.ok sub →
         sub.toVal = some v →
-          Val.mult P.decls v ≠ Mult.copy →
-            c.writeAt p.path Contents.hole = some c' →
+          Val.qual P.decls v ≠ Qual.copy →
+            c.setAt p.path Contents.movedOut = some c' →
               Step M P (Config.run H φ K (Focus.eval (Expr.use p)) tr)
                 (Config.run (List.set H ℓ (Cell.full c')) φ K (Focus.ret v)
                   tr)
@@ -33840,8 +33910,9 @@ RueCore.Step.useMove {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.binopEnter`** — (Search) §6.2 into `E ⊕ e`: the left operand first.
 
 ```lean
-RueCore.Step.binopEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {op : BinOp} {e₁ e₂ : Expr} :
+RueCore.Step.binopEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {op : BinOp}
+  {e₁ e₂ : Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.binop op e₁ e₂)) tr)
     (Config.run H φ (Kont.binopL op e₂ :: K) (Focus.eval e₁) tr)
 ```
@@ -33849,8 +33920,9 @@ RueCore.Step.binopEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.binopMid`** — (Search) §6.2 from `E ⊕ e` to `v ⊕ E`: the right operand next.
 
 ```lean
-RueCore.Step.binopMid {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {op : BinOp} {e₂ : Expr} {v₁ : Val} :
+RueCore.Step.binopMid {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {op : BinOp} {e₂ : Expr}
+  {v₁ : Val} :
   Step M P (Config.run H φ (Kont.binopL op e₂ :: K) (Focus.ret v₁) tr)
     (Config.run H φ (Kont.binopR op v₁ :: K) (Focus.eval e₂) tr)
 ```
@@ -33858,7 +33930,7 @@ RueCore.Step.binopMid {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.binop`** — §6.4's binary rules on two values: (D-Arith), (D-Div), (D-Bit), (D-Shl), (D-Shr), the integer compares, (D-Float-Arith), (D-Float-Ord) and (D-Total-Cmp), computed by `evalBinOp` (`Dynamics.lean`).
 
 ```lean
-RueCore.Step.binop {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.binop {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {op : BinOp} {v₁ v₂ v : Val} :
   evalBinOp M op v₁ v₂ = OpRes.val v →
     Step M P (Config.run H φ (Kont.binopR op v₁ :: K) (Focus.ret v₂) tr)
@@ -33868,9 +33940,9 @@ RueCore.Step.binop {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.binopTrap`** — §6.4's binary traps, (D-Arith-Trap), (D-Div-Zero) and (D-Div-Overflow) with `%`'s `rem-zero`, lifted past every context by (Panic-Lift) §6.2.
 
 ```lean
-RueCore.Step.binopTrap {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {op : BinOp} {v₁ v₂ : Val}
-  {κ : PanicKind} :
+RueCore.Step.binopTrap {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {op : BinOp}
+  {v₁ v₂ : Val} {κ : PanicKind} :
   evalBinOp M op v₁ v₂ = OpRes.trap κ →
     Step M P (Config.run H φ (Kont.binopR op v₁ :: K) (Focus.ret v₂) tr)
       (Config.panic κ tr)
@@ -33879,8 +33951,8 @@ RueCore.Step.binopTrap {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.unopEnter`** — (Search) §6.2 into `⊖ E`.
 
 ```lean
-RueCore.Step.unopEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {op : UnOp} {e : Expr} :
+RueCore.Step.unopEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {op : UnOp} {e : Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.unop op e)) tr)
     (Config.run H φ (Kont.unop op :: K) (Focus.eval e) tr)
 ```
@@ -33888,7 +33960,7 @@ RueCore.Step.unopEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.unop`** — §6.4's unary rules: (D-Arith)'s unary `neg`, (D-Float-Neg), `not`, and (D-Bit)'s complement (`evalUnOp`).
 
 ```lean
-RueCore.Step.unop {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.unop {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {op : UnOp} {v v' : Val} :
   evalUnOp op v = OpRes.val v' →
     Step M P (Config.run H φ (Kont.unop op :: K) (Focus.ret v) tr)
@@ -33898,8 +33970,9 @@ RueCore.Step.unop {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.unopTrap`** — (D-Arith-Trap) §6.4 at `neg (min_T)`, lifted by (Panic-Lift) §6.2.
 
 ```lean
-RueCore.Step.unopTrap {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {op : UnOp} {v : Val} {κ : PanicKind} :
+RueCore.Step.unopTrap {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {op : UnOp} {v : Val}
+  {κ : PanicKind} :
   evalUnOp op v = OpRes.trap κ →
     Step M P (Config.run H φ (Kont.unop op :: K) (Focus.ret v) tr)
       (Config.panic κ tr)
@@ -33908,8 +33981,9 @@ RueCore.Step.unopTrap {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.intCastEnter`** — (Search) §6.2 into `@intCast( E )`.
 
 ```lean
-RueCore.Step.intCastEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {w : IntWidth} {s : Sign} {e : Expr} :
+RueCore.Step.intCastEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {w : IntWidth} {s : Sign}
+  {e : Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.intCast w s e)) tr)
     (Config.run H φ (Kont.intCast w s :: K) (Focus.eval e) tr)
 ```
@@ -33917,7 +33991,7 @@ RueCore.Step.intCastEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.intCast`** — (D-Int-Cast) §6.4.
 
 ```lean
-RueCore.Step.intCast {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.intCast {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {w : IntWidth} {s : Sign} {v v' : Val} :
   evalIntCast w s v = OpRes.val v' →
     Step M P (Config.run H φ (Kont.intCast w s :: K) (Focus.ret v) tr)
@@ -33927,9 +34001,9 @@ RueCore.Step.intCast {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.intCastTrap`** — (D-Int-Cast-Trap) §6.4, lifted by (Panic-Lift) §6.2.
 
 ```lean
-RueCore.Step.intCastTrap {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {w : IntWidth} {s : Sign} {v : Val}
-  {κ : PanicKind} :
+RueCore.Step.intCastTrap {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {w : IntWidth} {s : Sign}
+  {v : Val} {κ : PanicKind} :
   evalIntCast w s v = OpRes.trap κ →
     Step M P (Config.run H φ (Kont.intCast w s :: K) (Focus.ret v) tr)
       (Config.panic κ tr)
@@ -33938,8 +34012,9 @@ RueCore.Step.intCastTrap {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.fintrinEnter`** — (Search) §6.2 into a float intrinsic's operand, `@f( E )`.
 
 ```lean
-RueCore.Step.fintrinEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {k : FloatIntrin} {e : Expr} :
+RueCore.Step.fintrinEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {k : FloatIntrin}
+  {e : Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.fintrin k e)) tr)
     (Config.run H φ (Kont.fintrin k :: K) (Focus.eval e) tr)
 ```
@@ -33947,7 +34022,7 @@ RueCore.Step.fintrinEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.fintrin`** — §6.4's float intrinsics: (D-Int-To-Float), (D-Float-To-Int), (D-Float-Cast) and (D-Float-Round) (`evalFintrin`).
 
 ```lean
-RueCore.Step.fintrin {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.fintrin {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {k : FloatIntrin} {v v' : Val} :
   evalFintrin M k v = OpRes.val v' →
     Step M P (Config.run H φ (Kont.fintrin k :: K) (Focus.ret v) tr)
@@ -33957,9 +34032,9 @@ RueCore.Step.fintrin {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.fintrinTrap`** — (D-Float-To-Int-Trap) §6.4, lifted by (Panic-Lift) §6.2.
 
 ```lean
-RueCore.Step.fintrinTrap {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {k : FloatIntrin} {v : Val}
-  {κ : PanicKind} :
+RueCore.Step.fintrinTrap {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {k : FloatIntrin}
+  {v : Val} {κ : PanicKind} :
   evalFintrin M k v = OpRes.trap κ →
     Step M P (Config.run H φ (Kont.fintrin k :: K) (Focus.ret v) tr)
       (Config.panic κ tr)
@@ -33968,7 +34043,7 @@ RueCore.Step.fintrinTrap {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.panic`** — (D-Panic) §6.12: `@panic` abandons the configuration to `↯user`, which (Panic-Lift) §6.2 carries past every context. The fragment's message is a literal field, so there is no operand to reduce first. §6.12's `panic: msg` output line is not recorded as an event, as in `eval`.
 
 ```lean
-RueCore.Step.panic {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.panic {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {msg : String} :
   Step M P (Config.run H φ K (Focus.eval (Expr.panic msg)) tr)
     (Config.panic PanicKind.user tr)
@@ -33977,8 +34052,8 @@ RueCore.Step.panic {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.dbgEnter`** — (Search) §6.2 into `@dbg( E )`.
 
 ```lean
-RueCore.Step.dbgEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {e : Expr} :
+RueCore.Step.dbgEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {e : Expr} :
   Step M P (Config.run H φ K (Focus.eval e.dbg) tr)
     (Config.run H φ (Kont.dbg :: K) (Focus.eval e) tr)
 ```
@@ -33986,7 +34061,7 @@ RueCore.Step.dbgEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.dbg`** — `@dbg`'s defining equation (§6.9's intrinsic note, §6.12): append the value's rendering to the observable output and yield `⟨⟩`. The rendering is defined on an observable value only (`Val.observable`), so any other operand has no rule (RUE-2427).
 
 ```lean
-RueCore.Step.dbg {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.dbg {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {v : Val} :
   v.observable = true →
     Step M P (Config.run H φ (Kont.dbg :: K) (Focus.ret v) tr)
@@ -33996,65 +34071,69 @@ RueCore.Step.dbg {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.structEnter`** — (Search) §6.2 into a struct literal's initializers, `S{ E, ē }`.
 
 ```lean
-RueCore.Step.structEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {s : Nat} {args : List Expr} :
+RueCore.Step.structEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {s : Nat}
+  {args : List Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.mkStruct s args)) tr)
-    (Config.run H φ K (Focus.args (ArgsTag.struct s) [] args) tr)
+    (Config.run H φ K (Focus.args (ArgsFrame.struct s) [] args) tr)
 ```
 
 **`Step.enumEnter`** — (Search) §6.2 into an enum literal's payload, `Kj( E, ē )`.
 
 ```lean
-RueCore.Step.enumEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {e k : Nat} {args : List Expr} :
+RueCore.Step.enumEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {e k : Nat}
+  {args : List Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.mkEnum e k args)) tr)
-    (Config.run H φ K (Focus.args (ArgsTag.enum e k) [] args) tr)
+    (Config.run H φ K (Focus.args (ArgsFrame.enum e k) [] args) tr)
 ```
 
 **`Step.arrayEnter`** — (Search) §6.2 into an array literal's elements, `[ E, ē ]`.
 
 ```lean
-RueCore.Step.arrayEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {T : Ty} {args : List Expr} :
+RueCore.Step.arrayEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {T : Ty}
+  {args : List Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.mkArray T args)) tr)
-    (Config.run H φ K (Focus.args (ArgsTag.array T) [] args) tr)
+    (Config.run H φ K (Focus.args (ArgsFrame.array T) [] args) tr)
 ```
 
 **`Step.callEnter`** — (Search) §6.2 into a call's by-value arguments, `g( E, ē )`.
 
 ```lean
-RueCore.Step.callEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {f : Nat} {args : List Expr} :
+RueCore.Step.callEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {f : Nat}
+  {args : List Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.call f args)) tr)
-    (Config.run H φ K (Focus.args (ArgsTag.call f) [] args) tr)
+    (Config.run H φ K (Focus.args (ArgsFrame.call f) [] args) tr)
 ```
 
 **`Step.indexReadEnter`** — (Search) §6.2 into a dynamic place's indices, `p[ E, ē ]`: "a place … is a redex once its index subexpressions are values".
 
 ```lean
 RueCore.Step.indexReadEnter {M : FloatSig} {P : Program} {H : Store}
-  {φ : Frame} {K : List Kont} {tr : List Event} {p : Place} {idx : List Expr}
-  {πs : List (List Nat)} :
+  {φ : Activation} {K : List Kont} {tr : List Event} {p : Place}
+  {idx : List Expr} {πs : List (List Nat)} :
   Step M P (Config.run H φ K (Focus.eval (Expr.indexRead p idx πs)) tr)
-    (Config.run H φ K (Focus.args (ArgsTag.indexRead p πs) [] idx) tr)
+    (Config.run H φ K (Focus.args (ArgsFrame.indexRead p πs) [] idx) tr)
 ```
 
 **`Step.indexDropEnter`** — (Search) §6.2 into the indices of `@drop` at a dynamic place.
 
 ```lean
 RueCore.Step.indexDropEnter {M : FloatSig} {P : Program} {H : Store}
-  {φ : Frame} {K : List Kont} {tr : List Event} {p : Place} {idx : List Expr}
-  {πs : List (List Nat)} :
+  {φ : Activation} {K : List Kont} {tr : List Event} {p : Place}
+  {idx : List Expr} {πs : List (List Nat)} :
   Step M P (Config.run H φ K (Focus.eval (Expr.indexDrop p idx πs)) tr)
-    (Config.run H φ K (Focus.args (ArgsTag.indexDrop p πs) [] idx) tr)
+    (Config.run H φ K (Focus.args (ArgsFrame.indexDrop p πs) [] idx) tr)
 ```
 
 **`Step.indexWriteEnter`** — (Search) §6.2 into an assignment below a dynamic index: `assign p = E`, the right-hand side **first** (`5.2:14`).
 
 ```lean
 RueCore.Step.indexWriteEnter {M : FloatSig} {P : Program} {H : Store}
-  {φ : Frame} {K : List Kont} {tr : List Event} {p : Place} {idx : List Expr}
-  {πs : List (List Nat)} {e : Expr} :
+  {φ : Activation} {K : List Kont} {tr : List Event} {p : Place}
+  {idx : List Expr} {πs : List (List Nat)} {e : Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.indexWrite p idx πs e)) tr)
     (Config.run H φ (Kont.indexWriteRhs p idx πs :: K) (Focus.eval e) tr)
 ```
@@ -34063,19 +34142,19 @@ RueCore.Step.indexWriteEnter {M : FloatSig} {P : Program} {H : Store}
 
 ```lean
 RueCore.Step.indexWriteRhs {M : FloatSig} {P : Program} {H : Store}
-  {φ : Frame} {K : List Kont} {tr : List Event} {p : Place} {idx : List Expr}
-  {πs : List (List Nat)} {v : Val} :
+  {φ : Activation} {K : List Kont} {tr : List Event} {p : Place}
+  {idx : List Expr} {πs : List (List Nat)} {v : Val} :
   Step M P
     (Config.run H φ (Kont.indexWriteRhs p idx πs :: K) (Focus.ret v) tr)
-    (Config.run H φ K (Focus.args (ArgsTag.indexWrite p πs v) [] idx) tr)
+    (Config.run H φ K (Focus.args (ArgsFrame.indexWrite p πs v) [] idx) tr)
 ```
 
 **`Step.argsPush`** — (Search) §6.2 into the next hole of a list context, `…( v̄, E, ē )`.
 
 ```lean
-RueCore.Step.argsPush {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {t : ArgsTag} {vs : List Val} {e : Expr}
-  {es : List Expr} :
+RueCore.Step.argsPush {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {t : ArgsFrame}
+  {vs : List Val} {e : Expr} {es : List Expr} :
   Step M P (Config.run H φ K (Focus.args t vs (e :: es)) tr)
     (Config.run H φ (Kont.args t vs es :: K) (Focus.eval e) tr)
 ```
@@ -34083,9 +34162,9 @@ RueCore.Step.argsPush {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.argsPlug`** — (Search) §6.2: a list context's hole became a value; move past it.
 
 ```lean
-RueCore.Step.argsPlug {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {t : ArgsTag} {vs : List Val}
-  {es : List Expr} {v : Val} :
+RueCore.Step.argsPlug {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {t : ArgsFrame}
+  {vs : List Val} {es : List Expr} {v : Val} :
   Step M P (Config.run H φ (Kont.args t vs es :: K) (Focus.ret v) tr)
     (Config.run H φ K (Focus.args t (vs ++ [v]) es) tr)
 ```
@@ -34093,12 +34172,12 @@ RueCore.Step.argsPlug {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.mkStruct`** — (D-Struct) §6.5: every initializer is a value. The value's identity is minted as `eval` mints it (`introVal`): the next index of the store, reserved with `†`.
 
 ```lean
-RueCore.Step.mkStruct {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {s : Nat} {vs : List Val}
+RueCore.Step.mkStruct {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {s : Nat} {vs : List Val}
   {sd : StructDecl} :
   P.decls.structs[s]? = some sd →
     sd.fields.length = vs.length →
-      Step M P (Config.run H φ K (Focus.args (ArgsTag.struct s) vs []) tr)
+      Step M P (Config.run H φ K (Focus.args (ArgsFrame.struct s) vs []) tr)
         (Config.run (H ++ [Cell.dead]) φ K
           (Focus.ret (Val.struct s (List.length H) vs)) tr)
 ```
@@ -34106,13 +34185,13 @@ RueCore.Step.mkStruct {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.mkEnum`** — (D-Enum-Intro) §6.6: every payload component is a value; the identity is minted as at (D-Struct).
 
 ```lean
-RueCore.Step.mkEnum {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.mkEnum {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {e k : Nat} {vs : List Val}
   {ed : EnumDecl} {Ts : List Ty} :
   P.decls.enums[e]? = some ed →
     ed.variants[k]? = some Ts →
       Ts.length = vs.length →
-        Step M P (Config.run H φ K (Focus.args (ArgsTag.enum e k) vs []) tr)
+        Step M P (Config.run H φ K (Focus.args (ArgsFrame.enum e k) vs []) tr)
           (Config.run (H ++ [Cell.dead]) φ K
             (Focus.ret (Val.enum e k (List.length H) vs)) tr)
 ```
@@ -34120,9 +34199,9 @@ RueCore.Step.mkEnum {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.mkArray`** — (D-Array) §6.5: every element is a value; the identity is minted as at (D-Struct).
 
 ```lean
-RueCore.Step.mkArray {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.mkArray {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {T : Ty} {vs : List Val} :
-  Step M P (Config.run H φ K (Focus.args (ArgsTag.array T) vs []) tr)
+  Step M P (Config.run H φ K (Focus.args (ArgsFrame.array T) vs []) tr)
     (Config.run (H ++ [Cell.dead]) φ K
       (Focus.ret (Val.array T (List.length H) vs)) tr)
 ```
@@ -34130,8 +34209,9 @@ RueCore.Step.mkArray {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.repeatEnter`** — (Search) §6.2 into the repeat form's operand (`7.1:39`).
 
 ```lean
-RueCore.Step.repeatEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {T : Ty} {e : Expr} {n : Nat} :
+RueCore.Step.repeatEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {T : Ty} {e : Expr}
+  {n : Nat} :
   Step M P (Config.run H φ K (Focus.eval (Expr.repeatArray T e n)) tr)
     (Config.run H φ (Kont.repeatArray T n :: K) (Focus.eval e) tr)
 ```
@@ -34139,9 +34219,10 @@ RueCore.Step.repeatEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.repeatArray`** — The repeat form's elaboration (`7.1:39`): the operand, evaluated once, copied into each of the `n` slots. The elaboration `let t = v; [t, …, t]` is defined only at a `Copy` operand (`7.1:38`), so a non-`Copy` one is stuck (`typeConfusion`).
 
 ```lean
-RueCore.Step.repeatArray {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {T : Ty} {n : Nat} {v : Val} :
-  Val.mult P.decls v = Mult.copy →
+RueCore.Step.repeatArray {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {T : Ty} {n : Nat}
+  {v : Val} :
+  Val.qual P.decls v = Qual.copy →
     Step M P (Config.run H φ (Kont.repeatArray T n :: K) (Focus.ret v) tr)
       (Config.run (H ++ [Cell.dead]) φ K
         (Focus.ret (Val.array T (List.length H) (List.replicate n v))) tr)
@@ -34150,16 +34231,17 @@ RueCore.Step.repeatArray {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.indexRead`** — (D-Index) §6.5 at a dynamic place, every index in range, and (D-Use-Untrackable-Dynamic-Copy) §6.3 reads the `Copy` leaf, leaving the storage live. §6.3 has no rule for a non-`Copy` leaf here, so that configuration is stuck (`typeConfusion`).
 
 ```lean
-RueCore.Step.indexRead {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {p : Place} {πs : List (List Nat)}
-  {vs : List Val} {ℓ : Nat} {c sub : Contents} {ρ : List Nat}
-  {leaf : Contents} {v : Val} :
+RueCore.Step.indexRead {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {p : Place}
+  {πs : List (List Nat)} {vs : List Val} {ℓ : Nat} {c sub : Contents}
+  {ρ : List Nat} {leaf : Contents} {v : Val} :
   dynPlace H φ p vs πs = DynPlace.at ℓ c sub ρ →
-    sub.readAt ρ = Except.ok leaf →
+    sub.getAt ρ = Except.ok leaf →
       leaf.toVal = some v →
-        Val.mult P.decls v = Mult.copy →
+        Val.qual P.decls v = Qual.copy →
           Step M P
-            (Config.run H φ K (Focus.args (ArgsTag.indexRead p πs) vs []) tr)
+            (Config.run H φ K (Focus.args (ArgsFrame.indexRead p πs) vs [])
+              tr)
             (Config.run H φ K (Focus.ret v) tr)
 ```
 
@@ -34167,26 +34249,28 @@ RueCore.Step.indexRead {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 
 ```lean
 RueCore.Step.indexReadTrap {M : FloatSig} {P : Program} {H : Store}
-  {φ : Frame} {K : List Kont} {tr : List Event} {p : Place}
+  {φ : Activation} {K : List Kont} {tr : List Event} {p : Place}
   {πs : List (List Nat)} {vs : List Val} :
   dynPlace H φ p vs πs = DynPlace.bounds →
-    Step M P (Config.run H φ K (Focus.args (ArgsTag.indexRead p πs) vs []) tr)
+    Step M P
+      (Config.run H φ K (Focus.args (ArgsFrame.indexRead p πs) vs []) tr)
       (Config.panic PanicKind.bounds tr)
 ```
 
 **`Step.indexDrop`** — §6.11's `@drop` at a `Copy` place below a dynamic index: (D-Index) §6.5 navigates it, nothing is dropped, and the result is `⟨⟩`. The plan is `Untrackable(OrdinaryDynamic)`, whose only rule is §6.3's `Copy` read, so a non-`Copy` leaf is stuck (`typeConfusion`) and so is a `⊘` leaf (`useAfterMove`, the read finding no value).
 
 ```lean
-RueCore.Step.indexDrop {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {p : Place} {πs : List (List Nat)}
-  {vs : List Val} {ℓ : Nat} {c sub : Contents} {ρ : List Nat}
-  {leaf : Contents} {v : Val} :
+RueCore.Step.indexDrop {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {p : Place}
+  {πs : List (List Nat)} {vs : List Val} {ℓ : Nat} {c sub : Contents}
+  {ρ : List Nat} {leaf : Contents} {v : Val} :
   dynPlace H φ p vs πs = DynPlace.at ℓ c sub ρ →
-    sub.readAt ρ = Except.ok leaf →
+    sub.getAt ρ = Except.ok leaf →
       leaf.toVal = some v →
-        Contents.mult P.decls leaf = Mult.copy →
+        Contents.qual P.decls leaf = Qual.copy →
           Step M P
-            (Config.run H φ K (Focus.args (ArgsTag.indexDrop p πs) vs []) tr)
+            (Config.run H φ K (Focus.args (ArgsFrame.indexDrop p πs) vs [])
+              tr)
             (Config.run H φ K (Focus.ret Val.unit) tr)
 ```
 
@@ -34194,28 +34278,30 @@ RueCore.Step.indexDrop {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 
 ```lean
 RueCore.Step.indexDropTrap {M : FloatSig} {P : Program} {H : Store}
-  {φ : Frame} {K : List Kont} {tr : List Event} {p : Place}
+  {φ : Activation} {K : List Kont} {tr : List Event} {p : Place}
   {πs : List (List Nat)} {vs : List Val} :
   dynPlace H φ p vs πs = DynPlace.bounds →
-    Step M P (Config.run H φ K (Focus.args (ArgsTag.indexDrop p πs) vs []) tr)
+    Step M P
+      (Config.run H φ K (Focus.args (ArgsFrame.indexDrop p πs) vs []) tr)
       (Config.panic PanicKind.bounds tr)
 ```
 
 **`Step.indexWrite`** — (D-Assign) §6.8 below a dynamic index, every index in range (D-Index) §6.5: overwrite-drop what the position holds, then store.
 
 ```lean
-RueCore.Step.indexWrite {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {p : Place} {πs : List (List Nat)}
-  {v : Val} {vs : List Val} {ℓ : Nat} {c sub : Contents} {ρ : List Nat}
-  {old : Contents} {evs : List Event} {sub' c' : Contents} :
+RueCore.Step.indexWrite {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {p : Place}
+  {πs : List (List Nat)} {v : Val} {vs : List Val} {ℓ : Nat}
+  {c sub : Contents} {ρ : List Nat} {old : Contents} {evs : List Event}
+  {sub' c' : Contents} :
   dynPlace H φ p vs πs = DynPlace.at ℓ c sub ρ →
-    sub.readAt ρ = Except.ok old →
+    sub.getAt ρ = Except.ok old →
       dropCell P.decls ℓ old = Except.ok evs →
-        sub.writeAt ρ (Contents.ofVal v) = some sub' →
-          c.writeAt p.path sub' = some c' →
+        sub.setAt ρ (Contents.ofVal v) = some sub' →
+          c.setAt p.path sub' = some c' →
             Step M P
-              (Config.run H φ K (Focus.args (ArgsTag.indexWrite p πs v) vs [])
-                tr)
+              (Config.run H φ K
+                (Focus.args (ArgsFrame.indexWrite p πs v) vs []) tr)
               (Config.run (List.set H ℓ (Cell.full c')) φ K
                 (Focus.ret Val.unit) (tr ++ evs))
 ```
@@ -34224,19 +34310,20 @@ RueCore.Step.indexWrite {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 
 ```lean
 RueCore.Step.indexWriteTrap {M : FloatSig} {P : Program} {H : Store}
-  {φ : Frame} {K : List Kont} {tr : List Event} {p : Place}
+  {φ : Activation} {K : List Kont} {tr : List Event} {p : Place}
   {πs : List (List Nat)} {v : Val} {vs : List Val} :
   dynPlace H φ p vs πs = DynPlace.bounds →
     Step M P
-      (Config.run H φ K (Focus.args (ArgsTag.indexWrite p πs v) vs []) tr)
+      (Config.run H φ K (Focus.args (ArgsFrame.indexWrite p πs v) vs []) tr)
       (Config.panic PanicKind.bounds tr)
 ```
 
 **`Step.matchEnter`** — (Search) §6.2 into `match E { … }`.
 
 ```lean
-RueCore.Step.matchEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {scrut : Expr} {arms : List Expr} :
+RueCore.Step.matchEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {scrut : Expr}
+  {arms : List Expr} :
   Step M P (Config.run H φ K (Focus.eval (scrut.match arms)) tr)
     (Config.run H φ (Kont.match arms :: K) (Focus.eval scrut) tr)
 ```
@@ -34244,11 +34331,11 @@ RueCore.Step.matchEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.match`** — (D-Match) §6.6: the tag selects the arm; the payload is bound to fresh cells, appended to the scope record *and* owed to the arm's `endscope`; a non-`Copy` scrutinee's shell is consumed (`matchConsume`, RUE-2427).
 
 ```lean
-RueCore.Step.match {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.match {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {arms : List Expr} {e k i : Nat}
   {vs : List Val} {body : Expr} {H' : Store} {ls : List Nat} :
   arms[k]? = some body →
-    mintParams H vs = (H', ls) →
+    freshParams H vs = (H', ls) →
       Step M P
         (Config.run H φ (Kont.match arms :: K) (Focus.ret (Val.enum e k i vs))
           tr)
@@ -34260,8 +34347,8 @@ RueCore.Step.match {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.iteEnter`** — (Search) §6.2 into `if E { e1 } else { e2 }`.
 
 ```lean
-RueCore.Step.iteEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {c e₁ e₂ : Expr} :
+RueCore.Step.iteEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {c e₁ e₂ : Expr} :
   Step M P (Config.run H φ K (Focus.eval (c.ite e₁ e₂)) tr)
     (Config.run H φ (Kont.ite e₁ e₂ :: K) (Focus.eval c) tr)
 ```
@@ -34269,7 +34356,7 @@ RueCore.Step.iteEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.iteTrue`** — (D-If-T) §6.6.
 
 ```lean
-RueCore.Step.iteTrue {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.iteTrue {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {e₁ e₂ : Expr} :
   Step M P
     (Config.run H φ (Kont.ite e₁ e₂ :: K) (Focus.ret (Val.bool true)) tr)
@@ -34279,8 +34366,8 @@ RueCore.Step.iteTrue {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.iteFalse`** — (D-If-F) §6.6.
 
 ```lean
-RueCore.Step.iteFalse {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {e₁ e₂ : Expr} :
+RueCore.Step.iteFalse {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {e₁ e₂ : Expr} :
   Step M P
     (Config.run H φ (Kont.ite e₁ e₂ :: K) (Focus.ret (Val.bool false)) tr)
     (Config.run H φ K (Focus.eval e₂) tr)
@@ -34289,8 +34376,9 @@ RueCore.Step.iteFalse {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.letEnter`** — (Search) §6.2 into `let x = E ; e2`.
 
 ```lean
-RueCore.Step.letEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {m : Bool} {e₁ e₂ : Expr} :
+RueCore.Step.letEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {m : Bool}
+  {e₁ e₂ : Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.letIn m e₁ e₂)) tr)
     (Config.run H φ (Kont.letIn e₂ :: K) (Focus.eval e₁) tr)
 ```
@@ -34298,7 +34386,7 @@ RueCore.Step.letEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.letBind`** — (D-Let) §6.7: a fresh cell, bound, appended to the innermost scope record, and owed to the body's `endscope` (RUE-1277).
 
 ```lean
-RueCore.Step.letBind {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.letBind {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {e₂ : Expr} {v : Val} :
   Step M P (Config.run H φ (Kont.letIn e₂ :: K) (Focus.ret v) tr)
     (Config.run (H ++ [Cell.full (Contents.ofVal v)])
@@ -34306,22 +34394,22 @@ RueCore.Step.letBind {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
       (Kont.endscope [List.length H] :: K) (Focus.eval e₂) tr)
 ```
 
-**`Step.endScope`** — (D-EndScope) §6.7: the body is a value; drop-retire the marker's cells newest-first and resume in `⟨ρ; s minus ℓ̄⟩`: the marker's cells popped off the environment and the scope record by count (`Frame.popScope`).
+**`Step.endScope`** — (D-EndScope) §6.7: the body is a value; drop-retire the marker's cells newest-first and resume in `⟨ρ; s minus ℓ̄⟩`: the marker's cells popped off the environment and the scope record by count (`Activation.unwindScope`).
 
 ```lean
-RueCore.Step.endScope {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {ℓs : List Nat} {v : Val} {H' : Store}
-  {evs : List Event} :
+RueCore.Step.endScope {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {ℓs : List Nat} {v : Val}
+  {H' : Store} {evs : List Event} :
   plainUnwind P.decls H ℓs.reverse = Except.ok (H', evs) →
     Step M P (Config.run H φ (Kont.endscope ℓs :: K) (Focus.ret v) tr)
-      (Config.run H' (φ.popScope ℓs.length) K (Focus.ret v) (tr ++ evs))
+      (Config.run H' (φ.unwindScope ℓs.length) K (Focus.ret v) (tr ++ evs))
 ```
 
 **`Step.seqEnter`** — (Search) §6.2 into `E ; e2`.
 
 ```lean
-RueCore.Step.seqEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {e₁ e₂ : Expr} :
+RueCore.Step.seqEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {e₁ e₂ : Expr} :
   Step M P (Config.run H φ K (Focus.eval (e₁.seq e₂)) tr)
     (Config.run H φ (Kont.seq e₂ :: K) (Focus.eval e₁) tr)
 ```
@@ -34329,9 +34417,9 @@ RueCore.Step.seqEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.seqCopy`** — (D-Seq) §6.7 at a `Copy` temporary: `drop(H, v)` is `H`.
 
 ```lean
-RueCore.Step.seqCopy {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.seqCopy {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {e₂ : Expr} {v : Val} :
-  Val.mult P.decls v = Mult.copy →
+  Val.qual P.decls v = Qual.copy →
     Step M P (Config.run H φ (Kont.seq e₂ :: K) (Focus.ret v) tr)
       (Config.run H φ K (Focus.eval e₂) tr)
 ```
@@ -34339,9 +34427,9 @@ RueCore.Step.seqCopy {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.seqDrop`** — (D-Seq) §6.7 at a droppable temporary: drop it, then continue. §5.3 guarantees it carries no linear value; the rule does not check.
 
 ```lean
-RueCore.Step.seqDrop {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.seqDrop {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {e₂ : Expr} {v : Val} {evs : List Event} :
-  Val.mult P.decls v ≠ Mult.copy →
+  Val.qual P.decls v ≠ Qual.copy →
     dropContents P.decls (Contents.ofVal v) = Except.ok evs →
       Step M P (Config.run H φ (Kont.seq e₂ :: K) (Focus.ret v) tr)
         (Config.run H φ K (Focus.eval e₂) (tr ++ Event.dropTemp v :: evs))
@@ -34350,8 +34438,8 @@ RueCore.Step.seqDrop {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.assignEnter`** — (Search) §6.2 into `assign p = E`.
 
 ```lean
-RueCore.Step.assignEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {p : Place} {e : Expr} :
+RueCore.Step.assignEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {p : Place} {e : Expr} :
   Step M P (Config.run H φ K (Focus.eval (Expr.assign p e)) tr)
     (Config.run H φ (Kont.assign p :: K) (Focus.eval e) tr)
 ```
@@ -34359,13 +34447,13 @@ RueCore.Step.assignEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.assign`** — (D-Assign) §6.8: overwrite-drop what the position holds (nothing for a `⊘`, which is reinitialisation), then store. No linearity premise: §5.2's (Assign) excluded a live linear position statically (`3.8:77`).
 
 ```lean
-RueCore.Step.assign {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.assign {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {p : Place} {v : Val} {ℓ : Nat}
   {c old : Contents} {evs : List Event} {c' : Contents} :
   rootCell H φ p.root = Except.ok (ℓ, c) →
-    c.readAt p.path = Except.ok old →
+    c.getAt p.path = Except.ok old →
       dropCell P.decls ℓ old = Except.ok evs →
-        c.writeAt p.path (Contents.ofVal v) = some c' →
+        c.setAt p.path (Contents.ofVal v) = some c' →
           Step M P (Config.run H φ (Kont.assign p :: K) (Focus.ret v) tr)
             (Config.run (List.set H ℓ (Cell.full c')) φ K (Focus.ret Val.unit)
               (tr ++ evs))
@@ -34374,30 +34462,31 @@ RueCore.Step.assign {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.dropDeclared`** — `@drop` at a declared-linear plan, as §5.1 reads §5.3's `(@Drop)` under a `Declared(d, π)` plan (the paragraph after the use rules): §6.3's destructure, then the selected leaf's own drop (§6.11), and `⊘` at the consumed place. A `⊘` leaf has no drop (`drop(H, ⊘) = H`).
 
 ```lean
-RueCore.Step.dropDeclared {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {p : Place} {ℓ : Nat} {c : Contents}
-  {πd πs : List Nat} {cd leaf : Contents} {evs levs : List Event}
-  {c' : Contents} :
+RueCore.Step.dropDeclared {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {p : Place} {ℓ : Nat}
+  {c : Contents} {πd πs : List Nat} {cd leaf : Contents}
+  {evs levs : List Event} {c' : Contents} :
   rootCell H φ p.root = Except.ok (ℓ, c) →
     Contents.declaredPlan P.decls c p.path = some (πd, πs) →
-      c.readAt πd = Except.ok cd →
+      c.getAt πd = Except.ok cd →
         plainDestructure P.decls ℓ cd πs = Except.ok (leaf, evs) →
           dropCell P.decls ℓ leaf = Except.ok levs →
-            c.writeAt πd Contents.hole = some c' →
+            c.setAt πd Contents.movedOut = some c' →
               Step M P (Config.run H φ K (Focus.eval (Expr.drop p)) tr)
                 (Config.run (List.set H ℓ (Cell.full c')) φ K
                   (Focus.ret Val.unit) (tr ++ (evs ++ levs)))
 ```
 
-**`Step.dropCopy`** — §6.11's `@drop` of a `Copy` place: `⟨⟩`, the store unchanged. A `⊘` place is `Copy` here (`Contents.mult`), so `@drop` of a moved-out place is §6.11's `drop(H, ⊘) = H` and not a refusal.
+**`Step.dropCopy`** — §6.11's `@drop` of a `Copy` place: `⟨⟩`, the store unchanged. A `⊘` place is `Copy` here (`Contents.qual`), so `@drop` of a moved-out place is §6.11's `drop(H, ⊘) = H` and not a refusal.
 
 ```lean
-RueCore.Step.dropCopy {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {p : Place} {ℓ : Nat} {c sub : Contents} :
+RueCore.Step.dropCopy {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {p : Place} {ℓ : Nat}
+  {c sub : Contents} :
   rootCell H φ p.root = Except.ok (ℓ, c) →
     Contents.declaredPlan P.decls c p.path = none →
-      c.readAt p.path = Except.ok sub →
-        Contents.mult P.decls sub = Mult.copy →
+      c.getAt p.path = Except.ok sub →
+        Contents.qual P.decls sub = Qual.copy →
           Step M P (Config.run H φ K (Focus.eval (Expr.drop p)) tr)
             (Config.run H φ K (Focus.ret Val.unit) tr)
 ```
@@ -34405,15 +34494,15 @@ RueCore.Step.dropCopy {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.dropMove`** — §6.11's `@drop` of a non-`Copy` place: run `drop` on what it holds (the walk skips every `⊘` inside), then write `⊘` back.
 
 ```lean
-RueCore.Step.dropMove {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {p : Place} {ℓ : Nat} {c sub : Contents}
-  {evs : List Event} {c' : Contents} :
+RueCore.Step.dropMove {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {p : Place} {ℓ : Nat}
+  {c sub : Contents} {evs : List Event} {c' : Contents} :
   rootCell H φ p.root = Except.ok (ℓ, c) →
     Contents.declaredPlan P.decls c p.path = none →
-      c.readAt p.path = Except.ok sub →
-        Contents.mult P.decls sub ≠ Mult.copy →
+      c.getAt p.path = Except.ok sub →
+        Contents.qual P.decls sub ≠ Qual.copy →
           dropCell P.decls ℓ sub = Except.ok evs →
-            c.writeAt p.path Contents.hole = some c' →
+            c.setAt p.path Contents.movedOut = some c' →
               Step M P (Config.run H φ K (Focus.eval (Expr.drop p)) tr)
                 (Config.run (List.set H ℓ (Cell.full c')) φ K
                   (Focus.ret Val.unit) (tr ++ evs))
@@ -34422,13 +34511,13 @@ RueCore.Step.dropMove {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.call`** — (D-Call) §6.9: every argument is a value; mint one cell per by-value argument, suspend the caller as `ret(E, φ)`, and enter the body in the callee's frame, whose entry scope owes exactly those cells.
 
 ```lean
-RueCore.Step.call {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+RueCore.Step.call {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
   {K : List Kont} {tr : List Event} {f : Nat} {vs : List Val} {fd : FnDef}
   {H' : Store} {ls : List Nat} :
   P.fns[f]? = some fd →
     fd.params.length = vs.length →
-      mintParams H vs = (H', ls) →
-        Step M P (Config.run H φ K (Focus.args (ArgsTag.call f) vs []) tr)
+      freshParams H vs = (H', ls) →
+        Step M P (Config.run H φ K (Focus.args (ArgsFrame.call f) vs []) tr)
           (Config.run H' { env := ls.reverse, scope := ls } (Kont.call φ :: K)
             (Focus.eval fd.body) tr)
 ```
@@ -34436,9 +34525,9 @@ RueCore.Step.call {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.callReturn`** — (D-Return-Value) §6.9: the body is a value; run the frame's scope drops and resume the caller.
 
 ```lean
-RueCore.Step.callReturn {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {φs : Frame} {v : Val} {H' : Store}
-  {evs : List Event} :
+RueCore.Step.callReturn {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {φs : Activation}
+  {v : Val} {H' : Store} {evs : List Event} :
   plainUnwind P.decls H φ.scope.reverse = Except.ok (H', evs) →
     Step M P (Config.run H φ (Kont.call φs :: K) (Focus.ret v) tr)
       (Config.run H' φs K (Focus.ret v) (tr ++ evs))
@@ -34447,8 +34536,8 @@ RueCore.Step.callReturn {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.retEnter`** — (Search) §6.2 into `return E`.
 
 ```lean
-RueCore.Step.retEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {e : Expr} :
+RueCore.Step.retEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {e : Expr} :
   Step M P (Config.run H φ K (Focus.eval e.ret) tr)
     (Config.run H φ (Kont.ret :: K) (Focus.eval e) tr)
 ```
@@ -34456,9 +34545,9 @@ RueCore.Step.retEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.ret`** — (D-Return) §6.9: discard every frame up to the nearest `ret(E, φ)` — pending `endscope` markers and loop boundaries included — run the frame's scope drops from its record, and hand `v` to the caller. At the entry point's `call` frame this is (D-Return-Main) §6.9 (`Config.init`).
 
 ```lean
-RueCore.Step.ret {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {v : Val} {φs : Frame} {K' : List Kont}
-  {H' : Store} {evs : List Event} :
+RueCore.Step.ret {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
+  {K : List Kont} {tr : List Event} {v : Val} {φs : Activation}
+  {K' : List Kont} {H' : Store} {evs : List Event} :
   Kont.toCall K = some (φs, K') →
     plainUnwind P.decls H φ.scope.reverse = Except.ok (H', evs) →
       Step M P (Config.run H φ (Kont.ret :: K) (Focus.ret v) tr)
@@ -34468,8 +34557,8 @@ RueCore.Step.ret {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.loopEnter`** — (D-Loop-Enter) §6.10: push the loop boundary and enter the body.
 
 ```lean
-RueCore.Step.loopEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {e : Expr} :
+RueCore.Step.loopEnter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {e : Expr} :
   Step M P (Config.run H φ K (Focus.eval e.loop) tr)
     (Config.run H φ (Kont.loop e φ :: K) (Focus.eval e) tr)
 ```
@@ -34477,9 +34566,9 @@ RueCore.Step.loopEnter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.loopIter`** — (D-Loop-Iter) §6.10: the body became `⟨⟩` — "necessarily `⟨⟩`", so any other value has no rule (RUE-2427); `run-scope-drops` on the cells the turn still owes (those past the loop's own record, newest-first, as (D-Break) reads them), then re-enter the body in the loop's frame.
 
 ```lean
-RueCore.Step.loopIter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {e : Expr} {φs : Frame} {H' : Store}
-  {evs : List Event} :
+RueCore.Step.loopIter {M : FloatSig} {P : Program} {H : Store}
+  {φ : Activation} {K : List Kont} {tr : List Event} {e : Expr}
+  {φs : Activation} {H' : Store} {evs : List Event} :
   plainUnwind P.decls H (List.drop φs.scope.length φ.scope).reverse =
       Except.ok (H', evs) →
     Step M P (Config.run H φ (Kont.loop e φs :: K) (Focus.ret Val.unit) tr)
@@ -34489,9 +34578,9 @@ RueCore.Step.loopIter {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
 **`Step.brk`** — (D-Break) §6.10: discard every frame up to the nearest loop boundary, drop-retire the cells the body still owed newest-first (`unwind-drops(H, φ', φ)`), and yield `⟨⟩` to the loop's context.
 
 ```lean
-RueCore.Step.brk {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {φs : Frame} {K' : List Kont} {H' : Store}
-  {evs : List Event} :
+RueCore.Step.brk {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
+  {K : List Kont} {tr : List Event} {φs : Activation} {K' : List Kont}
+  {H' : Store} {evs : List Event} :
   Kont.toLoop K = some (φs, K') →
     plainUnwind P.decls H (List.drop φs.scope.length φ.scope).reverse =
         Except.ok (H', evs) →
@@ -34546,7 +34635,7 @@ def RueCore.Spec.Config.stuck_iff_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Step`
 
-**Steps, terminal, or stuck** (§6), a stuck one named by a `Violation`:
+**Steps, terminal, or stuck** (§6), a stuck one named by a `Refusal`:
 some `C → C'`, or `C` is `✓` or `↯κ`, or `step` refuses `C`.
 
 ```lean
@@ -34695,19 +34784,19 @@ trap is not simulated: §6.12's `↯κ` keeps no store, so it holds nothing, and
 §5.7's `⊥_panic` edge runs no drop.
 
 ```lean
-def RueCore.MSim (M : FloatSig) (P : Program) (φ : Frame)
+def RueCore.MSim (M : FloatSig) (P : Program) (φ : Activation)
   (C : List Kont → List Event → Config) : EvalRes → Prop :=
   match x✝ with
   | EvalRes.ok H v tr' =>
     ∀ (K : List Kont) (tr : List Event),
       MSteps M P (C K tr) (Config.run H φ K (Focus.ret v) (tr ++ tr'))
   | EvalRes.returned H v tr' =>
-    ∀ (K : List Kont) (tr : List Event) (φs : Frame) (K' : List Kont),
+    ∀ (K : List Kont) (tr : List Event) (φs : Activation) (K' : List Kont),
       Kont.toCall K = some (φs, K') →
         IdLe (stackOwn P.decls K) (stackOwn P.decls K') →
           MSteps M P (C K tr) (Config.run H φs K' (Focus.ret v) (tr ++ tr'))
   | EvalRes.broke H sc tr' =>
-    ∀ (K : List Kont) (tr : List Event) (φs : Frame) (K' : List Kont)
+    ∀ (K : List Kont) (tr : List Event) (φs : Activation) (K' : List Kont)
       (H' : Store) (evs : List Event),
       Kont.toLoop K = some (φs, K') →
         IdLe (stackOwn P.decls K) (stackOwn P.decls K') →
@@ -34716,7 +34805,7 @@ def RueCore.MSim (M : FloatSig) (P : Program) (φ : Frame)
             MSteps M P (C K tr)
               (Config.run H' φs K' (Focus.ret Val.unit) (tr ++ tr' ++ evs))
   | EvalRes.panic k tr => True
-  | EvalRes.stuck why => True
+  | EvalRes.refused why => True
   | EvalRes.outOfFuel => True
 ```
 
@@ -34735,7 +34824,7 @@ context ((Panic-Lift) §6.2), an unwinding `return` reaches the nearest caller
 through already-reduced operands from this relation's `ok` clause.
 
 ```lean
-def RueCore.Sim (M : FloatSig) (P : Program) (φ : Frame)
+def RueCore.Sim (M : FloatSig) (P : Program) (φ : Activation)
   (C : List Kont → List Event → Config) : EvalRes → Prop :=
   match x✝ with
   | EvalRes.ok H v tr' =>
@@ -34745,18 +34834,18 @@ def RueCore.Sim (M : FloatSig) (P : Program) (φ : Frame)
     ∀ (K : List Kont) (tr : List Event),
       Steps M P (C K tr) (Config.panic k (tr ++ tr'))
   | EvalRes.returned H v tr' =>
-    ∀ (K : List Kont) (tr : List Event) (φs : Frame) (K' : List Kont),
+    ∀ (K : List Kont) (tr : List Event) (φs : Activation) (K' : List Kont),
       Kont.toCall K = some (φs, K') →
         Steps M P (C K tr) (Config.run H φs K' (Focus.ret v) (tr ++ tr'))
   | EvalRes.broke H sc tr' =>
-    ∀ (K : List Kont) (tr : List Event) (φs : Frame) (K' : List Kont)
+    ∀ (K : List Kont) (tr : List Event) (φs : Activation) (K' : List Kont)
       (H' : Store) (evs : List Event),
       Kont.toLoop K = some (φs, K') →
         plainUnwind P.decls H (List.drop φs.scope.length sc).reverse =
             Except.ok (H', evs) →
           Steps M P (C K tr)
             (Config.run H' φs K' (Focus.ret Val.unit) (tr ++ tr' ++ evs))
-  | EvalRes.stuck why => True
+  | EvalRes.refused why => True
   | EvalRes.outOfFuel => True
 ```
 
@@ -34766,25 +34855,25 @@ def RueCore.Sim (M : FloatSig) (P : Program) (φ : Frame)
 
 **Completeness on every program** (§6.12): the same, up to a refusal of
 `run`'s (RUE-2314). With no typing hypothesis the escape is wide: a `run` that
-is `.stuck` past some fuel satisfies it, whatever `→*` reaches.
+is `.refused` past some fuel satisfies it, whatever `→*` reaches.
 
 ```lean
 def RueCore.Spec.run_complete_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program),
-    (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+    (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
         Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
           ∃ n,
             ∀ (fuel : Nat),
               n < fuel →
                 run M P fuel = EvalRes.ok H v tr ∨
-                  ∃ w, run M P fuel = EvalRes.stuck w) ∧
+                  ∃ w, run M P fuel = EvalRes.refused w) ∧
       ∀ (κ : PanicKind) (tr : List Event),
         Steps M P Config.init (Config.panic κ tr) →
           ∃ n,
             ∀ (fuel : Nat),
               n < fuel →
                 run M P fuel = EvalRes.panic κ tr ∨
-                  ∃ w, run M P fuel = EvalRes.stuck w
+                  ∃ w, run M P fuel = EvalRes.refused w
 ```
 
 ### `Spec.run_sim_stmt`
@@ -34800,7 +34889,7 @@ def RueCore.Spec.run_sim_stmt : Prop :=
     (∀ (H : Store) (v : Val) (tr : List Event),
         run M P fuel = EvalRes.ok H v tr →
           Steps M P Config.init
-            (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+            (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
       ∀ (k : PanicKind) (tr : List Event),
         run M P fuel = EvalRes.panic k tr →
           Steps M P Config.init (Config.panic k tr)
@@ -34811,15 +34900,15 @@ def RueCore.Spec.run_sim_stmt : Prop :=
 *def* · module `RueCore.Spec.Adequacy`
 
 **A stuck `Step` run is a refusal of `run`** (§6), at every large enough
-fuel, perhaps with another `Violation`.
+fuel, perhaps with another `Refusal`.
 
 ```lean
 def RueCore.Spec.run_stuck_of_step_stuck_stmt : Prop :=
-  ∀ (M : FloatSig) (P : Program) {C : Config} {w : Violation},
+  ∀ (M : FloatSig) (P : Program) {C : Config} {w : Refusal},
     Steps M P Config.init C →
       Config.Stuck M P C w →
         ∃ n,
-          ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.stuck w'
+          ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.refused w'
 ```
 
 ### `Spec.step_never_stuck_of_run_stmt`
@@ -34833,7 +34922,7 @@ defined panics").
 ```lean
 def RueCore.Spec.step_never_stuck_of_run_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program),
-    (∀ (fuel : Nat) (w : Violation), run M P fuel ≠ EvalRes.stuck w) →
+    (∀ (fuel : Nat) (w : Refusal), run M P fuel ≠ EvalRes.refused w) →
       ∀ (C : Config),
         Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
 ```
@@ -34852,7 +34941,7 @@ needed: a configuration whose frame names a retired cell is stuck so
 ```lean
 def RueCore.Spec.step_no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) {C : Config},
-    Steps M P Config.init C → ¬Config.Stuck M P C Violation.useAfterDrop
+    Steps M P Config.init C → ¬Config.Stuck M P C Refusal.useAfterDrop
 ```
 
 ### `LongCIH`
@@ -34865,7 +34954,7 @@ store is a run of at least `fuel` steps with the ledger (helper).
 ```lean
 def RueCore.LongCIH (M : FloatSig) (P : Program) (F : Event → List Nat)
   (fuel : Nat) : Prop :=
-  ∀ (H : Store) (φ : Frame) (e : Expr),
+  ∀ (H : Store) (φ : Activation) (e : Expr),
     StoreCC P.decls H →
       eval M fuel P H φ e = EvalRes.outOfFuel →
         LongC M P F H [] (evalConf H φ e) fuel
@@ -34880,7 +34969,7 @@ steps (helper).
 
 ```lean
 def RueCore.LongIH (M : FloatSig) (P : Program) (fuel : Nat) : Prop :=
-  ∀ (H : Store) (φ : Frame) (e : Expr),
+  ∀ (H : Store) (φ : Activation) (e : Expr),
     eval M fuel P H φ e = EvalRes.outOfFuel → Long M P (evalConf H φ e) fuel
 ```
 
@@ -34892,11 +34981,11 @@ The induction hypothesis: `eval` at fuel `fuel` is simulated (helper).
 
 ```lean
 def RueCore.SimIH (M : FloatSig) (P : Program) (fuel : Nat) : Prop :=
-  ∀ (H : Store) (φ : Frame) (e : Expr),
+  ∀ (H : Store) (φ : Activation) (e : Expr),
     Sim M P φ (evalConf H φ e) (eval M fuel P H φ e)
 ```
 
-### `ContentsMatches`
+### `ContentsOwnTyping`
 
 *inductive* · module `RueCore.Soundness.Defs`
 
@@ -34908,47 +34997,48 @@ residue the machine drops path-specifically (`3.8:60`) — and `fields` holds th
 struct its type names, matched field by field.
 
 ```lean
-inductive RueCore.ContentsMatches (D : Decls) : Contents → OwnSt → Ty → Prop
+inductive RueCore.ContentsOwnTyping (D : Decls) : Contents → OwnSt → Ty → Prop
 ```
 
 Constructors:
 
-**`ContentsMatches.owned`** — An `Owned` path holds a value: well-typed contents with no `⊘` in it.
+**`ContentsOwnTyping.owned`** — An `Owned` path holds a value: well-typed contents with no `⊘` in it.
 
 ```lean
-RueCore.ContentsMatches.owned {D : Decls} {c : Contents} {T : Ty} :
-  ContentsTy D c T → c.holeFree = true → ContentsMatches D c OwnSt.owned T
+RueCore.ContentsOwnTyping.owned {D : Decls} {c : Contents} {T : Ty} :
+  ContentsTy D c T → c.noMovedOut = true → ContentsOwnTyping D c OwnSt.owned T
 ```
 
-**`ContentsMatches.moved`** — A `MovedOut` path may still hold live contents — the §5.5 join's asymmetry (`3.8:60`) — but never a live linear sub-value (`3.8:50`).
+**`ContentsOwnTyping.moved`** — A `MovedOut` path may still hold live contents — the §5.5 join's asymmetry (`3.8:60`) — but never a live linear sub-value (`3.8:50`).
 
 ```lean
-RueCore.ContentsMatches.moved {D : Decls} {c : Contents} {T : Ty} :
+RueCore.ContentsOwnTyping.moved {D : Decls} {c : Contents} {T : Ty} :
   ContentsTy D c T →
-    Contents.residualLinear D c = false → ContentsMatches D c OwnSt.movedOut T
+    Contents.residualLinear D c = false →
+      ContentsOwnTyping D c OwnSt.movedOut T
 ```
 
-**`ContentsMatches.fields`** — A partially moved path holds the struct its type names, field by field.
+**`ContentsOwnTyping.fields`** — A partially moved path holds the struct its type names, field by field.
 
 ```lean
-RueCore.ContentsMatches.fields {D : Decls} {s : Nat} {sd : StructDecl}
+RueCore.ContentsOwnTyping.fields {D : Decls} {s : Nat} {sd : StructDecl}
   {i : Nat} {cs : List Contents} {ts : List OwnSt} :
   D.structs[s]? = some sd →
-    ContentsMatchesList D cs ts sd.fields →
-      ContentsMatches D (Contents.struct s i cs) (OwnSt.fields ts)
+    ContentsOwnTypingList D cs ts sd.fields →
+      ContentsOwnTyping D (Contents.struct s i cs) (OwnSt.fields ts)
         (Ty.struct s)
 ```
 
-**`ContentsMatches.elems`** — The array form of the same clause: a node with per-element records holds the array its type names, element by element. A constant-index **write** reaches it (`a[0] = …` records `fields [Owned]`), and so does an element move, whose `⊘` is what `3.8:73`'s per-path element drop reads.
+**`ContentsOwnTyping.elems`** — The array form of the same clause: a node with per-element records holds the array its type names, element by element. A constant-index **write** reaches it (`a[0] = …` records `fields [Owned]`), and so does an element move, whose `⊘` is what `3.8:73`'s per-path element drop reads.
 
 ```lean
-RueCore.ContentsMatches.elems {D : Decls} {T : Ty} {n i : Nat}
+RueCore.ContentsOwnTyping.elems {D : Decls} {T : Ty} {n i : Nat}
   {cs : List Contents} {ts : List OwnSt} :
-  ContentsMatchesList D cs ts (List.replicate n T) →
-    ContentsMatches D (Contents.array T i cs) (OwnSt.fields ts) (T.array n)
+  ContentsOwnTypingList D cs ts (List.replicate n T) →
+    ContentsOwnTyping D (Contents.array T i cs) (OwnSt.fields ts) (T.array n)
 ```
 
-### `ContentsMatchesList`
+### `ContentsOwnTypingList`
 
 *inductive* · module `RueCore.Soundness.Defs`
 
@@ -34956,27 +35046,27 @@ The same over a declaration's fields, slot by slot; a slot Σ has no record
 for is `owned` (`OwnSt.fieldAt`) (helper).
 
 ```lean
-inductive RueCore.ContentsMatchesList (D : Decls) :
+inductive RueCore.ContentsOwnTypingList (D : Decls) :
   List Contents → List OwnSt → List Ty → Prop
 ```
 
 Constructors:
 
-**`ContentsMatchesList.nil`** — No fields left to match.
+**`ContentsOwnTypingList.nil`** — No fields left to match.
 
 ```lean
-RueCore.ContentsMatchesList.nil {D : Decls} {ts : List OwnSt} :
-  ContentsMatchesList D [] ts []
+RueCore.ContentsOwnTypingList.nil {D : Decls} {ts : List OwnSt} :
+  ContentsOwnTypingList D [] ts []
 ```
 
-**`ContentsMatchesList.cons`** — The first field matches its own slot's state; the rest match the tail of the record.
+**`ContentsOwnTypingList.cons`** — The first field matches its own slot's state; the rest match the tail of the record.
 
 ```lean
-RueCore.ContentsMatchesList.cons {D : Decls} {c : Contents}
+RueCore.ContentsOwnTypingList.cons {D : Decls} {c : Contents}
   {cs : List Contents} {ts : List OwnSt} {T : Ty} {Ts : List Ty} :
-  ContentsMatches D c (OwnSt.fieldAt ts 0) T →
-    ContentsMatchesList D cs ts.tail Ts →
-      ContentsMatchesList D (c :: cs) ts (T :: Ts)
+  ContentsOwnTyping D c (OwnSt.fieldAt ts 0) T →
+    ContentsOwnTypingList D cs ts.tail Ts →
+      ContentsOwnTypingList D (c :: cs) ts (T :: Ts)
 ```
 
 ### `ContentsTy`
@@ -34994,10 +35084,11 @@ inductive RueCore.ContentsTy (D : Decls) : Contents → Ty → Prop
 
 Constructors:
 
-**`ContentsTy.hole`**
+**`ContentsTy.movedOut`**
 
 ```lean
-RueCore.ContentsTy.hole {D : Decls} {T : Ty} : ContentsTy D Contents.hole T
+RueCore.ContentsTy.movedOut {D : Decls} {T : Ty} :
+  ContentsTy D Contents.movedOut T
 ```
 
 **`ContentsTy.int`**
@@ -35037,7 +35128,7 @@ RueCore.ContentsTy.struct {D : Decls} {s : Nat} {sd : StructDecl} {i : Nat}
       ContentsTy D (Contents.struct s i cs) (Ty.struct s)
 ```
 
-**`ContentsTy.enum`** — §6.1's tagged value stored in a cell, typed the way `HasTy.enum` types the value. A payload position is never `⊘` in a reachable state (no path reaches one — `Dynamics.lean`), but nothing here needs that: `ContentsTy` admits `⊘` at every node and `holeFree` is what the rules that want a value ask for.
+**`ContentsTy.enum`** — §6.1's tagged value stored in a cell, typed the way `HasTy.enum` types the value. A payload position is never `⊘` in a reachable state (no path reaches one — `Dynamics.lean`), but nothing here needs that: `ContentsTy` admits `⊘` at every node and `noMovedOut` is what the rules that want a value ask for.
 
 ```lean
 RueCore.ContentsTy.enum {D : Decls} {e k : Nat} {ed : EnumDecl} {Ts : List Ty}
@@ -35097,7 +35188,7 @@ what `dropResidue`'s monitor asks for (helper).
 ```lean
 def RueCore.ResidueOk (D : Decls) (rs : List Contents) : Prop :=
   ∀ (r : Contents),
-    r ∈ rs → ∃ Tr, ContentsTy D r Tr ∧ Ty.mult D Tr ≠ Mult.linear
+    r ∈ rs → ∃ Tr, ContentsTy D r Tr ∧ Ty.qual D Tr ≠ Qual.linear
 ```
 
 ### `Ctx.Wf`
@@ -35328,10 +35419,10 @@ inductive RueCore.DropGlue (D : Decls) : Contents → List Event → Prop
 
 Constructors:
 
-**`DropGlue.hole`**
+**`DropGlue.movedOut`**
 
 ```lean
-RueCore.DropGlue.hole {D : Decls} : DropGlue D Contents.hole []
+RueCore.DropGlue.movedOut {D : Decls} : DropGlue D Contents.movedOut []
 ```
 
 **`DropGlue.int`**
@@ -35523,7 +35614,7 @@ Defining equations, as Lean derived them from the body:
 The promise `soundness` makes about `eval`'s result, given §5.3's `Ω` —
 its normal outgoing state `o` and its deliveries `B`: a value of the
 expression's type with that state's invariant restored (preservation), or one
-of `AbortOk`'s outcomes — never `.stuck` (progress). When `o` is `none`,
+of `AbortOk`'s outcomes — never `.refused` (progress). When `o` is `none`,
 §5.7's `⊥`, a value is **impossible**: an expression the rules type as
 divergent never completes normally. A `break` is one of the deliveries: the
 state it fired at is one the rules recorded. Stating it as a predicate on the
@@ -35533,16 +35624,17 @@ combinators (`bind`) be discharged once and reused at every form
 
 ```lean
 def RueCore.EvalOk (D : Decls) (T R : Ty) (o : Option Ctx) (B : List Ctx)
-  (φ : Frame) (H : Store) : EvalRes → Prop :=
+  (φ : Activation) (H : Store) : EvalRes → Prop :=
   match x✝ with
   | EvalRes.ok H' v tr =>
     match o with
-    | some Γ' => HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+    | some Γ' =>
+      HasTy D v T ∧ ActivationTyping D Γ' φ H' ∧ FrameProperty φ.env H H'
     | none => False
-  | EvalRes.returned H' v tr => HasTy D v R ∧ Untouched φ.env H H'
-  | EvalRes.broke H' sc tr => BrokeOk D B φ H H' sc
+  | EvalRes.returned H' v tr => HasTy D v R ∧ FrameProperty φ.env H H'
+  | EvalRes.broke H' sc tr => BreakOutputOk D B φ H H' sc
   | EvalRes.panic k tr => True
-  | EvalRes.stuck why => False
+  | EvalRes.refused why => False
   | EvalRes.outOfFuel => True
 ```
 
@@ -35625,6 +35717,41 @@ Expr.breaksList [] = false
   Expr.breaksList (e :: es) = (e.breaks || Expr.breaksList es)
 ```
 
+### `Expr.canCompleteAbruptly`
+
+*def* · module `RueCore.Trace.Defs`
+
+Whether evaluating an expression can **unwind** past its context: it
+contains a `return`, or a `break` its own loops do not catch
+(`Expr.breaks`) (helper).
+
+```lean
+def RueCore.Expr.canCompleteAbruptly (e : Expr) : Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (e : Expr), e.canCompleteAbruptly = (e.returns || e.breaks)
+```
+
+### `Expr.quietList`
+
+*def* · module `RueCore.Trace.Defs`
+
+No expression of the list unwinds (helper).
+
+```lean
+def RueCore.Expr.quietList (es : List Expr) : Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (es : List Expr),
+  Expr.quietList es = es.all fun e => !e.canCompleteAbruptly
+```
+
 ### `Expr.pendingSafe`
 
 *def* · module `RueCore.Trace.Defs`
@@ -35657,7 +35784,7 @@ Expr.unitLit.pendingSafe = true
 Expr.brk.pendingSafe = true
 ∀ (op : BinOp) (e₁ e₂ : Expr),
   (Expr.binop op e₁ e₂).pendingSafe =
-    (e₁.pendingSafe && e₂.pendingSafe && !e₂.unwinds)
+    (e₁.pendingSafe && e₂.pendingSafe && !e₂.canCompleteAbruptly)
 ∀ (op : UnOp) (e : Expr), (Expr.unop op e).pendingSafe = e.pendingSafe
 ∀ (w : IntWidth) (s : Sign) (e : Expr),
   (Expr.intCast w s e).pendingSafe = e.pendingSafe
@@ -35730,7 +35857,7 @@ from every copy-closed store, for every `pendingSafe` expression (helper).
 
 ```lean
 def RueCore.MSimIH (M : FloatSig) (P : Program) (fuel : Nat) : Prop :=
-  ∀ (H : Store) (φ : Frame) (e : Expr),
+  ∀ (H : Store) (φ : Activation) (e : Expr),
     StoreCC P.decls H →
       e.pendingSafe = true →
         MSim M P φ (evalConf H φ e) (eval M fuel P H φ e)
@@ -35750,22 +35877,6 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (P : Program), P.pendingSafe = P.fns.all fun fd => fd.body.pendingSafe
-```
-
-### `Expr.quietList`
-
-*def* · module `RueCore.Trace.Defs`
-
-No expression of the list unwinds (helper).
-
-```lean
-def RueCore.Expr.quietList (es : List Expr) : Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (es : List Expr), Expr.quietList es = es.all fun e => !e.unwinds
 ```
 
 ### `Expr.returns`
@@ -35844,24 +35955,6 @@ Expr.returnsList [] = false
   Expr.returnsList (e :: es) = (e.returns || Expr.returnsList es)
 ```
 
-### `Expr.unwinds`
-
-*def* · module `RueCore.Trace.Defs`
-
-Whether evaluating an expression can **unwind** past its context: it
-contains a `return`, or a `break` its own loops do not catch
-(`Expr.breaks`) (helper).
-
-```lean
-def RueCore.Expr.unwinds (e : Expr) : Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (e : Expr), e.unwinds = (e.returns || e.breaks)
-```
-
 ### `HasTy`
 
 *inductive* · module `RueCore.Soundness.Defs`
@@ -35885,7 +35978,7 @@ RueCore.HasTy.int {D : Decls} {w : IntWidth} {s : Sign} {n : Int} :
   InBounds w s n → HasTy D (Val.int w s n) (Ty.int w s)
 ```
 
-**`HasTy.float`** — §6.1's `f_T` at `T = float(w)`: the datum lies in `𝔽_w`, which is the float counterpart of `n_T`'s `min_T ≤ n ≤ max_T` side condition. Keeping it is what gives §7's "totality of the float operations" lemma something to preserve: the model's closure laws (`FloatModel`, `Float.lean`) are exactly what re-establishes it after a rounded operation.
+**`HasTy.float`** — §6.1's `f_T` at `T = float(w)`: the datum lies in `𝔽_w`, which is the float counterpart of `n_T`'s `min_T ≤ n ≤ max_T` side condition. Keeping it is what gives §7's "totality of the float operations" lemma something to preserve: the model's closure laws (`FloatLaws`, `Float.lean`) are exactly what re-establishes it after a rounded operation.
 
 ```lean
 RueCore.HasTy.float {D : Decls} {w : FloatWidth} {f : FloatDatum} :
@@ -36053,22 +36146,22 @@ def RueCore.Spec.Nonvacuous.stuck_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
           checkProgram P = false ∧
             run Float.exactOps P 200 =
-                EvalRes.stuck Violation.useAfterMove ∧
+                EvalRes.refused Refusal.useAfterMove ∧
               ∃ C,
                 Steps Float.exactOps P Config.init C ∧
-                  Config.Stuck Float.exactOps P C Violation.useAfterMove
+                  Config.Stuck Float.exactOps P C Refusal.useAfterMove
 ```
 
 ### `OwnSt.fullyOwned`
@@ -36358,13 +36451,13 @@ def RueCore.Spec.Nonvacuous.diverges_drop_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns := [{ params := [], ret := Ty.unit, body := B }] } →
           checkProgram P = true ∧
             ProgramTyped P ∧
@@ -36428,13 +36521,13 @@ def RueCore.Spec.Nonvacuous.whole_drops_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -36447,8 +36540,8 @@ def RueCore.Spec.Nonvacuous.whole_drops_stmt : Prop :=
                       2 ∈ Config.held P.decls C ∧
                         ∃ H v tr,
                           Steps Float.exactOps P C
-                              (Config.run H Frame.empty [] (Focus.ret v)
-                                tr) ∧
+                              (Config.run H Activation.empty []
+                                (Focus.ret v) tr) ∧
                             List.count 0 (freedIds P.decls tr) = 1 ∧
                               List.count 2 (freedIds P.decls tr) = 1
 ```
@@ -36474,12 +36567,12 @@ def RueCore.Spec.Nonvacuous.whole_result_stmt : Prop :=
               structs :=
                 [{ attr := Attr.none,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Mult.affine },
+                    dtor := true, cls := Qual.affine },
                   { attr := Attr.linear,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Mult.linear }],
+                    dtor := false, cls := Qual.linear }],
               enums :=
-                [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
           fns :=
             [{ params := [], ret := Ty.struct 0,
                 body :=
@@ -36493,7 +36586,8 @@ def RueCore.Spec.Nonvacuous.whole_result_stmt : Prop :=
                 0 ∈ Config.held P.decls C ∧
                   ∃ H v tr,
                     Steps Float.exactOps P C
-                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        (Config.run H Activation.empty [] (Focus.ret v)
+                          tr) ∧
                       List.count 0 (Val.own P.decls v) = 1 ∧
                         freedIds P.decls tr = []
 ```
@@ -36531,15 +36625,15 @@ def RueCore.Spec.Sharp.bare_dtor_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.copy,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.copy },
+                        dtor := true, cls := Qual.copy },
                       { attr := Attr.none, fields := [Ty.struct 0],
-                        dtor := false, cls := Mult.affine },
+                        dtor := false, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.struct 0, Ty.struct 3], dtor := false,
-                        cls := Mult.linear },
+                        cls := Qual.linear },
                       { attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine }],
+                        dtor := true, cls := Qual.affine }],
                   enums := [] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
@@ -36584,10 +36678,10 @@ def RueCore.Spec.Sharp.copy_leak_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.copy,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.copy },
+                        dtor := false, cls := Qual.copy },
                       { attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine }],
+                        dtor := true, cls := Qual.affine }],
                   enums := [] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
@@ -36600,7 +36694,8 @@ def RueCore.Spec.Sharp.copy_leak_stmt : Prop :=
                     0 ∈ Config.held P.decls C ∧
                       ∃ H v tr,
                         Steps Float.exactOps P C
-                            (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                            (Config.run H Activation.empty [] (Focus.ret v)
+                              tr) ∧
                           List.count 0 (Val.own P.decls v) +
                               List.count 0 (freedIds P.decls tr) =
                             0
@@ -36617,7 +36712,7 @@ would duplicate an owner through: over `S0 = @copy struct { x0: i64 }` and
 @drop(p.x0); @drop(q.x0); 0` (`Trace.lean`'s `dupProgram`). It is not
 `ProgramTyped`, and `eval` refuses it with `ownedUnderCopy`, at the literal:
 `no_violation`'s conclusion fails once `ProgramTyped` is dropped, and a machine
-without the copy-closure monitor (`Contents.copyClosed` in `introVal`) makes
+without the copy-closure monitor (`Contents.copyContained` in `introVal`) makes
 this statement false.
 
 ```lean
@@ -36639,10 +36734,10 @@ def RueCore.Spec.Sharp.copy_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.copy,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.copy },
+                        dtor := false, cls := Qual.copy },
                       { attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine }],
+                        dtor := true, cls := Qual.affine }],
                   enums := [] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
@@ -36650,7 +36745,7 @@ def RueCore.Spec.Sharp.copy_stmt : Prop :=
           checkProgram P = false ∧
             ¬ProgramTyped P ∧
               run Float.exactOps P 200 =
-                EvalRes.stuck Violation.ownedUnderCopy
+                EvalRes.refused Refusal.ownedUnderCopy
 ```
 
 ### `Spec.Sharp.discard_loop_stmt`
@@ -36679,18 +36774,18 @@ def RueCore.Spec.Sharp.discard_loop_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns := [{ params := [], ret := Ty.unit, body := B }] } →
           checkProgram P = false ∧
             ¬ProgramTyped P ∧
               run Float.exactOps P 200 =
-                  EvalRes.stuck Violation.linearDiscard ∧
+                  EvalRes.refused Refusal.linearDiscard ∧
                 (∀ (n : Nat),
                     ∃ D, StepsN Float.exactOps P n Config.init D) ∧
                   (∀ (C : Config),
@@ -36700,8 +36795,8 @@ def RueCore.Spec.Sharp.discard_loop_stmt : Prop :=
                             run Float.exactOps P fuel = EvalRes.outOfFuel) ↔
                           ∀ (n : Nat),
                             ∃ D, StepsN Float.exactOps P n Config.init D) ∧
-                      ¬((∀ (fuel : Nat) (w : Violation),
-                            run Float.exactOps P fuel ≠ EvalRes.stuck w) ↔
+                      ¬((∀ (fuel : Nat) (w : Refusal),
+                            run Float.exactOps P fuel ≠ EvalRes.refused w) ↔
                           ∀ (C : Config),
                             Steps Float.exactOps P Config.init C →
                               C.Terminal ∨ ∃ C', Step Float.exactOps P C C')
@@ -36733,20 +36828,20 @@ def RueCore.Spec.Sharp.discard_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
           checkProgram P = false ∧
             ¬ProgramTyped P ∧
               run Float.exactOps P 200 =
-                  EvalRes.stuck Violation.linearDiscard ∧
+                  EvalRes.refused Refusal.linearDiscard ∧
                 ∃ κ tr,
                   Steps Float.exactOps P Config.init (Config.panic κ tr) ∧
                     ¬∃ n,
@@ -36788,15 +36883,15 @@ def RueCore.Spec.Sharp.double_drop_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.copy,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.copy },
+                        dtor := true, cls := Qual.copy },
                       { attr := Attr.none, fields := [Ty.struct 0],
-                        dtor := false, cls := Mult.affine },
+                        dtor := false, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.struct 0, Ty.struct 3], dtor := false,
-                        cls := Mult.linear },
+                        cls := Qual.linear },
                       { attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine }],
+                        dtor := true, cls := Qual.affine }],
                   enums := [] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
@@ -36849,20 +36944,20 @@ def RueCore.Spec.Sharp.float_halt_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.float FloatWidth.w64,
                     body := B }] } →
           ProgramTyped P ∧
             (∃ H tr,
                 Steps Float.exactOps P Config.init
-                  (Config.run H Frame.empty []
+                  (Config.run H Activation.empty []
                     (Focus.ret
                       (Val.float FloatWidth.w64
                         (FloatDatum.num false 15 (-1))))
@@ -36870,38 +36965,38 @@ def RueCore.Spec.Sharp.float_halt_stmt : Prop :=
               ¬FloatDatum.Wf FloatWidth.w64 (FloatDatum.num false 30 (-2)) ∧
                 ¬FloatDatum.Wf FloatWidth.w64
                       (FloatDatum.num false 1 (-1075)) ∧
-                  (Config.run [] Frame.empty []
+                  (Config.run [] Activation.empty []
                         (Focus.ret
                           (Val.float FloatWidth.w64
                             (FloatDatum.num false 30 (-2))))
                         []).Terminal ∧
-                    (Config.run [] Frame.empty []
+                    (Config.run [] Activation.empty []
                           (Focus.ret
                             (Val.float FloatWidth.w64
                               (FloatDatum.num false 1 (-1075))))
                           []).Terminal ∧
                       ¬Steps Float.exactOps P Config.init
-                            (Config.run [] Frame.empty []
+                            (Config.run [] Activation.empty []
                               (Focus.ret
                                 (Val.float FloatWidth.w64
                                   (FloatDatum.num false 30 (-2))))
                               []) ∧
                         ¬Steps Float.exactOps P Config.init
-                              (Config.run [] Frame.empty []
+                              (Config.run [] Activation.empty []
                                 (Focus.ret
                                   (Val.float FloatWidth.w64
                                     (FloatDatum.num false 1 (-1075))))
                                 []) ∧
                           ¬Config.SafeAt Float.exactOps P
                                 (Ty.float FloatWidth.w64)
-                                (Config.run [] Frame.empty []
+                                (Config.run [] Activation.empty []
                                   (Focus.ret
                                     (Val.float FloatWidth.w64
                                       (FloatDatum.num false 30 (-2))))
                                   []) ∧
                             ¬Config.SafeAt Float.exactOps P
                                 (Ty.float FloatWidth.w64)
-                                (Config.run [] Frame.empty []
+                                (Config.run [] Activation.empty []
                                   (Focus.ret
                                     (Val.float FloatWidth.w64
                                       (FloatDatum.num false 1 (-1075))))
@@ -36933,13 +37028,13 @@ def RueCore.Spec.Sharp.fuel_panic_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -36952,7 +37047,7 @@ def RueCore.Spec.Sharp.fuel_panic_stmt : Prop :=
                     run Float.exactOps P fuel =
                         EvalRes.panic PanicKind.user
                           [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)] ∨
-                      ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+                      ∃ w, run Float.exactOps P fuel = EvalRes.refused w
 ```
 
 ### `Spec.Sharp.fuel_stmt`
@@ -36988,38 +37083,40 @@ def RueCore.Spec.Sharp.fuel_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
           ProgramTyped P ∧
             (∀ (n : Nat),
                 run Float.exactOps P n =
-                  eval Float.exactOps n P [] Frame.empty (Expr.call 0 [])) ∧
+                  eval Float.exactOps n P [] Activation.empty
+                    (Expr.call 0 [])) ∧
               run Float.exactOps P 0 = EvalRes.outOfFuel ∧
                 ∃ H v tr,
                   run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                     Steps Float.exactOps P Config.init
-                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        (Config.run H Activation.empty [] (Focus.ret v)
+                          tr) ∧
                       ¬200 ≤ 0 ∧
                         0 ≤ 200 ∧
                           run Float.exactOps P 0 ≠
                               run Float.exactOps P 200 ∧
-                            (∀ (w : Violation),
+                            (∀ (w : Refusal),
                                 run Float.exactOps P 200 ≠
-                                  EvalRes.stuck w) ∧
+                                  EvalRes.refused w) ∧
                               ¬∀ (fuel : Nat),
                                   run Float.exactOps P fuel =
                                       EvalRes.ok H v tr ∨
                                     ∃ w,
                                       run Float.exactOps P fuel =
-                                        EvalRes.stuck w
+                                        EvalRes.refused w
 ```
 
 ### `Spec.Sharp.ill_typed_halt_stmt`
@@ -37052,25 +37149,25 @@ def RueCore.Spec.Sharp.ill_typed_halt_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
           ProgramTyped P ∧
-            (Config.run [] Frame.empty [] (Focus.ret (Val.bool true))
+            (Config.run [] Activation.empty [] (Focus.ret (Val.bool true))
                   []).Terminal ∧
               ¬Steps Float.exactOps P Config.init
-                    (Config.run [] Frame.empty []
+                    (Config.run [] Activation.empty []
                       (Focus.ret (Val.bool true)) []) ∧
                 ¬Config.SafeAt Float.exactOps P
                     (Ty.int IntWidth.w64 Sign.signed)
-                    (Config.run [] Frame.empty []
+                    (Config.run [] Activation.empty []
                       (Focus.ret (Val.bool true)) [])
 ```
 
@@ -37103,35 +37200,35 @@ def RueCore.Spec.Sharp.init_steps_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
           ProgramTyped P ∧
             Step Float.exactOps P Config.init
-                (Config.run [] Frame.empty []
-                  (Focus.args (ArgsTag.call 0) [] []) []) ∧
+                (Config.run [] Activation.empty []
+                  (Focus.args (ArgsFrame.call 0) [] []) []) ∧
               ¬Step Float.exactOps P Config.init Config.init ∧
-                Config.run [] Frame.empty []
-                      (Focus.args (ArgsTag.call 0) [] []) [] ≠
+                Config.run [] Activation.empty []
+                      (Focus.args (ArgsFrame.call 0) [] []) [] ≠
                     Config.init ∧
                   ¬Config.init.Terminal ∧
                     ¬Config.Stuck Float.exactOps P Config.init
-                          Violation.linearLeak ∧
-                      Violation.linearLeak.isStuckState = false ∧
+                          Refusal.linearLeak ∧
+                      Refusal.linearLeak.isStuckState = false ∧
                         Steps Float.exactOps P Config.init Config.init ∧
                           ¬∃ n,
                               ∀ (fuel : Nat),
                                 n < fuel →
                                   ∃ w',
                                     run Float.exactOps P fuel =
-                                      EvalRes.stuck w'
+                                      EvalRes.refused w'
 ```
 
 ### `Spec.Sharp.leak_stmt`
@@ -37162,20 +37259,20 @@ def RueCore.Spec.Sharp.leak_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
           checkProgram P = false ∧
             ¬ProgramTyped P ∧
               run Float.exactOps P 200 =
-                  EvalRes.stuck Violation.linearLeak ∧
+                  EvalRes.refused Refusal.linearLeak ∧
                 ∃ H φ v tr,
                   Steps Float.exactOps P Config.init
                       (Config.run H φ [] (Focus.ret v) tr) ∧
@@ -37212,38 +37309,38 @@ def RueCore.Spec.Sharp.not_a_step_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
           ProgramTyped P ∧
             ∃ H v tr,
               Steps Float.exactOps P Config.init
-                  (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                  (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                 tr ≠ [] ∧
                   ¬Step Float.exactOps P
-                        (Config.run H Frame.empty [] (Focus.ret v) tr)
+                        (Config.run H Activation.empty [] (Focus.ret v) tr)
                         (Config.panic PanicKind.user []) ∧
                     ¬∃ evs,
                         (Config.panic PanicKind.user []).trace =
-                            (Config.run H Frame.empty [] (Focus.ret v)
+                            (Config.run H Activation.empty [] (Focus.ret v)
                                   tr).trace ++
                               evs ∧
-                          NewestFirst (dropLocs evs) ∧
-                            Lifo
-                                (Config.run H Frame.empty [] (Focus.ret v)
-                                    tr).stack
+                          StrictStackOrder (dropLocs evs) ∧
+                            StackDiscipline
+                                (Config.run H Activation.empty []
+                                    (Focus.ret v) tr).stack
                                 (Config.panic PanicKind.user []).stack
                                 (dropLocs evs) ∧
                               List.Pairwise (fun x1 x2 => x1 < x2)
-                                (Config.run H Frame.empty [] (Focus.ret v)
-                                    tr).stack
+                                (Config.run H Activation.empty []
+                                    (Focus.ret v) tr).stack
 ```
 
 ### `Spec.Sharp.off_run_stmt`
@@ -37275,13 +37372,13 @@ def RueCore.Spec.Sharp.off_run_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -37291,7 +37388,7 @@ def RueCore.Spec.Sharp.off_run_stmt : Prop :=
                 Steps Float.exactOps P Config.init C ∧
                   0 ∈ Config.held P.decls C ∧
                     ¬Steps Float.exactOps P C
-                          (Config.run [] Frame.empty []
+                          (Config.run [] Activation.empty []
                             (Focus.ret (Val.int IntWidth.w64 Sign.signed 3))
                             []) ∧
                       List.count 0
@@ -37330,18 +37427,18 @@ def RueCore.Spec.Sharp.out_of_range_halt_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
           ProgramTyped P ∧
-            (Config.run [] Frame.empty []
+            (Config.run [] Activation.empty []
                   (Focus.ret
                     (Val.int IntWidth.w64 Sign.signed 9223372036854775808))
                   []).Terminal ∧
@@ -37349,14 +37446,14 @@ def RueCore.Spec.Sharp.out_of_range_halt_stmt : Prop :=
                     (Val.int IntWidth.w64 Sign.signed 9223372036854775808)
                     (Ty.int IntWidth.w64 Sign.signed) ∧
                 ¬Steps Float.exactOps P Config.init
-                      (Config.run [] Frame.empty []
+                      (Config.run [] Activation.empty []
                         (Focus.ret
                           (Val.int IntWidth.w64 Sign.signed
                             9223372036854775808))
                         []) ∧
                   ¬Config.SafeAt Float.exactOps P
                       (Ty.int IntWidth.w64 Sign.signed)
-                      (Config.run [] Frame.empty []
+                      (Config.run [] Activation.empty []
                         (Focus.ret
                           (Val.int IntWidth.w64 Sign.signed
                             9223372036854775808))
@@ -37393,20 +37490,20 @@ def RueCore.Spec.Sharp.overwrite_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
           checkProgram P = false ∧
             ¬ProgramTyped P ∧
               run Float.exactOps P 200 =
-                EvalRes.stuck Violation.linearOverwrite
+                EvalRes.refused Refusal.linearOverwrite
 ```
 
 ### `Spec.Sharp.pending_leak_stmt`
@@ -37435,12 +37532,12 @@ def RueCore.Spec.Sharp.pending_leak_stmt : Prop :=
               structs :=
                 [{ attr := Attr.none,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Mult.affine },
+                    dtor := true, cls := Qual.affine },
                   { attr := Attr.linear,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Mult.linear }],
+                    dtor := false, cls := Qual.linear }],
               enums :=
-                [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
           fns :=
             [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                 body :=
@@ -37464,7 +37561,8 @@ def RueCore.Spec.Sharp.pending_leak_stmt : Prop :=
                 0 ∈ Config.held P.decls C ∧
                   ∃ H v tr,
                     Steps Float.exactOps P C
-                        (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                        (Config.run H Activation.empty [] (Focus.ret v)
+                          tr) ∧
                       List.count 0 (Val.own P.decls v) +
                           List.count 0 (freedIds P.decls tr) =
                         0
@@ -37500,24 +37598,24 @@ def RueCore.Spec.Sharp.retired_cell_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
           ProgramTyped P ∧
             eval Float.exactOps 1 P [Cell.dead] { env := [0], scope := [] }
                   (Expr.use (Place.var 0)) =
-                EvalRes.stuck Violation.useAfterDrop ∧
+                EvalRes.refused Refusal.useAfterDrop ∧
               Config.Stuck Float.exactOps P
                   (Config.run [Cell.dead] { env := [0], scope := [] } []
                     (Focus.eval (Expr.use (Place.var 0))) [])
-                  Violation.useAfterDrop ∧
+                  Refusal.useAfterDrop ∧
                 ¬Steps Float.exactOps P Config.init
                     (Config.run [Cell.dead] { env := [0], scope := [] } []
                       (Focus.eval (Expr.use (Place.var 0))) [])
@@ -37552,22 +37650,22 @@ def RueCore.Spec.Sharp.stuck_step_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
           ¬ProgramTyped P ∧
             (∃ C,
                 Steps Float.exactOps P Config.init C ∧
-                  Config.Stuck Float.exactOps P C Violation.useAfterMove) ∧
+                  Config.Stuck Float.exactOps P C Refusal.useAfterMove) ∧
               run Float.exactOps P 200 =
-                  EvalRes.stuck Violation.useAfterMove ∧
+                  EvalRes.refused Refusal.useAfterMove ∧
                 run Float.exactOps P 0 = EvalRes.outOfFuel ∧
                   (¬∀ (C : Config),
                         Steps Float.exactOps P Config.init C →
@@ -37585,7 +37683,7 @@ def RueCore.Spec.Sharp.stuck_step_stmt : Prop :=
                                       D) ∨
                                   (∃ H v tr,
                                       Steps Float.exactOps P Config.init
-                                          (Config.run H Frame.empty []
+                                          (Config.run H Activation.empty []
                                             (Focus.ret v) tr) ∧
                                         HasTy P.decls v fd.ret) ∨
                                     ∃ κ tr,
@@ -37593,7 +37691,7 @@ def RueCore.Spec.Sharp.stuck_step_stmt : Prop :=
                                         (Config.panic κ tr)) ∧
                         ¬∀ (fuel : Nat),
                             ∃ w',
-                              run Float.exactOps P fuel = EvalRes.stuck w'
+                              run Float.exactOps P fuel = EvalRes.refused w'
 ```
 
 ### `Spec.Sharp.uncut_drop_stmt`
@@ -37606,7 +37704,7 @@ frame registers cells `0` and `1`, in location order, but whose pending
 `endscope` names cell `0` rather than the newest cell `1` takes a step: (D-EndScope)
 pops one cell off the record, which leaves `[0]`, and drops cell `0`, the cell
 it kept. Its drop markers name one cell, so they are newest first, and its
-stack is in location order; only `Lifo` fails: the step cut cell `1` and
+stack is in location order; only `StackDiscipline` fails: the step cut cell `1` and
 dropped cell `0`. `Config.init` does not reach it, so `drop_order`'s last half
 fails without the hypothesis that the configuration is reached, on the one
 conjunct `unordered` leaves alone.
@@ -37628,13 +37726,13 @@ def RueCore.Spec.Sharp.uncut_drop_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -37672,9 +37770,9 @@ def RueCore.Spec.Sharp.uncut_drop_stmt : Prop :=
                       Event.dtor 0
                         (Contents.struct 0 0
                           [Contents.int IntWidth.w64 Sign.signed 1])]) ∧
-                NewestFirst [0] ∧
+                StrictStackOrder [0] ∧
                   List.Pairwise (fun x1 x2 => x1 < x2) [0, 1] ∧
-                    ¬Lifo [0, 1] [0] [0] ∧
+                    ¬StackDiscipline [0, 1] [0] [0] ∧
                       ¬∃ evs,
                           (Config.run
                                   [Cell.dead,
@@ -37708,8 +37806,8 @@ def RueCore.Spec.Sharp.uncut_drop_stmt : Prop :=
                                       (Val.int IntWidth.w64 Sign.signed 3))
                                     []).trace ++
                                 evs ∧
-                            NewestFirst (dropLocs evs) ∧
-                              Lifo
+                            StrictStackOrder (dropLocs evs) ∧
+                              StackDiscipline
                                   (Config.run
                                       [Cell.full
                                           (Contents.struct 0 0
@@ -37791,13 +37889,13 @@ def RueCore.Spec.Sharp.unheld_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -37806,7 +37904,7 @@ def RueCore.Spec.Sharp.unheld_stmt : Prop :=
               ¬1 ∈ Config.held P.decls Config.init ∧
                 ∃ H v tr,
                   Steps Float.exactOps P Config.init
-                      (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                     List.count 1 (Val.own P.decls v) +
                         List.count 1 (freedIds P.decls tr) =
                       0
@@ -37839,13 +37937,13 @@ def RueCore.Spec.Sharp.unordered_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -37869,8 +37967,8 @@ def RueCore.Spec.Sharp.unordered_stmt : Prop :=
                                 (Expr.intLit IntWidth.w64 Sign.signed 1))
                               []).trace ++
                           evs ∧
-                      NewestFirst (dropLocs evs) ∧
-                        Lifo
+                      StrictStackOrder (dropLocs evs) ∧
+                        StackDiscipline
                             (Config.run [] { env := [], scope := [1, 0] } []
                                 (Focus.eval
                                   (Expr.intLit IntWidth.w64 Sign.signed 1))
@@ -37916,37 +38014,37 @@ def RueCore.Spec.Sharp.unreachable_stuck_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
           ProgramTyped P ∧
             Config.Stuck Float.exactOps P
-                (Config.run [] Frame.empty []
+                (Config.run [] Activation.empty []
                   (Focus.eval (Expr.use (Place.var 0))) [])
-                Violation.unbound ∧
+                Refusal.unbound ∧
               ¬Steps Float.exactOps P Config.init
-                    (Config.run [] Frame.empty []
+                    (Config.run [] Activation.empty []
                       (Focus.eval (Expr.use (Place.var 0))) []) ∧
-                (∀ (fuel : Nat) (w : Violation),
-                    run Float.exactOps P fuel ≠ EvalRes.stuck w) ∧
-                  ¬((Config.run [] Frame.empty []
+                (∀ (fuel : Nat) (w : Refusal),
+                    run Float.exactOps P fuel ≠ EvalRes.refused w) ∧
+                  ¬((Config.run [] Activation.empty []
                             (Focus.eval (Expr.use (Place.var 0)))
                             []).Terminal ∨
                         ∃ C',
                           Step Float.exactOps P
-                            (Config.run [] Frame.empty []
+                            (Config.run [] Activation.empty []
                               (Focus.eval (Expr.use (Place.var 0))) [])
                             C') ∧
                     (∀ (T : Ty),
                         ¬Config.SafeAt Float.exactOps P T
-                            (Config.run [] Frame.empty []
+                            (Config.run [] Activation.empty []
                               (Focus.eval (Expr.use (Place.var 0))) [])) ∧
                       (¬∀ (C : Config),
                             C.Terminal ∨ ∃ C', Step Float.exactOps P C C') ∧
@@ -37955,7 +38053,7 @@ def RueCore.Spec.Sharp.unreachable_stuck_stmt : Prop :=
                               n < fuel →
                                 ∃ w',
                                   run Float.exactOps P fuel =
-                                    EvalRes.stuck w'
+                                    EvalRes.refused w'
 ```
 
 ### `Spec.Sharp.unreached_double_stmt`
@@ -37987,13 +38085,13 @@ def RueCore.Spec.Sharp.unreached_double_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -38049,13 +38147,13 @@ def RueCore.Spec.Sharp.unreached_held_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -38066,7 +38164,7 @@ def RueCore.Spec.Sharp.unreached_held_stmt : Prop :=
                       [Cell.full
                           (Contents.struct 0 5
                             [Contents.int IntWidth.w64 Sign.signed 1])]
-                      Frame.empty []
+                      Activation.empty []
                       (Focus.ret (Val.int IntWidth.w64 Sign.signed 0)) []) ∧
                 5 ∈
                     Config.held P.decls
@@ -38074,7 +38172,7 @@ def RueCore.Spec.Sharp.unreached_held_stmt : Prop :=
                         [Cell.full
                             (Contents.struct 0 5
                               [Contents.int IntWidth.w64 Sign.signed 1])]
-                        Frame.empty []
+                        Activation.empty []
                         (Focus.ret (Val.int IntWidth.w64 Sign.signed 0))
                         []) ∧
                   List.count 5
@@ -38112,13 +38210,13 @@ def RueCore.Spec.Sharp.unreached_panic_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -38146,7 +38244,8 @@ def RueCore.Spec.Sharp.unreached_panic_stmt : Prop :=
                                     (Contents.struct 0 0
                                       [Contents.int IntWidth.w64 Sign.signed
                                           1])] ∨
-                            ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+                            ∃ w,
+                              run Float.exactOps P fuel = EvalRes.refused w
 ```
 
 ### `Spec.Sharp.unreached_stmt`
@@ -38181,19 +38280,19 @@ def RueCore.Spec.Sharp.unreached_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
           ProgramTyped P ∧
             ¬Steps Float.exactOps P Config.init
-                  (Config.run [] Frame.empty []
+                  (Config.run [] Activation.empty []
                     (Focus.ret (Val.int IntWidth.w64 Sign.signed 8))
                     [Event.dtor 0
                         (Contents.struct 0 0
@@ -38217,7 +38316,8 @@ def RueCore.Spec.Sharp.unreached_stmt : Prop :=
                                     (Contents.struct 0 0
                                       [Contents.int IntWidth.w64 Sign.signed
                                           1])] ∨
-                            ∃ w, run Float.exactOps P fuel = EvalRes.stuck w
+                            ∃ w,
+                              run Float.exactOps P fuel = EvalRes.refused w
 ```
 
 ### `Spec.checkProgram_sound_stmt`
@@ -38249,9 +38349,9 @@ machine's drop glue cannot carry this statement with it.
 
 ```lean
 def RueCore.Spec.drop_glue_order_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+      (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M.toFloatSig P Config.init
               (Config.run H φ [] (Focus.ret v) tr) →
             DropGlueBlocks P.decls tr) ∧
@@ -38268,16 +38368,16 @@ def RueCore.Spec.drop_glue_order_stmt : Prop :=
 its scope"; §6.7, §6.9–§6.11), over `Step`. A finished run's trace — value
 or panic — is in §6.11's block grammar (`Blocks`). Each step from a
 reachable configuration drops one cell or distinct cells newest first, and
-the registration stack is in location order. `Lifo` holds of every step
+the registration stack is in location order. `StackDiscipline` holds of every step
 that keeps its stack, whatever it drops, so it constrains only a step that
 pops: the cells it drops are among those it cut, newest first (R7 of
 `REDTEAM-LOG.md`).
 
 ```lean
 def RueCore.Spec.drop_order_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+      (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M.toFloatSig P Config.init
               (Config.run H φ [] (Focus.ret v) tr) →
             Blocks P.decls tr) ∧
@@ -38289,8 +38389,8 @@ def RueCore.Spec.drop_order_stmt : Prop :=
               Step M.toFloatSig P C C' →
                 ∃ evs,
                   C'.trace = C.trace ++ evs ∧
-                    NewestFirst (dropLocs evs) ∧
-                      Lifo C.stack C'.stack (dropLocs evs) ∧
+                    StrictStackOrder (dropLocs evs) ∧
+                      StackDiscipline C.stack C'.stack (dropLocs evs) ∧
                         List.Pairwise (fun x1 x2 => x1 < x2) C.stack
 ```
 
@@ -38305,9 +38405,9 @@ every large enough fuel.
 
 ```lean
 def RueCore.Spec.eval_complete_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+      (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M.toFloatSig P Config.init
               (Config.run H φ [] (Focus.ret v) tr) →
             ∃ n,
@@ -38330,7 +38430,7 @@ every length from `Config.init`.
 
 ```lean
 def RueCore.Spec.eval_diverges_iff_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ((∀ (fuel : Nat), run M.toFloatSig P fuel = EvalRes.outOfFuel) ↔
         ∀ (n : Nat), ∃ D, StepsN M.toFloatSig P n Config.init D)
@@ -38347,14 +38447,14 @@ by `→*` from `Config.init` with the same store and trace.
 
 ```lean
 def RueCore.Spec.eval_sound_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
+        (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
           (∀ (H : Store) (v : Val) (tr : List Event),
               run M.toFloatSig P fuel = EvalRes.ok H v tr →
                 Steps M.toFloatSig P Config.init
-                  (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+                  (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
             ∀ (k : PanicKind) (tr : List Event),
               run M.toFloatSig P fuel = EvalRes.panic k tr →
                 Steps M.toFloatSig P Config.init (Config.panic k tr)
@@ -38371,10 +38471,10 @@ sides hold outright, so the equivalence adds nothing; cite
 
 ```lean
 def RueCore.Spec.never_stuck_iff_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      ((∀ (fuel : Nat) (w : Violation),
-          run M.toFloatSig P fuel ≠ EvalRes.stuck w) ↔
+      ((∀ (fuel : Nat) (w : Refusal),
+          run M.toFloatSig P fuel ≠ EvalRes.refused w) ↔
         ∀ (C : Config),
           Steps M.toFloatSig P Config.init C →
             C.Terminal ∨ ∃ C', Step M.toFloatSig P C C')
@@ -38392,10 +38492,10 @@ covers it, over every configuration a run reaches (RUE-2477).
 
 ```lean
 def RueCore.Spec.no_double_free_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
+        (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
           (∀ (a : Nat),
               List.count a
                   (freedIds P.decls (run M.toFloatSig P fuel).trace) ≤
@@ -38415,10 +38515,10 @@ never fire; what they rule out is what those monitors watch (R3 of
 
 ```lean
 def RueCore.Spec.no_linear_discard_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearDiscard
+        run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearDiscard
 ```
 
 ### `Spec.no_linear_leak_stmt`
@@ -38439,10 +38539,10 @@ What it rules out is what `eval`'s leak monitor watches (R3 of
 
 ```lean
 def RueCore.Spec.no_linear_leak_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearLeak
+        run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearLeak
 ```
 
 ### `Spec.no_linear_overwrite_stmt`
@@ -38454,10 +38554,10 @@ a live linear value.
 
 ```lean
 def RueCore.Spec.no_linear_overwrite_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.linearOverwrite
+        run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearOverwrite
 ```
 
 ### `Spec.no_use_after_drop_stmt`
@@ -38478,10 +38578,10 @@ consequence of typing; it is kept in §7's form, over checked programs
 
 ```lean
 def RueCore.Spec.no_use_after_drop_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterDrop
+        run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.useAfterDrop
 ```
 
 ### `Spec.no_use_after_move_stmt`
@@ -38496,10 +38596,10 @@ what that monitor watches (R3 of `REDTEAM-LOG.md`; RUE-2469).
 
 ```lean
 def RueCore.Spec.no_use_after_move_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
-        run M.toFloatSig P fuel ≠ EvalRes.stuck Violation.useAfterMove
+        run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.useAfterMove
 ```
 
 ### `Spec.no_violation_stmt`
@@ -38507,19 +38607,19 @@ def RueCore.Spec.no_use_after_move_stmt : Prop :=
 *def* · module `RueCore.Spec.Safety`
 
 **No refusal of any kind** (§7's memory-safety bullets). A checked
-program's run is never `.stuck`. Narrower than the bullets: a value built for
+program's run is never `.refused`. Narrower than the bullets: a value built for
 a sibling operand that a later one abandons by `return` or `break` is dropped
 by nobody (RUE-2316), and a `@panic` runs no drop (§5.7's `⊥_panic`). Like
-every "never `.stuck`" statement, it holds because `eval`'s checks and
+every "never `.refused`" statement, it holds because `eval`'s checks and
 monitors never fire: what it rules out is what they watch (R3 of
 `REDTEAM-LOG.md`; RUE-2469).
 
 ```lean
 def RueCore.Spec.no_violation_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      ∀ (fuel : Nat) (w : Violation),
-        run M.toFloatSig P fuel ≠ EvalRes.stuck w
+      ∀ (fuel : Nat) (w : Refusal),
+        run M.toFloatSig P fuel ≠ EvalRes.refused w
 ```
 
 ### `Spec.step_no_double_free_stmt`
@@ -38538,7 +38638,7 @@ included; `no_double_free` over a finished run follows from it
 
 ```lean
 def RueCore.Spec.step_no_double_free_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∀ {C : Config},
         Steps M.toFloatSig P Config.init C →
@@ -38563,7 +38663,7 @@ the conclusion of Timany et al.'s Cor. 2.3, `safe`, with typed halting values
 
 ```lean
 def RueCore.Spec.step_preservation_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∃ fd,
         P.fns[0]? = some fd ∧
@@ -38584,7 +38684,7 @@ run, Timany et al.'s `safe` of the initial configuration (`FIELD.md`, section 2)
 
 ```lean
 def RueCore.Spec.step_progress_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∀ (C : Config),
         Steps M.toFloatSig P Config.init C →
@@ -38603,7 +38703,7 @@ trap as a third outcome (`FIELD.md`, section 2), rather than progress ∧ preser
 
 ```lean
 def RueCore.Spec.step_type_safety_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∃ fd,
         P.fns[0]? = some fd ∧
@@ -38611,7 +38711,7 @@ def RueCore.Spec.step_type_safety_stmt : Prop :=
             (∃ D, StepsN M.toFloatSig P n Config.init D) ∨
               (∃ H v tr,
                   Steps M.toFloatSig P Config.init
-                      (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                      (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                     HasTy P.decls v fd.ret) ∨
                 ∃ κ tr, Steps M.toFloatSig P Config.init (Config.panic κ tr)
 ```
@@ -38638,14 +38738,14 @@ what it abandons is not ended), and nothing about a run that never finishes
 
 ```lean
 def RueCore.Spec.whole_program_exactly_once_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       P.pendingSafe = true →
         ∀ {C : Config},
           Steps M.toFloatSig P Config.init C →
             ∀ {a : Nat},
               a ∈ Config.held P.decls C →
-                ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+                ∀ {H : Store} {φ : Activation} {v : Val} {tr : List Event},
                   Steps M.toFloatSig P C
                       (Config.run H φ [] (Focus.ret v) tr) →
                     List.count a (Val.own P.decls v) +
@@ -38681,13 +38781,13 @@ def RueCore.Spec.Nonvacuous.array_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -38703,7 +38803,8 @@ def RueCore.Spec.Nonvacuous.array_stmt : Prop :=
                   ∃ H v tr,
                     run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                       Steps Float.exactOps P Config.init
-                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          (Config.run H Activation.empty [] (Focus.ret v)
+                            tr) ∧
                         2 ≤ (dtorIds tr).length
 ```
 
@@ -38740,13 +38841,13 @@ def RueCore.Spec.Nonvacuous.dtor_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -38761,16 +38862,17 @@ def RueCore.Spec.Nonvacuous.dtor_stmt : Prop :=
                           (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
                   DtorNotCopy P.decls ∧
                     (∃ C, Step Float.exactOps P Config.init C) ∧
-                      (∀ (fuel : Nat) (w : Violation),
-                          run Float.exactOps P fuel ≠ EvalRes.stuck w) ∧
+                      (∀ (fuel : Nat) (w : Refusal),
+                          run Float.exactOps P fuel ≠ EvalRes.refused w) ∧
                         2 ≤
                             (freedIds P.decls
-                                (eval Float.exactOps 200 P [] Frame.empty
-                                    B).trace).length ∧
+                                (eval Float.exactOps 200 P []
+                                    Activation.empty B).trace).length ∧
                           (∃ H₁ vs tr r,
-                              Lead Float.exactOps P 200 [] Frame.empty H₁ vs
-                                  tr B ∧
-                                eval Float.exactOps 201 P [] Frame.empty B =
+                              Lead Float.exactOps P 200 [] Activation.empty
+                                  H₁ vs tr B ∧
+                                eval Float.exactOps 201 P []
+                                      Activation.empty B =
                                     EvalRes.withTrace tr r ∧
                                   Contents.ownList P.decls
                                       (Contents.ofVals vs) ≠
@@ -38778,7 +38880,7 @@ def RueCore.Spec.Nonvacuous.dtor_stmt : Prop :=
                             ∃ H v tr,
                               run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                                 Steps Float.exactOps P Config.init
-                                    (Config.run H Frame.empty []
+                                    (Config.run H Activation.empty []
                                       (Focus.ret v) tr) ∧
                                   2 ≤ (freedIds P.decls tr).length ∧
                                     2 ≤ (dtorIds tr).length
@@ -38812,13 +38914,13 @@ def RueCore.Spec.Nonvacuous.early_return_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -38834,7 +38936,8 @@ def RueCore.Spec.Nonvacuous.early_return_stmt : Prop :=
                   ∃ H v tr,
                     run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                       Steps Float.exactOps P Config.init
-                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          (Config.run H Activation.empty [] (Focus.ret v)
+                            tr) ∧
                         v = Val.int IntWidth.w64 Sign.signed 7 ∧
                           2 ≤ (dtorIds tr).length
 ```
@@ -38868,13 +38971,13 @@ def RueCore.Spec.Nonvacuous.enum_match_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -38890,7 +38993,8 @@ def RueCore.Spec.Nonvacuous.enum_match_stmt : Prop :=
                   ∃ H v tr,
                     run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                       Steps Float.exactOps P Config.init
-                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          (Config.run H Activation.empty [] (Focus.ret v)
+                            tr) ∧
                         2 ≤ (freedIds P.decls tr).length ∧
                           1 ≤ (dtorIds tr).length
 ```
@@ -38925,13 +39029,13 @@ def RueCore.Spec.Nonvacuous.float_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.float FloatWidth.w64,
                     body := B }] } →
@@ -38946,7 +39050,8 @@ def RueCore.Spec.Nonvacuous.float_stmt : Prop :=
                   ∃ H v tr,
                     run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                       Steps Float.exactOps P Config.init
-                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          (Config.run H Activation.empty [] (Focus.ret v)
+                            tr) ∧
                         v =
                           Val.float FloatWidth.w64
                             (FloatDatum.num false 15 (-1))
@@ -38980,13 +39085,13 @@ def RueCore.Spec.Nonvacuous.linear_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39002,7 +39107,8 @@ def RueCore.Spec.Nonvacuous.linear_stmt : Prop :=
                   ∃ H v tr,
                     run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                       Steps Float.exactOps P Config.init
-                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          (Config.run H Activation.empty [] (Focus.ret v)
+                            tr) ∧
                         2 ≤ (freedIds P.decls tr).length
 ```
 
@@ -39039,13 +39145,13 @@ def RueCore.Spec.Nonvacuous.loop_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39061,7 +39167,8 @@ def RueCore.Spec.Nonvacuous.loop_stmt : Prop :=
                   ∃ H v tr,
                     run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                       Steps Float.exactOps P Config.init
-                          (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                          (Config.run H Activation.empty [] (Focus.ret v)
+                            tr) ∧
                         3 ≤ (dtorIds tr).length
 ```
 
@@ -39073,7 +39180,7 @@ def RueCore.Spec.Nonvacuous.loop_stmt : Prop :=
 beyond the empty frame. Over the witnesses' declarations, `@drop(s); 1` is
 typed by `check` in the context `s : S0`, owned, and the frame `{ ρ := [ℓ0],
 σ := [ℓ0] }` over the store `ℓ0 ↦ S0 { 5 }` agrees with that context
-(`FrameMatches`) and is copy-closed (`StoreCC`), for a checked, `pendingSafe`
+(`ActivationTyping`) and is copy-closed (`StoreCC`), for a checked, `pendingSafe`
 program. Its evaluation runs the destructor of the value it started with, and
 its leading operand has a `Lead`, so `soundness`, `drop_exactly_once` and
 `rest_exactly_once` apply to a term with a free variable and a store that is
@@ -39087,12 +39194,12 @@ def RueCore.Spec.Nonvacuous.open_frame_stmt : Prop :=
           structs :=
             [{ attr := Attr.none,
                 fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                cls := Mult.affine },
+                cls := Qual.affine },
               { attr := Attr.linear,
                 fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-                cls := Mult.linear }],
+                cls := Qual.linear }],
           enums :=
-            [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] } →
+            [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] } →
       ∀ (e : Expr),
         e =
             (Expr.drop (Place.var 0)).seq
@@ -39107,7 +39214,7 @@ def RueCore.Spec.Nonvacuous.open_frame_stmt : Prop :=
               ProgramTyped P ∧
                 P.pendingSafe = true ∧
                   e.pendingSafe = true ∧
-                    FrameMatches D
+                    ActivationTyping D
                         [{ ty := Ty.struct 0, mu := false,
                             st := OwnSt.owned }]
                         { env := [0], scope := [0] }
@@ -39183,13 +39290,13 @@ def RueCore.Spec.Nonvacuous.panic_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39232,12 +39339,12 @@ def RueCore.Spec.Sharp.entry_param_stmt : Prop :=
               structs :=
                 [{ attr := Attr.none,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Mult.affine },
+                    dtor := true, cls := Qual.affine },
                   { attr := Attr.linear,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Mult.linear }],
+                    dtor := false, cls := Qual.linear }],
               enums :=
-                [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
           fns :=
             [{
                 params :=
@@ -39255,7 +39362,7 @@ def RueCore.Spec.Sharp.entry_param_stmt : Prop :=
                         ∃ H v tr,
                           run Float.exactOps P 200 = EvalRes.ok H v tr ∧
                             HasTy P.decls v fd.ret)) ∧
-            run Float.exactOps P 200 = EvalRes.stuck Violation.typeConfusion
+            run Float.exactOps P 200 = EvalRes.refused Refusal.typeConfusion
 ```
 
 ### `Spec.Sharp.frame_stmt`
@@ -39265,13 +39372,13 @@ def RueCore.Spec.Sharp.entry_param_stmt : Prop :=
 **A typed expression run in a frame that does not match its context**
 (§7 sharpness, RUE-2485). `1; x`, typed by `check` in the context `x : i64` over
 the checked program of `Nonvacuous.dtor`, is run from the empty frame and
-store, which do not match that context (`FrameMatches` fails); everything else
+store, which do not match that context (`ActivationTyping` fails); everything else
 `soundness`, `drop_exactly_once` and `rest_exactly_once` ask holds, a `Lead`
 (the discarded `1`) included. `eval` refuses the read of `x` with `unbound`. The statement gives `ProgramTyped P` and `WfProgram P`
 (`soundness` asks the second, `drop_exactly_once` the first), and
 `rest_exactly_once`'s hypothesis 8 as `eval … = r.withTrace []` with `r` the
 refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495);
-`¬ FrameMatches` is proved through `soundness`.
+`¬ ActivationTyping` is proved through `soundness`.
 
 ```lean
 def RueCore.Spec.Sharp.frame_stmt : Prop :=
@@ -39290,13 +39397,13 @@ def RueCore.Spec.Sharp.frame_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39326,23 +39433,25 @@ def RueCore.Spec.Sharp.frame_stmt : Prop :=
                                   ¬EvalOk P.decls
                                       (Ty.int IntWidth.w64 Sign.signed)
                                       (Ty.int IntWidth.w64 Sign.signed)
-                                      Ω.norm Ω.brk Frame.empty []
+                                      Ω.norm Ω.brk Activation.empty []
                                       (eval Float.exactOps 200 P []
-                                        Frame.empty e)) ∧
-                          ¬FrameMatches P.decls
+                                        Activation.empty e)) ∧
+                          ¬ActivationTyping P.decls
                                 [{ ty := Ty.int IntWidth.w64 Sign.signed,
                                     mu := false, st := OwnSt.owned }]
-                                Frame.empty [] ∧
-                            Lead Float.exactOps P 200 [] Frame.empty []
+                                Activation.empty [] ∧
+                            Lead Float.exactOps P 200 [] Activation.empty []
                                 [Val.int IntWidth.w64 Sign.signed 1] [] e ∧
-                              eval Float.exactOps 200 P [] Frame.empty e =
-                                  EvalRes.stuck Violation.unbound ∧
-                                eval Float.exactOps 201 P [] Frame.empty e =
-                                    EvalRes.stuck Violation.unbound ∧
-                                  eval Float.exactOps 201 P [] Frame.empty
-                                      e =
+                              eval Float.exactOps 200 P [] Activation.empty
+                                    e =
+                                  EvalRes.refused Refusal.unbound ∧
+                                eval Float.exactOps 201 P []
+                                      Activation.empty e =
+                                    EvalRes.refused Refusal.unbound ∧
+                                  eval Float.exactOps 201 P []
+                                      Activation.empty e =
                                     EvalRes.withTrace []
-                                      (EvalRes.stuck Violation.unbound)
+                                      (EvalRes.refused Refusal.unbound)
 ```
 
 ### `Spec.Sharp.no_entry_stmt`
@@ -39364,16 +39473,16 @@ def RueCore.Spec.Sharp.no_entry_stmt : Prop :=
               structs :=
                 [{ attr := Attr.none,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Mult.affine },
+                    dtor := true, cls := Qual.affine },
                   { attr := Attr.linear,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Mult.linear }],
+                    dtor := false, cls := Qual.linear }],
               enums :=
-                [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
           fns := [] } →
       WfProgram P ∧
         P.fns[0]? = none ∧
-          run Float.exactOps P 200 = EvalRes.stuck Violation.unbound ∧
+          run Float.exactOps P 200 = EvalRes.refused Refusal.unbound ∧
             ∀ (fd : FnDef),
               ¬(run Float.exactOps P 200 = EvalRes.outOfFuel ∨
                   (∃ k tr, run Float.exactOps P 200 = EvalRes.panic k tr) ∨
@@ -39409,20 +39518,20 @@ def RueCore.Spec.Sharp.no_eval_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
           ProgramTyped P ∧
             P.pendingSafe = true ∧
               B.pendingSafe = true ∧
-                FrameMatches P.decls [] Frame.empty [] ∧
+                ActivationTyping P.decls [] Activation.empty [] ∧
                   StoreCC P.decls [] ∧
                     (∃ c Ω,
                         check P (Ty.int IntWidth.w64 Sign.signed) [] B =
@@ -39431,11 +39540,12 @@ def RueCore.Spec.Sharp.no_eval_stmt : Prop :=
                             Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
                               (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
                       ∃ H₁ vs tr,
-                        Lead Float.exactOps P 200 [] Frame.empty H₁ vs tr
-                            B ∧
-                          ∀ (w : Violation),
-                            eval Float.exactOps 201 P [] Frame.empty B ≠
-                              EvalRes.withTrace tr (EvalRes.stuck w)
+                        Lead Float.exactOps P 200 [] Activation.empty H₁ vs
+                            tr B ∧
+                          ∀ (w : Refusal),
+                            eval Float.exactOps 201 P [] Activation.empty
+                                B ≠
+                              EvalRes.withTrace tr (EvalRes.refused w)
 ```
 
 ### `Spec.Sharp.no_lead_stmt`
@@ -39466,20 +39576,20 @@ def RueCore.Spec.Sharp.no_lead_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
           ProgramTyped P ∧
             P.pendingSafe = true ∧
               B.pendingSafe = true ∧
-                FrameMatches P.decls [] Frame.empty [] ∧
+                ActivationTyping P.decls [] Activation.empty [] ∧
                   StoreCC P.decls [] ∧
                     (∃ c Ω,
                         check P (Ty.int IntWidth.w64 Sign.signed) [] B =
@@ -39487,7 +39597,7 @@ def RueCore.Spec.Sharp.no_lead_stmt : Prop :=
                           c.fits (Ty.int IntWidth.w64 Sign.signed) = true ∧
                             Typed P (Ty.int IntWidth.w64 Sign.signed) [] B
                               (Ty.int IntWidth.w64 Sign.signed) Ω) ∧
-                      ¬Lead Float.exactOps P 200 [] Frame.empty
+                      ¬Lead Float.exactOps P 200 [] Activation.empty
                             [Cell.full
                                 (Contents.struct 0 0
                                   [Contents.int IntWidth.w64 Sign.signed
@@ -39495,9 +39605,10 @@ def RueCore.Spec.Sharp.no_lead_stmt : Prop :=
                             [Val.struct 0 0
                                 [Val.int IntWidth.w64 Sign.signed 1]]
                             [] B ∧
-                        eval Float.exactOps 201 P [] Frame.empty B =
+                        eval Float.exactOps 201 P [] Activation.empty B =
                             EvalRes.withTrace []
-                              (eval Float.exactOps 201 P [] Frame.empty B) ∧
+                              (eval Float.exactOps 201 P [] Activation.empty
+                                B) ∧
                           ¬Exact P.decls
                               [Cell.full
                                   (Contents.struct 0 0
@@ -39508,7 +39619,8 @@ def RueCore.Spec.Sharp.no_lead_stmt : Prop :=
                                   [Val.struct 0 0
                                       [Val.int IntWidth.w64 Sign.signed
                                           1]]))
-                              (eval Float.exactOps 201 P [] Frame.empty B)
+                              (eval Float.exactOps 201 P [] Activation.empty
+                                B)
 ```
 
 ### `Spec.Sharp.not_fits_stmt`
@@ -39537,13 +39649,13 @@ def RueCore.Spec.Sharp.not_fits_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39587,13 +39699,13 @@ def RueCore.Spec.Sharp.pending_expr_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39607,7 +39719,7 @@ def RueCore.Spec.Sharp.pending_expr_stmt : Prop :=
               ProgramTyped P ∧
                 P.pendingSafe = true ∧
                   e.pendingSafe = false ∧
-                    FrameMatches P.decls
+                    ActivationTyping P.decls
                         [{ ty := Ty.struct 0, mu := false,
                             st := OwnSt.owned }]
                         { env := [0], scope := [0] }
@@ -39707,12 +39819,12 @@ def RueCore.Spec.Sharp.pending_program_stmt : Prop :=
               structs :=
                 [{ attr := Attr.none,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Mult.affine },
+                    dtor := true, cls := Qual.affine },
                   { attr := Attr.linear,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Mult.linear }],
+                    dtor := false, cls := Qual.linear }],
               enums :=
-                [{ variants := [[Ty.struct 0], []], cls := Mult.affine }] },
+                [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
           fns :=
             [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                 body := Expr.intLit IntWidth.w64 Sign.signed 0 },
@@ -39728,7 +39840,7 @@ def RueCore.Spec.Sharp.pending_program_stmt : Prop :=
           ProgramTyped P ∧
             P.pendingSafe = false ∧
               e.pendingSafe = true ∧
-                FrameMatches P.decls
+                ActivationTyping P.decls
                     [{ ty := Ty.struct 0, mu := false, st := OwnSt.owned }]
                     { env := [0], scope := [0] }
                     [Cell.full
@@ -39754,7 +39866,7 @@ def RueCore.Spec.Sharp.pending_program_stmt : Prop :=
                               (Contents.struct 0 0
                                 [Contents.int IntWidth.w64 Sign.signed 5])]
                           { env := [0], scope := [0] }
-                          [Cell.full Contents.hole]
+                          [Cell.full Contents.movedOut]
                           [Val.struct 0 0
                               [Val.int IntWidth.w64 Sign.signed 5]]
                           [] e ∧
@@ -39783,7 +39895,7 @@ def RueCore.Spec.Sharp.pending_program_stmt : Prop :=
                                         [Contents.int IntWidth.w64
                                             Sign.signed 5])]
                                   { env := [0], scope := [0] } e) ∧
-                            ¬Exact P.decls [Cell.full Contents.hole]
+                            ¬Exact P.decls [Cell.full Contents.movedOut]
                                 (Contents.ownList P.decls
                                   (Contents.ofVals
                                     [Val.struct 0 0
@@ -39826,13 +39938,13 @@ def RueCore.Spec.Sharp.store_cc_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39843,7 +39955,7 @@ def RueCore.Spec.Sharp.store_cc_stmt : Prop :=
               ProgramTyped P ∧
                 P.pendingSafe = true ∧
                   e.pendingSafe = true ∧
-                    FrameMatches P.decls [] Frame.empty
+                    ActivationTyping P.decls [] Activation.empty
                         [Cell.full
                             (Contents.array
                               (Ty.int IntWidth.w64 Sign.signed) 0
@@ -39871,7 +39983,7 @@ def RueCore.Spec.Sharp.store_cc_stmt : Prop :=
                                     [Contents.struct 0 1
                                         [Contents.int IntWidth.w64
                                             Sign.signed 1]])]
-                              Frame.empty
+                              Activation.empty
                               [Cell.full
                                   (Contents.array
                                     (Ty.int IntWidth.w64 Sign.signed) 0
@@ -39886,7 +39998,7 @@ def RueCore.Spec.Sharp.store_cc_stmt : Prop :=
                                         [Contents.struct 0 1
                                             [Contents.int IntWidth.w64
                                                 Sign.signed 1]])]
-                                  Frame.empty e =
+                                  Activation.empty e =
                                 EvalRes.withTrace []
                                   (eval Float.exactOps 201 P
                                     [Cell.full
@@ -39896,7 +40008,7 @@ def RueCore.Spec.Sharp.store_cc_stmt : Prop :=
                                           [Contents.struct 0 1
                                               [Contents.int IntWidth.w64
                                                   Sign.signed 1]])]
-                                    Frame.empty e) ∧
+                                    Activation.empty e) ∧
                               ¬Exact P.decls
                                     [Cell.full
                                         (Contents.array
@@ -39915,7 +40027,7 @@ def RueCore.Spec.Sharp.store_cc_stmt : Prop :=
                                             [Contents.struct 0 1
                                                 [Contents.int IntWidth.w64
                                                     Sign.signed 1]])]
-                                      Frame.empty e) ∧
+                                      Activation.empty e) ∧
                                 ¬Exact P.decls
                                     [Cell.full
                                         (Contents.array
@@ -39937,7 +40049,7 @@ def RueCore.Spec.Sharp.store_cc_stmt : Prop :=
                                             [Contents.struct 0 1
                                                 [Contents.int IntWidth.w64
                                                     Sign.signed 1]])]
-                                      Frame.empty e)
+                                      Activation.empty e)
 ```
 
 ### `Spec.Sharp.stuck_stmt`
@@ -39980,13 +40092,13 @@ def RueCore.Spec.Sharp.stuck_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39996,7 +40108,7 @@ def RueCore.Spec.Sharp.stuck_stmt : Prop :=
                 (∃ fd, P.fns[0]? = some fd ∧ fd.params = []) ∧
                   P.pendingSafe = true ∧
                     (Expr.call 0 []).pendingSafe = true ∧
-                      FrameMatches P.decls [] Frame.empty [] ∧
+                      ActivationTyping P.decls [] Activation.empty [] ∧
                         StoreCC P.decls [] ∧
                           (∃ c Ω,
                               check P (Ty.int IntWidth.w64 Sign.signed) []
@@ -40010,29 +40122,31 @@ def RueCore.Spec.Sharp.stuck_stmt : Prop :=
                                     ¬EvalOk P.decls
                                         (Ty.int IntWidth.w64 Sign.signed)
                                         (Ty.int IntWidth.w64 Sign.signed)
-                                        Ω.norm Ω.brk Frame.empty []
+                                        Ω.norm Ω.brk Activation.empty []
                                         (eval Float.exactOps 200 P []
-                                          Frame.empty (Expr.call 0 []))) ∧
-                            Lead Float.exactOps P 200 [] Frame.empty [] []
-                                [] (Expr.call 0 []) ∧
-                              eval Float.exactOps 200 P [] Frame.empty
+                                          Activation.empty
+                                          (Expr.call 0 []))) ∧
+                            Lead Float.exactOps P 200 [] Activation.empty []
+                                [] [] (Expr.call 0 []) ∧
+                              eval Float.exactOps 200 P [] Activation.empty
                                     (Expr.call 0 []) =
-                                  EvalRes.stuck Violation.useAfterMove ∧
-                                eval Float.exactOps 201 P [] Frame.empty
-                                      (Expr.call 0 []) =
-                                    EvalRes.stuck Violation.useAfterMove ∧
-                                  eval Float.exactOps 201 P [] Frame.empty
-                                        (Expr.call 0 []) =
+                                  EvalRes.refused Refusal.useAfterMove ∧
+                                eval Float.exactOps 201 P []
+                                      Activation.empty (Expr.call 0 []) =
+                                    EvalRes.refused Refusal.useAfterMove ∧
+                                  eval Float.exactOps 201 P []
+                                        Activation.empty (Expr.call 0 []) =
                                       EvalRes.withTrace []
-                                        (EvalRes.stuck
-                                          Violation.useAfterMove) ∧
+                                        (EvalRes.refused
+                                          Refusal.useAfterMove) ∧
                                     (∀ (n : Nat),
                                         run Float.exactOps P n =
                                           eval Float.exactOps n P []
-                                            Frame.empty (Expr.call 0 [])) ∧
+                                            Activation.empty
+                                            (Expr.call 0 [])) ∧
                                       run Float.exactOps P 200 =
-                                          EvalRes.stuck
-                                            Violation.useAfterMove ∧
+                                          EvalRes.refused
+                                            Refusal.useAfterMove ∧
                                         run Float.exactOps P 0 =
                                             EvalRes.outOfFuel ∧
                                           ¬(run Float.exactOps P 200 =
@@ -40062,7 +40176,7 @@ their conclusions holds of it: the typing hypothesis `Typed` is needed. It is
 also `check_sound`'s first hypothesis dropped: `check` does not accept it, and
 no type fits a derivation. `check_sound`'s hypothesis 2 (`c.fits T = true`) has
 no `c` to hold of, since `check` answers `none`: the statement gives
-`CTy.never`, which fits every type, and no `Ω` at all; `¬ Typed` is stated
+`TyOrNever.never`, which fits every type, and no `Ω` at all; `¬ Typed` is stated
 for every type and outcome, so for any `c`, `Ω` a spine instance picks. And
 `rest_exactly_once`'s hypothesis 8 is `eval … = r.withTrace []` with `r` the
 refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495); `¬ Typed`
@@ -40085,13 +40199,13 @@ def RueCore.Spec.Sharp.typed_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Mult.affine },
+                        dtor := true, cls := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Mult.linear }],
+                        dtor := false, cls := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Mult.affine }] },
+                        cls := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -40105,29 +40219,30 @@ def RueCore.Spec.Sharp.typed_stmt : Prop :=
                 WfProgram P ∧
                   P.pendingSafe = true ∧
                     e.pendingSafe = true ∧
-                      FrameMatches P.decls [] Frame.empty [] ∧
+                      ActivationTyping P.decls [] Activation.empty [] ∧
                         StoreCC P.decls [] ∧
                           check P (Ty.int IntWidth.w64 Sign.signed) [] e =
                               none ∧
                             (∀ (T : Ty) (Ω : Out),
                                 ¬Typed P (Ty.int IntWidth.w64 Sign.signed)
                                     [] e T Ω) ∧
-                              Lead Float.exactOps P 200 [] Frame.empty
+                              Lead Float.exactOps P 200 [] Activation.empty
                                   [Cell.dead]
                                   [Val.struct 0 0
                                       [Val.int IntWidth.w64 Sign.signed 1]]
                                   [] e ∧
-                                eval Float.exactOps 200 P [] Frame.empty e =
-                                    EvalRes.stuck Violation.useAfterMove ∧
-                                  eval Float.exactOps 201 P [] Frame.empty
-                                        e =
-                                      EvalRes.stuck Violation.useAfterMove ∧
-                                    eval Float.exactOps 201 P [] Frame.empty
-                                          e =
+                                eval Float.exactOps 200 P []
+                                      Activation.empty e =
+                                    EvalRes.refused Refusal.useAfterMove ∧
+                                  eval Float.exactOps 201 P []
+                                        Activation.empty e =
+                                      EvalRes.refused Refusal.useAfterMove ∧
+                                    eval Float.exactOps 201 P []
+                                          Activation.empty e =
                                         EvalRes.withTrace []
-                                          (EvalRes.stuck
-                                            Violation.useAfterMove) ∧
-                                      CTy.never.fits
+                                          (EvalRes.refused
+                                            Refusal.useAfterMove) ∧
+                                      TyOrNever.never.fits
                                             (Ty.int IntWidth.w64
                                               Sign.signed) =
                                           true ∧
@@ -40135,9 +40250,10 @@ def RueCore.Spec.Sharp.typed_stmt : Prop :=
                                           ¬EvalOk P.decls T
                                               (Ty.int IntWidth.w64
                                                 Sign.signed)
-                                              Ω.norm Ω.brk Frame.empty []
+                                              Ω.norm Ω.brk Activation.empty
+                                              []
                                               (eval Float.exactOps 200 P []
-                                                Frame.empty e)
+                                                Activation.empty e)
 ```
 
 ### `Spec.check_sound_stmt`
@@ -40150,7 +40266,7 @@ in Walker's sense (`FIELD.md`, section 4), and not completeness, which does not 
 
 ```lean
 def RueCore.Spec.check_sound_stmt : Prop :=
-  ∀ {P : Program} {R : Ty} (e : Expr) {Γ : Ctx} {c : CTy} {Ω : Out},
+  ∀ {P : Program} {R : Ty} (e : Expr) {Γ : Ctx} {c : TyOrNever} {Ω : Out},
     check P R Γ e = some (c, Ω) →
       ∀ (T : Ty), c.fits T = true → Typed P R Γ e T Ω
 ```
@@ -40171,17 +40287,17 @@ evaluation, not per run; the whole-run form is `whole_program_exactly_once`
 
 ```lean
 def RueCore.Spec.drop_exactly_once_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       P.pendingSafe = true →
         ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-          {φ : Frame} {H : Store},
+          {φ : Activation} {H : Store},
           Typed P R Γ e T Ω →
-            FrameMatches P.decls Γ φ H →
+            ActivationTyping P.decls Γ φ H →
               StoreCC P.decls H →
                 e.pendingSafe = true →
-                  (∀ (w : Violation),
-                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
+                  (∀ (w : Refusal),
+                      eval M.toFloatSig fuel P H φ e ≠ EvalRes.refused w) ∧
                     Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
                       Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
@@ -40200,13 +40316,13 @@ says the values a form mints mid-evaluation are covered too.
 
 ```lean
 def RueCore.Spec.rest_exactly_once_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       P.pendingSafe = true →
         ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-          {φ : Frame} {H : Store},
+          {φ : Activation} {H : Store},
           Typed P R Γ e T Ω →
-            FrameMatches P.decls Γ φ H →
+            ActivationTyping P.decls Γ φ H →
               StoreCC P.decls H →
                 e.pendingSafe = true →
                   ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
@@ -40214,7 +40330,7 @@ def RueCore.Spec.rest_exactly_once_stmt : Prop :=
                       ∀ {r : EvalRes},
                         eval M.toFloatSig (fuel + 1) P H φ e =
                             EvalRes.withTrace tr r →
-                          (∀ (w : Violation), r ≠ EvalRes.stuck w) ∧
+                          (∀ (w : Refusal), r ≠ EvalRes.refused w) ∧
                             Exact P.decls H₁
                                 (Contents.ownList P.decls
                                   (Contents.ofVals vs))
@@ -40236,7 +40352,7 @@ and no drop or monitor sees it (`Nonvacuous.whole_result` returns an `S0`).
 
 ```lean
 def RueCore.Spec.run_safe_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} {fd : FnDef},
+  ∀ (M : FloatLaws) {P : Program} {fd : FnDef},
     WfProgram P →
       P.fns[0]? = some fd →
         fd.params = [] →
@@ -40256,16 +40372,16 @@ def RueCore.Spec.run_safe_stmt : Prop :=
 names). A typed expression of a well-formed program, run at any fuel from a
 frame and store agreeing with its context, ends in `EvalOk`: a well-typed
 value, an unwinding `return` or `break` §5.3's `Ω` allows, a defined panic,
-or exhausted fuel — never `.stuck`.
+or exhausted fuel — never `.refused`.
 
 ```lean
 def RueCore.Spec.soundness_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program},
+  ∀ (M : FloatLaws) {P : Program},
     WfProgram P →
       ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty},
         Typed P R Γ e T Ω →
-          ∀ {φ : Frame} {H : Store},
-            FrameMatches P.decls Γ φ H →
+          ∀ {φ : Activation} {H : Store},
+            ActivationTyping P.decls Γ φ H →
               EvalOk P.decls T R Ω.norm Ω.brk φ H
                 (eval M.toFloatSig fuel P H φ e)
 ```
@@ -40357,7 +40473,7 @@ RueCore.Typed.useCopy {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
     en.st.get p.path = some u →
       u.fullyOwned = true →
         Ty.atPath P.decls en.ty p.path = some T →
-          Ty.mult P.decls T = Mult.copy →
+          Ty.qual P.decls T = Qual.copy →
             declaredPrefix P.decls en.ty p.path = none →
               Typed P R Γ (Expr.use p) T { norm := some Γ, brk := [] }
 ```
@@ -40371,7 +40487,7 @@ RueCore.Typed.useMove {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
     en.st.get p.path = some u →
       u.fullyOwned = true →
         Ty.atPath P.decls en.ty p.path = some T →
-          Ty.mult P.decls T ≠ Mult.copy →
+          Ty.qual P.decls T ≠ Qual.copy →
             noDtorPrefix P.decls en.ty p.path = true →
               declaredPrefix P.decls en.ty p.path = none →
                 rootIdxOnly P.decls en.ty p.path = true →
@@ -40590,13 +40706,13 @@ RueCore.Typed.mkArray {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {T : Ty}
     Typed P R Γ (Expr.mkArray T args) (T.array args.length) Ω
 ```
 
-**`Typed.repeatArray`** — The surface repeat form `[e; n]` (`7.1:36`–`7.1:39`), whose element type `7.1:38` restricts to `Copy` (E0905, probe `a2b`). §2's elaboration inventory gives this form **no core image**: it elaborates to `let t = e; [t, …, t]`, "one evaluation of the operand, then `n` value-context *copies* (§4.2)", precisely because the `Copy` restriction makes those copies free. The form is kept here as a rule of its own so the printer can emit the surface spelling the compiler's E0905 is about and so the bridge exercises it; the premise and the dynamics are exactly that elaboration's, and `Ty.mult P.decls T = .copy` is `7.1:38`. That the calculus and this rule agree is by construction and not by a theorem — it is named as a deviation in `../03-metatheory.md`.
+**`Typed.repeatArray`** — The surface repeat form `[e; n]` (`7.1:36`–`7.1:39`), whose element type `7.1:38` restricts to `Copy` (E0905, probe `a2b`). §2's elaboration inventory gives this form **no core image**: it elaborates to `let t = e; [t, …, t]`, "one evaluation of the operand, then `n` value-context *copies* (§4.2)", precisely because the `Copy` restriction makes those copies free. The form is kept here as a rule of its own so the printer can emit the surface spelling the compiler's E0905 is about and so the bridge exercises it; the premise and the dynamics are exactly that elaboration's, and `Ty.qual P.decls T = .copy` is `7.1:38`. That the calculus and this rule agree is by construction and not by a theorem — it is named as a deviation in `../03-metatheory.md`.
 
 ```lean
 RueCore.Typed.repeatArray {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {T : Ty}
   {e : Expr} {n : Nat} :
   Typed P R Γ e T Ω →
-    Ty.mult P.decls T = Mult.copy →
+    Ty.qual P.decls T = Qual.copy →
       Typed P R Γ (Expr.repeatArray T e n) (T.array n) Ω
 ```
 
@@ -40615,7 +40731,7 @@ RueCore.Typed.indexRead {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ : List Ctx}
               u.fullyOwned = true →
                 Ty.atPath P.decls en.ty p.path = some Ta →
                   Ty.atDyn P.decls Ta πs = some T →
-                    Ty.mult P.decls T = Mult.copy →
+                    Ty.qual P.decls T = Qual.copy →
                       declaredPrefix P.decls en.ty p.path = none →
                         Ty.dynNoDeclared P.decls Ta πs = true →
                           Typed P R Γ (Expr.indexRead p idx πs) T
@@ -40660,7 +40776,7 @@ RueCore.Typed.indexWrite {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx}
                           u₁.fullyOwned = true →
                             assignArrayOk P.decls en₁.st en₁.ty p.path =
                                 true →
-                              Ty.mult P.decls T ≠ Mult.linear →
+                              Ty.qual P.decls T ≠ Qual.linear →
                                 Typed P R Γ (Expr.indexWrite p idx πs e)
                                   Ty.unit
                                   {
@@ -40717,7 +40833,7 @@ RueCore.Typed.dropCopy {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
     en.st.get p.path = some u →
       u.fullyOwned = true →
         Ty.atPath P.decls en.ty p.path = some T →
-          Ty.mult P.decls T = Mult.copy →
+          Ty.qual P.decls T = Qual.copy →
             declaredPrefix P.decls en.ty p.path = none →
               Typed P R Γ (Expr.drop p) Ty.unit { norm := some Γ, brk := [] }
 ```
@@ -40731,7 +40847,7 @@ RueCore.Typed.dropRes {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
     en.st.get p.path = some u →
       u.isOwned = true →
         Ty.atPath P.decls en.ty p.path = some T →
-          Ty.mult P.decls T ≠ Mult.copy →
+          Ty.qual P.decls T ≠ Qual.copy →
             noDtorPrefix P.decls en.ty p.path = true →
               declaredPrefix P.decls en.ty p.path = none →
                 u.fullyOwned = true ∨
@@ -40814,7 +40930,7 @@ RueCore.Typed.assign {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ : List Ctx}
             Γ₁[p.root]? = some en₁ →
               en₁.st.get p.path = some u₁ →
                 assignArrayOk P.decls en₁.st en₁.ty p.path = true →
-                  u₁ = OwnSt.movedOut ∨ Ty.mult P.decls T ≠ Mult.linear →
+                  u₁ = OwnSt.movedOut ∨ Ty.qual P.decls T ≠ Qual.linear →
                     Typed P R Γ (Expr.assign p e) Ty.unit
                       {
                         norm :=
@@ -40839,7 +40955,7 @@ RueCore.Typed.assignBot {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}
 RueCore.Typed.seq {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ₁ : List Ctx}
   {Ω₂ : Out} {e₁ e₂ : Expr} {T₁ T₂ : Ty} :
   Typed P R Γ e₁ T₁ { norm := some Γ₁, brk := Δ₁ } →
-    Ty.mult P.decls T₁ ≠ Mult.linear →
+    Ty.qual P.decls T₁ ≠ Qual.linear →
       Typed P R Γ₁ e₂ T₂ Ω₂ → Typed P R Γ (e₁.seq e₂) T₂ (Ω₂.merge Δ₁)
 ```
 
@@ -41118,7 +41234,7 @@ def RueCore.dropEvents (D : Decls) : Contents → List Event
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls), dropEvents D Contents.hole = []
+∀ (D : Decls), dropEvents D Contents.movedOut = []
 ∀ (D : Decls) (w : IntWidth) (s : Sign) (n : Int),
   dropEvents D (Contents.int w s n) = []
 ∀ (D : Decls) (w : FloatWidth) (f : FloatDatum),
@@ -41179,7 +41295,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls) (ℓ : Nat) (rs : List Contents),
   dropResidueEvents D ℓ rs =
-    List.flatMap (fun r => residueMark D ℓ r ++ dropEvents D r) rs
+    List.flatMap (fun r => residueDropEvent D ℓ r ++ dropEvents D r) rs
 ```
 
 ### `ownedJoinable`
@@ -41199,7 +41315,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls) (x : Ty), ownedJoinable D OwnSt.owned x = true
 ∀ (D : Decls) (x : Ty),
-  ownedJoinable D OwnSt.movedOut x = decide (Ty.mult D x ≠ Mult.linear)
+  ownedJoinable D OwnSt.movedOut x = decide (Ty.qual D x ≠ Qual.linear)
 ∀ (D : Decls) (ts : List OwnSt) (s : Nat),
   ownedJoinable D (OwnSt.fields ts) (Ty.struct s) =
     match D.structs[s]? with
@@ -41266,7 +41382,7 @@ elements, each at the element type (`3.8:71`, §5.3's "the element type for an
 array of nonzero length"). §5.6 writes that clause with a second disjunct,
 "(untracked residue carries linear)", for the elements the tracked list does
 not reach. It is not absent here: `residualLinearFields`' `[], Ts` base case
-answers those slots at the **type** level, `Ts.any (·.mult D = .linear)`, and
+answers those slots at the **type** level, `Ts.any (·.qual D = .linear)`, and
 that reading is **exact**, not conservative. An element Σ has no record for
 is one no path has touched, and nothing below a dynamic index is ever moved:
 the calculus has no rule for a move or a `@drop` of an affine or linear place
@@ -41284,7 +41400,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls) (x : Ty), residualLinear D OwnSt.movedOut x = false
 ∀ (D : Decls) (x : Ty),
-  residualLinear D OwnSt.owned x = decide (Ty.mult D x = Mult.linear)
+  residualLinear D OwnSt.owned x = decide (Ty.qual D x = Qual.linear)
 ∀ (D : Decls) (ts : List OwnSt) (s : Nat),
   residualLinear D (OwnSt.fields ts) (Ty.struct s) =
     match D.structs[s]? with
@@ -41317,7 +41433,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls) (x : List Ty),
   residualLinearFields D [] x =
-    x.any fun T => decide (Ty.mult D T = Mult.linear)
+    x.any fun T => decide (Ty.qual D T = Qual.linear)
 ∀ (D : Decls) (head : OwnSt) (tail : List OwnSt),
   residualLinearFields D (head :: tail) [] = false
 ∀ (D : Decls) (t : OwnSt) (ts : List OwnSt) (T : Ty) (Ts : List Ty),

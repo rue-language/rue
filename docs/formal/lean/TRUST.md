@@ -86,7 +86,7 @@ and diffs them against the committed copies.
 | `negate_wf` | `RueCore.Float` | *none* |
 | `widen_wf` | `RueCore.Float` | `Quot.sound`, `propext` |
 | `roundOp_wf` | `RueCore.Float` | `Quot.sound`, `propext` |
-| `FloatModel.cast_nan` | `RueCore.Float` | `propext` |
+| `FloatLaws.cast_nan` | `RueCore.Float` | `propext` |
 | `floatToInt_partition` | `RueCore.Float` | *none* |
 | `toIntIn_mem` | `RueCore.Float` | *none* |
 | `toIntIn_nan` | `RueCore.Float` | *none* |
@@ -130,15 +130,15 @@ and diffs them against the committed copies.
 | `Float.ofLit_one` | `RueCore.Float.Lemmas` | *none* |
 | `Float.ite_succ_le` | `RueCore.Float.Lemmas` | *none* |
 | `Float.sqrt_wf` | `RueCore.Float.Lemmas` | `Quot.sound`, `propext` |
-| `Mult.rank_le_join_left` | `RueCore.Statics.Lemmas` | *none* |
-| `Mult.rank_le_join_right` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
-| `Mult.eq_linear_of_rank` | `RueCore.Statics.Lemmas` | `propext` |
+| `Qual.rank_le_join_left` | `RueCore.Statics.Lemmas` | *none* |
+| `Qual.rank_le_join_right` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Qual.eq_linear_of_rank` | `RueCore.Statics.Lemmas` | `propext` |
 | `rank_le_joinFold` | `RueCore.Statics.Lemmas` | `propext` |
 | `rank_le_joinFold_of_mem` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
 | `joinFold_linear_inv` | `RueCore.Statics.Lemmas` | `propext` |
 | `StructDecl.Wf.field_not_linear` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
 | `struct_carriesLinear_iff` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
-| `Ty.mult_congr_tyNames` | `RueCore.Statics.Lemmas` | `propext` |
+| `Ty.qual_congr_tyNames` | `RueCore.Statics.Lemmas` | `propext` |
 | `rank_le_payloadFold` | `RueCore.Statics.Lemmas` | `propext` |
 | `rank_le_payloadFold_of_mem` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
 | `payloadFold_linear_inv` | `RueCore.Statics.Lemmas` | `propext` |
@@ -157,10 +157,10 @@ and diffs them against the committed copies.
 | `OwnSt.joinList_comm` | `RueCore.Statics.Lemmas` | `propext` |
 | `Entry.join_comm` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
 | `Ctx.join_comm` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
-| `Ty.array_mult_linear` | `RueCore.Statics.Lemmas` | `propext` |
-| `Ty.any_replicate_mult_linear` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
-| `residualLinear_mult_linear` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
-| `residualLinearFields_mult_linear` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `Ty.array_qual_linear` | `RueCore.Statics.Lemmas` | `propext` |
+| `Ty.any_replicate_qual_linear` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `residualLinear_qual_linear` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
+| `residualLinearFields_qual_linear` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
 | `ownedJoinable_residualLinear` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
 | `ownedJoinableList_residualLinearFields` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
 | `ownedJoinable_of_residualLinear_false` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
@@ -276,7 +276,7 @@ and diffs them against the committed copies.
 | `fnCtx_wf` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
 | `Typed.wf_fnCtx` | `RueCore.Statics.Lemmas` | `Quot.sound`, `propext` |
 | `Contents.toVals_length` | `RueCore.Dynamics.Lemmas` | `propext` |
-| `Contents.mult_toVal` | `RueCore.Dynamics.Lemmas` | `Quot.sound`, `propext` |
+| `Contents.qual_toVal` | `RueCore.Dynamics.Lemmas` | `Quot.sound`, `propext` |
 | `inBoundsIdx_eq_true` | `RueCore.Dynamics.Lemmas` | `propext` |
 | `dropEventsList_eq_flatten` | `RueCore.Dynamics.Lemmas` | `propext` |
 | `Step.step_eq` | `RueCore.Step.Lemmas` | `propext` |
@@ -293,7 +293,7 @@ and diffs them against the committed copies.
 | `Config.trichotomy` | `RueCore.Step.Lemmas` | `Quot.sound`, `propext` |
 | `Config.stuck_iff` | `RueCore.Step.Lemmas` | `Quot.sound`, `propext` |
 | `Config.Stuck.no_step` | `RueCore.Step.Lemmas` | `propext` |
-| `Contents.readAt_err` | `RueCore.Step.Lemmas` | `propext` |
+| `Contents.getAt_err` | `RueCore.Step.Lemmas` | `propext` |
 | `Contents.splitResidue_err` | `RueCore.Step.Lemmas` | `propext` |
 | `Contents.splitFields_err` | `RueCore.Step.Lemmas` | `propext` |
 | `dropContents_err` | `RueCore.Step.Lemmas` | `propext` |
@@ -312,7 +312,7 @@ and diffs them against the committed copies.
 | `destructure_plain` | `RueCore.Step.Lemmas` | `propext` |
 | `stepN_steps` | `RueCore.Step.Lemmas` | `Quot.sound`, `propext` |
 | `HasTys.length_eq` | `RueCore.Soundness` | `propext` |
-| `HasTy.mult_eq` | `RueCore.Soundness` | `propext` |
+| `HasTy.qual_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.observable` | `RueCore.Soundness` | `propext` |
 | `HasTy.int_inv` | `RueCore.Soundness` | `propext` |
 | `HasTy.float_inv` | `RueCore.Soundness` | `propext` |
@@ -328,23 +328,23 @@ and diffs them against the committed copies.
 | `ContentsTys.set` | `RueCore.Soundness` | `propext` |
 | `HasTy.contentsTy` | `RueCore.Soundness` | `propext` |
 | `HasTys.contentsTys` | `RueCore.Soundness` | `propext` |
-| `Contents.holeFree_ofVal` | `RueCore.Soundness` | *none* |
-| `Contents.holeFreeList_ofVals` | `RueCore.Soundness` | *none* |
-| `Contents.holeFreeList_index` | `RueCore.Soundness` | `propext` |
-| `Contents.holeFreeList_set` | `RueCore.Soundness` | `propext` |
+| `Contents.noMovedOut_ofVal` | `RueCore.Soundness` | *none* |
+| `Contents.noMovedOutList_ofVals` | `RueCore.Soundness` | *none* |
+| `Contents.noMovedOutList_index` | `RueCore.Soundness` | `propext` |
+| `Contents.noMovedOutList_set` | `RueCore.Soundness` | `propext` |
 | `HasTys.replicate` | `RueCore.Soundness` | `propext` |
 | `ContentsTy.toVal` | `RueCore.Soundness` | `propext` |
 | `ContentsTys.toVals` | `RueCore.Soundness` | `propext` |
-| `ContentsTy.mult_eq` | `RueCore.Soundness` | `propext` |
-| `Mult.eq_copy_of_rank` | `RueCore.Soundness` | `propext` |
+| `ContentsTy.qual_eq` | `RueCore.Soundness` | `propext` |
+| `Qual.eq_copy_of_rank` | `RueCore.Soundness` | `propext` |
 | `StructDecl.Wf.field_copy` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `EnumDecl.Wf.payload_copy` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `Ty.array_copy_elem` | `RueCore.Soundness` | `propext` |
 | `ContentsTy.allCopy` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `ContentsTys.allCopyList` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `ContentsTy.copyClosed` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `ContentsTys.copyClosedList` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `HasTy.copyClosed` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `ContentsTy.copyContained` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `ContentsTys.copyContainedList` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `HasTy.copyContained` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `dropContents_events` | `RueCore.Soundness` | `propext` |
 | `dropContentsList_events` | `RueCore.Soundness` | `propext` |
 | `dropContents_ok` | `RueCore.Soundness` | `propext` |
@@ -366,88 +366,88 @@ and diffs them against the committed copies.
 | `evalUnOp_float_res` | `RueCore.Soundness` | `propext` |
 | `evalFintrin_int_res` | `RueCore.Soundness` | `propext` |
 | `evalFintrin_float_res` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `ContentsMatches.contentsTy` | `RueCore.Soundness` | `propext` |
-| `ContentsMatchesList.contentsTys` | `RueCore.Soundness` | `propext` |
+| `ContentsOwnTyping.contentsTy` | `RueCore.Soundness` | `propext` |
+| `ContentsOwnTypingList.contentsTys` | `RueCore.Soundness` | `propext` |
 | `OwnSt.fieldAt_succ` | `RueCore.Soundness` | `propext` |
 | `OwnSt.setField_zero` | `RueCore.Soundness` | *none* |
 | `OwnSt.setField_succ` | `RueCore.Soundness` | `propext` |
-| `ContentsMatchesList.index` | `RueCore.Soundness` | `propext` |
-| `ContentsMatchesList.set` | `RueCore.Soundness` | `propext` |
-| `ContentsMatchesList.of_owned` | `RueCore.Soundness` | `propext` |
-| `ContentsMatches.owned_struct` | `RueCore.Soundness` | `propext` |
-| `ContentsMatches.owned_array` | `RueCore.Soundness` | `propext` |
+| `ContentsOwnTypingList.index` | `RueCore.Soundness` | `propext` |
+| `ContentsOwnTypingList.set` | `RueCore.Soundness` | `propext` |
+| `ContentsOwnTypingList.of_owned` | `RueCore.Soundness` | `propext` |
+| `ContentsOwnTyping.owned_struct` | `RueCore.Soundness` | `propext` |
+| `ContentsOwnTyping.owned_array` | `RueCore.Soundness` | `propext` |
 | `Ty.fieldAt_inv` | `RueCore.Soundness` | `propext` |
 | `residueOk_of_tys` | `RueCore.Soundness` | `propext` |
 | `splitFields_ok` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `splitResidue_ok` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `dropResidue_events` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `destructure_ok` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `ContentsMatches.holeFree` | `RueCore.Soundness` | `propext` |
-| `ContentsMatchesList.holeFreeList` | `RueCore.Soundness` | `propext` |
-| `ContentsMatches.toVal` | `RueCore.Soundness` | `propext` |
-| `ContentsMatches.ne_hole` | `RueCore.Soundness` | `propext` |
-| `ContentsMatches.mult_eq` | `RueCore.Soundness` | `propext` |
-| `ContentsMatches.ofVal` | `RueCore.Soundness` | `propext` |
-| `Contents.isHole_eq_false` | `RueCore.Soundness` | *none* |
+| `ContentsOwnTyping.noMovedOut` | `RueCore.Soundness` | `propext` |
+| `ContentsOwnTypingList.noMovedOutList` | `RueCore.Soundness` | `propext` |
+| `ContentsOwnTyping.toVal` | `RueCore.Soundness` | `propext` |
+| `ContentsOwnTyping.ne_movedOut` | `RueCore.Soundness` | `propext` |
+| `ContentsOwnTyping.qual_eq` | `RueCore.Soundness` | `propext` |
+| `ContentsOwnTyping.ofVal` | `RueCore.Soundness` | `propext` |
+| `Contents.isMovedOut_eq_false` | `RueCore.Soundness` | *none* |
 | `OwnSt.isOwned_of_fullyOwned` | `RueCore.Soundness` | `propext` |
-| `ContentsMatches.readAt` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `ContentsMatches.writeAt` | `RueCore.Soundness` | `propext` |
-| `ContentsMatches.declaredPlan_eq` | `RueCore.Soundness` | `propext` |
-| `ContentsMatches.hole` | `RueCore.Soundness` | `propext` |
+| `ContentsOwnTyping.getAt` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `ContentsOwnTyping.setAt` | `RueCore.Soundness` | `propext` |
+| `ContentsOwnTyping.declaredPlan_eq` | `RueCore.Soundness` | `propext` |
+| `ContentsOwnTyping.movedOut` | `RueCore.Soundness` | `propext` |
 | `residualLinearFields_false` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `ContentsMatches.residualLinear_false` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `ContentsMatchesList.residualLinearList_false` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Matches.mem_lt` | `RueCore.Soundness` | `propext` |
-| `Matches.fresh_not_mem` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Matches.lookup` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Matches.cons_inv` | `RueCore.Soundness` | `propext` |
-| `Matches.append` | `RueCore.Soundness` | `propext` |
-| `Matches.set_outside` | `RueCore.Soundness` | `propext` |
-| `Matches.set` | `RueCore.Soundness` | `propext` |
-| `Matches.snoc` | `RueCore.Soundness` | `propext` |
-| `Untouched.refl` | `RueCore.Soundness` | `propext` |
-| `Untouched.trans` | `RueCore.Soundness` | `propext` |
-| `Untouched.append` | `RueCore.Soundness` | `propext` |
-| `Untouched.set` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Untouched.trans_set` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Untouched.of_fresh` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Untouched.under_binders` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Untouched.under_binder` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Matches.transport` | `RueCore.Soundness` | `propext` |
-| `CellMatches.dropOk` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `ContentsOwnTyping.residualLinear_false` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `ContentsOwnTypingList.residualLinearList_false` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `StoreTyping.mem_lt` | `RueCore.Soundness` | `propext` |
+| `StoreTyping.fresh_not_mem` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `StoreTyping.lookup` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `StoreTyping.cons_inv` | `RueCore.Soundness` | `propext` |
+| `StoreTyping.append` | `RueCore.Soundness` | `propext` |
+| `StoreTyping.set_outside` | `RueCore.Soundness` | `propext` |
+| `StoreTyping.set` | `RueCore.Soundness` | `propext` |
+| `StoreTyping.snoc` | `RueCore.Soundness` | `propext` |
+| `FrameProperty.refl` | `RueCore.Soundness` | `propext` |
+| `FrameProperty.trans` | `RueCore.Soundness` | `propext` |
+| `FrameProperty.append` | `RueCore.Soundness` | `propext` |
+| `FrameProperty.set` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `FrameProperty.trans_set` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `FrameProperty.of_fresh` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `FrameProperty.under_binders` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `FrameProperty.under_binder` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `StoreTyping.transport` | `RueCore.Soundness` | `propext` |
+| `CellTyping.dropOk` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `dropCell_ok` | `RueCore.Soundness` | `propext` |
 | `dropRetire_ok` | `RueCore.Soundness` | `propext` |
-| `Matches.unwind` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Matches.unwindPrefix` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `StoreTyping.unwind` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `StoreTyping.unwindPrefix` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `runAllScopeDrops_ok` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `ownedJoinable_matches` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `ownedJoinableList_matches` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `OwnSt.join_matches` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `OwnSt.joinList_matches` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Entry.join_matches_left` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Entry.join_matches_right` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Matches.join_left` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Matches.join_right` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Matches.joinFold` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Matches.joinAll` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `ownedJoinable_typing` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `ownedJoinableList_typing` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `OwnSt.join_typing` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `OwnSt.joinList_typing` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `Entry.join_typing_left` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `Entry.join_typing_right` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `StoreTyping.join_left` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `StoreTyping.join_right` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `StoreTyping.joinFold` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `StoreTyping.joinAll` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `Ctx.joinOpts_mem` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Matches.joinOpt_left` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Matches.joinOpt_right` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `mintParams_store` | `RueCore.Soundness` | `propext` |
-| `mintParams_fresh` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `matches_mintParams` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `mintParams_locs_length` | `RueCore.Soundness` | `propext` |
-| `matches_mintParams_app` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `StoreTyping.joinOpt_left` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `StoreTyping.joinOpt_right` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `freshParams_store` | `RueCore.Soundness` | `propext` |
+| `freshParams_fresh` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `storeTyping_freshParams` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `freshParams_locs_length` | `RueCore.Soundness` | `propext` |
+| `storeTyping_freshParams_app` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `OwnSt.get_owned` | `RueCore.Soundness` | `propext` |
 | `OwnSt.fullyOwnedList_setField_nil` | `RueCore.Soundness` | `propext` |
 | `OwnSt.fullyOwned_setAt_owned` | `RueCore.Soundness` | `propext` |
 | `TypedArgs.length_eq` | `RueCore.Soundness` | `propext` |
 | `Val.ints_of_hasTys` | `RueCore.Soundness` | `propext` |
 | `Contents.resolveDyn_ok` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `BrokeOk.mono_store` | `RueCore.Soundness` | `propext` |
-| `BrokeOk.mono_brk` | `RueCore.Soundness` | `propext` |
-| `BrokeOk.under_binders` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `BrokeOk.under_binder` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `BreakOutputOk.mono_store` | `RueCore.Soundness` | `propext` |
+| `BreakOutputOk.mono_brk` | `RueCore.Soundness` | `propext` |
+| `BreakOutputOk.under_binders` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `BreakOutputOk.under_binder` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `EvalOk.ok_inv` | `RueCore.Soundness` | `propext` |
 | `ArgsOk.ok_inv` | `RueCore.Soundness` | `propext` |
 | `EvalOk.mono_store` | `RueCore.Soundness` | `propext` |
@@ -464,7 +464,7 @@ and diffs them against the committed copies.
 | `EvalOk.bindSame` | `RueCore.Soundness` | `propext` |
 | `EvalOk.weaken` | `RueCore.Soundness` | `propext` |
 | `introVal_ok` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `Matches.length_eq` | `RueCore.Soundness` | `propext` |
+| `StoreTyping.length_eq` | `RueCore.Soundness` | `propext` |
 | `Ctx.SameSkel.of_forall` | `RueCore.Soundness` | *none* |
 | `LoopHead.enter` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `LoopHead.backEdge` | `RueCore.Soundness` | `Quot.sound`, `propext` |
@@ -480,7 +480,7 @@ and diffs them against the committed copies.
 | `fuel_mono` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `no_masking` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `entry_typed` | `RueCore.Soundness` | `propext` |
-| `frameMatches_empty` | `RueCore.Soundness` | `propext` |
+| `activationTyping_empty` | `RueCore.Soundness` | `propext` |
 | `EvalRes.withTrace_ne_returned` | `RueCore.Soundness` | `propext` |
 | `EvalRes.bindCall_ne_returned` | `RueCore.Soundness` | `propext` |
 | `run_ne_returned` | `RueCore.Soundness` | `Quot.sound`, `propext` |
@@ -492,12 +492,12 @@ and diffs them against the committed copies.
 | `no_linear_leak` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `no_linear_overwrite` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `no_linear_discard` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `CTy.eq_of_fits` | `RueCore.Checker` | `propext` |
-| `CTy.fits_self` | `RueCore.Checker` | `propext` |
-| `CTy.fits_never` | `RueCore.Checker` | *none* |
-| `CTy.fits_pick` | `RueCore.Checker` | `propext` |
-| `CTy.fitsC_fits` | `RueCore.Checker` | `propext` |
-| `CTy.meet_fits` | `RueCore.Checker` | `propext` |
+| `TyOrNever.eq_of_fits` | `RueCore.Checker` | `propext` |
+| `TyOrNever.fits_self` | `RueCore.Checker` | `propext` |
+| `TyOrNever.fits_never` | `RueCore.Checker` | *none* |
+| `TyOrNever.fits_pick` | `RueCore.Checker` | `propext` |
+| `TyOrNever.fitsC_fits` | `RueCore.Checker` | `propext` |
+| `TyOrNever.meet_fits` | `RueCore.Checker` | `propext` |
 | `check_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
 | `checkIdx_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
 | `checkArms_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
@@ -518,25 +518,25 @@ and diffs them against the committed copies.
 | `checkProgram_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
 | `dtorIds_append` | `RueCore.Trace` | `propext` |
 | `dtorIds_nil` | `RueCore.Trace` | `propext` |
-| `Contents.own_of_mult` | `RueCore.Trace` | `propext` |
-| `Contents.allCopy_mult` | `RueCore.Trace` | `propext` |
+| `Contents.own_of_qual` | `RueCore.Trace` | `propext` |
+| `Contents.allCopy_qual` | `RueCore.Trace` | `propext` |
 | `Contents.allCopy_own` | `RueCore.Trace` | `propext` |
 | `Contents.allCopyList_own` | `RueCore.Trace` | `propext` |
-| `Contents.copyClosed_allCopy` | `RueCore.Trace` | `propext` |
-| `Contents.allCopy_copyClosed` | `RueCore.Trace` | `propext` |
-| `Contents.allCopyList_copyClosedList` | `RueCore.Trace` | `propext` |
-| `Contents.copyClosedList_index` | `RueCore.Trace` | `propext` |
+| `Contents.copyContained_allCopy` | `RueCore.Trace` | `propext` |
+| `Contents.allCopy_copyContained` | `RueCore.Trace` | `propext` |
+| `Contents.allCopyList_copyContainedList` | `RueCore.Trace` | `propext` |
+| `Contents.copyContainedList_index` | `RueCore.Trace` | `propext` |
 | `Contents.allCopyList_index` | `RueCore.Trace` | `propext` |
-| `Contents.copyClosedList_set` | `RueCore.Trace` | `propext` |
+| `Contents.copyContainedList_set` | `RueCore.Trace` | `propext` |
 | `Contents.allCopyList_set` | `RueCore.Trace` | `propext` |
 | `Contents.ownList_set_count` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Contents.ofVal_toVal` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Contents.ofVals_toVals` | `RueCore.Trace` | `Quot.sound`, `propext` |
-| `Contents.readAt_allCopy` | `RueCore.Trace` | `propext` |
-| `Contents.readAt_copyClosed` | `RueCore.Trace` | `propext` |
-| `Contents.writeAt_allCopy` | `RueCore.Trace` | `Quot.sound`, `propext` |
-| `Contents.writeAt_copyClosed` | `RueCore.Trace` | `Quot.sound`, `propext` |
-| `Contents.writeAt_own` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Contents.getAt_allCopy` | `RueCore.Trace` | `propext` |
+| `Contents.getAt_copyContained` | `RueCore.Trace` | `propext` |
+| `Contents.setAt_allCopy` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Contents.setAt_copyContained` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Contents.setAt_own` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `storeOwn_append` | `RueCore.Trace` | `propext` |
 | `storeOwn_set_count` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `StoreCC.append` | `RueCore.Trace` | `Quot.sound`, `propext` |
@@ -556,17 +556,17 @@ and diffs them against the committed copies.
 | `dropCell_measure` | `RueCore.Trace` | `propext` |
 | `dropRetire_measure` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `unwindLocs_measure` | `RueCore.Trace` | `Quot.sound`, `propext` |
-| `residueMark_measure` | `RueCore.Trace` | `propext` |
+| `residueDropEvent_measure` | `RueCore.Trace` | `propext` |
 | `dropResidue_measure` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Contents.ownList_append` | `RueCore.Trace` | `propext` |
-| `Contents.copyClosedList_append` | `RueCore.Trace` | `propext` |
+| `Contents.copyContainedList_append` | `RueCore.Trace` | `propext` |
 | `Contents.allCopyList_append` | `RueCore.Trace` | `propext` |
 | `Contents.splitResidue_allCopy` | `RueCore.Trace` | `propext` |
 | `Contents.splitFields_allCopy` | `RueCore.Trace` | `propext` |
 | `Contents.splitResidue_own` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Contents.splitFields_own` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Contents.pathOnlyFields_length` | `RueCore.Trace` | `propext` |
-| `Contents.ownList_holes` | `RueCore.Trace` | `propext` |
+| `Contents.ownList_movedOuts` | `RueCore.Trace` | `propext` |
 | `Contents.pathOnly_own` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Contents.pathOnlyFields_own` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Contents.destructure_measure` | `RueCore.Trace` | `Quot.sound`, `propext` |
@@ -590,13 +590,13 @@ and diffs them against the committed copies.
 | `evalUnOp_scalar` | `RueCore.Trace` | `propext` |
 | `evalIntCast_scalar` | `RueCore.Trace` | `propext` |
 | `evalFintrin_scalar` | `RueCore.Trace` | `propext` |
-| `Contents.mult_ofVal` | `RueCore.Trace` | `propext` |
+| `Contents.qual_ofVal` | `RueCore.Trace` | `propext` |
 | `Val.own_of_copy` | `RueCore.Trace` | `propext` |
 | `Contents.ownList_ofVals_cons` | `RueCore.Trace` | `propext` |
 | `Contents.ownList_replicate` | `RueCore.Trace` | `propext` |
-| `storeOwn_mintParams` | `RueCore.Trace` | `propext` |
-| `StoreCC.mintParams` | `RueCore.Trace` | `Quot.sound`, `propext` |
-| `mintParams_length` | `RueCore.Trace` | `propext` |
+| `storeOwn_freshParams` | `RueCore.Trace` | `propext` |
+| `StoreCC.freshParams` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `freshParams_length` | `RueCore.Trace` | `propext` |
 | `Contents.own_struct_le` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Contents.own_enum_le` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Contents.own_array_le` | `RueCore.Trace` | `Quot.sound`, `propext` |
@@ -636,8 +636,8 @@ and diffs them against the committed copies.
 | `evalArgs_abort_ne_ok` | `RueCore.Adequacy` | `propext` |
 | `EvalRes.withTrace_bind` | `RueCore.Adequacy` | `propext` |
 | `rootCell_of` | `RueCore.Adequacy` | `propext` |
-| `Frame.popScope_push` | `RueCore.Adequacy` | `propext` |
-| `Frame.popScope_let` | `RueCore.Adequacy` | `propext` |
+| `Activation.unwindScope_push` | `RueCore.Adequacy` | `propext` |
+| `Activation.unwindScope_let` | `RueCore.Adequacy` | `propext` |
 | `plainUnwind_single` | `RueCore.Adequacy` | `propext` |
 | `sim_use` | `RueCore.Adequacy` | `propext` |
 | `sim_drop` | `RueCore.Adequacy` | `propext` |
@@ -763,10 +763,10 @@ and diffs them against the committed copies.
 | `EvalRes.bindCall_quiet` | `RueCore.TraceExact` | `propext` |
 | `eval_quiet` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `freedIds_append` | `RueCore.TraceExact` | `propext` |
-| `Contents.readAt_writeAt` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
-| `Contents.writeAt_own_eq` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Contents.getAt_setAt` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Contents.setAt_own_eq` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `dropCell_freed` | `RueCore.TraceExact` | `propext` |
-| `residueMark_freed` | `RueCore.TraceExact` | `propext` |
+| `residueDropEvent_freed` | `RueCore.TraceExact` | `propext` |
 | `dropResidue_freed` | `RueCore.TraceExact` | `propext` |
 | `Contents.destructure_exact` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `dropRetire_exact` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
@@ -806,12 +806,12 @@ and diffs them against the committed copies.
 | `Contents.ownList_ofVals_single` | `RueCore.TraceExact` | `propext` |
 | `rest_step` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `eval_exact` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
-| `Frame.In.mono` | `RueCore.TraceExact` | *none* |
+| `Activation.In.mono` | `RueCore.TraceExact` | *none* |
 | `Local.refl` | `RueCore.TraceExact` | `propext` |
 | `Local.trans` | `RueCore.TraceExact` | `propext` |
 | `Local.set` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `Local.append` | `RueCore.TraceExact` | `propext` |
-| `Retired.same` | `RueCore.TraceExact` | `propext` |
+| `Tombstoned.same` | `RueCore.TraceExact` | `propext` |
 | `Tidy.same` | `RueCore.TraceExact` | `propext` |
 | `Tidy.write` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `Tidy.opRes` | `RueCore.TraceExact` | `propext` |
@@ -824,23 +824,23 @@ and diffs them against the committed copies.
 | `unwind_kills` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `dropRetire_kills` | `RueCore.TraceExact` | `propext` |
 | `Tidy.scoped` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
-| `mintParams_locs` | `RueCore.TraceExact` | `propext` |
-| `mintParams_mem` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
-| `mintParams_pre` | `RueCore.TraceExact` | `propext` |
+| `freshParams_locs` | `RueCore.TraceExact` | `propext` |
+| `freshParams_mem` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `freshParams_pre` | `RueCore.TraceExact` | `propext` |
 | `dynPlace_env` | `RueCore.TraceExact` | `propext` |
 | `evalArgs_tidy` | `RueCore.TraceExact` | `propext` |
 | `Tidy.call` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `eval_tidy` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
-| `FrameMatches.frameIn` | `RueCore.TraceExact` | `propext` |
+| `ActivationTyping.activationIn` | `RueCore.TraceExact` | `propext` |
 | `drop_exactly_once` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
-| `Retired.mono` | `RueCore.TraceExact` | `propext` |
+| `Tombstoned.mono` | `RueCore.TraceExact` | `propext` |
 | `Tidy.settled` | `RueCore.TraceExact` | `propext` |
 | `lead_cc` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `rest_exactly_once` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `lostProgram_typed` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `pendingSafe_needed` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `typed_of_check` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
-| `lostFrame_matches` | `RueCore.TraceExact` | `propext` |
+| `lostActivation_typing` | `RueCore.TraceExact` | `propext` |
 | `lostStore_cc` | `RueCore.TraceExact` | `propext` |
 | `orphan_rejected` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `emptyStore_cc` | `RueCore.TraceExact` | `propext` |
@@ -888,7 +888,7 @@ and diffs them against the committed copies.
 | `plainUnwind_length` | `RueCore.TraceOrder` | `propext` |
 | `Kont.toCall_mem` | `RueCore.TraceOrder` | `propext` |
 | `Kont.toLoop_mem` | `RueCore.TraceOrder` | `propext` |
-| `mintParams_eq` | `RueCore.TraceOrder` | `propext` |
+| `freshParams_eq` | `RueCore.TraceOrder` | `propext` |
 | `step_ordered` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `reachable_ordered` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `dropLocs_append` | `RueCore.TraceOrder` | `propext` |
@@ -899,19 +899,19 @@ and diffs them against the committed copies.
 | `plainResidue_locs` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `plainDestructure_locs` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `plainUnwind_locs` | `RueCore.TraceOrder` | `propext` |
-| `NewestFirst.teardown` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `StrictStackOrder.teardown` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `step_drop_order` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `reachable_drop_order` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
-| `Frame.popScope_tail` | `RueCore.TraceOrder` | `propext` |
+| `Activation.unwindScope_tail` | `RueCore.TraceOrder` | `propext` |
 | `Nest.toCall` | `RueCore.TraceOrder` | `propext` |
 | `Nest.toLoop` | `RueCore.TraceOrder` | `propext` |
-| `Lifo.newer` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
-| `Lifo.same` | `RueCore.TraceOrder` | `propext` |
-| `Lifo.cut` | `RueCore.TraceOrder` | `propext` |
+| `StackDiscipline.newer` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `StackDiscipline.same` | `RueCore.TraceOrder` | `propext` |
+| `StackDiscipline.cut` | `RueCore.TraceOrder` | `propext` |
 | `step_nested` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `reachable_nested` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
-| `step_lifo` | `RueCore.TraceOrder` | `propext` |
-| `reachable_lifo` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `step_stackDiscipline` | `RueCore.TraceOrder` | `propext` |
+| `reachable_stackDiscipline` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `step_blocks` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `drop_glue_order` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `drop_order` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
@@ -929,12 +929,12 @@ and diffs them against the committed copies.
 | `Retire.Grow.append` | `RueCore.Retire` | `propext` |
 | `Retire.Grow.set_full` | `RueCore.Retire` | `Quot.sound`, `propext` |
 | `Retire.Live.ne_of_le` | `RueCore.Retire` | `propext` |
-| `Retire.LiveFrame.grow` | `RueCore.Retire` | `propext` |
+| `Retire.LiveActivation.grow` | `RueCore.Retire` | `propext` |
 | `Retire.LivePost.withTrace` | `RueCore.Retire` | `propext` |
 | `Retire.LivePost.lift` | `RueCore.Retire` | `propext` |
 | `Retire.LivePost.andThen` | `RueCore.Retire` | `propext` |
 | `Retire.LivePost.scoped` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `Retire.Contents.readAt_ne_uad` | `RueCore.Retire` | `propext` |
+| `Retire.Contents.getAt_ne_uad` | `RueCore.Retire` | `propext` |
 | `Retire.Contents.resolveDyn_ne_uad` | `RueCore.Retire` | `Quot.sound`, `propext` |
 | `Retire.dynPlace_ne_uad` | `RueCore.Retire` | `Quot.sound`, `propext` |
 | `Retire.dropContents_ne_uad` | `RueCore.Retire` | `propext` |
@@ -948,11 +948,11 @@ and diffs them against the committed copies.
 | `Retire.unwindLocs_live` | `RueCore.Retire` | `propext` |
 | `Retire.nodup_reverse` | `RueCore.Retire` | `Quot.sound`, `propext` |
 | `Retire.UnwindPost.grow` | `RueCore.Retire` | `propext` |
-| `Retire.mintParams_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `Retire.freshParams_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
 | `Retire.OpRes.toRes_live` | `RueCore.Retire` | `propext` |
 | `Retire.introVal_live` | `RueCore.Retire` | `propext` |
 | `Retire.evalArgs_live` | `RueCore.Retire` | `propext` |
-| `Retire.LiveFrame.root` | `RueCore.Retire` | `propext` |
+| `Retire.LiveActivation.root` | `RueCore.Retire` | `propext` |
 | `Retire.eval_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
 | `Retire.plainDropRetire_live` | `RueCore.Retire` | `propext` |
 | `Retire.plainUnwind_live` | `RueCore.Retire` | `propext` |
@@ -967,7 +967,7 @@ and diffs them against the committed copies.
 | `Retire.unwind_keeps` | `RueCore.Retire` | `Quot.sound`, `propext` |
 | `Retire.unwind_err` | `RueCore.Retire` | `Quot.sound`, `propext` |
 | `Retire.extend_keeps` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `Retire.Frame.popScope_ext` | `RueCore.Retire` | `propext` |
+| `Retire.Activation.unwindScope_ext` | `RueCore.Retire` | `propext` |
 | `Retire.OpRes.toStep_live` | `RueCore.Retire` | `propext` |
 | `Retire.stepEval_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
 | `Retire.stepArgs_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
@@ -1578,7 +1578,7 @@ and diffs them against the committed copies.
 | `glue_fieldsSwapped_rejected` | `RueCore.Witnesses` | `propext` |
 | `glue_dtorAfterFields_rejected` | `RueCore.Witnesses` | `propext` |
 | `glue_dtorSkipped_rejected` | `RueCore.Witnesses` | `propext` |
-| `returnPastAffine_newestFirst` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
+| `returnPastAffine_strictStackOrder` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
 | `unorderedRecord_rejected` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
 | `swappedMarkers_rejected` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
 | `letAddProgram_runs` | `RueCore.Witnesses` | `Quot.sound`, `propext` |
@@ -1616,7 +1616,7 @@ that rests on one takes the structure as a parameter, so the assumption
 is visible in its own statement and in `DIGEST.md`, and `#print axioms`
 keeps meaning what it says.
 
-One interface exists today, `RueCore.FloatModel` (`RueCore/Float.lean`),
+One interface exists today, `RueCore.FloatLaws` (`RueCore/Float.lean`),
 which is §7's "totality of the float operations" lemma — the one §7
 itself says is "discharged against the standard rather than against
 Rue". Its fields:
@@ -1649,7 +1649,7 @@ arithmetic, so nothing here touches Lean's `Float` — whose definition
 over an `opaque` constant would put `Classical.choice` on every theorem
 mentioning a value. It *satisfies* every law above: `Float.exactModel`
 (`RueCore/Float/Lemmas.lean`, RUE-2469) proves each one of it, so the laws
-have a model and the theorems quantifying over `M : FloatModel` are not
+have a model and the theorems quantifying over `M : FloatLaws` are not
 vacuous in `M` (`Nonvacuous.exact_model` in `SPINE.md`). The laws say nothing
 about which datum a rounding returns: that `exactOps`'s roundings are IEEE
 754's (correct rounding, ties to even, the overflow threshold) is checked by
@@ -1689,7 +1689,7 @@ witness programs): a witness can only fail to witness, never widen a claim.
 
 - Headline statements: 41 — `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `run_no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `no_masking`, `run_ne_returned`, `check_sound`, `checkProgram_sound`, `no_double_free`, `step_no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `whole_program_exactly_once`, `drop_order`, `drop_glue_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `Config.stuck_iff`, `step_stuck_isStuckState`, `step_progress`, `step_preservation`, `step_type_safety`, `step_no_use_after_drop`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `run_stuck_of_step_stuck`, `eval_diverges_iff`.
 - Definitions to read: **299**, in 9 modules (69 inductive, 227 def, 3 abbrev).
-- Instances they use: 12 — `instDecidableEqAttr`, `instDecidableEqEntry`, `instDecidableEqFloatWidth`, `instDecidableEqIntWidth`, `instDecidableEqMult`, `instDecidableEqOwnSt`, `instDecidableEqSign`, `instDecidableEqTy`, `instDecidableInBounds`, `instDecidableNoResidualLinear`, `instDecidableRoundsFinite`, `instDecidableWf_1`. A `deriving` image says nothing beyond its type; a hand-written one is read with the predicate it decides.
+- Instances they use: 12 — `instDecidableEqAttr`, `instDecidableEqEntry`, `instDecidableEqFloatWidth`, `instDecidableEqIntWidth`, `instDecidableEqOwnSt`, `instDecidableEqQual`, `instDecidableEqSign`, `instDecidableEqTy`, `instDecidableInBounds`, `instDecidableNoResidualLinear`, `instDecidableRoundsFinite`, `instDecidableWf_1`. A `deriving` image says nothing beyond its type; a hand-written one is read with the predicate it decides.
 - Lean-generated auxiliaries passed through (`isLeanAux`): 531. Each is
   Lean's rendering of a definition listed here, so there is nothing more to read in
   them. A constant counts as Lean's only when Lean's own tables record it (recursors
@@ -1699,12 +1699,12 @@ witness programs): a witness can only fail to witness, never widen a claim.
 
 | Module | Layer | Count | Definitions |
 | --- | --- | --- | --- |
-| `RueCore.Float` | L0 syntax | 32 | `FloatArith`, `FloatDatum`, `FloatDatum.Wf`, `FloatDatum.isNaN`, `FloatDatum.le`, `FloatDatum.lt`, `FloatDatum.negate`, `FloatDatum.roundOp`, `FloatDatum.succMag`, `FloatDatum.toIntIn`, `FloatDatum.totalCmp`, `FloatDatum.totalRank`, `FloatDatum.truncToInt`, `FloatDatum.widen`, `FloatLit`, `FloatLit.RoundsFinite`, `FloatLit.exact`, `FloatModel`, `FloatRoundOp`, `FloatSig`, `FloatSig.cast`, `FloatSig.roundIntrin`, `FloatUnIntrin`, `FloatWidth`, `FloatWidth.eMin`, `FloatWidth.eTop`, `FloatWidth.overflowNum`, `FloatWidth.prec`, `canonAux`, `canonNum`, `cmpScaled`, `magCmp` |
-| `RueCore.Syntax` | L0 syntax | 54 | `Attr`, `Attr.lift`, `BinOp`, `BinOp.floatAdmits`, `BinOp.intAdmits`, `BinOp.isCompare`, `BinOp.resultTy`, `Decls`, `Decls.classOf`, `Decls.enumClassOf`, `EnumDecl`, `Expr`, `Expr.breaks`, `FloatIntrin`, `FloatIntrin.floatSrc`, `FloatIntrin.resTy`, `FnDef`, `InBounds`, `IntWidth`, `IntWidth.bits`, `IntWidth.modulus`, `Mult`, `Mult.join`, `Mult.rank`, `Param`, `Place`, `Place.path`, `Place.root`, `Program`, `Sign`, `StructDecl`, `Ty`, `Ty.atDyn`, `Ty.atPath`, `Ty.declaredLinear`, `Ty.dynNoDeclared`, `Ty.fieldAt`, `Ty.isInt`, `Ty.mult`, `Ty.observable`, `UnOp`, `anyLinearOther`, `arrayPrefix`, `bitsOf`, `declaredPrefix`, `instDecidableEqTy.decEq`, `intMax`, `intMin`, `linearResidue`, `noArrayStep`, `noDtorPrefix`, `rootIdxOnly`, `valOf`, `wrapInt` |
-| `RueCore.Adequacy.Defs` | L1 definitions | 3 | `Config.SafeAt`, `Frame.empty`, `StepsN` |
-| `RueCore.Checker.Defs` | L1 definitions | 19 | `CTy`, `CTy.fits`, `CTy.fitsC`, `CTy.meet`, `Decls.topoSort`, `Decls.topoSortStep`, `Expr.nodes`, `Ty.grounded`, `check`, `checkDecls`, `checkEnumDecl`, `checkEnums`, `checkFn`, `checkNoCycle`, `checkProgram`, `checkStructDecl`, `checkStructs`, `headIter`, `headNext` |
-| `RueCore.Dynamics` | L1 definitions | 61 | `ArgsRes`, `Cell`, `Contents`, `Contents.allCopyList`, `Contents.copyClosed`, `Contents.declaredLinear`, `Contents.declaredPlan`, `Contents.destructure`, `Contents.isHole`, `Contents.mult`, `Contents.ofVal`, `Contents.ofVals`, `Contents.pathOnly`, `Contents.readAt`, `Contents.residualLinear`, `Contents.resolveDyn`, `Contents.splitResidue`, `Contents.toVal`, `Contents.writeAt`, `DynPlace`, `DynStep`, `Env`, `EvalRes`, `EvalRes.bind`, `EvalRes.bindCall`, `EvalRes.withTrace`, `Event`, `Frame`, `OpRes`, `OpRes.toRes`, `PanicKind`, `Store`, `Val`, `Val.ints`, `Val.mult`, `Val.observable`, `Violation`, `binOpFloat`, `binOpInt`, `dropCell`, `dropContents`, `dropEvents`, `dropResidue`, `dropRetire`, `dynPlace`, `eval`, `evalArgs`, `evalBinOp`, `evalFintrin`, `evalIntCast`, `evalUnOp`, `inBoundsIdx`, `intResult`, `introVal`, `matchConsume`, `mintParams`, `residueMark`, `run`, `runAllScopeDrops`, `shiftAmount`, `unwindLocs` |
-| `RueCore.Soundness.Defs` | L1 definitions | 13 | `BrokeOk`, `CellMatches`, `Contents.holeFree`, `ContentsMatches`, `ContentsMatchesList`, `ContentsTy`, `ContentsTys`, `EvalOk`, `FrameMatches`, `HasTy`, `HasTys`, `Matches`, `Untouched` |
-| `RueCore.Statics` | L1 definitions | 56 | `Ctx`, `Ctx.Wf`, `Ctx.join`, `Ctx.joinAll`, `Ctx.joinFold`, `Ctx.joinOpt`, `Ctx.joinOpts`, `Ctx.loopLocals`, `Ctx.outsideLoop`, `Decls.Names`, `Decls.byValue`, `Entry`, `Entry.join`, `Entry.setSt`, `Entry.wf`, `EnumDecl.Wf`, `EnumDecl.payloadJoin`, `LoopHead`, `NoResidualLinear`, `Out`, `Out.merge`, `OwnSt`, `OwnSt.decEq`, `OwnSt.fieldAt`, `OwnSt.fieldStates`, `OwnSt.fullyOwned`, `OwnSt.get`, `OwnSt.isOwned`, `OwnSt.join`, `OwnSt.setAt`, `OwnSt.setField`, `OwnSt.wf`, `ProgramTyped`, `StructDecl.Wf`, `StructDecl.baseOf`, `Ty.tyNames`, `TyName`, `Typed`, `TypedArgs`, `TypedArms`, `WfDecls`, `WfEnums`, `WfFn`, `WfNames`, `WfProgram`, `WfStructs`, `assignArrayOk`, `extendArm`, `fnCtx`, `instDecidableEqEntry.decEq`, `overwriteOk`, `ownedJoinable`, `ownedJoinableList`, `residualLinear`, `residualLinearBelow`, `residualLinearFields` |
-| `RueCore.Step` | L1 definitions | 24 | `ArgsTag`, `Config`, `Config.Stuck`, `Config.Terminal`, `Config.init`, `Focus`, `Frame.popScope`, `Kont`, `Kont.toCall`, `Kont.toLoop`, `OpRes.toStep`, `Step`, `StepOut`, `Steps`, `Violation.isStuckState`, `plainDestructure`, `plainDropRetire`, `plainResidue`, `plainUnwind`, `rootCell`, `step`, `stepArgs`, `stepEval`, `stepRet` |
-| `RueCore.Trace.Defs` | L1 definitions | 37 | `ArgsTag.own`, `Blocks`, `Cell.own`, `Config.held`, `Config.stack`, `Config.trace`, `Contents.own`, `Contents.ownList`, `DropGlue`, `DropGlueBlocks`, `DropGlueSeq`, `DtorNotCopy`, `EvalRes.trace`, `Event.dtorIds`, `Event.freed`, `Exact`, `Expr.pendingSafe`, `Expr.quietList`, `Expr.returns`, `Expr.unwinds`, `Focus.own`, `Kont.own`, `Lead`, `Lifo`, `Local`, `NewestFirst`, `Program.pendingSafe`, `Retired`, `Settled`, `Stk`, `StoreCC`, `Tidy`, `Val.own`, `dropLocs`, `dtorIds`, `freedIds`, `storeOwn` |
+| `RueCore.Float` | L0 syntax | 32 | `FloatArith`, `FloatDatum`, `FloatDatum.Wf`, `FloatDatum.isNaN`, `FloatDatum.le`, `FloatDatum.lt`, `FloatDatum.negate`, `FloatDatum.roundOp`, `FloatDatum.succMag`, `FloatDatum.toIntIn`, `FloatDatum.totalCmp`, `FloatDatum.totalRank`, `FloatDatum.truncToInt`, `FloatDatum.widen`, `FloatLaws`, `FloatLit`, `FloatLit.RoundsFinite`, `FloatLit.exact`, `FloatRoundOp`, `FloatSig`, `FloatSig.cast`, `FloatSig.roundIntrin`, `FloatUnIntrin`, `FloatWidth`, `FloatWidth.eMin`, `FloatWidth.eTop`, `FloatWidth.overflowNum`, `FloatWidth.prec`, `canonAux`, `canonNum`, `cmpScaled`, `magCmp` |
+| `RueCore.Syntax` | L0 syntax | 54 | `Attr`, `Attr.lift`, `BinOp`, `BinOp.floatAdmits`, `BinOp.intAdmits`, `BinOp.isCompare`, `BinOp.resultTy`, `Decls`, `Decls.classOf`, `Decls.enumClassOf`, `EnumDecl`, `Expr`, `Expr.breaks`, `FloatIntrin`, `FloatIntrin.floatSrc`, `FloatIntrin.resTy`, `FnDef`, `InBounds`, `IntWidth`, `IntWidth.bits`, `IntWidth.modulus`, `Param`, `Place`, `Place.path`, `Place.root`, `Program`, `Qual`, `Qual.join`, `Qual.rank`, `Sign`, `StructDecl`, `Ty`, `Ty.atDyn`, `Ty.atPath`, `Ty.declaredLinear`, `Ty.dynNoDeclared`, `Ty.fieldAt`, `Ty.isInt`, `Ty.observable`, `Ty.qual`, `UnOp`, `anyLinearOther`, `arrayPrefix`, `bitsOf`, `declaredPrefix`, `instDecidableEqTy.decEq`, `intMax`, `intMin`, `linearResidue`, `noArrayStep`, `noDtorPrefix`, `rootIdxOnly`, `valOf`, `wrapInt` |
+| `RueCore.Adequacy.Defs` | L1 definitions | 3 | `Activation.empty`, `Config.SafeAt`, `StepsN` |
+| `RueCore.Checker.Defs` | L1 definitions | 19 | `Decls.topoSort`, `Decls.topoSortStep`, `Expr.nodes`, `Ty.grounded`, `TyOrNever`, `TyOrNever.fits`, `TyOrNever.fitsC`, `TyOrNever.meet`, `check`, `checkDecls`, `checkEnumDecl`, `checkEnums`, `checkFn`, `checkNoCycle`, `checkProgram`, `checkStructDecl`, `checkStructs`, `headIter`, `headNext` |
+| `RueCore.Dynamics` | L1 definitions | 61 | `Activation`, `ArgsRes`, `Cell`, `Contents`, `Contents.allCopyList`, `Contents.copyContained`, `Contents.declaredLinear`, `Contents.declaredPlan`, `Contents.destructure`, `Contents.getAt`, `Contents.isMovedOut`, `Contents.ofVal`, `Contents.ofVals`, `Contents.pathOnly`, `Contents.qual`, `Contents.residualLinear`, `Contents.resolveDyn`, `Contents.setAt`, `Contents.splitResidue`, `Contents.toVal`, `DynPlace`, `DynStep`, `Env`, `EvalRes`, `EvalRes.bind`, `EvalRes.bindCall`, `EvalRes.withTrace`, `Event`, `OpRes`, `OpRes.toRes`, `PanicKind`, `Refusal`, `Store`, `Val`, `Val.ints`, `Val.observable`, `Val.qual`, `binOpFloat`, `binOpInt`, `dropCell`, `dropContents`, `dropEvents`, `dropResidue`, `dropRetire`, `dynPlace`, `eval`, `evalArgs`, `evalBinOp`, `evalFintrin`, `evalIntCast`, `evalUnOp`, `freshParams`, `inBoundsIdx`, `intResult`, `introVal`, `matchConsume`, `residueDropEvent`, `run`, `runAllScopeDrops`, `shiftAmount`, `unwindLocs` |
+| `RueCore.Soundness.Defs` | L1 definitions | 13 | `ActivationTyping`, `BreakOutputOk`, `CellTyping`, `Contents.noMovedOut`, `ContentsOwnTyping`, `ContentsOwnTypingList`, `ContentsTy`, `ContentsTys`, `EvalOk`, `FrameProperty`, `HasTy`, `HasTys`, `StoreTyping` |
+| `RueCore.Statics` | L1 definitions | 56 | `Ctx`, `Ctx.Wf`, `Ctx.join`, `Ctx.joinAll`, `Ctx.joinFold`, `Ctx.joinOpt`, `Ctx.joinOpts`, `Ctx.loopLocals`, `Ctx.outsideLoop`, `Decls.ByValueEdge`, `Decls.byValue`, `Entry`, `Entry.join`, `Entry.setSt`, `Entry.wf`, `EnumDecl.Wf`, `EnumDecl.payloadJoin`, `LoopHead`, `NoResidualLinear`, `Out`, `Out.merge`, `OwnSt`, `OwnSt.decEq`, `OwnSt.fieldAt`, `OwnSt.fieldStates`, `OwnSt.fullyOwned`, `OwnSt.get`, `OwnSt.isOwned`, `OwnSt.join`, `OwnSt.setAt`, `OwnSt.setField`, `OwnSt.wf`, `ProgramTyped`, `StructDecl.Wf`, `StructDecl.baseOf`, `Ty.tyNames`, `TyName`, `Typed`, `TypedArgs`, `TypedArms`, `WfDecls`, `WfEnums`, `WfFn`, `WfNames`, `WfProgram`, `WfStructs`, `assignArrayOk`, `extendArm`, `fnCtx`, `instDecidableEqEntry.decEq`, `overwriteOk`, `ownedJoinable`, `ownedJoinableList`, `residualLinear`, `residualLinearBelow`, `residualLinearFields` |
+| `RueCore.Step` | L1 definitions | 24 | `Activation.unwindScope`, `ArgsFrame`, `Config`, `Config.Stuck`, `Config.Terminal`, `Config.init`, `Focus`, `Kont`, `Kont.toCall`, `Kont.toLoop`, `OpRes.toStep`, `Refusal.isStuckState`, `Step`, `StepOut`, `Steps`, `plainDestructure`, `plainDropRetire`, `plainResidue`, `plainUnwind`, `rootCell`, `step`, `stepArgs`, `stepEval`, `stepRet` |
+| `RueCore.Trace.Defs` | L1 definitions | 37 | `ArgsFrame.own`, `Blocks`, `Cell.own`, `Config.held`, `Config.stack`, `Config.trace`, `Contents.own`, `Contents.ownList`, `DropGlue`, `DropGlueBlocks`, `DropGlueSeq`, `DtorNotCopy`, `EvalRes.trace`, `Event.dtorIds`, `Event.freed`, `Exact`, `Expr.canCompleteAbruptly`, `Expr.pendingSafe`, `Expr.quietList`, `Expr.returns`, `Focus.own`, `Kont.own`, `Lead`, `Local`, `Program.pendingSafe`, `Settled`, `StackDiscipline`, `Stk`, `StoreCC`, `StrictStackOrder`, `Tidy`, `Tombstoned`, `Val.own`, `dropLocs`, `dtorIds`, `freedIds`, `storeOwn` |
