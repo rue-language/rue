@@ -2729,10 +2729,10 @@ later exit drops them again.
 
 where `drop(H, ℓ)` is the drop relation of §6.11 (a no-op on a `⊘` or `Copy`
 cell). The suffix side condition is an invariant, not a check the machine
-performs: cells are appended to the innermost record in creation order, an
+performs: cells are appended to the innermost drop scope in creation order, an
 `endscope` closes the most recently created ones, and nothing between a
 binding's creation and its `endscope` can leave a *younger* cell in the same
-record (a nested `let`'s or `match`'s marker closes before the enclosing one by
+drop scope (a nested `let`'s or `match`'s marker closes before the enclosing one by
 expression nesting; a nested `loop` pushes and — by `(D-Loop-Iter)`/
 `(D-Break)` — fully pops its *own* drop scopes; a call runs in its own
 activation record). Nested `let`s nest their `endscope`s, so cells are dropped in **reverse
@@ -2836,7 +2836,7 @@ analogue of (Panic-Lift), §6.2): `let y = (return 100); …` and
 discarding `E'`, every pending `endscope` marker inside it included, along with
 any loop boundaries the activation record pushed onto `K`. The drops those markers would
 have run are not lost: every bound cell is also registered in the activation record's drop
-scopes (§6.7), and `run-all-scope-drops` walks exactly those records, so an
+scopes (§6.7), and `run-all-scope-drops` walks exactly those drop scopes, so an
 early return runs every live binding's drop, newest-first per scope
 (`3.9:18` — verified against the compiler: an early return with two live
 destructor-bearing locals runs both destructors, then the caller's). The activation record
