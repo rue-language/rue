@@ -2152,13 +2152,14 @@ theorem RueCore.checkEnums_sound {D : Decls} (h : checkEnums D = true) : WfEnums
 
 *theorem* · module `RueCore.Checker`
 
-**Every `checkNoCycle` acceptance is `3.0:5`** (`WfNames`): the by-value
+**Every `checkNoCycle` acceptance is `3.0:5`** (`WfByValueEdge`): the by-value
 "contains" relation over the declarations is well-founded, so no struct or enum
 contains itself by value through any cycle of fields and payloads. This is the
 premise `class_unique` turns into "§3's class assignment has one solution".
 
 ```lean
-theorem RueCore.checkNoCycle_sound {D : Decls} (h : checkNoCycle D = true) : WfNames D
+theorem RueCore.checkNoCycle_sound {D : Decls} (h : checkNoCycle D = true) :
+  WfByValueEdge D
 ```
 
 ### `checkDecls_sound`
@@ -28738,7 +28739,7 @@ def RueCore.Ctx.Extends (Γb Γ : Ctx) : Prop :=
 `3.0:5`'s relation, one step: `d` contains `d'` by value. A slot reaches
 its declaration **through any depth of array nesting** (`Ty.tyNames`), because
 `3.0:5` names array elements beside fields and payloads; without that, a
-struct naming itself through an array element would satisfy `WfNames` and §3's
+struct naming itself through an array element would satisfy `WfByValueEdge` and §3's
 equation would have more than one solution at it.
 
 ```lean
@@ -30738,7 +30739,7 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls), Val.qual D Val.unit = Qual.copy
 ```
 
-### `WfNames`
+### `WfByValueEdge`
 
 *def* · module `RueCore.Statics`
 
@@ -30749,7 +30750,7 @@ struct and enum equations a *definition* — `class_unique` is the induction it
 licenses — and it is joint over the two layers because `3.0:5` is.
 
 ```lean
-def RueCore.WfNames (D : Decls) : Prop :=
+def RueCore.WfByValueEdge (D : Decls) : Prop :=
   WellFounded fun d' d => D.ByValueEdge d d'
 ```
 
@@ -30903,7 +30904,7 @@ def RueCore.checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (c : TyOrNever) :
 **`3.0:5` (E0483) as an algorithm**: every declaration is grounded after
 `|structs| + |enums|` rounds of the sort, which is "no struct or enum contains itself
 by value, either directly or through a cycle of struct fields and enum
-payloads". `checkNoCycle_sound` turns an acceptance into `WfNames`, the premise
+payloads". `checkNoCycle_sound` turns an acceptance into `WfByValueEdge`, the premise
 that makes §3's two class equations a definition.
 
 ```lean
@@ -31177,7 +31178,7 @@ def RueCore.Corpus.cases : List Corpus.Case
 *inductive* · module `RueCore.Statics`
 
 One enum declaration's well-formedness (§3, `6.3:19`): its recorded class
-is the payload join. As for a struct this is the equation only, and `WfNames`
+is the payload join. As for a struct this is the equation only, and `WfByValueEdge`
 is what makes it solvable (`3.0:5` forbids an enum to contain itself by value
 through any cycle of fields and payloads).
 
@@ -31492,7 +31493,7 @@ destructor-bearing declaration carries no linear field.
 
 This is the *equation* only. What makes it solvable — that no declaration
 contains itself by value, directly or through a cycle (`3.0:5`, E0483) — is
-`WfNames`, stated jointly over both layers below, because a field may name an
+`WfByValueEdge`, stated jointly over both layers below, because a field may name an
 enum and a payload may name a struct.
 
 ```lean
@@ -32355,7 +32356,7 @@ def RueCore.Spec.step_stuck_isStuckState_stmt : Prop :=
 
 *inductive* · module `RueCore.Statics`
 
-A well-formed declaration environment: `3.0:5`'s acyclicity (`WfNames`),
+A well-formed declaration environment: `3.0:5`'s acyclicity (`WfByValueEdge`),
 §3's class assignment for every struct declaration (`WfStructs`) and for every
 enum declaration (`WfEnums`). This is the premise every theorem that reads a
 recorded class through `Ty.qual` carries, and it is what `checkDecls`
@@ -32370,8 +32371,8 @@ Constructors:
 **`WfDecls.mk`**
 
 ```lean
-RueCore.WfDecls.mk {D : Decls} (names : WfNames D) (structs : WfStructs D)
-  (enums : WfEnums D) : WfDecls D
+RueCore.WfDecls.mk {D : Decls} (byValueEdge : WfByValueEdge D)
+  (structs : WfStructs D) (enums : WfEnums D) : WfDecls D
 ```
 
 ### `checkDecls`
@@ -41196,7 +41197,7 @@ A well-formed program: §3's class assignment holds of every declaration and
 (Fn) §5.8 of every function. Recursion is ordinary — a body may call any
 function of the program, itself included, since (Call) reads only the callee's
 signature (§5.8, "the core is fully monomorphic") — while *declarations* are
-not recursive at all (`3.0:5`, `WfNames`).
+not recursive at all (`3.0:5`, `WfByValueEdge`).
 
 ```lean
 inductive RueCore.WfProgram (P : Program) : Prop
