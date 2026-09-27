@@ -289,6 +289,25 @@ nothing; the shape needs a seed whose draws put `i64`, signed and `*` at a
 binop the pair reaches at all. `Gen.lean`'s docstring has the mechanism in
 full and BRIDGE-SENSITIVITY.md the mutant results.
 
+Reaching `divZero` (RUE-2512): The `(x, 0)` div-by-zero shape above
+reached an *accepted* program too rarely to be useful: 0 of the 1,200
+generated programs at `--gen 200 --seed 7` and `--gen 1000 --seed 23` end in
+`panic divZero`, against one `remZero`. `/`'s own rate is raised to one in
+six (`rem`'s stays untouched), and, since the runtime prints one message for
+`divZero` and `remZero` and `lean_corpus.rs` maps both to one bridge kind,
+this one shape now prints under `/` whichever of `div` or `rem` the operator
+itself is — so `--gen 200 --seed 7` reaches its one accepted `divZero` at no
+extra draw, from the `remZero` hit it already had (`gen_7_171`). `--gen 1000
+--seed 23` reaches one too, `gen_23_351`: the raised rate fires a root-level
+`(x, 0)` pair against a callee's whole call, `pruneFns` removes the now
+unreferenced callee, and the 3-node result — `let v0: u8 = 0; (255 / v0)`,
+the `0` divisor bound through a `let` (one draw in two, the same technique as
+`min_T * -1`'s `-1` above) — is accepted where trunk's draw was rejected; the
+only verdict change at either setting. `bin/verify.py` agrees with the
+compiler on every case at both settings; the only disagreement, at either, is
+`array_elem_self_assign` itself. `Gen.lean`'s docstring has the mechanism in
+full.
+
 ```bash
 lake exe ruecore-corpus --gen 1000 --seed 7 > /tmp/gen.json   # seed cases, then 1000 generated
 scripts/rue lean-bridge -- --corpus /tmp/gen.json               # the last --corpus wins

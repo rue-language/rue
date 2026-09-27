@@ -787,6 +787,29 @@ Rerun at these settings:
   (`gen_23_173`, `203`, `271`, `326`, `375`, `757`, `857`; `gen_7_93`,
   `144`), all masked by an earlier compiler-side error, the same as trunk's
   own instances of it.
+
+Reaching `divZero` (RUE-2512): `arithBinop`'s `(x, 0)` div-by-zero pair
+(above) reached an *accepted* program too rarely to be generated coverage at
+all: 0 of the 1,200 generated programs at these two settings ended in `panic
+divZero`, against one `remZero` (`gen_7_171`). `pairRate` raises `/`'s own
+rate to one in six (`rem`'s stays untouched), and this one shape now prints
+under `/` whichever of `div` or `rem` the operator itself is — the runtime
+and `lean_corpus.rs` already collapse `divZero` and `remZero` to one message
+and one bridge kind, so a `rem` site reaching `(x, 0)` is as good a witness.
+Rerun at these settings:
+
+* `--gen 200 --seed 7` reaches one accepted `divZero`, at no extra draw —
+  `gen_7_171`'s existing `(x, 0)` hit now prints under `/` instead of `%`.
+* `--gen 1000 --seed 23` reaches one, `gen_23_351`: the raised rate fires a
+  root-level `(x, 0)` pair against a callee's whole call, `pruneFns` removes
+  the now unreferenced callee, and the 3-node result — `let v0: u8 = 0; (255
+  / v0)`, the `0` divisor bound through a `let` (one draw in two, the same
+  technique `h2318`'s `-1` above uses) — is accepted where trunk's draw was
+  rejected; the only verdict change at either setting.
+* The unmutated compiler agrees with the model on every other case at both
+  settings, plus seeds: the only disagreement, at either, is still
+  `array_elem_self_assign` itself, unaffected.
+
 ## Six divergence-rule seeds (RUE-2483)
 
 "Rule coverage" above (§5's "In the fragment, and never exercised") found
