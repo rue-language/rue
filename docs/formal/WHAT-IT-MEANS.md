@@ -96,6 +96,9 @@ the model, test the product against it), at a far smaller scale.
 - Only programs in the core fragment are covered.
 - Bugs on program shapes the tests never produce can be missed, as can drops
   that run no destructor.
+- Unreached code after a `return`/`@panic`/`break` is untested: the model
+  types nothing past it, so a compiler rejection there is not compared
+  (RUE-2376, open).
 - The comparison is run by hand, not yet in CI (RUE-2241).
 
 ## How we know the proofs are right
