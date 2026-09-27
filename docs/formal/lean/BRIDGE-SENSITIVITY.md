@@ -802,7 +802,7 @@ Rerun at these settings:
   `gen_7_171`'s existing `(x, 0)` hit now prints under `/` instead of `%`.
 * `--gen 1000 --seed 23` reaches one, `gen_23_351`: the raised rate fires a
   root-level `(x, 0)` pair against a callee's whole call, `pruneFns` removes
-  the now unreferenced callee, and the 3-node result — `let v0: u8 = 0; (255
+  the now unreferenced callee, and the 3-node result — `let v0: u8 = 0; (0
   / v0)`, the `0` divisor bound through a `let` (one draw in two, the same
   technique `h2318`'s `-1` above uses) — is accepted where trunk's draw was
   rejected; the only verdict change at either setting.

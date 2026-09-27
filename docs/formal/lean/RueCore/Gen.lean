@@ -591,7 +591,7 @@ drew a 2-function, 119-node program the checker rejects (no refusal reached
 on the executed path, `f0` calling a recursive `f1`); this branch's raised
 rate fires a root-level `(x, 0)` pair against `f1`'s whole call, `pruneFns`
 then removes the now-unreferenced `f1`, and the 3-node result — `fn f0() ->
-u8 { let v0: u8 = 0; (255 / v0) }`, the non-constant divisor — is accepted
+u8 { let v0: u8 = 0; (0 / v0) }`, the non-constant divisor — is accepted
 and traps `divZero`; this is the only verdict change at either setting.
 Measured against the pre-RUE-2512 draw, 20 of 200 and 357 of 1,000 generated
 cases differ at all, 3 and 23 differ in more than a literal (the same kind of
