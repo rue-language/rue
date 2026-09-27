@@ -2656,6 +2656,78 @@ def linearLostAtArrayElem : Program :=
               ret := .struct sLinearDtor,
               body := seq (drop (.var 0)) (resLD (lit 9)) }] }
 
+/-! ## Four never-exercised divergence rules, seeded (RUE-2483)
+
+`BRIDGE-SENSITIVITY.md`'s rule-coverage table found seven §5.3/§5.7
+"-Bottom" rules with no seed and no generated case. Three of them —
+(Seq-Bottom), (Let-Bottom), and every position of (Strict-Bottom) except the
+one below — type a form *past* a diverging subexpression: an unreached
+sequence tail, `let` body, or branch arm. Seeding those needs the syntax
+RUE-2376 leaves unsettled (code after a `return`/`@panic` the compiler may
+reject as ill-formed dead code), so none is added; `BRIDGE-SENSITIVITY.md`
+and `WHAT-IT-MEANS.md` record the gap instead. (Panic-Operand) is not a gap
+at all: `Expr.panic`'s message is a literal `String` (`Syntax.lean`), not an
+`Expr`, so there is no operand position for it to diverge in — outside the
+fragment, permanently.
+
+The remaining four need no tail at all — each diverging form is either the
+whole construct or its last sibling — so each gets a seed below. None
+crosses RUE-2316's pending-temporary gap either: none has an earlier
+sibling value already built when a later one diverges. -/
+
+/-- (Return-Bottom) §5.7: `return`'s own operand is itself a `return`, so the
+outer `return` never fires — the inner one already unwound the frame with
+`5`. Nothing follows either `return`. The compiler agrees: it accepts the
+nested `return` and exits with `5`, after the `@dbg` line `1`. -/
+def returnBottom : Program :=
+  scalarProg tI64 (seq (dbg (lit 1)) (ret (ret (lit 5))))
+
+/-- (Call-Bottom) §5.3, `f1`'s sole argument: it diverges by `return` before
+the call is reached, so `f1`'s frame is never pushed and its body never
+runs. The mechanization has no separate (Call-Bottom) conclusion for the
+call itself — `Typed.call` always concludes at `fd.ret` (`Statics.lean`'s
+note on what the fragment omits) — so what diverges is `TypedArgs.consBot`,
+labelled "(Strict-Bottom) at a list member"; `Explain.explain`'s `.call` case
+now names the call "(Call-Bottom)" when its argument list does, the same way
+its `.loop` case already picks between (Loop-Div) and (Loop-Div-Backedge).
+Nothing follows the call, and there is no earlier argument to strand. The
+compiler agrees: it accepts and exits with the `return`'s value, `0`, after
+the `@dbg` line `1`. -/
+def callBottom : Program :=
+  { decls := Decls.ofStructs [],
+    fns := [{ params := [], ret := tI64,
+              body := seq (dbg (lit 1)) (call 1 [ret (lit 0)]) },
+            { params := [⟨tI64, false⟩], ret := tI64, body := use (.var 0) }] }
+
+/-- (Strict-Bottom) §5.3 at an assignment's right-hand side (`assignBot`):
+`v0 = return ()` diverges before the store, so nothing is written, and
+`check` still demands the assignment's own syntactic premises — a `μ = mut`
+root — which this one has. The `let` binds no body past the assignment: it
+*is* the function's tail, so no unreached code follows it either. The
+compiler agrees: it accepts (with only an unused-variable lint on `v0`) and
+exits having run the `@dbg` line `1` before the assignment. -/
+def strictBottomAssign : Program :=
+  scalarProg .unit (seq (dbg (lit 1)) (letIn true (lit 0) (assign (.var 0) (ret unitLit))))
+
+/-- (Loop-Div-Backedge) §5.7: a `loop` with no `break` anywhere is
+`never`-typed regardless of what its body does (`4.8:21`); the body here
+(`v0 = v0 + 1`) is typed once, at the loop-head state, where it completes
+normally — the "back edge" case, `Ωe.norm = some _`. `LoopHead`'s fixpoint is
+about *types*, not values, so `v0`'s starting value is free to make the loop
+diverge quickly at runtime instead of running forever: seeded one below
+`i64::MAX`, the second turn overflows and traps, so the case completes well
+inside the fuel bound although the loop has no static exit at all.
+`loop_moved_prev_iteration` (`Corpus.lean`) is (Loop-Div)'s one seed, the
+sibling case where the body itself always diverges; this is the
+always-continues counterpart. The `let`'s body is the `loop` itself — no
+code follows it, so this needs nothing RUE-2376 leaves unsettled either. The
+compiler agrees: it accepts the unbounded `loop` and traps with the same
+overflow. -/
+def loopDivBackedge : Program :=
+  scalarProg tI64
+    (letIn true (lit 9223372036854775806)
+      (loop (assign (.var 0) (binop .add (use (.var 0)) (lit 1)))))
+
 #eval run demoOps (scalarProg (.int .w8 .signed) i8Overflow) demoFuel        -- panic: overflow
 #eval run demoOps (scalarProg (.int .w8 .unsigned) u8Underflow) demoFuel     -- panic: overflow
 #eval run demoOps (scalarProg (.int .w8 .signed) i8DivMinByNegOne) demoFuel  -- panic: overflow
@@ -2709,6 +2781,10 @@ def linearLostAtArrayElem : Program :=
 #eval run demoOps (prog tI64 joinWholeAgainstPartial) demoFuel  -- ok: 9, dtors 1 then 2
 #eval run demoOps linearLostAtCallArg demoFuel                  -- ok: 0, EMPTY trace
 #eval run demoOps affineLostAtCallArg demoFuel                  -- ok: 0, EMPTY trace
+#eval run demoOps returnBottom demoFuel                         -- ok: 5, dbg 1
+#eval run demoOps callBottom demoFuel                           -- ok: 0, dbg 1
+#eval run demoOps strictBottomAssign demoFuel                   -- ok: (), dbg 1
+#eval run demoOps loopDivBackedge demoFuel                      -- panic: overflow
 
 /-!
 ## Static acceptance and rejection, mechanically
@@ -2737,6 +2813,10 @@ example : ProgramTyped returnPastAffine := checkProgram_sound (by rfl)
 example : ProgramTyped paramDroppedAtPop := checkProgram_sound (by rfl)
 example : ProgramTyped recursionTrap := checkProgram_sound (by rfl)
 example : ProgramTyped countdown := checkProgram_sound (by rfl)
+example : ProgramTyped returnBottom := checkProgram_sound (by rfl)
+example : ProgramTyped callBottom := checkProgram_sound (by rfl)
+example : ProgramTyped strictBottomAssign := checkProgram_sound (by rfl)
+example : ProgramTyped loopDivBackedge := checkProgram_sound (by rfl)
 
 /-! The partial-move programs (RUE-2231): the accepted ones, so the §7
 theorems apply to a store whose cells hold trees with holes in them. -/

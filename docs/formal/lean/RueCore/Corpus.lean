@@ -1026,7 +1026,23 @@ def cases : List Case := [
   { name := "copy_monitor_off",
     description := "The one shape §7's no-double-free conservation law needs excluded: an owned, destructor-bearing S1 value placed under a Copy S0's field, by an ill-typed program the checker already refuses for an unrelated reason (the field's declared type is i64, not S1). No well-typed program can reach this state, so this is the machine's own last line of defense: eval refuses to build the value with ownedUnderCopy, where Step (which has no monitor) would run S1's destructor on the same identity twice. Seeded by the definition mutation analysis (RUE-2486): mutant `copy-monitor-off`.",
     rules := ["ownedUnderCopy monitor §6.5", "§7 no-double-free"],
-    prog := dupProgram }
+    prog := dupProgram },
+  { name := "return_bottom",
+    description := "return's own operand is itself a return: the outer return never fires, since the inner one already unwound the frame with 5. Nothing follows either return, so this needs none of the syntax RUE-2376 leaves unsettled. Seeded for RUE-2483: (Return-Bottom) had no seed and no generated case.",
+    rules := ["(Return-Bottom) §5.7", "(Dbg) §5.8"],
+    prog := Examples.returnBottom },
+  { name := "call_bottom",
+    description := "A one-argument call whose sole argument diverges by return before the call is reached, so the callee's frame is never pushed and its body never runs. Nothing follows the call, and there is no earlier argument for RUE-2316's pending-temporary gap to strand. Seeded for RUE-2483: (Call-Bottom) had no seed, no generated case, and no Explain row; Explain now names the call this way when its argument list diverges, the way (Loop-Div)/(Loop-Div-Backedge) are already told apart.",
+    rules := ["(Call-Bottom) §5.3", "(Return-Value) §5.7", "(Dbg) §5.8"],
+    prog := Examples.callBottom },
+  { name := "strict_bottom_assign",
+    description := "An assignment's right-hand side diverges by return before the store: check still demands the destination's own mut mark, which this one has, and the let's body is the assignment itself, so no code follows it either. Seeded for RUE-2483: no seed or generated case reached (Strict-Bottom) at any of its positions.",
+    rules := ["(Assign) §5.2 with (Strict-Bottom) §5.3", "(Dbg) §5.8"],
+    prog := Examples.strictBottomAssign },
+  { name := "loop_div_backedge",
+    description := "A break-less loop whose body completes normally at the type-level loop-head state (an assignment), so it is never-typed by the back-edge case of (Loop-Div)/(Loop-Div-Backedge) rather than the always-diverges case loop_moved_prev_iteration already seeds. The counter starts one below i64::MAX, so the second turn overflows and traps well inside the fuel bound although the loop has no static exit. Seeded for RUE-2483: (Loop-Div-Backedge) had no seed and no generated case.",
+    rules := ["(Loop-Div-Backedge) §5.7", "(Assign) §5.2", "(D-Arith-Trap) §6.4"],
+    prog := Examples.loopDivBackedge }
 ]
 
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/
