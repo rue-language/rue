@@ -49,7 +49,7 @@ def rows : List Row := [
     lit := "Soundness via a definitional interpreter: `⊢ e : T ∧ eval n e = r ≠ Timeout ⇒ r = Val v ∧ v : T`"
     cite := "FIELD §3: Amin & Rompf Lemma 3; Owens et al. §5"
     ours := "`WfProgram P`, `Typed P R Γ e T Ω` and a frame and store agreeing with `Γ` ⇒ `EvalOk` of `eval` at every fuel"
-    diff := "The same theorem for an open expression, from any frame and store that agree with its context (`FrameMatches`), with an unwinding `return` or `break`, a defined panic and exhausted fuel among the allowed outcomes, and with `.stuck` excluded, which covers `eval`'s monitors as well as stuck states." },
+    diff := "The same theorem for an open expression, from any frame and store that agree with its context (`ActivationTyping`), with an unwinding `return` or `break`, a defined panic and exhausted fuel among the allowed outcomes, and with `.stuck` excluded, which covers `eval`'s monitors as well as stuck states." },
   { thm := `RueCore.run_safe
     lit := "Syntactic soundness: `⊢ e : τ ⇒ e⇑ ∨ (e ↦* v ∧ ⊢ v : τ)`"
     cite := "FIELD §2: Wright & Felleisen Thm 4.12 (preprint numbering)"

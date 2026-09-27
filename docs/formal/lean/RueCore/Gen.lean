@@ -65,7 +65,7 @@ A **use** and a **`@drop`** are drawn at a path of one *or two* field steps —
 a field of a field — wherever the declarations reach that far and the place
 rules admit the path (`paths2`, `pathOk`, which is `projSlots`' legality test
 read at a whole path). Depth 2 is where the path machinery actually recurses:
-`OwnSt.get` and `setAt`'s padding, `ContentsMatches.readAt`/`.writeAt`, and
+`OwnSt.get` and `setAt`'s padding, `ContentsOwnTyping.readAt`/`.writeAt`, and
 §6.11's nested `⊘`-skip. One seed case (`deep_path`) is not coverage of it.
 
 An **assignment target** is at most **one** field step deep, and that is a

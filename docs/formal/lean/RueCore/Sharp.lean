@@ -198,7 +198,7 @@ theorem stuck :
       checkProgram P = false ∧ ¬ ProgramTyped P ∧ ¬ WfProgram P ∧
       (∃ fd, P.fns[0]? = some fd ∧ fd.params = []) ∧
       P.pendingSafe = true ∧ (Expr.call 0 []).pendingSafe = true ∧
-      FrameMatches P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
+      ActivationTyping P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
       (∃ c Ω, check P (.int .w64 .signed) [] (.call 0 []) = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [] (.call 0 []) (.int .w64 .signed) Ω ∧
         ¬ EvalOk P.decls (.int .w64 .signed) (.int .w64 .signed) Ω.norm Ω.brk Activation.empty []
@@ -220,10 +220,10 @@ theorem stuck :
       c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [] (.call 0 []) (.int .w64 .signed) Ω := by
     subst hB hP; exact ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩
   refine ⟨by subst hB hP; rfl, fun h => no_use_after_move Float.exactModel h 200 hrun, fun hw => ?_,
-    ⟨_, by subst hB hP; rfl, rfl⟩, by subst hB hP; rfl, rfl, frameMatches_empty,
+    ⟨_, by subst hB hP; rfl, rfl⟩, by subst hB hP; rfl, rfl, activationTyping_empty,
     fun _ _ h => by simp at h, ⟨c, Ω, hc, hf, ht, by rw [hr]; exact id⟩, rfl, hr,
     by subst hB hP; rfl, by subst hB hP; rfl, fun _ => rfl, hrun, by subst hP; rfl, stuck_not_safe hrun ⟨[], .int .w64 .signed, .unitLit⟩⟩
-  have := soundness Float.exactModel hw 200 ht frameMatches_empty
+  have := soundness Float.exactModel hw 200 ht activationTyping_empty
   rw [exact_ops, hr] at this
   exact this
 
@@ -297,7 +297,7 @@ theorem typed :
         .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
         (.seq (.drop (.var 0)) (.use (.proj (.var 0) 0))) →
       ProgramTyped P ∧ WfProgram P ∧ P.pendingSafe = true ∧ e.pendingSafe = true ∧
-      FrameMatches P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
+      ActivationTyping P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
       check P (.int .w64 .signed) [] e = none ∧ (∀ (T : Ty) (Ω : Out), ¬ Typed P (.int .w64 .signed) [] e T Ω) ∧
       Lead Float.exactOps P 200 [] Activation.empty [.dead] [.struct 0 0 [.int .w64 .signed 1]] [] e ∧
       eval Float.exactOps 200 P [] Activation.empty e = .stuck .useAfterMove ∧
@@ -310,10 +310,10 @@ theorem typed :
   have hPT : ProgramTyped P := checkProgram_sound (by subst hB hP; rfl)
   have hr : eval Float.exactOps 200 P [] Activation.empty e = .stuck .useAfterMove := by subst he hB hP; rfl
   have hnt : ∀ (T : Ty) (Ω : Out), ¬ Typed P (.int .w64 .signed) [] e T Ω := fun T Ω ht => by
-    have := soundness Float.exactModel hPT.wf 200 ht frameMatches_empty
+    have := soundness Float.exactModel hPT.wf 200 ht activationTyping_empty
     rw [exact_ops, hr] at this
     exact this
-  exact ⟨hPT, hPT.wf, by subst hB hP; rfl, by subst he; rfl, frameMatches_empty,
+  exact ⟨hPT, hPT.wf, by subst hB hP; rfl, by subst he; rfl, activationTyping_empty,
     fun _ _ h => by simp at h, by subst he hB hP; rfl, hnt, by subst he hB hP; exact ⟨_, rfl, by rfl⟩,
     hr, by subst he hB hP; rfl, by subst he hB hP; rfl, rfl, fun T Ω => by rw [hr]; exact id⟩
 
@@ -335,7 +335,7 @@ theorem frame :
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [{ ty := .int .w64 .signed, mu := false, st := .owned }] e (.int .w64 .signed) Ω ∧
         ¬ EvalOk P.decls (.int .w64 .signed) (.int .w64 .signed) Ω.norm Ω.brk Activation.empty []
           (eval Float.exactOps 200 P [] Activation.empty e)) ∧
-      ¬ FrameMatches P.decls [{ ty := .int .w64 .signed, mu := false, st := .owned }] Activation.empty [] ∧
+      ¬ ActivationTyping P.decls [{ ty := .int .w64 .signed, mu := false, st := .owned }] Activation.empty [] ∧
       Lead Float.exactOps P 200 [] Activation.empty [] [.int .w64 .signed 1] [] e ∧
       eval Float.exactOps 200 P [] Activation.empty e = .stuck .unbound ∧
       eval Float.exactOps 201 P [] Activation.empty e = .stuck .unbound ∧
@@ -577,7 +577,7 @@ theorem not_fits :
       c.fits .bool = false := by
     subst hB hP; exact ⟨_, _, by rfl, by rfl⟩
   refine ⟨hPT, c, Ω, hc, hf, fun ht => ?_⟩
-  have := soundness Float.exactModel hPT.wf 200 ht frameMatches_empty
+  have := soundness Float.exactModel hPT.wf 200 ht activationTyping_empty
   have hr : eval Float.exactOps 200 P [] Activation.empty (.intLit .w64 .signed 1) =
       .ok [] (.int .w64 .signed 1) [] := by subst hP; rfl
   rw [exact_ops, hr] at this
@@ -653,7 +653,7 @@ theorem pending_program :
               (.intLit .w64 .signed 0) }] } →
     ∀ e : Expr, e = .call 1 [.use (.var 0)] →
       ProgramTyped P ∧ P.pendingSafe = false ∧ e.pendingSafe = true ∧
-      FrameMatches P.decls [{ ty := .struct 0, mu := false, st := .owned }] { env := [0], scope := [0] } [.full (.struct 0 0 [.int .w64 .signed 5])] ∧ StoreCC P.decls [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
+      ActivationTyping P.decls [{ ty := .struct 0, mu := false, st := .owned }] { env := [0], scope := [0] } [.full (.struct 0 0 [.int .w64 .signed 5])] ∧ StoreCC P.decls [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
       (∃ c Ω, check P (.int .w64 .signed) [{ ty := .struct 0, mu := false, st := .owned }] e = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [{ ty := .struct 0, mu := false, st := .owned }] e (.int .w64 .signed) Ω) ∧
       Lead Float.exactOps P 200 [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } [.full .hole] [(.struct 0 0 [.int .w64 .signed 5])] [] e ∧
@@ -690,7 +690,7 @@ theorem pending_expr :
         (.seq (.mkArray (.struct 0) [.use (.var 0), .ret (.intLit .w64 .signed 7)])
           (.intLit .w64 .signed 1)) →
       ProgramTyped P ∧ P.pendingSafe = true ∧ e.pendingSafe = false ∧
-      FrameMatches P.decls [{ ty := .struct 0, mu := false, st := .owned }] { env := [0], scope := [0] } [.full (.struct 0 0 [.int .w64 .signed 5])] ∧ StoreCC P.decls [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
+      ActivationTyping P.decls [{ ty := .struct 0, mu := false, st := .owned }] { env := [0], scope := [0] } [.full (.struct 0 0 [.int .w64 .signed 5])] ∧ StoreCC P.decls [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
       (∃ c Ω, check P (.int .w64 .signed) [{ ty := .struct 0, mu := false, st := .owned }] e = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [{ ty := .struct 0, mu := false, st := .owned }] e (.int .w64 .signed) Ω) ∧
       Lead Float.exactOps P 200 [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } [.full (.struct 0 0 [.int .w64 .signed 5])] [.int .w64 .signed 0] [] e ∧
@@ -725,7 +725,7 @@ theorem store_cc :
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
     ∀ e : Expr, e = .seq (.intLit .w64 .signed 1) (.intLit .w64 .signed 2) →
       ProgramTyped P ∧ P.pendingSafe = true ∧ e.pendingSafe = true ∧
-      FrameMatches P.decls [] Activation.empty [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] ∧ ¬ StoreCC P.decls [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] ∧
+      ActivationTyping P.decls [] Activation.empty [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] ∧ ¬ StoreCC P.decls [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] ∧
       (∃ c Ω, check P (.int .w64 .signed) [] e = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [] e (.int .w64 .signed) Ω) ∧
       Lead Float.exactOps P 200 [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] Activation.empty [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] [.int .w64 .signed 1] [] e ∧
@@ -763,7 +763,7 @@ theorem no_lead :
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ProgramTyped P ∧ P.pendingSafe = true ∧ B.pendingSafe = true ∧
-      FrameMatches P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
+      ActivationTyping P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       ¬ Lead Float.exactOps P 200 [] Activation.empty [.full (.struct 0 0 [.int .w64 .signed 1])]
@@ -779,7 +779,7 @@ theorem no_lead :
         (storeOwn P.decls [.full (.struct 0 0 [.int .w64 .signed 1])]).count 0 +
           (Contents.ownList P.decls (Contents.ofVals [.struct 0 0 [.int .w64 .signed 1]])).count 0 := by
     subst hB hP; exact ⟨_, _, _, by rfl, by decide⟩
-  refine ⟨hPT, by subst hB hP; rfl, by subst hB; rfl, frameMatches_empty, fun _ _ h => by simp at h,
+  refine ⟨hPT, by subst hB hP; rfl, by subst hB; rfl, activationTyping_empty, fun _ _ h => by simp at h,
     by subst hB hP; exact ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩, ?_,
     (withTrace_nil _).symm, by rw [hr]; exact not_exact_ok 0 (by decide) hne⟩
   subst hB hP
@@ -799,7 +799,7 @@ theorem no_eval :
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ProgramTyped P ∧ P.pendingSafe = true ∧ B.pendingSafe = true ∧
-      FrameMatches P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
+      ActivationTyping P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       ∃ H₁ vs tr, Lead Float.exactOps P 200 [] Activation.empty H₁ vs tr B ∧
@@ -808,7 +808,7 @@ theorem no_eval :
   have hPT : ProgramTyped P := checkProgram_sound (by subst hB hP; rfl)
   obtain ⟨H', v, tr, hr⟩ : ∃ H' v tr, eval Float.exactOps 201 P [] Activation.empty B = .ok H' v tr := by
     subst hB hP; exact ⟨_, _, _, by rfl⟩
-  refine ⟨hPT, by subst hB hP; rfl, by subst hB; rfl, frameMatches_empty, fun _ _ h => by simp at h,
+  refine ⟨hPT, by subst hB hP; rfl, by subst hB; rfl, activationTyping_empty, fun _ _ h => by simp at h,
     by subst hB hP; exact ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
     [.dead], [.struct 0 0 [.int .w64 .signed 1]], [], by subst hB hP; exact ⟨_, rfl, by rfl⟩,
     fun w h => ?_⟩

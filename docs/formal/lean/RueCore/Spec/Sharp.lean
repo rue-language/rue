@@ -47,7 +47,7 @@ as `eval` at `main()`, `WfProgram` beside `ProgramTyped`, `eval … =
 r.withTrace []`), and its doc-comment names the spot. One thing the kernel
 does not show is that the dropped hypothesis fails independently of the
 spine. Every negated hypothesis (`¬ ProgramTyped`, `¬ WfProgram`, `¬ Typed`,
-`¬ FrameMatches`, `¬ Steps …`) is proved through the spine theorem itself,
+`¬ ActivationTyping`, `¬ Steps …`) is proved through the spine theorem itself,
 from the other hypotheses and the failed conclusion, except where the
 doc-comment says it is shown directly. The content of each counter-example is
 that the other hypotheses hold and the conclusion fails, and both are
@@ -106,7 +106,7 @@ def stuck_stmt : Prop :=
       checkProgram P = false ∧ ¬ ProgramTyped P ∧ ¬ WfProgram P ∧
       (∃ fd, P.fns[0]? = some fd ∧ fd.params = []) ∧
       P.pendingSafe = true ∧ (Expr.call 0 []).pendingSafe = true ∧
-      FrameMatches P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
+      ActivationTyping P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
       (∃ c Ω, check P (.int .w64 .signed) [] (.call 0 []) = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [] (.call 0 []) (.int .w64 .signed) Ω ∧
         ¬ EvalOk P.decls (.int .w64 .signed) (.int .w64 .signed) Ω.norm Ω.brk Activation.empty []
@@ -183,7 +183,7 @@ def typed_stmt : Prop :=
         .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
         (.seq (.drop (.var 0)) (.use (.proj (.var 0) 0))) →
       ProgramTyped P ∧ WfProgram P ∧ P.pendingSafe = true ∧ e.pendingSafe = true ∧
-      FrameMatches P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
+      ActivationTyping P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
       check P (.int .w64 .signed) [] e = none ∧ (∀ (T : Ty) (Ω : Out), ¬ Typed P (.int .w64 .signed) [] e T Ω) ∧
       Lead Float.exactOps P 200 [] Activation.empty [.dead] [.struct 0 0 [.int .w64 .signed 1]] [] e ∧
       eval Float.exactOps 200 P [] Activation.empty e = .stuck .useAfterMove ∧
@@ -196,13 +196,13 @@ def typed_stmt : Prop :=
 /-- **A typed expression run in a frame that does not match its context**
 (§7 sharpness, RUE-2485). `1; x`, typed by `check` in the context `x : i64` over
 the checked program of `Nonvacuous.dtor`, is run from the empty frame and
-store, which do not match that context (`FrameMatches` fails); everything else
+store, which do not match that context (`ActivationTyping` fails); everything else
 `soundness`, `drop_exactly_once` and `rest_exactly_once` ask holds, a `Lead`
 (the discarded `1`) included. `eval` refuses the read of `x` with `unbound`. The statement gives `ProgramTyped P` and `WfProgram P`
 (`soundness` asks the second, `drop_exactly_once` the first), and
 `rest_exactly_once`'s hypothesis 8 as `eval … = r.withTrace []` with `r` the
 refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495);
-`¬ FrameMatches` is proved through `soundness`. -/
+`¬ ActivationTyping` is proved through `soundness`. -/
 def frame_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -220,7 +220,7 @@ def frame_stmt : Prop :=
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [{ ty := .int .w64 .signed, mu := false, st := .owned }] e (.int .w64 .signed) Ω ∧
         ¬ EvalOk P.decls (.int .w64 .signed) (.int .w64 .signed) Ω.norm Ω.brk Activation.empty []
           (eval Float.exactOps 200 P [] Activation.empty e)) ∧
-      ¬ FrameMatches P.decls [{ ty := .int .w64 .signed, mu := false, st := .owned }] Activation.empty [] ∧
+      ¬ ActivationTyping P.decls [{ ty := .int .w64 .signed, mu := false, st := .owned }] Activation.empty [] ∧
       Lead Float.exactOps P 200 [] Activation.empty [] [.int .w64 .signed 1] [] e ∧
       eval Float.exactOps 200 P [] Activation.empty e = .stuck .unbound ∧
       eval Float.exactOps 201 P [] Activation.empty e = .stuck .unbound ∧
@@ -517,7 +517,7 @@ def pending_program_stmt : Prop :=
               (.intLit .w64 .signed 0) }] } →
     ∀ e : Expr, e = .call 1 [.use (.var 0)] →
       ProgramTyped P ∧ P.pendingSafe = false ∧ e.pendingSafe = true ∧
-      FrameMatches P.decls [{ ty := .struct 0, mu := false, st := .owned }] { env := [0], scope := [0] } [.full (.struct 0 0 [.int .w64 .signed 5])] ∧ StoreCC P.decls [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
+      ActivationTyping P.decls [{ ty := .struct 0, mu := false, st := .owned }] { env := [0], scope := [0] } [.full (.struct 0 0 [.int .w64 .signed 5])] ∧ StoreCC P.decls [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
       (∃ c Ω, check P (.int .w64 .signed) [{ ty := .struct 0, mu := false, st := .owned }] e = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [{ ty := .struct 0, mu := false, st := .owned }] e (.int .w64 .signed) Ω) ∧
       Lead Float.exactOps P 200 [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } [.full .hole] [(.struct 0 0 [.int .w64 .signed 5])] [] e ∧
@@ -549,7 +549,7 @@ def pending_expr_stmt : Prop :=
         (.seq (.mkArray (.struct 0) [.use (.var 0), .ret (.intLit .w64 .signed 7)])
           (.intLit .w64 .signed 1)) →
       ProgramTyped P ∧ P.pendingSafe = true ∧ e.pendingSafe = false ∧
-      FrameMatches P.decls [{ ty := .struct 0, mu := false, st := .owned }] { env := [0], scope := [0] } [.full (.struct 0 0 [.int .w64 .signed 5])] ∧ StoreCC P.decls [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
+      ActivationTyping P.decls [{ ty := .struct 0, mu := false, st := .owned }] { env := [0], scope := [0] } [.full (.struct 0 0 [.int .w64 .signed 5])] ∧ StoreCC P.decls [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
       (∃ c Ω, check P (.int .w64 .signed) [{ ty := .struct 0, mu := false, st := .owned }] e = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [{ ty := .struct 0, mu := false, st := .owned }] e (.int .w64 .signed) Ω) ∧
       Lead Float.exactOps P 200 [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } [.full (.struct 0 0 [.int .w64 .signed 5])] [.int .w64 .signed 0] [] e ∧
@@ -578,7 +578,7 @@ def store_cc_stmt : Prop :=
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
     ∀ e : Expr, e = .seq (.intLit .w64 .signed 1) (.intLit .w64 .signed 2) →
       ProgramTyped P ∧ P.pendingSafe = true ∧ e.pendingSafe = true ∧
-      FrameMatches P.decls [] Activation.empty [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] ∧ ¬ StoreCC P.decls [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] ∧
+      ActivationTyping P.decls [] Activation.empty [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] ∧ ¬ StoreCC P.decls [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] ∧
       (∃ c Ω, check P (.int .w64 .signed) [] e = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [] e (.int .w64 .signed) Ω) ∧
       Lead Float.exactOps P 200 [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] Activation.empty [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] [.int .w64 .signed 1] [] e ∧
@@ -605,7 +605,7 @@ def no_lead_stmt : Prop :=
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ProgramTyped P ∧ P.pendingSafe = true ∧ B.pendingSafe = true ∧
-      FrameMatches P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
+      ActivationTyping P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       ¬ Lead Float.exactOps P 200 [] Activation.empty [.full (.struct 0 0 [.int .w64 .signed 1])]
@@ -632,7 +632,7 @@ def no_eval_stmt : Prop :=
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ProgramTyped P ∧ P.pendingSafe = true ∧ B.pendingSafe = true ∧
-      FrameMatches P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
+      ActivationTyping P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       ∃ H₁ vs tr, Lead Float.exactOps P 200 [] Activation.empty H₁ vs tr B ∧

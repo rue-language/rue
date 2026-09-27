@@ -882,19 +882,19 @@ lean_package(
         "RueCore.dropContents_order",
         "RueCore.dropContents_struct_events",
         "RueCore.dropContents_enum_events",
-        "RueCore.Matches.joinAll",
+        "RueCore.StoreTyping.joinAll",
         "RueCore.OwnSt.join_assoc",
         "RueCore.Ctx.join_assoc",
         "RueCore.Ctx.joinAll_perm",
         "RueCore.OwnSt.setAt_wf",
         "RueCore.Ctx.joinAll_wf",
-        "RueCore.Matches.unwindPrefix",
+        "RueCore.StoreTyping.unwindPrefix",
         "RueCore.dropContents_array_events",
         "RueCore.ContentsTy.array_shape",
-        "RueCore.ContentsMatches.residualLinear_false",
-        "RueCore.ContentsMatches.readAt",
-        "RueCore.ContentsMatches.writeAt",
-        "RueCore.ContentsMatches.declaredPlan_eq",
+        "RueCore.ContentsOwnTyping.residualLinear_false",
+        "RueCore.ContentsOwnTyping.readAt",
+        "RueCore.ContentsOwnTyping.writeAt",
+        "RueCore.ContentsOwnTyping.declaredPlan_eq",
         "RueCore.declaredPrefix_split",
         "RueCore.declaredPrefix_declaredLinear",
         "RueCore.splitResidue_ok",
@@ -1546,7 +1546,7 @@ rue_tool_test(
 # otherwise report a clean audit of nothing.
 filegroup(
     name = "scheduled-workflow-test-inputs",
-    # Matches the script's own `*.y*ml` discovery. A narrower glob here would
+    # StoreTyping the script's own `*.y*ml` discovery. A narrower glob here would
     # leave a `.yaml` workflow live in CI but invisible to these tests.
     srcs = glob([".github/workflows/*.yml", ".github/workflows/*.yaml"]),
 )

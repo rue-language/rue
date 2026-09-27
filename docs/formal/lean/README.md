@@ -491,7 +491,7 @@ opens with the fragment boundary, quoted from `INDEX.md`'s coverage lines, so
 the scope is visible before the claims are. Proof bodies are deliberately
 absent: a proof is checked by the kernel, and what the kernel appealed to is
 the other report. A definition's body is printed when the definition *is* a
-type or a predicate (`Ctx`, `CellMatches`, `InBounds`) or when it is short
+type or a predicate (`Ctx`, `CellTyping`, `InBounds`) or when it is short
 enough to read: a signature alone cannot tell `Ty.mult` from `fun _ => .copy`
 or `Ctx.join` from `fun _ _ => none`, and the linearity theorems are about
 what those two decide. A long body (`eval`, `check`, `explain`) is left to
@@ -632,12 +632,12 @@ mechanized*. The short version:
   `no_violation`'s doc-comment: a by-value argument destroyed by a sibling
   argument's `return` is dropped by nobody and monitored by nobody, so the
   linear bullet has an edge these refusals do not reach (the calculus as
-  written; RUE-2316). `FrameMatches` is the invariant the proof carries:
-  `Matches` — "Σ faithfully tracks the store's initialization", with one
+  written; RUE-2316). `ActivationTyping` is the invariant the proof carries:
+  `StoreTyping` — "Σ faithfully tracks the store's initialization", with one
   deliberate asymmetry explained in its doc-comment — plus the σ invariant,
   that the frame's scope record read newest-first *is* its environment (which
   holds definitionally in this fragment, and becomes an obligation when
-  `Activation.scope` is §6.1's stack). `Untouched` is the frame-locality property
+  `Activation.scope` is §6.1's stack). `FrameProperty` is the frame-locality property
   that carries a caller's agreement across a callee's run.
 - **Run something.** Open `RueCore/Examples.lean`; each `#eval` line runs a
   program at a fuel bound, and the editor (or `lake build`'s log) shows its
@@ -716,7 +716,7 @@ its own layer or a lower one:
 | Layer | Modules | What it holds |
 | --- | --- | --- |
 | **L0 syntax** | `Float`, `Syntax` | §2's syntax, types and float data |
-| **L1 definitions** | `Statics`, `Dynamics`, `Step`, `Soundness/Defs`, `Checker/Defs`, `Trace/Defs`, `Adequacy/Defs` | the semantics (§5's judgment, `eval`, §6's `Step`), and every definition a headline statement is written in: value typing and `FrameMatches`, the checker algorithm, the trace projections, ledgers and configuration invariants, `Config.SafeAt` |
+| **L1 definitions** | `Statics`, `Dynamics`, `Step`, `Soundness/Defs`, `Checker/Defs`, `Trace/Defs`, `Adequacy/Defs` | the semantics (§5's judgment, `eval`, §6's `Step`), and every definition a headline statement is written in: value typing and `ActivationTyping`, the checker algorithm, the trace projections, ledgers and configuration invariants, `Config.SafeAt` |
 | **Spec statements** | `Spec`, `Spec.Safety`, `Spec.Checker`, `Spec.Trace`, `Spec.Step`, `Spec.Adequacy`, `Spec.Nonvacuous`, `Spec.Sharp` | the headline statements, each a `def …_stmt : Prop` over L0 and L1 alone, with its English reading; the one list of them, `Spec.spine` ("The statement layer"); the non-vacuity witnesses with their list, `Spec.witnesses` ("Non-vacuity witnesses"); and the sharpness counter-examples with theirs, `Spec.sharpness` and `Spec.sharpnessReasons` ("Sharpness counter-examples") |
 | **L2 proofs** | `Float.Lemmas`, `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder`, `Retire`, `TracePrefix`, `TraceWhole`, `Nonvacuous`, `Sharp`, `Spine`, `Nonvacuous.Glue`, `Sharp.Glue` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L0's and L1's definitions (`Float.Lemmas`: the `FloatModel` laws of `Float.exactOps`), `Nonvacuous` proves the witness statements and `Sharp` the counter-example statements, `Spine` checks each headline, witness and counter-example proof against its Spec statement, `Nonvacuous.Glue` applies each witness to the theorems it lists, and `Sharp.Glue` refutes each spine statement with a hypothesis dropped from the counter-example `Spec.sharpness` pairs with it |
 | **L3 tooling** | `Examples`, `Witnesses`, `Print`, `Corpus`, `Gen`, `Explain*`, `Digest`, `Map`, `Literature`, `Layers`, `Lint`, the `*Main` executables, the root `RueCore` | example and corpus programs and the theorems about them, the printer, the generator, the explain and digest reports, the proof map's milestone list, the spine's table against the literature, the layer table and the lint |
@@ -1232,7 +1232,7 @@ in the statement, with the non-triviality in the statement too.
   `step_no_double_free` bounds a non-empty trace of a run that never ends,
   RUE-2477), **one that gets stuck** unchecked (a read after
   `@drop`: `run` refuses it with `useAfterMove` and `Step` reaches a stuck
-  configuration), **the empty frame** (`FrameMatches` and `StoreCC` at the
+  configuration), **the empty frame** (`ActivationTyping` and `StoreCC` at the
   empty context, frame and store), and **an open term in a live frame**
   (`open_frame`: `@drop(s); 1` typed in the context `s : S0`, over a frame and
   store that hold an `S0`, whose evaluation runs that value's destructor), so
@@ -1451,7 +1451,7 @@ The two reasons, both in `Spec.lean`:
 The Spec statement writes the program out; the
 proof runs `check`, `eval` and `step` in the kernel (`rfl`, `decide`), and
 shows every dropped hypothesis false (`¬ ProgramTyped`, `¬ WfProgram`,
-`¬ Typed`, `¬ FrameMatches`, `¬ Steps …`) through the spine theorem itself:
+`¬ Typed`, `¬ ActivationTyping`, `¬ Steps …`) through the spine theorem itself:
 for a program of which every other hypothesis holds and the conclusion fails,
 established without the theorem, the theorem leaves the dropped one no way to
 hold (`¬ ProgramTyped P` from `no_use_after_move` and a refusal, `¬ Typed`
@@ -1517,8 +1517,8 @@ pass is):
 | `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with observation traces (drops, destructors, `@dbg`); cell **contents as a tree with `⊘` at any node**, navigated by a path (§6.3's `H(ℓ)@π` and `H[ℓ@π ↦ ⊘]`, a constant index being a step like a field slot); §6.3's `split`/`destructure` for the declared-linear redex, with a residue monitor; §6.11's recursive drop (destructor, then fields in declaration order, an enum's active variant's payload, and an array's elements in ascending index order, every `⊘` skipped); frames with scope records and their unwinds, `return`'s and `break`'s; loops, each turn spending fuel; value identities minted at aggregate introduction and carried by values, cells and trace events; violations as named refusals, among them the copy-closure monitor; §6.4's operator rules, §6.5's bounds trap at a dynamic index, and every §6.12 trap the fragment reaches, each carrying the trace up to it | §6.1–§6.12 |
 | `RueCore/Statics/Lemmas.lean`, `RueCore/Dynamics/Lemmas.lean`, `RueCore/Step/Lemmas.lean` | (layer L2) the theorems about the three definition modules' definitions, moved out of them verbatim (RUE-2460): the class and join lemmas `Statics.lean`'s row names, the machine's few, and `Step`'s below | as the module each is about |
 | `RueCore/Step.lean` | §6's reduction relation `Step` over the §6.1 configuration, one constructor per rule, with §6.2's evaluation contexts as a stack of frames (enter and plug constructors per context production, (Panic-Lift) folded into every trap); `step`, the same relation as a function, and (in `Step/Lemmas.lean`) `step_iff`; determinism (`Step.det`), no step from a terminal configuration, the terminal/step/stuck trichotomy with every stuck state named by one of §6's own four violations, never a monitor (`step_stuck_isStuckState`); the monitor-free drops and the lemmas that a monitor only removes behaviour (`unwindLocs_plain`, `destructure_plain`). Adequacy to `eval`: soundness is `Adequacy.lean`, completeness proved in `RueCore/Adequacy.lean` (`eval_complete`, `never_stuck_iff`) | §6.1–§6.12 |
-| `RueCore/Soundness/Defs.lean` | (layer L1) the definitions §7's statements are written in, moved out of `Soundness.lean`: value and contents typing (`HasTy`, `ContentsTy`), the per-frame agreement invariant `FrameMatches` with its per-cell and per-node parts, frame locality `Untouched`, and `soundness`'s promise `EvalOk` | §6.1, §7 |
-| `RueCore/Soundness.lean` | lemmas about value typing, the per-frame agreement invariant `FrameMatches` and frame locality `Untouched` (all three defined in `Soundness/Defs.lean`), **the safety theorem** — with progress at a `match` resting on exhaustiveness, preservation on the folded join, and a loop's back edge and exits on the head equation (`LoopHead.enter`, `LoopHead.backEdge`, `loop_exit_ok`) — the fuel lemmas, and per-§7-bullet corollaries over a whole program | §7 |
+| `RueCore/Soundness/Defs.lean` | (layer L1) the definitions §7's statements are written in, moved out of `Soundness.lean`: value and contents typing (`HasTy`, `ContentsTy`), the per-frame agreement invariant `ActivationTyping` with its per-cell and per-node parts, frame locality `FrameProperty`, and `soundness`'s promise `EvalOk` | §6.1, §7 |
+| `RueCore/Soundness.lean` | lemmas about value typing, the per-frame agreement invariant `ActivationTyping` and frame locality `FrameProperty` (all three defined in `Soundness/Defs.lean`), **the safety theorem** — with progress at a `match` resting on exhaustiveness, preservation on the folded join, and a loop's back edge and exits on the head equation (`LoopHead.enter`, `LoopHead.backEdge`, `loop_exit_ok`) — the fuel lemmas, and per-§7-bullet corollaries over a whole program | §7 |
 | `RueCore/Trace/Defs.lean` | (layer L1) the definitions the trace theorems are stated over, moved out of `Trace.lean`, `TraceExact.lean` and `TraceOrder.lean`: owned identities and the trace's projections (`Contents.own`, `freedIds`, `dtorIds`), the ledgers `Cons`, `Exact`, `Lead` and `Tidy`, the carve-out `Program.pendingSafe`, the block grammar `Blocks`, §6.11's drop rules `DropGlue` and `DropGlueSeq` and the block grammar over them `DropGlueBlocks` (RUE-2487), the configuration invariants `Config.Ordered`, `Config.Nested`, `NewestFirst` and `Lifo`, and what a configuration holds, `Config.held` with `Kont.own`, `Focus.own` and `ArgsFrame.own` (RUE-2478) | §6.1, §6.7, §6.9–§6.11, §7 |
 | `RueCore/Trace.lean` | theorems over the drop trace: owned value identities (`Contents.own`, defined in `Trace/Defs.lean`), copy closure, and the conservation law `eval_conserves`, proved by fuel induction over `eval`, from which `no_double_free` follows — no identity freed twice, no destructor run twice on one value, for every finished run of a checked program (every prefix of every run: `TracePrefix.lean`); and `dupProgram_step_double_free`, the ill-typed program §6's relation frees twice | §7 |
 | `RueCore/TraceExact.lean` | the exact ledger `eval_exact`, the conservation law read as an equality over the identities an evaluation starts with, proved through `rest_step`, the ledger for the rest of every form; the frame-pop invariant `eval_tidy`, that every cell an evaluation allocates is retired by its end; `drop_exactly_once`, at every well-typed configuration of a checked program — every owned value it starts with ends exactly once, dropped, discarded or consumed on the normal or the unwind path, never both, and every cell it allocated is retired — and `rest_exactly_once`, the same for the values a form's leading operands produce — a loop's lead being its body breaking — which covers values minted inside an evaluation; with the `@panic` carve-out and the RUE-2316 one (`pendingSafe`, witnessed load-bearing by `pendingSafe_needed`), and `orphan_rejected`/`letDropDeleted_rejected`/`seqDropDeleted_rejected`/`breakLeak_rejected`, results the two statements reject at typed configurations of checked programs; the whole-run form is `TraceWhole.lean`'s | §6.7, §6.9, §6.10, §7 |
@@ -1618,7 +1618,7 @@ example 11 traces RUE-1615's and RUE-1614's shapes through the rules.
 
 ```
 theorem soundness (hwf : WfProgram P) :
-  ∀ fuel, Typed P R Γ e T Ω → FrameMatches P.decls Γ φ H →
+  ∀ fuel, Typed P R Γ e T Ω → ActivationTyping P.decls Γ φ H →
     EvalOk P.decls T R Ω.norm Ω.brk φ H (eval fuel P H φ e)
 ```
 
@@ -1636,9 +1636,9 @@ corollaries restate it over a whole program. `Adequacy.lean` carries it to
 `step_preservation` (every reachable configuration is typed at the entry
 type, for a semantic configuration typing).
 
-`FrameMatches` is the §7 preservation invariant, in two halves. `Matches` —
-"Σ faithfully tracks the store's initialization" — whose `CellMatches` clause
-is the **recursive** `ContentsMatches`, relating the binding's ownership tree
+`ActivationTyping` is the §7 preservation invariant, in two halves. `StoreTyping` —
+"Σ faithfully tracks the store's initialization" — whose `CellTyping` clause
+is the **recursive** `ContentsOwnTyping`, relating the binding's ownership tree
 to the tree stored in its cell path by path and encoding the deliberate
 asymmetry of the §5.5 join (a statically `MovedOut` path may dynamically still
 hold live *non-linear* content, which the machine then drops path-specifically,

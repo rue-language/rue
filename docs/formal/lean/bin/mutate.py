@@ -538,9 +538,9 @@ MUTANTS = [
     M("evalok-stuck-ok", "§7", "EvalOk (progress)", "vacuous",
       [E(SD, "  | .stuck _ => False", "  | .stuck _ => True")],
       "soundness no longer states progress: a stuck result is EvalOk"),
-    M("contentsmatches-moved-residue", "§7", "ContentsMatches.moved", "premise",
-      [E(SD, "  | moved {c T} :\n      ContentsTy D c T → c.residualLinear D = false → ContentsMatches D c .movedOut T",
-         "  | moved {c T} :\n      ContentsTy D c T → True → ContentsMatches D c .movedOut T")],
+    M("contentsowntyping-moved-residue", "§7", "ContentsOwnTyping.moved", "premise",
+      [E(SD, "  | moved {c T} :\n      ContentsTy D c T → c.residualLinear D = false → ContentsOwnTyping D c .movedOut T",
+         "  | moved {c T} :\n      ContentsTy D c T → True → ContentsOwnTyping D c .movedOut T")],
       "a MovedOut path may match contents holding a live linear sub-value"),
     M("exact-at-most", "§7", "Exact (ok/returned)", "count",
       [E(TD, "      ∀ a, a < H.length → (storeOwn D H').count a + (v.own D).count a + (freedIds D tr).count a\n        = (storeOwn D H).count a + X.count a\n  | .broke H' _ tr =>",
@@ -586,14 +586,14 @@ MUTANTS = [
       [E(FL, "        (sig % 2 = 1 ∧ sig < 2 ^ w.prec ∧ w.eMin ≤ exp ∧ exp ≤ w.eTop ∧\n          sig < 2 ^ (w.eTop - exp).toNat)",
          "        (sig < 2 ^ w.prec ∧ w.eMin ≤ exp ∧ exp ≤ w.eTop ∧\n          sig < 2 ^ (w.eTop - exp).toNat)")],
       "a non-canonical (even-significand) finite datum is Wf"),
-    # RUE-2500: the hypothesis-side control RUE-2490's review asked for. `ContentsMatches` sits
-    # in `FrameMatches`, a hypothesis of `soundness`, `drop_exactly_once` and
+    # RUE-2500: the hypothesis-side control RUE-2490's review asked for. `ContentsOwnTyping` sits
+    # in `ActivationTyping`, a hypothesis of `soundness`, `drop_exactly_once` and
     # `rest_exactly_once`; demanding `False` of an `Owned` path makes those hypotheses
     # unsatisfiable at any frame with an owned binding, so the theorems become vacuous there,
-    # and only a witness that states `FrameMatches` of such a frame can notice.
-    M("contentsmatches-owned-false", "§7", "ContentsMatches.owned", "strengthen",
-      [E(SD, "  | owned {c T} : ContentsTy D c T → c.holeFree = true → ContentsMatches D c .owned T",
-         "  | owned {c T} : ContentsTy D c T → False → ContentsMatches D c .owned T")],
+    # and only a witness that states `ActivationTyping` of such a frame can notice.
+    M("contentsowntyping-owned-false", "§7", "ContentsOwnTyping.owned", "strengthen",
+      [E(SD, "  | owned {c T} : ContentsTy D c T → c.holeFree = true → ContentsOwnTyping D c .owned T",
+         "  | owned {c T} : ContentsTy D c T → False → ContentsOwnTyping D c .owned T")],
       "strengthen a hypothesis: no Owned path matches any contents, so no frame with an owned binding agrees with its store"),
 ]
 
@@ -607,13 +607,13 @@ MUTANTS = [
 # is rebuilt.
 DIRECTION = {
     "hasty-int-any-value": "weaken", "hasty-float-any-value": "weaken",
-    "evalok-stuck-ok": "weaken", "contentsmatches-moved-residue": "weaken",
+    "evalok-stuck-ok": "weaken", "contentsowntyping-moved-residue": "weaken",
     "exact-at-most": "weaken", "blocks-any-trace": "weaken", "lifo-vacuous": "weaken",
     "newestfirst-vacuous": "weaken", "ordered-vacuous": "weaken",
     "safeat-progress-vacuous": "weaken", "safeat-typing-vacuous": "weaken",
     "safeat-terminal-only": "strengthen", "stepsn-one-step-only": "strengthen",
     "float-wf-no-emin": "weaken", "float-wf-noncanonical": "weaken",
-    "contentsmatches-owned-false": "strengthen",
+    "contentsowntyping-owned-false": "strengthen",
 }
 
 
@@ -656,7 +656,7 @@ RULINGS = {
     "first-arm-ty": ("holds", "refuses more: no statement is about the checker's completeness"),
     "match-exhaustive": ("equivalent", "`TypedArms` and `checkArms` walk arms and variants in step and fail on a length mismatch, so the premise is implied"),
     "arm-leak": ("statement", "accepts an arm that ends with a live linear payload binding; the machine refuses with `linearLeak` (`enum_arm_leaks_payload`): `soundness`"),
-    "arm-payload-mutable": ("helper", "only `Ctx.skel_extendArm`, which restates `extendArm`; mutability is not a safety property", {"soundness": "a payload binding is a cell of its own (the arm mints it), so a write to it is an ordinary assignment; the machine never reads a binding's mutability, and `FrameMatches` does not mention it"}),
+    "arm-payload-mutable": ("helper", "only `Ctx.skel_extendArm`, which restates `extendArm`; mutability is not a safety property", {"soundness": "a payload binding is a cell of its own (the arm mints it), so a write to it is an ordinary assignment; the machine never reads a binding's mutability, and `ActivationTyping` does not mention it"}),
     "let-leak": ("statement", "accepts a `let` that ends with a live linear binding; `linearLeak` (`linear_leaked`): `soundness`"),
     "residual-declared": ("statement", "a partially moved declared-linear struct owes nothing, so its leak is accepted; the machine's monitor still refuses: `soundness`"),
     "residual-untracked": ("statement", "untouched linear slots owe nothing, so their leak is accepted; the machine refuses: `soundness`"),
@@ -719,7 +719,7 @@ RULINGS = {
     "hasty-int-any-value": ("statement", "`Sharp.out_of_range_halt` is false (RUE-2500): its `¬ HasTy` of `2^63` at `i64`, and its `¬ SafeAt` of the configuration halted with it, rest on `HasTy.int`'s bounds, which the mutant drops (kernel-checked refutation, scratch/rue-2500/hasty-int-any-value-T.lean). Before RUE-2500 no Spec statement was false: `HasTy` occurred only in conclusions and in `¬` claims about stuck or valueless runs; `HasTy.contentsTy` is also a false helper"),
     "hasty-float-any-value": ("statement", "`Sharp.float_halt` is false (RUE-2500): the configurations halted with `30 · 2^-2` and `1 · 2^-1075` are now `SafeAt` `f64`, since `HasTy.float` no longer asks `Wf` (scratch/rue-2500/hasty-float-any-value-T.lean); `HasTy.contentsTy` is also a false helper"),
     "evalok-stuck-ok": ("statement", "`Sharp.stuck`, `.typed` and `.frame` are false: each asserts `¬ EvalOk … (.stuck _)`, now `¬ True`. `Spec.soundness_stmt` is only weakened by this mutant, not false, so that is not the kill"),
-    "contentsmatches-moved-residue": ("statement", "`Spec.soundness_stmt` — the headline — and `drop_exactly_once_stmt` are both false: the dropped residual-linear check sits in `FrameMatches`, a *hypothesis* of `soundness`, so weakening it strengthens the claim; a live linear overwrite `check` now accepts still runs to `.stuck .linearOverwrite` (kernel-checked counterexample, contentsmatches-moved-residue-T.lean)"),
+    "contentsowntyping-moved-residue": ("statement", "`Spec.soundness_stmt` — the headline — and `drop_exactly_once_stmt` are both false: the dropped residual-linear check sits in `ActivationTyping`, a *hypothesis* of `soundness`, so weakening it strengthens the claim; a live linear overwrite `check` now accepts still runs to `.stuck .linearOverwrite` (kernel-checked counterexample, contentsowntyping-moved-residue-T.lean)"),
     "exact-at-most": ("statement", "`Sharp.pending_program`, `.pending_expr` and `.no_lead` are false: each `¬ Exact` rested on a strict `<` that the weakened `≤` now satisfies; `Sharp.store_cc` stays true, since its `¬ Exact` rests on `StoreCC` instead"),
     "blocks-any-trace": ("statement", "`Sharp.bare_dtor`, `.unreached` and `.unreached_panic` are false via `Blocks.not_dtor`; `Sharp.leak`, `.overwrite`, `.discard`, `.discard_loop` and `.copy` never mention `Blocks` and stay true"),
     "lifo-vacuous": ("statement", "`Sharp.uncut_drop` is false (RUE-2500): its `¬ Lifo [0, 1] [0] [0]` (a pop that cut cell 1 and dropped cell 0) is now `¬ True`, and so is its refutation of `drop_order`'s last half, where `NewestFirst` and the stack's order hold (scratch/rue-2500/lifo-vacuous-T.lean). `Sharp.unordered` and `.not_a_step` stay true through other conjuncts"),
@@ -732,7 +732,7 @@ RULINGS = {
     "float-wf-no-emin": ("statement", "`Sharp.float_halt` is false (RUE-2500): its `¬ (num false 1 (-1075)).Wf .w64`, half the least subnormal, is refuted (scratch/rue-2500/float-wf-no-emin-T.lean). The float laws still hold on the mutant's larger `Wf` as far as RUE-2490 sampled, and the four Float lemmas that fail conclude a weaker `Wf` and stay true, so without that statement nothing would be false"),
     "float-wf-noncanonical": ("statement", "`Sharp.float_halt` is false (RUE-2500): its `¬ (num false 30 (-2)).Wf .w64`, the non-canonical spelling of the `7.5` `Nonvacuous.float` returns, is refuted (scratch/rue-2500/float-wf-noncanonical-T.lean); the float laws and the four Float lemmas stay true as for `float-wf-no-emin`"),
     # RUE-2500: the hypothesis-side control, read by hand (scratch/rue-2500/), as for the 15 above.
-    "contentsmatches-owned-false": ("statement", "`Nonvacuous.open_frame` is false: its `FrameMatches` of the owned binding `s : S0` against the cell `S0 { 5 }` needs `ContentsMatches .owned`, whose premise is now `False` (scratch/rue-2500/contentsmatches-owned-false-T.lean). No other witness states `FrameMatches` at a frame with an owned binding: `empty_frame` and `Sharp.stuck` state it of the empty frame, and `Nonvacuous.dtor` does not state it at all, so `soundness`, `drop_exactly_once` and `rest_exactly_once` would be vacuous at every open frame and only `open_frame` shows it"),
+    "contentsowntyping-owned-false": ("statement", "`Nonvacuous.open_frame` is false: its `ActivationTyping` of the owned binding `s : S0` against the cell `S0 { 5 }` needs `ContentsOwnTyping .owned`, whose premise is now `False` (scratch/rue-2500/contentsowntyping-owned-false-T.lean). No other witness states `ActivationTyping` at a frame with an owned binding: `empty_frame` and `Sharp.stuck` state it of the empty frame, and `Nonvacuous.dtor` does not state it at all, so `soundness`, `drop_exactly_once` and `rest_exactly_once` would be vacuous at every open frame and only `open_frame` shows it"),
 }
 
 

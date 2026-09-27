@@ -3814,7 +3814,7 @@ example : eval demoOps demoFuel (prog tI64 unitLit)
 /-- The same guard on the unwind path: a frame whose scope record names a
 retired cell refuses instead of retiring it twice (§6.9). No run from the
 start reaches this state (`run_no_use_after_drop`); for a well-typed program
-`FrameMatches` excludes it as well. -/
+`ActivationTyping` excludes it as well. -/
 example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [0] }
     (ret (lit 1)) = .stuck .useAfterDrop := by rfl
 

@@ -168,7 +168,7 @@ reduction". This fragment's `Expr.use`/`Expr.drop` carry no annotation — they
 carry a `Place`, and the machine has no type environment — so `eval` recovers
 the plan from the **store** instead (`Contents.declaredPlan`), which it can do
 because §6.1's struct value names its declaration. That is a deviation in
-*form* only: `ContentsMatches.declaredPlan_eq` (`Soundness.lean`) proves the
+*form* only: `ContentsOwnTyping.declaredPlan_eq` (`Soundness.lean`) proves the
 store-side plan is the type-side `declaredPrefix` (`Syntax.lean`) at every
 place a matched cell answers for, so the redex that fires is the one
 elaboration would have annotated. Every index a `Place` carries here is a
@@ -183,7 +183,7 @@ included.
 paper machine has nothing to check. `dropResidue` checks anyway, refusing with
 `linearLeak` where a retained subtree still holds a live declared-`linear`
 value: the same monitors-not-silence commitment §6.7's `endscope` and §6.8's
-overwrite already make. `ContentsMatches.destructure_ok` (`Soundness.lean`) is
+overwrite already make. `ContentsOwnTyping.destructure_ok` (`Soundness.lean`) is
 the proof that a program `check` accepts never reaches it. `@drop` at a
 declared plan makes the same commitment at the selected **leaf**: a `⊘` there
 refuses with `useAfterMove` rather than dropping nothing, because
@@ -749,7 +749,7 @@ where the path has a proper prefix of declared-`linear` struct type — §4.2's
 
 This is `declaredPrefix` (`Syntax.lean`) with the declaration index taken from
 the value rather than from the type, clause for clause, and
-`ContentsMatches.declaredPlan_eq` (`Soundness.lean`) is the proof that the two
+`ContentsOwnTyping.declaredPlan_eq` (`Soundness.lean`) is the proof that the two
 agree wherever the store and Σ agree. The module docstring says why the plan is
 recovered here rather than carried on the syntax as §6.3 writes it.
 
@@ -1015,7 +1015,7 @@ element's drop is its marker (`residueMark`) and then §6.11's walk of it.
 The `residualLinear` test is the monitor this machine adds and §6.3 does not
 need: §5.1's `¬ linear-residue(S, π_s)` premise has already excluded a linear
 residue before the redex fires, so on a program `check` accepts the branch is
-unreachable (`ContentsMatches.destructure_ok`, `Soundness.lean`). On a program
+unreachable (`ContentsOwnTyping.destructure_ok`, `Soundness.lean`). On a program
 `check` rejects it turns the silent destruction of a linear value into a named
 refusal, which is what `3.8:60` (E0474) is about.
 

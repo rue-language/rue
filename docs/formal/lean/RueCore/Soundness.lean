@@ -9,14 +9,14 @@ public import RueCore.Soundness.Defs
 /-!
 # RueCore.Soundness — the §7 memory-safety theorem, fragment-sized
 
-The central invariant is `Matches D Γ ρ H` — "Σ faithfully tracks the store's
+The central invariant is `StoreTyping D Γ ρ H` — "Σ faithfully tracks the store's
 initialization", the load-bearing clause of §7's no-use-after-move bullet. `D`
 is the program's struct declarations, which is what a type's class (§3) and a
 value's drop (§6.11) are read against; every predicate here carries it.
 
 With Σ keyed by path (`OwnSt`, `Statics.lean`) and a cell holding a tree with
 `⊘` at any node (`Contents`, `Dynamics.lean`), the per-cell clause is
-**recursive**: `ContentsMatches` relates the two trees at the path's declared
+**recursive**: `ContentsOwnTyping` relates the two trees at the path's declared
 type. It is deliberately asymmetric at its `movedOut` clause, mirroring §5.5:
 a *statically* `MovedOut` path may still hold live (non-linear!) contents —
 that is exactly the state a conservative branch join produces, and the machine
@@ -28,7 +28,7 @@ always holds a value; and a live **linear** sub-value is never behind a
 
 A frame carries an environment `ρ` and a scope record `σ`, and the machine
 keeps two books on every live binding: `ρ` says where it is, `σ` says it is
-owed a drop. `FrameMatches` states both halves at once — `Matches Γ ρ H`, and
+owed a drop. `ActivationTyping` states both halves at once — `StoreTyping Γ ρ H`, and
 `σ` reversed **is** `ρ`.
 
 The second conjunct is **definitional in this fragment**, and it is worth
@@ -46,19 +46,19 @@ length at entry (`Dynamics.lean`), so a `break`'s record is the loop's with the
 body's open bindings appended (`BrokeOk`).
 
 What the clause does buy, already: `run-all-scope-drops` walks σ, and because
-σ is ρ, `Matches` — every cell live or moved-out, no two bindings sharing one
+σ is ρ, `StoreTyping` — every cell live or moved-out, no two bindings sharing one
 — applies to the walk. That is what turns §7's no-use-after-drop bullet from a
 structural observation into a consequence of the invariant, and what proves no
 unwind retires a cell twice or touches a `†` cell.
 
-## Locality (`Untouched`)
+## Locality (`FrameProperty`)
 
 A call runs the callee in a frame of its own, and the caller's invariant has
-to survive it. `Untouched ρ H H'` is the statement that carries it: the store
+to survive it. `FrameProperty ρ H H'` is the statement that carries it: the store
 only grows, and every cell below `|H|` that `ρ` does not name has the contents
 it had. Since a callee's parameter cells are minted above the caller's whole
 store, the caller's cells are outside the callee's `ρ`, and the caller's
-`Matches` transports across the call unchanged.
+`StoreTyping` transports across the call unchanged.
 
 ## Values, contents, and the drop that never refuses
 
@@ -89,7 +89,7 @@ once" quantifies over. `dropContents_array_events` is the same read at an
 array: the elements' events in **ascending index order** (`3.9:15`, `3.8:73`)
 and no destructor event of the array's own (`3.9:14`). `dropContents_order` and `dropContentsList_order` are
 the one-level induction steps, `dropContents_ok` the corollary that the walk
-never refuses, and `ContentsMatches.residualLinear_false` the reason the leak
+never refuses, and `ContentsOwnTyping.residualLinear_false` the reason the leak
 monitor's reading of the residue is the one §5.6 computes. The **overwrite**
 monitor reads the residue too, but (Assign) §5.2's premise is type-keyed
 (`overwriteOk`), so that case of `soundness` discharges it from either
@@ -104,7 +104,7 @@ is an index the arm list has, so the machine is never stuck on an uncovered tag.
 **Dropped exactly once** is the pair of `⊘`s: a `match` on a non-`Copy` enum
 moves the scrutinee out, so §6.11's later walk through that place finds a hole
 and drops nothing, while the payload now lives in the arm's own cells and is
-dropped by the arm's `endscope` — `Matches.unwindPrefix` is that teardown, and it
+dropped by the arm's `endscope` — `StoreTyping.unwindPrefix` is that teardown, and it
 never refuses because the arm discharged §5.6 for exactly those cells
 (`6.3:17`, `6.3:20`). `dropContents_enum_events` is the drop *order* at an enum,
 in the same closed form the struct case has.
@@ -119,7 +119,7 @@ store agreeing with the back-edge state agrees with the head, the join's right
 arm. And `LoopHead.reenter_body` (`Statics/Lemmas.lean`): the loop's own derivation
 types it again at its head, so the next turn is the same loop at one unit of
 fuel less. A `break` is caught by `loop_exit_ok`: the body's open bindings are
-exactly the cells past the loop's scope-record length, `Matches.unwindPrefix`
+exactly the cells past the loop's scope-record length, `StoreTyping.unwindPrefix`
 drops them without refusal because (Loop-Break) discharged §5.6 for them, and
 what remains agrees with `outside_loop` and so with the exit join. A
 `break`-less loop has no delivery to catch (`Typed.brk_nil`), and (Fn) gives a
@@ -136,7 +136,7 @@ panic, or to `outOfFuel` — never to a `Violation` (progress). `fuel_mono` and
 bottom restate the theorem per §7 bullet, over a whole program.
 
 The definitions the statements here are written in (value typing, the
-agreement invariant `FrameMatches`, the promise `EvalOk`) are in
+agreement invariant `ActivationTyping`, the promise `EvalOk`) are in
 `Soundness/Defs.lean`, the definitions layer (README, "Layers").
 -/
 
@@ -923,7 +923,7 @@ theorem evalFintrin_float_res {D : Decls} (M : FloatModel) (k : FloatIntrin)
 
 /-! ## The store–Σ agreement invariant, path by path
 
-`Matches` is §7's "Σ faithfully tracks the store's initialization". With Σ
+`StoreTyping` is §7's "Σ faithfully tracks the store's initialization". With Σ
 keyed by path (`OwnSt`, `Statics.lean`) and a cell holding a tree with `⊘` at
 any node (`Contents`, `Dynamics.lean`), the per-cell clause becomes a
 **recursive** relation between the two trees and the binding's declared type.
@@ -958,20 +958,20 @@ while the store's is the active payload's (`Contents.residualLinear`), and
 mutual
 /-- Agreement implies contents typing, which is what makes every drop the
 machine runs on a matched cell terminate in an `ok` (helper). -/
-theorem ContentsMatches.contentsTy {D c t T} (h : ContentsMatches D c t T) :
+theorem ContentsOwnTyping.contentsTy {D c t T} (h : ContentsOwnTyping D c t T) :
     ContentsTy D c T := by
   cases h with
   | owned hc _ => exact hc
   | moved hc _ => exact hc
-  | fields hd hl => exact .struct hd (ContentsMatchesList.contentsTys hl)
-  | elems hl => exact .array (ContentsMatchesList.contentsTys hl)
+  | fields hd hl => exact .struct hd (ContentsOwnTypingList.contentsTys hl)
+  | elems hl => exact .array (ContentsOwnTypingList.contentsTys hl)
 
 /-- The same over a field list (helper). -/
-theorem ContentsMatchesList.contentsTys {D cs ts Ts} (h : ContentsMatchesList D cs ts Ts) :
+theorem ContentsOwnTypingList.contentsTys {D cs ts Ts} (h : ContentsOwnTypingList D cs ts Ts) :
     ContentsTys D cs Ts := by
   cases h with
   | nil => exact .nil
-  | cons hc hl => exact .cons hc.contentsTy (ContentsMatchesList.contentsTys hl)
+  | cons hc hl => exact .cons hc.contentsTy (ContentsOwnTypingList.contentsTys hl)
 end
 
 /-- `Σ`'s record for slot `f+1` is its tail's record for slot `f` (helper). -/
@@ -994,9 +994,9 @@ theorem OwnSt.setField_succ : ∀ (ts : List OwnSt) (f : Nat) (u : OwnSt),
   | _ :: _, _, _ => rfl
 
 /-- A field of a matched aggregate matches its own slot's state (helper). -/
-theorem ContentsMatchesList.index : ∀ {D : Decls} {cs : List Contents} {ts : List OwnSt}
-    {Ts : List Ty} (f : Nat) {Tf : Ty}, ContentsMatchesList D cs ts Ts → Ts[f]? = some Tf →
-    ∃ cf, cs[f]? = some cf ∧ ContentsMatches D cf (OwnSt.fieldAt ts f) Tf
+theorem ContentsOwnTypingList.index : ∀ {D : Decls} {cs : List Contents} {ts : List OwnSt}
+    {Ts : List Ty} (f : Nat) {Tf : Ty}, ContentsOwnTypingList D cs ts Ts → Ts[f]? = some Tf →
+    ∃ cf, cs[f]? = some cf ∧ ContentsOwnTyping D cf (OwnSt.fieldAt ts f) Tf
   | _, _, _, _, _, _, .nil, hT => by simp at hT
   | _, _, _, _, 0, _, .cons hc _, hT => by
       simp only [List.getElem?_cons_zero, Option.some_inj] at hT
@@ -1004,16 +1004,16 @@ theorem ContentsMatchesList.index : ∀ {D : Decls} {cs : List Contents} {ts : L
   | _, _, ts, _, (f + 1), _, .cons _ hl, hT => by
       simp only [List.getElem?_cons_succ] at hT ⊢
       rw [OwnSt.fieldAt_succ]
-      exact ContentsMatchesList.index f hl hT
+      exact ContentsOwnTypingList.index f hl hT
 
 /-- **Writing one field's contents and its Σ slot together keeps the
 aggregate matched.** This is the list half of the partial move: (Use-Move)
 §5.1 marks exactly one slot and writes `⊘` into exactly the corresponding
 position (helper). -/
-theorem ContentsMatchesList.set : ∀ {D : Decls} {cs : List Contents} {ts : List OwnSt}
+theorem ContentsOwnTypingList.set : ∀ {D : Decls} {cs : List Contents} {ts : List OwnSt}
     {Ts : List Ty} (f : Nat) {Tf : Ty} {cf' : Contents} {u' : OwnSt},
-    ContentsMatchesList D cs ts Ts → Ts[f]? = some Tf → ContentsMatches D cf' u' Tf →
-    ContentsMatchesList D (cs.set f cf') (OwnSt.setField ts f u') Ts
+    ContentsOwnTypingList D cs ts Ts → Ts[f]? = some Tf → ContentsOwnTyping D cf' u' Tf →
+    ContentsOwnTypingList D (cs.set f cf') (OwnSt.setField ts f u') Ts
   | _, _, _, _, _, _, _, _, .nil, hT, _ => by simp at hT
   | _, _, ts, _, 0, _, cf', u', .cons _ hl, hT, hnew => by
       simp only [List.getElem?_cons_zero, Option.some_inj] at hT
@@ -1027,27 +1027,27 @@ theorem ContentsMatchesList.set : ∀ {D : Decls} {cs : List Contents} {ts : Lis
       rw [OwnSt.setField_succ, List.set_cons_succ]
       refine .cons ?_ ?_
       · simpa only [OwnSt.fieldAt, List.getElem?_cons_zero, Option.getD_some] using hc
-      · simpa only [List.tail_cons] using ContentsMatchesList.set f hl hT hnew
+      · simpa only [List.tail_cons] using ContentsOwnTypingList.set f hl hT hnew
 
 /-- A hole-free well-typed struct is a matched aggregate whose every slot is
 `owned` — which is what lets the §5.5 join read an `Owned` arm field by field
 against a partially moved one (helper). -/
-theorem ContentsMatchesList.of_owned : ∀ {D : Decls} {cs : List Contents} {Ts : List Ty},
-    ContentsTys D cs Ts → Contents.holeFreeList cs = true → ContentsMatchesList D cs [] Ts
+theorem ContentsOwnTypingList.of_owned : ∀ {D : Decls} {cs : List Contents} {Ts : List Ty},
+    ContentsTys D cs Ts → Contents.holeFreeList cs = true → ContentsOwnTypingList D cs [] Ts
   | _, _, _, .nil, _ => .nil
   | D, _, _, @ContentsTys.cons _ c cs T Ts hc hcs, hf => by
       have hf' : Contents.holeFree c = true ∧ Contents.holeFreeList cs = true := by
         simpa only [Contents.holeFreeList, Bool.and_eq_true] using hf
       refine .cons ?_ ?_
       · simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using
-          ContentsMatches.owned hc hf'.1
-      · simpa only [List.tail_nil] using ContentsMatchesList.of_owned hcs hf'.2
+          ContentsOwnTyping.owned hc hf'.1
+      · simpa only [List.tail_nil] using ContentsOwnTypingList.of_owned hcs hf'.2
 
 /-- Inversion of an `Owned` match at a struct type: the cell holds that
 struct, and every slot of it is `owned` (helper). -/
-theorem ContentsMatches.owned_struct {D : Decls} {c : Contents} {s : Nat}
-    {sd : StructDecl} (hd : D.structs[s]? = some sd) (h : ContentsMatches D c .owned (.struct s)) :
-    ∃ i cs, c = .struct s i cs ∧ ContentsMatchesList D cs [] sd.fields := by
+theorem ContentsOwnTyping.owned_struct {D : Decls} {c : Contents} {s : Nat}
+    {sd : StructDecl} (hd : D.structs[s]? = some sd) (h : ContentsOwnTyping D c .owned (.struct s)) :
+    ∃ i cs, c = .struct s i cs ∧ ContentsOwnTypingList D cs [] sd.fields := by
   cases h with
   | owned hty hf =>
       cases hty with
@@ -1055,20 +1055,20 @@ theorem ContentsMatches.owned_struct {D : Decls} {c : Contents} {s : Nat}
       | @struct s' sd' i cs hd' hcs =>
           have : sd' = sd := by rw [hd'] at hd; cases hd; rfl
           subst this
-          exact ⟨i, cs, rfl, ContentsMatchesList.of_owned hcs
+          exact ⟨i, cs, rfl, ContentsOwnTypingList.of_owned hcs
             (by simpa only [Contents.holeFree] using hf)⟩
 
 /-- Inversion of an `Owned` match at an array type: the cell holds that array,
 and every element of it is `owned` (helper). -/
-theorem ContentsMatches.owned_array {D : Decls} {c : Contents} {T : Ty} {n : Nat}
-    (h : ContentsMatches D c .owned (.array T n)) :
-    ∃ i cs, c = .array T i cs ∧ ContentsMatchesList D cs [] (List.replicate n T) := by
+theorem ContentsOwnTyping.owned_array {D : Decls} {c : Contents} {T : Ty} {n : Nat}
+    (h : ContentsOwnTyping D c .owned (.array T n)) :
+    ∃ i cs, c = .array T i cs ∧ ContentsOwnTypingList D cs [] (List.replicate n T) := by
   cases h with
   | owned hty hf =>
       cases hty with
       | hole => simp [Contents.holeFree] at hf
       | @array T' n' i cs hcs =>
-          exact ⟨i, cs, rfl, ContentsMatchesList.of_owned hcs
+          exact ⟨i, cs, rfl, ContentsOwnTypingList.of_owned hcs
             (by simpa only [Contents.holeFree] using hf)⟩
 
 /-- Inversion of a field step (helper).
@@ -1265,20 +1265,20 @@ mutual
 /-- A fully-owned node holds a hole-free contents: `fully-owned(Σ, p)` (§5.1)
 is exactly what says the aggregate a use hands on has no hole in it
 (`3.8:26`) (helper). -/
-theorem ContentsMatches.holeFree {D c t T} (h : ContentsMatches D c t T)
+theorem ContentsOwnTyping.holeFree {D c t T} (h : ContentsOwnTyping D c t T)
     (hf : t.fullyOwned = true) : c.holeFree = true := by
   cases h with
   | owned _ hh => exact hh
   | moved _ _ => simp [OwnSt.fullyOwned] at hf
   | fields hd hl =>
       show Contents.holeFreeList _ = true
-      exact ContentsMatchesList.holeFreeList hl (by simpa only [OwnSt.fullyOwned] using hf)
+      exact ContentsOwnTypingList.holeFreeList hl (by simpa only [OwnSt.fullyOwned] using hf)
   | elems hl =>
       show Contents.holeFreeList _ = true
-      exact ContentsMatchesList.holeFreeList hl (by simpa only [OwnSt.fullyOwned] using hf)
+      exact ContentsOwnTypingList.holeFreeList hl (by simpa only [OwnSt.fullyOwned] using hf)
 
 /-- The same over a field list (helper). -/
-theorem ContentsMatchesList.holeFreeList {D cs ts Ts} (h : ContentsMatchesList D cs ts Ts)
+theorem ContentsOwnTypingList.holeFreeList {D cs ts Ts} (h : ContentsOwnTypingList D cs ts Ts)
     (hf : OwnSt.fullyOwnedList ts = true) : Contents.holeFreeList cs = true := by
   cases h with
   | nil => rfl
@@ -1286,29 +1286,29 @@ theorem ContentsMatchesList.holeFreeList {D cs ts Ts} (h : ContentsMatchesList D
       cases ts with
       | nil =>
           show (Contents.holeFree c && Contents.holeFreeList cs) = true
-          rw [ContentsMatches.holeFree hc rfl,
-            ContentsMatchesList.holeFreeList hl (by rfl)]
+          rw [ContentsOwnTyping.holeFree hc rfl,
+            ContentsOwnTypingList.holeFreeList hl (by rfl)]
           rfl
       | cons t ts' =>
           have hf' : OwnSt.fullyOwned t = true ∧ OwnSt.fullyOwnedList ts' = true := by
             simpa only [OwnSt.fullyOwnedList, Bool.and_eq_true] using hf
           show (Contents.holeFree c && Contents.holeFreeList cs) = true
-          rw [ContentsMatches.holeFree hc
+          rw [ContentsOwnTyping.holeFree hc
                 (by simpa only [OwnSt.fieldAt, List.getElem?_cons_zero,
                       Option.getD_some] using hf'.1),
-            ContentsMatchesList.holeFreeList hl (by simpa only [List.tail_cons] using hf'.2)]
+            ContentsOwnTypingList.holeFreeList hl (by simpa only [List.tail_cons] using hf'.2)]
           rfl
 end
 
 /-- The contents of a matched, fully-owned node is the value the machine hands
 on, well typed at the node's type (helper). -/
-theorem ContentsMatches.toVal {D c t T} (h : ContentsMatches D c t T)
+theorem ContentsOwnTyping.toVal {D c t T} (h : ContentsOwnTyping D c t T)
     (hf : t.fullyOwned = true) : ∃ v, c.toVal = some v ∧ HasTy D v T :=
   h.contentsTy.toVal (h.holeFree hf)
 
 /-- A matched node whose state is `Owned` is not itself a hole — which is what
 lets `@drop` at a partially moved place run at all (helper). -/
-theorem ContentsMatches.ne_hole {D c t T} (h : ContentsMatches D c t T)
+theorem ContentsOwnTyping.ne_hole {D c t T} (h : ContentsOwnTyping D c t T)
     (ho : t.isOwned = true) : c ≠ .hole := by
   cases h with
   | owned _ hh => intro hc; rw [hc] at hh; simp [Contents.holeFree] at hh
@@ -1318,7 +1318,7 @@ theorem ContentsMatches.ne_hole {D c t T} (h : ContentsMatches D c t T)
 
 /-- A matched node whose state is `Owned` has its type's class, which is what
 `dropCell`'s `Copy` test reads (helper). -/
-theorem ContentsMatches.mult_eq {D c t T} (h : ContentsMatches D c t T)
+theorem ContentsOwnTyping.mult_eq {D c t T} (h : ContentsOwnTyping D c t T)
     (ho : t.isOwned = true) : c.mult D = T.mult D := by
   cases h with
   | owned hc hh => exact hc.mult_eq hh
@@ -1326,12 +1326,12 @@ theorem ContentsMatches.mult_eq {D c t T} (h : ContentsMatches D c t T)
   | fields hd _ => simp [Contents.mult, Ty.mult, Decls.classOf, hd]
   | elems hl =>
       simp only [Contents.mult,
-        ContentsTys.length_eq (ContentsMatchesList.contentsTys hl), List.length_replicate]
+        ContentsTys.length_eq (ContentsOwnTypingList.contentsTys hl), List.length_replicate]
 
 /-- The contents of a value written into a cell matches the `owned` state
 (§6.7's (D-Let), §6.8's store) (helper). -/
-theorem ContentsMatches.ofVal {D v T} (h : HasTy D v T) :
-    ContentsMatches D (Contents.ofVal v) .owned T :=
+theorem ContentsOwnTyping.ofVal {D v T} (h : HasTy D v T) :
+    ContentsOwnTyping D (Contents.ofVal v) .owned T :=
   .owned h.contentsTy (Contents.holeFree_ofVal v)
 
 /-- A contents that is not `⊘` fails the `⊘` test (helper). -/
@@ -1356,9 +1356,9 @@ has a state for the path — which is where no proper prefix of it is `MovedOut`
 (§5.1's `Owned-Base`, `3.8:53`) — the store's `H(ℓ)@π` (§6.3) reaches a
 sub-position, and the two match at the path's declared type. This is what makes
 every place rule's premises enough for its dynamic rule to fire. -/
-theorem ContentsMatches.readAt {D : Decls} : ∀ (π : List Nat) {c : Contents}
-    {t u : OwnSt} {T T' : Ty}, ContentsMatches D c t T → t.get π = some u →
-    T.atPath D π = some T' → ∃ sub, c.readAt π = .ok sub ∧ ContentsMatches D sub u T'
+theorem ContentsOwnTyping.readAt {D : Decls} : ∀ (π : List Nat) {c : Contents}
+    {t u : OwnSt} {T T' : Ty}, ContentsOwnTyping D c t T → t.get π = some u →
+    T.atPath D π = some T' → ∃ sub, c.readAt π = .ok sub ∧ ContentsOwnTyping D sub u T'
   | [], c, t, u, T, T', hm, hg, hty => by
       simp only [OwnSt.get, Option.some.injEq] at hg
       simp only [Ty.atPath, Option.some.injEq] at hty
@@ -1371,50 +1371,50 @@ theorem ContentsMatches.readAt {D : Decls} : ∀ (π : List Nat) {c : Contents}
         simp only [Ty.atPath, hfa] at hty
         -- A step is a field slot or a constant index, and the two are read
         -- with the same two lines: `Ty.fieldAt_inv` says which, and the
-        -- element list `ContentsMatchesList` walks is the declaration's
+        -- element list `ContentsOwnTypingList` walks is the declaration's
         -- fields or `n` copies of the element type.
         rcases Ty.fieldAt_inv hfa with ⟨s, sd, rfl, hd, hf⟩ | ⟨n, rfl, hf⟩
         · cases hm with
           | owned hcty hhf =>
-              obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_struct hd (.owned hcty hhf)
-              obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+              obtain ⟨i, cs, rfl, hl⟩ := ContentsOwnTyping.owned_struct hd (.owned hcty hhf)
+              obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
               simp only [Contents.readAt, hcf]
-              exact ContentsMatches.readAt π
+              exact ContentsOwnTyping.readAt π
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
                 hg hty
           | moved _ _ => simp [OwnSt.get] at hg
           | @fields s' sd' i cs ts hd' hl =>
               have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
               subst heq
-              obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+              obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
               simp only [Contents.readAt, hcf]
-              exact ContentsMatches.readAt π hmf hg hty
+              exact ContentsOwnTyping.readAt π hmf hg hty
         · cases hm with
           | owned hcty hhf =>
-              obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_array (.owned hcty hhf)
-              obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+              obtain ⟨i, cs, rfl, hl⟩ := ContentsOwnTyping.owned_array (.owned hcty hhf)
+              obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
               simp only [Contents.readAt, hcf]
-              exact ContentsMatches.readAt π
+              exact ContentsOwnTyping.readAt π
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
                 hg hty
           | moved _ _ => simp [OwnSt.get] at hg
           | @elems T'' n' i cs ts hl =>
-              obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+              obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
               simp only [Contents.readAt, hcf]
-              exact ContentsMatches.readAt π hmf hg hty
+              exact ContentsOwnTyping.readAt π hmf hg hty
 
 /-- **Writing a sub-position and its Σ state together keeps the cell
 matched.** (Use-Move) §6.3's `H[ℓ@π ↦ ⊘]`, `@drop`'s write-back (§6.11) and
 (D-Assign)'s store (§6.8) are all this lemma, with a different pair written in
 at the path. -/
-theorem ContentsMatches.writeAt {D : Decls} : ∀ (π : List Nat) {c sub' : Contents}
-    {t u u' : OwnSt} {T T' : Ty}, ContentsMatches D c t T → t.get π = some u →
-    T.atPath D π = some T' → ContentsMatches D sub' u' T' →
-    ∃ c', c.writeAt π sub' = some c' ∧ ContentsMatches D c' (t.setAt π u') T
+theorem ContentsOwnTyping.writeAt {D : Decls} : ∀ (π : List Nat) {c sub' : Contents}
+    {t u u' : OwnSt} {T T' : Ty}, ContentsOwnTyping D c t T → t.get π = some u →
+    T.atPath D π = some T' → ContentsOwnTyping D sub' u' T' →
+    ∃ c', c.writeAt π sub' = some c' ∧ ContentsOwnTyping D c' (t.setAt π u') T
   | [], c, sub', t, u, u', T, T', hm, hg, hty, hnew => by
       simp only [Ty.atPath, Option.some.injEq] at hty
       subst hty
@@ -1427,50 +1427,50 @@ theorem ContentsMatches.writeAt {D : Decls} : ∀ (π : List Nat) {c sub' : Cont
         rcases Ty.fieldAt_inv hfa with ⟨s, sd, rfl, hd, hf⟩ | ⟨n, rfl, hf⟩
         · cases hm with
           | owned hcty hhf =>
-              obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_struct hd (.owned hcty hhf)
-              obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+              obtain ⟨i, cs, rfl, hl⟩ := ContentsOwnTyping.owned_struct hd (.owned hcty hhf)
+              obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
-              obtain ⟨cf', hw, hmf'⟩ := ContentsMatches.writeAt π
+              obtain ⟨cf', hw, hmf'⟩ := ContentsOwnTyping.writeAt π
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
                 hg hty hnew
               refine ⟨.struct s i (cs.set f cf'), by simp only [Contents.writeAt, hcf, hw,
                 Option.map_some], ?_⟩
               simp only [OwnSt.setAt]
-              exact .fields hd (ContentsMatchesList.set f hl hf
+              exact .fields hd (ContentsOwnTypingList.set f hl hf
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf'))
           | moved _ _ => simp [OwnSt.get] at hg
           | @fields s' sd' i cs ts hd' hl =>
               have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
               subst heq
-              obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+              obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
-              obtain ⟨cf', hw, hmf'⟩ := ContentsMatches.writeAt π hmf hg hty hnew
+              obtain ⟨cf', hw, hmf'⟩ := ContentsOwnTyping.writeAt π hmf hg hty hnew
               refine ⟨.struct s i (cs.set f cf'), by simp only [Contents.writeAt, hcf, hw,
                 Option.map_some], ?_⟩
               simp only [OwnSt.setAt]
-              exact .fields hd' (ContentsMatchesList.set f hl hf hmf')
+              exact .fields hd' (ContentsOwnTypingList.set f hl hf hmf')
         · cases hm with
           | owned hcty hhf =>
-              obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_array (.owned hcty hhf)
-              obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+              obtain ⟨i, cs, rfl, hl⟩ := ContentsOwnTyping.owned_array (.owned hcty hhf)
+              obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
-              obtain ⟨cf', hw, hmf'⟩ := ContentsMatches.writeAt π
+              obtain ⟨cf', hw, hmf'⟩ := ContentsOwnTyping.writeAt π
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
                 hg hty hnew
               refine ⟨.array Tf i (cs.set f cf'), by simp only [Contents.writeAt, hcf, hw,
                 Option.map_some], ?_⟩
               simp only [OwnSt.setAt]
-              exact .elems (ContentsMatchesList.set f hl hf
+              exact .elems (ContentsOwnTypingList.set f hl hf
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf'))
           | moved _ _ => simp [OwnSt.get] at hg
           | @elems _ _ i cs ts hl =>
-              obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+              obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
-              obtain ⟨cf', hw, hmf'⟩ := ContentsMatches.writeAt π hmf hg hty hnew
+              obtain ⟨cf', hw, hmf'⟩ := ContentsOwnTyping.writeAt π hmf hg hty hnew
               refine ⟨.array Tf i (cs.set f cf'), by simp only [Contents.writeAt, hcf, hw,
                 Option.map_some], ?_⟩
               simp only [OwnSt.setAt]
-              exact .elems (ContentsMatchesList.set f hl hf hmf')
+              exact .elems (ContentsOwnTypingList.set f hl hf hmf')
 
 /-- **The store's use plan is the type's use plan.** §6.3 has the machine
 consume a closed elaboration annotation `μ`; this fragment's `eval` recovers it
@@ -1484,8 +1484,8 @@ It is what makes the six place cases of `soundness` fire the rule their
 `Typed` premise selected — the four ordinary ones because the plan is `none`
 on both sides, and the two declared ones because it is the same
 `some (π_d, π_s)`. -/
-theorem ContentsMatches.declaredPlan_eq {D : Decls} : ∀ (π : List Nat) {c : Contents}
-    {t u : OwnSt} {T T' : Ty}, ContentsMatches D c t T → t.get π = some u →
+theorem ContentsOwnTyping.declaredPlan_eq {D : Decls} : ∀ (π : List Nat) {c : Contents}
+    {t u : OwnSt} {T T' : Ty}, ContentsOwnTyping D c t T → t.get π = some u →
     T.atPath D π = some T' → c.declaredPlan D π = declaredPrefix D T π
   | [], _, _, _, _, _, _, _, _ => rfl
   | f :: π, c, t, u, T, T', hm, hg, hty => by
@@ -1499,10 +1499,10 @@ theorem ContentsMatches.declaredPlan_eq {D : Decls} : ∀ (π : List Nat) {c : C
             fun _ _ => rfl
           cases hm with
           | owned hcty hhf =>
-              obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_struct hd (.owned hcty hhf)
-              obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+              obtain ⟨i, cs, rfl, hl⟩ := ContentsOwnTyping.owned_struct hd (.owned hcty hhf)
+              obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
-              have ih := ContentsMatches.declaredPlan_eq π
+              have ih := ContentsOwnTyping.declaredPlan_eq π
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
                 hg hty
               cases hrec : declaredPrefix D Tf π with
@@ -1512,9 +1512,9 @@ theorem ContentsMatches.declaredPlan_eq {D : Decls} : ∀ (π : List Nat) {c : C
           | @fields s' sd' i cs ts hd' hl =>
               have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
               subst heq
-              obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+              obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
-              have ih := ContentsMatches.declaredPlan_eq π hmf hg hty
+              have ih := ContentsOwnTyping.declaredPlan_eq π hmf hg hty
               cases hrec : declaredPrefix D Tf π with
               | none => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec, hdl]
               | some r => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec]
@@ -1523,10 +1523,10 @@ theorem ContentsMatches.declaredPlan_eq {D : Decls} : ∀ (π : List Nat) {c : C
           -- into the element and agree by the induction hypothesis.
           cases hm with
           | owned hcty hhf =>
-              obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_array (.owned hcty hhf)
-              obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+              obtain ⟨i, cs, rfl, hl⟩ := ContentsOwnTyping.owned_array (.owned hcty hhf)
+              obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
-              have ih := ContentsMatches.declaredPlan_eq π
+              have ih := ContentsOwnTyping.declaredPlan_eq π
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
                 hg hty
               cases hrec : declaredPrefix D Tf π with
@@ -1535,9 +1535,9 @@ theorem ContentsMatches.declaredPlan_eq {D : Decls} : ∀ (π : List Nat) {c : C
               | some r => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec]
           | moved _ _ => simp [OwnSt.get] at hg
           | @elems _ _ i cs ts hl =>
-              obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+              obtain ⟨cf, hcf, hmf⟩ := ContentsOwnTypingList.index f hl hf
               simp only [OwnSt.get] at hg
-              have ih := ContentsMatches.declaredPlan_eq π hmf hg hty
+              have ih := ContentsOwnTyping.declaredPlan_eq π hmf hg hty
               cases hrec : declaredPrefix D Tf π with
               | none => simp [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec,
                   Ty.declaredLinear]
@@ -1545,7 +1545,7 @@ theorem ContentsMatches.declaredPlan_eq {D : Decls} : ∀ (π : List Nat) {c : C
 
 /-- A `⊘` matches a `MovedOut` state at every type: nothing is stored, so
 nothing is claimed (helper). -/
-theorem ContentsMatches.hole {D T} : ContentsMatches D (.hole : Contents) .movedOut T :=
+theorem ContentsOwnTyping.hole {D T} : ContentsOwnTyping D (.hole : Contents) .movedOut T :=
   .moved .hole rfl
 
 /-! ### §5.6's obligation, read on Σ and read on the store, agree -/
@@ -1578,8 +1578,8 @@ no live declared-`linear` sub-value — so `endscope` (§6.7), the frame teardow
 (§6.9) and the overwrite (§6.8) all let it through. This is the clause that
 makes the RUE-1591 model sound: after a partial move the obligation is the
 residue's, on both sides of the invariant. -/
-theorem ContentsMatches.residualLinear_false {D c t T} (hwf : WfDecls D)
-    (h : ContentsMatches D c t T) (hr : residualLinear D t T = false) :
+theorem ContentsOwnTyping.residualLinear_false {D c t T} (hwf : WfDecls D)
+    (h : ContentsOwnTyping D c t T) (hr : residualLinear D t T = false) :
     c.residualLinear D = false := by
   cases h with
   | owned hc _ =>
@@ -1589,15 +1589,15 @@ theorem ContentsMatches.residualLinear_false {D c t T} (hwf : WfDecls D)
   | @fields s sd i cs ts hd hl =>
       simp only [residualLinear, hd, Bool.or_eq_false_iff, decide_eq_false_iff_not] at hr
       simp only [Contents.residualLinear, hd, hr.1, Bool.false_or, decide_false]
-      exact ContentsMatchesList.residualLinearList_false hwf hl hr.2
+      exact ContentsOwnTypingList.residualLinearList_false hwf hl hr.2
   | @elems T n i cs ts hl =>
       simp only [residualLinear] at hr
       simp only [Contents.residualLinear]
-      exact ContentsMatchesList.residualLinearList_false hwf hl hr
+      exact ContentsOwnTypingList.residualLinearList_false hwf hl hr
 
 /-- The same over a field list (helper). -/
-theorem ContentsMatchesList.residualLinearList_false {D cs ts Ts} (hwf : WfDecls D)
-    (h : ContentsMatchesList D cs ts Ts) (hr : residualLinearFields D ts Ts = false) :
+theorem ContentsOwnTypingList.residualLinearList_false {D cs ts Ts} (hwf : WfDecls D)
+    (h : ContentsOwnTypingList D cs ts Ts) (hr : residualLinearFields D ts Ts = false) :
     Contents.residualLinearList D cs = false := by
   cases h with
   | nil => rfl
@@ -1608,10 +1608,10 @@ theorem ContentsMatchesList.residualLinearList_false {D cs ts Ts} (hwf : WfDecls
               residualLinearFields D [] Ts = false := by
             simpa only [residualLinearFields, List.any_cons, Bool.or_eq_false_iff] using hr
           show (Contents.residualLinear D c || Contents.residualLinearList D cs) = false
-          rw [ContentsMatches.residualLinear_false hwf hc
+          rw [ContentsOwnTyping.residualLinear_false hwf hc
                 (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none,
                       residualLinear] using hsplit.1),
-            ContentsMatchesList.residualLinearList_false hwf hl
+            ContentsOwnTypingList.residualLinearList_false hwf hl
                 (by simpa only [List.tail_nil] using hsplit.2)]
           rfl
       | cons t ts' =>
@@ -1619,16 +1619,16 @@ theorem ContentsMatchesList.residualLinearList_false {D cs ts Ts} (hwf : WfDecls
               residualLinearFields D ts' Ts = false := by
             simpa only [residualLinearFields, Bool.or_eq_false_iff] using hr
           show (Contents.residualLinear D c || Contents.residualLinearList D cs) = false
-          rw [ContentsMatches.residualLinear_false hwf hc
+          rw [ContentsOwnTyping.residualLinear_false hwf hc
                 (by simpa only [OwnSt.fieldAt, List.getElem?_cons_zero,
                       Option.getD_some] using hsplit.1),
-            ContentsMatchesList.residualLinearList_false hwf hl
+            ContentsOwnTypingList.residualLinearList_false hwf hl
                 (by simpa only [List.tail_cons] using hsplit.2)]
           rfl
 end
 
 /-- Every bound location is inside the store (helper). -/
-theorem Matches.mem_lt {D Γ ρ H} (hm : Matches D Γ ρ H) : ∀ ℓ ∈ ρ, ℓ < H.length := by
+theorem StoreTyping.mem_lt {D Γ ρ H} (hm : StoreTyping D Γ ρ H) : ∀ ℓ ∈ ρ, ℓ < H.length := by
   induction hm with
   | nil => intro ℓ h; cases h
   | cons hc _ _ _ ih =>
@@ -1638,14 +1638,14 @@ theorem Matches.mem_lt {D Γ ρ H} (hm : Matches D Γ ρ H) : ∀ ℓ ∈ ρ, �
       | tail _ h => exact ih _ h
 
 /-- The next location to allocate is bound to nothing (helper). -/
-theorem Matches.fresh_not_mem {D Γ ρ H} (hm : Matches D Γ ρ H) : H.length ∉ ρ := by
+theorem StoreTyping.fresh_not_mem {D Γ ρ H} (hm : StoreTyping D Γ ρ H) : H.length ∉ ρ := by
   intro hmem
   exact absurd (hm.mem_lt _ hmem) (by omega)
 
 /-- Look a binding up through the invariant (helper). -/
-theorem Matches.lookup {D Γ ρ H} (hm : Matches D Γ ρ H) {i : Nat} {en}
+theorem StoreTyping.lookup {D Γ ρ H} (hm : StoreTyping D Γ ρ H) {i : Nat} {en}
     (hget : Γ[i]? = some en) :
-    ∃ ℓ c, ρ[i]? = some ℓ ∧ H[ℓ]? = some c ∧ CellMatches D c en := by
+    ∃ ℓ c, ρ[i]? = some ℓ ∧ H[ℓ]? = some c ∧ CellTyping D c en := by
   induction hm generalizing i with
   | nil => simp at hget
   | cons hc hcm _ _ ih =>
@@ -1656,13 +1656,13 @@ theorem Matches.lookup {D Γ ρ H} (hm : Matches D Γ ρ H) {i : Nat} {en}
           exact ih hget
 
 /-- Inversion at a non-empty context (helper). -/
-theorem Matches.cons_inv {D en Γ ℓ ρ H} (h : Matches D (en :: Γ) (ℓ :: ρ) H) :
-    ∃ c, H[ℓ]? = some c ∧ CellMatches D c en ∧ ℓ ∉ ρ ∧ Matches D Γ ρ H := by
+theorem StoreTyping.cons_inv {D en Γ ℓ ρ H} (h : StoreTyping D (en :: Γ) (ℓ :: ρ) H) :
+    ∃ c, H[ℓ]? = some c ∧ CellTyping D c en ∧ ℓ ∉ ρ ∧ StoreTyping D Γ ρ H := by
   cases h; exact ⟨_, ‹_›, ‹_›, ‹_›, ‹_›⟩
 
 /-- Store growth by allocation preserves the invariant (helper). -/
-theorem Matches.append {D Γ ρ H} (hm : Matches D Γ ρ H) (ext : Store) :
-    Matches D Γ ρ (H ++ ext) := by
+theorem StoreTyping.append {D Γ ρ H} (hm : StoreTyping D Γ ρ H) (ext : Store) :
+    StoreTyping D Γ ρ (H ++ ext) := by
   induction hm with
   | nil => exact .nil
   | cons hc hcm hnin _ ih =>
@@ -1671,21 +1671,21 @@ theorem Matches.append {D Γ ρ H} (hm : Matches D Γ ρ H) (ext : Store) :
       exact hc
 
 /-- Writing a cell nobody in `ρ` points at preserves the invariant (helper). -/
-theorem Matches.set_outside : ∀ {D Γ ρ H} {ℓ : Nat} {c : Cell},
-    Matches D Γ ρ H → ℓ ∉ ρ → Matches D Γ ρ (H.set ℓ c)
+theorem StoreTyping.set_outside : ∀ {D Γ ρ H} {ℓ : Nat} {c : Cell},
+    StoreTyping D Γ ρ H → ℓ ∉ ρ → StoreTyping D Γ ρ (H.set ℓ c)
   | _, _, _, _, _, _, .nil, _ => .nil
   | _, _, _, _, ℓ, c, .cons (ℓ := ℓ') hc hcm hnin' hrest, hnin => by
       have hne : ℓ ≠ ℓ' := fun h => hnin (by simp [h])
       refine .cons ?_ hcm hnin'
-        (Matches.set_outside hrest (fun h => hnin (List.mem_cons_of_mem _ h)))
+        (StoreTyping.set_outside hrest (fun h => hnin (List.mem_cons_of_mem _ h)))
       rw [List.getElem?_set_ne hne]
       exact hc
 
 /-- Updating binding `i`'s cell together with its entry preserves the
 invariant, given the new cell matches the new entry (helper). -/
-theorem Matches.set : ∀ {D Γ ρ H} {i ℓ : Nat} {en' : Entry} {c' : Cell},
-    Matches D Γ ρ H → ρ[i]? = some ℓ → CellMatches D c' en' →
-    Matches D (Γ.set i en') ρ (H.set ℓ c')
+theorem StoreTyping.set : ∀ {D Γ ρ H} {i ℓ : Nat} {en' : Entry} {c' : Cell},
+    StoreTyping D Γ ρ H → ρ[i]? = some ℓ → CellTyping D c' en' →
+    StoreTyping D (Γ.set i en') ρ (H.set ℓ c')
   | _, _, _, _, _, _, _, _, .nil, hρ, _ => by simp at hρ
   | _, _, _, _, 0, ℓ, en', c', .cons (ℓ := ℓ') hc hcm hnin hrest, hρ, hc' => by
       simp only [List.getElem?_cons_zero, Option.some_inj] at hρ
@@ -1698,7 +1698,7 @@ theorem Matches.set : ∀ {D Γ ρ H} {i ℓ : Nat} {en' : Entry} {c' : Cell},
       have hmem : ℓ ∈ _ := List.mem_of_getElem? hρ
       have hne : ℓ' ≠ ℓ := fun h => hnin (h ▸ hmem)
       simp only [List.set_cons_succ]
-      refine .cons ?_ hcm hnin (Matches.set hrest hρ hc')
+      refine .cons ?_ hcm hnin (StoreTyping.set hrest hρ hc')
       rw [List.getElem?_set_ne (fun h => hne h.symm)]
       exact hc
 
@@ -1706,9 +1706,9 @@ theorem Matches.set : ∀ {D Γ ρ H} {i ℓ : Nat} {en' : Entry} {c' : Cell},
 is built in, since a signature names its parameters left to right while `Ctx`
 and `Env` list the innermost binder first (§5.8's (Fn), §6.9's (D-Call))
 (helper). -/
-theorem Matches.snoc : ∀ {D Γ ρ H} {ℓ : Nat} {en : Entry} {c : Cell},
-    Matches D Γ ρ H → H[ℓ]? = some c → CellMatches D c en → ℓ ∉ ρ →
-    Matches D (Γ ++ [en]) (ρ ++ [ℓ]) H
+theorem StoreTyping.snoc : ∀ {D Γ ρ H} {ℓ : Nat} {en : Entry} {c : Cell},
+    StoreTyping D Γ ρ H → H[ℓ]? = some c → CellTyping D c en → ℓ ∉ ρ →
+    StoreTyping D (Γ ++ [en]) (ρ ++ [ℓ]) H
   | _, _, _, _, ℓ, en, c, .nil, hc, hcm, _ => by
       simp only [List.nil_append]
       refine .cons hc hcm ?_ .nil
@@ -1724,37 +1724,37 @@ theorem Matches.snoc : ∀ {D Γ ρ H} {ℓ : Nat} {en : Entry} {c : Cell},
         · exact hne (List.mem_singleton.mp h).symm
       simp only [List.cons_append]
       exact .cons hc' hcm' hnin''
-        (Matches.snoc hrest hc hcm (fun h => hnin (List.mem_cons_of_mem _ h)))
+        (StoreTyping.snoc hrest hc hcm (fun h => hnin (List.mem_cons_of_mem _ h)))
 
 /-! ## Locality: what a frame's evaluation may touch -/
 
 /-- Locality is reflexive (helper). -/
-theorem Untouched.refl {ρ : Env} {H : Store} : Untouched ρ H H :=
+theorem FrameProperty.refl {ρ : Env} {H : Store} : FrameProperty ρ H H :=
   ⟨Nat.le_refl _, fun _ _ _ => rfl⟩
 
 /-- Locality composes along a sequence of steps in one frame (helper). -/
-theorem Untouched.trans {ρ : Env} {H₁ H₂ H₃ : Store}
-    (h₁ : Untouched ρ H₁ H₂) (h₂ : Untouched ρ H₂ H₃) : Untouched ρ H₁ H₃ :=
+theorem FrameProperty.trans {ρ : Env} {H₁ H₂ H₃ : Store}
+    (h₁ : FrameProperty ρ H₁ H₂) (h₂ : FrameProperty ρ H₂ H₃) : FrameProperty ρ H₁ H₃ :=
   ⟨Nat.le_trans h₁.1 h₂.1,
    fun ℓ hlt hnin => (h₂.2 ℓ (Nat.lt_of_lt_of_le hlt h₁.1) hnin).trans (h₁.2 ℓ hlt hnin)⟩
 
 /-- Allocation is local: appending cells touches nothing already there
 (helper). -/
-theorem Untouched.append {ρ : Env} {H : Store} (ext : Store) : Untouched ρ H (H ++ ext) :=
+theorem FrameProperty.append {ρ : Env} {H : Store} (ext : Store) : FrameProperty ρ H (H ++ ext) :=
   ⟨by simp, fun ℓ hlt _ => List.getElem?_append_left hlt⟩
 
 /-- Writing a cell the frame names is local (helper). -/
-theorem Untouched.set {ρ : Env} {H : Store} {ℓ : Nat} {c : Cell} (h : ℓ ∈ ρ) :
-    Untouched ρ H (H.set ℓ c) := by
+theorem FrameProperty.set {ρ : Env} {H : Store} {ℓ : Nat} {c : Cell} (h : ℓ ∈ ρ) :
+    FrameProperty ρ H (H.set ℓ c) := by
   refine ⟨by simp, fun ℓ' _ hnin => ?_⟩
   have hne : ℓ ≠ ℓ' := by rintro rfl; exact hnin h
   exact List.getElem?_set_ne hne
 
 /-- Locality extends across a write to a cell the frame names, or to one
 minted above the store locality is measured from (helper). -/
-theorem Untouched.trans_set {ρ : Env} {H₀ H : Store} {ℓ : Nat} {c : Cell}
-    (hu : Untouched ρ H₀ H) (h : H₀.length ≤ ℓ ∨ ℓ ∈ ρ) :
-    Untouched ρ H₀ (H.set ℓ c) := by
+theorem FrameProperty.trans_set {ρ : Env} {H₀ H : Store} {ℓ : Nat} {c : Cell}
+    (hu : FrameProperty ρ H₀ H) (h : H₀.length ≤ ℓ ∨ ℓ ∈ ρ) :
+    FrameProperty ρ H₀ (H.set ℓ c) := by
   refine ⟨by simpa using hu.1, fun ℓ' hlt hnin => ?_⟩
   have hne : ℓ ≠ ℓ' := by
     rcases h with h | h
@@ -1766,11 +1766,11 @@ theorem Untouched.trans_set {ρ : Env} {H₀ H : Store} {ℓ : Nat} {c : Cell}
 /-- A step that only touches cells the *inner* frame names, all of them minted
 above the outer store, is local for the outer frame too: the shape both a
 `let` body and a callee's frame take (helper). -/
-theorem Untouched.of_fresh {ρ ρ' : Env} {H Hm H' : Store}
+theorem FrameProperty.of_fresh {ρ ρ' : Env} {H Hm H' : Store}
     (hpre : H.length ≤ Hm.length)
     (hfresh : ∀ ℓ ∈ ρ', H.length ≤ ℓ)
     (hkeep : ∀ ℓ, ℓ < H.length → Hm[ℓ]? = H[ℓ]?)
-    (h : Untouched ρ' Hm H') : Untouched ρ H H' := by
+    (h : FrameProperty ρ' Hm H') : FrameProperty ρ H H' := by
   refine ⟨Nat.le_trans hpre h.1, fun ℓ hlt _ => ?_⟩
   have hnin : ℓ ∉ ρ' := fun hmem => absurd (hfresh ℓ hmem) (by omega)
   rw [h.2 ℓ (Nat.lt_of_lt_of_le hlt hpre) hnin]
@@ -1778,13 +1778,13 @@ theorem Untouched.of_fresh {ρ ρ' : Env} {H Hm H' : Store}
 
 /-- A `match` arm runs in the **same** frame with its payload cells prepended,
 all of them minted above the whole store; what it does is local to the frame
-without them too. This is `Untouched.under_binder`'s n-ary form, and the shape
+without them too. This is `FrameProperty.under_binder`'s n-ary form, and the shape
 (D-Match) §6.6 needs where a `let` needs the unary one (helper). -/
-theorem Untouched.under_binders {ρ locs : Env} {H Hm H' : Store}
+theorem FrameProperty.under_binders {ρ locs : Env} {H Hm H' : Store}
     (hpre : H.length ≤ Hm.length)
     (hkeep : ∀ ℓ, ℓ < H.length → Hm[ℓ]? = H[ℓ]?)
     (hfresh : ∀ ℓ ∈ locs, H.length ≤ ℓ)
-    (h : Untouched (locs ++ ρ) Hm H') : Untouched ρ H H' := by
+    (h : FrameProperty (locs ++ ρ) Hm H') : FrameProperty ρ H H' := by
   refine ⟨Nat.le_trans hpre h.1, fun ℓ hlt hnin => ?_⟩
   have hnin' : ℓ ∉ locs ++ ρ := by
     intro hmem
@@ -1796,8 +1796,8 @@ theorem Untouched.under_binders {ρ locs : Env} {H Hm H' : Store}
 
 /-- A `let` body runs in a frame with one more binding, minted above the whole
 store; what it does is local to the enclosing frame too (helper). -/
-theorem Untouched.under_binder {ρ : Env} {H₁ H₂ : Store} {c : Cell}
-    (h : Untouched (H₁.length :: ρ) (H₁ ++ [c]) H₂) : Untouched ρ H₁ H₂ := by
+theorem FrameProperty.under_binder {ρ : Env} {H₁ H₂ : Store} {c : Cell}
+    (h : FrameProperty (H₁.length :: ρ) (H₁ ++ [c]) H₂) : FrameProperty ρ H₁ H₂ := by
   have hlen := h.1
   simp only [List.length_append, List.length_cons, List.length_nil] at hlen
   refine ⟨by omega, fun ℓ hlt hnin => ?_⟩
@@ -1809,8 +1809,8 @@ theorem Untouched.under_binder {ρ : Env} {H₁ H₂ : Store} {c : Cell}
 
 /-- The invariant of a frame transports across a step local to a *disjoint*
 frame: the caller's bindings survive a callee's run (helper). -/
-theorem Matches.transport {D Γ ρ₀ ρ H H'} (hm : Matches D Γ ρ₀ H)
-    (hdisj : ∀ ℓ ∈ ρ₀, ℓ ∉ ρ) (hu : Untouched ρ H H') : Matches D Γ ρ₀ H' := by
+theorem StoreTyping.transport {D Γ ρ₀ ρ H H'} (hm : StoreTyping D Γ ρ₀ H)
+    (hdisj : ∀ ℓ ∈ ρ₀, ℓ ∉ ρ) (hu : FrameProperty ρ H H') : StoreTyping D Γ ρ₀ H' := by
   induction hm with
   | nil => exact .nil
   | cons hc hcm hnin hrest ih =>
@@ -1827,7 +1827,7 @@ theorem Matches.transport {D Γ ρ₀ ρ H H'} (hm : Matches D Γ ρ₀ H)
 are well typed (so §6.11's walk never refuses) and hold no live
 declared-`linear` sub-value (so the leak monitor lets them through)
 (helper). -/
-theorem CellMatches.dropOk {D cell en} (hwf : WfDecls D) (hcm : CellMatches D cell en)
+theorem CellTyping.dropOk {D cell en} (hwf : WfDecls D) (hcm : CellTyping D cell en)
     (h : residualLinear D en.st en.ty = false) :
     ∃ c, cell = .full c ∧ ContentsTy D c en.ty ∧ c.residualLinear D = false := by
   obtain ⟨c, rfl, hm⟩ := hcm
@@ -1857,12 +1857,12 @@ theorem dropRetire_ok {D : Decls} {H : Store} {ℓ : Nat} {cell : Cell} {c : Con
 
 /-- **Scope teardown never refuses on a frame the statics cleared.**
 `run-scope-drops` (§6.1) over a frame whose bindings carry no residual linear
-content retires every one of them: none is already retired (`Matches` says
+content retires every one of them: none is already retired (`StoreTyping` says
 every bound cell is live and that no two bindings share one — §7's
 no-use-after-drop at an unwinding edge), and none holds a live linear
 sub-value (the §5.6 obligation, read on the residue). -/
-theorem Matches.unwind {D : Decls} (hwf : WfDecls D) :
-    ∀ (Γ : Ctx) (ρ : Env) (H : Store), Matches D Γ ρ H → NoResidualLinear D Γ →
+theorem StoreTyping.unwind {D : Decls} (hwf : WfDecls D) :
+    ∀ (Γ : Ctx) (ρ : Env) (H : Store), StoreTyping D Γ ρ H → NoResidualLinear D Γ →
     ∃ H' evs, unwindLocs D H ρ = .ok (H', evs) ∧ H'.length = H.length ∧
       ∀ ℓ, ℓ ∉ ρ → H'[ℓ]? = H[ℓ]?
   | [], _, H, hm, _ => by
@@ -1876,7 +1876,7 @@ theorem Matches.unwind {D : Decls} (hwf : WfDecls D) :
         obtain ⟨c, hcell, hty, hres⟩ := hcm.dropOk hwf hhead
         obtain ⟨evs₀, hdr⟩ := dropRetire_ok hc hcell hty hres
         obtain ⟨H', evs', hrec, hlen, hout⟩ :=
-          Matches.unwind hwf Γ₀ ρ₀ (H.set ℓ .dead) (hrest.set_outside hnin) hnl₀
+          StoreTyping.unwind hwf Γ₀ ρ₀ (H.set ℓ .dead) (hrest.set_outside hnin) hnl₀
         refine ⟨H', evs₀ ++ evs', ?_, ?_, ?_⟩
         · simp only [unwindLocs, hdr, hrec]
         · rw [hlen]; simp
@@ -1890,13 +1890,13 @@ the frame** (§6.6's `endscope([ℓ1,…,ℓa])`, run when the arm's body become
 value). The arm added `n` bindings on top of the frame it was entered in, so the
 teardown walks the first `n` locations of `ρ` — newest-first, since the arm's
 payload cells sit at the front of the environment — and leaves exactly the frame
-the arm started from. `Matches.unwind` is the whole-frame case of the same walk
+the arm started from. `StoreTyping.unwind` is the whole-frame case of the same walk
 (`n = ρ.length`), and this is the prefix one (helper). -/
-theorem Matches.unwindPrefix {D : Decls} (hwf : WfDecls D) :
-    ∀ (n : Nat) (Γ : Ctx) (ρ : Env) (H : Store), Matches D Γ ρ H →
+theorem StoreTyping.unwindPrefix {D : Decls} (hwf : WfDecls D) :
+    ∀ (n : Nat) (Γ : Ctx) (ρ : Env) (H : Store), StoreTyping D Γ ρ H →
     NoResidualLinear D (Γ.take n) →
     ∃ H' evs, unwindLocs D H (ρ.take n) = .ok (H', evs) ∧
-      Matches D (Γ.drop n) (ρ.drop n) H' ∧ H'.length = H.length ∧
+      StoreTyping D (Γ.drop n) (ρ.drop n) H' ∧ H'.length = H.length ∧
       ∀ ℓ, ℓ ∉ ρ.take n → H'[ℓ]? = H[ℓ]?
   | 0, Γ, ρ, H, hm, _ => by
       simp only [List.take_zero, List.drop_zero, unwindLocs]
@@ -1916,7 +1916,7 @@ theorem Matches.unwindPrefix {D : Decls} (hwf : WfDecls D) :
         obtain ⟨c, hcell, hty, hres⟩ := hcm.dropOk hwf hhead
         obtain ⟨evs₀, hdr⟩ := dropRetire_ok hc hcell hty hres
         obtain ⟨H', evs', hrec, hmrest, hlen, hout⟩ :=
-          Matches.unwindPrefix hwf n Γ₀ ρ₀ (H.set ℓ .dead) (hrest.set_outside hnin) hnl₀
+          StoreTyping.unwindPrefix hwf n Γ₀ ρ₀ (H.set ℓ .dead) (hrest.set_outside hnin) hnl₀
         refine ⟨H', evs₀ ++ evs', ?_, hmrest, ?_, ?_⟩
         · simp only [List.take_succ_cons, unwindLocs, hdr, hrec]
         · rw [hlen]; simp
@@ -1927,14 +1927,14 @@ theorem Matches.unwindPrefix {D : Decls} (hwf : WfDecls D) :
 
 /-- **A frame's whole teardown never refuses** (§6.9's `run-all-scope-drops`,
 run at (D-Return-Value) and at (D-Return)). The record is the environment
-reversed, so this is `Matches.unwind` read newest-first. -/
-theorem runAllScopeDrops_ok {D Γ φ H} (hwf : WfDecls D) (hfm : FrameMatches D Γ φ H)
+reversed, so this is `StoreTyping.unwind` read newest-first. -/
+theorem runAllScopeDrops_ok {D Γ φ H} (hwf : WfDecls D) (hfm : ActivationTyping D Γ φ H)
     (hnl : NoResidualLinear D Γ) :
     ∃ H' evs, runAllScopeDrops D H φ = .ok (H', evs) ∧ H'.length = H.length ∧
       ∀ ℓ, ℓ ∉ φ.env → H'[ℓ]? = H[ℓ]? := by
   unfold runAllScopeDrops
   rw [hfm.record]
-  exact Matches.unwind hwf _ _ _ hfm.store hnl
+  exact StoreTyping.unwind hwf _ _ _ hfm.store hnl
 
 /-! ## Skeleton transport and join weakening -/
 
@@ -1944,9 +1944,9 @@ contents still matches it.** The `Owned` side never adds a move, so the only
 question the join asks is whether each path `t` has `MovedOut` may be lost —
 which `ownedJoinable` has answered, and which the invariant's asymmetric
 `movedOut` clause then admits (`3.8:50`, `3.8:60`). -/
-theorem ownedJoinable_matches {D : Decls} (hwf : WfDecls D) :
+theorem ownedJoinable_typing {D : Decls} (hwf : WfDecls D) :
     ∀ (t : OwnSt) {T : Ty} {c : Contents}, ownedJoinable D t T = true →
-      ContentsMatches D c .owned T → ContentsMatches D c t T
+      ContentsOwnTyping D c .owned T → ContentsOwnTyping D c t T
   | .owned, _, _, _, h => h
   | .movedOut, T, c, hok, h => by
       simp only [ownedJoinable, decide_eq_true_eq] at hok
@@ -1962,18 +1962,18 @@ theorem ownedJoinable_matches {D : Decls} (hwf : WfDecls D) :
         simp only [ownedJoinable] at hok
         split at hok
         · rename_i sd hd
-          obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_struct hd h
-          exact .fields hd (ownedJoinableList_matches hwf ts hok hl)
+          obtain ⟨i, cs, rfl, hl⟩ := ContentsOwnTyping.owned_struct hd h
+          exact .fields hd (ownedJoinableList_typing hwf ts hok hl)
         · simp at hok
       | array T' n =>
         simp only [ownedJoinable] at hok
-        obtain ⟨i, cs, rfl, hl⟩ := ContentsMatches.owned_array h
-        exact .elems (ownedJoinableList_matches hwf ts hok hl)
+        obtain ⟨i, cs, rfl, hl⟩ := ContentsOwnTyping.owned_array h
+        exact .elems (ownedJoinableList_typing hwf ts hok hl)
 
 /-- The same over a declaration's fields (helper). -/
-theorem ownedJoinableList_matches {D : Decls} (hwf : WfDecls D) :
+theorem ownedJoinableList_typing {D : Decls} (hwf : WfDecls D) :
     ∀ (ts : List OwnSt) {Ts : List Ty} {cs : List Contents}, ownedJoinableList D ts Ts = true →
-      ContentsMatchesList D cs [] Ts → ContentsMatchesList D cs ts Ts
+      ContentsOwnTypingList D cs [] Ts → ContentsOwnTypingList D cs ts Ts
   | [], _, _, _, h => h
   | _ :: _, [], _, _, h => by cases h; exact .nil
   | t :: ts, T :: Ts, cs, hok, h => by
@@ -1982,9 +1982,9 @@ theorem ownedJoinableList_matches {D : Decls} (hwf : WfDecls D) :
         simp only [ownedJoinableList, Bool.and_eq_true] at hok
         refine .cons ?_ ?_
         · simpa only [OwnSt.fieldAt, List.getElem?_cons_zero, Option.getD_some] using
-            ownedJoinable_matches hwf t hok.1
+            ownedJoinable_typing hwf t hok.1
               (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hhd)
-        · simpa only [List.tail_cons] using ownedJoinableList_matches hwf ts hok.2
+        · simpa only [List.tail_cons] using ownedJoinableList_typing hwf ts hok.2
             (by simpa only [List.tail_nil] using htl)
 end
 
@@ -1995,15 +1995,15 @@ join is that state, and where they disagree the join is `MovedOut`, which the
 invariant's asymmetric clause admits because the disagreement premise has
 already ruled out live linear content there (`3.8:50`). The machine then drops
 whatever residue the taken path left, path-specifically (`3.8:60`). -/
-theorem OwnSt.join_matches {D : Decls} (hwf : WfDecls D) :
+theorem OwnSt.join_typing {D : Decls} (hwf : WfDecls D) :
     ∀ (a b : OwnSt) {e : OwnSt} {T : Ty} {c : Contents}, OwnSt.join D a b T = some e →
-      (ContentsMatches D c a T ∨ ContentsMatches D c b T) → ContentsMatches D c e T
+      (ContentsOwnTyping D c a T ∨ ContentsOwnTyping D c b T) → ContentsOwnTyping D c e T
   | .owned, b, e, T, c, hj, hc => by
       simp only [OwnSt.join] at hj
       split at hj
       · cases hj
         rcases hc with h | h
-        · exact ownedJoinable_matches hwf b ‹_› h
+        · exact ownedJoinable_typing hwf b ‹_› h
         · exact h
       · cases hj
   | .movedOut, .owned, e, T, c, hj, hc => by
@@ -2012,7 +2012,7 @@ theorem OwnSt.join_matches {D : Decls} (hwf : WfDecls D) :
       · cases hj
         rcases hc with h | h
         · exact h
-        · exact ownedJoinable_matches hwf .movedOut ‹_› h
+        · exact ownedJoinable_typing hwf .movedOut ‹_› h
       · cases hj
   | .fields as, .owned, e, T, c, hj, hc => by
       simp only [OwnSt.join] at hj
@@ -2020,7 +2020,7 @@ theorem OwnSt.join_matches {D : Decls} (hwf : WfDecls D) :
       · cases hj
         rcases hc with h | h
         · exact h
-        · exact ownedJoinable_matches hwf (.fields as) ‹_› h
+        · exact ownedJoinable_typing hwf (.fields as) ‹_› h
       · cases hj
   | .movedOut, .movedOut, e, T, c, hj, hc => by
       simp only [OwnSt.join, residualLinear, Bool.false_eq_true, if_neg,
@@ -2067,12 +2067,12 @@ theorem OwnSt.join_matches {D : Decls} (hwf : WfDecls D) :
                 | @fields _ sd' _ cs _ hd' hl =>
                   have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
                   subst heq
-                  exact .fields hd' (OwnSt.joinList_matches hwf as bs sd'.fields hjl (Or.inl hl))
+                  exact .fields hd' (OwnSt.joinList_typing hwf as bs sd'.fields hjl (Or.inl hl))
               · cases h with
                 | @fields _ sd' _ cs _ hd' hl =>
                   have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
                   subst heq
-                  exact .fields hd' (OwnSt.joinList_matches hwf as bs sd'.fields hjl (Or.inr hl))
+                  exact .fields hd' (OwnSt.joinList_typing hwf as bs sd'.fields hjl (Or.inr hl))
         · cases hj
       | array T' n =>
         simp only [OwnSt.join] at hj
@@ -2085,17 +2085,17 @@ theorem OwnSt.join_matches {D : Decls} (hwf : WfDecls D) :
             rcases hc with h | h
             · cases h with
               | @elems _ _ _ cs _ hl =>
-                exact .elems (OwnSt.joinList_matches hwf as bs (List.replicate n T') hjl (Or.inl hl))
+                exact .elems (OwnSt.joinList_typing hwf as bs (List.replicate n T') hjl (Or.inl hl))
             · cases h with
               | @elems _ _ _ cs _ hl =>
-                exact .elems (OwnSt.joinList_matches hwf as bs (List.replicate n T') hjl (Or.inr hl))
+                exact .elems (OwnSt.joinList_typing hwf as bs (List.replicate n T') hjl (Or.inr hl))
 
 /-- The same over a declaration's field slots (helper). -/
-theorem OwnSt.joinList_matches {D : Decls} (hwf : WfDecls D) :
+theorem OwnSt.joinList_typing {D : Decls} (hwf : WfDecls D) :
     ∀ (as bs : List OwnSt) (Ts : List Ty) {es : List OwnSt} {cs : List Contents},
       OwnSt.joinList D as bs Ts = some es →
-      (ContentsMatchesList D cs as Ts ∨ ContentsMatchesList D cs bs Ts) →
-      ContentsMatchesList D cs es Ts
+      (ContentsOwnTypingList D cs as Ts ∨ ContentsOwnTypingList D cs bs Ts) →
+      ContentsOwnTypingList D cs es Ts
   | as, bs, [], es, cs, hj, hc => by
       simp only [OwnSt.joinList, Option.some.injEq] at hj
       cases hj
@@ -2105,7 +2105,7 @@ theorem OwnSt.joinList_matches {D : Decls} (hwf : WfDecls D) :
       split at hj
       · cases hj
         rcases hc with h | h
-        · exact ownedJoinableList_matches hwf bs ‹_› h
+        · exact ownedJoinableList_typing hwf bs ‹_› h
         · exact h
       · cases hj
   | a :: as, [], T :: Ts, es, cs, hj, hc => by
@@ -2114,7 +2114,7 @@ theorem OwnSt.joinList_matches {D : Decls} (hwf : WfDecls D) :
       · cases hj
         rcases hc with h | h
         · exact h
-        · exact ownedJoinableList_matches hwf (a :: as) ‹_› h
+        · exact ownedJoinableList_typing hwf (a :: as) ‹_› h
       · cases hj
   | a :: as, b :: bs, T :: Ts, es, cs, hj, hc => by
       simp only [OwnSt.joinList] at hj
@@ -2125,7 +2125,7 @@ theorem OwnSt.joinList_matches {D : Decls} (hwf : WfDecls D) :
           | @cons c cs' _ _ _ hhd htl =>
             refine .cons ?_ ?_
             · simp only [OwnSt.fieldAt, List.getElem?_cons_zero, Option.getD_some]
-              refine OwnSt.join_matches hwf a b he ?_
+              refine OwnSt.join_typing hwf a b he ?_
               first
                 | exact Or.inl (by
                     simpa only [OwnSt.fieldAt, List.getElem?_cons_zero,
@@ -2134,7 +2134,7 @@ theorem OwnSt.joinList_matches {D : Decls} (hwf : WfDecls D) :
                     simpa only [OwnSt.fieldAt, List.getElem?_cons_zero,
                       Option.getD_some] using hhd)
             · simp only [List.tail_cons]
-              refine OwnSt.joinList_matches hwf as bs Ts hrest ?_
+              refine OwnSt.joinList_typing hwf as bs Ts hrest ?_
               first
                 | exact Or.inl (by simpa only [List.tail_cons] using htl)
                 | exact Or.inr (by simpa only [List.tail_cons] using htl)
@@ -2145,9 +2145,9 @@ end
 the left entry matches the joined entry (the conservative join, whose residue
 the machine drops path-specifically: `3.8:60` for a struct's fields, `3.8:73`
 the array-element form). -/
-theorem Entry.join_matches_left {D : Decls} (hwf : WfDecls D) {a b e' : Entry}
-    (hj : a.join D b = some e') {cell : Cell} (hc : CellMatches D cell a) :
-    CellMatches D cell e' := by
+theorem Entry.join_typing_left {D : Decls} (hwf : WfDecls D) {a b e' : Entry}
+    (hj : a.join D b = some e') {cell : Cell} (hc : CellTyping D cell a) :
+    CellTyping D cell e' := by
   unfold Entry.join at hj
   cases hju : OwnSt.join D a.st b.st a.ty with
   | none => rw [hju] at hj; cases hj
@@ -2155,15 +2155,15 @@ theorem Entry.join_matches_left {D : Decls} (hwf : WfDecls D) {a b e' : Entry}
       rw [hju] at hj
       simp only [Option.map_some, Option.some.injEq] at hj
       obtain ⟨c, rfl, hm⟩ := hc
-      exact ⟨c, rfl, hj ▸ OwnSt.join_matches hwf a.st b.st hju (Or.inl hm)⟩
+      exact ⟨c, rfl, hj ▸ OwnSt.join_typing hwf a.st b.st hju (Or.inl hm)⟩
 
 /-- The §5.5 join weakens the right arm's per-cell agreement, given the two
 arms share a skeleton (the conservative join, whose residue the machine drops
 path-specifically: `3.8:60` for a struct's fields, `3.8:73` the array-element
 form). -/
-theorem Entry.join_matches_right {D : Decls} (hwf : WfDecls D) {a b e' : Entry}
+theorem Entry.join_typing_right {D : Decls} (hwf : WfDecls D) {a b e' : Entry}
     (hskel : a.skel = b.skel) (hj : a.join D b = some e') {cell : Cell}
-    (hc : CellMatches D cell b) : CellMatches D cell e' := by
+    (hc : CellTyping D cell b) : CellTyping D cell e' := by
   have hty : a.ty = b.ty := congrArg Prod.fst hskel
   unfold Entry.join at hj
   cases hju : OwnSt.join D a.st b.st a.ty with
@@ -2172,12 +2172,12 @@ theorem Entry.join_matches_right {D : Decls} (hwf : WfDecls D) {a b e' : Entry}
       rw [hju] at hj
       simp only [Option.map_some, Option.some.injEq] at hj
       obtain ⟨c, rfl, hm⟩ := hc
-      exact ⟨c, rfl, hj ▸ OwnSt.join_matches hwf a.st b.st hju (Or.inr (hty ▸ hm))⟩
+      exact ⟨c, rfl, hj ▸ OwnSt.join_typing hwf a.st b.st hju (Or.inr (hty ▸ hm))⟩
 
 /-- The invariant survives the §5.5 join from the left arm. -/
-theorem Matches.join_left {D : Decls} (hwf : WfDecls D) :
+theorem StoreTyping.join_left {D : Decls} (hwf : WfDecls D) :
     ∀ {Γ₁ Γ₂ Γ' : Ctx} {ρ H},
-    Ctx.join D Γ₁ Γ₂ = some Γ' → Matches D Γ₁ ρ H → Matches D Γ' ρ H := by
+    Ctx.join D Γ₁ Γ₂ = some Γ' → StoreTyping D Γ₁ ρ H → StoreTyping D Γ' ρ H := by
   intro Γ₁ Γ₂ Γ' ρ H hj hm
   induction hm generalizing Γ₂ Γ' with
   | nil =>
@@ -2192,14 +2192,14 @@ theorem Matches.join_left {D : Decls} (hwf : WfDecls D) :
           split at hj
           · rename_i e rest hje hjrest
             cases hj
-            exact .cons hc (Entry.join_matches_left hwf hje hcm) hnin (ih hjrest)
+            exact .cons hc (Entry.join_typing_left hwf hje hcm) hnin (ih hjrest)
           · cases hj
 
 /-- The invariant survives the §5.5 join from the right arm. -/
-theorem Matches.join_right {D : Decls} (hwf : WfDecls D) :
+theorem StoreTyping.join_right {D : Decls} (hwf : WfDecls D) :
     ∀ {Γ₁ Γ₂ Γ' : Ctx} {ρ H},
     Ctx.skel Γ₁ = Ctx.skel Γ₂ →
-    Ctx.join D Γ₁ Γ₂ = some Γ' → Matches D Γ₂ ρ H → Matches D Γ' ρ H := by
+    Ctx.join D Γ₁ Γ₂ = some Γ' → StoreTyping D Γ₂ ρ H → StoreTyping D Γ' ρ H := by
   intro Γ₁ Γ₂ Γ' ρ H hskel hj hm
   induction hm generalizing Γ₁ Γ' with
   | nil =>
@@ -2215,16 +2215,16 @@ theorem Matches.join_right {D : Decls} (hwf : WfDecls D) :
           split at hj
           · rename_i e rest hje hjrest
             cases hj
-            exact .cons hc (Entry.join_matches_right hwf hskel.1 hje hcm) hnin
+            exact .cons hc (Entry.join_typing_right hwf hskel.1 hje hcm) hnin
               (ih hskel.2 hjrest)
           · cases hj
 
 /-- The invariant survives the **accumulator step** of (Match) §5.5's n-way
 join, from the accumulated state or from any arm still to be folded in. -/
-theorem Matches.joinFold {D : Decls} (hwf : WfDecls D) :
+theorem StoreTyping.joinFold {D : Decls} (hwf : WfDecls D) :
     ∀ (Γs : List Ctx) {acc Γ' : Ctx} {ρ : Env} {H : Store}, Ctx.joinFold D acc Γs = some Γ' →
-      Ctx.SameSkel acc Γs → (Matches D acc ρ H ∨ ∃ Γᵢ ∈ Γs, Matches D Γᵢ ρ H) →
-      Matches D Γ' ρ H
+      Ctx.SameSkel acc Γs → (StoreTyping D acc ρ H ∨ ∃ Γᵢ ∈ Γs, StoreTyping D Γᵢ ρ H) →
+      StoreTyping D Γ' ρ H
   | [], acc, Γ', ρ, H, hj, _, hm => by
       simp only [Ctx.joinFold, Option.some.injEq] at hj
       subst hj
@@ -2237,12 +2237,12 @@ theorem Matches.joinFold {D : Decls} (hwf : WfDecls D) :
       | none => rw [hja] at hj; cases hj
       | some a =>
           rw [hja] at hj
-          refine Matches.joinFold hwf Γs hj
+          refine StoreTyping.joinFold hwf Γs hj
             (Ctx.SameSkel.transport (Ctx.join_skel hja) hsk.2) ?_
           rcases hm with h | ⟨Γᵢ, hmem, hmi⟩
-          · exact Or.inl (Matches.join_left hwf hja h)
+          · exact Or.inl (StoreTyping.join_left hwf hja h)
           · cases hmem with
-            | head => exact Or.inl (Matches.join_right hwf hsk.1.symm hja hmi)
+            | head => exact Or.inl (StoreTyping.join_right hwf hsk.1.symm hja hmi)
             | tail _ hrest => exact Or.inr ⟨Γᵢ, hrest, hmi⟩
 
 /-- **The invariant survives (Match) §5.5's n-way join, from whichever arm ran.**
@@ -2250,14 +2250,14 @@ The join is the left fold of the binary one, and each arm's outgoing context has
 the skeleton the arms share, so the fold may read the state the taken arm left —
 which is what the `match` case of `soundness` needs, exactly as `ite` reads
 `join_left`/`join_right`. -/
-theorem Matches.joinAll {D : Decls} (hwf : WfDecls D) :
+theorem StoreTyping.joinAll {D : Decls} (hwf : WfDecls D) :
     ∀ {Γ₀ : Ctx} {Γs : List Ctx} {Γ' Γᵢ : Ctx} {ρ : Env} {H : Store},
-      Ctx.joinAll D Γs = some Γ' → Ctx.SameSkel Γ₀ Γs → Γᵢ ∈ Γs → Matches D Γᵢ ρ H →
-      Matches D Γ' ρ H
+      Ctx.joinAll D Γs = some Γ' → Ctx.SameSkel Γ₀ Γs → Γᵢ ∈ Γs → StoreTyping D Γᵢ ρ H →
+      StoreTyping D Γ' ρ H
   | _, [], _, _, _, _, hj, _, _, _ => by simp [Ctx.joinAll] at hj
   | Γ₀, Γ₁ :: Γs, Γ', Γᵢ, ρ, H, hj, hsk, hmem, hmi => by
       simp only [Ctx.joinAll] at hj
-      refine Matches.joinFold hwf Γs hj (Ctx.SameSkel.transport hsk.1 hsk.2) ?_
+      refine StoreTyping.joinFold hwf Γs hj (Ctx.SameSkel.transport hsk.1 hsk.2) ?_
       cases hmem with
       | head => exact Or.inl hmi
       | tail _ hrest => exact Or.inr ⟨Γᵢ, hrest, hmi⟩
@@ -2286,9 +2286,9 @@ theorem Ctx.joinOpts_mem {D : Decls} {os : List (Option Ctx)} {o : Option Ctx} {
 /-- **The invariant survives (If) §5.5's join over `Ω` from the left arm**:
 when the left arm continues, the join is a state, and it is the left arm's
 state or its binary join with the right one's (helper). -/
-theorem Matches.joinOpt_left {D : Decls} (hwf : WfDecls D) {a b o : Option Ctx} {Γ₁ : Ctx}
+theorem StoreTyping.joinOpt_left {D : Decls} (hwf : WfDecls D) {a b o : Option Ctx} {Γ₁ : Ctx}
     (h : Ctx.joinOpt D a b = some o) (ha : a = some Γ₁) :
-    ∃ Γ', o = some Γ' ∧ ∀ ρ H, Matches D Γ₁ ρ H → Matches D Γ' ρ H := by
+    ∃ Γ', o = some Γ' ∧ ∀ ρ H, StoreTyping D Γ₁ ρ H → StoreTyping D Γ' ρ H := by
   subst ha
   cases b with
   | none =>
@@ -2301,14 +2301,14 @@ theorem Matches.joinOpt_left {D : Decls} (hwf : WfDecls D) {a b o : Option Ctx} 
       | some z =>
           rw [hj] at h
           simp only [Option.map_some, Option.some.injEq] at h
-          exact ⟨z, h.symm, fun _ _ hm => Matches.join_left hwf hj hm⟩
+          exact ⟨z, h.symm, fun _ _ hm => StoreTyping.join_left hwf hj hm⟩
 
 /-- The same from the right arm, which needs the two continuing arms to share
-a skeleton, as `Matches.join_right` does (helper). -/
-theorem Matches.joinOpt_right {D : Decls} (hwf : WfDecls D) {a b o : Option Ctx} {Γ₂ : Ctx}
+a skeleton, as `StoreTyping.join_right` does (helper). -/
+theorem StoreTyping.joinOpt_right {D : Decls} (hwf : WfDecls D) {a b o : Option Ctx} {Γ₂ : Ctx}
     (hsk : ∀ x, a = some x → x.skel = Γ₂.skel)
     (h : Ctx.joinOpt D a b = some o) (hb : b = some Γ₂) :
-    ∃ Γ', o = some Γ' ∧ ∀ ρ H, Matches D Γ₂ ρ H → Matches D Γ' ρ H := by
+    ∃ Γ', o = some Γ' ∧ ∀ ρ H, StoreTyping D Γ₂ ρ H → StoreTyping D Γ' ρ H := by
   subst hb
   cases a with
   | none =>
@@ -2321,7 +2321,7 @@ theorem Matches.joinOpt_right {D : Decls} (hwf : WfDecls D) {a b o : Option Ctx}
       | some z =>
           rw [hj] at h
           simp only [Option.map_some, Option.some.injEq] at h
-          exact ⟨z, h.symm, fun _ _ hm => Matches.join_right hwf (hsk x rfl) hj hm⟩
+          exact ⟨z, h.symm, fun _ _ hm => StoreTyping.join_right hwf (hsk x rfl) hj hm⟩
 
 /-! ## Minting a callee's parameters (§6.9's (D-Call)) -/
 
@@ -2351,17 +2351,17 @@ cells hold the argument values, and (Fn) §5.8's entry context `Γ0;Σ0`
 (`fnCtx`) describes exactly them. The two `reverse`s are the same one: a
 signature lists parameters left to right while `Ctx` and `Env` list the
 innermost binder first. -/
-theorem matches_mintParams {D : Decls} : ∀ (ps : List Param) (vs : List Val) (H : Store),
+theorem storeTyping_mintParams {D : Decls} : ∀ (ps : List Param) (vs : List Val) (H : Store),
     HasTys D vs (ps.map Param.ty) →
-    Matches D ((ps.map fun p => ({ ty := p.ty, mu := p.mu, st := .owned } : Entry)).reverse)
+    StoreTyping D ((ps.map fun p => ({ ty := p.ty, mu := p.mu, st := .owned } : Entry)).reverse)
       (mintParams H vs).2.reverse (mintParams H vs).1
   | [], vs, H, h => by cases h; exact .nil
   | p :: ps, vs, H, h => by
       cases h with
       | @cons v vs' _ _ hv hvs =>
-          have ih := matches_mintParams (D := D) ps vs' (H ++ [Cell.full (Contents.ofVal v)]) hvs
+          have ih := storeTyping_mintParams (D := D) ps vs' (H ++ [Cell.full (Contents.ofVal v)]) hvs
           simp only [List.map_cons, List.reverse_cons, mintParams]
-          refine Matches.snoc ih ?_ ⟨Contents.ofVal v, rfl, ContentsMatches.ofVal hv⟩ ?_
+          refine StoreTyping.snoc ih ?_ ⟨Contents.ofVal v, rfl, ContentsOwnTyping.ofVal hv⟩ ?_
           · rw [mintParams_store]
             rw [List.getElem?_append_left (by simp)]
             simp
@@ -2381,26 +2381,26 @@ theorem mintParams_locs_length : ∀ (H : Store) (vs : List Val),
 /-- **(D-Match) §6.6 establishes the arm's entry invariant.** The payload cells
 hold the payload components and (Match) §5.5's `Σ0[ x_{ij} ↦ Owned ]` — `extendArm`
 — describes exactly them, on top of the frame the `match` was evaluated in. This
-is `matches_mintParams` read over a non-empty base frame: the same minting, the
+is `storeTyping_mintParams` read over a non-empty base frame: the same minting, the
 same two `reverse`s (a payload tuple is written left to right while `Ctx` and
 `Env` list the innermost binder first), with the enclosing frame carried along
 because the cells are minted **above** the whole store. -/
-theorem matches_mintParams_app {D : Decls} :
+theorem storeTyping_mintParams_app {D : Decls} :
     ∀ (Ts : List Ty) (vs : List Val) (Γ : Ctx) (ρ : Env) (H : Store),
-      HasTys D vs Ts → Matches D Γ ρ H →
-      Matches D ((Ts.map fun T => ({ ty := T, mu := false, st := .owned } : Entry)).reverse ++ Γ)
+      HasTys D vs Ts → StoreTyping D Γ ρ H →
+      StoreTyping D ((Ts.map fun T => ({ ty := T, mu := false, st := .owned } : Entry)).reverse ++ Γ)
         ((mintParams H vs).2.reverse ++ ρ) (mintParams H vs).1
   | [], vs, Γ, ρ, H, h, hm => by cases h; simpa [mintParams] using hm
   | T :: Ts, vs, Γ, ρ, H, h, hm => by
       cases h with
       | @cons v vs' _ _ hv hvs =>
           have hfresh : H.length ∉ ρ := hm.fresh_not_mem
-          have hbase : Matches D ({ ty := T, mu := false, st := .owned } :: Γ)
+          have hbase : StoreTyping D ({ ty := T, mu := false, st := .owned } :: Γ)
               (H.length :: ρ) (H ++ [Cell.full (Contents.ofVal v)]) := by
-            refine .cons ?_ ⟨Contents.ofVal v, rfl, ContentsMatches.ofVal hv⟩ hfresh
+            refine .cons ?_ ⟨Contents.ofVal v, rfl, ContentsOwnTyping.ofVal hv⟩ hfresh
               (hm.append _)
             simp
-          have ih := matches_mintParams_app (D := D) Ts vs'
+          have ih := storeTyping_mintParams_app (D := D) Ts vs'
             ({ ty := T, mu := false, st := .owned } :: Γ) (H.length :: ρ)
             (H ++ [Cell.full (Contents.ofVal v)]) hvs hbase
           simp only [List.map_cons, List.reverse_cons, mintParams, List.reverse_cons,
@@ -2414,7 +2414,7 @@ array place `p` its first dynamic step indexes (`Contents.resolveDyn`,
 `Dynamics.lean`). The lemmas below are what make that resolution safe: under a
 `fully-owned` `p`, every dynamic step is taken at a hole-free array of the
 length its type names, so each step either traps on the bound or lands on an
-element `ContentsMatches` covers, and the resolved path is typed at the leaf. -/
+element `ContentsOwnTyping` covers, and the resolved path is typed at the leaf. -/
 
 /-- An `Owned` node owns every path under it, and each of them is `Owned`
 (helper). -/
@@ -2469,11 +2469,11 @@ theorem Val.ints_of_hasTys {D : Decls} : ∀ {vs : List Val} {Ts : List Ty},
 bound or resolves to a constant path typed at the leaf** (§6.5's
 (D-Index)/(D-Index-Trap), `7.1:10`). Never a refusal: every dynamic step is
 taken at an array (`Ty.atDyn`), the array's length is its type's
-(`ContentsMatches.owned_array`), and an element of an `Owned` array is
-`Owned`, so the constant path after it reads by `ContentsMatches.readAt`
+(`ContentsOwnTyping.owned_array`), and an element of an `Owned` array is
+`Owned`, so the constant path after it reads by `ContentsOwnTyping.readAt`
 (helper). -/
 theorem Contents.resolveDyn_ok {D : Decls} : ∀ (is : List Int) (πs : List (List Nat))
-    {c : Contents} {Ta T : Ty}, ContentsMatches D c .owned Ta → Ta.atDyn D πs = some T →
+    {c : Contents} {Ta T : Ty}, ContentsOwnTyping D c .owned Ta → Ta.atDyn D πs = some T →
     is.length = πs.length →
       c.resolveDyn is πs = .bounds ∨ ∃ ρ, c.resolveDyn is πs = .ok ρ ∧ Ta.atPath D ρ = some T
   | [], [], c, Ta, T, _, hdyn, _ => by
@@ -2491,7 +2491,7 @@ theorem Contents.resolveDyn_ok {D : Decls} : ∀ (is : List Int) (πs : List (Li
         | none => simp [hE] at hdyn
         | some T₁ =>
           simp only [hE] at hdyn
-          obtain ⟨_, cs, rfl, hl⟩ := ContentsMatches.owned_array hm
+          obtain ⟨_, cs, rfl, hl⟩ := ContentsOwnTyping.owned_array hm
           have hcl : cs.length = n := by
             simpa only [List.length_replicate] using hl.contentsTys.length_eq
           by_cases hb : inBoundsIdx i cs.length = true
@@ -2500,10 +2500,10 @@ theorem Contents.resolveDyn_ok {D : Decls} : ∀ (is : List Int) (πs : List (Li
             have hTe : (List.replicate n E)[i.toNat]? = some E := by
               rw [List.getElem?_eq_getElem (by simp only [List.length_replicate]; omega)]
               simp
-            obtain ⟨ce, hce, hme⟩ := ContentsMatchesList.index i.toNat hl hTe
-            have hme' : ContentsMatches D ce .owned E := by
+            obtain ⟨ce, hce, hme⟩ := ContentsOwnTypingList.index i.toNat hl hTe
+            have hme' : ContentsOwnTyping D ce .owned E := by
               simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hme
-            obtain ⟨c', hr', hm'⟩ := ContentsMatches.readAt π hme' (OwnSt.get_owned π) hE
+            obtain ⟨c', hr', hm'⟩ := ContentsOwnTyping.readAt π hme' (OwnSt.get_owned π) hE
             have hlen' : is.length = πs.length := by simpa using hlen
             rcases Contents.resolveDyn_ok is πs hm' hdyn hlen' with hb' | ⟨ρ, hres, hty⟩
             · left
@@ -2525,7 +2525,7 @@ of the deliveries `B` (`BrokeOk`); a trap and exhausted fuel promise nothing;
 a refusal is impossible, which is the whole theorem (helper). -/
 def AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Activation) (H : Store) : EvalRes → Prop
   | .ok _ _ _ => False
-  | .returned H' v _ => HasTy D v R ∧ Untouched φ.env H H'
+  | .returned H' v _ => HasTy D v R ∧ FrameProperty φ.env H H'
   | .broke H' sc _ => BrokeOk D B φ H H' sc
   | .panic _ _ => True
   | .stuck _ => False
@@ -2538,13 +2538,13 @@ def ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx) (B : List Ctx) (
     (H : Store) : ArgsRes → Prop
   | .ok H' vs _ =>
       match o with
-      | some Γ' => HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+      | some Γ' => HasTys D vs Ts ∧ ActivationTyping D Γ' φ H' ∧ FrameProperty φ.env H H'
       | none => False
   | .abort r => AbortOk D R B φ H r
 
 /-- A `break` promised from a later store is promised from an earlier one,
 given the step between them was local to the frame (helper). -/
-theorem BrokeOk.mono_store {D B φ H H₁ H' sc} (hu : Untouched φ.env H H₁)
+theorem BrokeOk.mono_store {D B φ H H₁ H' sc} (hu : FrameProperty φ.env H H₁)
     (h : BrokeOk D B φ H₁ H' sc) : BrokeOk D B φ H H' sc := by
   obtain ⟨Γb, hb, locs, hsc, hfm, hfresh, hu'⟩ := h
   exact ⟨Γb, hb, locs, hsc, hfm, fun ℓ hℓ => Nat.le_trans hu.1 (hfresh ℓ hℓ), hu.trans hu'⟩
@@ -2575,7 +2575,7 @@ theorem BrokeOk.under_binders {D B φ H Hm H' sc} {ls : List Nat}
     rcases List.mem_append.mp hℓ with h | h
     · exact hfresh ℓ h
     · exact Nat.le_trans hpre (hfresh' ℓ h)
-  · exact Untouched.under_binders hpre hkeep (fun ℓ hℓ => hfresh ℓ (List.mem_reverse.mp hℓ)) hu
+  · exact FrameProperty.under_binders hpre hkeep (fun ℓ hℓ => hfresh ℓ (List.mem_reverse.mp hℓ)) hu
 
 /-- `BrokeOk.under_binders` at a `let`'s one binder, whose cell is minted at
 the end of the store (§6.7's (D-Let)) (helper). -/
@@ -2587,21 +2587,21 @@ theorem BrokeOk.under_binder {D B φ H₁ H' sc} {c : Cell}
 
 /-- A value promised at some normal state names that state (helper). -/
 theorem EvalOk.ok_inv {D T R o B φ H H' v tr} (h : EvalOk D T R o B φ H (.ok H' v tr)) :
-    ∃ Γ', o = some Γ' ∧ HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H' := by
+    ∃ Γ', o = some Γ' ∧ HasTy D v T ∧ ActivationTyping D Γ' φ H' ∧ FrameProperty φ.env H H' := by
   cases o with
   | none => exact h.elim
   | some Γ' => exact ⟨Γ', rfl, h⟩
 
 /-- The same, for an argument list (helper). -/
 theorem ArgsOk.ok_inv {D R Ts o B φ H H' vs tr} (h : ArgsOk D R Ts o B φ H (.ok H' vs tr)) :
-    ∃ Γ', o = some Γ' ∧ HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H' := by
+    ∃ Γ', o = some Γ' ∧ HasTys D vs Ts ∧ ActivationTyping D Γ' φ H' ∧ FrameProperty φ.env H H' := by
   cases o with
   | none => exact h.elim
   | some Γ' => exact ⟨Γ', rfl, h⟩
 
 /-- A promise made from a later store is a promise from an earlier one, given
 the step between them was local to the frame (helper). -/
-theorem EvalOk.mono_store {D T R o B φ H H₁ r} (hu : Untouched φ.env H H₁)
+theorem EvalOk.mono_store {D T R o B φ H H₁ r} (hu : FrameProperty φ.env H H₁)
     (h : EvalOk D T R o B φ H₁ r) : EvalOk D T R o B φ H r := by
   cases r with
   | ok H' v tr =>
@@ -2615,7 +2615,7 @@ theorem EvalOk.mono_store {D T R o B φ H H₁ r} (hu : Untouched φ.env H H₁)
   | outOfFuel => trivial
 
 /-- The same, for a result that is not a value (helper). -/
-theorem AbortOk.mono_store {D R B φ H H₁ r} (hu : Untouched φ.env H H₁)
+theorem AbortOk.mono_store {D R B φ H H₁ r} (hu : FrameProperty φ.env H H₁)
     (h : AbortOk D R B φ H₁ r) : AbortOk D R B φ H r := by
   cases r with
   | ok H' v tr => exact h.elim
@@ -2697,7 +2697,7 @@ the form's. Every operand of every form is discharged by this lemma
 theorem EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ : Ctx} {B₀ B : List Ctx}
     {φ : Activation} {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
     (hr : EvalOk D T₀ R (some Γ₀) B₀ φ H r) (hB : B₀ ⊆ B)
-    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → HasTy D v T₀ → FrameMatches D Γ₀ φ H₁ →
+    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → HasTy D v T₀ → ActivationTyping D Γ₀ φ H₁ →
             EvalOk D T R o B φ H₁ (k H₁ v)) :
     EvalOk D T R o B φ H (r.bind k) := by
   cases r with
@@ -2716,7 +2716,7 @@ the form continues at the same state; if it is `⊥`, so is the form (helper). -
 theorem EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {B : List Ctx} {φ : Activation}
     {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
     (hr : EvalOk D T₀ R o B φ H r)
-    (hk : ∀ H₁ v tr Γ₀, r = .ok H₁ v tr → HasTy D v T₀ → FrameMatches D Γ₀ φ H₁ →
+    (hk : ∀ H₁ v tr Γ₀, r = .ok H₁ v tr → HasTy D v T₀ → ActivationTyping D Γ₀ φ H₁ →
             EvalOk D T R (some Γ₀) B φ H₁ (k H₁ v)) :
     EvalOk D T R o B φ H (r.bind k) := by
   cases o with
@@ -2735,8 +2735,8 @@ local macro "brk_sub" : tactic =>
 of an arm: a value's state is carried to some state of the join, and `⊥`
 carries nothing (helper). -/
 theorem EvalOk.weaken {D T R o₁ o' B φ H r}
-    (hw : ∀ Γ₁ H', o₁ = some Γ₁ → FrameMatches D Γ₁ φ H' →
-      ∃ Γ', o' = some Γ' ∧ FrameMatches D Γ' φ H')
+    (hw : ∀ Γ₁ H', o₁ = some Γ₁ → ActivationTyping D Γ₁ φ H' →
+      ∃ Γ', o' = some Γ' ∧ ActivationTyping D Γ' φ H')
     (h : EvalOk D T R o₁ B φ H r) : EvalOk D T R o' B φ H r := by
   cases r with
   | ok H' v tr =>
@@ -2756,15 +2756,15 @@ one `†` slot above the store, which no binding names — so the frame still
 matches and nothing it names was touched (helper). -/
 theorem introVal_ok {D : Decls} {T R : Ty} {Γ : Ctx} {B : List Ctx} {φ : Activation}
     {H₀ H : Store} {mk : Nat → Val} (hwf : WfDecls D) (hty : HasTy D (mk H.length) T)
-    (hfm : FrameMatches D Γ φ H) (hu : Untouched φ.env H₀ H) :
+    (hfm : ActivationTyping D Γ φ H) (hu : FrameProperty φ.env H₀ H) :
     EvalOk D T R (some Γ) B φ H₀ (introVal D H mk) := by
   simp only [introVal, if_pos (hty.copyClosed hwf)]
-  exact ⟨hty, ⟨hfm.store.append _, hfm.record⟩, hu.trans (Untouched.append _)⟩
+  exact ⟨hty, ⟨hfm.store.append _, hfm.record⟩, hu.trans (FrameProperty.append _)⟩
 
 /-! ## Loops: the head, the back edge, and the exits (§5.7, §6.10) -/
 
 /-- The invariant binds exactly one location per binding (helper). -/
-theorem Matches.length_eq {D Γ ρ H} (hm : Matches D Γ ρ H) : Γ.length = ρ.length := by
+theorem StoreTyping.length_eq {D Γ ρ H} (hm : StoreTyping D Γ ρ H) : Γ.length = ρ.length := by
   induction hm with
   | nil => rfl
   | cons _ _ _ _ ih => simp [ih]
@@ -2780,8 +2780,8 @@ theorem Ctx.SameSkel.of_forall {Γ₀ : Ctx} :
 agrees with the loop-head state: the head is the entry or its §5.5 join with
 the back-edge state, and the join weakens its left arm (helper). -/
 theorem LoopHead.enter {D : Decls} (hwf : WfDecls D) {Γ Γh : Ctx} {o : Option Ctx}
-    {φ : Activation} {H : Store} (h : LoopHead D Γ o Γh) (hfm : FrameMatches D Γ φ H) :
-    FrameMatches D Γh φ H := by
+    {φ : Activation} {H : Store} (h : LoopHead D Γ o Γh) (hfm : ActivationTyping D Γ φ H) :
+    ActivationTyping D Γh φ H := by
   cases o with
   | none =>
       have h1 := h.1
@@ -2796,7 +2796,7 @@ theorem LoopHead.enter {D : Decls} (hwf : WfDecls D) {Γ Γh : Ctx} {o : Option 
           rw [hj] at h1
           simp only [Option.map_some, Option.some.injEq] at h1
           subst h1
-          exact ⟨Matches.join_left hwf hj hfm.store, hfm.record⟩
+          exact ⟨StoreTyping.join_left hwf hj hfm.store, hfm.record⟩
 
 /-- **The back edge** (§5.7, `3.8:79`). The store agreeing with the body's
 back-edge state agrees with the loop-head state: the head is the §5.5 join of
@@ -2804,7 +2804,7 @@ the entry with that state, and the join weakens its right arm. This is the
 preservation half of re-entering the body (helper). -/
 theorem LoopHead.backEdge {D : Decls} (hwf : WfDecls D) {Γ Γh Γe : Ctx}
     {φ : Activation} {H : Store} (h : LoopHead D Γ (some Γe) Γh) (hsk : Γe.skel = Γh.skel)
-    (hfm : FrameMatches D Γe φ H) : FrameMatches D Γh φ H := by
+    (hfm : ActivationTyping D Γe φ H) : ActivationTyping D Γh φ H := by
   have h1 := h.1
   simp only [Ctx.joinOpt] at h1
   cases hj : Ctx.join D Γ Γe with
@@ -2814,7 +2814,7 @@ theorem LoopHead.backEdge {D : Decls} (hwf : WfDecls D) {Γ Γh Γe : Ctx}
       simp only [Option.map_some, Option.some.injEq] at h1
       subst h1
       have hs : Ctx.skel Γ = Ctx.skel Γe := (Ctx.join_skel hj).symm.trans hsk.symm
-      exact ⟨Matches.join_right hwf hs hj hfm.store, hfm.record⟩
+      exact ⟨StoreTyping.join_right hwf hs hj hfm.store, hfm.record⟩
 
 /-- **The exits** (§5.7's (Loop-Break), §6.10's (D-Break)). A `break` that
 fired at one of the body's deliveries `Γb`, in a frame that is the loop's with
@@ -2825,26 +2825,26 @@ keeps the leak monitor off. What is left agrees with `outside_loop(Γb)`, and
 so with the loop's outgoing state, the join over every exit (`3.8:80`)
 (helper). -/
 theorem loop_exit_ok {D : Decls} (hwf : WfDecls D) {Γh Γx : Ctx} {B : List Ctx}
-    {φ : Activation} {H H₁ : Store} {sc : List Nat} (hfmh : FrameMatches D Γh φ H)
+    {φ : Activation} {H H₁ : Store} {sc : List Nat} (hfmh : ActivationTyping D Γh φ H)
     (hext : ∀ Γb ∈ B, Ctx.Extends Γb Γh)
     (hnl : ∀ Γb ∈ B, NoResidualLinear D (Ctx.loopLocals Γh Γb))
     (hjoin : Ctx.joinAll D (B.map (Ctx.outsideLoop Γh)) = some Γx)
     (hb : BrokeOk D B φ H H₁ sc) :
     ∃ H₂ evs, unwindLocs D H₁ (sc.drop φ.scope.length).reverse = .ok (H₂, evs) ∧
-      FrameMatches D Γx φ H₂ ∧ Untouched φ.env H H₂ := by
+      ActivationTyping D Γx φ H₂ ∧ FrameProperty φ.env H H₂ := by
   obtain ⟨Γb, hmem, locs, rfl, hfmb, hfresh, hu⟩ := hb
   have hdrop : (φ.scope ++ locs).drop φ.scope.length = locs := List.drop_left
   rw [hdrop]
   have hlenb : Γb.length = locs.length + φ.env.length := by
-    rw [Matches.length_eq hfmb.store]; simp
-  have hlenh : Γh.length = φ.env.length := Matches.length_eq hfmh.store
+    rw [StoreTyping.length_eq hfmb.store]; simp
+  have hlenh : Γh.length = φ.env.length := StoreTyping.length_eq hfmh.store
   have hn : Γb.length - Γh.length = locs.length := by omega
   have hnl' : NoResidualLinear D (Γb.take locs.length) := by
     have := hnl Γb hmem
     simp only [Ctx.loopLocals, hn] at this
     exact this
   obtain ⟨H₂, evs, hunw, hm₂, hlen₂, hout₂⟩ :=
-    Matches.unwindPrefix hwf locs.length Γb (locs.reverse ++ φ.env) H₁ hfmb.store hnl'
+    StoreTyping.unwindPrefix hwf locs.length Γb (locs.reverse ++ φ.env) H₁ hfmb.store hnl'
   have hlocs : locs.reverse.length = locs.length := List.length_reverse
   have hT : (locs.reverse ++ φ.env).take locs.length = locs.reverse := by
     rw [← hlocs, List.take_left]
@@ -2859,8 +2859,8 @@ theorem loop_exit_ok {D : Decls} (hwf : WfDecls D) {Γh Γx : Ctx} {B : List Ctx
     Ctx.SameSkel.of_forall fun Γo hΓo => by
       obtain ⟨Γb', hb', rfl⟩ := List.mem_map.mp hΓo
       exact Ctx.outsideLoop_skel (hext Γb' hb')
-  have hmx : Matches D Γx φ.env H₂ :=
-    Matches.joinAll hwf hjoin hsame (List.mem_map.mpr ⟨Γb, hmem, rfl⟩) hm₂
+  have hmx : StoreTyping D Γx φ.env H₂ :=
+    StoreTyping.joinAll hwf hjoin hsame (List.mem_map.mpr ⟨Γb, hmem, rfl⟩) hm₂
   refine ⟨H₂, evs, hunw, ⟨hmx, hfmh.record⟩, ⟨by rw [hlen₂]; exact hu.1, fun ℓ hlt hnin => ?_⟩⟩
   have hnl₂ : ℓ ∉ locs.reverse := by
     intro hm
@@ -2878,7 +2878,7 @@ theorem loop_step (M : FloatSig) {P : Program} {fuel : Nat} {D : Decls} {T R : T
     {oe : Option Ctx} {Be : List Ctx}
     {φ : Activation} {H : Store} {e : Expr} {o' : Option Ctx} {B' : List Ctx}
     (kb : EvalOk D .unit R oe Be φ H (eval M fuel P H φ e))
-    (hback : ∀ Γe H₁, oe = some Γe → FrameMatches D Γe φ H₁ →
+    (hback : ∀ Γe H₁, oe = some Γe → ActivationTyping D Γe φ H₁ →
       EvalOk D T R o' B' φ H₁ (eval M fuel P H₁ φ (.loop e)))
     (hexit : ∀ H₁ sc, BrokeOk D Be φ H H₁ sc →
       EvalOk D T R o' B' φ H
@@ -2922,10 +2922,10 @@ hypothesis is `soundness` at the fuel the call has already spent one unit of,
 which is why this is a lemma rather than a case of the induction. -/
 theorem args_sound (M : FloatModel) {P : Program} {fuel : Nat}
     (ih : ∀ {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty}, Typed P R Γ e T Ω →
-      ∀ {φ : Activation} {H : Store}, FrameMatches P.decls Γ φ H →
+      ∀ {φ : Activation} {H : Store}, ActivationTyping P.decls Γ φ H →
         EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)) :
     ∀ (es : List Expr) {R : Ty} {Γ : Ctx} {Ω : Out} {Ts : List Ty} {φ : Activation} {H : Store},
-      TypedArgs P R Γ es Ts Ω → FrameMatches P.decls Γ φ H →
+      TypedArgs P R Γ es Ts Ω → ActivationTyping P.decls Γ φ H →
         ArgsOk P.decls R Ts Ω.norm Ω.brk φ H
           (evalArgs (fun H' e => eval M.toFloatSig fuel P H' φ e) H es) := by
   intro es
@@ -2933,7 +2933,7 @@ theorem args_sound (M : FloatModel) {P : Program} {fuel : Nat}
   | nil =>
       intro R Γ Ω Ts φ H hta hfm
       cases hta
-      exact ⟨.nil, hfm, Untouched.refl⟩
+      exact ⟨.nil, hfm, FrameProperty.refl⟩
   | cons e es ihes =>
       intro R Γ Ω Ts φ H hta hfm
       cases hta with
@@ -3001,7 +3001,7 @@ and every subexpression — a call's arguments and the callee's body alike —
 runs at one unit less. -/
 theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
     ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty}, Typed P R Γ e T Ω →
-      ∀ {φ : Activation} {H : Store}, FrameMatches P.decls Γ φ H →
+      ∀ {φ : Activation} {H : Store}, ActivationTyping P.decls Γ φ H →
         EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e) := by
   intro fuel
   induction fuel with
@@ -3015,13 +3015,13 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
       cases ht with
       | @intLit Γ w sg n hb =>
           simp only [eval]
-          exact ⟨.int hb, hfm, Untouched.refl⟩
+          exact ⟨.int hb, hfm, FrameProperty.refl⟩
       | @boolLit Γ b =>
           simp only [eval]
-          exact ⟨.bool, hfm, Untouched.refl⟩
+          exact ⟨.bool, hfm, FrameProperty.refl⟩
       | @unitLit Γ =>
           simp only [eval]
-          exact ⟨.unit, hfm, Untouched.refl⟩
+          exact ⟨.unit, hfm, FrameProperty.refl⟩
       | @useCopy Γ pl en u T hget hg hfo hty hcopy hplan =>
           -- (D-Use-Copy) §6.3: the plan is `Ordinary` on both sides
           -- (`declaredPlan_eq`), so the destructure redex does not fire;
@@ -3030,31 +3030,31 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm.store.lookup hget
           obtain ⟨cc, rfl, hmm⟩ := hcm
           have hpl : cc.declaredPlan P.decls pl.path = none := by
-            rw [ContentsMatches.declaredPlan_eq pl.path hmm hg hty]; exact hplan
-          obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt pl.path hmm hg hty
+            rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hg hty]; exact hplan
+          obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt pl.path hmm hg hty
           obtain ⟨v, hv, htyv⟩ := hsub.toVal hfo
           have hvm : v.mult P.decls = .copy := by rw [htyv.mult_eq]; exact hcopy
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.use pl) = .ok H v [] := by
             simp [eval, hρ, hc, hpl, hread, hv, hvm]
           rw [hev]
-          exact ⟨htyv, hfm, Untouched.refl⟩
+          exact ⟨htyv, hfm, FrameProperty.refl⟩
       | @useMove Γ pl en u T hget hg hfo hty hncopy _ hplan =>
           -- (D-Use-Move) §6.3: read the sub-position, then write `⊘` at
           -- exactly it — the partial move of §4.2.
           obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm.store.lookup hget
           obtain ⟨cc, rfl, hmm⟩ := hcm
           have hpl : cc.declaredPlan P.decls pl.path = none := by
-            rw [ContentsMatches.declaredPlan_eq pl.path hmm hg hty]; exact hplan
-          obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt pl.path hmm hg hty
+            rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hg hty]; exact hplan
+          obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt pl.path hmm hg hty
           obtain ⟨v, hv, htyv⟩ := hsub.toVal hfo
           have hvm : v.mult P.decls ≠ .copy := by rw [htyv.mult_eq]; exact hncopy
           obtain ⟨cc', hw, hmm'⟩ :=
-            ContentsMatches.writeAt pl.path hmm hg hty (ContentsMatches.hole (T := T))
+            ContentsOwnTyping.writeAt pl.path hmm hg hty (ContentsOwnTyping.hole (T := T))
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.use pl) = .ok (H.set ℓ (.full cc')) v [] := by
             simp [eval, hρ, hc, hpl, hread, hv, hvm, hw]
           rw [hev]
           exact ⟨htyv, ⟨hfm.store.set hρ ⟨cc', rfl, hmm'⟩, hfm.record⟩,
-            Untouched.trans_set Untouched.refl (Or.inr (List.mem_of_getElem? hρ))⟩
+            FrameProperty.trans_set FrameProperty.refl (Or.inr (List.mem_of_getElem? hρ))⟩
       | @useDeclared Γ pl en u πd πs Td T hget hplan hgd hfo htd hres hty hdtor =>
           -- **(D-Use-Declared-Linear) §6.3.** The plan the machine reads off
           -- the store is the one the rule selected (`declaredPlan_eq`), so the
@@ -3064,7 +3064,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           -- premise held), and only then does the **consumed place** become
           -- `⊘`. That last write is (Use-Move)'s at `π_d`, so the invariant is
           -- re-established exactly as the `useMove` case above re-establishes
-          -- it, with `ContentsMatches.hole` at `d`'s own type.
+          -- it, with `ContentsOwnTyping.hole` at `d`'s own type.
           obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm.store.lookup hget
           obtain ⟨cc, rfl, hmm⟩ := hcm
           obtain ⟨hsplit, _⟩ := declaredPrefix_split P.decls en.ty pl.path πd πs hplan
@@ -3075,19 +3075,19 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           have hgfull : en.st.get pl.path = some u' := by
             rw [hsplit, OwnSt.get_append, hgd]; exact hgu
           have hpl : cc.declaredPlan P.decls pl.path = some (πd, πs) := by
-            rw [ContentsMatches.declaredPlan_eq pl.path hmm hgfull hty]; exact hplan
-          obtain ⟨cd, hread, hsub⟩ := ContentsMatches.readAt πd hmm hgd htd
+            rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hgfull hty]; exact hplan
+          obtain ⟨cd, hread, hsub⟩ := ContentsOwnTyping.readAt πd hmm hgd htd
           obtain ⟨leaf, rs, hdest, hlty, hlhf⟩ :=
             destructure_ok hwf.decls ℓ hsub.contentsTy (hsub.holeFree hfo) hleaf hres
           obtain ⟨v, hv, htyv⟩ := hlty.toVal hlhf
           obtain ⟨cc', hw, hmm'⟩ :=
-            ContentsMatches.writeAt πd hmm hgd htd (ContentsMatches.hole (T := Td))
+            ContentsOwnTyping.writeAt πd hmm hgd htd (ContentsOwnTyping.hole (T := Td))
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.use pl)
               = .ok (H.set ℓ (.full cc')) v (dropResidueEvents P.decls ℓ rs ++ [.consume (cd.pathOnly πs)]) := by
             simp [eval, hρ, hc, hpl, hread, hdest, hv, hw]
           rw [hev]
           exact ⟨htyv, ⟨hfm.store.set hρ ⟨cc', rfl, hmm'⟩, hfm.record⟩,
-            Untouched.trans_set Untouched.refl (Or.inr (List.mem_of_getElem? hρ))⟩
+            FrameProperty.trans_set FrameProperty.refl (Or.inr (List.mem_of_getElem? hρ))⟩
       | @binop Γ Γ₁ Ω₂ Δ₁ op e₁ e₂ w sg h₁ h₂ hop =>
           simp only [eval]
           refine EvalOk.bind (ih h₁ hfm) (by brk_sub) ?_
@@ -3098,7 +3098,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨n₂, rfl, _⟩ := hty₂.int_inv
           rcases evalBinOp_res (D := P.decls) M.toFloatSig op w sg n₁ n₂ hop with
             ⟨v, hv, hty⟩ | ⟨k, hk⟩
-          · rw [hv]; exact ⟨hty, hfm₂, Untouched.refl⟩
+          · rw [hv]; exact ⟨hty, hfm₂, FrameProperty.refl⟩
           · rw [hk]; trivial
       | @binopBot Γ Δ₁ op e₁ e₂ w sg h₁ hop =>
           -- (Strict-Bottom) §5.3: the left operand produced no value, so the
@@ -3122,7 +3122,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨f₂, rfl, hw₂⟩ := hty₂.float_inv
           obtain ⟨v, hv, hty⟩ := evalBinOpFloat_res (D := P.decls) M op w f₁ f₂ hw₁ hw₂ hop
           rw [hv]
-          exact ⟨hty, hfm₂, Untouched.refl⟩
+          exact ⟨hty, hfm₂, FrameProperty.refl⟩
       | @neg Γ Ω e w h =>
           simp only [eval]
           refine EvalOk.bindSame (ih h hfm) ?_
@@ -3130,7 +3130,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨n, rfl, _⟩ := hty.int_inv
           rcases evalUnOp_int_res (D := P.decls) .neg w .signed n (by simp) with
             ⟨v', hv, hty'⟩ | hk
-          · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
+          · rw [hv]; exact ⟨hty', hfm', FrameProperty.refl⟩
           · rw [hk]; trivial
       | @floatNeg Γ Ω e w h =>
           -- (Float-Neg) §5.8 with (D-Float-Neg) §6.4: total, so there is no
@@ -3141,7 +3141,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨f, rfl, hwf'⟩ := hty.float_inv
           obtain ⟨v', hv, hty'⟩ := evalUnOp_float_res (D := P.decls) w f hwf'
           rw [hv]
-          exact ⟨hty', hfm', Untouched.refl⟩
+          exact ⟨hty', hfm', FrameProperty.refl⟩
       | @notOp Γ Ω e h =>
           simp only [eval]
           refine EvalOk.bindSame (ih h hfm) ?_
@@ -3149,7 +3149,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨b, rfl⟩ := hty.bool_inv
           obtain ⟨v', hv, hty'⟩ := evalUnOp_bool_res (D := P.decls) b
           rw [hv]
-          exact ⟨hty', hfm', Untouched.refl⟩
+          exact ⟨hty', hfm', FrameProperty.refl⟩
       | @bitnot Γ Ω e w sg h =>
           simp only [eval]
           refine EvalOk.bindSame (ih h hfm) ?_
@@ -3157,7 +3157,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨n, rfl, _⟩ := hty.int_inv
           rcases evalUnOp_int_res (D := P.decls) .bitnot w sg n (by simp) with
             ⟨v', hv, hty'⟩ | hk
-          · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
+          · rw [hv]; exact ⟨hty', hfm', FrameProperty.refl⟩
           · rw [hk]; trivial
       | @intCast Γ Ω w sg w' s' e h =>
           simp only [eval]
@@ -3165,13 +3165,13 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           intro H' v tr Γ' _ hty hfm'
           obtain ⟨n, rfl, _⟩ := hty.int_inv
           rcases evalIntCast_res (D := P.decls) w sg w' s' n with ⟨v', hv, hty'⟩ | hk
-          · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
+          · rw [hv]; exact ⟨hty', hfm', FrameProperty.refl⟩
           · rw [hk]; trivial
       | @floatLit Γ w l _ =>
           -- (Lit) at `float(w)`: `3.12:9` rounds the literal's decimal into
           -- `𝔽_w`, and `ofLit_wf` is the closure law that says so.
           simp only [eval]
-          exact ⟨.float (M.ofLit_wf w l.sig l.negExp l.e), hfm, Untouched.refl⟩
+          exact ⟨.float (M.ofLit_wf w l.sig l.negExp l.e), hfm, FrameProperty.refl⟩
       | @intToFloat Γ Ω w w' s' e h =>
           simp only [eval]
           refine EvalOk.bindSame (ih h hfm) ?_
@@ -3179,7 +3179,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨n, rfl, _⟩ := hty.int_inv
           obtain ⟨v', hv, hty'⟩ := evalFintrin_int_res (D := P.decls) M w w' s' n
           rw [hv]
-          exact ⟨hty', hfm', Untouched.refl⟩
+          exact ⟨hty', hfm', FrameProperty.refl⟩
       | @floatIntrin Γ Ω k w e h hk =>
           simp only [eval]
           refine EvalOk.bindSame (ih h hfm) ?_
@@ -3187,7 +3187,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨f, rfl, hwf'⟩ := hty.float_inv
           rcases evalFintrin_float_res (D := P.decls) M k w f hwf' hk with
             ⟨v', hv, hty'⟩ | hk'
-          · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
+          · rw [hv]; exact ⟨hty', hfm', FrameProperty.refl⟩
           · rw [hk']; trivial
       | @panic Γ T msg =>
           -- (D-Panic) §6.12 abandons the configuration, which is a defined
@@ -3200,7 +3200,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bindSame (ih h hfm) ?_
           intro H' v tr Γ' _ hty hfm'
           rw [if_pos (hty.observable hobs)]
-          exact ⟨.unit, hfm', Untouched.refl⟩
+          exact ⟨.unit, hfm', FrameProperty.refl⟩
       | @mkStruct Γ Ω s args sd hget hta =>
           -- (D-Struct) §6.5 over §6.2's left-to-right search: the same
           -- argument-list lemma (Call) §5.8 uses, then the literal.
@@ -3264,11 +3264,11 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
             exact List.getElem?_append_left hlt
           have hpre : H₀.length ≤ (mintParams H₀ vs).1.length := by
             rw [mintParams_store]; simp
-          have hfma : FrameMatches P.decls (extendArm Ts Γ₀)
+          have hfma : ActivationTyping P.decls (extendArm Ts Γ₀)
               { env := (mintParams H₀ vs).2.reverse ++ φ.env,
                 scope := φ.scope ++ (mintParams H₀ vs).2 } (mintParams H₀ vs).1 := by
             refine ⟨?_, ?_⟩
-            · exact matches_mintParams_app Ts vs Γ₀ φ.env H₀ hvs hfm₀.store
+            · exact storeTyping_mintParams_app Ts vs Γ₀ φ.env H₀ hvs hfm₀.store
             · simp [hfm₀.record]
           have hsplitT : ((mintParams H₀ vs).2.reverse ++ φ.env).take Ts.length
               = (mintParams H₀ vs).2.reverse := by
@@ -3286,13 +3286,13 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               obtain ⟨hres, hmem⟩ := hbres Γb hnb
               obtain ⟨Γ', rfl, hjall, hmemΓ⟩ := Ctx.joinOpts_mem hjoin hmem
               obtain ⟨H₃, evs, hunw, hm₃, hlen₃, hout₃⟩ :=
-                Matches.unwindPrefix hwf.decls Ts.length Γb
+                StoreTyping.unwindPrefix hwf.decls Ts.length Γb
                   ((mintParams H₀ vs).2.reverse ++ φ.env) H₂ hfm₂.store hres
               rw [hsplitT] at hunw
               rw [hsplitD] at hm₃
-              have hu₀₂ : Untouched φ.env H₀ H₂ :=
-                Untouched.under_binders hpre hkeep hfresh hu₂
-              have hu₀₃ : Untouched φ.env H₀ H₃ := by
+              have hu₀₂ : FrameProperty φ.env H₀ H₂ :=
+                FrameProperty.under_binders hpre hkeep hfresh hu₂
+              have hu₀₃ : FrameProperty φ.env H₀ H₃ := by
                 refine ⟨by rw [hlen₃]; exact hu₀₂.1, fun ℓ hlt hnin => ?_⟩
                 have hnotminted : ℓ ∉ (mintParams H₀ vs).2.reverse := by
                   intro hmem
@@ -3302,11 +3302,11 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                 exact hu₀₂.2 ℓ hlt hnin
               simp only [EvalRes.bind, hunw, EvalRes.withTrace]
               exact ⟨hty₂,
-                ⟨Matches.joinAll hwf.decls hjall harms.arm_skel hmemΓ hm₃, hfm.record⟩, hu₀₃⟩
+                ⟨StoreTyping.joinAll hwf.decls hjall harms.arm_skel hmemΓ hm₃, hfm.record⟩, hu₀₃⟩
           | returned H₂ v₂ tr₂ =>
               rw [hrb] at kb
               simp only [EvalRes.bind]
-              exact ⟨kb.1, Untouched.under_binders hpre hkeep hfresh kb.2⟩
+              exact ⟨kb.1, FrameProperty.under_binders hpre hkeep hfresh kb.2⟩
           | broke H₂ sc tr₂ =>
               -- (D-Break) §6.10 from inside the arm: the arm's `endscope` is
               -- discarded, and its payload cells travel with the `break` as
@@ -3345,7 +3345,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bindSame (ih h hfm) ?_
           intro H' v tr Γ' _ hty hfm'
           rw [if_pos (hty.mult_eq.trans hcopy)]
-          exact introVal_ok hwf.decls (.array (HasTys.replicate hty n)) hfm' Untouched.refl
+          exact introVal_ok hwf.decls (.array (HasTys.replicate hty n)) hfm' FrameProperty.refl
       | @indexReadBot Γ Δ p idx πs Ts en Ta T hta _ _ _ _ _ _ =>
           -- (Strict-Bottom) §5.3 at an index: the list aborts, and the place
           -- is never navigated.
@@ -3384,8 +3384,8 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                 rw [hislen, hvs.length_eq, ← hta.length_eq, hlen]
               obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm₁.store.lookup hget
               obtain ⟨cc, rfl, hmm⟩ := hcm
-              obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt p.path hmm hg hty
-              have hso : ContentsMatches P.decls sub .owned Ta :=
+              obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt p.path hmm hg hty
+              have hso : ContentsOwnTyping P.decls sub .owned Ta :=
                 .owned hsub.contentsTy (hsub.holeFree hfo)
               refine EvalOk.withTrace ?_ tr
               rcases Contents.resolveDyn_ok is πs hso hdyn hlen' with hb | ⟨ρ, hres, hρty⟩
@@ -3396,7 +3396,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               · have hdp : dynPlace H₁ φ p vs πs = .at ℓ cc sub ρ := by
                   simp [dynPlace, his, hρ, hc, hread, hres]
                 obtain ⟨leaf, hrl, hleaf⟩ :=
-                  ContentsMatches.readAt ρ hso (OwnSt.get_owned ρ) hρty
+                  ContentsOwnTyping.readAt ρ hso (OwnSt.get_owned ρ) hρty
                 obtain ⟨v, hv, htyv⟩ := hleaf.toVal rfl
                 -- (D-Use-Untrackable-Dynamic-Copy)'s `class(T) = Copy`, which
                 -- the machine checks on the value (RUE-2400): the rule's own
@@ -3411,7 +3411,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           simp only [eval]
           refine EvalOk.bindSame (ih h hfm) ?_
           intro H' v tr Γ' _ _ hfm'
-          exact ⟨.unit, hfm', Untouched.refl⟩
+          exact ⟨.unit, hfm', FrameProperty.refl⟩
       | @indexWriteBotRhs Γ Δ p idx πs e T h₁ =>
           -- (Strict-Bottom) §5.3 at the right-hand side, which `5.2:14` runs
           -- first: nothing after it runs.
@@ -3464,8 +3464,8 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               have hskel : Ctx.skel Γ₂ = Ctx.skel Γ := hta.skel_of.trans h₁.skel_of
               have htyeq : en₁.ty = en₀.ty := (skel_lookup hskel hget₀ hget₁).1
               have hty₁ : en₁.ty.atPath P.decls p.path = some Ta := htyeq ▸ hty₀
-              obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt p.path hmm hg₁ hty₁
-              have hso : ContentsMatches P.decls sub .owned Ta :=
+              obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt p.path hmm hg₁ hty₁
+              have hso : ContentsOwnTyping P.decls sub .owned Ta :=
                 .owned hsub.contentsTy (hsub.holeFree hfo)
               have hmem : ℓ ∈ φ.env := List.mem_of_getElem? hρ
               refine EvalOk.withTrace ?_ tr
@@ -3477,25 +3477,25 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               · have hdp : dynPlace H₂ φ p vs πs = .at ℓ cc sub ρ := by
                   simp [dynPlace, his, hρ, hc, hread, hres]
                 obtain ⟨old, hrl, hold⟩ :=
-                  ContentsMatches.readAt ρ hso (OwnSt.get_owned ρ) hρty
+                  ContentsOwnTyping.readAt ρ hso (OwnSt.get_owned ρ) hρty
                 have hnl : Contents.residualLinear P.decls old = false :=
                   ContentsTy.residualLinear_false hwf.decls hold.contentsTy hnlin
                 obtain ⟨evs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hold.contentsTy
-                obtain ⟨sub', hw', hm'⟩ := ContentsMatches.writeAt ρ hso (OwnSt.get_owned ρ)
-                  hρty (ContentsMatches.ofVal htyv)
-                have hso' : ContentsMatches P.decls sub' .owned Ta :=
+                obtain ⟨sub', hw', hm'⟩ := ContentsOwnTyping.writeAt ρ hso (OwnSt.get_owned ρ)
+                  hρty (ContentsOwnTyping.ofVal htyv)
+                have hso' : ContentsOwnTyping P.decls sub' .owned Ta :=
                   .owned hm'.contentsTy (hm'.holeFree (OwnSt.fullyOwned_setAt_owned ρ))
-                obtain ⟨cc', hw, hmm'⟩ := ContentsMatches.writeAt p.path hmm hg₁ hty₁ hso'
+                obtain ⟨cc', hw, hmm'⟩ := ContentsOwnTyping.writeAt p.path hmm hg₁ hty₁ hso'
                 simp only [hdp, hrl, hnl, Bool.false_eq_true, if_false, hdc, hw', hw,
                   hmm'.contentsTy.copyClosed hwf.decls, if_true]
                 exact ⟨.unit, ⟨hfm₂.store.set hρ ⟨cc', rfl, hmm'⟩, hfm₂.record⟩,
-                  Untouched.trans_set hu₂ (Or.inr hmem)⟩
+                  FrameProperty.trans_set hu₂ (Or.inr hmem)⟩
       | @dropCopy Γ pl en u T hget hg hfo hty hcopy hplan =>
           obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm.store.lookup hget
           obtain ⟨cc, rfl, hmm⟩ := hcm
           have hpl : cc.declaredPlan P.decls pl.path = none := by
-            rw [ContentsMatches.declaredPlan_eq pl.path hmm hg hty]; exact hplan
-          obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt pl.path hmm hg hty
+            rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hg hty]; exact hplan
+          obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt pl.path hmm hg hty
           have hnh : sub.isHole = false :=
             Contents.isHole_eq_false (hsub.ne_hole (OwnSt.isOwned_of_fullyOwned hfo))
           have hvm : sub.mult P.decls = .copy := by
@@ -3503,26 +3503,26 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.drop pl) = .ok H .unit [] := by
             simp [eval, hρ, hc, hpl, hread, hnh, hvm, dropCell]
           rw [hev]
-          exact ⟨.unit, hfm, Untouched.refl⟩
+          exact ⟨.unit, hfm, FrameProperty.refl⟩
       | @dropRes Γ pl en u T hget hg ho hty hncopy _ hplan _ =>
           -- §6.11's explicit `@drop`: the walk skips every `⊘` already under
           -- the place, and the place itself becomes `⊘`.
           obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm.store.lookup hget
           obtain ⟨cc, rfl, hmm⟩ := hcm
           have hpl : cc.declaredPlan P.decls pl.path = none := by
-            rw [ContentsMatches.declaredPlan_eq pl.path hmm hg hty]; exact hplan
-          obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt pl.path hmm hg hty
+            rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hg hty]; exact hplan
+          obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt pl.path hmm hg hty
           have hnh : sub.isHole = false := Contents.isHole_eq_false (hsub.ne_hole ho)
           have hvm : sub.mult P.decls ≠ .copy := by rw [hsub.mult_eq ho]; exact hncopy
           obtain ⟨evs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hsub.contentsTy
           obtain ⟨cc', hw, hmm'⟩ :=
-            ContentsMatches.writeAt pl.path hmm hg hty (ContentsMatches.hole (T := T))
+            ContentsOwnTyping.writeAt pl.path hmm hg hty (ContentsOwnTyping.hole (T := T))
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.drop pl)
               = .ok (H.set ℓ (.full cc')) .unit evs := by
             simp [eval, hρ, hc, hpl, hread, hnh, hvm, hdc, hw]
           rw [hev]
           exact ⟨.unit, ⟨hfm.store.set hρ ⟨cc', rfl, hmm'⟩, hfm.record⟩,
-            Untouched.trans_set Untouched.refl (Or.inr (List.mem_of_getElem? hρ))⟩
+            FrameProperty.trans_set FrameProperty.refl (Or.inr (List.mem_of_getElem? hρ))⟩
       | @dropDeclared Γ pl en u πd πs Td T hget hplan hgd hfo htd hres hty hdtor =>
           -- **(@Drop) §5.3 at a declared plan**, whose dynamics is §6.3's
           -- destructure followed by §6.11 on the selected leaf: the residue's
@@ -3537,8 +3537,8 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           have hgfull : en.st.get pl.path = some u' := by
             rw [hsplit, OwnSt.get_append, hgd]; exact hgu
           have hpl : cc.declaredPlan P.decls pl.path = some (πd, πs) := by
-            rw [ContentsMatches.declaredPlan_eq pl.path hmm hgfull hty]; exact hplan
-          obtain ⟨cd, hread, hsub⟩ := ContentsMatches.readAt πd hmm hgd htd
+            rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hgfull hty]; exact hplan
+          obtain ⟨cd, hread, hsub⟩ := ContentsOwnTyping.readAt πd hmm hgd htd
           obtain ⟨leaf, rs, hdest, hlty, hlhf⟩ :=
             destructure_ok hwf.decls ℓ hsub.contentsTy (hsub.holeFree hfo) hleaf hres
           -- The machine's hole guard on the leaf (`Dynamics.lean`) is the one
@@ -3549,13 +3549,13 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
             cases leaf <;> simp_all [Contents.isHole, Contents.holeFree]
           obtain ⟨levs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hlty
           obtain ⟨cc', hw, hmm'⟩ :=
-            ContentsMatches.writeAt πd hmm hgd htd (ContentsMatches.hole (T := Td))
+            ContentsOwnTyping.writeAt πd hmm hgd htd (ContentsOwnTyping.hole (T := Td))
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.drop pl)
               = .ok (H.set ℓ (.full cc')) .unit ((dropResidueEvents P.decls ℓ rs ++ [.consume (cd.pathOnly πs)]) ++ levs) := by
             simp [eval, hρ, hc, hpl, hread, hdest, hnh, hdc, hw]
           rw [hev]
           exact ⟨.unit, ⟨hfm.store.set hρ ⟨cc', rfl, hmm'⟩, hfm.record⟩,
-            Untouched.trans_set Untouched.refl (Or.inr (List.mem_of_getElem? hρ))⟩
+            FrameProperty.trans_set FrameProperty.refl (Or.inr (List.mem_of_getElem? hρ))⟩
       | @letBot Γ Δ₁ m e₁ e₂ T₁ T h₁ =>
           -- (Let-Bottom) §5.3: the initializer produced no value, so no cell
           -- is minted and the body never runs.
@@ -3568,11 +3568,11 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h₁ hfm) (by brk_sub) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
           have hfresh : H₁.length ∉ φ.env := hfm₁.store.fresh_not_mem
-          have hfm' : FrameMatches P.decls ({ ty := T₁, mu := m, st := .owned } :: Γ₁)
+          have hfm' : ActivationTyping P.decls ({ ty := T₁, mu := m, st := .owned } :: Γ₁)
               { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] }
               (H₁ ++ [.full (Contents.ofVal v₁)]) := by
             constructor
-            · refine .cons ?_ ⟨Contents.ofVal v₁, rfl, ContentsMatches.ofVal hty₁⟩ hfresh
+            · refine .cons ?_ ⟨Contents.ofVal v₁, rfl, ContentsOwnTyping.ofVal hty₁⟩ hfresh
                 (hfm₁.store.append _)
               simp
             · simp [hfm₁.record]
@@ -3598,11 +3598,11 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h₁ hfm) (by brk_sub) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
           have hfresh : H₁.length ∉ φ.env := hfm₁.store.fresh_not_mem
-          have hfm' : FrameMatches P.decls ({ ty := T₁, mu := m, st := .owned } :: Γ₁)
+          have hfm' : ActivationTyping P.decls ({ ty := T₁, mu := m, st := .owned } :: Γ₁)
               { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] }
               (H₁ ++ [.full (Contents.ofVal v₁)]) := by
             constructor
-            · refine .cons ?_ ⟨Contents.ofVal v₁, rfl, ContentsMatches.ofVal hty₁⟩ hfresh
+            · refine .cons ?_ ⟨Contents.ofVal v₁, rfl, ContentsOwnTyping.ofVal hty₁⟩ hfresh
                 (hfm₁.store.append _)
               simp
             · simp [hfm₁.record]
@@ -3622,7 +3622,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               obtain ⟨evs, hdr⟩ := dropRetire_ok hc hcell hty' hres'
               simp only [EvalRes.bind, hdr, EvalRes.withTrace]
               exact ⟨hty₂, ⟨hrest.set_outside hnin, hfm.record⟩,
-                Untouched.trans_set hu₂.under_binder (Or.inl (Nat.le_refl _))⟩
+                FrameProperty.trans_set hu₂.under_binder (Or.inl (Nat.le_refl _))⟩
           | returned H₂ v₂ tr₂ =>
               rw [hrb] at kb
               simp only [EvalRes.bind]
@@ -3651,7 +3651,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           have hskel := h.skel_of
           have htyeq : en₁.ty = en₀.ty := (skel_lookup hskel hget₀ hget₁).1
           obtain ⟨old, hread, hold⟩ :=
-            ContentsMatches.readAt pl.path hmm hg₁ (htyeq ▸ hty₀)
+            ContentsOwnTyping.readAt pl.path hmm hg₁ (htyeq ▸ hty₀)
           -- §5.2's premise is the type-keyed disjunction; either disjunct gives
           -- the residue the overwrite-drop is about to walk no linear content,
           -- which is why `linearOverwrite` is unreachable from a typed program.
@@ -3660,13 +3660,13 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
             · exact hold.residualLinear_false hwf.decls rfl
             · exact ContentsTy.residualLinear_false hwf.decls hold.contentsTy hnlin
           obtain ⟨evs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hold.contentsTy
-          obtain ⟨cc', hw, hmm'⟩ := ContentsMatches.writeAt pl.path hmm hg₁
-            (htyeq ▸ hty₀) (ContentsMatches.ofVal hty)
+          obtain ⟨cc', hw, hmm'⟩ := ContentsOwnTyping.writeAt pl.path hmm hg₁
+            (htyeq ▸ hty₀) (ContentsOwnTyping.ofVal hty)
           have hmem : ℓ ∈ φ.env := List.mem_of_getElem? hρ
           simp only [hρ, hc, hread, hnl, Bool.false_eq_true, if_neg, hdc, hw,
             not_false_eq_true, hmm'.contentsTy.copyClosed hwf.decls, if_true]
           exact ⟨.unit, ⟨hfm₁.store.set hρ ⟨cc', rfl, hmm'⟩, hfm₁.record⟩,
-            Untouched.trans_set Untouched.refl (Or.inr hmem)⟩
+            FrameProperty.trans_set FrameProperty.refl (Or.inr hmem)⟩
       | @seqBot Γ Δ₁ e₁ e₂ T₁ T h₁ =>
           -- (Seq-Bottom) §5.3: the prefix produced no value; the tail never runs.
           simp only [eval]
@@ -3701,12 +3701,12 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           | true =>
               dsimp only
               refine EvalOk.weaken (fun Γ₁ H' hn hf => ?_) ((ih h₁ hfm₀).mono_brk (by brk_sub))
-              obtain ⟨Γ', ho, hm⟩ := Matches.joinOpt_left hwf.decls hjoin hn
+              obtain ⟨Γ', ho, hm⟩ := StoreTyping.joinOpt_left hwf.decls hjoin hn
               exact ⟨Γ', ho, hm _ _ hf.store, hf.record⟩
           | false =>
               dsimp only
               refine EvalOk.weaken (fun Γ₂ H' hn hf => ?_) ((ih h₂ hfm₀).mono_brk (by brk_sub))
-              obtain ⟨Γ', ho, hm⟩ := Matches.joinOpt_right hwf.decls
+              obtain ⟨Γ', ho, hm⟩ := StoreTyping.joinOpt_right hwf.decls
                 (fun x hx => (hsk₁ x hx).trans (hsk₂ Γ₂ hn).symm) hjoin hn
               exact ⟨Γ', ho, hm _ _ hf.store, hf.record⟩
       | @call Γ Ω f args fd hget hta =>
@@ -3728,10 +3728,10 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               simp only [hget]
               rw [if_pos hlen]
               obtain ⟨Ωf, hbody, hnlf, hbrkf⟩ := hwf.fns fd (List.mem_of_getElem? hget)
-              have hfmg : FrameMatches P.decls (fnCtx fd)
+              have hfmg : ActivationTyping P.decls (fnCtx fd)
                   { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 }
                   (mintParams H₁ vs).1 :=
-                ⟨matches_mintParams fd.params vs H₁ hvs, rfl⟩
+                ⟨storeTyping_mintParams fd.params vs H₁ hvs, rfl⟩
               have hfreshg : ∀ ℓ ∈ (mintParams H₁ vs).2.reverse, H₁.length ≤ ℓ :=
                 fun ℓ hm => mintParams_fresh H₁ vs ℓ (List.mem_reverse.mp hm)
               have hkeep : ∀ ℓ, ℓ < H₁.length → (mintParams H₁ vs).1[ℓ]? = H₁[ℓ]? := by
@@ -3743,7 +3743,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               have hdisj : ∀ ℓ ∈ φ.env, ℓ ∉ (mintParams H₁ vs).2.reverse := by
                 intro ℓ hm hg
                 exact absurd (hfreshg ℓ hg) (by have := hfm₁.store.mem_lt ℓ hm; omega)
-              have hmint : Matches P.decls Γ' φ.env (mintParams H₁ vs).1 := by
+              have hmint : StoreTyping P.decls Γ' φ.env (mintParams H₁ vs).1 := by
                 rw [mintParams_store]; exact hfm₁.store.append _
               have kb := ih hbody hfmg
               cases hrb : eval M.toFloatSig fuel P (mintParams H₁ vs).1
@@ -3755,18 +3755,18 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                   obtain ⟨H₄, evs, hrun, hlen4, hout4⟩ :=
                     runAllScopeDrops_ok hwf.decls hfm₃ (hnlf Γf hnf)
                   simp only [EvalRes.bindCall, hrun, EvalRes.withTrace]
-                  have hu34 : Untouched (mintParams H₁ vs).2.reverse H₃ H₄ :=
+                  have hu34 : FrameProperty (mintParams H₁ vs).2.reverse H₃ H₄ :=
                     ⟨by omega, fun ℓ _ hnin => hout4 ℓ hnin⟩
-                  have hu4 : Untouched (mintParams H₁ vs).2.reverse (mintParams H₁ vs).1 H₄ :=
+                  have hu4 : FrameProperty (mintParams H₁ vs).2.reverse (mintParams H₁ vs).1 H₄ :=
                     hu₃.trans hu34
                   exact ⟨htyv, ⟨hmint.transport hdisj hu4, hfm.record⟩,
-                    hu₁.trans (Untouched.of_fresh hpre hfreshg hkeep hu4)⟩
+                    hu₁.trans (FrameProperty.of_fresh hpre hfreshg hkeep hu4)⟩
               | returned H₃ v tr₃ =>
                   rw [hrb] at kb
                   obtain ⟨htyv, hu₃⟩ := kb
                   simp only [EvalRes.bindCall, EvalRes.withTrace]
                   exact ⟨htyv, ⟨hmint.transport hdisj hu₃, hfm.record⟩,
-                    hu₁.trans (Untouched.of_fresh hpre hfreshg hkeep hu₃)⟩
+                    hu₁.trans (FrameProperty.of_fresh hpre hfreshg hkeep hu₃)⟩
               | broke H₃ sc tr₃ =>
                   -- (Fn) §5.8 gives the body no `⟨break, _⟩` delivery, so no
                   -- `break` reaches the call boundary.
@@ -3783,7 +3783,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           -- arm adds its own on the way out (`BrokeOk.under_binders`).
           simp only [eval]
           exact ⟨Γ, List.mem_singleton_self _, [], by simp, by simpa using hfm,
-            by simp, Untouched.refl⟩
+            by simp, FrameProperty.refl⟩
       | @loopDiv Γ Γh Ωe e T hbody hhead hnb hdiv =>
           -- (Loop-Div-Backedge)/(Loop-Div) with §6.10: the body runs from the
           -- head, and every completed turn re-enters it there — the same
@@ -4192,7 +4192,7 @@ theorem entry_typed {P : Program} {fd : FnDef} (h0 : P.fns[0]? = some fd)
 
 /-- The machine's initial state satisfies the frame invariant: no bindings, no
 store, an empty scope record (helper). -/
-theorem frameMatches_empty {D : Decls} : FrameMatches D [] { env := [], scope := [] } [] :=
+theorem activationTyping_empty {D : Decls} : ActivationTyping D [] { env := [], scope := [] } [] :=
   ⟨.nil, rfl⟩
 
 /-- Prefixing a trace cannot make a result an unwinding `return` that was not
@@ -4254,7 +4254,7 @@ theorem run_safe (M : FloatModel) {P : Program} {fd : FnDef} (hwf : WfProgram P)
       (∃ H v tr, run M.toFloatSig P fuel = .ok H v tr ∧ HasTy P.decls v fd.ret) := by
   have hok : EvalOk P.decls fd.ret fd.ret (some []) [] { env := [], scope := [] } []
       (run M.toFloatSig P fuel) :=
-    soundness M hwf fuel (entry_typed h0 hp fd.ret) frameMatches_empty
+    soundness M hwf fuel (entry_typed h0 hp fd.ret) activationTyping_empty
   cases hr : run M.toFloatSig P fuel with
   | ok H v tr =>
       rw [hr] at hok
@@ -4324,7 +4324,7 @@ calculus, the second is the calculus doing what it says.
   route as well as the first.
 
 Every *other* edge — a `let`'s scope exit, a `match` arm's `endscope` over its
-payload locals (`Matches.unwindPrefix`), a `break`'s unwind to its loop
+payload locals (`StoreTyping.unwindPrefix`), a `break`'s unwind to its loop
 (`loop_exit_ok`), a frame's normal pop, and a `return`'s unwind — is
 covered. -/
 theorem no_violation (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) (w : Violation) :
@@ -4345,9 +4345,9 @@ it for every program. `run-all-scope-drops` (§6.9) walks the frame's scope
 record at every `return` and at every frame pop, and what keeps those walks
 off a `†` cell, and stops any cell being retired twice, is structural: a
 binding's cell is minted fresh and retired only when its scope ends, after
-which nothing names it, and a record owes each cell once. `FrameMatches`
+which nothing names it, and a record owes each cell once. `ActivationTyping`
 implies as much for a checked program (the record is the environment, whose
-cells `Matches` says are live or moved out and pairwise distinct). -/
+cells `StoreTyping` says are live or moved out and pairwise distinct). -/
 theorem no_use_after_drop (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     run M.toFloatSig P fuel ≠ .stuck .useAfterDrop := no_violation M h fuel _
 
