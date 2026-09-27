@@ -1135,6 +1135,11 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
            rejected "(Int-Cast) §5.8" Γ (.intCast w s e) Premise.neverOperand [d]
        | none => rejected "(Int-Cast) §5.8" Γ (.intCast w s e) Premise.subDerivation [d])
   | .panic msg =>
+      -- No (Panic-Operand) branch is possible here, not just unexercised:
+      -- `Expr.panic`'s message is a literal `String` field (`Syntax.lean`'s
+      -- note on `panic msg`), not an `Expr`, so there is no operand
+      -- position for a message to diverge in. (Panic) is the only rule this
+      -- case can ever produce.
       accepted "(Panic) §5.8 + (Sub-Never) §5.7" Γ (.panic msg) .never ⟨none, []⟩ []
   | .dbg e =>
       let d := explain P R Γ e
@@ -1548,7 +1553,17 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       | none => rejected "(Call) §5.8" Γ (.call f args) Premise.unknownCallee []
       | some fd =>
         (match explainArgs P R Γ args (fd.params.map Param.ty) with
-         | (some Ω, kids) => accepted "(Call) §5.8" Γ (.call f args) (.ty fd.ret) Ω kids
+         | (some Ω, kids) =>
+             -- (Call)'s own conclusion is always at `fd.ret` (`Typed.call`'s
+             -- docstring: the fragment models neither borrows nor a `never`
+             -- type, so it does not carry the informal calculus's separate
+             -- (Call-Bottom) conclusion `⇒ never`). What diverges here is the
+             -- argument list (`TypedArgs.consBot`, "(Strict-Bottom) at a list
+             -- member"), so this picks the trace label the way `.loop`'s case
+             -- below picks between (Loop-Div) and (Loop-Div-Backedge): one
+             -- Lean derivation, a presentation label keyed on `Ω.norm`.
+             accepted (if Ω.norm.isSome then "(Call) §5.8" else "(Call-Bottom) §5.3")
+               Γ (.call f args) (.ty fd.ret) Ω kids
          | (none, kids) =>
              rejected "(Call) §5.8" Γ (.call f args)
                (argsPremise P R Γ args (fd.params.map Param.ty)) kids)
