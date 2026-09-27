@@ -10,11 +10,11 @@ whole-declaration qualifier). `lake exe ruecore-corpus --profile` (RUE-2469)
 already counts acceptances and rejections; this page (RUE-2491) measures the
 part of that incompleteness visible from outside the proof: corpus and
 generated programs the checker rejects that the interpreter's `run`
-nonetheless carries to a value at the export fuel and model, so the bridge
+nonetheless carries to a value at the export fuel and model, so differential testing
 compares them only on their accept/reject call and never on their run
-(`README.md`, "The bridge corpus"). A checker that drifted stricter over
+(`README.md`, "The differential corpus"). A checker that drifted stricter over
 time would show up here first — as more such cases, or as one whose refusal
-no longer traces to a citation below — before it ever cost the bridge a real
+no longer traces to a citation below — before it ever cost differential testing a real
 disagreement.
 
 Measured on trunk `2b68e2142` (2026-09-26):
@@ -109,7 +109,7 @@ module docstring already names:
 `verify.py` (run against the seed corpus and against `--gen 200 --seed 7`,
 393 programs) finds exactly two cases where the compiler accepts a program
 the model rejects: `array_elem_self_assign` (seed) and `gen_7_3` (generated,
-the same shape reached unmasked — README.md, "The bridge corpus"). Both are
+the same shape reached unmasked — README.md, "The differential corpus"). Both are
 `a[i] = a[i]`, the one shape (Assign) §5.2's `3.8:72`/`7.1:46` premise
 refuses on purpose while the compiler accepts it on purpose since RUE-228;
 which is right is RUE-2346's open decision, not a new finding. No other

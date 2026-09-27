@@ -43,7 +43,7 @@ node — the size stat the simplification issue (RUE-2468's "Size stats") uses.
   annotated with the section and parenthesized-rule-label citations its
   doc-comment carries (`sectionCitations`, `ruleCitations`);
 * the **assurance-chain diagram** (`assuranceChainDiagram`), static: what the
-  proof chain and the bridge each cover, kept in content beside
+  proof chain and differential testing each cover, kept in content beside
   `../WHAT-IT-MEANS.md`'s diagram (RUE-2462) without depending on that file;
 * the **size stats** table — proof lines from declaration ranges, and the
   helper count `walk` already computed.
@@ -334,7 +334,7 @@ def defAnchor (n : Name) : String :=
   "def-" ++ sanitizeId (Digest.shortName n)
 
 /-- (helper) The static assurance-chain diagram (RUE-2468): what the proof
-chain covers, and how the bridge corpus tests the compiler against the same
+chain covers, and how the differential corpus tests the compiler against the same
 model, kept beside `../WHAT-IT-MEANS.md`'s diagram (RUE-2462) in content
 without depending on that file, since it lands on a separate branch. Static
 because the chain from the calculus to the compiler's targets is not a

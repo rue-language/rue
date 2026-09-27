@@ -8,7 +8,7 @@ public import RueCore.Statics
 # RueCore.Checker.Defs — the checker, as an algorithm (layer L1)
 
 `check`, `checkFn`, `checkDecls` and `checkProgram`: §5's judgment and §3's
-qualifier assignment as a decision procedure, the verdict the bridge corpus
+qualifier assignment as a decision procedure, the verdict the differential corpus
 records. The module docstring of `Checker.lean` explains the algorithm and
 what completeness costs; `Checker.lean` proves it sound (`check_sound`,
 `checkProgram_sound`).

@@ -47,7 +47,7 @@ how they behave on this package (no Mathlib, no LSP server, the module system),
 what they found on `RueCore/TraceOrder.lean`, and which parts the project uses.
 None of it replaces the gates below: the plugin's axiom checker is not ours.
 
-## The bridge corpus (ADR-0097, RUE-2227)
+## The differential corpus (ADR-0097, RUE-2227)
 
 `lake exe ruecore-corpus` (or the `corpus.json` output of `scripts/rue lean`)
 prints every corpus case as JSON: the fragment program — a list of function
@@ -71,7 +71,7 @@ catch a compiler that is wrong, is measured in
 [BRIDGE-SENSITIVITY.md](BRIDGE-SENSITIVITY.md) (RUE-2464). That page
 reintroduced historical compiler bugs and classic
 mutants one at a time and recorded which seed or generated case killed each.
-Whether the proofs, the witnesses, the corpus and the bridge would notice a
+Whether the proofs, the witnesses, the corpus and differential testing would notice a
 wrong *definition* is measured in [MUTATION.md](MUTATION.md) (RUE-2465):
 96 one-rule mutants, run by `bin/mutate.py`, with what each kill rests on —
 80 of the semantics and the checker (`Syntax`, `Statics`, `Checker/Defs`,
@@ -82,7 +82,7 @@ Every one of the 16 falsifies a stated property or a witness, checked by hand
 (RUE-2500).
 
 How incomplete the checker is on the same corpus — a program it rejects
-that the interpreter nonetheless runs to a value, which the bridge then
+that the interpreter nonetheless runs to a value, which differential testing then
 compares only on its accept/reject call and never on its run — is measured
 and classified in [CHECKER-PROFILE.md](CHECKER-PROFILE.md) (RUE-2491): every
 such case traces to a cited static approximation the calculus already
@@ -322,7 +322,7 @@ program, the four views side by side, and the pair(s) that disagree, with a
 tally at the end; `--report-json` writes the same findings as JSON so two runs
 can be diffed. It exits non-zero when any disagreement exists.
 
-**The seed corpus is red on one case, and that is the bridge working.**
+**The seed corpus is red on one case, and that is differential testing working.**
 `destructure_ancestor_dropped` was red until RUE-2335 was fixed: after
 `y.x0.x0` destructures the inner declared-`linear` place, §5.3's (@Drop)
 discharges the declared-`linear` **ancestor** `y` — `Σ(y) = Owned`, no
@@ -361,7 +361,7 @@ into it. The model refuses it (E0205 on `h.x0`); the compiler move-checked a
 place below a dynamic index through a field against the wrong path, accepted
 it, ran the destroyed element's destructor a second time and leaked the
 written value. It now refuses it with the same E0205, and the case stays as
-the regression signal. A red case is what the bridge is for; the model is not softened to
+the regression signal. A red case is what differential testing is for; the model is not softened to
 match the compiler.
 
 The mode is a `buck2 run` entry point and belongs to no test tier, so nothing
@@ -390,7 +390,7 @@ the compiler's runtime reports these as `error: integer overflow`,
 `error: division by zero`, `error: integer cast overflow`,
 `error: index out of bounds` and `panic: <message>`, each with exit status 101, and the value never prints);
 or, for a rejected program, `stuck` with the refusal the machine would
-reach, which the bridge cannot observe because the compiler rejects the
+reach, which differential testing cannot observe because the compiler rejects the
 program first (the compiler's diagnostics for the seed cases: E0406 linear
 leak, E0205 use after move or use of a partially moved value, E0443 join,
 E0456 move out of a destructor-bearing value, E0493 linear overwrite, E0478
@@ -1519,7 +1519,7 @@ pass is):
 * the assurance-chain diagram, static: the calculus, the Lean definitions,
   the Spec statements, the proofs, and where each of the kernel, Lean
   Comparator and `ruecore-lint` sits below them, beside the printer, the
-  interpreter, the bridge corpus and the compiler — kept in content beside
+  interpreter, the differential corpus and the compiler — kept in content beside
   WHAT-IT-MEANS's diagram (RUE-2462) once it lands, without depending on that
   file existing today;
 * size stats per marked node: its proof size in source lines, and the number
@@ -1553,7 +1553,7 @@ pass is):
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
 | `RueCore/Witnesses.lean` | (layer L3) the theorems at work on example and corpus programs, moved out of the proof modules because they mention the tooling layer: `affineScopeDrop_both_ways` traces one corpus program both ways; `drop_order`'s rejections (`fieldsSwapped_rejected`, `swappedMarkers_rejected`, `unorderedRecord_rejected`) and `returnPastAffine_strictStackOrder`; `drop_glue_order`'s, the three drop-glue mutants' traces (`glue_fieldsSwapped_rejected`, `glue_dtorAfterFields_rejected`, `glue_dtorSkipped_rejected`, RUE-2487); fourteen order-witnessing corpus cases read through the trace theorems; every accepted seed case is `pendingSafe`; and, moved from `Step.lean` and `Equivalence.lean` (RUE-2460), eleven programs run through §6's relation by `stepN` and `run_sim`'s and `run_small_to_big`'s witnesses on them (`letAddProgram_sound`, `dropMoved_refused`); and the checker's rejections, one corpus case per error qualifier (`errorClasses_rejected`, `typeErrors_rejected`, RUE-2469) | §5, §6.7, §6.9, §6.11, §7 witnesses |
 | `RueCore/Print.lean` | core syntax → Rue source, the program's struct and enum declarations included, and the observation channel (a `drop fn` per destructor-bearing declaration) | §2 elaboration inventory, 3.9 |
-| `RueCore/Corpus.lean` | the bridge corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`), and the checker's acceptance profile over it (`--profile`, RUE-2469) | §5, §6, §7 witnesses |
+| `RueCore/Corpus.lean` | the differential corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`), and the checker's acceptance profile over it (`--profile`, RUE-2469) | §5, §6, §7 witnesses |
 | `RueCore/Gen.lean` | a seeded, type-directed generator of fragment programs — struct **and enum** declarations, enum construction, `match` in §5.5's match-compilation form, **arrays**: `[T; n]` fields and binders, literal and repeat forms, constant-index reads, writes, element moves and `@drop`s, and dynamic-index reads, writes and `Copy` `@drop`s at and below the element, in and out of bounds — and **loops**: counted and once-through, nested, with `break` arms that may move a binder from outside the loop, every one terminating — appended to the corpus by `lake exe ruecore-corpus --gen N --seed S` | programs, not rules |
 | `RueCore/Explain.lean` | instrumented mirrors of `check` and `eval` — derivation trees with the failing premise named, and step tables with stores and drop events — with the lemmas tying both to the proved definitions | §5, §6 as an explanation |
 | `RueCore/Explain/Text.lean`, `RueCore/Explain/Html.lean`, `RueCore/Explain/Ledger.lean` | the terminal and self-contained-page renderings (`lake exe ruecore-explain`), each ending with the identity ledger: per owned identity, the step that minted it, the steps that ended it and the steps whose destructor ran on it, so "exactly once" and the order are visible; the checked-in text is in `explain/` | §7 |
@@ -1681,4 +1681,4 @@ answerable by execution — and the Lean model already seeds a
 differential-testing harness against the Rust oracle: differential testing
 against an executable model, Cedar-style, though only `--gen` mode is random,
 and at a far smaller scale than Cedar's DRT (see the outline doc, and
-`FIELD.md`, "Where the bridge sits").
+`FIELD.md`, "Where differential testing sits").

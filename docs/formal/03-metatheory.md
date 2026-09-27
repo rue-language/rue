@@ -112,8 +112,8 @@ literal `[e; n]` no core form: it elaborates to `let t = e; [t, …, t]`, one
 evaluation of the operand and then `n` value-context copies, which `7.1:38`'s
 `Copy` restriction makes free. The mechanization keeps it as a rule
 (`RueCore.Typed.repeatArray`) and a machine arm of its own, so that the
-printer can emit the surface spelling the compiler's E0905 is about and the
-bridge exercises it. Its premise and its dynamics *are* that elaboration's,
+printer can emit the surface spelling the compiler's E0905 is about and
+differential testing exercises it. Its premise and its dynamics *are* that elaboration's,
 but that they are is by construction and not by a theorem: this is the one
 place where the mechanization has a form the calculus's core does not. The
 machine arm checks the `Copy` premise on the operand's value and refuses a
@@ -468,8 +468,8 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     gone somewhere, but the value's life ends there. Without the event the
     count could only be an inequality.
 
-  All three are markers no Rue program observes, so the corpus and the
-  bridge are unchanged.
+  All three are markers no Rue program observes, so the corpus and
+  differential testing are unchanged.
 - **Why two statements, not one over `run`.** A run starts from the empty
   store, so every identity it mentions is minted during it, and its result
   does not say which store indices were minted for owned values.
@@ -606,11 +606,11 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 - **The corpus, read through it.** `Witnesses.lean` pins, for fourteen
   order-witnessing seed cases, the identities the destructors ran on in
   order (the order the printed destructors print their payloads in, which
-  the bridge checks against the compiler), the cells the markers name, and
+  differential testing checks against the compiler), the cells the markers name, and
   the identities the markers end, each once. `nested_scopes` is the
-  bridge-checked case of the cross-step order. The trace renderings'
+  checked by differential testing case of the cross-step order. The trace renderings'
   identity ledger shows the same per case (`lean/explain/*.txt`). The callee
-  activation record's last-parameter-first teardown is bridge-checked too:
+  activation record's last-parameter-first teardown is checked by differential testing too:
   `two_params_dropped_at_pop` (two parameters of two types) and
   `three_params_dropped_at_pop` drop the last parameter first, and
   `param_moved_other_dropped` moves the first parameter into a further call,
@@ -634,7 +634,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   normal pop (a by-value parameter the callee never consumed — (Fn) §5.8's
   second clause, `3.8:62`), and a `return`'s `⊥_exit` unwind. The frame-pop
   edge is reached only through `Examples.lean`'s kernel-checked
-  `run linearParamLeaked … = .refused .linearLeak`: the bridge cannot exercise
+  `run linearParamLeaked … = .refused .linearLeak`: differential testing cannot exercise
   it, because the compiler rejects that program (E0406) before anything runs.
 - **Carve-out, the two edges no refusal covers.** On both a **linear value
   can be consumed zero times** with none of the three refusals firing, and a

@@ -135,7 +135,7 @@ panics, and its drop trace.
 This one artifact does three jobs at once:
 
 - it is an executable reading of §6, related to the Lean `eval` only by
-  testing (the bridge), not by proof (purpose 2);
+  testing (differential testing), not by proof (purpose 2);
 - it is the behavioral reference an alternate compiler is checked against
   (purpose 1);
 - it is the **differential-testing oracle** of RUE-50: run a random program
@@ -158,7 +158,7 @@ runs that corpus through the compiler, the oracle, and native binaries at
 O1--O3, and names every pairwise disagreement: checker vs. compiler, Lean vs.
 oracle, Lean vs. native, oracle vs. native. It is deliberately not in any test
 tier — RUE-2241 decides whether CI gates on it. Its first red case
-(`cond_drop_affine`, a compiler ICE fixed as RUE-2290) is what the bridge is
+(`cond_drop_affine`, a compiler ICE fixed as RUE-2290) is what differential testing is
 for: it reports the disagreeing pair and leaves the judgment of which view is
 wrong to a human (RUE-305).
 
@@ -229,7 +229,7 @@ shape.
   mechanizes it or *not yet mechanized*, and `lean/README.md` has the build
   commands (`scripts/rue lean`).
 - **`REDTEAM.md`**, **`REDTEAM-LOG.md`**: the red-team program that attacks
-  the claim as a whole (statements, definitions, bridge, docs, trusted base),
+  the claim as a whole (statements, definitions, differential testing, docs, trusted base),
   and the append-only log of its passes, findings and what survived.
 - **`FIELD.md`**: the field map. For each of the eight subfields of the
   programming-languages literature the core draws on, it lists the canonical

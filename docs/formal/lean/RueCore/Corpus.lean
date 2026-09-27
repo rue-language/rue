@@ -4,7 +4,7 @@ import RueCore.Print
 import RueCore.Trace
 
 /-!
-# RueCore.Corpus — the bridge corpus (ADR-0097, RUE-2227)
+# RueCore.Corpus — the differential corpus (ADR-0097, RUE-2227)
 
 Every case pairs a fragment program with what the mechanization says about
 it: the checker's verdict (§5; proved sound by `checkProgram_sound`) and the
@@ -37,7 +37,7 @@ One array of case objects. Fields:
   `check` carries §5.7's `⊥` (RUE-2368) the one shape it is not complete on is
   an operator whose operand is `never`, such as `(return 1) + 2`, where it
   names no type (`Checker.lean`, "what completeness still costs"). That shape
-  would be a *false* bridge failure, so no seed case has it and `Gen.lean`
+  would be a *false* differential-testing failure, so no seed case has it and `Gen.lean`
   puts no `return`, `@panic` or `break` in an operand (RUE-2383). A diverging arm beside one that can complete normally
   is no longer such a shape, and five seed cases below exercise it.
 
@@ -68,7 +68,7 @@ One array of case objects. Fields:
   process prints what it printed and then exits 101. For a rejected program
   `expected` is `{"kind": "stuck", "violation":
   <name>}`: the refusal the machine reaches, kernel-checked in
-  `Examples.lean` and below, which the bridge cannot observe because the
+  `Examples.lean` and below, which differential testing cannot observe because the
   compiler rejects the program first. A rejected program the machine
   nonetheless runs to completion carries the `ok` or `panic` outcome of the
   executed path instead, so a compiler that accepts it unsoundly is still
@@ -254,7 +254,7 @@ def cases : List Case := [
       letIn false (Examples.lit 4) (Examples.resA (use (.var 0)))
     },
   { name := "cond_drop_affine",
-    description := "An affine resource dropped explicitly in one arm of an if and left to scope exit on the other: accepted (the join sends it to MovedOut), one destructor line either way. The bridge found the compiler ICEing on this (RUE-2290, fixed); the case stays as the regression signal.",
+    description := "An affine resource dropped explicitly in one arm of an if and left to scope exit on the other: accepted (the join sends it to MovedOut), one destructor line either way. Differential testing found the compiler ICEing on this (RUE-2290, fixed); the case stays as the regression signal.",
     rules := ["(@Drop) §5.3", "(If) §5.5 join", "3.9:38"],
     prog := Examples.prog Examples.tI64 <| letIn false (Examples.resA (Examples.lit 5))
       (seq (ite (boolLit true) (drop (.var 0)) unitLit) (Examples.lit 9))
@@ -351,7 +351,7 @@ def cases : List Case := [
     prog := Examples.scalarProg (.int .w8 .signed) Examples.i8RemMinByNegOne
     },
   { name := "i64_min_times_neg1",
-    description := "min_T * -1 at i64: an overflow trap, because -min_T is one past max_T. The bridge found the compiler wrapping this one and exiting 0: it lowered a checked multiply by a constant power of two as a left shift checked by shifting back, and took the bit pattern of min_T, 2^63, for one (RUE-2318). The compiler traps now, and the case stays as the regression signal.",
+    description := "min_T * -1 at i64: an overflow trap, because -min_T is one past max_T. Differential testing found the compiler wrapping this one and exiting 0: it lowered a checked multiply by a constant power of two as a left shift checked by shifting back, and took the bit pattern of min_T, 2^63, for one (RUE-2318). The compiler traps now, and the case stays as the regression signal.",
     rules := ["(Arith) §5.8", "(D-Arith-Trap) §6.4", "8.1:3"],
     prog := Examples.scalarProg Examples.tI64 Examples.i64MinTimesNeg1
     },
@@ -651,7 +651,7 @@ def cases : List Case := [
     prog := Examples.destrProg Examples.tI64 Examples.destructureOneArm
     },
   { name := "destructure_ancestor_dropped",
-    description := "After an inner declared-linear place is destructured, @drop of the declared-linear ancestor discharges it and §6.11 drops exactly the ancestor's own residue. The bridge was red on this one until RUE-2335 was fixed: the compiler rejected it with E0406. It stays seeded as a regression signal.",
+    description := "After an inner declared-linear place is destructured, @drop of the declared-linear ancestor discharges it and §6.11 drops exactly the ancestor's own residue. Differential testing was red on this one until RUE-2335 was fixed: the compiler rejected it with E0406. It stays seeded as a regression signal.",
     rules := ["(Use-Declared-Linear-Destructure) §5.1", "(@Drop) §5.3", "§5.6 declared clause", "3.8:74"],
     prog := Examples.destrProg Examples.tI64 Examples.destructureAncestorDropped
     },
@@ -860,11 +860,11 @@ def cases : List Case := [
     rules := ["(Use-Untrackable-Dynamic-Copy) §5.1", "(D-Index-Trap) §6.5", "§6.12", "7.1:11"],
     prog := Examples.prog Examples.tI64 Examples.arrayZeroLengthDynTrap },
   { name := "array_elem_self_assign",
-    description := "a[0] = a[0] on an [S1; 2]: (Assign) §5.2 evaluates the right-hand side first, which moves a[0] out, and the write then goes into an array with a moved-out element, which 3.8:72 and 7.1:46 forbid (E0480). The bridge is red on this one: the compiler accepts it on purpose (RUE-228 made element self-assignment reinitialise the element) and prints 100, 1, 2. Which reading is right is RUE-2346. The case stays seeded until that is decided.",
+    description := "a[0] = a[0] on an [S1; 2]: (Assign) §5.2 evaluates the right-hand side first, which moves a[0] out, and the write then goes into an array with a moved-out element, which 3.8:72 and 7.1:46 forbid (E0480). Differential testing is red on this one: the compiler accepts it on purpose (RUE-228 made element self-assignment reinitialise the element) and prints 100, 1, 2. Which reading is right is RUE-2346. The case stays seeded until that is decided.",
     rules := ["(Assign) §5.2", "(Use-Move) §5.1", "3.8:72", "7.1:46", "5.2:14"],
     prog := Examples.prog Examples.tI64 Examples.arrayElemSelfAssign },
   { name := "array_zero_length_field_dyn_read",
-    description := "h.x1[i] at i = 0, where the field x1 is an [i64; 0]: every index into a zero-length array is out of bounds, so the read takes (D-Index-Trap) §6.5's bounds trap and nothing prints. The bridge was red on this one until RUE-2345 was fixed: the compiler reported an internal error in code generation (a zero-sized place reached through a field was not diverted to the zero-sized address). It now traps as the model does, and the case stays as the regression signal.",
+    description := "h.x1[i] at i = 0, where the field x1 is an [i64; 0]: every index into a zero-length array is out of bounds, so the read takes (D-Index-Trap) §6.5's bounds trap and nothing prints. Differential testing was red on this one until RUE-2345 was fixed: the compiler reported an internal error in code generation (a zero-sized place reached through a field was not diverted to the zero-sized address). It now traps as the model does, and the case stays as the regression signal.",
     rules := ["(Use-Untrackable-Dynamic-Copy) §5.1", "(D-Index-Trap) §6.5", "7.1:11"],
     prog := Examples.arrayZeroLengthFieldDynRead },
   { name := "if_return_arm_affine",
@@ -936,15 +936,15 @@ def cases : List Case := [
     rules := ["(Loop-Break) §5.7", "(Break) §5.7", "(@Drop) §5.3", "3.8:79", "3.8:80", "(D-Break) §6.10"],
     prog := Examples.prog Examples.tI64 Examples.loopNestedEveryPathBreaks },
   { name := "destructure_root_through_moved_part",
-    description := "Three declared-linear levels: y.x0.x0.x0 destructures the innermost, and @drop(y.x0) then destructures the root y, which a moved-out part below it keeps from being fully owned (3.8:26; the compiler reports E0205). Seeded by the bridge sensitivity drills (RUE-2464): with RUE-2335's root check removed the compiler accepted it and ran the moved-out part's destructor twice, and no seed or generated case caught that.",
+    description := "Three declared-linear levels: y.x0.x0.x0 destructures the innermost, and @drop(y.x0) then destructures the root y, which a moved-out part below it keeps from being fully owned (3.8:26; the compiler reports E0205). Seeded by the real-fault mutation runs (RUE-2464): with RUE-2335's root check removed the compiler accepted it and ran the moved-out part's destructor twice, and no seed or generated case caught that.",
     rules := ["(Use-Declared-Linear-Destructure) §5.1", "(@Drop) §5.3", "3.8:26", "3.8:33"],
     prog := Examples.destrTripleProg Examples.tI64 Examples.destructureRootThroughMovedPart },
   { name := "array_bounds_trap_at_len",
-    description := "A dynamic-index read at the last element and then at exactly the length: 30 prints and the second read is (D-Index-Trap) §6.5's bounds trap. Seeded by the bridge sensitivity drills (RUE-2464): an off-by-one bounds check (i <= n) passed every seed, because the other bounds seeds index further past the end, or into a zero-length array, which does not go through the length compare.",
+    description := "A dynamic-index read at the last element and then at exactly the length: 30 prints and the second read is (D-Index-Trap) §6.5's bounds trap. Seeded by the real-fault mutation runs (RUE-2464): an off-by-one bounds check (i <= n) passed every seed, because the other bounds seeds index further past the end, or into a zero-length array, which does not go through the length compare.",
     rules := ["(Use-Untrackable-Dynamic-Copy) §5.1", "(D-Index) §6.5", "(D-Index-Trap) §6.5", "§6.12", "7.1:10"],
     prog := Examples.arrayBoundsTrapAtLen },
   { name := "loop_move_out_then_reinit",
-    description := "Each turn of a counted loop moves the mut affine b into t and reinitializes b, and t drops after the reinit: 2 and 21 in the loop, 22 at b's scope exit, then the value 2. Seeded by the bridge sensitivity drills (RUE-2464): with RUE-2380's fix removed the compiler ICEd at -O2 and -O3 (E9000), and no seed or generated case reached the shape. Only the harness's O2/O3 compile lanes (checker <-> compiler [O2]) see that mutant; bin/verify.py runs the default level.",
+    description := "Each turn of a counted loop moves the mut affine b into t and reinitializes b, and t drops after the reinit: 2 and 21 in the loop, 22 at b's scope exit, then the value 2. Seeded by the real-fault mutation runs (RUE-2464): with RUE-2380's fix removed the compiler ICEd at -O2 and -O3 (E9000), and no seed or generated case reached the shape. Only the harness's O2/O3 compile lanes (checker <-> compiler [O2]) see that mutant; bin/verify.py runs the default level.",
     rules := ["(Loop-Break) §5.7", "(Use-Move) §5.1", "(Assign) §5.2", "3.8:55", "§5.6 scope exit", "(D-Loop-Iter) §6.10"],
     prog := Examples.prog Examples.tI64 Examples.loopMoveOutThenReinit },
   { name := "join_moved_vs_partial_linear",
@@ -1076,7 +1076,7 @@ example : run exportOps (Examples.destrProg Examples.tI64 Examples.destructureLi
 /-- How `@dbg` renders a value (§5.8's (Dbg); the compiler prints an integer
 as its decimal and a `bool` as `true`/`false`, one line each). The calculus
 fixes no rendering, so this is the compiler's, verified by hand and compared
-by the bridge. A float's text is `3.12:40`–`3.12:42`'s — the shortest decimal
+by differential testing. A float's text is `3.12:40`–`3.12:42`'s — the shortest decimal
 that round-trips at its own width, or `NaN`/`inf`/`-inf`/`-0.0`
 (`FloatDatum.render`, `Float.lean`); the compiler reaches the same text
 through the vendored `zmij` formatter. A type `@dbg` does not accept has no line, which the statics
@@ -1164,7 +1164,7 @@ def refusalName : Refusal → String
   | .typeConfusion => "typeConfusion"
   | .ownedUnderCopy => "ownedUnderCopy"
 
-/-- The stdout the bridge compares, for a completed run: one line per
+/-- The stdout differential testing compares, for a completed run: one line per
 observable event the run executed — a user destructor or a `@dbg`
 (`eventLine`) — in trace order, then the lines `main` shows for the program's
 value. A trapping run has no value line, so the panic arms of

@@ -1,13 +1,13 @@
-# Bridge sensitivity: would the bridge catch a broken compiler?
+# Real-fault mutation runs: would differential testing catch a broken compiler?
 
-The bridge (ADR-0097; [README.md](README.md), "The bridge corpus") compares
+Differential testing (ADR-0097; [README.md](README.md), "The differential corpus") compares
 the compiler with the Lean model on every corpus case. Its agreement rate
 says the compiler and the model agree on those cases. It does not say the
 cases would notice a compiler that is wrong. This page measures that
 **mutation score** (RUE-2464). We put known bugs back into scratch copies of the
 compiler, one at a time, and ask whether the seed corpus or the generator
 catches each one. This is mutation analysis (DeMillo, Lipton & Sayward,
-"Hints on Test Data Selection", 1978) applied to the bridge's corpus, with
+"Hints on Test Data Selection", 1978) applied to differential testing's corpus, with
 real, historical compiler bugs as most of the mutants.
 
 We say a mutant is **killed** when at least one case disagrees with the model
@@ -56,7 +56,7 @@ check applies to the exported corpus. That test has four parts:
   disagreement. (An ICE on a checker-rejected case exits 1, which the
   per-case test treats as agreement, the same as any other rejection.)
 
-When all three stages missed a mutant, we also ran the full bridge harness
+When all three stages missed a mutant, we also ran the full differential-testing harness
 (`rue-oracle-diff lean-corpus`, the program behind `scripts/rue lean-bridge`)
 on the same 1,371 cases. The harness adds the reference interpreter
 (`rue-oracle`), native code at O1, O2 and O3, and a trap-kind comparison. The
@@ -331,7 +331,7 @@ parentheses, and the `(mint #n)` identities are merged into one row.
 Each rule named in §5 or §6 of the calculus falls in one of three groups.
 
 **Outside the fragment.** No case can reach these, and that is a scope fact.
-The bridge says nothing about these rules:
+Differential testing says nothing about these rules:
 
 * (Eq) §5.8 and (D-Eq) §6.4: equality borrows its operands, and the
   fragment's `BinOp` has no `==`;
@@ -365,7 +365,7 @@ reaches these:
   other positions "What completeness still costs" above lists): `check`'s
   own algorithm refuses these, even though `Typed` accepts them — a real
   completeness gap of the checker, not the compiler, so a seed here would be
-  a false bridge failure (`Corpus.lean`'s verdict contract already excludes
+  a false differential-testing failure (`Corpus.lean`'s verdict contract already excludes
   this shape; unrelated to RUE-2376);
 * (Strict-Bottom) §5.3 at every other position — an `if` condition, a
   `match` scrutinee, a dynamic-index member, an aggregate's list member —
@@ -397,7 +397,7 @@ reaches these:
 **Observable drops are rare in generated programs.** Only 14 of the 115
 accepted programs at seed 7, and 51 of the 569 at seed 23, print any
 destructor line. Among the seeds it is 76 of 140. A drop that prints nothing
-is invisible to the bridge. That is why two drop mutants got past 1,200
+is invisible to differential testing. That is why two drop mutants got past 1,200
 generated programs: `c-skip-overwrite-drop` and `c-reverse-scope-drops`. The
 same mutants are killed by the seeds, where destructors print. `h2335`'s
 miss is different: it is a sema-acceptance mutant, killed by no existing

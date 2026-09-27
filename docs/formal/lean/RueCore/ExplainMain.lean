@@ -33,7 +33,7 @@ def writeAll (dir : String) (ext : String) (render : Corpus.Case → String) : I
   for c in Corpus.cases do
     IO.FS.writeFile (System.FilePath.mk dir / (c.name ++ ext)) (render c)
 
-/-- (helper) Render the bridge corpus as readable §5 derivations and §6
+/-- (helper) Render the differential corpus as readable §5 derivations and §6
 step tables. -/
 def main (args : List String) : IO UInt32 := do
   match args with

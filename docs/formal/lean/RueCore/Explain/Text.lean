@@ -259,7 +259,7 @@ def render (name description : String) (rules : List String) (marks : Print.Dtor
     [""]
   String.intercalate "\n" lines ++ "\n"
 
-/-- (helper) The rendering of one bridge corpus case (`Corpus.lean`). -/
+/-- (helper) The rendering of one differential corpus case (`Corpus.lean`). -/
 def renderCase (c : Corpus.Case) : String :=
   render c.name c.description c.rules c.dtorMark c.prog
 
