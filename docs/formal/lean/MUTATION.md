@@ -26,7 +26,7 @@ Measured on trunk `b36896b5f` (2026-09-26): all 96 mutants in one run of
 `join-owned-wins` rerun alone (`--only --redo`) after a fix to how the pass
 locates a failing theorem, which had left it `blocked`. The generator has
 changed since (RUE-2480's observable destructors, RUE-2481's multi-function
-programs), so the bridge column reflects `b36896b5f`'s generated cases, not
+programs), so the differential-testing column reflects `b36896b5f`'s generated cases, not
 the current generator's. The table and
 the score below are its `--table` and `--score` output; nothing in them is
 updated by hand. The readings ("Reading a proof failure") are `mutate.py`'s
@@ -139,7 +139,7 @@ fails on it, in this order:
    `Corpus`, `Print`, `Explain`) or in an `example`;
 4. **corpus**: the build succeeds, and `lake exe ruecore-corpus` (every
    seed's verdict and expected outcome) differs from the unmutated baseline;
-5. **bridge**: the seeds are unchanged, but `--gen 200 --seed 7` (the
+5. **bridge** (differential testing): the seeds are unchanged, but `--gen 200 --seed 7` (the
    per-lane check's generated cases) changes, and the compiler disagrees with
    the mutant on a changed case;
 6. **survived**: nothing fails.
@@ -161,8 +161,8 @@ A witness failure that is only in `Explain.lean` is recorded apart, as the
 `traceEval_res`). A mutant that changes one copy fails that proof, whether or
 not the change means anything, so it is not a test of the definition.
 
-A seed whose expectation the mutant leaves unchanged cannot make the bridge
-disagree anew: the bridge already compares that expectation with the
+A seed whose expectation the mutant leaves unchanged cannot make differential testing
+disagree anew: differential testing already compares that expectation with the
 compiler, and it agrees on unmutated trunk (all but the allowed red,
 `array_elem_self_assign`). So step 5 runs the compiler (`scripts/rue exec`,
 the comparison of the loop's `bin/verify.py`) only on the generated cases the
@@ -321,7 +321,7 @@ of the statement vocabulary (RUE-2490's 15 and RUE-2500's control).
 | A candidate statement is unproved under the mutant (the spec pass) | 87/92 (95%) | 72/76 (95%) | 15/16 (94%) |
 | A stated property or a helper lemma is false | 78/92 (85%) | 62/76 (82%) | 16/16 (100%) |
 | The tests with the proofs off: witnesses, seeds, generated cases | 73/92 (79%) | 71/76 (93%) | 2/16 (12%) |
-| The seeds and the bridge alone | 69/92 (75%) | 69/76 (91%) | 0/16 (0%) |
+| The seeds and differential testing alone | 69/92 (75%) | 69/76 (91%) | 0/16 (0%) |
 | The build or the corpus fails at all (a proof script, a helper or the Explain mirror included) | 92/92 (100%) | 76/76 (100%) | 16/16 (100%) |
 
 - Not killed: 0
@@ -331,7 +331,7 @@ of the statement vocabulary (RUE-2490's 15 and RUE-2500's control).
 - Killed by a proof script only (every statement holds): 0
 - Killed by a helper lemma only: 0
 - Missed by the tests with the proofs off: 19: `loop-div-breaks`, `loop-break-div-brk`, `entry-params`, `step-usecopy-nondet`, `seq-droptemp-skip`, `hasty-int-any-value`, `hasty-float-any-value`, `evalok-refused-ok`, `contentsowntyping-moved-residue`, `exact-at-most`, `blocks-any-trace`, `stackdiscipline-vacuous`, `safeat-progress-vacuous`, `safeat-typing-vacuous`, `safeat-terminal-only`, `stepsn-one-step-only`, `float-wf-no-emin`, `float-wf-noncanonical`, `contentsowntyping-owned-false`
-- Missed by the seeds and the bridge: 23: `loop-div-breaks`, `loop-break-div-brk`, `entry-params`, `step-usecopy-nondet`, `seq-droptemp-skip`, `residue-drop-event-skip`, `match-consume-skip`, `hasty-int-any-value`, `hasty-float-any-value`, `evalok-refused-ok`, `contentsowntyping-moved-residue`, `exact-at-most`, `blocks-any-trace`, `stackdiscipline-vacuous`, `strictstackorder-vacuous`, `ordered-vacuous`, `safeat-progress-vacuous`, `safeat-typing-vacuous`, `safeat-terminal-only`, `stepsn-one-step-only`, `float-wf-no-emin`, `float-wf-noncanonical`, `contentsowntyping-owned-false`
+- Missed by the seeds and differential testing: 23: `loop-div-breaks`, `loop-break-div-brk`, `entry-params`, `step-usecopy-nondet`, `seq-droptemp-skip`, `residue-drop-event-skip`, `match-consume-skip`, `hasty-int-any-value`, `hasty-float-any-value`, `evalok-refused-ok`, `contentsowntyping-moved-residue`, `exact-at-most`, `blocks-any-trace`, `stackdiscipline-vacuous`, `strictstackorder-vacuous`, `ordered-vacuous`, `safeat-progress-vacuous`, `safeat-typing-vacuous`, `safeat-terminal-only`, `stepsn-one-step-only`, `float-wf-no-emin`, `float-wf-noncanonical`, `contentsowntyping-owned-false`
 - Failed in the Explain mirror: 6: `use-copy-moved`, `match-exhaustive`, `loop-head-unverified`, `repeat-count`, `seq-affine-as-linear`, `seq-droptemp-skip`
 
 What the rows mean:
@@ -350,7 +350,7 @@ What the rows mean:
   occurs in no statement.
 * **A stated property is false** is the readings'. Every one of those 73
   rests on the spec pass: none reads a statement false that the pass proved.
-* **The tests with the proofs off** and **the seeds and the bridge alone**
+* **The tests with the proofs off** and **the seeds and differential testing alone**
   are the other two passes. They see 71 and 69 of the 76 semantics mutants,
   and 2 and 0 of the 16 vocabulary mutants: a wrong statement definition
   changes no program's behaviour, so only a statement can notice it.
@@ -362,10 +362,10 @@ The historical comparison this page was written for, RUE-2465's six seeds,
 was measured at `c2fe428ff` on the first 80 mutants: without the seeds 73 of
 76 were killed (`breaks-nested` by a proof script only, `arm-payload-mutable`
 by a helper only, `assign-immutable` by the Explain mirror only), with them
-all 76; the seeds and the bridge alone went from 50 to 69 of 76. That run's
+all 76; the seeds and differential testing alone went from 50 to 69 of 76. That run's
 work directory is not rerun here (`--before` recomputes the column from one).
 
-### What the proofs kill, and what needs the corpus or the bridge
+### What the proofs kill, and what needs the corpus or differential testing
 
 * **The proofs are strongest on the statics.** A mutant that lets the checker
   (or the rules) accept a program the machine then refuses falsifies
@@ -452,16 +452,16 @@ work directory is not rerun here (`--before` recomputes the column from one).
   refusal the statements state. The refusal witnesses in `Examples.lean`,
   `Corpus.lean` and `Trace.lean` still kill all five with the proofs off,
   and the seeds whose expected outcome is that refusal kill four.
-* **Trace-only mutants are invisible to the bridge by construction.**
+* **Trace-only mutants are invisible to differential testing by construction.**
   `seq-droptemp-skip`, `residue-drop-event-skip` and `match-consume-skip` remove a
   drop mark or a `consume` event, and none of these is an output line.
   `Exact` (`drop_exactly_once`, `rest_exactly_once`) is false for all three.
-* **The bridge adds 4 kills that the seeds do not make:**
+* **Differential testing adds 4 kills that the seeds do not make:**
   `zero-array-linear`, `repeat-count`, `binop-eval-order` and
-  `decl-cycle-rounds`. With the proofs off, the bridge is the first test to
+  `decl-cycle-rounds`. With the proofs off, differential testing is the first test to
   kill `decl-cycle-rounds`: 17 generated cases nest declarations deeper than
   the topological sort's shortened round count, and no seed does.
-* **20 mutants got past the seeds and the bridge together**, after the six
+* **20 mutants got past the seeds and differential testing together**, after the six
   RUE-2465 seeds and before RUE-2486. They fell into three groups, and
   RUE-2486 seeds all of the third group, leaving **7**:
   - 4 no corpus case can show: `loop-div-breaks`, `loop-break-div-brk`,
@@ -489,7 +489,7 @@ work directory is not rerun here (`--before` recomputes the column from one).
     and bridge alone" column of "The mutants", below), the same reading a
     proof already gave each of them. Proposed issue 1 (below) is done.
 
-    The remaining 7 that get past the seeds and the bridge together are the
+    The remaining 7 that get past the seeds and differential testing together are the
     4 no corpus case can show plus the 3 trace-only ones.
 
 ### The mutants
@@ -855,7 +855,7 @@ need a non-vacuity witness that states `ActivationTyping`/`StoreCC` positively
 1. **[Formal/Bridge] Seed the refusals only a witness proves — done
    (RUE-2486).** 13 mutants were killed by an `Examples.lean` or
    `Trace.lean` refusal witness and by no seed or generated case, each a
-   refusal the compiler should make too, that the bridge never compared. Two
+   refusal the compiler should make too, that differential testing never compared. Two
    PRs seeded all 13:
    * Part 1 (seven): moving an element out below a projection
      (`use-move-rootidx`); a dynamic-index read, `@drop` or write of a
@@ -969,9 +969,9 @@ need a non-vacuity witness that states `ActivationTyping`/`StoreCC` positively
 * **The first failure hides the rest.** The table names where the build
   stopped. A later theorem may also be false, and a helper's failure may
   mask a stated property's.
-* **Seeds and 200 generated cases.** The bridge column uses `--gen 200 --seed
+* **Seeds and 200 generated cases.** The differential-testing column uses `--gen 200 --seed
   7`, the per-lane check's. A larger stream might kill more of the 7 mutants
-  the seeds and the bridge still miss (the 4 no corpus case can show, and
+  the seeds and differential testing still miss (the 4 no corpus case can show, and
   the 3 trace-only ones); the 13 refusal shapes RUE-2486 seeded were never
   ones the generator drew, which is why a seed rather than a larger stream
   was the fix.

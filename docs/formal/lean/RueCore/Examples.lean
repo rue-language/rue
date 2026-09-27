@@ -1737,7 +1737,7 @@ example : checkProgram dynDropCopyTrap = true := by rfl
 example : run demoOps dynDropCopyTrap demoFuel
     = .panic .bounds [.dbg (v64 10), .dbg (v64 3), .dbg (v64 10)] := by rfl
 
-/-- Two refusals the bridge seeded red: the compiler refuses the first since
+/-- Two refusals differential testing seeded red: the compiler refuses the first since
 RUE-2341 and the second since RUE-2344. -/
 example : checkProgram dynWriteAfterDestructureViaField = false := by rfl
 example : checkProgram dynWriteAfterFieldMove = false := by rfl
@@ -1883,7 +1883,7 @@ def panicPastLinear : Expr :=
 /-! ## Enums and `match` (RUE-2320)
 
 The fixture enums, the holder struct that puts one in a field, and the eight
-programs the bridge seeds. Every one was run against the compiler before it was
+programs differential testing seeds. Every one was run against the compiler before it was
 committed; the probe it reproduces is named in its doc-comment.
 
 `qual(E)` is the payload join over **every** variant (`6.3:19`), so `E1` — one
@@ -2630,7 +2630,7 @@ def linearLostAtBreakArg : Program :=
 destructor, so a drop of it is the trace event the printed program turns into
 an output line — and here there is none. The callee discharges its parameter
 with `@drop`, which would print; the value never reaches the callee. The Rue
-compiler agrees — `S1`'s destructor does not run — which is why no bridge case
+compiler agrees — `S1`'s destructor does not run — which is why no differential-testing case
 could catch this and why none is added. -/
 def affineLostAtCallArg : Program :=
   { decls := Decls.ofStructs structEnv,
@@ -3463,7 +3463,7 @@ example : checkDecls
 In interpreter form a violation is a positive result, so `soundness` is only
 as strong as `eval`'s refusal enumeration. These witnesses pin every refusal
 and trap to a program, or an open machine state, that reaches it, checked
-by the kernel rather than observed by `#eval` (ADR-0097; the bridge cannot
+by the kernel rather than observed by `#eval` (ADR-0097; differential testing cannot
 observe refusals, because the compiler rejects those programs first).
 -/
 
@@ -3484,7 +3484,7 @@ example : run demoOps (scalarProg (.int .w8 .signed) i8RemMinByNegOne) demoFuel
 
 /-- `min_T * -1` traps at `i64` as it does at every other signed width. The
 compiler did not until RUE-2318 was fixed; `Corpus`'s `i64_min_times_neg1` is
-the case that says so to the bridge. -/
+the case that says so to differential testing. -/
 example : run demoOps (scalarProg tI64 i64MinTimesNeg1) demoFuel
     = .panic .overflow [] := by rfl
 example : run demoOps (scalarProg (.int .w8 .signed) i8RemZero) demoFuel
@@ -4135,7 +4135,7 @@ theorem infiniteLoop_outOfFuel (M : FloatSig) (P : Program) :
           rw [infiniteLoop] at this
           rw [this]; rfl
 
-/-! ## Seeds from the bridge sensitivity drills (RUE-2464)
+/-! ## Seeds from the real-fault mutation runs (RUE-2464)
 
 `docs/formal/lean/BRIDGE-SENSITIVITY.md` re-introduced historical compiler bugs
 into scratch copies of the compiler, one at a time, and ran the seed corpus and
@@ -4200,7 +4200,7 @@ a new `S1`; `t` drops at its `let`'s end, after the reinitialization. (Assign)
 The destructors print `2` and `21` inside the loop and `22` at `b`'s scope
 exit, then the value `2`. The compiler before RUE-2380's fix forwarded `t`'s
 load to `b`'s, so at `-O2` and `-O3` its CFG verifier saw the next turn read a
-consumed owner root (E9000); only the bridge's native lanes at those levels see
+consumed owner root (E9000); only differential testing's native lanes at those levels see
 it. -/
 def loopMoveOutThenReinit : Expr :=
   letIn true (resA (lit 2))

@@ -27,7 +27,7 @@ bug.
 
 Renderers live in `RueCore/Explain/Text.lean` (terminal, `#eval`) and
 `RueCore/Explain/Html.lean` (a self-contained page); `lake exe
-ruecore-explain` drives both over the bridge corpus.
+ruecore-explain` drives both over the differential corpus.
 
 Expression text reuses `Print`'s surface syntax and its `v<depth>` binder
 naming, so a subexpression is spelled the same way here, in `corpus.json`,

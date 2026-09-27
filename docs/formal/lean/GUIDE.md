@@ -189,8 +189,8 @@ The trace lists, in order, everything the machine did that a program can see:
 
 The last two are what a Rue program prints; the first two mark where a drop
 starts, and `consume` where a value's life ends without one. The trace is the fragment's image of the oracle interpreter's
-observable outcome, and the bridge compares it against a native binary's
-stdout (`README.md`, "The bridge corpus"). A trap carries a trace too, because
+observable outcome, and differential testing compares it against a native binary's
+stdout (`README.md`, "The differential corpus"). A trap carries a trace too, because
 a trapping process prints what it printed and then exits 101.
 
 **Every aggregate value has an identity.** §6.1 gives values none: two
@@ -201,7 +201,7 @@ identity is the store's next index, reserved by appending a `†` slot that no
 binding ever names (§6.1: "a fresh identity is one not in `dom(H)`"), so the
 stores in the tables below have `†` slots between the bindings, and a
 binding's location is the next index after them. Nothing in `eval` branches on
-an identity, and the printer and the corpus never print one, so the bridge
+an identity, and the printer and the corpus never print one, so differential testing
 compares exactly what it compared before; the step tables below print `#n`
 only for the reader's benefit. What it buys is section 4's last theorem,
 `no_double_free`: in a checked program's trace, no identity has its
@@ -237,13 +237,13 @@ the same store and activation record `eval` uses. The two are kept for different
 `Step` is what §6 *says*, so a reader checks it against the calculus rule by
 rule, and §7's own phrasing ("no reduction sequence reaches a stuck
 configuration") is a statement about it. `eval` is what can be *run* and
-*proved about*: the safety theorem is a fuel induction over it, and the bridge
+*proved about*: the safety theorem is a fuel induction over it, and differential testing
 compares its results with the compiler's. Neither alone is enough: a theorem
 about `eval` says nothing about §6 unless the two agree, and `Step`, though
 it runs (`stepN` takes its steps, and `letAddProgram_runs` and the `demo_`
-theorems run whole programs through it), is not what the bridge runs against
+theorems run whole programs through it), is not what differential testing runs against
 the compiler, and it does not carry the safety proof as cheaply. The semantic-equivalence
-theorems (RUE-2289's parts 2 and 3) are the bridge between them. Besides
+theorems (RUE-2289's parts 2 and 3) are the link between them. Besides
 them, `Step`'s own theorems are the cheap ones — it is deterministic, a
 terminal configuration takes no step, and a stuck one is stuck on one of §6's
 four violations, never on one of `eval`'s four monitors
@@ -802,7 +802,7 @@ Witnesses:
   show as the ends `[9.1]` and `[9.2]`, the first and second end of row 9.
 - `two_params_dropped_at_pop` and `three_params_dropped_at_pop`, for a
   callee activation record's pop. It tears the by-value parameters down last-parameter
-  first (`ℓ4` then `ℓ3`; `ℓ5`, `ℓ4`, `ℓ3`), and the bridge checks the
+  first (`ℓ4` then `ℓ3`; `ℓ5`, `ℓ4`, `ℓ3`), and differential testing checks the
   compiler does the same. `param_moved_other_dropped` moves the first
   parameter out, so only the second is left to the pop.
 
@@ -888,7 +888,7 @@ use `demoOps` (`Float.exactOps`); that it is such a model is the one
 assumption example 10 names, and a program with no floats never exercises it.
 Most examples have kernel-checked forms in `Examples.lean`, beside the
 program's definition: the acceptance (`checkProgram_sound (by rfl)` or
-`checkProgram … = true`) and the run's pinned trace. The bridge compares each
+`checkProgram … = true`) and the run's pinned trace. Differential testing compares each
 printed program's output with the compiled binary's.
 
 Every other corpus case is a smaller worked example. Its printed source
@@ -916,7 +916,7 @@ letIn true (resL (lit 1))
 
 This is the body of the entry function `f0`. `resL e` is `mkStruct sLinear
 [e]`, a literal of `S2`: the declared-`linear` struct with one `i64` field and
-no destructor. The bridge prints it as:
+no destructor. Differential testing prints it as:
 
 ```rue
 linear struct S2 { x0: i64 }
@@ -1012,7 +1012,7 @@ new value in the old place, and each value was freed once, which is what
 No event is **observable**. `S2` declares no destructor, so the two
 `drop ℓ1` events project to no stdout line (`Corpus.eventLine`), and the
 scope exit finds a `⊘`. The printed program's only output line is the value,
-`2`, and the bridge expectation in `corpus.json` is exactly that:
+`2`, and the differential-testing expectation in `corpus.json` is exactly that:
 `{"kind": "ok", "stdout": ["2"], "exit": 0}`.
 
 #### What the proof needs
@@ -1258,7 +1258,7 @@ it, and the machine then must.
 | 9 | (D-Return-Value) §6.9 | | the activation-record pops with an empty drop scope | | |
 
 So the program prints `1` (the outer destructor), then `2` (the inner), then
-its value `9`: the bridge expectation
+its value `9`: the differential-testing expectation
 `{"kind": "ok", "stdout": ["1", "2", "9"], "exit": 0}`.
 
 #### What the proof needs
@@ -1995,7 +1995,7 @@ dropped at row 8 instead of at its own scope's end (`loop_break_past_local`).
 
 `loop_linear_one_exit` takes exit 1: `false` sends it to the `else` arm, whose
 `break` leaves `v0` alone. Then the `let`'s scope exit (row 11) meets a live
-linear value, and the machine refuses with `linearLeak`. The bridge never
+linear value, and the machine refuses with `linearLeak`. Differential testing never
 sees that run, because the compiler rejects the program first.
 
 #### What the proof needs
@@ -2244,14 +2244,14 @@ program, exhaustion at every fuel is divergence. `03-metatheory.md`'s
 *A defect looks like:* any of these stated with `P` fixed or with an extra
 hypothesis beyond `ProgramTyped`.
 
-**5. Run the bridge across four views (three minutes).**
+**5. Run differential testing across four views (three minutes).**
 
-The theorems are about `eval` and `check`, not about the compiler. The bridge
+The theorems are about `eval` and `check`, not about the compiler. Differential testing
 compares four views — the mechanization, the compiler, the reference oracle
 and the native binary — over four pairs: every corpus case is printed as a
 Rue program, and the compiler, the reference oracle and the native binary are
 run on it and compared with what the mechanization says (`README.md`, "The
-bridge corpus").
+differential corpus").
 
 ```bash
 scripts/rue lean-bridge
@@ -2279,7 +2279,7 @@ deliberately and stays until its issue is decided:
   RUE-228. Which is right is a decision: RUE-2346.
 
 Other seeded cases were red until the compiler defect they found was fixed,
-and stay as regression signals; `README.md`, "The bridge corpus", lists them.
+and stay as regression signals; `README.md`, "The differential corpus", lists them.
 *A defect looks like:* any **other** case disagreeing. A disagreement means
 the compiler, the oracle, the model, the spec or the printer is wrong, or it
 is a pending decision (e.g. RUE-2346); a person decides which, and the case's

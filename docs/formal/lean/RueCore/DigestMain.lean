@@ -636,7 +636,7 @@ def mapReport (env : Environment) : CoreM (String × UInt32) := do
     "",
     "How the mechanization's theorems hang together: which marked node's proof",
     "rests on which, what each spine theorem's statement unfolds to, and where the",
-    "proof chain sits beside the compiler bridge. `README.md`, \"The proof map\",",
+    "proof chain sits beside differential testing against the compiler. `README.md`, \"The proof map\",",
     "explains what a **spine node** and a **milestone lemma** are and how this file",
     "is generated. GitHub renders every diagram below inline.",
     "",
@@ -681,7 +681,7 @@ def mapReport (env : Environment) : CoreM (String × UInt32) := do
     out := out ++ (← renderTheoremDiagram env milestoneSet h s ancestors).toArray
     out := out.push ""
   out := out ++ #["## The assurance chain", "",
-    "Static: what the proof chain covers, and how the bridge corpus tests the",
+    "Static: what the proof chain covers, and how the differential corpus tests the",
     "compiler against the same model — kept in content beside",
     "`../WHAT-IT-MEANS.md`'s diagram (RUE-2462) without depending on that file.",
     ""]

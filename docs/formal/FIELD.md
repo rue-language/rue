@@ -573,7 +573,7 @@ but neither appears in the CompCert sources fetched here. Quote
 | Verified compiler / validator | `Comp(S) = OK(C) ⇒ S ≈ C` / `Validate(S,C) = true ⇒ S ≈ C` | CACM eqs. 6, 7 |
 | QuickCheck property | `∀x. P x`, checked on random x | QuickCheck §2.1 |
 
-**Where the bridge sits.** The bridge compares the model with the
+**Where differential testing sits.** Our differential testing compares the model with the
 implementation twice: the compiler's accept/reject against the Lean checker's
 verdict, and the observations of the oracle and the native binary against the
 Lean interpreter's outcome (ADR-0097; [lean/README.md](lean/README.md)). That
@@ -584,8 +584,8 @@ default corpus is about 170 hand-written cases, and random generation
 (`Gen.lean`, `--gen N --seed S`) runs only on request, so only the `--gen` mode
 is random testing in Cedar's DRT sense. Cedar's DRT generates millions of
 inputs with the cargo-fuzz framework and sends each to both the Lean model and
-the Rust implementation; ours prints each core program as a Rue module first. The
-bridge is **not translation validation**, which establishes `S ≈ C` for every
+the Rust implementation; ours prints each core program as a Rue module first. It
+is **not translation validation**, which establishes `S ≈ C` for every
 execution of one compilation and must itself be proved sound. It is not
 verified compilation either. For one closed, deterministic, terminating
 program, a run checks the single behavior that program has, which is one
@@ -596,7 +596,7 @@ trusts the runner, the printer and the model.
 
 | Our term | Accepted term | Confidence |
 |---|---|---|
-| "the bridge", "bridge corpus" (ADR-0097; [lean/README.md](lean/README.md)) | differential testing against an executable model; in `--gen` mode, randomized differential testing (Csmith) / DRT (Cedar) | partial: "bridge" is our word, and the activity has an accepted name. GUIDE §2 also uses "bridge" for the adequacy theorems between `eval` and `Step`, a second meaning |
+| "differential testing", "differential corpus" (ADR-0097; [lean/README.md](lean/README.md); formerly "the bridge", "bridge corpus") | differential testing against an executable model; in `--gen` mode, randomized differential testing (Csmith) / DRT (Cedar) | clear since RUE-2466 for the activity; "differential corpus" is our name for its test set. The tool names (`lean-bridge`, BRIDGE-SENSITIVITY.md) keep the old word |
 | "differential-tested", `rue-oracle-diff` | differential testing | clear |
 | "oracle" (`rue-oracle`, the executable reference interpreter) | test oracle, specifically a pseudo-oracle, which Barr class as a derived oracle. The accepted term names the pass/fail judge, not the interpreter itself | partial |
 | "executable reference interpreter" / "the executable semantics" (§6) | executable model / specification (Cedar) | clear |
@@ -606,7 +606,7 @@ trusts the runner, the printer and the model.
 | "verdict" (the checker's accept or reject on a case) | no counterpart. In runtime verification a verdict is a monitor's output (§6), a different object | none |
 | "model gap", "gap registry" (01 §6.13.6; these belong to `rue-oracle`, not to the Lean model) | no verified counterpart | none |
 | "red case", "disagreement" | a candidate for a bug-exposing test (McKeeman: the results differ, or one system hangs or crashes) | partial |
-| "real-fault mutation run" (a re-introduced historical compiler bug that some bridge case kills; REDTEAM.md "caught or not", pending sync) | mutation testing (Jia & Harman; DeMillo et al.). The re-introduced bug plays the role of a mutant of the compiler, and "killed" (Jia & Harman) is now our word too | partial: the mutant is a real past bug, not the output of a mutation operator, and the test set is the bridge corpus |
+| "real-fault mutation run" (a re-introduced historical compiler bug that some differential-testing case kills; REDTEAM.md "caught or not", pending sync) | mutation testing (Jia & Harman; DeMillo et al.). The re-introduced bug plays the role of a mutant of the compiler, and "killed" (Jia & Harman) is now our word too | partial: the mutant is a real past bug, not the output of a mutation operator, and the test set is the differential corpus |
 | "mutation" of the definitions (REDTEAM.md: "drop a premise or weaken a rule and see whether any theorem or corpus case notices"; RUE-2465) | program mutation (DeMillo et al.), applied to the model's definitions; the mutants that survive are the live ones | clear |
 | "non-vacuity witness" (REDTEAM.md: a program meeting every hypothesis, on which the conclusion is non-trivial) | interesting witness (Beer et al.), which shows that a formula holds non-vacuously | partial: the same role for a theorem's hypotheses, but Beer et al. define it for temporal formulas checked against a model, and their witness is a model or a path, not a program |
 | "sharpness counter-example" (REDTEAM.md: a program just outside a hypothesis, showing the hypothesis is not slack) | no verified counterpart | none |

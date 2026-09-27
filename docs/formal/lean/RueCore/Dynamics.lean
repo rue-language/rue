@@ -108,7 +108,7 @@ forms) and on its stored image (`Contents`), through every move, parameter
 and `match` binding, and the events carry it because they carry the value or
 contents they ran on. It is unobservable: nothing in `eval` branches on it,
 and the printer (`Print.lean`) and the corpus (`Corpus.lean`) never print it,
-so the bridge compares exactly what it compared before. A copy of a `Copy`
+so differential testing compares exactly what it compared before. A copy of a `Copy`
 value carries its original's identity; `no_double_free` counts only the
 non-`Copy` nodes (`Contents.own`, `Trace/Defs.lean`), which are never copied.
 `Step` mints the same way, so the two presentations keep one store
@@ -237,7 +237,7 @@ scopes" — is exactly true and exactly insufficient here, because a sibling
 temporary is not a bound cell. The Rue compiler behaves the same way (a
 destructor-bearing sibling's destructor does not run, at an argument, a
 struct initializer, an array element and an assignment's right-hand side
-alike — probe r14 of RUE-2342), so the bridge cannot see it either.
+alike — probe r14 of RUE-2342), so differential testing cannot see it either.
 
 `eval` models the calculus rather than patching it, so no monitor is added:
 `evalArgs` passes a `returned` or `broke` abort on untouched — and because the three list

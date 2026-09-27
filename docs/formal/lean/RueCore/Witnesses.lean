@@ -187,7 +187,7 @@ theorem swappedMarkers_rejected :
 
 The order-witnessing corpus cases, each run at the export model: the
 identities the destructors ran on, in order (`dtorIds`, the order the printed
-destructors print their payloads in, which the bridge already checks against
+destructors print their payloads in, which differential testing already checks against
 the compiler); the cells the `drop` markers name, in order (`dropLocs`); and
 the owned identities the markers end (`freedIds`), each exactly once. -/
 
@@ -248,7 +248,7 @@ example : orderView (destrProg tI64 destructureNestedResidue).decls
   rfl
 
 open Examples in
-/-- `nested_scopes`, the bridge case's own program (helper). -/
+/-- `nested_scopes`, the differential-testing case's own program (helper). -/
 def nestedScopes : Program :=
   prog tI64 <| .letIn false (resA (lit 1)) (.letIn false (resA (lit 2)) (lit 0))
 
@@ -258,7 +258,7 @@ example : (Corpus.cases.find? (·.name == "nested_scopes")).map (·.prog.fns.map
 
 /-- `nested_scopes`: two sibling `let`s exit over two (D-EndScope) steps, the
 inner (`ℓ3`) before the outer (`ℓ1`) — the cross-step order `reachable_stackDiscipline`
-fixes, bridge-checked. -/
+fixes, checked by differential testing. -/
 example : orderView nestedScopes.decls (corpusTrace nestedScopes) = ([2, 0], [3, 1], [2, 0]) := by
   rfl
 
@@ -271,7 +271,7 @@ open Examples in
 /-- `two_params_dropped_at_pop`: the callee's activation record pop tears its by-value
 parameters down last-parameter first, `b` (`ℓ4`, the `S5` `#2` and its field
 `#1`) before `a` (`ℓ3`, `#0`) — the LIFO half of `drop_order` at an activation record,
-bridge-checked. -/
+checked by differential testing. -/
 example : orderView twoParamsDroppedAtPop.decls (corpusTrace twoParamsDroppedAtPop)
     = ([2, 1, 0], [4, 3], [2, 1, 0]) := by rfl
 

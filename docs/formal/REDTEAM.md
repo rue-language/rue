@@ -4,7 +4,7 @@ The loop's adversarial review attacks a *change*: one lane, one diff, with
 the implementer's plan in hand. This program attacks the *claim as a whole*:
 that the Lean statements say what the calculus (§7 of
 [01-core-calculus.md](01-core-calculus.md)) says, that the definitions they
-use are faithful to it, that the bridge would notice a broken compiler, that
+use are faithful to it, that differential testing would notice a broken compiler, that
 no document says more than the theorems, and that the trusted base is what
 [lean/TRUST.md](lean/TRUST.md) reports. It complements the per-lane review
 and does not replace it. Results go in [REDTEAM-LOG.md](REDTEAM-LOG.md).
@@ -21,7 +21,7 @@ RUE-2461's glossary rather than FIELD.md's theorem-level terms.
 |---|---|---|---|
 | **Statements** (the headline theorems in [lean/DIGEST.md](lean/DIGEST.md)) | Read each statement cold and compare it with §7: a hypothesis that is unsatisfiable or excludes the interesting programs, a conclusion a trivial evaluator or step relation also meets, a disjunct that always holds, a statement weaker than its English reading | A reading per theorem, a verdict (weaker / equal / stronger, with the gap), and, for each spine theorem, a checked **non-vacuity witness** (a program meeting every hypothesis on which the conclusion is non-trivial) and a **sharpness counter-example** (a program just outside a hypothesis, showing the hypothesis is not slack) | RUE-2470 (fresh-context statement audits), RUE-2469 (non-vacuity witnesses and sharpness counter-examples) |
 | **Definitions** (`Typed`, `Step`, `eval`, `HasTy`, the trace predicates) | Fidelity to §5/§6 rule by rule; **mutation**: drop a premise or weaken a rule and see whether any theorem or corpus case notices | The mutants that survive, each either a missing test or an under-constrained rule | RUE-2465 (mutation testing) |
-| **Bridge** (the differential testing of the compiler against the Lean model, [lean/README.md](lean/README.md)) | Would it catch a broken compiler? Re-introduce historical compiler bugs, one at a time, and run the bridge | Per drill: caught or not, and by which case | RUE-2464 (sensitivity drills) |
+| **Differential testing** (of the compiler against the Lean model, [lean/README.md](lean/README.md)) | Would it catch a broken compiler? Re-introduce historical compiler bugs, one at a time, and run differential testing | Per drill: caught or not, and by which case | RUE-2464 (sensitivity drills) |
 | **Docs** ([README.md](README.md), [03-metatheory.md](03-metatheory.md), `lean/README.md`, `lean/GUIDE.md`, the plain-language account, Linear project updates) | List every claim about what is proved, established or guaranteed and match it to a statement | Each claim marked supported, partly supported, unsupported, or a process claim; an issue per overclaim | RUE-2476 (overclaims) |
 | **Trusted base** (FIELD.md's *trusted computing base*, §7; axioms, `set_option` escapes, the digest and trust generators, the statement/proof split's Comparator configuration) | Try to get a hole past the checks: a new axiom, `sorry` behind a macro, `native_decide`, a claim file that differs from what was proved | Whether the lint and the trust report catch each attempt | RUE-2457 (trusted-base lint), RUE-2460 (the Comparator configuration) |
 
@@ -74,7 +74,7 @@ reading's limits stated in the log.
 - **One full-claim pass per milestone**, and one before each review
   checkpoint (RUE-2251, RUE-2252), against the trunk the checkpoint reviews.
 - **A targeted pass** whenever a spine statement, a trusted-base definition
-  (anything a spine statement mentions, transitively) or the bridge changes:
+  (anything a spine statement mentions, transitively) or differential testing changes:
   the statement agent for the first two, a drill for the third. The loop
   schedules it as an ordinary lane after the change merges.
 - Every pass occupies one lane under the loop's two-lane cap, whatever number

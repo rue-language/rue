@@ -5,9 +5,9 @@ import RueCore.Corpus
 
 xref: examples
 
-The bridge corpus (`Corpus.lean`) is hand-written, so it only exercises the
+The differential corpus (`Corpus.lean`) is hand-written, so it only exercises the
 shapes its authors thought of. This module generates fragment programs from a
-seed, so the differential bridge (ADR-0097, decision 4) can also run programs
+seed, so differential testing (ADR-0097, decision 4) can also run programs
 nobody wrote: the verification-guided-development loop of generate, run the
 model and the implementations, compare. `lake exe ruecore-corpus --gen N
 --seed S` appends `N` generated cases to the corpus JSON in the schema
@@ -43,7 +43,7 @@ a destructor-bearing value, a destructure whose residue carries a linear
 value, a write into an array with a moved-out element, a dynamic index into
 one, a dynamic index under a declared-`linear` struct, a value moved by one
 loop turn and used by the next, loop exits that disagree on a linear value, a
-`break` past a live linear local — which is what the bridge's refusal table
+`break` past a live linear local — which is what differential testing's refusal table
 covers. Both halves are design intents, not theorems: nothing in this module
 is proved, and a generated case that `Print.tyOf` fails on, or that the checker
 refuses for another reason, shows up in a corpus run as an error or an
@@ -73,7 +73,7 @@ deliberate exception: a reinitialising assignment at depth ≥ 2 is a compiler
 defect (RUE-2319) — it runs the overwrite-drop on the already moved-out
 position and then leaks the value it stored — so the model and the compiler
 disagree there for a reason that is not the model's, and a generated case with
-the shape would be a false bridge failure rather than a finding. Depth-2 uses
+the shape would be a false differential-testing failure rather than a finding. Depth-2 uses
 and drops are unaffected by it: the defect is in the assignment path, and
 depth-2 use, `@drop` and assignment-under-a-live-value were all checked by
 hand against the compiler.
@@ -158,7 +158,7 @@ the shapes those would add.
 
 Four generated shapes have disagreed with the compiler — three seeded, and a
 fourth the return arms reached (RUE-2383) not yet — and none is drawn around — drawing around one would write the compiler's current
-answer into the generator. A generated case with one of them is a bridge
+answer into the generator. A generated case with one of them is a differential-testing
 disagreement to attribute to its issue by hand, as RUE-2335's was (above);
 nothing in the tree counts them. On the current draws the acceptance settings,
 `--gen 200 --seed 7` and `--gen 1000 --seed 23`, reach one of them, the
@@ -393,7 +393,7 @@ naming the cases, if a generated case does not complete at the export fuel,
 rather than leaving it out as it does a seed case (`CorpusMain.lean`).
 
 Two constraints are drawn around rather than left to chance, because each is a
-question for the calculus rather than a finding the bridge should make:
+question for the calculus rather than a finding differential testing should make:
 
 * **no syntax after a diverging form** (RUE-2376): a `break` is only ever the
   last form of a break arm or of a once-through body, and a branch has at most
@@ -1405,7 +1405,7 @@ most two array levels (`arrayOf`), each of which spends a round too.
 Before this existed the depth-exhausted fallback was `mkStruct s []`, which is
 a struct literal missing its initializers: an **ill-typed** program, rejected
 by the checker for a reason that is not ownership and by the compiler for a
-field-count error rather than the ownership diagnostic the bridge's refusal
+field-count error rather than the ownership diagnostic differential testing's refusal
 table covers (two of the 200 cases at `--gen 200 --seed 7` were that shape). -/
 def leastValue (D : Decls) : Nat → Ty → Expr
   | _, .int w sg => intLit w sg 0
@@ -1549,7 +1549,7 @@ partial move of `3.8:22`; one with such a prefix is the declared-linear
 destructure of `3.8:33`, which (Use-Declared-Linear-Destructure) §5.1 and
 (D-Use-Declared-Linear) §6.3 discharge (RUE-2236). Both are drawn from the one
 grammar and `declaredPrefix` (`Syntax.lean`) decides between them, which is
-what makes the plan's *selection* something the bridge checks rather than
+what makes the plan's *selection* something differential testing checks rather than
 something the draw assumes.
 
 A destructure's own premises are left to chance with every other ownership
@@ -1557,7 +1557,7 @@ choice in this module: a residue that carries a linear value is §5.1's
 `¬ linear-residue(S, π_s)` and the E0474 the compiler reports (`3.8:60`), and a
 destructor above the leaf is `3.9:34` and E0456 — which the declared plan
 demands even at a `Copy` leaf, where the ordinary rules do not. Both are
-`reject` verdicts of the kind the bridge's refusal table covers. RUE-2335's
+`reject` verdicts of the kind differential testing's refusal table covers. RUE-2335's
 shape, a `@drop` of a declared-`linear` place after a destructure under it, is
 not drawn around either: the model accepts it, and the compiler has too since
 RUE-2335 was fixed (rare; module docstring). -/

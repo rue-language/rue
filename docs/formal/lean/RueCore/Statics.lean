@@ -1219,7 +1219,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   value-context *copies* (§4.2)", precisely because the `Copy` restriction
   makes those copies free. The form is kept here as a rule of its own so the
   printer can emit the surface spelling the compiler's E0905 is about and so
-  the bridge exercises it; the premise and the dynamics are exactly that
+  differential testing exercises it; the premise and the dynamics are exactly that
   elaboration's, and `Ty.qual P.decls T = .copy` is `7.1:38`. That the
   calculus and this rule agree is by construction and not by a theorem — it is
   named as a deviation in `../03-metatheory.md`. -/

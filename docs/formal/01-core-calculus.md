@@ -2611,7 +2611,7 @@ off the interpreter itself. `SemanticGapKind::FloatArithmetic` survives in the
 enum with no site that raises it.
 
 So the RUE-50 differential obligation on the float rules is **live**: the
-Lean↔oracle pair of the ADR-0097 bridge compares the float corpus like any
+Lean↔oracle pair of ADR-0097's differential testing compares the float corpus like any
 other, and step 5 of the README's rubric is met for this construct. One thing
 the harness cannot compare away is `σ_NaN` (§2): it is fixed per target, so a
 case whose answer depends on it — only `@total_cmp` can see it — is a case the

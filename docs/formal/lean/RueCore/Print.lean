@@ -1,10 +1,10 @@
 import RueCore.Syntax
 
 /-!
-# RueCore.Print — core syntax to Rue source (the bridge's printer)
+# RueCore.Print — core syntax to Rue source (differential testing's printer)
 
 `crates/rue-oracle` interprets the compiler's CFG built from Rue source and
-cannot consume core syntax, so the differential bridge (ADR-0097, RUE-2227)
+cannot consume core syntax, so differential testing (ADR-0097, RUE-2227)
 runs the cheap direction: every fragment program is printed as a Rue program
 whose surface forms elaborate back to the core forms it came from (§2's
 elaboration inventory), and the compiler, the oracle, and the native binary
@@ -136,7 +136,7 @@ is what the interpreter's own value line is projected from (`Corpus.lean`'s
 `valueLines` reads the lines that value's drop would emit). A struct whose
 qualifier is `Linear` cannot be dropped implicitly, so `main` discharges it with
 `@drop(result)` — the same glue, made explicit (§5.3). Traps (§6.12) end the
-process before any of this; the bridge compares the trap kind.
+process before any of this; differential testing compares the trap kind.
 -/
 
 namespace RueCore

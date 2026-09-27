@@ -3,7 +3,7 @@ import RueCore.Gen
 import RueCore.Explain.Text
 
 /-!
-`lake exe ruecore-corpus` prints the bridge corpus as JSON on stdout. With
+`lake exe ruecore-corpus` prints the differential corpus as JSON on stdout. With
 `--gen N --seed S` (RUE-2229) the `N` programs `RueCore/Gen.lean` generates
 from seed `S` follow the seed cases in the same document; the seed defaults
 to 0. With `--profile` (RUE-2469) it prints instead the checker's acceptance
@@ -18,8 +18,8 @@ The profile also names the checker's **incompleteness** (RUE-2491): a case
 export fuel and model — the checker rejects it, but the interpreter did not
 get stuck on it. Such a case's verdict is never checked against the
 compiler's *run*, only against its accept/reject call (`Corpus.lean`'s
-module docstring), so an over-strict rejection here is invisible to the
-bridge otherwise. Each one is listed with the checker's own refusal, in the
+module docstring), so an over-strict rejection here is invisible to
+differential testing otherwise. Each one is listed with the checker's own refusal, in the
 calculus's own words (`Explain.lean`'s `verdictSection`, the same prose
 `ruecore-explain` prints), so a reader can tell an intended static
 approximation from an accidental one without re-deriving it by hand.

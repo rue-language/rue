@@ -11,7 +11,7 @@ the findings dropped in adjudication are listed with the reason.
 
 - **Trunk:** `f4ac09fc9`.
 - **Kind:** full-claim, the program's first. Two targets were run, statements
-  and docs. Definitions, bridge and trusted base were not attacked in this
+  and docs. Definitions, differential testing and trusted base were not attacked in this
   pass beyond what the statement agent read; their children (RUE-2465,
   RUE-2464, RUE-2457) carry them.
 - **Models:** two fresh Claude Opus sessions, one per brief, run one after
@@ -88,7 +88,7 @@ found it independently, and it is recorded here as a confirmation.
 | Destructors are events, not nested runs | Disclosed: 03-metatheory's reduction-relation row and GUIDE §2 list it among `Step`'s departures from §6. |
 | Exclusivity and no-use-after-free have no statement | Disclosed: 03-metatheory marks both *not yet mechanized* (RUE-2238). |
 | `Entry.join` ignores the second entry's type; `Typed.loopDiv` does not require `Ωe.brk = []` | Not reproduced by reading; left to RUE-2465's mutants, which test exactly this kind of premise. |
-| Docs: the bridge's corpus drops non-terminating cases; the generator's "typed by construction" has no theorem; "all 1,200 cases agree" is a snapshot | Process claims the README already hedges; no theorem is claimed. |
+| Docs: differential testing's corpus drops non-terminating cases; the generator's "typed by construction" has no theorem; "all 1,200 cases agree" is a snapshot | Process claims the README already hedges; no theorem is claimed. |
 
 ### Not pursued
 
@@ -253,7 +253,7 @@ Do not edit any file. Write your full report to <packet>/red-docs-report.md and 
 - **Packet:** none. There is no red agent here. The "attack" is 80 mutants,
   each a one-rule change written as exact-text edits. The script records the
   first of these that fails on each mutant: a proof, a witness, the seed
-  corpus, or the bridge on `--gen 200 --seed 7`. It runs each mutant a
+  corpus, or differential testing on `--gen 200 --seed 7`. It runs each mutant a
   proof fails on again with the proofs of L0, L1, the Spec layer and L2
   given `sorry`. It runs each mutant a witness fails on a third time with
   the witnesses off as well.
@@ -268,7 +268,7 @@ Do not edit any file. Write your full report to <packet>/red-docs-report.md and 
   false stated property, or a failing witness, seed or generated case. No
   cross-model auditor ran.
 - **Score:** 73 of 76 non-equivalent mutants killed without the seeds, 76 of
-  76 with them. The seeds and the bridge alone kill 50 before the seeds and
+  76 with them. The seeds and differential testing alone kill 50 before the seeds and
   56 after.
 
 ### Findings (counted)
@@ -287,7 +287,7 @@ Each is reproduced by `mutate.py --work <dir> --only <id>` on the tree above.
 | Candidate | Why dropped |
 |---|---|
 | 4 mutants that fail a proof script (3 also the Explain mirror): `use-copy-moved`, `match-exhaustive`, `loop-head-unverified`, `entry-join-bty` | Equivalent: each changes no decision on any reachable state (MUTATION.md, "Equivalent mutants"). `entry-join-bty` settles the first pass's dropped "`Entry.join` ignores the second entry's type": it is harmless. |
-| 16 mutants that fail a proof while every statement holds | Not counted as kills by a proof. Each is killed by a witness, a seed or the bridge, after the seeds; before them, `breaks-nested` was not (D4). |
+| 16 mutants that fail a proof while every statement holds | Not counted as kills by a proof. Each is killed by a witness, a seed or differential testing, after the seeds; before them, `breaks-nested` was not (D4). |
 
 ### Attacked and survived
 
@@ -626,7 +626,7 @@ What the mutants could not get past:
 | S2 | statements | low | fixed here | `Config.trichotomy`'s Literature row said the statement "has content here". It does not: `Config.Stuck` is `step`'s verdict, and `step` is total. The row now says what the statement adds. |
 | S3 | statements | low | fixed here | `freed_once` and `dtor_once` read as if a property of the type system. A refused or fuel-exhausted run has an empty trace, so on unchecked programs the bound rests on `eval`'s refusals. Both readings now say so. |
 | S4 | definitions | low | fixed here (disclosed) | `WfProgram` admits any entry-point return type, while 01 §2 fixes `i32 \| unit`. A checked `fn main() -> Tok { Tok{} }` returns a live linear value, and `whole_program_exactly_once` counts it as ended. It is disclosed in `run_safe` and `whole_program_exactly_once` rather than restricted, because restricting it would empty `Nonvacuous.whole_result`. |
-| S5 | definitions | low | fixed here | `@panic`'s message is not modelled, but a comment in `Dynamics.lean` said it "is emitted". The comment and INDEX now say the bridge compares the panic category only. |
+| S5 | definitions | low | fixed here | `@panic`'s message is not modelled, but a comment in `Dynamics.lean` said it "is emitted". The comment and INDEX now say differential testing compares the panic category only. |
 | S6 | calculus | low | RUE-2507 (Steve), then RUE-2510 (fixed) | 03's float row does not account for §7's "`≺_w` is a total order". `totalCmp_trichotomy` proves only the −1/0/1 range. RUE-2510 proves the order (`totalCmp_strictTotalOrder`), and 03's row now cites it. |
 | S7 | calculus | low | RUE-2508 (Steve) | 01 §§5–7 have no paragraph ids, so a statement's "§7 paragraph" link can't be checked. |
 
