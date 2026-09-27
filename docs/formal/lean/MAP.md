@@ -19,7 +19,11 @@ incoming edge from `Step.det` depends on it.
 
 ```mermaid
 flowchart BT
-  subgraph RueCore_Adequacy["RueCore.Adequacy (L2 proofs)"]
+  subgraph RueCore_Checker["RueCore.Checker (L2 proofs)"]
+    checkProgram_sound["checkProgram_sound"]
+    check_sound["check_sound"]
+  end
+  subgraph RueCore_Equivalence["RueCore.Equivalence (L2 proofs)"]
     eval_big_to_small["eval_big_to_small"]
     eval_diverges_iff["eval_diverges_iff"]
     eval_sim["eval_sim"]
@@ -36,16 +40,8 @@ flowchart BT
     step_type_safety["step_type_safety"]
     step_value_typed["step_value_typed"]
   end
-  subgraph RueCore_Checker["RueCore.Checker (L2 proofs)"]
-    checkProgram_sound["checkProgram_sound"]
-    check_sound["check_sound"]
-  end
   subgraph RueCore_Float_Lemmas["RueCore.Float.Lemmas (L2 proofs)"]
     roundRat_wf["roundRat_wf"]
-  end
-  subgraph RueCore_Retire["RueCore.Retire (L2 proofs)"]
-    run_no_use_after_drop["run_no_use_after_drop"]
-    step_no_use_after_drop["step_no_use_after_drop"]
   end
   subgraph RueCore_Soundness["RueCore.Soundness (L2 proofs)"]
     LoopHead_backEdge["LoopHead.backEdge"]
@@ -80,6 +76,10 @@ flowchart BT
     step_iff["step_iff"]
     step_stuck_isStuckState["step_stuck_isStuckState"]
     unwindLocs_plain["unwindLocs_plain"]
+  end
+  subgraph RueCore_Tombstone["RueCore.Tombstone (L2 proofs)"]
+    run_no_use_after_drop["run_no_use_after_drop"]
+    step_no_use_after_drop["step_no_use_after_drop"]
   end
   subgraph RueCore_Trace["RueCore.Trace (L2 proofs)"]
     dtor_once["dtor_once"]
@@ -250,7 +250,7 @@ its module and the calculus citations its doc-comment carries — what the
 | Definition | Module | Calculus citations |
 | --- | --- | --- |
 | <a id="def-Activation"></a>`Activation` | `RueCore.Dynamics` | §6.1, §6.9 |
-| <a id="def-Activation_empty"></a>`Activation.empty` | `RueCore.Adequacy.Defs` | — |
+| <a id="def-Activation_empty"></a>`Activation.empty` | `RueCore.Equivalence.Defs` | — |
 | <a id="def-Activation_unwindScope"></a>`Activation.unwindScope` | `RueCore.Step` | §6.7, (D-Let), (D-Match) |
 | <a id="def-ActivationTyping"></a>`ActivationTyping` | `RueCore.Soundness.Defs` | §6.1, §6.9 |
 | <a id="def-ArgsFrame"></a>`ArgsFrame` | `RueCore.Step` | §6.2 |
@@ -269,7 +269,7 @@ its module and the calculus citations its doc-comment carries — what the
 | <a id="def-Cell_own"></a>`Cell.own` | `RueCore.Trace.Defs` | — |
 | <a id="def-CellTyping"></a>`CellTyping` | `RueCore.Soundness.Defs` | §7, §5.5 |
 | <a id="def-Config"></a>`Config` | `RueCore.Step` | §6.1, §6.12, (Result-Ok) |
-| <a id="def-Config_SafeAt"></a>`Config.SafeAt` | `RueCore.Adequacy.Defs` | §7, §6.12, §5, (Result-Panic) |
+| <a id="def-Config_SafeAt"></a>`Config.SafeAt` | `RueCore.Equivalence.Defs` | §7, §6.12, §5, (Result-Panic) |
 | <a id="def-Config_Stuck"></a>`Config.Stuck` | `RueCore.Step` | §6, §7 |
 | <a id="def-Config_Terminal"></a>`Config.Terminal` | `RueCore.Step` | (Result-Ok), (Result-Panic) |
 | <a id="def-Config_held"></a>`Config.held` | `RueCore.Trace.Defs` | §6.1, §6.12, (D-Struct), (D-Enum-Intro), (D-Array) |
@@ -431,7 +431,7 @@ its module and the calculus citations its doc-comment carries — what the
 | <a id="def-Step"></a>`Step` | `RueCore.Step` | §6, §6.4, §6.2, (Search), (Panic-Lift) |
 | <a id="def-StepOut"></a>`StepOut` | `RueCore.Step` | §6 |
 | <a id="def-Steps"></a>`Steps` | `RueCore.Step` | §6.12 |
-| <a id="def-StepsN"></a>`StepsN` | `RueCore.Adequacy.Defs` | §6 |
+| <a id="def-StepsN"></a>`StepsN` | `RueCore.Equivalence.Defs` | §6 |
 | <a id="def-Stk"></a>`Stk` | `RueCore.Trace.Defs` | §6.9 |
 | <a id="def-Store"></a>`Store` | `RueCore.Dynamics` | §6.1 |
 | <a id="def-StoreCC"></a>`StoreCC` | `RueCore.Trace.Defs` | — |
@@ -2421,7 +2421,7 @@ marked node.
 | `no_refusal` | `RueCore.Soundness` | 46 | 3 |
 | `no_use_after_move` | `RueCore.Soundness` | 3 | 0 |
 | `no_use_after_drop` | `RueCore.Soundness` | 12 | 0 |
-| `run_no_use_after_drop` | `RueCore.Retire` | 12 | 51 |
+| `run_no_use_after_drop` | `RueCore.Tombstone` | 12 | 51 |
 | `no_linear_leak` | `RueCore.Soundness` | 4 | 0 |
 | `no_linear_overwrite` | `RueCore.Soundness` | 7 | 0 |
 | `no_linear_discard` | `RueCore.Soundness` | 3 | 0 |
@@ -2445,18 +2445,18 @@ marked node.
 | `step_iff` | `RueCore.Step.Lemmas` | 14 | 12 |
 | `Config.stuck_iff` | `RueCore.Step.Lemmas` | 17 | 13 |
 | `step_stuck_isStuckState` | `RueCore.Step.Lemmas` | 48 | 27 |
-| `step_progress` | `RueCore.Adequacy` | 11 | 0 |
-| `step_safeAt` | `RueCore.Adequacy` | 13 | 2 |
-| `step_type_safety` | `RueCore.Adequacy` | 25 | 2 |
-| `step_no_use_after_drop` | `RueCore.Retire` | 10 | 57 |
-| `eval_big_to_small` | `RueCore.Adequacy` | 17 | 0 |
-| `run_sim` | `RueCore.Adequacy` | 18 | 0 |
-| `eval_small_to_big` | `RueCore.Adequacy` | 23 | 0 |
-| `run_small_to_big` | `RueCore.Adequacy` | 25 | 10 |
-| `never_refused_iff` | `RueCore.Adequacy` | 14 | 0 |
-| `step_never_stuck_of_run` | `RueCore.Adequacy` | 17 | 0 |
-| `run_refused_of_step_stuck` | `RueCore.Adequacy` | 13 | 12 |
-| `eval_diverges_iff` | `RueCore.Adequacy` | 26 | 8 |
+| `step_progress` | `RueCore.Equivalence` | 11 | 0 |
+| `step_safeAt` | `RueCore.Equivalence` | 13 | 2 |
+| `step_type_safety` | `RueCore.Equivalence` | 25 | 2 |
+| `step_no_use_after_drop` | `RueCore.Tombstone` | 10 | 57 |
+| `eval_big_to_small` | `RueCore.Equivalence` | 17 | 0 |
+| `run_sim` | `RueCore.Equivalence` | 18 | 0 |
+| `eval_small_to_big` | `RueCore.Equivalence` | 23 | 0 |
+| `run_small_to_big` | `RueCore.Equivalence` | 25 | 10 |
+| `never_refused_iff` | `RueCore.Equivalence` | 14 | 0 |
+| `step_never_stuck_of_run` | `RueCore.Equivalence` | 17 | 0 |
+| `run_refused_of_step_stuck` | `RueCore.Equivalence` | 13 | 12 |
+| `eval_diverges_iff` | `RueCore.Equivalence` | 26 | 8 |
 | `Typed.wf` | `RueCore.Statics.Lemmas` | 127 | 90 |
 | `Ctx.join_absorb` | `RueCore.Statics.Lemmas` | 23 | 28 |
 | `Ctx.joinAll_perm` | `RueCore.Statics.Lemmas` | 25 | 70 |
@@ -2466,10 +2466,10 @@ marked node.
 | `class_unique` | `RueCore.Statics.Lemmas` | 90 | 14 |
 | `struct_carriesLinear_iff` | `RueCore.Statics.Lemmas` | 42 | 9 |
 | `enum_carriesLinear_iff` | `RueCore.Statics.Lemmas` | 23 | 11 |
-| `init_safeAt` | `RueCore.Adequacy` | 18 | 2 |
-| `eval_sim` | `RueCore.Adequacy` | 46 | 60 |
-| `eval_steps_of_outOfFuel` | `RueCore.Adequacy` | 42 | 63 |
-| `step_value_typed` | `RueCore.Adequacy` | 10 | 0 |
+| `init_safeAt` | `RueCore.Equivalence` | 18 | 2 |
+| `eval_sim` | `RueCore.Equivalence` | 46 | 60 |
+| `eval_steps_of_outOfFuel` | `RueCore.Equivalence` | 42 | 63 |
+| `step_value_typed` | `RueCore.Equivalence` | 10 | 0 |
 | `destructure_plain` | `RueCore.Step.Lemmas` | 18 | 1 |
 | `unwindLocs_plain` | `RueCore.Step.Lemmas` | 19 | 1 |
 | `eval_conserves` | `RueCore.Trace` | 390 | 173 |

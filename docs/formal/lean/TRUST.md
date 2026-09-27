@@ -643,110 +643,110 @@ and diffs them against the committed copies.
 | `dtor_once` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `no_double_free` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `dupProgram_step_double_free` | `RueCore.Trace` | `Quot.sound`, `propext` |
-| `Steps.trans` | `RueCore.Adequacy` | `propext` |
-| `Steps.single` | `RueCore.Adequacy` | `propext` |
-| `Steps.peel` | `RueCore.Adequacy` | `propext` |
-| `Sim.pre` | `RueCore.Adequacy` | `propext` |
-| `Sim.withTrace` | `RueCore.Adequacy` | `propext` |
-| `Sim.bind` | `RueCore.Adequacy` | `propext` |
-| `Sim.lift` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `Sim.absorb` | `RueCore.Adequacy` | `propext` |
-| `OpRes.sim` | `RueCore.Adequacy` | `propext` |
-| `evalArgs_sim` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `Sim.peel` | `RueCore.Adequacy` | `propext` |
-| `evalArgs_abort_ne_ok` | `RueCore.Adequacy` | `propext` |
-| `EvalRes.withTrace_bind` | `RueCore.Adequacy` | `propext` |
-| `rootCell_of` | `RueCore.Adequacy` | `propext` |
-| `Activation.unwindScope_push` | `RueCore.Adequacy` | `propext` |
-| `Activation.unwindScope_let` | `RueCore.Adequacy` | `propext` |
-| `plainUnwind_single` | `RueCore.Adequacy` | `propext` |
-| `sim_use` | `RueCore.Adequacy` | `propext` |
-| `sim_drop` | `RueCore.Adequacy` | `propext` |
-| `sim_binop` | `RueCore.Adequacy` | `propext` |
-| `sim_unop` | `RueCore.Adequacy` | `propext` |
-| `sim_intCast` | `RueCore.Adequacy` | `propext` |
-| `sim_fintrin` | `RueCore.Adequacy` | `propext` |
-| `sim_dbg` | `RueCore.Adequacy` | `propext` |
-| `sim_mkStruct` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `sim_mkEnum` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `sim_mkArray` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `sim_repeat` | `RueCore.Adequacy` | `propext` |
-| `sim_indexRead_args` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `sim_indexRead` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `sim_indexDrop` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `sim_indexWrite` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `sim_match` | `RueCore.Adequacy` | `propext` |
-| `sim_letIn` | `RueCore.Adequacy` | `propext` |
-| `sim_assign` | `RueCore.Adequacy` | `propext` |
-| `sim_seq` | `RueCore.Adequacy` | `propext` |
-| `sim_ite` | `RueCore.Adequacy` | `propext` |
-| `sim_call` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `sim_ret` | `RueCore.Adequacy` | `propext` |
-| `sim_brk` | `RueCore.Adequacy` | `propext` |
-| `sim_loop` | `RueCore.Adequacy` | `propext` |
-| `eval_sim` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `run_sim` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `eval_big_to_small` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `StepsN.toSteps` | `RueCore.Adequacy` | `propext` |
-| `Steps.toN` | `RueCore.Adequacy` | `propext` |
-| `StepsN.trans` | `RueCore.Adequacy` | `propext` |
-| `StepsN.prefix` | `RueCore.Adequacy` | `propext` |
-| `StepsN.det` | `RueCore.Adequacy` | `propext` |
-| `StepsN.peel` | `RueCore.Adequacy` | `propext` |
-| `StepsN.bound` | `RueCore.Adequacy` | `propext` |
-| `Steps.final_unique` | `RueCore.Adequacy` | `propext` |
-| `Long.mono` | `RueCore.Adequacy` | `propext` |
-| `Long.pre` | `RueCore.Adequacy` | `propext` |
-| `Long.pre1` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `Long.bind` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `Long.bind0` | `RueCore.Adequacy` | `propext` |
-| `evalArgs_long` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `evalArgs_ok_steps` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `Long.zero` | `RueCore.Adequacy` | `propext` |
-| `OpRes.toRes_ne_outOfFuel` | `RueCore.Adequacy` | `propext` |
-| `introVal_ne_outOfFuel` | `RueCore.Adequacy` | `propext` |
-| `eval_leaf_ne_outOfFuel` | `RueCore.Adequacy` | `propext` |
-| `long_binop` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_unop` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_intCast` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_fintrin` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_dbg` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_repeat` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_ret` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_assign` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_letIn` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_match` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_seq` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_ite` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_argsForm` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_mkStruct` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_mkEnum` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_mkArray` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_indexRead` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_indexDrop` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_indexDrop_one` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_indexWrite` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_call` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `long_loop` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `eval_steps_of_outOfFuel` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `EvalRes.withTrace_ne_broke` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `EvalRes.bindCall_ne_broke` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `run_ne_broke` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `run_classify` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `run_small_to_big` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `eval_small_to_big` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `run_refused_of_step_stuck` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `step_never_stuck_of_run` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `never_refused_iff` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `eval_diverges_iff` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `Config.SafeAt.progress` | `RueCore.Adequacy` | `propext` |
-| `Config.SafeAt.invariant` | `RueCore.Adequacy` | `propext` |
-| `Config.SafeAt.steps` | `RueCore.Adequacy` | `propext` |
-| `init_safeAt` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `step_progress` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `step_safeAt` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `step_value_typed` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `step_type_safety` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `Steps.trans` | `RueCore.Equivalence` | `propext` |
+| `Steps.single` | `RueCore.Equivalence` | `propext` |
+| `Steps.peel` | `RueCore.Equivalence` | `propext` |
+| `Sim.pre` | `RueCore.Equivalence` | `propext` |
+| `Sim.withTrace` | `RueCore.Equivalence` | `propext` |
+| `Sim.bind` | `RueCore.Equivalence` | `propext` |
+| `Sim.lift` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `Sim.absorb` | `RueCore.Equivalence` | `propext` |
+| `OpRes.sim` | `RueCore.Equivalence` | `propext` |
+| `evalArgs_sim` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `Sim.peel` | `RueCore.Equivalence` | `propext` |
+| `evalArgs_abort_ne_ok` | `RueCore.Equivalence` | `propext` |
+| `EvalRes.withTrace_bind` | `RueCore.Equivalence` | `propext` |
+| `rootCell_of` | `RueCore.Equivalence` | `propext` |
+| `Activation.unwindScope_push` | `RueCore.Equivalence` | `propext` |
+| `Activation.unwindScope_let` | `RueCore.Equivalence` | `propext` |
+| `plainUnwind_single` | `RueCore.Equivalence` | `propext` |
+| `sim_use` | `RueCore.Equivalence` | `propext` |
+| `sim_drop` | `RueCore.Equivalence` | `propext` |
+| `sim_binop` | `RueCore.Equivalence` | `propext` |
+| `sim_unop` | `RueCore.Equivalence` | `propext` |
+| `sim_intCast` | `RueCore.Equivalence` | `propext` |
+| `sim_fintrin` | `RueCore.Equivalence` | `propext` |
+| `sim_dbg` | `RueCore.Equivalence` | `propext` |
+| `sim_mkStruct` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `sim_mkEnum` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `sim_mkArray` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `sim_repeat` | `RueCore.Equivalence` | `propext` |
+| `sim_indexRead_args` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `sim_indexRead` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `sim_indexDrop` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `sim_indexWrite` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `sim_match` | `RueCore.Equivalence` | `propext` |
+| `sim_letIn` | `RueCore.Equivalence` | `propext` |
+| `sim_assign` | `RueCore.Equivalence` | `propext` |
+| `sim_seq` | `RueCore.Equivalence` | `propext` |
+| `sim_ite` | `RueCore.Equivalence` | `propext` |
+| `sim_call` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `sim_ret` | `RueCore.Equivalence` | `propext` |
+| `sim_brk` | `RueCore.Equivalence` | `propext` |
+| `sim_loop` | `RueCore.Equivalence` | `propext` |
+| `eval_sim` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `run_sim` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `eval_big_to_small` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `StepsN.toSteps` | `RueCore.Equivalence` | `propext` |
+| `Steps.toN` | `RueCore.Equivalence` | `propext` |
+| `StepsN.trans` | `RueCore.Equivalence` | `propext` |
+| `StepsN.prefix` | `RueCore.Equivalence` | `propext` |
+| `StepsN.det` | `RueCore.Equivalence` | `propext` |
+| `StepsN.peel` | `RueCore.Equivalence` | `propext` |
+| `StepsN.bound` | `RueCore.Equivalence` | `propext` |
+| `Steps.final_unique` | `RueCore.Equivalence` | `propext` |
+| `Long.mono` | `RueCore.Equivalence` | `propext` |
+| `Long.pre` | `RueCore.Equivalence` | `propext` |
+| `Long.pre1` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `Long.bind` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `Long.bind0` | `RueCore.Equivalence` | `propext` |
+| `evalArgs_long` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `evalArgs_ok_steps` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `Long.zero` | `RueCore.Equivalence` | `propext` |
+| `OpRes.toRes_ne_outOfFuel` | `RueCore.Equivalence` | `propext` |
+| `introVal_ne_outOfFuel` | `RueCore.Equivalence` | `propext` |
+| `eval_leaf_ne_outOfFuel` | `RueCore.Equivalence` | `propext` |
+| `long_binop` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_unop` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_intCast` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_fintrin` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_dbg` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_repeat` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_ret` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_assign` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_letIn` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_match` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_seq` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_ite` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_argsForm` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_mkStruct` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_mkEnum` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_mkArray` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_indexRead` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_indexDrop` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_indexDrop_one` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_indexWrite` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_call` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `long_loop` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `eval_steps_of_outOfFuel` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `EvalRes.withTrace_ne_broke` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `EvalRes.bindCall_ne_broke` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `run_ne_broke` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `run_classify` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `run_small_to_big` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `eval_small_to_big` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `run_refused_of_step_stuck` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `step_never_stuck_of_run` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `never_refused_iff` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `eval_diverges_iff` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `Config.SafeAt.progress` | `RueCore.Equivalence` | `propext` |
+| `Config.SafeAt.invariant` | `RueCore.Equivalence` | `propext` |
+| `Config.SafeAt.steps` | `RueCore.Equivalence` | `propext` |
+| `init_safeAt` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `step_progress` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `step_safeAt` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `step_value_typed` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `step_type_safety` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
 | `Nonvacuous.withTrace_nil` | `RueCore.Nonvacuous` | `propext` |
 | `Nonvacuous.of_okFloat` | `RueCore.Nonvacuous` | `propext` |
 | `Nonvacuous.loopUnit_eval` | `RueCore.Nonvacuous` | `propext` |
@@ -941,62 +941,62 @@ and diffs them against the committed copies.
 | `DropGlueSeq.det` | `RueCore.TraceOrder` | `propext` |
 | `DropGlueBlocks.drop_inv` | `RueCore.TraceOrder` | `propext` |
 | `Blocks.not_dtor` | `RueCore.TraceOrder` | `propext` |
-| `Retire.Live.lt` | `RueCore.Retire` | `propext` |
-| `Retire.Live.ne_dead` | `RueCore.Retire` | `propext` |
-| `Retire.Live.set_full` | `RueCore.Retire` | `propext` |
-| `Retire.Live.append` | `RueCore.Retire` | `propext` |
-| `Retire.Grow.refl` | `RueCore.Retire` | `propext` |
-| `Retire.Grow.trans` | `RueCore.Retire` | `propext` |
-| `Retire.Grow.append` | `RueCore.Retire` | `propext` |
-| `Retire.Grow.set_full` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `Retire.Live.ne_of_le` | `RueCore.Retire` | `propext` |
-| `Retire.LiveActivation.grow` | `RueCore.Retire` | `propext` |
-| `Retire.LivePost.withTrace` | `RueCore.Retire` | `propext` |
-| `Retire.LivePost.lift` | `RueCore.Retire` | `propext` |
-| `Retire.LivePost.andThen` | `RueCore.Retire` | `propext` |
-| `Retire.LivePost.scoped` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `Retire.Contents.getAt_ne_uad` | `RueCore.Retire` | `propext` |
-| `Retire.Contents.resolveDyn_ne_uad` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `Retire.dynPlace_ne_uad` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `Retire.dropContents_ne_uad` | `RueCore.Retire` | `propext` |
-| `Retire.dropContentsList_ne_uad` | `RueCore.Retire` | `propext` |
-| `Retire.dropCell_ne_uad` | `RueCore.Retire` | `propext` |
-| `Retire.Contents.splitResidue_ne_uad` | `RueCore.Retire` | `propext` |
-| `Retire.Contents.splitFields_ne_uad` | `RueCore.Retire` | `propext` |
-| `Retire.dropResidue_ne_uad` | `RueCore.Retire` | `propext` |
-| `Retire.Contents.destructure_ne_uad` | `RueCore.Retire` | `propext` |
-| `Retire.dropRetire_live` | `RueCore.Retire` | `propext` |
-| `Retire.unwindLocs_live` | `RueCore.Retire` | `propext` |
-| `Retire.nodup_reverse` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `Retire.UnwindPost.grow` | `RueCore.Retire` | `propext` |
-| `Retire.freshParams_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `Retire.OpRes.toRes_live` | `RueCore.Retire` | `propext` |
-| `Retire.introVal_live` | `RueCore.Retire` | `propext` |
-| `Retire.evalArgs_live` | `RueCore.Retire` | `propext` |
-| `Retire.LiveActivation.root` | `RueCore.Retire` | `propext` |
-| `Retire.eval_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `Retire.plainDropRetire_live` | `RueCore.Retire` | `propext` |
-| `Retire.plainUnwind_live` | `RueCore.Retire` | `propext` |
-| `Retire.plainResidue_ne_uad` | `RueCore.Retire` | `propext` |
-| `Retire.plainDestructure_ne_uad` | `RueCore.Retire` | `propext` |
-| `Retire.Shape.env` | `RueCore.Retire` | `propext` |
-| `Retire.Shape.toCall` | `RueCore.Retire` | `propext` |
-| `Retire.Shape.toLoop` | `RueCore.Retire` | `propext` |
-| `Retire.StackLive.env` | `RueCore.Retire` | `propext` |
-| `Retire.StackLive.grow` | `RueCore.Retire` | `propext` |
-| `Retire.rootCell_ne_uad` | `RueCore.Retire` | `propext` |
-| `Retire.unwind_keeps` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `Retire.unwind_err` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `Retire.extend_keeps` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `Retire.Activation.unwindScope_ext` | `RueCore.Retire` | `propext` |
-| `Retire.OpRes.toStep_live` | `RueCore.Retire` | `propext` |
-| `Retire.stepEval_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `Retire.stepArgs_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `Retire.stepRet_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `Retire.step_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `Retire.steps_live` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `run_no_use_after_drop` | `RueCore.Retire` | `Quot.sound`, `propext` |
-| `step_no_use_after_drop` | `RueCore.Retire` | `Quot.sound`, `propext` |
+| `Tombstone.Live.lt` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.Live.ne_dead` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.Live.set_full` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.Live.append` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.Grow.refl` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.Grow.trans` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.Grow.append` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.Grow.set_full` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
+| `Tombstone.Live.ne_of_le` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.LiveActivation.grow` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.LivePost.withTrace` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.LivePost.lift` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.LivePost.andThen` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.LivePost.scoped` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
+| `Tombstone.Contents.getAt_ne_uad` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.Contents.resolveDyn_ne_uad` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
+| `Tombstone.dynPlace_ne_uad` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
+| `Tombstone.dropContents_ne_uad` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.dropContentsList_ne_uad` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.dropCell_ne_uad` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.Contents.splitResidue_ne_uad` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.Contents.splitFields_ne_uad` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.dropResidue_ne_uad` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.Contents.destructure_ne_uad` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.dropRetire_live` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.unwindLocs_live` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.nodup_reverse` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
+| `Tombstone.UnwindPost.grow` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.freshParams_live` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
+| `Tombstone.OpRes.toRes_live` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.introVal_live` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.evalArgs_live` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.LiveActivation.root` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.eval_live` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
+| `Tombstone.plainDropRetire_live` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.plainUnwind_live` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.plainResidue_ne_uad` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.plainDestructure_ne_uad` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.Shape.env` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.Shape.toCall` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.Shape.toLoop` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.StackLive.env` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.StackLive.grow` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.rootCell_ne_uad` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.unwind_keeps` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
+| `Tombstone.unwind_err` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
+| `Tombstone.extend_keeps` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
+| `Tombstone.Activation.unwindScope_ext` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.OpRes.toStep_live` | `RueCore.Tombstone` | `propext` |
+| `Tombstone.stepEval_live` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
+| `Tombstone.stepArgs_live` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
+| `Tombstone.stepRet_live` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
+| `Tombstone.step_live` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
+| `Tombstone.steps_live` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
+| `run_no_use_after_drop` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
+| `step_no_use_after_drop` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
 | `StepsN.split` | `RueCore.TracePrefix` | `propext` |
 | `StepsN.reaches` | `RueCore.TracePrefix` | `propext` |
 | `Steps.trace_ext` | `RueCore.TracePrefix` | `Quot.sound`, `propext` |
@@ -1722,9 +1722,9 @@ witness programs): a witness can only fail to witness, never widen a claim.
 | --- | --- | --- | --- |
 | `RueCore.Float` | L0 syntax | 32 | `FloatArith`, `FloatDatum`, `FloatDatum.Wf`, `FloatDatum.isNaN`, `FloatDatum.le`, `FloatDatum.lt`, `FloatDatum.negate`, `FloatDatum.roundOp`, `FloatDatum.succMag`, `FloatDatum.toIntIn`, `FloatDatum.totalCmp`, `FloatDatum.totalRank`, `FloatDatum.truncToInt`, `FloatDatum.widen`, `FloatLaws`, `FloatLit`, `FloatLit.RoundsFinite`, `FloatLit.exact`, `FloatRoundOp`, `FloatSig`, `FloatSig.cast`, `FloatSig.roundIntrin`, `FloatUnIntrin`, `FloatWidth`, `FloatWidth.eMin`, `FloatWidth.eTop`, `FloatWidth.overflowNum`, `FloatWidth.prec`, `canonAux`, `canonNum`, `cmpScaled`, `magCmp` |
 | `RueCore.Syntax` | L0 syntax | 54 | `Attr`, `Attr.lift`, `BinOp`, `BinOp.floatAdmits`, `BinOp.intAdmits`, `BinOp.isCompare`, `BinOp.resultTy`, `Decls`, `Decls.classOf`, `Decls.enumClassOf`, `EnumDecl`, `Expr`, `Expr.breaks`, `FloatIntrin`, `FloatIntrin.floatSrc`, `FloatIntrin.resTy`, `FnDef`, `InBounds`, `IntWidth`, `IntWidth.bits`, `IntWidth.modulus`, `Param`, `Place`, `Place.path`, `Place.root`, `Program`, `Qual`, `Qual.join`, `Qual.rank`, `Sign`, `StructDecl`, `Ty`, `Ty.atDyn`, `Ty.atPath`, `Ty.declaredLinear`, `Ty.dynNoDeclared`, `Ty.fieldAt`, `Ty.isInt`, `Ty.observable`, `Ty.qual`, `UnOp`, `anyLinearOther`, `arrayPrefix`, `bitsOf`, `declaredPrefix`, `instDecidableEqTy.decEq`, `intMax`, `intMin`, `linearResidue`, `noArrayStep`, `noDtorPrefix`, `rootIdxOnly`, `valOf`, `wrapInt` |
-| `RueCore.Adequacy.Defs` | L1 definitions | 3 | `Activation.empty`, `Config.SafeAt`, `StepsN` |
 | `RueCore.Checker.Defs` | L1 definitions | 19 | `Decls.topoSort`, `Decls.topoSortStep`, `Expr.nodes`, `Ty.grounded`, `TyOrNever`, `TyOrNever.fits`, `TyOrNever.fitsC`, `TyOrNever.meet`, `check`, `checkDecls`, `checkEnumDecl`, `checkEnums`, `checkFn`, `checkNoCycle`, `checkProgram`, `checkStructDecl`, `checkStructs`, `headIter`, `headNext` |
 | `RueCore.Dynamics` | L1 definitions | 61 | `Activation`, `ArgsRes`, `Cell`, `Contents`, `Contents.allCopyList`, `Contents.copyContained`, `Contents.declaredLinear`, `Contents.declaredPlan`, `Contents.destructure`, `Contents.getAt`, `Contents.isMovedOut`, `Contents.ofVal`, `Contents.ofVals`, `Contents.pathOnly`, `Contents.qual`, `Contents.residualLinear`, `Contents.resolveDyn`, `Contents.setAt`, `Contents.splitResidue`, `Contents.toVal`, `DynPlace`, `DynStep`, `Env`, `EvalRes`, `EvalRes.bind`, `EvalRes.bindCall`, `EvalRes.withTrace`, `Event`, `OpRes`, `OpRes.toRes`, `PanicKind`, `Refusal`, `Store`, `Val`, `Val.ints`, `Val.observable`, `Val.qual`, `binOpFloat`, `binOpInt`, `dropCell`, `dropContents`, `dropEvents`, `dropResidue`, `dropRetire`, `dynPlace`, `eval`, `evalArgs`, `evalBinOp`, `evalFintrin`, `evalIntCast`, `evalUnOp`, `freshParams`, `inBoundsIdx`, `intResult`, `introVal`, `matchConsume`, `residueDropEvent`, `run`, `runAllScopeDrops`, `shiftAmount`, `unwindLocs` |
+| `RueCore.Equivalence.Defs` | L1 definitions | 3 | `Activation.empty`, `Config.SafeAt`, `StepsN` |
 | `RueCore.Soundness.Defs` | L1 definitions | 13 | `ActivationTyping`, `BreakOutputOk`, `CellTyping`, `Contents.noMovedOut`, `ContentsOwnTyping`, `ContentsOwnTypingList`, `ContentsTy`, `ContentsTys`, `EvalOk`, `FrameProperty`, `HasTy`, `HasTys`, `StoreTyping` |
 | `RueCore.Statics` | L1 definitions | 56 | `Ctx`, `Ctx.Wf`, `Ctx.join`, `Ctx.joinAll`, `Ctx.joinFold`, `Ctx.joinOpt`, `Ctx.joinOpts`, `Ctx.loopLocals`, `Ctx.outsideLoop`, `Decls.ByValueEdge`, `Decls.byValue`, `Entry`, `Entry.join`, `Entry.setSt`, `Entry.wf`, `EnumDecl.Wf`, `EnumDecl.payloadJoin`, `LoopHead`, `NoResidualLinear`, `Out`, `Out.merge`, `OwnSt`, `OwnSt.decEq`, `OwnSt.fieldAt`, `OwnSt.fieldStates`, `OwnSt.fullyOwned`, `OwnSt.get`, `OwnSt.isOwned`, `OwnSt.join`, `OwnSt.setAt`, `OwnSt.setField`, `OwnSt.wf`, `ProgramTyped`, `StructDecl.Wf`, `StructDecl.baseOf`, `Ty.tyNames`, `TyName`, `Typed`, `TypedArgs`, `TypedArms`, `WfByValueEdge`, `WfDecls`, `WfEnums`, `WfFn`, `WfProgram`, `WfStructs`, `assignArrayOk`, `extendArm`, `fnCtx`, `instDecidableEqEntry.decEq`, `overwriteOk`, `ownedJoinable`, `ownedJoinableList`, `residualLinear`, `residualLinearBelow`, `residualLinearFields` |
 | `RueCore.Step` | L1 definitions | 24 | `Activation.unwindScope`, `ArgsFrame`, `Config`, `Config.Stuck`, `Config.Terminal`, `Config.init`, `Focus`, `Kont`, `Kont.toCall`, `Kont.toLoop`, `OpRes.toStep`, `Refusal.isStuckState`, `Step`, `StepOut`, `Steps`, `plainDestructure`, `plainDropRetire`, `plainResidue`, `plainUnwind`, `rootCell`, `step`, `stepArgs`, `stepEval`, `stepRet` |
