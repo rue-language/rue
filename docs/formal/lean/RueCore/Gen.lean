@@ -576,7 +576,7 @@ itself has to land on `div` before its own pair can even fire, and seed 7's
 `(x, 0)` shape). `pairRate` raises `/`'s own rate to one in six (its own doc
 has the modulus's reasoning); `rem`'s stays untouched. And since the runtime
 prints one message for `divZero` and `remZero` (`crates/rue-runtime/src/error.rs`)
-and `crates/rue-oracle-diff/src/lean_corpus.rs` maps both to one bridge kind, a
+and `crates/rue-oracle-diff/src/lean_corpus.rs` maps both to one trap kind for differential testing, a
 `rem` site landing on `(x, 0)` is as good a `divZero` witness as a `div` site
 is — so `arithBinop` prints `/` under this one shape whichever of `div` or
 `rem` `op` itself is (its own doc has the mechanism), at no extra cost to
@@ -1117,7 +1117,7 @@ one draw in two, so the non-constant divisor (`let d = 0; x / d`) is exercised
 too, not only the literal `x / 0`. And whichever of `div` or `rem` `op` itself
 is, this one shape always prints under `/`: the runtime prints one message
 for `divZero` and `remZero` (`crates/rue-runtime/src/error.rs`) and
-`crates/rue-oracle-diff/src/lean_corpus.rs` maps both to one bridge kind, so a
+`crates/rue-oracle-diff/src/lean_corpus.rs` maps both to one trap kind for differential testing, so a
 `rem` site landing on `(x, 0)` is as good a `divZero` witness as a `div` site
 is, and forcing it costs nothing observable. Every other pair, at every op,
 still prints under `op` exactly as before. -/

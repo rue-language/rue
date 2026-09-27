@@ -294,7 +294,7 @@ reached an accepted program too rarely to be useful: 0 of the 1,200
 generated programs at `--gen 200 --seed 7` and `--gen 1000 --seed 23` end in
 `panic divZero`, against one `remZero`. `/`'s own rate is raised to one in
 six (`rem`'s stays untouched), and, since the runtime prints one message for
-`divZero` and `remZero` and `lean_corpus.rs` maps both to one bridge kind,
+`divZero` and `remZero` and `lean_corpus.rs` maps both to one trap kind for differential testing,
 this one shape now prints under `/` whichever of `div` or `rem` the operator
 itself is — so `--gen 200 --seed 7` reaches its one accepted `divZero` at no
 extra draw, from the `remZero` hit it already had (`gen_7_171`). `--gen 1000

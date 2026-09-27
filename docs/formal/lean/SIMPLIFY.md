@@ -320,7 +320,7 @@ Shared lemmas that several spine proofs re-prove in different forms.
 
 1. The simulation, proved three and a half times. `Equivalence` proves the
    simulation between `eval` and `Step` twice over: `Sim` (34 theorems,
-   756 lines, `eval_sim`) for a finished result, and `Long` (29 theorems,
+   756 lines, `eval_sim`) for a terminating result, and `Long` (29 theorems,
    404 lines, `eval_steps_of_outOfFuel`) for exhausted fuel. `TraceWhole`
    re-proves the first with a lossless-ledger side condition on every step:
    `MSim` and `MSteps` (45 theorems, 1,000 lines). `TracePrefix` re-proves the
@@ -447,7 +447,7 @@ them:
   by step, needs a typing of every intermediate configuration, which the
   package does not have (RUE-2423, and `TraceWhole.lean`'s module doc); the
   simulation is the cheaper proof.
-- The adequacy theorems (`eval_big_to_small`, `eval_small_to_big`,
+- The semantic-equivalence theorems (`eval_big_to_small`, `eval_small_to_big`,
   `never_refused_iff`, `step_never_stuck_of_run`) add no helpers of their
   own, yet each depends on 104 to 343, through `no_refusal`. Their statements
   include "the run is never refused", so the dependency on `soundness` is the
