@@ -39,7 +39,7 @@ Types
       | [T; n]                 -- array of n ≥ 0 elements of type T
 
 Type declarations
-  D ::= struct S { f1: T1, ..., fk: Tk }             -- struct; multiplicity class assigned by §3
+  D ::= struct S { f1: T1, ..., fk: Tk }             -- struct; qualifier assigned by §3
       | enum   E { K1(T̄1), ..., Kn(T̄n) }             -- enum (sum); variant Ki has payload tuple T̄i = Ti1..Ti_{ai} (ai ≥ 0)
   (an elaborated anonymous struct is just a struct name S with a generated identity;
    a discriminant-only, C-like enum is the ai = 0 case for every variant)
@@ -304,35 +304,35 @@ work, designed against the view values §6.13.2 already defines.
 
 ## 3. The multiplicity lattice
 
-Every type has a **class** describing its substructural behavior — how many times
+Every type has a **qualifier** describing its substructural behavior — how many times
 a value of it may be used, and whether it may be discarded (dropped):
 
 ```
-  class(T) ∈ { Copy, Affine, Linear }
+  qual(T) ∈ { Copy, Affine, Linear }
 
   Copy    : may be used any number of times (contraction);  may be dropped (weakening).
   Affine  : may be used at most once (no contraction);       may be dropped (weakening).
   Linear  : must be used exactly once (no contraction);      must NOT be dropped (no weakening).
 ```
 
-Assignment of the class:
+Assignment of the qualifier:
 
 ```
-  class(int(_,_)) = class(float(_)) = class(bool) = class(unit) = Copy
-  class(never)    = Copy            -- vacuous: no values, so any class is sound; Copy is simplest
-  class([T; n])   = Linear   if n > 0 and class(T) = Linear
-                  = Affine   if n > 0 and class(T) = Affine
-                  = Affine   if n = 0 and class(T) ≠ Copy    -- carries nothing (3.8:74): droppable, but NOT duplicable
-                  = Copy     if class(T) = Copy      -- includes every n when T:Copy
+  qual(int(_,_)) = qual(float(_)) = qual(bool) = qual(unit) = Copy
+  qual(never)    = Copy            -- vacuous: no values, so any class is sound; Copy is simplest
+  qual([T; n])   = Linear   if n > 0 and qual(T) = Linear
+                  = Affine   if n > 0 and qual(T) = Affine
+                  = Affine   if n = 0 and qual(T) ≠ Copy    -- carries nothing (3.8:74): droppable, but NOT duplicable
+                  = Copy     if qual(T) = Copy      -- includes every n when T:Copy
 
   For a struct  S { f1: T1, ..., fk: Tk }  with declared attribute attr(S):
-    let base = ⊔ { class(Ti) }            -- the join (Copy ⊑ Affine ⊑ Linear) over fields
-    class(S) = Linear         if attr(S) = linear   OR base = Linear    -- infectious (3.8:58, 3.8:57)
+    let base = ⊔ { qual(Ti) }            -- the join (Copy ⊑ Affine ⊑ Linear) over fields
+    qual(S) = Linear         if attr(S) = linear   OR base = Linear    -- infectious (3.8:58, 3.8:57)
              = Copy           if attr(S) = @copy    (well-formed only if base = Copy and S declares no destructor — 3.8:18, 3.9:31)
              = Affine         otherwise
 
   For an enum  E { K1(T̄1), ..., Kn(T̄n) }  with T̄i = Ti1..Ti_{ai}:
-    class(E) = ⊔ { class(Tij) : 1 ≤ i ≤ n, 1 ≤ j ≤ ai }    -- join over EVERY payload component of EVERY variant (6.3:19)
+    qual(E) = ⊔ { qual(Tij) : 1 ≤ i ≤ n, 1 ≤ j ≤ ai }    -- join over EVERY payload component of EVERY variant (6.3:19)
              = Copy   when there are no payload components  -- discriminant-only ⇒ empty join ⇒ Copy (6.3:19, 3.8:2)
 ```
 
@@ -348,25 +348,25 @@ elements, is ill-formed (E0483 — the compiler reports the cycle, `S -> E -> S`
 The **by-value "names" relation** over declarations — `S` names `T` when a
 field of `S`, a payload component of `S`, or the element type of such a field
 or component has type `T` — is therefore well-founded on every program the
-core admits, `class` is defined by recursion on it, and each declaration's
-class is the unique solution of its equation. A mechanization may record each
-declaration's class and check the equation instead of recomputing it, as long
+core admits, `qual` is defined by recursion on it, and each declaration's
+qualifier is the unique solution of its equation. A mechanization may record each
+declaration's qualifier and check the equation instead of recomputing it, as long
 as the check is stated over the whole environment at once: checking structs
-given the enums' classes and enums given the structs' is the same condition
+given the enums' qualifiers and enums given the structs' is the same condition
 only because no cycle exists.
 
-`class(float(w)) = Copy` is stated by the prose: `3.12:2a` classifies both
+`qual(float(w)) = Copy` is stated by the prose: `3.12:2a` classifies both
 float types as Copy and `3.8:2` lists them, so the core takes `Copy` directly
 (the derivation from `3.12:26`, `3.9:31`, and `3.8:58` that an earlier draft
 relied on now merely agrees with it).
 
-An enum has no `@copy`/`linear` attribute of its own: its class is exactly the
-join of its variants' payload classes (`6.3:19`). It is `Copy` iff every payload
+An enum has no `@copy`/`linear` attribute of its own: its qualifier is exactly the
+join of its variants' payload qualifiers (`6.3:19`). It is `Copy` iff every payload
 of every variant is `Copy` (a discriminant-only enum, whose join is empty, is the
 degenerate `Copy` case); `Affine` if some payload is `Affine` and none `Linear`;
 `Linear` if some payload is `Linear` — and a `Linear` enum must be consumed
 exactly like a `Linear` struct (`6.3:19`, matching ADR-0039). The join is over
-*all* variants because the active variant is not known statically; the class is
+*all* variants because the active variant is not known statically; the qualifier is
 the type's worst case, while the *drop* at run time touches only the active
 payload (§5.6, §6).
 
@@ -385,7 +385,7 @@ be discharged only by the drop glue §6.11 runs *after* the destructor, which
 is exactly the implicit discard of a linear value §5.6 forbids. This is the
 declaration-site half of the same destructor/linear separation whose
 field-move half is `3.9:34`, and it is a well-formedness condition on the
-declaration rather than a clause of `class(S)`: the assignment above is stated
+declaration rather than a clause of `qual(S)`: the assignment above is stated
 for declarations that already satisfy it, and a violation is rejected where
 the struct is declared (E0462) rather than at a use. A *declared*-`linear`
 struct may still have a destructor when none of its fields carries a linear
@@ -405,7 +405,7 @@ this table classified every `[T; 0]` as `Copy`; that over-granted contraction
 > (`@copy` field constraint), `3.8:57/58` (carries-linear, infectious), and
 > `6.3:19` (enum multiplicity = the payload join) with one lattice and one join.
 
-There is no fourth class. Explicit duplication of an `Affine` value is an
+There is no fourth qualifier. Explicit duplication of an `Affine` value is an
 ordinary function `g_dup : S -> S`, needing no directive and no lattice
 change — the former `@handle` directive was retired on exactly this
 observation (RUE-199).
@@ -450,7 +450,7 @@ syntactic contexts:
 > **Definition (use).** A **use** of a place `p` of type `T` is the appearance of
 > `p` as an expression in *value context* (the `e ::= p` production of §2). Its
 > effect is selected first by the static use plan recorded during elaboration
-> (§5.1), then by `class(T)`. A declared-linear destructure plan is the
+> (§5.1), then by `qual(T)`. A declared-linear destructure plan is the
 > central override: it consumes the selected enclosing place even when `T` is
 > `Copy`, and transfers the selected leaf while disposing of the residue.
 >
@@ -459,11 +459,11 @@ syntactic contexts:
 >   selected leaf;
 > - if the plan is `Untrackable(DeclaredLinearDynamic)`, the use is ill-formed: an
 >   untrackable index cannot identify the declared-linear destructure target;
-> - otherwise, if the plan is `Untrackable(OrdinaryDynamic)` and `class(T) = Copy`,
+> - otherwise, if the plan is `Untrackable(OrdinaryDynamic)` and `qual(T) = Copy`,
 >   the use **copies** —
 >   the value at `p` is duplicated and `p` remains in whatever ownership state
 >   it had;
-> - otherwise, if `class(T) ∈ {Affine, Linear}`, the use **moves** (equivalently,
+> - otherwise, if `qual(T) ∈ {Affine, Linear}`, the use **moves** (equivalently,
 >   *consumes*) — the value at `p` is transferred out; `p` becomes `MovedOut`
 >   (§5). A later use of `p`, or of any place under it, is ill-formed; and `p` is
 >   not dropped at scope exit.
@@ -646,7 +646,7 @@ in `Σf` is a leak, exactly as a `let` binding would be; body-local bindings
 discharge the same obligation at their own scope exits inside `e_body` (§5.6),
 and `borrow`/`inout` parameters are exempt because the caller owns them
 (`3.8:62`). Without this, `Σf` was derived by (Fn) and then never used, and the
-must-consume check — the entire point of the `Linear` class — lived only in
+must-consume check — the entire point of the `Linear` qualifier — lived only in
 §5.6's prose. Verified against the compiler: a by-value `linear` parameter the
 body never consumes is E0406 ("parameter 't' is passed by value, so this
 function owns it and must consume it"), as is a body-local `let` binding of
@@ -685,8 +685,8 @@ by the ordinary `(Use-Copy)` premise.
   ───────────────────────────────────────────────────────────────────────── (Use-Copy)
   Γ ; Σ ; Λ  ⊢  p  ⇒  T  ⊣  Σ
 
-  Γ ⊢ p : T       planΓ(p) = Ordinary(class(T),T)
-  class(Γ ⊢ p : T) ∈ {Affine, Linear}    fully-owned(Σ, p)    p not loaned in Λ
+  Γ ⊢ p : T       planΓ(p) = Ordinary(qual(T),T)
+  qual(Γ ⊢ p : T) ∈ {Affine, Linear}    fully-owned(Σ, p)    p not loaned in Λ
   no proper prefix of p has a type that declares a destructor       -- 3.9:34 (E0456); moving the WHOLE value is fine
   any index step in p is a constant [c] applied directly to the root binding    -- 3.8:68 (E0904)
   ───────────────────────────────────────────────────────────────────────── (Use-Move)
@@ -695,14 +695,14 @@ by the ordinary `(Use-Copy)` premise.
 
 ```
   Γ ⊢ p : T       planΓ(p) = Untrackable(OrdinaryDynamic,T)
-  class(T) = Copy  Σ(p) = Owned    p not exclusively loaned in Λ
+  qual(T) = Copy  Σ(p) = Owned    p not exclusively loaned in Λ
   no applicable declared-linear prefix in p
   ─────────────────────────────────────────────────────── (Use-Untrackable-Dynamic-Copy)
   Γ ; Σ ; Λ ⊢ p ⇒ T ⊣ Σ
 ```
 
 There is no successful static rule for `Untrackable(OrdinaryDynamic,T)` when
-`class(T) ∈ {Affine,Linear}`: the existing dynamic-index move restriction
+`qual(T) ∈ {Affine,Linear}`: the existing dynamic-index move restriction
 rejects that use. There is also no successful static rule when an untrackable
 path has an applicable declared-linear prefix: that use is rejected with E0904
 because its destructure target cannot be tracked without a compile-time index. The
@@ -922,14 +922,14 @@ rule per syntax form.
 ```
 
 Discarding a value whose type *carries a linear value* is ill-formed (`3.8:64` —
-`carries_linear(T)` is `class(T) = Linear` lifted through the aggregates: the
+`carries_linear(T)` is `qual(T) = Linear` lifted through the aggregates: the
 field join for a struct, the element type for an array **of nonzero length**
-(a zero-length array carries nothing, `3.8:74` — which is why §3 classes it
+(a zero-length array carries nothing, `3.8:74` — which is why §3 gives it the qualifier
 `Affine`, droppable, when its element type is non-Copy), and the **payload join
-over all variants** for an enum (`6.3:19`) reaching Linear). Because `class` is
-itself defined as exactly these joins (§3), `carries_linear(T) ⟺ class(T) =
-Linear` for every type — including enums, whose class is the payload join, and
-zero-length arrays, whose class never reaches Linear.
+over all variants** for an enum (`6.3:19`) reaching Linear). Because `qual` is
+itself defined as exactly these joins (§3), `carries_linear(T) ⟺ qual(T) =
+Linear` for every type — including enums, whose qualifier is the payload join, and
+zero-length arrays, whose qualifier never reaches Linear.
 `let x = e1 ; e2` is like `Seq` but binds `x` (with `x` Owned in Σ for `e2`) and
 imposes no discard check on `e1`.
 
@@ -953,11 +953,11 @@ that can satisfy a linear obligation. For `Copy` operands, `@drop` has no drop
 glue and no ownership effect.
 
 ```
-  Γ ⊢ p : T        class(T)=Copy        Σ(p)=Owned
+  Γ ⊢ p : T        qual(T)=Copy        Σ(p)=Owned
   ─────────────────────────────────────────────────────── (@Drop-Copy)
   Γ;Σ;Λ ⊢ @drop(p) ⇒ unit ⊣ Σ
 
-  Γ ⊢ p : T        class(T)∈{Affine,Linear}        Σ(p)=Owned        p not loaned in Λ
+  Γ ⊢ p : T        qual(T)∈{Affine,Linear}        Σ(p)=Owned        p not loaned in Λ
   no proper prefix of p has a type that declares a destructor       -- 3.9:34 (E0456); @drop of the WHOLE value is fine
   any index step in p is a constant [c] applied directly to the root binding    -- 3.8:68 (E0904)
   if p has a MovedOut descendant, no still-owned linear sub-place remains below p
@@ -1039,7 +1039,7 @@ by §6.13.2 is minted before `main` and never retired: `Σ(ℓ_e) = Owned` holds
 everywhere, no scope contains it, and §5.6 therefore schedules nothing for it —
 that is the precise content of "no drop glue". The temporary form is an
 ordinary `let` whose binding scope is the call, so §5.6 governs it unchanged:
-if `class(T)` is droppable the drop is scheduled at the call's exit, and if
+if `qual(T)` is droppable the drop is scheduled at the call's exit, and if
 `residual-linear(Σ, x_fresh, T)` the program is **ill-formed** — which is the
 right answer, since `x_fresh` is unnameable and so can never be consumed. The
 must-consume rejection of `f(borrow make_token())` is thus a corollary of
@@ -1133,8 +1133,8 @@ arm per variant of `E`), so exactly one arm's payload is live in any run:
   Γ;Σ;Λ ⊢ match e0 { K1(x̄1) => e1, ..., Kn(x̄n) => en } ⇒ T ⊣ Σ'
 ```
 
-Typing `e0 ⇒ E` moves the scrutinee out when `class(E) ∈ {Affine, Linear}` and
-copies it when `class(E) = Copy` (the (Use-Move)/(Use-Copy) split of §5.1),
+Typing `e0 ⇒ E` moves the scrutinee out when `qual(E) ∈ {Affine, Linear}` and
+copies it when `qual(E) = Copy` (the (Use-Move)/(Use-Copy) split of §5.1),
 exactly as for any other place. The payload locals `x_{ij}` are ordinary Owned
 bindings and are governed by §5.6 at the arm's end: a `Linear`-carrying payload
 that an arm neither moves nor consumes is a leak error, and an `Affine` payload it
@@ -1183,7 +1183,7 @@ in state `Owned`:
 
 - if `residual-linear(Σ, x, T)` (below): **ill-formed** — a linear value
   reached end of scope unconsumed (`3.8:32/62/66`). This is the must-use check.
-- else if `class(T) = Copy`: nothing happens (no drop).
+- else if `qual(T) = Copy`: nothing happens (no drop).
 - else (`Affine`, droppable, non-linear): a **drop** is scheduled (dynamic §6):
   the value's destructor, if any, runs, then its droppable *contents* drop,
   skipping any sub-place that is `MovedOut`. The contents depend on the type:
@@ -1203,7 +1203,7 @@ binding's *type* alone (RUE-526): after a partial move, the linear obligation
 attaches to whatever linear content is still present. `carries_linear(T)` at
 the binding's type would over-reject the legal idiom of consuming exactly the
 linear part of an infectious carrier (`let h = Holder { t: token, n: 0 };
-consume(h.t);` — `class(Holder) = Linear` by the join, yet prose and compiler
+consume(h.t);` — `qual(Holder) = Linear` by the join, yet prose and compiler
 both let the non-linear residue drop). The compiler reached this model in
 RUE-1591: it previously treated `consume(h.t)` on an infectious carrier as a
 whole-value destructuring consumption, which both leaked the residue's drop
@@ -1217,7 +1217,7 @@ glue and over-rejected reads of a Copy sibling. Precisely:
     ∃ field f:  residual-linear(Σ, p.f, T_f)         if T = struct { …, f: T_f, … }
     ∃ tracked element [c]:  residual-linear(Σ, p[c], T')   ∨  (untracked residue carries linear)
                                                      if T = [T'; n], n > 0
-    class(T) = Linear                                if T is an enum (payload paths are not statically tracked)
+    qual(T) = Linear                                if T is an enum (payload paths are not statically tracked)
     false                                            if T is a scalar ([T'; 0] has no elements: false)
 ```
 
@@ -1536,7 +1536,7 @@ this is the coercion, stated as **subsumption on the bottom type** (`3.4:3/4`):
 Because `never` has no values (`3.4:1`), this coercion is vacuously sound: there
 is no run-time value to convert, so re-typing a diverging expression at `T`
 cannot misclassify any value. It also creates no ownership obligation: `never` is
-zero-sized (`3.4:9`) and §3 sets `class(never) = Copy`, so a `never`-typed
+zero-sized (`3.4:9`) and §3 sets `qual(never) = Copy`, so a `never`-typed
 expression has nothing to move, drop, or leak, and (Sub-Never) leaves its
 outcome `Ω` untouched — in particular a divergent `⊥;Δ` stays divergent, with
 its deliveries, when it is re-typed.
@@ -1814,7 +1814,7 @@ value places each field in its *declaration* slot (`3.6:9`). A well-formed
 literal supplies every field exactly once (`3.6:5`, `3.6:6`); a surface literal
 written field-out-of-order (`3.6:15`) is presented here in declaration order by
 elaboration without loss of generality. The result owns all fields, so
-`class(S)` is the field join of §3.
+`qual(S)` is the field join of §3.
 
 **Array construction.** All `n` elements share one element type `T`, and the
 result has type `[T; n]`.
@@ -1828,9 +1828,9 @@ result has type `[T; n]`.
 Every element is a value-context use of `T` (`3.5:3`, `7.1:3` — one shared
 element type),
 typed left-to-right with Σ threaded, and the array owns all `n` elements;
-`class([T; n])` is given by §3 (`3.5:1` for the type form). The empty array `[]`
-(`n = 0`) is the zero-sized `[T; 0]` and uses nothing; §3's table classes it
-`Copy` when `class(T)` is and `Affine` otherwise — droppable because it carries
+`qual([T; n])` is given by §3 (`3.5:1` for the type form). The empty array `[]`
+(`n = 0`) is the zero-sized `[T; 0]` and uses nothing; §3's table gives it
+`Copy` when `qual(T)` is and `Affine` otherwise — droppable because it carries
 nothing (`3.8:74`), but not duplicable (RUE-526).
 
 **Call.** A call's type is the callee's return type; its arguments are checked
@@ -2192,7 +2192,7 @@ signedness were resolved by elaboration (§5.8), so the machine stores the concr
 
 Using a place `p` in value context is the operational side of §4.2 / §5.1. At
 static elaboration, every such use receives a closed annotation `μ`; it is one
-of `Declared(d,π_s,T)`, `Untrackable(f,T)`, or `Ordinary(class(T),T)`. The
+of `Declared(d,π_s,T)`, `Untrackable(f,T)`, or `Ordinary(qual(T),T)`. The
 `Untrackable` annotation contains the concrete `uf` data from §4.2, including
 whether an applicable declared-linear prefix exists. Such a prefix is rejected
 during static checking; otherwise the action is `OrdinaryDynamic`. A place in a
@@ -2243,7 +2243,7 @@ dynamic-index rule.
 
 ```
   ρ(root(p)) = ℓ      μ = Untrackable(OrdinaryDynamic,T)
-  class(T) = Copy      H(ℓ)@π = v
+  qual(T) = Copy      H(ℓ)@π = v
   ─────────────────────────────────────────────── (D-Use-Untrackable-Dynamic-Copy)
   ⟨ H ; φ ; K ; p ⟩ → ⟨ H ; φ ; K ; v ⟩
 ```
@@ -2253,8 +2253,8 @@ dynamic-index rule.
   ─────────────────────────────────────────────────────────────────── (D-Use-Copy)
   ⟨ H ; φ ; K ; p ⟩ → ⟨ H ; φ ; K ; v ⟩                         -- the cell is left untouched
 
-  ρ(root(p)) = ℓ      μ = Ordinary(class(T),T)  H(ℓ)@π = v
-  class(T) ∈ {Affine,Linear}
+  ρ(root(p)) = ℓ      μ = Ordinary(qual(T),T)  H(ℓ)@π = v
+  qual(T) ∈ {Affine,Linear}
   ─────────────────────────────────────────────────────────────────── (D-Use-Move)
   ⟨ H ; φ ; K ; p ⟩ → ⟨ H[ℓ@π ↦ ⊘] ; φ ; K ; v ⟩               -- whole- or partial-place move; source becomes ⊘
 ```
@@ -3131,7 +3131,7 @@ Two §6.1 value forms name allocations:
   pointer field inside an abstract data type's header struct (the `ptr mut T` of
   `std/arraybuf.rue`, the `ptr mut u8` of `std/strbuf.rue`'s header),
   and only the specification equations below touch the allocation it names. Every
-  abstract data type declares a destructor, so its class is `Affine` (§3,
+  abstract data type declares a destructor, so its qualifier is `Affine` (§3,
   never `@copy`) and core code cannot duplicate a header — and with it a
   handle — by (Use-Copy); handle uniqueness inside the *trusted code* is obligation
   (O1) of §6.13.5.
@@ -3190,7 +3190,7 @@ at the destructor:
     h = buf⟨A⟩    ⇒  H(A) is live with exactly cap cells;
                      cells 0 … len-1 are values of T (not ⊘);
                      cells len … cap-1 are ⊘
-    class(T) ≠ Linear            -- the RUE-388 instantiation gate (@require_droppable, E0499)
+    qual(T) ≠ Linear            -- the RUE-388 instantiation gate (@require_droppable, E0499)
 ```
 
 Mid-equation the invariant may be broken (a grow is mid-flight between `mint`
@@ -3527,7 +3527,7 @@ neither claims anything about an uninhabited-parameter function such as
   `MovedOut`/`⊘`; its selected leaf is consequently the sole new owner. No
   value is used twice (`Use-Move` consumes an ordinary moved value).
   Hence exactly once. This
-  now covers **enums**: `class(E)` is the payload join (§3), so a `Linear`-payload
+  now covers **enums**: `qual(E)` is the payload join (§3), so a `Linear`-payload
   enum is itself `Linear` and `carries_linear(E)` holds (§5.3); letting it reach
   end of scope unconsumed is rejected exactly as for a linear struct (`6.3:19`),
   and consuming it by a `match` that binds and consumes the linear payload
@@ -3545,7 +3545,7 @@ neither claims anything about an uninhabited-parameter function such as
   cells — no new rule is needed, which is precisely why the RUE-390 ruling
   wanted allocations abstract.
 
-**Floats add no obligation to any of the seven** (RUE-2158). `class(float(w))`
+**Floats add no obligation to any of the seven** (RUE-2158). `qual(float(w))`
 is `Copy` (§3), so a float value is never moved, never leaves a `⊘` behind, has
 no drop glue, is never registered in a scope record, and never names an
 allocation: the no-use-after-move, no-double-free, no-use-after-drop,
@@ -3617,7 +3617,7 @@ as owed rather than discharged.
 | §2 elaboration inventory — *recorded as deferred, not subsumed* | 4.8:23–29 (`for`), 4.8:8/9/10/13, 4.8:27 (`continue`) |
 | §2 reachability-pruning assumption (+ §7's quantification) | 10.5:4, 6.3:12 |
 | §5.8 (Panic)/(Dbg) intrinsic statics | 3.4:2, 8.1–8.3 (`@panic`); 3.12:39 (`@dbg`'s float operand) |
-| §3 multiplicity lattice (with the destructor/linear-field well-formedness condition on declarations, and the by-value well-foundedness that makes `class` a recursive definition) | 3.0:5, 3.8:1–3, 3.8:14/16/18/20, 3.8:30/32/37, 3.8:57/58, 3.8:74, 3.9:31, 3.9:44, 6.3:19 |
+| §3 multiplicity lattice (with the destructor/linear-field well-formedness condition on declarations, and the by-value well-foundedness that makes `qual` a recursive definition) | 3.0:5, 3.8:1–3, 3.8:14/16/18/20, 3.8:30/32/37, 3.8:57/58, 3.8:74, 3.9:31, 3.9:44, 6.3:19 |
 | §4.2 definition of *use* (+ §5.1 premises) | 3.8:5, 3.8:7, 3.8:9, 3.8:11, 3.8:22, 3.8:26, 3.8:33, 3.8:53, 3.8:68, 3.9:34 |
 | §5.1 declared-linear projection destructure (smallest place, residue gate, and ownership transition) | 3.8:33, 3.8:60, 3.8:74, 3.9:34 |
 | §4.1/§5.4 equality borrows its operands | 4.3:3f |
@@ -3636,7 +3636,7 @@ as owed rather than discharged.
 | §6.2 evaluation order (contexts, left-to-right) | 4.0:3–9 |
 | §6.3 dynamic use: declared-linear destructure, copy vs. ordinary move; equality borrows | 3.8:5/7/22/33/60/68/74, 3.9:1/2/13/15/28/34, 4.3:3f |
 | §6.4 operator dynamics: arith/div/mod, compare, bitwise/shift; the `≈` partial-equivalence note (its float leaf below) | 4.2:1, 4.3:1/2, 4.3:3b, 4.3:3g, 4.3a:10, 3.1:6/13 |
-| §2 `float(w)` + the IEEE-datum representation decision; §3 `class(float(w)) = Copy`; §6.1 float values | 3.12:1, 3.12:2, 3.12:44, 3.12:45 |
+| §2 `float(w)` + the IEEE-datum representation decision; §3 `qual(float(w)) = Copy`; §6.1 float values | 3.12:1, 3.12:2, 3.12:44, 3.12:45 |
 | §5.8 float literal typing (`comptime_float` resolved by elaboration, as for integers) | 3.12:3, 3.12:7–11, 4.1:13/14 |
 | §5.8 float operator statics: same-width `+ - * /`, float `neg`, ordering; `%`, bitwise/shift, and `not` rejected by absence | 3.12:13, 3.12:14, 3.12:25, 4.2:14, 4.3:5 |
 | §6.4 float dynamics: trap-free arithmetic, division by zero, overflow to infinity, sign-flip `neg`, the IEEE compares, and `≈` at a float leaf | 3.12:21–24, 3.12:27–29 |

@@ -18,7 +18,7 @@ is why any sufficient bound gives the same answer.
 ## The fixture declarations
 
 `structEnv` is one struct environment shared by every example that needs a
-struct, so a reader learns it once. It spans the classes §3 assigns and the
+struct, so a reader learns it once. It spans the qualifiers §3 assigns and the
 two things `3.9` makes a declaration's choice — whether it declares a
 destructor, and therefore whether its drops are observable at all and whether
 a field may be read out of it (`3.9:34`).
@@ -74,15 +74,15 @@ abbrev max64 : Int := intMax .w64 .signed
 
 /-! ## The fixture struct declarations -/
 
-/-- `S0`: `@copy struct { x0: i64 }`. Class `Copy`; a `@copy` type declares no
+/-- `S0`: `@copy struct { x0: i64 }`. Qualifier `Copy`; a `@copy` type declares no
 destructor, so its drops are silent and its field is readable. -/
 def dCopy : StructDecl := { attr := .copy, fields := [tI64], dtor := false, cls := .copy }
 
-/-- `S1`: `struct { x0: i64 }` with a destructor. Class `Affine`, and the
+/-- `S1`: `struct { x0: i64 }` with a destructor. Qualifier `Affine`, and the
 destructor is what makes each of its drops observable. -/
 def dAffine : StructDecl := { attr := .none, fields := [tI64], dtor := true, cls := .affine }
 
-/-- `S2`: `linear struct { x0: i64 }`, no destructor. Class `Linear`, drops
+/-- `S2`: `linear struct { x0: i64 }`, no destructor. Qualifier `Linear`, drops
 silent. It is *declared* linear, so a projection out of it selects §4.2's
 `Declared(d, π_s)` plan and §5.1's declared-linear destructure rule consumes
 the whole value for the leaf; the obligation is otherwise discharged by a move
@@ -91,54 +91,54 @@ rule's image, so it carries the section pointer rather than the label. The
 destructure cases have their own declarations (`destrDecls`, below). -/
 def dLinear : StructDecl := { attr := .linear, fields := [tI64], dtor := false, cls := .linear }
 
-/-- `S3`: `linear struct { x0: i64 }` with a destructor. Class `Linear`, drops
+/-- `S3`: `linear struct { x0: i64 }` with a destructor. Qualifier `Linear`, drops
 observable; nothing may be moved out of it (`3.9:34`), so it is discharged by
 `@drop` or by a move of the whole value. -/
 def dLinearDtor : StructDecl :=
   { attr := .linear, fields := [tI64], dtor := true, cls := .linear }
 
 /-- `S4`: `struct { x0: i64, x1: S3 }`, no attribute and no destructor. Its
-class is `Linear` *through a field* — §3's join, `3.8:58`'s infectiousness —
+qualifier is `Linear` *through a field* — §3's join, `3.8:58`'s infectiousness —
 which is the shape the linear-carrying-struct cases are about. -/
 def dCarry : StructDecl :=
   { attr := .none, fields := [tI64, .struct 3], dtor := false, cls := .linear }
 
-/-- `S5`: `struct { x0: i64, x1: S1 }` with a destructor. Class `Affine`;
+/-- `S5`: `struct { x0: i64, x1: S1 }` with a destructor. Qualifier `Affine`;
 dropping it runs its own destructor first and then its fields in declaration
 order (§6.11), so it is the nesting case. -/
 def dOuter : StructDecl :=
   { attr := .none, fields := [tI64, .struct 1], dtor := true, cls := .affine }
 
-/-- `S6`: `@copy struct { x0: i64, x1: i64 }`. Class `Copy`, two fields, so a
+/-- `S6`: `@copy struct { x0: i64, x1: i64 }`. Qualifier `Copy`, two fields, so a
 use of it copies and a projection of either field is a `Copy` read that leaves
 the base `Owned`. -/
 def dPair : StructDecl :=
   { attr := .copy, fields := [tI64, tI64], dtor := false, cls := .copy }
 
-/-- `S7`: `struct { x0: S1, x1: S1 }`, no destructor. Class `Affine`; dropping
+/-- `S7`: `struct { x0: S1, x1: S1 }`, no destructor. Qualifier `Affine`; dropping
 it drops both fields in declaration order (§6.11) and nothing else. -/
 def dTwoAffine : StructDecl :=
   { attr := .none, fields := [.struct 1, .struct 1], dtor := false, cls := .affine }
 
-/-- `S8`: `struct { x0: S1, x1: i64 }`, no destructor. Class `Affine`; its
+/-- `S8`: `struct { x0: S1, x1: i64 }`, no destructor. Qualifier `Affine`; its
 first field is droppable and its second is `Copy`, so it is the shape a partial
 move leaves a readable sibling in (`3.8:53` reads it through the hole). -/
 def dAffineInt : StructDecl :=
   { attr := .none, fields := [.struct 1, tI64], dtor := false, cls := .affine }
 
-/-- `S9`: `struct { x0: S7, x1: i64 }`, no destructor. Class `Affine`; it
+/-- `S9`: `struct { x0: S7, x1: i64 }`, no destructor. Qualifier `Affine`; it
 nests `S7`, so a path into it is two field steps deep. -/
 def dNested : StructDecl :=
   { attr := .none, fields := [.struct 7, tI64], dtor := false, cls := .affine }
 
-/-- `S10`: `struct { x0: S3, x1: S1 }`, no destructor. Class `Linear` through
+/-- `S10`: `struct { x0: S3, x1: S1 }`, no destructor. Qualifier `Linear` through
 its first field; its second is affine and destructor-bearing, so the two halves
 of §5.6's residual obligation are separable at a path. -/
 def dCarryAffine : StructDecl :=
   { attr := .none, fields := [.struct 3, .struct 1], dtor := false, cls := .linear }
 
 /-- The fixture environment: every field type names an earlier declaration, so
-`WfStructs` holds (checked below) and §3's class assignment is the one
+`WfStructs` holds (checked below) and §3's qualifier assignment is the one
 recorded. -/
 def structEnv : List StructDecl :=
   [dCopy, dAffine, dLinear, dLinearDtor, dCarry, dOuter, dPair, dTwoAffine,
@@ -219,7 +219,7 @@ def aNaN (w : FloatWidth) : Expr := binop .div (flE w 0 0) (flE w 0 0)
 §6.4; every operand is exactly representable, so the answer is exact. -/
 def floatArith : Expr := binop .mul (binop .add (fl .w64 15 1) (fl .w64 225 2)) (flE .w64 2 0)
 
-/-- A float binding used twice: `class(float(w)) = Copy` (`3.12:2a`), so the
+/-- A float binding used twice: `qual(float(w)) = Copy` (`3.12:2a`), so the
 second use copies and no drop is owed. -/
 def floatCopy : Expr := letIn false (fl .w64 15 1) (binop .add (use (.var 0)) (use (.var 0)))
 
@@ -571,7 +571,7 @@ def overwritePastPartialLinear : Expr :=
         (seq (drop (.var 0)) (lit 9))))
 
 /-- `S11`: `struct { x0: S10, x1: i64 }`, no attribute and no destructor.
-Class `Linear` through `S10`, so a **field** of it is a linear-carrying place
+Qualifier `Linear` through `S10`, so a **field** of it is a linear-carrying place
 one field step down — which is where (Assign)'s type-keyed premise is tested
 below a root. Held out of `structEnv` so that only the one case that needs it
 prints it. -/
@@ -655,7 +655,7 @@ def arrayWholeDrop : Expr :=
 
 /-- `S11`: `struct { x0: [S6; 2] }`, no attribute and no destructor — an
 array held as a struct **field**, so a path into an element is a projection
-and then an index and then a projection again. Class `Affine`: `class([S6;2])`
+and then an index and then a projection again. Qualifier `Affine`: `qual([S6;2])`
 is `Copy` because `S6` is, and an attribute-less declaration is `Affine`
 otherwise. Held out of `structEnv` so only the case that needs it prints
 it. -/
@@ -707,7 +707,7 @@ def arrayDynWriteTrap : Program :=
 
 /-- Probe `n4`: a dynamic-index write at an **affine**, destructor-bearing
 element type. An assignment *destination* is not a use, so §4.2's plans — and
-the read's `class(T) = Copy` premise — do not reach it; what (Assign) §5.2
+the read's `qual(T) = Copy` premise — do not reach it; what (Assign) §5.2
 demands is `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` (`3.8:77`), which `S1`
 satisfies. §6.8's overwrite-drop then runs the old element's destructor where
 the assignment is, so `f1(0)` gives `1`, then the scope exit's `9` and `2`,
@@ -997,7 +997,7 @@ def arrayRepeatAffine : Expr :=
 
 /-- Probe `a5`: a dynamic-index read of a non-`Copy` element.
 (Use-Untrackable-Dynamic-Copy) §5.1 is the only successful rule for §4.2's
-`Untrackable(OrdinaryDynamic)` plan and it wants `class(T) = Copy`; there is
+`Untrackable(OrdinaryDynamic)` plan and it wants `qual(T) = Copy`; there is
 no rule at `Affine` or `Linear`, because the compiler cannot know which
 element a runtime index moved (E0904). -/
 def arrayDynIndexAffine : Program :=
@@ -1280,7 +1280,7 @@ example : checkProgram arrayDynWriteLinearElem = false := by rfl
 /-- Review probe T1 (RUE-2324 review, RUE-2400): `let a = [S1{1}, S1{2}];
 let x = a[i]; 0` with an affine element under a dynamic index. The statics
 reject it (E0904: §5.1's only rule at `Untrackable(OrdinaryDynamic)` wants
-`class(T) = Copy`), and the machine refuses it too: before RUE-2400 `eval`
+`qual(T) = Copy`), and the machine refuses it too: before RUE-2400 `eval`
 copied the affine leaf out and left the array live, so three destructors ran
 for two constructed values. -/
 def dynReadAffineCopied : Expr :=
@@ -1329,7 +1329,7 @@ example : checkProgram dynDropAffineSkippedDyn = false := by rfl
 
 /-- (RUE-2400) The dynamic-index read of an affine leaf is refused by the
 machine as well as the statics: (D-Use-Untrackable-Dynamic-Copy) §6.3 is the
-only rule there and it wants `class(T) = Copy`, so `eval` answers
+only rule there and it wants `qual(T) = Copy`, so `eval` answers
 `typeConfusion` instead of duplicating the leaf. `Step.demo_dynamicRead_stuck`
 is the same program, stuck at the same rule in `Step`. -/
 theorem dynReadAffine_refused (M : FloatSig) :
@@ -1358,7 +1358,7 @@ example : run demoOps arrayDynIndexAffine demoFuel = .refused .typeConfusion := 
 
 /-- The linear-overwrite refusal is the machine's too: `eval`'s
 `indexWrite` arm reads the residue of the element it is about to drop and
-refuses, which is the arm the old `class(T) = Copy` premise made
+refuses, which is the arm the old `qual(T) = Copy` premise made
 unreachable. -/
 example : run demoOps arrayDynWriteLinearElem demoFuel
     = .refused .linearOverwrite := by rfl
@@ -1388,7 +1388,7 @@ def pairArr (a b c d : Int) : Expr :=
 
 /-- **A `Copy` leaf read below a dynamic index** (probes q01, q08): `a[i].x1`
 on an `[S6; 2]` binding and `h.x0[i].x0` through a field, `4 + 7 = 11` at
-`i = 1`. (Use-Untrackable-Dynamic-Copy) §5.1 reads the leaf's class, not the
+`i = 1`. (Use-Untrackable-Dynamic-Copy) §5.1 reads the leaf's qualifier, not the
 element's, and the constant path after the index is navigated like any other. -/
 def dynReadBelow : Program :=
   { decls := Decls.ofStructs (structEnv ++ [dArrHolder]),
@@ -1868,7 +1868,7 @@ that survives the trap there is the explicit drop's. -/
 def panicPastAffine : Expr :=
   letIn false (resA (lit 7)) (panic "boom")
 
-/-- The same past a live **linear** binding, which is the class where
+/-- The same past a live **linear** binding, which is the qualifier where
 `Typed.panic` and `Typed.ret` actually differ: `ret` would need
 `NoResidualLinear` here and `panic` does not, so the judgment derives this
 program (`panicPastLinear_typed`) and the machine runs it to a trap with an
@@ -1886,16 +1886,16 @@ The fixture enums, the holder struct that puts one in a field, and the eight
 programs the bridge seeds. Every one was run against the compiler before it was
 committed; the probe it reproduces is named in its doc-comment.
 
-`class(E)` is the payload join over **every** variant (`6.3:19`), so `E1` — one
+`qual(E)` is the payload join over **every** variant (`6.3:19`), so `E1` — one
 variant of which carries a declared-`linear` payload — is itself `Linear`
 whichever variant a value holds, which is the fact `enum_carriesLinear_iff`
 states and the fact probe e11 pins against the compiler (E0406). -/
 
-/-- `E0`: `enum { K0(S1), K1 }`. Class `Affine` through `S1`, whose destructor
+/-- `E0`: `enum { K0(S1), K1 }`. Qualifier `Affine` through `S1`, whose destructor
 is what makes a payload's drop observable. -/
 def eAffine : EnumDecl := { variants := [[.struct 1], []], cls := .affine }
 
-/-- `E1`: `enum { K0(S3), K1 }`. Class `Linear` through `S3`, a declared-linear
+/-- `E1`: `enum { K0(S3), K1 }`. Qualifier `Linear` through `S3`, a declared-linear
 payload with a destructor — the must-consume enum. -/
 def eLinear : EnumDecl := { variants := [[.struct 3], []], cls := .linear }
 
@@ -1913,11 +1913,11 @@ def eInt : EnumDecl := { variants := [[tI64], []], cls := .copy }
 
 /-- `E5`: `enum { K0(S1, S3), K1 }`. An `Affine` payload component beside a
 declared-`linear` one, which is what lets a single arm move the first out and
-`@drop` the second. `class(E5)` is `Linear` by `6.3:19`'s join over every
+`@drop` the second. `qual(E5)` is `Linear` by `6.3:19`'s join over every
 component of every variant, so the value itself must be consumed. -/
 def eMixed : EnumDecl := { variants := [[.struct 1, .struct 3], []], cls := .linear }
 
-/-- `S11`: `struct { x0: E0, x1: S1 }`, no destructor. Class `Affine`; it is
+/-- `S11`: `struct { x0: E0, x1: S1 }`, no destructor. Qualifier `Affine`; it is
 what makes a `match` scrutinee a **projection**, so the partial move the match
 takes is one field of a struct whose sibling still drops at scope exit. -/
 def dHolder : StructDecl :=
@@ -1974,7 +1974,7 @@ def enumDropUnmatched : Expr :=
 
 /-- **Probe e2.** A `Linear`-payload enum consumed by a `match` in one arm of an
 `if` only: §5.5's join sees the binding `MovedOut` on one path and `Owned` at a
-`Linear` type on the other, so it is ill-formed (E0443). `class(E1)` is what
+`Linear` type on the other, so it is ill-formed (E0443). `qual(E1)` is what
 makes the `Owned` side residual — the payload paths are not tracked, so §5.6
 reads the type (`6.3:19`). -/
 def enumMatchOneArm : Expr :=
@@ -2065,7 +2065,7 @@ reports is named in the doc-comment. -/
 
 /-- A `Linear` payload moved into a **call** in the one arm of an `if` that
 matches: the `then` path consumes the enum, the `else` path leaves it, and
-`class(E1)` makes the `Owned` side residual, so §5.5's join is ill-formed
+`qual(E1)` makes the `Owned` side residual, so §5.5's join is ill-formed
 (`3.8:50`, `6.3:19`; the compiler reports E0443). The callee takes the payload
 by value and discharges it with `@drop`, because `3.9:34` forbids moving a
 field out of a destructor-bearing value. The executed path runs: `1` from the
@@ -2083,10 +2083,10 @@ def enumPayloadMovedIntoCall : Program :=
      { params := [⟨.struct sLinearDtor, false⟩], ret := tI64,
        body := seq (drop (.var 0)) (lit 5) }]
 
-/-- One arm, two payload components of different classes: the `Affine` one is
+/-- One arm, two payload components of different qualifiers: the `Affine` one is
 **moved** into an outer `mut` binding — whose overwrite-drop (§6.8) runs on the
 value it replaces — and the `Linear` one is `@drop`ped, which is what
-discharges `class(E5)`'s obligation (`6.3:19`). `9`, `2`, `20`, then the moved
+discharges `qual(E5)`'s obligation (`6.3:19`). `9`, `2`, `20`, then the moved
 value's `1` at the outer scope exit, then `5`. -/
 def enumArmMovesAffineDropsLinear : Expr :=
   letIn true (resA (lit 9))
@@ -2148,7 +2148,7 @@ def enumMatchedTwiceMoving : Expr :=
 
 /-- Two values of the **same** `Linear`-payload enum, one at each variant, each
 consumed by its own `match`: the `K0` value's payload is `@drop`ped (`1`), the
-`K1` value's arm has no payload to discharge, and `class(E1)`'s obligation is
+`K1` value's arm has no payload to discharge, and `qual(E1)`'s obligation is
 met on both because the `match` consumed each value. Then `7`. -/
 def enumTwoLinearValues : Expr :=
   letIn false (mkEnum eLinearIdx 0 [resLD (lit 1)])
@@ -2421,7 +2421,7 @@ def destructureOneArm : Expr :=
 at the access by §6.11's array rule — the elements in ascending index order.
 `10`, the elements' `1`, `2`, `20`, then the value `7`. Nothing in the residue
 traversal looks *inside* the array: a retained array is an ordinary residue
-place (`linearResidue` reads its class, `dropContents` walks it). A selected
+place (`linearResidue` reads its qualifier, `dropContents` walks it). A selected
 path *through* an index step is the case that needs §5.1's array clause, and
 that is `destructureThroughIndex` below. -/
 def destructureArrayResidue : Expr :=
@@ -2818,7 +2818,7 @@ that `checkProgram_sound` ties to the judgment. `rfl`/`decide` makes these
 kernel-checked facts, not test assertions.
 -/
 
-/-- §3's class assignment holds of the fixture declarations, so `Ty.qual`'s
+/-- §3's qualifier assignment holds of the fixture declarations, so `Ty.qual`'s
 lookup is the join §3 defines (`checkStructs_sound`). -/
 example : WfStructs (Decls.ofStructs structEnv) := checkStructs_sound (by rfl)
 
@@ -2889,7 +2889,7 @@ nothing to the join, and `check` accepts that program as the Rue compiler does
 (`Corpus.lean`'s `match_return_arm_linear`, which prints `1 2`).
 -/
 
-/-- §3's class assignment holds of the enum declarations too (`6.3:19`), so
+/-- §3's qualifier assignment holds of the enum declarations too (`6.3:19`), so
 `Ty.qual`'s lookup is the payload join at an enum type (`checkEnums_sound`). -/
 example : WfEnums enumDecls := checkEnums_sound (by rfl)
 example : WfStructs enumDecls := checkStructs_sound (by rfl)
@@ -2930,7 +2930,7 @@ example : checkProgram (enumProg tI64 enumMatchedTwiceMoving) = false := by rfl
 example : run Float.exactOps (enumProg tI64 enumMatchedTwiceMoving) demoFuel
     = .refused .useAfterMove := by rfl
 
-/-- (Match) §5.5's join with the enum consumed on one path only: `class(E)` is
+/-- (Match) §5.5's join with the enum consumed on one path only: `qual(E)` is
 the payload join over every variant, so the `Owned` side is residual and the
 join is ill-formed (`3.8:50`, `6.3:19`; the compiler reports E0443 — probe
 e2). -/
@@ -2971,7 +2971,7 @@ example : checkProgram (enumProg tI64
         («match» (use (.var 0)) [lit 5, lit 6])))) = false := by rfl
 
 /-- An enum one variant of which carries a `linear` payload, constructed as the
-**other** variant and left to scope exit: `class(E)` is the join over every
+**other** variant and left to scope exit: `qual(E)` is the join over every
 variant, so the obligation is the type's and the value's own emptiness does not
 discharge it (`6.3:19`; the compiler reports E0406 — probe e11). -/
 example : checkProgram (enumProg tI64
@@ -3278,8 +3278,8 @@ example : checkProgram (prog tI64
         (seq (assign (.var 0) (mkStruct sCarryAffine [resLD (lit 5), resA (lit 6)]))
           (seq (drop (.var 0)) (lit 9)))))) = true := by rfl
 
-/-- A declaration whose recorded class disagrees with §3's join is rejected by
-the same pass: `class(S)` is not a free parameter of the syntax. -/
+/-- A declaration whose recorded qualifier disagrees with §3's join is rejected by
+the same pass: `qual(S)` is not a free parameter of the syntax. -/
 example : checkStructs (Decls.ofStructs
     [{ attr := .none, fields := [tI64], dtor := false, cls := .copy }]) = false := by rfl
 
@@ -3353,7 +3353,7 @@ example :
 slots for a field record to record. -/
 example : OwnSt.wf (Decls.ofStructs []) (.fields [.owned]) tI64 = false := by rfl
 
-/-- A declaration whose recorded class is `Affine` over a `Linear` field: §3's
+/-- A declaration whose recorded qualifier is `Affine` over a `Linear` field: §3's
 equation fails, so `checkStructs` rejects it (`WfStructs`), and it is what the
 second associativity counterexample is built on. -/
 def joinAssocBadDecls : Decls :=
@@ -3366,7 +3366,7 @@ example : checkStructs joinAssocBadDecls = false := by rfl
 /-- **Why it also needs `WfStructs`.** Over `joinAssocBadDecls` the two
 associations of `MovedOut`, `Owned`, `fields [MovedOut]` disagree the same way,
 although every one of the three states *is* a shape of its type: `ownedJoinable`
-reads the moved-out field's own class and `residualLinear` reads the struct's,
+reads the moved-out field's own qualifier and `residualLinear` reads the struct's,
 and §3's assignment (`3.8:58`) is what keeps the two answers in step. So
 `OwnSt.join_assoc` carries `WfStructs` as well — a premise every well-formed
 program already has (`checkStructs_sound`). -/
@@ -3388,21 +3388,21 @@ The rule is **joint** over the two layers, and the cross-layer shape is why.
 `struct S { x0: E }` / `enum E { K(S), L }` satisfies §3's struct equation and
 `6.3:19`'s enum equation at *more than one* assignment — `Affine` in both
 layers and `Linear` in both layers each check out — so without `3.0:5` the
-recorded class would be a free parameter, and the same source program would be
+recorded qualifier would be a free parameter, and the same source program would be
 accepted under one reading and rejected under the other. `checkNoCycle` refuses
 the shape under both, which is what makes `class_unique` unconditional. The
 compiler refuses the declaration outright: E0483, "recursive type 'S' has
 infinite size (contains itself by value: S -> E -> S)".
 -/
 
-/-- The cross-layer cycle with `Affine` recorded in both layers; §3's two class
+/-- The cross-layer cycle with `Affine` recorded in both layers; §3's two qualifier
 equations hold of it. -/
 def cycAffine : Decls :=
   { structs := [{ attr := .none, fields := [Ty.enum 0], dtor := false, cls := .affine }],
     enums := [{ variants := [[Ty.struct 0], []], cls := .affine }] }
 
-/-- The same shapes with `Linear` recorded in both layers; §3's two class
-equations hold of this one too, and it gives `class(S)` a different value. -/
+/-- The same shapes with `Linear` recorded in both layers; §3's two qualifier
+equations hold of this one too, and it gives `qual(S)` a different value. -/
 def cycLinear : Decls :=
   { structs := [{ attr := .none, fields := [Ty.enum 0], dtor := false, cls := .linear }],
     enums := [{ variants := [[Ty.struct 0], []], cls := .linear }] }
@@ -3418,7 +3418,7 @@ example : checkDecls cycAffine = false := by rfl
 example : checkDecls cycLinear = false := by rfl
 
 /-- The one-layer shape the same rule covers: a struct that names itself
-(E0483, "contains itself by value: S -> S"). Its class equation is solved by
+(E0483, "contains itself by value: S -> S"). Its qualifier equation is solved by
 `Affine` as readily as by `Linear`, so the per-layer join check accepts it and
 only `3.0:5` refuses it. -/
 example : checkStructs (Decls.ofStructs

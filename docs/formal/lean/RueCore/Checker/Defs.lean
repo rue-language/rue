@@ -8,7 +8,7 @@ public import RueCore.Statics
 # RueCore.Checker.Defs — the checker, as an algorithm (layer L1)
 
 `check`, `checkFn`, `checkDecls` and `checkProgram`: §5's judgment and §3's
-class assignment as a decision procedure, the verdict the bridge corpus
+qualifier assignment as a decision procedure, the verdict the bridge corpus
 records. The module docstring of `Checker.lean` explains the algorithm and
 what completeness costs; `Checker.lean` proves it sound (`check_sound`,
 `checkProgram_sound`).
@@ -593,8 +593,8 @@ def checkFn (P : Program) (fd : FnDef) : Bool :=
         Ω.brk.isEmpty
   | none => false
 
-/-- §3's class assignment for one struct declaration, as an algorithm: the
-recorded class is the attribute's lifting of the field join, a `@copy`
+/-- §3's qualifier assignment for one struct declaration, as an algorithm: the
+recorded qualifier is the attribute's lifting of the field join, a `@copy`
 declaration's join is already `Copy` and it has no destructor (`3.8:18`,
 `3.9:31`), and a destructor-bearing declaration carries no linear field
 (`3.9:44`).
@@ -609,19 +609,19 @@ def checkStructDecl (D : Decls) (sd : StructDecl) : Bool :=
      | _ => true) &&
     (!sd.dtor || !decide (sd.baseOf D = .linear))
 
-/-- §3's class assignment for a whole struct environment, as an algorithm.
+/-- §3's qualifier assignment for a whole struct environment, as an algorithm.
 `WfStructs` is what it decides, and that is the premise `Ty.qual`'s lookup
 needs to be §3's join. -/
 def checkStructs (D : Decls) : Bool := D.structs.all (checkStructDecl D)
 
-/-- §3's class assignment for one enum declaration, as an algorithm (`6.3:19`):
-the recorded class is the payload join over every variant. There is no attribute
+/-- §3's qualifier assignment for one enum declaration, as an algorithm (`6.3:19`):
+the recorded qualifier is the payload join over every variant. There is no attribute
 clause, no destructor clause and no acyclicity clause — §3 gives an enum neither
 of the first two, and the third is `checkNoCycle`'s. -/
 def checkEnumDecl (D : Decls) (ed : EnumDecl) : Bool :=
   decide (ed.cls = ed.payloadJoin D)
 
-/-- §3's class assignment for a whole enum environment, as an algorithm.
+/-- §3's qualifier assignment for a whole enum environment, as an algorithm.
 `WfEnums` is what it decides, and that is the premise `Ty.qual`'s lookup needs to
 be `6.3:19`'s join at an enum type. -/
 def checkEnums (D : Decls) : Bool := D.enums.all (checkEnumDecl D)
@@ -671,7 +671,7 @@ def Decls.topoSort (D : Decls) : Nat → List Bool × List Bool
 `|structs| + |enums|` rounds of the sort, which is "no struct or enum contains itself
 by value, either directly or through a cycle of struct fields and enum
 payloads". `checkNoCycle_sound` turns an acceptance into `WfByValueEdge`, the premise
-that makes §3's two class equations a definition. -/
+that makes §3's two qualifier equations a definition. -/
 def checkNoCycle (D : Decls) : Bool :=
   let st := D.topoSort (D.structs.length + D.enums.length)
   st.1.all id && st.2.all id

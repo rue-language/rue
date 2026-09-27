@@ -21,7 +21,7 @@ closed, well-scoped, and simply typed by construction: every `use p` and
 `int`, both arms of an `if` have the wanted type, `assign p e` targets a place
 rooted at a `mut` binder and `e` has the place's type, and every literal is in
 bounds (`InBounds`). A program's struct **and enum** declarations are drawn
-first and are well-formed by construction (§3's class equation and `6.3:19`'s
+first and are well-formed by construction (§3's qualifier equation and `6.3:19`'s
 payload join, `3.8:18`'s `@copy` restriction, and fields and payload
 components naming only declarations drawn earlier, which is `3.0:5`'s
 acyclicity); a struct literal supplies one initializer per declared field, an
@@ -656,7 +656,7 @@ the weights can be read and changed:
   reinitialisation after a move and overwrite of a live value both arise)
   and `@drop` live; `@drop` prefers a binder §6.11 walks into — a struct, an
   enum or an array — but may name any binder, since the calculus allows `@drop`
-  of a place of any class;
+  of a place of any qualifier;
 * integer literals are small, `0` among them, with an occasional `min_T` or
   `max_T` at the drawn type, so every arithmetic operator can trap — and the
   narrow types make that likely rather than rare; one `intLiteral` draw in
@@ -678,7 +678,7 @@ the weights can be read and changed:
   observation channels;
 * an enum's payload components are mostly **struct** types, because a struct
   is what carries a destructor and a declared attribute — so the payload
-  classes span `Copy`, `Affine` and `Linear`, `6.3:19`'s join has something to
+  qualifiers span `Copy`, `Affine` and `Linear`, `6.3:19`'s join has something to
   say, and an enum one of whose variants carries a `linear` payload is itself
   `Linear` whichever variant a value holds;
 * a `match` is weighted up sharply when the scope already holds a place of
@@ -1171,7 +1171,7 @@ def floatLiteral (w : FloatWidth) : G Expr := do
 
 /-- (helper) An array length (`7.1:14`'s compile-time constant): small, so a
 program stays readable, and `0` among them — the zero-sized `[T; 0]`, whose
-class is `Affine` rather than the element's when the element is not `Copy`
+qualifier is `Affine` rather than the element's when the element is not `Copy`
 (§3's table), and at which every dynamic index is out of bounds. -/
 def arrayLen : G Nat := weighted 2 [(1, 0), (2, 1), (3, 2), (2, 3)]
 
@@ -1191,7 +1191,7 @@ A generated program declares its own structs and enums (`Syntax.lean`), and the
 declarations are drawn so that `WfDecls` holds by construction: a field or a
 payload component names only a declaration drawn **before** it, which is
 `3.0:5`'s acyclicity (E0483) restricted to the draw order; a struct's recorded
-class is §3's join lifted by the attribute and an enum's is `6.3:19`'s payload
+qualifier is §3's join lifted by the attribute and an enum's is `6.3:19`'s payload
 join over every variant, with no attribute to lift; a destructor is dropped
 from the draw when a field carries a linear value (`3.9:44`) or the
 declaration is declared `linear` (a choice rather than a rule: `3.9:34` would
@@ -1341,7 +1341,7 @@ def structLitArgs (sd : StructDecl) (draw : Ty → G Expr) : G (List Expr) := do
 of the `nStructs` struct declarations — none of which names an enum, since they
 are drawn first — or an **earlier** enum. Struct components are the common draw
 because they are what carries a destructor and a declared attribute, so the
-payload classes span `Copy`, `Affine` and `Linear` and `6.3:19`'s join has
+payload qualifiers span `Copy`, `Affine` and `Linear` and `6.3:19`'s join has
 something to say. -/
 def payloadTy (nStructs e : Nat) : G Ty := do
   let scalar : G Ty := do weighted (← intTy) [(3, ← intTy), (1, .bool), (1, .unit)]
@@ -1358,7 +1358,7 @@ def payloadTy (nStructs e : Nat) : G Ty := do
 /-- (helper) One enum declaration, well-formed by construction: two or three
 variants in declaration order — the order a tag indexes and (Match) §5.5's arms
 are presented in — each carrying `0`–`2` payload components, and the recorded
-class exactly `6.3:19`'s join over every component of every variant, which is
+qualifier exactly `6.3:19`'s join over every component of every variant, which is
 what `checkEnumDecl` pins. An arity-`0` variant is `6.3:14`'s
 discriminant-only case, and a declaration all of whose variants are arity `0`
 is the duplicable tag enum of `3.8:2`. There is no attribute to draw and no
@@ -1973,7 +1973,7 @@ def atom (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
       -- binder, with the struct arm's weights — or (Array-Intro) §5.8's
       -- literal, one atom per element, or at a `Copy` element one time in three
       -- the repeat form `[e; n]` (`7.1:36`, `7.1:38`), which the checker
-      -- refuses at any other element class (E0905) and so is not drawn there.
+      -- refuses at any other element qualifier (E0905) and so is not drawn there.
       let projs := projPlaces D Γ (.array T n)
       if !projs.isEmpty && (← chance 1 2) then return use (← pickPlace (.var 0) projs)
       let uses := indicesWhere Γ (fun b => b.ty == .array T n)
@@ -2788,7 +2788,7 @@ mutual
 /-- (helper) The rule labels one expression exercises, in the seed corpus's
 spellings where it has one and in traversal order. `Γ` lists the binder types
 innermost first, as `Print.tyOf` reads them, so a use or a `@drop` is labeled
-copy or move by the class of the type its place reaches. -/
+copy or move by the qualifier of the type its place reaches. -/
 def rulesIn (D : Decls) (F : List FnDef) (Γ : List Ty) : Expr → List String
   | use pl =>
       (match Γ[pl.root]? with
@@ -2816,7 +2816,7 @@ def rulesIn (D : Decls) (F : List FnDef) (Γ : List Ty) : Expr → List String
       ["(Enum-Intro) §5.5", "(D-Enum-Intro) §6.6"] ++ (args.map (rulesIn D F Γ)).flatten
   | .«match» scrut arms =>
       -- The arms are read under their own payload locals, which is what makes
-      -- a use of one labeled by the payload's class rather than by whatever
+      -- a use of one labeled by the payload's qualifier rather than by whatever
       -- binder happens to sit at that index outside the arm.
       let P : Program := { decls := D, fns := F }
       let variants := match Print.tyOf P (.int .w64 .signed) Γ scrut with
@@ -2934,7 +2934,7 @@ value line is usually present, with a float often enough that `main` prints a
 shortest round-trip rendering (`3.12:40`) as well, and an aggregate often
 enough that `main`'s own observation of the value is exercised — for an enum
 that is §6.11's tag read, dropping the **active** variant's payload only
-(`6.3:20`), or, where `class(E)` is `Linear`, the explicit `@drop`
+(`6.3:20`), or, where `qual(E)` is `Linear`, the explicit `@drop`
 `Print.observeValue` emits instead. -/
 def resultTy (D : Decls) : G Ty := do
   let k ← nat 1 10

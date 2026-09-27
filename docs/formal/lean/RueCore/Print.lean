@@ -39,7 +39,7 @@ destructor drops silently in both. **`@dbg` is the other kind**, and it needs
 no bridging at all: the core form prints as itself and the interpreter emits
 a `dbg` event (§6.12's observable output).
 
-The rest follows from the spec's constraints on destructors per class
+The rest follows from the spec's constraints on destructors per qualifier
 (`3.9`):
 
 * **`@copy`.** A `@copy` type must not have a destructor (`3.9:31`,
@@ -50,7 +50,7 @@ The rest follows from the spec's constraints on destructors per class
   `Place.proj` (`3.6:15`: elaboration resolves the field name to its
   declaration slot, and `structItem` below declares the slots under those
   names). A projection in value context is a `Copy` read, a partial move by its
-  own type's class (`3.8:22`), or — where the path has a proper prefix of
+  own type's qualifier (`3.8:22`), or — where the path has a proper prefix of
   declared-`linear` struct type — the destructure of `3.8:33`; an assignment
   target is `x.f0 = e;`, and a `@drop` of one is `@drop(x.f0)`. Each is the
   surface form of the core place, with no helper supplied, because the
@@ -69,7 +69,7 @@ The rest follows from the spec's constraints on destructors per class
   operator operand, a field initializer, a call argument, a `return` operand,
   an `if` condition, an assignment right-hand side, a block tail — is a value
   context outright.
-* **`@drop`.** Every class prints `@drop(x)`, the identity elaboration of
+* **`@drop`.** Every qualifier prints `@drop(x)`, the identity elaboration of
   `Expr.drop`: it is legal on a declared-linear place and on a place whose
   type is linear through a field (`3.9:39`, verified against the compiler),
   and it runs the same glue scope exit would, so the destructor lines it
@@ -134,7 +134,7 @@ stated with it.
 printed with `@dbg`; `()` prints nothing; a struct value is **dropped**, which
 is what the interpreter's own value line is projected from (`Corpus.lean`'s
 `valueLines` reads the lines that value's drop would emit). A struct whose
-class is `Linear` cannot be dropped implicitly, so `main` discharges it with
+qualifier is `Linear` cannot be dropped implicitly, so `main` discharges it with
 `@drop(result)` — the same glue, made explicit (§5.3). Traps (§6.12) end the
 process before any of this; the bridge compares the trap kind.
 -/
@@ -727,7 +727,7 @@ end
 
 /-- How `main` observes the program's value (module docstring): a scalar is
 printed; `()` prints nothing; a struct value is dropped — implicitly at
-`main`'s end, or, when its class is `Linear` and an implicit drop would be
+`main`'s end, or, when its qualifier is `Linear` and an implicit drop would be
 §5.6's leak, by an explicit `@drop`, which runs the same glue (§5.3)
 (helper). -/
 def observeValue (D : Decls) (T : Ty) : String :=
@@ -739,7 +739,7 @@ def observeValue (D : Decls) (T : Ty) : String :=
 
 /-! The array arm of `observeValue` at both of its answers. No corpus program
 and no `Examples.lean` witness returns an aggregate from `f0`, so these two
-lines are what exercise it: an array whose class is not `Linear` is left to
+lines are what exercise it: an array whose qualifier is not `Linear` is left to
 `main`'s implicit drop, and a linear-carrying one takes the explicit `@drop`
 §5.3 runs the same glue for. -/
 

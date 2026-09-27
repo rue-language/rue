@@ -6,7 +6,7 @@ program the declarative `Typed` judgment (§5) would accept may still be one
 judgment derives (`Checker.lean`, "What completeness still costs") or
 because the judgment itself is a conservative, flow-insensitive
 approximation of what is actually safe (a branch join, a loop head, a
-whole-declaration class). `lake exe ruecore-corpus --profile` (RUE-2469)
+whole-declaration qualifier). `lake exe ruecore-corpus --profile` (RUE-2469)
 already counts acceptances and rejections; this page (RUE-2491) measures the
 part of that incompleteness visible from outside the proof: corpus and
 generated programs the checker rejects that the interpreter's `run`
@@ -62,7 +62,7 @@ module docstring already names:
    on a binding an untaken arm or a loop iteration the run never reaches
    would have left un-consumed, (Match)'s per-arm payload leak (`6.3:17`,
    `3.8:32`), and (If) §5.5's join itself (`3.8:50`).
-2. **A type's class is one verdict for the whole declaration, not per
+2. **A type's qualifier is one verdict for the whole declaration, not per
    value.** §3's payload join over every variant (`6.3:19`) makes an enum
    Linear the moment *any* variant carries a linear field, even for a value
    built from a variant that carries none; discarding such a value trips
