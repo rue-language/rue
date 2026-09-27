@@ -603,7 +603,7 @@ theorem longc_loop (hF : TraceMeasure P.decls F) (IH : LongCIH M P F fuel)
         (fun a => Nat.le_refl _) hent (fun K tr => IH H φ e hcc hr _ tr)
   | returned => simp
   | panic => simp
-  | stuck => simp
+  | refused => simp
 
 end longcForms
 
@@ -683,7 +683,7 @@ whose trace `run_trace_once` bounds, or before the end of a run of at least
 `k` steps whose ledger `eval_longc` keeps; and a trace only grows along the
 way. -/
 theorem steps_trace_once (M : FloatSig) {P : Program} {F : Event → List Nat}
-    (hF : TraceMeasure P.decls F) (hns : ∀ fuel w, run M P fuel ≠ .stuck w)
+    (hF : TraceMeasure P.decls F) (hns : ∀ fuel w, run M P fuel ≠ .refused w)
     {C : Config} (hC : Steps M P Config.init C) : ∀ a, (C.trace.flatMap F).count a ≤ 1 := by
   intro a
   obtain ⟨k, hk⟩ := hC.toN
@@ -721,7 +721,7 @@ theorem steps_trace_once (M : FloatSig) {P : Program} {F : Event → List Nat}
       rw [hδ]
       simp only [storeOwn, List.flatMap_nil, List.count_nil, List.length_nil, List.nil_append] at *
       omega
-  | stuck w => exact absurd hr (hns k w)
+  | refused w => exact absurd hr (hns k w)
   | returned H v tr => exact absurd hr (run_ne_returned M H v tr)
   | broke H sc tr => exact absurd hr (run_ne_broke M H sc tr)
 
@@ -743,7 +743,7 @@ panic `run` answers is reached by §6's relation (`eval_sound`), so its trace is
 a reachable configuration's; exhausted fuel carries the empty trace; and a
 checked run is never refused (helper). -/
 theorem no_double_free_of_step (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
+    (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
       (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
       (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1) := by
   have hs := eval_sound M h fuel
@@ -752,7 +752,7 @@ theorem no_double_free_of_step (M : FloatModel) {P : Program} (h : ProgramTyped 
     | ok H v tr => exact ⟨_, hs.2.1 H v tr hr, by simp [Config.trace, EvalRes.trace]⟩
     | panic κ tr => exact ⟨_, hs.2.2 κ tr hr, by simp [Config.trace, EvalRes.trace]⟩
     | outOfFuel => exact ⟨_, .refl _, by simp [Config.init, Config.trace, EvalRes.trace]⟩
-    | stuck w => exact absurd hr (hs.1 w)
+    | refused w => exact absurd hr (hs.1 w)
     | returned H v tr => exact absurd hr (run_ne_returned _ H v tr)
     | broke H sc tr => exact absurd hr (run_ne_broke _ H sc tr)
   obtain ⟨C, hC, htr⟩ := key

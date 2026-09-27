@@ -25,7 +25,7 @@ so a run that never finishes is not covered here; `step_no_double_free`
 covers it, over every configuration a run reaches (RUE-2477). -/
 def no_double_free_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
-    (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
+    (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
       (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
       (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1)
 
@@ -76,7 +76,7 @@ def drop_exactly_once_stmt : Prop :=
     (_ : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
     {φ : Activation} {H : Store} (_ : Typed P R Γ e T Ω) (_ : ActivationTyping P.decls Γ φ H)
     (_ : StoreCC P.decls H) (_ : e.pendingSafe = true),
-    (∀ w, eval M.toFloatSig fuel P H φ e ≠ .stuck w) ∧
+    (∀ w, eval M.toFloatSig fuel P H φ e ≠ .refused w) ∧
       Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
       Tidy φ H (eval M.toFloatSig fuel P H φ e)
 
@@ -94,7 +94,7 @@ def rest_exactly_once_stmt : Prop :=
     (_ : StoreCC P.decls H) (_ : e.pendingSafe = true)
     {H₁ : Store} {vs : List Val} {tr : List Event} (_ : Lead M.toFloatSig P fuel H φ H₁ vs tr e)
     {r : EvalRes} (_ : eval M.toFloatSig (fuel + 1) P H φ e = r.withTrace tr),
-    (∀ w, r ≠ .stuck w) ∧
+    (∀ w, r ≠ .refused w) ∧
       Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧ Settled φ H₁ r
 
 /-- **Every owned value of a run that finishes with a value ends exactly once** (§7 "No

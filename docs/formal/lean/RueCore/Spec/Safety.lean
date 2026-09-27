@@ -24,7 +24,7 @@ namespace RueCore.Spec
 names). A typed expression of a well-formed program, run at any fuel from a
 frame and store agreeing with its context, ends in `EvalOk`: a well-typed
 value, an unwinding `return` or `break` §5.3's `Ω` allows, a defined panic,
-or exhausted fuel — never `.stuck`. -/
+or exhausted fuel — never `.refused`. -/
 def soundness_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : WfProgram P) (fuel : Nat) {R : Ty} {Γ : Ctx}
     {Ω : Out} {e : Expr} {T : Ty}, Typed P R Γ e T Ω →
@@ -45,15 +45,15 @@ def run_safe_stmt : Prop :=
       (∃ H v tr, run M.toFloatSig P fuel = .ok H v tr ∧ HasTy P.decls v fd.ret)
 
 /-- **No refusal of any kind** (§7's memory-safety bullets). A checked
-program's run is never `.stuck`. Narrower than the bullets: a value built for
+program's run is never `.refused`. Narrower than the bullets: a value built for
 a sibling operand that a later one abandons by `return` or `break` is dropped
 by nobody (RUE-2316), and a `@panic` runs no drop (§5.7's `⊥_panic`). Like
-every "never `.stuck`" statement, it holds because `eval`'s checks and
+every "never `.refused`" statement, it holds because `eval`'s checks and
 monitors never fire: what it rules out is what they watch (R3 of
 `REDTEAM-LOG.md`; RUE-2469). -/
 def no_violation_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat) (w : Violation),
-    run M.toFloatSig P fuel ≠ .stuck w
+  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat) (w : Refusal),
+    run M.toFloatSig P fuel ≠ .refused w
 
 /-- **No use-after-move** (§7 "No use-after-move"): `run` never refuses with
 `useAfterMove`, the tag `eval` raises when it reads a `⊘`. It is
@@ -62,7 +62,7 @@ only as far as `eval` checks every read and labels it so: what it rules out is
 what that monitor watches (R3 of `REDTEAM-LOG.md`; RUE-2469). -/
 def no_use_after_move_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
-    run M.toFloatSig P fuel ≠ .stuck .useAfterMove
+    run M.toFloatSig P fuel ≠ .refused .useAfterMove
 
 /-- **No use-after-drop** (§7 "No use-after-drop / no leak of drops", "never
 read afterward"): `run` never refuses with `useAfterDrop`, the tag `eval`
@@ -77,7 +77,7 @@ consequence of typing; it is kept in §7's form, over checked programs
 (RUE-2496). -/
 def no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
-    run M.toFloatSig P fuel ≠ .stuck .useAfterDrop
+    run M.toFloatSig P fuel ≠ .refused .useAfterDrop
 
 /-- **No use-after-drop, on every program** (§7 "No use-after-drop / no leak
 of drops", "never read afterward"; RUE-2496): `run` never refuses with
@@ -91,7 +91,7 @@ names a cell already retired, `eval` does refuse (`Sharp.retired_cell`). Like
 `no_use_after_drop`, it says no retired cell is accessed only as far as
 `eval` checks every access and labels it so (R3 of `REDTEAM-LOG.md`). -/
 def run_no_use_after_drop_stmt : Prop :=
-  ∀ (M : FloatSig) (P : Program) (fuel : Nat), run M P fuel ≠ .stuck .useAfterDrop
+  ∀ (M : FloatSig) (P : Program) (fuel : Nat), run M P fuel ≠ .refused .useAfterDrop
 
 /-- **No linear leak** (§7 "Linear values are consumed exactly once", §5.6): no
 scope exit, frame pop or scope unwind meets a live linear binding. Narrower
@@ -106,13 +106,13 @@ What it rules out is what `eval`'s leak monitor watches (R3 of
 `REDTEAM-LOG.md`). -/
 def no_linear_leak_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
-    run M.toFloatSig P fuel ≠ .stuck .linearLeak
+    run M.toFloatSig P fuel ≠ .refused .linearLeak
 
 /-- **No linear overwrite** (§7, the same bullet, `3.8:77`): no assignment drops
 a live linear value. -/
 def no_linear_overwrite_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
-    run M.toFloatSig P fuel ≠ .stuck .linearOverwrite
+    run M.toFloatSig P fuel ≠ .refused .linearOverwrite
 
 /-- **No linear discard** (§7, the same bullet, `3.8:64`): no sequence discards
 a linear value. The three linear statements hold because `eval`'s monitors
@@ -120,7 +120,7 @@ never fire; what they rule out is what those monitors watch (R3 of
 `REDTEAM-LOG.md`). -/
 def no_linear_discard_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
-    run M.toFloatSig P fuel ≠ .stuck .linearDiscard
+    run M.toFloatSig P fuel ≠ .refused .linearDiscard
 
 /-- **Fuel monotonicity** (§6 as `eval` runs it; `03-metatheory.md` "Fuel").
 An answer other than `outOfFuel` is the answer at every larger fuel: the clock
@@ -136,8 +136,8 @@ refusal at one fuel is the answer at every fuel that answers; a corollary of
 `fuel_mono`, in either order of the two fuels. -/
 def no_masking_stmt : Prop :=
   ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : Expr} {n m : Nat}
-    {w : Violation} (_ : eval M n P H φ e = .stuck w) (_ : eval M m P H φ e ≠ .outOfFuel),
-    eval M m P H φ e = .stuck w
+    {w : Refusal} (_ : eval M n P H φ e = .refused w) (_ : eval M m P H φ e ≠ .outOfFuel),
+    eval M m P H φ e = .refused w
 
 /-- **No outcome is an unwinding `return`** ((D-Return-Main) §6.9). -/
 def run_ne_returned_stmt : Prop :=

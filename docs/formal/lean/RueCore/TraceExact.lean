@@ -446,7 +446,7 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
           | broke H₁ sc tr => dsimp only; split <;> trivial
           | returned => rw [hr] at hb; exact hb
           | panic => trivial
-          | stuck => trivial
+          | refused => trivial
           | outOfFuel => trivial
         · cases hr : eval M n P H φ e₁ with
           | ok H₁ v tr =>
@@ -456,7 +456,7 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
           | broke H₁ sc tr => dsimp only; split <;> trivial
           | returned => trivial
           | panic => trivial
-          | stuck => trivial
+          | refused => trivial
           | outOfFuel => trivial
 
 /-! ## The equalities the ledger is made of -/
@@ -736,7 +736,7 @@ theorem Val.ints_own {D : Decls} : ∀ {vs : List Val} {is : List Int},
 
 /-- `dynPlace` lands only after its indices were integers (helper). -/
 theorem dynPlace_ints {H : Store} {φ : Activation} {p : Place} {vs : List Val} {πs : List (List Nat)}
-    (h : ∀ w, dynPlace H φ p vs πs ≠ .stuck w) : ∃ is, Val.ints vs = some is := by
+    (h : ∀ w, dynPlace H φ p vs πs ≠ .refused w) : ∃ is, Val.ints vs = some is := by
   unfold dynPlace at h
   split at h
   · exact absurd rfl (h .typeConfusion)
@@ -772,7 +772,7 @@ theorem Exact.prefix {D : Decls} {H H₁ : Store} {X Y : List Nat} {tr : List Ev
       rw [freedIds_append, List.count_append]
       omega
   | panic k tr₂ => trivial
-  | stuck w => trivial
+  | refused w => trivial
   | outOfFuel => trivial
 
 /-- A step that ended nothing (helper). -/
@@ -797,7 +797,7 @@ theorem Exact.bind {D : Decls} {H : Store} {X : List Nat} {r : EvalRes}
   | returned H₁ v tr => exact hr
   | broke H₁ sc tr => exact hr
   | panic k tr => trivial
-  | stuck w => trivial
+  | refused w => trivial
   | outOfFuel => trivial
 
 /-- **A later operand under a held value** (helper): the operand does not
@@ -818,7 +818,7 @@ theorem Exact.bindHeld {D : Decls} {H : Store} {Y : List Nat} {r : EvalRes}
   | returned H₁ v tr => exact hq.1.elim
   | broke H₁ sc tr => exact hq.2.elim
   | panic k tr => trivial
-  | stuck w => trivial
+  | refused w => trivial
   | outOfFuel => trivial
 
 /-- §6.9's call boundary, as an exact ledger (helper). -/
@@ -834,7 +834,7 @@ theorem Exact.absorb {D : Decls} {H : Store} {X : List Nat} {r : EvalRes}
   | returned H₁ v tr => exact hr
   | broke H₁ sc tr => trivial
   | panic k tr => trivial
-  | stuck w => trivial
+  | refused w => trivial
   | outOfFuel => trivial
 
 /-- A value produced where the store is, owning exactly what was held
@@ -938,7 +938,7 @@ theorem evalArgs_exactQuiet {D : Decls} {ev : Store → Expr → EvalRes} :
       | returned H₁ v tr => rw [hr] at q₁; exact q₁.1.elim
       | broke H₁ sc tr => rw [hr] at q₁; exact q₁.2.elim
       | panic k tr => exact ⟨trivial, fun r h => by cases h; exact ⟨trivial, trivial⟩⟩
-      | stuck w => exact ⟨trivial, fun r h => by cases h; exact ⟨trivial, trivial⟩⟩
+      | refused w => exact ⟨trivial, fun r h => by cases h; exact ⟨trivial, trivial⟩⟩
       | outOfFuel => exact ⟨trivial, fun r h => by cases h; exact ⟨trivial, trivial⟩⟩
 
 /-- **An argument list keeps the exact ledger** where only its first member
@@ -976,7 +976,7 @@ theorem evalArgs_exact {D : Decls} {ev : Store → Expr → EvalRes} {es : List 
       | returned H₁ v tr => rw [hr] at h₁; exact h₁
       | broke H₁ sc tr => rw [hr] at h₁; exact h₁
       | panic k tr => trivial
-      | stuck w => trivial
+      | refused w => trivial
       | outOfFuel => trivial
 
 /-! ## The forms' exact ledgers -/
@@ -1100,7 +1100,7 @@ theorem Exact.unwind {D : Decls} {H : Store} {v : Val} {ls : List Nat} (hcc : St
     (hv : (Contents.ofVal v).copyClosed D = true) :
     Exact D H (v.own D)
       (match unwindLocs D H ls with
-       | .error w => .stuck w
+       | .error w => .refused w
        | .ok (H', evs) => .ok H' v evs) := by
   cases hu : unwindLocs D H ls with
   | error w => trivial
@@ -1153,7 +1153,7 @@ theorem eval_indexRead_copy {M : FloatSig} {P : Program} {n : Nat} {H H' : Store
         exact absurd h (evalArgs_abort_ne_ok hra _ _ _)
       · rename_i H₁ vs tr₀ hra
         cases hdp : dynPlace H₁ φ p vs πs with
-        | stuck w => simp [hdp, EvalRes.withTrace] at h
+        | refused w => simp [hdp, EvalRes.withTrace] at h
         | bounds => simp [hdp, EvalRes.withTrace] at h
         | «at» ℓ c sub ρ =>
             simp only [hdp] at h
@@ -1992,7 +1992,7 @@ theorem unwindLocs_shape {D : Decls} : ∀ {H H' : Store} {ls : List Nat} {evs :
 /-- What a scope teardown after a value does to the store: refuse, or retire
 exactly the cells `ls` names (helper). -/
 def KillsOnly (ls : List Nat) (H : Store) (v : Val) (R : EvalRes) : Prop :=
-  (∃ w, R = .stuck w) ∨
+  (∃ w, R = .refused w) ∨
     ∃ H' evs, R = .ok H' v evs ∧ H'.length = H.length ∧ (∀ ℓ ∈ ls, H'[ℓ]? = some .dead) ∧
       ∀ ℓ, ℓ ∉ ls → H'[ℓ]? = H[ℓ]?
 
@@ -2000,7 +2000,7 @@ def KillsOnly (ls : List Nat) (H : Store) (v : Val) (R : EvalRes) : Prop :=
 theorem unwind_kills {D : Decls} {H : Store} {v : Val} {ls ls' : List Nat}
     (hm : ∀ ℓ, ℓ ∈ ls' ↔ ℓ ∈ ls) :
     KillsOnly ls H v (match unwindLocs D H ls' with
-      | .error w => .stuck w
+      | .error w => .refused w
       | .ok (H', evs) => .ok H' v evs) := by
   split
   · exact .inl ⟨_, rfl⟩
@@ -2012,7 +2012,7 @@ theorem unwind_kills {D : Decls} {H : Store} {v : Val} {ls ls' : List Nat}
 /-- `drop-retire` of one cell as a teardown (helper). -/
 theorem dropRetire_kills {D : Decls} {H : Store} {v : Val} {ℓ : Nat} :
     KillsOnly [ℓ] H v (match dropRetire D H ℓ with
-      | .error w => .stuck w
+      | .error w => .refused w
       | .ok (H', evs) => .ok H' v evs) := by
   split
   · exact .inl ⟨_, rfl⟩
@@ -2157,7 +2157,7 @@ theorem evalArgs_tidy {φ : Activation} {ev : Store → Expr → EvalRes} :
       | returned => rw [hr] at h₁; exact h₁
       | broke => rw [hr] at h₁; exact h₁
       | panic => trivial
-      | stuck => trivial
+      | refused => trivial
       | outOfFuel => trivial
 
 /-- **§6.9's frame, pushed and popped**: a callee's body, run in a frame of
@@ -2169,7 +2169,7 @@ theorem Tidy.call {D : Decls} {φ : Activation} {H Hm : Store} {ls : List Nat} {
     (hpre : ∀ ℓ, ℓ < H.length → Hm[ℓ]? = H[ℓ]?)
     (hr : Tidy { env := ls.reverse, scope := ls } Hm r) :
     Tidy φ H (r.bindCall fun H₃ v => match runAllScopeDrops D H₃ { env := ls.reverse, scope := ls } with
-      | .error w => .stuck w
+      | .error w => .refused w
       | .ok (H₄, evs) => .ok H₄ v evs) := by
   have loc : ∀ H₂, Local { env := ls.reverse, scope := ls } Hm H₂ → Local φ H H₂ := by
     intro H₂ l
@@ -2494,7 +2494,7 @@ theorem drop_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
     (hp : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
     {φ : Activation} {H : Store} (ht : Typed P R Γ e T Ω) (hfm : ActivationTyping P.decls Γ φ H)
     (hcc : StoreCC P.decls H) (he : e.pendingSafe = true) :
-    (∀ w, eval M.toFloatSig fuel P H φ e ≠ .stuck w) ∧
+    (∀ w, eval M.toFloatSig fuel P H φ e ≠ .refused w) ∧
       Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
       Tidy φ H (eval M.toFloatSig fuel P H φ e) := by
   refine ⟨fun w hw => ?_, eval_exact M.toFloatSig hp fuel H φ e hcc he,
@@ -2613,7 +2613,7 @@ theorem rest_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
     (hcc : StoreCC P.decls H) (he : e.pendingSafe = true)
     {H₁ : Store} {vs : List Val} {tr : List Event} (hl : Lead M.toFloatSig P fuel H φ H₁ vs tr e)
     {r : EvalRes} (hr : eval M.toFloatSig (fuel + 1) P H φ e = r.withTrace tr) :
-    (∀ w, r ≠ .stuck w) ∧
+    (∀ w, r ≠ .refused w) ∧
       Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧ Settled φ H₁ r := by
   obtain ⟨hle, hc₁, hvs⟩ := lead_cc M.toFloatSig hp hcc he hl
   refine ⟨fun w hw => ?_, rest_step M.toFloatSig hp

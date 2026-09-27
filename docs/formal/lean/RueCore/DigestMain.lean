@@ -259,7 +259,7 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
     "The laws have a model: `Float.exactModel` (`RueCore/Float/Lemmas.lean`) proves every one",
     "of them of the executable instance `Float.exactOps`, so they are jointly satisfiable and",
     s!"those {floatStmts.length} are not vacuous in `M` (`Nonvacuous.exact_model`, RUE-2469). Several statements say",
-    "\"`run` is never `.stuck` with violation *v*\": they mean what `eval`'s monitors",
+    "\"`run` is never `.refused` with violation *v*\": they mean what `eval`'s monitors",
     "watch, since *v* is the tag a monitor raises (`no_violation`, `no_use_after_move`,",
     "`no_use_after_drop` and `no_linear_discard` say so; RUE-2469).",
     "What the proof means for the compiler, in plain language, is RUE-2462's",

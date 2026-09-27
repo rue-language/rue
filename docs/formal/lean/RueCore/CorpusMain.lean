@@ -57,7 +57,7 @@ def outcomeKey : RueCore.EvalRes → String
   | .returned .. => "returned"
   | .broke .. => "broke"
   | .panic .. => "panic"
-  | .stuck w => s!"stuck {RueCore.Corpus.violationName w}"
+  | .refused w => s!"stuck {RueCore.Corpus.refusalName w}"
   | .outOfFuel => "outOfFuel"
 
 /-- (helper) Count each key, in first-seen order. -/

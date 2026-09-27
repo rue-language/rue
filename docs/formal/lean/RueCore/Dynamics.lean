@@ -21,7 +21,7 @@ Design commitments carried over from §6:
 
 * **Memory violations are refusals, not silence.** Reading a `⊘`/`†` cell,
   implicitly dropping a linear value, or overwriting one, yields a named
-  `Violation`. The §7 safety theorem (`Soundness.lean`) is exactly:
+  `Refusal`. The §7 safety theorem (`Soundness.lean`) is exactly:
   well-typed programs never reach one — which is a claim about the refusals
   below, and the carve-out under "Pending values" names the one edge they
   do not cover. The refusals are of two kinds, and the distinction matters
@@ -594,7 +594,7 @@ deriving DecidableEq, Repr
 
 /-- The named memory violations: the machine's refusals. §7's decomposed
 memory-safety bullets each forbid one of these. -/
-inductive Violation where
+inductive Refusal where
   /-- Reading a `⊘` cell (§7: no use-after-move). -/
   | useAfterMove
   /-- Touching a `†` cell (§7: no use-after-drop). -/
@@ -627,7 +627,7 @@ deriving DecidableEq, Repr
 with path left to walk is the use of a moved-out place (§7's first bullet); a
 step that is not a field of what is stored is a shape no well-typed program
 produces (helper). -/
-def Contents.readAt : Contents → List Nat → Except Violation Contents
+def Contents.readAt : Contents → List Nat → Except Refusal Contents
   | c, [] => .ok c
   | .hole, _ :: _ => .error .useAfterMove
   | .struct _ _ cs, f :: π =>
@@ -661,7 +661,7 @@ once every index is a value and in range, §6.5's bounds trap, or a refusal
 inductive DynStep where
   | ok (ρ : List Nat)
   | bounds
-  | stuck (w : Violation)
+  | refused (w : Refusal)
 
 /-- **Resolve a dynamic tail** `[i₁]π₁…[iₖ]πₖ` against the contents it is taken
 in, to the constant path it denotes: §6.5's (D-Index)/(D-Index-Trap) at each
@@ -676,16 +676,16 @@ def Contents.resolveDyn : Contents → List Int → List (List Nat) → DynStep
   | .array _ _ cs, i :: is, π :: πs =>
       if inBoundsIdx i cs.length then
         (match cs[i.toNat]? with
-         | none => .stuck .typeConfusion
+         | none => .refused .typeConfusion
          | some c =>
            match c.readAt π with
-           | .error w => .stuck w
+           | .error w => .refused w
            | .ok c' =>
              match c'.resolveDyn is πs with
              | .ok ρ => .ok (i.toNat :: (π ++ ρ))
              | r => r)
       else .bounds
-  | _, _, _ => .stuck .typeConfusion
+  | _, _, _ => .refused .typeConfusion
 
 /-- The index values of a dynamic place, as integers; `none` where one is not
 an integer, which no well-typed program produces (helper). -/
@@ -704,7 +704,7 @@ the dynamic tail resolved to under it — or the bounds trap, or a refusal
 inductive DynPlace where
   | at (ℓ : Nat) (c sub : Contents) (ρ : List Nat)
   | bounds
-  | stuck (w : Violation)
+  | refused (w : Refusal)
 
 /-- **Navigate a place below a dynamic index** (§6.3's `H(ℓ)@π` with §6.5's
 bounds check at every dynamic step), once its index values `vs` are known.
@@ -713,22 +713,22 @@ mirror (`Explain.lean`), so the four test the same thing (helper). -/
 def dynPlace (H : Store) (φ : Activation) (p : Place) (vs : List Val) (πs : List (List Nat)) :
     DynPlace :=
   match Val.ints vs with
-  | none => .stuck .typeConfusion
+  | none => .refused .typeConfusion
   | some is =>
     match φ.env[p.root]? with
-    | none => .stuck .unbound
+    | none => .refused .unbound
     | some ℓ =>
       match H[ℓ]? with
-      | none => .stuck .unbound
-      | some .dead => .stuck .useAfterDrop
+      | none => .refused .unbound
+      | some .dead => .refused .useAfterDrop
       | some (.full c) =>
         match c.readAt p.path with
-        | .error w => .stuck w
+        | .error w => .refused w
         | .ok sub =>
           match sub.resolveDyn is πs with
           | .ok ρ => .at ℓ c sub ρ
           | .bounds => .bounds
-          | .stuck w => .stuck w
+          | .refused w => .refused w
 
 /-- Whether the contents stored at a position is a struct **declared**
 `linear`: the same mark `Ty.declaredLinear` (`Syntax.lean`) reads, read off the
@@ -796,7 +796,7 @@ inductive EvalRes where
   cells the body still owed a drop — and the trace so far. -/
   | broke (H : Store) (scope : List Nat) (tr : List Event)
   | panic (k : PanicKind) (tr : List Event)
-  | stuck (why : Violation)
+  | refused (why : Refusal)
   | outOfFuel
 deriving Repr
 
@@ -837,7 +837,7 @@ typed program reaches it. -/
 def EvalRes.bindCall : EvalRes → (Store → Val → EvalRes) → EvalRes
   | .ok H v tr, k => (k H v).withTrace tr
   | .returned H v tr, _ => .ok H v tr
-  | .broke _ _ _, _ => .stuck .typeConfusion
+  | .broke _ _ _, _ => .refused .typeConfusion
   | r, _ => r
 
 mutual
@@ -887,7 +887,7 @@ arm cannot refuse and why the value's enum **index** is not read: there is
 nothing to look it up for. Under `Typed` it is pinned anyway
 (`HasTy.enum_inv`). A payload already moved out by a `match` binding left the enum
 place `⊘` and is skipped by the `⊘` case above, never dropped twice. -/
-def dropContents (D : Decls) : Contents → Except Violation (List Event)
+def dropContents (D : Decls) : Contents → Except Refusal (List Event)
   | .hole => .ok []
   | .int _ _ _ => .ok []
   | .float _ _ => .ok []
@@ -911,7 +911,7 @@ def dropContents (D : Decls) : Contents → Except Violation (List Event)
 /-- `drop*(H, [c1,…,ck])` (§6.11): fold `drop` over the contents left to right
 — for a struct's fields, declaration order (`3.9:13`); for an array's
 elements, ascending index order (`3.9:15`). -/
-def dropContentsList (D : Decls) : List Contents → Except Violation (List Event)
+def dropContentsList (D : Decls) : List Contents → Except Refusal (List Event)
   | [] => .ok []
   | c :: cs =>
       match dropContents D c with
@@ -974,7 +974,7 @@ different list, so it runs the same `splitFields`. Probe `b20` pins the order
 on the compiler: a declared-`linear` `{ p, arr: [S1; 3], q }` destructured at
 `x.arr[1]` drops `p`, `arr[0]`, `arr[2]`, `q`, in that order. -/
 def Contents.splitResidue (D : Decls) :
-    Contents → List Nat → Except Violation (Contents × List Contents)
+    Contents → List Nat → Except Refusal (Contents × List Contents)
   | c, [] => .ok (c, [])
   | .struct _ _ cs, f :: π => Contents.splitFields D cs f π
   | .array _ _ cs, c :: π => Contents.splitFields D cs c π
@@ -988,7 +988,7 @@ it, and retain the members after — which is §6.3's "visit fields in declarati
 order" (and §5.1's ascending-index order at an array) written as a structural
 recursion rather than as a `take`/`drop` (helper). -/
 def Contents.splitFields (D : Decls) :
-    List Contents → Nat → List Nat → Except Violation (Contents × List Contents)
+    List Contents → Nat → List Nat → Except Refusal (Contents × List Contents)
   | [], _, _ => .error .typeConfusion
   | c :: cs, 0, π =>
       (match Contents.splitResidue D c π with
@@ -1025,7 +1025,7 @@ Nothing is destroyed early by it: `dropContents` writes no store, the `⊘` at
 `ℓ@π_d` is the caller's step *after* `destructure` returns `.ok`, and a
 refusal discards the events, so an earlier residue's drop leaves no trace and
 no heap effect behind. -/
-def dropResidue (D : Decls) (ℓ : Nat) : List Contents → Except Violation (List Event)
+def dropResidue (D : Decls) (ℓ : Nat) : List Contents → Except Refusal (List Event)
   | [] => .ok []
   | r :: rs =>
       if r.residualLinear D then .error .linearLeak
@@ -1066,7 +1066,7 @@ context, not a value dropped by `destructure`" — and the residue's drop events
 followed by the consumption. Writing `⊘` at `ℓ@π_d` is the caller's step,
 because §6.3 puts it *after* the residue's drops. -/
 def Contents.destructure (D : Decls) (ℓ : Nat) (c : Contents) (πs : List Nat) :
-    Except Violation (Contents × List Event) :=
+    Except Refusal (Contents × List Event) :=
   match Contents.splitResidue D c πs with
   | .error w => .error w
   | .ok (leaf, rs) =>
@@ -1103,7 +1103,7 @@ emits. `Copy` contents — a scalar, or a `⊘` with nothing left in it — has 
 drop glue at all (§6.11: `drop(H, n_T) = H`, `drop(H, ⊘) = H`), so it records
 nothing, which is also why `@drop` of a `Copy` place leaves no trace (§5.3's
 (@Drop-Copy)) (helper). -/
-def dropCell (D : Decls) (ℓ : Nat) (c : Contents) : Except Violation (List Event) :=
+def dropCell (D : Decls) (ℓ : Nat) (c : Contents) : Except Refusal (List Event) :=
   if c.mult D = .copy then .ok []
   else
     match dropContents D c with
@@ -1120,7 +1120,7 @@ after a partial move the obligation attaches to whatever linear content is
 still present rather than to the binding's type (RUE-1591). This is the one
 scope-teardown path: `let`'s normal `endscope` (§6.7) and the frame unwind of
 `return` (§6.9) both run it. -/
-def dropRetire (D : Decls) (H : Store) (ℓ : Nat) : Except Violation (Store × List Event) :=
+def dropRetire (D : Decls) (H : Store) (ℓ : Nat) : Except Refusal (Store × List Event) :=
   match H[ℓ]? with
   | none => .error .unbound
   | some .dead => .error .useAfterDrop
@@ -1134,7 +1134,7 @@ def dropRetire (D : Decls) (H : Store) (ℓ : Nat) : Except Violation (Store × 
 /-- `run-scope-drops` (§6.1): drop-retire a scope's cells in the order given,
 accumulating the drop events. Callers pass the record newest-first, which is
 the order §6.1 fixes for a scope's teardown (RAII). -/
-def unwindLocs (D : Decls) (H : Store) : List Nat → Except Violation (Store × List Event)
+def unwindLocs (D : Decls) (H : Store) : List Nat → Except Refusal (Store × List Event)
   | [] => .ok (H, [])
   | ℓ :: rest =>
       match dropRetire D H ℓ with
@@ -1149,7 +1149,7 @@ when a frame is popped — at a normal (D-Return-Value) and at an unwinding
 (D-Return). The frame's record lists its cells in creation order, so the
 teardown reads it backwards: newest binding first. -/
 def runAllScopeDrops (D : Decls) (H : Store) (φ : Activation) :
-    Except Violation (Store × List Event) :=
+    Except Refusal (Store × List Event) :=
   unwindLocs D H φ.scope.reverse
 
 /-- (D-Call) §6.9: mint one fresh single-cell binding allocation per by-value
@@ -1359,7 +1359,7 @@ the operands emitted are prefixed by `bind`), and a refusal is named
 def OpRes.toRes (H : Store) : OpRes → EvalRes
   | .val v => .ok H v []
   | .trap k => .panic k []
-  | .confused => .stuck .typeConfusion
+  | .confused => .refused .typeConfusion
 
 /-- **Aggregate introduction mints a value identity** ((D-Struct) and (D-Array)
 §6.5, (D-Enum-Intro) §6.6, and the repeat form): the new value's identity is
@@ -1377,7 +1377,7 @@ The copy-closure monitor (`Contents.copyClosed`) runs here, on the finished
 value (helper). -/
 def introVal (D : Decls) (H : Store) (mk : Nat → Val) : EvalRes :=
   if (Contents.ofVal (mk H.length)).copyClosed D then .ok (H ++ [.dead]) (mk H.length) []
-  else .stuck .ownedUnderCopy
+  else .refused .ownedUnderCopy
 
 /-- The interpreter, over a `FloatSig` (`Float.lean`): §2 fixes `rnd_w` and
 `σ_NaN` per *target*, not per rule, so the machine takes them as a parameter
@@ -1432,37 +1432,37 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- and, for a non-`Copy` place, write `⊘` at exactly that sub-position,
       -- which is the partial move of §4.2.
       match φ.env[p.root]? with
-      | none => .stuck .unbound
+      | none => .refused .unbound
       | some ℓ =>
         match H[ℓ]? with
-        | none => .stuck .unbound
-        | some .dead => .stuck .useAfterDrop
+        | none => .refused .unbound
+        | some .dead => .refused .useAfterDrop
         | some (.full c) =>
           match c.declaredPlan P.decls p.path with
           | some (πd, πs) =>
             (match c.readAt πd with
-             | .error w => .stuck w
+             | .error w => .refused w
              | .ok cd =>
                match cd.destructure P.decls ℓ πs with
-               | .error w => .stuck w
+               | .error w => .refused w
                | .ok (leaf, evs) =>
                  match leaf.toVal with
-                 | none => .stuck .useAfterMove
+                 | none => .refused .useAfterMove
                  | some v =>
                    match c.writeAt πd .hole with
-                   | none => .stuck .typeConfusion
+                   | none => .refused .typeConfusion
                    | some c' => .ok (H.set ℓ (.full c')) v evs)
           | none =>
             match c.readAt p.path with
-            | .error w => .stuck w
+            | .error w => .refused w
             | .ok sub =>
               match sub.toVal with
-              | none => .stuck .useAfterMove
+              | none => .refused .useAfterMove
               | some v =>
                   if v.mult P.decls = .copy then .ok H v []
                   else
                     match c.writeAt p.path .hole with
-                    | none => .stuck .typeConfusion
+                    | none => .refused .typeConfusion
                     | some c' => .ok (H.set ℓ (.full c')) v []
   | fuel + 1, P, H, φ, .binop op e₁ e₂ =>
       (eval M fuel P H φ e₁).bind fun H₁ v₁ =>
@@ -1489,7 +1489,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- checked program never reaches it: (Dbg) §5.8 types the operand
       -- `Ty.observable` (`soundness`).
       (eval M fuel P H φ e).bind fun H' v =>
-        if v.observable then .ok H' .unit [.dbg v] else .stuck .typeConfusion
+        if v.observable then .ok H' .unit [.dbg v] else .refused .typeConfusion
   | fuel + 1, P, H, φ, .mkStruct s args =>
       -- (D-Struct) §6.5: a struct literal is a redex once every initializer
       -- is a value; §6.2's contexts reduce them left to right, threading `H`,
@@ -1499,10 +1499,10 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
        | .ok H₁ vs tr =>
          EvalRes.withTrace tr <|
            match P.decls.structs[s]? with
-           | none => .stuck .unbound
+           | none => .refused .unbound
            | some sd =>
                if sd.fields.length = vs.length then introVal P.decls H₁ (fun i => .struct s i vs)
-               else .stuck .typeConfusion)
+               else .refused .typeConfusion)
   | fuel + 1, P, H, φ, .mkEnum e k args =>
       -- (D-Enum-Intro) §6.6: an enum literal is a redex once every payload
       -- component is a value; §6.2's contexts reduce them left to right
@@ -1514,13 +1514,13 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
        | .ok H₁ vs tr =>
          EvalRes.withTrace tr <|
            match P.decls.enums[e]? with
-           | none => .stuck .unbound
+           | none => .refused .unbound
            | some ed =>
              match ed.variants[k]? with
-             | none => .stuck .typeConfusion
+             | none => .refused .typeConfusion
              | some Ts =>
                  if Ts.length = vs.length then introVal P.decls H₁ (fun i => .enum e k i vs)
-                 else .stuck .typeConfusion)
+                 else .refused .typeConfusion)
   | fuel + 1, P, H, φ, .«match» scrut arms =>
       -- (D-Match) §6.6: reduce the scrutinee to an enum value — a *use* of its
       -- place, so a non-`Copy` enum's cell became `⊘` by §6.3 and a `Copy` one
@@ -1534,7 +1534,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
         match v with
         | .enum e k i vs =>
           (match arms[k]? with
-           | none => .stuck .typeConfusion
+           | none => .refused .typeConfusion
            | some body =>
              -- The payload components are bound to fresh cells exactly as
              -- (D-Let) §6.7 binds one: appended to the frame's innermost scope
@@ -1560,9 +1560,9 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
                  -- with the evaluation context and found the same cells in σ
                  -- instead (§6.9, probe e8).
                  match unwindLocs P.decls H₂ minted.2.reverse with
-                 | .error w => .stuck w
+                 | .error w => .refused w
                  | .ok (H₃, evs) => .ok H₃ v₂ evs)
-        | _ => .stuck .typeConfusion
+        | _ => .refused .typeConfusion
   | fuel + 1, P, H, φ, .mkArray T args =>
       -- (D-Array) §6.5: an array literal is a redex once every element is a
       -- value; §6.2's `[ v1, …, v_{i-1}, E, e_{i+1}, … ]` context reduces them
@@ -1586,7 +1586,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- `HasTy.mult_eq` give it (`soundness`).
       (eval M fuel P H φ e).bind fun H' v =>
         if v.mult P.decls = .copy then introVal P.decls H' (fun i => .array T i (List.replicate n v))
-        else .stuck .typeConfusion
+        else .refused .typeConfusion
   | fuel + 1, P, H, φ, .indexRead p idx πs =>
       -- (D-Index)/(D-Index-Trap) §6.5 at a place below one or more **dynamic**
       -- indices: §6.2's `v[E]` contexts reduce the index expressions left to
@@ -1605,17 +1605,17 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
        | .ok H₁ vs tr =>
          EvalRes.withTrace tr <|
            match dynPlace H₁ φ p vs πs with
-           | .stuck w => .stuck w
+           | .refused w => .refused w
            | .bounds => .panic .bounds []
            | .at _ _ sub ρ =>
              match sub.readAt ρ with
-             | .error w => .stuck w
+             | .error w => .refused w
              | .ok leaf =>
                match leaf.toVal with
-               | none => .stuck .useAfterMove
+               | none => .refused .useAfterMove
                | some v =>
                    if v.mult P.decls = .copy then .ok H₁ v []
-                   else .stuck .typeConfusion)
+                   else .refused .typeConfusion)
   | fuel + 1, P, H, φ, .indexWrite p idx πs e =>
       -- (D-Assign) §6.8 below a dynamic index, in `5.2:14`'s order: the
       -- right-hand side first, then the index expressions left to right
@@ -1636,25 +1636,25 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
         | .ok H₂ vs tr =>
           EvalRes.withTrace tr <|
             match dynPlace H₂ φ p vs πs with
-            | .stuck w => .stuck w
+            | .refused w => .refused w
             | .bounds => .panic .bounds []
             | .at ℓ c sub ρ =>
               match sub.readAt ρ with
-              | .error w => .stuck w
+              | .error w => .refused w
               | .ok old =>
-                if old.residualLinear P.decls then .stuck .linearOverwrite
+                if old.residualLinear P.decls then .refused .linearOverwrite
                 else
                   match dropCell P.decls ℓ old with
-                  | .error w => .stuck w
+                  | .error w => .refused w
                   | .ok evs =>
                     match sub.writeAt ρ (Contents.ofVal v) with
-                    | none => .stuck .typeConfusion
+                    | none => .refused .typeConfusion
                     | some sub' =>
                       match c.writeAt p.path sub' with
-                      | none => .stuck .typeConfusion
+                      | none => .refused .typeConfusion
                       | some c' =>
                         if c'.copyClosed P.decls then .ok (H₂.set ℓ (.full c')) .unit evs
-                        else .stuck .ownedUnderCopy
+                        else .refused .ownedUnderCopy
   | fuel + 1, P, H, φ, .indexDrop p idx πs =>
       -- §6.11's `@drop(p)` at a `Copy` place below a dynamic index. A `Copy`
       -- place owes no glue and changes no ownership, so what is left of the
@@ -1683,39 +1683,39 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- every already-`⊘` sub-place — and writes `⊘` back at that position,
       -- which suppresses the later scope-exit drop through it.
       match φ.env[p.root]? with
-      | none => .stuck .unbound
+      | none => .refused .unbound
       | some ℓ =>
         match H[ℓ]? with
-        | none => .stuck .unbound
-        | some .dead => .stuck .useAfterDrop
+        | none => .refused .unbound
+        | some .dead => .refused .useAfterDrop
         | some (.full c) =>
           match c.declaredPlan P.decls p.path with
           | some (πd, πs) =>
             (match c.readAt πd with
-             | .error w => .stuck w
+             | .error w => .refused w
              | .ok cd =>
                match cd.destructure P.decls ℓ πs with
-               | .error w => .stuck w
+               | .error w => .refused w
                | .ok (leaf, evs) =>
-                 if leaf.isHole then .stuck .useAfterMove else
+                 if leaf.isHole then .refused .useAfterMove else
                  match dropCell P.decls ℓ leaf with
-                 | .error w => .stuck w
+                 | .error w => .refused w
                  | .ok levs =>
                    match c.writeAt πd .hole with
-                   | none => .stuck .typeConfusion
+                   | none => .refused .typeConfusion
                    | some c' => .ok (H.set ℓ (.full c')) .unit (evs ++ levs))
           | none =>
             match c.readAt p.path with
-            | .error w => .stuck w
+            | .error w => .refused w
             | .ok sub =>
-              if sub.isHole then .stuck .useAfterMove else
+              if sub.isHole then .refused .useAfterMove else
               match dropCell P.decls ℓ sub with
-              | .error w => .stuck w
+              | .error w => .refused w
               | .ok evs =>
                   if sub.mult P.decls = .copy then .ok H .unit []
                   else
                     match c.writeAt p.path .hole with
-                    | none => .stuck .typeConfusion
+                    | none => .refused .typeConfusion
                     | some c' => .ok (H.set ℓ (.full c')) .unit evs
   | fuel + 1, P, H, φ, .letIn _m e₁ e₂ =>
       (eval M fuel P H φ e₁).bind fun H₁ v₁ =>
@@ -1729,54 +1729,54 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
             -- case returns to is the caller's, which never held the cell, so
             -- the two bookkeepings drop it exactly once between them.
             match dropRetire P.decls H₂ H₁.length with
-            | .error w => .stuck w
+            | .error w => .refused w
             | .ok (H₃, evs) => .ok H₃ v₂ evs
   | fuel + 1, P, H, φ, .assign p e =>
       (eval M fuel P H φ e).bind fun H₁ v =>
         -- (D-Assign) §6.8, at a sub-position: drop what is live there first
         -- (a `⊘` drops nothing — reinitialization, `3.8:55`), then store.
         match φ.env[p.root]? with
-        | none => .stuck .unbound
+        | none => .refused .unbound
         | some ℓ =>
           match H₁[ℓ]? with
-          | none => .stuck .unbound
-          | some .dead => .stuck .useAfterDrop
+          | none => .refused .unbound
+          | some .dead => .refused .useAfterDrop
           | some (.full c) =>
             match c.readAt p.path with
-            | .error w => .stuck w
+            | .error w => .refused w
             | .ok old =>
-                if old.residualLinear P.decls then .stuck .linearOverwrite   -- 3.8:77
+                if old.residualLinear P.decls then .refused .linearOverwrite   -- 3.8:77
                 else
                   match dropCell P.decls ℓ old with
-                  | .error w => .stuck w
+                  | .error w => .refused w
                   | .ok evs =>
                       match c.writeAt p.path (Contents.ofVal v) with
-                      | none => .stuck .typeConfusion
+                      | none => .refused .typeConfusion
                       | some c' =>
                           -- The copy-closure monitor (`Contents.copyClosed`).
                           if c'.copyClosed P.decls then .ok (H₁.set ℓ (.full c')) .unit evs
-                          else .stuck .ownedUnderCopy
+                          else .refused .ownedUnderCopy
   | fuel + 1, P, H, φ, .seq e₁ e₂ =>
       (eval M fuel P H φ e₁).bind fun H₁ v₁ =>
         match v₁.mult P.decls with
-        | .linear => .stuck .linearDiscard                         -- 3.8:64
+        | .linear => .refused .linearDiscard                         -- 3.8:64
         | .affine =>
             (match dropContents P.decls (Contents.ofVal v₁) with
-             | .error w => .stuck w
+             | .error w => .refused w
              | .ok evs => (eval M fuel P H₁ φ e₂).withTrace (.dropTemp v₁ :: evs))
         | .copy => eval M fuel P H₁ φ e₂
   | fuel + 1, P, H, φ, .ite c e₁ e₂ =>
       (eval M fuel P H φ c).bind fun H₀ v₀ =>
         match v₀ with
         | .bool b => if b then eval M fuel P H₀ φ e₁ else eval M fuel P H₀ φ e₂
-        | _ => .stuck .typeConfusion
+        | _ => .refused .typeConfusion
   | fuel + 1, P, H, φ, .call f args =>
       match evalArgs (fun H' e => eval M fuel P H' φ e) H args with
       | .abort r => r
       | .ok H₁ vs tr =>
         EvalRes.withTrace tr <|
           match P.fns[f]? with
-          | none => .stuck .unbound
+          | none => .refused .unbound
           | some fd =>
             if fd.params.length = vs.length then
               -- (D-Call): one fresh cell per by-value argument; the callee's
@@ -1789,16 +1789,16 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
                 -- path: `bindCall` took its value, and its unwind already ran
                 -- every one of those drops.
                 match runAllScopeDrops P.decls H₃ φg with
-                | .error w => .stuck w
+                | .error w => .refused w
                 | .ok (H₄, evs) => .ok H₄ v evs
-            else .stuck .typeConfusion
+            else .refused .typeConfusion
   | fuel + 1, P, H, φ, .ret e =>
       (eval M fuel P H φ e).bind fun H₁ v =>
         -- (D-Return) §6.9: discard the evaluation context, every pending
         -- `endscope` marker inside it included, and run the frame's scope
         -- record instead — newest binding first.
         match runAllScopeDrops P.decls H₁ φ with
-        | .error w => .stuck w
+        | .error w => .refused w
         | .ok (H₂, evs) => .returned H₂ v evs
   | fuel + 1, P, H, φ, .loop e =>
       -- §6.10: run the body in the loop's frame. (D-Loop-Iter): when it
@@ -1816,10 +1816,10 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- checked program never reaches it: the body is typed `unit`.
       match eval M fuel P H φ e with
       | .ok H₁ .unit tr => (eval M fuel P H₁ φ (.loop e)).withTrace tr
-      | .ok _ _ _ => .stuck .typeConfusion
+      | .ok _ _ _ => .refused .typeConfusion
       | .broke H₁ sc tr =>
           match unwindLocs P.decls H₁ (sc.drop φ.scope.length).reverse with
-          | .error w => .stuck w
+          | .error w => .refused w
           | .ok (H₂, evs) => .ok H₂ .unit (tr ++ evs)
       | r => r
   | _ + 1, _, H, φ, .brk =>

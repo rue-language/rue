@@ -59,7 +59,7 @@ holds of every finished run, typed or not, given only `WfDecls`' "a
 destructor-bearing struct is not `Copy`". Typing enters `no_double_free`
 through `no_violation`:
 a program the checker accepts never reaches the monitor, or any other
-refusal, so its trace is the whole run's — a `stuck` result carries no trace
+refusal, so its trace is the whole run's — a `refused` result carries no trace
 and would make the statement vacuous.
 
 The definitions the statements here are written in (owned identities, the
@@ -1101,7 +1101,7 @@ theorem Cons.weaken {D : Decls} {F : Event → List Nat} {H : Store} {X Y : List
   | panic k tr =>
       obtain ⟨N, h4⟩ := h
       exact ⟨N, fun a => by have := h4 a; have := hXY a; omega⟩
-  | stuck w => trivial
+  | refused w => trivial
   | outOfFuel => trivial
 
 /-- **Composition**: an evaluation from `H₁` whose own law holds, run after a
@@ -1138,7 +1138,7 @@ theorem Cons.prefix {D : Decls} {F : Event → List Nat} {H H₁ : Store} {X Y :
       have := hI a; have := h4 a; have := Fresh.count_trans_range hle N a
       simp only [List.flatMap_append, List.count_append]
       omega
-  | stuck w => trivial
+  | refused w => trivial
   | outOfFuel => trivial
 
 /-- A step that emitted nothing: the law transports back along it (helper). -/
@@ -1165,7 +1165,7 @@ theorem Cons.bind {D : Decls} {F : Event → List Nat} {H : Store} {X : List Nat
   | returned H₁ v tr => exact hr
   | broke H₁ sc tr => exact hr
   | panic k tr => exact hr
-  | stuck w => trivial
+  | refused w => trivial
   | outOfFuel => trivial
 
 /-- §6.9's call boundary, as a ledger: the same, with an unwinding `return`
@@ -1182,7 +1182,7 @@ theorem Cons.absorb {D : Decls} {F : Event → List Nat} {H : Store} {X : List N
   | returned H₁ v tr => exact hr
   | broke H₁ sc tr => trivial
   | panic k tr => exact hr
-  | stuck w => trivial
+  | refused w => trivial
   | outOfFuel => trivial
 
 /-- A value produced where the store is, owning nothing held (helper). -/
@@ -1454,7 +1454,7 @@ theorem evalArgs_cons {D : Decls} {F : Event → List Nat} {ev : Store → Expr 
       | returned H₁ v tr => rw [hr] at h₁; exact h₁
       | broke H₁ sc tr => rw [hr] at h₁; exact h₁
       | panic k tr => rw [hr] at h₁; exact h₁
-      | stuck w => trivial
+      | refused w => trivial
       | outOfFuel => trivial
 
 /-! ## The place forms' ledgers: a move, a drop, a write -/
@@ -1593,7 +1593,7 @@ theorem Cons.unwind {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
     (hv : (Contents.ofVal v).copyClosed D = true) :
     Cons D F H (v.own D)
       (match unwindLocs D H ls with
-       | .error w => .stuck w
+       | .error w => .refused w
        | .ok (H', evs) => .ok H' v evs) := by
   cases hu : unwindLocs D H ls with
   | error w => trivial
@@ -2069,7 +2069,7 @@ theorem run_trace_once (M : FloatSig) {P : Program} {F : Event → List Nat}
       simp only [EvalRes.trace, storeOwn, List.length_nil, List.flatMap_nil,
         List.count_nil] at *
       omega
-  | stuck w => simp [EvalRes.trace]
+  | refused w => simp [EvalRes.trace]
   | outOfFuel => simp [EvalRes.trace]
 
 /-- **No identity appears twice among the `drop`/`dropTemp` free events, on
@@ -2109,7 +2109,7 @@ leaf is handed on, the residue is dropped once, each retained subtree under
 its own `drop` marker, the path's shell is consumed (`consume`), and the
 place becomes `⊘`. -/
 theorem no_double_free (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
+    (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
       (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
       (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1) :=
   ⟨no_violation M h fuel, freed_once M.toFloatSig P fuel,
@@ -2157,7 +2157,7 @@ example : checkProgram dupProgram = false := by rfl
 
 /-- `eval` refuses it where the owned value would go under the `Copy` node
 (`Contents.copyClosed`). -/
-example : run Float.exactOps dupProgram 100 = .stuck .ownedUnderCopy := by rfl
+example : run Float.exactOps dupProgram 100 = .refused .ownedUnderCopy := by rfl
 
 /-- **§6's relation, with no monitor, frees one identity twice**: `S1 #0` is
 destroyed through `p.x0` and again through `q.x0`, so `dtorIds` names `0`
@@ -2182,6 +2182,6 @@ example :
         (.letIn true (.mkStruct 0 [.intLit .w64 .signed 1])
           (.seq (.assign (.proj (.var 0) 0) (.mkStruct 1 [.intLit .w64 .signed 2]))
             (.intLit .w64 .signed 0)))) 100
-      = .stuck .ownedUnderCopy := by rfl
+      = .refused .ownedUnderCopy := by rfl
 
 end RueCore

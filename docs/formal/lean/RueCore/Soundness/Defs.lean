@@ -217,7 +217,7 @@ def BrokeOk (D : Decls) (B : List Ctx) (φ : Activation) (H H' : Store) (sc : Li
 /-- The promise `soundness` makes about `eval`'s result, given §5.3's `Ω` —
 its normal outgoing state `o` and its deliveries `B`: a value of the
 expression's type with that state's invariant restored (preservation), or one
-of `AbortOk`'s outcomes — never `.stuck` (progress). When `o` is `none`,
+of `AbortOk`'s outcomes — never `.refused` (progress). When `o` is `none`,
 §5.7's `⊥`, a value is **impossible**: an expression the rules type as
 divergent never completes normally. A `break` is one of the deliveries: the
 state it fired at is one the rules recorded. Stating it as a predicate on the
@@ -233,7 +233,7 @@ def EvalOk (D : Decls) (T R : Ty) (o : Option Ctx) (B : List Ctx) (φ : Activati
   | .returned H' v _ => HasTy D v R ∧ FrameProperty φ.env H H'
   | .broke H' sc _ => BrokeOk D B φ H H' sc
   | .panic _ _ => True
-  | .stuck _ => False
+  | .refused _ => False
   | .outOfFuel => True
 
 end RueCore

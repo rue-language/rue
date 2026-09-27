@@ -103,7 +103,7 @@ def verdict (D : Decls) (res : EvalRes) (e : Entry) : String :=
       | .ok _ v _ | .returned _ v _ =>
           if (v.own D).contains e.id then "held by the result" else "never ended"
       | .panic _ _ => "abandoned by the trap (§6.12)"
-      | .stuck _ => "the run was refused (§6)"
+      | .refused _ => "the run was refused (§6)"
       | .broke _ _ _ | .outOfFuel => "the run did not finish"
   | n => toString n ++ " times"
 
@@ -113,7 +113,7 @@ ledger is only what the table recorded before the refusal. -/
 def summary (D : Decls) (res : EvalRes) (es : List Entry) : String :=
   let odd := es.filter (fun e => verdict D res e != "once")
   match res with
-  | .stuck _ =>
+  | .refused _ =>
       "The run was refused (§6), which a checked program's never is (`soundness`); " ++
         "the ledger is what the table recorded before the refusal."
   | .outOfFuel | .broke _ _ _ => "The run did not finish, so the ledger is partial."

@@ -2859,7 +2859,7 @@ theorem diverges_drop.eval_diverges_iff : True := by
 /-- `stuck` applied to `fuel_mono` (helper). -/
 theorem stuck.fuel_mono : True := by
   obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.stuck bodyStuck rfl progStuck rfl
-  have h300 : run Float.exactOps progStuck 300 = .stuck .useAfterMove := by rfl
+  have h300 : run Float.exactOps progStuck 300 = .refused .useAfterMove := by rfl
   have hne : run Float.exactOps progStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
   have := Spine.fuel_mono Float.exactOps (Nat.le_succ 200) hne
   trivial
@@ -2867,7 +2867,7 @@ theorem stuck.fuel_mono : True := by
 /-- `stuck` applied to `no_masking` (helper). -/
 theorem stuck.no_masking : True := by
   obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.stuck bodyStuck rfl progStuck rfl
-  have h300 : run Float.exactOps progStuck 300 = .stuck .useAfterMove := by rfl
+  have h300 : run Float.exactOps progStuck 300 = .refused .useAfterMove := by rfl
   have hne : run Float.exactOps progStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
   have := Spine.no_masking Float.exactOps hr (m := 300) (show run Float.exactOps progStuck 300 ≠ .outOfFuel by rw [h300]; intro h; cases h)
   trivial
@@ -2875,7 +2875,7 @@ theorem stuck.no_masking : True := by
 /-- `stuck` applied to `Config.trichotomy` (helper). -/
 theorem stuck.Config.trichotomy : True := by
   obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.stuck bodyStuck rfl progStuck rfl
-  have h300 : run Float.exactOps progStuck 300 = .stuck .useAfterMove := by rfl
+  have h300 : run Float.exactOps progStuck 300 = .refused .useAfterMove := by rfl
   have hne : run Float.exactOps progStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
   have := Spine.Config.trichotomy Float.exactOps progStuck C
   trivial
@@ -2883,7 +2883,7 @@ theorem stuck.Config.trichotomy : True := by
 /-- `stuck` applied to `Config.stuck_iff` (helper). -/
 theorem stuck.Config.stuck_iff : True := by
   obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.stuck bodyStuck rfl progStuck rfl
-  have h300 : run Float.exactOps progStuck 300 = .stuck .useAfterMove := by rfl
+  have h300 : run Float.exactOps progStuck 300 = .refused .useAfterMove := by rfl
   have hne : run Float.exactOps progStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
   have := Spine.Config.stuck_iff.mpr ⟨_, hSt⟩
   trivial
@@ -2891,7 +2891,7 @@ theorem stuck.Config.stuck_iff : True := by
 /-- `stuck` applied to `step_stuck_isStuckState` (helper). -/
 theorem stuck.step_stuck_isStuckState : True := by
   obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.stuck bodyStuck rfl progStuck rfl
-  have h300 : run Float.exactOps progStuck 300 = .stuck .useAfterMove := by rfl
+  have h300 : run Float.exactOps progStuck 300 = .refused .useAfterMove := by rfl
   have hne : run Float.exactOps progStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
   have := Spine.step_stuck_isStuckState hSt
   trivial
@@ -2899,7 +2899,7 @@ theorem stuck.step_stuck_isStuckState : True := by
 /-- `stuck` applied to `run_stuck_of_step_stuck` (helper). -/
 theorem stuck.run_stuck_of_step_stuck : True := by
   obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.stuck bodyStuck rfl progStuck rfl
-  have h300 : run Float.exactOps progStuck 300 = .stuck .useAfterMove := by rfl
+  have h300 : run Float.exactOps progStuck 300 = .refused .useAfterMove := by rfl
   have hne : run Float.exactOps progStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
   have := Spine.run_stuck_of_step_stuck Float.exactOps progStuck hS hSt
   trivial

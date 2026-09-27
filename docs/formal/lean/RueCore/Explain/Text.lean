@@ -93,7 +93,7 @@ def stepResLines (indent : Nat) : StepRes → List String
   | .panicked k =>
       [sp indent ++ pad 8 "result" ++ "PANIC (" ++ Corpus.panicName k ++ ") — a defined trap, §6.12"]
   | .refuse w why =>
-      (sp indent ++ pad 8 "result" ++ "REFUSED (" ++ Corpus.violationName w ++ ")") ::
+      (sp indent ++ pad 8 "result" ++ "REFUSED (" ++ Corpus.refusalName w ++ ")") ::
         para (indent + 8) 68 why
   | .exhausted =>
       [sp indent ++ pad 8 "result" ++ "OUT OF FUEL — the interpreter stopped early"]
@@ -129,8 +129,8 @@ def outcomeLines : EvalRes → List String
   | .panic k tr =>
       ["Outcome: PANIC (" ++ Corpus.panicName k ++ ") — a defined trap, §6.12",
        "         trace up to the trap: " ++ (if tr.isEmpty then "(nothing)" else eventsLine tr)]
-  | .stuck w =>
-      ("Outcome: REFUSED (" ++ Corpus.violationName w ++ ")") :: para 9 68 (violationPremise w)
+  | .refused w =>
+      ("Outcome: REFUSED (" ++ Corpus.refusalName w ++ ")") :: para 9 68 (refusalPremise w)
   | .outOfFuel =>
       ["Outcome: OUT OF FUEL — the interpreter stopped before the program did.",
        "         `fuel_mono` says a larger bound never changes an answer, so this",

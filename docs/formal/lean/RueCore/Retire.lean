@@ -134,7 +134,7 @@ def LivePost (H : Store) (φ : Activation) : EvalRes → Prop
   | .broke H' sc _ => Grow H H' ∧ ∃ xs, sc = φ.scope ++ xs ∧ xs.Nodup ∧
       ∀ ℓ ∈ xs, H.length ≤ ℓ ∧ Live H' ℓ
   | .panic _ _ => True
-  | .stuck w => w ≠ .useAfterDrop
+  | .refused w => w ≠ .useAfterDrop
   | .outOfFuel => True
 
 /-- Prefixing a trace changes no store (helper). -/
@@ -153,7 +153,7 @@ theorem LivePost.lift {H H₁ : Store} {φ : Activation} {r : EvalRes} (hg : Gro
       obtain ⟨hg', xs, hsc, hnd, hxs⟩ := h
       exact ⟨hg.trans hg', xs, hsc, hnd, fun ℓ hℓ => ⟨Nat.le_trans hg.1 (hxs ℓ hℓ).1, (hxs ℓ hℓ).2⟩⟩
   | panic k tr => trivial
-  | stuck w => exact h
+  | refused w => exact h
   | outOfFuel => trivial
 
 /-- §6.2's search keeps the promise (helper). -/
@@ -192,13 +192,13 @@ theorem LivePost.scoped {H H₁ : Store} {φ φ' : Activation} {ys : List Nat} {
         · exact ⟨(hys ℓ hm).1, hg'.2 ℓ (hys ℓ hm).2⟩
         · exact ⟨Nat.le_trans hg.1 (hxs ℓ hm).1, (hxs ℓ hm).2⟩
   | panic k tr => trivial
-  | stuck w => exact h
+  | refused w => exact h
   | outOfFuel => trivial
 
 /-! ### The helpers never refuse with `useAfterDrop` -/
 
 /-- `H(ℓ)@π` refuses only with `useAfterMove` or `typeConfusion` (helper). -/
-theorem Contents.readAt_ne_uad : ∀ (π : List Nat) {c : Contents} {w : Violation},
+theorem Contents.readAt_ne_uad : ∀ (π : List Nat) {c : Contents} {w : Refusal},
     c.readAt π = .error w → w ≠ .useAfterDrop
   | [], c, w, h => by simp [Contents.readAt] at h
   | f :: π, c, w, h => by
@@ -218,7 +218,7 @@ theorem Contents.readAt_ne_uad : ∀ (π : List Nat) {c : Contents} {w : Violati
 
 /-- Resolving a dynamic tail never refuses with `useAfterDrop` (helper). -/
 theorem Contents.resolveDyn_ne_uad : ∀ (is : List Int) (πs : List (List Nat)) {c : Contents}
-    {w : Violation}, c.resolveDyn is πs = .stuck w → w ≠ .useAfterDrop
+    {w : Refusal}, c.resolveDyn is πs = .refused w → w ≠ .useAfterDrop
   | is, πs, c, w, h => by
       unfold Contents.resolveDyn at h
       split at h
@@ -237,8 +237,8 @@ theorem Contents.resolveDyn_ne_uad : ∀ (is : List Int) (πs : List (List Nat))
 /-- Navigating a dynamic place from a frame whose environment names live cells
 never refuses with `useAfterDrop` (helper). -/
 theorem dynPlace_ne_uad {H : Store} {φ : Activation} {p : Place} {vs : List Val}
-    {πs : List (List Nat)} {w : Violation} (hφ : ∀ ℓ ∈ φ.env, Live H ℓ)
-    (h : dynPlace H φ p vs πs = .stuck w) : w ≠ .useAfterDrop := by
+    {πs : List (List Nat)} {w : Refusal} (hφ : ∀ ℓ ∈ φ.env, Live H ℓ)
+    (h : dynPlace H φ p vs πs = .refused w) : w ≠ .useAfterDrop := by
   unfold dynPlace at h
   split at h
   · cases h; simp
@@ -258,7 +258,7 @@ theorem dynPlace_ne_uad {H : Store} {φ : Activation} {p : Place} {vs : List Val
 
 mutual
 /-- §6.11's walk refuses only with `unbound` (helper). -/
-theorem dropContents_ne_uad {D : Decls} : ∀ {c : Contents} {w : Violation},
+theorem dropContents_ne_uad {D : Decls} : ∀ {c : Contents} {w : Refusal},
     dropContents D c = .error w → w ≠ .useAfterDrop
   | .hole, _, h | .int _ _ _, _, h | .float _ _, _, h | .bool _, _, h | .unit, _, h => by
       simp [dropContents] at h
@@ -273,7 +273,7 @@ theorem dropContents_ne_uad {D : Decls} : ∀ {c : Contents} {w : Violation},
   | .array _ _ cs, _, h => by simp only [dropContents] at h; exact dropContentsList_ne_uad h
 
 /-- The same over a list (helper). -/
-theorem dropContentsList_ne_uad {D : Decls} : ∀ {cs : List Contents} {w : Violation},
+theorem dropContentsList_ne_uad {D : Decls} : ∀ {cs : List Contents} {w : Refusal},
     dropContentsList D cs = .error w → w ≠ .useAfterDrop
   | [], _, h => by simp [dropContentsList] at h
   | c :: cs, _, h => by
@@ -286,7 +286,7 @@ theorem dropContentsList_ne_uad {D : Decls} : ∀ {cs : List Contents} {w : Viol
 end
 
 /-- A binding's drop never refuses with `useAfterDrop` (helper). -/
-theorem dropCell_ne_uad {D : Decls} {ℓ : Nat} {c : Contents} {w : Violation}
+theorem dropCell_ne_uad {D : Decls} {ℓ : Nat} {c : Contents} {w : Refusal}
     (h : dropCell D ℓ c = .error w) : w ≠ .useAfterDrop := by
   unfold dropCell at h
   split at h
@@ -298,7 +298,7 @@ theorem dropCell_ne_uad {D : Decls} {ℓ : Nat} {c : Contents} {w : Violation}
 mutual
 /-- §6.3's `split` never refuses with `useAfterDrop` (helper). -/
 theorem Contents.splitResidue_ne_uad {D : Decls} : ∀ {c : Contents} {π : List Nat}
-    {w : Violation}, c.splitResidue D π = .error w → w ≠ .useAfterDrop
+    {w : Refusal}, c.splitResidue D π = .error w → w ≠ .useAfterDrop
   | c, [], _, h => by simp [Contents.splitResidue] at h
   | .struct _ _ cs, f :: π, _, h => by
       simp only [Contents.splitResidue] at h; exact Contents.splitFields_ne_uad h
@@ -311,7 +311,7 @@ theorem Contents.splitResidue_ne_uad {D : Decls} : ∀ {c : Contents} {π : List
 
 /-- The same at one node's members (helper). -/
 theorem Contents.splitFields_ne_uad {D : Decls} : ∀ {cs : List Contents} {f : Nat}
-    {π : List Nat} {w : Violation}, Contents.splitFields D cs f π = .error w →
+    {π : List Nat} {w : Refusal}, Contents.splitFields D cs f π = .error w →
       w ≠ .useAfterDrop
   | [], _, _, _, h => by simp [Contents.splitFields] at h; subst h; simp
   | c :: cs, 0, π, _, h => by
@@ -327,7 +327,7 @@ theorem Contents.splitFields_ne_uad {D : Decls} : ∀ {cs : List Contents} {f : 
 end
 
 /-- The residue's `drop*` never refuses with `useAfterDrop` (helper). -/
-theorem dropResidue_ne_uad {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {w : Violation},
+theorem dropResidue_ne_uad {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {w : Refusal},
     dropResidue D ℓ rs = .error w → w ≠ .useAfterDrop
   | [], _, h => by simp [dropResidue] at h
   | r :: rs, _, h => by
@@ -342,7 +342,7 @@ theorem dropResidue_ne_uad {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {w
 
 /-- §6.3's destructure never refuses with `useAfterDrop` (helper). -/
 theorem Contents.destructure_ne_uad {D : Decls} {ℓ : Nat} {c : Contents} {πs : List Nat}
-    {w : Violation} (h : c.destructure D ℓ πs = .error w) : w ≠ .useAfterDrop := by
+    {w : Refusal} (h : c.destructure D ℓ πs = .error w) : w ≠ .useAfterDrop := by
   unfold Contents.destructure at h
   split at h
   · cases h; exact Contents.splitResidue_ne_uad (by assumption)
@@ -377,7 +377,7 @@ theorem dropRetire_live {D : Decls} {H : Store} {ℓ : Nat} (hl : Live H ℓ) :
 /-- What `run-scope-drops` over distinct live cells does: it never meets
 `†`, keeps the store's length, and leaves every other cell as it was
 (helper). -/
-def UnwindPost (H : Store) (ls : List Nat) : Except Violation (Store × List Event) → Prop
+def UnwindPost (H : Store) (ls : List Nat) : Except Refusal (Store × List Event) → Prop
   | .error w => w ≠ .useAfterDrop
   | .ok (H', _) => H'.length = H.length ∧ ∀ ℓ, ℓ ∉ ls → H'[ℓ]? = H[ℓ]?
 
@@ -827,7 +827,7 @@ theorem eval_live (M : FloatSig) (P : Program) :
                   exact hb.2 ℓ (fun hm => hl.ne_of_le (hlm ℓ hm).1 rfl) (hgm.2 ℓ hl)
               | broke H₃ sc tr₃ => simp [EvalRes.bindCall, LivePost]
               | panic k tr₃ => trivial
-              | stuck w => exact hb
+              | refused w => exact hb
               | outOfFuel => trivial
             · simp [LivePost]
     | ret e₁ =>
@@ -922,7 +922,7 @@ theorem plainUnwind_live {D : Decls} : ∀ {H : Store} {ls : List Nat}, ls.Nodup
           rw [heq m (fun h' => hm (List.mem_cons_of_mem _ h')), hH₁, List.getElem?_set_ne hne]
 
 /-- The plain residue walk never refuses with `useAfterDrop` (helper). -/
-theorem plainResidue_ne_uad {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {w : Violation},
+theorem plainResidue_ne_uad {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {w : Refusal},
     plainResidue D ℓ rs = .error w → w ≠ .useAfterDrop
   | [], _, h => by simp [plainResidue] at h
   | r :: rs, _, h => by
@@ -935,7 +935,7 @@ theorem plainResidue_ne_uad {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {
 
 /-- The plain destructure never refuses with `useAfterDrop` (helper). -/
 theorem plainDestructure_ne_uad {D : Decls} {ℓ : Nat} {c : Contents} {πs : List Nat}
-    {w : Violation} (h : plainDestructure D ℓ c πs = .error w) : w ≠ .useAfterDrop := by
+    {w : Refusal} (h : plainDestructure D ℓ c πs = .error w) : w ≠ .useAfterDrop := by
   unfold plainDestructure at h
   split at h
   · cases h; exact Contents.splitResidue_ne_uad (by assumption)
@@ -1060,7 +1060,7 @@ theorem StackLive.grow {H H' : Store} {φ : Activation} {K : List Kont} (h : Sta
 
 /-- Looking a place's root up in a frame whose environment names live cells never
 refuses with `useAfterDrop` (helper). -/
-theorem rootCell_ne_uad {H : Store} {φ : Activation} {i : Nat} {w : Violation}
+theorem rootCell_ne_uad {H : Store} {φ : Activation} {i : Nat} {w : Refusal}
     (hφ : ∀ ℓ ∈ φ.env, Live H ℓ) (h : rootCell H φ i = .error w) : w ≠ .useAfterDrop := by
   unfold rootCell at h
   split at h
@@ -1092,7 +1092,7 @@ theorem unwind_keeps {D : Decls} {H H' : Store} {A xs : List Nat} {evs : List Ev
   exact hdis ℓ hℓ ℓ (List.mem_reverse.mp hm) rfl
 
 /-- The same teardown never refuses with `useAfterDrop` (helper). -/
-theorem unwind_err {D : Decls} {H : Store} {A xs : List Nat} {w : Violation}
+theorem unwind_err {D : Decls} {H : Store} {A xs : List Nat} {w : Refusal}
     (hnd : (A ++ xs).Nodup) (hl : ∀ ℓ ∈ A ++ xs, Live H ℓ)
     (hu : plainUnwind D H xs.reverse = .error w) : w ≠ .useAfterDrop := by
   obtain ⟨_, hxs, _⟩ := List.nodup_append.mp hnd
@@ -1472,7 +1472,7 @@ open Retire
 of drops", "never read afterward"; §6.9): `run` never refuses with
 `useAfterDrop`, checked or not. -/
 theorem run_no_use_after_drop (M : FloatSig) (P : Program) (fuel : Nat) :
-    run M P fuel ≠ .stuck .useAfterDrop := by
+    run M P fuel ≠ .refused .useAfterDrop := by
   intro h
   have := Retire.eval_live M P fuel [] { env := [], scope := [] } (.call 0 [])
     ⟨fun _ h => absurd h List.not_mem_nil, fun _ h => absurd h List.not_mem_nil,

@@ -210,7 +210,7 @@ def MSim (M : FloatSig) (P : Program) (φ : Activation) (C : List Kont → List 
       IdLe (stackOwn P.decls K) (stackOwn P.decls K') →
       plainUnwind P.decls H (sc.drop φs.scope.length).reverse = .ok (H', evs) →
       MSteps M P (C K tr) (.run H' φs K' (.ret .unit) (tr ++ tr' ++ evs))
-  | .panic _ _ | .stuck _ | .outOfFuel => True
+  | .panic _ _ | .refused _ | .outOfFuel => True
 
 /-- A frame that holds nothing leaves the stack's holdings alone (helper). -/
 theorem stackOwn_cons_nil {D : Decls} {F : Kont} (hF : F.own D = []) (K : List Kont) :
@@ -275,7 +275,7 @@ theorem MSim.andThen {φ φ₁ : Activation} {C C₁ : List Kont → List Event 
       exact (hC K tr).trans (h₁ (F :: K) tr φs K' H' evs (by rw [(hF K).2]; exact hK)
         (by rw [stackOwn_cons_nil hFo]; exact hs) hu)
   | panic κ tr₁ => trivial
-  | stuck w => trivial
+  | refused w => trivial
   | outOfFuel => trivial
 
 /-- **A later operand under a held value** (RUE-2316): the frame holds a
@@ -294,7 +294,7 @@ theorem MSim.andThenHeld {φ φ₁ : Activation} {C C₁ : List Kont → List Ev
   | returned => exact hq.1.elim
   | broke => exact hq.2.elim
   | panic κ tr₁ => trivial
-  | stuck w => trivial
+  | refused w => trivial
   | outOfFuel => trivial
 
 /-- A result that is not a value passes through a frame that holds nothing
@@ -327,7 +327,7 @@ theorem MSim.absorb {φ φ₁ : Activation} {C C₁ : List Kont → List Event �
         (by rw [stackOwn_cons_nil rfl]; exact IdLe.refl' _))
   | broke H₁ sc tr₁ => simp [EvalRes.bindCall, MSim]
   | panic κ tr₁ => trivial
-  | stuck w => simp [EvalRes.bindCall, MSim]
+  | refused w => simp [EvalRes.bindCall, MSim]
   | outOfFuel => simp [EvalRes.bindCall, MSim]
 
 /-- Where no target has an expression in focus, a first step of the family
@@ -1444,7 +1444,7 @@ theorem msim_loop (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (hcc : Stor
       exact (hent K tr).trans (h₁ (.loop e φ :: K) tr φs K' hK
         (by rw [stackOwn_cons_nil rfl]; exact hs))
   | panic κ tr₁ => trivial
-  | stuck w => trivial
+  | refused w => trivial
   | outOfFuel => trivial
 
 end forms
