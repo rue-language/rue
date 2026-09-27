@@ -4,7 +4,7 @@
 
 How the mechanization's theorems hang together: which marked node's proof
 rests on which, what each spine theorem's statement unfolds to, and where the
-proof chain sits beside the compiler bridge. `README.md`, "The proof map",
+proof chain sits beside differential testing against the compiler. `README.md`, "The proof map",
 explains what a **spine node** and a **milestone lemma** are and how this file
 is generated. GitHub renders every diagram below inline.
 
@@ -221,26 +221,26 @@ helper theorems `Map.walk` counted under it before the next marked node:
 | `Ctx.joinAll_perm` | the §5.5 n-way join fold is invariant under a permutation of the match arms it folds | 25 | 70 |
 | `LoopHead.enter` | a loop body is typed at its head state on first entry | 21 | 43 |
 | `LoopHead.backEdge` | a loop body re-typed at its head state after one turn still satisfies the head equation | 17 | 46 |
-| `loop_exit_ok` | every one of a loop's delivered exits is typed at the state its `break` fires with | 51 | 68 |
-| `class_unique` | §3's class assignment is unique; every derivation that reads a class off a type leans on this | 90 | 14 |
-| `struct_carriesLinear_iff` | a struct's class carries `linear` iff a field's does — read off by the checker and by the destructure rules | 42 | 9 |
+| `loop_exit_ok` | every one of a loop's abrupt-completion contexts is typed at the state its `break` fires with | 51 | 68 |
+| `class_unique` | §3's qualifier assignment is unique; every derivation that reads a qualifier off a type leans on this | 90 | 14 |
+| `struct_carriesLinear_iff` | a struct's qualifier carries `linear` iff a field's does — read off by the checker and by the destructure rules | 42 | 9 |
 | `enum_carriesLinear_iff` | the same equation for an enum's variants | 23 | 11 |
-| `init_safeAt` | `Config.init` is semantically safe; the fundamental lemma `step_safeAt` inducts from | 18 | 2 |
+| `init_safeAt` | `Config.init` is semantically safe: syntactic type soundness, which `step_safeAt` inducts from | 18 | 2 |
 | `eval_sim` | the simulation relation between `eval` and `Step`, proved for every expression, fuel and program | 46 | 60 |
-| `eval_steps_of_outOfFuel` | exhausted fuel is a run of that many `Step`s — completeness modulo fuel, behind `eval_small_to_big` | 42 | 63 |
+| `eval_steps_of_outOfFuel` | exhausted fuel is a run of that many `Step`s — the small-to-big direction modulo fuel, behind `eval_small_to_big` | 42 | 63 |
 | `step_value_typed` | every value a reachable `Step` configuration carries is typed | 10 | 0 |
 | `destructure_plain` | a monitor removes no behaviour: the declared-linear destructure's residue check changes no step it does not refuse | 18 | 1 |
 | `unwindLocs_plain` | a monitor removes no behaviour: an unwind's drops are the same with or without the monitors | 19 | 1 |
 | `eval_conserves` | the conservation law over `eval`'s identities, proved by fuel induction, that `no_double_free` follows from | 390 | 173 |
-| `eval_tidy` | every cell an evaluation allocates is retired by its end — the frame-pop invariant behind `drop_exactly_once` | 228 | 49 |
+| `eval_tidy` | every cell an evaluation allocates is tombstoned by its end — the activation-record-pop invariant behind `drop_exactly_once` | 228 | 49 |
 | `rest_step` | the ledger for the rest of every form, behind `rest_exactly_once` | 326 | 169 |
-| `run_blocks` | every finished run's trace is in the block grammar `Blocks`: each drop marker followed by exactly its own walk | 6 | 79 |
+| `run_blocks` | every terminating run's trace is in the block grammar `Blocks`: each drop marker followed by exactly its own walk | 6 | 79 |
 | `step_blocks` | carries `run_blocks` to `Step` | 17 | 6 |
-| `reachable_ordered` | every scope record is in location order | 13 | 23 |
+| `reachable_ordered` | every drop scope is in location order | 13 | 23 |
 | `reachable_nested` | scopes nest, a pending `endscope` being the tail of its record | 12 | 17 |
 | `reachable_stackDiscipline` | the registration stack is dropped newest-first | 17 | 13 |
 | `pendingSafe_needed` | the RUE-2316 carve-out (a by-value argument a sibling's `return` destroys) is load-bearing, not vacuous | 28 | 6 |
-| `roundRat_wf` | rounding an exact rational lands in 𝔽_w — the float model's closure law the non-vacuity witness rests on | 19 | 34 |
+| `roundRat_wf` | rounding an exact rational lands in 𝔽_w — the float algebraic specification's closure law the non-vacuity witness rests on | 19 | 34 |
 ## Definitions the statements rest on
 
 Every definition any spine theorem's statement depends on, once each, with
@@ -2383,7 +2383,7 @@ flowchart BT
 
 ## The assurance chain
 
-Static: what the proof chain covers, and how the bridge corpus tests the
+Static: what the proof chain covers, and how the differential corpus tests the
 compiler against the same model — kept in content beside
 `../WHAT-IT-MEANS.md`'s diagram (RUE-2462) without depending on that file.
 

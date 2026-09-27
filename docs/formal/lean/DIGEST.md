@@ -386,10 +386,10 @@ theorem RueCore.totalCmp_strictTotalOrder (w : FloatWidth) :
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-**A droppable struct carries no linear field.** If a declaration's class
-is not `Linear`, no field's class is — which is why the machine's leak monitor
-(§6.7's `endscope`, §6.9's frame teardown) needs to look only at the value's
-own class and never inside it. This is §3's infectiousness, used.
+**A droppable struct carries no linear field.** If a declaration's qualifier
+is not `Linear`, no field's qualifier is — which is why the machine's leak monitor
+(§6.7's `endscope`, §6.9's activation record teardown) needs to look only at the value's
+own qualifier and never inside it. This is §3's infectiousness, used.
 
 ```lean
 theorem RueCore.StructDecl.Wf.field_not_linear {D : Decls} {sd : StructDecl}
@@ -401,7 +401,7 @@ theorem RueCore.StructDecl.Wf.field_not_linear {D : Decls} {sd : StructDecl}
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-**`carries_linear` lifts through the fields** (§5.3). A struct's class
+**`carries_linear` lifts through the fields** (§5.3). A struct's qualifier
 reaches `Linear` exactly when its declaration says `linear` (`3.8:57`) or some
 field carries a linear value (`3.8:58` — infectiousness is the join). Together
 with `Ty.carriesLinear`'s definition this is §5.3's sentence, mechanized.
@@ -417,7 +417,7 @@ theorem RueCore.struct_carriesLinear_iff {D : Decls} {s : Nat} {sd : StructDecl}
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-**A droppable enum carries no linear payload.** If a declaration's class is
+**A droppable enum carries no linear payload.** If a declaration's qualifier is
 not `Linear`, no payload component of any variant is — which is why the
 machine's leak monitor need only read the payload it finds under the active tag
 (§6.11) and never the declaration. This is `6.3:19`'s join, used.
@@ -433,9 +433,9 @@ theorem RueCore.EnumDecl.Wf.payload_not_linear {D : Decls} {ed : EnumDecl}
 *theorem* · module `RueCore.Statics.Lemmas`
 
 **`carries_linear` lifts through an enum's payloads** (§5.3, `6.3:19`). An
-enum's class reaches `Linear` exactly when some variant carries a linear payload
+enum's qualifier reaches `Linear` exactly when some variant carries a linear payload
 component — over *every* variant, not the active one, because the active variant
-is a dynamic fact and the class is the type's worst case. This is what makes
+is a dynamic fact and the qualifier is the type's worst case. This is what makes
 `E0.K1` of `enum E0 { K0(T0), K1 }` with `T0` declared `linear` a must-consume
 value even though the value it holds carries nothing (probe e11, E0406).
 
@@ -450,17 +450,17 @@ theorem RueCore.enum_carriesLinear_iff {D : Decls} {e : Nat} {ed : EnumDecl}
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-**§3's class assignment has exactly one solution** (`3.0:5`, `6.3:19`).
+**§3's qualifier assignment has exactly one solution** (`3.0:5`, `6.3:19`).
 Two declaration environments of the same *shapes* — the same number of struct
 and of enum declarations, the same attribute and field list at every struct
 index, the same variant payloads at every enum index — that each satisfy
-`WfDecls` assign the same class to **every** type: every struct, every enum,
-and every scalar. So recording `class(S)`/`class(E)` in the declaration
+`WfDecls` assign the same qualifier to **every** type: every struct, every enum,
+and every scalar. So recording `qual(S)`/`qual(E)` in the declaration
 (`Syntax.lean`) records a determined value rather than a free parameter, and a
 `checkProgram = true` verdict is a verdict about the declarations the compiler
-would compute the same classes for.
+would compute the same qualifiers for.
 
-The theorem takes no hypothesis about the other layer's classes, which is what
+The theorem takes no hypothesis about the other layer's qualifiers, which is what
 `3.0:5`'s joint well-foundedness buys: the induction is over the by-value
 "contains" relation rather than over a declaration index, so a field naming an
 enum and a payload naming a struct are the same step. `dtor` does not appear,
@@ -486,7 +486,7 @@ theorem RueCore.class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D'
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-**§3's class assignment for the struct layer has one solution**, the
+**§3's qualifier assignment for the struct layer has one solution**, the
 projection of `class_unique` §3's own sentence asks for. It needs the enum
 layer's shapes as well as the struct layer's, because a field may name an enum
 — that is the mutual recursion `3.0:5` grounds, not a weakness of the
@@ -512,9 +512,9 @@ theorem RueCore.struct_class_unique {D D' : Decls} (hwf : WfDecls D)
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-**§3's class assignment for the enum layer has one solution** (`6.3:19`),
+**§3's qualifier assignment for the enum layer has one solution** (`6.3:19`),
 the other projection of `class_unique`. Simpler than the struct one in its own
-layer — an enum records no attribute, so its class *is* the payload join — and
+layer — an enum records no attribute, so its qualifier *is* the payload join — and
 mutual in the same way: a payload may name a struct.
 
 ```lean
@@ -566,7 +566,7 @@ theorem RueCore.OwnSt.join_comm (D : Decls) (a b : OwnSt) (T : Ty) :
 *theorem* · module `RueCore.Statics.Lemmas`
 
 **The §5.5 join is commutative on one entry**, whose skeleton the two arms
-share — the entry's declared type and `mut` mark come from the incoming
+share — the entry's declared type and `mut` mark come from the input
 context, so only the state differs.
 
 ```lean
@@ -580,7 +580,7 @@ theorem RueCore.Entry.join_comm {D : Decls} {a b : Entry} (hsk : a.skel = b.skel
 
 **The §5.5 join is commutative on a whole context**, pointwise, whenever
 the two arms carry the same skeleton — which `skel_preserved` guarantees of any
-two outgoing contexts of one incoming one (`Typed.skel_preserved`). So which
+two output contexts of one input one (`Typed.skel_preserved`). So which
 arm the algorithm reads first is immaterial; `Ctx.join_assoc` gives the
 bracketing, and `Ctx.joinAll_perm` the arm order of the n-way fold.
 
@@ -593,7 +593,7 @@ theorem RueCore.Ctx.join_comm {D : Decls} (Γ₁ Γ₂ : Ctx) :
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-**Residue is only ever found where §3's class puts it.** §5.6's
+**Residue is only ever found where §3's qualifier puts it.** §5.6's
 `residual-linear` is read on the state, not on the type, but it can report an
 obligation only at a path whose type carries one, so a state with residue is a
 state of a `Linear` type (`3.8:58`, through `struct_carriesLinear_iff`). This
@@ -625,7 +625,7 @@ theorem RueCore.ownedJoinable_residualLinear {D : Decls} (hD : WfStructs D)
 *theorem* · module `RueCore.Statics.Lemmas`
 
 **A residue-free state answers `ownedJoinable` exactly as `MovedOut` does**:
-joining it with a wholly `Owned` arm is admissible exactly when `class(T)` is
+joining it with a wholly `Owned` arm is admissible exactly when `qual(T)` is
 not `Linear`, which is the same test §5.5 applies at the `MovedOut`/`Owned`
 disagreement (`3.8:50`). This is the step that needs `OwnSt.wf`: at a type with
 no slots, `.fields` is a state `ownedJoinable` refuses and `residualLinear`
@@ -714,7 +714,7 @@ theorem RueCore.OwnSt.join_wf {D : Decls} (b c : OwnSt) (T : Ty) (r : OwnSt) :
 *theorem* · module `RueCore.Statics.Lemmas`
 
 **The §5.5 join is associative**, at one path and its subtree, over states
-that are shapes of their type (`OwnSt.wf`) and under §3's class assignment for
+that are shapes of their type (`OwnSt.wf`) and under §3's qualifier assignment for
 the struct layer (`WfStructs`, of which only the class-is-join clause is read).
 Neither premise can be dropped: the section docstring above says which
 counterexample each rules out; `WfStructs` is one a
@@ -743,7 +743,7 @@ theorem RueCore.OwnSt.join_assoc {D : Decls} (hD : WfStructs D) (a b c : OwnSt)
 *theorem* · module `RueCore.Statics.Lemmas`
 
 **The §5.5 join is associative on one entry**, whose skeleton the three arms
-share — the declared type and `mut` mark come from the incoming context, so
+share — the declared type and `mut` mark come from the input context, so
 only the state differs, and the state's associativity is `OwnSt.join_assoc`.
 
 ```lean
@@ -773,8 +773,8 @@ theorem RueCore.Entry.join_wf {D : Decls} {a b e : Entry} (hab : a.skel = b.skel
 
 **The §5.5 join is associative on a whole context**, pointwise, whenever the
 three arms carry the same skeleton and every entry is a shape of its declared
-type — which `Typed.skel_preserved` and `Ctx.Wf` give of the outgoing contexts
-of one incoming one. So the bracketing of (Match) §5.5's `join(Σ1, …, Σn)` is
+type — which `Typed.skel_preserved` and `Ctx.Wf` give of the output contexts
+of one input one. So the bracketing of (Match) §5.5's `join(Σ1, …, Σn)` is
 immaterial, which with `Ctx.join_comm` is what `Ctx.joinAll_perm` needs.
 
 ```lean
@@ -915,8 +915,8 @@ theorem RueCore.LoopHead.reenter {D : Decls} {Γ Γh : Ctx} {o : Option Ctx}
 Every rule preserves the context skeleton: only ownership states flow.
 This is the fused context's image of §5's convention that `Γ` is fixed while
 `Σ` is threaded through the judgment, read over `Ω` (`Out.SkelOk`): the
-normal outgoing state has the incoming skeleton, and every `⟨break, Σ⟩`
-delivery extends it. The three judgments are proved together, by recursion
+normal output context has the input skeleton, and every `⟨break, Σ⟩`
+abrupt-completion context extends it. The three judgments are proved together, by recursion
 on the derivation.
 
 ```lean
@@ -929,20 +929,20 @@ theorem RueCore.Typed.skel_preserved {P : Program} {R : Ty} {Γ : Ctx} {e : Expr
 *theorem* · module `RueCore.Statics.Lemmas`
 
 **The shape invariant is preserved judgment-wide** (RUE-2340): from a
-well-formed incoming context, every normal outgoing state a derivation
-concludes at, and every state it delivers to a loop, is well-formed. With
+well-formed input context, every normal output context a derivation
+concludes at, and every state it completes abruptly with to a loop, is well-formed. With
 `fnCtx_wf` it discharges `Ctx.Wf`, the premise §5.5's associativity carries
-(`Ctx.joinAll_perm`), at every normal outgoing state of a function body
+(`Ctx.joinAll_perm`), at every normal output context of a function body
 (`Typed.wf_fnCtx`). The recursion carries the invariant into every arm of
 every `match` and `if` and into every loop body it passes through, which is
 where associativity is read; what is stated as a theorem is that
-outgoing-state form, not a separate corollary per join. It holds because
+output-state form, not a separate corollary per join. It holds because
 §5.3's `Ω` gives §5.7's `⊥` no state: before the judgment carried `Ω`,
 `return` and `@panic` concluded at an arbitrary context and the statement was
 false. A loop body is typed at the loop-head state, which `LoopHead` asks to
 be well formed when a back edge produced it (`LoopHead.wf`); (Loop-Break)'s
-exit state is the join of the deliveries' `outside_loop` parts, each a
-suffix of a well-formed delivery.
+exit state is the join of the abrupt-completion contexts' `outside_loop` parts, each a
+suffix of a well-formed abrupt-completion context.
 
 ```lean
 theorem RueCore.Typed.wf {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty}
@@ -953,8 +953,8 @@ theorem RueCore.Typed.wf {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty}
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-**A body with no `break` targeting its loop delivers none** (§5.7): every
-delivery in `Ω.brk` comes from a `break` the syntax has, outside any nested
+**A body with no `break` targeting its loop completes abruptly with none** (§5.7): every
+abrupt-completion context in `Ω.brk` comes from a `break` the syntax has, outside any nested
 loop (`Expr.breaks`).
 
 ```lean
@@ -966,7 +966,7 @@ theorem RueCore.Typed.brk_nil {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} {T : 
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-**The shape invariant holds at every normal outgoing state of a function
+**The shape invariant holds at every normal output context of a function
 body** (RUE-2340): `Typed.wf` from (Fn) §5.8's entry context, which
 `fnCtx_wf` makes well-formed. This is the end-to-end form: no `Ctx.Wf`
 hypothesis is left for a caller to supply.
@@ -981,7 +981,7 @@ theorem RueCore.Typed.wf_fnCtx {P : Program} {R : Ty} {fd : FnDef} {e : Expr} {T
 
 *theorem* · module `RueCore.Dynamics.Lemmas`
 
-`Contents.qual` agrees with `Val.qual` on a hole-free contents: §6's
+`Contents.qual` agrees with `Val.qual` on a moved-out-free contents: §6's
 `Step.indexDrop` reads `leaf.qual` on the store's `Contents`, while `eval`'s
 dynamic checks (RUE-2400) read `v.qual` on the `Val` a successful read
 produces; this is what lets the two land on the same refusal. Serves
@@ -1114,7 +1114,7 @@ theorem RueCore.step_stuck_isStuckState {M : FloatSig} {P : Program} {C : Config
 **The leak monitor only removes behaviour** (RUE-2314): where
 `unwindLocs` — `run-scope-drops` with `eval`'s monitor — succeeds, §6's
 monitor-free `plainUnwind` succeeds with the same store and trace. Parts 2
-and 3 of the adequacy proof read every scope exit through this.
+and 3 of the semantic-equivalence proof read every scope exit through this.
 
 ```lean
 theorem RueCore.unwindLocs_plain {D : Decls} {H : Store} {ls : List Nat}
@@ -1126,7 +1126,7 @@ theorem RueCore.unwindLocs_plain {D : Decls} {H : Store} {ls : List Nat}
 
 *theorem* · module `RueCore.Step.Lemmas`
 
-**The residue monitor only removes behaviour** (RUE-2314): where
+**The linear-leak monitor only removes behaviour** (RUE-2314): where
 `eval`'s monitored `destructure` succeeds, §6.3's monitor-free
 `destructure` succeeds with the same leaf and trace.
 
@@ -1291,11 +1291,11 @@ theorem RueCore.dropContentsList_order {D : Decls} {c : Contents} {cs : List Con
 *theorem* · module `RueCore.Soundness`
 
 **A value of a non-linear type carries no linear residue.** §3's join makes
-a struct whose class is not `Linear` one with no linear field at any depth
+a struct whose qualifier is not `Linear` one with no linear field at any depth
 (`StructDecl.Wf.field_not_linear`), so the machine's monitor — which walks the
 stored contents looking for a live declared-`linear` struct — finds none. A
 `⊘` contributes nothing whatever its type, so the statement needs no
-hole-freeness.
+moved-out-freeness.
 
 ```lean
 theorem RueCore.ContentsTy.residualLinear_false {D : Decls} {c : Contents} {T : Ty}
@@ -1478,12 +1478,12 @@ theorem RueCore.evalFintrin_float_res {D : Decls} (M : FloatLaws) (k : FloatIntr
 
 *theorem* · module `RueCore.Soundness`
 
-**`split` never fails on a hole-free well-typed aggregate, and the leaf it
+**`split` never fails on a moved-out-free well-typed aggregate, and the leaf it
 exposes is a value.** §6.3's `split(H(ℓ)@π_d, π_s)` is total wherever
 (Use-Declared-Linear-Destructure) §5.1's premises hold: `fully-owned(Σ, d)` is
-what says the aggregate has no hole in it, `Γ ⊢ p : T` is what says every step
+what says the aggregate has no moved-out part in it, `Γ ⊢ p : T` is what says every step
 of `π_s` is a field, and `¬ linear-residue(S, π_s)` is what makes every
-retained subtree droppable. The leaf is hole-free because the whole subtree
+retained subtree droppable. The leaf is moved-out-free because the whole subtree
 was, which is what lets the use hand the context a `Val` (`ContentsTy.toVal`).
 
 ```lean
@@ -1521,10 +1521,10 @@ theorem RueCore.dropResidue_events {D : Decls} (hwf : WfDecls D) (ℓ : Nat)
 *theorem* · module `RueCore.Soundness`
 
 **§6.3's `destructure` is total where §5.1 admits the redex**, and its
-trace is the residue's in closed form followed by the consumption of the
-path's shell. This is the statement the two declared-linear `soundness` cases
+trace is the residue's in closed form followed by the consume event of the
+path's dead remainder. This is the statement the two declared-linear `soundness` cases
 consume: the selected leaf comes back well typed at `Γ ⊢ p : T`'s type and
-hole-free — so a use hands on a `Val` and a `@drop` can run §6.11 on it — and
+moved-out-free — so a use hands on a `Val` and a `@drop` can run §6.11 on it — and
 the events are `dropResidueEvents` and one `consume`, with no `linearLeak`
 reachable.
 
@@ -1612,7 +1612,7 @@ theorem RueCore.ContentsOwnTyping.declaredPlan_eq {D : Decls} (π : List Nat)
 
 **The machine's leak monitor sees exactly what §5.6 computes.** If Σ says
 the residue at a path carries no linear value, the contents stored there holds
-no live declared-`linear` sub-value — so `endscope` (§6.7), the frame teardown
+no live declared-`linear` sub-value — so `endscope` (§6.7), the activation record teardown
 (§6.9) and the overwrite (§6.8) all let it through. This is the clause that
 makes the RUE-1591 model sound: after a partial move the obligation is the
 residue's, on both sides of the invariant.
@@ -1627,9 +1627,9 @@ theorem RueCore.ContentsOwnTyping.residualLinear_false {D : Decls} {c : Contents
 
 *theorem* · module `RueCore.Soundness`
 
-**Scope teardown never refuses on a frame the statics cleared.**
-`run-scope-drops` (§6.1) over a frame whose bindings carry no residual linear
-content retires every one of them: none is already retired (`StoreTyping` says
+**Scope teardown never refuses on an activation record the statics cleared.**
+`run-scope-drops` (§6.1) over an activation record whose bindings carry no residual linear
+content tombstones every one of them: none is already tombstoned (`StoreTyping` says
 every bound cell is live and that no two bindings share one — §7's
 no-use-after-drop at an unwinding edge), and none holds a live linear
 sub-value (the §5.6 obligation, read on the residue).
@@ -1649,7 +1649,7 @@ theorem RueCore.StoreTyping.unwind {D : Decls} (hwf : WfDecls D) (Γ : Ctx) (ρ 
 
 *theorem* · module `RueCore.Soundness`
 
-**A frame's whole teardown never refuses** (§6.9's `run-all-scope-drops`,
+**An activation record's whole teardown never refuses** (§6.9's `run-all-scope-drops`,
 run at (D-Return-Value) and at (D-Return)). The record is the environment
 reversed, so this is `StoreTyping.unwind` read newest-first.
 
@@ -1775,7 +1775,7 @@ theorem RueCore.StoreTyping.joinFold {D : Decls} (hwf : WfDecls D) (Γs : List C
 *theorem* · module `RueCore.Soundness`
 
 **The invariant survives (Match) §5.5's n-way join, from whichever arm ran.**
-The join is the left fold of the binary one, and each arm's outgoing context has
+The join is the left fold of the binary one, and each arm's output context has
 the skeleton the arms share, so the fold may read the state the taken arm left —
 which is what the `match` case of `soundness` needs, exactly as `ite` reads
 `join_left`/`join_right`.
@@ -1813,10 +1813,10 @@ theorem RueCore.storeTyping_freshParams {D : Decls} (ps : List Param) (vs : List
 
 **(D-Match) §6.6 establishes the arm's entry invariant.** The payload cells
 hold the payload components and (Match) §5.5's `Σ0[ x_{ij} ↦ Owned ]` — `extendArm`
-— describes exactly them, on top of the frame the `match` was evaluated in. This
-is `storeTyping_freshParams` read over a non-empty base frame: the same minting, the
+— describes exactly them, on top of the activation record the `match` was evaluated in. This
+is `storeTyping_freshParams` read over a non-empty base activation record: the same minting, the
 same two `reverse`s (a payload tuple is written left to right while `Ctx` and
-`Env` list the innermost binder first), with the enclosing frame carried along
+`Env` list the innermost binder first), with the enclosing activation record carried along
 because the cells are minted **above** the whole store.
 
 ```lean
@@ -1837,7 +1837,7 @@ theorem RueCore.storeTyping_freshParams_app {D : Decls} (Ts : List Ty) (vs : Lis
 
 **The argument list of a call is safe** (§5.8's (Call), §6.9's (D-Call)):
 evaluated left to right with Σ threaded, it produces one well-typed value per
-parameter with the invariant carried to the last argument's outgoing context,
+parameter with the invariant carried to the last argument's output context,
 or hands on the first argument's non-value outcome — an unwinding `return`
 among them, which aborts the call before any parameter cell is minted. The
 hypothesis is `soundness` at the fuel the call has already spent one unit of,
@@ -1867,11 +1867,11 @@ theorem RueCore.args_sound (M : FloatLaws) {P : Program} {fuel : Nat}
 **Type safety for the fragment** (§7, first bullet, in
 definitional-interpreter form).
 
-A well-typed expression, run at any fuel in any frame and store agreeing with
-its incoming context, yields a well-typed value with the agreement restored at
-the normal outgoing state of its §5.3 result `Ω` — and no value at all when
+A well-typed expression, run at any fuel in any activation record and store agreeing with
+its input context, yields a well-typed value with the agreement restored at
+the normal output context of its §5.3 result `Ω` — and no value at all when
 `Ω` is §5.7's `⊥` — a value handed back by an unwinding `return` (§6.9), an
-unwinding `break` (§6.10) that fired at one of `Ω`'s delivered states, a
+unwinding `break` (§6.10) that fired at one of `Ω`'s abrupt-completion contexts, a
 *defined* panic (§6.12), or `outOfFuel` — never `.refused`, so never a
 `Refusal`: no use-after-move, no use-after-drop, no linear leak, no linear
 overwrite, no linear discard (§7's decomposed bullets). The theorem is
@@ -1997,12 +1997,12 @@ calculus, the second is the calculus doing what it says.
 * **A pending value (open).** A value already built for a **sibling
   position** that a *later* sibling destroys by `return` or `break` is in no
   cell and no
-  scope record, so its drop is neither run nor monitored and none of the five
+  drop scope, so its drop is neither run nor monitored and none of the five
   violations fires. The sibling positions are every list `evalArgs` walks — a
   call's argument list, a struct literal's initializers, an array literal's
   elements — and an assignment's right-hand side while the target's indices
   run after it (`5.2:14`). At the right-hand side only the affine half
-  applies: (Assign)'s leaf premise `class(T) ≠ Linear` keeps the abandoned
+  applies: (Assign)'s leaf premise `qual(T) ≠ Linear` keeps the abandoned
   value from being linear, so `no_linear_discard` is not affected there. That
   edge is the calculus as written — §6.9's and §6.10's unwinding
   rules walk only σ, and §5.3's strict-context bottom rule (`Strict-Bottom`
@@ -2024,7 +2024,7 @@ calculus, the second is the calculus doing what it says.
 
 Every *other* edge — a `let`'s scope exit, a `match` arm's `endscope` over its
 payload locals (`StoreTyping.unwindPrefix`), a `break`'s unwind to its loop
-(`loop_exit_ok`), a frame's normal pop, and a `return`'s unwind — is
+(`loop_exit_ok`), an activation record's normal pop, and a `return`'s unwind — is
 covered.
 
 ```lean
@@ -2048,13 +2048,13 @@ theorem RueCore.no_use_after_move (M : FloatLaws) {P : Program} (h : ProgramType
 
 *theorem* · module `RueCore.Soundness`
 
-§7 "No use-after-drop": the machine never touches a retired (`†`) cell.
+§7 "No use-after-drop": the machine never touches a tombstoned (`†`) cell.
 Here it is `no_refusal` at one tag, over checked programs, but typing is not
 what makes it true: `run_no_use_after_drop` (`Tombstone.lean`, RUE-2496) proves
-it for every program. `run-all-scope-drops` (§6.9) walks the frame's scope
-record at every `return` and at every frame pop, and what keeps those walks
-off a `†` cell, and stops any cell being retired twice, is structural: a
-binding's cell is minted fresh and retired only when its scope ends, after
+it for every program. `run-all-scope-drops` (§6.9) walks the activation record's drop
+scope at every `return` and at every activation record pop, and what keeps those walks
+off a `†` cell, and stops any cell being tombstoned twice, is structural: a
+binding's cell is minted fresh and tombstoned only when its scope ends, after
 which nothing names it, and a record owes each cell once. `ActivationTyping`
 implies as much for a checked program (the record is the environment, whose
 cells `StoreTyping` says are live or moved out and pairwise distinct).
@@ -2070,7 +2070,7 @@ theorem RueCore.no_use_after_drop (M : FloatLaws) {P : Program} (h : ProgramType
 *theorem* · module `RueCore.Soundness`
 
 §7 "Linear values are consumed exactly once", leak half: neither a scope
-exit (§6.7) nor a frame unwind (§6.9) ever sees a live linear value.
+exit (§6.7) nor an activation record unwind (§6.9) ever sees a live linear value.
 
 ```lean
 theorem RueCore.no_linear_leak (M : FloatLaws) {P : Program} (h : ProgramTyped P)
@@ -2163,7 +2163,7 @@ theorem RueCore.checkFn_sound {P : Program} {fd : FnDef} (h : checkFn P fd = tru
 
 *theorem* · module `RueCore.Checker`
 
-Every `checkStructDecl` acceptance is §3's class assignment for that
+Every `checkStructDecl` acceptance is §3's qualifier assignment for that
 declaration.
 
 ```lean
@@ -2175,7 +2175,7 @@ theorem RueCore.checkStructDecl_sound {D : Decls} {sd : StructDecl}
 
 *theorem* · module `RueCore.Checker`
 
-Every `checkStructs` acceptance is §3's class assignment for the whole
+Every `checkStructs` acceptance is §3's qualifier assignment for the whole
 environment (`WfStructs`).
 
 ```lean
@@ -2187,7 +2187,7 @@ theorem RueCore.checkStructs_sound {D : Decls} (h : checkStructs D = true) :
 
 *theorem* · module `RueCore.Checker`
 
-Every `checkEnumDecl` acceptance is §3's class assignment for that
+Every `checkEnumDecl` acceptance is §3's qualifier assignment for that
 declaration (`6.3:19`).
 
 ```lean
@@ -2199,7 +2199,7 @@ theorem RueCore.checkEnumDecl_sound {D : Decls} {ed : EnumDecl}
 
 *theorem* · module `RueCore.Checker`
 
-Every `checkEnums` acceptance is §3's class assignment for the whole enum
+Every `checkEnums` acceptance is §3's qualifier assignment for the whole enum
 environment (`WfEnums`).
 
 ```lean
@@ -2213,7 +2213,7 @@ theorem RueCore.checkEnums_sound {D : Decls} (h : checkEnums D = true) : WfEnums
 **Every `checkNoCycle` acceptance is `3.0:5`** (`WfByValueEdge`): the by-value
 "contains" relation over the declarations is well-founded, so no struct or enum
 contains itself by value through any cycle of fields and payloads. This is the
-premise `class_unique` turns into "§3's class assignment has one solution".
+premise `class_unique` turns into "§3's qualifier assignment has one solution".
 
 ```lean
 theorem RueCore.checkNoCycle_sound {D : Decls} (h : checkNoCycle D = true) :
@@ -2225,7 +2225,7 @@ theorem RueCore.checkNoCycle_sound {D : Decls} (h : checkNoCycle D = true) :
 *theorem* · module `RueCore.Checker`
 
 Every `checkDecls` acceptance is a well-formed declaration environment:
-§3's class assignment in both layers and `3.0:5`'s acyclicity.
+§3's qualifier assignment in both layers and `3.0:5`'s acyclicity.
 
 ```lean
 theorem RueCore.checkDecls_sound {D : Decls} (h : checkDecls D = true) : WfDecls D
@@ -2249,10 +2249,10 @@ theorem RueCore.checkProgram_sound {P : Program} (h : checkProgram P = true) :
 *theorem* · module `RueCore.Trace`
 
 **The conservation law** (§7's no-double-free, the invariant half): every
-evaluation, of every expression from every copy-closed store, at every fuel,
+evaluation, of every expression from every copy-contained store, at every fuel,
 keeps `Cons` — no identity is ever duplicated, only moved, consumed, or
 minted fresh. By fuel induction over `eval`, one case per form, each closed by
-its ledger above. It reads no typing derivation: copy closure is what the
+its ledger above. It reads no typing derivation: Copy containment is what the
 machine maintains itself, and `DtorNotCopy` (inside `TraceMeasure`, for
 `dtorIds`) is the one fact it needs about the declarations.
 
@@ -2267,9 +2267,9 @@ theorem RueCore.eval_conserves (M : FloatSig) {P : Program} {F : Event → List 
 *theorem* · module `RueCore.Trace`
 
 **No identity appears twice among the `drop`/`dropTemp` free events, on
-any finished run** (§6.11): each owned identity occurs at most once among the
+any terminating run** (§6.11): each owned identity occurs at most once among the
 trees those markers free (`freedIds`), a declared-linear destructure's
-residue and a consumed shell included (RUE-2427). Holds unconditionally, for
+residue and a consumed dead remainder included (RUE-2427). Holds unconditionally, for
 every program, no hypothesis at all: the machine refuses the one shape — an
 owned value hidden under a `Copy` node — that would let a copy duplicate it
 (`Contents.copyContained`).
@@ -2283,7 +2283,7 @@ theorem RueCore.freed_once (M : FloatSig) (P : Program) (fuel a : Nat) :
 
 *theorem* · module `RueCore.Trace`
 
-**No destructor runs twice on one value, on any finished run** (§6.11, `3.9:28`):
+**No destructor runs twice on one value, on any terminating run** (§6.11, `3.9:28`):
 each identity occurs at most once among the values the trace's `dtor` events
 ran on. It needs only that a destructor-bearing struct is not `Copy`
 (`3.9:31`), which `WfDecls` gives (`WfDecls.dtorNotCopy`).
@@ -2312,7 +2312,7 @@ position is never dropped through the old owner; and a `match` binding takes
 the payload whole into the arm's cells, so the scrutinee's owner is gone.
 The declared-linear destructure (§6.3) consumes its place the same way: the
 leaf is handed on, the residue is dropped once, each retained subtree under
-its own `drop` marker, the path's shell is consumed (`consume`), and the
+its own `drop` marker, the path's dead remainder is consumed (`consume`), and the
 place becomes `⊘`.
 
 ```lean
@@ -2365,7 +2365,7 @@ theorem RueCore.dupProgram_step_double_free (M : FloatSig) :
 *theorem* · module `RueCore.Equivalence`
 
 **`eval` is simulated by §6's `→*`** (RUE-2289 part 2, ADR-0097 decision
-3), for every expression, store, frame and fuel, on every program: a value, a
+3), for every expression, store, activation record and fuel, on every program: a value, a
 panic, an unwinding `return` and an unwinding `break` are each reached by
 `Step` from the expression in focus under any context, as `Sim` reads them
 (§6.2's (Search) and (Panic-Lift), (D-Return) §6.9, (D-Break) §6.10). The
@@ -2404,12 +2404,12 @@ theorem RueCore.run_sim (M : FloatSig) (P : Program) (fuel : Nat) :
 **`eval` is sound with respect to §6's reduction** (RUE-2289 part 2;
 ADR-0097 decision 3: "a theorem about `eval` is a theorem about §6 only once
 the two are proved to agree"). For a program `check` accepts
-(`ProgramTyped`, RUE-2314's domain), `run` is never stuck (`no_refusal`),
+(`ProgramTyped`, RUE-2314's domain), `run` is never refused (`no_refusal`),
 so it answers a value, a panic or `outOfFuel`; a value is reached by §6's
 `→*` from the initial configuration as a terminal configuration with the same
 store and trace, and a panic as `↯κ` after the same trace (§6.2, §6.12).
 `.refused` is outside the correspondence and does not occur here; `outOfFuel`
-is not a state of §6's machine. The converse, completeness modulo fuel, is
+is not a state of §6's machine. The converse, the small-to-big direction modulo fuel, is
 `eval_small_to_big`.
 
 ```lean
@@ -2447,7 +2447,7 @@ theorem RueCore.eval_steps_of_outOfFuel (M : FloatSig) (P : Program) (fuel : Nat
 
 *theorem* · module `RueCore.Equivalence`
 
-**Completeness of `eval` modulo fuel, on every program** (RUE-2289 part
+**The small-to-big direction, modulo fuel, on every program** (RUE-2289 part
 3, ADR-0097 decision 3; §6.2, §6.12). If §6's `→*` takes the initial
 configuration to `✓` — a value at an empty stack — then at every fuel past
 the number of steps, `run` answers that value with the same store and trace,
@@ -2477,14 +2477,14 @@ theorem RueCore.run_small_to_big (M : FloatSig) (P : Program) :
 
 *theorem* · module `RueCore.Equivalence`
 
-**Completeness of `eval` modulo fuel** (RUE-2289 part 3; ADR-0097
+**The small-to-big direction of `eval`, modulo fuel** (RUE-2289 part 3; ADR-0097
 decision 3: "a theorem about `eval` is a theorem about §6 only once the two
 are proved to agree"). For a program `check` accepts (`ProgramTyped`,
 RUE-2314's domain): if §6's `→*` takes the initial configuration to a
 terminal configuration — `✓`, a value at an empty stack, or `↯κ` — then some
 fuel makes `run` answer that outcome with the same store, value and trace,
 and so does every larger fuel (§6.2, §6.12). With `eval_big_to_small` this is
-adequacy in both directions: on checked programs, `run`'s values and panics
+semantic equivalence in both directions: on checked programs, `run`'s values and panics
 are exactly the ends of §6's runs, and `outOfFuel` at every fuel is exactly
 divergence (`eval_diverges_iff`).
 
@@ -2521,7 +2521,7 @@ theorem RueCore.run_refused_of_step_stuck (M : FloatSig) (P : Program) {C : Conf
 
 *theorem* · module `RueCore.Equivalence`
 
-**`eval` never stuck ⇒ `Step` never stuck, on every program** (§7's
+**`eval` never refused ⇒ `Step` never stuck, on every program** (§7's
 phrasing: "it either reduces, halts with a value, or halts with one of the
 defined panics"). If no fuel makes `run` refuse, every configuration `→*`
 reaches from the initial one is terminal or takes a step. The converse fails
@@ -2539,7 +2539,7 @@ theorem RueCore.step_never_stuck_of_run (M : FloatSig) (P : Program)
 
 *theorem* · module `RueCore.Equivalence`
 
-**"Never stuck", both ways, in §7's phrasing** (RUE-2289 part 3; §7's
+**"Never refused" iff "never stuck", in §7's phrasing** (RUE-2289 part 3; §7's
 type-safety bullet; ADR-0097 decision 3). For a program `check` accepts,
 "for every fuel, `run` is never `.refused`" is equivalent to "every
 configuration §6's `→*` reaches from the initial one reduces or has halted
@@ -2593,7 +2593,7 @@ theorem RueCore.Config.SafeAt.progress {M : FloatSig} {P : Program} {T : Ty}
 
 *theorem* · module `RueCore.Equivalence`
 
-**Preservation for a typed configuration** (§7, first bullet: "types are
+**SafeAt invariance for a typed configuration** (§7, first bullet: "types are
 preserved under reduction"): a step of §6's `→` from a configuration typed at
 `T` lands on one typed at `T`.
 
@@ -2607,7 +2607,7 @@ theorem RueCore.Config.SafeAt.invariant {M : FloatSig} {P : Program} {T : Ty}
 
 *theorem* · module `RueCore.Equivalence`
 
-**The fundamental lemma: a checked program starts typed** (§7, first
+**Syntactic type soundness: a checked program starts typed** (§7, first
 bullet; §6.12's initial configuration). For a program `check` accepts, the
 initial configuration is safe at the entry point's declared return type. The
 "never stuck" half is `step_never_stuck_of_run` given `no_refusal`; the
@@ -2644,7 +2644,7 @@ theorem RueCore.step_progress (M : FloatLaws) {P : Program} (h : ProgramTyped P)
 
 *theorem* · module `RueCore.Equivalence`
 
-**Preservation over §6's reduction** (§7, first bullet: "types are
+**SafeAt invariance over §6's reduction** (§7, first bullet: "types are
 preserved under reduction"; ADR-0097 decision 3). For a program `check`
 accepts, every configuration `→*` reaches from §6.12's initial configuration
 is typed at the entry point's declared return type, in the semantic sense of
@@ -2669,7 +2669,7 @@ theorem RueCore.step_safeAt (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
 **The value §6 halts with has the declared type** (§7, first bullet;
 §6.12's (Result-Ok)). For a program `check` accepts, if `→*` takes the
 initial configuration to `✓v`, then `v` has the entry point's declared return
-type. This is preservation read at the result, `Config.SafeAt`'s second half
+type. This is SafeAt invariance read at the result, `Config.SafeAt`'s second half
 at `Config.init`.
 
 ```lean
@@ -3400,7 +3400,7 @@ theorem RueCore.Nonvacuous.whole_result (P : Program) :
 
 **The exact conservation law** (§7's no-leak-of-drops, the invariant
 half): every evaluation, of every `pendingSafe` expression of a
-`pendingSafe` program, from every copy-closed store, at every fuel, keeps
+`pendingSafe` program, from every copy-contained store, at every fuel, keeps
 `Exact` — every owned identity it starts with is, at its end, in exactly one
 of the store, the result, or the trace's ended identities. By fuel induction
 over `eval`, one case per form, each closed by its exact ledger above; like
@@ -3417,8 +3417,8 @@ theorem RueCore.eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = tr
 
 *theorem* · module `RueCore.TraceExact`
 
-**Every allocation is retired** (§6.7, §6.9, §6.10): every evaluation, of
-every expression, in every frame that names only existing cells, keeps
+**Every allocation is tombstoned** (§6.7, §6.9, §6.10): every evaluation, of
+every expression, in every activation record that names only existing cells, keeps
 `Tidy`. By fuel induction over `eval`; no typing derivation.
 
 ```lean
@@ -3433,24 +3433,24 @@ theorem RueCore.eval_tidy (M : FloatSig) (P : Program) (fuel : Nat) (H : Store)
 **No leak of drops: every owned value ends exactly once** (§7's
 "no use-after-drop / no leak of drops" bullet, the "exactly once" half;
 §6.7, §6.9, §6.10, §6.11). Take any well-typed configuration of a checked
-program — an expression typed in `Γ`, run in a frame and store that agree
+program — an expression typed in `Γ`, run in an activation record and store that agree
 with `Γ` — whose program and expression are `pendingSafe`. Its evaluation is
-never refused, and when it finishes normally or unwinds by `return` or
+never refused, and when it completes normally or abruptly by `return` or
 `break`:
 
 * **every owned identity the store held at the start** is in exactly one
   place: in a cell that already existed, part of the result, or ended in the
   trace exactly as many times as it was held — by a drop, a discarded
-  temporary, a residue drop, or a consumption (`Exact`);
-* **every cell the evaluation allocated is retired** (`Tidy`): a `let`'s at
+  temporary, a residue drop, or a consume event (`Exact`);
+* **every cell the evaluation allocated is tombstoned** (`Tidy`): a `let`'s at
   its `endscope` (§6.7), a `match` arm's at the arm's end (§6.6), a callee's
-  at its frame pop (§6.9) — except, for an unwinding `break`, the cells its
-  scope record still owes, which the loop retires (§6.10) and whose values
+  at its activation record pop (§6.9) — except, for an unwinding `break`, the cells its
+  drop scope still owes, which the loop tombstones (§6.10) and whose values
   `rest_exactly_once` at the loop counts (`breakLeak_rejected`) — cells outside the
-  frame's environment were touched only to be retired, and an unwinding
-  `return` has retired the frame's whole record (§6.9's σ-walk). So "still in
+  activation record's environment were touched only to be tombstoned, and an unwinding
+  `return` has tombstoned the activation record's whole drop scope (§6.9's σ-walk). So "still in
   the store" means a cell the enclosing code can still reach, never one a
-  frame pop forgot (`orphan_rejected`).
+  activation record pop forgot (`orphan_rejected`).
 
 So a binding's value is dropped at its scope's end on the normal path
 (`endscope`, §6.7) or by the σ-walk of an unwind (§6.9, §6.10) — never both,
@@ -3498,15 +3498,15 @@ after trace `tr` (`Lead`). Whatever the rest of the form yields, `r` with
 `eval … e = r.withTrace tr`, is not a refusal, and every owned identity of
 `vs` or of `H₁` is, at its end, in a cell that already existed, in the result,
 or ended in `r`'s trace exactly as many times as it was held; every cell
-allocated since `H₁` is retired (`Settled`). This is where a `let`'s
+allocated since `H₁` is tombstoned (`Settled`). This is where a `let`'s
 initializer is dropped at the `endscope`, a discarded `S { .. };` at the
-`dropTemp`, an argument at the callee's frame pop, and a scrutinee's shell at
+`dropTemp`, an argument at the callee's activation record pop, and a scrutinee's dead remainder at
 its `consume`, and where a `break` unwinds the bindings its loop body still
 held — the loop's lead is its body breaking, so the unwind is that loop's rest
 (`breakLeak_rejected`) — values `drop_exactly_once` alone never sees, because
 no evaluation starts holding them (`letDropDeleted_rejected`). Every place the
-machine ends an owned value — an `endscope`, a discard, a frame pop, a
-`return`'s σ-walk, a `break`'s unwind, a consumption, an overwrite or `@drop`
+machine ends an owned value — an `endscope`, a discard, an activation record pop, a
+`return`'s σ-walk, a `break`'s unwind, a consume event, an overwrite or `@drop`
 — lies inside the window of a statement that already counts the value: the
 rest of the form that bound or received it, the rest of the loop a `break`
 unwinds to, or an evaluation that started holding it. So the two theorems
@@ -3523,7 +3523,7 @@ What the two do not see is an end emitted *early*, inside the evaluation
 that minted the value: no window holds the value yet, so only
 `no_double_free`'s "at most once" bounds such an end, and `main`'s own result
 is part of `run`'s result, handed to no form. `whole_program_exactly_once`
-(`TraceWhole.lean`, RUE-2478) counts both: over a whole run that finishes with a value (a trap ends nothing), every
+(`TraceWhole.lean`, RUE-2478) counts both: over a whole run that terminates with a value (a trap ends nothing), every
 owned value any configuration of the run holds is ended exactly once or is
 part of the result.
 
@@ -3568,7 +3568,7 @@ theorem RueCore.pendingSafe_needed (M : FloatSig) :
 
 **An orphaned cell balances the ledger but breaks `Tidy`** (§6.9). At the
 typed configuration `g(x)` of a checked, `pendingSafe` program, the real run
-drops `x`'s `S0` at `g`'s frame pop and retires the cell, and satisfies
+drops `x`'s `S0` at `g`'s activation record pop and tombstones the cell, and satisfies
 `drop_exactly_once`; the orphaned result keeps `Exact` yet fails `Tidy`,
 which `drop_exactly_once` concludes.
 
@@ -3682,9 +3682,9 @@ theorem RueCore.seqDropDeleted_rejected (M : FloatLaws) :
 
 **A silent `break` unwind of a body-minted value** (§6.10's (D-Break)):
 `g`'s loop is a typed configuration of a checked, `pendingSafe` program. The
-real loop drop-retires `z`'s cell. A loop that retires it silently satisfies
+real loop drop-retires `z`'s cell. A loop that tombstones it silently satisfies
 the bare ledger and `Tidy` — `z`'s `S0` was minted after the loop started, and
-its cell is retired — and is rejected by `rest_exactly_once` at the loop, whose
+its cell is tombstoned — and is rejected by `rest_exactly_once` at the loop, whose
 lead is the body breaking in `breakStore`; the real unwind satisfies it.
 
 ```lean
@@ -3740,7 +3740,7 @@ theorem RueCore.dropContents_glue {D : Decls} {c : Contents} {evs : List Event} 
 *theorem* · module `RueCore.TraceOrder`
 
 **Every evaluation's trace is in §6.11's block grammar** (§3.9, §6.11):
-every evaluation, of every expression, from every copy-closed store, at every
+every evaluation, of every expression, from every copy-contained store, at every
 fuel. By fuel induction over `eval`; no typing derivation, only
 `DtorNotCopy`, which a destructure's `Copy` residue needs (module
 docstring).
@@ -3756,7 +3756,7 @@ theorem RueCore.eval_glue_blocks (M : FloatSig) {P : Program}
 
 *theorem* · module `RueCore.TraceOrder`
 
-**Every finished run's trace is in §6.11's block grammar** (§3.9, §6.11):
+**Every terminating run's trace is in §6.11's block grammar** (§3.9, §6.11):
 every destructor event of every run sits inside §6.11's walk of the drop
 marker before it — the value's own destructor first (`3.9:28`), then its
 fields in declaration order (`3.9:13`), an array's elements ascending
@@ -3773,7 +3773,7 @@ theorem RueCore.run_glue_blocks (M : FloatSig) {P : Program}
 
 *theorem* · module `RueCore.TraceOrder`
 
-**Every finished run's trace is in the block grammar `Blocks`** (§3.9,
+**Every terminating run's trace is in the block grammar `Blocks`** (§3.9,
 §6.11), each drop marker followed by exactly `dropEvents` of what it names:
 `run_glue_blocks` read through `DropGlueBlocks.toBlocks`.
 
@@ -3786,7 +3786,7 @@ theorem RueCore.run_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.dec
 
 *theorem* · module `RueCore.TraceOrder`
 
-**Every step keeps every scope record in registration order** (§6.7,
+**Every step keeps every drop scope in registration order** (§6.7,
 §6.9, §6.10): a record is only ever extended with cells allocated at that
 step — (D-Let)'s one, (D-Match)'s payload cells, (D-Call)'s parameter cells —
 which are past every cell already in it, and only ever shortened from its
@@ -3803,7 +3803,7 @@ theorem RueCore.step_ordered {M : FloatSig} {P : Program} {C C' : Config}
 
 **Registration order is location order, everywhere the machine goes**
 (§6.1, §6.7, §6.9, §6.10): in every configuration reachable from §6.12's
-initial one, every scope record — the current frame's, every suspended
+initial one, every drop scope — the current activation record's, every suspended
 caller's and loop boundary's, and every pending `endscope` marker's — lists
 its cells in strictly increasing location order. No typing hypothesis.
 
@@ -3820,7 +3820,7 @@ theorem RueCore.reachable_ordered {M : FloatSig} {P : Program} {C : Config}
 newest-first** (§6.7, §6.9, §6.10, §6.11): it appends to the trace, and the
 `drop` markers it appends name one cell or name distinct cells in strictly
 decreasing location order. A teardown — (D-EndScope), (D-Return-Value)'s
-frame pop, (D-Return)'s σ-walk, (D-Loop-Iter)'s end of a turn and
+activation record pop, (D-Return)'s σ-walk, (D-Loop-Iter)'s end of a turn and
 (D-Break)'s unwind — walks an ordered record backwards
 (`StrictStackOrder.teardown`).
 
@@ -3851,7 +3851,7 @@ theorem RueCore.reachable_drop_order {M : FloatSig} {P : Program} {C C' : Config
 
 **Every step keeps the scopes nested** (§6.7, §6.9, §6.10): (D-Let) and
 (D-Match) push a marker equal to the cells they append to the record,
-(D-EndScope) pops both together, a call starts a frame of its own, and a
+(D-EndScope) pops both together, a call starts an activation record of its own, and a
 return, a loop turn's end and a `break` restore a record the stack held.
 
 ```lean
@@ -3920,7 +3920,7 @@ theorem RueCore.reachable_stackDiscipline {M : FloatSig} {P : Program} {C C' : C
 
 **§6.11's order within a value, in §6.11's own terms** (§3.9, §6.11;
 RUE-2487), over §6's relation, for a program the checker accepts: every
-finished run's trace — a terminal value or a trap — is in the block grammar
+terminating run's trace — a terminal value or a trap — is in the block grammar
 `DropGlueBlocks`, whose drop blocks are §6.11's rules (`DropGlue`) rather than the
 machine's walk. So each drop marker is followed by the value's own destructor
 first (`3.9:28`), then its fields in declaration order (`3.9:13`), an array's
@@ -3947,7 +3947,7 @@ theorem RueCore.drop_glue_order (M : FloatLaws) {P : Program} (h : ProgramTyped 
 no leak of drops" bullet, its *when*), over §6's relation, for a program the
 checker accepts:
 
-* **within a value**: every finished run's trace — a terminal value or a
+* **within a value**: every terminating run's trace — a terminal value or a
   trap — is in §6.11's block grammar (`step_blocks`): every destructor event
   sits inside the walk of the drop marker before it — destructor first
   (`3.9:28`), fields in declaration order (`3.9:13`), array elements
@@ -4012,7 +4012,7 @@ theorem RueCore.run_no_use_after_drop (M : FloatSig) (P : Program) (fuel : Nat) 
 *theorem* · module `RueCore.Tombstone`
 
 **No use-after-drop over §6's relation, on every program**: a
-configuration `→*` reaches from `Config.init` is never stuck on a retired
+configuration `→*` reaches from `Config.init` is never stuck on a tombstoned
 cell, checked or not.
 
 ```lean
@@ -4025,7 +4025,7 @@ theorem RueCore.step_no_use_after_drop (M : FloatSig) (P : Program) {C : Config}
 *theorem* · module `RueCore.TracePrefix`
 
 **Exhausted fuel keeps the ledger** (RUE-2477): if `eval` exhausts `fuel`
-on an expression from a copy-closed store, then from that expression in
+on an expression from a copy-contained store, then from that expression in
 focus, under any context and after any trace, §6's relation has a run of at
 least `fuel` steps whose appended trace owns, under any projection the law
 counts, at most what the store owned plus a range of fresh identities — the
@@ -4045,7 +4045,7 @@ theorem RueCore.eval_longc (M : FloatSig) {P : Program} {F : Event → List Nat}
 **No double free, on every prefix of a run** (§7 "No double-free", as a
 safety property; RUE-2477). For a checked program, every configuration §6's
 relation reaches from `Config.init` — the run so far, whether or not it ever
-finishes — has a trace that frees no identity twice (`freedIds`) and runs no
+terminates — has a trace that frees no identity twice (`freedIds`) and runs no
 destructor twice on one (`dtorIds`). A program that diverges is covered: its
 trace is bounded at every step, where `no_double_free`, over `run`'s answer,
 sees only `outOfFuel` and an empty trace.
@@ -4061,14 +4061,14 @@ theorem RueCore.step_no_double_free (M : FloatLaws) {P : Program} (h : ProgramTy
 
 *theorem* · module `RueCore.TraceWhole`
 
-**Every owned value of a finished run ends exactly once** (§7 "No
+**Every owned value of a terminating run ends exactly once** (§7 "No
 use-after-drop / no leak of drops", over a whole program; RUE-2478). For a
 checked program whose functions are all `pendingSafe` (RUE-2316), take any
 configuration `C` §6's relation reaches from `Config.init` and any owned
 identity `a` it holds (`Config.held`: in a cell, in focus, or pending on the
-control stack). If the run from `C` finishes with a value — `✓v`, a value at
+control stack). If the run from `C` terminates with a value — `✓v`, a value at
 an empty stack — then `a` is ended exactly once in the final trace (a drop, a
-discarded temporary's drop, or a consumption: `freedIds`) or is part of the
+discarded temporary's drop, or a consume event: `freedIds`) or is part of the
 final value, and not both. So no owned value the run ever holds is lost, and
 none is ended twice. A panic carries no claim: §6.12's trap runs no drop
 (§5.7's `⊥_panic` edge), so what it abandons is abandoned by design, and
@@ -4079,7 +4079,7 @@ form and shows each step of the run moves an owned identity between the
 store, the focus, the stack and the trace without losing it (`MSteps`); by
 determinism every configuration the run reaches lies on that run
 (`MSteps.of_steps`). `eval_small_to_big` places the run's end at `run`'s answer,
-where `eval_tidy` has retired every cell and `eval_conserves` bounds each
+where `eval_tidy` has tombstoned every cell and `eval_conserves` bounds each
 count by one.
 
 ```lean
@@ -6355,7 +6355,7 @@ theorem RueCore.Sharp.off_run (B : Expr) :
 
 (RUE-2400) The dynamic-index read of an affine leaf is refused by the
 machine as well as the statics: (D-Use-Untrackable-Dynamic-Copy) §6.3 is the
-only rule there and it wants `class(T) = Copy`, so `eval` answers
+only rule there and it wants `qual(T) = Copy`, so `eval` answers
 `typeConfusion` instead of duplicating the leaf. `Step.demo_dynamicRead_stuck`
 is the same program, stuck at the same rule in `Step`.
 
@@ -6409,7 +6409,7 @@ imposes no residual-linear premise — §5.7 exempts the `⊥_panic` edge from
 §5.6's obligation — and the `let`'s tail is `⊥`, so (Let) with a divergent
 tail (`Typed.letInDiv`) reaches no scope exit and reads no state there. This
 is the one shape where `Typed.panic` and `Typed.ret` differ: `ret` carries the
-frame-wide residual-linear premise, and at an affine binding there is nothing
+activation-record-wide residual-linear premise, and at an affine binding there is nothing
 for either to drop.
 
 ```lean
@@ -6422,8 +6422,8 @@ theorem RueCore.Examples.panicPastLinear_typed :
 
 *theorem* · module `RueCore.Examples`
 
-Seventeen is enough, and the answer is a value with five retired
-parameter cells — one per frame the recursion pushed.
+Seventeen is enough, and the answer is a value with five tombstoned
+parameter cells — one per activation record the recursion pushed.
 
 ```lean
 theorem RueCore.Examples.countdown_at_17 :
@@ -6504,13 +6504,13 @@ theorem RueCore.Examples.infiniteLoop_outOfFuel (M : FloatSig) (P : Program)
 
 **One corpus program, both presentations** (GUIDE section 2, "One
 program, traced both ways"; §6.2, §6.5, §6.7, §6.9, §6.11, §6.12). `check`
-accepts `affine_scope_drop`; `run` answers `1` with both cells retired and
+accepts `affine_scope_drop`; `run` answers `1` with both cells tombstoned and
 the trace "drop `ℓ1`, then `S1`'s destructor"; and §6's `→*` reaches the same
 terminal configuration by the twelve steps written out here, one `Step`
 constructor each: (Search) into the call's empty argument list, (D-Call),
 (Search) into the `let`, (Search) into the struct literal and its one
-initializer, the literal, the plug, (D-Struct) minting `#0`, (D-Let),
-the body's literal, (D-EndScope) dropping and retiring `ℓ1`, and
+initializer, the literal, the return-state step, (D-Struct) minting `#0`, (D-Let),
+the body's literal, (D-EndScope) dropping and tombstoning `ℓ1`, and
 (D-Return-Value). `explain/affine_scope_drop.txt` renders `eval`'s run of the
 same program in seven rows: the (Search) steps are the part of `Step` that
 `eval` does by recursion.
@@ -6621,7 +6621,7 @@ theorem RueCore.glue_dtorSkipped_rejected :
 
 **Newest-first on a reachable step** (§6.9's (D-Return)):
 `return_past_affine` returns past two live affine bindings, `ℓ1` then `ℓ3`,
-and the one step that runs the frame's σ-walk drops `ℓ3` then `ℓ1` — two
+and the one step that runs the activation record's σ-walk drops `ℓ3` then `ℓ1` — two
 distinct cells, newest first, the teardown `reachable_drop_order` speaks
 of.
 
@@ -6637,7 +6637,7 @@ theorem RueCore.returnPastAffine_strictStackOrder :
 
 *theorem* · module `RueCore.Witnesses`
 
-**The invariant is what orders a teardown.** A frame whose scope record
+**The invariant is what orders a teardown.** An activation record whose drop scope
 is *not* in location order — `[3, 1]`, a configuration `reachable_ordered`
 says no run reaches — pops (D-Return-Value) and drops `ℓ1` before `ℓ3`: the
 step is a real step of §6's relation, and its markers are not newest-first.
@@ -6677,10 +6677,10 @@ theorem RueCore.swappedMarkers_rejected :
 *theorem* · module `RueCore.Witnesses`
 
 **The relation runs a program to the same answer `eval` does**, a check
-the two presentations can be compared on before the adequacy theorems say
+the two presentations can be compared on before the semantic-equivalence theorems say
 they always agree: from §6.12's initial configuration, `→*` reaches `✓42`
 through (D-Call), (D-Let), (D-Use-Copy), (D-Arith), (D-EndScope) and
-(D-Return-Value), with the `let`'s cell retired and nothing printed; and
+(D-Return-Value), with the `let`'s cell tombstoned and nothing printed; and
 `run` answers the same value, store and trace.
 
 ```lean
@@ -6698,7 +6698,7 @@ theorem RueCore.letAddProgram_runs (M : FloatSig) :
 
 **(D-Use-Untrackable-Dynamic-Copy) needs `Copy`** (§6.3): in
 `let a = [S{}, S{}]; let x = a[dyn 0]; 0` the dynamic read of an affine
-leaf is stuck, before any destructor runs. `eval` is stuck at the same read
+leaf is stuck, before any destructor runs. `eval` refuses at the same read
 (`RueCore.Examples.dynReadAffine_refused`); `check` rejects the program.
 
 ```lean
@@ -6724,7 +6724,7 @@ theorem RueCore.demo_dynamicRead_stuck (M : FloatSig) :
 
 **`@drop` at a dynamic place needs `Copy`** (§6.3's only
 `Untrackable(OrdinaryDynamic)` rule): `let a = [S{}]; @drop(a[dyn 0]); @dbg(1); 0`
-is stuck at the `@drop`, with nothing printed. `eval` is stuck at the same
+is stuck at the `@drop`, with nothing printed. `eval` refuses at the same
 `@drop` (`RueCore.Examples.dynDropAffine_refused`).
 
 ```lean
@@ -6749,7 +6749,7 @@ theorem RueCore.demo_dynamicDrop_stuck (M : FloatSig) :
 *theorem* · module `RueCore.Witnesses`
 
 **The repeat form needs `Copy`** (`7.1:38`): `let a = [S{}; 2]; 0` is
-stuck at the repeat. `eval` is stuck at the same repeat
+stuck at the repeat. `eval` refuses at the same repeat
 (`RueCore.Examples.repeatAffine_refused`).
 
 ```lean
@@ -6870,7 +6870,7 @@ theorem RueCore.demo_loopTurns_runs (M : FloatSig) :
 *theorem* · module `RueCore.Witnesses`
 
 **(D-Return) from inside a `let`** (§6.9): `let s = S{}; let y = return 5; 0`
-discards the pending `let` and `endscope`, destroys the `S` from the frame's
+discards the pending `let` and `endscope`, destroys the `S` from the activation record's
 record, and reaches `✓5`.
 
 ```lean
@@ -6900,7 +6900,7 @@ theorem RueCore.demo_returnInLet_runs (M : FloatSig) :
 **(D-Return) from a `match` arm** (§6.6, §6.9):
 `let x = S{}; match A(S{}) { A(p) => return 4, B => 0 }` destroys the arm's
 payload and then `x`, newest first, and reaches `✓4`. The match consumes the
-`A`'s shell first (`consume`, RUE-2427).
+`A`'s dead remainder first (`consume`, RUE-2427).
 
 ```lean
 theorem RueCore.demo_returnInMatch_runs (M : FloatSig) :
@@ -6931,7 +6931,7 @@ theorem RueCore.demo_returnInMatch_runs (M : FloatSig) :
 *theorem* · module `RueCore.Witnesses`
 
 **(D-Loop-Iter) runs the turn's drops** (§6.10's `run-scope-drops`): at a
-loop boundary whose frame owes nothing, a body value returned in a frame that
+loop boundary whose activation record owes nothing, a body value returned in an activation record that
 still owes cell 0 destroys it before the next turn. The configuration is not
 reachable from `Config.init` — there `endscope` has always emptied the list —
 but it is one §6.10's rule covers.
@@ -6984,7 +6984,7 @@ theorem RueCore.dropMoved_refused (M : FloatSig) :
 **The theorem at work**: `letAddProgram_runs` (above) found its
 `→*` derivation by running `stepN`; here it comes from `run`'s answer alone,
 through `run_sim` — `let x = 40; x + 2` reaches `✓42` with the `let`'s cell
-retired and nothing printed (§6.7, §6.9, §6.12).
+tombstoned and nothing printed (§6.7, §6.9, §6.12).
 
 ```lean
 theorem RueCore.letAddProgram_sound (M : FloatSig) :
@@ -7285,7 +7285,7 @@ theorem RueCore.declaredPrefix_split (D : Decls) (T : Ty) (π πd πs : List Nat
 
 **The consumed place is a declared-`linear` struct** (§5.1's
 `Γ ⊢ d : S`, `S` declared `linear`). The rule states it as a premise; here it
-is a *consequence* of the plan, so `Typed.useDeclared`/`Typed.dropDeclared`
+is a *corollary* of the plan, so `Typed.useDeclared`/`Typed.dropDeclared`
 need not carry it (helper).
 
 ```lean
@@ -7788,7 +7788,7 @@ theorem RueCore.rank_le_joinFold (D : Decls) (Ts : List Ty) (acc : Qual) :
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-Every field's class is below §3's join of them (helper).
+Every field's qualifier is below §3's join of them (helper).
 
 ```lean
 theorem RueCore.rank_le_joinFold_of_mem (D : Decls) (Ts : List Ty) (acc : Qual)
@@ -7814,9 +7814,9 @@ theorem RueCore.joinFold_linear_inv (D : Decls) (Ts : List Ty) (acc : Qual) :
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-Two environments that give the same class to every declaration a type
-names by value give that type the same class: `class([T; n])` is §3's lift of
-`class(T)`, so peeling the array wrappers loses nothing (helper).
+Two environments that give the same qualifier to every declaration a type
+names by value give that type the same qualifier: `qual([T; n])` is §3's lift of
+`qual(T)`, so peeling the array wrappers loses nothing (helper).
 
 ```lean
 theorem RueCore.Ty.qual_congr_tyNames {D D' : Decls} (T : Ty) :
@@ -7843,7 +7843,7 @@ theorem RueCore.rank_le_payloadFold (D : Decls) (Tss : List (List Ty)) (acc : Qu
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-Every payload component's class is below §3's join of them (`6.3:19`)
+Every payload component's qualifier is below §3's join of them (`6.3:19`)
 (helper).
 
 ```lean
@@ -7879,7 +7879,7 @@ theorem RueCore.payloadFold_linear_inv (D : Decls) (Tss : List (List Ty))
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-Two environments that give every type of a field list the same class give
+Two environments that give every type of a field list the same qualifier give
 that list the same §3 join (helper).
 
 ```lean
@@ -7962,7 +7962,7 @@ theorem RueCore.OwnSt.joinList_comm (D : Decls) (as bs : List OwnSt) (Ts : List 
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-§3's class of an array type reaches `Linear` exactly through a nonempty
+§3's qualifier of an array type reaches `Linear` exactly through a nonempty
 array of a `Linear` element type — `Ty.qual`'s own four-line table read as the
 biconditional the join proofs need (`3.8:74`; the zero-length reading is
 RUE-526's) (helper).
@@ -7978,7 +7978,7 @@ theorem RueCore.Ty.array_qual_linear (D : Decls) (T : Ty) (n : Nat) :
 
 The same fact in the shape §5.5's array clauses use it: an array node's slot
 types are `List.replicate n T`, so asking whether any slot carries a linear
-value is asking `class([T; n]) = Linear` (helper).
+value is asking `qual([T; n]) = Linear` (helper).
 
 ```lean
 theorem RueCore.Ty.any_replicate_qual_linear (D : Decls) (T : Ty) (n : Nat) :
@@ -8061,7 +8061,7 @@ theorem RueCore.OwnSt.join_owned_right (D : Decls) (a : OwnSt) (T : Ty) :
 The one clause the two readings share: joining `MovedOut` with a wholly
 `Owned` arm is admissible exactly when the arm has no residue, because
 `ownedJoinable` at `MovedOut` and `residualLinear` at `Owned` are complementary
-tests of `class(T)` (helper).
+tests of `qual(T)` (helper).
 
 ```lean
 theorem RueCore.OwnSt.join_movedOut_owned_eq (D : Decls) (T : Ty) :
@@ -8204,7 +8204,7 @@ theorem RueCore.OwnSt.joinList_cons_bind_right (D : Decls) (a b c : OwnSt)
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-§5.6's residue of a state a wholly `Owned` arm may absorb *is* `class(T) =
+§5.6's residue of a state a wholly `Owned` arm may absorb *is* `qual(T) =
 Linear`: the two halves above, taken together (helper).
 
 ```lean
@@ -8613,9 +8613,9 @@ theorem RueCore.OwnSt.wfList_fieldStates_array {D : Decls} {t : OwnSt} {T₁ : T
 
 **(Match) §5.5's premises for the arm a tag selects.** Read at the variant
 index `k`: the arm's body is typed under that variant's payload locals, and
-when it continues its locals are discharged by §5.6 at the arm's end and what
+when it completes normally its locals are discharged by §5.6 at the arm's end and what
 it contributes to the n-way join is one of the states the join was taken
-over, and its deliveries are among the arms'. This is the inversion
+over, and its abrupt-completion contexts are among the arms'. This is the inversion
 `soundness` performs once (D-Match) §6.6 has read the tag (helper).
 
 ```lean
@@ -8694,7 +8694,7 @@ theorem RueCore.skel_set_setSt {Γ : Ctx} {i : Nat} {en : Entry} (h : Γ[i]? = s
 *theorem* · module `RueCore.Statics.Lemmas`
 
 A `match` arm's entry context has the arm's payload locals on top of the
-incoming skeleton, so popping them leaves that skeleton (helper).
+input skeleton, so popping them leaves that skeleton (helper).
 
 ```lean
 theorem RueCore.Ctx.skel_extendArm (Ts : List Ty) (Γ : Ctx) :
@@ -8706,7 +8706,7 @@ theorem RueCore.Ctx.skel_extendArm (Ts : List Ty) (Γ : Ctx) :
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-The context an arm hands the §5.5 join — its body's outgoing context with
+The context an arm hands the §5.5 join — its body's output context with
 the payload locals popped — has the skeleton the arm started from (helper).
 
 ```lean
@@ -8808,7 +8808,7 @@ theorem RueCore.Ctx.joinFold_wf {D : Decls} {sk : List (Ty × Bool)} (Γs : List
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-The two-arm §5.5 join over `Ω` preserves a skeleton both continuing arms
+The two-arm §5.5 join over `Ω` preserves a skeleton both arms that can complete normally
 have (helper).
 
 ```lean
@@ -8822,7 +8822,7 @@ theorem RueCore.Ctx.joinOpt_skel {D : Decls} {a b : Option Ctx} {Γ' : Ctx}
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-The n-way §5.5 join over `Ω` preserves the skeleton every continuing arm
+The n-way §5.5 join over `Ω` preserves the skeleton every arm that can complete normally
 has (helper).
 
 ```lean
@@ -8857,7 +8857,7 @@ theorem RueCore.Ctx.Extends.skel {Γb Γ₁ Γ : Ctx} (h : Γb.Extends Γ₁)
 *theorem* · module `RueCore.Statics.Lemmas`
 
 Extending a context with one more binding on top extends the context
-under it: a delivery from a `let` body extends the `let`'s own context
+under it: an abrupt-completion context from a `let` body extends the `let`'s own context
 (helper).
 
 ```lean
@@ -8892,7 +8892,7 @@ theorem RueCore.Ctx.Extends.length_le {Γb Γ : Ctx} (h : Γb.Extends Γ) :
 *theorem* · module `RueCore.Statics.Lemmas`
 
 `outside_loop(Σ_x)` has the loop's own skeleton: popping the loop-local
-bindings off a delivery that extends the head leaves the head's bindings
+bindings off an abrupt-completion context that extends the head leaves the head's bindings
 (helper).
 
 ```lean
@@ -8904,7 +8904,7 @@ theorem RueCore.Ctx.outsideLoop_skel {Γh Γb : Ctx} (h : Γb.Extends Γh) :
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-A `⊥` outcome whose deliveries extend the context preserves its skeleton
+A `⊥` outcome whose abrupt-completion contexts extend the context preserves its skeleton
 (helper).
 
 ```lean
@@ -8917,8 +8917,8 @@ theorem RueCore.Out.skelOk_bot {Γ : Ctx} {Δ : List Ctx}
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-An outcome that continues at the incoming context itself and delivers
-nothing preserves its skeleton (helper).
+An outcome that completes normally at the input context itself and
+never abruptly preserves its skeleton (helper).
 
 ```lean
 theorem RueCore.Out.skelOk_same {Γ : Ctx} : Out.SkelOk Γ { norm := some Γ, brk := [] }
@@ -8928,8 +8928,8 @@ theorem RueCore.Out.skelOk_same {Γ : Ctx} : Out.SkelOk Γ { norm := some Γ, br
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-An outcome that continues at a context of the incoming skeleton and
-delivers nothing preserves it (helper).
+An outcome that completes normally at a context of the input skeleton
+and never abruptly preserves it (helper).
 
 ```lean
 theorem RueCore.Out.skelOk_of {Γ Γ' : Ctx} (h : Γ'.skel = Γ.skel) :
@@ -8940,7 +8940,7 @@ theorem RueCore.Out.skelOk_of {Γ Γ' : Ctx} (h : Γ'.skel = Γ.skel) :
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-§5.3's threading, read over skeletons: a prefix that continues at `Γ₁`
+§5.3's threading, read over skeletons: a prefix that can complete normally at `Γ₁`
 followed by a subexpression typed from `Γ₁` preserves the skeleton the
 prefix started from, `Ω ⊕ Δ₁` included (helper).
 
@@ -8978,8 +8978,8 @@ theorem RueCore.TypedArgs.skel_preserved {P : Program} {R : Ty} {Γ : Ctx}
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-**Every continuing arm of a `match` hands the §5.5 join a context with the
-skeleton the arm started from**, and every delivery an arm makes extends it:
+**Every arm that can complete normally of a `match` hands the §5.5 join a context with the
+skeleton the arm started from**, and every abrupt-completion context an arm makes extends it:
 the arm's payload locals are popped on its normal path, and sit on top of the
 arm's context at a `break` inside it (helper).
 
@@ -8995,7 +8995,7 @@ theorem RueCore.TypedArms.skel_all {P : Program} {R : Ty} {Γ₀ : Ctx}
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-**Every continuing arm of a `match` hands the §5.5 join a context with the
+**Every arm that can complete normally of a `match` hands the §5.5 join a context with the
 skeleton the arm started from** (§5's convention that `Γ` is fixed): the arm's
 payload locals are popped, and the body preserved the rest. This is what lets
 the n-way join read either the accumulated state or an arm's, which is the
@@ -9012,7 +9012,7 @@ theorem RueCore.TypedArms.arm_skel {P : Program} {R : Ty} {Γ₀ : Ctx}
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-The skeleton of a continuing outcome, read off a derivation (helper).
+The skeleton of an outcome that completes normally, read off a derivation (helper).
 
 ```lean
 theorem RueCore.Typed.skel_of {P : Program} {R : Ty} {Γ Γ' : Ctx} {e : Expr} {T : Ty}
@@ -9061,7 +9061,7 @@ theorem RueCore.Entry.wf_owned (D : Decls) (T : Ty) (m : Bool) :
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-(helper) A `let` binder enters `Owned`, so pushing it keeps a frame
+(helper) A `let` binder enters `Owned`, so pushing it keeps an activation record
 well-formed.
 
 ```lean
@@ -9074,7 +9074,7 @@ theorem RueCore.Ctx.Wf.cons_owned {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) (T : 
 *theorem* · module `RueCore.Statics.Lemmas`
 
 (helper) Re-marking one entry at a path of its type with a state that is
-a shape of that path's type keeps a frame well-formed — (Use-Move),
+a shape of that path's type keeps an activation record well-formed — (Use-Move),
 (Use-Declared-Linear-Destructure), (@Drop) and (Assign) all write this way.
 
 ```lean
@@ -9126,7 +9126,7 @@ theorem RueCore.Ctx.joinOpts_wf {D : Decls} {os : List (Option Ctx)} {Γ' : Ctx}
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-(helper) A `⊥` outcome is well formed when its deliveries are.
+(helper) A `⊥` outcome is well formed when its abrupt-completion contexts are.
 
 ```lean
 theorem RueCore.Out.Wf.bot {D : Decls} {Δ : List Ctx}
@@ -9138,8 +9138,8 @@ theorem RueCore.Out.Wf.bot {D : Decls} {Δ : List Ctx}
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-(helper) An outcome that continues at a well-formed state and delivers
-nothing is well formed.
+(helper) An outcome that completes normally at a well-formed state and
+never abruptly is well formed.
 
 ```lean
 theorem RueCore.Out.Wf.of {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) :
@@ -9174,7 +9174,7 @@ theorem RueCore.LoopHead.wf {D : Decls} {Γ Γh : Ctx} {o : Option Ctx}
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
-(helper) Dropping bindings off the top keeps a frame well formed.
+(helper) Dropping bindings off the top keeps an activation record well formed.
 
 ```lean
 theorem RueCore.Ctx.Wf.drop {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) (n : Nat) :
@@ -9519,7 +9519,7 @@ theorem RueCore.dropRetire_plain {D : Decls} {H : Store} {ℓ : Nat}
 
 *theorem* · module `RueCore.Step.Lemmas`
 
-The residue monitor passes only where the plain `drop*` of the residue
+The linear-leak monitor passes only where the plain `drop*` of the residue
 succeeds with the same trace (helper).
 
 ```lean
@@ -9556,7 +9556,7 @@ theorem RueCore.HasTys.length_eq {D : Decls} {vs : List Val} {Ts : List Ty} :
 
 *theorem* · module `RueCore.Soundness`
 
-A well-typed value has its type's class (helper).
+A well-typed value has its type's qualifier (helper).
 
 ```lean
 theorem RueCore.HasTy.qual_eq {D : Decls} {v : Val} {T : Ty} (h : HasTy D v T) :
@@ -9665,7 +9665,7 @@ theorem RueCore.ContentsTys.length_eq {D : Decls} {cs : List Contents}
 *theorem* · module `RueCore.Soundness`
 
 Inversion of contents typing at a struct type, for a contents that is not
-a hole (helper).
+a moved-out part (helper).
 
 ```lean
 theorem RueCore.ContentsTy.struct_inv {D : Decls} {s i : Nat} {cs : List Contents}
@@ -9678,7 +9678,7 @@ theorem RueCore.ContentsTy.struct_inv {D : Decls} {s i : Nat} {cs : List Content
 *theorem* · module `RueCore.Soundness`
 
 Inversion of contents typing at an array type, for a contents that is not
-a hole (helper).
+a moved-out part (helper).
 
 ```lean
 theorem RueCore.ContentsTy.array_inv {D : Decls} {T : Ty} {i : Nat}
@@ -9691,7 +9691,7 @@ theorem RueCore.ContentsTy.array_inv {D : Decls} {T : Ty} {i : Nat}
 
 *theorem* · module `RueCore.Soundness`
 
-A hole-free contents well typed at `[T; n]` **is** an array of `n`
+A moved-out-free contents well typed at `[T; n]` **is** an array of `n`
 elements: the shape (D-Index) §6.5 needs before it can bounds-check an index
 against `cs.length` (helper).
 
@@ -9755,7 +9755,7 @@ theorem RueCore.HasTys.contentsTys {D : Decls} {vs : List Val} {Ts : List Ty}
 
 *theorem* · module `RueCore.Soundness`
 
-The image of a value has no hole in it (helper).
+The image of a value has no moved-out part in it (helper).
 
 ```lean
 theorem RueCore.Contents.noMovedOut_ofVal (v : Val) :
@@ -9777,7 +9777,7 @@ theorem RueCore.Contents.noMovedOutList_ofVals (vs : List Val) :
 
 *theorem* · module `RueCore.Soundness`
 
-A member of a hole-free list is hole-free: what an element read needs
+A member of a moved-out-free list is moved-out-free: what an element read needs
 before it can hand the context a value (helper).
 
 ```lean
@@ -9790,7 +9790,7 @@ theorem RueCore.Contents.noMovedOutList_index {cs : List Contents} {k : Nat}
 
 *theorem* · module `RueCore.Soundness`
 
-Writing a hole-free member into a hole-free list keeps it hole-free: what
+Writing a moved-out-free member into a moved-out-free list keeps it moved-out-free: what
 an element write needs before the array it stores back is still a value
 (helper).
 
@@ -9818,10 +9818,10 @@ theorem RueCore.HasTys.replicate {D : Decls} {v : Val} {T : Ty} (h : HasTy D v T
 
 *theorem* · module `RueCore.Soundness`
 
-**A hole-free well-typed contents is a well-typed value.** This is the
+**A moved-out-free well-typed contents is a well-typed value.** This is the
 half of the correspondence the machine needs at a use: (D-Use-Copy)/(D-Use-Move)
 §6.3 hand the context a *value*, and `fully-owned(Σ, p)` (§5.1) is what says
-the contents they read has no hole in it (helper).
+the contents they read has no moved-out part in it (helper).
 
 ```lean
 theorem RueCore.ContentsTy.toVal {D : Decls} {c : Contents} {T : Ty}
@@ -9845,7 +9845,7 @@ theorem RueCore.ContentsTys.toVals {D : Decls} {cs : List Contents} {Ts : List T
 
 *theorem* · module `RueCore.Soundness`
 
-A hole-free well-typed contents has its type's class, which is what the
+A moved-out-free well-typed contents has its type's qualifier, which is what the
 `Copy` test of (D-Use-Copy) and of `dropCell` reads (helper).
 
 ```lean
@@ -9858,7 +9858,7 @@ theorem RueCore.ContentsTy.qual_eq {D : Decls} {c : Contents} {T : Ty}
 
 *theorem* · module `RueCore.Soundness`
 
-A class of rank `0` is `Copy` (helper).
+A qualifier of rank `0` is `Copy` (helper).
 
 ```lean
 theorem RueCore.Qual.eq_copy_of_rank {m : Qual} (h : m.rank = 0) : m = Qual.copy
@@ -9868,7 +9868,7 @@ theorem RueCore.Qual.eq_copy_of_rank {m : Qual} (h : m.rank = 0) : m = Qual.copy
 
 *theorem* · module `RueCore.Soundness`
 
-**A `Copy` struct's fields are `Copy`** (`3.8:18`): the class is the
+**A `Copy` struct's fields are `Copy`** (`3.8:18`): the qualifier is the
 attribute's lift of the field join, only `@copy` lifts to `Copy`, and a
 well-formed `@copy` declaration's join is already `Copy` (helper).
 
@@ -9882,7 +9882,7 @@ theorem RueCore.StructDecl.Wf.field_copy {D : Decls} {sd : StructDecl}
 
 *theorem* · module `RueCore.Soundness`
 
-**A `Copy` enum's payloads are `Copy`** (`6.3:19`): the class is the join
+**A `Copy` enum's payloads are `Copy`** (`6.3:19`): the qualifier is the join
 over every payload component of every variant (helper).
 
 ```lean
@@ -9931,7 +9931,7 @@ theorem RueCore.ContentsTys.allCopyList {D : Decls} {cs : List Contents}
 
 *theorem* · module `RueCore.Soundness`
 
-**Well-typed contents is copy-closed**, so the machine's copy-closure
+**Well-typed contents is copy-contained**, so the machine's Copy-containment
 monitor (`Contents.copyContained`) lets every checked program's aggregates through
 (helper).
 
@@ -9956,7 +9956,7 @@ theorem RueCore.ContentsTys.copyContainedList {D : Decls} {cs : List Contents}
 
 *theorem* · module `RueCore.Soundness`
 
-A well-typed value is copy-closed (helper).
+A well-typed value is copy-contained (helper).
 
 ```lean
 theorem RueCore.HasTy.copyContained {D : Decls} {v : Val} {T : Ty} (hwf : WfDecls D)
@@ -10086,7 +10086,7 @@ theorem RueCore.ContentsOwnTypingList.set {D : Decls} {cs : List Contents}
 
 *theorem* · module `RueCore.Soundness`
 
-A hole-free well-typed struct is a matched aggregate whose every slot is
+A moved-out-free well-typed struct is a matched aggregate whose every slot is
 `owned` — which is what lets the §5.5 join read an `Owned` arm field by field
 against a partially moved one (helper).
 
@@ -10196,8 +10196,8 @@ theorem RueCore.splitFields_ok {D : Decls} {πs : List Nat} {T' : Ty} (f : Nat)
 
 *theorem* · module `RueCore.Soundness`
 
-A fully-owned node holds a hole-free contents: `fully-owned(Σ, p)` (§5.1)
-is exactly what says the aggregate a use hands on has no hole in it
+A fully-owned node holds a moved-out-free contents: `fully-owned(Σ, p)` (§5.1)
+is exactly what says the aggregate a use hands on has no moved-out part in it
 (`3.8:26`) (helper).
 
 ```lean
@@ -10235,7 +10235,7 @@ theorem RueCore.ContentsOwnTyping.toVal {D : Decls} {c : Contents} {t : OwnSt}
 
 *theorem* · module `RueCore.Soundness`
 
-A matched node whose state is `Owned` is not itself a hole — which is what
+A matched node whose state is `Owned` is not itself a moved-out part — which is what
 lets `@drop` at a partially moved place run at all (helper).
 
 ```lean
@@ -10248,7 +10248,7 @@ theorem RueCore.ContentsOwnTyping.ne_movedOut {D : Decls} {c : Contents} {t : Ow
 
 *theorem* · module `RueCore.Soundness`
 
-A matched node whose state is `Owned` has its type's class, which is what
+A matched node whose state is `Owned` has its type's qualifier, which is what
 `dropCell`'s `Copy` test reads (helper).
 
 ```lean
@@ -10437,7 +10437,7 @@ theorem RueCore.StoreTyping.snoc {D : Decls} {Γ : Ctx} {ρ : Env} {H : Store} {
 
 *theorem* · module `RueCore.Soundness`
 
-Locality is reflexive (helper).
+The frame property is reflexive (helper).
 
 ```lean
 theorem RueCore.FrameProperty.refl {ρ : Env} {H : Store} : FrameProperty ρ H H
@@ -10447,7 +10447,7 @@ theorem RueCore.FrameProperty.refl {ρ : Env} {H : Store} : FrameProperty ρ H H
 
 *theorem* · module `RueCore.Soundness`
 
-Locality composes along a sequence of steps in one frame (helper).
+The frame property composes along a sequence of steps in one frame (helper).
 
 ```lean
 theorem RueCore.FrameProperty.trans {ρ : Env} {H₁ H₂ H₃ : Store}
@@ -10471,7 +10471,7 @@ theorem RueCore.FrameProperty.append {ρ : Env} {H : Store} (ext : Store) :
 
 *theorem* · module `RueCore.Soundness`
 
-Writing a cell the frame names is local (helper).
+Writing a cell the activation record names is local (helper).
 
 ```lean
 theorem RueCore.FrameProperty.set {ρ : Env} {H : Store} {ℓ : Nat} {c : Cell}
@@ -10482,8 +10482,8 @@ theorem RueCore.FrameProperty.set {ρ : Env} {H : Store} {ℓ : Nat} {c : Cell}
 
 *theorem* · module `RueCore.Soundness`
 
-Locality extends across a write to a cell the frame names, or to one
-minted above the store locality is measured from (helper).
+The frame property extends across a write to a cell the frame names, or to one
+minted above the store the frame property is measured from (helper).
 
 ```lean
 theorem RueCore.FrameProperty.trans_set {ρ : Env} {H₀ H : Store} {ℓ : Nat} {c : Cell}
@@ -10495,9 +10495,9 @@ theorem RueCore.FrameProperty.trans_set {ρ : Env} {H₀ H : Store} {ℓ : Nat} 
 
 *theorem* · module `RueCore.Soundness`
 
-A step that only touches cells the *inner* frame names, all of them minted
-above the outer store, is local for the outer frame too: the shape both a
-`let` body and a callee's frame take (helper).
+A step that only touches cells the *inner* activation record names, all of them minted
+above the outer store, is local for the outer activation record too: the shape both a
+`let` body and a callee's activation record take (helper).
 
 ```lean
 theorem RueCore.FrameProperty.of_fresh {ρ ρ' : Env} {H Hm H' : Store}
@@ -10511,8 +10511,8 @@ theorem RueCore.FrameProperty.of_fresh {ρ ρ' : Env} {H Hm H' : Store}
 
 *theorem* · module `RueCore.Soundness`
 
-A `match` arm runs in the **same** frame with its payload cells prepended,
-all of them minted above the whole store; what it does is local to the frame
+A `match` arm runs in the **same** activation record with its payload cells prepended,
+all of them minted above the whole store; what it does is local to the activation record
 without them too. This is `FrameProperty.under_binder`'s n-ary form, and the shape
 (D-Match) §6.6 needs where a `let` needs the unary one (helper).
 
@@ -10528,8 +10528,8 @@ theorem RueCore.FrameProperty.under_binders {ρ locs : Env} {H Hm H' : Store}
 
 *theorem* · module `RueCore.Soundness`
 
-A `let` body runs in a frame with one more binding, minted above the whole
-store; what it does is local to the enclosing frame too (helper).
+A `let` body runs in an activation record with one more binding, minted above the whole
+store; what it does is local to the enclosing activation record too (helper).
 
 ```lean
 theorem RueCore.FrameProperty.under_binder {ρ : Env} {H₁ H₂ : Store} {c : Cell}
@@ -10541,8 +10541,8 @@ theorem RueCore.FrameProperty.under_binder {ρ : Env} {H₁ H₂ : Store} {c : C
 
 *theorem* · module `RueCore.Soundness`
 
-The invariant of a frame transports across a step local to a *disjoint*
-frame: the caller's bindings survive a callee's run (helper).
+The invariant of an activation record transports across a step local to a *disjoint*
+activation record: the caller's bindings survive a callee's run (helper).
 
 ```lean
 theorem RueCore.StoreTyping.transport {D : Decls} {Γ : Ctx} {ρ₀ ρ : Env}
@@ -10556,7 +10556,7 @@ theorem RueCore.StoreTyping.transport {D : Decls} {Γ : Ctx} {ρ₀ ρ : Env}
 *theorem* · module `RueCore.Soundness`
 
 **A cell whose Σ record carries no residual linear content is one
-`drop-retire` can retire.** Both halves come off the invariant: the contents
+`drop-retire` can tombstone.** Both halves come off the invariant: the contents
 are well typed (so §6.11's walk never refuses) and hold no live
 declared-`linear` sub-value (so the leak monitor lets them through)
 (helper).
@@ -10585,7 +10585,7 @@ theorem RueCore.dropCell_ok {D : Decls} {ℓ : Nat} {c : Contents} {T : Ty}
 
 *theorem* · module `RueCore.Soundness`
 
-`drop-retire` (§6.1) succeeds on such a cell, retiring it: the contents'
+`drop-retire` (§6.1) succeeds on such a cell, tombstoning it: the contents'
 own drop (§6.11) runs — `dropContents_ok` is why it never refuses — and the
 leak monitor lets it through because no live linear sub-value is left in it
 (helper).
@@ -10603,11 +10603,11 @@ theorem RueCore.dropRetire_ok {D : Decls} {H : Store} {ℓ : Nat} {cell : Cell}
 *theorem* · module `RueCore.Soundness`
 
 **A `match` arm's own cells can be torn down without touching the rest of
-the frame** (§6.6's `endscope([ℓ1,…,ℓa])`, run when the arm's body becomes a
-value). The arm added `n` bindings on top of the frame it was entered in, so the
+the activation record** (§6.6's `endscope([ℓ1,…,ℓa])`, run when the arm's body becomes a
+value). The arm added `n` bindings on top of the activation record it was entered in, so the
 teardown walks the first `n` locations of `ρ` — newest-first, since the arm's
-payload cells sit at the front of the environment — and leaves exactly the frame
-the arm started from. `StoreTyping.unwind` is the whole-frame case of the same walk
+payload cells sit at the front of the environment — and leaves exactly the activation record
+the arm started from. `StoreTyping.unwind` is the whole-activation-record case of the same walk
 (`n = ρ.length`), and this is the prefix one (helper).
 
 ```lean
@@ -10654,9 +10654,9 @@ theorem RueCore.OwnSt.joinList_typing {D : Decls} (hwf : WfDecls D)
 *theorem* · module `RueCore.Soundness`
 
 **(Match) §5.5's join over `Ω` holds a state for the arm that ran.** An
-arm that continued contributed its state to the list the join folds, so the
-join is a state — not `⊥` — and the fold `Ctx.joinAll` over the continuing
-arms produced it (helper).
+arm that completed normally contributed its state to the list the join folds, so the
+join is a state — not `⊥` — and the fold `Ctx.joinAll` over the arms that
+can complete normally produced it (helper).
 
 ```lean
 theorem RueCore.Ctx.joinOpts_mem {D : Decls} {os : List (Option Ctx)} {o : Option Ctx}
@@ -10672,7 +10672,7 @@ theorem RueCore.Ctx.joinOpts_mem {D : Decls} {os : List (Option Ctx)} {o : Optio
 *theorem* · module `RueCore.Soundness`
 
 **The invariant survives (If) §5.5's join over `Ω` from the left arm**:
-when the left arm continues, the join is a state, and it is the left arm's
+when the left arm can complete normally, the join is a state, and it is the left arm's
 state or its binary join with the right one's (helper).
 
 ```lean
@@ -10688,7 +10688,7 @@ theorem RueCore.StoreTyping.joinOpt_left {D : Decls} (hwf : WfDecls D)
 
 *theorem* · module `RueCore.Soundness`
 
-The same from the right arm, which needs the two continuing arms to share
+The same from the right arm, which needs the two arms that can complete normally to share
 a skeleton, as `StoreTyping.join_right` does (helper).
 
 ```lean
@@ -10719,7 +10719,7 @@ theorem RueCore.freshParams_store (H : Store) (vs : List Val) :
 *theorem* · module `RueCore.Soundness`
 
 Every parameter cell is minted above the caller's whole store, which is
-what makes a call local to the caller's frame (helper).
+what makes a call local to the caller's activation record (helper).
 
 ```lean
 theorem RueCore.freshParams_fresh (H : Store) (vs : List Val) (ℓ : Nat) :
@@ -10825,7 +10825,7 @@ theorem RueCore.Contents.resolveDyn_ok {D : Decls} (is : List Int)
 *theorem* · module `RueCore.Soundness`
 
 A `break` promised from a later store is promised from an earlier one,
-given the step between them was local to the frame (helper).
+given the step between them was local to the activation record (helper).
 
 ```lean
 theorem RueCore.BreakOutputOk.mono_store {D : Decls} {B : List Ctx} {φ : Activation}
@@ -10837,7 +10837,7 @@ theorem RueCore.BreakOutputOk.mono_store {D : Decls} {B : List Ctx} {φ : Activa
 
 *theorem* · module `RueCore.Soundness`
 
-A `break` at one of some deliveries is at one of any superset of them
+A `break` at one of some abrupt-completion contexts is at one of any superset of them
 (helper).
 
 ```lean
@@ -10851,12 +10851,12 @@ theorem RueCore.BreakOutputOk.mono_brk {D : Decls} {B B' : List Ctx} {φ : Activ
 *theorem* · module `RueCore.Soundness`
 
 **A `break` passes out through a binder** (§6.10, with §6.7's and §6.6's
-registration): a `break` inside a `let` body or a `match` arm, whose frame is
+registration): a `break` inside a `let` body or a `match` arm, whose activation record is
 the enclosing one with the binder's fresh cells `ls` opened on top, is a
-`break` of the enclosing frame with `ls` among the bindings still open where
+`break` of the enclosing activation record with `ls` among the bindings still open where
 it fired. The unwind the loop runs therefore drops the binder's cells too —
 which is RUE-1277's redundancy read at a `break`: the discarded `endscope`
-marker's cells are found in the scope record instead (helper).
+marker's cells are found in the drop scope instead (helper).
 
 ```lean
 theorem RueCore.BreakOutputOk.under_binders {D : Decls} {B : List Ctx}
@@ -10922,7 +10922,7 @@ theorem RueCore.ArgsOk.ok_inv {D : Decls} {R : Ty} {Ts : List Ty} {o : Option Ct
 *theorem* · module `RueCore.Soundness`
 
 A promise made from a later store is a promise from an earlier one, given
-the step between them was local to the frame (helper).
+the step between them was local to the activation record (helper).
 
 ```lean
 theorem RueCore.EvalOk.mono_store {D : Decls} {T R : Ty} {o : Option Ctx}
@@ -10948,8 +10948,8 @@ theorem RueCore.AbortOk.mono_store {D : Decls} {R : Ty} {B : List Ctx}
 
 *theorem* · module `RueCore.Soundness`
 
-A promise at some deliveries is a promise at any superset of them: a form
-carries its operands' deliveries outward among its own (§5.3's threading)
+A promise at some abrupt-completion contexts is a promise at any superset of them: a form
+carries its operands' abrupt-completion contexts outward among its own (§5.3's threading)
 (helper).
 
 ```lean
@@ -11001,7 +11001,7 @@ theorem RueCore.AbortOk.withTrace {D : Decls} {R : Ty} {B : List Ctx} {φ : Acti
 *theorem* · module `RueCore.Soundness`
 
 A result that is not a value satisfies the full promise, whatever type and
-outgoing state the form claims — the promise is only about values there
+output context the form claims — the promise is only about values there
 (helper).
 
 ```lean
@@ -11057,7 +11057,7 @@ theorem RueCore.EvalOk.bot_bind {D : Decls} {T T₀ R : Ty} {B : List Ctx}
 
 **§6.2's search, once and for all.** An operand that promised its own
 outcome, sequenced into a context that promises the form's outcome from the
-operand's value, promises the form's outcome — the operand's deliveries among
+operand's value, promises the form's outcome — the operand's abrupt-completion contexts among
 the form's. Every operand of every form is discharged by this lemma
 (helper).
 
@@ -11078,9 +11078,9 @@ theorem RueCore.EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ 
 
 *theorem* · module `RueCore.Soundness`
 
-`bind` for an operand whose outgoing `Ω` the form passes on unchanged —
-§5.3's threading convention at a one-operand rule: if the operand continues,
-the form continues at the same state; if it is `⊥`, so is the form (helper).
+`bind` for an operand whose output `Ω` the form passes on unchanged —
+§5.3's threading convention at a one-operand rule: if the operand can complete normally,
+the form can complete normally at the same state; if it is `⊥`, so is the form (helper).
 
 ```lean
 theorem RueCore.EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx}
@@ -11099,7 +11099,7 @@ theorem RueCore.EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx}
 
 *theorem* · module `RueCore.Soundness`
 
-Weakening the outgoing state of a promise, which is what §5.5's join asks
+Weakening the output context of a promise, which is what §5.5's join asks
 of an arm: a value's state is carried to some state of the join, and `⊥`
 carries nothing (helper).
 
@@ -11120,8 +11120,8 @@ theorem RueCore.EvalOk.weaken {D : Decls} {T R : Ty} {o₁ o' : Option Ctx}
 
 **Aggregate introduction keeps the promise** ((D-Struct), (D-Array) §6.5,
 (D-Enum-Intro) §6.6, the repeat form): a well-typed aggregate passes the
-copy-closure monitor (`HasTy.copyContained`), and the identity it mints reserves
-one `†` slot above the store, which no binding names — so the frame still
+Copy-containment monitor (`HasTy.copyContained`), and the identity it mints reserves
+one `†` slot above the store, which no binding names — so the activation record still
 matches and nothing it names was touched (helper).
 
 ```lean
@@ -11189,12 +11189,12 @@ theorem RueCore.LoopHead.backEdge {D : Decls} (hwf : WfDecls D) {Γ Γh Γe : Ct
 *theorem* · module `RueCore.Soundness`
 
 **The exits** (§5.7's (Loop-Break), §6.10's (D-Break)). A `break` that
-fired at one of the body's deliveries `Γb`, in a frame that is the loop's with
+fired at one of the body's abrupt-completion contexts `Γb`, in an activation record that is the loop's with
 the body's still-open bindings `locs` on top, is caught by the loop: it
 drop-retires exactly those bindings, newest first — `unwind-drops(H, φ', φ)`
 — and the rule's premise that they carry no residual linear content is what
 keeps the leak monitor off. What is left agrees with `outside_loop(Γb)`, and
-so with the loop's outgoing state, the join over every exit (`3.8:80`)
+so with the loop's output context, the join over every exit (`3.8:80`)
 (helper).
 
 ```lean
@@ -11335,8 +11335,8 @@ theorem RueCore.entry_typed {P : Program} {fd : FnDef} (h0 : P.fns[0]? = some fd
 
 *theorem* · module `RueCore.Soundness`
 
-The machine's initial state satisfies the frame invariant: no bindings, no
-store, an empty scope record (helper).
+The machine's initial state satisfies the activation record invariant: no bindings, no
+store, an empty drop scope (helper).
 
 ```lean
 theorem RueCore.activationTyping_empty {D : Decls} :
@@ -11496,7 +11496,7 @@ theorem RueCore.Decls.grounded_peel_zero (D : Decls) (d : TyName) :
 *theorem* · module `RueCore.Checker`
 
 A declaration grounded at round `n+1` contains only declarations grounded
-at round `n`. This is the peel read backwards, and it is what turns an
+at round `n`. This is the topological sort read backwards, and it is what turns an
 acceptance into well-foundedness (helper).
 
 ```lean
@@ -11599,7 +11599,7 @@ theorem RueCore.Contents.allCopyList_own {D : Decls} {cs : List Contents} :
 
 *theorem* · module `RueCore.Trace`
 
-A copy-closed node that is `Copy` is `Copy` all the way down (helper).
+A copy-contained node that is `Copy` is `Copy` all the way down (helper).
 
 ```lean
 theorem RueCore.Contents.copyContained_allCopy {D : Decls} {c : Contents}
@@ -11611,7 +11611,7 @@ theorem RueCore.Contents.copyContained_allCopy {D : Decls} {c : Contents}
 
 *theorem* · module `RueCore.Trace`
 
-All-`Copy` contents is copy-closed (helper).
+All-`Copy` contents is copy-contained (helper).
 
 ```lean
 theorem RueCore.Contents.allCopy_copyContained {D : Decls} {c : Contents} :
@@ -11634,7 +11634,7 @@ theorem RueCore.Contents.allCopyList_copyContainedList {D : Decls}
 
 *theorem* · module `RueCore.Trace`
 
-A member of a copy-closed list is copy-closed (helper).
+A member of a copy-contained list is copy-contained (helper).
 
 ```lean
 theorem RueCore.Contents.copyContainedList_index {D : Decls} {cs : List Contents}
@@ -11660,7 +11660,7 @@ theorem RueCore.Contents.allCopyList_index {D : Decls} {cs : List Contents} {f :
 
 *theorem* · module `RueCore.Trace`
 
-Writing a copy-closed member keeps a copy-closed list so (helper).
+Writing a copy-contained member keeps a copy-contained list so (helper).
 
 ```lean
 theorem RueCore.Contents.copyContainedList_set {D : Decls} {cs : List Contents}
@@ -11737,7 +11737,7 @@ theorem RueCore.Contents.getAt_allCopy {D : Decls} (π : List Nat) {c sub : Cont
 
 *theorem* · module `RueCore.Trace`
 
-A position read out of a copy-closed contents is copy-closed (helper).
+A position read out of a copy-contained contents is copy-contained (helper).
 
 ```lean
 theorem RueCore.Contents.getAt_copyContained {D : Decls} (π : List Nat)
@@ -11764,7 +11764,7 @@ theorem RueCore.Contents.setAt_allCopy {D : Decls} (π : List Nat)
 
 *theorem* · module `RueCore.Trace`
 
-**A `⊘` write keeps copy closure** (§6.3's `H[ℓ@π ↦ ⊘]`): `⊘` is
+**A `⊘` write keeps Copy containment** (§6.3's `H[ℓ@π ↦ ⊘]`): `⊘` is
 all-`Copy`, so it may sit under any node (helper).
 
 ```lean
@@ -11783,7 +11783,7 @@ theorem RueCore.Contents.setAt_copyContained {D : Decls} (π : List Nat)
 owned before, less what sat at the path, plus what was written. This is §6.3's
 move (write `⊘`, hand the old sub-tree on) and §6.8's store (drop the old
 sub-tree, write the new value) read as a ledger. Below a `Copy` node both
-sides own nothing there, which is where copy closure is needed (helper).
+sides own nothing there, which is where Copy containment is needed (helper).
 
 ```lean
 theorem RueCore.Contents.setAt_own {D : Decls} (a : Nat) (π : List Nat)
@@ -11824,7 +11824,7 @@ theorem RueCore.storeOwn_set_count (D : Decls) (a : Nat) {H : Store} {ℓ : Nat}
 
 *theorem* · module `RueCore.Trace`
 
-Growing the store by a copy-closed cell keeps it copy-closed (helper).
+Growing the store by a copy-contained cell keeps it copy-contained (helper).
 
 ```lean
 theorem RueCore.StoreCC.append {D : Decls} {H ext : Store} (h : StoreCC D H)
@@ -11835,7 +11835,7 @@ theorem RueCore.StoreCC.append {D : Decls} {H ext : Store} (h : StoreCC D H)
 
 *theorem* · module `RueCore.Trace`
 
-A store of one copy-closed cell is copy-closed (helper).
+A store of one copy-contained cell is copy-contained (helper).
 
 ```lean
 theorem RueCore.StoreCC.single {D : Decls} {c : Contents}
@@ -11846,7 +11846,7 @@ theorem RueCore.StoreCC.single {D : Decls} {c : Contents}
 
 *theorem* · module `RueCore.Trace`
 
-A `†` cell is copy-closed (helper).
+A `†` cell is copy-contained (helper).
 
 ```lean
 theorem RueCore.StoreCC.dead {D : Decls} : StoreCC D [Cell.dead]
@@ -11856,7 +11856,7 @@ theorem RueCore.StoreCC.dead {D : Decls} : StoreCC D [Cell.dead]
 
 *theorem* · module `RueCore.Trace`
 
-Writing a copy-closed cell keeps the store copy-closed (helper).
+Writing a copy-contained cell keeps the store copy-contained (helper).
 
 ```lean
 theorem RueCore.StoreCC.set {D : Decls} {H : Store} {ℓ : Nat} {c : Contents}
@@ -11868,7 +11868,7 @@ theorem RueCore.StoreCC.set {D : Decls} {H : Store} {ℓ : Nat} {c : Contents}
 
 *theorem* · module `RueCore.Trace`
 
-Retiring a cell keeps the store copy-closed (helper).
+Tombstoning a cell keeps the store copy-contained (helper).
 
 ```lean
 theorem RueCore.StoreCC.set_dead {D : Decls} {H : Store} {ℓ : Nat} (h : StoreCC D H) :
@@ -12141,7 +12141,7 @@ theorem RueCore.Contents.splitFields_allCopy {D : Decls} (cs : List Contents)
 
 **`split`, counted** (§6.3): the leaf and the residue together own at most
 what the consumed place owned — the nodes on the path between them are
-consumed — and both stay copy-closed (helper).
+consumed — and both stay copy-contained (helper).
 
 ```lean
 theorem RueCore.Contents.splitResidue_own {D : Decls} (a : Nat) (π : List Nat)
@@ -12199,8 +12199,8 @@ theorem RueCore.Contents.ownList_movedOuts {α : Type} (D : Decls) (cs : List α
 
 *theorem* · module `RueCore.Trace`
 
-**`split` and the consumed shell, counted exactly** (§6.3, RUE-2427): the
-leaf, the residue and the path's shell (`Contents.pathOnly`) together own
+**`split` and the consumed dead remainder, counted exactly** (§6.3, RUE-2427): the
+leaf, the residue and the path's dead remainder (`Contents.pathOnly`) together own
 exactly what the consumed place owned — every owned node of it is in exactly
 one of the three (helper).
 
@@ -12237,7 +12237,7 @@ theorem RueCore.Contents.pathOnlyFields_own {D : Decls} (a : Nat) (cs : List Con
 *theorem* · module `RueCore.Trace`
 
 **§6.3's `destructure`, counted**: the leaf it hands on, the residue drops
-it runs and the shell it consumes together account for at most what the
+it runs and the dead remainder it consumes together account for at most what the
 consumed place owned (helper).
 
 ```lean
@@ -12525,7 +12525,7 @@ theorem RueCore.evalFintrin_scalar {M : FloatSig} {k : FloatIntrin} {a v : Val}
 
 *theorem* · module `RueCore.Trace`
 
-A value's stored image has the value's class (helper).
+A value's stored image has the value's qualifier (helper).
 
 ```lean
 theorem RueCore.Contents.qual_ofVal (D : Decls) (v : Val) :
@@ -12584,7 +12584,7 @@ theorem RueCore.storeOwn_freshParams (D : Decls) (H : Store) (vs : List Val) :
 
 *theorem* · module `RueCore.Trace`
 
-The cells `freshParams` adds are copy-closed when the arguments are
+The cells `freshParams` adds are copy-contained when the arguments are
 (helper).
 
 ```lean
@@ -12648,8 +12648,8 @@ theorem RueCore.Contents.own_array_le (D : Decls) (T : Ty) (i : Nat)
 
 *theorem* · module `RueCore.Trace`
 
-An enum owns at least its payload, and a copy-closed one's payload is
-copy-closed — what (D-Match) §6.6 hands the arm's cells (helper).
+An enum owns at least its payload, and a copy-contained one's payload is
+copy-contained — what (D-Match) §6.6 hands the arm's cells (helper).
 
 ```lean
 theorem RueCore.Contents.enum_payload {D : Decls} {e k i : Nat} {cs : List Contents}
@@ -12663,9 +12663,9 @@ theorem RueCore.Contents.enum_payload {D : Decls} {e k i : Nat} {cs : List Conte
 
 *theorem* · module `RueCore.Trace`
 
-**(D-Match)'s consumption, counted** (RUE-2427): the payload the arm's cells
-receive and the shell `matchConsume` ends together account for at most the
-scrutinee — the payload moves, the shell ends, nothing is duplicated
+**(D-Match)'s consume event, counted** (RUE-2427): the payload the arm's cells
+receive and the dead remainder `matchConsume` ends together account for at most the
+scrutinee — the payload moves, the dead remainder ends, nothing is duplicated
 (helper).
 
 ```lean
@@ -12865,7 +12865,7 @@ theorem RueCore.Cons.assignDyn {D : Decls} {F : Event → List Nat}
 
 *theorem* · module `RueCore.Trace`
 
-A scope teardown after a value (`endscope` §6.7, the frame pop §6.9), as
+A scope teardown after a value (`endscope` §6.7, the activation record pop §6.9), as
 a ledger (helper).
 
 ```lean
@@ -12985,8 +12985,8 @@ theorem RueCore.Sim.withTrace {M : FloatSig} {P : Program} {φ : Activation}
 
 *theorem* · module `RueCore.Equivalence`
 
-**§6.2's (Search), once**: `eval`'s `bind` is an enter step pushing a
-frame `F`, the operand run under `F`, and a plug of its value into `F`'s hole.
+**§6.2's (Search), once**: `eval`'s `bind` is an evaluation-state step pushing a
+frame `F`, the operand run under `F`, and a return-state step of its value into `F`'s hole.
 A `return` or a `break` passes through `F` unchanged because `F` is neither a
 call frame nor a loop boundary, and a panic because (Panic-Lift) discards
 every context (helper).
@@ -13027,7 +13027,7 @@ theorem RueCore.Sim.lift {M : FloatSig} {P : Program} {φ φ₁ : Activation}
 *theorem* · module `RueCore.Equivalence`
 
 §6.9's call boundary: the body's `returned` is caught at the `call φ`
-frame, which is what `absorb` turns into a value (helper).
+activation record, which is what `absorb` turns into a value (helper).
 
 ```lean
 theorem RueCore.Sim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Activation}
@@ -13049,7 +13049,7 @@ theorem RueCore.Sim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Activation}
 
 *theorem* · module `RueCore.Equivalence`
 
-§6.4's operator frames: a value plugs the hole, a trap is (Panic-Lift)
+§6.4's operator frames: a value fills the hole, a trap is (Panic-Lift)
 (helper).
 
 ```lean
@@ -13147,7 +13147,7 @@ theorem RueCore.rootCell_of {H : Store} {φ : Activation} {i ℓ : Nat} {c : Con
 
 *theorem* · module `RueCore.Equivalence`
 
-(D-EndScope) restores the frame (D-Let) or (D-Match) extended (helper).
+(D-EndScope) restores the activation record (D-Let) or (D-Match) extended (helper).
 
 ```lean
 theorem RueCore.Activation.unwindScope_push (φ : Activation) (ls : List Nat) :
@@ -13667,7 +13667,7 @@ theorem RueCore.Long.bind {M : FloatSig} {P : Program} {φ₁ : Activation}
 
 *theorem* · module `RueCore.Equivalence`
 
-§6.2's (Search) without its enter step, counted: the operand is already in
+§6.2's (Search) without its evaluation-state step, counted: the operand is already in
 focus under the frame `F` — (D-Match) put the arm's body there while binding
 the payload — so exhaustion is a run of `fuel` steps, not `fuel + 1`
 (helper).
@@ -14155,7 +14155,7 @@ theorem RueCore.run_classify {M : FloatSig} {P : Program} {T : Config}
 
 *theorem* · module `RueCore.Equivalence`
 
-Preservation along `→*` (§6.12) (helper).
+SafeAt invariance along `→*` (§6.12) (helper).
 
 ```lean
 theorem RueCore.Config.SafeAt.steps {M : FloatSig} {P : Program} {T : Ty}
@@ -14189,7 +14189,7 @@ theorem RueCore.Nonvacuous.of_okFloat {r : EvalRes} {w : FloatWidth} {f : FloatD
 
 *theorem* · module `RueCore.Nonvacuous`
 
-`loop { () }` exhausts every fuel, from every store and frame: each turn
+`loop { () }` exhausts every fuel, from every store and activation record: each turn
 spends one unit and the body never breaks (helper).
 
 ```lean
@@ -14219,7 +14219,7 @@ theorem RueCore.Nonvacuous.loopUnit_run (fuel : Nat) :
 *theorem* · module `RueCore.Nonvacuous`
 
 One turn of `let s = S0 { 1 }; ()` finishes at every fuel past `3`, from
-every store and frame: it mints `S0 { 1 }`, binds it, and drops it at the
+every store and activation record: it mints `S0 { 1 }`, binds it, and drops it at the
 scope's end (helper).
 
 ```lean
@@ -14252,7 +14252,7 @@ theorem RueCore.Nonvacuous.dropTurn_eval (M : FloatSig) (fns : List FnDef) (m : 
 *theorem* · module `RueCore.Nonvacuous`
 
 `loop { let s = S0 { 1 }; () }` exhausts every fuel, from every store and
-frame: each turn finishes and the body never breaks (helper).
+activation record: each turn finishes and the body never breaks (helper).
 
 ```lean
 theorem RueCore.Nonvacuous.dropLoop_eval (M : FloatSig) (fns : List FnDef) (n : Nat)
@@ -14315,7 +14315,7 @@ theorem RueCore.Expr.breaksList_mem {es : List Expr} {e : Expr} :
 
 *theorem* · module `RueCore.TraceExact`
 
-A member of a quiet list does not unwind (helper).
+A member of a quiet list does not complete abruptly (helper).
 
 ```lean
 theorem RueCore.Expr.quietList_mem {es : List Expr} {e : Expr}
@@ -14327,7 +14327,7 @@ theorem RueCore.Expr.quietList_mem {es : List Expr} {e : Expr}
 
 *theorem* · module `RueCore.TraceExact`
 
-`bind` unwinds only where its operand or its context does (helper).
+`bind` completes abruptly only where its operand or its context does (helper).
 
 ```lean
 theorem RueCore.EvalRes.bind_noRet {r : EvalRes} {k : Store → Val → EvalRes}
@@ -14357,7 +14357,7 @@ theorem RueCore.EvalRes.bind_noBrk {r : EvalRes} {k : Store → Val → EvalRes}
 
 *theorem* · module `RueCore.TraceExact`
 
-A prefixed trace does not change whether a result unwinds (helper).
+A prefixed trace does not change whether a result completes abruptly (helper).
 
 ```lean
 theorem RueCore.EvalRes.withTrace_noRet {r : EvalRes} {tr : List Event}
@@ -14441,7 +14441,7 @@ theorem RueCore.EvalRes.bindCall_quiet {r : EvalRes} {k : Store → Val → Eval
 
 *theorem* · module `RueCore.TraceExact`
 
-**What does not unwind, does not unwind**: an expression with no `return`
+**What cannot complete abruptly, does not**: an expression with no `return`
 never evaluates to an unwinding `return`, and one with no free `break` never
 to an unwinding `break` — a call absorbs its callee's `return` (§6.9) and a
 loop catches its body's `break` (§6.10) (helper).
@@ -14482,7 +14482,7 @@ theorem RueCore.Contents.getAt_setAt (π : List Nat) {c new c' : Contents} :
 **A write at a path, counted exactly**: the contents after the write owns
 what it owned before, less what sat at the path, plus what was written —
 §6.3's move and §6.8's store, read as an equation. Below a `Copy` node both
-sides own nothing, which is where copy closure of both the old and the new
+sides own nothing, which is where Copy containment of both the old and the new
 contents is needed (helper).
 
 ```lean
@@ -14540,7 +14540,7 @@ theorem RueCore.dropResidue_freed {D : Decls} {ℓ : Nat} {rs : List Contents}
 *theorem* · module `RueCore.TraceExact`
 
 **§6.3's destructure, counted exactly**: the leaf it hands on and what its
-trace ends — the residue's drops and the path's consumption — are exactly
+trace ends — the residue's drops and the path's consume event — are exactly
 what the consumed place owned (helper).
 
 ```lean
@@ -14591,8 +14591,8 @@ theorem RueCore.unwindLocs_exact {D : Decls} {H H' : Store} {ls : List Nat}
 
 *theorem* · module `RueCore.TraceExact`
 
-**(D-Match)'s consumption, counted exactly** (RUE-2427): the payload the
-arm's cells receive and the shell `matchConsume` ends are exactly the
+**(D-Match)'s consume event, counted exactly** (RUE-2427): the payload the
+arm's cells receive and the dead remainder `matchConsume` ends are exactly the
 scrutinee (helper).
 
 ```lean
@@ -14611,7 +14611,7 @@ theorem RueCore.matchConsume_exact {D : Decls} {e k i : Nat} {vs : List Val}
 *theorem* · module `RueCore.TraceExact`
 
 A fresh aggregate owns exactly its members, apart from its own identity:
-a `Copy` node owns nothing, and — copy-closed — neither do its members
+a `Copy` node owns nothing, and — copy-contained — neither do its members
 (helper).
 
 ```lean
@@ -14735,7 +14735,7 @@ theorem RueCore.Exact.bind {D : Decls} {H : Store} {X : List Nat} {r : EvalRes}
 *theorem* · module `RueCore.TraceExact`
 
 **A later operand under a held value** (helper): the operand does not
-unwind — `pendingSafe` — so the held value `Y` is never abandoned, and the
+complete abruptly — `pendingSafe` — so the held value `Y` is never abandoned, and the
 context receives both.
 
 ```lean
@@ -14837,7 +14837,7 @@ theorem RueCore.Exact.intro {D : Decls} {H : Store} {Y : List Nat} {mk : Nat →
 
 *theorem* · module `RueCore.TraceExact`
 
-A result that neither completes nor unwinds keeps every ledger, with any
+A result that completes neither normally nor abruptly keeps every ledger, with any
 trace prefixed (helper).
 
 ```lean
@@ -14854,7 +14854,7 @@ theorem RueCore.Exact.of_quiet {D : Decls} {H : Store} {X : List Nat} {r : EvalR
 
 **A quiet argument list keeps the exact ledger** (§6.2's left-to-right
 search), and aborts only with a trap, a refusal or exhausted fuel: no member
-unwinds, so no built value is ever abandoned (helper).
+completes abruptly, so no built value is ever abandoned (helper).
 
 ```lean
 theorem RueCore.evalArgs_exactQuiet {D : Decls} {ev : Store → Expr → EvalRes}
@@ -14873,7 +14873,7 @@ theorem RueCore.evalArgs_exactQuiet {D : Decls} {ev : Store → Expr → EvalRes
 *theorem* · module `RueCore.TraceExact`
 
 **An argument list keeps the exact ledger** where only its first member
-may unwind: nothing is pending when the first does (helper).
+may complete abruptly: nothing is pending when the first does (helper).
 
 ```lean
 theorem RueCore.evalArgs_exact {D : Decls} {ev : Store → Expr → EvalRes}
@@ -14905,7 +14905,7 @@ theorem RueCore.Exact.move {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Conte
 *theorem* · module `RueCore.TraceExact`
 
 **(D-Use-Declared-Linear) §6.3, exactly**: the leaf handed on, the residue
-dropped and the shell consumed are exactly the consumed place, which becomes
+dropped and the dead remainder consumed are exactly the consumed place, which becomes
 `⊘` (helper).
 
 ```lean
@@ -14992,7 +14992,7 @@ theorem RueCore.Exact.assignDyn {D : Decls} {H : Store} {ℓ : Nat}
 
 *theorem* · module `RueCore.TraceExact`
 
-A scope teardown after a value (`endscope` §6.7, the frame pop §6.9),
+A scope teardown after a value (`endscope` §6.7, the activation record pop §6.9),
 exactly (helper).
 
 ```lean
@@ -15128,7 +15128,7 @@ theorem RueCore.rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = tru
 
 *theorem* · module `RueCore.TraceExact`
 
-A frame inside a store is inside every store grown from it (helper).
+An activation record inside a store is inside every store grown from it (helper).
 
 ```lean
 theorem RueCore.Activation.In.mono {φ : Activation} {H H' : Store} (h : φ.In H)
@@ -15182,7 +15182,7 @@ theorem RueCore.Local.append {φ : Activation} {H : Store} (ext : Store) :
 
 *theorem* · module `RueCore.TraceExact`
 
-Nothing allocated, nothing to retire (helper).
+Nothing allocated, nothing to tombstone (helper).
 
 ```lean
 theorem RueCore.Tombstoned.same {H H' : Store} {keep : List Nat}
@@ -15227,7 +15227,7 @@ theorem RueCore.Tidy.opRes {φ : Activation} {H : Store} {o : OpRes} :
 
 *theorem* · module `RueCore.TraceExact`
 
-Aggregate introduction reserves one retired slot (helper).
+Aggregate introduction reserves one tombstoned slot (helper).
 
 ```lean
 theorem RueCore.Tidy.intro {D : Decls} {φ : Activation} {H : Store} {mk : Nat → Val} :
@@ -15238,8 +15238,8 @@ theorem RueCore.Tidy.intro {D : Decls} {φ : Activation} {H : Store} {mk : Nat �
 
 *theorem* · module `RueCore.TraceExact`
 
-**Composition**: a step that allocated and retired locally, then an
-evaluation in the same frame (helper).
+**Composition**: a step that allocated and tombstoned locally, then an
+evaluation in the same activation record (helper).
 
 ```lean
 theorem RueCore.Tidy.prefix {φ : Activation} {H H₁ : Store} {tr : List Event}
@@ -15252,7 +15252,7 @@ theorem RueCore.Tidy.prefix {φ : Activation} {H H₁ : Store} {tr : List Event}
 
 *theorem* · module `RueCore.TraceExact`
 
-§6.2's search keeps the frame-pop invariant (helper).
+§6.2's search keeps the activation-record-pop invariant (helper).
 
 ```lean
 theorem RueCore.Tidy.bind {φ : Activation} {H : Store} {r : EvalRes}
@@ -15268,7 +15268,7 @@ theorem RueCore.Tidy.bind {φ : Activation} {H : Store} {r : EvalRes}
 
 *theorem* · module `RueCore.TraceExact`
 
-`drop-retire` retires exactly its cell (helper).
+`drop-retire` tombstones exactly its cell (helper).
 
 ```lean
 theorem RueCore.dropRetire_shape {D : Decls} {H H' : Store} {ℓ : Nat}
@@ -15280,7 +15280,7 @@ theorem RueCore.dropRetire_shape {D : Decls} {H H' : Store} {ℓ : Nat}
 
 *theorem* · module `RueCore.TraceExact`
 
-The same at a retired cell: `drop-retire` refuses (helper).
+The same at a tombstoned cell: `drop-retire` refuses (helper).
 
 ```lean
 theorem RueCore.dropRetire_live {D : Decls} {H H' : Store} {ℓ : Nat}
@@ -15292,7 +15292,7 @@ theorem RueCore.dropRetire_live {D : Decls} {H H' : Store} {ℓ : Nat}
 
 *theorem* · module `RueCore.TraceExact`
 
-**`run-scope-drops` retires exactly its cells** (§6.1): the store keeps its
+**`run-scope-drops` tombstones exactly its cells** (§6.1): the store keeps its
 length, every listed cell is `†`, every other cell is untouched (helper).
 
 ```lean
@@ -15337,11 +15337,11 @@ theorem RueCore.dropRetire_kills {D : Decls} {H : Store} {v : Val} {ℓ : Nat} :
 
 *theorem* · module `RueCore.TraceExact`
 
-**A scope opened above the frame and closed at its end** (§6.7's `let`,
-§6.6's `match` arm): an evaluation in the frame extended by fresh cells `ls`,
-followed on a value by a teardown that retires exactly `ls`, keeps the
-frame-pop invariant in the frame it was opened in. An unwinding `return`
-finds `ls` in the extended record and has retired them; an unwinding `break`
+**A scope opened above the activation record and closed at its end** (§6.7's `let`,
+§6.6's `match` arm): an evaluation in the activation record extended by fresh cells `ls`,
+followed on a value by a teardown that tombstones exactly `ls`, keeps the
+activation-record-pop invariant in the activation record it was opened in. An unwinding `return`
+finds `ls` in the extended record and has tombstoned them; an unwinding `break`
 carries them in its record (helper).
 
 ```lean
@@ -15407,7 +15407,7 @@ theorem RueCore.dynPlace_env {H : Store} {φ : Activation} {p : Place} {vs : Lis
 
 *theorem* · module `RueCore.TraceExact`
 
-An argument list keeps the frame-pop invariant (helper).
+An argument list keeps the activation-record-pop invariant (helper).
 
 ```lean
 theorem RueCore.evalArgs_tidy {φ : Activation} {ev : Store → Expr → EvalRes}
@@ -15420,10 +15420,10 @@ theorem RueCore.evalArgs_tidy {φ : Activation} {ev : Store → Expr → EvalRes
 
 *theorem* · module `RueCore.TraceExact`
 
-**§6.9's frame, pushed and popped**: a callee's body, run in a frame of
+**§6.9's activation record, pushed and popped**: a callee's body, run in an activation record of
 fresh parameter cells `ls` and absorbed at the call boundary — its value's
-frame popped by `run-all-scope-drops`, its unwinding `return` having popped
-it already — keeps the caller's frame-pop invariant (helper).
+activation record popped by `run-all-scope-drops`, its unwinding `return` having popped
+it already — keeps the caller's activation-record-pop invariant (helper).
 
 ```lean
 theorem RueCore.Tidy.call {D : Decls} {φ : Activation} {H Hm : Store} {ls : List Nat}
@@ -15443,7 +15443,7 @@ theorem RueCore.Tidy.call {D : Decls} {φ : Activation} {H Hm : Store} {ls : Lis
 
 *theorem* · module `RueCore.TraceExact`
 
-A frame agreeing with a context names only existing cells (helper).
+An activation record agreeing with a context names only existing cells (helper).
 
 ```lean
 theorem RueCore.ActivationTyping.activationIn {D : Decls} {Γ : Ctx} {φ : Activation}
@@ -15467,7 +15467,7 @@ theorem RueCore.Tombstoned.mono {H H₁ H' : Store} {keep : List Nat}
 
 *theorem* · module `RueCore.TraceExact`
 
-The whole form's frame-pop invariant, read at the rest (helper).
+The whole form's activation-record-pop invariant, read at the rest (helper).
 
 ```lean
 theorem RueCore.Tidy.settled {φ : Activation} {H H₁ : Store} {r : EvalRes}
@@ -15479,8 +15479,8 @@ theorem RueCore.Tidy.settled {φ : Activation} {H H₁ : Store} {r : EvalRes}
 
 *theorem* · module `RueCore.TraceExact`
 
-A form's leading operands ran from a copy-closed store: the store only
-grew, it stays copy-closed, and the values are (helper).
+A form's leading operands ran from a copy-contained store: the store only
+grew, it stays copy-contained, and the values are (helper).
 
 ```lean
 theorem RueCore.lead_cc (M : FloatSig) {P : Program} (hp : P.pendingSafe = true)
@@ -15518,7 +15518,7 @@ theorem RueCore.typed_of_check {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} (T :
 
 *theorem* · module `RueCore.TraceExact`
 
-`g`'s entry frame agrees with its entry context (helper).
+`g`'s entry activation record agrees with its entry context (helper).
 
 ```lean
 theorem RueCore.lostActivation_typing :
@@ -15529,7 +15529,7 @@ theorem RueCore.lostActivation_typing :
 
 *theorem* · module `RueCore.TraceExact`
 
-`g`'s entry store is copy-closed (helper).
+`g`'s entry store is copy-contained (helper).
 
 ```lean
 theorem RueCore.lostStore_cc : StoreCC lostDecls lostStore
@@ -15539,7 +15539,7 @@ theorem RueCore.lostStore_cc : StoreCC lostDecls lostStore
 
 *theorem* · module `RueCore.TraceExact`
 
-The empty frame agrees with the empty context over the empty store
+The empty activation record agrees with the empty context over the empty store
 (helper).
 
 ```lean
@@ -15720,7 +15720,7 @@ theorem RueCore.dropResidue_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat}
 *theorem* · module `RueCore.TraceOrder`
 
 §6.3's destructure is a sequence of blocks: the residue's, then the
-consumed shell (helper).
+consumed dead remainder (helper).
 
 ```lean
 theorem RueCore.destructure_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat}
@@ -15734,7 +15734,7 @@ theorem RueCore.destructure_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat}
 
 *theorem* · module `RueCore.TraceOrder`
 
-(D-Match)'s consumption is a block or nothing (helper).
+(D-Match)'s consume event is a block or nothing (helper).
 
 ```lean
 theorem RueCore.matchConsume_blocks {D : Decls} {e k i : Nat} {vs : List Val} :
@@ -15809,7 +15809,7 @@ theorem RueCore.DropGlueBlocks.intro {D D' : Decls} {H : Store} {mk : Nat → Va
 
 *theorem* · module `RueCore.TraceOrder`
 
-A copy-closed store is one step further along an evaluation that reached
+A copy-contained store is one step further along an evaluation that reached
 a value (helper).
 
 ```lean
@@ -15887,7 +15887,7 @@ theorem RueCore.Rec.fresh {n k : Nat} {ls : List Nat} (h : Rec n ls) :
 
 *theorem* · module `RueCore.TraceOrder`
 
-A longer store keeps a frame ordered (helper).
+A longer store keeps an activation record ordered (helper).
 
 ```lean
 theorem RueCore.Kont.Ordered.mono {n m : Nat} {k : Kont} (h : Kont.Ordered n k)
@@ -15898,7 +15898,7 @@ theorem RueCore.Kont.Ordered.mono {n m : Nat} {k : Kont} (h : Kont.Ordered n k)
 
 *theorem* · module `RueCore.TraceOrder`
 
-A step that leaves the frame alone, grows or keeps the store, and pushes
+A step that leaves the activation record alone, grows or keeps the store, and pushes
 only frames that owe nothing keeps the invariant (helper).
 
 ```lean
@@ -15976,7 +15976,7 @@ theorem RueCore.plainUnwind_length {D : Decls} {H H' : Store} {ls : List Nat}
 
 *theorem* · module `RueCore.TraceOrder`
 
-(D-Return)'s search: the caller's frame is on the stack, and what is left
+(D-Return)'s search: the caller's activation record is on the stack, and what is left
 under it was under it (helper).
 
 ```lean
@@ -16147,7 +16147,7 @@ theorem RueCore.Nest.toCall {K K' : List Kont} {φ : Activation} {sc : List Nat}
 *theorem* · module `RueCore.TraceOrder`
 
 (D-Break)'s search, read by the nesting: the loop boundary's record is a
-prefix of the frame's, the rest being the cells the body registered, and no
+prefix of the activation record's, the rest being the cells the body registered, and no
 caller's record is crossed (helper).
 
 ```lean
@@ -16177,7 +16177,7 @@ theorem RueCore.StackDiscipline.newer {S S' ls : List Nat}
 
 *theorem* · module `RueCore.TraceOrder`
 
-A step that keeps the frame and the callers keeps the stack (helper).
+A step that keeps the activation record and the callers keeps the stack (helper).
 
 ```lean
 theorem RueCore.StackDiscipline.same {S ls : List Nat} : StackDiscipline S S ls
@@ -16187,7 +16187,7 @@ theorem RueCore.StackDiscipline.same {S ls : List Nat} : StackDiscipline S S ls
 
 *theorem* · module `RueCore.TraceOrder`
 
-A teardown of the current frame's tail (helper).
+A teardown of the current activation record's tail (helper).
 
 ```lean
 theorem RueCore.StackDiscipline.cut {A m ls : List Nat} (h : ls.Sublist m.reverse) :
@@ -16198,7 +16198,7 @@ theorem RueCore.StackDiscipline.cut {A m ls : List Nat} (h : ls.Sublist m.revers
 
 *theorem* · module `RueCore.TraceOrder`
 
-`Blocks` on §6's terminal configurations: a finished `Step` run's trace
+`Blocks` on §6's terminal configurations: a terminating `Step` run's trace
 is the one `eval` answers (`eval_small_to_big`), so it is in the block grammar
 (helper).
 
@@ -16276,7 +16276,7 @@ theorem RueCore.Tombstone.Live.lt {H : Store} {ℓ : Nat} (h : Tombstone.Live H 
 
 *theorem* · module `RueCore.Tombstone`
 
-A live cell is not retired (helper).
+A live cell is not tombstoned (helper).
 
 ```lean
 theorem RueCore.Tombstone.Live.ne_dead {H : Store} {ℓ : Nat}
@@ -16331,7 +16331,7 @@ theorem RueCore.Tombstone.Grow.trans {H H₁ H₂ : Store} (h₁ : Tombstone.Gro
 *theorem* · module `RueCore.Tombstone`
 
 Allocation appends, so it grows the store: a binding cell (§6.7, §6.9) or a
-value identity's reserved `†` slot (`introVal`) (helper).
+object identity's reserved `†` slot (`introVal`) (helper).
 
 ```lean
 theorem RueCore.Tombstone.Grow.append (H H' : Store) : Tombstone.Grow H (H ++ H')
@@ -16365,7 +16365,7 @@ theorem RueCore.Tombstone.Live.ne_of_le {H : Store} {ℓ m : Nat}
 
 *theorem* · module `RueCore.Tombstone`
 
-The frame invariant survives growth (helper).
+The activation record invariant survives growth (helper).
 
 ```lean
 theorem RueCore.Tombstone.LiveActivation.grow {H H' : Store} {φ : Activation}
@@ -16417,7 +16417,7 @@ theorem RueCore.Tombstone.LivePost.andThen {H : Store} {φ : Activation} {r : Ev
 
 *theorem* · module `RueCore.Tombstone`
 
-A scope opened on top of the frame — a `let`'s cell, a `match` arm's
+A scope opened on top of the activation record — a `let`'s cell, a `match` arm's
 payload cells — keeps the promise when the body's non-value outcomes pass
 through it (helper).
 
@@ -16461,7 +16461,7 @@ theorem RueCore.Tombstone.Contents.resolveDyn_ne_uad (is : List Int)
 
 *theorem* · module `RueCore.Tombstone`
 
-Navigating a dynamic place from a frame whose environment names live cells
+Navigating a dynamic place from an activation record whose environment names live cells
 never refuses with `useAfterDrop` (helper).
 
 ```lean
@@ -16559,7 +16559,7 @@ theorem RueCore.Tombstone.Contents.destructure_ne_uad {D : Decls} {ℓ : Nat}
 
 *theorem* · module `RueCore.Tombstone`
 
-`drop-retire` of a live cell never meets `†`, and retires exactly that
+`drop-retire` of a live cell never meets `†`, and tombstones exactly that
 cell (helper).
 
 ```lean
@@ -16588,7 +16588,7 @@ theorem RueCore.Tombstone.unwindLocs_live {D : Decls} {H : Store} {ls : List Nat
 
 *theorem* · module `RueCore.Tombstone`
 
-A scope record read newest-first owes each cell once, as it did oldest-first
+A drop scope read newest-first owes each cell once, as it did oldest-first
 (helper).
 
 ```lean
@@ -16599,7 +16599,7 @@ theorem RueCore.Tombstone.nodup_reverse {l : List Nat} (h : l.Nodup) : l.reverse
 
 *theorem* · module `RueCore.Tombstone`
 
-Retiring a record's cells leaves every live cell outside it live (helper).
+Tombstoning a record's cells leaves every live cell outside it live (helper).
 
 ```lean
 theorem RueCore.Tombstone.UnwindPost.grow {H H' : Store} {ls : List Nat}
@@ -16639,7 +16639,7 @@ theorem RueCore.Tombstone.OpRes.toRes_live {H : Store} {φ : Activation} (o : Op
 
 *theorem* · module `RueCore.Tombstone`
 
-Minting a value identity appends a `†` slot no binding names (helper).
+Minting a object identity appends a `†` slot no binding names (helper).
 
 ```lean
 theorem RueCore.Tombstone.introVal_live {D : Decls} {H : Store} {φ : Activation}
@@ -16678,7 +16678,7 @@ theorem RueCore.Tombstone.LiveActivation.root {H : Store} {φ : Activation} {i �
 
 *theorem* · module `RueCore.Tombstone`
 
-**The invariant over `eval`**: from a frame whose cells are live and owed
+**The invariant over `eval`**: from an activation record whose cells are live and owed
 once, every evaluation keeps `LivePost`, at every fuel (helper).
 
 ```lean
@@ -16691,7 +16691,7 @@ theorem RueCore.Tombstone.eval_live (M : FloatSig) (P : Program) (fuel : Nat)
 
 *theorem* · module `RueCore.Tombstone`
 
-The plain `drop-retire` of a live cell never meets `†`, and retires
+The plain `drop-retire` of a live cell never meets `†`, and tombstones
 exactly that cell (helper).
 
 ```lean
@@ -16746,7 +16746,7 @@ theorem RueCore.Tombstone.plainDestructure_ne_uad {D : Decls} {ℓ : Nat} {c : C
 
 *theorem* · module `RueCore.Tombstone`
 
-Every frame on a well-shaped stack has its scope record, reversed, as its
+Every activation record on a well-shaped stack has its drop scope, reversed, as its
 environment (helper).
 
 ```lean
@@ -16758,7 +16758,7 @@ theorem RueCore.Tombstone.Shape.env {φ : Activation} {K : List Kont} :
 
 *theorem* · module `RueCore.Tombstone`
 
-(D-Return)'s search: the caller's frame is well shaped, and the cells the
+(D-Return)'s search: the caller's activation record is well shaped, and the cells the
 suspended callers owe are its own and those below it (helper).
 
 ```lean
@@ -16774,8 +16774,8 @@ theorem RueCore.Tombstone.Shape.toCall {φ : Activation} {K : List Kont}
 
 *theorem* · module `RueCore.Tombstone`
 
-(D-Break)'s search: the loop's frame is well shaped, no caller is crossed, and
-the frame in force extends the loop's at the end of its scope record (helper).
+(D-Break)'s search: the loop's activation record is well shaped, no caller is crossed, and
+the activation record in force extends the loop's at the end of its drop scope (helper).
 
 ```lean
 theorem RueCore.Tombstone.Shape.toLoop {φ : Activation} {K : List Kont}
@@ -16814,7 +16814,7 @@ theorem RueCore.Tombstone.StackLive.grow {H H' : Store} {φ : Activation}
 
 *theorem* · module `RueCore.Tombstone`
 
-Looking a place's root up in a frame whose environment names live cells never
+Looking a place's root up in an activation record whose environment names live cells never
 refuses with `useAfterDrop` (helper).
 
 ```lean
@@ -16827,7 +16827,7 @@ theorem RueCore.Tombstone.rootCell_ne_uad {H : Store} {φ : Activation} {i : Nat
 
 *theorem* · module `RueCore.Tombstone`
 
-Retiring the cells at the end of the owed list keeps the rest live and
+Tombstoning the cells at the end of the owed list keeps the rest live and
 owed once (helper).
 
 ```lean
@@ -17193,7 +17193,7 @@ theorem RueCore.longc_letIn {M : FloatSig} {P : Program} {F : Event → List Nat
 
 *theorem* · module `RueCore.TracePrefix`
 
-(D-Match) §6.6, with the ledger: the consumed shell and the payload cells
+(D-Match) §6.6, with the ledger: the consumed dead remainder and the payload cells
 own what the scrutinee owned (helper).
 
 ```lean
@@ -17416,7 +17416,7 @@ theorem RueCore.steps_trace_once (M : FloatSig) {P : Program} {F : Event → Lis
 
 *theorem* · module `RueCore.TracePrefix`
 
-`no_double_free` for a finished run is a corollary (RUE-2477): a value or a
+`no_double_free` for a terminating run is a corollary (RUE-2477): a value or a
 panic `run` answers is reached by §6's relation (`eval_big_to_small`), so its trace is
 a reachable configuration's; exhausted fuel carries the empty trace; and a
 checked run is never refused (helper).
@@ -17627,7 +17627,7 @@ theorem RueCore.MSim.withTrace {M : FloatSig} {P : Program} {φ : Activation}
 
 *theorem* · module `RueCore.TraceWhole`
 
-A result that neither completes nor unwinds is simulated vacuously
+A result that completes neither normally nor abruptly is simulated vacuously
 (helper).
 
 ```lean
@@ -17641,7 +17641,7 @@ theorem RueCore.MSim.of_quiet {M : FloatSig} {P : Program} {φ : Activation}
 
 *theorem* · module `RueCore.TraceWhole`
 
-**§6.2's (Search), once, losslessly**: an enter run pushing a frame `F`
+**§6.2's (Search), once, losslessly**: an evaluation-state run pushing a frame `F`
 that holds nothing, the operand simulated under `F`, and the context's
 simulation from the operand's value (helper).
 
@@ -17665,7 +17665,7 @@ theorem RueCore.MSim.andThen {M : FloatSig} {P : Program} {φ φ₁ : Activation
 *theorem* · module `RueCore.TraceWhole`
 
 **A later operand under a held value** (RUE-2316): the frame holds a
-value, so the operand must not unwind — `pendingSafe` — and then only its
+value, so the operand must not complete abruptly — `pendingSafe` — and then only its
 value matters (helper).
 
 ```lean
@@ -17870,7 +17870,7 @@ theorem RueCore.assignDyn_count {D : Decls} {H : Store} {ℓ : Nat}
 
 *theorem* · module `RueCore.TraceWhole`
 
-A fresh struct owns at least its fields, copy-closed (helper).
+A fresh struct owns at least its fields, copy-contained (helper).
 
 ```lean
 theorem RueCore.Contents.own_struct_ge {D : Decls} {s i : Nat} {cs : List Contents}
@@ -17883,7 +17883,7 @@ theorem RueCore.Contents.own_struct_ge {D : Decls} {s i : Nat} {cs : List Conten
 
 *theorem* · module `RueCore.TraceWhole`
 
-A fresh array owns at least its elements, copy-closed (helper).
+A fresh array owns at least its elements, copy-contained (helper).
 
 ```lean
 theorem RueCore.Contents.own_array_ge {D : Decls} {T : Ty} {i : Nat}
@@ -17898,7 +17898,7 @@ theorem RueCore.Contents.own_array_ge {D : Decls} {T : Ty} {i : Nat}
 *theorem* · module `RueCore.TraceWhole`
 
 An argument list of `pendingSafe` members that finishes leaves a
-copy-closed store and copy-closed values (`eval_exact`) (helper).
+copy-contained store and copy-contained values (`eval_exact`) (helper).
 
 ```lean
 theorem RueCore.evalArgs_cc {M : FloatSig} {P : Program} {fuel : Nat} {φ : Activation}
@@ -17916,7 +17916,7 @@ theorem RueCore.evalArgs_cc {M : FloatSig} {P : Program} {fuel : Nat} {φ : Acti
 *theorem* · module `RueCore.TraceWhole`
 
 **An argument list that finishes, losslessly** (§6.2's `…( v̄, E, ē )`):
-each member is pushed, simulated, and plugged back into the list (helper).
+each member is pushed, simulated, and returned into the list (helper).
 
 ```lean
 theorem RueCore.evalArgs_msimOk {M : FloatSig} {P : Program} {fuel : Nat}
@@ -17937,7 +17937,7 @@ theorem RueCore.evalArgs_msimOk {M : FloatSig} {P : Program} {fuel : Nat}
 *theorem* · module `RueCore.TraceWhole`
 
 **An argument list that aborts, losslessly**, where only its first member
-may unwind (`pendingSafe`): nothing is pending when the first one does, and
+may complete abruptly (`pendingSafe`): nothing is pending when the first one does, and
 the list's tag holds nothing; a later member's abort is a trap, a refusal or
 exhausted fuel (helper).
 
@@ -17974,7 +17974,7 @@ theorem RueCore.MSteps.toValue {M : FloatSig} {P : Program} {φ : Activation}
 
 *theorem* · module `RueCore.TraceWhole`
 
-An enter step of §6.2's (Search) pushing a frame that holds nothing
+An evaluation-state step of §6.2's (Search) pushing a frame that holds nothing
 (helper).
 
 ```lean
@@ -17992,7 +17992,7 @@ theorem RueCore.MSteps.enter {M : FloatSig} {P : Program} {φ : Activation} {H :
 
 *theorem* · module `RueCore.TraceWhole`
 
-An enter step into a list context whose tag holds nothing (helper).
+An evaluation-state step into a list context whose tag holds nothing (helper).
 
 ```lean
 theorem RueCore.MSteps.enterArgs {M : FloatSig} {P : Program} {φ : Activation}
@@ -18129,7 +18129,7 @@ theorem RueCore.msim_dbg {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 *theorem* · module `RueCore.TraceWhole`
 
-An argument-list form's prefix: the enter step, and the list run to its
+An argument-list form's prefix: the evaluation-state step, and the list run to its
 redex or its abort, losslessly (helper).
 
 ```lean
@@ -18157,7 +18157,7 @@ theorem RueCore.msim_argsForm {M : FloatSig} {P : Program} {fuel : Nat} {H : Sto
 *theorem* · module `RueCore.TraceWhole`
 
 (D-Struct) §6.5: the identity is minted as `introVal` mints it, whose
-copy-closure monitor keeps every member's identities in the new value
+Copy-containment monitor keeps every member's identities in the new value
 (helper).
 
 ```lean
@@ -18282,7 +18282,7 @@ theorem RueCore.msim_indexWrite {M : FloatSig} {P : Program} {fuel : Nat} {H : S
 
 *theorem* · module `RueCore.TraceWhole`
 
-(D-Match) §6.6: the payload moves into the arm's cells and the shell is
+(D-Match) §6.6: the payload moves into the arm's cells and the dead remainder is
 consumed; the arm runs under its `endscope`, which (D-EndScope) closes
 (helper).
 
@@ -18314,7 +18314,7 @@ theorem RueCore.msim_letIn {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 *theorem* · module `RueCore.TraceWhole`
 
-(D-Assign) §6.8: `eval`'s copy-closure monitor passed, so the stored
+(D-Assign) §6.8: `eval`'s Copy-containment monitor passed, so the stored
 value's identities stay counted (helper).
 
 ```lean
@@ -18416,11 +18416,11 @@ theorem RueCore.msim_loop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 *theorem* · module `RueCore.TraceWhole`
 
 **`eval` is simulated losslessly** (helper): for a `pendingSafe` program,
-every `pendingSafe` expression from every copy-closed store, at every fuel,
+every `pendingSafe` expression from every copy-contained store, at every fuel,
 reaches what `Sim` says it reaches by a run along which no step loses an
 owned identity. The proof is `eval_sim`'s, form by form, with each step's
 ledger closed by the matching exact ledger of `TraceExact.lean`; typing
-enters nowhere — `eval`'s monitors are what copy closure needs — and
+enters nowhere — `eval`'s monitors are what Copy containment needs — and
 `pendingSafe` is what keeps an unwind from discarding a held value.
 
 ```lean
@@ -18432,7 +18432,7 @@ theorem RueCore.eval_msim (M : FloatSig) {P : Program} (hp : P.pendingSafe = tru
 
 *theorem* · module `RueCore.TraceWhole`
 
-**A finished run of a `pendingSafe` program is lossless** (helper): where
+**A terminating run of a `pendingSafe` program is lossless** (helper): where
 `run` answers a value, §6's relation reaches that value's terminal
 configuration from `Config.init` by a run along which no step loses an owned
 identity.
@@ -18448,7 +18448,7 @@ theorem RueCore.run_msteps (M : FloatSig) {P : Program} (hp : P.pendingSafe = tr
 
 *theorem* · module `RueCore.TraceWhole`
 
-A store whose every cell is retired owns nothing (helper).
+A store whose every cell is tombstoned owns nothing (helper).
 
 ```lean
 theorem RueCore.storeOwn_of_dead {D : Decls} {H : Store}
@@ -18460,8 +18460,8 @@ theorem RueCore.storeOwn_of_dead {D : Decls} {H : Store}
 
 *theorem* · module `RueCore.TraceWhole`
 
-**A finished run ends with an empty store and counts every identity at
-most once** (helper): `eval_tidy` retires every cell by the end, and
+**A terminating run ends with an empty store and counts every identity at
+most once** (helper): `eval_tidy` tombstones every cell by the end, and
 `eval_conserves` from the empty store bounds what the result and the trace
 own by the range of identities minted (`run_trace_once`'s argument).
 
@@ -18619,7 +18619,7 @@ theorem RueCore.Sharp.not_exact_returned {D : Decls} {H H' : Store} {v : Val}
 
 *theorem* · module `RueCore.Sharp`
 
-`Exact` fails at a value whose final store is not copy-closed (helper).
+`Exact` fails at a value whose final store is not copy-contained (helper).
 
 ```lean
 theorem RueCore.Sharp.not_exact_cc {D : Decls} {H H' : Store} {v : Val}
@@ -18631,7 +18631,7 @@ theorem RueCore.Sharp.not_exact_cc {D : Decls} {H H' : Store} {v : Val}
 
 *theorem* · module `RueCore.Sharp`
 
-A one-cell store is copy-closed when its cell is (helper).
+A one-cell store is copy-contained when its cell is (helper).
 
 ```lean
 theorem RueCore.Sharp.storeCC_one {D : Decls} {c : Contents}
@@ -24501,7 +24501,7 @@ RueCore.Qual.linear : Qual
 
 *def* · module `RueCore.Trace.Defs`
 
-A scope record in **registration order is location order**: its cells
+A drop scope in **registration order is location order**: its cells
 strictly increasing, every one below the store's length `n` (helper).
 
 ```lean
@@ -24534,7 +24534,7 @@ RueCore.Refusal.useAfterMove : Refusal
 RueCore.Refusal.useAfterDrop : Refusal
 ```
 
-**`Refusal.linearLeak`** — A scope exit — at a `let`'s end (§6.7) or on a frame's unwind (§6.9) — reaching a live linear value (§7: consumed exactly once; §5.6); or a declared-linear destructure whose residue holds one, which §5.1's `¬ linear-residue(S, π_s)` premise forbids (`3.8:60`, E0474) and which §6.3 therefore leaves unchecked.
+**`Refusal.linearLeak`** — A scope exit — at a `let`'s end (§6.7) or on an activation record's unwind (§6.9) — reaching a live linear value (§7: consumed exactly once; §5.6); or a declared-linear destructure whose residue holds one, which §5.1's `¬ linear-residue(S, π_s)` premise forbids (`3.8:60`, E0474) and which §6.3 therefore leaves unchecked.
 
 ```lean
 RueCore.Refusal.linearLeak : Refusal
@@ -24564,7 +24564,7 @@ RueCore.Refusal.unbound : Refusal
 RueCore.Refusal.typeConfusion : Refusal
 ```
 
-**`Refusal.ownedUnderCopy`** — An owned value under a `Copy` node (§3: a `Copy` type's fields, payloads and elements are `Copy`, `3.8:18`, `6.3:19`) — the shape a copy would duplicate an owner through, which §7's no-double-free bullet forbids. The copy-closure monitor (`Contents.copyContained`) refuses it where it could be built: at aggregate introduction and at an assignment (RUE-2323).
+**`Refusal.ownedUnderCopy`** — An owned value under a `Copy` node (§3: a `Copy` type's fields, payloads and elements are `Copy`, `3.8:18`, `6.3:19`) — the shape a copy would duplicate an owner through, which §7's no-double-free bullet forbids. The Copy-containment monitor (`Contents.copyContained`) refuses it where it could be built: at aggregate introduction and at an assignment (RUE-2323).
 
 ```lean
 RueCore.Refusal.ownedUnderCopy : Refusal
@@ -24785,8 +24785,8 @@ Defining equations, as Lean derived them from the body:
 
 *inductive* · module `RueCore.Dynamics`
 
-§6.1's frame `φ = ⟨ρ ; σ⟩`: the environment and the frame's open scope
-record — the cells owed a drop when the frame's scopes end, in creation order
+§6.1's activation record `φ = ⟨ρ ; σ⟩`: the environment and the activation record's open drop
+scope — the cells with a drop obligation when the activation record's scopes end, in creation order
 (dropped newest-first). Every binding of the fragment is a `let` binding or a
 by-value parameter, and both are registered; `borrow`/`inout` parameters,
 which are deliberately never registered (§6.9, `3.8:62`), are not in the
@@ -25146,7 +25146,7 @@ Defining equations, as Lean derived them from the body:
 
 The operations of §6.4 whose result is `rnd_w` of a value that need not lie
 in `𝔽_w`, and the target parameter `σ_NaN` they *create* NaNs at. §2 fixes both
-per target rather than per rule, so they are the interface the development is
+per target rather than per rule, so they are the signature the development is
 parameterized over; every exact operation is a function of this module
 instead.
 
@@ -25557,7 +25557,7 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Equivalence.Defs`
 
-The empty frame the entry point is called from (helper).
+The empty activation record the entry point is called from (helper).
 
 ```lean
 def RueCore.Activation.empty : Activation
@@ -25575,7 +25575,7 @@ Activation.empty = { env := [], scope := [] }
 
 §6.7's `⟨ρ; s minus ℓ̄⟩` for the `n` cells an `endscope` marker owes:
 (D-Let) and (D-Match) put them at the front of the environment (de Bruijn
-indices) and at the end of the scope record, so closing the marker drops them
+indices) and at the end of the drop scope, so closing the marker drops them
 from both by count (helper).
 
 ```lean
@@ -25620,9 +25620,9 @@ Defining equations, as Lean derived them from the body:
 
 Cell contents (§6.1's `c ::= v | ⊘`), as a **tree**: `⊘` may sit at any
 node, not only at the root, because (D-Use-Move) §6.3 writes `H[ℓ@π ↦ ⊘]` at
-exactly the sub-position a partial move takes (§4.2, `3.8:22`). A hole-free
+exactly the sub-position a partial move takes (§4.2, `3.8:22`). A moved-out-free
 contents is a value (`toVal`), and a value written into a cell becomes the
-hole-free tree of the same shape (`ofVal`); the two are inverse, which is what
+moved-out-free tree of the same shape (`ofVal`); the two are inverse, which is what
 lets §6.11's walk and §6.3's navigation share one representation. An aggregate
 node keeps its value's identity, so a stored value and the value read back
 out of it are the same value.
@@ -25708,9 +25708,9 @@ RueCore.Entry.mk (ty : Ty) (mu : Bool) (st : OwnSt) : Entry
 A monomorphic enum declaration: §2's `enum E { K1(T̄1), …, Kn(T̄n) }`, one
 payload tuple per variant in **declaration order** — the order a tag `Kj`
 indexes and the order (Match) §5.5's arms are presented in — together with the
-class §3 assigns it. A variant with an empty tuple is §2's discriminant-only
+qualifier §3 assigns it. A variant with an empty tuple is §2's discriminant-only
 case (`ai = 0`, `6.3:14`). An enum declares **no attribute** and **no
-destructor**: §3 gives it no `@copy`/`linear` mark, its class is exactly the
+destructor**: §3 gives it no `@copy`/`linear` mark, its qualifier is exactly the
 payload join (`6.3:19`), and the compiler rejects `drop fn E(self)` because a destructor names a
 struct type (E0417), so there is nothing here for §6.11 to run before the
 payload.
@@ -26027,7 +26027,7 @@ Defining equations, as Lean derived them from the body:
 
 A by-value parameter (§5.8's `mi = ∅` mode): its declared type and its `μ`
 mark, which is what lets a body assign to it (§5.2). `borrow`/`inout`
-parameters, which the caller owns and which owe no drop (`3.8:62`, §6.9), are
+parameters, which the caller owns and which carry no drop obligation (`3.8:62`, §6.9), are
 not in the fragment.
 
 ```lean
@@ -26066,7 +26066,7 @@ Defining equations, as Lean derived them from the body:
 
 A monomorphic struct declaration: §2's `S { f1: T1, …, fk: Tk }` with its
 declared attribute (§3), whether it declares a destructor (`3.9`), and the
-class §3 assigns it. Fields are listed in **declaration order**, which is the
+qualifier §3 assigns it. Fields are listed in **declaration order**, which is the
 order §6.11 drops them in (`3.9:13`, after the user destructor — `3.9:28`) and
 the order (Struct-Intro) §5.8's initializers are presented in (`3.6:15`); they
 are named by position, as bindings are, because elaboration resolves field
@@ -26245,8 +26245,8 @@ Machine values (§6.1's `v`), fragment forms only. `struct s i vs` is §6.1's
 says why the machine adds it), and one value per field, in
 declaration order — the order `3.9:13` drops them in. `float w f` is §6.1's `f_T` at `T = float(w)`: §2's
 datum, not a bit pattern (`Float.lean`). A struct value names its declaration rather than
-carrying its class, so the machine's drop decisions are value-driven — it
-reads the tag the value carries — while the class and the destructor come from
+carrying its qualifier, so the machine's drop decisions are value-driven — it
+reads the tag the value carries — while the qualifier and the destructor come from
 the program's declarations, as the compiled program's drop glue does.
 
 `enum e k i vs` is §6.1's `Kj⟨ v1, …, va ⟩`: the declaration's index, the
@@ -26366,7 +26366,7 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.TraceExact`
 
-`g`'s entry frame (helper).
+`g`'s entry activation record (helper).
 
 ```lean
 def RueCore.lostActivation : Activation
@@ -26442,8 +26442,8 @@ RueCore.ArgsFrame.indexWrite (p : Place) (πs : List (List Nat)) (v : Val) :
 *inductive* · module `RueCore.Dynamics`
 
 The store `H` (§6.1) holds one cell per binding allocation; the cell is
-live contents or the retired marker `†`. §6.1's whole-cell `⊘` is
-`full .movedOut` — a hole at the root of the tree, which is what a whole-place
+live contents or the tombstoned marker `†`. §6.1's whole-cell `⊘` is
+`full .movedOut` — a moved-out part at the root of the tree, which is what a whole-place
 move writes.
 
 ```lean
@@ -26558,7 +26558,7 @@ The program's declaration environment: §2's type-declaration production
 `D ::= struct S { … } | enum E { … }`, one list per kind, each indexed the way
 `Ty.struct`/`Ty.enum` names it. The two layers are separate lists rather than
 one list of a sum because a type names one or the other and never both, and
-because §3 assigns their classes by two different equations.
+because §3 assigns their qualifiers by two different equations.
 
 ```lean
 inductive RueCore.Decls : Type
@@ -26650,7 +26650,7 @@ a Rue program can *observe*: the user destructor `S` declares (`3.9`), which
 §6.11 runs before the value's fields. The events a drop emits follow each other
 in §6.11's order: the destructor, then the fields in declaration order, each
 recursively, with every `⊘` skipped. A binding's drop carries the *contents*
-it ran on, because after a partial move what is dropped is a tree with holes in
+it ran on, because after a partial move what is dropped is a tree with moved-out parts in
 it rather than a value; a discarded temporary is always a whole value. Every
 aggregate in what an event carries has its identity, so the trace records
 *which* values were dropped and destroyed; `no_double_free` (`Trace.lean`) is
@@ -26680,7 +26680,7 @@ RueCore.Event.dropTemp (v : Val) : Event
 RueCore.Event.dtor (s : Nat) (c : Contents) : Event
 ```
 
-**`Event.consume`** — **A consumption** (RUE-2427): the aggregate nodes of `c` end here without a drop of their own, because every member they held has already been moved out or dropped — a `match`'s scrutinee shell once (D-Match) §6.6 has bound its payload to the arm's cells, and the path from a declared-`linear` place `d` down to the selected leaf once §6.3's destructure has handed the leaf on and dropped the residue. `c` is the shell itself, every member a `⊘` (`matchConsume`, `Contents.pathOnly`). No destructor runs: an enum declares none (§3, E0417), and `3.9:34` keeps a destructor-bearing value off a destructure's path — a guarantee of the checker, not of the machine, which on a program §5 rejects consumes such a node without running its glue (`destructure_under_dtor`). Like `drop` and `dropTemp` it is a marker no Rue program can observe (`Corpus.eventLine`); it is what lets `drop_exactly_once` (`TraceExact.lean`) name the end of *every* owned value in the trace.
+**`Event.consume`** — **A consume event** (RUE-2427): the aggregate nodes of `c` end here without a drop of their own, because every member they held has already been moved out or dropped — a `match`'s scrutinee dead remainder once (D-Match) §6.6 has bound its payload to the arm's cells, and the path from a declared-`linear` place `d` down to the selected leaf once §6.3's destructure has handed the leaf on and dropped the residue. `c` is the dead remainder itself, every member a `⊘` (`matchConsume`, `Contents.pathOnly`). No destructor runs: an enum declares none (§3, E0417), and `3.9:34` keeps a destructor-bearing value off a destructure's path — a guarantee of the checker, not of the machine, which on a program §5 rejects consumes such a node without running its glue (`destructure_under_dtor`). Like `drop` and `dropTemp` it is a marker no Rue program can observe (`Corpus.eventLine`); it is what lets `drop_exactly_once` (`TraceExact.lean`) name the end of *every* owned value in the trace.
 
 ```lean
 RueCore.Event.consume (c : Contents) : Event
@@ -26714,7 +26714,7 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Examples`
 
-`S1`: `struct { x0: i64 }` with a destructor. Class `Affine`, and the
+`S1`: `struct { x0: i64 }` with a destructor. Qualifier `Affine`, and the
 destructor is what makes each of its drops observable.
 
 ```lean
@@ -26733,9 +26733,9 @@ Examples.dAffine =
 
 *def* · module `RueCore.Examples`
 
-`S8`: `struct { x0: S1, x1: i64 }`, no destructor. Class `Affine`; its
+`S8`: `struct { x0: S1, x1: i64 }`, no destructor. Qualifier `Affine`; its
 first field is droppable and its second is `Copy`, so it is the shape a partial
-move leaves a readable sibling in (`3.8:53` reads it through the hole).
+move leaves a readable sibling in (`3.8:53` reads it through the moved-out part).
 
 ```lean
 def RueCore.Examples.dAffineInt : StructDecl
@@ -26754,7 +26754,7 @@ Examples.dAffineInt =
 *def* · module `RueCore.Examples`
 
 `S4`: `struct { x0: i64, x1: S3 }`, no attribute and no destructor. Its
-class is `Linear` *through a field* — §3's join, `3.8:58`'s infectiousness —
+qualifier is `Linear` *through a field* — §3's join, `3.8:58`'s infectiousness —
 which is the shape the linear-carrying-struct cases are about.
 
 ```lean
@@ -26773,7 +26773,7 @@ Examples.dCarry =
 
 *def* · module `RueCore.Examples`
 
-`S10`: `struct { x0: S3, x1: S1 }`, no destructor. Class `Linear` through
+`S10`: `struct { x0: S3, x1: S1 }`, no destructor. Qualifier `Linear` through
 its first field; its second is affine and destructor-bearing, so the two halves
 of §5.6's residual obligation are separable at a path.
 
@@ -26793,7 +26793,7 @@ Examples.dCarryAffine =
 
 *def* · module `RueCore.Examples`
 
-`S0`: `@copy struct { x0: i64 }`. Class `Copy`; a `@copy` type declares no
+`S0`: `@copy struct { x0: i64 }`. Qualifier `Copy`; a `@copy` type declares no
 destructor, so its drops are silent and its field is readable.
 
 ```lean
@@ -26812,7 +26812,7 @@ Examples.dCopy =
 
 *def* · module `RueCore.Examples`
 
-`S2`: `linear struct { x0: i64 }`, no destructor. Class `Linear`, drops
+`S2`: `linear struct { x0: i64 }`, no destructor. Qualifier `Linear`, drops
 silent. It is *declared* linear, so a projection out of it selects §4.2's
 `Declared(d, π_s)` plan and §5.1's declared-linear destructure rule consumes
 the whole value for the leaf; the obligation is otherwise discharged by a move
@@ -26836,7 +26836,7 @@ Examples.dLinear =
 
 *def* · module `RueCore.Examples`
 
-`S3`: `linear struct { x0: i64 }` with a destructor. Class `Linear`, drops
+`S3`: `linear struct { x0: i64 }` with a destructor. Qualifier `Linear`, drops
 observable; nothing may be moved out of it (`3.9:34`), so it is discharged by
 `@drop` or by a move of the whole value.
 
@@ -26856,7 +26856,7 @@ Examples.dLinearDtor =
 
 *def* · module `RueCore.Examples`
 
-`S9`: `struct { x0: S7, x1: i64 }`, no destructor. Class `Affine`; it
+`S9`: `struct { x0: S7, x1: i64 }`, no destructor. Qualifier `Affine`; it
 nests `S7`, so a path into it is two field steps deep.
 
 ```lean
@@ -26875,7 +26875,7 @@ Examples.dNested =
 
 *def* · module `RueCore.Examples`
 
-`S5`: `struct { x0: i64, x1: S1 }` with a destructor. Class `Affine`;
+`S5`: `struct { x0: i64, x1: S1 }` with a destructor. Qualifier `Affine`;
 dropping it runs its own destructor first and then its fields in declaration
 order (§6.11), so it is the nesting case.
 
@@ -26895,7 +26895,7 @@ Examples.dOuter =
 
 *def* · module `RueCore.Examples`
 
-`S6`: `@copy struct { x0: i64, x1: i64 }`. Class `Copy`, two fields, so a
+`S6`: `@copy struct { x0: i64, x1: i64 }`. Qualifier `Copy`, two fields, so a
 use of it copies and a projection of either field is a `Copy` read that leaves
 the base `Owned`.
 
@@ -26915,7 +26915,7 @@ Examples.dPair =
 
 *def* · module `RueCore.Examples`
 
-`S7`: `struct { x0: S1, x1: S1 }`, no destructor. Class `Affine`; dropping
+`S7`: `struct { x0: S1, x1: S1 }`, no destructor. Qualifier `Affine`; dropping
 it drops both fields in declaration order (§6.11) and nothing else.
 
 ```lean
@@ -27029,7 +27029,7 @@ an operand expression, which is also why no `(Panic-Operand)` case is needed.
 (Enum-Intro) §5.5 types: the enum's index, the variant's **0-based tag** (the
 `Kj` of §6.1's value form, which is the variant's declaration slot) and one
 payload argument per declared component, presented left to right. `match scrut
-arms` is §2's `match e0 { pat1 => e1, … }` in the canonical form §5.5 fixes:
+arms` is §2's `match e0 { pat1 => e1, … }` in the match-compilation form §5.5 fixes:
 **exactly one arm per variant, in declaration order**, so the patterns are not
 represented at all — arm `j` is the arm for variant `j`, and the `a_j` payload
 locals it binds are de Bruijn binders of its body, bound the way `letIn` binds
@@ -27049,7 +27049,7 @@ and `πs = [π₁, …, πₖ]`, `k ≥ 1`, each `πⱼ` a constant path of fiel
 constant indices: a constant index is a step of the place (`Place.idx`), so
 these two forms exist for the index §5's `Path` cannot track — §4.2's
 `Untrackable(OrdinaryDynamic)` plan for the read, restricted to a
-`class(T) = Copy` leaf by §5.1's only successful rule for it, and (Assign)
+`qual(T) = Copy` leaf by §5.1's only successful rule for it, and (Assign)
 §5.2's linear-overwrite premise for the write, whose right-hand side runs
 before its indices (`5.2:14`) — both bounds-checked at run time at every
 dynamic step by §6.5's (D-Index)/(D-Index-Trap). The two lists are parallel
@@ -27067,7 +27067,7 @@ innermost enclosing loop and hands it `()` (§5.7, §6.10). There is no
 value-carrying `break`: §2's grammar has none, and `4.8:22` makes
 `break expr` a compile-time error at the surface. `continue` has no
 constructor either: §2 elaborates it to the loop's back edge, and §5.7
-lists its `⟨continue, Σ⟩` delivery only so the back-edge set is closed under
+lists its `⟨continue, Σ⟩` abrupt-completion context only so the back-edge set is closed under
 that elaboration. Lean spells the constructor `brk` because `break` is one of
 its own keywords.
 
@@ -27322,7 +27322,7 @@ Defining equations, as Lean derived them from the body:
 
 *inductive* · module `RueCore.Float`
 
-**§7's "totality of the float operations", as an interface.** A
+**§7's "totality of the float operations", as an algebraic specification.** A
 `FloatSig` together with the laws §7 owes for floats and §6.4 quotes from
 `3.12:9`, `3.12:22` and `3.12:44`. Every field is a statement that is true of
 IEEE 754 *and* of the compiler — which is why the NaN laws below say only that
@@ -27589,7 +27589,7 @@ Val.unit.observable = false
 
 *def* · module `RueCore.Trace`
 
-A scalar owns nothing and is copy-closed (helper).
+A scalar owns nothing and is copy-contained (helper).
 
 ```lean
 def RueCore.Val.scalar : Val → Prop :=
@@ -27811,7 +27811,7 @@ def RueCore.Ctx.SameSkel (Γ₀ : Ctx) : List Ctx → Prop :=
 
 *def* · module `RueCore.Statics`
 
-The loop-local part of a `⟨break, Σ_x⟩` delivery made by a loop body typed
+The loop-local part of a `⟨break, Σ_x⟩` abrupt-completion context made by a loop body typed
 at `Γh`: the bindings the body opened and had not closed where the `break`
 fired, innermost first. §5.7 discharges their §5.6 obligation "at the exit
 itself, where their scopes end" (helper).
@@ -27831,8 +27831,8 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Statics`
 
-§5.7's `outside_loop(Σ_x)` for a delivery made by a body typed at `Γh`:
-the bindings in scope at the loop's entry, which are the delivered context's
+§5.7's `outside_loop(Σ_x)` for an abrupt-completion context made by a body typed at `Γh`:
+the bindings in scope at the loop's entry, which are the abrupt-completion context's
 outermost `|Γh|` entries (helper).
 
 ```lean
@@ -27893,8 +27893,8 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Syntax`
 
-`class(S)` for a declared struct type (§3), read off the declaration. An
-index the environment does not have is `Affine`, the class of a struct with no
+`qual(S)` for a declared struct type (§3), read off the declaration. An
+index the environment does not have is `Affine`, the qualifier of a struct with no
 attribute and no linear field — the conservative reading of a program
 `WfStructs` rejects anyway (helper).
 
@@ -27916,7 +27916,7 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Syntax`
 
-`class(E)` for a declared enum type (§3, `6.3:19`), read off the
+`qual(E)` for a declared enum type (§3, `6.3:19`), read off the
 declaration. An index the environment does not have is `Affine`, the
 conservative reading of a program `WfEnums` rejects anyway — `Copy` would let
 such a type be duplicated (helper).
@@ -28108,7 +28108,7 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Examples`
 
 The fixture environment: every field type names an earlier declaration, so
-`WfStructs` holds (checked below) and §3's class assignment is the one
+`WfStructs` holds (checked below) and §3's qualifier assignment is the one
 recorded.
 
 ```lean
@@ -28350,19 +28350,19 @@ RueCore.Kont.assign (p : Place) : Kont
 RueCore.Kont.ret : Kont
 ```
 
-**`Kont.endscope`** — `endscope(ℓ̄) in E` (§6.2, §6.7): the cells the body owes. Closing it pops them off the frame by count (the module docstring says why a pop).
+**`Kont.endscope`** — `endscope(ℓ̄) in E` (§6.2, §6.7): the cells the body owes. Closing it pops them off the activation record by count (the module docstring says why a pop).
 
 ```lean
 RueCore.Kont.endscope (ℓs : List Nat) : Kont
 ```
 
-**`Kont.loop`** — `loopβ(e, φ)` (§6.1, §6.10): the loop's body and the frame each turn starts in; `break` unwinds to here.
+**`Kont.loop`** — `loopβ(e, φ)` (§6.1, §6.10): the loop's body and the activation record each turn starts in; `break` unwinds to here.
 
 ```lean
 RueCore.Kont.loop (e : Expr) (φ : Activation) : Kont
 ```
 
-**`Kont.call`** — `ret(E, φ)` (§6.1, §6.9): a caller suspended in frame `φ`, its context `E` the frames below this one.
+**`Kont.call`** — `ret(E, φ)` (§6.1, §6.9): a caller suspended in activation record `φ`, its context `E` the frames below this one.
 
 ```lean
 RueCore.Kont.call (φ : Activation) : Kont
@@ -28372,8 +28372,8 @@ RueCore.Kont.call (φ : Activation) : Kont
 
 *inductive* · module `RueCore.Statics`
 
-§5.3's outgoing result `Ω`: `norm = some Σ'` is `Σ';Δ` and `norm = none`
-is `⊥;Δ`, with `brk` the recorded deliveries `Δ` (section docstring).
+§5.3's output result `Ω`: `norm = some Σ'` is `Σ';Δ` and `norm = none`
+is `⊥;Δ`, with `brk` the recorded abrupt-completion contexts `Δ` (section docstring).
 
 ```lean
 inductive RueCore.Out : Type
@@ -28453,12 +28453,12 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Syntax`
 
-The type one **step** of a path reaches: a declaration's field at a slot,
+The type one **projection** of a path reaches: a declaration's field at a slot,
 or an array's element at a constant index within its length (`7.1:9` — a
 constant index is bounds-checked at compile time, so an out-of-range one has
 no type and therefore no derivation, which is probe `a9`'s E0902). `none`
-where the step is not a step of the type reached so far — an enum type among
-them, since a payload is not a path. The two kinds that do step share
+where the projection is not one of the type reached so far — an enum type
+among them, since a payload is not a path. The two kinds of projection share
 one function because §5's `Path` puts them on one production, and §6.3's `π`
 is likewise "field indices and already-reduced array indices" (helper).
 
@@ -28634,11 +28634,11 @@ demoS = Expr.mkStruct 0 []
 `drop(H, c)` (§6.11), on the fragment's cell contents. A `⊘` drops
 **nothing** — "this single skip is what makes double-free impossible" — and a
 scalar drops nothing either ("scalars are Copy"; §7 says the same of a float —
-it "has no drop glue, is never registered in a scope record, and never names
+it "has no drop glue, is never registered in a drop scope, and never names
 an allocation"). A struct runs its **user destructor first** (`3.9:28`), if its
 declaration has one, and then drops its fields in **declaration order**
 (`3.9:13`, §6.11's `drop*`), recursively. A field is dropped whatever its
-class: an explicit `@drop` of a linear-carrying struct discharges the whole
+qualifier: an explicit `@drop` of a linear-carrying struct discharges the whole
 obligation, and a scope exit never reaches a live linear sub-value, because the
 leak monitor (`dropRetire`) reads `Contents.residualLinear` first.
 `dropContents_struct_events`
@@ -28651,10 +28651,10 @@ Two things §6.11 writes out are elided here, both unobservably.
   has one — so there is nothing to step. The Rue program the printer emits
   supplies a body that reproduces the event (`Print.lean`).
 * **The scratch cell is not minted.** §6.11 mints a fresh `ℓ` holding the
-  value, runs the destructor in a frame whose scope record is empty, drops
-  the *residual* fields `H1(ℓ)` leaves, and then retires `ℓ`. `dropContents`
+  value, runs the destructor in an activation record whose drop scope is empty, drops
+  the *residual* fields `H1(ℓ)` leaves, and then tombstones `ℓ`. `dropContents`
   mints nothing and drops the original `cs`. Neither difference is
-  observable: no `Event` corresponds to minting or retiring the scratch cell,
+  observable: no `Event` corresponds to minting or tombstoning the scratch cell,
   and the residual fields *are* the original ones, because `3.9:33` forbids
   moving `self` out of a destructor and `3.9:34` forbids moving a field out
   of a value whose type declares one, so a destructor body cannot change a
@@ -28843,7 +28843,7 @@ No **proper prefix** of the path names a value whose type declares a
 destructor: (Use-Move) §5.1's and (@Drop) §5.3's `3.9:34` premise (E0456).
 Moving or dropping the whole value is fine — the empty path has no proper
 prefix — because the restriction exists so that a destructor never observes a
-hole in the value it runs on.
+moved-out part in the value it runs on.
 
 An **array** step declares no destructor of its own: `3.9:14` gives `[T; n]` a
 destructor exactly when `T` has one, and `3.9:34` speaks of a type that
@@ -28908,7 +28908,7 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.TraceExact`
 
-The frame names only cells the store already has (helper).
+The activation record names only cells the store already has (helper).
 
 ```lean
 def RueCore.Activation.In (φ : Activation) (H : Store) : Prop :=
@@ -28982,8 +28982,8 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Statics`
 
-A delivered context **extends** `Γ`: it is `Γ`'s skeleton with zero or
-more bindings pushed on top. A `⟨break, Σ⟩` delivery records the whole
+An abrupt-completion context **extends** `Γ`: it is `Γ`'s skeleton with zero or
+more bindings pushed on top. A `⟨break, Σ⟩` abrupt-completion context records the whole
 context in force at the `break` (`Typed.brk`), so between the loop that reads
 it and the `break` that made it sit the bindings of every `let` and every
 `match` arm the `break` is inside (helper).
@@ -29047,12 +29047,12 @@ def RueCore.DtorNotCopy (D : Decls) : Prop :=
 *inductive* · module `RueCore.Dynamics`
 
 Evaluation results: a value with the final store and trace (§6.12's normal
-result); a value handed back by an unwinding `return`, whose frame's scopes
+result); a value handed back by an unwinding `return`, whose activation record's scopes
 have already been dropped (§6.9's (D-Return)) and which every enclosing form
 passes on untouched until a call boundary absorbs it; a `break` on its way to
 its loop, which every enclosing form passes on the same way until the loop
 catches it and runs the drops it owes (§6.10's (D-Break)); a defined panic
-(§6.12's `↯κ`); a violation ("stuck": either a configuration §6 leaves
+(§6.12's `↯κ`); a refusal (either a configuration §6 leaves
 undefined or a linear action one of the monitors refuses, named; the module
 docstring says which is which); or exhausted fuel, which is not a machine
 state at all but this interpreter's admission that it stopped early.
@@ -29075,7 +29075,7 @@ RueCore.EvalRes.ok (H : Store) (v : Val) (tr : List Event) : EvalRes
 RueCore.EvalRes.returned (H : Store) (v : Val) (tr : List Event) : EvalRes
 ```
 
-**`EvalRes.broke`** — A `break` unwinding to its loop (§6.10's (D-Break)): the store, the scope record of the frame the `break` fired in — the loop reads off it which cells the body still owed a drop — and the trace so far.
+**`EvalRes.broke`** — A `break` unwinding to its loop (§6.10's (D-Break)): the store, the drop scope of the activation record the `break` fired in — the loop reads off it which cells of the body still had a drop obligation — and the trace so far.
 
 ```lean
 RueCore.EvalRes.broke (H : Store) (scope : List Nat) (tr : List Event) :
@@ -29149,7 +29149,7 @@ Examples.dynDropAffineSkipped =
 Review probe T1 (RUE-2324 review, RUE-2400): `let a = [S1{1}, S1{2}];
 let x = a[i]; 0` with an affine element under a dynamic index. The statics
 reject it (E0904: §5.1's only rule at `Untrackable(OrdinaryDynamic)` wants
-`class(T) = Copy`), and the machine refuses it too: before RUE-2400 `eval`
+`qual(T) = Copy`), and the machine refuses it too: before RUE-2400 `eval`
 copied the affine leaf out and left the array live, so three destructors ran
 for two constructed values.
 
@@ -29172,13 +29172,13 @@ Examples.dynReadAffineCopied =
 
 *def* · module `RueCore.Examples`
 
-The same past a live **linear** binding, which is the class where
+The same past a live **linear** binding, which is the qualifier where
 `Typed.panic` and `Typed.ret` actually differ: `ret` would need
 `NoResidualLinear` here and `panic` does not, so the judgment derives this
 program (`panicPastLinear_typed`) and the machine runs it to a trap with an
 empty trace. `check` accepts it too, since it carries §5.7's `⊥`: the `let`'s
 tail diverges, so no scope exit is reached on a normal path (before RUE-2368
-`check` handed that scope exit the incoming `Owned` state and refused). The
+`check` handed that scope exit the input `Owned` state and refused). The
 compiler accepts and runs it: `panic: boom`, exit 101, nothing on stdout, so
 `S3`'s destructor does not run there either (verified by hand).
 
@@ -29339,7 +29339,7 @@ Float.exactOps =
 
 `FrameProperty ρ H H'`: the store only grew, and every cell that was already
 allocated and that `ρ` does not name has the contents it had. This is the
-frame-locality property a call needs — a callee's cells are minted above the
+frame property a call needs — a callee's cells are minted above the
 caller's whole store (§6.9's (D-Call)), so the caller's bindings are outside
 the callee's `ρ` and survive the call untouched.
 
@@ -29373,7 +29373,7 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Trace.Defs`
 
 What a frame of the control stack owes, ordered: a pending `endscope`
-marker's cells, and the scope record of a suspended caller (`ret(E, φ)`) or
+marker's cells, and the drop scope of a suspended caller (`ret(E, φ)`) or
 of a loop boundary (`loopβ(e, φ)`) (helper).
 
 ```lean
@@ -29389,7 +29389,7 @@ def RueCore.Kont.Ordered (n : Nat) : Kont → Prop :=
 
 *def* · module `RueCore.Step`
 
-The nearest `ret(E, φ)` below the top: its frame and the stack under it.
+The nearest `ret(E, φ)` below the top: its activation record and the stack under it.
 (D-Return) discards everything above it — context frames, pending `endscope`
 markers and loop boundaries alike (§6.9) (helper).
 
@@ -29414,7 +29414,7 @@ Kont.toCall [] = none
 
 The nearest `loopβ(e, φ)` below the top, provided no `ret(E, φ)` comes
 first: "a `break` in a callee would be ill-formed" (§6.10), so a `break` with
-no loop in its own frame has no rule (helper).
+no loop in its own activation record has no rule (helper).
 
 ```lean
 def RueCore.Kont.toLoop : List Kont → Option (Activation × List Kont)
@@ -29438,8 +29438,8 @@ Kont.toLoop [] = none
 
 *def* · module `RueCore.Trace.Defs`
 
-The store only grew, and a cell outside the frame's environment was left
-alone or retired (helper).
+The store only grew, and a cell outside the activation record's environment was left
+alone or tombstoned (helper).
 
 ```lean
 def RueCore.Local (φ : Activation) (H H' : Store) : Prop :=
@@ -29453,8 +29453,8 @@ def RueCore.Local (φ : Activation) (H H' : Store) : Prop :=
 
 *def* · module `RueCore.Trace.Defs`
 
-The scope record the pending `endscope` markers and loop boundaries of
-one frame account for (§6.7, §6.10): reading the stack top-down, each
+The drop scope the pending `endscope` markers and loop boundaries of
+one activation record account for (§6.7, §6.10): reading the stack top-down, each
 `endscope ℓs` is the tail of what is left of the record, a loop boundary
 `loopβ(e, φs)` has exactly `φs`'s record left, and a caller's frame
 `ret(E, φs)` starts the same reading over for the caller's record `φs`
@@ -29469,8 +29469,8 @@ def RueCore.Nest : List Nat → List Kont → Prop :=
 
 *def* · module `RueCore.Statics`
 
-§5.3's `Ω ⊕ Δ`: add a continuing prefix's deliveries to an outcome, which
-keeps its own continuing-or-divergent shape — `(Σ';Δ') ⊕ Δ = Σ';(Δ' ∪ Δ)` and
+§5.3's `Ω ⊕ Δ`: add the abrupt-completion contexts of a prefix that can complete normally to an outcome, which
+keeps its own normal-or-divergent shape — `(Σ';Δ') ⊕ Δ = Σ';(Δ' ∪ Δ)` and
 `(⊥;Δ') ⊕ Δ = ⊥;(Δ' ∪ Δ)`.
 
 ```lean
@@ -29532,7 +29532,7 @@ Stk [] = []
 
 *def* · module `RueCore.Tombstone`
 
-Cell `ℓ` of the store is live: it holds contents, not the retired marker
+Cell `ℓ` of the store is live: it holds contents, not the tombstoned marker
 `†` (helper).
 
 ```lean
@@ -29545,11 +29545,11 @@ def RueCore.Tombstone.Live (H : Store) (ℓ : Nat) : Prop :=
 *def* · module `RueCore.Tombstone`
 
 **The stack's shape**: what each frame of the control stack says about the
-frame in force above it. An `endscope ℓ̄` marker and a loop boundary sit
-under a frame that extends theirs by cells at the end of its scope record
+activation record in force above it. An `endscope ℓ̄` marker and a loop boundary sit
+under an activation record that extends theirs by cells at the end of its drop scope
 (and the front of its environment); a call boundary and the stack's bottom
-sit under a frame whose environment is its scope record reversed; every other
-frame is an evaluation context of the same frame (helper).
+sit under an activation record whose environment is its drop scope reversed; every other
+frame is an evaluation context of the same activation record (helper).
 
 ```lean
 def RueCore.Tombstone.Shape : Activation → List Kont → Prop :=
@@ -29578,7 +29578,7 @@ def RueCore.Tombstone.UnwindPost (H : Store) (ls : List Nat) :
 
 *def* · module `RueCore.Tombstone`
 
-The cells the suspended callers' frames owe a drop (helper).
+The cells the suspended callers' activation records hold a drop obligation for (helper).
 
 ```lean
 def RueCore.Tombstone.callerCells : List Kont → List Nat
@@ -29600,7 +29600,7 @@ Tombstone.callerCells [] = []
 
 *def* · module `RueCore.Trace.Defs`
 
-Every cell allocated since `H` is retired, but those `keep` names
+Every cell allocated since `H` is tombstoned, but those `keep` names
 (helper).
 
 ```lean
@@ -29640,20 +29640,20 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Syntax`
 
-`class(T)` (§3), against the program's declaration environment. Scalars are
+`qual(T)` (§3), against the program's declaration environment. Scalars are
 `Copy` at every width and signedness, floats included (`3.12:2a` classifies
 both float types `Copy` and `3.8:2` lists them, so the core takes it
-directly); a struct type has the class its declaration records, and so does an
+directly); a struct type has the qualifier its declaration records, and so does an
 enum type — whose record is the payload join over every variant (`6.3:19`),
 because the active variant is not a static fact.
 
-`class([T; n])` is §3's own four-line table, read as one `if`: `Copy` whenever
-`class(T)` is (which covers every `n`, the empty array included), `Affine`
-when `n = 0` and `class(T)` is not — a zero-length array of a non-`Copy`
+`qual([T; n])` is §3's own four-line table, read as one `if`: `Copy` whenever
+`qual(T)` is (which covers every `n`, the empty array included), `Affine`
+when `n = 0` and `qual(T)` is not — a zero-length array of a non-`Copy`
 element type carries nothing, so `3.8:74` grants it droppability and says
 nothing about duplicability (RUE-526: an earlier table classed every `[T; 0]`
 `Copy` and over-granted contraction; the compiler agrees with the current
-reading, `let b = a; let c = a;` on an `[NC; 0]` is E0205) — and `class(T)`
+reading, `let b = a; let c = a;` on an `[NC; 0]` is E0205) — and `qual(T)`
 itself otherwise, which is §3's "infectiousness is just the join" with the
 element type as the only member.
 
@@ -30018,10 +30018,10 @@ lostStore =
 
 *def* · module `RueCore.Dynamics`
 
-A `match` consumes a non-`Copy` scrutinee's **shell** (RUE-2427): the enum
+A `match` consumes a non-`Copy` scrutinee's **dead remainder** (RUE-2427): the enum
 node, its payload already bound to the arm's cells. The event names the node
 with every payload slot `⊘`. A `Copy` scrutinee was copied, not consumed, and
-its shell owns nothing, so nothing is recorded (helper).
+its dead remainder owns nothing, so nothing is recorded (helper).
 
 ```lean
 def RueCore.matchConsume (D : Decls) (e k i : Nat) (vs : List Val) : List Event
@@ -30096,7 +30096,7 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Step`
 
 The root cell of a place: `ρ(root(p)) = ℓ` and `H(ℓ)` live (§6.3). An
-unbound index is `unbound` and a retired cell is `useAfterDrop`, §6's stuck
+unbound index is `unbound` and a tombstoned cell is `useAfterDrop`, §6's stuck
 states for both (helper).
 
 ```lean
@@ -30149,8 +30149,8 @@ RueCore.ArgsRes.abort (r : EvalRes) : ArgsRes
 
 *def* · module `RueCore.Trace.Defs`
 
-**Scopes nest** (§6.7, §6.9, §6.10): every frame's pending `endscope`
-markers are exactly the tail of its scope record, innermost last, and the
+**Scopes nest** (§6.7, §6.9, §6.10): every activation record's pending `endscope`
+markers are exactly the tail of its drop scope, innermost last, and the
 whole registration stack is in location order, below the store's length.
 
 ```lean
@@ -30165,7 +30165,7 @@ def RueCore.Config.Nested : Config → Prop :=
 
 *def* · module `RueCore.Trace.Defs`
 
-**Every scope record of a configuration is in registration order**, which
+**Every drop scope of a configuration is in registration order**, which
 is location order: the current frame's, and every one the control stack
 holds (§6.1's `σ`, §6.7's `endscope`, §6.9's `ret(E, φ)`, §6.10's
 `loopβ(e, φ)`).
@@ -30183,7 +30183,7 @@ def RueCore.Config.Ordered : Config → Prop :=
 
 *def* · module `RueCore.Step`
 
-The terminal configurations: `✓n`, a value with nothing left to plug it
+The terminal configurations: `✓n`, a value with nothing left to return it into
 into — (Result-Ok) — and `↯κ` — (Result-Panic). Any value counts here, where
 (Result-Ok) reads only an `i32` or `⟨⟩`: reading the exit code is left to the
 observer.
@@ -30214,7 +30214,7 @@ def RueCore.Config.evalFocus : Config → Prop :=
 *def* · module `RueCore.Step`
 
 §6.12's initial configuration: the empty store (the fragment has no
-string literals to pre-allocate), an empty frame, and the entry point called
+string literals to pre-allocate), an empty activation record, and the entry point called
 with no arguments — the same call `run` (`Dynamics.lean`) makes, so
 (D-Return-Main) is (D-Return) reaching the entry `call` frame. From §6.12's
 own initial configuration, with no `call` frame, a `return` would be stuck
@@ -30237,7 +30237,7 @@ Config.init =
 *def* · module `RueCore.Trace.Defs`
 
 The machine's whole **registration stack**: every suspended caller's
-scope record, bottom first, then the current frame's (§6.1's `σ` per frame);
+drop scope, bottom first, then the current activation record's (§6.1's `σ` per activation record);
 empty at a trap (helper).
 
 ```lean
@@ -30274,8 +30274,8 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Dynamics`
 
-The dynamic image of `class(T)` (§3) on cell contents: a hole has nothing
-to drop, and a struct has the class its declaration records (helper).
+The dynamic image of `qual(T)` (§3) on cell contents: a moved-out part has nothing
+to drop, and a struct has the qualifier its declaration records (helper).
 
 ```lean
 def RueCore.Contents.qual (D : Decls) : Contents → Qual
@@ -30331,7 +30331,7 @@ RueCore.Corpus.Case.mk (name description : String) (rules : List String)
 
 *def* · module `RueCore.Statics`
 
-§3's payload join for one enum declaration: `⊔ { class(Tij) }` over every
+§3's payload join for one enum declaration: `⊔ { qual(Tij) }` over every
 component of every variant, read left to right, variant by variant (`6.3:19`).
 The empty join is `Copy`, which is the discriminant-only case.
 
@@ -30496,7 +30496,7 @@ Examples.demoOps = Float.exactOps
 *inductive* · module `RueCore.Explain`
 
 A derivation tree for the §5 judgment `Γ;Σ ⊢ e ⇒ T ⊣ Ω`: one node per
-rule, carrying the rule's name as the calculus writes it, the incoming fused
+rule, carrying the rule's name as the calculus writes it, the input fused
 `Γ;Σ`, the expression the rule concluded about, its verdict, and the
 sub-derivations of its premises, in premise order.
 
@@ -30559,7 +30559,7 @@ Float.exactModel =
 
 *def* · module `RueCore.TraceExact`
 
-What a scope teardown after a value does to the store: refuse, or retire
+What a scope teardown after a value does to the store: refuse, or tombstone
 exactly the cells `ls` names (helper).
 
 ```lean
@@ -30637,10 +30637,10 @@ Defining equations, as Lean derived them from the body:
 *inductive* · module `RueCore.Statics`
 
 The skeleton half of §5's convention that `Γ` is fixed while `Σ` is
-threaded, read over `Ω`: a normal outgoing state, when there is one, has the
-incoming skeleton, and every `⟨break, Σ⟩` delivery **extends** it — the
-bindings in force at the edge, on top of the incoming ones. `⊥` has no state,
-so it constrains only the deliveries (helper).
+threaded, read over `Ω`: a normal output context, when there is one, has the
+input skeleton, and every `⟨break, Σ⟩` abrupt-completion context **extends** it — the
+bindings in force at the edge, on top of the input ones. `⊥` has no state,
+so it constrains only the abrupt-completion contexts (helper).
 
 ```lean
 inductive RueCore.Out.SkelOk (Γ : Ctx) (Ω : Out) : Prop
@@ -30682,9 +30682,9 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Trace.Defs`
 
 What the rest of a form owes the cells allocated after its leading
-operands ran: every one retired by the form's end — but, for an unwinding
+operands ran: every one tombstoned by the form's end — but, for an unwinding
 `break`, the ones its record owes the loop — and, for an unwinding `return`,
-the frame's whole record retired (helper).
+the activation record's whole drop scope tombstoned (helper).
 
 ```lean
 def RueCore.Settled (φ : Activation) (H₁ : Store) : EvalRes → Prop :=
@@ -30802,7 +30802,7 @@ RueCore.StepOut.stuck (w : Refusal) : StepOut
 
 *def* · module `RueCore.Statics`
 
-§3's field join, over the field types of one declaration: `⊔ { class(Ti) }`
+§3's field join, over the field types of one declaration: `⊔ { qual(Ti) }`
 read left to right. `Attr.lift` then lifts it by the declared attribute.
 
 ```lean
@@ -30821,13 +30821,13 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Trace.Defs`
 
-**The frame-pop invariant for one evaluation** in frame `φ` from store `H`
+**The activation-record-pop invariant for one evaluation** in activation record `φ` from store `H`
 (§6.7, §6.9, §6.10): the store only grew and was touched outside `φ`'s
-environment only to retire; every cell the evaluation allocated is retired by
-its end — for an unwinding `break`, all but the cells of the scope record it
+environment only to tombstone; every cell the evaluation allocated is tombstoned by
+its end — for an unwinding `break`, all but the cells of the drop scope it
 carries, which extends `φ`'s by cells allocated since `H` and which the loop
-retires; and an unwinding
-`return` has retired every cell of `φ`'s record (§6.9's σ-walk).
+tombstones; and an unwinding
+`return` has tombstoned every cell of `φ`'s record (§6.9's σ-walk).
 
 ```lean
 def RueCore.Tidy (φ : Activation) (H : Store) : EvalRes → Prop :=
@@ -30851,7 +30851,7 @@ def RueCore.Tidy (φ : Activation) (H : Store) : EvalRes → Prop :=
 
 *def* · module `RueCore.Tombstone`
 
-The store grew: it is no shorter, and no live cell was retired (helper).
+The store grew: it is no shorter, and no live cell was tombstoned (helper).
 
 ```lean
 def RueCore.Tombstone.Grow (H H' : Store) : Prop :=
@@ -30863,8 +30863,8 @@ def RueCore.Tombstone.Grow (H H' : Store) : Prop :=
 
 *def* · module `RueCore.Tombstone`
 
-**The frame invariant**: every cell the environment names, and every cell
-the scope record owes a drop, is live, and the record owes each at most once
+**The activation record invariant**: every cell the environment names, and every cell
+the drop scope holds a drop obligation for, is live, and the record owes each at most once
 (helper).
 
 ```lean
@@ -30878,7 +30878,7 @@ def RueCore.Tombstone.LiveActivation (H : Store) (φ : Activation) : Prop :=
 *def* · module `RueCore.Tombstone`
 
 **The configuration invariant**: the stack has its shape, and every cell a
-frame on it owes a drop — the frame in force and every suspended caller — is
+activation record on it holds a drop obligation for — the activation record in force and every suspended caller — is
 live and owed once (helper).
 
 ```lean
@@ -30979,8 +30979,8 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Dynamics`
 
-The dynamic image of `class(T)` (§3) on a value: scalars are `Copy`, a
-struct value has the class its declaration records.
+The dynamic image of `qual(T)` (§3) on a value: scalars are `Copy`, a
+struct value has the qualifier its declaration records.
 
 ```lean
 def RueCore.Val.qual (D : Decls) : Val → Qual
@@ -31065,7 +31065,7 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.TraceExact`
 
-A loop whose `break` unwind retires `z`'s cell with no drop and no
+A loop whose `break` unwind tombstones `z`'s cell with no drop and no
 destructor (helper).
 
 ```lean
@@ -31117,12 +31117,12 @@ breakProgram =
 *def* · module `RueCore.Checker.Defs`
 
 The §5 judgment as an algorithm: one case per `Typed` rule, in the same
-order, producing the type (`TyOrNever`) and §5.3's outgoing `Ω` or rejecting. `P`
+order, producing the type (`TyOrNever`) and §5.3's output `Ω` or rejecting. `P`
 is the top-level function environment (Call) §5.8 looks a callee up in and
 `R` the enclosing function's declared return type (Return-Value) §5.7 checks
 a `return` operand against. Where an operand's `Ω` is `⊥` the algorithm stops
 exactly where the `-Bottom` rules stop, and a branch joins only the arms that
-continue (`Ctx.joinOpt`, `Ctx.joinOpts`).
+can complete normally (`Ctx.joinOpt`, `Ctx.joinOpts`).
 
 ```lean
 def RueCore.check (P : Program) (R : Ty) (Γ : Ctx) :
@@ -31149,10 +31149,10 @@ def RueCore.checkArgs (P : Program) (R : Ty) :
 
 (Match) §5.5's arm premises as an algorithm: every arm from the same
 post-scrutinee state `Γ₀`, each under its variant's payload locals (`extendArm`),
-each at the type `c` the first typed arm fixed, and each that continues
-discharging §5.6 for the locals it pops. The result is one optional outgoing
+each at the type `c` the first typed arm fixed, and each that can complete normally
+discharging §5.6 for the locals it pops. The result is one optional output
 context per arm — `none` for an arm that diverges — in declaration order, and
-the arms' deliveries, which is what `Ctx.joinOpts` then folds. A count
+the arms' abrupt-completion contexts, which is what `Ctx.joinOpts` then folds. A count
 mismatch between the arms and the variants is the last clause's `none` —
 `check` has already required the counts to agree, so no program reaches it.
 
@@ -31169,7 +31169,7 @@ def RueCore.checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (c : TyOrNever) :
 `|structs| + |enums|` rounds of the sort, which is "no struct or enum contains itself
 by value, either directly or through a cycle of struct fields and enum
 payloads". `checkNoCycle_sound` turns an acceptance into `WfByValueEdge`, the premise
-that makes §3's two class equations a definition.
+that makes §3's two qualifier equations a definition.
 
 ```lean
 def RueCore.checkNoCycle (D : Decls) : Bool
@@ -31201,7 +31201,7 @@ them through the model `M`;
 observable output (§5.8's (Dbg), §6.12's `Outcome`); `drop` is §6.11's
 explicit `@drop`; `letIn` is (D-Let) + (D-EndScope)'s drop-retire (§6.7);
 `assign` is (D-Assign), §6.8's overwrite-drop / reinitialization, with the
-copy-closure monitor on what it stores; `seq` is
+Copy-containment monitor on what it stores; `seq` is
 (D-Seq), discarding with a temporary drop (§6.7); `mkStruct` is (D-Struct)
 §6.5 after §6.2's left-to-right search through its initializers and `mkArray`
 is (D-Array) §6.5 after the same search, each minting its value's identity
@@ -31215,11 +31215,11 @@ newest-first drop at the arm's end; `ite` is (D-If-T)/(D-If-F) after the §6.2
 search for the scrutinee; `call` is (D-Call)
 followed by (D-Return-Value) when the body completes normally, and by
 (D-Return)'s absorption when it does not; `ret` is (D-Return), which runs the
-frame's scope drops and hands the value past every enclosing form; `loop` is
+activation record's scope drops and hands the value past every enclosing form; `loop` is
 (D-Loop-Enter) and (D-Loop-Iter) §6.10, re-entering the body at one unit of
 fuel less after every turn that completes, and (D-Break)'s unwind when the
-body breaks; `brk` is (D-Break), which hands its loop the frame's scope
-record.
+body breaks; `brk` is (D-Break), which hands its loop the activation record's drop
+scope.
 
 Every operand is sequenced with `bind`, which is §6.2's search through an
 evaluation context; the callee's body is sequenced with `bindCall`, the one
@@ -31287,7 +31287,7 @@ orphanProgram =
 
 *def* · module `RueCore.TraceExact`
 
-The result of a frame pop that forgot its σ-walk: `g`'s parameter cell
+The result of an activation record pop that forgot its σ-walk: `g`'s parameter cell
 `ℓ2` still full, no drop, the destructor event alone (helper).
 
 ```lean
@@ -31394,7 +31394,7 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Witnesses`
 
 Two nested `let`s' pending markers, swapped: `endscope [1]` above
-`endscope [3]` in a frame whose record is `[1, 3]` (the review's Probe 2)
+`endscope [3]` in an activation record whose record is `[1, 3]` (the review's Probe 2)
 (helper).
 
 ```lean
@@ -31418,7 +31418,7 @@ swappedMarkers =
 
 *def* · module `RueCore.TraceExact`
 
-The frame-pop invariant for an argument list (helper).
+The activation-record-pop invariant for an argument list (helper).
 
 ```lean
 def RueCore.ArgsTidy (φ : Activation) (H : Store) : ArgsRes → Prop :=
@@ -31441,13 +31441,13 @@ def RueCore.Corpus.cases : List Corpus.Case
 
 *inductive* · module `RueCore.Statics`
 
-One enum declaration's well-formedness (§3, `6.3:19`): its recorded class
+One enum declaration's well-formedness (§3, `6.3:19`): its recorded qualifier
 is the payload join. As for a struct this is the equation only, and `WfByValueEdge`
 is what makes it solvable (`3.0:5` forbids an enum to contain itself by value
 through any cycle of fields and payloads).
 
 There is no attribute clause and no destructor clause, because §3 gives an enum
-neither: `6.3:19` fixes its class as the join with no `@copy`/`linear` mark to
+neither: `6.3:19` fixes its qualifier as the join with no `@copy`/`linear` mark to
 lift, and the compiler rejects `drop fn E(self)` where it is declared (E0417),
 which is why `EnumDecl` records no `dtor` field for §6.11 to read.
 
@@ -31503,7 +31503,7 @@ call — a `returned` result becomes the call's value, with the drops its unwind
 already ran. Everywhere else the `return` keeps travelling (`bind`).
 
 A `break` never crosses a call boundary: §5.7 makes one well-formed only
-inside a loop, and (Fn) §5.8 gives a function body no `⟨break, _⟩` delivery,
+inside a loop, and (Fn) §5.8 gives a function body no `⟨break, _⟩` abrupt-completion context,
 so a callee's `break` is caught by a loop of its own body — "a `break` in a
 callee would be ill-formed" (§6.10). One that reached the boundary anyway is
 a configuration §6 leaves undefined, `typeConfusion`; `soundness` proves no
@@ -31576,7 +31576,7 @@ RueCore.Explain.ArgsTrace.mk (steps : List Explain.Step) (res : ArgsRes) :
 
 *def* · module `RueCore.Explain`
 
-The derivation's conclusion, in `check`'s shape: the type and outgoing
+The derivation's conclusion, in `check`'s shape: the type and output
 `Σ` of an accepted node, nothing for a rejected one. `explain_result` is the
 proof that this projection is exactly `check` (§5 as an algorithm).
 
@@ -31617,7 +31617,7 @@ def RueCore.Explain.explain (P : Program) (R : Ty) (Γ : Ctx) :
 *def* · module `RueCore.Explain`
 
 The instrumented mirror of `checkArgs` (§5.8's (Call) argument list):
-the sub-derivations in argument order, and the outgoing `Ω` when every
+the sub-derivations in argument order, and the output `Ω` when every
 argument checked at its parameter's type, or `⊥` from the first that
 diverged (§5.3's (Strict-Bottom)).
 
@@ -31645,7 +31645,7 @@ def RueCore.Explain.traceEval (M : FloatSig) (P : Program) :
 
 *def* · module `RueCore.Step`
 
-An operator's outcome as a step: a value plugs the hole, a trap is
+An operator's outcome as a step: a value fills the hole, a trap is
 (Panic-Lift) §6.2, and a wrong-shaped operand is stuck (helper).
 
 ```lean
@@ -31708,7 +31708,7 @@ def RueCore.Spec.no_masking_stmt : Prop :=
 *inductive* · module `RueCore.Statics`
 
 One declaration's well-formedness (§3, `3.8:18`, `3.9:31`, `3.9:44`): its
-recorded class is §3's field join lifted by its attribute, a `@copy`
+recorded qualifier is §3's field join lifted by its attribute, a `@copy`
 declaration's join is already `Copy` and it declares no destructor, and a
 destructor-bearing declaration carries no linear field.
 
@@ -31753,11 +31753,11 @@ def RueCore.Tombstone.ConfigLive : Config → Prop :=
 
 *def* · module `RueCore.Tombstone`
 
-**What an evaluation keeps**, by outcome (helper). A value retires no cell
+**What an evaluation keeps**, by outcome (helper). A value tombstones no cell
 that was live before it (only the cells it minted itself). An unwinding
-`return` may retire the frame's scope record, and nothing else live before it.
-A `break` retires nothing live before it, and the scope record it carries is
-the frame's own, extended by distinct cells it minted, still live. And no
+`return` may tombstone the activation record's drop scope, and nothing else live before it.
+A `break` tombstones nothing live before it, and the drop scope it carries is
+the activation record's own, extended by distinct cells it minted, still live. And no
 refusal is `useAfterDrop`.
 
 ```lean
@@ -31782,8 +31782,8 @@ def RueCore.Tombstone.LivePost (H : Store) (φ : Activation) : EvalRes → Prop 
 
 *def* · module `RueCore.Checker.Defs`
 
-§3's class assignment for one enum declaration, as an algorithm (`6.3:19`):
-the recorded class is the payload join over every variant. There is no attribute
+§3's qualifier assignment for one enum declaration, as an algorithm (`6.3:19`):
+the recorded qualifier is the payload join over every variant. There is no attribute
 clause, no destructor clause and no acyclicity clause — §3 gives an enum neither
 of the first two, and the third is `checkNoCycle`'s.
 
@@ -31838,8 +31838,8 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Checker.Defs`
 
-§3's class assignment for one struct declaration, as an algorithm: the
-recorded class is the attribute's lifting of the field join, a `@copy`
+§3's qualifier assignment for one struct declaration, as an algorithm: the
+recorded qualifier is the attribute's lifting of the field join, a `@copy`
 declaration's join is already `Copy` and it has no destructor (`3.8:18`,
 `3.9:31`), and a destructor-bearing declaration carries no linear field
 (`3.9:44`).
@@ -31943,7 +31943,7 @@ Evaluate a call's by-value arguments left to right, threading the store
 (§6.2's evaluation order, §6.9's by-value argument rule). `ev` is the
 interpreter at the fuel the caller has already spent one unit of, which is
 what keeps `eval` structurally recursive on its fuel. A `returned` argument
-aborts the call: its frame has already unwound, and no parameter cell was
+aborts the call: its activation record has already unwound, and no parameter cell was
 minted (helper).
 
 ```lean
@@ -32081,7 +32081,7 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Dynamics`
 
 A program's outcome (§6.12's top-level result): call the entry function,
-index `0`, with no arguments in an empty store and a frame with no bindings.
+index `0`, with no arguments in an empty store and an activation record with no bindings.
 (D-Return-Main) is the same rule as (D-Return-Value) at the bottom of the
 stack, so the entry point is an ordinary call and needs no second path: the
 call boundary absorbs an unwinding `return` exactly as it does anywhere.
@@ -32130,7 +32130,7 @@ def RueCore.stepArgs (P : Program) (H : Store) (φ : Activation) (K : List Kont)
 
 `step` at an expression in focus: the literal rules of §6.3, the place
 rules of §6.3 and §6.11, (D-Panic) §6.12, (D-Loop-Enter) and (D-Break)
-§6.10, and every (Search) enter rule of §6.2 (helper).
+§6.10, and every (Search) evaluation-state rule of §6.2 (helper).
 
 ```lean
 def RueCore.stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation)
@@ -32141,7 +32141,7 @@ def RueCore.stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation)
 
 *def* · module `RueCore.Step`
 
-`step` at a value returning into the top frame: every (Search) plug rule
+`step` at a value returning into the top frame: every (Search) return-state rule
 of §6.2 and the redexes that fire there — §6.4's operators, (D-Match),
 (D-If-T)/(D-If-F), (D-Let), (D-EndScope), (D-Seq), (D-Assign),
 (D-Return-Value), (D-Return) and (D-Loop-Iter) (helper).
@@ -32169,7 +32169,7 @@ def RueCore.Config.Stuck (M : FloatSig) (P : Program) (C : Config) (w : Refusal)
 
 *def* · module `RueCore.Examples`
 
-An early `return` past two live affine bindings: the frame unwinds
+An early `return` past two live affine bindings: the activation record unwinds
 newest-first (§6.9's (D-Return)), so the trace is `4` then `3`, then the
 value `7`.
 
@@ -32192,7 +32192,7 @@ Examples.returnPastAffine =
 *def* · module `RueCore.Explain`
 
 The instrumented mirror of `checkIdx`: the index expressions'
-sub-derivations in evaluation order, and their integer types with the outgoing
+sub-derivations in evaluation order, and their integer types with the output
 `Ω` when every one checked at an integer type (`4.11:4`).
 
 ```lean
@@ -32228,7 +32228,7 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Explain`
 
 The run of a whole program: the entry call, from the empty store and the
-empty frame (§6.12's top-level result).
+empty activation record (§6.12's top-level result).
 
 ```lean
 def RueCore.Explain.runTrace (M : FloatSig) (P : Program) (fuel : Nat) :
@@ -32285,7 +32285,7 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Trace.Defs`
 
-**A form's leading operands have run** (helper): from store `H` in frame
+**A form's leading operands have run** (helper): from store `H` in activation record
 `φ` at fuel `fuel`, the form's first operand — or its argument list, for a
 call, a literal and a dynamic read — produced the values `vs` in store `H₁`,
 after trace `tr`. A `@drop` below a dynamic index runs the read first. A
@@ -32353,7 +32353,7 @@ def RueCore.Lead (M : FloatSig) (P : Program) (fuel : Nat) (H : Store)
 **No destructor twice on one value** (§6.11, `3.9:28`), given only that a
 destructor-bearing struct is not `Copy` (`3.9:31`). As for `freed_once`, a
 refused or fuel-exhausted run has an empty trace, so the bound is over the
-runs `eval` finishes.
+runs `eval` terminates.
 
 ```lean
 def RueCore.Spec.dtor_once_stmt : Prop :=
@@ -32381,13 +32381,13 @@ def RueCore.Spec.run_ne_returned_stmt : Prop :=
 **No use-after-drop, on every program** (§7 "No use-after-drop / no leak
 of drops", "never read afterward"; RUE-2496): `run` never refuses with
 `useAfterDrop`, at any fuel and any float operations (not only a `FloatLaws`), **whether or not the program is
-checked**. The property is structural rather than a consequence of typing: a
-binding's cell is minted fresh and retired only when the scope that bound it
-ends, after which nothing names it, and a scope record owes each cell once.
+checked**. The property is structural rather than a corollary of typing: a
+binding's cell is minted fresh and tombstoned only when the scope that bound it
+ends, after which nothing names it, and a drop scope owes each cell once.
 So `no_use_after_drop`'s `ProgramTyped` is redundant for a run from the
-start. The guard is not dead code: from an open configuration, a frame that
-names a cell already retired, `eval` does refuse (`Sharp.tombstoned_cell`). Like
-`no_use_after_drop`, it says no retired cell is accessed only as far as
+start. The guard is not dead code: from an open configuration, an activation record that
+names a cell already tombstoned, `eval` does refuse (`Sharp.tombstoned_cell`). Like
+`no_use_after_drop`, it says no tombstoned cell is accessed only as far as
 `eval` checks every access and labels it so (R3 of `REDTEAM-LOG.md`).
 
 ```lean
@@ -32427,7 +32427,7 @@ def RueCore.Tombstone.StepLive : StepOut → Prop :=
 
 *def* · module `RueCore.Statics`
 
-A well-formed enum environment: §3's class assignment holds of every enum
+A well-formed enum environment: §3's qualifier assignment holds of every enum
 declaration (`EnumDecl.Wf`). Together with `WfStructs` this is the premise that
 makes `Ty.qual`'s lookup §3's join at every type, and it is what `checkEnums`
 (`Checker/Defs.lean`) decides.
@@ -32441,7 +32441,7 @@ def RueCore.WfEnums (D : Decls) : Prop :=
 
 *def* · module `RueCore.Statics`
 
-A well-formed struct environment: §3's class assignment holds of every
+A well-formed struct environment: §3's qualifier assignment holds of every
 declaration (`StructDecl.Wf`). This is the premise that makes `Ty.qual`'s
 lookup §3's join, and it is what `checkStructs` (`Checker/Defs.lean`) decides.
 
@@ -32492,7 +32492,7 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Checker.Defs`
 
-§3's class assignment for a whole enum environment, as an algorithm.
+§3's qualifier assignment for a whole enum environment, as an algorithm.
 `WfEnums` is what it decides, and that is the premise `Ty.qual`'s lookup needs to
 be `6.3:19`'s join at an enum type.
 
@@ -32510,7 +32510,7 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Checker.Defs`
 
-§3's class assignment for a whole struct environment, as an algorithm.
+§3's qualifier assignment for a whole struct environment, as an algorithm.
 `WfStructs` is what it decides, and that is the premise `Ty.qual`'s lookup
 needs to be §3's join.
 
@@ -32529,7 +32529,7 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Step`
 
 `drop-retire(H, ℓ)` (§6.1) as §6 writes it: run the binding's drop and
-retire the allocation, with **no** leak monitor — `dropRetire`
+tombstone the allocation, with **no** leak monitor — `dropRetire`
 (`Dynamics.lean`) without its `residualLinear` test (helper).
 
 ```lean
@@ -32557,7 +32557,7 @@ Defining equations, as Lean derived them from the body:
 
 §6.3's `drop*` on the residue as §6.3 writes it: each retained subtree's
 marker (`residueDropEvent`, RUE-2427) and §6.11's walk, left to right, with no
-residue monitor (helper).
+linear-leak monitor (helper).
 
 ```lean
 def RueCore.plainResidue (D : Decls) (ℓ : Nat) :
@@ -32621,9 +32621,9 @@ def RueCore.Spec.step_stuck_isStuckState_stmt : Prop :=
 *inductive* · module `RueCore.Statics`
 
 A well-formed declaration environment: `3.0:5`'s acyclicity (`WfByValueEdge`),
-§3's class assignment for every struct declaration (`WfStructs`) and for every
+§3's qualifier assignment for every struct declaration (`WfStructs`) and for every
 enum declaration (`WfEnums`). This is the premise every theorem that reads a
-recorded class through `Ty.qual` carries, and it is what `checkDecls`
+recorded qualifier through `Ty.qual` carries, and it is what `checkDecls`
 (`Checker/Defs.lean`) decides.
 
 ```lean
@@ -32692,8 +32692,8 @@ Defining equations, as Lean derived them from the body:
 
 The promise for an evaluation that does **not** produce a value here: an
 unwinding `return` carries a value of the enclosing function's declared return
-type `R` and leaves the frame's neighbours alone; an unwinding `break` is one
-of the deliveries `B` (`BreakOutputOk`); a trap and exhausted fuel promise nothing;
+type `R` and leaves the activation record's neighbours alone; an unwinding `break` is one
+of the abrupt-completion contexts `B` (`BreakOutputOk`); a trap and exhausted fuel promise nothing;
 a refusal is impossible, which is the whole theorem (helper).
 
 ```lean
@@ -32712,10 +32712,10 @@ def RueCore.AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Activation)
 
 *inductive* · module `RueCore.Soundness.Defs`
 
-The per-frame invariant (§6.1): the fused context agrees with the store
-through the frame's environment, and the frame's scope record, read
+The per-activation-record invariant (§6.1): the fused context agrees with the store
+through the activation record's environment, and the activation record's drop scope, read
 newest-first, **is** that environment. The second clause is the RUE-1277
-redundancy discharged — every live binding of the frame is registered for a
+redundancy discharged — every live binding of the activation record is registered for a
 drop exactly once, which is what makes `run-all-scope-drops` (§6.9) safe at an
 early `return`.
 
@@ -32739,15 +32739,15 @@ RueCore.ActivationTyping.mk {D : Decls} {Γ : Ctx} {φ : Activation} {H : Store}
 *def* · module `RueCore.Soundness.Defs`
 
 The promise for an unwinding `break` (§6.10's (D-Break)), made about an
-evaluation in frame `φ` from store `H`: the `break` fired in a frame that is
+evaluation in activation record `φ` from store `H`: the `break` fired in an activation record that is
 `φ` with some bindings `locs` opened on top of it — the ones the loop body
 opened and had not closed, each minted above `H` — and at one of the
-delivered states `B` of §5.3's `Ω`, the frame it fired in agrees with the
+abrupt-completion contexts `B` of §5.3's `Ω`, the activation record it fired in agrees with the
 store. Its record is `φ`'s with `locs` appended, which is what the loop reads
-to find the drops it owes, and nothing `φ` names outside the frame was
+to find the drops it owes, and nothing `φ` names outside the activation record was
 touched. It is closed under entering a binder (`BreakOutputOk.under_binders`), so a
 `let` or a `match` arm passes it outward unchanged, and the loop that catches
-it reads the frame it fired in straight off it (helper).
+it reads the activation record it fired in straight off it (helper).
 
 ```lean
 def RueCore.BreakOutputOk (D : Decls) (B : List Ctx) (φ : Activation)
@@ -32847,7 +32847,7 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Soundness`
 
 The promise for an argument list (§5.8's (Call), left to right with Σ
-threaded), at the list's normal outgoing state `o` and deliveries `B`
+threaded), at the list's normal output context `o` and abrupt-completion contexts `B`
 (helper).
 
 ```lean
@@ -32867,7 +32867,7 @@ def RueCore.ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx)
 *inductive* · module `RueCore.Trace.Defs`
 
 **§6.11's order, as a grammar over the trace.** A trace is a sequence of
-blocks: a `@dbg` line, a consumption (`consume c`, which runs no drop of its
+blocks: a `@dbg` line, a consume event (`consume c`, which runs no drop of its
 own), or a drop marker followed by exactly the events §6.11's walk of what it
 names emits (`dropEvents`) — for a binding's drop `drop ℓ c`, the contents
 `c`, and for a discarded temporary `dropTemp v`, the value `v`. A destructor
@@ -32920,7 +32920,7 @@ RueCore.Blocks.dropTemp {D : Decls} {v : Val} {t : List Event} :
 
 *def* · module `RueCore.Trace.Defs`
 
-A cell's owned identities: a retired cell, or a reserved identity slot,
+A cell's owned identities: a tombstoned cell, or a reserved identity slot,
 holds none (helper).
 
 ```lean
@@ -32956,7 +32956,7 @@ Defining equations, as Lean derived them from the body:
 
 Per-cell agreement between the static entry and the dynamic cell: §7's
 "Σ faithfully tracks the store's initialization", with the §5.5 join's
-asymmetry built into `ContentsOwnTyping`. A retired (`†`) cell matches no entry
+asymmetry built into `ContentsOwnTyping`. A tombstoned (`†`) cell matches no entry
 at all, which is what keeps the unwind off one.
 
 ```lean
@@ -33066,7 +33066,7 @@ Defining equations, as Lean derived them from the body:
 owned identities `X` besides it (a pending operand's value): the result's
 store, its value and the trace's projection `F` together own at most what `H`
 and `X` owned, plus what was minted on the way — each identity counted, as a
-multiset. The store and the value stay copy-closed. A trap carries no store,
+multiset. The store and the value stay copy-contained. A trap carries no store,
 so its minted range is existential; a refusal and exhausted fuel promise
 nothing (helper).
 
@@ -33114,7 +33114,7 @@ def RueCore.Cons (D : Decls) (F : Event → List Nat) (H : Store) (X : List Nat)
 *def* · module `RueCore.Dynamics`
 
 Whether every node of a contents is `Copy` — a `⊘` and a scalar are, and an
-aggregate is when its own class is and each member is (helper).
+aggregate is when its own qualifier is and each member is (helper).
 
 ```lean
 def RueCore.Contents.allCopy (D : Decls) : Contents → Bool
@@ -33165,13 +33165,13 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Dynamics`
 
-**Copy closure**: no non-`Copy` value sits under a `Copy` node. §3 makes
+**Copy containment**: no non-`Copy` value sits under a `Copy` node. §3 makes
 it a fact about types — a `Copy` type's fields, payloads and elements are
 `Copy` (`3.8:18`, `6.3:19`, §3's array lift) — and the machine relies on it
 wherever it duplicates a value: (D-Use-Copy), the dynamic-index read and the
 repeat form copy a `Copy` value whole, which is sound only when nothing owned
 hides inside it. A struct literal, an enum literal or an array literal whose
-class is `Copy` but whose members are not, or an assignment that writes an
+qualifier is `Copy` but whose members are not, or an assignment that writes an
 owned value under a `Copy` node, is a shape no well-typed program produces;
 the machine refuses it (`ownedUnderCopy`) rather than build a duplicable
 owner, and `soundness` proves a checked program never reaches the refusal
@@ -33233,7 +33233,7 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Trace.Defs`
 
-Every live cell of the store is copy-closed (helper).
+Every live cell of the store is copy-contained (helper).
 
 ```lean
 def RueCore.StoreCC (D : Decls) (H : Store) : Prop :=
@@ -33245,10 +33245,10 @@ def RueCore.StoreCC (D : Decls) (H : Store) : Prop :=
 
 *def* · module `RueCore.Spec.Nonvacuous`
 
-**The initial frame agrees with the empty context** (§6.12's initial
-configuration): at every declaration environment, the empty frame over the
+**The initial activation record agrees with the empty context** (§6.12's initial
+configuration): at every declaration environment, the empty activation record over the
 empty store matches the empty context (`ActivationTyping`) and its store is
-copy-closed (`StoreCC`). With a program's typed body this is the frame and
+copy-contained (`StoreCC`). With a program's typed body this is the activation record and
 store the evaluation statements (`soundness`, `drop_exactly_once`,
 `rest_exactly_once`) are applied at by the witnesses below.
 
@@ -33263,10 +33263,10 @@ def RueCore.Spec.Nonvacuous.empty_activation_stmt : Prop :=
 
 **§6.3's `destructure(H, ℓ@π_d, π_s)`**, on the contents stored at the
 consumed place of cell `ℓ`: `split` the aggregate, then apply `drop*` to the
-residue, then record the consumption of the path's shell (`consume`,
+residue, then record the consume event of the path's dead remainder (`consume`,
 RUE-2427). The result is the selected leaf — "the result transferred to the
 context, not a value dropped by `destructure`" — and the residue's drop events
-followed by the consumption. Writing `⊘` at `ℓ@π_d` is the caller's step,
+followed by the consume event. Writing `⊘` at `ℓ@π_d` is the caller's step,
 because §6.3 puts it *after* the residue's drops.
 
 ```lean
@@ -33391,8 +33391,8 @@ Contents.ofVals [] = []
 
 (D-Call) §6.9: mint one fresh single-cell binding allocation per by-value
 argument, left to right, each holding its argument's value. Returns the store
-and the locations in creation order — the callee's entry scope record, which
-owes a drop for exactly these cells. The callee's environment is its reverse,
+and the locations in creation order — the callee's entry drop scope, which
+holds a drop obligation for exactly these cells. The callee's environment is its reverse,
 because `Env` (like `Ctx`) lists the innermost binder first and the last
 parameter is the innermost.
 
@@ -33414,7 +33414,7 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Dynamics`
 
-**Aggregate introduction mints a value identity** ((D-Struct) and (D-Array)
+**Aggregate introduction mints a object identity** ((D-Struct) and (D-Array)
 §6.5, (D-Enum-Intro) §6.6, and the repeat form): the new value's identity is
 `H.length`, the next index of the store, and that index is reserved by
 appending `†`. §6.1 draws every identity from one pool — "a fresh identity is
@@ -33426,7 +33426,7 @@ binds it; it is never read. The identity travels with the value — through
 cells and a `match` arm's payload cells — and the drop trace records it
 (`Event`), which is what `no_double_free` (`Trace.lean`) counts.
 
-The copy-closure monitor (`Contents.copyContained`) runs here, on the finished
+The Copy-containment monitor (`Contents.copyContained`) runs here, on the finished
 value (helper).
 
 ```lean
@@ -33518,7 +33518,7 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Trace.Defs`
 
 The owned identities a `drop` or `dropTemp` marker frees: the whole tree
-§6.11's walk goes through — and the shell a `consume` event ends (RUE-2427),
+§6.11's walk goes through — and the dead remainder a `consume` event ends (RUE-2427),
 whose members were already moved out or dropped. A destructor event frees
 nothing of its own — it is nested under a marker — and a `@dbg` frees nothing
 (helper).
@@ -33567,8 +33567,8 @@ Defining equations, as Lean derived them from the body:
 
 The owned identities one control-stack frame holds (§6.1's `K`, §6.2's
 `E`): a binary operator's left operand, reduced while the right one is, and a
-list context's reduced values. A `call` or loop frame holds a scope record,
-whose cells are in the store, and no other frame holds a value (helper).
+list context's reduced values. A `call` or loop frame holds a drop scope,
+whose cells are in the store, and no other activation record holds a value (helper).
 
 ```lean
 def RueCore.Kont.own (D : Decls) : Kont → List Nat
@@ -33730,7 +33730,7 @@ def RueCore.Spec.freed_once_stmt : Prop :=
 
 *def* · module `RueCore.Dynamics`
 
-**The consumed shell of a destructure** (RUE-2427): the nodes on the
+**The consumed dead remainder of a destructure** (RUE-2427): the nodes on the
 selected path — the declared-`linear` place `d` and every node below it down
 to the leaf's parent — with the leaf and every retained subtree replaced by
 `⊘`. It is what §6.3's destructure consumes without dropping: the leaf is
@@ -33788,9 +33788,9 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Step`
 
 §6.3's `destructure(H, ℓ@π_d, π_s)` as §6.3 writes it: `split`, then
-`drop*` on the residue left to right, with no residue monitor — the
+`drop*` on the residue left to right, with no linear-leak monitor — the
 (Use-Declared-Linear-Destructure) premise excluded a linear residue before
-(D-Use-Declared-Linear) can fire — and then the path's shell consumed
+(D-Use-Declared-Linear) can fire — and then the path's dead remainder consumed
 (`consume`, RUE-2427), exactly as `eval`'s `Contents.destructure` records it
 (helper).
 
@@ -33819,7 +33819,7 @@ Defining equations, as Lean derived them from the body:
 
 §5.6's `residual-linear`, read on the **contents** rather than on Σ: does a
 live sub-value of a declared-`linear` struct type remain? This is the leak
-monitor §6.7's `endscope` and §6.9's frame teardown consult, and the overwrite
+monitor §6.7's `endscope` and §6.9's activation record teardown consult, and the overwrite
 monitor of §6.8. A `⊘` carries nothing (`3.8:60`'s skip), a live
 declared-`linear` struct carries the obligation itself (`3.8:74`), and
 otherwise the obligation is the disjunction over the live fields — exactly the
@@ -33828,7 +33828,7 @@ recursion §5.6 writes for Σ, on the store's side of the invariant.
 At an **enum** the residue is the **active** variant's payload and nothing else:
 an enum declares no attribute to carry an obligation of its own, and the
 inactive variants have no storage (§6.11). That is weaker than §5.6's Σ-side
-clause, which reads `class(E) = Linear` over *every* variant because the tag is
+clause, which reads `qual(E) = Linear` over *every* variant because the tag is
 not a static fact — and weaker in the safe direction: a program the statics
 accept has no linear payload in any variant, so the monitor finds none under the
 tag either (`ContentsTy.residualLinear_false`, `Soundness.lean`). The gap is
@@ -33899,7 +33899,7 @@ unreachable (`ContentsOwnTyping.destructure_ok`, `Soundness.lean`). On a program
 refusal, which is what `3.8:60` (E0474) is about.
 
 The test is per element, immediately before that element's own drop, which is
-`unwindLocs`' shape at a scope record rather than `dropRetire`'s at one cell.
+`unwindLocs`' shape at a drop scope rather than `dropRetire`'s at one cell.
 Nothing is destroyed early by it: `dropContents` writes no store, the `⊘` at
 `ℓ@π_d` is the caller's step *after* `destructure` returns `.ok`, and a
 refusal discards the events, so an earlier residue's drop leaves no trace and
@@ -33933,14 +33933,14 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Dynamics`
 
 `drop-retire(H, ℓ)` (§6.1): run the binding's drop (§6.11 — a no-op on a
-`⊘` or `Copy` cell), then retire the allocation, so any later access to it is
+`⊘` or `Copy` cell), then tombstone the allocation, so any later access to it is
 `useAfterDrop` rather than silently readable (the RUE-390 change). A live
 linear value here is §5.6's leak: the scope ends with an obligation
 undischarged, and the machine refuses (`3.8:32`). The monitor reads
 `Contents.residualLinear`, §5.6's own recursion on the store's side, because
 after a partial move the obligation attaches to whatever linear content is
 still present rather than to the binding's type (RUE-1591). This is the one
-scope-teardown path: `let`'s normal `endscope` (§6.7) and the frame unwind of
+scope-teardown path: `let`'s normal `endscope` (§6.7) and the activation record unwind of
 `return` (§6.9) both run it.
 
 ```lean
@@ -33996,9 +33996,9 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Dynamics`
 
-`run-all-scope-drops(H, φ)` (§6.1, §6.9): the whole-frame teardown, run
-when a frame is popped — at a normal (D-Return-Value) and at an unwinding
-(D-Return). The frame's record lists its cells in creation order, so the
+`run-all-scope-drops(H, φ)` (§6.1, §6.9): the whole-activation-record teardown, run
+when an activation record is popped — at a normal (D-Return-Value) and at an unwinding
+(D-Return). The activation record's drop scope lists its cells in creation order, so the
 teardown reads it backwards: newest binding first.
 
 ```lean
@@ -34073,7 +34073,7 @@ Contents.toVals [] = some []
 
 **§6's reduction relation** `C → C'`, over the fragment. One constructor
 per §6 rule (or per rule group, where §6.4's operator tables are one function
-of the operands), plus §6.2's (Search) as an *enter* and a *plug* constructor
+of the operands), plus §6.2's (Search) as an *evaluation-state* and a *return-state* constructor
 per evaluation-context production. (Panic-Lift) is the shape of every trap
 constructor. `M` fixes the float operations, as `eval`'s does; `P` supplies the
 declarations and the functions.
@@ -34323,7 +34323,7 @@ RueCore.Step.dbgEnter {M : FloatSig} {P : Program} {H : Store}
     (Config.run H φ (Kont.dbg :: K) (Focus.eval e) tr)
 ```
 
-**`Step.dbg`** — `@dbg`'s defining equation (§6.9's intrinsic note, §6.12): append the value's rendering to the observable output and yield `⟨⟩`. The rendering is defined on an observable value only (`Val.observable`), so any other operand has no rule (RUE-2427).
+**`Step.dbg`** — `@dbg`'s specification equation (§6.9's intrinsic note, §6.12): append the value's rendering to the observable output and yield `⟨⟩`. The rendering is defined on an observable value only (`Val.observable`), so any other operand has no rule (RUE-2427).
 
 ```lean
 RueCore.Step.dbg {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
@@ -34593,7 +34593,7 @@ RueCore.Step.matchEnter {M : FloatSig} {P : Program} {H : Store}
     (Config.run H φ (Kont.match arms :: K) (Focus.eval scrut) tr)
 ```
 
-**`Step.match`** — (D-Match) §6.6: the tag selects the arm; the payload is bound to fresh cells, appended to the scope record *and* owed to the arm's `endscope`; a non-`Copy` scrutinee's shell is consumed (`matchConsume`, RUE-2427).
+**`Step.match`** — (D-Match) §6.6: the tag selects the arm; the payload is bound to fresh cells, appended to the drop scope *and* owed to the arm's `endscope`; a non-`Copy` scrutinee's dead remainder is consumed (`matchConsume`, RUE-2427).
 
 ```lean
 RueCore.Step.match {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
@@ -34648,7 +34648,7 @@ RueCore.Step.letEnter {M : FloatSig} {P : Program} {H : Store}
     (Config.run H φ (Kont.letIn e₂ :: K) (Focus.eval e₁) tr)
 ```
 
-**`Step.letBind`** — (D-Let) §6.7: a fresh cell, bound, appended to the innermost scope record, and owed to the body's `endscope` (RUE-1277).
+**`Step.letBind`** — (D-Let) §6.7: a fresh cell, bound, appended to the innermost drop scope, and owed to the body's `endscope` (RUE-1277).
 
 ```lean
 RueCore.Step.letBind {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
@@ -34659,7 +34659,7 @@ RueCore.Step.letBind {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
       (Kont.endscope [List.length H] :: K) (Focus.eval e₂) tr)
 ```
 
-**`Step.endScope`** — (D-EndScope) §6.7: the body is a value; drop-retire the marker's cells newest-first and resume in `⟨ρ; s minus ℓ̄⟩`: the marker's cells popped off the environment and the scope record by count (`Activation.unwindScope`).
+**`Step.endScope`** — (D-EndScope) §6.7: the body is a value; drop-retire the marker's cells newest-first and resume in `⟨ρ; s minus ℓ̄⟩`: the marker's cells popped off the environment and the drop scope by count (`Activation.unwindScope`).
 
 ```lean
 RueCore.Step.endScope {M : FloatSig} {P : Program} {H : Store}
@@ -34773,7 +34773,7 @@ RueCore.Step.dropMove {M : FloatSig} {P : Program} {H : Store}
                   (Focus.ret Val.unit) (tr ++ evs))
 ```
 
-**`Step.call`** — (D-Call) §6.9: every argument is a value; mint one cell per by-value argument, suspend the caller as `ret(E, φ)`, and enter the body in the callee's frame, whose entry scope owes exactly those cells.
+**`Step.call`** — (D-Call) §6.9: every argument is a value; mint one cell per by-value argument, suspend the caller as `ret(E, φ)`, and enter the body in the callee's activation record, whose entry scope owes exactly those cells.
 
 ```lean
 RueCore.Step.call {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
@@ -34787,7 +34787,7 @@ RueCore.Step.call {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
             (Focus.eval fd.body) tr)
 ```
 
-**`Step.callReturn`** — (D-Return-Value) §6.9: the body is a value; run the frame's scope drops and resume the caller.
+**`Step.callReturn`** — (D-Return-Value) §6.9: the body is a value; run the activation record's scope drops and resume the caller.
 
 ```lean
 RueCore.Step.callReturn {M : FloatSig} {P : Program} {H : Store}
@@ -34807,7 +34807,7 @@ RueCore.Step.retEnter {M : FloatSig} {P : Program} {H : Store}
     (Config.run H φ (Kont.ret :: K) (Focus.eval e) tr)
 ```
 
-**`Step.ret`** — (D-Return) §6.9: discard every frame up to the nearest `ret(E, φ)` — pending `endscope` markers and loop boundaries included — run the frame's scope drops from its record, and hand `v` to the caller. At the entry point's `call` frame this is (D-Return-Main) §6.9 (`Config.init`).
+**`Step.ret`** — (D-Return) §6.9: discard every frame up to the nearest `ret(E, φ)` — pending `endscope` markers and loop boundaries included — run the activation record's scope drops from its record, and hand `v` to the caller. At the entry point's `call` frame this is (D-Return-Main) §6.9 (`Config.init`).
 
 ```lean
 RueCore.Step.ret {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
@@ -34828,7 +34828,7 @@ RueCore.Step.loopEnter {M : FloatSig} {P : Program} {H : Store}
     (Config.run H φ (Kont.loop e φ :: K) (Focus.eval e) tr)
 ```
 
-**`Step.loopIter`** — (D-Loop-Iter) §6.10: the body became `⟨⟩` — "necessarily `⟨⟩`", so any other value has no rule (RUE-2427); `run-scope-drops` on the cells the turn still owes (those past the loop's own record, newest-first, as (D-Break) reads them), then re-enter the body in the loop's frame.
+**`Step.loopIter`** — (D-Loop-Iter) §6.10: the body became `⟨⟩` — "necessarily `⟨⟩`", so any other value has no rule (RUE-2427); `run-scope-drops` on the cells the turn still owes (those past the loop's own record, newest-first, as (D-Break) reads them), then re-enter the body in the loop's activation record.
 
 ```lean
 RueCore.Step.loopIter {M : FloatSig} {P : Program} {H : Store}
@@ -35082,7 +35082,7 @@ def RueCore.MSim (M : FloatSig) (P : Program) (φ : Activation)
 (RUE-2289, parts 2 and 3; the module docstring reads it clause by clause). `C`
 is a configuration family indexed by the context `K` below the focus and the
 trace `tr` produced before it, §6.2's `⟨H ; φ ; K ; E[e]⟩`: a value reaches
-`E[v]` in the frame `φ` (§6.2's (Search)), a panic reaches `↯κ` from every
+`E[v]` in the activation record `φ` (§6.2's (Search)), a panic reaches `↯κ` from every
 context ((Panic-Lift) §6.2), an unwinding `return` reaches the nearest caller
 ((D-Return) §6.9), and an unwinding `break` reaches the nearest loop's context
 ((D-Break) §6.10). Part 3's completeness (`eval_small_to_big`) takes its runs
@@ -35180,7 +35180,7 @@ def RueCore.Spec.run_small_to_big_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Equivalence`
 
-**`eval` never stuck, so `Step` never stuck, on every program** (§7 "Type
+**`eval` never refused, so `Step` never stuck, on every program** (§7 "Type
 safety": "it either reduces, halts with a value, or halts with one of the
 defined panics").
 
@@ -35197,10 +35197,10 @@ def RueCore.Spec.step_never_stuck_of_run_stmt : Prop :=
 *def* · module `RueCore.Spec.Step`
 
 **No use-after-drop over `Step`, on every program** (§7 "No use-after-drop /
-no leak of drops"; §6.1's retired cell; RUE-2496). No configuration reachable
-from `Config.init` is stuck on a retired (`†`) cell, whether or not the
+no leak of drops"; §6.1's tombstoned cell; RUE-2496). No configuration reachable
+from `Config.init` is stuck on a tombstoned (`†`) cell, whether or not the
 program is checked. The hypothesis that the configuration is reached is
-needed: a configuration whose frame names a retired cell is stuck so
+needed: a configuration whose activation record names a tombstoned cell is stuck so
 (`Sharp.tombstoned_cell`).
 
 ```lean
@@ -35213,7 +35213,7 @@ def RueCore.Spec.step_no_use_after_drop_stmt : Prop :=
 
 *def* · module `RueCore.TracePrefix`
 
-The induction hypothesis: at fuel `fuel`, exhaustion from a copy-closed
+The induction hypothesis: at fuel `fuel`, exhaustion from a copy-contained
 store is a run of at least `fuel` steps with the ledger (helper).
 
 ```lean
@@ -35446,7 +35446,7 @@ RueCore.ContentsTys.cons {D : Decls} {c : Contents} {cs : List Contents}
 *def* · module `RueCore.Soundness`
 
 The residue `split` exposes is droppable: every retained subtree is well
-typed at a type whose class is not `Linear`. This is §5.1's
+typed at a type whose qualifier is not `Linear`. This is §5.1's
 `¬ linear-residue(S, π_s)` premise, read on the store side — and it is exactly
 what `dropResidue`'s monitor asks for (helper).
 
@@ -35461,7 +35461,7 @@ def RueCore.ResidueOk (D : Decls) (rs : List Contents) : Prop :=
 *def* · module `RueCore.Statics`
 
 §5.5's join is associative over contexts whose every entry is a shape of
-its declared type; `Ctx.Wf` reads that invariant over a whole frame, the way
+its declared type; `Ctx.Wf` reads that invariant over a whole activation record, the way
 `NoResidualLinear` reads §5.6's.
 
 ```lean
@@ -35473,8 +35473,8 @@ def RueCore.Ctx.Wf (D : Decls) (Γ : Ctx) : Prop :=
 
 *inductive* · module `RueCore.Statics`
 
-(helper) Every state an outcome carries — its normal outgoing state and
-every delivered one — is a shape of its declared types.
+(helper) Every state an outcome carries — its normal output context and
+every abrupt-completion one — is a shape of its declared types.
 
 ```lean
 inductive RueCore.Out.Wf (D : Decls) (Ω : Out) : Prop
@@ -35494,8 +35494,8 @@ RueCore.Out.Wf.mk {D : Decls} {Ω : Out}
 
 *def* · module `RueCore.Statics`
 
-(helper) The same for a `match`'s arms: every continuing arm's state and
-every arm's deliveries.
+(helper) The same for a `match`'s arms: the state of every arm that can complete normally, and
+every arm's abrupt-completion contexts.
 
 ```lean
 def RueCore.Out.WfArms (D : Decls) (Γ₀ : Ctx) (os : List (Option Ctx))
@@ -35509,8 +35509,8 @@ def RueCore.Out.WfArms (D : Decls) (Γ₀ : Ctx) (os : List (Option Ctx))
 
 *def* · module `RueCore.Statics`
 
-(helper) `Typed.wf`'s statement for one judgment: a well-formed incoming
-context gives a well-formed normal outgoing state and well-formed deliveries.
+(helper) `Typed.wf`'s statement for one judgment: a well-formed input
+context gives a well-formed normal output context and well-formed abrupt-completion contexts.
 
 ```lean
 def RueCore.Out.WfPres (D : Decls) (Γ : Ctx) (Ω : Out) : Prop :=
@@ -35522,7 +35522,7 @@ def RueCore.Out.WfPres (D : Decls) (Γ : Ctx) (Ω : Out) : Prop :=
 *def* · module `RueCore.Statics`
 
 The §5.5 branch join, pointwise. Defined only on equal-length contexts
-(the two arms extend one incoming context, so lengths always agree).
+(the two arms extend one input context, so lengths always agree).
 
 ```lean
 def RueCore.Ctx.join (D : Decls) : Ctx → Ctx → Option Ctx
@@ -35549,7 +35549,7 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Statics`
 
 The accumulator step of (Match) §5.5's `join(Σ1, …, Σn)`: fold the binary
-§5.5 join over the remaining arms' outgoing states, left to right.
+§5.5 join over the remaining arms' output contexts, left to right.
 
 ```lean
 def RueCore.Ctx.joinFold (D : Decls) : Ctx → List Ctx → Option Ctx
@@ -35571,9 +35571,9 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Statics`
 
 §5.5's branch join over `Ω` for two arms: "the normal state is `join` of
-the continuing arms' normal states (`⊥` when no arm continues)". A divergent
-arm contributes nothing, which is how (Sub-Never) §5.7 lets it sit beside a
-continuing one; `none` is a join the continuing arms disagree on.
+the normal states of the arms that can complete normally (`⊥` when no arm can complete normally)". A divergent
+arm contributes nothing, which is how (Sub-Never) §5.7 lets it sit beside one
+that can complete normally; `none` is a join the arms that can complete normally disagree on.
 
 ```lean
 def RueCore.Ctx.joinOpt (D : Decls) :
@@ -35593,7 +35593,7 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Statics`
 
-(Match) §5.5's `Σ' = join(Σ1, …, Σn)`: the n-way join of the arms' outgoing
+(Match) §5.5's `Σ' = join(Σ1, …, Σn)`: the n-way join of the arms' output
 states, as the left fold of the binary join (section docstring).
 
 ```lean
@@ -35613,7 +35613,8 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Statics`
 
 (Match) §5.5's n-way join over `Ω`: the fold `Ctx.joinAll` over the
-normal states of the arms that **continue**, or `⊥` when none does.
+normal states of the arms that **can complete normally**, or `⊥` when none
+can.
 
 ```lean
 def RueCore.Ctx.joinOpts (D : Decls) (os : List (Option Ctx)) :
@@ -35635,7 +35636,7 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Statics`
 
 §5.7's loop-head equation `Σ_h = head(Σ, e)`, over the body's normal
-outgoing state `o` (section docstring): `Σ_h` is the §5.5 join of the entry
+output context `o` (section docstring): `Σ_h` is the §5.5 join of the entry
 state `Γ` with the body's back-edge state when it has one, and is `Γ` itself
 when it has none; a head a back edge produced is a state of its types.
 
@@ -35760,7 +35761,7 @@ RueCore.DropGlue.enum {D : Decls} {e k i : Nat} {cs : List Contents}
 
 **§6.11's order as a grammar over the trace, stated independently of the
 machine** (RUE-2487). The same block grammar as `Blocks` — a `@dbg` line, a
-consumption, or a drop marker followed by its drop's events — except that a
+consume event, or a drop marker followed by its drop's events — except that a
 drop's events are given by §6.11's rules (`DropGlue`) rather than by the
 function `dropEvents` the machine's walk is proved equal to. So a trace in
 this grammar runs each value's destructor first, then its fields in
@@ -35877,11 +35878,11 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Soundness.Defs`
 
 The promise `soundness` makes about `eval`'s result, given §5.3's `Ω` —
-its normal outgoing state `o` and its deliveries `B`: a value of the
+its normal output context `o` and its abrupt-completion contexts `B`: a value of the
 expression's type with that state's invariant restored (preservation), or one
 of `AbortOk`'s outcomes — never `.refused` (progress). When `o` is `none`,
 §5.7's `⊥`, a value is **impossible**: an expression the rules type as
-divergent never completes normally. A `break` is one of the deliveries: the
+divergent never completes normally. A `break` is one of the abrupt-completion contexts: the
 state it fired at is one the rules recorded. Stating it as a predicate on the
 result, rather than as a disjunction of existentials, is what lets the operand
 combinators (`bind`) be discharged once and reused at every form
@@ -35986,7 +35987,7 @@ Expr.breaksList [] = false
 
 *def* · module `RueCore.Trace.Defs`
 
-Whether evaluating an expression can **unwind** past its context: it
+Whether evaluating an expression can **complete abruptly** past its context: it
 contains a `return`, or a `break` its own loops do not catch
 (`Expr.breaks`) (helper).
 
@@ -36004,7 +36005,7 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Trace.Defs`
 
-No expression of the list unwinds (helper).
+No expression of the list can complete abruptly (helper).
 
 ```lean
 def RueCore.Expr.quietList (es : List Expr) : Bool
@@ -36022,10 +36023,10 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Trace.Defs`
 
 **The RUE-2316 carve-out, syntactically**: no value computed for one
-operand is pending while a later operand of the same form can unwind — a
+operand is pending while a later operand of the same form can complete abruptly — a
 call's arguments, a struct, enum or array literal's members, an index list,
 a binary operator's two operands, and an indexed assignment's right-hand side
-before its indices (`5.2:14`). The first operand may unwind: nothing is
+before its indices (`5.2:14`). The first operand may complete abruptly: nothing is
 pending yet. `binop` is in the list although RUE-2316's text does not name it:
 its left operand is a scalar under (Arith) §5.8, so nothing owned is lost
 there on a checked program, but the carve-out is syntactic and cannot see the
@@ -36118,7 +36119,7 @@ Expr.pendingSafeList [] = true
 *def* · module `RueCore.TraceWhole`
 
 The induction hypothesis: `eval` at fuel `fuel` is simulated losslessly
-from every copy-closed store, for every `pendingSafe` expression (helper).
+from every copy-contained store, for every `pendingSafe` expression (helper).
 
 ```lean
 def RueCore.MSimIH (M : FloatSig) (P : Program) (fuel : Nat) : Prop :=
@@ -36271,7 +36272,7 @@ RueCore.HasTy.struct {D : Decls} {s : Nat} {sd : StructDecl} {i : Nat}
     HasTys D vs sd.fields → HasTy D (Val.struct s i vs) (Ty.struct s)
 ```
 
-**`HasTy.enum`** — §6.1's `Kj⟨ v1, …, va ⟩` at `E`: the tag names a variant of the declaration — which is what progress at a `match` reads (`exhaustive_arm_exists`) — and the payload is well typed at that variant's declared component types ((Enum-Intro) §5.5, read on values). Nothing relates the value to the *other* variants: `class(E)` does (§3), and that is a fact about the type.
+**`HasTy.enum`** — §6.1's `Kj⟨ v1, …, va ⟩` at `E`: the tag names a variant of the declaration — which is what progress at a `match` reads (`exhaustive_arm_exists`) — and the payload is well typed at that variant's declared component types ((Enum-Intro) §5.5, read on values). Nothing relates the value to the *other* variants: `qual(E)` does (§3), and that is a fact about the type.
 
 ```lean
 RueCore.HasTy.enum {D : Decls} {e k : Nat} {ed : EnumDecl} {Ts : List Ty}
@@ -36281,7 +36282,7 @@ RueCore.HasTy.enum {D : Decls} {e k : Nat} {ed : EnumDecl} {Ts : List Ty}
       HasTys D vs Ts → HasTy D (Val.enum e k i vs) (Ty.enum e)
 ```
 
-**`HasTy.array`** — §6.1's `[ v1, …, vn ]` well typed at `[T; n]` exactly when it has `n` elements and each is well typed at `T` ((Array-Intro) §5.8, read on values; `3.5:3`'s one shared element type is `List.replicate n T`). The value carries `T` because `class([T; n])` is not a function of the elements present — `3.8:74` (`Syntax.lean`).
+**`HasTy.array`** — §6.1's `[ v1, …, vn ]` well typed at `[T; n]` exactly when it has `n` elements and each is well typed at `T` ((Array-Intro) §5.8, read on values; `3.5:3`'s one shared element type is `List.replicate n T`). The value carries `T` because `qual([T; n])` is not a function of the elements present — `3.8:74` (`Syntax.lean`).
 
 ```lean
 RueCore.HasTy.array {D : Decls} {T : Ty} {n i : Nat} {vs : List Val} :
@@ -36320,11 +36321,11 @@ RueCore.HasTys.cons {D : Decls} {v : Val} {vs : List Val} {T : Ty}
 
 *def* · module `RueCore.Statics`
 
-§5.6's residual-linear condition, read over a whole frame: no binding has
+§5.6's residual-linear condition, read over a whole activation record: no binding has
 residual linear content left. This is the premise (Fn) §5.8 imposes on a
 function body's exit edges for its by-value parameters (`3.8:62`) and that
 §5.6's `⊥_exit` carries at an early `return`: at such an edge every open scope
-of the frame ends at once, so the check is frame-wide rather than
+of the activation record ends at once, so the check is activation-record-wide rather than
 per-binding.
 
 ```lean
@@ -36392,7 +36393,7 @@ case `use_after_move` reads its moved binding the same way). `let a = S0 { 1
 }; @drop(a); a.x0` is rejected by the checker; run
 unchecked, `eval` refuses it with `useAfterMove`, and §6's relation reaches a
 configuration stuck with the same violation from `Config.init`. So the
-statements whose hypothesis is a stuck run or a stuck configuration are not
+statements whose hypothesis is a refused run or a stuck configuration are not
 vacuous either.
 
 ```lean
@@ -36496,8 +36497,8 @@ deviation from the calculus as written is recorded in §5.2 itself.
 The premise applies to an array anywhere in the place tree (`3.8:71`), and
 the compiler follows it there too: its E0480 check keys on the outermost array
 the write steps into, wherever it sits (RUE-2341; it used to fire only when the
-root binding was an array). Once a declared-linear destructure has holed
-`h.arr[0]` through a struct root, a write *to* the element (`h.arr[0] = …`),
+root binding was an array). Once a declared-linear destructure has left a moved-out
+part in `h.arr[0]` through a struct root, a write *to* the element (`h.arr[0] = …`),
 one *through* it (`h.arr[0].x0 = …`, `array_write_after_destructure_via_field`)
 and one below a dynamic index (`h.arr[i].x0 = …`,
 `array_dyn_write_after_destructure_via_field`) are all E0480.
@@ -36765,7 +36766,7 @@ whole program; RUE-2478; the `dtor` witness's program, the corpus case
 `affine_scope_drop` twice over). `let x = S0 { 1 }; let y = S0 { 2 }; 3` is
 checked and `pendingSafe`; §6's relation reaches a configuration that holds
 both values, identities `0` and `2`, in their cells, and from there the run
-finishes with a trace that ends each of them once. So
+terminates with a trace that ends each of them once. So
 `whole_program_exactly_once`'s hypotheses hold of a run that allocates and
 drops several owned values.
 
@@ -36818,7 +36819,7 @@ def RueCore.Spec.Nonvacuous.whole_drops_stmt : Prop :=
 **A run whose result is an owned value** (§7, over a whole program;
 RUE-2478). `fn main() -> S0 { S0 { 7 } }` is checked and `pendingSafe`; the
 configuration right after (D-Struct) holds the new value's identity `0`, and
-the run finishes with that value as its result — which owns `0` — and a trace
+the run terminates with that value as its result — which owns `0` — and a trace
 that ends nothing. So `whole_program_exactly_once`'s other disjunct, an owned
 value accounted for by being part of the final value, is reached too.
 
@@ -36920,10 +36921,10 @@ RUE-2478; the ill-typed shape of `double_drop`, without the copies). With `S0`
 a `@copy` struct whose field is an `i64`, `let p = S0 { S1 { 1 } }; 0` is
 rejected by the checker (the field is given an `S1`), so it is not
 `ProgramTyped` (shown through `whole_program_exactly_once` itself), and it is
-`pendingSafe`. §6's relation, which has no copy-closure monitor, runs it: the
+`pendingSafe`. §6's relation, which has no Copy-containment monitor, runs it: the
 configuration after `S1`'s (D-Struct) holds `S1`'s identity `0`; (D-Struct)
 wraps it in the `Copy` `S0`, which owns nothing, and `p`'s drop at scope exit
-is a `Copy` cell's, which runs nothing; the run finishes with `0` and an empty
+is a `Copy` cell's, which runs nothing; the run terminates with `0` and an empty
 trace. Identity `0` is neither in the result nor ended: without
 `ProgramTyped`, `whole_program_exactly_once` fails.
 
@@ -36977,7 +36978,7 @@ would duplicate an owner through: over `S0 = @copy struct { x0: i64 }` and
 @drop(p.x0); @drop(q.x0); 0` (`Trace.lean`'s `dupProgram`). It is not
 `ProgramTyped`, and `eval` refuses it with `ownedUnderCopy`, at the literal:
 `no_refusal`'s conclusion fails once `ProgramTyped` is dropped, and a machine
-without the copy-closure monitor (`Contents.copyContained` in `introVal`) makes
+without the Copy-containment monitor (`Contents.copyContained` in `introVal`) makes
 this statement false.
 
 ```lean
@@ -37444,7 +37445,7 @@ def RueCore.Spec.Sharp.ill_typed_halt_stmt : Prop :=
 checked program of `Nonvacuous.dtor`, `Config.init` steps to the argument
 list of `main()`, and not to itself; it is not terminal and not stuck (with
 `linearLeak`, a monitor's tag, not one of §6's stuck states); and `run` is
-never stuck. So `Step.det` fails without either of its step hypotheses,
+never refused. So `Step.det` fails without either of its step hypotheses,
 `Step.terminal` without `C.Terminal`, `step_stuck_isStuckState` without
 `C.Stuck`, and `run_refused_of_step_stuck` without `C.Stuck`.
 
@@ -37612,7 +37613,7 @@ def RueCore.Spec.Sharp.not_a_step_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**A finished configuration the run does not reach** (§7 sharpness,
+**A terminal configuration the run does not reach** (§7 sharpness,
 RUE-2478). The checked, `pendingSafe` program of `Nonvacuous.dtor` reaches a
 configuration holding `x`'s `S0`, identity `0`; the terminal configuration
 with an empty store, result `3` and an empty trace ends nothing, and that
@@ -37781,7 +37782,7 @@ itself). `fn main() -> i64 { f(S0 { 7 }, return 0) }` with `fn f(a: S0, b:
 i64) -> i64 { @drop(a); b }` is accepted by the checker and is not
 `pendingSafe`: the second argument returns. §6's relation reaches the
 configuration holding the minted `S0` (identity `0`) pending in the call's
-argument list; (D-Return) discards that list, and the run finishes with `0`
+argument list; (D-Return) discards that list, and the run terminates with `0`
 and an empty trace. Identity `0` is neither in the result nor ended: without
 `pendingSafe`, `whole_program_exactly_once` fails on a checked program. A
 `break` out of a pending form loses a value the same way (`loop { S2 { S0 { 1 },
@@ -37842,9 +37843,9 @@ reaches a configuration stuck with `useAfterMove` from `Config.init`, and
 `run` refuses at fuel `200` and exhausts fuel `0`. So once `ProgramTyped` is
 dropped, `step_progress`, `step_safeAt` and `step_type_safety` fail
 (no horizon passes the stuck configuration, which is not a value or a
-panic); once `step_never_stuck_of_run`'s hypothesis that `run` is never stuck
+panic); once `step_never_stuck_of_run`'s hypothesis that `run` is never refused
 is dropped, its conclusion fails; and once `run_refused_of_step_stuck`'s bound
-`n < fuel` is dropped, no `n` makes `run` stuck at every fuel.
+`n < fuel` is dropped, no `n` makes `run` refuse at every fuel.
 
 ```lean
 def RueCore.Spec.Sharp.stuck_step_stmt : Prop :=
@@ -37910,10 +37911,10 @@ def RueCore.Spec.Sharp.stuck_step_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**A configuration that reads a retired cell, not reached** (§7 sharpness,
+**A configuration that reads a tombstoned cell, not reached** (§7 sharpness,
 RUE-2496). For the checked program of `Nonvacuous.dtor`, a configuration whose
-frame names a cell already retired (`†`) is stuck with `useAfterDrop`, and
-`eval` from the same store and frame refuses the same way; the configuration
+activation record names a cell already tombstoned (`†`) is stuck with `useAfterDrop`, and
+`eval` from the same store and activation record refuses the same way; the configuration
 is not reached from `Config.init` (shown through `step_no_use_after_drop`
 itself). So `step_no_use_after_drop` fails without the hypothesis that the
 configuration is reached: the refusal is live from an open configuration, and
@@ -37965,7 +37966,7 @@ def RueCore.Spec.Sharp.tombstoned_cell_stmt : Prop :=
 
 **A pop that drops a cell it did not cut, not reached** (§7 sharpness,
 RUE-2500). For the checked program of `Nonvacuous.dtor`, a configuration whose
-frame registers cells `0` and `1`, in location order, but whose pending
+activation record registers cells `0` and `1`, in location order, but whose pending
 `endscope` names cell `0` rather than the newest cell `1` takes a step: (D-EndScope)
 pops one cell off the record, which leaves `[0]`, and drops cell `0`, the cell
 it kept. Its drop markers name one cell, so they are newest first, and its
@@ -38130,7 +38131,7 @@ def RueCore.Spec.Sharp.uncut_drop_stmt : Prop :=
 *def* · module `RueCore.Spec.Sharp`
 
 **An identity the run never holds** (§7 sharpness, RUE-2478). The checked,
-`pendingSafe` program of `Nonvacuous.dtor` finishes from `Config.init`, which
+`pendingSafe` program of `Nonvacuous.dtor` terminates from `Config.init`, which
 holds nothing; its trace ends identities `0` and `2` and nothing else, so
 identity `1` — the index of `x`'s cell, which names a cell and no value — is
 neither ended nor in the result. So the statement fails without the
@@ -38181,7 +38182,7 @@ def RueCore.Spec.Sharp.unheld_stmt : Prop :=
 
 **An unreachable configuration whose registration stack is out of order**
 (§7 sharpness, RUE-2485). For the checked program of `Nonvacuous.dtor`, a
-configuration whose frame registers cell `1` before cell `0` takes a step, but
+configuration whose activation record registers cell `1` before cell `0` takes a step, but
 `Config.init` does not reach it: `drop_order`'s last half fails without the
 hypothesis that the configuration is reached.
 
@@ -38255,7 +38256,7 @@ def RueCore.Spec.Sharp.unordered_stmt : Prop :=
 *def* · module `RueCore.Spec.Sharp`
 
 **A stuck configuration that is not reached** (§7 sharpness, RUE-2485). For the
-checked program of `Nonvacuous.dtor`, whose `run` is never stuck, a
+checked program of `Nonvacuous.dtor`, whose `run` is never refused, a
 configuration reading an unbound name is stuck and is not reached from
 `Config.init`. So `step_progress`, `step_safeAt`,
 `step_never_stuck_of_run` and `run_refused_of_step_stuck` fail without the
@@ -38604,7 +38605,7 @@ def RueCore.Spec.checkProgram_sound_stmt : Prop :=
 
 **Drop glue order, in §6.11's own terms** (§3.9, §6.11; §7 "No
 use-after-drop / no leak of drops", *how* a value is dropped; RUE-2487), over
-`Step`. A finished run's trace — value or panic — is in §6.11's block grammar
+`Step`. A terminating run's trace — value or panic — is in §6.11's block grammar
 with each drop's events given by §6.11's rules (`DropGlueBlocks`, `DropGlue`):
 after each drop marker, the value's destructor first, then its fields in
 declaration order, an array's elements in ascending index order, and an enum's
@@ -38630,7 +38631,7 @@ def RueCore.Spec.drop_glue_order_stmt : Prop :=
 *def* · module `RueCore.Spec.Trace`
 
 **Drop order** (§7 "No use-after-drop / no leak of drops", "at the end of
-its scope"; §6.7, §6.9–§6.11), over `Step`. A finished run's trace — value
+its scope"; §6.7, §6.9–§6.11), over `Step`. A terminating run's trace — value
 or panic — is in §6.11's block grammar (`Blocks`). Each step from a
 reachable configuration drops one cell or distinct cells newest first, and
 the registration stack is in location order. `StackDiscipline` holds of every step
@@ -38663,9 +38664,9 @@ def RueCore.Spec.drop_order_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Equivalence`
 
-**`eval` is sound for `Step`**, the interpreter-to-small-step direction of
-the semantic equivalence (§7's adequacy sentence; ADR-0097). For a
-checked program, `run` is never stuck, and its values and panics are reached
+**The big-to-small direction, `eval` to `Step`**: the interpreter-to-small-step direction of
+the semantic equivalence (§7's semantic-equivalence sentence; ADR-0097). For a
+checked program, `run` is never refused, and its values and panics are reached
 by `→*` from `Config.init` with the same store and trace.
 
 ```lean
@@ -38703,8 +38704,8 @@ def RueCore.Spec.eval_diverges_iff_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Equivalence`
 
-**`eval` is complete for `Step`, modulo fuel**, the small-step-to-interpreter
-direction of the semantic equivalence (§7's adequacy sentence).
+**The small-to-big direction, `Step` to `eval`, modulo fuel**: the small-step-to-interpreter
+direction of the semantic equivalence (§7's semantic-equivalence sentence).
 For a checked program, a value or panic `→*` reaches is `run`'s answer at
 every large enough fuel.
 
@@ -38729,8 +38730,8 @@ def RueCore.Spec.eval_small_to_big_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Equivalence`
 
-**Never stuck, both ways** (§7 "Type safety"). For a checked program, `run`
-is never stuck iff no reachable configuration is. Under `ProgramTyped` both
+**Never refused iff never stuck** (§7 "Type safety"). For a checked program,
+`run` is never refused iff no reachable configuration is stuck. Under `ProgramTyped` both
 sides hold outright, so the equivalence adds nothing; cite
 `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`).
 
@@ -38752,7 +38753,7 @@ def RueCore.Spec.never_refused_iff_stmt : Prop :=
 **No double free** (§7 "No double-free"). A checked program's run is never
 refused, and its trace frees no identity twice and runs no destructor twice
 on one. Narrower than the bullet: an `outOfFuel` result has an empty trace,
-so a run that never finishes is not covered here; `step_no_double_free`
+so a run that never terminates is not covered here; `step_no_double_free`
 covers it, over every configuration a run reaches (RUE-2477).
 
 ```lean
@@ -38791,10 +38792,10 @@ def RueCore.Spec.no_linear_discard_stmt : Prop :=
 *def* · module `RueCore.Spec.Safety`
 
 **No linear leak** (§7 "Linear values are consumed exactly once", §5.6): no
-scope exit, frame pop or scope unwind meets a live linear binding. Narrower
+scope exit, activation record pop or scope unwind meets a live linear binding. Narrower
 than the bullet:
 - a linear value built for a sibling operand, which a later operand abandons
-  by `return` or `break`, is in no scope record; the unwind discards it
+  by `return` or `break`, is in no drop scope; the unwind discards it
   unchecked and the run ends normally (RUE-2316;
   `Examples.linearLostAtCallArg`);
 - a `@panic` abandons live linear bindings by design (§5.7's `⊥_panic`);
@@ -38851,14 +38852,14 @@ def RueCore.Spec.no_refusal_stmt : Prop :=
 
 **No use-after-drop** (§7 "No use-after-drop / no leak of drops", "never
 read afterward"): `run` never refuses with `useAfterDrop`, the tag `eval`
-raises when it reaches a retired cell. It is `no_refusal` at one tag, so it
-says no retired cell is accessed only as far as `eval` checks every access
+raises when it reaches a tombstoned cell. It is `no_refusal` at one tag, so it
+says no tombstoned cell is accessed only as far as `eval` checks every access
 and labels it so: what it rules out is what that monitor watches (R3 of
 `REDTEAM-LOG.md`; RUE-2469). The buffer half of the bullet, use-after-free,
 has no statement (§6.13 is outside the fragment). Its `ProgramTyped`
 hypothesis is redundant: `run_no_use_after_drop` below proves the same
 conclusion for every program, checked or not, so this statement is not a
-consequence of typing; it is kept in §7's form, over checked programs
+corollary of typing; it is kept in §7's form, over checked programs
 (RUE-2496).
 
 ```lean
@@ -38894,11 +38895,11 @@ def RueCore.Spec.no_use_after_move_stmt : Prop :=
 **No double free, on every prefix of a run** (§7 "No double-free", read as a
 safety property; RUE-2477). For a checked program, every configuration §6's
 relation reaches from `Config.init` — the run so far, whether or not it ever
-finishes — has a trace that frees no identity twice and runs no destructor
+terminates — has a trace that frees no identity twice and runs no destructor
 twice on one, in `no_double_free`'s terms (`freedIds`, `dtorIds`). A safety
 property is one a finite prefix of a run can violate (Alpern & Schneider,
 `FIELD.md`), so this is the bullet's form over every run, a diverging one
-included; `no_double_free` over a finished run follows from it
+included; `no_double_free` over a terminating run follows from it
 (`no_double_free_of_step`).
 
 ```lean
@@ -38985,20 +38986,20 @@ def RueCore.Spec.step_type_safety_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Trace`
 
-**Every owned value of a run that finishes with a value ends exactly once** (§7 "No
+**Every owned value of a run that terminates with a value ends exactly once** (§7 "No
 use-after-drop / no leak of drops", over a whole program; RUE-2478). For a
 checked, `pendingSafe` program, take any configuration `C` §6's relation
 reaches from `Config.init` and any owned identity `a` that `C` holds — in a
 cell, in focus, or pending on the control stack (`Config.held`); these are the
-owned values allocated along the run. If the run from `C` finishes with a
+owned values allocated along the run. If the run from `C` terminates with a
 value (`✓v`, a value at an empty stack), then `a` is ended in the final trace
-(a drop, a discarded temporary's drop, or a consumption: `freedIds`) or is
+(a drop, a discarded temporary's drop, or a consume event: `freedIds`) or is
 part of the final value (which counts as ended: §2 restricts `main` to `i32` or
 `unit`, which own nothing, and the fragment does not), exactly once between
 the two: no owned value the
 run holds is lost, and none is ended twice. Narrower than the bullet:
 `pendingSafe` (RUE-2316), nothing about a panic (§6.12's trap runs no drop, so
-what it abandons is not ended), and nothing about a run that never finishes
+what it abandons is not ended), and nothing about a run that never terminates
 (`step_no_double_free` bounds every prefix from above).
 
 ```lean
@@ -39084,7 +39085,7 @@ class: destructors; the corpus case `affine_scope_drop`, with two bindings). The
 `Step` from `Config.init`, and its trace frees two identities and runs two
 destructors. It also carries the other hypotheses of the trace statements:
 the declarations keep destructor-bearing structs off `Copy` (`DtorNotCopy`),
-the initial configuration steps, no fuel makes the run stuck, the body's own
+the initial configuration steps, no fuel makes the run refused, the body's own
 evaluation drops two values, and the body's leading operand mints an owned
 identity (`Lead`), so `rest_exactly_once` applies to a value minted
 mid-evaluation.
@@ -39214,7 +39215,7 @@ def RueCore.Spec.Nonvacuous.early_return_stmt : Prop :=
 **A checked program with an enum and a `match`** (§5.5, §6.6; construct class: enums with
 `match`; the corpus case `enum_match_affine`). `let e = E0::K0(S0 { 1 }); match
 e { K0(s) => s.x0, K1 => 0 }` is accepted and typed; its run returns, reached
-by `Step`, and its trace frees two identities (the scrutinee's shell,
+by `Step`, and its trace frees two identities (the scrutinee's dead remainder,
 consumed by the match, and the payload, dropped at the arm's end) and runs
 the payload's destructor.
 
@@ -39441,11 +39442,11 @@ def RueCore.Spec.Nonvacuous.loop_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Nonvacuous`
 
-**An open term in a live frame** (§6.1, §7): the evaluation statements apply
-beyond the empty frame. Over the witnesses' declarations, `@drop(s); 1` is
-typed by `check` in the context `s : S0`, owned, and the frame `{ ρ := [ℓ0],
+**An open term in a live activation record** (§6.1, §7): the evaluation statements apply
+beyond the empty activation record. Over the witnesses' declarations, `@drop(s); 1` is
+typed by `check` in the context `s : S0`, owned, and the activation record `{ ρ := [ℓ0],
 σ := [ℓ0] }` over the store `ℓ0 ↦ S0 { 5 }` agrees with that context
-(`ActivationTyping`) and is copy-closed (`StoreCC`), for a checked, `pendingSafe`
+(`ActivationTyping`) and is copy-contained (`StoreCC`), for a checked, `pendingSafe`
 program. Its evaluation runs the destructor of the value it started with, and
 its leading operand has a `Lead`, so `soundness`, `drop_exactly_once` and
 `rest_exactly_once` apply to a term with a free variable and a store that is
@@ -39586,9 +39587,9 @@ def RueCore.Spec.Nonvacuous.panic_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**A typed expression run in a frame that does not match its context**
+**A typed expression run in an activation record that does not match its context**
 (§7 sharpness, RUE-2485). `1; x`, typed by `check` in the context `x : i64` over
-the checked program of `Nonvacuous.dtor`, is run from the empty frame and
+the checked program of `Nonvacuous.dtor`, is run from the empty activation record and
 store, which do not match that context (`ActivationTyping` fails); everything else
 `soundness`, `drop_exactly_once` and `rest_exactly_once` ask holds, a `Lead`
 (the discarded `1`) included. `eval` refuses the read of `x` with `unbound`. The statement gives `ProgramTyped P` and `WfProgram P`
@@ -39818,7 +39819,7 @@ def RueCore.Spec.Sharp.no_eval_stmt : Prop :=
 *def* · module `RueCore.Spec.Sharp`
 
 **A `Lead` that did not happen** (§7 sharpness, RUE-2485). For the body of
-`Nonvacuous.dtor`, run from the empty frame, take the store `ℓ0 ↦ S0 { 1 }`
+`Nonvacuous.dtor`, run from the empty activation record, take the store `ℓ0 ↦ S0 { 1 }`
 and the pending value `S0 { 1 }` (identity `0`) as if the leading operand had
 produced them; it did not (`Lead` fails: it minted identity `0` into a reserved
 slot). Everything else `rest_exactly_once` asks holds, and the evaluation ends
@@ -39941,8 +39942,8 @@ def RueCore.Spec.Sharp.not_fits_stmt : Prop :=
 **An expression that is not `pendingSafe`** (§7 sharpness, RUE-2485; RUE-2316's
 carve-out). In the checked program of `Nonvacuous.dtor`, `0; [s, return 7];
 1` is typed in the context `s : S0`, but the array literal's first element is
-pending when the second unwinds. From a frame holding `s` at cell `0`, the
-`return` retires the frame and ends `s`'s identity nowhere. So
+pending when the second completes abruptly. From an activation record holding `s` at cell `0`, the
+`return` tombstones the activation record and ends `s`'s identity nowhere. So
 `drop_exactly_once` and `rest_exactly_once` fail without `e.pendingSafe`
 (`Exact` fails); everything else they ask holds, a `Lead` (the discarded `0`)
 included.
@@ -40068,8 +40069,8 @@ def RueCore.Spec.Sharp.pending_expr_stmt : Prop :=
 **A checked program with a function that is not `pendingSafe`** (§7 sharpness,
 RUE-2485; RUE-2316's carve-out). Beside an entry point returning `0`, `fn
 g(s: S0) -> i64 { [s, return 7]; 0 }` is typed, but the array literal's first
-element is pending when the second unwinds, so the program is not
-`pendingSafe`. The call `g(s)`, from a frame holding `s : S0` at cell `0`,
+element is pending when the second completes abruptly, so the program is not
+`pendingSafe`. The call `g(s)`, from an activation record holding `s : S0` at cell `0`,
 returns `7` and ends `s`'s identity nowhere: it is in no cell, not in the
 result and not in the trace. So `drop_exactly_once` and `rest_exactly_once`
 fail without `P.pendingSafe` (`Exact` fails); everything else they ask holds.
@@ -40183,7 +40184,7 @@ def RueCore.Spec.Sharp.pending_program_stmt : Prop :=
 @drop(a); a.x0` as the entry point: the checker rejects it and it is neither
 `ProgramTyped` nor `WfProgram`, while its entry point exists and takes no
 parameters, and its body is `pendingSafe`; `main()`, the call `run` makes, is
-typed by `check` from the empty frame and store, which agree with the empty
+typed by `check` from the empty activation record and store, which agree with the empty
 context, and has a `Lead` (its empty argument list). `eval` refuses it with
 `useAfterMove`, and at fuel `0` it answers `outOfFuel`. So each of these
 conclusions fails once its program hypothesis is dropped: `soundness`
@@ -40288,13 +40289,13 @@ def RueCore.Spec.Sharp.refused_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Sharp`
 
-**A store that is not copy-closed** (§7 sharpness, RUE-2485). The store's one
+**A store that is not copy-contained** (§7 sharpness, RUE-2485). The store's one
 cell holds an `[i64; 1]` array (a `Copy` type) with an owned `S0` inside it,
-outside the frame. `1; 2` is typed and run from the empty frame over it, which
+outside the activation record. `1; 2` is typed and run from the empty activation record over it, which
 agrees with the empty context, in the checked program of `Nonvacuous.dtor`;
 everything else `drop_exactly_once` and `rest_exactly_once` ask holds. The
 evaluation leaves the cell alone, and `Exact` asks the final store to be
-copy-closed, which it is not: both fail without `StoreCC`.
+copy-contained, which it is not: both fail without `StoreCC`.
 
 ```lean
 def RueCore.Spec.Sharp.store_cc_stmt : Prop :=
@@ -40433,7 +40434,7 @@ def RueCore.Spec.Sharp.store_cc_stmt : Prop :=
 
 **An ill-typed expression of a checked program** (§7 sharpness, RUE-2485).
 Over the checked program of `Nonvacuous.dtor`, the expression `let a = S0 { 1
-}; @drop(a); a.x0`, from the empty frame and store, is typed at no type and no
+}; @drop(a); a.x0`, from the empty activation record and store, is typed at no type and no
 outcome, and `check` rejects it; everything else `soundness`,
 `drop_exactly_once` and `rest_exactly_once` ask holds, the leading `S0 { 1 }`
 included (`Lead`). Its evaluation is refused with `useAfterMove`, so none of
@@ -40543,9 +40544,9 @@ def RueCore.Spec.check_sound_stmt : Prop :=
 **Every owned value ends exactly once** (§7 "No use-after-drop / no leak of
 drops"). A typed expression of a checked program, the expression and the
 program both `pendingSafe` (`e.pendingSafe`, `P.pendingSafe`), run from an
-agreeing frame and store, is never refused; every identity the store
+agreeing activation record and store, is never refused; every identity the store
 holds ends up in an old cell, in the result, or ended in the trace as often
-as held (`Exact`); every cell it allocated is retired (`Tidy`). Narrower
+as held (`Exact`); every cell it allocated is tombstoned (`Tidy`). Narrower
 than the bullet: `pendingSafe` (RUE-2316), nothing about a panic, and per
 evaluation, not per run; the whole-run form is `whole_program_exactly_once`
 (RUE-2478).
@@ -40574,7 +40575,7 @@ def RueCore.Spec.drop_exactly_once_stmt : Prop :=
 **Values minted during an evaluation end exactly once too** (the same §7
 bullet; §6.7, §6.9, §6.10): under the same hypotheses, once a form's leading
 operands produced `vs` in `H₁` (`Lead`), the rest of the form ends them and
-`H₁`'s identities as `Exact` counts, and retires what it allocated
+`H₁`'s identities as `Exact` counts, and tombstones what it allocated
 (`Settled`). This is the form the proof of `drop_exactly_once` inducts on
 (`Lead`, `fuel + 1`, `withTrace`), listed as a linking statement: it is what
 says the values a form mints mid-evaluation are covered too.
@@ -40635,7 +40636,7 @@ def RueCore.Spec.run_safe_stmt : Prop :=
 
 **Type safety over `eval`** (§7 "Type safety", in the interpreter form it
 names). A typed expression of a well-formed program, run at any fuel from a
-frame and store agreeing with its context, ends in `EvalOk`: a well-typed
+activation record and store agreeing with its context, ends in `EvalOk`: a well-typed
 value, an unwinding `return` or `break` §5.3's `Ω` allows, a defined panic,
 or exhausted fuel — never `.refused`.
 
@@ -40656,7 +40657,7 @@ def RueCore.Spec.soundness_stmt : Prop :=
 *inductive* · module `RueCore.Statics`
 
 `Γ ; Σ ⊢ e ⇒ T ⊣ Ω` (§5), over the fused context, under the program `P`
-and the enclosing function's return type `R`, with §5.3's outgoing result
+and the enclosing function's return type `R`, with §5.3's output result
 `Ω` (`Out`).
 
 **Reachability is in the rules' shape**, as §5.7 says: the `-Bottom` rules
@@ -40692,7 +40693,7 @@ away (`7.1:36`–`7.1:39`); `indexRead`/`indexWrite` are the dynamic index,
 typed by (Use-Untrackable-Dynamic-Copy) §5.1 and by (Assign) §5.2; `«match»`
 is (Match)
 (§5.5), whose arms fold in §5.6's check for their payload locals and whose
-outgoing states join n-way; `letIn` folds in §5.6's residual-linear scope-exit
+output contexts join n-way; `letIn` folds in §5.6's residual-linear scope-exit
 check; `assign` is (Assign) with the `3.8:77` linear-overwrite premise, keyed
 on the destination's type (`overwriteOk`), on the *post-RHS* state; `seq` is (Seq) with the `3.8:64` discard check; `ite` is (If)
 with the §5.5 join; `call` is (Call) by value (§5.8); `ret` is (Return-Value)
@@ -40743,7 +40744,7 @@ RueCore.Typed.useCopy {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
               Typed P R Γ (Expr.use p) T { norm := some Γ, brk := [] }
 ```
 
-**`Typed.useMove`** — (Use-Move) §5.1: a use of an `Affine`/`Linear` place moves it out — at a projection, the **partial move** of `3.8:22`, which marks exactly `p` and removes every path under it while leaving `p`'s siblings alone. `fully-owned(Σ, p)` is the premise (`3.8:26`: handing an aggregate with a hole to a new owner is ill-formed), and `noDtorPrefix` is `3.9:34`'s restriction (E0456). `rootIdxOnly` is §4.2's third restriction, `3.8:68`'s "element moves only at the root" (E0904): the move may take one element out of the **root binding**'s array, and out of no array reached through a further step (`Syntax.lean`). `declaredPrefix … = none` is §5.1's `Ordinary` plan premise, exactly as the `Copy` rule above carries it.
+**`Typed.useMove`** — (Use-Move) §5.1: a use of an `Affine`/`Linear` place moves it out — at a projection, the **partial move** of `3.8:22`, which marks exactly `p` and removes every path under it while leaving `p`'s siblings alone. `fully-owned(Σ, p)` is the premise (`3.8:26`: handing an aggregate with a moved-out part to a new owner is ill-formed), and `noDtorPrefix` is `3.9:34`'s restriction (E0456). `rootIdxOnly` is §4.2's third restriction, `3.8:68`'s "element moves only at the root" (E0904): the move may take one element out of the **root binding**'s array, and out of no array reached through a further step (`Syntax.lean`). `declaredPrefix … = none` is §5.1's `Ordinary` plan premise, exactly as the `Copy` rule above carries it.
 
 ```lean
 RueCore.Typed.useMove {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
@@ -40765,7 +40766,7 @@ RueCore.Typed.useMove {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
                       brk := [] }
 ```
 
-**`Typed.useDeclared`** — **(Use-Declared-Linear-Destructure) §5.1**, the declared-linear destructure of `3.8:33`: a use of a place whose path has a proper prefix of declared-`linear` struct type consumes that prefix — the **smallest** enclosing one, `d` — and produces the selected leaf, destroying `d`'s droppable residue on the way (§6.3's `destructure`). The premises are the rule's, in its order. `declaredPrefix` is §4.2's `plan_Γ(p) = Declared(d, π_s)`, and it carries the rule's second premise with it: `Γ ⊢ d : S` with `S` declared `linear` is `declaredPrefix_declaredLinear` (`Syntax.lean`) rather than a premise here. `fully-owned(Σ, d)` is asked of `d`, not of `p` — the rule hands a new owner the leaf and destroys the rest, so the whole subtree must be there (`3.8:26`). `linearResidue = false` is `¬ linear-residue(S, π_s)`, the premise that rejects the access "before any residue can be silently dropped" (`3.8:60`, E0474). `noDtorPrefix` is read over the **whole** path, which is the rule's "no proper prefix `q` of `p` has a user-defined destructor — every enclosing value, including `d`" (`3.9:34`, E0456). And `T` is the leaf's type, bound by the rule's `Γ ⊢ p : T`. `rootIdxOnly` is deliberately **not** a premise here, where (Use-Move) carries it. §4.2's `dl` is explicit that "the selected path may pass through nested structs and constant-index arrays", `3.8:71` says that consuming the linear sub-places of an array reached through a field projection discharges the array field's obligation, and the compiler accepts every shape that admits: `x.arr[0]` on a declared-`linear` `x` (probe b3), `h.arr[0].x0` whose *consumed* place is an element of an array reached through a field (probe d1b), and `a[0][0].x0` whose consumed place sits at a nested index (probe d2b) — although the same `a[0][0]` moved **ordinarily** is E0904 (probe e1). A retained *array* in the residue needs nothing of the sort (probe d9). The Σ effect is §5.1's move effect, taken at `d`: `Σ[ d ↦ MovedOut, and every path strictly under d removed ]`. Nothing else in the context moves, so a declared-linear **ancestor** of `d` stays `Owned` and keeps its own obligation (§5.6's declared clause), and a sibling of `d` keeps its own state — which is what makes `h.l.a` consume `h.l` alone (probe d4). Because the rule is selected by the *plan* rather than by `class(T)`, it fires at a `Copy` leaf too: that is §4.2's "central override", and probe d1 is it.
+**`Typed.useDeclared`** — **(Use-Declared-Linear-Destructure) §5.1**, the declared-linear destructure of `3.8:33`: a use of a place whose path has a proper prefix of declared-`linear` struct type consumes that prefix — the **smallest** enclosing one, `d` — and produces the selected leaf, destroying `d`'s droppable residue on the way (§6.3's `destructure`). The premises are the rule's, in its order. `declaredPrefix` is §4.2's `plan_Γ(p) = Declared(d, π_s)`, and it carries the rule's second premise with it: `Γ ⊢ d : S` with `S` declared `linear` is `declaredPrefix_declaredLinear` (`Syntax.lean`) rather than a premise here. `fully-owned(Σ, d)` is asked of `d`, not of `p` — the rule hands a new owner the leaf and destroys the rest, so the whole subtree must be there (`3.8:26`). `linearResidue = false` is `¬ linear-residue(S, π_s)`, the premise that rejects the access "before any residue can be silently dropped" (`3.8:60`, E0474). `noDtorPrefix` is read over the **whole** path, which is the rule's "no proper prefix `q` of `p` has a user-defined destructor — every enclosing value, including `d`" (`3.9:34`, E0456). And `T` is the leaf's type, bound by the rule's `Γ ⊢ p : T`. `rootIdxOnly` is deliberately **not** a premise here, where (Use-Move) carries it. §4.2's `dl` is explicit that "the selected path may pass through nested structs and constant-index arrays", `3.8:71` says that consuming the linear sub-places of an array reached through a field projection discharges the array field's obligation, and the compiler accepts every shape that admits: `x.arr[0]` on a declared-`linear` `x` (probe b3), `h.arr[0].x0` whose *consumed* place is an element of an array reached through a field (probe d1b), and `a[0][0].x0` whose consumed place sits at a nested index (probe d2b) — although the same `a[0][0]` moved **ordinarily** is E0904 (probe e1). A retained *array* in the residue needs nothing of the sort (probe d9). The Σ effect is §5.1's move effect, taken at `d`: `Σ[ d ↦ MovedOut, and every path strictly under d removed ]`. Nothing else in the context moves, so a declared-linear **ancestor** of `d` stays `Owned` and keeps its own obligation (§5.6's declared clause), and a sibling of `d` keeps its own state — which is what makes `h.l.a` consume `h.l` alone (probe d4). Because the rule is selected by the *plan* rather than by `qual(T)`, it fires at a `Copy` leaf too: that is §4.2's "central override", and probe d1 is it.
 
 ```lean
 RueCore.Typed.useDeclared {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
@@ -40799,7 +40800,7 @@ RueCore.Typed.binop {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Ω₂ : Out}
           (Ω₂.merge Δ₁)
 ```
 
-**`Typed.binopBot`** — (Strict-Bottom) §5.3 at `binop`'s left operand: once `e₁` diverges the right operand is never reached, so it is not typed, and the form concludes at `⊥` with `e₁`'s deliveries and at its own type `T_E`, (Arith)/(Ord)'s `op.resultTy (int(w,s))` — not at `never`. A right operand that diverges needs no rule of its own: `binop` passes `e₂`'s `Ω` on.
+**`Typed.binopBot`** — (Strict-Bottom) §5.3 at `binop`'s left operand: once `e₁` diverges the right operand is never reached, so it is not typed, and the form concludes at `⊥` with `e₁`'s abrupt-completion contexts and at its own type `T_E`, (Arith)/(Ord)'s `op.resultTy (int(w,s))` — not at `never`. A right operand that diverges needs no rule of its own: `binop` passes `e₂`'s `Ω` on.
 
 ```lean
 RueCore.Typed.binopBot {P : Program} {R : Ty} {Γ : Ctx} {Δ₁ : List Ctx}
@@ -40903,7 +40904,7 @@ RueCore.Typed.floatIntrin {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out}
     k.floatSrc w = true → Typed P R Γ (Expr.fintrin k e) (k.resTy w) Ω
 ```
 
-**`Typed.panic`** — (Panic) §5.8 with (Sub-Never) folded in (§5.7), the same fold `Typed.ret` makes: `@panic` is `never`-typed, so the rule concludes at an arbitrary type, and at `⊥` with no delivery the fragment records (a `⟨panic, _⟩` delivery has no consumer; §5.7 exempts it). Unlike `ret` it imposes no residual-linear premise: §5.7 exempts the `⊥_panic` edge from §5.6's scope-exit check, and §6.12's own rule runs no drop. The message is a string literal the form carries rather than an operand, because the fragment has no string type, which is also why §5.8's operand-diverging companion has no instance.
+**`Typed.panic`** — (Panic) §5.8 with (Sub-Never) folded in (§5.7), the same fold `Typed.ret` makes: `@panic` is `never`-typed, so the rule concludes at an arbitrary type, and at `⊥` with no abrupt-completion context the fragment records (a `⟨panic, _⟩` abrupt-completion context has no consumer; §5.7 exempts it). Unlike `ret` it imposes no residual-linear premise: §5.7 exempts the `⊥_panic` edge from §5.6's scope-exit check, and §6.12's own rule runs no drop. The message is a string literal the form carries rather than an operand, because the fragment has no string type, which is also why §5.8's operand-diverging companion has no instance.
 
 ```lean
 RueCore.Typed.panic {P : Program} {R : Ty} {Γ : Ctx} {T : Ty} {msg : String} :
@@ -40918,7 +40919,7 @@ RueCore.Typed.dbg {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr}
   Typed P R Γ e T Ω → T.observable = true → Typed P R Γ e.dbg Ty.unit Ω
 ```
 
-**`Typed.mkStruct`** — (Struct-Intro) §5.8: one initializer per declared field, typed in declaration order at its field's type with Σ threaded left to right (`3.6:5`, `3.6:6`, `3.6:15`), and the result owns every field — which is why `class(S)` is the field join of §3.
+**`Typed.mkStruct`** — (Struct-Intro) §5.8: one initializer per declared field, typed in declaration order at its field's type with Σ threaded left to right (`3.6:5`, `3.6:6`, `3.6:15`), and the result owns every field — which is why `qual(S)` is the field join of §3.
 
 ```lean
 RueCore.Typed.mkStruct {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {s : Nat}
@@ -40928,7 +40929,7 @@ RueCore.Typed.mkStruct {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {s : Nat}
       Typed P R Γ (Expr.mkStruct s args) (Ty.struct s) Ω
 ```
 
-**`Typed.mkEnum`** — (Enum-Intro) §5.5: one payload argument per declared component of the variant the tag names, typed left to right at its component's type with Σ threaded (§6.2's order, the same `TypedArgs` (Struct-Intro) uses), and the result owns the tag and the supplied payload — which is why `class(E)` is the payload join of §3 (`6.3:19`). The tag is the variant's declaration slot, so `variants[k]? = some Ts` is both §5.5's `E = enum { …, Kj(T̄j), … }` premise and `6.3:16`'s "the variant exists" (E0420 otherwise); the argument count is `6.3:16`'s arity premise, carried by `TypedArgs`' own shape.
+**`Typed.mkEnum`** — (Enum-Intro) §5.5: one payload argument per declared component of the variant the tag names, typed left to right at its component's type with Σ threaded (§6.2's order, the same `TypedArgs` (Struct-Intro) uses), and the result owns the tag and the supplied payload — which is why `qual(E)` is the payload join of §3 (`6.3:19`). The tag is the variant's declaration slot, so `variants[k]? = some Ts` is both §5.5's `E = enum { …, Kj(T̄j), … }` premise and `6.3:16`'s "the variant exists" (E0420 otherwise); the argument count is `6.3:16`'s arity premise, carried by `TypedArgs`' own shape.
 
 ```lean
 RueCore.Typed.mkEnum {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {e k : Nat}
@@ -40939,7 +40940,7 @@ RueCore.Typed.mkEnum {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {e k : Nat}
         Typed P R Γ (Expr.mkEnum e k args) (Ty.enum e) Ω
 ```
 
-**`Typed.match`** — (Match) §5.5, the elimination form for enums. The scrutinee is typed first, at the enum type, and its Σ effect is whatever typing it did: at a place that is (Use-Copy)/(Use-Move) §5.1 by `class(E)` — a non-`Copy` enum is *consumed* by the match, because a scrutinee is a value context and a use of a move-type place there moves it (`3.8:7`, `3.8:76`; `6.3:17` for the payload the arm binds out of it, and not `3.8:33`'s declared-`linear` destructure, which is a rule this fragment does not mechanize), and a second `match` on it is then the use of a moved-out place the compiler reports as E0205 (`3.8:5`). Exhaustiveness is the arm list's **shape**: `arms.length = ed.variants.length`, with arm `j` the arm for variant `j`, so §5.5's "exactly the variants K1..Kn" needs no coverage search and no ordering side condition (`4.7:9`, `4.7:10`'s enum clause; the wildcard, the repeated pattern and the first-match order are elaboration obligations §5.5 states). Progress rests on it: `exhaustive_arm_exists` (`Soundness.lean`) is that a well-typed tag has an arm. Each arm is typed from the **same** post-scrutinee state `Σ0` under its payload locals (`extendArm`), all arms at one type `T` — the premise a diverging arm satisfies through (Sub-Never), which the `⊥` rules fold in, exactly as an `ite` arm does. An arm that continues leaves its payload locals' scope under §5.6: `TypedArms` carries the same residual-linear check `Typed.letIn` carries for its one binder, over the `ai` entries the arm pops. §5.5 joins the **continuing** arms' outgoing states n-way (`Ctx.joinOpts`, the fold `Ctx.joinAll` over them), and a diverging arm is "excluded from the state join" and contributes only its deliveries. The delivery set is the scrutinee's `Δ_0` with every arm's, continuing or not.
+**`Typed.match`** — (Match) §5.5, the elimination form for enums. The scrutinee is typed first, at the enum type, and its Σ effect is whatever typing it did: at a place that is (Use-Copy)/(Use-Move) §5.1 by `qual(E)` — a non-`Copy` enum is *consumed* by the match, because a scrutinee is a value context and a use of a move-type place there moves it (`3.8:7`, `3.8:76`; `6.3:17` for the payload the arm binds out of it, and not `3.8:33`'s declared-`linear` destructure, which is a rule this fragment does not mechanize), and a second `match` on it is then the use of a moved-out place the compiler reports as E0205 (`3.8:5`). Exhaustiveness is the arm list's **shape**: `arms.length = ed.variants.length`, with arm `j` the arm for variant `j`, so §5.5's "exactly the variants K1..Kn" needs no coverage search and no ordering side condition (`4.7:9`, `4.7:10`'s enum clause; the wildcard, the repeated pattern and the first-match order are elaboration obligations §5.5 states). Progress rests on it: `exhaustive_arm_exists` (`Soundness.lean`) is that a well-typed tag has an arm. Each arm is typed from the **same** post-scrutinee state `Σ0` under its payload locals (`extendArm`), all arms at one type `T` — the premise a diverging arm satisfies through (Sub-Never), which the `⊥` rules fold in, exactly as an `ite` arm does. An arm that can complete normally leaves its payload locals' scope under §5.6: `TypedArms` carries the same residual-linear check `Typed.letIn` carries for its one binder, over the `ai` entries the arm pops. §5.5 joins the output contexts of the arms that **can complete normally** n-way (`Ctx.joinOpts`, the fold `Ctx.joinAll` over them), and a diverging arm is "excluded from the state join" and contributes only its abrupt-completion contexts. The set of abrupt-completion contexts is the scrutinee's `Δ_0` with every arm's, whether or not it can complete normally.
 
 ```lean
 RueCore.Typed.match {P : Program} {R : Ty} {Γ Γ₀ : Ctx} {Δ₀ : List Ctx}
@@ -40962,7 +40963,7 @@ RueCore.Typed.matchBot {P : Program} {R : Ty} {Γ : Ctx} {Δ₀ : List Ctx}
     Typed P R Γ (scrut.match arms) T { norm := none, brk := Δ₀ }
 ```
 
-**`Typed.mkArray`** — (Array-Intro) §5.8: all `n` elements share one element type `T` (`3.5:3`, `7.1:3`), are typed left to right with Σ threaded, and the array owns all of them — which is why `class([T; n])` is §3's lift of `class(T)`. `n` is the literal's own length (`7.1:4` — the declared size must match), and `n = 0` is admitted: `[]` is the zero-sized `[T; 0]` and uses nothing. The element-type list is `List.replicate n T`, so this rule is (Struct-Intro)'s `TypedArgs` at a constant field list.
+**`Typed.mkArray`** — (Array-Intro) §5.8: all `n` elements share one element type `T` (`3.5:3`, `7.1:3`), are typed left to right with Σ threaded, and the array owns all of them — which is why `qual([T; n])` is §3's lift of `qual(T)`. `n` is the literal's own length (`7.1:4` — the declared size must match), and `n = 0` is admitted: `[]` is the zero-sized `[T; 0]` and uses nothing. The element-type list is `List.replicate n T`, so this rule is (Struct-Intro)'s `TypedArgs` at a constant field list.
 
 ```lean
 RueCore.Typed.mkArray {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {T : Ty}
@@ -40971,7 +40972,7 @@ RueCore.Typed.mkArray {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {T : Ty}
     Typed P R Γ (Expr.mkArray T args) (T.array args.length) Ω
 ```
 
-**`Typed.repeatArray`** — The surface repeat form `[e; n]` (`7.1:36`–`7.1:39`), whose element type `7.1:38` restricts to `Copy` (E0905, probe `a2b`). §2's elaboration inventory gives this form **no core image**: it elaborates to `let t = e; [t, …, t]`, "one evaluation of the operand, then `n` value-context *copies* (§4.2)", precisely because the `Copy` restriction makes those copies free. The form is kept here as a rule of its own so the printer can emit the surface spelling the compiler's E0905 is about and so the bridge exercises it; the premise and the dynamics are exactly that elaboration's, and `Ty.qual P.decls T = .copy` is `7.1:38`. That the calculus and this rule agree is by construction and not by a theorem — it is named as a deviation in `../03-metatheory.md`.
+**`Typed.repeatArray`** — The surface repeat form `[e; n]` (`7.1:36`–`7.1:39`), whose element type `7.1:38` restricts to `Copy` (E0905, probe `a2b`). §2's elaboration inventory gives this form **no core image**: it elaborates to `let t = e; [t, …, t]`, "one evaluation of the operand, then `n` value-context *copies* (§4.2)", precisely because the `Copy` restriction makes those copies free. The form is kept here as a rule of its own so the printer can emit the surface spelling the compiler's E0905 is about and so differential testing exercises it; the premise and the dynamics are exactly that elaboration's, and `Ty.qual P.decls T = .copy` is `7.1:38`. That the calculus and this rule agree is by construction and not by a theorem — it is named as a deviation in `../03-metatheory.md`.
 
 ```lean
 RueCore.Typed.repeatArray {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {T : Ty}
@@ -40981,7 +40982,7 @@ RueCore.Typed.repeatArray {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {T : Ty}
       Typed P R Γ (Expr.repeatArray T e n) (T.array n) Ω
 ```
 
-**`Typed.indexRead`** — (Use-Untrackable-Dynamic-Copy) §5.1, at a read `p[e₁]π₁…[eₖ]πₖ` below one or more indices that are not compile-time constants: §4.2's `Untrackable(OrdinaryDynamic)` plan, and the *only* successful static rule for it. The place is `p` (a constant `Place`), then `k ≥ 1` dynamic steps, each followed by a constant path of field slots and constant indices, so `a[i]`, `a[i].x0`, `h.arr[i].x0`, `a[i][j]` and `a[i][0].x1` are all this form (probes q01, q08, q09, q10). `Place` stays constant-only: a dynamic step is never a path of Σ, which is what keeps Σ finite (`3.8:68`). The premises, in the order the rule reads them. * The index expressions are typed **left to right** at integer types, with Σ threaded (`TypedArgs` at a list of `int(w,s)`; `4.11:4` admits any integer type), and the place is read on the resulting context; `eval` runs them in the same order. `4.11:14` puts a full index expression's *base* before its index, and that is unobservable here because the base is a `Place`: reading one runs nothing and threads no Σ. * `fully-owned(Σ, p)` at the array the **first** dynamic step indexes — stronger than §5.1's `Σ(p) = Owned`, and `3.8:70`/`7.1:45`'s own rule: it is an error "to index the array with a non-constant index" while an element is moved out (E0205; probes q06, q19). It is `p`, not the root binding: `a[0][i]` after `a[1]` moved reads a whole `a[0]`, and the compiler accepts it (probe r01). A later dynamic step needs nothing more, because `fully-owned` at `p` is `fully-owned` at everything under it. A moved inner element under a second dynamic step is not merely untested but inexpressible: a nested element move such as `a[0][1]` is itself E0904 (`rootIdxOnly`; review probes a1–a3). * `Γ ⊢ p[…]… : T` is `Ty.atPath` to `p` and then `Ty.atDyn` through the dynamic tail, which fails unless every dynamic step is taken at an array. * `class(T) = Copy` is the rule's own premise, and §4.2's "there is no successful static rule … when `class(T) ∈ {Affine,Linear}`" is that premise's absence rather than a rejection of its own (E0904; probes q02, q15). * No declared-`linear` proper prefix anywhere along the complete path: `declaredPrefix … = none` above the first dynamic step and `Ty.dynNoDeclared` below it keep §4.2's `Untrackable(DeclaredLinearDynamic)` — ill-formed there — without an instance (E0904; probes q11, r07). The read copies, so the outgoing state is the indices'. Whether each index is *in range* is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing question.
+**`Typed.indexRead`** — (Use-Untrackable-Dynamic-Copy) §5.1, at a read `p[e₁]π₁…[eₖ]πₖ` below one or more indices that are not compile-time constants: §4.2's `Untrackable(OrdinaryDynamic)` plan, and the *only* successful static rule for it. The place is `p` (a constant `Place`), then `k ≥ 1` dynamic steps, each followed by a constant path of field slots and constant indices, so `a[i]`, `a[i].x0`, `h.arr[i].x0`, `a[i][j]` and `a[i][0].x1` are all this form (probes q01, q08, q09, q10). `Place` stays constant-only: a dynamic step is never a path of Σ, which is what keeps Σ finite (`3.8:68`). The premises, in the order the rule reads them. * The index expressions are typed **left to right** at integer types, with Σ threaded (`TypedArgs` at a list of `int(w,s)`; `4.11:4` admits any integer type), and the place is read on the resulting context; `eval` runs them in the same order. `4.11:14` puts a full index expression's *base* before its index, and that is unobservable here because the base is a `Place`: reading one runs nothing and threads no Σ. * `fully-owned(Σ, p)` at the array the **first** dynamic step indexes — stronger than §5.1's `Σ(p) = Owned`, and `3.8:70`/`7.1:45`'s own rule: it is an error "to index the array with a non-constant index" while an element is moved out (E0205; probes q06, q19). It is `p`, not the root binding: `a[0][i]` after `a[1]` moved reads a whole `a[0]`, and the compiler accepts it (probe r01). A later dynamic step needs nothing more, because `fully-owned` at `p` is `fully-owned` at everything under it. A moved inner element under a second dynamic step is not merely untested but inexpressible: a nested element move such as `a[0][1]` is itself E0904 (`rootIdxOnly`; review probes a1–a3). * `Γ ⊢ p[…]… : T` is `Ty.atPath` to `p` and then `Ty.atDyn` through the dynamic tail, which fails unless every dynamic step is taken at an array. * `qual(T) = Copy` is the rule's own premise, and §4.2's "there is no successful static rule … when `qual(T) ∈ {Affine,Linear}`" is that premise's absence rather than a rejection of its own (E0904; probes q02, q15). * No declared-`linear` proper prefix anywhere along the complete path: `declaredPrefix … = none` above the first dynamic step and `Ty.dynNoDeclared` below it keep §4.2's `Untrackable(DeclaredLinearDynamic)` — ill-formed there — without an instance (E0904; probes q11, r07). The read copies, so the output context is the indices'. Whether each index is *in range* is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing question.
 
 ```lean
 RueCore.Typed.indexRead {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ : List Ctx}
@@ -41003,7 +41004,7 @@ RueCore.Typed.indexRead {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ : List Ctx}
                             { norm := some Γ₁, brk := Δ }
 ```
 
-**`Typed.indexReadBot`** — (Strict-Bottom) §5.3 at a dynamic index: an index expression diverges, so the place is never navigated and no premise about its state is read. The premises left are the ones that name `T_E`, the leaf's type — the index list's shape, and `Γ ⊢ p[…]… : T` read on the incoming context, whose skeleton is the one every later state has.
+**`Typed.indexReadBot`** — (Strict-Bottom) §5.3 at a dynamic index: an index expression diverges, so the place is never navigated and no premise about its state is read. The premises left are the ones that name `T_E`, the leaf's type — the index list's shape, and `Γ ⊢ p[…]… : T` read on the input context, whose skeleton is the one every later state has.
 
 ```lean
 RueCore.Typed.indexReadBot {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}
@@ -41020,7 +41021,7 @@ RueCore.Typed.indexReadBot {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}
                   { norm := none, brk := Δ }
 ```
 
-**`Typed.indexWrite`** — (Assign) §5.2 below a dynamic index, `p[e₁]π₁…[eₖ]πₖ = e` (`7.1:30`, `4.11:12`): an in-place mutation that modifies the array without moving it. The root must be a `μ = mut` binding (§5 preamble). **The right-hand side is typed first**, then the index expressions left to right, with Σ threaded in that order: `5.2:14` is normative ("the right-hand side `expression` is evaluated first … any index subexpressions appearing in the target … are evaluated after the right-hand side, in source order"), §6.2's `assign p = E` context says the same, and the compiler agrees (probes q14, q20, r10). The destination is **not** a use, so the read's `class(T) = Copy` premise does not transfer here: what (Assign) demands of a destination is its own last premise, `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the leaf. A place under a runtime index can never be proven `MovedOut` (`3.8:77`), so the disjunction is its right half, `class(T) ≠ Linear`: an affine, even destructor-bearing, leaf is admitted and the machine's overwrite-drop runs its glue (probe q04), while a linear-carrying one is E0493 (probe q05). There is **no plan premise**: §4.2's plans classify value-context uses, and an assignment destination is not one. The compiler admits a dynamic-index write under a declared-`linear` prefix above the index (`v0.x0[i] = 9`, second-review probe c3; `v.arr[i].x1 = 9`, probe r06) **and** below it (`a[i].x0 = 5` on `[L; 2]` with `L` declared `linear`, probe r05, which prints `6`). The write lands on a leaf the declared-`linear` place still owns whole — `fully-owned` below guards that — and consumes nothing, so `Untrackable(DeclaredLinearDynamic)` has no instance at a write. `3.8:72`/`7.1:46` — "while one or more elements of an array are moved out, it is a compile-time error to assign into the array" — is `fully-owned(Σ, p)` on the post-operand state at the array the first dynamic step indexes, and `assignArrayOk` at any array the constant place stepped through to reach it (`a[0][i].k = 5` after a move of `a[1]` is E0480, probe r02; `a[i].k = 5` after `a[0]` moved, probes q07, q18). And `3.8:55`'s reinitialization is (Assign)'s own `Σ1[p ↦ Owned]`, taken at the **whole array** `p`: `7.1:46` says an element write "does not reinstate per-element ownership", and on the `fully-owned` premise there is nothing to reinstate, so writing `Owned` at `p` changes no path's state. `en₀.st.get p.path = some u₀` constrains `u₀` nowhere, and deliberately: it is (Assign)'s own incoming `Σ(p)` lookup, whose content is that the destination path is *reachable* — `OwnSt.get` is `none` under a moved-out prefix — while every condition on the state itself is read after the operands have run, on `u₁`, because that is the state the write overwrites.
+**`Typed.indexWrite`** — (Assign) §5.2 below a dynamic index, `p[e₁]π₁…[eₖ]πₖ = e` (`7.1:30`, `4.11:12`): an in-place mutation that modifies the array without moving it. The root must be a `μ = mut` binding (§5 preamble). **The right-hand side is typed first**, then the index expressions left to right, with Σ threaded in that order: `5.2:14` is normative ("the right-hand side `expression` is evaluated first … any index subexpressions appearing in the target … are evaluated after the right-hand side, in source order"), §6.2's `assign p = E` context says the same, and the compiler agrees (probes q14, q20, r10). The destination is **not** a use, so the read's `qual(T) = Copy` premise does not transfer here: what (Assign) demands of a destination is its own last premise, `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the leaf. A place under a runtime index can never be proven `MovedOut` (`3.8:77`), so the disjunction is its right half, `qual(T) ≠ Linear`: an affine, even destructor-bearing, leaf is admitted and the machine's overwrite-drop runs its glue (probe q04), while a linear-carrying one is E0493 (probe q05). There is **no plan premise**: §4.2's plans classify value-context uses, and an assignment destination is not one. The compiler admits a dynamic-index write under a declared-`linear` prefix above the index (`v0.x0[i] = 9`, second-review probe c3; `v.arr[i].x1 = 9`, probe r06) **and** below it (`a[i].x0 = 5` on `[L; 2]` with `L` declared `linear`, probe r05, which prints `6`). The write lands on a leaf the declared-`linear` place still owns whole — `fully-owned` below guards that — and consumes nothing, so `Untrackable(DeclaredLinearDynamic)` has no instance at a write. `3.8:72`/`7.1:46` — "while one or more elements of an array are moved out, it is a compile-time error to assign into the array" — is `fully-owned(Σ, p)` on the post-operand state at the array the first dynamic step indexes, and `assignArrayOk` at any array the constant place stepped through to reach it (`a[0][i].k = 5` after a move of `a[1]` is E0480, probe r02; `a[i].k = 5` after `a[0]` moved, probes q07, q18). And `3.8:55`'s reinitialization is (Assign)'s own `Σ1[p ↦ Owned]`, taken at the **whole array** `p`: `7.1:46` says an element write "does not reinstate per-element ownership", and on the `fully-owned` premise there is nothing to reinstate, so writing `Owned` at `p` changes no path's state. `en₀.st.get p.path = some u₀` constrains `u₀` nowhere, and deliberately: it is (Assign)'s own input `Σ(p)` lookup, whose content is that the destination path is *reachable* — `OwnSt.get` is `none` under a moved-out prefix — while every condition on the state itself is read after the operands have run, on `u₁`, because that is the state the write overwrites.
 
 ```lean
 RueCore.Typed.indexWrite {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx}
@@ -41080,7 +41081,7 @@ RueCore.Typed.indexWriteBotIdx {P : Program} {R : Ty} {Γ Γ₁ : Ctx}
                 { norm := none, brk := Δ₂ ++ Δ₁ }
 ```
 
-**`Typed.indexDrop`** — (@Drop-Copy) §5.3 at a `Copy` place below a dynamic index, `@drop(p[e₁]π₁…[eₖ]πₖ)`. §5.3's rule has no index premise and its prose admits `@drop(a[i])` on a `Copy`-element array at a dynamic index; the compiler accepts the form (probe d1), runs the indices and bounds-checks them (probe d3 traps), and gives it exactly the read's premises: an affine or linear place there is E0904, as its read is (probe d4). The premise is therefore the read's whole derivation, (Use-Untrackable-Dynamic-Copy) §5.1 at the same place — `Copy` leaf, `fully-owned(Σ, p)`, no declared-`linear` prefix, integer indices typed left to right — and the conclusion is the read's outgoing context at type `unit`: a `Copy` place is moved by nothing, so there is no ownership effect to add.
+**`Typed.indexDrop`** — (@Drop-Copy) §5.3 at a `Copy` place below a dynamic index, `@drop(p[e₁]π₁…[eₖ]πₖ)`. §5.3's rule has no index premise and its prose admits `@drop(a[i])` on a `Copy`-element array at a dynamic index; the compiler accepts the form (probe d1), runs the indices and bounds-checks them (probe d3 traps), and gives it exactly the read's premises: an affine or linear place there is E0904, as its read is (probe d4). The premise is therefore the read's whole derivation, (Use-Untrackable-Dynamic-Copy) §5.1 at the same place — `Copy` leaf, `fully-owned(Σ, p)`, no declared-`linear` prefix, integer indices typed left to right — and the conclusion is the read's output context at type `unit`: a `Copy` place is moved by nothing, so there is no ownership effect to add.
 
 ```lean
 RueCore.Typed.indexDrop {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {p : Place}
@@ -41127,7 +41128,7 @@ RueCore.Typed.dropRes {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
                         brk := [] }
 ```
 
-**`Typed.dropDeclared`** — **(@Drop) §5.3 at a declared-linear plan**, the `@drop` half of the destructure. §5.3 states it in prose rather than as a fourth rule: the two `@drop` rules "are read the same way" as §5.1's two use rules, so "`@drop(p)` leaves `p` `MovedOut`, so where elaboration records `Declared(d, π)` for `p` the intrinsic consumes `d` and destroys its droppable residue exactly as a use does, rather than marking the projected leaf alone." So the premises are `Typed.useDeclared`'s, verbatim, and there is **no premise on the leaf's class**: §5.3 is explicit that the whole of `d` is consumed "for a `Copy` field `f` as much as for a droppable one", and the compiler agrees — after `@drop(d.f)` at a `Copy` field, a later use of `d` is E0205 (probe d6/d6b). That is the one place where `@drop` at a `Copy` place is not a no-op, and it is why this rule is not folded into `dropCopy`. The **prose spec** does not say it yet: `3.9:37-39` describe `@drop` at the named place only, and `3.9:39`'s "applied to a `@copy` value, it is a no-op" is about that place, not about a `Copy` leaf reached through a declared-`linear` prefix. The rule follows the calculus §5.3 and `3.8:33`'s destructure, which the compiler matches; RUE-2338 is the spec paragraph that is owed. What the dynamics adds over a use is only the leaf: §6.3's `destructure` runs the residue's drops, and then §6.11 drops the selected leaf itself (probe d6c fixes the order — residue first, leaf second). `rootIdxOnly` is **not** carried, for the reason `useDeclared` above does not carry it; `@drop(a[0].x0)` on an `[T0; 2]` compiles and consumes the element (probe d3).
+**`Typed.dropDeclared`** — **(@Drop) §5.3 at a declared-linear plan**, the `@drop` half of the destructure. §5.3 states it in prose rather than as a fourth rule: the two `@drop` rules "are read the same way" as §5.1's two use rules, so "`@drop(p)` leaves `p` `MovedOut`, so where elaboration records `Declared(d, π)` for `p` the intrinsic consumes `d` and destroys its droppable residue exactly as a use does, rather than marking the projected leaf alone." So the premises are `Typed.useDeclared`'s, verbatim, and there is **no premise on the leaf's qualifier**: §5.3 is explicit that the whole of `d` is consumed "for a `Copy` field `f` as much as for a droppable one", and the compiler agrees — after `@drop(d.f)` at a `Copy` field, a later use of `d` is E0205 (probe d6/d6b). That is the one place where `@drop` at a `Copy` place is not a no-op, and it is why this rule is not folded into `dropCopy`. The **prose spec** does not say it yet: `3.9:37-39` describe `@drop` at the named place only, and `3.9:39`'s "applied to a `@copy` value, it is a no-op" is about that place, not about a `Copy` leaf reached through a declared-`linear` prefix. The rule follows the calculus §5.3 and `3.8:33`'s destructure, which the compiler matches; RUE-2338 is the spec paragraph that is owed. What the dynamics adds over a use is only the leaf: §6.3's `destructure` runs the residue's drops, and then §6.11 drops the selected leaf itself (probe d6c fixes the order — residue first, leaf second). `rootIdxOnly` is **not** carried, for the reason `useDeclared` above does not carry it; `@drop(a[0].x0)` on an `[T0; 2]` compiles and consumes the element (probe d3).
 
 ```lean
 RueCore.Typed.dropDeclared {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
@@ -41149,7 +41150,7 @@ RueCore.Typed.dropDeclared {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
                       brk := [] }
 ```
 
-**`Typed.letIn`** — (Let) + §5.6 scope exit: the binder enters `Owned`; at the body's end its residual state must not be an unconsumed linear value (the leak check). An `Owned` affine residue is dropped by the machine (§6.7); `MovedOut` needs nothing. The body's deliveries keep the binder on top of the state they record, which is the state in force at their edge; the conclusion is §5.3's `Ω_2 ⊕ Δ_1`.
+**`Typed.letIn`** — (Let) + §5.6 scope exit: the binder enters `Owned`; at the body's end its residual state must not be an unconsumed linear value (the leak check). An `Owned` affine residue is dropped by the machine (§6.7); `MovedOut` needs nothing. The body's abrupt-completion contexts keep the binder on top of the state they record, which is the state in force at their edge; the conclusion is §5.3's `Ω_2 ⊕ Δ_1`.
 
 ```lean
 RueCore.Typed.letIn {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Γ₂ : List Entry}
@@ -41182,7 +41183,7 @@ RueCore.Typed.letBot {P : Program} {R : Ty} {Γ : Ctx} {Δ₁ : List Ctx}
     Typed P R Γ (Expr.letIn m e₁ e₂) T { norm := none, brk := Δ₁ }
 ```
 
-**`Typed.assign`** — (Assign) §5.2, at a place: the root must be a `μ = mut` binding (§5 preamble), the RHS runs first, the overwrite of live linear content is ill-formed (`3.8:77`, checked on the **post-RHS** state — the RUE-387 premise, and the `Σ1` reading that makes `p = f(p)` legal), and the subtree at `p` becomes `Owned` afterward (reinitialization, `3.8:55`). The `get` premises are `Owned-Base` (`3.8:53`) at both states: a path under a moved prefix is not a path to assign to, which the compiler reports as E0205. The `3.8:77` premise is §5.2's disjunction **as written** — `Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, on the destination's declared type — and not §5.6's residual reading. `overwriteOk`'s docstring says why: an overwrite discharges nothing, so the argument that made §5.5 and §5.6 state-keyed (RUE-526, RUE-1591) does not transfer, and the compiler rejects the shape the residual reading would accept (E0493 on `@drop(v.linearField); v = …`; corpus case `overwrite_past_partial_linear`). `assignArrayOk` is §5.2's own array side condition (`3.8:72`, E0480), read on the post-RHS state like the `3.8:77` premise beside it: a destination that steps into an array demands the whole array, so an element is never reinitialized and the whole-array reassignment is the only recovery (`7.1:46`). Its docstring records the deviation from §5.2's disjunction as written. One **deviation** (N3): `Owned-Base` is demanded on the *incoming* state as well as the post-RHS one, so this rule is one premise stricter than §5.2, which states neither (U4 reads §5.1's "in any context" side condition for the post-RHS lookup). Nothing a program can observe turns on it: only an RHS that reinitialises the target's own moved-out prefix could make the incoming lookup fail where the post-RHS one succeeds.
+**`Typed.assign`** — (Assign) §5.2, at a place: the root must be a `μ = mut` binding (§5 preamble), the RHS runs first, the overwrite of live linear content is ill-formed (`3.8:77`, checked on the **post-RHS** state — the RUE-387 premise, and the `Σ1` reading that makes `p = f(p)` legal), and the subtree at `p` becomes `Owned` afterward (reinitialization, `3.8:55`). The `get` premises are `Owned-Base` (`3.8:53`) at both states: a path under a moved prefix is not a path to assign to, which the compiler reports as E0205. The `3.8:77` premise is §5.2's disjunction **as written** — `Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, on the destination's declared type — and not §5.6's residual reading. `overwriteOk`'s docstring says why: an overwrite discharges nothing, so the argument that made §5.5 and §5.6 state-keyed (RUE-526, RUE-1591) does not transfer, and the compiler rejects the shape the residual reading would accept (E0493 on `@drop(v.linearField); v = …`; corpus case `overwrite_past_partial_linear`). `assignArrayOk` is §5.2's own array side condition (`3.8:72`, E0480), read on the post-RHS state like the `3.8:77` premise beside it: a destination that steps into an array demands the whole array, so an element is never reinitialized and the whole-array reassignment is the only recovery (`7.1:46`). Its docstring records the deviation from §5.2's disjunction as written. One **deviation** (N3): `Owned-Base` is demanded on the *input context* as well as the post-RHS one, so this rule is one premise stricter than §5.2, which states neither (U4 reads §5.1's "in any context" side condition for the post-RHS lookup). Nothing a program can observe turns on it: only an RHS that reinitialises the target's own moved-out prefix could make the input lookup fail where the post-RHS one succeeds.
 
 ```lean
 RueCore.Typed.assign {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ : List Ctx}
@@ -41214,7 +41215,7 @@ RueCore.Typed.assignBot {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}
     Typed P R Γ (Expr.assign p e) Ty.unit { norm := none, brk := Δ }
 ```
 
-**`Typed.seq`** — (Seq): the discarded value must not carry a linear value (`3.8:64`). Only the prefix must continue; the tail's `Ω_2` is the form's, with the prefix's deliveries added (`Ω_2 ⊕ Δ_1`, §5.3).
+**`Typed.seq`** — (Seq): the discarded value must not carry a linear value (`3.8:64`). Only the prefix must complete normally; the tail's `Ω_2` is the form's, with the prefix's abrupt-completion contexts added (`Ω_2 ⊕ Δ_1`, §5.3).
 
 ```lean
 RueCore.Typed.seq {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ₁ : List Ctx}
@@ -41233,7 +41234,7 @@ RueCore.Typed.seqBot {P : Program} {R : Ty} {Γ : Ctx} {Δ₁ : List Ctx}
     Typed P R Γ (e₁.seq e₂) T { norm := none, brk := Δ₁ }
 ```
 
-**`Typed.ite`** — (If): both arms from the post-condition state, at one type `T` (a diverging arm meets it by (Sub-Never) §5.7). The outgoing state is the §5.5 join of the arms that **continue** (`Ctx.joinOpt`: a diverging arm is excluded, `3.8:51`, and `⊥` when neither continues), and the deliveries are the condition's `Δ_0` with both arms'.
+**`Typed.ite`** — (If): both arms from the post-condition state, at one type `T` (a diverging arm meets it by (Sub-Never) §5.7). The output context is the §5.5 join of the arms that **can complete normally** (`Ctx.joinOpt`: a diverging arm is excluded, `3.8:51`, and `⊥` when neither can), and the abrupt-completion contexts are the condition's `Δ_0` with both arms'.
 
 ```lean
 RueCore.Typed.ite {P : Program} {R : Ty} {Γ Γ₀ : Ctx} {Δ₀ : List Ctx}
@@ -41265,7 +41266,7 @@ RueCore.Typed.call {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {f : Nat}
       Typed P R Γ (Expr.call f args) fd.ret Ω
 ```
 
-**`Typed.ret`** — (Return-Value) §5.7 with (Sub-Never) folded in: the operand is checked against the enclosing function's declared return type `R`; §5.6's `⊥_exit` obligation is the frame-wide residual-linear premise (no binding of the current frame still carries residual linear content — `3.8:62`, and (Fn) §5.8's second clause, which is why an early `return` past a live linear is rejected). The conclusion is at an arbitrary type, which is (Sub-Never) §5.7 applied to `never`, and at `⊥` with the operand's deliveries. The `⟨ret, Σ_e⟩` delivery itself is not recorded: its one consumer, (Fn) §5.8's residual check, is this rule's premise, read where the edge fires — the architecture §5.7's closing note allows.
+**`Typed.ret`** — (Return-Value) §5.7 with (Sub-Never) folded in: the operand is checked against the enclosing function's declared return type `R`; §5.6's `⊥_exit` obligation is the activation-record-wide residual-linear premise (no binding of the current activation record still carries residual linear content — `3.8:62`, and (Fn) §5.8's second clause, which is why an early `return` past a live linear is rejected). The conclusion is at an arbitrary type, which is (Sub-Never) §5.7 applied to `never`, and at `⊥` with the operand's abrupt-completion contexts. The `⟨ret, Σ_e⟩` abrupt-completion context itself is not recorded: its one consumer, (Fn) §5.8's residual check, is this rule's premise, read where the edge fires — the architecture §5.7's closing note allows.
 
 ```lean
 RueCore.Typed.ret {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ : List Ctx}
@@ -41275,7 +41276,7 @@ RueCore.Typed.ret {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ : List Ctx}
       Typed P R Γ e.ret T { norm := none, brk := Δ }
 ```
 
-**`Typed.retBot`** — (Return-Bottom) §5.7 with (Sub-Never): the operand itself diverges, so the `return` never fires, makes no delivery and reads no state.
+**`Typed.retBot`** — (Return-Bottom) §5.7 with (Sub-Never): the operand itself diverges, so the `return` never fires, makes no abrupt-completion context and reads no state.
 
 ```lean
 RueCore.Typed.retBot {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}
@@ -41284,14 +41285,14 @@ RueCore.Typed.retBot {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}
     Typed P R Γ e.ret T { norm := none, brk := Δ }
 ```
 
-**`Typed.brk`** — **(Break) §5.7** with (Sub-Never) folded in: `break` yields no value to its own context, so it concludes at every type and at `⊥`, and it delivers `⟨break, Σ⟩` — the **whole** context in force where it fires, loop-local bindings included — to the innermost enclosing loop, which is the one consumer that reads it (`loopBreak`). Every rule between the two carries the delivery outward by §5.3's threading, whether or not the `break` is in tail position. "Well-formed only inside a loop" is (Fn)'s premise that a body delivers no `break` (`WfFn`).
+**`Typed.brk`** — **(Break) §5.7** with (Sub-Never) folded in: `break` yields no value to its own context, so it concludes at every type and at `⊥`, and it completes abruptly with `⟨break, Σ⟩` — the **whole** context in force where it fires, loop-local bindings included — to the innermost enclosing loop, which is the one consumer that reads it (`loopBreak`). Every rule between the two carries the abrupt-completion context outward by §5.3's threading, whether or not the `break` is in tail position. "Well-formed only inside a loop" is (Fn)'s premise that a body completes abruptly with no `break` (`WfFn`).
 
 ```lean
 RueCore.Typed.brk {P : Program} {R : Ty} {Γ : Ctx} {T : Ty} :
   Typed P R Γ Expr.brk T { norm := none, brk := [Γ] }
 ```
 
-**`Typed.loopDiv`** — **(Loop-Div-Backedge) and (Loop-Div) §5.7**, in one rule, because they differ only in whether the body reaches its back edge — which is what the body's own `Ω` says, so the rule reads it rather than splitting on it. The body syntactically contains no `break` targeting this loop (`4.8:21`, `Expr.breaks`), so the loop is `never`-typed, with (Sub-Never) folded in. The body is typed once, at the **loop-head state** `Σ_h = head(Σ, e)` (`3.8:79`): `LoopHead` is §5.7's defining equation, `Σ_h` the join of the entry state with the states at the body's own reachable back edges, read off the very judgment that types the body at `Σ_h`. When the body continues it re-enters itself forever, so it delivers `⟨diverge, Σ_h⟩`; the fragment checks that delivery where it fires, frame-wide, by `NoResidualLinear` — §5.6/§5.7's retained non-panic residual check, which the compiler enforces as E0406 for a linear local or a by-value parameter live at `loop { }` (`../03-metatheory.md` records the reading). When the body never completes (Loop-Div), `B_h = ∅`, so `Σ_h = Σ` and there is no diverge delivery: the loop is left only by the body's own `return`/`@panic`, which were checked where they fired. Either way the loop concludes at `⊥` and delivers no `break` outward (`Δ_out` removes this loop's own edges, and the syntactic premise says there are none — `Typed.brk_nil`). The diverge premise is there for fidelity to §5.7 and agreement with the compiler (E0406), not for safety: `soundness` does not use it, since a loop that never exits cannot leak in a way the machine sees — the premise `ret`'s residual check has at a `return` has no dynamic counterpart here. The same holds of `loopBreakDiv`'s.
+**`Typed.loopDiv`** — **(Loop-Div-Backedge) and (Loop-Div) §5.7**, in one rule, because they differ only in whether the body reaches its back edge — which is what the body's own `Ω` says, so the rule reads it rather than splitting on it. The body syntactically contains no `break` targeting this loop (`4.8:21`, `Expr.breaks`), so the loop is `never`-typed, with (Sub-Never) folded in. The body is typed once, at the **loop-head state** `Σ_h = head(Σ, e)` (`3.8:79`): `LoopHead` is §5.7's defining equation, `Σ_h` the join of the entry state with the states at the body's own reachable back edges, read off the very judgment that types the body at `Σ_h`. When the body can complete normally it re-enters itself forever, so it completes abruptly with `⟨diverge, Σ_h⟩`; the fragment checks that abrupt-completion context where it fires, activation-record-wide, by `NoResidualLinear` — §5.6/§5.7's retained non-panic residual check, which the compiler enforces as E0406 for a linear local or a by-value parameter live at `loop { }` (`../03-metatheory.md` records the reading). When the body never completes (Loop-Div), `B_h = ∅`, so `Σ_h = Σ` and there is no diverge abrupt-completion context: the loop is left only by the body's own `return`/`@panic`, which were checked where they fired. Either way the loop concludes at `⊥` and completes abruptly with no `break` outward (`Δ_out` removes this loop's own edges, and the syntactic premise says there are none — `Typed.brk_nil`). The diverge premise is there for fidelity to §5.7 and agreement with the compiler (E0406), not for safety: `soundness` does not use it, since a loop that never exits cannot leak in a way the machine sees — the premise `ret`'s residual check has at a `return` has no dynamic counterpart here. The same holds of `loopBreakDiv`'s.
 
 ```lean
 RueCore.Typed.loopDiv {P : Program} {R : Ty} {Γ Γh : Ctx} {Ωe : Out}
@@ -41303,7 +41304,7 @@ RueCore.Typed.loopDiv {P : Program} {R : Ty} {Γ Γh : Ctx} {Ωe : Out}
           Typed P R Γ e.loop T { norm := none, brk := [] }
 ```
 
-**`Typed.loopBreak`** — **(Loop-Break) §5.7 with a reachable exit** (`X ≠ ∅`): the body contains a `break` targeting this loop (`4.8:21`), so the loop is `unit`-typed; the body is typed at the loop-head state (`LoopHead`, as for `loopDiv`), and the exits are read off that one judgment. `X` is the body's `brk`: each delivery is the whole context at its `break`, so the loop splits it at the loop's own depth. The loop-local bindings still open there (the prefix, `Ctx.loopLocals`) end at the exit, which discharges §5.6 for them ("discharged at the exit itself"; dynamically, §6.10's unwind); the rest (`Ctx.outsideLoop`) is `outside_loop(Σ_x)`, and the loop's normal outgoing state is §5.5's join over those (`3.8:80`), `Ctx.joinAll` in delivery order (the order is immaterial: `Ctx.joinAll_perm`). The body's normal completion is the back edge, which `LoopHead` already reads; it is not an exit. The loop consumes its own `break` deliveries (`Δ_out`), and the fragment has no others, so it delivers none.
+**`Typed.loopBreak`** — **(Loop-Break) §5.7 with a reachable exit** (`X ≠ ∅`): the body contains a `break` targeting this loop (`4.8:21`), so the loop is `unit`-typed; the body is typed at the loop-head state (`LoopHead`, as for `loopDiv`), and the exits are read off that one judgment. `X` is the body's `brk`: each abrupt-completion context is the whole context at its `break`, so the loop splits it at the loop's own depth. The loop-local bindings still open there (the prefix, `Ctx.loopLocals`) end at the exit, which discharges §5.6 for them ("discharged at the exit itself"; dynamically, §6.10's unwind); the rest (`Ctx.outsideLoop`) is `outside_loop(Σ_x)`, and the loop's normal output state is §5.5's join over those (`3.8:80`), `Ctx.joinAll` in abrupt-completion context order (the order is immaterial: `Ctx.joinAll_perm`). The body's normal completion is the back edge, which `LoopHead` already reads; it is not an exit. The loop consumes its own `break` abrupt-completion contexts (`Δ_out`), and the fragment has no others, so it completes abruptly with none.
 
 ```lean
 RueCore.Typed.loopBreak {P : Program} {R : Ty} {Γ Γh : Ctx} {Ωe : Out}
@@ -41317,7 +41318,7 @@ RueCore.Typed.loopBreak {P : Program} {R : Ty} {Γ Γh : Ctx} {Ωe : Out}
             Typed P R Γ e.loop Ty.unit { norm := some Γx, brk := [] }
 ```
 
-**`Typed.loopBreakDiv`** — **(Loop-Break) §5.7 with no reachable exit** (`X = ∅`): every targeting `break` is unreachable, so the loop is still `unit`-typed by `4.8:21`'s syntactic classification but has no post-loop state, `⊥`. With a reachable back edge it re-enters itself forever and delivers `⟨diverge, Σ_h⟩` exactly as `loopDiv` does, checked the same way; with none, the body's own `return`/`@panic` are its only exits. "The two forms differ only in `4.8:21`'s syntactic type, never in what they deliver."
+**`Typed.loopBreakDiv`** — **(Loop-Break) §5.7 with no reachable exit** (`X = ∅`): every targeting `break` is unreachable, so the loop is still `unit`-typed by `4.8:21`'s syntactic classification but has no post-loop state, `⊥`. With a reachable back edge it re-enters itself forever and completes abruptly with `⟨diverge, Σ_h⟩` exactly as `loopDiv` does, checked the same way; with none, the body's own `return`/`@panic` are its only exits. "The two forms differ only in `4.8:21`'s syntactic type, never in how they complete abruptly."
 
 ```lean
 RueCore.Typed.loopBreakDiv {P : Program} {R : Ty} {Γ Γh : Ctx} {Ωe : Out}
@@ -41355,7 +41356,7 @@ RueCore.TypedArgs.nil {P : Program} {R : Ty} {Γ : Ctx} :
   TypedArgs P R Γ [] [] { norm := some Γ, brk := [] }
 ```
 
-**`TypedArgs.cons`** — One member is a value-context use at its expected type (§4.2), threading Σ into the rest of the list (§5.8), whose outcome is the list's with this member's deliveries added (§5.3's `Ω ⊕ Δ`).
+**`TypedArgs.cons`** — One member is a value-context use at its expected type (§4.2), threading Σ into the rest of the list (§5.8), whose outcome is the list's with this member's abrupt-completion contexts added (§5.3's `Ω ⊕ Δ`).
 
 ```lean
 RueCore.TypedArgs.cons {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ₁ : List Ctx}
@@ -41383,15 +41384,15 @@ RueCore.TypedArgs.consBot {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}
 post-scrutinee state `Σ0`** (a `match` is a branch, not a sequence, so Σ is not
 threaded from arm to arm) and each at the one type `T` the rule concludes at.
 
-An arm that continues carries two premises of its own. Its body is typed under
+An arm that can complete normally carries two premises of its own. Its body is typed under
 the variant's payload locals (`extendArm`), and at its end those locals leave
 scope under §5.6 — `NoResidualLinear` over the `ai` entries the arm pops is
 the leak check `Typed.letIn` makes for its single binder, read over the whole
 payload (`6.3:17`: a `Linear` payload an arm neither moves nor consumes is a
 leak; an `Affine` one the machine drops once). The arm's contribution to the
 join is what is left after popping them. An arm that diverges contributes `⊥`
-to the join (`none`), and only its deliveries. The result is one optional
-state per arm, in declaration order, and the arms' deliveries.
+to the join (`none`), and only its abrupt-completion contexts. The result is one optional
+state per arm, in declaration order, and the arms' abrupt-completion contexts.
 
 ```lean
 inductive RueCore.TypedArms (P : Program) (R : Ty) :
@@ -41407,7 +41408,7 @@ RueCore.TypedArms.noArms {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty} :
   TypedArms P R Γ₀ [] [] T [] []
 ```
 
-**`TypedArms.arm`** — The arm for the next variant, continuing: its body typed under that variant's payload locals, those locals discharged by §5.6 at the arm's end, and the rest of the arms typed from the same `Σ0`.
+**`TypedArms.arm`** — The arm for the next variant, completing normally: its body typed under that variant's payload locals, those locals discharged by §5.6 at the arm's end, and the rest of the arms typed from the same `Σ0`.
 
 ```lean
 RueCore.TypedArms.arm {P : Program} {R : Ty} {Γ₀ Γb : Ctx} {Δb : List Ctx}
@@ -41420,7 +41421,7 @@ RueCore.TypedArms.arm {P : Program} {R : Ty} {Γ₀ Γb : Ctx} {Δb : List Ctx}
           (some (List.drop Ts.length Γb) :: os) (Δb ++ Δs)
 ```
 
-**`TypedArms.armDiv`** — The arm for the next variant, diverging: its body is `⊥`, so no scope exit is reached on a normal path and it contributes no state to the join (§5.5, `3.8:51`), only its deliveries.
+**`TypedArms.armDiv`** — The arm for the next variant, diverging: its body is `⊥`, so no scope exit is reached on a normal path and it contributes no state to the join (§5.5, `3.8:51`), only its abrupt-completion contexts.
 
 ```lean
 RueCore.TypedArms.armDiv {P : Program} {R : Ty} {Γ₀ : Ctx} {Δb : List Ctx}
@@ -41441,7 +41442,7 @@ exit edge discharges §5.6's obligation for every by-value parameter and every
 still-open body-local binding (`3.8:62` — a by-value parameter carrying a
 linear value must be consumed on every non-diverging path). The rule's early
 exits are covered by `Typed.ret`, which carries the same premise at the edge
-where the frame's scopes end (§5.7's `⊥_exit`). A body with no normal exit,
+where the activation record's scopes end (§5.7's `⊥_exit`). A body with no normal exit,
 `Ωf = ⊥;Δf`, owes nothing at one. `Δf` has no `⟨break, _⟩`: "a break outside
 a loop is ill-formed" (§5.7), which is (Fn)'s own premise.
 
@@ -41457,7 +41458,7 @@ def RueCore.WfFn (P : Program) (fd : FnDef) : Prop :=
 
 *inductive* · module `RueCore.Statics`
 
-A well-formed program: §3's class assignment holds of every declaration and
+A well-formed program: §3's qualifier assignment holds of every declaration and
 (Fn) §5.8 of every function. Recursion is ordinary — a body may call any
 function of the program, itself included, since (Call) reads only the callee's
 signature (§5.8, "the core is fully monomorphic") — while *declarations* are
@@ -41569,7 +41570,7 @@ Defining equations, as Lean derived them from the body:
 
 Whether joining a wholly-`Owned` arm with `t` is well-formed: every path
 `t` has `MovedOut` must be one the `Owned` side may lose, which by §5.6 read on
-an `Owned` subtree is `class(T) ≠ Linear` at that path (`3.8:50`).
+an `Owned` subtree is `qual(T) ≠ Linear` at that path (`3.8:50`).
 
 ```lean
 def RueCore.ownedJoinable (D : Decls) : OwnSt → Ty → Bool
@@ -41626,10 +41627,10 @@ declared type.
 
 * a `MovedOut` path carries nothing (`Σ(p) = MovedOut ⇒ false`);
 * a path that is wholly `Owned` carries a linear value exactly when
-  `class(T) = Linear`, because §3's class *is* the join that reaches `Linear`
+  `qual(T) = Linear`, because §3's qualifier *is* the join that reaches `Linear`
   through a declared-`linear` struct at some depth (`struct_carriesLinear_iff`)
   — so the type-level test is the fixed point of §5.6's own recursion on a
-  subtree with no holes in it;
+  subtree with no moved-out parts in it;
 * a **declared**-`linear` struct still `Owned` carries the obligation itself,
   whatever its fields do (`3.8:74`; `3.8:75`'s empty `linear struct MustUse` is
   the motivating case);
@@ -41654,7 +41655,7 @@ the calculus has no rule for a move or a `@drop` of an affine or linear place
 there, nor for a declared-`linear` plan (§4.2's `Untrackable` plans, E0904;
 probes q02, q11, q15 of RUE-2342); a `@drop` of a `Copy` place there
 (`Typed.indexDrop`) moves nothing, and a write there consumes nothing. So an untracked element is `Owned`, and
-an `Owned` element carries a linear value exactly when `class(T) = Linear`.
+an `Owned` element carries a linear value exactly when `qual(T) = Linear`.
 
 ```lean
 def RueCore.residualLinear (D : Decls) : OwnSt → Ty → Bool

@@ -1,8 +1,8 @@
 ════════════════════════════════════════════════════════════════════════════════
  recursion_trap
 ════════════════════════════════════════════════════════════════════════════════
-Recursion four frames deep, ending in a division by zero: a defined trap
-reached through a call chain.
+Recursion four activation records deep, ending in a division by zero: a
+defined trap reached through a call chain.
 
 Rules exercised: (Call) §5.8 · (D-Call) §6.9 · §6.4 arithmetic traps
 
@@ -104,9 +104,9 @@ the node itself, so the table reads top to bottom as the machine ran. `d<n>`
 is the nesting depth — a callee's rows are deeper than its call's — and `>>`
 marks a drop event. The run enters at f0(), as `Dynamics.run` does.
 `#n` after an aggregate is its identity, minted when it was built; a `†`
-cell is a retired binding or an identity's reserved slot (`introVal`).
+cell is a tombstoned binding or an identity's reserved slot (`introVal`).
 
-  [1]   d1    (D-Call) §6.9 (push the frame)
+  [1]   d1    (D-Call) §6.9 (push the activation record)
          expr    fn f0() -> i64  with []
          store   (empty)
            →     (empty)
@@ -116,7 +116,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          store   (empty)
            →     (empty)
          result  value 3
-  [3]   d3        (D-Call) §6.9 (push the frame)
+  [3]   d3        (D-Call) §6.9 (push the activation record)
          expr    fn f1(v0: i64) -> i64  with [ℓ0]
          store   (empty)
            →     [ℓ0 = 3]
@@ -151,7 +151,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = 3]
            →     [ℓ0 = 3]
          result  value 2
-  [10]  d6              (D-Call) §6.9 (push the frame)
+  [10]  d6              (D-Call) §6.9 (push the activation record)
          expr    fn f1(v0: i64) -> i64  with [ℓ1]
          store   [ℓ0 = 3]
            →     [ℓ0 = 3, ℓ1 = 2]
@@ -186,7 +186,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = 3, ℓ1 = 2]
            →     [ℓ0 = 3, ℓ1 = 2]
          result  value 1
-  [17]  d9                  (D-Call) §6.9 (push the frame)
+  [17]  d9                  (D-Call) §6.9 (push the activation record)
          expr    fn f1(v0: i64) -> i64  with [ℓ2]
          store   [ℓ0 = 3, ℓ1 = 2]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1]
@@ -221,7 +221,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1]
          result  value 0
-  [24]  d12                  (D-Call) §6.9 (push the frame)
+  [24]  d12                  (D-Call) §6.9 (push the activation record)
          expr    fn f1(v0: i64) -> i64  with [ℓ3]
          store   [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
@@ -261,7 +261,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
          result  PANIC (divZero) — a defined trap, §6.12
-  [32]  d11                  (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
+  [32]  d11                  (Panic-Lift) §6.2 — the callee trapped, so no activation record is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
          expr    f1((v0 + (-1)))
          store   [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
@@ -271,7 +271,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
          result  PANIC (divZero) — a defined trap, §6.12
-  [34]  d8                  (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
+  [34]  d8                  (Panic-Lift) §6.2 — the callee trapped, so no activation record is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
          expr    f1((v0 + (-1)))
          store   [ℓ0 = 3, ℓ1 = 2]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
@@ -281,7 +281,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = 3, ℓ1 = 2]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
          result  PANIC (divZero) — a defined trap, §6.12
-  [36]  d5            (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
+  [36]  d5            (Panic-Lift) §6.2 — the callee trapped, so no activation record is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
          expr    f1((v0 + (-1)))
          store   [ℓ0 = 3]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
@@ -291,12 +291,12 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = 3]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
          result  PANIC (divZero) — a defined trap, §6.12
-  [38]  d2      (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
+  [38]  d2      (Panic-Lift) §6.2 — the callee trapped, so no activation record is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
          expr    f1(3)
          store   (empty)
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
          result  PANIC (divZero) — a defined trap, §6.12
-  [39]  d0  (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
+  [39]  d0  (Panic-Lift) §6.2 — the callee trapped, so no activation record is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
          expr    f0()
          store   (empty)
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
@@ -305,7 +305,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
 ── Identities (§7) ─────────────────────────────────────────────────────────────
 
 One line per owned identity: the step that minted it, the steps that ended
-it (a drop marker, a discarded temporary, a consumption), and the steps whose
+it (a drop marker, a discarded temporary, a consume event), and the steps whose
 destructor ran on it. `drop_exactly_once` is one entry in the ended column
 per identity. Read in row order, and `[n.k]` (the k-th end of row n) inside a
 row, the ends are the trace's order, which `drop_order` fixes: a value's

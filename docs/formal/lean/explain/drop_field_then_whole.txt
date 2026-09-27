@@ -2,7 +2,8 @@
  drop_field_then_whole
 ════════════════════════════════════════════════════════════════════════════════
 @drop at a field and then @drop of the whole: §5.3 asks only Σ(p) = Owned of
-the second, and §6.11's walk drops the owned residue and skips the hole.
+the second, and §6.11's walk drops the owned residue and skips the moved-out
+part.
 
 Rules exercised: (@Drop) §5.3 · §6.11 · 3.8:60
 
@@ -107,9 +108,9 @@ the node itself, so the table reads top to bottom as the machine ran. `d<n>`
 is the nesting depth — a callee's rows are deeper than its call's — and `>>`
 marks a drop event. The run enters at f0(), as `Dynamics.run` does.
 `#n` after an aggregate is its identity, minted when it was built; a `†`
-cell is a retired binding or an identity's reserved slot (`introVal`).
+cell is a tombstoned binding or an identity's reserved slot (`introVal`).
 
-  [1]   d1    (D-Call) §6.9 (push the frame)
+  [1]   d1    (D-Call) §6.9 (push the activation record)
          expr    fn f0() -> i64  with []
          store   (empty)
            →     (empty)
@@ -171,12 +172,12 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = S7 { S1 { 1 }#0, S1 { 2 }#1 }#2]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = ⊘]
          result  value 9
-  [13]  d2      (D-EndScope) §6.7 (retire the binding)
+  [13]  d2      (D-EndScope) §6.7 (tombstone the binding)
          expr    endscope([ℓ3])
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = ⊘]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
          result  value 9
-  [14]  d0  (D-Return-Value) §6.9 (pop the frame)
+  [14]  d0  (D-Return-Value) §6.9 (pop the activation record)
          expr    run-all-scope-drops([])
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
@@ -185,7 +186,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
 ── Identities (§7) ─────────────────────────────────────────────────────────────
 
 One line per owned identity: the step that minted it, the steps that ended
-it (a drop marker, a discarded temporary, a consumption), and the steps whose
+it (a drop marker, a discarded temporary, a consume event), and the steps whose
 destructor ran on it. `drop_exactly_once` is one entry in the ended column
 per identity. Read in row order, and `[n.k]` (the k-th end of row n) inside a
 row, the ends are the trace's order, which `drop_order` fixes: a value's
