@@ -123,7 +123,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
            →     (empty)
          result  value 0 — handed past this node by a `return` (§6.9)
   [8]   d0  (D-Return)/(D-Return-Main) §6.9 (the callee's return is the call's value)
-         expr    absorb 0
+         expr    bindCall 0
          store   (empty)
            →     (empty)
          result  value 0

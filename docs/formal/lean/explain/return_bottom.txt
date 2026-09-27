@@ -108,7 +108,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
            →     (empty)
          result  value 5 — handed past this node by a `return` (§6.9)
   [8]   d0  (D-Return)/(D-Return-Main) §6.9 (the callee's return is the call's value)
-         expr    absorb 5
+         expr    bindCall 5
          store   (empty)
            →     (empty)
          result  value 5
