@@ -3,8 +3,9 @@
 This file grounds the formal core's terminology in the programming-languages
 literature. The calculus ([01-core-calculus.md](01-core-calculus.md)), the
 metatheory ([03-metatheory.md](03-metatheory.md)) and the mechanization
-([lean/](lean/README.md)) draw on eight subfields, §§1–8, and on some
-general mathematics, §9. For each one, this file records:
+([lean/](lean/README.md)) draw on eight subfields, §§1–8, on some
+general mathematics, §9, and on the vocabulary of program logics, data
+abstraction and language implementation, §10. For each one, this file records:
 
 - the canonical sources;
 - the accepted terms, with the source that defines or uses each;
@@ -297,6 +298,8 @@ Atkey 2018; Bernardy et al. 2018 (Linear Haskell).
 | linear | Exchange only: exactly one use | Walker |
 | ordered | No structural rules: exactly one use, in order | Walker §1.4 |
 | qualifier | The annotation that puts a type in one of these classes | Walker §1.2 (`lin`, `un`); Tov & Pucella ("usage qualifier") |
+| containment rules | "Unrestricted data structures may not contain linear data structures. More generally, data structures with less restrictive type may not contain data structures with more restrictive type": the predicate `q(T)` says which types a `q`-qualified structure may hold | Walker §1.2 |
+| input context / output context | In the algorithmic judgment `Γin ⊢ t : T; Γout`, the context checking starts from, "some portion of which will be consumed", and the context left over, "synthesized alongside the type T" | Walker §1.2, "Algorithmic Linear Type Checking"; Oxide App. B.4 ("producing output context") |
 | context split | `Γ = Γ₁ ∘ Γ₂`, which distributes linear assumptions between subterms | Walker Fig. 1-4 |
 | dereliction subtyping | An unlimited-use function may be used where a one-use function is expected, after linear logic's dereliction rule | Tov & Pucella |
 | multiplicity | An arrow or binder annotation: 1, ω, a variable, or a sum or product of these. Multiplicities form a semiring without a zero | Linear Haskell §3.2 |
@@ -356,7 +359,7 @@ SE-0176 (*Enforce Exclusive Access to Memory*); the CWE entries 416, 415 and
 | place expression / value expression | Denotes a memory location / denotes a value (formerly lvalue / rvalue) | Ref. *Expressions* |
 | place | Oxide: a place expression with no dereference | Oxide |
 | move path | A location that can be initialized or moved. Move paths form a tree | rustc-dev-guide *Move paths* |
-| moved from; deinitialized | After a move out of a place, the place is deinitialized | Ref. *Expressions*; Ref. *Glossary* |
+| moved from; moved out of; deinitialized | After a move out of a place, the place is deinitialized: "After moving out of a place expression that evaluates to a local variable, the location is deinitialized" | Ref. *Expressions* (`[expr.move.deinitialization]`); Ref. *Glossary* |
 | initialized / uninitialized | Assigned and not moved from since / otherwise | Ref. *Glossary* |
 | maybe-initialized / maybe-uninitialized | The two dataflow analyses over move paths | rustc-dev-guide |
 | partial move; partially initialized | Some fields have been moved out. Only the initialized fields are dropped | Ref. *Patterns*; Ref. *Destructors* |
@@ -368,6 +371,7 @@ SE-0176 (*Enforce Exclusive Access to Memory*); the CWE entries 416, 415 and
 | destructor; dropped | What runs when an initialized variable or temporary leaves scope | Ref. *Destructors* |
 | drop scope; drop order | Variables are dropped in reverse order of declaration, temporaries in reverse order of creation; struct fields in declaration order; arrays from first element to last | Ref. *Destructors* |
 | drop glue | Calls `Drop::drop` if implemented, then the drop glue of every field | rustc-dev-guide *Drop elaboration* |
+| drop obligation | When a local variable becomes initialized, it establishes "a set of structural paths (e.g. a local `a`, or a path to a field `b.f.y`) that need to be dropped"; moving from a path releases the obligations for it and its descendants | rustc-dev-guide *Drop elaboration*, quoting RFC 320 |
 | drop flag | A per-variable runtime flag recording whether a drop is still owed | Rustonomicon *Drop Flags* |
 | drop elaboration; static / dead / conditional / open drop | Rewriting drops into code guarded by flags. The target is always initialized / always uninitialized / either wholly initialized or wholly uninitialized / possibly partly initialized. "Dynamic drops" is the guide's heading for the flag-based scheme (RFC 320), not a kind | rustc-dev-guide *Drop elaboration* |
 | substructural (context) | RustBelt's typing context is substructural | RustBelt §2, §3.3 |
@@ -711,6 +715,46 @@ pending audit.
 
 ---
 
+## 10. Program logics, data abstraction and implementation
+
+**Sources:** O'Hearn, Reynolds & Yang 2001; Raza & Gardner 2009; Wirth
+1996/2017; Appel 1998 (table of contents only); the Java Language
+Specification, Java SE 21, ch. 14; cppreference (*Throwing exceptions*;
+`std::vector::push_back`); Maranget 2008; Liskov & Zilles 1974 **(record)**;
+MIT 6.005 Reading 13; Guttag & Horning 1978 **(record)**; Gaudel & Le Gall
+2008; Leroy & Blazy 2008; Pearce, Kelly & Hankin 2004; Wikipedia's
+*Tombstone (programming)*; the Python Language Reference; Khoshafian &
+Copeland 1986 **(record)**; the Swift performance guide; Rust's
+`std::borrow::Cow`; the WHATWG Encoding Standard.
+
+### Accepted terms
+
+| Term | Meaning | Source |
+|---|---|---|
+| frame rule; frame property | The frame rule `{P} C {Q} ⇒ {P ∗ R} C {Q ∗ R}` codifies local behaviour: cells beyond those `P` describes "will remain unaltered". The frame property is the semantic condition behind it: "if the command is safe on some heap, then in any outcome of applying the command on a larger heap, the additional heap portion will remain unchanged by the command" | O'Hearn, Reynolds & Yang §3 (the rule); Raza & Gardner §2 (the property, which they credit to Yang & O'Hearn 2002) |
+| activation record; activation frame | The block of storage a procedure call allocates, on a stack, for its local variables (and its return address), released when the procedure terminates | Wirth §12.1 ("The storage blocks are called procedure activation records or activation frames"); Appel ch. 6 "Activation Records" (title seen) |
+| normal / abrupt completion; reason | A statement completes normally when all its steps are carried out. `break`, `continue`, `return` and `throw` cause a transfer of control that may make it complete abruptly instead, and "an abrupt completion always has an associated reason" (the statement, with its label or value) | JLS §14.1 |
+| can complete normally | The static, rule-by-rule judgment that a statement can complete normally, which decides reachability | JLS §14.22 |
+| stack unwinding | After a throw, "the control flow works backwards (up the call stack)" to a matching handler; on the way, destructors run for the automatic objects constructed since the `try` block was entered, in reverse order of construction | cppreference, *Throwing exceptions*, "Stack unwinding" |
+| match compilation; match compiler | Compiling ML pattern matching to simple tests: a decision tree whose switch nodes test the constructor of one value, with distinct constructors of one signature and a default case only when they do not cover it | Maranget §§1, 3 |
+| abstract data type (ADT) | A type known by its operations, whose representation is hidden, so that the representation can change without changing client code | Liskov & Zilles 1974 (record); MIT 6.005 Reading 13 |
+| representation invariant (rep invariant) | A predicate `RI : R → boolean` on representation values that "tells us whether a given rep value is well-formed"; every operation that creates or mutates the representation must re-establish it | MIT 6.005 Reading 13 |
+| algebraic (axiomatic) specification | Defining an abstract data type "by giving the properties (axioms) of their operations", with "no explicit definition of each operation (no pre- and post-condition, no algorithm)"; the idea dates from the late 1970s | Gaudel & Le Gall §2, crediting Guttag & Horning 1978 (record) |
+| memory block; block reference | CompCert views a memory state "as a collection of separated blocks, identified by block references b"; allocation creates a fresh block, and a location is a block reference and an offset | Leroy & Blazy §3 |
+| field-sensitive / field-insensitive / field-based | Of an analysis over aggregates: each instance of a field is modelled separately / the aggregate is one variable / each field name is one variable | Pearce, Kelly & Hankin §2 |
+| iterator and reference invalidation | After an operation reallocates a container's storage, "all iterators (including the end() iterator) and all references to the elements are invalidated" | cppreference, `std::vector::push_back` |
+| copy-on-write (COW); clone-on-write | A shared value is copied only when it is mutated (Swift's containers); Rust's `Cow` encloses borrowed data and clones it "lazily when mutation or ownership is required" | Swift, *Writing High-Performance Swift Code*; Rust `std::borrow::Cow` |
+| UTF-8 decoder | The algorithm that turns UTF-8 bytes into code points, with a defined outcome (U+FFFD) for an invalid sequence | WHATWG Encoding §8.1.1 |
+| tombstone | An intermediary a pointer refers to; when the data is deallocated, the tombstone is set to a value no valid pointer has, so a later use through the stale pointer is detected. More generally, a marker for "this data is no longer here" | Wikipedia, *Tombstone (programming)* (citing Scott, *Programming Language Pragmatics*, p. 392, not fetched) |
+| object identity | "Every object has an identity, a type and a value. An object's identity never changes once it has been created" | Python Language Reference §3.1; Khoshafian & Copeland 1986 (record) |
+
+### Terms we currently use that differ from this
+
+| Our term | Accepted term | Confidence |
+|---|---|---|
+
+---
+
 ## Sources
 
 Fetched means the page title was seen and recorded. **(record)** means the DOI
@@ -723,6 +767,7 @@ the secondary source named alongside.
 | Alpern & Schneider 1985 | B. Alpern, F. B. Schneider. Defining Liveness. *Inf. Process. Lett.* 21(4):181–185, 1985 | https://doi.org/10.1016/0020-0190(85)90056-0 | "Defining liveness" (Crossref); Cornell PDF "DEFINING LIVENESS" |
 | Amin & Rompf 2017 | N. Amin, T. Rompf. Type Soundness Proofs with Definitional Interpreters. POPL 2017 | https://doi.org/10.1145/3009837.3009866 | Semantic Scholar record; the paper PDF |
 | Appel & McAllester 2001 | A. W. Appel, D. McAllester. An indexed model of recursive types for foundational proof-carrying code. *TOPLAS* 23(5):657–683, 2001 | https://doi.org/10.1145/504709.504712 | OpenAlex record; full text (cs.princeton.edu/~appel/papers/indexed.pdf) |
+| Appel 1998 | A. W. Appel. *Modern Compiler Implementation in ML*. Cambridge University Press, 1998 | https://www.cs.princeton.edu/~appel/modern/toc.html | "Modern Compiler Implementation, Table of Contents" (chapter titles only; text not read) |
 | Atkey 2018 | R. Atkey. Syntax and Semantics of Quantitative Type Theory. LICS 2018, 56–65 | https://doi.org/10.1145/3209108.3209189 | Crossref; PDF at bentnib.org |
 | Barendregt & Wiedijk 2005 | H. Barendregt, F. Wiedijk. The Challenge of Computer Mathematics. *Phil. Trans. R. Soc. A* 363(1835):2351–2375, 2005 | https://doi.org/10.1098/rsta.2005.1650 | Crossref; the authors' preprint in the Radboud repository (https://hdl.handle.net/2066/32307) |
 | Barr et al. 2015 | E. T. Barr, M. Harman, P. McMinn, M. Shahbaz, S. Yoo. The Oracle Problem in Software Testing: A Survey. *IEEE TSE* 41(5):507–525, 2015 | https://doi.org/10.1109/TSE.2014.2372785 | Crossref; PDF of the same title |
@@ -738,49 +783,65 @@ the secondary source named alongside.
 | C11 | ISO/IEC 9899:201x, draft N1570, §5.1.2.3, §6.8 | https://port70.net/~nsz/c/c11/n1570.html | "N1570 … ISO/IEC 9899:201x" |
 | CakeML 2014 | R. Kumar, M. O. Myreen, M. Norrish, S. Owens. CakeML: A Verified Implementation of ML. POPL 2014, 179–191 | https://doi.org/10.1145/2535838.2535841 | Crossref; cakeml.org/popl14.pdf |
 | C-Reduce 2012 | J. Regehr, Y. Chen, P. Cuoq, E. Eide, C. Ellison, X. Yang. Test-Case Reduction for C Compiler Bugs. PLDI 2012, 335–346 | https://doi.org/10.1145/2254064.2254104 | Crossref; preprint of the same title |
+| cppreference | cppreference.com: *Throwing exceptions* ("Stack unwinding"); `std::vector<T,Allocator>::push_back` | https://en.cppreference.com/w/cpp/language/throw | "Throwing exceptions - cppreference.com"; "std::vector<T,Allocator>::push_back - cppreference.com" |
 | Csmith 2011 | X. Yang, Y. Chen, E. Eide, J. Regehr. Finding and Understanding Bugs in C Compilers. PLDI 2011, 283–294 | https://doi.org/10.1145/1993498.1993532 | Crossref; preprint of the same title |
 | CWE | MITRE. Common Weakness Enumeration 4.20: CWE-416 Use After Free; CWE-415 Double Free; CWE-401 Missing Release of Memory after Effective Lifetime | https://cwe.mitre.org/data/definitions/416.html (and 415.html, 401.html) | "CWE-416: Use After Free (4.20)"; "CWE-415: Double Free (4.20)"; "CWE-401: Missing Release of Memory after Effective Lifetime (4.20)" |
 | DeMillo et al. 1978 | R. A. DeMillo, R. J. Lipton, F. G. Sayward. Hints on Test Data Selection: Help for the Practicing Programmer. *Computer* 11(4):34–41, 1978 | https://doi.org/10.1109/C-M.1978.218136 | Crossref; a scan of the IEEE reprint (st.cs.uni-saarland.de/edu/recommendation-systems/papers/Hints_on_Test_Data_Selection-1.pdf), read as page images |
 | Dreyer et al. 2019 | D. Dreyer, A. Timany, R. Krebbers, L. Birkedal, R. Jung. What Type Soundness Theorem Do You Really Want to Prove? SIGPLAN Blog, 2019-10-17 | https://blog.sigplan.org/2019/10/17/what-type-soundness-theorem-do-you-really-want-to-prove/ | same title |
 | Felleisen & Hieb 1992 | M. Felleisen, R. Hieb. The revised report on the syntactic theories of sequential control and state. *Theor. Comput. Sci.* 103(2):235–271, 1992 | https://doi.org/10.1016/0304-3975(92)90014-7 | OpenAlex record; the Rice TR 100-89 preprint of the same title (numbering here is the preprint's) |
+| Gaudel & Le Gall 2008 | M.-C. Gaudel, P. Le Gall. Testing Data Types Implementations from Algebraic Specifications. In *Formal Methods and Testing*, Springer, 2008, 209–239 (per arXiv) | https://arxiv.org/abs/0804.0970 | "Testing Data Types Implementations from Algebraic Specifications" (arXiv PDF) |
+| Guttag & Horning 1978 | J. V. Guttag, J. J. Horning. The algebraic specification of abstract data types. *Acta Informatica* 10(1):27–52, 1978 **(record)** | https://doi.org/10.1007/BF00260922 | Crossref record (the Springer PDF is paywalled); content cited through Gaudel & Le Gall 2008 |
 | Harper 2016 (PFPL) | R. Harper. *Practical Foundations for Programming Languages*, 2nd ed. Cambridge University Press, 2016 | https://doi.org/10.1017/CBO9781316576892 | CUP page; cs.cmu.edu/~rwh/pfpl and its abbreviated PDF |
 | Hicks 2014 | M. Hicks. What is memory safety? *The PL Enthusiast* (blog), 2014-07-21 | http://www.pl-enthusiast.net/2014/07/21/memory-safety/ (the site is gone; fetched from https://web.archive.org/web/20260831075253/http://www.pl-enthusiast.net/2014/07/21/memory-safety/) | "What is memory safety? - The PL Enthusiast" (Wayback snapshot) |
 | Hutton 1999 | G. Hutton. A tutorial on the universality and expressiveness of fold. *J. Funct. Program.* 9(4):355–372, 1999 | https://doi.org/10.1017/S0956796899003500 | Crossref; people.cs.nott.ac.uk/pszgmh/fold.pdf |
 | Jia & Harman 2011 | Y. Jia, M. Harman. An Analysis and Survey of the Development of Mutation Testing. *IEEE TSE* 37(5):649–678, 2011 | https://doi.org/10.1109/TSE.2010.62 | Crossref; author preprint of the same title (www0.cs.ucl.ac.uk/staff/mharman/tse-mutation-survey.pdf) |
+| JLS | J. Gosling et al. *The Java Language Specification*, Java SE 21 Edition, ch. 14 "Blocks, Statements, and Patterns" | https://docs.oracle.com/javase/specs/jls/se21/html/jls-14.html | "Chapter 14. Blocks, Statements, and Patterns" |
+| Khoshafian & Copeland 1986 | S. N. Khoshafian, G. P. Copeland. Object identity. OOPSLA '86, 406–416 **(record)** | https://doi.org/10.1145/28697.28739 | Crossref record (the ACM page returned 403); the term is cited through the Python Language Reference |
 | Lamport 1977 | L. Lamport. Proving the Correctness of Multiprocess Programs. *IEEE TSE* SE-3(2):125–143, 1977 | https://doi.org/10.1109/TSE.1977.229904 | Crossref; "The Writings of Leslie Lamport" (which says this paper introduced "safety" and "liveness") |
 | Lean Reference | *The Lean Language Reference* | https://lean-lang.org/doc/reference/latest/ | "The Lean Language Reference" and its chapters 2, 4 (with §4.4 "Inductive Types"), 5 "Source Files and Modules", 7.4, 7.6 "Recursive Definitions", 8, "Validating a Lean Proof" |
 | Lean 4.29.0 | Lean 4.29.0 release notes | https://lean-lang.org/doc/reference/latest/releases/v4.29.0/ | "Lean 4.29.0 (2026-03-27)" |
 | Lean API | `Lean.ReducibilityAttrs`, `Init.Tactics` | https://lean-lang.org/doc/api/Lean/ReducibilityAttrs.html | "Lean.ReducibilityAttrs"; "Init.Tactics" |
 | Leijen 2001 | D. Leijen. Division and Modulus for Computer Scientists. University of Utrecht, 2001-12-03 | https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/divmodnote-letter.pdf | "Division and Modulus for Computer Scientists" |
+| Leroy & Blazy 2008 | X. Leroy, S. Blazy. Formal verification of a C-like memory model and its uses for verifying program transformations. *J. Autom. Reasoning* 41(1):1–31, 2008 | https://doi.org/10.1007/s10817-008-9099-0 | Crossref; xavierleroy.org/publi/memory-model-journal.pdf |
 | Leroy 2009a (CACM) | X. Leroy. Formal verification of a realistic compiler. *CACM* 52(7):107–115, 2009 | https://doi.org/10.1145/1538788.1538814 | Crossref; xavierleroy.org PDF |
 | Leroy 2009b (JAR) | X. Leroy. A formally verified compiler back-end. *J. Autom. Reasoning* 43(4):363–446, 2009 | https://arxiv.org/abs/0902.2137 | "A formally verified compiler back-end" |
 | Leroy & Grall 2009 | X. Leroy, H. Grall. Coinductive big-step operational semantics. *Inf. Comput.* 207(2):284–304, 2009 | https://doi.org/10.1016/j.ic.2007.12.004 (arXiv:0808.0586) | "Coinductive big-step operational semantics" (arXiv) |
 | Leucker & Schallhart 2009 | M. Leucker, C. Schallhart. A brief account of runtime verification. *J. Log. Algebr. Program.* 78(5):293–303, 2009 | https://doi.org/10.1016/j.jlap.2008.08.004 | Crossref; Lübeck PDF "A Brief Account of Runtime Verification" |
 | libFuzzer | libFuzzer documentation | https://llvm.org/docs/LibFuzzer.html | "libFuzzer – a library for coverage-guided fuzz testing" |
+| Liskov & Zilles 1974 | B. Liskov, S. Zilles. Programming with abstract data types. *ACM SIGPLAN Notices* 9(4):50–59, 1974 **(record)** | https://doi.org/10.1145/942572.807045 | Crossref record; content cited through MIT 6.005 Reading 13 |
+| Maranget 2008 | L. Maranget. Compiling pattern matching to good decision trees. ML Workshop 2008, 35–46 | https://doi.org/10.1145/1411304.1411311 | Crossref; the author's PDF (pauillac.inria.fr/~maranget/papers/ml05e-maranget.pdf) |
 | McBride 2016 | C. McBride. I Got Plenty o' Nuttin'. In *A List of Successes That Can Change the World*, LNCS 9600, 207–233, 2016 | https://doi.org/10.1007/978-3-319-30936-1_12 | "I got plenty o' nuttin'" (Strathclyde); preprint |
 | McKeeman 1998 | W. M. McKeeman. Differential Testing for Software. *Digital Technical Journal* 10(1):100–107, 1998 | https://www.cs.tufts.edu/~nr/cs257/archive/bill-mckeeman/DifferentailTesting.pdf (no DOI found) | "Differential Testing for Software" |
 | Milner 1978 | R. Milner. A theory of type polymorphism in programming. *J. Comput. Syst. Sci.* 17(3):348–375, 1978 | https://doi.org/10.1016/0022-0000(78)90014-4 | Edinburgh Research Explorer abstract page; OpenAlex; full text (homepages.inf.ed.ac.uk/wadler/papers/papers-we-love/milner-type-polymorphism.pdf) |
+| MIT 6.005 | MIT 6.005 *Software Construction*, Fall 2015, Reading 13: Abstraction Functions & Rep Invariants | https://web.mit.edu/6.005/www/fa15/classes/13-abstraction-functions-rep-invariants/ | "Reading 13: Abstraction Functions & Rep Invariants" |
 | Necula 2000 | G. C. Necula. Translation Validation for an Optimizing Compiler. PLDI 2000, 83–94 | https://doi.org/10.1145/349299.349314 | Crossref; Berkeley PDF |
 | Nipkow & Klein | T. Nipkow, G. Klein. *Concrete Semantics*; Isabelle HOL-IMP theory `Small_Step` | http://concrete-semantics.org/ and https://isabelle.in.tum.de/library/HOL/HOL-IMP/Small_Step.html | "Concrete Semantics"; "Small-Step Semantics of Commands" |
 | Niu, Sterling & Harper 2024 | Y. Niu, J. Sterling, R. Harper. Cost-sensitive computational adequacy of higher-order recursion in synthetic domain theory. MFPS 2024 (ENTICS 4) | https://arxiv.org/abs/2404.00212 | arXiv abstract page; full text |
+| O'Hearn, Reynolds & Yang 2001 | P. O'Hearn, J. Reynolds, H. Yang. Local Reasoning about Programs that Alter Data Structures. CSL 2001, LNCS 2142, 1–19 | https://doi.org/10.1007/3-540-44802-0_1 | Crossref; the UCL PDF (www0.cs.ucl.ac.uk/staff/p.ohearn/papers/localreasoning.pdf) |
 | Owens et al. 2016 | S. Owens, M. O. Myreen, R. Kumar, Y. K. Tan. Functional Big-Step Semantics. ESOP 2016, LNCS 9632, 589–615 | https://doi.org/10.1007/978-3-662-49498-1_23 | Crossref; "Functional Big-step Semantics" (cl.cam.ac.uk PDF) |
 | Oxide | A. Weiss, O. Gierczak, D. Patterson, A. Ahmed. Oxide: The Essence of Rust. arXiv:1903.00982; theorem and lemma numbers cited here are v4's (19 Oct 2021), and v1 (3 Mar 2019) numbers them differently | https://arxiv.org/abs/1903.00982 | "Oxide: The Essence of Rust" |
+| Pearce, Kelly & Hankin 2004 | D. J. Pearce, P. H. J. Kelly, C. Hankin. Efficient field-sensitive pointer analysis for C. PASTE 2004, 37–42 | https://doi.org/10.1145/996821.996835 | Crossref; the Imperial College PDF of the same title |
 | Pierce 2002 (TAPL) | B. C. Pierce. *Types and Programming Languages*. MIT Press, 2002 | https://www.cis.upenn.edu/~bcpierce/tapl/ | "Types and Programming Languages", with its table of contents and errata (text not read) |
 | Plotkin 1977 | G. D. Plotkin. LCF considered as a programming language. *Theor. Comput. Sci.* 5(3):223–255, 1977 **(record)** | https://doi.org/10.1016/0304-3975(77)90044-5 | Crossref record |
 | Plotkin 1981/2004 | G. D. Plotkin. A Structural Approach to Operational Semantics. DAIMI FN-19, Aarhus, 1981; *J. Log. Algebr. Program.* 60–61:17–139, 2004 | https://doi.org/10.1016/j.jlap.2004.05.001 | Crossref/OpenAlex record; the author's own 2004 edition (homepages.inf.ed.ac.uk/gdp/publications/sos_jlap.pdf), whose numbering is used here |
 | Plotkin 2004b | G. D. Plotkin. The Origins of Structural Operational Semantics. *J. Log. Algebr. Program.* 60–61:3–15, 2004 | https://doi.org/10.1016/j.jlap.2004.03.009 | "The Origins of Structural Operational Semantics" (author PDF) |
 | Pnueli et al. 1998 | A. Pnueli, M. Siegel, E. Singerman. Translation Validation. TACAS 1998, LNCS 1384, 151–166 | https://doi.org/10.1007/BFb0054170 | Crossref; Weizmann research-portal page |
 | Polonius | The Polonius book, "Atoms" | https://rust-lang.github.io/polonius/rules/atoms.html | "Atoms - Polonius" |
+| Python Reference | *The Python Language Reference*, §3.1 "Objects, values and types" | https://docs.python.org/3/reference/datamodel.html | "3. Data model" |
+| Raza & Gardner 2009 | M. Raza, P. Gardner. Footprints in Local Reasoning. *Log. Methods Comput. Sci.* 5(2:4), 2009 | https://doi.org/10.2168/LMCS-5(2:4)2009 | Crossref; arXiv:0903.1032 PDF |
 | Reynolds 1972 | J. C. Reynolds. Definitional interpreters for higher-order programming languages. ACM '72, 717–740; reprinted *Higher-Order Symb. Comput.* 11(4):363–397, 1998 **(record)** | https://doi.org/10.1023/A:1010027404223 | Crossref records for both |
 | RFC 2119 | S. Bradner. Key words for use in RFCs to Indicate Requirement Levels. RFC 2119 (BCP 14), 1997 | https://www.rfc-editor.org/rfc/rfc2119.txt | "Key words for use in RFCs to Indicate Requirement Levels" |
+| RFC 320 | Rust RFC 320, Non-zeroing dynamic drop (start date 2014-09-24) | https://github.com/rust-lang/rfcs/blob/master/text/0320-nonzeroing-dynamic-drop.md | "0320-nonzeroing-dynamic-drop.md" (its "Drop obligations" section) |
 | Rust Book | *The Rust Programming Language*, §4.1 "What is Ownership?" | https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html | "What is Ownership? - The Rust Programming Language" |
 | Rust Reference | *The Rust Reference*: Destructors; Expressions; Glossary; Patterns (and the whole-book `print.html`, searched for "affine") | https://doc.rust-lang.org/reference/destructors.html | "Destructors - The Rust Reference" (and "Expressions", "Glossary", "Patterns") |
+| Rust std `Cow` | *The Rust Standard Library*, `std::borrow::Cow` | https://doc.rust-lang.org/std/borrow/enum.Cow.html | "Cow in std::borrow - Rust" |
 | Rustonomicon | *The Rustonomicon*: Drop Flags; Destructors | https://doc.rust-lang.org/nomicon/drop-flags.html | "Drop Flags - The Rustonomicon" |
 | rustc-dev-guide | *Rust Compiler Development Guide*: Move paths; Drop elaboration | https://rustc-dev-guide.rust-lang.org/borrow-check/moves-and-initialization/move-paths.html | "Move paths - Rust Compiler Development Guide"; "Drop elaboration - …" |
 | RustBelt 2018 | R. Jung, J.-H. Jourdan, R. Krebbers, D. Dreyer. RustBelt: Securing the Foundations of the Rust Programming Language. *PACMPL* 2(POPL), Art. 66, 2018 | https://doi.org/10.1145/3158154 | Crossref; plv.mpi-sws.org/rustbelt/popl18; the paper PDF |
 | Schneider 2000 | F. B. Schneider. Enforceable Security Policies. *ACM TISSEC* 3(1):30–50, 2000 | https://doi.org/10.1145/353323.353382 | Crossref; Cornell PDF |
 | Siek 2013 | J. Siek. Type Safety in Three Easy Lemmas. Blog post, 2013-05-27 | https://siek.blogspot.com/2013/05/type-safety-in-three-easy-lemmas.html | "Jeremy Siek: Type Safety in Three Easy Lemmas" |
 | Software Foundations | B. C. Pierce et al. *Software Foundations*, vol. 1 (`ImpCEvalFun`) and vol. 2 (`Smallstep`, `StlcProp`) | https://softwarefoundations.cis.upenn.edu/plf-current/Smallstep.html | "Smallstep: Small-step Operational Semantics"; "StlcProp"; "ImpCEvalFun" |
+| Swift performance guide | *Writing High-Performance Swift Code* (`docs/OptimizationTips.rst` in the Swift repository), "Advice: Use copy-on-write semantics for large values" | https://github.com/swiftlang/swift/blob/main/docs/OptimizationTips.rst | "Writing High-Performance Swift Code" |
 | Swift SE-0176 | J. McCall. SE-0176: Enforce Exclusive Access to Memory. Swift Evolution proposal, implemented in Swift 4.0 | https://github.com/swiftlang/swift-evolution/blob/main/proposals/0176-enforce-exclusive-access-to-memory.md | "Enforce Exclusive Access to Memory" |
 | Tarski 1955 | A. Tarski. A lattice-theoretical fixpoint theorem and its applications. *Pacific J. Math.* 5(2):285–309, 1955 | https://doi.org/10.2140/pjm.1955.5.285 | Crossref; the MSP PDF (msp.org/pjm/1955/5-2/pjm-v5-n2-p11-s.pdf) |
 | Timany et al. 2024 | A. Timany, R. Krebbers, D. Dreyer, L. Birkedal. A Logical Approach to Type Soundness. *J. ACM* 71(6), Art. 40, 2024 | https://doi.org/10.1145/3676954 | "A Logical Approach to Type Soundness" (author page; iris-project.org PDF) |
@@ -788,4 +849,7 @@ the secondary source named alongside.
 | Tov & Pucella 2011 | J. A. Tov, R. Pucella. Practical affine types. POPL 2011, 447–458 | https://doi.org/10.1145/1926385.1926436 | Crossref; long-version PDF "Practical Affine Types" |
 | Walker 2005 | D. Walker. Substructural Type Systems. In B. C. Pierce (ed.), *Advanced Topics in Types and Programming Languages*, ch. 1, 3–44. MIT Press | https://doi.org/10.7551/mitpress/1104.003.0003 | Crossref (which dates the chapter 2004); MIT Press sample PDF "1 Substructural Type Systems" |
 | Wadler 1992 | P. Wadler. Monads for Functional Programming. In J. Jeuring, E. Meijer (eds.), *Advanced Functional Programming*, LNCS 925, 24–52. Springer, 1995 (notes appear 1992) | https://homepages.inf.ed.ac.uk/wadler/papers/marktoberdorf/baastad.pdf | the author's PDF, "Monads for functional programming" |
+| WHATWG Encoding | *Encoding Standard* (WHATWG Living Standard), §8.1.1 "UTF-8 decoder" | https://encoding.spec.whatwg.org/ | "Encoding Standard" |
+| Wikipedia *Tombstone* | Wikipedia, *Tombstone (programming)* | https://en.wikipedia.org/wiki/Tombstone_(programming) | "Tombstone (programming)" (its source text) |
+| Wirth 1996/2017 | N. Wirth. *Compiler Construction*. Addison-Wesley, 1996; slightly revised edition, Zürich, May 2017 | https://people.inf.ethz.ch/wirth/CompilerConstruction/ | "Compiler Construction" (the author's PDFs; §12.1 read) |
 | Wright & Felleisen 1994 | A. K. Wright, M. Felleisen. A Syntactic Approach to Type Soundness. *Inf. Comput.* 115(1):38–94, 1994 | https://doi.org/10.1006/inco.1994.1093 | OpenAlex record; the Rice TR91-160 preprint of the same title (numbering here is the preprint's) |
