@@ -4327,7 +4327,7 @@ Every *other* edge — a `let`'s scope exit, a `match` arm's `endscope` over its
 payload locals (`StoreTyping.unwindPrefix`), a `break`'s unwind to its loop
 (`loop_exit_ok`), a frame's normal pop, and a `return`'s unwind — is
 covered. -/
-theorem no_violation (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) (w : Refusal) :
+theorem no_refusal (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) (w : Refusal) :
     run M.toFloatSig P fuel ≠ .refused w := by
   obtain ⟨_, _, h₁ | ⟨k, trk, h₂⟩ | ⟨H, v, tr, h₃, _⟩⟩ := h.run_safe M fuel
   · rw [h₁]; simp
@@ -4336,10 +4336,10 @@ theorem no_violation (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : 
 
 /-- §7 "No use-after-move": the machine never reads a `⊘` cell. -/
 theorem no_use_after_move (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    run M.toFloatSig P fuel ≠ .refused .useAfterMove := no_violation M h fuel _
+    run M.toFloatSig P fuel ≠ .refused .useAfterMove := no_refusal M h fuel _
 
 /-- §7 "No use-after-drop": the machine never touches a retired (`†`) cell.
-Here it is `no_violation` at one tag, over checked programs, but typing is not
+Here it is `no_refusal` at one tag, over checked programs, but typing is not
 what makes it true: `run_no_use_after_drop` (`Retire.lean`, RUE-2496) proves
 it for every program. `run-all-scope-drops` (§6.9) walks the frame's scope
 record at every `return` and at every frame pop, and what keeps those walks
@@ -4349,12 +4349,12 @@ which nothing names it, and a record owes each cell once. `ActivationTyping`
 implies as much for a checked program (the record is the environment, whose
 cells `StoreTyping` says are live or moved out and pairwise distinct). -/
 theorem no_use_after_drop (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    run M.toFloatSig P fuel ≠ .refused .useAfterDrop := no_violation M h fuel _
+    run M.toFloatSig P fuel ≠ .refused .useAfterDrop := no_refusal M h fuel _
 
 /-- §7 "Linear values are consumed exactly once", leak half: neither a scope
 exit (§6.7) nor a frame unwind (§6.9) ever sees a live linear value. -/
 theorem no_linear_leak (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    run M.toFloatSig P fuel ≠ .refused .linearLeak := no_violation M h fuel _
+    run M.toFloatSig P fuel ≠ .refused .linearLeak := no_refusal M h fuel _
 
 /-- §7 linear bullet, overwrite half (`3.8:77`, the RUE-387 premise). The
 monitor reads the residue the overwrite-drop is about to walk, and (Assign)
@@ -4362,10 +4362,10 @@ monitor reads the residue the overwrite-drop is about to walk, and (Assign)
 the two — so the residue is empty of linear content whenever the checker
 accepted. -/
 theorem no_linear_overwrite (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    run M.toFloatSig P fuel ≠ .refused .linearOverwrite := no_violation M h fuel _
+    run M.toFloatSig P fuel ≠ .refused .linearOverwrite := no_refusal M h fuel _
 
 /-- §7 linear bullet, discard half (`3.8:64`). -/
 theorem no_linear_discard (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    run M.toFloatSig P fuel ≠ .refused .linearDiscard := no_violation M h fuel _
+    run M.toFloatSig P fuel ≠ .refused .linearDiscard := no_refusal M h fuel _
 
 end RueCore

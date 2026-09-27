@@ -71,7 +71,7 @@ configuration typing `⊢ C : T` is defined or preserved (RUE-2423). In the
 field's terms it is not preservation (subject reduction, PFPL's Thm 6.2) but
 the conclusion of Timany et al.'s Cor. 2.3, `safe`, with typed halting values
 (`FIELD.md`, section 2); the name is §7's, and RUE-2423 decides whether it stays. -/
-def step_preservation_stmt : Prop :=
+def step_safeAt_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P),
     ∃ fd, P.fns[0]? = some fd ∧
       ∀ C, Steps M.toFloatSig P Config.init C → C.SafeAt M.toFloatSig P fd.ret

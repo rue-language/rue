@@ -24,8 +24,8 @@ the findings dropped in adjudication are listed with the reason.
 
 - **Statement agent.** `01-core-calculus.md` §§5–7 (lines 529–3587,
   unedited); the elaborated Lean statements of the 14 headline theorems
-  (`check_sound`, `step_type_safety`, `step_progress`, `step_preservation`,
-  `eval_sound`, `eval_complete`, `never_stuck_iff`, `eval_diverges_iff`,
+  (`check_sound`, `step_type_safety`, `step_progress`, `step_safeAt`,
+  `eval_big_to_small`, `eval_small_to_big`, `never_refused_iff`, `eval_diverges_iff`,
   `Step.det`, `Config.trichotomy`, `no_double_free`, `drop_exactly_once`,
   `rest_exactly_once`, `drop_order`), taken from `lean/DIGEST.md`'s code
   blocks with every doc-comment stripped; and the definitions those
@@ -58,8 +58,8 @@ issue, or commented onto an existing one.
 | R1 | statement | medium | F2 (raw: HIGH) | RUE-2477 | `no_double_free` says nothing about a run that does not terminate: add a statement over every reachable configuration's trace. `EvalRes.trace` is `[]` for `outOfFuel` (its DIGEST entry: "nothing for a refusal or exhausted fuel"), and by `eval_diverges_iff` a diverging program is `outOfFuel` at every fuel, so both counts are 0 for it. §7's bullet ("every stored value's destructor runs at most once") has no termination proviso; `run_trace_once` and `eval_conserves` are also over `run`/`eval` results. A double drop inside a `loop` that never exits is outside every multiplicity statement. In FIELD.md's terms (§6, Alpern & Schneider), this multiplicity bound is a safety property; R1 is a missing finite-prefix form of it, as RUE-2477 frames it. (Since closed, by RUE-2477: `step_no_double_free` bounds the trace of every configuration `Step` reaches; see the entry below.) |
 | R2 | statement | medium | F7 (raw: medium) | RUE-2478 | Whole-program "every owned value ends exactly once" is a prose composition of `drop_exactly_once` and `rest_exactly_once`, not a theorem. `Exact` quantifies over `a < List.length H`; at the program level (`run`: `H = []`) the quantifier is empty. 03-metatheory's "Why two statements, not one over `run`" argues the composition in prose ("So every owned value a checked run holds ends exactly once …") and names two ends neither theorem sees (an end inside the minting evaluation; `main`'s result). No statement discharges the per-window hypotheses (`ActivationTyping`, `StoreCC`) at every intermediate state. (Since closed, by RUE-2478: `whole_program_exactly_once` states the whole-program form over §6's relation and is proved without composing the two; see the entry below.) |
 | R3 | statement | medium | F1 (raw: HIGH) | RUE-2469 (comment) | The linear-consumption guarantee lives only in `eval`'s monitors: bring the monitor-fires witnesses into the statement layer. `Step.assign`, `Step.seqDrop`, `Step.endScope` and the unwinds drop a linear value through the same `dropCell`/`dropContents` path as `@drop`, with the same `Event.drop`. The three linear theorems are `run … ≠ .refused .linearX`, which hold for an `eval` with no monitors. They are non-vacuous only because of `Examples.lean`'s `run … = .refused .linearLeak`/`.linearOverwrite` witnesses and `Corpus.lean:938`'s `.linearDiscard` one, which are examples, not part of the stated claim. For RUE-2469 (witnesses) and RUE-2465 (a mutant that removes a monitor). |
-| R4 | statement | medium | F5 (raw: HIGH) | RUE-2423, RUE-2467 (comment) | `step_preservation` states `SafeAt init`: its `∀ C` adds nothing, and no configuration typing is preserved. `Config.SafeAt` quantifies over everything reachable from `C`, so it is closed under `Steps` by transitivity, and the theorem is equivalent to `SafeAt … Config.init`. 03-metatheory l.202–203 and l.211–214 already disclose this ("needs no typing hypothesis"; "holds by construction, and the content is the fundamental lemma `RueCore.init_safeAt`"), as does the semantic form generally (FIELD.md §2, the `SafeAt` docstring). What is not disclosed: no configuration-typing relation is stated at all (RUE-2423), and the theorem's name still reads as the syntactic lemma (RUE-2467, the spine alignment). |
-| R5 | statement | low | F3 (raw: HIGH) | RUE-2467 (comment) | `never_stuck_iff` under `ProgramTyped` is the conjunction of two theorems, not an equivalence with content. Under `h`, its left side is `eval_sound`'s first conjunct and its right side is `step_progress`. Its own docstring says the content is the forward direction on every program (`step_never_stuck_of_run`), which is not the headline. The spine should cite that theorem (RUE-2467, the spine alignment). |
+| R4 | statement | medium | F5 (raw: HIGH) | RUE-2423, RUE-2467 (comment) | `step_safeAt` states `SafeAt init`: its `∀ C` adds nothing, and no configuration typing is preserved. `Config.SafeAt` quantifies over everything reachable from `C`, so it is closed under `Steps` by transitivity, and the theorem is equivalent to `SafeAt … Config.init`. 03-metatheory l.202–203 and l.211–214 already disclose this ("needs no typing hypothesis"; "holds by construction, and the content is the fundamental lemma `RueCore.init_safeAt`"), as does the semantic form generally (FIELD.md §2, the `SafeAt` docstring). What is not disclosed: no configuration-typing relation is stated at all (RUE-2423), and the theorem's name still reads as the syntactic lemma (RUE-2467, the spine alignment). |
+| R5 | statement | low | F3 (raw: HIGH) | RUE-2467 (comment) | `never_refused_iff` under `ProgramTyped` is the conjunction of two theorems, not an equivalence with content. Under `h`, its left side is `eval_big_to_small`'s first conjunct and its right side is `step_progress`. Its own docstring says the content is the forward direction on every program (`step_never_stuck_of_run`), which is not the headline. The spine should cite that theorem (RUE-2467, the spine alignment). |
 | R6 | trusted base / digest | medium | F14 (raw: medium) | RUE-2479 | DIGEST prints no body or defining equations for Bool-valued predicates that are hypotheses or rule premises (`Expr.pendingSafe`, `Expr.breaks`, `OwnSt.join`, `noDtorPrefix`, `linearResidue`, …). DIGEST's preamble promises a body "whenever it is a type or a predicate … or is short enough to read"; these entries (e.g. DIGEST `Expr.pendingSafe`, `Expr.breaks`, `OwnSt.join`) carry the signature only. `pendingSafe` is a hypothesis of two spine theorems and the red agent could not check it is satisfiable; `OwnSt.join` is where §5.5's "consumed on some paths" rejection lives. For RUE-2457's trusted-base list and the statement/proof split. |
 | R7 | statement | low | F11 (raw: medium) | RUE-2467 (comment) | `drop_order`'s `StackDiscipline` constrains nothing on a step that does not pop, and `Blocks` is claimed for finished traces only. `StackDiscipline S S' ls := S <+: S' ∨ …`; the first disjunct holds on every non-popping step. `Sublist` lets a popped cell go without a drop (left to `Exact`). 03-metatheory says "every **finished** run's trace", so the second point is disclosed; the first is not stated as a limit (RUE-2467, the spine alignment). |
 | R8 | docs | high | H2 (raw: HIGH) | RUE-2476 (comment) | `docs/formal/README.md` says the calculus "brings `ArrayBuf`/`StrBuf` buffers inside the proved perimeter". README Contents, lines 195–198. Nothing about buffers is mechanized: 03-metatheory's fragment paragraph ends "no … loans, or buffers", and TRUST.md lists the §6.13.5 library obligations as not yet present. "Proved" should be "specified". The README sentence describes `01-core-calculus.md`, so "proved perimeter" may mean the paper's own perimeter rather than the Lean's; the report and the RUE-2476 comment both flag this reading. |
@@ -81,7 +81,7 @@ found it independently, and it is recorded here as a confirmation.
 |---|---|
 | `Config.trichotomy` holds for a stepper that always reports stuck | Packet artefact. `step_iff` (`Step M P C C' ↔ step M P C = .next C'`) ties `step` to `Step`; `Config.stuck_iff` states stuckness in `Step`'s terms. |
 | `pendingSafe` might be false for every program | Packet artefact in part: its definition is syntactic (TraceExact.lean) and a `#guard` checks every accepted seed satisfies it. The residue, that DIGEST does not show the body, is R6. |
-| `eval_sound` does not exclude `returned`/`broke` | Packet artefact: `run_ne_returned`, and `run_safe`'s case analysis, exclude both. |
+| `eval_big_to_small` does not exclude `returned`/`broke` | Packet artefact: `run_ne_returned`, and `run_safe`'s case analysis, exclude both. |
 | `check_sound` is not connected to `ProgramTyped` | Packet artefact: `checkProgram_sound`. Completeness is not claimed; the "verified checker" wording is RUE-2476. |
 | `rest_exactly_once`'s `fuel`/`fuel + 1` coupling may be unsatisfiable | Does not hold: `eval (fuel + 1)` evaluates each lead at `fuel` (`Dynamics.lean`, e.g. the `seq`, `letIn` and `ret` arms). |
 | DIGEST closure misses `Decls.classOf` and four others | Extractor artefact: all five have DIGEST entries. |
@@ -103,7 +103,7 @@ each raw finding is accounted for here.
 | **Docs M7** (MEDIUM): "a property proven once about the core holds for all ten" needs elaboration correctness, which is unspecified (`02-elaboration.md` is planned). | The same overclaim shape as R9 (whole-core vs. fragment); not separately counted. Route with R9's citation, RUE-2476. |
 | **Docs M8** (MEDIUM): "kernel-checked" checks the proofs; it does not check that `Typed`/`Step`/`ProgramTyped` faithfully transcribe §5/§6. Faithfulness rests on review and the INDEX cross-reference. | Not a claim about what is proved so much as what "kernel-checked" can be read to promise; route to RUE-2476. |
 | **Docs H4** in full (HIGH): the exactly-once guarantee is expression-level and needs `ActivationTyping`/`StoreCC` at every intermediate state, not only `pendingSafe`; no statement instantiates it at `Config.init`. | R9 cites only the `pendingSafe` half. The rest is R2's and R7's territory (RUE-2478, RUE-2467); not separately filed. (Since closed for exactly-once, by RUE-2478: `whole_program_exactly_once` is instantiated at `Config.init` and needs no hypothesis at an intermediate state; see the entry below.) |
-| **L1, L3, L5, L8–L11** (statement, LOW): `@drop` of a moved place is a no-op on a hole, not stuck (L1); `WfProgram.fns` requires unreachable functions well typed too, stronger than §7's scope (L3); the dynamic copy/move-vs-declared-plan equivalence (L5, see F13); `step_type_safety` is derivable from `step_progress` + `step_preservation` (L8); the residue-before-leaf drop order for a declared-linear projection is unstated (L9, see F14); `Typed.indexRead`'s `fullyOwned` is stronger than (Use-Untrackable-Dynamic-Copy), rejecting some §5-admitted programs (L10); no (Call-Bottom): a call to a divergent function types as continuing (L11). | Harmless or conservative on inspection. No action. |
+| **L1, L3, L5, L8–L11** (statement, LOW): `@drop` of a moved place is a no-op on a hole, not stuck (L1); `WfProgram.fns` requires unreachable functions well typed too, stronger than §7's scope (L3); the dynamic copy/move-vs-declared-plan equivalence (L5, see F13); `step_type_safety` is derivable from `step_progress` + `step_safeAt` (L8); the residue-before-leaf drop order for a declared-linear projection is unstated (L9, see F14); `Typed.indexRead`'s `fullyOwned` is stronger than (Use-Untrackable-Dynamic-Copy), rejecting some §5-admitted programs (L10); no (Call-Bottom): a call to a divergent function types as continuing (L11). | Harmless or conservative on inspection. No action. |
 | **Docs Lo1, Lo2, Lo6–Lo8** (LOW): `rue-oracle`'s fuel-bounded outcomes not distinguished from divergence (Lo1); the fixed-fuel corpus outcome is honest for accepted programs but unverified for rejected ones, overlapping H3 (Lo2); "everything hard … lives here and only here" is a design claim outside what predicates cover (Lo6); "precise, mechanizable" / "in time, mechanically proven" are hedged intent (Lo7); "the complete small-step dynamic semantics" is about the paper, not the Lean fragment (Lo8). | Process or hedge claims the statements cannot speak to and the docs do not present as theorems. No action. |
 
 ### Attacked and survived
@@ -118,11 +118,11 @@ Read the same way by the red agent and by us, with no gap either found:
   for `OpRes.confused`) and an uncovered `match` tag.
 - `step_type_safety`: equal to §7's type-safety bullet on the fragment
   (slightly stronger: the halting frame is `Activation.empty`).
-- `eval_complete` and `eval_diverges_iff`: the two directions of the
+- `eval_small_to_big` and `eval_diverges_iff`: the two directions of the
   big-step/small-step equivalence (FIELD.md §3) for terminating and diverging
   runs; `eval_diverges_iff`'s backward direction has content no other
   statement has.
-- `eval_sound`'s second and third conjuncts: every `ok`/`panic` result is
+- `eval_big_to_small`'s second and third conjuncts: every `ok`/`panic` result is
   `Step`-reachable with the same store, value and trace.
 - `check_sound`, read as expression-level soundness, with (Sub-Never) folded
   into `TyOrNever.fits` correctly.
@@ -229,7 +229,7 @@ Do not edit any file. Write your full report to <packet>/red-docs-report.md and 
     neighbour; `typeErrors_rejected`, six type errors.
   - **Review.** An adversarial review found no blocker. Its five should-fixes
     are resolved: the witness mapping is now kernel-checked (it had one wrong
-    entry, `stuck` for `run_complete`), the open-frame witness, the float
+    entry, `stuck` for `run_small_to_big`), the open-frame witness, the float
     wording, the error classes, and the statement-layer docs.
 - **Findings.** None against the claim: every hypothesis was satisfiable by
   the programs tried. One tooling finding: the core library's
@@ -422,7 +422,7 @@ What the mutants could not get past:
     and `StructDecl.fields` is the typing's (`ContentsTy`), not stated in
     `DropGlueBlocks`. A mutant storing fields in another order is still caught
     by the statements when the fields' types differ, because typing ties
-    contents to the declared fields (`step_preservation`, `soundness`). Two
+    contents to the declared fields (`step_safeAt`, `soundness`). Two
     cases escape every statement: a permutation among fields of the same
     type, with projections permuted to match, and a drop marker that
     records permuted contents. The corpus is what would catch those
@@ -458,7 +458,7 @@ What the mutants could not get past:
     configuration bounds every earlier one; for a configuration reached in
     `k` steps, `run` at fuel `k` either exhausts it (a run of at least `k`
     steps with the ledger) or answers a value or a panic `Step` reaches past
-    it. Typing enters only through `no_violation`: the bound holds of every
+    it. Typing enters only through `no_refusal`: the bound holds of every
     program `run` never refuses (`steps_trace_once`).
   - **Non-vacuity and sharpness.** `Nonvacuous.diverges_drop`: `loop { let s
     = S0 { 1 }; () }` is checked, `outOfFuel` at every fuel, and `Step`
@@ -496,7 +496,7 @@ What the mutants could not get past:
     and drops cell `0`, from an unreached configuration. Its markers are newest
     first and its stack is in order, so only `StackDiscipline` fails.
 
-  The first three refute `step_preservation` without its reachability
+  The first three refute `step_safeAt` without its reachability
   hypothesis and the last `drop_order` without its own, so the lint
   holds them to the kernel-checked glue like every counter-example. None
   adds a hypothesis to cover: all four pairs were already covered.
@@ -635,7 +635,7 @@ What the mutants could not get past:
 | Candidate | Why dropped |
 |---|---|
 | "`t4` (`let t = Tok{}; loop {}`) shows the checker is incomplete" | `Typed.loopDiv` rejects it too. It is the reading of RUE-2369, which 03 records, not checker incompleteness. |
-| "`Step` is blind to linearity, so the step statements say nothing" | Known and disclosed (R3, RUE-2314, Step.lean's header). On checked programs `Step` and `eval` agree (`eval_sound`, `eval_complete`), so it matters only off the checked domain. |
+| "`Step` is blind to linearity, so the step statements say nothing" | Known and disclosed (R3, RUE-2314, Step.lean's header). On checked programs `Step` and `eval` agree (`eval_big_to_small`, `eval_small_to_big`), so it matters only off the checked domain. |
 
 ### Read the same way by the auditor and SPINE.md
 

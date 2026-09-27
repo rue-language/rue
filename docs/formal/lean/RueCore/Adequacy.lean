@@ -15,14 +15,14 @@ and says that "a theorem about `eval` is a theorem about §6 only once the two
 are proved to agree". `Step.lean` mechanizes §6's reduction relation; this
 module proves the agreement in both directions. RUE-2289's part 2 is
 soundness: whatever `eval` answers with a value or a panic, §6's `→*` reaches
-too, with the same store, value and trace (`eval_sound`). Part 3 is
+too, with the same store, value and trace (`eval_big_to_small`). Part 3 is
 completeness modulo fuel: whatever terminal configuration §6's `→*` reaches,
 every fuel past the length of the run makes `eval` answer it
-(`eval_complete`); `eval` exhausts every fuel exactly when §6 diverges
+(`eval_small_to_big`); `eval` exhausts every fuel exactly when §6 diverges
 (`eval_diverges_iff`); and "`eval` is never stuck" is "§6 is never stuck", in
-§7's phrasing (`never_stuck_iff`). Part 4 restates §7's first bullet over
+§7's phrasing (`never_refused_iff`). Part 4 restates §7's first bullet over
 `Step` itself: progress and preservation (`step_progress`,
-`step_preservation`, `step_type_safety`).
+`step_safeAt`, `step_type_safety`).
 
 ## The simulation relation
 
@@ -69,8 +69,8 @@ lets a drop through the plain drop does the same thing (`unwindLocs_plain`,
 `destructure_plain`, `dropRetire_plain`). So soundness needs no typing
 derivation.
 
-Typing is what fixes the domain (RUE-2314): `eval_sound` is stated for the
-programs `check` accepts, where `no_violation` says `run` is never `.refused`.
+Typing is what fixes the domain (RUE-2314): `eval_big_to_small` is stated for the
+programs `check` accepts, where `no_refusal` says `run` is never `.refused`.
 There every outcome is a value, a panic, or `outOfFuel`, and the first two are
 §6's. On other input `run_sim` still holds but says nothing about `.refused`,
 which is outside the correspondence: four monitors are not §6's, and `eval`
@@ -96,23 +96,23 @@ The rest is determinism (`Step.det`). A run that ends at a configuration with
 no successor, terminal or stuck, bounds every run from the same start
 (`StepsN.bound`). So past its length, `run` is not `outOfFuel`, and whatever
 it answers is placed by `run_sim` at the same end (`Steps.final_unique`).
-`run_complete` and `run_stuck_of_step_stuck` hold on every program, up to a
-refusal of `eval`'s. The checked domain removes the refusal (`no_violation`),
-which gives `eval_complete`, `never_stuck_iff` and `eval_diverges_iff`.
+`run_small_to_big` and `run_refused_of_step_stuck` hold on every program, up to a
+refusal of `eval`'s. The checked domain removes the refusal (`no_refusal`),
+which gives `eval_small_to_big`, `never_refused_iff` and `eval_diverges_iff`.
 `dropMoved_refused` (`Witnesses.lean`) shows the refusal is really there off
 the domain.
 
 ## §7 over `Step`: progress and preservation
 
 Part 4 derives §7's first bullet in §6's terms. `step_progress` is
-`step_never_stuck_of_run` given `no_violation`: on a checked program, every
+`step_never_stuck_of_run` given `no_refusal`: on a checked program, every
 configuration `→*` reaches reduces or has halted. Preservation is stated for a
 *semantic* configuration typing, `Config.SafeAt`: a configuration is typed at
 `T` when nothing it reaches is stuck and every value it halts with has type
 `T`. Its one-step preservation is by construction, and the fundamental lemma
 `init_safeAt` — a checked program's initial configuration is typed at its
 entry type — is `soundness` (through `run_safe`) carried to §6 by
-`eval_complete`. `step_type_safety` puts the three together at every
+`eval_small_to_big`. `step_type_safety` puts the three together at every
 horizon: §6 has run `n` steps, or has halted with a well-typed value, or with
 a defined panic. A syntactic configuration typing, with one preservation case
 per `Step` constructor, would be a second safety proof and is not claimed.
@@ -140,7 +140,7 @@ trace `tr` produced before it, §6.2's `⟨H ; φ ; K ; E[e]⟩`: a value reache
 `E[v]` in the frame `φ` (§6.2's (Search)), a panic reaches `↯κ` from every
 context ((Panic-Lift) §6.2), an unwinding `return` reaches the nearest caller
 ((D-Return) §6.9), and an unwinding `break` reaches the nearest loop's context
-((D-Break) §6.10). Part 3's completeness (`eval_complete`) takes its runs
+((D-Break) §6.10). Part 3's completeness (`eval_small_to_big`) takes its runs
 through already-reduced operands from this relation's `ok` clause. -/
 def Sim (M : FloatSig) (P : Program) (φ : Activation) (C : List Kont → List Event → Config) :
     EvalRes → Prop
@@ -1051,20 +1051,20 @@ theorem run_sim (M : FloatSig) (P : Program) (fuel : Nat) :
 /-- **`eval` is sound with respect to §6's reduction** (RUE-2289 part 2;
 ADR-0097 decision 3: "a theorem about `eval` is a theorem about §6 only once
 the two are proved to agree"). For a program `check` accepts
-(`ProgramTyped`, RUE-2314's domain), `run` is never stuck (`no_violation`),
+(`ProgramTyped`, RUE-2314's domain), `run` is never stuck (`no_refusal`),
 so it answers a value, a panic or `outOfFuel`; a value is reached by §6's
 `→*` from the initial configuration as a terminal configuration with the same
 store and trace, and a panic as `↯κ` after the same trace (§6.2, §6.12).
 `.refused` is outside the correspondence and does not occur here; `outOfFuel`
 is not a state of §6's machine. The converse, completeness modulo fuel, is
-`eval_complete`. -/
-theorem eval_sound (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+`eval_small_to_big`. -/
+theorem eval_big_to_small (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
     (∀ H v tr, run M.toFloatSig P fuel = .ok H v tr →
       Steps M.toFloatSig P Config.init (.run H Activation.empty [] (.ret v) tr)) ∧
     (∀ k tr, run M.toFloatSig P fuel = .panic k tr →
       Steps M.toFloatSig P Config.init (.panic k tr)) :=
-  ⟨no_violation M h fuel, (run_sim M.toFloatSig P fuel).1, (run_sim M.toFloatSig P fuel).2⟩
+  ⟨no_refusal M h fuel, (run_sim M.toFloatSig P fuel).1, (run_sim M.toFloatSig P fuel).2⟩
 
 /-! ## Counted runs -/
 
@@ -1759,9 +1759,9 @@ theorem run_classify {M : FloatSig} {P : Program} {T : Config} (hT : Steps M P C
 configuration to `✓` — a value at an empty stack — then at every fuel past
 the number of steps, `run` answers that value with the same store and trace,
 or refuses; likewise for `↯κ`. The refusal disjunct is where `eval`'s
-monitors and its `@drop ⊘` refusal sit (RUE-2314); `eval_complete` removes it
+monitors and its `@drop ⊘` refusal sit (RUE-2314); `eval_small_to_big` removes it
 on checked programs. -/
-theorem run_complete (M : FloatSig) (P : Program) :
+theorem run_small_to_big (M : FloatSig) (P : Program) :
     (∀ H φ v tr, Steps M P Config.init (.run H φ [] (.ret v) tr) →
       ∃ n, ∀ fuel, n < fuel → run M P fuel = .ok H v tr ∨ ∃ w, run M P fuel = .refused w) ∧
     (∀ κ tr, Steps M P Config.init (.panic κ tr) →
@@ -1786,23 +1786,23 @@ are proved to agree"). For a program `check` accepts (`ProgramTyped`,
 RUE-2314's domain): if §6's `→*` takes the initial configuration to a
 terminal configuration — `✓`, a value at an empty stack, or `↯κ` — then some
 fuel makes `run` answer that outcome with the same store, value and trace,
-and so does every larger fuel (§6.2, §6.12). With `eval_sound` this is
+and so does every larger fuel (§6.2, §6.12). With `eval_big_to_small` this is
 adequacy in both directions: on checked programs, `run`'s values and panics
 are exactly the ends of §6's runs, and `outOfFuel` at every fuel is exactly
 divergence (`eval_diverges_iff`). -/
-theorem eval_complete (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
+theorem eval_small_to_big (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) →
       ∃ n, ∀ fuel, n < fuel → run M.toFloatSig P fuel = .ok H v tr) ∧
     (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) →
       ∃ n, ∀ fuel, n < fuel → run M.toFloatSig P fuel = .panic κ tr) := by
-  obtain ⟨hv, hp⟩ := run_complete M.toFloatSig P
+  obtain ⟨hv, hp⟩ := run_small_to_big M.toFloatSig P
   refine ⟨fun H φ v tr hT => ?_, fun κ tr hT => ?_⟩
   · obtain ⟨n, hn⟩ := hv H φ v tr hT
     exact ⟨n, fun fuel hlt =>
-      (hn fuel hlt).resolve_right (fun ⟨w, hw⟩ => no_violation M h fuel w hw)⟩
+      (hn fuel hlt).resolve_right (fun ⟨w, hw⟩ => no_refusal M h fuel w hw)⟩
   · obtain ⟨n, hn⟩ := hp κ tr hT
     exact ⟨n, fun fuel hlt =>
-      (hn fuel hlt).resolve_right (fun ⟨w, hw⟩ => no_violation M h fuel w hw)⟩
+      (hn fuel hlt).resolve_right (fun ⟨w, hw⟩ => no_refusal M h fuel w hw)⟩
 
 /-! ## "Never stuck", both ways -/
 
@@ -1810,7 +1810,7 @@ theorem eval_complete (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
 if `→*` takes the initial configuration to a stuck one, then at every fuel past
 the number of steps `run` refuses. The refusal need not name the same
 `Refusal`: `eval` inspects operand shapes in its own order (RUE-2314). -/
-theorem run_stuck_of_step_stuck (M : FloatSig) (P : Program) {C : Config} {w : Refusal}
+theorem run_refused_of_step_stuck (M : FloatSig) (P : Program) {C : Config} {w : Refusal}
     (hC : Steps M P Config.init C) (hs : C.Stuck M P w) :
     ∃ n, ∀ fuel, n < fuel → ∃ w', run M P fuel = .refused w' := by
   obtain ⟨n, hn⟩ := run_classify hC (fun _ => hs.no_step)
@@ -1834,7 +1834,7 @@ theorem step_never_stuck_of_run (M : FloatSig) (P : Program)
   rcases Config.trichotomy M P C with hs | ht | ⟨w, hw⟩
   · exact .inr hs
   · exact .inl ht
-  · obtain ⟨n, hn⟩ := run_stuck_of_step_stuck M P hC hw
+  · obtain ⟨n, hn⟩ := run_refused_of_step_stuck M P hC hw
     obtain ⟨w', hw'⟩ := hn (n + 1) (Nat.lt_succ_self n)
     exact absurd hw' (hnv _ _)
 
@@ -1844,21 +1844,21 @@ type-safety bullet; ADR-0097 decision 3). For a program `check` accepts,
 configuration §6's `→*` reaches from the initial one reduces or has halted
 with a value or a panic". The forward direction holds on every program
 (`step_never_stuck_of_run`) and is the one with content; on this domain the
-backward one is `no_violation`, and off it the backward one fails
+backward one is `no_refusal`, and off it the backward one fails
 (RUE-2314's discriminators). `fuel_mono` and `no_masking` (`Soundness.lean`)
 say the same stability from `eval`'s side: its answer, once it is not
 `outOfFuel`, is the answer at every larger fuel. -/
-theorem never_stuck_iff (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
+theorem never_refused_iff (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     (∀ fuel w, run M.toFloatSig P fuel ≠ .refused w) ↔
       ∀ C, Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C' :=
-  ⟨step_never_stuck_of_run M.toFloatSig P, fun _ fuel w => no_violation M h fuel w⟩
+  ⟨step_never_stuck_of_run M.toFloatSig P, fun _ fuel w => no_refusal M h fuel w⟩
 
 /-- **Divergence is exhaustion at every fuel** (RUE-2289 part 3, ADR-0097
 decision 3). For a program `check` accepts, `run` is `outOfFuel` at every
 fuel exactly when §6's reduction has a run of every length from the initial
 configuration — by `Step.det`, one infinite run. So `outOfFuel` is never a
 premature stop on a checked program: past the length of §6's run, `eval`
-answers (`eval_complete`), and where it never answers §6 never halts. -/
+answers (`eval_small_to_big`), and where it never answers §6 never halts. -/
 theorem eval_diverges_iff (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     (∀ fuel, run M.toFloatSig P fuel = .outOfFuel) ↔
       ∀ n, ∃ D, StepsN M.toFloatSig P n Config.init D := by
@@ -1876,7 +1876,7 @@ theorem eval_diverges_iff (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
         obtain ⟨k, hk⟩ := ((run_sim _ P fuel).2 κ tr hr).toN
         obtain ⟨D, hD⟩ := hd (k + 1)
         exact absurd (hk.bound (fun _ => Step.terminal trivial) hD) (by omega)
-    | refused w => exact absurd hr (no_violation M h fuel w)
+    | refused w => exact absurd hr (no_refusal M h fuel w)
     | returned H v tr => exact absurd hr (run_ne_returned _ H v tr)
     | broke H sc tr => exact absurd hr (run_ne_broke _ H sc tr)
 
@@ -1910,7 +1910,7 @@ theorem Config.SafeAt.progress {M : FloatSig} {P : Program} {T : Ty} {C : Config
 /-- **Preservation for a typed configuration** (§7, first bullet: "types are
 preserved under reduction"): a step of §6's `→` from a configuration typed at
 `T` lands on one typed at `T`. -/
-theorem Config.SafeAt.preservation {M : FloatSig} {P : Program} {T : Ty} {C C' : Config}
+theorem Config.SafeAt.invariant {M : FloatSig} {P : Program} {T : Ty} {C C' : Config}
     (h : C.SafeAt M P T) (hs : Step M P C C') : C'.SafeAt M P T :=
   ⟨fun D hD => h.1 D (.step hs hD), fun H φ v tr hD => h.2 H φ v tr (.step hs hD)⟩
 
@@ -1922,16 +1922,16 @@ theorem Config.SafeAt.steps {M : FloatSig} {P : Program} {T : Ty} {C C' : Config
 /-- **The fundamental lemma: a checked program starts typed** (§7, first
 bullet; §6.12's initial configuration). For a program `check` accepts, the
 initial configuration is safe at the entry point's declared return type. The
-"never stuck" half is `step_never_stuck_of_run` given `no_violation`; the
+"never stuck" half is `step_never_stuck_of_run` given `no_refusal`; the
 typing half takes a value §6 halts with to `run`'s answer at some fuel
-(`eval_complete`), where `run_safe` (`soundness` over a whole program) types
+(`eval_small_to_big`), where `run_safe` (`soundness` over a whole program) types
 it. This is the one place `soundness` enters the `Step` form. -/
 theorem init_safeAt (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     ∃ fd, P.fns[0]? = some fd ∧ Config.init.SafeAt M.toFloatSig P fd.ret := by
   obtain ⟨fd, h0, hp⟩ := h.entry
-  refine ⟨fd, h0, step_never_stuck_of_run _ P (no_violation M h), ?_⟩
+  refine ⟨fd, h0, step_never_stuck_of_run _ P (no_refusal M h), ?_⟩
   intro H φ v tr hT
-  obtain ⟨n, hn⟩ := (eval_complete M h).1 H φ v tr hT
+  obtain ⟨n, hn⟩ := (eval_small_to_big M h).1 H φ v tr hT
   have hr := hn (n + 1) (Nat.lt_succ_self n)
   rcases run_safe M h.wf h0 hp (n + 1) with ho | ⟨κ, tr', hp'⟩ | ⟨H', v', tr', hr', hty⟩
   · rw [hr] at ho; cases ho
@@ -1944,21 +1944,21 @@ a value, or halts with one of the defined panics"; ADR-0097 decision 3). For
 a program `check` accepts, every configuration `→*` reaches from §6.12's
 initial configuration is terminal or takes a step, so none is stuck
 (`Config.stuck_iff`). Derived: `soundness` gives "`run` is never `.refused`"
-(`no_violation`), and `step_never_stuck_of_run` — built from `run_sim` and
+(`no_refusal`), and `step_never_stuck_of_run` — built from `run_sim` and
 the step count `eval_steps_of_outOfFuel` — carries it to `Step`. -/
 theorem step_progress (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     ∀ C, Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C' :=
-  step_never_stuck_of_run _ P (no_violation M h)
+  step_never_stuck_of_run _ P (no_refusal M h)
 
 /-- **Preservation over §6's reduction** (§7, first bullet: "types are
 preserved under reduction"; ADR-0097 decision 3). For a program `check`
 accepts, every configuration `→*` reaches from §6.12's initial configuration
 is typed at the entry point's declared return type, in the semantic sense of
 `Config.SafeAt`: it is never stuck from there on, and every value it halts
-with has that type. With `Config.SafeAt.preservation` this is the one-step
+with has that type. With `Config.SafeAt.invariant` this is the one-step
 form. The typing is semantic, not a syntactic `⊢ C : T`; this section's
 docstring says what that does and does not claim. -/
-theorem step_preservation (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
+theorem step_safeAt (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     ∃ fd, P.fns[0]? = some fd ∧
       ∀ C, Steps M.toFloatSig P Config.init C → C.SafeAt M.toFloatSig P fd.ret := by
   obtain ⟨fd, h0, hs⟩ := init_safeAt M h

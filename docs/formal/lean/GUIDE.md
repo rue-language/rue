@@ -227,8 +227,8 @@ becomes the single statement "never `.refused`", which section 4's theorem
 proves. What the function owes the relation is an adequacy lemma (the two
 agree on every checked program), required before the mechanization gates
 anything (`../03-metatheory.md`, "How to read a theorem here"). Its first
-half, soundness, is proved (`eval_sound`, below), and so is its second half,
-completeness modulo fuel (`eval_complete`).
+half, soundness, is proved (`eval_big_to_small`, below), and so is its second half,
+completeness modulo fuel (`eval_small_to_big`).
 
 **Two presentations of one dynamics.** The relation exists too:
 `Step.lean` defines `Step`, §6's `C → C'` itself, one constructor per §6
@@ -272,8 +272,8 @@ On programs `check` rejects, `Step` follows §6 where `eval` does not: `@drop`
 of a `⊘` place is §6.11's no-op where `eval` refuses it.
 
 **Soundness: what `eval` answers, §6 reaches.** `Adequacy.lean` proves the
-first adequacy theorem. For a program `check` accepts, `eval_sound` says three
-things: `run` is never `.refused` (that is `no_violation`); if it answers a
+first adequacy theorem. For a program `check` accepts, `eval_big_to_small` says three
+things: `run` is never `.refused` (that is `no_refusal`); if it answers a
 value, §6.12's initial configuration reaches, by `Step`, the terminal
 configuration holding that value, with the same store and the same trace; and
 if it panics, `Step` reaches the same panic after the same trace. The proof is
@@ -295,9 +295,9 @@ unit of fuel `eval` spends is paid for by a step. `Step` is deterministic, so a
 run that reaches an end in `n` steps has no longer run beside it. At any fuel
 above `n`, then, `run` cannot be out of fuel, and whatever it answers,
 soundness places at that same end. On a checked program, that makes
-`eval_complete`: `run` answers §6's value or panic, with the same store and
+`eval_small_to_big`: `run` answers §6's value or panic, with the same store and
 trace, at every fuel past the length of §6's run. It also makes
-`never_stuck_iff`: "`run` is never `.refused`" is equivalent to "every
+`never_refused_iff`: "`run` is never `.refused`" is equivalent to "every
 configuration `Step` reaches reduces or has halted", which is §7's own
 phrasing. And it makes `eval_diverges_iff`: `run` is out of fuel at every fuel
 exactly when §6's run never ends. On a program `check` rejects, `eval` may
@@ -364,8 +364,8 @@ The end states are equal: the same store (`[†, †]`), the same value (`1`),
 and the same trace. `affineScopeDrop_both_ways` proves exactly that, and also
 proves `check` accepts the program. The adequacy theorems say that this
 agreement is not special to one program: on every program `check` accepts,
-`eval`'s value or panic is §6's (`eval_sound`), §6's is `eval`'s at every
-fuel past the run's length (`eval_complete`), and `outOfFuel` at every fuel
+`eval`'s value or panic is §6's (`eval_big_to_small`), §6's is `eval`'s at every
+fuel past the run's length (`eval_small_to_big`), and `outOfFuel` at every fuel
 is §6 running forever (`eval_diverges_iff`).
 
 **What that buys: §7 in its own terms.** The safety theorem is proved once,
@@ -373,7 +373,7 @@ over `eval`. Adequacy then carries it to `Step`:
 
 - `step_progress`: every configuration §6 reaches from a checked program's
   initial one reduces or has halted, so none is stuck.
-- `step_preservation`: every configuration §6 reaches is typed at the entry
+- `step_safeAt`: every configuration §6 reaches is typed at the entry
   point's return type. A step from a typed configuration lands on a typed
   one — equivalently, `step_progress` plus `step_value_typed`; the one-step
   half holds on every program.
@@ -384,7 +384,7 @@ over `eval`. Adequacy then carries it to `Step`:
 configuration reaches is stuck, and every value it halts with has the type.
 Preserving it is immediate. The work is in showing the initial configuration
 has it (`init_safeAt`), and that is `run_safe` carried over by
-`eval_complete`. A syntactic typing of configurations would be a second
+`eval_small_to_big`. A syntactic typing of configurations would be a second
 safety proof, one case per `Step` constructor, and the mechanization does not
 claim one. For `affine_scope_drop`, `step_value_typed` reads off that the `1`
 §6 halts with is an `i64`.
@@ -433,7 +433,7 @@ the corpus, which exports only completed runs, leaves it out.
 The two lemmas close the loophole from `eval`'s side. Adequacy closes it from
 §6's side. On a checked program, `run` is out of fuel at every bound exactly
 when §6's reduction never ends (`eval_diverges_iff`). And when §6's run does
-end, every bound past its length finds the end (`eval_complete`).
+end, every bound past its length finds the end (`eval_small_to_big`).
 
 ### The one edge no monitor covers
 
@@ -566,7 +566,7 @@ reuse it at every form. It says:
 
 That is progress and preservation in one statement (§7, first bullet).
 Over §6's `Step`, its whole-program consequence is `step_progress` and
-`step_value_typed`, with `step_preservation` packaging the two as a semantic
+`step_value_typed`, with `step_safeAt` packaging the two as a semantic
 configuration typing, derived from this theorem by adequacy. The
 per-expression invariant `ActivationTyping` has no `Step`-side statement.
 
@@ -609,7 +609,7 @@ counted as a multiset, is at most what the initial store owned plus what was
 minted, and minted identities are store indices, each once. It needs no typing
 derivation. It needs **copy closure**, that nothing owned sits under a `Copy`
 node, and the machine enforces that with its fourth monitor. Typing enters
-through the first conjunct, `no_violation`: a checked program never reaches
+through the first conjunct, `no_refusal`: a checked program never reaches
 the monitor, so its trace is the whole run's. `dupProgram_step_double_free` is
 the ill-typed program that shows the monitor is doing real work: §6's
 relation, which has no monitor, runs one destructor twice on one identity.
@@ -766,7 +766,7 @@ Both halves are over §6's `Step`.
   destructor first, then the fields in declaration order, an array's
   elements ascending, and an enum's active payload only. A destructor event
   has no other place in the grammar. It is proved over `eval`
-  (`run_blocks`) and carried to `Step`'s finished runs by `eval_complete`
+  (`run_blocks`) and carried to `Step`'s finished runs by `eval_small_to_big`
   (`step_blocks`).
   `Blocks` reads each drop's events off `dropEvents`, so it moves with that
   definition. `drop_glue_order` (RUE-2487) states the same order in §6.11's
@@ -2235,9 +2235,9 @@ makes it vacuous (`no_masking` with `n = m`, say).
 Then ask the fuel question from §6's side, which is checkpoint C's: does
 "for every fuel, never `.refused`" imply that no reduction sequence reaches a
 stuck configuration? `step_never_stuck_of_run` says yes, on every program;
-`never_stuck_iff` is the equivalence on checked programs; and
+`never_refused_iff` is the equivalence on checked programs; and
 `step_progress` is the conclusion for checked programs. Can `outOfFuel` hide
-a violation? `run_stuck_of_step_stuck` says a stuck §6 run is a refusal at
+a violation? `run_refused_of_step_stuck` says a stuck §6 run is a refusal at
 every fuel past its length, and `eval_diverges_iff` says that on a checked
 program, exhaustion at every fuel is divergence. `03-metatheory.md`'s
 "ADR-0097's conditions" section maps each gate condition to its theorem.
@@ -2332,13 +2332,13 @@ Pick two of these three and read the calculus and the Lean side by side.
 
 **What thirty minutes does not buy.** The adequacy lemma tying this
 executable dynamics to §6's reduction relation is proved both ways
-(`eval_sound` and `eval_complete`, section 2), and §7's progress and
+(`eval_big_to_small` and `eval_small_to_big`, section 2), and §7's progress and
 preservation are stated over `Step` itself (`step_progress`,
-`step_preservation`). But the preservation there is for a semantic
+`step_safeAt`). But the preservation there is for a semantic
 configuration typing, not a syntactic one (section 2). The fuel is this
 interpreter's device and has no counterpart in §6, so `fuel_mono` and
 `no_masking` are about `eval`, not about the paper machine; their §6-side
-counterparts are `run_stuck_of_step_stuck` and `eval_diverges_iff`. And the rules and forms `INDEX.md` marks *not yet
+counterparts are `run_refused_of_step_stuck` and `eval_diverges_iff`. And the rules and forms `INDEX.md` marks *not yet
 mechanized* are outside every theorem above. The fragment boundary in step 3
 is not a formality; it is most of what the reports are for.
 

@@ -1563,7 +1563,7 @@ The proof is lossless simulation: `eval_msim` follows `eval_sim` form by
 form and shows each step of the run moves an owned identity between the
 store, the focus, the stack and the trace without losing it (`MSteps`); by
 determinism every configuration the run reaches lies on that run
-(`MSteps.of_steps`). `eval_complete` places the run's end at `run`'s answer,
+(`MSteps.of_steps`). `eval_small_to_big` places the run's end at `run`'s answer,
 where `eval_tidy` has retired every cell and `eval_conserves` bounds each
 count by one. -/
 theorem whole_program_exactly_once (M : FloatLaws) {P : Program} (h : ProgramTyped P)
@@ -1571,7 +1571,7 @@ theorem whole_program_exactly_once (M : FloatLaws) {P : Program} (h : ProgramTyp
     (ha : a ∈ C.held P.decls) {H : Store} {φ : Activation} {v : Val} {tr : List Event}
     (hT : Steps M.toFloatSig P C (.run H φ [] (.ret v) tr)) :
     (v.own P.decls).count a + (freedIds P.decls tr).count a = 1 := by
-  obtain ⟨n, hn⟩ := (eval_complete M h).1 H φ v tr (hC.trans hT)
+  obtain ⟨n, hn⟩ := (eval_small_to_big M h).1 H φ v tr (hC.trans hT)
   have hr := hn (n + 1) (Nat.lt_succ_self n)
   have hm := (run_msteps M.toFloatSig hp (n + 1) hr).of_steps
     (fun _ => Step.terminal trivial) hC

@@ -51,7 +51,7 @@ bounds every earlier one. So for a reachable `C`, reached in `k` steps,
 `run` at fuel `k` decides: exhausted fuel gives a run of at least `k` steps
 whose end bounds `C` (`Step.det`); a value or a panic is reached by §6's
 relation (`run_sim`), past `C`, and `run_trace_once` bounds it; a refusal is
-what typing excludes (`no_violation`), and nothing else is an answer of
+what typing excludes (`no_refusal`), and nothing else is an answer of
 `run`'s.
 -/
 
@@ -735,18 +735,18 @@ sees only `outOfFuel` and an empty trace. -/
 theorem step_no_double_free (M : FloatLaws) {P : Program} (h : ProgramTyped P) {C : Config}
     (hC : Steps M.toFloatSig P Config.init C) :
     (∀ a, (freedIds P.decls C.trace).count a ≤ 1) ∧ (∀ a, (dtorIds C.trace).count a ≤ 1) :=
-  ⟨steps_trace_once M.toFloatSig (freed_measure P.decls) (no_violation M h) hC,
-    steps_trace_once M.toFloatSig (dtor_measure h.wf.decls.dtorNotCopy) (no_violation M h) hC⟩
+  ⟨steps_trace_once M.toFloatSig (freed_measure P.decls) (no_refusal M h) hC,
+    steps_trace_once M.toFloatSig (dtor_measure h.wf.decls.dtorNotCopy) (no_refusal M h) hC⟩
 
 /-- `no_double_free` for a finished run is a corollary (RUE-2477): a value or a
-panic `run` answers is reached by §6's relation (`eval_sound`), so its trace is
+panic `run` answers is reached by §6's relation (`eval_big_to_small`), so its trace is
 a reachable configuration's; exhausted fuel carries the empty trace; and a
 checked run is never refused (helper). -/
 theorem no_double_free_of_step (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
       (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
       (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1) := by
-  have hs := eval_sound M h fuel
+  have hs := eval_big_to_small M h fuel
   have key : ∃ C, Steps M.toFloatSig P Config.init C ∧ C.trace = (run M.toFloatSig P fuel).trace := by
     cases hr : run M.toFloatSig P fuel with
     | ok H v tr => exact ⟨_, hs.2.1 H v tr hr, by simp [Config.trace, EvalRes.trace]⟩

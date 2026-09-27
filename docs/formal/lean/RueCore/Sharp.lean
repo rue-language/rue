@@ -418,7 +418,7 @@ theorem copy :
       checkProgram P = false ∧ ¬ ProgramTyped P ∧ run Float.exactOps P 200 = .refused .ownedUnderCopy := by
   intro B hB P hP
   have hr : run Float.exactOps P 200 = .refused .ownedUnderCopy := by subst hB hP; rfl
-  exact ⟨by subst hB hP; rfl, fun h => no_violation Float.exactModel h 200 _ hr, hr⟩
+  exact ⟨by subst hB hP; rfl, fun h => no_refusal Float.exactModel h 200 _ hr, hr⟩
 
 /-- `Spec.Sharp.leak_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
 theorem leak :
@@ -530,7 +530,7 @@ theorem fuel :
   have h0 : run Float.exactOps P 0 = .outOfFuel := by subst hP; rfl
   obtain ⟨H, v, tr, hr⟩ : ∃ H v tr, run Float.exactOps P 200 = .ok H v tr := by
     subst hB hP; exact ⟨_, _, _, by rfl⟩
-  refine ⟨hPT, fun _ => rfl, h0, H, v, tr, hr, (eval_sound Float.exactModel hPT 200).2.1 _ _ _ hr, by omega, by omega,
+  refine ⟨hPT, fun _ => rfl, h0, H, v, tr, hr, (eval_big_to_small Float.exactModel hPT 200).2.1 _ _ _ hr, by omega, by omega,
     by rw [h0, hr]; simp, fun w => by rw [hr]; simp, fun h => ?_⟩
   rcases h 0 with h' | ⟨w, h'⟩ <;> rw [h0] at h' <;> cases h'
 
@@ -554,7 +554,7 @@ theorem fuel_panic :
   have hPT : ProgramTyped P := checkProgram_sound (by subst hB hP; rfl)
   have h0 : run Float.exactOps P 0 = .outOfFuel := by subst hP; rfl
   have hr : run Float.exactOps P 200 = .panic .user [.dbg (.int .w64 .signed 5)] := by subst hB hP; rfl
-  refine ⟨hPT, h0, (eval_sound Float.exactModel hPT 200).2.2 _ _ hr, fun h => ?_⟩
+  refine ⟨hPT, h0, (eval_big_to_small Float.exactModel hPT 200).2.2 _ _ hr, fun h => ?_⟩
   rcases h 0 with h' | ⟨w, h'⟩ <;> rw [h0] at h' <;> cases h'
 
 /-- `Spec.Sharp.not_fits_stmt`, proved: a §7 hypothesis needed (RUE-2485). -/
@@ -838,7 +838,7 @@ theorem unreached :
   obtain ⟨H, v, tr, hr, hv⟩ : ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧ v = .int .w64 .signed 3 := by
     subst hB hP; exact ⟨_, _, _, by rfl, rfl⟩
   subst hv
-  have hs := (eval_sound Float.exactModel hPT 200).2.1 _ _ _ hr
+  have hs := (eval_big_to_small Float.exactModel hPT 200).2.1 _ _ _ hr
   refine ⟨hPT, not_steps_of_final hs (noStep_of_terminal trivial) (noStep_of_terminal trivial)
     (by simp), by rw [hr]; simp, Blocks.not_dtor,
     not_eventually hr (by simp) (fun r => r = .ok [] (.int .w64 .signed 8) [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])] ∨ ∃ w, r = .refused w)
@@ -866,7 +866,7 @@ theorem unreached_panic :
   have hPT : ProgramTyped P := checkProgram_sound (by subst hB hP; rfl)
   obtain ⟨H, v, tr, hr⟩ : ∃ H v tr, run Float.exactOps P 200 = .ok H v tr := by
     subst hB hP; exact ⟨_, _, _, by rfl⟩
-  have hs := (eval_sound Float.exactModel hPT 200).2.1 _ _ _ hr
+  have hs := (eval_big_to_small Float.exactModel hPT 200).2.1 _ _ _ hr
   refine ⟨hPT, not_steps_of_final hs (noStep_of_terminal trivial)
     (noStep_of_terminal (C := .panic .user [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])]) trivial)
     (by simp), by rw [hr]; simp, Blocks.not_dtor,
@@ -933,7 +933,7 @@ theorem not_a_step :
   have hPT : ProgramTyped P := checkProgram_sound (by subst hB hP; rfl)
   obtain ⟨H, v, tr, hr, htr⟩ : ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧ tr ≠ [] := by
     subst hB hP; exact ⟨_, _, _, by rfl, by simp⟩
-  refine ⟨hPT, H, v, tr, (eval_sound Float.exactModel hPT 200).2.1 _ _ _ hr, htr,
+  refine ⟨hPT, H, v, tr, (eval_big_to_small Float.exactModel hPT 200).2.1 _ _ _ hr, htr,
     noStep_of_terminal (C := .run H Activation.empty [] (.ret v) tr) trivial _, ?_⟩
   rintro ⟨evs, h, _⟩
   simp only [Config.trace] at h
@@ -994,7 +994,7 @@ theorem unreachable_stuck :
   have hnt := not_terminal_of_stuck hst
   obtain ⟨H, v, tr, hr⟩ : ∃ H v tr, run Float.exactOps P 200 = .ok H v tr := by
     subst hB hP; exact ⟨_, _, _, by rfl⟩
-  refine ⟨hPT, hst, fun hs => ?_, no_violation Float.exactModel hPT, ?_, fun T h => ?_, fun h => ?_,
+  refine ⟨hPT, hst, fun hs => ?_, no_refusal Float.exactModel hPT, ?_, fun T h => ?_, fun h => ?_,
     not_eventually hr (by simp) (fun r => ∃ w', r = .refused w') (by simp)⟩
   · rcases step_progress Float.exactModel hPT _ hs with h | ⟨_, s⟩
     · exact hnt h
@@ -1152,7 +1152,7 @@ theorem ill_typed_halt :
   have hns : ¬ ((.run [] Activation.empty [] (.ret (.bool true)) []) : Config).SafeAt Float.exactOps P
       (.int .w64 .signed) := fun h => nomatch h.2 _ _ _ _ (.refl _)
   refine ⟨hPT, trivial, fun hs => ?_, hns⟩
-  obtain ⟨fd, hfd, hsafe⟩ := step_preservation Float.exactModel hPT
+  obtain ⟨fd, hfd, hsafe⟩ := step_safeAt Float.exactModel hPT
   subst hB hP
   simp only [List.getElem?_cons_zero, Option.some.injEq] at hfd
   subst hfd
@@ -1186,7 +1186,7 @@ theorem out_of_range_halt :
   have hns : ¬ ((.run [] Activation.empty [] (.ret (.int .w64 .signed 9223372036854775808)) []) : Config).SafeAt
       Float.exactOps P (.int .w64 .signed) := fun h => hty (h.2 _ _ _ _ (.refl _))
   refine ⟨hPT, trivial, hty, fun hs => ?_, hns⟩
-  obtain ⟨fd, hfd, hsafe⟩ := step_preservation Float.exactModel hPT
+  obtain ⟨fd, hfd, hsafe⟩ := step_safeAt Float.exactModel hPT
   subst hB hP
   simp only [List.getElem?_cons_zero, Option.some.injEq] at hfd
   subst hfd
@@ -1233,7 +1233,7 @@ theorem float_halt :
       Float.exactOps P (.float .w64) := fun h => by
     cases h.2 _ _ _ _ (.refl _) with
     | float hf => exact hw2 hf
-  obtain ⟨fd, hfd, hsafe⟩ := step_preservation Float.exactModel hPT
+  obtain ⟨fd, hfd, hsafe⟩ := step_safeAt Float.exactModel hPT
   have hret : fd.ret = .float .w64 := by
     subst hB hP
     simp only [List.getElem?_cons_zero, Option.some.injEq] at hfd

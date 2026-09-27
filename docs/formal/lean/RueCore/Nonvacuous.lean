@@ -19,7 +19,7 @@ proofs run the checker and `eval` in the kernel (`rfl`, `decide`, and
 `decide +kernel` for the float program, whose rounding reaches `2^1076`, past
 the elaborator's evaluation threshold; never `native_decide`), and get the
 rest from the spine's own theorems: `checkProgram_sound`, `check_sound`,
-`eval_sound`, `no_violation` and `WfDecls.dtorNotCopy`, at
+`eval_big_to_small`, `no_refusal` and `WfDecls.dtorNotCopy`, at
 `Float.exactModel` (`Float/Lemmas.lean`).
 -/
 
@@ -136,9 +136,9 @@ theorem dtor :
   have hP := checkProgram_sound h1
   subst hPe
   exact ⟨h1, hP, by rfl, ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
-    WfDecls.dtorNotCopy hP.wf.decls, ⟨_, step_iff.mpr rfl⟩, no_violation Float.exactModel hP,
+    WfDecls.dtorNotCopy hP.wf.decls, ⟨_, step_iff.mpr rfl⟩, no_refusal Float.exactModel hP,
     by decide, ⟨_, _, _, _, ⟨_, rfl, by rfl⟩, (withTrace_nil _).symm, by decide⟩,
-    _, _, _, by rfl, (eval_sound Float.exactModel hP 200).2.1 _ _ _ (by rfl), by decide, by decide⟩
+    _, _, _, by rfl, (eval_big_to_small Float.exactModel hP 200).2.1 _ _ _ (by rfl), by decide, by decide⟩
 
 /-- `Spec.Nonvacuous.linear_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem linear :
@@ -165,7 +165,7 @@ theorem linear :
   have hP := checkProgram_sound h1
   subst hPe
   exact ⟨h1, hP, by rfl, ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
-    _, _, _, by rfl, (eval_sound Float.exactModel hP 200).2.1 _ _ _ (by rfl), by decide⟩
+    _, _, _, by rfl, (eval_big_to_small Float.exactModel hP 200).2.1 _ _ _ (by rfl), by decide⟩
 
 /-- `Spec.Nonvacuous.loop_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem loop :
@@ -196,7 +196,7 @@ theorem loop :
   have hP := checkProgram_sound h1
   subst hPe
   exact ⟨h1, hP, by rfl, ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
-    _, _, _, by rfl, (eval_sound Float.exactModel hP 200).2.1 _ _ _ (by rfl), by decide⟩
+    _, _, _, by rfl, (eval_big_to_small Float.exactModel hP 200).2.1 _ _ _ (by rfl), by decide⟩
 
 /-- `Spec.Nonvacuous.array_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem array :
@@ -224,7 +224,7 @@ theorem array :
   have hP := checkProgram_sound h1
   subst hPe
   exact ⟨h1, hP, by rfl, ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
-    _, _, _, by rfl, (eval_sound Float.exactModel hP 200).2.1 _ _ _ (by rfl), by decide⟩
+    _, _, _, by rfl, (eval_big_to_small Float.exactModel hP 200).2.1 _ _ _ (by rfl), by decide⟩
 
 /-- `Spec.Nonvacuous.enum_match_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem enum_match :
@@ -250,7 +250,7 @@ theorem enum_match :
   have hP := checkProgram_sound h1
   subst hPe
   exact ⟨h1, hP, by rfl, ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
-    _, _, _, by rfl, (eval_sound Float.exactModel hP 200).2.1 _ _ _ (by rfl), by decide, by decide⟩
+    _, _, _, by rfl, (eval_big_to_small Float.exactModel hP 200).2.1 _ _ _ (by rfl), by decide, by decide⟩
 
 /-- `Spec.Nonvacuous.early_return_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem early_return :
@@ -277,7 +277,7 @@ theorem early_return :
   have hP := checkProgram_sound h1
   subst hPe
   exact ⟨h1, hP, by rfl, ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
-    _, _, _, by rfl, (eval_sound Float.exactModel hP 200).2.1 _ _ _ (by rfl), rfl, by decide⟩
+    _, _, _, by rfl, (eval_big_to_small Float.exactModel hP 200).2.1 _ _ _ (by rfl), rfl, by decide⟩
 
 /-- `Spec.Nonvacuous.panic_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem panic :
@@ -302,7 +302,7 @@ theorem panic :
   have hP := checkProgram_sound h1
   subst hPe
   exact ⟨h1, hP, by rfl, ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
-    by rfl, (eval_sound Float.exactModel hP 200).2.2 _ _ (by rfl)⟩
+    by rfl, (eval_big_to_small Float.exactModel hP 200).2.2 _ _ (by rfl)⟩
 
 /-- `Spec.Nonvacuous.float_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem float :
@@ -336,7 +336,7 @@ theorem float :
   obtain ⟨H, tr, hr⟩ := of_okFloat hf
   subst hPe
   exact ⟨h1, hP, by rfl, ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
-    H, _, tr, hr, (eval_sound Float.exactModel hP 200).2.1 _ _ _ hr, rfl⟩
+    H, _, tr, hr, (eval_big_to_small Float.exactModel hP 200).2.1 _ _ _ hr, rfl⟩
 
 /-- `Spec.Nonvacuous.diverges_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem diverges :

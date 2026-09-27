@@ -51,8 +51,8 @@ Design commitments carried over from §6:
     monitor refuses that aggregate before it exists, which is what lets
     `no_double_free` (`Trace.lean`) be proved without a typing derivation.
 * **The correspondence with §6 is claimed on the checker's input domain.**
-  On a program `check` accepts, `eval` and §6 agree: `eval_sound`
-  (`Adequacy.lean`) proves `eval ⇒ Step*` there, and `eval_complete` the
+  On a program `check` accepts, `eval` and §6 agree: `eval_big_to_small`
+  (`Adequacy.lean`) proves `eval ⇒ Step*` there, and `eval_small_to_big` the
   converse modulo fuel; on other input they may not. An
   operator reduces both its operands first, in §6.2's own left-to-right
   order, and only then inspects their shapes, so a mismatch is named after
@@ -247,7 +247,7 @@ pinned as kernel-checked witnesses in `Examples.lean`
 (`linearLostAtCallArg`, `affineLostAtCallArg`, `linearLostAtArrayElem`, and
 `linearLostAtBreakArg` for the `break` case, which the compiler matches), the
 §7 claim is stated with
-the carve-out named (`Soundness.lean`'s `no_violation`,
+the carve-out named (`Soundness.lean`'s `no_refusal`,
 `docs/formal/03-metatheory.md`), and closing it is an open spec decision
 (RUE-2316, the pending-argument decision) — it needs a rule, in §5.7, §6.9
 or §6.10, before a monitor here would mean anything.
