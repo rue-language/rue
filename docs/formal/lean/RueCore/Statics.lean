@@ -66,8 +66,8 @@ every variant rather than the active one.
 ## Divergence, without a `never` type
 
 §5.7 types `return e`, `@panic`, `break` and a `break`-less `loop` at `never`
-and lets (Sub-Never) coerce them to any type, with a divergent outgoing state
-`⊥` that §5.5's join excludes. The judgment carries §5.3's outgoing result
+and lets (Sub-Never) coerce them to any type, with a divergent output context
+`⊥` that §5.5's join excludes. The judgment carries §5.3's output result
 `Ω` (`Out`), whose `norm = none` is that `⊥`; the fragment folds the type
 half into each never-typed rule, which concludes at **any** type `T`. `Ty`
 therefore needs no `never` constructor and `HasTy` (`Soundness/Defs.lean`) no case
@@ -692,7 +692,7 @@ def Entry.join (D : Decls) (a b : Entry) : Option Entry :=
   (OwnSt.join D a.st b.st a.ty).map a.setSt
 
 /-- The §5.5 branch join, pointwise. Defined only on equal-length contexts
-(the two arms extend one incoming context, so lengths always agree). -/
+(the two arms extend one input context, so lengths always agree). -/
 def Ctx.join (D : Decls) : Ctx → Ctx → Option Ctx
   | [], [] => some []
   | a :: as, b :: bs =>
@@ -703,11 +703,11 @@ def Ctx.join (D : Decls) : Ctx → Ctx → Option Ctx
 
 /-! ### The n-way §5.5 join, and a `match` arm's own binders
 
-(Match) §5.5 writes `Σ' = join(Σ1, …, Σn)` over one outgoing state per arm.
+(Match) §5.5 writes `Σ' = join(Σ1, …, Σn)` over one output context per arm.
 `join` is a binary least upper bound taken path by path, so the n-way form is
 its **left fold** over the arms in declaration order, starting from the first
 arm's state; `Ctx.joinAll` is that fold and `Ctx.joinFold` its accumulator step.
-A one-armed `match` joins nothing and is the arm's own outgoing state, which is
+A one-armed `match` joins nothing and is the arm's own output context, which is
 `Ctx.joinFold`'s base case; a zero-armed one has no state to start from, so
 `Ctx.joinAll []` is `none` — and §5.5 says why nothing needs it: every core enum
 has at least one variant, the zero-arm `match` on an uninhabited scrutinee being
@@ -724,7 +724,7 @@ is **associative** over states that are shapes of their type
 permutation of the arms, which is what licenses reading `Ctx.joinAll` as the
 unordered `join(Σ1, …, Σn)` the calculus writes.
 
-Its premise — every arm's outgoing context a shape of its declared types
+Its premise — every arm's output context a shape of its declared types
 (`Ctx.Wf`) — is one the rules that *write* keep: `OwnSt.setAt_wf` for (Use-Move)
 §5.1, (@Drop) §5.3 and (Assign) §5.2, `Ctx.joinAll_wf` for a nested (Match), and
 `fnCtx`/`extendArm` push `Owned`. §5.7's `⊥` has no state to break it: the
@@ -746,7 +746,7 @@ def extendArm (Ts : List Ty) (Γ : Ctx) : Ctx :=
   (Ts.map fun T => ({ ty := T, mu := false, st := .owned } : Entry)).reverse ++ Γ
 
 /-- The accumulator step of (Match) §5.5's `join(Σ1, …, Σn)`: fold the binary
-§5.5 join over the remaining arms' outgoing states, left to right. -/
+§5.5 join over the remaining arms' output contexts, left to right. -/
 def Ctx.joinFold (D : Decls) : Ctx → List Ctx → Option Ctx
   | acc, [] => some acc
   | acc, Γ :: Γs =>
@@ -754,15 +754,15 @@ def Ctx.joinFold (D : Decls) : Ctx → List Ctx → Option Ctx
       | some acc' => Ctx.joinFold D acc' Γs
       | none => none
 
-/-- (Match) §5.5's `Σ' = join(Σ1, …, Σn)`: the n-way join of the arms' outgoing
+/-- (Match) §5.5's `Σ' = join(Σ1, …, Σn)`: the n-way join of the arms' output
 states, as the left fold of the binary join (section docstring). -/
 def Ctx.joinAll (D : Decls) : List Ctx → Option Ctx
   | [] => none
   | Γ :: Γs => Ctx.joinFold D Γ Γs
 
-/-! ### The outgoing result `Ω` (§5.3)
+/-! ### The output result `Ω` (§5.3)
 
-§5.3 gives every judgment an outgoing result `Ω ::= Σ;Δ | ⊥;Δ`: an optional
+§5.3 gives every judgment an output result `Ω ::= Σ;Δ | ⊥;Δ`: an optional
 normal ownership state together with the **edge deliveries** `Δ` the
 expression's reachable diverging edges make. `Out` is that pair. `norm` is the
 normal state — `some Σ'` when evaluation can reach the next expression, `none`
@@ -782,10 +782,10 @@ every rule carries its premises' deliveries into its conclusion, as §5.3's
 them. The list is the calculus's set: order and repetition carry no meaning
 (`Ctx.joinAll_perm` is why the exit join may read it in order). -/
 
-/-- §5.3's outgoing result `Ω`: `norm = some Σ'` is `Σ';Δ` and `norm = none`
+/-- §5.3's output result `Ω`: `norm = some Σ'` is `Σ';Δ` and `norm = none`
 is `⊥;Δ`, with `brk` the recorded deliveries `Δ` (section docstring). -/
 structure Out where
-  /-- The normal outgoing state, or `none` for §5.7's `⊥`. -/
+  /-- The normal output context, or `none` for §5.7's `⊥`. -/
   norm : Option Ctx
   /-- The `⟨break, Σ⟩` deliveries, each with the state in force at its edge. -/
   brk : List Ctx
@@ -827,7 +827,7 @@ The core has no `continue` (§2 elaborates it to the back edge), so `B_h` is at
 most the body's own normal completion state, and that state has the head's
 skeleton — a body's `let`s close before it completes — so `outside_loop` is
 the identity on it. `LoopHead` is the equation, stated over the body's normal
-outgoing state `o`: `Σ_h = Σ` when the body never completes (`B_h = ∅`), and
+output context `o`: `Σ_h = Σ` when the body never completes (`B_h = ∅`), and
 `Σ_h = join(Σ, Σ_e)` when it completes at `Σ_e`. It is a **fixpoint** premise:
 `o` is read off the judgment that types the body *at* `Σ_h`. Any solution is
 admitted, as the calculus admits any, the non-least ones included — an
@@ -851,7 +851,7 @@ solve it. With it, re-entering the loop at `Σ_h` solves the equation again
 -/
 
 /-- §5.7's loop-head equation `Σ_h = head(Σ, e)`, over the body's normal
-outgoing state `o` (section docstring): `Σ_h` is the §5.5 join of the entry
+output context `o` (section docstring): `Σ_h` is the §5.5 join of the entry
 state `Γ` with the body's back-edge state when it has one, and is `Γ` itself
 when it has none; a head a back edge produced is a state of its types. -/
 def LoopHead (D : Decls) (Γ : Ctx) (o : Option Ctx) (Γh : Ctx) : Prop :=
@@ -870,7 +870,7 @@ def Ctx.outsideLoop (Γh Γb : Ctx) : Ctx := Γb.drop (Γb.length - Γh.length)
 
 mutual
 /-- `Γ ; Σ ⊢ e ⇒ T ⊣ Ω` (§5), over the fused context, under the program `P`
-and the enclosing function's return type `R`, with §5.3's outgoing result
+and the enclosing function's return type `R`, with §5.3's output result
 `Ω` (`Out`).
 
 **Reachability is in the rules' shape**, as §5.7 says: the `-Bottom` rules
@@ -906,7 +906,7 @@ away (`7.1:36`–`7.1:39`); `indexRead`/`indexWrite` are the dynamic index,
 typed by (Use-Untrackable-Dynamic-Copy) §5.1 and by (Assign) §5.2; `«match»`
 is (Match)
 (§5.5), whose arms fold in §5.6's check for their payload locals and whose
-outgoing states join n-way; `letIn` folds in §5.6's residual-linear scope-exit
+output contexts join n-way; `letIn` folds in §5.6's residual-linear scope-exit
 check; `assign` is (Assign) with the `3.8:77` linear-overwrite premise, keyed
 on the destination's type (`overwriteOk`), on the *post-RHS* state; `seq` is (Seq) with the `3.8:64` discard check; `ite` is (If)
 with the §5.5 join; `call` is (Call) by value (§5.8); `ret` is (Return-Value)
@@ -1174,7 +1174,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   an `ite` arm does. An arm that continues leaves its payload locals' scope
   under §5.6: `TypedArms` carries the same residual-linear check `Typed.letIn`
   carries for its one binder, over the `ai` entries the arm pops. §5.5 joins
-  the **continuing** arms' outgoing states n-way (`Ctx.joinOpts`, the fold
+  the **continuing** arms' output contexts n-way (`Ctx.joinOpts`, the fold
   `Ctx.joinAll` over them), and a diverging arm is "excluded from the state
   join" and contributes only its deliveries. The delivery set is the
   scrutinee's `Δ_0` with every arm's, continuing or not. -/
@@ -1263,7 +1263,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
     `Untrackable(DeclaredLinearDynamic)` — ill-formed there — without an
     instance (E0904; probes q11, r07).
 
-  The read copies, so the outgoing state is the indices'. Whether each index
+  The read copies, so the output context is the indices'. Whether each index
   is *in range* is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing
   question. -/
   | indexRead {Γ Γ₁ Δ p idx πs Ts en u Ta T} :
@@ -1280,7 +1280,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   /-- (Strict-Bottom) §5.3 at a dynamic index: an index expression diverges,
   so the place is never navigated and no premise about its state is read.
   The premises left are the ones that name `T_E`, the leaf's type — the
-  index list's shape, and `Γ ⊢ p[…]… : T` read on the incoming context, whose
+  index list's shape, and `Γ ⊢ p[…]… : T` read on the input context, whose
   skeleton is the one every later state has. -/
   | indexReadBot {Γ Δ p idx πs Ts en Ta T} :
       TypedArgs P R Γ idx Ts ⟨none, Δ⟩ → Ts.all Ty.isInt = true →
@@ -1329,7 +1329,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   at `p` changes no path's state.
 
   `en₀.st.get p.path = some u₀` constrains `u₀` nowhere, and deliberately: it
-  is (Assign)'s own incoming `Σ(p)` lookup, whose content is that the
+  is (Assign)'s own input `Σ(p)` lookup, whose content is that the
   destination path is *reachable* — `OwnSt.get` is `none` under a moved-out
   prefix — while every condition on the state itself is read after the operands
   have run, on `u₁`, because that is the state the write overwrites. -/
@@ -1383,7 +1383,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   therefore the read's whole derivation, (Use-Untrackable-Dynamic-Copy) §5.1
   at the same place — `Copy` leaf, `fully-owned(Σ, p)`, no declared-`linear`
   prefix, integer indices typed left to right — and the conclusion is the
-  read's outgoing context at type `unit`: a `Copy` place is moved by nothing,
+  read's output context at type `unit`: a `Copy` place is moved by nothing,
   so there is no ownership effect to add. -/
   | indexDrop {Γ Ω p idx πs T} :
       Typed P R Γ (.indexRead p idx πs) T Ω →
@@ -1512,11 +1512,11 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   (`7.1:46`). Its docstring records the deviation from §5.2's disjunction as
   written.
 
-  One **deviation** (N3): `Owned-Base` is demanded on the *incoming* state as
+  One **deviation** (N3): `Owned-Base` is demanded on the *input* state as
   well as the post-RHS one, so this rule is one premise stricter than §5.2,
   which states neither (U4 reads §5.1's "in any context" side condition for the
   post-RHS lookup). Nothing a program can observe turns on it: only an RHS that
-  reinitialises the target's own moved-out prefix could make the incoming
+  reinitialises the target's own moved-out prefix could make the input
   lookup fail where the post-RHS one succeeds. -/
   | assign {Γ Γ₁ Δ p e en₀ en₁ u₀ u₁ T} :
       Γ[p.root]? = some en₀ → en₀.mu = true →
@@ -1559,7 +1559,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
       Typed P R Γ e₁ T₁ ⟨none, Δ₁⟩ →
       Typed P R Γ (.seq e₁ e₂) T ⟨none, Δ₁⟩
   /-- (If): both arms from the post-condition state, at one type `T` (a
-  diverging arm meets it by (Sub-Never) §5.7). The outgoing state is the §5.5
+  diverging arm meets it by (Sub-Never) §5.7). The output context is the §5.5
   join of the arms that **continue** (`Ctx.joinOpt`: a diverging arm is
   excluded, `3.8:51`, and `⊥` when neither continues), and the deliveries are
   the condition's `Δ_0` with both arms'. -/
@@ -1654,7 +1654,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   loop's own depth. The loop-local bindings still open there (the prefix,
   `Ctx.loopLocals`) end at the exit, which discharges §5.6 for them
   ("discharged at the exit itself"; dynamically, §6.10's unwind); the rest
-  (`Ctx.outsideLoop`) is `outside_loop(Σ_x)`, and the loop's normal outgoing
+  (`Ctx.outsideLoop`) is `outside_loop(Σ_x)`, and the loop's normal output
   state is §5.5's join over those (`3.8:80`), `Ctx.joinAll` in delivery
   order (the order is immaterial: `Ctx.joinAll_perm`). The body's normal
   completion is the back edge, which `LoopHead` already reads; it is not an
@@ -1792,12 +1792,12 @@ it and the `break` that made it sit the bindings of every `let` and every
 def Ctx.Extends (Γb Γ : Ctx) : Prop := ∃ pre, Γb.skel = pre ++ Γ.skel
 
 /-- The skeleton half of §5's convention that `Γ` is fixed while `Σ` is
-threaded, read over `Ω`: a normal outgoing state, when there is one, has the
-incoming skeleton, and every `⟨break, Σ⟩` delivery **extends** it — the
-bindings in force at the edge, on top of the incoming ones. `⊥` has no state,
+threaded, read over `Ω`: a normal output context, when there is one, has the
+input skeleton, and every `⟨break, Σ⟩` delivery **extends** it — the
+bindings in force at the edge, on top of the input ones. `⊥` has no state,
 so it constrains only the deliveries (helper). -/
 structure Out.SkelOk (Γ : Ctx) (Ω : Out) : Prop where
-  /-- The normal outgoing state has the incoming skeleton. -/
+  /-- The normal output context has the input skeleton. -/
   norm : ∀ Γ', Ω.norm = some Γ' → Γ'.skel = Γ.skel
   /-- Every delivered state extends it. -/
   brk : ∀ Γb ∈ Ω.brk, Ctx.Extends Γb Γ
@@ -1806,23 +1806,23 @@ structure Out.SkelOk (Γ : Ctx) (Ω : Out) : Prop where
 
 `Ctx.Wf` — every entry's ownership state a shape of its declared type — is
 the premise §5.5's associativity (`OwnSt.join_assoc`, `Ctx.joinAll_perm`)
-carries. With §5.7's `⊥` an arbitrary context of the incoming skeleton, as it
+carries. With §5.7's `⊥` an arbitrary context of the input skeleton, as it
 was before the judgment carried `Ω`, a judgment-wide preservation theorem was
 false: a `return` arm could feed the join a state no rule writes. §5.3's `Ω`
-gives `⊥` no state at all, so every normal outgoing state is one a rule
+gives `⊥` no state at all, so every normal output context is one a rule
 wrote, and `Typed.wf` below proves the invariant is preserved. The premise is
 then discharged once, for every derivation from a well-formed context. -/
 
-/-- (helper) Every state an outcome carries — its normal outgoing state and
+/-- (helper) Every state an outcome carries — its normal output context and
 every delivered one — is a shape of its declared types. -/
 structure Out.Wf (D : Decls) (Ω : Out) : Prop where
-  /-- The normal outgoing state. -/
+  /-- The normal output context. -/
   norm : ∀ Γ', Ω.norm = some Γ' → Ctx.Wf D Γ'
   /-- Every `⟨break, Σ⟩` delivery. -/
   brk : ∀ Γb ∈ Ω.brk, Ctx.Wf D Γb
 
-/-- (helper) `Typed.wf`'s statement for one judgment: a well-formed incoming
-context gives a well-formed normal outgoing state and well-formed deliveries. -/
+/-- (helper) `Typed.wf`'s statement for one judgment: a well-formed input
+context gives a well-formed normal output context and well-formed deliveries. -/
 def Out.WfPres (D : Decls) (Γ : Ctx) (Ω : Out) : Prop :=
   Ctx.Wf D Γ → Out.Wf D Ω
 

@@ -87,7 +87,7 @@ end
 how to compute the least one: "start from `Σ`, type the body, join the entry
 with the back-edge states it reaches, and repeat until the state stops
 changing". `headIter` is that iteration, over a function `body` that types
-the body at a candidate head and reports its normal outgoing state (`none`
+the body at a candidate head and reports its normal output context (`none`
 when the body is refused there). It stops at the first candidate the step
 leaves unchanged, and refuses when a step is refused, when a join is
 undefined (§5.5's `3.8:50`: a linear-carrying path `Owned` at entry and
@@ -96,7 +96,7 @@ undefined (§5.5's `3.8:50`: a linear-carrying path `Owned` at entry and
 **Termination** is structural: the iteration is bounded, so `check` is total.
 **The bound suffices**, by the argument §5.7 gives: the sequence only moves
 toward `MovedOut`. Every head is `join(Σ, Σ_e)` for a back-edge state `Σ_e`,
-so it has every move `Σ` has; the body's outgoing state at a path is either
+so it has every move `Σ` has; the body's output context at a path is either
 written by the body (a move, a `@drop`, an assignment) — the same at every
 head — or carried through from the head, so a head with more paths `MovedOut`
 gives a back-edge state with at least as many, and the next head is no
@@ -135,7 +135,7 @@ def headIter (D : Decls) (body : Ctx → Option (Option Ctx)) (Γ : Ctx) :
 
 mutual
 /-- The §5 judgment as an algorithm: one case per `Typed` rule, in the same
-order, producing the type (`TyOrNever`) and §5.3's outgoing `Ω` or rejecting. `P`
+order, producing the type (`TyOrNever`) and §5.3's output `Ω` or rejecting. `P`
 is the top-level function environment (Call) §5.8 looks a callee up in and
 `R` the enclosing function's declared return type (Return-Value) §5.7 checks
 a `return` operand against. Where an operand's `Ω` is `⊥` the algorithm stops
@@ -553,7 +553,7 @@ def armsJoinTy (P : Program) (R : Ty) (Γ₀ : Ctx) :
 /-- (Match) §5.5's arm premises as an algorithm: every arm from the same
 post-scrutinee state `Γ₀`, each under its variant's payload locals (`extendArm`),
 each at the type `c` the first typed arm fixed, and each that continues
-discharging §5.6 for the locals it pops. The result is one optional outgoing
+discharging §5.6 for the locals it pops. The result is one optional output
 context per arm — `none` for an arm that diverges — in declaration order, and
 the arms' deliveries, which is what `Ctx.joinOpts` then folds. A count
 mismatch between the arms and the variants is the last clause's `none` —

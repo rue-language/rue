@@ -2246,7 +2246,7 @@ theorem StoreTyping.joinFold {D : Decls} (hwf : WfDecls D) :
             | tail _ hrest => exact Or.inr ⟨Γᵢ, hrest, hmi⟩
 
 /-- **The invariant survives (Match) §5.5's n-way join, from whichever arm ran.**
-The join is the left fold of the binary one, and each arm's outgoing context has
+The join is the left fold of the binary one, and each arm's output context has
 the skeleton the arms share, so the fold may read the state the taken arm left —
 which is what the `match` case of `soundness` needs, exactly as `ite` reads
 `join_left`/`join_right`. -/
@@ -2532,7 +2532,7 @@ def AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Activation) (H : Store) : 
   | .outOfFuel => True
 
 /-- The promise for an argument list (§5.8's (Call), left to right with Σ
-threaded), at the list's normal outgoing state `o` and deliveries `B`
+threaded), at the list's normal output context `o` and deliveries `B`
 (helper). -/
 def ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx) (B : List Ctx) (φ : Activation)
     (H : Store) : ArgsRes → Prop
@@ -2653,7 +2653,7 @@ theorem AbortOk.withTrace {D R B φ H r} (h : AbortOk D R B φ H r) (tr : List E
   cases r <;> simp_all [EvalRes.withTrace, AbortOk]
 
 /-- A result that is not a value satisfies the full promise, whatever type and
-outgoing state the form claims — the promise is only about values there
+output context the form claims — the promise is only about values there
 (helper). -/
 theorem EvalOk.of_abort {D T R o B φ H r} (h : AbortOk D R B φ H r) : EvalOk D T R o B φ H r := by
   cases r <;> cases o <;> simp_all [AbortOk, EvalOk]
@@ -2710,7 +2710,7 @@ theorem EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ : Ctx} {
   | refused w => exact hr.elim
   | outOfFuel => trivial
 
-/-- `bind` for an operand whose outgoing `Ω` the form passes on unchanged —
+/-- `bind` for an operand whose output `Ω` the form passes on unchanged —
 §5.3's threading convention at a one-operand rule: if the operand continues,
 the form continues at the same state; if it is `⊥`, so is the form (helper). -/
 theorem EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {B : List Ctx} {φ : Activation}
@@ -2731,7 +2731,7 @@ the conclusion's. -/
 local macro "brk_sub" : tactic =>
   `(tactic| (intro _ hx; first | exact hx | (simp only [Out.merge, List.mem_append] at hx ⊢; simp [hx])))
 
-/-- Weakening the outgoing state of a promise, which is what §5.5's join asks
+/-- Weakening the output context of a promise, which is what §5.5's join asks
 of an arm: a value's state is carried to some state of the join, and `⊥`
 carries nothing (helper). -/
 theorem EvalOk.weaken {D T R o₁ o' B φ H r}
@@ -2822,7 +2822,7 @@ the body's still-open bindings `locs` on top, is caught by the loop: it
 drop-retires exactly those bindings, newest first — `unwind-drops(H, φ', φ)`
 — and the rule's premise that they carry no residual linear content is what
 keeps the leak monitor off. What is left agrees with `outside_loop(Γb)`, and
-so with the loop's outgoing state, the join over every exit (`3.8:80`)
+so with the loop's output context, the join over every exit (`3.8:80`)
 (helper). -/
 theorem loop_exit_ok {D : Decls} (hwf : WfDecls D) {Γh Γx : Ctx} {B : List Ctx}
     {φ : Activation} {H H₁ : Store} {sc : List Nat} (hfmh : ActivationTyping D Γh φ H)
@@ -2915,7 +2915,7 @@ theorem loop_step (M : FloatSig) {P : Program} {fuel : Nat} {D : Decls} {T R : T
 
 /-- **The argument list of a call is safe** (§5.8's (Call), §6.9's (D-Call)):
 evaluated left to right with Σ threaded, it produces one well-typed value per
-parameter with the invariant carried to the last argument's outgoing context,
+parameter with the invariant carried to the last argument's output context,
 or hands on the first argument's non-value outcome — an unwinding `return`
 among them, which aborts the call before any parameter cell is minted. The
 hypothesis is `soundness` at the fuel the call has already spent one unit of,
@@ -2985,8 +2985,8 @@ theorem args_sound (M : FloatLaws) {P : Program} {fuel : Nat}
 definitional-interpreter form).
 
 A well-typed expression, run at any fuel in any frame and store agreeing with
-its incoming context, yields a well-typed value with the agreement restored at
-the normal outgoing state of its §5.3 result `Ω` — and no value at all when
+its input context, yields a well-typed value with the agreement restored at
+the normal output context of its §5.3 result `Ω` — and no value at all when
 `Ω` is §5.7's `⊥` — a value handed back by an unwinding `return` (§6.9), an
 unwinding `break` (§6.10) that fired at one of `Ω`'s delivered states, a
 *defined* panic (§6.12), or `outOfFuel` — never `.refused`, so never a

@@ -107,7 +107,7 @@ def storeTable (H : Store) : String :=
 def ctxHtml (Γ : Ctx) : String :=
   if Γ.isEmpty then tagc "span" "none" "(empty)" else esc (ctxLine Γ)
 
-/-- One node of the §5 derivation: the rule, the expression, the incoming
+/-- One node of the §5 derivation: the rule, the expression, the input
 `Γ;Σ`, the conclusion `⇒ T ⊣ Σ'` or the premise that failed, and the
 premises as a nested list. -/
 partial def derivHtml (P : Program) (R : Ty) : Deriv → String

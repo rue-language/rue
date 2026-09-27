@@ -215,7 +215,7 @@ def BreakOutputOk (D : Decls) (B : List Ctx) (φ : Activation) (H H' : Store) (s
     (∀ ℓ ∈ locs, H.length ≤ ℓ) ∧ FrameProperty φ.env H H'
 
 /-- The promise `soundness` makes about `eval`'s result, given §5.3's `Ω` —
-its normal outgoing state `o` and its deliveries `B`: a value of the
+its normal output context `o` and its deliveries `B`: a value of the
 expression's type with that state's invariant restored (preservation), or one
 of `AbortOk`'s outcomes — never `.refused` (progress). When `o` is `none`,
 §5.7's `⊥`, a value is **impossible**: an expression the rules type as

@@ -739,7 +739,7 @@ kill on its own.
   so the re-check always passes.
 * **`entry-join-bty`** joins at the second entry's declared type. Every join
   is between two entries with the same skeleton (`Ctx.join` is only ever
-  applied to two arms of one incoming context), so the two types are equal.
+  applied to two arms of one input context), so the two types are equal.
   This answers the red-team log's "`Entry.join` ignores the second entry's
   type" (dropped there and "left to RUE-2465's mutants"): it is harmless.
 

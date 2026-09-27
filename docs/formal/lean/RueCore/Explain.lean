@@ -9,8 +9,8 @@ This module adds the two instrumented mirrors an explainability view needs:
 
 * `explain`, which mirrors `check` and returns a `Deriv` — the derivation
   tree the calculus would draw, one node per rule, each carrying the rule's
-  name as §5 writes it, the incoming `Γ;Σ`, the expression, the resulting
-  type and outgoing `Γ;Σ`, and the sub-derivations of its premises. A
+  name as §5 writes it, the input `Γ;Σ`, the expression, the resulting
+  type and output `Γ;Σ`, and the sub-derivations of its premises. A
   rejection keeps the partial derivation above the failure and names the
   premise that failed, in the calculus's own words, with its citation.
 * `traceEval`, which mirrors `eval` and returns a `Trace` — a step table,
@@ -290,7 +290,7 @@ def tyOrNeverName : TyOrNever → String
   | .never => "never"
   | .ty T => Print.tyName T
 
-/-- (helper) §5.3's outgoing result `Ω`: the normal state, or `⊥` when there
+/-- (helper) §5.3's output result `Ω`: the normal state, or `⊥` when there
 is none, followed by the recorded `⟨break, Σ⟩` deliveries when there are
 any. -/
 def outLine (Ω : Out) : String :=
@@ -627,7 +627,7 @@ def letLeak (T : Ty) : String :=
 /-- (helper) Unreachable: `Typed.skel_preserved` forbids a rule from
 changing the context skeleton, so a body cannot lose its own binder. -/
 def letBinderLost : String :=
-  "the body's outgoing context lost the `let` binder; skeleton preservation " ++
+  "the body's output context lost the `let` binder; skeleton preservation " ++
   "(`Statics.lean`, `Typed.skel_preserved`) forbids it, so no program reaches this premise"
 
 /-- (Assign) mutability side condition (§5.2); prose `5.1:3`. -/
@@ -898,13 +898,13 @@ inductive Verdict where
   | reject (premise : String)
 
 /-- A derivation tree for the §5 judgment `Γ;Σ ⊢ e ⇒ T ⊣ Ω`: one node per
-rule, carrying the rule's name as the calculus writes it, the incoming fused
+rule, carrying the rule's name as the calculus writes it, the input fused
 `Γ;Σ`, the expression the rule concluded about, its verdict, and the
 sub-derivations of its premises, in premise order. -/
 inductive Deriv where
   | node (rule : String) (ctxIn : Ctx) (expr : Expr) (verdict : Verdict) (kids : List Deriv)
 
-/-- The derivation's conclusion, in `check`'s shape: the type and outgoing
+/-- The derivation's conclusion, in `check`'s shape: the type and output
 `Σ` of an accepted node, nothing for a rejected one. `explain_result` is the
 proof that this projection is exactly `check` (§5 as an algorithm). -/
 def Deriv.result : Deriv → Option (TyOrNever × Out)
@@ -1628,7 +1628,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
         | none => rejected rule Γ (.loop e) Premise.subDerivation [d]
 
 /-- The instrumented mirror of `checkArgs` (§5.8's (Call) argument list):
-the sub-derivations in argument order, and the outgoing `Ω` when every
+the sub-derivations in argument order, and the output `Ω` when every
 argument checked at its parameter's type, or `⊥` from the first that
 diverged (§5.3's (Strict-Bottom)). -/
 def explainArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Option Out × List Deriv
@@ -1649,7 +1649,7 @@ def explainArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Optio
   | _, _, _ => (none, [])
 
 /-- The instrumented mirror of `checkIdx`: the index expressions'
-sub-derivations in evaluation order, and their integer types with the outgoing
+sub-derivations in evaluation order, and their integer types with the output
 `Ω` when every one checked at an integer type (`4.11:4`). -/
 def explainIdx (P : Program) (R : Ty) : Ctx → List Expr → Option (List Ty × Out) × List Deriv
   | Γ, [] => (some ([], ⟨some Γ, []⟩), [])

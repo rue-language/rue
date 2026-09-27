@@ -47,7 +47,7 @@ module docstring already names:
 
 1. **A branch, arm, or loop head is checked whether or not the run takes
    it.** (Match) §5.5 checks every arm's per-arm leak, (If) §5.5's join
-   merges both arms' outgoing state, and §5.7's loop head is the *fixpoint*
+   merges both arms' output context, and §5.7's loop head is the *fixpoint*
    `Σ_h = join(Σ, B_h)` over every back-edge the body can reach — so a value
    consumed only on the arm/iteration the run does not take is flagged, and
    a `break` taken before a later iteration's move ever happens is checked

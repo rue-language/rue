@@ -43,7 +43,7 @@ components, which `extendArm` supplies, so a wrong arity is not expressible rath
 than rejected. **The per-arm leak check**: `NoResidualLinear` over the entries
 the arm pops, which is `letIn`'s check read over a whole payload, for an arm
 that continues. **The folded join**: `Ctx.joinOpts`, the fold `Ctx.joinAll`
-over the continuing arms' outgoing contexts in declaration order.
+over the continuing arms' output contexts in declaration order.
 
 The one thing `check` must *choose* is the arms' shared type, since §5.5 states
 it as one `T` and lets (Sub-Never) coerce a diverging arm to it. `armsJoinTy`
@@ -54,7 +54,7 @@ twice, which costs time and nothing else.
 
 ## `⊥`, algorithmically
 
-`check` computes §5.3's outgoing result `Ω` (`Out`) and a type that may be
+`check` computes §5.3's output result `Ω` (`Out`) and a type that may be
 `never` (`TyOrNever`). A form the rules type at `⊥` — `return`, `@panic`, and every
 `-Bottom` rule — produces `⟨none, Δ⟩`, and the forms that consume a result
 stop exactly where the rules do: a diverging operand ends a strict context

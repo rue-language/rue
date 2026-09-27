@@ -53,8 +53,8 @@ in parentheses.
 inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop
 ```
 
-Read `Typed P R Γ e T Ω` as the judgment above, with §5.3's outgoing result
-`Ω` for `Σ'`: `Ω` (`Out`) is a normal outgoing state `some Σ'`, or `none` for
+Read `Typed P R Γ e T Ω` as the judgment above, with §5.3's output result
+`Ω` for `Σ'`: `Ω` (`Out`) is a normal output context `some Σ'`, or `none` for
 §5.7's `⊥` when evaluation never continues past `e`, together with the edge
 deliveries `Δ` a later rule reads a state from. (The fragment records only
 `⟨break, Σ⟩` deliveries, each the whole context in force at its `break`,
@@ -86,7 +86,7 @@ Four things differ in shape and not in content:
   for some `T` and `Ω`; that is what "there is a derivation" means.
 - **`never` is folded into the rules that produce it.** §5.7 types
   `return e` at `never` and lets (Sub-Never) coerce it to whatever the context
-  needs, with a divergent outgoing state `⊥`. `Ty` has no `never`: a `never`
+  needs, with a divergent output context `⊥`. `Ty` has no `never`: a `never`
   value does not exist (`3.4:1`), so nothing is ever typed at it dynamically.
   Instead `Typed.ret`, `Typed.panic`, `Typed.brk`, `Typed.loopDiv` and the
   `-Bottom` rules §5.7 types at `never` conclude at *any* type, and at `⊥`. The `⊥` itself is in the
@@ -553,7 +553,7 @@ of them.
 existentials, which lets the proof discharge §6.2's operand search once and
 reuse it at every form. It says:
 
-- on `.ok`, the normal outgoing state `Ω.norm` is some `Σ'`, the value has the
+- on `.ok`, the normal output context `Ω.norm` is some `Σ'`, the value has the
   expression's type, the invariant holds at `Σ'`, and the cells outside the
   frame are untouched — and when `Ω` is `⊥` there is no `.ok` at all, so an
   expression the rules type as divergent never completes normally;
@@ -946,7 +946,7 @@ fn main() -> i32 {
 
 #### What the checker demands
 
-`checkProgram` accepts, and `f0`'s body checks at `i64` with outgoing context
+`checkProgram` accepts, and `f0`'s body checks at `i64` with output context
 `[]`. The derivation it certifies, read in evaluation order:
 
 | Step | Rule | Σ in | Σ out |
@@ -1070,7 +1070,7 @@ fn f0() -> i64 {
   residual linear value** after the operand. This is §5.6's obligation, taken
   frame-wide because a `return` ends every open scope of the frame at once
   (`3.8:62`, and (Fn) §5.8's second clause);
-- the outgoing context is free (that is `⊥`), restricted only to the same
+- the output context is free (that is `⊥`), restricted only to the same
   skeleton.
 
 Here Σ at the `return` is `[v1: S1 = Owned, v0: S1 = Owned]`. Both bindings
@@ -1894,7 +1894,7 @@ the `break`-less (Loop-Div) forms share the first two:
    and the body is typed at `Σ_h`, so the rule takes `Σ_h` as a premise
    (`LoopHead`), and `check` finds it by iterating from the entry state until
    it stops changing (`headIter`).
-2. **Type the body once, at `Σ_h`.** Its outgoing result says where the turn
+2. **Type the body once, at `Σ_h`.** Its output result says where the turn
    ends: a normal state is the back edge, and each `⟨break, Σ_x⟩` delivery is
    an exit (§5.3's `Ω`).
 3. **Read the exits.** At each exit the bindings the body opened are
@@ -2011,7 +2011,7 @@ Three things, in `Statics.lean` and `Soundness.lean`:
   head, from the entry and from the back edge.
 - **The exits.** `loop_exit_ok` carries the store's agreement across a
   `break`: the unwind drops exactly the cells `Ctx.loopLocals` names, and the
-  exit's state joins into the loop's outgoing one. The machine keeps the
+  exit's state joins into the loop's output one. The machine keeps the
   state of the path it took, and the join is the "maybe" over all paths, which
   is `3.8:60`'s asymmetry again.
 - **Nontermination.** A loop may never finish. Each turn spends fuel, so a
@@ -2300,7 +2300,7 @@ Pick two of these three and read the calculus and the Lean side by side.
   `Γ[p.root]?`, the pre-RHS state, which would accept a program that
   overwrites a live linear value the right-hand side had not yet consumed.
   (The constructor also carries `assignArrayOk`, §5.2's array side condition,
-  and `Owned-Base` on the incoming state as well as the post-RHS one; its
+  and `Owned-Base` on the input context as well as the post-RHS one; its
   doc-comment and `assignArrayOk`'s record both as deviations from §5.2 as
   written.)
 - **(D-Return) §6.9, against `eval`'s `ret` arm.** The rule discards the

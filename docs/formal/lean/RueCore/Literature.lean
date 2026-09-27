@@ -110,7 +110,7 @@ def rows : List Row := [
     lit := "Algorithmic soundness: `Γ₁ ⊢ t : T; Γ₂ ∧ L(Γ₂) = ∅ ⇒ Γ₁ ⊢ t : T`"
     cite := "FIELD §4: Walker 1.2.9"
     ours := "`check P R Γ e = some (c, Ω)` ⇒ `Typed P R Γ e T Ω` at every `T` that `c` fits"
-    diff := "Walker's direction and shape, with the outgoing state `Ω` kept in the declarative judgment rather than required empty, and soundness only: completeness is not stated, and does not hold (a bound on the loop-head iteration can reject a typed program)." },
+    diff := "Walker's direction and shape, with the output context `Ω` kept in the declarative judgment rather than required empty, and soundness only: completeness is not stated, and does not hold (a bound on the loop-head iteration can reject a typed program)." },
   { thm := `RueCore.checkProgram_sound
     lit := "Algorithmic soundness (Walker 1.2.9), for a whole program"
     cite := "FIELD §4: Walker 1.2.9"

@@ -459,7 +459,7 @@ Both are proved.
 **Commutativity.** `OwnSt.join_comm` holds of arbitrary states, and
 `Entry.join_comm`/`Ctx.join_comm` lift it to same-skeleton entries and contexts
 — which is every pair the rule joins, since the arms of a `match` or an `if`
-extend one incoming context and `Typed.skel_preserved` keeps their skeletons
+extend one input context and `Typed.skel_preserved` keeps their skeletons
 equal.
 
 **Associativity.** `OwnSt.join_assoc` holds of states that are shapes of their
@@ -525,7 +525,7 @@ theorem OwnSt.joinList_comm (D : Decls) : ∀ (as bs : List OwnSt) (Ts : List Ty
 end
 
 /-- **The §5.5 join is commutative on one entry**, whose skeleton the two arms
-share — the entry's declared type and `mut` mark come from the incoming
+share — the entry's declared type and `mut` mark come from the input
 context, so only the state differs. -/
 theorem Entry.join_comm {D : Decls} {a b : Entry} (hsk : a.skel = b.skel) :
     Entry.join D a b = Entry.join D b a := by
@@ -538,7 +538,7 @@ theorem Entry.join_comm {D : Decls} {a b : Entry} (hsk : a.skel = b.skel) :
 
 /-- **The §5.5 join is commutative on a whole context**, pointwise, whenever
 the two arms carry the same skeleton — which `skel_preserved` guarantees of any
-two outgoing contexts of one incoming one (`Typed.skel_preserved`). So which
+two output contexts of one input one (`Typed.skel_preserved`). So which
 arm the algorithm reads first is immaterial; `Ctx.join_assoc` gives the
 bracketing, and `Ctx.joinAll_perm` the arm order of the n-way fold. -/
 theorem Ctx.join_comm {D : Decls} : ∀ (Γ₁ Γ₂ : Ctx), Γ₁.skel = Γ₂.skel →
@@ -1419,7 +1419,7 @@ theorem Entry.ty_of_skel {a b : Entry} (h : a.skel = b.skel) : b.ty = a.ty := by
   exact h.1.symm
 
 /-- **The §5.5 join is associative on one entry**, whose skeleton the three arms
-share — the declared type and `mut` mark come from the incoming context, so
+share — the declared type and `mut` mark come from the input context, so
 only the state differs, and the state's associativity is `OwnSt.join_assoc`. -/
 theorem Entry.join_assoc {D : Decls} (hD : WfStructs D) {a b c : Entry}
     (hab : a.skel = b.skel) (hbc : b.skel = c.skel)
@@ -1479,8 +1479,8 @@ theorem Ctx.join_cons_bind_right (D : Decls) (a b c : Entry) (as bs cs : Ctx) :
 
 /-- **The §5.5 join is associative on a whole context**, pointwise, whenever the
 three arms carry the same skeleton and every entry is a shape of its declared
-type — which `Typed.skel_preserved` and `Ctx.Wf` give of the outgoing contexts
-of one incoming one. So the bracketing of (Match) §5.5's `join(Σ1, …, Σn)` is
+type — which `Typed.skel_preserved` and `Ctx.Wf` give of the output contexts
+of one input one. So the bracketing of (Match) §5.5's `join(Σ1, …, Σn)` is
 immaterial, which with `Ctx.join_comm` is what `Ctx.joinAll_perm` needs. -/
 theorem Ctx.join_assoc {D : Decls} (hD : WfStructs D) :
     ∀ (Γ₁ Γ₂ Γ₃ : Ctx), Γ₁.skel = Γ₂.skel → Γ₂.skel = Γ₃.skel →
@@ -1875,7 +1875,7 @@ The core has no `continue` (§2 elaborates it to the back edge), so `B_h` is at
 most the body's own normal completion state, and that state has the head's
 skeleton — a body's `let`s close before it completes — so `outside_loop` is
 the identity on it. `LoopHead` is the equation, stated over the body's normal
-outgoing state `o`: `Σ_h = Σ` when the body never completes (`B_h = ∅`), and
+output context `o`: `Σ_h = Σ` when the body never completes (`B_h = ∅`), and
 `Σ_h = join(Σ, Σ_e)` when it completes at `Σ_e`. It is a **fixpoint** premise:
 `o` is read off the judgment that types the body *at* `Σ_h`. Any solution is
 admitted, as the calculus admits any, the non-least ones included — an
@@ -1978,12 +1978,12 @@ theorem skel_set_setSt {Γ : Ctx} {i : Nat} {en : Entry} (h : Γ[i]? = some en)
   exact List.set_self_of_getElem? (by simp [h]; rfl)
 
 /-- A `match` arm's entry context has the arm's payload locals on top of the
-incoming skeleton, so popping them leaves that skeleton (helper). -/
+input skeleton, so popping them leaves that skeleton (helper). -/
 theorem Ctx.skel_extendArm (Ts : List Ty) (Γ : Ctx) :
     Ctx.skel (extendArm Ts Γ) = (Ts.map fun T => (T, false)).reverse ++ Ctx.skel Γ := by
   simp [Ctx.skel, extendArm, Entry.skel, List.map_append, List.map_reverse]
 
-/-- The context an arm hands the §5.5 join — its body's outgoing context with
+/-- The context an arm hands the §5.5 join — its body's output context with
 the payload locals popped — has the skeleton the arm started from (helper). -/
 theorem skel_drop_extendArm {Γb : Ctx} {Ts : List Ty} {Γ₀ : Ctx}
     (h : Ctx.skel Γb = Ctx.skel (extendArm Ts Γ₀)) :
@@ -2257,12 +2257,12 @@ theorem Out.skelOk_bot {Γ : Ctx} {Δ : List Ctx} (h : ∀ Γb ∈ Δ, Ctx.Exten
     Out.SkelOk Γ ⟨none, Δ⟩ :=
   ⟨fun _ h => (by cases h), h⟩
 
-/-- An outcome that continues at the incoming context itself and delivers
+/-- An outcome that continues at the input context itself and delivers
 nothing preserves its skeleton (helper). -/
 theorem Out.skelOk_same {Γ : Ctx} : Out.SkelOk Γ ⟨some Γ, []⟩ :=
   ⟨fun _ h => by cases h; rfl, fun _ h => by cases h⟩
 
-/-- An outcome that continues at a context of the incoming skeleton and
+/-- An outcome that continues at a context of the input skeleton and
 delivers nothing preserves it (helper). -/
 theorem Out.skelOk_of {Γ Γ' : Ctx} (h : Γ'.skel = Γ.skel) : Out.SkelOk Γ ⟨some Γ', []⟩ :=
   ⟨fun _ hn => by cases hn; exact h, fun _ h => by cases h⟩
@@ -2327,7 +2327,7 @@ mutual
 /-- Every rule preserves the context skeleton: only ownership states flow.
 This is the fused context's image of §5's convention that `Γ` is fixed while
 `Σ` is threaded through the judgment, read over `Ω` (`Out.SkelOk`): the
-normal outgoing state has the incoming skeleton, and every `⟨break, Σ⟩`
+normal output context has the input skeleton, and every `⟨break, Σ⟩`
 delivery extends it. The three judgments are proved together, by recursion
 on the derivation. -/
 theorem Typed.skel_preserved {P R} : ∀ {Γ : Ctx} {e T} {Ω : Out},
@@ -2503,10 +2503,10 @@ theorem skel_lookup {Γ Γ' : Ctx} (h : Ctx.skel Γ' = Ctx.skel Γ) {i : Nat} {e
 
 `Ctx.Wf` — every entry's ownership state a shape of its declared type — is
 the premise §5.5's associativity (`OwnSt.join_assoc`, `Ctx.joinAll_perm`)
-carries. With §5.7's `⊥` an arbitrary context of the incoming skeleton, as it
+carries. With §5.7's `⊥` an arbitrary context of the input skeleton, as it
 was before the judgment carried `Ω`, a judgment-wide preservation theorem was
 false: a `return` arm could feed the join a state no rule writes. §5.3's `Ω`
-gives `⊥` no state at all, so every normal outgoing state is one a rule
+gives `⊥` no state at all, so every normal output context is one a rule
 wrote, and `Typed.wf` below proves the invariant is preserved. The premise is
 then discharged once, for every derivation from a well-formed context. -/
 
@@ -2625,14 +2625,14 @@ theorem Ctx.Wf.drop {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) (n : Nat) : Ctx.Wf 
 
 mutual
 /-- **The shape invariant is preserved judgment-wide** (RUE-2340): from a
-well-formed incoming context, every normal outgoing state a derivation
+well-formed input context, every normal output context a derivation
 concludes at, and every state it delivers to a loop, is well-formed. With
 `fnCtx_wf` it discharges `Ctx.Wf`, the premise §5.5's associativity carries
-(`Ctx.joinAll_perm`), at every normal outgoing state of a function body
+(`Ctx.joinAll_perm`), at every normal output context of a function body
 (`Typed.wf_fnCtx`). The recursion carries the invariant into every arm of
 every `match` and `if` and into every loop body it passes through, which is
 where associativity is read; what is stated as a theorem is that
-outgoing-state form, not a separate corollary per join. It holds because
+output-state form, not a separate corollary per join. It holds because
 §5.3's `Ω` gives §5.7's `⊥` no state: before the judgment carried `Ω`,
 `return` and `@panic` concluded at an arbitrary context and the statement was
 false. A loop body is typed at the loop-head state, which `LoopHead` asks to
@@ -2796,7 +2796,7 @@ theorem LoopHead.reenter_body {P R} {Γ Γh : Ctx} {e : Expr} {Ωe : Out}
 /-! ### No `break`, no delivery
 
 §5.7's (Loop-Div) rules are selected by a *syntactic* premise — the body
-contains no `break` targeting the loop — while the loop's outgoing `Δ_out`
+contains no `break` targeting the loop — while the loop's output `Δ_out`
 removes the deliveries the body made. The two agree: a derivation of a body
 with no such `break` makes no `⟨break, _⟩` delivery at all, because the only
 rule that makes one is (Break) and every loop consumes its own. So the
@@ -2908,7 +2908,7 @@ theorem fnCtx_wf (D : Decls) (fd : FnDef) : Ctx.Wf D (fnCtx fd) := by
   obtain ⟨p, _, rfl⟩ := hen
   exact Entry.wf_owned D p.ty p.mu
 
-/-- **The shape invariant holds at every normal outgoing state of a function
+/-- **The shape invariant holds at every normal output context of a function
 body** (RUE-2340): `Typed.wf` from (Fn) §5.8's entry context, which
 `fnCtx_wf` makes well-formed. This is the end-to-end form: no `Ctx.Wf`
 hypothesis is left for a caller to supply. -/
