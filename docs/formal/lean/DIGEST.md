@@ -35657,7 +35657,7 @@ neither `dropContents` nor `dropEvents`, so a change to the machine's drop glue
 does not change it. One constructor per equation of §6.11:
 
 * `drop(H, ⊘) = H`: a moved-out or uninitialised position emits nothing
-  (`hole`), at every depth, which is `3.8:73`'s "elements that were moved out
+  (`movedOut`), at every depth, which is `3.8:73`'s "elements that were moved out
   … are not dropped";
 * `drop(H, n_T) = drop(H, f_T) = drop(H, b) = drop(H, ⟨⟩) = H`: a scalar emits
   nothing (`int`, `float`, `bool`, `unit`);
