@@ -28,7 +28,7 @@ or exhausted fuel — never `.stuck`. -/
 def soundness_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : WfProgram P) (fuel : Nat) {R : Ty} {Γ : Ctx}
     {Ω : Out} {e : Expr} {T : Ty}, Typed P R Γ e T Ω →
-      ∀ {φ : Activation} {H : Store}, FrameMatches P.decls Γ φ H →
+      ∀ {φ : Activation} {H : Store}, ActivationTyping P.decls Γ φ H →
         EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)
 
 /-- **Program safety** (§7 "Type safety"). A well-formed program whose entry

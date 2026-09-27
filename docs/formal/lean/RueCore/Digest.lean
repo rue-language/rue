@@ -35,7 +35,7 @@ The definitions a statement is "written in terms of" are its transitive
 *type*-level dependencies: the constants of the theorem's statement, of those
 constants' types, of an inductive's constructor types, and of whatever body
 the entry itself prints. An entry prints a body when the definition **is** a
-type or a predicate — its type ends in a sort (`Ctx`, `CellMatches`,
+type or a predicate — its type ends in a sort (`Ctx`, `CellTyping`,
 `InBounds`) or in `Bool` (`Expr.pendingSafe`, `noDtorPrefix`), or it is a
 result a hypothesis compares (`OwnSt.join`, `alwaysBody`) — whatever its size,
 because a hypothesis says what that body says (RUE-2479); and otherwise when the
@@ -680,7 +680,7 @@ def renderDigest (index : String) (theorems helpers definitions : Array Item) :
     "kernel, and `TRUST.md` reports the axioms that check appealed to; reading",
     "the tactic script is not how this is validated. A definition's body *is*",
     "here whenever it is a type or a predicate, `Prop`- or `Bool`-valued",
-    "(`Ctx`, `CellMatches`, `InBounds`, `Expr.pendingSafe`, `noDtorPrefix`),",
+    "(`Ctx`, `CellTyping`, `InBounds`, `Expr.pendingSafe`, `noDtorPrefix`),",
     "or a result a hypothesis compares (`OwnSt.join`), whatever its size,",
     "because a hypothesis says what that body says; otherwise whenever it is",
     "short enough to read, because a signature alone cannot",

@@ -69,8 +69,8 @@ theorem exact_model :
 
 /-- `Spec.Nonvacuous.empty_frame_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem empty_frame :
-    ∀ D : Decls, FrameMatches D [] Activation.empty [] ∧ StoreCC D [] :=
-  fun _ => ⟨frameMatches_empty, fun _ _ hc => by simp at hc⟩
+    ∀ D : Decls, ActivationTyping D [] Activation.empty [] ∧ StoreCC D [] :=
+  fun _ => ⟨activationTyping_empty, fun _ _ hc => by simp at hc⟩
 
 /-- `Spec.Nonvacuous.open_frame_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem open_frame :
@@ -83,7 +83,7 @@ theorem open_frame :
     ∀ P : Program, P =
       { decls := D, fns := [{ params := [], ret := .int .w64 .signed, body := .intLit .w64 .signed 0 }] } →
       ProgramTyped P ∧ P.pendingSafe = true ∧ e.pendingSafe = true ∧
-      FrameMatches D [{ ty := .struct 0, mu := false, st := .owned }]
+      ActivationTyping D [{ ty := .struct 0, mu := false, st := .owned }]
         { env := [0], scope := [0] } [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
       StoreCC D [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
       (∃ c Ω, check P (.int .w64 .signed) [{ ty := .struct 0, mu := false, st := .owned }] e =

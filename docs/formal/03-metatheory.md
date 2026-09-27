@@ -214,25 +214,25 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   `eval_complete`. A syntactic configuration typing `⊢ C : T` (a typed store
   and frame stack, one preservation case per `Step` constructor) would be a
   second safety proof over `Step`, not a corollary of this one, and is not
-  claimed; the invariant that plays its role is `FrameMatches`, over `eval`.
+  claimed; the invariant that plays its role is `ActivationTyping`, over `eval`.
   The §7 preservation invariant proper, "Σ faithfully tracks the store's
-  initialization", is `FrameMatches` over `eval`. No `Step`-side counterpart
+  initialization", is `ActivationTyping` over `eval`. No `Step`-side counterpart
   is stated.
-- **Invariant:** `RueCore.FrameMatches`, in two halves. `Matches` — "Σ
+- **Invariant:** `RueCore.ActivationTyping`, in two halves. `StoreTyping` — "Σ
   faithfully tracks the store's initialization" (§7), whose per-cell clause is
-  the **recursive** `RueCore.ContentsMatches`: Σ's state for a binding is a
+  the **recursive** `RueCore.ContentsOwnTyping`: Σ's state for a binding is a
   tree over its paths (`owned`, `movedOut`, or `fields` for a partially moved
   value) and the cell holds the same shape with §6.1's `⊘` admitted at any
   node, and the two are related path by path. It is deliberately asymmetric at
   the `movedOut` clause: a statically `MovedOut` path may still hold live
   *non-linear* content (the §5.5 conservative join, `3.8:73`), never a live
   linear sub-value (`3.8:50`). Two lemmas turn that into what the proof uses:
-  `RueCore.ContentsMatches.residualLinear_false` says the machine's leak
+  `RueCore.ContentsOwnTyping.residualLinear_false` says the machine's leak
   monitor sees exactly what §5.6's `residual-linear` computes, and
-  `RueCore.ContentsMatches.readAt`/`.writeAt` say that navigating a path
+  `RueCore.ContentsOwnTyping.readAt`/`.writeAt` say that navigating a path
   agrees on the two sides wherever Σ has a state for it — which is wherever no
   proper prefix is `MovedOut`, (Owned-Base) §5.1. And the σ invariant: the frame's scope record,
-  read newest-first, *is* its environment, which is what lets `Matches` apply
+  read newest-first, *is* its environment, which is what lets `StoreTyping` apply
   to `run-all-scope-drops`'s walk. In this fragment that equation is
   **definitional** — every frame the interpreter builds builds σ and ρ from
   one list — so it is not yet evidence about the RUE-1277 redundancy, which
@@ -242,9 +242,9 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   the record's length at the loop's entry, and a `break` hands the loop the
   record of the frame it fired in (`RueCore.EvalRes.broke`), whose cells past
   that length are exactly the body's still-open bindings. So the equation
-  stays definitional, and a `break`'s unwind is `RueCore.Matches.unwindPrefix`
+  stays definitional, and a `break`'s unwind is `RueCore.StoreTyping.unwindPrefix`
   on those cells (`RueCore.loop_exit_ok`). It becomes a real obligation when
-  `Activation.scope` is §6.1's stack. `RueCore.Untouched` carries frame locality
+  `Activation.scope` is §6.1's stack. `RueCore.FrameProperty` carries frame locality
   across a call, so a caller's agreement survives a callee's run.
 - **Hypothesis:** `RueCore.ProgramTyped` — §3's class assignment for every
   struct **and enum** declaration together with `3.0:5`'s acyclicity
@@ -275,7 +275,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   enum slice (RUE-2320) has done so: progress at a `match` is exhaustiveness
   (`RueCore.exhaustive_arm_exists` — a well-typed tag is an index the arm list
   has), and preservation over the n-way join is the fold of the binary one
-  (`RueCore.Matches.joinAll`); RUE-2325 then put the enum forms under the
+  (`RueCore.StoreTyping.joinAll`); RUE-2325 then put the enum forms under the
   generator, and at `--gen 200 --seed 7` and `--gen 1000 --seed 23` the
   model's verdicts and traces were compared against the compiler by hand and
   agree. That is a differential check of `check`/`eval` against the
@@ -407,7 +407,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   `[T; n]` a destructor exactly when `T` has one) and the elements'
   events concatenated in **ascending index order** (`3.9:15`, `3.8:73`). `RueCore.dropContents_ok` says the walk never refuses on
   well-typed contents, and
-  `RueCore.ContentsMatches.residualLinear_false` says contents the leak
+  `RueCore.ContentsOwnTyping.residualLinear_false` says contents the leak
   monitor lets through holds no live declared-`linear` sub-value — the
   residual reading §5.6 asks for, which is what makes a partially consumed
   carrier's residue droppable. "Exactly once" (that every owned, droppable,
@@ -423,8 +423,8 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   half: no evaluation touches a retired (`†`) cell. With frames this is a
   consequence of the invariant rather than a structural fact about closed
   expressions: `run-all-scope-drops` (§6.9) walks the frame's scope record at
-  every `return` and at every frame pop, and it is `FrameMatches` — the record
-  *is* the environment, whose cells `Matches` says are live or moved out and
+  every `return` and at every frame pop, and it is `ActivationTyping` — the record
+  *is* the environment, whose cells `StoreTyping` says are live or moved out and
   pairwise distinct — that keeps those walks off a `†` cell and stops any cell
   being retired twice. The guard is also witnessed directly from an open
   machine state, including one whose scope record names a retired cell

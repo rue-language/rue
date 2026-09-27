@@ -715,7 +715,7 @@ a surface form elaboration never brings here (§2's reachability pruning,
 `10.5:4`).
 
 The fold is the *computation* §5.5's unordered `join(Σ1, …, Σn)` is read as,
-and it is what `Matches.joinFold` (`Soundness.lean`) consumes. That reading is
+and it is what `StoreTyping.joinFold` (`Soundness.lean`) consumes. That reading is
 exact, in both halves: the binary join is **commutative** (`OwnSt.join_comm`,
 `Ctx.join_comm`), so which of two arms is taken first does not matter, and it
 is **associative** over states that are shapes of their type

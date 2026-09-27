@@ -2442,8 +2442,8 @@ theorem eval_tidy (M : FloatSig) (P : Program) :
 /-! ## §7: every owned value ends exactly once -/
 
 /-- A frame agreeing with a context names only existing cells (helper). -/
-theorem FrameMatches.activationIn {D : Decls} {Γ : Ctx} {φ : Activation} {H : Store}
-    (h : FrameMatches D Γ φ H) : φ.In H := by
+theorem ActivationTyping.activationIn {D : Decls} {Γ : Ctx} {φ : Activation} {H : Store}
+    (h : ActivationTyping D Γ φ H) : φ.In H := by
   refine ⟨h.store.mem_lt, fun ℓ hm => h.store.mem_lt ℓ ?_⟩
   rw [← h.record]; exact List.mem_reverse.mpr hm
 
@@ -2492,7 +2492,7 @@ The carve-outs, stated where they apply:
   without it. -/
 theorem drop_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
     (hp : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-    {φ : Activation} {H : Store} (ht : Typed P R Γ e T Ω) (hfm : FrameMatches P.decls Γ φ H)
+    {φ : Activation} {H : Store} (ht : Typed P R Γ e T Ω) (hfm : ActivationTyping P.decls Γ φ H)
     (hcc : StoreCC P.decls H) (he : e.pendingSafe = true) :
     (∀ w, eval M.toFloatSig fuel P H φ e ≠ .stuck w) ∧
       Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
@@ -2609,7 +2609,7 @@ owned value any configuration of the run holds is ended exactly once or is
 part of the result. -/
 theorem rest_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
     (hp : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-    {φ : Activation} {H : Store} (ht : Typed P R Γ e T Ω) (hfm : FrameMatches P.decls Γ φ H)
+    {φ : Activation} {H : Store} (ht : Typed P R Γ e T Ω) (hfm : ActivationTyping P.decls Γ φ H)
     (hcc : StoreCC P.decls H) (he : e.pendingSafe = true)
     {H₁ : Store} {vs : List Val} {tr : List Event} (hl : Lead M.toFloatSig P fuel H φ H₁ vs tr e)
     {r : EvalRes} (hr : eval M.toFloatSig (fuel + 1) P H φ e = r.withTrace tr) :
@@ -2680,13 +2680,13 @@ its `return` has unwound: not in the store, not in the result, not in the
 trace. -/
 theorem pendingSafe_needed (M : FloatSig) :
     Typed lostProgram (.int .w64 .signed) lostCtx lostBody (.int .w64 .signed) ⟨none, []⟩ ∧
-      FrameMatches lostProgram.decls lostCtx lostActivation lostStore ∧
+      ActivationTyping lostProgram.decls lostCtx lostActivation lostStore ∧
       StoreCC lostProgram.decls lostStore ∧
       lostBody.pendingSafe = false ∧
       ¬ Exact lostProgram.decls lostStore [] (eval M 100 lostProgram lostStore lostActivation lostBody) := by
   refine ⟨check_sound _ (by rfl) _ (by rfl), ⟨.cons (by rfl) ⟨_, rfl, ?_⟩ (by simp) .nil, rfl⟩,
     ?_, by rfl, ?_⟩
-  · exact ContentsMatches.ofVal (v := .struct 0 0 [.int .w64 .signed 7])
+  · exact ContentsOwnTyping.ofVal (v := .struct 0 0 [.int .w64 .signed 7])
       (HasTy.struct (by rfl) (.cons (.int (w := .w64) (s := .signed) (n := 7) (by decide)) .nil))
   · intro ℓ c hc
     match ℓ, hc with
@@ -2731,8 +2731,8 @@ theorem typed_of_check {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} (T : Ty)
   | some p => obtain ⟨c, Ω⟩ := p; simp [hc] at h; exact ⟨Ω, check_sound e hc T h⟩
 
 /-- `g`'s entry frame agrees with its entry context (helper). -/
-theorem lostActivation_matches : FrameMatches lostDecls lostCtx lostActivation lostStore :=
-  ⟨.cons (by rfl) ⟨_, rfl, ContentsMatches.ofVal (v := .struct 0 0 [.int .w64 .signed 7])
+theorem lostActivation_typing : ActivationTyping lostDecls lostCtx lostActivation lostStore :=
+  ⟨.cons (by rfl) ⟨_, rfl, ContentsOwnTyping.ofVal (v := .struct 0 0 [.int .w64 .signed 7])
     (HasTy.struct (by rfl) (.cons (.int (w := .w64) (s := .signed) (n := 7) (by decide)) .nil))⟩
     (by simp) .nil, rfl⟩
 
@@ -2777,7 +2777,7 @@ theorem orphan_rejected (M : FloatModel) :
   obtain ⟨Ω, ht⟩ := typed_of_check (P := orphanProgram) (R := .int .w64 .signed) (Γ := lostCtx)
     (e := .call 1 [.use (.var 0)]) (.int .w64 .signed) (by rfl)
   refine ⟨hP, by rfl, ⟨Ω, ht⟩, by rfl,
-    (drop_exactly_once M hP (by rfl) ht lostActivation_matches lostStore_cc (by rfl)).2.2,
+    (drop_exactly_once M hP (by rfl) ht lostActivation_typing lostStore_cc (by rfl)).2.2,
     ⟨by decide, fun ℓ c hc => ?_, rfl, fun a ha => ?_⟩, fun ⟨_, hret⟩ => ?_⟩
   · match ℓ, hc with
     | 0, hc => simp at hc
@@ -2828,7 +2828,7 @@ theorem letDropDeleted_rejected (M : FloatModel) :
   have hl : Lead M.toFloatSig orphanProgram 100 [] { env := [], scope := [] } [.dead] [s0one] []
       (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0)) :=
     ⟨s0one, rfl, by rfl⟩
-  have real := (rest_exactly_once M hP (by rfl) ht frameMatches_empty emptyStore_cc (by rfl) hl
+  have real := (rest_exactly_once M hP (by rfl) ht activationTyping_empty emptyStore_cc (by rfl) hl
     (r := .ok [.dead, .dead] (.int .w64 .signed 0)
       [.drop 1 (Contents.ofVal s0one), .dtor 0 (Contents.ofVal s0one)]) (by rfl)).2.1
   refine ⟨hP, ⟨Ω, ht⟩, hl, by rfl, real, ⟨by decide, fun ℓ c hc => ?_, rfl, fun a ha => ?_⟩,
@@ -2864,7 +2864,7 @@ theorem seqDropDeleted_rejected (M : FloatModel) :
   have hl : Lead M.toFloatSig orphanProgram 100 [] { env := [], scope := [] } [.dead] [s0one] []
       (.seq (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0)) :=
     ⟨s0one, rfl, by rfl⟩
-  have real := (rest_exactly_once M hP (by rfl) ht frameMatches_empty emptyStore_cc (by rfl) hl
+  have real := (rest_exactly_once M hP (by rfl) ht activationTyping_empty emptyStore_cc (by rfl) hl
     (r := .ok [.dead] (.int .w64 .signed 0) [.dropTemp s0one, .dtor 0 (Contents.ofVal s0one)])
     (by rfl)).2.1
   refine ⟨⟨Ω, ht⟩, hl, by rfl, real, fun ⟨_, _, _, h4⟩ => ?_⟩
@@ -2915,7 +2915,7 @@ theorem breakLeak_rejected (M : FloatModel) :
     (e := breakLoop) .unit (by rfl)
   have hl : Lead M.toFloatSig breakProgram 100 lostStore lostActivation breakStore [] [] breakLoop :=
     ⟨[1, 3], rfl, by rfl⟩
-  have real := (rest_exactly_once M hP (by rfl) ht lostActivation_matches lostStore_cc (by rfl) hl
+  have real := (rest_exactly_once M hP (by rfl) ht lostActivation_typing lostStore_cc (by rfl) hl
     (r := .ok [.dead, .full s0x, .dead, .dead] .unit [.drop 3 s0z, .dtor 0 s0z]) (by rfl)).2.1
   refine ⟨hP, by rfl, ⟨Ω, ht⟩, hl, by rfl, real,
     ⟨by decide, fun ℓ c hc => ?_, rfl, fun a ha => ?_⟩,

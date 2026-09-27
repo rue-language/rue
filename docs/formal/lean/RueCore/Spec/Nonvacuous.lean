@@ -53,18 +53,18 @@ def exact_model_stmt : Prop :=
 
 /-- **The initial frame agrees with the empty context** (§6.12's initial
 configuration): at every declaration environment, the empty frame over the
-empty store matches the empty context (`FrameMatches`) and its store is
+empty store matches the empty context (`ActivationTyping`) and its store is
 copy-closed (`StoreCC`). With a program's typed body this is the frame and
 store the evaluation statements (`soundness`, `drop_exactly_once`,
 `rest_exactly_once`) are applied at by the witnesses below. -/
 def empty_frame_stmt : Prop :=
-  ∀ D : Decls, FrameMatches D [] Activation.empty [] ∧ StoreCC D []
+  ∀ D : Decls, ActivationTyping D [] Activation.empty [] ∧ StoreCC D []
 
 /-- **An open term in a live frame** (§6.1, §7): the evaluation statements apply
 beyond the empty frame. Over the witnesses' declarations, `@drop(s); 1` is
 typed by `check` in the context `s : S0`, owned, and the frame `{ ρ := [ℓ0],
 σ := [ℓ0] }` over the store `ℓ0 ↦ S0 { 5 }` agrees with that context
-(`FrameMatches`) and is copy-closed (`StoreCC`), for a checked, `pendingSafe`
+(`ActivationTyping`) and is copy-closed (`StoreCC`), for a checked, `pendingSafe`
 program. Its evaluation runs the destructor of the value it started with, and
 its leading operand has a `Lead`, so `soundness`, `drop_exactly_once` and
 `rest_exactly_once` apply to a term with a free variable and a store that is
@@ -79,7 +79,7 @@ def open_frame_stmt : Prop :=
     ∀ P : Program, P =
       { decls := D, fns := [{ params := [], ret := .int .w64 .signed, body := .intLit .w64 .signed 0 }] } →
       ProgramTyped P ∧ P.pendingSafe = true ∧ e.pendingSafe = true ∧
-      FrameMatches D [{ ty := .struct 0, mu := false, st := .owned }]
+      ActivationTyping D [{ ty := .struct 0, mu := false, st := .owned }]
         { env := [0], scope := [0] } [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
       StoreCC D [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
       (∃ c Ω, check P (.int .w64 .signed) [{ ty := .struct 0, mu := false, st := .owned }] e =

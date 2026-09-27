@@ -65,7 +65,7 @@ theorem stuck.soundness_1 :
         {T : Ty},
         Typed P R Γ e T Ω →
           ∀ {φ : Activation} {H : Store},
-            FrameMatches P.decls Γ φ H →
+            ActivationTyping P.decls Γ φ H →
               EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e) := by
   intro h
   obtain ⟨-, hnpt, hnwf, -, hps, heps, hfm, hcc, ⟨c, Ω, -, -, ht, hne⟩, hl, h200, -, h201, -, hr200, -, hnot⟩ :=
@@ -131,7 +131,7 @@ theorem stuck.drop_exactly_once_1 :
           ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
             {H : Store},
             Typed P R Γ e T Ω →
-              FrameMatches P.decls Γ φ H →
+              ActivationTyping P.decls Γ φ H →
                 StoreCC P.decls H →
                   e.pendingSafe = true →
                     (∀ (w : Violation), eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
@@ -149,7 +149,7 @@ theorem stuck.rest_exactly_once_1 :
           ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
             {H : Store},
             Typed P R Γ e T Ω →
-              FrameMatches P.decls Γ φ H →
+              ActivationTyping P.decls Γ φ H →
                 StoreCC P.decls H →
                   e.pendingSafe = true →
                     ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
@@ -237,7 +237,7 @@ theorem typed.soundness_2 :
         WfProgram P →
           ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : RueCore.Expr} {T : Ty} {φ : Activation}
             {H : Store},
-            FrameMatches P.decls Γ φ H →
+            ActivationTyping P.decls Γ φ H →
               EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e) := by
   intro h
   obtain ⟨hPT, hwf, hps, heps, hfm, hcc, -, hnt, hl, h200, -, h201, hfit, hne⟩ :=
@@ -262,7 +262,7 @@ theorem typed.drop_exactly_once_3 :
           P.pendingSafe = true →
             ∀ {fuel : Nat} {_R : Ty} {Γ : Ctx} {e : RueCore.Expr} {_T : Ty} {_Ω : Out} {φ : Activation}
               {H : Store},
-              FrameMatches P.decls Γ φ H →
+              ActivationTyping P.decls Γ φ H →
                 StoreCC P.decls H →
                   e.pendingSafe = true →
                     (∀ (w : Violation), eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
@@ -281,7 +281,7 @@ theorem typed.rest_exactly_once_3 :
           P.pendingSafe = true →
             ∀ {fuel : Nat} {_R : Ty} {Γ : Ctx} {e : RueCore.Expr} {_T : Ty} {_Ω : Out} {φ : Activation}
               {H : Store},
-              FrameMatches P.decls Γ φ H →
+              ActivationTyping P.decls Γ φ H →
                 StoreCC P.decls H →
                   e.pendingSafe = true →
                     ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
@@ -643,7 +643,7 @@ theorem pending_program.drop_exactly_once_2 :
           ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
             {H : Store},
             Typed P R Γ e T Ω →
-              FrameMatches P.decls Γ φ H →
+              ActivationTyping P.decls Γ φ H →
                 StoreCC P.decls H →
                   e.pendingSafe = true →
                     (∀ (w : Violation), eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
@@ -661,7 +661,7 @@ theorem pending_program.rest_exactly_once_2 :
           ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
             {H : Store},
             Typed P R Γ e T Ω →
-              FrameMatches P.decls Γ φ H →
+              ActivationTyping P.decls Γ φ H →
                 StoreCC P.decls H →
                   e.pendingSafe = true →
                     ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
@@ -684,7 +684,7 @@ theorem pending_expr.drop_exactly_once_6 :
             ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
               {H : Store},
               Typed P R Γ e T Ω →
-                FrameMatches P.decls Γ φ H →
+                ActivationTyping P.decls Γ φ H →
                   StoreCC P.decls H →
                     (∀ (w : Violation), eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
                       Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
@@ -702,7 +702,7 @@ theorem pending_expr.rest_exactly_once_6 :
             ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
               {H : Store},
               Typed P R Γ e T Ω →
-                FrameMatches P.decls Γ φ H →
+                ActivationTyping P.decls Γ φ H →
                   StoreCC P.decls H →
                     ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
                       Lead M.toFloatSig P fuel H φ H₁ vs tr e →
@@ -724,7 +724,7 @@ theorem store_cc.drop_exactly_once_5 :
             ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
               {H : Store},
               Typed P R Γ e T Ω →
-                FrameMatches P.decls Γ φ H →
+                ActivationTyping P.decls Γ φ H →
                   e.pendingSafe = true →
                     (∀ (w : Violation), eval M.toFloatSig fuel P H φ e ≠ EvalRes.stuck w) ∧
                       Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
@@ -742,7 +742,7 @@ theorem store_cc.rest_exactly_once_5 :
             ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
               {H : Store},
               Typed P R Γ e T Ω →
-                FrameMatches P.decls Γ φ H →
+                ActivationTyping P.decls Γ φ H →
                   e.pendingSafe = true →
                     ∀ {H₁ : Store} {vs : List Val} {tr : List Event},
                       Lead M.toFloatSig P fuel H φ H₁ vs tr e →
@@ -764,7 +764,7 @@ theorem no_lead.rest_exactly_once_7 :
             ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
               {H : Store},
               Typed P R Γ e T Ω →
-                FrameMatches P.decls Γ φ H →
+                ActivationTyping P.decls Γ φ H →
                   StoreCC P.decls H →
                     e.pendingSafe = true →
                       ∀ {H₁ : Store} {vs : List Val} {tr : List Event} {r : EvalRes},
@@ -784,7 +784,7 @@ theorem no_eval.rest_exactly_once_8 :
             ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
               {H : Store},
               Typed P R Γ e T Ω →
-                FrameMatches P.decls Γ φ H →
+                ActivationTyping P.decls Γ φ H →
                   StoreCC P.decls H →
                     e.pendingSafe = true →
                       ∀ {H₁ : Store} {vs : List Val} {tr : List Event},

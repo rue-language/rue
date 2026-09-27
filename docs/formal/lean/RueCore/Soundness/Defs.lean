@@ -10,7 +10,7 @@ public import RueCore.Dynamics
 The definitions §7's safety theorems (`Soundness.lean`) and the trace theorems
 (`Trace.lean`, `TraceExact.lean`) write their statements in: §6.1's value and
 contents typing (`HasTy`, `ContentsTy`), the store–context agreement the
-invariant carries (`ContentsMatches`, `Matches`, `FrameMatches`), and the
+invariant carries (`ContentsOwnTyping`, `StoreTyping`, `ActivationTyping`), and the
 promise `soundness` makes about `eval`'s result (`EvalOk`, `BrokeOk`).
 
 They are moved here verbatim from `Soundness.lean` (RUE-2456) so that the
@@ -127,60 +127,60 @@ initialization", section docstring): `owned` holds a value, `movedOut` holds
 contents with no live linear sub-value — the §5.5 join's asymmetry, whose
 residue the machine drops path-specifically (`3.8:60`) — and `fields` holds the
 struct its type names, matched field by field. -/
-inductive ContentsMatches (D : Decls) : Contents → OwnSt → Ty → Prop where
+inductive ContentsOwnTyping (D : Decls) : Contents → OwnSt → Ty → Prop where
   /-- An `Owned` path holds a value: well-typed contents with no `⊘` in it. -/
-  | owned {c T} : ContentsTy D c T → c.holeFree = true → ContentsMatches D c .owned T
+  | owned {c T} : ContentsTy D c T → c.holeFree = true → ContentsOwnTyping D c .owned T
   /-- A `MovedOut` path may still hold live contents — the §5.5 join's
   asymmetry (`3.8:60`) — but never a live linear sub-value (`3.8:50`). -/
   | moved {c T} :
-      ContentsTy D c T → c.residualLinear D = false → ContentsMatches D c .movedOut T
+      ContentsTy D c T → c.residualLinear D = false → ContentsOwnTyping D c .movedOut T
   /-- A partially moved path holds the struct its type names, field by
   field. -/
   | fields {s sd i cs ts} :
-      D.structs[s]? = some sd → ContentsMatchesList D cs ts sd.fields →
-      ContentsMatches D (.struct s i cs) (.fields ts) (.struct s)
+      D.structs[s]? = some sd → ContentsOwnTypingList D cs ts sd.fields →
+      ContentsOwnTyping D (.struct s i cs) (.fields ts) (.struct s)
   /-- The array form of the same clause: a node with per-element records holds
   the array its type names, element by element. A constant-index **write**
   reaches it (`a[0] = …` records `fields [Owned]`), and so does an element
   move, whose `⊘` is what `3.8:73`'s per-path element drop reads. -/
   | elems {T n i cs ts} :
-      ContentsMatchesList D cs ts (List.replicate n T) →
-      ContentsMatches D (.array T i cs) (.fields ts) (.array T n)
+      ContentsOwnTypingList D cs ts (List.replicate n T) →
+      ContentsOwnTyping D (.array T i cs) (.fields ts) (.array T n)
 
 /-- The same over a declaration's fields, slot by slot; a slot Σ has no record
 for is `owned` (`OwnSt.fieldAt`) (helper). -/
-inductive ContentsMatchesList (D : Decls) : List Contents → List OwnSt → List Ty → Prop where
+inductive ContentsOwnTypingList (D : Decls) : List Contents → List OwnSt → List Ty → Prop where
   /-- No fields left to match. -/
-  | nil {ts} : ContentsMatchesList D [] ts []
+  | nil {ts} : ContentsOwnTypingList D [] ts []
   /-- The first field matches its own slot's state; the rest match the tail of
   the record. -/
   | cons {c cs ts T Ts} :
-      ContentsMatches D c (OwnSt.fieldAt ts 0) T → ContentsMatchesList D cs ts.tail Ts →
-      ContentsMatchesList D (c :: cs) ts (T :: Ts)
+      ContentsOwnTyping D c (OwnSt.fieldAt ts 0) T → ContentsOwnTypingList D cs ts.tail Ts →
+      ContentsOwnTypingList D (c :: cs) ts (T :: Ts)
 end
 
 /-- Per-cell agreement between the static entry and the dynamic cell: §7's
 "Σ faithfully tracks the store's initialization", with the §5.5 join's
-asymmetry built into `ContentsMatches`. A retired (`†`) cell matches no entry
+asymmetry built into `ContentsOwnTyping`. A retired (`†`) cell matches no entry
 at all, which is what keeps the unwind off one. -/
-def CellMatches (D : Decls) (cell : Cell) (en : Entry) : Prop :=
-  ∃ c, cell = .full c ∧ ContentsMatches D c en.st en.ty
+def CellTyping (D : Decls) (cell : Cell) (en : Entry) : Prop :=
+  ∃ c, cell = .full c ∧ ContentsOwnTyping D c en.st en.ty
 
-/-- `Matches Γ ρ H`: each binding's location holds a cell agreeing with its
+/-- `StoreTyping Γ ρ H`: each binding's location holds a cell agreeing with its
 static entry; locations are live (in `H`) and pairwise distinct. This is the
 §7 preservation invariant, over §6.1's environment `ρ` and store `H`. -/
-inductive Matches (D : Decls) : Ctx → Env → Store → Prop where
-  | nil {H} : Matches D [] [] H
+inductive StoreTyping (D : Decls) : Ctx → Env → Store → Prop where
+  | nil {H} : StoreTyping D [] [] H
   | cons {en : Entry} {Γ : Ctx} {ℓ : Nat} {ρ : Env} {H : Store} {c : Cell} :
-      H[ℓ]? = some c → CellMatches D c en → ℓ ∉ ρ → Matches D Γ ρ H →
-      Matches D (en :: Γ) (ℓ :: ρ) H
+      H[ℓ]? = some c → CellTyping D c en → ℓ ∉ ρ → StoreTyping D Γ ρ H →
+      StoreTyping D (en :: Γ) (ℓ :: ρ) H
 
-/-- `Untouched ρ H H'`: the store only grew, and every cell that was already
+/-- `FrameProperty ρ H H'`: the store only grew, and every cell that was already
 allocated and that `ρ` does not name has the contents it had. This is the
 frame-locality property a call needs — a callee's cells are minted above the
 caller's whole store (§6.9's (D-Call)), so the caller's bindings are outside
 the callee's `ρ` and survive the call untouched. -/
-def Untouched (ρ : Env) (H H' : Store) : Prop :=
+def FrameProperty (ρ : Env) (H H' : Store) : Prop :=
   H.length ≤ H'.length ∧ ∀ ℓ, ℓ < H.length → ℓ ∉ ρ → H'[ℓ]? = H[ℓ]?
 
 /-- The per-frame invariant (§6.1): the fused context agrees with the store
@@ -189,9 +189,9 @@ newest-first, **is** that environment. The second clause is the RUE-1277
 redundancy discharged — every live binding of the frame is registered for a
 drop exactly once, which is what makes `run-all-scope-drops` (§6.9) safe at an
 early `return`. -/
-structure FrameMatches (D : Decls) (Γ : Ctx) (φ : Activation) (H : Store) : Prop where
-  /-- `Matches` through the frame's environment `ρ`. -/
-  store : Matches D Γ φ.env H
+structure ActivationTyping (D : Decls) (Γ : Ctx) (φ : Activation) (H : Store) : Prop where
+  /-- `StoreTyping` through the frame's environment `ρ`. -/
+  store : StoreTyping D Γ φ.env H
   /-- The scope record, newest-first, is the environment (`3.8:62`: every
   by-value binding is registered, and only those). In this fragment both are
   built from one list at every frame, so the equation holds definitionally;
@@ -211,8 +211,8 @@ touched. It is closed under entering a binder (`BrokeOk.under_binders`), so a
 it reads the frame it fired in straight off it (helper). -/
 def BrokeOk (D : Decls) (B : List Ctx) (φ : Activation) (H H' : Store) (sc : List Nat) : Prop :=
   ∃ Γb ∈ B, ∃ locs : List Nat, sc = φ.scope ++ locs ∧
-    FrameMatches D Γb { env := locs.reverse ++ φ.env, scope := sc } H' ∧
-    (∀ ℓ ∈ locs, H.length ≤ ℓ) ∧ Untouched φ.env H H'
+    ActivationTyping D Γb { env := locs.reverse ++ φ.env, scope := sc } H' ∧
+    (∀ ℓ ∈ locs, H.length ≤ ℓ) ∧ FrameProperty φ.env H H'
 
 /-- The promise `soundness` makes about `eval`'s result, given §5.3's `Ω` —
 its normal outgoing state `o` and its deliveries `B`: a value of the
@@ -228,9 +228,9 @@ def EvalOk (D : Decls) (T R : Ty) (o : Option Ctx) (B : List Ctx) (φ : Activati
     EvalRes → Prop
   | .ok H' v _ =>
       match o with
-      | some Γ' => HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+      | some Γ' => HasTy D v T ∧ ActivationTyping D Γ' φ H' ∧ FrameProperty φ.env H H'
       | none => False
-  | .returned H' v _ => HasTy D v R ∧ Untouched φ.env H H'
+  | .returned H' v _ => HasTy D v R ∧ FrameProperty φ.env H H'
   | .broke H' sc _ => BrokeOk D B φ H H' sc
   | .panic _ _ => True
   | .stuck _ => False

@@ -449,15 +449,15 @@ calculus as written and what the compiler does, not a modelling slip.
 `linearLostAtCallArg`, `affineLostAtCallArg` and `linearLostAtBreakArg` (the
 `break` case) are kernel-checked witnesses, and closing it is RUE-2316.
 
-## 3. The invariant: what `Matches` says, and why it is asymmetric
+## 3. The invariant: what `StoreTyping` says, and why it is asymmetric
 
 Every safety proof carries an invariant relating the static story to the
-dynamic one. Here it is `FrameMatches D Γ φ H` (`Soundness/Defs.lean`), where `D`
+dynamic one. Here it is `ActivationTyping D Γ φ H` (`Soundness/Defs.lean`), where `D`
 is the program's declarations, against which `class(T)` and a value's drop
 are read. It has two fields, `store` and `record`, and the proof also carries
-a third fact, `Untouched`.
+a third fact, `FrameProperty`.
 
-**`store`: `Matches D Γ ρ H`.** For each binding, the cell at its location
+**`store`: `StoreTyping D Γ ρ H`.** For each binding, the cell at its location
 agrees with its context entry; every location is inside the store; and no two
 bindings share a location.
 
@@ -466,7 +466,7 @@ for a binding is an `OwnSt`: `owned`, `movedOut`, or `fields [t₁ … tₖ]` fo
 value some of whose fields or elements have been moved out (the explainer
 output and the drawing in example 5 write this `Owned{ x0: MovedOut }`).
 The cell holds `Contents`: the same shape, with `⊘` admitted at any node.
-`ContentsMatches` relates the two node by node:
+`ContentsOwnTyping` relates the two node by node:
 
 - an **`owned`** node holds hole-free, well-typed contents, that is, a value;
 - a **`movedOut`** node holds well-typed contents with **no live linear
@@ -491,16 +491,16 @@ Then the static leak check could pass while the machine reached
 `linearLeak`, and the theorem would be false. Where two arms disagree on a
 path whose residue still carries a linear value, the join refuses outright
 (`3.8:50`; the corpus cases `linear_half_consumed` and
-`join_linear_field_one_arm`), and `ContentsMatches` records that refusal as an
+`join_linear_field_one_arm`), and `ContentsOwnTyping` records that refusal as an
 invariant.
 
 Two lemmas turn the clause into what the proof uses:
 
-- `ContentsMatches.residualLinear_false`: the machine's leak monitor sees
+- `ContentsOwnTyping.residualLinear_false`: the machine's leak monitor sees
   exactly what §5.6's `residual-linear` computes. After a partial move the
   obligation is the *residue*'s on both sides, which is the residue-keyed
   obligation model (RUE-1591) and what the compiler does.
-- `ContentsMatches.readAt` and `ContentsMatches.writeAt`: navigating a path
+- `ContentsOwnTyping.readAt` and `ContentsOwnTyping.writeAt`: navigating a path
   agrees on the two sides. Wherever Σ has a state for the path (wherever no
   proper prefix of it is `MovedOut`, (Owned-Base) §5.1), the store reaches a
   sub-position, and writing a matching state and contents there leaves the
@@ -516,7 +516,7 @@ body) builds σ and ρ from the same list, so the equation holds by definition.
 It is stated as an invariant for two reasons:
 
 - The teardown proofs consume it. `run-all-scope-drops` walks σ, and because
-  σ is ρ, `Matches` applies to the walk: every cell is live or moved out, and
+  σ is ρ, `StoreTyping` applies to the walk: every cell is live or moved out, and
   no two bindings share one. That is why §7's no-use-after-drop bullet follows
   from the invariant rather than from a fact about closed expressions, and why
   no unwind touches a `†` cell or retires one twice.
@@ -528,9 +528,9 @@ It is stated as an invariant for two reasons:
   remembers the record's length at its entry instead of pushing one, so a
   `break` hands the loop the record it fired in and the loop drops the cells
   past that length. The equation stays definitional; what the loop's proof
-  uses is `Matches.unwindPrefix`, the arm's own teardown lemma.
+  uses is `StoreTyping.unwindPrefix`, the arm's own teardown lemma.
 
-**`Untouched ρ H H'`** carries frame *locality*: the store only grows, and
+**`FrameProperty ρ H H'`** carries frame *locality*: the store only grows, and
 every allocated cell that ρ does not name keeps its contents. A callee's
 parameter cells are minted above the caller's whole store, so the caller's
 bindings are outside the callee's ρ and their agreement survives the call.
@@ -541,7 +541,7 @@ signature.
 
 ```lean
 theorem soundness (M : FloatModel) (hwf : WfProgram P) :
-    ∀ fuel, Typed P R Γ e T Ω → FrameMatches P.decls Γ φ H →
+    ∀ fuel, Typed P R Γ e T Ω → ActivationTyping P.decls Γ φ H →
       EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
@@ -568,7 +568,7 @@ That is progress and preservation in one statement (§7, first bullet).
 Over §6's `Step`, its whole-program consequence is `step_progress` and
 `step_value_typed`, with `step_preservation` packaging the two as a semantic
 configuration typing, derived from this theorem by adequacy. The
-per-expression invariant `FrameMatches` has no `Step`-side statement.
+per-expression invariant `ActivationTyping` has no `Step`-side statement.
 
 Over a whole program, `run_safe` says it in the shape a reader wants:
 
@@ -696,7 +696,7 @@ the unwind path, never both and never neither.*
 ```lean
 theorem drop_exactly_once (M : FloatModel) (h : ProgramTyped P)
     (hp : P.pendingSafe = true) (ht : Typed P R Γ e T Ω)
-    (hfm : FrameMatches P.decls Γ φ H) (hcc : StoreCC P.decls H)
+    (hfm : ActivationTyping P.decls Γ φ H) (hcc : StoreCC P.decls H)
     (he : e.pendingSafe = true) :
     (∀ w, eval M.toFloatSig fuel P H φ e ≠ .stuck w) ∧
       Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
@@ -1017,7 +1017,7 @@ scope exit finds a `⊘`. The printed program's only output line is the value,
 
 #### What the proof needs
 
-The initial invariant, `FrameMatches D [] ⟨[], []⟩ []`, holds trivially: no
+The initial invariant, `ActivationTyping D [] ⟨[], []⟩ []`, holds trivially: no
 bindings, no store, an empty scope record. `run_safe` then gives, at every
 fuel, `outOfFuel`, a defined panic, or `.ok` with a value of the entry
 function's declared return type. The run above is the last case:
@@ -1307,7 +1307,7 @@ value context moves *exactly* that field.
 the state for `v0.x0` (and returns `none`, a rejection, when a *proper prefix*
 is `MovedOut`); `en.ty.atPath` types the place; `u.fullyOwned` is `3.8:26`;
 `noDtorPrefix` is `3.9:34`. Before the move, Σ and the cell agree on a
-hole-free tree (`ContentsMatches`'s `owned` clause):
+hole-free tree (`ContentsOwnTyping`'s `owned` clause):
 
 ```
   Σ(v0)                      H(ℓ3)
@@ -1459,7 +1459,7 @@ and the `consume` event records that its life ends here, with every member
 marker ends any of them again.
 
 `MovedOut` on the Σ side and `⊘` on the store side, at the one path `π_d`,
-is `ContentsMatches` again. The output is `10`, `1`, `2`, `20`, then the
+is `ContentsOwnTyping` again. The output is `10`, `1`, `2`, `20`, then the
 value `5`: the residue drops **at the access** rather than at scope exit, and
 `explain/destructure_residue_order.txt` shows both drops and the
 consumption on its one (D-Use-Declared-Linear) §6.3 row. Where the selected path passes through a
@@ -1472,7 +1472,7 @@ nested struct, the nested residue comes before the later sibling
 
 The case is `useDeclared` in `soundness`, and it rests on three lemmas:
 
-- `ContentsMatches.declaredPlan_eq`: the plan the machine reads off the store
+- `ContentsOwnTyping.declaredPlan_eq`: the plan the machine reads off the store
   is the plan the rule selected;
 - `splitResidue_ok`: `split` never fails on a hole-free, well-typed
   aggregate, and every retained subtree is non-`Linear`;
@@ -2200,11 +2200,11 @@ defect looks like:*
 
 The one place a soundness proof can quietly cheat is its invariant. An
 invariant too strong to be provable is caught by the kernel; one too weak to
-mean anything is not. `FrameMatches` (in `DIGEST.md`, or `Soundness/Defs.lean`) is
-this proof's invariant, and its `store` field, through `CellMatches` and
-`ContentsMatches`, is what §7's no-use-after-move bullet names in words:
+mean anything is not. `ActivationTyping` (in `DIGEST.md`, or `Soundness/Defs.lean`) is
+this proof's invariant, and its `store` field, through `CellTyping` and
+`ContentsOwnTyping`, is what §7's no-use-after-move bullet names in words:
 "preservation maintains the invariant that Σ faithfully tracks the store's
-initialization". Check `ContentsMatches`'s clauses against that phrase, as
+initialization". Check `ContentsOwnTyping`'s clauses against that phrase, as
 section 3 spells them out: an `owned` node holds a hole-free, well-typed
 value; a `movedOut` node holds well-typed contents whose `residualLinear` is
 `false`, that is, with no live linear sub-value. *A defect looks like:* that
