@@ -750,7 +750,7 @@ a compiler finding.
 
 ## Boundary integer literals and operand pairs (RUE-2482)
 
-Mutant 1 (`h2318`) and mutant 20 (`c-overflow-kind`), above, were both caught
+Mutant 1 (`h2318`) and mutant 20 (`c-overflow-kind`), above, were both killed
 only by their own seed or by the full harness — the generator's small,
 mostly-independent integer literals rarely land two operands, or an operand
 and a trap-kind check, where these bugs live. `RueCore/Gen.lean` gained a

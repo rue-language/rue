@@ -4140,7 +4140,7 @@ theorem infiniteLoop_outOfFuel (M : FloatSig) (P : Program) :
 `docs/formal/lean/BRIDGE-SENSITIVITY.md` re-introduced historical compiler bugs
 into scratch copies of the compiler, one at a time, and ran the seed corpus and
 the generator against each. The three programs below are follow-ups for the
-mutants no seed caught: each is a small fragment program on which the mutated
+mutants no seed killed: each is a small fragment program on which the mutated
 compiler disagrees with the model, and on which the fixed compiler agrees. -/
 
 /-- `S23`: `linear struct { x0: S13, x1: S1 }`. A third declared-`linear` level
