@@ -37,7 +37,7 @@ call, the extended frame inside a `let` body — builds σ and ρ from the same
 list, so σ carries no information ρ does not and the equation cannot fail
 here. It is stated as an invariant because it is what the *teardown* proofs
 consume, and because it is the clause that stops being free the moment
-`Frame.scope` becomes the stack §6.1 actually specifies, where scopes are
+`Activation.scope` becomes the stack §6.1 actually specifies, where scopes are
 pushed and popped independently of the binder chain and σ and ρ are two
 different books a slice has to keep in step. That is the shape the RUE-1277
 redundancy was raised for, and this fragment does not have it: §6.6's `match`
@@ -2523,7 +2523,7 @@ unwinding `return` carries a value of the enclosing function's declared return
 type `R` and leaves the frame's neighbours alone; an unwinding `break` is one
 of the deliveries `B` (`BrokeOk`); a trap and exhausted fuel promise nothing;
 a refusal is impossible, which is the whole theorem (helper). -/
-def AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Frame) (H : Store) : EvalRes → Prop
+def AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Activation) (H : Store) : EvalRes → Prop
   | .ok _ _ _ => False
   | .returned H' v _ => HasTy D v R ∧ Untouched φ.env H H'
   | .broke H' sc _ => BrokeOk D B φ H H' sc
@@ -2534,7 +2534,7 @@ def AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Frame) (H : Store) : EvalR
 /-- The promise for an argument list (§5.8's (Call), left to right with Σ
 threaded), at the list's normal outgoing state `o` and deliveries `B`
 (helper). -/
-def ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx) (B : List Ctx) (φ : Frame)
+def ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx) (B : List Ctx) (φ : Activation)
     (H : Store) : ArgsRes → Prop
   | .ok H' vs _ =>
       match o with
@@ -2695,7 +2695,7 @@ operand's value, promises the form's outcome — the operand's deliveries among
 the form's. Every operand of every form is discharged by this lemma
 (helper). -/
 theorem EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ : Ctx} {B₀ B : List Ctx}
-    {φ : Frame} {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
+    {φ : Activation} {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
     (hr : EvalOk D T₀ R (some Γ₀) B₀ φ H r) (hB : B₀ ⊆ B)
     (hk : ∀ H₁ v tr, r = .ok H₁ v tr → HasTy D v T₀ → FrameMatches D Γ₀ φ H₁ →
             EvalOk D T R o B φ H₁ (k H₁ v)) :
@@ -2713,7 +2713,7 @@ theorem EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ : Ctx} {
 /-- `bind` for an operand whose outgoing `Ω` the form passes on unchanged —
 §5.3's threading convention at a one-operand rule: if the operand continues,
 the form continues at the same state; if it is `⊥`, so is the form (helper). -/
-theorem EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {B : List Ctx} {φ : Frame}
+theorem EvalOk.bindSame {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {B : List Ctx} {φ : Activation}
     {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
     (hr : EvalOk D T₀ R o B φ H r)
     (hk : ∀ H₁ v tr Γ₀, r = .ok H₁ v tr → HasTy D v T₀ → FrameMatches D Γ₀ φ H₁ →
@@ -2754,7 +2754,7 @@ theorem EvalOk.weaken {D T R o₁ o' B φ H r}
 copy-closure monitor (`HasTy.copyClosed`), and the identity it mints reserves
 one `†` slot above the store, which no binding names — so the frame still
 matches and nothing it names was touched (helper). -/
-theorem introVal_ok {D : Decls} {T R : Ty} {Γ : Ctx} {B : List Ctx} {φ : Frame}
+theorem introVal_ok {D : Decls} {T R : Ty} {Γ : Ctx} {B : List Ctx} {φ : Activation}
     {H₀ H : Store} {mk : Nat → Val} (hwf : WfDecls D) (hty : HasTy D (mk H.length) T)
     (hfm : FrameMatches D Γ φ H) (hu : Untouched φ.env H₀ H) :
     EvalOk D T R (some Γ) B φ H₀ (introVal D H mk) := by
@@ -2780,7 +2780,7 @@ theorem Ctx.SameSkel.of_forall {Γ₀ : Ctx} :
 agrees with the loop-head state: the head is the entry or its §5.5 join with
 the back-edge state, and the join weakens its left arm (helper). -/
 theorem LoopHead.enter {D : Decls} (hwf : WfDecls D) {Γ Γh : Ctx} {o : Option Ctx}
-    {φ : Frame} {H : Store} (h : LoopHead D Γ o Γh) (hfm : FrameMatches D Γ φ H) :
+    {φ : Activation} {H : Store} (h : LoopHead D Γ o Γh) (hfm : FrameMatches D Γ φ H) :
     FrameMatches D Γh φ H := by
   cases o with
   | none =>
@@ -2803,7 +2803,7 @@ back-edge state agrees with the loop-head state: the head is the §5.5 join of
 the entry with that state, and the join weakens its right arm. This is the
 preservation half of re-entering the body (helper). -/
 theorem LoopHead.backEdge {D : Decls} (hwf : WfDecls D) {Γ Γh Γe : Ctx}
-    {φ : Frame} {H : Store} (h : LoopHead D Γ (some Γe) Γh) (hsk : Γe.skel = Γh.skel)
+    {φ : Activation} {H : Store} (h : LoopHead D Γ (some Γe) Γh) (hsk : Γe.skel = Γh.skel)
     (hfm : FrameMatches D Γe φ H) : FrameMatches D Γh φ H := by
   have h1 := h.1
   simp only [Ctx.joinOpt] at h1
@@ -2825,7 +2825,7 @@ keeps the leak monitor off. What is left agrees with `outside_loop(Γb)`, and
 so with the loop's outgoing state, the join over every exit (`3.8:80`)
 (helper). -/
 theorem loop_exit_ok {D : Decls} (hwf : WfDecls D) {Γh Γx : Ctx} {B : List Ctx}
-    {φ : Frame} {H H₁ : Store} {sc : List Nat} (hfmh : FrameMatches D Γh φ H)
+    {φ : Activation} {H H₁ : Store} {sc : List Nat} (hfmh : FrameMatches D Γh φ H)
     (hext : ∀ Γb ∈ B, Ctx.Extends Γb Γh)
     (hnl : ∀ Γb ∈ B, NoResidualLinear D (Ctx.loopLocals Γh Γb))
     (hjoin : Ctx.joinAll D (B.map (Ctx.outsideLoop Γh)) = some Γx)
@@ -2876,7 +2876,7 @@ promise. An unwinding `return` from the body passes through; a trap and
 exhausted fuel promise nothing (helper). -/
 theorem loop_step (M : FloatSig) {P : Program} {fuel : Nat} {D : Decls} {T R : Ty}
     {oe : Option Ctx} {Be : List Ctx}
-    {φ : Frame} {H : Store} {e : Expr} {o' : Option Ctx} {B' : List Ctx}
+    {φ : Activation} {H : Store} {e : Expr} {o' : Option Ctx} {B' : List Ctx}
     (kb : EvalOk D .unit R oe Be φ H (eval M fuel P H φ e))
     (hback : ∀ Γe H₁, oe = some Γe → FrameMatches D Γe φ H₁ →
       EvalOk D T R o' B' φ H₁ (eval M fuel P H₁ φ (.loop e)))
@@ -2922,9 +2922,9 @@ hypothesis is `soundness` at the fuel the call has already spent one unit of,
 which is why this is a lemma rather than a case of the induction. -/
 theorem args_sound (M : FloatModel) {P : Program} {fuel : Nat}
     (ih : ∀ {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty}, Typed P R Γ e T Ω →
-      ∀ {φ : Frame} {H : Store}, FrameMatches P.decls Γ φ H →
+      ∀ {φ : Activation} {H : Store}, FrameMatches P.decls Γ φ H →
         EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)) :
-    ∀ (es : List Expr) {R : Ty} {Γ : Ctx} {Ω : Out} {Ts : List Ty} {φ : Frame} {H : Store},
+    ∀ (es : List Expr) {R : Ty} {Γ : Ctx} {Ω : Out} {Ts : List Ty} {φ : Activation} {H : Store},
       TypedArgs P R Γ es Ts Ω → FrameMatches P.decls Γ φ H →
         ArgsOk P.decls R Ts Ω.norm Ω.brk φ H
           (evalArgs (fun H' e => eval M.toFloatSig fuel P H' φ e) H es) := by
@@ -3001,7 +3001,7 @@ and every subexpression — a call's arguments and the callee's body alike —
 runs at one unit less. -/
 theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
     ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty}, Typed P R Γ e T Ω →
-      ∀ {φ : Frame} {H : Store}, FrameMatches P.decls Γ φ H →
+      ∀ {φ : Activation} {H : Store}, FrameMatches P.decls Γ φ H →
         EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e) := by
   intro fuel
   induction fuel with
@@ -3928,7 +3928,7 @@ theorem evalArgs_mono {ev ev' : Store → Expr → EvalRes}
 
 /-- One step of fuel monotonicity: a bound that answered answers the same at
 the next bound up (helper). -/
-theorem eval_succ (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Frame) (e : Expr),
+theorem eval_succ (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Activation) (e : Expr),
     eval M fuel P H φ e ≠ .outOfFuel → eval M (fuel + 1) P H φ e = eval M fuel P H φ e := by
   intro fuel
   induction fuel with
@@ -4151,7 +4151,7 @@ never changes an answer, so "the answer at some fuel" is well defined and the
 ∀-fuel form of `soundness` is a statement about it. The fuel is this
 interpreter's own device, not a §6 notion, so what this lemma is about is the
 claim `eval` makes on behalf of §6's machine. -/
-theorem fuel_mono (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr} :
+theorem fuel_mono (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : Expr} :
     ∀ {n m : Nat}, n ≤ m → eval M n P H φ e ≠ .outOfFuel →
       eval M m P H φ e = eval M n P H φ e := by
   intro n m hle hne
@@ -4172,7 +4172,7 @@ one that hides it: at every bound that answers at all, the answer is that same
 violation. So no choice of fuel turns a violation into exhaustion for a
 program some fuel completes, and the `outOfFuel` escape hatch in the §7
 theorems (§6's machine has no such state) cannot be what makes them true. -/
-theorem no_masking (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat}
+theorem no_masking (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : Expr} {n m : Nat}
     {w : Violation} (hn : eval M n P H φ e = .stuck w) (hm : eval M m P H φ e ≠ .outOfFuel) :
     eval M m P H φ e = .stuck w := by
   rcases Nat.le_total n m with hle | hle

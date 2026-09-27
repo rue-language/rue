@@ -55,7 +55,7 @@ reachable from `Config.init`:
   markers are exactly the tail of its record, innermost last, and the whole
   registration stack — every suspended caller's record, then the current
   frame's — is in location order. So (D-EndScope)'s pop by count removes the
-  marker's own cells (`Frame.popScope_tail`).
+  marker's own cells (`Activation.unwindScope_tail`).
 * `reachable_lifo`: every step is **last-in first-out** on that stack
   (`Lifo`). It keeps the stack as a prefix of the new one, or cuts it back
   and drops only cells of the suffix it cut, newest first; each such cell is
@@ -401,7 +401,7 @@ theorem DropGlueBlocks.intro {D D' : Decls} {H : Store} {mk : Nat → Val} :
 
 /-- A copy-closed store is one step further along an evaluation that reached
 a value (helper). -/
-theorem eval_ok_cc (M : FloatSig) {P : Program} {n : Nat} {H H₁ : Store} {φ : Frame} {e : Expr}
+theorem eval_ok_cc (M : FloatSig) {P : Program} {n : Nat} {H H₁ : Store} {φ : Activation} {e : Expr}
     {v : Val} {tr : List Event} (hcc : StoreCC P.decls H)
     (hr : eval M n P H φ e = .ok H₁ v tr) :
     StoreCC P.decls H₁ ∧ (Contents.ofVal v).copyClosed P.decls = true := by
@@ -439,14 +439,14 @@ fuel. By fuel induction over `eval`; no typing derivation, only
 `DtorNotCopy`, which a destructure's `Copy` residue needs (module
 docstring). -/
 theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls) :
-    ∀ (fuel : Nat) (H : Store) (φ : Frame) (e : Expr), StoreCC P.decls H →
+    ∀ (fuel : Nat) (H : Store) (φ : Activation) (e : Expr), StoreCC P.decls H →
       DropGlueBlocks P.decls (eval M fuel P H φ e).trace := by
   intro fuel
   induction fuel with
   | zero => intro H φ e _; exact .nil
   | succ n ih =>
     intro H φ e hcc
-    have hok := fun {H' : Store} {φ' : Frame} {e' : Expr} {H₁ : Store} {v : Val}
+    have hok := fun {H' : Store} {φ' : Activation} {e' : Expr} {H₁ : Store} {v : Val}
         {tr : List Event} (hc : StoreCC P.decls H') (hr : eval M n P H' φ' e' = .ok H₁ v tr) =>
       eval_ok_cc M hc hr
     have hargs := fun (H' : Store) (es : List Expr) (hc : StoreCC P.decls H') =>
@@ -735,7 +735,7 @@ theorem Kont.Ordered.mono {n m : Nat} {k : Kont} (h : k.Ordered n) (hn : n ≤ m
 
 /-- A step that leaves the frame alone, grows or keeps the store, and pushes
 only frames that owe nothing keeps the invariant (helper). -/
-theorem Config.Ordered.keep {H H' : Store} {φ : Frame} {K K' : List Kont} {f f' : Focus}
+theorem Config.Ordered.keep {H H' : Store} {φ : Activation} {K K' : List Kont} {f f' : Focus}
     {tr tr' : List Event} (h : (Config.run H φ K f tr).Ordered) (hn : H.length ≤ H'.length)
     (hK : ∀ k ∈ K', k ∈ K ∨ ∀ n, k.Ordered n) : (Config.run H' φ K' f' tr').Ordered :=
   ⟨h.1.mono hn, fun k hk => by
@@ -744,13 +744,13 @@ theorem Config.Ordered.keep {H H' : Store} {φ : Frame} {K K' : List Kont} {f f'
     · exact h' _⟩
 
 /-- A step that keeps the stack (helper). -/
-theorem Config.Ordered.same {H H' : Store} {φ : Frame} {K : List Kont} {f f' : Focus}
+theorem Config.Ordered.same {H H' : Store} {φ : Activation} {K : List Kont} {f f' : Focus}
     {tr tr' : List Event} (h : (Config.run H φ K f tr).Ordered) (hn : H.length ≤ H'.length) :
     (Config.run H' φ K f' tr').Ordered :=
   h.keep hn (fun _ hk => .inl hk)
 
 /-- A step that pushes a context frame, which owes nothing (helper). -/
-theorem Config.Ordered.push {H H' : Store} {φ : Frame} {K : List Kont} {k : Kont} {f f' : Focus}
+theorem Config.Ordered.push {H H' : Store} {φ : Activation} {K : List Kont} {k : Kont} {f f' : Focus}
     {tr tr' : List Event} (h : (Config.run H φ K f tr).Ordered) (hn : H.length ≤ H'.length)
     (hk : ∀ n, k.Ordered n) : (Config.run H' φ (k :: K) f' tr').Ordered :=
   h.keep hn (fun _ hm => by
@@ -759,7 +759,7 @@ theorem Config.Ordered.push {H H' : Store} {φ : Frame} {K : List Kont} {k : Kon
     · exact .inl hm)
 
 /-- A step that pops a context frame (helper). -/
-theorem Config.Ordered.pop {H H' : Store} {φ : Frame} {K : List Kont} {k : Kont} {f f' : Focus}
+theorem Config.Ordered.pop {H H' : Store} {φ : Activation} {K : List Kont} {k : Kont} {f f' : Focus}
     {tr tr' : List Event} (h : (Config.run H φ (k :: K) f tr).Ordered)
     (hn : H.length ≤ H'.length) : (Config.run H' φ K f' tr').Ordered :=
   h.keep hn (fun _ hm => .inl (List.mem_cons_of_mem _ hm))
@@ -793,7 +793,7 @@ theorem plainUnwind_length {D : Decls} :
 
 /-- (D-Return)'s search: the caller's frame is on the stack, and what is left
 under it was under it (helper). -/
-theorem Kont.toCall_mem : ∀ {K K' : List Kont} {φ : Frame}, Kont.toCall K = some (φ, K') →
+theorem Kont.toCall_mem : ∀ {K K' : List Kont} {φ : Activation}, Kont.toCall K = some (φ, K') →
     Kont.call φ ∈ K ∧ ∀ k ∈ K', k ∈ K
   | [], _, _, h => by simp [Kont.toCall] at h
   | k :: K, K', φ, h => by
@@ -807,7 +807,7 @@ theorem Kont.toCall_mem : ∀ {K K' : List Kont} {φ : Frame}, Kont.toCall K = s
 
 /-- (D-Break)'s search: the loop boundary is on the stack, and what is left
 under it was under it (helper). -/
-theorem Kont.toLoop_mem : ∀ {K K' : List Kont} {φ : Frame}, Kont.toLoop K = some (φ, K') →
+theorem Kont.toLoop_mem : ∀ {K K' : List Kont} {φ : Activation}, Kont.toLoop K = some (φ, K') →
     (∃ e, Kont.loop e φ ∈ K) ∧ ∀ k ∈ K', k ∈ K
   | [], _, _, h => by simp [Kont.toLoop] at h
   | k :: K, K', φ, h => by
@@ -1101,13 +1101,13 @@ drops last-in first-out. -/
 
 /-- (D-EndScope)'s pop by count removes exactly the marker's cells when they
 are the record's tail (helper). -/
-theorem Frame.popScope_tail (φ : Frame) {sc ls : List Nat} (h : φ.scope = sc ++ ls) :
-    (φ.popScope ls.length).scope = sc := by
-  simp [Frame.popScope, h]
+theorem Activation.unwindScope_tail (φ : Activation) {sc ls : List Nat} (h : φ.scope = sc ++ ls) :
+    (φ.unwindScope ls.length).scope = sc := by
+  simp [Activation.unwindScope, h]
 
 /-- (D-Return)'s search, read by the nesting: the caller's record is the
 next one, and the stack below it is the rest (helper). -/
-theorem Nest.toCall {K K' : List Kont} {φ : Frame} :
+theorem Nest.toCall {K K' : List Kont} {φ : Activation} :
     ∀ {sc : List Nat}, Nest sc K → Kont.toCall K = some (φ, K') →
       Nest φ.scope K' ∧ Stk K = Stk K' ++ φ.scope := by
   induction K with
@@ -1128,7 +1128,7 @@ theorem Nest.toCall {K K' : List Kont} {φ : Frame} :
 /-- (D-Break)'s search, read by the nesting: the loop boundary's record is a
 prefix of the frame's, the rest being the cells the body registered, and no
 caller's record is crossed (helper). -/
-theorem Nest.toLoop {K K' : List Kont} {φ : Frame} :
+theorem Nest.toLoop {K K' : List Kont} {φ : Activation} :
     ∀ {sc : List Nat}, Nest sc K → Kont.toLoop K = some (φ, K') →
       (∃ m, sc = φ.scope ++ m) ∧ Nest φ.scope K' ∧ Stk K = Stk K' := by
   induction K with
@@ -1189,10 +1189,10 @@ theorem step_nested {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P C
   case endScope H φ K tr ℓs v H' evs hu =>
     have hl := plainUnwind_length hu
     obtain ⟨sc', hsc, hn⟩ := hC.1
-    have hp := Frame.popScope_tail φ hsc
+    have hp := Activation.unwindScope_tail φ hsc
     have h2 : Rec H.length (Stk K ++ φ.scope) := hC.2
     refine ⟨by rw [hp]; exact hn, ?_⟩
-    show Rec H'.length (Stk K ++ (φ.popScope ℓs.length).scope)
+    show Rec H'.length (Stk K ++ (φ.unwindScope ℓs.length).scope)
     rw [hp]
     refine (h2.sublist ?_).mono (by omega)
     rw [hsc, ← List.append_assoc]; exact List.sublist_append_left _ _
@@ -1229,7 +1229,7 @@ theorem step_nested {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P C
 /-- **The nesting holds everywhere the machine goes** (§6.7, §6.9, §6.10):
 in every configuration reachable from §6.12's initial one. In particular
 (D-EndScope)'s pop by count always removes the marker's own cells
-(`Frame.popScope_tail`). No typing hypothesis. -/
+(`Activation.unwindScope_tail`). No typing hypothesis. -/
 theorem reachable_nested {M : FloatSig} {P : Program} {C : Config}
     (h : Steps M P Config.init C) : C.Nested := by
   have key : ∀ {C₁ C₂ : Config}, Steps M P C₁ C₂ → C₁.Nested → C₂.Nested := by
@@ -1256,7 +1256,7 @@ theorem step_lifo {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P C C
   case endScope H φ K tr ℓs v H' evs hu =>
     obtain ⟨sc', hsc, _⟩ := hC.1
     refine ⟨_, rfl, ?_⟩
-    simp only [Config.stack, Stk, Frame.popScope_tail φ hsc, hsc, ← List.append_assoc]
+    simp only [Config.stack, Stk, Activation.unwindScope_tail φ hsc, hsc, ← List.append_assoc]
     exact Lifo.cut (plainUnwind_locs hu)
   case call => exact ⟨[], by simp [Config.trace], keep (List.prefix_append _ _)⟩
   case callReturn H φ K tr φs v H' evs hu =>

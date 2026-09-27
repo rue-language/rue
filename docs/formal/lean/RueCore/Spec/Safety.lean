@@ -28,7 +28,7 @@ or exhausted fuel — never `.stuck`. -/
 def soundness_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : WfProgram P) (fuel : Nat) {R : Ty} {Γ : Ctx}
     {Ω : Out} {e : Expr} {T : Ty}, Typed P R Γ e T Ω →
-      ∀ {φ : Frame} {H : Store}, FrameMatches P.decls Γ φ H →
+      ∀ {φ : Activation} {H : Store}, FrameMatches P.decls Γ φ H →
         EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)
 
 /-- **Program safety** (§7 "Type safety"). A well-formed program whose entry
@@ -127,7 +127,7 @@ An answer other than `outOfFuel` is the answer at every larger fuel: the clock
 lemma of functional big-step semantics, which Owens et al. §3.4 leave unnamed
 and call "an analogue of determinism" (`FIELD.md`, section 3). -/
 def fuel_mono_stmt : Prop :=
-  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr},
+  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : Expr},
     ∀ {n m : Nat}, n ≤ m → eval M n P H φ e ≠ .outOfFuel →
       eval M m P H φ e = eval M n P H φ e
 
@@ -135,7 +135,7 @@ def fuel_mono_stmt : Prop :=
 refusal at one fuel is the answer at every fuel that answers; a corollary of
 `fuel_mono`, in either order of the two fuels. -/
 def no_masking_stmt : Prop :=
-  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat}
+  ∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : Expr} {n m : Nat}
     {w : Violation} (_ : eval M n P H φ e = .stuck w) (_ : eval M m P H φ e ≠ .outOfFuel),
     eval M m P H φ e = .stuck w
 

@@ -1389,7 +1389,7 @@ theorem Cons.intro {D : Decls} {F : Event → List Nat} {H : Store} {Y : List Na
   · trivial
 
 /-- What `dynPlace` lands on is a live cell and a read of it (helper). -/
-theorem dynPlace_at {H : Store} {φ : Frame} {p : Place} {vs : List Val} {πs : List (List Nat)}
+theorem dynPlace_at {H : Store} {φ : Activation} {p : Place} {vs : List Val} {πs : List (List Nat)}
     {ℓ : Nat} {c sub : Contents} {ρ : List Nat} (h : dynPlace H φ p vs πs = .at ℓ c sub ρ) :
     H[ℓ]? = some (.full c) ∧ c.readAt p.path = .ok sub := by
   unfold dynPlace at h
@@ -1617,7 +1617,7 @@ machine maintains itself, and `DtorNotCopy` (inside `TraceMeasure`, for
 `dtorIds`) is the one fact it needs about the declarations. -/
 theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
     (hF : TraceMeasure P.decls F) :
-    ∀ (fuel : Nat) (H : Store) (φ : Frame) (e : Expr), StoreCC P.decls H →
+    ∀ (fuel : Nat) (H : Store) (φ : Activation) (e : Expr), StoreCC P.decls H →
       Cons P.decls F H [] (eval M fuel P H φ e) := by
   intro fuel
   induction fuel with

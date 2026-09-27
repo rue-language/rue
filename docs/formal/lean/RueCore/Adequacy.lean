@@ -119,7 +119,7 @@ per `Step` constructor, would be a second safety proof and is not claimed.
 `affineScopeDrop_both_ways` is one corpus program in both presentations, the
 GUIDE's worked instance.
 
-`Frame.empty`, `StepsN` and `Config.SafeAt` are in `Adequacy/Defs.lean`, the
+`Activation.empty`, `StepsN` and `Config.SafeAt` are in `Adequacy/Defs.lean`, the
 definitions layer; `affineScopeDrop_both_ways`, one corpus program traced
 both ways, is in `Witnesses.lean` (README, "Layers").
 -/
@@ -130,7 +130,7 @@ namespace RueCore
 
 /-- The configuration family of an expression in focus: `⟨H ; φ ; K ; E[e]⟩`
 for every context `K` and every trace `tr` already produced (§6.1, §6.2). -/
-abbrev evalConf (H : Store) (φ : Frame) (e : Expr) : List Kont → List Event → Config :=
+abbrev evalConf (H : Store) (φ : Activation) (e : Expr) : List Kont → List Event → Config :=
   fun K tr => .run H φ K (.eval e) tr
 
 /-- **The simulation relation** between an `eval` result and §6's `→*`
@@ -142,7 +142,7 @@ context ((Panic-Lift) §6.2), an unwinding `return` reaches the nearest caller
 ((D-Return) §6.9), and an unwinding `break` reaches the nearest loop's context
 ((D-Break) §6.10). Part 3's completeness (`eval_complete`) takes its runs
 through already-reduced operands from this relation's `ok` clause. -/
-def Sim (M : FloatSig) (P : Program) (φ : Frame) (C : List Kont → List Event → Config) :
+def Sim (M : FloatSig) (P : Program) (φ : Activation) (C : List Kont → List Event → Config) :
     EvalRes → Prop
   | .ok H v tr' => ∀ K tr, Steps M P (C K tr) (.run H φ K (.ret v) (tr ++ tr'))
   | .panic k tr' => ∀ K tr, Steps M P (C K tr) (.panic k (tr ++ tr'))
@@ -192,7 +192,7 @@ def Kont.Transparent (F : Kont) : Prop :=
 /-! ## Combinators -/
 
 /-- A run into the family carries its simulation back (helper). -/
-theorem Sim.pre {M : FloatSig} {P : Program} {φ : Frame} {C C₂ : List Kont → List Event → Config}
+theorem Sim.pre {M : FloatSig} {P : Program} {φ : Activation} {C C₂ : List Kont → List Event → Config}
     {r : EvalRes} (hpre : ∀ K tr, Steps M P (C K tr) (C₂ K tr)) (h : Sim M P φ C₂ r) :
     Sim M P φ C r := by
   cases r <;> simp only [Sim] at h ⊢
@@ -203,7 +203,7 @@ theorem Sim.pre {M : FloatSig} {P : Program} {φ : Frame} {C C₂ : List Kont �
 
 /-- A run into the family that emits `tr₁` carries its simulation back to
 the result with `tr₁` prefixed (§6.12's accumulating output) (helper). -/
-theorem Sim.withTrace {M : FloatSig} {P : Program} {φ : Frame}
+theorem Sim.withTrace {M : FloatSig} {P : Program} {φ : Activation}
     {C C₂ : List Kont → List Event → Config} {r : EvalRes} {tr₁ : List Event}
     (hpre : ∀ K tr, Steps M P (C K tr) (C₂ K (tr ++ tr₁))) (h : Sim M P φ C₂ r) :
     Sim M P φ C (r.withTrace tr₁) := by
@@ -223,7 +223,7 @@ frame `F`, the operand run under `F`, and a plug of its value into `F`'s hole.
 A `return` or a `break` passes through `F` unchanged because `F` is neither a
 call frame nor a loop boundary, and a panic because (Panic-Lift) discards
 every context (helper). -/
-theorem Sim.bind {M : FloatSig} {P : Program} {φ φ₁ : Frame}
+theorem Sim.bind {M : FloatSig} {P : Program} {φ φ₁ : Activation}
     {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
     (hC : ∀ K tr, Steps M P (C K tr) (C₁ (F :: K) tr))
     {r : EvalRes} (h₁ : Sim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
@@ -251,7 +251,7 @@ theorem Sim.bind {M : FloatSig} {P : Program} {φ φ₁ : Frame}
 
 /-- A result that is not a value passes through a transparent frame unchanged
 (helper). -/
-theorem Sim.lift {M : FloatSig} {P : Program} {φ φ₁ : Frame}
+theorem Sim.lift {M : FloatSig} {P : Program} {φ φ₁ : Activation}
     {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
     (hC : ∀ K tr, Steps M P (C K tr) (C₁ (F :: K) tr))
     {r : EvalRes} (h₁ : Sim M P φ₁ C₁ r) (hr : ∀ H v tr, r ≠ .ok H v tr) :
@@ -262,7 +262,7 @@ theorem Sim.lift {M : FloatSig} {P : Program} {φ φ₁ : Frame}
 
 /-- §6.9's call boundary: the body's `returned` is caught at the `call φ`
 frame, which is what `absorb` turns into a value (helper). -/
-theorem Sim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Frame}
+theorem Sim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Activation}
     {C C₁ : List Kont → List Event → Config}
     (hC : ∀ K tr, Steps M P (C K tr) (C₁ (.call φ :: K) tr))
     {r : EvalRes} (h₁ : Sim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
@@ -287,7 +287,7 @@ theorem Sim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Frame}
 
 /-- §6.4's operator frames: a value plugs the hole, a trap is (Panic-Lift)
 (helper). -/
-theorem OpRes.sim {M : FloatSig} {P : Program} {φ : Frame} {H : Store} {F : Kont} {v : Val}
+theorem OpRes.sim {M : FloatSig} {P : Program} {φ : Activation} {H : Store} {F : Kont} {v : Val}
     (o : OpRes)
     (hv : ∀ K tr v', o = .val v' → Step M P (.run H φ (F :: K) (.ret v) tr) (.run H φ K (.ret v') tr))
     (ht : ∀ K tr κ, o = .trap κ → Step M P (.run H φ (F :: K) (.ret v) tr) (.panic κ tr)) :
@@ -302,15 +302,15 @@ def SimIH (M : FloatSig) (P : Program) (fuel : Nat) : Prop :=
   ∀ H φ e, Sim M P φ (evalConf H φ e) (eval M fuel P H φ e)
 
 /-- A list context `…( v̄, E, ē )` at a store (helper). -/
-abbrev argsConf (H : Store) (φ : Frame) (t : ArgsTag) (vs : List Val) (es : List Expr) :
+abbrev argsConf (H : Store) (φ : Activation) (t : ArgsFrame) (vs : List Val) (es : List Expr) :
     List Kont → List Event → Config :=
   fun K tr => .run H φ K (.args t vs es) tr
 
 /-- **Argument lists** (§6.2's `…( v̄, E, ē )`): where `evalArgs` finishes,
 `→*` walks the list to its redex; where it aborts, the aborting element's
 result is simulated from the list context (helper). -/
-theorem evalArgs_sim {M : FloatSig} {P : Program} {fuel : Nat} {φ : Frame}
-    (IH : SimIH M P fuel) (t : ArgsTag) : ∀ (es : List Expr) (H : Store) (vs₀ : List Val),
+theorem evalArgs_sim {M : FloatSig} {P : Program} {fuel : Nat} {φ : Activation}
+    (IH : SimIH M P fuel) (t : ArgsFrame) : ∀ (es : List Expr) (H : Store) (vs₀ : List Val),
     (∀ H' vs tr', evalArgs (fun H e => eval M fuel P H φ e) H es = .ok H' vs tr' →
       ∀ K tr, Steps M P (.run H φ K (.args t vs₀ es) tr)
         (.run H' φ K (.args t (vs₀ ++ vs) []) (tr ++ tr'))) ∧
@@ -361,7 +361,7 @@ theorem evalArgs_sim {M : FloatSig} {P : Program} {fuel : Nat} {φ : Frame}
 
 /-- Where no `Sim` target has an expression in focus, a first step of `C`
 can be peeled off by determinism (helper). -/
-theorem Sim.peel {M : FloatSig} {P : Program} {φ : Frame}
+theorem Sim.peel {M : FloatSig} {P : Program} {φ : Activation}
     {C C₂ : List Kont → List Event → Config} {r : EvalRes}
     (hs : ∀ K tr, Step M P (C K tr) (C₂ K tr)) (hC : ∀ K tr, (C K tr).evalFocus)
     (h : Sim M P φ C r) : Sim M P φ C₂ r := by
@@ -403,21 +403,21 @@ theorem EvalRes.withTrace_bind (r : EvalRes) (t : List Event) (k : Store → Val
   | _ => simp [EvalRes.withTrace, EvalRes.bind]
 
 /-- The root of a place, as `eval` resolves it inline, is `rootCell` (helper). -/
-theorem rootCell_of {H : Store} {φ : Frame} {i ℓ : Nat} {c : Contents}
+theorem rootCell_of {H : Store} {φ : Activation} {i ℓ : Nat} {c : Contents}
     (hℓ : φ.env[i]? = some ℓ) (hc : H[ℓ]? = some (.full c)) : rootCell H φ i = .ok (ℓ, c) := by
   simp [rootCell, hℓ, hc]
 
 /-- (D-EndScope) restores the frame (D-Let) or (D-Match) extended (helper). -/
-theorem Frame.popScope_push (φ : Frame) (ls : List Nat) :
-    ({ env := ls.reverse ++ φ.env, scope := φ.scope ++ ls } : Frame).popScope ls.length = φ := by
+theorem Activation.unwindScope_push (φ : Activation) (ls : List Nat) :
+    ({ env := ls.reverse ++ φ.env, scope := φ.scope ++ ls } : Activation).unwindScope ls.length = φ := by
   cases φ
-  simp [Frame.popScope]
+  simp [Activation.unwindScope]
 
 /-- (D-EndScope) after (D-Let) (helper). -/
-theorem Frame.popScope_let (φ : Frame) (ℓ : Nat) :
-    ({ env := ℓ :: φ.env, scope := φ.scope ++ [ℓ] } : Frame).popScope 1 = φ := by
+theorem Activation.unwindScope_let (φ : Activation) (ℓ : Nat) :
+    ({ env := ℓ :: φ.env, scope := φ.scope ++ [ℓ] } : Activation).unwindScope 1 = φ := by
   cases φ
-  simp [Frame.popScope]
+  simp [Activation.unwindScope]
 
 /-- The monitor-free unwind of one cell (helper). -/
 theorem plainUnwind_single {D : Decls} {H H' : Store} {ℓ : Nat} {evs : List Event}
@@ -425,7 +425,7 @@ theorem plainUnwind_single {D : Decls} {H H' : Store} {ℓ : Nat} {evs : List Ev
   simp [plainUnwind, dropRetire_plain h]
 
 section forms
-variable {M : FloatSig} {P : Program} {fuel : Nat} {H : Store} {φ : Frame}
+variable {M : FloatSig} {P : Program} {fuel : Nat} {H : Store} {φ : Activation}
 
 /-- (D-Use-Declared-Linear), (D-Use-Copy), (D-Use-Move) §6.3 (helper). -/
 theorem sim_use (p : Place) :
@@ -794,7 +794,7 @@ theorem sim_match (IH : SimIH M P fuel) (scrut : Expr) (arms : List Expr) :
         have := Steps.single (M := M) (P := P) (.endScope (K := K) (tr := tr) (v := v₂)
           (φ := { env := (mintParams H₀ vs).2.reverse ++ φ.env,
                   scope := φ.scope ++ (mintParams H₀ vs).2 }) (unwindLocs_plain hu))
-        rwa [Frame.popScope_push] at this
+        rwa [Activation.unwindScope_push] at this
   · trivial
 
 /-- (D-Let) §6.7, then (D-EndScope) (helper). -/
@@ -814,7 +814,7 @@ theorem sim_letIn (IH : SimIH M P fuel) (m : Bool) (e₁ e₂ : Expr) :
     have := Steps.single (M := M) (P := P) (.endScope (K := K) (tr := tr) (v := v₂)
       (φ := { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] })
       (ℓs := [H₁.length]) (plainUnwind_single hd))
-    simpa [Frame.popScope_let] using this
+    simpa [Activation.unwindScope_let] using this
 
 /-- (D-Assign) §6.8 (helper). -/
 theorem sim_assign (IH : SimIH M P fuel) (p : Place) (e : Expr) :
@@ -1037,9 +1037,9 @@ every program: a value `run` returns is a terminal configuration `✓` that
 refusal on `eval`'s side. -/
 theorem run_sim (M : FloatSig) (P : Program) (fuel : Nat) :
     (∀ H v tr, run M P fuel = .ok H v tr →
-      Steps M P Config.init (.run H Frame.empty [] (.ret v) tr)) ∧
+      Steps M P Config.init (.run H Activation.empty [] (.ret v) tr)) ∧
     (∀ k tr, run M P fuel = .panic k tr → Steps M P Config.init (.panic k tr)) := by
-  have h := eval_sim M P fuel [] Frame.empty (.call 0 [])
+  have h := eval_sim M P fuel [] Activation.empty (.call 0 [])
   refine ⟨fun H v tr hr => ?_, fun k tr hr => ?_⟩
   · simp only [run] at hr
     rw [hr] at h
@@ -1061,7 +1061,7 @@ is not a state of §6's machine. The converse, completeness modulo fuel, is
 theorem eval_sound (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
     (∀ H v tr, run M.toFloatSig P fuel = .ok H v tr →
-      Steps M.toFloatSig P Config.init (.run H Frame.empty [] (.ret v) tr)) ∧
+      Steps M.toFloatSig P Config.init (.run H Activation.empty [] (.ret v) tr)) ∧
     (∀ k tr, run M.toFloatSig P fuel = .panic k tr →
       Steps M.toFloatSig P Config.init (.panic k tr)) :=
   ⟨no_violation M h fuel, (run_sim M.toFloatSig P fuel).1, (run_sim M.toFloatSig P fuel).2⟩
@@ -1192,7 +1192,7 @@ fuel. If `eval` spent its fuel on the operand, the operand's run under the
 pushed frame `F` is the long one, one enter step in; if the operand reached a
 value (`Sim`'s `ok` clause gives the run to it) and the context spent the fuel,
 the context's run is (helper). -/
-theorem Long.bind {φ₁ : Frame} {C C₁ : List Kont → List Event → Config} {F : Kont} {fuel : Nat}
+theorem Long.bind {φ₁ : Activation} {C C₁ : List Kont → List Event → Config} {F : Kont} {fuel : Nat}
     (hC : ∀ K tr, Step M P (C K tr) (C₁ (F :: K) tr))
     {r : EvalRes} (hsim : Sim M P φ₁ C₁ r) (h₁ : r = .outOfFuel → Long M P C₁ fuel)
     {k : Store → Val → EvalRes}
@@ -1213,7 +1213,7 @@ theorem Long.bind {φ₁ : Frame} {C C₁ : List Kont → List Event → Config}
 focus under the frame `F` — (D-Match) put the arm's body there while binding
 the payload — so exhaustion is a run of `fuel` steps, not `fuel + 1`
 (helper). -/
-theorem Long.bind0 {φ₁ : Frame} {C₁ : List Kont → List Event → Config} {F : Kont}
+theorem Long.bind0 {φ₁ : Activation} {C₁ : List Kont → List Event → Config} {F : Kont}
     {fuel : Nat} {r : EvalRes} (hsim : Sim M P φ₁ C₁ r) (h₁ : r = .outOfFuel → Long M P C₁ fuel)
     {k : Store → Val → EvalRes}
     (hk : ∀ H₁ v tr₁, r = .ok H₁ v tr₁ → k H₁ v = .outOfFuel →
@@ -1235,7 +1235,7 @@ def LongIH (M : FloatSig) (P : Program) (fuel : Nat) : Prop :=
 /-- **Argument lists, counted** (§6.2's `…( v̄, E, ē )`): a list that spent
 its fuel on an element has a run one step longer than the element's fuel, the
 extra step being the (Search) push into the element's hole (helper). -/
-theorem evalArgs_long {fuel : Nat} {φ : Frame} (IH : LongIH M P fuel) (t : ArgsTag) :
+theorem evalArgs_long {fuel : Nat} {φ : Activation} (IH : LongIH M P fuel) (t : ArgsFrame) :
     ∀ (es : List Expr) (H : Store) (vs₀ : List Val),
     evalArgs (fun H e => eval M fuel P H φ e) H es = .abort .outOfFuel →
       Long M P (argsConf H φ t vs₀ es) (fuel + 1)
@@ -1262,7 +1262,7 @@ theorem evalArgs_long {fuel : Nat} {φ : Frame} (IH : LongIH M P fuel) (t : Args
       | _ => simp [evalArgs, he] at h
 
 /-- `evalArgs` finishes as `eval_sim` says, from the argument list (helper). -/
-theorem evalArgs_ok_steps {fuel : Nat} {φ : Frame} {t : ArgsTag} {es : List Expr} {H H' : Store}
+theorem evalArgs_ok_steps {fuel : Nat} {φ : Activation} {t : ArgsFrame} {es : List Expr} {H H' : Store}
     {vs : List Val} {tr' : List Event}
     (h : evalArgs (fun H e => eval M fuel P H φ e) H es = .ok H' vs tr') :
     ∀ K tr, Steps M P (argsConf H φ t [] es K tr) (.run H' φ K (.args t vs []) (tr ++ tr')) := by
@@ -1274,7 +1274,7 @@ end counted
 /-! ## Fuel counts steps, per form -/
 
 section longForms
-variable {M : FloatSig} {P : Program} {fuel : Nat} {H : Store} {φ : Frame}
+variable {M : FloatSig} {P : Program} {fuel : Nat} {H : Store} {φ : Activation}
 
 /-- Every family has runs of no steps (helper). -/
 theorem Long.zero {C : List Kont → List Event → Config} : Long M P C 0 :=
@@ -1473,7 +1473,7 @@ theorem long_ite (IH : LongIH M P fuel) (c e₁ e₂ : Expr) :
 
 /-- An argument-list form whose list spent the fuel, from its enter step
 (helper). -/
-theorem long_argsForm {t : ArgsTag} {es : List Expr} {e : Expr} (IH : LongIH M P fuel)
+theorem long_argsForm {t : ArgsFrame} {es : List Expr} {e : Expr} (IH : LongIH M P fuel)
     (hent : ∀ K tr, Step M P (evalConf H φ e K tr) (argsConf H φ t [] es K tr))
     (h : evalArgs (fun H e => eval M fuel P H φ e) H es = .abort .outOfFuel) :
     Long M P (evalConf H φ e) (fuel + 1) :=
@@ -1735,7 +1735,7 @@ than `StepsN.bound` allows), an `ok` or a `panic` is placed by `run_sim` and
 theorem run_classify {M : FloatSig} {P : Program} {T : Config} (hT : Steps M P Config.init T)
     (hfin : ∀ C', ¬ Step M P T C') :
     ∃ n, ∀ fuel, n < fuel →
-      (∃ H v tr, run M P fuel = .ok H v tr ∧ T = .run H Frame.empty [] (.ret v) tr) ∨
+      (∃ H v tr, run M P fuel = .ok H v tr ∧ T = .run H Activation.empty [] (.ret v) tr) ∨
       (∃ κ tr, run M P fuel = .panic κ tr ∧ T = .panic κ tr) ∨
       (∃ w, run M P fuel = .stuck w) := by
   obtain ⟨n, hn⟩ := hT.toN
@@ -1749,7 +1749,7 @@ theorem run_classify {M : FloatSig} {P : Program} {T : Config} (hT : Steps M P C
         (fun _ => Step.terminal trivial)⟩)
   | stuck w => exact .inr (.inr ⟨w, rfl⟩)
   | outOfFuel =>
-      obtain ⟨D, hD⟩ := eval_steps_of_outOfFuel M P fuel [] Frame.empty (.call 0 []) hr [] []
+      obtain ⟨D, hD⟩ := eval_steps_of_outOfFuel M P fuel [] Activation.empty (.call 0 []) hr [] []
       exact absurd (hn.bound hfin hD) (by omega)
   | returned H v tr => exact absurd hr (run_ne_returned M H v tr)
   | broke H sc tr => exact absurd hr (run_ne_broke M H sc tr)
@@ -1864,7 +1864,7 @@ theorem eval_diverges_iff (M : FloatModel) {P : Program} (h : ProgramTyped P) :
       ∀ n, ∃ D, StepsN M.toFloatSig P n Config.init D := by
   constructor
   · intro hf n
-    exact eval_steps_of_outOfFuel _ P n [] Frame.empty (.call 0 []) (hf n) [] []
+    exact eval_steps_of_outOfFuel _ P n [] Activation.empty (.call 0 []) (hf n) [] []
   · intro hd fuel
     cases hr : run M.toFloatSig P fuel with
     | outOfFuel => rfl
@@ -1991,13 +1991,13 @@ at fuel `n` is out of fuel (then §6 has an `n`-step run,
 theorem step_type_safety (M : FloatModel) {P : Program} (h : ProgramTyped P) :
     ∃ fd, P.fns[0]? = some fd ∧ ∀ n,
       (∃ D, StepsN M.toFloatSig P n Config.init D) ∨
-      (∃ H v tr, Steps M.toFloatSig P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+      (∃ H v tr, Steps M.toFloatSig P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         HasTy P.decls v fd.ret) ∨
       (∃ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr)) := by
   obtain ⟨fd, h0, hp⟩ := h.entry
   refine ⟨fd, h0, fun n => ?_⟩
   rcases run_safe M h.wf h0 hp n with ho | ⟨κ, tr, hr⟩ | ⟨H, v, tr, hr, hty⟩
-  · exact .inl (eval_steps_of_outOfFuel _ P n [] Frame.empty (.call 0 []) ho [] [])
+  · exact .inl (eval_steps_of_outOfFuel _ P n [] Activation.empty (.call 0 []) ho [] [])
   · exact .inr (.inr ⟨κ, tr, (run_sim _ P n).2 κ tr hr⟩)
   · exact .inr (.inl ⟨H, v, tr, (run_sim _ P n).1 H v tr hr, hty⟩)
 

@@ -256,7 +256,7 @@ or §6.10, before a monitor here would mean anything.
 
 §6.1's frame is `φ = ⟨ρ ; σ⟩` with `σ` a *stack* of open scope records.
 (D-Let) §6.7 and (D-Match) §6.6 both **append** their cells to the innermost
-record rather than pushing a new one, so `Frame` carries that one record.
+record rather than pushing a new one, so `Activation` carries that one record.
 §6.10's loop does push a scope, `push-scope(φ)`, and `unwind-drops(H, φ', φ)`
 runs the drops of every scope open in `φ'` that is not open in `φ`. The
 fragment keeps one record and reads the loop's boundary as its **length**
@@ -536,7 +536,7 @@ record — the cells owed a drop when the frame's scopes end, in creation order
 by-value parameter, and both are registered; `borrow`/`inout` parameters,
 which are deliberately never registered (§6.9, `3.8:62`), are not in the
 fragment. -/
-structure Frame where
+structure Activation where
   env : Env
   scope : List Nat
 deriving DecidableEq, Repr
@@ -710,7 +710,7 @@ inductive DynPlace where
 bounds check at every dynamic step), once its index values `vs` are known.
 One function for the read and the write, and for `eval` and its instrumented
 mirror (`Explain.lean`), so the four test the same thing (helper). -/
-def dynPlace (H : Store) (φ : Frame) (p : Place) (vs : List Val) (πs : List (List Nat)) :
+def dynPlace (H : Store) (φ : Activation) (p : Place) (vs : List Val) (πs : List (List Nat)) :
     DynPlace :=
   match Val.ints vs with
   | none => .stuck .typeConfusion
@@ -1148,7 +1148,7 @@ def unwindLocs (D : Decls) (H : Store) : List Nat → Except Violation (Store ×
 when a frame is popped — at a normal (D-Return-Value) and at an unwinding
 (D-Return). The frame's record lists its cells in creation order, so the
 teardown reads it backwards: newest binding first. -/
-def runAllScopeDrops (D : Decls) (H : Store) (φ : Frame) :
+def runAllScopeDrops (D : Decls) (H : Store) (φ : Activation) :
     Except Violation (Store × List Event) :=
   unwindLocs D H φ.scope.reverse
 
@@ -1415,7 +1415,7 @@ record.
 Every operand is sequenced with `bind`, which is §6.2's search through an
 evaluation context; the callee's body is sequenced with `bindCall`, the one
 place a `return` stops travelling (§6.9). -/
-def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalRes
+def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → EvalRes
   | 0, _, _, _, _ => .outOfFuel
   | _ + 1, _, H, _, .intLit w s n => .ok H (.int w s n) []
   | _ + 1, _, H, _, .floatLit w l =>
@@ -1782,7 +1782,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalR
               -- (D-Call): one fresh cell per by-value argument; the callee's
               -- entry scope owes a drop for exactly those cells.
               let minted := mintParams H₁ vs
-              let φg : Frame := { env := minted.2.reverse, scope := minted.2 }
+              let φg : Activation := { env := minted.2.reverse, scope := minted.2 }
               (eval M fuel P minted.1 φg fd.body).bindCall fun H₃ v =>
                 -- (D-Return-Value): the body became a value; pop the frame,
                 -- running its open scopes' drops. (D-Return) needs no second

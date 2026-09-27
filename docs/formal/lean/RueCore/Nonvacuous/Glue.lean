@@ -455,7 +455,7 @@ theorem dtor.Step.terminal : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
+  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Activation.empty [] (.ret v) tr) from trivial)
   trivial
 
 /-- `dtor` applied to `run_sim` (helper). -/
@@ -830,7 +830,7 @@ theorem linear.Step.terminal : True := by
   rw [← hM] at hrun hSteps
   let P := progLinear
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
+  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Activation.empty [] (.ret v) tr) from trivial)
   trivial
 
 /-- `linear` applied to `run_sim` (helper). -/
@@ -1094,7 +1094,7 @@ theorem loop.Step.terminal : True := by
   rw [← hM] at hrun hSteps
   let P := progLoop
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
+  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Activation.empty [] (.ret v) tr) from trivial)
   trivial
 
 /-- `loop` applied to `run_sim` (helper). -/
@@ -1369,7 +1369,7 @@ theorem array.Step.terminal : True := by
   rw [← hM] at hrun hSteps
   let P := progArray
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
+  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Activation.empty [] (.ret v) tr) from trivial)
   trivial
 
 /-- `array` applied to `run_sim` (helper). -/
@@ -1633,7 +1633,7 @@ theorem enum_match.Step.terminal : True := by
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
+  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Activation.empty [] (.ret v) tr) from trivial)
   trivial
 
 /-- `enum_match` applied to `run_sim` (helper). -/
@@ -1897,7 +1897,7 @@ theorem early_return.Step.terminal : True := by
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
+  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Activation.empty [] (.ret v) tr) from trivial)
   trivial
 
 /-- `early_return` applied to `run_sim` (helper). -/
@@ -2172,7 +2172,7 @@ theorem float.Step.terminal : True := by
   rw [← hM] at hrun hSteps
   let P := progFloat
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Frame.empty [] (.ret v) tr) from trivial)
+  have := Spine.Step.terminal (M := M.toFloatSig) (P := P) (C' := Config.init) (show Config.Terminal (.run H Activation.empty [] (.ret v) tr) from trivial)
   trivial
 
 /-- `float` applied to `run_sim` (helper). -/

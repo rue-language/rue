@@ -236,7 +236,7 @@ after trace `tr`. A `@drop` below a dynamic index runs the read first. A
 `loop`'s lead is its body **breaking**: its rest is (D-Break)'s unwind, which
 ends the values the body still held — the cells the carried record owes, the
 body's own bindings included (§6.10). -/
-def Lead (M : FloatSig) (P : Program) (fuel : Nat) (H : Store) (φ : Frame) (H₁ : Store)
+def Lead (M : FloatSig) (P : Program) (fuel : Nat) (H : Store) (φ : Activation) (H₁ : Store)
     (vs : List Val) (tr : List Event) : Expr → Prop
   | .letIn _ e₁ _ | .seq e₁ _ | .«match» e₁ _ | .assign _ e₁ | .ret e₁ | .dbg e₁
   | .repeatArray _ e₁ _ | .indexWrite _ _ _ e₁ | .binop _ e₁ _ | .unop _ e₁
@@ -251,7 +251,7 @@ def Lead (M : FloatSig) (P : Program) (fuel : Nat) (H : Store) (φ : Frame) (H�
 
 /-- The store only grew, and a cell outside the frame's environment was left
 alone or retired (helper). -/
-def Local (φ : Frame) (H H' : Store) : Prop :=
+def Local (φ : Activation) (H H' : Store) : Prop :=
   H.length ≤ H'.length ∧
     ∀ ℓ, ℓ < H.length → ℓ ∉ φ.env → H'[ℓ]? = H[ℓ]? ∨ H'[ℓ]? = some .dead
 
@@ -267,7 +267,7 @@ its end — for an unwinding `break`, all but the cells of the scope record it
 carries, which extends `φ`'s by cells allocated since `H` and which the loop
 retires; and an unwinding
 `return` has retired every cell of `φ`'s record (§6.9's σ-walk). -/
-def Tidy (φ : Frame) (H : Store) : EvalRes → Prop
+def Tidy (φ : Activation) (H : Store) : EvalRes → Prop
   | .ok H' _ _ => Local φ H H' ∧ Retired H [] H'
   | .returned H' _ _ => Local φ H H' ∧ Retired H [] H' ∧ ∀ ℓ ∈ φ.scope, H'[ℓ]? = some .dead
   | .broke H' sc _ => Local φ H H' ∧ Retired H sc H' ∧
@@ -278,7 +278,7 @@ def Tidy (φ : Frame) (H : Store) : EvalRes → Prop
 operands ran: every one retired by the form's end — but, for an unwinding
 `break`, the ones its record owes the loop — and, for an unwinding `return`,
 the frame's whole record retired (helper). -/
-def Settled (φ : Frame) (H₁ : Store) : EvalRes → Prop
+def Settled (φ : Activation) (H₁ : Store) : EvalRes → Prop
   | .ok H' _ _ => Retired H₁ [] H'
   | .returned H' _ _ => Retired H₁ [] H' ∧ ∀ ℓ ∈ φ.scope, H'[ℓ]? = some .dead
   | .broke H' sc _ => Retired H₁ sc H' ∧ ∃ locs, sc = φ.scope ++ locs
@@ -452,7 +452,7 @@ def Lifo (S S' : List Nat) (ls : List Nat) : Prop :=
 /-- The owned identities an argument list's tag holds: an indexed
 assignment's right-hand side, already a value while its indices are reduced
 (`5.2:14`); no other tag holds a value (helper). -/
-def ArgsTag.own (D : Decls) : ArgsTag → List Nat
+def ArgsFrame.own (D : Decls) : ArgsFrame → List Nat
   | .indexWrite _ _ v => v.own D
   | _ => []
 

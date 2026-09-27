@@ -36,7 +36,7 @@ def eval_sound_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
     (∀ H v tr, run M.toFloatSig P fuel = .ok H v tr →
-      Steps M.toFloatSig P Config.init (.run H Frame.empty [] (.ret v) tr)) ∧
+      Steps M.toFloatSig P Config.init (.run H Activation.empty [] (.ret v) tr)) ∧
     (∀ k tr, run M.toFloatSig P fuel = .panic k tr →
       Steps M.toFloatSig P Config.init (.panic k tr))
 
@@ -45,7 +45,7 @@ no typing hypothesis. -/
 def run_sim_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) (fuel : Nat),
     (∀ H v tr, run M P fuel = .ok H v tr →
-      Steps M P Config.init (.run H Frame.empty [] (.ret v) tr)) ∧
+      Steps M P Config.init (.run H Activation.empty [] (.ret v) tr)) ∧
     (∀ k tr, run M P fuel = .panic k tr → Steps M P Config.init (.panic k tr))
 
 /-- **`eval` is complete for `Step`, modulo fuel**, the small-step-to-interpreter

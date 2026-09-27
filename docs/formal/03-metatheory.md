@@ -244,7 +244,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   that length are exactly the body's still-open bindings. So the equation
   stays definitional, and a `break`'s unwind is `RueCore.Matches.unwindPrefix`
   on those cells (`RueCore.loop_exit_ok`). It becomes a real obligation when
-  `Frame.scope` is §6.1's stack. `RueCore.Untouched` carries frame locality
+  `Activation.scope` is §6.1's stack. `RueCore.Untouched` carries frame locality
   across a call, so a caller's agreement survives a callee's run.
 - **Hypothesis:** `RueCore.ProgramTyped` — §3's class assignment for every
   struct **and enum** declaration together with `3.0:5`'s acyclicity
@@ -579,7 +579,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     innermost last, and the whole registration stack (every suspended
     caller's record, then the current frame's, `RueCore.Config.stack`) is in
     location order. In particular (D-EndScope)'s pop by count removes the
-    marker's own cells (`RueCore.Frame.popScope_tail`), which §6.7 states as
+    marker's own cells (`RueCore.Activation.unwindScope_tail`), which §6.7 states as
     a set difference and `Step.lean` implements by count.
   - `RueCore.reachable_lifo`: every step is last-in first-out on that stack
     (`RueCore.Lifo`). It keeps the stack as a prefix of the new one, or it

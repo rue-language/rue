@@ -96,7 +96,7 @@ trace has ended (`freedIds`), as one multiset (helper). -/
 def Config.ledger (D : Decls) (C : Config) : List Nat := C.held D ++ freedIds D C.trace
 
 /-- A running configuration's ledger, counted part by part (helper). -/
-theorem Config.ledger_count_run (D : Decls) (H : Store) (φ : Frame) (K : List Kont) (f : Focus)
+theorem Config.ledger_count_run (D : Decls) (H : Store) (φ : Activation) (K : List Kont) (f : Focus)
     (tr : List Event) (a : Nat) :
     ((Config.run H φ K f tr).ledger D).count a =
       (storeOwn D H).count a + (f.own D).count a + (stackOwn D K).count a +
@@ -106,7 +106,7 @@ theorem Config.ledger_count_run (D : Decls) (H : Store) (φ : Frame) (K : List K
 /-- A step between running configurations loses nothing when every identity
 the source holds is, after it, held or ended by what the step appended
 (helper). -/
-theorem ledger_le_run {D : Decls} {H H' : Store} {φ φ' : Frame} {K K' : List Kont} {f f' : Focus}
+theorem ledger_le_run {D : Decls} {H H' : Store} {φ φ' : Activation} {K K' : List Kont} {f f' : Focus}
     {tr evs : List Event}
     (h : ∀ a, (storeOwn D H).count a + (f.own D).count a + (stackOwn D K).count a ≤
       (storeOwn D H').count a + (f'.own D).count a + (stackOwn D K').count a +
@@ -118,7 +118,7 @@ theorem ledger_le_run {D : Decls} {H H' : Store} {φ φ' : Frame} {K K' : List K
   omega
 
 /-- The same for a step that appends nothing to the trace (helper). -/
-theorem ledger_le_run0 {D : Decls} {H H' : Store} {φ φ' : Frame} {K K' : List Kont} {f f' : Focus}
+theorem ledger_le_run0 {D : Decls} {H H' : Store} {φ φ' : Activation} {K K' : List Kont} {f f' : Focus}
     {tr : List Event}
     (h : ∀ a, (storeOwn D H).count a + (f.own D).count a + (stackOwn D K).count a ≤
       (storeOwn D H').count a + (f'.own D).count a + (stackOwn D K').count a) :
@@ -200,7 +200,7 @@ the context that the frames the unwind discards hold no owned value — what
 `pendingSafe` guarantees at every form that pushes such a frame (RUE-2316). A
 trap is not simulated: §6.12's `↯κ` keeps no store, so it holds nothing, and
 §5.7's `⊥_panic` edge runs no drop. -/
-def MSim (M : FloatSig) (P : Program) (φ : Frame) (C : List Kont → List Event → Config) :
+def MSim (M : FloatSig) (P : Program) (φ : Activation) (C : List Kont → List Event → Config) :
     EvalRes → Prop
   | .ok H v tr' => ∀ K tr, MSteps M P (C K tr) (.run H φ K (.ret v) (tr ++ tr'))
   | .returned H v tr' => ∀ K tr φs K', Kont.toCall K = some (φs, K') →
@@ -218,7 +218,7 @@ theorem stackOwn_cons_nil {D : Decls} {F : Kont} (hF : F.own D = []) (K : List K
   simp [stackOwn, List.flatMap_cons, hF]
 
 /-- A lossless run into the family carries its simulation back (helper). -/
-theorem MSim.pre {φ : Frame} {C C₂ : List Kont → List Event → Config} {r : EvalRes}
+theorem MSim.pre {φ : Activation} {C C₂ : List Kont → List Event → Config} {r : EvalRes}
     (hpre : ∀ K tr, MSteps M P (C K tr) (C₂ K tr)) (h : MSim M P φ C₂ r) : MSim M P φ C r := by
   cases r <;> simp only [MSim] at h ⊢
   · intro K tr; exact (hpre K tr).trans (h K tr)
@@ -227,7 +227,7 @@ theorem MSim.pre {φ : Frame} {C C₂ : List Kont → List Event → Config} {r 
 
 /-- A lossless run that emits `tr₁` carries the simulation back to the result
 with `tr₁` prefixed (helper). -/
-theorem MSim.withTrace {φ : Frame} {C C₂ : List Kont → List Event → Config} {r : EvalRes}
+theorem MSim.withTrace {φ : Activation} {C C₂ : List Kont → List Event → Config} {r : EvalRes}
     {tr₁ : List Event} (hpre : ∀ K tr, MSteps M P (C K tr) (C₂ K (tr ++ tr₁)))
     (h : MSim M P φ C₂ r) : MSim M P φ C (r.withTrace tr₁) := by
   cases r <;> simp only [MSim, EvalRes.withTrace] at h ⊢
@@ -242,7 +242,7 @@ theorem MSim.withTrace {φ : Frame} {C C₂ : List Kont → List Event → Confi
 
 /-- A result that neither completes nor unwinds is simulated vacuously
 (helper). -/
-theorem MSim.of_quiet {φ : Frame} {C : List Kont → List Event → Config} {r : EvalRes}
+theorem MSim.of_quiet {φ : Activation} {C : List Kont → List Event → Config} {r : EvalRes}
     (hq : r.NoRet ∧ r.NoBrk) (hok : ∀ H v tr, r ≠ .ok H v tr) : MSim M P φ C r := by
   cases r with
   | ok H v tr => exact absurd rfl (hok H v tr)
@@ -253,7 +253,7 @@ theorem MSim.of_quiet {φ : Frame} {C : List Kont → List Event → Config} {r 
 /-- **§6.2's (Search), once, losslessly**: an enter run pushing a frame `F`
 that holds nothing, the operand simulated under `F`, and the context's
 simulation from the operand's value (helper). -/
-theorem MSim.andThen {φ φ₁ : Frame} {C C₁ : List Kont → List Event → Config} {F : Kont}
+theorem MSim.andThen {φ φ₁ : Activation} {C C₁ : List Kont → List Event → Config} {F : Kont}
     (hF : F.Transparent) (hFo : F.own P.decls = [])
     (hC : ∀ K tr, MSteps M P (C K tr) (C₁ (F :: K) tr))
     {r : EvalRes} (h₁ : MSim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
@@ -281,7 +281,7 @@ theorem MSim.andThen {φ φ₁ : Frame} {C C₁ : List Kont → List Event → C
 /-- **A later operand under a held value** (RUE-2316): the frame holds a
 value, so the operand must not unwind — `pendingSafe` — and then only its
 value matters (helper). -/
-theorem MSim.andThenHeld {φ φ₁ : Frame} {C C₁ : List Kont → List Event → Config} {F : Kont}
+theorem MSim.andThenHeld {φ φ₁ : Activation} {C C₁ : List Kont → List Event → Config} {F : Kont}
     (hC : ∀ K tr, MSteps M P (C K tr) (C₁ (F :: K) tr))
     {r : EvalRes} (hq : r.NoRet ∧ r.NoBrk) (h₁ : MSim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
     (hk : ∀ H₁ v tr₁, r = .ok H₁ v tr₁ →
@@ -299,7 +299,7 @@ theorem MSim.andThenHeld {φ φ₁ : Frame} {C C₁ : List Kont → List Event �
 
 /-- A result that is not a value passes through a frame that holds nothing
 (helper). -/
-theorem MSim.lift {φ φ₁ : Frame} {C C₁ : List Kont → List Event → Config} {F : Kont}
+theorem MSim.lift {φ φ₁ : Activation} {C C₁ : List Kont → List Event → Config} {F : Kont}
     (hF : F.Transparent) (hFo : F.own P.decls = [])
     (hC : ∀ K tr, MSteps M P (C K tr) (C₁ (F :: K) tr))
     {r : EvalRes} (h₁ : MSim M P φ₁ C₁ r) (hr : ∀ H v tr, r ≠ .ok H v tr) :
@@ -310,7 +310,7 @@ theorem MSim.lift {φ φ₁ : Frame} {C C₁ : List Kont → List Event → Conf
 
 /-- §6.9's call boundary, losslessly: the body's `returned` is caught at the
 `call φ` frame, which holds nothing (helper). -/
-theorem MSim.absorb {φ φ₁ : Frame} {C C₁ : List Kont → List Event → Config}
+theorem MSim.absorb {φ φ₁ : Activation} {C C₁ : List Kont → List Event → Config}
     (hC : ∀ K tr, MSteps M P (C K tr) (C₁ (.call φ :: K) tr))
     {r : EvalRes} (h₁ : MSim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
     (hk : ∀ H₁ v tr₁, r = .ok H₁ v tr₁ →
@@ -332,7 +332,7 @@ theorem MSim.absorb {φ φ₁ : Frame} {C C₁ : List Kont → List Event → Co
 
 /-- Where no target has an expression in focus, a first step of the family
 can be peeled off by determinism (helper). -/
-theorem MSim.peel {φ : Frame} {C C₂ : List Kont → List Event → Config} {r : EvalRes}
+theorem MSim.peel {φ : Activation} {C C₂ : List Kont → List Event → Config} {r : EvalRes}
     (hs : ∀ K tr, Step M P (C K tr) (C₂ K tr)) (hC : ∀ K tr, (C K tr).evalFocus)
     (h : MSim M P φ C r) : MSim M P φ C₂ r := by
   cases r <;> simp only [MSim] at h ⊢
@@ -516,7 +516,7 @@ def MSimIH (M : FloatSig) (P : Program) (fuel : Nat) : Prop :=
     MSim M P φ (evalConf H φ e) (eval M fuel P H φ e)
 
 section forms
-variable {M : FloatSig} {P : Program} {fuel : Nat} {H : Store} {φ : Frame}
+variable {M : FloatSig} {P : Program} {fuel : Nat} {H : Store} {φ : Activation}
 
 /-- An argument list of `pendingSafe` members that finishes leaves a
 copy-closed store and copy-closed values (`eval_exact`) (helper). -/
@@ -548,7 +548,7 @@ theorem evalArgs_cc (hp : P.pendingSafe = true) :
 
 /-- **An argument list that finishes, losslessly** (§6.2's `…( v̄, E, ē )`):
 each member is pushed, simulated, and plugged back into the list (helper). -/
-theorem evalArgs_msimOk (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (t : ArgsTag) :
+theorem evalArgs_msimOk (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (t : ArgsFrame) :
     ∀ (es : List Expr) (H : Store) (vs₀ : List Val), Expr.pendingSafeList es = true →
       StoreCC P.decls H →
       ∀ H' vs tr', evalArgs (fun H e => eval M fuel P H φ e) H es = .ok H' vs tr' →
@@ -593,7 +593,7 @@ theorem evalArgs_msimOk (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (t : 
 may unwind (`pendingSafe`): nothing is pending when the first one does, and
 the list's tag holds nothing; a later member's abort is a trap, a refusal or
 exhausted fuel (helper). -/
-theorem evalArgs_msimAbort (IH : MSimIH M P fuel) (t : ArgsTag)
+theorem evalArgs_msimAbort (IH : MSimIH M P fuel) (t : ArgsFrame)
     (ht : t.own P.decls = []) :
     ∀ (es : List Expr) (H : Store), Expr.pendingSafeList es = true →
       Expr.quietList es.tail = true → StoreCC P.decls H →
@@ -653,7 +653,7 @@ theorem MSteps.enter {H : Store} {K : List Kont} {tr : List Event} {e e' : Expr}
     rw [stackOwn_cons_nil hF]; simp only [Focus.own, List.count_nil]; omega)
 
 /-- An enter step into a list context whose tag holds nothing (helper). -/
-theorem MSteps.enterArgs {H : Store} {K : List Kont} {tr : List Event} {e : Expr} {t : ArgsTag}
+theorem MSteps.enterArgs {H : Store} {K : List Kont} {tr : List Event} {e : Expr} {t : ArgsFrame}
     {es : List Expr} (ht : t.own P.decls = [])
     (s : Step M P (.run H φ K (.eval e) tr) (.run H φ K (.args t [] es) tr)) :
     MSteps M P (.run H φ K (.eval e) tr) (.run H φ K (.args t [] es) tr) :=
@@ -866,7 +866,7 @@ theorem msim_dbg (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H) (e : Expr)
 /-- An argument-list form's prefix: the enter step, and the list run to its
 redex or its abort, losslessly (helper). -/
 theorem msim_argsForm (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
-    (hcc : StoreCC P.decls H) {e : Expr} {t : ArgsTag} (ht : t.own P.decls = []) {es : List Expr}
+    (hcc : StoreCC P.decls H) {e : Expr} {t : ArgsFrame} (ht : t.own P.decls = []) {es : List Expr}
     (hps : Expr.pendingSafeList es = true) (hql : Expr.quietList es.tail = true)
     (hent : ∀ K tr, MSteps M P (evalConf H φ e K tr) (argsConf H φ t [] es K tr))
     {k : Store → List Val → List Event → EvalRes}
@@ -906,7 +906,7 @@ theorem msim_mkStruct (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
         rw [List.append_nil]
         exact MSteps.single (.mkStruct hsd hlen) (ledger_le_run0 fun a => by
           have := Contents.own_struct_ge hv a
-          simp only [Focus.own, ArgsTag.own, storeOwn_append, List.nil_append, List.count_append]
+          simp only [Focus.own, ArgsFrame.own, storeOwn_append, List.nil_append, List.count_append]
           simp only [storeOwn, Cell.own, List.flatMap_cons, List.flatMap_nil, List.append_nil,
             List.count_nil]
           simp only [Val.own, Contents.ofVal] at this ⊢
@@ -938,7 +938,7 @@ theorem msim_mkEnum (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
           rw [List.append_nil]
           exact MSteps.single (.mkEnum hed hTs hlen) (ledger_le_run0 fun a => by
             have := (Contents.enum_payload hv a).1
-            simp only [Focus.own, ArgsTag.own, storeOwn_append, List.nil_append, List.count_append]
+            simp only [Focus.own, ArgsFrame.own, storeOwn_append, List.nil_append, List.count_append]
             simp only [storeOwn, Cell.own, List.flatMap_cons, List.flatMap_nil, List.append_nil,
               List.count_nil]
             simp only [Val.own, Contents.ofVal] at this ⊢
@@ -962,7 +962,7 @@ theorem msim_mkArray (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
     rw [List.append_nil]
     exact MSteps.single .mkArray (ledger_le_run0 fun a => by
       have := Contents.own_array_ge hv a
-      simp only [Focus.own, ArgsTag.own, storeOwn_append, List.nil_append, List.count_append]
+      simp only [Focus.own, ArgsFrame.own, storeOwn_append, List.nil_append, List.count_append]
       simp only [storeOwn, Cell.own, List.flatMap_cons, List.flatMap_nil, List.append_nil,
         List.count_nil]
       simp only [Val.own, Contents.ofVal] at this ⊢
@@ -1022,7 +1022,7 @@ theorem msim_indexRead_args (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
           · rename_i hcopy
             intro K tr
             simpa using MSteps.single (.indexRead hd hleaf hv hcopy) (ledger_le_run0 fun a => by
-              simp only [Focus.own, ArgsTag.own, Val.ints_own (D := P.decls) his, List.append_nil,
+              simp only [Focus.own, ArgsFrame.own, Val.ints_own (D := P.decls) his, List.append_nil,
                 List.count_nil]
               omega)
           · trivial
@@ -1072,7 +1072,7 @@ theorem msim_indexDrop (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
             intro K tr
             simpa [EvalRes.bind] using MSteps.single (.indexDrop hd hleaf hv hcopy)
               (ledger_le_run0 (tr := tr) fun a => by
-                simp only [Focus.own, ArgsTag.own, Val.ints_own (D := P.decls) his, List.append_nil,
+                simp only [Focus.own, ArgsFrame.own, Val.ints_own (D := P.decls) his, List.append_nil,
                   Val.own_unit, List.count_nil]
                 omega)
           · trivial
@@ -1095,7 +1095,7 @@ theorem msim_indexWrite (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   have hent : ∀ K tr, MSteps M P (.run H₁ φ (.indexWriteRhs p idx πs :: K) (.ret v) tr)
       (argsConf H₁ φ (.indexWrite p πs v) [] idx K tr) := fun _ _ =>
     MSteps.single .indexWriteRhs (ledger_le_run0 fun a => by
-      simp only [Focus.own, Kont.own, ArgsTag.own, stackOwn, List.flatMap_cons, Contents.ofVals,
+      simp only [Focus.own, Kont.own, ArgsFrame.own, stackOwn, List.flatMap_cons, Contents.ofVals,
         Contents.ownList, List.append_nil, List.count_append, List.count_nil]
       omega)
   split
@@ -1136,7 +1136,7 @@ theorem msim_indexWrite (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
                   intro K tr
                   exact MSteps.single (.indexWrite hd hold hdrop hw₁ hw₂) (ledger_le_run fun a => by
                     have := assignDyn_count c₂ hc hsub hold hdrop hw₁ hw₂ hc' a
-                    simp only [Focus.own, ArgsTag.own, Val.ints_own (D := P.decls) his,
+                    simp only [Focus.own, ArgsFrame.own, Val.ints_own (D := P.decls) his,
                       List.append_nil, Val.own_unit, List.count_nil]
                     omega)
                 · trivial
@@ -1187,7 +1187,7 @@ theorem msim_match (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (hcc : Sto
         have hs := Step.endScope (M := M) (P := P) (K := K) (tr := tr) (v := v₂)
           (φ := { env := (mintParams H₀ vs).2.reverse ++ φ.env,
                   scope := φ.scope ++ (mintParams H₀ vs).2 }) (unwindLocs_plain hu)
-        rw [Frame.popScope_push] at hs
+        rw [Activation.unwindScope_push] at hs
         exact MSteps.single hs (ledger_le_run fun a => by
           have := plainUnwind_count (unwindLocs_plain hu) a
           rw [stackOwn_cons_nil rfl]
@@ -1222,7 +1222,7 @@ theorem msim_letIn (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (hcc : Sto
     have hs := Step.endScope (M := M) (P := P) (K := K) (tr := tr) (v := v₂)
       (φ := { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] })
       (ℓs := [H₁.length]) (plainUnwind_single hd)
-    simp only [List.length_singleton, Frame.popScope_let] at hs
+    simp only [List.length_singleton, Activation.unwindScope_let] at hs
     exact MSteps.single hs (ledger_le_run fun a => by
       have := plainUnwind_count (plainUnwind_single hd) a
       rw [stackOwn_cons_nil rfl]
@@ -1353,7 +1353,7 @@ theorem msim_call (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (hcc : Stor
     · rename_i hlen
       refine MSim.absorb (fun _ _ => MSteps.single (.call hfd hlen rfl) (ledger_le_run0 fun a => by
           rw [storeOwn_mintParams, stackOwn_cons_nil rfl]
-          simp only [Focus.own, ArgsTag.own, List.nil_append, List.count_append, List.count_nil]
+          simp only [Focus.own, ArgsFrame.own, List.nil_append, List.count_append, List.count_nil]
           omega))
         (IH _ _ fd.body (c₁.mintParams cv₁) (hbody f fd hfd)) ?_
       intro H₃ v _ hr₃
@@ -1506,8 +1506,8 @@ configuration from `Config.init` by a run along which no step loses an owned
 identity. -/
 theorem run_msteps (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) (fuel : Nat)
     {H : Store} {v : Val} {tr : List Event} (hr : run M P fuel = .ok H v tr) :
-    MSteps M P Config.init (.run H Frame.empty [] (.ret v) tr) := by
-  have h := eval_msim M hp fuel [] Frame.empty (.call 0 []) (fun ℓ c hc => by simp at hc) rfl
+    MSteps M P Config.init (.run H Activation.empty [] (.ret v) tr) := by
+  have h := eval_msim M hp fuel [] Activation.empty (.call 0 []) (fun ℓ c hc => by simp at hc) rfl
   simp only [run] at hr
   rw [hr] at h
   simpa [Config.init] using h [] []
@@ -1531,8 +1531,8 @@ own by the range of identities minted (`run_trace_once`'s argument). -/
 theorem run_final_le (M : FloatSig) (P : Program) (fuel : Nat) {H : Store} {v : Val}
     {tr : List Event} (hr : run M P fuel = .ok H v tr) :
     storeOwn P.decls H = [] ∧ ∀ a, (v.own P.decls).count a + (freedIds P.decls tr).count a ≤ 1 := by
-  have ht := eval_tidy M P fuel [] Frame.empty (.call 0 []) ⟨by simp, by simp⟩
-  have hc := eval_conserves M (freed_measure P.decls) fuel [] Frame.empty (.call 0 [])
+  have ht := eval_tidy M P fuel [] Activation.empty (.call 0 []) ⟨by simp, by simp⟩
+  have hc := eval_conserves M (freed_measure P.decls) fuel [] Activation.empty (.call 0 [])
     (fun ℓ c hc => by simp at hc)
   simp only [run] at hr
   rw [hr] at ht hc
@@ -1568,7 +1568,7 @@ where `eval_tidy` has retired every cell and `eval_conserves` bounds each
 count by one. -/
 theorem whole_program_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
     (hp : P.pendingSafe = true) {C : Config} (hC : Steps M.toFloatSig P Config.init C) {a : Nat}
-    (ha : a ∈ C.held P.decls) {H : Store} {φ : Frame} {v : Val} {tr : List Event}
+    (ha : a ∈ C.held P.decls) {H : Store} {φ : Activation} {v : Val} {tr : List Event}
     (hT : Steps M.toFloatSig P C (.run H φ [] (.ret v) tr)) :
     (v.own P.decls).count a + (freedIds P.decls tr).count a = 1 := by
   obtain ⟨n, hn⟩ := (eval_complete M h).1 H φ v tr (hC.trans hT)

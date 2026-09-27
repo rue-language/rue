@@ -47,7 +47,7 @@ theorem Step.terminal {M : FloatSig} {P : Program} {C C' : Config}
 /-! ## `step` is `Step`, and the enumeration of what a configuration can be -/
 
 /-- `stepEval`'s `next` is a `Step` (helper). -/
-theorem stepEval_complete {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+theorem stepEval_complete {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
     {K : List Kont} {tr : List Event} {e : Expr} {C' : Config}
     (h : stepEval M P H φ K tr e = .next C') : Step M P (.run H φ K (.eval e) tr) C' := by
   cases e <;> simp only [stepEval] at h
@@ -58,8 +58,8 @@ theorem stepEval_complete {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   all_goals (constructor <;> first | assumption | rfl)
 
 /-- `stepArgs`'s `next` is a `Step` (helper). -/
-theorem stepArgs_complete {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
-    {K : List Kont} {tr : List Event} {vs : List Val} {t : ArgsTag} {C' : Config}
+theorem stepArgs_complete {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
+    {K : List Kont} {tr : List Event} {vs : List Val} {t : ArgsFrame} {C' : Config}
     (h : stepArgs P H φ K tr vs t = .next C') : Step M P (.run H φ K (.args t vs []) tr) C' := by
   cases t <;> simp only [stepArgs] at h
   all_goals (repeat' split at h)
@@ -68,7 +68,7 @@ theorem stepArgs_complete {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   all_goals (constructor <;> first | assumption | rfl)
 
 /-- `stepRet`'s `next` is a `Step` (helper). -/
-theorem stepRet_complete {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+theorem stepRet_complete {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
     {K : List Kont} {tr : List Event} {v : Val} {k : Kont} {C' : Config}
     (h : stepRet M P H φ K tr v k = .next C') : Step M P (.run H φ (k :: K) (.ret v) tr) C' := by
   cases k <;> simp only [stepRet, OpRes.toStep] at h
@@ -93,7 +93,7 @@ theorem step_iff {M : FloatSig} {P : Program} {C C' : Config} :
   | .run H φ (k :: K) (.ret v) tr, h => exact stepRet_complete h
 
 /-- `stepEval` never answers `halted` (helper). -/
-theorem stepEval_ne_halted {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+theorem stepEval_ne_halted {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
     {K : List Kont} {tr : List Event} {e : Expr} : stepEval M P H φ K tr e ≠ .halted := by
   intro h
   cases e <;> simp only [stepEval] at h
@@ -101,15 +101,15 @@ theorem stepEval_ne_halted {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
   all_goals simp at h
 
 /-- `stepArgs` never answers `halted` (helper). -/
-theorem stepArgs_ne_halted {P : Program} {H : Store} {φ : Frame} {K : List Kont}
-    {tr : List Event} {vs : List Val} {t : ArgsTag} : stepArgs P H φ K tr vs t ≠ .halted := by
+theorem stepArgs_ne_halted {P : Program} {H : Store} {φ : Activation} {K : List Kont}
+    {tr : List Event} {vs : List Val} {t : ArgsFrame} : stepArgs P H φ K tr vs t ≠ .halted := by
   intro h
   cases t <;> simp only [stepArgs] at h
   all_goals (repeat' split at h)
   all_goals simp at h
 
 /-- `stepRet` never answers `halted` (helper). -/
-theorem stepRet_ne_halted {M : FloatSig} {P : Program} {H : Store} {φ : Frame}
+theorem stepRet_ne_halted {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
     {K : List Kont} {tr : List Event} {v : Val} {k : Kont} : stepRet M P H φ K tr v k ≠ .halted := by
   intro h
   cases k <;> simp only [stepRet, OpRes.toStep] at h
@@ -299,7 +299,7 @@ theorem plainDestructure_err {D : Decls} {ℓ : Nat} {c : Contents} {πs : List 
     · simp at h
 
 /-- `rootCell` refuses only with §6's stuck states (helper). -/
-theorem rootCell_err {H : Store} {φ : Frame} {i : Nat} {w : Violation}
+theorem rootCell_err {H : Store} {φ : Activation} {i : Nat} {w : Violation}
     (h : rootCell H φ i = .error w) : w.isStuckState = true := by
   simp only [rootCell] at h
   repeat' split at h
@@ -328,7 +328,7 @@ theorem Contents.resolveDyn_err : ∀ {c : Contents} {is : List Int} {πs : List
       cases c <;> simp [Contents.resolveDyn] at h <;> (subst h; rfl)
 
 /-- Navigating a dynamic place refuses only with §6's stuck states (helper). -/
-theorem dynPlace_err {H : Store} {φ : Frame} {p : Place} {vs : List Val}
+theorem dynPlace_err {H : Store} {φ : Activation} {p : Place} {vs : List Val}
     {πs : List (List Nat)} {w : Violation}
     (h : dynPlace H φ p vs πs = .stuck w) : w.isStuckState = true := by
   simp only [dynPlace] at h

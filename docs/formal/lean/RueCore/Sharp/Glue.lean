@@ -64,7 +64,7 @@ theorem stuck.soundness_1 :
     ¬∀ (M : FloatModel) {P : Program} (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : RueCore.Expr}
         {T : Ty},
         Typed P R Γ e T Ω →
-          ∀ {φ : Frame} {H : Store},
+          ∀ {φ : Activation} {H : Store},
             FrameMatches P.decls Γ φ H →
               EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e) := by
   intro h
@@ -106,12 +106,12 @@ theorem stuck.no_use_after_move_1 :
 
 /-- `Sharp.stuck` refutes `no_masking` without hypothesis 2 (helper). -/
 theorem stuck.no_masking_2 :
-    ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : RueCore.Expr} {n m : Nat}
+    ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : RueCore.Expr} {n m : Nat}
         {w : Violation}, eval M n P H φ e = EvalRes.stuck w → eval M m P H φ e = EvalRes.stuck w := by
   intro h
   obtain ⟨-, hnpt, hnwf, -, hps, heps, hfm, hcc, ⟨c, Ω, -, -, ht, hne⟩, hl, h200, -, h201, -, hr200, -, hnot⟩ :=
     Spine.Sharp.stuck _ rfl _ rfl
-  have h0 : eval Float.exactOps 0 progStuck [] Frame.empty (.call 0 []) = .outOfFuel := rfl
+  have h0 : eval Float.exactOps 0 progStuck [] Activation.empty (.call 0 []) = .outOfFuel := rfl
   have := h Float.exactOps (m := 0) h200
   rw [h0] at this
   cases this
@@ -128,7 +128,7 @@ theorem stuck.checkProgram_sound_1 :
 theorem stuck.drop_exactly_once_1 :
     ¬∀ (M : FloatModel) {P : Program},
         P.pendingSafe = true →
-          ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Frame}
+          ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
             {H : Store},
             Typed P R Γ e T Ω →
               FrameMatches P.decls Γ φ H →
@@ -146,7 +146,7 @@ theorem stuck.drop_exactly_once_1 :
 theorem stuck.rest_exactly_once_1 :
     ¬∀ (M : FloatModel) {P : Program},
         P.pendingSafe = true →
-          ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Frame}
+          ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
             {H : Store},
             Typed P R Γ e T Ω →
               FrameMatches P.decls Γ φ H →
@@ -170,7 +170,7 @@ theorem stuck.eval_sound_1 :
         (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
           (∀ (H : Store) (v : Val) (tr : List Event),
               run M.toFloatSig P fuel = EvalRes.ok H v tr →
-                Steps M.toFloatSig P Config.init (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+                Steps M.toFloatSig P Config.init (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
             ∀ (k : PanicKind) (tr : List Event),
               run M.toFloatSig P fuel = EvalRes.panic k tr →
                 Steps M.toFloatSig P Config.init (Config.panic k tr) := by
@@ -206,7 +206,7 @@ theorem stuck_step.step_type_safety_1 :
             ∀ (n : Nat),
               (∃ D, StepsN M.toFloatSig P n Config.init D) ∨
                 (∃ H v tr,
-                    Steps M.toFloatSig P Config.init (Config.run H Frame.empty [] (Focus.ret v) tr) ∧
+                    Steps M.toFloatSig P Config.init (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                       HasTy P.decls v fd.ret) ∨
                   ∃ κ tr, Steps M.toFloatSig P Config.init (Config.panic κ tr) := by
   intro h
@@ -235,7 +235,7 @@ theorem stuck_step.run_stuck_of_step_stuck_3 :
 theorem typed.soundness_2 :
     ¬∀ (M : FloatModel) {P : Program},
         WfProgram P →
-          ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : RueCore.Expr} {T : Ty} {φ : Frame}
+          ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : RueCore.Expr} {T : Ty} {φ : Activation}
             {H : Store},
             FrameMatches P.decls Γ φ H →
               EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e) := by
@@ -260,7 +260,7 @@ theorem typed.drop_exactly_once_3 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
           P.pendingSafe = true →
-            ∀ {fuel : Nat} {_R : Ty} {Γ : Ctx} {e : RueCore.Expr} {_T : Ty} {_Ω : Out} {φ : Frame}
+            ∀ {fuel : Nat} {_R : Ty} {Γ : Ctx} {e : RueCore.Expr} {_T : Ty} {_Ω : Out} {φ : Activation}
               {H : Store},
               FrameMatches P.decls Γ φ H →
                 StoreCC P.decls H →
@@ -279,7 +279,7 @@ theorem typed.rest_exactly_once_3 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
           P.pendingSafe = true →
-            ∀ {fuel : Nat} {_R : Ty} {Γ : Ctx} {e : RueCore.Expr} {_T : Ty} {_Ω : Out} {φ : Frame}
+            ∀ {fuel : Nat} {_R : Ty} {Γ : Ctx} {e : RueCore.Expr} {_T : Ty} {_Ω : Out} {φ : Activation}
               {H : Store},
               FrameMatches P.decls Γ φ H →
                 StoreCC P.decls H →
@@ -303,19 +303,19 @@ theorem frame.soundness_3 :
         WfProgram P →
           ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : RueCore.Expr} {T : Ty},
             Typed P R Γ e T Ω →
-              ∀ {φ : Frame} {H : Store},
+              ∀ {φ : Activation} {H : Store},
                 EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e) := by
   intro h
   obtain ⟨hPT, hwf, hps, heps, hcc, ⟨c, Ω, -, -, ht, hne⟩, -, hl, h200, -, h201⟩ :=
     Spine.Sharp.frame _ rfl _ rfl _ rfl
-  exact hne (h Float.exactModel hwf 200 ht (φ := Frame.empty) (H := []))
+  exact hne (h Float.exactModel hwf 200 ht (φ := Activation.empty) (H := []))
 
 /-- `Sharp.frame` refutes `drop_exactly_once` without hypothesis 4 (helper). -/
 theorem frame.drop_exactly_once_4 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
           P.pendingSafe = true →
-            ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Frame}
+            ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
               {H : Store},
               Typed P R Γ e T Ω →
                 StoreCC P.decls H →
@@ -326,14 +326,14 @@ theorem frame.drop_exactly_once_4 :
   intro h
   obtain ⟨hPT, hwf, hps, heps, hcc, ⟨c, Ω, -, -, ht, hne⟩, -, hl, h200, -, h201⟩ :=
     Spine.Sharp.frame _ rfl _ rfl _ rfl
-  exact (h Float.exactModel hPT hps (fuel := 200) (φ := Frame.empty) ht hcc heps).1 _ h200
+  exact (h Float.exactModel hPT hps (fuel := 200) (φ := Activation.empty) ht hcc heps).1 _ h200
 
 /-- `Sharp.frame` refutes `rest_exactly_once` without hypothesis 4 (helper). -/
 theorem frame.rest_exactly_once_4 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
           P.pendingSafe = true →
-            ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Frame}
+            ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
               {H : Store},
               Typed P R Γ e T Ω →
                 StoreCC P.decls H →
@@ -348,7 +348,7 @@ theorem frame.rest_exactly_once_4 :
   intro h
   obtain ⟨hPT, hwf, hps, heps, hcc, ⟨c, Ω, -, -, ht, hne⟩, -, hl, h200, -, h201⟩ :=
     Spine.Sharp.frame _ rfl _ rfl _ rfl
-  exact (h Float.exactModel hPT hps (φ := Frame.empty) ht hcc heps hl h201).1 _ rfl
+  exact (h Float.exactModel hPT hps (φ := Activation.empty) ht hcc heps hl h201).1 _ rfl
 
 /-- `Sharp.no_entry` refutes `run_safe` without hypothesis 2 (helper). -/
 theorem no_entry.run_safe_2 :
@@ -404,7 +404,7 @@ theorem leak.no_linear_leak_1 :
 /-- `Sharp.leak` refutes `eval_complete` without hypothesis 1 (helper). -/
 theorem leak.eval_complete_1 :
     ¬∀ (M : FloatModel) {P : Program},
-        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
               ∃ n, ∀ (fuel : Nat), n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
           ∀ (κ : PanicKind) (tr : List Event),
@@ -433,7 +433,7 @@ theorem discard.no_linear_discard_1 :
 /-- `Sharp.discard` refutes `eval_complete` without hypothesis 1 (helper). -/
 theorem discard.eval_complete_1 :
     ¬∀ (M : FloatModel) {P : Program},
-        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
               ∃ n, ∀ (fuel : Nat), n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
           ∀ (κ : PanicKind) (tr : List Event),
@@ -472,32 +472,32 @@ theorem discard_loop.eval_diverges_iff_1 :
 
 /-- `Sharp.fuel` refutes `fuel_mono` without hypothesis 1 (helper). -/
 theorem fuel.fuel_mono_1 :
-    ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : RueCore.Expr} {n m : Nat},
+    ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : RueCore.Expr} {n m : Nat},
         eval M n P H φ e ≠ EvalRes.outOfFuel → eval M m P H φ e = eval M n P H φ e := by
   intro h
   obtain ⟨hPT, hrun, -, H, v, tr, hr, hs, -, -, hne, hns, hn⟩ := Spine.Sharp.fuel _ rfl _ rfl
-  have k := h Float.exactOps (P := progDtor) (H := []) (φ := Frame.empty) (e := .call 0 []) (n := 200) (m := 0)
+  have k := h Float.exactOps (P := progDtor) (H := []) (φ := Activation.empty) (e := .call 0 []) (n := 200) (m := 0)
     (by rw [← hrun, hr]; intro h; cases h)
   rw [← hrun, ← hrun] at k
   exact hne k
 
 /-- `Sharp.fuel` refutes `fuel_mono` without hypothesis 2 (helper). -/
 theorem fuel.fuel_mono_2 :
-    ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : RueCore.Expr} {n m : Nat},
+    ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : RueCore.Expr} {n m : Nat},
         n ≤ m → eval M m P H φ e = eval M n P H φ e := by
   intro h
   obtain ⟨hPT, hrun, -, H, v, tr, hr, hs, -, -, hne, hns, hn⟩ := Spine.Sharp.fuel _ rfl _ rfl
-  have k := h Float.exactOps (P := progDtor) (H := []) (φ := Frame.empty) (e := .call 0 []) (Nat.zero_le 200)
+  have k := h Float.exactOps (P := progDtor) (H := []) (φ := Activation.empty) (e := .call 0 []) (Nat.zero_le 200)
   rw [← hrun, ← hrun] at k
   exact hne k.symm
 
 /-- `Sharp.fuel` refutes `no_masking` without hypothesis 1 (helper). -/
 theorem fuel.no_masking_1 :
-    ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Frame} {e : RueCore.Expr} {_n : Nat} {m : Nat}
+    ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : RueCore.Expr} {_n : Nat} {m : Nat}
         {w : Violation}, eval M m P H φ e ≠ EvalRes.outOfFuel → eval M m P H φ e = EvalRes.stuck w := by
   intro h
   obtain ⟨hPT, hrun, -, H, v, tr, hr, hs, -, -, hne, hns, hn⟩ := Spine.Sharp.fuel _ rfl _ rfl
-  have k := h Float.exactOps (P := progDtor) (H := []) (φ := Frame.empty) (e := .call 0 []) (_n := 0) (m := 200)
+  have k := h Float.exactOps (P := progDtor) (H := []) (φ := Activation.empty) (e := .call 0 []) (_n := 0) (m := 200)
     (w := .unbound) (by rw [← hrun, hr]; intro h; cases h)
   rw [← hrun] at k
   exact hns _ k
@@ -506,7 +506,7 @@ theorem fuel.no_masking_1 :
 theorem fuel.eval_complete_3 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
-          (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
               Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
                 ∃ _n : Nat, ∀ (fuel : Nat), run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
             ∀ (κ : PanicKind) (tr : List Event),
@@ -520,7 +520,7 @@ theorem fuel.eval_complete_3 :
 /-- `Sharp.fuel` refutes `run_complete` without hypothesis 2 (helper). -/
 theorem fuel.run_complete_2 :
     ¬∀ (M : FloatSig) (P : Program),
-        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
               ∃ _n : Nat,
                 ∀ (fuel : Nat),
@@ -539,7 +539,7 @@ theorem fuel.run_complete_2 :
 theorem fuel_panic.eval_complete_5 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
-          (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
               Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
                 ∃ n : Nat, ∀ (fuel : Nat), n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
             ∀ (κ : PanicKind) (tr : List Event),
@@ -553,7 +553,7 @@ theorem fuel_panic.eval_complete_5 :
 /-- `Sharp.fuel_panic` refutes `run_complete` without hypothesis 4 (helper). -/
 theorem fuel_panic.run_complete_4 :
     ¬∀ (M : FloatSig) (P : Program),
-        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
               ∃ n : Nat,
                 ∀ (fuel : Nat),
@@ -607,7 +607,7 @@ theorem double_drop.dtor_once_1 :
 /-- `Sharp.bare_dtor` refutes `drop_order` without hypothesis 1 (helper). -/
 theorem bare_dtor.drop_order_1 :
     ¬∀ (M : FloatModel) {P : Program},
-        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) → Blocks P.decls tr) ∧
           (∀ (κ : PanicKind) (tr : List Event),
               Steps M.toFloatSig P Config.init (Config.panic κ tr) → Blocks P.decls tr) ∧
@@ -627,7 +627,7 @@ theorem bare_dtor.drop_order_1 :
 outside `Blocks` is outside `DropGlueBlocks` (helper). -/
 theorem bare_dtor.drop_glue_order_1 :
     ¬∀ (M : FloatModel) {P : Program},
-        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
               DropGlueBlocks P.decls tr) ∧
           ∀ (κ : PanicKind) (tr : List Event),
@@ -640,7 +640,7 @@ theorem bare_dtor.drop_glue_order_1 :
 theorem pending_program.drop_exactly_once_2 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
-          ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Frame}
+          ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
             {H : Store},
             Typed P R Γ e T Ω →
               FrameMatches P.decls Γ φ H →
@@ -658,7 +658,7 @@ theorem pending_program.drop_exactly_once_2 :
 theorem pending_program.rest_exactly_once_2 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
-          ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Frame}
+          ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
             {H : Store},
             Typed P R Γ e T Ω →
               FrameMatches P.decls Γ φ H →
@@ -681,7 +681,7 @@ theorem pending_expr.drop_exactly_once_6 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
           P.pendingSafe = true →
-            ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Frame}
+            ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
               {H : Store},
               Typed P R Γ e T Ω →
                 FrameMatches P.decls Γ φ H →
@@ -699,7 +699,7 @@ theorem pending_expr.rest_exactly_once_6 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
           P.pendingSafe = true →
-            ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Frame}
+            ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
               {H : Store},
               Typed P R Γ e T Ω →
                 FrameMatches P.decls Γ φ H →
@@ -721,7 +721,7 @@ theorem store_cc.drop_exactly_once_5 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
           P.pendingSafe = true →
-            ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Frame}
+            ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
               {H : Store},
               Typed P R Γ e T Ω →
                 FrameMatches P.decls Γ φ H →
@@ -739,7 +739,7 @@ theorem store_cc.rest_exactly_once_5 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
           P.pendingSafe = true →
-            ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Frame}
+            ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
               {H : Store},
               Typed P R Γ e T Ω →
                 FrameMatches P.decls Γ φ H →
@@ -761,7 +761,7 @@ theorem no_lead.rest_exactly_once_7 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
           P.pendingSafe = true →
-            ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Frame}
+            ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
               {H : Store},
               Typed P R Γ e T Ω →
                 FrameMatches P.decls Γ φ H →
@@ -781,7 +781,7 @@ theorem no_eval.rest_exactly_once_8 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
           P.pendingSafe = true →
-            ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Frame}
+            ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : RueCore.Expr} {T : Ty} {Ω : Out} {φ : Activation}
               {H : Store},
               Typed P R Γ e T Ω →
                 FrameMatches P.decls Γ φ H →
@@ -801,7 +801,7 @@ theorem no_eval.rest_exactly_once_8 :
 theorem unreached.drop_order_2 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
-          (∀ (_H : Store) (_φ : Frame) (_v : Val) (tr : List Event), Blocks P.decls tr) ∧
+          (∀ (_H : Store) (_φ : Activation) (_v : Val) (tr : List Event), Blocks P.decls tr) ∧
             (∀ (κ : PanicKind) (tr : List Event),
                 Steps M.toFloatSig P Config.init (Config.panic κ tr) → Blocks P.decls tr) ∧
               ∀ (C C' : RueCore.Config),
@@ -814,18 +814,18 @@ theorem unreached.drop_order_2 :
                             List.Pairwise (fun x1 x2 => x1 < x2) C.stack := by
   intro h
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached _ rfl _ rfl
-  exact hnb ((h Float.exactModel hPT).1 [] Frame.empty (.int .w64 .signed 8) _)
+  exact hnb ((h Float.exactModel hPT).1 [] Activation.empty (.int .w64 .signed 8) _)
 
 /-- `Sharp.unreached` refutes `drop_glue_order` without hypothesis 2 (helper). -/
 theorem unreached.drop_glue_order_2 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
-          (∀ (_H : Store) (_φ : Frame) (_v : Val) (tr : List Event), DropGlueBlocks P.decls tr) ∧
+          (∀ (_H : Store) (_φ : Activation) (_v : Val) (tr : List Event), DropGlueBlocks P.decls tr) ∧
             ∀ (κ : PanicKind) (tr : List Event),
               Steps M.toFloatSig P Config.init (Config.panic κ tr) → DropGlueBlocks P.decls tr := by
   intro h
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached _ rfl _ rfl
-  exact hnb ((h Float.exactModel hPT).1 [] Frame.empty (.int .w64 .signed 8) _).toBlocks
+  exact hnb ((h Float.exactModel hPT).1 [] Activation.empty (.int .w64 .signed 8) _).toBlocks
 
 /-- `Sharp.unreached` refutes `eval_sound` without hypothesis 2 (helper). -/
 theorem unreached.eval_sound_2 :
@@ -834,7 +834,7 @@ theorem unreached.eval_sound_2 :
           ∀ (fuel : Nat),
             (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
               (∀ (H : Store) (v : Val) (tr : List Event),
-                  Steps M.toFloatSig P Config.init (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+                  Steps M.toFloatSig P Config.init (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
                 ∀ (k : PanicKind) (tr : List Event),
                   run M.toFloatSig P fuel = EvalRes.panic k tr →
                     Steps M.toFloatSig P Config.init (Config.panic k tr) := by
@@ -846,7 +846,7 @@ theorem unreached.eval_sound_2 :
 theorem unreached.run_sim_1 :
     ¬∀ (M : FloatSig) (P : Program) (fuel : Nat),
         (∀ (H : Store) (v : Val) (tr : List Event),
-            Steps M P Config.init (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+            Steps M P Config.init (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
           ∀ (k : PanicKind) (tr : List Event),
             run M P fuel = EvalRes.panic k tr → Steps M P Config.init (Config.panic k tr) := by
   intro h
@@ -857,21 +857,21 @@ theorem unreached.run_sim_1 :
 theorem unreached.eval_complete_2 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
-          (∀ (H : Store) (_φ : Frame) (v : Val) (tr : List Event),
+          (∀ (H : Store) (_φ : Activation) (v : Val) (tr : List Event),
               ∃ n, ∀ (fuel : Nat), n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
             ∀ (κ : PanicKind) (tr : List Event),
               Steps M.toFloatSig P Config.init (Config.panic κ tr) →
                 ∃ n, ∀ (fuel : Nat), n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr := by
   intro h
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached _ rfl _ rfl
-  obtain ⟨n, hk⟩ := (h Float.exactModel hPT).1 [] Frame.empty (.int .w64 .signed 8)
+  obtain ⟨n, hk⟩ := (h Float.exactModel hPT).1 [] Activation.empty (.int .w64 .signed 8)
     [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])]
   exact hn ⟨n, fun f hf => .inl (hk f hf)⟩
 
 /-- `Sharp.unreached` refutes `run_complete` without hypothesis 1 (helper). -/
 theorem unreached.run_complete_1 :
     ¬∀ (M : FloatSig) (P : Program),
-        (∀ (H : Store) (_φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (_φ : Activation) (v : Val) (tr : List Event),
             ∃ n,
               ∀ (fuel : Nat),
                 n < fuel → run M P fuel = EvalRes.ok H v tr ∨ ∃ w, run M P fuel = EvalRes.stuck w) ∧
@@ -882,13 +882,13 @@ theorem unreached.run_complete_1 :
                   n < fuel → run M P fuel = EvalRes.panic κ tr ∨ ∃ w, run M P fuel = EvalRes.stuck w := by
   intro h
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached _ rfl _ rfl
-  exact hn ((h Float.exactOps _).1 [] Frame.empty (.int .w64 .signed 8) _)
+  exact hn ((h Float.exactOps _).1 [] Activation.empty (.int .w64 .signed 8) _)
 
 /-- `Sharp.unreached_panic` refutes `drop_order` without hypothesis 3 (helper). -/
 theorem unreached_panic.drop_order_3 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
-          (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
               Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
                 Blocks P.decls tr) ∧
             (∀ (_κ : PanicKind) (tr : List Event), Blocks P.decls tr) ∧
@@ -908,7 +908,7 @@ theorem unreached_panic.drop_order_3 :
 theorem unreached_panic.drop_glue_order_3 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
-          (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
               Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
                 DropGlueBlocks P.decls tr) ∧
             ∀ (_κ : PanicKind) (tr : List Event), DropGlueBlocks P.decls tr := by
@@ -924,7 +924,7 @@ theorem unreached_panic.eval_sound_3 :
             (∀ (w : Violation), run M.toFloatSig P fuel ≠ EvalRes.stuck w) ∧
               (∀ (H : Store) (v : Val) (tr : List Event),
                   run M.toFloatSig P fuel = EvalRes.ok H v tr →
-                    Steps M.toFloatSig P Config.init (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+                    Steps M.toFloatSig P Config.init (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
                 ∀ (k : PanicKind) (tr : List Event),
                   Steps M.toFloatSig P Config.init (Config.panic k tr) := by
   intro h
@@ -936,7 +936,7 @@ theorem unreached_panic.run_sim_2 :
     ¬∀ (M : FloatSig) (P : Program) (fuel : Nat),
         (∀ (H : Store) (v : Val) (tr : List Event),
             run M P fuel = EvalRes.ok H v tr →
-              Steps M P Config.init (Config.run H Frame.empty [] (Focus.ret v) tr)) ∧
+              Steps M P Config.init (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
           ∀ (k : PanicKind) (tr : List Event), Steps M P Config.init (Config.panic k tr) := by
   intro h
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached_panic _ rfl _ rfl
@@ -946,7 +946,7 @@ theorem unreached_panic.run_sim_2 :
 theorem unreached_panic.eval_complete_4 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
-          (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
               Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
                 ∃ n, ∀ (fuel : Nat), n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
             ∀ (κ : PanicKind) (tr : List Event),
@@ -959,7 +959,7 @@ theorem unreached_panic.eval_complete_4 :
 /-- `Sharp.unreached_panic` refutes `run_complete` without hypothesis 3 (helper). -/
 theorem unreached_panic.run_complete_3 :
     ¬∀ (M : FloatSig) (P : Program),
-        (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+        (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
               ∃ n,
                 ∀ (fuel : Nat),
@@ -976,7 +976,7 @@ theorem unreached_panic.run_complete_3 :
 theorem unordered.drop_order_4 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
-          (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
               Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
                 Blocks P.decls tr) ∧
             (∀ (κ : PanicKind) (tr : List Event),
@@ -996,7 +996,7 @@ theorem unordered.drop_order_4 :
 theorem not_a_step.drop_order_5 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
-          (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
               Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
                 Blocks P.decls tr) ∧
             (∀ (κ : PanicKind) (tr : List Event),
@@ -1117,7 +1117,7 @@ theorem unreached_double.step_no_double_free_2 :
 theorem uncut_drop.drop_order_4 :
     ¬∀ (M : FloatModel) {P : Program},
         ProgramTyped P →
-          (∀ (H : Store) (φ : Frame) (v : Val) (tr : List Event),
+          (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
               Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
                 Blocks P.decls tr) ∧
             (∀ (κ : PanicKind) (tr : List Event),
@@ -1173,7 +1173,7 @@ theorem float_halt.step_preservation_2 :
 theorem copy_leak.whole_program_exactly_once_1 :
     ¬∀ (M : FloatModel) {P : Program}, P.pendingSafe = true → ∀ {C : RueCore.Config},
         Steps M.toFloatSig P Config.init C → ∀ {a : Nat}, a ∈ C.held P.decls →
-          ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+          ∀ {H : Store} {φ : Activation} {v : Val} {tr : List Event},
             Steps M.toFloatSig P C (.run H φ [] (.ret v) tr) →
               List.count a (v.own P.decls) + List.count a (freedIds P.decls tr) = 1 := by
   intro h
@@ -1185,7 +1185,7 @@ theorem copy_leak.whole_program_exactly_once_1 :
 theorem pending_leak.whole_program_exactly_once_2 :
     ¬∀ (M : FloatModel) {P : Program}, ProgramTyped P → ∀ {C : RueCore.Config},
         Steps M.toFloatSig P Config.init C → ∀ {a : Nat}, a ∈ C.held P.decls →
-          ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+          ∀ {H : Store} {φ : Activation} {v : Val} {tr : List Event},
             Steps M.toFloatSig P C (.run H φ [] (.ret v) tr) →
               List.count a (v.own P.decls) + List.count a (freedIds P.decls tr) = 1 := by
   intro h
@@ -1197,7 +1197,7 @@ theorem pending_leak.whole_program_exactly_once_2 :
 theorem unreached_held.whole_program_exactly_once_3 :
     ¬∀ (M : FloatModel) {P : Program}, ProgramTyped P → P.pendingSafe = true →
         ∀ {C : RueCore.Config} {a : Nat}, a ∈ C.held P.decls →
-          ∀ {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+          ∀ {H : Store} {φ : Activation} {v : Val} {tr : List Event},
             Steps M.toFloatSig P C (.run H φ [] (.ret v) tr) →
               List.count a (v.own P.decls) + List.count a (freedIds P.decls tr) = 1 := by
   intro h
@@ -1209,7 +1209,7 @@ theorem unreached_held.whole_program_exactly_once_3 :
 theorem unheld.whole_program_exactly_once_4 :
     ¬∀ (M : FloatModel) {P : Program}, ProgramTyped P → P.pendingSafe = true →
         ∀ {C : RueCore.Config}, Steps M.toFloatSig P Config.init C →
-          ∀ {a : Nat} {H : Store} {φ : Frame} {v : Val} {tr : List Event},
+          ∀ {a : Nat} {H : Store} {φ : Activation} {v : Val} {tr : List Event},
             Steps M.toFloatSig P C (.run H φ [] (.ret v) tr) →
               List.count a (v.own P.decls) + List.count a (freedIds P.decls tr) = 1 := by
   intro h
@@ -1221,11 +1221,11 @@ theorem unheld.whole_program_exactly_once_4 :
 theorem off_run.whole_program_exactly_once_5 :
     ¬∀ (M : FloatModel) {P : Program}, ProgramTyped P → P.pendingSafe = true →
         ∀ {C : RueCore.Config}, Steps M.toFloatSig P Config.init C → ∀ {a : Nat},
-          a ∈ C.held P.decls → ∀ {_H : Store} {_φ : Frame} {v : Val} {tr : List Event},
+          a ∈ C.held P.decls → ∀ {_H : Store} {_φ : Activation} {v : Val} {tr : List Event},
             List.count a (v.own P.decls) + List.count a (freedIds P.decls tr) = 1 := by
   intro h
   obtain ⟨hPT, hps, C, hC, ha, -, hz⟩ := Spine.Sharp.off_run _ rfl _ rfl
-  have := h Float.exactModel hPT hps hC ha (_H := []) (_φ := Frame.empty)
+  have := h Float.exactModel hPT hps hC ha (_H := []) (_φ := Activation.empty)
     (v := .int .w64 .signed 3) (tr := [])
   omega
 

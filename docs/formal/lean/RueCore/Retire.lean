@@ -29,7 +29,7 @@ bound at once, and a scope record lists each cell once. So:
 
 * over `eval` (`Retire.eval_live`): if every cell the frame's environment and
   scope record name is live, and the record owes each cell once
-  (`LiveFrame`), then an evaluation that yields a value retired no cell that
+  (`LiveActivation`), then an evaluation that yields a value retired no cell that
   was live before it; an unwinding `return` retired at most the frame's
   scope record; a `break` retired nothing live before it and hands its loop
   the frame's record extended by distinct fresh cells, still live; and no
@@ -114,12 +114,12 @@ theorem Live.ne_of_le {H : Store} {ℓ m : Nat} (h : Live H ℓ) (hm : H.length 
 /-- **The frame invariant**: every cell the environment names, and every cell
 the scope record owes a drop, is live, and the record owes each at most once
 (helper). -/
-def LiveFrame (H : Store) (φ : Frame) : Prop :=
+def LiveActivation (H : Store) (φ : Activation) : Prop :=
   (∀ ℓ ∈ φ.env, Live H ℓ) ∧ (∀ ℓ ∈ φ.scope, Live H ℓ) ∧ φ.scope.Nodup
 
 /-- The frame invariant survives growth (helper). -/
-theorem LiveFrame.grow {H H' : Store} {φ : Frame} (h : LiveFrame H φ) (hg : Grow H H') :
-    LiveFrame H' φ :=
+theorem LiveActivation.grow {H H' : Store} {φ : Activation} (h : LiveActivation H φ) (hg : Grow H H') :
+    LiveActivation H' φ :=
   ⟨fun ℓ hℓ => hg.2 ℓ (h.1 ℓ hℓ), fun ℓ hℓ => hg.2 ℓ (h.2.1 ℓ hℓ), h.2.2⟩
 
 /-- **What an evaluation keeps**, by outcome (helper). A value retires no cell
@@ -128,7 +128,7 @@ that was live before it (only the cells it minted itself). An unwinding
 A `break` retires nothing live before it, and the scope record it carries is
 the frame's own, extended by distinct cells it minted, still live. And no
 refusal is `useAfterDrop`. -/
-def LivePost (H : Store) (φ : Frame) : EvalRes → Prop
+def LivePost (H : Store) (φ : Activation) : EvalRes → Prop
   | .ok H' _ _ => Grow H H'
   | .returned H' _ _ => H.length ≤ H'.length ∧ ∀ ℓ, ℓ ∉ φ.scope → Live H ℓ → Live H' ℓ
   | .broke H' sc _ => Grow H H' ∧ ∃ xs, sc = φ.scope ++ xs ∧ xs.Nodup ∧
@@ -138,13 +138,13 @@ def LivePost (H : Store) (φ : Frame) : EvalRes → Prop
   | .outOfFuel => True
 
 /-- Prefixing a trace changes no store (helper). -/
-theorem LivePost.withTrace {H : Store} {φ : Frame} {r : EvalRes} (h : LivePost H φ r)
+theorem LivePost.withTrace {H : Store} {φ : Activation} {r : EvalRes} (h : LivePost H φ r)
     (tr : List Event) : LivePost H φ (r.withTrace tr) := by
   cases r <;> exact h
 
 /-- An evaluation that started later, in a grown store, keeps the promise
 relative to the earlier store (helper). -/
-theorem LivePost.lift {H H₁ : Store} {φ : Frame} {r : EvalRes} (hg : Grow H H₁)
+theorem LivePost.lift {H H₁ : Store} {φ : Activation} {r : EvalRes} (hg : Grow H H₁)
     (h : LivePost H₁ φ r) : LivePost H φ r := by
   cases r with
   | ok H' v tr => exact hg.trans h
@@ -157,7 +157,7 @@ theorem LivePost.lift {H H₁ : Store} {φ : Frame} {r : EvalRes} (hg : Grow H H
   | outOfFuel => trivial
 
 /-- §6.2's search keeps the promise (helper). -/
-theorem LivePost.andThen {H : Store} {φ : Frame} {r : EvalRes} {k : Store → Val → EvalRes}
+theorem LivePost.andThen {H : Store} {φ : Activation} {r : EvalRes} {k : Store → Val → EvalRes}
     (h : LivePost H φ r) (hk : ∀ H₁ v, Grow H H₁ → LivePost H₁ φ (k H₁ v)) :
     LivePost H φ (r.bind k) := by
   cases r with
@@ -167,7 +167,7 @@ theorem LivePost.andThen {H : Store} {φ : Frame} {r : EvalRes} {k : Store → V
 /-- A scope opened on top of the frame — a `let`'s cell, a `match` arm's
 payload cells — keeps the promise when the body's non-value outcomes pass
 through it (helper). -/
-theorem LivePost.scoped {H H₁ : Store} {φ φ' : Frame} {ys : List Nat} {r : EvalRes}
+theorem LivePost.scoped {H H₁ : Store} {φ φ' : Activation} {ys : List Nat} {r : EvalRes}
     {k : Store → Val → EvalRes}
     (hg : Grow H H₁) (hys : ∀ ℓ ∈ ys, H.length ≤ ℓ ∧ Live H₁ ℓ) (hnd : ys.Nodup)
     (hsc : φ'.scope = φ.scope ++ ys) (h : LivePost H₁ φ' r)
@@ -236,7 +236,7 @@ theorem Contents.resolveDyn_ne_uad : ∀ (is : List Int) (πs : List (List Nat))
 
 /-- Navigating a dynamic place from a frame whose environment names live cells
 never refuses with `useAfterDrop` (helper). -/
-theorem dynPlace_ne_uad {H : Store} {φ : Frame} {p : Place} {vs : List Val}
+theorem dynPlace_ne_uad {H : Store} {φ : Activation} {p : Place} {vs : List Val}
     {πs : List (List Nat)} {w : Violation} (hφ : ∀ ℓ ∈ φ.env, Live H ℓ)
     (h : dynPlace H φ p vs πs = .stuck w) : w ≠ .useAfterDrop := by
   unfold dynPlace at h
@@ -444,14 +444,14 @@ theorem mintParams_live : ∀ (H : Store) (vs : List Val),
 /-! ### The operators and the value introductions -/
 
 /-- §6.4's operators touch no cell (helper). -/
-theorem OpRes.toRes_live {H : Store} {φ : Frame} (o : OpRes) : LivePost H φ (o.toRes H) := by
+theorem OpRes.toRes_live {H : Store} {φ : Activation} (o : OpRes) : LivePost H φ (o.toRes H) := by
   cases o with
   | val v => exact Grow.refl H
   | trap k => trivial
   | confused => simp [OpRes.toRes, LivePost]
 
 /-- Minting a value identity appends a `†` slot no binding names (helper). -/
-theorem introVal_live {D : Decls} {H : Store} {φ : Frame} (mk : Nat → Val) :
+theorem introVal_live {D : Decls} {H : Store} {φ : Activation} (mk : Nat → Val) :
     LivePost H φ (introVal D H mk) := by
   unfold introVal
   split
@@ -459,15 +459,15 @@ theorem introVal_live {D : Decls} {H : Store} {φ : Frame} (mk : Nat → Val) :
   · simp [LivePost]
 
 /-- The promise over an argument list (helper). -/
-def ArgsLive (H : Store) (φ : Frame) : ArgsRes → Prop
+def ArgsLive (H : Store) (φ : Activation) : ArgsRes → Prop
   | .ok H' _ _ => Grow H H'
   | .abort r => LivePost H φ r
 
 /-- An argument list keeps the promise, argument by argument (§6.2's left-to-right
 search) (helper). -/
-theorem evalArgs_live {φ : Frame} {ev : Store → Expr → EvalRes}
-    (hev : ∀ H e, LiveFrame H φ → LivePost H φ (ev H e)) :
-    ∀ (H : Store) (es : List Expr), LiveFrame H φ → ArgsLive H φ (evalArgs ev H es)
+theorem evalArgs_live {φ : Activation} {ev : Store → Expr → EvalRes}
+    (hev : ∀ H e, LiveActivation H φ → LivePost H φ (ev H e)) :
+    ∀ (H : Store) (es : List Expr), LiveActivation H φ → ArgsLive H φ (evalArgs ev H es)
   | H, [], _ => Grow.refl H
   | H, e :: es, hf => by
       simp only [evalArgs]
@@ -485,21 +485,21 @@ theorem evalArgs_live {φ : Frame} {ev : Store → Expr → EvalRes}
 /-! ### The invariant, by induction on fuel -/
 
 /-- A cell the environment names is live (helper). -/
-theorem LiveFrame.root {H : Store} {φ : Frame} {i ℓ : Nat} (h : LiveFrame H φ)
+theorem LiveActivation.root {H : Store} {φ : Activation} {i ℓ : Nat} (h : LiveActivation H φ)
     (hρ : φ.env[i]? = some ℓ) : Live H ℓ :=
   h.1 ℓ (List.mem_of_getElem? hρ)
 
 /-- **The invariant over `eval`**: from a frame whose cells are live and owed
 once, every evaluation keeps `LivePost`, at every fuel (helper). -/
 theorem eval_live (M : FloatSig) (P : Program) :
-    ∀ (fuel : Nat) (H : Store) (φ : Frame) (e : Expr), LiveFrame H φ →
+    ∀ (fuel : Nat) (H : Store) (φ : Activation) (e : Expr), LiveActivation H φ →
       LivePost H φ (eval M fuel P H φ e) := by
   intro fuel
   induction fuel with
   | zero => intro H φ e _; simp only [eval]; trivial
   | succ n ih =>
     intro H φ e hf
-    have hargs := fun (H' : Store) (es : List Expr) (hf' : LiveFrame H' φ) =>
+    have hargs := fun (H' : Store) (es : List Expr) (hf' : LiveActivation H' φ) =>
       evalArgs_live (fun H'' e' hf'' => ih H'' φ e' hf'') H' es hf'
     cases e with
     | intLit w sg m => exact Grow.refl H
@@ -949,9 +949,9 @@ under a frame that extends theirs by cells at the end of its scope record
 (and the front of its environment); a call boundary and the stack's bottom
 sit under a frame whose environment is its scope record reversed; every other
 frame is an evaluation context of the same frame (helper). -/
-def Shape : Frame → List Kont → Prop
+def Shape : Activation → List Kont → Prop
   | φ, [] => φ.env = φ.scope.reverse
-  | φ, .endscope ℓs :: K => ∃ φ₀ : Frame,
+  | φ, .endscope ℓs :: K => ∃ φ₀ : Activation,
       φ = { env := ℓs.reverse ++ φ₀.env, scope := φ₀.scope ++ ℓs } ∧ Shape φ₀ K
   | φ, .loop _ φs :: K => ∃ xs : List Nat,
       φ = { env := xs.reverse ++ φs.env, scope := φs.scope ++ xs } ∧ Shape φs K
@@ -970,7 +970,7 @@ def callerCells : List Kont → List Nat
 /-- **The configuration invariant**: the stack has its shape, and every cell a
 frame on it owes a drop — the frame in force and every suspended caller — is
 live and owed once (helper). -/
-def StackLive (H : Store) (φ : Frame) (K : List Kont) : Prop :=
+def StackLive (H : Store) (φ : Activation) (K : List Kont) : Prop :=
   Shape φ K ∧ (callerCells K ++ φ.scope).Nodup ∧ ∀ ℓ ∈ callerCells K ++ φ.scope, Live H ℓ
 
 /-- The invariant at a configuration; a trap `↯κ` has no store left to check
@@ -981,7 +981,7 @@ def ConfigLive : Config → Prop
 
 /-- Every frame on a well-shaped stack has its scope record, reversed, as its
 environment (helper). -/
-theorem Shape.env : ∀ {φ : Frame} {K : List Kont}, Shape φ K → φ.env = φ.scope.reverse
+theorem Shape.env : ∀ {φ : Activation} {K : List Kont}, Shape φ K → φ.env = φ.scope.reverse
   | φ, [], h => h
   | φ, .endscope ℓs :: K, h => by
       obtain ⟨φ₀, rfl, h₀⟩ := h
@@ -998,7 +998,7 @@ theorem Shape.env : ∀ {φ : Frame} {K : List Kont}, Shape φ K → φ.env = φ
 
 /-- (D-Return)'s search: the caller's frame is well shaped, and the cells the
 suspended callers owe are its own and those below it (helper). -/
-theorem Shape.toCall : ∀ {φ : Frame} {K : List Kont} {φs : Frame} {K' : List Kont},
+theorem Shape.toCall : ∀ {φ : Activation} {K : List Kont} {φs : Activation} {K' : List Kont},
     Shape φ K → Kont.toCall K = some (φs, K') →
       Shape φs K' ∧ callerCells K = callerCells K' ++ φs.scope
   | _, [], _, _, _, h => by simp [Kont.toCall] at h
@@ -1023,7 +1023,7 @@ theorem Shape.toCall : ∀ {φ : Frame} {K : List Kont} {φs : Frame} {K' : List
 
 /-- (D-Break)'s search: the loop's frame is well shaped, no caller is crossed, and
 the frame in force extends the loop's at the end of its scope record (helper). -/
-theorem Shape.toLoop : ∀ {φ : Frame} {K : List Kont} {φs : Frame} {K' : List Kont},
+theorem Shape.toLoop : ∀ {φ : Activation} {K : List Kont} {φs : Activation} {K' : List Kont},
     Shape φ K → Kont.toLoop K = some (φs, K') →
       Shape φs K' ∧ callerCells K = callerCells K' ∧ ∃ xs, φ.scope = φs.scope ++ xs
   | _, [], _, _, _, h => by simp [Kont.toLoop] at h
@@ -1047,20 +1047,20 @@ theorem Shape.toLoop : ∀ {φ : Frame} {K : List Kont} {φs : Frame} {K' : List
   | _, .ret :: K, _, _, hs, h => Shape.toLoop (K := K) hs h
 
 /-- A cell the environment names is live (helper). -/
-theorem StackLive.env {H : Store} {φ : Frame} {K : List Kont} (h : StackLive H φ K) :
+theorem StackLive.env {H : Store} {φ : Activation} {K : List Kont} (h : StackLive H φ K) :
     ∀ ℓ ∈ φ.env, Live H ℓ := by
   intro ℓ hℓ
   rw [h.1.env] at hℓ
   exact h.2.2 ℓ (List.mem_append_right _ (List.mem_reverse.mp hℓ))
 
 /-- The configuration invariant survives growth (helper). -/
-theorem StackLive.grow {H H' : Store} {φ : Frame} {K : List Kont} (h : StackLive H φ K)
+theorem StackLive.grow {H H' : Store} {φ : Activation} {K : List Kont} (h : StackLive H φ K)
     (hg : Grow H H') : StackLive H' φ K :=
   ⟨h.1, h.2.1, fun ℓ hℓ => hg.2 ℓ (h.2.2 ℓ hℓ)⟩
 
 /-- Looking a place's root up in a frame whose environment names live cells never
 refuses with `useAfterDrop` (helper). -/
-theorem rootCell_ne_uad {H : Store} {φ : Frame} {i : Nat} {w : Violation}
+theorem rootCell_ne_uad {H : Store} {φ : Activation} {i : Nat} {w : Violation}
     (hφ : ∀ ℓ ∈ φ.env, Live H ℓ) (h : rootCell H φ i = .error w) : w ≠ .useAfterDrop := by
   unfold rootCell at h
   split at h
@@ -1113,14 +1113,14 @@ theorem extend_keeps {H H' : Store} {A ls : List Nat} (hnd : A.Nodup)
     · exact (hfresh ℓ hm).2
 
 /-- (D-EndScope)'s pop undoes the extension (D-Let) and (D-Match) made (helper). -/
-theorem Frame.popScope_ext (φ₀ : Frame) (ls : List Nat) :
-    ({ env := ls.reverse ++ φ₀.env, scope := φ₀.scope ++ ls } : Frame).popScope ls.length
+theorem Activation.unwindScope_ext (φ₀ : Activation) (ls : List Nat) :
+    ({ env := ls.reverse ++ φ₀.env, scope := φ₀.scope ++ ls } : Activation).unwindScope ls.length
       = φ₀ := by
   cases φ₀
-  simp [Frame.popScope]
+  simp [Activation.unwindScope]
 
 /-- An operator's step touches no cell (helper). -/
-theorem OpRes.toStep_live {H : Store} {φ : Frame} {K : List Kont} {tr : List Event}
+theorem OpRes.toStep_live {H : Store} {φ : Activation} {K : List Kont} {tr : List Event}
     (h : StackLive H φ K) (o : OpRes) : StepLive (o.toStep H φ K tr) := by
   cases o with
   | val v => exact h
@@ -1128,7 +1128,7 @@ theorem OpRes.toStep_live {H : Store} {φ : Frame} {K : List Kont} {tr : List Ev
   | confused => simp [OpRes.toStep, StepLive]
 
 /-- `step` at an expression keeps the invariant (helper). -/
-theorem stepEval_live (M : FloatSig) (P : Program) {H : Store} {φ : Frame} {K : List Kont}
+theorem stepEval_live (M : FloatSig) (P : Program) {H : Store} {φ : Activation} {K : List Kont}
     {tr : List Event} (h : StackLive H φ K) (e : Expr) : StepLive (stepEval M P H φ K tr e) := by
   have henv := h.env
   cases e with
@@ -1227,8 +1227,8 @@ theorem stepEval_live (M : FloatSig) (P : Program) {H : Store} {φ : Frame} {K :
 
 /-- `step` at a completed argument list keeps the invariant: (D-Call) mints the
 callee's cells fresh (helper). -/
-theorem stepArgs_live (P : Program) {H : Store} {φ : Frame} {K : List Kont}
-    {tr : List Event} (h : StackLive H φ K) (vs : List Val) (t : ArgsTag) :
+theorem stepArgs_live (P : Program) {H : Store} {φ : Activation} {K : List Kont}
+    {tr : List Event} (h : StackLive H φ K) (vs : List Val) (t : ArgsFrame) :
     StepLive (stepArgs P H φ K tr vs t) := by
   have henv := h.env
   cases t with
@@ -1304,7 +1304,7 @@ theorem stepArgs_live (P : Program) {H : Store} {φ : Frame} {K : List Kont}
 
 /-- `step` at a value returning into the top frame keeps the invariant: every
 teardown walks cells the invariant says are live and owed once (helper). -/
-theorem stepRet_live (M : FloatSig) (P : Program) {H : Store} {φ : Frame} {K : List Kont}
+theorem stepRet_live (M : FloatSig) (P : Program) {H : Store} {φ : Activation} {K : List Kont}
     {tr : List Event} (v : Val) (k : Kont) (h : StackLive H φ (k :: K)) :
     StepLive (stepRet M P H φ K tr v k) := by
   cases k with
@@ -1411,7 +1411,7 @@ theorem stepRet_live (M : FloatSig) (P : Program) {H : Store} {φ : Frame} {K : 
       · rename_i H' evs hu
         obtain ⟨h₁, h₂⟩ := unwind_keeps hnd' hlv' hu
         show StackLive H' _ K
-        rw [Frame.popScope_ext]
+        rw [Activation.unwindScope_ext]
         exact ⟨hs, h₁, h₂⟩
   | loop e φs =>
       obtain ⟨⟨xs, hφ, hs⟩, hnd, hlv⟩ := h

@@ -189,13 +189,13 @@ newest-first, **is** that environment. The second clause is the RUE-1277
 redundancy discharged — every live binding of the frame is registered for a
 drop exactly once, which is what makes `run-all-scope-drops` (§6.9) safe at an
 early `return`. -/
-structure FrameMatches (D : Decls) (Γ : Ctx) (φ : Frame) (H : Store) : Prop where
+structure FrameMatches (D : Decls) (Γ : Ctx) (φ : Activation) (H : Store) : Prop where
   /-- `Matches` through the frame's environment `ρ`. -/
   store : Matches D Γ φ.env H
   /-- The scope record, newest-first, is the environment (`3.8:62`: every
   by-value binding is registered, and only those). In this fragment both are
   built from one list at every frame, so the equation holds definitionally;
-  it becomes a real obligation when `Frame.scope` is §6.1's stack (§6.6,
+  it becomes a real obligation when `Activation.scope` is §6.1's stack (§6.6,
   §6.10). -/
   record : φ.scope.reverse = φ.env
 
@@ -209,7 +209,7 @@ to find the drops it owes, and nothing `φ` names outside the frame was
 touched. It is closed under entering a binder (`BrokeOk.under_binders`), so a
 `let` or a `match` arm passes it outward unchanged, and the loop that catches
 it reads the frame it fired in straight off it (helper). -/
-def BrokeOk (D : Decls) (B : List Ctx) (φ : Frame) (H H' : Store) (sc : List Nat) : Prop :=
+def BrokeOk (D : Decls) (B : List Ctx) (φ : Activation) (H H' : Store) (sc : List Nat) : Prop :=
   ∃ Γb ∈ B, ∃ locs : List Nat, sc = φ.scope ++ locs ∧
     FrameMatches D Γb { env := locs.reverse ++ φ.env, scope := sc } H' ∧
     (∀ ℓ ∈ locs, H.length ≤ ℓ) ∧ Untouched φ.env H H'
@@ -224,7 +224,7 @@ state it fired at is one the rules recorded. Stating it as a predicate on the
 result, rather than as a disjunction of existentials, is what lets the operand
 combinators (`bind`) be discharged once and reused at every form
 (helper). -/
-def EvalOk (D : Decls) (T R : Ty) (o : Option Ctx) (B : List Ctx) (φ : Frame) (H : Store) :
+def EvalOk (D : Decls) (T R : Ty) (o : Option Ctx) (B : List Ctx) (φ : Activation) (H : Store) :
     EvalRes → Prop
   | .ok H' v _ =>
       match o with

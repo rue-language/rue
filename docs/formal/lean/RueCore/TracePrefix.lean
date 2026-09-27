@@ -162,7 +162,7 @@ theorem LongC.step1 {H : Store} {X Y : List Nat} {C C₂ : List Kont → List Ev
 If `eval` spent its fuel on the operand, the operand's run is the long one;
 if the operand finished, `Sim` gives the run to its value and `Cons` its
 ledger, and the context's run is the long one (helper). -/
-theorem LongC.andThen {H : Store} {X : List Nat} {φ₁ : Frame}
+theorem LongC.andThen {H : Store} {X : List Nat} {φ₁ : Activation}
     {C C₁ : List Kont → List Event → Config} {Fr : Kont} {fuel : Nat}
     (hC : ∀ K tr, Step M P (C K tr) (C₁ (Fr :: K) tr))
     {r : EvalRes} (hsim : Sim M P φ₁ C₁ r) (hcons : Cons P.decls F H X r)
@@ -202,8 +202,8 @@ theorem Contents.ownList_ofVals_snoc (D : Decls) (vs : List Val) (v : Val) :
 
 /-- **Argument lists, counted, with their ledger** (§6.2's `…( v̄, E, ē )`): the
 values already built are held (`X`) while the next element runs (helper). -/
-theorem evalArgs_longc {fuel : Nat} {φ : Frame} (hF : TraceMeasure P.decls F)
-    (IH : LongCIH M P F fuel) (t : ArgsTag) :
+theorem evalArgs_longc {fuel : Nat} {φ : Activation} (hF : TraceMeasure P.decls F)
+    (IH : LongCIH M P F fuel) (t : ArgsFrame) :
     ∀ (es : List Expr) (H : Store) (vs₀ : List Val), StoreCC P.decls H →
     evalArgs (fun H e => eval M fuel P H φ e) H es = .abort .outOfFuel →
       LongC M P F H (Contents.ownList P.decls (Contents.ofVals vs₀)) (argsConf H φ t vs₀ es)
@@ -242,7 +242,7 @@ end prefixLedger
 /-! ## The ledger, per form -/
 
 section longcForms
-variable {M : FloatSig} {P : Program} {F : Event → List Nat} {fuel : Nat} {H : Store} {φ : Frame}
+variable {M : FloatSig} {P : Program} {F : Event → List Nat} {fuel : Nat} {H : Store} {φ : Activation}
 
 /-- Close a context `k H v = .outOfFuel` whose context never spends fuel,
 in `LongC.andThen`'s form (helper). -/
@@ -405,7 +405,7 @@ theorem longc_ite (hF : TraceMeasure P.decls F) (IH : LongCIH M P F fuel)
 
 /-- An argument-list form whose list spent the fuel, from its enter step
 (helper). -/
-theorem longc_argsForm (hF : TraceMeasure P.decls F) {t : ArgsTag} {es : List Expr} {e : Expr}
+theorem longc_argsForm (hF : TraceMeasure P.decls F) {t : ArgsFrame} {es : List Expr} {e : Expr}
     (IH : LongCIH M P F fuel) (hcc : StoreCC P.decls H)
     (hent : ∀ K tr, Step M P (evalConf H φ e K tr) (argsConf H φ t [] es K tr))
     (h : evalArgs (fun H e => eval M fuel P H φ e) H es = .abort .outOfFuel) :
@@ -714,7 +714,7 @@ theorem steps_trace_once (M : FloatSig) {P : Program} {F : Event → List Nat}
       simpa [Config.trace, EvalRes.trace] using this
   | outOfFuel =>
       obtain ⟨m, D, hm, hD, δ, hδ, N, hN⟩ :=
-        eval_longc M hF k [] Frame.empty (.call 0 []) (fun ℓ c h => by simp at h) hr [] []
+        eval_longc M hF k [] Activation.empty (.call 0 []) (fun ℓ c h => by simp at h) hr [] []
       refine back D (hk.reaches hD hm) ?_
       have := hN a
       have := range'_count_le_one 0 N a

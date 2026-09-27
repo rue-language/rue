@@ -3718,7 +3718,7 @@ division is `3.12:22`'s (`FloatModel.div_by_zero`), the literals are
 float arithmetic is computed anywhere in the proof, and the theorem holds for
 every model satisfying the laws — including, but not only, `Float.exactOps`,
 which the corpus runs and the compiler agrees with. -/
-theorem floatDivZeroToInt_traps (M : FloatModel) (P : Program) (H : Store) (φ : Frame)
+theorem floatDivZeroToInt_traps (M : FloatModel) (P : Program) (H : Store) (φ : Activation)
     (w : FloatWidth) (w' : IntWidth) (s' : Sign) :
     eval M.toFloatSig 8 P H φ
         (fintrin (.floatToInt w' s') (binop .div (flE w 1 0) (flE w 0 0)))
@@ -4111,7 +4111,7 @@ example : run demoOps (prog tI64 loopNestedMoveOuter) demoFuel = .stuck .useAfte
 
 /-- (D-Loop-Iter) §6.10, as an equation: a body that completes with `⟨⟩`
 re-enters the loop at one unit of fuel less (helper). -/
-theorem eval_loop_ok {M : FloatSig} {P : Program} {n : Nat} {H H₁ : Store} {φ : Frame}
+theorem eval_loop_ok {M : FloatSig} {P : Program} {n : Nat} {H H₁ : Store} {φ : Activation}
     {e : Expr} {tr : List Event} (h : eval M n P H φ e = .ok H₁ .unit tr) :
     eval M (n + 1) P H φ (.loop e) = (eval M n P H₁ φ (.loop e)).withTrace tr := by
   simp only [eval, h]
@@ -4121,7 +4121,7 @@ turn runs the body at one unit less and re-enters at one unit less, so no fuel
 completes it — `outOfFuel` is its answer at every bound, which is what
 `Corpus.lean`'s export leaves out. -/
 theorem infiniteLoop_outOfFuel (M : FloatSig) (P : Program) :
-    ∀ (fuel : Nat) (H : Store) (φ : Frame), eval M fuel P H φ infiniteLoop = .outOfFuel := by
+    ∀ (fuel : Nat) (H : Store) (φ : Activation), eval M fuel P H φ infiniteLoop = .outOfFuel := by
   intro fuel
   induction fuel with
   | zero => intro H φ; rfl
