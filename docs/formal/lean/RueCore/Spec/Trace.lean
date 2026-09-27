@@ -24,7 +24,7 @@ on one. Narrower than the bullet: an `outOfFuel` result has an empty trace,
 so a run that never finishes is not covered here; `step_no_double_free`
 covers it, over every configuration a run reaches (RUE-2477). -/
 def no_double_free_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
       (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
       (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1)
@@ -39,7 +39,7 @@ property is one a finite prefix of a run can violate (Alpern & Schneider,
 included; `no_double_free` over a finished run follows from it
 (`no_double_free_of_step`). -/
 def step_no_double_free_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) {C : Config}
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) {C : Config}
     (_ : Steps M.toFloatSig P Config.init C),
     (∀ a, (freedIds P.decls C.trace).count a ≤ 1) ∧ (∀ a, (dtorIds C.trace).count a ≤ 1)
 
@@ -72,7 +72,7 @@ than the bullet: `pendingSafe` (RUE-2316), nothing about a panic, and per
 evaluation, not per run; the whole-run form is `whole_program_exactly_once`
 (RUE-2478). -/
 def drop_exactly_once_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P)
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P)
     (_ : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
     {φ : Activation} {H : Store} (_ : Typed P R Γ e T Ω) (_ : ActivationTyping P.decls Γ φ H)
     (_ : StoreCC P.decls H) (_ : e.pendingSafe = true),
@@ -88,7 +88,7 @@ operands produced `vs` in `H₁` (`Lead`), the rest of the form ends them and
 (`Lead`, `fuel + 1`, `withTrace`), listed as a linking statement: it is what
 says the values a form mints mid-evaluation are covered too. -/
 def rest_exactly_once_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P)
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P)
     (_ : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
     {φ : Activation} {H : Store} (_ : Typed P R Γ e T Ω) (_ : ActivationTyping P.decls Γ φ H)
     (_ : StoreCC P.decls H) (_ : e.pendingSafe = true)
@@ -113,7 +113,7 @@ run holds is lost, and none is ended twice. Narrower than the bullet:
 what it abandons is not ended), and nothing about a run that never finishes
 (`step_no_double_free` bounds every prefix from above). -/
 def whole_program_exactly_once_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (_ : P.pendingSafe = true)
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (_ : P.pendingSafe = true)
     {C : Config} (_ : Steps M.toFloatSig P Config.init C) {a : Nat} (_ : a ∈ C.held P.decls)
     {H : Store} {φ : Activation} {v : Val} {tr : List Event}
     (_ : Steps M.toFloatSig P C (.run H φ [] (.ret v) tr)),
@@ -128,7 +128,7 @@ that keeps its stack, whatever it drops, so it constrains only a step that
 pops: the cells it drops are among those it cut, newest first (R7 of
 `REDTEAM-LOG.md`). -/
 def drop_order_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P),
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P),
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
     (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → Blocks P.decls tr) ∧
     ∀ C C', Steps M.toFloatSig P Config.init C → Step M.toFloatSig P C C' →
@@ -145,7 +145,7 @@ active payload only. Unlike `drop_order`'s `Blocks`, the rules are not the
 function `dropEvents` the machine's walk is proved equal to, so a change to the
 machine's drop glue cannot carry this statement with it. -/
 def drop_glue_order_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P),
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P),
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) →
       DropGlueBlocks P.decls tr) ∧
     (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → DropGlueBlocks P.decls tr)

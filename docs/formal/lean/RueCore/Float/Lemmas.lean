@@ -7,12 +7,12 @@ public import RueCore.Float
 /-!
 # RueCore.Float.Lemmas — `Float.exactOps` satisfies the laws (layer L2)
 
-`FloatModel` (`Float.lean`) is a `FloatSig` together with the laws §7's
+`FloatLaws` (`Float.lean`) is a `FloatSig` together with the laws §7's
 "totality of the float operations" lemma names, and 19 of the spine's
 statements quantify over one. Were the laws jointly unsatisfiable, those
 statements would hold vacuously (RUE-2469). This module proves every law of
 the executable instance `Float.exactOps` and packages it as
-`Float.exactModel : FloatModel`, so the laws have a model, and it is the
+`Float.exactModel : FloatLaws`, so the laws have a model, and it is the
 model the corpus and the printer run on.
 
 * **Closure** (`arith_wf`, `sqrt_wf`, `ofLit_wf`, `ofInt_wf`, `narrow_wf`):
@@ -300,7 +300,7 @@ theorem divD_wf (σ : Bool) (w : FloatWidth) (a b : FloatDatum) : (divD σ w a b
 theorem subD_wf (σ : Bool) (w : FloatWidth) (a b : FloatDatum) : (subD σ w a b).Wf w := by
   cases a <;> cases b <;> simp only [subD] <;> first | trivial | exact addD_wf _ _ _ _
 
-/-- **Closure of `⊕_w`** (§7) for `exactOps`: `FloatModel.arith_wf`, with no hypothesis on the operands. -/
+/-- **Closure of `⊕_w`** (§7) for `exactOps`: `FloatLaws.arith_wf`, with no hypothesis on the operands. -/
 theorem arith_wf (σ : Bool) (w : FloatWidth) (op : FloatArith) (a b : FloatDatum) :
     (arith σ w op a b).Wf w := by
   cases op
@@ -309,7 +309,7 @@ theorem arith_wf (σ : Bool) (w : FloatWidth) (op : FloatArith) (a b : FloatDatu
   · exact mulD_wf _ _ _ _
   · exact divD_wf _ _ _ _
 
-/-- **Closure of the narrowing cast** (`3.12:19`) for `exactOps`: `FloatModel.narrow_wf`, on any datum. -/
+/-- **Closure of the narrowing cast** (`3.12:19`) for `exactOps`: `FloatLaws.narrow_wf`, on any datum. -/
 theorem narrow_wf (f : FloatDatum) : (narrow f).Wf .w32 := by
   cases f <;> simp only [narrow]
   all_goals (repeat' split) <;>
@@ -318,42 +318,42 @@ theorem narrow_wf (f : FloatDatum) : (narrow f).Wf .w32 := by
       | exact Or.inl ⟨rfl, rfl⟩
       | exact roundRat_wf _ _ _ two_pow_ne_zero
 
-/-- **Closure of `rnd_w` on an integer** (`3.12:16`) for `exactOps`: `FloatModel.ofInt_wf`. -/
+/-- **Closure of `rnd_w` on an integer** (`3.12:16`) for `exactOps`: `FloatLaws.ofInt_wf`. -/
 theorem ofInt_wf (w : FloatWidth) (n : Int) : (ofInt w n).Wf w :=
   roundRat_wf _ _ _ Nat.one_ne_zero
 
-/-- **Closure of `rnd_w` on a literal** (`3.12:9`) for `exactOps`: `FloatModel.ofLit_wf`. -/
+/-- **Closure of `rnd_w` on a literal** (`3.12:9`) for `exactOps`: `FloatLaws.ofLit_wf`. -/
 theorem ofLit_wf (w : FloatWidth) (m : Nat) (ne : Bool) (e : Nat) : (ofLit w m ne e).Wf w := by
   unfold ofLit FloatLit.exact
   cases ne
   · exact roundRat_wf _ _ _ Nat.one_ne_zero
   · exact roundRat_wf _ _ _ (Nat.pos_iff_ne_zero.mp (Nat.pow_pos (by decide)))
 
-/-- **A NaN operand yields a NaN** (§6.4) for `exactOps` (`FloatModel.arith_nan`): the operand is propagated. -/
+/-- **A NaN operand yields a NaN** (§6.4) for `exactOps` (`FloatLaws.arith_nan`): the operand is propagated. -/
 theorem arith_nan (σ : Bool) (w : FloatWidth) (op : FloatArith) (a b : FloatDatum)
     (h : a.isNaN = true ∨ b.isNaN = true) : (arith σ w op a b).isNaN = true := by
   cases op <;> cases a <;> cases b <;>
     simp_all [arith, addD, subD, mulD, divD, FloatDatum.isNaN]
 
-/-- **A cast of a NaN is a NaN** (§6.4, `3.12:19`) for `exactOps` (`FloatModel.narrow_nan`). -/
+/-- **A cast of a NaN is a NaN** (§6.4, `3.12:19`) for `exactOps` (`FloatLaws.narrow_nan`). -/
 theorem narrow_nan (f : FloatDatum) (h : f.isNaN = true) : (narrow f).isNaN = true := by
   cases f <;> simp_all [narrow, FloatDatum.isNaN]
 
-/-- **A finite non-zero over a zero is the infinity of the xor sign** (`3.12:22`) for `exactOps` (`FloatModel.div_by_zero`). -/
+/-- **A finite non-zero over a zero is the infinity of the xor sign** (`3.12:22`) for `exactOps` (`FloatLaws.div_by_zero`). -/
 theorem div_by_zero (σ : Bool) (w : FloatWidth) (n : Bool) (s : Nat) (e : Int) (hs : s ≠ 0)
     (n₂ : Bool) : arith σ w .div (.num n s e) (.num n₂ 0 0) = .inf (xor n n₂) := by
   simp [arith, divD, hs]
 
-/-- **`0/0` is `NaN(σ_NaN)`** (`3.12:22`) for `exactOps` (`FloatModel.zero_div_zero`). -/
+/-- **`0/0` is `NaN(σ_NaN)`** (`3.12:22`) for `exactOps` (`FloatLaws.zero_div_zero`). -/
 theorem zero_div_zero (σ : Bool) (w : FloatWidth) (n₁ n₂ : Bool) :
     arith σ w .div (.num n₁ 0 0) (.num n₂ 0 0) = .nan σ := by
   simp [arith, divD]
 
-/-- **The decimal zero is `+0`** (`3.12:9`) for `exactOps` (`FloatModel.ofLit_zero`). -/
+/-- **The decimal zero is `+0`** (`3.12:9`) for `exactOps` (`FloatLaws.ofLit_zero`). -/
 theorem ofLit_zero (w : FloatWidth) (ne : Bool) (e : Nat) : ofLit w 0 ne e = .num false 0 0 := by
   cases ne <;> simp [ofLit, FloatLit.exact, roundRat]
 
-/-- **The decimal one is `1 · 2^0`** (`3.12:9`) for `exactOps` (`FloatModel.ofLit_one`), evaluated in the kernel at each width. -/
+/-- **The decimal one is `1 · 2^0`** (`3.12:9`) for `exactOps` (`FloatLaws.ofLit_one`), evaluated in the kernel at each width. -/
 theorem ofLit_one (w : FloatWidth) : ofLit w 1 false 0 = .num false 1 0 := by
   -- `decide +kernel`: `roundRat` compares against `2 ^ 1076`, past the
   -- elaborator's `exponentiation.threshold`, so plain `decide` stops; the
@@ -366,7 +366,7 @@ theorem ite_succ_le (c : Prop) [Decidable c] (x : Nat) : (if c then x + 1 else x
   · exact Nat.le_refl _
   · exact Nat.le_succ _
 
-/-- **Closure of `@sqrt`** (`3.12:35`, §7's "each `⊙_w` is total on `𝔽_w`") for `exactOps`: `FloatModel.sqrt_wf`. -/
+/-- **Closure of `@sqrt`** (`3.12:35`, §7's "each `⊙_w` is total on `𝔽_w`") for `exactOps`: `FloatLaws.sqrt_wf`. -/
 theorem sqrt_wf (σ : Bool) (w : FloatWidth) (f : FloatDatum) (hf : f.Wf w) :
     (sqrtD σ w f).Wf w := by
   cases f with
@@ -384,8 +384,8 @@ theorem sqrt_wf (σ : Bool) (w : FloatWidth) (f : FloatDatum) (hf : f.Wf w) :
             · exact absurd h0 hs
             · exact sqrt_core htop hlo hhi rfl (sqrt_sq_le _) (ite_succ_le _ _)
 
-/-- **The laws have a model: `Float.exactOps`** (§7's float lemma). Every field of `FloatModel` proved of the executable instance, so the 19 spine statements that quantify over `M : FloatModel` are not vacuous in `M` (RUE-2469), and each applies to the model the corpus runs on. Satisfying the laws does not make `exactOps` IEEE 754: the laws say nothing about which datum a rounding returns. What they leave open, `exactOps` decides by its own definition — the value of every rounding (correct rounding, ties to even, the overflow threshold), which NaN a propagating operation returns, and `σ_NaN` — and those are checked against the compiler by the corpus, not proved. -/
-def exactModel : FloatModel where
+/-- **The laws have a model: `Float.exactOps`** (§7's float lemma). Every field of `FloatLaws` proved of the executable instance, so the 19 spine statements that quantify over `M : FloatLaws` are not vacuous in `M` (RUE-2469), and each applies to the model the corpus runs on. Satisfying the laws does not make `exactOps` IEEE 754: the laws say nothing about which datum a rounding returns. What they leave open, `exactOps` decides by its own definition — the value of every rounding (correct rounding, ties to even, the overflow threshold), which NaN a propagating operation returns, and `σ_NaN` — and those are checked against the compiler by the corpus, not proved. -/
+def exactModel : FloatLaws where
   toFloatSig := exactOps
   arith_wf w op a b _ _ := arith_wf false w op a b
   sqrt_wf w f hf := sqrt_wf false w f hf

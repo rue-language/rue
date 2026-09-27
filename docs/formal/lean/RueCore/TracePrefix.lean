@@ -732,7 +732,7 @@ finishes — has a trace that frees no identity twice (`freedIds`) and runs no
 destructor twice on one (`dtorIds`). A program that diverges is covered: its
 trace is bounded at every step, where `no_double_free`, over `run`'s answer,
 sees only `outOfFuel` and an empty trace. -/
-theorem step_no_double_free (M : FloatModel) {P : Program} (h : ProgramTyped P) {C : Config}
+theorem step_no_double_free (M : FloatLaws) {P : Program} (h : ProgramTyped P) {C : Config}
     (hC : Steps M.toFloatSig P Config.init C) :
     (∀ a, (freedIds P.decls C.trace).count a ≤ 1) ∧ (∀ a, (dtorIds C.trace).count a ≤ 1) :=
   ⟨steps_trace_once M.toFloatSig (freed_measure P.decls) (no_violation M h) hC,
@@ -742,7 +742,7 @@ theorem step_no_double_free (M : FloatModel) {P : Program} (h : ProgramTyped P) 
 panic `run` answers is reached by §6's relation (`eval_sound`), so its trace is
 a reachable configuration's; exhausted fuel carries the empty trace; and a
 checked run is never refused (helper). -/
-theorem no_double_free_of_step (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+theorem no_double_free_of_step (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
       (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
       (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1) := by

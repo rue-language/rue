@@ -540,7 +540,7 @@ signature.
 ## 4. The theorem, and what `check_sound` buys
 
 ```lean
-theorem soundness (M : FloatModel) (hwf : WfProgram P) :
+theorem soundness (M : FloatLaws) (hwf : WfProgram P) :
     ∀ fuel, Typed P R Γ e T Ω → ActivationTyping P.decls Γ φ H →
       EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)
 ```
@@ -573,7 +573,7 @@ per-expression invariant `ActivationTyping` has no `Step`-side statement.
 Over a whole program, `run_safe` says it in the shape a reader wants:
 
 ```lean
-theorem run_safe (M : FloatModel) (hwf : WfProgram P)
+theorem run_safe (M : FloatLaws) (hwf : WfProgram P)
     (h0 : P.fns[0]? = some fd) (hp : fd.params = []) (fuel : Nat) :
     run M.toFloatSig P fuel = .outOfFuel
       ∨ (∃ k tr, run M.toFloatSig P fuel = .panic k tr)
@@ -587,7 +587,7 @@ The named corollaries (`no_use_after_move`, `no_linear_leak`, …) each restate
 (`Trace.lean`):
 
 ```lean
-theorem no_double_free (M : FloatModel) (h : ProgramTyped P) (fuel : Nat) :
+theorem no_double_free (M : FloatLaws) (h : ProgramTyped P) (fuel : Nat) :
     (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
       (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
       (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1)
@@ -675,7 +675,7 @@ makes each claim something you can look at, not only something proved.
 ended twice and no value's destructor runs twice.*
 
 ```lean
-theorem no_double_free (M : FloatModel) (h : ProgramTyped P) (fuel : Nat) :
+theorem no_double_free (M : FloatLaws) (h : ProgramTyped P) (fuel : Nat) :
     (∀ w, run M.toFloatSig P fuel ≠ .stuck w) ∧
       (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
       (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1)
@@ -694,7 +694,7 @@ cell, part of the result, or ended exactly once: on the normal path or on
 the unwind path, never both and never neither.*
 
 ```lean
-theorem drop_exactly_once (M : FloatModel) (h : ProgramTyped P)
+theorem drop_exactly_once (M : FloatLaws) (h : ProgramTyped P)
     (hp : P.pendingSafe = true) (ht : Typed P R Γ e T Ω)
     (hfm : ActivationTyping P.decls Γ φ H) (hcc : StoreCC P.decls H)
     (he : e.pendingSafe = true) :
@@ -720,7 +720,7 @@ a run of a checked, `pendingSafe` program that finishes with a value ever holds 
 end, ended exactly once in the trace or part of the result, and not both.*
 
 ```lean
-theorem whole_program_exactly_once (M : FloatModel) (h : ProgramTyped P)
+theorem whole_program_exactly_once (M : FloatLaws) (h : ProgramTyped P)
     (hp : P.pendingSafe = true) (hC : Steps M.toFloatSig P Config.init C)
     (ha : a ∈ C.held P.decls)
     (hT : Steps M.toFloatSig P C (.run H φ [] (.ret v) tr)) :
@@ -750,7 +750,7 @@ only cells it deregistered, newest first, and every such cell is newer than
 every cell still registered.*
 
 ```lean
-theorem drop_order (M : FloatModel) (h : ProgramTyped P) :
+theorem drop_order (M : FloatLaws) (h : ProgramTyped P) :
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
     (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → Blocks P.decls tr) ∧
     ∀ C C', Steps M.toFloatSig P Config.init C → Step M.toFloatSig P C C' →
@@ -1829,21 +1829,21 @@ which is what §7 asks for and what keeps progress intact. It is provable
 because §2 models a float as a *datum*, so truncation toward zero is exact
 integer arithmetic.
 
-Row 4 is an **assumption**: `FloatModel.div_by_zero`, `3.12:22` as §6.4
+Row 4 is an **assumption**: `FloatLaws.div_by_zero`, `3.12:22` as §6.4
 quotes it. `Examples.floatDivZeroToInt_traps` is the two rows together,
-stated over an *arbitrary* `FloatModel` and proved from its laws. So the
+stated over an *arbitrary* `FloatLaws` and proved from its laws. So the
 witness is a claim about IEEE 754 rather than about this package's instance,
 and it computes no float at all. That is also why it costs no axiom: Lean's
 own `Float` is defined over an `opaque` constant, and a theorem that so much
 as mentions one reports `Classical.choice`.
 
 The laws are **structure fields**, not `axiom` declarations, so a theorem
-that rests on one says so in its own statement (the `M : FloatModel`
+that rests on one says so in its own statement (the `M : FloatLaws`
 argument of section 4's theorems), and `TRUST.md` lists them in a section of
 their own. `Float.exactOps`, the instance the corpus and the examples run, is
 constructive integer arithmetic, and it satisfies every law: `Float.exactModel`
 (`RueCore/Float/Lemmas.lean`, RUE-2469) proves each one of it, so the laws have
-a model and the theorems over `M : FloatModel` are not vacuous in `M`. The
+a model and the theorems over `M : FloatLaws` are not vacuous in `M`. The
 laws say nothing about which datum a rounding returns; that `exactOps`'s
 roundings are IEEE 754's is checked by running the float corpus against the
 compiler rather than proved.

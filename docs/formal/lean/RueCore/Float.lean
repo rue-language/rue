@@ -3,7 +3,7 @@ module
 @[expose] public section
 
 /-!
-# RueCore.Float — `𝔽_w`, the rendering, and the `FloatModel` interface
+# RueCore.Float — `𝔽_w`, the rendering, and the `FloatLaws` interface
 
 §2's representation decision, mechanized: a value of `float(w)` is an
 **abstract IEEE 754 binary-`w` datum, not a bit pattern**. `FloatDatum` is
@@ -50,16 +50,16 @@ datum built from `Nat`/`Int` costs nothing.
   `𝔽_w`, which is §2's second model parameter: the four arithmetic operators,
   `@sqrt`, `@int_to_float`, a literal's own conversion (`3.12:9`), and the
   narrowing half of `@float_cast`. Those are the fields of `FloatSig`, and
-  `FloatModel` is a `FloatSig` together with the laws §7's "totality of the
+  `FloatLaws` is a `FloatSig` together with the laws §7's "totality of the
   float operations" lemma names. The machine (`Dynamics.lean`) takes a
-  `FloatSig`; every theorem quantifies over a `FloatModel`, so it holds for
+  `FloatSig`; every theorem quantifies over a `FloatLaws`, so it holds for
   every model satisfying the laws.
 
 `Float.exactOps` is the executable instance the corpus and the printer run on.
 It is **constructive**: `roundRat` rounds an exact rational to `𝔽_w` by
 integer arithmetic, so `+ - * /` (exact rationals, then `rnd_w`) and `@sqrt`
 (an integer square root, then `rnd_w`) need no host float and no axiom. It
-**satisfies every law** of `FloatModel`: `Float/Lemmas.lean` (layer L2) proves
+**satisfies every law** of `FloatLaws`: `Float/Lemmas.lean` (layer L2) proves
 each one of it and packages it as `Float.exactModel` (RUE-2469), so the laws
 have a model and the theorems that quantify over one apply to the corpus's.
 The laws say nothing about which datum a rounding returns, so satisfying them
@@ -377,7 +377,7 @@ def FloatDatum.roundOp (op : FloatRoundOp) (f : FloatDatum) : FloatDatum :=
 §7's totality lemma asks that every §6.4 float operation land *in* `𝔽_w`. For
 the operations this module defines — the sign flip, the widening cast, and the
 four exact rounding intrinsics — that is a theorem, proved here. For the
-rounded ones it is a law of `FloatModel`, because rounding is IEEE's and not
+rounded ones it is a law of `FloatLaws`, because rounding is IEEE's and not
 this module's. -/
 
 /-- The canonicalization loop lands in `𝔽_w` whenever the number it is handed
@@ -458,7 +458,7 @@ theorem widen_wf {f : FloatDatum} (h : f.Wf .w32) : f.widen.Wf .w64 := by
 result is exact — an integral value near `x` is always representable"). With
 `negate_wf` and `widen_wf` this discharges §7's "each `⊙_w` of §6.4 is total
 on `𝔽_w`" for every float operation this module defines; `@sqrt`, the one that
-rounds, is `FloatModel.sqrt_wf`. -/
+rounds, is `FloatLaws.sqrt_wf`. -/
 theorem roundOp_wf {w : FloatWidth} {op : FloatRoundOp} {f : FloatDatum} (h : f.Wf w) :
     (f.roundOp op).Wf w := by
   cases f with
@@ -589,7 +589,7 @@ structure FloatSig where
   sign of a NaN an operation **creates** — `0/0`, `inf - inf`, `0 · inf`,
   `inf/inf`, `@sqrt` of a negative. A NaN that merely passes *through* an
   operation is propagated with its own sign on both targets, so `σ_NaN` does
-  not reach it (`FloatModel.arith_nan`, `Float.addD`). -/
+  not reach it (`FloatLaws.arith_nan`, `Float.addD`). -/
   nanSign : Bool
 
 /-- `(D-Float-Cast)` §6.4 at either direction, given the model's narrowing.
@@ -662,7 +662,7 @@ They are *fields* rather than `axiom` declarations so that every theorem
 resting on one carries it in its own statement (`TRUST.md`, "Assumptions
 carried as interfaces"). §7 says the lemma is "discharged against the standard
 rather than against Rue"; this is that sentence, mechanized. -/
-structure FloatModel extends FloatSig where
+structure FloatLaws extends FloatSig where
   /-- **Closure of `⊕_w`** (§7): the four arithmetic operators map `𝔽_w × 𝔽_w`
   into `𝔽_w`. With Lean totality this is §7's "`⊕_w` is a total function
   `𝔽_w × 𝔽_w → 𝔽_w`". -/
@@ -711,7 +711,7 @@ structure FloatModel extends FloatSig where
 `narrow_nan`; the widening half is `FloatDatum.widen`, the identity, so it is
 *proved* rather than assumed. As with `arith_nan`, the sign is not fixed: both
 targets keep the operand's. -/
-theorem FloatModel.cast_nan (M : FloatModel) (w w' : FloatWidth) {f : FloatDatum}
+theorem FloatLaws.cast_nan (M : FloatLaws) (w w' : FloatWidth) {f : FloatDatum}
     (h : f.isNaN = true) : (M.toFloatSig.cast w w' f).isNaN = true := by
   cases w <;> cases w' <;>
     simp only [FloatSig.cast, FloatDatum.widen] <;>
@@ -982,7 +982,7 @@ def FloatWidth.overflowNum (w : FloatWidth) : Nat :=
 "a float literal whose value rounds to an infinity in its target type MUST be
 rejected at compile time (`E0206`)" — and §5.8's own prose in the calculus
 cites it, so the statics owe it. It is stated here as an exact comparison of
-naturals against `overflowNum`, so it is decidable, needs no `FloatModel`, and
+naturals against `overflowNum`, so it is decidable, needs no `FloatLaws`, and
 pulls no axiom: `l.exact` is `num / den` and the premise is `num < threshold ·
 den`. *Underflow* needs no premise — `3.12:10` allows a literal to round to
 zero, and the model and the compiler agree that it does (`1e-400` is `0.0` in
@@ -990,7 +990,7 @@ both).
 
 It is stated against the *threshold* rather than as
 `(M.ofLit w l).isFinite` deliberately: the statics then say what they say for
-every `FloatModel`, with no instance and no `FloatSig` argument in the typing
+every `FloatLaws`, with no instance and no `FloatSig` argument in the typing
 judgment, and `check` decides it by comparing two naturals. A law tying the two
 together — `RoundsFinite w l → (ofLit w l).isFinite` — is not needed by
 anything here and is not assumed. -/
@@ -1007,7 +1007,7 @@ Constructive throughout: every rounded operation is an exact rational (or, for
 Lean's `Float`, so nothing here can put `Classical.choice` on a theorem, and
 the corpus runs by ordinary evaluation.
 
-These definitions satisfy `FloatModel`'s laws, proved in `Float/Lemmas.lean`
+These definitions satisfy `FloatLaws`'s laws, proved in `Float/Lemmas.lean`
 (`Float.exactModel`, RUE-2469). The laws say nothing about which datum a
 rounding returns, so what is **not** proved is that these are IEEE 754's
 roundings — correct rounding, ties to even, the overflow threshold — nor
@@ -1041,7 +1041,7 @@ and all, and with two NaN operands the **first** one wins. That is what x86-64
 and AArch64 both do, and it is measured against the compiler (`x + (-NaN)` and
 `(-NaN) + x` both keep the negative sign at every operator), not inferred.
 
-It is a *model* choice all the same. `FloatModel.arith_nan` assumes only that
+It is a *model* choice all the same. `FloatLaws.arith_nan` assumes only that
 *a* NaN comes out, because that is all IEEE 754 promises; which NaN is what
 this instance picks, and the corpus is what checks the pick. -/
 

@@ -1058,7 +1058,7 @@ store and trace, and a panic as `↯κ` after the same trace (§6.2, §6.12).
 `.refused` is outside the correspondence and does not occur here; `outOfFuel`
 is not a state of §6's machine. The converse, completeness modulo fuel, is
 `eval_complete`. -/
-theorem eval_sound (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+theorem eval_sound (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
     (∀ H v tr, run M.toFloatSig P fuel = .ok H v tr →
       Steps M.toFloatSig P Config.init (.run H Activation.empty [] (.ret v) tr)) ∧
@@ -1790,7 +1790,7 @@ and so does every larger fuel (§6.2, §6.12). With `eval_sound` this is
 adequacy in both directions: on checked programs, `run`'s values and panics
 are exactly the ends of §6's runs, and `outOfFuel` at every fuel is exactly
 divergence (`eval_diverges_iff`). -/
-theorem eval_complete (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+theorem eval_complete (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) →
       ∃ n, ∀ fuel, n < fuel → run M.toFloatSig P fuel = .ok H v tr) ∧
     (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) →
@@ -1848,7 +1848,7 @@ backward one is `no_violation`, and off it the backward one fails
 (RUE-2314's discriminators). `fuel_mono` and `no_masking` (`Soundness.lean`)
 say the same stability from `eval`'s side: its answer, once it is not
 `outOfFuel`, is the answer at every larger fuel. -/
-theorem never_stuck_iff (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+theorem never_stuck_iff (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     (∀ fuel w, run M.toFloatSig P fuel ≠ .refused w) ↔
       ∀ C, Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C' :=
   ⟨step_never_stuck_of_run M.toFloatSig P, fun _ fuel w => no_violation M h fuel w⟩
@@ -1859,7 +1859,7 @@ fuel exactly when §6's reduction has a run of every length from the initial
 configuration — by `Step.det`, one infinite run. So `outOfFuel` is never a
 premature stop on a checked program: past the length of §6's run, `eval`
 answers (`eval_complete`), and where it never answers §6 never halts. -/
-theorem eval_diverges_iff (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+theorem eval_diverges_iff (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     (∀ fuel, run M.toFloatSig P fuel = .outOfFuel) ↔
       ∀ n, ∃ D, StepsN M.toFloatSig P n Config.init D := by
   constructor
@@ -1926,7 +1926,7 @@ initial configuration is safe at the entry point's declared return type. The
 typing half takes a value §6 halts with to `run`'s answer at some fuel
 (`eval_complete`), where `run_safe` (`soundness` over a whole program) types
 it. This is the one place `soundness` enters the `Step` form. -/
-theorem init_safeAt (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+theorem init_safeAt (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     ∃ fd, P.fns[0]? = some fd ∧ Config.init.SafeAt M.toFloatSig P fd.ret := by
   obtain ⟨fd, h0, hp⟩ := h.entry
   refine ⟨fd, h0, step_never_stuck_of_run _ P (no_violation M h), ?_⟩
@@ -1946,7 +1946,7 @@ initial configuration is terminal or takes a step, so none is stuck
 (`Config.stuck_iff`). Derived: `soundness` gives "`run` is never `.refused`"
 (`no_violation`), and `step_never_stuck_of_run` — built from `run_sim` and
 the step count `eval_steps_of_outOfFuel` — carries it to `Step`. -/
-theorem step_progress (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+theorem step_progress (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     ∀ C, Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C' :=
   step_never_stuck_of_run _ P (no_violation M h)
 
@@ -1958,7 +1958,7 @@ is typed at the entry point's declared return type, in the semantic sense of
 with has that type. With `Config.SafeAt.preservation` this is the one-step
 form. The typing is semantic, not a syntactic `⊢ C : T`; this section's
 docstring says what that does and does not claim. -/
-theorem step_preservation (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+theorem step_preservation (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     ∃ fd, P.fns[0]? = some fd ∧
       ∀ C, Steps M.toFloatSig P Config.init C → C.SafeAt M.toFloatSig P fd.ret := by
   obtain ⟨fd, h0, hs⟩ := init_safeAt M h
@@ -1969,7 +1969,7 @@ theorem step_preservation (M : FloatModel) {P : Program} (h : ProgramTyped P) :
 initial configuration to `✓v`, then `v` has the entry point's declared return
 type. This is preservation read at the result, `Config.SafeAt`'s second half
 at `Config.init`. -/
-theorem step_value_typed (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+theorem step_value_typed (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     ∃ fd, P.fns[0]? = some fd ∧ ∀ H φ v tr,
       Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → HasTy P.decls v fd.ret := by
   obtain ⟨fd, h0, hs⟩ := init_safeAt M h
@@ -1988,7 +1988,7 @@ the unbounded form of the first case. Fuel meets `Step` here directly: `run`
 at fuel `n` is out of fuel (then §6 has an `n`-step run,
 `eval_steps_of_outOfFuel`), a value (typed by `run_safe`, reached by
 `run_sim`), or a panic (reached by `run_sim`); never `.refused`. -/
-theorem step_type_safety (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+theorem step_type_safety (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     ∃ fd, P.fns[0]? = some fd ∧ ∀ n,
       (∃ D, StepsN M.toFloatSig P n Config.init D) ∨
       (∃ H v tr, Steps M.toFloatSig P Config.init (.run H Activation.empty [] (.ret v) tr) ∧

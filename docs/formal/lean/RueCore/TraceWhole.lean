@@ -1566,7 +1566,7 @@ determinism every configuration the run reaches lies on that run
 (`MSteps.of_steps`). `eval_complete` places the run's end at `run`'s answer,
 where `eval_tidy` has retired every cell and `eval_conserves` bounds each
 count by one. -/
-theorem whole_program_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
+theorem whole_program_exactly_once (M : FloatLaws) {P : Program} (h : ProgramTyped P)
     (hp : P.pendingSafe = true) {C : Config} (hC : Steps M.toFloatSig P Config.init C) {a : Nat}
     (ha : a ∈ C.held P.decls) {H : Store} {φ : Activation} {v : Val} {tr : List Event}
     (hT : Steps M.toFloatSig P C (.run H φ [] (.ret v) tr)) :

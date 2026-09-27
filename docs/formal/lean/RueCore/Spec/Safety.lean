@@ -26,7 +26,7 @@ frame and store agreeing with its context, ends in `EvalOk`: a well-typed
 value, an unwinding `return` or `break` §5.3's `Ω` allows, a defined panic,
 or exhausted fuel — never `.refused`. -/
 def soundness_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : WfProgram P) (fuel : Nat) {R : Ty} {Γ : Ctx}
+  ∀ (M : FloatLaws) {P : Program} (_ : WfProgram P) (fuel : Nat) {R : Ty} {Γ : Ctx}
     {Ω : Out} {e : Expr} {T : Ty}, Typed P R Γ e T Ω →
       ∀ {φ : Activation} {H : Store}, ActivationTyping P.decls Γ φ H →
         EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)
@@ -39,7 +39,7 @@ and (Result-Ok) §6.12 reads only those types, but `WfProgram` admits any type.
 So a checked program may return an owned value from `main`, even a linear one,
 and no drop or monitor sees it (`Nonvacuous.whole_result` returns an `S0`). -/
 def run_safe_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} {fd : FnDef} (_ : WfProgram P)
+  ∀ (M : FloatLaws) {P : Program} {fd : FnDef} (_ : WfProgram P)
     (_ : P.fns[0]? = some fd) (_ : fd.params = []) (fuel : Nat),
     run M.toFloatSig P fuel = .outOfFuel ∨ (∃ k tr, run M.toFloatSig P fuel = .panic k tr) ∨
       (∃ H v tr, run M.toFloatSig P fuel = .ok H v tr ∧ HasTy P.decls v fd.ret)
@@ -52,7 +52,7 @@ every "never `.refused`" statement, it holds because `eval`'s checks and
 monitors never fire: what it rules out is what they watch (R3 of
 `REDTEAM-LOG.md`; RUE-2469). -/
 def no_violation_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat) (w : Refusal),
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat) (w : Refusal),
     run M.toFloatSig P fuel ≠ .refused w
 
 /-- **No use-after-move** (§7 "No use-after-move"): `run` never refuses with
@@ -61,7 +61,7 @@ def no_violation_stmt : Prop :=
 only as far as `eval` checks every read and labels it so: what it rules out is
 what that monitor watches (R3 of `REDTEAM-LOG.md`; RUE-2469). -/
 def no_use_after_move_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     run M.toFloatSig P fuel ≠ .refused .useAfterMove
 
 /-- **No use-after-drop** (§7 "No use-after-drop / no leak of drops", "never
@@ -76,12 +76,12 @@ conclusion for every program, checked or not, so this statement is not a
 consequence of typing; it is kept in §7's form, over checked programs
 (RUE-2496). -/
 def no_use_after_drop_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     run M.toFloatSig P fuel ≠ .refused .useAfterDrop
 
 /-- **No use-after-drop, on every program** (§7 "No use-after-drop / no leak
 of drops", "never read afterward"; RUE-2496): `run` never refuses with
-`useAfterDrop`, at any fuel and any float operations (not only a `FloatModel`), **whether or not the program is
+`useAfterDrop`, at any fuel and any float operations (not only a `FloatLaws`), **whether or not the program is
 checked**. The property is structural rather than a consequence of typing: a
 binding's cell is minted fresh and retired only when the scope that bound it
 ends, after which nothing names it, and a scope record owes each cell once.
@@ -105,13 +105,13 @@ than the bullet:
 What it rules out is what `eval`'s leak monitor watches (R3 of
 `REDTEAM-LOG.md`). -/
 def no_linear_leak_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     run M.toFloatSig P fuel ≠ .refused .linearLeak
 
 /-- **No linear overwrite** (§7, the same bullet, `3.8:77`): no assignment drops
 a live linear value. -/
 def no_linear_overwrite_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     run M.toFloatSig P fuel ≠ .refused .linearOverwrite
 
 /-- **No linear discard** (§7, the same bullet, `3.8:64`): no sequence discards
@@ -119,7 +119,7 @@ a linear value. The three linear statements hold because `eval`'s monitors
 never fire; what they rule out is what those monitors watch (R3 of
 `REDTEAM-LOG.md`). -/
 def no_linear_discard_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     run M.toFloatSig P fuel ≠ .refused .linearDiscard
 
 /-- **Fuel monotonicity** (§6 as `eval` runs it; `03-metatheory.md` "Fuel").

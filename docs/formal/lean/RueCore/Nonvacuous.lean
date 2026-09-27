@@ -65,7 +65,7 @@ theorem loopUnit_run : ∀ fuel, run Float.exactOps
 
 /-- `Spec.Nonvacuous.exact_model_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem exact_model :
-    ∃ M : FloatModel, M.toFloatSig = Float.exactOps := ⟨Float.exactModel, rfl⟩
+    ∃ M : FloatLaws, M.toFloatSig = Float.exactOps := ⟨Float.exactModel, rfl⟩
 
 /-- `Spec.Nonvacuous.empty_frame_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem empty_frame :

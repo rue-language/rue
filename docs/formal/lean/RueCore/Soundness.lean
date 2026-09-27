@@ -812,7 +812,7 @@ there is no trap case at all, which is `3.12:21` and §6.4's note that no
 arithmetic trap rule is stated over a float redex. `M.arith_wf` is §7's
 closure law — the one thing about `⊕_w` that cannot be proved of an arbitrary
 `FloatSig` — and it is what re-establishes `HasTy` at the result. -/
-theorem binOpFloat_res {D : Decls} (M : FloatModel) (op : BinOp) (w : FloatWidth)
+theorem binOpFloat_res {D : Decls} (M : FloatLaws) (op : BinOp) (w : FloatWidth)
     (a b : FloatDatum) (ha : a.Wf w) (hb : b.Wf w) (hop : op.floatAdmits = true) :
     ∃ v, binOpFloat M.toFloatSig op w a b = .val v ∧ HasTy D v (op.resultTy (.float w)) := by
   cases op <;>
@@ -836,7 +836,7 @@ theorem binOpFloat_res {D : Decls} (M : FloatModel) (op : BinOp) (w : FloatWidth
 /-- The same, over the two machine values (Float-Arith)/(Float-Ord)/
 (Total-Cmp) §5.8 give one `float(w)`: the shape mismatch `evalBinOp` refuses
 is not reachable from them. -/
-theorem evalBinOpFloat_res {D : Decls} (M : FloatModel) (op : BinOp) (w : FloatWidth)
+theorem evalBinOpFloat_res {D : Decls} (M : FloatLaws) (op : BinOp) (w : FloatWidth)
     (a b : FloatDatum) (ha : a.Wf w) (hb : b.Wf w) (hop : op.floatAdmits = true) :
     ∃ v, evalBinOp M.toFloatSig op (.float w a) (.float w b) = .val v ∧
       HasTy D v (op.resultTy (.float w)) := by
@@ -882,7 +882,7 @@ theorem evalUnOp_float_res {D : Decls} (w : FloatWidth) (f : FloatDatum) (hw : f
 
 /-- **`@int_to_float` lands on a value of its result type and never traps**
 ((D-Int-To-Float), `3.12:16`). -/
-theorem evalFintrin_int_res {D : Decls} (M : FloatModel) (w : FloatWidth) (w' : IntWidth)
+theorem evalFintrin_int_res {D : Decls} (M : FloatLaws) (w : FloatWidth) (w' : IntWidth)
     (s' : Sign) (n : Int) :
     ∃ v, evalFintrin M.toFloatSig (.intToFloat w) (.int w' s' n) = .val v ∧
       HasTy D v (.float w) :=
@@ -896,7 +896,7 @@ the trap disjunct is `= .trap .overflow` rather than an existential. The
 `Wf` half of each value case is §7's closure obligation: proved here for the
 exact operations (`widen_wf`, `roundOp_wf`) and a law of the model for the
 rounded ones (`narrow_wf`, `sqrt_wf`). -/
-theorem evalFintrin_float_res {D : Decls} (M : FloatModel) (k : FloatIntrin)
+theorem evalFintrin_float_res {D : Decls} (M : FloatLaws) (k : FloatIntrin)
     (w : FloatWidth) (f : FloatDatum) (hw : f.Wf w) (hk : k.floatSrc w = true) :
     (∃ v, evalFintrin M.toFloatSig k (.float w f) = .val v ∧ HasTy D v (k.resTy w)) ∨
       evalFintrin M.toFloatSig k (.float w f) = .trap .overflow := by
@@ -2920,7 +2920,7 @@ or hands on the first argument's non-value outcome — an unwinding `return`
 among them, which aborts the call before any parameter cell is minted. The
 hypothesis is `soundness` at the fuel the call has already spent one unit of,
 which is why this is a lemma rather than a case of the induction. -/
-theorem args_sound (M : FloatModel) {P : Program} {fuel : Nat}
+theorem args_sound (M : FloatLaws) {P : Program} {fuel : Nat}
     (ih : ∀ {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty}, Typed P R Γ e T Ω →
       ∀ {φ : Activation} {H : Store}, ActivationTyping P.decls Γ φ H →
         EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)) :
@@ -2999,7 +2999,7 @@ The induction is on the fuel, not on the derivation: a callee's body is not a
 subexpression of the call, so recursion is what the fuel is there to bound,
 and every subexpression — a call's arguments and the callee's body alike —
 runs at one unit less. -/
-theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
+theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
     ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty}, Typed P R Γ e T Ω →
       ∀ {φ : Activation} {H : Store}, ActivationTyping P.decls Γ φ H →
         EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e) := by
@@ -4248,7 +4248,7 @@ theorem run_ne_returned (M : FloatSig) {P : Program} {fuel : Nat} :
 at any fuel, either exhausts its fuel, traps in a defined way (§6.12), or
 produces a value of the entry point's declared return type. It never reaches a
 `Refusal`. -/
-theorem run_safe (M : FloatModel) {P : Program} {fd : FnDef} (hwf : WfProgram P)
+theorem run_safe (M : FloatLaws) {P : Program} {fd : FnDef} (hwf : WfProgram P)
     (h0 : P.fns[0]? = some fd) (hp : fd.params = []) (fuel : Nat) :
     run M.toFloatSig P fuel = .outOfFuel ∨ (∃ k tr, run M.toFloatSig P fuel = .panic k tr) ∨
       (∃ H v tr, run M.toFloatSig P fuel = .ok H v tr ∧ HasTy P.decls v fd.ret) := by
@@ -4274,7 +4274,7 @@ theorem run_safe (M : FloatModel) {P : Program} {fd : FnDef} (hwf : WfProgram P)
 existentially quantified because `ProgramTyped` only says one exists; the
 value's type is still the one that function declares, so this form claims
 exactly what `run_safe` proves. -/
-theorem ProgramTyped.run_safe (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+theorem ProgramTyped.run_safe (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     ∃ fd, P.fns[0]? = some fd ∧
       (run M.toFloatSig P fuel = .outOfFuel ∨ (∃ k tr, run M.toFloatSig P fuel = .panic k tr) ∨
         (∃ H v tr, run M.toFloatSig P fuel = .ok H v tr ∧ HasTy P.decls v fd.ret)) := by
@@ -4327,7 +4327,7 @@ Every *other* edge — a `let`'s scope exit, a `match` arm's `endscope` over its
 payload locals (`StoreTyping.unwindPrefix`), a `break`'s unwind to its loop
 (`loop_exit_ok`), a frame's normal pop, and a `return`'s unwind — is
 covered. -/
-theorem no_violation (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) (w : Refusal) :
+theorem no_violation (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) (w : Refusal) :
     run M.toFloatSig P fuel ≠ .refused w := by
   obtain ⟨_, _, h₁ | ⟨k, trk, h₂⟩ | ⟨H, v, tr, h₃, _⟩⟩ := h.run_safe M fuel
   · rw [h₁]; simp
@@ -4335,7 +4335,7 @@ theorem no_violation (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel :
   · rw [h₃]; simp
 
 /-- §7 "No use-after-move": the machine never reads a `⊘` cell. -/
-theorem no_use_after_move (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+theorem no_use_after_move (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     run M.toFloatSig P fuel ≠ .refused .useAfterMove := no_violation M h fuel _
 
 /-- §7 "No use-after-drop": the machine never touches a retired (`†`) cell.
@@ -4348,12 +4348,12 @@ binding's cell is minted fresh and retired only when its scope ends, after
 which nothing names it, and a record owes each cell once. `ActivationTyping`
 implies as much for a checked program (the record is the environment, whose
 cells `StoreTyping` says are live or moved out and pairwise distinct). -/
-theorem no_use_after_drop (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+theorem no_use_after_drop (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     run M.toFloatSig P fuel ≠ .refused .useAfterDrop := no_violation M h fuel _
 
 /-- §7 "Linear values are consumed exactly once", leak half: neither a scope
 exit (§6.7) nor a frame unwind (§6.9) ever sees a live linear value. -/
-theorem no_linear_leak (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+theorem no_linear_leak (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     run M.toFloatSig P fuel ≠ .refused .linearLeak := no_violation M h fuel _
 
 /-- §7 linear bullet, overwrite half (`3.8:77`, the RUE-387 premise). The
@@ -4361,11 +4361,11 @@ monitor reads the residue the overwrite-drop is about to walk, and (Assign)
 §5.2's premise is keyed on the destination's *type*, which is the stronger of
 the two — so the residue is empty of linear content whenever the checker
 accepted. -/
-theorem no_linear_overwrite (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+theorem no_linear_overwrite (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     run M.toFloatSig P fuel ≠ .refused .linearOverwrite := no_violation M h fuel _
 
 /-- §7 linear bullet, discard half (`3.8:64`). -/
-theorem no_linear_discard (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+theorem no_linear_discard (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     run M.toFloatSig P fuel ≠ .refused .linearDiscard := no_violation M h fuel _
 
 end RueCore

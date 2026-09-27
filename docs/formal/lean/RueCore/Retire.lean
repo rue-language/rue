@@ -48,7 +48,7 @@ so it never meets `†` and never retires a cell twice; a lookup through the
 environment finds a live cell; and every other helper a rule calls refuses
 with some other violation, never `useAfterDrop`.
 
-The theorems quantify over any `FloatSig`, not only a `FloatModel`: they hold
+The theorems quantify over any `FloatSig`, not only a `FloatLaws`: they hold
 even for float operations satisfying none of the laws. The argument uses that
 in the fragment only a frame's environment names a cell. Loans (§5.4, outside
 the fragment, Phase D, RUE-2238) add references as a second way to name one,

@@ -58,7 +58,7 @@ checked program, every `C` with `Config.init →* C` is terminal or has a step
 (no configuration typing is defined, RUE-2423) but its consequence along every
 run, Timany et al.'s `safe` of the initial configuration (`FIELD.md`, section 2). -/
 def step_progress_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P),
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P),
     ∀ C, Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 
 /-- **The invariant `SafeAt` along every run** (§7 "Type safety"; *not* its
@@ -72,7 +72,7 @@ field's terms it is not preservation (subject reduction, PFPL's Thm 6.2) but
 the conclusion of Timany et al.'s Cor. 2.3, `safe`, with typed halting values
 (`FIELD.md`, section 2); the name is §7's, and RUE-2423 decides whether it stays. -/
 def step_preservation_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P),
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P),
     ∃ fd, P.fns[0]? = some fd ∧
       ∀ C, Steps M.toFloatSig P Config.init C → C.SafeAt M.toFloatSig P fd.ret
 
@@ -82,7 +82,7 @@ checked program and every `n`, `Config.init →ⁿ D` for some `D`, or
 Wright & Felleisen's form (diverge, or a typed value), per horizon and with a
 trap as a third outcome (`FIELD.md`, section 2), rather than progress ∧ preservation. -/
 def step_type_safety_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P),
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P),
     ∃ fd, P.fns[0]? = some fd ∧ ∀ n,
       (∃ D, StepsN M.toFloatSig P n Config.init D) ∨
       (∃ H v tr, Steps M.toFloatSig P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
