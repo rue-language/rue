@@ -2045,7 +2045,7 @@ them is a bug (RUE-305) — that is the point of pinning both.
                      | { v1, …, vk }_S         -- a struct-S value (fields in declaration order)
                      | [ v1, …, vn ]           -- an array value (elements in ascending index)
                      | Kj⟨ v1, …, va ⟩         -- an enum value: variant tag Kj (0-based index j) + payload v1..va (a = 0 ⇒ just the tag)
-                     | buf⟨A⟩                  -- an owned buffer handle: the opaque identity of a buffer allocation (§6.13)
+                     | buf⟨A⟩                  -- an owned pointer: the opaque identity of a buffer allocation (§6.13)
                      | view⟨A | o, k⟩          -- a second-class view of k cells of allocation A starting at cell o (§6.13)
   Environment    ρ : Var ⇀ Loc × Path        -- per frame: each in-scope binding → its root cell and a projection path
                                              --   (RUE-1279: declared here once, not silently widened at §6.9. Every
@@ -3126,7 +3126,7 @@ Three commitments, each load-bearing:
 
 Two §6.1 value forms name allocations:
 
-- `buf⟨A⟩` — an **owned buffer handle**. It is opaque: no §2 expression form
+- `buf⟨A⟩` — an **owned pointer**. It is opaque: no §2 expression form
   and no §6.3–§6.11 rule operates on it; it exists only as the abstracted
   pointer field inside an abstract data type's header struct (the `ptr mut T` of
   `std/arraybuf.rue`, the `ptr mut u8` of `std/strbuf.rue`'s header),
@@ -3280,7 +3280,7 @@ citation:
   not a value. Its trusted source body is `yield checked {
   @place(@ptr_offset(...)) };`; `@place` is not a general user intrinsic and
   the checked bridge is accepted only in this receiver-rooted accessor context.
-- **Growth is identity death** (§6.13.1's `realloc`): a view into the old
+- **Growth invalidates references** (§6.13.1's `realloc`): a view into the old
   buffer held by an enclosing call would now be stuck — but §5.4's exclusivity
   already rejects that shape (`v[0..2] == g(inout v)`): the `inout` loan
   needed to reach `push` conflicts with any live view of `v`. The model and
@@ -3325,7 +3325,7 @@ source pins in its header comment: **`cap = 0` is the non-owning state.**
 The `cap = 0` literal-backed state is why a `StrBuf` built from a literal is
 safe to store indefinitely: the allocation it does not own is one of `H0`'s
 immortal literals, which no reduction can retire. Mutation of such a value
-first performs **literal promotion** (`grow`'s `cap = 0` arm): mint a fresh
+first performs **copy-on-write** (`grow`'s `cap = 0` arm): mint a fresh
 allocation, copy the live cells, and only then write — the non-owned
 allocation is never written through and never retired. Equations, as `u8`
 instances of §6.13.3 with these deltas:
@@ -3363,7 +3363,7 @@ instances of §6.13.3 with these deltas:
 - Equality (§6.4's `≈`) on each canonical text rung compares **content** — the
   live cells in order (`equals_borrowed`) — never allocation identity: two
   distinct allocations with equal bytes are `≈`-equal (`4.3:2`).
-- The UTF-8 **decode family** (`char_scalar`, `char_next`, and their `_lossy`
+- The UTF-8 **decoder methods** (`char_scalar`, `char_next`, and their `_lossy`
   variants, still runtime calls dispatched by the oracle) is deliberately
   **not pinned here**: its strict forms introduce a trap category (invalid
   UTF-8) that §6.12's taxonomy does not yet carry, so its equations belong to
@@ -3391,7 +3391,7 @@ exactly the position RustBelt gives `Vec`'s unsafe internals:
   reachable only through its one owning header, so §5.4's root-granular loans
   on the header place cover the cells, and the root-separation lemma extends
   to allocations.
-- **(O2) Boundary invariant.** Every method entered on a representation
+- **(O2) Representation invariant.** Every method entered on a representation
   satisfying `Inv` re-establishes `Inv` at exit — and at every call it makes
   back into user code (element drop glue must observe the container
   mid-teardown only through values it owns).
