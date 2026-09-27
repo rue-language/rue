@@ -249,8 +249,8 @@ BRIDGE-SENSITIVITY.md have the design and the rerun results.
 **Boundary integer literals and operand pairs (RUE-2482).** Integer literals
 are otherwise small, so an overflow, cast or comparison trap is rare and a
 shape needing a literal at `min_T`/`max_T` together with another boundary
-value is rarer still. `intLiteral` reads a **fourth** random stream, the
-**boundary** stream, one draw in eight, and replaces the literal with
+value is rarer still. `intLiteral` reads a fourth random stream, the
+`boundary` stream, one draw in eight, and replaces the literal with
 `min_T`/`max_T`, one step in from each, `-1`/`0`/`1`, or a power of two and
 its neighbour instead. Unlike the side and call streams, this one costs
 nothing even when it fires on a leaf: it only ever replaces the single
@@ -258,7 +258,7 @@ literal `intLiteral` was about to draw anyway, main-stream draw and all, so a
 program with no boundary draw is exactly the program drawn before RUE-2482.
 Measured against trunk, 91 of 200 (`--gen 200 --seed 7`) and 407 of 1,000
 (`--gen 1000 --seed 23`) generated cases differ at all; of those, 4 and 6
-differ in more than a literal value, because the *pair* draw below discards
+differ in more than a literal value, because the pair draw below discards
 whole operand subtrees, and one of those six also changes its verdict
 (below).
 
@@ -276,7 +276,7 @@ only confuses `crates/rue-codegen/src/value_plan.rs`'s `multiplier_shift` at
 because `4` and `2` both hit a low-order-bit correlation in this seed's
 specific `StdGen` positions (checked directly: eight draws, eight identical
 residues, at both moduli) that a modulus which is not a small power of two
-side-steps. Half of *those* draws additionally bind the `-1` operand through
+side-steps. Half of those draws additionally bind the `-1` operand through
 a `let` first, testing `multiplier_shift`'s actual shape — a literal
 multiplier against a runtime value — rather than only literal-times-literal.
 With it, `--gen 1000 --seed 23` draws the shape at `gen_23_73`, the program
