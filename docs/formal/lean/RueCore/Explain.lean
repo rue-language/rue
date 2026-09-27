@@ -1560,8 +1560,8 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
              -- (Call-Bottom) conclusion `⇒ never`). What diverges here is the
              -- argument list (`TypedArgs.consBot`, "(Strict-Bottom) at a list
              -- member"), so this picks the trace label the way `.loop`'s case
-             -- below picks between (Loop-Div) and (Loop-Div-Backedge): one
-             -- Lean derivation, a presentation label keyed on `Ω.norm`.
+             -- below tells its two divergence cases apart from one Lean
+             -- derivation, keyed on `Ω.norm` rather than a separate rule.
              accepted (if Ω.norm.isSome then "(Call) §5.8" else "(Call-Bottom) §5.3")
                Γ (.call f args) (.ty fd.ret) Ω kids
          | (none, kids) =>
