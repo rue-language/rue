@@ -21,7 +21,7 @@ every fuel past the length of the run makes `eval` answer it
 (`eval_small_to_big`); `eval` exhausts every fuel exactly when §6 diverges
 (`eval_diverges_iff`); and "`eval` is never refused" is "§6 is never stuck", in
 §7's phrasing (`never_refused_iff`). Part 4 restates §7's first bullet over
-`Step` itself: progress and preservation (`step_progress`,
+`Step` itself: progress and SafeAt invariance (`step_progress`,
 `step_safeAt`, `step_type_safety`).
 
 ## The simulation relation
@@ -102,14 +102,14 @@ which gives `eval_small_to_big`, `never_refused_iff` and `eval_diverges_iff`.
 `dropMoved_refused` (`Witnesses.lean`) shows the refusal is really there off
 the domain.
 
-## §7 over `Step`: progress and preservation
+## §7 over `Step`: progress and SafeAt invariance
 
 Part 4 derives §7's first bullet in §6's terms. `step_progress` is
 `step_never_stuck_of_run` given `no_refusal`: on a checked program, every
-configuration `→*` reaches reduces or has halted. Preservation is stated for a
-*semantic* configuration typing, `Config.SafeAt`: a configuration is typed at
+configuration `→*` reaches reduces or has halted. Preservation is stated, as SafeAt invariance,
+for a *semantic* configuration typing, `Config.SafeAt`: a configuration is typed at
 `T` when nothing it reaches is stuck and every value it halts with has type
-`T`. Its one-step preservation is by construction, and syntactic type
+`T`. Its one-step SafeAt invariance is by construction, and syntactic type
 soundness, `init_safeAt` — a checked program's initial configuration is typed at its
 entry type — is `soundness` (through `run_safe`) carried to §6 by
 `eval_small_to_big`. `step_type_safety` puts the three together at every
@@ -1880,7 +1880,7 @@ theorem eval_diverges_iff (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     | returned H v tr => exact absurd hr (run_ne_returned _ H v tr)
     | broke H sc tr => exact absurd hr (run_ne_broke _ H sc tr)
 
-/-! ## §7 over `Step`: progress and preservation (RUE-2289 part 4)
+/-! ## §7 over `Step`: progress and SafeAt invariance (RUE-2289 part 4)
 
 §7's first bullet is a statement about §6's machine: "a well-typed core
 program does not get stuck: it either reduces, halts with a value, or halts
@@ -1889,9 +1889,9 @@ theorems above state it over `eval` (`soundness`, `run_safe`); this section
 restates it over `Step`, derived from `soundness` and the two semantic-equivalence
 directions, so the metatheory can cite a theorem in §7's own terms.
 
-**Which preservation.** The configuration typing here is *semantic*:
+**SafeAt invariance, not syntactic preservation.** The configuration typing here is *semantic*:
 `Config.SafeAt T C` says every configuration `C` reaches is terminal or
-steps, and every value it halts with has type `T`. Progress and preservation
+steps, and every value it halts with has type `T`. Progress and invariance
 of `SafeAt` hold by construction, as in any semantic-typing proof; the content
 is syntactic type soundness, `init_safeAt` — a checked program's initial
 configuration is safe at its entry type — and that is `soundness` carried to
@@ -1907,14 +1907,14 @@ theorem Config.SafeAt.progress {M : FloatSig} {P : Program} {T : Ty} {C : Config
     (h : C.SafeAt M P T) : C.Terminal ∨ ∃ C', Step M P C C' :=
   h.1 C (.refl C)
 
-/-- **Preservation for a typed configuration** (§7, first bullet: "types are
+/-- **SafeAt invariance for a typed configuration** (§7, first bullet: "types are
 preserved under reduction"): a step of §6's `→` from a configuration typed at
 `T` lands on one typed at `T`. -/
 theorem Config.SafeAt.invariant {M : FloatSig} {P : Program} {T : Ty} {C C' : Config}
     (h : C.SafeAt M P T) (hs : Step M P C C') : C'.SafeAt M P T :=
   ⟨fun D hD => h.1 D (.step hs hD), fun H φ v tr hD => h.2 H φ v tr (.step hs hD)⟩
 
-/-- Preservation along `→*` (§6.12) (helper). -/
+/-- SafeAt invariance along `→*` (§6.12) (helper). -/
 theorem Config.SafeAt.steps {M : FloatSig} {P : Program} {T : Ty} {C C' : Config}
     (h : C.SafeAt M P T) (hs : Steps M P C C') : C'.SafeAt M P T :=
   ⟨fun D hD => h.1 D (hs.trans hD), fun H φ v tr hD => h.2 H φ v tr (hs.trans hD)⟩
@@ -1950,7 +1950,7 @@ theorem step_progress (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     ∀ C, Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C' :=
   step_never_stuck_of_run _ P (no_refusal M h)
 
-/-- **Preservation over §6's reduction** (§7, first bullet: "types are
+/-- **SafeAt invariance over §6's reduction** (§7, first bullet: "types are
 preserved under reduction"; ADR-0097 decision 3). For a program `check`
 accepts, every configuration `→*` reaches from §6.12's initial configuration
 is typed at the entry point's declared return type, in the semantic sense of
@@ -1967,7 +1967,7 @@ theorem step_safeAt (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
 /-- **The value §6 halts with has the declared type** (§7, first bullet;
 §6.12's (Result-Ok)). For a program `check` accepts, if `→*` takes the
 initial configuration to `✓v`, then `v` has the entry point's declared return
-type. This is preservation read at the result, `Config.SafeAt`'s second half
+type. This is SafeAt invariance read at the result, `Config.SafeAt`'s second half
 at `Config.init`. -/
 theorem step_value_typed (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     ∃ fd, P.fns[0]? = some fd ∧ ∀ H φ v tr,

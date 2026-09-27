@@ -2334,7 +2334,7 @@ Pick two of these three and read the calculus and the Lean side by side.
 executable dynamics to §6's reduction relation is proved both ways
 (`eval_big_to_small` and `eval_small_to_big`, section 2), and §7's progress and
 preservation are stated over `Step` itself (`step_progress`,
-`step_safeAt`). But the preservation there is for a semantic
+`step_safeAt`). But the preservation there is SafeAt invariance, for a semantic
 configuration typing, not a syntactic one (section 2). The fuel is this
 interpreter's device and has no counterpart in §6, so `fuel_mono` and
 `no_masking` are about `eval`, not about the paper machine; their §6-side
