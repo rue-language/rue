@@ -1042,7 +1042,15 @@ def cases : List Case := [
   { name := "loop_div_backedge",
     description := "A break-less loop whose body completes normally at the type-level loop-head state (an assignment), so it is never-typed by the back-edge case of (Loop-Div)/(Loop-Div-Backedge) rather than the always-diverges case loop_moved_prev_iteration already seeds. The counter starts one below i64::MAX, so the second turn overflows and traps well inside the fuel bound although the loop has no static exit. Seeded for RUE-2483: (Loop-Div-Backedge) had no seed and no generated case.",
     rules := ["(Loop-Div-Backedge) §5.7", "(Assign) §5.2", "(D-Arith-Trap) §6.4"],
-    prog := Examples.loopDivBackedge }
+    prog := Examples.loopDivBackedge },
+  { name := "seq_bottom",
+    description := "The prefix return 1 diverges, so the tail 2 is never typed and never runs: a well-formed tail, so the compiler only warns (unreachable code) rather than rejecting it, and RUE-2376 (which is about a dead tail that is itself ill-formed) does not bear on this case. Seeded for RUE-2483: (Seq-Bottom) had no seed and no generated case.",
+    rules := ["(Seq-Bottom) §5.3"],
+    prog := Examples.seqBottom },
+  { name := "let_bottom",
+    description := "The initializer return 1 diverges, so x is never bound and its use in the body is never typed or reached: again a well-formed tail, and RUE-2376 does not bear on it for the same reason as seq_bottom. Seeded for RUE-2483: (Let-Bottom) had no seed and no generated case.",
+    rules := ["(Let-Bottom) §5.3"],
+    prog := Examples.letBottom }
 ]
 
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/
