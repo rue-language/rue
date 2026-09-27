@@ -789,7 +789,7 @@ theorem msim_binop (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (hcc : Sto
     (op : BinOp) (e₁ e₂ : Expr) (he : (Expr.binop op e₁ e₂).pendingSafe = true) :
     MSim M P φ (evalConf H φ (.binop op e₁ e₂)) (eval M (fuel + 1) P H φ (.binop op e₁ e₂)) := by
   simp only [Expr.pendingSafe, Bool.and_eq_true, Bool.not_eq_eq_eq_not, Bool.not_true,
-    Expr.unwinds, Bool.or_eq_false_iff] at he
+    Expr.canCompleteAbruptly, Bool.or_eq_false_iff] at he
   simp only [eval]
   refine MSim.andThen (F := .binopL op e₂) (fun _ => ⟨rfl, rfl⟩) rfl
     (fun _ _ => MSteps.enter rfl .binopEnter) (IH H φ e₁ hcc he.1.1) ?_

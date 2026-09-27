@@ -892,8 +892,8 @@ theorem unordered :
         (.run [] { env := [], scope := [1, 0] } [] (.ret (.int .w64 .signed 1)) []) ∧
       ¬ ∃ evs, (Config.run [] { env := [], scope := [1, 0] } [] (.ret (.int .w64 .signed 1)) []).trace =
           (Config.run [] { env := [], scope := [1, 0] } [] (.eval (.intLit .w64 .signed 1)) []).trace ++ evs ∧
-        NewestFirst (dropLocs evs) ∧
-        Lifo (Config.run [] { env := [], scope := [1, 0] } [] (.eval (.intLit .w64 .signed 1)) []).stack
+        StrictStackOrder (dropLocs evs) ∧
+        StackDiscipline (Config.run [] { env := [], scope := [1, 0] } [] (.eval (.intLit .w64 .signed 1)) []).stack
           (Config.run [] { env := [], scope := [1, 0] } [] (.ret (.int .w64 .signed 1)) []).stack (dropLocs evs) ∧
         (Config.run [] { env := [], scope := [1, 0] } [] (.eval (.intLit .w64 .signed 1)) []).stack.Pairwise (· < ·) := by
   intro B hB P hP
@@ -925,8 +925,8 @@ theorem not_a_step :
       ProgramTyped P ∧ ∃ H v tr, Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         tr ≠ [] ∧ ¬ Step Float.exactOps P (.run H Activation.empty [] (.ret v) tr) (.panic .user []) ∧
         ¬ ∃ evs, (Config.panic .user []).trace = (Config.run H Activation.empty [] (.ret v) tr).trace ++ evs ∧
-          NewestFirst (dropLocs evs) ∧
-          Lifo (Config.run H Activation.empty [] (.ret v) tr).stack (Config.panic .user []).stack
+          StrictStackOrder (dropLocs evs) ∧
+          StackDiscipline (Config.run H Activation.empty [] (.ret v) tr).stack (Config.panic .user []).stack
             (dropLocs evs) ∧
           (Config.run H Activation.empty [] (.ret v) tr).stack.Pairwise (· < ·) := by
   intro B hB P hP
@@ -1077,15 +1077,15 @@ theorem uncut_drop :
         (.run [.dead, .full (.struct 0 1 [.int .w64 .signed 2])] { env := [0], scope := [0] } []
           (.ret (.int .w64 .signed 3))
           [.drop 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]) ∧
-      NewestFirst [0] ∧ [0, 1].Pairwise (· < ·) ∧ ¬ Lifo [0, 1] [0] [0] ∧
+      StrictStackOrder [0] ∧ [0, 1].Pairwise (· < ·) ∧ ¬ StackDiscipline [0, 1] [0] [0] ∧
       ¬ ∃ evs,
         (Config.run [.dead, .full (.struct 0 1 [.int .w64 .signed 2])] { env := [0], scope := [0] } []
           (.ret (.int .w64 .signed 3))
           [.drop 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]).trace =
           (Config.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
             { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []).trace ++ evs ∧
-        NewestFirst (dropLocs evs) ∧
-        Lifo
+        StrictStackOrder (dropLocs evs) ∧
+        StackDiscipline
           (Config.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
             { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []).stack
           (Config.run [.dead, .full (.struct 0 1 [.int .w64 .signed 2])] { env := [0], scope := [0] } []
@@ -1103,7 +1103,7 @@ theorem uncut_drop :
         (.ret (.int .w64 .signed 3))
         [.drop 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]) :=
     step_iff.mpr (by subst hB hP; rfl)
-  have hnl : ¬ Lifo [0, 1] [0] [0] := by
+  have hnl : ¬ StackDiscipline [0, 1] [0] [0] := by
     rintro (h | ⟨-, h⟩)
     · exact absurd h.length_le (by decide)
     · exact absurd (h.subset (List.mem_singleton_self 0)) (by decide)
@@ -1113,8 +1113,8 @@ theorem uncut_drop :
         [.drop 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]).trace =
         (Config.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
           { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []).trace ++ evs ∧
-      NewestFirst (dropLocs evs) ∧
-      Lifo
+      StrictStackOrder (dropLocs evs) ∧
+      StackDiscipline
         (Config.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
           { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []).stack
         (Config.run [.dead, .full (.struct 0 1 [.int .w64 .signed 2])] { env := [0], scope := [0] } []

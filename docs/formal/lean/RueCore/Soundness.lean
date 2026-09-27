@@ -43,7 +43,7 @@ different books a slice has to keep in step. That is the shape the RUE-1277
 redundancy was raised for, and this fragment does not have it: §6.6's `match`
 arm appends to the one record, and a loop reads its boundary as the record's
 length at entry (`Dynamics.lean`), so a `break`'s record is the loop's with the
-body's open bindings appended (`BrokeOk`).
+body's open bindings appended (`BreakOutputOk`).
 
 What the clause does buy, already: `run-all-scope-drops` walks σ, and because
 σ is ρ, `StoreTyping` — every cell live or moved-out, no two bindings sharing one
@@ -2521,12 +2521,12 @@ theorem Contents.resolveDyn_ok {D : Decls} : ∀ (is : List Int) (πs : List (Li
 /-- The promise for an evaluation that does **not** produce a value here: an
 unwinding `return` carries a value of the enclosing function's declared return
 type `R` and leaves the frame's neighbours alone; an unwinding `break` is one
-of the deliveries `B` (`BrokeOk`); a trap and exhausted fuel promise nothing;
+of the deliveries `B` (`BreakOutputOk`); a trap and exhausted fuel promise nothing;
 a refusal is impossible, which is the whole theorem (helper). -/
 def AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Activation) (H : Store) : EvalRes → Prop
   | .ok _ _ _ => False
   | .returned H' v _ => HasTy D v R ∧ FrameProperty φ.env H H'
-  | .broke H' sc _ => BrokeOk D B φ H H' sc
+  | .broke H' sc _ => BreakOutputOk D B φ H H' sc
   | .panic _ _ => True
   | .refused _ => False
   | .outOfFuel => True
@@ -2544,15 +2544,15 @@ def ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (o : Option Ctx) (B : List Ctx) (
 
 /-- A `break` promised from a later store is promised from an earlier one,
 given the step between them was local to the frame (helper). -/
-theorem BrokeOk.mono_store {D B φ H H₁ H' sc} (hu : FrameProperty φ.env H H₁)
-    (h : BrokeOk D B φ H₁ H' sc) : BrokeOk D B φ H H' sc := by
+theorem BreakOutputOk.mono_store {D B φ H H₁ H' sc} (hu : FrameProperty φ.env H H₁)
+    (h : BreakOutputOk D B φ H₁ H' sc) : BreakOutputOk D B φ H H' sc := by
   obtain ⟨Γb, hb, locs, hsc, hfm, hfresh, hu'⟩ := h
   exact ⟨Γb, hb, locs, hsc, hfm, fun ℓ hℓ => Nat.le_trans hu.1 (hfresh ℓ hℓ), hu.trans hu'⟩
 
 /-- A `break` at one of some deliveries is at one of any superset of them
 (helper). -/
-theorem BrokeOk.mono_brk {D B B' φ H H' sc} (hB : B ⊆ B') (h : BrokeOk D B φ H H' sc) :
-    BrokeOk D B' φ H H' sc := by
+theorem BreakOutputOk.mono_brk {D B B' φ H H' sc} (hB : B ⊆ B') (h : BreakOutputOk D B φ H H' sc) :
+    BreakOutputOk D B' φ H H' sc := by
   obtain ⟨Γb, hb, rest⟩ := h
   exact ⟨Γb, hB hb, rest⟩
 
@@ -2563,11 +2563,11 @@ the enclosing one with the binder's fresh cells `ls` opened on top, is a
 it fired. The unwind the loop runs therefore drops the binder's cells too —
 which is RUE-1277's redundancy read at a `break`: the discarded `endscope`
 marker's cells are found in the scope record instead (helper). -/
-theorem BrokeOk.under_binders {D B φ H Hm H' sc} {ls : List Nat}
+theorem BreakOutputOk.under_binders {D B φ H Hm H' sc} {ls : List Nat}
     (hpre : H.length ≤ Hm.length) (hkeep : ∀ ℓ, ℓ < H.length → Hm[ℓ]? = H[ℓ]?)
     (hfresh : ∀ ℓ ∈ ls, H.length ≤ ℓ)
-    (h : BrokeOk D B { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls } Hm H' sc) :
-    BrokeOk D B φ H H' sc := by
+    (h : BreakOutputOk D B { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls } Hm H' sc) :
+    BreakOutputOk D B φ H H' sc := by
   obtain ⟨Γb, hb, locs, hsc, hfm, hfresh', hu⟩ := h
   refine ⟨Γb, hb, ls ++ locs, by simp [hsc], ?_, ?_, ?_⟩
   · simpa [List.reverse_append, List.append_assoc] using hfm
@@ -2577,12 +2577,12 @@ theorem BrokeOk.under_binders {D B φ H Hm H' sc} {ls : List Nat}
     · exact Nat.le_trans hpre (hfresh' ℓ h)
   · exact FrameProperty.under_binders hpre hkeep (fun ℓ hℓ => hfresh ℓ (List.mem_reverse.mp hℓ)) hu
 
-/-- `BrokeOk.under_binders` at a `let`'s one binder, whose cell is minted at
+/-- `BreakOutputOk.under_binders` at a `let`'s one binder, whose cell is minted at
 the end of the store (§6.7's (D-Let)) (helper). -/
-theorem BrokeOk.under_binder {D B φ H₁ H' sc} {c : Cell}
-    (h : BrokeOk D B { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] }
-      (H₁ ++ [c]) H' sc) : BrokeOk D B φ H₁ H' sc :=
-  BrokeOk.under_binders (ls := [H₁.length]) (by simp)
+theorem BreakOutputOk.under_binder {D B φ H₁ H' sc} {c : Cell}
+    (h : BreakOutputOk D B { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] }
+      (H₁ ++ [c]) H' sc) : BreakOutputOk D B φ H₁ H' sc :=
+  BreakOutputOk.under_binders (ls := [H₁.length]) (by simp)
     (fun _ hℓ => List.getElem?_append_left hℓ) (by simp) h
 
 /-- A value promised at some normal state names that state (helper). -/
@@ -2609,7 +2609,7 @@ theorem EvalOk.mono_store {D T R o B φ H H₁ r} (hu : FrameProperty φ.env H H
       | none => exact h.elim
       | some Γ' => exact ⟨h.1, h.2.1, hu.trans h.2.2⟩
   | returned H' v tr => exact ⟨h.1, hu.trans h.2⟩
-  | broke H' sc tr => exact BrokeOk.mono_store hu h
+  | broke H' sc tr => exact BreakOutputOk.mono_store hu h
   | panic k tr => trivial
   | refused w => exact h.elim
   | outOfFuel => trivial
@@ -2620,7 +2620,7 @@ theorem AbortOk.mono_store {D R B φ H H₁ r} (hu : FrameProperty φ.env H H₁
   cases r with
   | ok H' v tr => exact h.elim
   | returned H' v tr => exact ⟨h.1, hu.trans h.2⟩
-  | broke H' sc tr => exact BrokeOk.mono_store hu h
+  | broke H' sc tr => exact BreakOutputOk.mono_store hu h
   | panic k tr => trivial
   | refused w => exact h.elim
   | outOfFuel => trivial
@@ -2631,14 +2631,14 @@ carries its operands' deliveries outward among its own (§5.3's threading)
 theorem EvalOk.mono_brk {D T R o B B' φ H r} (hB : B ⊆ B') (h : EvalOk D T R o B φ H r) :
     EvalOk D T R o B' φ H r := by
   cases r with
-  | broke H' sc tr => exact BrokeOk.mono_brk hB h
+  | broke H' sc tr => exact BreakOutputOk.mono_brk hB h
   | _ => exact h
 
 /-- The same, for a result that is not a value (helper). -/
 theorem AbortOk.mono_brk {D R B B' φ H r} (hB : B ⊆ B') (h : AbortOk D R B φ H r) :
     AbortOk D R B' φ H r := by
   cases r with
-  | broke H' sc tr => exact BrokeOk.mono_brk hB h
+  | broke H' sc tr => exact BreakOutputOk.mono_brk hB h
   | _ => exact h
 
 /-- Prefixing a trace changes no promise: the trace is an observation, not a
@@ -2705,7 +2705,7 @@ theorem EvalOk.bind {D : Decls} {T T₀ R : Ty} {o : Option Ctx} {Γ₀ : Ctx} {
       obtain ⟨hty, hfm, hu⟩ := hr
       exact (((hk H₁ v tr rfl hty hfm).mono_store hu).withTrace tr)
   | returned H₁ v tr => exact hr
-  | broke H₁ sc tr => exact BrokeOk.mono_brk hB hr
+  | broke H₁ sc tr => exact BreakOutputOk.mono_brk hB hr
   | panic k tr => trivial
   | refused w => exact hr.elim
   | outOfFuel => trivial
@@ -2829,7 +2829,7 @@ theorem loop_exit_ok {D : Decls} (hwf : WfDecls D) {Γh Γx : Ctx} {B : List Ctx
     (hext : ∀ Γb ∈ B, Ctx.Extends Γb Γh)
     (hnl : ∀ Γb ∈ B, NoResidualLinear D (Ctx.loopLocals Γh Γb))
     (hjoin : Ctx.joinAll D (B.map (Ctx.outsideLoop Γh)) = some Γx)
-    (hb : BrokeOk D B φ H H₁ sc) :
+    (hb : BreakOutputOk D B φ H H₁ sc) :
     ∃ H₂ evs, unwindLocs D H₁ (sc.drop φ.scope.length).reverse = .ok (H₂, evs) ∧
       ActivationTyping D Γx φ H₂ ∧ FrameProperty φ.env H H₂ := by
   obtain ⟨Γb, hmem, locs, rfl, hfmb, hfresh, hu⟩ := hb
@@ -2880,7 +2880,7 @@ theorem loop_step (M : FloatSig) {P : Program} {fuel : Nat} {D : Decls} {T R : T
     (kb : EvalOk D .unit R oe Be φ H (eval M fuel P H φ e))
     (hback : ∀ Γe H₁, oe = some Γe → ActivationTyping D Γe φ H₁ →
       EvalOk D T R o' B' φ H₁ (eval M fuel P H₁ φ (.loop e)))
-    (hexit : ∀ H₁ sc, BrokeOk D Be φ H H₁ sc →
+    (hexit : ∀ H₁ sc, BreakOutputOk D Be φ H H₁ sc →
       EvalOk D T R o' B' φ H
         (match unwindLocs P.decls H₁ (sc.drop φ.scope.length).reverse with
          | .error w => .refused w
@@ -2966,7 +2966,7 @@ theorem args_sound (M : FloatLaws) {P : Program} {fuel : Nat}
         | broke H₁ sc tr =>
             rw [hr] at k₁
             try dsimp only
-            exact BrokeOk.mono_brk (List.subset_append_right _ _) k₁
+            exact BreakOutputOk.mono_brk (List.subset_append_right _ _) k₁
         | panic pk tr => try dsimp only; trivial
         | refused w => rw [hr] at k₁; exact k₁.elim
         | outOfFuel => try dsimp only; trivial
@@ -3313,8 +3313,8 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
               -- bindings still open where it fired.
               rw [hrb] at kb
               simp only [EvalRes.bind]
-              exact BrokeOk.mono_brk (hΔb.trans (List.subset_append_left _ _))
-                (BrokeOk.under_binders hpre hkeep (fun ℓ hℓ => freshParams_fresh H₀ vs ℓ hℓ) kb)
+              exact BreakOutputOk.mono_brk (hΔb.trans (List.subset_append_left _ _))
+                (BreakOutputOk.under_binders hpre hkeep (fun ℓ hℓ => freshParams_fresh H₀ vs ℓ hℓ) kb)
           | panic pk tr₂ => simp only [EvalRes.bind]; trivial
           | refused w => rw [hrb] at kb; exact kb.elim
           | outOfFuel => simp only [EvalRes.bind]; trivial
@@ -3589,7 +3589,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
               -- discarded, and the binder's cell travels with the `break`.
               rw [hrb] at kb
               simp only [EvalRes.bind]
-              exact BrokeOk.mono_brk (by brk_sub) kb.under_binder
+              exact BreakOutputOk.mono_brk (by brk_sub) kb.under_binder
           | panic pk tr => simp only [EvalRes.bind]; trivial
           | refused w => rw [hrb] at kb; exact kb.elim
           | outOfFuel => simp only [EvalRes.bind]; trivial
@@ -3632,7 +3632,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
               -- discarded, and the binder's cell travels with the `break`.
               rw [hrb] at kb
               simp only [EvalRes.bind]
-              exact BrokeOk.mono_brk (by brk_sub) kb.under_binder
+              exact BreakOutputOk.mono_brk (by brk_sub) kb.under_binder
           | panic pk tr => simp only [EvalRes.bind]; trivial
           | refused w => rw [hrb] at kb; exact kb.elim
           | outOfFuel => simp only [EvalRes.bind]; trivial
@@ -3780,7 +3780,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
       | @brk Γ T =>
           -- (D-Break) §6.10: the `break` fires in this very frame, with no
           -- binding opened since the loop's — unless an enclosing `let` or
-          -- arm adds its own on the way out (`BrokeOk.under_binders`).
+          -- arm adds its own on the way out (`BreakOutputOk.under_binders`).
           simp only [eval]
           exact ⟨Γ, List.mem_singleton_self _, [], by simp, by simpa using hfm,
             by simp, FrameProperty.refl⟩

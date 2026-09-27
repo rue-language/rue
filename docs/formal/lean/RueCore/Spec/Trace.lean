@@ -123,7 +123,7 @@ def whole_program_exactly_once_stmt : Prop :=
 its scope"; §6.7, §6.9–§6.11), over `Step`. A finished run's trace — value
 or panic — is in §6.11's block grammar (`Blocks`). Each step from a
 reachable configuration drops one cell or distinct cells newest first, and
-the registration stack is in location order. `Lifo` holds of every step
+the registration stack is in location order. `StackDiscipline` holds of every step
 that keeps its stack, whatever it drops, so it constrains only a step that
 pops: the cells it drops are among those it cut, newest first (R7 of
 `REDTEAM-LOG.md`). -/
@@ -132,8 +132,8 @@ def drop_order_stmt : Prop :=
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
     (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → Blocks P.decls tr) ∧
     ∀ C C', Steps M.toFloatSig P Config.init C → Step M.toFloatSig P C C' →
-      ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) ∧
-        Lifo C.stack C'.stack (dropLocs evs) ∧ (C.stack.Pairwise (· < ·))
+      ∃ evs, C'.trace = C.trace ++ evs ∧ StrictStackOrder (dropLocs evs) ∧
+        StackDiscipline C.stack C'.stack (dropLocs evs) ∧ (C.stack.Pairwise (· < ·))
 
 /-- **Drop glue order, in §6.11's own terms** (§3.9, §6.11; §7 "No
 use-after-drop / no leak of drops", *how* a value is dropped; RUE-2487), over

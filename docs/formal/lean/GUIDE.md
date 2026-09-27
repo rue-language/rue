@@ -560,7 +560,7 @@ reuse it at every form. It says:
 - on `.returned`, the value has the enclosing function's return type `R`, and
   the cells outside the frame are untouched;
 - on `.broke`, the `break` fired at one of `Ω`'s delivered states, in the
-  frame with the loop body's still-open bindings on top (`BrokeOk`);
+  frame with the loop body's still-open bindings on top (`BreakOutputOk`);
 - on `.panic` and `.outOfFuel`, nothing;
 - on `.refused`, **`False`**, which is the whole point.
 
@@ -754,8 +754,8 @@ theorem drop_order (M : FloatLaws) (h : ProgramTyped P) :
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
     (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → Blocks P.decls tr) ∧
     ∀ C C', Steps M.toFloatSig P Config.init C → Step M.toFloatSig P C C' →
-      ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) ∧
-        Lifo C.stack C'.stack (dropLocs evs) ∧ C.stack.Pairwise (· < ·)
+      ∃ evs, C'.trace = C.trace ++ evs ∧ StrictStackOrder (dropLocs evs) ∧
+        StackDiscipline C.stack C'.stack (dropLocs evs) ∧ C.stack.Pairwise (· < ·)
 ```
 
 Both halves are over §6's `Step`.
@@ -782,12 +782,12 @@ Both halves are over §6's `Step`.
     conjunct).
   - The pending `endscope` markers are exactly the tail of their frame's
     record (`reachable_nested`).
-  - So every step is `Lifo`: it keeps the stack as a prefix of the new one,
+  - So every step is `StackDiscipline`: it keeps the stack as a prefix of the new one,
     or cuts it back and drops only cells of the part it cut, newest first.
-    Those cells are newer than every cell still registered (`Lifo.newer`).
+    Those cells are newer than every cell still registered (`StackDiscipline.newer`).
     This orders drops across steps as well as within one: `{ let a; let b; }`
     exits over two (D-EndScope) steps and drops `b` first.
-  - `NewestFirst` is the same within one step: one cell, or distinct cells
+  - `StrictStackOrder` is the same within one step: one cell, or distinct cells
     newest first.
 
 Witnesses:
@@ -798,7 +798,7 @@ Witnesses:
 - `nested_scopes`, for the cross-step order. Its two sibling `let`s drop
   `ℓ3` then `ℓ1` over two steps.
 - `return_past_affine`, for the order within one step. The σ-walk's one step
-  drops `ℓ3`, then `ℓ1` (`returnPastAffine_newestFirst`). In the ledger these
+  drops `ℓ3`, then `ℓ1` (`returnPastAffine_strictStackOrder`). In the ledger these
   show as the ends `[9.1]` and `[9.2]`, the first and second end of row 9.
 - `two_params_dropped_at_pop` and `three_params_dropped_at_pop`, for a
   callee frame's pop. It tears the by-value parameters down last-parameter

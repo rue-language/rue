@@ -26,7 +26,7 @@ Most of the programs are unchecked, and several are refused by one of
 monitor removed makes the matching statement false (R3 of `REDTEAM-LOG.md`;
 the five monitor mutants of `MUTATION.md`). Four more (`uncut_drop`,
 `ill_typed_halt`, `out_of_range_halt`, `float_halt`; RUE-2500) pin the
-definitions the spine is written in the same way: each negates `Lifo`,
+definitions the spine is written in the same way: each negates `StackDiscipline`,
 `SafeAt`'s typing half, `HasTy` or `FloatDatum.Wf` at a configuration or
 datum that fails only that definition, so a weakened definition makes the
 statement false (the statement-vocabulary mutants of `MUTATION.md`). The checked programs are the
@@ -713,8 +713,8 @@ def unordered_stmt : Prop :=
         (.run [] { env := [], scope := [1, 0] } [] (.ret (.int .w64 .signed 1)) []) ∧
       ¬ ∃ evs, (Config.run [] { env := [], scope := [1, 0] } [] (.ret (.int .w64 .signed 1)) []).trace =
           (Config.run [] { env := [], scope := [1, 0] } [] (.eval (.intLit .w64 .signed 1)) []).trace ++ evs ∧
-        NewestFirst (dropLocs evs) ∧
-        Lifo (Config.run [] { env := [], scope := [1, 0] } [] (.eval (.intLit .w64 .signed 1)) []).stack
+        StrictStackOrder (dropLocs evs) ∧
+        StackDiscipline (Config.run [] { env := [], scope := [1, 0] } [] (.eval (.intLit .w64 .signed 1)) []).stack
           (Config.run [] { env := [], scope := [1, 0] } [] (.ret (.int .w64 .signed 1)) []).stack (dropLocs evs) ∧
         (Config.run [] { env := [], scope := [1, 0] } [] (.eval (.intLit .w64 .signed 1)) []).stack.Pairwise (· < ·)
 
@@ -737,8 +737,8 @@ def not_a_step_stmt : Prop :=
       ProgramTyped P ∧ ∃ H v tr, Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         tr ≠ [] ∧ ¬ Step Float.exactOps P (.run H Activation.empty [] (.ret v) tr) (.panic .user []) ∧
         ¬ ∃ evs, (Config.panic .user []).trace = (Config.run H Activation.empty [] (.ret v) tr).trace ++ evs ∧
-          NewestFirst (dropLocs evs) ∧
-          Lifo (Config.run H Activation.empty [] (.ret v) tr).stack (Config.panic .user []).stack
+          StrictStackOrder (dropLocs evs) ∧
+          StackDiscipline (Config.run H Activation.empty [] (.ret v) tr).stack (Config.panic .user []).stack
             (dropLocs evs) ∧
           (Config.run H Activation.empty [] (.ret v) tr).stack.Pairwise (· < ·)
 
@@ -847,7 +847,7 @@ frame registers cells `0` and `1`, in location order, but whose pending
 `endscope` names cell `0` rather than the newest cell `1` takes a step: (D-EndScope)
 pops one cell off the record, which leaves `[0]`, and drops cell `0`, the cell
 it kept. Its drop markers name one cell, so they are newest first, and its
-stack is in location order; only `Lifo` fails: the step cut cell `1` and
+stack is in location order; only `StackDiscipline` fails: the step cut cell `1` and
 dropped cell `0`. `Config.init` does not reach it, so `drop_order`'s last half
 fails without the hypothesis that the configuration is reached, on the one
 conjunct `unordered` leaves alone. -/
@@ -872,15 +872,15 @@ def uncut_drop_stmt : Prop :=
         (.run [.dead, .full (.struct 0 1 [.int .w64 .signed 2])] { env := [0], scope := [0] } []
           (.ret (.int .w64 .signed 3))
           [.drop 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]) ∧
-      NewestFirst [0] ∧ [0, 1].Pairwise (· < ·) ∧ ¬ Lifo [0, 1] [0] [0] ∧
+      StrictStackOrder [0] ∧ [0, 1].Pairwise (· < ·) ∧ ¬ StackDiscipline [0, 1] [0] [0] ∧
       ¬ ∃ evs,
         (Config.run [.dead, .full (.struct 0 1 [.int .w64 .signed 2])] { env := [0], scope := [0] } []
           (.ret (.int .w64 .signed 3))
           [.drop 0 (.struct 0 0 [.int .w64 .signed 1]), .dtor 0 (.struct 0 0 [.int .w64 .signed 1])]).trace =
           (Config.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
             { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []).trace ++ evs ∧
-        NewestFirst (dropLocs evs) ∧
-        Lifo
+        StrictStackOrder (dropLocs evs) ∧
+        StackDiscipline
           (Config.run [.full (.struct 0 0 [.int .w64 .signed 1]), .full (.struct 0 1 [.int .w64 .signed 2])]
             { env := [1, 0], scope := [0, 1] } [.endscope [0]] (.ret (.int .w64 .signed 3)) []).stack
           (Config.run [.dead, .full (.struct 0 1 [.int .w64 .signed 2])] { env := [0], scope := [0] } []

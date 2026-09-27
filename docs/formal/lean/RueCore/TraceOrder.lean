@@ -56,8 +56,8 @@ reachable from `Config.init`:
   registration stack — every suspended caller's record, then the current
   frame's — is in location order. So (D-EndScope)'s pop by count removes the
   marker's own cells (`Activation.unwindScope_tail`).
-* `reachable_lifo`: every step is **last-in first-out** on that stack
-  (`Lifo`). It keeps the stack as a prefix of the new one, or cuts it back
+* `reachable_stackDiscipline`: every step is **last-in first-out** on that stack
+  (`StackDiscipline`). It keeps the stack as a prefix of the new one, or cuts it back
   and drops only cells of the suffix it cut, newest first; each such cell is
   newer than every cell still registered. That orders drops *across* steps:
   `{ let a; let b; }` exits over two (D-EndScope) steps, and `b` drops
@@ -80,7 +80,7 @@ the grammar accepts that trace. And "an enum's active payload only" is how
 no other — rather than a clause of the grammar.
 
 The definitions the statements here are written in (`Blocks`,
-`Config.Ordered`, `Config.Nested`, `NewestFirst`, `Lifo`) are in
+`Config.Ordered`, `Config.Nested`, `StrictStackOrder`, `StackDiscipline`) are in
 `Trace/Defs.lean`, the definitions layer; the witnesses on example and corpus
 programs are in `Witnesses.lean` (README, "Layers").
 -/
@@ -1027,8 +1027,8 @@ theorem plainUnwind_locs {D : Decls} : ∀ {H H' : Store} {ls : List Nat} {evs :
           · exact ih.cons_cons ℓ
 
 /-- A teardown of an ordered record drops newest-first (helper). -/
-theorem NewestFirst.teardown {n : Nat} {ls ls' : List Nat} (h : Rec n ls)
-    (hs : ls'.Sublist ls.reverse) : NewestFirst ls' :=
+theorem StrictStackOrder.teardown {n : Nat} {ls ls' : List Nat} (h : Rec n ls)
+    (hs : ls'.Sublist ls.reverse) : StrictStackOrder ls' :=
   .inr ((List.pairwise_reverse.mpr h.1).sublist hs)
 
 /-- **Every step of §6's relation from an ordered configuration drops
@@ -1037,12 +1037,12 @@ newest-first** (§6.7, §6.9, §6.10, §6.11): it appends to the trace, and the
 decreasing location order. A teardown — (D-EndScope), (D-Return-Value)'s
 frame pop, (D-Return)'s σ-walk, (D-Loop-Iter)'s end of a turn and
 (D-Break)'s unwind — walks an ordered record backwards
-(`NewestFirst.teardown`). -/
+(`StrictStackOrder.teardown`). -/
 theorem step_drop_order {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P C C')
-    (hC : C.Ordered) : ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) := by
+    (hC : C.Ordered) : ∃ evs, C'.trace = C.trace ++ evs ∧ StrictStackOrder (dropLocs evs) := by
   have one : ∀ {evs : List Event} (ℓ : Nat), (∀ x ∈ dropLocs evs, x = ℓ) →
-      NewestFirst (dropLocs evs) := fun ℓ h => .inl ⟨ℓ, h⟩
-  have none : ∀ {evs : List Event}, dropLocs evs = [] → NewestFirst (dropLocs evs) :=
+      StrictStackOrder (dropLocs evs) := fun ℓ h => .inl ⟨ℓ, h⟩
+  have none : ∀ {evs : List Event}, dropLocs evs = [] → StrictStackOrder (dropLocs evs) :=
     fun h => .inl ⟨0, by simp [h]⟩
   cases h
   case useDeclared H φ K tr p ℓ c πd πs cd leaf evs v c' _ _ _ hd _ _ =>
@@ -1052,7 +1052,7 @@ theorem step_drop_order {M : FloatSig} {P : Program} {C C' : Config} (h : Step M
     refine ⟨_, rfl, none ?_⟩
     unfold matchConsume; split <;> rfl
   case endScope H φ K tr ℓs v H' evs hu =>
-    exact ⟨_, rfl, NewestFirst.teardown (hC.2 _ List.mem_cons_self) (plainUnwind_locs hu)⟩
+    exact ⟨_, rfl, StrictStackOrder.teardown (hC.2 _ List.mem_cons_self) (plainUnwind_locs hu)⟩
   case seqDrop hd =>
     refine ⟨_, rfl, none ?_⟩
     rw [show ∀ v evs, (Event.dropTemp v :: evs) = [.dropTemp v] ++ evs from fun _ _ => rfl,
@@ -1067,13 +1067,13 @@ theorem step_drop_order {M : FloatSig} {P : Program} {C C' : Config} (h : Step M
     · exact dropCell_locs hl x hx
   case dropMove H φ K tr p ℓ c sub evs c' _ _ _ _ hd _ => exact ⟨_, rfl, one ℓ (dropCell_locs hd)⟩
   case callReturn H φ K tr φs v H' evs hu =>
-    exact ⟨_, rfl, NewestFirst.teardown hC.1 (plainUnwind_locs hu)⟩
-  case ret hu => exact ⟨_, rfl, NewestFirst.teardown hC.1 (plainUnwind_locs hu)⟩
+    exact ⟨_, rfl, StrictStackOrder.teardown hC.1 (plainUnwind_locs hu)⟩
+  case ret hu => exact ⟨_, rfl, StrictStackOrder.teardown hC.1 (plainUnwind_locs hu)⟩
   case loopIter hu =>
-    exact ⟨_, rfl, NewestFirst.teardown (hC.1.sublist (List.drop_sublist _ _))
+    exact ⟨_, rfl, StrictStackOrder.teardown (hC.1.sublist (List.drop_sublist _ _))
       (plainUnwind_locs hu)⟩
   case brk hu =>
-    exact ⟨_, rfl, NewestFirst.teardown (hC.1.sublist (List.drop_sublist _ _))
+    exact ⟨_, rfl, StrictStackOrder.teardown (hC.1.sublist (List.drop_sublist _ _))
       (plainUnwind_locs hu)⟩
   all_goals exact ⟨[], by simp [Config.trace], none rfl⟩
 
@@ -1083,7 +1083,7 @@ from every configuration reachable from §6.12's initial one, every step's
 hypothesis. -/
 theorem reachable_drop_order {M : FloatSig} {P : Program} {C C' : Config}
     (hr : Steps M P Config.init C) (h : Step M P C C') :
-    ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) :=
+    ∃ evs, C'.trace = C.trace ++ evs ∧ StrictStackOrder (dropLocs evs) :=
   step_drop_order h (reachable_ordered hr)
 
 /-! ## Across steps: scopes nest, and teardown is last-in first-out
@@ -1094,9 +1094,9 @@ needs more: that the pending `endscope` markers are exactly the tail of the
 scope record, innermost last (`Config.Nested`). Then every teardown removes a
 suffix of the machine's whole registration stack — the suspended callers'
 records, then the current frame's — and drops cells only from that suffix,
-newest first (`Lifo`). Since the stack is in location order, a cell a
+newest first (`StackDiscipline`). Since the stack is in location order, a cell a
 teardown deregisters is newer than every cell still registered
-(`Lifo.newer`): across steps, across scopes and across frames, the machine
+(`StackDiscipline.newer`): across steps, across scopes and across frames, the machine
 drops last-in first-out. -/
 
 /-- (D-EndScope)'s pop by count removes exactly the marker's cells when they
@@ -1151,7 +1151,7 @@ theorem Nest.toLoop {K K' : List Kont} {φ : Activation} :
 registered**: on a stack in location order, a step that cuts the stack back
 drops only cells it deregistered, each newer than every cell still
 registered (helper). -/
-theorem Lifo.newer {S S' ls : List Nat} (hS : S.Pairwise (· < ·)) (h : Lifo S S' ls)
+theorem StackDiscipline.newer {S S' ls : List Nat} (hS : S.Pairwise (· < ·)) (h : StackDiscipline S S' ls)
     (hcut : ¬ S <+: S') : ∀ ℓ ∈ ls, ℓ ∉ S' ∧ ∀ ℓ' ∈ S', ℓ' < ℓ := by
   rcases h with h | ⟨⟨rest, rfl⟩, hs⟩
   · exact absurd h hcut
@@ -1164,10 +1164,10 @@ theorem Lifo.newer {S S' ls : List Nat} (hS : S.Pairwise (· < ·)) (h : Lifo S 
     exact ⟨fun hm => Nat.lt_irrefl ℓ (hlt ℓ hm), hlt⟩
 
 /-- A step that keeps the frame and the callers keeps the stack (helper). -/
-theorem Lifo.same {S ls : List Nat} : Lifo S S ls := .inl (List.prefix_refl S)
+theorem StackDiscipline.same {S ls : List Nat} : StackDiscipline S S ls := .inl (List.prefix_refl S)
 
 /-- A teardown of the current frame's tail (helper). -/
-theorem Lifo.cut {A m ls : List Nat} (h : ls.Sublist m.reverse) : Lifo (A ++ m) A ls :=
+theorem StackDiscipline.cut {A m ls : List Nat} (h : ls.Sublist m.reverse) : StackDiscipline (A ++ m) A ls :=
   .inr ⟨List.prefix_append A m, by simpa using h⟩
 
 /-- **Every step keeps the scopes nested** (§6.7, §6.9, §6.10): (D-Let) and
@@ -1242,11 +1242,11 @@ theorem reachable_nested {M : FloatSig} {P : Program} {C : Config}
 /-- **Every step is last-in first-out** (§6.7, §6.9, §6.10): from a nested
 configuration, a step appends `evs` to the trace and either keeps the
 registration stack as a prefix of the new one, or cuts it back and drops
-only cells of the cut suffix, newest first (`Lifo`). -/
-theorem step_lifo {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P C C')
+only cells of the cut suffix, newest first (`StackDiscipline`). -/
+theorem step_stackDiscipline {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P C C')
     (hC : C.Nested) :
-    ∃ evs, C'.trace = C.trace ++ evs ∧ Lifo C.stack C'.stack (dropLocs evs) := by
-  have keep : ∀ {evs : List Event} {S S' : List Nat}, S <+: S' → Lifo S S' (dropLocs evs) :=
+    ∃ evs, C'.trace = C.trace ++ evs ∧ StackDiscipline C.stack C'.stack (dropLocs evs) := by
+  have keep : ∀ {evs : List Event} {S S' : List Nat}, S <+: S' → StackDiscipline S S' (dropLocs evs) :=
     fun h => .inl h
   have pre : ∀ A B D : List Nat, A ++ B <+: A ++ (B ++ D) := fun A B D => by
     rw [← List.append_assoc]; exact List.prefix_append _ _
@@ -1257,32 +1257,32 @@ theorem step_lifo {M : FloatSig} {P : Program} {C C' : Config} (h : Step M P C C
     obtain ⟨sc', hsc, _⟩ := hC.1
     refine ⟨_, rfl, ?_⟩
     simp only [Config.stack, Stk, Activation.unwindScope_tail φ hsc, hsc, ← List.append_assoc]
-    exact Lifo.cut (plainUnwind_locs hu)
+    exact StackDiscipline.cut (plainUnwind_locs hu)
   case call => exact ⟨[], by simp [Config.trace], keep (List.prefix_append _ _)⟩
   case callReturn H φ K tr φs v H' evs hu =>
     refine ⟨_, rfl, ?_⟩
     simp only [Config.stack, Stk]
-    exact Lifo.cut (plainUnwind_locs hu)
+    exact StackDiscipline.cut (plainUnwind_locs hu)
   case ret H φ K tr v φs K' H' evs hk hu =>
     obtain ⟨_, hs⟩ := Nest.toCall hC.1 hk
     refine ⟨_, rfl, ?_⟩
     simp only [Config.stack, hs]
-    exact Lifo.cut (plainUnwind_locs hu)
+    exact StackDiscipline.cut (plainUnwind_locs hu)
   case loopIter H φ K tr e φs H' evs hu =>
     obtain ⟨heq, _⟩ := hC.1
     refine ⟨_, rfl, ?_⟩
     simp only [Config.stack, Stk, heq]
-    exact Lifo.same
+    exact StackDiscipline.same
   case brk H φ K tr φs K' H' evs hk hu =>
     obtain ⟨⟨m, hm⟩, _, hs⟩ := Nest.toLoop hC.1 hk
     refine ⟨_, rfl, ?_⟩
     have hd : φ.scope.drop φs.scope.length = m := by rw [hm]; simp
     rw [hd] at hu
     simp only [Config.stack, hs, hm, ← List.append_assoc]
-    exact Lifo.cut (plainUnwind_locs hu)
+    exact StackDiscipline.cut (plainUnwind_locs hu)
   all_goals first
-    | exact ⟨_, rfl, Lifo.same⟩
-    | exact ⟨[], by simp [Config.trace], Lifo.same⟩
+    | exact ⟨_, rfl, StackDiscipline.same⟩
+    | exact ⟨[], by simp [Config.trace], StackDiscipline.same⟩
     | exact ⟨[], by simp [Config.trace], .inr ⟨List.nil_prefix, List.nil_sublist _⟩⟩
 
 /-- **Last-in first-out, on every reachable step** (§6.7, §6.9, §6.10): the
@@ -1292,12 +1292,12 @@ registered. So a cell dropped at one teardown and a cell dropped at a later
 one, still registered at the first, drop newest first: `{ let a; let b; }`
 drops `b` before `a` over its two (D-EndScope) steps. No typing
 hypothesis. -/
-theorem reachable_lifo {M : FloatSig} {P : Program} {C C' : Config}
+theorem reachable_stackDiscipline {M : FloatSig} {P : Program} {C C' : Config}
     (hr : Steps M P Config.init C) (h : Step M P C C') :
-    ∃ evs, C'.trace = C.trace ++ evs ∧ Lifo C.stack C'.stack (dropLocs evs) ∧
+    ∃ evs, C'.trace = C.trace ++ evs ∧ StackDiscipline C.stack C'.stack (dropLocs evs) ∧
       (¬ C.stack <+: C'.stack → ∀ ℓ ∈ dropLocs evs, ℓ ∉ C'.stack ∧ ∀ ℓ' ∈ C'.stack, ℓ' < ℓ) := by
   have hn := reachable_nested hr
-  obtain ⟨evs, ht, hl⟩ := step_lifo h hn
+  obtain ⟨evs, ht, hl⟩ := step_stackDiscipline h hn
   refine ⟨evs, ht, hl, fun hcut => hl.newer ?_ hcut⟩
   cases C with
   | run H φ K f tr => exact hn.2.1
@@ -1360,11 +1360,11 @@ checker accepts:
   ascending (`3.9:15`), an enum's stored (active) payload only (`6.3:20`) —
   and nowhere else;
 * **across cells**, at every step from a reachable configuration: its `drop`
-  markers name one cell or distinct cells newest first (`NewestFirst`), and
-  the step is last-in first-out on the registration stack (`Lifo`): it keeps
+  markers name one cell or distinct cells newest first (`StrictStackOrder`), and
+  the step is last-in first-out on the registration stack (`StackDiscipline`): it keeps
   the stack, or cuts it back and drops only cells it deregistered — each
   newer than every cell still registered, by `reachable_nested`'s location
-  order (`reachable_lifo`, `Lifo.newer`). So across all its exit steps a
+  order (`reachable_stackDiscipline`, `StackDiscipline.newer`). So across all its exit steps a
   scope's cells drop newest first, and before any older scope's.
 
 Only the first half reads the typing hypothesis, through `eval_complete` and
@@ -1373,11 +1373,11 @@ theorem drop_order (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
     (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → Blocks P.decls tr) ∧
     ∀ C C', Steps M.toFloatSig P Config.init C → Step M.toFloatSig P C C' →
-      ∃ evs, C'.trace = C.trace ++ evs ∧ NewestFirst (dropLocs evs) ∧
-        Lifo C.stack C'.stack (dropLocs evs) ∧ (C.stack.Pairwise (· < ·)) := by
+      ∃ evs, C'.trace = C.trace ++ evs ∧ StrictStackOrder (dropLocs evs) ∧
+        StackDiscipline C.stack C'.stack (dropLocs evs) ∧ (C.stack.Pairwise (· < ·)) := by
   refine ⟨(step_blocks M h).1, (step_blocks M h).2, fun C C' hr hs => ?_⟩
   obtain ⟨evs, ht, hn⟩ := reachable_drop_order hr hs
-  obtain ⟨evs', ht', hl⟩ := step_lifo hs (reachable_nested hr)
+  obtain ⟨evs', ht', hl⟩ := step_stackDiscipline hs (reachable_nested hr)
   have : evs' = evs := List.append_cancel_left (ht'.symm.trans ht)
   subst this
   refine ⟨evs', ht, hn, hl, ?_⟩

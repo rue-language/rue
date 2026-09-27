@@ -14,7 +14,7 @@ identities and the trace's projections (`freedIds`, `dtorIds`, from
 promises (`Cons`, `Exact`, `Lead`, `Tidy`, `Settled`), the RUE-2316 carve-out
 (`Program.pendingSafe`, from `TraceExact.lean`), and the drop order's grammar
 and the configuration invariants over §6's relation (`Blocks`,
-`Config.Ordered`, `Config.Nested`, `NewestFirst`, `Lifo`, from
+`Config.Ordered`, `Config.Nested`, `StrictStackOrder`, `StackDiscipline`, from
 `TraceOrder.lean`).
 
 They are moved here verbatim (RUE-2456), in the order the three proof modules
@@ -172,10 +172,10 @@ end
 /-- Whether evaluating an expression can **unwind** past its context: it
 contains a `return`, or a `break` its own loops do not catch
 (`Expr.breaks`) (helper). -/
-def Expr.unwinds (e : Expr) : Bool := e.returns || e.breaks
+def Expr.canCompleteAbruptly (e : Expr) : Bool := e.returns || e.breaks
 
 /-- No expression of the list unwinds (helper). -/
-def Expr.quietList (es : List Expr) : Bool := es.all fun e => !e.unwinds
+def Expr.quietList (es : List Expr) : Bool := es.all fun e => !e.canCompleteAbruptly
 
 mutual
 /-- **The RUE-2316 carve-out, syntactically**: no value computed for one
@@ -190,7 +190,7 @@ type. -/
 def Expr.pendingSafe : Expr → Bool
   | .intLit _ _ _ | .floatLit _ _ | .boolLit _ | .unitLit | .use _ | .panic _
   | .drop _ | .brk => true
-  | .binop _ e₁ e₂ => e₁.pendingSafe && e₂.pendingSafe && !e₂.unwinds
+  | .binop _ e₁ e₂ => e₁.pendingSafe && e₂.pendingSafe && !e₂.canCompleteAbruptly
   | .unop _ e | .intCast _ _ e | .fintrin _ e | .dbg e | .repeatArray _ e _
   | .assign _ e | .ret e | .loop e => e.pendingSafe
   | .mkStruct _ args | .mkEnum _ _ args | .mkArray _ args | .call _ args
@@ -257,7 +257,7 @@ def Local (φ : Activation) (H H' : Store) : Prop :=
 
 /-- Every cell allocated since `H` is retired, but those `keep` names
 (helper). -/
-def Retired (H : Store) (keep : List Nat) (H' : Store) : Prop :=
+def Tombstoned (H : Store) (keep : List Nat) (H' : Store) : Prop :=
   ∀ ℓ, H.length ≤ ℓ → ℓ < H'.length → ℓ ∉ keep → H'[ℓ]? = some .dead
 
 /-- **The frame-pop invariant for one evaluation** in frame `φ` from store `H`
@@ -268,9 +268,9 @@ carries, which extends `φ`'s by cells allocated since `H` and which the loop
 retires; and an unwinding
 `return` has retired every cell of `φ`'s record (§6.9's σ-walk). -/
 def Tidy (φ : Activation) (H : Store) : EvalRes → Prop
-  | .ok H' _ _ => Local φ H H' ∧ Retired H [] H'
-  | .returned H' _ _ => Local φ H H' ∧ Retired H [] H' ∧ ∀ ℓ ∈ φ.scope, H'[ℓ]? = some .dead
-  | .broke H' sc _ => Local φ H H' ∧ Retired H sc H' ∧
+  | .ok H' _ _ => Local φ H H' ∧ Tombstoned H [] H'
+  | .returned H' _ _ => Local φ H H' ∧ Tombstoned H [] H' ∧ ∀ ℓ ∈ φ.scope, H'[ℓ]? = some .dead
+  | .broke H' sc _ => Local φ H H' ∧ Tombstoned H sc H' ∧
       ∃ locs, sc = φ.scope ++ locs ∧ ∀ ℓ ∈ locs, H.length ≤ ℓ
   | .panic _ _ | .refused _ | .outOfFuel => True
 
@@ -279,9 +279,9 @@ operands ran: every one retired by the form's end — but, for an unwinding
 `break`, the ones its record owes the loop — and, for an unwinding `return`,
 the frame's whole record retired (helper). -/
 def Settled (φ : Activation) (H₁ : Store) : EvalRes → Prop
-  | .ok H' _ _ => Retired H₁ [] H'
-  | .returned H' _ _ => Retired H₁ [] H' ∧ ∀ ℓ ∈ φ.scope, H'[ℓ]? = some .dead
-  | .broke H' sc _ => Retired H₁ sc H' ∧ ∃ locs, sc = φ.scope ++ locs
+  | .ok H' _ _ => Tombstoned H₁ [] H'
+  | .returned H' _ _ => Tombstoned H₁ [] H' ∧ ∀ ℓ ∈ φ.scope, H'[ℓ]? = some .dead
+  | .broke H' sc _ => Tombstoned H₁ sc H' ∧ ∃ locs, sc = φ.scope ++ locs
   | .panic _ _ | .refused _ | .outOfFuel => True
 
 /-- **§6.11's order, as a grammar over the trace.** A trace is a sequence of
@@ -401,7 +401,7 @@ def dropLocs (tr : List Event) : List Nat :=
 one cell — an overwrite, an `@drop`, a destructure's residue, several
 sub-positions of one binding — or name distinct cells in strictly decreasing
 location order (helper). -/
-def NewestFirst (ls : List Nat) : Prop := (∃ ℓ, ∀ x ∈ ls, x = ℓ) ∨ ls.Pairwise (· > ·)
+def StrictStackOrder (ls : List Nat) : Prop := (∃ ℓ, ∀ x ∈ ls, x = ℓ) ∨ ls.Pairwise (· > ·)
 
 /-- The output a configuration has produced so far (§6.12) (helper). -/
 def Config.trace : Config → List Event
@@ -446,7 +446,7 @@ def Config.Nested : Config → Prop
 either keeps the stack as a prefix of the new one — nothing deregistered —
 or cuts the stack back to a prefix of the old one, and its `drop` markers
 then name only cells of the suffix it cut, newest first (helper). -/
-def Lifo (S S' : List Nat) (ls : List Nat) : Prop :=
+def StackDiscipline (S S' : List Nat) (ls : List Nat) : Prop :=
   S <+: S' ∨ (S' <+: S ∧ ls.Sublist (S.drop S'.length).reverse)
 
 /-- The owned identities an argument list's tag holds: an indexed

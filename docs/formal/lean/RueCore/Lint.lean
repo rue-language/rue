@@ -881,7 +881,7 @@ of a `Prop` type in the order they occur, walking its `∀`s, the two sides of a
 `∧` or an `↔` and the body of an `∃` in its conclusion, and numbers each from
 1 by the counter it threads. It does not go under `∨` or `¬` (`Not` is not
 reducible) and does not unfold a definition that is not reducible, so a
-premise inside `Config.SafeAt`, `Exact`, `Blocks` or `Lifo` is part of the
+premise inside `Config.SafeAt`, `Exact`, `Blocks` or `StackDiscipline` is part of the
 conclusion, not a hypothesis. It returns the hypotheses met and the statement
 rebuilt with hypothesis number `drop` removed: that binder is left out, and the
 body under it is kept, which is well-formed only if the body does not mention

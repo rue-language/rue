@@ -61,7 +61,7 @@ issue, or commented onto an existing one.
 | R4 | statement | medium | F5 (raw: HIGH) | RUE-2423, RUE-2467 (comment) | `step_preservation` states `SafeAt init`: its `∀ C` adds nothing, and no configuration typing is preserved. `Config.SafeAt` quantifies over everything reachable from `C`, so it is closed under `Steps` by transitivity, and the theorem is equivalent to `SafeAt … Config.init`. 03-metatheory l.202–203 and l.211–214 already disclose this ("needs no typing hypothesis"; "holds by construction, and the content is the fundamental lemma `RueCore.init_safeAt`"), as does the semantic form generally (FIELD.md §2, the `SafeAt` docstring). What is not disclosed: no configuration-typing relation is stated at all (RUE-2423), and the theorem's name still reads as the syntactic lemma (RUE-2467, the spine alignment). |
 | R5 | statement | low | F3 (raw: HIGH) | RUE-2467 (comment) | `never_stuck_iff` under `ProgramTyped` is the conjunction of two theorems, not an equivalence with content. Under `h`, its left side is `eval_sound`'s first conjunct and its right side is `step_progress`. Its own docstring says the content is the forward direction on every program (`step_never_stuck_of_run`), which is not the headline. The spine should cite that theorem (RUE-2467, the spine alignment). |
 | R6 | trusted base / digest | medium | F14 (raw: medium) | RUE-2479 | DIGEST prints no body or defining equations for Bool-valued predicates that are hypotheses or rule premises (`Expr.pendingSafe`, `Expr.breaks`, `OwnSt.join`, `noDtorPrefix`, `linearResidue`, …). DIGEST's preamble promises a body "whenever it is a type or a predicate … or is short enough to read"; these entries (e.g. DIGEST `Expr.pendingSafe`, `Expr.breaks`, `OwnSt.join`) carry the signature only. `pendingSafe` is a hypothesis of two spine theorems and the red agent could not check it is satisfiable; `OwnSt.join` is where §5.5's "consumed on some paths" rejection lives. For RUE-2457's trusted-base list and the statement/proof split. |
-| R7 | statement | low | F11 (raw: medium) | RUE-2467 (comment) | `drop_order`'s `Lifo` constrains nothing on a step that does not pop, and `Blocks` is claimed for finished traces only. `Lifo S S' ls := S <+: S' ∨ …`; the first disjunct holds on every non-popping step. `Sublist` lets a popped cell go without a drop (left to `Exact`). 03-metatheory says "every **finished** run's trace", so the second point is disclosed; the first is not stated as a limit (RUE-2467, the spine alignment). |
+| R7 | statement | low | F11 (raw: medium) | RUE-2467 (comment) | `drop_order`'s `StackDiscipline` constrains nothing on a step that does not pop, and `Blocks` is claimed for finished traces only. `StackDiscipline S S' ls := S <+: S' ∨ …`; the first disjunct holds on every non-popping step. `Sublist` lets a popped cell go without a drop (left to `Exact`). 03-metatheory says "every **finished** run's trace", so the second point is disclosed; the first is not stated as a limit (RUE-2467, the spine alignment). |
 | R8 | docs | high | H2 (raw: HIGH) | RUE-2476 (comment) | `docs/formal/README.md` says the calculus "brings `ArrayBuf`/`StrBuf` buffers inside the proved perimeter". README Contents, lines 195–198. Nothing about buffers is mechanized: 03-metatheory's fragment paragraph ends "no … loans, or buffers", and TRUST.md lists the §6.13.5 library obligations as not yet present. "Proved" should be "specified". The README sentence describes `01-core-calculus.md`, so "proved perimeter" may mean the paper's own perimeter rather than the Lean's; the report and the RUE-2476 comment both flag this reading. |
 | R9 | docs | medium | H1 (raw: HIGH), M1 (raw: medium), H4 (raw: HIGH, folded) | RUE-2476 (comment) | `docs/formal/README.md`'s "the core's soundness holds for any well-formed core program" and "its §7 theorems as kernel-checked Lean statements" state for the whole core what is proved for a fragment. Lines 17–18 and 73–75. Proved: a fragment (03-metatheory, "Fragment today"), with exclusivity (RUE-2238) and no-use-after-free (RUE-2240) not mechanized, and exactly-once under `pendingSafe`. `docs/formal/README.md` never says "fragment" in these sentences (`lean/README.md` does, line 3), and neither README mentions the `pendingSafe` restriction, the `FloatLaws` interface, or that "safe" admits panics and divergence. |
 | R10 | docs | low | M6 (raw: medium); second half: adjudicator, not a red finding | RUE-2476 (comment) | `docs/formal/README.md` calls `rue-oracle` "the formal dynamic semantics", and 03-metatheory "a skeleton today". Line 122: since ADR-0097 the proved dynamic semantics is the Lean `Step`/`eval`, and no statement relates it to `rue-oracle`. Line 204: 03-metatheory is filled in (every §7 bullet but exclusivity and no-use-after-free names its theorem); this second half is the adjudicator's own observation from re-reading the docs, not something either red agent reported, and it is correct only because the line is now stale. |
@@ -297,7 +297,7 @@ What the mutants could not get past:
   that makes the checker or the rules accept a program the machine refuses.
   For 18 of them the corpus holds a concrete counterexample seed.
 - `Step.det`, against a `Step`-only mutant (`step-usecopy-nondet`).
-- `drop_order`'s `Lifo`, against the frame-exit and match-exit order mutants
+- `drop_order`'s `StackDiscipline`, against the frame-exit and match-exit order mutants
   (`scope-fifo`, `payload-order`).
 - `Exact` (`drop_exactly_once`, `rest_exactly_once`), against:
   - a skipped overwrite drop;
@@ -428,7 +428,7 @@ What the mutants could not get past:
     records permuted contents. The corpus is what would catch those
     (RUE-2501).
   - **G2, "bindings newest first" was already stated** (confirmation, no
-    issue). `drop_order`'s `NewestFirst` and `Lifo` read the drop markers'
+    issue). `drop_order`'s `StrictStackOrder` and `StackDiscipline` read the drop markers'
     cells and the scope records, not `dropEvents`, and `scope-fifo` and
     `payload-order` falsify them (RUE-2465).
 
@@ -494,14 +494,14 @@ What the mutants could not get past:
     configurations halted with them are not `SafeAt` `f64`;
   - `Sharp.uncut_drop`: a step that cuts cell `1` off the registration stack
     and drops cell `0`, from an unreached configuration. Its markers are newest
-    first and its stack is in order, so only `Lifo` fails.
+    first and its stack is in order, so only `StackDiscipline` fails.
 
   The first three refute `step_preservation` without its reachability
   hypothesis and the last `drop_order` without its own, so the lint
   holds them to the kernel-checked glue like every counter-example. None
   adds a hypothesis to cover: all four pairs were already covered.
 - **The mutants.** Each of `hasty-int-any-value`, `hasty-float-any-value`,
-  `lifo-vacuous`, `safeat-typing-vacuous`, `float-wf-no-emin` and
+  `stackdiscipline-vacuous`, `safeat-typing-vacuous`, `float-wf-no-emin` and
   `float-wf-noncanonical` now falsifies one of them, and the hypothesis-side
   control RUE-2490's review asked for, `contentsowntyping-owned-false`
   (`ContentsOwnTyping.owned` demanding `False`), falsifies
