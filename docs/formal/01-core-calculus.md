@@ -625,7 +625,7 @@ discipline determined by the signature:
   Δf has no ⟨break, _⟩ and no ⟨continue, _⟩      -- a break outside a loop is ill-formed (§5.7)
   Ends = { Σf | Ωf = Σf;Δf } ∪ { Σ_edge | ⟨κ, Σ_edge⟩ ∈ Δf, κ ∈ {ret, diverge} }
   for every by-value parameter xi (mi = ∅) and every Σ_edge ∈ Ends:
-    ¬ residual-linear(Σ_edge, xi, Ti)            -- §5.6 at this edge; ⟨panic, _⟩ deliveries are exempt (the process aborts)
+    ¬ residual-linear(Σ_edge, xi, Ti)            -- §5.6 at this edge; ⟨panic, _⟩ abrupt-completion contexts are exempt (the process aborts)
   for every parameter xi:
     mi = borrow  ⇒ xi and every path under xi is read-only, never moved out, and may be re-lent only as borrow
     mi = inout   ⇒ xi may be read, written, and forwarded, but never moved out
