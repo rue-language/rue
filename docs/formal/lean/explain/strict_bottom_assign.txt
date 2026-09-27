@@ -135,7 +135,7 @@ cell is a retired binding or an identity's reserved slot (`introVal`).
            →     [ℓ0 = †]
          result  value () — handed past this node by a `return` (§6.9)
   [11]  d0  (D-Return)/(D-Return-Main) §6.9 (the callee's return is the call's value)
-         expr    absorb ()
+         expr    bindCall ()
          store   [ℓ0 = †]
            →     [ℓ0 = †]
          result  value ()
