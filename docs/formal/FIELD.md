@@ -420,7 +420,7 @@ in the Rust Reference, the Book, the Rustonomicon and the rustc-dev-guide
 | `Owned` / `MovedOut` (Σ's two states, §5); the `Borrowed` place-use mode; `inout`/`borrow` parameters | owner; moved from; borrow / loan; unique / shared reference | partial |
 | "law of exclusivity" (§5.4) | law of exclusivity (Swift SE-0176); in Rust terms, unique (`mut`/`uniq`) vs shared (`shr`/`shrd`) references | clear for the Swift term |
 | "memory safety", "the memory-safety-without-GC claim" (README; 01 §7: "These seven are the memory-safety-without-GC claim, decomposed") | memory safety (Hicks 2014): no memory access error | partial: the field has no single definition. Ours is a list of theorems, and two of them go past Hicks's reading: leak-freedom, which he puts outside memory safety, and linear values consumed exactly once |
-| "No use-after-free" (01 §7; the metatheory's heading, not yet mechanized): no reduction applies a §6.13.1 machine operation to a dead buffer allocation | use after free (CWE-416) | clear, for buffers: it is stated only over §6.13's allocation store |
+| "No use-after-free" (01 §7; the metatheory's heading, not yet mechanized): no reduction applies a §6.13.1 machine operation to a dead buffer allocation | use after free (CWE-416) | clear, for buffers: it is stated only over §6.13's block store |
 | "No double-free", `no_double_free` (01 §7; the metatheory): no destructor runs twice, and no identity is freed twice in a trace | double free (CWE-415) | partial: CWE's is one `free()` of the same address twice; ours counts destructor runs and `drop`/`dropTemp` events per value identity |
 | "No use-after-drop", `no_use_after_drop` (01 §7; the metatheory): no evaluation reads a retired (`†`) cell | use after free (CWE-416), for a dropped binding's cell | partial: the same kind of error. "Drop" is Rust's word (Ref. *Destructors*) for what CWE calls freeing |
 | "no leak of drops" (01 §7; the metatheory; `drop_exactly_once`, `Tidy`): every owned, droppable, non-moved place is dropped exactly once, at the end of its scope | memory leak (CWE-401) is the failure of the "at least once" half | partial: ours also has the "at most once" half, and it counts drops (destructor runs), not memory released |
@@ -759,6 +759,7 @@ Copeland 1986 **(record)**; the Swift performance guide; Rust's
 | "growth invalidates references" (01 §6.13.3; formerly "growth is identity death") | iterator and reference invalidation (cppreference) | clear: a reallocating growth leaves every view into the old buffer dead |
 | "copy-on-write" (01 §6.13.4: a literal-backed `StrBuf` copies its cells into a fresh buffer on its first mutation; formerly "literal promotion") | copy-on-write (Swift); clone-on-write (Rust `Cow`) | clear: Rust's `Cow` is the same shape, borrowed data made owned on the first mutation |
 | "UTF-8 decoder methods" (01 §6.13.4; formerly "decode family") | UTF-8 decoder (WHATWG Encoding) | clear |
+| "memory block", "block store", `BlockId` (01 §6.1, §6.13; formerly "abstract allocation", "allocation store", `AllocId`) | memory block, block reference (CompCert, Leroy & Blazy) | clear: an identity with cells, not an address, never reused |
 
 ---
 

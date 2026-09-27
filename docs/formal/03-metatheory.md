@@ -619,7 +619,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 ## No use-after-free
 
 - **Not yet mechanized.** This is the §6.13 buffer bullet; it needs the
-  allocation store and the §6.13.5 obligations as explicit interfaces
+  block store and the §6.13.5 obligations as explicit interfaces
   (RUE-2240), after loans (RUE-2238).
 
 ## Linear values are consumed exactly once

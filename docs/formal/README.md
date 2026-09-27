@@ -20,7 +20,7 @@ language." The formal core answers "what is the *exact* meaning, for a compiler
 author or a proof." The compiler is a third view — the running realization.
 The mechanization (`lean/`, ADR-0097) is a fourth: for the fragment it covers
 today — a store of cells (`Store`) but no loans or borrows, and none of
-§6.13's allocation store for buffers and views (ADR-0097 Phase D: exclusivity
+§6.13's block store for buffers and views (ADR-0097 Phase D: exclusivity
 RUE-2238, no-use-after-free RUE-2240) — the core's rules and its §7 theorems
 as kernel-checked Lean statements, under the stated hypotheses (`pendingSafe`,
 the `FloatLaws` laws); a safe run may still panic or diverge, and
@@ -82,7 +82,7 @@ to specializations), but as its own layer, later, once the core is solid. The
 core is what an alternate compiler's *back half* targets; elaboration is its
 *front half*. (Deferring the staging semantics is not deferring correctness:
 for the fragment the mechanization covers today — a store of cells (`Store`)
-but no loans or borrows, and none of §6.13's allocation store for buffers and
+but no loans or borrows, and none of §6.13's block store for buffers and
 views (ADR-0097 Phase D: exclusivity RUE-2238, no-use-after-free RUE-2240) —
 the core's soundness rests on the `FloatLaws` laws, and exactly-once
 additionally on `pendingSafe` (RUE-2316); a safe run may still panic or
@@ -208,11 +208,11 @@ shape.
   operator, aggregate, and call statics (§5.8) that complete every §2 expression
   form; the **complete small-step dynamic semantics (§6)** — a reduction rule for
   every §2 form, grounded function-for-function in the `rue-oracle` interpreter
-  (RUE-50) — and drop; the **allocation store and the abstract data types'
+  (RUE-50) — and drop; the **block store and the abstract data types'
   specification equations (§6.13)** — the ratified RUE-390 modeling decision, which
   places `ArrayBuf`/`StrBuf` buffers inside the calculus's perimeter on paper,
   under stated RustBelt-style trusted-code obligations — nothing about buffers is
-  mechanized in Lean yet (the allocation store is Phase D, RUE-2240); and the
+  mechanized in Lean yet (the block store is Phase D, RUE-2240); and the
   soundness theorems (memory safety), stated precisely.
 - *(planned)* `02-elaboration.md` — surface→core desugaring and the comptime /
   monomorphization semantics.

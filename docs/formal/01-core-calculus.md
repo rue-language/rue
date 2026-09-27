@@ -288,7 +288,7 @@ so they are modeled separately rather than threaded through every rule.
 
 **Buffer-backed container types are inside the machine; slice statics are not
 yet.** The RUE-390 modeling decision is ratified (2026-07-14): the machine's
-store is an **allocation store** (§6.1) — abstract allocations, not a
+store is a **block store** (§6.1) — memory blocks, not a
 language-level heap — and the buffer-backed abstract data types `ArrayBuf(T)` /
 `StrBuf` are brought inside the proved perimeter by specification equations over it
 (§6.13), so the §7 theorems now quantify over buffer cells as well
@@ -2031,13 +2031,13 @@ them is a bug (RUE-305) — that is the point of pinning both.
 ### 6.1 The machine configuration
 
 ```
-  Allocation ids A ∈ AllocId                 -- abstract allocation identities (the RUE-390 ruling: allocations, not addresses)
-  Locations      ℓ ∈ Loc ⊂ AllocId           -- binding allocations: one single-cell allocation per live let-binding or by-value parameter
+  Block ids      A ∈ BlockId                 -- memory-block identities (the RUE-390 ruling: memory blocks, not addresses)
+  Locations      ℓ ∈ Loc ⊂ BlockId           -- binding allocations: one single-cell allocation per live let-binding or by-value parameter
   Cell contents  c ::= v | ⊘                 -- ⊘ = uninitialised / moved-out (the dynamic image of Σ's absence/MovedOut, §5)
                    | { c1,…,ck }_S | [ c1,…,cn ] | Kj⟨ c1,…,ca ⟩   -- an aggregate holding contents, so a ⊘ can sit at any depth (§6.11)
   Allocations    a ::= [ c1, …, cn ]         -- live: n ≥ 0 cells (a binding allocation always has exactly one)
                      | †                      -- dead: the identity is spent, its storage gone, and it is never reused (§6.13)
-  Store          H : AllocId ⇀ a             -- the allocation store
+  Store          H : BlockId ⇀ a             -- the block store
   Values         v ::= n_T                    -- a scalar integer n of type T = int(w,s), with min_T ≤ n ≤ max_T
                      | f_T                     -- a float datum f ∈ 𝔽_w of type T = float(w) (§2's value set; §6.4)
                      | b                       -- b ∈ { true, false }
@@ -2071,7 +2071,7 @@ proceeds block-by-block exactly as `E`-decomposition proceeds redex-by-redex.
 
 The store's allocations come in two kinds, distinguished only by how they are
 minted (the RUE-390 ruling: stack storage and dynamically allocated buffers
-are both abstract allocations, separated only where the semantics requires
+are both memory blocks, separated only where the semantics requires
 it). **Binding allocations** `ℓ ∈ Loc` are minted by `(D-Let)`, `(D-Match)`,
 and `(D-Call)`, always hold exactly one cell, and are retired by the scope
 exit that drops them; `H(ℓ) = c` and `H[ℓ ↦ c]` throughout §6.3–§6.11
@@ -3068,10 +3068,10 @@ above names the function that realizes it, so a change to either must be mirrore
 in the other or the differential tests will diverge — which is the mechanism that
 keeps the paper semantics and the running semantics one artifact.
 
-### 6.13 The allocation store: buffers, views, and container specification equations
+### 6.13 The block store: buffers, views, and container specification equations
 
 This section is the ratified RUE-390 modeling decision (maintainer ruling,
-2026-07-14): the machine models **abstract allocations**, not a language-level
+2026-07-14): the machine models **memory blocks**, not a language-level
 heap. §6.1's store already gives every binding a single-cell allocation; this
 section adds the multi-cell **buffer allocations** that back `ArrayBuf(T)` and
 `StrBuf`, the machine operations on them, the two value forms that name them,
@@ -3596,7 +3596,7 @@ These seven are the memory-safety-without-GC claim, decomposed. Note which of
 them was *unprovable* against the prose spec until now: all of them, because
 each rests on "use", "moved", "consumed", "dropped" being defined — which
 §3–§6 finally do. And note which were **vacuous for the flagship collection
-types** until the allocation store: the double-free, use-after-drop, and
+types** until the block store: the double-free, use-after-drop, and
 use-after-free bullets (RUE-390) — now stated over buffer cells, with their
 conditionality on the trusted-code obligations made explicit in §6.13.5 rather
 than hidden.
@@ -3648,7 +3648,7 @@ as owed rather than discharged.
 | §6.10 loop / break dynamics | 4.8:18/21/22, 3.4:2 |
 | §6.11 drop relation (active enum payload; skip moved; explicit `@drop`; residue order) | 3.9:1/2/4/13/15/18/28/37–39, 6.3:20 |
 | §6.12 overflow/bounds/div-zero/cast-overflow/`@panic` traps + exit code | 3.1:6/13, 4.13:5c, 4.13:28, 8.1, 8.2, 8.3, Appendix B |
-| §6.13 allocation store: handles, views, container equations | 3.7, 3.9 (drop order), 4.3:2 (string content equality); design citations: the RUE-390 ruling, ADR-0035/0041/0043, the RUE-386 str ruling, the RUE-388 linear-element gate |
+| §6.13 block store: handles, views, container equations | 3.7, 3.9 (drop order), 4.3:2 (string content equality); design citations: the RUE-390 ruling, ADR-0035/0041/0043, the RUE-386 str ruling, the RUE-388 linear-element gate |
 | §7 soundness | the informal safety intent throughout ch. 3 and 8 |
 
 ---
@@ -3663,7 +3663,7 @@ locked:
 2. **Raw pointers / `unchecked` out of the core initially (§2).** Model chapter 9
    as a marked extension that explicitly steps outside the §7 guarantees, rather
    than threading it through every rule. (Recommended.) The RUE-390 ruling
-   keeps this: §6.13 models buffers as abstract allocations reached only
+   keeps this: §6.13 models buffers as memory blocks reached only
    through container specification equations — raw pointers themselves stay outside
    the core, and the containers' unchecked internals carry the §6.13.5
    obligations instead.
