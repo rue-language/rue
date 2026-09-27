@@ -359,18 +359,20 @@ only their row label differs:
   other rules' premises, not derivation nodes.
 
 **In the fragment, and never exercised.** No seed and no generated case
-reaches these, and each needs syntax after a diverging form to reach it — an
-unreached sequence tail, `let` body, or branch arm — which the generator
-never draws (RUE-2376) and which RUE-2483 (below, "Four divergence-rule
-seeds") leaves unseeded for the same reason:
+reaches these:
 
-* (Seq-Bottom) and (Let-Bottom) §5.3: the tail past the diverging prefix, or
-  the `let` body past the diverging initializer, is exactly the shape
-  RUE-2376 asks about;
-* (Strict-Bottom) §5.3 at every position **except** an assignment's
-  right-hand side (below): a diverging binop/unop operand, match scrutinee,
-  `if` condition, or dynamic-index member leaves a sibling operand or arm
-  unreached the same way;
+* (Strict-Bottom) §5.3 at a binary/unary operator's left operand (and the
+  other positions "What completeness still costs" above lists): `check`'s
+  own algorithm refuses these, even though `Typed` accepts them — a real
+  completeness gap of the checker, not the compiler, so a seed here would be
+  a false bridge failure (`Corpus.lean`'s verdict contract already excludes
+  this shape; unrelated to RUE-2376);
+* (Strict-Bottom) §5.3 at every other position — an `if` condition, a
+  `match` scrutinee, a dynamic-index member, an aggregate's list member —
+  besides the assignment right-hand side seeded below ("Six divergence-rule
+  seeds"): not attempted in this pass, and not known to be blocked by
+  anything; a quick check found at least the `if`-condition case compiles
+  and runs with no dependency on RUE-2376 either;
 * (Loop-Div) §5.7, which only one seed exercises, and that seed is rejected.
 
 **Exercised by the seeds only.** These rules have zero generated cases:
@@ -384,11 +386,11 @@ seeds") leaves unseeded for the same reason:
   accepted case, a `break` unwind that runs a printing destructor, a frame
   pop that runs one, and (D-Use-Declared-Linear) §6.3 with a printing
   residue on an accepted case.
-* (Return-Bottom) and (Loop-Div-Backedge) §5.7, and (Strict-Bottom) §5.3 at
-  an assignment's right-hand side: each needs no tail at all — the diverging
-  form is the construct's own last sibling, or (for the loop) the `let`'s
-  own body — so RUE-2483 (below) seeds all three by hand; the generator
-  still draws none of them.
+* (Seq-Bottom), (Let-Bottom) and (Strict-Bottom) §5.3 at an assignment's
+  right-hand side, and (Return-Bottom) and (Loop-Div-Backedge) §5.7: RUE-2483
+  (below, "Six divergence-rule seeds") seeds all five by hand; the generator
+  still draws none of them (RUE-2330's restriction on where it places a
+  `return`/`break`/`@panic`).
 * (Call-Bottom) §5.3, which `Explain` had no row for until RUE-2483 named
   the call this way when its argument list diverges (below).
 
@@ -785,35 +787,43 @@ Rerun at these settings:
   (`gen_23_173`, `203`, `271`, `326`, `375`, `757`, `857`; `gen_7_93`,
   `144`), all masked by an earlier compiler-side error, the same as trunk's
   own instances of it.
-## Four divergence-rule seeds (RUE-2483)
+## Six divergence-rule seeds (RUE-2483)
 
 "Rule coverage" above (§5's "In the fragment, and never exercised") found
 seven §5.3/§5.7 "-Bottom" rules with no seed and no generated case:
 (Seq-Bottom), (Let-Bottom), (Strict-Bottom), (Call-Bottom), (Panic-Operand),
-(Return-Bottom) and (Loop-Div-Backedge). Read individually rather than as one
-group, three outcomes hold:
+(Return-Bottom) and (Loop-Div-Backedge). Six of the seven now have one:
 
-* **(Panic-Operand) is not a temporary gap.** `Expr.panic`'s message is a
-  literal `String` field, not an `Expr` (`Syntax.lean`); no syntax the
-  fragment admits has an operand there to diverge. It stays "outside the
-  fragment" (above), permanently.
-* **Four rules need no tail past a diverging form at all**, so RUE-2376's
-  question (is unreachable code normative?) does not bear on them, and each
-  now has a seed: `return`'s own operand can itself diverge (Return-Bottom,
-  `return_bottom`), a call's sole argument can diverge before the call is
-  reached (Call-Bottom, `call_bottom`), an assignment's right-hand side can
-  diverge before the store (Strict-Bottom, `strict_bottom_assign`), and a
-  `break`-less loop's body can be well-typed to complete normally at its
-  head state without ever doing so at runtime (Loop-Div-Backedge,
-  `loop_div_backedge`, whose counter starts one below `i64::MAX` so the
-  second turn overflows and traps inside the fuel bound, although the loop
-  itself has no static exit). `bin/verify.py` agrees with the unmutated
-  compiler on all four.
-* **Three rules genuinely need one**, and stay unseeded: (Seq-Bottom) and
-  (Let-Bottom) always leave a sequence tail or `let` body unreached past the
-  diverging prefix, and every position of (Strict-Bottom) except the
-  assignment one above leaves a sibling operand or branch arm unreached.
-  Seeding any of them means deciding RUE-2376's question first (`WHAT-IT-MEANS.md` records the gap).
+* **(Panic-Operand) is the one that stays unseeded, and it is not a
+  temporary gap.** `Expr.panic`'s message is a literal `String` field, not
+  an `Expr` (`Syntax.lean`); no syntax the fragment admits has an operand
+  there to diverge. It stays "outside the fragment" (above), permanently.
+* **Four rules need no tail past a diverging form at all**: `return`'s own
+  operand can itself diverge (Return-Bottom, `return_bottom`), a call's sole
+  argument can diverge before the call is reached (Call-Bottom,
+  `call_bottom`), an assignment's right-hand side can diverge before the
+  store (Strict-Bottom, `strict_bottom_assign`), and a `break`-less loop's
+  body can be well-typed to complete normally at its head state without
+  ever doing so at runtime (Loop-Div-Backedge, `loop_div_backedge`, whose
+  counter starts one below `i64::MAX` so the second turn overflows and traps
+  inside the fuel bound, although the loop itself has no static exit).
+* **(Seq-Bottom) and (Let-Bottom) do need a tail — `return 1; 2` and `let x:
+  i64 = return 1; x` — but that tail can simply be well-formed.** RUE-2376
+  is not a reason to skip these two: it is about a dead tail that is itself
+  *ill-formed* (a type error, a missing match arm, a double `@drop`, a
+  linear leak or discard, an assignment to an immutable binding), which the
+  checker never sees (§5.3 types nothing past a diverging form) but the
+  compiler's own reachability analysis does, and may reject. `2` and `x`
+  have none of those defects, so the compiler has nothing to reject: it
+  accepts, with an "unreachable code" warning, and runs to the value the
+  model predicts, `1` — `seq_bottom` and `let_bottom` below. (An earlier
+  draft of this page asserted the opposite for these two rules; that was
+  wrong, and is corrected here.)
+
+`bin/verify.py` agrees with the unmutated compiler on all six, and none
+crosses RUE-2316's pending-temporary gap: none has an earlier sibling value
+already built when the diverging one runs, so there is nothing for an
+unwinding `return` to strand.
 
 `Explain` had no row naming (Call-Bottom): the mechanization's `Typed.call`
 always concludes at the callee's return type (`Statics.lean`'s note on what
@@ -822,19 +832,17 @@ calculus's separate `⇒ never` conclusion for a diverging argument list isn't
 modelled as a distinct constructor). What diverges is `TypedArgs.consBot`,
 labelled "(Strict-Bottom) at a list member". `Explain.explain`'s `.call` case
 now picks "(Call-Bottom)" or "(Call) §5.8" by inspecting the argument list's
-own `Ω`, the same way its `.loop` case already picks between (Loop-Div) and
-(Loop-Div-Backedge) from one Lean derivation.
-
-None of the four crosses RUE-2316's pending-temporary gap either: each has
-no earlier sibling value already built when the diverging one runs, so there
-is nothing for an unwinding `return` to strand.
+own `Ω`, the way its `.loop` case already tells its two divergence cases
+apart from one Lean derivation.
 
 | Rule | Before | After |
 |---|---|---|
-| (Return-Bottom) §5.7 | never exercised | `return_bottom` (seed 194 of 197) |
-| (Call-Bottom) §5.3 | never exercised, no `Explain` row | `call_bottom` (seed 195 of 197); `Explain` now names it |
-| (Strict-Bottom) §5.3 at an assignment's RHS | never exercised | `strict_bottom_assign` (seed 196 of 197) |
-| (Loop-Div-Backedge) §5.7 | never exercised | `loop_div_backedge` (seed 197 of 197) |
+| (Return-Bottom) §5.7 | never exercised | `return_bottom` (seed 194 of 199) |
+| (Call-Bottom) §5.3 | never exercised, no `Explain` row | `call_bottom` (seed 195 of 199); `Explain` now names it |
+| (Strict-Bottom) §5.3 at an assignment's RHS | never exercised | `strict_bottom_assign` (seed 196 of 199) |
+| (Loop-Div-Backedge) §5.7 | never exercised | `loop_div_backedge` (seed 197 of 199) |
+| (Seq-Bottom) §5.3 | never exercised | `seq_bottom` (seed 198 of 199) |
+| (Let-Bottom) §5.3 | never exercised | `let_bottom` (seed 199 of 199) |
 
 ## Follow-ups
 
@@ -854,7 +862,7 @@ blind spot, get a generator or tooling proposal too.
 | (Call) §5.8 and the call-boundary drop paths (no generated case) | done (RUE-2481, below, "Multi-function programs"): by-value parameters, including destructor-bearing and declared-linear ones, calls in operand position, early returns from a callee, and bounded recursion | generator issue, done |
 | `c-overflow-kind` (the per-case test is blind to it) | done for the loop's own `verify.py`/`mverify.py` (RUE-2482, below): both now also compare the trapping run's last stderr line against the compiler's fixed message for the corpus's expected panic category (`crates/rue-runtime/src/error.rs`), which now catches `c-overflow-kind` (first at `gen_23_73`, program 74 of the `--gen 1000 --seed 23` set) — the run traps at the right exit code and stdout but with `error: division by zero` where `error: integer overflow` was expected. `crates/rue-oracle-diff/src/lean_corpus.rs` (the CI harness) already compares the trap category this way and is unchanged | tooling issue, done for the loop scripts |
 | `h2380` (default level only) | the per-case check should also compile at `-O2` as well as the default level, or the lane should run `scripts/rue lean-bridge`, which does both | tooling issue |
-| The divergence rules (never exercised) | done (RUE-2483, above, "Four divergence-rule seeds"): (Return-Bottom), (Call-Bottom), (Strict-Bottom) at an assignment's RHS, and (Loop-Div-Backedge) each needed no tail past the diverging form, so each has a seed now. (Seq-Bottom), (Let-Bottom) and every other position of (Strict-Bottom) still need one — RUE-2376's still-open question — and stay scope notes; (Panic-Operand) is outside the fragment, not a gap | seed (4 of 7, done) or scope note, for RUE-2376's owner |
+| The divergence rules (never exercised) | done (RUE-2483, above, "Six divergence-rule seeds"): (Return-Bottom), (Call-Bottom), (Strict-Bottom) at an assignment's RHS, and (Loop-Div-Backedge) each needed no tail past the diverging form; (Seq-Bottom) and (Let-Bottom) do need one, but a well-formed tail draws only a compiler warning, not a rejection, so all six now have a seed. Every other position of (Strict-Bottom) is unattempted (not known to be blocked); (Panic-Operand) is outside the fragment, not a gap | seed (6 of 7, done) |
 
 ## Reproducing
 
