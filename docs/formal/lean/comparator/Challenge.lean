@@ -49,8 +49,8 @@ def run_safe_stmt : Prop :=
                     ∃ (tr : List Event),
                       run M.toFloatSig P fuel = EvalRes.ok H v tr ∧ HasTy P.decls v fd.ret
 
-/-- The statement `no_violation` proves. -/
-def no_violation_stmt : Prop :=
+/-- The statement `no_refusal` proves. -/
+def no_refusal_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P → ∀ (fuel : Nat) (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w
 
@@ -242,8 +242,8 @@ def step_progress_stmt : Prop :=
       ∀ (C : Config),
         Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ (C' : Config), Step M.toFloatSig P C C'
 
-/-- The statement `step_preservation` proves. -/
-def step_preservation_stmt : Prop :=
+/-- The statement `step_safeAt` proves. -/
+def step_safeAt_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∃ (fd : FnDef),
@@ -272,8 +272,8 @@ def step_no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) {C : Config},
     Steps M P Config.init C → ¬Config.Stuck M P C Refusal.useAfterDrop
 
-/-- The statement `eval_sound` proves. -/
-def eval_sound_stmt : Prop :=
+/-- The statement `eval_big_to_small` proves. -/
+def eval_big_to_small_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
@@ -295,8 +295,8 @@ def run_sim_stmt : Prop :=
       ∀ (k : PanicKind) (tr : List Event),
         run M P fuel = EvalRes.panic k tr → Steps M P Config.init (Config.panic k tr)
 
-/-- The statement `eval_complete` proves. -/
-def eval_complete_stmt : Prop :=
+/-- The statement `eval_small_to_big` proves. -/
+def eval_small_to_big_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
@@ -306,8 +306,8 @@ def eval_complete_stmt : Prop :=
           Steps M.toFloatSig P Config.init (Config.panic κ tr) →
             ∃ (n : Nat), ∀ (fuel : Nat), n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 
-/-- The statement `run_complete` proves. -/
-def run_complete_stmt : Prop :=
+/-- The statement `run_small_to_big` proves. -/
+def run_small_to_big_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program),
     (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
         Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
@@ -323,8 +323,8 @@ def run_complete_stmt : Prop :=
               n < fuel →
                 run M P fuel = EvalRes.panic κ tr ∨ ∃ (w : Refusal), run M P fuel = EvalRes.refused w
 
-/-- The statement `never_stuck_iff` proves. -/
-def never_stuck_iff_stmt : Prop :=
+/-- The statement `never_refused_iff` proves. -/
+def never_refused_iff_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ((∀ (fuel : Nat) (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ↔
@@ -337,8 +337,8 @@ def step_never_stuck_of_run_stmt : Prop :=
     (∀ (fuel : Nat) (w : Refusal), run M P fuel ≠ EvalRes.refused w) →
       ∀ (C : Config), Steps M P Config.init C → C.Terminal ∨ ∃ (C' : Config), Step M P C C'
 
-/-- The statement `run_stuck_of_step_stuck` proves. -/
-def run_stuck_of_step_stuck_stmt : Prop :=
+/-- The statement `run_refused_of_step_stuck` proves. -/
+def run_refused_of_step_stuck_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) {C : Config} {w : Refusal},
     Steps M P Config.init C →
       Config.Stuck M P C w →
@@ -355,12 +355,12 @@ def eval_diverges_iff_stmt : Prop :=
 def Nonvacuous.exact_model_stmt : Prop :=
   ∃ (M : FloatLaws), M.toFloatSig = Float.exactOps
 
-/-- The statement `Nonvacuous.empty_frame` proves. -/
-def Nonvacuous.empty_frame_stmt : Prop :=
+/-- The statement `Nonvacuous.empty_activation` proves. -/
+def Nonvacuous.empty_activation_stmt : Prop :=
   ∀ (D : Decls), ActivationTyping D [] Activation.empty [] ∧ StoreCC D []
 
-/-- The statement `Nonvacuous.open_frame` proves. -/
-def Nonvacuous.open_frame_stmt : Prop :=
+/-- The statement `Nonvacuous.open_activation` proves. -/
+def Nonvacuous.open_activation_stmt : Prop :=
   ∀ (D : Decls),
     D =
         {
@@ -824,8 +824,8 @@ def Nonvacuous.whole_result_stmt : Prop :=
                         Steps Float.exactOps P C (Config.run H Activation.empty [] (Focus.ret v) tr) ∧
                           List.count 0 (Val.own P.decls v) = 1 ∧ freedIds P.decls tr = []
 
-/-- The statement `Nonvacuous.stuck` proves. -/
-def Nonvacuous.stuck_stmt : Prop :=
+/-- The statement `Nonvacuous.refused_stuck` proves. -/
+def Nonvacuous.refused_stuck_stmt : Prop :=
   ∀ (B : Expr),
     B =
         Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
@@ -848,8 +848,8 @@ def Nonvacuous.stuck_stmt : Prop :=
                 Steps Float.exactOps P Config.init C ∧
                   Config.Stuck Float.exactOps P C Refusal.useAfterMove
 
-/-- The statement `Sharp.stuck` proves. -/
-def Sharp.stuck_stmt : Prop :=
+/-- The statement `Sharp.refused` proves. -/
+def Sharp.refused_stmt : Prop :=
   ∀ (B : Expr),
     B =
         Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
@@ -1005,8 +1005,8 @@ def Sharp.typed_stmt : Prop :=
                                               Ω.brk Activation.empty []
                                               (eval Float.exactOps 200 P [] Activation.empty e)
 
-/-- The statement `Sharp.frame` proves. -/
-def Sharp.frame_stmt : Prop :=
+/-- The statement `Sharp.activation` proves. -/
+def Sharp.activation_stmt : Prop :=
   ∀ (B : Expr),
     B =
         Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
@@ -1968,8 +1968,8 @@ def Sharp.unreachable_stuck_stmt : Prop :=
                               n < fuel →
                                 ∃ (w' : Refusal), run Float.exactOps P fuel = EvalRes.refused w'
 
-/-- The statement `Sharp.retired_cell` proves. -/
-def Sharp.retired_cell_stmt : Prop :=
+/-- The statement `Sharp.tombstoned_cell` proves. -/
+def Sharp.tombstoned_cell_stmt : Prop :=
   ∀ (B : Expr),
     B =
         Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
@@ -2410,7 +2410,7 @@ namespace RueCore.Spine
 
 theorem soundness : RueCore.Spec.soundness_stmt := sorry
 theorem run_safe : RueCore.Spec.run_safe_stmt := sorry
-theorem no_violation : RueCore.Spec.no_violation_stmt := sorry
+theorem no_refusal : RueCore.Spec.no_refusal_stmt := sorry
 theorem no_use_after_move : RueCore.Spec.no_use_after_move_stmt := sorry
 theorem no_use_after_drop : RueCore.Spec.no_use_after_drop_stmt := sorry
 theorem run_no_use_after_drop : RueCore.Spec.run_no_use_after_drop_stmt := sorry
@@ -2438,20 +2438,20 @@ theorem step_iff : RueCore.Spec.step_iff_stmt := sorry
 theorem Config.stuck_iff : RueCore.Spec.Config.stuck_iff_stmt := sorry
 theorem step_stuck_isStuckState : RueCore.Spec.step_stuck_isStuckState_stmt := sorry
 theorem step_progress : RueCore.Spec.step_progress_stmt := sorry
-theorem step_preservation : RueCore.Spec.step_preservation_stmt := sorry
+theorem step_safeAt : RueCore.Spec.step_safeAt_stmt := sorry
 theorem step_type_safety : RueCore.Spec.step_type_safety_stmt := sorry
 theorem step_no_use_after_drop : RueCore.Spec.step_no_use_after_drop_stmt := sorry
-theorem eval_sound : RueCore.Spec.eval_sound_stmt := sorry
+theorem eval_big_to_small : RueCore.Spec.eval_big_to_small_stmt := sorry
 theorem run_sim : RueCore.Spec.run_sim_stmt := sorry
-theorem eval_complete : RueCore.Spec.eval_complete_stmt := sorry
-theorem run_complete : RueCore.Spec.run_complete_stmt := sorry
-theorem never_stuck_iff : RueCore.Spec.never_stuck_iff_stmt := sorry
+theorem eval_small_to_big : RueCore.Spec.eval_small_to_big_stmt := sorry
+theorem run_small_to_big : RueCore.Spec.run_small_to_big_stmt := sorry
+theorem never_refused_iff : RueCore.Spec.never_refused_iff_stmt := sorry
 theorem step_never_stuck_of_run : RueCore.Spec.step_never_stuck_of_run_stmt := sorry
-theorem run_stuck_of_step_stuck : RueCore.Spec.run_stuck_of_step_stuck_stmt := sorry
+theorem run_refused_of_step_stuck : RueCore.Spec.run_refused_of_step_stuck_stmt := sorry
 theorem eval_diverges_iff : RueCore.Spec.eval_diverges_iff_stmt := sorry
 theorem Nonvacuous.exact_model : RueCore.Spec.Nonvacuous.exact_model_stmt := sorry
-theorem Nonvacuous.empty_frame : RueCore.Spec.Nonvacuous.empty_frame_stmt := sorry
-theorem Nonvacuous.open_frame : RueCore.Spec.Nonvacuous.open_frame_stmt := sorry
+theorem Nonvacuous.empty_activation : RueCore.Spec.Nonvacuous.empty_activation_stmt := sorry
+theorem Nonvacuous.open_activation : RueCore.Spec.Nonvacuous.open_activation_stmt := sorry
 theorem Nonvacuous.dtor : RueCore.Spec.Nonvacuous.dtor_stmt := sorry
 theorem Nonvacuous.linear : RueCore.Spec.Nonvacuous.linear_stmt := sorry
 theorem Nonvacuous.loop : RueCore.Spec.Nonvacuous.loop_stmt := sorry
@@ -2464,11 +2464,11 @@ theorem Nonvacuous.diverges : RueCore.Spec.Nonvacuous.diverges_stmt := sorry
 theorem Nonvacuous.diverges_drop : RueCore.Spec.Nonvacuous.diverges_drop_stmt := sorry
 theorem Nonvacuous.whole_drops : RueCore.Spec.Nonvacuous.whole_drops_stmt := sorry
 theorem Nonvacuous.whole_result : RueCore.Spec.Nonvacuous.whole_result_stmt := sorry
-theorem Nonvacuous.stuck : RueCore.Spec.Nonvacuous.stuck_stmt := sorry
-theorem Sharp.stuck : RueCore.Spec.Sharp.stuck_stmt := sorry
+theorem Nonvacuous.refused_stuck : RueCore.Spec.Nonvacuous.refused_stuck_stmt := sorry
+theorem Sharp.refused : RueCore.Spec.Sharp.refused_stmt := sorry
 theorem Sharp.stuck_step : RueCore.Spec.Sharp.stuck_step_stmt := sorry
 theorem Sharp.typed : RueCore.Spec.Sharp.typed_stmt := sorry
-theorem Sharp.frame : RueCore.Spec.Sharp.frame_stmt := sorry
+theorem Sharp.activation : RueCore.Spec.Sharp.activation_stmt := sorry
 theorem Sharp.no_entry : RueCore.Spec.Sharp.no_entry_stmt := sorry
 theorem Sharp.entry_param : RueCore.Spec.Sharp.entry_param_stmt := sorry
 theorem Sharp.copy : RueCore.Spec.Sharp.copy_stmt := sorry
@@ -2492,7 +2492,7 @@ theorem Sharp.unordered : RueCore.Spec.Sharp.unordered_stmt := sorry
 theorem Sharp.not_a_step : RueCore.Spec.Sharp.not_a_step_stmt := sorry
 theorem Sharp.init_steps : RueCore.Spec.Sharp.init_steps_stmt := sorry
 theorem Sharp.unreachable_stuck : RueCore.Spec.Sharp.unreachable_stuck_stmt := sorry
-theorem Sharp.retired_cell : RueCore.Spec.Sharp.retired_cell_stmt := sorry
+theorem Sharp.tombstoned_cell : RueCore.Spec.Sharp.tombstoned_cell_stmt := sorry
 theorem Sharp.unreached_double : RueCore.Spec.Sharp.unreached_double_stmt := sorry
 theorem Sharp.uncut_drop : RueCore.Spec.Sharp.uncut_drop_stmt := sorry
 theorem Sharp.ill_typed_halt : RueCore.Spec.Sharp.ill_typed_halt_stmt := sorry
