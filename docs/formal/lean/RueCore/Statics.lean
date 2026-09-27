@@ -1512,7 +1512,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   (`7.1:46`). Its docstring records the deviation from §5.2's disjunction as
   written.
 
-  One **deviation** (N3): `Owned-Base` is demanded on the *input* state as
+  One **deviation** (N3): `Owned-Base` is demanded on the *input context* as
   well as the post-RHS one, so this rule is one premise stricter than §5.2,
   which states neither (U4 reads §5.1's "in any context" side condition for the
   post-RHS lookup). Nothing a program can observe turns on it: only an RHS that
