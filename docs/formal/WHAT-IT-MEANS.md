@@ -65,8 +65,8 @@ For programs in the core fragment that the typing rules accept:
 
 ## How this connects to the compiler
 
-The proofs are not about the compiler's code. The connection is **differential
-testing against an executable specification**:
+The connection is **differential testing against an executable
+specification**:
 
 1. The Lean model accepts or rejects each program and runs it.
 2. A printer turns it into Rue source whose destructors print.
@@ -75,13 +75,14 @@ testing against an executable specification**:
 4. Every verdict and output must match.
 
 Inputs: 171 hand-written programs and 1,200 generated ones, as of
-2026-09-25. All the generated cases agree. The hand-written corpus has one
-known disagreement, described below.
+2026-09-25. All the generated cases agree.
 
 A disagreement means the compiler, model, spec or printer is wrong; a person
 decides which. At least nine were compiler bugs, all fixed
 (RUE-2290, RUE-2318, RUE-2335, RUE-2341, RUE-2344, RUE-2345, RUE-2347,
-RUE-2348, RUE-2449); others became spec questions.
+RUE-2348, RUE-2449); others became spec questions. Of 21 re-introduced
+compiler bugs and classic mutants, the comparison kills all 20 inside the
+fragment ([lean/BRIDGE-SENSITIVITY.md](lean/BRIDGE-SENSITIVITY.md)).
 
 One hand-written case knowingly disagrees: the spec forbids `a[0] = a[0]`, the
 compiler accepts it, and the decision is open (RUE-2346).

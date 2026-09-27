@@ -840,7 +840,7 @@ controls) are killed immediately by a false Spec statement
 (`step_safeAt`; `eval_diverges_iff` and `Sharp.discard_loop`), exactly
 as a strengthening is expected to work — but they exercise only the trivial
 direction. `SafeAt` and `StepsN` occur positively in a conclusion, so any
-non-equivalent strengthening there must break `adequacy`'s own proof; they
+non-equivalent strengthening there must break the semantic equivalence's own proof; they
 say nothing about whether the witness and sharpness layers pin the
 vocabulary against a hypothesis-side strengthening, which is the direction
 that can make a theorem vacuous rather than merely false. A control for that
