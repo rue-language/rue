@@ -220,9 +220,9 @@ the aggregate contexts `S { v̄, …, E, … }` and `[ v̄, …, E, … ]`, and
 `assign p[ v̄, E, … ] = v` with it — and runs `run-all-scope-drops` on the frame's records, which never named that
 value; if it unwinds by `break`, (D-Break) §6.10 discards the same context
 (`E'`) and the loop's `unwind-drops` walks the same records. Its drop is therefore neither run nor monitored, whatever its
-multiplicity class: an affine sibling emits no `dropTemp`, and a linear one is
+qualifier: an affine sibling emits no `dropTemp`, and a linear one is
 destroyed without a `linearDiscard`. At the right-hand side only the affine
-half applies: (Assign)'s leaf premise `class(T) ≠ Linear` (`3.8:77`) keeps
+half applies: (Assign)'s leaf premise `qual(T) ≠ Linear` (`3.8:77`) keeps
 the abandoned value from being linear, so `no_linear_discard` is not affected
 by that position.
 
@@ -306,8 +306,8 @@ namespace RueCore
 says why the machine adds it), and one value per field, in
 declaration order — the order `3.9:13` drops them in. `float w f` is §6.1's `f_T` at `T = float(w)`: §2's
 datum, not a bit pattern (`Float.lean`). A struct value names its declaration rather than
-carrying its class, so the machine's drop decisions are value-driven — it
-reads the tag the value carries — while the class and the destructor come from
+carrying its qualifier, so the machine's drop decisions are value-driven — it
+reads the tag the value carries — while the qualifier and the destructor come from
 the program's declarations, as the compiled program's drop glue does.
 
 `enum e k i vs` is §6.1's `Kj⟨ v1, …, va ⟩`: the declaration's index, the
@@ -326,8 +326,8 @@ inductive Val where
   | array (elem : Ty) (id : Nat) (vs : List Val)
 deriving Repr
 
-/-- The dynamic image of `class(T)` (§3) on a value: scalars are `Copy`, a
-struct value has the class its declaration records. -/
+/-- The dynamic image of `qual(T)` (§3) on a value: scalars are `Copy`, a
+struct value has the qualifier its declaration records. -/
 def Val.qual (D : Decls) : Val → Qual
   | .struct s _ _ => D.classOf s
   | .enum e _ _ _ => D.enumClassOf e
@@ -402,8 +402,8 @@ def Contents.isMovedOut : Contents → Bool
   | .int _ _ _ | .float _ _ | .bool _ | .unit | .struct _ _ _ | .enum _ _ _ _
   | .array _ _ _ => false
 
-/-- The dynamic image of `class(T)` (§3) on cell contents: a hole has nothing
-to drop, and a struct has the class its declaration records (helper). -/
+/-- The dynamic image of `qual(T)` (§3) on cell contents: a hole has nothing
+to drop, and a struct has the qualifier its declaration records (helper). -/
 def Contents.qual (D : Decls) : Contents → Qual
   | .struct s _ _ => D.classOf s
   | .enum e _ _ _ => D.enumClassOf e
@@ -412,7 +412,7 @@ def Contents.qual (D : Decls) : Contents → Qual
 
 mutual
 /-- Whether every node of a contents is `Copy` — a `⊘` and a scalar are, and an
-aggregate is when its own class is and each member is (helper). -/
+aggregate is when its own qualifier is and each member is (helper). -/
 def Contents.allCopy (D : Decls) : Contents → Bool
   | .movedOut | .int _ _ _ | .float _ _ | .bool _ | .unit => true
   | .struct s _ cs => decide (D.classOf s = .copy) && Contents.allCopyList D cs
@@ -433,7 +433,7 @@ it a fact about types — a `Copy` type's fields, payloads and elements are
 wherever it duplicates a value: (D-Use-Copy), the dynamic-index read and the
 repeat form copy a `Copy` value whole, which is sound only when nothing owned
 hides inside it. A struct literal, an enum literal or an array literal whose
-class is `Copy` but whose members are not, or an assignment that writes an
+qualifier is `Copy` but whose members are not, or an assignment that writes an
 owned value under a `Copy` node, is a shape no well-typed program produces;
 the machine refuses it (`ownedUnderCopy`) rather than build a duplicable
 owner, and `soundness` proves a checked program never reaches the refusal
@@ -470,7 +470,7 @@ recursion §5.6 writes for Σ, on the store's side of the invariant.
 At an **enum** the residue is the **active** variant's payload and nothing else:
 an enum declares no attribute to carry an obligation of its own, and the
 inactive variants have no storage (§6.11). That is weaker than §5.6's Σ-side
-clause, which reads `class(E) = Linear` over *every* variant because the tag is
+clause, which reads `qual(E) = Linear` over *every* variant because the tag is
 not a static fact — and weaker in the safe direction: a program the statics
 accept has no linear payload in any variant, so the monitor finds none under the
 tag either (`ContentsTy.residualLinear_false`, `Soundness.lean`). The gap is
@@ -848,7 +848,7 @@ it "has no drop glue, is never registered in a scope record, and never names
 an allocation"). A struct runs its **user destructor first** (`3.9:28`), if its
 declaration has one, and then drops its fields in **declaration order**
 (`3.9:13`, §6.11's `drop*`), recursively. A field is dropped whatever its
-class: an explicit `@drop` of a linear-carrying struct discharges the whole
+qualifier: an explicit `@drop` of a linear-carrying struct discharges the whole
 obligation, and a scope exit never reaches a live linear sub-value, because the
 leak monitor (`dropRetire`) reads `Contents.residualLinear` first.
 `dropContents_struct_events`
@@ -1579,7 +1579,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- into each of the `n` slots, which is well defined because `7.1:38`
       -- makes the element type `Copy`. The machine reads that premise off the
       -- value: the elaboration `let t = v; [t, …, t]` would move `t` at its
-      -- first use and be stuck at the second when `class(v) ≠ Copy`, so a
+      -- first use and be stuck at the second when `qual(v) ≠ Copy`, so a
       -- non-`Copy` operand refuses with `typeConfusion` rather than duplicating
       -- a value §6 would destroy once (RUE-2400). A checked program never
       -- reaches the refusal: `Typed.repeatArray`'s `T.qual = .copy` premise and
@@ -1594,7 +1594,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- bounds-checked "at the moment the path is navigated" (`7.1:10`) —
       -- before anything is read. In range, (D-Use-Untrackable-Dynamic-Copy)
       -- §6.3 hands the leaf on and leaves the array alone. That rule's premise
-      -- `class(T) = Copy` is read off the value: §6.3 has no rule for a
+      -- `qual(T) = Copy` is read off the value: §6.3 has no rule for a
       -- non-`Copy` leaf under a dynamic index, so the machine refuses with
       -- `typeConfusion` instead of copying an affine value out of a place it
       -- leaves live (RUE-2400). A checked program never reaches the refusal:
@@ -1671,7 +1671,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- §6.11's explicit `@drop(p)`: at a `Declared(d, π_s)` plan it is the
       -- §6.3 destructure with the selected leaf dropped too — residue first,
       -- leaf second (probe d6c) — and the *consumed place* `ℓ@π_d` becomes
-      -- `⊘`, whatever the leaf's class (§5.3, probe d6). A `⊘` at the selected
+      -- `⊘`, whatever the leaf's qualifier (§5.3, probe d6). A `⊘` at the selected
       -- leaf refuses with `useAfterMove`, exactly as the ordinary branch below
       -- refuses a `⊘` at the named place and as the declared `.use` branch
       -- refuses through `toVal`: `Contents.qual ⊘ = .copy`, so without the

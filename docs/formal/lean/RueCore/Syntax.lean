@@ -14,7 +14,7 @@ scoped for the mechanization spike:
   signednesses, `float(w)` at both widths (§2's `𝔽_w`, mechanized in
   `Float.lean`), `bool`, `unit`, the monomorphic struct and **enum** types
   a declaration of the program's declaration environment names, and `[T; n]` —
-  the fixed-length array of §2, whose class is §3's lift of `class(T)`.
+  the fixed-length array of §2, whose qualifier is §3's lift of `qual(T)`.
 * Places: §5's `Path ::= x | Path.f | Path[c]` — a root binding, a chain of
   field projections, and **constant** array index steps (`Place`). §5's `Path`
   tracks an index only when it is a compile-time constant, which is the whole
@@ -61,8 +61,8 @@ declared-`linear` struct type, which (Use-Declared-Linear-Destructure) §5.1 and
 (D-Use-Declared-Linear) §6.3 then discharge. `Untrackable(OrdinaryDynamic)` is
 the dynamic index *read*, at the element or at any place below it, whose one
 successful rule is (Use-Untrackable-Dynamic-Copy) §5.1: `Expr.indexRead`
-carries its `class(T) = Copy` premise at the leaf, and §4.2's "there is no
-successful static rule … when `class(T) ∈ {Affine,Linear}`" is that premise's
+carries its `qual(T) = Copy` premise at the leaf, and §4.2's "there is no
+successful static rule … when `qual(T) ∈ {Affine,Linear}`" is that premise's
 absence rather than a rule of its own (E0904). `@drop` there is (@Drop-Copy)
 §5.3 at a `Copy` place, `Expr.indexDrop`, under the read's premises; an affine
 or linear place below a dynamic index has no `@drop` rule either (E0904). A dynamic-index *write* is not
@@ -86,7 +86,7 @@ leaf is `Copy`. A use of a declared-`linear` place *whole* is ordinary (the
 plan looks for a **proper** prefix), so such a struct is still moved, dropped
 and reinitialized by the ordinary rules; and linearity *by infection*
 (`3.8:58`) draws no plan at all, because `Ty.declaredLinear` reads the declared
-attribute rather than the class (`3.8:60`'s second paragraph).
+attribute rather than the qualifier (`3.8:60`'s second paragraph).
 
 `linearResidue` is §5.1's `linear-residue(S, π_s)` on the same split: the
 ordered residue traversal's retained places, tested at their **types**. It is
@@ -159,12 +159,12 @@ at a sibling. `assignArrayOk` (`Statics.lean`) is that side condition, E0480.
 ## An array value carries its element type
 
 `Val.array` and `Contents.array` carry `T`, for the reason `Val.int` carries
-`(w, s)`: the machine's drop and copy decisions read a value's class, and the
-class of `[T; n]` is **not** a function of the elements present. `3.8:74`
+`(w, s)`: the machine's drop and copy decisions read a value's qualifier, and the
+qualifier of `[T; n]` is **not** a function of the elements present. `3.8:74`
 grants a zero-length array of a non-`Copy` element type droppability but not
-duplicability, so §3 classes `[NC; 0]` `Affine` while the value `[]` holds
+duplicability, so §3 gives `[NC; 0]` the qualifier `Affine` while the value `[]` holds
 nothing at all (RUE-526). Carrying `T` is what makes `Val.qual` agree with
-`Ty.qual` there; §6.1 writes the value as `[v1, …, vn]` because its `class` is
+`Ty.qual` there; §6.1 writes the value as `[v1, …, vn]` because its `qual` is
 never read in the same breath.
 
 ## An integer value carries its type
@@ -182,16 +182,16 @@ a concrete `int(w,s)` and never an unresolved one.
 compute in and what makes their results total. Arithmetic does **not** wrap —
 `3.1:6` traps instead — so `wrapInt` is used by (D-Bit)/(D-Shl)/(D-Shr) only.
 
-## Where a type's class lives
+## Where a type's qualifier lives
 
-§3 fixes `class(S)` as the join of the field classes lifted by the declared
-attribute. A declaration *records* that class, and the program well-formedness
-judgment `WfStructs` (`Statics.lean`) is §3's equation: the recorded class is
+§3 fixes `qual(S)` as the join of the field qualifiers lifted by the declared
+attribute. A declaration *records* that qualifier, and the program well-formedness
+judgment `WfStructs` (`Statics.lean`) is §3's equation: the recorded qualifier is
 the lifted join, and a `@copy` declaration's fields are all `Copy` and it
 declares no destructor (`3.8:18`, `3.9:31`). Recording it is what lets
 `Ty.qual` be a lookup rather than a recursion over the environment.
 
-An enum declaration records its class the same way, and §3 gives it a simpler
+An enum declaration records its qualifier the same way, and §3 gives it a simpler
 equation: no attribute to lift and no destructor to declare, just the join over
 **every** payload component of **every** variant (`6.3:19`), because the active
 variant is a run-time fact. `WfEnums` is that equation and
@@ -205,7 +205,7 @@ through a cycle of struct fields and enum payloads. The condition is joint over
 the two layers because the recursion is — a field may name an enum and a
 payload may name a struct — and `class_unique` (`Statics/Lemmas.lean`) is the proof it
 buys, unconditionally: on declarations of the same shapes, at most one
-assignment of classes satisfies §3's equations.
+assignment of qualifiers satisfies §3's equations.
 
 `Expr` and `Val` derive `Repr` but not `DecidableEq`: both carry a nested
 inductive occurrence (`List Expr`, `List Val`), for which Lean's `DecidableEq`
@@ -375,7 +375,7 @@ def Ty.observable : Ty → Bool
 
 /-- A monomorphic struct declaration: §2's `S { f1: T1, …, fk: Tk }` with its
 declared attribute (§3), whether it declares a destructor (`3.9`), and the
-class §3 assigns it. Fields are listed in **declaration order**, which is the
+qualifier §3 assigns it. Fields are listed in **declaration order**, which is the
 order §6.11 drops them in (`3.9:13`, after the user destructor — `3.9:28`) and
 the order (Struct-Intro) §5.8's initializers are presented in (`3.6:15`); they
 are named by position, as bindings are, because elaboration resolves field
@@ -389,7 +389,7 @@ structure StructDecl where
   /-- Whether `S` declares `drop fn S(self)` (`3.9`), which §6.11 runs before
   the fields (`3.9:28`). -/
   dtor : Bool
-  /-- `class(S)` (§3), the field join lifted by `attr`; `WfStructs`
+  /-- `qual(S)` (§3), the field join lifted by `attr`; `WfStructs`
   (`Statics.lean`) is the equation that pins it. -/
   cls : Qual
 deriving DecidableEq, Repr
@@ -397,9 +397,9 @@ deriving DecidableEq, Repr
 /-- A monomorphic enum declaration: §2's `enum E { K1(T̄1), …, Kn(T̄n) }`, one
 payload tuple per variant in **declaration order** — the order a tag `Kj`
 indexes and the order (Match) §5.5's arms are presented in — together with the
-class §3 assigns it. A variant with an empty tuple is §2's discriminant-only
+qualifier §3 assigns it. A variant with an empty tuple is §2's discriminant-only
 case (`ai = 0`, `6.3:14`). An enum declares **no attribute** and **no
-destructor**: §3 gives it no `@copy`/`linear` mark, its class is exactly the
+destructor**: §3 gives it no `@copy`/`linear` mark, its qualifier is exactly the
 payload join (`6.3:19`), and the compiler rejects `drop fn E(self)` because a destructor names a
 struct type (E0417), so there is nothing here for §6.11 to run before the
 payload. -/
@@ -407,7 +407,7 @@ structure EnumDecl where
   /-- The payload types of each variant, in declaration order; variant `j`'s
   tuple is `variants[j]`, and `[]` is the discriminant-only case (`6.3:14`). -/
   variants : List (List Ty)
-  /-- `class(E)` (§3, `6.3:19`), the join over **every** payload component of
+  /-- `qual(E)` (§3, `6.3:19`), the join over **every** payload component of
   **every** variant; `WfEnums` (`Statics.lean`) is the equation that pins it,
   and `enum_carriesLinear_iff` is `6.3:19` read as a biconditional. -/
   cls : Qual
@@ -417,7 +417,7 @@ deriving DecidableEq, Repr
 `D ::= struct S { … } | enum E { … }`, one list per kind, each indexed the way
 `Ty.struct`/`Ty.enum` names it. The two layers are separate lists rather than
 one list of a sum because a type names one or the other and never both, and
-because §3 assigns their classes by two different equations. -/
+because §3 assigns their qualifiers by two different equations. -/
 structure Decls where
   /-- The struct declarations §2's `S` names, indexed by `Ty.struct`. -/
   structs : List StructDecl
@@ -430,8 +430,8 @@ the fragment had before enums, and the one a generated program still has
 (`Gen.lean`) (helper). -/
 def Decls.ofStructs (D : List StructDecl) : Decls := { structs := D, enums := [] }
 
-/-- `class(S)` for a declared struct type (§3), read off the declaration. An
-index the environment does not have is `Affine`, the class of a struct with no
+/-- `qual(S)` for a declared struct type (§3), read off the declaration. An
+index the environment does not have is `Affine`, the qualifier of a struct with no
 attribute and no linear field — the conservative reading of a program
 `WfStructs` rejects anyway (helper). -/
 def Decls.classOf (D : Decls) (s : Nat) : Qual :=
@@ -439,7 +439,7 @@ def Decls.classOf (D : Decls) (s : Nat) : Qual :=
   | some sd => sd.cls
   | none => .affine
 
-/-- `class(E)` for a declared enum type (§3, `6.3:19`), read off the
+/-- `qual(E)` for a declared enum type (§3, `6.3:19`), read off the
 declaration. An index the environment does not have is `Affine`, the
 conservative reading of a program `WfEnums` rejects anyway — `Copy` would let
 such a type be duplicated (helper). -/
@@ -448,20 +448,20 @@ def Decls.enumClassOf (D : Decls) (e : Nat) : Qual :=
   | some ed => ed.cls
   | none => .affine
 
-/-- `class(T)` (§3), against the program's declaration environment. Scalars are
+/-- `qual(T)` (§3), against the program's declaration environment. Scalars are
 `Copy` at every width and signedness, floats included (`3.12:2a` classifies
 both float types `Copy` and `3.8:2` lists them, so the core takes it
-directly); a struct type has the class its declaration records, and so does an
+directly); a struct type has the qualifier its declaration records, and so does an
 enum type — whose record is the payload join over every variant (`6.3:19`),
 because the active variant is not a static fact.
 
-`class([T; n])` is §3's own four-line table, read as one `if`: `Copy` whenever
-`class(T)` is (which covers every `n`, the empty array included), `Affine`
-when `n = 0` and `class(T)` is not — a zero-length array of a non-`Copy`
+`qual([T; n])` is §3's own four-line table, read as one `if`: `Copy` whenever
+`qual(T)` is (which covers every `n`, the empty array included), `Affine`
+when `n = 0` and `qual(T)` is not — a zero-length array of a non-`Copy`
 element type carries nothing, so `3.8:74` grants it droppability and says
 nothing about duplicability (RUE-526: an earlier table classed every `[T; 0]`
 `Copy` and over-granted contraction; the compiler agrees with the current
-reading, `let b = a; let c = a;` on an `[NC; 0]` is E0205) — and `class(T)`
+reading, `let b = a; let c = a;` on an `[NC; 0]` is E0205) — and `qual(T)`
 itself otherwise, which is §3's "infectiousness is just the join" with the
 element type as the only member. -/
 def Ty.qual (D : Decls) : Ty → Qual
@@ -473,8 +473,8 @@ def Ty.qual (D : Decls) : Ty → Qual
       | .copy => .copy
       | m => if n = 0 then .affine else m
 
-/-- `carries_linear(T)` (§5.3): `class(T) = Linear`, which §5.3 states is the
-same predicate as "Linear lifted through the aggregates" because `class` *is*
+/-- `carries_linear(T)` (§5.3): `qual(T) = Linear`, which §5.3 states is the
+same predicate as "Linear lifted through the aggregates" because `qual` *is*
 that join (§3). `struct_carriesLinear_iff` (`Statics/Lemmas.lean`) is the lifting,
 proved through the field join. -/
 abbrev Ty.carriesLinear (D : Decls) (T : Ty) : Prop := T.qual D = .linear
@@ -1023,7 +1023,7 @@ and `πs = [π₁, …, πₖ]`, `k ≥ 1`, each `πⱼ` a constant path of fiel
 constant indices: a constant index is a step of the place (`Place.idx`), so
 these two forms exist for the index §5's `Path` cannot track — §4.2's
 `Untrackable(OrdinaryDynamic)` plan for the read, restricted to a
-`class(T) = Copy` leaf by §5.1's only successful rule for it, and (Assign)
+`qual(T) = Copy` leaf by §5.1's only successful rule for it, and (Assign)
 §5.2's linear-overwrite premise for the write, whose right-hand side runs
 before its indices (`5.2:14`) — both bounds-checked at run time at every
 dynamic step by §6.5's (D-Index)/(D-Index-Trap). The two lists are parallel

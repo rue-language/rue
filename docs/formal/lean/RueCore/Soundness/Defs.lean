@@ -44,7 +44,7 @@ inductive HasTy (D : Decls) : Val → Ty → Prop where
   declaration — which is what progress at a `match` reads (`exhaustive_arm_exists`)
   — and the payload is well typed at that variant's declared component types
   ((Enum-Intro) §5.5, read on values). Nothing relates the value to the *other*
-  variants: `class(E)` does (§3), and that is a fact about the type. -/
+  variants: `qual(E)` does (§3), and that is a fact about the type. -/
   | enum {e k ed Ts i vs} :
       D.enums[e]? = some ed → ed.variants[k]? = some Ts → HasTys D vs Ts →
       HasTy D (.enum e k i vs) (.enum e)
@@ -52,7 +52,7 @@ inductive HasTy (D : Decls) : Val → Ty → Prop where
   /-- §6.1's `[ v1, …, vn ]` well typed at `[T; n]` exactly when it has `n`
   elements and each is well typed at `T` ((Array-Intro) §5.8, read on values;
   `3.5:3`'s one shared element type is `List.replicate n T`). The value
-  carries `T` because `class([T; n])` is not a function of the elements
+  carries `T` because `qual([T; n])` is not a function of the elements
   present — `3.8:74` (`Syntax.lean`). -/
   | array {T n i vs} :
       HasTys D vs (List.replicate n T) → HasTy D (.array T i vs) (.array T n)

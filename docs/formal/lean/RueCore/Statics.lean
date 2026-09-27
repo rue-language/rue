@@ -25,11 +25,11 @@ calculus fixes them for a function body.
 Loans (Λ) are omitted: the fragment has no borrows, and Λ is ambiently empty
 in the current core (§5 preamble).
 
-## Types and their class
+## Types and their qualifier
 
-§3 assigns a struct the join of its field classes lifted by the declared
-attribute, and a declaration records that class (`Syntax.lean`). `WfStructs`
-is §3's equation, made a premise of a well-formed program: the recorded class
+§3 assigns a struct the join of its field qualifiers lifted by the declared
+attribute, and a declaration records that qualifier (`Syntax.lean`). `WfStructs`
+is §3's equation, made a premise of a well-formed program: the recorded qualifier
 *is* the lifted join, a `@copy` declaration's join is already `Copy` and it
 declares no destructor (`3.8:18`, `3.9:31`), a destructor-bearing declaration
 carries no linear field (`3.9:44`, E0462 — `3.9:34` forbids moving one out, so
@@ -41,24 +41,24 @@ itself by value, directly or through a cycle — `WfByValueEdge` is that rule, j
 over both layers, and `class_unique` is the statement it buys, proved.
 
 `3.9:44` is stated "through any depth of struct nesting", and `dtorWf` looks
-one level down — at `sd.baseOf D`, the join of the *immediate* field classes.
+one level down — at `sd.baseOf D`, the join of the *immediate* field qualifiers.
 The two agree because `WfStructs` holds at every declaration, the fields'
 included: a field whose type is linear only by infection has `baseOf = Linear`
-at *its* declaration, and `Attr.lift` then forces its recorded class to
+at *its* declaration, and `Attr.lift` then forces its recorded qualifier to
 `Linear` for every attribute `copyWf` permits. So a linear value at any depth
-has already reached the immediate field's class by the time `dtorWf` reads the
+has already reached the immediate field's qualifier by the time `dtorWf` reads the
 join, and one level is the whole depth.
 
-§3 gives an **enum** one equation and no lifting: `class(E)` is the join over
+§3 gives an **enum** one equation and no lifting: `qual(E)` is the join over
 every payload component of every variant (`6.3:19`), so `EnumDecl.Wf` is that
 equation and `WfEnums` its program-wide form. An enum declares no attribute and
 no destructor, so there is no `@copy`/`linear` clause to check and nothing for
 §6.11 to run before the payload (the compiler rejects `drop fn E(self)` with
 E0417: a destructor names a struct type).
 
-`carries_linear(T) ⟺ class(T) = Linear` is §5.3's own reading, so it is a
+`carries_linear(T) ⟺ qual(T) = Linear` is §5.3's own reading, so it is a
 definition here (`Ty.carriesLinear`); what §5.3 asks to be checked is the
-*lifting*, and `struct_carriesLinear_iff` is it: a struct's class reaches
+*lifting*, and `struct_carriesLinear_iff` is it: a struct's qualifier reaches
 `Linear` exactly when the declaration says `linear` or some field carries a
 linear value. `enum_carriesLinear_iff` is the same sentence for an enum, over
 every variant rather than the active one.
@@ -95,15 +95,15 @@ what completeness that costs.
 
 namespace RueCore
 
-/-! ## §3's lattice, and the class of a declared struct -/
+/-! ## §3's lattice, and the qualifier of a declared struct -/
 
-/-- §3's field join, over the field types of one declaration: `⊔ { class(Ti) }`
+/-- §3's field join, over the field types of one declaration: `⊔ { qual(Ti) }`
 read left to right. `Attr.lift` then lifts it by the declared attribute. -/
 def StructDecl.baseOf (D : Decls) (sd : StructDecl) : Qual :=
   sd.fields.foldl (fun m T => m.join (Ty.qual D T)) .copy
 
 /-- One declaration's well-formedness (§3, `3.8:18`, `3.9:31`, `3.9:44`): its
-recorded class is §3's field join lifted by its attribute, a `@copy`
+recorded qualifier is §3's field join lifted by its attribute, a `@copy`
 declaration's join is already `Copy` and it declares no destructor, and a
 destructor-bearing declaration carries no linear field.
 
@@ -112,7 +112,7 @@ contains itself by value, directly or through a cycle (`3.0:5`, E0483) — is
 `WfByValueEdge`, stated jointly over both layers below, because a field may name an
 enum and a payload may name a struct. -/
 structure StructDecl.Wf (D : Decls) (sd : StructDecl) : Prop where
-  /-- §3's assignment: `class(S) = attr(S) lifted over ⊔ { class(Ti) }`. -/
+  /-- §3's assignment: `qual(S) = attr(S) lifted over ⊔ { qual(Ti) }`. -/
   classIsJoin : sd.cls = sd.attr.lift (sd.baseOf D)
   /-- `3.8:18` and `3.9:31`: `@copy` is well-formed only when every field is
   `Copy` and the struct declares no destructor. -/
@@ -122,19 +122,19 @@ structure StructDecl.Wf (D : Decls) (sd : StructDecl) : Prop where
   value, so the field's obligation could only ever be met by the drop glue
   §6.11 runs after the destructor — which is exactly the implicit discard
   §5.6 forbids. A *declared*-`linear` struct may still have a destructor: the
-  condition is on the field join, not on the class. -/
+  condition is on the field join, not on the qualifier. -/
   dtorWf : sd.dtor = true → sd.baseOf D ≠ .linear
 
-/-- A well-formed struct environment: §3's class assignment holds of every
+/-- A well-formed struct environment: §3's qualifier assignment holds of every
 declaration (`StructDecl.Wf`). This is the premise that makes `Ty.qual`'s
 lookup §3's join, and it is what `checkStructs` (`Checker/Defs.lean`) decides. -/
 def WfStructs (D : Decls) : Prop :=
   ∀ (s : Nat) (sd : StructDecl), D.structs[s]? = some sd → StructDecl.Wf D sd
 
-/-! ## §3's class assignment for an enum: the payload join (`6.3:19`)
+/-! ## §3's qualifier assignment for an enum: the payload join (`6.3:19`)
 
 An enum has no attribute to lift and no destructor to declare, so §3 gives it
-one equation and nothing else: `class(E)` is the join over **every** payload
+one equation and nothing else: `qual(E)` is the join over **every** payload
 component of **every** variant, because the active variant is not a static
 fact. A discriminant-only enum's join is empty and so `Copy` (`6.3:19`,
 `3.8:2`), which is what makes `enum C { A, B }` a duplicable tag.
@@ -149,26 +149,26 @@ holds — and `EnumDecl.Wf.payload_not_linear` is the direction the machine need
 a non-`Linear` enum has no linear payload to leak.
 -/
 
-/-- §3's payload join for one enum declaration: `⊔ { class(Tij) }` over every
+/-- §3's payload join for one enum declaration: `⊔ { qual(Tij) }` over every
 component of every variant, read left to right, variant by variant (`6.3:19`).
 The empty join is `Copy`, which is the discriminant-only case. -/
 def EnumDecl.payloadJoin (D : Decls) (ed : EnumDecl) : Qual :=
   ed.variants.foldl (fun m Ts => Ts.foldl (fun m' T => m'.join (Ty.qual D T)) m) .copy
 
-/-- One enum declaration's well-formedness (§3, `6.3:19`): its recorded class
+/-- One enum declaration's well-formedness (§3, `6.3:19`): its recorded qualifier
 is the payload join. As for a struct this is the equation only, and `WfByValueEdge`
 is what makes it solvable (`3.0:5` forbids an enum to contain itself by value
 through any cycle of fields and payloads).
 
 There is no attribute clause and no destructor clause, because §3 gives an enum
-neither: `6.3:19` fixes its class as the join with no `@copy`/`linear` mark to
+neither: `6.3:19` fixes its qualifier as the join with no `@copy`/`linear` mark to
 lift, and the compiler rejects `drop fn E(self)` where it is declared (E0417),
 which is why `EnumDecl` records no `dtor` field for §6.11 to read. -/
 structure EnumDecl.Wf (D : Decls) (ed : EnumDecl) : Prop where
-  /-- §3's assignment: `class(E) = ⊔ { class(Tij) }` (`6.3:19`). -/
+  /-- §3's assignment: `qual(E) = ⊔ { qual(Tij) }` (`6.3:19`). -/
   classIsJoin : ed.cls = ed.payloadJoin D
 
-/-- A well-formed enum environment: §3's class assignment holds of every enum
+/-- A well-formed enum environment: §3's qualifier assignment holds of every enum
 declaration (`EnumDecl.Wf`). Together with `WfStructs` this is the premise that
 makes `Ty.qual`'s lookup §3's join at every type, and it is what `checkEnums`
 (`Checker/Defs.lean`) decides. -/
@@ -177,7 +177,7 @@ def WfEnums (D : Decls) : Prop :=
 
 /-! ### `3.0:5`: no declaration contains itself by value
 
-`3.0:5` (E0483) is the rule that makes §3's two class equations a definition:
+`3.0:5` (E0483) is the rule that makes §3's two qualifier equations a definition:
 "A struct or enum **MUST NOT** contain itself by value, either directly or
 through a cycle of struct fields, enum payloads, or array elements." It is one
 rule over **both** layers, and it has to be: a field may name an enum
@@ -189,7 +189,7 @@ shape both equations solve at more than one assignment
 
 `Decls.ByValueEdge` is `3.0:5`'s "contains by value" relation, one step, and
 `WfByValueEdge` is the rule itself: the relation is **well-founded**, so each
-declaration's class is the unique solution of its equation (`class_unique`).
+declaration's qualifier is the unique solution of its equation (`class_unique`).
 The calculus states the equations but not this side condition; §3 gains the
 paragraph in RUE-2334, and `3.0:5` is the normative form it mechanizes.
 `checkNoCycle` (`Checker/Defs.lean`) decides it by peeling. -/
@@ -246,16 +246,16 @@ licenses — and it is joint over the two layers because `3.0:5` is. -/
 def WfByValueEdge (D : Decls) : Prop := WellFounded (fun d' d => D.ByValueEdge d d')
 
 /-- A well-formed declaration environment: `3.0:5`'s acyclicity (`WfByValueEdge`),
-§3's class assignment for every struct declaration (`WfStructs`) and for every
+§3's qualifier assignment for every struct declaration (`WfStructs`) and for every
 enum declaration (`WfEnums`). This is the premise every theorem that reads a
-recorded class through `Ty.qual` carries, and it is what `checkDecls`
+recorded qualifier through `Ty.qual` carries, and it is what `checkDecls`
 (`Checker/Defs.lean`) decides. -/
 structure WfDecls (D : Decls) : Prop where
   /-- `3.0:5` (E0483): no declaration contains itself by value. -/
   byValueEdge : WfByValueEdge D
-  /-- §3's class assignment for the struct layer (`3.8:18`, `3.9:31`, `3.9:44`). -/
+  /-- §3's qualifier assignment for the struct layer (`3.8:18`, `3.9:31`, `3.9:44`). -/
   structs : WfStructs D
-  /-- §3's class assignment for the enum layer (`6.3:19`). -/
+  /-- §3's qualifier assignment for the enum layer (`6.3:19`). -/
   enums : WfEnums D
 
 /-! ## The fused `Γ ; Σ` context, keyed by path -/
@@ -379,7 +379,7 @@ declared type.
 
 * a `MovedOut` path carries nothing (`Σ(p) = MovedOut ⇒ false`);
 * a path that is wholly `Owned` carries a linear value exactly when
-  `class(T) = Linear`, because §3's class *is* the join that reaches `Linear`
+  `qual(T) = Linear`, because §3's qualifier *is* the join that reaches `Linear`
   through a declared-`linear` struct at some depth (`struct_carriesLinear_iff`)
   — so the type-level test is the fixed point of §5.6's own recursion on a
   subtree with no holes in it;
@@ -407,7 +407,7 @@ the calculus has no rule for a move or a `@drop` of an affine or linear place
 there, nor for a declared-`linear` plan (§4.2's `Untrackable` plans, E0904;
 probes q02, q11, q15 of RUE-2342); a `@drop` of a `Copy` place there
 (`Typed.indexDrop`) moves nothing, and a write there consumes nothing. So an untracked element is `Owned`, and
-an `Owned` element carries a linear value exactly when `class(T) = Linear`. -/
+an `Owned` element carries a linear value exactly when `qual(T) = Linear`. -/
 def residualLinear (D : Decls) : OwnSt → Ty → Bool
   | .movedOut, _ => false
   | .owned, T => decide (T.qual D = .linear)
@@ -636,7 +636,7 @@ instance (D : Decls) (Γ : Ctx) : Decidable (Ctx.Wf D Γ) := by
 mutual
 /-- Whether joining a wholly-`Owned` arm with `t` is well-formed: every path
 `t` has `MovedOut` must be one the `Owned` side may lose, which by §5.6 read on
-an `Owned` subtree is `class(T) ≠ Linear` at that path (`3.8:50`). -/
+an `Owned` subtree is `qual(T) ≠ Linear` at that path (`3.8:50`). -/
 def ownedJoinable (D : Decls) : OwnSt → Ty → Bool
   | .owned, _ => true
   | .movedOut, T => decide (T.qual D ≠ .linear)
@@ -1003,7 +1003,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   declared-linear **ancestor** of `d` stays `Owned` and keeps its own
   obligation (§5.6's declared clause), and a sibling of `d` keeps its own
   state — which is what makes `h.l.a` consume `h.l` alone (probe d4). Because
-  the rule is selected by the *plan* rather than by `class(T)`, it fires at a
+  the rule is selected by the *plan* rather than by `qual(T)`, it fires at a
   `Copy` leaf too: that is §4.2's "central override", and probe d1 is it. -/
   | useDeclared {Γ p en u πd πs Td T} :
       Γ[p.root]? = some en →
@@ -1132,7 +1132,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   /-- (Struct-Intro) §5.8: one initializer per declared field, typed in
   declaration order at its field's type with Σ threaded left to right
   (`3.6:5`, `3.6:6`, `3.6:15`), and the result owns every field — which is why
-  `class(S)` is the field join of §3. -/
+  `qual(S)` is the field join of §3. -/
   | mkStruct {Γ Ω s args sd} :
       P.decls.structs[s]? = some sd →
       TypedArgs P R Γ args sd.fields Ω →
@@ -1140,7 +1140,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   /-- (Enum-Intro) §5.5: one payload argument per declared component of the
   variant the tag names, typed left to right at its component's type with Σ
   threaded (§6.2's order, the same `TypedArgs` (Struct-Intro) uses), and the
-  result owns the tag and the supplied payload — which is why `class(E)` is the
+  result owns the tag and the supplied payload — which is why `qual(E)` is the
   payload join of §3 (`6.3:19`). The tag is the variant's declaration slot, so
   `variants[k]? = some Ts` is both §5.5's `E = enum { …, Kj(T̄j), … }` premise
   and `6.3:16`'s "the variant exists" (E0420 otherwise); the argument count is
@@ -1153,7 +1153,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   /-- (Match) §5.5, the elimination form for enums.
 
   The scrutinee is typed first, at the enum type, and its Σ effect is whatever
-  typing it did: at a place that is (Use-Copy)/(Use-Move) §5.1 by `class(E)` —
+  typing it did: at a place that is (Use-Copy)/(Use-Move) §5.1 by `qual(E)` —
   a non-`Copy` enum is *consumed* by the match, because a scrutinee is a value
   context and a use of a move-type place there moves it (`3.8:7`, `3.8:76`;
   `6.3:17` for the payload the arm binds out of it, and not `3.8:33`'s
@@ -1202,7 +1202,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
       Typed P R Γ (.«match» scrut arms) T ⟨none, Δ₀⟩
   /-- (Array-Intro) §5.8: all `n` elements share one element type `T`
   (`3.5:3`, `7.1:3`), are typed left to right with Σ threaded, and the array
-  owns all of them — which is why `class([T; n])` is §3's lift of `class(T)`.
+  owns all of them — which is why `qual([T; n])` is §3's lift of `qual(T)`.
   `n` is the literal's own length (`7.1:4` — the declared size must match), and
   `n = 0` is admitted: `[]` is the zero-sized `[T; 0]` and uses nothing. The
   element-type list is `List.replicate n T`, so this rule is
@@ -1253,8 +1253,8 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
     (`rootIdxOnly`; review probes a1–a3).
   * `Γ ⊢ p[…]… : T` is `Ty.atPath` to `p` and then `Ty.atDyn` through the
     dynamic tail, which fails unless every dynamic step is taken at an array.
-  * `class(T) = Copy` is the rule's own premise, and §4.2's "there is no
-    successful static rule … when `class(T) ∈ {Affine,Linear}`" is that
+  * `qual(T) = Copy` is the rule's own premise, and §4.2's "there is no
+    successful static rule … when `qual(T) ∈ {Affine,Linear}`" is that
     premise's absence rather than a rejection of its own (E0904; probes q02,
     q15).
   * No declared-`linear` proper prefix anywhere along the complete path:
@@ -1300,11 +1300,11 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   §6.2's `assign p = E` context says the same, and the compiler agrees (probes
   q14, q20, r10).
 
-  The destination is **not** a use, so the read's `class(T) = Copy` premise
+  The destination is **not** a use, so the read's `qual(T) = Copy` premise
   does not transfer here: what (Assign) demands of a destination is its own
   last premise, `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the leaf. A place
   under a runtime index can never be proven `MovedOut` (`3.8:77`), so the
-  disjunction is its right half, `class(T) ≠ Linear`: an affine, even
+  disjunction is its right half, `qual(T) ≠ Linear`: an affine, even
   destructor-bearing, leaf is admitted and the machine's overwrite-drop runs
   its glue (probe q04), while a linear-carrying one is E0493 (probe q05).
 
@@ -1437,7 +1437,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   leaf alone."
 
   So the premises are `Typed.useDeclared`'s, verbatim, and there is **no
-  premise on the leaf's class**: §5.3 is explicit that the whole of `d` is
+  premise on the leaf's qualifier**: §5.3 is explicit that the whole of `d` is
   consumed "for a `Copy` field `f` as much as for a droppable one", and the
   compiler agrees —
   after `@drop(d.f)` at a `Copy` field, a later use of `d` is E0205 (probe
@@ -1752,13 +1752,13 @@ def WfFn (P : Program) (fd : FnDef) : Prop :=
   ∃ Ωf, Typed P fd.ret (fnCtx fd) fd.body fd.ret Ωf ∧
     (∀ Γf, Ωf.norm = some Γf → NoResidualLinear P.decls Γf) ∧ Ωf.brk = []
 
-/-- A well-formed program: §3's class assignment holds of every declaration and
+/-- A well-formed program: §3's qualifier assignment holds of every declaration and
 (Fn) §5.8 of every function. Recursion is ordinary — a body may call any
 function of the program, itself included, since (Call) reads only the callee's
 signature (§5.8, "the core is fully monomorphic") — while *declarations* are
 not recursive at all (`3.0:5`, `WfByValueEdge`). -/
 structure WfProgram (P : Program) : Prop where
-  /-- §3's class assignment, for every declaration of either kind. -/
+  /-- §3's qualifier assignment, for every declaration of either kind. -/
   decls : WfDecls P.decls
   /-- (Fn) §5.8, for every function. -/
   fns : ∀ fd ∈ P.fns, WfFn P fd

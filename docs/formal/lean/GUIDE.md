@@ -121,7 +121,7 @@ Premise by premise:
    with a hole may not be handed to a new owner).
 4. `en.ty.atPath … = some T`: the path reaches a declared field at every step
    and lands at type `T`.
-5. `T.qual P.decls ≠ .copy`: `T`'s class is not `Copy`.
+5. `T.qual P.decls ≠ .copy`: `T`'s qualifier is not `Copy`.
 6. `noDtorPrefix … = true`: no proper prefix of the path declares a destructor
    (`3.9:34`, E0456).
 7. `declaredPrefix … = none`: the use plan §4.2 records for the place is
@@ -453,7 +453,7 @@ calculus as written and what the compiler does, not a modelling slip.
 
 Every safety proof carries an invariant relating the static story to the
 dynamic one. Here it is `ActivationTyping D Γ φ H` (`Soundness/Defs.lean`), where `D`
-is the program's declarations, against which `class(T)` and a value's drop
+is the program's declarations, against which `qual(T)` and a value's drop
 are read. It has two fields, `store` and `record`, and the proof also carries
 a third fact, `FrameProperty`.
 
@@ -853,7 +853,7 @@ interpreter and the theorem in full. The others show only what is new.
 | 1 | `reinit` | reading a derivation and a run end to end; the overwrite premise of (Assign) |
 | 2 | `return_past_affine` | an early `return` unwinds the frame's scope record, newest first |
 | 3 | `panic_after_drop` | a trap keeps the output already printed and runs no drops |
-| 4 | `struct_nested_dtor_drop` | a struct's class, and §6.11's outer-then-fields drop order |
+| 4 | `struct_nested_dtor_drop` | a struct's qualifier, and §6.11's outer-then-fields drop order |
 | 5 | `partial_move_residue` | a partial move: Σ and the store as trees |
 | 6 | `destructure_residue_order` | a declared-linear destructure consumes the enclosing place |
 | 7 | `array_elem_move_rest_ascending` | an element move, and the rest dropped in index order |
@@ -953,7 +953,7 @@ fn main() -> i32 {
 | --- | --- | --- | --- |
 | `mkStruct sLinear [lit 1]` | `Typed.mkStruct`, (Struct-Intro) §5.8: one initializer per declared field, at the field's type | `[]` | `[]` |
 | enter the `let` body | `Typed.letIn`, (Let): the binder enters `Owned` | `[]` | `[v0: S2 mut = Owned]` |
-| `drop (.var 0)` | (@Drop) §5.3: `class(S2) = Linear` (§3: the declared attribute), and `@drop` is the one non-move discharge of a linear obligation (`3.9:39`) | `Owned` | `MovedOut` |
+| `drop (.var 0)` | (@Drop) §5.3: `qual(S2) = Linear` (§3: the declared attribute), and `@drop` is the one non-move discharge of a linear obligation (`3.9:39`) | `Owned` | `MovedOut` |
 | `seq` discard | (Seq): `unit` carries no linear value (`3.8:64`) | | |
 | `mkStruct sLinear [lit 2]` | the assignment's right-hand side, typed first | `MovedOut` | `MovedOut` |
 | `assign (.var 0) …` | (Assign) §5.2: `v0` is `mut`; on the post-RHS state `v0` is `MovedOut`, so the `3.8:77` premise holds; the subtree at the path becomes `Owned` (`3.8:55`) | `MovedOut` | `Owned` |
@@ -1194,7 +1194,7 @@ that program, kernel-checked to an empty trace, and the compiler does the same.
 A `return` in the same position would have unwound the frame and printed the
 line, as in example 2.
 
-### Example 4: `struct_nested_dtor_drop`, a struct's class and §6.11's drop order
+### Example 4: `struct_nested_dtor_drop`, a struct's qualifier and §6.11's drop order
 
 The smallest program in which a struct's *fields* matter: a
 destructor-bearing struct holding a destructor-bearing struct, dropped at
@@ -1218,16 +1218,16 @@ fn f0() -> i64 {
 
 In the core the body is `letIn false (mkStruct sOuter [lit 1, resA (lit 2)])
 (lit 9)`, and the declarations are `StructDecl` records that each carry their
-class: `class(S1) = Affine`, `class(S5) = Affine`.
+qualifier: `qual(S1) = Affine`, `qual(S5) = Affine`.
 
 #### What the checker demands
 
-**The recorded class.** §3 says `class(S)` is the join of the field classes,
+**The recorded qualifier.** §3 says `qual(S)` is the join of the field qualifiers,
 lifted by the declared attribute. For `S5` that is
-`Copy ⊔ class(S1) = Copy ⊔ Affine = Affine`, and no attribute lifts it
+`Copy ⊔ qual(S1) = Copy ⊔ Affine = Affine`, and no attribute lifts it
 (`3.8:3`: structs are affine by default). `WfStructs` (`Statics.lean`) checks
-every recorded class against this equation, alongside §3's other declaration
-rules, and `class_unique` shows the recorded class is determined rather than
+every recorded qualifier against this equation, alongside §3's other declaration
+rules, and `class_unique` shows the recorded qualifier is determined rather than
 free.
 
 **The initializers.** (Struct-Intro) §5.8 types them **in declaration
@@ -1241,9 +1241,9 @@ because the two rules impose the same left-to-right discipline:
 | ⟶ `1` | (Lit) §5.8 | `⇒ i64`, at field `x0`'s declared type |
 | ⟶ `S1 { x0: 2 }` | (Struct-Intro) §5.8 | `⇒ S1`, at field `x1`'s declared type |
 | ⟶ ⟶ `2` | (Lit) §5.8 | `⇒ i64` |
-| `let v0 = …; 9` | (Let) §5.3 + §5.6 | `⇒ i64`, and the leak check passes: `class(S5) = Affine`, not `Linear` |
+| `let v0 = …; 9` | (Let) §5.3 + §5.6 | `⇒ i64`, and the leak check passes: `qual(S5) = Affine`, not `Linear` |
 
-The leak check is the one place the class is read: §5.6 rejects a binding
+The leak check is the one place the qualifier is read: §5.6 rejects a binding
 still `Owned` at a `Linear` type. `S5` is `Affine`, so scope exit may drop
 it, and the machine then must.
 
@@ -1271,9 +1271,9 @@ Three claims in row 8 are theorems rather than observations:
   order (`3.9:13`), each field's given by the same form recursively. A
   moved-out field (`⊘`) contributes none.
 - `dropContents_ok` says the walk never refuses on well-typed contents.
-- `StructDecl.Wf.field_not_linear` says a declaration whose class is not
+- `StructDecl.Wf.field_not_linear` says a declaration whose qualifier is not
   `Linear` has no `Linear` field. That is why the leak monitor at row 8 can
-  look at the value's own class and never inside it.
+  look at the value's own qualifier and never inside it.
 
 ### Example 5: `partial_move_residue`, a partial move, drawn
 
@@ -1588,7 +1588,7 @@ With enums, the thing to watch is not the branch (that is `if` again) but the
 ```rue
 struct S1 { x0: i64 }
 drop fn S1(self) { @dbg(self.x0); }     // the observation channel
-enum E0 { K0(S1), K1 }                   // class(E0) = Affine, through S1
+enum E0 { K0(S1), K1 }                   // qual(E0) = Affine, through S1
 
 fn f0() -> i64 {
     {
@@ -1604,9 +1604,9 @@ fn f0() -> i64 {
 }
 ```
 
-`class(E0)` is the join over **every** payload component of **every** variant
+`qual(E0)` is the join over **every** payload component of **every** variant
 (`6.3:19`), because the active variant is a run-time fact §3 cannot read.
-Here that is `class(S1) = Affine`, so a use of an `E0` place is a move.
+Here that is `qual(S1) = Affine`, so a use of an `E0` place is a move.
 
 The program prints `10`, `1`, `20`, then the value `5`. The `1` is `S1`'s
 destructor, and **where** it falls is the whole example: at the *arm's* end,
@@ -1617,7 +1617,7 @@ not at `v0`'s scope exit and not twice.
 (Match) §5.5 has four premises, and `check` reads each one:
 
 - **The scrutinee is typed first**, and the arms start from the Σ it leaves.
-  `class(E0)` is not `Copy`, so `v0` is typed by (Use-Move) §5.1: the `match`
+  `qual(E0)` is not `Copy`, so `v0` is typed by (Use-Move) §5.1: the `match`
   **consumes** it, because a scrutinee is a value context (`3.8:7`, `3.8:76`,
   `6.3:17`).
 - **Exhaustiveness** is `arms.length = ed.variants.length`, with arm `j` the
@@ -1754,7 +1754,7 @@ types). Then it reads the array `v0` on the post-operand state: `fully-owned`
 there, and `assignArrayOk` above it (nothing to check, since `v0` is the
 root). The last premise is (Assign) §5.2's
 `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the leaf. A place under a
-run-time index is never `MovedOut`, so this is `class(S1) ≠ Linear`.
+run-time index is never `MovedOut`, so this is `qual(S1) ≠ Linear`.
 
 #### The run
 
@@ -2179,7 +2179,7 @@ rules and §2 syntactic forms have a core image at all, quoted from
 `INDEX.md`. Then it gives every theorem's statement as Lean elaborated it,
 then every definition those statements are written in terms of, in
 dependency order. A definition's body is included where it is short enough to
-read, so `Ty.qual` (which is `class(T)`, and so what makes a `linear` struct
+read, so `Ty.qual` (which is `qual(T)`, and so what makes a `linear` struct
 linear) and `Ctx.join` (§5.5, a premise of `Typed.ite`) can be read rather
 than taken on their signatures.
 

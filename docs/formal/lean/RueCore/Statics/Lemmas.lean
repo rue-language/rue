@@ -15,7 +15,7 @@ theorem sits under one; the definitions they are about stay in `Statics.lean`.
 
 namespace RueCore
 
-/-! ## §3's lattice, and the class of a declared struct -/
+/-! ## §3's lattice, and the qualifier of a declared struct -/
 
 /-- The join is an upper bound of its left argument (§3) (helper). -/
 theorem Qual.rank_le_join_left (a b : Qual) : a.rank ≤ (a.join b).rank := by
@@ -42,7 +42,7 @@ theorem rank_le_joinFold (D : Decls) : ∀ (Ts : List Ty) (acc : Qual),
   | _ :: Ts, acc =>
       Nat.le_trans (Qual.rank_le_join_left acc _) (rank_le_joinFold D Ts _)
 
-/-- Every field's class is below §3's join of them (helper). -/
+/-- Every field's qualifier is below §3's join of them (helper). -/
 theorem rank_le_joinFold_of_mem (D : Decls) : ∀ (Ts : List Ty) (acc : Qual) (T : Ty),
     T ∈ Ts → (T.qual D).rank ≤ (Ts.foldl (fun m T => m.join (Ty.qual D T)) acc).rank
   | T' :: Ts, acc, T, h => by
@@ -66,10 +66,10 @@ theorem joinFold_linear_inv (D : Decls) : ∀ (Ts : List Ty) (acc : Qual),
         · exact Or.inl h''
       · exact Or.inr ⟨T', List.mem_cons_of_mem _ hmem, hT'⟩
 
-/-- **A droppable struct carries no linear field.** If a declaration's class
-is not `Linear`, no field's class is — which is why the machine's leak monitor
+/-- **A droppable struct carries no linear field.** If a declaration's qualifier
+is not `Linear`, no field's qualifier is — which is why the machine's leak monitor
 (§6.7's `endscope`, §6.9's frame teardown) needs to look only at the value's
-own class and never inside it. This is §3's infectiousness, used. -/
+own qualifier and never inside it. This is §3's infectiousness, used. -/
 theorem StructDecl.Wf.field_not_linear {D : Decls} {sd : StructDecl}
     (h : sd.Wf D) (hcls : sd.cls ≠ .linear) : ∀ T ∈ sd.fields, T.qual D ≠ .linear := by
   intro T hmem hlin
@@ -88,7 +88,7 @@ theorem StructDecl.Wf.field_not_linear {D : Decls} {sd : StructDecl}
       rw [hbase] at this
       cases this
 
-/-- **`carries_linear` lifts through the fields** (§5.3). A struct's class
+/-- **`carries_linear` lifts through the fields** (§5.3). A struct's qualifier
 reaches `Linear` exactly when its declaration says `linear` (`3.8:57`) or some
 field carries a linear value (`3.8:58` — infectiousness is the join). Together
 with `Ty.carriesLinear`'s definition this is §5.3's sentence, mechanized. -/
@@ -133,7 +133,7 @@ theorem struct_carriesLinear_iff {D : Decls} {s : Nat} {sd : StructDecl}
 
 /-! ### `3.0:5`: no declaration contains itself by value
 
-`3.0:5` (E0483) is the rule that makes §3's two class equations a definition:
+`3.0:5` (E0483) is the rule that makes §3's two qualifier equations a definition:
 "A struct or enum **MUST NOT** contain itself by value, either directly or
 through a cycle of struct fields, enum payloads, or array elements." It is one
 rule over **both** layers, and it has to be: a field may name an enum
@@ -145,14 +145,14 @@ shape both equations solve at more than one assignment
 
 `Decls.ByValueEdge` is `3.0:5`'s "contains by value" relation, one step, and
 `WfByValueEdge` is the rule itself: the relation is **well-founded**, so each
-declaration's class is the unique solution of its equation (`class_unique`).
+declaration's qualifier is the unique solution of its equation (`class_unique`).
 The calculus states the equations but not this side condition; §3 gains the
 paragraph in RUE-2334, and `3.0:5` is the normative form it mechanizes.
 `checkNoCycle` (`Checker/Defs.lean`) decides it by peeling. -/
 
-/-- Two environments that give the same class to every declaration a type
-names by value give that type the same class: `class([T; n])` is §3's lift of
-`class(T)`, so peeling the array wrappers loses nothing (helper). -/
+/-- Two environments that give the same qualifier to every declaration a type
+names by value give that type the same qualifier: `qual([T; n])` is §3's lift of
+`qual(T)`, so peeling the array wrappers loses nothing (helper). -/
 theorem Ty.qual_congr_tyNames {D D' : Decls} :
     ∀ T : Ty, (∀ d ∈ T.tyNames, d.ty.qual D = d.ty.qual D') → T.qual D = T.qual D'
   | .struct s, h => h (.struct s) (by simp [Ty.tyNames])
@@ -170,7 +170,7 @@ theorem rank_le_payloadFold (D : Decls) : ∀ (Tss : List (List Ty)) (acc : Qual
   | Ts :: Tss, acc =>
       Nat.le_trans (rank_le_joinFold D Ts acc) (rank_le_payloadFold D Tss _)
 
-/-- Every payload component's class is below §3's join of them (`6.3:19`)
+/-- Every payload component's qualifier is below §3's join of them (`6.3:19`)
 (helper). -/
 theorem rank_le_payloadFold_of_mem (D : Decls) :
     ∀ (Tss : List (List Ty)) (acc : Qual) (Ts : List Ty) (T : Ty), Ts ∈ Tss → T ∈ Ts →
@@ -197,7 +197,7 @@ theorem payloadFold_linear_inv (D : Decls) : ∀ (Tss : List (List Ty)) (acc : Q
         · exact Or.inr ⟨Ts, List.mem_cons_self, T, hmem, hT⟩
       · exact Or.inr ⟨Ts', List.mem_cons_of_mem _ hmem, hT'⟩
 
-/-- **A droppable enum carries no linear payload.** If a declaration's class is
+/-- **A droppable enum carries no linear payload.** If a declaration's qualifier is
 not `Linear`, no payload component of any variant is — which is why the
 machine's leak monitor need only read the payload it finds under the active tag
 (§6.11) and never the declaration. This is `6.3:19`'s join, used. -/
@@ -213,9 +213,9 @@ theorem EnumDecl.Wf.payload_not_linear {D : Decls} {ed : EnumDecl}
   exact this
 
 /-- **`carries_linear` lifts through an enum's payloads** (§5.3, `6.3:19`). An
-enum's class reaches `Linear` exactly when some variant carries a linear payload
+enum's qualifier reaches `Linear` exactly when some variant carries a linear payload
 component — over *every* variant, not the active one, because the active variant
-is a dynamic fact and the class is the type's worst case. This is what makes
+is a dynamic fact and the qualifier is the type's worst case. This is what makes
 `E0.K1` of `enum E0 { K0(T0), K1 }` with `T0` declared `linear` a must-consume
 value even though the value it holds carries nothing (probe e11, E0406). -/
 theorem enum_carriesLinear_iff {D : Decls} {e : Nat} {ed : EnumDecl}
@@ -236,12 +236,12 @@ theorem enum_carriesLinear_iff {D : Decls} {e : Nat} {ed : EnumDecl}
     rw [hlin] at this
     exact this
 
-/-! ## The class a declaration records is determined, not free
+/-! ## The qualifier a declaration records is determined, not free
 
-A declaration carries `class(S)`/`class(E)` so that `Ty.qual` is a lookup. That
+A declaration carries `qual(S)`/`qual(E)` so that `Ty.qual` is a lookup. That
 is only honest if §3's equations have one solution, which is what `3.0:5`
 buys: no declaration contains itself by value, so the by-value relation is
-well-founded (`WfByValueEdge`) and each declaration's class is fixed by the classes
+well-founded (`WfByValueEdge`) and each declaration's qualifier is fixed by the qualifiers
 of the declarations it names.
 
 The condition has to be **joint**, because the recursion is. A field may name
@@ -250,7 +250,7 @@ an enum and a payload may name a struct, so `struct S { x0: E }` /
 at more than one assignment, and only a cross-layer condition excludes it
 (`Examples.lean` pins that shape as a refusal witness; the compiler reports
 E0483). `class_unique` is therefore **one** theorem over both layers, assuming
-nothing about the other layer's classes, and
+nothing about the other layer's qualifiers, and
 `struct_class_unique`/`enum_class_unique` are its two projections.
 
 The specification states the rule normatively and across both layers — `3.0:5`,
@@ -259,7 +259,7 @@ a cycle of struct fields, enum payloads, or array elements" (E0483) — and that
 is the citation this fragment mechanizes. The *calculus* states §3's equations
 without the side condition; the paragraph that adds it is §3 (RUE-2334). -/
 
-/-- Two environments that give every type of a field list the same class give
+/-- Two environments that give every type of a field list the same qualifier give
 that list the same §3 join (helper). -/
 theorem joinFold_congr {D D' : Decls} :
     ∀ (Ts : List Ty) (acc : Qual), (∀ T ∈ Ts, T.qual D = T.qual D') →
@@ -283,17 +283,17 @@ theorem payloadFold_congr {D D' : Decls} :
       simp only [List.foldl_cons, hhead]
       exact payloadFold_congr Tss _ (fun Ts' hm => h Ts' (List.mem_cons_of_mem _ hm))
 
-/-- **§3's class assignment has exactly one solution** (`3.0:5`, `6.3:19`).
+/-- **§3's qualifier assignment has exactly one solution** (`3.0:5`, `6.3:19`).
 Two declaration environments of the same *shapes* — the same number of struct
 and of enum declarations, the same attribute and field list at every struct
 index, the same variant payloads at every enum index — that each satisfy
-`WfDecls` assign the same class to **every** type: every struct, every enum,
-and every scalar. So recording `class(S)`/`class(E)` in the declaration
+`WfDecls` assign the same qualifier to **every** type: every struct, every enum,
+and every scalar. So recording `qual(S)`/`qual(E)` in the declaration
 (`Syntax.lean`) records a determined value rather than a free parameter, and a
 `checkProgram = true` verdict is a verdict about the declarations the compiler
-would compute the same classes for.
+would compute the same qualifiers for.
 
-The theorem takes no hypothesis about the other layer's classes, which is what
+The theorem takes no hypothesis about the other layer's qualifiers, which is what
 `3.0:5`'s joint well-foundedness buys: the induction is over the by-value
 "contains" relation rather than over a declaration index, so a field naming an
 enum and a payload naming a struct are the same step. `dtor` does not appear,
@@ -374,7 +374,7 @@ theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
             rw [(hwf.enums e ed hd).classIsJoin, (hwf'.enums e ed' hd').classIsJoin, hjoin]
   exact fun T => Ty.qual_congr_tyNames T (fun d _ => key d)
 
-/-- **§3's class assignment for the struct layer has one solution**, the
+/-- **§3's qualifier assignment for the struct layer has one solution**, the
 projection of `class_unique` §3's own sentence asks for. It needs the enum
 layer's shapes as well as the struct layer's, because a field may name an enum
 — that is the mutual recursion `3.0:5` grounds, not a weakness of the
@@ -390,9 +390,9 @@ theorem struct_class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
     ∀ s, D.classOf s = D'.classOf s :=
   fun s => class_unique hwf hwf' hslen helen hsshape heshape (.struct s)
 
-/-- **§3's class assignment for the enum layer has one solution** (`6.3:19`),
+/-- **§3's qualifier assignment for the enum layer has one solution** (`6.3:19`),
 the other projection of `class_unique`. Simpler than the struct one in its own
-layer — an enum records no attribute, so its class *is* the payload join — and
+layer — an enum records no attribute, so its qualifier *is* the payload join — and
 mutual in the same way: a payload may name a struct. -/
 theorem enum_class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
     (hslen : D.structs.length = D'.structs.length)
@@ -463,14 +463,14 @@ extend one incoming context and `Typed.skel_preserved` keeps their skeletons
 equal.
 
 **Associativity.** `OwnSt.join_assoc` holds of states that are shapes of their
-type (`OwnSt.wf`) under §3's class assignment for the struct layer
+type (`OwnSt.wf`) under §3's qualifier assignment for the struct layer
 (`WfStructs`), and `Entry.join_assoc`/`Ctx.join_assoc` lift it the same way.
 Both hypotheses are needed, and `Examples.lean` pins a counterexample to each.
 Drop `OwnSt.wf` and `.fields` at a scalar type is a state no rule can write:
 `ownedJoinable` refuses it while `residualLinear` sees nothing in it, so at `int`
 the two associations of `MovedOut`, `Owned`, `fields [Owned]` are `MovedOut`
 and ill-formed respectively. Drop `WfStructs` and a declaration whose recorded
-class is `Affine` over a `Linear` field separates the two associations of
+qualifier is `Affine` over a `Linear` field separates the two associations of
 `MovedOut`, `Owned`, `fields [MovedOut]` the same way — which is the
 declaration `checkStructs` rejects, so the premise is one a well-formed program
 already carries.
@@ -550,7 +550,7 @@ theorem Ctx.join_comm {D : Decls} : ∀ (Γ₁ Γ₂ : Ctx), Γ₁.skel = Γ₂.
       simp only [Ctx.skel, List.map_cons, List.cons.injEq] at h
       simp only [Ctx.join, Entry.join_comm h.1, Ctx.join_comm as bs h.2]
 
-/-- §3's class of an array type reaches `Linear` exactly through a nonempty
+/-- §3's qualifier of an array type reaches `Linear` exactly through a nonempty
 array of a `Linear` element type — `Ty.qual`'s own four-line table read as the
 biconditional the join proofs need (`3.8:74`; the zero-length reading is
 RUE-526's) (helper). -/
@@ -560,14 +560,14 @@ theorem Ty.array_qual_linear (D : Decls) (T : Ty) (n : Nat) :
 
 /-- The same fact in the shape §5.5's array clauses use it: an array node's slot
 types are `List.replicate n T`, so asking whether any slot carries a linear
-value is asking `class([T; n]) = Linear` (helper). -/
+value is asking `qual([T; n]) = Linear` (helper). -/
 theorem Ty.any_replicate_qual_linear (D : Decls) (T : Ty) (n : Nat) :
     ((List.replicate n T).any fun U => decide (U.qual D = .linear))
       = decide ((Ty.array T n).qual D = .linear) := by
   simp [List.any_replicate, Ty.array_qual_linear]
 
 mutual
-/-- **Residue is only ever found where §3's class puts it.** §5.6's
+/-- **Residue is only ever found where §3's qualifier puts it.** §5.6's
 `residual-linear` is read on the state, not on the type, but it can report an
 obligation only at a path whose type carries one, so a state with residue is a
 state of a `Linear` type (`3.8:58`, through `struct_carriesLinear_iff`). This
@@ -664,7 +664,7 @@ end
 
 mutual
 /-- **A residue-free state answers `ownedJoinable` exactly as `MovedOut` does**:
-joining it with a wholly `Owned` arm is admissible exactly when `class(T)` is
+joining it with a wholly `Owned` arm is admissible exactly when `qual(T)` is
 not `Linear`, which is the same test §5.5 applies at the `MovedOut`/`Owned`
 disagreement (`3.8:50`). This is the step that needs `OwnSt.wf`: at a type with
 no slots, `.fields` is a state `ownedJoinable` refuses and `residualLinear`
@@ -743,7 +743,7 @@ theorem OwnSt.join_owned_right (D : Decls) (a : OwnSt) (T : Ty) :
 /-- The one clause the two readings share: joining `MovedOut` with a wholly
 `Owned` arm is admissible exactly when the arm has no residue, because
 `ownedJoinable` at `MovedOut` and `residualLinear` at `Owned` are complementary
-tests of `class(T)` (helper). -/
+tests of `qual(T)` (helper). -/
 theorem OwnSt.join_movedOut_owned_eq (D : Decls) (T : Ty) :
     (if ownedJoinable D .movedOut T then some OwnSt.movedOut else none)
       = if residualLinear D .owned T then none else some OwnSt.movedOut := by
@@ -837,7 +837,7 @@ theorem OwnSt.joinList_cons_bind_right (D : Decls) (a b c : OwnSt) (as bs cs : L
       | some rest =>
           simp [OwnSt.joinList, hbc, hl] <;> rfl
 
-/-- §5.6's residue of a state a wholly `Owned` arm may absorb *is* `class(T) =
+/-- §5.6's residue of a state a wholly `Owned` arm may absorb *is* `qual(T) =
 Linear`: the two halves above, taken together (helper). -/
 theorem residualLinear_of_ownedJoinable {D : Decls} (hD : WfStructs D) (t : OwnSt) (T : Ty)
     (h : ownedJoinable D t T = true) :
@@ -1246,7 +1246,7 @@ theorem OwnSt.wf_fields_array (D : Decls) (T' : Ty) (n : Nat) (xs : List OwnSt) 
 
 mutual
 /-- **The §5.5 join is associative**, at one path and its subtree, over states
-that are shapes of their type (`OwnSt.wf`) and under §3's class assignment for
+that are shapes of their type (`OwnSt.wf`) and under §3's qualifier assignment for
 the struct layer (`WfStructs`, of which only the class-is-join clause is read).
 Neither premise can be dropped: the section docstring above says which
 counterexample each rules out; `WfStructs` is one a

@@ -1265,7 +1265,7 @@ theorem evalFintrin_scalar {M k a v} (h : evalFintrin M k a = .val v) : v.scalar
   unfold evalFintrin at h
   split at h <;> (repeat' split at h) <;> first | (cases h; trivial) | cases h
 
-/-- A value's stored image has the value's class (helper). -/
+/-- A value's stored image has the value's qualifier (helper). -/
 theorem Contents.qual_ofVal (D : Decls) (v : Val) : (Contents.ofVal v).qual D = v.qual D := by
   have h : ∀ vs : List Val, (Contents.ofVals vs).length = vs.length := by
     intro vs; induction vs <;> simp_all [Contents.ofVals]

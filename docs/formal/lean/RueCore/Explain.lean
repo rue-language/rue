@@ -572,7 +572,7 @@ def indexNotInt (T : Ty) : String :=
 
 /-- §4.2's `Untrackable(OrdinaryDynamic)` plan has a successful rule only at a
 `Copy` leaf type: (Use-Untrackable-Dynamic-Copy) §5.1, and "there is no
-successful static rule … when `class(T) ∈ {Affine,Linear}`" (E0904). The leaf
+successful static rule … when `qual(T) ∈ {Affine,Linear}`" (E0904). The leaf
 is the element itself or a place below it (`a[i]`, `a[i].x0`). This is about a
 dynamic-index **read**, which is a use; the write's own refusal is
 `linearOverwrite` below, because an assignment destination is not one. -/

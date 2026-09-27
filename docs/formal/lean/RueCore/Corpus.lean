@@ -516,7 +516,7 @@ def cases : List Case := [
     prog := Examples.enumProg Examples.tI64 Examples.enumDropUnmatched
     },
   { name := "enum_match_one_arm",
-    description := "A linear-payload enum consumed by a match in one arm of an if only: class(E) is the payload join over every variant, so the Owned side is residual and the §5.5 join rejects it (E0443); the executed path runs.",
+    description := "A linear-payload enum consumed by a match in one arm of an if only: qual(E) is the payload join over every variant, so the Owned side is residual and the §5.5 join rejects it (E0443); the executed path runs.",
     rules := ["(Match) §5.5", "(If) §5.5 join", "3.8:50", "6.3:19"],
     prog := Examples.enumProg Examples.tI64 Examples.enumMatchOneArm
     },
@@ -556,7 +556,7 @@ def cases : List Case := [
     prog := Examples.enumPayloadMovedIntoCall
     },
   { name := "enum_arm_moves_affine_drops_linear",
-    description := "One arm, two payload components of different classes: the affine one is moved into an outer mut binding, whose overwrite-drop runs first, and the linear one is @dropped, which discharges class(E).",
+    description := "One arm, two payload components of different qualifiers: the affine one is moved into an outer mut binding, whose overwrite-drop runs first, and the linear one is @dropped, which discharges qual(E).",
     rules := ["(Match) §5.5", "(Assign) §5.2", "(@Drop) §5.3", "§6.8 overwrite-drop", "6.3:19"],
     prog := Examples.enumProg Examples.tI64 Examples.enumArmMovesAffineDropsLinear
     },
@@ -664,7 +664,7 @@ def cases : List Case := [
     rules := ["(Float-Arith) §5.8", "(D-Float-Arith) §6.4", "3.12:21"],
     prog := Examples.scalarProg Examples.tF64 Examples.floatArith },
   { name := "float_copy_class",
-    description := "A float binding used twice: class(float(w)) = Copy, so the second use copies and no drop is owed.",
+    description := "A float binding used twice: qual(float(w)) = Copy, so the second use copies and no drop is owed.",
     rules := ["(Use-Copy) §5.1", "3.12:2a", "§3"],
     prog := Examples.scalarProg Examples.tF64 Examples.floatCopy },
   { name := "float_div_by_zero",
@@ -1017,11 +1017,11 @@ def cases : List Case := [
     prog := Examples.prog Examples.tI64 Examples.arrayRepeatAffine },
   { name := "copy_struct_dtor",
     description := "A @copy struct declaring a destructor, never instantiated by main: rule(id=\"3.9:31\") excludes the declaration itself (the compiler: E0457, since a Copy value is duplicated implicitly and running its destructor once would misrepresent every other copy as still holding the resource). checkDecls checks every declaration whether or not anything refers to it, so checkProgram refuses the program before main runs at all — there is no dynamics to compare. Seeded by the definition mutation analysis (RUE-2486): mutant `copy-struct-dtor`.",
-    rules := ["§3 class and destructor well-formedness", "rule(id=\"3.9:31\")"],
+    rules := ["§3 qualifier and destructor well-formedness", "rule(id=\"3.9:31\")"],
     prog := Examples.copyStructDtorProgram },
   { name := "dtor_linear_field",
     description := "A destructor-bearing struct whose field carries a linear value, never instantiated by main: rule(id=\"3.9:44\") excludes the declaration itself (the compiler: E0462, since the destructor cannot consume the field and nothing else may move a field out of a destructor-bearing value, so the field's obligation could only be met by drop glue that runs after the destructor). checkDecls refuses the declaration on its own, so there is no dynamics to compare. Seeded by the definition mutation analysis (RUE-2486): mutant `dtor-linear-field`.",
-    rules := ["§3 class and destructor well-formedness", "rule(id=\"3.9:44\")"],
+    rules := ["§3 qualifier and destructor well-formedness", "rule(id=\"3.9:44\")"],
     prog := Examples.dtorLinearFieldProgram },
   { name := "copy_monitor_off",
     description := "The one shape §7's no-double-free conservation law needs excluded: an owned, destructor-bearing S1 value placed under a Copy S0's field, by an ill-typed program the checker already refuses for an unrelated reason (the field's declared type is i64, not S1). No well-typed program can reach this state, so this is the machine's own last line of defense: eval refuses to build the value with ownedUnderCopy, where Step (which has no monitor) would run S1's destructor on the same identity twice. Seeded by the definition mutation analysis (RUE-2486): mutant `copy-monitor-off`.",

@@ -11,7 +11,7 @@ public import RueCore.Soundness.Defs
 
 The central invariant is `StoreTyping D Γ ρ H` — "Σ faithfully tracks the store's
 initialization", the load-bearing clause of §7's no-use-after-move bullet. `D`
-is the program's struct declarations, which is what a type's class (§3) and a
+is the program's struct declarations, which is what a type's qualifier (§3) and a
 value's drop (§6.11) are read against; every predicate here carries it.
 
 With Σ keyed by path (`OwnSt`, `Statics.lean`) and a cell holding a tree with
@@ -150,7 +150,7 @@ theorem HasTys.length_eq : ∀ {D vs Ts}, HasTys D vs Ts → vs.length = Ts.leng
   | _, _, _, .nil => rfl
   | _, _, _, .cons _ h => by simp [HasTys.length_eq h]
 
-/-- A well-typed value has its type's class (helper). -/
+/-- A well-typed value has its type's qualifier (helper). -/
 theorem HasTy.qual_eq {D v T} (h : HasTy D v T) : v.qual D = T.qual D := by
   cases h with
   | array hvs =>
@@ -384,7 +384,7 @@ theorem ContentsTys.toVals {D cs Ts} (h : ContentsTys D cs Ts)
       exact ⟨v :: vs, by simp only [Contents.toVals, hv, hvs], .cons htv htvs⟩
 end
 
-/-- A hole-free well-typed contents has its type's class, which is what the
+/-- A hole-free well-typed contents has its type's qualifier, which is what the
 `Copy` test of (D-Use-Copy) and of `dropCell` reads (helper). -/
 theorem ContentsTy.qual_eq {D c T} (h : ContentsTy D c T) (hf : c.noMovedOut = true) :
     c.qual D = T.qual D := by
@@ -402,17 +402,17 @@ theorem ContentsTy.qual_eq {D c T} (h : ContentsTy D c T) (hf : c.noMovedOut = t
 /-! ## Copy closure: a `Copy` type holds nothing owned
 
 The machine's copy-closure monitor (`Contents.copyContained`, `Dynamics.lean`)
-refuses an aggregate whose class is `Copy` but whose members are not. §3 makes
+refuses an aggregate whose qualifier is `Copy` but whose members are not. §3 makes
 that a fact about types — `3.8:18` requires every field of a `@copy` struct to
 be `Copy`, `6.3:19` makes an enum `Copy` only when every payload component is,
 and §3's array lift makes `[T; n]` `Copy` only when `T` is — so well-typed
 contents is copy-closed and the monitor never fires on a checked program. -/
 
-/-- A class of rank `0` is `Copy` (helper). -/
+/-- A qualifier of rank `0` is `Copy` (helper). -/
 theorem Qual.eq_copy_of_rank {m : Qual} (h : m.rank = 0) : m = .copy := by
   cases m <;> simp_all [Qual.rank]
 
-/-- **A `Copy` struct's fields are `Copy`** (`3.8:18`): the class is the
+/-- **A `Copy` struct's fields are `Copy`** (`3.8:18`): the qualifier is the
 attribute's lift of the field join, only `@copy` lifts to `Copy`, and a
 well-formed `@copy` declaration's join is already `Copy` (helper). -/
 theorem StructDecl.Wf.field_copy {D : Decls} {sd : StructDecl} (h : sd.Wf D)
@@ -433,7 +433,7 @@ theorem StructDecl.Wf.field_copy {D : Decls} {sd : StructDecl} (h : sd.Wf D)
   have : (sd.baseOf D).rank = 0 := by rw [hbase]; rfl
   exact Qual.eq_copy_of_rank (by unfold StructDecl.baseOf at this; omega)
 
-/-- **A `Copy` enum's payloads are `Copy`** (`6.3:19`): the class is the join
+/-- **A `Copy` enum's payloads are `Copy`** (`6.3:19`): the qualifier is the join
 over every payload component of every variant (helper). -/
 theorem EnumDecl.Wf.payload_copy {D : Decls} {ed : EnumDecl} (h : ed.Wf D)
     (hcls : ed.cls = .copy) : ∀ Ts ∈ ed.variants, ∀ T ∈ Ts, T.qual D = .copy := by
@@ -668,7 +668,7 @@ theorem dropContentsList_order {D : Decls} {c : Contents} {cs : List Contents}
 
 mutual
 /-- **A value of a non-linear type carries no linear residue.** §3's join makes
-a struct whose class is not `Linear` one with no linear field at any depth
+a struct whose qualifier is not `Linear` one with no linear field at any depth
 (`StructDecl.Wf.field_not_linear`), so the machine's monitor — which walks the
 stored contents looking for a live declared-`linear` struct — finds none. A
 `⊘` contributes nothing whatever its type, so the statement needs no
@@ -703,8 +703,8 @@ theorem ContentsTy.residualLinear_false {D : Decls} {c : Contents} {T : Ty}
         (hw.payload_not_linear hcls Ts (List.mem_of_getElem? hv))
   | @array T n i cs hcs =>
       -- An array carries no obligation of its own, so the question is whether
-      -- an **element** does. It cannot: `class([T; n])` reaches `Linear`
-      -- exactly when `class(T)` does and `n > 0` (§3), so a non-linear array
+      -- an **element** does. It cannot: `qual([T; n])` reaches `Linear`
+      -- exactly when `qual(T)` does and `n > 0` (§3), so a non-linear array
       -- type with an element at all has a non-linear element type — and an
       -- array with no elements has nothing to ask about (`3.8:74`).
       refine ContentsTys.residualLinearList_false hwf hcs ?_
@@ -950,7 +950,7 @@ An **enum** binding needs no clause of its own, and that is the content of
 `owned` or `movedOut` and never `fields`, because no `Place` step reaches a
 payload, so the first two clauses — which are stated at *every* type — are the
 whole of the relation there. The `movedOut` clause's residual condition is where
-the two sides' readings differ: Σ's is `class(E) = Linear` over every variant
+the two sides' readings differ: Σ's is `qual(E) = Linear` over every variant
 while the store's is the active payload's (`Contents.residualLinear`), and
 `ContentsTy.residualLinear_false` is the direction the proof consumes.
 -/
@@ -1120,7 +1120,7 @@ of §6.11's own, in the traversal's order.
 -/
 
 /-- The residue `split` exposes is droppable: every retained subtree is well
-typed at a type whose class is not `Linear`. This is §5.1's
+typed at a type whose qualifier is not `Linear`. This is §5.1's
 `¬ linear-residue(S, π_s)` premise, read on the store side — and it is exactly
 what `dropResidue`'s monitor asks for (helper). -/
 def ResidueOk (D : Decls) (rs : List Contents) : Prop :=
@@ -1316,7 +1316,7 @@ theorem ContentsOwnTyping.ne_movedOut {D c t T} (h : ContentsOwnTyping D c t T)
   | fields _ _ => simp
   | elems _ => simp
 
-/-- A matched node whose state is `Owned` has its type's class, which is what
+/-- A matched node whose state is `Owned` has its type's qualifier, which is what
 `dropCell`'s `Copy` test reads (helper). -/
 theorem ContentsOwnTyping.qual_eq {D c t T} (h : ContentsOwnTyping D c t T)
     (ho : t.isOwned = true) : c.qual D = T.qual D := by
@@ -3398,7 +3398,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
                 obtain ⟨leaf, hrl, hleaf⟩ :=
                   ContentsOwnTyping.getAt ρ hso (OwnSt.get_owned ρ) hρty
                 obtain ⟨v, hv, htyv⟩ := hleaf.toVal rfl
-                -- (D-Use-Untrackable-Dynamic-Copy)'s `class(T) = Copy`, which
+                -- (D-Use-Untrackable-Dynamic-Copy)'s `qual(T) = Copy`, which
                 -- the machine checks on the value (RUE-2400): the rule's own
                 -- premise, carried to `v` by `HasTy.qual_eq`.
                 simp only [hdp, hrl, hv, if_pos (htyv.qual_eq.trans hcopy)]
@@ -3527,7 +3527,7 @@ theorem soundness (M : FloatLaws) {P : Program} (hwf : WfProgram P) :
           -- **(@Drop) §5.3 at a declared plan**, whose dynamics is §6.3's
           -- destructure followed by §6.11 on the selected leaf: the residue's
           -- events come first and the leaf's after them (probe d6c), and the
-          -- consumed place `ℓ@π_d` becomes `⊘` whatever the leaf's class.
+          -- consumed place `ℓ@π_d` becomes `⊘` whatever the leaf's qualifier.
           obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm.store.lookup hget
           obtain ⟨cc, rfl, hmm⟩ := hcm
           obtain ⟨hsplit, _⟩ := declaredPrefix_split P.decls en.ty pl.path πd πs hplan
@@ -4303,7 +4303,7 @@ calculus, the second is the calculus doing what it says.
   call's argument list, a struct literal's initializers, an array literal's
   elements — and an assignment's right-hand side while the target's indices
   run after it (`5.2:14`). At the right-hand side only the affine half
-  applies: (Assign)'s leaf premise `class(T) ≠ Linear` keeps the abandoned
+  applies: (Assign)'s leaf premise `qual(T) ≠ Linear` keeps the abandoned
   value from being linear, so `no_linear_discard` is not affected there. That
   edge is the calculus as written — §6.9's and §6.10's unwinding
   rules walk only σ, and §5.3's strict-context bottom rule (`Strict-Bottom`

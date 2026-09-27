@@ -23,7 +23,7 @@ and the entry point takes no parameters. Its soundness lemma produces the
 `ProgramTyped` hypothesis `Soundness.lean`'s program theorems ask for.
 
 `checkDecls` is what makes `Ty.qual`'s lookup honest, in three parts. A
-declaration *records* `class(S)`, and `checkStructs` is the equation §3 writes
+declaration *records* `qual(S)`, and `checkStructs` is the equation §3 writes
 for it, together with `3.8:18`/`3.9:31`'s `@copy` restriction and `3.9:44`'s
 destructor restriction; `checkEnums` is the enum layer's one equation, the
 payload join over every variant (`6.3:19`). What makes either equation a
@@ -1054,7 +1054,7 @@ theorem checkFn_sound {P : Program} {fd : FnDef} (h : checkFn P fd = true) : WfF
     simpa using hnl
   · exact absurd h (by simp)
 
-/-- Every `checkStructDecl` acceptance is §3's class assignment for that
+/-- Every `checkStructDecl` acceptance is §3's qualifier assignment for that
 declaration. -/
 theorem checkStructDecl_sound {D : Decls} {sd : StructDecl}
     (h : checkStructDecl D sd = true) : sd.Wf D := by
@@ -1072,7 +1072,7 @@ theorem checkStructDecl_sound {D : Decls} {sd : StructDecl}
       decide_eq_false_iff_not] at hdtor
     exact hdtor
 
-/-- Every `checkStructs` acceptance is §3's class assignment for the whole
+/-- Every `checkStructs` acceptance is §3's qualifier assignment for the whole
 environment (`WfStructs`). -/
 theorem checkStructs_sound {D : Decls} (h : checkStructs D = true) : WfStructs D := by
   intro s sd hget
@@ -1080,7 +1080,7 @@ theorem checkStructs_sound {D : Decls} (h : checkStructs D = true) : WfStructs D
   obtain ⟨hlt, hs⟩ := List.getElem?_eq_some_iff.mp hget
   exact checkStructDecl_sound (h sd (hs ▸ List.getElem_mem hlt))
 
-/-- Every `checkEnumDecl` acceptance is §3's class assignment for that
+/-- Every `checkEnumDecl` acceptance is §3's qualifier assignment for that
 declaration (`6.3:19`). -/
 theorem checkEnumDecl_sound {D : Decls} {ed : EnumDecl}
     (h : checkEnumDecl D ed = true) : ed.Wf D := by
@@ -1088,7 +1088,7 @@ theorem checkEnumDecl_sound {D : Decls} {ed : EnumDecl}
   simp only [decide_eq_true_eq] at h
   exact ⟨h⟩
 
-/-- Every `checkEnums` acceptance is §3's class assignment for the whole enum
+/-- Every `checkEnums` acceptance is §3's qualifier assignment for the whole enum
 environment (`WfEnums`). -/
 theorem checkEnums_sound {D : Decls} (h : checkEnums D = true) : WfEnums D := by
   intro e ed hget
@@ -1160,7 +1160,7 @@ theorem Decls.acc_of_empty {D : Decls} {d : TyName} (h : D.byValue d = []) :
 /-- **Every `checkNoCycle` acceptance is `3.0:5`** (`WfByValueEdge`): the by-value
 "contains" relation over the declarations is well-founded, so no struct or enum
 contains itself by value through any cycle of fields and payloads. This is the
-premise `class_unique` turns into "§3's class assignment has one solution". -/
+premise `class_unique` turns into "§3's qualifier assignment has one solution". -/
 theorem checkNoCycle_sound {D : Decls} (h : checkNoCycle D = true) : WfByValueEdge D := by
   have key : ∀ (l : List Bool) (i : Nat) (b : Bool), l.all id = true → l[i]? = some b →
       b = true := by
@@ -1196,7 +1196,7 @@ theorem checkNoCycle_sound {D : Decls} (h : checkNoCycle D = true) : WfByValueEd
           exact key _ e _ he hb
 
 /-- Every `checkDecls` acceptance is a well-formed declaration environment:
-§3's class assignment in both layers and `3.0:5`'s acyclicity. -/
+§3's qualifier assignment in both layers and `3.0:5`'s acyclicity. -/
 theorem checkDecls_sound {D : Decls} (h : checkDecls D = true) : WfDecls D := by
   simp only [checkDecls, Bool.and_eq_true] at h
   exact ⟨checkNoCycle_sound h.2, checkStructs_sound h.1.1, checkEnums_sound h.1.2⟩
