@@ -687,7 +687,7 @@ theorem matchConsume_exact {D : Decls} {e k i : Nat} {vs : List Val}
     rw [if_pos hc] at h
     simp [Contents.allCopyList_own h, Contents.own, hc, freedIds]
   · rename_i hc
-    simp [freedIds, Event.freed, Contents.own, hc, Contents.ownList_holes, List.count_cons]
+    simp [freedIds, Event.freed, Contents.own, hc, Contents.ownList_movedOuts, List.count_cons]
 
 /-- A fresh aggregate owns exactly its members, apart from its own identity:
 a `Copy` node owns nothing, and — copy-closed — neither do its members
@@ -985,7 +985,7 @@ theorem evalArgs_exact {D : Decls} {ev : Store → Expr → EvalRes} {es : List 
 place owned, and the place holds `⊘` (helper). -/
 theorem Exact.move {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Contents} {π : List Nat}
     {v : Val} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c)) (hr : c.readAt π = .ok sub)
-    (hw : c.writeAt π .hole = some c') (hv : sub.toVal = some v) :
+    (hw : c.writeAt π .movedOut = some c') (hv : sub.toVal = some v) :
     Exact D H [] (.ok (H.set ℓ (.full c')) v []) := by
   have hccc := hcc ℓ c hc
   have hc' := Contents.writeAt_copyClosed π hccc rfl hw
@@ -1005,7 +1005,7 @@ theorem Exact.destructure {D : Decls} {H : Store} {ℓ : Nat} {c c' cd leaf : Co
     {πd πs : List Nat} {v : Val} {evs : List Event} (hcc : StoreCC D H)
     (hc : H[ℓ]? = some (.full c)) (hr : c.readAt πd = .ok cd)
     (hd : cd.destructure D ℓ πs = .ok (leaf, evs)) (hv : leaf.toVal = some v)
-    (hw : c.writeAt πd .hole = some c') :
+    (hw : c.writeAt πd .movedOut = some c') :
     Exact D H [] (.ok (H.set ℓ (.full c')) v evs) := by
   have hccc := hcc ℓ c hc
   have hcd := Contents.readAt_copyClosed πd hccc hr
@@ -1025,7 +1025,7 @@ becomes `⊘` (helper). -/
 theorem Exact.dropPlace {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Contents} {π : List Nat}
     {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
     (hr : c.readAt π = .ok sub) (hd : dropCell D ℓ sub = .ok evs)
-    (hw : c.writeAt π .hole = some c') :
+    (hw : c.writeAt π .movedOut = some c') :
     Exact D H [] (.ok (H.set ℓ (.full c')) .unit evs) := by
   have hccc := hcc ℓ c hc
   have hc' := Contents.writeAt_copyClosed π hccc rfl hw
@@ -1042,7 +1042,7 @@ theorem Exact.dropDeclared {D : Decls} {H : Store} {ℓ : Nat} {c c' cd leaf : C
     {πd πs : List Nat} {evs levs : List Event} (hcc : StoreCC D H)
     (hc : H[ℓ]? = some (.full c)) (hr : c.readAt πd = .ok cd)
     (hd : cd.destructure D ℓ πs = .ok (leaf, evs)) (hl : dropCell D ℓ leaf = .ok levs)
-    (hw : c.writeAt πd .hole = some c') :
+    (hw : c.writeAt πd .movedOut = some c') :
     Exact D H [] (.ok (H.set ℓ (.full c')) .unit (evs ++ levs)) := by
   have hccc := hcc ℓ c hc
   have hcd := Contents.readAt_copyClosed πd hccc hr
@@ -2757,7 +2757,7 @@ def s0x : Contents := .struct 0 0 [.int .w64 .signed 7]
 /-- The result of a frame pop that forgot its σ-walk: `g`'s parameter cell
 `ℓ2` still full, no drop, the destructor event alone (helper). -/
 def orphanResult : EvalRes :=
-  .ok [.dead, .full .hole, .full s0x] (.int .w64 .signed 0) [.dtor 0 s0x]
+  .ok [.dead, .full .movedOut, .full s0x] (.int .w64 .signed 0) [.dtor 0 s0x]
 
 /-- **An orphaned cell balances the ledger but breaks `Tidy`** (§6.9). At the
 typed configuration `g(x)` of a checked, `pendingSafe` program, the real run
@@ -2769,7 +2769,7 @@ theorem orphan_rejected (M : FloatModel) :
       (∃ Ω, Typed orphanProgram (.int .w64 .signed) lostCtx (.call 1 [.use (.var 0)])
         (.int .w64 .signed) Ω) ∧
       eval M.toFloatSig 100 orphanProgram lostStore lostActivation (.call 1 [.use (.var 0)])
-        = .ok [.dead, .full .hole, .dead] (.int .w64 .signed 0) [.drop 2 s0x, .dtor 0 s0x] ∧
+        = .ok [.dead, .full .movedOut, .dead] (.int .w64 .signed 0) [.drop 2 s0x, .dtor 0 s0x] ∧
       Tidy lostActivation lostStore
         (eval M.toFloatSig 100 orphanProgram lostStore lostActivation (.call 1 [.use (.var 0)])) ∧
       Exact lostDecls lostStore [] orphanResult ∧ ¬ Tidy lostActivation lostStore orphanResult := by

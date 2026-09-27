@@ -470,10 +470,10 @@ def cases : List Case := [
     rules := ["(Assign) §5.2", "3.8:55", "§6.8 overwrite-drop", "§6.11"],
     prog := Examples.prog Examples.tI64 Examples.reinitDeepPath
     },
-  { name := "overwrite_above_hole",
+  { name := "overwrite_above_moved_out",
     description := "The parent of a moved-out leaf overwritten whole: §6.8's overwrite-drop walks the old value with §6.11's hole-skip, so only the live sibling is destroyed at the assignment and the moved leaf is not dropped again (RUE-2319).",
     rules := ["(Assign) §5.2", "§6.8 overwrite-drop", "§6.11", "3.9:18"],
-    prog := Examples.prog Examples.tI64 Examples.overwriteAboveHole
+    prog := Examples.prog Examples.tI64 Examples.overwriteAboveMovedOut
     },
   { name := "linear_field_residue",
     description := "The RUE-1591 idiom at a path: consume exactly the linear field of an infectious carrier and let the non-linear residue drop — §5.6's obligation is keyed on the residual state, so the scope exit is legal.",

@@ -188,7 +188,7 @@ the proof that a program `check` accepts never reaches it. `@drop` at a
 declared plan makes the same commitment at the selected **leaf**: a `⊘` there
 refuses with `useAfterMove` rather than dropping nothing, because
 `Contents.mult ⊘ = .copy` would otherwise make the redex succeed in silence
-(`Examples.dropDeclaredHoleLeaf`).
+(`Examples.dropDeclaredMovedOutLeaf`).
 
 ## The bounds trap (§6.5, §6.12)
 
@@ -343,7 +343,7 @@ lets §6.11's walk and §6.3's navigation share one representation. An aggregate
 node keeps its value's identity, so a stored value and the value read back
 out of it are the same value. -/
 inductive Contents where
-  | hole
+  | movedOut
   | int (w : IntWidth) (s : Sign) (n : Int)
   | float (w : FloatWidth) (f : FloatDatum)
   | bool (b : Bool)
@@ -376,7 +376,7 @@ mutual
 which is the read §6.3 leaves stuck and §7's no-use-after-move bullet forbids
 (helper). -/
 def Contents.toVal : Contents → Option Val
-  | .hole => none
+  | .movedOut => none
   | .int w s n => some (.int w s n)
   | .float w f => some (.float w f)
   | .bool b => some (.bool b)
@@ -397,8 +397,8 @@ end
 /-- Whether a position holds §6.1's `⊘` — the test `@drop` makes before it
 runs a drop, so that dropping an already moved-out place is the refusal §7's
 no-use-after-move bullet forbids rather than a silent no-op (helper). -/
-def Contents.isHole : Contents → Bool
-  | .hole => true
+def Contents.isMovedOut : Contents → Bool
+  | .movedOut => true
   | .int _ _ _ | .float _ _ | .bool _ | .unit | .struct _ _ _ | .enum _ _ _ _
   | .array _ _ _ => false
 
@@ -408,13 +408,13 @@ def Contents.mult (D : Decls) : Contents → Mult
   | .struct s _ _ => D.classOf s
   | .enum e _ _ _ => D.enumClassOf e
   | .array T _ cs => Ty.mult D (.array T cs.length)
-  | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => .copy
+  | .movedOut | .int _ _ _ | .float _ _ | .bool _ | .unit => .copy
 
 mutual
 /-- Whether every node of a contents is `Copy` — a `⊘` and a scalar are, and an
 aggregate is when its own class is and each member is (helper). -/
 def Contents.allCopy (D : Decls) : Contents → Bool
-  | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => true
+  | .movedOut | .int _ _ _ | .float _ _ | .bool _ | .unit => true
   | .struct s _ cs => decide (D.classOf s = .copy) && Contents.allCopyList D cs
   | .enum e _ _ cs => decide (D.enumClassOf e = .copy) && Contents.allCopyList D cs
   | .array T _ cs =>
@@ -442,7 +442,7 @@ owner, and `soundness` proves a checked program never reaches the refusal
 value — and it is what makes `no_double_free`'s conservation law hold without
 a typing derivation (`Trace.lean`) (helper). -/
 def Contents.copyClosed (D : Decls) : Contents → Bool
-  | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => true
+  | .movedOut | .int _ _ _ | .float _ _ | .bool _ | .unit => true
   | .struct s _ cs =>
       if D.classOf s = .copy then Contents.allCopyList D cs else Contents.copyClosedList D cs
   | .enum e _ _ cs =>
@@ -477,7 +477,7 @@ tag either (`ContentsTy.residualLinear_false`, `Soundness.lean`). The gap is
 exactly probe e11, which the statics reject (E0406) and which this monitor would
 let run. -/
 def Contents.residualLinear (D : Decls) : Contents → Bool
-  | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => false
+  | .movedOut | .int _ _ _ | .float _ _ | .bool _ | .unit => false
   | .struct s _ cs =>
       (match D.structs[s]? with
        | some sd => sd.attr = .linear || Contents.residualLinearList D cs
@@ -516,7 +516,7 @@ def Contents.writeAt : Contents → List Nat → Contents → Option Contents
 
 /-- The store `H` (§6.1) holds one cell per binding allocation; the cell is
 live contents or the retired marker `†`. §6.1's whole-cell `⊘` is
-`full .hole` — a hole at the root of the tree, which is what a whole-place
+`full .movedOut` — a hole at the root of the tree, which is what a whole-place
 move writes. -/
 inductive Cell where
   | full (c : Contents)
@@ -629,7 +629,7 @@ step that is not a field of what is stored is a shape no well-typed program
 produces (helper). -/
 def Contents.readAt : Contents → List Nat → Except Refusal Contents
   | c, [] => .ok c
-  | .hole, _ :: _ => .error .useAfterMove
+  | .movedOut, _ :: _ => .error .useAfterMove
   | .struct _ _ cs, f :: π =>
       (match cs[f]? with
        | some c => Contents.readAt c π
@@ -739,7 +739,7 @@ def Contents.declaredLinear (D : Decls) : Contents → Bool
       (match D.structs[s]? with
        | some sd => sd.attr = .linear
        | none => false)
-  | .hole | .array _ _ _ | .int _ _ _ | .float _ _ | .bool _ | .unit
+  | .movedOut | .array _ _ _ | .int _ _ _ | .float _ _ | .bool _ | .unit
   | .enum _ _ _ _ => false
 
 /-- §6.3's use-plan annotation `μ`, recovered from the store: `some (π_d, π_s)`
@@ -774,7 +774,7 @@ def Contents.declaredPlan (D : Decls) : Contents → List Nat → Option (List N
             | some r => some (c :: r.1, r.2)
             | none => none)
        | none => none)
-  | .hole, _ :: _ => none
+  | .movedOut, _ :: _ => none
   | .int _ _ _, _ :: _ | .float _ _, _ :: _ | .bool _, _ :: _ | .unit, _ :: _
   | .enum _ _ _ _, _ :: _ => none
 
@@ -888,7 +888,7 @@ nothing to look it up for. Under `Typed` it is pinned anyway
 (`HasTy.enum_inv`). A payload already moved out by a `match` binding left the enum
 place `⊘` and is skipped by the `⊘` case above, never dropped twice. -/
 def dropContents (D : Decls) : Contents → Except Refusal (List Event)
-  | .hole => .ok []
+  | .movedOut => .ok []
   | .int _ _ _ => .ok []
   | .float _ _ => .ok []
   | .bool _ => .ok []
@@ -935,7 +935,7 @@ nothing, which the walk itself refuses instead —
 agree on every well-typed contents, and it is the closed form RUE-2237's
 "dropped exactly once" quantifies over. -/
 def dropEvents (D : Decls) : Contents → List Event
-  | .hole => []
+  | .movedOut => []
   | .int _ _ _ => []
   | .float _ _ => []
   | .bool _ => []
@@ -978,7 +978,7 @@ def Contents.splitResidue (D : Decls) :
   | c, [] => .ok (c, [])
   | .struct _ _ cs, f :: π => Contents.splitFields D cs f π
   | .array _ _ cs, c :: π => Contents.splitFields D cs c π
-  | .hole, _ :: _ => .error .useAfterMove
+  | .movedOut, _ :: _ => .error .useAfterMove
   | .int _ _ _, _ :: _ | .float _ _, _ :: _ | .bool _, _ :: _ | .unit, _ :: _
   | .enum _ _ _ _, _ :: _ => .error .typeConfusion
 
@@ -1045,17 +1045,17 @@ to the leaf's parent — with the leaf and every retained subtree replaced by
 handed on, the residue is dropped, and `ℓ@π_d` becomes `⊘`. It walks the path
 exactly as `splitResidue` does (helper). -/
 def Contents.pathOnly : Contents → List Nat → Contents
-  | _, [] => .hole
+  | _, [] => .movedOut
   | .struct s i cs, f :: π => .struct s i (Contents.pathOnlyFields cs f π)
   | .array T i cs, f :: π => .array T i (Contents.pathOnlyFields cs f π)
-  | _, _ :: _ => .hole
+  | _, _ :: _ => .movedOut
 
 /-- `pathOnly`'s member step: `⊘` at every unselected slot, the recursion at
 the selected one (helper). -/
 def Contents.pathOnlyFields : List Contents → Nat → List Nat → List Contents
   | [], _, _ => []
-  | c :: cs, 0, π => Contents.pathOnly c π :: cs.map (fun _ => .hole)
-  | _ :: cs, f + 1, π => .hole :: Contents.pathOnlyFields cs f π
+  | c :: cs, 0, π => Contents.pathOnly c π :: cs.map (fun _ => .movedOut)
+  | _ :: cs, f + 1, π => .movedOut :: Contents.pathOnlyFields cs f π
 end
 
 /-- **§6.3's `destructure(H, ℓ@π_d, π_s)`**, on the contents stored at the
@@ -1087,7 +1087,7 @@ node, its payload already bound to the arm's cells. The event names the node
 with every payload slot `⊘`. A `Copy` scrutinee was copied, not consumed, and
 its shell owns nothing, so nothing is recorded (helper). -/
 def matchConsume (D : Decls) (e k i : Nat) (vs : List Val) : List Event :=
-  if D.enumClassOf e = .copy then [] else [.consume (.enum e k i (vs.map fun _ => .hole))]
+  if D.enumClassOf e = .copy then [] else [.consume (.enum e k i (vs.map fun _ => .movedOut))]
 
 /-- `@dbg`'s operand domain: the values §6.12's rendering is defined on —
 an integer, a float or a `bool` (§5.8's (Dbg) types the operand
@@ -1449,7 +1449,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
                  match leaf.toVal with
                  | none => .refused .useAfterMove
                  | some v =>
-                   match c.writeAt πd .hole with
+                   match c.writeAt πd .movedOut with
                    | none => .refused .typeConfusion
                    | some c' => .ok (H.set ℓ (.full c')) v evs)
           | none =>
@@ -1461,7 +1461,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
               | some v =>
                   if v.mult P.decls = .copy then .ok H v []
                   else
-                    match c.writeAt p.path .hole with
+                    match c.writeAt p.path .movedOut with
                     | none => .refused .typeConfusion
                     | some c' => .ok (H.set ℓ (.full c')) v []
   | fuel + 1, P, H, φ, .binop op e₁ e₂ =>
@@ -1678,7 +1678,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- guard `dropCell` would report `.ok []` and the redex would complete in
       -- silence. Unreachable for a checked program — `fully-owned(Σ, d)` makes
       -- the whole of `d` hole-free — which is why `soundness`'s `dropDeclared`
-      -- case discharges it from `destructure_ok`'s `leaf.holeFree`. Otherwise
+      -- case discharges it from `destructure_ok`'s `leaf.noMovedOut`. Otherwise
       -- it runs the drop of whatever the sub-position holds — the walk skips
       -- every already-`⊘` sub-place — and writes `⊘` back at that position,
       -- which suppresses the later scope-exit drop through it.
@@ -1697,24 +1697,24 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
                match cd.destructure P.decls ℓ πs with
                | .error w => .refused w
                | .ok (leaf, evs) =>
-                 if leaf.isHole then .refused .useAfterMove else
+                 if leaf.isMovedOut then .refused .useAfterMove else
                  match dropCell P.decls ℓ leaf with
                  | .error w => .refused w
                  | .ok levs =>
-                   match c.writeAt πd .hole with
+                   match c.writeAt πd .movedOut with
                    | none => .refused .typeConfusion
                    | some c' => .ok (H.set ℓ (.full c')) .unit (evs ++ levs))
           | none =>
             match c.readAt p.path with
             | .error w => .refused w
             | .ok sub =>
-              if sub.isHole then .refused .useAfterMove else
+              if sub.isMovedOut then .refused .useAfterMove else
               match dropCell P.decls ℓ sub with
               | .error w => .refused w
               | .ok evs =>
                   if sub.mult P.decls = .copy then .ok H .unit []
                   else
-                    match c.writeAt p.path .hole with
+                    match c.writeAt p.path .movedOut with
                     | none => .refused .typeConfusion
                     | some c' => .ok (H.set ℓ (.full c')) .unit evs
   | fuel + 1, P, H, φ, .letIn _m e₁ e₂ =>

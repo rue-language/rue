@@ -390,7 +390,7 @@ theorem plainUnwind_count {D : Decls} : ∀ {H H' : Store} {ls : List Nat} {evs 
 /-- (D-Use-Move) §6.3, at every identity (helper). -/
 theorem move_count {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Contents} {π : List Nat}
     {v : Val} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c)) (hr : c.readAt π = .ok sub)
-    (hw : c.writeAt π .hole = some c') (hv : sub.toVal = some v) (a : Nat) :
+    (hw : c.writeAt π .movedOut = some c') (hv : sub.toVal = some v) (a : Nat) :
     (storeOwn D H).count a = (storeOwn D (H.set ℓ (.full c'))).count a + (v.own D).count a := by
   have hccc := hcc ℓ c hc
   have hc' := Contents.writeAt_copyClosed π hccc rfl hw
@@ -406,7 +406,7 @@ theorem destructure_count {D : Decls} {H : Store} {ℓ : Nat} {c c' cd leaf : Co
     {πd πs : List Nat} {v : Val} {evs : List Event} (hcc : StoreCC D H)
     (hc : H[ℓ]? = some (.full c)) (hr : c.readAt πd = .ok cd)
     (hd : cd.destructure D ℓ πs = .ok (leaf, evs)) (hv : leaf.toVal = some v)
-    (hw : c.writeAt πd .hole = some c') (a : Nat) :
+    (hw : c.writeAt πd .movedOut = some c') (a : Nat) :
     (storeOwn D H).count a = (storeOwn D (H.set ℓ (.full c'))).count a + (v.own D).count a +
       (freedIds D evs).count a := by
   have hccc := hcc ℓ c hc
@@ -424,7 +424,7 @@ theorem destructure_count {D : Decls} {H : Store} {ℓ : Nat} {c c' cd leaf : Co
 theorem dropPlace_count {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Contents} {π : List Nat}
     {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
     (hr : c.readAt π = .ok sub) (hd : dropCell D ℓ sub = .ok evs)
-    (hw : c.writeAt π .hole = some c') (a : Nat) :
+    (hw : c.writeAt π .movedOut = some c') (a : Nat) :
     (storeOwn D H).count a = (storeOwn D (H.set ℓ (.full c'))).count a + (freedIds D evs).count a := by
   have hccc := hcc ℓ c hc
   have hc' := Contents.writeAt_copyClosed π hccc rfl hw
@@ -439,7 +439,7 @@ theorem dropDeclared_count {D : Decls} {H : Store} {ℓ : Nat} {c c' cd leaf : C
     {πd πs : List Nat} {evs levs : List Event} (hcc : StoreCC D H)
     (hc : H[ℓ]? = some (.full c)) (hr : c.readAt πd = .ok cd)
     (hd : cd.destructure D ℓ πs = .ok (leaf, evs)) (hl : dropCell D ℓ leaf = .ok levs)
-    (hw : c.writeAt πd .hole = some c') (a : Nat) :
+    (hw : c.writeAt πd .movedOut = some c') (a : Nat) :
     (storeOwn D H).count a =
       (storeOwn D (H.set ℓ (.full c'))).count a + (freedIds D (evs ++ levs)).count a := by
   have hccc := hcc ℓ c hc

@@ -397,8 +397,8 @@ MUTANTS = [
        E(SP, "            if v.mult P.decls = .copy then .next (.run H φ K (.ret v) tr)", "            if v.mult P.decls ≠ .linear then .next (.run H φ K (.ret v) tr)"),
        E(SP, "      v.mult P.decls = .copy →\n      Step M P (.run H φ K (.eval (.use p)) tr) (.run H φ K (.ret v) tr)",
          "      v.mult P.decls ≠ .linear →\n      Step M P (.run H φ K (.eval (.use p)) tr) (.run H φ K (.ret v) tr)"),
-       E(SP, "      v.mult P.decls ≠ .copy →\n      c.writeAt p.path .hole = some c' →\n      Step M P (.run H φ K (.eval (.use p)) tr)",
-         "      v.mult P.decls = .linear →\n      c.writeAt p.path .hole = some c' →\n      Step M P (.run H φ K (.eval (.use p)) tr)")],
+       E(SP, "      v.mult P.decls ≠ .copy →\n      c.writeAt p.path .movedOut = some c' →\n      Step M P (.run H φ K (.eval (.use p)) tr)",
+         "      v.mult P.decls = .linear →\n      c.writeAt p.path .movedOut = some c' →\n      Step M P (.run H φ K (.eval (.use p)) tr)")],
       "eval, Step and step: an affine use copies instead of leaving a hole"),
     M("step-usecopy-nondet", "§6.3", "(D-Use-Copy), Step only", "copy-check",
       [E(SP, "      v.mult P.decls = .copy →\n      Step M P (.run H φ K (.eval (.use p)) tr) (.run H φ K (.ret v) tr)",
@@ -500,7 +500,7 @@ MUTANTS = [
       [E(DY, "  if r.mult D = .copy then [] else [.drop ℓ r]", "  []")],
       "a destructure's residue drops are not marked"),
     M("match-consume-skip", "§6.6", "(D-Match) consume", "drop-skip",
-      [E(DY, "  if D.enumClassOf e = .copy then [] else [.consume (.enum e k i (vs.map fun _ => .hole))]", "  []")],
+      [E(DY, "  if D.enumClassOf e = .copy then [] else [.consume (.enum e k i (vs.map fun _ => .movedOut))]", "  []")],
       "a matched non-Copy enum's shell is not consumed"),
     M("leak-monitor-off", "§6.11", "linearLeak monitor", "monitor",
       [E(DY, "      if c.residualLinear D then .error .linearLeak", "      if false then .error .linearLeak"),
@@ -592,7 +592,7 @@ MUTANTS = [
     # unsatisfiable at any frame with an owned binding, so the theorems become vacuous there,
     # and only a witness that states `ActivationTyping` of such a frame can notice.
     M("contentsowntyping-owned-false", "§7", "ContentsOwnTyping.owned", "strengthen",
-      [E(SD, "  | owned {c T} : ContentsTy D c T → c.holeFree = true → ContentsOwnTyping D c .owned T",
+      [E(SD, "  | owned {c T} : ContentsTy D c T → c.noMovedOut = true → ContentsOwnTyping D c .owned T",
          "  | owned {c T} : ContentsTy D c T → False → ContentsOwnTyping D c .owned T")],
       "strengthen a hypothesis: no Owned path matches any contents, so no frame with an owned binding agrees with its store"),
 ]

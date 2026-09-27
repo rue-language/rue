@@ -1,5 +1,5 @@
 ════════════════════════════════════════════════════════════════════════════════
- overwrite_above_hole
+ overwrite_above_moved_out
 ════════════════════════════════════════════════════════════════════════════════
 The parent of a moved-out leaf overwritten whole: §6.8's overwrite-drop walks
 the old value with §6.11's hole-skip, so only the live sibling is destroyed at

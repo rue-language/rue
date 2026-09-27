@@ -469,12 +469,12 @@ theorem demo_returnInMatch_runs (M : FloatSig) :
     ∃ H, Steps M (demoProgram (.letIn false demoS
         (.«match» (.mkEnum 0 0 [demoS]) [.ret (demoI32 4), demoI32 0]))) Config.init
       (.run H { env := [], scope := [] } [] (.ret (.int .w32 .signed 4))
-        [.consume (.enum 0 0 3 [.hole]), .drop 4 (demoSc 2), .dtor 0 (demoSc 2),
+        [.consume (.enum 0 0 3 [.movedOut]), .drop 4 (demoSc 2), .dtor 0 (demoSc 2),
          .drop 1 (demoSc 0), .dtor 0 (demoSc 0)]) ∧
     run M (demoProgram (.letIn false demoS
         (.«match» (.mkEnum 0 0 [demoS]) [.ret (demoI32 4), demoI32 0]))) 100 =
       .ok H (.int .w32 .signed 4)
-        [.consume (.enum 0 0 3 [.hole]), .drop 4 (demoSc 2), .dtor 0 (demoSc 2),
+        [.consume (.enum 0 0 3 [.movedOut]), .drop 4 (demoSc 2), .dtor 0 (demoSc 2),
          .drop 1 (demoSc 0), .dtor 0 (demoSc 0)] :=
   ⟨_, stepN_steps (n := 100), rfl⟩
 

@@ -262,7 +262,7 @@ it has two rows.
 | environment; `ρ` | The map from each binding in scope to its cell and path | [FIELD §3][F3]: environment (Amin & Rompf §§2.1–2.2); `eval n ρ e` | `Env` | standard | 01 §2; 03 “Type safety”; lean/README “Generated programs”; GUIDE §1; BRIDGE-SENSITIVITY “Multi-function programs”; MUTATION “Method”; TOOLING intro; `Syntax` |
 | store; `H` | The map from allocation identities to their cells | [FIELD §3][F3]: store (Amin & Rompf §4.1) | `Store` | standard | 01 §2; 03 intro; README intro; lean/README “Generated programs”; GUIDE §2; BRIDGE-SENSITIVITY “Results”; `Syntax` |
 | cell; cell contents; contents; content | One storage slot, and what it holds: a value, a moved-out marker, or an aggregate of contents | none | `Cell`, `Contents` | ours, pending audit | 01 §2; 03 intro; README “Contents”; lean/README “The trusted-base lint”; GUIDE §1; BRIDGE-SENSITIVITY “Rule coverage”; MUTATION “What the proofs kill, and …”; `Float` |
-| hole (a moved-out cell); `⊘` | The contents of an uninitialized or moved-out cell | [FIELD §5][F5]: "hole" differs, partial; accepted: moved from, deinitialized, dead | `Contents.hole` | ours, pending audit | 01 §4.2; 03 intro; REDTEAM “Targets”; lean/README “What is mechanized”; GUIDE §1; MUTATION “The mutants”; TOOLING “What the review found”; `Syntax` |
+| hole (a moved-out cell); `⊘` | The contents of an uninitialized or moved-out cell | [FIELD §5][F5]: "hole" differs, partial; accepted: moved from, deinitialized, dead | `Contents.movedOut` | ours, pending audit | 01 §4.2; 03 intro; REDTEAM “Targets”; lean/README “What is mechanized”; GUIDE §1; MUTATION “The mutants”; TOOLING “What the review found”; `Syntax` |
 | scope record; scope records; `σ`; open scopes | Per frame, the list of cells each open scope must drop at its exit | none; FIELD §5 maps it to Rust's drop scope ([FIELD §5][F5]) | `Activation` | ours, pending audit | 01 §2; 03 intro; README “The extension rubric”; lean/README “Generated programs”; GUIDE §1; BRIDGE-SENSITIVITY “Distinct identities and two more …”; CHECKER-PROFILE “Why a rejected program still …”; `Float` |
 | scope helpers | The four frame operations that push, close and unwind scopes | none | `Activation.unwindScope`, `runAllScopeDrops` | ours, pending audit | 01 §6.1 |
 | unwind; unwinding; with drops | Leaving scopes on a `return` or `break`, running their drops in order | none fetched | `unwindLocs`, `Expr.unwinds` | ours, pending audit | 01 §2; 03 intro; lean/README “How to read this, with …”; GUIDE §2; BRIDGE-SENSITIVITY “§6 step rows”; MUTATION “What is mutated”; `Statics` |
@@ -753,7 +753,7 @@ documents rely on.
 | `Contents.ofVals` | `Dynamics` | `Contents.ofVal` over a list of fields or elements | helper | — |
 | `Contents.toVal` | `Dynamics` | The value a cell's contents denotes, or nothing when some position in it is moved out | helper | — |
 | `Contents.toVals` | `Dynamics` | `Contents.toVal` over a list of fields or elements | helper | — |
-| `Contents.isHole` | `Dynamics` | Whether a position holds the moved-out mark `⊘`; `@drop` tests it before dropping | helper | `Step` |
+| `Contents.isMovedOut` | `Dynamics` | Whether a position holds the moved-out mark `⊘`; `@drop` tests it before dropping | helper | `Step` |
 | `Contents.mult` | `Dynamics` | The class (§3) of cell contents: a moved-out position has nothing to drop, a struct has its declaration's class | helper | `Dynamics` |
 | `Contents.allCopy` | `Dynamics` | Whether every node of the contents is `Copy` | helper | — |
 | `Contents.allCopyList` | `Dynamics` | `Contents.allCopy` over a list | helper | — |
@@ -875,8 +875,8 @@ documents rely on.
 | `checkProgram` | `Checker.Defs` | Checks a whole program: its declarations, every function, and an entry point with no parameters | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | 03 “Linear values are consumed exactly …”; lean/README “Non-vacuity witnesses”; GUIDE §4; BRIDGE-SENSITIVITY “Never exercised”; MUTATION “Method”; CHECKER-PROFILE intro; `Checker.Defs` |
 | `HasTy` | `Soundness.Defs` | Value typing: a machine value has a type (integer ranges, struct fields against the declaration) | standard (FIELD §2: typing judgment `⊢ v : τ`) | REDTEAM “Targets”; lean/README “Sharpness counter-examples”; GUIDE “What the proof needs”; MUTATION “What is mutated”; `Statics` |
 | `HasTys` | `Soundness.Defs` | Value typing for a list, position by position | standard (FIELD §2: typing judgment `⊢ v : τ`) | — |
-| `Contents.holeFree` | `Soundness.Defs` | Whether a contents tree has no moved-out position | helper | — |
-| `Contents.holeFreeList` | `Soundness.Defs` | `Contents.holeFree` over a list | helper | — |
+| `Contents.noMovedOut` | `Soundness.Defs` | Whether a contents tree has no moved-out position | helper | — |
+| `Contents.noMovedOutList` | `Soundness.Defs` | `Contents.noMovedOut` over a list | helper | — |
 | `ContentsTy` | `Soundness.Defs` | Typing of cell contents, where a moved-out position is well typed at every type | ours, pending audit | lean/README “What is mechanized”; MUTATION “What is mutated”; `Soundness.Defs` |
 | `ContentsTys` | `Soundness.Defs` | `ContentsTy` position by position over fields, payloads or elements | ours, pending audit | — |
 | `ContentsOwnTyping` | `Soundness.Defs` | Node-by-node agreement between the ownership state for a path and what is stored there | ours, pending audit | 03 “Type safety”; lean/README “The main theorem”; GUIDE §3; MUTATION “What is mutated”; `Syntax` |

@@ -173,7 +173,7 @@ theorem Config.Stuck.no_step {M : FloatSig} {P : Program} {C C' : Config} {w : R
 theorem Contents.readAt_err : ∀ {c : Contents} {π : List Nat} {w : Refusal},
     c.readAt π = .error w → w.isStuckState = true
   | _, [], _, h => by simp [Contents.readAt] at h
-  | .hole, _ :: _, _, h => by simp [Contents.readAt] at h; subst h; rfl
+  | .movedOut, _ :: _, _, h => by simp [Contents.readAt] at h; subst h; rfl
   | .struct _ _ cs, f :: π, _, h => by
       simp only [Contents.readAt] at h
       split at h
@@ -197,7 +197,7 @@ theorem Contents.splitResidue_err (D : Decls) : ∀ {c : Contents} {π : List Na
       simp only [Contents.splitResidue] at h; exact Contents.splitFields_err D h
   | .array _ _ cs, f :: π, _, h => by
       simp only [Contents.splitResidue] at h; exact Contents.splitFields_err D h
-  | .hole, _ :: _, _, h => by simp [Contents.splitResidue] at h; subst h; rfl
+  | .movedOut, _ :: _, _, h => by simp [Contents.splitResidue] at h; subst h; rfl
   | .int _ _ _, _ :: _, _, h | .float _ _, _ :: _, _, h | .bool _, _ :: _, _, h
   | .unit, _ :: _, _, h | .enum _ _ _ _, _ :: _, _, h => by
       simp [Contents.splitResidue] at h; subst h; rfl
@@ -223,7 +223,7 @@ mutual
 /-- §6.11's `drop` refuses only with §6's stuck states (helper). -/
 theorem dropContents_err (D : Decls) : ∀ {c : Contents} {w : Refusal},
     dropContents D c = .error w → w.isStuckState = true
-  | .hole, _, h | .int _ _ _, _, h | .float _ _, _, h | .bool _, _, h | .unit, _, h => by
+  | .movedOut, _, h | .int _ _ _, _, h | .float _ _, _, h | .bool _, _, h | .unit, _, h => by
       simp [dropContents] at h
   | .struct s i cs, _, h => by
       simp only [dropContents] at h

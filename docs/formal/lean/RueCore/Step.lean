@@ -141,7 +141,7 @@ an `i32` or `⟨⟩`; (D-Panic)'s `panic: msg` line is not an event.
 On programs `check` rejects, `Step` follows §6 where `eval` does not:
 
 * `@drop` of a `⊘` place is §6.11's no-op (`drop(H, ⊘) = H`) in `Step`;
-  `eval` refuses it with `useAfterMove` (`Contents.isHole`).
+  `eval` refuses it with `useAfterMove` (`Contents.isMovedOut`).
 * An aggregate or an assignment that puts an owned value under a `Copy` node
   steps in `Step`; `eval` refuses it with `ownedUnderCopy`
   (`Contents.copyClosed`).
@@ -384,7 +384,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
       c.readAt πd = .ok cd →
       plainDestructure P.decls ℓ cd πs = .ok (leaf, evs) →
       leaf.toVal = some v →
-      c.writeAt πd .hole = some c' →
+      c.writeAt πd .movedOut = some c' →
       Step M P (.run H φ K (.eval (.use p)) tr)
         (.run (H.set ℓ (.full c')) φ K (.ret v) (tr ++ evs))
   /-- (D-Use-Copy) §6.3: an `Ordinary` use of a `Copy` place reads it and
@@ -405,7 +405,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
       c.readAt p.path = .ok sub →
       sub.toVal = some v →
       v.mult P.decls ≠ .copy →
-      c.writeAt p.path .hole = some c' →
+      c.writeAt p.path .movedOut = some c' →
       Step M P (.run H φ K (.eval (.use p)) tr)
         (.run (H.set ℓ (.full c')) φ K (.ret v) tr)
   -- ### §6.4: operators and intrinsics
@@ -677,7 +677,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
       c.readAt πd = .ok cd →
       plainDestructure P.decls ℓ cd πs = .ok (leaf, evs) →
       dropCell P.decls ℓ leaf = .ok levs →
-      c.writeAt πd .hole = some c' →
+      c.writeAt πd .movedOut = some c' →
       Step M P (.run H φ K (.eval (.drop p)) tr)
         (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ (evs ++ levs)))
   /-- §6.11's `@drop` of a `Copy` place: `⟨⟩`, the store unchanged. A `⊘`
@@ -697,7 +697,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
       c.readAt p.path = .ok sub →
       sub.mult P.decls ≠ .copy →
       dropCell P.decls ℓ sub = .ok evs →
-      c.writeAt p.path .hole = some c' →
+      c.writeAt p.path .movedOut = some c' →
       Step M P (.run H φ K (.eval (.drop p)) tr)
         (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ evs))
   -- ### §6.9: calls and `return`
@@ -791,7 +791,7 @@ def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : Lis
             match leaf.toVal with
             | none => .stuck .useAfterMove
             | some v =>
-              match c.writeAt πd .hole with
+              match c.writeAt πd .movedOut with
               | none => .stuck .typeConfusion
               | some c' => .next (.run (H.set ℓ (.full c')) φ K (.ret v) (tr ++ evs))
       | none =>
@@ -803,7 +803,7 @@ def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : Lis
           | some v =>
             if v.mult P.decls = .copy then .next (.run H φ K (.ret v) tr)
             else
-              match c.writeAt p.path .hole with
+              match c.writeAt p.path .movedOut with
               | none => .stuck .typeConfusion
               | some c' => .next (.run (H.set ℓ (.full c')) φ K (.ret v) tr)
   | .binop op e₁ e₂ => .next (.run H φ (.binopL op e₂ :: K) (.eval e₁) tr)
@@ -835,7 +835,7 @@ def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : Lis
             match dropCell P.decls ℓ leaf with
             | .error w => .stuck w
             | .ok levs =>
-              match c.writeAt πd .hole with
+              match c.writeAt πd .movedOut with
               | none => .stuck .typeConfusion
               | some c' =>
                 .next (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ (evs ++ levs)))
@@ -848,7 +848,7 @@ def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : Lis
             match dropCell P.decls ℓ sub with
             | .error w => .stuck w
             | .ok evs =>
-              match c.writeAt p.path .hole with
+              match c.writeAt p.path .movedOut with
               | none => .stuck .typeConfusion
               | some c' => .next (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ evs))
   | .letIn _ e₁ e₂ => .next (.run H φ (.letIn e₂ :: K) (.eval e₁) tr)
