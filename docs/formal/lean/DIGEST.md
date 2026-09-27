@@ -10447,7 +10447,7 @@ theorem RueCore.FrameProperty.refl {ρ : Env} {H : Store} : FrameProperty ρ H H
 
 *theorem* · module `RueCore.Soundness`
 
-The frame property composes along a sequence of steps in one frame (helper).
+The frame property composes along a sequence of steps in one activation record (helper).
 
 ```lean
 theorem RueCore.FrameProperty.trans {ρ : Env} {H₁ H₂ H₃ : Store}
@@ -10482,7 +10482,7 @@ theorem RueCore.FrameProperty.set {ρ : Env} {H : Store} {ℓ : Nat} {c : Cell}
 
 *theorem* · module `RueCore.Soundness`
 
-The frame property extends across a write to a cell the frame names, or to one
+The frame property extends across a write to a cell the activation record names, or to one
 minted above the store the frame property is measured from (helper).
 
 ```lean
@@ -13643,7 +13643,7 @@ theorem RueCore.Long.pre1 {M : FloatSig} {P : Program}
 
 **§6.2's (Search), counted**: the twin of `Sim.bind` for exhausted
 fuel. If `eval` spent its fuel on the operand, the operand's run under the
-pushed frame `F` is the long one, one enter step in; if the operand reached a
+pushed frame `F` is the long one, one evaluation-state step in; if the operand reached a
 value (`Sim`'s `ok` clause gives the run to it) and the context spent the fuel,
 the context's run is (helper).
 
@@ -13938,8 +13938,8 @@ theorem RueCore.long_ite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 *theorem* · module `RueCore.Equivalence`
 
-An argument-list form whose list spent the fuel, from its enter step
-(helper).
+An argument-list form whose list spent the fuel, from its evaluation-state
+step (helper).
 
 ```lean
 theorem RueCore.long_argsForm {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
@@ -41285,7 +41285,7 @@ RueCore.Typed.retBot {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}
     Typed P R Γ e.ret T { norm := none, brk := Δ }
 ```
 
-**`Typed.brk`** — **(Break) §5.7** with (Sub-Never) folded in: `break` yields no value to its own context, so it concludes at every type and at `⊥`, and it completes abruptly with `⟨break, Σ⟩` — the **whole** context in force where it fires, loop-local bindings included — to the innermost enclosing loop, which is the one consumer that reads it (`loopBreak`). Every rule between the two carries the abrupt-completion context outward by §5.3's threading, whether or not the `break` is in tail position. "Well-formed only inside a loop" is (Fn)'s premise that a body completes abruptly with no `break` (`WfFn`).
+**`Typed.brk`** — **(Break) §5.7** with (Sub-Never) folded in: `break` yields no value to its own context, so it concludes at every type and at `⊥`, and it completes abruptly with `⟨break, Σ⟩` — the **whole** context in force where it fires, loop-local bindings included — to the innermost enclosing loop, which is the one consumer that reads it (`loopBreak`). Every rule between the two carries the abrupt-completion context outward by §5.3's threading, whether or not the `break` is in tail position. "Well-formed only inside a loop" is (Fn)'s premise that a body has no `break` abrupt-completion context (`WfFn`).
 
 ```lean
 RueCore.Typed.brk {P : Program} {R : Ty} {Γ : Ctx} {T : Ty} :
@@ -41304,7 +41304,7 @@ RueCore.Typed.loopDiv {P : Program} {R : Ty} {Γ Γh : Ctx} {Ωe : Out}
           Typed P R Γ e.loop T { norm := none, brk := [] }
 ```
 
-**`Typed.loopBreak`** — **(Loop-Break) §5.7 with a reachable exit** (`X ≠ ∅`): the body contains a `break` targeting this loop (`4.8:21`), so the loop is `unit`-typed; the body is typed at the loop-head state (`LoopHead`, as for `loopDiv`), and the exits are read off that one judgment. `X` is the body's `brk`: each abrupt-completion context is the whole context at its `break`, so the loop splits it at the loop's own depth. The loop-local bindings still open there (the prefix, `Ctx.loopLocals`) end at the exit, which discharges §5.6 for them ("discharged at the exit itself"; dynamically, §6.10's unwind); the rest (`Ctx.outsideLoop`) is `outside_loop(Σ_x)`, and the loop's normal output state is §5.5's join over those (`3.8:80`), `Ctx.joinAll` in abrupt-completion context order (the order is immaterial: `Ctx.joinAll_perm`). The body's normal completion is the back edge, which `LoopHead` already reads; it is not an exit. The loop consumes its own `break` abrupt-completion contexts (`Δ_out`), and the fragment has no others, so it completes abruptly with none.
+**`Typed.loopBreak`** — **(Loop-Break) §5.7 with a reachable exit** (`X ≠ ∅`): the body contains a `break` targeting this loop (`4.8:21`), so the loop is `unit`-typed; the body is typed at the loop-head state (`LoopHead`, as for `loopDiv`), and the exits are read off that one judgment. `X` is the body's `brk`: each abrupt-completion context is the whole context at its `break`, so the loop splits it at the loop's own depth. The loop-local bindings still open there (the prefix, `Ctx.loopLocals`) end at the exit, which discharges §5.6 for them ("discharged at the exit itself"; dynamically, §6.10's unwind); the rest (`Ctx.outsideLoop`) is `outside_loop(Σ_x)`, and the loop's normal output state is §5.5's join over those (`3.8:80`), `Ctx.joinAll` in abrupt-completion context order (the order is immaterial: `Ctx.joinAll_perm`). The body's normal completion is the back edge, which `LoopHead` already reads; it is not an exit. The loop consumes its own `break` abrupt-completion contexts (`Δ_out`), and the fragment has no others, so it has none.
 
 ```lean
 RueCore.Typed.loopBreak {P : Program} {R : Ty} {Γ Γh : Ctx} {Ωe : Out}
