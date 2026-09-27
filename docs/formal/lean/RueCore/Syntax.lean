@@ -773,7 +773,7 @@ def Ty.dynNoDeclared (D : Decls) : Ty → List (List Nat) → Bool
 
 /-- **The consumed place is a declared-`linear` struct** (§5.1's
 `Γ ⊢ d : S`, `S` declared `linear`). The rule states it as a premise; here it
-is a *consequence* of the plan, so `Typed.useDeclared`/`Typed.dropDeclared`
+is a *corollary* of the plan, so `Typed.useDeclared`/`Typed.dropDeclared`
 need not carry it (helper). -/
 theorem declaredPrefix_declaredLinear (D : Decls) : ∀ (T : Ty) (π πd πs : List Nat),
     declaredPrefix D T π = some (πd, πs) →

@@ -48,7 +48,7 @@ body's open bindings appended (`BreakOutputOk`).
 What the clause does buy, already: `run-all-scope-drops` walks σ, and because
 σ is ρ, `StoreTyping` — every cell live or moved-out, no two bindings sharing one
 — applies to the walk. That is what turns §7's no-use-after-drop bullet from a
-structural observation into a consequence of the invariant, and what proves no
+structural observation into a corollary of the invariant, and what proves no
 unwind retires a cell twice or touches a `†` cell.
 
 ## Locality (`FrameProperty`)

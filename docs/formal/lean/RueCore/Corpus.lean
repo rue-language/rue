@@ -636,7 +636,7 @@ def cases : List Case := [
     prog := Examples.destrProg Examples.tI64 Examples.destructureArrayResidue
     },
   { name := "destructure_linear_residue",
-    description := "A destructure whose residue carries a linear value: rejected statically (3.8:60, E0474) and refused dynamically by the residue monitor (linearLeak).",
+    description := "A destructure whose residue carries a linear value: rejected statically (3.8:60, E0474) and refused dynamically by the linear-leak monitor (linearLeak).",
     rules := ["(Use-Declared-Linear-Destructure) §5.1", "3.8:60"],
     prog := Examples.destrProg Examples.tI64 Examples.destructureLinearResidue
     },
@@ -1064,7 +1064,7 @@ example : run exportOps (Examples.prog Examples.tI64 (seq (Examples.resL (Exampl
 example : checkProgram (Examples.prog Examples.tI64 (seq (Examples.resL (Examples.lit 3)) (Examples.lit 4)))
     = false := by rfl
 
-/-- §6.3's residue monitor, as a refusal: a destructure whose residue holds a
+/-- §6.3's linear-leak monitor, as a refusal: a destructure whose residue holds a
 live declared-`linear` value is `linearLeak` rather than a silent drop
 (`3.8:60`, E0474). §5.1's `¬ linear-residue(S, π_s)` premise is what makes it
 unreachable for a program the checker accepts. -/

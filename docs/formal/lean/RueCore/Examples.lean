@@ -1043,7 +1043,7 @@ def arrayLinearElemLeaked : Expr :=
 Each acceptance is `check`'s, so `checkProgram_sound` turns it into a §5
 derivation and §7 covers the run; each refusal and each outcome below is
 checked by the kernel. `cA i n` abbreviates the stored `S1 { x0: n }` with
-value identity `i` these traces are full of. Every aggregate a program builds
+object identity `i` these traces are full of. Every aggregate a program builds
 mints its identity from the store's next index (`introVal`, `Dynamics.lean`),
 so a pinned final store is a run of `†` cells — the reserved slots and the
 retired bindings — and a binding's location counts the slots before it. -/
@@ -2383,7 +2383,7 @@ def destructureNestedResidue : Expr :=
 /-- **A residue that carries a linear value** (probe d3): the destructure would
 destroy `x1` without the program ever consuming it, which
 `¬ linear-residue(S, π_s)` refuses (`3.8:60`; the compiler reports E0474). The
-machine's own residue monitor refuses it with `linearLeak`. -/
+machine's own linear-leak monitor refuses it with `linearLeak`. -/
 def destructureLinearResidue : Expr :=
   letIn false (mkStruct sDestrLinRes [lit 1, resL (lit 2)])
     (letIn false (use (.proj (.var 0) 0)) (use (.var 0)))
@@ -3080,7 +3080,7 @@ example : checkProgram (destrProg tI64
     (letIn false (mkStruct sDestrOuter [mkStruct sDestrPair [lit 1, resA (lit 2)], resA (lit 3)])
       (letIn false (use (.proj (.proj (.var 0) 0) 0)) (use (.var 0))))) = false := by rfl
 
-/-- The machine's own residue monitor: a linear residue is a **positive
+/-- The machine's own linear-leak monitor: a linear residue is a **positive
 refusal**, not a silent drop (`Dynamics.lean`'s `dropResidue`; probe d3). §6.3
 leaves the case unchecked because §5.1's premise has excluded it, and this is
 the state that premise excludes. -/
@@ -3692,7 +3692,7 @@ of their own.
 
 What they do need is a way for a core program to *reach* an infinity, and
 that is a law: `3.12:22`'s "a finite non-zero over a zero is the infinity of
-the xor sign", which §6.4 quotes as a consequence of `⊕_w`. The witnesses are
+the xor sign", which §6.4 quotes as a corollary of `⊕_w`. The witnesses are
 therefore stated over an **arbitrary** `FloatLaws` and proved from its
 laws rather than by computing with `Float.exactOps` — which is what makes them
 claims about IEEE 754 instead of claims about this package's instance, and

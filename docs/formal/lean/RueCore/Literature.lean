@@ -96,7 +96,7 @@ def rows : List Row := [
     ours := "`n ≤ m` and `eval n … ≠ outOfFuel` ⇒ `eval m … = eval n …`"
     diff := "Identical up to notation." },
   { thm := `RueCore.no_masking
-    lit := "No named counterpart; a consequence of the clock lemma"
+    lit := "No named counterpart; a corollary of the clock lemma"
     cite := "FIELD §3: the `no_masking` row (none)"
     ours := "`eval n … = .refused w` and `eval m … ≠ outOfFuel` ⇒ `eval m … = .refused w`"
     diff := "A corollary of `fuel_mono` in either order of `n` and `m`, stated because the ∀-fuel theorems need it and the literature does not state it separately." },
@@ -121,7 +121,7 @@ def rows : List Row := [
     lit := "No double free: no program run \"calls free() twice on the same memory address\", an at-most-once safety property of the trace"
     cite := "FIELD §5: CWE-415; FIELD §6: Alpern & Schneider §2"
     ours := "`ProgramTyped P` ⇒ at every fuel, `run` is not stuck and its trace frees each identity, and runs a destructor on each, at most once"
-    diff := "It counts drop and destructor events per value identity rather than calls of `free()` per address, and holds of finished runs only (an `outOfFuel` result has an empty trace), so the safety-property form is `step_no_double_free`." },
+    diff := "It counts drop and destructor events per object identity rather than calls of `free()` per address, and holds of finished runs only (an `outOfFuel` result has an empty trace), so the safety-property form is `step_no_double_free`." },
   { thm := `RueCore.step_no_double_free
     lit := "A safety property: every violation has a finite prefix no continuation repairs"
     cite := "FIELD §6: Alpern & Schneider §2; FIELD §5: CWE-415"
@@ -131,7 +131,7 @@ def rows : List Row := [
     lit := "No double free (CWE-415), on every program"
     cite := "FIELD §5: CWE-415"
     ours := "every program ⇒ a finished run's trace frees each identity at most once"
-    diff := "No typing hypothesis and no destructor count, per value identity, over finished runs." },
+    diff := "No typing hypothesis and no destructor count, per object identity, over finished runs." },
   { thm := `RueCore.dtor_once
     lit := "No double free (CWE-415), for destructor runs"
     cite := "FIELD §5: CWE-415; Rust Reference, Destructors"
@@ -151,7 +151,7 @@ def rows : List Row := [
     lit := "Exactly once = at most once ∧ at least once, over a whole run; a memory leak is a value the run allocates and never releases"
     cite := "FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401"
     ours := "`ProgramTyped P`, `P.pendingSafe`, `init →* C`, `a` held by `C` (`Config.held`) and `C →* ✓v` with trace `tr` ⇒ `a` is ended in `tr` or owned by `v`, exactly once between the two"
-    diff := "Per owned value identity, for every value a finished run holds rather than per allocation site, under `pendingSafe` (RUE-2316), and with nothing about a panic, whose trap runs no drop, or a run that never finishes." },
+    diff := "Per owned object identity, for every value a finished run holds rather than per allocation site, under `pendingSafe` (RUE-2316), and with nothing about a panic, whose trap runs no drop, or a run that never finishes." },
   { thm := `RueCore.drop_order
     lit := "Drop order: variables are dropped in reverse order of declaration, temporaries in reverse order of creation"
     cite := "FIELD §5: Rust Reference, Destructors; FIELD §6: trace property over finished traces (no accepted name)"
