@@ -369,14 +369,14 @@ MUTANTS = [
       [E(ST, "      Typed P R Γ e T Ω → T.qual P.decls = .copy →\n      Typed P R Γ (.repeatArray", "      Typed P R Γ e T Ω → True →\n      Typed P R Γ (.repeatArray"),
        E(CK, "if T' = T ∧ T.qual P.decls = .copy then", "if T' = T then")],
       "`[e; n]` of a non-Copy element types"),
-    M("class-not-infectious", "§3", "class of a struct (Attr.lift)", "affine-linear",
+    M("class-not-infectious", "§3", "qualifier of a struct (Attr.lift)", "affine-linear",
       [E(SX, "  | .none, base => if base = .linear then .linear else .affine", "  | .none, _ => .affine")],
       "a plain struct with a linear field is Affine"),
-    M("qual-join-meet", "§3", "class join", "affine-linear",
+    M("qual-join-meet", "§3", "qualifier join", "affine-linear",
       [E(SX, "def Qual.join (a b : Qual) : Qual := if a.rank ≤ b.rank then b else a",
          "def Qual.join (a b : Qual) : Qual := if a.rank ≤ b.rank then a else b")],
-      "the class join takes the lesser class"),
-    M("zero-array-linear", "§3", "class of [T; 0] (3.8:74)", "affine-linear",
+      "the qualifier join takes the lesser qualifier"),
+    M("zero-array-linear", "§3", "qualifier of [T; 0] (3.8:74)", "affine-linear",
       [E(SX, "      | m => if n = 0 then .affine else m", "      | m => m")],
       "a zero-length array of a linear type is Linear"),
     M("copy-struct-dtor", "§3", "@copy struct (3.9:31)", "premise",
@@ -399,7 +399,7 @@ MUTANTS = [
          "      v.qual P.decls ≠ .linear →\n      Step M P (.run H φ K (.eval (.use p)) tr) (.run H φ K (.ret v) tr)"),
        E(SP, "      v.qual P.decls ≠ .copy →\n      c.setAt p.path .movedOut = some c' →\n      Step M P (.run H φ K (.eval (.use p)) tr)",
          "      v.qual P.decls = .linear →\n      c.setAt p.path .movedOut = some c' →\n      Step M P (.run H φ K (.eval (.use p)) tr)")],
-      "eval, Step and step: an affine use copies instead of leaving a hole"),
+      "eval, Step and step: an affine use copies instead of leaving a moved-out part"),
     M("step-usecopy-nondet", "§6.3", "(D-Use-Copy), Step only", "copy-check",
       [E(SP, "      v.qual P.decls = .copy →\n      Step M P (.run H φ K (.eval (.use p)) tr) (.run H φ K (.ret v) tr)",
          "      Step M P (.run H φ K (.eval (.use p)) tr) (.run H φ K (.ret v) tr)")],
@@ -466,10 +466,10 @@ MUTANTS = [
          "          match dropContentsList D cs with\n          | .error w => .error w\n          | .ok evs' => .ok (evs' ++ evs)"),
        E(DY, "  | c :: cs => dropEvents D c ++ dropEventsList D cs", "  | c :: cs => dropEventsList D cs ++ dropEvents D c")],
       "fields and elements are dropped last to first"),
-    M("scope-fifo", "§6.9", "frame exit drop order", "drop-order",
+    M("scope-fifo", "§6.9", "activation-record exit drop order", "drop-order",
       [E(DY, "  unwindLocs D H φ.scope.reverse", "  unwindLocs D H φ.scope"),
        E(SP, "plainUnwind P.decls H φ.scope.reverse", "plainUnwind P.decls H φ.scope", 4)],
-      "eval, Step and step: a frame's bindings are dropped first-declared first"),
+      "eval, Step and step: an activation record's bindings are dropped first-declared first"),
     M("payload-order", "§6.6", "match arm exit order", "drop-order",
       [E(DY, "                 match unwindLocs P.decls H₂ minted.2.reverse with", "                 match unwindLocs P.decls H₂ minted.2 with"),
        E(SP, "plainUnwind P.decls H ℓs.reverse", "plainUnwind P.decls H ℓs", 2)],
@@ -501,7 +501,7 @@ MUTANTS = [
       "a destructure's residue drops are not marked"),
     M("match-consume-skip", "§6.6", "(D-Match) consume", "drop-skip",
       [E(DY, "  if D.enumClassOf e = .copy then [] else [.consume (.enum e k i (vs.map fun _ => .movedOut))]", "  []")],
-      "a matched non-Copy enum's shell is not consumed"),
+      "a matched non-Copy enum's dead remainder is not consumed"),
     M("leak-monitor-off", "§6.11", "linearLeak monitor", "monitor",
       [E(DY, "      if c.residualLinear D then .error .linearLeak", "      if false then .error .linearLeak"),
        E(DY, "      if r.residualLinear D then .error .linearLeak", "      if false then .error .linearLeak")],
@@ -632,11 +632,11 @@ DIRECTION = {
 # ---------------------------------------------------------------------------------------
 
 RULINGS = {
-    "use-move-partial": ("statement", "moves a partially moved aggregate whole; the machine meets the hole (seed `partial_then_whole`): `soundness`, `check_sound`"),
-    "use-copy-moved": ("equivalent", "a `Copy` place is never `MovedOut` in a reachable state: a `Copy` `@drop` moves nothing and a `Copy` value is never a hole"),
+    "use-move-partial": ("statement", "moves a partially moved aggregate whole; the machine meets the moved-out part (seed `partial_then_whole`): `soundness`, `check_sound`"),
+    "use-copy-moved": ("equivalent", "a `Copy` place is never `MovedOut` in a reachable state: a `Copy` `@drop` moves nothing and a `Copy` value is never a moved-out part"),
     "use-move-dtor": ("holds", "E0456 is a static discipline with no dynamic counterpart: the machine runs the program (`partial_under_dtor`), so no stated property is false", {"check_sound": "true for the mutant: the rule and the checker drop the same premise, so every acceptance is still a derivation"}),
     "use-move-rootidx": ("holds", "a static discipline (`3.8:68`): the machine moves the element out and drops the rest path by path, without a refusal", {"check_sound": "true for the mutant: the rule and the checker drop the same premise, so every acceptance is still a derivation"}),
-    "use-affine-as-copy": ("statement", "an affine use leaves the place `Owned`, so a second use is accepted and the machine meets a hole (`use_after_move`): `soundness`"),
+    "use-affine-as-copy": ("statement", "an affine use leaves the place `Owned`, so a second use is accepted and the machine meets a moved-out part (`use_after_move`): `soundness`"),
     "use-declared-residue": ("statement", "accepts a destructure that strands a linear sibling; the machine refuses with `linearLeak` (`destructure_linear_residue`): `soundness`"),
     "index-read-copy": ("statement", "accepts a dynamic-index read of a non-Copy element, which the machine refuses (`typeConfusion`): `soundness`"),
     "index-drop-copy-checker": ("statement", "the checker accepts `@drop(a[i])` of a non-Copy element, which no `Typed` rule derives: `check_sound`"),
@@ -646,9 +646,9 @@ RULINGS = {
     "assign-immutable": ("holds", "mutability is not a safety property: the machine performs the write"),
     "index-write-linear": ("statement", "accepts writing a linear element through a dynamic index; the machine refuses with `linearOverwrite`: `soundness`"),
     "drop-residual-below": ("holds", "E0406's residual side condition has no dynamic counterpart (`linear_field_stranded` runs): no stated property is false", {"check_sound": "true for the mutant: the rule and the checker drop the same premise, so every acceptance is still a derivation"}),
-    "drop-moved": ("statement", "accepts `@drop` of a moved-out place; the machine meets the hole (`use_after_move`): `soundness`"),
+    "drop-moved": ("statement", "accepts `@drop` of a moved-out place; the machine meets the moved-out part (`use_after_move`): `soundness`"),
     "seq-discard": ("statement", "accepts discarding a linear value; the machine refuses with `linearDiscard` (`linear_temporary_discarded`): `soundness`"),
-    "join-owned-wins": ("statement", "the join keeps `Owned` where one arm moved, so a later use is accepted and meets the hole (`loop_moved_prev_iteration`): `soundness`"),
+    "join-owned-wins": ("statement", "the join keeps `Owned` where one arm moved, so a later use is accepted and meets the moved-out part (`loop_moved_prev_iteration`): `soundness`"),
     "join-linear-disagree": ("statement", "a linear path `Owned` on one arm and `MovedOut` on the other joins; the run leaks (`linear_half_consumed`): `soundness`"),
     "join-residual": ("statement", "accepts a leak through the join; `join_moved_vs_partial_linear` is accepted and refused with `linearLeak`: `soundness`"),
     "join-diverge-arm": ("statement", "one diverging arm makes the branch diverge, so what follows is not typed but runs (`loop_nested_move_outer` refused): `soundness`"),
@@ -674,7 +674,7 @@ RULINGS = {
     "dbg-observable": ("statement", "`@dbg` of an aggregate types; the machine refuses (`typeConfusion`): `soundness`"),
     "repeat-copy": ("statement", "`[e; n]` of a non-Copy element types; the machine refuses (`typeConfusion`): `soundness`"),
     "class-not-infectious": ("statement", "a linear-carrying struct is `Affine`, so dropping it is accepted and the machine's monitor refuses the live linear field: `soundness`"),
-    "qual-join-meet": ("statement", "the class join takes the lesser class, so a linear-carrying struct is not `Linear`; as `class-not-infectious`: `soundness`"),
+    "qual-join-meet": ("statement", "the qualifier join takes the lesser qualifier, so a linear-carrying struct is not `Linear`; as `class-not-infectious`: `soundness`"),
     "zero-array-linear": ("helper", "only `Ty.array_qual_linear`, which restates `Ty.qual`; `[T; 0]` being `Linear` refuses more", {"Ty.array_copy_elem": "true for the mutant: an array is `Copy` exactly when its element is, at every length"}),
     "copy-struct-dtor": ("statement", "accepts a `@copy` struct with a destructor, which `WfDecls` excludes: `checkProgram_sound`"),
     "dtor-linear-field": ("statement", "accepts a destructor-bearing struct with a linear field, which `WfDecls` excludes: `checkProgram_sound`"),
@@ -699,14 +699,14 @@ RULINGS = {
     "dtor-skip": ("statement", "`drop_glue_order` is false: a destructor-bearing struct is dropped with no `dtor` event, which `DropGlueBlocks` rejects (`glue_dtorSkipped_rejected`; RUE-2487)"),
     "dtor-after-fields": ("statement", "`drop_glue_order` is false: a field's destructor runs before its owner's, which `DropGlueBlocks` rejects (`glue_dtorAfterFields_rejected`; RUE-2487)"),
     "fields-reverse": ("statement", "`drop_glue_order` is false: fields drop last to first, which `DropGlueBlocks` rejects (`glue_fieldsSwapped_rejected`; RUE-2487)"),
-    "scope-fifo": ("statement", "a frame's bindings are dropped first-declared first: `drop_order`'s `StackDiscipline`"),
+    "scope-fifo": ("statement", "an activation record's bindings are dropped first-declared first: `drop_order`'s `StackDiscipline`"),
     "payload-order": ("statement", "an arm's payload bindings are dropped first to last: `drop_order`'s `StackDiscipline`"),
     "overwrite-no-drop": ("statement", "an assignment's old value is never dropped or freed: `Exact` (`drop_exactly_once`)"),
     "break-skip-local": ("statement", "`break` skips a loop-local's drop, which is never freed: `Exact`"),
     "seq-affine-as-linear": ("statement", "`eval` refuses to discard an affine temporary in a checked program: `soundness`"),
     "seq-droptemp-skip": ("statement", "a discarded temporary is never marked freed: `rest_exactly_once`'s `Exact`"),
     "residue-drop-event-skip": ("statement", "a destructure's residue is never marked freed: `Exact`"),
-    "match-consume-skip": ("statement", "a matched enum's shell identity is never freed: `Exact`"),
+    "match-consume-skip": ("statement", "a matched enum's dead remainder identity is never freed: `Exact`"),
     "leak-monitor-off": ("statement", "`Sharp.leak` is false: an unchecked leak is no longer refused (RUE-2485); the linear theorems still hold, since a machine with no refusal meets them"),
     "overwrite-monitor-off": ("statement", "`Sharp.overwrite` is false: an unchecked overwrite of a live linear value is no longer refused (RUE-2485)"),
     "discard-monitor-off": ("statement", "`Sharp.discard` and `Sharp.discard_loop` are false: an unchecked discard is no longer refused (RUE-2485); the build stops first at `eval_succ`, which restates `eval`"),
@@ -732,7 +732,7 @@ RULINGS = {
     "float-wf-no-emin": ("statement", "`Sharp.float_halt` is false (RUE-2500): its `¬ (num false 1 (-1075)).Wf .w64`, half the least subnormal, is refuted (scratch/rue-2500/float-wf-no-emin-T.lean). The float laws still hold on the mutant's larger `Wf` as far as RUE-2490 sampled, and the four Float lemmas that fail conclude a weaker `Wf` and stay true, so without that statement nothing would be false"),
     "float-wf-noncanonical": ("statement", "`Sharp.float_halt` is false (RUE-2500): its `¬ (num false 30 (-2)).Wf .w64`, the non-canonical spelling of the `7.5` `Nonvacuous.float` returns, is refuted (scratch/rue-2500/float-wf-noncanonical-T.lean); the float laws and the four Float lemmas stay true as for `float-wf-no-emin`"),
     # RUE-2500: the hypothesis-side control, read by hand (scratch/rue-2500/), as for the 15 above.
-    "contentsowntyping-owned-false": ("statement", "`Nonvacuous.open_activation` is false: its `ActivationTyping` of the owned binding `s : S0` against the cell `S0 { 5 }` needs `ContentsOwnTyping .owned`, whose premise is now `False` (scratch/rue-2500/contentsowntyping-owned-false-T.lean). No other witness states `ActivationTyping` at a frame with an owned binding: `empty_activation` and `Sharp.refused` state it of the empty frame, and `Nonvacuous.dtor` does not state it at all, so `soundness`, `drop_exactly_once` and `rest_exactly_once` would be vacuous at every open frame and only `open_activation` shows it"),
+    "contentsowntyping-owned-false": ("statement", "`Nonvacuous.open_activation` is false: its `ActivationTyping` of the owned binding `s : S0` against the cell `S0 { 5 }` needs `ContentsOwnTyping .owned`, whose premise is now `False` (scratch/rue-2500/contentsowntyping-owned-false-T.lean). No other witness states `ActivationTyping` at an activation record with an owned binding: `empty_activation` and `Sharp.refused` state it of the empty activation record, and `Nonvacuous.dtor` does not state it at all, so `soundness`, `drop_exactly_once` and `rest_exactly_once` would be vacuous at every open activation record and only `open_activation` shows it"),
 }
 
 
@@ -1750,7 +1750,7 @@ def print_score(results, before=None):
     row("A candidate statement is unproved under the mutant (the spec pass)", lambda r: first_kill(r) == "spec")
     row("A stated property or a helper lemma is false", lambda r: RULINGS[r["id"]][0] in ("statement", "helper"))
     row("The tests with the proofs off: witnesses, seeds, generated cases", lambda r: test_kill(r) in ("witness", "corpus", "bridge") or corpus_kill(r) in ("corpus", "bridge"))
-    row("The seeds and the bridge alone", lambda r: corpus_kill(r) in ("corpus", "bridge"))
+    row("The seeds and differential testing alone", lambda r: corpus_kill(r) in ("corpus", "bridge"))
     row("The build or the corpus fails at all (a proof script, a helper or the Explain mirror included)", lambda r: r["killed"] != "survived")
     print()
     notk = [k for k in live if not killed(rs[k])]
@@ -1762,7 +1762,7 @@ def print_score(results, before=None):
                         [k for k in live if rs[k]["killed"] == "proof" and RULINGS[k][0] == "holds" and test_kill(rs[k]) not in ("witness", "corpus", "bridge") and corpus_kill(rs[k]) not in ("corpus", "bridge")]),
                        ("Killed by a helper lemma only", [k for k in live if RULINGS[k][0] == "helper" and not killed(rs[k])]),
                        ("Missed by the tests with the proofs off", [k for k in live if test_kill(rs[k]) not in ("witness", "corpus", "bridge") and corpus_kill(rs[k]) not in ("corpus", "bridge")]),
-                       ("Missed by the seeds and the bridge", [k for k in live if corpus_kill(rs[k]) not in ("corpus", "bridge")]),
+                       ("Missed by the seeds and differential testing", [k for k in live if corpus_kill(rs[k]) not in ("corpus", "bridge")]),
                        ("Failed in the Explain mirror", [k for k in ids if "mirror" in (results[k]["killed"], results[k].get("without_proofs", {}).get("killed"))]),
                        ("Before the seeds, not killed", [k for k in live if before and not killed(bs[k])])):
         if label.startswith("Before") and not before:
