@@ -8,7 +8,7 @@ public import RueCore.Trace.Defs
 # RueCore.Spec.Trace — what the drop trace says (Spec layer)
 
 §7's "No double-free" and "No use-after-drop / no leak of drops" bullets,
-read off the trace every run records: each drop, destructor, consumption and
+read off the trace every run records: each drop, destructor, consume event and
 `@dbg`, in order, with the identity of the value each one is of. The
 multiplicity statements are over `run`'s and `eval`'s results, so over runs
 that terminate (a result at some fuel), except `step_no_double_free`, which bounds
@@ -104,7 +104,7 @@ reaches from `Config.init` and any owned identity `a` that `C` holds — in a
 cell, in focus, or pending on the control stack (`Config.held`); these are the
 owned values allocated along the run. If the run from `C` terminates with a
 value (`✓v`, a value at an empty stack), then `a` is ended in the final trace
-(a drop, a discarded temporary's drop, or a consumption: `freedIds`) or is
+(a drop, a discarded temporary's drop, or a consume event: `freedIds`) or is
 part of the final value (which counts as ended: §2 restricts `main` to `i32` or
 `unit`, which own nothing, and the fragment does not), exactly once between
 the two: no owned value the

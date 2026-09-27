@@ -461,7 +461,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   - a binding's drop, `drop ℓ c` — at scope exit, `@drop`, an overwrite, and
     each retained subtree of a declared-linear destructure's residue;
   - a discarded temporary, `dropTemp v`;
-  - a **consumption**, `consume c`: the dead remainder a `match` leaves once its
+  - a **consume event**, `consume c`: the dead remainder a `match` leaves once its
     payload is bound (§6.6), and the path from `d` to the leaf a
     destructure leaves once the leaf is handed on and the residue dropped
     (§6.3). Neither runs a drop of its own, because every member has already
@@ -497,7 +497,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   the value: the rest of the form that bound or received it, the rest of
   the loop a `break` unwinds to, or an evaluation that started holding it.
   The places are an `endscope`, a discard, an activation-record pop, a `return`'s σ-walk,
-  a `break`'s unwind, a consumption, an overwrite and `@drop`. So every
+  a `break`'s unwind, a consume event, an overwrite and `@drop`. So every
   owned value a checked run holds ends exactly once by the end of the
   window that holds it, and is never left in a cell nobody can reach.
   What neither theorem sees is an end emitted *early*, inside the
@@ -542,7 +542,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   terminal value or a trap that `→*` reaches from `Config.init`) is in the
   block grammar `RueCore.Blocks` (`RueCore.step_blocks`, which reaches
   `Step` from `eval`'s `RueCore.run_blocks` through `eval_small_to_big`). The
-  grammar is a sequence of `@dbg` lines, consumptions, and drop markers
+  grammar is a sequence of `@dbg` lines, consume events, and drop markers
   (`drop ℓ c`, `dropTemp v`), each marker followed by *exactly* §6.11's walk
   of what it names (`RueCore.dropEvents`). The grammar has no other place
   for a destructor event. So every destructor of every terminating run sits
@@ -563,7 +563,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   swapped.
 - **What the grammar does not constrain.** It ties each marker to its walk,
   not to the cell. Fidelity to what the cell held is `dropCell` reading
-  `H(ℓ)` and the exactly-once ledger above. A consumption carries no walk,
+  `H(ℓ)` and the exactly-once ledger above. A consume event carries no walk,
   so on a program the checker rejects a destructor-bearing node can be
   consumed without its destructor running (`destructure_under_dtor`, E0456
   by `3.9:34`), and the grammar accepts that trace.

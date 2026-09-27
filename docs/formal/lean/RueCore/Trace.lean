@@ -1349,7 +1349,7 @@ theorem Contents.enum_payload {D : Decls} {e k i : Nat} {cs : List Contents}
   · rename_i hc
     refine ⟨by simp [Contents.own, hc, List.count_cons], h⟩
 
-/-- **(D-Match)'s consumption, counted** (RUE-2427): the payload the arm's cells
+/-- **(D-Match)'s consume event, counted** (RUE-2427): the payload the arm's cells
 receive and the dead remainder `matchConsume` ends together account for at most the
 scrutinee — the payload moves, the dead remainder ends, nothing is duplicated
 (helper). -/

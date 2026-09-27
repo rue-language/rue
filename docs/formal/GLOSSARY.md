@@ -303,7 +303,7 @@ it has two rows.
 | mint; mints; fresh; fresh cells | Creating a new allocation or object identity, one never used before | none | `freshParams`, `Fresh` | ours, pending audit | 01 §2; 03 intro; REDTEAM “Targets”; lean/README “Generated programs”; GUIDE §2; BRIDGE-SENSITIVITY “Rule coverage”; `Dynamics` |
 | identity; object identity | A unique tag an aggregate value carries from its creation, so a trace can say which value each event is about | [FIELD §10][F10]: object identity (the Python Language Reference §3.1; Khoshafian & Copeland 1986) | `Contents.own`, `Val.own` | standard | 01 §2; 03 “No double-free”; README “Why comptime is elaboration, not …”; lean/README “Generated programs”; GUIDE §2; BRIDGE-SENSITIVITY “Observable destructors”; MUTATION “The mutants”; `Float` |
 | dead remainder; dead remainder (τ†) | What remains of a matched enum value or a destructured path after its payload or leaf is moved out: every member a `⊘` | [FIELD §5][F5]: Oxide's dead type `τ†` (a totally moved type), partial: ours is the value's remainder, not a type | `matchConsume` | ours, pending audit | 03 “No double-free”; GUIDE §2; MUTATION “The mutants”; `Dynamics` |
-| consumption (event) | The trace event a `match` records when it consumes what remains of an enum scrutinee after its payload moves out | none | `Event` | ours, pending audit | 01 intro; 03 “No use-after-drop / no leak …”; README “The architecture: surface → elaboration …”; GUIDE “The run”; `Dynamics` |
+| consume event; consume events | The trace event a `match` records when it consumes what remains of an enum scrutinee after its payload moves out | [FIELD §6][F6]: an event of the trace (Leucker & Schallhart); the name is ours, after the `Event.consume` constructor | `Event` | ours, pending audit | 03 “No double-free”; GUIDE §4; MUTATION “What the proofs kill, and …”; `Dynamics` |
 | registration stack | The machine's list, for every activation record, of the pending `endscope` markers and the drop scopes | none | `Stk`, `Config.stack` | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “Sharpness counter-examples”; GUIDE “The three trace theorems, one …”; `Trace.Defs` |
 | scopes nest; nest | The pending `endscope` markers and the drop scopes agree, innermost first | none | `Nest`, `Config.Nested` | ours, pending audit | 01 §6.7; 03 “No use-after-drop / no leak …”; lean/README “Generated programs”; MUTATION “What the proofs kill, and …”; `Trace.Defs` |
 | owned (node); own | Of an aggregate in a store: a non-`Copy` node whose identity the store owns | [FIELD §5][F5]: owner (Rust Book §4.1), partial | `Contents.own`, `storeOwn` | ours, pending audit | 01 §2; 03 intro; README “Why comptime is elaboration, not …”; REDTEAM intro; lean/README “The differential corpus”; GUIDE intro; BRIDGE-SENSITIVITY “Method”; MUTATION intro; CHECKER-PROFILE intro; TOOLING intro; `Float` |
@@ -382,7 +382,7 @@ it has two rows.
 
 | Term | Meaning | Source | Lean | Class | First use |
 |---|---|---|---|---|---|
-| trace; drop trace; event | The sequence of observable events a run emits: `@dbg` lines, drops, destructor runs, consumptions | [FIELD §6][F6]: trace (Leucker & Schallhart), clear | `Event`, `EvalRes.trace`, `Config.trace` | standard | 01 §2; 03 intro; README “The executable oracle”; REDTEAM “Targets”; lean/README “The differential corpus”; GUIDE §2; BRIDGE-SENSITIVITY “Rule coverage”; MUTATION “What is mutated”; `Dynamics` |
+| trace; drop trace; event | The sequence of observable events a run emits: `@dbg` lines, drops, destructor runs, consume events | [FIELD §6][F6]: trace (Leucker & Schallhart), clear | `Event`, `EvalRes.trace`, `Config.trace` | standard | 01 §2; 03 intro; README “The executable oracle”; REDTEAM “Targets”; lean/README “The differential corpus”; GUIDE §2; BRIDGE-SENSITIVITY “Rule coverage”; MUTATION “What is mutated”; `Dynamics` |
 | terminating (run); terminating runs; terminates; terminating | A run that halts normally or in a trap, rather than running out of fuel | [FIELD §6][F6]: a terminating execution (Alpern & Schneider); FIELD §6 notes that properties of terminating traces become ordinary trace properties by stuttering | — | standard | 01 §5.7; 03 “No double-free”; WHAT-IT-MEANS “What is proved”; lean/README “Generated programs”; GUIDE “Fuel, and why the theorems …”; MUTATION “What the proofs kill, and …” |
 | finished (run) | A run that halts normally or in a trap, rather than running out of fuel | none; FIELD §6 notes that properties of finished traces become ordinary trace properties by padding ([FIELD §6][F6]) | — | ours, pending audit | 03 “No double-free”; lean/README “Sharpness counter-examples”; GUIDE §2; MUTATION “What the proofs kill, and …”; SIMPLIFY “Structural”; `Dynamics` |
 | trace property | A property of runs, stated over their traces | [FIELD §6][F6]: Clarkson & Schneider §2.1 | — | standard | — |
@@ -769,7 +769,7 @@ documents rely on.
 | `Store` | `Dynamics` | The store `H` (§6.1): a list of cells indexed by location; allocation appends, and indices are never reused | standard (FIELD §3: store, Amin & Rompf §4.1) | README intro; `Step` |
 | `Env` | `Dynamics` | The environment `ρ` (§6.1): maps each de Bruijn index to its store location | standard (FIELD §3: environment, Amin & Rompf §§2.1–2.2) | `Dynamics` |
 | `Activation` | `Dynamics` | §6.1's activation record `φ = ⟨ρ ; σ⟩`: the environment plus the list of cells with a drop obligation when the activation record's scopes end | ours, pending audit | `Dynamics` |
-| `Event` | `Dynamics` | One entry of the drop trace: a drop starting at a binding or temporary, a destructor run, a consumption, or a `@dbg` line | standard (FIELD §6: trace of events) | `Dynamics` |
+| `Event` | `Dynamics` | One entry of the drop trace: a drop starting at a binding or temporary, a destructor run, a consume event, or a `@dbg` line | standard (FIELD §6: trace of events) | `Dynamics` |
 | `PanicKind` | `Dynamics` | The kinds of defined trap (§6.12's `↯κ`): overflow, division or remainder by zero, out-of-bounds index, explicit panic, float-to-int range | Rue-specific, grounded (spec 8.1:1) | 03 intro |
 | `Refusal` | `Dynamics` | The named refusals of the machine (use after move, use after drop, …); each §7 memory-safety bullet forbids one | ours, pending audit | 03 “Type safety”; lean/README “How to read this, with …”; GUIDE §2; `Dynamics` |
 | `Contents.getAt` | `Dynamics` | `H(ℓ)@π` (§6.3): follows a path into stored contents; reaching a moved-out position is a use after move | ours, pending audit | — |
@@ -795,9 +795,9 @@ documents rely on.
 | `dropResidue` | `Dynamics` | Drops the unselected parts of a destructured value left to right, each immediately and once (§6.3, `3.8:33`) | Rue-specific, grounded (spec 3.8:33) | `Dynamics` |
 | `Contents.pathOnly` | `Dynamics` | The consumed outer nodes of a destructure: the path from the declared-`linear` place down to the field, with everything else moved out | ours, pending audit | `Dynamics` |
 | `Contents.pathOnlyFields` | `Dynamics` | `Contents.pathOnly`'s step over one node's fields | helper | — |
-| `Contents.destructure` | `Dynamics` | §6.3's `destructure`: take the selected field of a declared-`linear` value, drop the other parts, record the consumption | Rue-specific, grounded (spec 3.8:33) | `Dynamics` |
+| `Contents.destructure` | `Dynamics` | §6.3's `destructure`: take the selected field of a declared-`linear` value, drop the other parts, record the consume event | Rue-specific, grounded (spec 3.8:33) | `Dynamics` |
 | `dropResidueEvents` | `Dynamics` | The trace `dropResidue` emits, written out in closed form | Rue-specific, grounded (spec 3.8:33) | — |
-| `matchConsume` | `Dynamics` | The consumption event of a `match` on a non-`Copy` scrutinee: the enum node, its payload already bound to the arm | Rue-specific, grounded (spec 3.8:33) | `Dynamics` |
+| `matchConsume` | `Dynamics` | The consume event event of a `match` on a non-`Copy` scrutinee: the enum node, its payload already bound to the arm | Rue-specific, grounded (spec 3.8:33) | `Dynamics` |
 | `Val.observable` | `Dynamics` | Whether `@dbg` can print the value: an integer, a float or a `bool` | helper | `Dynamics` |
 | `dropCell` | `Dynamics` | The drop of a binding cell's contents as the trace records it: a marker naming the cell, then the contents' drop events | Rue-specific, grounded (spec 3.9:1) | 03 “No use-after-drop / no leak …”; SIMPLIFY “Detours”; `Dynamics` |
 | `dropRetire` | `Dynamics` | `drop-retire` (§6.1): drops a binding's contents, then marks the cell dead so later access is a use after drop | ours, pending audit | `Dynamics` |
@@ -898,7 +898,7 @@ documents rely on.
 | `StoreCC` | `Trace.Defs` | Every live cell satisfies `Contents.copyContained` | helper | lean/README “Non-vacuity witnesses”; MUTATION “The mutants” |
 | `IdLe` | `Trace.Defs` | Multiset inclusion of identity lists, by counts | helper | — |
 | `Fresh` | `Trace.Defs` | The identities created between two stores | helper | — |
-| `Event.freed` | `Trace.Defs` | The owned identities an event frees: an event that starts a drop, or a consumption | ours, pending audit | — |
+| `Event.freed` | `Trace.Defs` | The owned identities an event frees: an event that starts a drop, or a consume event | ours, pending audit | — |
 | `Event.dtorIds` | `Trace.Defs` | The identity a destructor event ran on | helper | — |
 | `freedIds` | `Trace.Defs` | The identities a trace frees, in order: what §7's no-double-free bullet counts at a drop | ours, pending audit | 03 “No double-free”; lean/README “What is mechanized”; GUIDE §4; `Trace.Defs` |
 | `dtorIds` | `Trace.Defs` | The identities a trace's destructors ran on, in order (`3.9:28`) | Rue-specific, grounded (spec 3.9:28) | 03 “No double-free”; lean/README “What is mechanized”; GUIDE §4; `Trace.Defs` |
@@ -919,7 +919,7 @@ documents rely on.
 | `Tombstoned` | `Trace.Defs` | Every cell allocated since a store is marked dead, except the named ones | helper | — |
 | `Tidy` | `Trace.Defs` | For one evaluation: every cell it allocated is marked dead by its end, and cells outside the activation record were only marked dead | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “What is mechanized”; GUIDE “The three trace theorems, one …”; `Trace.Defs` |
 | `Settled` | `Trace.Defs` | What the rest of a form owes cells allocated after its leading operands: marked dead by its end, with the unwinding exceptions | ours, pending audit | 03 “No use-after-drop / no leak …”; `Trace.Defs` |
-| `Blocks` | `Trace.Defs` | §6.11's drop order as a grammar over traces: a trace is a sequence of `@dbg` lines, consumptions, and drop-start events each followed by the events of that drop | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “Sharpness counter-examples”; GUIDE “The three trace theorems, one …”; MUTATION “What is mutated”; `Trace.Defs` |
+| `Blocks` | `Trace.Defs` | §6.11's drop order as a grammar over traces: a trace is a sequence of `@dbg` lines, consume events, and drop-start events each followed by the events of that drop | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “Sharpness counter-examples”; GUIDE “The three trace theorems, one …”; MUTATION “What is mutated”; `Trace.Defs` |
 | `DropGlue` | `Trace.Defs` | §6.11's drop written rule by rule, not through the machine: the events dropping some contents emits, its destructor first, then its fields in declaration order or its elements ascending | standard (FIELD §5: drop glue, rustc-dev-guide *Drop elaboration*) | lean/README “What is mechanized”; GUIDE “The three trace theorems, one …”; MUTATION “What the proofs kill, and …”; `Trace.Defs` |
 | `DropGlueSeq` | `Trace.Defs` | §6.11's `drop*`: `DropGlue` over a list, left to right | standard (FIELD §5: drop glue, rustc-dev-guide *Drop elaboration*) | lean/README “What is mechanized” |
 | `DropGlueBlocks` | `Trace.Defs` | `Blocks` with each drop's events given by `DropGlue` rather than by `dropEvents`: §6.11's drop order as a grammar over traces, in §6.11's own terms | ours, pending audit | lean/README “Sharpness counter-examples”; GUIDE “The three trace theorems, one …”; MUTATION “What the proofs kill, and …”; SIMPLIFY “Detours” |
@@ -962,7 +962,7 @@ Run-in headings, lemma titles and emphasized phrases:
   mutants themselves; Closure in `𝔽_w`; Closure of `@sqrt`; Closure of `⊕_w`;
   Compiler agreement; Compiler agreement (RUE-1614, resolved); Comptime as
   elaboration (README); computed and thrown away; Constructs, in L0–L2;
-  Consumption is recorded; Conventions; Covers; The
+  The consume event is recorded; Conventions; Covers; The
   `(D-Float-To-Int)`/`(D-Float-To-Int-Trap)` partition;
   (D-Use-Untrackable-Dynamic-Copy) needs `Copy`; A defect looks like;
   Definition (use); Dynamic rule(s); `endscope` pops by count; Equality

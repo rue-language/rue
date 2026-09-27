@@ -558,7 +558,7 @@ inductive Event where
   | drop (ℓ : Nat) (c : Contents)
   | dropTemp (v : Val)
   | dtor (s : Nat) (c : Contents)
-  /-- **A consumption** (RUE-2427): the aggregate nodes of `c` end here without
+  /-- **A consume event** (RUE-2427): the aggregate nodes of `c` end here without
   a drop of their own, because every member they held has already been moved
   out or dropped — a `match`'s scrutinee dead remainder once (D-Match) §6.6 has bound its
   payload to the arm's cells, and the path from a declared-`linear` place `d`
@@ -1060,10 +1060,10 @@ end
 
 /-- **§6.3's `destructure(H, ℓ@π_d, π_s)`**, on the contents stored at the
 consumed place of cell `ℓ`: `split` the aggregate, then apply `drop*` to the
-residue, then record the consumption of the path's dead remainder (`consume`,
+residue, then record the consume event of the path's dead remainder (`consume`,
 RUE-2427). The result is the selected leaf — "the result transferred to the
 context, not a value dropped by `destructure`" — and the residue's drop events
-followed by the consumption. Writing `⊘` at `ℓ@π_d` is the caller's step,
+followed by the consume event. Writing `⊘` at `ℓ@π_d` is the caller's step,
 because §6.3 puts it *after* the residue's drops. -/
 def Contents.destructure (D : Decls) (ℓ : Nat) (c : Contents) (πs : List Nat) :
     Except Refusal (Contents × List Event) :=
