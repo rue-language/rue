@@ -498,31 +498,40 @@ observability figures and the rerun results.
 ## Boundary integer literals and operand pairs (RUE-2482)
 
 `intLiteral` (above) already drew an occasional `min_T`/`max_T` on the main
-stream, one in twenty each. That alone rarely puts a boundary value where an
-overflow, cast or comparison trap actually lives, because the *other*
-operand of `+ - * /` or a comparison is still an independent small draw most
-of the time, and `min_T + 1`, `max_T − 1`, `-1`, a power of two and its
-neighbours never come up at all. So every `intLiteral` draw also reads a
-fourth stream, the **boundary** stream (`boundary`, its own `StdGen`,
-seeded like the call stream's — `GS`, `boundarySeed`): one time in eight
-(`chance 1 8`), it replaces the main-stream draw with a `boundaryLiteral`
-instead — `min_T` and `max_T` again, one step in from each, `-1` (signed
-only), `0` and `1`, or a power of two in range together with the constant
-just below or above it. The main-stream draw always runs first and is
-discarded when the boundary stream fires, so it costs the main stream
-nothing — the technique `divArm` (above, "Return and panic arms") uses on
-the side stream for a diverging arm, with a dedicated fourth stream instead
-of `side` itself: a boundary draw that does not fire leaves `main`, `side`
-and `call` exactly where trunk leaves them, because it reads no field but
-`boundary`. So a program in which no boundary draw fires anywhere in it is
-byte-identical to the one this module drew before RUE-2482, and one with a
-boundary draw differs from it only at the literal(s) or operand(s) a draw
-replaced — not, as an earlier version of this change did by reading `side`
-instead, at every later case's shape as well. Measured against trunk
-`30ad675b7`: 91 of the 200 generated cases at `--gen 200 --seed 7` differ,
-and 413 of the 1,000 at `--gen 1000 --seed 23` — inspected by hand, every
-difference is a literal or an operand pair, never a change in which form,
-arm or statement the program draws.
+stream, one in forty each (one in twenty together). That alone rarely puts a
+boundary value where an overflow, cast or comparison trap actually lives,
+because the *other* operand of `+ - * /` or a comparison is still an
+independent small draw most of the time, and `min_T + 1`, `max_T − 1`, `-1`,
+a power of two and its neighbours never come up at all. So every `intLiteral`
+draw also reads a fourth stream, the **boundary** stream (`boundary`, its own
+`StdGen`, seeded like the call stream's — `GS`, `boundarySeed`): one
+`intLiteral` draw in eight (`chance 1 8`) replaces the main-stream draw with
+a `boundaryLiteral` instead — `min_T` and `max_T` again, one step in from
+each, `-1` (signed only), `0` and `1`, or a power of two in range together
+with the constant just below or above it. The main-stream draw always runs
+first and is discarded when the boundary stream fires, so it costs the main
+stream nothing — the technique `divArm` (above, "Return and panic arms")
+uses on the side stream for a diverging arm, with a dedicated fourth stream
+instead of `side` itself: a boundary draw that does not fire leaves `main`,
+`side` and `call` exactly where trunk leaves them, because it reads no field
+but `boundary`.
+
+A fired *single* literal replaces one leaf, so a program it touches keeps its
+shape: only that literal differs. A fired *pair* (`arithBinop`, below) is not
+so gentle — it discards both of `self`'s operand subtrees whole, and a
+discarded subtree can be a block, a loop, a `@drop` or a call, so a fired
+pair can delete code `pruneFns` then finds a now-unreferenced callee for, and
+can turn a rejected program into an accepted one or the reverse. So "a
+program with no boundary draw is unchanged" is exact, but "a program *with*
+one only has a different literal" is not: measured against trunk
+`30ad675b7`, of the 91 (of 200, `--gen 200 --seed 7`) and 407 (of 1,000,
+`--gen 1000 --seed 23`) generated cases that differ at all, 4 and 6 differ in
+more than their literals — a nested composite operand replaced whole — and
+of those, exactly one (`gen_23_73`, below) also changes its verdict, from
+trunk's rejected `linearDiscard` (4 functions, 327 nodes) to an accepted
+3-node `min_T * -1`. Both counts are checked by diffing every case's source
+with its integer literals normalized to one token first, so a same-shape,
+different-value literal never counts as a shape change.
 
 A single boundary literal rarely lands on *both* operands of the same binop
 at once, and some shapes need exactly that — `min_T * -1` folding to `min_T`
@@ -530,21 +539,31 @@ instead of trapping (RUE-2318) needs `min_T` on one side and `-1` on the
 other of the same `*`. So `arithBinop` also reads the boundary stream, at
 `pairRate w sg op` (ordinarily one binop in sixteen): it replaces *both*
 operands of an arithmetic or shift binop with a `boundaryPair` for that
-operator — `(min_T, -1)` (signed only), `(max_T, 1)`, `(min_T, 1)` and
-`(min_T, min_T)` for `+ - *`, those plus `(x, 0)` for `/` and `%` (a
+operator — `(min_T, -1)` (signed only), `(min_T, 1)` and `(min_T, min_T)` for
+`+ - *` (`(max_T, 1)` too for `+`/`-`; a `*`-specific list drops it, since it
+never overflows a multiply, and adds two unsigned-only candidates that do,
+`(max_T, 2)` and `(2^(bits-1), 2)`), those plus `(x, 0)` for `/` and `%` (a
 div-by-zero trap, `x` itself a `boundaryLiteral`), and a power of two paired
 with a shift at `w.bits - 1`, `w.bits` or `w.bits + 1` for `shl`/`shr`. Both
 operands are still drawn by `self` on the main stream first and discarded
 when the pair fires, the same technique the single-literal draw uses, so
 this too leaves `main`, `side` and `call` exactly where trunk leaves them
-when it does not fire. `pairRate` raises the rate to one in two at `i64`,
-signed, `*` or `/` specifically (`pairRate`'s own doc says why: verified by
-hand, `min_T`'s bit pattern only confuses `multiplier_shift` at 64 bits, and
+when it does not fire.
+
+`pairRate` raises the rate to one in four at `i64`, signed, `*` specifically
+(`pairRate`'s own doc says why, including why the modulus is `(25, 100)` and
+not the plainer `(1, 4)`: verified by hand, `min_T`'s bit pattern only
+confuses `multiplier_shift` at 64 bits, `/` is unaffected by the mutant, and
 the ordinary rate under-reached the shape in a 1,000-program run). With it,
-`--gen 1000 --seed 23` draws the RUE-2318 shape itself at `gen_23_73`:
-`fn f0() -> i64 { ((-9223372036854775808) * (-1)) }` — the model accepts it
-and traps with overflow; the RUE-2318 mutant accepts it too but computes
-`-9223372036854775808` and exits `0`.
+`--gen 1000 --seed 23` draws the RUE-2318 shape itself at `gen_23_73` — one
+in two of those draws (`arithBinop`'s own `(50, 100)`) binds the second
+operand through a `let` first, testing `multiplier_shift`'s actual shape (a
+literal multiplier against a runtime value) rather than only
+literal-times-literal; at `gen_23_73` it does: `fn f0() -> i64 { let v0: i64
+= (-1); (min_T * v0) }`. The model accepts it and traps with overflow; the
+RUE-2318 mutant accepts it too but computes `min_T` and exits `0`. This one
+program is the only generated catch at this setting; `--gen 200 --seed 7`
+catches nothing.
 
 ## What it deliberately does not guarantee
 
