@@ -1003,7 +1003,7 @@ an operand expression, which is also why no `(Panic-Operand)` case is needed.
 (Enum-Intro) §5.5 types: the enum's index, the variant's **0-based tag** (the
 `Kj` of §6.1's value form, which is the variant's declaration slot) and one
 payload argument per declared component, presented left to right. `match scrut
-arms` is §2's `match e0 { pat1 => e1, … }` in the canonical form §5.5 fixes:
+arms` is §2's `match e0 { pat1 => e1, … }` in the match-compilation form §5.5 fixes:
 **exactly one arm per variant, in declaration order**, so the patterns are not
 represented at all — arm `j` is the arm for variant `j`, and the `a_j` payload
 locals it binds are de Bruijn binders of its body, bound the way `letIn` binds

@@ -39,7 +39,7 @@ decided by `checkNoCycle`, which is what makes either equation a definition —
 and which sees **through an array element**, since `3.0:5` names array
 elements beside fields and payloads: `struct S { x0: [S; 1] }` is E0483 for
 the compiler and fails `RueCore.checkDecls` here); struct literals ((Struct-Intro) §5.8, (D-Struct) §6.5), enum
-construction and the `match` that eliminates it in §5.5's canonical form —
+construction and the `match` that eliminates it in §5.5's match-compilation form —
 one arm per variant, binding that variant's payload as fresh `Owned` locals
 that leave scope at the arm's end ((Enum-Intro)/(Match) §5.5,
 (D-Enum-Intro)/(D-Match) §6.6, `6.3:17`) — and §6.11's drop order — a value's user
@@ -683,7 +683,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     nothing, says `panic: boom` and exits 101 (verified by hand).
     `panicPastAffine` is the same shape one class down, where the obligation
     was never there to lose.
-- **Covers:** whole bindings, **paths and per-field obligations**, the binary
+- **Covers:** whole bindings, **field-sensitive obligations**, the binary
   join, by-value parameters, and struct values whose class is `Linear` through
   a field — §3's join, proved to be what a declaration records
   (`RueCore.class_unique`, one unconditional statement over both layers, with

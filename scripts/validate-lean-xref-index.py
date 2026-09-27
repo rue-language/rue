@@ -348,7 +348,7 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ("e", "match e0 { pat1 => e1, ..., patk => ek }"): (
         "partial",
         ["Expr.match"],
-        "§5.5's canonical form only: an enum scrutinee and exactly one arm per "
+        "§5.5's match-compilation form: an enum scrutinee and exactly one arm per "
         "variant in declaration order, so the patterns are not represented — arm `j` "
         "is variant `j`'s and binds its payload as de Bruijn binders of its body. "
         "(Match) §5.5 and (D-Match) §6.6 are the rules; the wildcard, the repeated "
