@@ -26,7 +26,7 @@ diverging forms, which the fragment's rules fold (Sub-Never) into by
 concluding at every type. `check` returns `never` exactly where the rule it
 mirrors concludes at an arbitrary type, and `check_sound` says so: a `never`
 result has a derivation at **every** type (§5.7's (Sub-Never)). -/
-inductive CTy where
+inductive TyOrNever where
   /-- §5.7's `never`: the expression has a derivation at every type. -/
   | never
   /-- An ordinary type. -/
@@ -35,13 +35,13 @@ deriving DecidableEq, Repr
 
 /-- Whether a checked type admits `T` — (Sub-Never) §5.7 for `never`, identity
 otherwise (helper). -/
-def CTy.fits : CTy → Ty → Bool
+def TyOrNever.fits : TyOrNever → Ty → Bool
   | .never, _ => true
   | .ty T', T => decide (T' = T)
 
 /-- Whether one checked type admits every type another admits — the arm
 comparison `match` makes against the type `armsJoinTy` fixed (helper). -/
-def CTy.fitsC : CTy → CTy → Bool
+def TyOrNever.fitsC : TyOrNever → TyOrNever → Bool
   | .never, _ => true
   | .ty T', .ty T => decide (T' = T)
   | .ty _, .never => false
@@ -49,13 +49,13 @@ def CTy.fitsC : CTy → CTy → Bool
 /-- The common type of two branch arms, §5.5's single `T` with (Sub-Never)
 §5.7 applied to a diverging arm: `never` meets anything, two types meet only
 when equal (helper). -/
-def CTy.meet : CTy → CTy → Option CTy
+def TyOrNever.meet : TyOrNever → TyOrNever → Option TyOrNever
   | .never, c => some c
   | c, .never => some c
   | .ty T₁, .ty T₂ => if T₁ = T₂ then some (.ty T₁) else none
 
 /-- A type a checked type admits, defaulting when it admits them all (helper). -/
-def CTy.pick : CTy → Ty → Ty
+def TyOrNever.pick : TyOrNever → Ty → Ty
   | .ty T, _ => T
   | .never, d => d
 
@@ -135,13 +135,13 @@ def headIter (D : Decls) (body : Ctx → Option (Option Ctx)) (Γ : Ctx) :
 
 mutual
 /-- The §5 judgment as an algorithm: one case per `Typed` rule, in the same
-order, producing the type (`CTy`) and §5.3's outgoing `Ω` or rejecting. `P`
+order, producing the type (`TyOrNever`) and §5.3's outgoing `Ω` or rejecting. `P`
 is the top-level function environment (Call) §5.8 looks a callee up in and
 `R` the enclosing function's declared return type (Return-Value) §5.7 checks
 a `return` operand against. Where an operand's `Ω` is `⊥` the algorithm stops
 exactly where the `-Bottom` rules stop, and a branch joins only the arms that
 continue (`Ctx.joinOpt`, `Ctx.joinOpts`). -/
-def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
+def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (TyOrNever × Out)
   | .intLit w s n => if InBounds w s n then some (.ty (.int w s), ⟨some Γ, []⟩) else none
   | .boolLit _ => some (.ty .bool, ⟨some Γ, []⟩)
   | .unitLit => some (.ty .unit, ⟨some Γ, []⟩)
@@ -444,7 +444,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (CTy × Out)
       | some (.ty .bool, ⟨some Γ₀, Δ₀⟩) =>
         (match check P R Γ₀ e₁, check P R Γ₀ e₂ with
         | some (c₁, Ω₁), some (c₂, Ω₂) =>
-            (match CTy.meet c₁ c₂ with
+            (match TyOrNever.meet c₁ c₂ with
              | some c' =>
                (match Ctx.joinOpt P.decls Ω₁.norm Ω₂.norm with
                 | some o => some (c', ⟨o, Ω₁.brk ++ Ω₂.brk ++ Δ₀⟩)
@@ -541,9 +541,9 @@ def checkIdx (P : Program) (R : Ty) : Ctx → List Expr → Option (List Ty × O
 `never` when every arm diverges at `never`. §5.5 states the premise as one
 type `T` for every arm and lets (Sub-Never) supply it for a diverging one, so
 `check` fixes `T` here and compares the others against it — exactly what it
-does for `ite`'s two arms (`CTy.meet`). -/
+does for `ite`'s two arms (`TyOrNever.meet`). -/
 def armsJoinTy (P : Program) (R : Ty) (Γ₀ : Ctx) :
-    List Expr → List (List Ty) → CTy
+    List Expr → List (List Ty) → TyOrNever
   | e :: es, Ts :: Tss =>
       match check P R (extendArm Ts Γ₀) e with
       | some (.ty T, _) => .ty T
@@ -558,7 +558,7 @@ context per arm — `none` for an arm that diverges — in declaration order, an
 the arms' deliveries, which is what `Ctx.joinOpts` then folds. A count
 mismatch between the arms and the variants is the last clause's `none` —
 `check` has already required the counts to agree, so no program reaches it. -/
-def checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (c : CTy) :
+def checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (c : TyOrNever) :
     List Expr → List (List Ty) → Option (List (Option Ctx) × List Ctx)
   | [], [] => some ([], [])
   | e :: es, Ts :: Tss =>

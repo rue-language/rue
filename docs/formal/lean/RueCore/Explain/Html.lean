@@ -115,7 +115,7 @@ partial def derivHtml (P : Program) (R : Ty) : Deriv → String
       let binders := binderTys Γ
       let concl := match v with
         | .accept c Ω =>
-            tagc "div" "concl" ("⇒ " ++ esc (cTyName c) ++ " ⊣ " ++
+            tagc "div" "concl" ("⇒ " ++ esc (tyOrNeverName c) ++ " ⊣ " ++
               (match Ω.norm, Ω.brk with
                | some Γ', [] => ctxHtml Γ'
                | _, _ => esc (outLine Ω)))

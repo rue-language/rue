@@ -59,7 +59,7 @@ def section' (title : String) : List String :=
 right-hand side: `⇒ T ⊣ Σ'`, or the premise that failed. -/
 def verdictLines (indent : Nat) : Verdict → List String
   | .accept c Ω =>
-      [sp indent ++ pad 8 "⇒" ++ cTyName c ++ "  ⊣  " ++ clip 80 (outLine Ω)]
+      [sp indent ++ pad 8 "⇒" ++ tyOrNeverName c ++ "  ⊣  " ++ clip 80 (outLine Ω)]
   | .reject why =>
       (sp indent ++ pad 8 "✗" ++ "this premise fails:") ::
         para (indent + 8) 68 why
@@ -172,7 +172,7 @@ def fnVerdictLines (P : Program) : List (Nat × FnDef × Deriv) → List String
               | some Γf => decide (NoResidualLinear P.decls Γf)
               | none => true
             if !c.fits fd.ret then
-              [head ++ "  — REJECTED: the body has type " ++ cTyName c ++
+              [head ++ "  — REJECTED: the body has type " ++ tyOrNeverName c ++
                  ", not the declared return type"]
             else if !exitOk then
               [head ++ "  — REJECTED: a by-value parameter or a still-open binding is",
@@ -183,9 +183,9 @@ def fnVerdictLines (P : Program) : List (Nat × FnDef × Deriv) → List String
             else
               (match Ω.norm with
                | some Γf =>
-                   [head ++ "  — body ⇒ " ++ cTyName c ++ ", exit Σ " ++ clip 40 (ctxLine Γf)]
+                   [head ++ "  — body ⇒ " ++ tyOrNeverName c ++ ", exit Σ " ++ clip 40 (ctxLine Γf)]
                | none =>
-                   [head ++ "  — body ⇒ " ++ cTyName c ++ ", exit ⊥ (no normal exit)"])
+                   [head ++ "  — body ⇒ " ++ tyOrNeverName c ++ ", exit ⊥ (no normal exit)"])
         | none => [head ++ "  — REJECTED: see the derivation below"]
       tail ++ fnVerdictLines P rest
 

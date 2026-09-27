@@ -48,21 +48,21 @@ over the continuing arms' outgoing contexts in declaration order.
 The one thing `check` must *choose* is the arms' shared type, since §5.5 states
 it as one `T` and lets (Sub-Never) coerce a diverging arm to it. `armsJoinTy`
 takes the first arm's that has one — skipping an arm whose type is `never` —
-and every other arm is compared against that (`CTy.fitsC`), the same choice
-`ite` makes for its two arms (`CTy.meet`). The arms are therefore checked
+and every other arm is compared against that (`TyOrNever.fitsC`), the same choice
+`ite` makes for its two arms (`TyOrNever.meet`). The arms are therefore checked
 twice, which costs time and nothing else.
 
 ## `⊥`, algorithmically
 
 `check` computes §5.3's outgoing result `Ω` (`Out`) and a type that may be
-`never` (`CTy`). A form the rules type at `⊥` — `return`, `@panic`, and every
+`never` (`TyOrNever`). A form the rules type at `⊥` — `return`, `@panic`, and every
 `-Bottom` rule — produces `⟨none, Δ⟩`, and the forms that consume a result
 stop exactly where the rules do: a diverging operand ends a strict context
 ((Strict-Bottom) §5.3), a diverging prefix ends a sequence or a `let`
 ((Seq-Bottom), (Let-Bottom)), and a branch joins only the arms that continue
 (`Ctx.joinOpt`, `Ctx.joinOpts`, §5.5). A `never` result is one whose rule
 concludes at every type, and `check_sound` says so: `check P R Γ e = some (c,
-Ω)` gives a derivation at every type `c` admits (`CTy.fits`).
+Ω)` gives a derivation at every type `c` admits (`TyOrNever.fits`).
 
 Before RUE-2368 `check` had no `⊥`: it concluded a `return` or `@panic` at the
 enclosing return type `R` and at the state in force, and handed that state to
@@ -146,39 +146,39 @@ the definitions layer; this module proves it sound (README, "Layers").
 namespace RueCore
 
 /-- (helper) `check`'s result type `ty X` admits exactly `X`. -/
-theorem CTy.eq_of_fits {T' T : Ty} (h : (CTy.ty T').fits T = true) : T' = T := by
-  simpa [CTy.fits] using h
+theorem TyOrNever.eq_of_fits {T' T : Ty} (h : (TyOrNever.ty T').fits T = true) : T' = T := by
+  simpa [TyOrNever.fits] using h
 
 /-- (helper) A type admits itself. -/
-theorem CTy.fits_self (T : Ty) : (CTy.ty T).fits T = true := by simp [CTy.fits]
+theorem TyOrNever.fits_self (T : Ty) : (TyOrNever.ty T).fits T = true := by simp [TyOrNever.fits]
 
 /-- (helper) `never` admits every type — (Sub-Never) §5.7. -/
-theorem CTy.fits_never (T : Ty) : CTy.never.fits T = true := rfl
+theorem TyOrNever.fits_never (T : Ty) : TyOrNever.never.fits T = true := rfl
 
 /-- (helper) `pick` chooses a type the checked type admits. -/
-theorem CTy.fits_pick (c : CTy) (d : Ty) : c.fits (c.pick d) = true := by
-  cases c <;> simp [CTy.fits, CTy.pick]
+theorem TyOrNever.fits_pick (c : TyOrNever) (d : Ty) : c.fits (c.pick d) = true := by
+  cases c <;> simp [TyOrNever.fits, TyOrNever.pick]
 
 /-- (helper) An arm whose type fits the one `armsJoinTy` fixed admits every type
 that one admits. -/
-theorem CTy.fitsC_fits {c' c : CTy} {T : Ty} (h : c'.fitsC c = true) (hT : c.fits T = true) :
+theorem TyOrNever.fitsC_fits {c' c : TyOrNever} {T : Ty} (h : c'.fitsC c = true) (hT : c.fits T = true) :
     c'.fits T = true := by
-  cases c' <;> cases c <;> simp_all [CTy.fitsC, CTy.fits]
+  cases c' <;> cases c <;> simp_all [TyOrNever.fitsC, TyOrNever.fits]
 
 /-- (helper) Two arms whose types meet both admit whatever their meet admits. -/
-theorem CTy.meet_fits {c₁ c₂ c' : CTy} {T : Ty} (h : CTy.meet c₁ c₂ = some c')
+theorem TyOrNever.meet_fits {c₁ c₂ c' : TyOrNever} {T : Ty} (h : TyOrNever.meet c₁ c₂ = some c')
     (hT : c'.fits T = true) : c₁.fits T = true ∧ c₂.fits T = true := by
   cases c₁ with
   | never =>
-      simp only [CTy.meet, Option.some.injEq] at h
+      simp only [TyOrNever.meet, Option.some.injEq] at h
       subst h; exact ⟨rfl, hT⟩
   | ty T₁ =>
     cases c₂ with
     | never =>
-        simp only [CTy.meet, Option.some.injEq] at h
+        simp only [TyOrNever.meet, Option.some.injEq] at h
         subst h; exact ⟨hT, rfl⟩
     | ty T₂ =>
-        simp only [CTy.meet] at h
+        simp only [TyOrNever.meet] at h
         split at h
         · rename_i heq
           simp only [Option.some.injEq] at h
@@ -187,13 +187,13 @@ theorem CTy.meet_fits {c₁ c₂ c' : CTy} {T : Ty} (h : CTy.meet c₁ c₂ = so
 
 /-- (helper) Close a `check_sound` case whose result type is an ordinary type:
 the only type it admits is that one. -/
-local macro "fin_ty" : tactic => `(tactic| (intro T hT; cases CTy.eq_of_fits hT))
+local macro "fin_ty" : tactic => `(tactic| (intro T hT; cases TyOrNever.eq_of_fits hT))
 
 mutual
 /-- Every `check` acceptance is a real derivation of the §5 judgment, at every
 type the result admits (a `never` result at every type, (Sub-Never) §5.7), so
 the §7 theorems apply to whatever `check` accepts. -/
-theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy} {Ω : Out},
+theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : TyOrNever} {Ω : Out},
     check P R Γ e = some (c, Ω) → ∀ T, c.fits T = true → Typed P R Γ e T Ω
   | .intLit w s n, Γ, c, Ω, h => by
       simp only [check] at h
@@ -255,7 +255,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
                 simp only [h₁] at h
                 split at h
                 · cases h; fin_ty
-                  exact .binopBot (check_sound e₁ h₁ _ (CTy.fits_self _)) ‹_›
+                  exact .binopBot (check_sound e₁ h₁ _ (TyOrNever.fits_self _)) ‹_›
                 · cases h
             | some Γ₁ =>
                 simp only [h₁] at h
@@ -268,7 +268,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
                       simp only [h₂] at h
                       split at h
                       · cases h; fin_ty
-                        exact .binop (check_sound e₁ h₁ _ (CTy.fits_self _))
+                        exact .binop (check_sound e₁ h₁ _ (TyOrNever.fits_self _))
                           (check_sound e₂ h₂ _ rfl) ‹_›
                       · cases h
                   | ty T₂ =>
@@ -279,8 +279,8 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
                         · rename_i hws
                           obtain ⟨rfl, rfl, hadm⟩ := hws
                           cases h; fin_ty
-                          exact .binop (check_sound e₁ h₁ _ (CTy.fits_self _))
-                            (check_sound e₂ h₂ _ (CTy.fits_self _)) hadm
+                          exact .binop (check_sound e₁ h₁ _ (TyOrNever.fits_self _))
+                            (check_sound e₂ h₂ _ (TyOrNever.fits_self _)) hadm
                         · cases h
                     | float _ | bool | unit | struct _ | enum _ | array _ _ => simp [h₂] at h
           | float w =>
@@ -289,7 +289,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
                 simp only [h₁] at h
                 split at h
                 · cases h; fin_ty
-                  exact .floatBinopBot (check_sound e₁ h₁ _ (CTy.fits_self _)) ‹_›
+                  exact .floatBinopBot (check_sound e₁ h₁ _ (TyOrNever.fits_self _)) ‹_›
                 · cases h
             | some Γ₁ =>
                 simp only [h₁] at h
@@ -302,7 +302,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
                       simp only [h₂] at h
                       split at h
                       · cases h; fin_ty
-                        exact .floatBinop (check_sound e₁ h₁ _ (CTy.fits_self _))
+                        exact .floatBinop (check_sound e₁ h₁ _ (TyOrNever.fits_self _))
                           (check_sound e₂ h₂ _ rfl) ‹_›
                       · cases h
                   | ty T₂ =>
@@ -313,8 +313,8 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
                         · rename_i hws
                           obtain ⟨rfl, hadm⟩ := hws
                           cases h; fin_ty
-                          exact .floatBinop (check_sound e₁ h₁ _ (CTy.fits_self _))
-                            (check_sound e₂ h₂ _ (CTy.fits_self _)) hadm
+                          exact .floatBinop (check_sound e₁ h₁ _ (TyOrNever.fits_self _))
+                            (check_sound e₂ h₂ _ (TyOrNever.fits_self _)) hadm
                         · cases h
                     | int _ _ | bool | unit | struct _ | enum _ | array _ _ => simp [h₂] at h
           | bool | unit | struct _ | enum _ | array _ _ => simp [h₁] at h
@@ -326,14 +326,14 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
   | .fintrin (.intToFloat w) e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
-      · cases h; fin_ty; exact .intToFloat (check_sound e ‹_› _ (CTy.fits_self _))
+      · cases h; fin_ty; exact .intToFloat (check_sound e ‹_› _ (TyOrNever.fits_self _))
       · cases h
   | .fintrin (.floatToInt w s) e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
       · split at h
         · cases h; fin_ty
-          exact .floatIntrin (check_sound e ‹_› _ (CTy.fits_self _)) (by simpa using ‹_›)
+          exact .floatIntrin (check_sound e ‹_› _ (TyOrNever.fits_self _)) (by simpa using ‹_›)
         · cases h
       · cases h
   | .fintrin (.floatCast w) e, Γ, c, Ω, h => by
@@ -341,7 +341,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
       split at h
       · split at h
         · cases h; fin_ty
-          exact .floatIntrin (check_sound e ‹_› _ (CTy.fits_self _)) (by simpa using ‹_›)
+          exact .floatIntrin (check_sound e ‹_› _ (TyOrNever.fits_self _)) (by simpa using ‹_›)
         · cases h
       · cases h
   | .fintrin (.roundOp k) e, Γ, c, Ω, h => by
@@ -349,29 +349,29 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
       split at h
       · split at h
         · cases h; fin_ty
-          exact .floatIntrin (check_sound e ‹_› _ (CTy.fits_self _)) (by simpa using ‹_›)
+          exact .floatIntrin (check_sound e ‹_› _ (TyOrNever.fits_self _)) (by simpa using ‹_›)
         · cases h
       · cases h
   | .unop .neg e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
-      · cases h; fin_ty; exact .neg (check_sound e ‹_› _ (CTy.fits_self _))
-      · cases h; fin_ty; exact .floatNeg (check_sound e ‹_› _ (CTy.fits_self _))
+      · cases h; fin_ty; exact .neg (check_sound e ‹_› _ (TyOrNever.fits_self _))
+      · cases h; fin_ty; exact .floatNeg (check_sound e ‹_› _ (TyOrNever.fits_self _))
       · cases h
   | .unop .not e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
-      · cases h; fin_ty; exact .notOp (check_sound e ‹_› _ (CTy.fits_self _))
+      · cases h; fin_ty; exact .notOp (check_sound e ‹_› _ (TyOrNever.fits_self _))
       · cases h
   | .unop .bitnot e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
-      · cases h; fin_ty; exact .bitnot (check_sound e ‹_› _ (CTy.fits_self _))
+      · cases h; fin_ty; exact .bitnot (check_sound e ‹_› _ (TyOrNever.fits_self _))
       · cases h
   | .intCast w s e, Γ, c, Ω, h => by
       simp only [check] at h
       split at h
-      · cases h; fin_ty; exact .intCast (check_sound e ‹_› _ (CTy.fits_self _))
+      · cases h; fin_ty; exact .intCast (check_sound e ‹_› _ (TyOrNever.fits_self _))
       · cases h
   | .panic msg, Γ, c, Ω, h => by
       simp only [check] at h
@@ -383,7 +383,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
       split at h
       · rename_i T₁ Ω₁ h₁
         split at h
-        · cases h; fin_ty; exact .dbg (check_sound e h₁ _ (CTy.fits_self _)) ‹_›
+        · cases h; fin_ty; exact .dbg (check_sound e h₁ _ (TyOrNever.fits_self _)) ‹_›
         · cases h
       · cases h
   | .mkStruct s args, Γ, c, Ω, h => by
@@ -436,7 +436,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
                 simp only [hscrut, Option.some.injEq, Prod.mk.injEq] at h
                 obtain ⟨rfl, rfl⟩ := h
                 intro T _
-                exact .matchBot (check_sound scrut hscrut _ (CTy.fits_self _))
+                exact .matchBot (check_sound scrut hscrut _ (TyOrNever.fits_self _))
             | some Γ₀ =>
               simp only [hscrut] at h
               cases hed : P.decls.enums[e]? with
@@ -457,7 +457,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
                         simp only [hjoin, Option.some.injEq, Prod.mk.injEq] at h
                         obtain ⟨rfl, rfl⟩ := h
                         intro T hT
-                        exact .«match» (check_sound scrut hscrut _ (CTy.fits_self _)) hed hlen
+                        exact .«match» (check_sound scrut hscrut _ (TyOrNever.fits_self _)) hed hlen
                           (checkArms_sound arms harms T hT) hjoin
                 · simp only [if_neg hlen] at h; cases h
   | .mkArray Te args, Γ, c, Ω, h => by
@@ -476,7 +476,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
           obtain ⟨hT, hcopy⟩ := hprem
           subst hT
           cases h; fin_ty
-          exact .repeatArray (check_sound e hchk _ (CTy.fits_self _)) hcopy
+          exact .repeatArray (check_sound e hchk _ (TyOrNever.fits_self _)) hcopy
         · cases h
       · cases h
   | .indexRead pl idx πs, Γ, c, Ω, h => by
@@ -540,7 +540,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
                     simp only [hchk, Option.some.injEq, Prod.mk.injEq] at h
                     obtain ⟨rfl, rfl⟩ := h
                     fin_ty
-                    exact .indexWriteBotRhs (check_sound e hchk _ (CTy.fits_pick ce T₀))
+                    exact .indexWriteBotRhs (check_sound e hchk _ (TyOrNever.fits_pick ce T₀))
                 | some Γ₁ =>
                   simp only [hchk] at h
                   split at h
@@ -664,7 +664,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
             simp only [h₁, Option.some.injEq, Prod.mk.injEq] at h
             obtain ⟨rfl, rfl⟩ := h
             intro T _
-            exact .letBot (check_sound e₁ h₁ _ (CTy.fits_pick c₁ .unit))
+            exact .letBot (check_sound e₁ h₁ _ (TyOrNever.fits_pick c₁ .unit))
         | some Γ₁ =>
           cases c₁ with
           | never => simp [h₁] at h
@@ -679,7 +679,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
                   simp only [h₂, Option.some.injEq, Prod.mk.injEq] at h
                   obtain ⟨rfl, rfl⟩ := h
                   intro T hT
-                  exact .letInDiv (check_sound e₁ h₁ _ (CTy.fits_self _)) (check_sound e₂ h₂ T hT)
+                  exact .letInDiv (check_sound e₁ h₁ _ (TyOrNever.fits_self _)) (check_sound e₂ h₂ T hT)
               | some Γb =>
                 cases Γb with
                 | nil => simp [h₂] at h
@@ -691,7 +691,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
                     simp only [Option.some.injEq, Prod.mk.injEq] at h
                     obtain ⟨rfl, rfl⟩ := h
                     intro T hT
-                    exact .letIn (check_sound e₁ h₁ _ (CTy.fits_self _)) (check_sound e₂ h₂ T hT)
+                    exact .letIn (check_sound e₁ h₁ _ (TyOrNever.fits_self _)) (check_sound e₂ h₂ T hT)
                       ((Bool.not_eq_true _).mp hres)
   | .assign pl e, Γ, c, Ω, h => by
       simp only [check] at h
@@ -711,7 +711,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
                   simp only [hchk, Option.some.injEq, Prod.mk.injEq] at h
                   obtain ⟨rfl, rfl⟩ := h
                   fin_ty
-                  exact .assignBot (check_sound e hchk _ (CTy.fits_pick ce T₀))
+                  exact .assignBot (check_sound e hchk _ (TyOrNever.fits_pick ce T₀))
               | some Γ₁ =>
                 simp only [hchk] at h
                 split at h
@@ -742,7 +742,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
             simp only [h₁, Option.some.injEq, Prod.mk.injEq] at h
             obtain ⟨rfl, rfl⟩ := h
             intro T _
-            exact .seqBot (check_sound e₁ h₁ _ (CTy.fits_pick c₁ .unit))
+            exact .seqBot (check_sound e₁ h₁ _ (TyOrNever.fits_pick c₁ .unit))
         | some Γ₁ =>
           cases c₁ with
           | never => simp [h₁] at h
@@ -758,7 +758,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
                   simp only [h₂, Option.some.injEq, Prod.mk.injEq] at h
                   obtain ⟨rfl, rfl⟩ := h
                   intro T hT
-                  exact .seq (check_sound e₁ h₁ _ (CTy.fits_self _)) hnl (check_sound e₂ h₂ T hT)
+                  exact .seq (check_sound e₁ h₁ _ (TyOrNever.fits_self _)) hnl (check_sound e₂ h₂ T hT)
   | .ite cnd e₁ e₂, Γ, c, Ω, h => by
       simp only [check] at h
       cases hc : check P R Γ cnd with
@@ -792,7 +792,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
                   obtain ⟨c₁, Ω₁⟩ := r₁
                   obtain ⟨c₂, Ω₂⟩ := r₂
                   simp only [h₁, h₂] at h
-                  cases hm : CTy.meet c₁ c₂ with
+                  cases hm : TyOrNever.meet c₁ c₂ with
                   | none => simp [hm] at h
                   | some c' =>
                     simp only [hm] at h
@@ -802,8 +802,8 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {c : CTy}
                         simp only [hj, Option.some.injEq, Prod.mk.injEq] at h
                         obtain ⟨rfl, rfl⟩ := h
                         intro T hT
-                        obtain ⟨hT₁, hT₂⟩ := CTy.meet_fits hm hT
-                        exact .ite (check_sound cnd hc _ (CTy.fits_self _))
+                        obtain ⟨hT₁, hT₂⟩ := TyOrNever.meet_fits hm hT
+                        exact .ite (check_sound cnd hc _ (TyOrNever.fits_self _))
                           (check_sound e₁ h₁ T hT₁) (check_sound e₂ h₂ T hT₂) hj
   | .call f args, Γ, c, Ω, h => by
       simp only [check] at h
@@ -921,7 +921,7 @@ theorem checkIdx_sound {P : Program} {R : Ty} : ∀ (es : List Expr) {Γ : Ctx} 
             | none =>
                 simp only [hchk, Option.some.injEq, Prod.mk.injEq] at h
                 obtain ⟨rfl, rfl⟩ := h
-                refine ⟨.consBot (check_sound e hchk _ (CTy.fits_self _)) (by simp), ?_⟩
+                refine ⟨.consBot (check_sound e hchk _ (TyOrNever.fits_self _)) (by simp), ?_⟩
                 simp [Ty.isInt]
             | some Γ₁ =>
                 simp only [hchk] at h
@@ -932,12 +932,12 @@ theorem checkIdx_sound {P : Program} {R : Ty} : ∀ (es : List Expr) {Γ : Ctx} 
                   simp only [hrest, Option.some.injEq, Prod.mk.injEq] at h
                   obtain ⟨rfl, rfl⟩ := h
                   obtain ⟨hta, hint⟩ := checkIdx_sound es hrest
-                  exact ⟨.cons (check_sound e hchk _ (CTy.fits_self _)) hta,
+                  exact ⟨.cons (check_sound e hchk _ (TyOrNever.fits_self _)) hta,
                     by simp [Ty.isInt, hint]⟩
 
 /-- Every `checkArms` acceptance is a real (Match) §5.5 arm-list derivation, at
 every type the arms' fixed type admits. -/
-theorem checkArms_sound {P : Program} {R : Ty} {Γ₀ : Ctx} {c : CTy} :
+theorem checkArms_sound {P : Program} {R : Ty} {Γ₀ : Ctx} {c : TyOrNever} :
     ∀ (es : List Expr) {Tss : List (List Ty)} {os : List (Option Ctx)} {Δs : List Ctx},
     checkArms P R Γ₀ c es Tss = some (os, Δs) → ∀ T, c.fits T = true →
       TypedArms P R Γ₀ es Tss T os Δs
@@ -969,7 +969,7 @@ theorem checkArms_sound {P : Program} {R : Ty} {Γ₀ : Ctx} {c : CTy} :
                     simp only [hrest, Option.some.injEq, Prod.mk.injEq] at h
                     obtain ⟨rfl, rfl⟩ := h
                     intro T hT
-                    exact .arm (check_sound e hchk T (CTy.fitsC_fits hcond.1 hT)) hcond.2
+                    exact .arm (check_sound e hchk T (TyOrNever.fitsC_fits hcond.1 hT)) hcond.2
                       (checkArms_sound es hrest T hT)
                 · cases h
             | none =>
@@ -983,7 +983,7 @@ theorem checkArms_sound {P : Program} {R : Ty} {Γ₀ : Ctx} {c : CTy} :
                     simp only [hrest, Option.some.injEq, Prod.mk.injEq] at h
                     obtain ⟨rfl, rfl⟩ := h
                     intro T hT
-                    exact .armDiv (check_sound e hchk T (CTy.fitsC_fits hcond hT))
+                    exact .armDiv (check_sound e hchk T (TyOrNever.fitsC_fits hcond hT))
                       (checkArms_sound es hrest T hT)
                 · cases h
 
@@ -1118,7 +1118,7 @@ theorem Decls.grounded_peel_zero (D : Decls) (d : TyName) :
 at round `n`. This is the peel read backwards, and it is what turns an
 acceptance into well-foundedness (helper). -/
 theorem Decls.grounded_pred {D : Decls} {n : Nat} {d d' : TyName}
-    (h : Ty.grounded (D.topoSort (n + 1)) d.ty = true) (hn : D.Names d d') :
+    (h : Ty.grounded (D.topoSort (n + 1)) d.ty = true) (hn : D.ByValueEdge d d') :
     Ty.grounded (D.topoSort n) d'.ty = true := by
   cases d with
   | struct s =>
@@ -1128,7 +1128,7 @@ theorem Decls.grounded_pred {D : Decls} {n : Nat} {d d' : TyName}
       | some sd =>
           rw [hd] at h
           simp only [Option.map_some, Option.getD_some, List.all_eq_true] at h
-          simp only [Decls.Names, Decls.byValue, hd] at hn
+          simp only [Decls.ByValueEdge, Decls.byValue, hd] at hn
           obtain ⟨T, hT, hd'⟩ := hn
           exact Ty.grounded_tyNames (h T hT) hd'
   | enum e =>
@@ -1138,7 +1138,7 @@ theorem Decls.grounded_pred {D : Decls} {n : Nat} {d d' : TyName}
       | some ed =>
           rw [hd] at h
           simp only [Option.map_some, Option.getD_some, List.all_eq_true] at h
-          simp only [Decls.Names, Decls.byValue, hd] at hn
+          simp only [Decls.ByValueEdge, Decls.byValue, hd] at hn
           obtain ⟨T, hTmem, hd'⟩ := hn
           obtain ⟨Ts, hTs, hT⟩ := List.mem_flatten.mp hTmem
           exact Ty.grounded_tyNames (h Ts hTs T hT) hd'
@@ -1146,7 +1146,7 @@ theorem Decls.grounded_pred {D : Decls} {n : Nat} {d d' : TyName}
 /-- A declaration grounded at some round is accessible in the by-value
 relation (helper). -/
 theorem Decls.acc_of_grounded (D : Decls) : ∀ (n : Nat) (d : TyName),
-    Ty.grounded (D.topoSort n) d.ty = true → Acc (fun a b => D.Names b a) d
+    Ty.grounded (D.topoSort n) d.ty = true → Acc (fun a b => D.ByValueEdge b a) d
   | 0, d, h => absurd h (by rw [D.grounded_peel_zero d]; simp)
   | n + 1, d, h =>
       Acc.intro d (fun d' hd' => D.acc_of_grounded n d' (Decls.grounded_pred h hd'))
@@ -1154,8 +1154,8 @@ theorem Decls.acc_of_grounded (D : Decls) : ∀ (n : Nat) (d : TyName),
 /-- A declaration index the environment does not have contains nothing, so it
 is accessible outright (helper). -/
 theorem Decls.acc_of_empty {D : Decls} {d : TyName} (h : D.byValue d = []) :
-    Acc (fun a b => D.Names b a) d :=
-  Acc.intro d (fun _ hd' => absurd hd' (by simp [Decls.Names, h]))
+    Acc (fun a b => D.ByValueEdge b a) d :=
+  Acc.intro d (fun _ hd' => absurd hd' (by simp [Decls.ByValueEdge, h]))
 
 /-- **Every `checkNoCycle` acceptance is `3.0:5`** (`WfNames`): the by-value
 "contains" relation over the declarations is well-founded, so no struct or enum

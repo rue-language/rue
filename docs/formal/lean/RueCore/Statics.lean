@@ -187,7 +187,7 @@ per-layer order does not exclude `struct S { x0: E } / enum E { K(S) }` — a
 shape both equations solve at more than one assignment
 (`Examples.lean`'s cycle witnesses; the compiler reports E0483).
 
-`Decls.Names` is `3.0:5`'s "contains by value" relation, one step, and
+`Decls.ByValueEdge` is `3.0:5`'s "contains by value" relation, one step, and
 `WfNames` is the rule itself: the relation is **well-founded**, so each
 declaration's class is the unique solution of its equation (`class_unique`).
 The calculus states the equations but not this side condition; §3 gains the
@@ -236,14 +236,14 @@ its declaration **through any depth of array nesting** (`Ty.tyNames`), because
 `3.0:5` names array elements beside fields and payloads; without that, a
 struct naming itself through an array element would satisfy `WfNames` and §3's
 equation would have more than one solution at it. -/
-def Decls.Names (D : Decls) (d d' : TyName) : Prop := ∃ T ∈ D.byValue d, d' ∈ T.tyNames
+def Decls.ByValueEdge (D : Decls) (d d' : TyName) : Prop := ∃ T ∈ D.byValue d, d' ∈ T.tyNames
 
 /-- **`3.0:5` (E0483), mechanized**: the by-value "contains" relation over the
 declarations is well-founded, so no declaration reaches itself through a cycle
 of struct fields and enum payloads. This is the one premise that makes §3's
 struct and enum equations a *definition* — `class_unique` is the induction it
 licenses — and it is joint over the two layers because `3.0:5` is. -/
-def WfNames (D : Decls) : Prop := WellFounded (fun d' d => D.Names d d')
+def WfNames (D : Decls) : Prop := WellFounded (fun d' d => D.ByValueEdge d d')
 
 /-- A well-formed declaration environment: `3.0:5`'s acyclicity (`WfNames`),
 §3's class assignment for every struct declaration (`WfStructs`) and for every

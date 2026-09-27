@@ -1953,7 +1953,7 @@ breaks and RUE-1614's exit join when another exit keeps `x`; otherwise a bare
 `break` or one unit-typed leaf and then `break`. The `break` is the arm's
 **last** form, so no syntax follows it in its block (RUE-2376), and the arm is
 `never`-typed, which (Sub-Never) §5.7 coerces to the other arms' type
-(`armsJoinTy` and `CTy.meet` skip it, `Checker/Defs.lean`). -/
+(`armsJoinTy` and `TyOrNever.meet` skip it, `Checker/Defs.lean`). -/
 def breakArm (D : Decls) (Γ : Scope) : G Expr := do
   let owned := indicesWhere Γ (fun b => isAggregate b.ty && b.ty.qual D != .copy)
   if !owned.isEmpty && (← chance 1 2) then return seq (drop (.var (← pick 0 owned))) brk
