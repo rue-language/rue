@@ -531,7 +531,7 @@ abbrev Store := List Cell
 abbrev Env := List Nat
 
 /-- §6.1's frame `φ = ⟨ρ ; σ⟩`: the environment and the frame's open scope
-record — the cells owed a drop when the frame's scopes end, in creation order
+record — the cells with a drop obligation when the frame's scopes end, in creation order
 (dropped newest-first). Every binding of the fragment is a `let` binding or a
 by-value parameter, and both are registered; `borrow`/`inout` parameters,
 which are deliberately never registered (§6.9, `3.8:62`), are not in the
@@ -793,7 +793,7 @@ inductive EvalRes where
   | returned (H : Store) (v : Val) (tr : List Event)
   /-- A `break` unwinding to its loop (§6.10's (D-Break)): the store, the
   scope record of the frame the `break` fired in — the loop reads off it which
-  cells the body still owed a drop — and the trace so far. -/
+  cells of the body still had a drop obligation — and the trace so far. -/
   | broke (H : Store) (scope : List Nat) (tr : List Event)
   | panic (k : PanicKind) (tr : List Event)
   | refused (why : Refusal)
@@ -1155,7 +1155,7 @@ def runAllScopeDrops (D : Decls) (H : Store) (φ : Activation) :
 /-- (D-Call) §6.9: mint one fresh single-cell binding allocation per by-value
 argument, left to right, each holding its argument's value. Returns the store
 and the locations in creation order — the callee's entry scope record, which
-owes a drop for exactly these cells. The callee's environment is its reverse,
+holds a drop obligation for exactly these cells. The callee's environment is its reverse,
 because `Env` (like `Ctx`) lists the innermost binder first and the last
 parameter is the innermost. -/
 def freshParams : Store → List Val → Store × List Nat
@@ -1780,7 +1780,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
           | some fd =>
             if fd.params.length = vs.length then
               -- (D-Call): one fresh cell per by-value argument; the callee's
-              -- entry scope owes a drop for exactly those cells.
+              -- entry scope holds a drop obligation for exactly those cells.
               let minted := freshParams H₁ vs
               let φg : Activation := { env := minted.2.reverse, scope := minted.2 }
               (eval M fuel P minted.1 φg fd.body).bindCall fun H₃ v =>
@@ -1826,7 +1826,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- (D-Break) §6.10: discard the evaluation context — every pending
       -- `endscope` marker inside it included — and hand the loop the frame's
       -- scope record, which is where §6.7 registered every binding the
-      -- discarded markers owed a drop (RUE-1277).
+      -- discarded markers held a drop obligation for (RUE-1277).
       .broke H φ.scope []
 
 /-- A program's outcome (§6.12's top-level result): call the entry function,

@@ -27,8 +27,8 @@ always holds a value; and a live **linear** sub-value is never behind a
 ## The frame invariant (§6.1, §6.9)
 
 A frame carries an environment `ρ` and a scope record `σ`, and the machine
-keeps two books on every live binding: `ρ` says where it is, `σ` says it is
-owed a drop. `ActivationTyping` states both halves at once — `StoreTyping Γ ρ H`, and
+keeps two books on every live binding: `ρ` says where it is, `σ` says it has a
+drop obligation. `ActivationTyping` states both halves at once — `StoreTyping Γ ρ H`, and
 `σ` reversed **is** `ρ`.
 
 The second conjunct is **definitional in this fragment**, and it is worth

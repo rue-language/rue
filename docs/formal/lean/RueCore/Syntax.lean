@@ -1104,7 +1104,7 @@ end
 
 /-- A by-value parameter (§5.8's `mi = ∅` mode): its declared type and its `μ`
 mark, which is what lets a body assign to it (§5.2). `borrow`/`inout`
-parameters, which the caller owns and which owe no drop (`3.8:62`, §6.9), are
+parameters, which the caller owns and which carry no drop obligation (`3.8:62`, §6.9), are
 not in the fragment. -/
 structure Param where
   ty : Ty

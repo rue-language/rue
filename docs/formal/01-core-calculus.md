@@ -2708,7 +2708,7 @@ payload runs its destructor exactly once when its binding leaves scope"
 ### 6.7 `let`, sequencing, and scope-exit drop
 
 `let x = v ; e2` allocates a fresh cell for `x`, binds it, and reduces the body in
-a scope that **owes `x` a drop**. That debt is recorded in **two places at
+a scope in which **`x` has a drop obligation**. That obligation is recorded in **two places at
 once**, and the redundancy is load-bearing (RUE-1277): the cell is appended to
 the frame's innermost open scope record `s` — so the frame-level unwinding of
 `return` (§6.9) and `break` (§6.10) can find and drop it — *and* the body is
@@ -2802,7 +2802,7 @@ is read-only. Let `g` be `fn g(m1 x1:T1, …, mm xm:Tm) -> Tr { e_body }`:
   ⟨ H ; φ ; K ; E[ g(a1,…,am) ] ⟩ → ⟨ H' ; φ_g ; ret(E, φ)·K ; e_body ⟩
 ```
 
-The callee's entry scope owes a drop **only** for the by-value parameter cells;
+The callee's entry scope holds a drop obligation **only** for the by-value parameter cells;
 `inout`/`borrow` parameters are owned by the caller and are exempt (§5.6,
 `3.8:62`). A by-ref binding carries both the root cell and the projection path
 that was passed; reading or writing parameter `xi` therefore reaches exactly the

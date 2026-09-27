@@ -158,7 +158,7 @@ def run (M : FloatSig) (P : Program) (fuel : Nat) : EvalRes :=
   a partial move writes `H[ℓ@π ↦ ⊘]` at exactly the sub-position it takes
   (§6.3, §4.2), and a whole-place move is the case `π = ε`.
 - `φ` is §6.1's frame: the environment `ρ` (position `i` ↦ its location in
-  `H`) and the scope record `σ` (the cells this frame owes a drop, in creation
+  `H`) and the scope record `σ` (the cells with a drop obligation in this frame, in creation
   order).
 - `run` is §6.12's top-level result: call the entry point, function `0`, with
   no arguments.
@@ -508,7 +508,7 @@ Two lemmas turn the clause into what the proof uses:
 
 **`record`: `φ.scope.reverse = φ.env`.** The frame's scope record, read
 newest-first, *is* its environment. §6.1 keeps both books: ρ says where a
-binding lives, σ that it is owed a drop.
+binding lives, σ that it has a drop obligation.
 
 In this fragment the equation costs **nothing** to prove. Every frame the
 interpreter builds (the callee's at a call, the extended one inside a `let`
