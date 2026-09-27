@@ -2050,7 +2050,7 @@ theorem RueCore.no_use_after_move (M : FloatLaws) {P : Program} (h : ProgramType
 
 §7 "No use-after-drop": the machine never touches a retired (`†`) cell.
 Here it is `no_refusal` at one tag, over checked programs, but typing is not
-what makes it true: `run_no_use_after_drop` (`Retire.lean`, RUE-2496) proves
+what makes it true: `run_no_use_after_drop` (`Tombstone.lean`, RUE-2496) proves
 it for every program. `run-all-scope-drops` (§6.9) walks the frame's scope
 record at every `return` and at every frame pop, and what keeps those walks
 off a `†` cell, and stops any cell being retired twice, is structural: a
@@ -2362,7 +2362,7 @@ theorem RueCore.dupProgram_step_double_free (M : FloatSig) :
 
 ### `eval_sim`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **`eval` is simulated by §6's `→*`** (RUE-2289 part 2, ADR-0097 decision
 3), for every expression, store, frame and fuel, on every program: a value, a
@@ -2377,7 +2377,7 @@ theorem RueCore.eval_sim (M : FloatSig) (P : Program) (fuel : Nat) : SimIH M P f
 
 ### `run_sim`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **`run` is simulated by `→*` from §6.12's initial configuration**, on
 every program: a value `run` returns is a terminal configuration `✓` that
@@ -2399,7 +2399,7 @@ theorem RueCore.run_sim (M : FloatSig) (P : Program) (fuel : Nat) :
 
 ### `eval_big_to_small`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **`eval` is sound with respect to §6's reduction** (RUE-2289 part 2;
 ADR-0097 decision 3: "a theorem about `eval` is a theorem about §6 only once
@@ -2427,7 +2427,7 @@ theorem RueCore.eval_big_to_small (M : FloatLaws) {P : Program} (h : ProgramType
 
 ### `eval_steps_of_outOfFuel`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **Fuel counts steps** (RUE-2332; ADR-0097 decision 3). If `eval` exhausts
 `fuel` on an expression, then from that expression in focus, under any context
@@ -2445,7 +2445,7 @@ theorem RueCore.eval_steps_of_outOfFuel (M : FloatSig) (P : Program) (fuel : Nat
 
 ### `run_small_to_big`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **Completeness of `eval` modulo fuel, on every program** (RUE-2289 part
 3, ADR-0097 decision 3; §6.2, §6.12). If §6's `→*` takes the initial
@@ -2475,7 +2475,7 @@ theorem RueCore.run_small_to_big (M : FloatSig) (P : Program) :
 
 ### `eval_small_to_big`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **Completeness of `eval` modulo fuel** (RUE-2289 part 3; ADR-0097
 decision 3: "a theorem about `eval` is a theorem about §6 only once the two
@@ -2504,7 +2504,7 @@ theorem RueCore.eval_small_to_big (M : FloatLaws) {P : Program} (h : ProgramType
 
 ### `run_refused_of_step_stuck`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **A stuck `Step` run is a refusal of `run`, on every program** (§6, §7):
 if `→*` takes the initial configuration to a stuck one, then at every fuel past
@@ -2519,7 +2519,7 @@ theorem RueCore.run_refused_of_step_stuck (M : FloatSig) (P : Program) {C : Conf
 
 ### `step_never_stuck_of_run`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **`eval` never stuck ⇒ `Step` never stuck, on every program** (§7's
 phrasing: "it either reduces, halts with a value, or halts with one of the
@@ -2537,7 +2537,7 @@ theorem RueCore.step_never_stuck_of_run (M : FloatSig) (P : Program)
 
 ### `never_refused_iff`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **"Never stuck", both ways, in §7's phrasing** (RUE-2289 part 3; §7's
 type-safety bullet; ADR-0097 decision 3). For a program `check` accepts,
@@ -2561,7 +2561,7 @@ theorem RueCore.never_refused_iff (M : FloatLaws) {P : Program} (h : ProgramType
 
 ### `eval_diverges_iff`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **Divergence is exhaustion at every fuel** (RUE-2289 part 3, ADR-0097
 decision 3). For a program `check` accepts, `run` is `outOfFuel` at every
@@ -2578,7 +2578,7 @@ theorem RueCore.eval_diverges_iff (M : FloatLaws) {P : Program} (h : ProgramType
 
 ### `Config.SafeAt.progress`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **Progress for a typed configuration** (§7, first bullet): it has halted
 with a value or a defined panic, or it takes a step (§6.12's terminal
@@ -2591,7 +2591,7 @@ theorem RueCore.Config.SafeAt.progress {M : FloatSig} {P : Program} {T : Ty}
 
 ### `Config.SafeAt.invariant`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **Preservation for a typed configuration** (§7, first bullet: "types are
 preserved under reduction"): a step of §6's `→` from a configuration typed at
@@ -2605,7 +2605,7 @@ theorem RueCore.Config.SafeAt.invariant {M : FloatSig} {P : Program} {T : Ty}
 
 ### `init_safeAt`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **The fundamental lemma: a checked program starts typed** (§7, first
 bullet; §6.12's initial configuration). For a program `check` accepts, the
@@ -2622,7 +2622,7 @@ theorem RueCore.init_safeAt (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
 
 ### `step_progress`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **Progress over §6's reduction** (§7, first bullet, in its own phrasing:
 "a well-typed core program does not get stuck: it either reduces, halts with
@@ -2642,7 +2642,7 @@ theorem RueCore.step_progress (M : FloatLaws) {P : Program} (h : ProgramTyped P)
 
 ### `step_safeAt`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **Preservation over §6's reduction** (§7, first bullet: "types are
 preserved under reduction"; ADR-0097 decision 3). For a program `check`
@@ -2664,7 +2664,7 @@ theorem RueCore.step_safeAt (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
 
 ### `step_value_typed`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **The value §6 halts with has the declared type** (§7, first bullet;
 §6.12's (Result-Ok)). For a program `check` accepts, if `→*` takes the
@@ -2684,7 +2684,7 @@ theorem RueCore.step_value_typed (M : FloatLaws) {P : Program} (h : ProgramTyped
 
 ### `step_type_safety`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **Type safety over §6's reduction, at every horizon** (§7, first bullet;
 §6.12; ADR-0097 decisions 3 and 5(b)). For a program `check` accepts and
@@ -3996,7 +3996,7 @@ theorem RueCore.Blocks.not_dtor {D : Decls} {s : Nat} {c : Contents}
 
 ### `run_no_use_after_drop`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 **No use-after-drop, on every program** (§7 "No use-after-drop / no leak
 of drops", "never read afterward"; §6.9): `run` never refuses with
@@ -4009,7 +4009,7 @@ theorem RueCore.run_no_use_after_drop (M : FloatSig) (P : Program) (fuel : Nat) 
 
 ### `step_no_use_after_drop`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 **No use-after-drop over §6's relation, on every program**: a
 configuration `→*` reaches from `Config.init` is never stuck on a retired
@@ -12918,7 +12918,7 @@ theorem RueCore.run_trace_once (M : FloatSig) {P : Program} {F : Event → List 
 
 ### `Steps.trans`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 `→*` composes (§6.12) (helper).
 
@@ -12929,7 +12929,7 @@ theorem RueCore.Steps.trans {M : FloatSig} {P : Program} {C₁ C₂ C₃ : Confi
 
 ### `Steps.single`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 One step is a run (§6.12) (helper).
 
@@ -12940,7 +12940,7 @@ theorem RueCore.Steps.single {M : FloatSig} {P : Program} {C₁ C₂ : Config}
 
 ### `Steps.peel`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **Peeling a step by determinism** (`Step.det`, §6): a run from `C` that
 ends at a configuration with no expression in focus passes through `C`'s one
@@ -12954,7 +12954,7 @@ theorem RueCore.Steps.peel {M : FloatSig} {P : Program} {C C' D : Config}
 
 ### `Sim.pre`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 A run into the family carries its simulation back (helper).
 
@@ -12967,7 +12967,7 @@ theorem RueCore.Sim.pre {M : FloatSig} {P : Program} {φ : Activation}
 
 ### `Sim.withTrace`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 A run into the family that emits `tr₁` carries its simulation back to
 the result with `tr₁` prefixed (§6.12's accumulating output) (helper).
@@ -12983,7 +12983,7 @@ theorem RueCore.Sim.withTrace {M : FloatSig} {P : Program} {φ : Activation}
 
 ### `Sim.bind`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **§6.2's (Search), once**: `eval`'s `bind` is an enter step pushing a
 frame `F`, the operand run under `F`, and a plug of its value into `F`'s hole.
@@ -13007,7 +13007,7 @@ theorem RueCore.Sim.bind {M : FloatSig} {P : Program} {φ φ₁ : Activation}
 
 ### `Sim.lift`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 A result that is not a value passes through a transparent frame unchanged
 (helper).
@@ -13024,7 +13024,7 @@ theorem RueCore.Sim.lift {M : FloatSig} {P : Program} {φ φ₁ : Activation}
 
 ### `Sim.absorb`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 §6.9's call boundary: the body's `returned` is caught at the `call φ`
 frame, which is what `absorb` turns into a value (helper).
@@ -13047,7 +13047,7 @@ theorem RueCore.Sim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Activation}
 
 ### `OpRes.sim`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 §6.4's operator frames: a value plugs the hole, a trap is (Panic-Lift)
 (helper).
@@ -13071,7 +13071,7 @@ theorem RueCore.OpRes.sim {M : FloatSig} {P : Program} {φ : Activation} {H : St
 
 ### `evalArgs_sim`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **Argument lists** (§6.2's `…( v̄, E, ē )`): where `evalArgs` finishes,
 `→*` walks the list to its redex; where it aborts, the aborting element's
@@ -13093,7 +13093,7 @@ theorem RueCore.evalArgs_sim {M : FloatSig} {P : Program} {fuel : Nat}
 
 ### `Sim.peel`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 Where no `Sim` target has an expression in focus, a first step of `C`
 can be peeled off by determinism (helper).
@@ -13108,7 +13108,7 @@ theorem RueCore.Sim.peel {M : FloatSig} {P : Program} {φ : Activation}
 
 ### `evalArgs_abort_ne_ok`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 `evalArgs` aborts only with a result that is not a value (helper).
 
@@ -13121,7 +13121,7 @@ theorem RueCore.evalArgs_abort_ne_ok {ev : Store → Expr → EvalRes} {es : Lis
 
 ### `EvalRes.withTrace_bind`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 `bind` after a trace prefix (helper).
 
@@ -13133,7 +13133,7 @@ theorem RueCore.EvalRes.withTrace_bind (r : EvalRes) (t : List Event)
 
 ### `rootCell_of`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 The root of a place, as `eval` resolves it inline, is `rootCell` (helper).
 
@@ -13145,7 +13145,7 @@ theorem RueCore.rootCell_of {H : Store} {φ : Activation} {i ℓ : Nat} {c : Con
 
 ### `Activation.unwindScope_push`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-EndScope) restores the frame (D-Let) or (D-Match) extended (helper).
 
@@ -13158,7 +13158,7 @@ theorem RueCore.Activation.unwindScope_push (φ : Activation) (ls : List Nat) :
 
 ### `Activation.unwindScope_let`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-EndScope) after (D-Let) (helper).
 
@@ -13169,7 +13169,7 @@ theorem RueCore.Activation.unwindScope_let (φ : Activation) (ℓ : Nat) :
 
 ### `plainUnwind_single`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 The monitor-free unwind of one cell (helper).
 
@@ -13181,7 +13181,7 @@ theorem RueCore.plainUnwind_single {D : Decls} {H H' : Store} {ℓ : Nat}
 
 ### `sim_use`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Use-Declared-Linear), (D-Use-Copy), (D-Use-Move) §6.3 (helper).
 
@@ -13193,7 +13193,7 @@ theorem RueCore.sim_use {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `sim_drop`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 §6.11's `@drop` at a constant place (helper).
 
@@ -13206,7 +13206,7 @@ theorem RueCore.sim_drop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `sim_binop`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 §6.4's binary operators after §6.2's `E ⊕ e` and `v ⊕ E` (helper).
 
@@ -13219,7 +13219,7 @@ theorem RueCore.sim_binop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `sim_unop`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 §6.4's unary operators after §6.2's `⊖ E` (helper).
 
@@ -13232,7 +13232,7 @@ theorem RueCore.sim_unop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `sim_intCast`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Int-Cast) and its trap after §6.2's `@intCast( E )` (helper).
 
@@ -13246,7 +13246,7 @@ theorem RueCore.sim_intCast {M : FloatSig} {P : Program} {fuel : Nat} {H : Store
 
 ### `sim_fintrin`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 §6.4's float intrinsics after §6.2's `@f( E )` (helper).
 
@@ -13259,7 +13259,7 @@ theorem RueCore.sim_fintrin {M : FloatSig} {P : Program} {fuel : Nat} {H : Store
 
 ### `sim_dbg`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 `@dbg` (§6.12) after §6.2's `@dbg( E )` (helper).
 
@@ -13271,7 +13271,7 @@ theorem RueCore.sim_dbg {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `sim_mkStruct`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Struct) §6.5 after §6.2's search through the initializers; the
 identity is minted as `introVal` mints it (helper).
@@ -13285,7 +13285,7 @@ theorem RueCore.sim_mkStruct {M : FloatSig} {P : Program} {fuel : Nat} {H : Stor
 
 ### `sim_mkEnum`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Enum-Intro) §6.6 after §6.2's search through the payload (helper).
 
@@ -13298,7 +13298,7 @@ theorem RueCore.sim_mkEnum {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `sim_mkArray`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Array) §6.5 after §6.2's search through the elements (helper).
 
@@ -13311,7 +13311,7 @@ theorem RueCore.sim_mkArray {M : FloatSig} {P : Program} {fuel : Nat} {H : Store
 
 ### `sim_repeat`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 The repeat form (`7.1:39`) (helper).
 
@@ -13324,7 +13324,7 @@ theorem RueCore.sim_repeat {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `sim_indexRead_args`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Index)/(D-Index-Trap) §6.5 and (D-Use-Untrackable-Dynamic-Copy) §6.3,
 from the index list's context (helper).
@@ -13339,7 +13339,7 @@ theorem RueCore.sim_indexRead_args {M : FloatSig} {P : Program} {fuel : Nat}
 
 ### `sim_indexRead`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Index) at an expression in focus (helper).
 
@@ -13353,7 +13353,7 @@ theorem RueCore.sim_indexRead {M : FloatSig} {P : Program} {fuel : Nat} {H : Sto
 
 ### `sim_indexDrop`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 §6.11's `@drop` at a `Copy` place below a dynamic index. `eval` runs it
 as the read with its value discarded, at the same fuel, so the argument list
@@ -13369,7 +13369,7 @@ theorem RueCore.sim_indexDrop {M : FloatSig} {P : Program} {fuel : Nat} {H : Sto
 
 ### `sim_indexWrite`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Assign) §6.8 below a dynamic index, in `5.2:14`'s order (helper).
 
@@ -13383,7 +13383,7 @@ theorem RueCore.sim_indexWrite {M : FloatSig} {P : Program} {fuel : Nat} {H : St
 
 ### `sim_match`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Match) §6.6: the arm runs under its `endscope`, which (D-EndScope)
 closes (helper).
@@ -13397,7 +13397,7 @@ theorem RueCore.sim_match {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `sim_letIn`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Let) §6.7, then (D-EndScope) (helper).
 
@@ -13410,7 +13410,7 @@ theorem RueCore.sim_letIn {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `sim_assign`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Assign) §6.8 (helper).
 
@@ -13423,7 +13423,7 @@ theorem RueCore.sim_assign {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `sim_seq`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Seq) §6.7 (helper).
 
@@ -13435,7 +13435,7 @@ theorem RueCore.sim_seq {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `sim_ite`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-If-T)/(D-If-F) §6.6 (helper).
 
@@ -13448,7 +13448,7 @@ theorem RueCore.sim_ite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `sim_call`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Call) §6.9, then (D-Return-Value), or (D-Return)'s value caught at the
 `call` frame (helper).
@@ -13462,7 +13462,7 @@ theorem RueCore.sim_call {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `sim_ret`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Return) §6.9 (helper).
 
@@ -13474,7 +13474,7 @@ theorem RueCore.sim_ret {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `sim_brk`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Break) §6.10 (helper).
 
@@ -13486,7 +13486,7 @@ theorem RueCore.sim_brk {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `sim_loop`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Loop-Enter), (D-Loop-Iter) and (D-Break)'s landing §6.10. A turn that
 finishes re-enters the body; `eval` re-evaluates the loop at one less fuel,
@@ -13501,7 +13501,7 @@ theorem RueCore.sim_loop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `StepsN.toSteps`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 A counted run is a run (§6.12's `→*`) (helper).
 
@@ -13512,7 +13512,7 @@ theorem RueCore.StepsN.toSteps {M : FloatSig} {P : Program} {n : Nat} {C D : Con
 
 ### `Steps.toN`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 Every run has a length (helper).
 
@@ -13523,7 +13523,7 @@ theorem RueCore.Steps.toN {M : FloatSig} {P : Program} {C D : Config}
 
 ### `StepsN.trans`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 Counted runs compose (helper).
 
@@ -13534,7 +13534,7 @@ theorem RueCore.StepsN.trans {M : FloatSig} {P : Program} {a b : Nat} {C E D : C
 
 ### `StepsN.prefix`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 A run of `n` steps has a run of every shorter length from the same start
 (helper).
@@ -13546,7 +13546,7 @@ theorem RueCore.StepsN.prefix {M : FloatSig} {P : Program} {n : Nat} {C D : Conf
 
 ### `StepsN.det`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **Determinism, counted** (`Step.det`, §6): two runs of the same length
 from one configuration end at the same configuration (helper).
@@ -13558,7 +13558,7 @@ theorem RueCore.StepsN.det {M : FloatSig} {P : Program} {n : Nat} {C D D' : Conf
 
 ### `StepsN.peel`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 Peeling a counted run's first step by determinism (helper).
 
@@ -13569,7 +13569,7 @@ theorem RueCore.StepsN.peel {M : FloatSig} {P : Program} {n : Nat} {C C' D : Con
 
 ### `StepsN.bound`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **A configuration that takes no step bounds every run** through it (§6,
 by `Step.det`): if `→ᵏ` reaches a configuration with no successor — terminal
@@ -13583,7 +13583,7 @@ theorem RueCore.StepsN.bound {M : FloatSig} {P : Program} {k : Nat} {C T : Confi
 
 ### `Steps.final_unique`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **One end per start** (§6, by `Step.det`): two configurations with no
 successor reached from the same configuration are the same one (helper).
@@ -13597,7 +13597,7 @@ theorem RueCore.Steps.final_unique {M : FloatSig} {P : Program} {C T₁ T₂ : C
 
 ### `Long.mono`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 A family with long runs has shorter ones (helper).
 
@@ -13609,7 +13609,7 @@ theorem RueCore.Long.mono {M : FloatSig} {P : Program}
 
 ### `Long.pre`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 A run into a family with long runs is at least as long (helper).
 
@@ -13623,7 +13623,7 @@ theorem RueCore.Long.pre {M : FloatSig} {P : Program}
 
 ### `Long.pre1`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 A step and then a run into a family with long runs is one step longer
 (helper).
@@ -13639,7 +13639,7 @@ theorem RueCore.Long.pre1 {M : FloatSig} {P : Program}
 
 ### `Long.bind`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **§6.2's (Search), counted**: the twin of `Sim.bind` for exhausted
 fuel. If `eval` spent its fuel on the operand, the operand's run under the
@@ -13665,7 +13665,7 @@ theorem RueCore.Long.bind {M : FloatSig} {P : Program} {φ₁ : Activation}
 
 ### `Long.bind0`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 §6.2's (Search) without its enter step, counted: the operand is already in
 focus under the frame `F` — (D-Match) put the arm's body there while binding
@@ -13688,7 +13688,7 @@ theorem RueCore.Long.bind0 {M : FloatSig} {P : Program} {φ₁ : Activation}
 
 ### `evalArgs_long`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **Argument lists, counted** (§6.2's `…( v̄, E, ē )`): a list that spent
 its fuel on an element has a run one step longer than the element's fuel, the
@@ -13705,7 +13705,7 @@ theorem RueCore.evalArgs_long {M : FloatSig} {P : Program} {fuel : Nat}
 
 ### `evalArgs_ok_steps`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 `evalArgs` finishes as `eval_sim` says, from the argument list (helper).
 
@@ -13721,7 +13721,7 @@ theorem RueCore.evalArgs_ok_steps {M : FloatSig} {P : Program} {fuel : Nat}
 
 ### `Long.zero`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 Every family has runs of no steps (helper).
 
@@ -13732,7 +13732,7 @@ theorem RueCore.Long.zero {M : FloatSig} {P : Program}
 
 ### `OpRes.toRes_ne_outOfFuel`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 An operator's outcome is never exhausted fuel (helper).
 
@@ -13743,7 +13743,7 @@ theorem RueCore.OpRes.toRes_ne_outOfFuel (o : OpRes) (H : Store) :
 
 ### `introVal_ne_outOfFuel`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 Aggregate introduction is never exhausted fuel (helper).
 
@@ -13754,7 +13754,7 @@ theorem RueCore.introVal_ne_outOfFuel {D : Decls} {H : Store} {mk : Nat → Val}
 
 ### `eval_leaf_ne_outOfFuel`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 The place forms, literals, `@panic` and `break` spend no fuel of their own
 beyond the unit they start with (helper).
@@ -13778,7 +13778,7 @@ theorem RueCore.eval_leaf_ne_outOfFuel {M : FloatSig} {P : Program} {fuel : Nat}
 
 ### `long_binop`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 §6.4's binary operators, counted (helper).
 
@@ -13791,7 +13791,7 @@ theorem RueCore.long_binop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `long_unop`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 §6.4's unary operators, counted (helper).
 
@@ -13804,7 +13804,7 @@ theorem RueCore.long_unop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `long_intCast`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Int-Cast), counted (helper).
 
@@ -13818,7 +13818,7 @@ theorem RueCore.long_intCast {M : FloatSig} {P : Program} {fuel : Nat} {H : Stor
 
 ### `long_fintrin`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 §6.4's float intrinsics, counted (helper).
 
@@ -13831,7 +13831,7 @@ theorem RueCore.long_fintrin {M : FloatSig} {P : Program} {fuel : Nat} {H : Stor
 
 ### `long_dbg`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 `@dbg` (§6.12), counted (helper).
 
@@ -13844,7 +13844,7 @@ theorem RueCore.long_dbg {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `long_repeat`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 The repeat form (`7.1:39`), counted (helper).
 
@@ -13857,7 +13857,7 @@ theorem RueCore.long_repeat {M : FloatSig} {P : Program} {fuel : Nat} {H : Store
 
 ### `long_ret`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Return) §6.9, counted (helper).
 
@@ -13870,7 +13870,7 @@ theorem RueCore.long_ret {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `long_assign`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Assign) §6.8, counted (helper).
 
@@ -13883,7 +13883,7 @@ theorem RueCore.long_assign {M : FloatSig} {P : Program} {fuel : Nat} {H : Store
 
 ### `long_letIn`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Let) §6.7, counted: the body runs after (D-Let)'s step (helper).
 
@@ -13896,7 +13896,7 @@ theorem RueCore.long_letIn {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `long_match`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Match) §6.6, counted: the arm runs after (D-Match)'s step (helper).
 
@@ -13909,7 +13909,7 @@ theorem RueCore.long_match {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `long_seq`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Seq) §6.7, counted: the second operand runs after (D-Seq)'s step
 (helper).
@@ -13923,7 +13923,7 @@ theorem RueCore.long_seq {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `long_ite`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-If-T)/(D-If-F) §6.6, counted (helper).
 
@@ -13936,7 +13936,7 @@ theorem RueCore.long_ite {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `long_argsForm`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 An argument-list form whose list spent the fuel, from its enter step
 (helper).
@@ -13956,7 +13956,7 @@ theorem RueCore.long_argsForm {M : FloatSig} {P : Program} {fuel : Nat} {H : Sto
 
 ### `long_mkStruct`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Struct) §6.5, counted (helper).
 
@@ -13969,7 +13969,7 @@ theorem RueCore.long_mkStruct {M : FloatSig} {P : Program} {fuel : Nat} {H : Sto
 
 ### `long_mkEnum`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Enum-Intro) §6.6, counted (helper).
 
@@ -13982,7 +13982,7 @@ theorem RueCore.long_mkEnum {M : FloatSig} {P : Program} {fuel : Nat} {H : Store
 
 ### `long_mkArray`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Array) §6.5, counted (helper).
 
@@ -13995,7 +13995,7 @@ theorem RueCore.long_mkArray {M : FloatSig} {P : Program} {fuel : Nat} {H : Stor
 
 ### `long_indexRead`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Index) §6.5, counted (helper).
 
@@ -14009,7 +14009,7 @@ theorem RueCore.long_indexRead {M : FloatSig} {P : Program} {fuel : Nat} {H : St
 
 ### `long_indexDrop`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 `@drop` at a dynamic place, counted. `eval` re-dispatches it to the read
 at one less fuel without a step of its own; the (Search) push into the first
@@ -14025,7 +14025,7 @@ theorem RueCore.long_indexDrop {M : FloatSig} {P : Program} {fuel : Nat} {H : St
 
 ### `long_indexDrop_one`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 `@drop` at a dynamic place at the smallest fuel: one step, (Search) into
 the indices (helper).
@@ -14038,7 +14038,7 @@ theorem RueCore.long_indexDrop_one {M : FloatSig} {P : Program} {H : Store}
 
 ### `long_indexWrite`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Assign) below a dynamic index (§6.8, `5.2:14`), counted (helper).
 
@@ -14052,7 +14052,7 @@ theorem RueCore.long_indexWrite {M : FloatSig} {P : Program} {fuel : Nat} {H : S
 
 ### `long_call`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Call) §6.9, counted: the body runs after the arguments and (D-Call)'s
 step (helper).
@@ -14066,7 +14066,7 @@ theorem RueCore.long_call {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `long_loop`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 (D-Loop-Enter) and (D-Loop-Iter) §6.10, counted. A turn that finishes
 re-enters the body through (D-Loop-Iter) where `eval` re-evaluates the loop
@@ -14083,7 +14083,7 @@ theorem RueCore.long_loop {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
 
 ### `EvalRes.withTrace_ne_broke`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 Prefixing a trace never makes an unwinding `break` (helper).
 
@@ -14098,7 +14098,7 @@ theorem RueCore.EvalRes.withTrace_ne_broke {r : EvalRes} {t : List Event}
 
 ### `EvalRes.bindCall_ne_broke`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 The call boundary never passes an unwinding `break` on (helper).
 
@@ -14113,7 +14113,7 @@ theorem RueCore.EvalRes.bindCall_ne_broke {r : EvalRes} {k : Store → Val → E
 
 ### `run_ne_broke`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 A program's outcome is never an unwinding `break`: the entry point is a
 call, and the call boundary turns a `break` that reached it into
@@ -14127,7 +14127,7 @@ theorem RueCore.run_ne_broke (M : FloatSig) {P : Program} {fuel : Nat} (H : Stor
 
 ### `run_classify`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 **Where a run of `Step` ends, `run` answers** (§6.12, `Step.det`): if
 `→*` takes §6.12's initial configuration to a configuration with no successor
@@ -14153,7 +14153,7 @@ theorem RueCore.run_classify {M : FloatSig} {P : Program} {T : Config}
 
 ### `Config.SafeAt.steps`
 
-*theorem* · module `RueCore.Adequacy`
+*theorem* · module `RueCore.Equivalence`
 
 Preservation along `→*` (§6.12) (helper).
 
@@ -16261,440 +16261,442 @@ theorem RueCore.DropGlueBlocks.drop_inv {D : Decls} {ℓ : Nat} {c : Contents}
   ∃ evs t', DropGlue D c evs ∧ t = evs ++ t' ∧ DropGlueBlocks D t'
 ```
 
-### `Retire.Live.lt`
+### `Tombstone.Live.lt`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 A live cell is in the store (helper).
 
 ```lean
-theorem RueCore.Retire.Live.lt {H : Store} {ℓ : Nat} (h : Retire.Live H ℓ) :
+theorem RueCore.Tombstone.Live.lt {H : Store} {ℓ : Nat} (h : Tombstone.Live H ℓ) :
   ℓ < List.length H
 ```
 
-### `Retire.Live.ne_dead`
+### `Tombstone.Live.ne_dead`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 A live cell is not retired (helper).
 
 ```lean
-theorem RueCore.Retire.Live.ne_dead {H : Store} {ℓ : Nat} (h : Retire.Live H ℓ) :
-  H[ℓ]? ≠ some Cell.dead
+theorem RueCore.Tombstone.Live.ne_dead {H : Store} {ℓ : Nat}
+  (h : Tombstone.Live H ℓ) : H[ℓ]? ≠ some Cell.dead
 ```
 
-### `Retire.Live.set_full`
+### `Tombstone.Live.set_full`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 Writing contents into any cell keeps every live cell live (helper).
 
 ```lean
-theorem RueCore.Retire.Live.set_full {H : Store} {ℓ : Nat} (h : Retire.Live H ℓ)
-  (ℓ' : Nat) (c : Contents) : Retire.Live (List.set H ℓ' (Cell.full c)) ℓ
+theorem RueCore.Tombstone.Live.set_full {H : Store} {ℓ : Nat} (h : Tombstone.Live H ℓ)
+  (ℓ' : Nat) (c : Contents) : Tombstone.Live (List.set H ℓ' (Cell.full c)) ℓ
 ```
 
-### `Retire.Live.append`
+### `Tombstone.Live.append`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 Appending to the store keeps every live cell live (helper).
 
 ```lean
-theorem RueCore.Retire.Live.append {H : Store} {ℓ : Nat} (h : Retire.Live H ℓ)
-  (H' : Store) : Retire.Live (H ++ H') ℓ
+theorem RueCore.Tombstone.Live.append {H : Store} {ℓ : Nat} (h : Tombstone.Live H ℓ)
+  (H' : Store) : Tombstone.Live (H ++ H') ℓ
 ```
 
-### `Retire.Grow.refl`
+### `Tombstone.Grow.refl`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 An unchanged store has grown (helper).
 
 ```lean
-theorem RueCore.Retire.Grow.refl (H : Store) : Retire.Grow H H
+theorem RueCore.Tombstone.Grow.refl (H : Store) : Tombstone.Grow H H
 ```
 
-### `Retire.Grow.trans`
+### `Tombstone.Grow.trans`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 Growth composes (helper).
 
 ```lean
-theorem RueCore.Retire.Grow.trans {H H₁ H₂ : Store} (h₁ : Retire.Grow H H₁)
-  (h₂ : Retire.Grow H₁ H₂) : Retire.Grow H H₂
+theorem RueCore.Tombstone.Grow.trans {H H₁ H₂ : Store} (h₁ : Tombstone.Grow H H₁)
+  (h₂ : Tombstone.Grow H₁ H₂) : Tombstone.Grow H H₂
 ```
 
-### `Retire.Grow.append`
+### `Tombstone.Grow.append`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 Allocation appends, so it grows the store: a binding cell (§6.7, §6.9) or a
 value identity's reserved `†` slot (`introVal`) (helper).
 
 ```lean
-theorem RueCore.Retire.Grow.append (H H' : Store) : Retire.Grow H (H ++ H')
+theorem RueCore.Tombstone.Grow.append (H H' : Store) : Tombstone.Grow H (H ++ H')
 ```
 
-### `Retire.Grow.set_full`
+### `Tombstone.Grow.set_full`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 Writing contents into a cell — a move's `⊘`, an assignment, an `@drop` — grows
 the store (helper).
 
 ```lean
-theorem RueCore.Retire.Grow.set_full (H : Store) (ℓ : Nat) (c : Contents) :
-  Retire.Grow H (List.set H ℓ (Cell.full c))
+theorem RueCore.Tombstone.Grow.set_full (H : Store) (ℓ : Nat) (c : Contents) :
+  Tombstone.Grow H (List.set H ℓ (Cell.full c))
 ```
 
-### `Retire.Live.ne_of_le`
+### `Tombstone.Live.ne_of_le`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 A cell at or above the old store's length is not one of its live cells
 (helper).
 
 ```lean
-theorem RueCore.Retire.Live.ne_of_le {H : Store} {ℓ m : Nat} (h : Retire.Live H ℓ)
-  (hm : List.length H ≤ m) : ℓ ≠ m
+theorem RueCore.Tombstone.Live.ne_of_le {H : Store} {ℓ m : Nat}
+  (h : Tombstone.Live H ℓ) (hm : List.length H ≤ m) : ℓ ≠ m
 ```
 
-### `Retire.LiveActivation.grow`
+### `Tombstone.LiveActivation.grow`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 The frame invariant survives growth (helper).
 
 ```lean
-theorem RueCore.Retire.LiveActivation.grow {H H' : Store} {φ : Activation}
-  (h : Retire.LiveActivation H φ) (hg : Retire.Grow H H') :
-  Retire.LiveActivation H' φ
+theorem RueCore.Tombstone.LiveActivation.grow {H H' : Store} {φ : Activation}
+  (h : Tombstone.LiveActivation H φ) (hg : Tombstone.Grow H H') :
+  Tombstone.LiveActivation H' φ
 ```
 
-### `Retire.LivePost.withTrace`
+### `Tombstone.LivePost.withTrace`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 Prefixing a trace changes no store (helper).
 
 ```lean
-theorem RueCore.Retire.LivePost.withTrace {H : Store} {φ : Activation} {r : EvalRes}
-  (h : Retire.LivePost H φ r) (tr : List Event) :
-  Retire.LivePost H φ (EvalRes.withTrace tr r)
+theorem RueCore.Tombstone.LivePost.withTrace {H : Store} {φ : Activation}
+  {r : EvalRes} (h : Tombstone.LivePost H φ r) (tr : List Event) :
+  Tombstone.LivePost H φ (EvalRes.withTrace tr r)
 ```
 
-### `Retire.LivePost.lift`
+### `Tombstone.LivePost.lift`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 An evaluation that started later, in a grown store, keeps the promise
 relative to the earlier store (helper).
 
 ```lean
-theorem RueCore.Retire.LivePost.lift {H H₁ : Store} {φ : Activation} {r : EvalRes}
-  (hg : Retire.Grow H H₁) (h : Retire.LivePost H₁ φ r) : Retire.LivePost H φ r
+theorem RueCore.Tombstone.LivePost.lift {H H₁ : Store} {φ : Activation} {r : EvalRes}
+  (hg : Tombstone.Grow H H₁) (h : Tombstone.LivePost H₁ φ r) :
+  Tombstone.LivePost H φ r
 ```
 
-### `Retire.LivePost.andThen`
+### `Tombstone.LivePost.andThen`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 §6.2's search keeps the promise (helper).
 
 ```lean
-theorem RueCore.Retire.LivePost.andThen {H : Store} {φ : Activation} {r : EvalRes}
-  {k : Store → Val → EvalRes} (h : Retire.LivePost H φ r)
+theorem RueCore.Tombstone.LivePost.andThen {H : Store} {φ : Activation} {r : EvalRes}
+  {k : Store → Val → EvalRes} (h : Tombstone.LivePost H φ r)
   (hk :
     ∀ (H₁ : Store) (v : Val),
-      Retire.Grow H H₁ → Retire.LivePost H₁ φ (k H₁ v)) :
-  Retire.LivePost H φ (r.bind k)
+      Tombstone.Grow H H₁ → Tombstone.LivePost H₁ φ (k H₁ v)) :
+  Tombstone.LivePost H φ (r.bind k)
 ```
 
-### `Retire.LivePost.scoped`
+### `Tombstone.LivePost.scoped`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 A scope opened on top of the frame — a `let`'s cell, a `match` arm's
 payload cells — keeps the promise when the body's non-value outcomes pass
 through it (helper).
 
 ```lean
-theorem RueCore.Retire.LivePost.scoped {H H₁ : Store} {φ φ' : Activation}
+theorem RueCore.Tombstone.LivePost.scoped {H H₁ : Store} {φ φ' : Activation}
   {ys : List Nat} {r : EvalRes} {k : Store → Val → EvalRes}
-  (hg : Retire.Grow H H₁)
-  (hys : ∀ (ℓ : Nat), ℓ ∈ ys → List.length H ≤ ℓ ∧ Retire.Live H₁ ℓ)
+  (hg : Tombstone.Grow H H₁)
+  (hys : ∀ (ℓ : Nat), ℓ ∈ ys → List.length H ≤ ℓ ∧ Tombstone.Live H₁ ℓ)
   (hnd : ys.Nodup) (hsc : φ'.scope = φ.scope ++ ys)
-  (h : Retire.LivePost H₁ φ' r)
+  (h : Tombstone.LivePost H₁ φ' r)
   (hk :
     ∀ (H₂ : Store) (v : Val),
-      Retire.Grow H₁ H₂ → Retire.LivePost H φ (k H₂ v)) :
-  Retire.LivePost H φ (r.bind k)
+      Tombstone.Grow H₁ H₂ → Tombstone.LivePost H φ (k H₂ v)) :
+  Tombstone.LivePost H φ (r.bind k)
 ```
 
-### `Retire.Contents.getAt_ne_uad`
+### `Tombstone.Contents.getAt_ne_uad`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 `H(ℓ)@π` refuses only with `useAfterMove` or `typeConfusion` (helper).
 
 ```lean
-theorem RueCore.Retire.Contents.getAt_ne_uad (π : List Nat) {c : Contents}
+theorem RueCore.Tombstone.Contents.getAt_ne_uad (π : List Nat) {c : Contents}
   {w : Refusal} : c.getAt π = Except.error w → w ≠ Refusal.useAfterDrop
 ```
 
-### `Retire.Contents.resolveDyn_ne_uad`
+### `Tombstone.Contents.resolveDyn_ne_uad`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 Resolving a dynamic tail never refuses with `useAfterDrop` (helper).
 
 ```lean
-theorem RueCore.Retire.Contents.resolveDyn_ne_uad (is : List Int)
+theorem RueCore.Tombstone.Contents.resolveDyn_ne_uad (is : List Int)
   (πs : List (List Nat)) {c : Contents} {w : Refusal} :
   c.resolveDyn is πs = DynStep.refused w → w ≠ Refusal.useAfterDrop
 ```
 
-### `Retire.dynPlace_ne_uad`
+### `Tombstone.dynPlace_ne_uad`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 Navigating a dynamic place from a frame whose environment names live cells
 never refuses with `useAfterDrop` (helper).
 
 ```lean
-theorem RueCore.Retire.dynPlace_ne_uad {H : Store} {φ : Activation} {p : Place}
+theorem RueCore.Tombstone.dynPlace_ne_uad {H : Store} {φ : Activation} {p : Place}
   {vs : List Val} {πs : List (List Nat)} {w : Refusal}
-  (hφ : ∀ (ℓ : Nat), ℓ ∈ φ.env → Retire.Live H ℓ)
+  (hφ : ∀ (ℓ : Nat), ℓ ∈ φ.env → Tombstone.Live H ℓ)
   (h : dynPlace H φ p vs πs = DynPlace.refused w) : w ≠ Refusal.useAfterDrop
 ```
 
-### `Retire.dropContents_ne_uad`
+### `Tombstone.dropContents_ne_uad`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 §6.11's walk refuses only with `unbound` (helper).
 
 ```lean
-theorem RueCore.Retire.dropContents_ne_uad {D : Decls} {c : Contents} {w : Refusal} :
-  dropContents D c = Except.error w → w ≠ Refusal.useAfterDrop
+theorem RueCore.Tombstone.dropContents_ne_uad {D : Decls} {c : Contents}
+  {w : Refusal} : dropContents D c = Except.error w → w ≠ Refusal.useAfterDrop
 ```
 
-### `Retire.dropContentsList_ne_uad`
+### `Tombstone.dropContentsList_ne_uad`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 The same over a list (helper).
 
 ```lean
-theorem RueCore.Retire.dropContentsList_ne_uad {D : Decls} {cs : List Contents}
+theorem RueCore.Tombstone.dropContentsList_ne_uad {D : Decls} {cs : List Contents}
   {w : Refusal} :
   dropContentsList D cs = Except.error w → w ≠ Refusal.useAfterDrop
 ```
 
-### `Retire.dropCell_ne_uad`
+### `Tombstone.dropCell_ne_uad`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 A binding's drop never refuses with `useAfterDrop` (helper).
 
 ```lean
-theorem RueCore.Retire.dropCell_ne_uad {D : Decls} {ℓ : Nat} {c : Contents}
+theorem RueCore.Tombstone.dropCell_ne_uad {D : Decls} {ℓ : Nat} {c : Contents}
   {w : Refusal} (h : dropCell D ℓ c = Except.error w) :
   w ≠ Refusal.useAfterDrop
 ```
 
-### `Retire.Contents.splitResidue_ne_uad`
+### `Tombstone.Contents.splitResidue_ne_uad`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 §6.3's `split` never refuses with `useAfterDrop` (helper).
 
 ```lean
-theorem RueCore.Retire.Contents.splitResidue_ne_uad {D : Decls} {c : Contents}
+theorem RueCore.Tombstone.Contents.splitResidue_ne_uad {D : Decls} {c : Contents}
   {π : List Nat} {w : Refusal} :
   Contents.splitResidue D c π = Except.error w → w ≠ Refusal.useAfterDrop
 ```
 
-### `Retire.Contents.splitFields_ne_uad`
+### `Tombstone.Contents.splitFields_ne_uad`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 The same at one node's members (helper).
 
 ```lean
-theorem RueCore.Retire.Contents.splitFields_ne_uad {D : Decls} {cs : List Contents}
+theorem RueCore.Tombstone.Contents.splitFields_ne_uad {D : Decls} {cs : List Contents}
   {f : Nat} {π : List Nat} {w : Refusal} :
   Contents.splitFields D cs f π = Except.error w → w ≠ Refusal.useAfterDrop
 ```
 
-### `Retire.dropResidue_ne_uad`
+### `Tombstone.dropResidue_ne_uad`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 The residue's `drop*` never refuses with `useAfterDrop` (helper).
 
 ```lean
-theorem RueCore.Retire.dropResidue_ne_uad {D : Decls} {ℓ : Nat} {rs : List Contents}
-  {w : Refusal} :
+theorem RueCore.Tombstone.dropResidue_ne_uad {D : Decls} {ℓ : Nat}
+  {rs : List Contents} {w : Refusal} :
   dropResidue D ℓ rs = Except.error w → w ≠ Refusal.useAfterDrop
 ```
 
-### `Retire.Contents.destructure_ne_uad`
+### `Tombstone.Contents.destructure_ne_uad`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 §6.3's destructure never refuses with `useAfterDrop` (helper).
 
 ```lean
-theorem RueCore.Retire.Contents.destructure_ne_uad {D : Decls} {ℓ : Nat}
+theorem RueCore.Tombstone.Contents.destructure_ne_uad {D : Decls} {ℓ : Nat}
   {c : Contents} {πs : List Nat} {w : Refusal}
   (h : Contents.destructure D ℓ c πs = Except.error w) :
   w ≠ Refusal.useAfterDrop
 ```
 
-### `Retire.dropRetire_live`
+### `Tombstone.dropRetire_live`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 `drop-retire` of a live cell never meets `†`, and retires exactly that
 cell (helper).
 
 ```lean
-theorem RueCore.Retire.dropRetire_live {D : Decls} {H : Store} {ℓ : Nat}
-  (hl : Retire.Live H ℓ) :
+theorem RueCore.Tombstone.dropRetire_live {D : Decls} {H : Store} {ℓ : Nat}
+  (hl : Tombstone.Live H ℓ) :
   (∀ (w : Refusal),
       dropRetire D H ℓ = Except.error w → w ≠ Refusal.useAfterDrop) ∧
     ∀ (H' : Store) (evs : List Event),
       dropRetire D H ℓ = Except.ok (H', evs) → H' = List.set H ℓ Cell.dead
 ```
 
-### `Retire.unwindLocs_live`
+### `Tombstone.unwindLocs_live`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 `run-scope-drops` over distinct live cells keeps `UnwindPost` (helper).
 
 ```lean
-theorem RueCore.Retire.unwindLocs_live {D : Decls} {H : Store} {ls : List Nat} :
+theorem RueCore.Tombstone.unwindLocs_live {D : Decls} {H : Store} {ls : List Nat} :
   ls.Nodup →
-    (∀ (ℓ : Nat), ℓ ∈ ls → Retire.Live H ℓ) →
-      Retire.UnwindPost H ls (unwindLocs D H ls)
+    (∀ (ℓ : Nat), ℓ ∈ ls → Tombstone.Live H ℓ) →
+      Tombstone.UnwindPost H ls (unwindLocs D H ls)
 ```
 
-### `Retire.nodup_reverse`
+### `Tombstone.nodup_reverse`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 A scope record read newest-first owes each cell once, as it did oldest-first
 (helper).
 
 ```lean
-theorem RueCore.Retire.nodup_reverse {l : List Nat} (h : l.Nodup) : l.reverse.Nodup
+theorem RueCore.Tombstone.nodup_reverse {l : List Nat} (h : l.Nodup) : l.reverse.Nodup
 ```
 
-### `Retire.UnwindPost.grow`
+### `Tombstone.UnwindPost.grow`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 Retiring a record's cells leaves every live cell outside it live (helper).
 
 ```lean
-theorem RueCore.Retire.UnwindPost.grow {H H' : Store} {ls : List Nat}
-  {evs : List Event} (h : Retire.UnwindPost H ls (Except.ok (H', evs))) :
+theorem RueCore.Tombstone.UnwindPost.grow {H H' : Store} {ls : List Nat}
+  {evs : List Event} (h : Tombstone.UnwindPost H ls (Except.ok (H', evs))) :
   List.length H ≤ List.length H' ∧
-    ∀ (ℓ : Nat), ¬ℓ ∈ ls → Retire.Live H ℓ → Retire.Live H' ℓ
+    ∀ (ℓ : Nat), ¬ℓ ∈ ls → Tombstone.Live H ℓ → Tombstone.Live H' ℓ
 ```
 
-### `Retire.freshParams_live`
+### `Tombstone.freshParams_live`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 (D-Call)'s and (D-Match)'s minting: the new cells are live, distinct, and
 above the old store, and nothing live before is touched (helper).
 
 ```lean
-theorem RueCore.Retire.freshParams_live (H : Store) (vs : List Val) :
-  Retire.Grow H (freshParams H vs).fst ∧
+theorem RueCore.Tombstone.freshParams_live (H : Store) (vs : List Val) :
+  Tombstone.Grow H (freshParams H vs).fst ∧
     (freshParams H vs).snd.Nodup ∧
       ∀ (ℓ : Nat),
         ℓ ∈ (freshParams H vs).snd →
-          List.length H ≤ ℓ ∧ Retire.Live (freshParams H vs).fst ℓ
+          List.length H ≤ ℓ ∧ Tombstone.Live (freshParams H vs).fst ℓ
 ```
 
-### `Retire.OpRes.toRes_live`
+### `Tombstone.OpRes.toRes_live`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 §6.4's operators touch no cell (helper).
 
 ```lean
-theorem RueCore.Retire.OpRes.toRes_live {H : Store} {φ : Activation} (o : OpRes) :
-  Retire.LivePost H φ (OpRes.toRes H o)
+theorem RueCore.Tombstone.OpRes.toRes_live {H : Store} {φ : Activation} (o : OpRes) :
+  Tombstone.LivePost H φ (OpRes.toRes H o)
 ```
 
-### `Retire.introVal_live`
+### `Tombstone.introVal_live`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 Minting a value identity appends a `†` slot no binding names (helper).
 
 ```lean
-theorem RueCore.Retire.introVal_live {D : Decls} {H : Store} {φ : Activation}
-  (mk : Nat → Val) : Retire.LivePost H φ (introVal D H mk)
+theorem RueCore.Tombstone.introVal_live {D : Decls} {H : Store} {φ : Activation}
+  (mk : Nat → Val) : Tombstone.LivePost H φ (introVal D H mk)
 ```
 
-### `Retire.evalArgs_live`
+### `Tombstone.evalArgs_live`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 An argument list keeps the promise, argument by argument (§6.2's left-to-right
 search) (helper).
 
 ```lean
-theorem RueCore.Retire.evalArgs_live {φ : Activation} {ev : Store → Expr → EvalRes}
+theorem RueCore.Tombstone.evalArgs_live {φ : Activation} {ev : Store → Expr → EvalRes}
   (hev :
     ∀ (H : Store) (e : Expr),
-      Retire.LiveActivation H φ → Retire.LivePost H φ (ev H e))
+      Tombstone.LiveActivation H φ → Tombstone.LivePost H φ (ev H e))
   (H : Store) (es : List Expr) :
-  Retire.LiveActivation H φ → Retire.ArgsLive H φ (evalArgs ev H es)
+  Tombstone.LiveActivation H φ → Tombstone.ArgsLive H φ (evalArgs ev H es)
 ```
 
-### `Retire.LiveActivation.root`
+### `Tombstone.LiveActivation.root`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 A cell the environment names is live (helper).
 
 ```lean
-theorem RueCore.Retire.LiveActivation.root {H : Store} {φ : Activation} {i ℓ : Nat}
-  (h : Retire.LiveActivation H φ) (hρ : φ.env[i]? = some ℓ) : Retire.Live H ℓ
+theorem RueCore.Tombstone.LiveActivation.root {H : Store} {φ : Activation} {i ℓ : Nat}
+  (h : Tombstone.LiveActivation H φ) (hρ : φ.env[i]? = some ℓ) :
+  Tombstone.Live H ℓ
 ```
 
-### `Retire.eval_live`
+### `Tombstone.eval_live`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 **The invariant over `eval`**: from a frame whose cells are live and owed
 once, every evaluation keeps `LivePost`, at every fuel (helper).
 
 ```lean
-theorem RueCore.Retire.eval_live (M : FloatSig) (P : Program) (fuel : Nat) (H : Store)
-  (φ : Activation) (e : Expr) :
-  Retire.LiveActivation H φ → Retire.LivePost H φ (eval M fuel P H φ e)
+theorem RueCore.Tombstone.eval_live (M : FloatSig) (P : Program) (fuel : Nat)
+  (H : Store) (φ : Activation) (e : Expr) :
+  Tombstone.LiveActivation H φ → Tombstone.LivePost H φ (eval M fuel P H φ e)
 ```
 
-### `Retire.plainDropRetire_live`
+### `Tombstone.plainDropRetire_live`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 The plain `drop-retire` of a live cell never meets `†`, and retires
 exactly that cell (helper).
 
 ```lean
-theorem RueCore.Retire.plainDropRetire_live {D : Decls} {H : Store} {ℓ : Nat}
-  (hl : Retire.Live H ℓ) :
+theorem RueCore.Tombstone.plainDropRetire_live {D : Decls} {H : Store} {ℓ : Nat}
+  (hl : Tombstone.Live H ℓ) :
   (∀ (w : Refusal),
       plainDropRetire D H ℓ = Except.error w → w ≠ Refusal.useAfterDrop) ∧
     ∀ (H' : Store) (evs : List Event),
@@ -16702,254 +16704,256 @@ theorem RueCore.Retire.plainDropRetire_live {D : Decls} {H : Store} {ℓ : Nat}
         H' = List.set H ℓ Cell.dead
 ```
 
-### `Retire.plainUnwind_live`
+### `Tombstone.plainUnwind_live`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 The plain `run-scope-drops` over distinct live cells keeps `UnwindPost`
 (helper).
 
 ```lean
-theorem RueCore.Retire.plainUnwind_live {D : Decls} {H : Store} {ls : List Nat} :
+theorem RueCore.Tombstone.plainUnwind_live {D : Decls} {H : Store} {ls : List Nat} :
   ls.Nodup →
-    (∀ (ℓ : Nat), ℓ ∈ ls → Retire.Live H ℓ) →
-      Retire.UnwindPost H ls (plainUnwind D H ls)
+    (∀ (ℓ : Nat), ℓ ∈ ls → Tombstone.Live H ℓ) →
+      Tombstone.UnwindPost H ls (plainUnwind D H ls)
 ```
 
-### `Retire.plainResidue_ne_uad`
+### `Tombstone.plainResidue_ne_uad`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 The plain residue walk never refuses with `useAfterDrop` (helper).
 
 ```lean
-theorem RueCore.Retire.plainResidue_ne_uad {D : Decls} {ℓ : Nat} {rs : List Contents}
-  {w : Refusal} :
+theorem RueCore.Tombstone.plainResidue_ne_uad {D : Decls} {ℓ : Nat}
+  {rs : List Contents} {w : Refusal} :
   plainResidue D ℓ rs = Except.error w → w ≠ Refusal.useAfterDrop
 ```
 
-### `Retire.plainDestructure_ne_uad`
+### `Tombstone.plainDestructure_ne_uad`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 The plain destructure never refuses with `useAfterDrop` (helper).
 
 ```lean
-theorem RueCore.Retire.plainDestructure_ne_uad {D : Decls} {ℓ : Nat} {c : Contents}
+theorem RueCore.Tombstone.plainDestructure_ne_uad {D : Decls} {ℓ : Nat} {c : Contents}
   {πs : List Nat} {w : Refusal}
   (h : plainDestructure D ℓ c πs = Except.error w) : w ≠ Refusal.useAfterDrop
 ```
 
-### `Retire.Shape.env`
+### `Tombstone.Shape.env`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 Every frame on a well-shaped stack has its scope record, reversed, as its
 environment (helper).
 
 ```lean
-theorem RueCore.Retire.Shape.env {φ : Activation} {K : List Kont} :
-  Retire.Shape φ K → φ.env = φ.scope.reverse
+theorem RueCore.Tombstone.Shape.env {φ : Activation} {K : List Kont} :
+  Tombstone.Shape φ K → φ.env = φ.scope.reverse
 ```
 
-### `Retire.Shape.toCall`
+### `Tombstone.Shape.toCall`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 (D-Return)'s search: the caller's frame is well shaped, and the cells the
 suspended callers owe are its own and those below it (helper).
 
 ```lean
-theorem RueCore.Retire.Shape.toCall {φ : Activation} {K : List Kont} {φs : Activation}
-  {K' : List Kont} :
-  Retire.Shape φ K →
+theorem RueCore.Tombstone.Shape.toCall {φ : Activation} {K : List Kont}
+  {φs : Activation} {K' : List Kont} :
+  Tombstone.Shape φ K →
     Kont.toCall K = some (φs, K') →
-      Retire.Shape φs K' ∧
-        Retire.callerCells K = Retire.callerCells K' ++ φs.scope
+      Tombstone.Shape φs K' ∧
+        Tombstone.callerCells K = Tombstone.callerCells K' ++ φs.scope
 ```
 
-### `Retire.Shape.toLoop`
+### `Tombstone.Shape.toLoop`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 (D-Break)'s search: the loop's frame is well shaped, no caller is crossed, and
 the frame in force extends the loop's at the end of its scope record (helper).
 
 ```lean
-theorem RueCore.Retire.Shape.toLoop {φ : Activation} {K : List Kont} {φs : Activation}
-  {K' : List Kont} :
-  Retire.Shape φ K →
+theorem RueCore.Tombstone.Shape.toLoop {φ : Activation} {K : List Kont}
+  {φs : Activation} {K' : List Kont} :
+  Tombstone.Shape φ K →
     Kont.toLoop K = some (φs, K') →
-      Retire.Shape φs K' ∧
-        Retire.callerCells K = Retire.callerCells K' ∧
+      Tombstone.Shape φs K' ∧
+        Tombstone.callerCells K = Tombstone.callerCells K' ∧
           ∃ xs, φ.scope = φs.scope ++ xs
 ```
 
-### `Retire.StackLive.env`
+### `Tombstone.StackLive.env`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 A cell the environment names is live (helper).
 
 ```lean
-theorem RueCore.Retire.StackLive.env {H : Store} {φ : Activation} {K : List Kont}
-  (h : Retire.StackLive H φ K) (ℓ : Nat) : ℓ ∈ φ.env → Retire.Live H ℓ
+theorem RueCore.Tombstone.StackLive.env {H : Store} {φ : Activation} {K : List Kont}
+  (h : Tombstone.StackLive H φ K) (ℓ : Nat) : ℓ ∈ φ.env → Tombstone.Live H ℓ
 ```
 
-### `Retire.StackLive.grow`
+### `Tombstone.StackLive.grow`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 The configuration invariant survives growth (helper).
 
 ```lean
-theorem RueCore.Retire.StackLive.grow {H H' : Store} {φ : Activation} {K : List Kont}
-  (h : Retire.StackLive H φ K) (hg : Retire.Grow H H') :
-  Retire.StackLive H' φ K
+theorem RueCore.Tombstone.StackLive.grow {H H' : Store} {φ : Activation}
+  {K : List Kont} (h : Tombstone.StackLive H φ K) (hg : Tombstone.Grow H H') :
+  Tombstone.StackLive H' φ K
 ```
 
-### `Retire.rootCell_ne_uad`
+### `Tombstone.rootCell_ne_uad`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 Looking a place's root up in a frame whose environment names live cells never
 refuses with `useAfterDrop` (helper).
 
 ```lean
-theorem RueCore.Retire.rootCell_ne_uad {H : Store} {φ : Activation} {i : Nat}
-  {w : Refusal} (hφ : ∀ (ℓ : Nat), ℓ ∈ φ.env → Retire.Live H ℓ)
+theorem RueCore.Tombstone.rootCell_ne_uad {H : Store} {φ : Activation} {i : Nat}
+  {w : Refusal} (hφ : ∀ (ℓ : Nat), ℓ ∈ φ.env → Tombstone.Live H ℓ)
   (h : rootCell H φ i = Except.error w) : w ≠ Refusal.useAfterDrop
 ```
 
-### `Retire.unwind_keeps`
+### `Tombstone.unwind_keeps`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 Retiring the cells at the end of the owed list keeps the rest live and
 owed once (helper).
 
 ```lean
-theorem RueCore.Retire.unwind_keeps {D : Decls} {H H' : Store} {A xs : List Nat}
+theorem RueCore.Tombstone.unwind_keeps {D : Decls} {H H' : Store} {A xs : List Nat}
   {evs : List Event} (hnd : (A ++ xs).Nodup)
-  (hl : ∀ (ℓ : Nat), ℓ ∈ A ++ xs → Retire.Live H ℓ)
+  (hl : ∀ (ℓ : Nat), ℓ ∈ A ++ xs → Tombstone.Live H ℓ)
   (hu : plainUnwind D H xs.reverse = Except.ok (H', evs)) :
-  A.Nodup ∧ ∀ (ℓ : Nat), ℓ ∈ A → Retire.Live H' ℓ
+  A.Nodup ∧ ∀ (ℓ : Nat), ℓ ∈ A → Tombstone.Live H' ℓ
 ```
 
-### `Retire.unwind_err`
+### `Tombstone.unwind_err`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 The same teardown never refuses with `useAfterDrop` (helper).
 
 ```lean
-theorem RueCore.Retire.unwind_err {D : Decls} {H : Store} {A xs : List Nat}
+theorem RueCore.Tombstone.unwind_err {D : Decls} {H : Store} {A xs : List Nat}
   {w : Refusal} (hnd : (A ++ xs).Nodup)
-  (hl : ∀ (ℓ : Nat), ℓ ∈ A ++ xs → Retire.Live H ℓ)
+  (hl : ∀ (ℓ : Nat), ℓ ∈ A ++ xs → Tombstone.Live H ℓ)
   (hu : plainUnwind D H xs.reverse = Except.error w) :
   w ≠ Refusal.useAfterDrop
 ```
 
-### `Retire.extend_keeps`
+### `Tombstone.extend_keeps`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 Fresh cells appended to the owed list (helper).
 
 ```lean
-theorem RueCore.Retire.extend_keeps {H H' : Store} {A ls : List Nat} (hnd : A.Nodup)
-  (hl : ∀ (ℓ : Nat), ℓ ∈ A → Retire.Live H ℓ) (hg : Retire.Grow H H')
-  (hls : ls.Nodup)
-  (hfresh : ∀ (ℓ : Nat), ℓ ∈ ls → List.length H ≤ ℓ ∧ Retire.Live H' ℓ) :
-  (A ++ ls).Nodup ∧ ∀ (ℓ : Nat), ℓ ∈ A ++ ls → Retire.Live H' ℓ
+theorem RueCore.Tombstone.extend_keeps {H H' : Store} {A ls : List Nat}
+  (hnd : A.Nodup) (hl : ∀ (ℓ : Nat), ℓ ∈ A → Tombstone.Live H ℓ)
+  (hg : Tombstone.Grow H H') (hls : ls.Nodup)
+  (hfresh : ∀ (ℓ : Nat), ℓ ∈ ls → List.length H ≤ ℓ ∧ Tombstone.Live H' ℓ) :
+  (A ++ ls).Nodup ∧ ∀ (ℓ : Nat), ℓ ∈ A ++ ls → Tombstone.Live H' ℓ
 ```
 
-### `Retire.Activation.unwindScope_ext`
+### `Tombstone.Activation.unwindScope_ext`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 (D-EndScope)'s pop undoes the extension (D-Let) and (D-Match) made (helper).
 
 ```lean
-theorem RueCore.Retire.Activation.unwindScope_ext (φ₀ : Activation) (ls : List Nat) :
+theorem RueCore.Tombstone.Activation.unwindScope_ext (φ₀ : Activation)
+  (ls : List Nat) :
   { env := ls.reverse ++ φ₀.env, scope := φ₀.scope ++ ls }.unwindScope
       ls.length =
     φ₀
 ```
 
-### `Retire.OpRes.toStep_live`
+### `Tombstone.OpRes.toStep_live`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 An operator's step touches no cell (helper).
 
 ```lean
-theorem RueCore.Retire.OpRes.toStep_live {H : Store} {φ : Activation} {K : List Kont}
-  {tr : List Event} (h : Retire.StackLive H φ K) (o : OpRes) :
-  Retire.StepLive (OpRes.toStep H φ K tr o)
+theorem RueCore.Tombstone.OpRes.toStep_live {H : Store} {φ : Activation}
+  {K : List Kont} {tr : List Event} (h : Tombstone.StackLive H φ K)
+  (o : OpRes) : Tombstone.StepLive (OpRes.toStep H φ K tr o)
 ```
 
-### `Retire.stepEval_live`
+### `Tombstone.stepEval_live`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 `step` at an expression keeps the invariant (helper).
 
 ```lean
-theorem RueCore.Retire.stepEval_live (M : FloatSig) (P : Program) {H : Store}
+theorem RueCore.Tombstone.stepEval_live (M : FloatSig) (P : Program) {H : Store}
   {φ : Activation} {K : List Kont} {tr : List Event}
-  (h : Retire.StackLive H φ K) (e : Expr) :
-  Retire.StepLive (stepEval M P H φ K tr e)
+  (h : Tombstone.StackLive H φ K) (e : Expr) :
+  Tombstone.StepLive (stepEval M P H φ K tr e)
 ```
 
-### `Retire.stepArgs_live`
+### `Tombstone.stepArgs_live`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 `step` at a completed argument list keeps the invariant: (D-Call) mints the
 callee's cells fresh (helper).
 
 ```lean
-theorem RueCore.Retire.stepArgs_live (P : Program) {H : Store} {φ : Activation}
-  {K : List Kont} {tr : List Event} (h : Retire.StackLive H φ K)
-  (vs : List Val) (t : ArgsFrame) : Retire.StepLive (stepArgs P H φ K tr vs t)
+theorem RueCore.Tombstone.stepArgs_live (P : Program) {H : Store} {φ : Activation}
+  {K : List Kont} {tr : List Event} (h : Tombstone.StackLive H φ K)
+  (vs : List Val) (t : ArgsFrame) :
+  Tombstone.StepLive (stepArgs P H φ K tr vs t)
 ```
 
-### `Retire.stepRet_live`
+### `Tombstone.stepRet_live`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 `step` at a value returning into the top frame keeps the invariant: every
 teardown walks cells the invariant says are live and owed once (helper).
 
 ```lean
-theorem RueCore.Retire.stepRet_live (M : FloatSig) (P : Program) {H : Store}
+theorem RueCore.Tombstone.stepRet_live (M : FloatSig) (P : Program) {H : Store}
   {φ : Activation} {K : List Kont} {tr : List Event} (v : Val) (k : Kont)
-  (h : Retire.StackLive H φ (k :: K)) :
-  Retire.StepLive (stepRet M P H φ K tr v k)
+  (h : Tombstone.StackLive H φ (k :: K)) :
+  Tombstone.StepLive (stepRet M P H φ K tr v k)
 ```
 
-### `Retire.step_live`
+### `Tombstone.step_live`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 **The invariant over `Step`**: `step` keeps it, and never answers `stuck
 .useAfterDrop` under it (helper).
 
 ```lean
-theorem RueCore.Retire.step_live (M : FloatSig) (P : Program) {C : Config}
-  (h : Retire.ConfigLive C) : Retire.StepLive (step M P C)
+theorem RueCore.Tombstone.step_live (M : FloatSig) (P : Program) {C : Config}
+  (h : Tombstone.ConfigLive C) : Tombstone.StepLive (step M P C)
 ```
 
-### `Retire.steps_live`
+### `Tombstone.steps_live`
 
-*theorem* · module `RueCore.Retire`
+*theorem* · module `RueCore.Tombstone`
 
 `→*` keeps the invariant (helper).
 
 ```lean
-theorem RueCore.Retire.steps_live {M : FloatSig} {P : Program} {C C' : Config}
-  (hs : Steps M P C C') : Retire.ConfigLive C → Retire.ConfigLive C'
+theorem RueCore.Tombstone.steps_live {M : FloatSig} {P : Program} {C C' : Config}
+  (hs : Steps M P C C') : Tombstone.ConfigLive C → Tombstone.ConfigLive C'
 ```
 
 ### `StepsN.split`
@@ -25551,7 +25555,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `Activation.empty`
 
-*def* · module `RueCore.Adequacy.Defs`
+*def* · module `RueCore.Equivalence.Defs`
 
 The empty frame the entry point is called from (helper).
 
@@ -29502,73 +29506,6 @@ Constructors:
 RueCore.Program.mk (decls : Decls) (fns : List FnDef) : Program
 ```
 
-### `Retire.Live`
-
-*def* · module `RueCore.Retire`
-
-Cell `ℓ` of the store is live: it holds contents, not the retired marker
-`†` (helper).
-
-```lean
-def RueCore.Retire.Live (H : Store) (ℓ : Nat) : Prop :=
-  ∃ c, H[ℓ]? = some (Cell.full c)
-```
-
-### `Retire.Shape`
-
-*def* · module `RueCore.Retire`
-
-**The stack's shape**: what each frame of the control stack says about the
-frame in force above it. An `endscope ℓ̄` marker and a loop boundary sit
-under a frame that extends theirs by cells at the end of its scope record
-(and the front of its environment); a call boundary and the stack's bottom
-sit under a frame whose environment is its scope record reversed; every other
-frame is an evaluation context of the same frame (helper).
-
-```lean
-def RueCore.Retire.Shape : Activation → List Kont → Prop :=
-  List.brecOn (motive := fun x => Activation → Prop) x✝ Retire.Shape._f x✝¹
-```
-
-### `Retire.UnwindPost`
-
-*def* · module `RueCore.Retire`
-
-What `run-scope-drops` over distinct live cells does: it never meets
-`†`, keeps the store's length, and leaves every other cell as it was
-(helper).
-
-```lean
-def RueCore.Retire.UnwindPost (H : Store) (ls : List Nat) :
-  Except Refusal (Store × List Event) → Prop :=
-  match x✝ with
-  | Except.error w => w ≠ Refusal.useAfterDrop
-  | Except.ok (H', snd) =>
-    List.length H' = List.length H ∧ ∀ (ℓ : Nat), ¬ℓ ∈ ls → H'[ℓ]? = H[ℓ]?
-```
-
-### `Retire.callerCells`
-
-*def* · module `RueCore.Retire`
-
-The cells the suspended callers' frames owe a drop (helper).
-
-```lean
-def RueCore.Retire.callerCells : List Kont → List Nat
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-Retire.callerCells [] = []
-∀ (φs : Activation) (K : List Kont),
-  Retire.callerCells (Kont.call φs :: K) =
-    Retire.callerCells K ++ φs.scope
-∀ (head : Kont) (K : List Kont),
-  (∀ (φs : Activation), head = Kont.call φs → False) →
-    Retire.callerCells (head :: K) = Retire.callerCells K
-```
-
 ### `Stk`
 
 *def* · module `RueCore.Trace.Defs`
@@ -29589,6 +29526,74 @@ Stk [] = []
 ∀ (head : Kont) (K : List Kont),
   (∀ (φs : Activation), head = Kont.call φs → False) →
     Stk (head :: K) = Stk K
+```
+
+### `Tombstone.Live`
+
+*def* · module `RueCore.Tombstone`
+
+Cell `ℓ` of the store is live: it holds contents, not the retired marker
+`†` (helper).
+
+```lean
+def RueCore.Tombstone.Live (H : Store) (ℓ : Nat) : Prop :=
+  ∃ c, H[ℓ]? = some (Cell.full c)
+```
+
+### `Tombstone.Shape`
+
+*def* · module `RueCore.Tombstone`
+
+**The stack's shape**: what each frame of the control stack says about the
+frame in force above it. An `endscope ℓ̄` marker and a loop boundary sit
+under a frame that extends theirs by cells at the end of its scope record
+(and the front of its environment); a call boundary and the stack's bottom
+sit under a frame whose environment is its scope record reversed; every other
+frame is an evaluation context of the same frame (helper).
+
+```lean
+def RueCore.Tombstone.Shape : Activation → List Kont → Prop :=
+  List.brecOn (motive := fun x => Activation → Prop) x✝ Tombstone.Shape._f
+    x✝¹
+```
+
+### `Tombstone.UnwindPost`
+
+*def* · module `RueCore.Tombstone`
+
+What `run-scope-drops` over distinct live cells does: it never meets
+`†`, keeps the store's length, and leaves every other cell as it was
+(helper).
+
+```lean
+def RueCore.Tombstone.UnwindPost (H : Store) (ls : List Nat) :
+  Except Refusal (Store × List Event) → Prop :=
+  match x✝ with
+  | Except.error w => w ≠ Refusal.useAfterDrop
+  | Except.ok (H', snd) =>
+    List.length H' = List.length H ∧ ∀ (ℓ : Nat), ¬ℓ ∈ ls → H'[ℓ]? = H[ℓ]?
+```
+
+### `Tombstone.callerCells`
+
+*def* · module `RueCore.Tombstone`
+
+The cells the suspended callers' frames owe a drop (helper).
+
+```lean
+def RueCore.Tombstone.callerCells : List Kont → List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Tombstone.callerCells [] = []
+∀ (φs : Activation) (K : List Kont),
+  Tombstone.callerCells (Kont.call φs :: K) =
+    Tombstone.callerCells K ++ φs.scope
+∀ (head : Kont) (K : List Kont),
+  (∀ (φs : Activation), head = Kont.call φs → False) →
+    Tombstone.callerCells (head :: K) = Tombstone.callerCells K
 ```
 
 ### `Tombstoned`
@@ -30193,7 +30198,7 @@ def RueCore.Config.Terminal : Config → Prop :=
 
 ### `Config.evalFocus`
 
-*def* · module `RueCore.Adequacy`
+*def* · module `RueCore.Equivalence`
 
 Whether a configuration has an expression in focus (helper).
 
@@ -30569,7 +30574,7 @@ def RueCore.KillsOnly (ls : List Nat) (H : Store) (v : Val) (R : EvalRes) : Prop
 
 ### `Kont.Transparent`
 
-*def* · module `RueCore.Adequacy`
+*def* · module `RueCore.Equivalence`
 
 A frame `toCall` and `toLoop` look through: every frame but `call` and
 `loop` (helper).
@@ -30670,47 +30675,6 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (T : Ty) (e : Expr),
   Program.entry D T e =
     { decls := D, fns := [{ params := [], ret := T, body := e }] }
-```
-
-### `Retire.Grow`
-
-*def* · module `RueCore.Retire`
-
-The store grew: it is no shorter, and no live cell was retired (helper).
-
-```lean
-def RueCore.Retire.Grow (H H' : Store) : Prop :=
-  List.length H ≤ List.length H' ∧
-    ∀ (ℓ : Nat), Retire.Live H ℓ → Retire.Live H' ℓ
-```
-
-### `Retire.LiveActivation`
-
-*def* · module `RueCore.Retire`
-
-**The frame invariant**: every cell the environment names, and every cell
-the scope record owes a drop, is live, and the record owes each at most once
-(helper).
-
-```lean
-def RueCore.Retire.LiveActivation (H : Store) (φ : Activation) : Prop :=
-  (∀ (ℓ : Nat), ℓ ∈ φ.env → Retire.Live H ℓ) ∧
-    (∀ (ℓ : Nat), ℓ ∈ φ.scope → Retire.Live H ℓ) ∧ φ.scope.Nodup
-```
-
-### `Retire.StackLive`
-
-*def* · module `RueCore.Retire`
-
-**The configuration invariant**: the stack has its shape, and every cell a
-frame on it owes a drop — the frame in force and every suspended caller — is
-live and owed once (helper).
-
-```lean
-def RueCore.Retire.StackLive (H : Store) (φ : Activation) (K : List Kont) : Prop :=
-  Retire.Shape φ K ∧
-    (Retire.callerCells K ++ φ.scope).Nodup ∧
-      ∀ (ℓ : Nat), ℓ ∈ Retire.callerCells K ++ φ.scope → Retire.Live H ℓ
 ```
 
 ### `Settled`
@@ -30883,6 +30847,49 @@ def RueCore.Tidy (φ : Activation) (H : Store) : EvalRes → Prop :=
   | EvalRes.outOfFuel => True
 ```
 
+### `Tombstone.Grow`
+
+*def* · module `RueCore.Tombstone`
+
+The store grew: it is no shorter, and no live cell was retired (helper).
+
+```lean
+def RueCore.Tombstone.Grow (H H' : Store) : Prop :=
+  List.length H ≤ List.length H' ∧
+    ∀ (ℓ : Nat), Tombstone.Live H ℓ → Tombstone.Live H' ℓ
+```
+
+### `Tombstone.LiveActivation`
+
+*def* · module `RueCore.Tombstone`
+
+**The frame invariant**: every cell the environment names, and every cell
+the scope record owes a drop, is live, and the record owes each at most once
+(helper).
+
+```lean
+def RueCore.Tombstone.LiveActivation (H : Store) (φ : Activation) : Prop :=
+  (∀ (ℓ : Nat), ℓ ∈ φ.env → Tombstone.Live H ℓ) ∧
+    (∀ (ℓ : Nat), ℓ ∈ φ.scope → Tombstone.Live H ℓ) ∧ φ.scope.Nodup
+```
+
+### `Tombstone.StackLive`
+
+*def* · module `RueCore.Tombstone`
+
+**The configuration invariant**: the stack has its shape, and every cell a
+frame on it owes a drop — the frame in force and every suspended caller — is
+live and owed once (helper).
+
+```lean
+def RueCore.Tombstone.StackLive (H : Store) (φ : Activation) (K : List Kont) :
+  Prop :=
+  Tombstone.Shape φ K ∧
+    (Tombstone.callerCells K ++ φ.scope).Nodup ∧
+      ∀ (ℓ : Nat),
+        ℓ ∈ Tombstone.callerCells K ++ φ.scope → Tombstone.Live H ℓ
+```
+
 ### `Ty.atDyn`
 
 *def* · module `RueCore.Syntax`
@@ -31037,7 +31044,7 @@ Defining equations, as Lean derived them from the body:
 
 ### `argsConf`
 
-*def* · module `RueCore.Adequacy`
+*def* · module `RueCore.Equivalence`
 
 A list context `…( v̄, E, ē )` at a store (helper).
 
@@ -31225,7 +31232,7 @@ def RueCore.eval (M : FloatSig) :
 
 ### `evalConf`
 
-*def* · module `RueCore.Adequacy`
+*def* · module `RueCore.Equivalence`
 
 The configuration family of an expression in focus: `⟨H ; φ ; K ; E[e]⟩`
 for every context `K` and every trace `tr` already produced (§6.1, §6.2).
@@ -31661,49 +31668,6 @@ Defining equations, as Lean derived them from the body:
     StepOut.stuck Refusal.typeConfusion
 ```
 
-### `Retire.ConfigLive`
-
-*def* · module `RueCore.Retire`
-
-The invariant at a configuration; a trap `↯κ` has no store left to check
-(helper).
-
-```lean
-def RueCore.Retire.ConfigLive : Config → Prop :=
-  match x✝ with
-  | Config.run H φ K f tr => Retire.StackLive H φ K
-  | Config.panic k tr => True
-```
-
-### `Retire.LivePost`
-
-*def* · module `RueCore.Retire`
-
-**What an evaluation keeps**, by outcome (helper). A value retires no cell
-that was live before it (only the cells it minted itself). An unwinding
-`return` may retire the frame's scope record, and nothing else live before it.
-A `break` retires nothing live before it, and the scope record it carries is
-the frame's own, extended by distinct cells it minted, still live. And no
-refusal is `useAfterDrop`.
-
-```lean
-def RueCore.Retire.LivePost (H : Store) (φ : Activation) : EvalRes → Prop :=
-  match x✝ with
-  | EvalRes.ok H' v tr => Retire.Grow H H'
-  | EvalRes.returned H' v tr =>
-    List.length H ≤ List.length H' ∧
-      ∀ (ℓ : Nat), ¬ℓ ∈ φ.scope → Retire.Live H ℓ → Retire.Live H' ℓ
-  | EvalRes.broke H' sc tr =>
-    Retire.Grow H H' ∧
-      ∃ xs,
-        sc = φ.scope ++ xs ∧
-          xs.Nodup ∧
-            ∀ (ℓ : Nat), ℓ ∈ xs → List.length H ≤ ℓ ∧ Retire.Live H' ℓ
-  | EvalRes.panic k tr => True
-  | EvalRes.refused w => w ≠ Refusal.useAfterDrop
-  | EvalRes.outOfFuel => True
-```
-
 ### `Spec.fuel_mono_stmt`
 
 *def* · module `RueCore.Spec.Safety`
@@ -31769,6 +31733,49 @@ RueCore.StructDecl.Wf.mk {D : Decls} {sd : StructDecl}
       StructDecl.baseOf D sd = Qual.copy ∧ sd.dtor = false)
   (dtorWf : sd.dtor = true → StructDecl.baseOf D sd ≠ Qual.linear) :
   StructDecl.Wf D sd
+```
+
+### `Tombstone.ConfigLive`
+
+*def* · module `RueCore.Tombstone`
+
+The invariant at a configuration; a trap `↯κ` has no store left to check
+(helper).
+
+```lean
+def RueCore.Tombstone.ConfigLive : Config → Prop :=
+  match x✝ with
+  | Config.run H φ K f tr => Tombstone.StackLive H φ K
+  | Config.panic k tr => True
+```
+
+### `Tombstone.LivePost`
+
+*def* · module `RueCore.Tombstone`
+
+**What an evaluation keeps**, by outcome (helper). A value retires no cell
+that was live before it (only the cells it minted itself). An unwinding
+`return` may retire the frame's scope record, and nothing else live before it.
+A `break` retires nothing live before it, and the scope record it carries is
+the frame's own, extended by distinct cells it minted, still live. And no
+refusal is `useAfterDrop`.
+
+```lean
+def RueCore.Tombstone.LivePost (H : Store) (φ : Activation) : EvalRes → Prop :=
+  match x✝ with
+  | EvalRes.ok H' v tr => Tombstone.Grow H H'
+  | EvalRes.returned H' v tr =>
+    List.length H ≤ List.length H' ∧
+      ∀ (ℓ : Nat), ¬ℓ ∈ φ.scope → Tombstone.Live H ℓ → Tombstone.Live H' ℓ
+  | EvalRes.broke H' sc tr =>
+    Tombstone.Grow H H' ∧
+      ∃ xs,
+        sc = φ.scope ++ xs ∧
+          xs.Nodup ∧
+            ∀ (ℓ : Nat), ℓ ∈ xs → List.length H ≤ ℓ ∧ Tombstone.Live H' ℓ
+  | EvalRes.panic k tr => True
+  | EvalRes.refused w => w ≠ Refusal.useAfterDrop
+  | EvalRes.outOfFuel => True
 ```
 
 ### `checkEnumDecl`
@@ -32339,33 +32346,6 @@ def RueCore.Lead (M : FloatSig) (P : Program) (fuel : Nat) (H : Store)
   | Expr.brk => False
 ```
 
-### `Retire.ArgsLive`
-
-*def* · module `RueCore.Retire`
-
-The promise over an argument list (helper).
-
-```lean
-def RueCore.Retire.ArgsLive (H : Store) (φ : Activation) : ArgsRes → Prop :=
-  match x✝ with
-  | ArgsRes.ok H' vs tr => Retire.Grow H H'
-  | ArgsRes.abort r => Retire.LivePost H φ r
-```
-
-### `Retire.StepLive`
-
-*def* · module `RueCore.Retire`
-
-What a step keeps (helper).
-
-```lean
-def RueCore.Retire.StepLive : StepOut → Prop :=
-  match x✝ with
-  | StepOut.next C => Retire.ConfigLive C
-  | StepOut.halted => True
-  | StepOut.stuck w => w ≠ Refusal.useAfterDrop
-```
-
 ### `Spec.dtor_once_stmt`
 
 *def* · module `RueCore.Spec.Trace`
@@ -32414,6 +32394,33 @@ names a cell already retired, `eval` does refuse (`Sharp.tombstoned_cell`). Like
 def RueCore.Spec.run_no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) (fuel : Nat),
     run M P fuel ≠ EvalRes.refused Refusal.useAfterDrop
+```
+
+### `Tombstone.ArgsLive`
+
+*def* · module `RueCore.Tombstone`
+
+The promise over an argument list (helper).
+
+```lean
+def RueCore.Tombstone.ArgsLive (H : Store) (φ : Activation) : ArgsRes → Prop :=
+  match x✝ with
+  | ArgsRes.ok H' vs tr => Tombstone.Grow H H'
+  | ArgsRes.abort r => Tombstone.LivePost H φ r
+```
+
+### `Tombstone.StepLive`
+
+*def* · module `RueCore.Tombstone`
+
+What a step keeps (helper).
+
+```lean
+def RueCore.Tombstone.StepLive : StepOut → Prop :=
+  match x✝ with
+  | StepOut.next C => Tombstone.ConfigLive C
+  | StepOut.halted => True
+  | StepOut.stuck w => w ≠ Refusal.useAfterDrop
 ```
 
 ### `WfEnums`
@@ -32989,7 +32996,7 @@ RueCore.StoreTyping.cons {D : Decls} {en : Entry} {Γ : Ctx} {ℓ : Nat}
 
 ### `Config.SafeAt`
 
-*def* · module `RueCore.Adequacy.Defs`
+*def* · module `RueCore.Equivalence.Defs`
 
 **A configuration typed at `T`, semantically** (§7, first bullet): every
 configuration `→*` reaches from `C` reduces or has halted ((Result-Ok),
@@ -34969,7 +34976,7 @@ RueCore.Steps.step {M : FloatSig} {P : Program} {C₁ C₂ C₃ : Config} :
 
 ### `StepsN`
 
-*inductive* · module `RueCore.Adequacy.Defs`
+*inductive* · module `RueCore.Equivalence.Defs`
 
 `→ⁿ`: a run of exactly `n` steps of §6's reduction (helper). Completeness
 counts steps, because fuel is a bound on them.
@@ -34997,7 +35004,7 @@ RueCore.StepsN.step {M : FloatSig} {P : Program} {n : Nat}
 
 ### `Long`
 
-*def* · module `RueCore.Adequacy`
+*def* · module `RueCore.Equivalence`
 
 A run of `n` steps from every member of a configuration family: from
 `⟨H ; φ ; K ; E[e]⟩`, for every context `K` and trace `tr` (helper).
@@ -35034,7 +35041,7 @@ def RueCore.LongC (M : FloatSig) (P : Program) (F : Event → List Nat) (H : Sto
 *def* · module `RueCore.TraceWhole`
 
 **`eval`'s result, simulated losslessly** (helper): `Sim`'s clauses
-(`Adequacy.lean`) with every run lossless (`MSteps`), for a value, an
+(`Equivalence.lean`) with every run lossless (`MSteps`), for a value, an
 unwinding `return` and an unwinding `break`. The two unwinding clauses ask of
 the context that the frames the unwind discards hold no owned value — what
 `pendingSafe` guarantees at every form that pushes such a frame (RUE-2316). A
@@ -35069,7 +35076,7 @@ def RueCore.MSim (M : FloatSig) (P : Program) (φ : Activation)
 
 ### `Sim`
 
-*def* · module `RueCore.Adequacy`
+*def* · module `RueCore.Equivalence`
 
 **The simulation relation** between an `eval` result and §6's `→*`
 (RUE-2289, parts 2 and 3; the module docstring reads it clause by clause). `C`
@@ -35109,7 +35116,7 @@ def RueCore.Sim (M : FloatSig) (P : Program) (φ : Activation)
 
 ### `Spec.run_refused_of_step_stuck_stmt`
 
-*def* · module `RueCore.Spec.Adequacy`
+*def* · module `RueCore.Spec.Equivalence`
 
 **A stuck `Step` run is a refusal of `run`** (§6), at every large enough
 fuel, perhaps with another `Refusal`.
@@ -35125,7 +35132,7 @@ def RueCore.Spec.run_refused_of_step_stuck_stmt : Prop :=
 
 ### `Spec.run_sim_stmt`
 
-*def* · module `RueCore.Spec.Adequacy`
+*def* · module `RueCore.Spec.Equivalence`
 
 **`run` is simulated by `Step`, on every program** (§6.12): the same, with
 no typing hypothesis.
@@ -35144,7 +35151,7 @@ def RueCore.Spec.run_sim_stmt : Prop :=
 
 ### `Spec.run_small_to_big_stmt`
 
-*def* · module `RueCore.Spec.Adequacy`
+*def* · module `RueCore.Spec.Equivalence`
 
 **Completeness on every program** (§6.12): the same, up to a refusal of
 `run`'s (RUE-2314). With no typing hypothesis the escape is wide: a `run` that
@@ -35171,7 +35178,7 @@ def RueCore.Spec.run_small_to_big_stmt : Prop :=
 
 ### `Spec.step_never_stuck_of_run_stmt`
 
-*def* · module `RueCore.Spec.Adequacy`
+*def* · module `RueCore.Spec.Equivalence`
 
 **`eval` never stuck, so `Step` never stuck, on every program** (§7 "Type
 safety": "it either reduces, halts with a value, or halts with one of the
@@ -35220,7 +35227,7 @@ def RueCore.LongCIH (M : FloatSig) (P : Program) (F : Event → List Nat)
 
 ### `LongIH`
 
-*def* · module `RueCore.Adequacy`
+*def* · module `RueCore.Equivalence`
 
 The induction hypothesis: at fuel `fuel`, exhaustion is a run of `fuel`
 steps (helper).
@@ -35233,7 +35240,7 @@ def RueCore.LongIH (M : FloatSig) (P : Program) (fuel : Nat) : Prop :=
 
 ### `SimIH`
 
-*def* · module `RueCore.Adequacy`
+*def* · module `RueCore.Equivalence`
 
 The induction hypothesis: `eval` at fuel `fuel` is simulated (helper).
 
@@ -38654,7 +38661,7 @@ def RueCore.Spec.drop_order_stmt : Prop :=
 
 ### `Spec.eval_big_to_small_stmt`
 
-*def* · module `RueCore.Spec.Adequacy`
+*def* · module `RueCore.Spec.Equivalence`
 
 **`eval` is sound for `Step`**, the interpreter-to-small-step direction of
 the semantic equivalence (§7's adequacy sentence; ADR-0097). For a
@@ -38678,7 +38685,7 @@ def RueCore.Spec.eval_big_to_small_stmt : Prop :=
 
 ### `Spec.eval_diverges_iff_stmt`
 
-*def* · module `RueCore.Spec.Adequacy`
+*def* · module `RueCore.Spec.Equivalence`
 
 **Divergence is exhaustion at every fuel** (§7 "Type safety"; §6.12): for a
 checked program, `run` is `outOfFuel` at every fuel iff `Step` has runs of
@@ -38694,7 +38701,7 @@ def RueCore.Spec.eval_diverges_iff_stmt : Prop :=
 
 ### `Spec.eval_small_to_big_stmt`
 
-*def* · module `RueCore.Spec.Adequacy`
+*def* · module `RueCore.Spec.Equivalence`
 
 **`eval` is complete for `Step`, modulo fuel**, the small-step-to-interpreter
 direction of the semantic equivalence (§7's adequacy sentence).
@@ -38720,7 +38727,7 @@ def RueCore.Spec.eval_small_to_big_stmt : Prop :=
 
 ### `Spec.never_refused_iff_stmt`
 
-*def* · module `RueCore.Spec.Adequacy`
+*def* · module `RueCore.Spec.Equivalence`
 
 **Never stuck, both ways** (§7 "Type safety"). For a checked program, `run`
 is never stuck iff no reachable configuration is. Under `ProgramTyped` both
