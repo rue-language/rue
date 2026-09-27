@@ -290,7 +290,7 @@ binop the pair reaches at all. `Gen.lean`'s docstring has the mechanism in
 full and BRIDGE-SENSITIVITY.md the mutant results.
 
 Reaching `divZero` (RUE-2512): The `(x, 0)` div-by-zero shape above
-reached an *accepted* program too rarely to be useful: 0 of the 1,200
+reached an accepted program too rarely to be useful: 0 of the 1,200
 generated programs at `--gen 200 --seed 7` and `--gen 1000 --seed 23` end in
 `panic divZero`, against one `remZero`. `/`'s own rate is raised to one in
 six (`rem`'s stays untouched), and, since the runtime prints one message for
